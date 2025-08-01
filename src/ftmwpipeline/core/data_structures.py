@@ -343,6 +343,38 @@ class ComplexFT:
             complex_spectrum=self.complex_spectrum[mask],
             freq_range=(freq_min, freq_max)
         )
+    
+    def trim_to_range(self, freq_min: float, freq_max: float) -> 'ComplexFT':
+        """
+        Create a new ComplexFT object trimmed to the specified frequency range.
+        
+        This method is useful for removing noise regions and focusing analysis
+        on the spectral activity region.
+        
+        Parameters
+        ----------
+        freq_min : float
+            Minimum frequency in MHz
+        freq_max : float
+            Maximum frequency in MHz
+            
+        Returns
+        -------
+        ComplexFT
+            New ComplexFT object containing only the specified frequency range
+        """
+        mask = (self.freq_array >= freq_min) & (self.freq_array <= freq_max)
+        
+        if not np.any(mask):
+            raise ValueError(f"No data points in frequency range [{freq_min}, {freq_max}] MHz")
+        
+        # Create new ComplexFT with trimmed data
+        return ComplexFT(
+            freq_array=self.freq_array[mask],
+            complex_spectrum=self.complex_spectrum[mask],
+            fid=self.fid,
+            metadata={**self.metadata, 'trimmed_range': (freq_min, freq_max)}
+        )
 
 
 class Peak:

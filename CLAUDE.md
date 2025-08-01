@@ -47,6 +47,25 @@ ftmwpipeline/
 ### Test Data Location:
 - `/home/kncrabtree/github/bcfitting/examples/blackchirp_data/2638/` - Real experimental data
 - `/home/kncrabtree/github/bcfitting/newfitting/output/` - Reference outputs
+- **Example data**: `examples/blackchirp_data/2638/` - Local copy for testing
+
+### Experiment 2638 Processing Notes:
+**Recommended Processing Parameters**:
+- `zpf=1` (zero padding factor for improved frequency resolution)
+- `expf_us=5.0` (5 μs exponential apodization filter for sensitivity enhancement)
+- **Activity region**: 26500-40000 MHz (focus analysis in this range)
+- **IMPORTANT**: FT should be trimmed to 26500-40000 MHz range before analysis to remove noise regions
+- FID specs: 750k points, 15 μs duration, 40.96 GHz probe, Lower Sideband
+
+**Example Usage**:
+```python
+# Load and process experiment 2638
+ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
+complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
+
+# Trim to activity region before analysis
+trimmed_ft = complex_ft.trim_to_range(26500, 40000)
+```
 
 ## Target Package Structure
 
