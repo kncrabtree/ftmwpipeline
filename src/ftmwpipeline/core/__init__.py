@@ -2,33 +2,38 @@
 Core data structures and classes for FTMW pipeline.
 
 This module contains the fundamental data structures used throughout the pipeline:
-- SpectralWindow: Container for frequency domain data
-- Peak: Individual spectral peak representation
-- FittingResult: Results from fitting algorithms
-- FIDParameters: Free induction decay parameters
+- FTMWData: Top-level container for complete FTMW experiment
+- FID: Time domain data with processing parameters
+- ComplexFT: Frequency domain data
+- SpectralWindow: Analysis window (subset of ComplexFT)
+- Peak: Pre-fitting detected peak representation
+- FittedPeak: Post-fitting peak results
+- FittingResult: Container for fitting results
+- FIDProcessingParameters: FID processing configuration
 """
 
 from .data_structures import (
+    FTMWData,
+    FID,
+    ComplexFT,
     SpectralWindow,
-    Peak, 
+    Peak,
+    FittedPeak,
     FittingResult,
-    FIDParameters,
-)
-
-from .fit_metrics import (
-    calculate_chi_squared,
-    calculate_aic,
-    calculate_f_statistic,
-    calculate_confidence_intervals,
+    FIDProcessingParameters,
+    PeakClassification,
+    Sideband,
 )
 
 __all__ = [
+    "FTMWData",
+    "FID", 
+    "ComplexFT",
     "SpectralWindow",
     "Peak",
-    "FittingResult", 
-    "FIDParameters",
-    "calculate_chi_squared",
-    "calculate_aic",
-    "calculate_f_statistic",
-    "calculate_confidence_intervals",
+    "FittedPeak",
+    "FittingResult",
+    "FIDProcessingParameters",
+    "PeakClassification",
+    "Sideband",
 ]

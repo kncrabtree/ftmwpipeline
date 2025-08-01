@@ -11,51 +11,58 @@ __author__ = "FTMW Pipeline Contributors"
 
 # Core data structures
 from ftmwpipeline.core.data_structures import (
+    FTMWData,
+    FID,
+    ComplexFT,
     SpectralWindow,
     Peak,
+    FittedPeak,
     FittingResult,
-    FIDParameters,
+    FIDProcessingParameters,
+    PeakClassification,
+    Sideband,
 )
 
 # Main pipeline interface
-from ftmwpipeline.pipeline import Pipeline
+# from ftmwpipeline.pipeline import Pipeline  # TODO: Fix imports
 
-# Preprocessing functions
-from ftmwpipeline.preprocessing.baseline_estimation import estimate_baseline_noise
-from ftmwpipeline.preprocessing.data_loading import load_blackchirp_data
+# TODO: Fix imports for other modules when they're implemented
+# # Preprocessing functions
+# from ftmwpipeline.preprocessing.baseline_estimation import estimate_baseline_noise
+# from ftmwpipeline.preprocessing.data_loading import load_blackchirp_data
 
-# Peak detection
-from ftmwpipeline.peak_detection.basic_detection import locate_peaks
-from ftmwpipeline.peak_detection.hybrid_detection import locate_peaks_hybrid
-from ftmwpipeline.peak_detection.classification import classify_peaks
+# # Peak detection
+# from ftmwpipeline.peak_detection.basic_detection import locate_peaks
+# from ftmwpipeline.peak_detection.hybrid_detection import locate_peaks_hybrid
+# from ftmwpipeline.peak_detection.classification import classify_peaks
 
-# Window assignment
-from ftmwpipeline.window_assignment.greedy_assignment import assign_analysis_windows
+# # Window assignment
+# from ftmwpipeline.window_assignment.greedy_assignment import assign_analysis_windows
 
-# Fitting algorithms
-from ftmwpipeline.fitting.time_domain import fit_time_domain_peaks
-from ftmwpipeline.fitting.conservative import fit_conservative_time_domain
-from ftmwpipeline.fitting.validation import validate_fit_results
+# # Fitting algorithms
+# from ftmwpipeline.fitting.time_domain import fit_time_domain_peaks
+# from ftmwpipeline.fitting.conservative import fit_conservative_time_domain
+# from ftmwpipeline.fitting.validation import validate_fit_results
 
-# Convenience functions for common workflows
-from ftmwpipeline.workflows import (
-    process_experiment,
-    batch_process_experiments,
-    quick_fit,
-)
+# # Convenience functions for common workflows
+# from ftmwpipeline.workflows import (
+#     process_experiment,
+#     batch_process_experiments,
+#     quick_fit,
+# )
 
-# Import submodules to make them accessible
-from ftmwpipeline import (
-    core,
-    preprocessing, 
-    peak_detection,
-    window_assignment,
-    fitting,
-    visualization,
-    io,
-    config,
-    utils,
-)
+# # Import submodules to make them accessible
+# from ftmwpipeline import (
+#     core,
+#     preprocessing, 
+#     peak_detection,
+#     window_assignment,
+#     fitting,
+#     visualization,
+#     io,
+#     config,
+#     utils,
+# )
 
 __all__ = [
     # Version info
@@ -63,35 +70,16 @@ __all__ = [
     "__author__",
     
     # Core data structures
+    "FTMWData",
+    "FID",
+    "ComplexFT", 
     "SpectralWindow",
-    "Peak", 
+    "Peak",
+    "FittedPeak",
     "FittingResult",
-    "FIDParameters",
-    
-    # Main interface
-    "Pipeline",
-    
-    # Preprocessing
-    "estimate_baseline_noise",
-    "load_blackchirp_data",
-    
-    # Peak detection
-    "locate_peaks",
-    "locate_peaks_hybrid", 
-    "classify_peaks",
-    
-    # Window assignment
-    "assign_analysis_windows",
-    
-    # Fitting
-    "fit_time_domain_peaks",
-    "fit_conservative_time_domain",
-    "validate_fit_results",
-    
-    # Workflows
-    "process_experiment",
-    "batch_process_experiments", 
-    "quick_fit",
+    "FIDProcessingParameters",
+    "PeakClassification",
+    "Sideband",
 ]
 
 # Package-level configuration
