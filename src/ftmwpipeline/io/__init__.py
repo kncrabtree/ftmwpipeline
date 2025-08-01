@@ -7,12 +7,13 @@ This module handles:
 - Structured logging and decision tracking
 """
 
-from .experimental_formats import load_blackchirp, load_generic_fid
+from .experimental_formats import load_blackchirp_experiment, load_blackchirp_fid, load_generic_fid
 from .result_serialization import save_results, load_results, export_to_csv
 from .logging import setup_logging, FittingLogger
 
 __all__ = [
-    "load_blackchirp",
+    "load_blackchirp_experiment",
+    "load_blackchirp_fid", 
     "load_generic_fid",
     "save_results",
     "load_results", 
