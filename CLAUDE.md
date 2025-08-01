@@ -66,40 +66,37 @@ src/ftmwpipeline/
 
 ## Development Phases
 
-The project is organized into 11 phases (see roadmap for details):
+**Current Status**: Phase 1 ✅ **COMPLETE** - Phase 2 **READY TO BEGIN**
 
-1. **Package Infrastructure** (2-3 days) - *Ready to begin*
-2. **Core Data Structures** (1 week)
-3. **Preprocessing Pipeline** (1 week)
-4. **Peak Detection** (1 week)
-5. **Window Assignment** (1 week)
-6. **Fitting Algorithms** (2 weeks) - *Most complex*
-7. **Logging and IO** (3-4 days)
-8. **Visualization** (3-4 days)
-9. **Configuration and Pipeline** (2-3 days)
-10. **Testing and Documentation** (1 week)
-11. **Packaging and Release** (2-3 days)
-
-**Current Status**: Phase 1 ready to begin
+The project is organized into 11 development phases. For complete details, current status, task breakdowns, and timeline, see the [**Development Roadmap**](FTMWPIPELINE_DEVELOPMENT_ROADMAP.md).
 
 ## Build/Test Instructions
 
-### Not Yet Implemented
-The package infrastructure has not been created yet. When implemented, it will use:
+### Current Implementation ✅
+The package infrastructure is now complete with:
 
 - **Package Manager**: Modern Python packaging with `pyproject.toml`
-- **Testing Framework**: pytest
-- **Documentation**: Sphinx
+- **Testing Framework**: pytest with fixtures and coverage
+- **Documentation**: Sphinx with API reference
 - **Build Tools**: Standard Python build tools
-- **CI/CD**: GitHub Actions workflows
+- **Environment**: Conda environment files
 
-### Development Workflow (Planned)
+### Development Workflow
 ```bash
-# Once implemented:
-pip install -e .                    # Install in development mode
-pytest                             # Run tests
+# Set up environment
+conda env create -f environment.yml
+conda activate ftmwpipeline
+
+# Install in development mode
+pip install -e .
+
+# Run tests
+pytest                             # Run all tests
 pytest --cov=ftmwpipeline         # Run tests with coverage
-sphinx-build docs/source docs/build  # Build documentation
+ftmwpipeline validate             # Validate installation
+
+# Build documentation (future)
+sphinx-build docs/source docs/build
 ```
 
 ## Key Algorithms to Migrate

@@ -1,0 +1,130 @@
+"""
+Test basic package imports and structure.
+
+These tests verify that the package can be imported correctly and that
+the basic API is accessible.
+"""
+
+import pytest
+
+
+class TestPackageImports:
+    """Test basic package import functionality."""
+    
+    def test_main_package_import(self):
+        """Test that main package can be imported."""
+        import ftmwpipeline
+        assert hasattr(ftmwpipeline, '__version__')
+        assert hasattr(ftmwpipeline, '__author__')
+    
+    def test_core_module_import(self):
+        """Test that core module can be imported."""
+        from ftmwpipeline import core
+        # Basic structure test - actual classes will be implemented in Phase 2
+        assert hasattr(core, '__all__')
+    
+    def test_pipeline_class_import(self):
+        """Test that Pipeline class can be imported and instantiated."""
+        from ftmwpipeline import Pipeline
+        
+        # Should be able to create a pipeline instance
+        pipeline = Pipeline()
+        assert pipeline is not None
+        
+        # Should have basic methods
+        assert hasattr(pipeline, 'process_experiment')
+        assert hasattr(pipeline, 'get_summary')
+    
+    def test_workflow_functions_import(self):
+        """Test that workflow functions can be imported."""
+        from ftmwpipeline import process_experiment, batch_process_experiments, quick_fit
+        
+        # Functions should be callable
+        assert callable(process_experiment)
+        assert callable(batch_process_experiments)
+        assert callable(quick_fit)
+    
+    def test_validation_function(self):
+        """Test the installation validation function."""
+        from ftmwpipeline.workflows import validate_installation
+        
+        results = validate_installation()
+        assert isinstance(results, dict)
+        assert 'core_imports' in results
+        assert 'dependencies' in results
+        assert 'pipeline_creation' in results
+        
+        # At minimum, core imports and pipeline creation should work
+        assert results['core_imports'] is True
+        assert results['pipeline_creation'] is True
+
+
+class TestSubmoduleImports:
+    """Test that all submodules can be imported without errors."""
+    
+    def test_preprocessing_import(self):
+        """Test preprocessing module import."""
+        from ftmwpipeline import preprocessing
+        assert hasattr(preprocessing, '__all__')
+    
+    def test_peak_detection_import(self):
+        """Test peak detection module import."""
+        from ftmwpipeline import peak_detection
+        assert hasattr(peak_detection, '__all__')
+    
+    def test_window_assignment_import(self):
+        """Test window assignment module import.""" 
+        from ftmwpipeline import window_assignment
+        assert hasattr(window_assignment, '__all__')
+    
+    def test_fitting_import(self):
+        """Test fitting module import."""
+        from ftmwpipeline import fitting
+        assert hasattr(fitting, '__all__')
+    
+    def test_visualization_import(self):
+        """Test visualization module import."""
+        from ftmwpipeline import visualization
+        assert hasattr(visualization, '__all__')
+    
+    def test_io_import(self):
+        """Test IO module import."""
+        from ftmwpipeline import io
+        assert hasattr(io, '__all__')
+    
+    def test_config_import(self):
+        """Test config module import."""
+        from ftmwpipeline import config
+        assert hasattr(config, '__all__')
+    
+    def test_utils_import(self):
+        """Test utils module import."""
+        from ftmwpipeline import utils
+        assert hasattr(utils, '__all__')
+
+
+class TestPackageMetadata:
+    """Test package metadata and version information."""
+    
+    def test_version_format(self):
+        """Test that version follows semantic versioning."""
+        import ftmwpipeline
+        
+        version = ftmwpipeline.__version__
+        assert isinstance(version, str)
+        
+        # Should follow semantic versioning (major.minor.patch)
+        parts = version.split('.')
+        assert len(parts) >= 2  # At least major.minor
+        assert all(part.isdigit() for part in parts[:3])  # First 3 parts should be numbers
+    
+    def test_package_info(self):
+        """Test package info dictionary."""
+        import ftmwpipeline
+        
+        info = ftmwpipeline.PACKAGE_INFO
+        assert isinstance(info, dict)
+        assert 'name' in info
+        assert 'version' in info
+        assert 'description' in info
+        assert info['name'] == 'ftmwpipeline'
