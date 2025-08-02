@@ -144,25 +144,49 @@ ftmwpipeline/
 - `docs/source/conf.py` - Sphinx configuration
 
 ### Phase 2: Core Data Structures (1 week)
-**Status**: 🔄 **READY TO BEGIN**
+**Status**: ✅ **COMPLETE** (2025-08-02)
 
-**Source Files to Extract From**:
-- `/home/kncrabtree/github/bcfitting/newfitting/complex_ft.py`
-- `/home/kncrabtree/github/bcfitting/newfitting/peak_classification.py`
+**Completed Tasks**:
+1. ✅ Created comprehensive `core/data_structures.py` with modern architecture:
+   - `FTMWData` - Top-level experiment container
+   - `FID` - Time-domain data with BlackChirp-compatible processing
+   - `ComplexFT` - Frequency-domain data with real FFT implementation
+   - `SpectralWindow` - Analysis subset of ComplexFT for targeted fitting
+   - `Peak` - Pre-fitting detected peak representation
+   - `FittedPeak` - Post-fitting results with uncertainties
+   - `FittingResult` - Flexible container for fitting analysis
+   - `FIDProcessingParameters` - Complete processing configuration
 
-**Tasks**:
-1. Create `core/data_structures.py`:
-   - `SpectralWindow` class (from ComplexFT)
-   - `Peak` class (from ClassifiedPeak)
-   - `FittingResult` class (from FitResult)
-   - `FIDParameters` class (extracted from ComplexFT)
+2. ✅ Implemented BlackChirp data loading (`io/experimental_formats.py`):
+   - `load_blackchirp_experiment()` - Complete experiment loading
+   - `load_blackchirp_fid()` - FID-specific loading with parameter conversion
+   - Base-36 integer conversion and voltage scaling
+   - Processing parameter translation and metadata extraction
 
-2. Create `core/fit_metrics.py`:
-   - Statistical metric calculations (chi-squared, AIC, F-tests)
-   - Noise-weighted statistics
-   - Confidence interval calculations
+3. ✅ Added interactive visualization (`visualization/pipeline_plots.py`):
+   - `plot_complex_ft()` - Dual backend (matplotlib/plotly) plotting
+   - Two-panel layout (magnitude + real/imaginary) with wide aspect ratio
+   - `plot_spectral_window()` - Window visualization with peak annotations
+   - Validated with real experimental data (375k frequency points)
 
-3. Comprehensive unit tests for all data structures
+4. ✅ Enhanced ComplexFT with analysis methods:
+   - `trim_to_range()` - Frequency range trimming for noise removal
+   - `extract_window()` - Spectral window creation
+   - Lazy computation and caching for performance
+
+5. ✅ Added example experimental data:
+   - BlackChirp experiment 2638 (750k FID points, 15 μs duration)
+   - Processing guidance and best practices documented in CLAUDE.md
+   - Recommended parameters: zpf=1, expf_us=5.0, activity region 26.5-40 GHz
+
+**Key Architecture Decisions**:
+- Hierarchical design: FTMWData → FID/ComplexFT → SpectralWindow → Peak
+- Clear separation: Peak (pre-fitting) vs FittedPeak (post-fitting)  
+- Real FFT processing (rfft/rfftfreq) for computational efficiency
+- BlackChirp compatibility with generic extensibility
+- Interactive visualization ready for pipeline development
+
+**Validation**: All components tested with real experimental data
 
 ### Phase 3: Preprocessing Pipeline (1 week)  
 **Status**: Pending
@@ -378,10 +402,12 @@ ftmwpipeline/
 ## Current Status
 
 - **Repository**: ✅ Created with complete package infrastructure
-- **Development Phase**: Phase 2 (Core Data Structures) - Ready to begin
+- **Development Phase**: ✅ Phase 2 (Core Data Structures) **COMPLETE**
+- **Current Progress**: Phase 3 (Preprocessing Pipeline) - Ready to begin
 - **Reference Code**: Available in `/home/kncrabtree/github/bcfitting/`
-- **Test Data**: Available and validated
-- **Timeline**: Estimated 5-6 weeks remaining for complete implementation
+- **Test Data**: ✅ BlackChirp experiment 2638 integrated with processing guidance
+- **Interactive Tools**: ✅ Visualization and data loading capabilities operational
+- **Timeline**: Estimated 4-5 weeks remaining for complete implementation
 
 ## Next Immediate Steps
 
@@ -389,9 +415,10 @@ ftmwpipeline/
 2. ✅ ~~Initialize git repository~~
 3. ✅ ~~Set up package structure with pyproject.toml~~
 4. ✅ ~~Begin Phase 1: Package Infrastructure~~
-5. **Begin Phase 2**: Extract and implement core data structures from bcfitting codebase
+5. ✅ ~~Phase 2: Extract and implement core data structures from bcfitting codebase~~
+6. **Begin Phase 3**: Implement preprocessing pipeline (baseline/noise estimation, data validation)
 
 ---
 
-**Last Updated**: 2025-08-01  
-**Status**: Phase 1 Complete - Ready for Phase 2
+**Last Updated**: 2025-08-02  
+**Status**: Phase 2 Complete - Ready for Phase 3 (Preprocessing Pipeline)
