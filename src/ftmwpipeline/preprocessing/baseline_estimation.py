@@ -31,42 +31,48 @@ def estimate_noise_adaptive(
     frequencies: np.ndarray,
     magnitudes: np.ndarray,
     skew_target: float = 0.631,
-    inc: float = 0.005,
+    inc: float = 0.01,  # Increased for efficiency
     min_bin_fraction: float = 1/64,  # Minimum bin size as fraction of total data
-    smoothing_window: Optional[int] = None,
-    adaptive_strategy: str = "variance_based",
+    smoothing_window_mhz: Optional[float] = None,
     min_noise_fraction: float = 2/3,
+    verbose: bool = False,
 ) -> NoiseResult:
     """
-    Estimate frequency-dependent noise using adaptive binning strategy.
+    Estimate frequency-dependent noise using variance-based adaptive binning.
     
     This function improves upon the original estimate_baseline_noise by:
     1. Using RMS instead of standard deviation for noise metric
-    2. Implementing adaptive binning based on local signal characteristics
-    3. Using overlapping bins to reduce boundary artifacts
-    4. Returning detailed information about the noise model
+    2. Implementing recursive binary subdivision based on local variance
+    3. Enforcing noise fraction constraints to maintain statistical quality
+    4. Using bin-aware smoothing for stable RMS estimates
+    5. Returning detailed information about the noise model
     
-    The algorithm identifies noise regions by iteratively removing high-magnitude
-    points until the remaining data matches a Rayleigh distribution (skewness ≈ 0.631).
+    The algorithm uses recursive subdivision to create bins, stopping when:
+    - Bins would be too small (< min_bin_fraction of data)
+    - Local variance is low (stable regions)
+    - Noise fraction would be insufficient (< min_noise_fraction)
+    
+    Within each bin, noise points are identified by iteratively removing 
+    high-magnitude points until skewness approaches the target value.
     
     Parameters:
     -----------
     frequencies : np.ndarray
-        Frequency values (Hz)
+        Frequency values (MHz)
     magnitudes : np.ndarray  
         Magnitude spectrum values
     skew_target : float, default=0.631
-        Target skewness for Rayleigh distribution
-    inc : float, default=0.005
+        Target skewness for noise identification (Rayleigh ≈ 0.631)
+    inc : float, default=0.01
         Fraction of points to remove per iteration during skewness optimization
     min_bin_fraction : float, default=1/64
-        Minimum bin size as fraction of total data length (e.g., 1/64 ≈ 1.6% of data)
-    smoothing_window : int, optional
-        Window size for smoothing. If None, uses adaptive sizing
-    adaptive_strategy : str, default="variance_based"
-        Strategy for adaptive binning: "variance_based", "fixed", or "frequency_dependent"
+        Minimum bin size as fraction of total data length
+    smoothing_window_mhz : float, optional
+        RMS smoothing window size in MHz. If None, uses 2× average bin width in frequency
     min_noise_fraction : float, default=2/3
-        Minimum fraction of points that must be identified as noise
+        Minimum fraction of points that must be identified as noise per bin
+    verbose : bool, default=False
+        Whether to print detailed subdivision decisions and statistics
         
     Returns:
     --------
@@ -89,20 +95,12 @@ def estimate_noise_adaptive(
     n_points = len(frequencies)
     min_bin_size = max(int(n_points * min_bin_fraction), 100)  # At least 100 points
     
-    # Determine adaptive binning strategy
-    if adaptive_strategy == "variance_based":
-        bin_edges = _compute_variance_based_bins(
-            magnitudes, min_bin_size, skew_target, inc, min_noise_fraction, frequencies
-        )
-    elif adaptive_strategy == "frequency_dependent":
-        bin_edges = _compute_frequency_dependent_bins(
-            frequencies, min_bin_size, max_bin_size, overlap_factor
-        )
-    else:  # fixed strategy (similar to original)
-        n_bins = max(2, min(n_points // min_bin_size, n_points // max_bin_size))
-        bin_edges = _compute_fixed_bins(n_points, n_bins, overlap_factor)
+    # Use variance-based adaptive binning strategy - returns bin edges and cached results
+    bin_edges, noise_results_cache = _compute_variance_based_bins(
+        magnitudes, min_bin_size, skew_target, inc, min_noise_fraction, frequencies, verbose
+    )
     
-    # Process each bin to identify noise points
+    # Process each bin to identify noise points using cached results from subdivision
     noise_mask = np.zeros(n_points, dtype=bool)
     bin_weights = np.zeros(n_points)
     
@@ -110,36 +108,47 @@ def estimate_noise_adaptive(
         start_idx = bin_edges[i]
         end_idx = bin_edges[i + 1]
         
-        # Extract bin data
-        bin_magnitudes = magnitudes[start_idx:end_idx]
-        bin_indices = np.arange(start_idx, end_idx)
+        # Use cached noise filtering results from subdivision
+        cache_key = (start_idx, end_idx)
+        if cache_key in noise_results_cache:
+            noise_indices, _ = noise_results_cache[cache_key]
+        else:
+            # Fallback: compute if not cached (shouldn't happen normally)
+            bin_magnitudes = magnitudes[start_idx:end_idx]
+            bin_indices = np.arange(start_idx, end_idx)
+            noise_indices, stats = _filter_by_skewness_cached(
+                bin_magnitudes, bin_indices, skew_target, inc, cache_key
+            )
         
-        # Apply skewness-based filtering to identify noise points
-        noise_indices, _ = _filter_by_skewness(
-            bin_magnitudes, bin_indices, skew_target, inc
-        )
-        
-        # Update global noise mask (no overlap weighting needed)
+        # Update global noise mask
         weights = np.ones(len(noise_indices))
-        
         noise_mask[noise_indices] = True
         bin_weights[noise_indices] = weights
     
     # Compute RMS noise estimate with smoothing
-    if smoothing_window is None:
-        smoothing_window = max(min_bin_size // 4, 10)
+    if smoothing_window_mhz is None:
+        # Default: use 2× average bin width in frequency
+        n_bins = len(bin_edges) - 1
+        freq_range = abs(frequencies[-1] - frequencies[0])
+        avg_bin_width_mhz = freq_range / n_bins
+        smoothing_window_mhz = 2.0 * avg_bin_width_mhz
+    
+    # Convert MHz to points
+    freq_step = abs(frequencies[1] - frequencies[0]) if len(frequencies) > 1 else 1.0
+    smoothing_window_points = max(int(smoothing_window_mhz / freq_step), 10)  # At least 10 points
     
     rms_noise = _compute_rms_noise_smoothed(
-        frequencies, magnitudes, noise_mask, bin_weights, smoothing_window, bin_edges
+        frequencies, magnitudes, noise_mask, bin_weights, smoothing_window_points, bin_edges
     )
     
     # Compile diagnostic information
     bin_info = {
         "bin_edges": np.array(bin_edges),
         "n_bins": len(bin_edges) - 1,
-        "adaptive_strategy": adaptive_strategy,
+        "algorithm": "variance_based_subdivision",
         "noise_fraction": np.sum(noise_mask) / n_points,
-        "smoothing_window": smoothing_window,
+        "smoothing_window_mhz": smoothing_window_mhz,
+        "smoothing_window_points": smoothing_window_points,
     }
     
     return NoiseResult(rms_noise, noise_mask, bin_info)
@@ -148,54 +157,139 @@ def estimate_noise_adaptive(
 def _compute_variance_based_bins(
     magnitudes: np.ndarray, min_bin_size: int, 
     skew_target: float, inc: float, min_noise_fraction: float,
-    frequencies: np.ndarray = None
-) -> list:
-    """Compute bin edges using recursive binary subdivision based on variance."""
+    frequencies: np.ndarray = None, verbose: bool = False
+) -> Tuple[list, dict]:
+    """Compute bin edges using recursive binary subdivision based on variance.
     
-    def check_noise_fraction(start_idx: int, end_idx: int) -> float:
-        """Check noise fraction for a potential bin."""
-        bin_magnitudes = magnitudes[start_idx:end_idx]
-        bin_indices = np.arange(start_idx, end_idx)
-        noise_indices, _ = _filter_by_skewness(bin_magnitudes, bin_indices, skew_target, inc)
-        return len(noise_indices) / len(bin_magnitudes)
+    Returns:
+        tuple: (bin_edges, noise_results_cache) where cache contains precomputed
+               noise filtering results for all final bins.
+    """
+    
+    # Global cache for statistical computations
+    _stats_cache = {}  # (start_idx, end_idx) -> scipy.stats.describe result
+    _noise_results_cache = {}  # (start_idx, end_idx) -> (noise_indices, final_stats)
+    
+    def get_bin_stats(start_idx: int, end_idx: int):
+        """Get cached scipy.stats.describe result for a bin region."""
+        cache_key = (start_idx, end_idx)
+        if cache_key not in _stats_cache:
+            bin_data = magnitudes[start_idx:end_idx]
+            _stats_cache[cache_key] = spsm.describe(bin_data)
+        return _stats_cache[cache_key]
+    
+    def get_noise_result(start_idx: int, end_idx: int):
+        """Get cached noise filtering result for a bin."""
+        cache_key = (start_idx, end_idx)
+        if cache_key not in _noise_results_cache:
+            bin_magnitudes = magnitudes[start_idx:end_idx]
+            bin_indices = np.arange(start_idx, end_idx)
+            noise_indices, final_stats = _filter_by_skewness_cached(
+                bin_magnitudes, bin_indices, skew_target, inc, cache_key
+            )
+            _noise_results_cache[cache_key] = (noise_indices, final_stats)
+        return _noise_results_cache[cache_key]
     
     def should_subdivide(start_idx: int, end_idx: int) -> bool:
         """Determine if a region should be subdivided based on size, variance, and noise fraction."""
         region_size = end_idx - start_idx
         
+        if verbose:
+            freq_info = ""
+            if frequencies is not None:
+                start_freq = frequencies[start_idx] 
+                end_freq = frequencies[end_idx-1] if end_idx < len(frequencies) else frequencies[-1]
+                freq_info = f" freqs=[{start_freq:.0f}:{end_freq:.0f}]"
+            print(f"  Checking subdivision for [{start_idx}:{end_idx}]{freq_info} (size={region_size})")
+        
         # Don't subdivide if too small
         if region_size < 2 * min_bin_size:
+            if verbose:
+                print(f"    → TOO SMALL: {region_size} < {2 * min_bin_size}")
             return False
         
-        # Check if variance is low enough to keep as single bin
-        region_data = magnitudes[start_idx:end_idx]
-        region_var = np.var(region_data)
-        
-        # Use coefficient of variation as stability metric
-        region_mean = np.mean(region_data)
-        cv = region_var / (region_mean**2 + 1e-10)  # Avoid division by zero
-        
-        # If variation is low, don't subdivide regardless of noise fraction
-        if cv <= 0.1:
-            return False
-        
-        # Check if subdivision would maintain adequate noise fraction
+        # Check if left and right halves have substantially different variances
         mid_idx = (start_idx + end_idx) // 2
         if mid_idx - start_idx < min_bin_size:
             mid_idx = start_idx + min_bin_size
         if end_idx - mid_idx < min_bin_size:
             mid_idx = end_idx - min_bin_size
             
-        # Only subdivide if valid mid point exists
+        # Only proceed if valid mid point exists
         if not (start_idx < mid_idx < end_idx):
+            if verbose:
+                print(f"    → INVALID MID: start={start_idx}, mid={mid_idx}, end={end_idx}")
             return False
             
-        # Check noise fractions for both potential halves
-        left_noise_fraction = check_noise_fraction(start_idx, mid_idx)
-        right_noise_fraction = check_noise_fraction(mid_idx, end_idx)
+        # Use POST-FILTERING statistics for subdivision decisions
+        # Get the filtered noise results for each half
+        left_noise_indices, left_filtered_stats = get_noise_result(start_idx, mid_idx)
+        right_noise_indices, right_filtered_stats = get_noise_result(mid_idx, end_idx)
+        
+        # Extract filtered data statistics
+        left_filtered_mean = left_filtered_stats.mean if left_filtered_stats else 0
+        left_filtered_var = left_filtered_stats.variance if left_filtered_stats else 0
+        right_filtered_mean = right_filtered_stats.mean if right_filtered_stats else 0
+        right_filtered_var = right_filtered_stats.variance if right_filtered_stats else 0
+        
+        # Calculate percentage differences and statistical significance
+        mean_diff_pct = abs(left_filtered_mean - right_filtered_mean) / (0.5 * (left_filtered_mean + right_filtered_mean) + 1e-10) * 100
+        var_diff_pct = abs(left_filtered_var - right_filtered_var) / (0.5 * (left_filtered_var + right_filtered_var) + 1e-10) * 100
+        
+        # Statistical significance tests
+        # 1. Z-test for difference in means
+        left_se = np.sqrt(left_filtered_var / len(left_noise_indices)) if len(left_noise_indices) > 0 else 1e-10
+        right_se = np.sqrt(right_filtered_var / len(right_noise_indices)) if len(right_noise_indices) > 0 else 1e-10
+        pooled_se = np.sqrt(left_se**2 + right_se**2)
+        z_score = abs(left_filtered_mean - right_filtered_mean) / (pooled_se + 1e-10)
+        
+        # 2. F-test for difference in variances
+        # F = larger_variance / smaller_variance, with df1, df2 = n1-1, n2-1
+        f_stat = max(left_filtered_var, right_filtered_var) / (min(left_filtered_var, right_filtered_var) + 1e-10)
+        df1 = max(len(left_noise_indices) - 1, 1)
+        df2 = max(len(right_noise_indices) - 1, 1)
+        
+        # Critical F-value for 5-sigma equivalent (p ≈ 5.7e-7, very conservative)
+        # For practical purposes, use F > 2.0 as significant difference threshold
+        f_critical = 2.0  # Conservative threshold for practical significance
+        
+        if verbose:
+            print(f"    → FILTERED VARIANCES: left={left_filtered_var:.2e}, right={right_filtered_var:.2e}, diff={var_diff_pct:.1f}%")
+            print(f"    → FILTERED MEANS: left={left_filtered_mean:.2e}, right={right_filtered_mean:.2e}, diff={mean_diff_pct:.1f}%")
+            print(f"    → STATISTICAL TESTS: z={z_score:.1f}, F={f_stat:.1f} (df1={df1}, df2={df2})")
+        
+        # Decision criteria: require significant difference in EITHER means OR variances
+        pct_threshold = 20.0     # Require at least 20% difference
+        sigma_threshold = 5.0    # Require at least 5-sigma significance for means
+        
+        # Test significance for means (percentage OR statistical)
+        mean_significant = mean_diff_pct >= pct_threshold or z_score >= sigma_threshold
+        
+        # Test significance for variances (percentage OR F-test)
+        var_significant = var_diff_pct >= pct_threshold or f_stat >= f_critical
+        
+        if not (mean_significant or var_significant):
+            if verbose:
+                print(f"    → SIMILAR REGIONS: mean(diff={mean_diff_pct:.1f}%, z={z_score:.1f}) and var(diff={var_diff_pct:.1f}%, F={f_stat:.1f}) both non-significant")
+            return False
+        else:
+            if verbose:
+                mean_reason = f"diff={mean_diff_pct:.1f}%" if mean_diff_pct >= pct_threshold else f"z={z_score:.1f}"
+                var_reason = f"diff={var_diff_pct:.1f}%" if var_diff_pct >= pct_threshold else f"F={f_stat:.1f}"
+                print(f"    → SIGNIFICANT DIFFERENCE: mean_sig={mean_significant} ({mean_reason}), var_sig={var_significant} ({var_reason})")
+        
+        # Calculate noise fractions (we already have the noise indices from above)
+        left_noise_fraction = len(left_noise_indices) / (mid_idx - start_idx)
+        right_noise_fraction = len(right_noise_indices) / (end_idx - mid_idx)
+        
+        if verbose:
+            print(f"    → NOISE FRACTIONS: left={left_noise_fraction:.3f}, right={right_noise_fraction:.3f} (need >={min_noise_fraction:.3f})")
         
         # Only subdivide if BOTH halves have sufficient noise
-        return left_noise_fraction >= min_noise_fraction and right_noise_fraction >= min_noise_fraction
+        can_subdivide = left_noise_fraction >= min_noise_fraction and right_noise_fraction >= min_noise_fraction
+        if verbose:
+            print(f"    → DECISION: {'SUBDIVIDE' if can_subdivide else 'KEEP AS SINGLE BIN'}")
+        return can_subdivide
     
     def recursive_subdivide(start_idx: int, end_idx: int, edges: list):
         """Recursively subdivide region if needed."""
@@ -223,6 +317,12 @@ def _compute_variance_based_bins(
     n_points = len(magnitudes)
     bin_edges = [0]
     
+    if verbose:
+        print(f"Starting subdivision with {n_points} points, min_bin_size={min_bin_size}")
+        print(f"Parameters: CV_threshold=0.1, min_noise_fraction={min_noise_fraction}")
+        if frequencies is not None:
+            print(f"Frequency range: {frequencies[0]:.1f} to {frequencies[-1]:.1f} MHz (descending: {frequencies[0] > frequencies[-1]})")
+    
     # Perform recursive subdivision
     recursive_subdivide(0, n_points, bin_edges)
     
@@ -230,78 +330,32 @@ def _compute_variance_based_bins(
     bin_edges.append(n_points)
     bin_edges = sorted(set(bin_edges))  # Remove duplicates and sort
     
+    if verbose:
+        print(f"Final subdivision: {len(bin_edges)-1} bins created")
+        bin_sizes = [bin_edges[i+1] - bin_edges[i] for i in range(len(bin_edges)-1)]
+        print(f"Bin sizes: min={min(bin_sizes)}, max={max(bin_sizes)}, avg={sum(bin_sizes)/len(bin_sizes):.1f}")
+    
     # No overlap needed with noise fraction validation
-    return bin_edges
+    return bin_edges, _noise_results_cache
 
 
-def _compute_frequency_dependent_bins(
-    frequencies: np.ndarray, min_bin_size: int, max_bin_size: int, overlap_factor: float
-) -> list:
-    """Compute bin edges with frequency-dependent sizing."""
-    n_points = len(frequencies)
-    freq_range = frequencies[-1] - frequencies[0]
-    
-    # Use smaller bins at higher frequencies where noise characteristics may change more rapidly
-    freq_norm = (frequencies - frequencies[0]) / freq_range
-    
-    # Linear scaling: smaller bins at high frequency
-    size_factor = 1.0 - 0.5 * freq_norm  # 50% reduction at highest frequency
-    adaptive_bin_sizes = min_bin_size + (max_bin_size - min_bin_size) * size_factor
-    
-    # Convert to bin edges similar to variance-based approach
-    bin_edges = [0]
-    current_pos = 0
-    
-    while current_pos < n_points - min_bin_size:
-        local_idx = min(current_pos + min_bin_size // 2, n_points - 1)
-        next_bin_size = int(adaptive_bin_sizes[local_idx])
-        
-        step_size = int(next_bin_size * (1 - overlap_factor))
-        current_pos += step_size
-        
-        if current_pos < n_points:
-            bin_edges.append(min(current_pos, n_points))
-    
-    if bin_edges[-1] < n_points:
-        bin_edges.append(n_points)
-    
-    return bin_edges
 
 
-def _compute_fixed_bins(n_points: int, n_bins: int, overlap_factor: float) -> list:
-    """Compute bin edges for fixed binning strategy (similar to original algorithm)."""
-    if overlap_factor == 0:
-        # No overlap - simple division
-        bin_size = n_points // n_bins
-        return [i * bin_size for i in range(n_bins)] + [n_points]
-    else:
-        # With overlap
-        effective_bin_size = n_points // (n_bins * (1 - overlap_factor) + overlap_factor)
-        step_size = int(effective_bin_size * (1 - overlap_factor))
-        
-        bin_edges = [0]
-        current_pos = 0
-        
-        while current_pos < n_points - effective_bin_size:
-            current_pos += step_size
-            bin_edges.append(min(current_pos, n_points))
-        
-        if bin_edges[-1] < n_points:
-            bin_edges.append(n_points)
-        
-        return bin_edges
-
-
-def _filter_by_skewness(
+def _filter_by_skewness_cached(
     bin_magnitudes: np.ndarray, 
     bin_indices: np.ndarray, 
     skew_target: float, 
-    inc: float
-) -> Tuple[np.ndarray, float]:
-    """Filter bin data by iteratively removing high values until target skewness is reached."""
+    inc: float,
+    cache_key: tuple
+) -> Tuple[np.ndarray, object]:
+    """Filter bin data by iteratively removing high values until target skewness is reached.
+    
+    Returns both noise indices and the final scipy.stats.describe result for caching.
+    """
     
     cutoff = 0.0
     current_data = bin_magnitudes.copy()
+    desc = None
     
     while True:
         # Remove top percentile of data
@@ -310,7 +364,7 @@ def _filter_by_skewness(
         if len(filtered_data) < 3:  # Need minimum points for skewness calculation
             break
             
-        # Calculate skewness
+        # Calculate statistics - this becomes our cached result
         desc = spsm.describe(filtered_data)
         
         if desc.skewness < skew_target:
@@ -322,7 +376,7 @@ def _filter_by_skewness(
                 mask = current_data <= threshold
                 noise_indices = bin_indices[mask]
             
-            return noise_indices, desc.skewness
+            return noise_indices, desc
         else:
             cutoff += inc
             
@@ -332,10 +386,12 @@ def _filter_by_skewness(
             threshold = np.percentile(current_data, 10)  # Keep bottom 10%
             mask = current_data <= threshold
             noise_indices = bin_indices[mask] if np.any(mask) else bin_indices[:1]
-            return noise_indices, desc.skewness if len(filtered_data) >= 3 else 0.0
+            return noise_indices, desc if desc is not None else spsm.describe(current_data[:1])
     
     # Fallback: return at least some points
-    return bin_indices[:max(1, len(bin_indices) // 10)], 0.0
+    fallback_indices = bin_indices[:max(1, len(bin_indices) // 10)]
+    fallback_desc = spsm.describe(bin_magnitudes[fallback_indices - bin_indices[0]])
+    return fallback_indices, fallback_desc
 
 
 def _compute_rms_noise_smoothed(

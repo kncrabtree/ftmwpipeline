@@ -169,7 +169,7 @@ def _plot_noise_estimation_plotly(
         rows=2, cols=2,
         subplot_titles=[
             'Spectrum with Noise Points',
-            f'Adaptive Bins ({noise_result.bin_info.get("adaptive_strategy", "unknown")})',
+            f'Adaptive Bins ({noise_result.bin_info.get("algorithm", "unknown")})',
             'RMS Noise Estimate',
             'Statistics'
         ],
@@ -296,7 +296,7 @@ def _compile_noise_statistics(
     # Algorithm parameters
     stats.append("ALGORITHM PARAMETERS")
     stats.append("-" * 20)
-    stats.append(f"Strategy: {noise_result.bin_info.get('adaptive_strategy', 'unknown')}")
+    stats.append(f"Strategy: {noise_result.bin_info.get('algorithm', 'unknown')}")
     stats.append(f"Number of bins: {noise_result.bin_info.get('n_bins', 'unknown')}")
     stats.append(f"Smoothing window: {noise_result.bin_info.get('smoothing_window', 'unknown')}")
     
@@ -339,7 +339,7 @@ def _compile_noise_statistics_table(
         f"{rms_min:.2e}",
         f"{rms_max:.2e}",
         f"{rms_max/rms_min:.1f}x",
-        f"{noise_result.bin_info.get('adaptive_strategy', 'unknown')}",
+        f"{noise_result.bin_info.get('algorithm', 'unknown')}",
         f"{noise_result.bin_info.get('n_bins', 'unknown')}",
         f"{noise_result.bin_info.get('smoothing_window', 'unknown')}"
     ]
@@ -351,7 +351,7 @@ def _compile_noise_statistics_summary(noise_result: NoiseResult) -> str:
     """Compile brief noise statistics for single-plot display."""
     
     stats = []
-    stats.append(f"Strategy: {noise_result.bin_info.get('adaptive_strategy', 'unknown')}")
+    stats.append(f"Strategy: {noise_result.bin_info.get('algorithm', 'unknown')}")
     stats.append(f"Bins: {noise_result.bin_info.get('n_bins', 'unknown')}")
     stats.append(f"Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}")
     
