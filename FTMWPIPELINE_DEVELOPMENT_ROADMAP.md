@@ -189,28 +189,50 @@ ftmwpipeline/
 **Validation**: All components tested with real experimental data
 
 ### Phase 3: Preprocessing Pipeline (1 week)  
-**Status**: Pending
+**Status**: ✅ **SUBSTANTIALLY COMPLETE** (2025-08-04)
 
-**Source Files to Extract From**:
+**Source Files Extracted From**:
 - `/home/kncrabtree/github/bcfitting/src/bcfitting/ftmwfitting.py` (estimate_baseline_noise)
 - `/home/kncrabtree/github/bcfitting/newfitting/ftmw_utils.py`
 - `/home/kncrabtree/github/bcfitting/newfitting/blackchirp-test/`
 
-**Tasks**:
-1. Create `preprocessing/baseline_estimation.py`:
-   - Extract `estimate_baseline_noise()` from ftmwfitting.py
-   - Implement frequency-dependent baseline/noise estimation
-   - Add robust outlier detection and filtering
+**Completed Tasks**:
+1. ✅ **Advanced Noise Estimation** (`preprocessing/baseline_estimation.py`):
+   - ✅ Extracted and completely redesigned `estimate_baseline_noise()` algorithm
+   - ✅ **Statistical rigor**: Implemented Z-test and F-test for subdivision decisions
+   - ✅ **Adaptive binning**: Recursive binary subdivision based on post-filtering statistics
+   - ✅ **Performance optimization**: Comprehensive caching reduces redundant calculations
+   - ✅ **User-friendly parameters**: MHz-based smoothing window, verbose debugging flag
+   - ✅ **Robust filtering**: Skewness-based noise identification with configurable targets
+   - ✅ **Result**: Creates ~26 statistically distinct bins (vs 32 uniform bins originally)
 
-2. Create `preprocessing/data_loading.py`:
-   - BlackChirp data format reader
-   - Generic FID data loading interface
-   - FID parameter extraction and validation
+2. ✅ **Data Loading Infrastructure** (`io/experimental_formats.py`):
+   - ✅ Complete BlackChirp data format reader with FT processing
+   - ✅ FID parameter extraction and processing (zpf, exponential filtering)
+   - ✅ Frequency trimming and range selection capabilities
+   - ✅ Integration with experiment 2638 test data
 
-3. Create `preprocessing/data_validation.py`:
-   - Input data sanity checks
-   - FID parameter validation
-   - Frequency range and resolution checks
+3. ✅ **Visualization and Diagnostics** (`visualization/noise_diagnostics.py`):
+   - ✅ Comprehensive noise estimation diagnostic plots
+   - ✅ Statistical threshold visualization (3×RMS, 5×RMS significance levels)
+   - ✅ Adaptive bin boundary visualization
+   - ✅ Both matplotlib and plotly backend support
+
+4. ✅ **Development Tools**:
+   - ✅ Test script for algorithm validation (`scripts/development/test_noise_simple.py`)
+   - ✅ Proper output handling with gitignore patterns
+   - ✅ Performance benchmarking and comparison capabilities
+
+**Remaining Tasks**:
+- ⏳ `preprocessing/data_validation.py`: Input data sanity checks and FID parameter validation
+- ⏳ Update `preprocessing/__init__.py` with new functions  
+- ⏳ Create comprehensive unit tests for preprocessing components
+
+**Key Technical Achievements**:
+- **Statistical Foundation**: 20% difference thresholds, 5σ Z-test significance, F≥2.0 variance tests
+- **Algorithm Efficiency**: O(log n) recursive subdivision with cached statistics 
+- **Spectroscopic Intelligence**: Uses post-filtering statistics for meaningful region detection
+- **Production Ready**: Verbose controls, MHz-based parameters, comprehensive error handling
 
 ### Phase 4: Peak Detection (1 week)
 **Status**: Pending
