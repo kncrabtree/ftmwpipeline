@@ -8,7 +8,7 @@ including bin boundaries, noise masks, and RMS estimates.
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Optional, Tuple, Union
-from ..preprocessing.baseline_estimation import NoiseResult
+from ..preprocessing.noise_estimation import NoiseResult
 
 
 def plot_noise_estimation(

@@ -11,7 +11,7 @@ from pathlib import Path
 
 # Import ftmwpipeline modules
 from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-from ftmwpipeline.preprocessing.baseline_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 from ftmwpipeline.visualization.noise_diagnostics import plot_noise_estimation
 
 

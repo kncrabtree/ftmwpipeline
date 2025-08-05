@@ -28,7 +28,7 @@ from ftmwpipeline.core.data_structures import (
 
 # TODO: Fix imports for other modules when they're implemented
 # # Preprocessing functions
-# from ftmwpipeline.preprocessing.baseline_estimation import estimate_baseline_noise
+# from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 # from ftmwpipeline.preprocessing.data_loading import load_blackchirp_data
 
 # # Peak detection

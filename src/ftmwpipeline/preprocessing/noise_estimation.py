@@ -454,34 +454,3 @@ def _compute_rms_noise_smoothed(
         return rms_interpolated
 
 
-# Legacy function name for backward compatibility
-def estimate_baseline_noise(
-    frequencies: np.ndarray,
-    magnitudes: np.ndarray,
-    **kwargs
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Legacy wrapper for estimate_noise_adaptive that returns baseline and noise.
-    
-    Since we've moved away from baseline estimation for time-domain fitting,
-    this returns a zero baseline and the RMS noise estimate.
-    
-    Parameters:
-    -----------
-    frequencies : np.ndarray
-        Frequency values
-    magnitudes : np.ndarray
-        Magnitude values
-    **kwargs
-        Additional arguments passed to estimate_noise_adaptive
-        
-    Returns:
-    --------
-    Tuple[np.ndarray, np.ndarray]
-        (baseline, noise) where baseline is zeros and noise is RMS estimate
-    """
-    
-    result = estimate_noise_adaptive(frequencies, magnitudes, **kwargs)
-    baseline = np.zeros_like(frequencies)  # No baseline estimation needed
-    
-    return baseline, result.rms_noise
