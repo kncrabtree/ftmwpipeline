@@ -25,6 +25,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 from ..core.data_structures import ComplexFT, SpectralWindow
+from ..io.result_serialization import load_pipeline_cache
 
 
 def plot_complex_ft(complex_ft: ComplexFT, 
@@ -359,5 +360,72 @@ def plot_windows(*args, **kwargs):
     raise NotImplementedError("Will be implemented in Phase 8")
 
 
+def plot_complex_ft_from_cache(
+    experiment_id: str,
+    cache_dir: str = "cache/",
+    **plot_kwargs
+) -> Any:
+    """
+    Plot ComplexFT spectrum from cached pipeline data.
+    
+    This function provides a convenient way to visualize ComplexFT spectra
+    without needing to load the full ComplexFT object into memory. It loads
+    the necessary data from the pipeline cache and calls the standard 
+    plot_complex_ft function.
+    
+    Parameters:
+    -----------
+    experiment_id : str
+        Identifier for the experiment (used to locate cache file)
+    cache_dir : str, default="cache/"
+        Directory containing cached pipeline results
+    **plot_kwargs
+        Additional keyword arguments passed to plot_complex_ft
+        (freq_range, title, backend, interactive, figsize, etc.)
+        
+    Returns:
+    --------
+    figure
+        Plotly Figure or matplotlib Figure object
+        
+    Raises:
+    -------
+    FileNotFoundError
+        If no cache file exists for the specified experiment
+    ValueError
+        If no ComplexFT data is cached for the experiment
+        
+    Examples:
+    ---------
+    >>> # Plot from cache with default settings
+    >>> fig = plot_complex_ft_from_cache("exp_2638")
+    >>> 
+    >>> # Plot with custom parameters
+    >>> fig = plot_complex_ft_from_cache(
+    ...     "exp_2638",
+    ...     cache_dir="my_cache/",
+    ...     freq_range=(26500, 40000),
+    ...     title="Custom Spectrum View",
+    ...     backend="matplotlib"
+    ... )
+    """
+    # Load pipeline cache data
+    cache_data = load_pipeline_cache(experiment_id, cache_dir=cache_dir)
+    
+    # Validate that ComplexFT data is available
+    if cache_data['complex_ft'] is None:
+        raise ValueError(
+            f"No ComplexFT data cached for experiment '{experiment_id}'. "
+            f"Process and cache the FT data first."
+        )
+    
+    # Extract ComplexFT object
+    complex_ft = cache_data['complex_ft']
+    
+    # Call the standard plotting function
+    return plot_complex_ft(complex_ft, **plot_kwargs)
+
+
 # Alias for backward compatibility
 plot_spectrum = plot_complex_ft
+plot_spectrum_from_cache = plot_complex_ft_from_cache

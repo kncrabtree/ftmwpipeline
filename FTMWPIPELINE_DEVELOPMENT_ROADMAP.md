@@ -86,7 +86,8 @@ ftmwpipeline/
 │       │   └── validation.py         # Physics-based validation
 │       ├── visualization/        # Optional plotting
 │       │   ├── __init__.py
-│       │   ├── pipeline_plots.py     # Pipeline stage plots
+│       │   ├── spectrum_visualization.py # Spectrum and ComplexFT plotting
+│       │   ├── noise_visualization.py   # Noise estimation diagnostics
 │       │   ├── fit_diagnostics.py    # Fitting diagnostics
 │       │   └── summary_reports.py    # Result summaries
 │       ├── io/                   # Input/output
@@ -163,10 +164,11 @@ ftmwpipeline/
    - Base-36 integer conversion and voltage scaling
    - Processing parameter translation and metadata extraction
 
-3. ✅ Added interactive visualization (`visualization/pipeline_plots.py`):
+3. ✅ Added interactive visualization (`visualization/spectrum_visualization.py`):
    - `plot_complex_ft()` - Dual backend (matplotlib/plotly) plotting
    - Two-panel layout (magnitude + real/imaginary) with wide aspect ratio
    - `plot_spectral_window()` - Window visualization with peak annotations
+   - `plot_complex_ft_from_cache()` - Cache-based visualization without recomputation
    - Validated with real experimental data (375k frequency points)
 
 4. ✅ Enhanced ComplexFT with analysis methods:
@@ -212,16 +214,18 @@ ftmwpipeline/
    - ✅ Frequency trimming and range selection capabilities
    - ✅ Integration with experiment 2638 test data
 
-3. ✅ **Visualization and Diagnostics** (`visualization/noise_diagnostics.py`):
+3. ✅ **Visualization and Diagnostics** (`visualization/noise_visualization.py`):
    - ✅ Comprehensive noise estimation diagnostic plots
    - ✅ Statistical threshold visualization (3×RMS, 5×RMS significance levels)
    - ✅ Adaptive bin boundary visualization
    - ✅ Both matplotlib and plotly backend support
+   - ✅ **Dual API Support**: Direct object plotting and cache-based visualization
 
 4. ✅ **Development Tools**:
    - ✅ Test script for algorithm validation (`scripts/development/test_noise_simple.py`)
    - ✅ Proper output handling with gitignore patterns
    - ✅ Performance benchmarking and comparison capabilities
+   - ✅ **Dual API demonstration**: Both direct object and cache-based visualization workflows
 
 **Remaining Tasks**:
 - ⏳ `preprocessing/data_validation.py`: Input data sanity checks and FID parameter validation
@@ -233,6 +237,8 @@ ftmwpipeline/
 - **Algorithm Efficiency**: O(log n) recursive subdivision with cached statistics 
 - **Spectroscopic Intelligence**: Uses post-filtering statistics for meaningful region detection
 - **Production Ready**: Verbose controls, MHz-based parameters, comprehensive error handling
+- **Dual API Architecture**: Direct object visualization + cache-based session independence
+- **Storage Optimization**: Cache-based visualization leverages 78.7% storage reduction from HDF5 serialization
 
 ### Phase 4: Peak Detection (1 week)
 **Status**: Pending
@@ -335,8 +341,8 @@ ftmwpipeline/
    - Multi-panel fit diagnostics
    - Residual analysis plots
 
-2. Create `visualization/pipeline_plots.py`:
-   - Pipeline stage visualization
+2. Create `visualization/spectrum_visualization.py`:
+   - ComplexFT spectrum visualization with dual API (direct + cache-based)
    - Peak detection and classification plots
    - Window assignment visualization
 

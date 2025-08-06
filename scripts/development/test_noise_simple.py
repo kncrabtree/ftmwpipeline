@@ -12,7 +12,11 @@ from pathlib import Path
 # Import ftmwpipeline modules
 from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
 from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
-from ftmwpipeline.visualization.noise_diagnostics import plot_noise_estimation
+from ftmwpipeline.io.result_serialization import save_pipeline_cache
+from ftmwpipeline.visualization.noise_visualization import (
+    plot_noise_estimation,
+    plot_noise_estimation_from_cache
+)
 
 
 def main():
@@ -62,21 +66,50 @@ def main():
     print(f"  RMS std: {np.std(result.rms_noise):.2e}")
     print()
     
-    # Create visualization
-    print("Creating diagnostic plot...")
-    fig = plot_noise_estimation(
-        frequencies, magnitudes, result,
-        title="Noise Estimation: Variance-Based",
-        figsize=(14, 10)
-    )
+    # Cache the results for future visualization
+    cache_dir = Path(__file__).parent / "cache"
+    cache_dir.mkdir(exist_ok=True)
     
-    # Save to output directory (ignored by git)
+    print("Caching pipeline results...")
+    cache_file = save_pipeline_cache(
+        "exp_2638", 
+        complex_ft=trimmed_ft, 
+        noise_result=result,
+        cache_dir=str(cache_dir)
+    )
+    print(f"✓ Cached to: {cache_file}")
+    
+    # Save output directory
     output_dir = Path(__file__).parent / "output"
     output_dir.mkdir(exist_ok=True)
-    output_file = output_dir / "noise_test.png"
-    fig.savefig(output_file, dpi=150, bbox_inches='tight')
-    print(f"✓ Saved: {output_file}")
     
+    # Demonstrate both visualization APIs
+    print("\n1. Creating plot using direct objects...")
+    fig1 = plot_noise_estimation(
+        frequencies, magnitudes, result,
+        title="Direct API: Noise Estimation Diagnostics",
+        figsize=(14, 10)
+    )
+    output_file1 = output_dir / "noise_direct_api.png"
+    fig1.savefig(output_file1, dpi=150, bbox_inches='tight')
+    print(f"✓ Saved direct API plot: {output_file1}")
+    
+    print("\n2. Creating plot using cached data...")
+    fig2 = plot_noise_estimation_from_cache(
+        "exp_2638",
+        cache_dir=str(cache_dir),
+        title="Cache API: Noise Estimation Diagnostics",
+        figsize=(14, 10)
+    )
+    output_file2 = output_dir / "noise_cache_api.png"
+    fig2.savefig(output_file2, dpi=150, bbox_inches='tight')
+    print(f"✓ Saved cache API plot: {output_file2}")
+    
+    print(f"\n✅ Dual API demonstration complete!")
+    print(f"   Both plots should be identical")
+    print(f"   Cache enables visualization without recomputation")
+    
+    # Show the cache-based plot (as an example)
     plt.show()
 
 
