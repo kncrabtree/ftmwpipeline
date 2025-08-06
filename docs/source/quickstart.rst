@@ -221,14 +221,16 @@ Save results in various formats:
 
 .. code-block:: python
 
-   # Save as HDF5 (recommended for large datasets)
-   fmw.io.save_results(results, 'results.h5')
+   # Save pipeline cache (recommended for large datasets)
+   fmw.io.save_pipeline_cache('experiment_id', complex_ft, noise_result)
    
-   # Export peak list to CSV
-   fmw.io.export_to_csv(results['peaks'], 'peaks.csv')
+   # Note: CSV export will be available in a future release
+   # For now, use the cache system for result persistence
    
-   # Load results later
-   loaded_results = fmw.io.load_results('results.h5')
+   # Load pipeline cache later
+   loaded_cache = fmw.io.load_pipeline_cache('experiment_id')
+   complex_ft = loaded_cache['complex_ft']
+   noise_result = loaded_cache['noise_result']
 
 Next Steps
 ----------

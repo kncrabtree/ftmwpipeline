@@ -394,49 +394,63 @@ def _filter_by_skewness_cached(
     return fallback_indices, fallback_desc
 
 
-def _compute_rms_noise_smoothed(
+def compute_rms_noise_convolution(
     frequencies: np.ndarray,
     magnitudes: np.ndarray, 
     noise_mask: np.ndarray,
-    weights: np.ndarray,
-    smoothing_window: int,
-    bin_edges: list,
+    bl_bin: int,
 ) -> np.ndarray:
-    """Compute smoothed RMS noise estimate from identified noise points."""
+    """Core RMS noise computation using convolution.
     
+    This is the modularized core algorithm that can be used by both the original
+    noise estimation and the deserialization reconstruction to ensure bit-perfect
+    reproduction.
+    
+    Parameters
+    ----------
+    frequencies : np.ndarray
+        Full frequency array (MHz)
+    magnitudes : np.ndarray
+        Full magnitude array
+    noise_mask : np.ndarray
+        Boolean mask indicating which points are noise
+    bl_bin : int
+        Smoothing window size in points
+    
+    Returns
+    -------
+    np.ndarray
+        RMS noise array interpolated to the full frequency grid
+    """
     # Extract noise points
     noise_magnitudes = magnitudes[noise_mask]
     noise_frequencies = frequencies[noise_mask]
-    noise_weights = weights[noise_mask]
     
     if len(noise_magnitudes) == 0:
         # Fallback: use minimum values if no noise points identified
         return np.full_like(frequencies, np.min(magnitudes))
     
-    # Follow original algorithm pattern exactly:
-    # 1. Use bl_bin = len(original_data) // 20 for window size
-    # 2. Pad the noise-only data 
-    # 3. Convolve on noise-only data
-    # 4. Remove padding and interpolate
+    # Ensure bl_bin is valid
+    bl_bin = max(bl_bin, 1)
     
-    # Use smoothing window based on bin structure: ~2× average bin width
-    n_bins = len(bin_edges) - 1
-    bl_bin = len(frequencies) // (n_bins // 2)  # 2× average bin width
+    # Pad noise data (exact same logic as original)
+    if len(noise_magnitudes) >= bl_bin // 2:
+        bl_pre = noise_magnitudes[0 : bl_bin // 2]
+        bl_post = noise_magnitudes[-(bl_bin // 2):]
+    else:
+        bl_pre = noise_magnitudes[:1]
+        bl_post = noise_magnitudes[-1:]
     
-    # Pad noise data (similar to original bl_pre, bl_post approach)
-    bl_pre = noise_magnitudes[0 : bl_bin // 2] if len(noise_magnitudes) >= bl_bin // 2 else noise_magnitudes[:1]
-    bl_post = noise_magnitudes[-(bl_bin // 2):] if len(noise_magnitudes) >= bl_bin // 2 else noise_magnitudes[-1:]
     noise_padded = np.concatenate([bl_pre, noise_magnitudes, bl_post])
     
-    # Compute RMS using same convolution approach as original stdev calculation
-    # RMS = sqrt(mean(x^2)) for noise data
+    # Compute RMS using exact convolution approach
     rms_values_padded = np.sqrt(
         spsig.oaconvolve(
             noise_padded ** 2, np.ones(bl_bin) / bl_bin, mode="same"
         )
     )
     
-    # Remove padding (same as original)
+    # Remove padding (exact same logic as original)
     rms_values = rms_values_padded[bl_bin // 2 : -(bl_bin // 2)]
     
     # Interpolate back to original frequency grid
@@ -445,6 +459,20 @@ def _compute_rms_noise_smoothed(
         return rms_values
     else:
         # Interpolate to full frequency grid
+        if len(noise_frequencies) == 0 or len(rms_values) == 0:
+            # Fallback if we have no data after padding removal
+            return np.full_like(frequencies, np.min(magnitudes))
+            
+        # Ensure rms_values and noise_frequencies have same length
+        if len(rms_values) != len(noise_frequencies):
+            # Adjust lengths to match (this can happen due to padding edge effects)
+            min_len = min(len(rms_values), len(noise_frequencies))
+            rms_values = rms_values[:min_len]
+            noise_frequencies = noise_frequencies[:min_len]
+            
+        if len(rms_values) == 0:
+            return np.full_like(frequencies, np.min(magnitudes))
+        
         if frequencies[0] > frequencies[-1]:
             # Handle descending frequency order
             rms_interpolated = np.interp(frequencies, noise_frequencies[::-1], rms_values[::-1])
@@ -452,5 +480,27 @@ def _compute_rms_noise_smoothed(
             rms_interpolated = np.interp(frequencies, noise_frequencies, rms_values)
         
         return rms_interpolated
+
+
+def _compute_rms_noise_smoothed(
+    frequencies: np.ndarray,
+    magnitudes: np.ndarray, 
+    noise_mask: np.ndarray,
+    weights: np.ndarray,
+    smoothing_window: int,
+    bin_edges: list,
+) -> np.ndarray:
+    """Compute smoothed RMS noise estimate from identified noise points.
+    
+    This function now delegates to the modularized core algorithm to ensure
+    bit-perfect reconstruction during deserialization.
+    """
+    
+    # Use the passed-in smoothing_window as bl_bin directly
+    # This was the original behavior that I accidentally changed
+    bl_bin = smoothing_window
+    
+    # Use the modularized core algorithm
+    return compute_rms_noise_convolution(frequencies, magnitudes, noise_mask, bl_bin)
 
 
