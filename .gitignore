@@ -214,3 +214,8 @@ scripts/development/*.jpeg
 scripts/development/*.pdf
 scripts/development/*.json
 scripts/development/*.csv
+
+# FTMW Pipeline cache and output directories
+cache/
+output/
+*.h5

@@ -53,12 +53,13 @@ This pattern ensures each stage is **fully functional, tested, and integrated** 
 ## Pipeline Architecture
 
 ```
-Raw Data → Stage 1 → Stage 2 → Stage 3 → Stage 4 → Stage 5 → Results
-           (FT)     (Noise)   (Peaks)   (Windows) (Fitting)
-             ↓         ↓         ↓         ↓         ↓
-           Cache     Cache     Cache     Cache     Cache
-             ↓         ↓         ↓         ↓         ↓
-           Visualize Visualize Visualize Visualize Visualize
+Raw Data → Stage 0 → Stage 1 → Stage 2 → Stage 3 → Stage 4 → Stage 5 → Results
+           (Load)    (FT)     (Noise)   (Peaks)   (Windows) (Fitting)
+             ↓         ↓         ↓         ↓         ↓         ↓
+           FID       ComplexFT  NoiseResult Peak[]   Window[]  FittedPeak[]
+           Cache     Cache      Cache      Cache     Cache     Cache
+             ↓         ↓         ↓         ↓         ↓         ↓
+           Visualize Visualize Visualize Visualize Visualize Visualize
 ```
 
 Each stage:
@@ -67,19 +68,98 @@ Each stage:
 - **Caches**: Results for subsequent stages and visualization
 - **Visualizes**: Both direct objects and cached data
 
+**Stage 0 (Data Loading)**: Multi-format data ingestion layer that creates standardized FID objects from various experimental formats (BlackChirp, CSV, HDF5, etc.) with full metadata preservation.
+
 ---
 
 ## Current Status Overview
 
 | Stage | Core Logic | Visualization | Testing | Serialization | Pipeline | Interactive | Status |
 |-------|-----------|---------------|---------|---------------|----------|-------------|--------|
-| **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for Integration** |
+| **Stage 0: Data Loading** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
+| **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
 | **Stage 2: Noise Estimation** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for Integration** |
 | Stage 3: Peak Detection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Next Priority**: Pipeline integration for Stages 1 & 2
+**Current Focus**: Stage 2 (Noise Estimation) CLI integration - first two stages complete
+
+---
+
+## Stage 0: Data Loading (FID)
+
+### ✅ **COMPLETE** - Core Logic Implementation
+**Target**: Multi-format data ingestion with standardized FID output
+- **Implementation**: Extensible loader architecture with format registry
+- **Data Structure**: Standardized `FID` objects with preserved metadata
+- **Formats**: BlackChirp (✅), CSV (✅), HDF5 (✅), extensible registry system
+
+**Completed Tasks**:
+- ✅ Created `src/ftmwpipeline/io/data_loaders/` package structure
+- ✅ Implemented base loader interface and format registry
+- ✅ Refactored BlackChirp loader into new architecture
+- ✅ Added CSV format support for generic time-series data
+- ✅ Implemented auto-format detection capabilities
+
+### ✅ **COMPLETE** - Visualization Development
+**Target**: FID visualization for data validation
+- **Location**: `src/ftmwpipeline/visualization/fid_visualization.py`
+- **Functions**: `plot_fid()`, `plot_fid_from_cache()`
+- **Features**: Time-domain plots, metadata display, acquisition parameter validation
+- **Diagnostics**: Signal quality checks, timing validation
+
+### ✅ **COMPLETE** - Testing & API Stabilization
+**Target**: Multi-format validation with real data
+- **Real Data**: Validated with experiment 2638 data
+- **Format Detection**: Auto-detection working for all supported formats
+- **Error Handling**: Comprehensive validation and error reporting
+
+### ✅ **COMPLETE** - Serialization Implementation
+**Target**: FID caching with metadata preservation
+- **Location**: `src/ftmwpipeline/io/fid_serialization.py`
+- **Implementation**: Complete HDF5 serialization with bit-perfect reconstruction
+- **Storage**: Optimized HDF5 storage with metadata preservation
+- **Validation**: Bit-perfect FID reconstruction verified with real data
+
+**HDF5 Structure**:
+```
+/fid_data/
+├── complex_fid            [dataset: time series data]
+├── metadata/              [group: acquisition parameters]
+│   ├── n_samples         [attribute: int]
+│   ├── spacing_us        [attribute: float]
+│   ├── probe_freq_mhz    [attribute: float]
+│   └── sideband          [attribute: str]
+└── source_info/          [group: provenance tracking]
+    ├── source_path       [attribute: str]
+    ├── data_format       [attribute: str]
+    ├── load_timestamp    [attribute: str]
+    └── loader_version    [attribute: str]
+```
+
+### ✅ **COMPLETE** - Pipeline Integration
+**Target**: CLI commands for data loading
+```bash
+ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638 --format blackchirp
+ftmwpipeline data-load exp_2638 --source data.csv --format csv
+ftmwpipeline data-load exp_2638 --source path/to/data  # Auto-detect format
+ftmwpipeline data-visualize exp_2638 --show-metadata
+```
+
+**Completed Tasks**:
+- ✅ Created `ftmwpipeline.cli.data_commands` module
+- ✅ Added format-specific parameter parsing
+- ✅ Implemented auto-format detection logic
+- ✅ Added metadata validation and error reporting
+- ✅ Integrated with cache management system
+
+### ✅ **COMPLETE** - Interactive Workflow
+**Target**: Interactive format selection and parameter validation
+- **Implementation**: Complete cache-based visualization workflow
+- **Format Selection**: Auto-detect with manual override options working
+- **Parameter Validation**: Format-specific parameter validation implemented
+- **Quality Assurance**: Visual validation via `data-visualize` command
 
 ---
 
@@ -109,20 +189,28 @@ Each stage:
 - **Storage**: ~6 MB per experiment with HDF5 compression
 - **Validation**: Bit-perfect reconstruction verified with real data
 
-### ❌ **TODO** - Pipeline Integration
-**Target**: CLI subcommand for FT processing
+### ✅ **COMPLETE** - Pipeline Integration
+**Target**: CLI subcommands for FT processing (Stage 0 → Stage 1 workflow)
 ```bash
-ftmwpipeline ft-process exp_2638 --source examples/blackchirp_data/2638 
+# Stage-based workflow (clean separation)
+ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638 --format blackchirp
 ftmwpipeline ft-process exp_2638 --zpf 2 --expf_us 3.0 --trim 26500:40000
 ftmwpipeline ft-visualize exp_2638 --freq-range 26500:40000
 ```
 
-**Implementation Tasks**:
-- [ ] Create `ftmwpipeline.cli.ft_commands` module
-- [ ] Add argument parsing for FT parameters  
-- [ ] Integrate with existing caching system
-- [ ] Add configuration file support
-- [ ] Error handling and validation
+**Completed Implementation**:
+- ✅ Complete `ft-process` and `ft-visualize` commands
+- ✅ CLI package structure with modular command organization
+- ✅ Full integration with Stage 0 FID caching system
+- ✅ Cache-first workflow - loads exclusively from Stage 0 cache
+- ✅ Enhanced parameter validation and error handling
+- ✅ Clean stage separation - no direct data loading in ft-process
+
+**Working Pipeline**:
+- ✅ Stage 0 → Stage 1 workflow fully functional
+- ✅ FID caching and ComplexFT caching working
+- ✅ Cache-based visualization implemented
+- ✅ Error handling guides users through proper workflow
 
 ### ✅ **COMPLETE** - Interactive Workflow
 - **Cache Visualization**: `plot_complex_ft_from_cache()` working
@@ -408,6 +496,8 @@ ftmwpipeline
 ├── config
 │   ├── generate-template         # Create config template
 │   └── validate <config.json>    # Validate config file
+├── data-load <exp_id>            # Stage 0: Data loading
+├── data-visualize <exp_id>       # Stage 0: Visualization
 ├── ft-process <exp_id>           # Stage 1: FT processing
 ├── ft-visualize <exp_id>         # Stage 1: Visualization
 ├── noise-estimate <exp_id>       # Stage 2: Noise estimation  
@@ -433,6 +523,7 @@ src/ftmwpipeline/
 │   ├── interactive.py            # Interactive mode implementation
 │   ├── batch.py                  # Batch processing 
 │   ├── config_commands.py        # Configuration management
+│   ├── data_commands.py          # Stage 0 CLI commands
 │   ├── ft_commands.py            # Stage 1 CLI commands
 │   ├── noise_commands.py         # Stage 2 CLI commands
 │   ├── peak_commands.py          # Stage 3 CLI commands (future)
@@ -451,15 +542,19 @@ src/ftmwpipeline/
 ## Next Development Priorities
 
 ### **Immediate (Next 2 weeks)**
-1. **Pipeline Integration for Stages 1 & 2**
-   - Implement CLI commands for FT processing and noise estimation
-   - Create configuration file support
-   - Add cache management commands
+1. **Stage 0: Data Loading Layer**
+   - Implement multi-format data loading infrastructure
+   - Create `data-load` and `data-visualize` CLI commands
+   - Add FID serialization/caching system
 
-2. **Interactive Mode Framework**
-   - Basic query/response interface
-   - Parameter modification workflows  
-   - Integration with existing visualization
+2. **Stage 1: FT Processing CLI Refinement**
+   - Remove direct data loading from `ft-process` command
+   - Implement cache-first workflow (`--from-cache` only)
+   - Integrate with Stage 0 FID caching system
+
+3. **Stage 2: Noise Estimation CLI Integration**
+   - Implement `noise-estimate` and `noise-visualize` commands
+   - Full Stage 0 → Stage 1 → Stage 2 workflow functional
 
 ### **Short Term (1 month)**
 3. **Stage 3: Peak Detection**

@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Union, Any
 import logging
 from pathlib import Path
 
-from .core.data_structures import SpectralWindow, Peak, FittingResult, FIDParameters
+from .core.data_structures import SpectralWindow, Peak, FittingResult, FIDProcessingParameters
 from .config.pipeline_config import PipelineConfig
 
 
@@ -46,7 +46,7 @@ class Pipeline:
             self.config = config
             
         # Pipeline state
-        self.fid_parameters: Optional[FIDParameters] = None
+        self.fid_parameters: Optional[FIDProcessingParameters] = None
         self.spectral_windows: List[SpectralWindow] = []
         self.peaks: List[Peak] = []
         self.fitting_results: List[FittingResult] = []
