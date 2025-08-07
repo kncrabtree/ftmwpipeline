@@ -81,7 +81,9 @@ def cmd_data_load(args) -> int:
             if 'probe_freq_mhz' in metadata:
                 print(f"   Probe frequency: {metadata['probe_freq_mhz']:.3f} MHz")
             if 'spacing_us' in metadata:
-                print(f"   Time spacing: {metadata['spacing_us']:.4f} μs")
+                # Convert μs to seconds and use scientific notation
+                spacing_seconds = metadata['spacing_us'] * 1e-6
+                print(f"   Time spacing: {spacing_seconds:.4e} s")
             if 'duration_us' in metadata:
                 print(f"   FID duration: {metadata['duration_us']:.1f} μs")
             if 'n_points' in metadata:
@@ -215,7 +217,7 @@ def cmd_data_visualize(args) -> int:
             print(f"\n📊 FID Data Summary:")
             print(f"   Data points: {fid.n_points:,}")
             print(f"   Duration: {fid.duration_us:.1f} μs")
-            print(f"   Spacing: {fid.spacing * 1e6:.4f} μs")
+            print(f"   Spacing: {fid.spacing:.4e} s")
             print(f"   Probe frequency: {fid.probe_freq_mhz:.3f} MHz")
             print(f"   Sideband: {fid.sideband.value}")
             print(f"   Shots: {fid.shots}")

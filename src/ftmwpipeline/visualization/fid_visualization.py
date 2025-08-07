@@ -116,7 +116,7 @@ def plot_fid(fid: FID,
             f"Acquisition Parameters:\n"
             f"  Probe Frequency: {fid.probe_freq_mhz:.3f} MHz\n"
             f"  Sideband: {fid.sideband.value.title()}\n"
-            f"  Time Spacing: {fid.spacing * 1e6:.4f} μs\n"
+            f"  Time Spacing: {fid.spacing:.4e} s\n"
             f"  Shots Averaged: {fid.shots:,}"
         )
         
@@ -362,7 +362,7 @@ def plot_fid_overview(fid: FID,
         f"Acquisition:\n"
         f"  Probe Freq: {fid.probe_freq_mhz:.3f} MHz\n"
         f"  Sideband: {fid.sideband.value}\n"
-        f"  Spacing: {fid.spacing*1e6:.4f} μs\n"
+        f"  Spacing: {fid.spacing:.4e} s\n"
         f"  Shots: {fid.shots:,}\n"
         f"  Duration: {fid.duration_us:.1f} μs\n"
         f"  Points: {fid.n_points:,}"

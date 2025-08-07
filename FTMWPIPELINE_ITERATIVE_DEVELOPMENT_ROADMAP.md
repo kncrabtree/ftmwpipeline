@@ -85,6 +85,8 @@ Each stage:
 
 **Current Focus**: Stage 2 (Noise Estimation) CLI integration - first two stages complete
 
+**Latest Update**: Phase 1 of Stage 0-1 refinement completed (data storage corrections and architectural improvements)
+
 ---
 
 ## Stage 0: Data Loading (FID)
@@ -125,18 +127,33 @@ Each stage:
 **HDF5 Structure**:
 ```
 /fid_data/
-├── complex_fid            [dataset: time series data]
-├── metadata/              [group: acquisition parameters]
-│   ├── n_samples         [attribute: int]
-│   ├── spacing_us        [attribute: float]
-│   ├── probe_freq_mhz    [attribute: float]
-│   └── sideband          [attribute: str]
-└── source_info/          [group: provenance tracking]
-    ├── source_path       [attribute: str]
-    ├── data_format       [attribute: str]
-    ├── load_timestamp    [attribute: str]
-    └── loader_version    [attribute: str]
+├── time_series_data              [dataset: real voltage data, float64]
+├── acquisition/                  [group: acquisition parameters]
+│   ├── spacing_seconds          [attr: float, time spacing in seconds]
+│   ├── probe_freq_mhz           [attr: float, probe/LO frequency]
+│   ├── sideband                 [attr: str, 'upper' or 'lower']
+│   ├── shots                    [attr: int, number of shots averaged]
+│   ├── n_points                 [attr: int, number of time points]
+│   └── duration_us              [attr: float, FID duration in microseconds]
+├── recommended_processing/       [group: optional format-specific defaults]
+│   ├── description              [attr: str, explains these are suggestions]
+│   ├── zpf                      [attr: int, suggested zero padding factor]
+│   ├── expf_us                  [attr: float or None, suggested exp filter]
+│   ├── winf                     [attr: str or None, suggested window function]
+│   ├── start_us/end_us          [attr: float or None, suggested time range]
+│   ├── autoscale_MHz            [attr: float or None, suggested autoscale]
+│   └── units_power              [attr: int, suggested scaling units]
+└── metadata/                     [group: source and experimental metadata]
+    ├── source_info              [dataset: JSON string with source metadata]
+    └── experimental_data        [dataset: JSON string with experimental metadata]
 ```
+
+**Phase 1 Refinement Completed (2025-08-07)**:
+- ✅ **Data Storage Corrections**: FID data correctly stored as real-valued (not complex)
+- ✅ **Format Standardization**: Point spacing displayed in scientific notation (`.4e` format) and stored in seconds
+- ✅ **Architecture Decoupling**: Processing parameters moved from `processing/` to `recommended_processing/` group
+- ✅ **Cache Portability**: FID cache now independent of specific FT processing choices
+- ✅ **Backward Compatibility**: Code handles both old and new cache format gracefully
 
 ### ✅ **COMPLETE** - Pipeline Integration
 **Target**: CLI commands for data loading

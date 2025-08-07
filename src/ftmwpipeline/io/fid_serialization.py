@@ -6,11 +6,15 @@ time-domain data, acquisition metadata, and source information needed for
 proper FT processing and pipeline traceability.
 
 The serialization stores:
-- Complete time-domain voltage data
-- All acquisition parameters (spacing, probe frequency, sideband, shots)
-- FID processing parameters
+- Complete time-domain voltage data (real-valued)
+- Core acquisition parameters (spacing, probe frequency, sideband, shots)
+- Optional format-specific processing recommendations (NOT requirements)
 - Source metadata (file path, format, loading timestamp)
 - Complete experimental metadata
+
+This design decouples FID cache from specific processing choices, making cache files
+portable and shareable. Processing parameters are stored as optional defaults that
+can be overridden during FT processing.
 
 Storage is compact since FID data is inherently small compared to frequency-domain data.
 """
@@ -46,26 +50,27 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
     HDF5 Structure
     --------------
     /fid_data/
-    ├── time_series_data        [dataset: real voltage data, float64]
-    ├── acquisition/            [group: acquisition parameters]
-    │   ├── spacing_seconds    [attr: float, time spacing in seconds]
-    │   ├── probe_freq_mhz     [attr: float, probe/LO frequency]
-    │   ├── sideband           [attr: str, 'upper' or 'lower']
-    │   ├── shots              [attr: int, number of shots averaged]
-    │   ├── n_points           [attr: int, number of time points]
-    │   └── duration_us        [attr: float, FID duration in microseconds]
-    ├── processing/             [group: FID processing parameters]
-    │   ├── start_us           [attr: float or None]
-    │   ├── end_us             [attr: float or None]
-    │   ├── winf               [attr: str or None, window function name]
-    │   ├── zpf                [attr: int, zero padding factor]
-    │   ├── rdc                [attr: bool, remove DC component]
-    │   ├── expf_us            [attr: float or None, exponential filter]
-    │   ├── autoscale_MHz      [attr: float or None, autoscale range]
-    │   └── units_power        [attr: int, scaling units power]
-    └── metadata/               [group: source and experimental metadata]
-        ├── source_info        [dataset: JSON string with source metadata]
-        └── experimental_data  [dataset: JSON string with experimental metadata]
+    ├── time_series_data              [dataset: real voltage data, float64]
+    ├── acquisition/                  [group: acquisition parameters]
+    │   ├── spacing_seconds          [attr: float, time spacing in seconds]
+    │   ├── probe_freq_mhz           [attr: float, probe/LO frequency]
+    │   ├── sideband                 [attr: str, 'upper' or 'lower']
+    │   ├── shots                    [attr: int, number of shots averaged]
+    │   ├── n_points                 [attr: int, number of time points]
+    │   └── duration_us              [attr: float, FID duration in microseconds]
+    ├── recommended_processing/       [group: optional format-specific defaults]
+    │   ├── description              [attr: str, explains these are suggestions]
+    │   ├── start_us                 [attr: float or None, suggested start time]
+    │   ├── end_us                   [attr: float or None, suggested end time]
+    │   ├── winf                     [attr: str or None, suggested window function]
+    │   ├── zpf                      [attr: int, suggested zero padding factor]
+    │   ├── rdc                      [attr: bool, suggested DC removal]
+    │   ├── expf_us                  [attr: float or None, suggested exp filter]
+    │   ├── autoscale_MHz            [attr: float or None, suggested autoscale]
+    │   └── units_power              [attr: int, suggested scaling units]
+    └── metadata/                     [group: source and experimental metadata]
+        ├── source_info              [dataset: JSON string with source metadata]
+        └── experimental_data        [dataset: JSON string with experimental metadata]
     """
     try:
         if not isinstance(fid, FID):
@@ -90,16 +95,18 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
         acq_group.attrs['n_points'] = fid.n_points
         acq_group.attrs['duration_us'] = fid.duration_us
         
-        # Create processing parameters group
-        proc_group = h5_group.create_group('processing')
-        proc_group.attrs['start_us'] = _serialize_optional_float(fid.processing.start_us)
-        proc_group.attrs['end_us'] = _serialize_optional_float(fid.processing.end_us)
-        proc_group.attrs['winf'] = _serialize_optional_str(fid.processing.winf)
-        proc_group.attrs['zpf'] = fid.processing.zpf
-        proc_group.attrs['rdc'] = fid.processing.rdc
-        proc_group.attrs['expf_us'] = _serialize_optional_float(fid.processing.expf_us)
-        proc_group.attrs['autoscale_MHz'] = _serialize_optional_float(fid.processing.autoscale_MHz)
-        proc_group.attrs['units_power'] = fid.processing.units_power
+        # Create recommended processing defaults group (NOT requirements)
+        # These are format-specific suggestions, not cache requirements
+        defaults_group = h5_group.create_group('recommended_processing')
+        defaults_group.attrs['description'] = 'Format-specific processing recommendations (not requirements)'
+        defaults_group.attrs['start_us'] = _serialize_optional_float(fid.processing.start_us)
+        defaults_group.attrs['end_us'] = _serialize_optional_float(fid.processing.end_us)
+        defaults_group.attrs['winf'] = _serialize_optional_str(fid.processing.winf)
+        defaults_group.attrs['zpf'] = fid.processing.zpf
+        defaults_group.attrs['rdc'] = fid.processing.rdc
+        defaults_group.attrs['expf_us'] = _serialize_optional_float(fid.processing.expf_us)
+        defaults_group.attrs['autoscale_MHz'] = _serialize_optional_float(fid.processing.autoscale_MHz)
+        defaults_group.attrs['units_power'] = fid.processing.units_power
         
         # Create metadata group and save as JSON strings
         meta_group = h5_group.create_group('metadata')
@@ -138,10 +145,17 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
             dtype=h5py.string_dtype(encoding='utf-8')
         )
         
-        # Add serialization metadata
+        # Add serialization metadata for portability
         h5_group.attrs['serialization_version'] = '1.0'
         h5_group.attrs['serialization_timestamp'] = datetime.now().isoformat()
         h5_group.attrs['object_type'] = 'FID'
+        h5_group.attrs['cache_description'] = 'Portable FID cache - contains all data needed for independent analysis'
+        
+        # Add quick-access summary for cache portability
+        h5_group.attrs['summary_probe_freq_mhz'] = fid.probe_freq_mhz
+        h5_group.attrs['summary_sideband'] = fid.sideband.value
+        h5_group.attrs['summary_duration_us'] = fid.duration_us
+        h5_group.attrs['summary_n_points'] = fid.n_points
         
     except Exception as e:
         raise RuntimeError(f"Failed to serialize FID to HDF5: {e}") from e
@@ -171,7 +185,7 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
     try:
         # Validate HDF5 structure
         required_datasets = ['time_series_data']
-        required_groups = ['acquisition', 'processing', 'metadata']
+        required_groups = ['acquisition', 'metadata']  # Note: processing is now optional 'recommended_processing'
         
         for dataset in required_datasets:
             if dataset not in h5_group:
@@ -194,18 +208,31 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
         sideband = Sideband(sideband_str)
         shots = int(acq_group.attrs['shots'])
         
-        # Load processing parameters
-        proc_group = h5_group['processing']
-        processing = FIDProcessingParameters(
-            start_us=_deserialize_optional_float(proc_group.attrs['start_us']),
-            end_us=_deserialize_optional_float(proc_group.attrs['end_us']),
-            winf=_deserialize_optional_str(proc_group.attrs['winf']),
-            zpf=int(proc_group.attrs['zpf']),
-            rdc=bool(proc_group.attrs['rdc']),
-            expf_us=_deserialize_optional_float(proc_group.attrs['expf_us']),
-            autoscale_MHz=_deserialize_optional_float(proc_group.attrs['autoscale_MHz']),
-            units_power=int(proc_group.attrs['units_power'])
-        )
+        # Load processing parameters (now optional defaults)
+        # Default to basic parameters if not found (for older cache files)
+        if 'recommended_processing' in h5_group:
+            proc_group = h5_group['recommended_processing']
+        elif 'processing' in h5_group:
+            # Backward compatibility with older cache files
+            proc_group = h5_group['processing']
+        else:
+            # No processing defaults stored - use minimal defaults
+            proc_group = None
+        
+        if proc_group is not None:
+            processing = FIDProcessingParameters(
+                start_us=_deserialize_optional_float(proc_group.attrs['start_us']),
+                end_us=_deserialize_optional_float(proc_group.attrs['end_us']),
+                winf=_deserialize_optional_str(proc_group.attrs['winf']),
+                zpf=int(proc_group.attrs['zpf']),
+                rdc=bool(proc_group.attrs['rdc']),
+                expf_us=_deserialize_optional_float(proc_group.attrs['expf_us']),
+                autoscale_MHz=_deserialize_optional_float(proc_group.attrs['autoscale_MHz']),
+                units_power=int(proc_group.attrs['units_power'])
+            )
+        else:
+            # Use minimal default processing parameters
+            processing = FIDProcessingParameters()
         
         # Load metadata
         meta_group = h5_group['metadata']
