@@ -85,7 +85,7 @@ Each stage:
 
 **Current Focus**: Stage 2 (Noise Estimation) CLI integration - first two stages complete
 
-**Latest Update**: Stage 0-1 refinement completed with enhanced ft-visualize parameter persistence and complete CLI parameter coverage
+**Latest Update**: Stage 1 enhanced with comprehensive FID visualization workflow, corrected preprocessing algorithms, and matplotlib layout optimizations
 
 ---
 
@@ -238,6 +238,17 @@ ftmwpipeline ft-visualize exp_2638 --freq-range 26500:40000
 - **Parameter Exploration**: Both direct and cached visualization APIs
 - **Interactive Parameter Persistence**: ft-visualize saves complete parameter sets (preprocessing + postprocessing)
 - **Complete CLI Parameter Coverage**: Both tools now support all processing parameters including units-power
+- **Enhanced FID Visualization**: Multi-panel layout showing complete FID-to-spectrum processing workflow
+- **Corrected Preprocessing**: Fixed FID processing order with DC removal after windowing
+- **Parameter Consistency**: Resolved windowing bounds display inconsistencies between raw and preprocessed panels
+
+**Latest Enhancements (2025-08-08)**:
+- ✅ **Enhanced Matplotlib Layout**: 16:9 aspect ratio with 3 equally-sized rows for comprehensive workflow visualization
+- ✅ **Raw FID Panel**: Shows original time-domain data with red dashed lines at windowing boundaries (start_us/end_us)
+- ✅ **Preprocessed FID Panel**: Displays effects of filtering, windowing, and zero-padding transformations
+- ✅ **Corrected Processing Order**: Fixed critical bug where DC removal occurred before windowing (now correctly after)
+- ✅ **Parameter Consistency Fix**: Raw FID panel now shows user's current parameters instead of cached parameters
+- ✅ **Layout Optimization**: Always calls fig.tight_layout() for proper panel spacing and readability
 
 ---
 

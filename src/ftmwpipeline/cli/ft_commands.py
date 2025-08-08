@@ -146,29 +146,38 @@ def cmd_ft_process(args) -> int:
 
 def cmd_ft_visualize(args) -> int:
     """
-    Interactive parameter exploration powered by visualization.
+    Enhanced interactive parameter exploration with FID visualization panels.
     
     This is the companion tool to ft-process, designed for exploratory usage
     where users want to experiment with different processing parameters and
-    see immediate visual feedback. Applies FT processing, creates interactive
-    spectrum plots, and offers to save good parameter combinations as defaults.
+    see immediate visual feedback. Creates enhanced multi-panel plots showing
+    the complete processing workflow from raw FID to final spectrum.
+    
+    Enhanced visualization features:
+    - Raw FID panel with windowing bounds (start_us/end_us vertical lines)
+    - Preprocessed FID panel showing effects of filtering, windowing, zero-padding
+    - Traditional spectrum panels (magnitude and real/imaginary components)
+    - Interactive parameter exploration with immediate visual feedback
+    - Save complete parameter sets (preprocessing + postprocessing) as defaults
     
     Use this command to:
-    - Interactively explore different processing parameters with visual feedback
-    - Find optimal parameters for your data through experimentation
-    - Save complete parameter sets (preprocessing + postprocessing) as defaults
-    - Create high-quality plots for publications/presentations
+    - Visualize the complete FID-to-spectrum processing workflow
+    - Understand the effects of windowing, filtering, and preprocessing parameters
+    - Optimize parameters by seeing their impact on both time and frequency domains
+    - Create comprehensive diagnostic plots for publications/presentations
+    - Save optimal parameter combinations for automated processing
     
     Key features:
     - On-demand ComplexFT calculation (no permanent storage unless requested)
-    - Interactive parameter persistence (save complete parameter sets as defaults)
+    - Enhanced 3-panel visualization showing processing stages
+    - Interactive parameter persistence with complete parameter sets
     - Matplotlib backend for reliable CLI visualization
-    - Support for static image export
+    - Support for both interactive display and static image export
     
     Workflow:
     1. Load FID data from Stage 0 cache
     2. Apply custom processing parameters (preprocessing + postprocessing)
-    3. Display interactive spectrum plot
+    3. Display enhanced multi-panel plot showing complete processing workflow
     4. Optionally save complete parameter set as defaults for this experiment
     """
     setup_logging(args.verbose)
@@ -215,6 +224,21 @@ def cmd_ft_visualize(args) -> int:
             'units_power': getattr(args, 'units_power', 6)
         }
         
+        # Update FID processing parameters for visualization consistency
+        # (The original cached parameters are preserved)
+        from ..core.data_structures import FIDProcessingParameters
+        current_processing = FIDProcessingParameters(
+            start_us=processing_params['start_us'],
+            end_us=processing_params['end_us'],
+            winf=processing_params['window_function'],
+            zpf=processing_params['zpf'],
+            rdc=True,
+            expf_us=processing_params['expf_us'],
+            units_power=processing_params['units_power']
+        )
+        # Temporarily update for visualization (doesn't affect cache)
+        fid.processing = current_processing
+        
         # Filter out None values for cleaner display
         display_params = {k: v for k, v in processing_params.items() if v is not None}
         if display_params:
@@ -256,10 +280,10 @@ def cmd_ft_visualize(args) -> int:
                 print_error(f"Failed to trim spectrum: {e}")
                 return 1
         
-        # Generate plot
-        print("Creating spectrum plot...")
+        # Generate enhanced plot with FID panels
+        print("Creating enhanced spectrum plot with FID panels...")
         try:
-            plot_title = f"Experiment {args.experiment_id} - FT Spectrum"
+            plot_title = f"Experiment {args.experiment_id} - Enhanced FT Visualization"
             if trim_range:
                 plot_title += f" ({trim_range[0]:.0f}-{trim_range[1]:.0f} MHz)"
             
@@ -270,16 +294,19 @@ def cmd_ft_visualize(args) -> int:
                     complex_ft=complex_ft,
                     title=plot_title,
                     backend='matplotlib',
-                    interactive=False
+                    interactive=False,
+                    fid=fid,
+                    preprocessed_fid=preprocessed_fid,
+                    show_fid_panels=True
                 )
                 if args.output:
                     fig.savefig(args.output, dpi=150, bbox_inches='tight')
-                    print(f"✅ Plot saved to: {args.output}")
+                    print(f"✅ Enhanced plot saved to: {args.output}")
                 else:
                     # Save with default name
-                    output_file = f"{args.experiment_id}_spectrum.png"
+                    output_file = f"{args.experiment_id}_enhanced_spectrum.png"
                     fig.savefig(output_file, dpi=150, bbox_inches='tight')
-                    print(f"✅ Plot saved to: {output_file}")
+                    print(f"✅ Enhanced plot saved to: {output_file}")
                 
                 # Close the figure to free memory
                 import matplotlib.pyplot as plt
@@ -290,16 +317,19 @@ def cmd_ft_visualize(args) -> int:
                     complex_ft=complex_ft,
                     title=plot_title,
                     backend='matplotlib',
-                    interactive=True
+                    interactive=True,
+                    fid=fid,
+                    preprocessed_fid=preprocessed_fid,
+                    show_fid_panels=True
                 )
                 # Show the interactive plot
                 import matplotlib.pyplot as plt
                 plt.show()
-                print("✅ Interactive plot displayed")
+                print("✅ Enhanced interactive plot displayed")
                 print("   Close the plot window to continue...")
                 
         except Exception as e:
-            print_error(f"Failed to generate plot: {e}")
+            print_error(f"Failed to generate enhanced plot: {e}")
             return 1
         
         # Implement interactive parameter persistence
@@ -487,36 +517,46 @@ Workflow:
     # ft-visualize command  
     ft_visualize_parser = subparsers.add_parser(
         'ft-visualize',
-        help='Interactive parameter exploration powered by visualization',
-        description='Companion tool to ft-process for exploratory parameter discovery through visualization.',
+        help='Enhanced interactive parameter exploration with FID visualization panels',
+        description='Enhanced companion tool to ft-process showing complete FID-to-spectrum processing workflow.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Purpose: Interactive parameter exploration powered by visualization
-Intended for: Exploratory usage and parameter discovery
+Purpose: Enhanced interactive parameter exploration with FID visualization panels
+Intended for: Understanding processing workflow and parameter optimization
+
+Enhanced Visualization:
+  - Raw FID panel shows original time-domain data with windowing bounds
+  - Preprocessed FID panel shows effects of filtering, windowing, zero-padding
+  - Spectrum panels show magnitude and real/imaginary frequency components
+  - Interactive parameter exploration with complete processing workflow visibility
 
 Examples:
-  # Interactive exploration with default parameters
-  ftmwpipeline ft-visualize exp_2638
+  # Enhanced visualization with windowing bounds displayed
+  ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --expf_us 5.0
   
-  # Explore custom parameters (will offer to save complete set)
+  # Explore custom parameters with trimmed frequency range
   ftmwpipeline ft-visualize exp_2638 --zpf 2 --expf_us 3.0 --trim 26500:40000
   
-  # Static image export
-  ftmwpipeline ft-visualize exp_2638 --no-interactive --output spectrum.png
+  # Static enhanced image export for presentations
+  ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --no-interactive --output enhanced_spectrum.png
   
-  # Advanced windowing and scaling exploration
-  ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --window-function hann --units-power 3
+  # Compare preprocessing effects with different window functions
+  ftmwpipeline ft-visualize exp_2638 --window-function hann --expf_us 10.0
 
 Key Features:
+  - Enhanced 3-panel visualization showing complete FID-to-spectrum workflow  
   - Interactive parameter exploration with immediate visual feedback
+  - Raw FID panel with windowing bounds (start_us/end_us vertical lines)
+  - Preprocessed FID panel showing effects of filtering and preprocessing
   - Save complete parameter sets (preprocessing + postprocessing) as defaults
   - Matplotlib-based reliable visualization for CLI environments
   - Support for both interactive display and static image export
 
 Workflow:
-  1. Experiment with different parameters until you find good ones
-  2. Save complete parameter set when prompted (y/N)
-  3. Future pipeline stages will use saved parameters as defaults
+  1. Visualize complete processing workflow from FID to spectrum
+  2. Experiment with parameters and see effects in all processing stages
+  3. Save complete parameter set when prompted (y/N)
+  4. Future pipeline stages will use saved parameters as defaults
         """
     )
     

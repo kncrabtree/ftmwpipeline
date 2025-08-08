@@ -311,7 +311,7 @@ class FID:
             units_power=units_power
         )
         
-        # Step 1: Extract windowed data from original FID
+        # Step 1: Determine windowing boundaries in original FID
         time_us = self.time_array_us()
         start_idx = 0
         end_idx = len(self.data)
@@ -321,28 +321,36 @@ class FID:
         if processing_params.end_us is not None:
             end_idx = np.searchsorted(time_us, processing_params.end_us)
         
-        # Extract windowed data and corresponding time array
-        windowed_data = self.data[start_idx:end_idx].copy()
-        windowed_time_us = time_us[start_idx:end_idx]
+        # Start with full original data and zero regions outside bounds
+        windowed_data = self.data.copy()
         original_length = len(self.data)  # For proper normalization
         
-        # Step 2: Apply exponential filtering ONLY to windowed data
-        if processing_params.expf_us is not None:
-            # Calculate decay relative to windowed time (start from 0 for windowed data)
-            relative_time_us = windowed_time_us - windowed_time_us[0]
+        # Zero out regions outside start_us/end_us bounds
+        if start_idx > 0:
+            windowed_data[:start_idx] = 0.0
+        if end_idx < len(windowed_data):
+            windowed_data[end_idx:] = 0.0
+        
+        # Step 2: Apply exponential filtering ONLY to active (non-zeroed) region
+        if processing_params.expf_us is not None and start_idx < end_idx:
+            # Calculate decay relative to active region time
+            active_time_us = time_us[start_idx:end_idx]
+            relative_time_us = active_time_us - active_time_us[0]
             decay = np.exp(-relative_time_us / processing_params.expf_us)
-            windowed_data *= decay
+            windowed_data[start_idx:end_idx] *= decay
         
-        # Step 3: Remove DC component from windowed data
-        if processing_params.rdc:
-            windowed_data -= np.mean(windowed_data)
+        # Step 3: Apply window function ONLY to active region
+        if processing_params.winf is not None and start_idx < end_idx:
+            window = spsig.get_window(processing_params.winf, end_idx - start_idx)
+            windowed_data[start_idx:end_idx] *= window
         
-        # Step 4: Apply window function ONLY to windowed/filtered data
-        if processing_params.winf is not None:
-            window = spsig.get_window(processing_params.winf, len(windowed_data))
-            windowed_data *= window
+        # Step 4: Remove DC component from active region (after windowing)
+        if processing_params.rdc and start_idx < end_idx:
+            active_data = windowed_data[start_idx:end_idx]
+            dc_offset = np.mean(active_data)
+            windowed_data[start_idx:end_idx] -= dc_offset
         
-        # Step 5: Zero padding to processed windowed data
+        # Step 5: Zero padding to full-length processed data
         final_data = windowed_data
         if processing_params.zpf > 0:
             # Pad to next power of 2, then extend by 2^zpf
