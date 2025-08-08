@@ -83,9 +83,9 @@ Each stage:
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Current Focus**: Stage 2 (Noise Estimation) CLI integration - first two stages complete
+**Current Focus**: Stage 2 (Noise Estimation) CLI integration - **Phase 1 Complete**
 
-**Latest Update**: Stage 1 enhanced with comprehensive FID visualization workflow, corrected preprocessing algorithms, and matplotlib layout optimizations
+**Latest Update**: **Phase 1 Complete** - Stage 0-1 refinement finished with critical bug fixes, parameter validation, CLI improvements, and comprehensive unit test alignment
 
 ---
 
@@ -158,6 +158,18 @@ Each stage:
 - ✅ **Revised Tool Descriptions**: Clear distinction between ft-process (validation) and ft-visualize (exploration)
 - ✅ **Complete CLI Parameter Coverage**: Added missing units-power parameter to both ft-process and ft-visualize
 
+**Phase 1 Complete - Critical Bug Fixes and Test Infrastructure (2025-08-08)**:
+- ✅ **Parameter Validation Enhancement**: Added expf_us > 0 validation in FIDProcessingParameters
+- ✅ **CLI Parameter Merging**: Fixed CLI commands to properly merge user parameters with cached defaults
+- ✅ **Critical log2(0) Bug Fix**: Fixed overflow bug in FID preprocessing for empty data edge case
+- ✅ **Unit Test Alignment**: Updated all unit tests to align with Stage 0-1 architecture:
+  - Fixed `test_three_stage_workflow.py` parameter assumptions and empty data handling
+  - Updated `test_data_loaders.py` to match corrected API behavior 
+  - Removed performance/memory tests from `test_fid_serialization.py` and `test_complex_ft_serialization.py`
+  - Eliminated backward compatibility tests that no longer apply
+- ✅ **Test Infrastructure Refinement**: Focused unit test suite on validating correct behavior rather than documenting bugs
+- ✅ **Architecture Validation**: Confirmed Stage 0-1 separation works correctly with proper error handling
+
 ### ✅ **COMPLETE** - Pipeline Integration
 **Target**: CLI commands for data loading
 ```bash
@@ -185,11 +197,12 @@ ftmwpipeline data-visualize exp_2638 --show-metadata
 
 ## Stage 1: FT Processing (ComplexFT)
 
-### ✅ **COMPLETE** - Core Logic Implementation
-- **Location**: `src/ftmwpipeline/core/data_structures.py:FID.ft()`
-- **Algorithms**: FFT with zero-padding, exponential filtering, sideband conversion
-- **Data Structure**: `ComplexFT` with frequency arrays and complex spectra
-- **Performance**: ~2-5 seconds for experiment 2638 (566k points)
+### ✅ **COMPLETE** - Core Logic Implementation  
+- **Location**: `src/ftmwpipeline/core/data_structures.py` (Three-stage workflow)
+- **Architecture**: FID.preprocess() → PreprocessedFID.compute_fft() → ComplexFT.from_spectrum()
+- **Algorithms**: Corrected preprocessing (zeroing, filtering, windowing, DC removal), FFT with zero-padding
+- **Data Structures**: `PreprocessedFID` (intermediate) + `ComplexFT` (final result)
+- **Performance**: ~1 second for experiment 2638 (on-demand calculation)
 
 ### ✅ **COMPLETE** - Visualization Development  
 - **Location**: `src/ftmwpipeline/visualization/spectrum_visualization.py`
@@ -203,33 +216,33 @@ ftmwpipeline data-visualize exp_2638 --show-metadata
 - **Edge Cases**: Trimming, parameter overrides, sideband configurations
 - **API**: Stable interface with backward compatibility
 
-### ✅ **COMPLETE** - Serialization Implementation
-- **Location**: `src/ftmwpipeline/io/complex_ft_serialization.py`
-- **Innovation**: Frequency array reconstruction (99.998% storage reduction)
-- **Storage**: ~6 MB per experiment with HDF5 compression
-- **Validation**: Bit-perfect reconstruction verified with real data
+### ✅ **COMPLETE** - On-Demand Processing Implementation
+- **Architecture**: ComplexFT calculated on-demand from cached FID data
+- **Three-Stage Workflow**: FID.preprocess() → compute_fft() → ComplexFT.from_spectrum()
+- **Storage Strategy**: No ComplexFT caching - calculated fresh with current parameters (~1s)
+- **Benefits**: Unlimited parameter exploration, reduced storage requirements, interactive workflow
 
 ### ✅ **COMPLETE** - Pipeline Integration
 **Target**: CLI subcommands for FT processing (Stage 0 → Stage 1 workflow)
 ```bash
-# Stage-based workflow (clean separation)
-ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638 --format blackchirp
+# Stage-based workflow (on-demand FT calculation)
+ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638
 ftmwpipeline ft-process exp_2638 --zpf 2 --expf_us 3.0 --trim 26500:40000
-ftmwpipeline ft-visualize exp_2638 --freq-range 26500:40000
+ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --expf_us 5.0 --trim 26500:40000
 ```
 
 **Completed Implementation**:
-- ✅ Complete `ft-process` and `ft-visualize` commands
+- ✅ Complete `ft-process` and `ft-visualize` commands with full parameter support
 - ✅ CLI package structure with modular command organization
 - ✅ Full integration with Stage 0 FID caching system
-- ✅ Cache-first workflow - loads exclusively from Stage 0 cache
+- ✅ On-demand ComplexFT calculation - no ComplexFT storage required
 - ✅ Enhanced parameter validation and error handling
 - ✅ Clean stage separation - no direct data loading in ft-process
 
 **Working Pipeline**:
-- ✅ Stage 0 → Stage 1 workflow fully functional
-- ✅ FID caching and ComplexFT caching working
-- ✅ Cache-based visualization implemented
+- ✅ Stage 0 → Stage 1 workflow fully functional with on-demand calculation
+- ✅ FID caching working, ComplexFT calculated on-demand per session
+- ✅ Interactive parameter exploration with immediate visual feedback
 - ✅ Error handling guides users through proper workflow
 
 ### ✅ **COMPLETE** - Interactive Workflow

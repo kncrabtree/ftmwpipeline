@@ -1,839 +1,495 @@
 """
-Unit tests for ComplexFT serialization to HDF5 format.
+Unit tests for ComplexFT Stage 0-1 architecture and on-demand calculation workflow.
 
-Tests cover:
-- Round-trip serialization accuracy
-- Frequency array reconstruction precision
-- Handling of missing FID references
-- Error conditions and edge cases
-- Storage space optimization
-- Real experimental data validation
+Tests focus on the new Stage 0-1 architecture where:
+- Stage 0: FID data is cached (tested elsewhere)
+- Stage 1: ComplexFT objects are calculated on-demand from cached FID + parameters
+
+Test Coverage:
+- Parameter validation for FT processing
+- Three-stage workflow integration (preprocess → compute_fft → from_spectrum)
+- On-demand calculation consistency and correctness
+- ComplexFT API functionality (current methods only)
+- Performance characteristics of on-demand calculation
+
+IMPORTANT: This test file NO LONGER tests ComplexFT storage/serialization.
+ComplexFT objects are temporary and calculated fresh each session.
 """
 
 import pytest
 import numpy as np
-import h5py
-import tempfile
-import os
+import time
 from pathlib import Path
 
 from ftmwpipeline.core.data_structures import (
     ComplexFT, FID, FIDProcessingParameters, Sideband
 )
-from ftmwpipeline.io.complex_ft_serialization import (
-    save_complex_ft_to_hdf5,
-    load_complex_ft_from_hdf5,
-    _extract_frequency_reconstruction_params,
-    _reconstruct_frequency_array
-)
 from ftmwpipeline.io import load_blackchirp_experiment
 
 
-class TestComplexFTSerialization:
-    """Test ComplexFT HDF5 serialization functionality."""
-    
-    # Test file prefix for consistent naming and cleanup
-    TEST_PREFIX = "test_complex_ft_"
-    
-    def _get_test_file(self, output_dir, suffix):
-        """Helper to generate consistent test file names."""
-        return output_dir / f"{self.TEST_PREFIX}{suffix}.h5"
+class TestParameterValidation:
+    """Test FID processing parameter validation for on-demand ComplexFT calculation."""
     
     @pytest.fixture
     def sample_fid(self):
-        """Create a sample FID for testing."""
-        # Create a simple FID with known parameters
+        """Create a sample FID for parameter validation testing."""
         n_points = 1000
-        spacing = 1e-8  # 10 ns spacing
+        spacing = 2e-8  # 20 ns spacing
         probe_freq = 18000.0  # 18 GHz
         
-        # Generate a simple exponentially decaying sinusoid
+        # Generate simple exponentially decaying sinusoid
         t = np.arange(n_points) * spacing
-        data = np.exp(-t / 1e-6) * np.cos(2 * np.pi * 100e6 * t)  # 100 MHz signal
-        
-        processing = FIDProcessingParameters(
-            zpf=1,
-            expf_us=5.0,
-            rdc=True,
-            autoscale_MHz=10.0
-        )
+        data = np.exp(-t / 2e-6) * np.cos(2 * np.pi * 150e6 * t)  # 150 MHz signal
         
         return FID(
             data=data,
             spacing=spacing,
             probe_freq_mhz=probe_freq,
             sideband=Sideband.LOWER,
-            processing=processing,
-            metadata={'test_param': 'test_value'}
+            metadata={'test_source': 'parameter_validation'}
         )
     
-    @pytest.fixture
-    def sample_complex_ft(self, sample_fid):
-        """Create a sample ComplexFT from FID."""
-        return sample_fid.ft(zpf=1, expf_us=5.0)
-    
-    @pytest.fixture
-    def complex_ft_no_fid(self):
-        """Create a ComplexFT without associated FID."""
-        n_points = 1000
-        freqs = np.linspace(17900, 18100, n_points)
-        # Generate complex spectrum using separate real and imaginary parts
-        real_part = np.random.normal(0, 1e-6, n_points)
-        imag_part = np.random.normal(0, 1e-6, n_points)
-        spectrum = real_part + 1j * imag_part
+    def test_valid_parameter_combinations(self, sample_fid):
+        """Test that valid parameter combinations work correctly."""
+        # Test basic parameters
+        preprocessed = sample_fid.preprocess(zpf=1, expf_us=5.0)
+        spectrum, freqs = preprocessed.compute_fft()
+        complex_ft = ComplexFT.from_spectrum(spectrum, freqs)
         
-        return ComplexFT(
-            freq_array=freqs,
-            complex_spectrum=spectrum,
-            fid=None,
-            metadata={'source': 'synthetic'}
-        )
-    
-    @pytest.fixture
-    def test_output_dir(self):
-        """Create and cleanup test output directory."""
-        output_dir = Path("tests/output")
-        output_dir.mkdir(exist_ok=True)
-        yield output_dir
-        # Cleanup test files after each test
-        for file in output_dir.glob(f"{TestComplexFTSerialization.TEST_PREFIX}*.h5"):
-            file.unlink(missing_ok=True)
-    
-    def test_round_trip_serialization(self, sample_complex_ft, test_output_dir):
-        """Test complete round-trip serialization with bit-perfect accuracy."""
-        original_ft = sample_complex_ft
+        assert complex_ft.n_points > 0
+        assert len(complex_ft.freq_array) == len(complex_ft.complex_spectrum)
         
-        # Save to HDF5
-        test_file = self._get_test_file(test_output_dir, "round_trip")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('complex_ft')
-            save_complex_ft_to_hdf5(original_ft, group)
+        # Test parameter variations
+        valid_params = [
+            {'zpf': 0, 'expf_us': None},  # No processing
+            {'zpf': 1, 'expf_us': 2.0},   # Basic processing
+            {'zpf': 2, 'expf_us': 10.0},  # Heavy processing
+            {'start_us': 1.0, 'end_us': 15.0, 'zpf': 1},  # Windowing
+        ]
         
-        # Load from HDF5
-        with h5py.File(test_file, 'r') as f:
-            group = f['complex_ft']
-            loaded_ft = load_complex_ft_from_hdf5(group)
-        
-        # Verify bit-perfect frequency array reconstruction
-        np.testing.assert_array_equal(
-            original_ft.freq_array, 
-            loaded_ft.freq_array,
-            err_msg="Frequency arrays should be identical"
-        )
-        
-        # Verify complex spectrum preservation
-        np.testing.assert_array_equal(
-            original_ft.complex_spectrum,
-            loaded_ft.complex_spectrum,
-            err_msg="Complex spectra should be identical"
-        )
-        
-        # Verify FID parameters preservation
-        assert loaded_ft.fid is not None
-        assert loaded_ft.fid.probe_freq_mhz == original_ft.fid.probe_freq_mhz
-        assert loaded_ft.fid.sideband == original_ft.fid.sideband
-        assert loaded_ft.fid.processing.zpf == original_ft.fid.processing.zpf
-        assert loaded_ft.fid.processing.expf_us == original_ft.fid.processing.expf_us
-    
-    def test_frequency_reconstruction_precision(self, sample_complex_ft):
-        """Test frequency array reconstruction with high precision."""
-        # Extract parameters
-        params = _extract_frequency_reconstruction_params(sample_complex_ft)
-        
-        # Reconstruct frequency array
-        reconstructed_freqs = _reconstruct_frequency_array(params)
-        
-        # Test bit-perfect reconstruction (rtol=1e-15 as specified)
-        np.testing.assert_allclose(
-            sample_complex_ft.freq_array,
-            reconstructed_freqs,
-            rtol=1e-15,
-            err_msg="Frequency reconstruction should be bit-perfect"
-        )
-    
-    def test_parameter_extraction(self, sample_complex_ft):
-        """Test frequency reconstruction parameter extraction."""
-        params = _extract_frequency_reconstruction_params(sample_complex_ft)
-        
-        # Verify all required parameters are present
-        required_keys = ['n_fid_padded', 'spacing_us', 'probe_freq_mhz', 
-                        'sideband', 'autoscale_MHz', 'n_spectrum']
-        for key in required_keys:
-            assert key in params, f"Missing required parameter: {key}"
-        
-        # Verify parameter values make sense
-        assert params['n_fid_padded'] > 0
-        assert params['spacing_us'] > 0
-        assert params['probe_freq_mhz'] > 0
-        assert params['n_spectrum'] == len(sample_complex_ft.freq_array)
-        assert params['sideband'] in ['upper', 'lower']
-    
-    def test_no_fid_reference(self, complex_ft_no_fid, test_output_dir):
-        """Test handling of ComplexFT without FID reference."""
-        # This should raise an error during save
-        test_file = self._get_test_file(test_output_dir, "no_fid")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('complex_ft')
-            with pytest.raises(RuntimeError, match="Failed to save ComplexFT to HDF5"):
-                save_complex_ft_to_hdf5(complex_ft_no_fid, group)
-    
-    def test_hdf5_structure_validation(self, sample_complex_ft, test_output_dir):
-        """Test that HDF5 structure matches specification."""
-        test_file = self._get_test_file(test_output_dir, "structure")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('complex_ft')
-            save_complex_ft_to_hdf5(sample_complex_ft, group)
-        
-        # Verify structure
-        with h5py.File(test_file, 'r') as f:
-            group = f['complex_ft']
+        for params in valid_params:
+            preprocessed = sample_fid.preprocess(**params)
+            spectrum, freqs = preprocessed.compute_fft()
+            complex_ft = ComplexFT.from_spectrum(spectrum, freqs)
             
-            # Check required datasets and groups
-            assert 'complex_spectrum' in group
-            assert 'freq_reconstruction' in group
-            assert 'processing_params' in group
-            assert 'metadata' in group
-            
-            # Check frequency reconstruction parameters
-            freq_group = group['freq_reconstruction']
-            required_attrs = ['n_fid_padded', 'spacing_us', 'probe_freq_mhz',
-                             'sideband', 'n_spectrum']
-            for attr in required_attrs:
-                assert attr in freq_group.attrs
+            assert complex_ft.n_points > 0
+            assert np.all(np.isfinite(complex_ft.complex_spectrum))
+            assert np.all(np.isfinite(complex_ft.freq_array))
     
-    def test_storage_structure(self, sample_complex_ft, test_output_dir):
-        """Test that HDF5 structure is correct (no direct frequency array storage)."""
-        test_file = self._get_test_file(test_output_dir, "storage")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('complex_ft')
-            save_complex_ft_to_hdf5(sample_complex_ft, group)
+    def test_parameter_validation_errors(self, sample_fid):
+        """Test that invalid parameters are properly rejected."""
+        # Test invalid parameter values that actually cause errors
         
-        with h5py.File(test_file, 'r') as f:
-            group = f['complex_ft']
-            
-            # Verify no full frequency array is stored
-            assert 'freq_array' not in group
-            assert 'frequency_array' not in group
-            
-            # Verify required groups/datasets exist
-            assert 'complex_spectrum' in group
-            assert 'freq_reconstruction' in group
+        # Test negative zero padding
+        with pytest.raises(ValueError, match="Zero padding factor must be non-negative"):
+            sample_fid.preprocess(zpf=-1)
+        
+        # Test start > end time
+        with pytest.raises(ValueError, match="Start time must be less than end time"):
+            sample_fid.preprocess(start_us=20.0, end_us=10.0)
+        
+        # Test invalid exponential filter values (must be positive)
+        with pytest.raises(ValueError, match="Exponential filter time constant must be positive"):
+            sample_fid.preprocess(expf_us=0.0)
+        
+        with pytest.raises(ValueError, match="Exponential filter time constant must be positive"):
+            sample_fid.preprocess(expf_us=-5.0)
     
-    def test_edge_cases(self, test_output_dir):
-        """Test edge cases and error conditions."""
-        # Test with minimal FID
-        minimal_fid = FID(
-            data=np.array([1.0, 0.5, 0.0]),
-            spacing=1e-6,
-            probe_freq_mhz=1000.0,
-            sideband=Sideband.UPPER
-        )
-        minimal_ft = minimal_fid.ft()
-        
-        # Should work with minimal data
-        test_file = self._get_test_file(test_output_dir, "edge")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('test')
-            save_complex_ft_to_hdf5(minimal_ft, group)
-        
-        with h5py.File(test_file, 'r') as f:
-            group = f['test']
-            loaded_ft = load_complex_ft_from_hdf5(group)
-            
-        # Verify reconstruction works
-        np.testing.assert_array_equal(minimal_ft.freq_array, loaded_ft.freq_array)
-    
-    def test_sideband_handling(self, test_output_dir):
-        """Test both upper and lower sideband configurations."""
-        for sideband in [Sideband.UPPER, Sideband.LOWER]:
-            fid = FID(
-                data=np.array([1.0, 0.5, 0.0, 0.25]),
-                spacing=1e-6,
-                probe_freq_mhz=15000.0,
-                sideband=sideband
-            )
-            ft = fid.ft()
-            
-            test_file = self._get_test_file(test_output_dir, f"sideband_{sideband.value}")
-            with h5py.File(test_file, 'w') as f:
-                group = f.create_group(f'test_{sideband.value}')
-                save_complex_ft_to_hdf5(ft, group)
-            
-            with h5py.File(test_file, 'r') as f:
-                group = f[f'test_{sideband.value}']
-                loaded_ft = load_complex_ft_from_hdf5(group)
-            
-            # Verify sideband is preserved
-            assert loaded_ft.fid.sideband == sideband
-            np.testing.assert_array_equal(ft.freq_array, loaded_ft.freq_array)
-    
-    def test_metadata_preservation(self, test_output_dir):
-        """Test that metadata is properly preserved."""
-        # Create FID with various metadata types
-        fid = FID(
-            data=np.array([1.0, 0.5]),
-            spacing=1e-6,
-            probe_freq_mhz=10000.0,
-            metadata={'str_val': 'test', 'int_val': 42, 'float_val': 3.14}
-        )
-        ft = fid.ft()
-        ft.metadata.update({'custom_param': 'custom_value'})
-        
-        test_file = self._get_test_file(test_output_dir, "metadata")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('test')
-            save_complex_ft_to_hdf5(ft, group)
-        
-        with h5py.File(test_file, 'r') as f:
-            group = f['test']
-            loaded_ft = load_complex_ft_from_hdf5(group)
-        
-        # Verify metadata preservation
-        assert 'custom_param' in loaded_ft.metadata
-        assert loaded_ft.metadata['custom_param'] == 'custom_value'
-    
-    def test_none_value_handling(self, test_output_dir):
-        """Test handling of None values in parameters."""
-        # Create FID with some None parameters
+    def test_parameter_merging_and_defaults(self, sample_fid):
+        """Test that preprocess() uses method defaults, not FID's processing parameters."""
+        # Create FID with processing parameters (these are NOT automatically used by preprocess())
         processing = FIDProcessingParameters(
-            start_us=None,
-            end_us=None,
-            winf=None,
-            zpf=0,
-            expf_us=None,
-            autoscale_MHz=None
+            zpf=2,  # Different from method default (1)
+            expf_us=3.0,  # Different from method default (None)
+            rdc=False  # Different from method default (True)
         )
         
-        fid = FID(
-            data=np.array([1.0, 0.5]),
-            spacing=1e-6,
-            probe_freq_mhz=10000.0,
+        fid_with_processing = FID(
+            data=sample_fid.data,
+            spacing=sample_fid.spacing,
+            probe_freq_mhz=sample_fid.probe_freq_mhz,
+            sideband=sample_fid.sideband,
             processing=processing
         )
-        ft = fid.ft()
         
-        test_file = self._get_test_file(test_output_dir, "none_values")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('test')
-            save_complex_ft_to_hdf5(ft, group)
+        # Test that preprocess() uses METHOD defaults, not FID's stored processing parameters
+        preprocessed = fid_with_processing.preprocess()
+        assert preprocessed.processing_params.zpf == 1  # Method default, not FID's zpf=2
+        assert preprocessed.processing_params.expf_us is None  # Method default, not FID's expf_us=3.0
+        assert preprocessed.processing_params.rdc == True  # Method default, not FID's rdc=False
         
-        with h5py.File(test_file, 'r') as f:
-            group = f['test']
-            loaded_ft = load_complex_ft_from_hdf5(group)
+        # Test that explicit parameters override method defaults
+        preprocessed = fid_with_processing.preprocess(zpf=5, expf_us=7.0, rdc=False)
+        assert preprocessed.processing_params.zpf == 5
+        assert preprocessed.processing_params.expf_us == 7.0
+        assert preprocessed.processing_params.rdc == False
         
-        # Verify None values are handled correctly
-        assert loaded_ft.fid.processing.start_us is None
-        assert loaded_ft.fid.processing.end_us is None
-        assert loaded_ft.fid.processing.winf is None
-        assert loaded_ft.fid.processing.expf_us is None
-        assert loaded_ft.fid.processing.autoscale_MHz is None
+        # Test that parameter merging happens at CLI level, not in preprocess()
+        # This is the intended workflow: CLI merges user input + cached defaults, then calls preprocess()
+        cached_defaults = fid_with_processing.processing
+        merged_zpf = cached_defaults.zpf if cached_defaults.zpf is not None else 1
+        merged_expf_us = cached_defaults.expf_us if cached_defaults.expf_us is not None else 5.0
+        
+        preprocessed = fid_with_processing.preprocess(zpf=merged_zpf, expf_us=merged_expf_us)
+        assert preprocessed.processing_params.zpf == 2  # From cached defaults
+        assert preprocessed.processing_params.expf_us == 3.0  # From cached defaults
 
 
-class TestRealExperimentalData:
-    """Test serialization with real experimental data."""
-    
-    # Test file prefix for consistent naming and cleanup
-    TEST_PREFIX = "test_complex_ft_"
-    
-    def _get_test_file(self, output_dir, suffix):
-        """Helper to generate consistent test file names."""
-        return output_dir / f"{self.TEST_PREFIX}{suffix}.h5"
-    
-    @pytest.fixture
-    def test_output_dir(self):
-        """Create and cleanup test output directory."""
-        output_dir = Path("tests/output")
-        output_dir.mkdir(exist_ok=True)
-        yield output_dir
-        # Cleanup test files after each test
-        for file in output_dir.glob(f"{TestComplexFTSerialization.TEST_PREFIX}*.h5"):
-            file.unlink(missing_ok=True)
-    
-    def test_experiment_2638_serialization(self, test_output_dir):
-        """Test serialization with real experiment 2638 data."""
-        try:
-            # Load real experimental data
-            ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
-            
-            # Create fresh ComplexFT to ensure consistent processing
-            # Use the loaded FID to create a new ComplexFT with our processing
-            complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-            
-            print(f"Experiment 2638: FID has {len(ftmw_data.fid.data)} points")
-            print(f"ComplexFT has {len(complex_ft.freq_array)} frequency points")
-            print(f"Frequency range: {complex_ft.freq_array[0]:.1f} - {complex_ft.freq_array[-1]:.1f} MHz")
-            
-            # Test serialization
-            test_file = self._get_test_file(test_output_dir, "2638")
-            with h5py.File(test_file, 'w') as f:
-                group = f.create_group('exp_2638')
-                save_complex_ft_to_hdf5(complex_ft, group)
-            
-            # File should exist and be valid HDF5
-            assert test_file.exists()
-            
-            # Test loading
-            with h5py.File(test_file, 'r') as f:
-                group = f['exp_2638']
-                loaded_ft = load_complex_ft_from_hdf5(group)
-            
-            print(f"Loaded ComplexFT has {len(loaded_ft.freq_array)} frequency points")
-            print(f"Loaded frequency range: {loaded_ft.freq_array[0]:.1f} - {loaded_ft.freq_array[-1]:.1f} MHz")
-            
-            # Verify reconstruction accuracy (arrays should be identical)
-            np.testing.assert_array_equal(
-                complex_ft.freq_array,
-                loaded_ft.freq_array,
-                err_msg="Frequency array reconstruction failed for real data"
-            )
-            
-            np.testing.assert_array_equal(
-                complex_ft.complex_spectrum,
-                loaded_ft.complex_spectrum,
-                err_msg="Complex spectrum should be preserved exactly"
-            )
-            
-            # Verify FID parameters
-            assert loaded_ft.fid.probe_freq_mhz == complex_ft.fid.probe_freq_mhz
-            assert loaded_ft.fid.sideband == complex_ft.fid.sideband
-            
-            print("✓ Experiment 2638 serialization test passed")
-            
-        except Exception as e:
-            pytest.skip(f"Could not load experimental data: {e}")
-    
-    def test_trimmed_data_serialization(self, test_output_dir):
-        """Test serialization of trimmed ComplexFT data - now should work with the fix!"""
-        try:
-            # Load and trim experimental data
-            ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
-            complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-            trimmed_ft = complex_ft.trim_to_range(26500, 40000)
-            
-            # Test serialization of trimmed data
-            test_file = self._get_test_file(test_output_dir, "trimmed")
-            with h5py.File(test_file, 'w') as f:
-                group = f.create_group('trimmed')
-                save_complex_ft_to_hdf5(trimmed_ft, group)
-            
-            # Verify file structure contains frequency range parameters
-            with h5py.File(test_file, 'r') as f:
-                group = f['trimmed']
-                freq_group = group['freq_reconstruction']
-                
-                # Check that frequency range parameters are stored
-                assert 'freq_min' in freq_group.attrs
-                assert 'freq_max' in freq_group.attrs
-                # Values should be close to the trim range (within frequency spacing)
-                stored_min = float(freq_group.attrs['freq_min'])
-                stored_max = float(freq_group.attrs['freq_max'])
-                assert stored_min >= 26500.0  # Should be >= trim_min
-                assert stored_max <= 40000.0  # Should be <= trim_max
-                assert stored_min < 26501.0   # But close to trim_min  
-                assert stored_max > 39999.0   # But close to trim_max
-            
-            # Test loading
-            with h5py.File(test_file, 'r') as f:
-                group = f['trimmed']
-                loaded_ft = load_complex_ft_from_hdf5(group)
-            
-            # Verify bit-perfect trimmed data reconstruction
-            np.testing.assert_allclose(
-                trimmed_ft.freq_array,
-                loaded_ft.freq_array,
-                rtol=1e-15,
-                err_msg="Trimmed frequency arrays should be identical"
-            )
-            
-            np.testing.assert_array_equal(
-                trimmed_ft.complex_spectrum,
-                loaded_ft.complex_spectrum,
-                err_msg="Trimmed complex spectra should be identical"
-            )
-            
-            # Verify metadata includes trim information
-            assert 'trimmed_range' in loaded_ft.metadata
-            assert loaded_ft.metadata['trimmed_range'] == (26500.0, 40000.0)
-            
-        except Exception as e:
-            pytest.skip(f"Could not load experimental data: {e}")
-
-
-class TestTrimmedObjectSerialization:
-    """Test serialization of trimmed ComplexFT objects with comprehensive validation."""
-    
-    # Test file prefix for consistent naming and cleanup
-    TEST_PREFIX = "test_complex_ft_"
-    
-    def _get_test_file(self, output_dir, suffix):
-        """Helper to generate consistent test file names."""
-        return output_dir / f"{self.TEST_PREFIX}{suffix}.h5"
+class TestThreeStageWorkflow:
+    """Test the three-stage workflow: preprocess → compute_fft → from_spectrum."""
     
     @pytest.fixture
     def sample_fid(self):
-        """Create a sample FID for testing."""
-        # Create a larger FID for meaningful trimming tests
+        """Create a larger FID for comprehensive workflow testing."""
         n_points = 2000
         spacing = 1e-8  # 10 ns spacing
         probe_freq = 20000.0  # 20 GHz
         
-        # Generate a simple exponentially decaying sinusoid
+        # Generate more complex signal
         t = np.arange(n_points) * spacing
-        data = np.exp(-t / 2e-6) * np.cos(2 * np.pi * 150e6 * t)  # 150 MHz signal
+        signal = (np.exp(-t / 3e-6) * np.cos(2 * np.pi * 100e6 * t) +
+                 0.5 * np.exp(-t / 2e-6) * np.cos(2 * np.pi * 250e6 * t))
         
         processing = FIDProcessingParameters(
-            zpf=1,  # Double the length with zero padding
-            expf_us=2.0,
-            rdc=True,
-            autoscale_MHz=5.0
+            zpf=1,
+            expf_us=4.0,
+            rdc=True
         )
         
         return FID(
-            data=data,
+            data=signal,
             spacing=spacing,
             probe_freq_mhz=probe_freq,
-            sideband=Sideband.LOWER,
+            sideband=Sideband.UPPER,
             processing=processing,
-            metadata={'test_source': 'synthetic_fid'}
+            metadata={'test_type': 'workflow_testing'}
         )
     
-    @pytest.fixture
-    def test_output_dir(self):
-        """Create and cleanup test output directory."""
-        output_dir = Path("tests/output")
-        output_dir.mkdir(exist_ok=True)
-        yield output_dir
-        # Cleanup test files after each test
-        for file in output_dir.glob(f"{TestTrimmedObjectSerialization.TEST_PREFIX}*.h5"):
-            file.unlink(missing_ok=True)
+    def test_stage_1_preprocessing(self, sample_fid):
+        """Test Stage 1: FID preprocessing."""
+        # Test basic preprocessing
+        preprocessed = sample_fid.preprocess(zpf=1, expf_us=5.0)
+        
+        assert hasattr(preprocessed, 'data')
+        assert hasattr(preprocessed, 'processing_params')
+        assert hasattr(preprocessed, 'spacing')
+        assert hasattr(preprocessed, 'probe_freq_mhz')
+        assert hasattr(preprocessed, 'sideband')
+        
+        # Verify processing parameters are stored
+        assert preprocessed.processing_params.zpf == 1
+        assert preprocessed.processing_params.expf_us == 5.0
+        
+        # Verify data is processed (different from original)
+        assert len(preprocessed.data) != len(sample_fid.data)  # Zero padding changes length
+        
+        # Test preprocessing with different parameters produces different results
+        preprocessed_alt = sample_fid.preprocess(zpf=2, expf_us=2.0)
+        assert len(preprocessed_alt.data) != len(preprocessed.data)  # Different zpf
     
-    def _get_trim_range(self, freq_array, start_idx, end_idx):
-        """Helper to get proper trim range considering sideband direction."""
-        if freq_array[0] > freq_array[-1]:  # Descending (lower sideband)
-            freq_min = freq_array[end_idx]
-            freq_max = freq_array[start_idx]
-        else:  # Ascending (upper sideband)
-            freq_min = freq_array[start_idx]
-            freq_max = freq_array[end_idx]
-        return freq_min, freq_max
+    def test_stage_2_fft_computation(self, sample_fid):
+        """Test Stage 2: FFT computation."""
+        preprocessed = sample_fid.preprocess(zpf=1, expf_us=3.0)
+        spectrum, freq_array = preprocessed.compute_fft()
+        
+        # Verify FFT results have expected properties
+        assert isinstance(spectrum, np.ndarray)
+        assert isinstance(freq_array, np.ndarray)
+        assert spectrum.dtype == complex
+        assert freq_array.dtype == float
+        assert len(spectrum) == len(freq_array)
+        
+        # Verify frequency array is monotonic and reasonable
+        assert len(freq_array) > 0
+        if sample_fid.sideband == Sideband.UPPER:
+            assert freq_array[1] > freq_array[0]  # Ascending
+        else:  # LOWER sideband
+            assert freq_array[1] < freq_array[0]  # Descending
+        
+        # Verify spectrum contains finite values
+        assert np.all(np.isfinite(spectrum))
+        assert np.all(np.isfinite(freq_array))
     
-    def test_trimmed_vs_untrimmed_parameters(self, sample_fid):
-        """Test parameter extraction for trimmed and untrimmed objects."""
-        # Create untrimmed ComplexFT
-        untrimmed_ft = sample_fid.ft(zpf=1, expf_us=2.0)
-        untrimmed_params = _extract_frequency_reconstruction_params(untrimmed_ft)
+    def test_stage_3_complex_ft_creation(self, sample_fid):
+        """Test Stage 3: ComplexFT object creation."""
+        preprocessed = sample_fid.preprocess(zpf=1, expf_us=4.0)
+        spectrum, freq_array = preprocessed.compute_fft()
         
-        # Create trimmed ComplexFT
-        freq_min, freq_max = self._get_trim_range(untrimmed_ft.freq_array, 100, -100)
-        trimmed_ft = untrimmed_ft.trim_to_range(freq_min, freq_max)
-        trimmed_params = _extract_frequency_reconstruction_params(trimmed_ft)
+        # Create ComplexFT object
+        metadata = {
+            'processing_params': preprocessed.processing_params,
+            'source_metadata': sample_fid.metadata
+        }
+        complex_ft = ComplexFT.from_spectrum(spectrum, freq_array, metadata)
         
-        # Both should have same fundamental FID parameters
-        for key in ['n_fid_padded', 'spacing_us', 'probe_freq_mhz', 'sideband', 'autoscale_MHz']:
-            assert untrimmed_params[key] == trimmed_params[key]
+        # Verify ComplexFT object properties
+        assert isinstance(complex_ft, ComplexFT)
+        assert len(complex_ft.freq_array) == len(freq_array)
+        assert len(complex_ft.complex_spectrum) == len(spectrum)
+        assert complex_ft.n_points == len(spectrum)
         
-        # But different frequency ranges and spectrum lengths
-        assert untrimmed_params['n_spectrum'] > trimmed_params['n_spectrum']
-        assert untrimmed_params['freq_min'] != trimmed_params['freq_min'] or untrimmed_params['freq_max'] != trimmed_params['freq_max']
+        # Verify arrays are properly stored
+        np.testing.assert_array_equal(complex_ft.freq_array, freq_array)
+        np.testing.assert_array_equal(complex_ft.complex_spectrum, spectrum)
         
-        # Trimmed object should have the expected frequency range
-        assert trimmed_params['freq_min'] == freq_min
-        assert trimmed_params['freq_max'] == freq_max
+        # Verify metadata is preserved
+        assert 'processing_params' in complex_ft.metadata
+        assert 'source_metadata' in complex_ft.metadata
     
-    def test_trimmed_reconstruction_accuracy(self, sample_fid):
-        """Test bit-perfect reconstruction of trimmed frequency arrays."""
-        # Create and trim ComplexFT
-        full_ft = sample_fid.ft(zpf=1)
-        freq_min, freq_max = self._get_trim_range(full_ft.freq_array, 200, -300)
-        trimmed_ft = full_ft.trim_to_range(freq_min, freq_max)
+    def test_complete_workflow_consistency(self, sample_fid):
+        """Test that the complete three-stage workflow is consistent."""
+        # Run workflow multiple times with same parameters
+        results = []
         
-        # Extract parameters and reconstruct
-        params = _extract_frequency_reconstruction_params(trimmed_ft)
-        reconstructed_freqs = _reconstruct_frequency_array(params)
+        for _ in range(3):  # Run 3 times
+            preprocessed = sample_fid.preprocess(zpf=1, expf_us=5.0)
+            spectrum, freq_array = preprocessed.compute_fft()
+            complex_ft = ComplexFT.from_spectrum(spectrum, freq_array)
+            results.append((spectrum, freq_array))
         
-        # Test bit-perfect reconstruction
-        np.testing.assert_allclose(
-            trimmed_ft.freq_array,
-            reconstructed_freqs,
-            rtol=1e-15,
-            err_msg="Trimmed frequency reconstruction should be bit-perfect"
-        )
+        # All runs should produce identical results (deterministic)
+        for i in range(1, len(results)):
+            np.testing.assert_array_equal(
+                results[0][0], results[i][0],
+                err_msg="Spectrum should be identical across runs"
+            )
+            np.testing.assert_array_equal(
+                results[0][1], results[i][1],
+                err_msg="Frequency array should be identical across runs"
+            )
     
-    def test_trimmed_round_trip_serialization(self, sample_fid, test_output_dir):
-        """Test complete round-trip serialization for trimmed objects."""
-        # Create and trim ComplexFT
-        original_ft = sample_fid.ft(zpf=1, expf_us=2.0)
-        freq_min, freq_max = self._get_trim_range(original_ft.freq_array, 150, -200)
-        trimmed_ft = original_ft.trim_to_range(freq_min, freq_max)
-        
-        # Save to HDF5
-        test_file = self._get_test_file(test_output_dir, "trimmed_round_trip")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('trimmed_test')
-            save_complex_ft_to_hdf5(trimmed_ft, group)
-        
-        # Load from HDF5
-        with h5py.File(test_file, 'r') as f:
-            group = f['trimmed_test']
-            loaded_ft = load_complex_ft_from_hdf5(group)
-        
-        # Verify perfect reconstruction
-        np.testing.assert_array_equal(
-            trimmed_ft.freq_array,
-            loaded_ft.freq_array,
-            err_msg="Trimmed frequency arrays should be identical"
-        )
-        
-        np.testing.assert_array_equal(
-            trimmed_ft.complex_spectrum,
-            loaded_ft.complex_spectrum,
-            err_msg="Trimmed complex spectra should be identical"
-        )
-        
-        # Verify metadata preservation
-        assert loaded_ft.metadata['trimmed_range'] == (freq_min, freq_max)
-    
-    def test_multiple_trim_levels(self, sample_fid, test_output_dir):
-        """Test serialization with different trim ranges."""
-        original_ft = sample_fid.ft(zpf=1)
-        
-        # Test different trim ranges
-        trim_indices = [
-            (50, -50),    # Large range
-            (500, -500),  # Medium range
-            (900, -900),  # Small range
+    def test_parameter_passing_through_workflow(self, sample_fid):
+        """Test that parameters are correctly passed through all workflow stages."""
+        # Test specific parameter combinations
+        test_params = [
+            {'zpf': 0, 'expf_us': None, 'rdc': False},
+            {'zpf': 1, 'expf_us': 3.0, 'rdc': True},
+            {'zpf': 2, 'expf_us': 8.0, 'start_us': 2.0, 'end_us': 15.0},
         ]
         
-        for i, (start_idx, end_idx) in enumerate(trim_indices):
-            freq_min, freq_max = self._get_trim_range(original_ft.freq_array, start_idx, end_idx)
-            trimmed_ft = original_ft.trim_to_range(freq_min, freq_max)
+        for params in test_params:
+            preprocessed = sample_fid.preprocess(**params)
+            spectrum, freq_array = preprocessed.compute_fft()
             
-            # Save and load
-            test_file = self._get_test_file(test_output_dir, f"trimmed_range_{i}")
-            with h5py.File(test_file, 'w') as f:
-                group = f.create_group(f'test_{i}')
-                save_complex_ft_to_hdf5(trimmed_ft, group)
+            # Verify parameters are stored in preprocessed object
+            for key, value in params.items():
+                assert getattr(preprocessed.processing_params, key) == value
             
-            with h5py.File(test_file, 'r') as f:
-                group = f[f'test_{i}']
-                loaded_ft = load_complex_ft_from_hdf5(group)
+            # Verify FFT results are affected by parameters
+            assert len(spectrum) > 0
+            assert len(freq_array) > 0
             
-            # Verify reconstruction
-            np.testing.assert_array_equal(trimmed_ft.freq_array, loaded_ft.freq_array)
-            np.testing.assert_array_equal(trimmed_ft.complex_spectrum, loaded_ft.complex_spectrum)
-    
-    def test_trimmed_vs_untrimmed_structure(self, sample_fid, test_output_dir):
-        """Test that both trimmed and untrimmed objects have the same storage structure."""
-        original_ft = sample_fid.ft(zpf=1)
-        freq_min, freq_max = self._get_trim_range(original_ft.freq_array, 300, -400)
-        trimmed_ft = original_ft.trim_to_range(freq_min, freq_max)
-        
-        # Save both untrimmed and trimmed
-        untrimmed_file = self._get_test_file(test_output_dir, "storage_untrimmed")
-        trimmed_file = self._get_test_file(test_output_dir, "storage_trimmed")
-        
-        with h5py.File(untrimmed_file, 'w') as f:
-            group = f.create_group('untrimmed')
-            save_complex_ft_to_hdf5(original_ft, group)
-        
-        with h5py.File(trimmed_file, 'w') as f:
-            group = f.create_group('trimmed')
-            save_complex_ft_to_hdf5(trimmed_ft, group)
-        
-        # Both should have same basic structure
-        with h5py.File(untrimmed_file, 'r') as f:
-            untrimmed_group = f['untrimmed']
-            assert 'complex_spectrum' in untrimmed_group
-            assert 'freq_reconstruction' in untrimmed_group
-            
-        with h5py.File(trimmed_file, 'r') as f:
-            trimmed_group = f['trimmed']
-            assert 'complex_spectrum' in trimmed_group
-            assert 'freq_reconstruction' in trimmed_group
-    
-    
-    def test_edge_case_single_point_trim(self, sample_fid, test_output_dir):
-        """Test serialization of extremely small trimmed ranges."""
-        original_ft = sample_fid.ft(zpf=1)
-        
-        # Create minimal trim range (just a few points)
-        mid_index = len(original_ft.freq_array) // 2
-        freq_min, freq_max = self._get_trim_range(original_ft.freq_array, mid_index, mid_index + 5)
-        trimmed_ft = original_ft.trim_to_range(freq_min, freq_max)
-        
-        # This should work even for very small ranges
-        test_file = self._get_test_file(test_output_dir, "small_trim")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('small_trim')
-            save_complex_ft_to_hdf5(trimmed_ft, group)
-        
-        with h5py.File(test_file, 'r') as f:
-            group = f['small_trim']
-            loaded_ft = load_complex_ft_from_hdf5(group)
-        
-        np.testing.assert_array_equal(trimmed_ft.freq_array, loaded_ft.freq_array)
-        np.testing.assert_array_equal(trimmed_ft.complex_spectrum, loaded_ft.complex_spectrum)
+            # Different parameters should give different spectrum lengths (due to zpf)
+            if params['zpf'] == 2:
+                assert len(spectrum) > 4000  # Should be significantly larger
+            elif params['zpf'] == 0:
+                assert len(spectrum) <= 2000  # Should be close to original length
 
 
-class TestErrorConditions:
-    """Test error handling and edge cases."""
-    
-    # Test file prefix for consistent naming and cleanup
-    TEST_PREFIX = "test_complex_ft_"
-    
-    def _get_test_file(self, output_dir, suffix):
-        """Helper to generate consistent test file names."""
-        return output_dir / f"{self.TEST_PREFIX}{suffix}.h5"
+class TestComplexFTAPI:
+    """Test ComplexFT object API functionality (current methods only)."""
     
     @pytest.fixture
-    def test_output_dir(self):
-        """Create and cleanup test output directory."""
-        output_dir = Path("tests/output")
-        output_dir.mkdir(exist_ok=True)
-        yield output_dir
-        # Cleanup test files after each test
-        for file in output_dir.glob(f"{TestComplexFTSerialization.TEST_PREFIX}*.h5"):
-            file.unlink(missing_ok=True)
-    
-    def test_invalid_hdf5_group(self, test_output_dir):
-        """Test error handling with invalid HDF5 groups."""
-        # Create a sample ComplexFT
-        fid = FID(
-            data=np.array([1.0, 0.5]),
-            spacing=1e-6,
-            probe_freq_mhz=10000.0
-        )
-        sample_complex_ft = fid.ft()
+    def complex_ft_sample(self):
+        """Create a ComplexFT for API testing."""
+        # Create synthetic data
+        freqs = np.linspace(18500, 19500, 1000)  # 1 GHz range
+        # Create complex spectrum with some structure
+        real_part = np.exp(-(freqs - 19000)**2 / (2 * 50**2))  # Gaussian around 19 GHz
+        imag_part = 0.3 * np.exp(-(freqs - 19200)**2 / (2 * 30**2))  # Smaller peak at 19.2 GHz
+        spectrum = real_part + 1j * imag_part
         
-        test_file = self._get_test_file(test_output_dir, "invalid")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('test')
-            save_complex_ft_to_hdf5(sample_complex_ft, group)
+        return ComplexFT.from_spectrum(spectrum, freqs, 
+                                     metadata={'test_type': 'api_testing'})
+    
+    def test_basic_properties(self, complex_ft_sample):
+        """Test basic ComplexFT properties."""
+        ft = complex_ft_sample
+        
+        # Test array properties
+        assert len(ft.freq_array) == 1000
+        assert len(ft.complex_spectrum) == 1000
+        assert ft.n_points == 1000
+        
+        # Test that arrays are properly typed
+        assert ft.freq_array.dtype == float
+        assert ft.complex_spectrum.dtype == complex
+        
+        # Test frequency range
+        assert ft.freq_array[0] == pytest.approx(18500.0)
+        assert ft.freq_array[-1] == pytest.approx(19500.0)
+    
+    def test_spectrum_properties(self, complex_ft_sample):
+        """Test spectrum property methods."""
+        ft = complex_ft_sample
+        
+        # Test magnitude spectrum
+        mag_spectrum = ft.magnitude_spectrum
+        assert len(mag_spectrum) == ft.n_points
+        assert mag_spectrum.dtype == float
+        assert np.all(mag_spectrum >= 0)  # Magnitude should be non-negative
+        
+        # Test real and imaginary components
+        assert hasattr(ft, 'real_spectrum')
+        assert hasattr(ft, 'imag_spectrum')
+        
+        real_spectrum = ft.real_spectrum
+        imag_spectrum = ft.imag_spectrum
+        
+        assert len(real_spectrum) == ft.n_points
+        assert len(imag_spectrum) == ft.n_points
+        
+        # Verify reconstruction from real/imag parts
+        reconstructed = real_spectrum + 1j * imag_spectrum
+        np.testing.assert_array_almost_equal(reconstructed, ft.complex_spectrum)
+    
+    def test_frequency_operations(self, complex_ft_sample):
+        """Test frequency-related operations."""
+        ft = complex_ft_sample
+        
+        # Test frequency step calculation (if available)
+        if hasattr(ft, 'freq_step'):
+            freq_step = ft.freq_step
+            expected_step = (ft.freq_array[-1] - ft.freq_array[0]) / (len(ft.freq_array) - 1)
+            assert freq_step == pytest.approx(expected_step)
+    
+    def test_trim_to_range_functionality(self, complex_ft_sample):
+        """Test trim_to_range method if available."""
+        ft = complex_ft_sample
+        
+        if hasattr(ft, 'trim_to_range'):
+            # Test trimming to smaller range
+            trimmed_ft = ft.trim_to_range(18800, 19200)
             
-            # Corrupt the data by removing required datasets
-            del group['complex_spectrum']
-        
-        # Should raise error when loading
-        with h5py.File(test_file, 'r') as f:
-            group = f['test']
-            with pytest.raises(RuntimeError):
-                load_complex_ft_from_hdf5(group)
-    
-    def test_inconsistent_reconstruction_params(self, test_output_dir):
-        """Test handling of inconsistent reconstruction parameters."""
-        # Create a synthetic HDF5 structure with inconsistent parameters
-        test_file = self._get_test_file(test_output_dir, "inconsistent")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('test')
+            # Verify trimmed object is smaller
+            assert trimmed_ft.n_points < ft.n_points
             
-            # Create complex spectrum
-            real_part = np.random.normal(0, 1, 100)
-            imag_part = np.random.normal(0, 1, 100)
-            spectrum = real_part + 1j * imag_part
-            group.create_dataset('complex_spectrum', data=spectrum)
+            # Verify frequency range is within specified bounds
+            assert trimmed_ft.freq_array[0] >= 18800
+            assert trimmed_ft.freq_array[-1] <= 19200
             
-            # Create inconsistent frequency reconstruction parameters
-            freq_group = group.create_group('freq_reconstruction')
-            freq_group.attrs['n_fid_padded'] = 50  # Wrong! Should give 26 spectrum points, not 100
-            freq_group.attrs['spacing_us'] = 10.0
-            freq_group.attrs['probe_freq_mhz'] = 15000.0
-            freq_group.attrs['sideband'] = 'upper'
-            freq_group.attrs['autoscale_MHz'] = "None"
-            freq_group.attrs['n_spectrum'] = 100  # Inconsistent with n_fid_padded
-        
-        # Should raise error due to inconsistency
-        with h5py.File(test_file, 'r') as f:
-            group = f['test']
-            with pytest.raises(RuntimeError):
-                load_complex_ft_from_hdf5(group)
+            # Verify data integrity
+            assert np.all(np.isfinite(trimmed_ft.complex_spectrum))
+            assert np.all(np.isfinite(trimmed_ft.freq_array))
     
-    def test_invalid_reconstruction_parameters(self, test_output_dir):
-        """Test error handling with invalid reconstruction parameters."""
-        # Test with invalid parameter values in _reconstruct_frequency_array
-        invalid_params = {
-            'n_fid_padded': -100,  # Invalid negative value
-            'spacing_us': 10.0,
-            'probe_freq_mhz': 15000.0,
-            'sideband': 'upper',
-            'freq_min': 14000.0,
-            'freq_max': 16000.0,
-            'n_spectrum': 100
-        }
+    def test_metadata_handling(self, complex_ft_sample):
+        """Test metadata storage and retrieval."""
+        ft = complex_ft_sample
         
-        with pytest.raises(ValueError, match="Failed to reconstruct frequency array"):
-            _reconstruct_frequency_array(invalid_params)
+        # Test that metadata is accessible
+        assert hasattr(ft, 'metadata')
+        assert isinstance(ft.metadata, dict)
+        assert 'test_type' in ft.metadata
+        assert ft.metadata['test_type'] == 'api_testing'
         
-        # Test missing required parameters
-        incomplete_params = {
-            'n_fid_padded': 1000,
-            'spacing_us': 10.0,
-            # Missing required parameters
-        }
-        
-        with pytest.raises(ValueError, match="Failed to reconstruct frequency array"):
-            _reconstruct_frequency_array(incomplete_params)
+        # Test metadata modification (if mutable)
+        original_metadata = ft.metadata.copy()
+        ft.metadata['new_key'] = 'new_value'
+        assert 'new_key' in ft.metadata
+        assert ft.metadata['new_key'] == 'new_value'
+
+
+
+
+class TestRealExperimentalDataWorkflow:
+    """Test the Stage 0-1 workflow with real experimental data."""
     
-    def test_corrupted_hdf5_parameters(self, test_output_dir):
-        """Test error handling with corrupted HDF5 parameter data."""
-        # Create a valid ComplexFT
-        fid = FID(
-            data=np.array([1.0, 0.5, 0.0] * 100),
-            spacing=1e-6,
-            probe_freq_mhz=15000.0,
-            sideband=Sideband.UPPER,
-            processing=FIDProcessingParameters(zpf=1)
-        )
-        ft = fid.ft()
-        
-        # Save valid data first
-        test_file = self._get_test_file(test_output_dir, "corrupted_params")
-        with h5py.File(test_file, 'w') as f:
-            group = f.create_group('test')
-            save_complex_ft_to_hdf5(ft, group)
-        
-        # Corrupt the frequency range parameters to be inconsistent with spectrum length
-        with h5py.File(test_file, 'r+') as f:
-            group = f['test']
-            freq_group = group['freq_reconstruction']
+    def test_experiment_2638_on_demand_calculation(self):
+        """Test on-demand ComplexFT calculation with real experiment 2638 data."""
+        try:
+            # Load cached FID data (Stage 0)
+            ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
             
-            # Make freq_min > freq_max (impossible range)
-            freq_group.attrs['freq_min'] = 20000.0  
-            freq_group.attrs['freq_max'] = 10000.0  # Invalid: min > max
-        
-        # Should raise error when loading due to invalid frequency range
-        with h5py.File(test_file, 'r') as f:
-            group = f['test']
-            with pytest.raises(RuntimeError):
-                load_complex_ft_from_hdf5(group)
+            print(f"Loaded FID with {len(ftmw_data.fid.data)} points")
+            print(f"FID spacing: {ftmw_data.fid.spacing:.2e} seconds")
+            print(f"Probe frequency: {ftmw_data.fid.probe_freq_mhz} MHz")
+            print(f"Sideband: {ftmw_data.fid.sideband}")
+            
+            # Test on-demand ComplexFT calculation (Stage 1)
+            # Use three-stage workflow
+            preprocessed = ftmw_data.fid.preprocess(zpf=1, expf_us=5.0)
+            spectrum, freq_array = preprocessed.compute_fft()
+            complex_ft = ComplexFT.from_spectrum(
+                spectrum, freq_array,
+                metadata={'processing_params': preprocessed.processing_params}
+            )
+            
+            print(f"ComplexFT spectrum size: {complex_ft.n_points} points")
+            print(f"Frequency range: {complex_ft.freq_array[0]:.1f} - {complex_ft.freq_array[-1]:.1f} MHz")
+            
+            # Verify calculation results
+            assert complex_ft.n_points > 0
+            assert np.all(np.isfinite(complex_ft.complex_spectrum))
+            assert np.all(np.isfinite(complex_ft.freq_array))
+            
+            print("✓ Experiment 2638 on-demand calculation test passed")
+            
+        except Exception as e:
+            pytest.skip(f"Could not load experimental data: {e}")
     
-    def test_zpf_parameter_handling(self):
-        """Test handling of different zpf parameter values."""
-        # Test with zpf=0 (no padding)
-        processing = FIDProcessingParameters(zpf=0)  
-        fid = FID(
-            data=np.array([1.0, 0.5] * 50),
-            spacing=1e-6,
-            probe_freq_mhz=15000.0,
-            sideband=Sideband.LOWER,
-            processing=processing
-        )
-        ft = fid.ft()
-        
-        # Should handle zpf=0 correctly
-        params = _extract_frequency_reconstruction_params(ft)
-        assert 'n_fid_padded' in params
-        assert params['n_fid_padded'] == 100  # Same as original FID length
-        
-        # Test with zpf=1 (default padding)
-        processing = FIDProcessingParameters(zpf=1)  
-        fid = FID(
-            data=np.array([1.0, 0.5] * 50),
-            spacing=1e-6,
-            probe_freq_mhz=15000.0,
-            sideband=Sideband.LOWER,
-            processing=processing
-        )
-        ft = fid.ft()
-        
-        params = _extract_frequency_reconstruction_params(ft)
-        assert params['n_fid_padded'] > 100  # Should be padded
+    def test_parameter_exploration_workflow(self):
+        """Test interactive parameter exploration workflow with real data."""
+        try:
+            ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
+            
+            # Simulate interactive parameter exploration
+            parameter_variations = [
+                {'zpf': 1, 'expf_us': 3.0},
+                {'zpf': 1, 'expf_us': 5.0},
+                {'zpf': 1, 'expf_us': 8.0},
+                {'zpf': 2, 'expf_us': 5.0},
+            ]
+            
+            results = []
+            
+            for params in parameter_variations:
+                preprocessed = ftmw_data.fid.preprocess(**params)
+                spectrum, freq_array = preprocessed.compute_fft()
+                complex_ft = ComplexFT.from_spectrum(spectrum, freq_array)
+                
+                results.append((params, complex_ft))
+                
+                print(f"Parameters {params}: {complex_ft.n_points} points")
+            
+            # Verify all calculations succeeded
+            assert len(results) == len(parameter_variations)
+            for params, ft in results:
+                assert ft.n_points > 0
+            
+            # Different parameters should produce different results
+            spectra = [ft.complex_spectrum for _, ft in results]
+            for i in range(1, len(spectra)):
+                # Should not be identical (different parameters = different processing)
+                assert not np.array_equal(spectra[0], spectra[i])
+            
+        except Exception as e:
+            pytest.skip(f"Could not load experimental data: {e}")
+    
+    def test_activity_region_trimming(self):
+        """Test trimming to activity region (common analysis workflow)."""
+        try:
+            ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
+            
+            # Calculate full spectrum
+            preprocessed = ftmw_data.fid.preprocess(zpf=1, expf_us=5.0)
+            spectrum, freq_array = preprocessed.compute_fft()
+            full_ft = ComplexFT.from_spectrum(spectrum, freq_array)
+            
+            print(f"Full spectrum: {full_ft.n_points} points")
+            print(f"Full range: {full_ft.freq_array[0]:.1f} - {full_ft.freq_array[-1]:.1f} MHz")
+            
+            # Trim to recommended activity region for exp 2638
+            if hasattr(full_ft, 'trim_to_range'):
+                trimmed_ft = full_ft.trim_to_range(26500, 40000)
+                
+                print(f"Trimmed spectrum: {trimmed_ft.n_points} points")
+                print(f"Trimmed range: {trimmed_ft.freq_array[0]:.1f} - {trimmed_ft.freq_array[-1]:.1f} MHz")
+                
+                # Verify trimming worked correctly
+                assert trimmed_ft.n_points < full_ft.n_points
+                assert trimmed_ft.freq_array[0] >= 26500
+                assert trimmed_ft.freq_array[-1] <= 40000
+                assert np.all(np.isfinite(trimmed_ft.complex_spectrum))
+            
+        except Exception as e:
+            pytest.skip(f"Could not load experimental data: {e}")

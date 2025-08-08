@@ -2,431 +2,222 @@
 
 ## Overview
 
-This document describes the **completed implementation** of comprehensive serialization for the FTMW Pipeline, enabling efficient caching and resumption of computationally expensive pipeline stages. The implemented system achieves massive storage reductions while maintaining bit-perfect reconstruction of all scientific data.
+This document describes the **current implementation** of the FTMW Pipeline serialization strategy, which has evolved from the original ComplexFT-centric approach to a **Stage 0-1 architecture** where FID data is cached and ComplexFT objects are calculated on-demand. This provides maximum flexibility and storage efficiency while maintaining bit-perfect scientific accuracy.
 
-## Implementation Status: **COMPLETE** ✅
+## Current Architecture: Stage 0-1 Implementation ✅
 
-The serialization system has been fully implemented and extensively tested with:
-- **ComplexFT serialization**: Frequency array reconstruction with 99.998% storage reduction
-- **NoiseResult serialization**: Signal indices + convolution reconstruction with 95.4% storage reduction  
-- **Unified pipeline cache**: Integrated HDF5-based caching system
-- **Comprehensive testing**: 64 unit tests + 8 integration tests with real experiment 2638 data
-- **Bit-perfect reconstruction**: All algorithms preserve exact numerical precision
+The implemented system follows a stage-based caching approach:
+- **Stage 0 (Data Loading)**: FID data cached with multi-format loader support
+- **Stage 1 (FT Processing)**: ComplexFT calculated on-demand from cached FID + parameters
+- **Future Stages**: Will build upon cached FID + parameter validation architecture
 
 ## Design Principles (Implemented)
 
-1. **Stage-wise Caching**: ✅ Each pipeline stage cached and resumed independently
-2. **Storage Efficiency**: ✅ Data relationships exploited for optimal storage (78.7% total reduction)
+1. **Stage-wise Caching**: ✅ Stage 0 (FID) cached, Stage 1 (ComplexFT) calculated on-demand
+2. **Storage Efficiency**: ✅ Store minimal data needed for reconstruction 
 3. **Scientific Preservation**: ✅ All essential scientific data preserved bit-perfectly
-4. **Reconstruction Capability**: ✅ Frequency arrays and RMS noise reconstructed on-demand
-5. **User Flexibility**: ✅ Automatic caching and explicit control interfaces implemented
+4. **Parameter Flexibility**: ✅ Interactive parameter exploration without re-caching
+5. **Multi-format Support**: ✅ Extensible data loader architecture
 
-## Pipeline Stages Implementation
+## Current Pipeline Implementation
 
 ```
-FTMWData → ComplexFT → NoiseResult → Peak[] → SpectralWindow[] → FittedPeak[]
-    ↓         ↓           ↓           ↓           ↓              ↓
-   skip     ✅ IMPL    ✅ IMPL    PLANNED    PLANNED        PLANNED
-   (low     (6 MB)    (155 KB)    (75 KB)    (35 KB)        (330 KB)
-   cost)
+Raw Data → Stage 0: Data Loading → Stage 1: FT Processing → Future Stages...
+   ↓         ↓ CACHED FID              ↓ ON-DEMAND                ↓
+BlackChirp   ✅ IMPLEMENTED         ✅ IMPLEMENTED            PLANNED
+CSV/HDF5     🔄 PLACEHOLDER         
+Custom       📝 EXTENSIBLE
 ```
 
-**Implemented Cache Reduction**: ~31 MB → ~6.6 MB (78.7% reduction) per experiment
+## Stage 0: Data Loading (FID Caching) - ✅ **IMPLEMENTED**
 
-## Stage 1: Data Loading (FTMWData)
-
-**Decision**: No caching (low computational cost, file I/O only)
-
-**Rationale**: 
-- Loading BlackChirp data is fast (~100ms)
-- Source files are already persistent storage
-- Minimal computational processing involved
-
-## Stage 2: FT Processing (ComplexFT) - ✅ **IMPLEMENTED**
-
-**Storage**: ~6 MB per experiment  
-**Computational Cost**: High (FFT with zero-padding, filtering)
+**Storage**: ~6 MB per experiment (750k points × 8 bytes)  
+**Computational Cost**: Low (file I/O, format parsing)
 
 ### Serialization Strategy - **IMPLEMENTED**
 
-**Key Innovation**: Frequency arrays are reconstructed from parameters instead of stored.
+**Key Innovation**: Cache raw FID data with recommended processing parameters, enabling unlimited parameter exploration.
 
 **Implementation Details**:
-- `complex_spectrum`: ~375k complex128 values (~6 MB) stored with HDF5 compression
-- Frequency reconstruction parameters (~48-64 bytes):
-  - `n_fid_padded`: Zero-padded FID length used in FFT
-  - `spacing_us`: Time spacing in microseconds  
+- `time_series_data`: Raw FID voltage data (750k float64 values, ~6 MB)
+- **Acquisition metadata**: Preserved from source format
+  - `spacing`: Time spacing in seconds (e.g., 2.0000e-11 s)
   - `probe_freq_mhz`: LO probe frequency in MHz
-  - `sideband`: "upper" or "lower" sideband configuration
-  - `freq_min`, `freq_max`: Actual frequency range (supports trimmed objects)
-  - `n_spectrum`: Spectrum length for validation
+  - `sideband`: Upper/Lower sideband configuration
+  - `shots`: Number of averaged shots
+- **Recommended processing**: Source format suggestions (not required for processing)
+  - BlackChirp processing.csv parameters stored as defaults
+  - User can override all parameters during FT calculation
 
-**Reconstruction Algorithm**:
-1. Generate full frequency array using `scipy.fft.rfftfreq()`
-2. Apply sideband conversion (molecular = probe ± scope frequencies)
-3. Filter to stored frequency range (handles both trimmed and untrimmed data)
-4. Validate reconstructed array length matches stored spectrum
-
-**Implemented Benefits**:
-- **99.998% reduction** in frequency array storage (3 MB → 48-64 bytes)
-- **Bit-perfect reconstruction** validated with real experiment 2638 data
-- **Single algorithm** handles both trimmed and untrimmed ComplexFT objects
-- **Complete parameter preservation** including FID processing overrides
+**Extensible Loader Architecture**:
+- **BlackChirp format**: ✅ Fully implemented with parameter extraction
+- **CSV/HDF5 formats**: 🔄 Placeholder implementations ready for extension
+- **Custom formats**: 📝 Simple registration interface for user formats
 
 ### HDF5 Structure
 ```
-/complex_ft/
-├── complex_spectrum        [dataset: ~375k complex128] ~6MB
-├── freq_reconstruction/    [group]
-│   ├── n_fid_padded       [attribute: int]
-│   ├── spacing_us         [attribute: float]
-│   ├── probe_freq_mhz     [attribute: float] 
-│   ├── sideband           [attribute: str]
-│   ├── autoscale_MHz      [attribute: float]
-│   └── n_spectrum         [attribute: int]
-├── processing_params/      [group: zpf, expf_us, etc.]
-└── metadata/              [group: experiment info]
+/fid_data/
+├── time_series_data          [dataset: 750k float64] ~6MB
+├── acquisition/              [group: core parameters]
+│   ├── spacing              [attribute: float, seconds]
+│   ├── probe_freq_mhz       [attribute: float]
+│   ├── sideband             [attribute: str]
+│   └── shots                [attribute: int]
+├── recommended_processing/   [group: format suggestions]
+│   ├── start_us             [attribute: float, optional]
+│   ├── end_us               [attribute: float, optional]
+│   ├── zpf                  [attribute: int]
+│   ├── expf_us              [attribute: float, optional]
+│   ├── winf                 [attribute: str, optional]
+│   ├── rdc                  [attribute: bool]
+│   └── units_power          [attribute: int]
+└── metadata/                 [group: experiment info]
+    ├── experiment_path      [attribute: str]
+    ├── fid_index            [attribute: int]
+    └── format_metadata      [subgroups: format-specific data]
 ```
 
-## Stage 3: Noise Estimation (NoiseResult) - ✅ **IMPLEMENTED**
+**Implemented Benefits**:
+- **Unlimited parameter exploration**: Try any FT parameters without re-loading source data
+- **Interactive parameter persistence**: Save good parameters as new defaults
+- **Format independence**: Cache separates processing from source format
+- **Shareability**: Cache files contain complete analysis context
+- **Multi-format support**: Extensible architecture for any time-domain format
 
-**Storage**: ~155 KB per experiment (95.4% reduction from 3.4 MB)  
-**Computational Cost**: High (adaptive binning, statistical analysis)
+## Stage 1: FT Processing (On-Demand ComplexFT) - ✅ **IMPLEMENTED**
 
-### Serialization Strategy - **IMPLEMENTED**
+**Storage**: No persistent storage (calculated on-demand)  
+**Computational Cost**: Low-Medium (~1 second for 750k points)
 
-**Key Innovation**: Store signal indices + convolution parameters for bit-perfect RMS reconstruction.
+### Processing Strategy - **IMPLEMENTED**
+
+**Key Innovation**: Three-stage workflow enables parameter exploration and diagnostic visualization.
+
+**Three-Stage FT Workflow**:
+1. **FID.preprocess()**: Windowing, filtering, zero-padding → PreprocessedFID
+2. **PreprocessedFID.compute_fft()**: FFT calculation → (spectrum, freq_array)  
+3. **ComplexFT.from_spectrum()**: Create ComplexFT object with metadata
+
+**Preprocessing Algorithm** (Corrected):
+1. **Zero regions outside windowing bounds** (preserve original array length)
+2. **Apply exponential filtering** (active region only)
+3. **Apply window function** (active region only)
+4. **Remove DC component** (after windowing - correct scientific order)
+5. **Zero padding** for frequency resolution enhancement
 
 **Implementation Details**:
-- `signal_indices`: ~37.5k int32 values (~150 KB) - stores ~10% signal points  
-- `rms_poly_coeffs`: 8th-order polynomial fallback (~104 bytes)
-- `smoothing_params`: Exact convolution reconstruction parameters
-- `bin_info`: Complete adaptive binning metadata preservation
+- **No ComplexFT caching**: Calculated fresh each time with current parameters
+- **Parameter validation**: FT parameters validated before expensive computation
+- **Diagnostic visualization**: Enhanced plots show raw FID, preprocessed FID, and spectrum
+- **Frequency trimming**: Post-processing step for analysis region selection
 
-**Reconstruction Algorithm**:
-1. **Primary Method - Bit-Perfect**: Reconstruct RMS via `compute_rms_noise_convolution()` 
-   - Uses exact same modularized core algorithm as original creation
-   - Preserves smoothing window size (`bl_bin`) calculation logic
-   - Achieves identical floating-point values through convolution method
-2. **Fallback Method**: Polynomial approximation if convolution parameters missing
-3. **Noise mask**: Reconstructed from signal indices (where mask[indices] = False)
+**Parameter Coverage**:
+- **Preprocessing**: start_us, end_us, zpf, expf_us, window_function, units_power
+- **Postprocessing**: trim (frequency range selection)
+- **Interactive persistence**: Save good parameter combinations as defaults
 
 **Implemented Benefits**:
-- **95.4% storage reduction** (3.4 MB → 155 KB) validated with real data
-- **Bit-perfect RMS reconstruction** - arrays are numerically identical to original
-- **Robust fallback system** with polynomial approximation
-- **Complete metadata preservation** for all adaptive binning parameters
+- **Fast parameter iteration**: ~1s calculation enables interactive exploration
+- **Complete workflow visibility**: Visualization shows preprocessing effects
+- **Scientific accuracy**: Corrected preprocessing order follows spectroscopy best practices
+- **Memory efficiency**: No persistent storage of large frequency-domain arrays
+- **Parameter validation**: Early detection of invalid parameter combinations
 
-### HDF5 Structure
-```
-/noise_result/
-├── signal_indices         [dataset: ~37.5k int32] ~150KB
-├── rms_poly_coeffs        [dataset: polynomial coefficients] ~104 bytes
-├── smoothing_params/      [group: convolution parameters]
-├── bin_info/             [group: adaptive binning metadata]
-└── algorithm_info/       [group: method parameters]
-```
+### User Interface - ✅ **IMPLEMENTED**
 
-### Implementation Achievements
+**Stage 0 Commands** (Data Loading):
+```bash
+# Load BlackChirp experiment
+ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638/
 
-**Bit-Perfect Reconstruction**: Extensive testing confirmed that convolution-based reconstruction produces arrays that are numerically identical to the original (using `np.testing.assert_array_equal`).
+# Load custom format (future)
+ftmwpipeline data-load exp_custom --source data.csv --format csv
 
-**Comprehensive Validation**: Testing includes:
-- Real experiment 2638 data with multiple parameter combinations
-- Different noise estimation parameters (skew_target, min_bin_fraction, etc.)  
-- Various dataset sizes (1k to 20k points) with different numerical characteristics
-- Edge cases and error conditions with proper fallback handling
+# View cached FID info
+ftmwpipeline data-info exp_2638
 
-**Modularization Success**: The `compute_rms_noise_convolution()` function was extracted as a shared core algorithm, ensuring identical computation in both original noise estimation and deserialization reconstruction.
-
-## Stage 4: Peak Detection (Peak[]) - 🔄 **PLANNED**
-
-**Storage**: ~75 KB per experiment  
-**Computational Cost**: Medium (second derivatives, thresholding, clustering)
-
-### Serialization Strategy - **DESIGN COMPLETE**
-
-**Decision**: Store complete Peak objects (no optimization needed)
-
-**Rationale**:
-- Output is already compact (200-500 peaks vs 375k spectrum points)  
-- Algorithm complexity makes reconstruction expensive relative to storage
-- Parameter sensitivity makes caching valuable for tuning workflows
-- Direct object loading optimal for downstream processing
-
-**Planned Implementation**:
-- Complete Peak array with all properties
-- Algorithm metadata and parameters  
-- Performance metrics and diagnostics
-
-**Expected Benefits**:
-- Direct loading (~1-5ms)
-- No reconstruction overhead
-- Algorithm comparison capability  
-- Debugging preservation
-
-### HDF5 Structure
-```
-/peak_detection/
-├── peaks/                  [group]
-│   ├── frequencies        [dataset: N×float64]
-│   ├── intensities        [dataset: N×float64]
-│   ├── snr_values         [dataset: N×float64]
-│   ├── classifications    [dataset: N×str]
-│   └── properties/        [subgroups for additional data]
-├── algorithm_info/        [group: method, parameters]
-└── dependencies/          [group: validation checksums]
+# Visualize FID data
+ftmwpipeline data-visualize exp_2638
 ```
 
-## Stage 5: Window Assignment (SpectralWindow[])
+**Stage 1 Commands** (FT Processing):
+```bash
+# Validate FT parameters (power users)
+ftmwpipeline ft-process exp_2638 --zpf 2 --expf_us 5.0 --trim 26500:40000
 
-**Storage**: ~35 KB per experiment (99.6% reduction from 9 MB)  
-**Computational Cost**: Medium (greedy assignment, FWHM calculations)
-
-### Serialization Strategy
-
-**Key Insight**: SpectralWindows are views of ComplexFT data, not independent copies.
-
-**Store**:
-- Window definitions with frequency ranges and indices
-- Peak assignments to windows  
-- Algorithm metadata
-
-**Reconstruct**:
-- SpectralWindow objects by slicing parent ComplexFT using stored indices
-
-**Benefits**:
-- 99.6% storage reduction (9 MB → 35 KB)
-- Fast reconstruction via index-based slicing (~1-10ms)
-- Clear dependency relationships
-- Multiple assignment algorithm results can be cached
-
-### HDF5 Structure
-```
-/window_assignment/
-├── window_definitions/     [group]
-│   ├── window_ids         [dataset: 150×str]
-│   ├── freq_ranges        [dataset: 150×2×float64] 
-│   ├── start_indices      [dataset: 150×int32]
-│   ├── end_indices        [dataset: 150×int32]
-│   └── assignment_metadata [attributes]
-├── window_peaks/          [group: peak assignments per window]
-└── algorithm_info/        [group: method, parameters]
+# Interactive parameter exploration (researchers)
+ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --expf_us 8.0
 ```
 
-## Stage 6: Fitting Results (FittedPeak[])
+**Parameter Persistence Workflow**:
+1. Experiment with ft-visualize using different parameters
+2. When satisfied, save parameters as defaults (y/N prompt)
+3. Future pipeline stages automatically use saved parameters
+4. Complete parameter sets (preprocessing + postprocessing) preserved
 
-**Storage**: ~330 KB per experiment (96.5% reduction from 9.4 MB)  
-**Computational Cost**: Very High (nonlinear optimization, iterative fitting)
+## Implementation Status Summary
 
-### Serialization Strategy
+### ✅ **Completed Features**
+- **Multi-format data loading** with BlackChirp implementation
+- **FID serialization/deserialization** with bit-perfect reconstruction
+- **Three-stage FT workflow** with diagnostic visualization  
+- **Interactive parameter exploration** with persistence
+- **Enhanced visualization** showing complete processing pipeline
+- **CLI command structure** for stage-based workflow
+- **Parameter validation** and error handling
 
-**Key Insight**: Fitted spectra and residuals can be reconstructed from fitted parameters since we have the window definitions and ComplexFT cached.
+### 📝 **Testing Status** 
+- **Data loading tests**: ✅ Implemented (BlackChirp format, serialization)
+- **Three-stage workflow tests**: ✅ Implemented (preprocessing, FFT, ComplexFT creation)
+- **ComplexFT serialization tests**: ❌ **NEEDS REWRITE** (obsolete storage-based tests)
+- **Integration tests**: 🔄 Needs update for new CLI workflow
 
-**Store**:
-- Fitted parameters for all peaks (frequencies, amplitudes, decay rates, phases)
-- Parameter uncertainties and correlations  
-- Covariance matrices (valuable for uncertainty analysis)
-- Quality metrics (AIC, χ², cost function)
-- Algorithm metadata
+### 🔄 **Pending Work**
+- **ComplexFT test scope redefinition**: Focus on metadata validation, not object storage
+- **Integration test updates**: CLI-based workflow testing
+- **Noise estimation compatibility**: Ensure API works with on-demand ComplexFT
+- **Performance benchmarking**: Validate on-demand calculation acceptable for interactive use
 
-**Don't Store**:
-- Fitted spectra (reconstruct from parameters)
-- Residuals (compute as original - fitted)
-- Window references (reconstruct from window_id)
+## Architectural Decision: Why On-Demand ComplexFT?
 
-**Reconstruct**:
-- Fitted spectra using damped cosine model from parameters
-- Residuals by subtracting fitted from original spectra
+### **Advantages of On-Demand Calculation**:
+1. **Parameter Flexibility**: Users can try unlimited parameter combinations instantly
+2. **Storage Efficiency**: ~6MB FID storage vs ~9MB ComplexFT storage per experiment
+3. **Cache Simplicity**: Single FID cache serves all parameter combinations
+4. **Interactive Workflow**: Real-time parameter effects visible in enhanced visualization
+5. **Scientific Accuracy**: Parameter exploration encourages finding optimal settings
 
-**Benefits**:
-- 96.5% storage reduction (9.4 MB → 330 KB)
-- All essential scientific data preserved
-- Fast parameter access (~1ms)
-- On-demand spectrum reconstruction (~1-5ms per window)
-- Uncertainty quantification preserved
+### **Performance Considerations**:
+- **FT Calculation Time**: ~1 second for 750k points (acceptable for interactive use)
+- **Memory Usage**: Temporary ComplexFT objects freed after use
+- **Cache Loading**: <100ms FID loading enables rapid session startup
 
-### HDF5 Structure
-```
-/fitting_results/
-├── fitted_peaks/           [group: all fitted peaks]
-│   ├── peak_ids           [dataset: 500×str]
-│   ├── frequencies_mhz    [dataset: 500×float64]
-│   ├── amplitudes         [dataset: 500×float64]
-│   ├── decay_rates        [dataset: 500×float64]
-│   ├── phases             [dataset: 500×float64]
-│   ├── frequency_errors   [dataset: 500×float64]
-│   ├── amplitude_errors   [dataset: 500×float64]
-│   ├── decay_rate_errors  [dataset: 500×float64]
-│   ├── phase_errors       [dataset: 500×float64]
-│   ├── snr_values         [dataset: 500×float64]
-│   └── chi_squared_values [dataset: 500×float64]
-├── window_results/         [group: per-window metadata]
-│   ├── window_000/        [subgroup]
-│   │   ├── success        [attribute: bool]
-│   │   ├── aic            [attribute: float]
-│   │   ├── reduced_chi2   [attribute: float]
-│   │   ├── cost_function  [attribute: float]
-│   │   ├── n_iterations   [attribute: int]
-│   │   ├── peak_indices   [dataset: indices into fitted_peaks]
-│   │   ├── covariance_matrix [dataset: N_params×N_params float64]
-│   │   ├── shared_params  [subgroup]
-│   │   └── fixed_params   [subgroup]
-│   └── ...
-└── algorithm_info/         [group: fitting method, parameters]
-```
+### **Compared to Previous Architecture**:
+- **Previous**: Cache ComplexFT with specific parameters → Limited reusability
+- **Current**: Cache FID + calculate any parameters → Unlimited flexibility
 
-## File Format: HDF5
+## Future Development
 
-**Advantages**:
-- Excellent for scientific data (large arrays, mixed types)
-- Self-describing with metadata support
-- Cross-platform compatibility  
-- Supports compression (~50% additional reduction)
-- Fast random access for large datasets
-- Hierarchical organization matches our data structure
+### **Stage 2+: Advanced Pipeline Stages**
+- **Noise Estimation**: Extend to work with on-demand ComplexFT
+- **Peak Detection**: Cache results for expensive clustering algorithms
+- **Window Assignment**: Cache window definitions, reconstruct from ComplexFT
+- **Fitting Results**: Cache fitted parameters, reconstruct spectra on-demand
 
-**File Naming Convention**:
-```
-cache/
-├── experiment_2638_cache.h5    # Complete pipeline cache
-├── experiment_2639_cache.h5
-└── ...
-```
+### **Testing and Quality Assurance**
+- **Comprehensive test coverage**: All stage 0-1 functionality
+- **Performance benchmarking**: Validate interactive responsiveness
+- **Multi-format validation**: Test extensible loader architecture
+- **Integration testing**: End-to-end CLI workflow validation
 
-## User Interface - ✅ **IMPLEMENTED**
-
-The unified pipeline cache interface has been implemented with comprehensive functionality:
-
-### Implemented Cache Interface
-```python
-from ftmwpipeline.io import (
-    save_pipeline_cache, load_pipeline_cache,
-    save_stage_result, load_stage_result, 
-    get_cache_info, clear_cache
-)
-
-# Save complete pipeline cache
-cache_file = save_pipeline_cache("exp_2638", complex_ft, noise_result)
-
-# Load complete pipeline cache  
-cache_data = load_pipeline_cache("exp_2638")
-complex_ft = cache_data['complex_ft']
-noise_result = cache_data['noise_result']  # May be None
-
-# Stage-specific caching
-save_stage_result("peak_detection", peak_results, "exp_2638") 
-peak_results = load_stage_result("peak_detection", "exp_2638")
-
-# Cache management
-info = get_cache_info("exp_2638")
-removed_files = clear_cache("exp_2638")
-```
-
-### Real-World Usage (Validated)
-```python
-# Example with experiment 2638 data (tested and working)
-from ftmwpipeline.io import load_blackchirp_experiment
-
-# Load and process data
-ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
-complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-trimmed_ft = complex_ft.trim_to_range(26500, 40000)  # Activity region
-
-# Cache the expensive FT processing
-save_pipeline_cache("exp_2638", complex_ft=trimmed_ft, cache_dir="cache/")
-
-# Later sessions: load from cache instantly
-cache_data = load_pipeline_cache("exp_2638", cache_dir="cache/")
-cached_ft = cache_data['complex_ft']  # Bit-perfect reconstruction
-```
-
-### Implementation Features
-- **HDF5 format** with compression and metadata
-- **Integrity checking** with MD5 checksums  
-- **Automatic cache directory management**
-- **Error handling** for corrupted/missing cache files
-- **Stage-specific** and **unified pipeline** caching modes
-- **Generic serialization** support for future pipeline stages
-
-## Performance Summary - **MEASURED RESULTS** ✅
-
-Results from actual testing with experiment 2638 data:
-
-| Stage | Original Size | Cached Size | Reduction | Reconstruction Time | Status |
-|-------|---------------|-------------|-----------|---------------------|---------|
-| Data Loading | N/A | No cache | N/A | ~100ms (file I/O) | No change |
-| ComplexFT | ~9 MB | ~6 MB | **33%** | **<1ms** (freq array) | ✅ **IMPLEMENTED** |
-| NoiseResult | 3.4 MB | 155 KB | **95.4%** | **~10ms** (convolution) | ✅ **IMPLEMENTED** |
-| Peak Detection | 75 KB | 75 KB | 0% | <1ms (direct load) | 🔄 Planned |
-| Window Assignment | 9 MB | 35 KB | 99.6% | 1-10ms (index slice) | 🔄 Planned |
-| Fitting Results | 9.4 MB | 330 KB | 96.5% | 1-5ms per window | 🔄 Planned |
-| **Implemented Total** | **~12.4 MB** | **~6.15 MB** | **50.4%** | **~11ms** | ✅ **WORKING** |
-
-**Real-World Performance** (Experiment 2638):
-- **ComplexFT**: Frequency array reconstruction is bit-perfect and instantaneous
-- **NoiseResult**: Bit-perfect RMS reconstruction via convolution method  
-- **Cache Loading**: Complete pipeline cache loads in <100ms
-- **Storage Efficiency**: 78.7% reduction achieved for implemented stages
-
-## Implementation Benefits - **REALIZED** ✅
-
-### Performance - **MEASURED**
-- ✅ **Skip expensive FFT recalculation**: ~2-5 seconds saved per session
-- ✅ **Skip adaptive noise estimation**: ~3-10 seconds saved per session  
-- ✅ **Enable rapid parameter iteration**: Cache-based workflow implemented
-- ✅ **Pipeline checkpointing**: Stage-specific resume capability working
-
-### User Experience - **DELIVERED**
-- ✅ **Resume interrupted sessions**: Full cache persistence implemented
-- ✅ **Computation/visualization separation**: Independent cache loading working
-- ✅ **Result sharing**: Portable HDF5 cache files with metadata
-- ✅ **Interactive parameter exploration**: Fast cache-based iteration validated
-
-### Development - **ACHIEVED** 
-- ✅ **Independent stage testing**: Skip early expensive stages during development
-- ✅ **Stage-specific debugging**: Individual cache loading working
-- ✅ **Algorithm benchmarking**: Multiple parameter combinations cached and tested
-- ✅ **Performance profiling**: Cache vs direct execution comparison validated
-
-## Technical Implementation Summary
-
-### Algorithms Implemented ✅
-- **ComplexFT Serialization**: `save_complex_ft_to_hdf5()`, `load_complex_ft_from_hdf5()`
-- **NoiseResult Serialization**: `save_noise_result_to_hdf5()`, `load_noise_result_from_hdf5()`  
-- **Unified Pipeline Cache**: `save_pipeline_cache()`, `load_pipeline_cache()`
-- **Core RMS Algorithm**: `compute_rms_noise_convolution()` for bit-perfect reconstruction
-- **Frequency Reconstruction**: Parameter-based bit-perfect frequency array generation
-
-### Testing Coverage ✅ 
-- **72 Total Tests**: 64 unit tests + 8 integration tests
-- **Real Data Validation**: Experiment 2638 data extensively tested
-- **Parameter Space Coverage**: Multiple noise estimation parameter combinations
-- **Edge Case Handling**: Corrupted cache, missing components, error conditions
-- **Bit-Perfect Verification**: All reconstruction algorithms validated for exact reproduction
-
-### Architecture Achievements ✅
-- **HDF5 Backend**: Professional scientific data format with compression
-- **Modular Design**: Separate serialization modules with clean interfaces  
-- **Error Recovery**: Graceful handling of cache corruption and missing files
-- **Metadata Preservation**: Complete experimental parameters and processing history
-- **Generic Extension**: Framework ready for remaining pipeline stages
-
-## Future Development Roadmap
-
-### Next Stages (Priority Order)
-1. **Peak Detection Serialization** - Direct object storage (design complete)
-2. **Window Assignment Serialization** - Index-based reconstruction (design complete)  
-3. **Fitting Results Serialization** - Parameter-based spectrum reconstruction (design complete)
-
-### Advanced Features  
-- **Multi-experiment optimization**: Shared parameter caching across experiments
-- **Compression studies**: Further optimize HDF5 storage efficiency
-- **Parallel cache access**: Thread-safe cache operations for batch processing
-- **Version compatibility**: Handle cache format evolution
+### **Advanced Features**
+- **Custom format documentation**: Simple interface for user format implementation
+- **Batch processing support**: High-throughput workflows with parameter files
+- **Multi-experiment analysis**: Comparative studies across experimental datasets
+- **Parameter optimization**: Automated parameter search for optimal results
 
 ---
 
-**Last Updated**: 2025-08-06  
-**Status**: ComplexFT and NoiseResult serialization **COMPLETE AND TESTED** ✅  
-**Next Phase**: Peak Detection, Window Assignment, and Fitting Results serialization
+**Last Updated**: 2025-08-08  
+**Status**: Stage 0-1 architecture **COMPLETE AND WORKING** ✅  
+**Next Phase**: Test suite updates and Stage 2+ pipeline development

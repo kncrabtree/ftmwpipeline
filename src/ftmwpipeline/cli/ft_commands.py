@@ -89,17 +89,20 @@ def cmd_ft_process(args) -> int:
         
         print(f"Loaded FID with {len(fid.data)} points from cache")
         
+        # Merge user parameters with cached recommended settings
+        cached_defaults = fid.processing
+        
         # Test FT processing to validate parameters and provide feedback
         print("Testing FT processing parameters...")
         try:
             # Stage 1: FID Preprocessing  
             preprocessed_fid = fid.preprocess(
-                start_us=getattr(args, 'start_us', None),
-                end_us=getattr(args, 'end_us', None), 
-                zpf=args.zpf, 
-                expf_us=args.expf_us,
-                window_function=getattr(args, 'window_function', None),
-                units_power=getattr(args, 'units_power', 6)
+                start_us=args.start_us if args.start_us is not None else cached_defaults.start_us,
+                end_us=args.end_us if args.end_us is not None else cached_defaults.end_us, 
+                zpf=args.zpf if args.zpf is not None else (cached_defaults.zpf if cached_defaults.zpf is not None else 1), 
+                expf_us=args.expf_us if args.expf_us is not None else (cached_defaults.expf_us if cached_defaults.expf_us is not None else 5.0),
+                window_function=args.window_function if args.window_function is not None else cached_defaults.winf,
+                units_power=args.units_power if args.units_power is not None else (cached_defaults.units_power if cached_defaults.units_power is not None else 6)
             )
             print(f"✓ Preprocessing complete: {len(preprocessed_fid.data):,} points (zero-padded)")
             
@@ -214,14 +217,15 @@ def cmd_ft_visualize(args) -> int:
         
         print(f"Loaded FID with {len(fid.data):,} points from cache")
         
-        # Get processing parameters (merge user input with defaults)
+        # Get processing parameters (merge user input with cached recommended settings)
+        cached_defaults = fid.processing  # Recommended settings from cached FID
         processing_params = {
-            'start_us': getattr(args, 'start_us', None),
-            'end_us': getattr(args, 'end_us', None),
-            'zpf': getattr(args, 'zpf', 1),
-            'expf_us': getattr(args, 'expf_us', 5.0),
-            'window_function': getattr(args, 'window_function', None),
-            'units_power': getattr(args, 'units_power', 6)
+            'start_us': args.start_us if args.start_us is not None else cached_defaults.start_us,
+            'end_us': args.end_us if args.end_us is not None else cached_defaults.end_us,
+            'zpf': args.zpf if args.zpf is not None else (cached_defaults.zpf if cached_defaults.zpf is not None else 1),
+            'expf_us': args.expf_us if args.expf_us is not None else (cached_defaults.expf_us if cached_defaults.expf_us is not None else 5.0),
+            'window_function': args.window_function if args.window_function is not None else cached_defaults.winf,
+            'units_power': args.units_power if args.units_power is not None else (cached_defaults.units_power if cached_defaults.units_power is not None else 6)
         }
         
         # Update FID processing parameters for visualization consistency
@@ -239,12 +243,14 @@ def cmd_ft_visualize(args) -> int:
         # Temporarily update for visualization (doesn't affect cache)
         fid.processing = current_processing
         
-        # Filter out None values for cleaner display
-        display_params = {k: v for k, v in processing_params.items() if v is not None}
-        if display_params:
-            print("Processing parameters:")
-            for param, value in display_params.items():
-                print(f"  {param}: {value}")
+        # Display all processing parameters (show complete parameter set)
+        print("Processing parameters:")
+        print(f"  start_us: {processing_params['start_us'] or 'None (full FID start)'}")
+        print(f"  end_us: {processing_params['end_us'] or 'None (full FID end)'}")
+        print(f"  zpf: {processing_params['zpf']}")
+        print(f"  expf_us: {processing_params['expf_us'] or 'None (no exponential filter)'}")
+        print(f"  window_function: {processing_params['window_function'] or 'None (no windowing)'}")
+        print(f"  units_power: {processing_params['units_power']}")
         
         # Calculate ComplexFT on-demand using separated stages
         print("Computing ComplexFT on-demand...")
@@ -479,14 +485,12 @@ Workflow:
     ft_process_parser.add_argument(
         '--zpf',
         type=int,
-        default=1,
-        help='Zero padding factor for improved frequency resolution (default: 1)'
+        help='Zero padding factor for improved frequency resolution (default: from cache or 1)'
     )
     ft_process_parser.add_argument(
         '--expf_us',
         type=float,
-        default=5.0,
-        help='Exponential filter in microseconds for sensitivity enhancement (default: 5.0)'
+        help='Exponential filter in microseconds for sensitivity enhancement (default: from cache or 5.0)'
     )
     ft_process_parser.add_argument(
         '--window-function',
@@ -495,8 +499,7 @@ Workflow:
     ft_process_parser.add_argument(
         '--units-power',
         type=int,
-        default=6,
-        help='Scaling factor for spectrum units as power of 10 (default: 6 for μV)'
+        help='Scaling factor for spectrum units as power of 10 (default: from cache or 6)'
     )
     ft_process_parser.add_argument(
         '--trim',
@@ -577,14 +580,12 @@ Workflow:
     ft_visualize_parser.add_argument(
         '--zpf',
         type=int,
-        default=1,
-        help='Zero padding factor for improved frequency resolution (default: 1)'
+        help='Zero padding factor for improved frequency resolution (default: from cache or 1)'
     )
     ft_visualize_parser.add_argument(
         '--expf_us',
         type=float,
-        default=5.0,
-        help='Exponential filter in microseconds for sensitivity enhancement (default: 5.0)'
+        help='Exponential filter in microseconds for sensitivity enhancement (default: from cache or 5.0)'
     )
     ft_visualize_parser.add_argument(
         '--window-function',
@@ -593,8 +594,7 @@ Workflow:
     ft_visualize_parser.add_argument(
         '--units-power',
         type=int,
-        default=6,
-        help='Scaling factor for spectrum units as power of 10 (default: 6 for μV)'
+        help='Scaling factor for spectrum units as power of 10 (default: from cache or 6)'
     )
     ft_visualize_parser.add_argument(
         '--trim',

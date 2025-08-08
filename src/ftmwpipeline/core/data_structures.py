@@ -65,6 +65,8 @@ class FIDProcessingParameters:
             raise ValueError("End time must be non-negative")
         if self.start_us is not None and self.end_us is not None and self.start_us >= self.end_us:
             raise ValueError("Start time must be less than end time")
+        if self.expf_us is not None and self.expf_us <= 0:
+            raise ValueError("Exponential filter time constant must be positive")
 
 
 class PreprocessedFID:
@@ -353,8 +355,13 @@ class FID:
         # Step 5: Zero padding to full-length processed data
         final_data = windowed_data
         if processing_params.zpf > 0:
-            # Pad to next power of 2, then extend by 2^zpf
-            n_padded = 2 ** (int(np.log2(len(final_data))) + 1 + processing_params.zpf)
+            # Handle edge case of empty data
+            if len(final_data) == 0:
+                # For empty data, create minimal padded array
+                n_padded = 2 ** processing_params.zpf
+            else:
+                # Pad to next power of 2, then extend by 2^zpf
+                n_padded = 2 ** (int(np.log2(len(final_data))) + 1 + processing_params.zpf)
             fid_padded = np.zeros(n_padded, dtype=float)
             fid_padded[:len(final_data)] = final_data
             final_data = fid_padded
