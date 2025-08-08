@@ -150,7 +150,6 @@ def _load_blackchirp_processing(fid_dir: Path) -> FIDProcessingParameters:
         zpf=int(proc_dict.get('FidZeroPadFactor', 0)),
         rdc=proc_dict.get('FidRemoveDC', 'false').lower() == 'true',
         expf_us=expf_us_val if expf_us_val > 0 else None,
-        autoscale_MHz=autoscale_val if autoscale_val > 0 else None,
         units_power=int(proc_dict.get('FtUnits', 6))
     )
 

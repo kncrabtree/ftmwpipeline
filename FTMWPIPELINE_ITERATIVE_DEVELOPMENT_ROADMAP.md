@@ -85,7 +85,7 @@ Each stage:
 
 **Current Focus**: Stage 2 (Noise Estimation) CLI integration - first two stages complete
 
-**Latest Update**: Phase 1 of Stage 0-1 refinement completed (data storage corrections and architectural improvements)
+**Latest Update**: Stage 0-1 refinement completed with enhanced ft-visualize parameter persistence and complete CLI parameter coverage
 
 ---
 
@@ -148,12 +148,15 @@ Each stage:
     └── experimental_data        [dataset: JSON string with experimental metadata]
 ```
 
-**Phase 1 Refinement Completed (2025-08-07)**:
+**Stage 0-1 Refinement Completed (2025-08-07 → 2025-08-08)**:
 - ✅ **Data Storage Corrections**: FID data correctly stored as real-valued (not complex)
 - ✅ **Format Standardization**: Point spacing displayed in scientific notation (`.4e` format) and stored in seconds
 - ✅ **Architecture Decoupling**: Processing parameters moved from `processing/` to `recommended_processing/` group
 - ✅ **Cache Portability**: FID cache now independent of specific FT processing choices
 - ✅ **Backward Compatibility**: Code handles both old and new cache format gracefully
+- ✅ **Enhanced ft-visualize Parameter Persistence**: Complete parameter sets (preprocessing + postprocessing) saved as defaults
+- ✅ **Revised Tool Descriptions**: Clear distinction between ft-process (validation) and ft-visualize (exploration)
+- ✅ **Complete CLI Parameter Coverage**: Added missing units-power parameter to both ft-process and ft-visualize
 
 ### ✅ **COMPLETE** - Pipeline Integration
 **Target**: CLI commands for data loading
@@ -233,6 +236,8 @@ ftmwpipeline ft-visualize exp_2638 --freq-range 26500:40000
 - **Cache Visualization**: `plot_complex_ft_from_cache()` working
 - **Integration Testing**: Cache-based workflow validated
 - **Parameter Exploration**: Both direct and cached visualization APIs
+- **Interactive Parameter Persistence**: ft-visualize saves complete parameter sets (preprocessing + postprocessing)
+- **Complete CLI Parameter Coverage**: Both tools now support all processing parameters including units-power
 
 ---
 

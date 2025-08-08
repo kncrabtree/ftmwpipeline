@@ -47,13 +47,12 @@ class FIDProcessingParameters:
     Based on BlackChirp processing settings, these control how the time-domain
     FID is converted to frequency domain.
     """
-    start_us: Optional[float] = None  # Start time in μs (earlier points set to 0)
-    end_us: Optional[float] = None    # End time in μs (later points set to 0)
+    start_us: Optional[float] = None  # Start time in μs for windowing
+    end_us: Optional[float] = None    # End time in μs for windowing
     winf: Optional[str] = None        # Window function name (scipy.signal compatible)
     zpf: int = 1                      # Zero padding factor (powers of 2)
     rdc: bool = True                  # Remove DC component (subtract average)
     expf_us: Optional[float] = None   # Exponential decay filter time constant (μs)
-    autoscale_MHz: Optional[float] = None  # Suppress noise near DC (MHz range)
     units_power: int = 6              # Scaling factor (10^units_power, 6 for μV)
     
     def __post_init__(self):
@@ -66,6 +65,116 @@ class FIDProcessingParameters:
             raise ValueError("End time must be non-negative")
         if self.start_us is not None and self.end_us is not None and self.start_us >= self.end_us:
             raise ValueError("Start time must be less than end time")
+
+
+class PreprocessedFID:
+    """
+    Preprocessed FID data ready for FFT calculation.
+    
+    Contains time-domain FID data that has been preprocessed with windowing,
+    zero-padding, filtering, etc. Separates preprocessing from FFT calculation.
+    """
+    
+    def __init__(self, data: np.ndarray, spacing: float, 
+                 probe_freq_mhz: float, sideband: Union[str, Sideband],
+                 original_length: int, processing_params: FIDProcessingParameters,
+                 metadata: Optional[Dict[str, Any]] = None):
+        """
+        Initialize PreprocessedFID object.
+        
+        Parameters
+        ----------
+        data : np.ndarray
+            Preprocessed FID data (windowed, filtered, zero-padded)
+        spacing : float
+            Original time spacing in seconds
+        probe_freq_mhz : float
+            Probe/LO frequency in MHz
+        sideband : str or Sideband
+            Sideband configuration
+        original_length : int
+            Original FID length before preprocessing (for normalization)
+        processing_params : FIDProcessingParameters
+            Parameters used for preprocessing
+        metadata : dict, optional
+            Preprocessing metadata
+        """
+        self.data = np.asarray(data, dtype=float)
+        self.spacing = float(spacing)
+        self.probe_freq_mhz = float(probe_freq_mhz)
+        
+        if isinstance(sideband, str):
+            self.sideband = Sideband(sideband.lower())
+        else:
+            self.sideband = sideband
+        
+        self.original_length = int(original_length)
+        self.processing_params = processing_params
+        self.metadata = metadata or {}
+    
+    @property
+    def n_points(self) -> int:
+        """Number of preprocessed data points."""
+        return len(self.data)
+    
+    def apply_molecular_frequency(self, scope_freq_mhz: np.ndarray) -> np.ndarray:
+        """
+        Convert scope frequency to molecular frequency.
+        
+        For upper sideband: molecular = probe + scope
+        For lower sideband: molecular = probe - scope
+        """
+        if self.sideband in (Sideband.LOWER, Sideband.LSB):
+            return self.probe_freq_mhz - scope_freq_mhz
+        else:
+            return self.probe_freq_mhz + scope_freq_mhz
+    
+    def compute_fft(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Compute FFT of preprocessed data.
+        
+        Returns
+        -------
+        tuple
+            (complex_spectrum, frequency_array) where complex_spectrum is the
+            FFT result and frequency_array is in MHz
+        """
+        # Compute real FFT (since FID data is real)
+        ft_data = sfft.rfft(self.data)
+        
+        # Generate frequency axis using rfftfreq
+        scope_freqs = sfft.rfftfreq(len(self.data), d=self.spacing) / 1e6  # MHz
+        
+        # Convert to molecular frequencies
+        mol_freqs = self.apply_molecular_frequency(scope_freqs)
+        
+        # Apply normalization (divide by original FID length, not padded length)
+        ft_data /= self.original_length
+        
+        # Apply scaling
+        scale_factor = 10 ** self.processing_params.units_power
+        ft_data *= scale_factor
+        
+        # Note: autoscale_MHz feature has been removed - use 'trim' for frequency range selection
+        
+        return ft_data, mol_freqs
+    
+    def compute_complex_ft(self) -> 'ComplexFT':
+        """
+        Complete FT processing including metadata.
+        
+        Returns
+        -------
+        ComplexFT
+            ComplexFT object with frequency domain data
+        """
+        complex_spectrum, freq_array = self.compute_fft()
+        
+        return ComplexFT(
+            freq_array=freq_array,
+            complex_spectrum=complex_spectrum,
+            metadata={'processing_params': self.processing_params}
+        )
 
 
 class FID:
@@ -154,104 +263,109 @@ class FID:
         else:
             return self.probe_freq_mhz + scope_freq_mhz
     
-    def ft(self, **processing_overrides) -> 'ComplexFT':
+    def preprocess(self, start_us: Optional[float] = None, end_us: Optional[float] = None, 
+                   zpf: int = 1, expf_us: Optional[float] = None, 
+                   window_function: Optional[str] = None, rdc: bool = True,
+                   units_power: int = 6) -> PreprocessedFID:
         """
-        Compute Fourier transform of FID and return ComplexFT object.
+        Apply preprocessing to FID data, return new PreprocessedFID object.
         
-        Uses processing parameters from self.processing unless overridden.
+        Stage 1 of FT processing: preprocessing only, no FFT computation.
+        
+        CRITICAL: Proper preprocessing sequence:
+        1. Extract windowed data (start_us to end_us)
+        2. Apply exponential filtering ONLY to windowed data
+        3. Apply window function ONLY to windowed/filtered data
+        4. Apply zero padding to processed window
         
         Parameters
         ----------
-        **processing_overrides
-            Override any FIDProcessingParameters
+        start_us : float, optional
+            Start time in μs for windowing
+        end_us : float, optional
+            End time in μs for windowing
+        zpf : int, default=1
+            Zero padding factor (powers of 2)
+        expf_us : float, optional
+            Exponential decay filter time constant (μs) - applied ONLY to windowed data
+        window_function : str, optional
+            Window function name (scipy.signal compatible) - applied ONLY to windowed data
+        rdc : bool, default=True
+            Remove DC component (subtract average)
+        units_power : int, default=6
+            Scaling factor (10^units_power, 6 for μV)
             
         Returns
         -------
-        ComplexFT
-            ComplexFT object containing frequency domain data
+        PreprocessedFID
+            PreprocessedFID object ready for FFT calculation
         """
-        # Get processing parameters (make a copy to avoid modifying original)
-        proc = FIDProcessingParameters(
-            start_us=self.processing.start_us,
-            end_us=self.processing.end_us,
-            winf=self.processing.winf,
-            zpf=self.processing.zpf,
-            rdc=self.processing.rdc,
-            expf_us=self.processing.expf_us,
-            autoscale_MHz=self.processing.autoscale_MHz,
-            units_power=self.processing.units_power
+        # Create processing parameters from inputs (autoscale_MHz deprecated and removed)
+        processing_params = FIDProcessingParameters(
+            start_us=start_us,
+            end_us=end_us,
+            winf=window_function,
+            zpf=zpf,
+            rdc=rdc,
+            expf_us=expf_us,
+            units_power=units_power
         )
         
-        # Apply overrides
-        for key, value in processing_overrides.items():
-            if hasattr(proc, key):
-                setattr(proc, key, value)
-        
-        # Start with copy of FID data
-        fid_data = self.data.copy()
-        
-        # Apply time windowing
+        # Step 1: Extract windowed data from original FID
         time_us = self.time_array_us()
-        if proc.start_us is not None:
-            mask = time_us < proc.start_us
-            fid_data[mask] = 0
-        if proc.end_us is not None:
-            mask = time_us > proc.end_us
-            fid_data[mask] = 0
+        start_idx = 0
+        end_idx = len(self.data)
         
-        # Remove DC component
-        if proc.rdc:
-            fid_data -= np.mean(fid_data)
+        if processing_params.start_us is not None:
+            start_idx = np.searchsorted(time_us, processing_params.start_us)
+        if processing_params.end_us is not None:
+            end_idx = np.searchsorted(time_us, processing_params.end_us)
         
-        # Apply exponential decay filter
-        if proc.expf_us is not None:
-            decay = np.exp(-time_us / proc.expf_us)
-            fid_data *= decay
+        # Extract windowed data and corresponding time array
+        windowed_data = self.data[start_idx:end_idx].copy()
+        windowed_time_us = time_us[start_idx:end_idx]
+        original_length = len(self.data)  # For proper normalization
         
-        # Apply window function
-        if proc.winf is not None:
-            window = spsig.get_window(proc.winf, len(fid_data))
-            fid_data *= window
+        # Step 2: Apply exponential filtering ONLY to windowed data
+        if processing_params.expf_us is not None:
+            # Calculate decay relative to windowed time (start from 0 for windowed data)
+            relative_time_us = windowed_time_us - windowed_time_us[0]
+            decay = np.exp(-relative_time_us / processing_params.expf_us)
+            windowed_data *= decay
         
-        # Store original FID length for normalization (before zero padding)
-        original_fid_length = len(fid_data)
+        # Step 3: Remove DC component from windowed data
+        if processing_params.rdc:
+            windowed_data -= np.mean(windowed_data)
         
-        # Zero padding
-        if proc.zpf > 0:
+        # Step 4: Apply window function ONLY to windowed/filtered data
+        if processing_params.winf is not None:
+            window = spsig.get_window(processing_params.winf, len(windowed_data))
+            windowed_data *= window
+        
+        # Step 5: Zero padding to processed windowed data
+        final_data = windowed_data
+        if processing_params.zpf > 0:
             # Pad to next power of 2, then extend by 2^zpf
-            n_padded = 2 ** (int(np.log2(len(fid_data))) + 1 + proc.zpf)
+            n_padded = 2 ** (int(np.log2(len(final_data))) + 1 + processing_params.zpf)
             fid_padded = np.zeros(n_padded, dtype=float)
-            fid_padded[:len(fid_data)] = fid_data
-            fid_data = fid_padded
+            fid_padded[:len(final_data)] = final_data
+            final_data = fid_padded
         
-        # Compute real FFT (since FID data is real)
-        ft_data = sfft.rfft(fid_data)
-        
-        # Generate frequency axis using rfftfreq
-        scope_freqs = sfft.rfftfreq(len(fid_data), d=self.spacing) / 1e6  # MHz
-        
-        # Convert to molecular frequencies
-        mol_freqs = self.apply_molecular_frequency(scope_freqs)
-        
-        # Apply normalization (divide by original FID length, not padded length)
-        ft_data /= original_fid_length
-        
-        # Apply scaling
-        scale_factor = 10 ** proc.units_power
-        ft_data *= scale_factor
-        
-        # Apply autoscale (suppress near-DC noise)
-        if proc.autoscale_MHz is not None:
-            dc_mask = np.abs(scope_freqs) < proc.autoscale_MHz
-            ft_data[dc_mask] = 0
-        
-        # Create and return ComplexFT object
-        return ComplexFT(
-            freq_array=mol_freqs,
-            complex_spectrum=ft_data,
-            fid=self,
-            metadata={'processing_params': proc}
+        return PreprocessedFID(
+            data=final_data,
+            spacing=self.spacing,
+            probe_freq_mhz=self.probe_freq_mhz,
+            sideband=self.sideband,
+            original_length=original_length,
+            processing_params=processing_params,
+            metadata={'source_fid_metadata': self.metadata}
         )
+    
+    # NOTE: FID.ft() method has been removed to enforce proper three-stage workflow:
+    # 1. fid.preprocess(**params) -> PreprocessedFID
+    # 2. preprocessed_fid.compute_fft() -> (spectrum, freq_array) 
+    # 3. ComplexFT.from_spectrum(spectrum, freq_array) -> ComplexFT
+    # This separation provides cleaner architecture and better control over processing stages.
 
 
 class ComplexFT:
@@ -263,7 +377,7 @@ class ComplexFT:
     """
     
     def __init__(self, freq_array: np.ndarray, complex_spectrum: np.ndarray,
-                 fid: Optional[FID] = None, metadata: Optional[Dict[str, Any]] = None):
+                 metadata: Optional[Dict[str, Any]] = None):
         """
         Initialize ComplexFT object.
         
@@ -273,8 +387,6 @@ class ComplexFT:
             Frequency array in MHz
         complex_spectrum : np.ndarray
             Complex spectrum data
-        fid : FID, optional
-            Source FID object
         metadata : dict, optional
             Additional metadata
         """
@@ -284,17 +396,42 @@ class ComplexFT:
         if len(self.freq_array) != len(self.complex_spectrum):
             raise ValueError("Frequency and spectrum arrays must have same length")
         
-        self.fid = fid
+        # Note: FID back-reference removed for cleaner architecture
         self.metadata = metadata or {}
         
         # Cached properties
         self._magnitude_spectrum = None
         self._freq_step = None
     
+    # NOTE: from_fid class method removed - use proper three-stage workflow:
+    # 1. preprocessed = fid.preprocess(**params)
+    # 2. spectrum, freqs = preprocessed.compute_fft()
+    # 3. complex_ft = ComplexFT.from_spectrum(spectrum, freqs)
+    
     @classmethod
-    def from_fid(cls, fid: FID, **ft_kwargs) -> 'ComplexFT':
-        """Create ComplexFT from FID using FT processing."""
-        return fid.ft(**ft_kwargs)
+    def from_spectrum(cls, complex_spectrum: np.ndarray, freq_array: np.ndarray,
+                     metadata: Optional[Dict[str, Any]] = None) -> 'ComplexFT':
+        """
+        Create ComplexFT from spectrum data.
+        
+        Used for Stage 3 post-processing after FFT computation.
+        
+        Parameters
+        ----------
+        complex_spectrum : np.ndarray
+            Complex spectrum data
+        freq_array : np.ndarray
+            Frequency array in MHz
+        metadata : dict, optional
+            Additional metadata
+            
+        Returns
+        -------
+        ComplexFT
+            ComplexFT object
+        """
+        return cls(freq_array=freq_array, complex_spectrum=complex_spectrum,
+                  metadata=metadata)
     
     @property
     def magnitude_spectrum(self) -> np.ndarray:
@@ -372,7 +509,6 @@ class ComplexFT:
         return ComplexFT(
             freq_array=self.freq_array[mask],
             complex_spectrum=self.complex_spectrum[mask],
-            fid=self.fid,
             metadata={**self.metadata, 'trimmed_range': (freq_min, freq_max)}
         )
 
@@ -697,14 +833,22 @@ class FTMWData:
     
     @property
     def complex_ft(self) -> ComplexFT:
-        """Get or compute ComplexFT from FID."""
+        """Get or compute ComplexFT from FID using default parameters."""
         if self._complex_ft is None:
-            self._complex_ft = self.fid.ft()
+            # Use three-stage workflow with default parameters
+            preprocessed = self.fid.preprocess()
+            spectrum, freqs = preprocessed.compute_fft()
+            self._complex_ft = ComplexFT.from_spectrum(spectrum, freqs, 
+                                                      metadata={'processing_params': preprocessed.processing_params})
         return self._complex_ft
     
     def compute_ft(self, **ft_kwargs) -> ComplexFT:
-        """Compute ComplexFT with custom parameters."""
-        self._complex_ft = self.fid.ft(**ft_kwargs)
+        """Compute ComplexFT with custom parameters using three-stage workflow."""
+        # Use three-stage workflow with custom parameters
+        preprocessed = self.fid.preprocess(**ft_kwargs)
+        spectrum, freqs = preprocessed.compute_fft()
+        self._complex_ft = ComplexFT.from_spectrum(spectrum, freqs, 
+                                                  metadata={'processing_params': preprocessed.processing_params})
         return self._complex_ft
     
     def create_spectral_window(self, freq_min: float, freq_max: float, 

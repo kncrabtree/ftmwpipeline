@@ -105,7 +105,6 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
         defaults_group.attrs['zpf'] = fid.processing.zpf
         defaults_group.attrs['rdc'] = fid.processing.rdc
         defaults_group.attrs['expf_us'] = _serialize_optional_float(fid.processing.expf_us)
-        defaults_group.attrs['autoscale_MHz'] = _serialize_optional_float(fid.processing.autoscale_MHz)
         defaults_group.attrs['units_power'] = fid.processing.units_power
         
         # Create metadata group and save as JSON strings
@@ -227,7 +226,6 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
                 zpf=int(proc_group.attrs['zpf']),
                 rdc=bool(proc_group.attrs['rdc']),
                 expf_us=_deserialize_optional_float(proc_group.attrs['expf_us']),
-                autoscale_MHz=_deserialize_optional_float(proc_group.attrs['autoscale_MHz']),
                 units_power=int(proc_group.attrs['units_power'])
             )
         else:
@@ -378,6 +376,105 @@ def load_fid_cache(experiment_id: str, cache_dir: str = "cache") -> FID:
             raise
         else:
             raise RuntimeError(f"Failed to load FID cache for {experiment_id}: {e}") from e
+
+
+def update_fid_processing_defaults(experiment_id: str, new_params: dict, cache_dir: str = "cache") -> None:
+    """
+    Update the recommended_processing section of FID cache with new defaults.
+    
+    This function allows updating the processing parameters stored in the FID cache
+    to serve as defaults for future FT processing, enabling parameter persistence
+    from interactive sessions.
+    
+    Parameters
+    ----------
+    experiment_id : str
+        Unique identifier for the experiment
+    new_params : dict
+        New processing parameters to save as defaults.
+        Keys can include: start_us, end_us, zpf, expf_us, window_function, rdc, units_power
+    cache_dir : str, default "cache"
+        Directory containing cache files
+        
+    Raises
+    ------
+    FileNotFoundError
+        If cache file does not exist
+    ValueError
+        If cache file is corrupted or parameters are invalid
+    RuntimeError
+        If cache update fails
+        
+    Example
+    -------
+    >>> # Update default parameters from interactive session
+    >>> new_params = {'zpf': 2, 'expf_us': 3.0, 'start_us': 1.0, 'end_us': 10.0}
+    >>> update_fid_processing_defaults('exp_2638', new_params, 'cache/')
+    """
+    try:
+        if not experiment_id or not isinstance(experiment_id, str):
+            raise ValueError("experiment_id must be a non-empty string")
+        
+        if not isinstance(new_params, dict) or not new_params:
+            raise ValueError("new_params must be a non-empty dictionary")
+        
+        # Locate cache file
+        cache_path = Path(cache_dir)
+        cache_filename = f"{experiment_id}_fid.h5"
+        cache_file = cache_path / cache_filename
+        
+        if not cache_file.exists():
+            raise FileNotFoundError(f"FID cache file not found: {cache_file}")
+        
+        # Update cache file in place
+        with h5py.File(cache_file, 'r+') as h5f:
+            if 'fid_data' not in h5f:
+                raise ValueError("Invalid FID cache file: missing 'fid_data' group")
+            
+            fid_group = h5f['fid_data']
+            
+            # Ensure recommended_processing group exists
+            if 'recommended_processing' not in fid_group:
+                defaults_group = fid_group.create_group('recommended_processing')
+                defaults_group.attrs['description'] = 'Format-specific processing recommendations (not requirements)'
+            else:
+                defaults_group = fid_group['recommended_processing']
+            
+            # Update attributes with new parameters
+            # Map window_function to winf for internal consistency
+            param_mapping = {
+                'start_us': 'start_us',
+                'end_us': 'end_us', 
+                'window_function': 'winf',
+                'winf': 'winf',
+                'zpf': 'zpf',
+                'rdc': 'rdc',
+                'expf_us': 'expf_us',
+                'units_power': 'units_power'
+            }
+            
+            for param_name, param_value in new_params.items():
+                if param_name in param_mapping:
+                    attr_name = param_mapping[param_name]
+                    
+                    if attr_name in ['start_us', 'end_us', 'expf_us']:
+                        # Optional float parameters
+                        defaults_group.attrs[attr_name] = _serialize_optional_float(param_value)
+                    elif attr_name == 'winf':
+                        # Optional string parameter
+                        defaults_group.attrs[attr_name] = _serialize_optional_str(param_value)
+                    elif attr_name in ['zpf', 'units_power']:
+                        # Integer parameters
+                        defaults_group.attrs[attr_name] = int(param_value)
+                    elif attr_name == 'rdc':
+                        # Boolean parameter
+                        defaults_group.attrs[attr_name] = bool(param_value)
+        
+    except Exception as e:
+        if isinstance(e, (FileNotFoundError, ValueError)):
+            raise
+        else:
+            raise RuntimeError(f"Failed to update FID processing defaults for {experiment_id}: {e}") from e
 
 
 # Helper functions for optional value serialization
