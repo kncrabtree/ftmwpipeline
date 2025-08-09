@@ -8,29 +8,15 @@ This module handles:
 """
 
 from .experimental_formats import load_blackchirp_experiment, load_blackchirp_fid, load_generic_fid
-from .result_serialization import (
-    save_pipeline_cache, 
-    load_pipeline_cache,
-    save_stage_result,
-    load_stage_result,
-    get_cache_info,
-    clear_cache
-)
 from .logging import setup_logging, FittingLogger
 from .complex_ft_serialization import save_complex_ft_to_hdf5, load_complex_ft_from_hdf5
 from .noise_result_serialization import save_noise_result_to_hdf5, load_noise_result_from_hdf5
+from .fid_serialization import save_fid_cache, load_fid_cache, update_fid_processing_defaults
 
 __all__ = [
     "load_blackchirp_experiment",
     "load_blackchirp_fid", 
     "load_generic_fid",
-    # Unified pipeline cache interface
-    "save_pipeline_cache",
-    "load_pipeline_cache", 
-    "save_stage_result",
-    "load_stage_result",
-    "get_cache_info",
-    "clear_cache",
     # Logging
     "setup_logging",
     "FittingLogger",
@@ -39,4 +25,8 @@ __all__ = [
     "load_complex_ft_from_hdf5",
     "save_noise_result_to_hdf5",
     "load_noise_result_from_hdf5",
+    # FID caching (Stage 0)
+    "save_fid_cache",
+    "load_fid_cache",
+    "update_fid_processing_defaults",
 ]

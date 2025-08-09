@@ -7,12 +7,13 @@ This module handles:
 - Data validation and quality checks
 """
 
-from .noise_estimation import estimate_noise_adaptive
+from .noise_estimation import estimate_noise_adaptive, NoiseResult
 from .data_loading import load_blackchirp_data, load_fid_data
 from .data_validation import validate_fid_data, validate_frequency_data
 
 __all__ = [
     "estimate_noise_adaptive",
+    "NoiseResult",
     "load_blackchirp_data",
     "load_fid_data", 
     "validate_fid_data",

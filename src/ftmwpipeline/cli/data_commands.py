@@ -12,7 +12,6 @@ from typing import Optional
 
 from ..io.data_loaders import detect_format, validate_source, load_fid, list_formats, get_format_info
 from ..io.fid_serialization import save_fid_cache, load_fid_cache
-from ..io.result_serialization import get_cache_info
 from .utils import setup_logging
 
 
@@ -165,9 +164,6 @@ def cmd_data_visualize(args) -> int:
     setup_logging(args.verbose)
     
     try:
-        # Check if cache exists
-        cache_info = get_cache_info(args.experiment_id, args.cache_dir)
-        
         # Check for FID cache file
         fid_cache_file = Path(args.cache_dir) / f"{args.experiment_id}_fid.h5"
         if not fid_cache_file.exists():

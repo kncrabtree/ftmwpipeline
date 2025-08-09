@@ -11,7 +11,6 @@ from typing import Optional, Tuple, Any
 from pathlib import Path
 
 from ..core.data_structures import FID
-from ..io.fid_serialization import load_fid_cache
 
 
 def plot_fid(fid: FID, 
@@ -156,57 +155,6 @@ def plot_fid(fid: FID,
     
     plt.tight_layout()
     return fig
-
-
-def plot_fid_from_cache(experiment_id: str,
-                       cache_dir: str = "cache",
-                       **plot_kwargs) -> Any:
-    """
-    Plot FID data directly from cache file.
-    
-    Parameters
-    ----------
-    experiment_id : str
-        Experiment identifier
-    cache_dir : str, optional
-        Cache directory (default: "cache")
-    **plot_kwargs
-        Additional arguments passed to plot_fid()
-        
-    Returns
-    -------
-    matplotlib.figure.Figure
-        Created figure object
-        
-    Raises
-    ------
-    FileNotFoundError
-        If cache file does not exist
-    RuntimeError
-        If loading or plotting fails
-        
-    Examples
-    --------
-    >>> # Plot FID from cache
-    >>> fig = plot_fid_from_cache("exp_2638")
-    >>> plt.show()
-    
-    >>> # Plot with custom options
-    >>> fig = plot_fid_from_cache("exp_2638", 
-    ...                          title="Cached FID Data",
-    ...                          time_units='ms')
-    """
-    try:
-        # Load FID from cache
-        fid = load_fid_cache(experiment_id, cache_dir)
-        
-        # Create plot
-        return plot_fid(fid, **plot_kwargs)
-        
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"FID cache not found for experiment '{experiment_id}': {e}")
-    except Exception as e:
-        raise RuntimeError(f"Failed to plot FID from cache: {e}") from e
 
 
 def plot_fid_comparison(fids: list,

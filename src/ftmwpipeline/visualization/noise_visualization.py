@@ -9,7 +9,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from typing import Optional, Tuple, Union
 from ..preprocessing.noise_estimation import NoiseResult
-from ..io.result_serialization import load_pipeline_cache
 
 
 def plot_noise_estimation(
@@ -361,77 +360,4 @@ def _compile_noise_statistics_summary(noise_result: NoiseResult) -> str:
     stats.append(f"RMS: {rms_mean:.2e} ± {rms_std:.2e}")
     
     return "\n".join(stats)
-
-
-def plot_noise_estimation_from_cache(
-    experiment_id: str,
-    cache_dir: str = "cache/",
-    **plot_kwargs
-) -> Union[plt.Figure, object]:
-    """
-    Plot noise estimation results from cached pipeline data.
-    
-    This function provides a convenient way to visualize noise estimation
-    results without needing to load the full ComplexFT and NoiseResult objects
-    into memory. It loads the necessary data from the pipeline cache and 
-    calls the standard plot_noise_estimation function.
-    
-    Parameters:
-    -----------
-    experiment_id : str
-        Identifier for the experiment (used to locate cache file)
-    cache_dir : str, default="cache/"
-        Directory containing cached pipeline results
-    **plot_kwargs
-        Additional keyword arguments passed to plot_noise_estimation
-        (y_max_factor, figsize, title, show_bin_boundaries, show_noise_points, backend)
-        
-    Returns:
-    --------
-    matplotlib.Figure or plotly.Figure
-        The created figure object
-        
-    Raises:
-    -------
-    FileNotFoundError
-        If no cache file exists for the specified experiment
-    ValueError
-        If no noise estimation results are cached for the experiment
-        
-    Examples:
-    ---------
-    >>> # Plot from cache with default settings
-    >>> fig = plot_noise_estimation_from_cache("exp_2638")
-    >>> 
-    >>> # Plot with custom parameters
-    >>> fig = plot_noise_estimation_from_cache(
-    ...     "exp_2638",
-    ...     cache_dir="my_cache/",
-    ...     title="Custom Noise Analysis",
-    ...     y_max_factor=15.0,
-    ...     backend="plotly"
-    ... )
-    """
-    # Load pipeline cache data
-    cache_data = load_pipeline_cache(experiment_id, cache_dir=cache_dir)
-    
-    # Validate that noise results are available
-    if cache_data['noise_result'] is None:
-        raise ValueError(
-            f"No noise estimation results cached for experiment '{experiment_id}'. "
-            f"Run noise estimation and cache the results first."
-        )
-    
-    # Extract necessary data
-    complex_ft = cache_data['complex_ft']
-    noise_result = cache_data['noise_result']
-    
-    # Call the standard plotting function
-    return plot_noise_estimation(
-        frequencies=complex_ft.freq_array,
-        magnitudes=complex_ft.magnitude_spectrum,
-        noise_result=noise_result,
-        **plot_kwargs
-    )
-
 
