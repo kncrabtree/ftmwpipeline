@@ -17,6 +17,7 @@ When invoked, you will:
    - Implementation strategies and architectural decisions
    - API specifications and feature descriptions
    - Timeline and milestone tracking
+   - These are typically files in the base directory with all caps names and underscores.
 
 3. **Identify Documentation Gaps**: Compare implemented work against planning documents to find:
    - Tasks that should be marked as complete, in-progress, or modified
