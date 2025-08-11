@@ -2,15 +2,51 @@
 
 ## Project Vision
 
-The FTMW Pipeline implements a **stage-based, cacheable, interactive** approach to FTMW spectroscopy data analysis. Each pipeline stage can be executed independently, with results cached for efficient parameter exploration and workflow flexibility.
+The FTMW Pipeline provides a **dual-interface, file-centric** approach to FTMW spectroscopy data analysis, offering both Python API and CLI workflows built around portable `.ftmw` pipeline data files. Each experiment is self-contained in a single file that progresses through analysis stages, enabling reproducible science and collaborative analysis.
 
 ### Core Design Principles
 
-1. **Stage Independence**: Each stage operates on cached data from previous stages
-2. **Interactive Workflow**: Query/response interface for parameter exploration  
-3. **Cacheable Results**: HDF5 serialization enables efficient reprocessing
-4. **Standalone Commands**: Individual CLI subcommands per pipeline stage
-5. **Flexible Configuration**: Interactive mode + config.json for batch processing
+1. **File-Centric Design**: Each `.ftmw` file contains one complete experiment analysis (FID → FT → Noise → Peaks → Fitting)
+2. **Dual Interface Access**: Identical functionality via Python API and CLI commands
+3. **Stage-Based Processing**: Sequential pipeline stages with clear dependencies and outputs
+4. **Portable Analysis**: Self-contained `.ftmw` files can be shared, archived, and reproduced anywhere
+5. **Interactive Parameter Exploration**: Safe re-execution and parameter optimization for research workflows
+6. **No Code Duplication**: Shared implementation between Python API and CLI ensures consistency
+
+### User Workflows
+
+**Python API Workflow** (Interactive Research):
+```python
+from ftmwpipeline import Pipeline
+
+# Create new analysis
+pipe = Pipeline.create("my_experiment.ftmw", source="data/experiment_2638/")
+
+# Interactive parameter exploration
+pipe.visualize_ft(zpf=1, expf_us=5.0)
+pipe.visualize_ft(zpf=2, expf_us=3.0, save_params=True)  # Save optimal params
+
+# Process subsequent stages
+pipe.estimate_noise()
+pipe.detect_peaks(algorithm='hybrid')
+```
+
+**CLI Workflow** (Automation & Scripting):
+```bash
+# Create pipeline data file
+ftmwpipeline import-data my_experiment.ftmw --source data/experiment_2638/
+
+# Process with saved parameters  
+ftmwpipeline visualize-ft my_experiment.ftmw --trim 26500:40000
+ftmwpipeline estimate-noise my_experiment.ftmw
+ftmwpipeline detect-peaks my_experiment.ftmw --algorithm hybrid
+```
+
+**Architecture Documentation**: Detailed strategies documented in:
+- [`API_STRATEGY.md`](API_STRATEGY.md) - Python API design and file management
+- [`CLI_STRATEGY.md`](CLI_STRATEGY.md) - Command-line interface principles  
+- [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) - HDF5 storage and optimization
+- [`TESTING_STRATEGY.md`](TESTING_STRATEGY.md) - Comprehensive testing approach for dual-interface architecture
 
 ## Development Pattern
 
@@ -27,24 +63,28 @@ Each pipeline stage follows a comprehensive **6-step development cycle**:
 - Comprehensive diagnostic outputs
 
 ### 3. Testing & API Stabilization
-- Unit tests with real experiment data
-- Parameter validation and edge case handling
-- API refinement based on testing results
+- **Unit Tests**: Core algorithm testing with real experiment data
+- **Integration Tests**: End-to-end workflows for all three interfaces (CLI, Pipeline class, functional API)
+- **Cross-Interface Consistency**: Verify identical results across interfaces
+- **Parameter Validation**: Edge cases and error handling across all interfaces
+- **File Management Tests**: `.ftmw` file creation, opening, validation, and error scenarios
 
 ### 4. Serialization Implementation
 - HDF5-based caching with storage optimization
 - Bit-perfect reconstruction algorithms
 - Unit tests for serialization round-trips
 
-### 5. Pipeline Integration
-- CLI subcommand for stage execution
-- Cache loading/saving interfaces
-- Parameter configuration management
+### 5. Dual Interface Implementation
+- Shared core implementation functions
+- Python API methods (Pipeline class + functional API)  
+- CLI command wrappers with consistent parameters
+- Error handling and validation across interfaces
 
-### 6. Interactive Workflow
-- Cache-based visualization functions
-- Interactive parameter exploration
-- Integration testing with full pipeline
+### 6. Integration & Workflow Testing
+- Pipeline data file management and portability
+- Interactive parameter exploration and persistence
+- End-to-end workflow testing (Python API + CLI)
+- Cross-interface consistency validation
 
 This pattern ensures each stage is **fully functional, tested, and integrated** before proceeding to the next stage.
 
@@ -52,40 +92,73 @@ This pattern ensures each stage is **fully functional, tested, and integrated** 
 
 ## Pipeline Architecture
 
+### Single-File Pipeline Design
 ```
-Raw Data → Stage 0 → Stage 1 → Stage 2 → Stage 3 → Stage 4 → Stage 5 → Results
-           (Load)    (FT)     (Noise)   (Peaks)   (Windows) (Fitting)
-             ↓         ↓         ↓         ↓         ↓         ↓
-           FID       ComplexFT  NoiseResult Peak[]   Window[]  FittedPeak[]
-           Cache     Cache      Cache      Cache     Cache     Cache
-             ↓         ↓         ↓         ↓         ↓         ↓
-           Visualize Visualize Visualize Visualize Visualize Visualize
+Raw Data → experiment.ftmw → Analysis Results
+           ┌──────────────┐
+           │ .ftmw File   │
+           │              │
+           │ Stage 0: FID │ ←→ Python API / CLI
+           │ Stage 1: ComplexFT │ ←→ pipe.compute_ft() / ftmwpipeline compute-ft
+           │ Stage 2: NoiseResult │ ←→ pipe.estimate_noise() / ftmwpipeline estimate-noise  
+           │ Stage 3: Peak[] │ ←→ pipe.detect_peaks() / ftmwpipeline detect-peaks
+           │ Stage 4: Window[] │ ←→ pipe.assign_windows() / ftmwpipeline assign-windows
+           │ Stage 5: FittedPeak[] │ ←→ pipe.fit_peaks() / ftmwpipeline fit-peaks
+           │              │
+           │ + Metadata   │
+           │ + Parameters │
+           │ + Source Info│
+           └──────────────┘
 ```
 
-Each stage:
-- **Loads**: Cached data from previous stages
-- **Processes**: Applies algorithms with configurable parameters  
-- **Caches**: Results for subsequent stages and visualization
-- **Visualizes**: Both direct objects and cached data
+### Stage Processing Model
+Each stage in the `.ftmw` file:
+- **Loads**: Data from previous stages within the same file
+- **Processes**: Applies algorithms with user-configurable parameters
+- **Stores**: Results and metadata for subsequent stages
+- **Visualizes**: Provides both Python and CLI visualization interfaces
+- **Validates**: Dependencies and parameter consistency
 
-**Stage 0 (Data Loading)**: Multi-format data ingestion layer that creates standardized FID objects from various experimental formats (BlackChirp, CSV, HDF5, etc.) with full metadata preservation.
+### Dual Interface Access
+Every stage operation available through both interfaces:
+```python
+# Python API
+pipe = Pipeline.open("experiment.ftmw") 
+result = pipe.compute_ft(zpf=2, expf_us=5.0)
+```
+```bash
+# CLI  
+ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
+```
+
+**Stage 0 (Data Import)**: Multi-format data ingestion that creates portable `.ftmw` files from various experimental formats (BlackChirp, CSV, HDF5, etc.) with complete metadata and source traceability.
 
 ---
 
 ## Current Status Overview
 
-| Stage | Core Logic | Visualization | Testing | Serialization | Pipeline | Interactive | Status |
-|-------|-----------|---------------|---------|---------------|----------|-------------|--------|
-| **Stage 0: Data Loading** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
-| **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
-| **Stage 2: Noise Estimation** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for Integration** |
+| Stage | Core Logic | Visualization | Testing | Serialization | Python API | CLI | Status |
+|-------|-----------|---------------|---------|---------------|-------------|-----|--------|
+| **Stage 0: Data Loading** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for API** |
+| **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for API** |
+| **Stage 2: Noise Estimation** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | **Ready for Integration** |
 | Stage 3: Peak Detection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Current Focus**: Stage 2 (Noise Estimation) CLI integration - **Phase 1 Complete**
+**Current Focus**: **High-Level API Implementation** - Implement Python API and updated CLI for Stages 0-1
 
-**Latest Update**: **Phase 1 Complete** - Stage 0-1 refinement finished with critical bug fixes, parameter validation, CLI improvements, and comprehensive unit test alignment
+### Latest Status: API Strategy Design Complete ✅
+
+**Architecture Documentation Complete**:
+- **API Strategy**: [`API_STRATEGY.md`](API_STRATEGY.md) - Pipeline class, functional API, and .ftmw file management
+- **CLI Strategy**: [`CLI_STRATEGY.md`](CLI_STRATEGY.md) - File-centric commands and shared implementation
+- **Serialization Strategy**: [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) - HDF5 optimization and stage storage
+
+**Next Implementation Priority**: 
+1. **Python API Implementation** (Stages 0-1): `Pipeline` class, functional API, and file manager
+2. **Updated CLI Commands** (Stages 0-1): File-centric commands using shared implementation  
+3. **Stage 2 Integration**: Extend dual-interface pattern to noise estimation
 
 ---
 
@@ -444,60 +517,92 @@ ftmwpipeline fit-visualize exp_2638 --show-residuals --show-uncertainties
 
 ---
 
-## Interactive CLI Vision
+## Dual Interface Vision
 
-### Query/Response Workflow
+### Current File-Centric CLI Commands (Implemented Stages 0-1)
+```bash
+# Create new pipeline data file from experimental data
+ftmwpipeline import-data my_experiment.ftmw --source examples/blackchirp_data/2638/
+
+# FT processing with parameter exploration
+ftmwpipeline visualize-ft my_experiment.ftmw --zpf 1 --expf_us 5.0
+ftmwpipeline visualize-ft my_experiment.ftmw --zpf 2 --expf_us 3.0 --save-params
+ftmwpipeline compute-ft my_experiment.ftmw --from-saved-params
+
+# File inspection and management
+ftmwpipeline info my_experiment.ftmw
+ftmwpipeline validate my_experiment.ftmw
 ```
-$ ftmwpipeline interactive
 
-Welcome to FTMW Pipeline Interactive Mode
-=========================================
+### Planned File-Centric Extensions (Future Stages)
+```bash
+# Stage 2: Noise Estimation
+ftmwpipeline estimate-noise my_experiment.ftmw --skew-target 0.7
+ftmwpipeline visualize-noise my_experiment.ftmw
 
-[1] Select input FID data:
-> examples/blackchirp_data/2638
+# Stage 3: Peak Detection  
+ftmwpipeline detect-peaks my_experiment.ftmw --algorithm hybrid --snr-threshold 5
+ftmwpipeline visualize-peaks my_experiment.ftmw --annotate-snr
 
-✓ Loaded FID: 750k points, 15 μs duration, 40.96 GHz probe
+# Stage 4: Window Assignment
+ftmwpipeline assign-windows my_experiment.ftmw --max-peaks-per-window 5
+ftmwpipeline visualize-windows my_experiment.ftmw --show-assignments
 
-[2] FT Processing Parameters:
-   Zero padding factor (zpf): 1
-   Exponential filter (expf_us): 5.0 μs
-   Frequency trim range: Full spectrum
-   
-   Modify parameters? (y/N): y
-   > zpf = 2
-   > expf_us = 3.0
-   > trim = 26500:40000
-   
-✓ Updated parameters
+# Stage 5: Fitting
+ftmwpipeline fit-peaks my_experiment.ftmw --algorithm conservative
+ftmwpipeline visualize-fits my_experiment.ftmw --show-residuals
 
-[3] Execute FT processing? (Y/n): Y
-   Processing... ✓ Complete (2.3s)
-   
-[4] Review FT results:
-   [Interactive plot window opens]
-   
-   Accept results and cache? (Y/n): Y
-   ✓ Cached FT results
-
-[5] Noise Estimation Parameters:
-   Skew target: 0.631
-   Minimum bin fraction: 0.03125
-   Smoothing window: 1000 MHz
-   
-   Modify parameters? (y/N): N
-   
-[6] Execute noise estimation? (Y/n): Y
-   Processing... ✓ Complete (4.1s)
-   
-[7] Review noise estimation:
-   [Interactive diagnostic plot opens]
-   
-   Accept results and cache? (Y/n): Y
-   ✓ Cached noise results
-
-[8] Continue to peak detection? (Y/n): Y
-   ...
+# Batch processing and utilities
+ftmwpipeline batch-process config.json --parallel 4
+ftmwpipeline export-results my_experiment.ftmw --format csv
 ```
+
+### Python API Integration
+**Jupyter Notebook Workflow** (matches CLI functionality):
+```python
+from ftmwpipeline import Pipeline
+
+# Create or open pipeline
+pipe = Pipeline.create("my_experiment.ftmw", source="examples/blackchirp_data/2638/")
+# pipe = Pipeline.open("my_experiment.ftmw")  # For existing files
+
+# Interactive parameter exploration (matches CLI)
+pipe.visualize_ft(zpf=1, expf_us=5.0)
+pipe.visualize_ft(zpf=2, expf_us=3.0, save_params=True)
+
+# Process subsequent stages
+pipe.estimate_noise(skew_target=0.7)
+pipe.detect_peaks(algorithm='hybrid', snr_threshold=5)
+pipe.assign_windows(max_peaks_per_window=5)
+pipe.fit_peaks(algorithm='conservative')
+```
+
+### Interactive Mode (Future Enhancement)
+```bash
+$ ftmwpipeline interactive my_experiment.ftmw
+
+FTMW Pipeline Interactive Mode - my_experiment.ftmw
+===================================================
+
+Pipeline Status:
+✅ Stage 0: Data imported (750k points, 15.0 μs)
+✅ Stage 1: FT processed (zpf=2, expf_us=3.0)
+❌ Stage 2: Noise estimation pending
+
+Next available operations:
+[1] Re-process FT with different parameters
+[2] Estimate noise and continue pipeline
+[3] Visualize current results  
+[4] Export current data
+
+Choice [2]: 2
+Processing noise estimation... ✓ Complete
+Continue to peak detection? (Y/n): Y
+```
+
+**Architecture References**: 
+- Full CLI design in [`CLI_STRATEGY.md`](CLI_STRATEGY.md)
+- Python API patterns in [`API_STRATEGY.md`](API_STRATEGY.md)
 
 ### Configuration File Support
 ```json
@@ -532,75 +637,119 @@ ftmwpipeline batch config.json --stage noise --reprocess --show-comparison
 
 ---
 
-## CLI Architecture Design
+## Updated CLI Architecture Design
 
-### Command Structure
+### File-Centric Command Structure
 ```
 ftmwpipeline
-├── interactive                    # Interactive mode
-├── batch <config.json>           # Batch processing  
-├── config
-│   ├── generate-template         # Create config template
-│   └── validate <config.json>    # Validate config file
-├── data-load <exp_id>            # Stage 0: Data loading
-├── data-visualize <exp_id>       # Stage 0: Visualization
-├── ft-process <exp_id>           # Stage 1: FT processing
-├── ft-visualize <exp_id>         # Stage 1: Visualization
-├── noise-estimate <exp_id>       # Stage 2: Noise estimation  
-├── noise-visualize <exp_id>      # Stage 2: Visualization
-├── peak-detect <exp_id>          # Stage 3: Peak detection
-├── peak-visualize <exp_id>       # Stage 3: Visualization
-├── window-assign <exp_id>        # Stage 4: Window assignment
-├── window-visualize <exp_id>     # Stage 4: Visualization
-├── fit <exp_id>                  # Stage 5: Fitting
-├── fit-visualize <exp_id>        # Stage 5: Visualization
-└── cache
-    ├── info <exp_id>             # Cache information
-    ├── list                      # List cached experiments
-    └── clear <exp_id>            # Clear cache data
+├── interactive <file.ftmw>          # Interactive mode for specific file
+├── batch-process <config.json>      # Batch processing multiple files
+├── import-data <file.ftmw>          # Stage 0: Create pipeline from raw data
+├── compute-ft <file.ftmw>           # Stage 1: FT processing
+├── visualize-ft <file.ftmw>         # Stage 1: FT visualization
+├── estimate-noise <file.ftmw>       # Stage 2: Noise estimation  
+├── visualize-noise <file.ftmw>      # Stage 2: Noise visualization
+├── detect-peaks <file.ftmw>         # Stage 3: Peak detection
+├── visualize-peaks <file.ftmw>      # Stage 3: Peak visualization
+├── assign-windows <file.ftmw>       # Stage 4: Window assignment
+├── visualize-windows <file.ftmw>    # Stage 4: Window visualization
+├── fit-peaks <file.ftmw>            # Stage 5: Fitting
+├── visualize-fits <file.ftmw>       # Stage 5: Fit visualization
+├── info <file.ftmw>                 # Pipeline file information
+├── validate <file.ftmw>             # Validate pipeline integrity  
+├── export-results <file.ftmw>       # Export analysis results
+└── formats                          # List available data formats
 ```
 
-### Implementation Structure
+**Key Changes from Previous Design**:
+- **File-Centric**: All commands operate on `.ftmw` files instead of experiment IDs + cache directories
+- **Explicit Import**: `import-data` clearly distinguishes creation from analysis operations
+- **Simplified Management**: No separate cache management needed - files are self-contained
+- **Consistent Naming**: Verb-object pattern with clear stage alignment
+
+**Implementation Strategy**: See [`CLI_STRATEGY.md`](CLI_STRATEGY.md) for complete design details
+
+### Dual-Interface Implementation Structure  
 ```
 src/ftmwpipeline/
+├── api.py                        # Functional Python API
+├── pipeline.py                   # Pipeline class API  
+├── file_manager.py               # .ftmw file operations
 ├── cli/
-│   ├── __init__.py
 │   ├── main.py                   # Entry point, command routing
-│   ├── interactive.py            # Interactive mode implementation
-│   ├── batch.py                  # Batch processing 
-│   ├── config_commands.py        # Configuration management
-│   ├── data_commands.py          # Stage 0 CLI commands
-│   ├── ft_commands.py            # Stage 1 CLI commands
-│   ├── noise_commands.py         # Stage 2 CLI commands
-│   ├── peak_commands.py          # Stage 3 CLI commands (future)
-│   ├── window_commands.py        # Stage 4 CLI commands (future)
-│   ├── fitting_commands.py       # Stage 5 CLI commands (future)
-│   └── cache_commands.py         # Cache management
+│   ├── commands.py               # All CLI commands (file-centric)
+│   ├── interactive.py            # Interactive mode (future)
+│   ├── batch.py                  # Batch processing (future)
+│   └── utils.py                  # CLI utilities and helpers
+├── _internal/                    # Shared implementation (CLI + API)
+│   ├── stage0_impl.py            # Data import implementation
+│   ├── stage1_impl.py            # FT processing implementation
+│   ├── stage2_impl.py            # Noise estimation implementation
+│   ├── stage3_impl.py            # Peak detection (future)
+│   ├── stage4_impl.py            # Window assignment (future)
+│   └── stage5_impl.py            # Fitting (future)
 └── config/
     ├── __init__.py
-    ├── config_schema.py          # JSON schema validation
-    ├── templates.py              # Configuration templates
-    └── parameter_defaults.py     # Default parameter values
+    ├── parameter_defaults.py     # Shared default values
+    └── validation.py             # Parameter validation
 ```
+
+**Key Architectural Changes**:
+- **Shared Implementation**: `_internal/` modules contain core logic used by both API and CLI
+- **Unified Commands**: Single `commands.py` with file-centric operations instead of scattered command files  
+- **API-First Design**: CLI commands are thin wrappers around API functions
+- **File Manager**: Centralized `.ftmw` file operations with dependency checking
+
+**Code Reuse Pattern**: All interfaces (Pipeline class, functional API, CLI) use the same `_internal/` implementations to eliminate duplication
 
 ---
 
 ## Next Development Priorities
 
-### **Immediate (Next 2 weeks)**
-1. **Stage 0: Data Loading Layer**
-   - Implement multi-format data loading infrastructure
-   - Create `data-load` and `data-visualize` CLI commands
-   - Add FID serialization/caching system
+### **Immediate (Next 2 weeks) - HIGH-LEVEL API IMPLEMENTATION**
 
-2. **Stage 1: FT Processing CLI Refinement**
-   - Remove direct data loading from `ft-process` command
-   - Implement cache-first workflow (`--from-cache` only)
-   - Integrate with Stage 0 FID caching system
+**Priority 1: Python API Foundation (Stages 0-1)**
+1. **File Manager Implementation** (`file_manager.py`)
+   - `.ftmw` file creation, opening, and validation
+   - Source metadata tracking and smart re-import detection
+   - Stage dependency checking and error handling
 
-3. **Stage 2: Noise Estimation CLI Integration**
-   - Implement `noise-estimate` and `noise-visualize` commands
-   - Full Stage 0 → Stage 1 → Stage 2 workflow functional
+2. **Pipeline Class** (`pipeline.py`)  
+   - `Pipeline.create()` and `Pipeline.open()` with safe file management
+   - Stage 0: `load_data()` → wrapper around existing data loaders
+   - Stage 1: `compute_ft()` and `visualize_ft()` → wrapper around existing FT processing
+
+3. **Functional API** (`api.py`)
+   - `import_data()`, `compute_ft()`, `visualize_ft()` functions  
+   - File-based parameter management and validation
+
+**Priority 2: Updated CLI Commands (Stages 0-1)**
+4. **File-Centric CLI** (`cli/commands.py`)
+   - `import-data`, `compute-ft`, `visualize-ft`, `info` commands
+   - Thin wrappers around Python API functions
+   - Migration from current experiment ID + cache-dir pattern
+
+5. **Shared Implementation Extraction** (`_internal/stage0_impl.py`, `_internal/stage1_impl.py`)  
+   - Extract core logic from existing CLI implementations
+   - Enable code reuse between Python API and CLI
+
+**Priority 3: Testing Infrastructure Updates**
+6. **Unit Test Updates**
+   - Update existing unit tests to use `.ftmw` file extensions
+   - Ensure test fixtures generate proper pipeline data files
+   - Do not add any methods for backward compatability. This is all new development with no legacy usage to support.
+
+7. **Integration Test Redesign**
+   - **CLI Integration Tests**: End-to-end workflow using file-centric commands
+   - **Pipeline Class Integration Tests**: Complete workflows using `Pipeline.create()` → `Pipeline.open()` pattern
+   - **Functional API Integration Tests**: Stateless function-based workflows
+   - **Cross-Interface Consistency Tests**: Verify identical results across CLI, Pipeline class, and functional API
+
+**Priority 4: Extension to Stage 2**
+8. **Stage 2 Dual Interface** 
+   - Extend Pipeline class and functional API to noise estimation
+   - Implement file-centric CLI commands for noise processing
+   - Validate complete Stage 0 → 1 → 2 workflow in both interfaces
 
 ### **Short Term (1 month)**
 3. **Stage 3: Peak Detection**

@@ -17,7 +17,7 @@ When invoked, you will:
    - Implementation strategies and architectural decisions
    - API specifications and feature descriptions
    - Timeline and milestone tracking
-   - These are typically files in the base directory with all caps names and underscores.
+   - These are primarily located in the dev-docs/ directory (FTMWPIPELINE_ITERATIVE_DEVELOPMENT_ROADMAP.md, SERIALIZATION_STRATEGY.md, API_STRATEGY.md) and CLAUDE.md in the base directory.
 
 3. **Identify Documentation Gaps**: Compare implemented work against planning documents to find:
    - Tasks that should be marked as complete, in-progress, or modified
