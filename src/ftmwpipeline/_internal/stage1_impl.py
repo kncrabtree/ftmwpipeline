@@ -92,6 +92,27 @@ def compute_ft_impl(
         'units_power': units_power if units_power is not None else (cached_defaults.units_power if cached_defaults.units_power is not None else 6)
     }
     
+    # Handle trim_range parameter - load from file if not provided by user
+    if trim_range is None:
+        # Try to load saved trim parameters from the .ftmw file
+        try:
+            import h5py
+            with h5py.File(file_path, 'r') as h5f:
+                rec_proc_path = 'stage0_fid_data/recommended_processing'
+                if rec_proc_path in h5f:
+                    rec_proc = h5f[rec_proc_path]
+                    trim_min = rec_proc.attrs.get('trim_min_mhz')
+                    trim_max = rec_proc.attrs.get('trim_max_mhz')
+                    
+                    # Reconstruct trim_range tuple if both values exist and are not None markers
+                    if (trim_min is not None and trim_max is not None and 
+                        trim_min != "__None__" and trim_max != "__None__"):
+                        trim_range = (float(trim_min), float(trim_max))
+                        logger.info(f"Loaded saved trim range: {trim_range[0]:.1f}-{trim_range[1]:.1f} MHz")
+        except Exception as e:
+            logger.warning(f"Could not load saved trim parameters: {e}")
+            # Continue without trim - this is not a fatal error
+    
     logger.info("Processing parameters:")
     for param, value in processing_params.items():
         logger.info(f"  {param}: {value}")
@@ -278,13 +299,11 @@ def save_ft_parameters_impl(
         Processing parameters to save
     """
     try:
-        # Extract experiment ID from file path for compatibility with current system
-        experiment_id = Path(file_path).stem
-        cache_dir = Path(file_path).parent / "cache"
+        # Import the file manager function
+        from ..file_manager import update_processing_parameters
         
-        # Use existing parameter saving function
-        # TODO: This will be updated when we fully migrate to .ftmw file system
-        update_fid_processing_defaults(experiment_id, parameters, str(cache_dir))
+        # Update parameters in the .ftmw file
+        update_processing_parameters(file_path, parameters)
         logger.info("Processing parameters saved successfully")
     except Exception as e:
         raise RuntimeError(f"Failed to save parameters: {e}")

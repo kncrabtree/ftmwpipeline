@@ -463,3 +463,75 @@ def _load_stage_tracker(filepath: Path, h5f: Optional[h5py.File] = None) -> Pipe
     finally:
         if should_close:
             h5f.close()
+
+
+def update_processing_parameters(filepath: Union[str, Path], parameters: Dict[str, Any]) -> None:
+    """
+    Update processing parameters in the pipeline file's recommended_processing section.
+    
+    This function updates the parameters stored in the FID's recommended_processing
+    group, allowing parameter persistence from interactive sessions.
+    
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the pipeline file
+    parameters : dict
+        Processing parameters to save. Keys can include:
+        start_us, end_us, zpf, expf_us, window_function, units_power
+        
+    Raises
+    ------
+    FileNotFoundError
+        If pipeline file does not exist
+    ValueError
+        If file format is invalid or parameters are invalid
+    RuntimeError
+        If parameter update fails
+        
+    Example
+    -------
+    >>> update_processing_parameters("exp_2638.ftmw", {
+    ...     'zpf': 2, 
+    ...     'expf_us': 5.0,
+    ...     'start_us': 2.0,
+    ...     'end_us': 12.0
+    ... })
+    """
+    import json
+    
+    filepath = Path(filepath)
+    
+    if not filepath.exists():
+        raise FileNotFoundError(f"Pipeline file does not exist: {filepath}")
+    
+    try:
+        with h5py.File(filepath, 'r+') as h5f:
+            # Locate the recommended_processing group
+            fid_group_path = 'stage0_fid_data/recommended_processing'
+            if fid_group_path not in h5f:
+                raise ValueError(f"Invalid pipeline file: missing {fid_group_path}")
+            
+            rec_proc_group = h5f[fid_group_path]
+            
+            # Update attributes with new parameters
+            for param_name, param_value in parameters.items():
+                # Handle None values (HDF5 can't store None directly)
+                if param_value is None:
+                    attr_value = "__None__"
+                else:
+                    attr_value = param_value
+                
+                # Set the attribute
+                rec_proc_group.attrs[param_name] = attr_value
+            
+            # Update last modified timestamp
+            if 'pipeline_stages' in h5f:
+                stages_group = h5f['pipeline_stages']
+                from datetime import datetime
+                stages_group.attrs['last_updated'] = datetime.now().isoformat()
+                
+        logger.info(f"Updated {len(parameters)} processing parameters in {filepath}")
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to update processing parameters: {e}") from e

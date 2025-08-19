@@ -24,7 +24,10 @@ from ftmwpipeline.core.data_structures import (
 )
 
 # Main pipeline interface
-# from ftmwpipeline.pipeline import Pipeline  # TODO: Fix imports
+from ftmwpipeline.pipeline import Pipeline
+
+# Functional API - can be imported as "import ftmwpipeline.api as ftmw"
+from ftmwpipeline import api
 
 # TODO: Fix imports for other modules when they're implemented
 # # Preprocessing functions
@@ -80,6 +83,12 @@ __all__ = [
     "FIDProcessingParameters",
     "PeakClassification",
     "Sideband",
+    
+    # Main pipeline interface
+    "Pipeline",
+    
+    # Functional API module
+    "api",
 ]
 
 # Package-level configuration

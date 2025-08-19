@@ -1,118 +1,462 @@
-"""
-Main Pipeline class for orchestrating FTMW spectroscopy data processing.
+"""Object-oriented Pipeline class for FTMW spectroscopy data processing.
 
-This module provides the high-level interface for running the complete
-FTMW analysis pipeline, from data loading through final fitting results.
+This module provides the high-level object-oriented interface for the FTMW
+pipeline, implementing the dual-interface architecture alongside functional
+and CLI interfaces. Each Pipeline instance is bound to a specific .ftmw file.
 """
 
-from typing import Dict, List, Optional, Union, Any
+from typing import Dict, List, Optional, Union, Any, Tuple
 import logging
 from pathlib import Path
 
-from .core.data_structures import SpectralWindow, Peak, FittingResult, FIDProcessingParameters
-from .config.pipeline_config import PipelineConfig
+from .core.data_structures import FID, ComplexFT
+from .file_manager import (
+    SourceMetadata, PipelineStageTracker,
+    PipelineFileError, PipelineExistsError, StageDependencyError, PipelineCorruptionError,
+    create_pipeline_file, open_pipeline_file, validate_pipeline_file, update_processing_parameters
+)
+from .io.data_loaders import load_fid, detect_format, validate_source
+from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
+from ._internal.stage1_impl import compute_ft_impl, visualize_ft_impl, save_ft_parameters_impl
 
 
 class Pipeline:
     """
-    Main pipeline class for FTMW spectroscopy data processing.
+    Object-oriented pipeline interface for FTMW spectroscopy data processing.
     
-    This class orchestrates the complete analysis workflow:
-    1. Data loading and preprocessing
-    2. Baseline and noise estimation  
-    3. Peak detection and classification
-    4. Analysis window assignment
-    5. Peak fitting with validation
-    6. Result serialization and visualization
+    Each Pipeline instance is bound to a specific .ftmw pipeline file and provides
+    high-level methods for data processing and analysis. This implements the 
+    object-oriented interface of the dual-interface architecture.
+    
+    Key Features:
+    - File-bound design: each instance manages one .ftmw pipeline file
+    - Safe re-execution: methods can be called multiple times
+    - Consistent with CLI: methods behave identically to CLI commands
+    - Error handling: clear error messages using custom exceptions
+    
+    Example Usage:
+    ```python
+    # Create new pipeline from raw data
+    pipe = Pipeline.create("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
+    
+    # Open existing pipeline for analysis
+    pipe = Pipeline.open("exp_2638.ftmw")
+    
+    # Stage 1: FT Processing
+    pipe.compute_ft(zpf=2, expf_us=5.0, trim=(26500, 40000))
+    pipe.visualize_ft(zpf=1, expf_us=3.0, save_params=True)
+    
+    # File info and validation
+    pipe.info()       # Show pipeline status and metadata
+    pipe.validate()   # Check file integrity
+    ```
     """
     
-    def __init__(self, config: Optional[Union[Dict, PipelineConfig]] = None):
+    def __init__(self, filepath: Union[str, Path], source_metadata: SourceMetadata, 
+                 stage_tracker: PipelineStageTracker):
         """
-        Initialize the FTMW pipeline.
+        Initialize Pipeline instance bound to a specific .ftmw file.
         
         Parameters
         ----------
-        config : dict or PipelineConfig, optional
-            Pipeline configuration parameters. If None, uses defaults.
+        filepath : str or Path
+            Path to the pipeline file
+        source_metadata : SourceMetadata
+            Source provenance information
+        stage_tracker : PipelineStageTracker
+            Stage completion tracker
+        
+        Notes
+        -----
+        Use Pipeline.create() or Pipeline.open() class methods instead of 
+        calling this constructor directly.
         """
         self.logger = logging.getLogger(__name__)
         
-        # Configuration management (placeholder)
-        if config is None:
-            self.config = PipelineConfig()
-        elif isinstance(config, dict):
-            self.config = PipelineConfig.from_dict(config)
-        else:
-            self.config = config
-            
-        # Pipeline state
-        self.fid_parameters: Optional[FIDProcessingParameters] = None
-        self.spectral_windows: List[SpectralWindow] = []
-        self.peaks: List[Peak] = []
-        self.fitting_results: List[FittingResult] = []
-        
-    def process_experiment(
-        self, 
-        data_path: Union[str, Path],
-        output_dir: Optional[Union[str, Path]] = None
-    ) -> Dict[str, Any]:
+        # File binding
+        self.filepath = Path(filepath)
+        self.source_metadata = source_metadata
+        self.stage_tracker = stage_tracker
+    
+    @classmethod
+    def create(cls, filepath: Union[str, Path], source: Union[str, Path], 
+               format_name: Optional[str] = None, fid_index: Optional[int] = None,
+               force: bool = False, **loader_params) -> 'Pipeline':
         """
-        Process a complete FTMW experiment.
+        Create new pipeline from raw experimental data.
         
         Parameters
         ----------
-        data_path : str or Path
-            Path to experimental data file
-        output_dir : str or Path, optional
-            Directory for output files
+        filepath : str or Path
+            Path for new pipeline file (should have .ftmw extension)
+        source : str or Path
+            Path to source data (file or directory)
+        format_name : str, optional
+            Data format name. If None, auto-detect format.
+        fid_index : int, optional
+            FID index for multi-FID formats (e.g., BlackChirp)
+        force : bool, default False
+            If True, overwrite existing file even with different source
+        **loader_params
+            Additional parameters for data loader
             
         Returns
         -------
-        dict
-            Dictionary containing processing results and metadata
+        Pipeline
+            New Pipeline instance bound to the created file
+            
+        Raises
+        ------
+        PipelineExistsError
+            If file exists with different source and force=False
+        FileNotFoundError
+            If source data does not exist
+        ValueError
+            If format detection or validation fails
+        RuntimeError
+            If data loading or file creation fails
         """
-        self.logger.info(f"Starting FTMW pipeline processing for {data_path}")
+        source_path = Path(source)
         
-        # Placeholder implementation - will be filled in later phases
-        results = {
-            "data_path": str(data_path),
-            "output_dir": str(output_dir) if output_dir else None,
-            "status": "not_implemented", 
-            "message": "Pipeline implementation pending - Phase 1 infrastructure only"
-        }
+        # Validate source exists
+        if not source_path.exists():
+            raise FileNotFoundError(f"Source path does not exist: {source_path}")
         
-        return results
+        # Format detection if not specified
+        if format_name is None:
+            format_name = detect_format(source_path)
+            if format_name is None:
+                raise ValueError(f"Could not detect format for: {source_path}")
+        
+        # Validate source with format
+        validation = validate_source(source_path, format_name)
+        if not validation['valid']:
+            errors = "; ".join(validation['errors'])
+            raise ValueError(f"Source validation failed: {errors}")
+        
+        # Prepare loader parameters
+        if format_name == 'blackchirp' and fid_index is not None:
+            loader_params['fid_index'] = fid_index
+        
+        # Load FID data
+        try:
+            fid = load_fid(source_path, format_name, **loader_params)
+        except Exception as e:
+            raise RuntimeError(f"Failed to load FID data: {e}") from e
+        
+        # Create source metadata
+        source_metadata = SourceMetadata(
+            source_path=source_path,
+            format_name=format_name,
+            loader_parameters=loader_params
+        )
+        
+        # Create pipeline file
+        created_filepath = create_pipeline_file(
+            filepath, fid, source_metadata, force=force
+        )
+        
+        # Load file info for Pipeline instance
+        filepath, source_metadata, stage_tracker = open_pipeline_file(created_filepath)
+        
+        return cls(filepath, source_metadata, stage_tracker)
     
-    def run_step_by_step(self, data_path: Union[str, Path]) -> Dict[str, Any]:
+    @classmethod
+    def open(cls, filepath: Union[str, Path]) -> 'Pipeline':
         """
-        Run pipeline with step-by-step control for debugging.
+        Open existing pipeline file.
         
         Parameters
         ----------
-        data_path : str or Path
-            Path to experimental data file
+        filepath : str or Path
+            Path to existing pipeline file
             
         Returns
         -------
-        dict
-            Dictionary containing step-by-step results
+        Pipeline
+            Pipeline instance bound to the opened file
+            
+        Raises
+        ------
+        FileNotFoundError
+            If pipeline file doesn't exist
+        PipelineCorruptedError
+            If file appears to be corrupted
+        ValueError
+            If file format is invalid
         """
-        # Placeholder - will implement in later phases
-        return {"status": "not_implemented"}
+        filepath, source_metadata, stage_tracker = open_pipeline_file(filepath)
+        
+        return cls(filepath, source_metadata, stage_tracker)
     
-    def get_summary(self) -> Dict[str, Any]:
+    def load_data(self) -> FID:
         """
-        Get a summary of the current pipeline state.
+        Load FID data from the pipeline file.
+        
+        This method implements Stage 0 data loading, providing access to the
+        raw FID data stored in the pipeline file.
+        
+        Returns
+        -------
+        FID
+            The loaded FID object with all metadata
+            
+        Raises
+        ------
+        FileNotFoundError
+            If pipeline file does not exist
+        PipelineCorruptionError
+            If file is corrupted or invalid
+        RuntimeError
+            If FID loading fails
+        """
+        try:
+            fid = load_fid_from_pipeline_impl(str(self.filepath))
+            self.logger.info(f"Loaded FID data: {fid.n_points:,} points, {fid.duration_us:.1f} μs")
+            return fid
+        except Exception as e:
+            raise RuntimeError(f"Failed to load FID data: {e}") from e
+    
+    def compute_ft(self, zpf: Optional[int] = None, expf_us: Optional[float] = None, 
+                   trim: Optional[Tuple[float, float]] = None, start_us: Optional[float] = None,
+                   end_us: Optional[float] = None, window_function: Optional[str] = None,
+                   units_power: Optional[int] = None, from_saved_params: bool = False) -> ComplexFT:
+        """
+        Compute Fourier Transform with specified processing parameters.
+        
+        This method implements Stage 1 FT processing, equivalent to the CLI
+        ft-process command. Can be called multiple times safely.
+        
+        Parameters
+        ----------
+        zpf : int, optional
+            Zero padding factor. If None, uses cached default or 1.
+        expf_us : float, optional
+            Exponential filter in microseconds. If None, uses cached default or 5.0.
+        trim : tuple of float, optional
+            (min_freq, max_freq) in MHz to trim spectrum
+        start_us : float, optional
+            FID window start time in microseconds
+        end_us : float, optional
+            FID window end time in microseconds  
+        window_function : str, optional
+            Windowing function name
+        units_power : int, optional
+            Scaling factor as power of 10. If None, uses cached default or 6.
+        from_saved_params : bool, default False
+            If True, use previously saved parameters and ignore other arguments
+            
+        Returns
+        -------
+        ComplexFT
+            Computed frequency domain data
+            
+        Raises
+        ------
+        StageDependencyError
+            If required dependencies (FID data) are not available
+        RuntimeError
+            If FT computation fails
+        """
+        # Check dependencies
+        self.stage_tracker.validate_dependencies('stage1_complex_ft')
+        
+        try:
+            # Use shared implementation for FT computation
+            result = compute_ft_impl(
+                file_path=str(self.filepath),
+                start_us=start_us if not from_saved_params else None,
+                end_us=end_us if not from_saved_params else None,
+                zpf=zpf if not from_saved_params else None,
+                expf_us=expf_us if not from_saved_params else None,
+                window_function=window_function if not from_saved_params else None,
+                units_power=units_power if not from_saved_params else None,
+                trim_range=trim,
+                validate_only=False
+            )
+            
+            complex_ft = result['complex_ft']
+            
+            # Mark stage as completed
+            self.stage_tracker.mark_completed('stage1_complex_ft')
+            
+            self.logger.info(f"FT computed: {complex_ft.n_points:,} frequency points")
+            if trim:
+                self.logger.info(f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz")
+                
+            return complex_ft
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to compute FT: {e}") from e
+    
+    def visualize_ft(self, zpf: Optional[int] = None, expf_us: Optional[float] = None,
+                     trim: Optional[Tuple[float, float]] = None, start_us: Optional[float] = None,
+                     end_us: Optional[float] = None, window_function: Optional[str] = None,
+                     units_power: Optional[int] = None, save_params: bool = False,
+                     backend: str = 'matplotlib', interactive: bool = True, 
+                     output_file: Optional[Union[str, Path]] = None,
+                     show_fid_panels: bool = True):
+        """
+        Create enhanced FT visualization with processing workflow display.
+        
+        This method implements enhanced FT visualization equivalent to the CLI 
+        ft-visualize command, showing complete FID-to-spectrum processing workflow.
+        
+        Parameters
+        ----------
+        zpf : int, optional
+            Zero padding factor. If None, uses cached default or 1.
+        expf_us : float, optional
+            Exponential filter in microseconds. If None, uses cached default or 5.0.
+        trim : tuple of float, optional
+            (min_freq, max_freq) in MHz to trim spectrum
+        start_us : float, optional
+            FID window start time in microseconds
+        end_us : float, optional
+            FID window end time in microseconds
+        window_function : str, optional
+            Windowing function name
+        units_power : int, optional
+            Scaling factor as power of 10. If None, uses cached default or 6.
+        save_params : bool, default False
+            Whether to save parameters as defaults for this experiment
+        backend : str, default 'matplotlib'
+            Plotting backend ('matplotlib' or 'plotly')
+        interactive : bool, default True
+            Whether to show interactive plot
+        output_file : str or Path, optional
+            Path to save plot image (for non-interactive mode)
+        show_fid_panels : bool, default True
+            Whether to show FID processing panels
+            
+        Returns
+        -------
+        figure
+            Matplotlib or Plotly figure object
+            
+        Raises
+        ------
+        StageDependencyError
+            If required dependencies are not available
+        RuntimeError
+            If visualization fails
+        """
+        # Check dependencies
+        self.stage_tracker.validate_dependencies('stage1_complex_ft')
+        
+        try:
+            # Use shared implementation for FT visualization
+            fig = visualize_ft_impl(
+                file_path=str(self.filepath),
+                start_us=start_us,
+                end_us=end_us,
+                zpf=zpf,
+                expf_us=expf_us,
+                window_function=window_function,
+                units_power=units_power,
+                trim_range=trim,
+                title=None,  # Let implementation generate title
+                show_fid_panels=show_fid_panels,
+                backend=backend,
+                interactive=interactive
+            )
+            
+            # Handle output
+            if not interactive and output_file:
+                fig.savefig(output_file, dpi=150, bbox_inches='tight')
+                self.logger.info(f"Plot saved to: {output_file}")
+            elif not interactive:
+                # Save with default name
+                default_name = f"{self.filepath.stem}_enhanced_spectrum.png"
+                fig.savefig(default_name, dpi=150, bbox_inches='tight')
+                self.logger.info(f"Plot saved to: {default_name}")
+            elif interactive and backend == 'matplotlib':
+                import matplotlib.pyplot as plt
+                plt.show()
+            
+            # Save parameters if requested
+            if save_params:
+                # Collect parameters for saving
+                params = {
+                    'start_us': start_us,
+                    'end_us': end_us,
+                    'zpf': zpf,
+                    'expf_us': expf_us,
+                    'window_function': window_function,
+                    'units_power': units_power,
+                    'trim_min_mhz': trim[0] if trim else None,
+                    'trim_max_mhz': trim[1] if trim else None
+                }
+                # Filter out None values
+                params = {k: v for k, v in params.items() if v is not None}
+                
+                if params:
+                    save_ft_parameters_impl(str(self.filepath), params)
+                    self.logger.info(f"Saved {len(params)} processing parameters")
+                else:
+                    self.logger.info("No custom parameters to save")
+            
+            self.logger.info("FT visualization completed")
+            return fig
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to create FT visualization: {e}") from e
+    
+    def info(self) -> Dict[str, Any]:
+        """
+        Get pipeline file information and status.
         
         Returns
         -------
         dict
-            Summary of pipeline processing results
+            Pipeline status and metadata information
         """
-        return {
-            "fid_parameters": self.fid_parameters is not None,
-            "num_windows": len(self.spectral_windows),
-            "num_peaks": len(self.peaks), 
-            "num_fits": len(self.fitting_results),
-            "config": self.config.to_dict() if hasattr(self.config, 'to_dict') else str(self.config)
-        }
+        try:
+            validation_report = validate_pipeline_file(self.filepath)
+            
+            info_dict = {
+                'filepath': str(self.filepath),
+                'valid': validation_report['valid'],
+                'source_path': str(self.source_metadata.source_path),
+                'format': self.source_metadata.format_name,
+                'import_time': self.source_metadata.import_timestamp.isoformat(),
+                'completed_stages': list(self.stage_tracker.completed_stages),
+                'next_available_stages': self.stage_tracker.get_next_available_stages()
+            }
+            
+            if not validation_report['valid']:
+                info_dict['errors'] = validation_report['errors']
+                
+            if validation_report.get('warnings'):
+                info_dict['warnings'] = validation_report['warnings']
+            
+            return info_dict
+            
+        except Exception as e:
+            return {
+                'filepath': str(self.filepath),
+                'valid': False,
+                'error': f"Failed to get info: {e}"
+            }
+    
+    def validate(self) -> Dict[str, Any]:
+        """
+        Validate pipeline file integrity.
+        
+        Returns
+        -------
+        dict
+            Detailed validation report
+            
+        Raises
+        ------
+        PipelineCorruptionError
+            If file is corrupted and cannot be validated
+        """
+        return validate_pipeline_file(self.filepath)
+    
+    def __repr__(self) -> str:
+        """String representation of Pipeline instance."""
+        return (f"Pipeline(file={self.filepath.name}, "
+                f"source={self.source_metadata.source_path.name}, "
+                f"stages={len(self.stage_tracker.completed_stages)})")

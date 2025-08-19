@@ -139,14 +139,14 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 
 | Stage | Core Logic | Visualization | Testing | Serialization | Python API | CLI | Status |
 |-------|-----------|---------------|---------|---------------|-------------|-----|--------|
-| **Stage 0: Data Loading** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for API** |
-| **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | **Ready for API** |
+| **Stage 0: Data Loading** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
+| **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
 | **Stage 2: Noise Estimation** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | **Ready for Integration** |
 | Stage 3: Peak Detection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Current Focus**: **Python API Implementation** - Implement Pipeline class using shared implementations for Stages 0-1
+**Current Focus**: **Stage 2 Integration** - Extend dual-interface pattern to noise estimation
 
 ### Latest Status: API Strategy Design Complete ✅
 
@@ -169,10 +169,37 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 - ✅ **Code Deduplication**: Eliminated duplicate logic between CLI commands and core functionality
 - ✅ **Critical Bug Fixes**: Fixed HDF5 loading issues and import statement cleanup
 
+**Latest Implementation: Python API Foundation Complete ✅ (2025-08-19)**
+
+**Completed Python API Implementation (Stages 0-1)**:
+- ✅ **Pipeline Class**: Complete `Pipeline` class with `.create()` and `.open()` class methods
+  - File-centric design with `.ftmw` file binding and lifecycle management
+  - Stage 0: `load_data()` method using shared `stage0_impl` 
+  - Stage 1: `compute_ft()` and `visualize_ft()` methods using shared `stage1_impl`
+  - Comprehensive error handling with custom exceptions and validation
+- ✅ **Functional API**: Complete stateless functional interface in `api.py`
+  - File-centric functions: `import_data()`, `compute_ft()`, `visualize_ft()`, etc.
+  - Zero code duplication - delegates to Pipeline class internally
+  - Identical behavior and parameter handling to Pipeline class methods
+- ✅ **Parameter Persistence System**: Enhanced `.ftmw` file parameter management
+  - New `update_processing_parameters()` function in `file_manager.py`
+  - Updated `save_ft_parameters_impl()` to use `.ftmw` file storage 
+  - Complete trim parameter support with loading/saving functionality
+  - Parameter persistence working with `save_params=True` in `visualize_ft()`
+- ✅ **Package Integration**: Updated main package to expose new APIs
+  - Added `Pipeline` class and `api` module to `__init__.py`
+  - Clean import structure for both object-oriented and functional usage
+
+**Testing Status**: 
+- ✅ Pipeline class tested with real experimental data (experiment 2638)
+- ✅ Parameter saving/loading validated with comprehensive manual testing
+- ✅ Functional API tested with basic workflows and parameter persistence
+
 **Next Implementation Priority**: 
-1. **Python API Implementation** (Stages 0-1): `Pipeline` class and functional API using shared implementations
-2. **Stage 2 Integration**: Extend dual-interface pattern to noise estimation
-3. **Testing Infrastructure Updates**: Update tests for new file-centric architecture
+1. **Unit Test Updates**: Update existing unit tests for new `.ftmw` file-centric architecture
+2. **Integration Test Creation**: Create comprehensive integration tests for CLI, Pipeline class, and functional API interfaces  
+3. **Cross-Interface Consistency Tests**: Verify identical results across all three interfaces (CLI, Pipeline class, functional API)
+4. **Stage 2 Integration**: Extend dual-interface pattern to noise estimation
 
 ---
 
@@ -720,9 +747,9 @@ src/ftmwpipeline/
 
 ## Next Development Priorities
 
-### **Immediate (Next 2 weeks) - HIGH-LEVEL API IMPLEMENTATION**
+### **Immediate (Next 2 weeks) - TESTING INFRASTRUCTURE UPDATES**
 
-**Priority 1: Python API Foundation (Stages 0-1)**
+**Priority 1: Python API Foundation (Stages 0-1) ✅ COMPLETE**
 1. ✅ **File Manager Implementation** (`file_manager.py`) **COMPLETE**
    - ✅ `.ftmw` file creation, opening, and validation
    - ✅ Source metadata tracking and smart re-import detection
@@ -735,22 +762,24 @@ src/ftmwpipeline/
    - ✅ Enable code reuse between Python API and CLI
    - ✅ Created shared utilities in `_internal/shared_utils.py`
 
-3. **Pipeline Class** (`pipeline.py`)  
-   - `Pipeline.create()` and `Pipeline.open()` with safe file management
-   - Stage 0: `load_data()` → wrapper around existing data loaders
-   - Stage 1: `compute_ft()` and `visualize_ft()` → wrapper around existing FT processing
+3. ✅ **Pipeline Class** (`pipeline.py`) **COMPLETE**
+   - ✅ `Pipeline.create()` and `Pipeline.open()` with safe file management
+   - ✅ Stage 0: `load_data()` → wrapper around existing data loaders
+   - ✅ Stage 1: `compute_ft()` and `visualize_ft()` → wrapper around existing FT processing
+   - ✅ Complete parameter persistence with `.ftmw` file integration
 
-4. **Functional API** (`api.py`)
-   - `import_data()`, `compute_ft()`, `visualize_ft()` functions  
-   - File-based parameter management and validation
+4. ✅ **Functional API** (`api.py`) **COMPLETE**
+   - ✅ `import_data()`, `compute_ft()`, `visualize_ft()` functions  
+   - ✅ File-based parameter management and validation
+   - ✅ Zero code duplication - delegates to Pipeline class internally
 
 **Priority 2: Updated CLI Commands (Stages 0-1)** ✅ **COMPLETE**
 5. ✅ **File-Centric CLI** (`cli/data_commands.py`, `cli/ft_commands.py`)
-   - `import-data`, `compute-ft`, `visualize-ft`, `info` commands
-   - Thin wrappers around shared implementation functions
-   - Migration from experiment ID + cache-dir to .ftmw file pattern complete
+   - ✅ `import-data`, `compute-ft`, `visualize-ft`, `info` commands
+   - ✅ Thin wrappers around shared implementation functions
+   - ✅ Migration from experiment ID + cache-dir to .ftmw file pattern complete
 
-**Priority 3: Testing Infrastructure Updates**
+**Priority 3: Testing Infrastructure Updates (Next Priority)**
 6. **Unit Test Updates**
    - Update existing unit tests to use `.ftmw` file extensions
    - Ensure test fixtures generate proper pipeline data files
