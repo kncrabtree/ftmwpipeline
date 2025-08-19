@@ -146,7 +146,7 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Current Focus**: **High-Level API Implementation** - Implement Python API and updated CLI for Stages 0-1
+**Current Focus**: **Python API Implementation** - Implement Pipeline class using shared implementations for Stages 0-1
 
 ### Latest Status: API Strategy Design Complete ✅
 
@@ -155,10 +155,24 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 - **CLI Strategy**: [`CLI_STRATEGY.md`](CLI_STRATEGY.md) - File-centric commands and shared implementation
 - **Serialization Strategy**: [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) - HDF5 optimization and stage storage
 
+**Latest Status: Shared Implementation Architecture Complete ✅**
+
+**Completed Architecture Transformation (2025-08-19)**:
+- ✅ **Shared Implementation Package**: Created `src/ftmwpipeline/_internal/` with core logic functions
+  - `stage0_impl.py` - Data import and FID operations
+  - `stage1_impl.py` - FT processing and spectrum operations  
+  - `shared_utils.py` - Common utilities across stages
+- ✅ **File Manager Refactor**: Converted `PipelineFileManager` class to utility functions in `file_manager.py`
+- ✅ **CLI Commands Updated**: Migrated to file-centric pattern using shared implementations
+  - `data_commands.py` - Now uses `.ftmw` files instead of experiment ID + cache directory
+  - `ft_commands.py` - Clean implementation using shared stage1_impl functions
+- ✅ **Code Deduplication**: Eliminated duplicate logic between CLI commands and core functionality
+- ✅ **Critical Bug Fixes**: Fixed HDF5 loading issues and import statement cleanup
+
 **Next Implementation Priority**: 
-1. **Python API Implementation** (Stages 0-1): `Pipeline` class, functional API, and file manager
-2. **Updated CLI Commands** (Stages 0-1): File-centric commands using shared implementation  
-3. **Stage 2 Integration**: Extend dual-interface pattern to noise estimation
+1. **Python API Implementation** (Stages 0-1): `Pipeline` class and functional API using shared implementations
+2. **Stage 2 Integration**: Extend dual-interface pattern to noise estimation
+3. **Testing Infrastructure Updates**: Update tests for new file-centric architecture
 
 ---
 
@@ -716,24 +730,25 @@ src/ftmwpipeline/
    - ✅ Custom exception classes with clear error messages
    - ✅ Comprehensive unit test coverage (56 tests, 97% coverage)
 
-2. **Pipeline Class** (`pipeline.py`)  
+2. ✅ **Shared Implementation Extraction** (`_internal/stage0_impl.py`, `_internal/stage1_impl.py`) **COMPLETE**
+   - ✅ Extract core logic from existing CLI implementations
+   - ✅ Enable code reuse between Python API and CLI
+   - ✅ Created shared utilities in `_internal/shared_utils.py`
+
+3. **Pipeline Class** (`pipeline.py`)  
    - `Pipeline.create()` and `Pipeline.open()` with safe file management
    - Stage 0: `load_data()` → wrapper around existing data loaders
    - Stage 1: `compute_ft()` and `visualize_ft()` → wrapper around existing FT processing
 
-3. **Functional API** (`api.py`)
+4. **Functional API** (`api.py`)
    - `import_data()`, `compute_ft()`, `visualize_ft()` functions  
    - File-based parameter management and validation
 
-**Priority 2: Updated CLI Commands (Stages 0-1)**
-4. **File-Centric CLI** (`cli/commands.py`)
+**Priority 2: Updated CLI Commands (Stages 0-1)** ✅ **COMPLETE**
+5. ✅ **File-Centric CLI** (`cli/data_commands.py`, `cli/ft_commands.py`)
    - `import-data`, `compute-ft`, `visualize-ft`, `info` commands
-   - Thin wrappers around Python API functions
-   - Migration from current experiment ID + cache-dir pattern
-
-5. **Shared Implementation Extraction** (`_internal/stage0_impl.py`, `_internal/stage1_impl.py`)  
-   - Extract core logic from existing CLI implementations
-   - Enable code reuse between Python API and CLI
+   - Thin wrappers around shared implementation functions
+   - Migration from experiment ID + cache-dir to .ftmw file pattern complete
 
 **Priority 3: Testing Infrastructure Updates**
 6. **Unit Test Updates**

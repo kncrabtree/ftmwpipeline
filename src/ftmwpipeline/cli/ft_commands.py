@@ -13,15 +13,13 @@ from typing import Optional, Tuple
 
 from .utils import (
     setup_logging, 
-    parse_frequency_range, 
-    validate_cache_dir,
     print_error,
     print_processing_params
 )
 
-# Import existing APIs
-from ..io.fid_serialization import load_fid_cache, update_fid_processing_defaults
-from ..visualization.spectrum_visualization import plot_complex_ft
+# Import shared implementations
+from .._internal.stage1_impl import compute_ft_impl, visualize_ft_impl, save_ft_parameters_impl, compare_ft_parameters_impl
+from .._internal.shared_utils import parse_frequency_range
 
 
 def cmd_ft_process(args) -> int:
@@ -50,8 +48,9 @@ def cmd_ft_process(args) -> int:
     setup_logging(args.verbose)
     
     try:
-        # Validate inputs
-        cache_dir = validate_cache_dir(args.cache_dir)
+        file_path = args.file_path
+        if not file_path.endswith('.ftmw'):
+            file_path = file_path + '.ftmw'
         
         # Parse optional trim range
         trim_range = None
@@ -62,81 +61,52 @@ def cmd_ft_process(args) -> int:
                 print_error(f"Invalid trim range: {e}")
                 return 1
         
-        print(f"Processing experiment {args.experiment_id} from Stage 0 cache")
+        print(f"Validating FT processing parameters for '{file_path}'")
         print_processing_params(args.zpf, args.expf_us, trim_range)
         print()
         
-        # Load FID data from Stage 0 cache
-        print("Loading FID data from cache...")
+        # Use shared implementation for FT validation
         try:
-            fid = load_fid_cache(args.experiment_id, str(cache_dir))
+            result = compute_ft_impl(
+                file_path=file_path,
+                start_us=args.start_us,
+                end_us=args.end_us,
+                zpf=args.zpf,
+                expf_us=args.expf_us,
+                window_function=args.window_function,
+                units_power=args.units_power,
+                trim_range=trim_range,
+                validate_only=True  # Only validate, don't return ComplexFT
+            )
+            
+            print("✅ FT processing validation completed successfully!")
+            print(f"   Processing parameters validated with {result['fid_points']:,} FID points")
+            print(f"   Preprocessed to {result['preprocessed_points']:,} points (zero-padded)")
+            print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
+            if 'trimmed_points' in result:
+                print(f"   After trimming: {result['trimmed_points']:,} points")
+            
+            print()
+            print("📌 ComplexFT will be calculated on-demand during visualization")
+            print(f"   Use: ftmwpipeline ft-visualize {file_path}")
+            if trim_range:
+                print(f"        ftmwpipeline ft-visualize {file_path} --trim {trim_range[0]:.0f}:{trim_range[1]:.0f}")
+            
+            return 0
+            
         except FileNotFoundError:
-            print_error(f"No FID data cached for experiment '{args.experiment_id}'")
+            print_error(f"Pipeline file not found: {file_path}")
             print("")
-            print("Stage 0 (Data Loading) must be completed before FT processing.")
-            print(f"Run: ftmwpipeline data-load {args.experiment_id} --source <path>")
+            print("Stage 0 (Data Import) must be completed before FT processing.")
+            print(f"Run: ftmwpipeline data-load {file_path} --source <path>")
             print("")
             print("For example:")
-            print(f"  ftmwpipeline data-load {args.experiment_id} --source examples/blackchirp_data/2638/")
-            print(f"  ftmwpipeline ft-process {args.experiment_id}")
+            print(f"  ftmwpipeline data-load {file_path} --source examples/blackchirp_data/2638/")
+            print(f"  ftmwpipeline ft-process {file_path}")
             return 1
-        except Exception as e:
-            print_error(f"Failed to load FID from cache: {e}")
-            print("The FID cache file may be corrupted or in an incompatible format.")
-            print(f"Try rerunning: ftmwpipeline data-load {args.experiment_id} --source <path>")
-            return 1
-        
-        print(f"Loaded FID with {len(fid.data)} points from cache")
-        
-        # Merge user parameters with cached recommended settings
-        cached_defaults = fid.processing
-        
-        # Test FT processing to validate parameters and provide feedback
-        print("Testing FT processing parameters...")
-        try:
-            # Stage 1: FID Preprocessing  
-            preprocessed_fid = fid.preprocess(
-                start_us=args.start_us if args.start_us is not None else cached_defaults.start_us,
-                end_us=args.end_us if args.end_us is not None else cached_defaults.end_us, 
-                zpf=args.zpf if args.zpf is not None else (cached_defaults.zpf if cached_defaults.zpf is not None else 1), 
-                expf_us=args.expf_us if args.expf_us is not None else (cached_defaults.expf_us if cached_defaults.expf_us is not None else 5.0),
-                window_function=args.window_function if args.window_function is not None else cached_defaults.winf,
-                units_power=args.units_power if args.units_power is not None else (cached_defaults.units_power if cached_defaults.units_power is not None else 6)
-            )
-            print(f"✓ Preprocessing complete: {len(preprocessed_fid.data):,} points (zero-padded)")
-            
-            # Stage 2: FFT Calculation
-            complex_spectrum, freq_array = preprocessed_fid.compute_fft()
-            print(f"✓ FFT computation complete: {len(complex_spectrum):,} frequency points")
-            print(f"  Frequency range: {freq_array[0]:.1f} - {freq_array[-1]:.1f} MHz")
-            
-            # Stage 3: Test post-processing (trimming) if requested
-            final_points = len(complex_spectrum)
-            if trim_range:
-                mask = (freq_array >= trim_range[0]) & (freq_array <= trim_range[1])
-                if not np.any(mask):
-                    print_error(f"No data points in trim range [{trim_range[0]:.1f}, {trim_range[1]:.1f}] MHz")
-                    return 1
-                final_points = np.sum(mask)
-                print(f"✓ Trimming validated: {final_points:,} points in range [{trim_range[0]:.1f}, {trim_range[1]:.1f}] MHz")
-            
         except Exception as e:
             print_error(f"Failed to process FT: {e}")
             return 1
-        
-        print()
-        print("✅ FT processing completed successfully!")
-        print(f"   Processing parameters validated with {len(fid.data):,} FID points")
-        print(f"   Final spectrum: {final_points:,} frequency points")
-        print()
-        print("📌 ComplexFT will be calculated on-demand during visualization")
-        print(f"   Use: ftmwpipeline ft-visualize {args.experiment_id}")
-        if trim_range:
-            print(f"        ftmwpipeline ft-visualize {args.experiment_id} --trim {trim_range[0]:.0f}:{trim_range[1]:.0f}")
-        print()
-        print("💾 FID data remains cached for reuse with different processing parameters")
-        
-        return 0
         
     except KeyboardInterrupt:
         print_error("Processing interrupted by user", 130)
@@ -177,7 +147,7 @@ def cmd_ft_visualize(args) -> int:
     - Support for both interactive display and static image export
     
     Workflow:
-    1. Load FID data from Stage 0 cache
+    1. Load FID data from .ftmw pipeline file
     2. Apply custom processing parameters (preprocessing + postprocessing)
     3. Display enhanced multi-panel plot showing complete processing workflow
     4. Optionally save complete parameter set as defaults for this experiment
@@ -185,8 +155,10 @@ def cmd_ft_visualize(args) -> int:
     setup_logging(args.verbose)
     
     try:
-        # Validate cache directory
-        cache_dir = validate_cache_dir(args.cache_dir)
+        # Ensure file path has .ftmw extension
+        file_path = args.file_path
+        if not file_path.endswith('.ftmw'):
+            file_path = file_path + '.ftmw'
         
         # Parse optional trim range
         trim_range = None
@@ -197,119 +169,42 @@ def cmd_ft_visualize(args) -> int:
                 print_error(f"Invalid trim range: {e}")
                 return 1
         
-        print(f"Visualizing experiment {args.experiment_id} with on-demand FT calculation")
+        print(f"Visualizing FT from '{file_path}' with on-demand calculation")
+        print_processing_params(args.zpf, args.expf_us, trim_range)
+        print()
         
-        # Load FID data from Stage 0 cache
-        print("Loading FID data from cache...")
+        # Use shared implementation for FT visualization
         try:
-            fid = load_fid_cache(args.experiment_id, str(cache_dir))
-        except FileNotFoundError:
-            print_error(f"No FID data cached for experiment '{args.experiment_id}'")
-            print("")
-            print("Stage 0 (Data Loading) must be completed before visualization.")
-            print(f"Run: ftmwpipeline data-load {args.experiment_id} --source <path>")
-            print("")
-            return 1
-        except Exception as e:
-            print_error(f"Failed to load FID from cache: {e}")
-            return 1
-        
-        print(f"Loaded FID with {len(fid.data):,} points from cache")
-        
-        # Get processing parameters (merge user input with cached recommended settings)
-        cached_defaults = fid.processing  # Recommended settings from cached FID
-        processing_params = {
-            'start_us': args.start_us if args.start_us is not None else cached_defaults.start_us,
-            'end_us': args.end_us if args.end_us is not None else cached_defaults.end_us,
-            'zpf': args.zpf if args.zpf is not None else (cached_defaults.zpf if cached_defaults.zpf is not None else 1),
-            'expf_us': args.expf_us if args.expf_us is not None else (cached_defaults.expf_us if cached_defaults.expf_us is not None else 5.0),
-            'window_function': args.window_function if args.window_function is not None else cached_defaults.winf,
-            'units_power': args.units_power if args.units_power is not None else (cached_defaults.units_power if cached_defaults.units_power is not None else 6)
-        }
-        
-        # Update FID processing parameters for visualization consistency
-        # (The original cached parameters are preserved)
-        from ..core.data_structures import FIDProcessingParameters
-        current_processing = FIDProcessingParameters(
-            start_us=processing_params['start_us'],
-            end_us=processing_params['end_us'],
-            winf=processing_params['window_function'],
-            zpf=processing_params['zpf'],
-            rdc=True,
-            expf_us=processing_params['expf_us'],
-            units_power=processing_params['units_power']
-        )
-        # Temporarily update for visualization (doesn't affect cache)
-        fid.processing = current_processing
-        
-        # Display all processing parameters (show complete parameter set)
-        print("Processing parameters:")
-        print(f"  start_us: {processing_params['start_us'] or 'None (full FID start)'}")
-        print(f"  end_us: {processing_params['end_us'] or 'None (full FID end)'}")
-        print(f"  zpf: {processing_params['zpf']}")
-        print(f"  expf_us: {processing_params['expf_us'] or 'None (no exponential filter)'}")
-        print(f"  window_function: {processing_params['window_function'] or 'None (no windowing)'}")
-        print(f"  units_power: {processing_params['units_power']}")
-        
-        # Calculate ComplexFT on-demand using separated stages
-        print("Computing ComplexFT on-demand...")
-        try:
-            # Stage 1: FID Preprocessing
-            preprocessed_fid = fid.preprocess(**processing_params)
-            
-            # Stage 2: FFT Calculation  
-            complex_spectrum, freq_array = preprocessed_fid.compute_fft()
-            
-            # Stage 3: Post-processing (ComplexFT creation)
-            from ..core.data_structures import ComplexFT
-            complex_ft = ComplexFT.from_spectrum(
-                complex_spectrum=complex_spectrum,
-                freq_array=freq_array,
-                metadata={'processing_params': preprocessed_fid.processing_params}
-            )
-            
-            print(f"✓ ComplexFT calculated: {len(complex_ft.complex_spectrum):,} frequency points")
-            print(f"  Frequency range: {complex_ft.freq_array[0]:.1f} - {complex_ft.freq_array[-1]:.1f} MHz")
-            
-        except Exception as e:
-            print_error(f"Failed to compute ComplexFT: {e}")
-            return 1
-        
-        # Apply frequency trimming if requested
-        if trim_range:
-            print(f"Trimming to {trim_range[0]:.1f} - {trim_range[1]:.1f} MHz...")
-            try:
-                complex_ft = complex_ft.trim_to_range(trim_range[0], trim_range[1])
-                print(f"✓ Trimmed spectrum: {len(complex_ft.complex_spectrum):,} points")
-            except Exception as e:
-                print_error(f"Failed to trim spectrum: {e}")
-                return 1
-        
-        # Generate enhanced plot with FID panels
-        print("Creating enhanced spectrum plot with FID panels...")
-        try:
-            plot_title = f"Experiment {args.experiment_id} - Enhanced FT Visualization"
+            # Generate title for plot
+            pipeline_name = Path(file_path).stem
+            plot_title = f"Pipeline {pipeline_name} - Enhanced FT Visualization"
             if trim_range:
                 plot_title += f" ({trim_range[0]:.0f}-{trim_range[1]:.0f} MHz)"
             
-            # Always use matplotlib backend for CLI - it's more reliable than plotly for CLI usage
+            fig = visualize_ft_impl(
+                file_path=file_path,
+                start_us=args.start_us,
+                end_us=args.end_us,
+                zpf=args.zpf,
+                expf_us=args.expf_us,
+                window_function=args.window_function,
+                units_power=args.units_power,
+                trim_range=trim_range,
+                title=plot_title,
+                show_fid_panels=True,
+                backend='matplotlib',
+                interactive=not args.no_interactive
+            )
+            
+            # Handle output based on mode
             if args.no_interactive:
-                # Create static plot and save to file
-                fig = plot_complex_ft(
-                    complex_ft=complex_ft,
-                    title=plot_title,
-                    backend='matplotlib',
-                    interactive=False,
-                    fid=fid,
-                    preprocessed_fid=preprocessed_fid,
-                    show_fid_panels=True
-                )
+                # Save static plot
                 if args.output:
                     fig.savefig(args.output, dpi=150, bbox_inches='tight')
                     print(f"✅ Enhanced plot saved to: {args.output}")
                 else:
                     # Save with default name
-                    output_file = f"{args.experiment_id}_enhanced_spectrum.png"
+                    output_file = f"{pipeline_name}_enhanced_spectrum.png"
                     fig.savefig(output_file, dpi=150, bbox_inches='tight')
                     print(f"✅ Enhanced plot saved to: {output_file}")
                 
@@ -317,108 +212,34 @@ def cmd_ft_visualize(args) -> int:
                 import matplotlib.pyplot as plt
                 plt.close(fig)
             else:
-                # Create interactive matplotlib plot
-                fig = plot_complex_ft(
-                    complex_ft=complex_ft,
-                    title=plot_title,
-                    backend='matplotlib',
-                    interactive=True,
-                    fid=fid,
-                    preprocessed_fid=preprocessed_fid,
-                    show_fid_panels=True
-                )
-                # Show the interactive plot
+                # Show interactive plot
                 import matplotlib.pyplot as plt
                 plt.show()
                 print("✅ Enhanced interactive plot displayed")
                 print("   Close the plot window to continue...")
-                
-        except Exception as e:
-            print_error(f"Failed to generate enhanced plot: {e}")
+            
+            print()
+            print("💡 ComplexFT calculated on-demand from pipeline file")
+            print("   Try different parameters without permanent storage:")
+            print(f"   ftmwpipeline ft-visualize {file_path} --zpf 2 --expf_us 3.0")
+            if not trim_range:
+                print(f"   ftmwpipeline ft-visualize {file_path} --trim 26500:40000")
+            
+            return 0
+            
+        except FileNotFoundError:
+            print_error(f"Pipeline file not found: {file_path}")
+            print("")
+            print("Stage 0 (Data Import) must be completed before FT visualization.")
+            print(f"Run: ftmwpipeline data-load {file_path} --source <path>")
+            print("")
+            print("For example:")
+            print(f"  ftmwpipeline data-load {file_path} --source examples/blackchirp_data/2638/")
+            print(f"  ftmwpipeline ft-visualize {file_path}")
             return 1
-        
-        # Implement interactive parameter persistence
-        if not args.no_interactive:
-            # Check if user provided custom parameters different from cache defaults
-            cached_fid = load_fid_cache(args.experiment_id, str(cache_dir))
-            default_params = {
-                'start_us': cached_fid.processing.start_us,
-                'end_us': cached_fid.processing.end_us,
-                'zpf': cached_fid.processing.zpf,
-                'expf_us': cached_fid.processing.expf_us,
-                'window_function': cached_fid.processing.winf,
-                'rdc': cached_fid.processing.rdc,
-                'units_power': cached_fid.processing.units_power
-            }
-            
-            # Determine which parameters were customized by user
-            user_params = {
-                'start_us': getattr(args, 'start_us', None),
-                'end_us': getattr(args, 'end_us', None),
-                'zpf': getattr(args, 'zpf', 1),
-                'expf_us': getattr(args, 'expf_us', 5.0),
-                'window_function': getattr(args, 'window_function', None),
-                'rdc': True,  # Always true in current implementation
-                'units_power': getattr(args, 'units_power', 6)
-            }
-            
-            # Find parameters that differ from cached defaults
-            custom_params = {}
-            for param, user_value in user_params.items():
-                default_value = default_params.get(param)
-                if user_value != default_value and user_value is not None:
-                    # Special handling for default values that might indicate customization
-                    if param == 'zpf' and user_value != 1:  # zpf=1 is default
-                        custom_params[param] = user_value
-                    elif param == 'expf_us' and user_value != 5.0:  # expf_us=5.0 is default
-                        custom_params[param] = user_value
-                    elif param == 'units_power' and user_value != 6:  # units_power=6 is default
-                        custom_params[param] = user_value
-                    elif param in ['start_us', 'end_us', 'window_function'] and user_value is not None:
-                        custom_params[param] = user_value
-            
-            # Also check trim parameters (include as post-processing setting)
-            if trim_range:
-                custom_params['trim_range'] = f"{trim_range[0]:.0f}:{trim_range[1]:.0f}"
-            
-            # Offer to save parameters if user provided custom values
-            if custom_params:
-                print()
-                print("You used custom processing parameters:")
-                for param, value in custom_params.items():
-                    print(f"  {param}: {value}")
-                print()
-                
-                try:
-                    response = input("Save complete parameter set as defaults for future processing? (y/N): ").strip()
-                    if response.lower().startswith('y'):
-                        # Save all parameters (preprocessing + postprocessing)
-                        # Handle trim_range specially for storage format
-                        params_to_save = {k: v for k, v in custom_params.items()}
-                        if 'trim_range' in params_to_save:
-                            # Store trim settings in a format that can be used by future stages
-                            trim_value = params_to_save.pop('trim_range')
-                            params_to_save['default_trim_range'] = trim_value
-                        
-                        if params_to_save:
-                            update_fid_processing_defaults(args.experiment_id, params_to_save, str(cache_dir))
-                            print("✅ Complete parameter set saved as defaults for this experiment")
-                            print("   Future pipeline stages will use these preprocessing and postprocessing parameters by default")
-                        else:
-                            print("No parameters to save")
-                    else:
-                        print("Parameters not saved - using for visualization only")
-                except (EOFError, KeyboardInterrupt):
-                    print("\nParameters not saved - using for visualization only")
-        
-        print()
-        print("💡 ComplexFT calculated on-demand from cached FID data")
-        print("   Try different parameters without permanent storage:")
-        print(f"   ftmwpipeline ft-visualize {args.experiment_id} --zpf 2 --expf_us 3.0")
-        if not trim_range:
-            print(f"   ftmwpipeline ft-visualize {args.experiment_id} --trim 26500:40000")
-        
-        return 0
+        except Exception as e:
+            print_error(f"Failed to visualize FT: {e}")
+            return 1
         
     except KeyboardInterrupt:
         print_error("Visualization interrupted by user", 130)
@@ -451,25 +272,25 @@ Intended for: Power users and automated pipeline processes
 
 Examples:
   # Validate basic processing parameters
-  ftmwpipeline ft-process exp_2638 --zpf 1 --expf_us 5.0
+  ftmwpipeline ft-process exp_2638.ftmw --zpf 1 --expf_us 5.0
   
   # Test parameter combinations with trimming
-  ftmwpipeline ft-process exp_2638 --zpf 2 --expf_us 10.0 --trim 26500:40000
+  ftmwpipeline ft-process exp_2638.ftmw --zpf 2 --expf_us 10.0 --trim 26500:40000
   
   # Test windowing and scaling parameters  
-  ftmwpipeline ft-process exp_2638 --start-us 1.0 --end-us 10.0 --units-power 3
+  ftmwpipeline ft-process exp_2638.ftmw --start-us 1.0 --end-us 10.0 --units-power 3
 
 Workflow:
-  1. ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638/
-  2. ftmwpipeline ft-process exp_2638 [--parameters]  # Power user validation
+  1. ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/
+  2. ftmwpipeline ft-process exp_2638.ftmw [--parameters]  # Power user validation
      OR
-     ftmwpipeline ft-visualize exp_2638 [--parameters] # Interactive exploration
+     ftmwpipeline ft-visualize exp_2638.ftmw [--parameters] # Interactive exploration
         """
     )
     
     ft_process_parser.add_argument(
-        'experiment_id',
-        help='Identifier for the cached experiment (from data-load command)'
+        'file_path',
+        help='Path to .ftmw pipeline file'
     )
     ft_process_parser.add_argument(
         '--start-us',
@@ -505,11 +326,6 @@ Workflow:
         help='Frequency range to keep as "min:max" in MHz (e.g., "26500:40000")'
     )
     ft_process_parser.add_argument(
-        '--cache-dir',
-        default='cache/',
-        help='Cache directory for results (default: cache/)'
-    )
-    ft_process_parser.add_argument(
         '-v', '--verbose',
         action='store_true',
         help='Enable verbose output'
@@ -534,16 +350,16 @@ Enhanced Visualization:
 
 Examples:
   # Enhanced visualization with windowing bounds displayed
-  ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --expf_us 5.0
+  ftmwpipeline ft-visualize exp_2638.ftmw --start-us 2.0 --end-us 12.0 --expf_us 5.0
   
   # Explore custom parameters with trimmed frequency range
-  ftmwpipeline ft-visualize exp_2638 --zpf 2 --expf_us 3.0 --trim 26500:40000
+  ftmwpipeline ft-visualize exp_2638.ftmw --zpf 2 --expf_us 3.0 --trim 26500:40000
   
   # Static enhanced image export for presentations
-  ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --no-interactive --output enhanced_spectrum.png
+  ftmwpipeline ft-visualize exp_2638.ftmw --start-us 2.0 --end-us 12.0 --no-interactive --output enhanced_spectrum.png
   
   # Compare preprocessing effects with different window functions
-  ftmwpipeline ft-visualize exp_2638 --window-function hann --expf_us 10.0
+  ftmwpipeline ft-visualize exp_2638.ftmw --window-function hann --expf_us 10.0
 
 Key Features:
   - Enhanced 3-panel visualization showing complete FID-to-spectrum workflow  
@@ -563,8 +379,8 @@ Workflow:
     )
     
     ft_visualize_parser.add_argument(
-        'experiment_id',
-        help='Identifier for the cached experiment data'
+        'file_path',
+        help='Path to .ftmw pipeline file'
     )
     ft_visualize_parser.add_argument(
         '--start-us',
@@ -598,11 +414,6 @@ Workflow:
     ft_visualize_parser.add_argument(
         '--trim',
         help='Frequency range to keep as "min:max" in MHz (e.g., "26500:40000")'
-    )
-    ft_visualize_parser.add_argument(
-        '--cache-dir',
-        default='cache/',
-        help='Cache directory containing results (default: cache/)'
     )
     ft_visualize_parser.add_argument(
         '--no-interactive',

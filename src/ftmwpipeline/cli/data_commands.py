@@ -10,91 +10,45 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from ..io.data_loaders import detect_format, validate_source, load_fid, list_formats, get_format_info
-from ..io.fid_serialization import save_fid_cache, load_fid_cache
+from ..io.data_loaders import list_formats, get_format_info
+from .._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl, visualize_fid_impl, get_pipeline_info_impl
 from .utils import setup_logging
 
 
 def cmd_data_load(args) -> int:
     """
-    Load experimental data and cache as FID object.
+    Import experimental data into a .ftmw pipeline file.
     
     This command handles data loading from various experimental formats
-    (BlackChirp, CSV, HDF5, etc.) and caches the resulting FID object
+    (BlackChirp, CSV, HDF5, etc.) and creates a .ftmw pipeline file
     for use in subsequent pipeline stages.
     """
     setup_logging(args.verbose)
     
     try:
         # Validate inputs
-        if not args.experiment_id:
-            print("❌ Error: experiment_id is required")
+        if not args.file_path:
+            print("❌ Error: file_path is required")
             return 1
         
         if not args.source:
             print("❌ Error: --source path is required")
             return 1
         
-        source_path = Path(args.source)
-        if not source_path.exists():
-            print(f"❌ Error: Source path does not exist: {source_path}")
-            return 1
+        file_path = args.file_path
+        if not file_path.endswith('.ftmw'):
+            file_path = file_path + '.ftmw'
         
-        print(f"🔍 Loading data for experiment '{args.experiment_id}'")
-        print(f"📁 Source: {source_path}")
-        
-        # Format detection or validation
-        format_name = args.format
-        if format_name is None:
-            print("🔍 Auto-detecting data format...")
-            format_name = detect_format(source_path)
-            
-            if format_name is None:
-                print(f"❌ Error: Could not detect data format for: {source_path}")
-                print(f"💡 Try specifying format explicitly with --format")
-                print(f"   Available formats: {', '.join(list_formats())}")
-                return 1
-            else:
-                print(f"✅ Detected format: {format_name}")
-        else:
-            print(f"🎯 Using specified format: {format_name}")
-        
-        # Validate source with detected/specified format
-        print(f"🔍 Validating source with {format_name} loader...")
-        validation = validate_source(source_path, format_name)
-        
-        if not validation['valid']:
-            print(f"❌ Source validation failed:")
-            for error in validation['errors']:
-                print(f"   • {error}")
-            return 1
-        
-        print("✅ Source validation passed")
-        
-        # Show detected metadata
-        if validation.get('metadata'):
-            print("\n📊 Detected metadata:")
-            metadata = validation['metadata']
-            if 'n_fids' in metadata:
-                print(f"   Available FIDs: {metadata['n_fids']}")
-            if 'probe_freq_mhz' in metadata:
-                print(f"   Probe frequency: {metadata['probe_freq_mhz']:.3f} MHz")
-            if 'spacing_us' in metadata:
-                # Convert μs to seconds and use scientific notation
-                spacing_seconds = metadata['spacing_us'] * 1e-6
-                print(f"   Time spacing: {spacing_seconds:.4e} s")
-            if 'duration_us' in metadata:
-                print(f"   FID duration: {metadata['duration_us']:.1f} μs")
-            if 'n_points' in metadata:
-                print(f"   Data points: {metadata['n_points']:,}")
+        print(f"🔍 Importing data into pipeline file '{file_path}'")
+        print(f"📁 Source: {args.source}")
         
         # Prepare loading parameters
-        load_params = {}
+        format_params = {}
         
         # Handle format-specific parameters
-        if format_name == 'blackchirp' and args.fid_index is not None:
-            load_params['fid_index'] = args.fid_index
-        elif format_name == 'csv':
+        if args.format == 'blackchirp' and args.fid_index is not None:
+            format_params['fid_index'] = args.fid_index
+        elif args.format == 'csv':
             # CSV format requires explicit parameters
             if args.spacing_us is None:
                 print("❌ Error: CSV format requires --spacing_us parameter")
@@ -102,47 +56,43 @@ def cmd_data_load(args) -> int:
             if args.probe_freq_mhz is None:
                 print("❌ Error: CSV format requires --probe_freq_mhz parameter")
                 return 1
-            load_params.update({
+            format_params.update({
                 'spacing_us': args.spacing_us,
                 'probe_freq_mhz': args.probe_freq_mhz,
                 'sideband': args.sideband or 'upper',
                 'shots': args.shots or 1
             })
         
-        # Load FID data
-        print(f"\n⚡ Loading FID data...")
-        try:
-            fid = load_fid(source_path, format_name, **load_params)
-            print(f"✅ FID data loaded successfully")
-            print(f"   Data points: {fid.n_points:,}")
-            print(f"   Duration: {fid.duration_us:.1f} μs")
-            print(f"   Probe freq: {fid.probe_freq_mhz:.3f} MHz")
-            print(f"   Sideband: {fid.sideband.value}")
-            print(f"   Shots: {fid.shots}")
-            
-        except Exception as e:
-            print(f"❌ Error loading FID data: {e}")
-            return 1
+        # Use shared implementation for data import
+        result = import_data_impl(
+            file_path=file_path,
+            source=args.source,
+            format_name=args.format,
+            **format_params
+        )
         
-        # Cache FID data
-        print(f"\n💾 Caching FID data...")
-        try:
-            cache_file = save_fid_cache(args.experiment_id, fid, args.cache_dir)
-            print(f"✅ FID cached successfully")
-            print(f"📁 Cache file: {cache_file}")
-            
-            # Show cache information
-            cache_size_mb = cache_file.stat().st_size / (1024 * 1024)
-            print(f"💿 Cache size: {cache_size_mb:.2f} MB")
-            
-        except Exception as e:
-            print(f"❌ Error caching FID data: {e}")
-            return 1
+        # Display results
+        print(f"✅ Data import completed successfully!")
+        print(f"📁 Pipeline file: {result['pipeline_file']}")
+        print(f"📊 Source format: {result['format_name']}")
         
-        print(f"\n🎉 Data loading completed successfully!")
-        print(f"💡 Next steps:")
-        print(f"   • Visualize FID: ftmwpipeline data-visualize {args.experiment_id}")
-        print(f"   • Process FT: ftmwpipeline ft-process {args.experiment_id} --from-cache")
+        # Show FID metadata
+        fid_info = result['fid_metadata']
+        print(f"📊 FID Information:")
+        print(f"   Data points: {fid_info['n_points']:,}")
+        print(f"   Duration: {fid_info['duration_us']:.1f} μs")
+        print(f"   Probe freq: {fid_info['probe_freq_mhz']:.3f} MHz")
+        print(f"   Sideband: {fid_info['sideband']}")
+        print(f"   Shots: {fid_info['shots']:,}")
+        
+        # Show file size
+        pipeline_file = Path(result['pipeline_file'])
+        file_size_mb = pipeline_file.stat().st_size / (1024 * 1024)
+        print(f"💿 File size: {file_size_mb:.2f} MB")
+        
+        print(f"\n💡 Next steps:")
+        print(f"   • Visualize FID: ftmwpipeline data-visualize {file_path}")
+        print(f"   • Process FT: ftmwpipeline ft-process {file_path}")
         
         return 0
         
@@ -156,47 +106,30 @@ def cmd_data_load(args) -> int:
 
 def cmd_data_visualize(args) -> int:
     """
-    Visualize cached FID data for validation.
+    Visualize FID data from pipeline file.
     
-    This command loads FID data from cache and creates plots for
+    This command loads FID data from a .ftmw pipeline file and creates plots for
     data validation and quality assessment.
     """
     setup_logging(args.verbose)
     
     try:
-        # Check for FID cache file
-        fid_cache_file = Path(args.cache_dir) / f"{args.experiment_id}_fid.h5"
-        if not fid_cache_file.exists():
-            print(f"❌ Error: FID cache not found for experiment '{args.experiment_id}'")
-            print(f"💡 Run data loading first: ftmwpipeline data-load {args.experiment_id} --source <path>")
-            return 1
+        file_path = args.file_path
+        if not file_path.endswith('.ftmw'):
+            file_path = file_path + '.ftmw'
         
-        # Load FID from cache
-        print(f"📊 Loading FID data for visualization...")
-        try:
-            fid = load_fid_cache(args.experiment_id, args.cache_dir)
-            print(f"✅ FID data loaded from cache")
-        except Exception as e:
-            print(f"❌ Error loading FID cache: {e}")
-            return 1
+        print(f"📊 Visualizing FID data from '{file_path}'...")
         
-        # Import visualization function
+        # Use shared implementation for FID visualization
         try:
-            from ..visualization.fid_visualization import plot_fid
-        except ImportError:
-            print("❌ Error: FID visualization not available")
-            print("💡 This feature will be implemented in the visualization module")
-            return 1
-        
-        # Create FID plot
-        print(f"📊 Creating FID visualization...")
-        try:
-            fig = plot_fid(fid, 
-                          show_metadata=args.show_metadata,
-                          title=f"Experiment {args.experiment_id} - FID Data")
+            fig = visualize_fid_impl(
+                file_path=file_path,
+                show_metadata=args.show_metadata,
+                title=f"Pipeline {Path(file_path).stem} - FID Data"
+            )
             
             if args.save:
-                output_file = Path(f"{args.experiment_id}_fid.png")
+                output_file = Path(f"{Path(file_path).stem}_fid.png")
                 fig.savefig(output_file, dpi=300, bbox_inches='tight')
                 print(f"💾 Plot saved: {output_file}")
             
@@ -209,24 +142,30 @@ def cmd_data_visualize(args) -> int:
             
         except Exception as e:
             print(f"❌ Error creating visualization: {e}")
-            # Fall back to basic info display
-            print(f"\n📊 FID Data Summary:")
-            print(f"   Data points: {fid.n_points:,}")
-            print(f"   Duration: {fid.duration_us:.1f} μs")
-            print(f"   Spacing: {fid.spacing:.4e} s")
-            print(f"   Probe frequency: {fid.probe_freq_mhz:.3f} MHz")
-            print(f"   Sideband: {fid.sideband.value}")
-            print(f"   Shots: {fid.shots}")
-            
-            if args.show_metadata and fid.metadata:
-                print(f"\n📋 Source Metadata:")
-                for key, value in fid.metadata.items():
-                    if isinstance(value, dict):
-                        print(f"   {key}: {type(value).__name__} with {len(value)} items")
-                    else:
-                        print(f"   {key}: {value}")
-            
-            return 0
+            # Fall back to basic info display using pipeline info
+            try:
+                file_path_obj, source_metadata, stage_tracker, fid = get_pipeline_info_impl(file_path)
+                
+                print(f"\n📊 FID Data Summary:")
+                print(f"   Data points: {fid.n_points:,}")
+                print(f"   Duration: {fid.duration_us:.1f} μs")
+                print(f"   Spacing: {fid.spacing:.4e} s")
+                print(f"   Probe frequency: {fid.probe_freq_mhz:.3f} MHz")
+                print(f"   Sideband: {fid.sideband.value}")
+                print(f"   Shots: {fid.shots}")
+                
+                if args.show_metadata:
+                    print(f"\n📋 Source Metadata:")
+                    print(f"   Source path: {source_metadata.source_path}")
+                    print(f"   Format: {source_metadata.format_name}")
+                    print(f"   Import time: {source_metadata.import_timestamp}")
+                    if source_metadata.loader_parameters:
+                        print(f"   Loader parameters: {source_metadata.loader_parameters}")
+                
+                return 0
+            except Exception as info_error:
+                print(f"❌ Error getting pipeline info: {info_error}")
+                return 1
         
     except KeyboardInterrupt:
         print("\n⚠️ Operation cancelled by user")
@@ -319,25 +258,24 @@ def add_data_subcommands(subparsers: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Load BlackChirp experiment (auto-detect format)
-  ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638/
+  # Import BlackChirp experiment (auto-detect format)
+  ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/
   
-  # Load BlackChirp with specific FID index
-  ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638/ --fid-index 1
+  # Import BlackChirp with specific FID index
+  ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/ --fid-index 1
   
-  # Load CSV file (requires explicit parameters)  
-  ftmwpipeline data-load exp_csv --source data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
+  # Import CSV file (requires explicit parameters)  
+  ftmwpipeline data-load exp_csv.ftmw --source data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
   
   # Force specific format
-  ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638/ --format blackchirp
+  ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/ --format blackchirp
         """
     )
     
-    load_parser.add_argument('experiment_id', help='Experiment identifier for caching')
+    load_parser.add_argument('file_path', help='Path to .ftmw pipeline file to create')
     load_parser.add_argument('--source', required=True, help='Path to data source (file or directory)')
     load_parser.add_argument('--format', choices=['blackchirp', 'csv', 'hdf5'], 
                            help='Data format (auto-detected if not specified)')
-    load_parser.add_argument('--cache-dir', default='cache', help='Cache directory (default: cache)')
     load_parser.add_argument('--verbose', '-v', action='store_true', help='Verbose output')
     
     # BlackChirp-specific options
@@ -360,18 +298,17 @@ Examples:
         epilog="""
 Examples:
   # Basic FID visualization
-  ftmwpipeline data-visualize exp_2638
+  ftmwpipeline data-visualize exp_2638.ftmw
   
   # Show metadata and save plot
-  ftmwpipeline data-visualize exp_2638 --show-metadata --save
+  ftmwpipeline data-visualize exp_2638.ftmw --show-metadata --save
   
   # Non-interactive mode
-  ftmwpipeline data-visualize exp_2638 --no-show --save
+  ftmwpipeline data-visualize exp_2638.ftmw --no-show --save
         """
     )
     
-    viz_parser.add_argument('experiment_id', help='Experiment identifier')
-    viz_parser.add_argument('--cache-dir', default='cache', help='Cache directory (default: cache)')
+    viz_parser.add_argument('file_path', help='Path to .ftmw pipeline file')
     viz_parser.add_argument('--show-metadata', action='store_true', help='Display metadata information')
     viz_parser.add_argument('--save', action='store_true', help='Save plot to file')
     viz_parser.add_argument('--no-show', action='store_true', help='Do not display plot interactively')
