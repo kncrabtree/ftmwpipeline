@@ -346,10 +346,11 @@ def open_pipeline_file(filepath: Union[str, Path]) -> Tuple[Path, SourceMetadata
             
             return filepath, source_metadata, stage_tracker
             
-    except h5py.Error as e:
-        raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
     except Exception as e:
-        raise RuntimeError(f"Failed to open pipeline file {filepath}: {e}") from e
+        if "h5py" in str(type(e)).lower() or "hdf5" in str(e).lower():
+            raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
+        else:
+            raise RuntimeError(f"Failed to open pipeline file {filepath}: {e}") from e
 
 
 def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
@@ -394,9 +395,11 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
         
         # Try loading FID data
         try:
-            fid = load_fid_from_hdf5(filepath)
-            if fid.n_points == 0:
-                errors.append("FID data is empty")
+            with h5py.File(filepath, 'r') as h5f:
+                stage0_group = h5f['stage0_fid_data']
+                fid = load_fid_from_hdf5(stage0_group)
+                if fid.n_points == 0:
+                    errors.append("FID data is empty")
         except Exception as e:
             errors.append(f"Cannot load FID data: {e}")
         
