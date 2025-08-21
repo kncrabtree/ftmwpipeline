@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from .core.data_structures import FID, ComplexFT
+from .preprocessing.noise_estimation import NoiseResult
 from .file_manager import (
     SourceMetadata, PipelineStageTracker,
     PipelineFileError, PipelineExistsError, StageDependencyError, PipelineCorruptionError,
@@ -18,6 +19,9 @@ from .file_manager import (
 from .io.data_loaders import load_fid, detect_format, validate_source
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
 from ._internal.stage1_impl import compute_ft_impl, visualize_ft_impl, save_ft_parameters_impl
+from ._internal.stage2_impl import (
+    compute_noise_estimation_impl, visualize_noise_impl
+)
 
 
 class Pipeline:
@@ -258,11 +262,8 @@ class Pipeline:
         RuntimeError
             If FT computation fails
         """
-        # Check dependencies
-        self.stage_tracker.validate_dependencies('stage1_complex_ft')
-        
         try:
-            # Use shared implementation for FT computation
+            # Use shared implementation for FT computation (handles dependency checking)
             result = compute_ft_impl(
                 file_path=str(self.filepath),
                 start_us=start_us if not from_saved_params else None,
@@ -277,9 +278,7 @@ class Pipeline:
             
             complex_ft = result['complex_ft']
             
-            # Mark stage as completed
-            self.stage_tracker.mark_completed('stage1_complex_ft')
-            
+            # Storage and stage completion handled by shared implementation
             self.logger.info(f"FT computed: {complex_ft.n_points:,} frequency points")
             if trim:
                 self.logger.info(f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz")
@@ -341,9 +340,6 @@ class Pipeline:
         RuntimeError
             If visualization fails
         """
-        # Check dependencies
-        self.stage_tracker.validate_dependencies('stage1_complex_ft')
-        
         try:
             # Use shared implementation for FT visualization
             fig = visualize_ft_impl(
@@ -401,6 +397,149 @@ class Pipeline:
             
         except Exception as e:
             raise RuntimeError(f"Failed to create FT visualization: {e}") from e
+    
+    def estimate_noise(self, skew_target: Optional[float] = None, 
+                       min_bin_fraction: Optional[float] = None,
+                       smoothing_window_mhz: Optional[float] = None,
+                       min_noise_fraction: Optional[float] = None,
+                       from_saved_params: bool = False) -> NoiseResult:
+        """
+        Estimate frequency-dependent noise using adaptive binning.
+        
+        This method implements Stage 2 noise estimation, equivalent to the CLI
+        estimate-noise command. Requires Stage 1 (FT computation) to be completed.
+        
+        Parameters
+        ----------
+        skew_target : float, optional
+            Target skewness for noise identification (default: 0.631 for Rayleigh)
+        min_bin_fraction : float, optional
+            Minimum bin size as fraction of total data (default: 1/64)
+        smoothing_window_mhz : float, optional
+            RMS smoothing window size in MHz (default: auto-calculated)
+        min_noise_fraction : float, optional
+            Minimum fraction of points that must be noise per bin (default: 2/3)
+        from_saved_params : bool, default False
+            If True, ignore provided parameters and use saved parameters only
+            
+        Returns
+        -------
+        NoiseResult
+            Container with RMS noise estimate, noise mask, and diagnostics
+            
+        Raises
+        ------
+        StageDependencyError
+            If Stage 1 (FT computation) has not been completed
+        ValueError
+            If noise estimation parameters are invalid
+        RuntimeError
+            If noise estimation computation fails
+        """
+        try:
+            # Compute noise estimation using shared implementation (handles dependency checking and storage)
+            result = compute_noise_estimation_impl(
+                file_path=str(self.filepath),
+                skew_target=skew_target,
+                min_bin_fraction=min_bin_fraction,
+                smoothing_window_mhz=smoothing_window_mhz,
+                min_noise_fraction=min_noise_fraction,
+                from_saved_params=from_saved_params
+            )
+            
+            # Storage and stage tracking handled by shared implementation
+            self.logger.info("Stage 2: Noise estimation completed successfully")
+            return result['noise_result']
+            
+        except StageDependencyError:
+            # Re-raise dependency errors with clear message
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to estimate noise: {e}") from e
+    
+    def visualize_noise(self, y_max_factor: Optional[float] = None,
+                        figsize: Optional[tuple] = None, title: Optional[str] = None,
+                        show_bin_boundaries: Optional[bool] = None,
+                        show_noise_points: Optional[bool] = None,
+                        save_params: bool = False, backend: str = 'matplotlib',
+                        interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
+                        **plot_kwargs):
+        """
+        Create noise estimation diagnostic visualization.
+        
+        This method creates diagnostic plots showing spectrum, noise points,
+        adaptive bin boundaries, and RMS noise estimates. Equivalent to the CLI
+        visualize-noise command.
+        
+        Parameters
+        ----------
+        y_max_factor : float, optional
+            Y-axis maximum as multiple of median RMS noise (default: 20.0)
+        figsize : tuple, optional
+            Figure size (width, height) in inches (default: (16, 6))
+        title : str, optional
+            Custom title for the plot
+        show_bin_boundaries : bool, optional
+            Whether to show adaptive bin boundaries (default: True)
+        show_noise_points : bool, optional
+            Whether to highlight noise points (default: True)
+        save_params : bool, default False
+            Whether to save custom parameters for future use
+        backend : str, default 'matplotlib'
+            Plotting backend ('matplotlib' or 'plotly')
+        interactive : bool, default True
+            Whether to create interactive plots
+        output_file : str or Path, optional
+            If provided, save plot to this file
+        **plot_kwargs
+            Additional plotting parameters
+            
+        Returns
+        -------
+        matplotlib.Figure or plotly.Figure
+            The created figure object
+            
+        Raises
+        ------
+        StageDependencyError
+            If Stage 2 (noise estimation) has not been completed
+        RuntimeError
+            If visualization fails
+        """
+        try:
+            # Create visualization using shared implementation (handles dependency checking and parameter saving)
+            fig = visualize_noise_impl(
+                file_path=str(self.filepath),
+                y_max_factor=y_max_factor,
+                figsize=figsize,
+                title=title,
+                show_bin_boundaries=show_bin_boundaries,
+                show_noise_points=show_noise_points,
+                backend=backend,
+                interactive=interactive,
+                save_params=save_params,
+                **plot_kwargs
+            )
+            
+            # Save output file if requested
+            if output_file:
+                try:
+                    if backend == 'plotly':
+                        fig.write_html(str(output_file))
+                    else:
+                        fig.savefig(str(output_file), dpi=300, bbox_inches='tight')
+                    self.logger.info(f"Visualization saved to: {output_file}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to save visualization: {e}")
+            
+            self.logger.info("Noise visualization completed")
+            return fig
+            
+        except StageDependencyError:
+            # Re-raise dependency errors with clear message
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to create noise visualization: {e}") from e
     
     def info(self) -> Dict[str, Any]:
         """

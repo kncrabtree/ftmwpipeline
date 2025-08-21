@@ -155,10 +155,21 @@ def compute_ft_impl(
     
     # Stage 3: ComplexFT creation
     try:
+        # Prepare FID context for serialization (universal experimental parameters)
+        fid_context = {
+            'probe_freq_mhz': fid.probe_freq_mhz,
+            'spacing_us': fid.spacing * 1e6,  # Convert to microseconds
+            'sideband': fid.sideband.value,
+            'original_fid_length': len(fid.data)
+        }
+        
         complex_ft = ComplexFT.from_spectrum(
             complex_spectrum=complex_spectrum,
             freq_array=freq_array,
-            metadata={'processing_params': preprocessed_fid.processing_params}
+            metadata={
+                'processing_params': preprocessed_fid.processing_params,
+                'fid_context': fid_context
+            }
         )
         logger.info(f"ComplexFT created: {len(complex_ft.complex_spectrum):,} frequency points")
     except Exception as e:
@@ -187,6 +198,14 @@ def compute_ft_impl(
     
     if trim_range:
         result['trim_range'] = trim_range
+    
+    # Store ComplexFT to pipeline file automatically
+    try:
+        _save_complex_ft_to_pipeline_file(file_path, complex_ft, processing_params)
+        logger.info("ComplexFT saved to pipeline file successfully")
+    except Exception as e:
+        logger.warning(f"Failed to save ComplexFT to pipeline file: {e}")
+        # Don't fail the computation if storage fails
     
     return result
 
@@ -364,3 +383,55 @@ def compare_ft_parameters_impl(
         }
     except Exception as e:
         raise RuntimeError(f"Failed to compare parameters: {e}")
+
+
+def _save_complex_ft_to_pipeline_file(file_path: str, complex_ft, parameters_used: Dict[str, Any]) -> None:
+    """
+    Save ComplexFT to pipeline file in stage1_complex_ft group.
+    
+    This function handles the automatic storage of ComplexFT results in .ftmw files,
+    ensuring consistent behavior across all interfaces (CLI, Pipeline class, functional API).
+    """
+    import h5py
+    import json
+    from datetime import datetime
+    
+    try:
+        with h5py.File(file_path, 'a') as h5f:
+            # Remove existing ComplexFT if present (allow re-computation)
+            if 'stage1_complex_ft' in h5f:
+                del h5f['stage1_complex_ft']
+            
+            # Create stage1_complex_ft group
+            stage1_group = h5f.create_group('stage1_complex_ft')
+            
+            # Save ComplexFT using existing serialization (now works with metadata-based FID context)
+            from ..io.complex_ft_serialization import save_complex_ft_to_hdf5
+            save_complex_ft_to_hdf5(complex_ft, stage1_group)
+            
+            # Add metadata and timestamp
+            stage1_group.attrs['creation_time'] = datetime.now().isoformat()
+            stage1_group.attrs['stage_name'] = 'stage1_complex_ft'
+            stage1_group.attrs['parameters_used'] = json.dumps(parameters_used, default=str)
+            
+            # Update pipeline stages to mark Stage 1 as completed
+            if 'pipeline_stages' in h5f:
+                stages_group = h5f['pipeline_stages']
+                
+                # Load current completed stages
+                completed_stages_json = stages_group.attrs.get('completed_stages', '[]')
+                completed_stages = json.loads(completed_stages_json)
+                
+                # Add stage1_complex_ft if not already present
+                if 'stage1_complex_ft' not in completed_stages:
+                    completed_stages.append('stage1_complex_ft')
+                
+                # Update completed stages and timestamp
+                stages_group.attrs['completed_stages'] = json.dumps(completed_stages)
+                stages_group.attrs['last_updated'] = datetime.now().isoformat()
+        
+        logger.info("ComplexFT and stage tracking saved to pipeline file")
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to save ComplexFT to pipeline file: {e}")
+

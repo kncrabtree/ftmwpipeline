@@ -160,7 +160,7 @@ def load_complex_ft_from_hdf5(h5_group: h5py.Group) -> ComplexFT:
         
         # All parameters 
         for key in ['n_fid_padded', 'spacing_us', 'probe_freq_mhz', 
-                   'sideband', 'autoscale_MHz', 'n_spectrum', 'freq_min', 'freq_max']:
+                   'sideband', 'n_spectrum', 'freq_min', 'freq_max']:
             value = freq_group.attrs[key]
             if isinstance(value, bytes):
                 value = value.decode('utf-8')
@@ -178,14 +178,16 @@ def load_complex_ft_from_hdf5(h5_group: h5py.Group) -> ComplexFT:
                 f"got {len(freq_array)}"
             )
         
-        # Reconstruct FID if processing parameters are available
-        fid = None
+        # Load metadata
+        metadata = {}
+        
+        # Load processing parameters into metadata if available
         if 'processing_params' in h5_group:
             proc_group = h5_group['processing_params']
             proc_params = {}
             
             for attr_name in ['start_us', 'end_us', 'winf', 'zpf', 'rdc', 
-                             'expf_us', 'autoscale_MHz', 'units_power']:
+                             'expf_us', 'units_power']:
                 if attr_name in proc_group.attrs:
                     value = proc_group.attrs[attr_name]
                     if isinstance(value, bytes):
@@ -194,21 +196,9 @@ def load_complex_ft_from_hdf5(h5_group: h5py.Group) -> ComplexFT:
                         value = None
                     proc_params[attr_name] = value
             
-            # Create FIDProcessingParameters object
+            # Create FIDProcessingParameters object and add to metadata
             processing = FIDProcessingParameters(**proc_params)
-            
-            # Create minimal FID object (note: actual FID data is not stored)
-            # This preserves the processing parameters for reference
-            fid = FID(
-                data=np.array([0.0]),  # Placeholder data
-                spacing=freq_params['spacing_us'] * 1e-6,  # Convert back to seconds
-                probe_freq_mhz=freq_params['probe_freq_mhz'],
-                sideband=freq_params['sideband'],
-                processing=processing
-            )
-        
-        # Load metadata
-        metadata = {}
+            metadata['processing_params'] = processing
         if 'metadata' in h5_group:
             meta_group = h5_group['metadata']
             
@@ -232,7 +222,6 @@ def load_complex_ft_from_hdf5(h5_group: h5py.Group) -> ComplexFT:
         return ComplexFT(
             freq_array=freq_array,
             complex_spectrum=complex_spectrum,
-            fid=fid,
             metadata=metadata
         )
         
@@ -264,13 +253,13 @@ def _extract_frequency_reconstruction_params(complex_ft: ComplexFT) -> Dict[str,
     ValueError
         If required parameters cannot be extracted from ComplexFT or its FID
     """
-    if complex_ft.fid is None:
+    if 'fid_context' not in complex_ft.metadata:
         raise ValueError(
             "Cannot extract frequency reconstruction parameters: "
-            "ComplexFT has no associated FID object"
+            "ComplexFT metadata missing 'fid_context'"
         )
     
-    fid = complex_ft.fid
+    fid_context = complex_ft.metadata['fid_context']
     
     # Store the actual frequency range of this ComplexFT object
     freq_min = float(np.min(complex_ft.freq_array))
@@ -283,11 +272,11 @@ def _extract_frequency_reconstruction_params(complex_ft: ComplexFT) -> Dict[str,
         actual_proc = complex_ft.metadata['processing_params']
         zpf = actual_proc.zpf if actual_proc.zpf is not None else 0
     else:
-        # Fallback to FID's processing parameters  
-        zpf = fid.processing.zpf if fid.processing.zpf is not None else 0
+        # Default zpf if no processing params found
+        zpf = 0
     
     # Calculate the padded FID length that was actually used in the FFT
-    original_fid_length = len(fid.data)
+    original_fid_length = fid_context['original_fid_length']
     if zpf > 0:
         n_fid_padded = 2 ** (int(np.log2(original_fid_length)) + 1 + zpf)
     else:
@@ -296,10 +285,9 @@ def _extract_frequency_reconstruction_params(complex_ft: ComplexFT) -> Dict[str,
     # Store parameters needed for reconstruction
     params = {
         'n_fid_padded': n_fid_padded,
-        'spacing_us': fid.spacing * 1e6,  # Convert seconds to microseconds
-        'probe_freq_mhz': fid.probe_freq_mhz,
-        'sideband': fid.sideband.value,
-        'autoscale_MHz': fid.processing.autoscale_MHz,
+        'spacing_us': fid_context['spacing_us'],
+        'probe_freq_mhz': fid_context['probe_freq_mhz'],
+        'sideband': fid_context['sideband'],
         'freq_min': freq_min,
         'freq_max': freq_max,
         'n_spectrum': n_spectrum

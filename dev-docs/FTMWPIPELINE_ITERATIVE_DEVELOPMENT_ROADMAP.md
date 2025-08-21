@@ -141,21 +141,47 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 |-------|-----------|---------------|---------|---------------|-------------|-----|--------|
 | **Stage 0: Data Loading** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
 | **Stage 1: FT Processing** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
-| **Stage 2: Noise Estimation** | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | **Ready for Integration** |
+| **Stage 2: Noise Estimation** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | **COMPLETE** |
 | Stage 3: Peak Detection | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Current Focus**: **Stage 2 Integration** - Extend dual-interface pattern to noise estimation (Integration tests complete)
+**Current Focus**: **Stage 3 Implementation** - Begin peak detection development with dual-interface architecture
 
-### Latest Status: API Strategy Design Complete ✅
+### Latest Status: Architecture Consistency Fix Complete ✅ (2025-08-21)
+
+**Critical Architecture Fixes Implemented**:
+- ✅ **ComplexFT Serialization Fixed**: Eliminated FID back-reference dependency by adding FID context to metadata
+  - Removed `fid` parameter from `ComplexFT` objects during serialization
+  - Added `fid_context` metadata with essential experimental parameters (probe_freq_mhz, spacing_us, sideband, original_fid_length)
+  - Fixed HDF5 object dtype storage issues that prevented proper parameter persistence
+  - Updated serialization loading to reconstruct frequency parameters from metadata instead of FID back-references
+- ✅ **Unified Storage Architecture**: Moved ALL storage logic from Pipeline class to shared implementations
+  - `_internal/stage1_impl.py` now handles ComplexFT storage automatically for all interfaces
+  - `_internal/stage2_impl.py` handles NoiseResult storage automatically for all interfaces  
+  - Pipeline class, functional API, and CLI now all use identical storage behavior
+  - Eliminated duplicate storage logic and dependency checking between interfaces
+- ✅ **Pipeline Class Architecture Fix**: Made Pipeline class a thin wrapper around shared implementations
+  - Removed duplicate dependency checking - now handled by shared implementations
+  - Removed duplicate stage tracking - now handled automatically during storage
+  - Pipeline methods now delegate to shared implementations and handle only interface-specific concerns
+- ✅ **Parameter Storage Resolution**: Fixed HDF5 object dtype problems preventing parameter persistence
+  - All processing parameters now stored as JSON strings with proper type handling
+  - Parameter loading/saving works consistently across all three interfaces
+  - `.ftmw` files now portable between CLI, Pipeline class, and functional API
+- ✅ **Stage 2 NoiseResult Integration Complete**: Extended dual-interface pattern to noise estimation
+  - `_internal/stage2_impl.py` implements shared noise estimation logic
+  - `cli/noise_commands.py` provides `estimate-noise` and `visualize-noise` commands
+  - Pipeline class `estimate_noise()` and `visualize_noise()` methods implemented
+  - Functional API `estimate_noise()` and `visualize_noise()` functions added to `api.py`
+  - All three interfaces now provide identical NoiseResult functionality with consistent `.ftmw` file storage
 
 **Architecture Documentation Complete**:
 - **API Strategy**: [`API_STRATEGY.md`](API_STRATEGY.md) - Pipeline class, functional API, and .ftmw file management
 - **CLI Strategy**: [`CLI_STRATEGY.md`](CLI_STRATEGY.md) - File-centric commands and shared implementation
 - **Serialization Strategy**: [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) - HDF5 optimization and stage storage
 
-**Latest Status: Shared Implementation Architecture Complete ✅**
+**Previous Implementation Status: Shared Implementation Architecture Complete ✅**
 
 **Completed Architecture Transformation (2025-08-19)**:
 - ✅ **Shared Implementation Package**: Created `src/ftmwpipeline/_internal/` with core logic functions
@@ -389,25 +415,24 @@ ftmwpipeline ft-visualize exp_2638 --start-us 2.0 --end-us 12.0 --expf_us 5.0 --
 
 ## Stage 2: Noise Estimation
 
-### ✅ **COMPLETE** - Core Logic Implementation
+### Core Logic Implementation (NEEDS INVESTIGATION)
 - **Location**: `src/ftmwpipeline/preprocessing/noise_estimation.py`
 - **Algorithms**: Adaptive binning, variance-based noise identification
 - **Data Structure**: `NoiseResult` with RMS estimates and noise masks
-- **Performance**: ~3-10 seconds for experiment 2638
 
-### ✅ **COMPLETE** - Visualization Development
+### Visualization Development  (NEEDS INVESTIGATION)
 - **Location**: `src/ftmwpipeline/visualization/noise_visualization.py` 
 - **Functions**: `plot_noise_estimation()`, `plot_noise_estimation_from_cache()`
 - **Features**: Spectrum + noise points + RMS estimates + diagnostics
 - **Cache Integration**: Automatic cache loading and visualization
 
-### ✅ **COMPLETE** - Testing & API Stabilization  
+### Testing & API Stabilization   (NEEDS INVESTIGATION)
 - **Unit Tests**: 24 tests covering adaptive algorithms, parameter ranges
 - **Real Data**: Multiple parameter combinations with experiment 2638
 - **Edge Cases**: Different dataset sizes, numerical edge cases
 - **API**: Stable interface with comprehensive parameter validation
 
-### ✅ **COMPLETE** - Serialization Implementation
+### Serialization Implementation  (NEEDS INVESTIGATION)
 - **Location**: `src/ftmwpipeline/io/noise_result_serialization.py`
 - **Innovation**: Signal indices + convolution reconstruction (95.4% reduction)
 - **Storage**: ~155 KB per experiment (vs 3.4 MB original)
@@ -816,21 +841,22 @@ src/ftmwpipeline/
      - File corruption detection and reporting
    - ✅ **Total Integration Test Coverage**: **38 passing tests** validating dual-interface architecture
 
-**Priority 4: Extension to Stage 2**
-8. **Stage 2 Dual Interface** 
-   - Extend Pipeline class and functional API to noise estimation
-   - Implement file-centric CLI commands for noise processing
-   - Validate complete Stage 0 → 1 → 2 workflow in both interfaces
+**Priority 4: Extension to Stage 2** ✅ **COMPLETE**
+8. ✅ **Stage 2 Dual Interface** **COMPLETE**
+   - ✅ Extended Pipeline class and functional API to noise estimation
+   - ✅ Implemented file-centric CLI commands for noise processing 
+   - ✅ Validated complete Stage 0 → 1 → 2 workflow in all three interfaces
 
 ### **Short Term (1 month)**
-3. **Stage 3: Peak Detection**
-   - Full 6-step development cycle
-   - Integration with Stages 1 & 2 via cache
+1. **Stage 2 Integration Testing**
+   - Add Stage 2 NoiseResult to integration and cross-interface tests
+   - Validate complete Stage 0 → 1 → 2 workflow consistency across all three interfaces
+   - Update unit tests for Stage 2 dual-interface functionality
 
-4. **Enhanced Interactive Mode**
-   - Visual parameter exploration
-   - Comparison between parameter sets
-   - Configuration export from interactive sessions
+2. **Stage 3: Peak Detection**
+   - Full 6-step development cycle with dual-interface architecture from start
+   - Integration with Stages 1 & 2 via `.ftmw` files
+   - Consistent behavior across CLI, Pipeline class, and functional API
 
 ### **Medium Term (2-3 months)**  
 5. **Stages 4 & 5: Window Assignment + Fitting**

@@ -15,6 +15,7 @@ from ..workflows import validate_installation
 from .utils import setup_logging
 from .ft_commands import add_ft_subcommands
 from .data_commands import add_data_subcommands
+from .noise_commands import register_noise_commands
 
 
 
@@ -106,6 +107,9 @@ Planned Commands:
     
     # Add FT processing commands (Stage 1)
     add_ft_subcommands(subparsers)
+    
+    # Add noise estimation commands (Stage 2)
+    register_noise_commands(subparsers)
     
     # Validate command
     validate_parser = subparsers.add_parser(
