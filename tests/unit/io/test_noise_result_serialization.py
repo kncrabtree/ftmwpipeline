@@ -20,6 +20,7 @@ from ftmwpipeline.io.noise_result_serialization import (
     _store_convolution_parameters,
     _reconstruct_rms_via_convolution
 )
+from ftmwpipeline.io.complex_ft_serialization import load_complex_ft_from_hdf5
 
 
 @pytest.fixture
@@ -489,15 +490,56 @@ class TestIntegrationWithRealData:
         # Check if example data exists
         self.example_data_path = Path("examples/blackchirp_data/2638")
         self.has_example_data = self.example_data_path.exists()
+        
+        # Cache for computed ComplexFT (computed once, reused across tests)
+        self._cached_complex_ft = None
     
     def teardown_method(self):
         """Clean up test files after each test."""
         if self.test_output_dir.exists():
+            # Clean up HDF5 test files
             for test_file in self.test_output_dir.glob(f"{self.TEST_PREFIX}*.h5"):
                 try:
                     test_file.unlink()
                 except OSError:
                     pass
+            
+            # Clean up .ftmw test files
+            for test_file in self.test_output_dir.glob("*.ftmw"):
+                try:
+                    test_file.unlink()
+                except OSError:
+                    pass
+    
+    def _get_experiment_2638_complex_ft(self):
+        """
+        Get ComplexFT for experiment 2638 using proper on-demand computation.
+        
+        Computes once and caches for reuse across test methods for performance.
+        Uses Stage 1 implementation with optimal parameters for experiment 2638.
+        """
+        if self._cached_complex_ft is not None:
+            return self._cached_complex_ft
+            
+        import ftmwpipeline.api as ftmw
+        
+        # Use tests/output directory for test .ftmw file
+        test_file = self.test_output_dir / "exp_2638_for_complex_ft.ftmw"
+        
+        # Use functional API to create and process .ftmw file
+        ftmw.import_data(str(test_file), source=str(self.example_data_path))
+        
+        # Compute ComplexFT using functional API with optimal parameters
+        # These are the recommended parameters for experiment 2638 from CLAUDE.md
+        complex_ft = ftmw.compute_ft(
+            str(test_file),
+            zpf=1,                    # Zero padding factor for improved frequency resolution
+            expf_us=5.0,             # 5 μs exponential apodization filter for sensitivity
+            trim=(26500, 40000)      # Activity region, removes noise regions
+        )
+        self._cached_complex_ft = complex_ft
+                
+        return self._cached_complex_ft
     
     @pytest.mark.skipif(
         not Path("examples/blackchirp_data/2638").exists(),
@@ -505,19 +547,13 @@ class TestIntegrationWithRealData:
     )
     def test_experiment_2638_default_parameters(self, test_output_dir):
         """Test serialization with real experiment 2638 data using default noise estimation parameters."""
-        from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-        
-        # Load experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        
-        # Process with recommended parameters from CLAUDE.md
-        complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-        trimmed_ft = complex_ft.trim_to_range(26500, 40000)  # Activity region
+        # Compute ComplexFT using Stage 1 implementation (correct on-demand architecture)
+        complex_ft = self._get_experiment_2638_complex_ft()
         
         # Test with default noise estimation parameters
         original_noise_result = estimate_noise_adaptive(
-            trimmed_ft.freq_array, 
-            trimmed_ft.magnitude_spectrum,
+            complex_ft.freq_array, 
+            complex_ft.magnitude_spectrum,
             verbose=False
         )
         
@@ -529,8 +565,8 @@ class TestIntegrationWithRealData:
             noise_group = f.create_group('noise_result')
             save_noise_result_to_hdf5(
                 original_noise_result, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum, 
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum, 
                 noise_group
             )
         
@@ -539,8 +575,8 @@ class TestIntegrationWithRealData:
             noise_group = f['noise_result']
             reconstructed_noise_result = load_noise_result_from_hdf5(
                 noise_group, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum
             )
         
         # Verify bit-perfect reconstruction
@@ -561,6 +597,7 @@ class TestIntegrationWithRealData:
         for key in ['n_bins', 'noise_fraction', 'algorithm']:
             if key in original_noise_result.bin_info:
                 assert reconstructed_noise_result.bin_info[key] == original_noise_result.bin_info[key]
+        
     
     @pytest.mark.skipif(
         not Path("examples/blackchirp_data/2638").exists(),
@@ -569,17 +606,13 @@ class TestIntegrationWithRealData:
     @pytest.mark.parametrize("skew_target", [0.5, 0.631, 0.8])
     def test_experiment_2638_skew_target_variations(self, skew_target, test_output_dir):
         """Test serialization with real data using different skew_target parameters."""
-        from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-        
-        # Load and process experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-        trimmed_ft = complex_ft.trim_to_range(26500, 40000)
+        # Compute ComplexFT using Stage 1 implementation (correct on-demand architecture)
+        complex_ft = self._get_experiment_2638_complex_ft()
         
         # Test with specific skew_target
         original_noise_result = estimate_noise_adaptive(
-            trimmed_ft.freq_array, 
-            trimmed_ft.magnitude_spectrum,
+            complex_ft.freq_array, 
+            complex_ft.magnitude_spectrum,
             skew_target=skew_target,
             verbose=False
         )
@@ -591,8 +624,8 @@ class TestIntegrationWithRealData:
             noise_group = f.create_group('noise_result')
             save_noise_result_to_hdf5(
                 original_noise_result, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum, 
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum, 
                 noise_group
             )
         
@@ -600,8 +633,8 @@ class TestIntegrationWithRealData:
             noise_group = f['noise_result']
             reconstructed_noise_result = load_noise_result_from_hdf5(
                 noise_group, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum
             )
         
         # Verify bit-perfect reconstruction for this parameter set
@@ -624,17 +657,13 @@ class TestIntegrationWithRealData:
     @pytest.mark.parametrize("min_bin_fraction", [1/128, 1/64, 1/32, 1/16])
     def test_experiment_2638_min_bin_fraction_variations(self, min_bin_fraction, test_output_dir):
         """Test serialization with real data using different min_bin_fraction parameters."""
-        from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-        
-        # Load and process experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-        trimmed_ft = complex_ft.trim_to_range(26500, 40000)
+        # Compute ComplexFT using Stage 1 implementation (correct on-demand architecture)
+        complex_ft = self._get_experiment_2638_complex_ft()
         
         # Test with specific min_bin_fraction
         original_noise_result = estimate_noise_adaptive(
-            trimmed_ft.freq_array, 
-            trimmed_ft.magnitude_spectrum,
+            complex_ft.freq_array, 
+            complex_ft.magnitude_spectrum,
             min_bin_fraction=min_bin_fraction,
             verbose=False
         )
@@ -646,8 +675,8 @@ class TestIntegrationWithRealData:
             noise_group = f.create_group('noise_result')
             save_noise_result_to_hdf5(
                 original_noise_result, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum, 
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum, 
                 noise_group
             )
         
@@ -655,8 +684,8 @@ class TestIntegrationWithRealData:
             noise_group = f['noise_result']
             reconstructed_noise_result = load_noise_result_from_hdf5(
                 noise_group, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum
             )
         
         # Verify bit-perfect reconstruction
@@ -684,17 +713,13 @@ class TestIntegrationWithRealData:
     @pytest.mark.parametrize("smoothing_window_mhz", [None, 50.0, 100.0, 200.0])
     def test_experiment_2638_smoothing_window_variations(self, smoothing_window_mhz, test_output_dir):
         """Test serialization with real data using different smoothing window parameters."""
-        from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-        
-        # Load and process experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-        trimmed_ft = complex_ft.trim_to_range(26500, 40000)
+        # Compute ComplexFT using Stage 1 implementation (correct on-demand architecture)
+        complex_ft = self._get_experiment_2638_complex_ft()
         
         # Test with specific smoothing_window_mhz
         original_noise_result = estimate_noise_adaptive(
-            trimmed_ft.freq_array, 
-            trimmed_ft.magnitude_spectrum,
+            complex_ft.freq_array, 
+            complex_ft.magnitude_spectrum,
             smoothing_window_mhz=smoothing_window_mhz,
             verbose=False
         )
@@ -707,8 +732,8 @@ class TestIntegrationWithRealData:
             noise_group = f.create_group('noise_result')
             save_noise_result_to_hdf5(
                 original_noise_result, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum, 
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum, 
                 noise_group
             )
         
@@ -716,8 +741,8 @@ class TestIntegrationWithRealData:
             noise_group = f['noise_result']
             reconstructed_noise_result = load_noise_result_from_hdf5(
                 noise_group, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum
             )
         
         # Verify bit-perfect reconstruction
@@ -745,17 +770,13 @@ class TestIntegrationWithRealData:
     @pytest.mark.parametrize("min_noise_fraction", [0.5, 2/3, 0.75, 0.9])
     def test_experiment_2638_min_noise_fraction_variations(self, min_noise_fraction, test_output_dir):
         """Test serialization with real data using different min_noise_fraction parameters."""
-        from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-        
-        # Load and process experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-        trimmed_ft = complex_ft.trim_to_range(26500, 40000)
+        # Compute ComplexFT using Stage 1 implementation (correct on-demand architecture)
+        complex_ft = self._get_experiment_2638_complex_ft()
         
         # Test with specific min_noise_fraction
         original_noise_result = estimate_noise_adaptive(
-            trimmed_ft.freq_array, 
-            trimmed_ft.magnitude_spectrum,
+            complex_ft.freq_array, 
+            complex_ft.magnitude_spectrum,
             min_noise_fraction=min_noise_fraction,
             verbose=False
         )
@@ -767,8 +788,8 @@ class TestIntegrationWithRealData:
             noise_group = f.create_group('noise_result')
             save_noise_result_to_hdf5(
                 original_noise_result, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum, 
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum, 
                 noise_group
             )
         
@@ -776,8 +797,8 @@ class TestIntegrationWithRealData:
             noise_group = f['noise_result']
             reconstructed_noise_result = load_noise_result_from_hdf5(
                 noise_group, 
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum
             )
         
         # Verify bit-perfect reconstruction
@@ -805,12 +826,8 @@ class TestIntegrationWithRealData:
     )
     def test_experiment_2638_combined_parameter_variations(self, test_output_dir):
         """Test serialization with real data using combinations of different parameters."""
-        from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-        
-        # Load and process experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-        trimmed_ft = complex_ft.trim_to_range(26500, 40000)
+        # Compute ComplexFT using Stage 1 implementation (correct on-demand architecture)
+        complex_ft = self._get_experiment_2638_complex_ft()
         
         # Test several interesting parameter combinations
         parameter_combinations = [
@@ -835,12 +852,12 @@ class TestIntegrationWithRealData:
         for combo in parameter_combinations:
             # Test with specific parameter combination
             original_noise_result = estimate_noise_adaptive(
-                trimmed_ft.freq_array, 
-                trimmed_ft.magnitude_spectrum,
+                complex_ft.freq_array, 
+                complex_ft.magnitude_spectrum,
                 verbose=False,
                 **combo["params"]
             )
-            
+        
             # Test serialization roundtrip
             test_file = self._get_test_file(test_output_dir, f"real_data_combo_{combo['name']}")
             
@@ -848,8 +865,8 @@ class TestIntegrationWithRealData:
                 noise_group = f.create_group('noise_result')
                 save_noise_result_to_hdf5(
                     original_noise_result, 
-                    trimmed_ft.freq_array, 
-                    trimmed_ft.magnitude_spectrum, 
+                    complex_ft.freq_array, 
+                    complex_ft.magnitude_spectrum, 
                     noise_group
                 )
             
@@ -857,10 +874,10 @@ class TestIntegrationWithRealData:
                 noise_group = f['noise_result']
                 reconstructed_noise_result = load_noise_result_from_hdf5(
                     noise_group, 
-                    trimmed_ft.freq_array, 
-                    trimmed_ft.magnitude_spectrum
+                    complex_ft.freq_array, 
+                    complex_ft.magnitude_spectrum
                 )
-            
+        
             # Verify bit-perfect reconstruction for this combination
             np.testing.assert_array_equal(
                 reconstructed_noise_result.rms_noise, 
@@ -878,6 +895,7 @@ class TestIntegrationWithRealData:
             assert np.all(original_noise_result.rms_noise > 0), f"All RMS values should be positive for '{combo['name']}'"
             assert np.isfinite(original_noise_result.rms_noise).all(), f"All RMS values should be finite for '{combo['name']}'"
             assert original_noise_result.noise_mask.dtype == bool, f"Noise mask should be boolean for '{combo['name']}'"
+        
 
 
 if __name__ == "__main__":

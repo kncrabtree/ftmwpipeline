@@ -4,12 +4,15 @@
 
 This document describes the **current implementation** of the FTMW Pipeline serialization strategy, which has evolved from the original ComplexFT-centric approach to a **Stage 0-1 architecture** where FID data is cached and ComplexFT objects are calculated on-demand. This provides maximum flexibility and storage efficiency while maintaining bit-perfect scientific accuracy.
 
-## Current Architecture: Stage 0-1 Implementation ✅
+## Current Architecture: Lightweight .ftmw File Design ✅ (Restored 2025-08-22)
 
-The implemented system follows a stage-based caching approach:
-- **Stage 0 (Data Loading)**: FID data cached with multi-format loader support
-- **Stage 1 (FT Processing)**: ComplexFT calculated on-demand from cached FID + parameters
-- **Future Stages**: Will build upon cached FID + parameter validation architecture
+The implemented system follows a lightweight, on-demand computation approach:
+- **Stage 0 (Data Loading)**: FID data cached with multi-format loader support (~6MB)
+- **Stage 1 (FT Processing)**: ComplexFT calculated on-demand from cached FID + parameters (no storage)
+- **Stage 2 (Noise Estimation)**: NoiseResult uses on-demand ComplexFT computation (~155KB storage)
+- **Future Stages**: Will build upon on-demand ComplexFT architecture for consistency
+
+**Architecture Restoration (2025-08-22)**: Removed automatic ComplexFT storage that was causing 12.8MB .ftmw file bloat and breaking the intended lightweight design. All interfaces now compute ComplexFT on-demand for true parameter exploration.
 
 ## Design Principles (Implemented)
 

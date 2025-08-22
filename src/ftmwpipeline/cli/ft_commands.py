@@ -76,21 +76,23 @@ def cmd_ft_process(args) -> int:
                 window_function=args.window_function,
                 units_power=args.units_power,
                 trim_range=trim_range,
-                validate_only=True  # Only validate, don't return ComplexFT
+                validate_only=False  # Validate and store parameters (aligns with help text)
             )
             
-            print("✅ FT processing validation completed successfully!")
-            print(f"   Processing parameters validated with {result['fid_points']:,} FID points")
+            print("✅ FT processing validation and parameter storage completed successfully!")
+            print(f"   Processing parameters validated and stored with {result['fid_points']:,} FID points")
             print(f"   Preprocessed to {result['preprocessed_points']:,} points (zero-padded)")
             print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
             if 'trimmed_points' in result:
                 print(f"   After trimming: {result['trimmed_points']:,} points")
             
             print()
-            print("📌 ComplexFT will be calculated on-demand during visualization")
-            print(f"   Use: ftmwpipeline ft-visualize {file_path}")
+            print("📌 Parameters stored for subsequent pipeline stages")
+            print("   ComplexFT will be calculated on-demand when needed")
+            print(f"   Next steps: ftmwpipeline estimate-noise {file_path}")
+            print(f"              ftmwpipeline ft-visualize {file_path}")
             if trim_range:
-                print(f"        ftmwpipeline ft-visualize {file_path} --trim {trim_range[0]:.0f}:{trim_range[1]:.0f}")
+                print(f"              ftmwpipeline ft-visualize {file_path} --trim {trim_range[0]:.0f}:{trim_range[1]:.0f}")
             
             return 0
             

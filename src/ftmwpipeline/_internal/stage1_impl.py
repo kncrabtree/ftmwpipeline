@@ -199,12 +199,12 @@ def compute_ft_impl(
     if trim_range:
         result['trim_range'] = trim_range
     
-    # Store ComplexFT to pipeline file automatically
+    # Save FT processing parameters and mark Stage 1 as completed
     try:
-        _save_complex_ft_to_pipeline_file(file_path, complex_ft, processing_params)
-        logger.info("ComplexFT saved to pipeline file successfully")
+        _save_ft_parameters_and_stage_completion(file_path, processing_params)
+        logger.info("FT parameters and stage completion saved to pipeline file")
     except Exception as e:
-        logger.warning(f"Failed to save ComplexFT to pipeline file: {e}")
+        logger.warning(f"Failed to save FT parameters: {e}")
         # Don't fail the computation if storage fails
     
     return result
@@ -385,12 +385,13 @@ def compare_ft_parameters_impl(
         raise RuntimeError(f"Failed to compare parameters: {e}")
 
 
-def _save_complex_ft_to_pipeline_file(file_path: str, complex_ft, parameters_used: Dict[str, Any]) -> None:
+def _save_ft_parameters_and_stage_completion(file_path: str, parameters_used: Dict[str, Any]) -> None:
     """
-    Save ComplexFT to pipeline file in stage1_complex_ft group.
+    Save FT processing parameters and mark Stage 1 as completed.
     
-    This function handles the automatic storage of ComplexFT results in .ftmw files,
-    ensuring consistent behavior across all interfaces (CLI, Pipeline class, functional API).
+    This function saves the processing parameters for persistence and parameter exploration,
+    and updates stage tracking to mark Stage 1 as completed. It does NOT store ComplexFT data,
+    maintaining the lightweight .ftmw file design where ComplexFT is computed on-demand.
     """
     import h5py
     import json
@@ -398,40 +399,41 @@ def _save_complex_ft_to_pipeline_file(file_path: str, complex_ft, parameters_use
     
     try:
         with h5py.File(file_path, 'a') as h5f:
-            # Remove existing ComplexFT if present (allow re-computation)
-            if 'stage1_complex_ft' in h5f:
-                del h5f['stage1_complex_ft']
+            # Save FT processing parameters
+            if 'processing_parameters' not in h5f:
+                h5f.create_group('processing_parameters')
             
-            # Create stage1_complex_ft group
-            stage1_group = h5f.create_group('stage1_complex_ft')
+            processing_group = h5f['processing_parameters']
             
-            # Save ComplexFT using existing serialization (now works with metadata-based FID context)
-            from ..io.complex_ft_serialization import save_complex_ft_to_hdf5
-            save_complex_ft_to_hdf5(complex_ft, stage1_group)
+            # Remove existing FT parameters if present (allow parameter updates)
+            if 'ft_processing' in processing_group:
+                del processing_group['ft_processing']
             
-            # Add metadata and timestamp
-            stage1_group.attrs['creation_time'] = datetime.now().isoformat()
-            stage1_group.attrs['stage_name'] = 'stage1_complex_ft'
-            stage1_group.attrs['parameters_used'] = json.dumps(parameters_used, default=str)
+            # Create FT parameters group and save parameters
+            ft_params_group = processing_group.create_group('ft_processing')
+            ft_params_group.attrs['parameters'] = json.dumps(parameters_used, default=str)
+            ft_params_group.attrs['last_updated'] = datetime.now().isoformat()
             
             # Update pipeline stages to mark Stage 1 as completed
-            if 'pipeline_stages' in h5f:
-                stages_group = h5f['pipeline_stages']
-                
-                # Load current completed stages
-                completed_stages_json = stages_group.attrs.get('completed_stages', '[]')
-                completed_stages = json.loads(completed_stages_json)
-                
-                # Add stage1_complex_ft if not already present
-                if 'stage1_complex_ft' not in completed_stages:
-                    completed_stages.append('stage1_complex_ft')
-                
-                # Update completed stages and timestamp
-                stages_group.attrs['completed_stages'] = json.dumps(completed_stages)
-                stages_group.attrs['last_updated'] = datetime.now().isoformat()
+            if 'pipeline_stages' not in h5f:
+                h5f.create_group('pipeline_stages')
+            
+            stages_group = h5f['pipeline_stages']
+            
+            # Load current completed stages
+            completed_stages_json = stages_group.attrs.get('completed_stages', '[]')
+            completed_stages = json.loads(completed_stages_json)
+            
+            # Add stage1_ft_processing if not already present
+            if 'stage1_ft_processing' not in completed_stages:
+                completed_stages.append('stage1_ft_processing')
+            
+            # Update completed stages and timestamp
+            stages_group.attrs['completed_stages'] = json.dumps(completed_stages)
+            stages_group.attrs['last_updated'] = datetime.now().isoformat()
         
-        logger.info("ComplexFT and stage tracking saved to pipeline file")
+        logger.info("FT parameters and stage tracking saved to pipeline file")
         
     except Exception as e:
-        raise RuntimeError(f"Failed to save ComplexFT to pipeline file: {e}")
+        raise RuntimeError(f"Failed to save FT parameters to pipeline file: {e}")
 

@@ -15,6 +15,7 @@ from typing import Dict, Any, Tuple
 from ftmwpipeline import Pipeline
 import ftmwpipeline.api as ftmw
 from ftmwpipeline.core.data_structures import ComplexFT, FID
+from ftmwpipeline.preprocessing.noise_estimation import NoiseResult
 
 
 @pytest.mark.cross_interface
@@ -117,6 +118,56 @@ class TestIdenticalResults:
                 complex_ft_pipeline, complex_ft_functional, 
                 f"Trim range {trim_range}"
             )
+
+    def test_identical_noise_estimation_results(self, exp_2638_data_path, temp_ftmw_dir, standard_ft_params):
+        """Verify all interfaces produce identical NoiseResult for same parameters."""
+        # Create separate .ftmw files for each interface (avoid cross-contamination)
+        pipeline_file = temp_ftmw_dir / "pipeline_noise.ftmw"
+        functional_file = temp_ftmw_dir / "functional_noise.ftmw"  
+        cli_file = temp_ftmw_dir / "cli_noise.ftmw"
+        
+        # Stage 0+1: Create files with FT computed using standard pattern
+        pipe = Pipeline.create(pipeline_file, source=exp_2638_data_path)
+        pipe.compute_ft(**standard_ft_params)
+        
+        ftmw.import_data(functional_file, source=exp_2638_data_path)
+        ftmw.compute_ft(functional_file, **standard_ft_params)
+        
+        # CLI: data-load + ft-process (follow existing pattern from other tests)
+        self._run_cli_command(["data-load", str(cli_file), "--source", exp_2638_data_path])
+        zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
+        trim_min, trim_max = standard_ft_params['trim']
+        self._run_cli_command([
+            "ft-process", str(cli_file),
+            "--zpf", str(zpf), "--expf_us", str(expf_us),
+            "--trim", f"{trim_min}:{trim_max}"
+        ])
+        
+        # Stage 2: Noise estimation with identical parameters
+        # Test 2 key parameter sets for performance (not exhaustive like unit tests)
+        test_cases = [
+            {"name": "default", "params": {}},
+            {"name": "custom", "params": {"skew_target": 0.631, "min_bin_fraction": 1/64}}
+        ]
+        
+        for case in test_cases:
+            noise_params = case["params"]
+            
+            # Get results from all 3 interfaces
+            noise_result_pipeline = pipe.estimate_noise(**noise_params)
+            noise_result_functional = ftmw.estimate_noise(functional_file, **noise_params)
+            
+            # CLI estimate-noise command
+            cli_args = ["estimate-noise", str(cli_file)]
+            for param, value in noise_params.items():
+                cli_args.extend([f"--{param.replace('_', '-')}", str(value)])
+            self._run_cli_command(cli_args)
+            noise_result_cli = ftmw.estimate_noise(cli_file, **noise_params)  # Load result
+            
+            # Compare results using bit-perfect consistency
+            self._compare_noise_results(noise_result_pipeline, noise_result_functional, f"{case['name']}: Pipeline vs Functional")
+            self._compare_noise_results(noise_result_pipeline, noise_result_cli, f"{case['name']}: Pipeline vs CLI")
+            self._compare_noise_results(noise_result_functional, noise_result_cli, f"{case['name']}: Functional vs CLI")
     
     def _compare_complex_ft_objects(self, ft1: ComplexFT, ft2: ComplexFT, context: str):
         """Compare two ComplexFT objects for numerical consistency."""
@@ -168,6 +219,29 @@ class TestIdenticalResults:
         assert fid1.shots == fid2.shots, f"{context}: Shots differ"
         assert fid1.duration_us == fid2.duration_us, f"{context}: Duration differs"
         assert fid1.n_points == fid2.n_points, f"{context}: Number of points differs"
+    
+    def _compare_noise_results(self, result1, result2, context: str):
+        """Compare NoiseResult objects for bit-perfect consistency."""
+        assert isinstance(result1, NoiseResult), f"{context}: First result should be NoiseResult"
+        assert isinstance(result2, NoiseResult), f"{context}: Second result should be NoiseResult"
+        
+        # RMS noise must be bit-perfect identical
+        np.testing.assert_array_equal(
+            result1.rms_noise, result2.rms_noise,
+            err_msg=f"{context}: RMS noise arrays should be bit-perfect identical"
+        )
+        
+        # Noise masks must be identical
+        np.testing.assert_array_equal(
+            result1.noise_mask, result2.noise_mask,
+            err_msg=f"{context}: Noise masks should be identical"
+        )
+        
+        # Verify basic properties
+        assert result1.rms_noise.shape == result2.rms_noise.shape, f"{context}: RMS shape mismatch"
+        assert result1.noise_mask.dtype == result2.noise_mask.dtype == bool, f"{context}: Mask should be boolean"
+        assert np.all(result1.rms_noise > 0), f"{context}: RMS values should be positive"
+        assert np.all(result2.rms_noise > 0), f"{context}: RMS values should be positive"
     
     def _run_cli_command(self, args):
         """Run CLI command and ensure it succeeds."""
@@ -269,6 +343,39 @@ class TestParameterPersistence:
             complex_ft_pipeline_saved, complex_ft_functional_saved,
             "Pipeline vs Functional using Pipeline-saved params"
         )
+
+    def test_noise_parameter_persistence_across_interfaces(self, exp_2638_data_path, temp_ftmw_dir, standard_ft_params):
+        """Verify noise parameter save/load works across interfaces."""
+        test_file = temp_ftmw_dir / "noise_param_persistence.ftmw"
+        
+        # Create file with completed Stage 1
+        pipe = Pipeline.create(test_file, source=exp_2638_data_path)
+        pipe.compute_ft(**standard_ft_params)
+        
+        # First estimate noise with the parameters we want to test
+        noise_params = {
+            'skew_target': 0.7, 
+            'min_bin_fraction': 1/32, 
+            'smoothing_window_mhz': 100.0
+        }
+        pipe.estimate_noise(**noise_params)
+        
+        # Then save parameters using Pipeline class visualize_noise
+        pipe.visualize_noise(save_params=True, interactive=False)
+        
+        # Load with functional API using saved params
+        noise_result_functional_saved = ftmw.estimate_noise(test_file, from_saved_params=True)
+        
+        # Load with Pipeline class using saved params  
+        noise_result_pipeline_saved = pipe.estimate_noise(from_saved_params=True)
+        
+        # Load with explicit parameters for comparison
+        noise_result_explicit = pipe.estimate_noise(**noise_params)
+        
+        # All should produce identical results
+        self._compare_noise_results(noise_result_pipeline_saved, noise_result_explicit, "Pipeline saved vs explicit")
+        self._compare_noise_results(noise_result_functional_saved, noise_result_explicit, "Functional saved vs explicit") 
+        self._compare_noise_results(noise_result_pipeline_saved, noise_result_functional_saved, "Pipeline saved vs Functional saved")
     
     def _compare_complex_ft_results(self, ft1: ComplexFT, ft2: ComplexFT, context: str):
         """Compare ComplexFT results for parameter persistence tests."""
@@ -282,6 +389,29 @@ class TestParameterPersistence:
             ft1.freq_array, ft2.freq_array,
             err_msg=f"{context}: Frequency arrays differ"
         )
+    
+    def _compare_noise_results(self, result1, result2, context: str):
+        """Compare NoiseResult objects for bit-perfect consistency."""
+        assert isinstance(result1, NoiseResult), f"{context}: First result should be NoiseResult"
+        assert isinstance(result2, NoiseResult), f"{context}: Second result should be NoiseResult"
+        
+        # RMS noise must be bit-perfect identical
+        np.testing.assert_array_equal(
+            result1.rms_noise, result2.rms_noise,
+            err_msg=f"{context}: RMS noise arrays should be bit-perfect identical"
+        )
+        
+        # Noise masks must be identical
+        np.testing.assert_array_equal(
+            result1.noise_mask, result2.noise_mask,
+            err_msg=f"{context}: Noise masks should be identical"
+        )
+        
+        # Verify basic properties
+        assert result1.rms_noise.shape == result2.rms_noise.shape, f"{context}: RMS shape mismatch"
+        assert result1.noise_mask.dtype == result2.noise_mask.dtype == bool, f"{context}: Mask should be boolean"
+        assert np.all(result1.rms_noise > 0), f"{context}: RMS values should be positive"
+        assert np.all(result2.rms_noise > 0), f"{context}: RMS values should be positive"
     
     def _run_cli_command(self, args):
         """Run CLI command and ensure it succeeds."""
@@ -405,6 +535,30 @@ class TestFilePortability:
         self._verify_file_portability(complex_ft_pipeline, complex_ft_functional)
         self._verify_file_portability(complex_ft_functional, complex_ft_cli)
         self._verify_file_portability(complex_ft_pipeline, complex_ft_cli)
+
+    def test_noise_file_portability_round_trip(self, exp_2638_data_path, temp_ftmw_dir, standard_ft_params):
+        """Test .ftmw files with NoiseResult work across interfaces."""
+        test_file = temp_ftmw_dir / "noise_portability.ftmw"
+        
+        # Create with Pipeline class and complete Stage 0+1+2
+        pipe = Pipeline.create(test_file, source=exp_2638_data_path)
+        pipe.compute_ft(**standard_ft_params)
+        noise_result_pipeline = pipe.estimate_noise(skew_target=0.631, min_bin_fraction=1/64)
+        
+        # Process with functional API 
+        noise_result_functional = ftmw.estimate_noise(test_file, skew_target=0.631, min_bin_fraction=1/64)
+        
+        # Process with CLI (just verify CLI can process the file)
+        self._run_cli_command([
+            "estimate-noise", str(test_file),
+            "--skew-target", "0.631", "--min-bin-fraction", str(1/64)
+        ])
+        noise_result_cli = ftmw.estimate_noise(test_file, skew_target=0.631, min_bin_fraction=1/64)
+        
+        # Results should be identical across interfaces
+        self._verify_noise_portability(noise_result_pipeline, noise_result_functional, "Pipeline to Functional portability")
+        self._verify_noise_portability(noise_result_functional, noise_result_cli, "Functional to CLI portability")
+        self._verify_noise_portability(noise_result_pipeline, noise_result_cli, "Pipeline to CLI portability")
     
     def _verify_file_portability(self, ft1: ComplexFT, ft2: ComplexFT):
         """Verify two ComplexFT objects are identical for portability testing."""
@@ -418,6 +572,22 @@ class TestFilePortability:
             ft1.complex_spectrum, ft2.complex_spectrum,
             rtol=1e-12, atol=1e-15,
             err_msg="Complex spectra should be identical across interfaces"
+        )
+    
+    def _verify_noise_portability(self, result1, result2, context: str):
+        """Verify two NoiseResult objects are identical for portability testing."""
+        assert isinstance(result1, NoiseResult), f"{context}: First result should be NoiseResult"
+        assert isinstance(result2, NoiseResult), f"{context}: Second result should be NoiseResult"
+        
+        # Strict comparison for portability
+        np.testing.assert_array_equal(
+            result1.rms_noise, result2.rms_noise,
+            err_msg=f"{context}: RMS noise arrays should be identical"
+        )
+        
+        np.testing.assert_array_equal(
+            result1.noise_mask, result2.noise_mask,
+            err_msg=f"{context}: Noise masks should be identical"
         )
     
     def _run_cli_command(self, args):
@@ -544,3 +714,27 @@ class TestErrorConsistency:
             timeout=10
         )
         assert result.returncode != 0, "CLI should fail with corrupted file"
+
+    def test_noise_stage_dependency_errors(self, exp_2638_data_path, temp_ftmw_dir):
+        """Test consistent error handling for missing Stage 1 dependency."""
+        test_file = temp_ftmw_dir / "incomplete_pipeline.ftmw"
+        
+        # Create file with only Stage 0 (no Stage 1)
+        pipe = Pipeline.create(test_file, source=exp_2638_data_path)
+        # Don't call compute_ft() - missing Stage 1
+        
+        # All interfaces should raise appropriate errors for missing Stage 1
+        with pytest.raises((ValueError, RuntimeError), match="Stage 1.*must be completed"):
+            pipe.estimate_noise()
+            
+        with pytest.raises((ValueError, RuntimeError), match="Stage 1.*must be completed"):
+            ftmw.estimate_noise(test_file)
+        
+        # CLI should fail with non-zero return code
+        result = subprocess.run(
+            ["ftmwpipeline", "estimate-noise", str(test_file)],
+            capture_output=True, text=True, check=False, timeout=10
+        )
+        assert result.returncode != 0, "CLI should fail when Stage 1 missing"
+        assert "Stage 1" in result.stderr or "Stage 1" in result.stdout, "Error should mention Stage 1"
+

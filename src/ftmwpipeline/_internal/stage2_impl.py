@@ -66,23 +66,27 @@ def compute_noise_estimation_impl(
     ValueError
         If Stage 1 dependencies are not met or parameters are invalid
     """
-    # Load ComplexFT from pipeline file (Stage 1 dependency)
+    # Compute ComplexFT on-demand using Stage 1 implementation (correct architecture)
     try:
-        # Load the ComplexFT from stage1_complex_ft group
+        # Check that Stage 1 parameters are available (Stage 1 dependency)
         with h5py.File(file_path, 'r') as h5f:
-            if 'stage1_complex_ft' not in h5f:
+            if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
                 raise ValueError(
                     "Stage 1 (FT computation) must be completed before noise estimation. "
-                    "Run compute_ft() or compute-ft command first."
+                    "Run compute_ft() or ft-process command first."
                 )
-            
-            # Import the ComplexFT loading function
-            from ..io.complex_ft_serialization import load_complex_ft_from_hdf5
-            complex_ft = load_complex_ft_from_hdf5(h5f['stage1_complex_ft'])
-            logger.info(f"Loaded ComplexFT with {len(complex_ft.freq_array):,} frequency points")
+        
+        # Import Stage 1 implementation for on-demand ComplexFT computation
+        from .stage1_impl import compute_ft_impl
+        
+        # Compute ComplexFT using saved Stage 1 parameters (lightweight on-demand computation)
+        stage1_result = compute_ft_impl(file_path=file_path)
+        
+        complex_ft = stage1_result['complex_ft']
+        logger.info(f"Computed ComplexFT on-demand with {len(complex_ft.freq_array):,} frequency points")
             
     except Exception as e:
-        raise RuntimeError(f"Failed to load ComplexFT from pipeline file {file_path}: {e}")
+        raise RuntimeError(f"Failed to compute ComplexFT from pipeline file {file_path}: {e}")
     
     # Load saved noise parameters if requested or available
     saved_params = {}
@@ -245,15 +249,20 @@ def visualize_noise_impl(
                     "Run estimate_noise() or estimate-noise command first."
                 )
             
-            if 'stage1_complex_ft' not in h5f:
+            # Check that Stage 1 parameters exist (needed for on-demand ComplexFT computation)
+            if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
                 raise ValueError(
                     "Stage 1 (FT computation) required for noise visualization. "
-                    "This should not happen if Stage 2 was completed properly."
+                    "Run compute_ft() or ft-process command first."
                 )
-            
-            # Load data
-            from ..io.complex_ft_serialization import load_complex_ft_from_hdf5
-            complex_ft = load_complex_ft_from_hdf5(h5f['stage1_complex_ft'])
+        
+        # Compute ComplexFT on-demand for visualization (consistent with Stage 2 architecture)
+        from .stage1_impl import compute_ft_impl
+        stage1_result = compute_ft_impl(file_path=file_path)
+        complex_ft = stage1_result['complex_ft']
+        
+        # Load NoiseResult data
+        with h5py.File(file_path, 'r') as h5f:
             
             noise_result = load_noise_result_from_hdf5(
                 h5f['stage2_noise_result'],
@@ -433,12 +442,17 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
             if 'stage2_noise_result' not in h5f:
                 raise ValueError("No noise estimation results found in pipeline file")
                 
-            if 'stage1_complex_ft' not in h5f:
-                raise ValueError("ComplexFT data missing - pipeline file may be corrupted")
-            
-            # Load ComplexFT
-            from ..io.complex_ft_serialization import load_complex_ft_from_hdf5
-            complex_ft = load_complex_ft_from_hdf5(h5f['stage1_complex_ft'])
+            # Check that Stage 1 parameters exist (needed for ComplexFT computation)
+            if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
+                raise ValueError("Stage 1 parameters missing - cannot compute ComplexFT for NoiseResult loading")
+        
+        # Compute ComplexFT on-demand (consistent with new architecture)
+        from .stage1_impl import compute_ft_impl
+        stage1_result = compute_ft_impl(file_path=file_path)
+        complex_ft = stage1_result['complex_ft']
+        
+        # Load NoiseResult using computed ComplexFT
+        with h5py.File(file_path, 'r') as h5f:
             
             # Load NoiseResult
             noise_result = load_noise_result_from_hdf5(
