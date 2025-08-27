@@ -308,27 +308,46 @@ def visualize_noise_impl(
             **plot_params
         )
         
-        # Save custom parameters if requested
+        # Save parameters if requested
         if save_params:
-            # Extract custom parameters that differ from defaults
-            custom_params = {}
-            if y_max_factor is not None and y_max_factor != 20.0:
-                custom_params['y_max_factor'] = y_max_factor
-            if figsize is not None and figsize != (16, 6):
-                custom_params['figsize'] = figsize
-            if show_bin_boundaries is not None and show_bin_boundaries != True:
-                custom_params['show_bin_boundaries'] = show_bin_boundaries
-            if show_noise_points is not None and show_noise_points != True:
-                custom_params['show_noise_points'] = show_noise_points
-            
-            if custom_params:
-                try:
-                    save_noise_parameters_impl(file_path, {'visualization': custom_params})
-                    logger.info(f"Saved {len(custom_params)} visualization parameters")
-                except Exception as e:
-                    logger.warning(f"Failed to save visualization parameters: {e}")
-            else:
-                logger.info("No custom visualization parameters to save")
+            try:
+                # Read the current noise estimation parameters from the pipeline file
+                # These are the parameters that were used to create the current NoiseResult
+                with h5py.File(file_path, 'r') as h5f:
+                    if 'processing_parameters' in h5f and 'noise_estimation' in h5f['processing_parameters']:
+                        noise_group = h5f['processing_parameters/noise_estimation']
+                        current_noise_params = {}
+                        for param_name in ['skew_target', 'min_bin_fraction', 'smoothing_window_mhz', 'min_noise_fraction']:
+                            if param_name in noise_group.attrs:
+                                value = noise_group.attrs[param_name]
+                                # Handle None values stored as strings
+                                if isinstance(value, str) and value == "__None__":
+                                    value = None
+                                current_noise_params[param_name] = value
+                        
+                        # Save the current noise estimation parameters (this enables from_saved_params=True)
+                        save_noise_parameters_impl(file_path, current_noise_params)
+                        logger.info(f"Saved noise estimation parameters for future use: {current_noise_params}")
+                    else:
+                        logger.warning("No noise estimation parameters found in pipeline file")
+                        
+                # Also save any custom visualization parameters that differ from defaults
+                custom_vis_params = {}
+                if y_max_factor is not None and y_max_factor != 20.0:
+                    custom_vis_params['y_max_factor'] = y_max_factor
+                if figsize is not None and figsize != (16, 6):
+                    custom_vis_params['figsize'] = figsize
+                if show_bin_boundaries is not None and show_bin_boundaries != True:
+                    custom_vis_params['show_bin_boundaries'] = show_bin_boundaries
+                if show_noise_points is not None and show_noise_points != True:
+                    custom_vis_params['show_noise_points'] = show_noise_points
+                
+                if custom_vis_params:
+                    save_noise_parameters_impl(file_path, {'visualization': custom_vis_params})
+                    logger.info(f"Saved {len(custom_vis_params)} visualization parameters")
+                    
+            except Exception as e:
+                logger.warning(f"Failed to save parameters: {e}")
         
         logger.info("Noise estimation visualization completed successfully")
         return fig
@@ -348,10 +367,7 @@ def save_noise_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> No
         Noise estimation parameters to save
     """
     try:
-        # Import the file manager function
-        from ..file_manager import update_processing_parameters
-        
-        # Create parameters dict for noise estimation
+        # Create parameters dict for noise estimation (filter to known parameter names)
         noise_params = {}
         param_names = ['skew_target', 'min_bin_fraction', 'smoothing_window_mhz', 'min_noise_fraction']
         
@@ -363,10 +379,34 @@ def save_noise_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> No
                     value = "__None__"
                 noise_params[param_name] = value
         
-        # Save noise parameters directly (not nested)
+        # Save noise parameters to processing_parameters/noise_estimation (same pattern as FT)
         if noise_params:
-            update_processing_parameters(file_path, noise_params)
-        logger.info("Noise estimation parameters saved successfully")
+            with h5py.File(file_path, 'a') as h5f:
+                # Ensure processing_parameters group exists
+                if 'processing_parameters' not in h5f:
+                    h5f.create_group('processing_parameters')
+                
+                processing_group = h5f['processing_parameters']
+                
+                # Remove existing noise parameters if present (allow parameter updates)
+                if 'noise_estimation' in processing_group:
+                    del processing_group['noise_estimation']
+                
+                # Create noise parameters group and save parameters
+                noise_params_group = processing_group.create_group('noise_estimation')
+                
+                # Store parameters individually as attributes (for easy loading with from_saved_params)
+                for param_name, value in noise_params.items():
+                    noise_params_group.attrs[param_name] = value
+                
+                # Also store as JSON for completeness
+                noise_params_group.attrs['parameters'] = json.dumps(noise_params, default=str)
+                noise_params_group.attrs['last_updated'] = datetime.now().isoformat()
+                
+            logger.info(f"Saved {len(noise_params)} noise estimation parameters to processing_parameters/noise_estimation")
+        else:
+            logger.warning("No valid noise parameters to save")
+            
     except Exception as e:
         raise RuntimeError(f"Failed to save noise parameters: {e}")
 

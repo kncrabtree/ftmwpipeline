@@ -146,7 +146,7 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 | Stage 4: Window Assignment | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 | Stage 5: Fitting | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Not Started |
 
-**Current Focus**: **Stage 2 Completion** - Investigate and fix parameter persistence in `visualize_noise` workflow
+**Current Focus**: **Stage 3 Development** - Begin implementation of peak detection algorithms and dual-interface architecture
 
 ### Latest Status: Architecture Restoration Complete ✅ (2025-08-22)
 
@@ -180,7 +180,7 @@ ftmwpipeline compute-ft experiment.ftmw --zpf 2 --expf_us 5.0
 - **Consistent Architecture**: All interfaces use same on-demand computation
 - **Clean Implementation**: Restored original design vision
 
-**Remaining Issue**: Parameter persistence in `visualize_noise` workflow needs investigation - when users run `visualize_noise` with `save_params=True`, those parameters should be stored and used by default for subsequent `estimate_noise` calls.
+**Stage 2 Parameter Persistence RESOLVED**: Fixed critical integration test failure for noise parameter persistence in `visualize_noise` workflow. All Stage 2 dual-interface functionality now working across Pipeline class, functional API, and CLI with proper parameter saving and loading.
 
 **Architecture Documentation Complete**:
 - **API Strategy**: [`API_STRATEGY.md`](API_STRATEGY.md) - Pipeline class, functional API, and .ftmw file management
@@ -458,11 +458,12 @@ ftmwpipeline visualize-noise experiment.ftmw --show-bins --y-max-factor 15
 - ✅ **Dual Interface**: Pipeline class and functional API implementations complete
 - ✅ **File-Centric Workflow**: Complete integration with `.ftmw` file architecture
 
-### 🔄 **NEEDS INVESTIGATION** - Parameter Persistence  
-**Issue**: `visualize_noise` parameter persistence not working as expected
-- **Problem**: When users run `visualize_noise` with `save_params=True`, parameters should be stored and used as defaults for subsequent `estimate_noise` calls
-- **Status**: Core dual-interface functionality working, parameter save/load mechanism needs investigation
-- **Impact**: Core workflow functional, but user parameter exploration workflow incomplete
+### ✅ **COMPLETE** - Integration & Workflow Testing
+**Target**: Comprehensive Stage 2 dual-interface integration and parameter persistence
+- **Integration Tests**: All 18 cross-interface consistency tests passing
+- **Parameter Persistence**: Fixed critical bugs in `visualize_noise_impl()` and `save_noise_parameters_impl()` 
+- **Dual Interface**: Pipeline class, functional API, and CLI all working with consistent behavior
+- **Workflow Completion**: Complete Stage 0 → 1 → 2 pipeline functional across all interfaces
 
 ### ✅ **COMPLETE** - Interactive Workflow
 - **Cache Visualization**: On-demand visualization working with Stage 1 integration
