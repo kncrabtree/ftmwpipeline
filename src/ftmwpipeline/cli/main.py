@@ -16,6 +16,7 @@ from .utils import setup_logging
 from .ft_commands import add_ft_subcommands
 from .data_commands import add_data_subcommands
 from .noise_commands import register_noise_commands
+from .peak_commands import register_peak_commands
 from .info_commands import add_info_subcommand
 
 
@@ -77,6 +78,10 @@ Available Commands:
     estimate-noise  Estimate frequency-dependent noise
     visualize-noise Visualize noise estimation
 
+  Stage 3 (Peak detection):
+    detect-peaks    Detect and classify peaks (two-pass)
+    visualize-peaks Overlay classified peaks on the spectrum
+
   Utility:
     info            Show provenance and stage status for a .ftmw file
     validate        Check installation and dependencies
@@ -106,6 +111,9 @@ Examples:
     
     # Add noise estimation commands (Stage 2)
     register_noise_commands(subparsers)
+
+    # Add peak detection commands (Stage 3)
+    register_peak_commands(subparsers)
 
     # Pipeline-file info command
     add_info_subcommand(subparsers)

@@ -29,7 +29,7 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 | 0 Data import | Implemented | — |
 | 1 FT processing | Implemented | — |
 | 2 Noise estimation | Implemented | — |
-| 3 Peak detection | Planned | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
+| 3 Peak detection | Implemented (algorithm); settings handling interim — see D7 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
 | 4 Window assignment | Not started | `planning/stage4-window-assignment.md` (TBD) |
 | 5 Fitting | Not started | `planning/stage5-fitting.md` (TBD) |
 
@@ -57,7 +57,8 @@ Per-feature implementation plans. Lifecycle and conventions:
 
 | Document | Status |
 |---|---|
-| [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Planning (Stage 3 not started) |
+| [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (algorithm); awaiting D7 to finalize settings handling |
+| [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Planning — **next task** (D7), fresh context |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
 
 ## Code vs spec divergences
@@ -73,8 +74,9 @@ here and resolved deliberately (amend spec, or change code), never silently.
 | D4 | CLI `info <file>` + machine-readable `--format json` not implemented | **Resolved (code):** `info` command added with `text`/`json` output |
 | D5 | Performance/benchmark tests absent; storage-reduction figures unmeasured | **Deferred (tracked):** specs already made unmeasured figures non-normative; benchmark work tracked in [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md). `tests/performance/` remains empty until then |
 | D6 | `io/complex_ft_serialization.py` never invoked by the pipeline | **Resolved (code):** module and its tests removed; the serialization spec prohibits persisting ComplexFT, so it was dead by design |
+| D7 | User-chosen FT processing settings (trim, zpf, expf, …) are not persisted as canonical state; later stages silently fall back to import-time *recommended* defaults instead of what the user chose. Stage 3 currently masks this with interim per-stage `trim`/`zpf` options | **Open — next task.** Fix at the root: Stage 1 persists the chosen settings; Stages 2–5 default to them (explicit > persisted > recommended); algorithmic deviations stay internal and snap results back onto the user grid. Plan: [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md). Spec amendments to `SERIALIZATION_STRATEGY.md`/`API_STRATEGY.md` pending under that task |
 
-No open divergences. New divergences are appended here as they arise.
+D7 is open. New divergences are appended here as they arise.
 
 Exact on-disk HDF5 group/attribute names are an implementation detail; the code
 is the source of truth and the current layout is recorded in `STATUS.md`. The

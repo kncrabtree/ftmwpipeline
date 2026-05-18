@@ -5,7 +5,7 @@ pipeline, implementing the dual-interface architecture alongside functional
 and CLI interfaces. Each Pipeline instance is bound to a specific .ftmw file.
 """
 
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Optional, Union, Any, Tuple, cast
 import logging
 from pathlib import Path
 
@@ -22,6 +22,10 @@ from ._internal.stage1_impl import compute_ft_impl, visualize_ft_impl, save_ft_p
 from ._internal.stage2_impl import (
     compute_noise_estimation_impl, visualize_noise_impl
 )
+from ._internal.stage3_impl import (
+    detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
+)
+from .core.data_structures import Peak
 
 
 class Pipeline:
@@ -551,7 +555,108 @@ class Pipeline:
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to create noise visualization: {e}") from e
-    
+
+    def detect_peaks(self, min_snr: Optional[float] = None,
+                     weak_medium_snr: Optional[float] = None,
+                     medium_strong_snr: Optional[float] = None,
+                     sg_window: Optional[int] = None,
+                     sg_order: Optional[int] = None,
+                     apodization_us: Optional[float] = None,
+                     tau_us: Optional[float] = None,
+                     min_exclusion_mhz: Optional[float] = None,
+                     run_gap_pass: Optional[bool] = None,
+                     trim: Optional[Tuple[float, float]] = None,
+                     zpf: Optional[int] = None) -> List[Peak]:
+        """
+        Detect and classify peaks (Stage 3, two-pass).
+
+        Requires Stage 1 (FT) and Stage 2 (noise) completed. Runs an apodized
+        primary pass plus a leakage-masked unapodized gap pass, scores every
+        peak on the unapodized spectrum, classifies by SNR, and persists the
+        list to the .ftmw file. Equivalent to the CLI ``detect-peaks`` command
+        and ``ftmwpipeline.api.detect_peaks``. Stage 3 owns its own ``trim``
+        and ``zpf`` (Stage 1 does not persist them).
+
+        Returns
+        -------
+        list of Peak
+            Classified peaks, sorted by frequency.
+
+        Raises
+        ------
+        StageDependencyError
+            If Stage 1 or Stage 2 has not been completed.
+        RuntimeError
+            If detection fails.
+        """
+        try:
+            result = detect_peaks_impl(
+                file_path=str(self.filepath),
+                min_snr=min_snr,
+                weak_medium_snr=weak_medium_snr,
+                medium_strong_snr=medium_strong_snr,
+                sg_window=sg_window,
+                sg_order=sg_order,
+                apodization_us=apodization_us,
+                tau_us=tau_us,
+                min_exclusion_mhz=min_exclusion_mhz,
+                run_gap_pass=run_gap_pass,
+                trim=trim,
+                zpf=zpf,
+            )
+            self.logger.info(
+                "Stage 3: %d peaks (%d primary, %d gap)",
+                result["n_peaks"], result["n_primary"], result["n_gap"],
+            )
+            return cast(List[Peak], result["peaks"])
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to detect peaks: {e}") from e
+
+    def load_peaks(self) -> List[Peak]:
+        """Load the persisted Stage 3 peak list (validates structure loudly)."""
+        return cast(List[Peak], load_peaks_impl(str(self.filepath))["peaks"])
+
+    def visualize_peaks(self, figsize: Optional[tuple] = None,
+                        title: Optional[str] = None,
+                        y_max_factor: Optional[float] = None,
+                        backend: str = 'matplotlib',
+                        interactive: bool = True,
+                        output_file: Optional[Union[str, Path]] = None) -> Any:
+        """
+        Overlay classified detected peaks on the unapodized spectrum (Stage 3).
+
+        Equivalent to the CLI ``visualize-peaks`` command. Interactive
+        matplotlib (log-y) by default; pass ``interactive=False`` with
+        ``output_file`` to save instead.
+
+        Raises
+        ------
+        RuntimeError
+            If Stage 3 has not been completed or visualization fails.
+        """
+        try:
+            fig = visualize_peaks_impl(
+                file_path=str(self.filepath),
+                figsize=figsize,
+                title=title,
+                y_max_factor=y_max_factor,
+                backend=backend,
+                interactive=interactive,
+            )
+            if not interactive and output_file:
+                fig.savefig(str(output_file), dpi=300, bbox_inches='tight')
+                self.logger.info(f"Plot saved to: {output_file}")
+            elif interactive and backend == 'matplotlib':
+                import matplotlib.pyplot as plt
+                plt.show()
+            return fig
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create peak visualization: {e}"
+            ) from e
+
     def info(self) -> Dict[str, Any]:
         """
         Get pipeline file information and status.

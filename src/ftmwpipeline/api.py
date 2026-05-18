@@ -38,7 +38,7 @@ from pathlib import Path
 import logging
 
 from .pipeline import Pipeline
-from .core.data_structures import FID, ComplexFT
+from .core.data_structures import FID, ComplexFT, Peak
 from .preprocessing.noise_estimation import NoiseResult
 
 # Module logger
@@ -637,6 +637,101 @@ def save_noise_parameters(file_path: Union[str, Path],
         logger.info(f"Saved {len(parameters)} noise parameters to {file_path}")
     except Exception as e:
         logger.error(f"Failed to save noise parameters to {file_path}: {e}")
+        raise
+
+
+# =============================================================================
+# Stage 3: Peak Detection Functions
+# =============================================================================
+
+def detect_peaks(file_path: Union[str, Path], min_snr: Optional[float] = None,
+                  weak_medium_snr: Optional[float] = None,
+                  medium_strong_snr: Optional[float] = None,
+                  sg_window: Optional[int] = None,
+                  sg_order: Optional[int] = None,
+                  apodization_us: Optional[float] = None,
+                  tau_us: Optional[float] = None,
+                  min_exclusion_mhz: Optional[float] = None,
+                  run_gap_pass: Optional[bool] = None,
+                  trim: Optional[Tuple[float, float]] = None,
+                  zpf: Optional[int] = None) -> List[Peak]:
+    """
+    Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
+
+    Requires Stage 1 (FT) and Stage 2 (noise). Two-pass detection scored on
+    the unapodized spectrum. Stage 3 owns its own ``trim`` and ``zpf``.
+
+    Returns
+    -------
+    list of Peak
+        Classified peaks, sorted by frequency.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.detect_peaks(
+            min_snr=min_snr,
+            weak_medium_snr=weak_medium_snr,
+            medium_strong_snr=medium_strong_snr,
+            sg_window=sg_window,
+            sg_order=sg_order,
+            apodization_us=apodization_us,
+            tau_us=tau_us,
+            min_exclusion_mhz=min_exclusion_mhz,
+            run_gap_pass=run_gap_pass,
+            trim=trim,
+            zpf=zpf,
+        )
+    except Exception as e:
+        logger.error(f"Failed to detect peaks for {file_path}: {e}")
+        raise
+
+
+def load_peaks(file_path: Union[str, Path]) -> List[Peak]:
+    """Load the persisted Stage 3 peak list, equivalent to
+    Pipeline.load_peaks(). Validates the on-disk structure loudly."""
+    try:
+        return Pipeline.open(file_path).load_peaks()
+    except Exception as e:
+        logger.error(f"Failed to load peaks from {file_path}: {e}")
+        raise
+
+
+def visualize_peaks(file_path: Union[str, Path],
+                    figsize: Optional[tuple] = None,
+                    title: Optional[str] = None,
+                    y_max_factor: Optional[float] = None,
+                    backend: str = 'matplotlib', interactive: bool = True,
+                    output_file: Optional[Union[str, Path]] = None) -> Any:
+    """
+    Overlay classified detected peaks on the spectrum (Stage 3), equivalent
+    to Pipeline.visualize_peaks(). Requires Stage 3 completion.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.visualize_peaks(
+            figsize=figsize,
+            title=title,
+            y_max_factor=y_max_factor,
+            backend=backend,
+            interactive=interactive,
+            output_file=output_file,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to create peak visualization for {file_path}: {e}"
+        )
+        raise
+
+
+def save_peak_parameters(file_path: Union[str, Path],
+                         parameters: Dict[str, Any]) -> None:
+    """Save Stage 3 detection parameters for reuse."""
+    try:
+        from ._internal.stage3_impl import save_peak_parameters_impl
+        save_peak_parameters_impl(str(file_path), parameters)
+        logger.info(f"Saved {len(parameters)} peak parameters to {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to save peak parameters to {file_path}: {e}")
         raise
 
 

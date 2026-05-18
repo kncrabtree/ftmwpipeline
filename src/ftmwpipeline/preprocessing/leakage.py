@@ -1,0 +1,130 @@
+"""
+Truncation-leakage reach estimator (Stage 3 open question O1).
+
+A strong line in a *boxcar-truncated* (unapodized) FTMW spectrum carries
+sinc-shaped truncation sidelobes whose envelope decays only as ``1/Δf``. The
+Stage 3 gap pass runs an unapodized detector at a low SNR floor to recover weak
+lines hiding between the strong ones; without a mask it would re-detect those
+sidelobes as spurious weak lines. This module provides the analytic estimate of
+how far from a strong line its sidelobes stay above the gap-pass floor, so the
+gap pass can be masked within ``±reach`` of every strong line.
+
+The same estimate sets the initial window extent in Stage 4 (a window must be
+at least as wide as the strongest in-window line's leakage reach), so it is
+defined once here and imported by both stages.
+
+Model
+-----
+Baseband response of an exponentially damped cosine (natural decay time
+constant ``τ``) observed over a finite acquisition ``T``::
+
+    S(Δf) = [1 - exp(-(1/τ + i2πΔf) T)] / (1/τ + i2πΔf)
+
+At line center ``S(0) = τ_eff`` with ``τ_eff = τ (1 - exp(-T/τ))`` (``→ T`` in
+the undamped/boxcar limit ``τ → ∞``). Far from center the envelope is::
+
+    |S_env(Δf)| ≈ (1 + exp(-T/τ)) / (2π |Δf|)
+
+so the sidelobe envelope, expressed as a fraction of the peak height, is
+``(1 + exp(-T/τ)) / (2π |Δf| τ_eff)``. Equating that to the gap-pass floor
+(``min_snr`` in SNR units) for a line of signal-to-noise ``peak_snr`` gives the
+closed form
+
+    reach = peak_snr · (1 + exp(-T/τ)) / (2π · τ_eff · min_snr)         (Hz)
+
+Limits (sanity):
+
+* Undamped boxcar (``τ → ∞``): ``τ_eff → T``, ``1 + exp(-T/τ) → 2`` so
+  ``reach → peak_snr / (π · T · min_snr)`` — exactly the offset at which the
+  ``1/(π|Δf|)`` sidelobe-peak envelope of ``T·sinc(Δf·T)`` crosses the floor.
+* Heavily damped (``τ ≪ T``): ``τ_eff → τ``, envelope factor ``→ 1``; the
+  edge term ``exp(-T/τ) → 0`` (the signal has decayed before truncation, so
+  there is little genuine leakage) and the reach collapses toward the
+  Lorentzian core width. The ``1/Δf`` form overestimates the true ``1/Δf²``
+  Lorentzian wing here, i.e. the mask is deliberately conservative (slightly
+  too wide rather than too narrow) in a regime where leakage is weak anyway.
+
+The estimate is intentionally an envelope/order-of-magnitude bound, not a
+per-sidelobe prediction; masking errs wide on purpose.
+"""
+
+from typing import Optional, Union, cast
+
+import numpy as np
+
+ArrayLike = Union[float, np.ndarray]
+
+
+def estimate_leakage_reach(
+    peak_snr: ArrayLike,
+    acquisition_us: float,
+    min_snr: float = 3.0,
+    tau_us: Optional[float] = None,
+) -> ArrayLike:
+    """Estimate the truncation-leakage reach of a strong line.
+
+    Returns the half-width ``Δf`` (MHz) beyond which a line of signal-to-noise
+    ``peak_snr`` no longer has unapodized sidelobes above ``min_snr·σ``. The
+    gap pass should be masked over ``[f0 - reach, f0 + reach]`` for each strong
+    line; Stage 4 uses the same value as a lower bound on window extent.
+
+    Parameters
+    ----------
+    peak_snr : float or np.ndarray
+        Peak signal-to-noise ratio of the strong line(s). Scalars and arrays
+        are both accepted; an array in gives an array out.
+    acquisition_us : float
+        Acquisition (FID) duration ``T`` in microseconds. Use the *active*
+        FID duration actually transformed, not the digitizer record length.
+    min_snr : float, default 3.0
+        Gap-pass detection floor in SNR units (the threshold the gap pass runs
+        at). Lower floors give a wider reach.
+    tau_us : float, optional
+        Assumed shared natural decay time constant ``τ`` in microseconds. If
+        ``None`` (default), the undamped/boxcar limit is used (``τ_eff = T``,
+        the most leakage-prone case and the safe default for masking).
+
+    Returns
+    -------
+    float or np.ndarray
+        Leakage reach in MHz, matching the shape of ``peak_snr``. Returns 0.0
+        where ``peak_snr <= 0`` (no line, nothing to mask).
+
+    Raises
+    ------
+    ValueError
+        If ``acquisition_us`` or ``min_snr`` is not positive, or ``tau_us`` is
+        given and not positive.
+    """
+    if acquisition_us <= 0:
+        raise ValueError("acquisition_us must be positive")
+    if min_snr <= 0:
+        raise ValueError("min_snr must be positive")
+    if tau_us is not None and tau_us <= 0:
+        raise ValueError("tau_us must be positive when provided")
+
+    snr = np.asarray(peak_snr, dtype=float)
+    T = acquisition_us * 1e-6  # seconds
+
+    if tau_us is None:
+        # Undamped boxcar limit: tau_eff -> T, envelope factor -> 2.
+        tau_eff = T
+        env_factor = 2.0
+    else:
+        tau = tau_us * 1e-6
+        edge = np.exp(-T / tau)  # exp(-T/τ): truncation-edge amplitude
+        # τ_eff = τ(1 - e^{-T/τ}); -expm1(-x) = 1 - e^{-x} (stable for small x).
+        tau_eff = tau * (-np.expm1(-T / tau))
+        env_factor = 1.0 + edge
+
+    reach_hz = snr * env_factor / (2.0 * np.pi * tau_eff * min_snr)
+    reach_mhz = reach_hz * 1e-6
+
+    # No line -> nothing to mask.
+    reach_arr = cast(
+        np.ndarray, np.asarray(np.where(snr > 0.0, reach_mhz, 0.0), dtype=float)
+    )
+
+    if reach_arr.ndim == 0:
+        return float(reach_arr)
+    return reach_arr

@@ -1,7 +1,9 @@
 # Plan: Stage 3 — Peak detection
 
-Status: **planning** (not started). Scope is Stage 3 only. Stages 4 (window
-definition) and 5 (fitting) are kept separate — see *Downstream context*.
+Status: **implemented** (all task-breakdown items landed; O2 thresholds
+shipped provisional, pending empirical sign-off on 2638). Scope is Stage 3
+only. Stages 4 (window definition) and 5 (fitting) are kept separate — see
+*Downstream context*.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the Stage 3 work it tracks.
@@ -99,16 +101,49 @@ Stage output: an ordered list of classified `Peak`s.
 
 ## Open questions / research
 
-- **O1 — leakage-reach masking for the gap pass.** Need an analytic estimate of
-  how far a strong peak's truncation sidelobes stay above noise
-  (≈ function of its SNR, acquisition T, and an assumed/shared τ), to mask the
-  unwindowed gap pass. This is the same estimate Stage 4 needs for window
-  extents; design it once, here, and share it.
-- **O2 — classification thresholds.** `t1`, `t2` defaults require empirical
-  tuning on 2638; ship configurable with documented provisional defaults.
-- **O3 — is the gap pass always needed?** If the windowed pass already clears
-  the SNR threshold for weak lines in practice, the gap pass may be optional.
-  Decide from O2/real-data evidence; keep it switchable.
+- **O1 — leakage-reach masking for the gap pass. RESOLVED.** Closed-form
+  estimator in `preprocessing/leakage.py::estimate_leakage_reach`:
+  `Δf_reach = peak_snr·(1+e^{-T/τ}) / (2π·τ_eff·min_snr)` with
+  `τ_eff = τ(1-e^{-T/τ})` (→ `T` in the undamped/boxcar limit, the safe
+  default). Validated to <20 % against a synthetic truncated-cosine FFT and
+  exactly against the boxcar sinc identity. Shared verbatim with Stage 4.
+- **O2 — classification thresholds. PROVISIONAL, pending sign-off.** Shipped
+  configurable: `weak < 10 ≤ medium < 50 ≤ strong` (SNR), detection floor
+  `min_snr = 3` (real-data evidence: at min_snr=3 the gap pass cleanly fills
+  the inter-line gaps for window seeding). `t1`/`t2` are placeholders in
+  `peak_detection.DEFAULT_*`; tune on 2638 once a reference line list is
+  available.
+- **O3 — is the gap pass always needed? RESOLVED: keep, switchable.** On 2638
+  the gap pass recovers real weak lines outside every primary leakage
+  exclusion that the apodized primary pass misses (integration test). It is
+  on by default and disabled with `run_gap_pass=False` / `--no-gap-pass`.
+- **Scoring basis (design decision, post-review).** The two passes only
+  *find positions*; amplitude/SNR/classification **and** the O1 leakage reach
+  are measured on the **unapodized** spectrum (the one fit downstream) for all
+  peaks — one consistent SNR scale, physically correct reach, and an honest
+  overlay. Each detection is apex-snapped to the nearest unapodized local
+  maximum (`locate_peaks` returns the 2nd-derivative `argrelmin`, ~few points
+  off the true apex for ultra-narrow lines → ~40 % amplitude error before the
+  fix) and de-duplicated by snapped index (collapses split-strong-line
+  triplets and primary/gap overlap). `visualize-peaks` plots the unapodized
+  spectrum on a log y-axis so the noise floor and the 100s-of-× stronger
+  lines are both legible. Apodized scoring remains only as a fallback when no
+  unapodized spectrum is supplied.
+- **Trim/zpf handling — INTERIM BAND-AID, superseded by D7.** Stage 1 does
+  **not** persist the user's FT settings (trim, zpf, …), so recompute-on-demand
+  yields the recommended-default spectrum (untrimmed, zpf=0 for 2638 → DC
+  edges, ~zero noise, nonsense SNR). As a stopgap so Stage 3 functions at all,
+  it currently *owns its own* `trim`/`zpf` (`detect_peaks(..., trim=, zpf=)`,
+  CLI `--trim`/`--zpf`, `_resolve_trim`/`_resolve_zpf`, saved under
+  `processing_parameters/peak_detection`). **This is not the intended design.**
+  The root-cause fix — Stage 1 persists chosen settings; later stages respect
+  them by default; algorithmic deviations (e.g. internal zpf=1 detection) snap
+  results back onto the user grid — is the next task:
+  [`processing-settings-persistence.md`](processing-settings-persistence.md)
+  (ROADMAP **D7**). That task removes this band-aid. Empirical note for it:
+  detection is best run internally at **zpf=1** (sharpens apex vs zpf=0;
+  zpf=2 over-interpolates — identical apex, ~2× spurious weak detections),
+  with results snapped onto the user's chosen grid.
 
 ## Downstream context (Stages 4–5, not in scope here)
 
@@ -146,10 +181,15 @@ before its implementation.
 
 ## Task breakdown
 
-1. Port and unit-test `locate_peaks` (+ `PeakResult` shape) into `_internal`.
-2. Design and unit-test the O1 leakage-reach estimator (shared with Stage 4).
-3. Two-pass driver (windowed primary + masked unwindowed gap pass) + SNR
-   classification.
-4. `stage3_peaks` serialization + stage tracking + hand-edit round-trip.
-5. Three interface wrappers + `detect-peaks`/`visualize-peaks` + visualization.
-6. Cross-interface and real-data tests; tune O2 defaults; decide O3.
+1. [x] Port + unit-test `locate_peaks`/`PeakResult` →
+   `preprocessing/peak_detection.py` (algorithm module, per the extend-a-stage
+   pattern; `_internal` holds orchestration).
+2. [x] O1 `estimate_leakage_reach` → `preprocessing/leakage.py` + unit tests.
+3. [x] Two-pass `detect_peaks` driver + `classify_by_snr` + unit tests.
+4. [x] `io/peak_serialization.py` + `stage3_peaks` stage tracking +
+   hand-edit round-trip tests.
+5. [x] Wrappers (`Pipeline.detect_peaks/visualize_peaks/load_peaks`,
+   `api.*`, CLI `detect-peaks`/`visualize-peaks`) +
+   `visualization/peak_visualization.py`.
+6. [x] Cross-interface + real-data integration tests; O3 decided (keep,
+   switchable); O2 shipped provisional, **awaiting empirical sign-off**.

@@ -157,6 +157,8 @@ class PipelineStageTracker:
         'stage0_fid_data': [],  # Stage 0 has no dependencies
         'stage1_complex_ft': ['stage0_fid_data'],  # Stage 1 requires Stage 0
         'stage2_noise_result': ['stage1_complex_ft'],  # Stage 2 requires Stage 1
+        # Stage 3 requires Stage 1 (FT) and Stage 2 (noise) to be completed.
+        'stage3_peaks': ['stage1_complex_ft', 'stage2_noise_result'],
         # Future stages...
     }
 
@@ -169,6 +171,7 @@ class PipelineStageTracker:
         'stage0_fid_data': 'stage0_fid_data',
         'stage1_complex_ft': 'processing_parameters/ft_processing',
         'stage2_noise_result': 'stage2_noise_result',
+        'stage3_peaks': 'stage3_peaks',
     }
     
     def __init__(self, completed_stages: Optional[list] = None):
