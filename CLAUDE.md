@@ -8,9 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 signal processing and peak fitting. Implementation is **stage-based and incremental**;
 Stages 0–2 (data import → FT → noise estimation) are implemented. Later stages (peak
 detection, window assignment, fitting) are `NotImplementedError` stubs under
-`src/ftmwpipeline/` and are a **clean-room reimplementation** — the original `bcfitting`
-reference code is permanently lost; there is nothing to port from. Do not cite or look
-for `bcfitting`.
+`src/ftmwpipeline/`. Reuse is mixed: the earlier reference
+`~/github/bcfitting/src/bcfitting/ftmwfitting.py` survives (it has `locate_peaks`, the
+sinc-leakage model, and the conservative time-domain *orchestration* shell) and is the
+starting point for Stage 3+. The refined `newfitting/` engine
+(`fit_time_domain_peaks`, adaptive window selection, peak aggregation) is permanently
+lost and is recreated against the surviving shell's contract. See
+`dev-docs/planning/` for per-stage plans before implementing any of Stages 3–5.
 
 `STATUS.md` is the verified current state (regenerated from code). `dev-docs/ROADMAP.md`
 is the coordination/task doc and holds the code-vs-spec divergence log. The
@@ -32,6 +36,16 @@ conda run -n ftmwpipeline-dev ftmwpipeline validate
 `pyproject.toml` hardwires `--cov` flags into pytest `addopts`, so `-p no:cov` alone
 breaks argument parsing — pass `-o addopts=""` to run without coverage. pytest-cov is
 in the dev env, so plain `pytest` (with coverage) also works.
+
+**Never pollute the working tree with run artifacts.** Direct any output-producing
+command or test (plots, exports, scratch `.ftmw`/`.h5`, coverage HTML) to an *untracked*
+location: the gitignored `scratch/` directory at the repo root, or system tmp. Tests must
+write only to pytest `tmp_path` (the integration suite already does). Some CLI commands
+(`visualize-ft`/`visualize-noise` non-interactive) default to writing into the current
+directory — always pass an explicit `--output scratch/...` (or run from `scratch/`) so
+nothing lands in tracked paths. `.gitignore` already covers `scratch/`, `output/`,
+`cache/`, `*.h5`, `*_enhanced_spectrum.png`; this is the backstop, not the primary
+defense — direct output deliberately rather than relying on ignore patterns.
 
 mypy is configured strict (`disallow_untyped_defs`, etc.); new code in `src/` must be
 fully type-annotated. Line length is 88. Note the repo was never run through its

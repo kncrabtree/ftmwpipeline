@@ -220,6 +220,9 @@ cache/
 output/
 *.h5
 
-# Test-generated visualization artifacts (non-interactive ft-visualize
+# Test-generated visualization artifacts (non-interactive visualize-ft
 # writes to the working directory; see STATUS.md known issues)
 *_enhanced_spectrum.png
+
+# Conventional untracked scratch directory for run/test artifacts
+scratch/

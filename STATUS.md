@@ -42,11 +42,15 @@ diagnostic visualization.
 
 **Stages 3–5 (not implemented):** every function in
 `src/ftmwpipeline/peak_detection/`, `window_assignment/`, and `fitting/` is a
-one-line `raise NotImplementedError`. The original `bcfitting` reference
-implementation these were to be ported from is **permanently lost** (never
-committed to GitHub, lost in a machine migration). Stages 3–5 are therefore a
-**clean-room reimplementation**, not a port — there is no source to extract
-from.
+one-line `raise NotImplementedError`. Reuse is mixed: the earlier reference
+`~/github/bcfitting/src/bcfitting/ftmwfitting.py` survives (detection
+`locate_peaks`, the analytic sinc-leakage model, and the conservative
+time-domain orchestration shell) and is the starting point. The refined
+`newfitting/` engine — `fit_time_domain_peaks`, adaptive window selection,
+peak aggregation — is permanently lost (machine migration, never committed)
+and is recreated against the surviving shell's contract. Stage 3 has a
+planning doc (`dev-docs/planning/stage3-peak-detection.md`); Stages 4–5 do
+not yet.
 
 ## Architecture (as built)
 

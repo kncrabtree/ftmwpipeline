@@ -29,12 +29,17 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 | 0 Data import | Implemented | — |
 | 1 FT processing | Implemented | — |
 | 2 Noise estimation | Implemented | — |
-| 3 Peak detection | Not started | `planning/stage3-peak-detection.md` (TBD) |
+| 3 Peak detection | Planned | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
 | 4 Window assignment | Not started | `planning/stage4-window-assignment.md` (TBD) |
 | 5 Fitting | Not started | `planning/stage5-fitting.md` (TBD) |
 
-Stages 3–5 are a **clean-room reimplementation**. The original `bcfitting`
-reference code is permanently lost; there is no source to port from.
+Stages 3–5 are partly **port-and-refine**, partly **recreate**. The earlier
+reference `~/github/bcfitting/src/bcfitting/ftmwfitting.py` survives (detection
+`locate_peaks`, the analytic sinc-leakage model, and the conservative
+time-domain *orchestration* shell). The refined `newfitting/` engine —
+`fit_time_domain_peaks`, adaptive window selection, peak aggregation — is
+permanently lost and is recreated against the surviving shell's known
+contract.
 
 ## Specifications
 
@@ -52,8 +57,8 @@ Per-feature implementation plans. Lifecycle and conventions:
 
 | Document | Status |
 |---|---|
+| [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Planning (Stage 3 not started) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
-| _Stage 3 plan — to be created before Stage 3 work begins_ | — |
 
 ## Code vs spec divergences
 
