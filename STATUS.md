@@ -8,16 +8,15 @@ the project is *going*, see `dev-docs/` (roadmap); this file is only what *is*.
 ## Snapshot
 
 - Version `0.1.0`, Python >= 3.9 (dev/CI on 3.11).
-- **Tests: 184 passing, 0 failing.** Reproduce:
+- **Tests: 170 passing, 0 failing.** Reproduce:
   `conda run -n ftmwpipeline-dev python -m pytest -q --no-header -o addopts=""`
   (the `-o addopts=""` is required: `pyproject.toml` hardwires `--cov` flags, so
   `-p no:cov` alone breaks argument parsing).
-  - unit: 142 (`tests/unit`), integration: 42 (`tests/integration`),
+  - unit: 126 (`tests/unit`), integration: 44 (`tests/integration`),
     performance: 0 (`tests/performance` is an empty package).
 - Dev environment is the conda env `ftmwpipeline-dev` (from
   `environment-dev.yml`, the superset). `environment.yml` is the lightweight
-  runtime env. (These two files' roles were swapped on 2026-05-17 to match
-  convention; README still describes them backwards — pending doc-sync.)
+  runtime env.
 
 ## Pipeline stages
 
@@ -66,34 +65,27 @@ from.
   `recommended_processing`), `processing_parameters/ft_processing` (Stage 1
   params — there is intentionally no `stage1_*` data group),
   `stage2_noise_result` (when noise estimation has run).
-- **Interfaces — real names** (planning docs are wrong about several):
-  - CLI subcommands: `data-load`, `data-visualize`, `data-info`,
-    `ft-process`, `ft-visualize`, `estimate-noise`, `visualize-noise`,
-    `validate`, `version`. (No `import-data`/`compute-ft`/`detect-peaks`.)
-  - `Pipeline` is constructed via `Pipeline.create(...)` /
-    `Pipeline.open(...)` only — there is **no** no-arg or single-path
-    constructor.
+- **Interfaces:**
+  - CLI subcommands: `import-data`, `visualize-data`, `formats`,
+    `compute-ft`, `visualize-ft`, `estimate-noise`, `visualize-noise`,
+    `info`, `validate`, `version`. Stages 3–5 commands not yet added.
+  - `Pipeline` is constructed via `Pipeline.create(...)`,
+    `Pipeline.open(...)`, or the smart constructor `Pipeline(path)`
+    (opens if present, else `FileNotFoundError` with guidance).
   - Functional API is the `ftmwpipeline.api` namespace
     (`import ftmwpipeline.api as ftmw`). `process_experiment` /
-    `batch_process_experiments` are also re-exported at top level.
+    `batch_process_experiments` and `Pipeline` are also exported at the
+    package top level.
 
-## Foundations pass — changes made 2026-05-17
+## Notable behaviors
 
-A "fix code before syncing docs" pass resolved 6 failing tests:
-
-- **Stage-completion tracking made coherent.** `stage1_impl` wrote a
-  non-canonical key (`stage1_ft_processing`) directly, bypassing the tracker;
-  `Pipeline.info()` read a stale in-memory tracker; `validate_pipeline_file`
-  assumed every stage has a same-named HDF5 group (false for lightweight
-  Stage 1). All three corrected.
-- **`validate_installation()`** no longer calls a bare `Pipeline()` (it was
-  always reporting `pipeline_creation: False`, visible via
-  `ftmwpipeline validate`).
-- **`workflows.py`** reimplemented as thin `Pipeline` wrappers
-  (`process_experiment`, `batch_process_experiments`; `quick_fit` removed),
-  re-exported in `__init__.py`.
-- Two tests asserting a never-built monolithic API, and one stale CLI
-  success-string assertion, were corrected.
+- **Stage-completion tracking is coherent.** Stages record their canonical
+  key (`stage0_fid_data`, `stage1_complex_ft`, `stage2_noise_result`) through
+  one mechanism; `Pipeline.info()` reflects on-disk state; validation checks
+  each stage's real persisted artifact (Stage 1 is lightweight — no group).
+- **`workflows.py`** is thin `Pipeline` wrappers only
+  (`process_experiment`, `batch_process_experiments`); no analysis logic.
+- `ftmwpipeline validate` exercises a real installation smoke check.
 
 ## Known issues / caveats
 
@@ -101,17 +93,12 @@ A "fix code before syncing docs" pass resolved 6 failing tests:
   configured black / isort / mypy-strict. `black --check` would reformat
   essentially every file (including untouched ones). Deferred as a standalone
   normalization task.
-- **`io/complex_ft_serialization.py` is dead code:** present and tested in
-  isolation, but never called by the pipeline (ComplexFT is on-demand).
-- **Storage-efficiency numbers** quoted in `dev-docs/SERIALIZATION_STRATEGY.md`
-  ("~95% reduction", "12.8MB → 100KB") are design targets, not measured;
-  `tests/performance/` is empty.
-- **Test artifact pollution:** non-interactive `ft-visualize` writes PNGs to
-  the working directory; test runs leave `*_enhanced_spectrum.png` in the repo
-  root. Not git-ignored.
-- Planning docs (`README.md`, `dev-docs/*`, `CLAUDE.md`) contain numerous
-  stale/false claims (test counts, command names, `Pipeline()` usage, dead
-  links, `bcfitting` port premise). Correcting these is the next phase.
+- **Performance/storage figures are unmeasured.** Any storage-size or timing
+  claim is non-normative until a benchmark measures it; `tests/performance/`
+  is empty. Tracked in `dev-docs/planning/perf-benchmarks.md` (ROADMAP D5).
+- **Test artifact location:** non-interactive `visualize-ft` writes PNGs to
+  the working directory; test runs leave `*_enhanced_spectrum.png` (now
+  git-ignored). The underlying default-output-to-cwd behavior remains.
 
 ## Not in scope of current state
 

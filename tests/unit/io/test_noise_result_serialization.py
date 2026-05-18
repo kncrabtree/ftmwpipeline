@@ -20,7 +20,6 @@ from ftmwpipeline.io.noise_result_serialization import (
     _store_convolution_parameters,
     _reconstruct_rms_via_convolution
 )
-from ftmwpipeline.io.complex_ft_serialization import load_complex_ft_from_hdf5
 
 
 @pytest.fixture

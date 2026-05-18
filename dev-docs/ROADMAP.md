@@ -52,23 +52,24 @@ Per-feature implementation plans. Lifecycle and conventions:
 
 | Document | Status |
 |---|---|
-| _(none yet — Stage 3 plan to be created before Stage 3 work begins)_ | — |
+| [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
+| _Stage 3 plan — to be created before Stage 3 work begins_ | — |
 
 ## Code vs spec divergences
 
-The specs state intended requirements. Where the current code diverges, it is
-recorded here as a pending decision. Nothing is silently changed in either the
-spec or the code; each row is resolved deliberately (amend spec, or change code,
-or accept as intentional).
+The specs state intended requirements. Where the code diverges, it is recorded
+here and resolved deliberately (amend spec, or change code), never silently.
 
-| # | Spec requirement | Current code | Status |
-|---|---|---|---|
-| D1 | CLI command names use verb-object intent: `import-data`, `compute-ft`, `visualize-ft`, `estimate-noise`, `detect-peaks`, `assign-windows`, `fit-peaks`, `info`, `formats` (CLI_STRATEGY) | `data-load`, `ft-process`, `ft-visualize`, `estimate-noise`, `visualize-noise`, `data-visualize`, `data-info`, `validate`, `version`. No `info`, `formats`, `export`, or JSON output mode | Open — decide canonical naming before adding Stage 3+ commands |
-| D2 | Convenience constructor `Pipeline("x.ftmw")` opens-if-exists (API_STRATEGY) | Only `Pipeline.create()` / `Pipeline.open()`; bare/single-arg constructor unsupported | Open — implement smart constructor or drop from spec |
-| D3 | Functional API usable as `import ftmwpipeline as ftmw; ftmw.import_data(...)` (API_STRATEGY) | Functions live under `ftmwpipeline.api`; only `process_experiment`/`batch_process_experiments` are top-level | Open — decide top-level export surface |
-| D4 | CLI provides `info <file>` and machine-readable `--format json` (CLI_STRATEGY) | Not implemented | Open — needed by some tests' helper code; schedule with D1 |
-| D5 | Performance/benchmark tests exist; storage-reduction figures are validated (TESTING/SERIALIZATION) | `tests/performance/` is empty; storage figures are unmeasured targets | Open — add benchmarks or remove the numeric claims |
-| D6 | `io/complex_ft_serialization.py` is part of the storage layer | Present and unit-tested but never invoked by the pipeline (ComplexFT is on-demand) | Open — remove dead module or document as reserved |
+| # | Divergence | Resolution |
+|---|---|---|
+| D1 | CLI command names: code used `data-load`/`ft-process`/`ft-visualize`/`data-visualize`/`data-info` vs spec verb-object intent | **Resolved (code):** renamed to `import-data`, `compute-ft`, `visualize-ft`, `visualize-data`, `formats`. `estimate-noise`/`visualize-noise` already conformed. Stage 3+ commands follow the verb-object scheme |
+| D2 | `Pipeline("x.ftmw")` smart constructor required by spec, not implemented | **Resolved (code):** `Pipeline(path)` opens if present, raises `FileNotFoundError` with guidance otherwise; `create()`/`open()` unchanged |
+| D3 | Spec showed functional API as top-level `import ftmwpipeline as ftmw; ftmw.import_data(...)` | **Resolved (spec):** the canonical functional namespace is `ftmwpipeline.api` (`import ftmwpipeline.api as ftmw`); only `process_experiment`/`batch_process_experiments` are top-level. API_STRATEGY amended to match |
+| D4 | CLI `info <file>` + machine-readable `--format json` not implemented | **Resolved (code):** `info` command added with `text`/`json` output |
+| D5 | Performance/benchmark tests absent; storage-reduction figures unmeasured | **Deferred (tracked):** specs already made unmeasured figures non-normative; benchmark work tracked in [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md). `tests/performance/` remains empty until then |
+| D6 | `io/complex_ft_serialization.py` never invoked by the pipeline | **Resolved (code):** module and its tests removed; the serialization spec prohibits persisting ComplexFT, so it was dead by design |
+
+No open divergences. New divergences are appended here as they arise.
 
 Exact on-disk HDF5 group/attribute names are an implementation detail; the code
 is the source of truth and the current layout is recorded in `STATUS.md`. The

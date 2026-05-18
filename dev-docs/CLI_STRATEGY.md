@@ -38,19 +38,29 @@ Option names must match the corresponding Python API parameter names.
 One command per pipeline stage; analysis stages require their predecessor to be
 complete and must fail with a clear dependency message otherwise.
 
-- Stage 0 — import raw data, creating the `.ftmw` file.
-- Stage 1 — compute FT; visualize FT.
-- Stage 2 — estimate noise; visualize noise.
-- Stages 3–5 (peak detection, window assignment, fitting) — added under the
-  same pattern.
+| Stage | Command(s) |
+|---|---|
+| 0 Data import | `import-data`, `visualize-data` |
+| 1 FT processing | `compute-ft`, `visualize-ft` |
+| 2 Noise estimation | `estimate-noise`, `visualize-noise` |
+| 3 Peak detection | `detect-peaks`, `visualize-peaks` |
+| 4 Window assignment | `assign-windows` |
+| 5 Fitting | `fit-peaks` |
+
+Stages 3–5 are not yet implemented; their command names are reserved here so
+the vocabulary stays consistent when they are added.
 
 ### Utility commands
 
-- File information (human-readable and machine-readable/JSON).
-- Pipeline-file integrity validation.
-- Installation/environment validation.
-- Available data formats.
-- Version.
+| Command | Purpose |
+|---|---|
+| `info` | Pipeline-file provenance and stage status (`--format text|json`) |
+| `formats` | List available data formats |
+| `validate` | Installation/environment check |
+| `version` | Version and package information |
+
+Pipeline-file integrity is reported through `info` (and the Python
+`.validate()`); `validate` is reserved for installation checks.
 
 ## Output and errors
 
@@ -74,9 +84,9 @@ complete and must fail with a clear dependency message otherwise.
 ## Naming
 
 Commands use a verb-object form expressing intent and aligned with pipeline
-stages; related commands share a consistent prefix. Creation is clearly
-distinguished from analysis. The concrete command vocabulary is part of this
-contract; changes to it are tracked as divergences until reconciled.
+stages; related commands share a consistent prefix (`visualize-*`). Creation
+(`import-data`) is clearly distinguished from analysis. The command tables
+above are the contract; new commands must follow the same scheme.
 
 ## Scripting
 

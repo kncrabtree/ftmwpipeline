@@ -91,8 +91,8 @@ def cmd_data_load(args) -> int:
         print(f"File size: {file_size_mb:.2f} MB")
         
         print(f"\nNext steps:")
-        print(f"   • Visualize FID: ftmwpipeline data-visualize {file_path}")
-        print(f"   • Process FT: ftmwpipeline ft-process {file_path}")
+        print(f"   • Visualize FID: ftmwpipeline visualize-data {file_path}")
+        print(f"   • Process FT: ftmwpipeline compute-ft {file_path}")
         
         return 0
         
@@ -250,25 +250,25 @@ def add_data_subcommands(subparsers: argparse._SubParsersAction) -> None:
         Subparser object to add commands to
     """
     
-    # data-load command
+    # import-data command
     load_parser = subparsers.add_parser(
-        'data-load',
+        'import-data',
         help='Load experimental data from various formats',
         description='Load FTMW experimental data and cache as FID object for pipeline processing',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Import BlackChirp experiment (auto-detect format)
-  ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/
+  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
   
   # Import BlackChirp with specific FID index
-  ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/ --fid-index 1
+  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/ --fid-index 1
   
   # Import CSV file (requires explicit parameters)  
-  ftmwpipeline data-load exp_csv.ftmw --source data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
+  ftmwpipeline import-data exp_csv.ftmw --source data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
   
   # Force specific format
-  ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/ --format blackchirp
+  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/ --format blackchirp
         """
     )
     
@@ -289,22 +289,22 @@ Examples:
     
     load_parser.set_defaults(func=cmd_data_load)
     
-    # data-visualize command  
+    # visualize-data command  
     viz_parser = subparsers.add_parser(
-        'data-visualize',
+        'visualize-data',
         help='Visualize cached FID data',
         description='Load FID data from cache and create validation plots',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Basic FID visualization
-  ftmwpipeline data-visualize exp_2638.ftmw
+  ftmwpipeline visualize-data exp_2638.ftmw
   
   # Show metadata and save plot
-  ftmwpipeline data-visualize exp_2638.ftmw --show-metadata --save
+  ftmwpipeline visualize-data exp_2638.ftmw --show-metadata --save
   
   # Non-interactive mode
-  ftmwpipeline data-visualize exp_2638.ftmw --no-show --save
+  ftmwpipeline visualize-data exp_2638.ftmw --no-show --save
         """
     )
     
@@ -316,19 +316,19 @@ Examples:
     
     viz_parser.set_defaults(func=cmd_data_visualize)
     
-    # data-info command
+    # formats command
     info_parser = subparsers.add_parser(
-        'data-info',
+        'formats',
         help='Show information about data formats',
         description='Display information about available data format loaders',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # List all available formats
-  ftmwpipeline data-info
+  ftmwpipeline formats
   
   # Show details about specific format
-  ftmwpipeline data-info --format blackchirp
+  ftmwpipeline formats --format blackchirp
         """
     )
     

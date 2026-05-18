@@ -105,7 +105,7 @@ class CSVLoader(BaseLoader):
             if missing_params:
                 result['errors'].append(
                     f"CSV format requires these parameters: {missing_params}. "
-                    f"Example: ftmwpipeline data-load exp_name --source data.csv --format csv "
+                    f"Example: ftmwpipeline import-data exp_name --source data.csv --format csv "
                     f"--spacing_us 0.02 --probe_freq_mhz 40960"
                 )
                 return result

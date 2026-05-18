@@ -1,7 +1,7 @@
 """
 FT processing and visualization commands.
 
-This module implements the ft-process and ft-visualize subcommands
+This module implements the compute-ft and visualize-ft subcommands
 for basic FTMW data processing and visualization.
 """
 
@@ -37,10 +37,10 @@ def cmd_ft_process(args) -> int:
     - Get detailed processing statistics and information
     - Programmatically validate parameters in automated workflows
     
-    For interactive parameter exploration with visualization, use ft-visualize.
+    For interactive parameter exploration with visualization, use visualize-ft.
     
     Stage-based workflow:
-    1. Load FID data from Stage 0 cache (data-load command output)
+    1. Load FID data from Stage 0 cache (import-data command output)
     2. Test preprocessing (windowing, filtering, zero-padding)
     3. Test FFT computation and frequency range
     4. Provide detailed feedback without permanent storage
@@ -90,9 +90,9 @@ def cmd_ft_process(args) -> int:
             print("Parameters stored for subsequent pipeline stages")
             print("   ComplexFT will be calculated on-demand when needed")
             print(f"   Next steps: ftmwpipeline estimate-noise {file_path}")
-            print(f"              ftmwpipeline ft-visualize {file_path}")
+            print(f"              ftmwpipeline visualize-ft {file_path}")
             if trim_range:
-                print(f"              ftmwpipeline ft-visualize {file_path} --trim {trim_range[0]:.0f}:{trim_range[1]:.0f}")
+                print(f"              ftmwpipeline visualize-ft {file_path} --trim {trim_range[0]:.0f}:{trim_range[1]:.0f}")
             
             return 0
             
@@ -100,11 +100,11 @@ def cmd_ft_process(args) -> int:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
             print("Stage 0 (Data Import) must be completed before FT processing.")
-            print(f"Run: ftmwpipeline data-load {file_path} --source <path>")
+            print(f"Run: ftmwpipeline import-data {file_path} --source <path>")
             print("")
             print("For example:")
-            print(f"  ftmwpipeline data-load {file_path} --source examples/blackchirp_data/2638/")
-            print(f"  ftmwpipeline ft-process {file_path}")
+            print(f"  ftmwpipeline import-data {file_path} --source examples/blackchirp_data/2638/")
+            print(f"  ftmwpipeline compute-ft {file_path}")
             return 1
         except Exception as e:
             print_error(f"Failed to process FT: {e}")
@@ -122,7 +122,7 @@ def cmd_ft_visualize(args) -> int:
     """
     Enhanced interactive parameter exploration with FID visualization panels.
     
-    This is the companion tool to ft-process, designed for exploratory usage
+    This is the companion tool to compute-ft, designed for exploratory usage
     where users want to experiment with different processing parameters and
     see immediate visual feedback. Creates enhanced multi-panel plots showing
     the complete processing workflow from raw FID to final spectrum.
@@ -223,9 +223,9 @@ def cmd_ft_visualize(args) -> int:
             print()
             print("ComplexFT calculated on-demand from pipeline file")
             print("   Try different parameters without permanent storage:")
-            print(f"   ftmwpipeline ft-visualize {file_path} --zpf 2 --expf_us 3.0")
+            print(f"   ftmwpipeline visualize-ft {file_path} --zpf 2 --expf_us 3.0")
             if not trim_range:
-                print(f"   ftmwpipeline ft-visualize {file_path} --trim 26500:40000")
+                print(f"   ftmwpipeline visualize-ft {file_path} --trim 26500:40000")
             
             return 0
             
@@ -233,11 +233,11 @@ def cmd_ft_visualize(args) -> int:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
             print("Stage 0 (Data Import) must be completed before FT visualization.")
-            print(f"Run: ftmwpipeline data-load {file_path} --source <path>")
+            print(f"Run: ftmwpipeline import-data {file_path} --source <path>")
             print("")
             print("For example:")
-            print(f"  ftmwpipeline data-load {file_path} --source examples/blackchirp_data/2638/")
-            print(f"  ftmwpipeline ft-visualize {file_path}")
+            print(f"  ftmwpipeline import-data {file_path} --source examples/blackchirp_data/2638/")
+            print(f"  ftmwpipeline visualize-ft {file_path}")
             return 1
         except Exception as e:
             print_error(f"Failed to visualize FT: {e}")
@@ -262,9 +262,9 @@ def add_ft_subcommands(subparsers) -> None:
     - Add pipeline stage selection options
     """
     
-    # ft-process command
+    # compute-ft command
     ft_process_parser = subparsers.add_parser(
-        'ft-process',
+        'compute-ft',
         help='Validate and store user-provided FT processing settings for analysis',
         description='Power user tool to validate specific FT processing parameters and provide detailed feedback.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -274,19 +274,19 @@ Intended for: Power users and automated pipeline processes
 
 Examples:
   # Validate basic processing parameters
-  ftmwpipeline ft-process exp_2638.ftmw --zpf 1 --expf_us 5.0
+  ftmwpipeline compute-ft exp_2638.ftmw --zpf 1 --expf_us 5.0
   
   # Test parameter combinations with trimming
-  ftmwpipeline ft-process exp_2638.ftmw --zpf 2 --expf_us 10.0 --trim 26500:40000
+  ftmwpipeline compute-ft exp_2638.ftmw --zpf 2 --expf_us 10.0 --trim 26500:40000
   
   # Test windowing and scaling parameters  
-  ftmwpipeline ft-process exp_2638.ftmw --start-us 1.0 --end-us 10.0 --units-power 3
+  ftmwpipeline compute-ft exp_2638.ftmw --start-us 1.0 --end-us 10.0 --units-power 3
 
 Workflow:
-  1. ftmwpipeline data-load exp_2638.ftmw --source examples/blackchirp_data/2638/
-  2. ftmwpipeline ft-process exp_2638.ftmw [--parameters]  # Power user validation
+  1. ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
+  2. ftmwpipeline compute-ft exp_2638.ftmw [--parameters]  # Power user validation
      OR
-     ftmwpipeline ft-visualize exp_2638.ftmw [--parameters] # Interactive exploration
+     ftmwpipeline visualize-ft exp_2638.ftmw [--parameters] # Interactive exploration
         """
     )
     
@@ -334,11 +334,11 @@ Workflow:
     )
     ft_process_parser.set_defaults(func=cmd_ft_process)
     
-    # ft-visualize command  
+    # visualize-ft command  
     ft_visualize_parser = subparsers.add_parser(
-        'ft-visualize',
+        'visualize-ft',
         help='Enhanced interactive parameter exploration with FID visualization panels',
-        description='Enhanced companion tool to ft-process showing complete FID-to-spectrum processing workflow.',
+        description='Enhanced companion tool to compute-ft showing complete FID-to-spectrum processing workflow.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Purpose: Enhanced interactive parameter exploration with FID visualization panels
@@ -352,16 +352,16 @@ Enhanced Visualization:
 
 Examples:
   # Enhanced visualization with windowing bounds displayed
-  ftmwpipeline ft-visualize exp_2638.ftmw --start-us 2.0 --end-us 12.0 --expf_us 5.0
+  ftmwpipeline visualize-ft exp_2638.ftmw --start-us 2.0 --end-us 12.0 --expf_us 5.0
   
   # Explore custom parameters with trimmed frequency range
-  ftmwpipeline ft-visualize exp_2638.ftmw --zpf 2 --expf_us 3.0 --trim 26500:40000
+  ftmwpipeline visualize-ft exp_2638.ftmw --zpf 2 --expf_us 3.0 --trim 26500:40000
   
   # Static enhanced image export for presentations
-  ftmwpipeline ft-visualize exp_2638.ftmw --start-us 2.0 --end-us 12.0 --no-interactive --output enhanced_spectrum.png
+  ftmwpipeline visualize-ft exp_2638.ftmw --start-us 2.0 --end-us 12.0 --no-interactive --output enhanced_spectrum.png
   
   # Compare preprocessing effects with different window functions
-  ftmwpipeline ft-visualize exp_2638.ftmw --window-function hann --expf_us 10.0
+  ftmwpipeline visualize-ft exp_2638.ftmw --window-function hann --expf_us 10.0
 
 Key Features:
   - Enhanced 3-panel visualization showing complete FID-to-spectrum workflow  

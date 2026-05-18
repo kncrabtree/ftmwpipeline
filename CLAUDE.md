@@ -44,11 +44,12 @@ locally black/mypy-clean.
 This is the single most important thing to understand. There are **three user-facing
 interfaces that must behave identically**, and they must not duplicate logic:
 
-1. **CLI** — `src/ftmwpipeline/cli/*.py` (subcommands: `data-load`, `data-visualize`,
-   `data-info`, `ft-process`, `ft-visualize`, `estimate-noise`, `visualize-noise`,
-   `validate`, `version`). Entry point: `ftmwpipeline.cli:main`.
+1. **CLI** — `src/ftmwpipeline/cli/*.py` (subcommands: `import-data`, `visualize-data`,
+   `formats`, `compute-ft`, `visualize-ft`, `estimate-noise`, `visualize-noise`,
+   `info`, `validate`, `version`). Entry point: `ftmwpipeline.cli:main`.
 2. **Pipeline class** — `src/ftmwpipeline/pipeline.py`, file-bound OO interface
-   (`Pipeline.create(...)` / `Pipeline.open(...)` then `.compute_ft()`, `.estimate_noise()`, …).
+   (`Pipeline.create(...)` / `Pipeline.open(...)` / `Pipeline(path)` smart constructor,
+   then `.compute_ft()`, `.estimate_noise()`, …).
 3. **Functional API** — `src/ftmwpipeline/api.py`, stateless functions taking a `.ftmw`
    path as first arg (`import ftmwpipeline.api as ftmw`).
 
@@ -59,11 +60,11 @@ behavior, edit the `_internal` impl and let all three interfaces inherit it — 
 one interface in isolation. There are integration tests dedicated to this
 (`tests/integration/test_cross_interface_consistency.py`); run them after any stage change.
 
-Note: the `dev-docs/*_STRATEGY.md` specs state *intended* requirements and may use
-different names than the code (e.g. spec `import-data` vs actual `data-load`). These are
-deliberate, tracked gaps — see the "Code vs spec divergences" table in
-`dev-docs/ROADMAP.md`. Trust the code (and `STATUS.md`) for what exists now; trust the
-specs for intent. Do not silently change code to match a spec or vice versa.
+Note: the `dev-docs/*_STRATEGY.md` files are normative specs (intent); `STATUS.md` is
+verified current state; `dev-docs/ROADMAP.md` holds the code-vs-spec divergence log.
+The known divergences (D1–D6) are resolved — code and specs currently agree — but if
+you find a new mismatch, log it in ROADMAP and resolve it deliberately (amend spec or
+change code), never silently.
 
 ## Architecture: the `.ftmw` file model
 

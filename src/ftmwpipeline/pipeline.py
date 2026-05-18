@@ -56,27 +56,38 @@ class Pipeline:
     ```
     """
     
-    def __init__(self, filepath: Union[str, Path], source_metadata: SourceMetadata, 
-                 stage_tracker: PipelineStageTracker):
+    def __init__(self, filepath: Union[str, Path],
+                 source_metadata: Optional[SourceMetadata] = None,
+                 stage_tracker: Optional[PipelineStageTracker] = None):
         """
-        Initialize Pipeline instance bound to a specific .ftmw file.
-        
+        Bind a Pipeline instance to a specific .ftmw file.
+
+        Smart constructor: ``Pipeline(path)`` opens an existing pipeline file,
+        raising ``FileNotFoundError`` with guidance if it does not exist. Use
+        ``Pipeline.create()`` to make a new analysis from raw data.
+
         Parameters
         ----------
         filepath : str or Path
-            Path to the pipeline file
-        source_metadata : SourceMetadata
-            Source provenance information
-        stage_tracker : PipelineStageTracker
-            Stage completion tracker
-        
+            Path to the pipeline file.
+        source_metadata : SourceMetadata, optional
+            Source provenance. When omitted (the smart-constructor path) it is
+            loaded from the file.
+        stage_tracker : PipelineStageTracker, optional
+            Stage completion tracker. When omitted it is loaded from the file.
+
         Notes
         -----
-        Use Pipeline.create() or Pipeline.open() class methods instead of 
-        calling this constructor directly.
+        ``create()`` and ``open()`` supply both metadata arguments directly.
+        Passing only a path performs the same load as ``open()``.
         """
         self.logger = logging.getLogger(__name__)
-        
+
+        if source_metadata is None or stage_tracker is None:
+            # Smart-constructor path: load state from the file (raises
+            # FileNotFoundError with guidance if absent).
+            filepath, source_metadata, stage_tracker = open_pipeline_file(filepath)
+
         # File binding
         self.filepath = Path(filepath)
         self.source_metadata = source_metadata
@@ -229,7 +240,7 @@ class Pipeline:
         Compute Fourier Transform with specified processing parameters.
         
         This method implements Stage 1 FT processing, equivalent to the CLI
-        ft-process command. Can be called multiple times safely.
+        compute-ft command. Can be called multiple times safely.
         
         Parameters
         ----------
@@ -299,7 +310,7 @@ class Pipeline:
         Create enhanced FT visualization with processing workflow display.
         
         This method implements enhanced FT visualization equivalent to the CLI 
-        ft-visualize command, showing complete FID-to-spectrum processing workflow.
+        visualize-ft command, showing complete FID-to-spectrum processing workflow.
         
         Parameters
         ----------

@@ -78,13 +78,14 @@ result = process_experiment(
 ### Command line
 
 ```bash
-ftmwpipeline data-load     exp_2638.ftmw --source examples/blackchirp_data/2638/
-ftmwpipeline ft-process    exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
-ftmwpipeline ft-visualize  exp_2638.ftmw --trim 26500:40000 --no-interactive
+ftmwpipeline import-data     exp_2638.ftmw --source examples/blackchirp_data/2638/
+ftmwpipeline compute-ft    exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
+ftmwpipeline visualize-ft  exp_2638.ftmw --trim 26500:40000 --no-interactive
 ftmwpipeline estimate-noise exp_2638.ftmw
 ftmwpipeline visualize-noise exp_2638.ftmw
 
-ftmwpipeline validate     # check installation
+ftmwpipeline info exp_2638.ftmw            # provenance and stage status
+ftmwpipeline validate                      # check installation
 ftmwpipeline version
 ```
 

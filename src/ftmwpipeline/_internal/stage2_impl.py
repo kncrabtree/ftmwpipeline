@@ -73,7 +73,7 @@ def compute_noise_estimation_impl(
             if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
                 raise ValueError(
                     "Stage 1 (FT computation) must be completed before noise estimation. "
-                    "Run compute_ft() or ft-process command first."
+                    "Run compute_ft() or compute-ft command first."
                 )
         
         # Import Stage 1 implementation for on-demand ComplexFT computation
@@ -253,7 +253,7 @@ def visualize_noise_impl(
             if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
                 raise ValueError(
                     "Stage 1 (FT computation) required for noise visualization. "
-                    "Run compute_ft() or ft-process command first."
+                    "Run compute_ft() or compute-ft command first."
                 )
         
         # Compute ComplexFT on-demand for visualization (consistent with Stage 2 architecture)

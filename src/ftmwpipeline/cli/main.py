@@ -16,6 +16,7 @@ from .utils import setup_logging
 from .ft_commands import add_ft_subcommands
 from .data_commands import add_data_subcommands
 from .noise_commands import register_noise_commands
+from .info_commands import add_info_subcommand
 
 
 
@@ -49,8 +50,8 @@ def cmd_version(args) -> int:
     print(f"ftmwpipeline {__version__}")
     print(f"Description: {PACKAGE_INFO['description']}")
     print(f"Optional dependencies:")
-    print(f"  matplotlib: {'' if PACKAGE_INFO['has_matplotlib'] else ''}")
-    print(f"  plotly: {'' if PACKAGE_INFO['has_plotly'] else ''}")
+    print(f"  matplotlib: {'available' if PACKAGE_INFO['has_matplotlib'] else 'missing'}")
+    print(f"  plotly: {'available' if PACKAGE_INFO['has_plotly'] else 'missing'}")
     
     return 0
 
@@ -63,34 +64,29 @@ def create_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Available Commands:
-  Data Loading (Stage 0):
-    data-load       Load experimental data from various formats
-    data-visualize  Visualize loaded FID data for validation
-    data-info       Show information about data formats
-    
-  FT Processing (Stage 1):
-    ft-process      Process FID data and compute Fourier Transform
-    ft-visualize    Visualize cached FT spectrum results
-    
-  Utility Commands:
+  Stage 0 (Data import):
+    import-data     Import experimental data, creating a .ftmw file
+    visualize-data  Visualize imported FID data
+    formats         List available data formats
+
+  Stage 1 (FT processing):
+    compute-ft      Compute the Fourier transform
+    visualize-ft    Visualize the FT spectrum
+
+  Stage 2 (Noise estimation):
+    estimate-noise  Estimate frequency-dependent noise
+    visualize-noise Visualize noise estimation
+
+  Utility:
+    info            Show provenance and stage status for a .ftmw file
     validate        Check installation and dependencies
     version         Show version and package information
 
 Examples:
-  # Stage-based pipeline workflow
-  ftmwpipeline data-load exp_2638 --source examples/blackchirp_data/2638/
-  ftmwpipeline data-visualize exp_2638
-  ftmwpipeline ft-process exp_2638 --from-cache --zpf 2 --expf_us 3.0
-  ftmwpipeline ft-visualize exp_2638
-  
-  # Utility commands
-  ftmwpipeline validate
-  ftmwpipeline version
-
-Planned Commands:
-  noise-estimate  Estimate baseline noise from cached FT data
-  noise-visualize Visualize noise estimation results
-  cache           Manage pipeline cache files and storage
+  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
+  ftmwpipeline compute-ft exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
+  ftmwpipeline estimate-noise exp_2638.ftmw
+  ftmwpipeline info exp_2638.ftmw --format json
         """
     )
     
@@ -110,7 +106,10 @@ Planned Commands:
     
     # Add noise estimation commands (Stage 2)
     register_noise_commands(subparsers)
-    
+
+    # Pipeline-file info command
+    add_info_subcommand(subparsers)
+
     # Validate command
     validate_parser = subparsers.add_parser(
         'validate',

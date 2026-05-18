@@ -40,13 +40,13 @@ class TestIdenticalResults:
         
         # CLI interface
         self._run_cli_command([
-            "data-load", str(cli_file),
+            "import-data", str(cli_file),
             "--source", exp_2638_data_path
         ])
         zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
         trim_min, trim_max = standard_ft_params['trim']
         self._run_cli_command([
-            "ft-process", str(cli_file),
+            "compute-ft", str(cli_file),
             "--zpf", str(zpf),
             "--expf_us", str(expf_us),
             "--trim", f"{trim_min}:{trim_max}"
@@ -74,7 +74,7 @@ class TestIdenticalResults:
         fid_functional = ftmw.load_fid(functional_file)
         
         self._run_cli_command([
-            "data-load", str(cli_file),
+            "import-data", str(cli_file),
             "--source", exp_2638_data_path
         ])
         fid_cli = ftmw.load_fid(cli_file)  # Use functional API to load
@@ -133,12 +133,12 @@ class TestIdenticalResults:
         ftmw.import_data(functional_file, source=exp_2638_data_path)
         ftmw.compute_ft(functional_file, **standard_ft_params)
         
-        # CLI: data-load + ft-process (follow existing pattern from other tests)
-        self._run_cli_command(["data-load", str(cli_file), "--source", exp_2638_data_path])
+        # CLI: import-data + compute-ft (follow existing pattern from other tests)
+        self._run_cli_command(["import-data", str(cli_file), "--source", exp_2638_data_path])
         zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
         trim_min, trim_max = standard_ft_params['trim']
         self._run_cli_command([
-            "ft-process", str(cli_file),
+            "compute-ft", str(cli_file),
             "--zpf", str(zpf), "--expf_us", str(expf_us),
             "--trim", f"{trim_min}:{trim_max}"
         ])
@@ -463,7 +463,7 @@ class TestFilePortability:
         zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
         trim_min, trim_max = standard_ft_params['trim']
         self._run_cli_command([
-            "ft-process", str(test_file),
+            "compute-ft", str(test_file),
             "--zpf", str(zpf),
             "--expf_us", str(expf_us),
             "--trim", f"{trim_min}:{trim_max}"
@@ -481,7 +481,7 @@ class TestFilePortability:
         
         # Create with CLI
         self._run_cli_command([
-            "data-load", str(test_file),
+            "import-data", str(test_file),
             "--source", exp_2638_data_path
         ])
         
@@ -493,7 +493,7 @@ class TestFilePortability:
         zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
         trim_min, trim_max = standard_ft_params['trim']
         self._run_cli_command([
-            "ft-process", str(test_file),
+            "compute-ft", str(test_file),
             "--zpf", str(zpf),
             "--expf_us", str(expf_us),
             "--trim", f"{trim_min}:{trim_max}"
@@ -509,7 +509,7 @@ class TestFilePortability:
         
         # Start with CLI
         self._run_cli_command([
-            "data-load", str(test_file),
+            "import-data", str(test_file),
             "--source", exp_2638_data_path
         ])
         
@@ -524,7 +524,7 @@ class TestFilePortability:
         zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
         trim_min, trim_max = standard_ft_params['trim']
         self._run_cli_command([
-            "ft-process", str(test_file),
+            "compute-ft", str(test_file),
             "--zpf", str(zpf),
             "--expf_us", str(expf_us),
             "--trim", f"{trim_min}:{trim_max}"
@@ -631,7 +631,7 @@ class TestErrorConsistency:
         
         # CLI should fail with non-zero return code
         result = subprocess.run(
-            ["ftmwpipeline", "ft-process", str(nonexistent_file)],
+            ["ftmwpipeline", "compute-ft", str(nonexistent_file)],
             capture_output=True,
             text=True,
             check=False,
@@ -654,7 +654,7 @@ class TestErrorConsistency:
         
         # CLI should fail with non-zero return code
         result = subprocess.run(
-            ["ftmwpipeline", "data-load", str(test_file), "--source", nonexistent_source],
+            ["ftmwpipeline", "import-data", str(test_file), "--source", nonexistent_source],
             capture_output=True,
             text=True,
             check=False,
@@ -679,7 +679,7 @@ class TestErrorConsistency:
         
         # CLI should also fail
         result = subprocess.run(
-            ["ftmwpipeline", "ft-process", str(test_file), "--zpf", "-1"],
+            ["ftmwpipeline", "compute-ft", str(test_file), "--zpf", "-1"],
             capture_output=True,
             text=True,
             check=False,
@@ -707,7 +707,7 @@ class TestErrorConsistency:
         
         # CLI should also detect corruption (though exact command may vary)
         result = subprocess.run(
-            ["ftmwpipeline", "data-visualize", str(test_file)],
+            ["ftmwpipeline", "visualize-data", str(test_file)],
             capture_output=True,
             text=True,
             check=False,

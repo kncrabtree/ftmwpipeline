@@ -287,8 +287,8 @@ def cli_command_runner():
         
         @staticmethod
         def import_data(ftmw_file: Path, source: str, **kwargs) -> Tuple[bool, str, str]:
-            """Run data-load command."""
-            args = ["data-load", str(ftmw_file), "--source", source]
+            """Run import-data command."""
+            args = ["import-data", str(ftmw_file), "--source", source]
             
             if 'format' in kwargs:
                 args.extend(["--format", kwargs['format']])
@@ -299,8 +299,8 @@ def cli_command_runner():
         
         @staticmethod
         def compute_ft(ftmw_file: Path, **params) -> Tuple[bool, str, str]:
-            """Run ft-process command with parameters."""
-            args = ["ft-process", str(ftmw_file)]
+            """Run compute-ft command with parameters."""
+            args = ["compute-ft", str(ftmw_file)]
             
             if 'zpf' in params:
                 args.extend(["--zpf", str(params['zpf'])])
@@ -314,8 +314,8 @@ def cli_command_runner():
         
         @staticmethod
         def visualize_ft(ftmw_file: Path, **params) -> Tuple[bool, str, str]:
-            """Run ft-visualize command with parameters."""
-            args = ["ft-visualize", str(ftmw_file), "--no-interactive"]
+            """Run visualize-ft command with parameters."""
+            args = ["visualize-ft", str(ftmw_file), "--no-interactive"]
             
             if 'zpf' in params:
                 args.extend(["--zpf", str(params['zpf'])])

@@ -90,8 +90,13 @@ A stateless surface where every function takes the `.ftmw` path as its first
 argument and shares the class API's implementation. It is the appropriate
 surface for batch and scripting use. Provided operations mirror the class:
 import, load, compute FT, visualize, estimate noise, save parameters, and
-introspection. Convenience whole-experiment wrappers
-(`process_experiment`, `batch_process_experiments`) are also provided.
+introspection.
+
+The canonical functional namespace is `ftmwpipeline.api`
+(`import ftmwpipeline.api as ftmw`); the package top level is intentionally not
+flooded with these functions. Only the whole-experiment convenience wrappers
+`process_experiment` and `batch_process_experiments` (and the `Pipeline` class)
+are exported at the package top level.
 
 ## Provenance
 
