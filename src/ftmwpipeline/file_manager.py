@@ -159,6 +159,17 @@ class PipelineStageTracker:
         'stage2_noise_result': ['stage1_complex_ft'],  # Stage 2 requires Stage 1
         # Future stages...
     }
+
+    # HDF5 location whose presence proves a completed stage's data is stored.
+    # Note Stage 1 is intentionally lightweight: ComplexFT is recomputed
+    # on-demand, so only its processing parameters are persisted (there is no
+    # 'stage1_complex_ft' group). Stages whose key is absent here are validated
+    # by a group named after the stage itself.
+    STAGE_DATA_PATHS = {
+        'stage0_fid_data': 'stage0_fid_data',
+        'stage1_complex_ft': 'processing_parameters/ft_processing',
+        'stage2_noise_result': 'stage2_noise_result',
+    }
     
     def __init__(self, completed_stages: Optional[list] = None):
         """Initialize stage tracker."""
@@ -254,7 +265,7 @@ def create_pipeline_file(filepath: Union[str, Path], fid: FID,
             )
         elif existing_metadata and existing_metadata.matches(source_metadata):
             logger.info(
-                f"ℹ️  Found existing pipeline with identical source. Loading existing data: {filepath}"
+                f"Found existing pipeline with identical source. Loading existing data: {filepath}"
             )
             return filepath
     
@@ -285,10 +296,10 @@ def create_pipeline_file(filepath: Union[str, Path], fid: FID,
             stage0_group = h5f.create_group('stage0_fid_data')
             save_fid_to_hdf5(fid, stage0_group)
         
-        logger.info(f"✅ Created pipeline file: {filepath}")
+        logger.info(f"Created pipeline file: {filepath}")
         
         if force and filepath.exists():
-            logger.warning(f"⚠️  Overwrote existing pipeline file: {filepath}")
+            logger.warning(f"Overwrote existing pipeline file: {filepath}")
         
         return filepath
         
@@ -387,10 +398,13 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
         if not source_metadata.source_path.exists():
             warnings.append(f"Original source file no longer exists: {source_metadata.source_path}")
         
-        # Validate stage data
+        # Validate stage data. Each completed stage must have its persisted
+        # data present at its known HDF5 location (which is not always a group
+        # named after the stage - e.g. Stage 1 is lightweight).
         with h5py.File(filepath, 'r') as h5f:
             for stage in stage_tracker.completed_stages:
-                if stage not in h5f:
+                data_path = PipelineStageTracker.STAGE_DATA_PATHS.get(stage, stage)
+                if data_path not in h5f:
                     errors.append(f"Missing data for completed stage: {stage}")
         
         # Try loading FID data

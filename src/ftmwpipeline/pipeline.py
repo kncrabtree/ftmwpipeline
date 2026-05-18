@@ -552,7 +552,12 @@ class Pipeline:
         """
         try:
             validation_report = validate_pipeline_file(self.filepath)
-            
+
+            # Refresh from disk: stages completed by compute_ft()/estimate_noise()
+            # (or by another interface) are written to the file, so the
+            # in-memory tracker captured at open()/create() time is stale.
+            _, self.source_metadata, self.stage_tracker = open_pipeline_file(self.filepath)
+
             info_dict = {
                 'filepath': str(self.filepath),
                 'valid': validation_report['valid'],

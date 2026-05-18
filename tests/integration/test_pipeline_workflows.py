@@ -294,7 +294,7 @@ class TestCLIWorkflows:
             "--trim", f"{trim_min}:{trim_max}"
         ])
         assert success, f"ft-process failed: {stderr}"
-        assert "FT processing validation completed successfully" in stdout, "FT validation success message missing"
+        assert "FT processing validation and parameter storage completed successfully" in stdout, "FT validation success message missing"
         
         # Stage 1: Visualize FT (non-interactive)
         success, stdout, stderr = self.run_cli_command([

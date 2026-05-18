@@ -29,6 +29,9 @@ from ftmwpipeline.pipeline import Pipeline
 # Functional API - can be imported as "import ftmwpipeline.api as ftmw"
 from ftmwpipeline import api
 
+# Convenience workflow functions (thin wrappers over Pipeline)
+from ftmwpipeline.workflows import process_experiment, batch_process_experiments
+
 # TODO: Fix imports for other modules when they're implemented
 # # Preprocessing functions
 # from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
@@ -46,13 +49,6 @@ from ftmwpipeline import api
 # from ftmwpipeline.fitting.time_domain import fit_time_domain_peaks
 # from ftmwpipeline.fitting.conservative import fit_conservative_time_domain
 # from ftmwpipeline.fitting.validation import validate_fit_results
-
-# # Convenience functions for common workflows
-# from ftmwpipeline.workflows import (
-#     process_experiment,
-#     batch_process_experiments,
-#     quick_fit,
-# )
 
 # # Import submodules to make them accessible
 # from ftmwpipeline import (
@@ -86,9 +82,13 @@ __all__ = [
     
     # Main pipeline interface
     "Pipeline",
-    
+
     # Functional API module
     "api",
+
+    # Convenience workflows
+    "process_experiment",
+    "batch_process_experiments",
 ]
 
 # Package-level configuration

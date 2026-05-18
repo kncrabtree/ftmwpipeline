@@ -79,7 +79,7 @@ def cmd_ft_process(args) -> int:
                 validate_only=False  # Validate and store parameters (aligns with help text)
             )
             
-            print("✅ FT processing validation and parameter storage completed successfully!")
+            print("FT processing validation and parameter storage completed successfully!")
             print(f"   Processing parameters validated and stored with {result['fid_points']:,} FID points")
             print(f"   Preprocessed to {result['preprocessed_points']:,} points (zero-padded)")
             print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
@@ -87,7 +87,7 @@ def cmd_ft_process(args) -> int:
                 print(f"   After trimming: {result['trimmed_points']:,} points")
             
             print()
-            print("📌 Parameters stored for subsequent pipeline stages")
+            print("Parameters stored for subsequent pipeline stages")
             print("   ComplexFT will be calculated on-demand when needed")
             print(f"   Next steps: ftmwpipeline estimate-noise {file_path}")
             print(f"              ftmwpipeline ft-visualize {file_path}")
@@ -203,12 +203,12 @@ def cmd_ft_visualize(args) -> int:
                 # Save static plot
                 if args.output:
                     fig.savefig(args.output, dpi=150, bbox_inches='tight')
-                    print(f"✅ Enhanced plot saved to: {args.output}")
+                    print(f"Enhanced plot saved to: {args.output}")
                 else:
                     # Save with default name
                     output_file = f"{pipeline_name}_enhanced_spectrum.png"
                     fig.savefig(output_file, dpi=150, bbox_inches='tight')
-                    print(f"✅ Enhanced plot saved to: {output_file}")
+                    print(f"Enhanced plot saved to: {output_file}")
                 
                 # Close the figure to free memory
                 import matplotlib.pyplot as plt
@@ -217,11 +217,11 @@ def cmd_ft_visualize(args) -> int:
                 # Show interactive plot
                 import matplotlib.pyplot as plt
                 plt.show()
-                print("✅ Enhanced interactive plot displayed")
+                print("Enhanced interactive plot displayed")
                 print("   Close the plot window to continue...")
             
             print()
-            print("💡 ComplexFT calculated on-demand from pipeline file")
+            print("ComplexFT calculated on-demand from pipeline file")
             print("   Try different parameters without permanent storage:")
             print(f"   ftmwpipeline ft-visualize {file_path} --zpf 2 --expf_us 3.0")
             if not trim_range:

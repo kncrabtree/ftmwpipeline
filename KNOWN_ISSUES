@@ -1,3 +1,0 @@
-Trim settings set by ft-visualize are not automatically used if ft-visualize is called again with no parameters.
-
-We need to implement an example or documentation about how to create and register a custom format. We want this to be as simple as possible; we need to minimize the number of virtual functions the user needs to implement (ideally they provide information about recognized extensions, whether they need a file or a directory, and they have a single function to implement that returns an FID object with the necessary information, along with an optional container of processing settings). They should not need to implement virtual validation functions etc; we should allow them to raise exceptions as needed.

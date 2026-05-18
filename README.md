@@ -1,103 +1,108 @@
 # ftmwpipeline
 
-A Python package for FTMW (Fourier Transform Microwave) spectroscopy signal processing and peak fitting.
+A Python package for FTMW (Fourier Transform Microwave) spectroscopy signal
+processing and peak fitting.
 
-## Overview
+Each experiment is processed as a single, portable `.ftmw` file that progresses
+through pipeline stages. The same functionality is available through a Python
+API and a command-line interface.
 
-This package provides a comprehensive pipeline for processing FTMW spectroscopy data, including:
+## Status
 
-- **Data Loading**: Support for BlackChirp and generic FID formats
-- **Preprocessing**: Automated baseline and noise estimation
-- **Peak Detection**: Advanced algorithms with clustering and iterative subtraction
-- **Window Assignment**: Physics-based analysis window optimization  
-- **Peak Fitting**: Time-domain and conservative fitting with statistical validation
-- **Visualization**: Comprehensive plotting and diagnostic tools
-- **Configuration**: Flexible parameter management and algorithm selection
+Implemented and tested: **data import**, **FT processing**, and **noise
+estimation** (pipeline Stages 0–2), via the CLI, the `Pipeline` class, and the
+functional API. Peak detection, window assignment, and fitting are not yet
+implemented.
+
+For the precise, verified current state see [`STATUS.md`](STATUS.md). For
+direction and specifications see [`dev-docs/ROADMAP.md`](dev-docs/ROADMAP.md).
 
 ## Installation
 
-### Using Conda (Recommended)
-
-Create a conda environment with all dependencies:
+From a clone, using conda:
 
 ```bash
-# Full environment with all features
-conda env create -f environment.yml
-conda activate ftmwpipeline
-
-# Or minimal development environment  
+# Development environment (tests, linters, docs, viz tooling)
 conda env create -f environment-dev.yml
 conda activate ftmwpipeline-dev
 
-# Install the package in development mode
-pip install -e .
-```
-
-### Using pip
-
-```bash
-pip install ftmwpipeline
-```
-
-### Development Installation
-
-```bash
-git clone https://github.com/ftmw-pipeline/ftmwpipeline.git
-cd ftmwpipeline
-
-# Create conda environment
+# or the minimal runtime environment
 conda env create -f environment.yml
 conda activate ftmwpipeline
-
-# Install in development mode
-pip install -e .
 ```
 
-## Quick Start
+Both environment files install the package itself in editable mode.
+
+## Quick start
+
+### Python — Pipeline class
 
 ```python
-import ftmwpipeline as fmw
+from ftmwpipeline import Pipeline
 
-# Process a single experiment
-results = fmw.process_experiment('data/experiment.h5')
+# Create a new analysis from raw data (here: a BlackChirp experiment directory)
+pipe = Pipeline.create("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
 
-# Or use the Pipeline class for more control
-pipeline = fmw.Pipeline()
-results = pipeline.process_experiment('data/experiment.h5')
+fid = pipe.load_data()
+complex_ft = pipe.compute_ft(zpf=2, expf_us=5.0, trim=(26500, 40000))
+noise = pipe.estimate_noise()
 
-# Batch processing
-results = fmw.batch_process_experiments(['exp1.h5', 'exp2.h5'])
+print(pipe.info())   # provenance, completed stages, next available stages
 ```
 
-## Development Status
+Open an existing analysis with `Pipeline.open("exp_2638.ftmw")`.
 
-**Current Phase**: Phase 1 (Infrastructure) ✅ **COMPLETE** - Phase 2 (Core Data Structures) **READY TO BEGIN**
+### Python — functional API
 
-This project is being developed in 11 phases. For complete development status, timeline, and detailed task breakdown, see the [**Development Roadmap**](FTMWPIPELINE_DEVELOPMENT_ROADMAP.md).
+```python
+import ftmwpipeline.api as ftmw
 
-## Validation
+ftmw.import_data("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
+complex_ft = ftmw.compute_ft("exp_2638.ftmw", zpf=2, expf_us=5.0,
+                             trim=(26500, 40000))
+noise = ftmw.estimate_noise("exp_2638.ftmw")
+```
 
-To verify your installation:
+### Python — whole-experiment convenience
+
+```python
+from ftmwpipeline import process_experiment
+
+result = process_experiment(
+    "examples/blackchirp_data/2638/",
+    "exp_2638.ftmw",
+    ft_params={"zpf": 2, "expf_us": 5.0, "trim": (26500, 40000)},
+)
+```
+
+### Command line
 
 ```bash
-# Command line
-ftmwpipeline validate
+ftmwpipeline data-load     exp_2638.ftmw --source examples/blackchirp_data/2638/
+ftmwpipeline ft-process    exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
+ftmwpipeline ft-visualize  exp_2638.ftmw --trim 26500:40000 --no-interactive
+ftmwpipeline estimate-noise exp_2638.ftmw
+ftmwpipeline visualize-noise exp_2638.ftmw
 
-# Or in Python
-python scripts/validate_installation.py
+ftmwpipeline validate     # check installation
+ftmwpipeline version
 ```
 
-## Documentation
+## Example data
 
-- [Installation Guide](docs/source/installation.rst)
-- [Quick Start Guide](docs/source/quickstart.rst)
-- [API Reference](docs/source/api/index.rst)
-- [Examples](examples/)
+`examples/blackchirp_data/2638/` is a real BlackChirp experiment included for
+testing and trying the pipeline. Recommended processing for it: `zpf=2`,
+`expf_us=5.0`, trimmed to 26500–40000 MHz.
 
-## Contributing
+## Tests
 
-This project is in active development. See [CHANGELOG.md](CHANGELOG.md) for detailed development progress.
+```bash
+conda run -n ftmwpipeline-dev python -m pytest -q --no-header -o addopts=""
+```
+
+(The `-o addopts=""` is required because coverage flags are configured in
+`pyproject.toml`.)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT — see [LICENSE](LICENSE).

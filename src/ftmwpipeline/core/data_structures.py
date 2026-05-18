@@ -12,8 +12,6 @@ Architecture:
 
 - FittingResult: Post-fitting results container
   └── FittedPeak[]: Fitted parameters for individual peaks
-
-Extracted and adapted from bcfitting/newfitting/ codebase.
 """
 
 import numpy as np
@@ -532,8 +530,8 @@ class Peak:
     """
     Pre-fitting detected peak representation.
     
-    Based on ClassifiedPeak from bcfitting. Represents peaks detected
-    in the spectrum before fitting, used for initial parameter guesses.
+    Represents peaks detected in the spectrum before fitting, used for
+    initial parameter guesses.
     """
     
     def __init__(self, frequency: float, intensity: float,
@@ -741,8 +739,7 @@ class FittingResult:
     """
     Container for fitting results from analysis of SpectralWindow(s).
     
-    Based on FitResult from bcfitting. Stores fitted parameters,
-    quality metrics, and diagnostic information.
+    Stores fitted parameters, quality metrics, and diagnostic information.
     """
     
     def __init__(self, success: bool = False, fitted_spectrum: Optional[np.ndarray] = None,

@@ -1,166 +1,124 @@
-# FTMW Pipeline Project - Claude Assistant Guide
+# CLAUDE.md
 
-## Project Overview
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-This project is developing `ftmwpipeline`, a standalone Python package for FTMW (Fourier Transform Microwave) spectroscopy signal processing and peak fitting. The goal is to extract and refactor algorithms from the experimental work in `/home/kncrabtree/github/bcfitting/newfitting/` into a clean, well-structured Python package.
+## What this is
 
-## Repository Structure
+`ftmwpipeline` is a Python package for FTMW (Fourier Transform Microwave) spectroscopy
+signal processing and peak fitting. Implementation is **stage-based and incremental**;
+Stages 0–2 (data import → FT → noise estimation) are implemented. Later stages (peak
+detection, window assignment, fitting) are `NotImplementedError` stubs under
+`src/ftmwpipeline/` and are a **clean-room reimplementation** — the original `bcfitting`
+reference code is permanently lost; there is nothing to port from. Do not cite or look
+for `bcfitting`.
 
-This project uses git worktrees, allowing multiple working directories for different branches:
-- **Bare repository**: `../ftmwpipeline.git/` (contains git objects and refs)
-- **Working directories**: Each branch can have its own worktree directory
-- **This directory**: Current working directory for whichever branch you're on
+`STATUS.md` is the verified current state (regenerated from code). `dev-docs/ROADMAP.md`
+is the coordination/task doc and holds the code-vs-spec divergence log. The
+`dev-docs/*_STRATEGY.md` files are normative specs (timeless requirements), not status.
 
-### Typical Structure
-```
-ftmwpipeline/
-├── ftmwpipeline.git/           # Bare git repository
-├── main/                       # Main branch worktree
-├── feature-xyz/                # Feature branch worktree (example)
-└── dev/                        # Development branch worktree (example)
-```
+## Commands
 
-### Current Directory Contents
-```
-├── FTMWPIPELINE_DEVELOPMENT_ROADMAP.md    # Comprehensive project roadmap
-├── CLAUDE.md                              # This file - assistant guide
-├── LICENSE                                # Project license
-└── README.md                              # Basic project description
-```
+The dev environment is the conda env `ftmwpipeline-dev` (from `environment-dev.yml`, the
+superset with tooling + editable install). Run all project commands through it:
 
-**Recommended Workflow**: Always start Claude Code sessions from within a worktree directory (like this one) for development work.
-
-## Source Code Location
-
-**IMPORTANT**: All source code to be migrated is located at:
-`/home/kncrabtree/github/bcfitting/`
-
-### Key Source Files to Extract:
-- `/home/kncrabtree/github/bcfitting/src/bcfitting/ftmwfitting.py` (lines 1095-2900+)
-- `/home/kncrabtree/github/bcfitting/newfitting/time_domain_fitting_unified.py`
-- `/home/kncrabtree/github/bcfitting/newfitting/complex_ft.py`
-- `/home/kncrabtree/github/bcfitting/newfitting/peak_classification.py`
-- `/home/kncrabtree/github/bcfitting/newfitting/window_assignment.py`
-- `/home/kncrabtree/github/bcfitting/newfitting/conservative_fitting_logger.py`
-- `/home/kncrabtree/github/bcfitting/newfitting/unified_fitting_visualization.py`
-
-### Test Data Location:
-- `/home/kncrabtree/github/bcfitting/examples/blackchirp_data/2638/` - Real experimental data
-- `/home/kncrabtree/github/bcfitting/newfitting/output/` - Reference outputs
-- **Example data**: `examples/blackchirp_data/2638/` - Local copy for testing
-
-### Experiment 2638 Processing Notes:
-**Recommended Processing Parameters**:
-- `zpf=1` (zero padding factor for improved frequency resolution)
-- `expf_us=5.0` (5 μs exponential apodization filter for sensitivity enhancement)
-- **Activity region**: 26500-40000 MHz (focus analysis in this range)
-- **IMPORTANT**: FT should be trimmed to 26500-40000 MHz range before analysis to remove noise regions
-- FID specs: 750k points, 15 μs duration, 40.96 GHz probe, Lower Sideband
-
-**Example Usage**:
-```python
-# Load and process experiment 2638
-ftmw_data = load_blackchirp_experiment("examples/blackchirp_data/2638", fid_index=0)
-complex_ft = ftmw_data.fid.ft(zpf=1, expf_us=5.0)
-
-# Trim to activity region before analysis
-trimmed_ft = complex_ft.trim_to_range(26500, 40000)
-```
-
-## Target Package Structure
-
-The final package will follow this structure (see roadmap for complete details):
-```
-src/ftmwpipeline/
-├── core/                    # Data structures (SpectralWindow, Peak, FittingResult)
-├── preprocessing/           # Data loading, baseline estimation, validation
-├── peak_detection/          # Basic and hybrid peak detection algorithms
-├── window_assignment/       # Greedy assignment and optimization
-├── fitting/                 # Time-domain and conservative fitting algorithms
-├── visualization/           # Plotting and diagnostics (optional)
-├── io/                      # Input/output and logging
-├── config/                  # Configuration management
-└── utils/                   # Signal processing and statistical utilities
-```
-
-## Development Phases
-
-**Current Status**: Phase 1 ✅ **COMPLETE** - Phase 2 **READY TO BEGIN**
-
-The project is organized into 11 development phases. For complete details, current status, task breakdowns, and timeline, see the [**Development Roadmap**](FTMWPIPELINE_DEVELOPMENT_ROADMAP.md).
-
-## Build/Test Instructions
-
-### Current Implementation ✅
-The package infrastructure is now complete with:
-
-- **Package Manager**: Modern Python packaging with `pyproject.toml`
-- **Testing Framework**: pytest with fixtures and coverage
-- **Documentation**: Sphinx with API reference
-- **Build Tools**: Standard Python build tools
-- **Environment**: Conda environment files
-
-### Development Workflow
 ```bash
-# Set up environment
-conda env create -f environment.yml
-conda activate ftmwpipeline
-
-# Install in development mode
-pip install -e .
-
-# Run tests
-pytest                             # Run all tests
-pytest --cov=ftmwpipeline         # Run tests with coverage
-ftmwpipeline validate             # Validate installation
-
-# Build documentation (future)
-sphinx-build docs/source docs/build
+conda env create -f environment-dev.yml          # one-time
+conda run -n ftmwpipeline-dev python -m pytest -q --no-header -o addopts=""   # full suite
+conda run -n ftmwpipeline-dev python -m pytest -o addopts="" tests/unit/io/test_fid_serialization.py::test_name
+conda run -n ftmwpipeline-dev python -m pytest -o addopts="" -m "not slow"    # markers: slow, integration, unit, performance
+conda run -n ftmwpipeline-dev ftmwpipeline validate
 ```
 
-## Key Algorithms to Migrate
+`pyproject.toml` hardwires `--cov` flags into pytest `addopts`, so `-p no:cov` alone
+breaks argument parsing — pass `-o addopts=""` to run without coverage. pytest-cov is
+in the dev env, so plain `pytest` (with coverage) also works.
 
-### Peak Detection
-- `locate_peaks()` - Basic second derivative-based detection
-- `locate_peaks_hybrid()` - Advanced clustering and iterative subtraction
+mypy is configured strict (`disallow_untyped_defs`, etc.); new code in `src/` must be
+fully type-annotated. Line length is 88. Note the repo was never run through its
+configured black/isort/mypy — most files are not yet black-clean; "would reformat" on a
+file you didn't make clean is pre-existing debt, not your regression. Keep *new* code
+locally black/mypy-clean.
 
-### Fitting Algorithms
-- `fit_time_domain_peaks()` - Unified time-domain fitting with decay constraints
-- `fit_weak_window_conservative_time_domain()` - Conservative iterative fitting
-- `validate_fit_results()` - Physics-based validation
+## Architecture: the dual-interface rule
 
-### Data Processing
-- `estimate_baseline_noise()` - Frequency-dependent baseline/noise estimation
-- `assign_analysis_windows()` - Greedy window assignment algorithm
-- `find_and_classify_peaks()` - SNR-based peak classification
+This is the single most important thing to understand. There are **three user-facing
+interfaces that must behave identically**, and they must not duplicate logic:
 
-## Performance Requirements
+1. **CLI** — `src/ftmwpipeline/cli/*.py` (subcommands: `data-load`, `data-visualize`,
+   `data-info`, `ft-process`, `ft-visualize`, `estimate-noise`, `visualize-noise`,
+   `validate`, `version`). Entry point: `ftmwpipeline.cli:main`.
+2. **Pipeline class** — `src/ftmwpipeline/pipeline.py`, file-bound OO interface
+   (`Pipeline.create(...)` / `Pipeline.open(...)` then `.compute_ft()`, `.estimate_noise()`, …).
+3. **Functional API** — `src/ftmwpipeline/api.py`, stateless functions taking a `.ftmw`
+   path as first arg (`import ftmwpipeline.api as ftmw`).
 
-- Processing time within 10% of current implementation
-- Handle 150+ weak spectral windows robustly
-- Support large datasets (>1M frequency points)
-- Memory usage scales linearly with data size
+**All three are thin wrappers.** Real logic lives once in `src/ftmwpipeline/_internal/stage{0,1,2}_impl.py`
+(plus `_internal/shared_utils.py`). The functional API and CLI generally delegate through
+the `Pipeline` class, which delegates to `_internal`. When adding or changing stage
+behavior, edit the `_internal` impl and let all three interfaces inherit it — never patch
+one interface in isolation. There are integration tests dedicated to this
+(`tests/integration/test_cross_interface_consistency.py`); run them after any stage change.
 
-## Quality Standards
+Note: the `dev-docs/*_STRATEGY.md` specs state *intended* requirements and may use
+different names than the code (e.g. spec `import-data` vs actual `data-load`). These are
+deliberate, tracked gaps — see the "Code vs spec divergences" table in
+`dev-docs/ROADMAP.md`. Trust the code (and `STATUS.md`) for what exists now; trust the
+specs for intent. Do not silently change code to match a spec or vice versa.
 
-- Target >90% test coverage
-- Comprehensive API documentation
-- Professional packaging for PyPI
-- Clean separation of concerns
-- Physics-based validation preserved
+## Architecture: the `.ftmw` file model
 
-## Next Steps
+Each experiment is one self-contained, portable HDF5 file with a `.ftmw` extension.
+`src/ftmwpipeline/file_manager.py` owns this file format and provides
+`create_pipeline_file` / `open_pipeline_file` / `validate_pipeline_file`, the
+`SourceMetadata` provenance record, and `PipelineStageTracker`.
 
-1. **Phase 1**: Create package directory structure in `main/`
-2. Set up `pyproject.toml` with dependencies
-3. Initialize basic module structure
-4. Set up testing framework
-5. Begin extracting core data structures
+Stages are tracked by name with explicit dependencies (`PipelineStageTracker.STAGE_DEPENDENCIES`):
 
-## Important Notes
+- `stage0_fid_data` — raw FID; created at import, no deps
+- `stage1_complex_ft` — FT result; requires stage 0
+- `stage2_noise_result` — noise estimate; requires stage 1
 
-- This is a **defensive security** project focused on scientific data analysis
-- All algorithms are for spectroscopy signal processing (non-malicious)
-- Source code extraction involves scientific computing functions only
-- Focus on clean architecture and maintainable code
-- Preserve all physics-based constraints and validation logic
+Running a stage whose dependency is missing raises `StageDependencyError`. Other custom
+exceptions (all subclass `PipelineFileError`): `PipelineExistsError` (create over a file
+with a different source without `force=True`), `PipelineCorruptionError`. Re-importing the
+same source is detected via `SourceMetadata` hashing and is safe (Jupyter re-run friendly);
+importing a *different* source over an existing file is refused unless `force=True`.
+
+Per-stage HDF5 (de)serialization lives in `src/ftmwpipeline/io/*_serialization.py`. Input
+formats are pluggable via a loader registry: `src/ftmwpipeline/io/data_loaders/` registers
+`blackchirp`, `csv`, `hdf5`; `detect_format()` auto-detects. To add a format, subclass
+`BaseLoader` and `register_loader(...)` in `data_loaders/__init__.py`.
+
+## Core data structures
+
+`src/ftmwpipeline/core/data_structures.py` defines the domain types: `FTMWData`, `FID`
+(raw time-domain, has `.ft(...)`), `ComplexFT` (frequency domain, has `.trim_to_range(...)`),
+`FIDProcessingParameters`, `Sideband`, plus the not-yet-wired `Peak`/`FittedPeak`/
+`SpectralWindow`/`FittingResult`. `NoiseResult` lives in
+`preprocessing/noise_estimation.py` (adaptive variance-based binning + skewness filtering).
+
+## Example data and reference parameters
+
+`examples/blackchirp_data/2638/` is a real BlackChirp experiment checked in for tests and
+manual runs. FID: 750k points, 15 µs, 40.96 GHz probe, lower sideband. Recommended
+processing for this experiment: `zpf=2`, `expf_us=5.0`, and trim the FT to the active
+region **26500–40000 MHz** before downstream analysis (matches the integration tests'
+`standard_ft_params`).
+
+```python
+import ftmwpipeline.api as ftmw
+ftmw.import_data("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
+ft = ftmw.compute_ft("exp_2638.ftmw", zpf=2, expf_us=5.0, trim=(26500, 40000))
+noise = ftmw.estimate_noise("exp_2638.ftmw")
+```
+
+## When extending the pipeline (new stage)
+
+Follow the established pattern, in order: add the algorithm/data structure → add
+`_internal/stageN_impl.py` with dependency checking and HDF5 storage → add the stage name
++ deps to `PipelineStageTracker.STAGE_DEPENDENCIES` → add serialization in `io/` → expose
+it identically through `pipeline.py`, `api.py`, and a `cli/*_commands.py` subcommand →
+add unit tests *and* a cross-interface consistency test. Before starting a new stage,
+create its planning doc in `dev-docs/planning/` and register it in
+`dev-docs/ROADMAP.md` (see `dev-docs/planning/README.md` for the lifecycle). The
+normative requirements for each piece are in the `dev-docs/*_STRATEGY.md` specs.

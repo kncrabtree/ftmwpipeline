@@ -28,19 +28,19 @@ def cmd_data_load(args) -> int:
     try:
         # Validate inputs
         if not args.file_path:
-            print("❌ Error: file_path is required")
+            print("Error: file_path is required")
             return 1
         
         if not args.source:
-            print("❌ Error: --source path is required")
+            print("Error: --source path is required")
             return 1
         
         file_path = args.file_path
         if not file_path.endswith('.ftmw'):
             file_path = file_path + '.ftmw'
         
-        print(f"🔍 Importing data into pipeline file '{file_path}'")
-        print(f"📁 Source: {args.source}")
+        print(f"Importing data into pipeline file '{file_path}'")
+        print(f"Source: {args.source}")
         
         # Prepare loading parameters
         format_params = {}
@@ -51,10 +51,10 @@ def cmd_data_load(args) -> int:
         elif args.format == 'csv':
             # CSV format requires explicit parameters
             if args.spacing_us is None:
-                print("❌ Error: CSV format requires --spacing_us parameter")
+                print("Error: CSV format requires --spacing_us parameter")
                 return 1
             if args.probe_freq_mhz is None:
-                print("❌ Error: CSV format requires --probe_freq_mhz parameter")
+                print("Error: CSV format requires --probe_freq_mhz parameter")
                 return 1
             format_params.update({
                 'spacing_us': args.spacing_us,
@@ -72,13 +72,13 @@ def cmd_data_load(args) -> int:
         )
         
         # Display results
-        print(f"✅ Data import completed successfully!")
-        print(f"📁 Pipeline file: {result['pipeline_file']}")
-        print(f"📊 Source format: {result['format_name']}")
+        print(f"Data import completed successfully!")
+        print(f"Pipeline file: {result['pipeline_file']}")
+        print(f"Source format: {result['format_name']}")
         
         # Show FID metadata
         fid_info = result['fid_metadata']
-        print(f"📊 FID Information:")
+        print(f"FID Information:")
         print(f"   Data points: {fid_info['n_points']:,}")
         print(f"   Duration: {fid_info['duration_us']:.1f} μs")
         print(f"   Probe freq: {fid_info['probe_freq_mhz']:.3f} MHz")
@@ -88,19 +88,19 @@ def cmd_data_load(args) -> int:
         # Show file size
         pipeline_file = Path(result['pipeline_file'])
         file_size_mb = pipeline_file.stat().st_size / (1024 * 1024)
-        print(f"💿 File size: {file_size_mb:.2f} MB")
+        print(f"File size: {file_size_mb:.2f} MB")
         
-        print(f"\n💡 Next steps:")
+        print(f"\nNext steps:")
         print(f"   • Visualize FID: ftmwpipeline data-visualize {file_path}")
         print(f"   • Process FT: ftmwpipeline ft-process {file_path}")
         
         return 0
         
     except KeyboardInterrupt:
-        print("\n⚠️ Operation cancelled by user")
+        print("\nOperation cancelled by user")
         return 1
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"Unexpected error: {e}")
         return 1
 
 
@@ -118,7 +118,7 @@ def cmd_data_visualize(args) -> int:
         if not file_path.endswith('.ftmw'):
             file_path = file_path + '.ftmw'
         
-        print(f"📊 Visualizing FID data from '{file_path}'...")
+        print(f"Visualizing FID data from '{file_path}'...")
         
         # Use shared implementation for FID visualization
         try:
@@ -131,22 +131,22 @@ def cmd_data_visualize(args) -> int:
             if args.save:
                 output_file = Path(f"{Path(file_path).stem}_fid.png")
                 fig.savefig(output_file, dpi=300, bbox_inches='tight')
-                print(f"💾 Plot saved: {output_file}")
+                print(f"Plot saved: {output_file}")
             
             if not args.no_show:
                 import matplotlib.pyplot as plt
                 plt.show()
                 
-            print(f"✅ FID visualization completed")
+            print(f"FID visualization completed")
             return 0
             
         except Exception as e:
-            print(f"❌ Error creating visualization: {e}")
+            print(f"Error creating visualization: {e}")
             # Fall back to basic info display using pipeline info
             try:
                 file_path_obj, source_metadata, stage_tracker, fid = get_pipeline_info_impl(file_path)
                 
-                print(f"\n📊 FID Data Summary:")
+                print(f"\nFID Data Summary:")
                 print(f"   Data points: {fid.n_points:,}")
                 print(f"   Duration: {fid.duration_us:.1f} μs")
                 print(f"   Spacing: {fid.spacing:.4e} s")
@@ -155,7 +155,7 @@ def cmd_data_visualize(args) -> int:
                 print(f"   Shots: {fid.shots}")
                 
                 if args.show_metadata:
-                    print(f"\n📋 Source Metadata:")
+                    print(f"\nSource Metadata:")
                     print(f"   Source path: {source_metadata.source_path}")
                     print(f"   Format: {source_metadata.format_name}")
                     print(f"   Import time: {source_metadata.import_timestamp}")
@@ -164,14 +164,14 @@ def cmd_data_visualize(args) -> int:
                 
                 return 0
             except Exception as info_error:
-                print(f"❌ Error getting pipeline info: {info_error}")
+                print(f"Error getting pipeline info: {info_error}")
                 return 1
         
     except KeyboardInterrupt:
-        print("\n⚠️ Operation cancelled by user")
+        print("\nOperation cancelled by user")
         return 1
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"Unexpected error: {e}")
         return 1
 
 
@@ -186,7 +186,7 @@ def cmd_data_info(args) -> int:
             # Show info about specific format
             try:
                 info = get_format_info(args.format)
-                print(f"📊 Format Information: {args.format}")
+                print(f"Format Information: {args.format}")
                 print(f"   Loader class: {info['loader_class']}")
                 
                 if info['file_extensions']:
@@ -206,18 +206,18 @@ def cmd_data_info(args) -> int:
                         print(f"     • {param} (default: {default})")
                 
             except ValueError as e:
-                print(f"❌ Error: {e}")
+                print(f"Error: {e}")
                 return 1
         else:
             # Show all available formats
             formats = list_formats()
-            print(f"📊 Available Data Formats ({len(formats)}):")
+            print(f"Available Data Formats ({len(formats)}):")
             print()
             
             for fmt in formats:
                 try:
                     info = get_format_info(fmt)
-                    print(f"🔹 {fmt}")
+                    print(f"{fmt}")
                     print(f"   Loader: {info['loader_class']}")
                     
                     if info['file_extensions']:
@@ -230,13 +230,13 @@ def cmd_data_info(args) -> int:
                     
                     print()
                 except Exception:
-                    print(f"🔹 {fmt} (info unavailable)")
+                    print(f"{fmt} (info unavailable)")
                     print()
         
         return 0
         
     except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        print(f"Unexpected error: {e}")
         return 1
 
 

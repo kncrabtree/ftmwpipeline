@@ -1,307 +1,116 @@
-# FTMW Pipeline - High-Level Python API Strategy
+# Specification: Python API
 
-## Overview
+Status of this document: **normative specification**. It states requirements,
+not current implementation state. Where the code diverges, see the divergence
+log in [`ROADMAP.md`](ROADMAP.md).
 
-This document outlines the design strategy for the high-level Python API for ftmwpipeline Stages 0-1, providing clean abstractions that mirror CLI functionality while preventing code duplication and ensuring safe file management.
+## Scope
 
-## Design Philosophy
+The Python API for ftmwpipeline. Two surfaces are provided over the same
+implementation:
 
-### Core Principles
-1. **Single File = Single Experiment**: Each `.ftmw` pipeline data file contains one complete FID analysis
-2. **User-Controlled File Locations**: Users specify file paths, internal HDF5 structure is hidden
-3. **Explicit Intent**: Clear distinction between creating new analyses vs. working with existing files
-4. **Jupyter-Safe**: Designed for safe re-execution in interactive environments
-5. **No Code Duplication**: CLI and API share core implementation logic
+- an object-oriented **Pipeline class** bound to one `.ftmw` file;
+- a stateless **functional API** operating on `.ftmw` file paths.
 
-### File-Centric Design
-- Pipeline data files use `.ftmw` extension for clarity
-- Files are completely portable and self-contained
-- Each file progresses through pipeline stages: FID → FT → Noise → Peaks → Fitting
-- Users work with file paths, not experiment IDs or cache directories
+Both are thin; all stage logic resides in shared internal implementation
+functions (see [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) and
+[`CLI_STRATEGY.md`](CLI_STRATEGY.md) for the other consumers of that shared
+core).
 
-## API Design
+## Principles
 
-### 1. Pipeline Class (Primary Interface)
+1. **One file, one experiment.** A `.ftmw` file holds one complete analysis
+   progressing through pipeline stages. Users address experiments by file
+   path, never by experiment ID or cache directory.
+2. **Explicit creation vs. opening.** Creating a new analysis and working with
+   an existing one are distinct operations with distinct failure modes.
+3. **Safe re-execution.** Re-running code (e.g. a notebook cell) must not
+   destroy completed downstream work.
+4. **Single implementation.** The class API, functional API, and CLI must
+   produce identical results for identical inputs; they share one core.
+5. **No silent behavior.** Any action that could discard work requires
+   explicit intent and informs the user of what happened.
 
-The Pipeline class represents a single experiment analysis bound to a specific file:
+## Pipeline class
 
-```python
-from ftmwpipeline import Pipeline
+A `Pipeline` instance is bound to exactly one `.ftmw` file for its lifetime.
 
-# Create new pipeline from raw data
-pipe = Pipeline.create("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
+### Construction
 
-# Open existing pipeline for analysis
-pipe = Pipeline.open("exp_2638.ftmw")
+- `Pipeline.create(path, source, *, format_name=None, fid_index=None,
+  force=False, **loader_params) -> Pipeline` — create a new analysis from raw
+  data.
+- `Pipeline.open(path) -> Pipeline` — open an existing analysis.
+- `Pipeline(path)` — convenience constructor: open if the file exists,
+  otherwise raise a clear error directing the user to `create`.
 
-# Smart constructor (convenience method)
-pipe = Pipeline("exp_2638.ftmw")  # Opens if exists, clear error if not
+`create` semantics:
 
-# Stage 0: Data import is handled during creation
-# (no separate import step needed after Pipeline.create)
+| Situation | Required behavior |
+|---|---|
+| File does not exist | Create it from `source`. |
+| File exists, identical source | Load existing; inform the user it was reused. Do not reprocess. |
+| File exists, different source | Raise `PipelineExistsError` with actionable options. |
+| File exists, `force=True` | Overwrite, with a warning. |
 
-# Stage 1: FT Processing
-pipe.compute_ft(zpf=2, expf_us=5.0, trim=(26500, 40000))
-pipe.visualize_ft(zpf=1, expf_us=3.0, save_params=True)
+Source identity is determined from recorded provenance (see Provenance).
 
-# Future stages (extensible design)
-pipe.estimate_noise()
-pipe.detect_peaks()
-pipe.assign_windows()
-pipe.fit_peaks()
-```
+`open` raises `FileNotFoundError` with guidance (how to create one, including
+the CLI form) when the file is absent, and a corruption error when the file is
+present but unreadable as a pipeline file.
 
-**Key Features**:
-- No experiment IDs needed - the instance IS the experiment
-- Methods don't require repetitive file/experiment parameters
-- Clear creation vs. opening semantics
-- Extensible to all pipeline stages
-
-### 2. Functional API (File-Based)
-
-For users who prefer functional interfaces or need to work with multiple files:
-
-```python
-import ftmwpipeline as ftmw
-
-# Stage 0: Import raw data into new pipeline file
-ftmw.import_data("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
-
-# Stage 1: FT processing with existing pipeline file
-complex_ft = ftmw.compute_ft("exp_2638.ftmw", zpf=2, expf_us=5.0)
-ftmw.visualize_ft("exp_2638.ftmw", trim=(26500, 40000))
-
-# Work with multiple experiments
-ftmw.import_data("experiment_A.ftmw", source='data_A/')
-ftmw.import_data("experiment_B.ftmw", source='data_B/')
-result_A = ftmw.compute_ft("experiment_A.ftmw", zpf=2)
-result_B = ftmw.compute_ft("experiment_B.ftmw", zpf=1)
-```
-
-**Key Features**:
-- First parameter is always the pipeline file path
-- Stateless functions for batch processing workflows
-- Same underlying implementation as Pipeline class
-
-## Safe File Management
-
-### The Re-Import Problem
-**Issue**: In Jupyter notebooks, users often re-run cells. Re-importing data could invalidate hours of downstream analysis.
-
-**Solution**: Explicit creation vs. opening with smart source detection.
-
-### Creation vs. Opening Semantics
-
-#### Pipeline.create() - Explicit New Analysis
-```python
-# Case 1: File doesn't exist - create new
-pipe = Pipeline.create("new_exp.ftmw", source='data/')  # ✅ Creates file
-
-# Case 2: File exists with identical source - load existing  
-pipe = Pipeline.create("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
-# ✅ Detects identical source, loads existing with info message:
-# "ℹ️ Found existing pipeline with identical source. Loading existing data."
-
-# Case 3: File exists with different source - explicit choice required
-pipe = Pipeline.create("exp_2638.ftmw", source='different_data/')  
-# ❌ Raises PipelineExistsError with clear options
-
-# Case 4: Explicit overwrite when needed
-pipe = Pipeline.create("exp_2638.ftmw", source='different_data/', force=True)
-# ⚠️ Overwrites with warning
-```
-
-#### Pipeline.open() - Work with Existing Analysis
-```python
-# Opens existing file for analysis (safe to repeat)
-pipe = Pipeline.open("exp_2638.ftmw")
-
-# Clear error if file doesn't exist
-pipe = Pipeline.open("missing.ftmw")  # FileNotFoundError with guidance
-```
-
-### Source Tracking System
-```python
-# Internal metadata stored in pipeline file:
-class SourceMetadata:
-    source_path: Path
-    source_mtime: float      # File modification time
-    source_hash: str         # Quick hash of key properties
-    import_timestamp: datetime
-    format_name: str
-    loader_parameters: dict
-```
-
-**Smart Behavior**:
-- Compare source path, modification time, and loader parameters
-- If identical: load existing with informative message
-- If different: require explicit user choice
-- No silent behavior - users always informed of actions
-
-## Jupyter-Friendly Patterns
-
-### Pattern A: Explicit Creation (Recommended)
-```python
-# Cell 1: Create new analysis (run once)
-pipe = Pipeline.create("my_analysis.ftmw", source='raw_data/')
-
-# Cell 2: Open for analysis (safe to re-run)
-pipe = Pipeline.open("my_analysis.ftmw")
-pipe.visualize_ft(zpf=2)
-```
-
-### Pattern B: Smart Constructor (Convenience)
-```python
-# Cell 1: Smart creation/opening
-try:
-    pipe = Pipeline.open("my_analysis.ftmw")
-    print("📂 Opened existing analysis")
-except FileNotFoundError:
-    pipe = Pipeline.create("my_analysis.ftmw", source='raw_data/')
-    print("📥 Created new analysis from raw data")
-
-# Cell 2: Analysis (always safe to re-run)
-pipe.visualize_ft(zpf=2)
-```
-
-### Pattern C: Development Helper
-```python
-# Single cell that's safe to re-run during development
-def get_or_create_pipeline(filename, source_path):
-    try:
-        return Pipeline.open(filename)
-    except FileNotFoundError:
-        return Pipeline.create(filename, source=source_path)
-
-pipe = get_or_create_pipeline("my_analysis.ftmw", "raw_data/")
-```
-
-## CLI Integration
-
-### Updated Command Structure
-```bash
-# Import raw data (creates new .ftmw file)
-ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
-
-# Work with existing pipeline file  
-ftmwpipeline visualize-ft exp_2638.ftmw --zpf 2
-ftmwpipeline compute-ft exp_2638.ftmw --zpf 2 --expf_us 5.0
-
-# Future stages
-ftmwpipeline estimate-noise exp_2638.ftmw
-ftmwpipeline detect-peaks exp_2638.ftmw
-```
-
-**Changes from Current CLI**:
-- `data-load` → `import-data` (clearer intent)
-- Experiment ID + cache-dir → single .ftmw filename
-- Consistent file-based interface across all commands
-
-### CLI-API Code Sharing
-```python
-# Internal implementation pattern
-def _compute_ft_impl(pipeline_file: Path, **kwargs):
-    """Shared implementation for both CLI and API"""
-    # Parameter validation, FT computation, etc.
-    pass
-
-# CLI command
-def cmd_compute_ft(args):
-    return _compute_ft_impl(Path(args.pipeline_file), 
-                           zpf=args.zpf, expf_us=args.expf_us, ...)
-
-# Pipeline class method  
-def compute_ft(self, **kwargs):
-    return _compute_ft_impl(self._file_path, **kwargs)
-
-# Functional API
-def compute_ft(pipeline_file: str, **kwargs):
-    return _compute_ft_impl(Path(pipeline_file), **kwargs)
-```
-
-## Implementation Structure
-
-### Directory Organization
-```
-src/ftmwpipeline/
-├── api.py              # Functional API (file-based functions)
-├── pipeline.py         # Pipeline class (file-based instance)  
-├── file_manager.py     # Single file operations abstraction
-├── cli/
-│   └── commands.py     # All CLI commands (filename-based)
-└── _internal/          # Shared implementation functions
-    ├── stage0_impl.py  # Data import implementation
-    ├── stage1_impl.py  # FT processing implementation
-    └── ...
-```
-
-### Code Reuse Strategy
-1. **Shared Implementation Functions**: Core logic in `_internal/` modules
-2. **Thin Interface Layers**: API, Pipeline class, and CLI are thin wrappers
-3. **Consistent Error Handling**: Same exceptions and messages across interfaces
-4. **Parameter Validation**: Shared validation logic prevents divergence
-
-## Extension to Future Stages
-
-This design naturally extends to future pipeline stages:
-
-```python
-# Stage 2: Noise Estimation
-pipe.estimate_noise(skew_target=0.7, min_bin_fraction=0.025)
-ftmw.estimate_noise("exp.ftmw", skew_target=0.7)
-
-# Stage 3: Peak Detection  
-peaks = pipe.detect_peaks(algorithm='hybrid', snr_threshold=5.0)
-peaks = ftmw.detect_peaks("exp.ftmw", algorithm='hybrid')
-
-# Stage 4: Window Assignment
-windows = pipe.assign_windows(max_peaks_per_window=5)
-windows = ftmw.assign_windows("exp.ftmw", max_peaks_per_window=5)
-
-# Stage 5: Fitting
-results = pipe.fit_peaks(algorithm='conservative')
-results = ftmw.fit_peaks("exp.ftmw", algorithm='conservative')
-```
-
-Each stage follows the same pattern:
-- Takes parameters for that specific stage
-- Loads dependencies from previous stages automatically
-- Stores results in the same pipeline file
-- Provides both class method and functional interfaces
-
-## Benefits Summary
-
-### User Experience
-- **Intuitive**: One file per experiment, clear creation/opening semantics
-- **Safe**: No accidental data loss from re-running import commands
-- **Flexible**: Choose between class-based or functional interfaces
-- **Jupyter-Friendly**: Safe cell re-execution patterns
-
-### Code Quality  
-- **No Duplication**: CLI and API share implementation
-- **Maintainable**: Clear separation between interface and implementation
-- **Extensible**: Consistent pattern for all pipeline stages
-- **Testable**: Shared logic can be thoroughly unit tested
-
-### Data Management
-- **Portable**: Self-contained .ftmw files can be shared and moved
-- **Traceable**: Source metadata enables provenance tracking  
-- **Efficient**: HDF5-based storage with stage-specific optimizations
-- **Reliable**: Explicit file operations prevent silent data loss
-
-## Implementation Timeline
-
-This API strategy supports the current roadmap:
-
-1. **Immediate (Stages 0-1)**: Implement Pipeline class and functional API for data import and FT processing
-2. **Short Term (Stage 2)**: Extend to noise estimation with same patterns
-3. **Medium Term (Stages 3-5)**: Complete pipeline with peak detection, window assignment, and fitting
-4. **Long Term**: Advanced features like batch processing, parameter optimization, and integration tools
-
-The file-centric design provides a solid foundation that will scale naturally as the pipeline grows in complexity.
-
----
-
-**Last Updated**: 2025-01-11  
-**Status**: Design complete, ready for implementation  
-**Next Steps**: Implement Pipeline class and functional API for Stages 0-1
+### Stage methods
+
+Each implemented stage exposes a method that loads its inputs from the file,
+applies the stage with user-overridable parameters, persists results/parameters
+to the same file, and returns the stage result object:
+
+- `load_data() -> FID`
+- `compute_ft(...) -> ComplexFT`
+- `visualize_ft(...)`
+- `estimate_noise(...) -> NoiseResult`
+- `visualize_noise(...)`
+
+Future stages (peak detection, window assignment, fitting) follow the same
+contract and are added without changing existing signatures.
+
+### Introspection
+
+- `info() -> dict` — provenance, validity, completed stages, next available
+  stages. Must reflect the current on-disk state, including stages completed
+  after the instance was constructed.
+- `validate() -> dict` — integrity report.
+
+Stage methods must reject execution when a required predecessor stage is not
+complete, with an error naming the missing dependency.
+
+## Functional API
+
+A stateless surface where every function takes the `.ftmw` path as its first
+argument and shares the class API's implementation. It is the appropriate
+surface for batch and scripting use. Provided operations mirror the class:
+import, load, compute FT, visualize, estimate noise, save parameters, and
+introspection. Convenience whole-experiment wrappers
+(`process_experiment`, `batch_process_experiments`) are also provided.
+
+## Provenance
+
+Every `.ftmw` file records, for the data it was created from: source path,
+source modification time, a content/identity hash, import timestamp, format
+name, and loader parameters. This record is the basis for safe-reimport
+detection and reproducibility, and must be sufficient to detect whether a
+re-import refers to the same source.
+
+## Interactive use
+
+The API must be safe to drive from notebooks: opening is idempotent,
+re-creating with an identical source is non-destructive, and parameter
+exploration (recomputing a stage with new parameters) never requires
+re-importing source data.
+
+## Extensibility
+
+Adding a stage must not require changes to existing stage signatures, the file
+format of prior stages, or the interface-sharing structure. Each new stage adds
+one shared implementation plus thin class/functional/CLI wrappers and its own
+serialization and tests.

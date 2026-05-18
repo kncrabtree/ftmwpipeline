@@ -424,9 +424,11 @@ def _save_ft_parameters_and_stage_completion(file_path: str, parameters_used: Di
             completed_stages_json = stages_group.attrs.get('completed_stages', '[]')
             completed_stages = json.loads(completed_stages_json)
             
-            # Add stage1_ft_processing if not already present
-            if 'stage1_ft_processing' not in completed_stages:
-                completed_stages.append('stage1_ft_processing')
+            # Add stage1_complex_ft if not already present. This must match the
+            # canonical key in PipelineStageTracker.STAGE_DEPENDENCIES so the
+            # stage tracker and dependency checks recognize Stage 1 completion.
+            if 'stage1_complex_ft' not in completed_stages:
+                completed_stages.append('stage1_complex_ft')
             
             # Update completed stages and timestamp
             stages_group.attrs['completed_stages'] = json.dumps(completed_stages)

@@ -28,17 +28,17 @@ def cmd_validate(args) -> int:
     
     all_good = True
     for component, status in results.items():
-        status_str = "✅ OK" if status else "❌ FAILED"
+        status_str = "OK" if status else "FAILED"
         print(f"{component:20s}: {status_str}")
         if not status:
             all_good = False
     
     print("-" * 40)
     if all_good:
-        print("✅ All components working correctly!")
+        print("All components working correctly!")
         return 0
     else:
-        print("❌ Some components have issues")
+        print("Some components have issues")
         return 1
 
 
@@ -49,8 +49,8 @@ def cmd_version(args) -> int:
     print(f"ftmwpipeline {__version__}")
     print(f"Description: {PACKAGE_INFO['description']}")
     print(f"Optional dependencies:")
-    print(f"  matplotlib: {'✅' if PACKAGE_INFO['has_matplotlib'] else '❌'}")
-    print(f"  plotly: {'✅' if PACKAGE_INFO['has_plotly'] else '❌'}")
+    print(f"  matplotlib: {'' if PACKAGE_INFO['has_matplotlib'] else ''}")
+    print(f"  plotly: {'' if PACKAGE_INFO['has_plotly'] else ''}")
     
     return 0
 

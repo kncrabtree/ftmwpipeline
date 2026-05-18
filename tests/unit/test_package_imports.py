@@ -24,25 +24,26 @@ class TestPackageImports:
         assert hasattr(core, '__all__')
     
     def test_pipeline_class_import(self):
-        """Test that Pipeline class can be imported and instantiated."""
+        """Test that the file-bound Pipeline class exposes its real API."""
         from ftmwpipeline import Pipeline
-        
-        # Should be able to create a pipeline instance
-        pipeline = Pipeline()
-        assert pipeline is not None
-        
-        # Should have basic methods
-        assert hasattr(pipeline, 'process_experiment')
-        assert hasattr(pipeline, 'get_summary')
-    
+
+        # Pipeline is file-bound: constructed via create()/open() factories,
+        # not a bare constructor.
+        assert hasattr(Pipeline, 'create')
+        assert hasattr(Pipeline, 'open')
+
+        # Implemented stage methods (Stages 0-2).
+        for method in ('load_data', 'compute_ft', 'visualize_ft',
+                       'estimate_noise', 'visualize_noise', 'info', 'validate'):
+            assert hasattr(Pipeline, method), f"Pipeline missing {method}()"
+
     def test_workflow_functions_import(self):
-        """Test that workflow functions can be imported."""
-        from ftmwpipeline import process_experiment, batch_process_experiments, quick_fit
-        
+        """Test that workflow convenience functions can be imported."""
+        from ftmwpipeline import process_experiment, batch_process_experiments
+
         # Functions should be callable
         assert callable(process_experiment)
         assert callable(batch_process_experiments)
-        assert callable(quick_fit)
     
     def test_validation_function(self):
         """Test the installation validation function."""
