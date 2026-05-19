@@ -39,13 +39,123 @@ def temp_ftmw_dir():
     shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# Session-scoped prebuilt baselines for 2638 (expensive import+FT+noise done once)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(scope="session")
+def baseline_2638_stage1(exp_2638_data_path, tmp_path_factory):
+    """
+    Build the 2638 pipeline through Stage 0+1 ONCE per test session, using
+    the functional API with standard FT parameters (zpf=2, expf_us=5.0,
+    trim=(26500, 40000)).
+
+    Returns the Path to a read-only reference .ftmw file.  Tests that need
+    a writable copy must shutil.copy it into their own tmp dir before mutating.
+    """
+    tmp = tmp_path_factory.mktemp("baseline_stage1")
+    fp = tmp / "baseline_2638_stage1.ftmw"
+    ftmw.import_data(fp, source=exp_2638_data_path)
+    ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=(26500, 40000))
+    return fp
+
+
+@pytest.fixture(scope="session")
+def baseline_2638_stage2(baseline_2638_stage1, tmp_path_factory):
+    """
+    Build the 2638 pipeline through Stage 0+1+2 ONCE per test session by
+    copying the stage1 baseline and running estimate_noise with default params.
+
+    Returns the Path to a read-only reference .ftmw file.  Tests that need
+    a writable copy must shutil.copy it.
+    """
+    tmp = tmp_path_factory.mktemp("baseline_stage2")
+    fp = tmp / "baseline_2638_stage2.ftmw"
+    shutil.copy(baseline_2638_stage1, fp)
+    ftmw.estimate_noise(fp)
+    return fp
+
+
+# ---------------------------------------------------------------------------
+# Module-scoped cross-interface trio fixtures (one per test module)
+# ---------------------------------------------------------------------------
+
+def _build_stage1_trio(exp_2638_data_path: str, tmp: Path, ft_params: dict) -> dict:
+    """
+    Build three .ftmw files through Stage 0+1 — one per interface (Pipeline,
+    functional API, CLI) — and return their paths.
+
+    All three should produce identical results; this is the shared evidence used
+    by identity tests, so they must be built independently (not copied from each
+    other) to preserve the proof of cross-interface consistency.
+    """
+    pipeline_file = tmp / "trio_pipeline.ftmw"
+    functional_file = tmp / "trio_functional.ftmw"
+    cli_file = tmp / "trio_cli.ftmw"
+
+    # Pipeline interface
+    pipe = Pipeline.create(pipeline_file, source=exp_2638_data_path)
+    pipe.compute_ft(**ft_params)
+
+    # Functional API
+    ftmw.import_data(functional_file, source=exp_2638_data_path)
+    ftmw.compute_ft(functional_file, **ft_params)
+
+    # CLI
+    _run_cli(["import-data", str(cli_file), "--source", exp_2638_data_path])
+    zpf, expf_us = ft_params["zpf"], ft_params["expf_us"]
+    trim_min, trim_max = ft_params["trim"]
+    _run_cli([
+        "compute-ft", str(cli_file),
+        "--zpf", str(zpf),
+        "--expf_us", str(expf_us),
+        "--trim", f"{trim_min}:{trim_max}",
+    ])
+
+    return {
+        "pipeline": pipeline_file,
+        "functional": functional_file,
+        "cli": cli_file,
+    }
+
+
+def _run_cli(args: list) -> None:
+    """Run an ftmwpipeline CLI command; fail loudly on non-zero exit."""
+    result = subprocess.run(
+        ["ftmwpipeline"] + args,
+        capture_output=True, text=True, check=False, timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"CLI command failed: ftmwpipeline {' '.join(args)}\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+
+@pytest.fixture(scope="module")
+def cross_interface_stage1_trio(exp_2638_data_path, tmp_path_factory, standard_ft_params):
+    """
+    Module-scoped: build the three-interface Stage 0+1 files ONCE per test module.
+
+    The files are read-only reference files; they must NOT be mutated by any
+    consuming test.  Tests that need a writable file must shutil.copy into their
+    own tmp_path.
+
+    Returns a dict: {"pipeline": Path, "functional": Path, "cli": Path}.
+    """
+    tmp = tmp_path_factory.mktemp("cross_interface_stage1_trio")
+    return _build_stage1_trio(exp_2638_data_path, tmp, standard_ft_params)
+
+
+
+
 @pytest.fixture
 def temp_ftmw_file(temp_ftmw_dir):
     """Generate temporary .ftmw file path."""
     return temp_ftmw_dir / "test_pipeline.ftmw"
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def standard_ft_params():
     """Standard FT parameters for consistent testing."""
     return {
@@ -55,7 +165,7 @@ def standard_ft_params():
     }
 
 
-@pytest.fixture  
+@pytest.fixture
 def cli_helper():
     """Helper class for CLI command execution and validation."""
     

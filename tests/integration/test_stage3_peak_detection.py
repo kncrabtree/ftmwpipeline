@@ -15,6 +15,7 @@ prepared through Stage 2 with the desired trim BEFORE calling detect_peaks.
 Heavy (full 750k FID + repeated FT/noise); marked slow + integration.
 """
 
+import shutil
 import subprocess
 
 import numpy as np
@@ -48,12 +49,20 @@ def _arr(peaks):
     return f, s, c
 
 
-def test_cross_interface_consistency(exp_2638_data_path, temp_ftmw_dir):
+def test_cross_interface_consistency(baseline_2638_stage2, temp_ftmw_dir):
+    """Verify CLI == Pipeline == functional API for detect_peaks.
+
+    Rather than running Stage 0->2 three times (one per interface), this test
+    copies the session-scoped Stage-0+1+2 baseline into three independent
+    writable files.  Copying an HDF5 file takes ~milliseconds; rebuilding from
+    the raw FID takes ~seconds each.  The three files are processed
+    independently by detect_peaks, proving cross-interface consistency.
+    """
     pfile = temp_ftmw_dir / "p.ftmw"
     ffile = temp_ftmw_dir / "f.ftmw"
     cfile = temp_ftmw_dir / "c.ftmw"
     for fp in (pfile, ffile, cfile):
-        _prep(fp, exp_2638_data_path)
+        shutil.copy(baseline_2638_stage2, fp)
 
     # D7 Phase B: detect_peaks no longer accepts trim= or zpf=; the persisted
     # Stage 1 canonical settings (including trim=(26500,40000)) govern.
@@ -83,10 +92,10 @@ def test_cross_interface_consistency(exp_2638_data_path, temp_ftmw_dir):
 
 
 def test_detection_is_sane_vs_known_lines(
-    exp_2638_data_path, temp_ftmw_dir
+    baseline_2638_stage2, temp_ftmw_dir
 ):
     fp = temp_ftmw_dir / "sane.ftmw"
-    _prep(fp, exp_2638_data_path)
+    shutil.copy(baseline_2638_stage2, fp)
     # D7 Phase B: no trim= on detect_peaks; Stage 1 persisted trim is used.
     peaks = ftmw.detect_peaks(fp, min_snr=3.0)
 
@@ -114,7 +123,7 @@ def test_detection_is_sane_vs_known_lines(
     )
 
 
-def test_gap_pass_recovers_a_weak_line(exp_2638_data_path, temp_ftmw_dir):
+def test_gap_pass_recovers_a_weak_line(baseline_2638_stage2, temp_ftmw_dir):
     """With the gap pass on, at least one weak line is recovered in a region
     the apodized primary pass did not cover (provenance == 'gap', and outside
     every primary leakage exclusion).
@@ -123,7 +132,7 @@ def test_gap_pass_recovers_a_weak_line(exp_2638_data_path, temp_ftmw_dir):
     Stage 1 canonical settings.  run_gap_pass= is still accepted.
     """
     fp = temp_ftmw_dir / "gap.ftmw"
-    _prep(fp, exp_2638_data_path)
+    shutil.copy(baseline_2638_stage2, fp)
 
     # D7 Phase B: trim= removed; run_gap_pass= still supported.
     no_gap = ftmw.detect_peaks(fp, min_snr=3.0, run_gap_pass=False)

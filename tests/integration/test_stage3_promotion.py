@@ -32,7 +32,6 @@ from ftmwpipeline._internal.stage0_impl import import_data_impl
 from ftmwpipeline._internal.stage3_impl import (
     detect_peaks_impl,
     load_peaks_impl,
-    visualize_peaks_impl,
 )
 from ftmwpipeline.preprocessing.peak_detection import (
     DEFAULT_INTERNAL_MIN_SNR,
@@ -279,31 +278,8 @@ def test_lower_internal_floor_yields_at_least_as_many_peaks(stage3_file, stage3_
     )
 
 
-# ---------------------------------------------------------------------------
-# Visualization: axis count
-# ---------------------------------------------------------------------------
-
-def test_visualize_peaks_default_one_axis(stage3_file):
-    """Default visualize_peaks_impl must return a figure with exactly 1 axis."""
-    import matplotlib.pyplot as plt
-    # Restore default run so there are peaks on disk to visualize.
-    detect_peaks_impl(stage3_file)  # re-run with default params
-    fig = visualize_peaks_impl(stage3_file, interactive=False)
-    try:
-        assert len(fig.get_axes()) == 1, (
-            f"Expected 1 axis for default plot, got {len(fig.get_axes())}"
-        )
-    finally:
-        plt.close(fig)
-
-
-def test_visualize_peaks_snr_histogram_two_axes(stage3_file):
-    """show_snr_histogram=True must return a figure with exactly 2 axes."""
-    import matplotlib.pyplot as plt
-    fig = visualize_peaks_impl(stage3_file, show_snr_histogram=True, interactive=False)
-    try:
-        assert len(fig.get_axes()) == 2, (
-            f"Expected 2 axes with snr_histogram, got {len(fig.get_axes())}"
-        )
-    finally:
-        plt.close(fig)
+# Visualization axis-count behaviour (default 1 panel vs snr_histogram 2
+# panels) is unit-tested directly on synthetic peaks in
+# tests/unit/visualization/test_peak_visualization.py. That logic lives
+# entirely in plot_peak_detection; exercising it through the full 2638
+# pipeline here cost ~60 s for no coverage the unit test does not give.
