@@ -259,27 +259,78 @@ def visualize_ft_impl(
         raise RuntimeError(f"Failed to create FT visualization: {e}")
 
 
+def _dependents_of(stage: str, deps: Dict[str, Any]) -> set:
+    """Transitive set of stages that depend (directly/indirectly) on ``stage``.
+
+    Excludes ``stage`` itself. Used to invalidate everything built on the FT
+    when the canonical FT settings change.
+    """
+    result: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for st, required in deps.items():
+            if st in result:
+                continue
+            if any(r == stage or r in result for r in required):
+                result.add(st)
+                changed = True
+    return result
+
+
 def _persist_canonical_settings(file_path: str, resolved: FTSettings) -> None:
     """Write resolved settings to ``ft_processing`` and mark Stage 1 complete.
 
     No ``ComplexFT`` is stored -- the lightweight ``.ftmw`` model recomputes it
-    on demand from the FID + these settings.
+    on demand from the FID + these settings. If the resolved settings *differ*
+    from a previously persisted canonical record, every stage built on the FT
+    (Stage 2 noise, Stage 3 peaks, ...) is invalidated: its stored result is
+    removed, it is dropped from the completed set, and a loud warning is
+    logged. An identical re-persist (idempotent Jupyter re-run) changes
+    nothing.
     """
+    from ..file_manager import PipelineStageTracker
+
+    new_attrs = resolved.to_attrs()
     with h5py.File(file_path, "a") as h5f:
         proc = h5f.require_group("processing_parameters")
+        old_attrs = None
         if "ft_processing" in proc:
+            old_attrs = FTSettings.from_attrs(
+                dict(proc["ft_processing"].attrs)
+            ).to_attrs()
             del proc["ft_processing"]
         ft_group = proc.create_group("ft_processing")
-        for name, value in resolved.to_attrs().items():
+        for name, value in new_attrs.items():
             ft_group.attrs[name] = value
         # Human/debug mirror of the canonical record.
-        ft_group.attrs["parameters"] = json.dumps(
-            resolved.to_attrs(), default=str
-        )
+        ft_group.attrs["parameters"] = json.dumps(new_attrs, default=str)
         ft_group.attrs["last_updated"] = datetime.now().isoformat()
 
         stages = h5f.require_group("pipeline_stages")
         completed = json.loads(stages.attrs.get("completed_stages", "[]"))
+
+        if old_attrs is not None and old_attrs != new_attrs:
+            deps = PipelineStageTracker.STAGE_DEPENDENCIES
+            paths = PipelineStageTracker.STAGE_DATA_PATHS
+            invalidated = []
+            for st in _dependents_of("stage1_complex_ft", deps):
+                data_path = paths.get(st, st)
+                if data_path in h5f:
+                    del h5f[data_path]
+                if st in completed:
+                    completed.remove(st)
+                    invalidated.append(st)
+            if invalidated:
+                logger.warning(
+                    "Canonical FT settings changed (%s -> %s); invalidated "
+                    "downstream stage(s) %s -- re-run them on the new "
+                    "spectrum.",
+                    old_attrs,
+                    new_attrs,
+                    sorted(invalidated),
+                )
+
         if "stage1_complex_ft" not in completed:
             completed.append("stage1_complex_ft")
         stages.attrs["completed_stages"] = json.dumps(completed)

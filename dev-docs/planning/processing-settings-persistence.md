@@ -1,35 +1,37 @@
 # Plan: Processing-settings persistence and propagation
 
-Status: **Phase A landed** (Phase B pending). Cross-cutting architectural fix.
+Status: **Complete** (D7 resolved). Cross-cutting architectural fix; full
+suite green (270 passed).
 
-Phase A (foundation + Stage 1 ownership) is implemented and the full suite is
-green (253 passed):
+Implemented:
 
-- New `core/settings.py`: `FTSettings` dataclass — single source of truth for
-  the FT settings across API/CLI/persistence; `resolve()` implements
+- `core/settings.py`: `FTSettings` dataclass — single source of truth for the
+  FT settings across API/CLI/persistence; `resolve()` implements
   `explicit > persisted (ft_processing) > recommended` with hard defaults;
   `to_attrs`/`from_attrs` persist the canonical record (trim **inside**
-  `ft_processing` as `trim_min_mhz`/`trim_max_mhz`, per the resolved open
-  question).
-- New `cli/_argspec.py`: argparse options generated from `cli_field` metadata
-  (single source; legacy `--expf_us` flag preserved).
-- `stage1_impl.compute_ft_impl(file_path, settings=None, validate_only=False,
-  persist=False)`: resolves and, when `persist=True` (user-driven Stage 1),
-  writes the resolved settings incl. `trim` as canonical and marks Stage 1
-  complete. No-arg recompute (used by Stages 2/3) now reproduces exactly the
-  user-chosen spectrum — the D7 root cause is fixed at this layer.
-- `pipeline.py` / `api.py` / `cli/ft_commands.py` thread `FTSettings`; ergonomic
-  kwargs retained at the boundaries.
+  `ft_processing` as `trim_min_mhz`/`trim_max_mhz`). `cli/_argspec.py`
+  generates argparse options from `cli_field` metadata (legacy `--expf_us`
+  preserved).
+- `stage1_impl`: `compute_ft_impl` resolves settings and, on a user-driven
+  invocation, persists the resolved record incl. `trim` as canonical; a
+  no-argument recompute (Stages 2/3) reproduces exactly the user-chosen
+  spectrum. Changing the canonical settings via an explicit override
+  invalidates every stage built on the FT (data group deleted, dropped from
+  completed set, loud warning); an identical re-persist is idempotent.
+- Stage 2 noise is estimated on the persisted spectrum (inherited via the
+  no-arg recompute).
+- `stage3_impl`: the interim `_resolve_trim`/`_resolve_zpf`/saved-Stage-3
+  trim+zpf and the `--trim`/`--zpf` options are gone. Detection runs
+  internally at `zpf=1` (apodized primary + unapodized gap) then snaps every
+  peak onto the persisted user grid by physical frequency, re-measuring
+  amplitude on the user spectrum and SNR against the canonical Stage 2 noise;
+  internal-grid values are kept under `Peak.properties`. `visualize-peaks`
+  overlays on the user spectrum.
+- `pipeline.py` / `api.py` / CLI thread `FTSettings`; `detect_peaks` no longer
+  exposes trim/zpf. `SERIALIZATION_STRATEGY.md` / `API_STRATEGY.md` amended;
+  ROADMAP D7 marked resolved.
 
-**Phase B (pending)** — the items below under "Required behaviour" 3–4 and the
-`stage2_impl` / `stage3_impl` touch points: Stage 2 noise on the persisted
-spectrum; remove the Stage 3 `_resolve_trim`/`_resolve_zpf`/`--trim`/`--zpf`
-band-aids; Stage 3 internal zpf=1 + unapodized with frequency-based snap-back
-re-measuring amplitude/SNR on the persisted user grid + canonical Stage 2
-noise; invalidate+warn downstream stages when an override changes canonical
-settings; amend `SERIALIZATION_STRATEGY.md`/`API_STRATEGY.md` to resolve D7.
-
-The original plan (unchanged, normative for the remaining work) follows.
+The original plan (kept for provenance) follows.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the work it tracks. Registered in

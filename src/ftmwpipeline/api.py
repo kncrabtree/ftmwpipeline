@@ -653,14 +653,14 @@ def detect_peaks(file_path: Union[str, Path], min_snr: Optional[float] = None,
                   apodization_us: Optional[float] = None,
                   tau_us: Optional[float] = None,
                   min_exclusion_mhz: Optional[float] = None,
-                  run_gap_pass: Optional[bool] = None,
-                  trim: Optional[Tuple[float, float]] = None,
-                  zpf: Optional[int] = None) -> List[Peak]:
+                  run_gap_pass: Optional[bool] = None) -> List[Peak]:
     """
     Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
 
-    Requires Stage 1 (FT) and Stage 2 (noise). Two-pass detection scored on
-    the unapodized spectrum. Stage 3 owns its own ``trim`` and ``zpf``.
+    Requires Stage 1 (FT) and Stage 2 (noise). Two-pass detection operates on
+    the Stage 1 persisted canonical spectrum (including its frequency trim
+    range); peaks are reported on that user grid with SNR measured against the
+    canonical Stage 2 noise.  There is no per-Stage-3 trim or zpf.
 
     Returns
     -------
@@ -679,8 +679,6 @@ def detect_peaks(file_path: Union[str, Path], min_snr: Optional[float] = None,
             tau_us=tau_us,
             min_exclusion_mhz=min_exclusion_mhz,
             run_gap_pass=run_gap_pass,
-            trim=trim,
-            zpf=zpf,
         )
     except Exception as e:
         logger.error(f"Failed to detect peaks for {file_path}: {e}")

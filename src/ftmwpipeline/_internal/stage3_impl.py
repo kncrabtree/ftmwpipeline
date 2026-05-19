@@ -2,23 +2,28 @@
 Shared implementation for Stage 3: Peak detection.
 
 Orchestration only -- the detection algorithm lives in
-``ftmwpipeline.preprocessing.peak_detection``. This module recomputes the two
-spectra the two-pass detector needs from the FID + Stage 1 parameters
-(an *apodized* primary spectrum and an *unapodized* full-resolution gap
-spectrum), estimates per-point noise on each grid (they differ, so noise must
-be estimated on the same grid it is detected on -- not reused from the Stage 2
-result, which spans the untrimmed spectrum), runs the detector, and persists
-the classified peak list. Wrapped identically by the CLI, Pipeline class, and
-functional API.
+``ftmwpipeline.preprocessing.peak_detection``. Stage 3 does **not** own any FT
+settings: the spectrum the user chose (Stage 1 canonical ``ft_processing``,
+incl. ``trim``) is authoritative. Detection runs *internally* at ``zpf=1`` on
+two recomputed spectra -- an apodized primary (robust position finding) and an
+unapodized full-resolution gap spectrum (weak-line recovery) -- because apex
+localization is best at the native grid. Every detected peak is then snapped
+back onto the user's persisted spectrum by physical frequency: its amplitude
+is re-measured on the user-settings ``ComplexFT`` and its SNR against the
+canonical Stage 2 noise, so the stored/returned result is expressed entirely
+on the user grid. The internal-grid values are kept under ``properties`` for
+diagnostics. Wrapped identically by the CLI, Pipeline class, and functional
+API.
 """
 
 from datetime import datetime
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple
 
 import h5py
+import numpy as np
 
 from ..core.data_structures import ComplexFT, Peak
 from ..preprocessing.noise_estimation import estimate_noise_adaptive
@@ -26,8 +31,10 @@ from ..preprocessing.peak_detection import (
     DEFAULT_MEDIUM_STRONG_SNR,
     DEFAULT_MIN_SNR,
     DEFAULT_WEAK_MEDIUM_SNR,
+    classify_by_snr,
     detect_peaks,
 )
+from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.peak_serialization import (
     load_peaks_from_hdf5,
     save_peaks_to_hdf5,
@@ -37,6 +44,10 @@ from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
 
 logger = logging.getLogger(__name__)
+
+# Apex localization runs at the native grid; the user's persisted zpf governs
+# only the reported/stored spectrum (snap-back re-measures there).
+_DETECTION_ZPF = 1
 
 
 def _active_acquisition_us(
@@ -53,21 +64,21 @@ def _spectrum_from_fid(
     base_pp: Any,
     trim_range: Optional[Tuple[float, float]],
     expf_us: Optional[float],
-    zpf: Optional[int] = None,
 ) -> ComplexFT:
-    """Recompute a ComplexFT from the FID at a chosen apodization.
+    """Recompute a ComplexFT from the FID at the internal detection grid.
 
-    ``expf_us=None`` (and no window function) yields the unapodized,
-    full-resolution boxcar spectrum used by the gap pass; a finite ``expf_us``
-    yields the leakage-suppressed primary spectrum. ``zpf`` overrides the
-    zero-padding factor (None -> the saved/recommended ``base_pp.zpf``); the
-    same value is used for both spectra so they share a consistent grid.
-    All other preprocessing (window bounds, units, trim) is held identical.
+    Always uses :data:`_DETECTION_ZPF` (native resolution -- best for apex
+    localization). ``expf_us=None`` (and no window) yields the unapodized
+    boxcar spectrum used by the gap pass; a finite ``expf_us`` yields the
+    leakage-suppressed primary spectrum. Window bounds, units, rdc and the
+    persisted ``trim`` are held identical to the user's settings so both
+    detection spectra share a consistent physical-frequency axis with the
+    user spectrum.
     """
     preprocessed = fid.preprocess(
         start_us=base_pp.start_us,
         end_us=base_pp.end_us,
-        zpf=base_pp.zpf if zpf is None else zpf,
+        zpf=_DETECTION_ZPF,
         expf_us=expf_us,
         window_function=None if expf_us is None else base_pp.winf,
         rdc=base_pp.rdc,
@@ -80,45 +91,77 @@ def _spectrum_from_fid(
     return cft
 
 
-def _saved_stage3_params(file_path: str) -> Dict[str, Any]:
-    """Best-effort read of previously persisted Stage 3 parameters."""
-    try:
-        with h5py.File(file_path, "r") as h5f:
-            pk = "processing_parameters/peak_detection"
-            if pk in h5f and "parameters" in h5f[pk].attrs:
-                return cast(Dict[str, Any], json.loads(h5f[pk].attrs["parameters"]))
-    except Exception as e:  # pragma: no cover - best-effort reuse
-        logger.warning("Could not read saved Stage 3 parameters: %s", e)
-    return {}
+def _nearest_index(sorted_pairs: Tuple[np.ndarray, np.ndarray], value: float) -> int:
+    """Index into the original array of the frequency closest to ``value``.
 
-
-def _resolve_trim(
-    explicit: Optional[Tuple[float, float]],
-    saved: Dict[str, Any],
-    stage1_trim: Optional[Tuple[float, float]],
-) -> Optional[Tuple[float, float]]:
-    """Trim precedence: explicit arg > saved Stage 3 trim > Stage 1 trim.
-
-    Stage 1 is intentionally lightweight and does not persist the FT trim (or
-    ``zpf``), so detection would otherwise run on the full untrimmed,
-    recommended-zpf spectrum. Stage 3 therefore owns its own trim and zpf.
+    ``sorted_pairs`` is ``(order, sorted_freq)`` precomputed once; handles
+    ascending or descending frequency axes (2638 is descending).
     """
-    if explicit is not None:
-        return explicit
-    tr = saved.get("trim")
-    if tr and tr[0] is not None and tr[1] is not None:
-        return (float(tr[0]), float(tr[1]))
-    return stage1_trim
+    order, sorted_f = sorted_pairs
+    pos = int(np.searchsorted(sorted_f, value))
+    pos = min(max(pos, 1), len(sorted_f) - 1)
+    if abs(value - sorted_f[pos - 1]) <= abs(value - sorted_f[pos]):
+        pos -= 1
+    return int(order[pos])
 
 
-def _resolve_zpf(explicit: Optional[int], saved: Dict[str, Any], base_zpf: int) -> int:
-    """zpf precedence: explicit arg > saved Stage 3 zpf > Stage 1/recommended."""
-    if explicit is not None:
-        return int(explicit)
-    sz = saved.get("zpf")
-    if sz is not None:
-        return int(sz)
-    return int(base_zpf)
+def _snap_to_user_grid(
+    internal_peaks: List[Peak],
+    user_ft: ComplexFT,
+    user_rms: np.ndarray,
+    weak_medium_snr: float,
+    medium_strong_snr: float,
+) -> List[Peak]:
+    """Re-express internal-grid detections on the persisted user spectrum.
+
+    For each detection: snap by physical frequency to the nearest user-grid
+    point, re-measure amplitude on the user spectrum and SNR against the
+    canonical Stage 2 noise, and reclassify. De-duplicates collisions on the
+    user grid (keeps the strongest). Internal-grid values are preserved under
+    ``properties`` for diagnostics.
+    """
+    user_freq = user_ft.freq_array
+    user_mag = user_ft.magnitude_spectrum
+    order = np.argsort(user_freq)
+    sorted_pairs = (order, user_freq[order])
+
+    by_user_idx: Dict[int, Peak] = {}
+    for p in internal_peaks:
+        ui = _nearest_index(sorted_pairs, p.frequency)
+        intensity = float(user_mag[ui])
+        sd = float(user_rms[ui])
+        snr = intensity / sd if sd > 0 else 0.0
+        snapped = Peak(
+            frequency=float(user_freq[ui]),
+            intensity=intensity,
+            index=int(ui),
+            snr=snr,
+            noise_std_local=sd,
+            classification=classify_by_snr(
+                snr, weak_medium_snr, medium_strong_snr
+            ),
+            detection_pass=p.properties.get("detection_pass"),
+            internal_frequency=p.frequency,
+            internal_intensity=p.intensity,
+            internal_snr=p.snr,
+            internal_index=p.index,
+        )
+        prev = by_user_idx.get(ui)
+        if prev is None or snapped.intensity > prev.intensity:
+            by_user_idx[ui] = snapped
+
+    return sorted(by_user_idx.values(), key=lambda q: q.frequency)
+
+
+def _load_canonical_noise(file_path: str, user_ft: ComplexFT) -> np.ndarray:
+    """Reconstruct the canonical Stage 2 noise on the user spectrum grid."""
+    with h5py.File(file_path, "r") as h5f:
+        noise = load_noise_result_from_hdf5(
+            h5f["stage2_noise_result"],
+            user_ft.freq_array,
+            user_ft.magnitude_spectrum,
+        )
+    return np.asarray(noise.rms_noise, dtype=float)
 
 
 def detect_peaks_impl(
@@ -132,14 +175,15 @@ def detect_peaks_impl(
     tau_us: Optional[float] = None,
     min_exclusion_mhz: Optional[float] = None,
     run_gap_pass: Optional[bool] = None,
-    trim: Optional[Tuple[float, float]] = None,
-    zpf: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run Stage 3 two-pass peak detection and persist the result.
 
-    Requires Stage 1 (FT params) and Stage 2 (noise) completed. Parameters
-    left as ``None`` fall back to documented defaults. Returns the peak list
-    and diagnostics; also writes ``/stage3_peaks`` and marks the stage done.
+    Requires Stage 1 (canonical FT settings) and Stage 2 (noise) completed.
+    Detection operates on the user's persisted spectrum: there is no Stage 3
+    ``trim``/``zpf`` -- those come from the Stage 1 canonical record.
+    Parameters left as ``None`` fall back to documented defaults. Returns the
+    peak list (on the user grid) and diagnostics; also writes
+    ``/stage3_peaks`` and marks the stage done.
     """
     min_snr_v: float = DEFAULT_MIN_SNR if min_snr is None else float(min_snr)
     weak_medium_v: float = (
@@ -166,6 +210,8 @@ def detect_peaks_impl(
         "tau_us": tau_v,
         "min_exclusion_mhz": min_excl_v,
         "run_gap_pass": run_gap_v,
+        "detection_zpf": _DETECTION_ZPF,
+        "settings_source": "stage1_canonical",
     }
 
     with h5py.File(file_path, "r") as h5f:
@@ -183,44 +229,35 @@ def detect_peaks_impl(
                 "detection. Run estimate_noise()/estimate-noise first."
             )
 
-    # Saved Stage 1 FT settings drive both recomputed spectra.
+    # The user's persisted spectrum is authoritative for reported results.
     stage1 = compute_ft_impl(file_path=file_path)
-    base_pp = stage1["complex_ft"].metadata["processing_params"]
-    saved_s3 = _saved_stage3_params(file_path)
-    trim_range = _resolve_trim(trim, saved_s3, stage1.get("trim_range"))
-    zpf_v = _resolve_zpf(zpf, saved_s3, base_pp.zpf)
-    params["trim"] = list(trim_range) if trim_range is not None else None
-    params["zpf"] = zpf_v
-    if trim_range is None:
-        logger.warning(
-            "No trim set for Stage 3; detecting on the full untrimmed "
-            "spectrum (DC edges may dominate). Pass trim=(min,max)."
-        )
+    user_ft: ComplexFT = stage1["complex_ft"]
+    base_pp = user_ft.metadata["processing_params"]
+    trim_range = stage1.get("trim_range")
+    user_rms = _load_canonical_noise(file_path, user_ft)
 
     fid = load_fid_from_pipeline_impl(file_path)
     acquisition_us = _active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 
-    # Primary apodization: caller override, else saved Stage 1 expf, else 5 us
+    # Primary apodization: caller override, else persisted expf, else 5 us
     # (a finite value is required so the primary differs from the gap pass).
     primary_apod = apodization_us
     if primary_apod is None:
         primary_apod = base_pp.expf_us if base_pp.expf_us else 5.0
 
-    # Apodized primary + unapodized full-resolution gap, on an identical grid.
-    primary_ft = _spectrum_from_fid(
-        fid, base_pp, trim_range, expf_us=primary_apod, zpf=zpf_v
-    )
-    gap_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=None, zpf=zpf_v)
-
-    # Per-point noise on each grid (must match the grid it is detected on).
+    # Internal detection grids (native zpf=1), identical physical axis.
+    primary_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=primary_apod)
+    gap_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=None)
     primary_noise = estimate_noise_adaptive(
         primary_ft.freq_array, primary_ft.magnitude_spectrum
     )
-    gap_noise = estimate_noise_adaptive(gap_ft.freq_array, gap_ft.magnitude_spectrum)
+    gap_noise = estimate_noise_adaptive(
+        gap_ft.freq_array, gap_ft.magnitude_spectrum
+    )
 
-    peaks: List[Peak] = detect_peaks(
+    internal_peaks: List[Peak] = detect_peaks(
         primary_ft.freq_array,
         primary_ft.magnitude_spectrum,
         primary_noise.rms_noise,
@@ -238,14 +275,20 @@ def detect_peaks_impl(
         run_gap_pass=run_gap_v,
     )
 
+    # Snap onto the user grid: physical frequency + re-measured amplitude/SNR.
+    peaks = _snap_to_user_grid(
+        internal_peaks, user_ft, user_rms, weak_medium_v, medium_strong_v
+    )
+
     full_params = {**params, "acquisition_us": acquisition_us}
     save_peaks_impl(file_path, peaks, parameters=full_params)
-    # Persist parameters (incl. resolved trim) for reuse by visualize/reruns.
     save_peak_parameters_impl(file_path, full_params)
     _update_stage_completion(file_path, "stage3_peaks")
-    logger.info("Stage 3: detected %d peaks", len(peaks))
+    logger.info("Stage 3: detected %d peaks (user grid)", len(peaks))
 
-    n_primary = sum(1 for p in peaks if p.properties.get("detection_pass") == "primary")
+    n_primary = sum(
+        1 for p in peaks if p.properties.get("detection_pass") == "primary"
+    )
     return {
         "status": "success",
         "peaks": peaks,
@@ -254,6 +297,8 @@ def detect_peaks_impl(
         "n_gap": len(peaks) - n_primary,
         "parameters_used": params,
         "acquisition_us": acquisition_us,
+        "user_ft": user_ft,
+        "user_rms": user_rms,
         "primary_ft": primary_ft,
         "gap_ft": gap_ft,
         "primary_noise": primary_noise,
@@ -308,42 +353,44 @@ def visualize_peaks_impl(
     backend: str = "matplotlib",
     interactive: bool = True,
 ) -> Any:
-    """Overlay the persisted classified peaks on the gap (full-res) spectrum.
+    """Overlay the persisted classified peaks on the user's spectrum.
 
-    Recomputes the unapodized spectrum + its per-point noise (same grid Stage 3
-    detected the gap pass on) for context, then delegates to the spectrum
-    visualization. Requires Stage 3 to be completed.
+    Peaks are stored on the user grid (frequency + re-measured amplitude), so
+    the overlay is the user's persisted spectrum with the canonical Stage 2
+    noise -- exactly the surface the peaks were scored on. Requires Stage 3
+    completed.
     """
     loaded = load_peaks_impl(file_path)
     peaks: List[Peak] = loaded["peaks"]
-    used = loaded["parameters_used"]
-    saved_trim = used.get("trim")
-    explicit_trim = (float(saved_trim[0]), float(saved_trim[1])) if saved_trim else None
 
     stage1 = compute_ft_impl(file_path=file_path)
-    base_pp = stage1["complex_ft"].metadata["processing_params"]
-    saved_s3 = _saved_stage3_params(file_path)
-    trim_range = _resolve_trim(explicit_trim, saved_s3, stage1.get("trim_range"))
-    # Display the same grid detection used (same zpf).
-    zpf_v = _resolve_zpf(used.get("zpf"), saved_s3, base_pp.zpf)
-    fid = load_fid_from_pipeline_impl(file_path)
-    gap_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=None, zpf=zpf_v)
-    gap_noise = estimate_noise_adaptive(gap_ft.freq_array, gap_ft.magnitude_spectrum)
+    user_ft: ComplexFT = stage1["complex_ft"]
+    try:
+        user_rms = _load_canonical_noise(file_path, user_ft)
+    except Exception as e:  # Stage 2 invalidated/missing -> degrade loudly.
+        logger.warning(
+            "Canonical Stage 2 noise unavailable (%s); estimating on the "
+            "user spectrum for display only.",
+            e,
+        )
+        user_rms = estimate_noise_adaptive(
+            user_ft.freq_array, user_ft.magnitude_spectrum
+        ).rms_noise
 
     from ..visualization.peak_visualization import plot_peak_detection
 
     if title is None:
         name = Path(file_path).stem
-        fr = (gap_ft.freq_array.min(), gap_ft.freq_array.max())
+        fr = (user_ft.freq_array.min(), user_ft.freq_array.max())
         title = (
             f"Pipeline {name} - Stage 3 Peak Detection "
             f"({fr[0]:.0f}-{fr[1]:.0f} MHz, {len(peaks)} peaks)"
         )
 
     return plot_peak_detection(
-        frequencies=gap_ft.freq_array,
-        magnitudes=gap_ft.magnitude_spectrum,
-        rms_noise=gap_noise.rms_noise,
+        frequencies=user_ft.freq_array,
+        magnitudes=user_ft.magnitude_spectrum,
+        rms_noise=user_rms,
         peaks=peaks,
         figsize=figsize if figsize is not None else (16, 6),
         title=title,

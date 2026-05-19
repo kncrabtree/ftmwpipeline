@@ -32,19 +32,9 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     try:
         file_path = _ensure_ftmw(args.file_path)
-        trim = None
-        if args.trim is not None:
-            try:
-                lo, hi = map(float, args.trim.split(":"))
-                trim = (lo, hi)
-            except ValueError:
-                print_error(f"Invalid --trim {args.trim!r}; use 'min:max' in MHz")
-                return 1
         print(f"Detecting peaks for: {file_path}")
         result = detect_peaks_impl(
             file_path=file_path,
-            trim=trim,
-            zpf=args.zpf,
             min_snr=args.min_snr,
             weak_medium_snr=args.weak_medium_snr,
             medium_strong_snr=args.medium_strong_snr,
@@ -151,23 +141,16 @@ def register_peak_commands(subparsers: Any) -> None:
     p_detect = subparsers.add_parser(
         "detect-peaks",
         help="Detect and classify peaks (Stage 3, two-pass)",
-        description="Stage 3 two-pass peak detection with SNR classification",
+        description=(
+            "Stage 3 two-pass peak detection with SNR classification.\n\n"
+            "Detection operates on the Stage 1 persisted canonical spectrum\n"
+            "(including its frequency trim range).  Run 'compute-ft' with the\n"
+            "desired --trim and --zpf to set those canonical settings first."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p_detect.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
-    )
-    p_detect.add_argument(
-        "--trim",
-        type=str,
-        help="Frequency trim 'min:max' in MHz (Stage 3 owns its own trim; "
-        "strongly recommended -- e.g. 26500:40000 for exp 2638)",
-    )
-    p_detect.add_argument(
-        "--zpf",
-        type=int,
-        help="Zero-padding factor for the detection spectra (Stage 3 owns "
-        "its own zpf; default = saved/recommended, 0 for exp 2638)",
     )
     p_detect.add_argument(
         "--min-snr",

@@ -70,9 +70,20 @@ to the same file, and returns the stage result object:
 - `visualize_ft(...)`
 - `estimate_noise(...) -> NoiseResult`
 - `visualize_noise(...)`
+- `detect_peaks(...) -> list[Peak]`
 
-Future stages (peak detection, window assignment, fitting) follow the same
-contract and are added without changing existing signatures.
+Future stages (window assignment, fitting) follow the same contract and are
+added without changing existing signatures.
+
+**Canonical FT settings.**  The user-chosen Stage 1 FT processing parameters —
+`start_us`, `end_us`, `zpf`, `expf_us`, `window_function`, `units_power`,
+`rdc`, and the frequency `trim` range — are persisted in the `.ftmw` file as
+the experiment's canonical settings.  All later stages operate on the spectrum
+they define; no stage carries its own trim or zpf.  Resolution order for each
+setting is: **explicit caller override > persisted canonical > import-time
+recommended default**.  Passing explicit overrides to `compute_ft` stores them
+as the new canonical state and invalidates any downstream stage results (they
+must be re-run).
 
 ### Introspection
 

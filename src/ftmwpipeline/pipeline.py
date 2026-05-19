@@ -593,9 +593,7 @@ class Pipeline:
                      apodization_us: Optional[float] = None,
                      tau_us: Optional[float] = None,
                      min_exclusion_mhz: Optional[float] = None,
-                     run_gap_pass: Optional[bool] = None,
-                     trim: Optional[Tuple[float, float]] = None,
-                     zpf: Optional[int] = None) -> List[Peak]:
+                     run_gap_pass: Optional[bool] = None) -> List[Peak]:
         """
         Detect and classify peaks (Stage 3, two-pass).
 
@@ -603,8 +601,12 @@ class Pipeline:
         primary pass plus a leakage-masked unapodized gap pass, scores every
         peak on the unapodized spectrum, classifies by SNR, and persists the
         list to the .ftmw file. Equivalent to the CLI ``detect-peaks`` command
-        and ``ftmwpipeline.api.detect_peaks``. Stage 3 owns its own ``trim``
-        and ``zpf`` (Stage 1 does not persist them).
+        and ``ftmwpipeline.api.detect_peaks``.
+
+        Detection operates on the Stage 1 persisted canonical spectrum,
+        including its frequency trim range.  Peaks are reported on that user
+        grid with amplitude and SNR measured against the canonical Stage 2
+        noise.  There is no per-Stage-3 trim or zpf.
 
         Returns
         -------
@@ -630,8 +632,6 @@ class Pipeline:
                 tau_us=tau_us,
                 min_exclusion_mhz=min_exclusion_mhz,
                 run_gap_pass=run_gap_pass,
-                trim=trim,
-                zpf=zpf,
             )
             self.logger.info(
                 "Stage 3: %d peaks (%d primary, %d gap)",

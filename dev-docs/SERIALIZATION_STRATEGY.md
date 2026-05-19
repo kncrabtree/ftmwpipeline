@@ -36,6 +36,15 @@ How an experiment's analysis is persisted. One experiment is one self-contained
   parameters. Only the processing parameters are persisted (for reproducibility
   and parameter persistence). Consequently a completed Stage 1 is proven by the
   presence of its persisted parameters, not by a stored result array.
+
+  The full set of user-chosen Stage 1 FT processing settings — `start_us`,
+  `end_us`, `zpf`, `expf_us`, `window_function`, `units_power`, `rdc`, **and
+  the frequency `trim` range** — are persisted in `processing_parameters/ft_processing`
+  as the experiment's *canonical* settings.  All later stages operate on the
+  spectrum they define.  Setting resolution order is **explicit override >
+  persisted canonical > import-time recommended**.  Changing canonical settings
+  via an explicit override invalidates downstream stage results (Stages 2–5
+  must be re-run).
 - **Stage 2 — NoiseResult.** Persisted, using a compact representation
   sufficient for exact reconstruction (store indices/coefficients rather than
   full dense masks where that is lossless).
