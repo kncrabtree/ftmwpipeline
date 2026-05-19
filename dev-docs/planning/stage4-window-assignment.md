@@ -62,35 +62,54 @@ split may only be determinable at fit time.
 
 Inputs: the promoted peaks (`Peak.properties['promoted']`) on the persisted
 user spectrum; the canonical Stage 2 noise (per-point RMS on that grid);
-`estimate_leakage_reach` (SNR, acquisition `T`, assumed `τ`); the user spectrum
-itself (for the empirical edge check).
+`estimate_leakage_reach` (SNR, acquisition `T`, assumed `τ`); and the
+**complex** user spectrum (real and imaginary parts, not just magnitude — the
+edge test below is a complex-domain coherence test and magnitude discards the
+phase information it depends on).
 
 1. **Propose extent.** For each strong line, predict its leakage reach from the
    analytic finite-T model; the proposed window spans the line ± reach.
-2. **Validate/trim edges.** Trim each proposed edge inward to where the
-   spectrum sits within `k · local_RMS` over a contiguous span (the line's
-   leakage has decayed into noise). Model-predicted reach *proposes*; the
-   empirical noise floor *validates*. (DC-offset-at-FT-edges as the true
-   "reached baseline" test is open research — see O4-1.)
+2. **Validate/trim edges (complex-domain coherence test).** Leakage is
+   phase-coherent; a leakage-free edge band is zero-mean white noise. Over an
+   M-point edge band test `|Σ_edge complex| / (σ_local·√M)`: O(1) ⇒ clean edge
+   (trim to here); ≫1 ⇒ coherent leakage still bleeding in (extend, and the
+   window has an out-of-band contributor — feeds step 6). Model-predicted
+   reach *proposes* the extent; this statistic *confirms/trims* it. A
+   magnitude `k·RMS` floor is **not** sufficient (a sinc skirt can dip to
+   near-noise in magnitude while still fully coherent). DC-offset-at-edges is
+   the zero-distance degenerate case of this test. See O4-1.
 3. **Strong clusters.** Strong lines whose reaches mutually overlap form a
    single **primary joint window** (they must be fit together first; none can
    be a fixed background for the others).
 4. **Merge to fixpoint.** Overlapping proposed fit windows merge transitively,
    deterministically ordered (by frequency, then descending strength), until
    stable → disjoint fit windows covering each point ≤ 1.
-5. **Assign in-band peaks.** Every promoted peak is a free peak of the unique
-   fit window containing its frequency.
-6. **Attach fixed contributors.** For each window, any freeze-eligible strong
-   line that is in-band of a *different* window but whose predicted leakage
-   here exceeds `k · local_RMS` is attached as a fixed contributor (reference
-   to its primary window). This adds a dependency edge.
-7. **Classify difficulty.** A window is **easy/independent** if it has no
-   unresolved fixed contributors, its free-peak count ≤ cap, and its width ≤
-   cap. Otherwise **hard**: it hit a cap, or sits in a comparably-strong
-   coupled cluster with no dominant line to freeze. For hard windows Stage 4
-   emits a *proposed* split (at the local noise-floor minimum, flagged as an
-   approximation that knowingly cuts shared leakage) **and/or** a
-   `needs_joint_treatment` marker. Stage 4 does not choose; it annotates.
+5. **Assign in-band peaks, pruning leakage artifacts.** A promoted peak is a
+   free peak of the unique fit window containing its frequency **only if it is
+   not attributable to a contributor's leakage**. Stage 3 promotes a strong
+   line's own sidelobes as peaks; once that line is a contributor (free
+   in-band or fixed) its leakage explains them, so they must not also be fit
+   as independent lines. Pruning uses the analytic leakage envelope of the
+   window's strong contributor(s); the residual after the strong term is what
+   defines genuine free peaks.
+6. **Attach fixed contributors.** For each window, a freeze-eligible strong
+   line in-band of a *different* window is attached as a fixed contributor
+   (reference to its primary window) when its predicted leakage reaches here
+   **and** the step-2 complex-edge test confirms coherent out-of-band
+   structure. Analytic reach proposes the candidate; the complex-edge test
+   confirms it. This adds a dependency edge.
+7. **Classify difficulty (strong-line-driven, empirical).** Difficulty is
+   *not* a promoted-peak-count threshold — that count is dominated by a strong
+   line's leakage artifacts and is unreliable. A window is **hard** if it
+   contains or is materially influenced by a strong line (has strong in-band
+   peaks, or unresolved fixed contributors, or fails the complex-edge test),
+   or exceeds the width cap, or sits in a comparably-strong coupled cluster
+   with no dominant line to freeze. Everything else is **easy/independent**.
+   The only count-like cap is *width*; "too many peaks" is replaced by
+   "contains/near a strong line". For hard windows Stage 4 emits a *proposed*
+   split (at a complex-edge-clean interior point, flagged as an approximation
+   that knowingly cuts shared leakage) **and/or** a `needs_joint_treatment`
+   marker. Stage 4 does not choose; it annotates.
 8. **Emit the plan.** Topologically order the dependency DAG; independent
    windows form parallel batches. Each window carries: freq range, free peaks,
    fixed contributors (peak id + primary window id), difficulty class, batch
@@ -134,15 +153,25 @@ peak serialization. Confirm against `SERIALIZATION_STRATEGY.md` (O4-6).
 
 ## Open research / questions
 
-- **O4-1 Baseline/edge definition.** Model-predicted reach vs empirical
-  `k·RMS` floor vs DC-offset-at-FT-edges; which is authoritative and how they
-  combine. Prototype on 2638.
-- **O4-2 Freeze-eligibility + error-propagation guard.** Exact criterion for
-  "strong/known enough to freeze"; the test for "frozen background good enough
-  vs must be thawed and re-fit" (partly Stage 5).
-- **O4-3 Dense-cluster cap policy.** Values for width/free-peak caps; split-at-
-  minimum vs escalate-to-Stage-5 marker; choosing the split point to minimize
-  shared-leakage error; how the approximation is logged.
+- **O4-1 Complex-edge baseline test (primary mechanism).** Statistic
+  `|Σ_edge complex|/(σ_local·√M)`: calibrate the band width M and the
+  threshold against synthetic clean-vs-leakage edges, then 2638. Sub-research:
+  discriminate a *global* baseline/DC offset (flat across the band) from a
+  *distance-dependent leakage envelope* (varies with proximity to the strong
+  line) — both inflate the edge integral but their spatial signature differs.
+  This subsumes the old `k·RMS`/DC-offset ideas.
+- **O4-2 Freeze-eligibility + error-propagation guard.** Criterion for
+  "strong/known enough to freeze". The empirical "does this window have a
+  fixed contributor" question is answered by the O4-1 complex-edge test; what
+  remains is "frozen background good enough vs must be thawed and re-fit"
+  (partly Stage 5).
+- **O4-3 Dense-cluster cap policy.** Width cap value (peak-count cap is
+  dropped — Stage 3 promoted counts are leakage-artifact-dominated and
+  unreliable; difficulty is strong-line-driven per algorithm step 7).
+  Split-at-complex-edge-clean-point vs escalate-to-Stage-5 marker; how the
+  approximation is logged. The leakage-artifact pruning of the free set
+  (step 5) is itself research: how cleanly the analytic strong-line envelope
+  removes its own detected sidelobes.
 - **O4-4 Strong-cluster detection.** Robustly grouping mutually-reach-
   overlapping strong lines into one primary joint window and bounding its size.
 - **O4-5 Determinism.** Merge order and tie-breaking must yield a reproducible
@@ -167,10 +196,17 @@ cross-stage risk and is settled when the Stage 5 plan is written.
 - Synthetic spectra (known A/f/φ/τ) for: isolated strong line; weak line on a
   strong line's skirt (must become a fixed contributor, not free); two strong
   lines with overlapping reach (one primary joint window); a dense comparably-
-  strong cluster (cap triggers a flagged split, not a 50-peak window).
+  strong cluster (width cap triggers a flagged split).
+- Complex-edge statistic (O4-1): on synthetic edges with vs without an
+  out-of-band coherent leakage tail, the statistic must separate the two
+  (≈O(1) clean vs ≫1 with leakage) across SNR/τ; and a flat global DC offset
+  must be distinguishable from a distance-dependent leakage envelope.
+- Leakage-artifact pruning (step 5): a strong line's promoted sidelobes are
+  excluded from the free set once it is a contributor; genuine nearby weak
+  lines are retained.
 - Invariant checks: fit windows disjoint and cover each point ≤ 1; every
-  promoted peak in exactly one window's free set; dependency graph acyclic;
-  topological order valid; batches independent.
+  retained free peak in exactly one window's free set; dependency graph
+  acyclic; topological order valid; batches independent.
 - 2638 real data: sane window count; the strong doublets anchor windows; dense
   regions are flagged, not exploded; promoted-only consumption.
 - Cross-interface identity (CLI/Pipeline/api); serialization round-trip +
@@ -181,12 +217,14 @@ cross-stage risk and is settled when the Stage 5 plan is written.
 
 1. [ ] Window-plan data structures (extend `SpectralWindow` or new
    `WindowPlan`) + unit tests.
-2. [ ] Extent prediction + empirical edge validation (O4-1) + unit tests.
+2. [ ] Complex-edge coherence statistic + extent prediction/trim (O4-1) +
+   unit tests (synthetic clean-vs-leakage; DC vs envelope).
 3. [ ] Strong-cluster grouping + merge-to-fixpoint (O4-4, O4-5) + unit tests.
-4. [ ] Fixed-contributor attachment + dependency DAG + topological/batch
-   ordering + unit tests.
-5. [ ] Difficulty classification + dense-cluster cap/split proposal (O4-3) +
-   unit tests.
+4. [ ] Fixed-contributor attachment (reach proposes, complex-edge confirms) +
+   leakage-artifact pruning of the free set + dependency DAG +
+   topological/batch ordering + unit tests.
+5. [ ] Strong-line-driven difficulty classification + width-cap/split proposal
+   (O4-3) + unit tests.
 6. [ ] `io/window_serialization.py` + `stage4_windows` stage tracking +
    hand-edit round-trip tests; wire into the invalidation mechanism.
 7. [ ] Wrappers (`Pipeline.assign_windows/visualize_windows/load_windows`,
