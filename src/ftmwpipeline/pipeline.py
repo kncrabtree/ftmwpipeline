@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from .core.data_structures import FID, ComplexFT
+from .core.settings import FTSettings
 from .preprocessing.noise_estimation import NoiseResult
 from .file_manager import (
     SourceMetadata, PipelineStageTracker,
@@ -18,7 +19,9 @@ from .file_manager import (
 )
 from .io.data_loaders import load_fid, detect_format, validate_source
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
-from ._internal.stage1_impl import compute_ft_impl, visualize_ft_impl, save_ft_parameters_impl
+from ._internal.stage1_impl import (
+    compute_ft_impl, visualize_ft_impl, save_ft_parameters_impl
+)
 from ._internal.stage2_impl import (
     compute_noise_estimation_impl, visualize_noise_impl
 )
@@ -236,182 +239,208 @@ class Pipeline:
         except Exception as e:
             raise RuntimeError(f"Failed to load FID data: {e}") from e
     
-    def compute_ft(self, zpf: Optional[int] = None, expf_us: Optional[float] = None, 
-                   trim: Optional[Tuple[float, float]] = None, start_us: Optional[float] = None,
-                   end_us: Optional[float] = None, window_function: Optional[str] = None,
-                   units_power: Optional[int] = None, from_saved_params: bool = False) -> ComplexFT:
-        """
-        Compute Fourier Transform with specified processing parameters.
-        
-        This method implements Stage 1 FT processing, equivalent to the CLI
-        compute-ft command. Can be called multiple times safely.
-        
+    def compute_ft(
+        self,
+        zpf: Optional[int] = None,
+        expf_us: Optional[float] = None,
+        trim: Optional[Tuple[float, float]] = None,
+        start_us: Optional[float] = None,
+        end_us: Optional[float] = None,
+        window_function: Optional[str] = None,
+        units_power: Optional[int] = None,
+        from_saved_params: bool = False,
+    ) -> ComplexFT:
+        """Compute Fourier Transform (Stage 1, user-driven).
+
+        Resolves settings through ``explicit > persisted > recommended`` and
+        persists the resolved canonical settings to the ``.ftmw`` file.  Can be
+        called multiple times safely.
+
         Parameters
         ----------
         zpf : int, optional
-            Zero padding factor. If None, uses cached default or 1.
+            Zero-padding factor.
         expf_us : float, optional
-            Exponential filter in microseconds. If None, uses cached default or 5.0.
+            Exponential filter time constant in microseconds.
         trim : tuple of float, optional
-            (min_freq, max_freq) in MHz to trim spectrum
+            ``(min_mhz, max_mhz)`` frequency analysis range to keep.
         start_us : float, optional
-            FID window start time in microseconds
+            FID window start time in microseconds.
         end_us : float, optional
-            FID window end time in microseconds  
+            FID window end time in microseconds.
         window_function : str, optional
-            Windowing function name
+            Window function name (hann, blackman, …).
         units_power : int, optional
-            Scaling factor as power of 10. If None, uses cached default or 6.
+            Spectrum scaling as power of 10.
         from_saved_params : bool, default False
-            If True, use previously saved parameters and ignore other arguments
-            
+            If ``True``, ignore the explicit kwargs above and use only the
+            persisted / recommended settings (no explicit overrides).
+
         Returns
         -------
         ComplexFT
-            Computed frequency domain data
-            
+            Computed frequency-domain data.
+
         Raises
         ------
         StageDependencyError
-            If required dependencies (FID data) are not available
+            If Stage 0 (FID data) is not available.
         RuntimeError
-            If FT computation fails
+            If FT computation fails.
         """
         try:
-            # Use shared implementation for FT computation (handles dependency checking)
+            settings: Optional[FTSettings] = None
+            if not from_saved_params:
+                settings = FTSettings(
+                    start_us=start_us,
+                    end_us=end_us,
+                    zpf=zpf,
+                    expf_us=expf_us,
+                    window_function=window_function,
+                    units_power=units_power,
+                    trim=trim,
+                )
             result = compute_ft_impl(
                 file_path=str(self.filepath),
-                start_us=start_us if not from_saved_params else None,
-                end_us=end_us if not from_saved_params else None,
-                zpf=zpf if not from_saved_params else None,
-                expf_us=expf_us if not from_saved_params else None,
-                window_function=window_function if not from_saved_params else None,
-                units_power=units_power if not from_saved_params else None,
-                trim_range=trim,
-                validate_only=False
+                settings=settings,
+                validate_only=False,
+                persist=True,
             )
-            
-            complex_ft = result['complex_ft']
-            
-            # Storage and stage completion handled by shared implementation
-            self.logger.info(f"FT computed: {complex_ft.n_points:,} frequency points")
+            complex_ft: ComplexFT = result["complex_ft"]
+            self.logger.info(
+                f"FT computed: {complex_ft.n_points:,} frequency points"
+            )
             if trim:
-                self.logger.info(f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz")
-                
+                self.logger.info(
+                    f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz"
+                )
             return complex_ft
-            
         except Exception as e:
             raise RuntimeError(f"Failed to compute FT: {e}") from e
     
-    def visualize_ft(self, zpf: Optional[int] = None, expf_us: Optional[float] = None,
-                     trim: Optional[Tuple[float, float]] = None, start_us: Optional[float] = None,
-                     end_us: Optional[float] = None, window_function: Optional[str] = None,
-                     units_power: Optional[int] = None, save_params: bool = False,
-                     backend: str = 'matplotlib', interactive: bool = True, 
-                     output_file: Optional[Union[str, Path]] = None,
-                     show_fid_panels: bool = True):
-        """
-        Create enhanced FT visualization with processing workflow display.
-        
-        This method implements enhanced FT visualization equivalent to the CLI 
-        visualize-ft command, showing complete FID-to-spectrum processing workflow.
-        
+    def visualize_ft(
+        self,
+        zpf: Optional[int] = None,
+        expf_us: Optional[float] = None,
+        trim: Optional[Tuple[float, float]] = None,
+        start_us: Optional[float] = None,
+        end_us: Optional[float] = None,
+        window_function: Optional[str] = None,
+        units_power: Optional[int] = None,
+        save_params: bool = False,
+        backend: str = "matplotlib",
+        interactive: bool = True,
+        output_file: Optional[Union[str, Path]] = None,
+        show_fid_panels: bool = True,
+    ) -> Any:
+        """Create enhanced FT visualization with processing workflow display.
+
+        Equivalent to the CLI ``visualize-ft`` command.  Never persists
+        settings; exploration only.  Pass ``save_params=True`` to write the
+        explicitly provided kwargs to the canonical ``ft_processing`` record.
+
         Parameters
         ----------
         zpf : int, optional
-            Zero padding factor. If None, uses cached default or 1.
+            Zero-padding factor.
         expf_us : float, optional
-            Exponential filter in microseconds. If None, uses cached default or 5.0.
+            Exponential filter time constant in microseconds.
         trim : tuple of float, optional
-            (min_freq, max_freq) in MHz to trim spectrum
+            ``(min_mhz, max_mhz)`` frequency analysis range.
         start_us : float, optional
-            FID window start time in microseconds
+            FID window start time in microseconds.
         end_us : float, optional
-            FID window end time in microseconds
+            FID window end time in microseconds.
         window_function : str, optional
-            Windowing function name
+            Window function name.
         units_power : int, optional
-            Scaling factor as power of 10. If None, uses cached default or 6.
+            Spectrum scaling as power of 10.
         save_params : bool, default False
-            Whether to save parameters as defaults for this experiment
-        backend : str, default 'matplotlib'
-            Plotting backend ('matplotlib' or 'plotly')
+            If ``True``, persist the explicitly provided settings.
+        backend : str, default ``'matplotlib'``
+            Plotting backend (``'matplotlib'`` or ``'plotly'``).
         interactive : bool, default True
-            Whether to show interactive plot
+            Whether to show an interactive plot.
         output_file : str or Path, optional
-            Path to save plot image (for non-interactive mode)
+            Path to save the plot image (non-interactive mode).
         show_fid_panels : bool, default True
-            Whether to show FID processing panels
-            
+            Whether to include FID processing panels.
+
         Returns
         -------
         figure
-            Matplotlib or Plotly figure object
-            
+            Matplotlib or Plotly figure object.
+
         Raises
         ------
         StageDependencyError
-            If required dependencies are not available
+            If required dependencies are not available.
         RuntimeError
-            If visualization fails
+            If visualization fails.
         """
         try:
-            # Use shared implementation for FT visualization
-            fig = visualize_ft_impl(
-                file_path=str(self.filepath),
+            settings = FTSettings(
                 start_us=start_us,
                 end_us=end_us,
                 zpf=zpf,
                 expf_us=expf_us,
                 window_function=window_function,
                 units_power=units_power,
-                trim_range=trim,
-                title=None,  # Let implementation generate title
+                trim=trim,
+            )
+            fig = visualize_ft_impl(
+                file_path=str(self.filepath),
+                settings=settings,
+                title=None,
                 show_fid_panels=show_fid_panels,
                 backend=backend,
-                interactive=interactive
+                interactive=interactive,
             )
-            
+
             # Handle output
             if not interactive and output_file:
-                fig.savefig(output_file, dpi=150, bbox_inches='tight')
+                fig.savefig(output_file, dpi=150, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {output_file}")
             elif not interactive:
-                # Save with default name
                 default_name = f"{self.filepath.stem}_enhanced_spectrum.png"
-                fig.savefig(default_name, dpi=150, bbox_inches='tight')
+                fig.savefig(default_name, dpi=150, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {default_name}")
-            elif interactive and backend == 'matplotlib':
+            elif interactive and backend == "matplotlib":
                 import matplotlib.pyplot as plt
+
                 plt.show()
-            
+
             # Save parameters if requested
             if save_params:
-                # Collect parameters for saving
-                params = {
-                    'start_us': start_us,
-                    'end_us': end_us,
-                    'zpf': zpf,
-                    'expf_us': expf_us,
-                    'window_function': window_function,
-                    'units_power': units_power,
-                    'trim_min_mhz': trim[0] if trim else None,
-                    'trim_max_mhz': trim[1] if trim else None
-                }
-                # Filter out None values
-                params = {k: v for k, v in params.items() if v is not None}
-                
+                params: Dict[str, Any] = {}
+                for key, value in (
+                    ("start_us", start_us),
+                    ("end_us", end_us),
+                    ("zpf", zpf),
+                    ("expf_us", expf_us),
+                    ("window_function", window_function),
+                    ("units_power", units_power),
+                ):
+                    if value is not None:
+                        params[key] = value
+                if trim is not None:
+                    params["trim_min_mhz"] = trim[0]
+                    params["trim_max_mhz"] = trim[1]
                 if params:
                     save_ft_parameters_impl(str(self.filepath), params)
-                    self.logger.info(f"Saved {len(params)} processing parameters")
+                    self.logger.info(
+                        f"Saved {len(params)} processing parameters"
+                    )
                 else:
                     self.logger.info("No custom parameters to save")
-            
+
             self.logger.info("FT visualization completed")
             return fig
-            
+
         except Exception as e:
-            raise RuntimeError(f"Failed to create FT visualization: {e}") from e
+            raise RuntimeError(
+                f"Failed to create FT visualization: {e}"
+            ) from e
     
     def estimate_noise(self, skew_target: Optional[float] = None, 
                        min_bin_fraction: Optional[float] = None,

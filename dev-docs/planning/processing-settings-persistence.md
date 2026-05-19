@@ -1,7 +1,35 @@
 # Plan: Processing-settings persistence and propagation
 
-Status: **planning** (not started). Cross-cutting architectural fix. This is
-the designated next task and is intended to be picked up in fresh context.
+Status: **Phase A landed** (Phase B pending). Cross-cutting architectural fix.
+
+Phase A (foundation + Stage 1 ownership) is implemented and the full suite is
+green (253 passed):
+
+- New `core/settings.py`: `FTSettings` dataclass — single source of truth for
+  the FT settings across API/CLI/persistence; `resolve()` implements
+  `explicit > persisted (ft_processing) > recommended` with hard defaults;
+  `to_attrs`/`from_attrs` persist the canonical record (trim **inside**
+  `ft_processing` as `trim_min_mhz`/`trim_max_mhz`, per the resolved open
+  question).
+- New `cli/_argspec.py`: argparse options generated from `cli_field` metadata
+  (single source; legacy `--expf_us` flag preserved).
+- `stage1_impl.compute_ft_impl(file_path, settings=None, validate_only=False,
+  persist=False)`: resolves and, when `persist=True` (user-driven Stage 1),
+  writes the resolved settings incl. `trim` as canonical and marks Stage 1
+  complete. No-arg recompute (used by Stages 2/3) now reproduces exactly the
+  user-chosen spectrum — the D7 root cause is fixed at this layer.
+- `pipeline.py` / `api.py` / `cli/ft_commands.py` thread `FTSettings`; ergonomic
+  kwargs retained at the boundaries.
+
+**Phase B (pending)** — the items below under "Required behaviour" 3–4 and the
+`stage2_impl` / `stage3_impl` touch points: Stage 2 noise on the persisted
+spectrum; remove the Stage 3 `_resolve_trim`/`_resolve_zpf`/`--trim`/`--zpf`
+band-aids; Stage 3 internal zpf=1 + unapodized with frequency-based snap-back
+re-measuring amplitude/SNR on the persisted user grid + canonical Stage 2
+noise; invalidate+warn downstream stages when an override changes canonical
+settings; amend `SERIALIZATION_STRATEGY.md`/`API_STRATEGY.md` to resolve D7.
+
+The original plan (unchanged, normative for the remaining work) follows.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the work it tracks. Registered in

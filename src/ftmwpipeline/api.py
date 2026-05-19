@@ -253,30 +253,31 @@ def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
     units_power : int, optional
         Scaling factor as power of 10. If None, uses cached default or 6.
     from_saved_params : bool, default False
-        If True, use previously saved parameters and ignore other arguments
-        
+        If ``True``, ignore the explicit kwargs and use only the persisted /
+        recommended settings (no explicit overrides).
+
     Returns
     -------
     ComplexFT
-        Computed frequency domain data
-        
+        Computed frequency domain data.
+
     Raises
     ------
     FileNotFoundError
-        If pipeline file does not exist
+        If pipeline file does not exist.
     StageDependencyError
-        If required dependencies (FID data) are not available
+        If required dependencies (FID data) are not available.
     RuntimeError
-        If FT computation fails
-        
+        If FT computation fails.
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
-    >>> # Compute with specific parameters
+    >>> # Compute with specific parameters (persisted as canonical)
     >>> complex_ft = ftmw.compute_ft("experiment.ftmw", zpf=2, expf_us=5.0,
     ...                              trim=(26500, 40000))
-    >>> 
-    >>> # Use saved parameters
+    >>>
+    >>> # Use saved/recommended settings only
     >>> complex_ft = ftmw.compute_ft("experiment.ftmw", from_saved_params=True)
     """
     try:
