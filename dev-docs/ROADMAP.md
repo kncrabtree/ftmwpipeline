@@ -29,8 +29,8 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 | 0 Data import | Implemented | — |
 | 1 FT processing | Implemented | — |
 | 2 Noise estimation | Implemented | — |
-| 3 Peak detection | Implemented (algorithm); settings handling interim — see D7 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
-| 4 Window assignment | Not started | `planning/stage4-window-assignment.md` (TBD) |
+| 3 Peak detection | Implemented (finalized: detection/promotion split, provenance) | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
+| 4 Window assignment | Planning | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) |
 | 5 Fitting | Not started | `planning/stage5-fitting.md` (TBD) |
 
 Stages 3–5 are partly **port-and-refine**, partly **recreate**. The earlier
@@ -57,8 +57,9 @@ Per-feature implementation plans. Lifecycle and conventions:
 
 | Document | Status |
 |---|---|
-| [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (algorithm); awaiting D7 to finalize settings handling |
-| [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Planning — **next task** (D7), fresh context |
+| [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance) |
+| [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Planning — **current task** |
+| [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
 
 ## Code vs spec divergences
