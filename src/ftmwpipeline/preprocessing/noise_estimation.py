@@ -5,12 +5,16 @@ This module provides improved noise estimation algorithms based on statistical a
 of magnitude spectra, using adaptive binning and RMS metrics for robust noise characterization.
 """
 
+import logging
+
 import numpy as np
 import numpy.ma as ma
 import scipy.stats.mstats as spsm
 import scipy.signal as spsig
 from typing import Tuple, Optional, Dict, Union
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -200,12 +204,12 @@ def _compute_variance_based_bins(
                 start_freq = frequencies[start_idx] 
                 end_freq = frequencies[end_idx-1] if end_idx < len(frequencies) else frequencies[-1]
                 freq_info = f" freqs=[{start_freq:.0f}:{end_freq:.0f}]"
-            print(f"  Checking subdivision for [{start_idx}:{end_idx}]{freq_info} (size={region_size})")
+            logger.debug(f"  Checking subdivision for [{start_idx}:{end_idx}]{freq_info} (size={region_size})")
         
         # Don't subdivide if too small
         if region_size < 2 * min_bin_size:
             if verbose:
-                print(f"    → TOO SMALL: {region_size} < {2 * min_bin_size}")
+                logger.debug(f"    → TOO SMALL: {region_size} < {2 * min_bin_size}")
             return False
         
         # Check if left and right halves have substantially different variances
@@ -218,7 +222,7 @@ def _compute_variance_based_bins(
         # Only proceed if valid mid point exists
         if not (start_idx < mid_idx < end_idx):
             if verbose:
-                print(f"    → INVALID MID: start={start_idx}, mid={mid_idx}, end={end_idx}")
+                logger.debug(f"    → INVALID MID: start={start_idx}, mid={mid_idx}, end={end_idx}")
             return False
             
         # Use POST-FILTERING statistics for subdivision decisions
@@ -254,9 +258,9 @@ def _compute_variance_based_bins(
         f_critical = 2.0  # Conservative threshold for practical significance
         
         if verbose:
-            print(f"    → FILTERED VARIANCES: left={left_filtered_var:.2e}, right={right_filtered_var:.2e}, diff={var_diff_pct:.1f}%")
-            print(f"    → FILTERED MEANS: left={left_filtered_mean:.2e}, right={right_filtered_mean:.2e}, diff={mean_diff_pct:.1f}%")
-            print(f"    → STATISTICAL TESTS: z={z_score:.1f}, F={f_stat:.1f} (df1={df1}, df2={df2})")
+            logger.debug(f"    → FILTERED VARIANCES: left={left_filtered_var:.2e}, right={right_filtered_var:.2e}, diff={var_diff_pct:.1f}%")
+            logger.debug(f"    → FILTERED MEANS: left={left_filtered_mean:.2e}, right={right_filtered_mean:.2e}, diff={mean_diff_pct:.1f}%")
+            logger.debug(f"    → STATISTICAL TESTS: z={z_score:.1f}, F={f_stat:.1f} (df1={df1}, df2={df2})")
         
         # Decision criteria: require significant difference in EITHER means OR variances
         pct_threshold = 20.0     # Require at least 20% difference
@@ -270,25 +274,25 @@ def _compute_variance_based_bins(
         
         if not (mean_significant or var_significant):
             if verbose:
-                print(f"    → SIMILAR REGIONS: mean(diff={mean_diff_pct:.1f}%, z={z_score:.1f}) and var(diff={var_diff_pct:.1f}%, F={f_stat:.1f}) both non-significant")
+                logger.debug(f"    → SIMILAR REGIONS: mean(diff={mean_diff_pct:.1f}%, z={z_score:.1f}) and var(diff={var_diff_pct:.1f}%, F={f_stat:.1f}) both non-significant")
             return False
         else:
             if verbose:
                 mean_reason = f"diff={mean_diff_pct:.1f}%" if mean_diff_pct >= pct_threshold else f"z={z_score:.1f}"
                 var_reason = f"diff={var_diff_pct:.1f}%" if var_diff_pct >= pct_threshold else f"F={f_stat:.1f}"
-                print(f"    → SIGNIFICANT DIFFERENCE: mean_sig={mean_significant} ({mean_reason}), var_sig={var_significant} ({var_reason})")
+                logger.debug(f"    → SIGNIFICANT DIFFERENCE: mean_sig={mean_significant} ({mean_reason}), var_sig={var_significant} ({var_reason})")
         
         # Calculate noise fractions (we already have the noise indices from above)
         left_noise_fraction = len(left_noise_indices) / (mid_idx - start_idx)
         right_noise_fraction = len(right_noise_indices) / (end_idx - mid_idx)
         
         if verbose:
-            print(f"    → NOISE FRACTIONS: left={left_noise_fraction:.3f}, right={right_noise_fraction:.3f} (need >={min_noise_fraction:.3f})")
+            logger.debug(f"    → NOISE FRACTIONS: left={left_noise_fraction:.3f}, right={right_noise_fraction:.3f} (need >={min_noise_fraction:.3f})")
         
         # Only subdivide if BOTH halves have sufficient noise
         can_subdivide = left_noise_fraction >= min_noise_fraction and right_noise_fraction >= min_noise_fraction
         if verbose:
-            print(f"    → DECISION: {'SUBDIVIDE' if can_subdivide else 'KEEP AS SINGLE BIN'}")
+            logger.debug(f"    → DECISION: {'SUBDIVIDE' if can_subdivide else 'KEEP AS SINGLE BIN'}")
         return can_subdivide
     
     def recursive_subdivide(start_idx: int, end_idx: int, edges: list):
@@ -318,10 +322,10 @@ def _compute_variance_based_bins(
     bin_edges = [0]
     
     if verbose:
-        print(f"Starting subdivision with {n_points} points, min_bin_size={min_bin_size}")
-        print(f"Parameters: CV_threshold=0.1, min_noise_fraction={min_noise_fraction}")
+        logger.debug(f"Starting subdivision with {n_points} points, min_bin_size={min_bin_size}")
+        logger.debug(f"Parameters: CV_threshold=0.1, min_noise_fraction={min_noise_fraction}")
         if frequencies is not None:
-            print(f"Frequency range: {frequencies[0]:.1f} to {frequencies[-1]:.1f} MHz (descending: {frequencies[0] > frequencies[-1]})")
+            logger.debug(f"Frequency range: {frequencies[0]:.1f} to {frequencies[-1]:.1f} MHz (descending: {frequencies[0] > frequencies[-1]})")
     
     # Perform recursive subdivision
     recursive_subdivide(0, n_points, bin_edges)
@@ -331,9 +335,9 @@ def _compute_variance_based_bins(
     bin_edges = sorted(set(bin_edges))  # Remove duplicates and sort
     
     if verbose:
-        print(f"Final subdivision: {len(bin_edges)-1} bins created")
+        logger.debug(f"Final subdivision: {len(bin_edges)-1} bins created")
         bin_sizes = [bin_edges[i+1] - bin_edges[i] for i in range(len(bin_edges)-1)]
-        print(f"Bin sizes: min={min(bin_sizes)}, max={max(bin_sizes)}, avg={sum(bin_sizes)/len(bin_sizes):.1f}")
+        logger.debug(f"Bin sizes: min={min(bin_sizes)}, max={max(bin_sizes)}, avg={sum(bin_sizes)/len(bin_sizes):.1f}")
     
     # No overlap needed with noise fraction validation
     return bin_edges, _noise_results_cache
