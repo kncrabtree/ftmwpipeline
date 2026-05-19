@@ -9,20 +9,31 @@ parallel arrays plus the detection parameters/provenance. The list is persisted
 
 HDF5 layout (under the caller-provided group, e.g. ``/stage3_peaks``)::
 
-    frequency          [f8]  MHz
-    intensity          [f8]  magnitude
-    index              [i8]  index into the gap/reference spectrum grid
-    snr                [f8]
+    frequency          [f8]  MHz, on the persisted user grid
+    intensity          [f8]  magnitude, re-measured on the user spectrum
+    index              [i8]  index into the user-grid spectrum
+    snr                [f8]  vs the canonical Stage 2 noise (user grid)
     noise_std_local    [f8]
     classification     [str] "weak" | "medium" | "strong" | ""
     detection_pass     [str] "primary" | "gap" | ""
+    internal_snr       [f8]  SNR on the internal zpf=1 detection grid
+    internal_frequency [f8]  MHz on the internal detection grid
     .attrs:
-        n_peaks, creation_time, stage_name, parameters (JSON)
+        n_peaks, creation_time, stage_name, parameters (JSON),
+        promotion_min_snr, internal_min_snr
+
+*All* detected peaks are stored. ``promotion_min_snr`` is the cutoff on the
+user-grid ``snr`` deciding which peaks move to Stage 4; ``load`` derives a
+per-peak ``properties['promoted']`` flag from it (it is not stored, so the
+threshold stays the single source of truth and an edited list re-derives
+cleanly). ``internal_snr``/``internal_frequency`` are detection provenance for
+curation and snap-back diagnosis -- not consumed by Stage 4 -- and are
+optional on read so pre-existing files still load.
 
 Round-trip contract: ``load`` -> edit the list -> ``save`` -> ``load`` returns
-the edited list. A malformed/edited group (missing column, mismatched lengths,
-unknown classification label) raises ``ValueError`` loudly rather than
-silently dropping or guessing data.
+the edited list. A malformed/edited group (missing required column, mismatched
+lengths, unknown classification label) raises ``ValueError`` loudly rather
+than silently dropping or guessing data.
 """
 
 from datetime import datetime
@@ -44,7 +55,21 @@ _COLUMNS = (
     "detection_pass",
 )
 
+# Detection provenance: written by current code, optional on read.
+_OPTIONAL_COLUMNS = (
+    "internal_snr",
+    "internal_frequency",
+)
+
 _VALID_CLASSES = {c.value for c in PeakClassification}
+
+
+def _prop_float(peak: Peak, key: str) -> float:
+    """Provenance value from ``peak.properties`` as float (NaN if absent)."""
+    value = peak.properties.get(key)
+    if value is None:
+        return float("nan")
+    return float(value)
 
 
 def save_peaks_to_hdf5(
@@ -61,7 +86,10 @@ def save_peaks_to_hdf5(
     h5_group : h5py.Group
         Destination group. Existing peak columns are overwritten.
     parameters : dict, optional
-        Detection parameters/provenance, stored as a JSON attribute.
+        Detection parameters/provenance, stored as a JSON attribute. If it
+        carries ``promotion_min_snr`` / ``internal_min_snr`` those are also
+        promoted to dedicated scalar attributes (the former drives the
+        ``promoted`` flag on load).
 
     Raises
     ------
@@ -74,6 +102,8 @@ def save_peaks_to_hdf5(
     index: np.ndarray = np.empty(n, dtype="i8")
     snr: np.ndarray = np.empty(n, dtype="f8")
     noise_std_local: np.ndarray = np.empty(n, dtype="f8")
+    internal_snr: np.ndarray = np.empty(n, dtype="f8")
+    internal_frequency: np.ndarray = np.empty(n, dtype="f8")
     classification: List[str] = []
     detection_pass: List[str] = []
 
@@ -85,6 +115,8 @@ def save_peaks_to_hdf5(
         noise_std_local[i] = (
             np.nan if p.noise_std_local is None else float(p.noise_std_local)
         )
+        internal_snr[i] = _prop_float(p, "internal_snr")
+        internal_frequency[i] = _prop_float(p, "internal_frequency")
         cls: Any = p.classification
         if cls is None:
             classification.append("")
@@ -103,6 +135,8 @@ def save_peaks_to_hdf5(
         "index": index,
         "snr": snr,
         "noise_std_local": noise_std_local,
+        "internal_snr": internal_snr,
+        "internal_frequency": internal_frequency,
         "classification": np.array(classification, dtype=object),
         "detection_pass": np.array(detection_pass, dtype=object),
     }
@@ -114,24 +148,25 @@ def save_peaks_to_hdf5(
         else:
             h5_group.create_dataset(name, data=data)
 
+    params = parameters or {}
     h5_group.attrs["n_peaks"] = n
     h5_group.attrs["creation_time"] = datetime.now().isoformat()
     h5_group.attrs["stage_name"] = "stage3_peaks"
-    h5_group.attrs["parameters"] = json.dumps(parameters or {}, default=str)
+    h5_group.attrs["parameters"] = json.dumps(params, default=str)
+    for attr in ("promotion_min_snr", "internal_min_snr"):
+        value = params.get(attr)
+        h5_group.attrs[attr] = (
+            float("nan") if value is None else float(value)
+        )
 
 
 def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
     """Load a peak list from an HDF5 group, validating structure loudly.
 
-    Parameters
-    ----------
-    h5_group : h5py.Group
-        Group previously written by :func:`save_peaks_to_hdf5` (possibly
-        hand-edited).
-
-    Returns
-    -------
-    list of Peak
+    A ``properties['promoted']`` flag is derived from the group's
+    ``promotion_min_snr`` attribute (peak promoted iff its user-grid ``snr``
+    meets the cutoff). Detection provenance columns, when present, are
+    restored into ``properties``.
 
     Raises
     ------
@@ -143,10 +178,18 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
     if missing:
         raise ValueError(f"stage3_peaks group missing required column(s): {missing}")
 
-    cols = {c: h5_group[c][:] for c in _COLUMNS}
+    present_optional = [c for c in _OPTIONAL_COLUMNS if c in h5_group]
+    cols = {c: h5_group[c][:] for c in (*_COLUMNS, *present_optional)}
     lengths = {c: len(v) for c, v in cols.items()}
     if len(set(lengths.values())) != 1:
         raise ValueError(f"stage3_peaks columns have mismatched lengths: {lengths}")
+
+    promotion_attr = h5_group.attrs.get("promotion_min_snr")
+    promotion_min_snr: Optional[float] = None
+    if promotion_attr is not None:
+        promotion_attr = float(promotion_attr)
+        if not np.isnan(promotion_attr):
+            promotion_min_snr = promotion_attr
 
     peaks: List[Peak] = []
     for i in range(next(iter(lengths.values()))):
@@ -165,6 +208,16 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
         idx = int(cols["index"][i])
         snr_val = float(cols["snr"][i])
         nsl_val = float(cols["noise_std_local"][i])
+
+        extra: Dict[str, Any] = {"detection_pass": raw_pass}
+        for opt in present_optional:
+            opt_val = float(cols[opt][i])
+            extra[opt] = None if np.isnan(opt_val) else opt_val
+        if promotion_min_snr is not None:
+            extra["promoted"] = (
+                not np.isnan(snr_val) and snr_val >= promotion_min_snr
+            )
+
         peaks.append(
             Peak(
                 frequency=float(cols["frequency"][i]),
@@ -173,7 +226,7 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
                 snr=None if np.isnan(snr_val) else snr_val,
                 noise_std_local=None if np.isnan(nsl_val) else nsl_val,
                 classification=raw_class if raw_class != "" else None,
-                detection_pass=raw_pass,
+                **extra,
             )
         )
     return peaks

@@ -585,33 +585,62 @@ class Pipeline:
         except Exception as e:
             raise RuntimeError(f"Failed to create noise visualization: {e}") from e
 
-    def detect_peaks(self, min_snr: Optional[float] = None,
-                     weak_medium_snr: Optional[float] = None,
-                     medium_strong_snr: Optional[float] = None,
-                     sg_window: Optional[int] = None,
-                     sg_order: Optional[int] = None,
-                     apodization_us: Optional[float] = None,
-                     tau_us: Optional[float] = None,
-                     min_exclusion_mhz: Optional[float] = None,
-                     run_gap_pass: Optional[bool] = None) -> List[Peak]:
-        """
-        Detect and classify peaks (Stage 3, two-pass).
+    def detect_peaks(
+        self,
+        min_snr: Optional[float] = None,
+        weak_medium_snr: Optional[float] = None,
+        medium_strong_snr: Optional[float] = None,
+        sg_window: Optional[int] = None,
+        sg_order: Optional[int] = None,
+        apodization_us: Optional[float] = None,
+        tau_us: Optional[float] = None,
+        min_exclusion_mhz: Optional[float] = None,
+        run_gap_pass: Optional[bool] = None,
+    ) -> List[Peak]:
+        """Detect and classify peaks (Stage 3, two-pass).
 
         Requires Stage 1 (FT) and Stage 2 (noise) completed. Runs an apodized
         primary pass plus a leakage-masked unapodized gap pass, scores every
-        peak on the unapodized spectrum, classifies by SNR, and persists the
-        list to the .ftmw file. Equivalent to the CLI ``detect-peaks`` command
-        and ``ftmwpipeline.api.detect_peaks``.
+        peak on the unapodized spectrum, classifies by SNR, and persists ALL
+        detected peaks to the .ftmw file. Equivalent to the CLI
+        ``detect-peaks`` command and ``ftmwpipeline.api.detect_peaks``.
 
         Detection operates on the Stage 1 persisted canonical spectrum,
         including its frequency trim range.  Peaks are reported on that user
         grid with amplitude and SNR measured against the canonical Stage 2
         noise.  There is no per-Stage-3 trim or zpf.
 
+        Parameters
+        ----------
+        min_snr : float, optional
+            Promotion SNR cutoff (peaks at/above this threshold on the user
+            grid are marked ``promoted=True`` and move to Stage 4); detection
+            runs aggressively below this internally. ALL detected peaks are
+            stored; ``promoted`` marks the Stage-4 gate. Default 3.0.
+        weak_medium_snr : float, optional
+            Weak/medium SNR boundary for classification (default 10.0).
+        medium_strong_snr : float, optional
+            Medium/strong SNR boundary for classification (default 50.0).
+        sg_window : int, optional
+            Savitzky-Golay smoothing window in points (default 11).
+        sg_order : int, optional
+            Savitzky-Golay polynomial order (default 3).
+        apodization_us : float, optional
+            Primary-pass apodization in microseconds (default: Stage 1 expf).
+        tau_us : float, optional
+            Assumed decay constant for leakage reach (default: undamped).
+        min_exclusion_mhz : float, optional
+            Minimum gap-pass exclusion half-width per primary peak in MHz.
+        run_gap_pass : bool, optional
+            If False, disable the unapodized gap pass (primary pass only).
+
         Returns
         -------
         list of Peak
-            Classified peaks, sorted by frequency.
+            ALL detected peaks (promoted and non-promoted), sorted by
+            frequency. Each peak's ``properties`` dict includes ``promoted``
+            (bool), ``internal_snr``, ``internal_frequency``, and
+            ``detection_pass``.
 
         Raises
         ------
@@ -634,8 +663,13 @@ class Pipeline:
                 run_gap_pass=run_gap_pass,
             )
             self.logger.info(
-                "Stage 3: %d peaks (%d primary, %d gap)",
-                result["n_peaks"], result["n_primary"], result["n_gap"],
+                "Stage 3: %d detected (%d promoted, SNR >= %.1f); "
+                "%d primary, %d gap",
+                result["n_peaks"],
+                result["n_promoted"],
+                result["promotion_min_snr"],
+                result["n_primary"],
+                result["n_gap"],
             )
             return cast(List[Peak], result["peaks"])
         except StageDependencyError:
@@ -647,18 +681,45 @@ class Pipeline:
         """Load the persisted Stage 3 peak list (validates structure loudly)."""
         return cast(List[Peak], load_peaks_impl(str(self.filepath))["peaks"])
 
-    def visualize_peaks(self, figsize: Optional[tuple] = None,
-                        title: Optional[str] = None,
-                        y_max_factor: Optional[float] = None,
-                        backend: str = 'matplotlib',
-                        interactive: bool = True,
-                        output_file: Optional[Union[str, Path]] = None) -> Any:
-        """
-        Overlay classified detected peaks on the unapodized spectrum (Stage 3).
+    def visualize_peaks(
+        self,
+        figsize: Optional[tuple] = None,
+        title: Optional[str] = None,
+        y_max_factor: Optional[float] = None,
+        backend: str = "matplotlib",
+        interactive: bool = True,
+        output_file: Optional[Union[str, Path]] = None,
+        show_snr_histogram: bool = False,
+    ) -> Any:
+        """Overlay classified detected peaks on the unapodized spectrum (Stage 3).
 
         Equivalent to the CLI ``visualize-peaks`` command. Interactive
         matplotlib (log-y) by default; pass ``interactive=False`` with
         ``output_file`` to save instead.
+
+        Parameters
+        ----------
+        figsize : tuple, optional
+            Figure size ``(width, height)`` in inches.
+        title : str, optional
+            Custom plot title.
+        y_max_factor : float, optional
+            Y-axis max as multiple of median RMS noise (default 25.0).
+        backend : str, default ``'matplotlib'``
+            Plotting backend (``'matplotlib'`` or ``'plotly'``).
+        interactive : bool, default True
+            Whether to open an interactive window.
+        output_file : str or Path, optional
+            Save plot to this path (non-interactive mode).
+        show_snr_histogram : bool, default False
+            If True, add a second panel showing the user-grid SNR distribution
+            with the promotion cutoff marked (curation view).
+
+        Returns
+        -------
+        figure
+            Matplotlib figure (single-panel or two-panel when
+            ``show_snr_histogram=True``).
 
         Raises
         ------
@@ -673,12 +734,14 @@ class Pipeline:
                 y_max_factor=y_max_factor,
                 backend=backend,
                 interactive=interactive,
+                show_snr_histogram=show_snr_histogram,
             )
             if not interactive and output_file:
-                fig.savefig(str(output_file), dpi=300, bbox_inches='tight')
+                fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {output_file}")
-            elif interactive and backend == 'matplotlib':
+            elif interactive and backend == "matplotlib":
                 import matplotlib.pyplot as plt
+
                 plt.show()
             return fig
         except Exception as e:

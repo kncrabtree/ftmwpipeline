@@ -645,27 +645,57 @@ def save_noise_parameters(file_path: Union[str, Path],
 # Stage 3: Peak Detection Functions
 # =============================================================================
 
-def detect_peaks(file_path: Union[str, Path], min_snr: Optional[float] = None,
-                  weak_medium_snr: Optional[float] = None,
-                  medium_strong_snr: Optional[float] = None,
-                  sg_window: Optional[int] = None,
-                  sg_order: Optional[int] = None,
-                  apodization_us: Optional[float] = None,
-                  tau_us: Optional[float] = None,
-                  min_exclusion_mhz: Optional[float] = None,
-                  run_gap_pass: Optional[bool] = None) -> List[Peak]:
-    """
-    Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
+def detect_peaks(
+    file_path: Union[str, Path],
+    min_snr: Optional[float] = None,
+    weak_medium_snr: Optional[float] = None,
+    medium_strong_snr: Optional[float] = None,
+    sg_window: Optional[int] = None,
+    sg_order: Optional[int] = None,
+    apodization_us: Optional[float] = None,
+    tau_us: Optional[float] = None,
+    min_exclusion_mhz: Optional[float] = None,
+    run_gap_pass: Optional[bool] = None,
+) -> List[Peak]:
+    """Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
 
     Requires Stage 1 (FT) and Stage 2 (noise). Two-pass detection operates on
     the Stage 1 persisted canonical spectrum (including its frequency trim
     range); peaks are reported on that user grid with SNR measured against the
     canonical Stage 2 noise.  There is no per-Stage-3 trim or zpf.
 
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file.
+    min_snr : float, optional
+        Promotion SNR cutoff (peaks at/above this threshold on the user grid
+        are marked ``promoted=True`` and move to Stage 4); detection runs
+        aggressively below this internally. ALL detected peaks are stored;
+        ``promoted`` marks the Stage-4 gate. Default 3.0.
+    weak_medium_snr : float, optional
+        Weak/medium SNR boundary for classification (default 10.0).
+    medium_strong_snr : float, optional
+        Medium/strong SNR boundary for classification (default 50.0).
+    sg_window : int, optional
+        Savitzky-Golay smoothing window in points (default 11).
+    sg_order : int, optional
+        Savitzky-Golay polynomial order (default 3).
+    apodization_us : float, optional
+        Primary-pass apodization in microseconds (default: Stage 1 expf).
+    tau_us : float, optional
+        Assumed decay constant for leakage reach (default: undamped).
+    min_exclusion_mhz : float, optional
+        Minimum gap-pass exclusion half-width per primary peak in MHz.
+    run_gap_pass : bool, optional
+        If False, disable the unapodized gap pass (primary pass only).
+
     Returns
     -------
     list of Peak
-        Classified peaks, sorted by frequency.
+        ALL detected peaks (promoted and non-promoted), sorted by frequency.
+        Each peak's ``properties`` dict includes ``promoted`` (bool),
+        ``internal_snr``, ``internal_frequency``, and ``detection_pass``.
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -695,15 +725,44 @@ def load_peaks(file_path: Union[str, Path]) -> List[Peak]:
         raise
 
 
-def visualize_peaks(file_path: Union[str, Path],
-                    figsize: Optional[tuple] = None,
-                    title: Optional[str] = None,
-                    y_max_factor: Optional[float] = None,
-                    backend: str = 'matplotlib', interactive: bool = True,
-                    output_file: Optional[Union[str, Path]] = None) -> Any:
-    """
-    Overlay classified detected peaks on the spectrum (Stage 3), equivalent
+def visualize_peaks(
+    file_path: Union[str, Path],
+    figsize: Optional[tuple] = None,
+    title: Optional[str] = None,
+    y_max_factor: Optional[float] = None,
+    backend: str = "matplotlib",
+    interactive: bool = True,
+    output_file: Optional[Union[str, Path]] = None,
+    show_snr_histogram: bool = False,
+) -> Any:
+    """Overlay classified detected peaks on the spectrum (Stage 3), equivalent
     to Pipeline.visualize_peaks(). Requires Stage 3 completion.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file with Stage 3 results.
+    figsize : tuple, optional
+        Figure size ``(width, height)`` in inches.
+    title : str, optional
+        Custom plot title.
+    y_max_factor : float, optional
+        Y-axis max as multiple of median RMS noise (default 25.0).
+    backend : str, default ``'matplotlib'``
+        Plotting backend (``'matplotlib'`` or ``'plotly'``).
+    interactive : bool, default True
+        Whether to open an interactive window.
+    output_file : str or Path, optional
+        Save plot to this path (non-interactive mode).
+    show_snr_histogram : bool, default False
+        If True, add a second panel showing the user-grid SNR distribution
+        with the promotion cutoff marked (curation view).
+
+    Returns
+    -------
+    figure
+        Matplotlib figure (single-panel or two-panel when
+        ``show_snr_histogram=True``).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -714,6 +773,7 @@ def visualize_peaks(file_path: Union[str, Path],
             backend=backend,
             interactive=interactive,
             output_file=output_file,
+            show_snr_histogram=show_snr_histogram,
         )
     except Exception as e:
         logger.error(

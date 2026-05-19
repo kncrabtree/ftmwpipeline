@@ -43,7 +43,17 @@ from .leakage import estimate_leakage_reach
 # Stage 3 real-data work (task-breakdown item 6); ship configurable.
 DEFAULT_WEAK_MEDIUM_SNR = 10.0
 DEFAULT_MEDIUM_STRONG_SNR = 50.0
+# Default user-facing *promotion* cutoff: which peaks (by user-grid SNR) move
+# on to Stage 4.
 DEFAULT_MIN_SNR = 3.0
+# Fixed *internal* detection floor. Detection runs this aggressively on the
+# zpf=1 grids regardless of the promotion cutoff: a 2638 benchmark showed
+# detecting at 3.0 then re-measuring on the user grid loses ~190 peaks that
+# genuinely clear 3.0 there, while ~2.0 recovers them and then plateaus
+# (below 2.0 is almost pure noise, no extra survivors). Cost is flat in the
+# floor (detection is bound by the fixed adaptive-noise step), so we always
+# detect at <=2.0 and let the promotion cutoff filter afterwards.
+DEFAULT_INTERNAL_MIN_SNR = 2.0
 
 
 class PeakResult(NamedTuple):

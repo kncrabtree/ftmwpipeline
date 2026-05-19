@@ -22,6 +22,53 @@ _CLASS_COLOR = {
 }
 
 
+def _plot_snr_histogram(
+    ax: plt.Axes,
+    peaks: List[Peak],
+    promotion_min_snr: Optional[float],
+) -> None:
+    """Draw the user-grid SNR distribution with the promotion cutoff marked.
+
+    This is the curation view: it shows where the promotion threshold lands in
+    the peak population (the noise hump vs the real-line tail) so the cutoff
+    can be chosen deliberately before peaks move to Stage 4.
+    """
+    snrs = np.array(
+        [p.snr for p in peaks if p.snr is not None and p.snr > 0], dtype=float
+    )
+    if snrs.size == 0:
+        ax.text(0.5, 0.5, "no SNR data", ha="center", va="center",
+                transform=ax.transAxes)
+        return
+    bins = np.logspace(
+        np.log10(max(snrs.min(), 0.5)), np.log10(snrs.max()), 60
+    )
+    ax.hist(snrs, bins=bins, color="steelblue", alpha=0.8)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    ax.set_xlabel("peak SNR (user grid)")
+    ax.set_ylabel("count")
+    if promotion_min_snr is not None:
+        ax.axvline(
+            promotion_min_snr,
+            color="crimson",
+            lw=2,
+            label=f"promotion cutoff = {promotion_min_snr:g}",
+        )
+        below = int((snrs < promotion_min_snr).sum())
+        ax.text(
+            0.02,
+            0.95,
+            f"{snrs.size - below:,} promoted / {snrs.size:,} detected "
+            f"({below:,} below cutoff)",
+            transform=ax.transAxes,
+            va="top",
+            fontsize=8,
+        )
+        ax.legend(loc="upper right", fontsize=8)
+    ax.set_title("SNR distribution")
+
+
 def plot_peak_detection(
     frequencies: np.ndarray,
     magnitudes: np.ndarray,
@@ -31,6 +78,8 @@ def plot_peak_detection(
     title: Optional[str] = None,
     y_max_factor: float = 25.0,
     backend: str = "matplotlib",
+    snr_histogram: bool = False,
+    promotion_min_snr: Optional[float] = None,
 ) -> Union[plt.Figure, object]:
     """Plot detected/classified peaks over the spectrum.
 
@@ -46,6 +95,11 @@ def plot_peak_detection(
         Y-axis max as a multiple of the median RMS noise.
     backend : str, default "matplotlib"
         Only ``"matplotlib"`` is supported.
+    snr_histogram : bool, default False
+        If True, add a second panel below the overlay showing the user-grid
+        SNR distribution with the promotion cutoff marked (curation view).
+    promotion_min_snr : float, optional
+        Promotion cutoff drawn on the SNR-histogram panel.
 
     Returns
     -------
@@ -56,7 +110,16 @@ def plot_peak_detection(
             f"Unsupported backend {backend!r}; only 'matplotlib' is available"
         )
 
-    fig, ax = plt.subplots(figsize=figsize)
+    if snr_histogram:
+        fig, (ax, ax_hist) = plt.subplots(
+            2,
+            1,
+            figsize=(figsize[0], figsize[1] + 4),
+            gridspec_kw={"height_ratios": [3, 1]},
+        )
+    else:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax_hist = None
     ax.plot(
         frequencies,
         magnitudes,
@@ -119,5 +182,7 @@ def plot_peak_detection(
     ax.set_ylabel("Magnitude")
     ax.set_title(title or "Stage 3 Peak Detection")
     ax.legend(loc="upper right", fontsize=8, ncol=2)
+    if ax_hist is not None:
+        _plot_snr_histogram(ax_hist, peaks, promotion_min_snr)
     fig.tight_layout()
     return fig

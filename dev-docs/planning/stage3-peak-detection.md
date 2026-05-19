@@ -193,3 +193,29 @@ before its implementation.
    `visualization/peak_visualization.py`.
 6. [x] Cross-interface + real-data integration tests; O3 decided (keep,
    switchable); O2 shipped provisional, **awaiting empirical sign-off**.
+7. [x] Detection/promotion split + provenance (post-D7 finalization).
+
+## Finalized Stage 3 → Stage 4 contract
+
+Locked after a 2638 cost/storage benchmark (detection cost is flat in the SNR
+floor — bound by the fixed adaptive-noise step — and storage is ~70 B/peak):
+
+- **Internal detection floor is fixed at `DEFAULT_INTERNAL_MIN_SNR = 2.0`**
+  (not user-exposed). Detecting at 3.0 then re-measuring on the user grid
+  loses ~190 peaks that genuinely clear 3.0 there; ~2.0 recovers them and
+  plateaus (below 2.0 is almost pure noise). Detection runs at
+  `min(2.0, promotion)`.
+- The user-facing `min_snr` is the **promotion cutoff** on the user-grid SNR:
+  it decides which peaks move to Stage 4, *not* what is detected.
+- **All detected peaks are persisted** (store-all). Each peak carries
+  `properties['promoted']` (derived on load from the stored
+  `promotion_min_snr` attr — single source of truth, survives hand-edits) and
+  curation/diagnosis provenance `internal_snr` / `internal_frequency`
+  (`internal_index`/`internal_intensity` deliberately dropped — meaningless
+  off the transient grid). Re-thresholding needs no re-detect.
+- **Stage 4 consumes `peaks` where `properties['promoted']`**; provenance is
+  ignored by the algorithm, available to the curator. `detect_peaks`/
+  `load_peaks` return the full list (curation substrate); Stage 4 filters.
+- Curation view: `visualize-peaks --snr-histogram` adds an SNR-distribution
+  panel with the promotion cutoff marked, so the threshold is chosen against
+  the visible noise-hump vs real-line-tail split before promotion.

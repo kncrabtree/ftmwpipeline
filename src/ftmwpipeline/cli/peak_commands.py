@@ -46,23 +46,37 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             run_gap_pass=(None if args.no_gap_pass is False else False),
         )
         peaks = result["peaks"]
+        promoted = [p for p in peaks if p.properties.get("promoted")]
         n_strong = sum(
-            1 for p in peaks if p.classification and p.classification.value == "strong"
+            1
+            for p in promoted
+            if p.classification and p.classification.value == "strong"
         )
         n_medium = sum(
-            1 for p in peaks if p.classification and p.classification.value == "medium"
+            1
+            for p in promoted
+            if p.classification and p.classification.value == "medium"
         )
         n_weak = sum(
-            1 for p in peaks if p.classification and p.classification.value == "weak"
+            1
+            for p in promoted
+            if p.classification and p.classification.value == "weak"
         )
         print("\nPeak detection completed successfully!")
         print(f"  Active acquisition T: {result['acquisition_us']:.2f} us")
-        print(f"  Total peaks: {result['n_peaks']:,}")
+        print(f"  Total detected: {result['n_peaks']:,}")
+        print(
+            f"  Promoted (SNR >= {result['promotion_min_snr']:.1f}): "
+            f"{result['n_promoted']:,}"
+        )
         print(
             f"    primary pass: {result['n_primary']:,}   "
             f"gap pass: {result['n_gap']:,}"
         )
-        print(f"    strong: {n_strong:,}   medium: {n_medium:,}   " f"weak: {n_weak:,}")
+        print(
+            f"    strong: {n_strong:,}   medium: {n_medium:,}   weak: {n_weak:,}"
+            " (promoted only)"
+        )
         print(f"\nResults saved to: {file_path}")
         print("Use 'visualize-peaks' to inspect detected peaks")
         return 0
@@ -109,6 +123,7 @@ def cmd_visualize_peaks(args: argparse.Namespace) -> int:
             y_max_factor=args.y_max_factor,
             backend="matplotlib",
             interactive=not args.no_interactive,
+            show_snr_histogram=args.snr_histogram,
         )
 
         if args.output:
@@ -156,7 +171,10 @@ def register_peak_commands(subparsers: Any) -> None:
         "--min-snr",
         dest="min_snr",
         type=float,
-        help="Detection floor in SNR units (default: 3.0)",
+        help=(
+            "Promotion SNR cutoff (peaks at/above move to Stage 4; detection "
+            "runs aggressively below this internally). default 3.0"
+        ),
     )
     p_detect.add_argument(
         "--weak-medium-snr",
@@ -237,6 +255,15 @@ def register_peak_commands(subparsers: Any) -> None:
         "--output",
         type=str,
         help="Save plot to this path (e.g. scratch/peaks.png)",
+    )
+    p_vis.add_argument(
+        "--snr-histogram",
+        dest="snr_histogram",
+        action="store_true",
+        help=(
+            "Add a second panel: user-grid SNR distribution with the "
+            "promotion cutoff marked (curation view)"
+        ),
     )
     p_vis.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"

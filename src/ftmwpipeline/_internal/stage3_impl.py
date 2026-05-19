@@ -28,6 +28,7 @@ import numpy as np
 from ..core.data_structures import ComplexFT, Peak
 from ..preprocessing.noise_estimation import estimate_noise_adaptive
 from ..preprocessing.peak_detection import (
+    DEFAULT_INTERNAL_MIN_SNR,
     DEFAULT_MEDIUM_STRONG_SNR,
     DEFAULT_MIN_SNR,
     DEFAULT_WEAK_MEDIUM_SNR,
@@ -111,14 +112,17 @@ def _snap_to_user_grid(
     user_rms: np.ndarray,
     weak_medium_snr: float,
     medium_strong_snr: float,
+    promotion_min_snr: float,
 ) -> List[Peak]:
     """Re-express internal-grid detections on the persisted user spectrum.
 
     For each detection: snap by physical frequency to the nearest user-grid
     point, re-measure amplitude on the user spectrum and SNR against the
     canonical Stage 2 noise, and reclassify. De-duplicates collisions on the
-    user grid (keeps the strongest). Internal-grid values are preserved under
-    ``properties`` for diagnostics.
+    user grid (keeps the strongest). Internal-grid SNR/frequency are preserved
+    under ``properties`` for curation/diagnosis, and a ``promoted`` flag marks
+    whether the user-grid SNR meets the Stage 4 promotion cutoff. All
+    detections are kept (promotion is a downstream gate, not a filter here).
     """
     user_freq = user_ft.freq_array
     user_mag = user_ft.magnitude_spectrum
@@ -142,9 +146,8 @@ def _snap_to_user_grid(
             ),
             detection_pass=p.properties.get("detection_pass"),
             internal_frequency=p.frequency,
-            internal_intensity=p.intensity,
             internal_snr=p.snr,
-            internal_index=p.index,
+            promoted=snr >= promotion_min_snr,
         )
         prev = by_user_idx.get(ui)
         if prev is None or snapped.intensity > prev.intensity:
@@ -181,11 +184,21 @@ def detect_peaks_impl(
     Requires Stage 1 (canonical FT settings) and Stage 2 (noise) completed.
     Detection operates on the user's persisted spectrum: there is no Stage 3
     ``trim``/``zpf`` -- those come from the Stage 1 canonical record.
+
+    ``min_snr`` is the **promotion cutoff** on the user-grid SNR -- which
+    peaks move on to Stage 4 -- not the detection floor. Detection always runs
+    aggressively on the internal zpf=1 grids at
+    ``min(DEFAULT_INTERNAL_MIN_SNR, promotion)`` (cheap, and recovers real
+    peaks the user-grid re-measure would otherwise miss). *Every* detected
+    peak is persisted with a ``promoted`` flag; the promotion cutoff is stored
+    so Stage 4 / curation can re-threshold without re-running detection.
+
     Parameters left as ``None`` fall back to documented defaults. Returns the
-    peak list (on the user grid) and diagnostics; also writes
-    ``/stage3_peaks`` and marks the stage done.
+    full peak list (user grid) plus diagnostics; also writes ``/stage3_peaks``
+    and marks the stage done.
     """
-    min_snr_v: float = DEFAULT_MIN_SNR if min_snr is None else float(min_snr)
+    promotion_v: float = DEFAULT_MIN_SNR if min_snr is None else float(min_snr)
+    internal_min_snr: float = min(DEFAULT_INTERNAL_MIN_SNR, promotion_v)
     weak_medium_v: float = (
         DEFAULT_WEAK_MEDIUM_SNR if weak_medium_snr is None else float(weak_medium_snr)
     )
@@ -201,7 +214,8 @@ def detect_peaks_impl(
     tau_v: Optional[float] = tau_us
 
     params: Dict[str, Any] = {
-        "min_snr": min_snr_v,
+        "promotion_min_snr": promotion_v,
+        "internal_min_snr": internal_min_snr,
         "weak_medium_snr": weak_medium_v,
         "medium_strong_snr": medium_strong_v,
         "sg_window": sg_window_v,
@@ -264,7 +278,7 @@ def detect_peaks_impl(
         gap_ft.freq_array,
         gap_ft.magnitude_spectrum,
         gap_noise.rms_noise,
-        min_snr=min_snr_v,
+        min_snr=internal_min_snr,
         weak_medium_snr=weak_medium_v,
         medium_strong_snr=medium_strong_v,
         sg_window=sg_window_v,
@@ -277,14 +291,25 @@ def detect_peaks_impl(
 
     # Snap onto the user grid: physical frequency + re-measured amplitude/SNR.
     peaks = _snap_to_user_grid(
-        internal_peaks, user_ft, user_rms, weak_medium_v, medium_strong_v
+        internal_peaks,
+        user_ft,
+        user_rms,
+        weak_medium_v,
+        medium_strong_v,
+        promotion_v,
     )
 
     full_params = {**params, "acquisition_us": acquisition_us}
     save_peaks_impl(file_path, peaks, parameters=full_params)
     save_peak_parameters_impl(file_path, full_params)
     _update_stage_completion(file_path, "stage3_peaks")
-    logger.info("Stage 3: detected %d peaks (user grid)", len(peaks))
+    n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
+    logger.info(
+        "Stage 3: detected %d peaks (user grid); %d promoted at SNR>=%.3g",
+        len(peaks),
+        n_promoted,
+        promotion_v,
+    )
 
     n_primary = sum(
         1 for p in peaks if p.properties.get("detection_pass") == "primary"
@@ -293,6 +318,9 @@ def detect_peaks_impl(
         "status": "success",
         "peaks": peaks,
         "n_peaks": len(peaks),
+        "n_promoted": n_promoted,
+        "promotion_min_snr": promotion_v,
+        "internal_min_snr": internal_min_snr,
         "n_primary": n_primary,
         "n_gap": len(peaks) - n_primary,
         "parameters_used": params,
@@ -331,15 +359,22 @@ def load_peaks_impl(file_path: str) -> Dict[str, Any]:
         grp = h5f["stage3_peaks"]
         peaks = load_peaks_from_hdf5(grp)
         creation_time = grp.attrs.get("creation_time", "unknown")
+        promo_attr = grp.attrs.get("promotion_min_snr")
         parameters: Dict[str, Any] = {}
         if "parameters" in grp.attrs:
             try:
                 parameters = json.loads(grp.attrs["parameters"])
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Could not parse saved Stage 3 parameters")
+    promotion_min_snr: Optional[float] = None
+    if promo_attr is not None and not np.isnan(float(promo_attr)):
+        promotion_min_snr = float(promo_attr)
+    n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
     return {
         "peaks": peaks,
         "n_peaks": len(peaks),
+        "n_promoted": n_promoted,
+        "promotion_min_snr": promotion_min_snr,
         "creation_time": creation_time,
         "parameters_used": parameters,
     }
@@ -352,16 +387,19 @@ def visualize_peaks_impl(
     y_max_factor: Optional[float] = None,
     backend: str = "matplotlib",
     interactive: bool = True,
+    show_snr_histogram: bool = False,
 ) -> Any:
     """Overlay the persisted classified peaks on the user's spectrum.
 
     Peaks are stored on the user grid (frequency + re-measured amplitude), so
     the overlay is the user's persisted spectrum with the canonical Stage 2
     noise -- exactly the surface the peaks were scored on. Requires Stage 3
-    completed.
+    completed. With ``show_snr_histogram`` a second panel shows the user-grid
+    SNR distribution with the promotion cutoff marked (curation view).
     """
     loaded = load_peaks_impl(file_path)
     peaks: List[Peak] = loaded["peaks"]
+    promotion_min_snr = loaded.get("promotion_min_snr")
 
     stage1 = compute_ft_impl(file_path=file_path)
     user_ft: ComplexFT = stage1["complex_ft"]
@@ -396,6 +434,8 @@ def visualize_peaks_impl(
         title=title,
         y_max_factor=y_max_factor if y_max_factor is not None else 25.0,
         backend=backend,
+        snr_histogram=show_snr_histogram,
+        promotion_min_snr=promotion_min_snr,
     )
 
 

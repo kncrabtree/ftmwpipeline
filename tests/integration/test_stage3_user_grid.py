@@ -8,8 +8,10 @@ Behaviour under test (Behaviour B):
     user spectrum: peak.frequency == user_ft.freq_array[peak.index] (exact),
     peak.intensity == user_ft.magnitude_spectrum[peak.index] (exact), and
     peak.snr is computed as intensity / user_rms[index].
-  - Internal-grid values are kept under peak.properties as internal_frequency,
-    internal_intensity, internal_snr, internal_index.
+  - Internal-grid values kept under peak.properties: internal_frequency,
+    internal_snr (for diagnostics).  internal_index and internal_intensity are
+    intentionally NOT stored (they are on a different grid and not needed
+    downstream; see Stage 3 contract).
   - The internal (zpf=1) grid genuinely differs in size from the user (zpf=2)
     grid, so the snap-back is non-trivial.
   - For experiment 2638 (lower sideband / descending frequency axis), indices
@@ -110,11 +112,14 @@ class TestUserGridSnapBack:
 
 class TestInternalGridProperties:
     def test_internal_properties_present(self, detection_result):
-        """Every peak must have internal_frequency, internal_index, internal_snr
-        under peak.properties."""
+        """Every peak must have internal_frequency and internal_snr under
+        peak.properties.  internal_index is intentionally NOT stored (it lives
+        on a different grid and is not consumed by Stage 4)."""
         peaks = detection_result["peaks"]
 
-        required_keys = {"internal_frequency", "internal_index", "internal_snr"}
+        # internal_index / internal_intensity are intentionally absent per the
+        # Stage 3 store-all/promotion contract (see peak_serialization.py docs).
+        required_keys = {"internal_frequency", "internal_snr"}
         for p in peaks:
             missing = required_keys - set(p.properties.keys())
             assert not missing, (
@@ -132,18 +137,29 @@ class TestInternalGridProperties:
             "zpf=1 vs zpf=2 should produce different grid sizes"
         )
 
-    def test_at_least_some_peaks_have_different_internal_index(self, detection_result):
-        """At least some peaks must have internal_index != index (the snap-back
-        moved them from the internal grid to a different user-grid position)."""
-        peaks = detection_result["peaks"]
+    def test_internal_frequency_recorded_for_all_peaks(self, detection_result):
+        """All peaks must carry internal_frequency in their properties.
 
-        moved = [
+        The snap-back translates from the internal zpf=1 detection grid to the
+        user zpf=2 grid.  internal_frequency records the detection position before
+        snapping (preserved for curation/diagnosis).  On a zpf=2 user grid the
+        zpf=1 frequency points are a strict subset of the user grid, so
+        internal_frequency may equal the user frequency -- but the property must
+        always be present and must be a finite number.
+
+        Note: internal_index is intentionally NOT stored (see Stage 3 contract).
+        """
+        peaks = detection_result["peaks"]
+        missing = [p for p in peaks if "internal_frequency" not in p.properties]
+        assert not missing, (
+            f"{len(missing)} peaks missing 'internal_frequency' in properties"
+        )
+        non_finite = [
             p for p in peaks
-            if p.properties.get("internal_index") != p.index
+            if not np.isfinite(p.properties.get("internal_frequency", float("nan")))
         ]
-        assert moved, (
-            "No peak has internal_index != index; snap-back appears to be a no-op "
-            "(zpf=1 and zpf=2 grid points may coincide exactly — check test setup)"
+        assert not non_finite, (
+            f"{len(non_finite)} peaks have non-finite internal_frequency"
         )
 
 

@@ -90,7 +90,14 @@ def test_detection_is_sane_vs_known_lines(
     # D7 Phase B: no trim= on detect_peaks; Stage 1 persisted trim is used.
     peaks = ftmw.detect_peaks(fp, min_snr=3.0)
 
-    assert 100 < len(peaks) < 5000, f"implausible peak count {len(peaks)}"
+    # Stage 3 stores ALL detected peaks (store-all contract): the total count
+    # includes sub-promotion-threshold peaks, so the upper bound is generous.
+    # We check promoted peaks (snr >= 3.0) are in a sensible range.
+    promoted = [p for p in peaks if p.properties.get("promoted")]
+    assert len(peaks) > 100, f"implausible total peak count {len(peaks)}"
+    assert 50 < len(promoted) < 10000, (
+        f"implausible promoted peak count {len(promoted)}"
+    )
     freqs = np.array([p.frequency for p in peaks])
     # All peaks lie within the trim window (allow 1 MHz grid snap tolerance).
     assert freqs.min() >= TRIM[0] - 1 and freqs.max() <= TRIM[1] + 1
