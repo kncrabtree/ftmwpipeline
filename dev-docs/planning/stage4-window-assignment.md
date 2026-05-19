@@ -154,12 +154,20 @@ peak serialization. Confirm against `SERIALIZATION_STRATEGY.md` (O4-6).
 ## Open research / questions
 
 - **O4-1 Complex-edge baseline test (primary mechanism).** Statistic
-  `|Σ_edge complex|/(σ_local·√M)`: calibrate the band width M and the
-  threshold against synthetic clean-vs-leakage edges, then 2638. Sub-research:
-  discriminate a *global* baseline/DC offset (flat across the band) from a
-  *distance-dependent leakage envelope* (varies with proximity to the strong
-  line) — both inflate the edge integral but their spatial signature differs.
-  This subsumes the old `k·RMS`/DC-offset ideas.
+  `|Σ_edge complex|/(σ_local·√M)`: calibrate band width M and threshold
+  against synthetic clean-vs-leakage edges, then 2638. Subsumes the old
+  `k·RMS`/DC-offset ideas. **Working physical assumption:** a true *global*
+  DC offset in the complex FT is unphysical — it is the Fourier dual of a
+  time-domain delta, and with a mean-subtracted FID it is not observed in
+  practice; an apparent flat pedestal would itself indicate an unaccounted
+  phase-coherent strong signal. So a nonzero coherent edge integral implies a
+  *signal* (leakage from a line), not an instrumental baseline. The
+  discrimination therefore is not "DC vs envelope" but "coherent structure
+  from an *out-of-band* line (→ fixed contributor) vs from an *in-band* line
+  not yet modelled (→ free peak / extend)" — a shape/locality question
+  (monotone envelope decaying from one edge vs a centred sinc). Keep a
+  research check on 2638 to confirm no flat pedestal appears (expected:
+  none).
 - **O4-2 Freeze-eligibility + error-propagation guard.** Criterion for
   "strong/known enough to freeze". The empirical "does this window have a
   fixed contributor" question is answered by the O4-1 complex-edge test; what
@@ -182,6 +190,42 @@ peak serialization. Confirm against `SERIALIZATION_STRATEGY.md` (O4-6).
   emits a re-plan request (merge/split) and Stage 4 exposes a re-plan entry
   point, vs Stage 4 over-provisioning hard windows up front.
 
+## Research prototype (first task — precedes any implementation)
+
+Before locking data structures, validate the complex-edge coherence
+statistic empirically; its behaviour determines the edge criterion (O4-1),
+the width cap (O4-3), strong-cluster grouping (O4-4), and how often Stage 5
+renegotiation (O4-7) would fire. This is a throwaway probe (gitignored
+`scratch/`, like the Stage 3 SNR benchmark) producing plots + a findings
+note, not production code.
+
+- **Synthetic (ground truth).** Build finite-T damped cosines with known
+  `A, f, φ, τ, T` using the same finite-T model Stage 5 will fit (not an ad
+  hoc sinc), add white *complex* noise at controlled `σ`. Construct edge
+  bands and sweep: line SNR, `τ`, edge–line distance, band width `M`. Cases:
+  (a) clean edge (no line within reach) → statistic must be ≈O(1);
+  (b) out-of-band line at varying distance/SNR → ≫1, with a monotone
+  decaying envelope; (c) an in-band centred line for contrast (centred sinc,
+  not a one-sided envelope) — test that shape distinguishes (b) from (c);
+  (d) a synthetic flat pedestal to confirm it is *not* produced by the
+  physics and, if injected, is separable from a leakage envelope.
+  Compare statistic variants: `|Σ complex|/(σ√M)`, max cumulative-sum,
+  separate real/imag z-scores; pick the most robust/discriminating and fix
+  `M` and the threshold as functions of `σ` and expected leakage amplitude.
+- **Real data (2638).** Reuse `scratch/exp_2638.ftmw` (already through
+  Stage 3). Evaluate the chosen statistic along the spectrum; verify it is
+  ≈O(1) in regions between isolated weak lines far from any strong line and
+  ≫1 in the skirts of the strong doublets and across the dense region.
+  Confirm no signal-free flat pedestal exists (physics check, O4-1).
+  Deliverable plot: spectrum (mag + real/imag) with the statistic vs
+  frequency and the proposed trimmed extents overlaid.
+- **Exit criterion.** A statistic + `M` + threshold that cleanly separates
+  clean from leakage-contaminated edges across the synthetic sweep and
+  behaves sensibly on 2638 (flags strong-line neighbourhoods, passes
+  isolated-weak-line regions). Findings feed O4-1/3/4 and the
+  data-structure design; record the renegotiation-frequency observation for
+  the O4-7 decision.
+
 ## Downstream context (Stage 5, not in scope)
 
 Stage 5 consumes the ordered plan: easy/independent windows fit in parallel;
@@ -199,8 +243,9 @@ cross-stage risk and is settled when the Stage 5 plan is written.
   strong cluster (width cap triggers a flagged split).
 - Complex-edge statistic (O4-1): on synthetic edges with vs without an
   out-of-band coherent leakage tail, the statistic must separate the two
-  (≈O(1) clean vs ≫1 with leakage) across SNR/τ; and a flat global DC offset
-  must be distinguishable from a distance-dependent leakage envelope.
+  (≈O(1) clean vs ≫1 with leakage) across SNR/τ; an *in-band* centred line
+  and an *out-of-band* decaying envelope must be distinguishable by shape;
+  confirm on 2638 that no flat (signal-free) pedestal exists.
 - Leakage-artifact pruning (step 5): a strong line's promoted sidelobes are
   excluded from the free set once it is a contributor; genuine nearby weak
   lines are retained.
@@ -215,20 +260,23 @@ cross-stage risk and is settled when the Stage 5 plan is written.
 
 ## Task breakdown
 
-1. [ ] Window-plan data structures (extend `SpectralWindow` or new
+1. [ ] **Research prototype** (see *Research prototype* above): calibrate the
+   complex-edge statistic on synthetic + 2638; findings note. Precedes all
+   below.
+2. [ ] Window-plan data structures (extend `SpectralWindow` or new
    `WindowPlan`) + unit tests.
-2. [ ] Complex-edge coherence statistic + extent prediction/trim (O4-1) +
-   unit tests (synthetic clean-vs-leakage; DC vs envelope).
-3. [ ] Strong-cluster grouping + merge-to-fixpoint (O4-4, O4-5) + unit tests.
-4. [ ] Fixed-contributor attachment (reach proposes, complex-edge confirms) +
+3. [ ] Complex-edge coherence statistic + extent prediction/trim (O4-1) +
+   unit tests (synthetic clean-vs-leakage; in-band vs out-of-band shape).
+4. [ ] Strong-cluster grouping + merge-to-fixpoint (O4-4, O4-5) + unit tests.
+5. [ ] Fixed-contributor attachment (reach proposes, complex-edge confirms) +
    leakage-artifact pruning of the free set + dependency DAG +
    topological/batch ordering + unit tests.
-5. [ ] Strong-line-driven difficulty classification + width-cap/split proposal
+6. [ ] Strong-line-driven difficulty classification + width-cap/split proposal
    (O4-3) + unit tests.
-6. [ ] `io/window_serialization.py` + `stage4_windows` stage tracking +
+7. [ ] `io/window_serialization.py` + `stage4_windows` stage tracking +
    hand-edit round-trip tests; wire into the invalidation mechanism.
-7. [ ] Wrappers (`Pipeline.assign_windows/visualize_windows/load_windows`,
+8. [ ] Wrappers (`Pipeline.assign_windows/visualize_windows/load_windows`,
    `api.*`, CLI `assign-windows`/`visualize-windows`) +
    `visualization/window_visualization.py`.
-8. [ ] Cross-interface + 2638 real-data integration tests; resolve O4-1/3/4,
+9. [ ] Cross-interface + 2638 real-data integration tests; resolve O4-1/3/4,
    record O4-7 handshake decision for the Stage 5 plan.
