@@ -324,20 +324,21 @@ parts on a linear scale. Bottom: the rolling `S_coh` statistic with
 $M = 64$, log scale, with the $S = 3$ threshold marked.
 
 The first observation is that the per-point noise estimate from the
-upstream noise stage varies from $\sigma_\text{min} = 0.005$ to
-$\sigma_\text{max} = 0.017$ across the persisted spectrum — a factor
-of about 3.5. **The statistic must use the local $\sigma$**, not a
-global median; using the median would understate significance in
-genuinely quiet stretches of the spectrum and overstate it in noisier
-ones. The implementation that produced this figure uses the
-window-mean of the per-point RMS as the local $\sigma$, which is the
-simplest sensible choice and what the production windowing stage
-should adopt.
+upstream noise stage (whose tuning is itself documented in
+[the noise-heuristic-audit report](../noise-heuristic-audit/report.md))
+varies from $\sigma_\text{min} \approx 0.004$ to $\sigma_\text{max}
+\approx 0.027$ across the persisted spectrum — a factor of about 6.
+**The statistic must use the local $\sigma$**, not a global median;
+using the median would understate significance in genuinely quiet
+stretches of the spectrum and overstate it in noisier ones. The
+implementation that produced this figure uses the window-mean of the
+per-point RMS as the local $\sigma$, which is the simplest sensible
+choice and what the production windowing stage should adopt.
 
 The second observation is that the statistic separates the spectrum
 into "leakage-touched" regions and "line-free" regions exactly the
 way the windowing stage needs. Strong-line clusters drive $S$ to
-peak values around 80, with extended skirts where $S > 3$. Long
+peak values around 50, with extended skirts where $S > 3$. Long
 runs of the spectrum between line clusters sit at $S < 1$, well
 inside the null distribution. The threshold $S = 3$ partitions the
 two regimes cleanly.

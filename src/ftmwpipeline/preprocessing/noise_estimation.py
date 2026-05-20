@@ -15,6 +15,22 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+# Module-level tuning constants. See dev-docs/research/noise-heuristic-audit/report.md
+# for the calibration that picked these values.
+#
+# DEFAULT_SMOOTHING_SAMPLES: noise-mask samples per smoothing window. Rayleigh-RMS
+# stability is σ(RMS)/RMS ≈ 1/(2√N), so 2500 samples gives ~1% RMS stability —
+# the target precision the downstream local-σ consumers (e.g. the windowing-stage
+# edge-coherence test) need.
+#
+# ABS_MIN_BIN_SIZE: minimum bin size below which Rayleigh sample-skewness
+# fluctuations dominate the trim termination. At N=300 the sample-skewness
+# std is ~0.14, ~6× tighter than the gap from Rayleigh (0.631) to a
+# half-Gaussian competitor.
+DEFAULT_SMOOTHING_SAMPLES = 2500
+ABS_MIN_BIN_SIZE = 300
+
+
 @dataclass
 class NoiseResult:
     """Result container for noise estimation.
@@ -95,7 +111,7 @@ def estimate_noise_adaptive(
         raise ValueError("Input arrays must be 1-dimensional")
     
     n_points = len(frequencies)
-    min_bin_size = max(int(n_points * min_bin_fraction), 100)  # At least 100 points
+    min_bin_size = max(int(n_points * min_bin_fraction), ABS_MIN_BIN_SIZE)
     
     # Use variance-based adaptive binning strategy - returns bin edges and cached results
     bin_edges, noise_results_cache = _compute_variance_based_bins(
@@ -127,17 +143,26 @@ def estimate_noise_adaptive(
         noise_mask[noise_indices] = True
         bin_weights[noise_indices] = weights
     
-    # Compute RMS noise estimate with smoothing
-    if smoothing_window_mhz is None:
-        # Default: use 2× average bin width in frequency
-        n_bins = len(bin_edges) - 1
-        freq_range = abs(frequencies[-1] - frequencies[0])
-        avg_bin_width_mhz = freq_range / n_bins
-        smoothing_window_mhz = 2.0 * avg_bin_width_mhz
-    
-    # Convert MHz to points
+    # Compute RMS noise estimate with smoothing.
+    #
+    # The convolution kernel runs over the *noise-masked* spectrum (not the
+    # full grid), so the operative quantity is "noise samples per window."
+    # Rayleigh-RMS stability is σ(RMS)/RMS ≈ 1/(2√N); the default targets
+    # 1% stability at N = DEFAULT_SMOOTHING_SAMPLES. An explicit
+    # ``smoothing_window_mhz`` override is interpreted in full-grid MHz
+    # for backwards compatibility (the equivalent noise-sample count
+    # depends weakly on the noise fraction).
     freq_step = abs(frequencies[1] - frequencies[0]) if len(frequencies) > 1 else 1.0
-    smoothing_window_points = max(int(smoothing_window_mhz / freq_step), 10)  # At least 10 points
+    noise_frac_diag = float(np.sum(noise_mask)) / max(n_points, 1)
+    if smoothing_window_mhz is None:
+        smoothing_window_points = max(DEFAULT_SMOOTHING_SAMPLES, 10)
+        # Diagnostic MHz value: approximate full-grid coverage of a
+        # ``smoothing_window_points``-sized window in noise-mask space.
+        smoothing_window_mhz = (
+            smoothing_window_points * freq_step / max(noise_frac_diag, 0.1)
+        )
+    else:
+        smoothing_window_points = max(int(smoothing_window_mhz / freq_step), 10)
     
     rms_noise = _compute_rms_noise_smoothed(
         frequencies, magnitudes, noise_mask, bin_weights, smoothing_window_points, bin_edges
@@ -371,8 +396,8 @@ def _filter_by_skewness_cached(
     Heuristics inherited from the prior implementation — the 1% rank step,
     the 90%-trimmed cutoff guard, and the bottom-10% fallback when the target
     is not reached — are preserved verbatim; see
-    ``dev-docs/planning/noise-estimation-followups.md`` for the audit and
-    open questions about each.
+    ``dev-docs/research/noise-heuristic-audit/report.md`` for the audit and
+    its decisions on each.
     """
     n = bin_magnitudes.shape[0]
     if n < 3:

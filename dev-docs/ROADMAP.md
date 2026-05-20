@@ -61,7 +61,6 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Planning — **current task** |
 | [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
-| [`planning/noise-estimation-followups.md`](planning/noise-estimation-followups.md) | Open — heuristic audit, deferred bolstering |
 
 ## Code vs spec divergences
 

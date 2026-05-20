@@ -20,6 +20,11 @@ readers.
   the next begins. Derives the phase-coherent edge test, calibrates
   the null distribution and threshold, and verifies on synthetic
   ground truth and the 2638 fixture.
+- [Noise-estimation heuristic audit](noise-heuristic-audit/report.md) —
+  five load-bearing constants in the noise-estimation stage examined
+  against synthetic ground truth and the 2638 fixture. Three preserved
+  with empirical justification; two replaced with sample-count
+  defaults derived from closed-form Rayleigh stability bounds.
 
 ## Conventions for new reports
 
