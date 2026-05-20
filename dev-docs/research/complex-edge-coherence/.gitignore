@@ -1,0 +1,3 @@
+# Intermediate sweep blobs (regenerable from prototype.py; ~50 MB combined).
+# Only the figures and report are tracked.
+*.npz
