@@ -8,10 +8,8 @@ of magnitude spectra, using adaptive binning and RMS metrics for robust noise ch
 import logging
 
 import numpy as np
-import numpy.ma as ma
-import scipy.stats.mstats as spsm
 import scipy.signal as spsig
-from typing import Tuple, Optional, Dict, Union
+from typing import NamedTuple, Tuple, Optional, Dict, Union
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -170,18 +168,10 @@ def _compute_variance_based_bins(
                noise filtering results for all final bins.
     """
     
-    # Global cache for statistical computations
-    _stats_cache = {}  # (start_idx, end_idx) -> scipy.stats.describe result
-    _noise_results_cache = {}  # (start_idx, end_idx) -> (noise_indices, final_stats)
-    
-    def get_bin_stats(start_idx: int, end_idx: int):
-        """Get cached scipy.stats.describe result for a bin region."""
-        cache_key = (start_idx, end_idx)
-        if cache_key not in _stats_cache:
-            bin_data = magnitudes[start_idx:end_idx]
-            _stats_cache[cache_key] = spsm.describe(bin_data)
-        return _stats_cache[cache_key]
-    
+    # Cache of (start, end) -> (noise_indices, BinStats) so that the recursive
+    # subdivision walk reuses every skewness-trim it has already done.
+    _noise_results_cache: Dict[Tuple[int, int], Tuple[np.ndarray, "BinStats"]] = {}
+
     def get_noise_result(start_idx: int, end_idx: int):
         """Get cached noise filtering result for a bin."""
         cache_key = (start_idx, end_idx)
@@ -345,57 +335,108 @@ def _compute_variance_based_bins(
 
 
 
-def _filter_by_skewness_cached(
-    bin_magnitudes: np.ndarray, 
-    bin_indices: np.ndarray, 
-    skew_target: float, 
-    inc: float,
-    cache_key: tuple
-) -> Tuple[np.ndarray, object]:
-    """Filter bin data by iteratively removing high values until target skewness is reached.
-    
-    Returns both noise indices and the final scipy.stats.describe result for caching.
+class BinStats(NamedTuple):
+    """Sufficient statistics of the noise-filtered subset of a bin.
+
+    Exposes the same fields the subdivision decision reads from a
+    ``scipy.stats.describe`` result (mean, variance) plus the skewness that
+    drove the trim decision and the kept-sample count. Returned by
+    :func:`_filter_by_skewness_cached` and cached for reuse across
+    overlapping subdivision queries.
     """
-    
-    cutoff = 0.0
-    current_data = bin_magnitudes.copy()
-    desc = None
-    
-    while True:
-        # Remove top percentile of data
-        filtered_data = spsm.trim(current_data, (0, cutoff), relative=True)
-        
-        if len(filtered_data) < 3:  # Need minimum points for skewness calculation
-            break
-            
-        # Calculate statistics - this becomes our cached result
-        desc = spsm.describe(filtered_data)
-        
-        if desc.skewness < skew_target:
-            # Create mask for points that passed the filter
-            if cutoff == 0:
-                noise_indices = bin_indices
-            else:
-                threshold = np.percentile(current_data, 100 * (1 - cutoff))
-                mask = current_data <= threshold
-                noise_indices = bin_indices[mask]
-            
-            return noise_indices, desc
+
+    nobs: int
+    mean: float
+    variance: float
+    skewness: float
+
+
+def _filter_by_skewness_cached(
+    bin_magnitudes: np.ndarray,
+    bin_indices: np.ndarray,
+    skew_target: float,
+    inc: float,
+    cache_key: tuple,
+) -> Tuple[np.ndarray, BinStats]:
+    """Identify noise points by trimming the bin's high-magnitude tail until
+    the kept distribution is Rayleigh-like (sample skewness < ``skew_target``).
+
+    Sorts the bin once and computes cumulative ``x``, ``x^2``, ``x^3`` so the
+    kept-data skewness at every candidate rank cutoff is O(1) to evaluate.
+    A 1%-rank cutoff grid is scanned (matching the prior loop's granularity);
+    the first cutoff whose kept skewness drops below the target is the chosen
+    mask, and its mean/variance/skewness are returned for the subdivision
+    decision.
+
+    Heuristics inherited from the prior implementation — the 1% rank step,
+    the 90%-trimmed cutoff guard, and the bottom-10% fallback when the target
+    is not reached — are preserved verbatim; see
+    ``dev-docs/planning/noise-estimation-followups.md`` for the audit and
+    open questions about each.
+    """
+    n = bin_magnitudes.shape[0]
+    if n < 3:
+        return bin_indices, _bin_stats_from(bin_magnitudes)
+
+    # Sort ascending; cumulative raw moments over the sorted prefix give the
+    # raw moments of the lowest-K kept subset in O(1) per K.
+    sorted_mag = np.sort(bin_magnitudes)
+    cs1 = np.cumsum(sorted_mag, dtype=np.float64)
+    cs2 = np.cumsum(sorted_mag * sorted_mag, dtype=np.float64)
+    cs3 = np.cumsum(sorted_mag * sorted_mag * sorted_mag, dtype=np.float64)
+
+    def stats_at(keep_n: int) -> BinStats:
+        k = float(keep_n)
+        m1 = cs1[keep_n - 1] / k
+        var = cs2[keep_n - 1] / k - m1 * m1
+        if var <= 0:
+            return BinStats(keep_n, float(m1), float(var), float("inf"))
+        # Third central moment from raw moments: μ3 = E[x³] - 3μE[x²] + 2μ³.
+        m3 = cs3[keep_n - 1] / k - 3.0 * m1 * (cs2[keep_n - 1] / k) + 2.0 * m1 ** 3
+        skew = m3 / var ** 1.5
+        return BinStats(keep_n, float(m1), float(var), float(skew))
+
+    # Scan cutoffs 0%, inc, 2·inc, ... up to <90% (matching the prior loop's
+    # ``cutoff >= 0.9`` guard). With np.ceil rounding we always remove ≥1
+    # point per nonzero step, exactly matching ``scipy.stats.mstats.trim``'s
+    # relative-rank semantics.
+    n_steps = int(np.floor(0.9 / inc)) + 1
+    for step in range(n_steps):
+        cutoff = step * inc
+        if cutoff == 0.0:
+            keep_n = n
         else:
-            cutoff += inc
-            
-        # Safety check to prevent infinite loop
-        if cutoff >= 0.9:
-            # If we can't achieve target skewness, use what we have
-            threshold = np.percentile(current_data, 10)  # Keep bottom 10%
-            mask = current_data <= threshold
-            noise_indices = bin_indices[mask] if np.any(mask) else bin_indices[:1]
-            return noise_indices, desc if desc is not None else spsm.describe(current_data[:1])
-    
-    # Fallback: return at least some points
-    fallback_indices = bin_indices[:max(1, len(bin_indices) // 10)]
-    fallback_desc = spsm.describe(bin_magnitudes[fallback_indices - bin_indices[0]])
-    return fallback_indices, fallback_desc
+            keep_n = max(3, n - int(np.ceil(cutoff * n)))
+        st = stats_at(keep_n)
+        if st.skewness < skew_target:
+            if cutoff == 0.0:
+                return bin_indices, st
+            threshold = sorted_mag[keep_n - 1]
+            mask = bin_magnitudes <= threshold
+            return bin_indices[mask], st
+
+    # Target unreachable: bottom ~10% by magnitude. Matches the prior
+    # ``np.percentile(current_data, 10)`` fallback to within one rank.
+    keep_n = max(1, n // 10)
+    threshold = sorted_mag[keep_n - 1]
+    mask = bin_magnitudes <= threshold
+    fallback_indices = bin_indices[mask] if np.any(mask) else bin_indices[:1]
+    return fallback_indices, stats_at(max(3, keep_n))
+
+
+def _bin_stats_from(values: np.ndarray) -> BinStats:
+    """BinStats from a full slice (no trimming). Used for degenerate
+    small-bin paths where the skewness scan would be ill-conditioned."""
+    n = int(values.shape[0])
+    if n == 0:
+        return BinStats(0, 0.0, 0.0, float("nan"))
+    mean = float(np.mean(values))
+    var = float(np.var(values))
+    if n < 3 or var <= 0:
+        return BinStats(n, mean, var, float("nan"))
+    centred = values - mean
+    skew = float(np.mean(centred ** 3) / var ** 1.5)
+    return BinStats(n, mean, var, skew)
 
 
 def compute_rms_noise_convolution(
