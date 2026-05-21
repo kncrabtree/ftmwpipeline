@@ -39,10 +39,10 @@ on demand) and the Stage 2 `NoiseResult` (per-point noise `sd`).
 
 Two passes:
 
-1. **Primary (windowed/apodized).** Compute the magnitude spectrum *with*
-   apodization (clean, leakage-suppressed) and run the ported `locate_peaks`
-   with `thresh = min_snr * sd`. Close lines smearing together is acceptable.
-   This yields the robust coarse peak list.
+1. **Primary (windowed/apodized).** Compute the magnitude spectrum *with* a
+   strong window-function apodization (clean, leakage-suppressed) and run the
+   ported `locate_peaks` with `thresh = min_snr * sd`. Close lines smearing
+   together is acceptable. This yields the robust coarse peak list.
 2. **Gap pass (unwindowed).** In the spectral regions *not* covered by a
    primary detection, recompute the magnitude spectrum *without* apodization
    (full resolution) and detect again at the same SNR threshold to recover weak
@@ -54,9 +54,17 @@ Each detected peak is **classified by SNR only** into
 `PeakClassification.{WEAK, MEDIUM, STRONG}` via two configurable thresholds
 (`weak < t1 ≤ medium < t2 ≤ strong`), with `min_snr` as the detection floor.
 
-The apodization used for pass 1 is a Stage 3 parameter, independent of the
-unwindowed spectrum the downstream fit uses; default to the Stage 1
-`expf_us`-equivalent.
+The apodization used for pass 1 is a Stage 3 parameter (`primary_window`),
+independent of the unwindowed spectrum the downstream fit uses **and** of the
+user's Stage 1 settings. It defaults to a strong window function
+(`blackmanharris`); a weaker window (Hann) or the mild Stage-1 exponential
+leaves truncation sidelobes in the primary strong-line list, polluting the
+gap-pass leakage mask. The default is calibrated in
+`dev-docs/research/peak-detection/report.md` (§3, §6): on 2638 the mild
+exponential left ~9.5 % of primary detections as sidelobe-suspects vs ~1.9 %
+for Blackman-Harris. The primary apodization affects only *which positions*
+the pass finds — every reported amplitude/SNR is measured on the unapodized
+spectrum (see *Scoring basis* below).
 
 ## Data structures
 
@@ -194,6 +202,9 @@ before its implementation.
 6. [x] Cross-interface + real-data integration tests; O3 decided (keep,
    switchable); O2 shipped provisional, **awaiting empirical sign-off**.
 7. [x] Detection/promotion split + provenance (post-D7 finalization).
+8. [x] Primary-pass apodization audited (`dev-docs/research/peak-detection/`);
+   default changed from the mild Stage-1 exponential to a strong window
+   (`primary_window`, default `blackmanharris`) — see *Algorithm* above.
 
 ## Finalized Stage 3 → Stage 4 contract
 

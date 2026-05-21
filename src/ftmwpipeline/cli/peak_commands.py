@@ -40,7 +40,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             medium_strong_snr=args.medium_strong_snr,
             sg_window=args.sg_window,
             sg_order=args.sg_order,
-            apodization_us=args.apodization_us,
+            primary_window=args.primary_window,
             tau_us=args.tau_us,
             min_exclusion_mhz=args.min_exclusion_mhz,
             run_gap_pass=(None if args.no_gap_pass is False else False),
@@ -201,10 +201,14 @@ def register_peak_commands(subparsers: Any) -> None:
         help="Savitzky-Golay polynomial order (default: 3)",
     )
     p_detect.add_argument(
-        "--apodization-us",
-        dest="apodization_us",
-        type=float,
-        help="Primary-pass apodization (us); default = Stage 1 expf",
+        "--primary-window",
+        dest="primary_window",
+        type=str,
+        help=(
+            "Apodization window for the primary position-finding pass "
+            "(scipy.signal window name). default: blackmanharris -- a strong "
+            "window chosen to suppress truncation sidelobes"
+        ),
     )
     p_detect.add_argument(
         "--tau-us",

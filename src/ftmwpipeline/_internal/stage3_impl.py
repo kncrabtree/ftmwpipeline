@@ -7,7 +7,14 @@ settings: the spectrum the user chose (Stage 1 canonical ``ft_processing``,
 incl. ``trim``) is authoritative. Detection runs *internally* at ``zpf=1`` on
 two recomputed spectra -- an apodized primary (robust position finding) and an
 unapodized full-resolution gap spectrum (weak-line recovery) -- because apex
-localization is best at the native grid. Every detected peak is then snapped
+localization is best at the native grid. The primary pass applies a strong
+window function (default Blackman-Harris) chosen purely to suppress
+truncation-leakage sidelobes so the strong-line list it produces -- which
+seeds the gap pass's leakage mask -- is not itself polluted by sidelobes; see
+``dev-docs/research/peak-detection/report.md`` for the calibration. The
+primary apodization is independent of the user's Stage 1 settings and affects
+only *which positions* are found, never any reported amplitude or SNR. Every
+detected peak is then snapped
 back onto the user's persisted spectrum by physical frequency: its amplitude
 is re-measured on the user-settings ``ComplexFT`` and its SNR against the
 canonical Stage 2 noise, so the stored/returned result is expressed entirely
@@ -50,6 +57,14 @@ logger = logging.getLogger(__name__)
 # only the reported/stored spectrum (snap-back re-measures there).
 _DETECTION_ZPF = 1
 
+# Primary-pass apodization: a strong window function suppresses truncation
+# sidelobes so the primary pass's strong-line list (which seeds the gap-pass
+# leakage mask) is clean. Blackman-Harris is the calibrated default -- on the
+# 2638 fixture it removes ~5x the sidelobe-suspect detections that the mild
+# Stage-1 exponential filter leaves behind. See
+# dev-docs/research/peak-detection/report.md sections 3 and 6.
+DEFAULT_PRIMARY_WINDOW = "blackmanharris"
+
 
 def _active_acquisition_us(
     fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
@@ -65,23 +80,27 @@ def _spectrum_from_fid(
     base_pp: Any,
     trim_range: Optional[Tuple[float, float]],
     expf_us: Optional[float],
+    window_function: Optional[str] = None,
 ) -> ComplexFT:
     """Recompute a ComplexFT from the FID at the internal detection grid.
 
     Always uses :data:`_DETECTION_ZPF` (native resolution -- best for apex
-    localization). ``expf_us=None`` (and no window) yields the unapodized
-    boxcar spectrum used by the gap pass; a finite ``expf_us`` yields the
+    localization). With ``expf_us=None`` and ``window_function=None`` this
+    yields the unapodized boxcar spectrum used by the gap pass; passing a
+    ``window_function`` (e.g. ``"blackmanharris"``) yields the
     leakage-suppressed primary spectrum. Window bounds, units, rdc and the
     persisted ``trim`` are held identical to the user's settings so both
     detection spectra share a consistent physical-frequency axis with the
-    user spectrum.
+    user spectrum. The primary apodization is deliberately *not* tied to the
+    user's Stage 1 ``winf``/``expf_us``: it is a Stage 3 position-finding
+    choice only (see the module docstring).
     """
     preprocessed = fid.preprocess(
         start_us=base_pp.start_us,
         end_us=base_pp.end_us,
         zpf=_DETECTION_ZPF,
         expf_us=expf_us,
-        window_function=None if expf_us is None else base_pp.winf,
+        window_function=window_function,
         rdc=base_pp.rdc,
         units_power=base_pp.units_power,
     )
@@ -174,7 +193,7 @@ def detect_peaks_impl(
     medium_strong_snr: Optional[float] = None,
     sg_window: Optional[int] = None,
     sg_order: Optional[int] = None,
-    apodization_us: Optional[float] = None,
+    primary_window: Optional[str] = None,
     tau_us: Optional[float] = None,
     min_exclusion_mhz: Optional[float] = None,
     run_gap_pass: Optional[bool] = None,
@@ -193,6 +212,14 @@ def detect_peaks_impl(
     peak is persisted with a ``promoted`` flag; the promotion cutoff is stored
     so Stage 4 / curation can re-threshold without re-running detection.
 
+    ``primary_window`` selects the apodization window for the primary pass
+    (any scipy.signal window name accepted by ``FID.preprocess``, e.g.
+    ``"blackmanharris"``, ``"blackman"``, ``"hann"``). It defaults to
+    :data:`DEFAULT_PRIMARY_WINDOW` -- a strong window chosen to suppress
+    truncation sidelobes; weaker windows leave sidelobe contamination in the
+    strong-line list that seeds the gap-pass mask. It affects only which
+    positions the primary pass finds, never any reported amplitude or SNR.
+
     Parameters left as ``None`` fall back to documented defaults. Returns the
     full peak list (user grid) plus diagnostics; also writes ``/stage3_peaks``
     and marks the stage done.
@@ -209,6 +236,9 @@ def detect_peaks_impl(
     )
     sg_window_v: int = 11 if sg_window is None else int(sg_window)
     sg_order_v: int = 3 if sg_order is None else int(sg_order)
+    primary_window_v: str = (
+        DEFAULT_PRIMARY_WINDOW if primary_window is None else str(primary_window)
+    )
     min_excl_v: float = 0.0 if min_exclusion_mhz is None else float(min_exclusion_mhz)
     run_gap_v: bool = True if run_gap_pass is None else bool(run_gap_pass)
     tau_v: Optional[float] = tau_us
@@ -220,7 +250,7 @@ def detect_peaks_impl(
         "medium_strong_snr": medium_strong_v,
         "sg_window": sg_window_v,
         "sg_order": sg_order_v,
-        "apodization_us": apodization_us,
+        "primary_window": primary_window_v,
         "tau_us": tau_v,
         "min_exclusion_mhz": min_excl_v,
         "run_gap_pass": run_gap_v,
@@ -255,14 +285,12 @@ def detect_peaks_impl(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 
-    # Primary apodization: caller override, else persisted expf, else 5 us
-    # (a finite value is required so the primary differs from the gap pass).
-    primary_apod = apodization_us
-    if primary_apod is None:
-        primary_apod = base_pp.expf_us if base_pp.expf_us else 5.0
-
-    # Internal detection grids (native zpf=1), identical physical axis.
-    primary_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=primary_apod)
+    # Internal detection grids (native zpf=1), identical physical axis. The
+    # primary pass applies a strong window (default Blackman-Harris) for
+    # sidelobe suppression; the gap pass is unapodized (full resolution).
+    primary_ft = _spectrum_from_fid(
+        fid, base_pp, trim_range, expf_us=None, window_function=primary_window_v
+    )
     gap_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=None)
     primary_noise = estimate_noise_adaptive(
         primary_ft.freq_array, primary_ft.magnitude_spectrum

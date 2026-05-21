@@ -127,12 +127,17 @@ phase information it depends on).
    partition, no randomness.
 5. **Assign in-band peaks, pruning leakage artifacts.** A promoted peak is a
    free peak of the unique fit window containing its frequency **only if it is
-   not attributable to a contributor's leakage**. Stage 3 promotes a strong
-   line's own sidelobes as peaks; once that line is a contributor (free
-   in-band or fixed) its leakage explains them, so they must not also be fit
-   as independent lines. Pruning uses the analytic leakage envelope of the
-   window's strong contributor(s); the residual after the strong term is what
-   defines genuine free peaks.
+   not attributable to a contributor's leakage**. Stage 3 still promotes some
+   of a strong line's sidelobes as peaks — its unapodized gap pass detects
+   them wherever the analytic leakage-reach mask under-covers, even though the
+   apodized primary pass is now sidelobe-clean (it uses a strong window; see
+   [`stage3-peak-detection.md`](stage3-peak-detection.md) and
+   [`../research/peak-detection/report.md`](../research/peak-detection/report.md)).
+   Once that line is a contributor (free in-band or fixed) its leakage
+   explains those detections, so they must not also be fit as independent
+   lines. Pruning uses the analytic leakage envelope of the window's strong
+   contributor(s); the residual after the strong term is what defines genuine
+   free peaks.
 6. **Attach fixed contributors.** For each window, a freeze-eligible strong
    line in-band of a *different* window is attached as a fixed contributor
    (reference to its primary window) when its predicted leakage reaches here
@@ -142,8 +147,10 @@ phase information it depends on).
    either side of the band give the candidate; the statistic confirms
    that a coherent skirt actually arrives. This adds a dependency edge.
 7. **Classify difficulty (strong-line-driven, empirical).** Difficulty is
-   *not* a promoted-peak-count threshold — that count is dominated by a strong
-   line's leakage artifacts and is unreliable. A window is **hard** if it
+   *not* a promoted-peak-count threshold — that count is inflated by residual
+   leakage artifacts (gap-pass sidelobes the reach mask misses) and in any
+   case conflates a dense-but-easy region with a coupled-and-hard one, so it
+   is an unreliable difficulty signal. A window is **hard** if it
    contains or is materially influenced by a strong line (has strong in-band
    peaks, or unresolved fixed contributors, or fails the edge-coherence test
    on its edges), or exceeds the width cap, or sits in a comparably-strong

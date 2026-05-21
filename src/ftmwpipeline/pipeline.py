@@ -592,7 +592,7 @@ class Pipeline:
         medium_strong_snr: Optional[float] = None,
         sg_window: Optional[int] = None,
         sg_order: Optional[int] = None,
-        apodization_us: Optional[float] = None,
+        primary_window: Optional[str] = None,
         tau_us: Optional[float] = None,
         min_exclusion_mhz: Optional[float] = None,
         run_gap_pass: Optional[bool] = None,
@@ -625,8 +625,13 @@ class Pipeline:
             Savitzky-Golay smoothing window in points (default 11).
         sg_order : int, optional
             Savitzky-Golay polynomial order (default 3).
-        apodization_us : float, optional
-            Primary-pass apodization in microseconds (default: Stage 1 expf).
+        primary_window : str, optional
+            Apodization window for the primary (position-finding) pass; any
+            scipy.signal window name (e.g. ``"blackmanharris"``,
+            ``"blackman"``, ``"hann"``). Default ``"blackmanharris"`` -- a
+            strong window that suppresses truncation sidelobes so the primary
+            strong-line list is clean. Affects only which positions are found,
+            never reported amplitude/SNR.
         tau_us : float, optional
             Assumed decay constant for leakage reach (default: undamped).
         min_exclusion_mhz : float, optional
@@ -657,7 +662,7 @@ class Pipeline:
                 medium_strong_snr=medium_strong_snr,
                 sg_window=sg_window,
                 sg_order=sg_order,
-                apodization_us=apodization_us,
+                primary_window=primary_window,
                 tau_us=tau_us,
                 min_exclusion_mhz=min_exclusion_mhz,
                 run_gap_pass=run_gap_pass,
