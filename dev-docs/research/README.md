@@ -25,6 +25,11 @@ readers.
   against synthetic ground truth and the 2638 fixture. Three preserved
   with empirical justification; two replaced with sample-count
   defaults derived from closed-form Rayleigh stability bounds.
+- [Peak-detection cost, correctness, and the sidelobe problem](peak-detection/report.md) —
+  profiles the smoothed second-derivative detector, shows the
+  unapodized false positives are sinc sidelobes that no cheap local
+  test can suppress, vindicates the two-pass design, and verifies on
+  2638 that the primary pass should apodize with a strong window.
 
 ## Conventions for new reports
 
