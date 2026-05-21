@@ -158,20 +158,38 @@ use from the Stage 3 mask and Stage 4 extent proposal. Final deletion of
 scoping (the finite-T reach formula may still seed the Stage 5 `τ` prior); until
 then it stays, unused by Stages 3–4.
 
-## Threshold / M re-calibration
+## Window-extent handling + threshold (calibrated)
 
-With `S_coh` now responding to leakage, the operating point needs review: on
-2638 ~57% of the spectrum reads leakage-touched at `T_edge=3, M=64`, and per
-strong-line extents reach 20–48 MHz. The `1/Δf` skirt decays slowly and the
-`√M` gain makes `S_coh=3` fire on ~0.4σ/bin coherent leakage — physically real,
-but possibly finer than Stage 4 needs to carry as a fixed contributor.
+Calibrated on 2638 (1366 promoted peaks, 133 strong; window count is ~350
+regardless of threshold — it is set by peak clustering, not by `T_edge`).
+Locked decisions:
 
-This is a **calibration sub-task**, separable from landing the de-ramp: pick
-`T_edge`/`M` (and possibly a leakage-amplitude floor) so the Stage 4 partition
-yields sensible window counts and the doublet/cluster reference cases still
-group correctly. Calibrate against 2638; the locked values update the
-`edge_coherence.py` defaults and the Stage 4 plan. Stage 4 is not trustworthy
-until this is done.
+- **`M = 64`, `T_edge = 8` for Stage 4.** `T_edge/√M` is the per-bin leakage
+  amplitude (in σ) at the detection boundary, so `T_edge = √M = 8` flags
+  coherent leakage that is at least noise-level per bin (~11% of 2638
+  leakage-touched; per-strong-line touched run ~±20 MHz). `T_edge = 3` (the
+  research report's value) flags sub-noise 0.38σ leakage and reads ~57% of the
+  spectrum touched — operationally over-sensitive.
+- **Per-job thresholds.** `leakage_touched_intervals` takes a `threshold`
+  argument; Stage 4 passes 8. The Stage 3 gap mask masks where the gap pass (a
+  ~2σ detector) would promote a sidelobe and so wants a higher threshold
+  (≈16, `2√M`) — calibrated in task 4.
+- **Window extent is *not* the touched run.** A single strong line's touched
+  run is ~80–100 MHz wide (its leakage is detectable ±40–50 MHz out); a window
+  that wide for one line is wrong. Window extents stay tight — a peak's core
+  plus `min_window_half_width_mhz` — and the touched map instead drives
+  strong-cluster grouping, fixed-contributor attachment, and difficulty.
+  `window_planning.py` step 2 drops the `estimate_leakage_reach` extent
+  proposal; `estimate_leakage_reach` becomes unused by Stage 4.
+- **The 36350/36389 doublet** (SNR 186 + 55, 39 MHz apart) is *not* forced into
+  one joint window. At `T_edge = 8` it decouples — 36389 becomes its own
+  window. This is **provisional**: if Stage 5 fits the pair poorly, revisit —
+  re-couple via a fixed-contributor edge, or lower `T_edge` for that region so
+  the overlap is recovered naturally. The doublet-coupling question genuinely
+  belongs to Stage 5.
+
+The locked values update the `edge_coherence.py` default and
+`stage4-window-assignment.md`. Stage 4 is not trustworthy until task 3 lands.
 
 ## Research report revisions
 
@@ -228,8 +246,11 @@ the `T_edge`/`M` operating point (needs re-calibration).
 2. [ ] Stage 4: de-ramp the spectrum feeding `edge_coherence` in
    `window_planning.py` / `stage4_impl.py`; algorithm step 1 uses the de-ramped
    map. Update Stage 4 unit tests for de-ramped input.
-3. [ ] `T_edge`/`M` re-calibration on 2638; update `edge_coherence.py` defaults
-   and `stage4-window-assignment.md`.
+3. [ ] Stage 4 calibration: set `DEFAULT_EDGE_THRESHOLD` to 8;
+   `window_planning.py` step 2 drops the `estimate_leakage_reach` extent
+   proposal (uniform tight extents); verify the 2638 plan; update Stage 4 unit
+   tests and `stage4-window-assignment.md`. See *Window-extent handling +
+   threshold (calibrated)*.
 4. [ ] Stage 3: replace the gap-pass mask with `leakage_touched_intervals`;
    retire `estimate_leakage_reach` from the mask. Update Stage 3 tests; verify
    the gap pass no longer promotes the strong-line sidelobes (the windowed-vs-

@@ -83,9 +83,13 @@ with per-bin complex noise RMS $\sigma$. Locked parameters:
   used only to locate the trim point inside an above-threshold band.
 - **Band width:** $M = 64$ for the rolling first-pass scan;
   $M \in [16, 32]$ for trim-point refinement after a flag.
-- **Threshold:** `T_edge = 3`. Per-band null false-positive rate
-  empirically < 1%; closed-form null mean $\sqrt{\pi/4} \approx 0.886$
-  matches the data.
+- **Threshold:** `T_edge = 8` ($= \sqrt{M}$; the D8 recalibration —
+  fires on coherent leakage of $\gtrsim 1\sigma$ per bin, since
+  $T_{\text{edge}}/\sqrt{M}$ is the per-bin leakage in $\sigma$. See
+  [`leakage-detection-rework.md`](leakage-detection-rework.md). The
+  research report's original `3` flags sub-noise 0.38σ leakage — it is
+  still null-safe (per-band false positives < 1%) but reads ~57% of
+  2638 leakage-touched.
 - **σ source:** the per-point `rms_noise[k]` array from the upstream
   noise stage (sample-count-stabilised default at ~1% RMS precision,
   see the [noise-heuristic audit](../research/noise-heuristic-audit/report.md)).
@@ -108,20 +112,22 @@ phase information it depends on).
    analytic finite-T model; the proposed window spans the line ± reach.
 2. **Validate/trim edges.** Compute the rolling `S_coh` statistic at
    $M = 64$ across the proposed extent's boundary. Where the rolling
-   statistic crosses the threshold $T_{\text{edge}} = 3$ from above,
+   statistic crosses the threshold $T_{\text{edge}} = 8$ from above,
    refine the trim point with a narrower-band ($M \in [16, 32]$) max-
    cumsum pass that locates the precise edge of the coherent region
    inside the flagged band. The analytic-reach predictor *proposes*;
    the statistic *trims*. (DC-offset-at-edges is the zero-distance
    degenerate case of the same test; the research report confirms no
    genuine flat pedestal is present on 2638.)
-3. **Strong clusters.** Strong lines whose trimmed extents overlap — or,
-   equivalently and the empirically usable criterion, between which
-   the rolling statistic stays above $T_{\text{edge}}$ — form a single
-   **primary joint window** (they must be fit together first; none can
-   be a fixed background for the others). 2638's 36350/36389 doublet
-   (39 MHz apart, statistic above threshold throughout) is the
-   reference case.
+3. **Strong clusters.** Strong lines sharing one leakage-touched run
+   (the rolling statistic stays above $T_{\text{edge}}$ between them)
+   form a single **primary joint window** — they must be fit together;
+   none can be a fixed background for the others. Note (D8): at the
+   recalibrated $T_{\text{edge}} = 8$, 2638's 36350/36389 pair
+   (SNR 186 + 55, 39 MHz apart) does *not* stay above threshold
+   throughout and so decouples into two windows. Whether that pair
+   should be co-fit is deferred to Stage 5; see
+   [`leakage-detection-rework.md`](leakage-detection-rework.md).
 4. **Merge to fixpoint.** Overlapping proposed fit windows merge transitively
    in a deterministic order (by frequency, then descending strength), until
    stable → disjoint fit windows covering each point ≤ 1. The merge is a
@@ -162,7 +168,7 @@ phase information it depends on).
 
    The width cap default uses the **contiguous-above-threshold extent**
    of `S_coh` as the natural scale: on 2638 the strong-line skirt
-   extends to about ±20 MHz at $T_{\text{edge}} = 3$, so a single window
+   extends to about ±20 MHz at $T_{\text{edge}} = 8$, so a single window
    ≳ 40 MHz wide is already in "dense / strongly-coupled" territory.
    `max_window_width_mhz` is a configurable parameter with that
    empirical scale as the default basis.
@@ -199,7 +205,7 @@ Logic in `_internal/stage4_impl.py`; thin identical wrappers:
 `Pipeline.assign_windows()` / `api.assign_windows()` / CLI `assign-windows`,
 plus `visualize-windows` and `load_windows()`. Consumes the **promoted** peaks
 only. Parameters (documented defaults, configurable on the file): the
-edge-test M and threshold above (`edge_M = 64`, `edge_threshold = 3.0`,
+edge-test M and threshold above (`edge_M = 64`, `edge_threshold = 8.0`,
 `trim_M = 32`), `max_window_width_mhz` (default ≈ 40 on 2638-class
 experiments), `min_freeze_snr` (freeze-eligibility cutoff — see O4-2),
 assumed `τ` for reach prediction. Stage tracking: add `stage4_windows`
@@ -271,9 +277,10 @@ edge-trim error (never). Lock the protocol in the Stage 5 plan; Stage
 - Invariant checks: fit windows disjoint and cover each point ≤ 1; every
   retained free peak in exactly one window's free set; dependency graph
   acyclic; topological order valid; batches independent.
-- 2638 real data: sane window count; the strong doublets anchor windows; dense
-  regions are flagged, not exploded; promoted-only consumption; the
-  36350/36389 doublet is captured as a single primary joint window.
+- 2638 real data: sane window count (no mega-windows; ~328 windows, max
+  width ~31 MHz at `T_edge = 8`); the strong lines anchor windows; dense
+  regions are flagged, not exploded; promoted-only consumption. (The
+  36350/36389 pair decouples at `T_edge = 8` — see step 3 and D8.)
 - Cross-interface identity (CLI/Pipeline/api); serialization round-trip +
   hand-edit; invalidation on Stage 1 canonical-settings change and on Stage 3
   re-detection.
@@ -308,25 +315,23 @@ edge-trim error (never). Lock the protocol in the Stage 5 plan; Stage
 ## Implementation notes
 
 - **Window extent is per-peak-proposed, statistic-grouped.** Each promoted
-  peak proposes a window of its analytic `estimate_leakage_reach` extent (at
-  least `min_window_half_width_mhz`); overlapping proposals merge to a
-  fixpoint. The complex-edge coherence statistic supplies the *leakage-touched
-  regions* used for strong-cluster grouping (strong lines sharing one touched
-  region merge into a primary joint window) and for fixed-contributor
-  attachment (a window inside a strong line's touched region but distinct from
-  it gets that line frozen-in). This hybrid keeps the partition robust when
-  the statistic is weak.
-- **The `S_coh` edge statistic is wrong on real data — see
-  [`leakage-detection-rework.md`](leakage-detection-rework.md) (D8).** Validation
-  on 2638 found that `S_coh` (a coherent windowed sum) cancels on the
-  oscillating sinc truncation skirt and reads noise-level over obvious coherent
-  leakage. The leakage-touched map, strong-cluster grouping, fixed-contributor
-  attachment, and the `edge_coherence_fail` difficulty criterion all depend on
-  it and are therefore not yet trustworthy. Stage 4 is committed as WIP; the
-  data structures, serialization, stage tracking/invalidation, and interface
-  plumbing are sound, but `preprocessing/edge_coherence.py` and its consumers
-  need the rework in the handoff document. Stage 3's gap pass has a paired
-  defect (sidelobes promoted as weak peaks).
+  peak proposes a *tight* window — its core plus `min_window_half_width_mhz`,
+  **not** the leakage-touched run (a strong line's run is ~80–100 MHz wide;
+  its distant leakage is carried elsewhere as a fixed contributor). Overlapping
+  proposals merge to a fixpoint. The complex-edge coherence statistic supplies
+  the *leakage-touched regions* used for strong-cluster grouping (strong lines
+  sharing one touched region merge into a primary joint window) and for
+  fixed-contributor attachment (a window inside a strong line's touched region
+  but distinct from it gets that line frozen-in).
+- **D8 status (the `S_coh` rework).** `S_coh` on the raw persisted spectrum
+  cancels on the oscillating truncation skirt and reads noise-level over
+  coherent leakage. Resolved by de-ramping the spectrum to the active-region
+  turn-on before the statistic (tasks 1–3 of
+  [`leakage-detection-rework.md`](leakage-detection-rework.md)); `S_coh` itself
+  was never wrong, only its input. `T_edge` recalibrated 3 → 8. The
+  leakage-touched map, strong-cluster grouping, fixed-contributor attachment,
+  and `edge_coherence_fail` now run on the de-ramped statistic. Stage 3's gap
+  pass has a paired defect (sidelobes promoted as weak peaks) — D8 task 4.
 - **O4-2 freeze-eligibility.** `min_freeze_snr` (default 50) is a parameter on
   the file; a fixed contributor below it is flagged `freeze_eligible=False`
   for the Stage 5 thaw-and-re-fit handshake. The thaw protocol itself is

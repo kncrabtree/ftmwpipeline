@@ -127,7 +127,7 @@ class TestWeakLineOnSkirt:
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30050.0, 6.0, PeakClassification.STRONG),
-                (30062.0, 0.12, PeakClassification.MEDIUM),
+                (30056.0, 0.12, PeakClassification.MEDIUM),
             ],
             n=8000,
         )

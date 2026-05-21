@@ -66,11 +66,11 @@ class TestCoherentBand:
         """A phase-aligned (coherent) band drives S_coh far above threshold."""
         sigma = 0.02
         m = 64
-        # A coherent contamination of amplitude ~sigma on every bin.
-        coherent = np.full(m, 0.5 * sigma + 0.0j)
+        # A coherent contamination of amplitude ~2 sigma on every bin.
+        coherent = np.full(m, 2.0 * sigma + 0.0j)
         z = coherent + _complex_noise(m, sigma, seed=3)
         s = coherence_statistic(z, sigma)
-        # S_coh ~ (L/sigma)*sqrt(M) = 0.5*8 = 4
+        # S_coh ~ (L/sigma)*sqrt(M) = 2.0*8 = 16
         assert s > DEFAULT_EDGE_THRESHOLD
 
     def test_degenerate_inputs(self):

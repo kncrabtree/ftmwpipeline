@@ -19,8 +19,11 @@ Outline (the plan's eight steps):
    contiguous above-threshold runs are the spectrum's *leakage-touched*
    regions: a strong line's coherent skirt fills a touched region several MHz
    wide, far wider than the per-point analytic leakage reach.
-2. Each promoted peak proposes a window of its analytic leakage extent
-   (``estimate_leakage_reach``), at least a configured minimum half-width.
+2. Each promoted peak proposes a tight window -- its core plus
+   ``min_window_half_width_mhz``. Extent is deliberately *not* the leakage
+   skirt: a strong line's coherent skirt is ~80-100 MHz wide, and its distant
+   leakage is carried by other windows as a fixed contributor, not by widening
+   this one.
 3. Strong lines sharing one leakage-touched region are mutually coupled and
    merge into one *primary joint window* (the 2638 36350/36389 doublet);
    overlapping proposed windows then merge to a fixpoint -> disjoint fit
@@ -61,7 +64,7 @@ from .edge_coherence import (
     max_cumsum_statistic,
     rolling_coherence,
 )
-from .leakage import deramp_to_active_start, estimate_leakage_reach
+from .leakage import deramp_to_active_start
 
 # Stage 4 parameter defaults. All configurable on the pipeline file.
 DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
@@ -325,18 +328,14 @@ def build_window_plan(
     rolling = rolling_coherence(ospec, orms, band_m=edge_m)
     touched = above_threshold_intervals(rolling, edge_threshold)
 
-    # --- Step 2: per-peak proposed windows (analytic extent, statistic-aware)
-    min_half_idx = max(int(round(min_window_half_width_mhz / step_mhz)), edge_m)
+    # --- Step 2: per-peak proposed windows (tight, uniform) -----------------
+    # A window's extent is a peak's core plus min_window_half_width -- it is
+    # NOT the leakage-touched run. A strong line's run is ~80-100 MHz wide; its
+    # distant leakage is carried by other windows as a fixed contributor, not
+    # by widening this window (see leakage-detection-rework.md).
+    half_idx = max(int(round(min_window_half_width_mhz / step_mhz)), edge_m)
     proto_spans: List[Tuple[int, int]] = []
-    reach_by_peak: Dict[int, float] = {}
     for pk in promoted:
-        reach_mhz = float(
-            estimate_leakage_reach(
-                pk.snr, acquisition_us, min_snr=edge_threshold, tau_us=tau_us
-            )
-        )
-        reach_by_peak[pk.list_index] = reach_mhz
-        half_idx = max(int(round(reach_mhz / step_mhz)), min_half_idx)
         lo = max(pk.grid_index - half_idx, 0)
         hi = min(pk.grid_index + half_idx, n - 1)
         proto_spans.append((lo, hi))

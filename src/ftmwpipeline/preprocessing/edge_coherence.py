@@ -16,12 +16,15 @@ RMS ``sigma`` the statistic is
     S_coh(z; sigma) = |sum_k z_k| / (sigma * sqrt(M))
 
 Under the null (band carries only noise) ``S_coh`` has mean ``sqrt(pi/4) ~=
-0.886`` and is independent of M; under a coherent leakage tail it grows like
-``(L/sigma) * sqrt(M)``. A threshold of 3 gives a per-band null false-positive
-rate well below 1%. The full derivation, calibration on synthetic spectra and
-verification on the 2638 fixture are in
-``dev-docs/research/complex-edge-coherence/report.md``; this module implements
-the locked operating point from that report.
+0.886`` and is independent of M; under a coherent leakage tail of per-bin
+amplitude ``L`` it grows like ``(L/sigma) * sqrt(M)``. The threshold ``T_edge``
+therefore corresponds to a per-bin leakage of ``L/sigma = T_edge/sqrt(M)``: the
+default ``T_edge = 8`` at ``M = 64`` flags coherent leakage that is at least
+~1σ per bin (the D8 recalibration -- see
+``dev-docs/planning/leakage-detection-rework.md``). The research report's
+original ``3`` is still safe on the null (< 1% per-band false positives) but
+flags sub-noise leakage. The statistic's derivation and calibration are in
+``dev-docs/research/complex-edge-coherence/report.md``.
 
 The functions here are pure (arrays in, arrays out) so they stay unit-testable;
 file orchestration lives in :mod:`ftmwpipeline._internal.stage4_impl`.
@@ -40,8 +43,11 @@ DEFAULT_EDGE_M = 64
 DEFAULT_TRIM_M = 32
 """Band width for trim-point refinement after a flag (finer spatial scale)."""
 
-DEFAULT_EDGE_THRESHOLD = 3.0
-"""``S_coh`` threshold separating leakage-touched from line-free regions."""
+DEFAULT_EDGE_THRESHOLD = 8.0
+"""``S_coh`` threshold ``T_edge`` separating leakage-touched from line-free
+regions. ``8 = sqrt(M)`` at the default ``M = 64`` -- fires on coherent leakage
+of at least ~1σ per bin (D8 recalibration). The Stage 3 gap mask passes a
+higher value; see leakage-detection-rework.md."""
 
 # Closed-form null moments of S_coh (M-independent), for regression tests.
 NULL_MEAN = float(np.sqrt(np.pi / 4.0))  # ~= 0.8862
