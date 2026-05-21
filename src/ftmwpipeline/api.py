@@ -38,7 +38,7 @@ from pathlib import Path
 import logging
 
 from .pipeline import Pipeline
-from .core.data_structures import FID, ComplexFT, Peak
+from .core.data_structures import FID, ComplexFT, Peak, WindowPlan
 from .preprocessing.noise_estimation import NoiseResult
 
 # Module logger
@@ -795,6 +795,145 @@ def save_peak_parameters(file_path: Union[str, Path],
         logger.info(f"Saved {len(parameters)} peak parameters to {file_path}")
     except Exception as e:
         logger.error(f"Failed to save peak parameters to {file_path}: {e}")
+        raise
+
+
+# =============================================================================
+# Stage 4: Window Assignment Functions
+# =============================================================================
+
+def assign_windows(
+    file_path: Union[str, Path],
+    edge_m: Optional[int] = None,
+    trim_m: Optional[int] = None,
+    edge_threshold: Optional[float] = None,
+    max_window_width_mhz: Optional[float] = None,
+    min_freeze_snr: Optional[float] = None,
+    min_window_half_width_mhz: Optional[float] = None,
+    tau_us: Optional[float] = None,
+) -> WindowPlan:
+    """Assign analysis windows (Stage 4), equivalent to Pipeline.assign_windows().
+
+    Requires Stage 3 (peak detection). Turns the promoted Stage 3 peaks into a
+    fit plan -- a set of disjoint analysis windows, each annotated with the
+    peaks to fit freely, the strong out-of-band lines whose leakage is carried
+    frozen, a fit dependency order, and a difficulty class. Stage 4 is purely
+    structural; the plan is persisted to the .ftmw file.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file.
+    edge_m : int, optional
+        Rolling-scan complex-edge coherence band width (default 64).
+    trim_m : int, optional
+        Trim-refinement band width (default 32).
+    edge_threshold : float, optional
+        ``S_coh`` threshold ``T_edge`` (default 3.0).
+    max_window_width_mhz : float, optional
+        Width cap; a wider window is HARD and gets a split proposal
+        (default 40.0).
+    min_freeze_snr : float, optional
+        Freeze-eligibility SNR cutoff for fixed contributors (default 50.0).
+    min_window_half_width_mhz : float, optional
+        Minimum half-width of a window around an isolated weak line
+        (default 2.0).
+    tau_us : float, optional
+        Assumed decay constant for the analytic leakage reach
+        (default: undamped/boxcar limit).
+
+    Returns
+    -------
+    WindowPlan
+        The fit plan: disjoint windows, dependency DAG, topological order,
+        parallel batches, parameters and diagnostics.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.assign_windows(
+            edge_m=edge_m,
+            trim_m=trim_m,
+            edge_threshold=edge_threshold,
+            max_window_width_mhz=max_window_width_mhz,
+            min_freeze_snr=min_freeze_snr,
+            min_window_half_width_mhz=min_window_half_width_mhz,
+            tau_us=tau_us,
+        )
+    except Exception as e:
+        logger.error(f"Failed to assign windows for {file_path}: {e}")
+        raise
+
+
+def load_windows(file_path: Union[str, Path]) -> WindowPlan:
+    """Load the persisted Stage 4 window plan, equivalent to
+    Pipeline.load_windows(). Validates the on-disk structure loudly."""
+    try:
+        return Pipeline.open(file_path).load_windows()
+    except Exception as e:
+        logger.error(f"Failed to load windows from {file_path}: {e}")
+        raise
+
+
+def visualize_windows(
+    file_path: Union[str, Path],
+    figsize: Optional[tuple] = None,
+    title: Optional[str] = None,
+    y_max_factor: Optional[float] = None,
+    backend: str = "matplotlib",
+    interactive: bool = True,
+    output_file: Optional[Union[str, Path]] = None,
+) -> Any:
+    """Overlay the Stage 4 window plan on the spectrum, equivalent to
+    Pipeline.visualize_windows(). Requires Stage 4 completion.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file with Stage 4 results.
+    figsize : tuple, optional
+        Figure size ``(width, height)`` in inches.
+    title : str, optional
+        Custom plot title.
+    y_max_factor : float, optional
+        Spectrum-panel y-axis headroom (default 25.0).
+    backend : str, default ``'matplotlib'``
+        Plotting backend (only ``'matplotlib'`` supported).
+    interactive : bool, default True
+        Whether to open an interactive window.
+    output_file : str or Path, optional
+        Save plot to this path (non-interactive mode).
+
+    Returns
+    -------
+    figure
+        Matplotlib figure.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.visualize_windows(
+            figsize=figsize,
+            title=title,
+            y_max_factor=y_max_factor,
+            backend=backend,
+            interactive=interactive,
+            output_file=output_file,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to create window visualization for {file_path}: {e}"
+        )
+        raise
+
+
+def save_window_parameters(file_path: Union[str, Path],
+                            parameters: Dict[str, Any]) -> None:
+    """Save Stage 4 window-assignment parameters for reuse."""
+    try:
+        from ._internal.stage4_impl import save_window_parameters_impl
+        save_window_parameters_impl(str(file_path), parameters)
+        logger.info(f"Saved {len(parameters)} window parameters to {file_path}")
+    except Exception as e:
+        logger.error(f"Failed to save window parameters to {file_path}: {e}")
         raise
 
 

@@ -1,0 +1,214 @@
+"""
+Complex-edge coherence statistic for Stage 4 window assignment.
+
+The Stage 4 windowing stage must decide, for any candidate window edge, whether
+the points on the noise side of that edge are clean background or are still
+carrying a strong line's coherent leakage skirt. A magnitude-domain test fails
+here: the finite-acquisition leakage envelope is *phase-coherent* and its
+magnitude passes through zero at every sinc zero, so the spectrum can look like
+noise (in magnitude) while still carrying fully coherent leakage. The
+discriminator is the phase, and this module provides the complex-domain test
+that uses it.
+
+For an M-point band of complex spectrum values ``z`` with per-bin complex noise
+RMS ``sigma`` the statistic is
+
+    S_coh(z; sigma) = |sum_k z_k| / (sigma * sqrt(M))
+
+Under the null (band carries only noise) ``S_coh`` has mean ``sqrt(pi/4) ~=
+0.886`` and is independent of M; under a coherent leakage tail it grows like
+``(L/sigma) * sqrt(M)``. A threshold of 3 gives a per-band null false-positive
+rate well below 1%. The full derivation, calibration on synthetic spectra and
+verification on the 2638 fixture are in
+``dev-docs/research/complex-edge-coherence/report.md``; this module implements
+the locked operating point from that report.
+
+The functions here are pure (arrays in, arrays out) so they stay unit-testable;
+file orchestration lives in :mod:`ftmwpipeline._internal.stage4_impl`.
+"""
+
+from typing import List, Tuple
+
+import numpy as np
+
+# Locked operating point (research report sections 3 and 5). All three are
+# Stage 4 parameters configurable on the pipeline file; these are the
+# empirically-validated defaults.
+DEFAULT_EDGE_M = 64
+"""Band width for the rolling first-pass scan (null-tightest, cache-sized)."""
+
+DEFAULT_TRIM_M = 32
+"""Band width for trim-point refinement after a flag (finer spatial scale)."""
+
+DEFAULT_EDGE_THRESHOLD = 3.0
+"""``S_coh`` threshold separating leakage-touched from line-free regions."""
+
+# Closed-form null moments of S_coh (M-independent), for regression tests.
+NULL_MEAN = float(np.sqrt(np.pi / 4.0))  # ~= 0.8862
+NULL_VAR = float(1.0 - np.pi / 4.0)  # ~= 0.2146
+
+
+def coherence_statistic(z: np.ndarray, sigma: float) -> float:
+    """Complex-edge coherence statistic ``S_coh`` of one M-point band.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        Complex spectrum values of the band (1D, length M).
+    sigma : float
+        Per-bin complex noise RMS for the band (a single scalar; callers pass
+        the local window-mean of the per-point ``rms_noise`` array).
+
+    Returns
+    -------
+    float
+        ``|sum z| / (sigma * sqrt(M))``. Returns ``0.0`` for an empty band or
+        a non-positive ``sigma`` (degenerate, nothing to test).
+    """
+    z = np.asarray(z)
+    m = z.size
+    if m == 0 or sigma <= 0.0:
+        return 0.0
+    return float(np.abs(np.sum(z)) / (sigma * np.sqrt(m)))
+
+
+def max_cumsum_statistic(z: np.ndarray, sigma: float) -> Tuple[float, int]:
+    """Max-cumsum variant ``S_cum`` and the index of its hot spot.
+
+    ``S_cum = max_t |sum_{k<=t} z_k| / (sigma * sqrt(t))``. Where ``S_coh``
+    asks "is this band coherent on average", ``S_cum`` amplifies a coherent
+    *sub-stretch* — used by Stage 4 to locate the precise edge of a coherent
+    region inside an already-flagged band.
+
+    Parameters
+    ----------
+    z : np.ndarray
+        Complex spectrum values of the band (1D).
+    sigma : float
+        Per-bin complex noise RMS for the band.
+
+    Returns
+    -------
+    tuple of (float, int)
+        ``(S_cum, t_hot)`` where ``t_hot`` is the 0-based index of the band
+        element at which the running statistic is maximised — i.e. the edge of
+        the coherent stretch. ``(0.0, 0)`` for an empty band / degenerate
+        sigma.
+    """
+    z = np.asarray(z)
+    m = z.size
+    if m == 0 or sigma <= 0.0:
+        return 0.0, 0
+    partial = np.abs(np.cumsum(z))
+    t = np.arange(1, m + 1, dtype=float)
+    vals = partial / (sigma * np.sqrt(t))
+    hot = int(np.argmax(vals))
+    return float(vals[hot]), hot
+
+
+def rolling_coherence(
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    band_m: int = DEFAULT_EDGE_M,
+) -> np.ndarray:
+    """Rolling ``S_coh`` across a spectrum, one value per band centre.
+
+    A length-M band slides over the spectrum; the statistic of the band
+    starting at index ``s`` is assigned to its centre ``s + M//2``. The per-band
+    ``sigma`` is the mean of ``rms_noise`` over the band (the report's locally-
+    varying noise — never a global median). Positions with no full band
+    centred on them (the first/last ~M/2 points) are ``NaN``.
+
+    Parameters
+    ----------
+    complex_spectrum : np.ndarray
+        Complex spectrum (1D). Must be the complex FT, not magnitude — the test
+        is a phase-coherence test.
+    rms_noise : np.ndarray
+        Per-point noise RMS, same length as ``complex_spectrum`` (the canonical
+        Stage 2 ``rms_noise`` array).
+    band_m : int, default 64
+        Band width M.
+
+    Returns
+    -------
+    np.ndarray
+        Float array the same length as ``complex_spectrum``; entry ``c`` is the
+        ``S_coh`` of the band centred at ``c``, or ``NaN`` near the edges. If
+        the spectrum is shorter than ``band_m`` the single whole-spectrum
+        statistic is placed at the midpoint and all other entries are ``NaN``.
+
+    Raises
+    ------
+    ValueError
+        If the arrays differ in length or ``band_m`` is not positive.
+    """
+    z = np.asarray(complex_spectrum, dtype=complex)
+    sd = np.asarray(rms_noise, dtype=float)
+    if z.shape != sd.shape:
+        raise ValueError("complex_spectrum and rms_noise must have equal length")
+    if z.ndim != 1:
+        raise ValueError("complex_spectrum must be 1-dimensional")
+    if band_m <= 0:
+        raise ValueError("band_m must be positive")
+
+    n = z.size
+    out: np.ndarray = np.full(n, np.nan, dtype=float)
+    if n == 0:
+        return out
+    if n < band_m:
+        sigma = float(np.mean(sd)) if sd.size else 0.0
+        out[n // 2] = coherence_statistic(z, sigma)
+        return out
+
+    # Band [s, s+M): complex sum via cumulative sums.
+    zc = np.concatenate(([0.0 + 0.0j], np.cumsum(z)))
+    band_sum = zc[band_m:] - zc[:-band_m]  # length n - M + 1
+    sc = np.concatenate(([0.0], np.cumsum(sd)))
+    band_sigma = (sc[band_m:] - sc[:-band_m]) / band_m  # length n - M + 1
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        stat = np.abs(band_sum) / (band_sigma * np.sqrt(band_m))
+    stat = np.where(band_sigma > 0.0, stat, 0.0)
+
+    centres = np.arange(band_sum.size) + band_m // 2
+    out[centres] = stat
+    return out
+
+
+def above_threshold_intervals(
+    rolling: np.ndarray,
+    threshold: float = DEFAULT_EDGE_THRESHOLD,
+) -> List[Tuple[int, int]]:
+    """Contiguous index runs where the rolling statistic exceeds ``threshold``.
+
+    These are the spectrum's "leakage-touched" regions: a strong line and its
+    coherent skirt drive ``S_coh`` above threshold over a contiguous stretch,
+    and the report shows the threshold partitions leakage-touched from
+    line-free regions cleanly. ``NaN`` entries (spectrum edges) are treated as
+    below threshold.
+
+    Parameters
+    ----------
+    rolling : np.ndarray
+        Rolling ``S_coh`` array from :func:`rolling_coherence`.
+    threshold : float, default 3.0
+        ``S_coh`` threshold ``T_edge``.
+
+    Returns
+    -------
+    list of tuple of int
+        ``(lo, hi)`` inclusive index pairs, ordered by ``lo``, one per
+        contiguous above-threshold run.
+    """
+    r = np.asarray(rolling, dtype=float)
+    mask = np.isfinite(r) & (r > threshold)
+    if not mask.any():
+        return []
+
+    # Run boundaries from the diff of the boolean mask.
+    padded = np.concatenate(([False], mask, [False]))
+    edges = np.diff(padded.astype(np.int8))
+    starts = np.where(edges == 1)[0]
+    ends = np.where(edges == -1)[0] - 1
+    return [(int(s), int(e)) for s, e in zip(starts, ends)]

@@ -47,6 +47,7 @@ from ..io.peak_serialization import (
     load_peaks_from_hdf5,
     save_peaks_to_hdf5,
 )
+from ..file_manager import invalidate_downstream_stages
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -331,6 +332,8 @@ def detect_peaks_impl(
     save_peaks_impl(file_path, peaks, parameters=full_params)
     save_peak_parameters_impl(file_path, full_params)
     _update_stage_completion(file_path, "stage3_peaks")
+    # Re-detection supersedes any Stage 4 window plan built on the old peaks.
+    invalidate_downstream_stages(file_path, "stage3_peaks")
     n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
     logger.info(
         "Stage 3: detected %d peaks (user grid); %d promoted at SNR>=%.3g",

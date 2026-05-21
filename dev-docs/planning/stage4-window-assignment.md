@@ -1,8 +1,10 @@
 # Plan: Stage 4 — Window assignment
 
-Status: **ready to implement** (prototype complete). Scope is Stage 4
-only — *classify and propose*, do not fit (fitting is Stage 5).
-Registered in [`../ROADMAP.md`](../ROADMAP.md).
+Status: **implemented (WIP)** — all task-breakdown items landed, but validation
+on 2638 found the edge statistic mishandles real truncation leakage; see
+*Implementation notes* and [`leakage-detection-rework.md`](leakage-detection-rework.md)
+(divergence D8). Scope is Stage 4 only — *classify and propose*, do not fit
+(fitting is Stage 5). Registered in [`../ROADMAP.md`](../ROADMAP.md).
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the Stage 4 work it tracks. It builds directly on the
@@ -283,24 +285,49 @@ edge-trim error (never). Lock the protocol in the Stage 5 plan; Stage
    [`../research/complex-edge-coherence/`](../research/complex-edge-coherence/report.md).
    The locked statistic, M, threshold, and σ source from that report
    are what the rest of the breakdown implements against.
-2. [ ] Window-plan data structures (extend `SpectralWindow` or new
-   `WindowPlan`) + unit tests.
-3. [ ] Edge-coherence statistic + extent prediction/trim + unit tests
-   (synthetic clean-vs-leakage; in-band-vs-out-of-band shape).
-   Implementation now well-specified by the research report; ship the
-   statistic as a helper in `preprocessing/` next to `leakage.py`,
-   consumed by `_internal/stage4_impl.py`.
-4. [ ] Strong-cluster grouping + merge-to-fixpoint + unit tests.
-5. [ ] Fixed-contributor attachment (reach proposes, edge-coherence test
-   confirms) + leakage-artifact pruning of the free set + dependency DAG +
-   topological/batch ordering + unit tests.
-6. [ ] Strong-line-driven difficulty classification + width-cap/split
+2. [x] Window-plan data structures — `WindowDifficulty`, `FixedContributor`,
+   `FitWindow`, `WindowPlan` in `core/data_structures.py` + unit tests.
+3. [x] Edge-coherence statistic — `preprocessing/edge_coherence.py`
+   (`coherence_statistic`, `rolling_coherence`, `max_cumsum_statistic`,
+   `above_threshold_intervals`) + unit tests calibrated against the report.
+4. [x] Strong-cluster grouping + merge-to-fixpoint —
+   `preprocessing/window_planning.py:build_window_plan` + unit tests.
+5. [x] Fixed-contributor attachment + leakage-artifact pruning + dependency
+   DAG + topological/batch ordering + unit tests.
+6. [x] Strong-line-driven difficulty classification + width-cap/split
    proposal + unit tests.
-7. [ ] `io/window_serialization.py` + `stage4_windows` stage tracking +
-   hand-edit round-trip tests; wire into the invalidation mechanism.
-8. [ ] Wrappers (`Pipeline.assign_windows/visualize_windows/load_windows`,
+7. [x] `io/window_serialization.py` + `stage4_windows` stage tracking +
+   hand-edit round-trip tests; wired into the invalidation mechanism
+   (`file_manager.invalidate_downstream_stages`, also called on Stage 3
+   re-detection).
+8. [x] Wrappers (`Pipeline.assign_windows/visualize_windows/load_windows`,
    `api.*`, CLI `assign-windows`/`visualize-windows`) +
    `visualization/window_visualization.py`.
-9. [ ] Cross-interface + 2638 real-data integration tests; record the
-   O4-2 freeze-eligibility decision and the O4-7 handshake protocol
-   for the Stage 5 plan.
+9. [x] Cross-interface + 2638 real-data integration tests.
+
+## Implementation notes
+
+- **Window extent is per-peak-proposed, statistic-grouped.** Each promoted
+  peak proposes a window of its analytic `estimate_leakage_reach` extent (at
+  least `min_window_half_width_mhz`); overlapping proposals merge to a
+  fixpoint. The complex-edge coherence statistic supplies the *leakage-touched
+  regions* used for strong-cluster grouping (strong lines sharing one touched
+  region merge into a primary joint window) and for fixed-contributor
+  attachment (a window inside a strong line's touched region but distinct from
+  it gets that line frozen-in). This hybrid keeps the partition robust when
+  the statistic is weak.
+- **The `S_coh` edge statistic is wrong on real data — see
+  [`leakage-detection-rework.md`](leakage-detection-rework.md) (D8).** Validation
+  on 2638 found that `S_coh` (a coherent windowed sum) cancels on the
+  oscillating sinc truncation skirt and reads noise-level over obvious coherent
+  leakage. The leakage-touched map, strong-cluster grouping, fixed-contributor
+  attachment, and the `edge_coherence_fail` difficulty criterion all depend on
+  it and are therefore not yet trustworthy. Stage 4 is committed as WIP; the
+  data structures, serialization, stage tracking/invalidation, and interface
+  plumbing are sound, but `preprocessing/edge_coherence.py` and its consumers
+  need the rework in the handoff document. Stage 3's gap pass has a paired
+  defect (sidelobes promoted as weak peaks).
+- **O4-2 freeze-eligibility.** `min_freeze_snr` (default 50) is a parameter on
+  the file; a fixed contributor below it is flagged `freeze_eligible=False`
+  for the Stage 5 thaw-and-re-fit handshake. The thaw protocol itself is
+  Stage 5 work.

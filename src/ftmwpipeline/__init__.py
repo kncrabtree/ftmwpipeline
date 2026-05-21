@@ -21,6 +21,10 @@ from ftmwpipeline.core.data_structures import (
     FIDProcessingParameters,
     PeakClassification,
     Sideband,
+    WindowDifficulty,
+    FixedContributor,
+    FitWindow,
+    WindowPlan,
 )
 
 # Main pipeline interface
@@ -79,7 +83,11 @@ __all__ = [
     "FIDProcessingParameters",
     "PeakClassification",
     "Sideband",
-    
+    "WindowDifficulty",
+    "FixedContributor",
+    "FitWindow",
+    "WindowPlan",
+
     # Main pipeline interface
     "Pipeline",
 

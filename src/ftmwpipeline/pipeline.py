@@ -28,7 +28,10 @@ from ._internal.stage2_impl import (
 from ._internal.stage3_impl import (
     detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
 )
-from .core.data_structures import Peak
+from ._internal.stage4_impl import (
+    assign_windows_impl, visualize_windows_impl, load_windows_impl
+)
+from .core.data_structures import Peak, WindowPlan
 
 
 class Pipeline:
@@ -752,6 +755,156 @@ class Pipeline:
         except Exception as e:
             raise RuntimeError(
                 f"Failed to create peak visualization: {e}"
+            ) from e
+
+    def assign_windows(
+        self,
+        edge_m: Optional[int] = None,
+        trim_m: Optional[int] = None,
+        edge_threshold: Optional[float] = None,
+        max_window_width_mhz: Optional[float] = None,
+        min_freeze_snr: Optional[float] = None,
+        min_window_half_width_mhz: Optional[float] = None,
+        tau_us: Optional[float] = None,
+    ) -> WindowPlan:
+        """Assign analysis windows (Stage 4), turning promoted peaks into a fit plan.
+
+        Requires Stage 3 (peak detection) completed. Builds a set of disjoint
+        fit windows over the persisted user spectrum, each annotated with the
+        peaks to fit freely, the strong out-of-band lines whose leakage is
+        carried frozen, a fit dependency order, and a difficulty class. Stage 4
+        is purely structural -- it makes no fits. Equivalent to the CLI
+        ``assign-windows`` command and ``ftmwpipeline.api.assign_windows``.
+
+        Consumes only the peaks flagged ``promoted`` by Stage 3, on the Stage 1
+        canonical spectrum with the canonical Stage 2 noise. The result is
+        persisted to ``/stage4_windows`` and the stage marked complete.
+
+        Parameters
+        ----------
+        edge_m : int, optional
+            Rolling-scan complex-edge coherence band width (default 64).
+        trim_m : int, optional
+            Trim-refinement band width (default 32).
+        edge_threshold : float, optional
+            ``S_coh`` threshold separating leakage-touched from line-free
+            regions (default 3.0).
+        max_window_width_mhz : float, optional
+            Width cap; a wider window is HARD and gets a split proposal
+            (default 40.0).
+        min_freeze_snr : float, optional
+            Freeze-eligibility SNR cutoff for fixed contributors (default 50.0).
+        min_window_half_width_mhz : float, optional
+            Minimum half-width of a window around an isolated weak line
+            (default 2.0).
+        tau_us : float, optional
+            Assumed decay constant for the analytic leakage reach
+            (default: undamped/boxcar limit).
+
+        Returns
+        -------
+        WindowPlan
+            The fit plan: disjoint windows, dependency DAG, topological order,
+            parallel batches, parameters and diagnostics.
+
+        Raises
+        ------
+        StageDependencyError
+            If Stage 3 has not been completed.
+        RuntimeError
+            If window assignment fails.
+        """
+        try:
+            result = assign_windows_impl(
+                file_path=str(self.filepath),
+                edge_m=edge_m,
+                trim_m=trim_m,
+                edge_threshold=edge_threshold,
+                max_window_width_mhz=max_window_width_mhz,
+                min_freeze_snr=min_freeze_snr,
+                min_window_half_width_mhz=min_window_half_width_mhz,
+                tau_us=tau_us,
+            )
+            self.logger.info(
+                "Stage 4: %d windows (%d hard), %d batches, %d free peaks, "
+                "%d fixed contributors",
+                result["n_windows"],
+                result["n_hard"],
+                result["n_batches"],
+                result["n_free_peaks"],
+                result["n_fixed_contributors"],
+            )
+            return cast(WindowPlan, result["plan"])
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to assign windows: {e}") from e
+
+    def load_windows(self) -> WindowPlan:
+        """Load the persisted Stage 4 window plan (validates structure loudly)."""
+        return cast(WindowPlan, load_windows_impl(str(self.filepath))["plan"])
+
+    def visualize_windows(
+        self,
+        figsize: Optional[tuple] = None,
+        title: Optional[str] = None,
+        y_max_factor: Optional[float] = None,
+        backend: str = "matplotlib",
+        interactive: bool = True,
+        output_file: Optional[Union[str, Path]] = None,
+    ) -> Any:
+        """Overlay the Stage 4 window plan on the spectrum.
+
+        Equivalent to the CLI ``visualize-windows`` command. Shows each fit
+        window's span (shaded by difficulty), free peaks, fixed contributors,
+        and the rolling complex-edge coherence statistic. Requires Stage 4
+        completed.
+
+        Parameters
+        ----------
+        figsize : tuple, optional
+            Figure size ``(width, height)`` in inches.
+        title : str, optional
+            Custom plot title.
+        y_max_factor : float, optional
+            Spectrum-panel y-axis headroom (default 25.0).
+        backend : str, default ``'matplotlib'``
+            Plotting backend (only ``'matplotlib'`` supported).
+        interactive : bool, default True
+            Whether to open an interactive window.
+        output_file : str or Path, optional
+            Save plot to this path (non-interactive mode).
+
+        Returns
+        -------
+        figure
+            Matplotlib figure.
+
+        Raises
+        ------
+        RuntimeError
+            If Stage 4 has not been completed or visualization fails.
+        """
+        try:
+            fig = visualize_windows_impl(
+                file_path=str(self.filepath),
+                figsize=figsize,
+                title=title,
+                y_max_factor=y_max_factor,
+                backend=backend,
+                interactive=interactive,
+            )
+            if not interactive and output_file:
+                fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
+                self.logger.info(f"Plot saved to: {output_file}")
+            elif interactive and backend == "matplotlib":
+                import matplotlib.pyplot as plt
+
+                plt.show()
+            return fig
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create window visualization: {e}"
             ) from e
 
     def info(self) -> Dict[str, Any]:

@@ -23,11 +23,15 @@ from .data_structures import (
     FIDProcessingParameters,
     PeakClassification,
     Sideband,
+    WindowDifficulty,
+    FixedContributor,
+    FitWindow,
+    WindowPlan,
 )
 
 __all__ = [
     "FTMWData",
-    "FID", 
+    "FID",
     "ComplexFT",
     "SpectralWindow",
     "Peak",
@@ -36,4 +40,8 @@ __all__ = [
     "FIDProcessingParameters",
     "PeakClassification",
     "Sideband",
+    "WindowDifficulty",
+    "FixedContributor",
+    "FitWindow",
+    "WindowPlan",
 ]

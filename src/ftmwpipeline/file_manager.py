@@ -159,6 +159,8 @@ class PipelineStageTracker:
         'stage2_noise_result': ['stage1_complex_ft'],  # Stage 2 requires Stage 1
         # Stage 3 requires Stage 1 (FT) and Stage 2 (noise) to be completed.
         'stage3_peaks': ['stage1_complex_ft', 'stage2_noise_result'],
+        # Stage 4 (window assignment) requires Stage 3 (peaks).
+        'stage4_windows': ['stage3_peaks'],
         # Future stages...
     }
 
@@ -172,6 +174,7 @@ class PipelineStageTracker:
         'stage1_complex_ft': 'processing_parameters/ft_processing',
         'stage2_noise_result': 'stage2_noise_result',
         'stage3_peaks': 'stage3_peaks',
+        'stage4_windows': 'stage4_windows',
     }
     
     def __init__(self, completed_stages: Optional[list] = None):
@@ -483,6 +486,69 @@ def _load_stage_tracker(filepath: Path, h5f: Optional[h5py.File] = None) -> Pipe
     finally:
         if should_close:
             h5f.close()
+
+
+def invalidate_downstream_stages(
+    filepath: Union[str, Path], stage_name: str
+) -> list:
+    """Drop persisted data and completion for every stage that depends on ``stage_name``.
+
+    Called when a stage is re-run (e.g. Stage 3 re-detection) so that stale
+    downstream results -- computed against the now-superseded output -- do not
+    linger. The stage itself is *not* touched, only its transitive dependents.
+
+    Parameters
+    ----------
+    filepath : str or Path
+        Path to the .ftmw pipeline file.
+    stage_name : str
+        The stage that was just (re-)run.
+
+    Returns
+    -------
+    list of str
+        The stage names that were invalidated (sorted), empty if none.
+    """
+    deps = PipelineStageTracker.STAGE_DEPENDENCIES
+    paths = PipelineStageTracker.STAGE_DATA_PATHS
+
+    dependents: set = set()
+    changed = True
+    while changed:
+        changed = False
+        for stage, required in deps.items():
+            if stage in dependents:
+                continue
+            if any(req == stage_name or req in dependents for req in required):
+                dependents.add(stage)
+                changed = True
+
+    if not dependents:
+        return []
+
+    with h5py.File(filepath, 'a') as h5f:
+        if 'pipeline_stages' not in h5f:
+            return []
+        stages_group = h5f['pipeline_stages']
+        completed = json.loads(stages_group.attrs.get('completed_stages', '[]'))
+        invalidated = []
+        for stage in dependents:
+            data_path = paths.get(stage, stage)
+            if data_path in h5f:
+                del h5f[data_path]
+            if stage in completed:
+                completed.remove(stage)
+                invalidated.append(stage)
+        if invalidated:
+            stages_group.attrs['completed_stages'] = json.dumps(completed)
+            stages_group.attrs['last_updated'] = datetime.now().isoformat()
+            logger.warning(
+                "Stage %s re-run; invalidated downstream stage(s) %s -- "
+                "re-run them to refresh.",
+                stage_name,
+                sorted(invalidated),
+            )
+        return sorted(invalidated)
 
 
 def update_processing_parameters(filepath: Union[str, Path], parameters: Dict[str, Any]) -> None:

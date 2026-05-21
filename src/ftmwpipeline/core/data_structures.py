@@ -895,3 +895,181 @@ class FTMWData:
                 f"fid_duration={self.fid.duration_us:.1f} μs, "
                 f"n_windows={self.n_windows}, "
                 f"n_fitted_peaks={self.total_fitted_peaks})")
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: window-assignment plan
+# ---------------------------------------------------------------------------
+#
+# Stage 4 turns the promoted Stage 3 peak list into a *fit plan*: an ordered set
+# of disjoint analysis windows, each carrying the peaks to fit freely, the
+# strong out-of-band lines whose leakage must be carried as a frozen background,
+# a fit dependency DAG, and a difficulty class. The plain ``SpectralWindow``
+# above is the data-bearing window used downstream; the structures here are the
+# *planning* substrate (no spectrum arrays — only references into the Stage 3
+# peak list). See ``dev-docs/planning/stage4-window-assignment.md``.
+
+
+class WindowDifficulty(Enum):
+    """Stage 4 difficulty class for a fit window.
+
+    ``EASY`` windows are isolated/independent and can be fit in parallel;
+    ``HARD`` windows contain or are materially influenced by a strong line (or
+    exceed the width cap, or sit in a coupled cluster) and warrant extra Stage 5
+    budget.
+    """
+
+    EASY = "easy"
+    HARD = "hard"
+
+
+@dataclass
+class FixedContributor:
+    """A strong line, fit freely in *its own* window, contributing leakage here.
+
+    A fixed contributor is evaluated in a dependent window's model with its
+    parameters frozen at the values found in its ``primary_window_id`` — it
+    contributes only its finite-T leakage skirt, it is not re-fit. This is what
+    lets a strong line's leakage be represented in every window it reaches
+    without fitting it more than once.
+
+    Attributes
+    ----------
+    peak_index : int
+        Index into the persisted Stage 3 peak list of the strong line.
+    primary_window_id : int
+        ``window_id`` of the fit window that fits this line as a free peak.
+    frequency_mhz : float
+        Frequency of the line (MHz), carried for diagnostics/serialization.
+    freeze_eligible : bool
+        Whether the line's SNR clears ``min_freeze_snr`` so its parameters are
+        stable enough to freeze without contaminating the dependent window
+        (Stage 4 open question O4-2). ``False`` flags a thaw-and-re-fit
+        candidate for Stage 5.
+    """
+
+    peak_index: int
+    primary_window_id: int
+    frequency_mhz: float
+    freeze_eligible: bool = True
+
+
+@dataclass
+class FitWindow:
+    """One analysis window in a Stage 4 :class:`WindowPlan`.
+
+    Fit windows are **disjoint** and cover each spectrum point at most once —
+    that is the hard Stage 4 invariant. The contributor sets (``free_peak_*``
+    plus ``fixed_contributors``) intentionally *do* overlap across windows.
+
+    Attributes
+    ----------
+    window_id : int
+        Stable identifier, assigned in ascending-frequency order.
+    freq_range : tuple of float
+        ``(min_mhz, max_mhz)`` span whose points enter this window's residual.
+    free_peak_indices : list of int
+        Indices into the persisted Stage 3 peak list of the peaks fit freely in
+        this window (leakage-artifact detections already pruned out).
+    fixed_contributors : list of FixedContributor
+        Out-of-band strong lines whose frozen leakage is carried here.
+    difficulty : WindowDifficulty
+        ``EASY`` or ``HARD``.
+    batch : int
+        Parallel-execution group: all windows in a batch are mutually
+        independent and depend only on earlier batches.
+    split_proposal : float, optional
+        A complex-edge-clean interior frequency at which Stage 5 *may* split a
+        too-wide hard window. ``None`` when no split is proposed.
+    needs_joint_treatment : bool
+        Set when a hard window is strongly coupled with no clean interior split
+        point — Stage 5 must treat it jointly.
+    diagnostics : dict
+        Free-form diagnostics (predicted vs trimmed extent, edge-statistic
+        values, width-cap hit flag, pruned-artifact count, …).
+    """
+
+    window_id: int
+    freq_range: Tuple[float, float]
+    free_peak_indices: List[int] = field(default_factory=list)
+    fixed_contributors: List[FixedContributor] = field(default_factory=list)
+    difficulty: WindowDifficulty = WindowDifficulty.EASY
+    batch: int = 0
+    split_proposal: Optional[float] = None
+    needs_joint_treatment: bool = False
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def width_mhz(self) -> float:
+        """Width of the window in MHz."""
+        return abs(self.freq_range[1] - self.freq_range[0])
+
+    @property
+    def n_free_peaks(self) -> int:
+        """Number of free peaks in this window."""
+        return len(self.free_peak_indices)
+
+    def __repr__(self) -> str:
+        return (
+            f"FitWindow(id={self.window_id}, "
+            f"range=[{self.freq_range[0]:.1f}, {self.freq_range[1]:.1f}] MHz, "
+            f"free={self.n_free_peaks}, fixed={len(self.fixed_contributors)}, "
+            f"{self.difficulty.value}, batch={self.batch})"
+        )
+
+
+@dataclass
+class WindowPlan:
+    """The complete Stage 4 fit plan: ordered windows + a fit dependency DAG.
+
+    Attributes
+    ----------
+    windows : list of FitWindow
+        The disjoint fit windows, ordered by ascending frequency.
+    dependency_edges : list of tuple of int
+        ``(window_id, depends_on_window_id)`` pairs — a window depends on the
+        windows that fit its fixed contributors. The graph is acyclic.
+    topological_order : list of int
+        ``window_id`` values in a valid fit order (every window appears after
+        all windows it depends on).
+    parameters : dict
+        The Stage 4 parameters used (edge M/threshold, width cap, …).
+    diagnostics : dict
+        Plan-level diagnostics (e.g. coherent regions with no identifiable
+        strong-line source — a hint that peak detection missed a line).
+    """
+
+    windows: List[FitWindow] = field(default_factory=list)
+    dependency_edges: List[Tuple[int, int]] = field(default_factory=list)
+    topological_order: List[int] = field(default_factory=list)
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def n_windows(self) -> int:
+        """Number of fit windows in the plan."""
+        return len(self.windows)
+
+    @property
+    def n_batches(self) -> int:
+        """Number of parallel-execution batches."""
+        if not self.windows:
+            return 0
+        return max(w.batch for w in self.windows) + 1
+
+    def window(self, window_id: int) -> "FitWindow":
+        """Return the window with the given ``window_id`` (raises if absent)."""
+        for w in self.windows:
+            if w.window_id == window_id:
+                return w
+        raise KeyError(f"no window with window_id={window_id}")
+
+    def __repr__(self) -> str:
+        n_hard = sum(
+            1 for w in self.windows if w.difficulty == WindowDifficulty.HARD
+        )
+        return (
+            f"WindowPlan(n_windows={self.n_windows}, hard={n_hard}, "
+            f"n_batches={self.n_batches}, "
+            f"n_dependencies={len(self.dependency_edges)})"
+        )
