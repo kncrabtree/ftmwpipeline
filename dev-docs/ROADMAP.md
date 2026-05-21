@@ -29,8 +29,8 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 | 0 Data import | Implemented | — |
 | 1 FT processing | Implemented | — |
 | 2 Noise estimation | Implemented | — |
-| 3 Peak detection | Implemented; gap-pass leakage masking flawed — see D8 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
-| 4 Window assignment | Implemented (WIP); edge statistic flawed — see D8 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) |
+| 3 Peak detection | Implemented; gap-pass leakage mask still flawed — D8 task 4 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
+| 4 Window assignment | Implemented (WIP); edge statistic de-ramp fixed — D8 tasks 1–3 done | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) |
 | 5 Fitting | Not started | `planning/stage5-fitting.md` (TBD) |
 
 Stages 3–5 are partly **port-and-refine**, partly **recreate**. The earlier
@@ -59,7 +59,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 |---|---|
 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance) |
 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Implemented (WIP — see leakage-detection-rework) |
-| [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Open (approach validated) — D8 de-ramp resolution plan |
+| [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | In progress (tasks 1–3 done; resume at task 4) — D8 de-ramp resolution |
 | [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
 
@@ -77,7 +77,7 @@ here and resolved deliberately (amend spec, or change code), never silently.
 | D5 | Performance/benchmark tests absent; storage-reduction figures unmeasured | **Deferred (tracked):** specs already made unmeasured figures non-normative; benchmark work tracked in [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md). `tests/performance/` remains empty until then |
 | D6 | `io/complex_ft_serialization.py` never invoked by the pipeline | **Resolved (code):** module and its tests removed; the serialization spec prohibits persisting ComplexFT, so it was dead by design |
 | D7 | User-chosen FT processing settings (trim, zpf, expf, …) are not persisted as canonical state; later stages silently fall back to import-time *recommended* defaults instead of what the user chose. Stage 3 currently masks this with interim per-stage `trim`/`zpf` options | **Resolved (code + spec):** Stage 1 now persists user-chosen settings (incl. trim) as canonical; Stages 2–5 operate on that grid; changing canonical settings invalidates downstream results. Stage 3's interim `trim`/`zpf` ownership removed from `_internal/stage3_impl`, `Pipeline.detect_peaks`, `api.detect_peaks`, and `cli/peak_commands.py`. `SERIALIZATION_STRATEGY.md` and `API_STRATEGY.md` amended with normative canonical-settings text |
-| D8 | Truncation-leakage handling is wrong in both Stage 3 and Stage 4. Stage 3's gap pass promotes a strong line's sinc sidelobes as weak lines — its leakage mask (`estimate_leakage_reach`) is 7–25× too narrow vs the real ±20+ MHz coherent skirt. Stage 4's edge statistic `S_coh` (a coherent windowed sum) cancels on the oscillating sinc skirt and reads noise-level over obvious leakage, so its leakage-touched map, fixed-contributor attachment, and difficulty classification are unreliable on real data | **Open (approach validated):** root cause is the full-record rfft phase ramp `exp(±i2πf·t₀)` (`t₀=start_us`) that makes truncation leakage oscillate so a coherent sum cancels on it. Fix is one shared de-ramp to the active-region turn-on feeding the existing `S_coh` — no new statistic. Validated on 2638 (damped + boxcar); implementation not started, Stage 4 committed as WIP. Resolution plan in [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) |
+| D8 | Truncation-leakage handling is wrong in both Stage 3 and Stage 4. Stage 3's gap pass promotes a strong line's sinc sidelobes as weak lines — its leakage mask (`estimate_leakage_reach`) is 7–25× too narrow vs the real ±20+ MHz coherent skirt. Stage 4's edge statistic `S_coh` (a coherent windowed sum) cancels on the oscillating sinc skirt and reads noise-level over obvious leakage, so its leakage-touched map, fixed-contributor attachment, and difficulty classification are unreliable on real data | **In progress:** root cause is the full-record rfft phase ramp `exp(±i2πf·t₀)` (`t₀=start_us`) that makes truncation leakage oscillate so a coherent sum cancels on it. Fix is one shared de-ramp to the active-region turn-on feeding the existing `S_coh` — no new statistic. Tasks 1–3 landed (de-ramp helpers; Stage 4 wired; `T_edge` recalibrated 3→8); Stage 3 gap mask + report revisions remain. Resolution plan and task breakdown in [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) |
 
 New divergences are appended here as they arise.
 

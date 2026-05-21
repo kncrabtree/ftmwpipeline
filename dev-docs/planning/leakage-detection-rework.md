@@ -1,12 +1,20 @@
 # Plan: leakage detection rework — Stages 3–4 (D8 resolution)
 
-Status: **approach validated, implementation not started.** Registered in
+Status: **in progress — tasks 1–3 done; resume at task 4.** Registered in
 [`../ROADMAP.md`](../ROADMAP.md) as divergence **D8**.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the D8 rework it tracks. It supersedes the earlier handoff
 that recommended building a new matched-filter detector — validation showed the
 fix is much smaller.
+
+**Next session — start here.** The de-ramp helpers, the Stage 4 wiring, and the
+`T_edge` recalibration have landed (commits through "Calibrate Stage 4 leakage
+threshold…"; tasks 1–3 below are checked off). Resume at **task 4** — the
+Stage 3 gap-pass mask. The de-ramp infrastructure it needs already exists
+(`leakage.py:leakage_touched_intervals`); the open calibration decision is the
+gap-mask threshold (see task 4). Tasks 5–7 (integration, report revisions,
+striking D8) follow.
 
 ## Summary
 
@@ -143,6 +151,10 @@ Measured on 2638 (`scratch/deramp.py`, `deramp_global.py`, `investigate.py`):
   de-ramped `S_coh` above-threshold intervals (`leakage_touched_intervals`),
   computed on the canonical unapodized spectrum the gap pass already uses. The
   gap pass runs only in the genuinely leakage-free intervals.
+- Threshold (per-job): the gap pass detects at ~2σ, so the mask should cover
+  where a sidelobe would clear that floor — `T_edge ≈ 16` (`= 2√M`), higher
+  than Stage 4's 8. `leakage_touched_intervals` already takes a `threshold`
+  argument; calibrate and lock ≈16 on 2638 (task 4).
 - The windowed primary pass is unchanged (already sidelobe-clean).
 - Cross-check retained: an unwindowed candidate inside a leakage-touched
   interval that has no counterpart in the windowed primary spectrum is a
@@ -240,24 +252,26 @@ the `T_edge`/`M` operating point (needs re-calibration).
 
 ## Task breakdown
 
-1. [ ] `deramp_to_active_start` + `leakage_touched_intervals` in
+1. [x] `deramp_to_active_start` + `leakage_touched_intervals` in
    `preprocessing/leakage.py` + unit tests (sideband sign both ways; null
    invariance; a synthetic `t₀≠0` line's skirt collapses to non-oscillating).
-2. [ ] Stage 4: de-ramp the spectrum feeding `edge_coherence` in
-   `window_planning.py` / `stage4_impl.py`; algorithm step 1 uses the de-ramped
-   map. Update Stage 4 unit tests for de-ramped input.
-3. [ ] Stage 4 calibration: set `DEFAULT_EDGE_THRESHOLD` to 8;
+2. [x] Stage 4: de-ramp the spectrum feeding `edge_coherence` in
+   `window_planning.py` / `stage4_impl.py` (and `window_visualization.py`).
+   Stage 4 unit tests updated for de-ramped input.
+3. [x] Stage 4 calibration: `DEFAULT_EDGE_THRESHOLD` 3 → 8;
    `window_planning.py` step 2 drops the `estimate_leakage_reach` extent
-   proposal (uniform tight extents); verify the 2638 plan; update Stage 4 unit
-   tests and `stage4-window-assignment.md`. See *Window-extent handling +
-   threshold (calibrated)*.
-4. [ ] Stage 3: replace the gap-pass mask with `leakage_touched_intervals`;
-   retire `estimate_leakage_reach` from the mask. Update Stage 3 tests; verify
-   the gap pass no longer promotes the strong-line sidelobes (the windowed-vs-
-   unwindowed peak-count collapse on 2638).
+   proposal (uniform tight extents); 2638 plan verified (328 windows, max
+   width ~31 MHz, no mega-windows); Stage 4 unit tests and
+   `stage4-window-assignment.md` updated.
+4. [ ] **Stage 3 — resume here.** Replace the gap-pass mask with
+   `leakage_touched_intervals`; retire `estimate_leakage_reach` from the mask.
+   Calibrate the per-job gap-mask threshold: the gap pass detects at ~2σ, so
+   the mask wants `T_edge ≈ 16` (`= 2√M`) — verify and lock that on 2638.
+   Update Stage 3 tests; verify the gap pass no longer promotes strong-line
+   sidelobes (the windowed-vs-unwindowed peak-count collapse on 2638).
 5. [ ] 2638 integration: strong-line skirts above threshold, leakage-free
-   stretches at the null, sane Stage 4 window count, reference doublet/cluster
-   still grouped. Re-run cross-interface consistency tests.
+   stretches at the null, sane Stage 4 window count. Re-run cross-interface
+   consistency tests.
 6. [ ] Research report revisions — `peak-detection/report.md` §5 + reach-mask
    conclusion (Stage 3); `complex-edge-coherence/` redo the synthetic sweep with
    a `t₀` parameter and regenerate the 2638 figures (Stage 4). See *Research
@@ -276,7 +290,8 @@ the `T_edge`/`M` operating point (needs re-calibration).
   genuine submerged weak lines in leakage-free gaps are still recovered.
 - **Stage 4:** edge-coherence consumers produce trustworthy leakage-touched
   regions on de-ramped 2638; invariants (disjoint fit windows, acyclic DAG)
-  still hold; the 36350/36389 doublet is one primary joint window.
+  still hold. (The 36350/36389 pair decouples at `T_edge = 8` by design — see
+  *Window-extent handling + threshold*.)
 - **Cross-interface:** identical results from CLI / Pipeline / functional API
   after the rework.
 - **Real data:** 2638 damped and boxcar — the strong-line and null evidence
@@ -297,6 +312,8 @@ ftmw.detect_peaks('scratch/exp_2638.ftmw')"
 The de-ramp diagnostics are ad-hoc scripts under the gitignored `scratch/`
 (`deramp.py` — single-line phase-slope + S_coh recovery; `deramp_global.py` —
 global + multi-region; `investigate.py` — null check, damped/boxcar table,
-Stage 3 mask comparison). The boxcar (undamped) spectrum is built in-script via
+Stage 3 mask comparison; `calibrate.py` — the `T_edge` sweep that fixed
+`T_edge = 8` and is the starting point for the task-4 gap-mask threshold). The
+boxcar (undamped) spectrum is built in-script via
 `FID.preprocess(expf_us=None)` because the API's `expf_us=None` resolves to the
 recommended default rather than "no filter".
