@@ -234,3 +234,63 @@ class TestEmptyAndEdgeCases:
             build_window_plan(peaks, freqs, spec, rms[:-1], acquisition_us=15.0)
         with pytest.raises(ValueError):
             build_window_plan(peaks, freqs, spec, rms, acquisition_us=0.0)
+
+
+class TestDeRamp:
+    """The full-record-rfft turn-on ramp and the de-ramp that undoes it."""
+
+    def test_deramp_recovers_plan_from_ramped_spectrum(self):
+        lines = [
+            (30038.0, 3.0, PeakClassification.STRONG),
+            (30042.0, 3.0, PeakClassification.STRONG),
+        ]
+        freqs, spec, rms, peaks = _synthetic(lines)
+        probe_mhz = 30000.0
+        t0_us = 3.0
+        ramp = np.exp(-2j * np.pi * (freqs - probe_mhz) * 1e6 * (t0_us * 1e-6))
+        ramped = spec * ramp
+
+        ref = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        fixed = build_window_plan(
+            peaks,
+            freqs,
+            ramped,
+            rms,
+            acquisition_us=15.0,
+            probe_freq_mhz=probe_mhz,
+            start_us=t0_us,
+        )
+        broken = build_window_plan(peaks, freqs, ramped, rms, acquisition_us=15.0)
+
+        # Matching start_us de-ramps back to the reference spectrum exactly.
+        assert fixed.n_windows == ref.n_windows
+        assert [w.freq_range for w in fixed.windows] == [
+            w.freq_range for w in ref.windows
+        ]
+        ref_stat = max(w.diagnostics["edge_coherence_statistic"] for w in ref.windows)
+        fixed_stat = max(
+            w.diagnostics["edge_coherence_statistic"] for w in fixed.windows
+        )
+        broken_stat = max(
+            w.diagnostics["edge_coherence_statistic"] for w in broken.windows
+        )
+        assert fixed_stat == pytest.approx(ref_stat, rel=1e-6)
+        # Leaving the ramp in place collapses the coherent edge statistic.
+        assert broken_stat < 0.5 * fixed_stat
+        _assert_invariants(fixed)
+
+    def test_start_us_recorded_in_parameters(self):
+        freqs, spec, rms, peaks = _synthetic(
+            [(30040.0, 2.0, PeakClassification.STRONG)]
+        )
+        plan = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            probe_freq_mhz=30000.0,
+            start_us=2.35,
+        )
+        assert plan.parameters["start_us"] == 2.35
+        assert plan.parameters["probe_freq_mhz"] == 30000.0

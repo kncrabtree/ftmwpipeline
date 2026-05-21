@@ -61,7 +61,7 @@ from .edge_coherence import (
     max_cumsum_statistic,
     rolling_coherence,
 )
-from .leakage import estimate_leakage_reach
+from .leakage import deramp_to_active_start, estimate_leakage_reach
 
 # Stage 4 parameter defaults. All configurable on the pipeline file.
 DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
@@ -220,6 +220,8 @@ def build_window_plan(
     max_window_width_mhz: float = DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    probe_freq_mhz: float = 0.0,
+    start_us: float = 0.0,
 ) -> WindowPlan:
     """Build the Stage 4 fit plan from the promoted Stage 3 peaks.
 
@@ -246,6 +248,14 @@ def build_window_plan(
         Freeze-eligibility SNR cutoff for fixed contributors (O4-2).
     min_window_half_width_mhz : float
         Minimum half-width of a window built around an isolated weak line.
+    probe_freq_mhz : float
+        Probe (LO) frequency in MHz, used to de-ramp the spectrum to the
+        active-region turn-on before the edge-coherence statistic (see
+        :func:`~ftmwpipeline.preprocessing.leakage.deramp_to_active_start`).
+    start_us : float
+        Active-region start time ``t0`` in microseconds for that de-ramp.
+        ``0`` (the default) makes the de-ramp the identity -- correct for a
+        synthetic spectrum with no turn-on ramp.
 
     Returns
     -------
@@ -272,6 +282,8 @@ def build_window_plan(
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
+        "start_us": float(start_us),
+        "probe_freq_mhz": float(probe_freq_mhz),
     }
 
     ofreqs, ospec, orms, _order = _ordered_grid(
@@ -279,6 +291,11 @@ def build_window_plan(
         np.asarray(complex_spectrum, dtype=complex),
         np.asarray(rms_noise, dtype=float),
     )
+    # Reference the spectrum to the active-region turn-on: the pipeline FT is a
+    # full-record rfft, so a strong line's truncation-leakage skirt carries an
+    # exp(+/-i2pi f t0) ramp that makes the coherent edge statistic cancel on
+    # genuine leakage. The de-ramp restores it (see leakage-detection-rework).
+    ospec = deramp_to_active_start(ofreqs, ospec, probe_freq_mhz, start_us)
     n = ofreqs.size
     diagnostics: Dict[str, Any] = {}
 

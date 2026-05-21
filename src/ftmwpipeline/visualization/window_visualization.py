@@ -20,6 +20,7 @@ from ..preprocessing.edge_coherence import (
     DEFAULT_EDGE_THRESHOLD,
     rolling_coherence,
 )
+from ..preprocessing.leakage import deramp_to_active_start
 
 _DIFFICULTY_COLOR = {
     WindowDifficulty.EASY: "tab:green",
@@ -73,8 +74,16 @@ def plot_window_plan(
     threshold = float(plan.parameters.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))
 
     order = np.argsort(frequencies)
+    # De-ramp to the active-region turn-on so the displayed S_coh matches the
+    # statistic that drove the plan (see leakage-detection-rework).
+    referenced = deramp_to_active_start(
+        np.asarray(frequencies, dtype=float),
+        np.asarray(complex_spectrum, dtype=complex),
+        float(plan.parameters.get("probe_freq_mhz", 0.0)),
+        float(plan.parameters.get("start_us", 0.0)),
+    )
     rolling = rolling_coherence(
-        np.asarray(complex_spectrum)[order],
+        referenced[order],
         np.asarray(rms_noise)[order],
         band_m=edge_m,
     )

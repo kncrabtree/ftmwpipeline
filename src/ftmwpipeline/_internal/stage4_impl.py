@@ -143,6 +143,8 @@ def assign_windows_impl(
         user_rms,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
+        probe_freq_mhz=fid.probe_freq_mhz,
+        start_us=base_pp.start_us or 0.0,
         edge_m=edge_m_v,
         trim_m=trim_m_v,
         edge_threshold=edge_threshold_v,
