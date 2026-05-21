@@ -1,134 +1,281 @@
-# Handoff: leakage detection in Stages 3–4
+# Plan: leakage detection rework — Stages 3–4 (D8 resolution)
 
-Status: **open** — diagnosis complete, rework not started. Registered in
-[`../ROADMAP.md`](../ROADMAP.md) (divergence **D8**).
+Status: **approach validated, implementation not started.** Registered in
+[`../ROADMAP.md`](../ROADMAP.md) as divergence **D8**.
 
-This document hands off a problem found while validating the freshly-landed
-Stage 4 implementation against the 2638 fixture. **Stage 4 is committed as
-WIP** (all 349 tests green), but the investigation showed that both Stage 3's
-gap pass and Stage 4's edge statistic mishandle finite-acquisition truncation
-leakage, so the Stage 4 window plans are not yet trustworthy on real data. The
-findings and the agreed path forward are recorded here so the rework can be
-picked up cleanly.
+Normative requirements remain in the `*_STRATEGY.md` specs; this document is
+normative only for the D8 rework it tracks. It supersedes the earlier handoff
+that recommended building a new matched-filter detector — validation showed the
+fix is much smaller.
 
-## The core finding (with evidence)
+## Summary
 
-The persisted 2638 spectrum is `expf_us=5.0, winf=None` — an exponential
-filter, no window function. The exponential does **not** taper the abrupt
-signal turn-on at `t = 2.35 µs` (decay factor 1.0 there) and only reaches ~8%
-at `t = 15 µs`, so the spectrum carries near-full boxcar truncation sidelobes.
+Both Stage 3's gap-pass leakage mask and Stage 4's `S_coh` edge statistic
+mishandle finite-acquisition truncation leakage on real data. The single root
+cause is that the persisted spectrum is a **full-record rfft** in which the
+active signal starts at `t₀ = start_us ≠ 0`, so a strong line's coherent
+leakage skirt carries a phase ramp `exp(±i2πf·t₀)` and *oscillates*. A coherent
+sum (`S_coh`) cancels on it; an unmasked gap pass detects its sidelobes as weak
+lines.
 
-Three checks, all on 2638 (region 28795–28835 MHz, around the SNR≈212 line at
-28817):
+The fix is one shared transform: **de-ramp the complex spectrum to the
+active-region turn-on** before any coherence analysis. This collapses the
+oscillating skirt to a smooth non-oscillating `1/Δf` envelope that `S_coh`
+detects correctly. No new statistic is needed — `edge_coherence.py` is unchanged
+and is simply fed de-ramped input. The same de-ramped `S_coh` leakage-extent map
+serves as Stage 3's gap-pass mask.
 
-1. **Window-function test.** Re-FFT the FID with a real window
-   (`blackmanharris`/`hann`) applied to the active region: the window
-   `[28806.9, 28829.6]` collapses from ~30 promoted peaks to **4**, and the
-   neighbouring window from 7 to **2**. The extra detections are truncation
-   sidelobes, not lines.
-2. **Complex FT.** Between the strong lines the real and imaginary parts do
-   **not** return to zero — they ring with a clean, coherent sinc oscillation
-   spanning the full ±12 MHz. That region is coherent leakage, not noise.
-3. **S_coh.** The Stage 4 edge statistic reads ≈1.3 (noise-null level) right
-   across that obviously-coherent ringing.
+## Diagnosis
 
-## Problem 1 — Stage 3 gap pass promotes sidelobes as weak lines
+Validated on the 2638 fixture (`expf_us=5.0, winf=None` — exponential filter,
+no window function; the spectrum carries near-full boxcar truncation sidelobes).
 
-The two-pass design is sound and **stays**: the windowed primary pass
-identifies strong peaks (and which peaks are skirt-contaminated); the
-**unwindowed** gap pass recovers genuine weak features that windowing
-submerges. Running the gap pass on unwindowed data is correct.
+**Problem 1 — Stage 3 gap pass promotes sidelobes as weak lines.** The two-pass
+design is sound and stays: the windowed primary pass identifies strong peaks
+(and is itself sidelobe-clean — verified byte-identical to a manual
+`blackmanharris` FT); the unwindowed gap pass recovers genuine weak features.
+The bug is the gap-pass *mask*: it is masked within
+`preprocessing/leakage.py:estimate_leakage_reach` of each strong line
+(≈1.4–3.0 MHz), but the real coherent skirt rings out to ±20–48 MHz. The mask is
+**7–25× too narrow**, so the gap pass fires on sidelobes and promotes them.
 
-The bug is the **leakage exclusion / gap identification**. The gap pass is
-masked within `preprocessing/leakage.py:estimate_leakage_reach` of each strong
-line — ≈1.8 MHz for the SNR-212 line — but the real sidelobe skirt rings
-coherently out to ±12+ MHz, and at any point the skirt is the *cumulative*
-sum over all strong lines. The mask is ~7–10× too narrow, so the gap pass
-fires on sidelobes from ~2–12 MHz out and promotes them as weak lines.
+**Problem 2 — Stage 4 `S_coh` is blind to oscillating leakage.**
+`S_coh = |Σ z_k| / (σ√M)` is a coherent sum over M consecutive bins. Real
+truncation leakage on the persisted spectrum oscillates (see *Root cause*); over
+an M=64 band the sum cancels and `S_coh` sits at/near the noise null over
+obvious coherent leakage. Everything in Stage 4 that consumes `S_coh` —
+leakage-touched map, strong-cluster grouping, fixed-contributor attachment,
+`edge_coherence_fail` difficulty — is therefore unreliable on real data.
 
-The windowed primary pass itself is **correct** — verified: the window
-function is applied to the active region `[2.35, 15.0] µs` (not the whole
-record), and the Stage-3 primary spectrum is byte-identical to a manual
-`blackmanharris` FT and is sidelobe-clean. The fault is entirely the gap pass's
-notion of where a "gap" is.
+## Root cause
 
-## Problem 2 — Stage 4 S_coh is the wrong statistic
+`FID.preprocess` zeroes the FID outside `[start_us, end_us]` but keeps the full
+record length, and `compute_fft` rfft's the whole (zero-padded) array. The FFT
+time origin is the digitizer `t=0`; the active signal occupies `[t₀, t₁]` with
+`t₀ = start_us` (2.35 µs on 2638). A truncated signal over `[t₀, t₁]` has rfft
+response with **two oscillating edge terms and no non-oscillating component** —
+unlike a signal truncated to `[0, T]`, whose response keeps a non-oscillating
+`1/(i2πΔf)` term that a coherent sum preserves.
 
-`S_coh = |Σ z_k| / (σ√M)` is a *coherent sum* over M consecutive bins. Real
-truncation leakage is an oscillating sinc skirt whose sign flips every ~0.3
-MHz; an M=64 band spans ~2–3 oscillation periods, so the sum largely cancels
-and S_coh sits at the noise null over genuine leakage. It was calibrated on
-smoothly-phased synthetic leakage, which real boxcar/`expf` leakage is not.
-Lowering `T_edge` does not help — the statistic simply does not respond to
-oscillating leakage.
+The complex-edge-coherence research report calibrated `S_coh` on a simulator
+(`finite_T_response`) that builds every line over `[0, T]`, i.e. silently
+assumes `t₀ = 0`. Its synthetic verification therefore passed, and its 2638
+"verification" (report §5) ran `S_coh` on the real `t₀≠0` spectrum without the
+de-ramp and is **invalid** — see *Research report addendum*.
 
-Everything in Stage 4 that consumes S_coh is therefore unreliable on real
-data: leakage-touched regions, strong-cluster grouping, fixed-contributor
-attachment, and the `edge_coherence_fail` difficulty criterion.
+Measuring the skirt phase slope on 2638 recovers the dominant edge at
+`t_edge = −2.350 µs`, exactly `−start_us` — confirmation that the ramp is
+precisely the active-region turn-on, and that the turn-on edge dominates (the
+turn-off edge is tapered to ~8% by `expf` and is a small oscillating residual).
 
-## Design constraints (confirmed with the project owner)
+## The fix: de-ramp to the active-region turn-on
 
-- **The end goal is time-domain fitting of *unwindowed* data.** A window
-  function as an end state is explicitly **not** wanted — automated fitting of
-  *windowed* data is already a solved/easy problem (the surviving `bcfitting`
-  code reaches >95%). Exponential filtering is acceptable; an end-state window
-  function is not.
-- Truncation leakage is therefore *inherent* and *expected*. Stage 5's
-  finite-T damped-cosine model reproduces it exactly (the `1 − e^{…}` turn-on
-  term). The job of Stages 3–4 is **not to remove leakage** but to (a) avoid
-  detecting it as independent lines and (b) tell which windows are
-  leakage-coupled so Stage 5 carries the right contributors.
-- The windowed spectrum is a *tool* used internally (identify strong /
-  skirt-contaminated peaks); it is never the fitting target.
+De-ramp factor, derived from the numpy rfft convention (a signal starting at
+sample index `s` carries `X[k] = e^{−i2πks/N}·X′[k]`; recover `X′` by
+multiplying by `e^{+i2πks/N} = e^{+i2π·f_bb·t₀}`, `f_bb` the baseband
+frequency, `t₀ = s·dt = start_us`):
 
-## Recommended path forward
+    z_referenced = z · exp(+i·2π · f_bb · t₀)
 
-One new capability serves both problems: an **oscillation-aware leakage
-detector** that recognises the coherent sinc *ringing pattern* over a
-frequency range (e.g. a matched filter against the finite-T sinc skirt, or an
-autocorrelation/period-detection statistic on the complex FT), instead of a
-flat windowed sum. `cft_real_imag` shows exactly the signature to match.
+`f_bb` is the **baseband** frequency. Real (sideband-converted) frequency
+relates to it by `f = f_probe ∓ f_bb` (lower / upper sideband), and a single
+experiment is single-sideband, so
 
-- **Stage 4:** replace `S_coh` (`preprocessing/edge_coherence.py`) with that
-  oscillation detector. Its above-threshold extent is the true
-  leakage-touched map; feed that to strong-cluster grouping,
-  fixed-contributor attachment, and difficulty classification.
-- **Stage 3:** use the same leakage-extent map to define the gap pass's
-  "gaps" — the regions genuinely free of any strong line's coherent skirt.
-  Run the unwindowed detector only there. Cross-checking unwindowed
-  candidates against the windowed spectrum helps separate submerged weak
-  lines (real, in a gap) from skirt artifacts. Recalibrate or retire
-  `estimate_leakage_reach` for masking accordingly — the per-line `1/Δf`
-  envelope under-predicts and ignores the cumulative skirt.
-- **Separately (still valid):** Stage 4 windows have no baseline padding —
-  they end at their outermost peaks' extents. Stage 5 fitting needs a
-  configurable noise-only margin per window.
+    f_bb = |f_real − f_probe|
+
+makes the form sideband-proof: it reduces to `exp(−i2πf·t₀)` for lower-sideband
+data and `exp(+i2πf·t₀)` for upper-sideband, automatically. The global constant
+phase `exp(∓i2π·f_probe·t₀)` is irrelevant — it factors out of `|Σz|`.
+
+`f_probe` and `sideband` live on the `FID`, which both stage impls already load;
+`t₀ = start_us` is in the persisted processing parameters.
+
+**Where it lives.** A shared helper in `preprocessing/leakage.py` (already the
+cross-stage leakage module):
+
+- `deramp_to_active_start(freq_mhz, complex_spectrum, probe_freq_mhz, sideband,
+  start_us) -> np.ndarray` — the transform above.
+- `leakage_touched_intervals(freq_mhz, complex_spectrum, rms_noise, probe,
+  sideband, start_us, band_m=…, threshold=…) -> list[(lo, hi)]` — convenience
+  that de-ramps, calls `edge_coherence.rolling_coherence`, and returns
+  `above_threshold_intervals`. Both stages call this.
+
+**Design decision.** The de-ramp is an *internal transform owned by the
+leakage-detection code*, applied to the complex spectrum just before coherence
+analysis. The persisted canonical spectrum is **not** changed (it would alter
+the persisted artifact's phase and widen the blast radius for no benefit; the
+magnitude spectrum is phase-invariant, so Stage 2 noise and Stage 3 detection
+are unaffected either way). `edge_coherence.py`'s pure statistic functions are
+unchanged.
+
+## Validation evidence
+
+Measured on 2638 (`scratch/deramp.py`, `deramp_global.py`, `investigate.py`):
+
+- **Null preserved.** IID complex-Gaussian noise: `S_coh` mean 0.894 → 0.865
+  after de-ramp, 0% false positives at `T_edge=3`. The de-ramp is a
+  unit-magnitude phase multiply and provably cannot inflate noise.
+- **Strong-line skirts (2–12 MHz band), damped 2638:** canonical `S_coh`
+  median ~1.8–2.3 (erratic, 20–36% > 3) → de-ramped ~21–27 (**100% > 3**),
+  6/6 strong lines.
+- **Undamped (boxcar, `expf` off) 2638:** the worst case — both truncation
+  edges leak hard — canonical ~1.1–1.5 (~null) → de-ramped ~12–18 (**100% >
+  3**). The coherent sum isolates the turn-on edge regardless of the turn-off
+  residual.
+- **Stage 3 gap mask:** `estimate_leakage_reach` gives ±1.4–3.0 MHz; the
+  de-ramped `S_coh` contiguous-above-threshold extent is ±20–48 MHz.
+
+## Stage 4 changes
+
+- `_internal/stage4_impl.py` / `preprocessing/window_planning.py`: feed the
+  **de-ramped** spectrum to all edge-coherence calls. The de-ramp is applied
+  once where the complex spectrum is obtained (the FID is already loaded there).
+- `edge_coherence.py`: unchanged (pure statistic).
+- Algorithm step 1 (propose extent): the de-ramped `S_coh` leakage map
+  supersedes `estimate_leakage_reach` for both proposal and trimming.
+- Re-run the Stage 4 consumers (leakage-touched map, strong-cluster grouping,
+  fixed-contributor attachment, difficulty) against the de-ramped statistic;
+  they are designed correctly and only need the corrected input.
+
+## Stage 3 changes
+
+- Gap-pass mask: replace the `estimate_leakage_reach`-based mask with the
+  de-ramped `S_coh` above-threshold intervals (`leakage_touched_intervals`),
+  computed on the canonical unapodized spectrum the gap pass already uses. The
+  gap pass runs only in the genuinely leakage-free intervals.
+- The windowed primary pass is unchanged (already sidelobe-clean).
+- Cross-check retained: an unwindowed candidate inside a leakage-touched
+  interval that has no counterpart in the windowed primary spectrum is a
+  sidelobe, not a submerged weak line.
+
+## `estimate_leakage_reach` disposition
+
+Demoted. The de-ramped `S_coh` map is the real leakage extent for both stages;
+the analytic `1/Δf` reach under-predicts (it ignores the cumulative skirt of
+multiple strong lines) and is no longer the masking/extent authority. Remove its
+use from the Stage 3 mask and Stage 4 extent proposal. Final deletion of
+`preprocessing/leakage.py:estimate_leakage_reach` is deferred to Stage 5
+scoping (the finite-T reach formula may still seed the Stage 5 `τ` prior); until
+then it stays, unused by Stages 3–4.
+
+## Threshold / M re-calibration
+
+With `S_coh` now responding to leakage, the operating point needs review: on
+2638 ~57% of the spectrum reads leakage-touched at `T_edge=3, M=64`, and per
+strong-line extents reach 20–48 MHz. The `1/Δf` skirt decays slowly and the
+`√M` gain makes `S_coh=3` fire on ~0.4σ/bin coherent leakage — physically real,
+but possibly finer than Stage 4 needs to carry as a fixed contributor.
+
+This is a **calibration sub-task**, separable from landing the de-ramp: pick
+`T_edge`/`M` (and possibly a leakage-amplitude floor) so the Stage 4 partition
+yields sensible window counts and the doublet/cluster reference cases still
+group correctly. Calibrate against 2638; the locked values update the
+`edge_coherence.py` defaults and the Stage 4 plan. Stage 4 is not trustworthy
+until this is done.
+
+## Research report revisions
+
+Both research reports enshrine conclusions the de-ramp overturns; each needs a
+substantive revision, not an addendum.
+
+- **`dev-docs/research/peak-detection/report.md` (Stage 3).** §5 concludes the
+  closed-form `estimate_leakage_reach` mask is "the only candidate above the
+  noise floor" and that no phase-based sidelobe discriminator exists. The
+  de-ramped `S_coh` leakage map is exactly such a phase-coherence
+  discriminator, and D8 measures the reach mask 7–25× too narrow on real data.
+  Revise §5 and the reach-mask conclusion (§6–§7): the gap-pass mask is now the
+  de-ramped leakage-touched map; the closed-form reach is demoted to a
+  proposal. The cost analysis and the primary-apodization calibration (§3, §6)
+  stand.
+- **`dev-docs/research/complex-edge-coherence/report.md` (Stage 4).** Redo the
+  affected parts. `prototype.py:finite_T_response` builds `[0,T]` lines — add a
+  turn-on offset `t₀` and rerun the synthetic sweep so the calibration covers
+  the realistic `t₀≠0` case. Regenerate the 2638 figures (05/06) from the
+  de-ramped statistic. Rewrite §4 (verification) and §5 (2638). The §3 null
+  derivation and calibration stand — the statistic was never wrong, only its
+  input.
+
+## Out of scope / tracked separately
+
+- **Window baseline padding.** Stage 4 windows end at their outermost peaks'
+  extents with no noise-only margin; Stage 5 fitting needs a configurable
+  per-window pad. Independent of the de-ramp; fold into Stage 4 finalization or
+  the Stage 5 plan.
+- **34154 MHz line anomaly.** This SNR-172 promoted peak de-ramps to only
+  ~3.1 (damped) / ~1.7 (boxcar), unlike the other SNR~170–240 lines (~21–27 /
+  ~12–18). Possibly a blend or a mis-scored detection. Investigate during
+  implementation; not a de-ramp blocker.
 
 ## What is committed as WIP
 
-The full Stage 4 implementation: `WindowDifficulty`/`FixedContributor`/
-`FitWindow`/`WindowPlan`, `preprocessing/edge_coherence.py`,
-`preprocessing/window_planning.py`, `_internal/stage4_impl.py`,
-`io/window_serialization.py`, the three interface wrappers,
-`visualization/window_visualization.py`, and 37 tests (suite 344→ green).
-**Trust boundary:** `edge_coherence.py` and every Stage 4 step that consumes it
-are provisional pending this rework; the data structures, serialization,
-stage-tracking/invalidation, and interface plumbing are sound and reusable.
+The full Stage 4 implementation is committed (suite green):
+`WindowDifficulty`/`FixedContributor`/`FitWindow`/`WindowPlan`,
+`preprocessing/edge_coherence.py`, `preprocessing/window_planning.py`,
+`_internal/stage4_impl.py`, `io/window_serialization.py`, the three interface
+wrappers, `visualization/window_visualization.py`, and its tests.
+
+**Trust boundary:** the Stage 4 data structures, serialization, stage
+tracking/invalidation, and interface plumbing are sound and reusable.
+`edge_coherence.py` is also sound — the statistic was never wrong, only its
+input. The provisional parts are the *coherence input* (needs the de-ramp) and
+the `T_edge`/`M` operating point (needs re-calibration).
+
+## Task breakdown
+
+1. [ ] `deramp_to_active_start` + `leakage_touched_intervals` in
+   `preprocessing/leakage.py` + unit tests (sideband sign both ways; null
+   invariance; a synthetic `t₀≠0` line's skirt collapses to non-oscillating).
+2. [ ] Stage 4: de-ramp the spectrum feeding `edge_coherence` in
+   `window_planning.py` / `stage4_impl.py`; algorithm step 1 uses the de-ramped
+   map. Update Stage 4 unit tests for de-ramped input.
+3. [ ] `T_edge`/`M` re-calibration on 2638; update `edge_coherence.py` defaults
+   and `stage4-window-assignment.md`.
+4. [ ] Stage 3: replace the gap-pass mask with `leakage_touched_intervals`;
+   retire `estimate_leakage_reach` from the mask. Update Stage 3 tests; verify
+   the gap pass no longer promotes the strong-line sidelobes (the windowed-vs-
+   unwindowed peak-count collapse on 2638).
+5. [ ] 2638 integration: strong-line skirts above threshold, leakage-free
+   stretches at the null, sane Stage 4 window count, reference doublet/cluster
+   still grouped. Re-run cross-interface consistency tests.
+6. [ ] Research report revisions — `peak-detection/report.md` §5 + reach-mask
+   conclusion (Stage 3); `complex-edge-coherence/` redo the synthetic sweep with
+   a `t₀` parameter and regenerate the 2638 figures (Stage 4). See *Research
+   report revisions*.
+7. [ ] Strike D8 from `../ROADMAP.md`; update the Stage 3/4 plan-doc status
+   rows; rewrite this document as an implementation overview.
+
+## Test plan
+
+- **Unit:** `deramp_to_active_start` — lower/upper sideband sign; de-ramp of
+  IID noise leaves `S_coh` distribution unchanged; a synthetic line truncated
+  to `[t₀, t₁]` with `t₀≠0` has an oscillating skirt that the de-ramp collapses
+  to a non-oscillating envelope. `leakage_touched_intervals` against a known
+  synthetic leakage map.
+- **Stage 3:** gap pass masked by the de-ramped map promotes no sidelobes;
+  genuine submerged weak lines in leakage-free gaps are still recovered.
+- **Stage 4:** edge-coherence consumers produce trustworthy leakage-touched
+  regions on de-ramped 2638; invariants (disjoint fit windows, acyclic DAG)
+  still hold; the 36350/36389 doublet is one primary joint window.
+- **Cross-interface:** identical results from CLI / Pipeline / functional API
+  after the rework.
+- **Real data:** 2638 damped and boxcar — the strong-line and null evidence
+  above as regression checks.
 
 ## Reproducing the evidence
 
 ```bash
-# build/refresh the fixture through Stage 3 (current algorithm)
+# fixture through Stage 3 (canonical settings)
 conda run -n ftmwpipeline-dev python -c "
 import ftmwpipeline.api as ftmw
 ftmw.import_data('scratch/exp_2638.ftmw', source='examples/blackchirp_data/2638/')
-ftmw.compute_ft('scratch/exp_2638.ftmw', zpf=2, expf_us=5.0, trim=(26500, 40000))
+ftmw.compute_ft('scratch/exp_2638.ftmw', zpf=1, expf_us=5.0, trim=(26500, 40000))
 ftmw.estimate_noise('scratch/exp_2638.ftmw')
-ftmw.detect_peaks('scratch/exp_2638.ftmw')
-ftmw.assign_windows('scratch/exp_2638.ftmw')"
+ftmw.detect_peaks('scratch/exp_2638.ftmw')"
 ```
 
-The window-function comparison and complex-FT plots are produced by ad-hoc
-scripts under the gitignored `scratch/` (`wf.py`, `cft.py`); regenerate them
-by FFT-ing the FID with `window_function="blackmanharris"` vs the canonical
-`expf_us=5.0, winf=None` and plotting the 28795–28835 MHz region.
+The de-ramp diagnostics are ad-hoc scripts under the gitignored `scratch/`
+(`deramp.py` — single-line phase-slope + S_coh recovery; `deramp_global.py` —
+global + multi-region; `investigate.py` — null check, damped/boxcar table,
+Stage 3 mask comparison). The boxcar (undamped) spectrum is built in-script via
+`FID.preprocess(expf_us=None)` because the API's `expf_us=None` resolves to the
+recommended default rather than "no filter".
