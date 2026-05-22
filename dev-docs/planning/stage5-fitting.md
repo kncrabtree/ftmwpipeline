@@ -176,19 +176,23 @@ identical point counts. Real and imaginary parts are stacked into one real
 residual vector; the least-squares objective is noise-weighted by the
 canonical Stage 2 per-point RMS.
 
-The Stage 2 `rms_noise` array is already a **per-bin complex RMS** (it is used
-raw as σ in the Stage 4 `S_coh` statistic). Stage 5 weights by it directly —
-the bcfitting `calculate_noise_weighted_chi2` applied a 1.53 magnitude→complex
-conversion factor that is **not** ported (D-8); that factor existed only
-because the older noise stage reported a magnitude standard deviation.
+The Stage 2 `rms_noise` array is already a **per-bin complex RMS** σ (it is
+used raw as σ in the Stage 4 `S_coh` statistic). The complex noise's real and
+imaginary parts each carry variance σ²/2, so the stacked Re/Im residual is
+weighted by **σ/√2** for every element to be unit-variance — then reduced χ²
+≈ 1 and the F-test is calibrated (D-8; the prototype confirmed weighting by σ
+itself leaves reduced χ² ≈ 0.5 and doubles the F-statistic). The bcfitting
+`calculate_noise_weighted_chi2` applied a 1.53 magnitude→complex factor for
+the same reason; with a genuine complex per-bin σ the correct factor is just
+√2 and nothing else.
 
-The solver is `scipy.optimize.least_squares` with an analytic Jacobian of
-`h_T` w.r.t. `(A, δ, φ)` per peak and the shared `τ` (finite-difference
-fallback acceptable initially; analytic Jacobian validated against
-finite-difference in unit tests). The Jacobian also yields the parameter
-**covariance** → real frequency/amplitude/phase uncertainties — an improvement
-over the surviving reference, which left `freq_err = 0` for want of a
-covariance matrix.
+The solver is `scipy.optimize.least_squares` with an **analytic Jacobian** of
+`h_T` w.r.t. `(A, δ, φ)` per peak and the shared `τ`. The prototype derived
+and verified that Jacobian (agreement with finite differences to ~3×10⁻¹⁰), so
+production uses it from the start — no finite-difference phase. The Jacobian
+also yields the parameter **covariance** → real frequency/amplitude/phase
+uncertainties — an improvement over the surviving reference, which left
+`freq_err = 0` for want of a covariance matrix.
 
 ### τ handling
 
@@ -233,13 +237,27 @@ Ported from `fit_weak_window_conservative_time_domain`:
    constraint (`min_separation = factor · FWHM(τ)`) is dropped.
 
 **Addition, not subtraction** — the prior effort assessed both incremental
-addition and incremental subtraction; addition won. The retained caveat is an
-**early-modelling / underfitting failure**: an under-fit N-peak model can
-leave a residual where peak N+1 alone shows no significant improvement, yet
-N+1 *and* N+2 together do — a strict "stop at first non-improvement" loop
-misses them. Mitigation: a **patience** parameter (O5-5) — continue trying
-additions for a small number of steps past a non-improving candidate before
-terminating, and re-evaluate the run as a whole.
+addition and incremental subtraction; addition won.
+
+**Blend-aware seeding (the prototype's main algorithmic finding).** The plain
+add-one-peak loop fits one cosine, lets it drift to a blend's centroid, then
+adds the next from that drifted state — and for a tight near-equal in-phase
+blend that sequential path lands in a degenerate basin and the loop reports
+one line. The prototype
+([`../research/stage5-fitting/report.md`](../research/stage5-fitting/report.md)
+§4) showed the blend is *not* the problem: a blend is always statistically
+detectable (a single cosine leaves an elevated reduced χ²) and, fit jointly
+with a proper K=2 initialisation, is recovered to ~1 kHz down to 0.5 FWHM. The
+failure is purely **initialisation**. So the loop carries a **blend-aware
+seeder**: when a single-cosine fit at a seed leaves an elevated reduced χ²,
+retry K=2 (then K=3) initialised at *two/three positions straddling the
+feature*, not at the drifted centroid plus one candidate. A **patience**
+parameter (O5-5) — tolerate a small number of consecutive rejections before
+stopping — is kept as cheap insurance, but the prototype found it marginal:
+the matched-filter F-test is decisive (a real line's integrated leakage energy
+makes it overwhelmingly significant), so there is little
+individually-insignificant / jointly-significant middle ground for patience to
+exploit. The seeder, not patience, is the real fix for under-resolved blends.
 
 **Audit trail.** Every iteration records `{peak tested, F-statistic, p-value,
 AIC before/after, separation check, decision, reason}`. This decision log is
@@ -452,17 +470,18 @@ Synthetic ground truth **before** any real-data fitting (mandated by the Stage
   down to ≈ ½ FWHM, with independent (swept) phases and **unequal intensities**
   — including a 3:5:1-type triplet (nitrogen quadrupole hyperfine): blend
   recovery accuracy; the separation at which an unrecognised blend's frozen
-  skirt biases a dependent window; whether the add-one-peak F-test (with/without
-  patience) detects the blend, especially a weak component on a strong flank.
+  skirt biases a dependent window; and whether the **blend-aware seeder**
+  recovers the line count where the plain add-one-peak loop's sequential
+  initialisation does not (the prototype's key finding).
 - **Fixed contributors.** A strong line and, in a *separate* window, a weak
   line on its skirt; the strong line is fit, frozen, and carried — the weak
   line's parameters must come back unbiased. Repeated with the strong line a
   partially-resolved blend (the failure mode).
 - **τ handling.** A weak-only window falls back to fixed `τ_default`; a window
   with a strong anchor fits `τ` free and recovers it.
-- **Conservative loop.** The F-test/AIC accept/reject logic; the underfitting
-  case where N+1 alone is insignificant but N+1 and N+2 are (patience); the
-  knockout test grows the residual as predicted.
+- **Conservative loop.** The F-test/AIC accept/reject logic; the blend-aware
+  seeder retrying K=2/K=3 where a single-cosine fit leaves an elevated reduced
+  χ²; the knockout test grows the residual as predicted.
 - **Renegotiation.** A synthetic coupled pair triggers the residual
   edge-coherence check → `thaw` → co-fit; a structural case exercises the Stage
   4 `replan` entry point.
@@ -482,47 +501,57 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
 
 ## Open questions
 
-- **O5-1 — model realization.** Analytic `h_T` on the window grid (primary,
-  needed for non-aliased fixed-contributor skirts) vs a literal numerical FFT
-  of the effective-time model (cross-check, and the only route if `winf`
-  support were ever needed). Confirm the closed form against the numerical FFT
-  in the prototype.
-- **O5-2 — blending and skirt fidelity.** The central prototype investigation
-  (see *The blending problem*): blend recovery vs separation, phase, and
-  intensity ratio, and the separation at which a mis-fit blend corrupts the
-  fixed-contributor model.
+- **O5-1 — model realization. RESOLVED (prototype).** Analytic `h_T` on the
+  window grid is the model — confirmed against a literal numerical FFT of a
+  synthesized FID to a relative error of 7×10⁻³ (entirely the numerical FFT's
+  finite-grid error; the closed form is exact). Used uniformly for free peaks
+  and fixed-contributor skirts. See
+  [`../research/stage5-fitting/report.md`](../research/stage5-fitting/report.md) §2.
+- **O5-2 — blending and skirt fidelity. INVESTIGATED (prototype); one item
+  open.** A blend fit jointly with the correct line count is recovered to
+  ~1 kHz down to 0.5 FWHM across phase and intensity ratio, and is always
+  statistically detectable. The failure mode is the add-one-peak loop's
+  *sequential initialisation* — addressed by the blend-aware seeder (see *The
+  conservative add-one-peak loop*). An unrecognised blended fixed contributor
+  biases dependent windows by ~1 kHz. Open: validating the seeder + residual
+  edge-coherence flag on real blended fixtures.
 - **O5-3 — padding fallback.** Whether context-only padding (D-6) suffices, or
   Stage 4 window widening + aggregation is required. Decided empirically once
   fits run.
 - **O5-4 — τ free-vs-fixed threshold.** The strongest-line SNR below which a
   window holds `τ` fixed at `τ_default`. Calibrated on 2638.
-- **O5-5 — patience parameter.** How many non-improving steps the add-one-peak
-  loop tolerates before terminating, to survive the underfitting failure
-  without admitting noise peaks.
+- **O5-5 — patience parameter. ASSESSED (prototype): marginal.** Kept as
+  cheap insurance (default 1) but the matched-filter F-test is decisive, so
+  patience rarely changes an outcome; the blend-aware seeder is the real fix
+  for under-resolved blends. Tunable left as a parameter.
 - **O5-6 — thaw protocol details.** The exact trigger thresholds for the
   residual edge-coherence check and the bound on renegotiation rounds.
-- **O5-7 — parameter uncertainties.** Analytic Jacobian → covariance from the
-  start, or finite-difference initially with the analytic Jacobian as a
-  follow-up.
+- **O5-7 — parameter uncertainties. RESOLVED (prototype).** The analytic
+  Jacobian of `h_T` is verified (finite-difference agreement ~3×10⁻¹⁰); use it
+  from the start, with its covariance for the parameter uncertainties. No
+  finite-difference phase.
 - **O5-8 — persist vs recompute.** Confirm the parameters-persisted /
   arrays-recomputed split against `SERIALIZATION_STRATEGY.md` during
   implementation.
 
 ## Task breakdown
 
-1. [ ] **Research prototype** — derive and unit-test the demodulation /
-   sideband mapping; verify `h_T` (analytic vs numerical FFT) and its Jacobian;
-   investigate **blending** (recovery vs separation/phase, fixed-contributor
-   skirt corruption, add-one-peak detection) and the addition-vs-patience
-   behaviour. Archive under `dev-docs/research/stage5-fitting/` with a report,
-   following the Stage 3/4 prototype pattern. Resolves O5-1, O5-2, informs
-   O5-5.
+1. [x] **Research prototype** — `h_T` and its Jacobian verified; the
+   demodulation/sideband mapping derived (a wrong sign is a 200–400 kHz silent
+   bias); blending investigated (joint recovery ~1 kHz to 0.5 FWHM; the loop's
+   sequential initialisation, not detectability, is the failure → blend-aware
+   seeder); fixed-contributor mis-fit bias ~1 kHz; σ/√2 noise weighting and the
+   knockout test established. Archived in
+   [`../research/stage5-fitting/`](../research/stage5-fitting/report.md)
+   (`prototype.py` + `report.md` + figures). Resolved O5-1, O5-7; informed
+   O5-2, O5-5, D-8.
 2. [ ] `fitting/peak_model.py` — `h_T`, Jacobian, demod/sideband mapping,
    de-ramp integration + unit tests (both sidebands).
 3. [ ] `fitting/window_fit.py` — per-window least-squares core (the recreated
    `fit_time_domain_peaks` contract), shared/fixed τ, parameter covariance +
    unit tests.
-4. [ ] Conservative add-one-peak loop — F-test + AIC + separation + patience,
+4. [ ] Conservative add-one-peak loop — F-test + AIC + separation + patience +
+   the **blend-aware seeder** (retry K=2/K=3 on elevated single-cosine χ²),
    the audit trail, the knockout test; `fitting/validation.py` helpers ported
    from the bcfitting shell + unit tests.
 5. [ ] Fixed-contributor evaluation + DAG/batch execution order + local `thaw`
