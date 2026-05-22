@@ -259,6 +259,14 @@ makes it overwhelmingly significant), so there is little
 individually-insignificant / jointly-significant middle ground for patience to
 exploit. The seeder, not patience, is the real fix for under-resolved blends.
 
+As implemented in task 4 the blend-aware seeder runs on the **seed** — the
+strongest line, the documented failure mode where the strongest detection is
+itself a blend. A blend that surfaces *mid-loop* — a candidate added later
+whose own single-cosine fit leaves an elevated residual — is currently left to
+the plain add-one-peak path. Extending the seeder to re-seed any candidate
+whose addition leaves an elevated local reduced χ² is a possible refinement;
+it is **O5-9**, to be assessed on the real-data blended fixtures in task 10.
+
 **Audit trail.** Every iteration records `{peak tested, F-statistic, p-value,
 AIC before/after, separation check, decision, reason}`. This decision log is
 persisted so the conservative loop's behaviour can be validated and curated
@@ -533,6 +541,11 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
 - **O5-8 — persist vs recompute.** Confirm the parameters-persisted /
   arrays-recomputed split against `SERIALIZATION_STRATEGY.md` during
   implementation.
+- **O5-9 — mid-loop blend-aware seeding.** Task 4's blend-aware seeder runs on
+  the seed only. Whether the loop also needs to re-seed a *mid-loop* candidate
+  whose own single-cosine fit leaves an elevated local reduced χ² (a blend that
+  is not the strongest line) is open — to be assessed on the real-data blended
+  fixtures in task 10, alongside the open part of O5-2.
 
 ## Task breakdown
 
@@ -545,15 +558,15 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    [`../research/stage5-fitting/`](../research/stage5-fitting/report.md)
    (`prototype.py` + `report.md` + figures). Resolved O5-1, O5-7; informed
    O5-2, O5-5, D-8.
-2. [ ] `fitting/peak_model.py` — `h_T`, Jacobian, demod/sideband mapping,
+2. [x] `fitting/peak_model.py` — `h_T`, Jacobian, demod/sideband mapping,
    de-ramp integration + unit tests (both sidebands).
-3. [ ] `fitting/window_fit.py` — per-window least-squares core (the recreated
+3. [x] `fitting/window_fit.py` — per-window least-squares core (the recreated
    `fit_time_domain_peaks` contract), shared/fixed τ, parameter covariance +
    unit tests.
-4. [ ] Conservative add-one-peak loop — F-test + AIC + separation + patience +
+4. [x] Conservative add-one-peak loop — F-test + AIC + separation + patience +
    the **blend-aware seeder** (retry K=2/K=3 on elevated single-cosine χ²),
    the audit trail, the knockout test; `fitting/validation.py` helpers ported
-   from the bcfitting shell + unit tests.
+   from the bcfitting shell + unit tests. Mid-loop re-seeding deferred as O5-9.
 5. [ ] Fixed-contributor evaluation + DAG/batch execution order + local `thaw`
    renegotiation + unit tests.
 6. [ ] Stage 4 `replan` entry point (`merge`/`split`) + the residual
