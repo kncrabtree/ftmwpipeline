@@ -36,15 +36,29 @@ that spectrum detects those sidelobes as lines. The driver's answer:
    apodization suppresses the sidelobes, for a robust strong-line list.
 2. **Gap pass** — run the locator on the *unapodized* spectrum to
    recover weak lines apodization smeared away, but drop any detection
-   inside `±leakage_reach` of a primary peak (the closed-form reach
-   estimator of [the windowing report's](../complex-edge-coherence/report.md)
-   §2, shared verbatim from `preprocessing/leakage.py`).
+   inside a **leakage-touched region**: a stretch where a strong line's
+   coherent truncation skirt is still measurable. That region map is the
+   de-ramped complex-edge coherence statistic of [the windowing
+   report](../complex-edge-coherence/report.md)
+   (`leakage_touched_intervals` in `preprocessing/leakage.py`).
 
 This report asks three questions of that design: is it *fast enough*,
 is it *correct*, and can the residual false positives — the user-facing
 complaint, and a pain point for the sibling BlackChirp project, which
 runs a single-pass detector on unapodized spectra — be cheaply
 suppressed.
+
+> **D8 update.** §5 below was written before the de-ramp result. As
+> first investigated, the gap-pass mask was the closed-form leakage
+> *reach* (`estimate_leakage_reach`), and §5 concluded that was the best
+> available suppressor and that no cheap phase-based discriminator
+> existed. The D8 rework overturned the conclusion, not the
+> investigation: de-ramping the complex spectrum to the active-region
+> turn-on restores a rolling-band phase-coherence statistic that maps
+> the leakage-touched regions directly — and measured the closed-form
+> reach 7–25× too narrow on real data. §5 and the §6–§8 reach-mask
+> references are revised accordingly; the §2–§4 cost analysis and the
+> §6 primary-apodization calibration are unaffected and stand.
 
 ## 2. Cost profile
 
@@ -176,15 +190,22 @@ not re-attempted:
   zeros, so its prominence *is* essentially its full height; meanwhile
   a genuine weak line riding the skirt of a strong one has *low*
   prominence. The test removes real lines preferentially.
-- **Phase gives no cheap separator.** The truncation phase factor
-  `exp(−iπΔf·T)` winds at the *same rate* at a real line's own centre
-  and at a distant line's sidelobe — there is no phase-gradient or
-  anti-coherence cut that holds. (This is *not* a contradiction of the
-  windowing stage's complex-edge coherence statistic: that statistic
-  works because it integrates a *known, oriented* M-point band against
-  a strong line of *known location*. It needs the strong-line list as
-  input — which is exactly the provenance information a local test by
-  definition lacks.)
+- **Phase gives no cheap *local* separator — but a rolling-band one
+  exists.** The truncation phase factor `exp(−iπΔf·T)` winds at the
+  *same rate* at a real line's own centre and at a distant line's
+  sidelobe, so no phase-gradient or anti-coherence cut on a *single
+  candidate's neighbourhood* holds — the "phase anti-coherence" row
+  above confirms it (193 of 223 FPs kept). What the sweep did not test
+  is a *rolling-band* phase statistic. The windowing stage's complex-edge
+  coherence statistic integrates an oriented M-point band; on the
+  full-record rfft of real data the leakage signal carries a turn-on
+  phase ramp and oscillates, so a coherent sum cancels on it — which is
+  why it looked inapplicable here. De-ramping the spectrum to the
+  acquisition turn-on (D8) removes that oscillation, and the de-ramped
+  rolling statistic then flags leakage-touched *regions* from the
+  acquisition geometry alone (`start_us`, `probe_freq`) — no strong-line
+  list required. It is a cheap phase-based discriminator; it was simply
+  absent from this local-test sweep.
 - **The apodized veto fails on close-in sidelobes.** A sidelobe within
   ~1 MHz of its parent hides under the *broadened* apodized main lobe
   of that parent, so the apodized magnitude there is high and the veto
@@ -192,23 +213,37 @@ not re-attempted:
   can drop below the veto floor. The veto alone is no better than the
   diagonal.
 
-The **closed-form reach mask is the only candidate above the
-diagonal**, and only mildly so. The reason it is not better, applied to
-a single detection list, is structural: the reach of a strong line
-covers several MHz, and any genuine weak line that happens to sit
-inside that skirt is masked along with the sidelobes. There is no way
-around this *from one spectrum* — the information needed to tell a
-masked weak line from a masked sidelobe is simply not present in the
-boxcar spectrum at that location.
+Among the swept *local* heuristics the closed-form reach mask is the
+only candidate above the diagonal, and only mildly so — which is why
+the design as first shipped masked the gap pass with it. **D8
+superseded it.** Measured against the de-ramped rolling statistic on
+the real 2638 spectrum, the closed-form reach under-predicts the true
+coherent skirt by 7–25× (±1.4–3 MHz predicted vs ±20–48 MHz measured):
+it models one isolated line and ignores the cumulative skirt of many
+strong lines. The gap-pass mask is now the de-ramped leakage-touched
+map; the closed-form reach is demoted to a cheap initial *proposal*
+(see [the windowing report](../complex-edge-coherence/report.md) and
+`dev-docs/planning/leakage-detection-rework.md`).
+
+What does *not* change is the structural limit this section found: a
+genuine weak line sitting inside a strong line's skirt cannot be told
+from a sidelobe *at that location*, by any test, region-level or local.
+The de-ramped statistic identifies the leakage-touched *region*; it
+does not classify individual candidates within it. The gap pass
+therefore *skips the region entirely* rather than running there and
+trying to classify — accepting that a weak line buried in a strong
+skirt is recovered by the windowed primary pass and the downstream
+fit, not by the gap pass. That policy, not a per-candidate
+discriminator, is the resolution.
 
 **This is why the two-pass design exists, and the investigation
 vindicates it.** The apodized primary pass is an *independent
 measurement channel* in which the strong line's skirt is gone, so a
 weak line sitting inside that skirt becomes visible on its own merits.
-The gap pass then masks the boxcar spectrum by the *primary's*
-strong-line list — provenance supplied externally, exactly the input
-no local test can synthesise. No bolt-on suppressor improves on this;
-the two-pass architecture *is* the fix, and it should be kept.
+The gap pass then runs the boxcar locator only *outside* the de-ramped
+leakage-touched regions — the region map supplying the provenance no
+local test could synthesise. No bolt-on local suppressor improves on
+this; the two-pass architecture *is* the fix, and it should be kept.
 
 ## 6. The primary pass is not clean — and the fix
 
@@ -217,8 +252,8 @@ pipeline undercuts it. The primary pass apodizes with the user's Stage
 1 `expf_us` — 5 µs on the 2638 fixture, with no window function. That
 is the **exponential-5 µs row of §3: 211 false positives.** The
 "clean" pass is not clean: it detects its own sidelobes as lines, which
-both pollutes the returned peak list and corrupts the strong-line list
-that seeds the gap-pass reach mask.
+pollutes the returned peak list — and a sidelobe mis-promoted into the
+strong-line list misleads the windowing stage that consumes it.
 
 Verified directly on 2638 by recomputing the primary spectrum under
 four apodizations and counting detections, with the self-consistent
@@ -243,10 +278,10 @@ suppress.
 (Blackman-Harris is the natural default; Kaiser or Blackman are
 equivalent), independent of the user's Stage 1 `expf_us`.** The
 primary pass's sole job is robust strong-line *position* finding —
-amplitude, SNR, and the leakage reach are all measured downstream on
-the unapodized spectrum, so the primary apodization has no effect on
-any reported quantity except *which positions* are found and *which
-strong lines seed the mask*. For that job the most sidelobe-suppressing
+amplitude, SNR, and the de-ramped leakage-touched map are all measured
+downstream on the unapodized spectrum, so the primary apodization has
+no effect on any reported quantity except *which positions* are found.
+For that job the most sidelobe-suppressing
 window available is unambiguously correct, and the planning doc's
 current default ("Stage 1 `expf_us`-equivalent") is the defect. The
 change is a one-line default in the stage's orchestration and is the
@@ -261,54 +296,66 @@ job. A strong primary window shifts work to the gap pass by design.
 
 The sibling BlackChirp project runs a single-pass detector on
 unapodized spectra and has no apodized companion to lean on. Section 5
-shows it cannot be fixed by a local test. The best available cheap
-hardening is a **self-consistent reach mask**:
+shows it cannot be fixed by a *local* test — but the de-ramped
+rolling-coherence region mask is a single-pass hardening, and a cheap
+one:
 
 1. Detect all concave-down maxima above the SNR floor (the existing
    `locate_peaks`).
-2. Sort detections by SNR, descending.
-3. For each detection, compute its closed-form leakage reach from its
-   own SNR and the acquisition T.
-4. Drop any *weaker* detection that falls within a *stronger*
-   detection's reach.
+2. De-ramp the complex spectrum to the acquisition turn-on — multiply
+   by `exp(+i2π·f_bb·t₀)`, with `f_bb` the baseband frequency and `t₀`
+   the active-region start. This needs only the acquisition geometry,
+   no line list.
+3. Roll the complex-edge coherence statistic across the de-ramped
+   spectrum and threshold it into leakage-touched regions
+   (`leakage_touched_intervals`).
+4. Drop any detection that falls inside a leakage-touched region.
 
-This is `O(N log N)`, needs no second FFT, and on the boxcar synthetic
-removes roughly half the false positives while keeping 27 of 30 lines
-(§5, reach mask at `min_snr = 5`). It is strictly imperfect — it
-masks genuine weak lines sitting inside a strong line's skirt, the same
-structural limit as §5 — but for a *window-seeding* detector that is an
-acceptable loss, and it is a large improvement over the raw boxcar
-output (234 false positives → ~110). BlackChirp should also be offered
-the full two-pass option: if it can afford one extra apodized FFT, the
-apodized-primary + reach-masked-gap architecture of this pipeline is
-the genuinely correct answer and removes essentially all sidelobe
-false positives (§3: Blackman-Harris primary → 0).
+This needs no second FFT — it reuses the complex spectrum BlackChirp
+already has — and is `O(N)` in the rolling sum. It is the same mask the
+two-pass gap pass now uses, and on real data it covers the true skirt,
+which the older closed-form reach mask under-predicted by 7–25× (§5).
+It is still imperfect in the §5 sense — a genuine weak line inside a
+masked region is dropped along with the sidelobes — but for a
+*window-seeding* detector that is the acceptable direction.
 
-The reach-mask building block — `estimate_leakage_reach` — is already
-factored out in `preprocessing/leakage.py` with a self-contained
-derivation in its module docstring, so the recipe ports without
-dragging the rest of the pipeline along.
+BlackChirp should also be offered the full two-pass option: if it can
+afford one extra apodized FFT, the apodized-primary + region-masked-gap
+architecture of this pipeline removes essentially all sidelobe false
+positives (§3: Blackman-Harris primary → 0) and additionally recovers
+weak lines that the single-pass mask drops.
+
+Both building blocks — `deramp_to_active_start` /
+`leakage_touched_intervals` and the older closed-form
+`estimate_leakage_reach` — are factored out in
+`preprocessing/leakage.py`, so either recipe ports without dragging the
+rest of the pipeline along.
 
 ## 8. Where the residual pipeline false positives come from
 
 With a clean (strong-window) primary pass, the pipeline's remaining
-false positives are bounded. The gap pass masks every primary strong
-line's reach, and a strong line is by definition caught by the primary
-pass (apodization cannot push a *strong* line below the floor). The
-sidelobes that survive into the final list are therefore sidelobes of
-**medium lines whose reach the analytic estimator slightly
-under-covers**, plus the genuine ambiguity of §5 — a sidelobe within a
-strong skirt that is indistinguishable from a real weak line and is
-*kept* rather than masked (the safe direction: the windowing stage
-treats an over-list of seeds far more gracefully than a missed line).
+false positives are bounded. The gap pass skips every de-ramped
+leakage-touched region, and a strong line is by definition caught by
+the primary pass (apodization cannot push a *strong* line below the
+floor), so its skirt is masked at the source. The sidelobes that
+survive into the final list are therefore those falling in a
+*sub-threshold dip* of the de-ramped coherence map — between lobes of a
+medium line whose band-averaged leakage does not clear the gap mask.
+The §5 ambiguity now resolves the other way: a weak real line buried in
+a strong skirt is *lost* by the gap pass, masked along with the
+sidelobes, and recovered — if at all — by the windowed primary pass and
+the downstream fit.
 
-On 2638 the unapodized gap grid carries 4569 raw detections, 3216 of
-them below SNR 3 (`prototype.py` §6) — the low-SNR tail the windowing
-stage already expects to absorb. The reach mask at 3σ retains 92 % of
-them; this is the population the planning doc deliberately tolerates as
-window seeds. The improvement that actually matters is upstream, in §6:
-a clean primary pass means the *strong-line list* — the part of the
-output the windowing stage trusts most — is no longer 9.5 % sidelobes.
+On 2638 the unapodized gap grid carries 4569 raw locator detections.
+The de-ramped leakage-touched mask (`T_edge = 8`, calibrated in D8)
+removes the strong-line skirts: the gap pass promotes 1576 peaks, down
+from 2355 under the old reach mask — 779 strong-line sidelobes no
+longer reach the final list, and the per-known-strong-line skirt count
+falls to 0–1 within ±8 MHz. The improvement is twofold: a clean primary
+pass (§6) means the *strong-line list* — the part of the output the
+windowing stage trusts most — is no longer 9.5 % sidelobes, and the
+de-ramped gap mask means the *gap* additions are no longer dominated by
+strong-line skirt ripple.
 
 ## 9. Caveats and known edges
 
