@@ -46,9 +46,9 @@ Two passes:
 2. **Gap pass (unwindowed).** In the spectral regions *not* covered by a
    primary detection, recompute the magnitude spectrum *without* apodization
    (full resolution) and detect again at the same SNR threshold to recover weak
-   lines the apodization suppressed. This pass must be **masked by strong-peak
-   leakage reach** so a strong line's sinc sidelobes are not detected as weak
-   lines (see Open question O1).
+   lines the apodization suppressed. This pass is **masked by the de-ramped
+   leakage-touched map** (D8) so a strong line's coherent sinc skirt is not
+   re-detected as weak lines (see Open question O1).
 
 Each detected peak is **classified by SNR only** into
 `PeakClassification.{WEAK, MEDIUM, STRONG}` via two configurable thresholds
@@ -59,7 +59,8 @@ independent of the unwindowed spectrum the downstream fit uses **and** of the
 user's Stage 1 settings. It defaults to a strong window function
 (`blackmanharris`); a weaker window (Hann) or the mild Stage-1 exponential
 leaves truncation sidelobes in the primary strong-line list, polluting the
-gap-pass leakage mask. The default is calibrated in
+returned peaks and the strong-line list Stage 4 consumes. The default is
+calibrated in
 `dev-docs/research/peak-detection/report.md` (§3, §6): on 2638 the mild
 exponential left ~9.5 % of primary detections as sidelobe-suspects vs ~1.9 %
 for Blackman-Harris. The primary apodization affects only *which positions*
@@ -109,12 +110,16 @@ Stage output: an ordered list of classified `Peak`s.
 
 ## Open questions / research
 
-- **O1 — leakage-reach masking for the gap pass. RESOLVED.** Closed-form
-  estimator in `preprocessing/leakage.py::estimate_leakage_reach`:
-  `Δf_reach = peak_snr·(1+e^{-T/τ}) / (2π·τ_eff·min_snr)` with
-  `τ_eff = τ(1-e^{-T/τ})` (→ `T` in the undamped/boxcar limit, the safe
-  default). Validated to <20 % against a synthetic truncated-cosine FFT and
-  exactly against the boxcar sinc identity. Shared verbatim with Stage 4.
+- **O1 — leakage masking for the gap pass. RESOLVED (revised by D8).**
+  The gap pass is masked by the **de-ramped leakage-touched map**
+  (`preprocessing/leakage.py::leakage_touched_intervals`): de-ramping the
+  complex spectrum to the active-region turn-on restores the coherent
+  edge statistic, whose above-threshold runs are the *measured* leakage
+  extent (`GAP_MASK_EDGE_THRESHOLD = 8` in `stage3_impl.py`). The original
+  closed-form reach estimator (`estimate_leakage_reach`) was measured 7–25×
+  too narrow on real data and is demoted to an unused analytic proposal. See
+  the implementation overview
+  [`leakage-detection-rework.md`](leakage-detection-rework.md).
 - **O2 — classification thresholds. PROVISIONAL, pending sign-off.** Shipped
   configurable: `weak < 10 ≤ medium < 50 ≤ strong` (SNR), detection floor
   `min_snr = 3` (real-data evidence: at min_snr=3 the gap pass cleanly fills
@@ -122,13 +127,13 @@ Stage output: an ordered list of classified `Peak`s.
   `peak_detection.DEFAULT_*`; tune on 2638 once a reference line list is
   available.
 - **O3 — is the gap pass always needed? RESOLVED: keep, switchable.** On 2638
-  the gap pass recovers real weak lines outside every primary leakage
-  exclusion that the apodized primary pass misses (integration test). It is
-  on by default and disabled with `run_gap_pass=False` / `--no-gap-pass`.
+  the gap pass recovers real weak lines, in leakage-free regions, that the
+  apodized primary pass misses (integration test). It is on by default and
+  disabled with `run_gap_pass=False` / `--no-gap-pass`.
 - **Scoring basis (design decision, post-review).** The two passes only
-  *find positions*; amplitude/SNR/classification **and** the O1 leakage reach
-  are measured on the **unapodized** spectrum (the one fit downstream) for all
-  peaks — one consistent SNR scale, physically correct reach, and an honest
+  *find positions*; amplitude/SNR/classification — and the de-ramped
+  leakage-touched mask — are computed on the **unapodized** spectrum (the one
+  fit downstream) for all peaks — one consistent SNR scale and an honest
   overlay. Each detection is apex-snapped to the nearest unapodized local
   maximum (`locate_peaks` returns the 2nd-derivative `argrelmin`, ~few points
   off the true apex for ultra-narrow lines → ~40 % amplitude error before the
@@ -158,12 +163,12 @@ Stage output: an ordered list of classified `Peak`s.
 Recorded so the design discussion is not lost; each gets its own planning doc
 before its implementation.
 
-- **Stage 4 — window definition (static).** Predict initial window extent from
-  the strongest in-window line; greedily expand when another strong line
-  appears before leakage decays; sanity-check edges by magnitude. *Research:*
-  test for DC offsets at the edges of the complex FT as the true
-  "reached baseline" criterion (worked out conceptually, never implemented).
-  Uses the O1 leakage-reach estimate.
+- **Stage 4 — window definition (static).** Implemented; see
+  [`stage4-window-assignment.md`](stage4-window-assignment.md). Tight
+  peak-clustering window extents, with the de-ramped leakage-touched map
+  (D8) driving strong-cluster grouping and fixed-contributor attachment. (The
+  pre-implementation sketch here — predict-and-greedily-expand from the
+  analytic leakage reach — was superseded by that doc.)
 - **Stage 5 — per-window fit.** Demodulate the complex FT window to DC and
   **decimate to bandwidth** → an effective, much shorter time axis with an
   explicit (direction-sensitive) mapping back to real frequency; sideband sign

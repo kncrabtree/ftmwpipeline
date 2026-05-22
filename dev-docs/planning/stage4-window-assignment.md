@@ -1,10 +1,11 @@
 # Plan: Stage 4 — Window assignment
 
-Status: **implemented (WIP)** — all task-breakdown items landed, but validation
-on 2638 found the edge statistic mishandles real truncation leakage; see
-*Implementation notes* and [`leakage-detection-rework.md`](leakage-detection-rework.md)
-(divergence D8). Scope is Stage 4 only — *classify and propose*, do not fit
-(fitting is Stage 5). Registered in [`../ROADMAP.md`](../ROADMAP.md).
+Status: **implemented (finalized).** All task-breakdown items landed; the
+edge-statistic truncation-leakage defect found on 2638 was resolved by the D8
+de-ramp rework (see [`leakage-detection-rework.md`](leakage-detection-rework.md)),
+and this document describes Stage 4 as it now stands. Scope is Stage 4 only —
+*classify and propose*, do not fit (fitting is Stage 5). Registered in
+[`../ROADMAP.md`](../ROADMAP.md).
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the Stage 4 work it tracks. It builds directly on the
@@ -102,23 +103,26 @@ with per-bin complex noise RMS $\sigma$. Locked parameters:
 ## Algorithm
 
 Inputs: the promoted peaks (`Peak.properties['promoted']`) on the persisted
-user spectrum; the canonical Stage 2 noise (per-point RMS on that grid);
-`estimate_leakage_reach` (SNR, acquisition `T`, assumed `τ`); and the
+user spectrum; the canonical Stage 2 noise (per-point RMS on that grid); the
+acquisition geometry (`start_us`, probe frequency) for the de-ramp; and the
 **complex** user spectrum (real and imaginary parts, not just magnitude — the
 edge test is a complex-domain coherence test and magnitude discards the
 phase information it depends on).
 
-1. **Propose extent.** For each strong line, predict its leakage reach from the
-   analytic finite-T model; the proposed window spans the line ± reach.
-2. **Validate/trim edges.** Compute the rolling `S_coh` statistic at
-   $M = 64$ across the proposed extent's boundary. Where the rolling
-   statistic crosses the threshold $T_{\text{edge}} = 8$ from above,
-   refine the trim point with a narrower-band ($M \in [16, 32]$) max-
-   cumsum pass that locates the precise edge of the coherent region
-   inside the flagged band. The analytic-reach predictor *proposes*;
-   the statistic *trims*. (DC-offset-at-edges is the zero-distance
-   degenerate case of the same test; the research report confirms no
-   genuine flat pedestal is present on 2638.)
+1. **De-ramp + leakage-touched map.** Reference the complex spectrum to the
+   active-region turn-on (`deramp_to_active_start`, D8 — see
+   [`leakage-detection-rework.md`](leakage-detection-rework.md)), then roll
+   `S_coh` at $M = 64$ and threshold it at $T_{\text{edge}} = 8$ into the
+   contiguous **leakage-touched intervals**. That map drives strong-cluster
+   grouping (step 3) and fixed-contributor attachment (step 6).
+2. **Propose extents.** Each promoted peak proposes a *tight* window — its
+   core plus `min_window_half_width_mhz`, **not** the leakage-touched run (a
+   strong line's run is ~80–100 MHz wide; its distant leakage is carried into
+   other windows as a fixed contributor, step 6). The max-cumsum variant
+   `S_cum` locates the precise edge of a coherent stretch inside a flagged
+   interval at a narrower band ($M \in [16, 32]$) when needed. (DC-offset-at-
+   edges is the zero-distance degenerate case of the same test; the research
+   report confirms no genuine flat pedestal is present on 2638.)
 3. **Strong clusters.** Strong lines sharing one leakage-touched run
    (the rolling statistic stays above $T_{\text{edge}}$ between them)
    form a single **primary joint window** — they must be fit together;
@@ -135,12 +139,12 @@ phase information it depends on).
    partition, no randomness.
 5. **Assign in-band peaks, pruning leakage artifacts.** A promoted peak is a
    free peak of the unique fit window containing its frequency **only if it is
-   not attributable to a contributor's leakage**. Stage 3 still promotes some
-   of a strong line's sidelobes as peaks — its unapodized gap pass detects
-   them wherever the analytic leakage-reach mask under-covers, even though the
-   apodized primary pass is now sidelobe-clean (it uses a strong window; see
+   not attributable to a contributor's leakage**. Stage 3's gap pass is masked
+   by the de-ramped leakage-touched map (D8), so strong-line skirts no longer
+   leak through wholesale — but a few sidelobes can still survive in
+   sub-threshold dips of that map (see
    [`stage3-peak-detection.md`](stage3-peak-detection.md) and
-   [`../research/peak-detection/report.md`](../research/peak-detection/report.md)).
+   [`../research/peak-detection/report.md`](../research/peak-detection/report.md) §8).
    Once that line is a contributor (free in-band or fixed) its leakage
    explains those detections, so they must not also be fit as independent
    lines. Pruning uses the analytic leakage envelope of the window's strong
@@ -148,17 +152,16 @@ phase information it depends on).
    free peaks.
 6. **Attach fixed contributors.** For each window, a freeze-eligible strong
    line in-band of a *different* window is attached as a fixed contributor
-   (reference to its primary window) when its predicted leakage reaches here
-   **and** the edge-coherence test fires on the relevant band. Analytic reach
-   proposes the candidate; `S_coh > T_edge` confirms it. The peak list
-   answers "from which line?" — Stage 3's promoted strong lines on
-   either side of the band give the candidate; the statistic confirms
-   that a coherent skirt actually arrives. This adds a dependency edge.
+   (reference to its primary window) when that line's leakage-touched interval
+   (step 1) overlaps this window. The peak list answers "from which line?" —
+   Stage 3's promoted strong lines give the candidate; the de-ramped
+   leakage-touched map confirms that a coherent skirt actually arrives here.
+   This adds a dependency edge.
 7. **Classify difficulty (strong-line-driven, empirical).** Difficulty is
-   *not* a promoted-peak-count threshold — that count is inflated by residual
-   leakage artifacts (gap-pass sidelobes the reach mask misses) and in any
-   case conflates a dense-but-easy region with a coupled-and-hard one, so it
-   is an unreliable difficulty signal. A window is **hard** if it
+   *not* a promoted-peak-count threshold — that count can be inflated by
+   residual leakage artifacts (gap-pass sidelobes that survive the de-ramped
+   leakage mask) and in any case conflates a dense-but-easy region with a
+   coupled-and-hard one, so it is an unreliable difficulty signal. A window is **hard** if it
    contains or is materially influenced by a strong line (has strong in-band
    peaks, or unresolved fixed contributors, or fails the edge-coherence test
    on its edges), or exceeds the width cap, or sits in a comparably-strong
@@ -323,15 +326,15 @@ edge-trim error (never). Lock the protocol in the Stage 5 plan; Stage
   sharing one touched region merge into a primary joint window) and for
   fixed-contributor attachment (a window inside a strong line's touched region
   but distinct from it gets that line frozen-in).
-- **D8 status (the `S_coh` rework).** `S_coh` on the raw persisted spectrum
-  cancels on the oscillating truncation skirt and reads noise-level over
+- **D8 — the `S_coh` de-ramp rework.** `S_coh` on the raw persisted spectrum
+  cancelled on the oscillating truncation skirt and read noise-level over
   coherent leakage. Resolved by de-ramping the spectrum to the active-region
-  turn-on before the statistic (tasks 1–3 of
-  [`leakage-detection-rework.md`](leakage-detection-rework.md)); `S_coh` itself
-  was never wrong, only its input. `T_edge` recalibrated 3 → 8. The
-  leakage-touched map, strong-cluster grouping, fixed-contributor attachment,
-  and `edge_coherence_fail` now run on the de-ramped statistic. Stage 3's gap
-  pass has a paired defect (sidelobes promoted as weak peaks) — D8 task 4.
+  turn-on before the statistic (`S_coh` itself was never wrong, only its
+  input); `T_edge` recalibrated 3 → 8. The leakage-touched map, strong-cluster
+  grouping, fixed-contributor attachment, and `edge_coherence_fail` all run on
+  the de-ramped statistic. Stage 3's gap pass had a paired defect (sidelobes
+  promoted as weak peaks), fixed in the same rework. Full implementation
+  overview: [`leakage-detection-rework.md`](leakage-detection-rework.md).
 - **O4-2 freeze-eligibility.** `min_freeze_snr` (default 50) is a parameter on
   the file; a fixed contributor below it is flagged `freeze_eligible=False`
   for the Stage 5 thaw-and-re-fit handshake. The thaw protocol itself is
