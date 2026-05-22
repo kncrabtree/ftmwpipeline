@@ -596,7 +596,6 @@ class Pipeline:
         sg_window: Optional[int] = None,
         sg_order: Optional[int] = None,
         primary_window: Optional[str] = None,
-        tau_us: Optional[float] = None,
         min_exclusion_mhz: Optional[float] = None,
         run_gap_pass: Optional[bool] = None,
     ) -> List[Peak]:
@@ -635,8 +634,6 @@ class Pipeline:
             strong window that suppresses truncation sidelobes so the primary
             strong-line list is clean. Affects only which positions are found,
             never reported amplitude/SNR.
-        tau_us : float, optional
-            Assumed decay constant for leakage reach (default: undamped).
         min_exclusion_mhz : float, optional
             Minimum gap-pass exclusion half-width per primary peak in MHz.
         run_gap_pass : bool, optional
@@ -666,7 +663,6 @@ class Pipeline:
                 sg_window=sg_window,
                 sg_order=sg_order,
                 primary_window=primary_window,
-                tau_us=tau_us,
                 min_exclusion_mhz=min_exclusion_mhz,
                 run_gap_pass=run_gap_pass,
             )

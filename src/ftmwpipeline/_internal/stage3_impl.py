@@ -33,6 +33,7 @@ import h5py
 import numpy as np
 
 from ..core.data_structures import ComplexFT, Peak
+from ..preprocessing.leakage import leakage_touched_intervals
 from ..preprocessing.noise_estimation import estimate_noise_adaptive
 from ..preprocessing.peak_detection import (
     DEFAULT_INTERNAL_MIN_SNR,
@@ -65,6 +66,16 @@ _DETECTION_ZPF = 1
 # Stage-1 exponential filter leaves behind. See
 # dev-docs/research/peak-detection/report.md sections 3 and 6.
 DEFAULT_PRIMARY_WINDOW = "blackmanharris"
+
+# Gap-pass leakage mask threshold (D8). The de-ramped coherent-leakage map --
+# ``S_coh`` above this value on the unapodized gap spectrum -- is excluded from
+# the gap pass so a strong line's truncation-leakage skirt does not re-detect
+# as spurious weak lines. Locked at 8 on the 2638 fixture (D8 task 4): the
+# de-ramped ``S_coh`` distribution over gap-pass promotions is bimodal with the
+# genuine-weak-line / sidelobe valley at ~6-8, and 8 = sqrt(M) is the level at
+# which a sidelobe's lobe peak clears the gap pass's ~2-sigma detection floor.
+# See dev-docs/planning/leakage-detection-rework.md.
+GAP_MASK_EDGE_THRESHOLD = 8.0
 
 
 def _active_acquisition_us(
@@ -195,7 +206,6 @@ def detect_peaks_impl(
     sg_window: Optional[int] = None,
     sg_order: Optional[int] = None,
     primary_window: Optional[str] = None,
-    tau_us: Optional[float] = None,
     min_exclusion_mhz: Optional[float] = None,
     run_gap_pass: Optional[bool] = None,
 ) -> Dict[str, Any]:
@@ -242,7 +252,6 @@ def detect_peaks_impl(
     )
     min_excl_v: float = 0.0 if min_exclusion_mhz is None else float(min_exclusion_mhz)
     run_gap_v: bool = True if run_gap_pass is None else bool(run_gap_pass)
-    tau_v: Optional[float] = tau_us
 
     params: Dict[str, Any] = {
         "promotion_min_snr": promotion_v,
@@ -252,7 +261,7 @@ def detect_peaks_impl(
         "sg_window": sg_window_v,
         "sg_order": sg_order_v,
         "primary_window": primary_window_v,
-        "tau_us": tau_v,
+        "gap_mask_edge_threshold": GAP_MASK_EDGE_THRESHOLD,
         "min_exclusion_mhz": min_excl_v,
         "run_gap_pass": run_gap_v,
         "detection_zpf": _DETECTION_ZPF,
@@ -300,6 +309,21 @@ def detect_peaks_impl(
         gap_ft.freq_array, gap_ft.magnitude_spectrum
     )
 
+    # Gap-pass leakage mask (D8): the de-ramped coherent-leakage map on the
+    # unapodized gap spectrum the gap pass detects on. A full-record rfft makes
+    # a strong line's truncation-leakage skirt oscillate; de-ramping to the
+    # active-region turn-on restores the coherent edge statistic, whose
+    # above-threshold runs are the regions the gap pass must skip so sidelobes
+    # are not promoted as weak lines. See leakage-detection-rework.md.
+    leakage_intervals = leakage_touched_intervals(
+        gap_ft.freq_array,
+        gap_ft.complex_spectrum,
+        gap_noise.rms_noise,
+        fid.probe_freq_mhz,
+        base_pp.start_us or 0.0,
+        threshold=GAP_MASK_EDGE_THRESHOLD,
+    )
+
     internal_peaks: List[Peak] = detect_peaks(
         primary_ft.freq_array,
         primary_ft.magnitude_spectrum,
@@ -312,8 +336,7 @@ def detect_peaks_impl(
         medium_strong_snr=medium_strong_v,
         sg_window=sg_window_v,
         sg_order=sg_order_v,
-        acquisition_us=acquisition_us,
-        tau_us=tau_v,
+        leakage_intervals=leakage_intervals,
         min_exclusion_mhz=min_excl_v,
         run_gap_pass=run_gap_v,
     )

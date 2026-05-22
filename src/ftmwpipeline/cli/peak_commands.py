@@ -41,7 +41,6 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             sg_window=args.sg_window,
             sg_order=args.sg_order,
             primary_window=args.primary_window,
-            tau_us=args.tau_us,
             min_exclusion_mhz=args.min_exclusion_mhz,
             run_gap_pass=(None if args.no_gap_pass is False else False),
         )
@@ -209,12 +208,6 @@ def register_peak_commands(subparsers: Any) -> None:
             "(scipy.signal window name). default: blackmanharris -- a strong "
             "window chosen to suppress truncation sidelobes"
         ),
-    )
-    p_detect.add_argument(
-        "--tau-us",
-        dest="tau_us",
-        type=float,
-        help="Assumed decay constant for leakage reach (default: undamped)",
     )
     p_detect.add_argument(
         "--min-exclusion-mhz",

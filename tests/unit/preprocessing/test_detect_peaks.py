@@ -2,9 +2,9 @@
 Unit tests for the Stage 3 two-pass driver and SNR classification.
 
 Synthetic spectra only: classification bin edges, gap-pass recovery of a weak
-line the (simulated) apodized primary pass misses, O1 leakage masking of a
-strong line's sidelobe, the O3 gap-pass switch, provenance, validation.
-Real-data 2638 behaviour is the integration suite (item 6).
+line the (simulated) apodized primary pass misses, leakage masking of a strong
+line's sidelobe via the de-ramped leakage-touched map, the gap-pass switch,
+provenance, validation. Real-data 2638 behaviour is the integration suite.
 """
 
 import numpy as np
@@ -40,11 +40,18 @@ class TestClassifyBySnr:
             classify_by_snr(5.0, 0.0, 10.0)
 
 
+# Index runs (on the 8000-point grid below) of the de-ramped leakage-touched
+# map: the ~10037.5-10062.5 MHz stretch around the sidelobe @10050. Excludes
+# the strong line @10000 (idx ~4000) and the weak line @10500 (idx ~6000).
+_LEAKAGE_INTERVALS = [(4150, 4250)]
+
+
 @pytest.fixture
 def two_pass_spectra():
-    """Strong line @10000; sidelobe bump @10050 (within reach); weak line
-    @10500 (in a gap, outside reach). Primary (apodized) sees only the strong
-    line; gap (unapodized) sees all three."""
+    """Strong line @10000; sidelobe bump @10050 (inside the leakage-touched
+    map, see ``_LEAKAGE_INTERVALS``); weak line @10500 (in a leakage-free gap).
+    Primary (apodized) sees only the strong line; gap (unapodized) sees all
+    three."""
     freq = np.linspace(9000.0, 11000.0, 8000)  # 0.25 MHz/pt
     sd = np.ones_like(freq)
 
@@ -70,7 +77,7 @@ class TestTwoPassDriver:
             min_snr=3.0,
             weak_medium_snr=10.0,
             medium_strong_snr=50.0,
-            acquisition_us=0.3,  # reach(snr=300) ~ 106 MHz
+            leakage_intervals=_LEAKAGE_INTERVALS,
         )
         freqs = np.array([p.frequency for p in peaks])
 
@@ -86,14 +93,15 @@ class TestTwoPassDriver:
         assert weak[0].classification is PeakClassification.WEAK
         assert weak[0].properties["detection_pass"] == "gap"
 
-        # Sidelobe @10050 is within the strong line's leakage reach -> masked.
+        # Sidelobe @10050 is inside the leakage-touched map -> masked.
         assert not np.any(np.abs(freqs - 10050.0) < 5.0)
 
         # Output sorted by frequency.
         assert list(freqs) == sorted(freqs)
 
     def test_gap_pass_disabled_does_not_recover_weak(self, two_pass_spectra):
-        """O3 switch: with the gap pass off, only the primary list remains."""
+        """Gap-pass switch: with the gap pass off, only the primary list
+        remains."""
         freq, primary_mag, gap_mag, sd = two_pass_spectra
         peaks = detect_peaks(
             freq,
@@ -103,7 +111,7 @@ class TestTwoPassDriver:
             gap_mag,
             sd,
             min_snr=3.0,
-            acquisition_us=0.3,
+            leakage_intervals=_LEAKAGE_INTERVALS,
             run_gap_pass=False,
         )
         freqs = np.array([p.frequency for p in peaks])
@@ -111,9 +119,9 @@ class TestTwoPassDriver:
         assert not np.any(np.abs(freqs - 10500.0) < 3.0)  # weak NOT recovered
         assert all(p.properties["detection_pass"] == "primary" for p in peaks)
 
-    def test_without_leakage_reach_sidelobe_leaks_through(self, two_pass_spectra):
-        """Sanity: drop acquisition_us (no O1 reach) and the sidelobe is no
-        longer masked -- confirms the mask, not luck, removed it above."""
+    def test_without_leakage_mask_sidelobe_leaks_through(self, two_pass_spectra):
+        """Sanity: omit leakage_intervals (no leakage mask) and the sidelobe is
+        no longer masked -- confirms the mask, not luck, removed it above."""
         freq, primary_mag, gap_mag, sd = two_pass_spectra
         peaks = detect_peaks(
             freq,
@@ -123,7 +131,7 @@ class TestTwoPassDriver:
             gap_mag,
             sd,
             min_snr=3.0,
-            acquisition_us=None,
+            leakage_intervals=None,
             min_exclusion_mhz=0.0,
         )
         freqs = np.array([p.frequency for p in peaks])
@@ -150,4 +158,4 @@ class TestValidation:
     def test_gap_shape_mismatch_rejected(self):
         x = np.linspace(0.0, 10.0, 100)
         with pytest.raises(ValueError, match="gap"):
-            detect_peaks(x, x, np.ones_like(x), x, x, np.ones(99), acquisition_us=1.0)
+            detect_peaks(x, x, np.ones_like(x), x, x, np.ones(99))

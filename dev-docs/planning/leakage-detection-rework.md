@@ -1,6 +1,6 @@
 # Plan: leakage detection rework — Stages 3–4 (D8 resolution)
 
-Status: **in progress — tasks 1–3 done; resume at task 4.** Registered in
+Status: **in progress — tasks 1–4 done; resume at task 5.** Registered in
 [`../ROADMAP.md`](../ROADMAP.md) as divergence **D8**.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
@@ -8,13 +8,10 @@ normative only for the D8 rework it tracks. It supersedes the earlier handoff
 that recommended building a new matched-filter detector — validation showed the
 fix is much smaller.
 
-**Next session — start here.** The de-ramp helpers, the Stage 4 wiring, and the
-`T_edge` recalibration have landed (commits through "Calibrate Stage 4 leakage
-threshold…"; tasks 1–3 below are checked off). Resume at **task 4** — the
-Stage 3 gap-pass mask. The de-ramp infrastructure it needs already exists
-(`leakage.py:leakage_touched_intervals`); the open calibration decision is the
-gap-mask threshold (see task 4). Tasks 5–7 (integration, report revisions,
-striking D8) follow.
+**Next session — start here.** The de-ramp helpers, both stage wirings, and
+both threshold calibrations have landed (tasks 1–4 below are checked off).
+Resume at **task 5** — 2638 integration and cross-interface checks. Tasks 6–7
+(research report revisions, striking D8) follow.
 
 ## Summary
 
@@ -151,10 +148,14 @@ Measured on 2638 (`scratch/deramp.py`, `deramp_global.py`, `investigate.py`):
   de-ramped `S_coh` above-threshold intervals (`leakage_touched_intervals`),
   computed on the canonical unapodized spectrum the gap pass already uses. The
   gap pass runs only in the genuinely leakage-free intervals.
-- Threshold (per-job): the gap pass detects at ~2σ, so the mask should cover
-  where a sidelobe would clear that floor — `T_edge ≈ 16` (`= 2√M`), higher
-  than Stage 4's 8. `leakage_touched_intervals` already takes a `threshold`
-  argument; calibrate and lock ≈16 on 2638 (task 4).
+- Threshold: the gap pass detects at ~2σ; the mask must cover where a
+  sidelobe's *lobe peak* would clear that floor. Calibration on 2638 (task 4)
+  put the genuine-weak-line / sidelobe valley in the de-ramped `S_coh`
+  distribution at ~6–8 and **locked `T_edge = 8`** (`= √M`) — *not* the `2√M`
+  the initial proposal guessed. That guess conflated the band-averaged `S_coh`
+  with the sidelobe lobe peak, which rides ~2× above it; the lobe peak clears
+  2σ already at `S_coh ≈ √M`. Stage 3 and Stage 4 share the threshold 8;
+  `leakage_touched_intervals`'s default is used.
 - The windowed primary pass is unchanged (already sidelobe-clean).
 - Cross-check retained: an unwindowed candidate inside a leakage-touched
   interval that has no counterpart in the windowed primary spectrum is a
@@ -182,10 +183,11 @@ Locked decisions:
   leakage-touched; per-strong-line touched run ~±20 MHz). `T_edge = 3` (the
   research report's value) flags sub-noise 0.38σ leakage and reads ~57% of the
   spectrum touched — operationally over-sensitive.
-- **Per-job thresholds.** `leakage_touched_intervals` takes a `threshold`
-  argument; Stage 4 passes 8. The Stage 3 gap mask masks where the gap pass (a
-  ~2σ detector) would promote a sidelobe and so wants a higher threshold
-  (≈16, `2√M`) — calibrated in task 4.
+- **Thresholds.** `leakage_touched_intervals` takes a `threshold` argument.
+  Both stages use 8: Stage 4 because `T_edge = √M` flags ≥1σ-per-bin coherent
+  leakage; Stage 3 (task 4 calibration) because the genuine/sidelobe valley in
+  the 2638 de-ramped `S_coh` distribution sits at ~6–8. The initial `≈16`
+  guess for the Stage 3 mask was overturned — see *Stage 3 changes*.
 - **Window extent is *not* the touched run.** A single strong line's touched
   run is ~80–100 MHz wide (its leakage is detectable ±40–50 MHz out); a window
   that wide for one line is wrong. Window extents stay tight — a peak's core
@@ -263,15 +265,18 @@ the `T_edge`/`M` operating point (needs re-calibration).
    proposal (uniform tight extents); 2638 plan verified (328 windows, max
    width ~31 MHz, no mega-windows); Stage 4 unit tests and
    `stage4-window-assignment.md` updated.
-4. [ ] **Stage 3 — resume here.** Replace the gap-pass mask with
-   `leakage_touched_intervals`; retire `estimate_leakage_reach` from the mask.
-   Calibrate the per-job gap-mask threshold: the gap pass detects at ~2σ, so
-   the mask wants `T_edge ≈ 16` (`= 2√M`) — verify and lock that on 2638.
-   Update Stage 3 tests; verify the gap pass no longer promotes strong-line
-   sidelobes (the windowed-vs-unwindowed peak-count collapse on 2638).
-5. [ ] 2638 integration: strong-line skirts above threshold, leakage-free
-   stretches at the null, sane Stage 4 window count. Re-run cross-interface
-   consistency tests.
+4. [x] **Stage 3.** Gap-pass mask replaced with `leakage_touched_intervals`
+   (`stage3_impl.py` builds the de-ramped leakage map on the unapodized gap
+   spectrum; `detect_peaks` masks the gap pass with it). `estimate_leakage_reach`
+   and the `tau_us` parameter are retired from Stage 3 — `detect_peaks` and all
+   three interfaces (CLI/Pipeline/functional API). Gap-mask threshold
+   calibrated and **locked at `T_edge = 8`** on 2638 (`scratch/gap_mask_calibrate.py`
+   — the de-ramped `S_coh` valley; the `≈16` proposal was overturned). On 2638
+   the gap pass collapsed 2355 → 1576 promotions (779 strong-line sidelobes no
+   longer promoted). Stage 3 unit tests updated.
+5. [ ] **Resume here.** 2638 integration: strong-line skirts above threshold,
+   leakage-free stretches at the null, sane Stage 4 window count. Re-run
+   cross-interface consistency tests.
 6. [ ] Research report revisions — `peak-detection/report.md` §5 + reach-mask
    conclusion (Stage 3); `complex-edge-coherence/` redo the synthetic sweep with
    a `t₀` parameter and regenerate the 2638 figures (Stage 4). See *Research

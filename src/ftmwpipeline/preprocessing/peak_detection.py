@@ -8,8 +8,8 @@ This module contains the Stage 3 detection algorithm:
   behaviour preserved exactly.
 * ``classify_by_snr`` -- SNR-only weak/medium/strong binning.
 * ``detect_peaks`` -- the two-pass driver: an apodized primary pass for the
-  robust coarse list, then an unapodized gap pass (masked by O1 leakage reach)
-  to recover weak lines the apodization suppressed.
+  robust coarse list, then an unapodized gap pass (masked by the de-ramped
+  coherent-leakage map) to recover weak lines the apodization suppressed.
 
 It operates on already-computed spectra so it stays pure and unit-testable.
 File orchestration -- recomputing the apodized/unapodized spectra from the FID
@@ -36,7 +36,6 @@ import numpy as np
 import scipy.signal as spsig
 
 from ..core.data_structures import Peak, PeakClassification
-from .leakage import estimate_leakage_reach
 
 # Provisional SNR classification thresholds (open question O2). These are
 # documented placeholders pending empirical tuning on experiment 2638 in the
@@ -268,6 +267,17 @@ def _covered_mask(
     return cast(np.ndarray, covered)
 
 
+def _index_run_mask(
+    n: int, intervals: Optional[List[Tuple[int, int]]]
+) -> np.ndarray:
+    """Boolean mask of length ``n``: True inside any inclusive ``(lo, hi)`` run."""
+    mask: np.ndarray = np.zeros(n, dtype=bool)
+    if intervals:
+        for lo, hi in intervals:
+            mask[max(int(lo), 0) : int(hi) + 1] = True
+    return mask
+
+
 def _apex_snap(mag: np.ndarray, idx: int, radius: int) -> int:
     """Refine a detection to the local magnitude maximum within ``±radius``.
 
@@ -310,24 +320,24 @@ def detect_peaks(
     medium_strong_snr: float = DEFAULT_MEDIUM_STRONG_SNR,
     sg_window: int = 11,
     sg_order: int = 3,
-    acquisition_us: Optional[float] = None,
-    tau_us: Optional[float] = None,
+    leakage_intervals: Optional[List[Tuple[int, int]]] = None,
     min_exclusion_mhz: float = 0.0,
     run_gap_pass: bool = True,
 ) -> List[Peak]:
     """Two-pass peak detection scored on the unapodized (to-be-fit) spectrum.
 
     The two passes only *find positions*; every peak's amplitude, SNR and
-    classification -- and the O1 leakage reach -- are then measured on the
-    **unapodized** spectrum (``gap_*``), which is the spectrum actually fit
-    downstream. This gives one consistent SNR scale across both passes and a
-    physically correct leakage reach.
+    classification are then measured on the **unapodized** spectrum
+    (``gap_*``), which is the spectrum actually fit downstream. This gives one
+    consistent SNR scale across both passes.
 
     * **Pass 1 (primary)** runs :func:`locate_peaks` on the *apodized*,
       leakage-suppressed spectrum (robust, few sidelobe false positives).
     * **Pass 2 (gap)** runs it on the *unapodized* spectrum to recover weak
       lines the apodization smeared away, keeping only detections **outside**
-      ``±max(min_exclusion_mhz, leakage_reach)`` of every primary peak.
+      the leakage-touched regions (``leakage_intervals``) -- a strong line's
+      coherent truncation-leakage skirt re-detects as spurious weak lines
+      otherwise -- and outside ``±min_exclusion_mhz`` of every primary peak.
 
     Every detected position is snapped to the nearest local maximum of the
     unapodized magnitude (:func:`_apex_snap`) and de-duplicated by snapped
@@ -349,11 +359,13 @@ def detect_peaks(
     sg_window, sg_order : int
         Savitzky-Golay window/order for :func:`locate_peaks`; the apex-snap
         radius is ``sg_window // 2``.
-    acquisition_us : float, optional
-        Active FID duration ``T`` (µs) for the O1 leakage-reach mask. If None,
-        the gap pass is masked only by ``min_exclusion_mhz``.
-    tau_us : float, optional
-        Assumed shared decay constant for O1 (None = undamped/boxcar limit).
+    leakage_intervals : list of (int, int), optional
+        Inclusive index runs on the ``gap_*`` grid where coherent truncation
+        leakage is detectable -- the de-ramped ``S_coh`` leakage-touched map
+        from
+        :func:`~ftmwpipeline.preprocessing.leakage.leakage_touched_intervals`.
+        Gap-pass detections inside these runs are dropped as sidelobes. If
+        None, the gap pass is masked only by ``min_exclusion_mhz``.
     min_exclusion_mhz : float, default 0.0
         Minimum exclusion half-width around every primary peak.
     run_gap_pass : bool, default True
@@ -426,22 +438,13 @@ def detect_peaks(
                 continue
             _, peak = _score(snapped, "primary")
             by_index[snapped] = peak
-            peak_snr = peak.snr if peak.snr is not None else 0.0
-            reach = (
-                float(
-                    estimate_leakage_reach(
-                        peak_snr,
-                        acquisition_us,
-                        min_snr=min_snr,
-                        tau_us=tau_us,
+            if min_exclusion_mhz > 0.0:
+                exclusions.append(
+                    (
+                        peak.frequency - min_exclusion_mhz,
+                        peak.frequency + min_exclusion_mhz,
                     )
                 )
-                if acquisition_us is not None
-                else 0.0
-            )
-            half = max(reach, min_exclusion_mhz)
-            if half > 0.0:
-                exclusions.append((peak.frequency - half, peak.frequency + half))
 
     # --- Pass 2: masked unapodized gap pass -----------------------------
     if run_gap_pass and have_gap:
@@ -453,10 +456,11 @@ def detect_peaks(
             thresh=min_snr * ref_sd,
         )
         merged = _merge_intervals(exclusions)
+        leakage_mask = _index_run_mask(ref_freq.size, leakage_intervals)
         if len(gap.freqs):
             covered = _covered_mask(gap.freqs, merged)
             for idx, is_cov in zip(gap.indices, covered):
-                if is_cov:
+                if is_cov or leakage_mask[int(idx)]:
                     continue
                 snapped = _apex_snap(ref_mag, int(idx), radius)
                 if snapped in by_index:
