@@ -1,6 +1,6 @@
 # Plan: leakage detection rework — Stages 3–4 (D8 resolution)
 
-Status: **in progress — tasks 1–5 done; resume at task 6.** Registered in
+Status: **in progress — tasks 1–6 done; resume at task 7.** Registered in
 [`../ROADMAP.md`](../ROADMAP.md) as divergence **D8**.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
@@ -8,10 +8,11 @@ normative only for the D8 rework it tracks. It supersedes the earlier handoff
 that recommended building a new matched-filter detector — validation showed the
 fix is much smaller.
 
-**Next session — start here.** The de-ramp helpers, both stage wirings, both
-threshold calibrations, and the 2638 integration verification have landed
-(tasks 1–5 below are checked off). Resume at **task 6** — the research report
-revisions. Task 7 (striking D8, rewriting this doc) follows.
+**Next session — start here.** Tasks 1–6 are done — the de-ramp helpers, both
+stage wirings, both threshold calibrations, the 2638 integration verification,
+and both research-report revisions have landed. Resume at **task 7**: strike
+D8 from `../ROADMAP.md`, update the Stage 3/4 plan-doc status rows, and rewrite
+this document as an implementation overview.
 
 ## Summary
 
@@ -283,12 +284,16 @@ the `T_edge`/`M` operating point (needs re-calibration).
    suite (97) green, incl. cross-interface consistency. Also corrected the
    stale `edge_threshold` default (3.0 → 8.0) in the Stage 4 `assign_windows`
    docstrings (`api.py`, `pipeline.py`) — a task-3 leftover.
-6. [ ] **Resume here.** Research report revisions — `peak-detection/report.md` §5 + reach-mask
-   conclusion (Stage 3); `complex-edge-coherence/` redo the synthetic sweep with
-   a `t₀` parameter and regenerate the 2638 figures (Stage 4). See *Research
-   report revisions*.
-7. [ ] Strike D8 from `../ROADMAP.md`; update the Stage 3/4 plan-doc status
-   rows; rewrite this document as an implementation overview.
+6. [x] Research reports revised. `peak-detection/report.md`: §5 reframed
+   (the de-ramped rolling statistic is the phase discriminator §5's local-test
+   sweep missed); §1/§6–§8 reach-mask references updated; §7 BlackChirp recipe
+   is now the de-ramped region mask. `complex-edge-coherence/`: `prototype.py`
+   gained a `t₀` turn-on offset + `deramp()`, the synthetic sweep reruns at
+   `t₀ = 2.35 µs` recording de-ramped vs raw, all figures regenerated; §2 gains
+   the turn-on, §3.2 recalibrates to `T_edge = 8`, §4–§6 rewritten for the
+   de-ramped statistic and the current windowing algorithm.
+7. [ ] **Resume here.** Strike D8 from `../ROADMAP.md`; update the Stage 3/4
+   plan-doc status rows; rewrite this document as an implementation overview.
 
 ## Test plan
 
