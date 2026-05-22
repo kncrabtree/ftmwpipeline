@@ -1,6 +1,6 @@
 # Plan: leakage detection rework — Stages 3–4 (D8 resolution)
 
-Status: **in progress — tasks 1–4 done; resume at task 5.** Registered in
+Status: **in progress — tasks 1–5 done; resume at task 6.** Registered in
 [`../ROADMAP.md`](../ROADMAP.md) as divergence **D8**.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
@@ -8,10 +8,10 @@ normative only for the D8 rework it tracks. It supersedes the earlier handoff
 that recommended building a new matched-filter detector — validation showed the
 fix is much smaller.
 
-**Next session — start here.** The de-ramp helpers, both stage wirings, and
-both threshold calibrations have landed (tasks 1–4 below are checked off).
-Resume at **task 5** — 2638 integration and cross-interface checks. Tasks 6–7
-(research report revisions, striking D8) follow.
+**Next session — start here.** The de-ramp helpers, both stage wirings, both
+threshold calibrations, and the 2638 integration verification have landed
+(tasks 1–5 below are checked off). Resume at **task 6** — the research report
+revisions. Task 7 (striking D8, rewriting this doc) follows.
 
 ## Summary
 
@@ -274,10 +274,16 @@ the `T_edge`/`M` operating point (needs re-calibration).
    — the de-ramped `S_coh` valley; the `≈16` proposal was overturned). On 2638
    the gap pass collapsed 2355 → 1576 promotions (779 strong-line sidelobes no
    longer promoted). Stage 3 unit tests updated.
-5. [ ] **Resume here.** 2638 integration: strong-line skirts above threshold,
-   leakage-free stretches at the null, sane Stage 4 window count. Re-run
-   cross-interface consistency tests.
-6. [ ] Research report revisions — `peak-detection/report.md` §5 + reach-mask
+5. [x] 2638 integration verified (`scratch/verify_task5.py`): 5 of the 6
+   strongest lines have skirt `S_coh` 12–18 with 91–100 % of bins above
+   `T = 8` (the 6th is the pre-tracked 34154 anomaly); only 5.8 % of the
+   spectrum is leakage-touched; Stage 4 plan is sane (339 windows, max width
+   30.3 MHz, no mega-windows). Added integration regression test
+   `test_gap_pass_does_not_promote_strong_line_sidelobes`. Full integration
+   suite (97) green, incl. cross-interface consistency. Also corrected the
+   stale `edge_threshold` default (3.0 → 8.0) in the Stage 4 `assign_windows`
+   docstrings (`api.py`, `pipeline.py`) — a task-3 leftover.
+6. [ ] **Resume here.** Research report revisions — `peak-detection/report.md` §5 + reach-mask
    conclusion (Stage 3); `complex-edge-coherence/` redo the synthetic sweep with
    a `t₀` parameter and regenerate the 2638 figures (Stage 4). See *Research
    report revisions*.

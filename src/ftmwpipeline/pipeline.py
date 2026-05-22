@@ -784,7 +784,7 @@ class Pipeline:
             Trim-refinement band width (default 32).
         edge_threshold : float, optional
             ``S_coh`` threshold separating leakage-touched from line-free
-            regions (default 3.0).
+            regions (default 8.0).
         max_window_width_mhz : float, optional
             Width cap; a wider window is HARD and gets a split proposal
             (default 40.0).

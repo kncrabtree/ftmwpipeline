@@ -5,6 +5,8 @@ Stage 3 integration tests on real experiment 2638 data.
 * sanity vs. known strong lines
 * the gap pass demonstrably recovers a weak line the windowed primary
   pass misses
+* the gap pass (masked by the de-ramped coherent-leakage map, D8) does not
+  promote a strong line's truncation-leakage skirt as spurious weak peaks
 
 NOTE (D7 / Phase B): detect_peaks / detect_peaks_impl / CLI detect-peaks no
 longer accept trim= or zpf= parameters.  The frequency range and zero-padding
@@ -158,3 +160,33 @@ def test_gap_pass_recovers_a_weak_line(baseline_2638_stage2, temp_ftmw_dir):
         if np.min(np.abs(primary_freqs - gp.frequency)) > 0.5
     ]
     assert recovered, "no gap peak is genuinely separated from primaries"
+
+
+def test_gap_pass_does_not_promote_strong_line_sidelobes(
+    baseline_2638_stage2, temp_ftmw_dir
+):
+    """D8: the gap pass is masked by the de-ramped coherent-leakage map, so a
+    strong line's truncation-leakage skirt is no longer re-detected as a dense
+    cluster of spurious weak peaks.
+
+    Each known strong line's skirt out to +-8 MHz is leakage-touched (de-ramped
+    S_coh well above the gap-mask threshold), so the gap pass should carry at
+    most a couple of detections there -- genuine weak lines in leakage-free
+    dips -- not the dozens the old estimate_leakage_reach mask (reach only
+    +-1.4-3 MHz) let through.
+    """
+    fp = temp_ftmw_dir / "sidelobes.ftmw"
+    shutil.copy(baseline_2638_stage2, fp)
+    peaks = ftmw.detect_peaks(fp, min_snr=3.0)
+
+    gap_freqs = np.array(
+        [p.frequency for p in peaks
+         if p.properties["detection_pass"] == "gap"]
+    )
+    assert gap_freqs.size, "gap pass recovered nothing"
+    for line in KNOWN_STRONG:
+        n_skirt = int(np.sum(np.abs(gap_freqs - line) <= 8.0))
+        assert n_skirt <= 3, (
+            f"{n_skirt} gap-pass peaks within +-8 MHz of strong line "
+            f"{line} MHz -- the leakage skirt is being promoted as weak peaks"
+        )
