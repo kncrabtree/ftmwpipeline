@@ -31,7 +31,7 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 | 2 Noise estimation | Implemented | — |
 | 3 Peak detection | Implemented | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
 | 4 Window assignment | Implemented | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) |
-| 5 Fitting | Not started | `planning/stage5-fitting.md` (TBD) |
+| 5 Fitting | Planning | [`planning/stage5-fitting.md`](planning/stage5-fitting.md) |
 
 Stages 3–5 are partly **port-and-refine**, partly **recreate**. The earlier
 reference `~/github/bcfitting/src/bcfitting/ftmwfitting.py` survives (detection
@@ -59,6 +59,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 |---|---|
 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance) |
 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Implemented (finalized) |
+| [`planning/stage5-fitting.md`](planning/stage5-fitting.md) | Planning (step-1 plan; implementation not started) |
 | [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Resolved (D8) — implementation overview |
 | [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
