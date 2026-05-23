@@ -35,8 +35,10 @@ import numpy as np
 
 from .peak_model import ModelPeak, model_spectrum
 from .residual_screening import (
+    DEFAULT_COHERENCE_CLOSE_THRESHOLD,
     DEFAULT_COHERENCE_CLUSTER_FWHM,
-    DEFAULT_COHERENCE_RATIO_THRESHOLD,
+    DEFAULT_COHERENCE_ISOLATED_FWHM,
+    DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     ResidualPeakCandidate,
     filter_by_phase_coherence,
     find_residual_peaks,
@@ -64,10 +66,13 @@ __all__ = [
     "DEFAULT_RESCUE_MAX_ROUNDS",
     "DEFAULT_RESCUE_SNR_THRESHOLD",
     "DEFAULT_RESCUE_PROMINENCE_THRESHOLD",
+    "ConsolidatedRescueOutcome",
     "RescueOutcome",
+    "RescueRoundDiagnostics",
     "attempt_residual_rescue",
     "merge_close_peaks_cleanup",
     "remove_and_refit_cleanup",
+    "rescue_and_consolidate",
 ]
 
 
@@ -362,7 +367,9 @@ def attempt_residual_rescue(
     min_separation_factor: float = DEFAULT_MIN_SEPARATION_FACTOR,
     max_peaks: int = DEFAULT_MAX_PEAKS,
     coherence_cluster_fwhm: float = DEFAULT_COHERENCE_CLUSTER_FWHM,
-    coherence_ratio_threshold: float = DEFAULT_COHERENCE_RATIO_THRESHOLD,
+    coherence_isolated_fwhm: float = DEFAULT_COHERENCE_ISOLATED_FWHM,
+    coherence_close_threshold: float = DEFAULT_COHERENCE_CLOSE_THRESHOLD,
+    coherence_isolated_threshold: float = DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     conservative_kwargs: Optional[dict[str, Any]] = None,
 ) -> RescueOutcome:
     """Find peaks the initial fit missed and fit them to its residual.
@@ -454,19 +461,28 @@ def attempt_residual_rescue(
         prominence_threshold=prominence_threshold,
         fwhm_mhz=rescue_fwhm if rescue_fwhm > 0.0 else None,
     )
-    # Phase-coherence filter: drop isolated candidates whose complex
-    # projection onto a Lorentzian basis at their offset doesn't recover
-    # the detected magnitude SNR -- those are phase-rotation artifacts
-    # from imperfect neighbour fits, not real missed lines. Clustered
-    # candidates (other candidate within ``coherence_cluster_fwhm * FWHM``)
-    # pass through so the blend-aware seeder can handle real close pairs.
+    # Phase-coherence filter (sliding, fitted-peak-aware): drop candidates
+    # whose complex projection onto a Lorentzian basis at their offset
+    # doesn't recover the detected magnitude SNR by a proximity-dependent
+    # ratio. The threshold ramps from ``coherence_close_threshold`` at the
+    # cluster boundary up to ``coherence_isolated_threshold`` for fully
+    # isolated candidates -- the rationale being that a candidate sitting
+    # in a fitted peak's skirt has its projection inevitably contaminated
+    # by the neighbour, so it should not be held to the same coherence
+    # standard as a candidate in an empty part of the residual. Candidates
+    # within ``coherence_cluster_fwhm * FWHM`` of any other candidate or
+    # already-fitted peak defer entirely to the blend-aware seeder.
+    fitted_peak_offsets = [pk.offset_mhz for pk in current_fit.peaks]
     if raw_candidates and rescue_fwhm > 0.0:
         candidates, rejected_by_coherence = filter_by_phase_coherence(
             raw_candidates, u, residual, sigma,
             rescue_tau_us, acquisition_us,
             fwhm_mhz=rescue_fwhm,
+            fitted_peak_offsets=fitted_peak_offsets,
             cluster_threshold_fwhm=coherence_cluster_fwhm,
-            coherence_ratio_threshold=coherence_ratio_threshold,
+            isolated_threshold_fwhm=coherence_isolated_fwhm,
+            close_threshold=coherence_close_threshold,
+            isolated_threshold=coherence_isolated_threshold,
         )
     else:
         candidates = list(raw_candidates)
@@ -514,4 +530,445 @@ def attempt_residual_rescue(
         candidates=candidates,
         rejected_by_coherence=rejected_by_coherence,
         knockouts=rescue_result.knockouts,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Recursive rescue + joint refit + knockout consolidation (the "B-loop")
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class RescueRoundDiagnostics:
+    """Per-round bookkeeping for :func:`rescue_and_consolidate`.
+
+    One record per rescue round actually executed. ``accepted`` is true when
+    this round's joint refit (post-knockout) replaced the previous round's
+    fit as the new ``current``. A round with ``accepted=False`` means the
+    rescue produced peaks but the joint refit either failed to converge or
+    its knockout sweep dropped everything -- in that case the previous
+    round's fit is retained and the loop terminates.
+
+    Attributes
+    ----------
+    round_idx : int
+        Zero-based round counter.
+    rescue : RescueOutcome
+        The :func:`attempt_residual_rescue` result for this round.
+    joint_fit : WindowFitResult or None
+        The thawed-everything joint refit on the union of the previous
+        round's peaks and the rescue's accepted peaks. ``None`` when the
+        rescue accepted no peaks (the round terminates immediately).
+    joint_knockouts : list of KnockoutResult
+        Knockout-sweep results on ``joint_fit``.
+    pruned_fit : WindowFitResult or None
+        The joint refit after dropping any peaks the knockout sweep flagged
+        as unsupported and refitting on the surviving subset. Equal to
+        ``joint_fit`` (same identity) when nothing was pruned; ``None`` when
+        pruning would have emptied the model.
+    pruned_knockouts : list of KnockoutResult
+        Knockout-sweep results on ``pruned_fit`` (the final consolidated
+        knockouts for this round). Empty when ``pruned_fit is None``.
+    n_initial_peaks : int
+        Number of peaks the round inherited from the previous round (used
+        as the origin marker: indices in ``joint_fit.peaks[:n_initial_peaks]``
+        came from the previous round; the rest came from this round's
+        rescue).
+    n_rescue_added : int
+        Number of peaks the rescue's conservative fit accepted.
+    n_pruned_total : int
+        Number of peaks the knockout sweep on ``joint_fit`` dropped.
+    n_pruned_rescue_origin : int
+        Of the pruned peaks, how many were rescue-origin (i.e., added this
+        round). This is the **failsafe diagnostic**: a high count is the
+        signal that the joint refit did not escape a pathological basin and
+        is undoing the rescue's contribution. v1 logs it but does not act
+        on it; a future fallback to A-mode for that window would be
+        triggered here.
+    chi2_before, chi2_after : float
+        Noise-weighted chi-squared of the previous round's fit and of the
+        consolidated (post-pruning) fit, both evaluated against the same
+        ``complex_spectrum``. ``chi2_after`` equals ``chi2_before`` when
+        the round was not accepted.
+    tau_us_before, tau_us_after : float
+        Shared decay constant before and after the round.
+    accepted : bool
+        Whether this round's contribution replaced the previous round's fit.
+    reason : str
+        Free-text note (which termination case, etc.).
+    """
+
+    round_idx: int
+    rescue: RescueOutcome
+    joint_fit: Optional[WindowFitResult]
+    joint_knockouts: List[KnockoutResult]
+    pruned_fit: Optional[WindowFitResult]
+    pruned_knockouts: List[KnockoutResult]
+    n_initial_peaks: int
+    n_rescue_added: int
+    n_pruned_total: int
+    n_pruned_rescue_origin: int
+    chi2_before: float
+    chi2_after: float
+    tau_us_before: float
+    tau_us_after: float
+    accepted: bool
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class ConsolidatedRescueOutcome:
+    """Result of :func:`rescue_and_consolidate`.
+
+    Attributes
+    ----------
+    fit : ConservativeFitResult
+        The final consolidated fit, suitable for slotting into a
+        :class:`WindowOutcome` 's ``fit`` field. Its ``audit_trail`` is the
+        *initial* fit's audit (the rescue loop is a separate phase that
+        does not extend the conservative loop's trail); its ``knockouts``
+        reflect the final consolidated peak set. When the loop accepted
+        nothing, this is the input ``initial_fit`` returned verbatim.
+    initial_fit : ConservativeFitResult
+        The input initial fit, preserved for diagnostics (e.g. comparing
+        chi-squared before and after the rescue chain).
+    rounds : list of RescueRoundDiagnostics
+        Per-round diagnostics, in execution order. May be empty (when the
+        initial fit's residual triggered no candidates on the first round).
+    terminated_reason : str
+        Why the loop stopped (``"no candidates"``, ``"joint failed"``,
+        ``"all pruned"``, ``"max rounds reached"``).
+    """
+
+    fit: ConservativeFitResult
+    initial_fit: ConservativeFitResult
+    rounds: List[RescueRoundDiagnostics]
+    terminated_reason: str
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def rescue_and_consolidate(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    initial_fit: ConservativeFitResult,
+    tau0_us: float,
+    acquisition_us: float,
+    *,
+    max_rescue_rounds: int = DEFAULT_RESCUE_MAX_ROUNDS,
+    snr_threshold: float = DEFAULT_RESCUE_SNR_THRESHOLD,
+    prominence_threshold: float = DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
+    coherence_cluster_fwhm: float = DEFAULT_COHERENCE_CLUSTER_FWHM,
+    coherence_isolated_fwhm: float = DEFAULT_COHERENCE_ISOLATED_FWHM,
+    coherence_close_threshold: float = DEFAULT_COHERENCE_CLOSE_THRESHOLD,
+    coherence_isolated_threshold: float = DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
+    rescue_significance: float = DEFAULT_SIGNIFICANCE,
+    knockout_significance: float = DEFAULT_SIGNIFICANCE,
+    rescue_max_peaks: int = DEFAULT_MAX_PEAKS,
+    conservative_kwargs: Optional[dict[str, Any]] = None,
+) -> ConsolidatedRescueOutcome:
+    """Iterate rescue + joint refit + knockout consolidation (option B).
+
+    The loop:
+
+    1. Run :func:`attempt_residual_rescue` against the current fit's residual.
+       If the rescue accepts 0 peaks, terminate (nothing to add).
+    2. Joint-refit the union of the current fit's peaks and the rescue's
+       accepted peaks against ``complex_spectrum`` with **every parameter
+       thawed** (including tau). The starting tau is the rescue's tau
+       (which already handled the apodization override when the previous
+       fit's tau was pathological) -- this is the structural mitigation
+       against w198-like cases where the previous fit's tau pegged at the
+       lower bound. If the joint refit fails to converge, terminate
+       (retain the previous round's fit).
+    3. Run :func:`knockout_test` on the joint fit. If any peak is flagged
+       unsupported (the F-test against removing it does not clear
+       ``knockout_significance``), drop those peaks and refit on the
+       surviving subset. The pruned refit becomes the consolidated fit
+       for this round; if pruning would empty the model, terminate
+       (retain the previous round's fit).
+    4. Loop back to step 1 with the consolidated fit as the new
+       ``current``, until ``max_rescue_rounds`` is reached.
+
+    Failsafe diagnostic
+    -------------------
+    Each :class:`RescueRoundDiagnostics` records
+    ``n_pruned_rescue_origin`` -- the count of rescue-added peaks the
+    knockout sweep dropped. A nonzero value indicates the joint refit may
+    not have escaped a pathological basin (e.g., the previous fit's tau
+    being still wrong even after thawing); a future A-mode fallback for
+    that window would key off this signal. v1 logs only.
+
+    Parameters
+    ----------
+    offset_grid_mhz, complex_spectrum, rms_noise
+        Window grid, *frozen-background-subtracted* complex data, and
+        per-bin complex noise RMS. The same arrays the initial fit
+        consumed.
+    initial_fit
+        The conservative-fit result for this window's initial pass.
+    tau0_us, acquisition_us
+        Default / starting tau and active acquisition length. Used to
+        derive joint-refit constraints (tau bounds, amplitude bounds,
+        penalties) via :func:`derive_window_fit_constraints` -- the same
+        constraints the initial fit used.
+    max_rescue_rounds
+        Cap on the rescue + joint-refit cycle. ``1`` reproduces a
+        single-pass rescue with consolidation; the default ``3`` matches
+        :data:`DEFAULT_RESCUE_MAX_ROUNDS`.
+    snr_threshold, prominence_threshold, coherence_cluster_fwhm,
+    coherence_isolated_fwhm, coherence_close_threshold,
+    coherence_isolated_threshold, rescue_significance
+        Forwarded to :func:`attempt_residual_rescue` each round.
+    knockout_significance
+        F-test p-value threshold for ``KnockoutResult.supported``. Peaks
+        whose knockout p-value is *above* this threshold are dropped in
+        the prune-and-refit step.
+    rescue_max_peaks
+        Cap on the rescue's own conservative loop -- forwarded as
+        :func:`attempt_residual_rescue` 's ``max_peaks``. Defaults to
+        :data:`DEFAULT_MAX_PEAKS`; the validation harness uses 32 so the
+        rescue's per-round K is gated by statistics rather than an
+        integer cap. The joint refit has no such cap (it just refits
+        whatever the rescue handed it).
+    conservative_kwargs
+        Forwarded to :func:`attempt_residual_rescue` and used to derive
+        the joint refit's constraints. Pass the same options the initial
+        fit received (notably ``tau_apodization_us``, ``max_decay_factor``,
+        and the penalty lambdas) so the rescue and the joint refit enforce
+        the same physics as the original pass.
+    """
+    if max_rescue_rounds <= 0:
+        return ConsolidatedRescueOutcome(
+            fit=initial_fit,
+            initial_fit=initial_fit,
+            rounds=[],
+            terminated_reason="max_rescue_rounds<=0",
+        )
+
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+
+    # ``max_peaks`` is forwarded explicitly to attempt_residual_rescue;
+    # strip it from the conservative-kwargs bag so the inner conservative_fit
+    # call doesn't get the same kwarg twice.
+    ckwargs_in = dict(conservative_kwargs or {})
+    ckwargs_in.pop("max_peaks", None)
+
+    # Derive the joint refit's constraints once. The bounds (tau, amp,
+    # penalty references) are properties of the window's data, not of
+    # whichever peak set we are currently fitting, so they stay constant
+    # across rounds.
+    constraints_kwargs = {
+        k: ckwargs_in[k]
+        for k in (
+            "max_decay_factor",
+            "min_separation_factor",
+            "amp_max_headroom",
+            "phase_penalty_lambda",
+            "amp_penalty_lambda",
+            "phase_penalty_cutoff_fwhm",
+            "tau_penalty_lambda",
+            "weak_window_snr_threshold",
+            "tau_apodization_us",
+        )
+        if k in ckwargs_in
+    }
+    constraints = derive_window_fit_constraints(
+        z, sigma, tau0_us, acquisition_us, **constraints_kwargs
+    )
+    fit_kwargs_inner = constraints.fit_kwargs_inner
+
+    current = initial_fit
+    rounds: List[RescueRoundDiagnostics] = []
+    terminated_reason = "max rounds reached"
+
+    for round_idx in range(max_rescue_rounds):
+        n_initial = len(current.peaks)
+        chi2_before = current.fit.chi_squared
+        tau_before = float(current.fit.tau_us)
+
+        rescue = attempt_residual_rescue(
+            u, z, sigma, current.fit, tau0_us, acquisition_us,
+            snr_threshold=snr_threshold,
+            prominence_threshold=prominence_threshold,
+            significance=rescue_significance,
+            coherence_cluster_fwhm=coherence_cluster_fwhm,
+            coherence_isolated_fwhm=coherence_isolated_fwhm,
+            coherence_close_threshold=coherence_close_threshold,
+            coherence_isolated_threshold=coherence_isolated_threshold,
+            max_peaks=rescue_max_peaks,
+            conservative_kwargs=ckwargs_in,
+        )
+        n_rescue_added = rescue.fit.n_peaks
+
+        if n_rescue_added == 0:
+            rounds.append(
+                RescueRoundDiagnostics(
+                    round_idx=round_idx,
+                    rescue=rescue,
+                    joint_fit=None,
+                    joint_knockouts=[],
+                    pruned_fit=None,
+                    pruned_knockouts=[],
+                    n_initial_peaks=n_initial,
+                    n_rescue_added=0,
+                    n_pruned_total=0,
+                    n_pruned_rescue_origin=0,
+                    chi2_before=chi2_before,
+                    chi2_after=chi2_before,
+                    tau_us_before=tau_before,
+                    tau_us_after=tau_before,
+                    accepted=False,
+                    reason="no rescue candidates accepted",
+                )
+            )
+            terminated_reason = "no candidates"
+            break
+
+        # Joint refit: union peaks, free everything (tau bounds inherited
+        # from the original window). Start tau at the rescue's value -- if
+        # apodization-override engaged in the rescue, this is the structural
+        # mitigation for w198-like cases (previous fit's tau pegged at the
+        # lower bound; thawing alone may not escape that basin without a
+        # better starting point).
+        union_init = list(current.peaks) + list(rescue.fit.peaks)
+        joint_tau_start = _clamp(
+            float(rescue.fit.tau_us),
+            constraints.tau_bounds[0],
+            constraints.tau_bounds[1],
+        )
+        joint = fit_window(
+            u, z, sigma, union_init, joint_tau_start, acquisition_us,
+            **fit_kwargs_inner,
+        )
+        if not joint.success:
+            rounds.append(
+                RescueRoundDiagnostics(
+                    round_idx=round_idx,
+                    rescue=rescue,
+                    joint_fit=joint,
+                    joint_knockouts=[],
+                    pruned_fit=None,
+                    pruned_knockouts=[],
+                    n_initial_peaks=n_initial,
+                    n_rescue_added=n_rescue_added,
+                    n_pruned_total=0,
+                    n_pruned_rescue_origin=0,
+                    chi2_before=chi2_before,
+                    chi2_after=chi2_before,
+                    tau_us_before=tau_before,
+                    tau_us_after=tau_before,
+                    accepted=False,
+                    reason="joint refit did not converge",
+                )
+            )
+            terminated_reason = "joint failed"
+            break
+
+        joint_knockouts = knockout_test(
+            u, z, sigma, joint, acquisition_us,
+            significance=knockout_significance,
+        )
+        supported_mask = [ko.supported for ko in joint_knockouts]
+        n_pruned_total = sum(1 for s in supported_mask if not s)
+        # Origin marker: indices [n_initial, n_initial + n_rescue_added) are
+        # rescue-added in joint.peaks (union_init layout was current.peaks
+        # then rescue.peaks).
+        n_pruned_rescue = sum(
+            1
+            for i, s in enumerate(supported_mask)
+            if not s and n_initial <= i < n_initial + n_rescue_added
+        )
+
+        pruned_fit: Optional[WindowFitResult]
+        pruned_knockouts: List[KnockoutResult]
+        if n_pruned_total == 0:
+            pruned_fit = joint
+            pruned_knockouts = list(joint_knockouts)
+        else:
+            survivors = [joint.peaks[i] for i, s in enumerate(supported_mask) if s]
+            if not survivors:
+                rounds.append(
+                    RescueRoundDiagnostics(
+                        round_idx=round_idx,
+                        rescue=rescue,
+                        joint_fit=joint,
+                        joint_knockouts=joint_knockouts,
+                        pruned_fit=None,
+                        pruned_knockouts=[],
+                        n_initial_peaks=n_initial,
+                        n_rescue_added=n_rescue_added,
+                        n_pruned_total=n_pruned_total,
+                        n_pruned_rescue_origin=n_pruned_rescue,
+                        chi2_before=chi2_before,
+                        chi2_after=chi2_before,
+                        tau_us_before=tau_before,
+                        tau_us_after=tau_before,
+                        accepted=False,
+                        reason="all joint-fit peaks unsupported by knockout",
+                    )
+                )
+                terminated_reason = "all pruned"
+                break
+            refit = fit_window(
+                u, z, sigma, survivors, float(joint.tau_us), acquisition_us,
+                **fit_kwargs_inner,
+            )
+            if refit.success:
+                pruned_fit = refit
+                pruned_knockouts = knockout_test(
+                    u, z, sigma, refit, acquisition_us,
+                    significance=knockout_significance,
+                )
+            else:
+                # Pruned refit failed -- keep the joint as the consolidated
+                # fit (it converged; the knockout flag was a recommendation
+                # we could not enact).
+                pruned_fit = joint
+                pruned_knockouts = list(joint_knockouts)
+
+        chi2_after = pruned_fit.chi_squared
+        tau_after = float(pruned_fit.tau_us)
+        rounds.append(
+            RescueRoundDiagnostics(
+                round_idx=round_idx,
+                rescue=rescue,
+                joint_fit=joint,
+                joint_knockouts=joint_knockouts,
+                pruned_fit=pruned_fit,
+                pruned_knockouts=pruned_knockouts,
+                n_initial_peaks=n_initial,
+                n_rescue_added=n_rescue_added,
+                n_pruned_total=n_pruned_total,
+                n_pruned_rescue_origin=n_pruned_rescue,
+                chi2_before=chi2_before,
+                chi2_after=chi2_after,
+                tau_us_before=tau_before,
+                tau_us_after=tau_after,
+                accepted=True,
+                reason=(
+                    "joint refit consolidated rescue contribution"
+                    if n_pruned_total == 0
+                    else f"joint refit + knockout pruned {n_pruned_total} peak(s)"
+                ),
+            )
+        )
+        current = ConservativeFitResult(
+            fit=pruned_fit,
+            audit_trail=initial_fit.audit_trail,
+            knockouts=pruned_knockouts,
+        )
+    else:
+        terminated_reason = "max rounds reached"
+
+    return ConsolidatedRescueOutcome(
+        fit=current,
+        initial_fit=initial_fit,
+        rounds=rounds,
+        terminated_reason=terminated_reason,
     )

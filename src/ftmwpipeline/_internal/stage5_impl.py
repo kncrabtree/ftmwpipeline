@@ -44,6 +44,17 @@ from ..fitting.plan_execution import (
     ReplanContext,
     execute_plan,
 )
+from ..fitting.residual_rescue import (
+    DEFAULT_RESCUE_MAX_ROUNDS,
+    DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
+    DEFAULT_RESCUE_SNR_THRESHOLD,
+)
+from ..fitting.residual_screening import (
+    DEFAULT_COHERENCE_CLOSE_THRESHOLD,
+    DEFAULT_COHERENCE_CLUSTER_FWHM,
+    DEFAULT_COHERENCE_ISOLATED_FWHM,
+    DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
+)
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
@@ -158,6 +169,13 @@ def fit_peaks_impl(
     residual_edge_m: Optional[int] = None,
     max_thaw_rounds: Optional[int] = None,
     max_replan_rounds: Optional[int] = None,
+    max_residual_rescue_rounds: Optional[int] = None,
+    rescue_snr_threshold: Optional[float] = None,
+    rescue_prominence_threshold: Optional[float] = None,
+    rescue_coherence_cluster_fwhm: Optional[float] = None,
+    rescue_coherence_isolated_fwhm: Optional[float] = None,
+    rescue_coherence_close_threshold: Optional[float] = None,
+    rescue_coherence_isolated_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -199,6 +217,31 @@ def fit_peaks_impl(
         Maximum structural-replan rounds per call (default
         :data:`DEFAULT_MAX_REPLAN_ROUNDS`). Pass 0 to disable structural
         renegotiation entirely.
+    max_residual_rescue_rounds : int, optional
+        Cap on per-window residual-rescue + joint-refit cycles. ``0``
+        (the current default) disables the rescue pass entirely; a
+        positive value (e.g. :data:`DEFAULT_RESCUE_MAX_ROUNDS`) runs the
+        B-loop on every window's post-thaw fit. The rescue is a
+        structural part of the fit -- it eliminates the conservative
+        loop's systematic under-counting of real lines -- and is
+        intended to become non-zero by default once validated at scale.
+        See ``dev-docs/planning/stage5-residual-rescue.md``.
+    rescue_snr_threshold, rescue_prominence_threshold : float, optional
+        Detector thresholds the rescue uses to nominate candidates on
+        ``|residual|`` (defaults :data:`DEFAULT_RESCUE_SNR_THRESHOLD` and
+        :data:`DEFAULT_RESCUE_PROMINENCE_THRESHOLD`). Ignored when
+        ``max_residual_rescue_rounds == 0``.
+    rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
+    rescue_coherence_close_threshold,
+    rescue_coherence_isolated_threshold : float, optional
+        Phase-coherence filter knobs governing the sliding ratio
+        threshold (close→isolated linear ramp by distance to nearest
+        existing peak or candidate). Defaults
+        :data:`DEFAULT_COHERENCE_CLUSTER_FWHM` /
+        :data:`DEFAULT_COHERENCE_ISOLATED_FWHM` /
+        :data:`DEFAULT_COHERENCE_CLOSE_THRESHOLD` /
+        :data:`DEFAULT_COHERENCE_ISOLATED_THRESHOLD`. All ignored when
+        ``max_residual_rescue_rounds == 0``.
 
     Raises
     ------
@@ -226,6 +269,44 @@ def fit_peaks_impl(
         DEFAULT_MAX_REPLAN_ROUNDS
         if max_replan_rounds is None
         else int(max_replan_rounds)
+    )
+    # 0 (the current default) disables the rescue; any positive value
+    # runs the B-loop with that round cap. See the rescue-default-intent
+    # discussion in dev-docs/planning/stage5-residual-rescue.md.
+    rescue_max_v = (
+        0
+        if max_residual_rescue_rounds is None
+        else max(0, int(max_residual_rescue_rounds))
+    )
+    rescue_snr_v = (
+        DEFAULT_RESCUE_SNR_THRESHOLD
+        if rescue_snr_threshold is None
+        else float(rescue_snr_threshold)
+    )
+    rescue_prom_v = (
+        DEFAULT_RESCUE_PROMINENCE_THRESHOLD
+        if rescue_prominence_threshold is None
+        else float(rescue_prominence_threshold)
+    )
+    rescue_cluster_v = (
+        DEFAULT_COHERENCE_CLUSTER_FWHM
+        if rescue_coherence_cluster_fwhm is None
+        else float(rescue_coherence_cluster_fwhm)
+    )
+    rescue_isolated_fwhm_v = (
+        DEFAULT_COHERENCE_ISOLATED_FWHM
+        if rescue_coherence_isolated_fwhm is None
+        else float(rescue_coherence_isolated_fwhm)
+    )
+    rescue_close_thresh_v = (
+        DEFAULT_COHERENCE_CLOSE_THRESHOLD
+        if rescue_coherence_close_threshold is None
+        else float(rescue_coherence_close_threshold)
+    )
+    rescue_isolated_thresh_v = (
+        DEFAULT_COHERENCE_ISOLATED_THRESHOLD
+        if rescue_coherence_isolated_threshold is None
+        else float(rescue_coherence_isolated_threshold)
     )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
@@ -305,6 +386,19 @@ def fit_peaks_impl(
         )
 
     # --- Drive the executor -------------------------------------------------
+    rescue_kwargs: Optional[Dict[str, Any]]
+    if rescue_max_v > 0:
+        rescue_kwargs = {
+            "snr_threshold": rescue_snr_v,
+            "prominence_threshold": rescue_prom_v,
+            "coherence_cluster_fwhm": rescue_cluster_v,
+            "coherence_isolated_fwhm": rescue_isolated_fwhm_v,
+            "coherence_close_threshold": rescue_close_thresh_v,
+            "coherence_isolated_threshold": rescue_isolated_thresh_v,
+        }
+    else:
+        rescue_kwargs = None
+
     plan_outcome = execute_plan(
         plan,
         active_ft,
@@ -325,6 +419,8 @@ def fit_peaks_impl(
             "tau_apodization_us": expf_us,
         },
         replan_context=replan_ctx,
+        max_residual_rescue_rounds=rescue_max_v,
+        rescue_kwargs=rescue_kwargs,
     )
 
     parameters = {
@@ -335,12 +431,24 @@ def fit_peaks_impl(
         "residual_edge_m": edge_m_v,
         "max_thaw_rounds": max_thaw_v,
         "max_replan_rounds": max_replan_v,
+        "max_residual_rescue_rounds": rescue_max_v,
         "acquisition_us": acquisition_us,
         "active_ft_alpha": float(active_ft.alpha),
         "n_active": int(active_ft.n_active),
         "n_padded": int(active_ft.n_padded),
         "sideband": sideband.value,
     }
+    if rescue_max_v > 0:
+        parameters.update(
+            {
+                "rescue_snr_threshold": rescue_snr_v,
+                "rescue_prominence_threshold": rescue_prom_v,
+                "rescue_coherence_cluster_fwhm": rescue_cluster_v,
+                "rescue_coherence_isolated_fwhm": rescue_isolated_fwhm_v,
+                "rescue_coherence_close_threshold": rescue_close_thresh_v,
+                "rescue_coherence_isolated_threshold": rescue_isolated_thresh_v,
+            }
+        )
     spectrum_fit: SpectrumFit = plan_fit_outcome_to_spectrum_fit(
         plan_outcome,
         plan,
@@ -358,13 +466,27 @@ def fit_peaks_impl(
 
     n_thaw_accepted = sum(1 for e in spectrum_fit.thaw_history if e.accepted)
     n_replan_accepted = sum(1 for e in spectrum_fit.replan_history if e.accepted)
+    # Rescue history is not (yet) persisted on SpectrumFit -- pull it off the
+    # live PlanFitOutcome for the in-memory return value and log line.
+    rescue_events_live = list(plan_outcome.rescue_history)
+    n_rescue_events = len(rescue_events_live)
+    n_rescue_accepted = sum(1 for e in rescue_events_live if e.accepted)
+    n_rescue_added_total = sum(e.n_rescue_added for e in rescue_events_live)
+    n_rescue_origin_pruned_total = sum(
+        e.n_pruned_rescue_origin for e in rescue_events_live
+    )
     logger.info(
         "Stage 5: %d windows, %d fitted peaks; thaw %d/%d accepted, "
+        "rescue %d/%d rounds accepted (added %d peaks, %d rescue-origin pruned), "
         "%d structural replans accepted (revision %d)",
         spectrum_fit.n_windows,
         spectrum_fit.n_fitted_peaks,
         n_thaw_accepted,
         len(spectrum_fit.thaw_history),
+        n_rescue_accepted,
+        n_rescue_events,
+        n_rescue_added_total,
+        n_rescue_origin_pruned_total,
         n_replan_accepted,
         spectrum_fit.final_plan_revision,
     )
@@ -375,11 +497,16 @@ def fit_peaks_impl(
         "n_fitted_peaks": spectrum_fit.n_fitted_peaks,
         "n_thaw_events": len(spectrum_fit.thaw_history),
         "n_thaw_accepted": n_thaw_accepted,
+        "n_rescue_events": n_rescue_events,
+        "n_rescue_accepted": n_rescue_accepted,
+        "n_rescue_added": n_rescue_added_total,
+        "n_rescue_origin_pruned": n_rescue_origin_pruned_total,
         "n_replan_events": len(spectrum_fit.replan_history),
         "n_replan_accepted": n_replan_accepted,
         "final_plan_revision": spectrum_fit.final_plan_revision,
         "parameters_used": parameters,
         "active_ft": active_ft,
+        "rescue_events": rescue_events_live,
     }
 
 

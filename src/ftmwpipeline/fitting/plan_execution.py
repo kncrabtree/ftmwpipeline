@@ -83,6 +83,7 @@ from .peak_model import (
     sideband_sign,
     to_baseband_offset,
 )
+from .residual_rescue import rescue_and_consolidate
 from .window_fit import (
     DEFAULT_MAX_DECAY_FACTOR,
     ConservativeFitResult,
@@ -94,6 +95,7 @@ from .window_fit import (
 __all__ = [
     "FrozenPeak",
     "ThawEvent",
+    "RescueEvent",
     "ReplanContext",
     "ReplanEvent",
     "WindowOutcome",
@@ -203,6 +205,70 @@ class ThawEvent:
     edge_side: str
     edge_coherence_before: float
     edge_coherence_after: float
+    accepted: bool
+    reason: str = ""
+
+
+@dataclass
+class RescueEvent:
+    """One residual-rescue + joint-refit consolidation round on a window.
+
+    Emitted by the rescue B-loop (:func:`~ftmwpipeline.fitting.residual_rescue.rescue_and_consolidate`)
+    when the orchestrator's per-window pass runs with ``max_residual_rescue_rounds > 0``.
+    One :class:`RescueEvent` per round actually executed (zero events on
+    windows where rescue is disabled or the first round nominated no
+    candidates).
+
+    Attributes
+    ----------
+    window_id : int
+        :class:`FitWindow` identifier this round belongs to.
+    round_idx : int
+        Zero-based round counter within the window's rescue chain.
+    n_candidates : int
+        Detector candidates that survived the phase-coherence filter and
+        were passed to the rescue's :func:`conservative_fit` (i.e., what
+        :func:`attempt_residual_rescue` reports as ``candidates``).
+    n_rejected_by_coherence : int
+        Detector candidates the phase-coherence filter dropped before
+        fitting.
+    n_rescue_added : int
+        Peaks the rescue's conservative loop actually accepted (the union
+        with the previous round's peaks is what the joint refit fits).
+    n_pruned_by_knockout : int
+        Peaks the joint-refit's knockout sweep flagged as unsupported
+        (dropped before the consolidated fit was finalised).
+    n_pruned_rescue_origin : int
+        Of the pruned peaks, how many came from *this round's* rescue
+        (the failsafe diagnostic -- a high count signals the joint refit
+        may not have escaped a pathological basin and is undoing the
+        rescue's contribution; v1 logs only).
+    chi2_before, chi2_after : float
+        Noise-weighted chi-squared of the previous round's fit and the
+        consolidated fit, both evaluated against the same data slice.
+        Equal when ``accepted`` is False.
+    tau_us_before, tau_us_after : float
+        Shared decay constant before and after the round.
+    accepted : bool
+        Whether the round's contribution replaced the previous round's
+        fit (False when the rescue nominated nothing, the joint refit
+        failed, or pruning would have emptied the model).
+    reason : str
+        Free-text annotation -- which termination case fired, how many
+        peaks pruned, etc.
+    """
+
+    window_id: int
+    round_idx: int
+    n_candidates: int
+    n_rejected_by_coherence: int
+    n_rescue_added: int
+    n_pruned_by_knockout: int
+    n_pruned_rescue_origin: int
+    chi2_before: float
+    chi2_after: float
+    tau_us_before: float
+    tau_us_after: float
     accepted: bool
     reason: str = ""
 
@@ -331,6 +397,9 @@ class WindowOutcome:
         ``complex_spectrum - full_fitted_spectrum``.
     thaw_events : list of ThawEvent
         Per-window thaw history (chronological).
+    rescue_events : list of RescueEvent
+        Per-window residual-rescue history (chronological). Empty unless
+        ``max_residual_rescue_rounds > 0`` was set on the executor call.
     edge_coherence_low : float
         Final residual ``S_coh`` at the low-frequency edge.
     edge_coherence_high : float
@@ -347,6 +416,7 @@ class WindowOutcome:
     full_fitted_spectrum: np.ndarray
     full_residual: np.ndarray
     thaw_events: list[ThawEvent] = field(default_factory=list)
+    rescue_events: list[RescueEvent] = field(default_factory=list)
     edge_coherence_low: float = 0.0
     edge_coherence_high: float = 0.0
 
@@ -363,6 +433,10 @@ class PlanFitOutcome:
         are absent).
     thaw_history : list of ThawEvent
         Every thaw attempt, in execution order.
+    rescue_history : list of RescueEvent
+        Every residual-rescue round across all windows, in execution
+        order. Empty unless ``max_residual_rescue_rounds > 0`` was set
+        on the executor call.
     replan_history : list of ReplanEvent
         Every structural-replan attempt, in execution order. Empty when
         ``execute_plan`` was called without a :class:`ReplanContext`.
@@ -373,6 +447,7 @@ class PlanFitOutcome:
 
     window_outcomes: dict[int, WindowOutcome]
     thaw_history: list[ThawEvent] = field(default_factory=list)
+    rescue_history: list[RescueEvent] = field(default_factory=list)
     replan_history: list[ReplanEvent] = field(default_factory=list)
     final_plan_revision: int = 0
 
@@ -889,6 +964,8 @@ def execute_plan(
     max_thaw_rounds: int = DEFAULT_MAX_THAW_ROUNDS,
     conservative_kwargs: Optional[dict[str, Any]] = None,
     replan_context: Optional[ReplanContext] = None,
+    max_residual_rescue_rounds: int = 0,
+    rescue_kwargs: Optional[dict[str, Any]] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -958,12 +1035,28 @@ def execute_plan(
         Inputs for structural renegotiation. When ``None`` (the default),
         the structural outer loop is skipped -- existing tests that build
         synthetic :class:`ActiveFTResult` s directly need no extra context.
+    max_residual_rescue_rounds : int, default 0
+        Cap on per-window residual-rescue + joint-refit cycles. ``0``
+        disables the rescue pass entirely (the current default while the
+        rescue is validated at scale); a positive value runs the B-loop
+        on every window's post-thaw fit with that round cap. The rescue
+        is a structural part of the fit -- it eliminates the conservative
+        loop's systematic under-counting of real lines -- and is intended
+        to become non-zero by default once validation completes.
+    rescue_kwargs : dict, optional
+        Tuning knobs for the rescue loop, forwarded to
+        :func:`~ftmwpipeline.fitting.residual_rescue.rescue_and_consolidate`
+        (``snr_threshold``, ``prominence_threshold``,
+        ``coherence_cluster_fwhm``, ``coherence_ratio_threshold``,
+        ``rescue_significance``, ``knockout_significance``). The
+        round-cap lives separately on ``max_residual_rescue_rounds``.
+        Ignored when ``max_residual_rescue_rounds == 0``.
 
     Returns
     -------
     PlanFitOutcome
-        Per-window outcomes, the chronological thaw history, the
-        structural-replan history, and the final plan revision.
+        Per-window outcomes, the chronological thaw / rescue / replan
+        histories, and the final plan revision.
 
     Raises
     ------
@@ -981,6 +1074,7 @@ def execute_plan(
 
     outcomes: dict[int, WindowOutcome] = {}
     thaw_history: list[ThawEvent] = []
+    rescue_history: list[RescueEvent] = []
     replan_history: list[ReplanEvent] = []
 
     # --- Initial walk over the plan as given -------------------------------
@@ -992,6 +1086,7 @@ def execute_plan(
         peak_frequencies_mhz=peak_frequencies_mhz,
         outcomes=outcomes,
         thaw_history=thaw_history,
+        rescue_history=rescue_history,
         sideband=sideband,
         acquisition_us=acquisition_us,
         tau0_us=tau0_us,
@@ -1000,6 +1095,8 @@ def execute_plan(
         residual_edge_m=residual_edge_m,
         max_thaw_rounds=max_thaw_rounds,
         conservative_kwargs=conservative_kwargs,
+        max_residual_rescue_rounds=max_residual_rescue_rounds,
+        rescue_kwargs=rescue_kwargs,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1050,6 +1147,7 @@ def execute_plan(
                 peak_frequencies_mhz=peak_frequencies_mhz,
                 outcomes=outcomes,
                 thaw_history=thaw_history,
+                rescue_history=rescue_history,
                 sideband=sideband,
                 acquisition_us=acquisition_us,
                 tau0_us=tau0_us,
@@ -1058,6 +1156,8 @@ def execute_plan(
                 residual_edge_m=residual_edge_m,
                 max_thaw_rounds=max_thaw_rounds,
                 conservative_kwargs=conservative_kwargs,
+                max_residual_rescue_rounds=max_residual_rescue_rounds,
+                rescue_kwargs=rescue_kwargs,
             )
 
             applied_pairs = {
@@ -1084,6 +1184,7 @@ def execute_plan(
     return PlanFitOutcome(
         window_outcomes=outcomes,
         thaw_history=thaw_history,
+        rescue_history=rescue_history,
         replan_history=replan_history,
         final_plan_revision=plan.plan_revision,
     )
@@ -1098,6 +1199,7 @@ def _walk_windows_in_order(
     peak_frequencies_mhz: Sequence[float],
     outcomes: dict[int, WindowOutcome],
     thaw_history: list[ThawEvent],
+    rescue_history: list[RescueEvent],
     sideband: SidebandLike,
     acquisition_us: float,
     tau0_us: float,
@@ -1106,11 +1208,24 @@ def _walk_windows_in_order(
     residual_edge_m: int,
     max_thaw_rounds: int,
     conservative_kwargs: dict[str, Any],
+    max_residual_rescue_rounds: int = 0,
+    rescue_kwargs: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Fit each window in ``order`` and run the bounded local-thaw loop.
+    """Fit each window in ``order``, run the bounded local-thaw loop, and
+    (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
 
-    Mutates ``outcomes`` and ``thaw_history`` in place. Shared by the initial
-    walk and the post-replan re-walk of affected windows.
+    Mutates ``outcomes``, ``thaw_history``, and ``rescue_history`` in place.
+    Shared by the initial walk and the post-replan re-walk of affected
+    windows.
+
+    Order of work per window:
+
+    1. Initial conservative fit (with frozen contributors).
+    2. Bounded local-thaw loop -- a thawed contributor can promote a frozen
+       line to a free peak that the rescue should then see in the model.
+    3. Residual-rescue B-loop, when ``max_residual_rescue_rounds > 0``. The
+       rescue operates on the post-thaw outcome so any contributor's line
+       that thaw promoted is already part of the model.
     """
     by_id = {w.window_id: w for w in plan.windows}
     for wid in order:
@@ -1149,6 +1264,20 @@ def _walk_windows_in_order(
             outcome = outcomes[wid]
             if not any(e.accepted for e in edge_events):
                 break
+
+        if max_residual_rescue_rounds > 0:
+            events = _apply_rescue_to_outcome(
+                win,
+                outcome,
+                acquisition_us=acquisition_us,
+                tau0_us=tau0_us,
+                residual_edge_m=residual_edge_m,
+                conservative_kwargs=conservative_kwargs,
+                max_residual_rescue_rounds=max_residual_rescue_rounds,
+                rescue_kwargs=rescue_kwargs or {},
+            )
+            for ev in events:
+                rescue_history.append(ev)
 
 
 # ---------------------------------------------------------------------------
@@ -1702,3 +1831,90 @@ def _install_cofit_outcome(
     )
     outcome.edge_coherence_low = low
     outcome.edge_coherence_high = high
+
+
+def _apply_rescue_to_outcome(
+    win: FitWindow,
+    outcome: WindowOutcome,
+    *,
+    acquisition_us: float,
+    tau0_us: float,
+    residual_edge_m: int,
+    conservative_kwargs: dict[str, Any],
+    max_residual_rescue_rounds: int,
+    rescue_kwargs: dict[str, Any],
+) -> list[RescueEvent]:
+    """Run the residual-rescue B-loop on a finished window and update its
+    outcome in place. Returns the per-round :class:`RescueEvent` records.
+
+    Operates on the *post-thaw* outcome: the rescue's notion of "what the
+    initial fit missed" includes any contributor's line a thaw promoted to
+    a free peak (which appears in the window's free-peak list after a
+    successful thaw via :func:`_install_cofit_outcome`). The frozen
+    contributor background is held fixed across the rescue chain -- the
+    rescue addresses missed lines, not contributor renegotiation.
+
+    The conservative-fit audit trail is preserved (the rescue is a
+    separate phase, not a continuation of the conservative loop). The
+    consolidated knockouts overwrite the original ones since the peak
+    set has changed.
+    """
+    data_minus_bg = outcome.complex_spectrum - outcome.background
+    consolidated = rescue_and_consolidate(
+        outcome.offset_grid_mhz,
+        data_minus_bg,
+        outcome.rms_noise,
+        outcome.fit,
+        tau0_us,
+        acquisition_us,
+        max_rescue_rounds=max_residual_rescue_rounds,
+        conservative_kwargs=conservative_kwargs,
+        **rescue_kwargs,
+    )
+
+    if any(r.accepted for r in consolidated.rounds):
+        # Mutate the existing ConservativeFitResult so any reference to it
+        # stays current (matches the _install_cofit_outcome pattern).
+        outcome.fit.fit = consolidated.fit.fit
+        outcome.fit.knockouts = consolidated.fit.knockouts
+        # Re-evaluate the free model on the caller's grid -- fit_window's
+        # internal arrays may be on a sorted version and we want bin-for-bin
+        # alignment with outcome.offset_grid_mhz / outcome.complex_spectrum.
+        free_model = model_spectrum(
+            outcome.offset_grid_mhz,
+            consolidated.fit.fit.peaks,
+            consolidated.fit.fit.tau_us,
+            acquisition_us,
+        )
+        outcome.fit.fit.fitted_spectrum = free_model
+        outcome.fit.fit.residual = data_minus_bg - free_model
+        outcome.full_fitted_spectrum = free_model + outcome.background
+        outcome.full_residual = (
+            outcome.complex_spectrum - outcome.full_fitted_spectrum
+        )
+        low, high = residual_edge_coherence(
+            outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
+        )
+        outcome.edge_coherence_low = low
+        outcome.edge_coherence_high = high
+
+    events: list[RescueEvent] = []
+    for diag in consolidated.rounds:
+        ev = RescueEvent(
+            window_id=win.window_id,
+            round_idx=diag.round_idx,
+            n_candidates=len(diag.rescue.candidates),
+            n_rejected_by_coherence=len(diag.rescue.rejected_by_coherence),
+            n_rescue_added=diag.n_rescue_added,
+            n_pruned_by_knockout=diag.n_pruned_total,
+            n_pruned_rescue_origin=diag.n_pruned_rescue_origin,
+            chi2_before=diag.chi2_before,
+            chi2_after=diag.chi2_after,
+            tau_us_before=diag.tau_us_before,
+            tau_us_after=diag.tau_us_after,
+            accepted=diag.accepted,
+            reason=diag.reason,
+        )
+        events.append(ev)
+        outcome.rescue_events.append(ev)
+    return events

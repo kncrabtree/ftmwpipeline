@@ -42,6 +42,8 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             residual_edge_m=args.residual_edge_m,
             max_thaw_rounds=args.max_thaw_rounds,
             max_replan_rounds=args.max_replan_rounds,
+            max_residual_rescue_rounds=args.max_residual_rescue_rounds,
+            rescue_snr_threshold=args.rescue_snr_threshold,
         )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
@@ -50,6 +52,13 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             f"  Thaw events:    {result['n_thaw_accepted']:,} accepted "
             f"of {result['n_thaw_events']:,}"
         )
+        if result["n_rescue_events"]:
+            print(
+                f"  Rescue rounds:  {result['n_rescue_accepted']:,} accepted "
+                f"of {result['n_rescue_events']:,} "
+                f"(added {result['n_rescue_added']:,} peaks, "
+                f"{result['n_rescue_origin_pruned']:,} rescue-origin pruned)"
+            )
         print(
             f"  Structural replans: {result['n_replan_accepted']:,} accepted "
             f"of {result['n_replan_events']:,} "
@@ -193,6 +202,23 @@ def register_fitting_commands(subparsers: Any) -> None:
         dest="max_replan_rounds",
         type=int,
         help="Maximum structural-replan rounds per call (0 disables).",
+    )
+    p_fit.add_argument(
+        "--max-residual-rescue-rounds",
+        dest="max_residual_rescue_rounds",
+        type=int,
+        help="Cap on per-window residual-rescue + joint-refit cycles. "
+        "0 (the current default) disables the rescue pass; a positive "
+        "value (e.g. 3) runs the B-loop with that round cap. The "
+        "rescue is a structural part of the fit and is intended to "
+        "become non-zero by default once validated at scale.",
+    )
+    p_fit.add_argument(
+        "--rescue-snr-threshold",
+        dest="rescue_snr_threshold",
+        type=float,
+        help="Detector SNR threshold (in sigma_c) for rescue candidates "
+        "(default 2.5; ignored when --max-residual-rescue-rounds is 0).",
     )
     p_fit.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"

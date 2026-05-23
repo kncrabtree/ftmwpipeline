@@ -942,6 +942,13 @@ def fit_peaks(
     residual_edge_m: Optional[int] = None,
     max_thaw_rounds: Optional[int] = None,
     max_replan_rounds: Optional[int] = None,
+    max_residual_rescue_rounds: Optional[int] = None,
+    rescue_snr_threshold: Optional[float] = None,
+    rescue_prominence_threshold: Optional[float] = None,
+    rescue_coherence_cluster_fwhm: Optional[float] = None,
+    rescue_coherence_isolated_fwhm: Optional[float] = None,
+    rescue_coherence_close_threshold: Optional[float] = None,
+    rescue_coherence_isolated_threshold: Optional[float] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -970,6 +977,18 @@ def fit_peaks(
         Maximum local-thaw rounds per window per call.
     max_replan_rounds : int, optional
         Maximum structural-replan rounds per call (0 disables).
+    max_residual_rescue_rounds : int, optional
+        Cap on per-window residual-rescue + joint-refit cycles. ``0``
+        (the current default) disables the rescue; a positive value runs
+        the B-loop with that round cap. Intended to become non-zero by
+        default once validated at scale.
+    rescue_snr_threshold, rescue_prominence_threshold,
+    rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
+    rescue_coherence_close_threshold,
+    rescue_coherence_isolated_threshold : optional
+        Rescue tuning knobs -- see :func:`Pipeline.fit_peaks` for the
+        defaults and what each one controls. All ignored when
+        ``max_residual_rescue_rounds`` is 0.
 
     Returns
     -------
@@ -986,6 +1005,13 @@ def fit_peaks(
             residual_edge_m=residual_edge_m,
             max_thaw_rounds=max_thaw_rounds,
             max_replan_rounds=max_replan_rounds,
+            max_residual_rescue_rounds=max_residual_rescue_rounds,
+            rescue_snr_threshold=rescue_snr_threshold,
+            rescue_prominence_threshold=rescue_prominence_threshold,
+            rescue_coherence_cluster_fwhm=rescue_coherence_cluster_fwhm,
+            rescue_coherence_isolated_fwhm=rescue_coherence_isolated_fwhm,
+            rescue_coherence_close_threshold=rescue_coherence_close_threshold,
+            rescue_coherence_isolated_threshold=rescue_coherence_isolated_threshold,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")

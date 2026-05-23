@@ -915,6 +915,13 @@ class Pipeline:
         residual_edge_m: Optional[int] = None,
         max_thaw_rounds: Optional[int] = None,
         max_replan_rounds: Optional[int] = None,
+        max_residual_rescue_rounds: Optional[int] = None,
+        rescue_snr_threshold: Optional[float] = None,
+        rescue_prominence_threshold: Optional[float] = None,
+        rescue_coherence_cluster_fwhm: Optional[float] = None,
+        rescue_coherence_isolated_fwhm: Optional[float] = None,
+        rescue_coherence_close_threshold: Optional[float] = None,
+        rescue_coherence_isolated_threshold: Optional[float] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -953,6 +960,22 @@ class Pipeline:
         max_replan_rounds : int, optional
             Maximum structural-replan rounds per call. Pass 0 to disable
             structural renegotiation.
+        max_residual_rescue_rounds : int, optional
+            Cap on per-window residual-rescue + joint-refit cycles. ``0``
+            (the current default) disables the rescue; a positive value
+            (e.g. 3) runs the B-loop with that round cap. The rescue is
+            a structural part of the fit, intended to become non-zero
+            by default once validated at scale.
+        rescue_snr_threshold, rescue_prominence_threshold,
+        rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
+        rescue_coherence_close_threshold,
+        rescue_coherence_isolated_threshold : optional
+            Detector and phase-coherence tuning knobs for the rescue --
+            see :func:`fit_peaks_impl` for defaults. The coherence knobs
+            parameterise the sliding-threshold scheme (close-to-neighbour
+            ratio ramping up to isolated ratio across the cluster→isolated
+            FWHM band). All ignored when
+            ``max_residual_rescue_rounds`` is 0.
 
         Returns
         -------
@@ -976,14 +999,26 @@ class Pipeline:
                 residual_edge_m=residual_edge_m,
                 max_thaw_rounds=max_thaw_rounds,
                 max_replan_rounds=max_replan_rounds,
+                max_residual_rescue_rounds=max_residual_rescue_rounds,
+                rescue_snr_threshold=rescue_snr_threshold,
+                rescue_prominence_threshold=rescue_prominence_threshold,
+                rescue_coherence_cluster_fwhm=rescue_coherence_cluster_fwhm,
+                rescue_coherence_isolated_fwhm=rescue_coherence_isolated_fwhm,
+                rescue_coherence_close_threshold=rescue_coherence_close_threshold,
+                rescue_coherence_isolated_threshold=rescue_coherence_isolated_threshold,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "
+                "rescue %d/%d (added %d, %d rescue-origin pruned), "
                 "%d structural replans accepted (revision %d)",
                 result["n_windows"],
                 result["n_fitted_peaks"],
                 result["n_thaw_accepted"],
                 result["n_thaw_events"],
+                result["n_rescue_accepted"],
+                result["n_rescue_events"],
+                result["n_rescue_added"],
+                result["n_rescue_origin_pruned"],
                 result["n_replan_accepted"],
                 result["final_plan_revision"],
             )
