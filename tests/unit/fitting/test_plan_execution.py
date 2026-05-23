@@ -29,6 +29,7 @@ from ftmwpipeline.core.data_structures import (
     WindowDifficulty,
     WindowPlan,
 )
+from ftmwpipeline.fitting.active_ft import ActiveFTResult
 from ftmwpipeline.fitting.peak_model import (
     ModelPeak,
     effective_tau,
@@ -94,6 +95,29 @@ def _amp_for_snr(snr: float, sigma: float = 1.0) -> float:
 def _complex_noise(n: int, sigma: float, rng: np.random.Generator) -> np.ndarray:
     s = sigma / np.sqrt(2.0)
     return rng.normal(0.0, s, n) + 1j * rng.normal(0.0, s, n)
+
+
+def _make_active_ft(
+    freq_array: np.ndarray, complex_spectrum: np.ndarray, *, alpha: float = 1.0
+) -> ActiveFTResult:
+    """Wrap a synthetic ``(freq, spectrum)`` pair as an :class:`ActiveFTResult`.
+
+    The tests build their spectra on a uniform synthetic frequency grid in the
+    natural ``h_T`` amplitude convention (``0.5 * A * exp(i*phi) * h_T(...)``),
+    which is exactly the active-FT convention. ``alpha`` defaults to ``1.0``
+    (no zero-padding context) since the tests do not exercise the persisted ->
+    active noise rescale -- they pass ``rms_noise`` directly in active-FT units.
+    """
+    spec = np.asarray(complex_spectrum, dtype=np.complex128)
+    n_active = spec.size
+    n_padded = max(int(round(n_active / alpha)), n_active)
+    return ActiveFTResult(
+        freq_mhz=np.asarray(freq_array, dtype=float),
+        complex_spectrum=spec,
+        alpha=float(alpha),
+        n_active=n_active,
+        n_padded=n_padded,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -424,13 +448,10 @@ class TestExecutePlanHappyPath:
 
         outcome = execute_plan(
             plan,
-            freqs,
-            spec,
+            _make_active_ft(freqs, spec),
             noise,
             peak_freqs,
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
         )
@@ -514,13 +535,10 @@ class TestExecutePlanHappyPath:
 
         outcome = execute_plan(
             plan,
-            freq_array,
-            spectrum,
+            _make_active_ft(freq_array, spectrum),
             rms_noise,
             peak_freqs,
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
         )
@@ -554,13 +572,10 @@ class TestExecutePlanHappyPath:
         plan = WindowPlan(windows=[win], topological_order=[0])
         outcome = execute_plan(
             plan,
-            freq_array,
-            spectrum,
+            _make_active_ft(freq_array, spectrum),
             rms_noise,
             [strong_freq],
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
         )
@@ -628,13 +643,10 @@ class TestLocalThaw:
         # Clean run first to populate both outcomes.
         outcome = execute_plan(
             plan,
-            freq_array,
-            spectrum,
+            _make_active_ft(freq_array, spectrum),
             rms_noise,
             [strong_freq, weak_freq],
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
         )
@@ -744,13 +756,10 @@ class TestLocalThaw:
 
         outcome = execute_plan(
             plan,
-            freq_array,
-            spectrum,
+            _make_active_ft(freq_array, spectrum),
             rms_noise,
             [strong_freq, weak_freq],
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
         )
@@ -809,13 +818,10 @@ class TestLocalThaw:
 
         outcome = execute_plan(
             plan,
-            freq_array,
-            spectrum,
+            _make_active_ft(freq_array, spectrum),
             rms_noise,
             [strong_freq, weak_freq],
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
             max_thaw_rounds=2,
@@ -866,13 +872,10 @@ class TestLocalThawCofit:
         plan = WindowPlan(windows=[win_a, win_b], topological_order=[0, 1])
         out = execute_plan(
             plan,
-            freq_array,
-            spectrum,
+            _make_active_ft(freq_array, spectrum),
             rms_noise,
             [strong_freq, weak_freq],
-            probe_freq_mhz=PROBE_MHZ,
             sideband=SIDEBAND,
-            start_us=START_US,
             acquisition_us=T_US,
             tau0_us=TAU_US,
         )

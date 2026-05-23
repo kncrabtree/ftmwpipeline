@@ -17,16 +17,18 @@ and builds on this core; it is not here.
 
 The fit frame
 -------------
-The core works entirely in the de-ramped, demodulated *fit frame*: the window
-grid is the signed baseband offset ``u`` and each line is parameterised by
+The core works entirely in the demodulated *fit frame*: the window grid is
+the signed baseband offset ``u`` and each line is parameterised by
 ``(amplitude, offset_mhz, phase)`` (:class:`~ftmwpipeline.fitting.peak_model.ModelPeak`)
-plus a window-shared decay ``tau``. The de-ramp and the molecular<->offset
-conversion are :func:`~ftmwpipeline.fitting.peak_model.to_baseband_frame`,
+plus a window-shared decay ``tau``. The data passed in is a slice of the
+active-portion FT (:mod:`ftmwpipeline.fitting.active_ft`), already in the
+``[0, T]`` reference frame ``h_T`` models; the molecular<->offset grid
+relabel is :func:`~ftmwpipeline.fitting.peak_model.to_baseband_offset`,
 applied by the orchestration *before* calling :func:`fit_window`.
 
 The residual and its weighting
 ------------------------------
-The residual is in the complex-FT domain: model versus de-ramped window data,
+The residual is in the complex-FT domain: model versus active-FT window data,
 identical point counts, real and imaginary parts stacked into one real vector.
 The canonical Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``; the
 real and imaginary parts each carry variance ``sigma**2 / 2``, so every stacked
@@ -355,17 +357,17 @@ def fit_window(
     """Fit a fixed number of lines to one window by complex least squares.
 
     Refines every line's ``(amplitude, offset_mhz, phase)`` -- and optionally
-    the shared ``tau`` -- against the de-ramped complex window data, using the
+    the shared ``tau`` -- against the active-FT complex window data, using the
     analytic Jacobian. This is the fixed-K core; choosing K is task 4.
 
     Parameters
     ----------
     offset_grid_mhz : np.ndarray
         Baseband-offset grid ``u`` for the window (MHz), 1-D. The window data
-        must already be in the de-ramped fit frame
-        (:func:`~ftmwpipeline.fitting.peak_model.to_baseband_frame`).
+        must already be in the active-FT fit frame
+        (:func:`~ftmwpipeline.fitting.peak_model.to_baseband_offset`).
     complex_spectrum : np.ndarray
-        De-ramped complex window data on ``offset_grid_mhz``, same shape.
+        Complex active-FT window data on ``offset_grid_mhz``, same shape.
     rms_noise : float or np.ndarray
         Per-bin *complex* noise RMS ``sigma`` (canonical Stage 2 noise). A
         scalar is broadcast across the window; an array must match the grid.
@@ -686,7 +688,7 @@ def knockout_test(
     offset_grid_mhz : np.ndarray
         Baseband-offset grid of the window.
     complex_spectrum : np.ndarray
-        De-ramped complex window data.
+        Complex active-FT window data.
     rms_noise : float or np.ndarray
         Per-bin complex noise RMS.
     fit : WindowFitResult
@@ -920,7 +922,7 @@ def conservative_fit(
     offset_grid_mhz : np.ndarray
         Baseband-offset grid of the window (any order; sorted internally).
     complex_spectrum : np.ndarray
-        De-ramped complex window data on the grid.
+        Complex active-FT window data on the grid.
     rms_noise : float or np.ndarray
         Per-bin complex noise RMS.
     candidate_offsets : sequence of float

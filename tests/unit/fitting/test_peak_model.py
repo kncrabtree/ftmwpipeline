@@ -17,15 +17,15 @@ from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.fitting.peak_model import (
     ModelPeak,
     baseband_offset,
-    deramp_to_active_start,
     effective_tau,
     h_T,
     h_T_jacobian,
     model_spectrum,
     molecular_frequency,
     sideband_sign,
-    to_baseband_frame,
+    to_baseband_offset,
 )
+from ftmwpipeline.preprocessing.leakage import deramp_to_active_start
 
 # Physical scale of the 2638 fixture (see prototype.py).
 T_US = 12.65  # active acquisition length
@@ -248,12 +248,20 @@ class TestModelSpectrum:
 
 
 # ---------------------------------------------------------------------------
-# The de-ramp round trip
+# Grid conversion: molecular frequency -> signed baseband offset
 # ---------------------------------------------------------------------------
-class TestDeRamp:
+class TestToBasebandOffset:
+    """``to_baseband_offset`` is grid relabel only (D9: no deramp).
+
+    The active-FT (:mod:`ftmwpipeline.fitting.active_ft`) is in the ``[0, T]``
+    form natively, so Stage 5 no longer applies a phase-ramp correction at
+    window-materialization time. ``deramp_to_active_start`` is still exercised
+    in ``tests/unit/preprocessing/test_leakage.py`` as a stand-alone primitive
+    used by Stage 4's edge-coherence work.
+    """
+
     @pytest.mark.parametrize("sideband", ["lower", "upper"])
-    def test_to_baseband_frame_recovers_zero_start_model(self, sideband):
-        """A persisted (ramped) window de-ramps back to the [0, T] model."""
+    def test_grid_conversion_on_both_sidebands(self, sideband):
         s = sideband_sign(sideband)
         f_c = PROBE_MHZ + s * 8.0
         u = _offset_grid(2.0)
@@ -262,41 +270,48 @@ class TestDeRamp:
             ModelPeak(amplitude=2.0, offset_mhz=0.7, phase=2.0),
         ]
         x0 = model_spectrum(u, peaks, TAU_US, T_US)  # [0, T] frame
-
-        # Build the persisted spectrum: the molecular-grid window carries the
-        # turn-on ramp exp(-i 2π f_bb t0) (numpy rfft convention, D8).
         f_grid = molecular_frequency(u, f_c, sideband)
-        f_bb_hz = np.abs(f_grid - PROBE_MHZ) * 1e6
-        ramp = np.exp(-2j * np.pi * f_bb_hz * (START_US * 1e-6))
-        x_persisted = x0 * ramp
 
-        u_out, z_out = to_baseband_frame(
+        u_out, z_out = to_baseband_offset(
             f_grid,
-            x_persisted,
+            x0,
             center_mhz=f_c,
             sideband=sideband,
-            probe_freq_mhz=PROBE_MHZ,
-            start_us=START_US,
         )
         assert np.allclose(u_out, u)
+        # Grid relabel only -- the spectrum is returned unchanged.
         assert np.allclose(z_out, x0)
 
-    def test_zero_start_is_identity(self):
-        """start_us = 0 leaves the spectrum unchanged (only the grid converts)."""
+    def test_descending_grid_preserved(self):
+        """Lower-sideband molecular grid descends; conversion preserves order."""
         f_c = 40952.0
         u = _offset_grid(1.0)
-        f_grid = molecular_frequency(u, f_c, "lower")
+        f_grid = molecular_frequency(u, f_c, "lower")  # descending in MHz
         z = model_spectrum(u, [ModelPeak(1.0, 0.1, 0.3)], TAU_US, T_US)
-        u_out, z_out = to_baseband_frame(
-            f_grid,
-            z,
-            center_mhz=f_c,
-            sideband="lower",
-            probe_freq_mhz=PROBE_MHZ,
-            start_us=0.0,
+        u_out, z_out = to_baseband_offset(
+            f_grid, z, center_mhz=f_c, sideband="lower"
         )
         assert np.allclose(u_out, u)
         assert np.allclose(z_out, z)
+
+    def test_shape_mismatch_raises(self):
+        with pytest.raises(ValueError, match="equal shape"):
+            to_baseband_offset(
+                np.zeros(8),
+                np.zeros(7, dtype=np.complex128),
+                center_mhz=0.0,
+                sideband="lower",
+            )
+
+
+class TestDeRampPrimitive:
+    """``deramp_to_active_start`` survives as the Stage 4 leakage primitive.
+
+    These checks live here for the few callers in the fitting tests that used
+    to compose deramp + grid conversion via the now-removed ``to_baseband_frame``
+    helper; the comprehensive deramp coverage is in
+    ``tests/unit/preprocessing/test_leakage.py``.
+    """
 
     def test_deramp_preserves_magnitude(self):
         """De-ramping is a per-bin phase rotation; magnitudes are unchanged."""

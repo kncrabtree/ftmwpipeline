@@ -3,10 +3,9 @@ Finite-acquisition line-shape model for Stage 5 per-window fitting.
 
 Stage 5 fits each analysis window to a sum of finite-acquisition damped
 cosines. This module is the *model* layer: the closed-form line shape ``h_T``,
-its analytic Jacobian, the demodulation / sideband mapping that connects the
-persisted molecular-frequency grid to the baseband offset the fit is
-parameterised in, and the de-ramp that moves window data into the model's
-``[0, T]`` reference frame.
+its analytic Jacobian, and the demodulation / sideband mapping that connects
+the molecular-frequency grid the data lives on to the baseband offset the fit
+is parameterised in.
 
 It is a pure algorithm module (arrays in, arrays out, no file or pipeline
 state), unit-tested in isolation. Orchestration lives in
@@ -55,14 +54,21 @@ by 100s of kHz while the magnitude residual can still look plausible -- a
 silent failure. The demodulation helpers are unit tested on synthetic lines of
 both sidebands precisely to guard this.
 
-The de-ramp
------------
-The persisted spectrum carries the active-region turn-on ramp
-``exp(-i2π f_bb t0)``; ``h_T`` above is the ``[0, T]`` form. Window data is
-de-ramped once on entry with
-:func:`ftmwpipeline.preprocessing.leakage.deramp_to_active_start` (re-exported
-here). :func:`to_baseband_frame` composes the de-ramp and the grid conversion
-into the single transform that moves a persisted window into the fit frame.
+The fit frame
+-------------
+``h_T`` is in the ``[0, T]`` form. Stage 5 fits on the **active-portion FT**
+(:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active samples
+with the canonical apodization, which is already in the ``[0, T]`` form
+natively. No de-ramp is needed: :func:`to_baseband_offset` only does the grid
+conversion from molecular MHz to the signed baseband offset.
+
+(Earlier drafts -- before D9 -- fitted on the persisted Stage 1 FT, which
+carries an ``exp(-i2π f_bb t0)`` turn-on phase ramp; this module called
+:func:`ftmwpipeline.preprocessing.leakage.deramp_to_active_start` to remove
+it. With the active-FT contract the active samples are referenced to
+``t = 0`` directly, so the deramp is a no-op. The de-ramp helper survives in
+``preprocessing/leakage.py`` for Stage 4's edge-coherence work on the
+persisted spectrum.)
 """
 
 from __future__ import annotations
@@ -74,9 +80,7 @@ from typing import Union, cast
 import numpy as np
 
 from ftmwpipeline.core.data_structures import Sideband
-from ftmwpipeline.preprocessing.leakage import deramp_to_active_start
 
-# Re-exported so callers reach the full fit-frame transform set from one place.
 __all__ = [
     "ModelPeak",
     "sideband_sign",
@@ -86,8 +90,7 @@ __all__ = [
     "model_spectrum",
     "baseband_offset",
     "molecular_frequency",
-    "to_baseband_frame",
-    "deramp_to_active_start",
+    "to_baseband_offset",
 ]
 
 SidebandLike = Union[Sideband, str]
@@ -406,24 +409,20 @@ def molecular_frequency(
     return cast(np.ndarray, center_mhz + s * delta)
 
 
-def to_baseband_frame(
+def to_baseband_offset(
     freq_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
     *,
     center_mhz: float,
     sideband: SidebandLike,
-    probe_freq_mhz: float,
-    start_us: float,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Move a persisted window into the fit frame: de-ramp + grid conversion.
+    """Move an active-FT window into the fit frame: grid conversion only.
 
-    Composes the two transforms this module owns:
-
-    1. de-ramp the spectrum to the active-region turn-on with
-       :func:`~ftmwpipeline.preprocessing.leakage.deramp_to_active_start`, so
-       the data matches the ``[0, T]`` form of :func:`h_T`;
-    2. convert the molecular grid to the signed baseband offset ``u`` with
-       :func:`baseband_offset`.
+    Converts the molecular grid to the signed baseband offset ``u`` with
+    :func:`baseband_offset` and returns the spectrum unchanged. The active-FT
+    (:mod:`ftmwpipeline.fitting.active_ft`) is already in the ``[0, T]`` form
+    ``h_T`` models -- there is no turn-on phase ramp to remove, so this is
+    just a grid relabel.
 
     The point correspondence is preserved -- ``offset[i]`` and
     ``spectrum[i]`` describe the same bin -- but the grid is **not** reordered
@@ -435,30 +434,26 @@ def to_baseband_frame(
     freq_mhz : np.ndarray
         Molecular frequency grid of the window (MHz), 1-D.
     complex_spectrum : np.ndarray
-        Persisted complex spectrum on ``freq_mhz``, same shape.
+        Active-FT complex spectrum on ``freq_mhz``, same shape.
     center_mhz : float
         Window reference (molecular) frequency ``f_c`` in MHz.
     sideband : Sideband or str
         Sideband configuration.
-    probe_freq_mhz : float
-        Probe (LO) frequency in MHz.
-    start_us : float
-        Active-region start time ``t0`` in microseconds (``>= 0``).
 
     Returns
     -------
     tuple of np.ndarray
-        ``(offset_grid_mhz, deramped_spectrum)`` -- the ``[0, T]``-frame data
+        ``(offset_grid_mhz, complex_spectrum)`` -- the ``[0, T]``-frame data
         ready for :func:`model_spectrum`.
 
     Raises
     ------
     ValueError
-        If the arrays differ in shape, are not 1-D, or ``start_us`` is
-        negative (propagated from :func:`deramp_to_active_start`).
+        If ``freq_mhz`` and ``complex_spectrum`` differ in shape.
     """
-    deramped = deramp_to_active_start(
-        freq_mhz, complex_spectrum, probe_freq_mhz, start_us
-    )
-    offset_grid = baseband_offset(freq_mhz, center_mhz, sideband)
-    return offset_grid, deramped
+    freq = np.asarray(freq_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    if freq.shape != z.shape:
+        raise ValueError("freq_mhz and complex_spectrum must have equal shape")
+    offset_grid = baseband_offset(freq, center_mhz, sideband)
+    return offset_grid, z

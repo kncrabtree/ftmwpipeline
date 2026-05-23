@@ -33,13 +33,22 @@ calls out:
   primary window. This is the canonical 36350/36389 doublet case. Rounds are
   bounded for guaranteed termination.
 
-Scope -- this is *task 5 only*. The Stage 4 ``replan`` entry point and the
-``merge`` / ``split`` re-plan requests are task 6; serialization, the
-``_internal/stage5_impl.py`` file orchestrator, and the dual-interface wrappers
-are tasks 8-9; the visualization is task 9. The light dataclasses defined here
+The fit frame is the **active-portion FT**
+(:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active FID
+samples with the canonical apodization, which is already in the ``[0, T]``
+form ``h_T`` models. Each window is sliced from the active-FT and its
+molecular-frequency grid is relabelled to a signed baseband offset
+(:func:`~ftmwpipeline.fitting.peak_model.to_baseband_offset`); the original
+de-ramp step the task-5 commit applied against the persisted FT is dropped
+(D9).
+
+Scope -- this is *task 5 + task 6*. The Stage 4 ``replan`` entry point and
+the ``merge`` / ``split`` re-plan requests are task 7; serialization, the
+``_internal/stage5_impl.py`` file orchestrator, and the dual-interface
+wrappers are later tasks. The light dataclasses defined here
 (:class:`FrozenPeak`, :class:`ThawEvent`, :class:`WindowOutcome`,
-:class:`PlanFitOutcome`) are minimal records that task 7 will compose into the
-persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
+:class:`PlanFitOutcome`) are minimal records that later tasks will compose
+into the persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
 :class:`~ftmwpipeline.core.data_structures.FittingResult` / the new
 ``SpectrumFit`` aggregate.
 """
@@ -64,11 +73,12 @@ from ftmwpipeline.preprocessing.edge_coherence import (
     coherence_statistic,
 )
 
+from .active_ft import ActiveFTResult
 from .peak_model import (
     ModelPeak,
     model_spectrum,
     sideband_sign,
-    to_baseband_frame,
+    to_baseband_offset,
 )
 from .window_fit import (
     DEFAULT_MAX_DECAY_FACTOR,
@@ -208,8 +218,8 @@ class WindowOutcome:
     offset_grid_mhz : np.ndarray
         Baseband-offset grid of the window (the fit frame).
     complex_spectrum : np.ndarray
-        De-ramped complex window data (the data passed to the fit, *before* the
-        frozen-background subtraction).
+        Active-FT complex window data (the data passed to the fit, *before*
+        the frozen-background subtraction).
     rms_noise : np.ndarray
         Per-bin complex noise RMS over the window.
     background : np.ndarray
@@ -278,9 +288,9 @@ def evaluate_fixed_contributor(
     f_c_dependent) + delta_primary``; ``amplitude``/``phase``/``tau`` are
     physical and unchanged.
 
-    The primary's de-ramp and the dependent's are both relative to the same
-    active-region start ``t0``, so the de-ramped phase is identical in both
-    frames -- no extra phase term enters here.
+    Both windows are sliced from the same active-FT (already in the
+    ``[0, T]`` form), so the relabel is a pure grid shift -- no extra phase
+    term enters here.
 
     Parameters
     ----------
@@ -388,7 +398,7 @@ def subtract_frozen_background(
     offset_grid_mhz : np.ndarray
         Baseband-offset grid of the dependent window (MHz).
     complex_spectrum : np.ndarray
-        De-ramped complex window data, same shape as the grid.
+        Active-FT complex window data, same shape as the grid.
     fixed_peaks : sequence of FrozenPeak
         Contributors to evaluate.
     tau_us : float
@@ -578,7 +588,7 @@ def local_thaw_cofit(
 ) -> tuple[WindowFitResult, np.ndarray]:
     """Joint co-fit of two windows with one contributor unfrozen.
 
-    The two windows' de-ramped data are concatenated under a shared baseband
+    The two windows' active-FT data are concatenated under a shared baseband
     coordinate centred at the primary window's reference frequency: the
     primary's free peaks keep their offsets unchanged; the dependent window's
     grid and free-peak offsets are remapped into the shared frame by adding
@@ -693,26 +703,29 @@ def local_thaw_cofit(
 # ---------------------------------------------------------------------------
 def _materialize_window(
     fit_window_spec: FitWindow,
-    freq_array_mhz: np.ndarray,
-    complex_spectrum: np.ndarray,
+    active_ft: ActiveFTResult,
     rms_noise: np.ndarray,
     *,
-    probe_freq_mhz: float,
     sideband: SidebandLike,
-    start_us: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-    """Slice a window from the persisted spectrum and move it into the fit frame.
+    """Slice a window from the active-FT and move it into the fit frame.
+
+    The active-FT is already in the ``[0, T]`` form ``h_T`` models, so this
+    is just a band slice plus a molecular -> signed-baseband-offset grid
+    relabel -- no de-ramp.
 
     Returns ``(freq_slice, offset_grid, complex_slice, rms_slice, center_mhz)``.
     """
     lo, hi = fit_window_spec.freq_range
     if lo > hi:
         lo, hi = hi, lo
+    freq_array_mhz = active_ft.freq_mhz
+    complex_spectrum = active_ft.complex_spectrum
     mask = (freq_array_mhz >= lo) & (freq_array_mhz <= hi)
     if not np.any(mask):
         raise ValueError(
             f"window {fit_window_spec.window_id} freq_range "
-            f"({lo}, {hi}) MHz has no overlap with the persisted spectrum"
+            f"({lo}, {hi}) MHz has no overlap with the active-FT spectrum"
         )
     freq_slice = freq_array_mhz[mask]
     z_slice = complex_spectrum[mask]
@@ -720,15 +733,13 @@ def _materialize_window(
     # Reference frequency: the midpoint of the window's freq_range. This is the
     # natural symmetric choice and keeps free-peak offsets balanced around zero.
     center_mhz = 0.5 * (lo + hi)
-    offset_grid, deramped = to_baseband_frame(
+    offset_grid, z_offset = to_baseband_offset(
         freq_slice,
         z_slice,
         center_mhz=center_mhz,
         sideband=sideband,
-        probe_freq_mhz=probe_freq_mhz,
-        start_us=start_us,
     )
-    return freq_slice, offset_grid, deramped, sig_slice, center_mhz
+    return freq_slice, offset_grid, z_offset, sig_slice, center_mhz
 
 
 def _peaks_to_candidate_offsets(
@@ -747,14 +758,11 @@ def _peaks_to_candidate_offsets(
 
 def execute_plan(
     plan: WindowPlan,
-    freq_array_mhz: np.ndarray,
-    complex_spectrum: np.ndarray,
+    active_ft: ActiveFTResult,
     rms_noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
     *,
-    probe_freq_mhz: float,
     sideband: SidebandLike,
-    start_us: float,
     acquisition_us: float,
     tau0_us: float,
     fit_tau: bool = True,
@@ -763,16 +771,17 @@ def execute_plan(
     max_thaw_rounds: int = DEFAULT_MAX_THAW_ROUNDS,
     conservative_kwargs: Optional[dict[str, Any]] = None,
 ) -> PlanFitOutcome:
-    """Walk a Stage 4 :class:`WindowPlan` and fit every window.
+    """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
     The algorithm:
 
     1. Visit windows in :attr:`WindowPlan.topological_order` (a window's
        fixed-contributor primaries are guaranteed already-fit when it is
        reached). Windows in the same batch are mutually independent.
-    2. For each window: materialize the de-ramped fit frame, evaluate each
-       :class:`FixedContributor` against its primary's :class:`WindowOutcome`
-       to produce :class:`FrozenPeak` s, then call
+    2. For each window: slice the active-FT into the fit frame (just a grid
+       relabel -- the active-FT is already in the ``[0, T]`` form), evaluate
+       each :class:`FixedContributor` against its primary's
+       :class:`WindowOutcome` to produce :class:`FrozenPeak` s, then call
        :func:`fit_window_with_fixed_contributors`.
     3. Compute :func:`residual_edge_coherence` on the full residual. For any
        edge above ``residual_edge_threshold``, pick a contributor via
@@ -783,25 +792,29 @@ def execute_plan(
        ``max_thaw_rounds``.
 
     The full plan-level outcome is returned; this function does **no file IO**
-    -- persistence is task 8, and the ``_internal/stage5_impl.py`` orchestrator
+    -- persistence is task 9, and the ``_internal/stage5_impl.py`` orchestrator
     is task 9. Pure inputs in, pure outputs out.
 
     Parameters
     ----------
     plan : WindowPlan
         Stage 4 fit plan.
-    freq_array_mhz : np.ndarray
-        Molecular frequency grid of the persisted Stage 1 spectrum.
-    complex_spectrum : np.ndarray
-        Persisted complex spectrum on ``freq_array_mhz``.
+    active_ft : ActiveFTResult
+        Active-portion FT of the experiment, computed by
+        :func:`~ftmwpipeline.fitting.active_ft.compute_active_ft` from the
+        FID + canonical Stage 1 settings. Carries the molecular frequency
+        grid, complex spectrum, and ``alpha = N_active/N_padded``.
     rms_noise : np.ndarray
-        Canonical Stage 2 per-bin complex RMS, same shape as the spectrum.
+        Per-bin complex noise RMS on the **active-FT** grid (typically from
+        :func:`~ftmwpipeline.fitting.active_ft.derive_active_noise`), same
+        shape as ``active_ft.complex_spectrum``.
     peak_frequencies_mhz : sequence of float
         Frequencies of *all* Stage 3 peaks (indexed by
         ``FitWindow.free_peak_indices`` and ``FixedContributor.peak_index``).
-    probe_freq_mhz, sideband, start_us, acquisition_us, tau0_us : ...
-        Pipeline-level parameters -- the probe LO, sideband sign, active-region
-        start, active acquisition length, and default shared decay.
+    sideband, acquisition_us, tau0_us : ...
+        Pipeline-level parameters -- sideband sign, active acquisition length
+        ``T``, and default shared decay. ``start_us`` is *not* needed
+        (the active-FT is in the ``[0, T]`` form natively).
     fit_tau : bool, default True
         Forwarded to :func:`conservative_fit` for each window.
     residual_edge_threshold : float
@@ -821,20 +834,16 @@ def execute_plan(
     Raises
     ------
     ValueError
-        If a window's ``freq_range`` does not overlap the persisted spectrum,
+        If a window's ``freq_range`` does not overlap the active-FT spectrum,
         or a fixed contributor references a primary window that has not been
         fit (which should be impossible given the topological walk).
     """
     if conservative_kwargs is None:
         conservative_kwargs = {}
 
-    freq_array = np.asarray(freq_array_mhz, dtype=float)
-    spectrum = np.asarray(complex_spectrum, dtype=np.complex128)
     noise = np.asarray(rms_noise, dtype=float)
-    if freq_array.shape != spectrum.shape or freq_array.shape != noise.shape:
-        raise ValueError(
-            "freq_array_mhz, complex_spectrum, and rms_noise must share shape"
-        )
+    if noise.shape != active_ft.complex_spectrum.shape:
+        raise ValueError("rms_noise must match active_ft.complex_spectrum shape")
 
     by_id = {w.window_id: w for w in plan.windows}
     order = plan.topological_order or [w.window_id for w in plan.windows]
@@ -845,14 +854,11 @@ def execute_plan(
         win = by_id[wid]
         outcome = _fit_one_window(
             win,
-            freq_array,
-            spectrum,
+            active_ft,
             noise,
             peak_frequencies_mhz=peak_frequencies_mhz,
             outcomes=outcomes,
-            probe_freq_mhz=probe_freq_mhz,
             sideband=sideband,
-            start_us=start_us,
             acquisition_us=acquisition_us,
             tau0_us=tau0_us,
             fit_tau=fit_tau,
@@ -888,15 +894,12 @@ def execute_plan(
 
 def _fit_one_window(
     win: FitWindow,
-    freq_array: np.ndarray,
-    spectrum: np.ndarray,
+    active_ft: ActiveFTResult,
     noise: np.ndarray,
     *,
     peak_frequencies_mhz: Sequence[float],
     outcomes: dict[int, WindowOutcome],
-    probe_freq_mhz: float,
     sideband: SidebandLike,
-    start_us: float,
     acquisition_us: float,
     tau0_us: float,
     fit_tau: bool,
@@ -904,14 +907,11 @@ def _fit_one_window(
     conservative_kwargs: dict[str, Any],
 ) -> WindowOutcome:
     """Fit one window with its frozen contributors; build its WindowOutcome."""
-    _, offset_grid, deramped, sig_slice, center_mhz = _materialize_window(
+    _, offset_grid, z_slice, sig_slice, center_mhz = _materialize_window(
         win,
-        freq_array,
-        spectrum,
+        active_ft,
         noise,
-        probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
-        start_us=start_us,
     )
 
     fixed_peaks: list[FrozenPeak] = []
@@ -937,7 +937,7 @@ def _fit_one_window(
     fit_result, background, full_fitted, full_residual = (
         fit_window_with_fixed_contributors(
             offset_grid,
-            deramped,
+            z_slice,
             sig_slice,
             fixed_peaks,
             candidate_offsets,
@@ -955,7 +955,7 @@ def _fit_one_window(
         fit=fit_result,
         fixed_peaks=fixed_peaks,
         offset_grid_mhz=offset_grid,
-        complex_spectrum=deramped,
+        complex_spectrum=z_slice,
         rms_noise=sig_slice,
         background=background,
         full_fitted_spectrum=full_fitted,

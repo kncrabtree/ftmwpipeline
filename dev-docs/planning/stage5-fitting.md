@@ -77,14 +77,20 @@ Consequences for the rest of the plan:
 - **The σ/√2 D-8 noise weighting still applies.** It splits the per-bin
   complex variance into Re/Im halves; it is independent of the bin-
   correlation question.
-- **Per-bin noise comes from Stage 2 via a derived rescale**, not a fresh
-  estimation pass. The active-FT bin variance is `1/α` that of the
-  persisted FT (same time-domain noise, fewer FT-length samples), so
-
-      σ_active(f) = σ_persisted(f_nearest) / √α
-
-  interpolated onto the active-FT grid. No second adaptive noise pass; one
-  canonical `rms_noise` source.
+- **Per-bin noise is measured directly on the active-FT** by running the
+  existing Stage 2 adaptive estimator
+  (`preprocessing.noise_estimation.estimate_noise_adaptive`) on the
+  active-FT magnitude spectrum — the same algorithm Stage 2 uses on the
+  persisted spectrum, applied to a different spectrum. No conversion
+  factor, no `σ / √α` rescale: the noise estimate comes from the same
+  spectrum the fit sees, so any FFT-normalization choices cancel by
+  construction. (Earlier drafts of this plan derived `σ_active =
+  σ_persisted / √α` from the persisted Stage 2 result; this proved
+  fragile because the formula only holds under unitary FFT normalization,
+  and the persisted FT uses `/N_orig × 10⁶`. Measuring `σ` on the active-FT
+  is robust to that mismatch by construction. Stage 2's cost on the
+  ~½M-bin active-FT is a small fraction of the full-spectrum pass and is
+  done once per Stage 5 invocation.)
 - **The active-FT is internal to Stage 5.** It is computed on demand from
   the persisted FID (`stage0_fid_data`) and the canonical Stage 1
   apodization settings; it is not persisted in the `.ftmw` file (small,
@@ -675,10 +681,12 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
       `(freq_mhz, complex_spectrum, alpha, n_active, n_padded)`. The FFT is
       `rfft(fid[active] * exp(-(t - t0)/τ_apod))` so the bin grid is
       `[0, T_active]`-natural — no phase ramp.
-   2. `derive_active_noise(persisted_rms_noise, persisted_freq_mhz,
-      active_freq_mhz, alpha) -> np.ndarray`: interpolate persisted Stage 2
-      σ onto the active-FT grid, rescale by `1/√α`. One canonical noise
-      source; no second adaptive pass.
+   2. Per-bin σ on the active-FT comes from running the existing Stage 2
+      adaptive estimator (`estimate_noise_adaptive`) on the active-FT
+      magnitude spectrum directly — same algorithm, different spectrum.
+      No derivation from σ_persisted, no `/√α` rescale: σ is measured on
+      the same spectrum the fit sees, so any normalization mismatch is
+      avoided at the source.
    3. Rewire `plan_execution._materialize_window` to slice the active-FT
       result instead of the persisted FT. Drop the
       `deramp_to_active_start` call from `to_baseband_frame` (the helper
@@ -688,13 +696,16 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
       instead of the persisted FT + per-bin noise. The
       `_internal/stage5_impl.py` orchestrator (task 9) computes the
       active-FT once per Stage 5 invocation from `stage0_fid_data` +
-      canonical Stage 1 settings.
+      canonical Stage 1 settings, runs `estimate_noise_adaptive` on the
+      active-FT magnitude spectrum to get the active-grid `rms_noise`,
+      and passes both into `execute_plan`.
    5. Tests: `tests/unit/fitting/test_active_ft.py` (synthetic damped
-      cosines, recovery of A/f/φ/τ; verify α and per-bin σ_active relation
-      to within ~5% on noise-only data; verify absence of phase ramp by
-      comparing bin phases at line center). Update
-      `tests/unit/fitting/test_plan_execution.py` for the new
-      `execute_plan` signature.
+      cosines, recovery of A/f/φ/τ on both sidebands; verify α =
+      N_active/N_padded; verify absence of phase ramp by comparing bin
+      phases at line center against `arg(h_T)`; verify Stage 2 noise
+      estimation on the active-FT recovers the time-domain σ_t prediction
+      to within ~10%). Update `tests/unit/fitting/test_plan_execution.py`
+      for the new `execute_plan` signature.
    6. Update `STATUS.md` (when wired) and confirm no α-correction is
       smuggled in; the helpers in `validation.py` stay as-written.
 7. [ ] Stage 4 `replan` entry point (`merge`/`split`) + the residual

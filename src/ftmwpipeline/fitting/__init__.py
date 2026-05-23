@@ -3,6 +3,7 @@ Peak fitting algorithms for FTMW spectroscopy.
 
 This module provides:
 - The finite-acquisition line-shape model (``peak_model``)
+- The active-portion FT used as the Stage 5 fit frame (``active_ft``)
 - The per-window least-squares core and conservative add-one-peak loop
   (``window_fit``)
 - Statistical-test and linewidth-physics helpers (``validation``)
@@ -10,6 +11,10 @@ This module provides:
   local thaw renegotiation (``plan_execution``)
 """
 
+from .active_ft import (
+    ActiveFTResult,
+    compute_active_ft,
+)
 from .peak_model import (
     ModelPeak,
     baseband_offset,
@@ -19,7 +24,7 @@ from .peak_model import (
     model_spectrum,
     molecular_frequency,
     sideband_sign,
-    to_baseband_frame,
+    to_baseband_offset,
 )
 from .validation import (
     calculate_aic,
@@ -61,6 +66,9 @@ from .window_fit import (
 )
 
 __all__ = [
+    # active_ft
+    "ActiveFTResult",
+    "compute_active_ft",
     # peak_model
     "ModelPeak",
     "baseband_offset",
@@ -70,7 +78,7 @@ __all__ = [
     "model_spectrum",
     "molecular_frequency",
     "sideband_sign",
-    "to_baseband_frame",
+    "to_baseband_offset",
     # validation
     "calculate_aic",
     "calculate_chi_squared_improvement",
