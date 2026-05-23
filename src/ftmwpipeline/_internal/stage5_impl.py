@@ -317,7 +317,13 @@ def fit_peaks_impl(
         residual_edge_threshold=edge_threshold_v,
         residual_edge_m=edge_m_v,
         max_thaw_rounds=max_thaw_v,
-        conservative_kwargs={"max_decay_factor": max_decay_v},
+        conservative_kwargs={
+            "max_decay_factor": max_decay_v,
+            # Apodization is the physics-informed hard ceiling on tau and the
+            # reference point for the stiff lower-side penalty. None disables
+            # both (no apodization means no upper bound to enforce).
+            "tau_apodization_us": expf_us,
+        },
         replan_context=replan_ctx,
     )
 
@@ -437,6 +443,13 @@ def visualize_fit_impl(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 
+    # The fit lives in active-FT amplitude units (``dt_us * rfft(active)``);
+    # the persisted FT uses ``rfft(padded) / original_length * 10**units_power``.
+    # Convert at plot time so the model overlay reads at the persisted scale.
+    sample_dt_us = float(fid.spacing * 1e6)
+    scale_factor = float(10 ** int(base_pp.units_power))
+    model_amplitude_scale = scale_factor / (float(fid.n_points) * sample_dt_us)
+
     from ..visualization.fit_visualization import plot_spectrum_fit
 
     if title is None:
@@ -447,6 +460,8 @@ def visualize_fit_impl(
             else f"{fit.n_windows} windows"
         )
         title = f"Pipeline {name} - Stage 5 Fit ({scope})"
+
+    start_us = float(base_pp.start_us) if base_pp.start_us is not None else 0.0
 
     return plot_spectrum_fit(
         frequencies=user_ft.freq_array,
@@ -459,4 +474,7 @@ def visualize_fit_impl(
         title=title,
         window_id=window_id,
         backend=backend,
+        model_amplitude_scale=model_amplitude_scale,
+        probe_freq_mhz=float(fid.probe_freq_mhz),
+        start_us=start_us,
     )

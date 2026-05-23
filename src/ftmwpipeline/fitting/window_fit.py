@@ -101,6 +101,33 @@ DEFAULT_SEEDER_RCHI2 = 1.5
 # Straddle of the re-seeded inits, in units of the feature FWHM.
 DEFAULT_SEEDER_STRADDLE_FACTOR = 1.0
 DEFAULT_SEEDER_MAX_K = 3
+# Soft phase-difference penalty: weak at sep = phase_penalty_cutoff_fwhm * fwhm,
+# growing linearly to (lambda * |sin(d_phase/2)|^2) at sep = 0. Catches the
+# degenerate "two peaks collapsed to the same offset with cancelling phases"
+# blend-aware re-seed pathology.
+DEFAULT_PHASE_PENALTY_LAMBDA = 100.0
+DEFAULT_PHASE_PENALTY_CUTOFF_FWHM = 2.0
+# Soft amplitude-floor penalty: linear hinge that adds sqrt(lambda) * max(0,
+# 1 - A/A_floor) for each peak, with A_floor scaled to the noise level so
+# noise-amplitude peaks are pushed toward 0.
+DEFAULT_AMP_PENALTY_LAMBDA = 10.0
+# Hard upper bound on a peak amplitude as a multiple of 2 * max(|data|) /
+# tau_eff_min (the strongest physically-plausible amplitude). 3x leaves
+# headroom for blended-peak superposition while still rejecting the
+# degenerate ~1000x-inflated amplitudes from the cancelling-pair pathology.
+DEFAULT_AMP_MAX_HEADROOM = 3.0
+# Post-fit sanity check in _blend_aware_seed: reject a K>=2 escalation if any
+# two of its fitted peaks collapsed to within this fraction of a FWHM.
+DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
+# Tau policy: the canonical apodization (``expf_us``) sets a hard upper bound
+# on ``tau`` -- the data cannot decay slower than the apodization itself.
+# Decreasing ``tau`` below the apodization broadens the line, so the LSQ
+# can buy chi^2 by under-fitting amplitude and over-broadening to absorb
+# unmodeled-peak residual; the penalty discourages this with a stiff
+# quadratic hinge. Weak-only windows (no candidate clears
+# ``DEFAULT_WEAK_WINDOW_SNR_THRESHOLD``) hold ``tau`` fixed entirely.
+DEFAULT_TAU_PENALTY_LAMBDA = 500.0
+DEFAULT_WEAK_WINDOW_SNR_THRESHOLD = 10.0
 
 
 # ---------------------------------------------------------------------------
@@ -340,6 +367,148 @@ def _parameter_errors(
 # ---------------------------------------------------------------------------
 # The fixed-K least-squares core
 # ---------------------------------------------------------------------------
+def _penalty_count(
+    k: int,
+    phase_penalty_lambda: float,
+    amp_penalty_lambda: float,
+    tau_penalty_lambda: float = 0.0,
+    fit_tau: bool = False,
+) -> int:
+    """Number of penalty residual elements for a window with ``k`` peaks.
+
+    Always-emitted shape (zero when inactive) so scipy's least-squares sees a
+    constant residual length across iterations; otherwise the optimiser
+    silently breaks when peaks cross the cutoff or amplitude floor mid-fit.
+    """
+    n = 0
+    if phase_penalty_lambda > 0.0 and k > 1:
+        n += k * (k - 1) // 2
+    if amp_penalty_lambda > 0.0:
+        n += k
+    if tau_penalty_lambda > 0.0 and fit_tau:
+        n += 1
+    return n
+
+
+def _penalty_residuals_and_jacobian(
+    params: np.ndarray,
+    k: int,
+    tau0_us: float,
+    fit_tau: bool,
+    *,
+    phase_penalty_lambda: float,
+    amp_penalty_lambda: float,
+    amp_floor: Optional[float],
+    fwhm_mhz: Optional[float],
+    phase_penalty_cutoff_fwhm: float,
+    tau_penalty_lambda: float = 0.0,
+    tau_penalty_reference: Optional[float] = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Penalty residuals + analytic Jacobian rows for the augmented LSQ.
+
+    Three soft penalties, all built so ``sum(r**2)`` matches the cost the
+    scipy solver minimises in addition to the data residual:
+
+    * **Pair phase penalty** -- one residual element per unordered pair
+      ``(i, j)``. The penalty is
+      ``sqrt(lambda) * weight * sin((phi_i - phi_j) / 2)`` with
+      ``weight = max(0, 1 - sep / cutoff)``: zero for in-phase peaks and at
+      or beyond the cutoff separation, maximal for anti-phase peaks at zero
+      separation. The slot is *always emitted* (with value zero when
+      ``weight = 0``) so the residual vector has constant length across
+      solver iterations.
+    * **Amplitude floor penalty** -- one residual element per peak,
+      ``sqrt(lambda) * max(0, 1 - A_i / amp_floor)``. A linear hinge that
+      pushes spurious noise-amplitude peaks toward zero. Always emitted
+      (zero above the floor).
+    * **Tau lower-side penalty** -- one residual element when ``fit_tau``
+      and ``tau_penalty_lambda > 0``:
+      ``sqrt(lambda) * max(0, (tau_ref - tau) / tau_ref)``. The applied
+      apodization (``expf_us``) sets a hard upper bound on tau (data can't
+      decay slower than the apodization); the penalty discourages tau from
+      drifting *below* it so the LSQ can't broaden the line to absorb
+      unmodeled-peak residual.
+    """
+    n_params = 3 * k + (1 if fit_tau else 0)
+    n_pen = _penalty_count(
+        k,
+        phase_penalty_lambda,
+        amp_penalty_lambda,
+        tau_penalty_lambda,
+        fit_tau,
+    )
+    if n_pen == 0:
+        return np.zeros(0, dtype=float), np.zeros((0, n_params), dtype=float)
+    res = np.zeros(n_pen, dtype=float)
+    jac = np.zeros((n_pen, n_params), dtype=float)
+    peaks, _tau = _unpack(params, k, tau0_us, fit_tau)
+
+    row = 0
+    if phase_penalty_lambda > 0.0 and k > 1:
+        cutoff = (
+            phase_penalty_cutoff_fwhm * fwhm_mhz
+            if fwhm_mhz is not None
+            else 0.0
+        )
+        sqrt_lambda = float(np.sqrt(phase_penalty_lambda))
+        for i in range(k):
+            for j in range(i + 1, k):
+                if cutoff > 0.0:
+                    off_i = peaks[i].offset_mhz
+                    off_j = peaks[j].offset_mhz
+                    sep = off_i - off_j
+                    abs_sep = abs(sep)
+                    if abs_sep < cutoff:
+                        weight = 1.0 - abs_sep / cutoff
+                        half_diff = 0.5 * (peaks[i].phase - peaks[j].phase)
+                        sin_half = float(np.sin(half_diff))
+                        cos_half = float(np.cos(half_diff))
+                        res[row] = sqrt_lambda * weight * sin_half
+                        sgn = (sep / abs_sep) if abs_sep > 0.0 else 0.0
+                        dweight_doffi = -sgn / cutoff
+                        dweight_doffj = sgn / cutoff
+                        jac[row, 3 * i + 1] = (
+                            sqrt_lambda * dweight_doffi * sin_half
+                        )
+                        jac[row, 3 * j + 1] = (
+                            sqrt_lambda * dweight_doffj * sin_half
+                        )
+                        jac[row, 3 * i + 2] = (
+                            sqrt_lambda * weight * 0.5 * cos_half
+                        )
+                        jac[row, 3 * j + 2] = (
+                            -sqrt_lambda * weight * 0.5 * cos_half
+                        )
+                row += 1
+
+    if amp_penalty_lambda > 0.0 and amp_floor is not None and amp_floor > 0.0:
+        sqrt_lambda = float(np.sqrt(amp_penalty_lambda))
+        for i, pk in enumerate(peaks):
+            ratio = pk.amplitude / amp_floor
+            if ratio < 1.0:
+                res[row] = sqrt_lambda * (1.0 - ratio)
+                jac[row, 3 * i] = -sqrt_lambda / amp_floor
+            row += 1
+
+    if (
+        tau_penalty_lambda > 0.0
+        and fit_tau
+        and tau_penalty_reference is not None
+        and tau_penalty_reference > 0.0
+    ):
+        # Tau is the last packed parameter when fit_tau is True.
+        tau_value = float(params[3 * k])
+        ratio = (tau_penalty_reference - tau_value) / tau_penalty_reference
+        if ratio > 0.0:
+            sqrt_lambda = float(np.sqrt(tau_penalty_lambda))
+            res[row] = sqrt_lambda * ratio
+            # d/d(tau) of (ref - tau)/ref = -1/ref
+            jac[row, 3 * k] = -sqrt_lambda / tau_penalty_reference
+        row += 1
+
+    return res, jac
+
+
 def fit_window(
     offset_grid_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
@@ -353,6 +522,14 @@ def fit_window(
     tau_bounds: Optional[tuple[float, float]] = None,
     offset_bounds: Optional[tuple[float, float]] = None,
     max_nfev: int = DEFAULT_MAX_NFEV,
+    amp_max: Optional[float] = None,
+    phase_penalty_lambda: float = 0.0,
+    amp_penalty_lambda: float = 0.0,
+    amp_floor: Optional[float] = None,
+    fwhm_mhz: Optional[float] = None,
+    phase_penalty_cutoff_fwhm: float = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+    tau_penalty_lambda: float = 0.0,
+    tau_penalty_reference: Optional[float] = None,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
 
@@ -390,6 +567,31 @@ def fit_window(
         ``(lo, hi)`` bounds for every line offset; defaults to the grid span.
     max_nfev : int, default 400
         Solver residual-evaluation cap.
+    amp_max : float, optional
+        Hard upper bound on every peak amplitude (replaces the default
+        ``+inf``). Typically set by the caller from the in-window data
+        magnitude with a small headroom factor.
+    phase_penalty_lambda : float, default 0.0
+        Weight of the pair-phase penalty (see
+        :func:`_penalty_residuals_and_jacobian`). ``0`` disables it.
+    amp_penalty_lambda : float, default 0.0
+        Weight of the amplitude-floor penalty. ``0`` disables it.
+    amp_floor : float, optional
+        Amplitude scale for the floor penalty (required when
+        ``amp_penalty_lambda > 0``).
+    fwhm_mhz : float, optional
+        Line-shape FWHM (MHz) used by the phase penalty (required when
+        ``phase_penalty_lambda > 0``).
+    phase_penalty_cutoff_fwhm : float, default 2.0
+        Pair-separation cutoff for the phase penalty, in FWHM units. The
+        penalty linearly ramps from 0 at this separation to its full
+        ``sqrt(lambda) * |sin(d_phase/2)|`` at zero separation.
+    tau_penalty_lambda : float, default 0.0
+        Weight of the lower-side tau penalty. ``0`` disables it.
+    tau_penalty_reference : float, optional
+        Reference tau (typically the apodization ``expf_us``) that the
+        lower-side penalty pulls tau toward. Required when
+        ``tau_penalty_lambda > 0``.
 
     Returns
     -------
@@ -460,12 +662,27 @@ def fit_window(
     if offset_bounds is None:
         offset_bounds = (float(u.min()), float(u.max()))
 
+    amp_upper = float(amp_max) if amp_max is not None and amp_max > 0.0 else np.inf
+    if amp_penalty_lambda > 0.0 and amp_floor is None:
+        raise ValueError("amp_floor is required when amp_penalty_lambda > 0")
+    if phase_penalty_lambda > 0.0 and fwhm_mhz is None:
+        raise ValueError("fwhm_mhz is required when phase_penalty_lambda > 0")
+    if (
+        tau_penalty_lambda > 0.0
+        and fit_tau
+        and (tau_penalty_reference is None or tau_penalty_reference <= 0.0)
+    ):
+        raise ValueError(
+            "tau_penalty_reference (>0) is required when tau_penalty_lambda > 0 "
+            "and fit_tau is True"
+        )
+
     # --- bounds, in the packed parameter order ------------------------------
     lo: list[float] = []
     hi: list[float] = []
     for _ in range(k):
         lo += [0.0, offset_bounds[0], -_PHASE_BOUND]
-        hi += [np.inf, offset_bounds[1], _PHASE_BOUND]
+        hi += [amp_upper, offset_bounds[1], _PHASE_BOUND]
     if fit_tau:
         lo.append(tau_bounds[0])
         hi.append(tau_bounds[1])
@@ -473,18 +690,45 @@ def fit_window(
     hi_arr = np.asarray(hi, dtype=float)
     p0 = np.clip(_pack(initial_peaks, tau0_us, fit_tau), lo_arr, hi_arr)
 
+    penalty_kw = dict(
+        phase_penalty_lambda=phase_penalty_lambda,
+        amp_penalty_lambda=amp_penalty_lambda,
+        amp_floor=amp_floor,
+        fwhm_mhz=fwhm_mhz,
+        phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
+        tau_penalty_lambda=tau_penalty_lambda,
+        tau_penalty_reference=tau_penalty_reference,
+    )
+    penalties_active = (
+        phase_penalty_lambda > 0.0
+        or amp_penalty_lambda > 0.0
+        or (tau_penalty_lambda > 0.0 and fit_tau)
+    )
+
     def residual(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
         model = model_spectrum(u, peaks, tau, acquisition_us)
         r = (z - model) / sig_ri
-        return cast(np.ndarray, np.concatenate([r.real, r.imag]))
+        data_r = np.concatenate([r.real, r.imag])
+        if not penalties_active:
+            return cast(np.ndarray, data_r)
+        pen_r, _ = _penalty_residuals_and_jacobian(
+            params, k, tau0_us, fit_tau, **penalty_kw
+        )
+        return cast(np.ndarray, np.concatenate([data_r, pen_r]))
 
     def jacobian(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
         # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, Re stacked over Im.
         dmodel = model_jacobian(u, peaks, tau, acquisition_us, include_tau=fit_tau)
         weighted = -dmodel / sig_ri[:, np.newaxis]
-        return cast(np.ndarray, np.concatenate([weighted.real, weighted.imag], axis=0))
+        data_jac = np.concatenate([weighted.real, weighted.imag], axis=0)
+        if not penalties_active:
+            return cast(np.ndarray, data_jac)
+        _, pen_jac = _penalty_residuals_and_jacobian(
+            params, k, tau0_us, fit_tau, **penalty_kw
+        )
+        return cast(np.ndarray, np.concatenate([data_jac, pen_jac], axis=0))
 
     try:
         sol = least_squares(
@@ -521,11 +765,26 @@ def fit_window(
         pk.phase = _wrap_phase(pk.phase)
 
     fitted = model_spectrum(u, peaks, tau, acquisition_us)
-    chi2 = 2.0 * float(sol.cost)  # scipy cost = 0.5 * sum(r**2)
+    # Reported statistics are data-only (penalties act like a prior on the
+    # parameters; the F-test / AIC across K stays calibrated only if chi^2
+    # counts the data residual alone).
+    data_resid = (z - fitted) / sig_ri
+    chi2 = float(np.sum(data_resid.real**2 + data_resid.imag**2))
+    cost_data = 0.5 * chi2
 
     covariance: Optional[np.ndarray] = None
     try:
-        jtj = np.asarray(sol.jac, dtype=float).T @ np.asarray(sol.jac, dtype=float)
+        # Data-only Jacobian for uncertainty: penalties bias parameter errors
+        # smaller (they're effectively a prior). Caller wants the data
+        # likelihood's covariance.
+        dmodel_sol = model_jacobian(
+            u, peaks, tau, acquisition_us, include_tau=fit_tau
+        )
+        weighted_sol = -dmodel_sol / sig_ri[:, np.newaxis]
+        data_jac = np.concatenate(
+            [weighted_sol.real, weighted_sol.imag], axis=0
+        )
+        jtj = data_jac.T @ data_jac
         covariance = cast(np.ndarray, np.linalg.inv(jtj))
     except np.linalg.LinAlgError:
         covariance = None
@@ -538,7 +797,7 @@ def fit_window(
         tau_us=tau,
         tau_error=tau_error,
         fit_tau=fit_tau,
-        cost=float(sol.cost),
+        cost=cost_data,
         chi_squared=chi2,
         n_data=n_data,
         n_params=int(p0.size),
@@ -783,6 +1042,14 @@ def _blend_aware_seed(
     rchi2_threshold: float,
     straddle_factor: float,
     max_k: int,
+    amp_max: Optional[float] = None,
+    amp_floor: Optional[float] = None,
+    phase_penalty_lambda: float = 0.0,
+    amp_penalty_lambda: float = 0.0,
+    phase_penalty_cutoff_fwhm: float = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+    min_pair_separation_factor: float = DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
+    tau_penalty_lambda: float = 0.0,
+    tau_penalty_reference: Optional[float] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -792,7 +1059,25 @@ def _blend_aware_seed(
     lines initialised at positions straddling the seed, accepting each
     escalation only on the F-test and AIC. ``offset_grid_mhz`` must be
     ascending.
+
+    Each K=2/K=3 trial fit is also post-checked for the "two peaks collapsed
+    onto the same offset with cancelling phases" degenerate solution
+    (``min_pair_separation_factor * fwhm`` is the minimum allowed pair
+    separation); collapsed escalations are rejected even when the F-test and
+    AIC would accept them.
     """
+    fit_kwargs = dict(
+        fit_tau=fit_tau,
+        tau_bounds=tau_bounds,
+        amp_max=amp_max,
+        amp_floor=amp_floor,
+        fwhm_mhz=fwhm_mhz,
+        phase_penalty_lambda=phase_penalty_lambda,
+        amp_penalty_lambda=amp_penalty_lambda,
+        phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
+        tau_penalty_lambda=tau_penalty_lambda,
+        tau_penalty_reference=tau_penalty_reference,
+    )
     fit1 = fit_window(
         offset_grid_mhz,
         complex_spectrum,
@@ -808,8 +1093,7 @@ def _blend_aware_seed(
         ],
         tau0_us,
         acquisition_us,
-        fit_tau=fit_tau,
-        tau_bounds=tau_bounds,
+        **fit_kwargs,
     )
     p1, f1, _ = calculate_chi_squared_improvement(
         null_chi2, fit1.chi_squared, fit1.n_params, fit1.n_data, fit1.n_params
@@ -836,6 +1120,7 @@ def _blend_aware_seed(
 
     # Elevated reduced chi-squared -> retry as a straddled blend.
     straddle = straddle_factor * fwhm_mhz
+    min_pair_sep = min_pair_separation_factor * fwhm_mhz
     prev = fit1
     for k in range(2, max_k + 1):
         positions = seed_offset_mhz + (np.arange(k) - 0.5 * (k - 1)) * straddle
@@ -852,8 +1137,7 @@ def _blend_aware_seed(
             init,
             tau0_us,
             acquisition_us,
-            fit_tau=fit_tau,
-            tau_bounds=tau_bounds,
+            **fit_kwargs,
         )
         p_value, f_stat, _ = calculate_chi_squared_improvement(
             prev.chi_squared,
@@ -862,7 +1146,27 @@ def _blend_aware_seed(
             trial.n_data,
             trial.n_params,
         )
-        accepted = trial.success and p_value < significance and trial.aic < prev.aic
+        # Post-fit sanity check: reject escalations whose peaks collapsed onto
+        # the same offset (the cancelling-phase degenerate solution).
+        collapsed = False
+        if trial.success and len(trial.peaks) >= 2 and min_pair_sep > 0.0:
+            offs = np.asarray([pk.offset_mhz for pk in trial.peaks], dtype=float)
+            for ii in range(offs.size):
+                for jj in range(ii + 1, offs.size):
+                    if abs(offs[ii] - offs[jj]) < min_pair_sep:
+                        collapsed = True
+                        break
+                if collapsed:
+                    break
+        accepted = (
+            trial.success
+            and p_value < significance
+            and trial.aic < prev.aic
+            and not collapsed
+        )
+        reason = f"K={k} straddled re-seed"
+        if collapsed and trial.success:
+            reason += " (rejected: peaks collapsed within min separation)"
         audit.append(
             AddStep(
                 n_peaks_before=prev.n_peaks,
@@ -873,9 +1177,9 @@ def _blend_aware_seed(
                 p_value=p_value,
                 aic_before=prev.aic,
                 aic_after=trial.aic,
-                separation_ok=True,
+                separation_ok=not collapsed,
                 decision="seed-blend" if accepted else "reject",
-                reason=f"K={k} straddled re-seed",
+                reason=reason,
             )
         )
         if not accepted:
@@ -904,6 +1208,14 @@ def conservative_fit(
     seeder_rchi2_threshold: float = DEFAULT_SEEDER_RCHI2,
     seeder_straddle_factor: float = DEFAULT_SEEDER_STRADDLE_FACTOR,
     seeder_max_k: int = DEFAULT_SEEDER_MAX_K,
+    phase_penalty_lambda: float = DEFAULT_PHASE_PENALTY_LAMBDA,
+    amp_penalty_lambda: float = DEFAULT_AMP_PENALTY_LAMBDA,
+    phase_penalty_cutoff_fwhm: float = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+    amp_max_headroom: float = DEFAULT_AMP_MAX_HEADROOM,
+    min_pair_separation_factor: float = DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
+    tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
+    weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
+    tau_apodization_us: Optional[float] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -949,6 +1261,47 @@ def conservative_fit(
         Straddle of the blend re-seed, in feature-FWHM units.
     seeder_max_k : int, default 3
         Largest K the blend-aware seeder escalates to.
+    phase_penalty_lambda : float, default :data:`DEFAULT_PHASE_PENALTY_LAMBDA`
+        Soft pair-phase penalty weight (see
+        :func:`_penalty_residuals_and_jacobian`). Catches the degenerate
+        "two peaks collapsed onto the same offset with cancelling phases"
+        blend-aware re-seed pathology. ``0`` disables.
+    amp_penalty_lambda : float, default :data:`DEFAULT_AMP_PENALTY_LAMBDA`
+        Soft amplitude-floor penalty weight; pushes noise-amplitude peaks
+        toward zero. ``0`` disables.
+    phase_penalty_cutoff_fwhm : float, default
+        :data:`DEFAULT_PHASE_PENALTY_CUTOFF_FWHM`
+        Pair-separation cutoff for the phase penalty, in FWHM units.
+    amp_max_headroom : float, default :data:`DEFAULT_AMP_MAX_HEADROOM`
+        Hard amplitude upper bound is set to
+        ``amp_max_headroom * 2 * max(|z|) / tau_eff(tau_bounds[0], T)`` -- a
+        few times the strongest physically-plausible amplitude at the tightest
+        bound, which still rejects the cancelling-pair pathology's inflated
+        amplitudes.
+    min_pair_separation_factor : float, default
+        :data:`DEFAULT_MIN_PAIR_SEPARATION_FACTOR`
+        Post-fit sanity-check threshold in FWHM units; the blend-aware seeder
+        rejects an escalation whose fitted peaks ended up within
+        ``min_pair_separation_factor * fwhm`` of each other.
+    tau_penalty_lambda : float, default :data:`DEFAULT_TAU_PENALTY_LAMBDA`
+        Weight of the lower-side tau penalty (see
+        :func:`_penalty_residuals_and_jacobian`). ``0`` disables. The
+        penalty pulls tau toward ``tau_apodization_us`` (the apodization
+        ceiling); the LSQ otherwise tends to broaden the line by lowering
+        tau to absorb unmodeled-peak residual.
+    weak_window_snr_threshold : float, default
+        :data:`DEFAULT_WEAK_WINDOW_SNR_THRESHOLD`
+        Windows whose strongest in-window magnitude is below this multiple
+        of the median active-FT noise hold tau fixed entirely (``fit_tau``
+        is forced to ``False`` regardless of the input). Weak windows
+        carry no information to fit tau and would otherwise pin it at the
+        lower bound.
+    tau_apodization_us : float, optional
+        Apodization ``expf_us`` (the hard upper bound on tau). When set:
+        (a) tau is bounded above by ``min(tau0_us * max_decay_factor,
+        tau_apodization_us)``; and (b) the tau penalty is referenced to it.
+        When ``None`` the tau penalty is disabled and the upper bound stays
+        ``tau0_us * max_decay_factor``.
 
     Returns
     -------
@@ -964,9 +1317,65 @@ def conservative_fit(
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
 
-    tau_bounds = (tau0_us / max_decay_factor, tau0_us * max_decay_factor)
+    # Tau policy:
+    # * Hard upper bound at the apodization (``tau_apodization_us``) when
+    #   provided: data cannot decay slower than the applied apodization.
+    # * Soft stiff penalty toward the apodization for any fitted-tau case.
+    # * Force ``fit_tau=False`` for weak-only windows (no information to
+    #   fit tau; otherwise it pegs at the lower bound).
+    tau_upper = tau0_us * max_decay_factor
+    if tau_apodization_us is not None and tau_apodization_us > 0.0:
+        tau_upper = min(tau_upper, float(tau_apodization_us))
+    tau_bounds = (tau0_us / max_decay_factor, tau_upper)
     fwhm = feature_fwhm(tau0_us, acquisition_us)
     min_separation = min_separation_factor * fwhm
+
+    # amp_max from the strongest in-window data and the tightest tau bound,
+    # times a headroom factor. amp_floor from the noise level: the amplitude
+    # that yields unit SNR at the nominal tau.
+    tau_eff_min = effective_tau(tau_bounds[0], acquisition_us)
+    tau_eff_nom = effective_tau(tau0_us, acquisition_us)
+    max_abs = float(np.max(np.abs(z))) if z.size else 0.0
+    if max_abs > 0.0 and tau_eff_min > 0.0:
+        amp_max = float(amp_max_headroom * 2.0 * max_abs / tau_eff_min)
+    else:
+        amp_max = None
+    sig_median = float(np.median(sigma)) if sigma.size else 0.0
+    if sig_median > 0.0 and tau_eff_nom > 0.0:
+        amp_floor = float(2.0 * sig_median / tau_eff_nom)
+    else:
+        amp_floor = None
+
+    # Weak-only window: hold tau fixed at the apodization since the data
+    # carries no information to fit it. ``snr_proxy`` is the strongest
+    # in-window magnitude over the median active-FT noise -- a fast proxy
+    # for whether *any* candidate is detectable enough to inform tau.
+    fit_tau_eff = fit_tau
+    snr_proxy = (max_abs / sig_median) if sig_median > 0.0 else 0.0
+    if fit_tau_eff and snr_proxy < weak_window_snr_threshold:
+        fit_tau_eff = False
+
+    tau_penalty_ref = (
+        float(tau_apodization_us)
+        if tau_apodization_us is not None and tau_apodization_us > 0.0
+        else None
+    )
+    effective_tau_penalty_lambda = (
+        tau_penalty_lambda if tau_penalty_ref is not None else 0.0
+    )
+
+    fit_kwargs_inner = dict(
+        fit_tau=fit_tau_eff,
+        tau_bounds=tau_bounds,
+        amp_max=amp_max,
+        amp_floor=amp_floor,
+        fwhm_mhz=fwhm,
+        phase_penalty_lambda=phase_penalty_lambda,
+        amp_penalty_lambda=amp_penalty_lambda,
+        phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
+        tau_penalty_lambda=effective_tau_penalty_lambda,
+        tau_penalty_reference=tau_penalty_ref,
+    )
 
     remaining = sorted(
         candidate_offsets,
@@ -985,7 +1394,7 @@ def conservative_fit(
         seed,
         tau0_us,
         acquisition_us,
-        fit_tau=fit_tau,
+        fit_tau=fit_tau_eff,
         tau_bounds=tau_bounds,
         fwhm_mhz=fwhm,
         null_chi2=null.chi_squared,
@@ -994,6 +1403,14 @@ def conservative_fit(
         rchi2_threshold=seeder_rchi2_threshold,
         straddle_factor=seeder_straddle_factor,
         max_k=seeder_max_k,
+        amp_max=amp_max,
+        amp_floor=amp_floor,
+        phase_penalty_lambda=phase_penalty_lambda,
+        amp_penalty_lambda=amp_penalty_lambda,
+        phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
+        min_pair_separation_factor=min_pair_separation_factor,
+        tau_penalty_lambda=effective_tau_penalty_lambda,
+        tau_penalty_reference=tau_penalty_ref,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
@@ -1046,8 +1463,7 @@ def conservative_fit(
             trial_init,
             tau0_us,
             acquisition_us,
-            fit_tau=fit_tau,
-            tau_bounds=tau_bounds,
+            **fit_kwargs_inner,
         )
         p_value, f_stat, _ = calculate_chi_squared_improvement(
             current.chi_squared,

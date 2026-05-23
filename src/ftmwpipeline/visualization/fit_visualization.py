@@ -32,11 +32,40 @@ from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
 SidebandLike = Union[Sideband, str]
 
 
+def _persisted_phase_ramp(
+    frequencies: np.ndarray,
+    sideband: SidebandLike,
+    probe_freq_mhz: float,
+    start_us: float,
+) -> np.ndarray:
+    """Per-bin phase factor that converts the active-FT phase frame to the
+    persisted-FT phase frame.
+
+    The active-FT lives in the de-ramped ``[0, T]`` frame (its first sample
+    is the FID at ``t = start_us``). The persisted FT is the rfft of the
+    full FID and lives in the ``[0, T_full]`` frame (its first sample is the
+    FID at ``t = 0``). A line at baseband frequency ``f_bb`` picks up an
+    ``exp(-i 2 pi f_bb start_us)`` phase between the two frames; multiplying
+    the active-frame model by this factor puts it on the persisted-frame
+    phase axis so the overlay matches the data's complex parts (not just
+    its magnitude). Returns ``ones`` when ``start_us == 0``.
+    """
+    if start_us == 0.0:
+        return np.ones(np.asarray(frequencies).shape, dtype=np.complex128)
+    s = sideband_sign(sideband)
+    f_bb = s * (np.asarray(frequencies, dtype=float) - float(probe_freq_mhz))
+    return cast(
+        np.ndarray, np.exp(-1j * 2.0 * np.pi * f_bb * float(start_us))
+    )
+
+
 def _window_model_on_persisted_grid(
     frequencies: np.ndarray,
     fit: SpectrumFit,
     sideband: SidebandLike,
     acquisition_us: float,
+    model_amplitude_scale: float = 1.0,
+    persisted_phase_ramp: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Sum the fitted model over every window, on the persisted grid.
 
@@ -47,6 +76,18 @@ def _window_model_on_persisted_grid(
     window contribute zero -- but the leakage skirt of each fitted line
     naturally reaches across the persisted grid through the closed-form
     ``h_T``.
+
+    ``model_amplitude_scale`` converts amplitudes from the fit-time active-FT
+    amplitude units (``dt_us * rfft(active)``) to the persisted-FT units
+    (``rfft(padded) / original_length * 10**units_power``). The scale is
+    ``10**units_power / (original_length * dt_us)`` for the canonical Stage
+    1 pipeline; the visualization caller computes it from the FID and
+    persisted-FT metadata.
+
+    ``persisted_phase_ramp`` (per-bin complex unit-modulus factor) converts
+    the active-FT ``[0, T]`` phase frame to the persisted-FT
+    ``[0, T_full]`` phase frame so the overlay matches the data's complex
+    parts. See :func:`_persisted_phase_ramp`.
     """
     s = sideband_sign(sideband)
     total = np.zeros(frequencies.shape, dtype=np.complex128)
@@ -72,6 +113,10 @@ def _window_model_on_persisted_grid(
             continue
         u = s * (f - center)
         total += model_spectrum(u, peaks, tau_us, acquisition_us)
+    if model_amplitude_scale != 1.0:
+        total *= model_amplitude_scale
+    if persisted_phase_ramp is not None:
+        total *= persisted_phase_ramp
     return cast(np.ndarray, total)
 
 
@@ -92,9 +137,14 @@ def _plot_overview(
     acquisition_us: float,
     figsize: Tuple[float, float],
     title: str,
+    model_amplitude_scale: float = 1.0,
+    persisted_phase_ramp: Optional[np.ndarray] = None,
 ) -> plt.Figure:
     """Two-panel overview: spectrum + model overlay; magnitude residual."""
-    model = _window_model_on_persisted_grid(frequencies, fit, sideband, acquisition_us)
+    model = _window_model_on_persisted_grid(
+        frequencies, fit, sideband, acquisition_us,
+        model_amplitude_scale, persisted_phase_ramp,
+    )
     fig, (ax_top, ax_bot) = plt.subplots(
         2, 1, figsize=figsize, sharex=True, gridspec_kw={"height_ratios": [3, 1]}
     )
@@ -122,64 +172,179 @@ def _plot_overview(
     return fig
 
 
-def _plot_audit_trail(ax: plt.Axes, fit_window: FittingResult) -> None:
-    """Compact rendering of the per-iteration conservative-loop decisions."""
+_AUDIT_COLORS = {
+    "seed": "tab:blue",
+    "seed-blend": "tab:cyan",
+    "accept": "tab:green",
+    "promote": "tab:olive",
+    "tentative": "0.6",
+    "reject": "tab:red",
+}
+
+
+def _plot_audit_trail_on_freq(
+    ax: plt.Axes,
+    fit_window: FittingResult,
+    sideband: SidebandLike,
+    center_mhz: float,
+    freq_lo: float,
+    freq_hi: float,
+) -> None:
+    """Audit trail on the molecular-frequency axis.
+
+    Each step is a horizontal bar at ``y = step_index`` from the window
+    centre to the candidate's molecular frequency (so the bar's terminus is
+    the line position on the same axis as the spectra above). Colour =
+    decision, with a short label ``decision (p=...)``.
+    """
     audit = fit_window.audit_trail
     if not audit:
-        ax.text(0.5, 0.5, "no audit trail", ha="center", va="center")
-        ax.set_axis_off()
-        return
-    colors = {
-        "seed": "tab:blue",
-        "seed-blend": "tab:cyan",
-        "accept": "tab:green",
-        "promote": "tab:olive",
-        "tentative": "0.6",
-        "reject": "tab:red",
-    }
-    for i, step in enumerate(audit):
-        ax.barh(
-            i,
-            step.candidate_offset_mhz,
-            color=colors.get(step.decision, "0.4"),
-            edgecolor="black",
-            linewidth=0.4,
-        )
-        label = step.decision
         ax.text(
-            step.candidate_offset_mhz,
-            i,
-            f" {label} (p={step.p_value:.1e})",
-            va="center",
-            fontsize=7,
+            0.5, 0.5, "no audit trail",
+            ha="center", va="center", transform=ax.transAxes,
         )
-    ax.axvline(0.0, color="black", linewidth=0.5)
+        ax.set_xlim(freq_lo, freq_hi)
+        ax.set_xlabel("frequency (MHz)")
+        ax.set_yticks([])
+        return
+    s = sideband_sign(sideband)
+    window_width = freq_hi - freq_lo
+    for i, step in enumerate(audit):
+        candidate_mhz = center_mhz + s * step.candidate_offset_mhz
+        # Bar from center to candidate, oriented along frequency axis.
+        ax.plot(
+            [center_mhz, candidate_mhz], [i, i],
+            color=_AUDIT_COLORS.get(step.decision, "0.4"),
+            lw=3.0, solid_capstyle="butt",
+        )
+        ax.plot(
+            [candidate_mhz], [i],
+            marker="o", markersize=5,
+            color=_AUDIT_COLORS.get(step.decision, "0.4"),
+        )
+        # Text label sits just below the marker. Horizontal alignment
+        # follows which third of the window the marker is in, so the text
+        # block always grows toward the window's interior and doesn't spill
+        # past the axis edge.
+        if window_width > 0:
+            frac = (candidate_mhz - freq_lo) / window_width
+        else:
+            frac = 0.5
+        if frac < 1.0 / 3.0:
+            ha = "left"
+        elif frac > 2.0 / 3.0:
+            ha = "right"
+        else:
+            ha = "center"
+        ax.text(
+            candidate_mhz, i - 0.3,
+            f"{step.decision} (p={step.p_value:.1e})",
+            va="top", ha=ha, fontsize=7,
+        )
+    ax.axvline(center_mhz, color="black", linewidth=0.5, alpha=0.5)
+    ax.set_xlim(freq_lo, freq_hi)
+    # Extra bottom headroom for the text under the lowest marker.
+    ax.set_ylim(-0.9, len(audit) - 0.5)
     ax.set_yticks(range(len(audit)))
     ax.set_yticklabels([f"step {i}" for i in range(len(audit))], fontsize=7)
-    ax.set_xlabel("candidate offset (MHz)")
+    ax.set_xlabel("frequency (MHz)")
     ax.set_title("audit trail", fontsize=9)
 
 
-def _plot_time_envelope(
-    ax: plt.Axes,
-    fit_window: FittingResult,
-    acquisition_us: float,
-    n_samples: int = 256,
+def _plot_residual_histogram(
+    ax: plt.Axes, residual: np.ndarray, sigma_slice: np.ndarray
 ) -> None:
-    """Synthesised time-domain envelope of the fitted lines (intuition only)."""
-    t = np.linspace(0.0, acquisition_us, n_samples)
-    tau = float(fit_window.shared_parameters.get("tau_us", {}).get("value", 0.0))
-    if tau <= 0:
-        ax.text(0.5, 0.5, "no tau", ha="center", va="center")
+    """Histogram of ``|residual|`` overlaid with the theoretical Rayleigh PDF.
+
+    Complex Gaussian noise with per-bin complex RMS ``sigma`` has per-real-
+    component standard deviation ``sigma_c = sigma / sqrt(2)``, and ``|noise|``
+    is Rayleigh-distributed with scale ``sigma_c``. Deviations from the
+    Rayleigh curve flag heavy-tail / mis-fit residual.
+    """
+    mag = np.abs(residual)
+    sigma_c = float(np.median(sigma_slice)) / np.sqrt(2.0)
+    if sigma_c <= 0.0 or mag.size == 0:
+        ax.text(
+            0.5, 0.5, "no residual data",
+            ha="center", va="center", transform=ax.transAxes,
+        )
         ax.set_axis_off()
         return
-    envelope = np.zeros_like(t)
-    for peak in fit_window.fitted_peaks:
-        envelope += 0.5 * float(peak.amplitude) * np.exp(-t / tau)
-    ax.plot(t, envelope, color="tab:purple", lw=0.9)
-    ax.set_xlabel("t (us)")
-    ax.set_ylabel("|envelope|")
-    ax.set_title("time-domain envelope (model)", fontsize=9)
+    n_bins = max(10, min(50, mag.size // 4))
+    ax.hist(
+        mag,
+        bins=n_bins,
+        density=True,
+        color="0.7",
+        edgecolor="0.3",
+        linewidth=0.5,
+        label="|residual|",
+    )
+    x_max = max(float(mag.max()), 5.0 * sigma_c)
+    x = np.linspace(0.0, x_max, 400)
+    rayleigh = (x / (sigma_c**2)) * np.exp(-(x**2) / (2.0 * sigma_c**2))
+    ax.plot(x, rayleigh, color="tab:purple", lw=1.2, label=r"Rayleigh($\sigma/\sqrt{2}$)")
+    ax.axvline(
+        3.0 * sigma_c, color="tab:red", lw=0.7, ls="--",
+        label=r"$3\sigma_c$ (~99%)",
+    )
+    ax.set_xlabel("|residual|")
+    ax.set_ylabel("density")
+    ax.set_title("|residual| histogram vs noise", fontsize=9)
+    ax.legend(loc="upper right", fontsize=7)
+
+
+def _plot_data_overlay(
+    ax: plt.Axes,
+    f_slice: np.ndarray,
+    data: np.ndarray,
+    model: np.ndarray,
+    model_color: str,
+) -> None:
+    """Data (black markers + faint connecting lines) and model on one axis."""
+    ax.plot(
+        f_slice, data,
+        color="#00000044", lw=0.7, zorder=1,
+    )
+    ax.plot(
+        f_slice, data,
+        marker="o", linestyle="None", markersize=3,
+        markerfacecolor="black", markeredgecolor="black", zorder=2,
+    )
+    ax.plot(
+        f_slice, model,
+        color=model_color, lw=1.2, zorder=3,
+    )
+
+
+def _plot_residual_with_band(
+    ax: plt.Axes,
+    f_slice: np.ndarray,
+    residual: np.ndarray,
+    band: float,
+    color: str,
+    is_magnitude: bool,
+) -> None:
+    """Residual line + horizontal ±band reference for re/im (or single +band for mag).
+
+    Re/Im panels also draw a zero line to guide the eye.
+    """
+    if not is_magnitude:
+        ax.axhline(0.0, color="0.5", lw=0.5)
+    ax.plot(f_slice, residual, color=color, lw=0.8)
+    if band > 0.0:
+        ax.axhline(band, color="0.3", lw=0.6, ls="--")
+        if is_magnitude:
+            ax.text(
+                f_slice[0], band, " 3σ_c (~99%)",
+                fontsize=7, va="bottom", ha="left", color="0.3",
+            )
+        else:
+            ax.axhline(-band, color="0.3", lw=0.6, ls="--")
+            ax.text(
+                f_slice[0], band, " ±3σ_c",
+                fontsize=7, va="bottom", ha="left", color="0.3",
+            )
 
 
 def _plot_per_window_detail(
@@ -192,9 +357,12 @@ def _plot_per_window_detail(
     acquisition_us: float,
     figsize: Tuple[float, float],
     title: str,
+    model_amplitude_scale: float = 1.0,
+    persisted_phase_ramp: Optional[np.ndarray] = None,
 ) -> plt.Figure:
-    """Five panels for one window: re/im model+residual, magnitude+residual,
-    audit trail, time envelope."""
+    """Per-window diagnostic: 3x2 grid of Re/Im/Mag (data+model | residual+band)
+    plus a 4th row of audit trail on the freq axis and a |residual| histogram
+    against the Rayleigh noise model."""
     window_fit = fit.window_fit(window_id)
     if window_fit.window is None:
         raise ValueError(
@@ -219,54 +387,113 @@ def _plot_per_window_detail(
         )
         for p in window_fit.fitted_peaks
     ]
+    # Add the frozen-contributor leakage: each FixedContributor names a
+    # strong line fit freely in its primary window; the converted
+    # ``fixed_parameters`` dict carries the line's refined molecular freq
+    # plus amplitude / phase from the primary fit. We evaluate them in this
+    # window's offset frame using THIS window's tau -- matching
+    # ``subtract_frozen_background``, which the fit itself uses to build
+    # the background it subtracts from the data.
+    frozen_peaks: list[ModelPeak] = []
+    for key, fp_data in window_fit.fixed_parameters.items():
+        if not key.startswith("frozen_peak_"):
+            continue
+        contrib_freq = float(fp_data["frequency_mhz"])
+        contrib_amp = float(fp_data["amplitude"])
+        contrib_phase = float(fp_data.get("phase", 0.0) or 0.0)
+        frozen_peaks.append(
+            ModelPeak(
+                amplitude=contrib_amp,
+                offset_mhz=float(s * (contrib_freq - center)),
+                phase=contrib_phase,
+            )
+        )
+    all_peaks = peaks + frozen_peaks
     model_slice = (
-        model_spectrum(u_slice, peaks, tau_us, acquisition_us)
-        if peaks and tau_us > 0
+        model_spectrum(u_slice, all_peaks, tau_us, acquisition_us)
+        if all_peaks and tau_us > 0
         else np.zeros_like(z_slice)
     )
+    if model_amplitude_scale != 1.0:
+        model_slice = model_slice * model_amplitude_scale
+    if persisted_phase_ramp is not None:
+        model_slice = model_slice * persisted_phase_ramp[mask]
     residual = z_slice - model_slice
 
+    # Per-component noise band: sigma_c = sigma_complex / sqrt(2).
+    sigma_c_slice = sigma_slice / np.sqrt(2.0)
+    band_re_im = 3.0 * float(np.median(sigma_c_slice))
+    # Magnitude residual peak-detection threshold: 3*sigma_c covers ~99% of
+    # the Rayleigh distribution (CDF at 3 sigma_c is ~0.989).
+    band_mag = band_re_im
+
+    # Spectrum + residual + audit panels all share the molecular-frequency
+    # x-axis; the histogram is on a different x (|residual|) so it must
+    # stay independent. ``sharex="col"`` on plt.subplots would link the
+    # hist to the right-column residuals and squash both.
     fig = plt.figure(figsize=figsize)
-    fig.suptitle(title)
-    gs = fig.add_gridspec(3, 2, height_ratios=[1, 1, 1])
-    ax_re = fig.add_subplot(gs[0, 0])
-    ax_im = fig.add_subplot(gs[0, 1])
-    ax_mag = fig.add_subplot(gs[1, 0])
-    ax_env = fig.add_subplot(gs[1, 1])
-    ax_audit = fig.add_subplot(gs[2, :])
-
-    ax_re.plot(f_slice, np.real(z_slice), color="0.4", lw=0.6, label="data Re")
-    ax_re.plot(
-        f_slice, np.real(model_slice), color="tab:orange", lw=0.9, label="model Re"
+    fig.suptitle(title, fontsize=10)
+    ax_re_data = fig.add_subplot(4, 2, 1)
+    ax_re_res = fig.add_subplot(4, 2, 2, sharex=ax_re_data)
+    ax_im_data = fig.add_subplot(4, 2, 3, sharex=ax_re_data)
+    ax_im_res = fig.add_subplot(4, 2, 4, sharex=ax_re_data)
+    ax_mag_data = fig.add_subplot(4, 2, 5, sharex=ax_re_data)
+    ax_mag_res = fig.add_subplot(4, 2, 6, sharex=ax_re_data)
+    ax_audit = fig.add_subplot(4, 2, 7, sharex=ax_re_data)
+    ax_hist = fig.add_subplot(4, 2, 8)
+    axes_freq_x = (
+        ax_re_data, ax_re_res, ax_im_data, ax_im_res,
+        ax_mag_data, ax_mag_res, ax_audit,
     )
-    ax_re.plot(f_slice, np.real(residual), color="tab:red", lw=0.5, label="residual Re")
-    ax_re.set_xlabel("frequency (MHz)")
-    ax_re.set_title("Re(X)", fontsize=9)
-    ax_re.legend(loc="best", fontsize=7)
 
-    ax_im.plot(f_slice, np.imag(z_slice), color="0.4", lw=0.6, label="data Im")
-    ax_im.plot(
-        f_slice, np.imag(model_slice), color="tab:orange", lw=0.9, label="model Im"
+    _plot_data_overlay(
+        ax_re_data, f_slice, np.real(z_slice), np.real(model_slice), "tab:red",
     )
-    ax_im.plot(f_slice, np.imag(residual), color="tab:red", lw=0.5, label="residual Im")
-    ax_im.set_xlabel("frequency (MHz)")
-    ax_im.set_title("Im(X)", fontsize=9)
-    ax_im.legend(loc="best", fontsize=7)
-
-    ax_mag.plot(f_slice, np.abs(z_slice), color="0.4", lw=0.6, label="|data|")
-    ax_mag.plot(
-        f_slice, np.abs(model_slice), color="tab:orange", lw=0.9, label="|model|"
+    _plot_residual_with_band(
+        ax_re_res, f_slice, np.real(residual), band_re_im,
+        "tab:red", is_magnitude=False,
     )
-    ax_mag.plot(f_slice, np.abs(residual), color="tab:red", lw=0.5, label="|residual|")
-    ax_mag.plot(f_slice, sigma_slice, color="0.4", ls="--", lw=0.5, label="sigma")
-    ax_mag.set_xlabel("frequency (MHz)")
-    ax_mag.set_title("|X|", fontsize=9)
-    ax_mag.legend(loc="best", fontsize=7)
+    _plot_data_overlay(
+        ax_im_data, f_slice, np.imag(z_slice), np.imag(model_slice), "tab:blue",
+    )
+    _plot_residual_with_band(
+        ax_im_res, f_slice, np.imag(residual), band_re_im,
+        "tab:blue", is_magnitude=False,
+    )
+    _plot_data_overlay(
+        ax_mag_data, f_slice, np.abs(z_slice), np.abs(model_slice), "tab:purple",
+    )
+    _plot_residual_with_band(
+        ax_mag_res, f_slice, np.abs(residual), band_mag,
+        "tab:purple", is_magnitude=True,
+    )
+    ax_re_data.set_ylabel("Re")
+    ax_im_data.set_ylabel("Im")
+    ax_mag_data.set_ylabel("|X|")
+    ax_re_res.set_ylabel("Re residual")
+    ax_im_res.set_ylabel("Im residual")
+    ax_mag_res.set_ylabel("|residual|")
 
-    _plot_time_envelope(ax_env, window_fit, acquisition_us)
-    _plot_audit_trail(ax_audit, window_fit)
+    # Column headers (top row only).
+    ax_re_data.set_title("spectrum (black: data, color: model)", fontsize=9)
+    ax_re_res.set_title("residual (data - model)", fontsize=9)
 
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
+    _plot_audit_trail_on_freq(
+        ax_audit, window_fit, sideband, center,
+        float(min(lo, hi)), float(max(lo, hi)),
+    )
+    _plot_residual_histogram(ax_hist, residual, sigma_slice)
+
+    # Hide redundant x-tick labels on the rows that share the freq axis
+    # except for the bottom-most (audit) row, which carries the label.
+    for ax in (ax_re_data, ax_re_res, ax_im_data, ax_im_res,
+               ax_mag_data, ax_mag_res):
+        ax.tick_params(axis="x", labelbottom=False)
+    ax_audit.set_xlabel("frequency (MHz)", fontsize=9)
+    for ax in axes_freq_x + (ax_hist,):
+        ax.tick_params(axis="x", labelsize=9)
+        ax.tick_params(axis="y", labelsize=9)
+    fig.tight_layout()
     return fig
 
 
@@ -281,6 +508,9 @@ def plot_spectrum_fit(
     title: Optional[str] = None,
     window_id: Optional[int] = None,
     backend: str = "matplotlib",
+    model_amplitude_scale: float = 1.0,
+    probe_freq_mhz: Optional[float] = None,
+    start_us: float = 0.0,
 ) -> plt.Figure:
     """Plot a Stage 5 fit -- overview or per-window detail.
 
@@ -307,6 +537,24 @@ def plot_spectrum_fit(
         instead of the spectrum-wide overview.
     backend : str, default ``"matplotlib"``
         Plotting backend (only ``"matplotlib"`` supported today).
+    model_amplitude_scale : float, default 1.0
+        Multiplicative factor applied to the fitted model when plotting on
+        the persisted-FT grid. The fit's amplitudes are in active-FT units
+        (``dt_us * rfft(active)``); converting to the persisted-FT amplitude
+        convention (``rfft(padded) / original_length * 10**units_power``)
+        requires multiplying by
+        ``10**units_power / (original_length * dt_us)``.
+    probe_freq_mhz : float, optional
+        Probe (LO) frequency in MHz. Required together with ``start_us > 0``
+        for the per-bin phase re-roll that maps the fit's active-FT
+        ``[0, T]`` phase frame onto the persisted-FT ``[0, T_full]`` frame.
+        Without it, complex parts of the model overlay will be off even if
+        the magnitude is correct.
+    start_us : float, default 0.0
+        Active-region start time in microseconds (``[start_us, end_us]`` is
+        the active portion of the FID). The model is multiplied by
+        ``exp(-i 2 pi f_bb start_us)`` to put it on the persisted-FT phase
+        frame. ``0`` skips the re-roll.
     """
     if backend != "matplotlib":
         raise NotImplementedError(
@@ -320,6 +568,17 @@ def plot_spectrum_fit(
             else f"Stage 5 fit ({fit.n_windows} windows, "
             f"{fit.n_fitted_peaks} peaks)"
         )
+    phase_ramp: Optional[np.ndarray] = None
+    if start_us != 0.0:
+        if probe_freq_mhz is None:
+            raise ValueError(
+                "probe_freq_mhz is required when start_us != 0 (the model "
+                "phase frame depends on the per-bin baseband frequency)"
+            )
+        phase_ramp = _persisted_phase_ramp(
+            frequencies, sideband, probe_freq_mhz, start_us
+        )
+
     if window_id is None:
         return _plot_overview(
             frequencies,
@@ -330,6 +589,8 @@ def plot_spectrum_fit(
             acquisition_us,
             figsize,
             title,
+            model_amplitude_scale,
+            phase_ramp,
         )
     return _plot_per_window_detail(
         frequencies,
@@ -341,4 +602,6 @@ def plot_spectrum_fit(
         acquisition_us,
         figsize,
         title,
+        model_amplitude_scale,
+        phase_ramp,
     )
