@@ -161,6 +161,12 @@ class PipelineStageTracker:
         'stage3_peaks': ['stage1_complex_ft', 'stage2_noise_result'],
         # Stage 4 (window assignment) requires Stage 3 (peaks).
         'stage4_windows': ['stage3_peaks'],
+        # Stage 5 (per-window fitting) consumes the Stage 4 plan AND the raw
+        # FID -- the active-portion FT the fit runs on is computed on demand
+        # from stage0_fid_data plus the canonical Stage 1 settings, so a
+        # change to Stage 1 settings or a re-import invalidates Stage 5
+        # through the existing canonical-settings/Stage 0 path.
+        'stage5_fitting': ['stage0_fid_data', 'stage4_windows'],
         # Future stages...
     }
 
@@ -175,6 +181,7 @@ class PipelineStageTracker:
         'stage2_noise_result': 'stage2_noise_result',
         'stage3_peaks': 'stage3_peaks',
         'stage4_windows': 'stage4_windows',
+        'stage5_fitting': 'stage5_fitting',
     }
     
     def __init__(self, completed_stages: Optional[list] = None):

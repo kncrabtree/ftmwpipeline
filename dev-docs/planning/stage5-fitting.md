@@ -644,9 +644,13 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   Jacobian of `h_T` is verified (finite-difference agreement ~3×10⁻¹⁰); use it
   from the start, with its covariance for the parameter uncertainties. No
   finite-difference phase.
-- **O5-8 — persist vs recompute.** Confirm the parameters-persisted /
-  arrays-recomputed split against `SERIALIZATION_STRATEGY.md` during
-  implementation.
+- **O5-8 — persist vs recompute. RESOLVED (task 9).** Implementation
+  confirmed the split against `SERIALIZATION_STRATEGY.md`: per-peak
+  fitted parameters, shared τ, frozen-contributor summaries, audit
+  trail, thaw / replan histories, plan revision, Stage 5 parameters,
+  and diagnostics are persisted; the per-window `SpectralWindow` (the
+  active-FT slice), the fitted complex spectrum, and the complex
+  residual are recomputed on load.
 - **O5-9 — mid-loop blend-aware seeding.** Task 4's blend-aware seeder runs on
   the seed only. Whether the loop also needs to re-seed a *mid-loop* candidate
   whose own single-cosine fit leaves an elevated local reduced χ² (a blend that
@@ -763,9 +767,35 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    knockout attachment, per-window vs plan-level thaw event partition,
    merged-list sorting + window-id tagging, and `final_plan_revision`
    propagation through a structural-replan scenario.
-9. [ ] `io/fitting_serialization.py` + `stage5_fitting` stage tracking and
+9. [x] `io/fitting_serialization.py` + `stage5_fitting` stage tracking and
    dependencies (depends on `stage0_fid_data` AND `stage4_windows`) +
-   invalidation wiring + hand-edit round-trip tests.
+   invalidation wiring + hand-edit round-trip tests. Landed in
+   [`io/fitting_serialization.py`](../../src/ftmwpipeline/io/fitting_serialization.py)
+   with the flat hand-editable layout sibling to
+   `io/window_serialization.py` and `io/peak_serialization.py`. Resolves
+   **O5-8** against [`../SERIALIZATION_STRATEGY.md`](../SERIALIZATION_STRATEGY.md):
+   the per-peak fitted parameters and uncertainties, the shared per-window
+   τ, the frozen-contributor summaries, the conservative-loop audit trail,
+   the per-window thaw events, the plan-level thaw + structural-replan
+   histories, the final plan revision, the Stage 5 parameters used, and
+   plan-level diagnostics are **persisted** (these are what a curator can
+   hand-edit); the per-window `SpectralWindow` (the active-FT slice), the
+   fitted complex spectrum, and the complex residual are
+   **recomputed on load** from the persisted parameters + the on-demand
+   active-FT — the SERIALIZATION spec's lightweight-file invariant forbids
+   storing them. The merged global `SpectrumFit.fitted_peaks` list is
+   rebuilt from the per-window peaks on load (sorted by molecular
+   frequency), so a hand-edit to a per-window peak naturally propagates.
+   `stage5_fitting` is registered in `PipelineStageTracker` with
+   dependencies on both `stage0_fid_data` and `stage4_windows`, so the
+   existing `invalidate_downstream_stages` path drops Stage 5 results
+   automatically whenever Stage 0 or Stage 4 is re-run. 18 unit tests in
+   `tests/unit/io/test_fitting_serialization.py` covering round-trip,
+   hand-edit (in-place peak-frequency edit survives reload), loud
+   validation of malformed groups (missing required attrs/datasets,
+   mismatched peak-column lengths, unknown audit `decision`, invalid
+   thaw `edge_side`, malformed JSON), NaN-encoded `None` uncertainties
+   round-trip, and the stage-tracker dependency registration.
 10. [ ] Wrappers (`Pipeline.fit_windows/visualize_fit/load_fit`, `api.*`, CLI
     `fit-windows`/`visualize-fit`) + `visualization/fit_visualization.py`.
     Visualization overlays the fitted model on the persisted (high-res) FT
