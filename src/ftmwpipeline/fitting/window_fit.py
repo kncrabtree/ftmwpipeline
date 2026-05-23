@@ -75,6 +75,8 @@ __all__ = [
     "AddStep",
     "KnockoutResult",
     "ConservativeFitResult",
+    "WindowFitConstraints",
+    "derive_window_fit_constraints",
     "model_jacobian",
     "fit_window",
     "knockout_test",
@@ -83,8 +85,15 @@ __all__ = [
 
 NoiseLike = Union[float, np.ndarray]
 
-# Default solver evaluation cap, ported from the bcfitting reference shell.
-DEFAULT_MAX_NFEV = 400
+# Default solver evaluation cap. Originally 400 (ported from the bcfitting
+# reference shell), bumped to 2000 after the residual-rescue work surfaced
+# partial-capture cases where LSQ converges (chi-squared stops moving) but
+# scipy still flags ``success=False`` because it hit the iteration cap --
+# which then trips the early-exit guards in
+# :func:`_blend_aware_seed` / :func:`conservative_fit` (both bail on
+# ``not fit.success``). 2000 covers every case seen in the 2638 fixture;
+# the cap exists only as a runaway-safety, not a quality criterion.
+DEFAULT_MAX_NFEV = 2000
 # Default tau bound factor k: tau in [tau_default / k, tau_default * k] (O5-4).
 DEFAULT_MAX_DECAY_FACTOR = 5.0
 # Phase bound: wide enough that wrapping never clips a free phase.
@@ -128,6 +137,122 @@ DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
 # ``DEFAULT_WEAK_WINDOW_SNR_THRESHOLD``) hold ``tau`` fixed entirely.
 DEFAULT_TAU_PENALTY_LAMBDA = 500.0
 DEFAULT_WEAK_WINDOW_SNR_THRESHOLD = 10.0
+
+
+# ---------------------------------------------------------------------------
+# Derived per-window fit constraints
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class WindowFitConstraints:
+    """Per-window state derived from a window's data + caller-level knobs.
+
+    Returned by :func:`derive_window_fit_constraints` and consumed by
+    :func:`conservative_fit` and the residual-rescue orchestrator so both
+    enforce the same tau bounds / amplitude bounds / penalty weights.
+    """
+
+    tau_bounds: tuple[float, float]
+    fwhm: float
+    min_separation: float
+    amp_max: Optional[float]
+    amp_floor: Optional[float]
+    fit_tau_eff: bool
+    tau_penalty_reference: Optional[float]
+    effective_tau_penalty_lambda: float
+    fit_kwargs_inner: dict
+
+
+def derive_window_fit_constraints(
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    tau0_us: float,
+    acquisition_us: float,
+    *,
+    fit_tau: bool = True,
+    min_separation_factor: float = DEFAULT_MIN_SEPARATION_FACTOR,
+    max_decay_factor: float = DEFAULT_MAX_DECAY_FACTOR,
+    amp_max_headroom: float = DEFAULT_AMP_MAX_HEADROOM,
+    phase_penalty_lambda: float = DEFAULT_PHASE_PENALTY_LAMBDA,
+    amp_penalty_lambda: float = DEFAULT_AMP_PENALTY_LAMBDA,
+    phase_penalty_cutoff_fwhm: float = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+    tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
+    weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
+    tau_apodization_us: Optional[float] = None,
+) -> WindowFitConstraints:
+    """Derive a window's tau / amplitude / penalty constraints from its data.
+
+    The tau policy (apodization-bounded above, stiff-penalty-toward-it below,
+    forced-fixed for weak-only windows) and the amplitude bounds (max from
+    the strongest in-window data and the tightest tau bound, floor from the
+    noise level) are derived purely from the window's complex spectrum and
+    the noise estimate -- no peak fitting involved. Returned bounds match the
+    legacy inline derivation in :func:`conservative_fit` exactly.
+    """
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(z.size, float(sigma))
+
+    tau_upper = tau0_us * max_decay_factor
+    if tau_apodization_us is not None and tau_apodization_us > 0.0:
+        tau_upper = min(tau_upper, float(tau_apodization_us))
+    tau_bounds = (tau0_us / max_decay_factor, tau_upper)
+    fwhm = feature_fwhm(tau0_us, acquisition_us)
+    min_separation = min_separation_factor * fwhm
+
+    tau_eff_min = effective_tau(tau_bounds[0], acquisition_us)
+    tau_eff_nom = effective_tau(tau0_us, acquisition_us)
+    max_abs = float(np.max(np.abs(z))) if z.size else 0.0
+    if max_abs > 0.0 and tau_eff_min > 0.0:
+        amp_max: Optional[float] = float(
+            amp_max_headroom * 2.0 * max_abs / tau_eff_min
+        )
+    else:
+        amp_max = None
+    sig_median = float(np.median(sigma)) if sigma.size else 0.0
+    if sig_median > 0.0 and tau_eff_nom > 0.0:
+        amp_floor: Optional[float] = float(2.0 * sig_median / tau_eff_nom)
+    else:
+        amp_floor = None
+
+    fit_tau_eff = fit_tau
+    snr_proxy = (max_abs / sig_median) if sig_median > 0.0 else 0.0
+    if fit_tau_eff and snr_proxy < weak_window_snr_threshold:
+        fit_tau_eff = False
+
+    tau_penalty_ref = (
+        float(tau_apodization_us)
+        if tau_apodization_us is not None and tau_apodization_us > 0.0
+        else None
+    )
+    effective_tau_penalty_lambda = (
+        tau_penalty_lambda if tau_penalty_ref is not None else 0.0
+    )
+
+    fit_kwargs_inner = dict(
+        fit_tau=fit_tau_eff,
+        tau_bounds=tau_bounds,
+        amp_max=amp_max,
+        amp_floor=amp_floor,
+        fwhm_mhz=fwhm,
+        phase_penalty_lambda=phase_penalty_lambda,
+        amp_penalty_lambda=amp_penalty_lambda,
+        phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
+        tau_penalty_lambda=effective_tau_penalty_lambda,
+        tau_penalty_reference=tau_penalty_ref,
+    )
+
+    return WindowFitConstraints(
+        tau_bounds=tau_bounds,
+        fwhm=fwhm,
+        min_separation=min_separation,
+        amp_max=amp_max,
+        amp_floor=amp_floor,
+        fit_tau_eff=fit_tau_eff,
+        tau_penalty_reference=tau_penalty_ref,
+        effective_tau_penalty_lambda=effective_tau_penalty_lambda,
+        fit_kwargs_inner=fit_kwargs_inner,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1317,65 +1442,31 @@ def conservative_fit(
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
 
-    # Tau policy:
-    # * Hard upper bound at the apodization (``tau_apodization_us``) when
-    #   provided: data cannot decay slower than the applied apodization.
-    # * Soft stiff penalty toward the apodization for any fitted-tau case.
-    # * Force ``fit_tau=False`` for weak-only windows (no information to
-    #   fit tau; otherwise it pegs at the lower bound).
-    tau_upper = tau0_us * max_decay_factor
-    if tau_apodization_us is not None and tau_apodization_us > 0.0:
-        tau_upper = min(tau_upper, float(tau_apodization_us))
-    tau_bounds = (tau0_us / max_decay_factor, tau_upper)
-    fwhm = feature_fwhm(tau0_us, acquisition_us)
-    min_separation = min_separation_factor * fwhm
-
-    # amp_max from the strongest in-window data and the tightest tau bound,
-    # times a headroom factor. amp_floor from the noise level: the amplitude
-    # that yields unit SNR at the nominal tau.
-    tau_eff_min = effective_tau(tau_bounds[0], acquisition_us)
-    tau_eff_nom = effective_tau(tau0_us, acquisition_us)
-    max_abs = float(np.max(np.abs(z))) if z.size else 0.0
-    if max_abs > 0.0 and tau_eff_min > 0.0:
-        amp_max = float(amp_max_headroom * 2.0 * max_abs / tau_eff_min)
-    else:
-        amp_max = None
-    sig_median = float(np.median(sigma)) if sigma.size else 0.0
-    if sig_median > 0.0 and tau_eff_nom > 0.0:
-        amp_floor = float(2.0 * sig_median / tau_eff_nom)
-    else:
-        amp_floor = None
-
-    # Weak-only window: hold tau fixed at the apodization since the data
-    # carries no information to fit it. ``snr_proxy`` is the strongest
-    # in-window magnitude over the median active-FT noise -- a fast proxy
-    # for whether *any* candidate is detectable enough to inform tau.
-    fit_tau_eff = fit_tau
-    snr_proxy = (max_abs / sig_median) if sig_median > 0.0 else 0.0
-    if fit_tau_eff and snr_proxy < weak_window_snr_threshold:
-        fit_tau_eff = False
-
-    tau_penalty_ref = (
-        float(tau_apodization_us)
-        if tau_apodization_us is not None and tau_apodization_us > 0.0
-        else None
-    )
-    effective_tau_penalty_lambda = (
-        tau_penalty_lambda if tau_penalty_ref is not None else 0.0
-    )
-
-    fit_kwargs_inner = dict(
-        fit_tau=fit_tau_eff,
-        tau_bounds=tau_bounds,
-        amp_max=amp_max,
-        amp_floor=amp_floor,
-        fwhm_mhz=fwhm,
+    constraints = derive_window_fit_constraints(
+        z,
+        sigma,
+        tau0_us,
+        acquisition_us,
+        fit_tau=fit_tau,
+        min_separation_factor=min_separation_factor,
+        max_decay_factor=max_decay_factor,
+        amp_max_headroom=amp_max_headroom,
         phase_penalty_lambda=phase_penalty_lambda,
         amp_penalty_lambda=amp_penalty_lambda,
         phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
-        tau_penalty_lambda=effective_tau_penalty_lambda,
-        tau_penalty_reference=tau_penalty_ref,
+        tau_penalty_lambda=tau_penalty_lambda,
+        weak_window_snr_threshold=weak_window_snr_threshold,
+        tau_apodization_us=tau_apodization_us,
     )
+    tau_bounds = constraints.tau_bounds
+    fwhm = constraints.fwhm
+    min_separation = constraints.min_separation
+    amp_max = constraints.amp_max
+    amp_floor = constraints.amp_floor
+    fit_tau_eff = constraints.fit_tau_eff
+    tau_penalty_ref = constraints.tau_penalty_reference
+    effective_tau_penalty_lambda = constraints.effective_tau_penalty_lambda
+    fit_kwargs_inner = constraints.fit_kwargs_inner
 
     remaining = sorted(
         candidate_offsets,

@@ -59,13 +59,29 @@ from .result_conversion import (
     window_outcome_to_fitting_result,
     window_outcome_to_spectral_window,
 )
+from .residual_rescue import (
+    DEFAULT_RESCUE_MAX_ROUNDS,
+    DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
+    DEFAULT_RESCUE_SNR_THRESHOLD,
+    RescueOutcome,
+    attempt_residual_rescue,
+)
+from .residual_screening import (
+    DEFAULT_COHERENCE_CLUSTER_FWHM,
+    DEFAULT_COHERENCE_RATIO_THRESHOLD,
+    ResidualPeakCandidate,
+    filter_by_phase_coherence,
+    find_residual_peaks,
+)
 from .window_fit import (
     AddStep,
     ConservativeFitResult,
     KnockoutResult,
     ParameterErrors,
+    WindowFitConstraints,
     WindowFitResult,
     conservative_fit,
+    derive_window_fit_constraints,
     fit_window,
     knockout_test,
     model_jacobian,
@@ -94,13 +110,27 @@ __all__ = [
     "feature_fwhm",
     "passes_significance_test",
     "validate_peak_separation",
+    # residual_rescue
+    "DEFAULT_RESCUE_MAX_ROUNDS",
+    "DEFAULT_RESCUE_PROMINENCE_THRESHOLD",
+    "DEFAULT_RESCUE_SNR_THRESHOLD",
+    "RescueOutcome",
+    "attempt_residual_rescue",
+    # residual_screening
+    "DEFAULT_COHERENCE_CLUSTER_FWHM",
+    "DEFAULT_COHERENCE_RATIO_THRESHOLD",
+    "ResidualPeakCandidate",
+    "filter_by_phase_coherence",
+    "find_residual_peaks",
     # window_fit
     "AddStep",
     "ConservativeFitResult",
     "KnockoutResult",
     "ParameterErrors",
+    "WindowFitConstraints",
     "WindowFitResult",
     "conservative_fit",
+    "derive_window_fit_constraints",
     "fit_window",
     "knockout_test",
     "model_jacobian",
