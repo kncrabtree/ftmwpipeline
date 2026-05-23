@@ -95,6 +95,16 @@ reduced χ² ≈ 1 and the F-test is calibrated. (Weighting by σ leaves reduced
 applied a 1.53 magnitude-to-complex factor for the same reason; with a
 genuine complex per-bin σ the correct factor is simply √2 and nothing else.)
 
+> *Calibration scope.* This prototype's noise model is i.i.d. complex
+> gaussian per bin — uncorrelated across bins by construction, because the
+> synthetic spectrum is built on an explicit frequency grid rather than via
+> a zero-padded FFT. That matches the **active-portion FT** Stage 5 actually
+> fits on (planning doc §"Spectral domain for the fit", ROADMAP D9), where
+> bins are independent. It does *not* match the persisted Stage 1 spectrum
+> (zero-padded; Dirichlet-correlated bins), so the σ/√2 calibration here is
+> directly applicable to production fitting only because Stage 5 works in
+> the active-FT frame — no further α-correction needed.
+
 The conservative add-one-peak loop is ported from the bcfitting shell:
 seed with the strongest line, add the strongest residual candidate, accept it
 only on an F-test (p < 0.05) *and* an AIC decrease, with a peak-separation

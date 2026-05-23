@@ -30,6 +30,76 @@ preserved and **barely-resolved blended lines stay resolvable**. The fitting
 model must therefore reproduce leakage exactly, and the algorithm's hardest job
 is strong, partially-resolved blends — see *The blending problem* below.
 
+## Spectral domain for the fit: the active-portion FT (normative)
+
+The persisted Stage 1 spectrum is an rfft of the *whole* zero-padded record
+(`zpf=2`, `N_active ≪ N_padded` for 2638: ~632k active samples in a 1.5M-bin
+FFT). That representation is right for **display, peak detection, and window
+planning** — sub-bin centroid interpolation helps the detector, and the
+edge-coherence statistic is calibrated on the high-resolution grid. But it is
+wrong for **statistical fitting**: adjacent bins are correlated by a Dirichlet
+kernel (the FFT of the zero-padding indicator), so the effective number of
+independent samples in any band of `M` bins is
+
+    M_eff = M · α,   α = N_active / N_padded   (≈ 0.42 for 2638),
+
+and the naive `N_dof = M − N_params` overcounts by `1/α`. That bias
+propagates into reduced χ², the F-test, and AIC — all in the direction of
+optimism — and silently miscalibrates the conservative loop's accept/reject
+decisions and the blend-aware seeder's `rchi2 > 1.5` trigger.
+
+**Stage 5 fits in the active-portion FT frame** to dissolve the problem at
+source. The fit-time spectrum is the rfft of just the active-region samples
+of the persisted FID, with the same `expf_us` apodization as the canonical
+Stage 1 settings:
+
+    active_ft[k] = rfft( fid[t0:t0+T] · exp(-(t − t0)/τ_apod) )[k]
+
+This representation has
+
+- **independent bins** (no Dirichlet correlation; α = 1 by construction),
+- **no phase ramp** (it is already in the `[0, T]` form `h_T` models),
+- **the same molecular frequency axis** (bin spacing = `1/T_active` instead
+  of `1/T_padded`, but the same continuous-frequency interpretation),
+- **the same line shape** (`h_T(Δf; τ_apod)` on a coarser grid — ~10 bins
+  per FWHM at the 2638 scale, well-sampled for a 3–4-parameter line model).
+
+Consequences for the rest of the plan:
+
+- **Statistics are honest by construction.** `reduced_chi2` ≈ 1 for a good
+  fit on real data; the F-test and AIC work as written;
+  `seeder_rchi2_threshold = 1.5` recalibrates against truth, not against
+  `1/α ≈ 2.4`.
+- **The de-ramp is a no-op.** `to_baseband_frame` no longer needs the
+  `deramp_to_active_start` step; the active-FT is the `[0, T]` form
+  natively. The de-ramp helper stays in `preprocessing/leakage.py` for
+  Stage 4's edge-coherence work, but Stage 5 stops calling it.
+- **The σ/√2 D-8 noise weighting still applies.** It splits the per-bin
+  complex variance into Re/Im halves; it is independent of the bin-
+  correlation question.
+- **Per-bin noise comes from Stage 2 via a derived rescale**, not a fresh
+  estimation pass. The active-FT bin variance is `1/α` that of the
+  persisted FT (same time-domain noise, fewer FT-length samples), so
+
+      σ_active(f) = σ_persisted(f_nearest) / √α
+
+  interpolated onto the active-FT grid. No second adaptive noise pass; one
+  canonical `rms_noise` source.
+- **The active-FT is internal to Stage 5.** It is computed on demand from
+  the persisted FID (`stage0_fid_data`) and the canonical Stage 1
+  apodization settings; it is not persisted in the `.ftmw` file (small,
+  fast, and trivially regeneratable). Stage 5 therefore gains an explicit
+  dependency on Stage 0 alongside Stage 4.
+- **Display still uses the persisted FT.** Visualization overlays the
+  fitted model on the high-resolution persisted grid by re-evaluating
+  `model_spectrum` at those frequencies; the model is grid-agnostic.
+
+The persisted-FT path that the task-5 implementation took is preserved in
+the algorithm module as a fall-back-debugging surface but is no longer the
+production fit frame; the migration is task 6 (see *Task breakdown*). The
+active-portion FT contract is registered in
+[`../ROADMAP.md`](../ROADMAP.md) as divergence **D9**.
+
 ## Reuse map
 
 Per the locked Stages 3–5 design, the refined `newfitting/` engine
@@ -92,13 +162,13 @@ data subtraction.
 
 ### Effective time axis and model generation
 
-Conceptually the model is the FFT of a sum of damped cosines on an *effective
-time axis*: the data to fit is a small-bandwidth slice of the persisted
-spectrum (M contiguous bins), and the inverse-DFT of an M-bin slice is an
-M-point time series at a decimated sample spacing — short, because the window
-bandwidth is small — spanning the full record duration, with the active signal
-occupying the sub-interval `[t₀, t₀+T]`. The model is a sum of damped cosines
-built on that axis and transformed back.
+The data to fit is a slice of the **active-portion FT** — the rfft of just the
+`[t₀, t₀+T]` FID samples, with the canonical Stage 1 apodization. By
+construction this slice is the FFT of a damped cosine observed over the
+finite acquisition `[0, T]` (no surrounding zeros, no zero-padded
+interpolation), so the model is `h_T` evaluated directly on the slice's
+frequency grid. Adjacent bins are statistically independent — see *Spectral
+domain for the fit* — so the conventional `N_dof = M − N_params` is exact.
 
 In practice that transform has the closed form `h_T(Δf;τ)` above, so the model
 spectrum is `h_T` evaluated directly on the window's frequency grid — no
@@ -147,13 +217,16 @@ look plausible. The synthetic both-sideband unit tests exist to catch exactly
 this.
 
 **The turn-on ramp.** The persisted spectrum carries the D8 phase ramp
-`exp(±i2π f_bb t₀)`. `h_T` as written is the `[0,T]` form. Stage 5 de-ramps
-the window data once with the existing
-`preprocessing/leakage.py:deramp_to_active_start` (sideband-proof via
-`|f − f_probe|`) and fits the `[0,T]` `h_T`. The de-ramp is an internal
-transform; the persisted spectrum is untouched. (Equivalently the ramp could be
-carried in the model; de-ramping the data reuses Stage 4's transform and keeps
-`h_T` in its simplest form — D-2.)
+`exp(±i2π f_bb t₀)` because it is the rfft of the *whole* zero-padded record.
+The **active-portion FT** Stage 5 actually fits on (see *Spectral domain for
+the fit*) is the rfft of just the `[t₀, t₀+T]` samples, which is in the
+`[0, T]` form natively — there is no phase ramp to remove. The
+`preprocessing/leakage.py:deramp_to_active_start` helper remains in place for
+Stage 4's edge-coherence work on the persisted spectrum; Stage 5's
+`to_baseband_frame` no longer calls it. (Earlier drafts of this plan, and the
+task-5 implementation that was committed against the persisted FT, did apply
+the de-ramp — D-2. The active-FT contract supersedes that path and the call
+is dropped.)
 
 **Window function.** `h_T` models boxcar truncation × exponential decay only.
 The pipeline's goal is unwindowed fitting and 2638's canonical settings have
@@ -171,17 +244,23 @@ mirror term only for windows below a documented `f_bb` cutoff (D-4).
 ### Least-squares residual
 
 Per the locked contract, the residual is in the **complex-FT domain**: model
-`h_T` evaluated on the window grid versus the de-ramped complex window data,
-identical point counts. Real and imaginary parts are stacked into one real
-residual vector; the least-squares objective is noise-weighted by the
-canonical Stage 2 per-point RMS.
+`h_T` evaluated on the active-portion window grid versus the active-portion
+complex window data, identical point counts. Real and imaginary parts are
+stacked into one real residual vector; the least-squares objective is
+noise-weighted.
 
-The Stage 2 `rms_noise` array is already a **per-bin complex RMS** σ (it is
-used raw as σ in the Stage 4 `S_coh` statistic). The complex noise's real and
-imaginary parts each carry variance σ²/2, so the stacked Re/Im residual is
-weighted by **σ/√2** for every element to be unit-variance — then reduced χ²
-≈ 1 and the F-test is calibrated (D-8; the prototype confirmed weighting by σ
-itself leaves reduced χ² ≈ 0.5 and doubles the F-statistic). The bcfitting
+The active-portion FT bin noise is derived from the canonical Stage 2
+per-bin complex RMS by
+
+    σ_active(f) = σ_persisted(f_nearest) / √α
+
+(see *Spectral domain for the fit*). The active-portion bins are independent,
+so summing their squared residuals gives a sum that is exactly χ²-distributed
+with `M − N_params` degrees of freedom. Real and imaginary parts of σ_active
+each carry variance σ_active² / 2, so the stacked Re/Im residual is weighted
+by **σ_active/√2** for every element to be unit-variance — then reduced χ²
+≈ 1 and the F-test is calibrated (D-8; the prototype confirmed weighting by
+σ alone leaves reduced χ² ≈ 0.5 and doubles the F-statistic). The bcfitting
 `calculate_noise_weighted_chi2` applied a 1.53 magnitude→complex factor for
 the same reason; with a genuine complex per-bin σ the correct factor is just
 √2 and nothing else.
@@ -401,15 +480,21 @@ and adds a plan-level aggregate:
 
 `SpectralWindow` is the natural data-bearing window object the fitter operates
 on (it carries `freq_array`/`complex_spectrum`/`peaks`); Stage 5 materializes
-one per fit window (padded per D-6) from the persisted spectrum and the plan.
+one per fit window (padded per D-6) from the active-portion FT and the plan.
 
 ## Pipeline integration
 
 - **Stage key / dependencies.** Add `stage5_fitting` to
-  `PipelineStageTracker.STAGE_DEPENDENCIES` (depends on `stage4_windows`) and a
-  `STAGE_DATA_PATHS` entry (`stage5_fitting`). It is then automatically
-  invalidated by the existing canonical-settings-change mechanism and by Stage
-  3 re-detection / Stage 4 re-planning via `invalidate_downstream_stages`.
+  `PipelineStageTracker.STAGE_DEPENDENCIES` with dependencies on **both**
+  `stage0_fid_data` (the raw FID — the active-portion FT is computed from it
+  on demand) **and** `stage4_windows` (the plan), plus a `STAGE_DATA_PATHS`
+  entry (`stage5_fitting`). The Stage 1 canonical settings (`start_us`,
+  `end_us`, `expf_us`, `winf`, `zpf`) parameterize the active-FT, so changes
+  to canonical Stage 1 settings invalidate Stage 5 through the existing
+  canonical-settings mechanism; Stage 3 re-detection and Stage 4 re-planning
+  also propagate via `invalidate_downstream_stages`. The active-portion FT
+  itself is *not* persisted: it is computed on demand from the FID and is
+  trivially regenerable.
 - **Serialization.** Persist a `/stage5_fitting` group. The fitted parameters
   are scientific output and may be hand-edited (like the peak list and the
   window plan), so they are **persisted, not recomputed**: flat, hand-editable
@@ -576,15 +661,53 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    the joint-frame local co-fit that promotes the thawed contributor to a free
    peak in both windows on accept). 22 unit tests including a coupled-pair
    thaw integration. `scratch/stage5_thaw_demo.py` shows the CLEAN vs COUPLED
-   contrast end-to-end. The Stage 4 `replan` entry point and merge/split path
-   remain task 6.
-6. [ ] Stage 4 `replan` entry point (`merge`/`split`) + the residual
-   edge-coherence renegotiation handshake + unit tests.
-7. [ ] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +
+   contrast end-to-end. **Implemented against the persisted Stage 1 FT;
+   superseded by the active-portion FT contract in task 6 below (D9).** The
+   algorithm survives the rewiring almost intact; only the input frame
+   changes.
+6. [ ] **Active-portion FT migration (D9).** Switch Stage 5 from fitting on
+   the persisted zero-padded FT to fitting on the active-portion FT, so
+   bins are independent and reduced χ², F-test, AIC are calibrated as
+   written. Subtasks:
+   1. `fitting/active_ft.py` (new algorithm module):
+      `compute_active_ft(fid, sample_dt_us, *, start_us, end_us, expf_us,
+      probe_freq_mhz, sideband) -> ActiveFTResult` with
+      `(freq_mhz, complex_spectrum, alpha, n_active, n_padded)`. The FFT is
+      `rfft(fid[active] * exp(-(t - t0)/τ_apod))` so the bin grid is
+      `[0, T_active]`-natural — no phase ramp.
+   2. `derive_active_noise(persisted_rms_noise, persisted_freq_mhz,
+      active_freq_mhz, alpha) -> np.ndarray`: interpolate persisted Stage 2
+      σ onto the active-FT grid, rescale by `1/√α`. One canonical noise
+      source; no second adaptive pass.
+   3. Rewire `plan_execution._materialize_window` to slice the active-FT
+      result instead of the persisted FT. Drop the
+      `deramp_to_active_start` call from `to_baseband_frame` (the helper
+      stays in `preprocessing/leakage.py` for Stage 4). Rename
+      `to_baseband_frame -> to_baseband_offset` for clarity.
+   4. `execute_plan` takes an `ActiveFTResult` and active-grid `rms_noise`
+      instead of the persisted FT + per-bin noise. The
+      `_internal/stage5_impl.py` orchestrator (task 9) computes the
+      active-FT once per Stage 5 invocation from `stage0_fid_data` +
+      canonical Stage 1 settings.
+   5. Tests: `tests/unit/fitting/test_active_ft.py` (synthetic damped
+      cosines, recovery of A/f/φ/τ; verify α and per-bin σ_active relation
+      to within ~5% on noise-only data; verify absence of phase ramp by
+      comparing bin phases at line center). Update
+      `tests/unit/fitting/test_plan_execution.py` for the new
+      `execute_plan` signature.
+   6. Update `STATUS.md` (when wired) and confirm no α-correction is
+      smuggled in; the helpers in `validation.py` stay as-written.
+7. [ ] Stage 4 `replan` entry point (`merge`/`split`) + the residual
+   edge-coherence renegotiation handshake + unit tests. (Implemented
+   against the active-FT frame established in task 6.)
+8. [ ] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +
    the new `SpectrumFit` aggregate + unit tests.
-8. [ ] `io/fitting_serialization.py` + `stage5_fitting` stage tracking and
-   dependencies + invalidation wiring + hand-edit round-trip tests.
-9. [ ] Wrappers (`Pipeline.fit_windows/visualize_fit/load_fit`, `api.*`, CLI
-   `fit-windows`/`visualize-fit`) + `visualization/fit_visualization.py`.
-10. [ ] Cross-interface + 2638 representative-subset integration tests; the
+9. [ ] `io/fitting_serialization.py` + `stage5_fitting` stage tracking and
+   dependencies (depends on `stage0_fid_data` AND `stage4_windows`) +
+   invalidation wiring + hand-edit round-trip tests.
+10. [ ] Wrappers (`Pipeline.fit_windows/visualize_fit/load_fit`, `api.*`, CLI
+    `fit-windows`/`visualize-fit`) + `visualization/fit_visualization.py`.
+    Visualization overlays the fitted model on the persisted (high-res) FT
+    by re-evaluating `model_spectrum` at the persisted frequencies.
+11. [ ] Cross-interface + 2638 representative-subset integration tests; the
     doublet and 34154 cases; then the full-plan integration check.
