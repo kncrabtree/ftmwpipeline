@@ -32,6 +32,7 @@ from ftmwpipeline.core.data_structures import (
     FittingResult,
     KnockoutInfo,
     ReplanInfo,
+    SpectralWindow,
     SpectrumFit,
     ThawInfo,
 )
@@ -306,12 +307,38 @@ class TestRoundTrip:
         assert tau_entry["error"] is None
 
     def test_recomputable_arrays_not_persisted(self, tmp_path):
-        """fitted_spectrum and window are recomputable -- they come back as None."""
+        """fitted_spectrum is recomputable -- comes back as None. The window's
+        freq_range is persisted (lightweight) so a loaded SpectralWindow has
+        no spectrum arrays but the right freq_range."""
         fit = _sample_spectrum_fit()
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
         for window_fit in loaded.window_fits:
             assert window_fit.fitted_spectrum is None
+            # The fixture _make_window_fit sets window=None, so freq_range
+            # round-trips as NaN -> loaded window stays None.
             assert window_fit.window is None
+
+    def test_window_freq_range_round_trips_when_attached(self, tmp_path):
+        """A FittingResult with an attached SpectralWindow round-trips the
+        freq_range; the loaded window's arrays are empty (recomputable) but
+        freq_range is preserved so visualization can locate the window."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        win.window = SpectralWindow(
+            parent_ft=None,
+            freq_array=np.linspace(36099.4, 36100.6, 50),
+            complex_spectrum=np.zeros(50, dtype=np.complex128),
+            freq_range=(36099.4, 36100.6),
+            window_id=0,
+        )
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+        loaded_win = loaded.window_fits[0].window
+        assert isinstance(loaded_win, SpectralWindow)
+        assert loaded_win.freq_range == pytest.approx((36099.4, 36100.6))
+        # Arrays are not persisted -- empty on load (caller recomputes).
+        assert loaded_win.freq_array.size == 0
+        assert loaded_win.complex_spectrum.size == 0
 
     def test_overwrite_existing_group(self, tmp_path):
         """A second save into the same group replaces, not appends."""

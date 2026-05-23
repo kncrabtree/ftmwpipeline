@@ -533,13 +533,13 @@ one per fit window (padded per D-6) from the active-portion FT and the plan.
 Logic in `_internal/stage5_impl.py` (orchestration) and the `fitting/` package
 (algorithm); thin identical wrappers across all three interfaces:
 
-- `Pipeline.fit_windows()` / `api.fit_windows()` / CLI `fit-windows`.
-- `Pipeline.visualize_fit()` / CLI `visualize-fit`, and `load_fit()`.
+- `Pipeline.fit_peaks()` / `api.fit_peaks()` / CLI `fit-peaks`.
+- `Pipeline.visualize_fit()` / `api.visualize_fit()` / CLI `visualize-fit`,
+  and `load_fit()` / `api.load_fit()`.
 
-`fit-windows` / `visualize-fit` follow the verb-object CLI scheme (D1); the
-names are reserved in `CLI_STRATEGY.md` alongside the other Stage 3+ commands.
-Cross-interface consistency tests are mandatory
-(`test_cross_interface_consistency.py`).
+The names match `CLI_STRATEGY.md` (Stage 5 reserves `fit-peaks` and
+`visualize-fit`). Cross-interface consistency tests are mandatory
+(`tests/integration/test_stage5_fitting.py`).
 
 Algorithm module layout under `src/ftmwpipeline/fitting/` (replacing the
 existing `NotImplementedError` stubs):
@@ -796,9 +796,33 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    mismatched peak-column lengths, unknown audit `decision`, invalid
    thaw `edge_side`, malformed JSON), NaN-encoded `None` uncertainties
    round-trip, and the stage-tracker dependency registration.
-10. [ ] Wrappers (`Pipeline.fit_windows/visualize_fit/load_fit`, `api.*`, CLI
-    `fit-windows`/`visualize-fit`) + `visualization/fit_visualization.py`.
-    Visualization overlays the fitted model on the persisted (high-res) FT
-    by re-evaluating `model_spectrum` at the persisted frequencies.
+10. [x] Wrappers (`Pipeline.fit_peaks/visualize_fit/load_fit`, `api.*`, CLI
+    `fit-peaks`/`visualize-fit`) + `visualization/fit_visualization.py`.
+    Landed across
+    [`_internal/stage5_impl.py`](../../src/ftmwpipeline/_internal/stage5_impl.py)
+    (orchestrator that loads the FID + canonical Stage 1 settings + plan,
+    computes the active-FT, measures active-FT noise via the Stage 2
+    estimator on the same spectrum, drives `execute_plan`, converts the
+    outcome to `SpectrumFit`, persists, and marks `stage5_fitting`
+    complete),
+    [`pipeline.py`](../../src/ftmwpipeline/pipeline.py),
+    [`api.py`](../../src/ftmwpipeline/api.py), and
+    [`cli/fitting_commands.py`](../../src/ftmwpipeline/cli/fitting_commands.py).
+    Visualization is in
+    [`visualization/fit_visualization.py`](../../src/ftmwpipeline/visualization/fit_visualization.py) --
+    overview mode overlays the fitted model on the persisted (high-res)
+    FT by re-evaluating `model_spectrum` at the persisted frequencies;
+    per-window detail mode (`--window-id`) shows the real/imaginary
+    parts of model-on-data with their residuals, the magnitude with its
+    residual, a synthesised time-domain envelope, and a compact rendering
+    of the conservative add-one-peak audit trail. Stage 5 fixture
+    `baseline_2638_stage4` is added to `tests/integration/conftest.py`
+    so the cross-interface tests
+    (`tests/integration/test_stage5_fitting.py`) can build on it.
+    Resolves the prior spec mismatch with `CLI_STRATEGY.md` (the planning
+    doc had named `fit-windows`/`visualize-fit`; the normative spec
+    reserved `fit-peaks`, which is what landed across all three
+    interfaces; `CLI_STRATEGY.md` now also reserves `visualize-fit` and
+    `visualize-windows` alongside the other Stage 4+ commands).
 11. [ ] Cross-interface + 2638 representative-subset integration tests; the
     doublet and 34154 cases; then the full-plan integration check.

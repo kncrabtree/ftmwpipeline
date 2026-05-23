@@ -31,7 +31,10 @@ from ._internal.stage3_impl import (
 from ._internal.stage4_impl import (
     assign_windows_impl, visualize_windows_impl, load_windows_impl
 )
-from .core.data_structures import Peak, WindowPlan
+from ._internal.stage5_impl import (
+    fit_peaks_impl, visualize_fit_impl, load_fit_impl
+)
+from .core.data_structures import Peak, SpectrumFit, WindowPlan
 
 
 class Pipeline:
@@ -901,6 +904,135 @@ class Pipeline:
         except Exception as e:
             raise RuntimeError(
                 f"Failed to create window visualization: {e}"
+            ) from e
+
+    def fit_peaks(
+        self,
+        tau0_us: Optional[float] = None,
+        fit_tau: Optional[bool] = None,
+        max_decay_factor: Optional[float] = None,
+        residual_edge_threshold: Optional[float] = None,
+        residual_edge_m: Optional[int] = None,
+        max_thaw_rounds: Optional[int] = None,
+        max_replan_rounds: Optional[int] = None,
+    ) -> SpectrumFit:
+        """Fit each Stage 4 window's lines (Stage 5).
+
+        Requires Stage 4 (window assignment) completed. Drives the conservative
+        add-one-peak loop over each window with the shared per-window decay
+        ``tau`` and the frozen-contributor model, then the residual
+        edge-coherence handshake (local thaw + structural replan). Equivalent
+        to the CLI ``fit-peaks`` command and ``ftmwpipeline.api.fit_peaks``.
+
+        The fit runs on the active-portion FT (computed on demand from the
+        FID + canonical Stage 1 settings), so per-bin statistics are
+        independent and reduced chi-squared / F-test / AIC are calibrated as
+        written. The persistent :class:`SpectrumFit` -- per-window
+        :class:`FittingResult` s, the merged global fitted-peak list, the
+        thaw / replan histories, and the parameters used -- is written to
+        ``/stage5_fitting``.
+
+        Parameters
+        ----------
+        tau0_us : float, optional
+            Starting / default shared decay constant per window
+            (microseconds). Defaults to the Stage 1 ``expf_us`` when set,
+            otherwise to ``T_active / 3``.
+        fit_tau : bool, optional
+            Free vs fixed per-window tau (default True).
+        max_decay_factor : float, optional
+            Tau bound factor ``k``: tau in ``[tau0/k, tau0*k]`` (default 5).
+        residual_edge_threshold : float, optional
+            ``S_coh`` threshold above which a residual edge triggers a thaw
+            attempt.
+        residual_edge_m : int, optional
+            Band width (in active-FT bins) of the residual-edge coherence
+            test.
+        max_thaw_rounds : int, optional
+            Maximum local-thaw rounds per window per call.
+        max_replan_rounds : int, optional
+            Maximum structural-replan rounds per call. Pass 0 to disable
+            structural renegotiation.
+
+        Returns
+        -------
+        SpectrumFit
+            The persistent fit aggregate.
+
+        Raises
+        ------
+        StageDependencyError
+            If Stage 4 has not been completed.
+        RuntimeError
+            If fitting fails.
+        """
+        try:
+            result = fit_peaks_impl(
+                file_path=str(self.filepath),
+                tau0_us=tau0_us,
+                fit_tau=fit_tau,
+                max_decay_factor=max_decay_factor,
+                residual_edge_threshold=residual_edge_threshold,
+                residual_edge_m=residual_edge_m,
+                max_thaw_rounds=max_thaw_rounds,
+                max_replan_rounds=max_replan_rounds,
+            )
+            self.logger.info(
+                "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "
+                "%d structural replans accepted (revision %d)",
+                result["n_windows"],
+                result["n_fitted_peaks"],
+                result["n_thaw_accepted"],
+                result["n_thaw_events"],
+                result["n_replan_accepted"],
+                result["final_plan_revision"],
+            )
+            return cast(SpectrumFit, result["fit"])
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to fit peaks: {e}") from e
+
+    def load_fit(self) -> SpectrumFit:
+        """Load the persisted Stage 5 fit (validates structure loudly)."""
+        return cast(SpectrumFit, load_fit_impl(str(self.filepath))["fit"])
+
+    def visualize_fit(
+        self,
+        figsize: Optional[tuple] = None,
+        title: Optional[str] = None,
+        window_id: Optional[int] = None,
+        backend: str = "matplotlib",
+        interactive: bool = True,
+        output_file: Optional[Union[str, Path]] = None,
+    ) -> Any:
+        """Overlay the Stage 5 fit on the spectrum.
+
+        Equivalent to the CLI ``visualize-fit`` command. With ``window_id``
+        set, draws a per-window detail figure (re/im, magnitude+residual,
+        time envelope, audit-trail); otherwise an overview overlay of the
+        fitted model on the persisted spectrum. Requires Stage 5 completed.
+        """
+        try:
+            fig = visualize_fit_impl(
+                file_path=str(self.filepath),
+                figsize=figsize,
+                title=title,
+                window_id=window_id,
+                backend=backend,
+                interactive=interactive,
+            )
+            if not interactive and output_file:
+                fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
+                self.logger.info(f"Plot saved to: {output_file}")
+            elif interactive and backend == "matplotlib":
+                import matplotlib.pyplot as plt
+
+                plt.show()
+            return fig
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to create fit visualization: {e}"
             ) from e
 
     def info(self) -> Dict[str, Any]:

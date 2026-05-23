@@ -84,6 +84,7 @@ from ..core.data_structures import (
     FittingResult,
     KnockoutInfo,
     ReplanInfo,
+    SpectralWindow,
     SpectrumFit,
     ThawInfo,
 )
@@ -335,6 +336,16 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     wg.attrs["reduced_chi2"] = float(window_fit.reduced_chi2)
     wg.attrs["tau_us"] = tau_us
     wg.attrs["tau_error"] = tau_error
+    # Persist the window's molecular freq_range so visualization can
+    # locate the window on the persisted spectrum without needing the
+    # Stage 4 plan back. The complex spectrum slice itself stays
+    # recomputable from the FID + active-FT.
+    if window_fit.window is not None:
+        wg.attrs["freq_min"] = float(window_fit.window.freq_range[0])
+        wg.attrs["freq_max"] = float(window_fit.window.freq_range[1])
+    else:
+        wg.attrs["freq_min"] = float("nan")
+        wg.attrs["freq_max"] = float("nan")
     wg.attrs["edge_coherence_low"] = float(
         window_fit.quality_metrics.get("edge_coherence_low", float("nan"))
     )
@@ -479,6 +490,23 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
     if "peaks" not in wg:
         raise ValueError(f"window {where!r} missing required 'peaks' subgroup")
 
+    # Reconstruct a lightweight SpectralWindow from the persisted freq_range
+    # (the complex spectrum slice stays recomputable from the FID + active-FT;
+    # what visualizations need from `window` is its freq_range).
+    freq_min = float(wg.attrs.get("freq_min", float("nan")))
+    freq_max = float(wg.attrs.get("freq_max", float("nan")))
+    window_obj: Optional[SpectralWindow]
+    if np.isnan(freq_min) or np.isnan(freq_max):
+        window_obj = None
+    else:
+        window_obj = SpectralWindow(
+            parent_ft=None,
+            freq_array=np.array([], dtype=float),
+            complex_spectrum=np.array([], dtype=np.complex128),
+            freq_range=(freq_min, freq_max),
+            window_id=int(wg.attrs["window_id"]),
+        )
+
     result = FittingResult(
         success=bool(wg.attrs["success"]),
         fitted_spectrum=None,  # recomputed on demand
@@ -486,7 +514,7 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
         iterations=int(wg.attrs["iterations"]),
         aic=float(wg.attrs["aic"]),
         reduced_chi2=float(wg.attrs["reduced_chi2"]),
-        window=None,  # recomputed on demand from FID + canonical Stage 1
+        window=window_obj,
         window_id=int(wg.attrs["window_id"]),
     )
 

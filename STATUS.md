@@ -29,9 +29,9 @@ dependencies (`file_manager.py: PipelineStageTracker.STAGE_DEPENDENCIES`).
 | 0 Data import | `stage0_fid_data` | Implemented |
 | 1 FT processing | `stage1_complex_ft` | Implemented |
 | 2 Noise estimation | `stage2_noise_result` | Implemented |
-| 3 Peak detection | — | **Not implemented** (stubs) |
-| 4 Window assignment | — | **Not implemented** (stubs) |
-| 5 Fitting | — | **Not implemented** (stubs) |
+| 3 Peak detection | `stage3_peaks` | Implemented |
+| 4 Window assignment | `stage4_windows` | Implemented |
+| 5 Fitting | `stage5_fitting` | Implemented |
 
 **Stages 0–2 (implemented):** data loading (BlackChirp / CSV / HDF5 via a
 loader registry, format auto-detection), FT processing (preprocess → FFT →
@@ -72,7 +72,9 @@ not yet.
 - **Interfaces:**
   - CLI subcommands: `import-data`, `visualize-data`, `formats`,
     `compute-ft`, `visualize-ft`, `estimate-noise`, `visualize-noise`,
-    `info`, `validate`, `version`. Stages 3–5 commands not yet added.
+    `detect-peaks`, `visualize-peaks`, `assign-windows`,
+    `visualize-windows`, `fit-peaks`, `visualize-fit`, `info`,
+    `validate`, `version`.
   - `Pipeline` is constructed via `Pipeline.create(...)`,
     `Pipeline.open(...)`, or the smart constructor `Pipeline(path)`
     (opens if present, else `FileNotFoundError` with guidance).
@@ -106,5 +108,5 @@ not yet.
 
 ## Not in scope of current state
 
-Peak detection, window assignment, fitting, batch parallelism, performance
-benchmarking, and PyPI packaging are all unimplemented.
+Batch parallelism, performance benchmarking, and PyPI packaging are all
+unimplemented.

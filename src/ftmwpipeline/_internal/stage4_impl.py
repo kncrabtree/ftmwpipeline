@@ -34,6 +34,7 @@ from ..preprocessing.edge_coherence import (
     DEFAULT_EDGE_THRESHOLD,
     DEFAULT_TRIM_M,
 )
+from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
     DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     DEFAULT_MIN_FREEZE_SNR,
@@ -156,6 +157,8 @@ def assign_windows_impl(
     save_window_plan_impl(file_path, plan)
     save_window_parameters_impl(file_path, plan.parameters)
     _update_stage_completion(file_path, "stage4_windows")
+    # Re-assignment supersedes any Stage 5 fit built on the old plan.
+    invalidate_downstream_stages(file_path, "stage4_windows")
 
     n_hard = sum(1 for w in plan.windows if w.difficulty == WindowDifficulty.HARD)
     n_free = sum(w.n_free_peaks for w in plan.windows)

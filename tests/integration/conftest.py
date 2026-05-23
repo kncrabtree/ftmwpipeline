@@ -92,6 +92,22 @@ def baseline_2638_stage3(baseline_2638_stage2, tmp_path_factory):
     return fp
 
 
+@pytest.fixture(scope="session")
+def baseline_2638_stage4(baseline_2638_stage3, tmp_path_factory):
+    """
+    Build the 2638 pipeline through Stage 0+1+2+3+4 ONCE per test session by
+    copying the stage3 baseline and running assign_windows with defaults.
+
+    Returns the Path to a read-only reference .ftmw file. Tests that need a
+    writable copy must shutil.copy it.
+    """
+    tmp = tmp_path_factory.mktemp("baseline_stage4")
+    fp = tmp / "baseline_2638_stage4.ftmw"
+    shutil.copy(baseline_2638_stage3, fp)
+    ftmw.assign_windows(fp)
+    return fp
+
+
 # ---------------------------------------------------------------------------
 # Module-scoped cross-interface trio fixtures (one per test module)
 # ---------------------------------------------------------------------------

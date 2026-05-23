@@ -38,7 +38,7 @@ from pathlib import Path
 import logging
 
 from .pipeline import Pipeline
-from .core.data_structures import FID, ComplexFT, Peak, WindowPlan
+from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .preprocessing.noise_estimation import NoiseResult
 
 # Module logger
@@ -930,6 +930,121 @@ def save_window_parameters(file_path: Union[str, Path],
         logger.info(f"Saved {len(parameters)} window parameters to {file_path}")
     except Exception as e:
         logger.error(f"Failed to save window parameters to {file_path}: {e}")
+        raise
+
+
+def fit_peaks(
+    file_path: Union[str, Path],
+    tau0_us: Optional[float] = None,
+    fit_tau: Optional[bool] = None,
+    max_decay_factor: Optional[float] = None,
+    residual_edge_threshold: Optional[float] = None,
+    residual_edge_m: Optional[int] = None,
+    max_thaw_rounds: Optional[int] = None,
+    max_replan_rounds: Optional[int] = None,
+) -> SpectrumFit:
+    """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
+
+    Requires Stage 4 (window assignment). The fit runs on the active-portion FT
+    computed on demand from the FID plus the canonical Stage 1 settings; per-bin
+    noise is measured on the active-FT directly. Persists the resulting
+    :class:`SpectrumFit` to ``/stage5_fitting``.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file.
+    tau0_us : float, optional
+        Starting / default shared decay constant per window (microseconds).
+        Defaults to ``expf_us`` when the canonical Stage 1 setting is set,
+        otherwise to ``T_active / 3``.
+    fit_tau : bool, optional
+        Free vs fixed per-window tau (default True).
+    max_decay_factor : float, optional
+        Tau bound factor (default 5).
+    residual_edge_threshold : float, optional
+        ``S_coh`` threshold above which a residual edge triggers a thaw attempt.
+    residual_edge_m : int, optional
+        Band width (in active-FT bins) of the residual-edge coherence test.
+    max_thaw_rounds : int, optional
+        Maximum local-thaw rounds per window per call.
+    max_replan_rounds : int, optional
+        Maximum structural-replan rounds per call (0 disables).
+
+    Returns
+    -------
+    SpectrumFit
+        The persistent fit aggregate.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.fit_peaks(
+            tau0_us=tau0_us,
+            fit_tau=fit_tau,
+            max_decay_factor=max_decay_factor,
+            residual_edge_threshold=residual_edge_threshold,
+            residual_edge_m=residual_edge_m,
+            max_thaw_rounds=max_thaw_rounds,
+            max_replan_rounds=max_replan_rounds,
+        )
+    except Exception as e:
+        logger.error(f"Failed to fit peaks for {file_path}: {e}")
+        raise
+
+
+def load_fit(file_path: Union[str, Path]) -> SpectrumFit:
+    """Load the persisted Stage 5 fit, equivalent to Pipeline.load_fit().
+    Validates the on-disk structure loudly."""
+    try:
+        return Pipeline.open(file_path).load_fit()
+    except Exception as e:
+        logger.error(f"Failed to load fit from {file_path}: {e}")
+        raise
+
+
+def visualize_fit(
+    file_path: Union[str, Path],
+    figsize: Optional[tuple] = None,
+    title: Optional[str] = None,
+    window_id: Optional[int] = None,
+    backend: str = "matplotlib",
+    interactive: bool = True,
+    output_file: Optional[Union[str, Path]] = None,
+) -> Any:
+    """Overlay the Stage 5 fit on the spectrum, equivalent to
+    Pipeline.visualize_fit(). Requires Stage 5 completion.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to .ftmw pipeline file with Stage 5 results.
+    figsize : tuple, optional
+        Figure size ``(width, height)`` in inches.
+    title : str, optional
+        Custom plot title.
+    window_id : int, optional
+        When set, draw a per-window detail figure (re/im, magnitude+residual,
+        time envelope, audit-trail); otherwise an overview overlay of the
+        fitted model on the persisted spectrum.
+    backend : str, default ``'matplotlib'``
+        Plotting backend (only ``'matplotlib'`` supported).
+    interactive : bool, default True
+        Whether to open an interactive window.
+    output_file : str or Path, optional
+        Save plot to this path (non-interactive mode).
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.visualize_fit(
+            figsize=figsize,
+            title=title,
+            window_id=window_id,
+            backend=backend,
+            interactive=interactive,
+            output_file=output_file,
+        )
+    except Exception as e:
+        logger.error(f"Failed to create fit visualization for {file_path}: {e}")
         raise
 
 

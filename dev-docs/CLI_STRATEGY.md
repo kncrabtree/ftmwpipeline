@@ -44,11 +44,8 @@ complete and must fail with a clear dependency message otherwise.
 | 1 FT processing | `compute-ft`, `visualize-ft` |
 | 2 Noise estimation | `estimate-noise`, `visualize-noise` |
 | 3 Peak detection | `detect-peaks`, `visualize-peaks` |
-| 4 Window assignment | `assign-windows` |
-| 5 Fitting | `fit-peaks` |
-
-Stages 3–5 are not yet implemented; their command names are reserved here so
-the vocabulary stays consistent when they are added.
+| 4 Window assignment | `assign-windows`, `visualize-windows` |
+| 5 Fitting | `fit-peaks`, `visualize-fit` |
 
 ### Utility commands
 

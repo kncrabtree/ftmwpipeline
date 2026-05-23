@@ -18,6 +18,7 @@ from .data_commands import add_data_subcommands
 from .noise_commands import register_noise_commands
 from .peak_commands import register_peak_commands
 from .window_commands import register_window_commands
+from .fitting_commands import register_fitting_commands
 from .info_commands import add_info_subcommand
 
 
@@ -87,6 +88,10 @@ Available Commands:
     assign-windows    Turn promoted peaks into a fit-window plan
     visualize-windows Overlay the window plan on the spectrum
 
+  Stage 5 (Fitting):
+    fit-peaks       Fit each window's lines (conservative add-one-peak loop)
+    visualize-fit   Overlay the fitted model on the spectrum
+
   Utility:
     info            Show provenance and stage status for a .ftmw file
     validate        Check installation and dependencies
@@ -122,6 +127,9 @@ Examples:
 
     # Add window assignment commands (Stage 4)
     register_window_commands(subparsers)
+
+    # Add fitting commands (Stage 5)
+    register_fitting_commands(subparsers)
 
     # Pipeline-file info command
     add_info_subcommand(subparsers)
