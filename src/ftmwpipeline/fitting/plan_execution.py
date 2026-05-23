@@ -1,0 +1,1262 @@
+"""
+Plan-level execution for Stage 5 fitting.
+
+Stage 5 task 5: drive a Stage 4 :class:`~ftmwpipeline.core.data_structures.WindowPlan`
+through to a fitted line list. This module owns the three pieces the task plan
+calls out:
+
+* **Fixed-contributor evaluation.** A
+  :class:`~ftmwpipeline.core.data_structures.FixedContributor` names a strong line
+  fit freely in its ``primary_window_id``. In a dependent window that line
+  contributes only its frozen ``h_T`` skirt -- the line itself is not re-fit. The
+  free-peak core (:func:`~ftmwpipeline.fitting.window_fit.fit_window` /
+  :func:`~ftmwpipeline.fitting.window_fit.conservative_fit`) fits free peaks only,
+  so the contributor's frozen model is *subtracted from the window data as a
+  frozen background* before delegating to the conservative loop. After the fit,
+  the background is added back to reconstruct the full model and residual.
+
+* **DAG / batch execution order.** Windows are fit in
+  :attr:`WindowPlan.topological_order` (equivalently, in ascending
+  :attr:`FitWindow.batch`); a window's fixed contributors are pulled from the
+  already-fit primary windows it depends on, so the dependency invariant is
+  enforced by the walk order. Within a batch the windows are mutually
+  independent, which keeps this pure-Python walk safe to parallelise later
+  without changing its semantics.
+
+* **Local thaw renegotiation.** After each window fit, a complex-edge coherence
+  statistic (:mod:`ftmwpipeline.preprocessing.edge_coherence`) is run on the *fit
+  residual* at the two window edges. Above-threshold coherence on an edge that
+  faces a frozen contributor means the contributor's skirt was carried badly
+  (or the contributor was not safe to freeze in the first place -- the
+  ``freeze_eligible=False`` case the Stage 4 plan flagged). The contributor is
+  then *thawed*: unfrozen and co-fit jointly with the dependent window and its
+  primary window. This is the canonical 36350/36389 doublet case. Rounds are
+  bounded for guaranteed termination.
+
+Scope -- this is *task 5 only*. The Stage 4 ``replan`` entry point and the
+``merge`` / ``split`` re-plan requests are task 6; serialization, the
+``_internal/stage5_impl.py`` file orchestrator, and the dual-interface wrappers
+are tasks 8-9; the visualization is task 9. The light dataclasses defined here
+(:class:`FrozenPeak`, :class:`ThawEvent`, :class:`WindowOutcome`,
+:class:`PlanFitOutcome`) are minimal records that task 7 will compose into the
+persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
+:class:`~ftmwpipeline.core.data_structures.FittingResult` / the new
+``SpectrumFit`` aggregate.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from typing import Any, Optional, Union
+
+import numpy as np
+
+from ftmwpipeline.core.data_structures import (
+    FitWindow,
+    FixedContributor,
+    Sideband,
+    WindowPlan,
+)
+from ftmwpipeline.preprocessing.edge_coherence import (
+    DEFAULT_EDGE_THRESHOLD,
+    DEFAULT_TRIM_M,
+    coherence_statistic,
+)
+
+from .peak_model import (
+    ModelPeak,
+    model_spectrum,
+    sideband_sign,
+    to_baseband_frame,
+)
+from .window_fit import (
+    DEFAULT_MAX_DECAY_FACTOR,
+    ConservativeFitResult,
+    WindowFitResult,
+    conservative_fit,
+    fit_window,
+)
+
+__all__ = [
+    "FrozenPeak",
+    "ThawEvent",
+    "WindowOutcome",
+    "PlanFitOutcome",
+    "DEFAULT_RESIDUAL_EDGE_THRESHOLD",
+    "DEFAULT_RESIDUAL_EDGE_M",
+    "DEFAULT_MAX_THAW_ROUNDS",
+    "evaluate_fixed_contributor",
+    "subtract_frozen_background",
+    "fit_window_with_fixed_contributors",
+    "residual_edge_coherence",
+    "select_contributor_to_thaw",
+    "local_thaw_cofit",
+    "attempt_thaw_round",
+    "execute_plan",
+]
+
+NoiseLike = Union[float, np.ndarray]
+SidebandLike = Union[Sideband, str]
+
+# Residual edge-coherence renegotiation defaults (O5-6 -- starting points).
+DEFAULT_RESIDUAL_EDGE_THRESHOLD = DEFAULT_EDGE_THRESHOLD
+"""``S_coh`` threshold above which a residual edge triggers a thaw attempt."""
+
+DEFAULT_RESIDUAL_EDGE_M = DEFAULT_TRIM_M
+"""Band width (in spectrum bins) of the residual-edge coherence test."""
+
+DEFAULT_MAX_THAW_ROUNDS = 2
+"""Maximum thaw rounds per window, for guaranteed termination."""
+
+
+# ---------------------------------------------------------------------------
+# Light per-window records
+# ---------------------------------------------------------------------------
+@dataclass
+class FrozenPeak:
+    """A :class:`FixedContributor` materialized in a dependent window's fit frame.
+
+    The contributor's fitted ``(amplitude, frequency, phase)`` -- read from its
+    ``primary_window``'s converged free-peak fit -- is mapped into the dependent
+    window's signed baseband-offset coordinate; the frozen model term is just
+    ``model_spectrum([model_peak], tau, T)`` evaluated on the dependent window's
+    grid (note the shared ``tau`` is the dependent window's, not the primary's
+    -- the leakage shape ``h_T`` carries one ``tau`` per window).
+
+    Attributes
+    ----------
+    peak_index : int
+        Stage 3 peak index of the strong line (links back to the plan).
+    primary_window_id : int
+        Window in which this line was fit freely.
+    model_peak : ModelPeak
+        The frozen model term, in the *dependent* window's offset frame.
+    frequency_mhz : float
+        Molecular frequency of the line (MHz), carried for diagnostics.
+    freeze_eligible : bool
+        Stage 4's eligibility flag, propagated for the thaw selection heuristic.
+    """
+
+    peak_index: int
+    primary_window_id: int
+    model_peak: ModelPeak
+    frequency_mhz: float
+    freeze_eligible: bool = True
+
+
+@dataclass
+class ThawEvent:
+    """One local-thaw renegotiation record.
+
+    Attributes
+    ----------
+    dependent_window_id : int
+        Window whose post-fit residual edge triggered the thaw.
+    primary_window_id : int
+        Window the thawed contributor was originally fit in.
+    contributor_peak_index : int
+        Stage 3 peak index of the thawed line.
+    contributor_frequency_mhz : float
+        Molecular frequency of the thawed line (MHz).
+    edge_side : str
+        ``"low"`` or ``"high"`` -- which edge of ``dependent_window_id`` flagged.
+    edge_coherence_before : float
+        Residual ``S_coh`` on that edge before the thaw, in the same units as
+        :func:`~ftmwpipeline.preprocessing.edge_coherence.coherence_statistic`.
+    edge_coherence_after : float
+        Residual ``S_coh`` on that edge after the joint co-fit. ``NaN`` if the
+        co-fit did not converge.
+    accepted : bool
+        Whether the co-fit converged and lowered the flagged-edge coherence to
+        at or below the threshold (i.e. the thaw improved things).
+    reason : str
+        Free-text note (which heuristic picked the contributor, etc.).
+    """
+
+    dependent_window_id: int
+    primary_window_id: int
+    contributor_peak_index: int
+    contributor_frequency_mhz: float
+    edge_side: str
+    edge_coherence_before: float
+    edge_coherence_after: float
+    accepted: bool
+    reason: str = ""
+
+
+@dataclass
+class WindowOutcome:
+    """Stage 5 result for one window.
+
+    Holds enough state for downstream consumers -- task 7's
+    :class:`~ftmwpipeline.core.data_structures.FittingResult` wiring, the
+    visualization, and the next batch's fixed-contributor lookup -- to work from
+    one object per window. The free-peak fit is left intact in ``fit``; the full
+    model / residual (free peaks plus frozen contributors) are reconstructed in
+    ``full_fitted_spectrum`` / ``full_residual`` for plotting and the residual
+    edge-coherence check.
+
+    Attributes
+    ----------
+    window_id : int
+        :class:`FitWindow` identifier.
+    fit : ConservativeFitResult
+        The free-peak fit (against ``data - frozen_background``).
+    fixed_peaks : list of FrozenPeak
+        The frozen contributors used.
+    offset_grid_mhz : np.ndarray
+        Baseband-offset grid of the window (the fit frame).
+    complex_spectrum : np.ndarray
+        De-ramped complex window data (the data passed to the fit, *before* the
+        frozen-background subtraction).
+    rms_noise : np.ndarray
+        Per-bin complex noise RMS over the window.
+    background : np.ndarray
+        Frozen-contributor model on ``offset_grid_mhz``.
+    full_fitted_spectrum : np.ndarray
+        ``fit.fitted_spectrum + background`` -- the complete model on the grid.
+    full_residual : np.ndarray
+        ``complex_spectrum - full_fitted_spectrum``.
+    thaw_events : list of ThawEvent
+        Per-window thaw history (chronological).
+    edge_coherence_low : float
+        Final residual ``S_coh`` at the low-frequency edge.
+    edge_coherence_high : float
+        Final residual ``S_coh`` at the high-frequency edge.
+    """
+
+    window_id: int
+    fit: ConservativeFitResult
+    fixed_peaks: list[FrozenPeak]
+    offset_grid_mhz: np.ndarray
+    complex_spectrum: np.ndarray
+    rms_noise: np.ndarray
+    background: np.ndarray
+    full_fitted_spectrum: np.ndarray
+    full_residual: np.ndarray
+    thaw_events: list[ThawEvent] = field(default_factory=list)
+    edge_coherence_low: float = 0.0
+    edge_coherence_high: float = 0.0
+
+
+@dataclass
+class PlanFitOutcome:
+    """Stage 5 outcome for a whole :class:`WindowPlan`.
+
+    Attributes
+    ----------
+    window_outcomes : dict of int -> WindowOutcome
+        Per-window results, keyed by ``window_id``.
+    thaw_history : list of ThawEvent
+        Every accepted thaw, in execution order.
+    """
+
+    window_outcomes: dict[int, WindowOutcome]
+    thaw_history: list[ThawEvent] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Fixed-contributor evaluation
+# ---------------------------------------------------------------------------
+def evaluate_fixed_contributor(
+    contributor: FixedContributor,
+    primary_outcome: WindowOutcome,
+    *,
+    dependent_center_mhz: float,
+    sideband: SidebandLike,
+) -> FrozenPeak:
+    """Materialize a :class:`FixedContributor` in a dependent window's fit frame.
+
+    Looks up the contributor's fitted :class:`ModelPeak` in
+    ``primary_outcome.fit.peaks`` by the nearest-frequency match (the
+    contributor's persisted ``frequency_mhz`` is the Stage 3 detection; the
+    primary fit's free peak is its refined location), then remaps that line's
+    signed baseband offset from the *primary* window's coordinate to the
+    *dependent* window's coordinate. Because both windows share the same
+    sideband and probe, the remap is the affine ``delta_dep = s*(f_c_primary -
+    f_c_dependent) + delta_primary``; ``amplitude``/``phase``/``tau`` are
+    physical and unchanged.
+
+    The primary's de-ramp and the dependent's are both relative to the same
+    active-region start ``t0``, so the de-ramped phase is identical in both
+    frames -- no extra phase term enters here.
+
+    Parameters
+    ----------
+    contributor : FixedContributor
+        The plan-level record naming the line.
+    primary_outcome : WindowOutcome
+        Converged outcome of the contributor's primary window.
+    dependent_center_mhz : float
+        Reference (molecular) frequency of the dependent window.
+    sideband : Sideband or str
+        Sideband configuration (must match both windows).
+
+    Returns
+    -------
+    FrozenPeak
+        The frozen model term, in the dependent window's offset frame.
+
+    Raises
+    ------
+    ValueError
+        If the primary outcome has no fitted peaks (the contributor cannot be
+        evaluated without a converged primary fit).
+    """
+    if not primary_outcome.fit.peaks:
+        raise ValueError(
+            f"primary window {contributor.primary_window_id} has no fitted "
+            f"peaks; cannot evaluate fixed contributor "
+            f"(peak {contributor.peak_index} at {contributor.frequency_mhz} MHz)"
+        )
+
+    s = sideband_sign(sideband)
+
+    # Pick the primary fit's peak nearest the persisted contributor frequency.
+    # The primary window's offset is signed-baseband from its own centre, so we
+    # compare in primary-offset space by mapping the contributor frequency the
+    # same way.
+    primary_center = _window_center_mhz(primary_outcome)
+    contributor_delta_primary = s * (contributor.frequency_mhz - primary_center)
+    nearest = min(
+        primary_outcome.fit.peaks,
+        key=lambda pk: abs(pk.offset_mhz - contributor_delta_primary),
+    )
+
+    # Use the *refined* fit frequency, not the Stage 3 detection: the primary's
+    # converged offset is the best estimate of where the line actually sits, and
+    # the frozen skirt must be evaluated there (a few-kHz Stage 3 vs fit
+    # disagreement otherwise places the skirt at the wrong location in the
+    # dependent frame).
+    fitted_freq_mhz = primary_center + s * nearest.offset_mhz
+    delta_dep = s * (fitted_freq_mhz - dependent_center_mhz)
+
+    return FrozenPeak(
+        peak_index=contributor.peak_index,
+        primary_window_id=contributor.primary_window_id,
+        model_peak=ModelPeak(
+            amplitude=nearest.amplitude,
+            offset_mhz=float(delta_dep),
+            phase=nearest.phase,
+        ),
+        frequency_mhz=fitted_freq_mhz,
+        freeze_eligible=contributor.freeze_eligible,
+    )
+
+
+def _window_center_mhz(outcome: WindowOutcome) -> float:
+    """Recover the molecular reference frequency from a window outcome.
+
+    A window's offset grid is ``u = s*(f - f_c)``; one valid recovery is
+    ``f_c = f_first - s*u_first`` once you know one paired (``f``, ``u``)
+    point. We store ``f_c`` alongside the outcome implicitly through the
+    ``offset_grid_mhz`` and the molecular grid -- but we did not persist the
+    molecular grid on the outcome. The dependable invariant is that the
+    outcome's offset grid was built with this center: callers that need the
+    center must supply it (the plan executor does, see :func:`execute_plan`).
+    Here we lean on a small helper: the center is cached as a private attribute
+    on the outcome when one is produced by the plan executor.
+    """
+    center = getattr(outcome, "_center_mhz", None)
+    if center is None:
+        raise ValueError(
+            "WindowOutcome is missing its molecular reference frequency. "
+            "WindowOutcome instances produced outside execute_plan must set the "
+            "_center_mhz attribute before being used as a fixed-contributor "
+            "primary."
+        )
+    return float(center)
+
+
+def subtract_frozen_background(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    fixed_peaks: Sequence[FrozenPeak],
+    tau_us: float,
+    acquisition_us: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate the frozen-contributor background and subtract it from the data.
+
+    Returns ``(background, data_minus_background)`` -- both complex, on the same
+    grid. With no contributors the background is all zeros and the data is
+    returned unchanged. The shared ``tau`` is the dependent window's, not the
+    primary's: ``h_T`` carries one ``tau`` per window.
+
+    Parameters
+    ----------
+    offset_grid_mhz : np.ndarray
+        Baseband-offset grid of the dependent window (MHz).
+    complex_spectrum : np.ndarray
+        De-ramped complex window data, same shape as the grid.
+    fixed_peaks : sequence of FrozenPeak
+        Contributors to evaluate.
+    tau_us : float
+        Dependent window's shared decay constant (microseconds).
+    acquisition_us : float
+        Active acquisition length ``T`` (microseconds).
+    """
+    if not fixed_peaks:
+        zero = np.zeros(offset_grid_mhz.shape, dtype=np.complex128)
+        return zero, np.asarray(complex_spectrum, dtype=np.complex128)
+    bg = model_spectrum(
+        offset_grid_mhz,
+        [fp.model_peak for fp in fixed_peaks],
+        tau_us,
+        acquisition_us,
+    )
+    return bg, np.asarray(complex_spectrum, dtype=np.complex128) - bg
+
+
+def fit_window_with_fixed_contributors(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: NoiseLike,
+    fixed_peaks: Sequence[FrozenPeak],
+    candidate_offsets: Sequence[float],
+    tau0_us: float,
+    acquisition_us: float,
+    **conservative_kwargs: Any,
+) -> tuple[ConservativeFitResult, np.ndarray, np.ndarray, np.ndarray]:
+    """Conservative free-peak fit of a window with frozen contributors.
+
+    Subtracts the frozen-contributor background from the window data and runs
+    :func:`~ftmwpipeline.fitting.window_fit.conservative_fit` on the difference.
+    The returned ``full_fitted_spectrum`` is the free-peak model plus the
+    background, and ``full_residual`` is the data minus that full model -- the
+    correct things to plot and to test for residual edge coherence.
+
+    ``**conservative_kwargs`` are forwarded verbatim to :func:`conservative_fit`
+    (e.g. ``fit_tau``, ``significance``, ``min_separation_factor``, ...).
+
+    Returns
+    -------
+    tuple
+        ``(fit_result, background, full_fitted_spectrum, full_residual)``.
+    """
+    background, data_minus_bg = subtract_frozen_background(
+        offset_grid_mhz, complex_spectrum, fixed_peaks, tau0_us, acquisition_us
+    )
+    fit_result = conservative_fit(
+        offset_grid_mhz,
+        data_minus_bg,
+        rms_noise,
+        candidate_offsets,
+        tau0_us,
+        acquisition_us,
+        **conservative_kwargs,
+    )
+    # conservative_fit sorts its grid internally; its fitted_spectrum is on
+    # *that* sorted grid. Re-evaluate the model on the caller's input grid so
+    # the returned arrays line up bin-for-bin with the inputs.
+    full_free = model_spectrum(
+        offset_grid_mhz, fit_result.fit.peaks, fit_result.fit.tau_us, acquisition_us
+    )
+    full_fitted = full_free + background
+    full_residual = np.asarray(complex_spectrum, dtype=np.complex128) - full_fitted
+    return fit_result, background, full_fitted, full_residual
+
+
+# ---------------------------------------------------------------------------
+# Residual edge-coherence
+# ---------------------------------------------------------------------------
+def residual_edge_coherence(
+    residual: np.ndarray,
+    rms_noise: NoiseLike,
+    band_m: int = DEFAULT_RESIDUAL_EDGE_M,
+) -> tuple[float, float]:
+    """Complex-edge coherence ``S_coh`` of the residual on each window edge.
+
+    The window's residual ``z`` is sliced into its first and last ``band_m``
+    bins; :func:`~ftmwpipeline.preprocessing.edge_coherence.coherence_statistic`
+    is evaluated on each slice with the local mean of ``rms_noise``. A coherent
+    leakage tail on either edge shows up as an above-threshold value; a clean
+    residual gives values near the null mean ``sqrt(pi/4) ~= 0.886``.
+
+    The returned ``(low, high)`` ordering follows the input order, i.e. ``low``
+    is the first-band statistic regardless of whether the grid is ascending or
+    descending in molecular frequency.
+
+    Parameters
+    ----------
+    residual : np.ndarray
+        Complex residual on the window grid.
+    rms_noise : float or np.ndarray
+        Per-bin complex noise RMS (scalar broadcast or per-bin array).
+    band_m : int, default :data:`DEFAULT_RESIDUAL_EDGE_M`
+        Number of edge bins per band. Clamped down to the residual length when
+        the window is shorter than ``2 * band_m``.
+
+    Returns
+    -------
+    tuple of float
+        ``(low_edge_S_coh, high_edge_S_coh)``.
+    """
+    z = np.asarray(residual, dtype=np.complex128)
+    n = z.size
+    if n == 0:
+        return 0.0, 0.0
+    m = max(1, min(int(band_m), n // 2 if n >= 2 else n))
+
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(n, float(sigma))
+    elif sigma.shape != z.shape:
+        raise ValueError("rms_noise must be a scalar or match the residual shape")
+
+    low_sigma = float(np.mean(sigma[:m]))
+    high_sigma = float(np.mean(sigma[-m:]))
+    low = coherence_statistic(z[:m], low_sigma)
+    high = coherence_statistic(z[-m:], high_sigma)
+    return low, high
+
+
+# ---------------------------------------------------------------------------
+# Thaw selection + local co-fit
+# ---------------------------------------------------------------------------
+def select_contributor_to_thaw(
+    window: FitWindow,
+    fixed_peaks: Sequence[FrozenPeak],
+    edge_side: str,
+) -> Optional[FrozenPeak]:
+    """Pick the contributor most likely responsible for a flagged residual edge.
+
+    The selection rules, in order:
+
+    1. Restrict to contributors on the same side of the window as the flagged
+       edge. The molecular-frequency edge is ``window.freq_range[0]`` for the
+       low side and ``window.freq_range[1]`` for the high side; a contributor
+       is "on" that side if its frequency lies outside the window in that
+       direction (the typical case for a fixed contributor -- they live in
+       neighbouring windows).
+    2. Prefer ``freeze_eligible=False`` contributors -- Stage 4 already flagged
+       these as not safe to freeze (O4-2).
+    3. Among the remaining candidates, pick the one nearest the flagged edge
+       in molecular frequency (the closest skirt is the most likely culprit).
+
+    Returns ``None`` if no contributor matches the side, in which case the
+    plan executor records a no-op thaw event and stops trying.
+
+    Parameters
+    ----------
+    window : FitWindow
+        The dependent window with the flagged edge.
+    fixed_peaks : sequence of FrozenPeak
+        Currently-frozen contributors in this window.
+    edge_side : str
+        ``"low"`` or ``"high"`` -- the flagged residual edge.
+    """
+    if edge_side not in ("low", "high"):
+        raise ValueError("edge_side must be 'low' or 'high'")
+
+    lo, hi = window.freq_range
+    if edge_side == "low":
+        side_candidates = [fp for fp in fixed_peaks if fp.frequency_mhz <= lo]
+        edge_freq = lo
+    else:
+        side_candidates = [fp for fp in fixed_peaks if fp.frequency_mhz >= hi]
+        edge_freq = hi
+
+    if not side_candidates:
+        return None
+
+    not_eligible = [fp for fp in side_candidates if not fp.freeze_eligible]
+    pool = not_eligible if not_eligible else side_candidates
+    return min(pool, key=lambda fp: abs(fp.frequency_mhz - edge_freq))
+
+
+def local_thaw_cofit(
+    dependent: WindowOutcome,
+    primary: WindowOutcome,
+    *,
+    thawed: FrozenPeak,
+    sideband: SidebandLike,
+    tau0_us: float,
+    acquisition_us: float,
+    fit_tau: bool = True,
+    max_decay_factor: float = DEFAULT_MAX_DECAY_FACTOR,
+) -> tuple[WindowFitResult, np.ndarray]:
+    """Joint co-fit of two windows with one contributor unfrozen.
+
+    The two windows' de-ramped data are concatenated under a shared baseband
+    coordinate centred at the primary window's reference frequency: the
+    primary's free peaks keep their offsets unchanged; the dependent window's
+    grid and free-peak offsets are remapped into the shared frame by adding
+    ``shift = s*(dep_center - primary_center)``. The thawed contributor was
+    already a free peak in the primary's fit (that is what "thaw" means: a line
+    fit freely in its primary is now also constrained by the dependent's data),
+    so it is **not** added as a separate peak -- doing so would double-count
+    the line. Other frozen contributors of either window stay frozen as a
+    background subtraction on their respective slices.
+
+    The joint fit's peak list layout is
+
+        joint.peaks[:n_primary] + joint.peaks[n_primary:]
+        = (primary free peaks, refined) + (dependent free peaks in primary frame)
+
+    and the returned index points to the thawed peak's slot within
+    ``joint.peaks[:n_primary]`` (the primary peak nearest the contributor's
+    persisted frequency).
+
+    Returns
+    -------
+    tuple
+        ``(joint_fit, thawed_peak_indices)``. ``thawed_peak_indices`` is a
+        length-1 array selecting the row of ``joint.peaks`` that is the
+        thawed contributor.
+    """
+    s = sideband_sign(sideband)
+    primary_center = _window_center_mhz(primary)
+    dep_center = _window_center_mhz(dependent)
+
+    # Build the combined data / grid in the primary's offset frame.
+    primary_u = np.asarray(primary.offset_grid_mhz, dtype=float)
+    primary_data = np.asarray(primary.complex_spectrum, dtype=np.complex128)
+    dep_u = np.asarray(dependent.offset_grid_mhz, dtype=float)
+    dep_data = np.asarray(dependent.complex_spectrum, dtype=np.complex128)
+
+    # u_primary = s*(f - f_c_primary); u_dep_in_primary = s*(f - f_c_primary)
+    # = u_dep + s*(f_c_dep - f_c_primary). So shift the dependent grid by that
+    # constant offset to remap it into the primary's frame.
+    shift = s * (dep_center - primary_center)
+    dep_u_in_primary = dep_u + shift
+
+    # Subtract any *other* frozen contributors from each side as background, so
+    # the joint fit only handles free peaks plus the thawed line.
+    primary_other = [fp for fp in primary.fixed_peaks if fp is not thawed]
+    dep_other = [
+        fp
+        for fp in dependent.fixed_peaks
+        if fp.peak_index != thawed.peak_index
+        or fp.primary_window_id != thawed.primary_window_id
+    ]
+    _, primary_clean = subtract_frozen_background(
+        primary_u, primary_data, primary_other, tau0_us, acquisition_us
+    )
+    _, dep_clean = subtract_frozen_background(
+        dep_u_in_primary, dep_data, dep_other, tau0_us, acquisition_us
+    )
+
+    grid = np.concatenate([primary_u, dep_u_in_primary])
+    data = np.concatenate([primary_clean, dep_clean])
+
+    sigma_primary = np.asarray(primary.rms_noise, dtype=float)
+    if sigma_primary.ndim == 0:
+        sigma_primary = np.full(primary_u.size, float(sigma_primary))
+    sigma_dep = np.asarray(dependent.rms_noise, dtype=float)
+    if sigma_dep.ndim == 0:
+        sigma_dep = np.full(dep_u.size, float(sigma_dep))
+    sigma = np.concatenate([sigma_primary, sigma_dep])
+
+    # Initial peak list. The thawed contributor is *already* a free peak in
+    # the primary's fit -- "thaw" means promoting that primary free peak so the
+    # dependent's data also constrains it. We must NOT add it as a separate
+    # peak (that would double-count the line). So: primary's free peaks
+    # (unchanged) + dependent's free peaks (remapped into the primary frame).
+    primary_peaks = [
+        ModelPeak(pk.amplitude, pk.offset_mhz, pk.phase) for pk in primary.fit.peaks
+    ]
+    dep_peaks_in_primary = [
+        ModelPeak(pk.amplitude, pk.offset_mhz + shift, pk.phase)
+        for pk in dependent.fit.peaks
+    ]
+    init = primary_peaks + dep_peaks_in_primary
+
+    # Identify the thawed peak's index in the primary list -- the closest match
+    # to the contributor's molecular frequency, mapped into the primary frame.
+    contributor_offset_primary = s * (thawed.frequency_mhz - primary_center)
+    thawed_index = min(
+        range(len(primary_peaks)),
+        key=lambda i: abs(primary_peaks[i].offset_mhz - contributor_offset_primary),
+    )
+
+    # Widen the offset bounds to the combined span.
+    lo = float(grid.min())
+    hi = float(grid.max())
+
+    joint = fit_window(
+        grid,
+        data,
+        sigma,
+        init,
+        tau0_us,
+        acquisition_us,
+        fit_tau=fit_tau,
+        max_decay_factor=max_decay_factor,
+        offset_bounds=(lo, hi),
+    )
+    return joint, np.array([thawed_index], dtype=int)
+
+
+# ---------------------------------------------------------------------------
+# Plan executor
+# ---------------------------------------------------------------------------
+def _materialize_window(
+    fit_window_spec: FitWindow,
+    freq_array_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    *,
+    probe_freq_mhz: float,
+    sideband: SidebandLike,
+    start_us: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Slice a window from the persisted spectrum and move it into the fit frame.
+
+    Returns ``(freq_slice, offset_grid, complex_slice, rms_slice, center_mhz)``.
+    """
+    lo, hi = fit_window_spec.freq_range
+    if lo > hi:
+        lo, hi = hi, lo
+    mask = (freq_array_mhz >= lo) & (freq_array_mhz <= hi)
+    if not np.any(mask):
+        raise ValueError(
+            f"window {fit_window_spec.window_id} freq_range "
+            f"({lo}, {hi}) MHz has no overlap with the persisted spectrum"
+        )
+    freq_slice = freq_array_mhz[mask]
+    z_slice = complex_spectrum[mask]
+    sig_slice = rms_noise[mask]
+    # Reference frequency: the midpoint of the window's freq_range. This is the
+    # natural symmetric choice and keeps free-peak offsets balanced around zero.
+    center_mhz = 0.5 * (lo + hi)
+    offset_grid, deramped = to_baseband_frame(
+        freq_slice,
+        z_slice,
+        center_mhz=center_mhz,
+        sideband=sideband,
+        probe_freq_mhz=probe_freq_mhz,
+        start_us=start_us,
+    )
+    return freq_slice, offset_grid, deramped, sig_slice, center_mhz
+
+
+def _peaks_to_candidate_offsets(
+    fit_window_spec: FitWindow,
+    peak_frequencies_mhz: Sequence[float],
+    center_mhz: float,
+    sideband: SidebandLike,
+) -> list[float]:
+    """Free-peak frequencies (MHz) -> signed baseband offsets in this window."""
+    s = sideband_sign(sideband)
+    return [
+        float(s * (float(peak_frequencies_mhz[idx]) - center_mhz))
+        for idx in fit_window_spec.free_peak_indices
+    ]
+
+
+def execute_plan(
+    plan: WindowPlan,
+    freq_array_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    peak_frequencies_mhz: Sequence[float],
+    *,
+    probe_freq_mhz: float,
+    sideband: SidebandLike,
+    start_us: float,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool = True,
+    residual_edge_threshold: float = DEFAULT_RESIDUAL_EDGE_THRESHOLD,
+    residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
+    max_thaw_rounds: int = DEFAULT_MAX_THAW_ROUNDS,
+    conservative_kwargs: Optional[dict[str, Any]] = None,
+) -> PlanFitOutcome:
+    """Walk a Stage 4 :class:`WindowPlan` and fit every window.
+
+    The algorithm:
+
+    1. Visit windows in :attr:`WindowPlan.topological_order` (a window's
+       fixed-contributor primaries are guaranteed already-fit when it is
+       reached). Windows in the same batch are mutually independent.
+    2. For each window: materialize the de-ramped fit frame, evaluate each
+       :class:`FixedContributor` against its primary's :class:`WindowOutcome`
+       to produce :class:`FrozenPeak` s, then call
+       :func:`fit_window_with_fixed_contributors`.
+    3. Compute :func:`residual_edge_coherence` on the full residual. For any
+       edge above ``residual_edge_threshold``, pick a contributor via
+       :func:`select_contributor_to_thaw` and run a :func:`local_thaw_cofit` of
+       this window with its primary. Accept if the co-fit converges and the
+       flagged-edge residual coherence drops to or below the threshold; rebuild
+       both windows' outcomes from the joint fit. Bounded by
+       ``max_thaw_rounds``.
+
+    The full plan-level outcome is returned; this function does **no file IO**
+    -- persistence is task 8, and the ``_internal/stage5_impl.py`` orchestrator
+    is task 9. Pure inputs in, pure outputs out.
+
+    Parameters
+    ----------
+    plan : WindowPlan
+        Stage 4 fit plan.
+    freq_array_mhz : np.ndarray
+        Molecular frequency grid of the persisted Stage 1 spectrum.
+    complex_spectrum : np.ndarray
+        Persisted complex spectrum on ``freq_array_mhz``.
+    rms_noise : np.ndarray
+        Canonical Stage 2 per-bin complex RMS, same shape as the spectrum.
+    peak_frequencies_mhz : sequence of float
+        Frequencies of *all* Stage 3 peaks (indexed by
+        ``FitWindow.free_peak_indices`` and ``FixedContributor.peak_index``).
+    probe_freq_mhz, sideband, start_us, acquisition_us, tau0_us : ...
+        Pipeline-level parameters -- the probe LO, sideband sign, active-region
+        start, active acquisition length, and default shared decay.
+    fit_tau : bool, default True
+        Forwarded to :func:`conservative_fit` for each window.
+    residual_edge_threshold : float
+        ``S_coh`` threshold for the residual edge-coherence test (O5-6).
+    residual_edge_m : int
+        Band width (in bins) of the residual edge-coherence test.
+    max_thaw_rounds : int
+        Maximum thaw attempts per window per call.
+    conservative_kwargs : dict, optional
+        Extra keyword arguments forwarded to :func:`conservative_fit`.
+
+    Returns
+    -------
+    PlanFitOutcome
+        Per-window outcomes and the chronological thaw history.
+
+    Raises
+    ------
+    ValueError
+        If a window's ``freq_range`` does not overlap the persisted spectrum,
+        or a fixed contributor references a primary window that has not been
+        fit (which should be impossible given the topological walk).
+    """
+    if conservative_kwargs is None:
+        conservative_kwargs = {}
+
+    freq_array = np.asarray(freq_array_mhz, dtype=float)
+    spectrum = np.asarray(complex_spectrum, dtype=np.complex128)
+    noise = np.asarray(rms_noise, dtype=float)
+    if freq_array.shape != spectrum.shape or freq_array.shape != noise.shape:
+        raise ValueError(
+            "freq_array_mhz, complex_spectrum, and rms_noise must share shape"
+        )
+
+    by_id = {w.window_id: w for w in plan.windows}
+    order = plan.topological_order or [w.window_id for w in plan.windows]
+    outcomes: dict[int, WindowOutcome] = {}
+    thaw_history: list[ThawEvent] = []
+
+    for wid in order:
+        win = by_id[wid]
+        outcome = _fit_one_window(
+            win,
+            freq_array,
+            spectrum,
+            noise,
+            peak_frequencies_mhz=peak_frequencies_mhz,
+            outcomes=outcomes,
+            probe_freq_mhz=probe_freq_mhz,
+            sideband=sideband,
+            start_us=start_us,
+            acquisition_us=acquisition_us,
+            tau0_us=tau0_us,
+            fit_tau=fit_tau,
+            residual_edge_m=residual_edge_m,
+            conservative_kwargs=conservative_kwargs,
+        )
+        outcomes[wid] = outcome
+
+        # Local thaw renegotiation, bounded.
+        for _ in range(max_thaw_rounds):
+            edge_events = attempt_thaw_round(
+                win,
+                outcome,
+                outcomes=outcomes,
+                sideband=sideband,
+                acquisition_us=acquisition_us,
+                tau0_us=tau0_us,
+                fit_tau=fit_tau,
+                residual_edge_threshold=residual_edge_threshold,
+                residual_edge_m=residual_edge_m,
+            )
+            if not edge_events:
+                break
+            for event in edge_events:
+                thaw_history.append(event)
+            # Refresh the local outcome reference (it may have been replaced).
+            outcome = outcomes[wid]
+            if not any(e.accepted for e in edge_events):
+                break
+
+    return PlanFitOutcome(window_outcomes=outcomes, thaw_history=thaw_history)
+
+
+def _fit_one_window(
+    win: FitWindow,
+    freq_array: np.ndarray,
+    spectrum: np.ndarray,
+    noise: np.ndarray,
+    *,
+    peak_frequencies_mhz: Sequence[float],
+    outcomes: dict[int, WindowOutcome],
+    probe_freq_mhz: float,
+    sideband: SidebandLike,
+    start_us: float,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool,
+    residual_edge_m: int,
+    conservative_kwargs: dict[str, Any],
+) -> WindowOutcome:
+    """Fit one window with its frozen contributors; build its WindowOutcome."""
+    _, offset_grid, deramped, sig_slice, center_mhz = _materialize_window(
+        win,
+        freq_array,
+        spectrum,
+        noise,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband,
+        start_us=start_us,
+    )
+
+    fixed_peaks: list[FrozenPeak] = []
+    for contributor in win.fixed_contributors:
+        primary_outcome = outcomes.get(contributor.primary_window_id)
+        if primary_outcome is None:
+            raise ValueError(
+                f"window {win.window_id} depends on un-fit primary window "
+                f"{contributor.primary_window_id} (topological_order broken)"
+            )
+        fixed_peaks.append(
+            evaluate_fixed_contributor(
+                contributor,
+                primary_outcome,
+                dependent_center_mhz=center_mhz,
+                sideband=sideband,
+            )
+        )
+
+    candidate_offsets = _peaks_to_candidate_offsets(
+        win, peak_frequencies_mhz, center_mhz, sideband
+    )
+    fit_result, background, full_fitted, full_residual = (
+        fit_window_with_fixed_contributors(
+            offset_grid,
+            deramped,
+            sig_slice,
+            fixed_peaks,
+            candidate_offsets,
+            tau0_us,
+            acquisition_us,
+            fit_tau=fit_tau,
+            **conservative_kwargs,
+        )
+    )
+    low_coh, high_coh = residual_edge_coherence(
+        full_residual, sig_slice, band_m=residual_edge_m
+    )
+    outcome = WindowOutcome(
+        window_id=win.window_id,
+        fit=fit_result,
+        fixed_peaks=fixed_peaks,
+        offset_grid_mhz=offset_grid,
+        complex_spectrum=deramped,
+        rms_noise=sig_slice,
+        background=background,
+        full_fitted_spectrum=full_fitted,
+        full_residual=full_residual,
+        edge_coherence_low=low_coh,
+        edge_coherence_high=high_coh,
+    )
+    # Stash the center on the outcome so it can be a primary for downstream
+    # windows. See _window_center_mhz for the contract.
+    outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
+    return outcome
+
+
+def attempt_thaw_round(
+    win: FitWindow,
+    outcome: WindowOutcome,
+    *,
+    outcomes: dict[int, WindowOutcome],
+    sideband: SidebandLike,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool = True,
+    residual_edge_threshold: float = DEFAULT_RESIDUAL_EDGE_THRESHOLD,
+    residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
+) -> list[ThawEvent]:
+    """Run one round of the residual edge-coherence check on a window and thaw.
+
+    Returns the :class:`ThawEvent` records produced this round (one per
+    above-threshold edge that was acted on). An empty return means no edge was
+    over threshold (no thaw needed); a return with all ``accepted=False`` means
+    we tried but the co-fit did not improve things.
+
+    The public surface :func:`execute_plan` walks this in a bounded loop. This
+    function is exposed for callers that want manual control over the
+    renegotiation loop (and the tests that verify a single round).
+
+    Parameters
+    ----------
+    win : FitWindow
+        The dependent window to check.
+    outcome : WindowOutcome
+        The (already-fit) outcome of ``win``; mutated in place if a thaw is
+        accepted.
+    outcomes : dict of int -> WindowOutcome
+        All known outcomes, by id; the contributor's primary outcome must be
+        present.
+    sideband, acquisition_us, tau0_us, fit_tau : ...
+        Pipeline-level parameters propagated to :func:`local_thaw_cofit`.
+    residual_edge_threshold, residual_edge_m : ...
+        See :func:`execute_plan`.
+    """
+    events: list[ThawEvent] = []
+    for edge_side, edge_coh in (
+        ("low", outcome.edge_coherence_low),
+        ("high", outcome.edge_coherence_high),
+    ):
+        if not np.isfinite(edge_coh) or edge_coh <= residual_edge_threshold:
+            continue
+        contributor = select_contributor_to_thaw(win, outcome.fixed_peaks, edge_side)
+        if contributor is None:
+            # No contributor to blame on this edge -- record as a no-op event
+            # so the diagnostic shows we tried; do not stop the bounded loop.
+            event = ThawEvent(
+                dependent_window_id=win.window_id,
+                primary_window_id=-1,
+                contributor_peak_index=-1,
+                contributor_frequency_mhz=float("nan"),
+                edge_side=edge_side,
+                edge_coherence_before=float(edge_coh),
+                edge_coherence_after=float(edge_coh),
+                accepted=False,
+                reason="no frozen contributor on the flagged edge side",
+            )
+        else:
+            event = _perform_thaw(
+                win,
+                outcome,
+                contributor,
+                edge_side=edge_side,
+                edge_coherence_before=float(edge_coh),
+                outcomes=outcomes,
+                sideband=sideband,
+                acquisition_us=acquisition_us,
+                tau0_us=tau0_us,
+                fit_tau=fit_tau,
+                residual_edge_threshold=residual_edge_threshold,
+                residual_edge_m=residual_edge_m,
+            )
+        events.append(event)
+        outcome.thaw_events.append(event)
+    return events
+
+
+def _perform_thaw(
+    dep_window: FitWindow,
+    dep_outcome: WindowOutcome,
+    thawed: FrozenPeak,
+    *,
+    edge_side: str,
+    edge_coherence_before: float,
+    outcomes: dict[int, WindowOutcome],
+    sideband: SidebandLike,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool,
+    residual_edge_threshold: float,
+    residual_edge_m: int,
+) -> ThawEvent:
+    """Do the joint co-fit, decide accept/reject, and rebuild the outcomes."""
+    primary_outcome = outcomes[thawed.primary_window_id]
+
+    joint, thawed_idx_arr = local_thaw_cofit(
+        dep_outcome,
+        primary_outcome,
+        thawed=thawed,
+        sideband=sideband,
+        tau0_us=tau0_us,
+        acquisition_us=acquisition_us,
+        fit_tau=fit_tau,
+    )
+    if not joint.success:
+        return ThawEvent(
+            dependent_window_id=dep_window.window_id,
+            primary_window_id=thawed.primary_window_id,
+            contributor_peak_index=thawed.peak_index,
+            contributor_frequency_mhz=thawed.frequency_mhz,
+            edge_side=edge_side,
+            edge_coherence_before=edge_coherence_before,
+            edge_coherence_after=float("nan"),
+            accepted=False,
+            reason="joint co-fit did not converge",
+        )
+
+    # Split joint.peaks back into primary and dependent (the thawed peak is
+    # *inside* the primary list -- it was already a free peak there before).
+    s = sideband_sign(sideband)
+    primary_center = _window_center_mhz(primary_outcome)
+    dep_center = _window_center_mhz(dep_outcome)
+    n_primary_peaks = len(primary_outcome.fit.peaks)
+    n_dep_peaks = len(dep_outcome.fit.peaks)
+    expected = n_primary_peaks + n_dep_peaks
+    if len(joint.peaks) != expected:
+        return ThawEvent(
+            dependent_window_id=dep_window.window_id,
+            primary_window_id=thawed.primary_window_id,
+            contributor_peak_index=thawed.peak_index,
+            contributor_frequency_mhz=thawed.frequency_mhz,
+            edge_side=edge_side,
+            edge_coherence_before=edge_coherence_before,
+            edge_coherence_after=float("nan"),
+            accepted=False,
+            reason="joint co-fit peak count mismatch",
+        )
+
+    thawed_idx = int(thawed_idx_arr[0])
+    primary_peaks = list(joint.peaks[:n_primary_peaks])
+    dep_peaks_in_primary = list(joint.peaks[n_primary_peaks:])
+    thawed_peak_primary = primary_peaks[thawed_idx]
+
+    # Remap the dependent frame: shift = s*(dep_center - primary_center).
+    shift = s * (dep_center - primary_center)
+    dep_peaks = [
+        ModelPeak(pk.amplitude, pk.offset_mhz - shift, pk.phase)
+        for pk in dep_peaks_in_primary
+    ]
+    thawed_in_dep = ModelPeak(
+        thawed_peak_primary.amplitude,
+        thawed_peak_primary.offset_mhz - shift,
+        thawed_peak_primary.phase,
+    )
+
+    # Provisional dependent residual after a (hypothetical) install: free peaks
+    # become dep_peaks + thawed_in_dep, the thawed contributor drops from the
+    # frozen background, every other frozen contributor stays at the new tau.
+    dep_other_peaks = [
+        fp
+        for fp in dep_outcome.fixed_peaks
+        if not (
+            fp.peak_index == thawed.peak_index
+            and fp.primary_window_id == thawed.primary_window_id
+        )
+    ]
+    provisional_dep_full = model_spectrum(
+        dep_outcome.offset_grid_mhz,
+        dep_peaks + [thawed_in_dep],
+        joint.tau_us,
+        acquisition_us,
+    ) + _frozen_subset_model(
+        dep_outcome.offset_grid_mhz, dep_other_peaks, joint.tau_us, acquisition_us
+    )
+    provisional_dep_residual = dep_outcome.complex_spectrum - provisional_dep_full
+    dep_low_after, dep_high_after = residual_edge_coherence(
+        provisional_dep_residual, dep_outcome.rms_noise, band_m=residual_edge_m
+    )
+    edge_after = dep_low_after if edge_side == "low" else dep_high_after
+    accepted = edge_after <= residual_edge_threshold
+
+    if not accepted:
+        return ThawEvent(
+            dependent_window_id=dep_window.window_id,
+            primary_window_id=thawed.primary_window_id,
+            contributor_peak_index=thawed.peak_index,
+            contributor_frequency_mhz=thawed.frequency_mhz,
+            edge_side=edge_side,
+            edge_coherence_before=edge_coherence_before,
+            edge_coherence_after=float(edge_after),
+            accepted=False,
+            reason="co-fit did not lower the flagged-edge coherence below threshold",
+        )
+
+    # Accept: install the new fits. The primary's peak list already includes
+    # the thawed line (the joint fit refined it), so just refresh its peaks;
+    # the dependent gains the thawed line as a free peak and drops it from
+    # the frozen contributors.
+    _install_cofit_outcome(
+        primary_outcome,
+        new_peaks=primary_peaks,
+        tau_us=joint.tau_us,
+        acquisition_us=acquisition_us,
+        residual_edge_m=residual_edge_m,
+    )
+    _install_cofit_outcome(
+        dep_outcome,
+        new_peaks=dep_peaks + [thawed_in_dep],
+        tau_us=joint.tau_us,
+        acquisition_us=acquisition_us,
+        residual_edge_m=residual_edge_m,
+        drop_contributor=thawed,
+    )
+
+    return ThawEvent(
+        dependent_window_id=dep_window.window_id,
+        primary_window_id=thawed.primary_window_id,
+        contributor_peak_index=thawed.peak_index,
+        contributor_frequency_mhz=thawed.frequency_mhz,
+        edge_side=edge_side,
+        edge_coherence_before=edge_coherence_before,
+        edge_coherence_after=float(edge_after),
+        accepted=True,
+        reason="joint co-fit lowered the flagged-edge coherence below threshold",
+    )
+
+
+def _frozen_subset_model(
+    grid: np.ndarray,
+    fixed_peaks: Sequence[FrozenPeak],
+    tau_us: float,
+    acquisition_us: float,
+) -> np.ndarray:
+    """Convenience: re-evaluate a subset of FrozenPeaks at one tau."""
+    if not fixed_peaks:
+        zero: np.ndarray = np.zeros(grid.shape, dtype=np.complex128)
+        return zero
+    return model_spectrum(
+        grid, [fp.model_peak for fp in fixed_peaks], tau_us, acquisition_us
+    )
+
+
+def _install_cofit_outcome(
+    outcome: WindowOutcome,
+    *,
+    new_peaks: Sequence[ModelPeak],
+    tau_us: float,
+    acquisition_us: float,
+    residual_edge_m: int,
+    drop_contributor: Optional[FrozenPeak] = None,
+) -> None:
+    """Update a WindowOutcome in place after an accepted co-fit.
+
+    Replaces the free-peak fit's peaks/tau and recomputes the full model,
+    residual, and edge-coherence statistics; optionally drops a now-thawed
+    contributor from ``fixed_peaks``. The conservative-fit audit trail and
+    knockouts are preserved (they describe the original free-peak fit; the
+    accepted-thaw record lives on the :class:`ThawEvent`).
+    """
+    if drop_contributor is not None:
+        outcome.fixed_peaks = [
+            fp
+            for fp in outcome.fixed_peaks
+            if not (
+                fp.peak_index == drop_contributor.peak_index
+                and fp.primary_window_id == drop_contributor.primary_window_id
+            )
+        ]
+    # Replace the free-peak fit's peaks/tau and reconstruct the full model.
+    new_peak_list = [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in new_peaks]
+    outcome.fit.fit.peaks = new_peak_list
+    outcome.fit.fit.tau_us = tau_us
+    free_model = model_spectrum(
+        outcome.offset_grid_mhz, new_peak_list, tau_us, acquisition_us
+    )
+    outcome.fit.fit.fitted_spectrum = free_model
+    background = _frozen_subset_model(
+        outcome.offset_grid_mhz, outcome.fixed_peaks, tau_us, acquisition_us
+    )
+    outcome.background = background
+    outcome.full_fitted_spectrum = free_model + background
+    outcome.full_residual = outcome.complex_spectrum - outcome.full_fitted_spectrum
+    outcome.fit.fit.residual = outcome.complex_spectrum - free_model - background
+    low, high = residual_edge_coherence(
+        outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
+    )
+    outcome.edge_coherence_low = low
+    outcome.edge_coherence_high = high

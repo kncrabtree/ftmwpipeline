@@ -567,8 +567,17 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    the **blend-aware seeder** (retry K=2/K=3 on elevated single-cosine χ²),
    the audit trail, the knockout test; `fitting/validation.py` helpers ported
    from the bcfitting shell + unit tests. Mid-loop re-seeding deferred as O5-9.
-5. [ ] Fixed-contributor evaluation + DAG/batch execution order + local `thaw`
-   renegotiation + unit tests.
+5. [x] Fixed-contributor evaluation + DAG/batch execution order + local `thaw`
+   renegotiation + unit tests. Algorithm landed in
+   [`fitting/plan_execution.py`](../../src/ftmwpipeline/fitting/plan_execution.py)
+   (FrozenPeak materialization with primary's refined frequency, frozen-skirt
+   subtraction-before-fit so `conservative_fit` stays free-peak-only, DAG walk
+   over `WindowPlan.topological_order`, residual edge-coherence trigger, and
+   the joint-frame local co-fit that promotes the thawed contributor to a free
+   peak in both windows on accept). 22 unit tests including a coupled-pair
+   thaw integration. `scratch/stage5_thaw_demo.py` shows the CLEAN vs COUPLED
+   contrast end-to-end. The Stage 4 `replan` entry point and merge/split path
+   remain task 6.
 6. [ ] Stage 4 `replan` entry point (`merge`/`split`) + the residual
    edge-coherence renegotiation handshake + unit tests.
 7. [ ] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +

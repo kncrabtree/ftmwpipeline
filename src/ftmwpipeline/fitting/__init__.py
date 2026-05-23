@@ -6,6 +6,8 @@ This module provides:
 - The per-window least-squares core and conservative add-one-peak loop
   (``window_fit``)
 - Statistical-test and linewidth-physics helpers (``validation``)
+- Plan-level execution: fixed-contributor evaluation, DAG/batch walk, and
+  local thaw renegotiation (``plan_execution``)
 """
 
 from .peak_model import (
@@ -28,6 +30,23 @@ from .validation import (
     feature_fwhm,
     passes_significance_test,
     validate_peak_separation,
+)
+from .plan_execution import (
+    DEFAULT_MAX_THAW_ROUNDS,
+    DEFAULT_RESIDUAL_EDGE_M,
+    DEFAULT_RESIDUAL_EDGE_THRESHOLD,
+    FrozenPeak,
+    PlanFitOutcome,
+    ThawEvent,
+    WindowOutcome,
+    attempt_thaw_round,
+    evaluate_fixed_contributor,
+    execute_plan,
+    fit_window_with_fixed_contributors,
+    local_thaw_cofit,
+    residual_edge_coherence,
+    select_contributor_to_thaw,
+    subtract_frozen_background,
 )
 from .window_fit import (
     AddStep,
@@ -71,4 +90,20 @@ __all__ = [
     "fit_window",
     "knockout_test",
     "model_jacobian",
+    # plan_execution
+    "DEFAULT_MAX_THAW_ROUNDS",
+    "DEFAULT_RESIDUAL_EDGE_M",
+    "DEFAULT_RESIDUAL_EDGE_THRESHOLD",
+    "FrozenPeak",
+    "PlanFitOutcome",
+    "ThawEvent",
+    "WindowOutcome",
+    "attempt_thaw_round",
+    "evaluate_fixed_contributor",
+    "execute_plan",
+    "fit_window_with_fixed_contributors",
+    "local_thaw_cofit",
+    "residual_edge_coherence",
+    "select_contributor_to_thaw",
+    "subtract_frozen_background",
 ]
