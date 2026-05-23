@@ -60,6 +60,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance) |
 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Implemented (finalized) |
 | [`planning/stage5-fitting.md`](planning/stage5-fitting.md) | Planning (step-1 plan; implementation not started) |
+| [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split` |
 | [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Resolved (D8) — implementation overview |
 | [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |

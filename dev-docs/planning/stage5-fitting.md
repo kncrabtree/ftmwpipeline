@@ -457,10 +457,24 @@ Stage 5 then emits a typed re-plan request:
   together. This covers `freeze_eligible = False` contributors and the
   36350/36389 doublet without a round-trip. Cheap and expected to be the common
   case.
-- **`merge(window_a, window_b)`** / **`split(window, freq)`** — structural,
-  changes window boundaries: routed through a new Stage 4 `replan(plan,
-  requests) → WindowPlan` entry point that updates the persisted plan in place
-  and bumps a plan-revision counter; Stage 5 re-fits the affected batches.
+- **`merge(window_a, window_b)`** — structural, changes window boundaries:
+  routed through a new Stage 4 `replan(plan, requests) → WindowPlan` entry
+  point that produces a revised plan with a bumped revision counter; Stage 5
+  re-fits the affected batches. Triggered when a window edge cuts a real
+  feature (the flagged residual edge has no fixed contributor to blame and
+  the adjacent window's facing edge is also coherent).
+
+**`split` is deliberately not implemented.** Stage 4 already proposes
+windows tight enough that splitting structurally would be the wrong remedy
+in practice; the real need it would address — "this window contains
+multiple features that don't all need to be fit jointly" — is better
+served by *intra-window* parameter clustering driven by the post-fit
+covariance matrix (the joint fit's off-diagonal blocks reveal which peaks
+are independent, so the model decomposes into a sum of independent
+sub-fits with shared `τ` at no orchestration cost). Captured as its own
+planning effort in
+[`intra-window-clustering.md`](intra-window-clustering.md); not part of
+task 7.
 
 Renegotiation rounds are bounded (default ≤ 2) for guaranteed termination. The
 full renegotiation history is recorded in the Stage 5 output (D-5).
@@ -708,9 +722,21 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
       for the new `execute_plan` signature.
    6. Update `STATUS.md` (when wired) and confirm no α-correction is
       smuggled in; the helpers in `validation.py` stay as-written.
-7. [ ] Stage 4 `replan` entry point (`merge`/`split`) + the residual
-   edge-coherence renegotiation handshake + unit tests. (Implemented
-   against the active-FT frame established in task 6.)
+7. [ ] Stage 4 `replan(plan, requests, …) → WindowPlan` entry point and the
+   residual edge-coherence structural renegotiation handshake.
+   **Merge-only**: `MergeRequest(window_a_id, window_b_id)` combines two
+   adjacent windows (union of free peaks + fixed contributors with
+   now-internal contributors dropped, surviving id = lower of the two);
+   the bookkeeping tail of `build_window_plan` (artifact pruning,
+   difficulty, batches) reruns on the modified window list; `WindowPlan`
+   gains a `plan_revision` counter that bumps on each `replan` call. The
+   `SplitRequest` primitive originally listed here is deferred to
+   [`intra-window-clustering.md`](intra-window-clustering.md). PR 7A is
+   the Stage 4 entry point + tests; PR 7B is the Stage 5 dispatcher that
+   emits `MergeRequest`s when the residual edge-coherence check flags a
+   boundary cut, re-fits the affected batches, and records the structural
+   events in the audit trail. (Implemented against the active-FT frame
+   established in task 6.)
 8. [ ] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +
    the new `SpectrumFit` aggregate + unit tests.
 9. [ ] `io/fitting_serialization.py` + `stage5_fitting` stage tracking and

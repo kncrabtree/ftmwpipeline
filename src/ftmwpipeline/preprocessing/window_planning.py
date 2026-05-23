@@ -51,6 +51,7 @@ import numpy as np
 from ..core.data_structures import (
     FitWindow,
     FixedContributor,
+    MergeRequest,
     Peak,
     PeakClassification,
     WindowDifficulty,
@@ -388,21 +389,84 @@ def build_window_plan(
             )
         )
 
+    return _finalize_plan(
+        windows=windows,
+        ofreqs=ofreqs,
+        rolling=rolling,
+        touched=touched,
+        promoted=promoted,
+        parameters=parameters,
+        diagnostics=diagnostics,
+        edge_m=edge_m,
+        trim_m=trim_m,
+        edge_threshold=edge_threshold,
+        max_window_width_mhz=max_window_width_mhz,
+        min_freeze_snr=min_freeze_snr,
+        acquisition_us=acquisition_us,
+        tau_us=tau_us,
+        plan_revision=0,
+    )
+
+
+def _finalize_plan(
+    *,
+    windows: List[FitWindow],
+    ofreqs: np.ndarray,
+    rolling: np.ndarray,
+    touched: List[Tuple[int, int]],
+    promoted: List[_PPeak],
+    parameters: Dict[str, Any],
+    diagnostics: Dict[str, Any],
+    edge_m: int,
+    trim_m: int,
+    edge_threshold: float,
+    max_window_width_mhz: float,
+    min_freeze_snr: float,
+    acquisition_us: float,
+    tau_us: Optional[float],
+    plan_revision: int,
+) -> WindowPlan:
+    """Run the spectrum-state-dependent finalization steps (4-7) of the plan.
+
+    Given a window list whose ``freq_range``, ``free_peak_indices``, and
+    ``diagnostics['grid_span']`` are set, this:
+
+    * recomputes the fixed-contributor lists and dependency edges from the
+      leakage-touched regions (step 4),
+    * prunes leakage-artifact detections (step 5),
+    * classifies difficulty + sets ``split_proposal`` / ``needs_joint_treatment``
+      (step 6),
+    * topo-sorts and computes parallel batches (step 7),
+    * records plan-level diagnostics.
+
+    Shared by :func:`build_window_plan` (initial plan) and :func:`replan`
+    (after structural :class:`MergeRequest` application).
+    """
     by_list_index = {pk.list_index: pk for pk in promoted}
+    members_by_window = {
+        w.window_id: [pk for pk in promoted if pk.list_index in w.free_peak_indices]
+        for w in windows
+    }
     strong_by_window = {
         w.window_id: [pk for pk in members_by_window[w.window_id] if pk.is_strong]
         for w in windows
     }
+    strong_in_interval: Dict[int, List[_PPeak]] = {}
+    for pk in promoted:
+        if not pk.is_strong:
+            continue
+        ti = _span_of(touched, pk.grid_index)
+        if ti >= 0:
+            strong_in_interval.setdefault(ti, []).append(pk)
 
     # --- Step 4: fixed contributors + fit dependency edges ------------------
-    # The primary window of each leakage-touched region is the window holding
-    # that region's strong line(s). Every *other* window that overlaps that
-    # region is reached by the strong line's coherent skirt (S_coh stays above
-    # threshold across the whole touched region), so the strong line(s) are
-    # attached there as fixed contributors and a dependency edge is added.
+    # Recomputed from scratch so a merged window's now-internal contributors
+    # drop off automatically (the strong line is a free peak in the merged
+    # window itself, so no other window points at it).
+    for w in windows:
+        w.fixed_contributors = []
     primary_of_interval: Dict[int, int] = {}
     for ti, strong_pks in strong_in_interval.items():
-        # All strong lines of one touched region merged into one window.
         gi0 = strong_pks[0].grid_index
         for w in windows:
             lo, hi = w.diagnostics["grid_span"]
@@ -505,7 +569,6 @@ def build_window_plan(
         )
         w.diagnostics["width_cap_hit"] = bool(too_wide)
         if too_wide:
-            lo, hi = w.diagnostics["grid_span"]
             interior = rolling[lo + edge_m : hi - edge_m + 1]
             finite = interior[np.isfinite(interior)]
             if finite.size and float(np.min(finite)) < edge_threshold:
@@ -539,4 +602,262 @@ def build_window_plan(
         topological_order=topo,
         parameters=parameters,
         diagnostics=diagnostics,
+        plan_revision=plan_revision,
+    )
+
+
+def _apply_merge(
+    windows: List[FitWindow],
+    req: MergeRequest,
+    *,
+    ofreqs: np.ndarray,
+    step_mhz: float,
+) -> List[FitWindow]:
+    """Apply one :class:`MergeRequest` to a window list.
+
+    The two named windows must be **adjacent in frequency** (no other
+    window's ``freq_range`` lies between them); otherwise the disjoint-
+    coverage invariant would be violated. The surviving merged window
+    keeps the *lower* of the two window ids; the higher id disappears
+    from the plan. The merged window's:
+
+    * ``freq_range`` = union of the two,
+    * ``free_peak_indices`` = ordered union of both lists,
+    * ``diagnostics['grid_span']`` recomputed for the new freq_range,
+    * other diagnostics carry over from the lower-id window with a
+      ``"merged_from"`` note added.
+
+    Fixed contributors and dependency edges are intentionally **not**
+    recomputed here -- :func:`_finalize_plan` re-derives them from the
+    new window list against the spectrum state, which handles the
+    "contributor is now internal" case automatically.
+
+    Returns a new list (does not mutate the input).
+    """
+    by_id = {w.window_id: w for w in windows}
+    if req.window_a_id not in by_id:
+        raise ValueError(f"merge request references unknown window {req.window_a_id}")
+    if req.window_b_id not in by_id:
+        raise ValueError(f"merge request references unknown window {req.window_b_id}")
+    if req.window_a_id == req.window_b_id:
+        raise ValueError("merge request must reference two distinct windows")
+
+    a = by_id[req.window_a_id]
+    b = by_id[req.window_b_id]
+    # Normalize so `lo_w` is the lower-frequency one (and its id survives if
+    # both ids are equally valid -- we still pick the lower id below).
+    if a.freq_range[0] > b.freq_range[0]:
+        a, b = b, a
+
+    # Adjacency: nothing else may sit between a.freq_range[1] and b.freq_range[0].
+    for other in windows:
+        if other.window_id in (a.window_id, b.window_id):
+            continue
+        olo, ohi = other.freq_range
+        if olo > a.freq_range[1] and ohi < b.freq_range[0]:
+            raise ValueError(
+                f"merge request {req.window_a_id}/{req.window_b_id}: window "
+                f"{other.window_id} lies between them (not adjacent)"
+            )
+
+    survivor_id = min(a.window_id, b.window_id)
+    new_lo = min(a.freq_range[0], b.freq_range[0])
+    new_hi = max(a.freq_range[1], b.freq_range[1])
+
+    # Ordered union of free peaks (preserve insertion order).
+    seen: set = set()
+    merged_free: List[int] = []
+    for li in list(a.free_peak_indices) + list(b.free_peak_indices):
+        if li not in seen:
+            seen.add(li)
+            merged_free.append(li)
+
+    # New grid span on the ordered grid. Use searchsorted on the (ascending)
+    # ofreqs to keep the half-open semantics build_window_plan uses.
+    new_lo_idx = int(np.searchsorted(ofreqs, new_lo, side="left"))
+    new_hi_idx = int(np.searchsorted(ofreqs, new_hi, side="right")) - 1
+    new_hi_idx = max(new_hi_idx, new_lo_idx)
+
+    # Carry diagnostics forward from the lower-id source for stability;
+    # _finalize_plan overwrites the per-window fields it manages.
+    base_diag = dict(by_id[survivor_id].diagnostics)
+    base_diag["grid_span"] = [new_lo_idx, new_hi_idx]
+    merged_from = sorted({a.window_id, b.window_id})
+    prior = base_diag.get("merged_from")
+    if prior:
+        merged_from = sorted(set(prior) | set(merged_from))
+    base_diag["merged_from"] = merged_from
+    if req.reason:
+        base_diag["merge_reason"] = req.reason
+
+    merged_window = FitWindow(
+        window_id=survivor_id,
+        freq_range=(new_lo, new_hi),
+        free_peak_indices=merged_free,
+        # fixed_contributors / difficulty / batch are rebuilt by _finalize_plan.
+        diagnostics=base_diag,
+    )
+
+    out: List[FitWindow] = []
+    for w in windows:
+        if w.window_id == a.window_id or w.window_id == b.window_id:
+            if w.window_id == survivor_id:
+                out.append(merged_window)
+            # else: drop the absorbed window
+        else:
+            out.append(w)
+    return out
+
+
+def replan(
+    plan: WindowPlan,
+    requests: List[MergeRequest],
+    peaks: List[Peak],
+    freqs: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    *,
+    acquisition_us: float,
+    tau_us: Optional[float] = None,
+    edge_m: int = DEFAULT_EDGE_M,
+    trim_m: int = DEFAULT_TRIM_M,
+    edge_threshold: float = DEFAULT_EDGE_THRESHOLD,
+    max_window_width_mhz: float = DEFAULT_MAX_WINDOW_WIDTH_MHZ,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    probe_freq_mhz: float = 0.0,
+    start_us: float = 0.0,
+) -> WindowPlan:
+    """Re-plan: apply structural change requests to an existing window plan.
+
+    Stage 5 emits :class:`MergeRequest` objects when the residual edge-
+    coherence check flags a boundary cut and no fixed contributor is
+    available to thaw -- i.e. a real spectral feature crosses the window
+    boundary. ``replan`` applies each request to the existing window list,
+    then re-runs the bookkeeping tail of :func:`build_window_plan`
+    (contributor / dependency / difficulty / batch recomputation, artifact
+    pruning) against the new window list, and bumps
+    :attr:`WindowPlan.plan_revision`.
+
+    The spectrum-dependent state (the rolling complex-edge coherence
+    statistic, the leakage-touched intervals, the promoted-peak grid
+    indices) is recomputed from the same spectrum the original plan was
+    built on -- callers must pass the same ``peaks``/``freqs``/
+    ``complex_spectrum``/``rms_noise`` plus matching stage-4 parameters
+    (the helper accepts everything :func:`build_window_plan` takes for
+    that reason).
+
+    Parameters
+    ----------
+    plan : WindowPlan
+        The plan to revise.
+    requests : list of MergeRequest
+        Structural change requests, applied in order. An empty list
+        produces a copy of ``plan`` with the revision counter bumped.
+    peaks, freqs, complex_spectrum, rms_noise : ...
+        Same inputs the plan was built from.
+    acquisition_us, tau_us, edge_m, trim_m, edge_threshold,
+    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz,
+    probe_freq_mhz, start_us : ...
+        Stage 4 parameters; see :func:`build_window_plan`.
+
+    Returns
+    -------
+    WindowPlan
+        A revised plan with ``plan_revision = plan.plan_revision + 1``,
+        the merged windows, and freshly recomputed dependency edges,
+        difficulty, batches, and topological order. The disjoint-coverage
+        invariant is preserved.
+
+    Raises
+    ------
+    ValueError
+        If a merge request names an unknown window, names the same window
+        twice, or names two windows that are not adjacent in frequency.
+    """
+    if not (len(freqs) == len(complex_spectrum) == len(rms_noise)):
+        raise ValueError("freqs, complex_spectrum and rms_noise must be equal length")
+    if acquisition_us <= 0:
+        raise ValueError("acquisition_us must be positive")
+
+    parameters: Dict[str, Any] = {
+        "edge_m": int(edge_m),
+        "trim_m": int(trim_m),
+        "edge_threshold": float(edge_threshold),
+        "max_window_width_mhz": float(max_window_width_mhz),
+        "min_freeze_snr": float(min_freeze_snr),
+        "min_window_half_width_mhz": float(min_window_half_width_mhz),
+        "acquisition_us": float(acquisition_us),
+        "tau_us": tau_us,
+        "start_us": float(start_us),
+        "probe_freq_mhz": float(probe_freq_mhz),
+    }
+
+    ofreqs, ospec, orms, _order = _ordered_grid(
+        np.asarray(freqs, dtype=float),
+        np.asarray(complex_spectrum, dtype=complex),
+        np.asarray(rms_noise, dtype=float),
+    )
+    ospec = deramp_to_active_start(ofreqs, ospec, probe_freq_mhz, start_us)
+    n = ofreqs.size
+    diagnostics: Dict[str, Any] = {}
+
+    promoted: List[_PPeak] = []
+    for li, p in enumerate(peaks):
+        if not p.properties.get("promoted"):
+            continue
+        gi = _nearest_grid_index(ofreqs, p.frequency) if n else 0
+        promoted.append(
+            _PPeak(
+                list_index=li,
+                grid_index=gi,
+                frequency=float(p.frequency),
+                snr=float(p.snr) if p.snr is not None else 0.0,
+                intensity=float(p.intensity),
+                is_strong=(p.classification == PeakClassification.STRONG),
+            )
+        )
+
+    step_mhz = float(np.mean(np.diff(ofreqs))) if n > 1 else 1.0
+    step_mhz = abs(step_mhz) or 1.0
+
+    rolling = rolling_coherence(ospec, orms, band_m=edge_m)
+    touched = above_threshold_intervals(rolling, edge_threshold)
+
+    # Deep-copy the windows so mutations during _finalize_plan don't leak
+    # back into the caller's plan object.
+    windows = [
+        FitWindow(
+            window_id=w.window_id,
+            freq_range=w.freq_range,
+            free_peak_indices=list(w.free_peak_indices),
+            fixed_contributors=[],  # rebuilt by _finalize_plan
+            difficulty=w.difficulty,
+            batch=w.batch,
+            split_proposal=w.split_proposal,
+            needs_joint_treatment=w.needs_joint_treatment,
+            diagnostics=dict(w.diagnostics),
+        )
+        for w in plan.windows
+    ]
+
+    for req in requests:
+        windows = _apply_merge(windows, req, ofreqs=ofreqs, step_mhz=step_mhz)
+
+    return _finalize_plan(
+        windows=windows,
+        ofreqs=ofreqs,
+        rolling=rolling,
+        touched=touched,
+        promoted=promoted,
+        parameters=parameters,
+        diagnostics=diagnostics,
+        edge_m=edge_m,
+        trim_m=trim_m,
+        edge_threshold=edge_threshold,
+        max_window_width_mhz=max_window_width_mhz,
+        min_freeze_snr=min_freeze_snr,
+        acquisition_us=acquisition_us,
+        tau_us=tau_us,
+        plan_revision=plan.plan_revision + 1,
     )

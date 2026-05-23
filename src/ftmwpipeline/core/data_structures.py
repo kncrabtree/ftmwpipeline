@@ -1019,6 +1019,37 @@ class FitWindow:
 
 
 @dataclass
+class MergeRequest:
+    """Structural re-plan request: merge two adjacent fit windows into one.
+
+    Emitted by Stage 5 when the residual edge-coherence check on a fit
+    window's edge flags above threshold and *no fixed contributor* on that
+    side is available to thaw — i.e. a real spectral feature crosses the
+    window boundary. Routed through
+    :func:`~ftmwpipeline.preprocessing.window_planning.replan`, which
+    produces a revised :class:`WindowPlan` with a bumped
+    :attr:`WindowPlan.plan_revision`; Stage 5 then re-fits the affected
+    batches.
+
+    Attributes
+    ----------
+    window_a_id : int
+        ``window_id`` of one of the two windows to merge.
+    window_b_id : int
+        ``window_id`` of the other window. The two windows must be adjacent
+        in the plan (no other window's ``freq_range`` lies between them);
+        ``replan`` raises if not. The surviving merged window keeps the
+        lower of the two ids.
+    reason : str
+        Free-text annotation for the renegotiation audit log.
+    """
+
+    window_a_id: int
+    window_b_id: int
+    reason: str = ""
+
+
+@dataclass
 class WindowPlan:
     """The complete Stage 4 fit plan: ordered windows + a fit dependency DAG.
 
@@ -1037,6 +1068,13 @@ class WindowPlan:
     diagnostics : dict
         Plan-level diagnostics (e.g. coherent regions with no identifiable
         strong-line source — a hint that peak detection missed a line).
+    plan_revision : int
+        Monotonic counter bumped each time
+        :func:`~ftmwpipeline.preprocessing.window_planning.replan` applies a
+        structural change. ``0`` is the initial plan from
+        :func:`~ftmwpipeline.preprocessing.window_planning.build_window_plan`;
+        downstream stages can use this to detect plan churn between Stage 5
+        invocations.
     """
 
     windows: List[FitWindow] = field(default_factory=list)
@@ -1044,6 +1082,7 @@ class WindowPlan:
     topological_order: List[int] = field(default_factory=list)
     parameters: Dict[str, Any] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+    plan_revision: int = 0
 
     @property
     def n_windows(self) -> int:

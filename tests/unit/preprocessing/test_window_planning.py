@@ -12,11 +12,12 @@ import numpy as np
 import pytest
 
 from ftmwpipeline.core.data_structures import (
+    MergeRequest,
     Peak,
     PeakClassification,
     WindowDifficulty,
 )
-from ftmwpipeline.preprocessing.window_planning import build_window_plan
+from ftmwpipeline.preprocessing.window_planning import build_window_plan, replan
 
 
 def _h_t(df_hz, t_s):
@@ -294,3 +295,218 @@ class TestDeRamp:
         )
         assert plan.parameters["start_us"] == 2.35
         assert plan.parameters["probe_freq_mhz"] == 30000.0
+
+
+# ---------------------------------------------------------------------------
+# Structural renegotiation: replan() with MergeRequests
+# ---------------------------------------------------------------------------
+class TestReplanMerge:
+    """``replan`` applies :class:`MergeRequest`s to an existing
+    :class:`WindowPlan`, re-runs Stage 4's bookkeeping tail (contributor /
+    dependency / difficulty / batch recomputation, artifact pruning) against
+    the merged window list, and bumps :attr:`WindowPlan.plan_revision`. The
+    disjoint-coverage invariant is preserved.
+    """
+
+    def _two_window_plan(self):
+        """Two well-separated EASY weak windows -- a clean merge fixture."""
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30030.0, 0.05, PeakClassification.WEAK),
+                (30060.0, 0.05, PeakClassification.WEAK),
+            ]
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        return plan, peaks, freqs, spec, rms
+
+    def test_empty_request_list_bumps_revision_only(self):
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        original_n = plan.n_windows
+        revised = replan(plan, [], peaks, freqs, spec, rms, acquisition_us=15.0)
+        assert revised.plan_revision == plan.plan_revision + 1
+        assert revised.n_windows == original_n
+        _assert_invariants(revised)
+
+    def test_merges_two_adjacent_windows(self):
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        assert plan.n_windows == 2
+        a, b = plan.windows[0], plan.windows[1]
+        survivor_id = min(a.window_id, b.window_id)
+
+        revised = replan(
+            plan,
+            [MergeRequest(a.window_id, b.window_id, reason="test merge")],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        assert revised.n_windows == 1
+        merged = revised.windows[0]
+        assert merged.window_id == survivor_id
+        assert merged.freq_range[0] == pytest.approx(a.freq_range[0])
+        assert merged.freq_range[1] == pytest.approx(b.freq_range[1])
+        # Union of free peaks.
+        assert sorted(merged.free_peak_indices) == sorted(
+            list(a.free_peak_indices) + list(b.free_peak_indices)
+        )
+        # Audit fields recorded.
+        assert merged.diagnostics["merged_from"] == sorted([a.window_id, b.window_id])
+        assert merged.diagnostics["merge_reason"] == "test merge"
+        _assert_invariants(revised)
+
+    def test_non_adjacent_merge_raises(self):
+        """A merge of windows with another window between them is rejected."""
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30020.0, 0.05, PeakClassification.WEAK),
+                (30050.0, 0.05, PeakClassification.WEAK),
+                (30080.0, 0.05, PeakClassification.WEAK),
+            ]
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        assert plan.n_windows == 3
+        w0, _w1, w2 = sorted(plan.windows, key=lambda w: w.freq_range[0])
+        with pytest.raises(ValueError, match="not adjacent"):
+            replan(
+                plan,
+                [MergeRequest(w0.window_id, w2.window_id)],
+                peaks,
+                freqs,
+                spec,
+                rms,
+                acquisition_us=15.0,
+            )
+
+    def test_unknown_window_id_raises(self):
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        with pytest.raises(ValueError, match="unknown window"):
+            replan(
+                plan,
+                [MergeRequest(99, plan.windows[0].window_id)],
+                peaks,
+                freqs,
+                spec,
+                rms,
+                acquisition_us=15.0,
+            )
+
+    def test_self_merge_raises(self):
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        wid = plan.windows[0].window_id
+        with pytest.raises(ValueError, match="distinct windows"):
+            replan(
+                plan,
+                [MergeRequest(wid, wid)],
+                peaks,
+                freqs,
+                spec,
+                rms,
+                acquisition_us=15.0,
+            )
+
+    def test_merge_drops_now_internal_contributor(self):
+        """A merge that swallows a primary makes its contributor internal.
+
+        Setup (same fixture shape as ``TestWeakLineOnSkirt``): a strong line
+        and a weak line on its far skirt. Stage 4 builds a 2-window plan
+        with the strong line attached to the weak window as a fixed
+        contributor + a dependency edge. Merge the two windows: the merged
+        window now contains the strong line as a free peak, so its earlier
+        role as a fixed contributor to the (now-merged) weak window is
+        no longer needed and the contributor list comes back empty.
+        """
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30050.0, 6.0, PeakClassification.STRONG),
+                (30056.0, 0.12, PeakClassification.MEDIUM),
+            ],
+            n=8000,
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        # Sanity: there should be two windows with a dep edge.
+        assert plan.n_windows == 2
+        assert plan.dependency_edges, "expected a dependency edge in setup"
+        a, b = sorted(plan.windows, key=lambda w: w.freq_range[0])
+
+        revised = replan(
+            plan,
+            [MergeRequest(a.window_id, b.window_id)],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        assert revised.n_windows == 1
+        merged = revised.windows[0]
+        # No contributors: the strong line is in-band of the merged window.
+        assert merged.fixed_contributors == []
+        # And no dependency edges remain.
+        assert revised.dependency_edges == []
+        _assert_invariants(revised)
+
+    def test_topological_order_recomputed(self):
+        """A 3-window plan with a chain dep: merge the outer two. The merged
+        window subsumes the chain endpoint, so the surviving edge re-ranks the
+        topological order against the new id set.
+        """
+        # Three lines: the leftmost strong, the other two weak on its skirt.
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30030.0, 2.5, PeakClassification.STRONG),
+                (30055.0, 0.06, PeakClassification.WEAK),
+                (30075.0, 0.06, PeakClassification.WEAK),
+            ]
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        if plan.n_windows < 3:
+            pytest.skip("setup did not produce 3 windows for this fixture")
+        ws = sorted(plan.windows, key=lambda w: w.freq_range[0])
+        # Merge the two adjacent weak windows.
+        revised = replan(
+            plan,
+            [MergeRequest(ws[1].window_id, ws[2].window_id)],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        ids = {w.window_id for w in revised.windows}
+        assert sorted(revised.topological_order) == sorted(ids)
+        # And the topological order is consistent with the surviving deps.
+        pos = {wid: i for i, wid in enumerate(revised.topological_order)}
+        for child, parent in revised.dependency_edges:
+            assert pos[parent] < pos[child]
+        _assert_invariants(revised)
+
+    def test_revision_counter_chains_across_replans(self):
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        once = replan(plan, [], peaks, freqs, spec, rms, acquisition_us=15.0)
+        twice = replan(once, [], peaks, freqs, spec, rms, acquisition_us=15.0)
+        assert plan.plan_revision == 0
+        assert once.plan_revision == 1
+        assert twice.plan_revision == 2
+
+    def test_original_plan_unmutated(self):
+        """replan must not mutate the input plan in place."""
+        plan, peaks, freqs, spec, rms = self._two_window_plan()
+        snapshot_n = plan.n_windows
+        snapshot_revision = plan.plan_revision
+        snapshot_window_ids = sorted(w.window_id for w in plan.windows)
+
+        revised = replan(
+            plan,
+            [MergeRequest(plan.windows[0].window_id, plan.windows[1].window_id)],
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+        )
+        assert plan.n_windows == snapshot_n
+        assert plan.plan_revision == snapshot_revision
+        assert sorted(w.window_id for w in plan.windows) == snapshot_window_ids
+        assert revised.n_windows < plan.n_windows  # merge succeeded
