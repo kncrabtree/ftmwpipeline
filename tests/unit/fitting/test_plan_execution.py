@@ -25,6 +25,8 @@ import pytest
 from ftmwpipeline.core.data_structures import (
     FitWindow,
     FixedContributor,
+    Peak,
+    PeakClassification,
     Sideband,
     WindowDifficulty,
     WindowPlan,
@@ -39,6 +41,8 @@ from ftmwpipeline.fitting.peak_model import (
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     FrozenPeak,
+    ReplanContext,
+    ReplanEvent,
     ThawEvent,
     WindowOutcome,
     attempt_thaw_round,
@@ -954,3 +958,322 @@ def _toy_outcome(
     )
     outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
     return outcome
+
+
+# ---------------------------------------------------------------------------
+# Structural renegotiation: execute_plan with a ReplanContext
+# ---------------------------------------------------------------------------
+# Stage 4 parameter defaults used when manually building a WindowPlan for the
+# dispatcher tests; the values match the production defaults exposed in
+# preprocessing.window_planning.
+_STAGE4_PARAMS = {
+    "edge_m": 16,
+    "trim_m": 4,
+    "edge_threshold": 1.5,
+    "max_window_width_mhz": 40.0,
+    "min_freeze_snr": 50.0,
+    "min_window_half_width_mhz": 2.0,
+    "acquisition_us": T_US,
+    "tau_us": TAU_US,
+    "start_us": START_US,
+    "probe_freq_mhz": PROBE_MHZ,
+}
+
+
+def _make_peak(
+    frequency_mhz: float,
+    snr: float,
+    sigma: float,
+    *,
+    grid_index: int,
+    classification: PeakClassification = PeakClassification.STRONG,
+) -> Peak:
+    """Promoted Peak in the shape Stage 4 expects."""
+    return Peak(
+        frequency=frequency_mhz,
+        intensity=snr * sigma,
+        index=grid_index,
+        snr=snr,
+        noise_std_local=sigma,
+        classification=classification,
+        promoted=True,
+    )
+
+
+class TestStructuralReplan:
+    """``execute_plan`` with a :class:`ReplanContext` runs the structural
+    renegotiation outer loop after the main fit + thaw passes. When a
+    residual edge flags with no contributor on that side and a
+    frequency-adjacent neighbour exists, a :class:`MergeRequest` is emitted
+    and the plan is revised in place. Outcomes for the merged windows + their
+    downstream dependents are dropped and refit on the revised plan.
+
+    Existing tests pass ``replan_context=None`` (the default) and are
+    unaffected; the synthetic fixtures here use a hand-built ``WindowPlan``
+    so the dispatcher can be exercised without depending on Stage 4's
+    contributor-attachment heuristics.
+    """
+
+    def _single_peak_setup(self, peak_freq: float, peak_snr: float, sigma: float):
+        """Build a one-peak fixture: spectrum + peak list + Stage 5 inputs."""
+        rng = np.random.default_rng(SEED + 30)
+        freq_array = np.arange(36100.0, 36120.0 + DF_MHZ / 2, DF_MHZ)
+        amp = _amp_for_snr(peak_snr, sigma)
+        spectrum = _synth_spectrum(freq_array, [(peak_freq, amp, 0.3)])
+        spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
+        rms = np.full(freq_array.size, sigma)
+        gi = int(np.argmin(np.abs(freq_array - peak_freq)))
+        peaks = [
+            _make_peak(peak_freq, peak_snr, sigma, grid_index=gi),
+        ]
+        return freq_array, spectrum, rms, peaks
+
+    def test_no_replan_context_skips_structural_loop(self):
+        """Without a ReplanContext, ``execute_plan`` behaves exactly as before:
+        no structural events, final_plan_revision stays at 0."""
+        freq_array, spectrum, rms, _peaks = self._single_peak_setup(
+            36110.0, peak_snr=100.0, sigma=1.0
+        )
+        win = FitWindow(
+            window_id=0,
+            freq_range=(36108.0, 36112.0),
+            free_peak_indices=[0],
+            difficulty=WindowDifficulty.EASY,
+            batch=0,
+        )
+        plan = WindowPlan(windows=[win], topological_order=[0])
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [36110.0],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        assert outcome.replan_history == []
+        assert outcome.final_plan_revision == 0
+
+    def test_merge_fires_when_feature_crosses_boundary(self):
+        """A peak sitting just inside window A; window B is empty but its low
+        edge sees the peak's leakage skirt. With no contributor attached to
+        B's low side, the dispatcher emits a merge of A and B; replan
+        produces one wide window; refit clears the previously-flagged edge.
+        """
+        sigma = 1.0
+        peak_freq = 36104.9
+        freq_array, spectrum, rms, peaks = self._single_peak_setup(
+            peak_freq, peak_snr=300.0, sigma=sigma
+        )
+
+        # Manual two-window plan: boundary at 36105.0, peak in window A.
+        # Both windows EASY, no fixed contributors -- the dispatcher will
+        # blame the flagged edge on no contributor and merge.
+        win_a = FitWindow(
+            window_id=0,
+            freq_range=(36100.0, 36105.0),
+            free_peak_indices=[0],
+            difficulty=WindowDifficulty.EASY,
+            batch=0,
+        )
+        win_b = FitWindow(
+            window_id=1,
+            freq_range=(36105.0, 36110.0),
+            free_peak_indices=[],
+            difficulty=WindowDifficulty.EASY,
+            batch=0,
+        )
+        plan = WindowPlan(
+            windows=[win_a, win_b],
+            topological_order=[0, 1],
+            parameters=dict(_STAGE4_PARAMS),
+        )
+
+        ctx = ReplanContext(
+            peaks=peaks,
+            persisted_freq_mhz=freq_array,
+            persisted_complex_spectrum=spectrum,
+            persisted_rms_noise=rms,
+        )
+
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [peak_freq],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            replan_context=ctx,
+        )
+
+        # A structural merge was applied.
+        assert outcome.replan_history, "expected a structural-replan event"
+        accepted = [e for e in outcome.replan_history if e.accepted]
+        assert accepted, "expected the merge to be accepted"
+        ev = accepted[0]
+        assert ev.surviving_window_id == 0
+        assert ev.revision_after == ev.revision_before + 1
+        assert outcome.final_plan_revision == 1
+
+        # Only one window left; it contains the peak as a free peak; its
+        # edges are clean (the feature is no longer cut by a boundary).
+        assert set(outcome.window_outcomes.keys()) == {0}
+        merged = outcome.window_outcomes[0]
+        assert merged.fit.fit.success
+        assert merged.fit.n_peaks == 1
+        # Edges below the dispatcher threshold (else another round would fire
+        # if max_replan_rounds allowed).
+        assert merged.edge_coherence_low <= DEFAULT_RESIDUAL_EDGE_THRESHOLD
+        assert merged.edge_coherence_high <= DEFAULT_RESIDUAL_EDGE_THRESHOLD
+
+    def test_flagged_edge_with_contributor_does_not_merge(self):
+        """When a flagged edge already has a fixed contributor, thaw owns
+        that edge -- the structural dispatcher must not also emit a merge.
+        """
+        sigma = 1.0
+        peak_freq = 36104.9
+        freq_array, spectrum, rms, peaks = self._single_peak_setup(
+            peak_freq, peak_snr=300.0, sigma=sigma
+        )
+        win_a = FitWindow(
+            window_id=0,
+            freq_range=(36100.0, 36105.0),
+            free_peak_indices=[0],
+            difficulty=WindowDifficulty.HARD,
+            batch=0,
+        )
+        # B claims the peak in A as a fixed contributor (the standard
+        # leakage-attachment outcome), so thaw -- not merge -- would handle
+        # any flagged B-low edge.
+        win_b = FitWindow(
+            window_id=1,
+            freq_range=(36105.0, 36110.0),
+            free_peak_indices=[],
+            fixed_contributors=[
+                FixedContributor(
+                    peak_index=0,
+                    primary_window_id=0,
+                    frequency_mhz=peak_freq,
+                    freeze_eligible=True,
+                )
+            ],
+            difficulty=WindowDifficulty.HARD,
+            batch=1,
+        )
+        plan = WindowPlan(
+            windows=[win_a, win_b],
+            dependency_edges=[(1, 0)],
+            topological_order=[0, 1],
+            parameters=dict(_STAGE4_PARAMS),
+        )
+        ctx = ReplanContext(
+            peaks=peaks,
+            persisted_freq_mhz=freq_array,
+            persisted_complex_spectrum=spectrum,
+            persisted_rms_noise=rms,
+        )
+
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [peak_freq],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            replan_context=ctx,
+        )
+        # No structural merge was emitted: the contributor on B's low side
+        # made thaw the responsible primitive (thaw may or may not have
+        # been triggered depending on residual coherence, but a merge is
+        # ruled out by construction).
+        assert outcome.replan_history == []
+
+    def test_flagged_edge_with_no_adjacent_window_records_no_event(self):
+        """A flagged edge at the plan's outer boundary has no neighbour to
+        merge with -- the dispatcher silently drops the request and exits."""
+        sigma = 1.0
+        # Peak placed near the *low* edge of the only window so its skirt
+        # leaks past that edge into a region the plan does not cover.
+        peak_freq = 36100.2
+        freq_array, spectrum, rms, peaks = self._single_peak_setup(
+            peak_freq, peak_snr=300.0, sigma=sigma
+        )
+        win = FitWindow(
+            window_id=0,
+            freq_range=(36100.0, 36105.0),
+            free_peak_indices=[0],
+            difficulty=WindowDifficulty.EASY,
+            batch=0,
+        )
+        plan = WindowPlan(
+            windows=[win],
+            topological_order=[0],
+            parameters=dict(_STAGE4_PARAMS),
+        )
+        ctx = ReplanContext(
+            peaks=peaks,
+            persisted_freq_mhz=freq_array,
+            persisted_complex_spectrum=spectrum,
+            persisted_rms_noise=rms,
+        )
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [peak_freq],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            replan_context=ctx,
+        )
+        # No adjacent window -> no merge events recorded.
+        assert outcome.replan_history == []
+
+    def test_max_replan_rounds_zero_disables_loop(self):
+        """``max_replan_rounds=0`` runs the initial walk only."""
+        sigma = 1.0
+        peak_freq = 36104.9
+        freq_array, spectrum, rms, peaks = self._single_peak_setup(
+            peak_freq, peak_snr=300.0, sigma=sigma
+        )
+        win_a = FitWindow(
+            window_id=0,
+            freq_range=(36100.0, 36105.0),
+            free_peak_indices=[0],
+            difficulty=WindowDifficulty.EASY,
+            batch=0,
+        )
+        win_b = FitWindow(
+            window_id=1,
+            freq_range=(36105.0, 36110.0),
+            free_peak_indices=[],
+            difficulty=WindowDifficulty.EASY,
+            batch=0,
+        )
+        plan = WindowPlan(
+            windows=[win_a, win_b],
+            topological_order=[0, 1],
+            parameters=dict(_STAGE4_PARAMS),
+        )
+        ctx = ReplanContext(
+            peaks=peaks,
+            persisted_freq_mhz=freq_array,
+            persisted_complex_spectrum=spectrum,
+            persisted_rms_noise=rms,
+            max_replan_rounds=0,
+        )
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms,
+            [peak_freq],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+            replan_context=ctx,
+        )
+        assert outcome.replan_history == []
+        assert outcome.final_plan_revision == 0
+        assert set(outcome.window_outcomes.keys()) == {0, 1}

@@ -64,6 +64,8 @@ import numpy as np
 from ftmwpipeline.core.data_structures import (
     FitWindow,
     FixedContributor,
+    MergeRequest,
+    Peak,
     Sideband,
     WindowPlan,
 )
@@ -72,6 +74,7 @@ from ftmwpipeline.preprocessing.edge_coherence import (
     DEFAULT_TRIM_M,
     coherence_statistic,
 )
+from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
 from .active_ft import ActiveFTResult
 from .peak_model import (
@@ -91,11 +94,14 @@ from .window_fit import (
 __all__ = [
     "FrozenPeak",
     "ThawEvent",
+    "ReplanContext",
+    "ReplanEvent",
     "WindowOutcome",
     "PlanFitOutcome",
     "DEFAULT_RESIDUAL_EDGE_THRESHOLD",
     "DEFAULT_RESIDUAL_EDGE_M",
     "DEFAULT_MAX_THAW_ROUNDS",
+    "DEFAULT_MAX_REPLAN_ROUNDS",
     "evaluate_fixed_contributor",
     "subtract_frozen_background",
     "fit_window_with_fixed_contributors",
@@ -118,6 +124,11 @@ DEFAULT_RESIDUAL_EDGE_M = DEFAULT_TRIM_M
 
 DEFAULT_MAX_THAW_ROUNDS = 2
 """Maximum thaw rounds per window, for guaranteed termination."""
+
+DEFAULT_MAX_REPLAN_ROUNDS = 2
+"""Maximum structural-replan rounds per :func:`execute_plan` call. Each round
+applies at most one merge per disjoint window pair, so a chain of N adjacent
+windows wanting to coalesce resolves in O(log2(N)) rounds."""
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +207,95 @@ class ThawEvent:
 
 
 @dataclass
+class ReplanContext:
+    """Inputs needed by Stage 5 to ask Stage 4 for a structural re-plan.
+
+    Stage 5's :func:`execute_plan` only operates on the active-FT, but Stage
+    4's :func:`~ftmwpipeline.preprocessing.window_planning.replan` needs the
+    Stage 3 peak list and the *persisted* Stage 1 spectrum (for the
+    leakage-touched region recomputation that drives the bookkeeping tail of
+    the plan). This dataclass bundles that context so the production
+    orchestrator (``_internal/stage5_impl.py``, task 9) can hand one object
+    through; tests can pass ``None`` to disable structural renegotiation.
+
+    Stage 4 parameters (``edge_m``, ``edge_threshold``, ``max_window_width_mhz``,
+    ``min_freeze_snr``, ``acquisition_us``, ``tau_us``, ``start_us``,
+    ``probe_freq_mhz``, ``min_window_half_width_mhz``, ``trim_m``) are read
+    from :attr:`WindowPlan.parameters` automatically -- they are persisted as
+    part of the plan and need not be threaded again.
+
+    Attributes
+    ----------
+    peaks : list of Peak
+        Stage 3 promoted peak list. Replan keys off ``properties['promoted']``
+        and ``classification`` exactly as :func:`build_window_plan` does.
+    persisted_freq_mhz : np.ndarray
+        Molecular frequency axis of the persisted Stage 1 spectrum.
+    persisted_complex_spectrum : np.ndarray
+        Complex spectrum on ``persisted_freq_mhz`` (same array as Stage 4 was
+        built on).
+    persisted_rms_noise : np.ndarray
+        Canonical Stage 2 per-bin RMS on the persisted grid.
+    max_replan_rounds : int, default :data:`DEFAULT_MAX_REPLAN_ROUNDS`
+        Cap on the structural-replan outer loop.
+    """
+
+    peaks: list[Peak]
+    persisted_freq_mhz: np.ndarray
+    persisted_complex_spectrum: np.ndarray
+    persisted_rms_noise: np.ndarray
+    max_replan_rounds: int = DEFAULT_MAX_REPLAN_ROUNDS
+
+
+@dataclass
+class ReplanEvent:
+    """One structural-replan record.
+
+    Parallels :class:`ThawEvent` but captures a *plan-structural* change
+    rather than a local co-fit. Emitted when the residual edge-coherence
+    check flags a window edge that has no fixed contributor to thaw and a
+    frequency-adjacent neighbour exists for a :class:`MergeRequest`.
+
+    Attributes
+    ----------
+    triggering_window_id : int
+        Window whose flagged edge prompted the merge. May or may not be the
+        ``surviving_window_id`` after the merge (the survivor is always the
+        lower-id of the pair).
+    partner_window_id : int
+        The adjacent window the trigger asked to merge with.
+    surviving_window_id : int
+        ``min(triggering_window_id, partner_window_id)`` -- the id that
+        carries the merged window in the revised plan.
+    edge_side : str
+        ``"low"`` or ``"high"`` -- which edge of ``triggering_window_id``
+        flagged.
+    edge_coherence_before : float
+        Residual ``S_coh`` on the flagged edge before the merge.
+    revision_before : int
+        :attr:`WindowPlan.plan_revision` before the merge.
+    revision_after : int
+        :attr:`WindowPlan.plan_revision` after the merge (= ``before + 1``
+        for an accepted merge; equal to ``before`` for a no-op).
+    accepted : bool
+        Whether the merge was applied and the refit completed (so the
+        revised plan stands).
+    reason : str
+        Free-text annotation.
+    """
+
+    triggering_window_id: int
+    partner_window_id: int
+    surviving_window_id: int
+    edge_side: str
+    edge_coherence_before: float
+    revision_before: int
+    revision_after: int
+    accepted: bool
+    reason: str = ""
+
+
+@dataclass
 class WindowOutcome:
     """Stage 5 result for one window.
 
@@ -257,13 +357,23 @@ class PlanFitOutcome:
     Attributes
     ----------
     window_outcomes : dict of int -> WindowOutcome
-        Per-window results, keyed by ``window_id``.
+        Per-window results, keyed by ``window_id``. After structural
+        renegotiation, keys reflect the *final* plan (absorbed window ids
+        are absent).
     thaw_history : list of ThawEvent
-        Every accepted thaw, in execution order.
+        Every thaw attempt, in execution order.
+    replan_history : list of ReplanEvent
+        Every structural-replan attempt, in execution order. Empty when
+        ``execute_plan`` was called without a :class:`ReplanContext`.
+    final_plan_revision : int
+        :attr:`WindowPlan.plan_revision` of the plan the per-window
+        outcomes describe. ``0`` if no replan happened.
     """
 
     window_outcomes: dict[int, WindowOutcome]
     thaw_history: list[ThawEvent] = field(default_factory=list)
+    replan_history: list[ReplanEvent] = field(default_factory=list)
+    final_plan_revision: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -770,6 +880,7 @@ def execute_plan(
     residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
     max_thaw_rounds: int = DEFAULT_MAX_THAW_ROUNDS,
     conservative_kwargs: Optional[dict[str, Any]] = None,
+    replan_context: Optional[ReplanContext] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -790,6 +901,17 @@ def execute_plan(
        flagged-edge residual coherence drops to or below the threshold; rebuild
        both windows' outcomes from the joint fit. Bounded by
        ``max_thaw_rounds``.
+    4. **Structural renegotiation** (when ``replan_context`` is provided).
+       After the main walk, scan every outcome for flagged residual edges
+       that have *no* fixed contributor on that side -- thaw cannot help
+       them; a real feature crosses the boundary. Emit a
+       :class:`~ftmwpipeline.core.data_structures.MergeRequest` pairing
+       each such window with its frequency-adjacent neighbour, dedup by
+       sorted pair, and route them through
+       :func:`~ftmwpipeline.preprocessing.window_planning.replan`. Drop
+       outcomes for the affected windows (mergers + transitive
+       downstream), re-walk them in topo order on the revised plan. Bounded
+       by ``replan_context.max_replan_rounds``.
 
     The full plan-level outcome is returned; this function does **no file IO**
     -- persistence is task 9, and the ``_internal/stage5_impl.py`` orchestrator
@@ -805,9 +927,8 @@ def execute_plan(
         FID + canonical Stage 1 settings. Carries the molecular frequency
         grid, complex spectrum, and ``alpha = N_active/N_padded``.
     rms_noise : np.ndarray
-        Per-bin complex noise RMS on the **active-FT** grid (typically from
-        :func:`~ftmwpipeline.fitting.active_ft.derive_active_noise`), same
-        shape as ``active_ft.complex_spectrum``.
+        Per-bin complex noise RMS on the **active-FT** grid, same shape as
+        ``active_ft.complex_spectrum``.
     peak_frequencies_mhz : sequence of float
         Frequencies of *all* Stage 3 peaks (indexed by
         ``FitWindow.free_peak_indices`` and ``FixedContributor.peak_index``).
@@ -825,11 +946,16 @@ def execute_plan(
         Maximum thaw attempts per window per call.
     conservative_kwargs : dict, optional
         Extra keyword arguments forwarded to :func:`conservative_fit`.
+    replan_context : ReplanContext, optional
+        Inputs for structural renegotiation. When ``None`` (the default),
+        the structural outer loop is skipped -- existing tests that build
+        synthetic :class:`ActiveFTResult` s directly need no extra context.
 
     Returns
     -------
     PlanFitOutcome
-        Per-window outcomes and the chronological thaw history.
+        Per-window outcomes, the chronological thaw history, the
+        structural-replan history, and the final plan revision.
 
     Raises
     ------
@@ -845,11 +971,140 @@ def execute_plan(
     if noise.shape != active_ft.complex_spectrum.shape:
         raise ValueError("rms_noise must match active_ft.complex_spectrum shape")
 
-    by_id = {w.window_id: w for w in plan.windows}
-    order = plan.topological_order or [w.window_id for w in plan.windows]
     outcomes: dict[int, WindowOutcome] = {}
     thaw_history: list[ThawEvent] = []
+    replan_history: list[ReplanEvent] = []
 
+    # --- Initial walk over the plan as given -------------------------------
+    _walk_windows_in_order(
+        plan,
+        plan.topological_order or [w.window_id for w in plan.windows],
+        active_ft=active_ft,
+        noise=noise,
+        peak_frequencies_mhz=peak_frequencies_mhz,
+        outcomes=outcomes,
+        thaw_history=thaw_history,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        tau0_us=tau0_us,
+        fit_tau=fit_tau,
+        residual_edge_threshold=residual_edge_threshold,
+        residual_edge_m=residual_edge_m,
+        max_thaw_rounds=max_thaw_rounds,
+        conservative_kwargs=conservative_kwargs,
+    )
+
+    # --- Structural renegotiation loop -------------------------------------
+    if replan_context is not None:
+        for _ in range(replan_context.max_replan_rounds):
+            pending = _dispatch_structural_round(
+                outcomes, plan, residual_edge_threshold
+            )
+            if not pending:
+                break
+            requests = _dedup_merge_requests([p.request for p in pending])
+            try:
+                new_plan = _do_replan(plan, requests, replan_context)
+            except ValueError as exc:
+                # Record the failure(s) and stop -- the plan stays as is.
+                for trig in pending:
+                    replan_history.append(
+                        ReplanEvent(
+                            triggering_window_id=trig.window_id,
+                            partner_window_id=trig.partner_id,
+                            surviving_window_id=min(trig.window_id, trig.partner_id),
+                            edge_side=trig.edge_side,
+                            edge_coherence_before=trig.edge_coherence,
+                            revision_before=plan.plan_revision,
+                            revision_after=plan.plan_revision,
+                            accepted=False,
+                            reason=f"replan failed: {exc}",
+                        )
+                    )
+                break
+
+            affected = _affected_after_replan(new_plan, requests)
+            new_by_id = {w.window_id: w for w in new_plan.windows}
+            # Drop outcomes that need refit (affected) AND outcomes whose
+            # window was absorbed by a merge (the partner id no longer
+            # appears in the revised plan).
+            for wid in list(outcomes.keys()):
+                if wid not in new_by_id or wid in affected:
+                    outcomes.pop(wid, None)
+            affected_order = [
+                wid for wid in new_plan.topological_order if wid in affected
+            ]
+            _walk_windows_in_order(
+                new_plan,
+                affected_order,
+                active_ft=active_ft,
+                noise=noise,
+                peak_frequencies_mhz=peak_frequencies_mhz,
+                outcomes=outcomes,
+                thaw_history=thaw_history,
+                sideband=sideband,
+                acquisition_us=acquisition_us,
+                tau0_us=tau0_us,
+                fit_tau=fit_tau,
+                residual_edge_threshold=residual_edge_threshold,
+                residual_edge_m=residual_edge_m,
+                max_thaw_rounds=max_thaw_rounds,
+                conservative_kwargs=conservative_kwargs,
+            )
+
+            applied_pairs = {
+                tuple(sorted([r.window_a_id, r.window_b_id])) for r in requests
+            }
+            for trig in pending:
+                pair = tuple(sorted([trig.window_id, trig.partner_id]))
+                accepted = pair in applied_pairs and min(pair) in new_by_id
+                replan_history.append(
+                    ReplanEvent(
+                        triggering_window_id=trig.window_id,
+                        partner_window_id=trig.partner_id,
+                        surviving_window_id=min(trig.window_id, trig.partner_id),
+                        edge_side=trig.edge_side,
+                        edge_coherence_before=trig.edge_coherence,
+                        revision_before=plan.plan_revision,
+                        revision_after=new_plan.plan_revision,
+                        accepted=accepted,
+                        reason=trig.reason,
+                    )
+                )
+            plan = new_plan
+
+    return PlanFitOutcome(
+        window_outcomes=outcomes,
+        thaw_history=thaw_history,
+        replan_history=replan_history,
+        final_plan_revision=plan.plan_revision,
+    )
+
+
+def _walk_windows_in_order(
+    plan: WindowPlan,
+    order: Sequence[int],
+    *,
+    active_ft: ActiveFTResult,
+    noise: np.ndarray,
+    peak_frequencies_mhz: Sequence[float],
+    outcomes: dict[int, WindowOutcome],
+    thaw_history: list[ThawEvent],
+    sideband: SidebandLike,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool,
+    residual_edge_threshold: float,
+    residual_edge_m: int,
+    max_thaw_rounds: int,
+    conservative_kwargs: dict[str, Any],
+) -> None:
+    """Fit each window in ``order`` and run the bounded local-thaw loop.
+
+    Mutates ``outcomes`` and ``thaw_history`` in place. Shared by the initial
+    walk and the post-replan re-walk of affected windows.
+    """
+    by_id = {w.window_id: w for w in plan.windows}
     for wid in order:
         win = by_id[wid]
         outcome = _fit_one_window(
@@ -867,7 +1122,6 @@ def execute_plan(
         )
         outcomes[wid] = outcome
 
-        # Local thaw renegotiation, bounded.
         for _ in range(max_thaw_rounds):
             edge_events = attempt_thaw_round(
                 win,
@@ -884,12 +1138,192 @@ def execute_plan(
                 break
             for event in edge_events:
                 thaw_history.append(event)
-            # Refresh the local outcome reference (it may have been replaced).
             outcome = outcomes[wid]
             if not any(e.accepted for e in edge_events):
                 break
 
-    return PlanFitOutcome(window_outcomes=outcomes, thaw_history=thaw_history)
+
+# ---------------------------------------------------------------------------
+# Structural renegotiation: dispatch + replan + affected-window bookkeeping
+# ---------------------------------------------------------------------------
+@dataclass
+class _PendingMerge:
+    """Internal dispatcher record: one window's flagged-edge request."""
+
+    window_id: int
+    partner_id: int
+    edge_side: str
+    edge_coherence: float
+    reason: str
+    request: MergeRequest
+
+
+def _find_adjacent_window(
+    plan: WindowPlan, win: FitWindow, side: str
+) -> Optional[FitWindow]:
+    """Return the immediately-adjacent window in ``side`` direction, or None.
+
+    Adjacency is in molecular frequency: the ``"low"``-side neighbour is the
+    window whose ``freq_range[1]`` is the largest value still ``<=
+    win.freq_range[0]``; ``"high"`` mirrors. Returns ``None`` when ``win`` is
+    at the plan's outer boundary on that side.
+    """
+    if side not in ("low", "high"):
+        raise ValueError("side must be 'low' or 'high'")
+    candidates = [w for w in plan.windows if w.window_id != win.window_id]
+    if side == "low":
+        below = [w for w in candidates if w.freq_range[1] <= win.freq_range[0]]
+        if not below:
+            return None
+        return max(below, key=lambda w: w.freq_range[1])
+    above = [w for w in candidates if w.freq_range[0] >= win.freq_range[1]]
+    if not above:
+        return None
+    return min(above, key=lambda w: w.freq_range[0])
+
+
+def _dispatch_structural_round(
+    outcomes: dict[int, WindowOutcome],
+    plan: WindowPlan,
+    residual_edge_threshold: float,
+) -> list[_PendingMerge]:
+    """Scan outcomes for flagged edges that warrant a structural merge.
+
+    A flagged edge is acted on as a merge only when both:
+
+    * **no fixed contributor on that side** -- otherwise the local thaw
+      handshake (already applied in the main walk) is the right tool and
+      will have either resolved it or recorded its failure;
+    * **an adjacent window exists** in that direction in the current plan.
+
+    Multiple windows may emit overlapping requests (e.g. window A's high
+    edge and window B's low edge both naming the same A-B merge); the
+    deduplication happens at :func:`_dedup_merge_requests`.
+    """
+    by_id = {w.window_id: w for w in plan.windows}
+    pending: list[_PendingMerge] = []
+    for wid, outcome in outcomes.items():
+        win = by_id.get(wid)
+        if win is None:
+            continue
+        for edge_side, edge_coh in (
+            ("low", outcome.edge_coherence_low),
+            ("high", outcome.edge_coherence_high),
+        ):
+            if not np.isfinite(edge_coh) or edge_coh <= residual_edge_threshold:
+                continue
+            side_contribs = [
+                fp
+                for fp in outcome.fixed_peaks
+                if (
+                    fp.frequency_mhz <= win.freq_range[0]
+                    if edge_side == "low"
+                    else fp.frequency_mhz >= win.freq_range[1]
+                )
+            ]
+            if side_contribs:
+                continue  # thaw owns this edge; structural merge is not the tool
+            adjacent = _find_adjacent_window(plan, win, edge_side)
+            if adjacent is None:
+                continue
+            reason = (
+                f"residual edge-coherence {edge_coh:.2f} on {edge_side} side, "
+                f"no contributor to thaw; merging with adjacent "
+                f"window {adjacent.window_id}"
+            )
+            pending.append(
+                _PendingMerge(
+                    window_id=win.window_id,
+                    partner_id=adjacent.window_id,
+                    edge_side=edge_side,
+                    edge_coherence=float(edge_coh),
+                    reason=reason,
+                    request=MergeRequest(
+                        window_a_id=win.window_id,
+                        window_b_id=adjacent.window_id,
+                        reason=reason,
+                    ),
+                )
+            )
+    return pending
+
+
+def _dedup_merge_requests(
+    requests: Sequence[MergeRequest],
+) -> list[MergeRequest]:
+    """Drop duplicate merge requests by sorted ``(a, b)`` pair."""
+    seen: set[tuple[int, int]] = set()
+    out: list[MergeRequest] = []
+    for req in requests:
+        lo = min(req.window_a_id, req.window_b_id)
+        hi = max(req.window_a_id, req.window_b_id)
+        pair: tuple[int, int] = (lo, hi)
+        if pair in seen:
+            continue
+        seen.add(pair)
+        out.append(req)
+    return out
+
+
+_REPLAN_PARAM_KEYS = (
+    "edge_m",
+    "trim_m",
+    "edge_threshold",
+    "max_window_width_mhz",
+    "min_freeze_snr",
+    "min_window_half_width_mhz",
+    "acquisition_us",
+    "tau_us",
+    "start_us",
+    "probe_freq_mhz",
+)
+
+
+def _do_replan(
+    plan: WindowPlan,
+    requests: list[MergeRequest],
+    ctx: ReplanContext,
+) -> WindowPlan:
+    """Forward the requests to Stage 4's :func:`replan` with parameters
+    sourced from ``plan.parameters`` (Stage 4 records them on the plan when
+    it builds it; we pull them back off the plan here so the caller does not
+    have to thread Stage 4 parameters separately).
+    """
+    kwargs = {k: plan.parameters[k] for k in _REPLAN_PARAM_KEYS if k in plan.parameters}
+    return stage4_replan(
+        plan,
+        requests,
+        ctx.peaks,
+        ctx.persisted_freq_mhz,
+        ctx.persisted_complex_spectrum,
+        ctx.persisted_rms_noise,
+        **kwargs,
+    )
+
+
+def _affected_after_replan(
+    new_plan: WindowPlan,
+    requests: Sequence[MergeRequest],
+) -> set[int]:
+    """Set of ``window_id`` s whose outcomes must be re-fit after a replan.
+
+    Includes every merge survivor plus any window in ``new_plan`` that
+    transitively depends on one of them.
+    """
+    affected: set[int] = set()
+    new_ids = {w.window_id for w in new_plan.windows}
+    for req in requests:
+        survivor = min(req.window_a_id, req.window_b_id)
+        if survivor in new_ids:
+            affected.add(survivor)
+    changed = True
+    while changed:
+        changed = False
+        for child, parent in new_plan.dependency_edges:
+            if parent in affected and child not in affected:
+                affected.add(child)
+                changed = True
+    return affected
 
 
 def _fit_one_window(
