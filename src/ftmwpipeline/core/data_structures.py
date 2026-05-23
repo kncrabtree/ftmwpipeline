@@ -607,35 +607,85 @@ class Peak:
 
 
 @dataclass
+class KnockoutInfo:
+    """Per-line knockout-test outcome attached to a :class:`FittedPeak`.
+
+    Persistent twin of :class:`ftmwpipeline.fitting.window_fit.KnockoutResult`:
+    the algorithm-side dataclass is the in-flight working record, this one is
+    the user-facing snapshot stored on the fitted peak. Removing a genuinely
+    supported line from the converged model grows the residual by very nearly
+    that line's own weighted energy; a line that can be knocked out without the
+    expected response was not supported by the data and is flagged.
+
+    Attributes
+    ----------
+    delta_chi2 : float
+        Observed chi-squared increase when the line is removed.
+    expected_delta_chi2 : float
+        The line's own noise-weighted energy -- the increase a real line should
+        produce.
+    supported : bool
+        Whether the chi-squared increase is statistically significant (F-test).
+    """
+
+    delta_chi2: float
+    expected_delta_chi2: float
+    supported: bool
+
+
+@dataclass
 class FittedPeak:
     """
     Post-fitting peak results with fitted parameters.
-    
-    Represents the results of fitting a single peak, including
-    fitted parameters, uncertainties, and quality metrics.
+
+    Represents the results of fitting a single peak, including fitted
+    parameters, uncertainties, and quality metrics. The peak originates in one
+    Stage 4 fit window; its ``peak_id`` is the Stage 3 promoted-peak index that
+    seeded it, ``window_id`` is the originating fit window's id, and
+    ``knockout`` carries the per-peak validation result from the Stage 5
+    knockout test.
     """
     peak_id: Union[str, int]
+    """Stage 3 promoted-peak index of the line (the entry in the persisted peak
+    list that seeded this fit). For lines added by the blend-aware seeder
+    without their own Stage 3 detection, this is the seeded peak's index --
+    multiple :class:`FittedPeak` s may share the same ``peak_id`` in a blend."""
     frequency_mhz: float
     amplitude: float
     decay_rate: Optional[float] = None
     phase: Optional[float] = None
-    
+
     # Parameter uncertainties
     frequency_error: Optional[float] = None
     amplitude_error: Optional[float] = None
     decay_rate_error: Optional[float] = None
     phase_error: Optional[float] = None
-    
+
     # Quality metrics
     snr: Optional[float] = None
     chi_squared: Optional[float] = None
-    
+
+    # Stage 5 wiring: originating window id and the per-peak knockout result.
+    window_id: Optional[int] = None
+    """``FitWindow.window_id`` the line was fit in."""
+    knockout: Optional[KnockoutInfo] = None
+    """Knockout-test outcome from :func:`ftmwpipeline.fitting.window_fit.knockout_test`."""
+
     # Additional fitted parameters
     extra_parameters: Dict[str, float] = field(default_factory=dict)
     extra_errors: Dict[str, float] = field(default_factory=dict)
-    
+
     def __repr__(self) -> str:
-        return f"FittedPeak(id={self.peak_id}, freq={self.frequency_mhz:.6f}±{self.frequency_error:.6f} MHz, amp={self.amplitude:.2e})"
+        ferr = (
+            f"{self.frequency_error:.6f}"
+            if self.frequency_error is not None
+            else "?"
+        )
+        return (
+            f"FittedPeak(id={self.peak_id}, "
+            f"freq={self.frequency_mhz:.6f}±{ferr} MHz, "
+            f"amp={self.amplitude:.2e})"
+        )
 
 
 class SpectralWindow:
@@ -646,24 +696,30 @@ class SpectralWindow:
     targeted peak detection and fitting operations.
     """
     
-    def __init__(self, parent_ft: ComplexFT, freq_array: np.ndarray, 
+    def __init__(self, parent_ft: Optional[ComplexFT], freq_array: np.ndarray,
                  complex_spectrum: np.ndarray, freq_range: Tuple[float, float],
-                 window_id: Optional[str] = None, peaks: Optional[List[Peak]] = None):
+                 window_id: Optional[Union[str, int]] = None,
+                 peaks: Optional[List[Peak]] = None):
         """
         Initialize SpectralWindow.
-        
+
         Parameters
         ----------
-        parent_ft : ComplexFT
-            Parent ComplexFT object this window was extracted from
+        parent_ft : ComplexFT, optional
+            Parent ComplexFT this window was extracted from. ``None`` when the
+            window was materialized from a non-persisted spectrum (e.g. Stage
+            5's active-portion FT, which is regenerated on demand and not
+            stored on the experiment).
         freq_array : np.ndarray
             Frequency array for this window
         complex_spectrum : np.ndarray
             Complex spectrum data for this window
         freq_range : tuple
             (min_freq, max_freq) in MHz
-        window_id : str, optional
-            Identifier for this window
+        window_id : str or int, optional
+            Identifier for this window. Stage 5 materializes one window per
+            :class:`FitWindow` and carries the integer ``FitWindow.window_id``
+            here directly; earlier callers used opaque string ids.
         peaks : list of Peak, optional
             Detected peaks in this window
         """
@@ -735,16 +791,107 @@ class SpectralWindow:
                 f"n_points={self.n_points}, n_peaks={self.n_peaks})")
 
 
+@dataclass
+class AuditStep:
+    """One decision in the conservative add-one-peak audit trail.
+
+    Persistent twin of :class:`ftmwpipeline.fitting.window_fit.AddStep`. The
+    add-one-peak loop records one of these per seed / re-seed / candidate so
+    the conservative loop's accept/reject behaviour can be replayed and
+    curated after the fact.
+
+    Attributes
+    ----------
+    n_peaks_before : int
+        Number of accepted lines before this step.
+    candidate_offset_mhz : float
+        Baseband offset (MHz) of the line tested at this step.
+    chi2_before, chi2_after : float
+        Noise-weighted chi-squared before / with the candidate.
+    f_statistic, p_value : float
+        Nested-model F-test of the chi-squared improvement.
+    aic_before, aic_after : float
+        AIC before / with the candidate.
+    separation_ok : bool
+        Whether the candidate cleared the peak-separation constraint.
+    decision : str
+        ``"seed"``, ``"seed-blend"``, ``"accept"``, ``"promote"``,
+        ``"tentative"``, or ``"reject"``.
+    reason : str
+        Free-text annotation.
+    """
+
+    n_peaks_before: int
+    candidate_offset_mhz: float
+    chi2_before: float
+    chi2_after: float
+    f_statistic: float
+    p_value: float
+    aic_before: float
+    aic_after: float
+    separation_ok: bool
+    decision: str
+    reason: str = ""
+
+
+@dataclass
+class ThawInfo:
+    """One residual-edge-coherence thaw record on a fit window.
+
+    Persistent twin of :class:`ftmwpipeline.fitting.plan_execution.ThawEvent`.
+    Stage 5's residual edge-coherence handshake unfreezes a fixed contributor
+    and co-fits it with its dependent window; one of these records is appended
+    per attempt (accepted or not).
+
+    Attributes
+    ----------
+    dependent_window_id : int
+        Window whose post-fit residual edge triggered the thaw.
+    primary_window_id : int
+        Window the thawed contributor was originally fit in. ``-1`` when no
+        contributor was available on the flagged side (a no-op record).
+    contributor_peak_index : int
+        Stage 3 peak index of the thawed line. ``-1`` for the no-op record.
+    contributor_frequency_mhz : float
+        Molecular frequency of the thawed line (MHz); ``nan`` for the no-op.
+    edge_side : str
+        ``"low"`` or ``"high"`` -- the flagged residual edge.
+    edge_coherence_before, edge_coherence_after : float
+        Residual ``S_coh`` on the flagged edge before / after the co-fit.
+        ``nan`` for ``after`` if the co-fit did not converge.
+    accepted : bool
+        Whether the co-fit converged and lowered the flagged-edge coherence to
+        at or below the threshold.
+    reason : str
+        Free-text annotation.
+    """
+
+    dependent_window_id: int
+    primary_window_id: int
+    contributor_peak_index: int
+    contributor_frequency_mhz: float
+    edge_side: str
+    edge_coherence_before: float
+    edge_coherence_after: float
+    accepted: bool
+    reason: str = ""
+
+
 class FittingResult:
     """
     Container for fitting results from analysis of SpectralWindow(s).
-    
+
     Stores fitted parameters, quality metrics, and diagnostic information.
+    Stage 5 also wires the per-iteration ``audit_trail`` (the conservative
+    add-one-peak loop's decision log) and the per-window ``thaw_events``
+    (the residual-edge-coherence renegotiation outcomes that touched this
+    window).
     """
-    
+
     def __init__(self, success: bool = False, fitted_spectrum: Optional[np.ndarray] = None,
                  cost: float = np.inf, iterations: int = 0, aic: float = np.inf,
-                 reduced_chi2: float = np.inf, window: Optional[SpectralWindow] = None):
+                 reduced_chi2: float = np.inf, window: Optional[SpectralWindow] = None,
+                 window_id: Optional[int] = None):
         """Initialize FittingResult."""
         self.success = success
         self.fitted_spectrum = fitted_spectrum
@@ -753,17 +900,26 @@ class FittingResult:
         self.aic = aic
         self.reduced_chi2 = reduced_chi2
         self.window = window
-        
+        self.window_id = window_id
+
         # Fitted peaks
         self.fitted_peaks: List[FittedPeak] = []
-        
-        # Global parameters (shared across peaks)
-        self.shared_parameters: Dict[str, Dict[str, float]] = {}
-        self.fixed_parameters: Dict[str, Dict[str, float]] = {}
-        
+
+        # Global parameters (shared across peaks): tau and its error live here.
+        # Each entry has free-form keys (value, error, peak_ids, ...) so the
+        # inner-dict value type widens beyond float.
+        self.shared_parameters: Dict[str, Dict[str, Any]] = {}
+        # Frozen-contributor summaries used in the fit live here.
+        self.fixed_parameters: Dict[str, Dict[str, Any]] = {}
+
         # Diagnostics
         self.residuals: Optional[np.ndarray] = None
         self.quality_metrics: Dict[str, float] = {}
+
+        # Stage 5 wiring: conservative-loop audit trail and the per-window
+        # slice of the plan-level thaw history (chronological).
+        self.audit_trail: List[AuditStep] = []
+        self.thaw_events: List[ThawInfo] = []
     
     def add_fitted_peak(self, fitted_peak: FittedPeak) -> None:
         """Add a fitted peak result."""
@@ -1111,4 +1267,135 @@ class WindowPlan:
             f"WindowPlan(n_windows={self.n_windows}, hard={n_hard}, "
             f"n_batches={self.n_batches}, "
             f"n_dependencies={len(self.dependency_edges)})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: persistent fit aggregate
+# ---------------------------------------------------------------------------
+#
+# Stage 5 turns the Stage 4 ``WindowPlan`` into a fitted line list. The
+# in-flight working records (``WindowOutcome`` / ``PlanFitOutcome`` in
+# :mod:`ftmwpipeline.fitting.plan_execution`) carry the raw least-squares
+# arrays needed to drive the orchestrator; the persistent user-facing types
+# below carry the spectroscopic parameters, the audit / renegotiation
+# history, and the plan-level diagnostics that downstream consumers
+# (serialization, visualization, hand-edit) need. The two layers are
+# connected by the pure converters in
+# :mod:`ftmwpipeline.fitting.result_conversion`.
+
+
+@dataclass
+class ReplanInfo:
+    """One structural-replan record in :class:`SpectrumFit`.
+
+    Persistent twin of :class:`ftmwpipeline.fitting.plan_execution.ReplanEvent`.
+    Emitted when a residual edge-coherence flag has no fixed contributor to
+    thaw and a frequency-adjacent neighbour exists, prompting Stage 4 to
+    merge the two windows and bump the plan revision.
+
+    Attributes
+    ----------
+    triggering_window_id : int
+        Window whose flagged edge prompted the merge.
+    partner_window_id : int
+        Adjacent window the trigger asked to merge with.
+    surviving_window_id : int
+        ``min(triggering_window_id, partner_window_id)`` -- the id that carries
+        the merged window in the revised plan.
+    edge_side : str
+        ``"low"`` or ``"high"``.
+    edge_coherence_before : float
+        Residual ``S_coh`` on the flagged edge before the merge.
+    revision_before, revision_after : int
+        :attr:`WindowPlan.plan_revision` before / after the merge. Equal when
+        the request was rejected (no-op).
+    accepted : bool
+        Whether the merge was applied and the refit completed.
+    reason : str
+        Free-text annotation.
+    """
+
+    triggering_window_id: int
+    partner_window_id: int
+    surviving_window_id: int
+    edge_side: str
+    edge_coherence_before: float
+    revision_before: int
+    revision_after: int
+    accepted: bool
+    reason: str = ""
+
+
+@dataclass
+class SpectrumFit:
+    """The complete Stage 5 fit of a :class:`WindowPlan`.
+
+    Parallels :class:`WindowPlan`: each :class:`FitWindow` produces one
+    :class:`FittingResult`, and the plan-level audit and renegotiation
+    histories live alongside the per-window results. The merged global line
+    list (``fitted_peaks``) is the curated user-facing output, sorted by
+    molecular frequency, with each peak tagged with the
+    :attr:`FittedPeak.window_id` of its originating fit window.
+
+    Attributes
+    ----------
+    window_fits : list of FittingResult
+        Per-window fit results, ordered by ascending ``window_id``.
+    fitted_peaks : list of FittedPeak
+        Merged global line list, sorted by ``frequency_mhz``. Each peak's
+        ``window_id`` points back to its originating window.
+    thaw_history : list of ThawInfo
+        Every thaw attempt across all windows, in execution order. The
+        per-window slice is mirrored on each :class:`FittingResult` for
+        convenience; this list is the canonical plan-level history.
+    replan_history : list of ReplanInfo
+        Every structural-replan attempt, in execution order. Empty when no
+        merges were proposed.
+    final_plan_revision : int
+        :attr:`WindowPlan.plan_revision` of the plan the ``window_fits``
+        describe. ``0`` when no structural change happened.
+    parameters : dict
+        The Stage 5 parameters used to produce this fit (``tau0_us``,
+        ``residual_edge_threshold``, ``max_thaw_rounds``, etc.). Recorded so
+        the persisted fit is self-describing.
+    diagnostics : dict
+        Plan-level diagnostics (e.g. windows whose fit did not converge,
+        bookkeeping summaries).
+    """
+
+    window_fits: List[FittingResult] = field(default_factory=list)
+    fitted_peaks: List[FittedPeak] = field(default_factory=list)
+    thaw_history: List[ThawInfo] = field(default_factory=list)
+    replan_history: List[ReplanInfo] = field(default_factory=list)
+    final_plan_revision: int = 0
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def n_windows(self) -> int:
+        """Number of fitted windows."""
+        return len(self.window_fits)
+
+    @property
+    def n_fitted_peaks(self) -> int:
+        """Total number of fitted peaks across all windows."""
+        return len(self.fitted_peaks)
+
+    def window_fit(self, window_id: int) -> FittingResult:
+        """Return the :class:`FittingResult` for ``window_id`` (raises if absent)."""
+        for fit in self.window_fits:
+            if fit.window_id == window_id:
+                return fit
+        raise KeyError(f"no fitting result for window_id={window_id}")
+
+    def __repr__(self) -> str:
+        n_thaw = len(self.thaw_history)
+        n_thaw_accept = sum(1 for e in self.thaw_history if e.accepted)
+        n_replan = len(self.replan_history)
+        return (
+            f"SpectrumFit(n_windows={self.n_windows}, "
+            f"n_fitted_peaks={self.n_fitted_peaks}, "
+            f"thaw={n_thaw_accept}/{n_thaw}, "
+            f"replans={n_replan}, revision={self.final_plan_revision})"
         )

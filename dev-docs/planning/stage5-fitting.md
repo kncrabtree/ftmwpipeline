@@ -482,8 +482,9 @@ full renegotiation history is recorded in the Stage 5 output (D-5).
 ## Data structures
 
 `core/data_structures.py` already defines `FittedPeak`, `FittingResult`, and
-the data-bearing `SpectralWindow` — defined but not wired. Stage 5 wires them
-and adds a plan-level aggregate:
+the data-bearing `SpectralWindow`; Stage 5 wires them via
+[`fitting/result_conversion.py`](../../src/ftmwpipeline/fitting/result_conversion.py)
+and adds the plan-level `SpectrumFit` aggregate:
 
 - **`FittedPeak`** — per line: `peak_id` (link back to the Stage 3 peak index),
   `frequency_mhz`, `amplitude`, `phase`, `decay_rate` (= 1/τ), their
@@ -737,8 +738,31 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    boundary cut, re-fits the affected batches, and records the structural
    events in the audit trail. (Implemented against the active-FT frame
    established in task 6.)
-8. [ ] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +
-   the new `SpectrumFit` aggregate + unit tests.
+8. [x] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +
+   the new `SpectrumFit` aggregate + unit tests. Landed in
+   [`fitting/result_conversion.py`](../../src/ftmwpipeline/fitting/result_conversion.py)
+   (pure converters `window_outcome_to_fitting_result` and
+   `plan_fit_outcome_to_spectrum_fit`, plus
+   `window_outcome_to_spectral_window`). `FittedPeak` gained `window_id` and
+   a `KnockoutInfo` field; `FittingResult` gained `audit_trail`,
+   `thaw_events`, and a `window_id`; `SpectralWindow.parent_ft` is now
+   `Optional` so the active-FT slice (no persisted parent `ComplexFT`) can
+   carry through; new aggregate `SpectrumFit` parallels `WindowPlan` with
+   per-window `FittingResult`s, the merged global fitted-peak list (sorted
+   by molecular frequency, each peak tagged with its originating window
+   id), the plan-level thaw + replan histories, the final plan revision,
+   and the Stage 5 parameters used. The persistent twins (`AuditStep`,
+   `KnockoutInfo`, `ThawInfo`, `ReplanInfo`) live in `core/` and the
+   converter copies fields into them rather than coupling the persistence
+   layer to the algorithm-side dataclasses (matching the Stage 4 precedent
+   for `FitWindow`/`MergeRequest`). Window baseline padding per D-6 is
+   intentionally deferred -- the bare Stage 4 `freq_range` slice that
+   `materialize_window` produces is what the new `SpectralWindow` carries;
+   padding lands with the persistence work in task 9. 21 unit tests
+   covering both-sideband offset->molecular mapping, audit-trail and
+   knockout attachment, per-window vs plan-level thaw event partition,
+   merged-list sorting + window-id tagging, and `final_plan_revision`
+   propagation through a structural-replan scenario.
 9. [ ] `io/fitting_serialization.py` + `stage5_fitting` stage tracking and
    dependencies (depends on `stage0_fid_data` AND `stage4_windows`) +
    invalidation wiring + hand-edit round-trip tests.

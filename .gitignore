@@ -226,3 +226,6 @@ output/
 
 # Conventional untracked scratch directory for run/test artifacts
 scratch/
+
+# Claude Code per-session bookkeeping (scheduled-task locks, etc.)
+.claude/

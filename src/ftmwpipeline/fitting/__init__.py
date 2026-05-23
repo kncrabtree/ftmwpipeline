@@ -49,9 +49,15 @@ from .plan_execution import (
     execute_plan,
     fit_window_with_fixed_contributors,
     local_thaw_cofit,
+    materialize_window,
     residual_edge_coherence,
     select_contributor_to_thaw,
     subtract_frozen_background,
+)
+from .result_conversion import (
+    plan_fit_outcome_to_spectrum_fit,
+    window_outcome_to_fitting_result,
+    window_outcome_to_spectral_window,
 )
 from .window_fit import (
     AddStep,
@@ -111,7 +117,12 @@ __all__ = [
     "execute_plan",
     "fit_window_with_fixed_contributors",
     "local_thaw_cofit",
+    "materialize_window",
     "residual_edge_coherence",
     "select_contributor_to_thaw",
     "subtract_frozen_background",
+    # result_conversion
+    "plan_fit_outcome_to_spectrum_fit",
+    "window_outcome_to_fitting_result",
+    "window_outcome_to_spectral_window",
 ]

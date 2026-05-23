@@ -105,6 +105,7 @@ __all__ = [
     "evaluate_fixed_contributor",
     "subtract_frozen_background",
     "fit_window_with_fixed_contributors",
+    "materialize_window",
     "residual_edge_coherence",
     "select_contributor_to_thaw",
     "local_thaw_cofit",
@@ -811,7 +812,7 @@ def local_thaw_cofit(
 # ---------------------------------------------------------------------------
 # Plan executor
 # ---------------------------------------------------------------------------
-def _materialize_window(
+def materialize_window(
     fit_window_spec: FitWindow,
     active_ft: ActiveFTResult,
     rms_noise: np.ndarray,
@@ -825,6 +826,13 @@ def _materialize_window(
     relabel -- no de-ramp.
 
     Returns ``(freq_slice, offset_grid, complex_slice, rms_slice, center_mhz)``.
+
+    The molecular frequency reference is the midpoint of
+    ``fit_window_spec.freq_range`` -- the natural symmetric choice, also the
+    one cached on each :class:`WindowOutcome` as ``_center_mhz``. Window
+    baseline padding per D-6 is intentionally not applied here; the slice
+    is the bare Stage 4 freq_range (a follow-up will add the context margin
+    once the persistence layer can record it).
     """
     lo, hi = fit_window_spec.freq_range
     if lo > hi:
@@ -1341,7 +1349,7 @@ def _fit_one_window(
     conservative_kwargs: dict[str, Any],
 ) -> WindowOutcome:
     """Fit one window with its frozen contributors; build its WindowOutcome."""
-    _, offset_grid, z_slice, sig_slice, center_mhz = _materialize_window(
+    _, offset_grid, z_slice, sig_slice, center_mhz = materialize_window(
         win,
         active_ft,
         noise,
