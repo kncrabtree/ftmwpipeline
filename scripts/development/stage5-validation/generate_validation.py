@@ -2026,16 +2026,23 @@ def main() -> None:
     init_conservative_kwargs = {
         "max_decay_factor": float(params.get("max_decay_factor", 5.0)),
         "tau_apodization_us": expf_us if expf_us else None,
+        # Use the information-weighted n_eff for the initial fit's final
+        # knockout sweep too (its main-loop and seeder gates already
+        # default to the same kind). Keeps all three AICc gates on a
+        # single kind for this run.
+        "knockout_n_eff_kind": "perplexity_log1p_snr",
     }
     rescue_conservative_kwargs = dict(init_conservative_kwargs)
     rescue_kwargs = {
         "snr_threshold": DEFAULT_RESCUE_SNR_THRESHOLD,
         "prominence_threshold": DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
         "rescue_max_peaks": 32,
-        # Phase 1 (AICc-with-n_eff merge gate) validation: kish_mag is the
-        # less-aggressive weighting under investigation. Default is
-        # kish_mag_sq; revisit once Phase 4 settles the production choice.
-        "n_eff_kind": "kish_mag",
+        # Information-weighted n_eff (perplexity of log1p(SNR) per-bin
+        # weights) at the merge / knockout sites. Empirical sweep on
+        # the 2638 fixture (diag_perplexity_merge_knockout.py) shows
+        # the survey p95 drops from 4.05 (kish_mag) to 3.35 and the
+        # rescue's w198 chain stops decimating its initial K=2 fit.
+        "n_eff_kind": "perplexity_log1p_snr",
         # Phase 1b: shape-error-aware sigma inflation for the rescue's
         # screening pipeline. epsilon = fractional Lorentzian-vs-true-
         # lineshape residual per unit parent amplitude (per-bin, not

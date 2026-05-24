@@ -1187,7 +1187,9 @@ def knockout_test(
     # n_eff is keyed on the K-fit's model magnitude -- the same value the
     # merge cleanup uses for its AICc test -- and shared across all peaks
     # in the sweep so per-peak comparisons sit on a common scale.
-    n_eff = effective_sample_size(fit.fitted_spectrum, kind=n_eff_kind)
+    n_eff = effective_sample_size(
+        fit.fitted_spectrum, kind=n_eff_kind, sigma=rms_noise,
+    )
     aicc_k = calculate_aicc(fit.chi_squared, fit.n_params, n_eff)
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner or {})

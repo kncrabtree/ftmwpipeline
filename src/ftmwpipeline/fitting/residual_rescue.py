@@ -105,25 +105,24 @@ DEFAULT_RESCUE_PROMINENCE_THRESHOLD = 2.0
 # pathology where a partially-captured candidate gets re-detected and
 # re-added in a subsequent round.
 DEFAULT_CLEANUP_SIGNIFICANCE = DEFAULT_SIGNIFICANCE
-# Threshold (in FWHM units) below which adjacent peaks are merged in the
-# post-rescue cleanup. Two peaks within 1 FWHM of each other typically
-# cannot be physically resolved by the line-shape model -- the rescue's
-# iterative duplicate-fit pathology produces tight clusters that split
-# one true line into several sub-peaks. Merging at 1 FWHM is conservative
-# (genuinely close pairs at the resolution limit may also collapse, but
-# they were not resolvable to start with).
-DEFAULT_MERGE_SEPARATION_FACTOR = 1.0
-# Two-tier merge gate inner threshold: peaks closer than this fraction of
-# the FWHM are merged unconditionally (no AICc test). They are physically
-# unresolvable by a Lorentzian-only model and any "two-peak" fit at sub-
-# resolution separations is a numerical artifact, not a real doublet. This
-# tier catches duplicate-pair overfit (w148: 0.04 MHz separation at FWHM
-# ~0.1 MHz). The outer tier (DEFAULT_MERGE_SEPARATION_FACTOR) runs the
-# AICc-with-n_eff test for separations in [structural, outer] FWHM, where
-# the merge fires only when AICc strictly prefers K-1 -- real close pairs
-# (w198 outer shoulders at ~1 FWHM) survive because AICc on those narrow
-# features is tied at the unidentifiable +inf, and tied AICc is treated
-# as "no evidence for merge".
+# Outer threshold (in FWHM units) above which adjacent peaks are not
+# considered for merging. The inner tier (DEFAULT_STRUCTURAL_MERGE_FACTOR)
+# merges sub-resolution pairs unconditionally; the AICc-gated outer tier
+# fires for separations in [structural, outer] FWHM when AICc strictly
+# prefers (K-1). Set equal to the structural threshold to disable the
+# AICc-gated tier entirely -- pairs in [0.5, 1.0] FWHM are real close
+# pairs whose collapse-or-keep call needs a different statistic than
+# AICc-with-information-weighted-n_eff (the latter activates AICc out
+# of the unidentifiable regime, where it merges real close pairs on
+# chi-squared evidence alone without a phase-degeneracy penalty to
+# distinguish them from duplicate-pair overfit).
+DEFAULT_MERGE_SEPARATION_FACTOR = 0.5
+# Inner / structural threshold: peaks closer than this fraction of the
+# FWHM are merged unconditionally (no AICc test). They are physically
+# unresolvable by a Lorentzian-only model and any "two-peak" fit at
+# sub-resolution separations is a numerical artifact, not a real
+# doublet. Catches the duplicate-pair overfit pathology (w148: 0.04
+# MHz separation at FWHM ~0.1 MHz).
 DEFAULT_STRUCTURAL_MERGE_FACTOR = 0.5
 # Effective-sample-size weighting for the AICc-with-n_eff gates. The
 # canonical definition lives in :mod:`ftmwpipeline.fitting.validation` so the
@@ -315,7 +314,9 @@ def merge_close_peaks_cleanup(
         # +inf because n_eff < k+1) preserve the K-peak fit, which is
         # the structural protection for real close pairs the AICc-only
         # gate over-merged.
-        n_eff = effective_sample_size(current.fitted_spectrum, kind=n_eff_kind)
+        n_eff = effective_sample_size(
+            current.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+        )
         aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
         aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
         if aicc_km1 >= aicc_k:
@@ -485,7 +486,9 @@ def iterative_aicc_cleanup(
     n_dropped = 0
     while current.n_peaks > 0:
         tau_locked = float(current.tau_us)
-        n_eff = effective_sample_size(current.fitted_spectrum, kind=n_eff_kind)
+        n_eff = effective_sample_size(
+            current.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+        )
         aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
 
         worst_aicc_km1 = float("inf")
