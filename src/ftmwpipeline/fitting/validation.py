@@ -35,7 +35,9 @@ __all__ = [
     "calculate_rms_residuals",
     "calculate_noise_weighted_chi2",
     "calculate_aic",
+    "calculate_aicc",
     "calculate_chi_squared_improvement",
+    "effective_sample_size",
     "passes_significance_test",
     "validate_peak_separation",
 ]
@@ -225,6 +227,142 @@ def calculate_aic(chi2: float, n_params: int, n_data: int) -> float:
     if chi2 <= 0.0 or n_data <= 0:
         return float("inf")
     return 2 * n_params + n_data * float(np.log(chi2 / n_data))
+
+
+def effective_sample_size(
+    model_spectrum: np.ndarray,
+    *,
+    kind: str = "kish_mag_sq",
+    cutoff_fraction: float = 0.1,
+) -> float:
+    """Effective number of bins the model actually informs.
+
+    The raw bin count ``n_data`` is the wrong scale for hypothesis tests that
+    distinguish K-peak from (K-1)-peak models on a narrow feature: only the
+    handful of bins under the feature carry information about the parameter
+    change. The Kish-style effective sample size
+
+        n_eff = (Σ w_f)² / Σ w_f²
+
+    with weight ``w_f`` derived from the model magnitude collapses a flat
+    spectrum to ``n_data`` and a delta to ``1``; for a localised feature it
+    returns roughly the FWHM-in-bins. Feeding ``n_eff`` into
+    :func:`calculate_aicc` makes the small-sample correction kick in on
+    narrow features and naturally rejects spurious K growth.
+
+    Parameters
+    ----------
+    model_spectrum : np.ndarray
+        Complex (or real) model spectrum on the window grid. Only the
+        magnitude is consulted.
+    kind : str, default "kish_mag_sq"
+        Weighting scheme. ``"kish_mag_sq"`` uses ``w_f = |model(f)|²``
+        (Fisher-information density for a Gaussian likelihood) and is the
+        default. ``"kish_mag"`` uses ``w_f = |model(f)|`` -- softer
+        concentration. ``"hard_radius"`` counts bins where ``|model(f)| >
+        cutoff_fraction * max|model|`` -- threshold-sensitive but simpler
+        to reason about.
+    cutoff_fraction : float, default 0.1
+        Fraction of ``max|model|`` used by ``"hard_radius"`` to delimit the
+        active region. Ignored by the other kinds.
+
+    Returns
+    -------
+    float
+        The effective sample size, in ``[1, n_data]``. Returns ``n_data`` for
+        an all-zero or all-flat model (the "no concentration" limit).
+
+    Raises
+    ------
+    ValueError
+        If ``kind`` is unknown.
+    """
+    mag = np.abs(np.asarray(model_spectrum))
+    n_data = mag.size
+    if n_data == 0:
+        return 0.0
+    max_mag = float(mag.max())
+    if max_mag <= 0.0:
+        return float(n_data)
+    if kind == "kish_mag_sq":
+        w = mag.astype(float) ** 2
+    elif kind == "kish_mag":
+        w = mag.astype(float)
+    elif kind == "hard_radius":
+        active = mag > cutoff_fraction * max_mag
+        n_eff = float(int(active.sum()))
+        return n_eff if n_eff > 0.0 else 1.0
+    else:
+        raise ValueError(f"unknown kind {kind!r}")
+    sum_w = float(w.sum())
+    sum_w2 = float((w * w).sum())
+    if sum_w2 <= 0.0:
+        return float(n_data)
+    n_eff = (sum_w * sum_w) / sum_w2
+    return float(min(max(n_eff, 1.0), float(n_data)))
+
+
+def calculate_aicc(
+    chi2: float,
+    n_params: int,
+    n_eff: float,
+) -> float:
+    """AIC with a small-sample correction, evaluated on the effective
+    sample size ``n_eff``.
+
+    The standard Burnham-Anderson AICc treats ``n`` as one quantity: it
+    appears in the Gaussian-MLE variance estimator (``σ̂² = chi²/n``, which
+    drives the log-likelihood term) *and* in the small-sample correction
+    (``2k(k+1)/(n - k - 1)``). Substituting an effective sample size
+    ``n_eff`` (see :func:`effective_sample_size`) for ``n`` uniformly
+    keeps the formula self-consistent: smaller ``n_eff`` simultaneously
+    rescales how much chi² improvements count for in the log-likelihood
+    term AND grows the small-sample correction. Hybridising (``n_data``
+    in the log term, ``n_eff`` in the correction) would not correspond to
+    any standard AICc derivation.
+
+    The formula:
+
+        AICc = 2k + n_eff * log(chi² / n_eff) + 2k(k+1) / (n_eff - k - 1)
+
+    Reduces to :func:`calculate_aic` (in the ``n_eff`` scaling) as
+    ``n_eff → ∞``. When ``n_eff ≤ k + 1`` the model is not identifiable
+    at the effective sample size and the function returns ``+inf`` -- this
+    is the structural rejection on narrow features the AICc-with-n_eff
+    design relies on.
+
+    Parameters
+    ----------
+    chi2 : float
+        Noise-weighted chi-squared of the fit.
+    n_params : int
+        Number of fitted parameters ``k``.
+    n_eff : float
+        Effective sample size (:func:`effective_sample_size`).
+
+    Returns
+    -------
+    float
+        The AICc. ``+inf`` for ``chi2 ≤ 0``, ``n_eff ≤ 0``, or
+        ``n_eff - k - 1 ≤ 0`` (model not identifiable on this evidence).
+        Lower is better.
+
+    Notes
+    -----
+    Tie semantics matter at decision points: when comparing AICc(K) to
+    AICc(K-1) and both diverge to ``+inf`` (neither model identifiable),
+    the comparison ``aicc_K-1 > aicc_K`` evaluates to ``False`` in
+    Python, so a "reject K if AICc(K-1) > AICc(K)" gate falls through to
+    accept the simpler model -- the conservative call.
+    """
+    if chi2 <= 0.0 or n_eff <= 0.0:
+        return float("inf")
+    denom = n_eff - float(n_params) - 1.0
+    if denom <= 0.0:
+        return float("inf")
+    log_term = n_eff * float(np.log(chi2 / n_eff))
+    correction = 2.0 * n_params * (n_params + 1) / denom
+    return 2.0 * n_params + log_term + correction
 
 
 def calculate_chi_squared_improvement(

@@ -2032,6 +2032,19 @@ def main() -> None:
         "snr_threshold": DEFAULT_RESCUE_SNR_THRESHOLD,
         "prominence_threshold": DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
         "rescue_max_peaks": 32,
+        # Phase 1 (AICc-with-n_eff merge gate) validation: kish_mag is the
+        # less-aggressive weighting under investigation. Default is
+        # kish_mag_sq; revisit once Phase 4 settles the production choice.
+        "n_eff_kind": "kish_mag",
+        # Phase 1b: shape-error-aware sigma inflation for the rescue's
+        # screening pipeline. epsilon = fractional Lorentzian-vs-true-
+        # lineshape residual per unit parent amplitude (per-bin, not
+        # chi^2_r-aggregated -- those are ~4-8x different in scale).
+        # Empirical sweep on the 2638 fixture (diag_phase1_merge_gate.py):
+        # epsilon=0.05 stops the w148/w269 rescue-merge limit cycle
+        # without affecting borderline real-peak rescues (w16/w104/w127/
+        # w337) or clean controls (w63/w64). Re-calibrate per dataset.
+        "shape_error_epsilon": 0.05,
     }
     peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded]
 

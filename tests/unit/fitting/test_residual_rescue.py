@@ -26,10 +26,15 @@ from ftmwpipeline.fitting.peak_model import ModelPeak, effective_tau, model_spec
 from ftmwpipeline.fitting.residual_rescue import (
     DEFAULT_RESCUE_MAX_ROUNDS,
     ConsolidatedRescueOutcome,
+    merge_close_peaks_cleanup,
     rescue_and_consolidate,
 )
 from ftmwpipeline.fitting.validation import feature_fwhm
-from ftmwpipeline.fitting.window_fit import conservative_fit
+from ftmwpipeline.fitting.window_fit import (
+    conservative_fit,
+    derive_window_fit_constraints,
+    fit_window,
+)
 
 T_US = 12.65
 TAU_US = 5.0
@@ -213,3 +218,133 @@ class TestRescueDiagnosticsShape:
             assert 0 <= diag.n_pruned_total <= len(diag.joint_fit.peaks)
             assert 0 <= diag.n_pruned_rescue_origin <= diag.n_pruned_total
             assert diag.n_pruned_rescue_origin <= diag.n_rescue_added
+
+
+class TestMergeCleanupAICc:
+    """AICc-with-n_eff merge gate behavior on the canonical duplicate-pair
+    and real-close-pair regimes."""
+
+    def _constraints_kwargs(self, u, z, sigma):
+        c = derive_window_fit_constraints(z, sigma, TAU_US, T_US)
+        return c.fit_kwargs_inner
+
+    def test_duplicate_pair_collapses(self):
+        """Two peaks at the same physical offset (split by half a bin) get
+        merged: AICc(K-1) <= AICc(K) because n_eff ~ FWHM-in-bins makes the
+        small-sample correction explode at K=2."""
+        rng = np.random.default_rng(SEED + 1)
+        true = ModelPeak(_amp_for_snr(120.0), 0.0, 0.5)
+        u, z = _window([true], 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        # Seed two peaks separated by half a bin around the true offset.
+        duplicate_init = [
+            ModelPeak(true.amplitude / 2, -0.5 * DF_MHZ, 0.5),
+            ModelPeak(true.amplitude / 2, +0.5 * DF_MHZ, 0.5),
+        ]
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(
+            u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs,
+        )
+        assert k2_fit.success and k2_fit.n_peaks == 2
+
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        assert n_merged == 1
+        assert merged.n_peaks == 1
+        assert abs(merged.peaks[0].offset_mhz - 0.0) < 0.5 * FWHM
+
+    def test_real_close_pair_survives(self):
+        """Two genuinely distinct peaks ~0.7 FWHM apart should NOT merge:
+        the K=2 model carries information the K=1 fit cannot reconstruct."""
+        rng = np.random.default_rng(SEED + 2)
+        sep = 0.7 * FWHM
+        true = [
+            ModelPeak(_amp_for_snr(220.0), -sep / 2, 0.5),
+            ModelPeak(_amp_for_snr(220.0), +sep / 2, 2.0),  # different phase
+        ]
+        u, z = _window(true, 1.0, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(
+            u, z, sigma, true, TAU_US, T_US, **fit_kwargs,
+        )
+        assert k2_fit.success and k2_fit.n_peaks == 2
+
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        assert n_merged == 0
+        assert merged.n_peaks == 2
+
+    def test_wide_pair_short_circuits(self):
+        """Pairs farther apart than ``merge_separation_factor * FWHM``
+        never reach the AICc gate."""
+        rng = np.random.default_rng(SEED + 3)
+        true = [
+            ModelPeak(_amp_for_snr(150.0), -3.0 * FWHM, 0.5),
+            ModelPeak(_amp_for_snr(150.0), +3.0 * FWHM, 1.5),
+        ]
+        u, z = _window(true, 8.0 * FWHM, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(
+            u, z, sigma, true, TAU_US, T_US, **fit_kwargs,
+        )
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+            merge_separation_factor=1.0,
+        )
+        assert n_merged == 0
+        assert merged is k2_fit
+
+    def test_above_resolution_real_pair_with_tied_aicc_survives(self):
+        """A real pair at separation slightly above the structural cutoff
+        but where AICc(K)=AICc(K-1)=+inf (model unidentifiable on the
+        narrow n_eff) must NOT merge -- this is the w198-style
+        outer-shoulder protection. REJECT-on-tie is the structural fix."""
+        rng = np.random.default_rng(SEED + 5)
+        # Separation = 0.7 FWHM: above 0.5 (no structural merge) and
+        # below 1.0 (enters the AICc test). Two genuinely distinct peaks
+        # with different phases at high SNR.
+        sep = 0.7 * FWHM
+        true = [
+            ModelPeak(_amp_for_snr(250.0), -sep / 2, 0.4),
+            ModelPeak(_amp_for_snr(250.0), +sep / 2, 2.3),
+        ]
+        u, z = _window(true, 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(
+            u, z, sigma, true, TAU_US, T_US, **fit_kwargs,
+        )
+        assert k2_fit.success and k2_fit.n_peaks == 2
+
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        # Real pair must survive the gate even when AICc cannot
+        # discriminate K=2 from K=1 on this narrow n_eff.
+        assert n_merged == 0
+        assert merged.n_peaks == 2
+
+    def test_k1_input_returns_unchanged(self):
+        """K<2 short-circuits to (fit, 0)."""
+        rng = np.random.default_rng(SEED + 4)
+        true = ModelPeak(_amp_for_snr(150.0), 0.0, 0.5)
+        u, z = _window([true], 1.0, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k1_fit = fit_window(
+            u, z, sigma, [true], TAU_US, T_US, **fit_kwargs,
+        )
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k1_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        assert n_merged == 0
+        assert merged is k1_fit

@@ -43,7 +43,12 @@ from .residual_screening import (
     filter_by_phase_coherence,
     find_residual_peaks,
 )
-from .validation import calculate_chi_squared_improvement, feature_fwhm
+from .validation import (
+    calculate_aicc,
+    calculate_chi_squared_improvement,
+    effective_sample_size,
+    feature_fwhm,
+)
 from .window_fit import (
     DEFAULT_MAX_PEAKS,
     DEFAULT_MIN_SEPARATION_FACTOR,
@@ -63,7 +68,9 @@ from .window_fit import (
 __all__ = [
     "DEFAULT_CLEANUP_SIGNIFICANCE",
     "DEFAULT_MERGE_SEPARATION_FACTOR",
+    "DEFAULT_N_EFF_KIND",
     "DEFAULT_RESCUE_MAX_ROUNDS",
+    "DEFAULT_STRUCTURAL_MERGE_FACTOR",
     "DEFAULT_RESCUE_SNR_THRESHOLD",
     "DEFAULT_RESCUE_PROMINENCE_THRESHOLD",
     "ConsolidatedRescueOutcome",
@@ -103,6 +110,27 @@ DEFAULT_CLEANUP_SIGNIFICANCE = DEFAULT_SIGNIFICANCE
 # (genuinely close pairs at the resolution limit may also collapse, but
 # they were not resolvable to start with).
 DEFAULT_MERGE_SEPARATION_FACTOR = 1.0
+# Two-tier merge gate inner threshold: peaks closer than this fraction of
+# the FWHM are merged unconditionally (no AICc test). They are physically
+# unresolvable by a Lorentzian-only model and any "two-peak" fit at sub-
+# resolution separations is a numerical artifact, not a real doublet. This
+# tier catches duplicate-pair overfit (w148: 0.04 MHz separation at FWHM
+# ~0.1 MHz). The outer tier (DEFAULT_MERGE_SEPARATION_FACTOR) runs the
+# AICc-with-n_eff test for separations in [structural, outer] FWHM, where
+# the merge fires only when AICc strictly prefers K-1 -- real close pairs
+# (w198 outer shoulders at ~1 FWHM) survive because AICc on those narrow
+# features is tied at the unidentifiable +inf, and tied AICc is treated
+# as "no evidence for merge".
+DEFAULT_STRUCTURAL_MERGE_FACTOR = 0.5
+# Effective-sample-size weighting for the AICc-with-n_eff gates (merge,
+# knockout, conservative-loop accept). Kish on |model(f)|^2 collapses the
+# n_data baseline to the bins the model actually informs -- a narrow
+# Lorentzian on a 200-bin window gives n_eff ~ FWHM-in-bins, making the
+# AICc small-sample correction kick in and naturally reject duplicate
+# peaks at sub-resolution separations. See
+# dev-docs/planning/stage5-residual-rescue.md Open question 2 -> Candidate
+# algorithmic fixes -> "Generalised effective-DoF" for the rationale.
+DEFAULT_N_EFF_KIND = "kish_mag_sq"
 
 
 @dataclass(frozen=True)
@@ -180,19 +208,35 @@ def merge_close_peaks_cleanup(
     *,
     fit_kwargs_inner: dict[str, Any],
     merge_separation_factor: float = DEFAULT_MERGE_SEPARATION_FACTOR,
+    structural_merge_factor: float = DEFAULT_STRUCTURAL_MERGE_FACTOR,
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
 ) -> Tuple[WindowFitResult, int]:
-    """Greedy F-test-gated merge of close peak pairs.
+    """Two-tier merge cleanup for close peak pairs.
 
-    Iteratively: find the closest pair in the current fit; if within
-    ``merge_separation_factor * fwhm``, attempt to merge them and refit
-    the resulting (K-1)-peak set. The merge is accepted only when the
-    K-vs-(K-1) F-test does *not* reach significance -- i.e., when the
-    merged model is statistically indistinguishable from the K-peak model,
-    so the two peaks were not actually carrying independent information.
-    Real distinct peaks that happen to sit close together survive: their
-    merged fit would significantly worsen chi-squared and the F-test
-    rejects the merge.
+    Iteratively finds the closest adjacent pair and decides whether to
+    collapse it into a single peak. Two tiers, keyed on the pair's
+    fractional FWHM separation:
+
+    1. **Sub-resolution** (separation < ``structural_merge_factor *
+       fwhm``): merge unconditionally. The Lorentzian-only model
+       physically cannot distinguish these from a single peak, so any
+       LSQ that converges to two separate peaks at this scale is a
+       numerical artifact (the duplicate-pair-overfit pathology from
+       w148/w269 in the 2638 fixture).
+    2. **Above resolution** (``structural_merge_factor * fwhm`` <=
+       separation < ``merge_separation_factor * fwhm``): merge only when
+       AICc strictly prefers the (K-1)-peak model. ``n_eff`` (Kish on
+       ``|model|^2`` by default) collapses to roughly K times the per-
+       peak FWHM-in-bins, which on narrow features can put both AICc
+       (K) and AICc(K-1) at ``+inf`` (model not identifiable). Tied AICc
+       is read as "no evidence for merge" and preserves the K-peak fit
+       -- this is the structural protection for real close pairs (w198
+       outer shoulders at ~1 FWHM from inner peaks) the earlier
+       AICc-only gate over-merged.
+
+    The legacy F-test ``p_value`` is no longer used; ``significance`` is
+    retained for backwards-compat callers.
 
     Returns ``(updated_fit, n_merged)``. ``n_merged`` is the number of
     successful merges (each removes one peak from the set).
@@ -239,17 +283,27 @@ def merge_close_peaks_cleanup(
         )
         if not refit.success:
             break
-        # F-test: simpler=merged (K-1 peaks), complex=current (K peaks).
-        # If pre-merge is significantly better, the merged peaks were
-        # really distinct -- back out the merge and stop.
-        p_value, _, _ = calculate_chi_squared_improvement(
-            refit.chi_squared,
-            current.chi_squared,
-            3,
-            current.n_data,
-            current.n_params,
-        )
-        if p_value < significance:
+
+        # Tier 1: sub-resolution -> merge unconditionally. The K-peak
+        # fit at this scale is a numerical artifact; no statistical test
+        # can disambiguate it from a single peak.
+        if min_dist < structural_merge_factor * fwhm:
+            current = refit
+            n_merged += 1
+            continue
+
+        # Tier 2: above-resolution -> AICc-with-n_eff test, with
+        # REJECT-on-tie. n_eff comes from the more-complex (K-peak)
+        # model's magnitude (Kish); both AICc evaluations share it.
+        # ``>=`` (rather than ``>``) makes the gate "merge only when
+        # K-1 is strictly better"; ties (both AICc finite-equal or both
+        # +inf because n_eff < k+1) preserve the K-peak fit, which is
+        # the structural protection for real close pairs the AICc-only
+        # gate over-merged.
+        n_eff = effective_sample_size(current.fitted_spectrum, kind=n_eff_kind)
+        aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
+        aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+        if aicc_km1 >= aicc_k:
             break
         current = refit
         n_merged += 1
@@ -371,6 +425,7 @@ def attempt_residual_rescue(
     coherence_close_threshold: float = DEFAULT_COHERENCE_CLOSE_THRESHOLD,
     coherence_isolated_threshold: float = DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     conservative_kwargs: Optional[dict[str, Any]] = None,
+    shape_error_epsilon: float = 0.0,
 ) -> RescueOutcome:
     """Find peaks the initial fit missed and fit them to its residual.
 
@@ -418,6 +473,19 @@ def attempt_residual_rescue(
         (e.g. ``tau_apodization_us``, ``max_decay_factor``,
         ``phase_penalty_lambda``). Pass the same options the initial fit
         received so the rescue's per-trial fits enforce the same physics.
+    shape_error_epsilon : float, default 0.0
+        Fractional lineshape-model error per unit parent amplitude.
+        Inflates the screening-pipeline noise floor by
+        ``epsilon * |current_model(f)|`` so candidates falling under
+        existing strong peaks must exceed the expected irreducible
+        Lorentzian-vs-true-shape residual to be considered. Calibrated
+        per dataset (the chi^2_r ~ SNR^2 regression slope: see
+        ``scratch/stage5-validation/diag_voigt_hypothesis.py``; ~0.0125
+        for the 2638 fixture). ``0.0`` (default) preserves the canonical
+        Stage 2 noise model and the pre-existing behaviour. The fitter
+        (LSQ inside :func:`conservative_fit`) always uses the
+        un-inflated sigma; inflation is a screening tool, not a fitting
+        one.
     """
     u = np.asarray(offset_grid_mhz, dtype=float)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
@@ -455,12 +523,42 @@ def attempt_residual_rescue(
         if rescue_tau_us > 0.0
         else 0.0
     )
+
+    # Shape-error-aware sigma inflation for the screening pipeline.
+    # When epsilon > 0, the per-bin noise floor seen by the detector +
+    # phase-coherence filter grows by ``epsilon * |initial_model|`` --
+    # representing the irreducible Lorentzian-vs-true-lineshape residual
+    # that scales with parent amplitude (see the chi^2_r ~ SNR^2
+    # regression in scratch/stage5-validation/diag_voigt_hypothesis.py).
+    # Candidates sitting under existing strong peaks must clear this
+    # inflated floor to be considered; far-from-peak candidates see the
+    # canonical noise. conservative_fit further down still uses the raw
+    # sigma -- the inflation gates which candidates enter the fit, not
+    # how they fit.
+    if shape_error_epsilon > 0.0:
+        model_mag = np.abs(initial_model)
+        sigma_screen = np.sqrt(sigma * sigma + (shape_error_epsilon * model_mag) ** 2)
+    else:
+        sigma_screen = sigma
     raw_candidates = find_residual_peaks(
-        u, residual, sigma,
+        u, residual, sigma_screen,
         snr_threshold=snr_threshold,
         prominence_threshold=prominence_threshold,
         fwhm_mhz=rescue_fwhm if rescue_fwhm > 0.0 else None,
     )
+    # find_residual_peaks gates on the *median* sigma_c (scipy's
+    # find_peaks takes a scalar height by design here). With per-bin
+    # sigma inflation that's much larger at a few peak-center bins than
+    # at the median bin, the median-based gate is barely shifted -- the
+    # per-bin filter has to run here as a post-step. Drop any candidate
+    # whose magnitude fails the inflated-sigma SNR at its own bin.
+    if shape_error_epsilon > 0.0 and raw_candidates:
+        kept = []
+        for c in raw_candidates:
+            bin_sigma_c = sigma_screen[c.bin_index] / np.sqrt(2.0)
+            if c.magnitude >= snr_threshold * bin_sigma_c:
+                kept.append(c)
+        raw_candidates = kept
     # Phase-coherence filter (sliding, fitted-peak-aware): drop candidates
     # whose complex projection onto a Lorentzian basis at their offset
     # doesn't recover the detected magnitude SNR by a proximity-dependent
@@ -475,7 +573,7 @@ def attempt_residual_rescue(
     fitted_peak_offsets = [pk.offset_mhz for pk in current_fit.peaks]
     if raw_candidates and rescue_fwhm > 0.0:
         candidates, rejected_by_coherence = filter_by_phase_coherence(
-            raw_candidates, u, residual, sigma,
+            raw_candidates, u, residual, sigma_screen,
             rescue_tau_us, acquisition_us,
             fwhm_mhz=rescue_fwhm,
             fitted_peak_offsets=fitted_peak_offsets,
@@ -583,6 +681,11 @@ class RescueRoundDiagnostics:
         is undoing the rescue's contribution. v1 logs it but does not act
         on it; a future fallback to A-mode for that window would be
         triggered here.
+    n_merged : int
+        Number of close-peak pairs the AICc-with-n_eff merge cleanup
+        collapsed in the post-knockout fit. The merge addresses the
+        duplicate-pair-overfit pathology that knockout cannot catch (each
+        duplicate looks individually supported when its twin is frozen).
     chi2_before, chi2_after : float
         Noise-weighted chi-squared of the previous round's fit and of the
         consolidated (post-pruning) fit, both evaluated against the same
@@ -612,6 +715,7 @@ class RescueRoundDiagnostics:
     tau_us_after: float
     accepted: bool
     reason: str = ""
+    n_merged: int = 0
 
 
 @dataclass(frozen=True)
@@ -667,6 +771,10 @@ def rescue_and_consolidate(
     knockout_significance: float = DEFAULT_SIGNIFICANCE,
     rescue_max_peaks: int = DEFAULT_MAX_PEAKS,
     conservative_kwargs: Optional[dict[str, Any]] = None,
+    merge_separation_factor: float = DEFAULT_MERGE_SEPARATION_FACTOR,
+    structural_merge_factor: float = DEFAULT_STRUCTURAL_MERGE_FACTOR,
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    shape_error_epsilon: float = 0.0,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + knockout consolidation (option B).
 
@@ -803,6 +911,7 @@ def rescue_and_consolidate(
             coherence_isolated_threshold=coherence_isolated_threshold,
             max_peaks=rescue_max_peaks,
             conservative_kwargs=ckwargs_in,
+            shape_error_epsilon=shape_error_epsilon,
         )
         n_rescue_added = rescue.fit.n_peaks
 
@@ -932,8 +1041,40 @@ def rescue_and_consolidate(
                 pruned_fit = joint
                 pruned_knockouts = list(joint_knockouts)
 
+        # Merge-cleanup the post-knockout fit. Closes the wiring gap noted
+        # in the planning doc: knockout cannot see duplicate-pair overfit
+        # because each duplicate "carries its share" while its twin is
+        # frozen; the AICc-with-n_eff merge gate evaluates the pair jointly
+        # and collapses sub-resolution duplicates. Real close pairs survive
+        # because the (K-1)-peak refit's AICc is worse.
+        merged_fit, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, pruned_fit,
+            float(pruned_fit.tau_us), acquisition_us,
+            fit_kwargs_inner=fit_kwargs_inner,
+            merge_separation_factor=merge_separation_factor,
+            structural_merge_factor=structural_merge_factor,
+            n_eff_kind=n_eff_kind,
+        )
+        if n_merged > 0:
+            # Refresh knockout flags so the persisted set matches the
+            # post-merge peak list.
+            pruned_knockouts = knockout_test(
+                u, z, sigma, merged_fit, acquisition_us,
+                significance=knockout_significance,
+            )
+            pruned_fit = merged_fit
+
         chi2_after = pruned_fit.chi_squared
         tau_after = float(pruned_fit.tau_us)
+        reason_parts: List[str] = []
+        if n_pruned_total > 0:
+            reason_parts.append(f"knockout pruned {n_pruned_total} peak(s)")
+        if n_merged > 0:
+            reason_parts.append(f"merge collapsed {n_merged} pair(s)")
+        if not reason_parts:
+            reason = "joint refit consolidated rescue contribution"
+        else:
+            reason = "joint refit + " + " + ".join(reason_parts)
         rounds.append(
             RescueRoundDiagnostics(
                 round_idx=round_idx,
@@ -951,11 +1092,8 @@ def rescue_and_consolidate(
                 tau_us_before=tau_before,
                 tau_us_after=tau_after,
                 accepted=True,
-                reason=(
-                    "joint refit consolidated rescue contribution"
-                    if n_pruned_total == 0
-                    else f"joint refit + knockout pruned {n_pruned_total} peak(s)"
-                ),
+                reason=reason,
+                n_merged=n_merged,
             )
         )
         current = ConservativeFitResult(

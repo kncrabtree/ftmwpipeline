@@ -425,11 +425,14 @@ This is the clearest concrete instance of the overfitting concern the
 parent open question is about. It's a Stage-5-algorithm fix, not a
 visualization fix; the visualization just made it visible.
 
-#### Candidate algorithmic fixes (deferred; user-proposed)
+#### Candidate algorithmic fixes (item 1 LANDED; item 2 still deferred)
 
 Two ideas the user surfaced while looking at w148 — both targeting
-the same underlying problem from different angles. Captured here for
-when this gets picked up:
+the same underlying problem from different angles. Item 1 (effective-
+DoF / AICc) shipped in the Phase 1 series; the actual implementation
+differs from the original proposal in a few important ways (see the
+"Phase 1 implementation status" subsection below). Item 2 (phase-
+degeneracy penalty) is still deferred.
 
 **1. Generalised effective-DoF across all Stage 5 hypothesis tests.**
 The Stage 5 fit currently runs three F-test-style gates, all sharing
@@ -559,39 +562,190 @@ resolution limit. The cutoff might need to be smaller for the
 degeneracy half (e.g. 1 FWHM instead of the current 2 FWHM) since
 the degeneracy pathology is specifically a sub-FWHM problem.
 
+#### Phase 1 implementation status (item 1 landed)
+
+Item 1 shipped against the **merge gate only** so far. The other two
+sites (knockout `supported` flag and conservative-loop accept gate)
+still use the raw-`n_data` F-test/AIC; they remain on the roadmap as
+Phase 2 and Phase 3 respectively. The merge-gate implementation also
+diverged from the original proposal in two structurally important
+ways:
+
+**(a) AICc formula uses `n_eff` uniformly, not just in the correction.**
+The Burnham-Anderson AICc is `2k + n·log(chi²/n) + 2k(k+1)/(n - k - 1)`;
+the original sketch only swapped `n_eff` into the correction term and
+left `n_data` in the log-likelihood. That hybrid doesn't correspond to
+any clean statistical derivation. The shipped form substitutes `n_eff`
+for `n` everywhere — see `validation.calculate_aicc(chi2, n_params,
+n_eff)`. The log-term scaling makes marginal chi² improvements count
+for less when `n_eff` is small, which is the same conservatism the
+small-sample correction provides, applied through a second channel.
+
+**(b) Two-tier merge gate, not single AICc test.** Pure AICc-with-
+`n_eff` has a structural blind spot: for K-peak fits on narrow features
+where `n_eff < k + 1` for *both* K and (K-1), AICc returns `+inf` for
+both → tied → any tie-break behaviour either over-merges (`inf > inf
+== False` accepts the merge, eating real peaks like w198's outer
+shoulders) or under-merges (rejects, leaving duplicate-pair overfit).
+The fix is a two-tier merge gate (`merge_close_peaks_cleanup` in
+`residual_rescue.py`):
+
+- **Tier 1 — sub-resolution structural merge.** Pairs at separation <
+  `structural_merge_factor * fwhm` (default 0.5 FWHM) merge
+  unconditionally; no AICc test. The Lorentzian-only model physically
+  cannot distinguish these from a single peak, so any K-peak LSQ
+  convergence at this scale is a numerical artifact. Catches the w148
+  / w269 duplicate-pair overfit pathology.
+- **Tier 2 — above-resolution AICc-with-`n_eff` gate, REJECT-on-tie.**
+  Pairs at `structural_merge_factor * fwhm` ≤ separation <
+  `merge_separation_factor * fwhm` (0.5 to 1.0 FWHM by default) merge
+  only when AICc(K-1) is **strictly less than** AICc(K). Ties (both
+  finite-equal or both `+inf`) preserve the K-peak fit. Protects real
+  close pairs like w198's outer shoulders (~1 FWHM from inner peaks)
+  where AICc cannot discriminate.
+
+The weighting choice for `n_eff` is `kish_mag` (Kish formula on
+`|model(f)|`, not `|model(f)|²`); a sweep on the 2638 fixture showed
+the `|model|²` weighting produced `n_eff` so small that even sub-
+resolution duplicate pairs sometimes were unidentifiable and the gate
+would either over- or under-merge unpredictably depending on tie-break
+choice. `kish_mag` keeps `n_eff` large enough for Tier 2 AICc to be
+informative across the 2638 fit's K range. `n_eff_kind` is a parameter
+on the merge function; the production default is set in
+`DEFAULT_N_EFF_KIND` and is dataset-relevant (per-instrument re-
+calibration may be needed).
+
+**(c) Cleanup wiring gap closed.** The pre-Phase-1 codebase had
+`merge_close_peaks_cleanup` defined as a library function but no
+caller in `rescue_and_consolidate` — confirmed via grep. The Phase 1
+work added the call after each round's knockout sweep (with a
+`knockout_test` re-run on the merged fit so persisted `supported`
+flags match the post-merge peak set). `RescueRoundDiagnostics` gained
+`n_merged` so the per-round audit shows where the gate fired.
+
+**(d) Shape-error-aware sigma inflation for the rescue's screening
+pipeline.** A separate Phase 1b change to `attempt_residual_rescue`,
+necessary because the merge gate alone left the rescue stuck in limit
+cycles on strong-line windows (rescue keeps re-detecting irreducible
+shape residual as candidate peaks; merge collapses them; next round
+re-detects them; ...). The fix builds a position-dependent effective
+noise floor
+
+```
+σ_eff(f) = √(σ_c² + (ε · |current_model(f)|)²)
+```
+
+threaded as the new `shape_error_epsilon` parameter (default 0.0 =
+behaviour-preserving). The rescue's detector + phase-coherence filter
+see the inflated sigma; the LSQ inside `conservative_fit` keeps the
+canonical sigma — inflation is a screening tool, not a fitting one. A
+per-bin post-filter is required because `find_residual_peaks` uses
+the *median* sigma for scipy's `find_peaks` height threshold, so a
+few-bin local inflation doesn't shift the global gate; the post-
+filter checks each detected candidate against
+`snr_threshold * sigma_eff[bin_index] / sqrt(2)` and drops those that
+fail at the inflated floor.
+
+`ε` is a **per-dataset constant** measured from the chi²_r vs SNR²
+regression on the post-rescue fits (see "Lineshape model deficit and
+per-dataset calibration" in
+[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)).
+The 2638 fixture's calibrated value is 0.05 (5% per-bin residual at
+the line center). Note that the *per-bin* `ε` is roughly 4× the
+*chi²_r-aggregated* `ε` from the regression because chi²_r sums over
+many bins and divides by full-window dof; the per-bin value is what
+the sigma inflation needs. This factor will likely differ between
+instruments.
+
+**(e) Persistence semantics.** The original proposal asked whether to
+keep raw F-test `p_value` or replace with the n_eff-corrected form.
+Decision: persist all three diagnostics during development (raw F-test
+p, n_eff-corrected p, and `aicc_delta`), slim to just (raw p +
+`aicc_delta` + `n_eff`) once Phase 2 / 3 settle. **NOT YET WIRED** —
+the merge gate is transient state (not persisted), so this only
+becomes load-bearing for the Phase 2 (knockout) and Phase 3
+(conservative-loop) work. No fixture-vintage hazard yet.
+
+#### Validation results after Phase 1 (2638 fixture, kish_mag, ε=0.05)
+
+Survey distribution (50 windows, every 7th):
+
+| metric | baseline (pre-Phase 1) | Phase 1+1b+1c |
+|---|---|---|
+| chi²_r median | 1.43 | 1.06 |
+| chi²_r p75 | 2.33 | 1.65 |
+| chi²_r p95 | 7.73 | 3.23 |
+| chi²_r max | (~65; outlier-dominated) | 5.65 |
+
+Target windows:
+
+| window | K_init → K_final | chi²_r init → final | note |
+|---|---|---|---|
+| w148 (duplicate-pair) | 1 → 2 | 715 → 6.27 | Duplicate-pair overfit eliminated (sub-resolution merge fires). chi²_r at shape-error floor for SNR=145. |
+| w198 (apod-override + shoulders) | 2 → 7 | 627 → 2.92 | Real outer shoulders preserved by Tier-2 REJECT-on-tie. |
+| w269 (duplicate-pair) | 5 → 4 | 17.4 → 18.65 | Duplicates from initial seeding collapsed; chi²_r at shape-error floor for SNR=474. Remaining initial-seeding duplicate likely needs Phase 3. |
+| w271 (decoupled doublet) | 2 → 2 | 1578 → 9.45 | Initial-seeding A/C duplicate not yet resolved — Phase 3 issue. |
+| w16, w104, w127, w337 (borderline) | 1 → 2 | (low → low) | Unchanged — weak-peak rescues preserved. |
+| w63, w64 (clean controls) | unchanged | unchanged | No regressions. |
+
 #### Suggested sequencing for the next session
 
-The duplicate-pair overfit (this section) and the contributor-skirt
-leakage (`stage5-fitting.md` O5-10) are related: leakage contaminates
-the noise floor and per-window chi² that every Stage 5 hypothesis
-test calibrates against. Tuning the effective-DoF rule on a
-contaminated baseline means re-tuning after the leakage fix lands.
-So the order matters:
+Items 1 and 2 below are LANDED; the remaining sequencing focuses on
+the still-deferred per-site AICc generalisation and the phase-
+degeneracy penalty. The duplicate-pair overfit and contributor-skirt
+leakage interaction noted in earlier versions of this section turned
+out to be less coupled in practice than expected — Phase 1 work
+proceeded cleanly without first re-doing the O5-10 leakage fix.
 
 1. **Fix the contributor-skirt leakage** (`stage5-fitting.md` O5-10).
-   Clean baseline first — w337 is the canonical case, but the bias
-   likely affects every window whose neighbour list is incomplete.
-   Pre-requisite for any hypothesis-test calibration that follows.
+   LANDED in commit `456fec2` (drives Stage 4 contributor attachment
+   from analytic skirt magnitude). Provides the clean baseline the
+   AICc work calibrates against.
 
-2. **Generalise to effective-DoF / AICc-with-`n_eff`** (this section,
-   #1). Re-derive the conservative-loop accept gate, knockout test,
-   and merge cleanup against one shared `n_eff` rule. Validation:
-   weak-peak windows (w16, w104, w127, w337) must retain their
-   borderline peaks; duplicate-pair windows (w148, w269) must lose
-   the duplicates. Both regimes from one threshold sweep.
+2. **AICc-with-`n_eff` at the merge gate** (this section, #1, merge
+   site). LANDED as Phase 1+1b+1c — see "Phase 1 implementation
+   status" above. Shipped form: two-tier gate (sub-resolution
+   structural + above-resolution AICc-with-REJECT-on-tie), shape-
+   error-aware sigma inflation for the rescue's screening pipeline,
+   wiring gap closed in `rescue_and_consolidate`. The per-dataset
+   `ε` calibration is the major generalisation lever — see
+   [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
 
-3. **Add the phase-degeneracy penalty** (this section, #2). Once
-   (2) is calibrated, this is the LSQ-side defence-in-depth: prevents
-   the optimiser from landing in the duplicate basin in the first
-   place, rather than relying on (2) to clean it up after. Cheap to
-   prototype, in-idiom with the existing penalty machinery; the
-   reason to do it second is that calibrating its λ against (2)'s
+3. **AICc-with-`n_eff` at the knockout test** (this section, #1,
+   knockout site). NEXT. Per-peak K-vs-(K-1) comparison; flip
+   `KnockoutResult.supported` from F-test `p_value < significance` to
+   `aicc_delta < 0`. Schema additions (`n_eff`, `aicc_delta`) to
+   `KnockoutInfo` with NaN defaults for backwards compat. Validation:
+   w148/w269 duplicate-pair members go `supported=False`;
+   w16/w104/w127/w337 stay supported.
+
+4. **AICc-with-`n_eff` at the conservative-loop accept gate** (this
+   section, #1, conservative-loop site). After Phase 3 lands. Replace
+   the dual `p_value < significance AND trial.aic < current.aic` gate
+   with the single AICc-with-`n_eff` test in both `_blend_aware_seed`
+   K=2/K=3 escalation and the main loop. Largest cascading effect on
+   K across all windows; expected to address the initial-seeding
+   duplicate-pair pathology in w269/w271 (the post-Phase-1 remaining
+   issue that's NOT a rescue problem).
+
+5. **Add the phase-degeneracy penalty** (this section, #2). Once
+   (3)+(4) are calibrated, this is the LSQ-side defence-in-depth:
+   prevents the optimiser from landing in the duplicate basin in the
+   first place. Cheap to prototype; calibrating its λ against the
    new gates is cleaner than against the current gates.
 
-Expected behaviour change for (2)+(3): borderline acceptance moves
-toward the empirical truth. The risk is over-correction (rejecting
-real-but-weak peaks); the validation set surfaces that as a
-regression.
+6. **Cross-fixture validation** (see
+   [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)).
+   Run alongside (3)–(5) as second / third fixtures become available.
+   The per-dataset `ε` calibration is the key generalisation tool;
+   if it works on a second fixture (especially from a different
+   instrument), the gates and penalties don't need per-dataset tuning
+   — only `ε` does.
+
+Expected behaviour change for (3)+(4)+(5): borderline acceptance
+moves toward the empirical truth. The risk is over-correction
+(rejecting real-but-weak peaks); the validation set surfaces that as
+a regression.
 
 ### 3. Total-model integration strategy (RESOLVED — option B)
 

@@ -12,10 +12,12 @@ import pytest
 from ftmwpipeline.fitting.peak_model import ModelPeak, model_spectrum
 from ftmwpipeline.fitting.validation import (
     calculate_aic,
+    calculate_aicc,
     calculate_chi_squared_improvement,
     calculate_hwhm_from_apodization,
     calculate_noise_weighted_chi2,
     calculate_rms_residuals,
+    effective_sample_size,
     feature_fwhm,
     passes_significance_test,
     validate_peak_separation,
@@ -128,6 +130,102 @@ class TestAIC:
     def test_degenerate_chi2_is_inf(self):
         assert calculate_aic(0.0, 3, 800) == float("inf")
         assert calculate_aic(-1.0, 3, 800) == float("inf")
+
+
+class TestEffectiveSampleSize:
+    def test_flat_spectrum_returns_n_data(self):
+        spec = np.ones(200, dtype=np.complex128)
+        assert effective_sample_size(spec) == pytest.approx(200.0)
+
+    def test_all_zero_returns_n_data(self):
+        spec = np.zeros(200, dtype=np.complex128)
+        assert effective_sample_size(spec) == 200.0
+
+    def test_delta_returns_one(self):
+        spec = np.zeros(200, dtype=np.complex128)
+        spec[100] = 1.0
+        assert effective_sample_size(spec) == pytest.approx(1.0)
+
+    def test_lorentzian_returns_roughly_fwhm_in_bins(self):
+        """Kish on |model|^2 for a Lorentzian collapses to ~FWHM in bins."""
+        u = np.linspace(-10.0, 10.0, 4001)
+        # half-width 1 in u-units; spacing du = 20/4000 = 0.005 -> FWHM = 2/du = 400 bins
+        f = 1.0 / (1.0 + u * u)
+        n_eff = effective_sample_size(f.astype(np.complex128))
+        fwhm_bins = 2.0 / (20.0 / 4000.0)
+        # Kish(|f|^2) for unit-half-width Lorentzian is 2pi/3 in width units
+        # i.e. 2pi/3 * (fwhm/2). Numerical check just bounds the result.
+        assert 0.5 * fwhm_bins <= n_eff <= 2.0 * fwhm_bins
+
+    def test_never_exceeds_n_data(self):
+        rng = np.random.default_rng(0)
+        spec = rng.normal(size=137) + 1j * rng.normal(size=137)
+        assert effective_sample_size(spec) <= 137.0
+
+    def test_kish_mag_returns_larger_than_kish_mag_sq(self):
+        u = np.linspace(-5.0, 5.0, 1001)
+        f = (1.0 / (1.0 + u * u)).astype(np.complex128)
+        n_eff_sq = effective_sample_size(f, kind="kish_mag_sq")
+        n_eff_mag = effective_sample_size(f, kind="kish_mag")
+        assert n_eff_mag > n_eff_sq
+
+    def test_hard_radius_counts_bins_above_threshold(self):
+        spec = np.zeros(100, dtype=np.complex128)
+        spec[40:50] = 1.0  # 10 bins at full height
+        spec[20:30] = 0.05  # below 0.1 cutoff by default
+        n_eff = effective_sample_size(spec, kind="hard_radius")
+        assert n_eff == 10.0
+
+    def test_unknown_kind_raises(self):
+        with pytest.raises(ValueError):
+            effective_sample_size(np.ones(10), kind="nonsense")
+
+
+class TestAICc:
+    def test_equals_aic_form_when_n_eff_equals_n_data(self):
+        """When n_eff == n_data, AICc differs from AIC only by the
+        small-sample correction term -- a known offset that vanishes as
+        n_eff -> infinity."""
+        chi2, k, n_eff = 400.0, 3, 800
+        aic = calculate_aic(chi2, k, int(n_eff))
+        aicc = calculate_aicc(chi2, k, n_eff)
+        correction = 2 * k * (k + 1) / (n_eff - k - 1)
+        assert aicc == pytest.approx(aic + correction)
+
+    def test_full_formula(self):
+        chi2, k, n_eff = 400.0, 3, 50.0
+        expected = (
+            2 * k
+            + n_eff * np.log(chi2 / n_eff)
+            + 2 * k * (k + 1) / (n_eff - k - 1)
+        )
+        assert calculate_aicc(chi2, k, n_eff) == pytest.approx(expected)
+
+    def test_returns_inf_when_n_eff_at_or_below_k_plus_one(self):
+        # Model not identifiable on this effective sample size.
+        assert calculate_aicc(100.0, 4, n_eff=5.0) == float("inf")
+        assert calculate_aicc(100.0, 4, n_eff=4.0) == float("inf")
+
+    def test_returns_inf_on_degenerate_inputs(self):
+        assert calculate_aicc(0.0, 3, n_eff=100.0) == float("inf")
+        assert calculate_aicc(100.0, 3, n_eff=0.0) == float("inf")
+
+    def test_smaller_n_eff_penalises_complex_models_more(self):
+        """A K=2 vs K=1 comparison should swing toward K=1 as n_eff shrinks."""
+        chi2_k1, k1 = 200.0, 4   # 1 peak + tau
+        chi2_k2, k2 = 195.0, 7   # 2 peaks + tau, marginal chi^2 improvement
+        # Large n_eff: marginal improvement may favour K=2.
+        large = 200.0
+        d_large = calculate_aicc(chi2_k2, k2, large) - calculate_aicc(
+            chi2_k1, k1, large
+        )
+        # Small n_eff: penalty dominates -> K=1 strongly preferred or
+        # K=2 unidentifiable (+inf).
+        small = 15.0
+        d_small = calculate_aicc(chi2_k2, k2, small) - calculate_aicc(
+            chi2_k1, k1, small
+        )
+        assert d_small > d_large
 
 
 class TestFTest:

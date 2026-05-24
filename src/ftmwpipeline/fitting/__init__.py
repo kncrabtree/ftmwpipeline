@@ -28,10 +28,12 @@ from .peak_model import (
 )
 from .validation import (
     calculate_aic,
+    calculate_aicc,
     calculate_chi_squared_improvement,
     calculate_hwhm_from_apodization,
     calculate_noise_weighted_chi2,
     calculate_rms_residuals,
+    effective_sample_size,
     feature_fwhm,
     passes_significance_test,
     validate_peak_separation,
@@ -105,10 +107,12 @@ __all__ = [
     "to_baseband_offset",
     # validation
     "calculate_aic",
+    "calculate_aicc",
     "calculate_chi_squared_improvement",
     "calculate_hwhm_from_apodization",
     "calculate_noise_weighted_chi2",
     "calculate_rms_residuals",
+    "effective_sample_size",
     "feature_fwhm",
     "passes_significance_test",
     "validate_peak_separation",
