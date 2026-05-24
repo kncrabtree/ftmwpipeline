@@ -283,6 +283,9 @@ artifact under `dev-docs/fixtures/<fixture-name>.md`:
   - `ε_per-bin` from the sweep
   - `n_eff_kind` choice
   - `structural_merge_factor` if non-default
+  - `tau_consensus_us` and `tau_consensus_window_count` (the
+    median of strong-window tau values and how many windows
+    contributed)
 - Tier 1 distribution numbers (post-Phase-1).
 - Tier 2 firing rates.
 - Tier 3 ground truth comparison if available.
@@ -313,6 +316,32 @@ work is dataset-invariant. Two reasonable outcomes:
   to 2638. Need to either find a more invariant formulation or
   accept that Stage 5 needs per-instrument calibration. Hopefully
   not, but the validation framework above will tell us either way.
+
+## Dataset-wide tau calibration (related deferred work)
+
+Independent of the shape-error epsilon calibration but
+conceptually adjacent: tau (the shared decay constant in the
+finite-T line shape model) is currently fit per-window. Strong-line
+windows converge to consistent values (~3 µs on 2638); weak windows
+hold tau at the apodization ceiling because there's no information
+to fit it from a few-σ peak. The weak-window behaviour is a bias,
+not a fit.
+
+A natural cleanup: after the per-window fits converge, compute a
+consensus tau from the strong-window distribution (median, or
+amplitude-weighted median, of windows where `tau_error <
+tolerance`), then re-fit weak windows with tau locked at the
+consensus. Improves weak-window amplitude/offset precision without
+changing the strong-window results.
+
+Per-fixture relevance: each instrument's beam geometry and natural
+linewidth determine its consensus tau. Recording this number per-
+fixture gives another simple invariant to track across fixtures —
+if a new fixture's strong-window tau distribution looks very
+different from 2638's, that's a signal about the instrument setup
+worth investigating before assuming Phase 1 settings transfer.
+Add `tau_consensus_us` and `tau_consensus_window_count` to the
+per-fixture record-keeping below.
 
 ## Next steps
 

@@ -666,6 +666,40 @@ the merge gate is transient state (not persisted), so this only
 becomes load-bearing for the Phase 2 (knockout) and Phase 3
 (conservative-loop) work. No fixture-vintage hazard yet.
 
+**(f) Tau handling in the (K-1) refit — open consideration.** The
+shipped `merge_close_peaks_cleanup` runs the (K-1) refit with tau
+free (inherited from `fit_kwargs_inner`). Tau is effectively a
+dataset-shared parameter (transit time × natural lifetime — a
+property of the experiment, not the individual peak), and letting
+a single-window (K-1) refit broaden tau to absorb the dropped
+peak's contribution gives the LSQ an extra knob the model
+comparison shouldn't have. The same consideration applies to the
+Phase 2 knockout's refit (see "Suggested sequencing" item 3).
+Recommended: lock tau at the K-fit value for both the merge and
+knockout (K-1) refits — passes `fit_tau=False, tau0_us=fit.tau_us`
+to `fit_window`. The merge change is a Phase 1d follow-up; the
+knockout change is built into Phase 2 from the start so both
+comparisons enforce the same dataset-wide tau invariance. Expected
+behaviour shift: slightly fewer merges fire (the (K-1) chi² won't
+benefit from tau broadening, so the AICc gate's bar is harder to
+clear); strong-line / cycling windows should be unaffected since
+tau is already well-determined there.
+
+**(g) Dataset-wide tau calibration (longer-horizon).** Independent
+of the (K-1)-refit question. Currently each window fits tau
+independently from its own data; for strong windows this converges
+near a consistent value (~3 µs on the 2638 fixture), but weak
+windows hold tau at the apodization ceiling (a bias, not a fit).
+A natural cleanup once Phases 2+3 land: after the per-window fits
+converge, compute a consensus tau from the strong-window
+distribution (median, or amplitude-weighted median, of windows
+where `tau_error < tolerance`), then re-fit weak windows with tau
+locked at the consensus. Improves weak-window amplitude/offset
+precision without changing the strong-window results. Tracked
+separately when implementation begins; noted here so the Phase 2
+"lock tau in the refit" decision doesn't get conflated with the
+"calibrate tau across the dataset" project.
+
 #### Validation results after Phase 1 (2638 fixture, kish_mag, ε=0.05)
 
 Survey distribution (50 windows, every 7th):
@@ -711,13 +745,52 @@ proceeded cleanly without first re-doing the O5-10 leakage fix.
    `ε` calibration is the major generalisation lever — see
    [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
 
-3. **AICc-with-`n_eff` at the knockout test** (this section, #1,
-   knockout site). NEXT. Per-peak K-vs-(K-1) comparison; flip
-   `KnockoutResult.supported` from F-test `p_value < significance` to
-   `aicc_delta < 0`. Schema additions (`n_eff`, `aicc_delta`) to
-   `KnockoutInfo` with NaN defaults for backwards compat. Validation:
-   w148/w269 duplicate-pair members go `supported=False`;
-   w16/w104/w127/w337 stay supported.
+3. **Refit-based knockout with AICc-with-`n_eff` gate** (this
+   section, #1, knockout site). NEXT. Two coupled changes:
+
+   - **Refactor the test from freeze-and-remove to remove-and-
+     refit.** Current `knockout_test` evaluates chi² with peak i
+     removed and the remaining K-1 peaks frozen at their K-fit
+     parameters; for duplicate-pair pathologies this leaves the
+     surviving twin half-fit and produces an enormous delta-chi²
+     that flags BOTH duplicates as supported regardless of the
+     gating statistic. The model-comparison test is: remove peak
+     i, refit the remaining K-1 peaks freely from their K-fit
+     parameters as warm start, then compare. In duplicate-pair
+     cases the surviving twin re-converges to full amplitude and
+     the refit's chi² is ~ the K-peak chi² → `supported=False`.
+     `remove_and_refit_cleanup` in `residual_rescue.py` is the
+     closest existing template (also unwired); the difference
+     is per-peak non-iterative vs greedy worst-first.
+
+   - **Lock tau in the (K-1) refit** (per item (f) above). Pass
+     `fit_tau=False, tau0_us=fit.tau_us` to the per-peak
+     `fit_window` call so the refit isolates the peak's
+     contribution without letting tau broaden to compensate.
+
+   - **Gate on AICc-with-`n_eff`, REJECT-on-tie** (matching Phase
+     1c). `supported = aicc_delta < 0` where
+     `aicc_delta = AICc(K-1 refit) - AICc(K)`; ties preserve the
+     K-peak fit (`supported=True`).
+
+   Schema additions (`n_eff`, `aicc_delta`) to `KnockoutResult`
+   and `KnockoutInfo` with NaN defaults; HDF5 columns added
+   alongside the existing `knockout_p_value`. Persistence
+   semantics per item (e). The freeze-others `delta_chi2` and
+   `expected_delta_chi2` fields stay as diagnostics (the "energy
+   carried by this line" check is meaningful in its own right;
+   just no longer the supported gate).
+
+   Validation: w148/w269 duplicate-pair members go
+   `supported=False`; w16/w104/w127/w337 stay supported; survey
+   chi²_r within Phase 1 range (median ~1.06, p95 ~3.23,
+   max ~5.65). Cost: K extra `fit_window` calls per knockout
+   sweep (was 0).
+
+   Phase 1d follow-up: align `merge_close_peaks_cleanup`'s (K-1)
+   refit to also lock tau, for consistency with the knockout
+   refit's convention. Small expected behaviour shift; re-run the
+   2638 harness to confirm no regression.
 
 4. **AICc-with-`n_eff` at the conservative-loop accept gate** (this
    section, #1, conservative-loop site). After Phase 3 lands. Replace
