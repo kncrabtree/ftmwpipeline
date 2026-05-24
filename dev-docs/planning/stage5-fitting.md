@@ -756,9 +756,9 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   fixture; instruments with denser line forests may need it.
 
   **Sequencing note:** this item is the prerequisite for the
-  generalised effective-DoF / AICc-with-`n_eff` work described in
-  [`stage5-residual-rescue.md`](stage5-residual-rescue.md) (Open
-  question 2 → "Suggested sequencing for the next session").
+  generalised effective-DoF / AICc-with-`n_eff` work covered in
+  [`stage5-residual-rescue.md`](stage5-residual-rescue.md) and
+  [`../research/residual-rescue/report.md`](../research/residual-rescue/report.md).
   Contributor-skirt leakage contaminates the per-window χ² and noise-
   floor baseline that every Stage 5 hypothesis test calibrates
   against; tuning effective-DoF thresholds against a contaminated

@@ -1,14 +1,17 @@
 # Stage 5 — Cross-fixture validation and per-dataset calibration
 
-Status: **planning**. This document was opened after the Phase 1 series
-of [`stage5-residual-rescue.md`](stage5-residual-rescue.md) landed on
-the 2638 fixture. The Phase 1 work made several decisions calibrated
-to 2638-specific numbers (most importantly the `shape_error_epsilon`
-constant); those calibrations need to be verified or re-derived on
-other fixtures before any of them can be treated as production
-defaults. This document also captures the **lineshape model deficit**
-discovery from that work, since the same physics shows up on every
-FTMW instrument but with instrument-specific magnitude.
+Status: **planning**. This document was opened after the
+residual-rescue and AICc-gate work
+([`stage5-residual-rescue.md`](stage5-residual-rescue.md),
+[`../research/residual-rescue/report.md`](../research/residual-rescue/report.md))
+landed on the 2638 fixture. That work made several decisions
+calibrated to 2638-specific numbers (most importantly the
+`shape_error_epsilon` constant); those calibrations need to be
+verified or re-derived on other fixtures before any of them can be
+treated as production defaults. This document also captures the
+**lineshape model deficit** discovery from that work, since the
+same physics shows up on every FTMW instrument but with instrument-
+specific magnitude.
 
 ## Why this matters: the per-dataset ε calibration is the generalisation lever
 
@@ -35,10 +38,12 @@ to discover which of the two regimes we're in as early as possible.
 
 ## The lineshape model deficit
 
-This is the physics finding that motivates the calibration. Discovered
-during Phase 1 validation on the 2638 fixture; see
-`scratch/stage5-validation/voigt_hypothesis.py` and
-`stage5-residual-rescue.md` "Phase 1 implementation status".
+This is the physics finding that motivates the calibration.
+Discovered during validation of the AICc-with-`n_eff` merge gate on
+the 2638 fixture; see
+`scratch/stage5-validation/voigt_hypothesis.py` and the
+"Shape-error sigma inflation" section of the residual-rescue
+research report.
 
 The Stage 5 model is a finite-T damped cosine — Lorentzian-like
 magnitude profile, sharp central frequency. The true molecular

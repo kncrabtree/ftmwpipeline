@@ -60,7 +60,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance) |
 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Implemented (finalized) |
 | [`planning/stage5-fitting.md`](planning/stage5-fitting.md) | Planning (step-1 plan; implementation not started) |
-| [`planning/stage5-residual-rescue.md`](planning/stage5-residual-rescue.md) | Implementation overview — rescue + phase-coherence screening + Phase 1 AICc-with-n_eff merge gate landed; Phase 2 (knockout) and Phase 3 (conservative-loop accept) next |
+| [`planning/stage5-residual-rescue.md`](planning/stage5-residual-rescue.md) | Implementation summary — rescue chain + phase-coherence screening + AICc-with-n_eff at all three hypothesis-test sites. Algorithmic-choice provenance in [`research/residual-rescue/report.md`](research/residual-rescue/report.md). |
 | [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
 | [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split` |
 | [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Resolved (D8) — implementation overview |

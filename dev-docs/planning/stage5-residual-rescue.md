@@ -1,154 +1,149 @@
 # Stage 5 — Residual rescue and phase-coherence screening
 
-Status: **implementation overview** for the production code that landed
-in commits `3d403b7` (library functions) and the orchestration / B-loop /
-sliding-coherence work that followed. The rescue pass is now wired into
-the per-window orchestrator and the `fit_peaks_impl` public surface; the
-gating knob is `max_residual_rescue_rounds` (integer, default `0` =
-disabled, intended to become non-zero once validated at scale — the
-rescue is a structural part of the fit, not an opt-in tweak). The
-15-window 2638 validation set lives at `scratch/stage5-validation/`;
-the harness emits, per window, `detail.png` (consolidated final fit),
-`audit-trail.png` (rescue audit trail), `detail-rr<n>.png` (one per
-consolidated round, trajectory snapshots), and the `report.md` /
-`report-rr.md` text rollups.
+**Implementation summary** for the residual-rescue subsystem of
+the Stage 5 fitting pipeline. The algorithmic-choice provenance
+lives in
+[`../research/residual-rescue/report.md`](../research/residual-rescue/report.md);
+this document is the operator's reference for what the system does,
+how it is wired, and what knobs it exposes.
 
-**Immediate next-session sequencing** for the open work is captured in
-[Open question 2 → "Suggested sequencing for the next session"](#suggested-sequencing-for-the-next-session).
-Items 1–4 (contributor-skirt leakage, merge-gate AICc, knockout-gate
-AICc, conservative-loop AICc) are LANDED; the remaining track is
-verifying the new `perplexity_log1p_snr` `n_eff` kind at the
-merge/knockout sites, resolving the w198 rescue-chain regression,
-and the phase-degeneracy penalty. "Next steps" further down is the
-longer-horizon rescue-completion plan (broader validation,
-calibration sweeps, default flip); both tracks coexist.
-
-Normative requirements remain in the `*_STRATEGY.md` specs; the parent
-plan is [`stage5-fitting.md`](stage5-fitting.md). This document is
-normative only for the residual-rescue subsystem.
+The parent plan is [`stage5-fitting.md`](stage5-fitting.md); the
+cross-fixture calibration protocol is
+[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md);
+the normative specs are the `*_STRATEGY.md` documents.
 
 ## What residual rescue is
 
-The Stage 5 conservative loop only ever seeds peaks Stage 3 detected.
-Any real line Stage 3 missed (or that knockout dropped during the
-conservative fit) leaves an above-noise residual that the initial fit
-cannot explain. The rescue is a second pass — and now a *chain* of
-passes — that detects peaks in that residual and folds them into the
-fit.
+The conservative add-one-peak loop that does the initial per-window
+fit only seeds peaks Stage 3 detected. Any real line Stage 3 missed
+— or that the knockout test dropped during the conservative fit —
+leaves an above-noise residual the initial fit cannot explain. The
+rescue is a second pass — and a chain of passes — that detects
+peaks in that residual and folds them into the fit.
 
-The single-round rescue is strictly separated from the initial fit:
+A single rescue round is strictly separated from the initial fit:
 
-1. Compute `residual = data − model(initial.peaks, initial.tau)`. Done
-   once; the initial fit is never touched again.
+1. Compute `residual = data − model(initial.peaks, initial.tau)`.
+   Done once; the initial fit is never touched again.
 2. Detect candidate peaks in the residual
    (`fitting.residual_screening.find_residual_peaks`).
 3. Drop candidates that fail the sliding phase-coherence check
    (`fitting.residual_screening.filter_by_phase_coherence`).
-4. Run a second `conservative_fit` on the **residual itself**, with tau
-   frozen at the rescue tau (see below). The result's peaks are exactly
-   the lines the rescue added; the initial fit's peaks are not present
-   in this returned fit.
+4. Run a second `conservative_fit` on the **residual itself**, with
+   tau frozen at the rescue tau. The result's peaks are exactly
+   the lines the rescue added; the initial fit's peaks are not in
+   this returned fit.
 
-The rescue chain (`fitting.residual_rescue.rescue_and_consolidate`,
-"option B") iterates this:
+The chain (`fitting.residual_rescue.rescue_and_consolidate`)
+iterates this:
 
-1. Initial fit → rescue₁ (as above).
-2. Joint refit of `initial.peaks + rescue₁.peaks` against the original
-   data, with all parameters thawed and the tau initial value pulled
-   from the rescue (apodization-override-aware — the structural fix for
-   w198-like cases where the initial fit's tau is pegged at the lower
-   bound).
-3. Knockout sweep over the joint fit; any peak flagged unsupported is
-   dropped and the surviving subset is refit.
+1. Initial fit → rescue₁.
+2. **Joint refit** of `initial.peaks + rescue₁.peaks` against the
+   original data, with all parameters thawed and the tau initial
+   value pulled from the rescue (apodization-override-aware — see
+   below).
+3. Merge cleanup, knockout sweep, iterative AICc cleanup. Final
+   knockout pass on the consolidated fit produces the persisted
+   diagnostics.
 4. The consolidated fit becomes the "current" for round 2; repeat
-   against the new residual. Terminates when the rescue accepts no new
-   peaks, the joint refit fails to converge, knockout would empty the
-   model, or `max_rescue_rounds` is reached (default 3).
+   against the new residual. Terminates when the rescue accepts
+   no new peaks, the joint refit fails to converge, knockout
+   would empty the model, or `max_rescue_rounds` is reached
+   (default 3).
 
-Each round records a `RescueRoundDiagnostics`; the
-`n_pruned_rescue_origin` counter is the **failsafe diagnostic** — a
-nonzero value means the knockout sweep dropped a peak the rescue had
-just added, which is the signal that the joint refit may not be
-escaping a pathological basin. v1 logs only; an A-mode fallback for
-windows that consistently trip this signal would key off it.
+The gating knob on the public surface is
+`max_residual_rescue_rounds` (integer, default `0` = disabled,
+intended to become non-zero once cross-fixture-validated — the
+rescue is a structural part of the fit, not an opt-in tweak).
 
 ## Public surface
 
 `fitting/residual_screening.py`
+
 - `find_residual_peaks(...)` — `scipy.signal.find_peaks` with a
-  sigma-relative height + prominence cut on `|residual|`. Threshold knobs:
-  `snr_threshold` (default 2.5σ_c), `prominence_threshold` (2.0σ_c).
+  sigma-relative height + prominence cut on `|residual|`.
+  Thresholds: `snr_threshold` (default 2.5σ_c),
+  `prominence_threshold` (2.0σ_c).
 - `filter_by_phase_coherence(candidates, ..., fitted_peak_offsets=...)`
-  — projects each candidate's residual onto a unit-amplitude Lorentzian
-  basis and rejects candidates whose coherent SNR ratio falls below a
-  **sliding threshold** keyed on the candidate's distance to the nearest
-  *other candidate or already-fitted peak*. Three bands (see "Phase-
-  coherence projection" below): cluster floor (defer), linear ramp from
-  `close_threshold` (default 0.2) to `isolated_threshold` (default 0.8)
-  across the cluster→isolated FWHM band, full isolated threshold above.
+  — projects each candidate's residual onto a unit-amplitude
+  Lorentzian basis and rejects candidates whose coherent SNR
+  ratio falls below a sliding threshold keyed on neighbour
+  distance. Three bands; see "Phase-coherence projection" below.
 
 `fitting/residual_rescue.py`
-- `attempt_residual_rescue(...)` → `RescueOutcome` — one-round rescue;
-  the rescue's `conservative_fit` runs with `fit_tau=False` so the
-  rescue's peak set shares one frozen tau (the apodization-override-aware
-  rescue tau).
-- `rescue_and_consolidate(...)` → `ConsolidatedRescueOutcome` — the
-  B-loop chain (rescue → joint refit → knockout → repeat). The
-  consolidated `ConservativeFitResult` is what the orchestrator slots
-  into `WindowOutcome.fit`; the `RescueRoundDiagnostics` list carries
+
+- `attempt_residual_rescue(...)` → `RescueOutcome` — one-round
+  rescue. The rescue's `conservative_fit` runs with
+  `fit_tau=False` so the rescue's peak set shares one frozen tau
+  (the apodization-override-aware rescue tau).
+- `rescue_and_consolidate(...)` → `ConsolidatedRescueOutcome` —
+  the chain (rescue → joint refit → merge cleanup → knockout →
+  iterative cleanup → repeat). The consolidated
+  `ConservativeFitResult` is what the orchestrator slots into
+  `WindowOutcome.fit`; the `RescueRoundDiagnostics` list carries
   per-round bookkeeping including the failsafe pruning counts.
-- The joint refit's constraints are derived once via
-  `derive_window_fit_constraints` so the per-round LSQ sees the same
-  tau / amplitude / penalty bounds as the initial fit; only the starting
-  tau is updated (from the rescue) to feed the joint refit a sensible
-  warm start.
+- `merge_close_peaks_cleanup(...)` — two-tier merge. Tier 1
+  (sub-resolution, separation < `structural_merge_factor · FWHM`,
+  default 0.5 FWHM) merges unconditionally. Tier 2
+  (`structural_merge_factor ≤ Δ < merge_separation_factor · FWHM`)
+  runs the AICc-with-`n_eff` test. Tier 2 is **disabled by
+  default** (`DEFAULT_MERGE_SEPARATION_FACTOR = 0.5 =
+  DEFAULT_STRUCTURAL_MERGE_FACTOR`); see "Open follow-ups" for
+  the dependency.
+- `iterative_aicc_cleanup(...)` — iteratively drops the worst
+  AICc-with-`n_eff` offender until every remaining peak is
+  supported. Non-iterative drop kills duplicate clusters
+  wholesale (each duplicate looks individually supported when
+  its twin is frozen); the iterative form drops one at a time
+  with a tau-locked (K-1) refit between drops.
 
 `fitting/plan_execution.py`
-- `_apply_rescue_to_outcome` runs the B-loop on each window's
-  *post-thaw* outcome (so any contributor that thaw promoted to a free
-  peak is already part of the model when the rescue measures the
+
+- `_apply_rescue_to_outcome` runs the chain on each window's
+  *post-thaw* outcome (so any contributor that thaw promoted to
+  a free peak is part of the model when the rescue measures the
   residual). Emits `RescueEvent` records aggregated into
   `PlanFitOutcome.rescue_history`.
 - `execute_plan(..., max_residual_rescue_rounds=N, rescue_kwargs={...})`
   threads the gating knob and the tuning bag through to
   `_walk_windows_in_order`.
 
-`fitting/window_fit.py` (earlier refactor)
-- `derive_window_fit_constraints(...)` → `WindowFitConstraints` extracts
-  the tau / amp / penalty derivation that used to live inline in
-  `conservative_fit`. Both `conservative_fit` and the rescue's joint
-  refit use it so they enforce identical constraints.
-- `DEFAULT_MAX_NFEV` bumped 400 → 2000. The original 400 was tripping
-  the `not fit.success` early-exit in `_blend_aware_seed` / the main
-  loop on partial-capture LSQ converges (chi² stops moving but scipy
-  flags `success=False` for hitting the cap). 2000 covers every case in
-  the 2638 fixture; the cap is a runaway-safety, not a convergence
-  criterion.
+`fitting/window_fit.py`
+
+- `derive_window_fit_constraints(...)` → `WindowFitConstraints`
+  extracts the tau / amp / penalty derivation. Both
+  `conservative_fit` and the rescue's joint refit use it so they
+  enforce identical constraints.
+- `knockout_test(...)` and `conservative_fit(...)` accept
+  `n_eff_kind` and (for `conservative_fit`)
+  `knockout_n_eff_kind` parameters; see §"AICc-with-`n_eff`
+  gates" below.
 
 ## Rescue tau policy
 
 Real molecular lines in one experiment share a tau ≈ the applied
-apodization (the canonical Stage 1 `expf_us`). The rescue must use the
-right line-shape width or the phase-coherence basis under-projects real
-peaks and the filter rejects them.
+apodization (the canonical Stage 1 `expf_us`). The rescue must
+use the right line-shape width or the phase-coherence basis
+under-projects real peaks and the filter rejects them.
 
 The rule:
-- Default to `initial.tau_us` — it's the LSQ-converged value for the
-  real lines this window contains.
-- **Override** to `tau_apodization_us` when `initial.tau_us` is within
-  5% of the lower bound (`tau_apodization_us / max_decay_factor`). That's
-  the signature of a broken initial fit: LSQ over-narrowed tau to absorb
-  unmodelled-peak residual. Using that broken tau as the coherence basis
-  under-projects real peaks. The apodization is the right physical
-  default.
 
-In the 2638 validation set this fires on w198 (initial tau pegged at
-1µs; apodization is 5µs).
+- Default to `initial.tau_us` — it's the LSQ-converged value for
+  the real lines this window contains.
+- **Override** to `tau_apodization_us` when `initial.tau_us` is
+  within 5% of the lower bound (`tau_apodization_us /
+  max_decay_factor`). That's the signature of a broken initial
+  fit: LSQ over-narrowed tau to absorb unmodelled-peak residual.
+  Using that broken tau as the coherence basis under-projects
+  real peaks. The apodization is the right physical default.
+
+The rescue tau is also handed to the joint refit's LSQ as its
+starting tau (warm start for the apodization-override case).
 
 ## Phase-coherence projection
 
-For an isolated candidate at offset `f_0`, build the unit-amplitude
-Lorentzian basis `basis(f) = h_T(f − f_0, tau, T)` and compute the
+For an isolated candidate at offset `f₀`, build the unit-amplitude
+Lorentzian basis `basis(f) = h_T(f − f₀, τ, T)` and compute the
 sigma-weighted complex projection:
 
 ```
@@ -156,1229 +151,254 @@ A_complex = Σ_f w_f · conj(basis(f)) · residual(f) / Σ_f w_f · |basis(f)|²
 ```
 
 with `w_f = 1 / σ_c(f)²`. This is the closed-form solution for an
-amp+phase-only fit with offset and tau frozen — exactly what
-`fit_window` would converge to if only those two parameters were free.
+amplitude+phase-only fit with offset and tau frozen.
 
-The "coherent SNR" at the peak is `|A_complex| · |basis(f_0)| / σ_c`.
-Compare it to the detected magnitude SNR (`|residual(f_0)| / σ_c`):
+The coherent SNR at the peak is `|A_complex| · |basis(f₀)| / σ_c`.
+Compared to the detected magnitude SNR
+`|residual(f₀)| / σ_c`:
 
-- **Real Lorentzian peak in clean isolation**: ratio ≈ 1 (the bin
-  magnitude is dominated by a coherent line the basis captures).
-- **Real Lorentzian peak sitting in a neighbour's skirt**: ratio
-  partially suppressed by leakage from the neighbour's (slightly
-  mis-fit) Lorentzian tail. The contamination scales with the
-  neighbour's Lorentzian magnitude at the candidate's offset — ~50%
-  at 1 FWHM separation, ~6% at 5 FWHM.
-- **Phase-rotation artifact**: ratio ≪ 1 (the complex projection
-  cancels across the rapidly-rotating phase).
+- Real Lorentzian peak in clean isolation: ratio ≈ 1.
+- Real Lorentzian peak in a neighbour's skirt: ratio partially
+  suppressed by leakage from the neighbour's Lorentzian tail
+  (~50% at 1 FWHM separation, ~6% at 5 FWHM).
+- Phase-rotation artifact: ratio ≪ 1.
 
 ### Sliding-threshold scheme
 
-A uniform ratio threshold (the previous design, default 0.5) does the
-wrong thing on both ends: too strict on candidates near fitted
-neighbours (legitimate peaks get rejected because their projection is
-inevitably contaminated), and arguably too loose on far-isolated
-candidates (a 50σ candidate with 25σ coherent projection passes
-despite half its magnitude being incoherent). The current scheme
-ramps the threshold by neighbour proximity in three bands:
+The shipped scheme ramps the threshold by neighbour proximity in
+three bands:
 
-- **Δ < `cluster_threshold_fwhm` × FWHM** (default 1.0 FWHM): defer
-  entirely. A sub-cluster candidate is either a real blend the
-  blend-aware seeder should handle, or a phase artifact the basis
-  cannot disambiguate from a blend.
+- **Δ < `cluster_threshold_fwhm` × FWHM** (default 1.0 FWHM):
+  defer entirely. A sub-cluster candidate is either a real blend
+  the blend-aware seeder should handle, or a phase artifact the
+  basis cannot disambiguate from a blend.
 - **`cluster_threshold_fwhm` ≤ Δ < `isolated_threshold_fwhm` × FWHM**
   (default 1.0–5.0 FWHM): linear ramp from `close_threshold`
   (default 0.2) at the cluster boundary up to `isolated_threshold`
-  (default 0.8) at the isolated boundary. The lenient close end
-  expects projection contamination from the neighbour; the strict far
-  end has no such excuse.
+  (default 0.8) at the isolated boundary.
 - **Δ ≥ `isolated_threshold_fwhm` × FWHM**: full
   `isolated_threshold`.
 
-A more principled functional form (interpolating by the Lorentzian
-skirt magnitude `|basis(Δ)|²` directly, since that tracks the
-contamination level exactly) is an obvious follow-up; the linear ramp
-is easier to tune and reason about for v1.
+The proximity check uses `min(distance to nearest other
+candidate, distance to nearest peak in current_fit)`. Including
+fitted peaks is the structural fix for real residual peaks
+sitting near freshly-fit lines.
 
-### Neighbour distance includes fitted peaks
+### Shape-error sigma inflation
 
-The proximity check uses `min(distance to nearest other candidate,
-distance to nearest peak in current_fit)`. Including the fitted peaks
-is the structural fix for the w198 case where a real residual peak
-sat ~1.1 FWHM from a freshly-fit line — that candidate was previously
-held to the 0.5 uniform threshold, projection-contaminated by the
-fitted neighbour, and rejected.
+The rescue's screening pipeline sees an inflated sigma:
 
-## Validation results (2638 fixture, 15-window sample)
+```
+σ_eff(f) = √( σ_c² + (ε · |current_model(f)|)² )
+```
 
-`scratch/stage5-validation/generate_validation.py` reproduces the
-initial fit per window, runs the consolidated B-loop, and emits one
-`detail-rr<n>.png` per round (showing the cumulative consolidated fit
-at the end of round *n*) plus a single `report-rr.md` rollup with per-
-round bookkeeping (rescue candidates, coherence-rejections, joint-refit
-status, knockout pruning broken out by rescue origin).
+threaded as the `shape_error_epsilon` parameter (default 0.0 =
+behaviour-preserving). The rescue's detector + phase-coherence
+filter see the inflated sigma; the LSQ inside `conservative_fit`
+keeps the canonical sigma — inflation is a screening tool, not a
+fitting one. A per-bin post-filter is required because
+`find_residual_peaks` uses the median sigma for scipy's
+`find_peaks` height threshold.
 
-### Post-B-loop + sliding-threshold (current behaviour)
+ε is a **per-dataset constant**. The 2638 fixture's calibrated
+value is 0.05 (5% per-bin residual at the line center). The
+per-fixture calibration protocol is in
+[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
 
-| Window | Initial → final K | Initial chi²_r → final chi²_r | Notes |
+## AICc-with-`n_eff` gates
+
+The three Stage 5 hypothesis tests (merge, knockout, conservative-
+loop accept) all gate on the AICc criterion evaluated at an
+effective sample size `n_eff` that weights each bin by some
+function of the local model magnitude. Substituting `n_eff` into
+the small-sample correction term `2k(k+1) / (n_eff − k − 1)`
+makes the burden of statistical proof scale with the informative-
+bin count rather than the full window. REJECT-on-tie at every
+site: the simpler model is preserved when AICc cannot
+discriminate.
+
+Two `n_eff` weighting kinds live in `validation.py`:
+
+- **`kish_mag_sq`** / **`kish_mag`**: Kish formula on `|model|²`
+  or `|model|`. Concentrated near the peak centre; collapses to
+  roughly the per-peak FWHM-in-bins on Lorentzian peaks. The
+  `kish_mag_sq` form is `DEFAULT_N_EFF_KIND`.
+- **`perplexity_log1p_snr`**: perplexity (`exp(H(p))`) of the
+  normalised distribution `p_f ∝ log(1 + |model|/σ)`. The
+  `log(1 + SNR)` weight is approximately the per-bin Shannon
+  information of a signal-vs-noise detection. On the 2638
+  fixture this returns ~30–80 bins on multi-peak windows. This
+  is `DEFAULT_CONSERVATIVE_N_EFF_KIND`.
+
+Per-call-site defaults:
+
+| site | direction | `n_eff_kind` | rationale |
 |---|---|---|---|
-| w63, w64 | 3→3, 2→2 | 0.81, 0.58 (unchanged) | clean controls — rescue terminates round 0 with no candidates. |
-| w16 | 1→2 | (low → low) | borderline second peak rescued. |
-| w104 | 1→2 | (low → 0.75) | Stage 3 candidate appears spurious; rescue replaces it. |
-| w127 | 1→2 | (low → 0.55) | borderline second peak rescued. |
-| w148 | 1→5 | 715 → **0.95** | missed 179σ peak captured round 0; the +0.5970 candidate (previously rejected by the 0.5 uniform threshold as "doublet leakage") is now accepted by the sliding threshold and survives knockout. **Subsequent inspection (see "Visual evidence on w148" below) shows the K=5 fit contains two sub-spacing in-phase duplicate pairs — the chi²_r=0.95 is achieved partly through overfit, not solely through correct line capture.** |
-| w198 | 2→8 | 628 → **2.3** | apodization-override propagates a sensible warm-start tau into the joint refit (1 µs → 2.2 µs); the previously-rejected −0.482 candidate now passes coherence. |
-| w269 | 5→10 | 17.4 → **1.6** | the +1.4558 candidate (previously rejected as "phantom") is now accepted and strongly supported by knockout. |
-| w68, w132, w209, w215, w260, w271 | typically K +5–8 | typically chi²_r 4–30 → ~0.7–2.5 | most multi-round cases now converge near the noise floor. |
-| w337 | 1→2 | (low → 1.3) | borderline second peak rescued. |
+| Conservative-loop accept gate (main loop + `_blend_aware_seed`) | K-vs-(K+1) | `perplexity_log1p_snr` | The K+1 model is the magnitude basis. Magnitude-concentrated weights collapse `n_eff` below the AICc identifiability threshold for K+1 → +∞ on the more-complex side → REJECT real escalations. Information-weighted `n_eff` keeps the gate in the AICc-identifiable regime. |
+| `knockout_test` (called inside `conservative_fit`) | K-vs-(K-1) | `kish_mag_sq` (via `knockout_n_eff_kind`) | The K-1 model is the simpler side. AICc divergence at small `n_eff` falls through to "preserve K", which is the desired conservative direction. |
+| `knockout_test` / `merge_close_peaks_cleanup` / `iterative_aicc_cleanup` (called from `rescue_and_consolidate`) | K-vs-(K-1) | `n_eff_kind` from the rescue kwargs | The validation harness pins `perplexity_log1p_snr` here; production sites pass it through `rescue_kwargs`. |
 
-### Caveat: real peaks or overfitting?
+The `effective_sample_size(..., kind=..., sigma=...)` API exposes
+all three kinds; `sigma` is required for the SNR-weighted kind
+and ignored by the magnitude-only kinds.
 
-Two of the cases the previous (uniform 0.5) doc cited as
-coherence-rejection successes — w148 +0.5970 and w269 +1.4558 — are
-now accepted and survive knockout. Two possible readings:
+## Tau locking in (K-1) refits
 
-- **They were always real**, and the strict uniform threshold was
-  over-rejecting them because their projections sat in fitted
-  neighbours' skirts (consistent with the design rationale for the
-  sliding scheme). The chi²_r → ~1 across the multi-round cases
-  supports this — the previous threshold left systematic residual
-  structure that the rescue is now explaining.
-- **The looser close-end threshold (0.2) plus a 32-peak per-window
-  `rescue_max_peaks` cap is overfitting**, and the knockout sweep is
-  not strict enough to catch all overshoots. The failsafe diagnostic
-  (`n_pruned_rescue_origin`) fires on w148 round 1, w269 round 1, and
-  a few others — knockout *is* catching some — but doesn't tell us
-  whether what survived was real.
-
-Until a wider validation rules this out, treat the dramatic per-window
-K increases as **preliminary**, not confirmed. Recommended diagnostics
-before bumping `max_residual_rescue_rounds` to a non-zero default:
-
-- Run the harness on the full 2638 fixture (~400 windows) and tabulate
-  how often `n_pruned_rescue_origin > 0` (the knockout safety net
-  firing).
-- Compare the consolidated peak list against the experiment's
-  blackchirp-era assignments, if any survive.
-- If accessible, run on another FTMW dataset where the expected peak
-  list is independently known.
-- Sensitivity-sweep the close/isolated anchor pair (0.2/0.8 → 0.3/0.8,
-  0.2/0.7, etc.) and look for the regime where w64/w63 acquire spurious
-  peaks. That's the empirical floor for what counts as "real" in this
-  signal.
-
-The clean controls (w63, w64) staying at 0 rounds is at least a weak
-guard against runaway acceptance — but a single clean-window pair is
-not statistical evidence of overfitting safety.
-
-**Update (post-visualization pass):** the overfitting reading is now
-the load-bearing one. See "Visual evidence on w148: sub-spacing
-duplicate-peak overfit" under open question 2 below — the doublet
-that should be 2 lines is being fit as 4 sub-spacing in-phase peaks,
-and the per-peak knockout test (now persisted as
-`KnockoutInfo.p_value`) shows <1e-15 for every duplicate because
-each pair member is individually supported even though the pair is
-physically redundant. Knockout cannot ask the merge question; merge
-cleanup is supposed to but isn't catching this case. Candidate
-algorithmic fixes — generalised effective-DoF / AICc with `n_eff`,
-and a phase-degeneracy penalty complementing the existing
-cancellation penalty — are sketched in that subsection.
-
-## Open questions
-
-### 1. Phase-coherence projection as a general primitive (Stage 3?)
-
-The projection-coherence test is general — it answers "is this magnitude
-peak the projection of a Lorentzian, or just incoherent magnitude?".
-Stage 3 currently detects peaks on the magnitude spectrum and would
-benefit from the same test:
-
-- Distinguish real lines from baseline / contributor systematics
-  (w337's case — see [`stage5-fitting.md`](stage5-fitting.md) O5-10
-  for the underlying contributor-skirt leakage; phase-coherence here
-  would *flag* the signature, the closing fix is upstream).
-- Filter Stage 3 candidates whose phase doesn't support a Lorentzian
-  interpretation before promotion.
-- Provide a per-peak coherence score in the persisted detection list as
-  a quality marker.
-
-Worth assessing — not immediately, but as a Stage 3 enhancement. Possible
-caveat: Stage 3 operates on the *persisted* spectrum (full record with
-the de-ramp phase), so the basis Lorentzian needs the same phase frame.
-
-### 2. Are the newly-accepted peaks real, or is the rescue overfitting?
-
-The sliding coherence threshold pushed several windows from chi²_r in
-the 4–50 range down to ~1. Two of the previously-rejected candidates
-the original planning doc cited as coherence-rejection successes
-(w148 +0.5970, w269 +1.4558) are now accepted and survive the
-knockout sweep. Two readings remain on the table; the harness's
-15-window sample does not distinguish them:
-
-- **The previous uniform-0.5 threshold was over-rejecting real peaks
-  that sat in fitted neighbours' skirts.** The chi²_r → ~1 behaviour
-  is consistent with finally fitting them. The fitted-peak-aware
-  proximity check + sliding threshold are doing what they were
-  designed for.
-- **The looser close anchor (0.2) plus the 32-peak per-window
-  `rescue_max_peaks` cap is overfitting**, and the knockout sweep is
-  not strict enough to catch all overshoots. The failsafe diagnostic
-  (`n_pruned_rescue_origin`) does fire on several windows (w148 r1,
-  w269 r1, w132 every round), so the safety net is engaged — but it
-  doesn't tell us whether what *survived* the knockout is real.
-
-The clearest concrete evidence for the overfitting concern is **w132**:
-the loop terminates on `max rounds reached` with chi²_r = 2.5
-(not the ~1 noise floor that most others hit), and the failsafe fires
-in every round (1, 1, 2 rescue-origin pruned). Three possible reads:
-
-1. **Out of rounds**: more rounds would let the chain settle, the
-   pruning is healthy because borderline candidates need joint-refit
-   evaluation, and chi²_r would converge toward 1 given another 2–5
-   rounds.
-2. **Overshoots survive**: rescue is nominating ~3σ candidates, the
-   knockout catches the worst, but the survivors are noise that
-   locally improved chi² without being physical lines.
-3. **Genuinely un-modellable residual structure**: a cluster of
-   unresolved hyperfine lines, Voigt broadening, instrumental
-   artifact — what the previous version of this question was about.
-   The sliding threshold accepts more candidates, leaving less
-   coherence-rejected material for direct inspection, but the
-   underlying physical signal didn't change.
-
-**Quick experiment for w132 with `max_residual_rescue_rounds=5`**
-(`scratch/stage5-validation/_w132_extended.py`): K 15→18,
-chi²_r 2.49→1.67. The failsafe fired in rounds 0–2 (1, 1, 2
-rescue-origin pruned) and **stopped firing in rounds 3–4** (0, 0
-pruned, both pure additive). The chain genuinely settled by round 3;
-the prior 3-round cap was too low for this window. Strong support for
-reading (1) — and a signal that the `DEFAULT_RESCUE_MAX_ROUNDS=3`
-default may need to bump higher (5? 7?) before the rescue can be
-turned on by default. Remaining 1.67 − 1.0 gap is open ground for (2)
-vs (3); needs separate investigation.
-
-Diagnostics to settle this in a fresh session:
-
-- Run the harness on the full 2638 fixture (~400 windows) and
-  tabulate failsafe-firing rate and final chi²_r distribution.
-- Sensitivity-sweep the close anchor (0.2 → 0.3 → 0.4) and look for
-  the regime where w64/w63 (clean controls) acquire spurious peaks —
-  that's the empirical floor for what counts as "real" in this signal.
-- For the persistent-residual-at-max-rounds cases (w132), plot the
-  surviving residual's local complex spectrum and check whether it
-  has Voigt-style wings, hyperfine substructure, or just noise.
-- Where blackchirp-era line assignments survive, compare the
-  consolidated peak list against them as ground truth.
-
-#### Visual evidence on w148: sub-spacing duplicate-peak overfit
-
-While building the per-window detail / audit visualisations (the new
-`detail.png` and `audit-trail.png` harness artifacts), inspecting w148
-made the overfitting concrete: the strong doublet that should be 2
-real lines is being fit as **4 peaks, arranged as two pairs of two**,
-with each pair's members separated by *less than the FT point spacing*
-and converging to roughly equal amplitudes. The two pair members are
-not independently resolvable — they are the rescue / joint-refit
-chain manufacturing duplicate peaks at the same physical line.
-
-| consolidated peak | freq (MHz)       | amplitude (µV)  |
-|---|---|---|
-| A | 31848.5948(25)   | 4.38(22)        |
-| C | 31848.5551(22)   | 4.641(187)      |
-| B | 31849.7032(24)   | 4.113(135)      |
-| D | 31849.65473(185) | 4.743(143)      |
-
-A/C separation: 0.040 MHz. B/D separation: 0.049 MHz. Point spacing on
-this fixture is ~0.05 MHz. With tau ≈ 4 µs, FWHM ≈ 0.08 MHz — both
-pairs are within 1 FWHM and at the resolution limit.
-
-The merge-clean-up step (`merge_close_peaks_cleanup` in
-`fitting/residual_rescue.py`, F-test-gated at
-`DEFAULT_MERGE_SEPARATION_FACTOR = 1.0 FWHM`) is *supposed* to catch
-this — it greedily merges close adjacent pairs when the merged
-(K-1)-peak fit is statistically indistinguishable from the K-peak fit.
-Either (a) the merge cleanup is not running in this code path
-(`rescue_and_consolidate` may not be calling it on the final
-consolidated fit), or (b) it is running but the F-test is rejecting
-the merge — the duplicate pair locally improves chi-squared enough
-that the F-test sees them as "really distinct" even though physically
-they cannot be.
-
-**Defer to a later session** — visualization pass needs to land first
-so the diagnostic is visible. When picking this up:
-
-1. Confirm whether `merge_close_peaks_cleanup` is called in the
-   consolidated path (grep for call sites). If not, that's the wiring
-   gap.
-2. If it is being called, instrument it to log which merges were
-   considered and which the F-test rejected. The expectation is that
-   w148's A/C and B/D pairs are being considered and rejected.
-3. The merge F-test compares chi-squared of the K-peak fit to a
-   refitted (K-1)-peak fit. If duplicate peaks at sub-spacing
-   separations split the line's signal between them, the K-peak fit's
-   chi-squared can be marginally lower in a way that's statistically
-   "significant" by F-test but physically meaningless — both peaks are
-   fitting the same noise realization of the same physical line. The
-   fix may be a structural separation cutoff (merge unconditionally
-   when separation < point spacing or < 0.5 FWHM), not just an
-   F-test-gated merge.
-
-This is the clearest concrete instance of the overfitting concern the
-parent open question is about. It's a Stage-5-algorithm fix, not a
-visualization fix; the visualization just made it visible.
-
-#### Candidate algorithmic fixes (item 1 LANDED at all three gate sites; item 2 still deferred)
-
-Two ideas the user surfaced while looking at w148 — both targeting
-the same underlying problem from different angles. Item 1
-(effective-DoF / AICc) shipped at the merge site (Phase 1), the
-knockout site (Phase 2), and the conservative-loop accept gate
-(Phase 3). The Phase 1, 2, and 3 implementations diverged from
-the original proposal in structurally important ways — see the
-"Phase 1/2/3 implementation status" subsections below.
-Item 2 (phase-degeneracy penalty) is still deferred.
-
-**1. Generalised effective-DoF across all Stage 5 hypothesis tests.**
-The Stage 5 fit currently runs three F-test-style gates, all sharing
-the same statistic shape:
-
-```
-F = (Δχ² / Δdof) / (χ²_K / (n_data − n_params_K))
-```
-
-The three sites:
-
-- **Conservative add-one-peak loop** (`window_fit.py`) — `accept`,
-  `promote`, and `tentative` decisions gate on
-  `p_value < significance AND trial.aic < current.aic`. K-vs-(K+1)
-  comparison.
-- **Knockout test** (`knockout_test` in `window_fit.py`) — per-peak
-  K-vs-(K-1) comparison; sets the `supported` flag and the persisted
-  `KnockoutInfo.p_value` (the column added in this work).
-- **Merge cleanup** (`merge_close_peaks_cleanup` in
-  `residual_rescue.py`) — pair-merge K-vs-(K-1) comparison; greedy
-  F-test-gated cleanup of close adjacent pairs.
-
-All three use the full window `n_data` (~100–300 bins) in the
-denominator. But the *informative* bins for distinguishing a K-peak
-model from a (K±1)-peak model live within ~1 FWHM of the peak in
-question — a handful of bins. The 200-bin denominator is mostly noise
-far from the feature, which inflates the F-statistic for marginal
-improvements and structurally biases every gate toward
-**accepting the more-complex model**:
-
-- Conservative loop: weak peaks pass the accept gate because adding
-  three parameters buys ~6 in δχ² (only ~2.4σ of evidence) — but
-  against a 200-bin denominator the p-value clears significance.
-  The AIC sibling-gate's `2k` penalty is not strong enough to backstop
-  this. Symptom: artificially low p-values for weak peaks, suspected
-  on inspection of the 2638 fixture's weak-peak windows.
-- Knockout: every duplicate-pair peak in w148 shows `p_KO < 1e-15`
-  because removing a duplicate leaves a half-fit line, which is a
-  large δχ² against a huge denominator. The peak looks individually
-  supported even though physically it's redundant.
-- Merge: w148's A/C and B/D duplicate pairs aren't merging — same
-  cause, evaluated head-on (most explicit symptom because the
-  question itself is local).
-
-Proposal: replace the raw `n_data` with an **effective sample size**
-`n_eff` that weights each bin by local model magnitude (Fisher-
-information-density flavour). Apply uniformly at all three test
-sites. Weighting options:
-
-- `w_f = |model(f)|²` plus the Kish formula `ν_eff = (Σ w_f)² / Σ w_f²`.
-  Soft, smoothly down-weights bins far from any feature.
-- `w_f = 1` only for `|model(f)| > c·max|model|` (hard radius,
-  threshold-sensitive but simpler).
-- Restrict the F-test to a "local window" of ±N·FWHM around the
-  candidate (hard form of the same idea — chi-squared restricted to
-  informative bins; loses the global noise floor estimate).
-
-**Canonical form: AICc with `n_eff`.** AICc (small-sample-corrected
-AIC) penalty grows as `2k(k+1)/(n - k - 1)`. If we feed it `n_eff`
-instead of raw `n_data`, AICc handles the over-acceptance problem at
-all three sites from one rule: the conservative-loop accept gate,
-the knockout-test "supported" decision, and the merge gate all key
-off the same effective-sample-size rule. This is the cleaner long-
-term form than per-site F-test patching — F-test stays as a
-diagnostic statistic; AICc with `n_eff` becomes the decision rule.
-
-User's framing: "fitting a narrow feature with 2 independent peaks
-should bear a high burden of statistical proof"; "we have
-artificially low p-values for weak peaks; likely just because there
-are so many points in a window." The effective-DoF formulation
-operationalises both: the burden grows because the denominator
-shrinks to the informative bins only.
-
-Caveats to think through:
-
-- The F-distribution assumes Gaussian residuals with the unit-
-  variance noise model. Weighted residuals change the distribution;
-  a strict derivation would need the right reference distribution
-  (probably still F under reasonable assumptions, but worth
-  checking). AICc dodges this — it's a likelihood criterion, not a
-  distributional one.
-- Weak isolated peaks that *should* be in the model (w16, w104, w127,
-  w337-borderlines) must not drop out under the new rule. The same
-  validation set that catches duplicate-pair overfit needs to also
-  catch under-rejection of real-but-weak peaks. Sensitivity sweep
-  the weighting choice (|model| vs |model|² vs hard window) against
-  both regimes.
-- The persisted `KnockoutInfo.p_value` semantics change if we move
-  to AICc-with-`n_eff`. Either keep the raw F-test p as today and
-  add an `aicc_delta` field, or repurpose the p_value field to the
-  effective-DoF F-test result. Decide before persisting any new
-  values to avoid mixed-semantics across fixture vintages.
-
-**2. Phase-degeneracy penalty (sketch).** The existing pair penalty
-(`window_fit.py:572-607`) is `sqrt(λ) · w(Δsep) · sin((φᵢ - φⱼ)/2)` —
-zero for in-phase pairs (Δφ=0) and maximal for anti-phase pairs (Δφ=π).
-It catches the cancellation pathology (a pair that fits noise by
-producing destructive interference between two large amplitudes) but
-explicitly does **not** penalise the *degeneracy* pathology (two
-in-phase peaks at the same offset with similar amplitude — the case in
-w148's A/C and B/D pairs).
-
-User's framing: "Our best bet for fitting blended features would
-likely occur when their phases are in quadrature." Quadrature (Δφ = π/2)
-is the only configuration where two close peaks carry independent
-information; both Δφ=0 (degenerate / co-aligned) and Δφ=π (cancelling)
-are pathological.
-
-The complementary penalty for the degeneracy pathology is
-`cos((φᵢ - φⱼ)/2)` — 1 at Δφ=0 (max penalty) and 0 at Δφ=π (no
-penalty). It mirrors the existing one. Two ways to wire this:
-
-- **Separate penalty term** — add a `phase_degeneracy_penalty_lambda`
-  parameter and emit a second penalty residual per pair with
-  `sqrt(λ_deg) · w(Δsep) · cos((φᵢ - φⱼ)/2)`. Independent tuning;
-  keeps the current cancellation penalty untouched.
-- **Single non-quadrature penalty** — replace both halves with one
-  term that fires at *both* Δφ=0 and Δφ=π, zero only at Δφ=π/2:
-  candidates are `cos(φᵢ - φⱼ)` (peaks at both 0 and π) or
-  `|cos(φᵢ - φⱼ)|`. One knob; cleaner conceptually but loses the
-  ability to tune cancellation-vs-degeneracy independently if their
-  failure modes turn out to need different λ.
-
-Both should keep the existing `weight = max(0, 1 - sep/cutoff)`
-closeness factor so the penalty only fires for pairs near the
-resolution limit. The cutoff might need to be smaller for the
-degeneracy half (e.g. 1 FWHM instead of the current 2 FWHM) since
-the degeneracy pathology is specifically a sub-FWHM problem.
-
-#### Phase 1 implementation status (item 1 landed)
-
-Item 1 shipped against the **merge gate only** so far. The other two
-sites (knockout `supported` flag and conservative-loop accept gate)
-still use the raw-`n_data` F-test/AIC; they remain on the roadmap as
-Phase 2 and Phase 3 respectively. The merge-gate implementation also
-diverged from the original proposal in two structurally important
-ways:
-
-**(a) AICc formula uses `n_eff` uniformly, not just in the correction.**
-The Burnham-Anderson AICc is `2k + n·log(chi²/n) + 2k(k+1)/(n - k - 1)`;
-the original sketch only swapped `n_eff` into the correction term and
-left `n_data` in the log-likelihood. That hybrid doesn't correspond to
-any clean statistical derivation. The shipped form substitutes `n_eff`
-for `n` everywhere — see `validation.calculate_aicc(chi2, n_params,
-n_eff)`. The log-term scaling makes marginal chi² improvements count
-for less when `n_eff` is small, which is the same conservatism the
-small-sample correction provides, applied through a second channel.
-
-**(b) Two-tier merge gate, not single AICc test.** Pure AICc-with-
-`n_eff` has a structural blind spot: for K-peak fits on narrow features
-where `n_eff < k + 1` for *both* K and (K-1), AICc returns `+inf` for
-both → tied → any tie-break behaviour either over-merges (`inf > inf
-== False` accepts the merge, eating real peaks like w198's outer
-shoulders) or under-merges (rejects, leaving duplicate-pair overfit).
-The fix is a two-tier merge gate (`merge_close_peaks_cleanup` in
-`residual_rescue.py`):
-
-- **Tier 1 — sub-resolution structural merge.** Pairs at separation <
-  `structural_merge_factor * fwhm` (default 0.5 FWHM) merge
-  unconditionally; no AICc test. The Lorentzian-only model physically
-  cannot distinguish these from a single peak, so any K-peak LSQ
-  convergence at this scale is a numerical artifact. Catches the w148
-  / w269 duplicate-pair overfit pathology.
-- **Tier 2 — above-resolution AICc-with-`n_eff` gate, REJECT-on-tie.**
-  Pairs at `structural_merge_factor * fwhm` ≤ separation <
-  `merge_separation_factor * fwhm` (0.5 to 1.0 FWHM by default) merge
-  only when AICc(K-1) is **strictly less than** AICc(K). Ties (both
-  finite-equal or both `+inf`) preserve the K-peak fit. Protects real
-  close pairs like w198's outer shoulders (~1 FWHM from inner peaks)
-  where AICc cannot discriminate.
-
-The weighting choice for `n_eff` is `kish_mag` (Kish formula on
-`|model(f)|`, not `|model(f)|²`); a sweep on the 2638 fixture showed
-the `|model|²` weighting produced `n_eff` so small that even sub-
-resolution duplicate pairs sometimes were unidentifiable and the gate
-would either over- or under-merge unpredictably depending on tie-break
-choice. `kish_mag` keeps `n_eff` large enough for Tier 2 AICc to be
-informative across the 2638 fit's K range. `n_eff_kind` is a parameter
-on the merge function; the production default is set in
-`DEFAULT_N_EFF_KIND` and is dataset-relevant (per-instrument re-
-calibration may be needed).
-
-**(c) Cleanup wiring gap closed.** The pre-Phase-1 codebase had
-`merge_close_peaks_cleanup` defined as a library function but no
-caller in `rescue_and_consolidate` — confirmed via grep. The Phase 1
-work added the call after each round's knockout sweep (with a
-`knockout_test` re-run on the merged fit so persisted `supported`
-flags match the post-merge peak set). `RescueRoundDiagnostics` gained
-`n_merged` so the per-round audit shows where the gate fired.
-
-**(d) Shape-error-aware sigma inflation for the rescue's screening
-pipeline.** A separate Phase 1b change to `attempt_residual_rescue`,
-necessary because the merge gate alone left the rescue stuck in limit
-cycles on strong-line windows (rescue keeps re-detecting irreducible
-shape residual as candidate peaks; merge collapses them; next round
-re-detects them; ...). The fix builds a position-dependent effective
-noise floor
-
-```
-σ_eff(f) = √(σ_c² + (ε · |current_model(f)|)²)
-```
-
-threaded as the new `shape_error_epsilon` parameter (default 0.0 =
-behaviour-preserving). The rescue's detector + phase-coherence filter
-see the inflated sigma; the LSQ inside `conservative_fit` keeps the
-canonical sigma — inflation is a screening tool, not a fitting one. A
-per-bin post-filter is required because `find_residual_peaks` uses
-the *median* sigma for scipy's `find_peaks` height threshold, so a
-few-bin local inflation doesn't shift the global gate; the post-
-filter checks each detected candidate against
-`snr_threshold * sigma_eff[bin_index] / sqrt(2)` and drops those that
-fail at the inflated floor.
-
-`ε` is a **per-dataset constant** measured from the chi²_r vs SNR²
-regression on the post-rescue fits (see "Lineshape model deficit and
-per-dataset calibration" in
-[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)).
-The 2638 fixture's calibrated value is 0.05 (5% per-bin residual at
-the line center). Note that the *per-bin* `ε` is roughly 4× the
-*chi²_r-aggregated* `ε` from the regression because chi²_r sums over
-many bins and divides by full-window dof; the per-bin value is what
-the sigma inflation needs. This factor will likely differ between
-instruments.
-
-**(e) Persistence semantics.** The original proposal asked whether to
-keep raw F-test `p_value` or replace with the n_eff-corrected form.
-Decision: persist all three diagnostics during development (raw F-test
-p, n_eff-corrected p, and `aicc_delta`), slim to just (raw p +
-`aicc_delta` + `n_eff`) once Phase 2 / 3 settle. **NOT YET WIRED** —
-the merge gate is transient state (not persisted), so this only
-becomes load-bearing for the Phase 2 (knockout) and Phase 3
-(conservative-loop) work. No fixture-vintage hazard yet.
-
-**(f) Tau handling in the (K-1) refit — open consideration.** The
-shipped `merge_close_peaks_cleanup` runs the (K-1) refit with tau
-free (inherited from `fit_kwargs_inner`). Tau is effectively a
+The merge gate's (K-1) refit, the knockout test's (K-1) refit, and
+the iterative AICc cleanup's (K-1) refit all run with
+`fit_tau=False, tau0_us=current.tau_us`. Tau is effectively a
 dataset-shared parameter (transit time × natural lifetime — a
-property of the experiment, not the individual peak), and letting
-a single-window (K-1) refit broaden tau to absorb the dropped
-peak's contribution gives the LSQ an extra knob the model
-comparison shouldn't have. The same consideration applies to the
-Phase 2 knockout's refit (see "Suggested sequencing" item 3).
-Recommended: lock tau at the K-fit value for both the merge and
-knockout (K-1) refits — passes `fit_tau=False, tau0_us=fit.tau_us`
-to `fit_window`. The merge change is a Phase 1d follow-up; the
-knockout change is built into Phase 2 from the start so both
-comparisons enforce the same dataset-wide tau invariance. Expected
-behaviour shift: slightly fewer merges fire (the (K-1) chi² won't
-benefit from tau broadening, so the AICc gate's bar is harder to
-clear); strong-line / cycling windows should be unaffected since
-tau is already well-determined there.
-
-**(g) Dataset-wide tau calibration (longer-horizon).** Independent
-of the (K-1)-refit question. Currently each window fits tau
-independently from its own data; for strong windows this converges
-near a consistent value (~3 µs on the 2638 fixture), but weak
-windows hold tau at the apodization ceiling (a bias, not a fit).
-A natural cleanup once Phases 2+3 land: after the per-window fits
-converge, compute a consensus tau from the strong-window
-distribution (median, or amplitude-weighted median, of windows
-where `tau_error < tolerance`), then re-fit weak windows with tau
-locked at the consensus. Improves weak-window amplitude/offset
-precision without changing the strong-window results. Tracked
-separately when implementation begins; noted here so the Phase 2
-"lock tau in the refit" decision doesn't get conflated with the
-"calibrate tau across the dataset" project.
-
-#### Phase 2 implementation status (knockout site LANDED)
-
-Item 1 shipped against the knockout site as four interlocking
-changes. The basic spec was straightforward — "remove-and-refit
-with AICc-with-`n_eff`, tau-locked, REJECT-on-tie" — but two
-structural issues surfaced during 2638 validation that required
-companion changes to land cleanly. The conservative-loop accept
-gate (Phase 3) is still on the raw-`n_data` F-test/AIC.
-
-**(a) Refit-based `knockout_test` with the AICc-with-`n_eff` gate
-(per the spec).** `knockout_test` in `window_fit.py` was rewritten:
-for each peak `i`, remove it from the K-fit, refit the surviving
-(K-1) peaks freely from their K-fit parameters as warm start, with
-`fit_tau=False, tau0_us=fit.tau_us` (tau locked at the K-fit
-value, per Phase 1 item (f) — the rationale is identical to the
-merge gate). Gate: `supported` iff `aicc_km1 >= aicc_k` (compared
-directly, not via subtraction, so the both-`+inf` case reads as a
-tie and preserves the K-peak fit — matches the merge convention).
-The freeze-others `delta_chi2` and `expected_delta_chi2` stay as
-"energy carried by this line" diagnostics on the persisted
-`KnockoutResult`; they are no longer the gate. `n_eff` is computed
-once per sweep from `fit.fitted_spectrum` (shared across all
-peaks). Schema additions (`n_eff`, `aicc_delta` with NaN defaults)
-land on both `KnockoutResult` and `KnockoutInfo`, with matching
-HDF5 columns (`knockout_n_eff`, `knockout_aicc_delta`) in
-`_OPTIONAL_PEAK_COLUMNS` (older files load with NaN).
-`DEFAULT_N_EFF_KIND` lifted from `residual_rescue.py` to
-`validation.py` so the merge and knockout gates share a single
-source of truth.
-
-`knockout_test` 's signature gains `fit_kwargs_inner` (the same
-bag `derive_window_fit_constraints` produces for `conservative_fit`)
-and `n_eff_kind`; the two production call sites
-(`conservative_fit` end-of-function, three sites in
-`rescue_and_consolidate`) thread both through. The non-iterative
-per-peak design is the user's spec — knockout produces a clean
-diagnostic snapshot of "what would removing peak `i` say in
-isolation", suitable for persistence.
-
-**(b) Iterative AICc cleanup for the rescue loop's drop step.**
-Validation revealed that the non-iterative per-peak `supported`
-flag, used directly to drop "all unsupported peaks at once", is
-structurally unsound on duplicate clusters. The 2638 survey
-regressed badly (p95 chi²_r 3.23 → 16.7, max 5.65 → 398; w315/
-w301/w273 went K=2→K=1 with chi²_r blowing up by 1–2 orders of
-magnitude). Mechanism: when N≥2 peaks are duplicates of a single
-real feature (or close enough that the (K-1) refit's surviving
-neighbour can absorb the removed peak's amplitude via offset /
-amplitude / phase shifts), the per-peak test flags each
-individually as unsupported because each peak's twin re-converges
-to full amplitude on refit. An all-at-once drop kills the whole
-cluster including the underlying real signal.
-
-Fix: a new `iterative_aicc_cleanup` function in `residual_rescue.py`
-(modelled on `remove_and_refit_cleanup` but with the AICc gate
-swapped in). At each iteration: for each remaining peak, simulate
-removal + tau-locked (K-1) refit, find the peak with the **most-
-negative** `aicc_delta`, drop that one (only) if `aicc_km1 <
-aicc_k`, and continue. Stop when all remaining peaks pass.
-Redistributes the dropped peak's contribution to the surviving
-peaks at each step, so the next iteration's per-peak test reflects
-the new model state. On a 2-duplicate cluster: drop one, the
-surviving twin re-converges to full amplitude on refit, next
-iteration's K=1-vs-K=0 test sees the full peak vs the null and is
-strongly supported → stop. On a 3-duplicate cluster: drop two,
-keep one. Real distinct peaks survive because none of their
-(K-1) refits comes close to the K chi².
-
-`rescue_and_consolidate` calls `iterative_aicc_cleanup` in place
-of the old supported-mask drop. The per-peak `knockout_test` still
-runs on `merged_joint_fit` (before cleanup) and on `pruned_fit`
-(after cleanup) so the persisted diagnostics show both the
-pre-cleanup gate state and the final consolidated state.
-
-**(c) Merge-before-knockout reorder.** Pre-Phase-2, the rescue
-loop ran `joint refit → knockout drop → refit on survivors →
-merge cleanup`. With the refit-based knockout, this order
-catastrophically dropped peaks: w148's joint fit produced sub-
-resolution duplicate pairs that knockout dropped wholesale before
-merge could collapse them. Restored target-window behavior (and
-the survey distribution) by running merge first on the joint
-fit, then knockout (now iterative). Loop order is now:
-
-```
-joint refit → merge cleanup (both tiers) → per-peak knockout (diagnostic)
-            → iterative AICc cleanup → per-peak knockout (final, persisted)
-```
-
-Tier 1 of merge still collapses sub-resolution clusters
-structurally (so they never reach knockout). Tier 2 (AICc-tied
-close pairs) preserves real close pairs that knockout would
-otherwise absorb. The reorder is a documented departure from the
-Phase 1 wiring; the comment in `rescue_and_consolidate`
-documents the rationale inline.
-
-**(d) Candidate-locality blacklist for the residual screen.**
-Validation also showed the audit trail was noisy: the rescue's
-detector kept nominating the same handful of candidates every
-round, each round's joint refit + iterative cleanup would drop
-them, the next round would find them again. The blacklist
-suppresses this: `attempt_residual_rescue` gains an
-`excluded_offsets` parameter, and the candidate-detection step
-filters out any candidate within +/-1 grid bin of either:
-
-- A *currently-fitted peak* in `current_fit.peaks` (residual
-  structure under a fitted peak is shape-error / leakage, not a
-  missed line — re-nominating it just feeds the joint-refit /
-  iterative-cleanup chain a peak it will drop again).
-- An entry of `excluded_offsets` (the across-rounds memory).
-
-`rescue_and_consolidate` maintains the across-rounds blacklist:
-at the end of each round, every detector candidate from this
-round (post-coherence-passed + coherence-rejected — "for any
-reason") whose frequency did NOT end up as a fitted peak in the
-consolidated set is added. The blacklist tracks the *detector's*
-frequency (not the LSQ-refined offset), because the next round's
-detector lookup compares against the detector's bin position,
-which can differ from the LSQ-refined position by more than a
-bin. Tolerance for both blacklist matching and survival check is
-1 grid bin (`df_mhz`), matching the user's "+/-1 point" spec.
-
-Empirically this collapses most multi-round rescue chains to a
-single accepted round, with subsequent rounds terminating at
-"no candidates". Per-round knockout-pruning counts on the 2638
-survey dropped from 140 (post-iterative cleanup, no blacklist)
-through 94 (rescue-fit-survival blacklist) and 73 (broader
-blacklist using `rescue.fit.peaks`) to 57 (final blacklist using
-detector frequencies). Final-state chi²_r distribution unchanged
-through all variants — the blacklist only suppresses redundant
-work, not real fitting.
-
-#### Validation results after Phase 1 (2638 fixture, kish_mag, ε=0.05)
-
-Survey distribution (50 windows, every 7th):
-
-| metric | baseline (pre-Phase 1) | Phase 1+1b+1c |
-|---|---|---|
-| chi²_r median | 1.43 | 1.06 |
-| chi²_r p75 | 2.33 | 1.65 |
-| chi²_r p95 | 7.73 | 3.23 |
-| chi²_r max | (~65; outlier-dominated) | 5.65 |
-
-Target windows:
-
-| window | K_init → K_final | chi²_r init → final | note |
-|---|---|---|---|
-| w148 (duplicate-pair) | 1 → 2 | 715 → 6.27 | Duplicate-pair overfit eliminated (sub-resolution merge fires). chi²_r at shape-error floor for SNR=145. |
-| w198 (apod-override + shoulders) | 2 → 7 | 627 → 2.92 | Real outer shoulders preserved by Tier-2 REJECT-on-tie. |
-| w269 (duplicate-pair) | 5 → 4 | 17.4 → 18.65 | Duplicates from initial seeding collapsed; chi²_r at shape-error floor for SNR=474. Remaining initial-seeding duplicate likely needs Phase 3. |
-| w271 (decoupled doublet) | 2 → 2 | 1578 → 9.45 | Initial-seeding A/C duplicate not yet resolved — Phase 3 issue. |
-| w16, w104, w127, w337 (borderline) | 1 → 2 | (low → low) | Unchanged — weak-peak rescues preserved. |
-| w63, w64 (clean controls) | unchanged | unchanged | No regressions. |
-
-#### Validation results after Phase 2 (2638 fixture, kish_mag, ε=0.05)
-
-Survey distribution (50 windows, every 7th):
-
-| metric | Phase 1+1b+1c | Phase 2 final |
-|---|---|---|
-| chi²_r median | 1.06 | 1.37 |
-| chi²_r p75 | 1.65 | 2.03 |
-| chi²_r p95 | 3.23 | 3.90 |
-| chi²_r max | 5.65 | 6.68 |
-
-Target windows:
-
-| window | Phase 1 (K, chi²_r) | Phase 2 (K, chi²_r) | note |
-|---|---|---|---|
-| w148 (duplicate-pair) | 1→2, 715→6.27 | 1→2, 715→6.22 | Matches Phase 1 (merge-first order preserved the Tier-1 collapse). |
-| w269 (duplicate-pair) | 5→4, 17.4→18.65 | 5→5, 17.4→17.41 | Stays at K=5: the K=4 collapse in Phase 1 depended on the rescue first nominating a candidate near the initial-seeding duplicate, which the locality blacklist now rejects (fitted-peak filter). chi²_r unchanged at shape-error floor. Initial-seeding duplicate remains Phase 3 territory. |
-| w16, w104, w127, w337 (borderline) | 1→2 (kept) | 1→1 (all pruned) | Rescue candidates rejected each round; final K=1 matches initial. chi²_r unchanged. Iterative cleanup now correctly identifies these as unsupported under the refit-based gate. |
-| w63, w64 (clean controls) | unchanged | unchanged | No regressions. |
-| w315/w301/w273 (tail risk under non-iterative drop) | n/a (no regression in Phase 1) | 2→2 stable | Initial fix attempt with non-iterative drop catastrophically broke these (K→1, chi²_r 6.7→398). Iterative AICc cleanup fixes; final fit matches initial. |
-
-Median chi²_r is slightly elevated vs Phase 1 (1.37 vs 1.06)
-because the new gate is more conservative on borderline rescues
-(w16/w104/w127/w337 no longer accept the borderline second peak).
-p95 and max are close to Phase 1 baseline. Per-round work counts
-dropped substantially with the blacklist (knockout-pruning count
-on the survey: 140 → 57 across the iterations of the fix).
-
-#### Phase 3 implementation status (conservative-loop site LANDED)
-
-The conservative-loop accept gate (this section, #1, third call
-site) ships in two parts: the AICc-with-`n_eff` test replacing the
-`p_value < significance AND trial.aic < current.aic` dual gate at
-both call sites (the main add-one-peak loop and the
-`_blend_aware_seed` K=2/K=3 escalation), and a new
-**information-weighted** `n_eff` kind to keep that test in the
-AICc-identifiable regime on narrow features.
-
-**(a) Single AICc gate at both K-vs-(K+1) sites.** The trial (K+1)
-model's `fitted_spectrum` is the magnitude basis (both AICc
-evaluations share one `n_eff` so the comparison sits on a common
-scale). REJECT-on-tie: accept iff `aicc_k_plus_1 < aicc_k`
-strictly — `inf < inf` is False so the both-`+inf` case (neither K
-nor K+1 identifiable at `n_eff`) reads as a tie and preserves the
-K-peak fit. This is the *opposite* sign convention from the merge
-/ knockout gates' REJECT-on-tie because the K+1 model is the
-more-complex one here; the same principle (a tie always preserves
-K) yields the conservative direction in both cases. `significance`
-is retained on the signatures for backwards compat but is not used
-to gate the accept decision; the F-test `p_value` and the legacy
-AIC are still computed and recorded on `AddStep` as familiar
-diagnostics.
-
-`AddStep` (and its persistent twin `AuditStep`) gained NaN-default
-`n_eff` and `aicc_delta` fields. The seed step (K=0→K=1, accepted
-unconditionally) and the separation-rejected branch leave both at
-NaN; every other gated step fills them. Older audit JSON blobs
-load with NaN via `.get` defaults in
-`io/fitting_serialization.py`.
-
-**(b) New `perplexity_log1p_snr` `n_eff` kind.** The merge /
-knockout gates use `kish_mag*` weights on `|model|` (or
-`|model|²`), which on a Lorentzian peak collapse to roughly the
-FWHM-in-bins (~5–8 on the 2638 fixture). That works for K-vs-(K-1)
-because AICc(K) diverges to `+inf` first when `n_eff` is small, so
-the gate falls through to "preserve K" (do not merge / do not drop
-the peak) — the conservative direction. For K-vs-(K+1) the
-divergence flips: AICc(K+1) goes `+inf` first, and the gate then
-asks "+inf < finite?" → False → REJECT the addition. On narrow
-features that locks out real escalations the chi-squared drop
-overwhelmingly supports (the failure mode the gate hits on the
-2638 clean controls and on w63/w64).
-
-The new kind replaces the magnitude weight with a per-bin
-information weight:
-
-```
-w_f = log(1 + |model(f)| / sigma(f))
-p_f = w_f / sum_f w_f
-n_eff = exp(-sum_f p_f * log(p_f))    # perplexity of p
-```
-
-`log1p(SNR)` is approximately the Shannon information of a signal-
-vs-noise detection at that SNR (exactly that in the small-SNR
-limit, `log(SNR)` for large SNR — the log-Bayes-factor of "signal
-present" vs "noise only"). The perplexity of the normalised
-distribution gives an effective bin count where each bin
-contributes by its information weight rather than its magnitude
-concentration. On the 2638 diagnostic windows the kind produces
-`n_eff` ~ 40–85 bins (vs ~5–30 for `kish_mag`), comfortably in the
-AICc-identifiable regime for K-vs-(K+1) on K up to ~5.
-
-Implementation: `effective_sample_size(..., kind=
-"perplexity_log1p_snr", sigma=...)`. The function gained an
-optional `sigma` argument used only by this kind; the magnitude-
-only kinds ignore it. `validation.py` exposes
-`DEFAULT_CONSERVATIVE_N_EFF_KIND = "perplexity_log1p_snr"`
-alongside the existing `DEFAULT_N_EFF_KIND = "kish_mag_sq"`.
-
-**(c) Per-site `n_eff_kind` defaults.** `conservative_fit` gained
-two parameters: `n_eff_kind` (default
-`DEFAULT_CONSERVATIVE_N_EFF_KIND`) for the conservative-loop gate
-threaded into `_blend_aware_seed`, and `knockout_n_eff_kind`
-(default `DEFAULT_N_EFF_KIND`) for the final `knockout_test`
-sweep. Same separation lets merge / knockout keep their magnitude-
-concentrated gate while the conservative-loop gate uses the
-information-weighted kind.
-
-**(d) Phase 1d follow-up (LANDED).** Aligned
-`merge_close_peaks_cleanup`'s (K-1) refit to lock tau at the
-current K-peak fit's value (`fit_tau=False, tau0_us=current.tau_us`).
-Matches the convention used by `knockout_test` and
-`iterative_aicc_cleanup`. Closes the last tau-handling
-inconsistency between the three AICc gates.
-
-#### Validation results after Phase 3 (2638 fixture, perplexity_log1p_snr, ε=0.05)
-
-Survey distribution (50 windows, every 7th):
-
-| metric | Phase 2 | Phase 3 |
-|---|---|---|
-| chi²_r median | 1.37 | 1.34 |
-| chi²_r p75 | 2.03 | 2.02 |
-| chi²_r p95 | 3.90 | 4.05 |
-| chi²_r max | 6.68 | 6.68 |
-
-Target windows:
-
-| window | Phase 2 (K, chi²_r) | Phase 3 (K, chi²_r) | note |
-|---|---|---|---|
-| w63 (clean control, K=3) | 3→3, 0.81 | 3→3, 0.81 | Restored — confirms the gate accepts real escalations on weak features (peak SNR ~5.7) where `kish_mag` n_eff would have been ~5 and AICc(K+1) `+inf`. |
-| w64 (clean control, K=2) | 2→2, 0.59 | 2→2, 0.59 | Same restoration. |
-| w148 (duplicate-pair) | 1→2, 715→6.22 | 1→2, 715→6.22 | Unchanged. |
-| w198 (apod-override + shoulders) | 2→7, 627→2.92 | **2→1, 627→774** | Initial fit correct at K=2; rescue chain over-prunes (rescue + knockout + merge cycle removes 5+ peaks net). Plausibly the rescue's internal `conservative_fit` inheriting the new perplexity default — on residuals, log1p(SNR) is close to uniform and n_eff approaches n_data, making the rescue's gate over-permissive. Knockout then over-prunes the over-nominated peaks and merge collapses the sub-resolution duplicates the rescue produced. Follow-up: pin the rescue's `conservative_fit` to `kish_mag*` via `rescue_conservative_kwargs`, or tune elsewhere. |
-| w269 (seed-duplicate K=5) | 5→5, 17.4→17.41 | **4→4, 18.65→18.55** | Target: K dropped from 5 to 4 on the initial fit — the seed-duplicate is rejected at the conservative-loop step instead of being passed through to the rescue's iterative cleanup. chi²_r at the shape-error floor for SNR=474. |
-| w271 (decoupled doublet) | 2→2, 1578→9.45 | 2→2, 9.45 (init) → 9.40 | Same final state. |
-| w16, w104, w127, w337 (borderline) | 1→1 | 1→1 | Unchanged. |
-
-The aggregate distribution is essentially identical to Phase 2
-(median slightly better at 1.34 vs 1.37). The user-named target
-(w269) hits exactly the K=4 expected outcome — the conservative-
-loop AICc gate now rejects the seed-duplicate at the initial fit
-step, eliminating the post-Phase-2 reliance on the rescue chain's
-iterative cleanup for this pathology.
-
-w198 is the one observed regression. Its initial fit is correct at
-K=2 (matches Phase 2); the chain that climbs to K=7 in Phase 2 now
-ends at K=1 because the rescue's internal `conservative_fit`
-inherits the perplexity default and behaves differently on the
-residual. Documented as a known follow-up; the fix is likely a
-per-call-site `n_eff_kind` (rescue stays on `kish_mag*`, initial
-fit uses perplexity), parallel to the existing
-`knockout_n_eff_kind` split in `conservative_fit`.
-
-#### Suggested sequencing for the next session
-
-Items 1, 2, 3, and 4 below are LANDED; the remaining sequencing
-focuses on the w198 rescue follow-up and the phase-degeneracy
-penalty.
-
-1. **Fix the contributor-skirt leakage** (`stage5-fitting.md` O5-10).
-   LANDED in commit `456fec2` (drives Stage 4 contributor attachment
-   from analytic skirt magnitude). Provides the clean baseline the
-   AICc work calibrates against.
-
-2. **AICc-with-`n_eff` at the merge gate** (this section, #1, merge
-   site). LANDED as Phase 1+1b+1c — see "Phase 1 implementation
-   status" above. Shipped form: two-tier gate (sub-resolution
-   structural + above-resolution AICc-with-REJECT-on-tie), shape-
-   error-aware sigma inflation for the rescue's screening pipeline,
-   wiring gap closed in `rescue_and_consolidate`. The per-dataset
-   `ε` calibration is the major generalisation lever — see
-   [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
-
-3. **Refit-based knockout with AICc-with-`n_eff` gate** (this
-   section, #1, knockout site). **LANDED as Phase 2 — see
-   "Phase 2 implementation status" above.** The base spec
-   (refit-based test, tau locked, REJECT-on-tie AICc-with-`n_eff`
-   gate, schema additions) shipped as written. Three companion
-   changes surfaced during 2638 validation and landed alongside:
-
-   - The per-peak gate is non-iterative and used as a diagnostic
-     snapshot; the rescue loop's actual drop logic is iterative
-     (`iterative_aicc_cleanup`). Necessary because non-iterative
-     drops kill duplicate clusters wholesale.
-   - The rescue loop reordered to run merge before knockout
-     (sub-resolution duplicates collapse before the refit-based
-     gate evaluates them).
-   - Added a candidate-locality blacklist for the residual
-     screen: detector candidates within +/-1 grid bin of an
-     existing fitted peak OR a previously-rejected candidate
-     (any rejection mechanism, any prior round) are dropped
-     before phase-coherence. Quiets the audit trail and prevents
-     re-detection of dropped peaks each round.
-
-   Phase 1d follow-up (align `merge_close_peaks_cleanup`'s (K-1)
-   refit to also lock tau) shipped alongside Phase 3 — see
-   "Phase 3 implementation status" item (d).
-
-4. **AICc-with-`n_eff` at the conservative-loop accept gate** (this
-   section, #1, conservative-loop site). **LANDED as Phase 3 —
-   see "Phase 3 implementation status" above.** The base spec
-   (single AICc-with-`n_eff` test at both K-vs-(K+1) sites,
-   REJECT-on-tie, diagnostic `p_value` retention, `AddStep`
-   schema additions) shipped as written. The validation surfaced
-   a structural over-rejection on narrow features when the
-   `kish_mag*` `n_eff` from the K+1 model fell below the AICc
-   identifiability threshold; the fix was a new
-   `perplexity_log1p_snr` kind keyed on `log1p(|model|/sigma)`
-   per-bin information weights. The post-fit `knockout_test` call
-   inside `conservative_fit` keeps the original
-   `kish_mag*` default via a separate `knockout_n_eff_kind`
-   parameter, since K-vs-(K-1) wants the structural protection
-   that the magnitude-concentrated weight provides. w269 hits
-   the user-named target outcome (K=5→K=4 on the initial fit);
-   w198 regresses through the rescue chain (initial fit correct
-   at K=2; final K=1 after rescue+knockout+merge) and is the
-   one open follow-up.
-
-5. **Test `perplexity_log1p_snr` at merge / knockout.** The Phase
-   3 work shipped per-site `n_eff_kind` defaults — merge /
-   knockout still on `kish_mag*`, conservative-loop on the new
-   information-weighted kind. Try the new kind at the K-vs-(K-1)
-   sites too and compare against the Phase 1 / Phase 2 baselines
-   (median 1.06 / 1.37 chi²_r). Watch for over-permissive
-   duplicate-pair merging or over-aggressive knockout pruning. If
-   it works at both sites, unify on a single `n_eff_kind` across
-   all three gates.
-
-6. **Resolve the w198 rescue-chain regression.** w198 is the one
-   target window that regressed in Phase 3 (K=2→1 vs Phase 2's
-   K=2→7). Initial fit is correct; the rescue's internal
-   `conservative_fit` inherits the new perplexity default which
-   is more permissive on residuals (most bins at noise floor →
-   uniform-ish log1p(SNR) distribution → `n_eff` close to
-   `n_data` → gate trivially permissive). Plausible fix: pin
-   the rescue's `conservative_fit` to `kish_mag*` via
-   `rescue_conservative_kwargs`. Investigate the per-round audit
-   before committing; the issue may also involve the merge tier-1
-   collapse interacting with rescue-produced sub-resolution
-   duplicates.
-
-7. **Add the phase-degeneracy penalty** (this section, #2). The
-   LSQ-side defence-in-depth: prevents the optimiser from landing
-   in the duplicate basin in the first place. Cheap to prototype;
-   calibrating its λ against the post-Phase-3 gates is cleaner
-   than against the original gates.
-
-6. **Cross-fixture validation** (see
-   [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)).
-   Run alongside (3)–(5) as second / third fixtures become available.
-   The per-dataset `ε` calibration is the key generalisation tool;
-   if it works on a second fixture (especially from a different
-   instrument), the gates and penalties don't need per-dataset tuning
-   — only `ε` does.
-
-Expected behaviour change for (3)+(4)+(5): borderline acceptance
-moves toward the empirical truth. The risk is over-correction
-(rejecting real-but-weak peaks); the validation set surfaces that as
-a regression.
-
-### 3. Total-model integration strategy (RESOLVED — option B)
-
-Implemented as option B (`rescue_and_consolidate`): joint refit +
-knockout between every rescue round. The structural argument was that
-each round should operate against a properly-jointly-fit baseline
-rather than an ever-thinner residual; the cost difference vs option A
-(recursive then unroll) was small relative to the conservative-fit
-calls already dominating Stage 5 wall time.
-
-The two specific mitigations against the user's pathology concern
-(joint refit failing to escape a broken-tau basin and dropping the
-rescue's contribution back out) landed as:
-
-- **Warm-start tau from the rescue, not the previous fit.** The rescue
-  itself runs its conservative loop with the apodization-override-aware
-  tau when it detects the previous fit's tau is pegged. That same value
-  is then handed to the joint refit's LSQ as its starting tau. In w198
-  this propagates 5 µs (apodization) into a joint refit that converges
-  to 2.3 µs — escaping the 1 µs lower-bound peg in one step.
-- **Failsafe diagnostic on knockout pruning.** Each
-  `RescueRoundDiagnostics` tracks how many of the round's accepted
-  rescue peaks the knockout sweep dropped (`n_pruned_rescue_origin`).
-  A nonzero count means the joint refit may not be escaping a
-  pathological basin and is undoing the rescue's contribution. v1 logs
-  only; if validation finds a window class where this fires
-  repeatedly, an A-mode fallback can be added for that window without
-  reshaping the whole loop.
-
-### 4. Sliding-coherence parameter calibration
-
-The current anchor pair (0.2 at the cluster floor, 0.8 at the isolated
-ceiling, ramping linearly from 1 to 5 FWHM) was chosen on a single
-15-window sample and is not empirically calibrated. The
-"validation results" caveat above lists the diagnostics needed before
-treating these as production defaults. Likely follow-ups:
-
-- Replace the linear ramp with the Lorentzian-skirt-magnitude form
-  `threshold(Δ) = high − (high − low) · |basis(Δ, τ, T)|²`, which
-  tracks the contamination level exactly.
-- Calibrate `(close, isolated)` against the regime where clean
-  windows acquire spurious peaks.
-- Investigate whether the close anchor should depend on the *neighbour's*
-  SNR — a 200σ neighbour leaves far more skirt energy in the
-  candidate's basis than a 10σ neighbour, even at the same separation.
-
-## Next steps
-
-The **immediate next-session sequencing** is described under Open
-question 2 → "Suggested sequencing for the next session": fix
-contributor-skirt leakage first (`stage5-fitting.md` O5-10), then
-generalise effective-DoF / AICc with `n_eff` across the three
-hypothesis-test sites, then add the phase-degeneracy penalty.
-That sequencing replaces what was, in earlier versions of this
-doc, the "calibrate sliding-coherence first" framing — the duplicate-
-pair overfit is now the binding constraint, not the sliding-threshold
-tune.
-
-The items below are the longer-horizon rescue-completion plan; they
-remain valid but assume the immediate sequencing has landed first.
-
-In order of dependency:
-
-1. **Broader validation** (next-most-important): the 15-window sample's
-   chi²_r → ~1 behaviour was the prompt for the immediate sequencing
-   above. Once that lands, confirm against (a) the full 2638 fixture,
-   (b) other FTMW datasets the user has access to, (c) blackchirp-era
-   line-assignment ground truth where available. See "real peaks or
-   overfitting?" above.
-2. **Sliding-coherence calibration** — replace the linear ramp with the
-   Lorentzian-skirt-magnitude functional form, and sweep the
-   `(close, isolated)` anchors to find the regime where clean windows
-   acquire spurious peaks. See "Sliding-coherence parameter
-   calibration" open question.
-3. **Round-cap calibration** — the w132 5-round experiment suggests
-   `DEFAULT_RESCUE_MAX_ROUNDS=3` is too low for some windows; pick a
-   default that's high enough for typical convergence (probably 5–7)
-   without burning compute on windows that already converged at round 1.
-4. **Flip the `max_residual_rescue_rounds` default** from 0 to the
-   calibrated round-cap once (1)–(3) give a clean read. The rescue is
-   a structural part of the fit, not an opt-in tweak — the current 0
-   default is transitional.
-5. **Per-window cost monitoring** — every rescue round adds one
-   conservative_fit + one joint refit + a knockout sweep. For the
-   production pipeline (~400 windows) the B-loop may multiply Stage 5
-   wall-time by a small constant. Worth measuring on a full fixture
-   once (4) lands.
-6. **Independent revisit of the projection-coherence idea for Stage 3**
-   — separate planning doc once Stage 5 rescue is settled.
-7. **Audit-trail richness** — the consolidated `ConservativeFitResult`
-   currently inherits the initial fit's `audit_trail`; the rescue
-   rounds and joint refits emit `RescueRoundDiagnostics` but those
-   stay live-only (off `SpectrumFit`). If the rescue chain becomes the
-   default, persist the per-window `RescueEvent` list into
-   `SpectrumFit` so the on-disk fit is reconstruction-complete.
-
-### Validation-harness augmentations (delivered)
-
-The harness (`scratch/stage5-validation/generate_validation.py`) is
-the primary inspection surface for the rescue chain. Three
-augmentations originally planned for a clean session have landed:
-
-- **Per-window context view** — Figure 1 (`detail.png`) now opens
-  with a full active-FT magnitude overview row, the current window's
-  `freq_range` highlighted by an `axvspan` + edge vlines. Truncated
-  to the persisted trim range and amplitude-scaled to the persisted
-  units convention (e.g. µV).
-- **vline markers at fitted-peak positions** — drawn on each
-  residual and data+model panel of Figure 1. Letter labels (A, B,
-  C, …) staggered cluster-aware so sub-FWHM clusters stay legible.
-- **Final audit-trail figure** — `audit-trail.png` (Figure 2). Top
-  half: window magnitude spectrum with consolidated model overlay.
-  Bottom half: per-round audit panel laid out **bottom-to-top**
-  (initial fit at the bottom, final consolidated peaks at the top
-  with dotted vlines reaching up to the spectrum). Each round band
-  shows a candidates row (coherence-accepted / coherence-rejected /
-  rescue-fit-kept markers) and a merge row (knockout-pruned with
-  red X; red border for rescue-origin pruning — the failsafe
-  diagnostic). Figure height grows with chain length; small chains
-  leave trailing blank space rather than stretching rows.
-
-Per-peak provenance and the spectroscopic uncertainty formatting on
-the peak listing are documented in "Loose threads / future harness
-work" below — the heuristic attribution surfaces edge cases.
-
-**Promotion to the main visualization code** is the next logical
-step (`visualization/fit_visualization.py`,
-`Pipeline.visualize_fit(window_id=..., rounds=True)`). Two plumbing
-options:
-- Persist `RescueRoundDiagnostics` to `SpectrumFit` so the viz reads
-  from disk (schema change).
-- Re-run the rescue on demand from the persisted state (lighter,
-  ~1s per window).
-
-Re-run-on-demand is cheaper for an initial promotion; persistence
-makes sense once the chain is the default. The harness layout is now
-stable enough to port; main blocker is the duplicate-pair overfit
-work (Open question 2 → "Suggested sequencing") which may motivate
-schema changes that should land before promotion to avoid double-
-migrations.
-
-## How to assess the validation artifacts
-
-```
-conda run -n ftmwpipeline-dev python scratch/stage5-validation/generate_validation.py
-```
-
-writes (per window, under `scratch/stage5-validation/window_NNN/`):
-
-- `detail.png` — **consolidated final fit** (Figure 1, landscape
-  letter). Full-spectrum overview + current-window axvspan; 3-column
-  residual row (Re/Im/|z|) with vlines at fitted peak frequencies and
-  cluster-aware letter labels; 3-column data+model row; bottom row of
-  |residual| histogram vs Rayleigh + peak-listing axes with PDG-style
-  spectroscopic uncertainties and the per-peak knockout p-value
-  alongside the rescue-round origin tag. Amplitudes scaled by
-  `10**units_power` (e.g. µV); overview truncated to the persisted
-  trim range.
-- `audit-trail.png` — **rescue audit trail** (Figure 2, portrait
-  letter, grows taller with the chain length). Top: window magnitude
-  spectrum with consolidated model overlay. Bottom: audit panel laid
-  out **bottom-to-top** chronologically — initial fit at bottom, then
-  each rescue round's candidates row (coherence-accepted as green
-  triangles, coherence-rejected as red X, rescue-fit kept as open
-  green circles) and merge row (knockout-pruned with red X, red
-  border for rescue-origin failsafe firings), then the consolidated
-  final peaks at top with dotted vlines reaching up to the spectrum.
-- `detail-rr<n>.png` — **trajectory snapshots** (one per B-loop
-  round). Uses the older 4×2 plot_spectrum_fit layout (no amplitude
-  scaling, no peak listing); shows the consolidated state at the end
-  of round *n* against the full window data. Useful for the
-  monotonic-residual-shrink check across the chain. Not promoted to
-  the new layout — its role is trajectory inspection, not final
-  answer.
-- `report.md` — text rollup of the per-window plan, fit statistics,
-  fitted peaks, audit trail, thaw events, residual peak candidates
-  surfaced by the detector. Refers to the **initial** fit (pre-rescue);
-  the rescue chain is covered by `report-rr.md`.
-- `report-rr.md` — per-round rollup of the rescue chain: candidate
-  list, coherence-rejections, the joint refit's K and chi²_r, and
-  the knockout pruning broken out by origin. Tags each round as
-  ACCEPTED or REJECTED with the termination reason.
+property of the experiment, not the individual peak); a single-
+window (K-1) refit must not get the extra knob of broadening tau
+to absorb the dropped peak's contribution.
+
+The joint refit inside `rescue_and_consolidate` is the one
+exception — it fits tau freely from the rescue's warm start, so
+it can escape the broken-initial-fit basin (see "Rescue tau
+policy"). Locking the joint refit's tau is on the cross-fixture
+follow-up track as the dataset-wide tau majority-vote-freeze
+proposal.
+
+## Validation harness
+
+`scripts/development/stage5-validation/generate_validation.py`
+reproduces the initial fit per window, runs the consolidated
+chain, and emits per-window artifacts under
+`scratch/stage5-validation/window_NNN/`:
+
+- `detail.png` — consolidated final fit. Full-spectrum overview
+  + current-window axvspan; 3-column residual row (Re/Im/|z|)
+  with vlines at fitted peak frequencies and cluster-aware
+  letter labels; 3-column data+model row; |residual| histogram
+  vs Rayleigh + peak listing with PDG-style spectroscopic
+  uncertainties and the per-peak knockout p-value.
+- `audit-trail.png` — rescue audit trail. Top: window magnitude
+  spectrum with consolidated model overlay. Bottom: per-round
+  audit panel laid out bottom-to-top chronologically with
+  candidates row (coherence-accepted as green triangles,
+  coherence-rejected as red X, rescue-fit kept as open green
+  circles) and merge row (knockout-pruned with red X, red border
+  for rescue-origin failsafe firings).
+- `detail-rr<n>.png` — trajectory snapshots (one per chain
+  round). Useful for the monotonic-residual-shrink check.
+- `report.md` — text rollup of the per-window plan, initial fit
+  statistics, fitted peaks, audit trail, thaw events.
+- `report-rr.md` — per-round rollup of the rescue chain:
+  candidate list, coherence-rejections, joint-refit K and
+  chi²_r, knockout pruning broken out by origin.
 
 Read sequentially: `detail.png` (the answer) → `audit-trail.png`
 (how we got here) → `detail-rr0.png` … `detail-rrN.png` (the
-intermediate states if the audit needs forensic context). The residual
-panels in the rr-trajectory should shrink monotonically toward the
-noise floor; any remaining structure is what's still unexplained at
-that round.
+intermediate states if the audit needs forensic context).
 
-## Loose threads / future harness work
+## Known limitations
 
-A grab-bag of items surfaced during the visualization pass; none are
-blockers, but they belong here so they survive session boundaries.
+- **w198 on 2638**: the rescue chain converges to K=3 at
+  χ²_r=148 instead of the K=7 at χ²_r=2.92 a tau-locked
+  configuration reaches. Root cause is the joint refit's tau
+  thaw: even when the initial fit holds tau fixed, the joint
+  refit fits tau freely and converges to a different (~2.4 µs)
+  basin from the dataset consensus (~3 µs). Resolution is the
+  dataset-wide tau majority-vote-freeze proposal in
+  [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
+- **Borderline real-vs-noise on w16/w104/w127/w337-class
+  windows**: the rescue's iterative cleanup rejects these
+  borderline second peaks each round. Whether they are real
+  weak lines or noise cannot be determined from the 2638
+  fixture alone; the cross-fixture validation Tier-3 ground-
+  truth check is the discriminator.
+- **Merge tier-2 disabled.** `DEFAULT_MERGE_SEPARATION_FACTOR =
+  0.5 = DEFAULT_STRUCTURAL_MERGE_FACTOR` so pairs in [0.5, 1.0]
+  FWHM are not considered for merging. Tier 2 becomes safe to
+  re-enable once the phase-degeneracy penalty
+  (`stage5-fitting.md` O5-11) provides the LSQ-side signal to
+  distinguish real close pairs from duplicate-pair LSQ
+  artifacts. Empirically a no-op on the 2638 fixture: 6 → 4
+  total merges, knockout-pruning 22 → 24, chi²_r distribution
+  unchanged.
 
-### Per-peak provenance attribution is a heuristic
+## Rescue-specific open follow-ups
 
-`_peak_provenance` in `generate_validation.py` attributes each
-consolidated peak to a "source" (`init` / `r0` / `r1` / …) by closest
-match in offset to that source's added-peak list. When the joint
-refit reshuffles peaks across rounds, this is not exact — the w148
-example shows two consolidated peaks (+0.5253 and +0.5650 offsets)
-both attributing to `init` because the only initial seed was at
-+0.5360, even though one of them physically descended from r0's
-accept at +0.5970. Workable for first read; if a window's audit
-gets a confusing attribution, this is why.
+External follow-ups (phase-degeneracy penalty, dataset-wide tau
+calibration, borderline-real ground truth, Stage 3
+projection-coherence) live in the planning docs that own each
+topic. Rescue-specific follow-ups:
 
-A more principled attribution would track peak identity through each
-joint refit (e.g., by index permutation derived from the refit's
-peak order). Worth doing only if the heuristic confuses real-world
-reads.
+- **Sliding-coherence parameter calibration.** The shipped
+  anchor pair (0.2 at the cluster floor, 0.8 at the isolated
+  ceiling, ramping linearly from 1 to 5 FWHM) was chosen on the
+  original 15-window sample and is not empirically calibrated
+  against a wider set. Likely follow-ups: replace the linear
+  ramp with the Lorentzian-skirt-magnitude functional form
+  `threshold(Δ) = high − (high − low) · |basis(Δ, τ, T)|²`
+  (tracks contamination level exactly); sweep `(close,
+  isolated)` against the regime where clean windows acquire
+  spurious peaks.
+- **Round-cap calibration.** A 5-round w132 experiment showed
+  the chain settling at round 3; `DEFAULT_RESCUE_MAX_ROUNDS=3`
+  may be too low for some windows. Probably 5–7 once the
+  rescue becomes a non-zero default.
+- **Default flip from `max_residual_rescue_rounds=0` to the
+  calibrated round-cap.** The rescue is a structural part of
+  the fit, not an opt-in tweak; the 0 default is transitional.
+  Gates on the cross-fixture validation work.
+- **Per-window cost monitoring.** Every rescue round adds one
+  `conservative_fit` + one joint refit + a knockout / merge /
+  iterative-cleanup sweep. For the production pipeline (~400
+  windows) the chain may multiply Stage 5 wall-time by a small
+  constant; worth measuring once the rescue is on by default.
+- **Audit-trail persistence.** The consolidated
+  `ConservativeFitResult` inherits the initial fit's
+  `audit_trail`; the rescue rounds and joint refits emit
+  `RescueRoundDiagnostics` but those stay live-only (off
+  `SpectrumFit`). Once the rescue is on by default, persist
+  the per-window `RescueEvent` list into `SpectrumFit` so the
+  on-disk fit is reconstruction-complete.
+- **Promotion to `Pipeline.visualize_fit(rounds=True)`.** The
+  harness layout for `detail.png` / `audit-trail.png` is stable
+  enough to port into `visualization/fit_visualization.py`.
+  Plumbing options for the audit data (re-run-on-demand vs
+  persist `RescueRoundDiagnostics`) — re-run is the lighter
+  starting move; persistence makes sense once the rescue is on
+  by default.
 
-### `detail-rr<n>.png` trajectory layout is unchanged
+## Validation-harness loose threads
 
-The per-round trajectory PNGs still go through
-`fit_visualization.plot_spectrum_fit` (the older 4×2 layout, no
-amplitude scaling, no peak listing). The new layout from `detail.png`
-was deliberately *not* propagated to the trajectory artifacts — their
-role is "here's the consolidated state at the end of round N" for
-forensic comparison, not "here's the final answer." If the trajectory
-PNGs end up being used heavily for inspection, lifting them to the
-new layout (with a "round N" header and possibly the per-round audit
-slice annotated) is a natural follow-up.
+Visualization-pass items that survived session boundaries; none
+are blockers.
 
-### Coherence-rejection X markers in Figure 2 are unexercised
-
-The audit-trail figure has marker code for coherence-rejected
-candidates (red X on the candidates row of each round). The 15-window
-2638 sample has zero coherence rejections, so the markers have never
-actually rendered. The code is in place; it just hasn't been
-visually validated. A window that produces coherence rejections (or
-a synthetic test fixture) would close this gap.
-
-### Top-level `overview.png` doesn't use `DisplayStyle`
-
-The spectrum-wide overview emitted by main() still goes through
-`visualization.fit_visualization.plot_spectrum_fit` with
-active-FT-native amplitudes — no trim, no units scaling. Per-window
-artifacts use the new `DisplayStyle` (`detail.png`, `audit-trail.png`
-respect trim + units), but the top-level overview is unchanged.
-Either thread the style into `plot_spectrum_fit` (library change) or
-emit a parallel harness-level overview (scratch-only). Library change
-is the right long-term move, defer until the harness layout
-stabilises and gets promoted.
-
-### Dead code from the model-overlay drop
-
-After removing the model overlay from Figure 1's full-spectrum
-context row (the data+model overlap was unreadable at the figure
-scale), `_full_spectrum_model` and the `other_window_fits` parameter
-on `_plot_consolidated_detail` are no longer called. Left in place
-in case a future iteration wants a different reduced overlay
-(e.g., data−model residual at the full-spectrum scale, or a
-contributor-only model to visualise leakage). If after another pass
-they're still unused, remove them.
-
-### Promotion to `Pipeline.visualize_fit(rounds=True)` (cross-ref)
-
-The harness is the iteration surface. When the layouts and
-provenance heuristics settle, the figures move into
-`visualization/fit_visualization.py` with a `rounds=True` flag on
-the per-window detail call (or a separate `visualize_audit_trail`
-entry point). Plumbing options for the audit data (re-run-on-demand
-vs persist `RescueRoundDiagnostics`) noted in §"Validation-harness
-augmentations" above; re-run is the lighter starting move.
+- **Per-peak provenance attribution is a heuristic.**
+  `_peak_provenance` in `generate_validation.py` attributes each
+  consolidated peak to a "source" (`init` / `r0` / `r1` / …) by
+  closest offset to that source's added-peak list. When the
+  joint refit reshuffles peaks across rounds, this is not exact;
+  workable for first read. A more principled attribution would
+  track peak identity through each joint refit by index
+  permutation.
+- **`detail-rr<n>.png` trajectory layout.** Still uses the older
+  4×2 `plot_spectrum_fit` layout (no amplitude scaling, no peak
+  listing). Deliberately not propagated to the trajectory
+  artifacts — their role is "consolidated state at the end of
+  round N" for forensic comparison, not "final answer." If the
+  trajectory PNGs end up being used heavily, lifting them to
+  the new layout is a natural follow-up.
+- **Coherence-rejection X markers in `audit-trail.png` are
+  unexercised.** The figure has marker code for coherence-
+  rejected candidates (red X on the candidates row of each
+  round). The 15-window 2638 sample has zero coherence
+  rejections, so the markers have never rendered. A window that
+  produces coherence rejections (or a synthetic test fixture)
+  would close this gap.
+- **Top-level `overview.png` doesn't use `DisplayStyle`.** The
+  spectrum-wide overview still goes through
+  `fit_visualization.plot_spectrum_fit` with active-FT-native
+  amplitudes — no trim, no units scaling. Either thread the
+  style into `plot_spectrum_fit` (library change) or emit a
+  parallel harness-level overview (scratch-only).
+- **Dead code from the model-overlay drop.**
+  `_full_spectrum_model` and the `other_window_fits` parameter
+  on `_plot_consolidated_detail` are no longer called after the
+  full-spectrum context row dropped the model overlay (data+model
+  overlap was unreadable at the figure scale). Left in place in
+  case a future iteration wants a different reduced overlay; if
+  still unused after another pass, remove them.
