@@ -22,7 +22,7 @@ sigma the correct factor is exactly ``sqrt(2)`` and nothing else.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Union
+from typing import List, Optional, Tuple, Union
 
 import numpy as np
 from scipy.stats import f as f_distribution
@@ -30,6 +30,7 @@ from scipy.stats import f as f_distribution
 from .peak_model import h_T
 
 __all__ = [
+    "DEFAULT_CONSERVATIVE_N_EFF_KIND",
     "DEFAULT_N_EFF_KIND",
     "calculate_hwhm_from_apodization",
     "feature_fwhm",
@@ -45,15 +46,32 @@ __all__ = [
 
 NoiseLike = Union[float, np.ndarray]
 
-# Effective-sample-size weighting kind used by the AICc-with-n_eff gates
-# (merge cleanup, knockout, conservative-loop accept). Kish on |model(f)|^2
-# collapses n_data to the bins the model actually informs -- a narrow
-# Lorentzian on a 200-bin window gives n_eff ~ FWHM-in-bins, which makes
-# the AICc small-sample correction kick in and naturally reject duplicate
-# peaks at sub-resolution separations. See
-# dev-docs/planning/stage5-residual-rescue.md Open question 2 -> Candidate
-# algorithmic fixes -> "Generalised effective-DoF" for the rationale.
+# Default effective-sample-size weighting kind used by the K-vs-(K-1) AICc
+# gates (merge cleanup, knockout). Kish on |model(f)|^2 collapses ``n_data``
+# to the bins the model actually informs -- a narrow Lorentzian on a 200-bin
+# window gives ``n_eff`` ~ FWHM-in-bins, which makes the AICc small-sample
+# correction kick in and naturally reject duplicate peaks at sub-resolution
+# separations. The structural divergence of AICc at small ``n_eff`` *helps*
+# the conservative direction here: when ``n_eff < k+1`` for the (K)-peak
+# model, AICc(K) goes ``+inf`` and the gate falls through to "preserve K"
+# (i.e. do not merge, do not drop the peak), which is what we want on weak
+# evidence.
 DEFAULT_N_EFF_KIND = "kish_mag_sq"
+
+# Default effective-sample-size weighting kind used by the K-vs-(K+1) AICc
+# gates (conservative add-one-peak loop and the blend-aware seeder's K=2/K=3
+# escalation). The magnitude-concentrated kinds above are wrong here:
+# ``n_eff`` is computed on the K+1 (more-complex) model, and the same
+# divergence at small ``n_eff`` now rejects real escalations the chi-squared
+# drop overwhelmingly supports. The perplexity-of-log1p(SNR) form weights
+# each bin by ``log(1 + |model|/sigma)`` -- the per-bin Shannon information
+# of a signal-vs-noise detection -- and returns ``exp(H(p))`` of the
+# normalised distribution. On a Lorentzian peak with peak SNR ~ 100 this
+# returns ~50 bins (matching a naive "count bins where the skirt is
+# significant") rather than ~5; the gate then stays in the AICc-identifiable
+# regime for realistic K-vs-(K+1) transitions and only diverges when the
+# K+1 model is genuinely under-determined.
+DEFAULT_CONSERVATIVE_N_EFF_KIND = "perplexity_log1p_snr"
 
 
 # ---------------------------------------------------------------------------
@@ -245,21 +263,34 @@ def effective_sample_size(
     *,
     kind: str = "kish_mag_sq",
     cutoff_fraction: float = 0.1,
+    sigma: Optional[np.ndarray] = None,
 ) -> float:
     """Effective number of bins the model actually informs.
 
     The raw bin count ``n_data`` is the wrong scale for hypothesis tests that
-    distinguish K-peak from (K-1)-peak models on a narrow feature: only the
+    distinguish K-peak from (K±1)-peak models on a narrow feature: only the
     handful of bins under the feature carry information about the parameter
-    change. The Kish-style effective sample size
-
-        n_eff = (Σ w_f)² / Σ w_f²
-
-    with weight ``w_f`` derived from the model magnitude collapses a flat
-    spectrum to ``n_data`` and a delta to ``1``; for a localised feature it
-    returns roughly the FWHM-in-bins. Feeding ``n_eff`` into
+    change. The effective sample size collapses a flat spectrum to ``n_data``
+    and a delta to ``1``; for a localised feature it returns roughly the
+    extent over which the feature is informative. Feeding ``n_eff`` into
     :func:`calculate_aicc` makes the small-sample correction kick in on
     narrow features and naturally rejects spurious K growth.
+
+    Two families of weighting are supported:
+
+    - **Magnitude-concentrated** (``kish_mag_sq``, ``kish_mag``,
+      ``hard_radius``). The weight is a function of ``|model|`` alone; on a
+      Lorentzian peak the result is roughly the FWHM-in-bins. Right for
+      K-vs-(K-1) tests (merge / knockout), where the question is "are these
+      K peaks each individually informative" and the structural divergence
+      of AICc at small ``n_eff`` *helps* the conservative direction (REJECT
+      a merge / preserve a peak).
+    - **Information-weighted** (``perplexity_log1p_snr``). The weight is
+      ``log(1 + |model|/sigma)`` (per-bin Shannon information of a signal-
+      vs-noise detection at that SNR), aggregated as the perplexity
+      ``exp(H(p))`` of the normalised weight distribution. Right for
+      K-vs-(K+1) tests (the conservative add-one-peak loop), where the
+      same divergence over-rejects real escalations on narrow features.
 
     Parameters
     ----------
@@ -268,14 +299,19 @@ def effective_sample_size(
         magnitude is consulted.
     kind : str, default "kish_mag_sq"
         Weighting scheme. ``"kish_mag_sq"`` uses ``w_f = |model(f)|²``
-        (Fisher-information density for a Gaussian likelihood) and is the
-        default. ``"kish_mag"`` uses ``w_f = |model(f)|`` -- softer
-        concentration. ``"hard_radius"`` counts bins where ``|model(f)| >
-        cutoff_fraction * max|model|`` -- threshold-sensitive but simpler
-        to reason about.
+        (Fisher-information density for a Gaussian likelihood). ``"kish_mag"``
+        uses ``w_f = |model(f)|`` -- softer concentration. ``"hard_radius"``
+        counts bins where ``|model(f)| > cutoff_fraction * max|model|`` --
+        threshold-sensitive but simpler to reason about.
+        ``"perplexity_log1p_snr"`` uses ``w_f = log1p(|model(f)|/sigma(f))``
+        as a per-bin information weight and returns the perplexity of the
+        normalised distribution; this requires ``sigma``.
     cutoff_fraction : float, default 0.1
         Fraction of ``max|model|`` used by ``"hard_radius"`` to delimit the
         active region. Ignored by the other kinds.
+    sigma : np.ndarray, optional
+        Per-bin complex noise RMS. Required for ``"perplexity_log1p_snr"``;
+        ignored by the magnitude-only kinds.
 
     Returns
     -------
@@ -286,7 +322,8 @@ def effective_sample_size(
     Raises
     ------
     ValueError
-        If ``kind`` is unknown.
+        If ``kind`` is unknown, or if a kind that needs ``sigma`` is selected
+        without it.
     """
     mag = np.abs(np.asarray(model_spectrum))
     n_data = mag.size
@@ -303,6 +340,25 @@ def effective_sample_size(
         active = mag > cutoff_fraction * max_mag
         n_eff = float(int(active.sum()))
         return n_eff if n_eff > 0.0 else 1.0
+    elif kind == "perplexity_log1p_snr":
+        if sigma is None:
+            raise ValueError(
+                "kind='perplexity_log1p_snr' requires sigma "
+                "(per-bin complex noise RMS)"
+            )
+        sig = np.asarray(sigma, dtype=float)
+        if sig.ndim == 0:
+            sig = np.full(n_data, float(sig))
+        snr = mag / np.maximum(sig, 1e-30)
+        w = np.log1p(snr)
+        sum_w = float(w.sum())
+        if sum_w <= 0.0:
+            return 1.0
+        p = w / sum_w
+        pp = p[p > 0.0]
+        h = float(-np.sum(pp * np.log(pp)))
+        n_eff = float(np.exp(h))
+        return float(min(max(n_eff, 1.0), float(n_data)))
     else:
         raise ValueError(f"unknown kind {kind!r}")
     sum_w = float(w.sum())

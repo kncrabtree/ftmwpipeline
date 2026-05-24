@@ -235,8 +235,15 @@ def merge_close_peaks_cleanup(
        outer shoulders at ~1 FWHM from inner peaks) the earlier
        AICc-only gate over-merged.
 
-    The legacy F-test ``p_value`` is no longer used; ``significance`` is
-    retained for backwards-compat callers.
+    The (K-1) refit locks tau at the current K-peak fit's value (tau is
+    effectively a dataset-shared parameter; a single-window refit must
+    not get the extra knob of broadening tau to absorb the merged
+    peak's contribution). Matches the convention in
+    :func:`~ftmwpipeline.fitting.window_fit.knockout_test` and
+    :func:`iterative_aicc_cleanup`.
+
+    ``significance`` is retained on the signature but is not used as a
+    gate threshold.
 
     Returns ``(updated_fit, n_merged)``. ``n_merged`` is the number of
     successful merges (each removes one peak from the set).
@@ -255,6 +262,14 @@ def merge_close_peaks_cleanup(
     if fwhm <= 0.0:
         return fit, 0
     merge_threshold = merge_separation_factor * fwhm
+
+    # Tau is effectively a dataset-shared parameter (transit time x natural
+    # lifetime); a single-window (K-1) refit must not get the extra knob of
+    # broadening tau to absorb the dropped peak's contribution. Lock tau at
+    # the current K-fit value for every (K-1) trial -- matches the
+    # convention used by ``knockout_test`` and ``iterative_aicc_cleanup``.
+    refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
+    refit_kwargs["fit_tau"] = False
 
     current = fit
     n_merged = 0
@@ -278,8 +293,8 @@ def merge_close_peaks_cleanup(
             sorted_peaks[:merge_i] + [merged_pair] + sorted_peaks[merge_i + 2:]
         )
         refit = fit_window(
-            u, z, sigma, merged_init, tau0_us, acquisition_us,
-            **fit_kwargs_inner,
+            u, z, sigma, merged_init, float(current.tau_us), acquisition_us,
+            **refit_kwargs,
         )
         if not refit.success:
             break

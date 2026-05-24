@@ -15,10 +15,12 @@ consolidated round, trajectory snapshots), and the `report.md` /
 
 **Immediate next-session sequencing** for the open work is captured in
 [Open question 2 → "Suggested sequencing for the next session"](#suggested-sequencing-for-the-next-session).
-Items 1–3 (contributor-skirt leakage, merge-gate AICc, knockout-gate
-AICc) are LANDED; the remaining track is the conservative-loop accept
-gate (Phase 3) and the phase-degeneracy penalty. "Next steps" further
-down is the longer-horizon rescue-completion plan (broader validation,
+Items 1–4 (contributor-skirt leakage, merge-gate AICc, knockout-gate
+AICc, conservative-loop AICc) are LANDED; the remaining track is
+verifying the new `perplexity_log1p_snr` `n_eff` kind at the
+merge/knockout sites, resolving the w198 rescue-chain regression,
+and the phase-degeneracy penalty. "Next steps" further down is the
+longer-horizon rescue-completion plan (broader validation,
 calibration sweeps, default flip); both tracks coexist.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; the parent
@@ -425,17 +427,16 @@ This is the clearest concrete instance of the overfitting concern the
 parent open question is about. It's a Stage-5-algorithm fix, not a
 visualization fix; the visualization just made it visible.
 
-#### Candidate algorithmic fixes (item 1 LANDED at merge + knockout sites; item 2 still deferred)
+#### Candidate algorithmic fixes (item 1 LANDED at all three gate sites; item 2 still deferred)
 
 Two ideas the user surfaced while looking at w148 — both targeting
-the same underlying problem from different angles. Item 1 (effective-
-DoF / AICc) has shipped at the merge site (Phase 1) and the knockout
-site (Phase 2); the conservative-loop accept gate (Phase 3) remains
-deferred. The actual Phase 1 and Phase 2 implementations diverged
-from the original proposal in structurally important ways — see
-the "Phase 1 implementation status" and "Phase 2 implementation
-status" subsections below. Item 2 (phase-degeneracy penalty) is
-still deferred.
+the same underlying problem from different angles. Item 1
+(effective-DoF / AICc) shipped at the merge site (Phase 1), the
+knockout site (Phase 2), and the conservative-loop accept gate
+(Phase 3). The Phase 1, 2, and 3 implementations diverged from
+the original proposal in structurally important ways — see the
+"Phase 1/2/3 implementation status" subsections below.
+Item 2 (phase-degeneracy penalty) is still deferred.
 
 **1. Generalised effective-DoF across all Stage 5 hypothesis tests.**
 The Stage 5 fit currently runs three F-test-style gates, all sharing
@@ -884,11 +885,137 @@ p95 and max are close to Phase 1 baseline. Per-round work counts
 dropped substantially with the blacklist (knockout-pruning count
 on the survey: 140 → 57 across the iterations of the fix).
 
+#### Phase 3 implementation status (conservative-loop site LANDED)
+
+The conservative-loop accept gate (this section, #1, third call
+site) ships in two parts: the AICc-with-`n_eff` test replacing the
+`p_value < significance AND trial.aic < current.aic` dual gate at
+both call sites (the main add-one-peak loop and the
+`_blend_aware_seed` K=2/K=3 escalation), and a new
+**information-weighted** `n_eff` kind to keep that test in the
+AICc-identifiable regime on narrow features.
+
+**(a) Single AICc gate at both K-vs-(K+1) sites.** The trial (K+1)
+model's `fitted_spectrum` is the magnitude basis (both AICc
+evaluations share one `n_eff` so the comparison sits on a common
+scale). REJECT-on-tie: accept iff `aicc_k_plus_1 < aicc_k`
+strictly — `inf < inf` is False so the both-`+inf` case (neither K
+nor K+1 identifiable at `n_eff`) reads as a tie and preserves the
+K-peak fit. This is the *opposite* sign convention from the merge
+/ knockout gates' REJECT-on-tie because the K+1 model is the
+more-complex one here; the same principle (a tie always preserves
+K) yields the conservative direction in both cases. `significance`
+is retained on the signatures for backwards compat but is not used
+to gate the accept decision; the F-test `p_value` and the legacy
+AIC are still computed and recorded on `AddStep` as familiar
+diagnostics.
+
+`AddStep` (and its persistent twin `AuditStep`) gained NaN-default
+`n_eff` and `aicc_delta` fields. The seed step (K=0→K=1, accepted
+unconditionally) and the separation-rejected branch leave both at
+NaN; every other gated step fills them. Older audit JSON blobs
+load with NaN via `.get` defaults in
+`io/fitting_serialization.py`.
+
+**(b) New `perplexity_log1p_snr` `n_eff` kind.** The merge /
+knockout gates use `kish_mag*` weights on `|model|` (or
+`|model|²`), which on a Lorentzian peak collapse to roughly the
+FWHM-in-bins (~5–8 on the 2638 fixture). That works for K-vs-(K-1)
+because AICc(K) diverges to `+inf` first when `n_eff` is small, so
+the gate falls through to "preserve K" (do not merge / do not drop
+the peak) — the conservative direction. For K-vs-(K+1) the
+divergence flips: AICc(K+1) goes `+inf` first, and the gate then
+asks "+inf < finite?" → False → REJECT the addition. On narrow
+features that locks out real escalations the chi-squared drop
+overwhelmingly supports (the failure mode the gate hits on the
+2638 clean controls and on w63/w64).
+
+The new kind replaces the magnitude weight with a per-bin
+information weight:
+
+```
+w_f = log(1 + |model(f)| / sigma(f))
+p_f = w_f / sum_f w_f
+n_eff = exp(-sum_f p_f * log(p_f))    # perplexity of p
+```
+
+`log1p(SNR)` is approximately the Shannon information of a signal-
+vs-noise detection at that SNR (exactly that in the small-SNR
+limit, `log(SNR)` for large SNR — the log-Bayes-factor of "signal
+present" vs "noise only"). The perplexity of the normalised
+distribution gives an effective bin count where each bin
+contributes by its information weight rather than its magnitude
+concentration. On the 2638 diagnostic windows the kind produces
+`n_eff` ~ 40–85 bins (vs ~5–30 for `kish_mag`), comfortably in the
+AICc-identifiable regime for K-vs-(K+1) on K up to ~5.
+
+Implementation: `effective_sample_size(..., kind=
+"perplexity_log1p_snr", sigma=...)`. The function gained an
+optional `sigma` argument used only by this kind; the magnitude-
+only kinds ignore it. `validation.py` exposes
+`DEFAULT_CONSERVATIVE_N_EFF_KIND = "perplexity_log1p_snr"`
+alongside the existing `DEFAULT_N_EFF_KIND = "kish_mag_sq"`.
+
+**(c) Per-site `n_eff_kind` defaults.** `conservative_fit` gained
+two parameters: `n_eff_kind` (default
+`DEFAULT_CONSERVATIVE_N_EFF_KIND`) for the conservative-loop gate
+threaded into `_blend_aware_seed`, and `knockout_n_eff_kind`
+(default `DEFAULT_N_EFF_KIND`) for the final `knockout_test`
+sweep. Same separation lets merge / knockout keep their magnitude-
+concentrated gate while the conservative-loop gate uses the
+information-weighted kind.
+
+**(d) Phase 1d follow-up (LANDED).** Aligned
+`merge_close_peaks_cleanup`'s (K-1) refit to lock tau at the
+current K-peak fit's value (`fit_tau=False, tau0_us=current.tau_us`).
+Matches the convention used by `knockout_test` and
+`iterative_aicc_cleanup`. Closes the last tau-handling
+inconsistency between the three AICc gates.
+
+#### Validation results after Phase 3 (2638 fixture, perplexity_log1p_snr, ε=0.05)
+
+Survey distribution (50 windows, every 7th):
+
+| metric | Phase 2 | Phase 3 |
+|---|---|---|
+| chi²_r median | 1.37 | 1.34 |
+| chi²_r p75 | 2.03 | 2.02 |
+| chi²_r p95 | 3.90 | 4.05 |
+| chi²_r max | 6.68 | 6.68 |
+
+Target windows:
+
+| window | Phase 2 (K, chi²_r) | Phase 3 (K, chi²_r) | note |
+|---|---|---|---|
+| w63 (clean control, K=3) | 3→3, 0.81 | 3→3, 0.81 | Restored — confirms the gate accepts real escalations on weak features (peak SNR ~5.7) where `kish_mag` n_eff would have been ~5 and AICc(K+1) `+inf`. |
+| w64 (clean control, K=2) | 2→2, 0.59 | 2→2, 0.59 | Same restoration. |
+| w148 (duplicate-pair) | 1→2, 715→6.22 | 1→2, 715→6.22 | Unchanged. |
+| w198 (apod-override + shoulders) | 2→7, 627→2.92 | **2→1, 627→774** | Initial fit correct at K=2; rescue chain over-prunes (rescue + knockout + merge cycle removes 5+ peaks net). Plausibly the rescue's internal `conservative_fit` inheriting the new perplexity default — on residuals, log1p(SNR) is close to uniform and n_eff approaches n_data, making the rescue's gate over-permissive. Knockout then over-prunes the over-nominated peaks and merge collapses the sub-resolution duplicates the rescue produced. Follow-up: pin the rescue's `conservative_fit` to `kish_mag*` via `rescue_conservative_kwargs`, or tune elsewhere. |
+| w269 (seed-duplicate K=5) | 5→5, 17.4→17.41 | **4→4, 18.65→18.55** | Target: K dropped from 5 to 4 on the initial fit — the seed-duplicate is rejected at the conservative-loop step instead of being passed through to the rescue's iterative cleanup. chi²_r at the shape-error floor for SNR=474. |
+| w271 (decoupled doublet) | 2→2, 1578→9.45 | 2→2, 9.45 (init) → 9.40 | Same final state. |
+| w16, w104, w127, w337 (borderline) | 1→1 | 1→1 | Unchanged. |
+
+The aggregate distribution is essentially identical to Phase 2
+(median slightly better at 1.34 vs 1.37). The user-named target
+(w269) hits exactly the K=4 expected outcome — the conservative-
+loop AICc gate now rejects the seed-duplicate at the initial fit
+step, eliminating the post-Phase-2 reliance on the rescue chain's
+iterative cleanup for this pathology.
+
+w198 is the one observed regression. Its initial fit is correct at
+K=2 (matches Phase 2); the chain that climbs to K=7 in Phase 2 now
+ends at K=1 because the rescue's internal `conservative_fit`
+inherits the perplexity default and behaves differently on the
+residual. Documented as a known follow-up; the fix is likely a
+per-call-site `n_eff_kind` (rescue stays on `kish_mag*`, initial
+fit uses perplexity), parallel to the existing
+`knockout_n_eff_kind` split in `conservative_fit`.
+
 #### Suggested sequencing for the next session
 
-Items 1, 2, and 3 below are LANDED; the remaining sequencing
-focuses on the still-deferred conservative-loop accept gate
-(Phase 3) and the phase-degeneracy penalty.
+Items 1, 2, 3, and 4 below are LANDED; the remaining sequencing
+focuses on the w198 rescue follow-up and the phase-degeneracy
+penalty.
 
 1. **Fix the contributor-skirt leakage** (`stage5-fitting.md` O5-10).
    LANDED in commit `456fec2` (drives Stage 4 contributor attachment
@@ -926,25 +1053,57 @@ focuses on the still-deferred conservative-loop accept gate
      re-detection of dropped peaks each round.
 
    Phase 1d follow-up (align `merge_close_peaks_cleanup`'s (K-1)
-   refit to also lock tau, for consistency with the knockout
-   refit's convention) is still open.
+   refit to also lock tau) shipped alongside Phase 3 — see
+   "Phase 3 implementation status" item (d).
 
 4. **AICc-with-`n_eff` at the conservative-loop accept gate** (this
-   section, #1, conservative-loop site). NEXT. Replace
-   the dual `p_value < significance AND trial.aic < current.aic` gate
-   with the single AICc-with-`n_eff` test in both `_blend_aware_seed`
-   K=2/K=3 escalation and the main loop. Largest cascading effect on
-   K across all windows; expected to address the initial-seeding
-   duplicate-pair pathology in w269/w271 (the post-Phase-1 remaining
-   issue that's NOT a rescue problem, and that Phase 2's locality
-   blacklist now prevents the rescue from masking via re-nominated
-   candidates).
+   section, #1, conservative-loop site). **LANDED as Phase 3 —
+   see "Phase 3 implementation status" above.** The base spec
+   (single AICc-with-`n_eff` test at both K-vs-(K+1) sites,
+   REJECT-on-tie, diagnostic `p_value` retention, `AddStep`
+   schema additions) shipped as written. The validation surfaced
+   a structural over-rejection on narrow features when the
+   `kish_mag*` `n_eff` from the K+1 model fell below the AICc
+   identifiability threshold; the fix was a new
+   `perplexity_log1p_snr` kind keyed on `log1p(|model|/sigma)`
+   per-bin information weights. The post-fit `knockout_test` call
+   inside `conservative_fit` keeps the original
+   `kish_mag*` default via a separate `knockout_n_eff_kind`
+   parameter, since K-vs-(K-1) wants the structural protection
+   that the magnitude-concentrated weight provides. w269 hits
+   the user-named target outcome (K=5→K=4 on the initial fit);
+   w198 regresses through the rescue chain (initial fit correct
+   at K=2; final K=1 after rescue+knockout+merge) and is the
+   one open follow-up.
 
-5. **Add the phase-degeneracy penalty** (this section, #2). Once
-   (3)+(4) are calibrated, this is the LSQ-side defence-in-depth:
-   prevents the optimiser from landing in the duplicate basin in the
-   first place. Cheap to prototype; calibrating its λ against the
-   new gates is cleaner than against the current gates.
+5. **Test `perplexity_log1p_snr` at merge / knockout.** The Phase
+   3 work shipped per-site `n_eff_kind` defaults — merge /
+   knockout still on `kish_mag*`, conservative-loop on the new
+   information-weighted kind. Try the new kind at the K-vs-(K-1)
+   sites too and compare against the Phase 1 / Phase 2 baselines
+   (median 1.06 / 1.37 chi²_r). Watch for over-permissive
+   duplicate-pair merging or over-aggressive knockout pruning. If
+   it works at both sites, unify on a single `n_eff_kind` across
+   all three gates.
+
+6. **Resolve the w198 rescue-chain regression.** w198 is the one
+   target window that regressed in Phase 3 (K=2→1 vs Phase 2's
+   K=2→7). Initial fit is correct; the rescue's internal
+   `conservative_fit` inherits the new perplexity default which
+   is more permissive on residuals (most bins at noise floor →
+   uniform-ish log1p(SNR) distribution → `n_eff` close to
+   `n_data` → gate trivially permissive). Plausible fix: pin
+   the rescue's `conservative_fit` to `kish_mag*` via
+   `rescue_conservative_kwargs`. Investigate the per-round audit
+   before committing; the issue may also involve the merge tier-1
+   collapse interacting with rescue-produced sub-resolution
+   duplicates.
+
+7. **Add the phase-degeneracy penalty** (this section, #2). The
+   LSQ-side defence-in-depth: prevents the optimiser from landing
+   in the duplicate basin in the first place. Cheap to prototype;
+   calibrating its λ against the post-Phase-3 gates is cleaner
+   than against the original gates.
 
 6. **Cross-fixture validation** (see
    [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)).

@@ -87,6 +87,8 @@ def _convert_audit_step(step: AddStep) -> AuditStep:
         separation_ok=step.separation_ok,
         decision=step.decision,
         reason=step.reason,
+        n_eff=step.n_eff,
+        aicc_delta=step.aicc_delta,
     )
 
 

@@ -157,6 +157,8 @@ def _audit_step_to_json(step: AuditStep) -> Dict[str, Any]:
         "separation_ok": bool(step.separation_ok),
         "decision": str(step.decision),
         "reason": str(step.reason),
+        "n_eff": float(step.n_eff),
+        "aicc_delta": float(step.aicc_delta),
     }
 
 
@@ -182,6 +184,10 @@ def _json_to_audit_step(blob: Dict[str, Any], where: str) -> AuditStep:
         separation_ok=bool(blob["separation_ok"]),
         decision=decision,
         reason=str(blob.get("reason", "")),
+        # n_eff / aicc_delta are optional on older or hand-edited audit
+        # blobs that omit the AICc-with-n_eff gate diagnostics.
+        n_eff=float(blob.get("n_eff", float("nan"))),
+        aicc_delta=float(blob.get("aicc_delta", float("nan"))),
     )
 
 

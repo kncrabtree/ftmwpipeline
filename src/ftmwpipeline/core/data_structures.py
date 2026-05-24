@@ -828,9 +828,11 @@ class AuditStep:
     chi2_before, chi2_after : float
         Noise-weighted chi-squared before / with the candidate.
     f_statistic, p_value : float
-        Nested-model F-test of the chi-squared improvement.
+        Diagnostic nested-model F-test of the chi-squared improvement.
+        Kept as a familiar statistic; the accept gate is
+        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``).
     aic_before, aic_after : float
-        AIC before / with the candidate.
+        Diagnostic AIC at the raw ``n_data``.
     separation_ok : bool
         Whether the candidate cleared the peak-separation constraint.
     decision : str
@@ -838,6 +840,16 @@ class AuditStep:
         ``"tentative"``, or ``"reject"``.
     reason : str
         Free-text annotation.
+    n_eff : float
+        Effective sample size shared by the K-vs-(K+1) AICc evaluation;
+        computed once from the K+1 (trial) model magnitude. ``nan`` on
+        steps that do not run the gate (the K=1 seed and separation-
+        rejected candidates) and on hand-edited or legacy audit blobs
+        that omit the field.
+    aicc_delta : float
+        ``AICc(K+1) - AICc(K)`` at the shared ``n_eff``; negative means
+        the gate accepted (the K+1 model is preferred). ``nan`` on the
+        same steps as ``n_eff``.
     """
 
     n_peaks_before: int
@@ -851,6 +863,8 @@ class AuditStep:
     separation_ok: bool
     decision: str
     reason: str = ""
+    n_eff: float = float("nan")
+    aicc_delta: float = float("nan")
 
 
 @dataclass

@@ -62,6 +62,7 @@ from scipy.optimize import least_squares
 
 from .peak_model import ModelPeak, effective_tau, h_T, h_T_jacobian, model_spectrum
 from .validation import (
+    DEFAULT_CONSERVATIVE_N_EFF_KIND,
     DEFAULT_N_EFF_KIND,
     calculate_aic,
     calculate_aicc,
@@ -956,9 +957,11 @@ class AddStep:
     chi2_before, chi2_after : float
         Noise-weighted chi-squared of the model before / with the candidate.
     f_statistic, p_value : float
-        Nested-model F-test of the chi-squared improvement.
+        Diagnostic nested-model F-test of the chi-squared improvement.
+        Kept as a familiar statistic; the accept gate is
+        AICc-with-``n_eff`` (see ``n_eff`` / ``aicc_delta``).
     aic_before, aic_after : float
-        AIC before / with the candidate.
+        Diagnostic AIC at the raw ``n_data``.
     separation_ok : bool
         Whether the candidate cleared the peak-separation constraint.
     decision : str
@@ -966,6 +969,21 @@ class AddStep:
         ``"tentative"`` or ``"reject"``.
     reason : str
         Free-text note on the decision.
+    n_eff : float
+        Effective sample size shared by the K-vs-(K+1) AICc evaluation;
+        computed once from the K+1 (trial) model magnitude (kind set by
+        ``n_eff_kind`` on :func:`conservative_fit`). ``nan`` on steps
+        that do not run the gate (the K=1 seed and separation-rejected
+        candidates).
+    aicc_delta : float
+        ``AICc(K+1) - AICc(K)`` at the shared ``n_eff``; negative values
+        mean the gate accepted (the K+1 model is preferred). The
+        REJECT-on-tie convention reads ``aicc_delta >= 0`` as "no
+        evidence for the more-complex model -- preserve K"; this is
+        opposite to the merge/knockout gates' REJECT-on-tie because the
+        comparison runs in the other direction (those test K-vs-(K-1)
+        and prefer the more-complex K). ``nan`` on the same steps as
+        ``n_eff``.
     """
 
     n_peaks_before: int
@@ -979,6 +997,8 @@ class AddStep:
     separation_ok: bool
     decision: str
     reason: str = ""
+    n_eff: float = float("nan")
+    aicc_delta: float = float("nan")
 
 
 @dataclass
@@ -1313,6 +1333,7 @@ def _blend_aware_seed(
     min_pair_separation_factor: float = DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
+    n_eff_kind: str = DEFAULT_CONSERVATIVE_N_EFF_KIND,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1320,14 +1341,19 @@ def _blend_aware_seed(
     treated as an unresolved blend (the prototype's key finding -- the failure
     is *initialisation*, not detectability). The fit is then retried with K
     lines initialised at positions straddling the seed, accepting each
-    escalation only on the F-test and AIC. ``offset_grid_mhz`` must be
-    ascending.
+    escalation only on the AICc-with-``n_eff`` gate (REJECT-on-tie: the
+    K+1 model must score strictly better; a tied or worse score preserves
+    the simpler K-peak fit). ``offset_grid_mhz`` must be ascending.
 
     Each K=2/K=3 trial fit is also post-checked for the "two peaks collapsed
     onto the same offset with cancelling phases" degenerate solution
     (``min_pair_separation_factor * fwhm`` is the minimum allowed pair
-    separation); collapsed escalations are rejected even when the F-test and
-    AIC would accept them.
+    separation); collapsed escalations are rejected even when the gate would
+    accept them.
+
+    ``significance`` is not used as a gate threshold; the F-test
+    ``p_value`` is computed and recorded on each :class:`AddStep` as a
+    familiar diagnostic.
     """
     fit_kwargs = dict(
         fit_tau=fit_tau,
@@ -1421,12 +1447,28 @@ def _blend_aware_seed(
                         break
                 if collapsed:
                     break
-        accepted = (
-            trial.success
-            and p_value < significance
-            and trial.aic < prev.aic
-            and not collapsed
-        )
+        # AICc-with-n_eff gate. The K+1 trial model is the magnitude
+        # basis: its fitted_spectrum defines the informative bins, and
+        # both AICc evaluations share that ``n_eff`` so they sit on a
+        # common scale. REJECT-on-tie: ``aicc_trial < aicc_prev`` is
+        # strictly less, so the both-+inf case (model not identifiable
+        # at n_eff for either K or K+1) reads as a tie and preserves
+        # the K-peak fit. Same conservative principle as the merge /
+        # knockout gates (a tie always preserves K), with the sign
+        # inverted because here K+1 is the more-complex model.
+        if trial.success:
+            n_eff = effective_sample_size(
+                trial.fitted_spectrum, kind=n_eff_kind, sigma=rms_noise,
+            )
+            aicc_prev = calculate_aicc(prev.chi_squared, prev.n_params, n_eff)
+            aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
+            aicc_delta = aicc_trial - aicc_prev
+            gate_accepts = aicc_trial < aicc_prev
+        else:
+            n_eff = float("nan")
+            aicc_delta = float("nan")
+            gate_accepts = False
+        accepted = trial.success and gate_accepts and not collapsed
         reason = f"K={k} straddled re-seed"
         if collapsed and trial.success:
             reason += " (rejected: peaks collapsed within min separation)"
@@ -1443,6 +1485,8 @@ def _blend_aware_seed(
                 separation_ok=not collapsed,
                 decision="seed-blend" if accepted else "reject",
                 reason=reason,
+                n_eff=float(n_eff),
+                aicc_delta=float(aicc_delta),
             )
         )
         if not accepted:
@@ -1479,18 +1523,21 @@ def conservative_fit(
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
     tau_apodization_us: Optional[float] = None,
+    n_eff_kind: str = DEFAULT_CONSERVATIVE_N_EFF_KIND,
+    knockout_n_eff_kind: str = DEFAULT_N_EFF_KIND,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
     Seeds with the strongest candidate (escalating to a straddled K=2/K=3 fit
     if the single-cosine seed leaves an elevated reduced chi-squared -- the
     blend-aware seeder), then repeatedly trial-fits the strongest remaining
-    residual candidate, accepting it only when the chi-squared improvement
-    passes a nested-model F-test *and* the AIC decreases. A candidate that
-    violates the peak-separation constraint is dropped; a rejected candidate is
-    held tentatively and the loop tolerates ``patience`` consecutive rejections
-    (a tentative batch is promoted whole if it later becomes jointly
-    significant). The converged fit is validated by :func:`knockout_test`.
+    residual candidate, accepting it only when the AICc-with-``n_eff`` gate
+    (REJECT-on-tie: ``AICc(K+1) < AICc(K)`` strictly) prefers the K+1 model.
+    A candidate that violates the peak-separation constraint is dropped; a
+    rejected candidate is held tentatively and the loop tolerates
+    ``patience`` consecutive rejections (a tentative batch is promoted whole
+    if it later becomes jointly significant). The converged fit is validated
+    by :func:`knockout_test`.
 
     Parameters
     ----------
@@ -1509,7 +1556,9 @@ def conservative_fit(
     fit_tau : bool, default True
         Fit the shared ``tau`` freely; ``False`` holds it (weak-only windows).
     significance : float, default 0.05
-        F-test p-value threshold for accepting a line.
+        Diagnostic F-test threshold. The accept gate is AICc-with-``n_eff``;
+        the F-test ``p_value`` is recorded on each :class:`AddStep` as a
+        familiar diagnostic but is not used to decide acceptance.
     min_separation_factor : float, default 1.0
         Minimum peak separation as a multiple of the feature FWHM.
     max_peaks : int, default 8
@@ -1565,6 +1614,17 @@ def conservative_fit(
         tau_apodization_us)``; and (b) the tau penalty is referenced to it.
         When ``None`` the tau penalty is disabled and the upper bound stays
         ``tau0_us * max_decay_factor``.
+    n_eff_kind : str, default :data:`DEFAULT_CONSERVATIVE_N_EFF_KIND`
+        Effective-sample-size kind for the conservative add-one-peak accept
+        gate (this loop and :func:`_blend_aware_seed` 's K=2/K=3
+        escalation). The K-vs-(K+1) comparisons use a per-bin information
+        weight so n_eff stays in the AICc-identifiable regime on narrow
+        features.
+    knockout_n_eff_kind : str, default :data:`DEFAULT_N_EFF_KIND`
+        Effective-sample-size kind for the final :func:`knockout_test`
+        sweep. The K-vs-(K-1) comparisons use the magnitude-concentrated
+        weight so the structural divergence of AICc at small ``n_eff``
+        falls through to "preserve K" (do not drop the peak).
 
     Returns
     -------
@@ -1640,6 +1700,7 @@ def conservative_fit(
         min_pair_separation_factor=min_pair_separation_factor,
         tau_penalty_lambda=effective_tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_ref,
+        n_eff_kind=n_eff_kind,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
@@ -1701,7 +1762,29 @@ def conservative_fit(
             trial.n_data,
             trial.n_params,
         )
-        passes = trial.success and p_value < significance and trial.aic < current.aic
+        # AICc-with-n_eff gate. The trial (K+1) model is the magnitude
+        # basis: its fitted_spectrum defines the informative bins, and
+        # both AICc evaluations share that ``n_eff`` so they sit on a
+        # common scale. REJECT-on-tie: ``aicc_trial < aicc_current`` is
+        # strictly less, so the both-+inf case (model not identifiable
+        # at n_eff for either K or K+1) reads as a tie and preserves
+        # the K-peak fit. Same conservative principle as the merge /
+        # knockout gates (a tie always preserves K), with the sign
+        # inverted because here K+1 is the more-complex model.
+        if trial.success:
+            n_eff = effective_sample_size(
+                trial.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+            )
+            aicc_current = calculate_aicc(
+                current.chi_squared, current.n_params, n_eff
+            )
+            aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
+            aicc_delta = aicc_trial - aicc_current
+            passes = aicc_trial < aicc_current
+        else:
+            n_eff = float("nan")
+            aicc_delta = float("nan")
+            passes = False
         if passes:
             decision = "promote" if tentative else "accept"
             audit.append(
@@ -1717,6 +1800,8 @@ def conservative_fit(
                     separation_ok=True,
                     decision=decision,
                     reason=f"+{len(tentative) + 1} line(s)",
+                    n_eff=float(n_eff),
+                    aicc_delta=float(aicc_delta),
                 )
             )
             current = trial
@@ -1736,6 +1821,8 @@ def conservative_fit(
                     separation_ok=True,
                     decision="tentative",
                     reason="held pending a jointly-significant batch",
+                    n_eff=float(n_eff),
+                    aicc_delta=float(aicc_delta),
                 )
             )
             tentative.append(
@@ -1748,6 +1835,7 @@ def conservative_fit(
     knockouts = knockout_test(
         u, z, sigma, current, acquisition_us,
         fit_kwargs_inner=fit_kwargs_inner,
+        n_eff_kind=knockout_n_eff_kind,
         significance=significance,
     )
     return ConservativeFitResult(current, audit, knockouts)
