@@ -8,8 +8,18 @@ gating knob is `max_residual_rescue_rounds` (integer, default `0` =
 disabled, intended to become non-zero once validated at scale — the
 rescue is a structural part of the fit, not an opt-in tweak). The
 15-window 2638 validation set lives at `scratch/stage5-validation/`;
-the harness emits one `detail-rr<n>.png` per consolidated round plus a
-single rollup `report-rr.md`.
+the harness emits, per window, `detail.png` (consolidated final fit),
+`audit-trail.png` (rescue audit trail), `detail-rr<n>.png` (one per
+consolidated round, trajectory snapshots), and the `report.md` /
+`report-rr.md` text rollups.
+
+**Immediate next-session sequencing** for the open work is captured in
+[Open question 2 → "Suggested sequencing for the next session"](#suggested-sequencing-for-the-next-session):
+contributor-skirt leakage ([`stage5-fitting.md`](stage5-fitting.md) O5-10)
+→ effective-DoF / AICc generalization → phase-degeneracy penalty.
+"Next steps" further down is the longer-horizon rescue-completion plan
+(broader validation, calibration sweeps, default flip); both tracks
+coexist.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; the parent
 plan is [`stage5-fitting.md`](stage5-fitting.md). This document is
@@ -214,7 +224,7 @@ status, knockout pruning broken out by rescue origin).
 | w16 | 1→2 | (low → low) | borderline second peak rescued. |
 | w104 | 1→2 | (low → 0.75) | Stage 3 candidate appears spurious; rescue replaces it. |
 | w127 | 1→2 | (low → 0.55) | borderline second peak rescued. |
-| w148 | 1→5 | 715 → **0.95** | missed 179σ peak captured round 0; the +0.5970 candidate (previously rejected by the 0.5 uniform threshold as "doublet leakage") is now accepted by the sliding threshold and survives knockout. |
+| w148 | 1→5 | 715 → **0.95** | missed 179σ peak captured round 0; the +0.5970 candidate (previously rejected by the 0.5 uniform threshold as "doublet leakage") is now accepted by the sliding threshold and survives knockout. **Subsequent inspection (see "Visual evidence on w148" below) shows the K=5 fit contains two sub-spacing in-phase duplicate pairs — the chi²_r=0.95 is achieved partly through overfit, not solely through correct line capture.** |
 | w198 | 2→8 | 628 → **2.3** | apodization-override propagates a sensible warm-start tau into the joint refit (1 µs → 2.2 µs); the previously-rejected −0.482 candidate now passes coherence. |
 | w269 | 5→10 | 17.4 → **1.6** | the +1.4558 candidate (previously rejected as "phantom") is now accepted and strongly supported by knockout. |
 | w68, w132, w209, w215, w260, w271 | typically K +5–8 | typically chi²_r 4–30 → ~0.7–2.5 | most multi-round cases now converge near the noise floor. |
@@ -258,6 +268,19 @@ before bumping `max_residual_rescue_rounds` to a non-zero default:
 The clean controls (w63, w64) staying at 0 rounds is at least a weak
 guard against runaway acceptance — but a single clean-window pair is
 not statistical evidence of overfitting safety.
+
+**Update (post-visualization pass):** the overfitting reading is now
+the load-bearing one. See "Visual evidence on w148: sub-spacing
+duplicate-peak overfit" under open question 2 below — the doublet
+that should be 2 lines is being fit as 4 sub-spacing in-phase peaks,
+and the per-peak knockout test (now persisted as
+`KnockoutInfo.p_value`) shows <1e-15 for every duplicate because
+each pair member is individually supported even though the pair is
+physically redundant. Knockout cannot ask the merge question; merge
+cleanup is supposed to but isn't catching this case. Candidate
+algorithmic fixes — generalised effective-DoF / AICc with `n_eff`,
+and a phase-degeneracy penalty complementing the existing
+cancellation penalty — are sketched in that subsection.
 
 ## Open questions
 
@@ -408,55 +431,97 @@ Two ideas the user surfaced while looking at w148 — both targeting
 the same underlying problem from different angles. Captured here for
 when this gets picked up:
 
-**1. Effective-DoF correction for the merge F-test.** The
-`merge_close_peaks_cleanup` F-test compares the K-peak fit to a
-(K-1)-peak fit refit on the merged subset. The statistic is
+**1. Generalised effective-DoF across all Stage 5 hypothesis tests.**
+The Stage 5 fit currently runs three F-test-style gates, all sharing
+the same statistic shape:
 
 ```
 F = (Δχ² / Δdof) / (χ²_K / (n_data − n_params_K))
 ```
 
-In an FT-windowed fit, `n_data` is ~100–300 bins but the *informative*
-bins for distinguishing a 1-peak from a 2-peak model lie within ~1
-FWHM of the candidate pair — a handful of bins. Most of the residual
-denominator is noise far from the feature, which makes the F-statistic
-small even when adding a third peak buys a near-zero physical
-improvement. The test is structurally biased toward accepting the
-more-complex model.
+The three sites:
 
-Proposal: replace the raw `n_data` count with an **effective sample
-size** that weights each bin by the local model magnitude. The
-intuition is Fisher-information-density-like — bins far from the peak
-carry essentially no information about that peak's parameters. Options
-for the weighting:
+- **Conservative add-one-peak loop** (`window_fit.py`) — `accept`,
+  `promote`, and `tentative` decisions gate on
+  `p_value < significance AND trial.aic < current.aic`. K-vs-(K+1)
+  comparison.
+- **Knockout test** (`knockout_test` in `window_fit.py`) — per-peak
+  K-vs-(K-1) comparison; sets the `supported` flag and the persisted
+  `KnockoutInfo.p_value` (the column added in this work).
+- **Merge cleanup** (`merge_close_peaks_cleanup` in
+  `residual_rescue.py`) — pair-merge K-vs-(K-1) comparison; greedy
+  F-test-gated cleanup of close adjacent pairs.
 
-- `w_f = |model(f)|²` (Fisher-information-density flavour) plus the
-  Kish formula `ν_eff = (Σ w_f)² / Σ w_f²` for the effective DoF. Soft
-  cutoff, smoothly down-weights bins far from any feature.
-- `w_f = 1` only for `|model(f)| > c·max|model|` for some threshold
-  `c` ~ 0.05 (hard radius, simpler but threshold-sensitive).
+All three use the full window `n_data` (~100–300 bins) in the
+denominator. But the *informative* bins for distinguishing a K-peak
+model from a (K±1)-peak model live within ~1 FWHM of the peak in
+question — a handful of bins. The 200-bin denominator is mostly noise
+far from the feature, which inflates the F-statistic for marginal
+improvements and structurally biases every gate toward
+**accepting the more-complex model**:
+
+- Conservative loop: weak peaks pass the accept gate because adding
+  three parameters buys ~6 in δχ² (only ~2.4σ of evidence) — but
+  against a 200-bin denominator the p-value clears significance.
+  The AIC sibling-gate's `2k` penalty is not strong enough to backstop
+  this. Symptom: artificially low p-values for weak peaks, suspected
+  on inspection of the 2638 fixture's weak-peak windows.
+- Knockout: every duplicate-pair peak in w148 shows `p_KO < 1e-15`
+  because removing a duplicate leaves a half-fit line, which is a
+  large δχ² against a huge denominator. The peak looks individually
+  supported even though physically it's redundant.
+- Merge: w148's A/C and B/D duplicate pairs aren't merging — same
+  cause, evaluated head-on (most explicit symptom because the
+  question itself is local).
+
+Proposal: replace the raw `n_data` with an **effective sample size**
+`n_eff` that weights each bin by local model magnitude (Fisher-
+information-density flavour). Apply uniformly at all three test
+sites. Weighting options:
+
+- `w_f = |model(f)|²` plus the Kish formula `ν_eff = (Σ w_f)² / Σ w_f²`.
+  Soft, smoothly down-weights bins far from any feature.
+- `w_f = 1` only for `|model(f)| > c·max|model|` (hard radius,
+  threshold-sensitive but simpler).
 - Restrict the F-test to a "local window" of ±N·FWHM around the
-  candidate pair (hard form of the same idea — explicit chi-squared
-  restricted to informative bins; no effective-DoF arithmetic needed
-  but loses the global noise floor estimate).
+  candidate (hard form of the same idea — chi-squared restricted to
+  informative bins; loses the global noise floor estimate).
+
+**Canonical form: AICc with `n_eff`.** AICc (small-sample-corrected
+AIC) penalty grows as `2k(k+1)/(n - k - 1)`. If we feed it `n_eff`
+instead of raw `n_data`, AICc handles the over-acceptance problem at
+all three sites from one rule: the conservative-loop accept gate,
+the knockout-test "supported" decision, and the merge gate all key
+off the same effective-sample-size rule. This is the cleaner long-
+term form than per-site F-test patching — F-test stays as a
+diagnostic statistic; AICc with `n_eff` becomes the decision rule.
 
 User's framing: "fitting a narrow feature with 2 independent peaks
-should bear a high burden of statistical proof." The effective-DoF
-formulation operationalises that — the burden grows because the
-denominator shrinks to the informative bins only.
+should bear a high burden of statistical proof"; "we have
+artificially low p-values for weak peaks; likely just because there
+are so many points in a window." The effective-DoF formulation
+operationalises both: the burden grows because the denominator
+shrinks to the informative bins only.
 
 Caveats to think through:
 
-- The F-distribution assumes Gaussian residuals with the unit-variance
-  noise model. Weighted residuals change the distribution; a strict
-  derivation would need the right reference distribution (probably
-  still F under reasonable assumptions, but worth checking).
-- An AICc-style correction (information criterion with small-sample
-  bias) is the canonical alternative. AICc penalty grows as
-  `2k(k+1)/(n-k-1)`; if `n` is the effective sample size, AICc would
-  reach the same destination through a different door.
-- Choice of weighting (|model| vs |model|² vs hard window) wants
-  validation against a small set of windows with known-good answers.
+- The F-distribution assumes Gaussian residuals with the unit-
+  variance noise model. Weighted residuals change the distribution;
+  a strict derivation would need the right reference distribution
+  (probably still F under reasonable assumptions, but worth
+  checking). AICc dodges this — it's a likelihood criterion, not a
+  distributional one.
+- Weak isolated peaks that *should* be in the model (w16, w104, w127,
+  w337-borderlines) must not drop out under the new rule. The same
+  validation set that catches duplicate-pair overfit needs to also
+  catch under-rejection of real-but-weak peaks. Sensitivity sweep
+  the weighting choice (|model| vs |model|² vs hard window) against
+  both regimes.
+- The persisted `KnockoutInfo.p_value` semantics change if we move
+  to AICc-with-`n_eff`. Either keep the raw F-test p as today and
+  add an `aicc_delta` field, or repurpose the p_value field to the
+  effective-DoF F-test result. Decide before persisting any new
+  values to avoid mixed-semantics across fixture vintages.
 
 **2. Phase-degeneracy penalty (sketch).** The existing pair penalty
 (`window_fit.py:572-607`) is `sqrt(λ) · w(Δsep) · sin((φᵢ - φⱼ)/2)` —
@@ -494,18 +559,39 @@ resolution limit. The cutoff might need to be smaller for the
 degeneracy half (e.g. 1 FWHM instead of the current 2 FWHM) since
 the degeneracy pathology is specifically a sub-FWHM problem.
 
-**Which to try first.** They attack different symptoms: (1) makes the
-post-fit gatekeeper stricter; (2) makes the LSQ less willing to land
-in the duplicate-pair basin in the first place. Both can coexist. The
-phase-degeneracy penalty is closer to the existing code's idiom and
-cheaper to prototype; the effective-DoF correction is the more
-principled long-term fix. Plausible order: ship (2) as a quick
-mitigation, then evaluate whether the merge cleanup still needs (1).
+#### Suggested sequencing for the next session
 
-Either way, expected behaviour change is small: only windows whose
-fits currently produce sub-spacing in-phase duplicate pairs should
-move; everything else should be untouched. Use w148 / w269 / w148-like
-cases as the validation set.
+The duplicate-pair overfit (this section) and the contributor-skirt
+leakage (`stage5-fitting.md` O5-10) are related: leakage contaminates
+the noise floor and per-window chi² that every Stage 5 hypothesis
+test calibrates against. Tuning the effective-DoF rule on a
+contaminated baseline means re-tuning after the leakage fix lands.
+So the order matters:
+
+1. **Fix the contributor-skirt leakage** (`stage5-fitting.md` O5-10).
+   Clean baseline first — w337 is the canonical case, but the bias
+   likely affects every window whose neighbour list is incomplete.
+   Pre-requisite for any hypothesis-test calibration that follows.
+
+2. **Generalise to effective-DoF / AICc-with-`n_eff`** (this section,
+   #1). Re-derive the conservative-loop accept gate, knockout test,
+   and merge cleanup against one shared `n_eff` rule. Validation:
+   weak-peak windows (w16, w104, w127, w337) must retain their
+   borderline peaks; duplicate-pair windows (w148, w269) must lose
+   the duplicates. Both regimes from one threshold sweep.
+
+3. **Add the phase-degeneracy penalty** (this section, #2). Once
+   (2) is calibrated, this is the LSQ-side defence-in-depth: prevents
+   the optimiser from landing in the duplicate basin in the first
+   place, rather than relying on (2) to clean it up after. Cheap to
+   prototype, in-idiom with the existing penalty machinery; the
+   reason to do it second is that calibrating its λ against (2)'s
+   new gates is cleaner than against the current gates.
+
+Expected behaviour change for (2)+(3): borderline acceptance moves
+toward the empirical truth. The risk is over-correction (rejecting
+real-but-weak peaks); the validation set surfaces that as a
+regression.
 
 ### 3. Total-model integration strategy (RESOLVED — option B)
 
@@ -554,12 +640,25 @@ treating these as production defaults. Likely follow-ups:
 
 ## Next steps
 
+The **immediate next-session sequencing** is described under Open
+question 2 → "Suggested sequencing for the next session": fix
+contributor-skirt leakage first (`stage5-fitting.md` O5-10), then
+generalise effective-DoF / AICc with `n_eff` across the three
+hypothesis-test sites, then add the phase-degeneracy penalty.
+That sequencing replaces what was, in earlier versions of this
+doc, the "calibrate sliding-coherence first" framing — the duplicate-
+pair overfit is now the binding constraint, not the sliding-threshold
+tune.
+
+The items below are the longer-horizon rescue-completion plan; they
+remain valid but assume the immediate sequencing has landed first.
+
 In order of dependency:
 
 1. **Broader validation** (next-most-important): the 15-window sample's
-   chi²_r → ~1 behaviour is encouraging but suggests possible
-   overfitting; confirm against (a) the full 2638 fixture, (b) other
-   FTMW datasets the user has access to, (c) blackchirp-era
+   chi²_r → ~1 behaviour was the prompt for the immediate sequencing
+   above. Once that lands, confirm against (a) the full 2638 fixture,
+   (b) other FTMW datasets the user has access to, (c) blackchirp-era
    line-assignment ground truth where available. See "real peaks or
    overfitting?" above.
 2. **Sliding-coherence calibration** — replace the linear ramp with the
@@ -589,47 +688,50 @@ In order of dependency:
    default, persist the per-window `RescueEvent` list into
    `SpectrumFit` so the on-disk fit is reconstruction-complete.
 
-### Validation-harness augmentations (clean-session work)
+### Validation-harness augmentations (delivered)
 
-The harness (`scratch/stage5-validation/generate_validation.py`) has
-become the primary inspection surface for the rescue chain. Three
-augmentations are worth picking up in a clean session:
+The harness (`scratch/stage5-validation/generate_validation.py`) is
+the primary inspection surface for the rescue chain. Three
+augmentations originally planned for a clean session have landed:
 
-- **Per-window context view**: a small `context.png` per window
-  showing the full active-FT spectrum with the current window's
-  `freq_range` highlighted (axvspan). Reuses the existing
-  overview-plot machinery; the addition is the per-window highlight.
-- **vline markers at fitted-peak positions** on every detail figure
-  (`detail.png` and each `detail-rr<n>.png`). Makes the peak count
-  visually obvious at a glance and helps spot blended peaks the
-  continuous-line overlay smears across.
-- **Final audit-trail figure** (separate from the spectrum
-  detail) showing the complete decision history with rounds laid out
-  cleanly. The structure to aim for (per user discussion):
-    - the existing conservative-loop audit format for the initial
-      round, followed by
-    - a visual break,
-    - one block per residual round with that round's rescue audit
-      (candidate proposals, F-test/AIC outcomes), then a "merge step"
-      panel showing knockout survival vs rejection between the
-      previous round's peak set and this round's.
-    - More vertical space than the current detail.png layout allows
-      — likely a dedicated figure rather than one panel.
+- **Per-window context view** — Figure 1 (`detail.png`) now opens
+  with a full active-FT magnitude overview row, the current window's
+  `freq_range` highlighted by an `axvspan` + edge vlines. Truncated
+  to the persisted trim range and amplitude-scaled to the persisted
+  units convention (e.g. µV).
+- **vline markers at fitted-peak positions** — drawn on each
+  residual and data+model panel of Figure 1. Letter labels (A, B,
+  C, …) staggered cluster-aware so sub-FWHM clusters stay legible.
+- **Final audit-trail figure** — `audit-trail.png` (Figure 2). Top
+  half: window magnitude spectrum with consolidated model overlay.
+  Bottom half: per-round audit panel laid out **bottom-to-top**
+  (initial fit at the bottom, final consolidated peaks at the top
+  with dotted vlines reaching up to the spectrum). Each round band
+  shows a candidates row (coherence-accepted / coherence-rejected /
+  rescue-fit-kept markers) and a merge row (knockout-pruned with
+  red X; red border for rescue-origin pruning — the failsafe
+  diagnostic). Figure height grows with chain length; small chains
+  leave trailing blank space rather than stretching rows.
 
-A clean session is the right place to design these — the user has
-sketches of both versions to discuss. Once the audit-trail figure is
-stable, it's a natural candidate for **promotion to the main
-visualization code** (`visualization/fit_visualization.py`,
-`Pipeline.visualize_fit(window_id=..., rounds=True)`) so the rescue
-chain becomes user-inspectable without re-running the harness. Two
-plumbing options for that promotion:
+Per-peak provenance and the spectroscopic uncertainty formatting on
+the peak listing are documented in "Loose threads / future harness
+work" below — the heuristic attribution surfaces edge cases.
+
+**Promotion to the main visualization code** is the next logical
+step (`visualization/fit_visualization.py`,
+`Pipeline.visualize_fit(window_id=..., rounds=True)`). Two plumbing
+options:
 - Persist `RescueRoundDiagnostics` to `SpectrumFit` so the viz reads
   from disk (schema change).
-- Re-run the rescue on demand from the persisted state (lighter, ~1s
-  per window).
+- Re-run the rescue on demand from the persisted state (lighter,
+  ~1s per window).
 
 Re-run-on-demand is cheaper for an initial promotion; persistence
-makes sense once the chain is the default.
+makes sense once the chain is the default. The harness layout is now
+stable enough to port; main blocker is the duplicate-pair overfit
+work (Open question 2 → "Suggested sequencing") which may motivate
+schema changes that should land before promotion to avoid double-
+migrations.
 
 ## How to assess the validation artifacts
 
