@@ -225,6 +225,9 @@ class RescueEvent:
         :class:`FitWindow` identifier this round belongs to.
     round_idx : int
         Zero-based round counter within the window's rescue chain.
+    n_initial_peaks : int
+        Number of peaks the round inherited from the previous round (the
+        first round inherits from the initial fit).
     n_candidates : int
         Detector candidates that survived the phase-coherence filter and
         were passed to the rescue's :func:`conservative_fit` (i.e., what
@@ -243,6 +246,9 @@ class RescueEvent:
         (the failsafe diagnostic -- a high count signals the joint refit
         may not have escaped a pathological basin and is undoing the
         rescue's contribution; v1 logs only).
+    n_merged : int
+        Close-peak pairs the merge cleanup collapsed before the knockout
+        sweep.
     chi2_before, chi2_after : float
         Noise-weighted chi-squared of the previous round's fit and the
         consolidated fit, both evaluated against the same data slice.
@@ -256,21 +262,41 @@ class RescueEvent:
     reason : str
         Free-text annotation -- which termination case fired, how many
         peaks pruned, etc.
+    candidates : list of ResidualPeakCandidate
+        Detector candidates that survived the phase-coherence filter and
+        were passed to the rescue's :func:`conservative_fit`. Carried by
+        reference so the result-conversion layer can produce the persistent
+        :class:`~ftmwpipeline.core.data_structures.RescueCandidateInfo`
+        records without re-running the rescue.
+    rejected_by_coherence : list of ResidualPeakCandidate
+        Detector candidates the phase-coherence filter dropped before
+        fitting; same conversion path.
     """
 
     window_id: int
     round_idx: int
+    n_initial_peaks: int
     n_candidates: int
     n_rejected_by_coherence: int
     n_rescue_added: int
     n_pruned_by_knockout: int
     n_pruned_rescue_origin: int
+    n_merged: int
     chi2_before: float
     chi2_after: float
     tau_us_before: float
     tau_us_after: float
     accepted: bool
     reason: str = ""
+    # Persistence-ready candidate detail: the post-coherence-filter set
+    # that the rescue's conservative_fit consumed, and the candidates the
+    # phase-coherence filter dropped. Carried by reference to the working
+    # ResidualPeakCandidate records so the converter can drop them onto
+    # the persistent RescueCandidateInfo twins without re-running the
+    # rescue. Empty on rounds where attempt_residual_rescue returned no
+    # candidates (the rescue never reached its conservative_fit).
+    candidates: list = field(default_factory=list)
+    rejected_by_coherence: list = field(default_factory=list)
 
 
 @dataclass
@@ -1904,17 +1930,21 @@ def _apply_rescue_to_outcome(
         ev = RescueEvent(
             window_id=win.window_id,
             round_idx=diag.round_idx,
+            n_initial_peaks=diag.n_initial_peaks,
             n_candidates=len(diag.rescue.candidates),
             n_rejected_by_coherence=len(diag.rescue.rejected_by_coherence),
             n_rescue_added=diag.n_rescue_added,
             n_pruned_by_knockout=diag.n_pruned_total,
             n_pruned_rescue_origin=diag.n_pruned_rescue_origin,
+            n_merged=diag.n_merged,
             chi2_before=diag.chi2_before,
             chi2_after=diag.chi2_after,
             tau_us_before=diag.tau_us_before,
             tau_us_after=diag.tau_us_after,
             accepted=diag.accepted,
             reason=diag.reason,
+            candidates=list(diag.rescue.candidates),
+            rejected_by_coherence=list(diag.rescue.rejected_by_coherence),
         )
         events.append(ev)
         outcome.rescue_events.append(ev)

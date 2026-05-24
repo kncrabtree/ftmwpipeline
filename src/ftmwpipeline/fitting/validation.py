@@ -30,7 +30,6 @@ from scipy.stats import f as f_distribution
 from .peak_model import h_T
 
 __all__ = [
-    "DEFAULT_CONSERVATIVE_N_EFF_KIND",
     "DEFAULT_N_EFF_KIND",
     "calculate_hwhm_from_apodization",
     "feature_fwhm",
@@ -46,32 +45,20 @@ __all__ = [
 
 NoiseLike = Union[float, np.ndarray]
 
-# Default effective-sample-size weighting kind used by the K-vs-(K-1) AICc
-# gates (merge cleanup, knockout). Kish on |model(f)|^2 collapses ``n_data``
-# to the bins the model actually informs -- a narrow Lorentzian on a 200-bin
-# window gives ``n_eff`` ~ FWHM-in-bins, which makes the AICc small-sample
-# correction kick in and naturally reject duplicate peaks at sub-resolution
-# separations. The structural divergence of AICc at small ``n_eff`` *helps*
-# the conservative direction here: when ``n_eff < k+1`` for the (K)-peak
-# model, AICc(K) goes ``+inf`` and the gate falls through to "preserve K"
-# (i.e. do not merge, do not drop the peak), which is what we want on weak
-# evidence.
-DEFAULT_N_EFF_KIND = "kish_mag_sq"
-
-# Default effective-sample-size weighting kind used by the K-vs-(K+1) AICc
-# gates (conservative add-one-peak loop and the blend-aware seeder's K=2/K=3
-# escalation). The magnitude-concentrated kinds above are wrong here:
-# ``n_eff`` is computed on the K+1 (more-complex) model, and the same
-# divergence at small ``n_eff`` now rejects real escalations the chi-squared
-# drop overwhelmingly supports. The perplexity-of-log1p(SNR) form weights
-# each bin by ``log(1 + |model|/sigma)`` -- the per-bin Shannon information
-# of a signal-vs-noise detection -- and returns ``exp(H(p))`` of the
+# Effective-sample-size weighting kind shared by every Stage 5 AICc gate
+# (conservative add-one-peak accept, blend-aware K=2/K=3 escalation, merge
+# cleanup, knockout, iterative cleanup). Each bin is weighted by
+# ``log(1 + |model|/sigma)`` -- the per-bin Shannon information of a signal-
+# vs-noise detection -- and ``n_eff`` is the perplexity ``exp(H(p))`` of the
 # normalised distribution. On a Lorentzian peak with peak SNR ~ 100 this
-# returns ~50 bins (matching a naive "count bins where the skirt is
-# significant") rather than ~5; the gate then stays in the AICc-identifiable
-# regime for realistic K-vs-(K+1) transitions and only diverges when the
-# K+1 model is genuinely under-determined.
-DEFAULT_CONSERVATIVE_N_EFF_KIND = "perplexity_log1p_snr"
+# returns ~50 bins (the bins where the skirt is significant) rather than
+# the ~5 FWHM-in-bins a magnitude-concentrated weight gives. The gate then
+# stays in the AICc-identifiable regime for the realistic K-vs-(K+/-1)
+# transitions Stage 5 makes and only diverges to ``+inf`` when the model is
+# genuinely under-determined; in the divergent case the REJECT-on-tie at
+# each gate falls through to "preserve the simpler model" (do not add /
+# do not merge / do not drop the peak), which is the conservative direction.
+DEFAULT_N_EFF_KIND = "perplexity_log1p_snr"
 
 
 # ---------------------------------------------------------------------------

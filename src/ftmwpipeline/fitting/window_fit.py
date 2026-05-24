@@ -62,7 +62,6 @@ from scipy.optimize import least_squares
 
 from .peak_model import ModelPeak, effective_tau, h_T, h_T_jacobian, model_spectrum
 from .validation import (
-    DEFAULT_CONSERVATIVE_N_EFF_KIND,
     DEFAULT_N_EFF_KIND,
     calculate_aic,
     calculate_aicc,
@@ -1335,7 +1334,7 @@ def _blend_aware_seed(
     min_pair_separation_factor: float = DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
-    n_eff_kind: str = DEFAULT_CONSERVATIVE_N_EFF_KIND,
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1525,8 +1524,7 @@ def conservative_fit(
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
     tau_apodization_us: Optional[float] = None,
-    n_eff_kind: str = DEFAULT_CONSERVATIVE_N_EFF_KIND,
-    knockout_n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -1616,17 +1614,14 @@ def conservative_fit(
         tau_apodization_us)``; and (b) the tau penalty is referenced to it.
         When ``None`` the tau penalty is disabled and the upper bound stays
         ``tau0_us * max_decay_factor``.
-    n_eff_kind : str, default :data:`DEFAULT_CONSERVATIVE_N_EFF_KIND`
-        Effective-sample-size kind for the conservative add-one-peak accept
-        gate (this loop and :func:`_blend_aware_seed` 's K=2/K=3
-        escalation). The K-vs-(K+1) comparisons use a per-bin information
-        weight so n_eff stays in the AICc-identifiable regime on narrow
-        features.
-    knockout_n_eff_kind : str, default :data:`DEFAULT_N_EFF_KIND`
-        Effective-sample-size kind for the final :func:`knockout_test`
-        sweep. The K-vs-(K-1) comparisons use the magnitude-concentrated
-        weight so the structural divergence of AICc at small ``n_eff``
-        falls through to "preserve K" (do not drop the peak).
+    n_eff_kind : str, default :data:`DEFAULT_N_EFF_KIND`
+        Effective-sample-size kind shared by every gate this fit runs --
+        the conservative add-one-peak accept gate (main loop and
+        :func:`_blend_aware_seed`'s K=2/K=3 escalation) and the final
+        :func:`knockout_test` sweep. The default information-weighted
+        kind keeps ``n_eff`` in the AICc-identifiable regime on narrow
+        features; gates that do diverge to ``+inf`` fall through to
+        their REJECT-on-tie branch (preserve the simpler model).
 
     Returns
     -------
@@ -1837,7 +1832,7 @@ def conservative_fit(
     knockouts = knockout_test(
         u, z, sigma, current, acquisition_us,
         fit_kwargs_inner=fit_kwargs_inner,
-        n_eff_kind=knockout_n_eff_kind,
+        n_eff_kind=n_eff_kind,
         significance=significance,
     )
     return ConservativeFitResult(current, audit, knockouts)

@@ -967,11 +967,12 @@ class Pipeline:
             Maximum structural-replan rounds per call. Pass 0 to disable
             structural renegotiation.
         max_residual_rescue_rounds : int, optional
-            Cap on per-window residual-rescue + joint-refit cycles. ``0``
-            (the current default) disables the rescue; a positive value
-            (e.g. 3) runs the B-loop with that round cap. The rescue is
-            a structural part of the fit, intended to become non-zero
-            by default once validated at scale.
+            Cap on per-window residual-rescue + joint-refit cycles.
+            ``None`` (the default) resolves to the calibrated default
+            cap (currently 5); pass ``0`` to disable the rescue pass
+            entirely (escape hatch for diagnostic re-fits). The rescue
+            is a structural part of the fit and runs on every window's
+            post-thaw fit by default.
         rescue_snr_threshold, rescue_prominence_threshold,
         rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
         rescue_coherence_close_threshold,

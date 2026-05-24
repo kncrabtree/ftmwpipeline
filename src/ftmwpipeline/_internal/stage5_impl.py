@@ -218,14 +218,14 @@ def fit_peaks_impl(
         :data:`DEFAULT_MAX_REPLAN_ROUNDS`). Pass 0 to disable structural
         renegotiation entirely.
     max_residual_rescue_rounds : int, optional
-        Cap on per-window residual-rescue + joint-refit cycles. ``0``
-        (the current default) disables the rescue pass entirely; a
-        positive value (e.g. :data:`DEFAULT_RESCUE_MAX_ROUNDS`) runs the
-        B-loop on every window's post-thaw fit. The rescue is a
-        structural part of the fit -- it eliminates the conservative
-        loop's systematic under-counting of real lines -- and is
-        intended to become non-zero by default once validated at scale.
-        See ``dev-docs/planning/stage5-residual-rescue.md``.
+        Cap on per-window residual-rescue + joint-refit cycles. ``None``
+        (the default) resolves to :data:`DEFAULT_RESCUE_MAX_ROUNDS`;
+        explicit ``0`` disables the rescue pass entirely (escape hatch
+        for diagnostic re-fits). The rescue is a structural part of the
+        fit -- it eliminates the conservative loop's systematic
+        under-counting of real lines -- and runs on every window's
+        post-thaw fit by default. See
+        ``dev-docs/planning/stage5-residual-rescue.md``.
     rescue_snr_threshold, rescue_prominence_threshold : float, optional
         Detector thresholds the rescue uses to nominate candidates on
         ``|residual|`` (defaults :data:`DEFAULT_RESCUE_SNR_THRESHOLD` and
@@ -270,11 +270,11 @@ def fit_peaks_impl(
         if max_replan_rounds is None
         else int(max_replan_rounds)
     )
-    # 0 (the current default) disables the rescue; any positive value
-    # runs the B-loop with that round cap. See the rescue-default-intent
-    # discussion in dev-docs/planning/stage5-residual-rescue.md.
+    # ``None`` resolves to the calibrated default cap; explicit ``0``
+    # disables the rescue (kept as an escape hatch). Any positive value
+    # runs the B-loop with that round cap.
     rescue_max_v = (
-        0
+        DEFAULT_RESCUE_MAX_ROUNDS
         if max_residual_rescue_rounds is None
         else max(0, int(max_residual_rescue_rounds))
     )

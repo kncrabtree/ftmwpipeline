@@ -953,6 +953,11 @@ class FittingResult:
         # slice of the plan-level thaw history (chronological).
         self.audit_trail: List[AuditStep] = []
         self.thaw_events: List[ThawInfo] = []
+        # Per-window slice of the plan-level rescue history (chronological).
+        # ``RescueRoundInfo`` is defined below SpectrumFit; the forward
+        # reference here lets it stay in execution order in the module
+        # without splitting the class definitions.
+        self.rescue_events: List["RescueRoundInfo"] = []
     
     def add_fitted_peak(self, fitted_peak: FittedPeak) -> None:
         """Add a fitted peak result."""
@@ -1361,6 +1366,122 @@ class ReplanInfo:
 
 
 @dataclass
+class RescueCandidateInfo:
+    """One detector candidate from a rescue round.
+
+    Persistent twin of the fields read off
+    :class:`ftmwpipeline.fitting.residual_screening.ResidualPeakCandidate`.
+    Carries only the bin frequency / magnitude / SNR -- enough to render
+    the audit-trail candidates row from the persisted fit without
+    re-running the rescue. The detector's ``bin_index`` and
+    ``prominence_sigma_c`` are not persisted because they are tied to the
+    transient residual-slice indexing of the round in which the candidate
+    was nominated.
+
+    Attributes
+    ----------
+    frequency_mhz : float
+        Baseband-offset (MHz) of the detected candidate in the window's
+        signed-offset grid -- the same frame the rescue's
+        :func:`conservative_fit` consumed it in.
+    magnitude : float
+        ``|residual|`` at the candidate's bin.
+    snr : float
+        ``magnitude / sigma_c`` at the bin, with ``sigma_c = sigma / sqrt(2)``.
+    """
+
+    frequency_mhz: float
+    magnitude: float
+    snr: float
+
+
+@dataclass
+class RescueRoundInfo:
+    """One residual-rescue round in a :class:`SpectrumFit`.
+
+    Persistent twin of the in-flight
+    :class:`ftmwpipeline.fitting.residual_rescue.RescueRoundDiagnostics`
+    (algorithm-side) and
+    :class:`ftmwpipeline.fitting.plan_execution.RescueEvent` (plan-executor-
+    side). One record per round actually executed; an empty list on a
+    :class:`FittingResult` means the rescue chain produced no candidates
+    on the first round, was disabled for the run, or that the fit predates
+    the rescue persistence schema.
+
+    Used at two levels mirroring the :class:`ThawInfo` precedent: per
+    window on :attr:`FittingResult.rescue_events`, and chronologically
+    across all windows on :attr:`SpectrumFit.rescue_history`. The
+    ``window_id`` field disambiguates the latter.
+
+    The intermediate per-round :class:`WindowFitResult` /
+    :class:`KnockoutResult` objects are not persisted -- they are
+    deterministic functions of the persisted initial fit, the consolidated
+    fit, and the candidate lists carried here, and re-running
+    :func:`rescue_and_consolidate` from the persisted state reproduces them.
+    The final-round per-peak knockout already lives on
+    :attr:`FittedPeak.knockout`.
+
+    Attributes
+    ----------
+    window_id : int
+        :class:`FitWindow` id this round belongs to.
+    round_idx : int
+        Zero-based round counter within the window's chain.
+    n_initial_peaks : int
+        Number of peaks the round inherited from the previous round.
+    n_rescue_added : int
+        Number of peaks the rescue's conservative fit accepted (before
+        the joint refit / knockout sweep).
+    n_pruned_total : int
+        Number of peaks the iterative AICc cleanup dropped from the joint
+        refit.
+    n_pruned_rescue_origin : int
+        Of the pruned peaks, how many were rescue-origin (i.e., added in
+        this round). The **failsafe diagnostic**: a high count signals
+        the joint refit may not have escaped a pathological basin and is
+        undoing the rescue's contribution.
+    n_merged : int
+        Number of close-peak pairs the merge cleanup collapsed before
+        the knockout sweep.
+    chi2_before, chi2_after : float
+        Noise-weighted chi-squared of the previous round's fit and of
+        the consolidated (post-pruning) fit, both evaluated against the
+        same window data. Equal when ``accepted`` is False.
+    tau_us_before, tau_us_after : float
+        Shared decay constant before and after the round.
+    accepted : bool
+        Whether this round's contribution replaced the previous round's
+        fit. False when the rescue nominated nothing, the joint refit
+        failed, or pruning would have emptied the model.
+    reason : str
+        Free-text annotation -- which termination case fired, how many
+        peaks were pruned or merged, etc.
+    candidates : list of RescueCandidateInfo
+        Detector candidates that survived the phase-coherence filter and
+        were passed to the rescue's :func:`conservative_fit`.
+    rejected_by_coherence : list of RescueCandidateInfo
+        Detector candidates the phase-coherence filter dropped before
+        fitting (phase-rotation artifacts, typically neighbour leakage).
+    """
+
+    window_id: int
+    round_idx: int
+    n_initial_peaks: int
+    n_rescue_added: int
+    n_pruned_total: int
+    n_pruned_rescue_origin: int
+    n_merged: int
+    chi2_before: float
+    chi2_after: float
+    tau_us_before: float
+    tau_us_after: float
+    accepted: bool
+    reason: str = ""
+    candidates: List[RescueCandidateInfo] = field(default_factory=list)
+    rejected_by_coherence: List[RescueCandidateInfo] = field(default_factory=list)
+
+
+@dataclass
 class SpectrumFit:
     """The complete Stage 5 fit of a :class:`WindowPlan`.
 
@@ -1385,6 +1506,12 @@ class SpectrumFit:
     replan_history : list of ReplanInfo
         Every structural-replan attempt, in execution order. Empty when no
         merges were proposed.
+    rescue_history : list of RescueRoundInfo
+        Every residual-rescue round across all windows, in execution
+        order. The per-window slice is mirrored on
+        :attr:`FittingResult.rescue_events` for convenience; this list
+        is the canonical plan-level history. Empty when the rescue was
+        disabled or no window produced any candidates.
     final_plan_revision : int
         :attr:`WindowPlan.plan_revision` of the plan the ``window_fits``
         describe. ``0`` when no structural change happened.
@@ -1401,6 +1528,7 @@ class SpectrumFit:
     fitted_peaks: List[FittedPeak] = field(default_factory=list)
     thaw_history: List[ThawInfo] = field(default_factory=list)
     replan_history: List[ReplanInfo] = field(default_factory=list)
+    rescue_history: List["RescueRoundInfo"] = field(default_factory=list)
     final_plan_revision: int = 0
     parameters: Dict[str, Any] = field(default_factory=dict)
     diagnostics: Dict[str, Any] = field(default_factory=dict)

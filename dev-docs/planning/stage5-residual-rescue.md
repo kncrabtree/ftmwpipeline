@@ -52,9 +52,12 @@ iterates this:
    (default 3).
 
 The gating knob on the public surface is
-`max_residual_rescue_rounds` (integer, default `0` = disabled,
-intended to become non-zero once cross-fixture-validated — the
-rescue is a structural part of the fit, not an opt-in tweak).
+`max_residual_rescue_rounds` (integer, defaults to
+`DEFAULT_RESCUE_MAX_ROUNDS` = 5; pass `0` to disable the rescue
+pass entirely as an escape hatch for diagnostic re-fits). The
+cap is calibrated to be a safety net rather than the working
+regime — on the 2638 fixture every window terminates naturally
+at "no candidates" by round 3.
 
 ## Public surface
 
@@ -207,40 +210,33 @@ per-fixture calibration protocol is in
 
 ## AICc-with-`n_eff` gates
 
-The three Stage 5 hypothesis tests (merge, knockout, conservative-
-loop accept) all gate on the AICc criterion evaluated at an
-effective sample size `n_eff` that weights each bin by some
-function of the local model magnitude. Substituting `n_eff` into
-the small-sample correction term `2k(k+1) / (n_eff − k − 1)`
-makes the burden of statistical proof scale with the informative-
-bin count rather than the full window. REJECT-on-tie at every
-site: the simpler model is preserved when AICc cannot
-discriminate.
+The Stage 5 hypothesis tests (conservative-loop accept,
+blend-aware K=2/K=3 escalation, knockout, merge, iterative
+cleanup) all gate on the AICc criterion evaluated at an effective
+sample size `n_eff` that weights each bin by the local
+information content of the model. Substituting `n_eff` into the
+small-sample correction term `2k(k+1) / (n_eff − k − 1)` makes
+the burden of statistical proof scale with the informative-bin
+count rather than the full window. REJECT-on-tie at every site:
+the simpler model is preserved when AICc cannot discriminate.
 
-Two `n_eff` weighting kinds live in `validation.py`:
+The single shared weighting kind, exposed as `DEFAULT_N_EFF_KIND`
+in `validation.py`, is **`perplexity_log1p_snr`**: the perplexity
+`exp(H(p))` of the normalised distribution `p_f ∝ log(1 +
+|model|/σ)`. The `log(1 + SNR)` weight is approximately the
+per-bin Shannon information of a signal-vs-noise detection. On
+the 2638 fixture this returns ~30–80 bins on multi-peak windows.
+Empirically the same kind works at every gate — the alternative
+considered (a magnitude-concentrated Kish weight at the
+K-vs-(K-1) sites) gave a marginally worse survey distribution
+and added a per-site rationale to maintain without supporting
+evidence; one default removes that maintenance burden.
 
-- **`kish_mag_sq`** / **`kish_mag`**: Kish formula on `|model|²`
-  or `|model|`. Concentrated near the peak centre; collapses to
-  roughly the per-peak FWHM-in-bins on Lorentzian peaks. The
-  `kish_mag_sq` form is `DEFAULT_N_EFF_KIND`.
-- **`perplexity_log1p_snr`**: perplexity (`exp(H(p))`) of the
-  normalised distribution `p_f ∝ log(1 + |model|/σ)`. The
-  `log(1 + SNR)` weight is approximately the per-bin Shannon
-  information of a signal-vs-noise detection. On the 2638
-  fixture this returns ~30–80 bins on multi-peak windows. This
-  is `DEFAULT_CONSERVATIVE_N_EFF_KIND`.
-
-Per-call-site defaults:
-
-| site | direction | `n_eff_kind` | rationale |
-|---|---|---|---|
-| Conservative-loop accept gate (main loop + `_blend_aware_seed`) | K-vs-(K+1) | `perplexity_log1p_snr` | The K+1 model is the magnitude basis. Magnitude-concentrated weights collapse `n_eff` below the AICc identifiability threshold for K+1 → +∞ on the more-complex side → REJECT real escalations. Information-weighted `n_eff` keeps the gate in the AICc-identifiable regime. |
-| `knockout_test` (called inside `conservative_fit`) | K-vs-(K-1) | `kish_mag_sq` (via `knockout_n_eff_kind`) | The K-1 model is the simpler side. AICc divergence at small `n_eff` falls through to "preserve K", which is the desired conservative direction. |
-| `knockout_test` / `merge_close_peaks_cleanup` / `iterative_aicc_cleanup` (called from `rescue_and_consolidate`) | K-vs-(K-1) | `n_eff_kind` from the rescue kwargs | The validation harness pins `perplexity_log1p_snr` here; production sites pass it through `rescue_kwargs`. |
-
-The `effective_sample_size(..., kind=..., sigma=...)` API exposes
-all three kinds; `sigma` is required for the SNR-weighted kind
-and ignored by the magnitude-only kinds.
+The `effective_sample_size(..., kind=..., sigma=...)` API still
+exposes the three magnitude-only kinds (`kish_mag_sq`,
+`kish_mag`, `hard_radius`) for direct callers and diagnostics;
+`sigma` is required for `perplexity_log1p_snr` and ignored by the
+magnitude-only kinds.
 
 ## Tau locking in (K-1) refits
 
@@ -334,14 +330,6 @@ topic. Rescue-specific follow-ups:
   (tracks contamination level exactly); sweep `(close,
   isolated)` against the regime where clean windows acquire
   spurious peaks.
-- **Round-cap calibration.** A 5-round w132 experiment showed
-  the chain settling at round 3; `DEFAULT_RESCUE_MAX_ROUNDS=3`
-  may be too low for some windows. Probably 5–7 once the
-  rescue becomes a non-zero default.
-- **Default flip from `max_residual_rescue_rounds=0` to the
-  calibrated round-cap.** The rescue is a structural part of
-  the fit, not an opt-in tweak; the 0 default is transitional.
-  Gates on the cross-fixture validation work.
 - **Per-window cost monitoring.** Every rescue round adds one
   `conservative_fit` + one joint refit + a knockout / merge /
   iterative-cleanup sweep. For the production pipeline (~400

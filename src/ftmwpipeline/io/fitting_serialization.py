@@ -33,6 +33,7 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
         diagnostics      (JSON)  -- plan-level diagnostics
         thaw_history     (JSON)  -- plan-level chronological thaw events
         replan_history   (JSON)  -- plan-level structural replans
+        rescue_history   (JSON)  -- plan-level chronological rescue rounds
     windows/
         window_0000/
             .attrs:
@@ -42,7 +43,8 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                 fixed_parameters (JSON),    -- frozen-contributor summaries
                 quality_metrics  (JSON),
                 audit_trail      (JSON),    -- per-window AuditStep list
-                thaw_events      (JSON)     -- per-window ThawInfo list
+                thaw_events      (JSON),    -- per-window ThawInfo list
+                rescue_events    (JSON)     -- per-window RescueRoundInfo list
             peaks/
                 peak_id                          [i8]
                 frequency_mhz                    [f8]
@@ -93,6 +95,8 @@ from ..core.data_structures import (
     FittingResult,
     KnockoutInfo,
     ReplanInfo,
+    RescueCandidateInfo,
+    RescueRoundInfo,
     SpectralWindow,
     SpectrumFit,
     ThawInfo,
@@ -259,6 +263,82 @@ def _json_to_replan_info(blob: Dict[str, Any], where: str) -> ReplanInfo:
     )
 
 
+def _rescue_candidate_to_json(c: RescueCandidateInfo) -> Dict[str, Any]:
+    return {
+        "frequency_mhz": float(c.frequency_mhz),
+        "magnitude": float(c.magnitude),
+        "snr": float(c.snr),
+    }
+
+
+def _json_to_rescue_candidate(
+    blob: Dict[str, Any], where: str
+) -> RescueCandidateInfo:
+    try:
+        return RescueCandidateInfo(
+            frequency_mhz=float(blob["frequency_mhz"]),
+            magnitude=float(blob["magnitude"]),
+            snr=float(blob["snr"]),
+        )
+    except KeyError as exc:
+        raise ValueError(f"{where} missing required field {exc.args[0]!r}") from exc
+
+
+def _rescue_round_to_json(r: RescueRoundInfo) -> Dict[str, Any]:
+    return {
+        "window_id": int(r.window_id),
+        "round_idx": int(r.round_idx),
+        "n_initial_peaks": int(r.n_initial_peaks),
+        "n_rescue_added": int(r.n_rescue_added),
+        "n_pruned_total": int(r.n_pruned_total),
+        "n_pruned_rescue_origin": int(r.n_pruned_rescue_origin),
+        "n_merged": int(r.n_merged),
+        "chi2_before": float(r.chi2_before),
+        "chi2_after": float(r.chi2_after),
+        "tau_us_before": float(r.tau_us_before),
+        "tau_us_after": float(r.tau_us_after),
+        "accepted": bool(r.accepted),
+        "reason": str(r.reason),
+        "candidates": [_rescue_candidate_to_json(c) for c in r.candidates],
+        "rejected_by_coherence": [
+            _rescue_candidate_to_json(c) for c in r.rejected_by_coherence
+        ],
+    }
+
+
+def _json_to_rescue_round(blob: Dict[str, Any], where: str) -> RescueRoundInfo:
+    try:
+        candidates_raw = blob.get("candidates", []) or []
+        rejected_raw = blob.get("rejected_by_coherence", []) or []
+        return RescueRoundInfo(
+            window_id=int(blob["window_id"]),
+            round_idx=int(blob["round_idx"]),
+            n_initial_peaks=int(blob["n_initial_peaks"]),
+            n_rescue_added=int(blob["n_rescue_added"]),
+            n_pruned_total=int(blob["n_pruned_total"]),
+            n_pruned_rescue_origin=int(blob["n_pruned_rescue_origin"]),
+            n_merged=int(blob.get("n_merged", 0)),
+            chi2_before=float(blob["chi2_before"]),
+            chi2_after=float(blob["chi2_after"]),
+            tau_us_before=float(blob["tau_us_before"]),
+            tau_us_after=float(blob["tau_us_after"]),
+            accepted=bool(blob["accepted"]),
+            reason=str(blob.get("reason", "")),
+            candidates=[
+                _json_to_rescue_candidate(c, f"{where}.candidates[{i}]")
+                for i, c in enumerate(candidates_raw)
+            ],
+            rejected_by_coherence=[
+                _json_to_rescue_candidate(
+                    c, f"{where}.rejected_by_coherence[{i}]"
+                )
+                for i, c in enumerate(rejected_raw)
+            ],
+        )
+    except KeyError as exc:
+        raise ValueError(f"{where} missing required field {exc.args[0]!r}") from exc
+
+
 # ---------------------------------------------------------------------------
 # Small attribute helpers
 # ---------------------------------------------------------------------------
@@ -330,6 +410,9 @@ def save_spectrum_fit_to_hdf5(fit: SpectrumFit, h5_group: h5py.Group) -> None:
     h5_group.attrs["replan_history"] = json.dumps(
         [_replan_info_to_json(e) for e in fit.replan_history]
     )
+    h5_group.attrs["rescue_history"] = json.dumps(
+        [_rescue_round_to_json(e) for e in fit.rescue_history]
+    )
 
     windows_group = h5_group.create_group("windows")
     for window_fit in fit.window_fits:
@@ -381,6 +464,9 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     )
     wg.attrs["thaw_events"] = json.dumps(
         [_thaw_info_to_json(e) for e in window_fit.thaw_events]
+    )
+    wg.attrs["rescue_events"] = json.dumps(
+        [_rescue_round_to_json(e) for e in window_fit.rescue_events]
     )
 
     peaks_group = wg.create_group("peaks")
@@ -478,6 +564,11 @@ def load_spectrum_fit_from_hdf5(h5_group: h5py.Group) -> SpectrumFit:
         _json_to_replan_info(blob, f"replan_history[{i}]")
         for i, blob in enumerate(raw_replan)
     ]
+    raw_rescue = _load_json_attr(h5_group, "rescue_history", [])
+    rescue_history = [
+        _json_to_rescue_round(blob, f"rescue_history[{i}]")
+        for i, blob in enumerate(raw_rescue)
+    ]
 
     windows_group = h5_group["windows"]
     window_fits: List[FittingResult] = []
@@ -498,6 +589,7 @@ def load_spectrum_fit_from_hdf5(h5_group: h5py.Group) -> SpectrumFit:
         fitted_peaks=fitted_peaks,
         thaw_history=thaw_history,
         replan_history=replan_history,
+        rescue_history=rescue_history,
         final_plan_revision=final_plan_revision,
         parameters=parameters,
         diagnostics=diagnostics,
@@ -581,6 +673,11 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
     result.thaw_events = [
         _json_to_thaw_info(blob, f"{where}/thaw_events[{i}]")
         for i, blob in enumerate(raw_thaw)
+    ]
+    raw_rescue = _load_json_attr(wg, "rescue_events", [])
+    result.rescue_events = [
+        _json_to_rescue_round(blob, f"{where}/rescue_events[{i}]")
+        for i, blob in enumerate(raw_rescue)
     ]
     return result
 

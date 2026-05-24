@@ -986,10 +986,11 @@ def fit_peaks(
     max_replan_rounds : int, optional
         Maximum structural-replan rounds per call (0 disables).
     max_residual_rescue_rounds : int, optional
-        Cap on per-window residual-rescue + joint-refit cycles. ``0``
-        (the current default) disables the rescue; a positive value runs
-        the B-loop with that round cap. Intended to become non-zero by
-        default once validated at scale.
+        Cap on per-window residual-rescue + joint-refit cycles. ``None``
+        (the default) resolves to the calibrated default cap; pass ``0``
+        to disable the rescue pass entirely (escape hatch for diagnostic
+        re-fits). The rescue runs on every window's post-thaw fit by
+        default.
     rescue_snr_threshold, rescue_prominence_threshold,
     rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
     rescue_coherence_close_threshold,

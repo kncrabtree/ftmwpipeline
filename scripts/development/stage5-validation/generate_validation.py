@@ -1948,6 +1948,29 @@ def _category_block(
 
 
 def main() -> None:
+    import argparse
+
+    arg_parser = argparse.ArgumentParser(
+        description=(
+            "Generate Stage 5 validation artifacts for the 2638 fixture. "
+            "Default: emits the deliberate EASY + HARD + NAMED samples. "
+            "Pass --window-id N (repeatable) to restrict to specific windows."
+        )
+    )
+    arg_parser.add_argument(
+        "--window-id",
+        type=int,
+        action="append",
+        dest="window_ids",
+        help=(
+            "Restrict artifact generation to this window id. Repeat the "
+            "flag to select multiple windows. When provided, overrides "
+            "the EASY/HARD/NAMED sample lists; the overview / INDEX.md "
+            "are still emitted but cover only the requested windows."
+        ),
+    )
+    args = arg_parser.parse_args()
+
     if not FTMW_PATH.exists():
         raise SystemExit(
             f"missing {FTMW_PATH}; build it first by running the pipeline "
@@ -2026,26 +2049,15 @@ def main() -> None:
     init_conservative_kwargs = {
         "max_decay_factor": float(params.get("max_decay_factor", 5.0)),
         "tau_apodization_us": expf_us if expf_us else None,
-        # Use the information-weighted n_eff for the initial fit's final
-        # knockout sweep too (its main-loop and seeder gates already
-        # default to the same kind). Keeps all three AICc gates on a
-        # single kind for this run.
-        "knockout_n_eff_kind": "perplexity_log1p_snr",
     }
     rescue_conservative_kwargs = dict(init_conservative_kwargs)
     rescue_kwargs = {
         "snr_threshold": DEFAULT_RESCUE_SNR_THRESHOLD,
         "prominence_threshold": DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
         "rescue_max_peaks": 32,
-        # Information-weighted n_eff (perplexity of log1p(SNR) per-bin
-        # weights) at the merge / knockout sites. Empirical sweep on
-        # the 2638 fixture (diag_perplexity_merge_knockout.py) shows
-        # the survey p95 drops from 4.05 (kish_mag) to 3.35 and the
-        # rescue's w198 chain stops decimating its initial K=2 fit.
-        "n_eff_kind": "perplexity_log1p_snr",
-        # Phase 1b: shape-error-aware sigma inflation for the rescue's
-        # screening pipeline. epsilon = fractional Lorentzian-vs-true-
-        # lineshape residual per unit parent amplitude (per-bin, not
+        # Shape-error-aware sigma inflation for the rescue's screening
+        # pipeline. epsilon = fractional Lorentzian-vs-true-lineshape
+        # residual per unit parent amplitude (per-bin, not
         # chi^2_r-aggregated -- those are ~4-8x different in scale).
         # Empirical sweep on the 2638 fixture (diag_phase1_merge_gate.py):
         # epsilon=0.05 stops the w148/w269 rescue-merge limit cycle
@@ -2166,19 +2178,45 @@ def main() -> None:
         return rel_dir
 
     easy_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
-    for wid in EASY_SAMPLE:
-        rel = emit(wid, None)
-        easy_entries.append((wid, plan_by_id[wid], fit_by_id[wid], None, rel))
-
     hard_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
-    for wid in HARD_SAMPLE:
-        rel = emit(wid, None)
-        hard_entries.append((wid, plan_by_id[wid], fit_by_id[wid], None, rel))
-
     named_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
-    for wid, note in NAMED_SAMPLE:
-        rel = emit(wid, note)
-        named_entries.append((wid, plan_by_id[wid], fit_by_id[wid], note, rel))
+
+    if args.window_ids:
+        # --window-id overrides the deliberate samples. Bucket the
+        # requested ids by their difficulty in the plan so the INDEX.md
+        # categories still make sense; named-case annotations are
+        # preserved when the id is in NAMED_SAMPLE.
+        named_lookup = dict(NAMED_SAMPLE)
+        for wid in args.window_ids:
+            if wid not in plan_by_id:
+                raise SystemExit(f"window_id {wid} not in plan")
+            if wid not in fit_by_id:
+                raise SystemExit(f"window_id {wid} not in persisted fit")
+            note = named_lookup.get(wid)
+            rel = emit(wid, note)
+            entry = (wid, plan_by_id[wid], fit_by_id[wid], note, rel)
+            if note is not None:
+                named_entries.append(entry)
+            elif plan_by_id[wid].difficulty == WindowDifficulty.HARD:
+                hard_entries.append(entry)
+            else:
+                easy_entries.append(entry)
+    else:
+        for wid in EASY_SAMPLE:
+            rel = emit(wid, None)
+            easy_entries.append(
+                (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
+            )
+        for wid in HARD_SAMPLE:
+            rel = emit(wid, None)
+            hard_entries.append(
+                (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
+            )
+        for wid, note in NAMED_SAMPLE:
+            rel = emit(wid, note)
+            named_entries.append(
+                (wid, plan_by_id[wid], fit_by_id[wid], note, rel)
+            )
 
     # --- INDEX.md ----------------------------------------------------------
     n_thaw = len(fit.thaw_history)

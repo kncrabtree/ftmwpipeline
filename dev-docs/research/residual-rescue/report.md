@@ -637,7 +637,48 @@ fixing tau is upstream work that lifts that bound.
 
 ## 9. Outstanding open questions
 
-Most of the open work has homes outside this document:
+### What landed after this report was written
+
+A second pass closed the rescue-completion threads that the
+first investigation left as transitional defaults:
+
+- **n_eff_kind unified across all gates.** The per-call-site
+  split described in §5.3 (`kish_mag_sq` at K-vs-(K-1),
+  `perplexity_log1p_snr` at K-vs-(K+1)) was collapsed onto a
+  single `DEFAULT_N_EFF_KIND = "perplexity_log1p_snr"`. The
+  single-kind survey in §5.4 was the deciding evidence: a
+  marginally better distribution on the 2638 fixture, no
+  regression on the named target windows, and a single default
+  to maintain. The `knockout_n_eff_kind` parameter on
+  `conservative_fit` was dropped; the `DEFAULT_CONSERVATIVE_N_EFF_KIND`
+  constant was removed.
+- **Round-cap calibrated and default flipped.** A 50-window
+  survey (every 7th window of the 2638 fixture) at caps
+  ∈ {3, 5, 7} showed the converged distribution unchanged
+  (median 1.31, p95 3.35) at every cap and zero windows
+  terminating at "max rounds reached" at any cap. At cap=3 six
+  windows (12%) used the third round; at cap=5 all 50 windows
+  converged of their own accord by round 3. `DEFAULT_RESCUE_MAX_ROUNDS`
+  is now 5 and `fit_peaks_impl`'s `max_residual_rescue_rounds`
+  resolves `None` to that default; explicit `0` remains as the
+  escape hatch.
+- **Audit-trail persistence landed.** `RescueRoundInfo` /
+  `RescueCandidateInfo` are the persistent twins next to
+  `AuditStep` / `KnockoutInfo` / `ThawInfo` / `ReplanInfo` in
+  `core/data_structures.py`. The plan executor's `RescueEvent`
+  carries the candidate lists through to the converter; the
+  serializer writes `rescue_history` (plan level) and
+  `rescue_events` (per window) as JSON attributes; old files
+  load with empty rescue histories. The intermediate per-round
+  `WindowFitResult` / `KnockoutResult` objects are not
+  persisted -- they are deterministic functions of the
+  persisted initial fit, the consolidated fit, and the
+  candidate lists, and re-running `rescue_and_consolidate` from
+  the persisted state reproduces them.
+
+### Still open
+
+External, owned by other planning docs:
 
 - **Phase-degeneracy penalty** (O5-11 in the fitting plan): the
   LSQ-side complement to the AICc gates, which would also let us
@@ -651,7 +692,7 @@ Most of the open work has homes outside this document:
   (peak-detection plan, future enhancement): the same primitive
   applied earlier in the pipeline.
 
-What remains rescue-specific:
+Rescue-specific:
 
 - **Sliding-coherence parameter calibration.** The shipped anchor
   pair (0.2, 0.8) was chosen on the original 15-window sample
@@ -661,25 +702,18 @@ What remains rescue-specific:
   which tracks the contamination level exactly); sweep
   `(close, isolated)` against the regime where clean windows
   acquire spurious peaks.
-- **Round-cap calibration.** A w132 5-round experiment showed
-  the chain settling at round 3; `DEFAULT_RESCUE_MAX_ROUNDS=3`
-  may be too low for some windows. Probably 5–7 once the rescue
-  becomes a non-zero default.
-- **Default flip from `max_residual_rescue_rounds=0` to the
-  calibrated round-cap.** The rescue is a structural part of the
-  fit, not an opt-in tweak; the 0 default is transitional.
 - **Per-window cost monitoring.** Every rescue round adds one
   `conservative_fit` + one joint refit + a knockout / merge /
   iterative-cleanup sweep. For the production pipeline (~400
-  windows) the B-loop may multiply Stage 5 wall-time by a small
-  constant; worth measuring once the rescue is on by default.
-- **Audit-trail persistence.** The consolidated
-  `ConservativeFitResult` inherits the initial fit's
-  `audit_trail`; the rescue rounds and joint refits emit
-  `RescueRoundDiagnostics` but those stay live-only (off
-  `SpectrumFit`). Once the rescue is on by default, persist the
-  per-window `RescueEvent` list into `SpectrumFit` so the
-  on-disk fit is reconstruction-complete.
+  windows) the B-loop multiplies Stage 5 wall-time by a small
+  constant; worth measuring now that the rescue is on by default.
+- **Rescue-aware visualization from the persisted fit.** With
+  `rescue_history` and per-window `rescue_events` on disk, the
+  validation-harness `audit-trail.png` layout can be lifted into
+  `Pipeline.visualize_fit(rounds=True)` without re-running the
+  rescue. The harness's `_run_window_rescue` re-run path stays
+  useful for forensic dives into the intermediate
+  `WindowFitResult`s the persistence layer deliberately skips.
 
 ## Reproducibility
 

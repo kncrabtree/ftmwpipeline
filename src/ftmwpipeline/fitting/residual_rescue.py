@@ -86,10 +86,13 @@ __all__ = [
 ]
 
 
-# A small number of rounds is enough in practice -- each round costs one
-# residual screen + one fit_window call per candidate. Mutually-interfering
+# Per-window safety cap on rescue rounds. Each round costs one residual
+# screen + one fit_window call per candidate. Calibrated on the 2638
+# fixture (50-window survey, every 7th window): every window terminates
+# naturally at "no candidates" by round 3; the extra two rounds of
+# headroom are a safety net, not a working regime. Mutually-interfering
 # pathologies (w198: ~5 lines) converge in 2-3 rounds.
-DEFAULT_RESCUE_MAX_ROUNDS = 3
+DEFAULT_RESCUE_MAX_ROUNDS = 5
 # The detector should nominate generously -- downstream F-test / AIC gating
 # decides which candidates survive. 2.5*sigma_c (~1% false alarm under
 # Rayleigh noise) catches borderline cases the conservative loop's seeded

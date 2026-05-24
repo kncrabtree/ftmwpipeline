@@ -32,6 +32,8 @@ from ftmwpipeline.core.data_structures import (
     FittingResult,
     KnockoutInfo,
     ReplanInfo,
+    RescueCandidateInfo,
+    RescueRoundInfo,
     SpectralWindow,
     SpectrumFit,
     ThawInfo,
@@ -546,3 +548,172 @@ class TestStageRegistration:
         tracker.mark_completed("stage3_peaks")
         tracker.mark_completed("stage4_windows")
         assert "stage5_fitting" in tracker.get_available_stages()
+
+
+# ---------------------------------------------------------------------------
+# Rescue-rounds persistence (Task C)
+# ---------------------------------------------------------------------------
+def _sample_rescue_round(
+    *,
+    window_id: int,
+    round_idx: int,
+    n_initial_peaks: int = 2,
+    n_rescue_added: int = 1,
+    n_pruned_total: int = 0,
+    n_pruned_rescue_origin: int = 0,
+    n_merged: int = 0,
+    chi2_before: float = 12.0,
+    chi2_after: float = 8.0,
+    tau_us_before: float = 3.0,
+    tau_us_after: float = 3.05,
+    accepted: bool = True,
+    reason: str = "joint refit consolidated rescue contribution",
+    candidates: list[RescueCandidateInfo] | None = None,
+    rejected_by_coherence: list[RescueCandidateInfo] | None = None,
+) -> RescueRoundInfo:
+    return RescueRoundInfo(
+        window_id=window_id,
+        round_idx=round_idx,
+        n_initial_peaks=n_initial_peaks,
+        n_rescue_added=n_rescue_added,
+        n_pruned_total=n_pruned_total,
+        n_pruned_rescue_origin=n_pruned_rescue_origin,
+        n_merged=n_merged,
+        chi2_before=chi2_before,
+        chi2_after=chi2_after,
+        tau_us_before=tau_us_before,
+        tau_us_after=tau_us_after,
+        accepted=accepted,
+        reason=reason,
+        candidates=candidates or [],
+        rejected_by_coherence=rejected_by_coherence or [],
+    )
+
+
+class TestRescueRoundsRoundTrip:
+    def test_empty_rescue_history_round_trips(self, tmp_path):
+        """A fit with no rescue activity round-trips with empty lists."""
+        fit = _sample_spectrum_fit()
+        assert fit.rescue_history == []
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+        assert loaded.rescue_history == []
+        for wf in loaded.window_fits:
+            assert wf.rescue_events == []
+
+    def test_single_round_round_trip(self, tmp_path):
+        """A window with one rescue round (candidates + coherence-rejected) round-trips."""
+        fit = _sample_spectrum_fit()
+        candidates = [
+            RescueCandidateInfo(frequency_mhz=-0.18, magnitude=0.42, snr=3.6),
+            RescueCandidateInfo(frequency_mhz=0.27, magnitude=0.31, snr=2.7),
+        ]
+        rejected = [
+            RescueCandidateInfo(frequency_mhz=0.05, magnitude=0.19, snr=2.5),
+        ]
+        round0 = _sample_rescue_round(
+            window_id=0,
+            round_idx=0,
+            n_rescue_added=2,
+            candidates=candidates,
+            rejected_by_coherence=rejected,
+        )
+        fit.window_fits[0].rescue_events = [round0]
+        fit.rescue_history = [round0]
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert len(loaded.rescue_history) == 1
+        got = loaded.rescue_history[0]
+        assert got.window_id == 0
+        assert got.round_idx == 0
+        assert got.n_initial_peaks == 2
+        assert got.n_rescue_added == 2
+        assert got.accepted is True
+        assert got.reason == round0.reason
+        assert got.chi2_before == pytest.approx(12.0)
+        assert got.chi2_after == pytest.approx(8.0)
+        assert got.tau_us_after == pytest.approx(3.05)
+        assert [c.frequency_mhz for c in got.candidates] == pytest.approx(
+            [-0.18, 0.27]
+        )
+        assert got.candidates[0].snr == pytest.approx(3.6)
+        assert [c.frequency_mhz for c in got.rejected_by_coherence] == pytest.approx(
+            [0.05]
+        )
+
+        # Per-window mirror.
+        assert len(loaded.window_fits[0].rescue_events) == 1
+        assert loaded.window_fits[0].rescue_events[0].window_id == 0
+
+    def test_multi_round_with_failsafe_round_trip(self, tmp_path):
+        """A multi-round chain with the rescue-origin pruning failsafe set."""
+        fit = _sample_spectrum_fit()
+        round0 = _sample_rescue_round(
+            window_id=1,
+            round_idx=0,
+            n_initial_peaks=1,
+            n_rescue_added=2,
+            n_pruned_total=0,
+            n_pruned_rescue_origin=0,
+            n_merged=0,
+            chi2_before=20.0,
+            chi2_after=14.0,
+            candidates=[
+                RescueCandidateInfo(frequency_mhz=-0.5, magnitude=0.8, snr=5.1),
+                RescueCandidateInfo(frequency_mhz=0.6, magnitude=0.7, snr=4.4),
+            ],
+        )
+        round1 = _sample_rescue_round(
+            window_id=1,
+            round_idx=1,
+            n_initial_peaks=3,
+            n_rescue_added=1,
+            n_pruned_total=1,
+            n_pruned_rescue_origin=1,  # the failsafe firing
+            n_merged=0,
+            chi2_before=14.0,
+            chi2_after=14.0,
+            accepted=False,
+            reason="joint refit consolidated rescue contribution (rescue-origin prune)",
+            candidates=[
+                RescueCandidateInfo(frequency_mhz=0.12, magnitude=0.35, snr=2.9),
+            ],
+        )
+        fit.window_fits[1].rescue_events = [round0, round1]
+        fit.rescue_history = [round0, round1]
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert [r.round_idx for r in loaded.rescue_history] == [0, 1]
+        failsafe = loaded.rescue_history[1]
+        assert failsafe.n_pruned_rescue_origin == 1
+        assert failsafe.accepted is False
+        assert failsafe.window_id == 1
+        # Candidates and counts on the first round survive.
+        first = loaded.rescue_history[0]
+        assert first.n_rescue_added == 2
+        assert len(first.candidates) == 2
+        assert first.candidates[1].snr == pytest.approx(4.4)
+        # Per-window mirror has both rounds for window 1.
+        win1 = loaded.window_fits[1]
+        assert [r.round_idx for r in win1.rescue_events] == [0, 1]
+
+    def test_legacy_file_loads_with_empty_rescue_history(self, tmp_path):
+        """A file written without the rescue_history / rescue_events attrs
+        loads with empty lists, not an error."""
+        path = tmp_path / "fit.h5"
+        fit = _sample_spectrum_fit()
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a pre-rescue-persistence file: strip the new attrs.
+            del g.attrs["rescue_history"]
+            for name in g["windows"]:
+                wg = g[f"windows/{name}"]
+                if "rescue_events" in wg.attrs:
+                    del wg.attrs["rescue_events"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.rescue_history == []
+        for wf in loaded.window_fits:
+            assert wf.rescue_events == []

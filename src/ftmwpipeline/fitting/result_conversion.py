@@ -50,6 +50,8 @@ from ftmwpipeline.core.data_structures import (
     FitWindow,
     KnockoutInfo,
     ReplanInfo,
+    RescueCandidateInfo,
+    RescueRoundInfo,
     Sideband,
     SpectralWindow,
     SpectrumFit,
@@ -58,7 +60,14 @@ from ftmwpipeline.core.data_structures import (
 )
 
 from .peak_model import effective_tau, molecular_frequency, sideband_sign
-from .plan_execution import PlanFitOutcome, ReplanEvent, ThawEvent, WindowOutcome
+from .plan_execution import (
+    PlanFitOutcome,
+    ReplanEvent,
+    RescueEvent,
+    ThawEvent,
+    WindowOutcome,
+)
+from .residual_screening import ResidualPeakCandidate
 from .window_fit import AddStep, KnockoutResult
 
 __all__ = [
@@ -131,6 +140,40 @@ def _convert_knockout(knockout: KnockoutResult) -> KnockoutInfo:
         p_value=knockout.p_value,
         n_eff=knockout.n_eff,
         aicc_delta=knockout.aicc_delta,
+    )
+
+
+def _convert_rescue_candidate(
+    candidate: ResidualPeakCandidate,
+) -> RescueCandidateInfo:
+    """Copy a :class:`ResidualPeakCandidate` into the persistent twin."""
+    return RescueCandidateInfo(
+        frequency_mhz=float(candidate.frequency_mhz),
+        magnitude=float(candidate.magnitude),
+        snr=float(candidate.snr),
+    )
+
+
+def _convert_rescue_event(event: RescueEvent) -> RescueRoundInfo:
+    """Copy a :class:`RescueEvent` into the persistent :class:`RescueRoundInfo`."""
+    return RescueRoundInfo(
+        window_id=int(event.window_id),
+        round_idx=int(event.round_idx),
+        n_initial_peaks=int(event.n_initial_peaks),
+        n_rescue_added=int(event.n_rescue_added),
+        n_pruned_total=int(event.n_pruned_by_knockout),
+        n_pruned_rescue_origin=int(event.n_pruned_rescue_origin),
+        n_merged=int(event.n_merged),
+        chi2_before=float(event.chi2_before),
+        chi2_after=float(event.chi2_after),
+        tau_us_before=float(event.tau_us_before),
+        tau_us_after=float(event.tau_us_after),
+        accepted=bool(event.accepted),
+        reason=str(event.reason),
+        candidates=[_convert_rescue_candidate(c) for c in event.candidates],
+        rejected_by_coherence=[
+            _convert_rescue_candidate(c) for c in event.rejected_by_coherence
+        ],
     )
 
 
@@ -365,6 +408,9 @@ def window_outcome_to_fitting_result(
     # Audit trail and per-window thaw events.
     result.audit_trail = [_convert_audit_step(s_) for s_ in fit.audit_trail]
     result.thaw_events = [_convert_thaw_event(e) for e in outcome.thaw_events]
+    result.rescue_events = [
+        _convert_rescue_event(e) for e in outcome.rescue_events
+    ]
 
     return result
 
@@ -446,6 +492,9 @@ def plan_fit_outcome_to_spectrum_fit(
         fitted_peaks=fitted_peaks,
         thaw_history=[_convert_thaw_event(e) for e in plan_outcome.thaw_history],
         replan_history=[_convert_replan_event(e) for e in plan_outcome.replan_history],
+        rescue_history=[
+            _convert_rescue_event(e) for e in plan_outcome.rescue_history
+        ],
         final_plan_revision=int(plan_outcome.final_plan_revision),
         parameters=dict(parameters) if parameters is not None else {},
         diagnostics=dict(diagnostics) if diagnostics is not None else {},

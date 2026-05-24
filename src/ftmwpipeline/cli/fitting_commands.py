@@ -208,10 +208,10 @@ def register_fitting_commands(subparsers: Any) -> None:
         dest="max_residual_rescue_rounds",
         type=int,
         help="Cap on per-window residual-rescue + joint-refit cycles. "
-        "0 (the current default) disables the rescue pass; a positive "
-        "value (e.g. 3) runs the B-loop with that round cap. The "
-        "rescue is a structural part of the fit and is intended to "
-        "become non-zero by default once validated at scale.",
+        "Omit to use the calibrated default (currently 5); pass 0 to "
+        "disable the rescue pass entirely (escape hatch for diagnostic "
+        "re-fits). The rescue is a structural part of the fit and runs "
+        "on every window's post-thaw fit by default.",
     )
     p_fit.add_argument(
         "--rescue-snr-threshold",
