@@ -279,31 +279,69 @@ Worth assessing — not immediately, but as a Stage 3 enhancement. Possible
 caveat: Stage 3 operates on the *persisted* spectrum (full record with
 the de-ramp phase), so the basis Lorentzian needs the same phase frame.
 
-### 2. Physical interpretation of the rejected (non-Lorentzian) signals
+### 2. Are the newly-accepted peaks real, or is the rescue overfitting?
 
-The phase-coherence filter rejects candidates that don't fit a Lorentzian
-basis. In this 2638 fixture, those mostly correspond to known artifacts:
-phase-rotation patterns from slightly-mis-fit neighbours (w269), doublet
-leakage (w148), and window-edge effects (w68). But the residual could
-also carry **physical** non-Lorentzian signal:
+The sliding coherence threshold pushed several windows from chi²_r in
+the 4–50 range down to ~1. Two of the previously-rejected candidates
+the original planning doc cited as coherence-rejection successes
+(w148 +0.5970, w269 +1.4558) are now accepted and survive the
+knockout sweep. Two readings remain on the table; the harness's
+15-window sample does not distinguish them:
 
-- **Doppler (Gaussian) broadening** convolves the Lorentzian into a
-  Voigt profile. If the Doppler width is non-negligible, a pure
-  Lorentzian basis would miss the Gaussian wings, leaving a structured
-  residual.
-- **Hyperfine / fine-structure splitting** beneath Stage 3's resolution
-  would appear as a phase pattern across multiple closely-spaced
-  unresolved lines.
-- **Instrumental effects** — power broadening, magnetic-field
-  inhomogeneity, mixing-product artifacts.
-- **Just numerical noise** — most rejections in clean windows fall
-  here.
+- **The previous uniform-0.5 threshold was over-rejecting real peaks
+  that sat in fitted neighbours' skirts.** The chi²_r → ~1 behaviour
+  is consistent with finally fitting them. The fitted-peak-aware
+  proximity check + sliding threshold are doing what they were
+  designed for.
+- **The looser close anchor (0.2) plus the 32-peak per-window
+  `rescue_max_peaks` cap is overfitting**, and the knockout sweep is
+  not strict enough to catch all overshoots. The failsafe diagnostic
+  (`n_pruned_rescue_origin`) does fire on several windows (w148 r1,
+  w269 r1, w132 every round), so the safety net is engaged — but it
+  doesn't tell us whether what *survived* the knockout is real.
 
-A diagnostic pass for a fresh session: collect all coherence-rejected
-candidates across the full 2638 fixture, plot their residual neighbourhoods,
-and look for systematic structure. If a substantial fraction sit on top of
-fitted peak centres (not random offsets), that points to physical
-Voigt-Lorentzian mismatch rather than fit imperfection.
+The clearest concrete evidence for the overfitting concern is **w132**:
+the loop terminates on `max rounds reached` with chi²_r = 2.5
+(not the ~1 noise floor that most others hit), and the failsafe fires
+in every round (1, 1, 2 rescue-origin pruned). Three possible reads:
+
+1. **Out of rounds**: more rounds would let the chain settle, the
+   pruning is healthy because borderline candidates need joint-refit
+   evaluation, and chi²_r would converge toward 1 given another 2–5
+   rounds.
+2. **Overshoots survive**: rescue is nominating ~3σ candidates, the
+   knockout catches the worst, but the survivors are noise that
+   locally improved chi² without being physical lines.
+3. **Genuinely un-modellable residual structure**: a cluster of
+   unresolved hyperfine lines, Voigt broadening, instrumental
+   artifact — what the previous version of this question was about.
+   The sliding threshold accepts more candidates, leaving less
+   coherence-rejected material for direct inspection, but the
+   underlying physical signal didn't change.
+
+**Quick experiment for w132 with `max_residual_rescue_rounds=5`**
+(`scratch/stage5-validation/_w132_extended.py`): K 15→18,
+chi²_r 2.49→1.67. The failsafe fired in rounds 0–2 (1, 1, 2
+rescue-origin pruned) and **stopped firing in rounds 3–4** (0, 0
+pruned, both pure additive). The chain genuinely settled by round 3;
+the prior 3-round cap was too low for this window. Strong support for
+reading (1) — and a signal that the `DEFAULT_RESCUE_MAX_ROUNDS=3`
+default may need to bump higher (5? 7?) before the rescue can be
+turned on by default. Remaining 1.67 − 1.0 gap is open ground for (2)
+vs (3); needs separate investigation.
+
+Diagnostics to settle this in a fresh session:
+
+- Run the harness on the full 2638 fixture (~400 windows) and
+  tabulate failsafe-firing rate and final chi²_r distribution.
+- Sensitivity-sweep the close anchor (0.2 → 0.3 → 0.4) and look for
+  the regime where w64/w63 (clean controls) acquire spurious peaks —
+  that's the empirical floor for what counts as "real" in this signal.
+- For the persistent-residual-at-max-rounds cases (w132), plot the
+  surviving residual's local complex spectrum and check whether it
+  has Voigt-style wings, hyperfine substructure, or just noise.
+- Where blackchirp-era line assignments survive, compare the
+  consolidated peak list against them as ground truth.
 
 ### 3. Total-model integration strategy (RESOLVED — option B)
 
@@ -360,28 +398,74 @@ In order of dependency:
    FTMW datasets the user has access to, (c) blackchirp-era
    line-assignment ground truth where available. See "real peaks or
    overfitting?" above.
-2. **Flip the `max_residual_rescue_rounds` default** from 0 to a
-   positive value (likely 3, the `DEFAULT_RESCUE_MAX_ROUNDS`) once (1)
-   gives a clean read. The rescue is a structural part of the fit, not
-   an opt-in tweak — the current 0 default is transitional.
-3. **Sliding-coherence calibration** — replace the linear ramp with the
+2. **Sliding-coherence calibration** — replace the linear ramp with the
    Lorentzian-skirt-magnitude functional form, and sweep the
    `(close, isolated)` anchors to find the regime where clean windows
    acquire spurious peaks. See "Sliding-coherence parameter
    calibration" open question.
-4. **Per-window cost monitoring** — every rescue round adds one
+3. **Round-cap calibration** — the w132 5-round experiment suggests
+   `DEFAULT_RESCUE_MAX_ROUNDS=3` is too low for some windows; pick a
+   default that's high enough for typical convergence (probably 5–7)
+   without burning compute on windows that already converged at round 1.
+4. **Flip the `max_residual_rescue_rounds` default** from 0 to the
+   calibrated round-cap once (1)–(3) give a clean read. The rescue is
+   a structural part of the fit, not an opt-in tweak — the current 0
+   default is transitional.
+5. **Per-window cost monitoring** — every rescue round adds one
    conservative_fit + one joint refit + a knockout sweep. For the
    production pipeline (~400 windows) the B-loop may multiply Stage 5
    wall-time by a small constant. Worth measuring on a full fixture
-   once (2) lands.
-5. **Independent revisit of the projection-coherence idea for Stage 3**
+   once (4) lands.
+6. **Independent revisit of the projection-coherence idea for Stage 3**
    — separate planning doc once Stage 5 rescue is settled.
-6. **Audit-trail richness** — the consolidated `ConservativeFitResult`
+7. **Audit-trail richness** — the consolidated `ConservativeFitResult`
    currently inherits the initial fit's `audit_trail`; the rescue
    rounds and joint refits emit `RescueRoundDiagnostics` but those
    stay live-only (off `SpectrumFit`). If the rescue chain becomes the
    default, persist the per-window `RescueEvent` list into
    `SpectrumFit` so the on-disk fit is reconstruction-complete.
+
+### Validation-harness augmentations (clean-session work)
+
+The harness (`scratch/stage5-validation/generate_validation.py`) has
+become the primary inspection surface for the rescue chain. Three
+augmentations are worth picking up in a clean session:
+
+- **Per-window context view**: a small `context.png` per window
+  showing the full active-FT spectrum with the current window's
+  `freq_range` highlighted (axvspan). Reuses the existing
+  overview-plot machinery; the addition is the per-window highlight.
+- **vline markers at fitted-peak positions** on every detail figure
+  (`detail.png` and each `detail-rr<n>.png`). Makes the peak count
+  visually obvious at a glance and helps spot blended peaks the
+  continuous-line overlay smears across.
+- **Final audit-trail figure** (separate from the spectrum
+  detail) showing the complete decision history with rounds laid out
+  cleanly. The structure to aim for (per user discussion):
+    - the existing conservative-loop audit format for the initial
+      round, followed by
+    - a visual break,
+    - one block per residual round with that round's rescue audit
+      (candidate proposals, F-test/AIC outcomes), then a "merge step"
+      panel showing knockout survival vs rejection between the
+      previous round's peak set and this round's.
+    - More vertical space than the current detail.png layout allows
+      — likely a dedicated figure rather than one panel.
+
+A clean session is the right place to design these — the user has
+sketches of both versions to discuss. Once the audit-trail figure is
+stable, it's a natural candidate for **promotion to the main
+visualization code** (`visualization/fit_visualization.py`,
+`Pipeline.visualize_fit(window_id=..., rounds=True)`) so the rescue
+chain becomes user-inspectable without re-running the harness. Two
+plumbing options for that promotion:
+- Persist `RescueRoundDiagnostics` to `SpectrumFit` so the viz reads
+  from disk (schema change).
+- Re-run the rescue on demand from the persisted state (lighter, ~1s
+  per window).
+
+Re-run-on-demand is cheaper for an initial promotion; persistence
+makes sense once the chain is the default.
 
 ## How to assess the validation artifacts
 
