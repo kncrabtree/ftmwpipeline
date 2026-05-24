@@ -796,6 +796,56 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   rescue-AICc / phase-degeneracy work that follows this fix), not by
   external-skirt leakage.
 
+- **O5-11 — phase-degeneracy penalty for the conservative-fit
+  residual.** The existing pair penalty in
+  `window_fit._penalty_residuals_and_jacobian` is
+  `sqrt(λ) · w(Δsep) · sin((φᵢ - φⱼ)/2)` — zero for in-phase pairs
+  (Δφ=0) and maximal for anti-phase pairs (Δφ=π). It catches the
+  *cancellation* pathology (a pair that fits noise by producing
+  destructive interference between two large amplitudes) but
+  explicitly does **not** penalise the *degeneracy* pathology (two
+  in-phase peaks at the same offset with similar amplitude — the
+  case in w148's A/C and B/D pairs before the AICc merge gate, and
+  the LSQ-basin difference between w198's K=4 and K=7 outcomes).
+  User framing: "Our best bet for fitting blended features would
+  likely occur when their phases are in quadrature." Quadrature
+  (Δφ = π/2) is the only configuration where two close peaks carry
+  independent information; both Δφ=0 (degenerate / co-aligned) and
+  Δφ=π (cancelling) are pathological.
+
+  The complementary penalty is `cos((φᵢ - φⱼ)/2)` — 1 at Δφ=0 (max
+  penalty) and 0 at Δφ=π (no penalty). Two wiring options:
+
+  - **Separate penalty term.** Add a
+    `phase_degeneracy_penalty_lambda` parameter and emit a second
+    penalty residual per pair with `sqrt(λ_deg) · w(Δsep) ·
+    cos((φᵢ - φⱼ)/2)`. Independent tuning; keeps the existing
+    cancellation penalty untouched.
+  - **Single non-quadrature penalty.** Replace both halves with one
+    term that fires at *both* Δφ=0 and Δφ=π, zero only at Δφ=π/2:
+    `cos(φᵢ - φⱼ)` (peaks at both 0 and π) or `|cos(φᵢ - φⱼ)|`. One
+    knob; cleaner conceptually but loses the ability to tune
+    cancellation-vs-degeneracy independently if their failure modes
+    need different λ.
+
+  Both keep the existing `weight = max(0, 1 - sep/cutoff)` closeness
+  factor so the penalty only fires for pairs near the resolution
+  limit. The degeneracy half may need a smaller cutoff (e.g. 1 FWHM
+  vs the current 2 FWHM) since the degeneracy pathology is
+  specifically a sub-FWHM problem.
+
+  This is the LSQ-side complement to the AICc-gate work in
+  [`stage5-residual-rescue.md`](stage5-residual-rescue.md): the
+  AICc gates catch duplicate-pair overfit after the fact; the
+  phase-degeneracy penalty prevents the optimiser from landing in
+  the duplicate basin in the first place. With this penalty in
+  place, re-enabling the AICc-gated outer tier of
+  `merge_close_peaks_cleanup` (currently disabled by setting
+  `DEFAULT_MERGE_SEPARATION_FACTOR = 0.5`, equal to the structural
+  threshold) becomes safe — tier 2 can decide between merging and
+  keeping real close pairs on chi-squared evidence with the
+  penalty providing the LSQ-side distinguishing signal.
+
 ## Task breakdown
 
 1. [x] **Research prototype** — `h_T` and its Jacobian verified; the

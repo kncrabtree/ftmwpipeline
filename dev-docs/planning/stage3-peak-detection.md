@@ -142,6 +142,22 @@ Stage output: an ordered list of classified `Peak`s.
   spectrum on a log y-axis so the noise floor and the 100s-of-× stronger
   lines are both legible. Apodized scoring remains only as a fallback when no
   unapodized spectrum is supplied.
+- **Phase-coherence projection as a stage-3 quality filter (future
+  enhancement).** The phase-coherence projection developed for Stage 5's
+  residual rescue
+  ([`stage5-residual-rescue.md`](stage5-residual-rescue.md),
+  §"Phase-coherence projection") is a general primitive: it answers "is
+  this magnitude peak the projection of a Lorentzian, or just incoherent
+  magnitude?" Stage 3 currently detects on magnitude alone and would
+  benefit from the same test as a quality filter on promoted peaks:
+  distinguish real lines from baseline / contributor systematics
+  (w337-style contributor-skirt leakage shows the signature), filter
+  candidates whose phase doesn't support a Lorentzian interpretation
+  before promotion, and provide a per-peak coherence score in the
+  persisted detection list. Caveat: Stage 3 operates on the *persisted*
+  spectrum (full record with the de-ramp phase), so the basis Lorentzian
+  needs the same phase frame. Worth assessing once Stage 5 settles; not
+  blocking.
 - **Trim/zpf handling — INTERIM BAND-AID, superseded by D7.** Stage 1 does
   **not** persist the user's FT settings (trim, zpf, …), so recompute-on-demand
   yields the recommended-default spectrum (untrimmed, zpf=0 for 2638 → DC

@@ -205,6 +205,38 @@ list to the assignment list:
 Ground truth is rare for FTMW data, so this tier may not be
 available; Tiers 1+2 are the operational acceptance gate.
 
+#### Borderline real-vs-noise: the standing open question
+
+A class of windows on the 2638 fixture sit at the edge of
+detectability: the initial fit lands at K=1, the rescue or
+seeder nominates a borderline second peak, and the AICc gates
+either accept or reject it depending on the exact n_eff
+calibration. Canonical examples on 2638: w16, w104, w127,
+w337. With the current gate configuration these end at K=1
+(post-rescue iterative cleanup rejects the second peak).
+
+The single-fixture data cannot resolve whether the rejected
+second peak is a real weak line the gates over-reject, or noise
+the gates correctly reject. Tier 3 is the discriminator: if a
+new fixture has independent line assignments and the borderline
+peaks appear in the reference list, the gates are calibrated too
+strictly and the n_eff weighting needs to be loosened; if the
+borderline peaks don't appear, the gates are calibrated right.
+
+Per-fixture record this against:
+
+- The list of borderline K=1-vs-K=2 windows in the fixture
+  (those whose audit trail shows a candidate that was accepted-
+  then-rejected by iterative cleanup, or rejected at the
+  conservative-loop gate with `aicc_delta` near zero).
+- Each window's AICc gate verdict under the production gate
+  configuration; if the audit shows borderline numerics
+  (`abs(aicc_delta) < small`), flag for ground-truth check.
+- Whether each borderline peak was a Stage 3 candidate
+  (suggests detector evidence) vs rescue-only (suggests it's
+  chasing residual structure that may be shape-error rather
+  than a line).
+
 ## What to bring back from a new fixture
 
 Bare minimum:
@@ -342,6 +374,47 @@ different from 2638's, that's a signal about the instrument setup
 worth investigating before assuming Phase 1 settings transfer.
 Add `tau_consensus_us` and `tau_consensus_window_count` to the
 per-fixture record-keeping below.
+
+### Broken-initial-fit pathology and the majority-vote-freeze proposal
+
+The 2638 fixture's w198 surfaced a sharper version of the weak-window
+tau bias: when the initial fit cannot represent the true number of
+peaks (Stage 3's candidate offsets under-count the window's actual
+K), LSQ narrows tau to broaden each modelled peak to absorb the
+unmodeled-peak residual. The K=2 initial fit on w198 pegs tau at
+1 µs (the apodization-override lower bound) instead of the dataset
+consensus of ~3 µs. The rescue chain's joint refit warm-starts
+from the apod-override at 5 µs but converges to ~2.4 µs — a
+closer-but-still-wrong basin. The K=7 outcome at tau ≈ 3 µs is
+the right answer; the K=3 outcome at tau ≈ 2.4 µs (the current
+production result) is a different LSQ basin altogether.
+
+This argues for **freeze-at-consensus** rather than soft re-fitting
+on the weak windows the prior section covers: when a window's
+initial fit lands far from the dataset consensus (e.g. > 2σ away),
+lock tau at the consensus for all subsequent passes on that window
+— initial fit, rescue's conservative loop, joint refit, knockout,
+merge. The free-fit basin LSQ falls into when the initial K is
+wrong is a pathological local minimum; locking tau keeps LSQ in
+the physical basin and lets the rescue do its job.
+
+Implementation sketch:
+
+1. Run all per-window fits with tau free (current behaviour).
+2. Compute the consensus tau and its variance from windows where
+   `tau_error / tau < threshold` (e.g. 5%).
+3. Identify windows whose fitted tau is > Nσ from the consensus.
+4. Re-fit those windows with `fit_tau=False, tau0_us=tau_consensus`
+   end-to-end — applied uniformly to the initial fit, the rescue's
+   internal `conservative_fit`, and the rescue's joint refit
+   (currently the joint refit thaws tau regardless).
+5. Iterate (step 2 may shift consensus slightly after the re-fits).
+
+The implementation involves threading a `tau_locked: bool` flag
+through `rescue_and_consolidate` so the joint refit honours it
+on flagged windows, and extending the orchestrator in
+`_internal/stage5_impl.py` with the two-pass logic. Resolves the
+w198 follow-up open after the residual-rescue restructure.
 
 ## Next steps
 
