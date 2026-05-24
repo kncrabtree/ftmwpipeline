@@ -626,11 +626,19 @@ class KnockoutInfo:
         produce.
     supported : bool
         Whether the chi-squared increase is statistically significant (F-test).
+    p_value : float
+        F-test p-value of the K-peak fit vs the (K-1)-peak fit produced by
+        knocking this line out. Per-peak significance against the final
+        converged fit -- the strongest individual evidence-of-existence
+        statistic the pipeline produces for a fitted line. ``supported``
+        is the boolean form (``p_value < significance``). ``nan`` for
+        peaks loaded from older files written before this column existed.
     """
 
     delta_chi2: float
     expected_delta_chi2: float
     supported: bool
+    p_value: float = float("nan")
 
 
 @dataclass

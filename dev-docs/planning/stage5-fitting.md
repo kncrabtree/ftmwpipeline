@@ -656,6 +656,44 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   whose own single-cosine fit leaves an elevated local reduced χ² (a blend that
   is not the strongest line) is open — to be assessed on the real-data blended
   fixtures in task 10, alongside the open part of O5-2.
+- **O5-10 — untreated fixed-contributor skirt leakage (w337-style).** A window
+  may sit downstream of a strong fixed contributor whose Lorentzian skirt
+  carries a small but signed amount of power into the window — the complex
+  residual then shows a structured offset (e.g. Im residual systematically
+  below zero, Re slightly above) rather than a zero-mean noise floor, and
+  the |residual| histogram drifts away from the Rayleigh reference. The
+  symptom is concrete and visible in the per-window detail figure (see
+  scratch/stage5-validation/window_337/detail.png after a re-run).
+
+  The framework currently treats fixed contributors via
+  `FrozenPeak`/`fixed_parameters` — each window's
+  `subtract_frozen_background` evaluates the listed contributors' skirts
+  on the window grid and subtracts them. Two failure modes that produce
+  the w337 signature:
+
+  1. **Contributor not in this window's fixed-contributor list.** Stage 4
+     decides which contributors get attached to each window; if the
+     selection radius is too narrow (e.g., only same-batch neighbours),
+     a strong line a few FWHM beyond the window edge can leak in without
+     ever appearing in `fixed_parameters`.
+  2. **Contributor is listed but the wrong-frame skirt model is being
+     subtracted.** The skirt evaluation must use the right phase frame
+     and τ — and the right *primary-window-refined* freq/amp/phase. A
+     stale or wrong-phase skirt under-subtracts, leaving a signed bias.
+
+  Diagnostic for w337: (i) identify the strongest fitted line within
+  ±10 FWHM of w337's edges (likely in an adjacent window's primary fit);
+  (ii) check whether it appears in `window_337.fixed_parameters`;
+  (iii) if yes, verify the evaluated skirt matches the actual data
+  deficit (sign + magnitude). The residual-rescue planning doc's
+  "phase-coherence projection as a general primitive" item is adjacent
+  but distinct — coherence projection would *flag* the signature; this
+  open item is about *closing the leakage at source*.
+
+  When picking up: the fix likely lives in Stage 4's contributor-
+  assignment radius or in the contributor-list builder in
+  `plan_execution.py`; the Stage 5 fit itself is the downstream
+  consumer.
 
 ## Task breakdown
 

@@ -269,7 +269,9 @@ Stage 3 currently detects peaks on the magnitude spectrum and would
 benefit from the same test:
 
 - Distinguish real lines from baseline / contributor systematics
-  (w337's case — see ROADMAP).
+  (w337's case — see [`stage5-fitting.md`](stage5-fitting.md) O5-10
+  for the underlying contributor-skirt leakage; phase-coherence here
+  would *flag* the signature, the closing fix is upstream).
 - Filter Stage 3 candidates whose phase doesn't support a Lorentzian
   interpretation before promotion.
 - Provide a per-peak coherence score in the persisted detection list as
@@ -342,6 +344,168 @@ Diagnostics to settle this in a fresh session:
   has Voigt-style wings, hyperfine substructure, or just noise.
 - Where blackchirp-era line assignments survive, compare the
   consolidated peak list against them as ground truth.
+
+#### Visual evidence on w148: sub-spacing duplicate-peak overfit
+
+While building the per-window detail / audit visualisations (the new
+`detail.png` and `audit-trail.png` harness artifacts), inspecting w148
+made the overfitting concrete: the strong doublet that should be 2
+real lines is being fit as **4 peaks, arranged as two pairs of two**,
+with each pair's members separated by *less than the FT point spacing*
+and converging to roughly equal amplitudes. The two pair members are
+not independently resolvable — they are the rescue / joint-refit
+chain manufacturing duplicate peaks at the same physical line.
+
+| consolidated peak | freq (MHz)       | amplitude (µV)  |
+|---|---|---|
+| A | 31848.5948(25)   | 4.38(22)        |
+| C | 31848.5551(22)   | 4.641(187)      |
+| B | 31849.7032(24)   | 4.113(135)      |
+| D | 31849.65473(185) | 4.743(143)      |
+
+A/C separation: 0.040 MHz. B/D separation: 0.049 MHz. Point spacing on
+this fixture is ~0.05 MHz. With tau ≈ 4 µs, FWHM ≈ 0.08 MHz — both
+pairs are within 1 FWHM and at the resolution limit.
+
+The merge-clean-up step (`merge_close_peaks_cleanup` in
+`fitting/residual_rescue.py`, F-test-gated at
+`DEFAULT_MERGE_SEPARATION_FACTOR = 1.0 FWHM`) is *supposed* to catch
+this — it greedily merges close adjacent pairs when the merged
+(K-1)-peak fit is statistically indistinguishable from the K-peak fit.
+Either (a) the merge cleanup is not running in this code path
+(`rescue_and_consolidate` may not be calling it on the final
+consolidated fit), or (b) it is running but the F-test is rejecting
+the merge — the duplicate pair locally improves chi-squared enough
+that the F-test sees them as "really distinct" even though physically
+they cannot be.
+
+**Defer to a later session** — visualization pass needs to land first
+so the diagnostic is visible. When picking this up:
+
+1. Confirm whether `merge_close_peaks_cleanup` is called in the
+   consolidated path (grep for call sites). If not, that's the wiring
+   gap.
+2. If it is being called, instrument it to log which merges were
+   considered and which the F-test rejected. The expectation is that
+   w148's A/C and B/D pairs are being considered and rejected.
+3. The merge F-test compares chi-squared of the K-peak fit to a
+   refitted (K-1)-peak fit. If duplicate peaks at sub-spacing
+   separations split the line's signal between them, the K-peak fit's
+   chi-squared can be marginally lower in a way that's statistically
+   "significant" by F-test but physically meaningless — both peaks are
+   fitting the same noise realization of the same physical line. The
+   fix may be a structural separation cutoff (merge unconditionally
+   when separation < point spacing or < 0.5 FWHM), not just an
+   F-test-gated merge.
+
+This is the clearest concrete instance of the overfitting concern the
+parent open question is about. It's a Stage-5-algorithm fix, not a
+visualization fix; the visualization just made it visible.
+
+#### Candidate algorithmic fixes (deferred; user-proposed)
+
+Two ideas the user surfaced while looking at w148 — both targeting
+the same underlying problem from different angles. Captured here for
+when this gets picked up:
+
+**1. Effective-DoF correction for the merge F-test.** The
+`merge_close_peaks_cleanup` F-test compares the K-peak fit to a
+(K-1)-peak fit refit on the merged subset. The statistic is
+
+```
+F = (Δχ² / Δdof) / (χ²_K / (n_data − n_params_K))
+```
+
+In an FT-windowed fit, `n_data` is ~100–300 bins but the *informative*
+bins for distinguishing a 1-peak from a 2-peak model lie within ~1
+FWHM of the candidate pair — a handful of bins. Most of the residual
+denominator is noise far from the feature, which makes the F-statistic
+small even when adding a third peak buys a near-zero physical
+improvement. The test is structurally biased toward accepting the
+more-complex model.
+
+Proposal: replace the raw `n_data` count with an **effective sample
+size** that weights each bin by the local model magnitude. The
+intuition is Fisher-information-density-like — bins far from the peak
+carry essentially no information about that peak's parameters. Options
+for the weighting:
+
+- `w_f = |model(f)|²` (Fisher-information-density flavour) plus the
+  Kish formula `ν_eff = (Σ w_f)² / Σ w_f²` for the effective DoF. Soft
+  cutoff, smoothly down-weights bins far from any feature.
+- `w_f = 1` only for `|model(f)| > c·max|model|` for some threshold
+  `c` ~ 0.05 (hard radius, simpler but threshold-sensitive).
+- Restrict the F-test to a "local window" of ±N·FWHM around the
+  candidate pair (hard form of the same idea — explicit chi-squared
+  restricted to informative bins; no effective-DoF arithmetic needed
+  but loses the global noise floor estimate).
+
+User's framing: "fitting a narrow feature with 2 independent peaks
+should bear a high burden of statistical proof." The effective-DoF
+formulation operationalises that — the burden grows because the
+denominator shrinks to the informative bins only.
+
+Caveats to think through:
+
+- The F-distribution assumes Gaussian residuals with the unit-variance
+  noise model. Weighted residuals change the distribution; a strict
+  derivation would need the right reference distribution (probably
+  still F under reasonable assumptions, but worth checking).
+- An AICc-style correction (information criterion with small-sample
+  bias) is the canonical alternative. AICc penalty grows as
+  `2k(k+1)/(n-k-1)`; if `n` is the effective sample size, AICc would
+  reach the same destination through a different door.
+- Choice of weighting (|model| vs |model|² vs hard window) wants
+  validation against a small set of windows with known-good answers.
+
+**2. Phase-degeneracy penalty (sketch).** The existing pair penalty
+(`window_fit.py:572-607`) is `sqrt(λ) · w(Δsep) · sin((φᵢ - φⱼ)/2)` —
+zero for in-phase pairs (Δφ=0) and maximal for anti-phase pairs (Δφ=π).
+It catches the cancellation pathology (a pair that fits noise by
+producing destructive interference between two large amplitudes) but
+explicitly does **not** penalise the *degeneracy* pathology (two
+in-phase peaks at the same offset with similar amplitude — the case in
+w148's A/C and B/D pairs).
+
+User's framing: "Our best bet for fitting blended features would
+likely occur when their phases are in quadrature." Quadrature (Δφ = π/2)
+is the only configuration where two close peaks carry independent
+information; both Δφ=0 (degenerate / co-aligned) and Δφ=π (cancelling)
+are pathological.
+
+The complementary penalty for the degeneracy pathology is
+`cos((φᵢ - φⱼ)/2)` — 1 at Δφ=0 (max penalty) and 0 at Δφ=π (no
+penalty). It mirrors the existing one. Two ways to wire this:
+
+- **Separate penalty term** — add a `phase_degeneracy_penalty_lambda`
+  parameter and emit a second penalty residual per pair with
+  `sqrt(λ_deg) · w(Δsep) · cos((φᵢ - φⱼ)/2)`. Independent tuning;
+  keeps the current cancellation penalty untouched.
+- **Single non-quadrature penalty** — replace both halves with one
+  term that fires at *both* Δφ=0 and Δφ=π, zero only at Δφ=π/2:
+  candidates are `cos(φᵢ - φⱼ)` (peaks at both 0 and π) or
+  `|cos(φᵢ - φⱼ)|`. One knob; cleaner conceptually but loses the
+  ability to tune cancellation-vs-degeneracy independently if their
+  failure modes turn out to need different λ.
+
+Both should keep the existing `weight = max(0, 1 - sep/cutoff)`
+closeness factor so the penalty only fires for pairs near the
+resolution limit. The cutoff might need to be smaller for the
+degeneracy half (e.g. 1 FWHM instead of the current 2 FWHM) since
+the degeneracy pathology is specifically a sub-FWHM problem.
+
+**Which to try first.** They attack different symptoms: (1) makes the
+post-fit gatekeeper stricter; (2) makes the LSQ less willing to land
+in the duplicate-pair basin in the first place. Both can coexist. The
+phase-degeneracy penalty is closer to the existing code's idiom and
+cheaper to prototype; the effective-DoF correction is the more
+principled long-term fix. Plausible order: ship (2) as a quick
+mitigation, then evaluate whether the merge cleanup still needs (1).
+
+Either way, expected behaviour change is small: only windows whose
+fits currently produce sub-spacing in-phase duplicate pairs should
+move; everything else should be untouched. Use w148 / w269 / w148-like
+cases as the validation set.
 
 ### 3. Total-model integration strategy (RESOLVED — option B)
 
@@ -473,25 +637,121 @@ makes sense once the chain is the default.
 conda run -n ftmwpipeline-dev python scratch/stage5-validation/generate_validation.py
 ```
 
-writes `scratch/stage5-validation/window_NNN/detail.png` plus
-`detail-rr<n>.png` (one per consolidated B-loop round) and a single
-`report-rr.md` rollup. All figures use the same 4×2 layout:
+writes (per window, under `scratch/stage5-validation/window_NNN/`):
 
-- `detail.png` — initial-fit assessment: data = active-FT, model
-  overlay = initial fit, residual panel = data − initial model.
-  Orange triangles on the `|residual|` panel mark detector candidates.
-- `detail-rr<n>.png` — consolidated state at the end of round *n*:
-  data = full active-FT (same as `detail.png`), model overlay = the
-  consolidated peaks at this point in the chain (initial + accepted
-  rescue contributions through round *n*, jointly refit and
-  knockout-pruned), residual panel = data − consolidated model.
+- `detail.png` — **consolidated final fit** (Figure 1, landscape
+  letter). Full-spectrum overview + current-window axvspan; 3-column
+  residual row (Re/Im/|z|) with vlines at fitted peak frequencies and
+  cluster-aware letter labels; 3-column data+model row; bottom row of
+  |residual| histogram vs Rayleigh + peak-listing axes with PDG-style
+  spectroscopic uncertainties and the per-peak knockout p-value
+  alongside the rescue-round origin tag. Amplitudes scaled by
+  `10**units_power` (e.g. µV); overview truncated to the persisted
+  trim range.
+- `audit-trail.png` — **rescue audit trail** (Figure 2, portrait
+  letter, grows taller with the chain length). Top: window magnitude
+  spectrum with consolidated model overlay. Bottom: audit panel laid
+  out **bottom-to-top** chronologically — initial fit at bottom, then
+  each rescue round's candidates row (coherence-accepted as green
+  triangles, coherence-rejected as red X, rescue-fit kept as open
+  green circles) and merge row (knockout-pruned with red X, red
+  border for rescue-origin failsafe firings), then the consolidated
+  final peaks at top with dotted vlines reaching up to the spectrum.
+- `detail-rr<n>.png` — **trajectory snapshots** (one per B-loop
+  round). Uses the older 4×2 plot_spectrum_fit layout (no amplitude
+  scaling, no peak listing); shows the consolidated state at the end
+  of round *n* against the full window data. Useful for the
+  monotonic-residual-shrink check across the chain. Not promoted to
+  the new layout — its role is trajectory inspection, not final
+  answer.
+- `report.md` — text rollup of the per-window plan, fit statistics,
+  fitted peaks, audit trail, thaw events, residual peak candidates
+  surfaced by the detector. Refers to the **initial** fit (pre-rescue);
+  the rescue chain is covered by `report-rr.md`.
+- `report-rr.md` — per-round rollup of the rescue chain: candidate
+  list, coherence-rejections, the joint refit's K and chi²_r, and
+  the knockout pruning broken out by origin. Tags each round as
+  ACCEPTED or REJECTED with the termination reason.
 
-Read sequentially: `detail.png` → `detail-rr0.png` → … The residual
-panel should shrink monotonically toward the noise floor; any
-remaining structure is what's still unexplained at that round.
+Read sequentially: `detail.png` (the answer) → `audit-trail.png`
+(how we got here) → `detail-rr0.png` … `detail-rrN.png` (the
+intermediate states if the audit needs forensic context). The residual
+panels in the rr-trajectory should shrink monotonically toward the
+noise floor; any remaining structure is what's still unexplained at
+that round.
 
-`report-rr.md` has one section per round with the rescue's candidate
-list, coherence-rejections, the joint refit's K and chi²_r, and the
-knockout pruning broken out by origin (the failsafe diagnostic). It
-also tags each round as ACCEPTED or REJECTED with the termination
-reason.
+## Loose threads / future harness work
+
+A grab-bag of items surfaced during the visualization pass; none are
+blockers, but they belong here so they survive session boundaries.
+
+### Per-peak provenance attribution is a heuristic
+
+`_peak_provenance` in `generate_validation.py` attributes each
+consolidated peak to a "source" (`init` / `r0` / `r1` / …) by closest
+match in offset to that source's added-peak list. When the joint
+refit reshuffles peaks across rounds, this is not exact — the w148
+example shows two consolidated peaks (+0.5253 and +0.5650 offsets)
+both attributing to `init` because the only initial seed was at
++0.5360, even though one of them physically descended from r0's
+accept at +0.5970. Workable for first read; if a window's audit
+gets a confusing attribution, this is why.
+
+A more principled attribution would track peak identity through each
+joint refit (e.g., by index permutation derived from the refit's
+peak order). Worth doing only if the heuristic confuses real-world
+reads.
+
+### `detail-rr<n>.png` trajectory layout is unchanged
+
+The per-round trajectory PNGs still go through
+`fit_visualization.plot_spectrum_fit` (the older 4×2 layout, no
+amplitude scaling, no peak listing). The new layout from `detail.png`
+was deliberately *not* propagated to the trajectory artifacts — their
+role is "here's the consolidated state at the end of round N" for
+forensic comparison, not "here's the final answer." If the trajectory
+PNGs end up being used heavily for inspection, lifting them to the
+new layout (with a "round N" header and possibly the per-round audit
+slice annotated) is a natural follow-up.
+
+### Coherence-rejection X markers in Figure 2 are unexercised
+
+The audit-trail figure has marker code for coherence-rejected
+candidates (red X on the candidates row of each round). The 15-window
+2638 sample has zero coherence rejections, so the markers have never
+actually rendered. The code is in place; it just hasn't been
+visually validated. A window that produces coherence rejections (or
+a synthetic test fixture) would close this gap.
+
+### Top-level `overview.png` doesn't use `DisplayStyle`
+
+The spectrum-wide overview emitted by main() still goes through
+`visualization.fit_visualization.plot_spectrum_fit` with
+active-FT-native amplitudes — no trim, no units scaling. Per-window
+artifacts use the new `DisplayStyle` (`detail.png`, `audit-trail.png`
+respect trim + units), but the top-level overview is unchanged.
+Either thread the style into `plot_spectrum_fit` (library change) or
+emit a parallel harness-level overview (scratch-only). Library change
+is the right long-term move, defer until the harness layout
+stabilises and gets promoted.
+
+### Dead code from the model-overlay drop
+
+After removing the model overlay from Figure 1's full-spectrum
+context row (the data+model overlap was unreadable at the figure
+scale), `_full_spectrum_model` and the `other_window_fits` parameter
+on `_plot_consolidated_detail` are no longer called. Left in place
+in case a future iteration wants a different reduced overlay
+(e.g., data−model residual at the full-spectrum scale, or a
+contributor-only model to visualise leakage). If after another pass
+they're still unused, remove them.
+
+### Promotion to `Pipeline.visualize_fit(rounds=True)` (cross-ref)
+
+The harness is the iteration surface. When the layouts and
+provenance heuristics settle, the figures move into
+`visualization/fit_visualization.py` with a `rounds=True` flag on
+the per-window detail call (or a separate `visualize_audit_trail`
+entry point). Plumbing options for the audit data (re-run-on-demand
+vs persist `RescueRoundDiagnostics`) noted in §"Validation-harness
+augmentations" above; re-run is the lighter starting move.

@@ -1000,6 +1000,12 @@ class KnockoutResult:
         should produce.
     supported : bool
         Whether removing the line significantly worsens the fit (F-test).
+    p_value : float
+        F-test p-value of the K-peak fit vs the (K-1)-peak fit produced by
+        knocking this line out. Per-peak significance against the final
+        converged fit -- the strongest individual evidence-of-existence
+        statistic the pipeline produces for a fitted line. ``supported``
+        is the boolean form (``p_value < significance``).
     """
 
     peak_index: int
@@ -1007,6 +1013,7 @@ class KnockoutResult:
     delta_chi2: float
     expected_delta_chi2: float
     supported: bool
+    p_value: float = float("nan")
 
 
 @dataclass
@@ -1119,6 +1126,7 @@ def knockout_test(
                 delta_chi2=delta,
                 expected_delta_chi2=expected,
                 supported=p_value < significance,
+                p_value=float(p_value),
             )
         )
     return results
