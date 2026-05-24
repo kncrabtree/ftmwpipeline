@@ -29,7 +29,7 @@ Notes
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -44,8 +44,10 @@ from .residual_screening import (
     find_residual_peaks,
 )
 from .validation import (
+    DEFAULT_N_EFF_KIND,
     calculate_aicc,
     calculate_chi_squared_improvement,
+    calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
 )
@@ -77,6 +79,7 @@ __all__ = [
     "RescueOutcome",
     "RescueRoundDiagnostics",
     "attempt_residual_rescue",
+    "iterative_aicc_cleanup",
     "merge_close_peaks_cleanup",
     "remove_and_refit_cleanup",
     "rescue_and_consolidate",
@@ -122,15 +125,12 @@ DEFAULT_MERGE_SEPARATION_FACTOR = 1.0
 # features is tied at the unidentifiable +inf, and tied AICc is treated
 # as "no evidence for merge".
 DEFAULT_STRUCTURAL_MERGE_FACTOR = 0.5
-# Effective-sample-size weighting for the AICc-with-n_eff gates (merge,
-# knockout, conservative-loop accept). Kish on |model(f)|^2 collapses the
-# n_data baseline to the bins the model actually informs -- a narrow
-# Lorentzian on a 200-bin window gives n_eff ~ FWHM-in-bins, making the
-# AICc small-sample correction kick in and naturally reject duplicate
-# peaks at sub-resolution separations. See
-# dev-docs/planning/stage5-residual-rescue.md Open question 2 -> Candidate
-# algorithmic fixes -> "Generalised effective-DoF" for the rationale.
-DEFAULT_N_EFF_KIND = "kish_mag_sq"
+# Effective-sample-size weighting for the AICc-with-n_eff gates. The
+# canonical definition lives in :mod:`ftmwpipeline.fitting.validation` so the
+# merge cleanup (this module) and the knockout test
+# (:mod:`ftmwpipeline.fitting.window_fit`) share a single source of truth;
+# re-exported here for callers that imported the name from this module
+# before the lift.
 
 
 @dataclass(frozen=True)
@@ -407,6 +407,122 @@ def remove_and_refit_cleanup(
     return current, n_dropped
 
 
+def iterative_aicc_cleanup(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    fit: WindowFitResult,
+    acquisition_us: float,
+    *,
+    fit_kwargs_inner: dict[str, Any],
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
+) -> Tuple[WindowFitResult, int]:
+    """Iteratively drop the worst AICc-with-n_eff offender until every
+    remaining peak is supported.
+
+    The per-peak :func:`knockout_test` produces accurate diagnostics in
+    isolation (each peak's "supported" flag, ``aicc_delta``, ``n_eff``)
+    but **cannot** be used non-iteratively to drop multiple peaks: when N
+    peaks duplicate a single real feature, each individually fails its
+    refit test (the surviving twins absorb), so an all-at-once drop kills
+    the whole cluster including the underlying real signal (the w273
+    failure mode: a real isolated peak gets rescue-assigned 2 candidates,
+    both fail knockout, both are dropped, the feature is now unmodeled).
+
+    The iterative form drops the *single* worst offender (lowest
+    ``aicc_delta``), refits the surviving (K-1) peaks, then re-runs the
+    per-peak test on the smaller set. The dropped peak's contribution is
+    redistributed among the surviving peaks during the refit, so the
+    remaining peaks' aicc_delta values reflect the *new* model state.
+    When the cluster was N duplicates of one real peak, the first drop
+    lets the surviving twin re-converge to full amplitude; the next
+    iteration's test now compares "this one full-amplitude peak" vs the
+    null, which is strongly supported for a real feature. The loop
+    terminates with one surviving peak.
+
+    Tau is locked at the K-fit's ``tau_us`` for every (K-1) refit (per
+    Phase 2 spec). REJECT-on-tie: ``aicc_km1 >= aicc_k`` preserves the
+    peak; only ``aicc_km1 < aicc_k`` drops it. The empty-set case (drop
+    the last surviving peak) is decided by comparing AICc(K=1 fit) to
+    AICc(K=0 null on data); the K=1 vs K=0 comparison uses the K-fit
+    model's ``fitted_spectrum`` for ``n_eff`` (we have no model to base
+    it on otherwise).
+
+    Returns ``(cleaned_fit, n_dropped)``. ``cleaned_fit`` is the
+    last refit (or the input ``fit`` if nothing was dropped); ``n_dropped``
+    is the number of peaks the iterative loop removed.
+    """
+    if fit.n_peaks == 0:
+        return fit, 0
+
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+    order = np.argsort(u)
+    u, z, sigma = u[order], z[order], sigma[order]
+
+    refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
+    refit_kwargs["fit_tau"] = False
+
+    current = fit
+    n_dropped = 0
+    while current.n_peaks > 0:
+        tau_locked = float(current.tau_us)
+        n_eff = effective_sample_size(current.fitted_spectrum, kind=n_eff_kind)
+        aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
+
+        worst_aicc_km1 = float("inf")
+        worst_idx = -1
+        worst_refit: Optional[WindowFitResult] = None
+        worst_is_null = False
+
+        for i in range(current.n_peaks):
+            kept = [pk for j, pk in enumerate(current.peaks) if j != i]
+            if not kept:
+                null_chi2 = calculate_noise_weighted_chi2(z, sigma)
+                aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
+                if aicc_km1 < worst_aicc_km1:
+                    worst_aicc_km1 = aicc_km1
+                    worst_idx = i
+                    worst_refit = None
+                    worst_is_null = True
+                continue
+            refit = fit_window(
+                u, z, sigma, kept, tau_locked, acquisition_us,
+                **refit_kwargs,
+            )
+            if not refit.success:
+                continue
+            aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+            if aicc_km1 < worst_aicc_km1:
+                worst_aicc_km1 = aicc_km1
+                worst_idx = i
+                worst_refit = refit
+                worst_is_null = False
+
+        # REJECT-on-tie: keep the peak unless AICc(K-1) is strictly
+        # better than AICc(K). When both diverge to +inf (model not
+        # identifiable for either K), ``inf < inf`` is False -> stop.
+        if worst_idx < 0 or not (worst_aicc_km1 < aicc_k):
+            break
+
+        n_dropped += 1
+        if worst_is_null:
+            # Dropped the last peak; the cleaned fit is the null model.
+            # Produce a zero-peak fit_window result so the loop's return
+            # has the same type as every other branch.
+            current = fit_window(
+                u, z, sigma, [], tau_locked, acquisition_us,
+                **refit_kwargs,
+            )
+            break
+        assert worst_refit is not None
+        current = worst_refit
+    return current, n_dropped
+
+
 def attempt_residual_rescue(
     offset_grid_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
@@ -426,6 +542,7 @@ def attempt_residual_rescue(
     coherence_isolated_threshold: float = DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     conservative_kwargs: Optional[dict[str, Any]] = None,
     shape_error_epsilon: float = 0.0,
+    excluded_offsets: Optional[Sequence[float]] = None,
 ) -> RescueOutcome:
     """Find peaks the initial fit missed and fit them to its residual.
 
@@ -486,6 +603,23 @@ def attempt_residual_rescue(
         (LSQ inside :func:`conservative_fit`) always uses the
         un-inflated sigma; inflation is a screening tool, not a fitting
         one.
+    excluded_offsets : sequence of float, optional
+        Additional offsets (MHz) the rescue must NOT re-propose
+        candidates near. Combined with ``current_fit.peaks`` 's offsets
+        into a single rejection list: any detector candidate whose
+        frequency falls within +/-1 grid bin of either a *currently-
+        fitted peak* or an *entry of this list* is dropped before
+        phase-coherence filtering. The fitted-peak rejection prevents
+        the screening pipeline from re-nominating the same line the
+        initial fit already explains (residual structure under a
+        fitted peak is shape-error / leakage, not a missed line).
+        The explicit list is used by :func:`rescue_and_consolidate`
+        to suppress candidates that a previous round nominated and
+        the joint-refit + iterative-cleanup later rejected -- those
+        candidates are not going to survive the next round's gate
+        either, and re-detecting them clutters the audit trail.
+        ``None`` (default) disables the explicit blacklist; the
+        fitted-peak rejection always applies.
     """
     u = np.asarray(offset_grid_mhz, dtype=float)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
@@ -559,6 +693,29 @@ def attempt_residual_rescue(
             if c.magnitude >= snr_threshold * bin_sigma_c:
                 kept.append(c)
         raw_candidates = kept
+    # Locality rejection: drop any candidate within +/-1 grid bin of a
+    # currently-fitted peak OR an explicit blacklist entry. Fitted-peak
+    # locality means the candidate is sitting under an existing peak --
+    # the residual signal there is shape-error / leakage, not a missed
+    # line -- and re-nominating it would only invite the joint-refit /
+    # iterative-cleanup chain to drop it again. The explicit blacklist
+    # is the across-rounds memory in :func:`rescue_and_consolidate`
+    # (rescue peaks that previous rounds nominated and the cleanup
+    # later rejected).
+    rejection_offsets: List[float] = [pk.offset_mhz for pk in current_fit.peaks]
+    if excluded_offsets:
+        rejection_offsets.extend(float(x) for x in excluded_offsets)
+    if rejection_offsets and raw_candidates and u.size >= 2:
+        u_sorted = np.sort(u)
+        df_mhz = float(np.min(np.diff(u_sorted)))
+        if df_mhz > 0.0:
+            raw_candidates = [
+                c for c in raw_candidates
+                if not any(
+                    abs(c.frequency_mhz - x) <= df_mhz
+                    for x in rejection_offsets
+                )
+            ]
     # Phase-coherence filter (sliding, fitted-peak-aware): drop candidates
     # whose complex projection onto a Lorentzian basis at their offset
     # doesn't recover the detected magnitude SNR by a proximity-dependent
@@ -776,7 +933,8 @@ def rescue_and_consolidate(
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape_error_epsilon: float = 0.0,
 ) -> ConsolidatedRescueOutcome:
-    """Iterate rescue + joint refit + knockout consolidation (option B).
+    """Iterate rescue + joint refit + merge + knockout consolidation
+    (option B).
 
     The loop:
 
@@ -790,13 +948,21 @@ def rescue_and_consolidate(
        against w198-like cases where the previous fit's tau pegged at the
        lower bound. If the joint refit fails to converge, terminate
        (retain the previous round's fit).
-    3. Run :func:`knockout_test` on the joint fit. If any peak is flagged
-       unsupported (the F-test against removing it does not clear
-       ``knockout_significance``), drop those peaks and refit on the
+    3. Run :func:`merge_close_peaks_cleanup` on the joint fit. This must
+       happen BEFORE the knockout sweep because the refit-based knockout
+       drops every member of a duplicate cluster (each twin's refit is
+       absorbed by its siblings, so each individually scores as
+       redundant). Merging first collapses sub-resolution clusters
+       structurally (Tier 1) and strictly-AICc-preferred close pairs
+       (Tier 2), leaving knockout with a clean K-peak set in which each
+       entry is a physically distinct candidate.
+    4. Run :func:`knockout_test` on the merged joint fit. If any peak is
+       flagged unsupported (``aicc_delta < 0`` -- AICc strictly prefers
+       the (K-1)-peak refit), drop those peaks and refit on the
        surviving subset. The pruned refit becomes the consolidated fit
        for this round; if pruning would empty the model, terminate
        (retain the previous round's fit).
-    4. Loop back to step 1 with the consolidated fit as the new
+    5. Loop back to step 1 with the consolidated fit as the new
        ``current``, until ``max_rescue_rounds`` is reached.
 
     Failsafe diagnostic
@@ -894,6 +1060,13 @@ def rescue_and_consolidate(
     current = initial_fit
     rounds: List[RescueRoundDiagnostics] = []
     terminated_reason = "max rounds reached"
+    # Across-rounds rejection memory: any rescue-added peak that a
+    # previous round's iterative cleanup dropped goes here. The next
+    # round's :func:`attempt_residual_rescue` skips detector candidates
+    # within +/-1 grid bin of any entry. Keeps the rescue from
+    # re-proposing the same offsets every round (visible as audit-trail
+    # clutter) and bounds the rescue's per-round work.
+    rejected_offsets: List[float] = []
 
     for round_idx in range(max_rescue_rounds):
         n_initial = len(current.peaks)
@@ -912,6 +1085,7 @@ def rescue_and_consolidate(
             max_peaks=rescue_max_peaks,
             conservative_kwargs=ckwargs_in,
             shape_error_epsilon=shape_error_epsilon,
+            excluded_offsets=rejected_offsets if rejected_offsets else None,
         )
         n_rescue_added = rescue.fit.n_peaks
 
@@ -979,90 +1153,141 @@ def rescue_and_consolidate(
             terminated_reason = "joint failed"
             break
 
-        joint_knockouts = knockout_test(
-            u, z, sigma, joint, acquisition_us,
-            significance=knockout_significance,
-        )
-        supported_mask = [ko.supported for ko in joint_knockouts]
-        n_pruned_total = sum(1 for s in supported_mask if not s)
-        # Origin marker: indices [n_initial, n_initial + n_rescue_added) are
-        # rescue-added in joint.peaks (union_init layout was current.peaks
-        # then rescue.peaks).
-        n_pruned_rescue = sum(
-            1
-            for i, s in enumerate(supported_mask)
-            if not s and n_initial <= i < n_initial + n_rescue_added
-        )
-
-        pruned_fit: Optional[WindowFitResult]
-        pruned_knockouts: List[KnockoutResult]
-        if n_pruned_total == 0:
-            pruned_fit = joint
-            pruned_knockouts = list(joint_knockouts)
-        else:
-            survivors = [joint.peaks[i] for i, s in enumerate(supported_mask) if s]
-            if not survivors:
-                rounds.append(
-                    RescueRoundDiagnostics(
-                        round_idx=round_idx,
-                        rescue=rescue,
-                        joint_fit=joint,
-                        joint_knockouts=joint_knockouts,
-                        pruned_fit=None,
-                        pruned_knockouts=[],
-                        n_initial_peaks=n_initial,
-                        n_rescue_added=n_rescue_added,
-                        n_pruned_total=n_pruned_total,
-                        n_pruned_rescue_origin=n_pruned_rescue,
-                        chi2_before=chi2_before,
-                        chi2_after=chi2_before,
-                        tau_us_before=tau_before,
-                        tau_us_after=tau_before,
-                        accepted=False,
-                        reason="all joint-fit peaks unsupported by knockout",
-                    )
-                )
-                terminated_reason = "all pruned"
-                break
-            refit = fit_window(
-                u, z, sigma, survivors, float(joint.tau_us), acquisition_us,
-                **fit_kwargs_inner,
-            )
-            if refit.success:
-                pruned_fit = refit
-                pruned_knockouts = knockout_test(
-                    u, z, sigma, refit, acquisition_us,
-                    significance=knockout_significance,
-                )
-            else:
-                # Pruned refit failed -- keep the joint as the consolidated
-                # fit (it converged; the knockout flag was a recommendation
-                # we could not enact).
-                pruned_fit = joint
-                pruned_knockouts = list(joint_knockouts)
-
-        # Merge-cleanup the post-knockout fit. Closes the wiring gap noted
-        # in the planning doc: knockout cannot see duplicate-pair overfit
-        # because each duplicate "carries its share" while its twin is
-        # frozen; the AICc-with-n_eff merge gate evaluates the pair jointly
-        # and collapses sub-resolution duplicates. Real close pairs survive
-        # because the (K-1)-peak refit's AICc is worse.
-        merged_fit, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, pruned_fit,
-            float(pruned_fit.tau_us), acquisition_us,
+        # Merge-cleanup the joint refit BEFORE the knockout sweep. The
+        # refit-based knockout is symmetric on duplicate clusters -- each
+        # duplicate looks individually redundant because the surviving
+        # twin(s) re-converge to absorb -- so running knockout first would
+        # drop ALL N duplicates and lose the underlying real signal.
+        # Collapsing sub-resolution duplicates (Tier 1) and AICc-strictly-
+        # preferred close pairs (Tier 2) first leaves knockout with a
+        # clean K-peak set where each entry represents a physically
+        # distinct candidate to evaluate. Real close pairs at separations
+        # where AICc is tied (e.g. w198 outer shoulders at ~1 FWHM) survive
+        # the merge and are then evaluated peak-by-peak by knockout.
+        merged_joint_fit, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, joint,
+            float(joint.tau_us), acquisition_us,
             fit_kwargs_inner=fit_kwargs_inner,
             merge_separation_factor=merge_separation_factor,
             structural_merge_factor=structural_merge_factor,
             n_eff_kind=n_eff_kind,
         )
-        if n_merged > 0:
-            # Refresh knockout flags so the persisted set matches the
-            # post-merge peak list.
-            pruned_knockouts = knockout_test(
-                u, z, sigma, merged_fit, acquisition_us,
-                significance=knockout_significance,
+
+        # Per-peak knockout produces persisted diagnostics (n_eff,
+        # aicc_delta, supported) on the merged joint fit. This is the
+        # diagnostic snapshot before iterative cleanup -- callers can
+        # see what the per-peak gate said about the joint set.
+        joint_knockouts = knockout_test(
+            u, z, sigma, merged_joint_fit, acquisition_us,
+            fit_kwargs_inner=fit_kwargs_inner,
+            n_eff_kind=n_eff_kind,
+            significance=knockout_significance,
+        )
+        # Iterative AICc cleanup: drops the worst offender, refits,
+        # repeats. Non-iterative drops kill duplicate clusters wholesale
+        # (every member individually fails when its twins absorb on
+        # refit); the iterative loop redistributes the dropped peak's
+        # contribution and re-evaluates, so a cluster of N duplicates
+        # of one real feature converges to a single supported peak.
+        pruned_fit_candidate, n_pruned_total = iterative_aicc_cleanup(
+            u, z, sigma, merged_joint_fit, acquisition_us,
+            fit_kwargs_inner=fit_kwargs_inner,
+            n_eff_kind=n_eff_kind,
+        )
+        # Grid spacing for the +/-1-bin tolerance used in both the
+        # rescue-survival check below and the across-rounds blacklist.
+        u_sorted = np.sort(u)
+        df_mhz = (
+            float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
+        )
+        survival_tol = max(df_mhz, 1e-3)
+        # Two-purpose bookkeeping:
+        #
+        # (1) Failsafe counter ``n_pruned_rescue_origin``: how many
+        #     iterative-cleanup drops were rescue-origin. The diagnostic
+        #     contract is ``n_pruned_rescue_origin <= n_pruned_total``
+        #     (you cannot prune more than was dropped). Walk
+        #     rescue.fit.peaks vs the two downstream snapshots
+        #     (merged_joint_fit, pruned_fit_candidate); a rescue peak
+        #     that survived merge but not iterative cleanup is a
+        #     rescue-origin pruning. Match within +/-1 grid bin (LSQ
+        #     shifts sub-bin; merge averages, which exceeds 1 bin when
+        #     the pair was >2 bins apart, so the merge case is
+        #     correctly classified).
+        merged_offsets = [pk.offset_mhz for pk in merged_joint_fit.peaks]
+        survivor_offsets = [pk.offset_mhz for pk in pruned_fit_candidate.peaks]
+        n_pruned_rescue = 0
+        for rescue_pk in rescue.fit.peaks:
+            in_merged = any(
+                abs(rescue_pk.offset_mhz - mo) <= survival_tol
+                for mo in merged_offsets
             )
-            pruned_fit = merged_fit
+            in_pruned = any(
+                abs(rescue_pk.offset_mhz - sp) <= survival_tol
+                for sp in survivor_offsets
+            )
+            if in_merged and not in_pruned:
+                n_pruned_rescue += 1
+        # (2) Across-rounds blacklist: every detector candidate from
+        #     this round (post-coherence-passed + coherence-rejected)
+        #     whose frequency did NOT end up as a fitted peak in the
+        #     consolidated set goes on the blacklist. The next round's
+        #     detector will skip any frequency within +/-1 grid bin of
+        #     these. Blacklisting the *detector* frequency (rather than
+        #     the LSQ-refined offset) matters: the LSQ can pull a
+        #     rescue-fit peak away from its detector position by a
+        #     bin or more, so blacklisting the refined offset misses
+        #     the detector's re-nomination of the original bin in the
+        #     next round.
+        if df_mhz > 0.0:
+            all_round_candidates = list(rescue.candidates) + list(
+                rescue.rejected_by_coherence
+            )
+            for cand in all_round_candidates:
+                freq = float(cand.frequency_mhz)
+                became_peak = any(
+                    abs(freq - sp) <= survival_tol for sp in survivor_offsets
+                )
+                if became_peak:
+                    continue
+                if not any(abs(freq - x) <= df_mhz for x in rejected_offsets):
+                    rejected_offsets.append(freq)
+
+        pruned_fit: Optional[WindowFitResult]
+        pruned_knockouts: List[KnockoutResult]
+        if pruned_fit_candidate.n_peaks == 0:
+            rounds.append(
+                RescueRoundDiagnostics(
+                    round_idx=round_idx,
+                    rescue=rescue,
+                    joint_fit=joint,
+                    joint_knockouts=joint_knockouts,
+                    pruned_fit=None,
+                    pruned_knockouts=[],
+                    n_initial_peaks=n_initial,
+                    n_rescue_added=n_rescue_added,
+                    n_pruned_total=n_pruned_total,
+                    n_pruned_rescue_origin=n_pruned_rescue,
+                    chi2_before=chi2_before,
+                    chi2_after=chi2_before,
+                    tau_us_before=tau_before,
+                    tau_us_after=tau_before,
+                    accepted=False,
+                    reason="iterative cleanup dropped every peak",
+                    n_merged=n_merged,
+                )
+            )
+            terminated_reason = "all pruned"
+            break
+        pruned_fit = pruned_fit_candidate
+        # Final per-peak diagnostics on the consolidated set. These are
+        # the ones persisted to KnockoutInfo on the surviving peaks.
+        pruned_knockouts = knockout_test(
+            u, z, sigma, pruned_fit, acquisition_us,
+            fit_kwargs_inner=fit_kwargs_inner,
+            n_eff_kind=n_eff_kind,
+            significance=knockout_significance,
+        )
 
         chi2_after = pruned_fit.chi_squared
         tau_after = float(pruned_fit.tau_us)

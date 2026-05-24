@@ -62,6 +62,12 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                 knockout_p_value                 [f8]    (NaN -> no knockout
                                                           or older file
                                                           predating this col)
+                knockout_n_eff                   [f8]    (NaN -> no knockout
+                                                          or older file
+                                                          predating this col)
+                knockout_aicc_delta              [f8]    (NaN -> no knockout
+                                                          or older file
+                                                          predating this col)
         window_0001/ ...
 
 Round-trip contract: ``save`` -> hand-edit -> ``load`` returns the edited
@@ -118,7 +124,11 @@ _PEAK_COLUMNS = (
 )
 # Columns added after the v1 schema was set. Older files won't have them;
 # load tolerates missing entries by substituting NaN.
-_OPTIONAL_PEAK_COLUMNS = ("knockout_p_value",)
+_OPTIONAL_PEAK_COLUMNS = (
+    "knockout_p_value",
+    "knockout_n_eff",
+    "knockout_aicc_delta",
+)
 
 _VALID_AUDIT_DECISIONS = {
     "seed",
@@ -391,6 +401,8 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         "knockout_expected_delta_chi2": np.empty(n, dtype="f8"),
         "knockout_supported": np.empty(n, dtype="i1"),
         "knockout_p_value": np.empty(n, dtype="f8"),
+        "knockout_n_eff": np.empty(n, dtype="f8"),
+        "knockout_aicc_delta": np.empty(n, dtype="f8"),
     }
     for i, p in enumerate(peaks):
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
@@ -410,6 +422,8 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
             columns["knockout_expected_delta_chi2"][i] = float("nan")
             columns["knockout_supported"][i] = -1
             columns["knockout_p_value"][i] = float("nan")
+            columns["knockout_n_eff"][i] = float("nan")
+            columns["knockout_aicc_delta"][i] = float("nan")
         else:
             columns["knockout_delta_chi2"][i] = float(p.knockout.delta_chi2)
             columns["knockout_expected_delta_chi2"][i] = float(
@@ -417,6 +431,8 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
             )
             columns["knockout_supported"][i] = 1 if p.knockout.supported else 0
             columns["knockout_p_value"][i] = float(p.knockout.p_value)
+            columns["knockout_n_eff"][i] = float(p.knockout.n_eff)
+            columns["knockout_aicc_delta"][i] = float(p.knockout.aicc_delta)
     for name, data in columns.items():
         peaks_group.create_dataset(name, data=data)
 
@@ -592,6 +608,8 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 expected_delta_chi2=float(cols["knockout_expected_delta_chi2"][i]),
                 supported=bool(ko_supported_raw),
                 p_value=float(cols["knockout_p_value"][i]),
+                n_eff=float(cols["knockout_n_eff"][i]),
+                aicc_delta=float(cols["knockout_aicc_delta"][i]),
             )
         wid_raw = int(cols["window_id"][i])
         peaks.append(

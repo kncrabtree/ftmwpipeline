@@ -14,12 +14,12 @@ consolidated round, trajectory snapshots), and the `report.md` /
 `report-rr.md` text rollups.
 
 **Immediate next-session sequencing** for the open work is captured in
-[Open question 2 → "Suggested sequencing for the next session"](#suggested-sequencing-for-the-next-session):
-contributor-skirt leakage ([`stage5-fitting.md`](stage5-fitting.md) O5-10)
-→ effective-DoF / AICc generalization → phase-degeneracy penalty.
-"Next steps" further down is the longer-horizon rescue-completion plan
-(broader validation, calibration sweeps, default flip); both tracks
-coexist.
+[Open question 2 → "Suggested sequencing for the next session"](#suggested-sequencing-for-the-next-session).
+Items 1–3 (contributor-skirt leakage, merge-gate AICc, knockout-gate
+AICc) are LANDED; the remaining track is the conservative-loop accept
+gate (Phase 3) and the phase-degeneracy penalty. "Next steps" further
+down is the longer-horizon rescue-completion plan (broader validation,
+calibration sweeps, default flip); both tracks coexist.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; the parent
 plan is [`stage5-fitting.md`](stage5-fitting.md). This document is
@@ -425,14 +425,17 @@ This is the clearest concrete instance of the overfitting concern the
 parent open question is about. It's a Stage-5-algorithm fix, not a
 visualization fix; the visualization just made it visible.
 
-#### Candidate algorithmic fixes (item 1 LANDED; item 2 still deferred)
+#### Candidate algorithmic fixes (item 1 LANDED at merge + knockout sites; item 2 still deferred)
 
 Two ideas the user surfaced while looking at w148 — both targeting
 the same underlying problem from different angles. Item 1 (effective-
-DoF / AICc) shipped in the Phase 1 series; the actual implementation
-differs from the original proposal in a few important ways (see the
-"Phase 1 implementation status" subsection below). Item 2 (phase-
-degeneracy penalty) is still deferred.
+DoF / AICc) has shipped at the merge site (Phase 1) and the knockout
+site (Phase 2); the conservative-loop accept gate (Phase 3) remains
+deferred. The actual Phase 1 and Phase 2 implementations diverged
+from the original proposal in structurally important ways — see
+the "Phase 1 implementation status" and "Phase 2 implementation
+status" subsections below. Item 2 (phase-degeneracy penalty) is
+still deferred.
 
 **1. Generalised effective-DoF across all Stage 5 hypothesis tests.**
 The Stage 5 fit currently runs three F-test-style gates, all sharing
@@ -700,6 +703,137 @@ separately when implementation begins; noted here so the Phase 2
 "lock tau in the refit" decision doesn't get conflated with the
 "calibrate tau across the dataset" project.
 
+#### Phase 2 implementation status (knockout site LANDED)
+
+Item 1 shipped against the knockout site as four interlocking
+changes. The basic spec was straightforward — "remove-and-refit
+with AICc-with-`n_eff`, tau-locked, REJECT-on-tie" — but two
+structural issues surfaced during 2638 validation that required
+companion changes to land cleanly. The conservative-loop accept
+gate (Phase 3) is still on the raw-`n_data` F-test/AIC.
+
+**(a) Refit-based `knockout_test` with the AICc-with-`n_eff` gate
+(per the spec).** `knockout_test` in `window_fit.py` was rewritten:
+for each peak `i`, remove it from the K-fit, refit the surviving
+(K-1) peaks freely from their K-fit parameters as warm start, with
+`fit_tau=False, tau0_us=fit.tau_us` (tau locked at the K-fit
+value, per Phase 1 item (f) — the rationale is identical to the
+merge gate). Gate: `supported` iff `aicc_km1 >= aicc_k` (compared
+directly, not via subtraction, so the both-`+inf` case reads as a
+tie and preserves the K-peak fit — matches the merge convention).
+The freeze-others `delta_chi2` and `expected_delta_chi2` stay as
+"energy carried by this line" diagnostics on the persisted
+`KnockoutResult`; they are no longer the gate. `n_eff` is computed
+once per sweep from `fit.fitted_spectrum` (shared across all
+peaks). Schema additions (`n_eff`, `aicc_delta` with NaN defaults)
+land on both `KnockoutResult` and `KnockoutInfo`, with matching
+HDF5 columns (`knockout_n_eff`, `knockout_aicc_delta`) in
+`_OPTIONAL_PEAK_COLUMNS` (older files load with NaN).
+`DEFAULT_N_EFF_KIND` lifted from `residual_rescue.py` to
+`validation.py` so the merge and knockout gates share a single
+source of truth.
+
+`knockout_test` 's signature gains `fit_kwargs_inner` (the same
+bag `derive_window_fit_constraints` produces for `conservative_fit`)
+and `n_eff_kind`; the two production call sites
+(`conservative_fit` end-of-function, three sites in
+`rescue_and_consolidate`) thread both through. The non-iterative
+per-peak design is the user's spec — knockout produces a clean
+diagnostic snapshot of "what would removing peak `i` say in
+isolation", suitable for persistence.
+
+**(b) Iterative AICc cleanup for the rescue loop's drop step.**
+Validation revealed that the non-iterative per-peak `supported`
+flag, used directly to drop "all unsupported peaks at once", is
+structurally unsound on duplicate clusters. The 2638 survey
+regressed badly (p95 chi²_r 3.23 → 16.7, max 5.65 → 398; w315/
+w301/w273 went K=2→K=1 with chi²_r blowing up by 1–2 orders of
+magnitude). Mechanism: when N≥2 peaks are duplicates of a single
+real feature (or close enough that the (K-1) refit's surviving
+neighbour can absorb the removed peak's amplitude via offset /
+amplitude / phase shifts), the per-peak test flags each
+individually as unsupported because each peak's twin re-converges
+to full amplitude on refit. An all-at-once drop kills the whole
+cluster including the underlying real signal.
+
+Fix: a new `iterative_aicc_cleanup` function in `residual_rescue.py`
+(modelled on `remove_and_refit_cleanup` but with the AICc gate
+swapped in). At each iteration: for each remaining peak, simulate
+removal + tau-locked (K-1) refit, find the peak with the **most-
+negative** `aicc_delta`, drop that one (only) if `aicc_km1 <
+aicc_k`, and continue. Stop when all remaining peaks pass.
+Redistributes the dropped peak's contribution to the surviving
+peaks at each step, so the next iteration's per-peak test reflects
+the new model state. On a 2-duplicate cluster: drop one, the
+surviving twin re-converges to full amplitude on refit, next
+iteration's K=1-vs-K=0 test sees the full peak vs the null and is
+strongly supported → stop. On a 3-duplicate cluster: drop two,
+keep one. Real distinct peaks survive because none of their
+(K-1) refits comes close to the K chi².
+
+`rescue_and_consolidate` calls `iterative_aicc_cleanup` in place
+of the old supported-mask drop. The per-peak `knockout_test` still
+runs on `merged_joint_fit` (before cleanup) and on `pruned_fit`
+(after cleanup) so the persisted diagnostics show both the
+pre-cleanup gate state and the final consolidated state.
+
+**(c) Merge-before-knockout reorder.** Pre-Phase-2, the rescue
+loop ran `joint refit → knockout drop → refit on survivors →
+merge cleanup`. With the refit-based knockout, this order
+catastrophically dropped peaks: w148's joint fit produced sub-
+resolution duplicate pairs that knockout dropped wholesale before
+merge could collapse them. Restored target-window behavior (and
+the survey distribution) by running merge first on the joint
+fit, then knockout (now iterative). Loop order is now:
+
+```
+joint refit → merge cleanup (both tiers) → per-peak knockout (diagnostic)
+            → iterative AICc cleanup → per-peak knockout (final, persisted)
+```
+
+Tier 1 of merge still collapses sub-resolution clusters
+structurally (so they never reach knockout). Tier 2 (AICc-tied
+close pairs) preserves real close pairs that knockout would
+otherwise absorb. The reorder is a documented departure from the
+Phase 1 wiring; the comment in `rescue_and_consolidate`
+documents the rationale inline.
+
+**(d) Candidate-locality blacklist for the residual screen.**
+Validation also showed the audit trail was noisy: the rescue's
+detector kept nominating the same handful of candidates every
+round, each round's joint refit + iterative cleanup would drop
+them, the next round would find them again. The blacklist
+suppresses this: `attempt_residual_rescue` gains an
+`excluded_offsets` parameter, and the candidate-detection step
+filters out any candidate within +/-1 grid bin of either:
+
+- A *currently-fitted peak* in `current_fit.peaks` (residual
+  structure under a fitted peak is shape-error / leakage, not a
+  missed line — re-nominating it just feeds the joint-refit /
+  iterative-cleanup chain a peak it will drop again).
+- An entry of `excluded_offsets` (the across-rounds memory).
+
+`rescue_and_consolidate` maintains the across-rounds blacklist:
+at the end of each round, every detector candidate from this
+round (post-coherence-passed + coherence-rejected — "for any
+reason") whose frequency did NOT end up as a fitted peak in the
+consolidated set is added. The blacklist tracks the *detector's*
+frequency (not the LSQ-refined offset), because the next round's
+detector lookup compares against the detector's bin position,
+which can differ from the LSQ-refined position by more than a
+bin. Tolerance for both blacklist matching and survival check is
+1 grid bin (`df_mhz`), matching the user's "+/-1 point" spec.
+
+Empirically this collapses most multi-round rescue chains to a
+single accepted round, with subsequent rounds terminating at
+"no candidates". Per-round knockout-pruning counts on the 2638
+survey dropped from 140 (post-iterative cleanup, no blacklist)
+through 94 (rescue-fit-survival blacklist) and 73 (broader
+blacklist using `rescue.fit.peaks`) to 57 (final blacklist using
+detector frequencies). Final-state chi²_r distribution unchanged
+through all variants — the blacklist only suppresses redundant
+work, not real fitting.
+
 #### Validation results after Phase 1 (2638 fixture, kish_mag, ε=0.05)
 
 Survey distribution (50 windows, every 7th):
@@ -722,14 +856,39 @@ Target windows:
 | w16, w104, w127, w337 (borderline) | 1 → 2 | (low → low) | Unchanged — weak-peak rescues preserved. |
 | w63, w64 (clean controls) | unchanged | unchanged | No regressions. |
 
+#### Validation results after Phase 2 (2638 fixture, kish_mag, ε=0.05)
+
+Survey distribution (50 windows, every 7th):
+
+| metric | Phase 1+1b+1c | Phase 2 final |
+|---|---|---|
+| chi²_r median | 1.06 | 1.37 |
+| chi²_r p75 | 1.65 | 2.03 |
+| chi²_r p95 | 3.23 | 3.90 |
+| chi²_r max | 5.65 | 6.68 |
+
+Target windows:
+
+| window | Phase 1 (K, chi²_r) | Phase 2 (K, chi²_r) | note |
+|---|---|---|---|
+| w148 (duplicate-pair) | 1→2, 715→6.27 | 1→2, 715→6.22 | Matches Phase 1 (merge-first order preserved the Tier-1 collapse). |
+| w269 (duplicate-pair) | 5→4, 17.4→18.65 | 5→5, 17.4→17.41 | Stays at K=5: the K=4 collapse in Phase 1 depended on the rescue first nominating a candidate near the initial-seeding duplicate, which the locality blacklist now rejects (fitted-peak filter). chi²_r unchanged at shape-error floor. Initial-seeding duplicate remains Phase 3 territory. |
+| w16, w104, w127, w337 (borderline) | 1→2 (kept) | 1→1 (all pruned) | Rescue candidates rejected each round; final K=1 matches initial. chi²_r unchanged. Iterative cleanup now correctly identifies these as unsupported under the refit-based gate. |
+| w63, w64 (clean controls) | unchanged | unchanged | No regressions. |
+| w315/w301/w273 (tail risk under non-iterative drop) | n/a (no regression in Phase 1) | 2→2 stable | Initial fix attempt with non-iterative drop catastrophically broke these (K→1, chi²_r 6.7→398). Iterative AICc cleanup fixes; final fit matches initial. |
+
+Median chi²_r is slightly elevated vs Phase 1 (1.37 vs 1.06)
+because the new gate is more conservative on borderline rescues
+(w16/w104/w127/w337 no longer accept the borderline second peak).
+p95 and max are close to Phase 1 baseline. Per-round work counts
+dropped substantially with the blacklist (knockout-pruning count
+on the survey: 140 → 57 across the iterations of the fix).
+
 #### Suggested sequencing for the next session
 
-Items 1 and 2 below are LANDED; the remaining sequencing focuses on
-the still-deferred per-site AICc generalisation and the phase-
-degeneracy penalty. The duplicate-pair overfit and contributor-skirt
-leakage interaction noted in earlier versions of this section turned
-out to be less coupled in practice than expected — Phase 1 work
-proceeded cleanly without first re-doing the O5-10 leakage fix.
+Items 1, 2, and 3 below are LANDED; the remaining sequencing
+focuses on the still-deferred conservative-loop accept gate
+(Phase 3) and the phase-degeneracy penalty.
 
 1. **Fix the contributor-skirt leakage** (`stage5-fitting.md` O5-10).
    LANDED in commit `456fec2` (drives Stage 4 contributor attachment
@@ -746,60 +905,40 @@ proceeded cleanly without first re-doing the O5-10 leakage fix.
    [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
 
 3. **Refit-based knockout with AICc-with-`n_eff` gate** (this
-   section, #1, knockout site). NEXT. Two coupled changes:
+   section, #1, knockout site). **LANDED as Phase 2 — see
+   "Phase 2 implementation status" above.** The base spec
+   (refit-based test, tau locked, REJECT-on-tie AICc-with-`n_eff`
+   gate, schema additions) shipped as written. Three companion
+   changes surfaced during 2638 validation and landed alongside:
 
-   - **Refactor the test from freeze-and-remove to remove-and-
-     refit.** Current `knockout_test` evaluates chi² with peak i
-     removed and the remaining K-1 peaks frozen at their K-fit
-     parameters; for duplicate-pair pathologies this leaves the
-     surviving twin half-fit and produces an enormous delta-chi²
-     that flags BOTH duplicates as supported regardless of the
-     gating statistic. The model-comparison test is: remove peak
-     i, refit the remaining K-1 peaks freely from their K-fit
-     parameters as warm start, then compare. In duplicate-pair
-     cases the surviving twin re-converges to full amplitude and
-     the refit's chi² is ~ the K-peak chi² → `supported=False`.
-     `remove_and_refit_cleanup` in `residual_rescue.py` is the
-     closest existing template (also unwired); the difference
-     is per-peak non-iterative vs greedy worst-first.
+   - The per-peak gate is non-iterative and used as a diagnostic
+     snapshot; the rescue loop's actual drop logic is iterative
+     (`iterative_aicc_cleanup`). Necessary because non-iterative
+     drops kill duplicate clusters wholesale.
+   - The rescue loop reordered to run merge before knockout
+     (sub-resolution duplicates collapse before the refit-based
+     gate evaluates them).
+   - Added a candidate-locality blacklist for the residual
+     screen: detector candidates within +/-1 grid bin of an
+     existing fitted peak OR a previously-rejected candidate
+     (any rejection mechanism, any prior round) are dropped
+     before phase-coherence. Quiets the audit trail and prevents
+     re-detection of dropped peaks each round.
 
-   - **Lock tau in the (K-1) refit** (per item (f) above). Pass
-     `fit_tau=False, tau0_us=fit.tau_us` to the per-peak
-     `fit_window` call so the refit isolates the peak's
-     contribution without letting tau broaden to compensate.
-
-   - **Gate on AICc-with-`n_eff`, REJECT-on-tie** (matching Phase
-     1c). `supported = aicc_delta < 0` where
-     `aicc_delta = AICc(K-1 refit) - AICc(K)`; ties preserve the
-     K-peak fit (`supported=True`).
-
-   Schema additions (`n_eff`, `aicc_delta`) to `KnockoutResult`
-   and `KnockoutInfo` with NaN defaults; HDF5 columns added
-   alongside the existing `knockout_p_value`. Persistence
-   semantics per item (e). The freeze-others `delta_chi2` and
-   `expected_delta_chi2` fields stay as diagnostics (the "energy
-   carried by this line" check is meaningful in its own right;
-   just no longer the supported gate).
-
-   Validation: w148/w269 duplicate-pair members go
-   `supported=False`; w16/w104/w127/w337 stay supported; survey
-   chi²_r within Phase 1 range (median ~1.06, p95 ~3.23,
-   max ~5.65). Cost: K extra `fit_window` calls per knockout
-   sweep (was 0).
-
-   Phase 1d follow-up: align `merge_close_peaks_cleanup`'s (K-1)
+   Phase 1d follow-up (align `merge_close_peaks_cleanup`'s (K-1)
    refit to also lock tau, for consistency with the knockout
-   refit's convention. Small expected behaviour shift; re-run the
-   2638 harness to confirm no regression.
+   refit's convention) is still open.
 
 4. **AICc-with-`n_eff` at the conservative-loop accept gate** (this
-   section, #1, conservative-loop site). After Phase 3 lands. Replace
+   section, #1, conservative-loop site). NEXT. Replace
    the dual `p_value < significance AND trial.aic < current.aic` gate
    with the single AICc-with-`n_eff` test in both `_blend_aware_seed`
    K=2/K=3 escalation and the main loop. Largest cascading effect on
    K across all windows; expected to address the initial-seeding
    duplicate-pair pathology in w269/w271 (the post-Phase-1 remaining
-   issue that's NOT a rescue problem).
+   issue that's NOT a rescue problem, and that Phase 2's locality
+   blacklist now prevents the rescue from masking via re-nominated
+   candidates).
 
 5. **Add the phase-degeneracy penalty** (this section, #2). Once
    (3)+(4) are calibrated, this is the LSQ-side defence-in-depth:

@@ -30,6 +30,7 @@ from scipy.stats import f as f_distribution
 from .peak_model import h_T
 
 __all__ = [
+    "DEFAULT_N_EFF_KIND",
     "calculate_hwhm_from_apodization",
     "feature_fwhm",
     "calculate_rms_residuals",
@@ -43,6 +44,16 @@ __all__ = [
 ]
 
 NoiseLike = Union[float, np.ndarray]
+
+# Effective-sample-size weighting kind used by the AICc-with-n_eff gates
+# (merge cleanup, knockout, conservative-loop accept). Kish on |model(f)|^2
+# collapses n_data to the bins the model actually informs -- a narrow
+# Lorentzian on a 200-bin window gives n_eff ~ FWHM-in-bins, which makes
+# the AICc small-sample correction kick in and naturally reject duplicate
+# peaks at sub-resolution separations. See
+# dev-docs/planning/stage5-residual-rescue.md Open question 2 -> Candidate
+# algorithmic fixes -> "Generalised effective-DoF" for the rationale.
+DEFAULT_N_EFF_KIND = "kish_mag_sq"
 
 
 # ---------------------------------------------------------------------------

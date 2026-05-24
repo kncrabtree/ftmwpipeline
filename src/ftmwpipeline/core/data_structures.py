@@ -612,33 +612,44 @@ class KnockoutInfo:
 
     Persistent twin of :class:`ftmwpipeline.fitting.window_fit.KnockoutResult`:
     the algorithm-side dataclass is the in-flight working record, this one is
-    the user-facing snapshot stored on the fitted peak. Removing a genuinely
-    supported line from the converged model grows the residual by very nearly
-    that line's own weighted energy; a line that can be knocked out without the
-    expected response was not supported by the data and is flagged.
+    the user-facing snapshot stored on the fitted peak.
 
     Attributes
     ----------
     delta_chi2 : float
-        Observed chi-squared increase when the line is removed.
+        Diagnostic chi-squared increase under the freeze-others convention
+        (every other peak held at its K-fit value when this peak is removed).
+        Meaningful as the "energy carried by this line" check; no longer the
+        gate because frozen-others leaves duplicate twins half-fit and
+        produces spurious large increases.
     expected_delta_chi2 : float
-        The line's own noise-weighted energy -- the increase a real line should
-        produce.
+        Diagnostic: the line's own noise-weighted energy.
     supported : bool
-        Whether the chi-squared increase is statistically significant (F-test).
+        Whether the AICc-with-n_eff gate prefers the K-peak fit
+        (``aicc_delta >= 0``; REJECT-on-tie). ``supported = False`` flags
+        the peak as redundant: removing it and re-fitting the surviving
+        (K-1) peaks (with tau locked at the K-fit value) produces a
+        strictly better AICc.
     p_value : float
-        F-test p-value of the K-peak fit vs the (K-1)-peak fit produced by
-        knocking this line out. Per-peak significance against the final
-        converged fit -- the strongest individual evidence-of-existence
-        statistic the pipeline produces for a fitted line. ``supported``
-        is the boolean form (``p_value < significance``). ``nan`` for
-        peaks loaded from older files written before this column existed.
+        Diagnostic F-test p-value of the K-peak fit vs the (K-1)-peak
+        refit. ``nan`` when the refit failed to converge or for peaks
+        loaded from older files written before this column existed.
+    n_eff : float
+        Effective sample size used by the AICc gate. ``nan`` for older
+        files written before this column existed.
+    aicc_delta : float
+        ``AICc(K-1 refit) - AICc(K)`` at the shared ``n_eff``; the gate
+        statistic. Negative values mean the simpler model is preferred
+        (peak redundant). ``nan`` when the refit failed to converge or
+        for older files.
     """
 
     delta_chi2: float
     expected_delta_chi2: float
     supported: bool
     p_value: float = float("nan")
+    n_eff: float = float("nan")
+    aicc_delta: float = float("nan")
 
 
 @dataclass

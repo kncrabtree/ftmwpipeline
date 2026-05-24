@@ -27,6 +27,7 @@ from .peak_model import (
     to_baseband_offset,
 )
 from .validation import (
+    DEFAULT_N_EFF_KIND,
     calculate_aic,
     calculate_aicc,
     calculate_chi_squared_improvement,
@@ -106,6 +107,7 @@ __all__ = [
     "sideband_sign",
     "to_baseband_offset",
     # validation
+    "DEFAULT_N_EFF_KIND",
     "calculate_aic",
     "calculate_aicc",
     "calculate_chi_squared_improvement",

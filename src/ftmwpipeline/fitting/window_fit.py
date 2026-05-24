@@ -55,16 +55,19 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Optional, Union, cast
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 from scipy.optimize import least_squares
 
 from .peak_model import ModelPeak, effective_tau, h_T, h_T_jacobian, model_spectrum
 from .validation import (
+    DEFAULT_N_EFF_KIND,
     calculate_aic,
+    calculate_aicc,
     calculate_chi_squared_improvement,
     calculate_noise_weighted_chi2,
+    effective_sample_size,
     feature_fwhm,
     validate_peak_separation,
 )
@@ -982,10 +985,12 @@ class AddStep:
 class KnockoutResult:
     """Per-line knockout-test outcome.
 
-    Removing a genuinely supported line from the converged model -- holding
-    every other parameter frozen -- grows the chi-squared by very nearly that
-    line's own weighted energy. A line that can be knocked out without the
-    expected response was not supported by the data and is flagged.
+    Removing a genuinely supported line and re-fitting the surviving (K-1)
+    peaks (tau locked at the K-fit value) grows the chi-squared by enough
+    that AICc, evaluated on an effective sample size that collapses to the
+    bins the model actually informs, prefers the K-peak model. A duplicate
+    or noise-amplitude line shows roughly indistinguishable chi-squared
+    between K and (K-1), and the AICc gate prefers K-1.
 
     Attributes
     ----------
@@ -994,18 +999,33 @@ class KnockoutResult:
     offset_mhz : float
         Baseband offset of the line.
     delta_chi2 : float
-        Observed chi-squared increase when the line is removed.
+        Diagnostic: chi-squared increase when the line is removed and every
+        other parameter is held frozen at the K-fit value. The "energy
+        carried by this line" check; meaningful in isolation but no longer
+        the gate (frozen others leave duplicate twins half-fit and produce
+        spurious large delta_chi2).
     expected_delta_chi2 : float
-        The line's own noise-weighted energy -- the increase a real line
-        should produce.
+        Diagnostic: the line's own noise-weighted energy -- the increase a
+        real line should produce under the freeze-others convention.
     supported : bool
-        Whether removing the line significantly worsens the fit (F-test).
+        Whether the AICc-with-n_eff gate prefers the K-peak fit
+        (``aicc_delta >= 0``; REJECT-on-tie matches the merge-cleanup
+        convention). A peak whose removal-and-refit produces a strictly
+        better AICc has ``supported = False``.
     p_value : float
-        F-test p-value of the K-peak fit vs the (K-1)-peak fit produced by
-        knocking this line out. Per-peak significance against the final
-        converged fit -- the strongest individual evidence-of-existence
-        statistic the pipeline produces for a fitted line. ``supported``
-        is the boolean form (``p_value < significance``).
+        Diagnostic F-test p-value of the K-peak fit vs the (K-1)-peak
+        refit (not freeze-others); kept as a familiar statistic but no
+        longer the decision rule. ``nan`` for an empty fit or when the
+        refit failed to converge.
+    n_eff : float
+        Effective sample size used by the AICc gate; computed once from
+        the K-fit model magnitude (kind set by ``n_eff_kind``) and shared
+        across all peak comparisons in this sweep.
+    aicc_delta : float
+        ``AICc(K-1 refit) - AICc(K)`` at the shared ``n_eff``. Negative
+        values say the simpler model is preferred (peak is redundant);
+        ``supported = aicc_delta < 0`` reads "the more complex model is
+        not preferred". ``nan`` when the refit failed to converge.
     """
 
     peak_index: int
@@ -1014,6 +1034,8 @@ class KnockoutResult:
     expected_delta_chi2: float
     supported: bool
     p_value: float = float("nan")
+    n_eff: float = float("nan")
+    aicc_delta: float = float("nan")
 
 
 @dataclass
@@ -1065,14 +1087,32 @@ def knockout_test(
     fit: WindowFitResult,
     acquisition_us: float,
     *,
+    fit_kwargs_inner: Optional[dict[str, Any]] = None,
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
     significance: float = DEFAULT_SIGNIFICANCE,
 ) -> list[KnockoutResult]:
     """Per-line knockout validation of a converged window fit.
 
-    For each fitted line: remove it from the model, hold every other parameter
-    frozen, and measure the chi-squared increase. A supported line grows the
-    chi-squared by ~its own weighted energy and the increase is statistically
-    significant (an F-test against the 3 parameters the line carries).
+    For each fitted line: remove it from the model, refit the surviving
+    (K-1) peaks freely starting from their K-fit parameters, with tau
+    locked at the K-fit value. Compare AICc on a shared effective sample
+    size; the peak is **supported** when AICc prefers the K-peak model
+    (REJECT-on-tie matches the merge-cleanup convention).
+
+    The refit (not freeze-others) is the structural fix for the
+    duplicate-pair pathology: if peak A and C are both fit at half the
+    line's true amplitude at the same physical offset, freezing C while
+    removing A leaves a half-fit residual and produces a huge
+    delta_chi2 that flags A as supported -- and symmetrically for C.
+    With the refit, C re-converges to full amplitude when A is removed
+    and the (K-1) chi-squared matches the K chi-squared, so AICc prefers
+    K-1 and both duplicates flip to ``supported = False``. See
+    `dev-docs/planning/stage5-residual-rescue.md`, Phase 2.
+
+    Tau is locked (``fit_tau=False``) in the (K-1) refit because tau is
+    effectively a dataset-shared parameter (transit time x natural
+    lifetime); a single-window (K-1) refit must not get the extra knob
+    of broadening tau to compensate for the removed peak.
 
     Parameters
     ----------
@@ -1083,50 +1123,140 @@ def knockout_test(
     rms_noise : float or np.ndarray
         Per-bin complex noise RMS.
     fit : WindowFitResult
-        The converged fit to validate.
+        The converged K-peak fit to validate.
     acquisition_us : float
         Active acquisition length ``T`` (microseconds).
-    significance : float, default 0.05
-        F-test p-value threshold for ``supported``.
+    fit_kwargs_inner : dict, optional
+        Tau / amplitude / penalty constraints to enforce in the (K-1)
+        refit -- the same bag :func:`derive_window_fit_constraints`
+        produces for :func:`conservative_fit`. The refit forces
+        ``fit_tau=False`` (tau locked at ``fit.tau_us``) regardless of
+        what this bag says. ``None`` defaults to the empty bag (only the
+        tau lock is applied); production callers should pass the
+        constraints derived for the K-fit.
+    n_eff_kind : str, default :data:`DEFAULT_N_EFF_KIND`
+        Effective-sample-size weighting kind passed to
+        :func:`effective_sample_size`. Shared across all peaks in the
+        sweep (n_eff is computed once from the K-fit model magnitude).
+    significance : float, default :data:`DEFAULT_SIGNIFICANCE`
+        Threshold for the diagnostic F-test ``p_value`` only; ``supported``
+        keys off ``aicc_delta`` (REJECT-on-tie).
 
     Returns
     -------
     list of KnockoutResult
-        One entry per fitted line, in fitted-peak order.
+        One entry per fitted line, in fitted-peak order. ``delta_chi2`` /
+        ``expected_delta_chi2`` keep the freeze-others "energy carried by
+        this line" diagnostic; ``p_value`` is now the refit-based F-test
+        diagnostic; ``supported`` / ``aicc_delta`` are the new gate.
     """
     peaks = fit.peaks
     if not peaks:
         return []
 
     u = np.asarray(offset_grid_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+
     tau = fit.tau_us
     full_model = model_spectrum(u, peaks, tau, acquisition_us)
     full_chi2 = calculate_noise_weighted_chi2(complex_spectrum, rms_noise, full_model)
 
+    # n_eff is keyed on the K-fit's model magnitude -- the same value the
+    # merge cleanup uses for its AICc test -- and shared across all peaks
+    # in the sweep so per-peak comparisons sit on a common scale.
+    n_eff = effective_sample_size(fit.fitted_spectrum, kind=n_eff_kind)
+    aicc_k = calculate_aicc(fit.chi_squared, fit.n_params, n_eff)
+
+    refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner or {})
+    refit_kwargs["fit_tau"] = False  # tau locked at the K-fit value
+
     results: list[KnockoutResult] = []
     for i, pk in enumerate(peaks):
         kept = [p for j, p in enumerate(peaks) if j != i]
+        # Diagnostic: freeze-others delta_chi2 + expected line energy.
         kept_model = model_spectrum(u, kept, tau, acquisition_us)
         chi2_without = calculate_noise_weighted_chi2(
             complex_spectrum, rms_noise, kept_model
         )
         delta = chi2_without - full_chi2
-        # The line's own weighted energy -- the increase a real line should
-        # produce when it is removed with every other parameter held frozen.
         line_model = model_spectrum(u, [pk], tau, acquisition_us)
         expected = calculate_noise_weighted_chi2(line_model, rms_noise)
-        # Removing one line drops its 3 parameters (the shared tau stays).
-        p_value, _, _ = calculate_chi_squared_improvement(
-            chi2_without, full_chi2, 3, fit.n_data, fit.n_params
+
+        if not kept:
+            # K=1 -> K=0 refit is the null model; no fit_window call needed.
+            # The null chi-squared is the data's own noise-weighted energy.
+            null_chi2 = calculate_noise_weighted_chi2(complex_spectrum, rms_noise)
+            aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
+            # Compare aicc_km1 to aicc_k directly so the both-+inf case
+            # (model not identifiable at n_eff for either K or K-1) reads
+            # as a tie and preserves the K-peak fit -- matches the merge
+            # gate's REJECT-on-tie convention.
+            supported = aicc_km1 >= aicc_k
+            p_value, _, _ = calculate_chi_squared_improvement(
+                null_chi2, fit.chi_squared, 3, fit.n_data, fit.n_params
+            )
+            results.append(
+                KnockoutResult(
+                    peak_index=i,
+                    offset_mhz=pk.offset_mhz,
+                    delta_chi2=delta,
+                    expected_delta_chi2=expected,
+                    supported=bool(supported),
+                    p_value=float(p_value),
+                    n_eff=float(n_eff),
+                    aicc_delta=float(aicc_km1 - aicc_k),
+                )
+            )
+            continue
+
+        refit = fit_window(
+            u, z, sigma, kept, tau, acquisition_us, **refit_kwargs,
         )
+        if not refit.success:
+            # Refit failure -> the AICc gate is unable to express a
+            # preference. Treat the peak as supported (REJECT-on-tie's
+            # conservative direction) and report NaN for the gate fields
+            # so downstream readers can distinguish "we tried and failed"
+            # from a legitimate decision.
+            results.append(
+                KnockoutResult(
+                    peak_index=i,
+                    offset_mhz=pk.offset_mhz,
+                    delta_chi2=delta,
+                    expected_delta_chi2=expected,
+                    supported=True,
+                    p_value=float("nan"),
+                    n_eff=float(n_eff),
+                    aicc_delta=float("nan"),
+                )
+            )
+            continue
+
+        aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+        # Diagnostic p_value: refit-based F-test (K-1 simpler vs K complex).
+        p_value, _, _ = calculate_chi_squared_improvement(
+            refit.chi_squared, fit.chi_squared, 3, fit.n_data, fit.n_params
+        )
+        # REJECT-on-tie: supported iff AICc(K-1) is not strictly better
+        # than AICc(K). Comparing the two AICc values directly (rather
+        # than via the subtraction) makes the both-+inf case (model not
+        # identifiable at n_eff for either K or K-1) read as a tie and
+        # preserve the K-peak fit; ``inf - inf`` would be NaN and silently
+        # drop the peak. Matches the merge-cleanup convention.
+        supported = aicc_km1 >= aicc_k
         results.append(
             KnockoutResult(
                 peak_index=i,
                 offset_mhz=pk.offset_mhz,
                 delta_chi2=delta,
                 expected_delta_chi2=expected,
-                supported=p_value < significance,
+                supported=bool(supported),
                 p_value=float(p_value),
+                n_eff=float(n_eff),
+                aicc_delta=float(aicc_km1 - aicc_k),
             )
         )
     return results
@@ -1616,6 +1746,8 @@ def conservative_fit(
                 break
 
     knockouts = knockout_test(
-        u, z, sigma, current, acquisition_us, significance=significance
+        u, z, sigma, current, acquisition_us,
+        fit_kwargs_inner=fit_kwargs_inner,
+        significance=significance,
     )
     return ConservativeFitResult(current, audit, knockouts)

@@ -127,6 +127,8 @@ def _convert_knockout(knockout: KnockoutResult) -> KnockoutInfo:
         expected_delta_chi2=knockout.expected_delta_chi2,
         supported=knockout.supported,
         p_value=knockout.p_value,
+        n_eff=knockout.n_eff,
+        aicc_delta=knockout.aicc_delta,
     )
 
 
