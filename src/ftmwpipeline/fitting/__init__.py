@@ -70,12 +70,7 @@ from .residual_rescue import (
     attempt_residual_rescue,
 )
 from .residual_screening import (
-    DEFAULT_COHERENCE_CLOSE_THRESHOLD,
-    DEFAULT_COHERENCE_CLUSTER_FWHM,
-    DEFAULT_COHERENCE_ISOLATED_FWHM,
-    DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     ResidualPeakCandidate,
-    filter_by_phase_coherence,
     find_residual_peaks,
 )
 from .window_fit import (
@@ -125,12 +120,7 @@ __all__ = [
     "RescueOutcome",
     "attempt_residual_rescue",
     # residual_screening
-    "DEFAULT_COHERENCE_CLOSE_THRESHOLD",
-    "DEFAULT_COHERENCE_CLUSTER_FWHM",
-    "DEFAULT_COHERENCE_ISOLATED_FWHM",
-    "DEFAULT_COHERENCE_ISOLATED_THRESHOLD",
     "ResidualPeakCandidate",
-    "filter_by_phase_coherence",
     "find_residual_peaks",
     # window_fit
     "AddStep",

@@ -1457,11 +1457,7 @@ class RescueRoundInfo:
         Free-text annotation -- which termination case fired, how many
         peaks were pruned or merged, etc.
     candidates : list of RescueCandidateInfo
-        Detector candidates that survived the phase-coherence filter and
-        were passed to the rescue's :func:`conservative_fit`.
-    rejected_by_coherence : list of RescueCandidateInfo
-        Detector candidates the phase-coherence filter dropped before
-        fitting (phase-rotation artifacts, typically neighbour leakage).
+        Detector candidates the rescue passed to ``conservative_fit``.
     """
 
     window_id: int
@@ -1478,7 +1474,6 @@ class RescueRoundInfo:
     accepted: bool
     reason: str = ""
     candidates: List[RescueCandidateInfo] = field(default_factory=list)
-    rejected_by_coherence: List[RescueCandidateInfo] = field(default_factory=list)
 
 
 @dataclass

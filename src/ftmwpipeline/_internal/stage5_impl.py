@@ -49,12 +49,6 @@ from ..fitting.residual_rescue import (
     DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
     DEFAULT_RESCUE_SNR_THRESHOLD,
 )
-from ..fitting.residual_screening import (
-    DEFAULT_COHERENCE_CLOSE_THRESHOLD,
-    DEFAULT_COHERENCE_CLUSTER_FWHM,
-    DEFAULT_COHERENCE_ISOLATED_FWHM,
-    DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
-)
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
@@ -172,10 +166,6 @@ def fit_peaks_impl(
     max_residual_rescue_rounds: Optional[int] = None,
     rescue_snr_threshold: Optional[float] = None,
     rescue_prominence_threshold: Optional[float] = None,
-    rescue_coherence_cluster_fwhm: Optional[float] = None,
-    rescue_coherence_isolated_fwhm: Optional[float] = None,
-    rescue_coherence_close_threshold: Optional[float] = None,
-    rescue_coherence_isolated_threshold: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -231,17 +221,6 @@ def fit_peaks_impl(
         ``|residual|`` (defaults :data:`DEFAULT_RESCUE_SNR_THRESHOLD` and
         :data:`DEFAULT_RESCUE_PROMINENCE_THRESHOLD`). Ignored when
         ``max_residual_rescue_rounds == 0``.
-    rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
-    rescue_coherence_close_threshold,
-    rescue_coherence_isolated_threshold : float, optional
-        Phase-coherence filter knobs governing the sliding ratio
-        threshold (close→isolated linear ramp by distance to nearest
-        existing peak or candidate). Defaults
-        :data:`DEFAULT_COHERENCE_CLUSTER_FWHM` /
-        :data:`DEFAULT_COHERENCE_ISOLATED_FWHM` /
-        :data:`DEFAULT_COHERENCE_CLOSE_THRESHOLD` /
-        :data:`DEFAULT_COHERENCE_ISOLATED_THRESHOLD`. All ignored when
-        ``max_residual_rescue_rounds == 0``.
 
     Raises
     ------
@@ -287,26 +266,6 @@ def fit_peaks_impl(
         DEFAULT_RESCUE_PROMINENCE_THRESHOLD
         if rescue_prominence_threshold is None
         else float(rescue_prominence_threshold)
-    )
-    rescue_cluster_v = (
-        DEFAULT_COHERENCE_CLUSTER_FWHM
-        if rescue_coherence_cluster_fwhm is None
-        else float(rescue_coherence_cluster_fwhm)
-    )
-    rescue_isolated_fwhm_v = (
-        DEFAULT_COHERENCE_ISOLATED_FWHM
-        if rescue_coherence_isolated_fwhm is None
-        else float(rescue_coherence_isolated_fwhm)
-    )
-    rescue_close_thresh_v = (
-        DEFAULT_COHERENCE_CLOSE_THRESHOLD
-        if rescue_coherence_close_threshold is None
-        else float(rescue_coherence_close_threshold)
-    )
-    rescue_isolated_thresh_v = (
-        DEFAULT_COHERENCE_ISOLATED_THRESHOLD
-        if rescue_coherence_isolated_threshold is None
-        else float(rescue_coherence_isolated_threshold)
     )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
@@ -391,10 +350,6 @@ def fit_peaks_impl(
         rescue_kwargs = {
             "snr_threshold": rescue_snr_v,
             "prominence_threshold": rescue_prom_v,
-            "coherence_cluster_fwhm": rescue_cluster_v,
-            "coherence_isolated_fwhm": rescue_isolated_fwhm_v,
-            "coherence_close_threshold": rescue_close_thresh_v,
-            "coherence_isolated_threshold": rescue_isolated_thresh_v,
         }
     else:
         rescue_kwargs = None
@@ -443,10 +398,6 @@ def fit_peaks_impl(
             {
                 "rescue_snr_threshold": rescue_snr_v,
                 "rescue_prominence_threshold": rescue_prom_v,
-                "rescue_coherence_cluster_fwhm": rescue_cluster_v,
-                "rescue_coherence_isolated_fwhm": rescue_isolated_fwhm_v,
-                "rescue_coherence_close_threshold": rescue_close_thresh_v,
-                "rescue_coherence_isolated_threshold": rescue_isolated_thresh_v,
             }
         )
     spectrum_fit: SpectrumFit = plan_fit_outcome_to_spectrum_fit(
@@ -466,9 +417,7 @@ def fit_peaks_impl(
 
     n_thaw_accepted = sum(1 for e in spectrum_fit.thaw_history if e.accepted)
     n_replan_accepted = sum(1 for e in spectrum_fit.replan_history if e.accepted)
-    # Rescue history is not (yet) persisted on SpectrumFit -- pull it off the
-    # live PlanFitOutcome for the in-memory return value and log line.
-    rescue_events_live = list(plan_outcome.rescue_history)
+    rescue_events_live = list(spectrum_fit.rescue_history)
     n_rescue_events = len(rescue_events_live)
     n_rescue_accepted = sum(1 for e in rescue_events_live if e.accepted)
     n_rescue_added_total = sum(e.n_rescue_added for e in rescue_events_live)

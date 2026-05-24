@@ -924,10 +924,6 @@ class Pipeline:
         max_residual_rescue_rounds: Optional[int] = None,
         rescue_snr_threshold: Optional[float] = None,
         rescue_prominence_threshold: Optional[float] = None,
-        rescue_coherence_cluster_fwhm: Optional[float] = None,
-        rescue_coherence_isolated_fwhm: Optional[float] = None,
-        rescue_coherence_close_threshold: Optional[float] = None,
-        rescue_coherence_isolated_threshold: Optional[float] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -973,15 +969,9 @@ class Pipeline:
             entirely (escape hatch for diagnostic re-fits). The rescue
             is a structural part of the fit and runs on every window's
             post-thaw fit by default.
-        rescue_snr_threshold, rescue_prominence_threshold,
-        rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
-        rescue_coherence_close_threshold,
-        rescue_coherence_isolated_threshold : optional
-            Detector and phase-coherence tuning knobs for the rescue --
-            see :func:`fit_peaks_impl` for defaults. The coherence knobs
-            parameterise the sliding-threshold scheme (close-to-neighbour
-            ratio ramping up to isolated ratio across the cluster→isolated
-            FWHM band). All ignored when
+        rescue_snr_threshold, rescue_prominence_threshold : optional
+            Detector tuning knobs for the rescue -- see
+            :func:`fit_peaks_impl` for defaults. Ignored when
             ``max_residual_rescue_rounds`` is 0.
 
         Returns
@@ -1009,10 +999,6 @@ class Pipeline:
                 max_residual_rescue_rounds=max_residual_rescue_rounds,
                 rescue_snr_threshold=rescue_snr_threshold,
                 rescue_prominence_threshold=rescue_prominence_threshold,
-                rescue_coherence_cluster_fwhm=rescue_coherence_cluster_fwhm,
-                rescue_coherence_isolated_fwhm=rescue_coherence_isolated_fwhm,
-                rescue_coherence_close_threshold=rescue_coherence_close_threshold,
-                rescue_coherence_isolated_threshold=rescue_coherence_isolated_threshold,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "

@@ -1194,9 +1194,9 @@ def _plot_audit_trail_figure(
     the shortest possible reach. Layout (bottom row to top row):
 
       * **initial fit** (y = Y_INIT) -- blue circles at each initial peak.
-      * **round i candidates row** -- coherence-accepted candidates (green
-        triangles), coherence-rejected candidates (red X), and the rescue's
-        conservative-fit accepted peaks (open green circles).
+      * **round i candidates row** -- detector candidates (green
+        triangles) and the rescue's conservative-fit accepted peaks
+        (open green circles).
       * **round i merge row** -- knockout-pruned peaks (red X; red border
         marks rescue-origin pruning, the failsafe diagnostic). Joint-refit
         K transition annotated on the left.
@@ -1327,13 +1327,6 @@ def _plot_audit_trail_figure(
                 markeredgecolor="black", markeredgewidth=0.5,
                 zorder=3,
             )
-        for c in rescue.rejected_by_coherence:
-            f_c = center_mhz + s * float(c.frequency_mhz)
-            ax_audit.plot(
-                f_c, y_candidates,
-                marker="x", markersize=6, color="tab:red",
-                markeredgewidth=1.2, zorder=3,
-            )
         for pk in rescue.fit.peaks:
             f_pk = center_mhz + s * pk.offset_mhz
             ax_audit.plot(
@@ -1344,8 +1337,7 @@ def _plot_audit_trail_figure(
             )
         _label_left(
             y_candidates,
-            f"  candidates: {len(rescue.candidates)} pass / "
-            f"{len(rescue.rejected_by_coherence)} coh-rej, "
+            f"  candidates: {len(rescue.candidates)}, "
             f"{rescue.fit.n_peaks} fit-accepted",
         )
 
@@ -1690,13 +1682,13 @@ def _rescue_report(
     parts = [
         f"# Window {window.window_id} - Residual Rescue (B-loop)",
         "",
-        "_Each round: detect candidates in the current residual, "
-        "phase-coherence-filter them, fit on the residual (rescue) with "
-        "frozen tau, then joint-refit the (initial + rescue) union with all "
-        "parameters thawed (starting tau from the rescue's apodization-aware "
-        "value), then knockout-prune any unsupported peaks. The next round "
-        "operates on the residual of the consolidated fit. Terminates when "
-        "the rescue accepts nothing, the joint refit fails, or all peaks "
+        "_Each round: detect candidates in the current residual, fit "
+        "them on the residual (rescue) with frozen tau, then joint-refit "
+        "the (initial + rescue) union with all parameters thawed "
+        "(starting tau from the rescue's apodization-aware value), then "
+        "knockout-prune any unsupported peaks. The next round operates "
+        "on the residual of the consolidated fit. Terminates when the "
+        "rescue accepts nothing, the joint refit fails, or all peaks "
         "get pruned._",
         "",
         f"**Loop terminated:** `{consolidated.terminated_reason}` "
@@ -1740,8 +1732,7 @@ def _rescue_round_section(diag: RescueRoundDiagnostics) -> List[str]:
         f"## Round {diag.round_idx} ({rounded_status})",
         f"- reason: _{diag.reason}_",
         f"- inherited peaks: {diag.n_initial_peaks}",
-        f"- detector candidates (post-coherence): {len(rescue.candidates)}",
-        f"- rejected by phase-coherence: {len(rescue.rejected_by_coherence)}",
+        f"- detector candidates: {len(rescue.candidates)}",
         f"- rescue accepted: **{diag.n_rescue_added}** peak(s) "
         f"({len(rescue.audit)} audit entries)",
     ]
@@ -1768,23 +1759,12 @@ def _rescue_round_section(diag: RescueRoundDiagnostics) -> List[str]:
 
     if rescue.candidates:
         parts.append("")
-        parts.append("### Round candidates (post-coherence)")
+        parts.append("### Round candidates")
         parts.append("| # | offset (MHz) | |residual| | SNR | prom (sigma_c) |")
         parts.append("|---:|---:|---|---:|---:|")
         for i, c in enumerate(rescue.candidates):
             parts.append(
                 f"| C{i} | {c.frequency_mhz:+.4f} | {c.magnitude:.4g} | "
-                f"{c.snr:.2f} | {c.prominence_sigma_c:.2f} |"
-            )
-
-    if rescue.rejected_by_coherence:
-        parts.append("")
-        parts.append("### Rejected by phase-coherence this round")
-        parts.append("| # | offset (MHz) | |residual| | detected SNR | prom (sigma_c) |")
-        parts.append("|---:|---:|---|---:|---:|")
-        for i, c in enumerate(rescue.rejected_by_coherence):
-            parts.append(
-                f"| R{i} | {c.frequency_mhz:+.4f} | {c.magnitude:.4g} | "
                 f"{c.snr:.2f} | {c.prominence_sigma_c:.2f} |"
             )
 

@@ -953,10 +953,6 @@ def fit_peaks(
     max_residual_rescue_rounds: Optional[int] = None,
     rescue_snr_threshold: Optional[float] = None,
     rescue_prominence_threshold: Optional[float] = None,
-    rescue_coherence_cluster_fwhm: Optional[float] = None,
-    rescue_coherence_isolated_fwhm: Optional[float] = None,
-    rescue_coherence_close_threshold: Optional[float] = None,
-    rescue_coherence_isolated_threshold: Optional[float] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -991,13 +987,9 @@ def fit_peaks(
         to disable the rescue pass entirely (escape hatch for diagnostic
         re-fits). The rescue runs on every window's post-thaw fit by
         default.
-    rescue_snr_threshold, rescue_prominence_threshold,
-    rescue_coherence_cluster_fwhm, rescue_coherence_isolated_fwhm,
-    rescue_coherence_close_threshold,
-    rescue_coherence_isolated_threshold : optional
+    rescue_snr_threshold, rescue_prominence_threshold : optional
         Rescue tuning knobs -- see :func:`Pipeline.fit_peaks` for the
-        defaults and what each one controls. All ignored when
-        ``max_residual_rescue_rounds`` is 0.
+        defaults. Ignored when ``max_residual_rescue_rounds`` is 0.
 
     Returns
     -------
@@ -1017,10 +1009,6 @@ def fit_peaks(
             max_residual_rescue_rounds=max_residual_rescue_rounds,
             rescue_snr_threshold=rescue_snr_threshold,
             rescue_prominence_threshold=rescue_prominence_threshold,
-            rescue_coherence_cluster_fwhm=rescue_coherence_cluster_fwhm,
-            rescue_coherence_isolated_fwhm=rescue_coherence_isolated_fwhm,
-            rescue_coherence_close_threshold=rescue_coherence_close_threshold,
-            rescue_coherence_isolated_threshold=rescue_coherence_isolated_threshold,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")

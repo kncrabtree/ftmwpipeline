@@ -171,9 +171,6 @@ def _convert_rescue_event(event: RescueEvent) -> RescueRoundInfo:
         accepted=bool(event.accepted),
         reason=str(event.reason),
         candidates=[_convert_rescue_candidate(c) for c in event.candidates],
-        rejected_by_coherence=[
-            _convert_rescue_candidate(c) for c in event.rejected_by_coherence
-        ],
     )
 
 

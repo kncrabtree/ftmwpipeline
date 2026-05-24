@@ -229,12 +229,9 @@ class RescueEvent:
         Number of peaks the round inherited from the previous round (the
         first round inherits from the initial fit).
     n_candidates : int
-        Detector candidates that survived the phase-coherence filter and
-        were passed to the rescue's :func:`conservative_fit` (i.e., what
-        :func:`attempt_residual_rescue` reports as ``candidates``).
-    n_rejected_by_coherence : int
-        Detector candidates the phase-coherence filter dropped before
-        fitting.
+        Detector candidates the rescue passed to ``conservative_fit``
+        (i.e., what :func:`attempt_residual_rescue` reports as
+        ``candidates``).
     n_rescue_added : int
         Peaks the rescue's conservative loop actually accepted (the union
         with the previous round's peaks is what the joint refit fits).
@@ -263,21 +260,17 @@ class RescueEvent:
         Free-text annotation -- which termination case fired, how many
         peaks pruned, etc.
     candidates : list of ResidualPeakCandidate
-        Detector candidates that survived the phase-coherence filter and
-        were passed to the rescue's :func:`conservative_fit`. Carried by
-        reference so the result-conversion layer can produce the persistent
+        Detector candidates the rescue passed to ``conservative_fit``.
+        Carried by reference so the result-conversion layer can produce
+        the persistent
         :class:`~ftmwpipeline.core.data_structures.RescueCandidateInfo`
         records without re-running the rescue.
-    rejected_by_coherence : list of ResidualPeakCandidate
-        Detector candidates the phase-coherence filter dropped before
-        fitting; same conversion path.
     """
 
     window_id: int
     round_idx: int
     n_initial_peaks: int
     n_candidates: int
-    n_rejected_by_coherence: int
     n_rescue_added: int
     n_pruned_by_knockout: int
     n_pruned_rescue_origin: int
@@ -288,15 +281,13 @@ class RescueEvent:
     tau_us_after: float
     accepted: bool
     reason: str = ""
-    # Persistence-ready candidate detail: the post-coherence-filter set
-    # that the rescue's conservative_fit consumed, and the candidates the
-    # phase-coherence filter dropped. Carried by reference to the working
+    # Persistence-ready candidate detail: the candidates the rescue
+    # passed to conservative_fit. Carried by reference to the working
     # ResidualPeakCandidate records so the converter can drop them onto
     # the persistent RescueCandidateInfo twins without re-running the
     # rescue. Empty on rounds where attempt_residual_rescue returned no
-    # candidates (the rescue never reached its conservative_fit).
+    # candidates.
     candidates: list = field(default_factory=list)
-    rejected_by_coherence: list = field(default_factory=list)
 
 
 @dataclass
@@ -1063,20 +1054,17 @@ def execute_plan(
         synthetic :class:`ActiveFTResult` s directly need no extra context.
     max_residual_rescue_rounds : int, default 0
         Cap on per-window residual-rescue + joint-refit cycles. ``0``
-        disables the rescue pass entirely (the current default while the
-        rescue is validated at scale); a positive value runs the B-loop
-        on every window's post-thaw fit with that round cap. The rescue
-        is a structural part of the fit -- it eliminates the conservative
-        loop's systematic under-counting of real lines -- and is intended
-        to become non-zero by default once validation completes.
+        disables the rescue pass entirely (escape hatch for diagnostic
+        re-fits); a positive value runs the B-loop on every window's
+        post-thaw fit with that round cap.
     rescue_kwargs : dict, optional
         Tuning knobs for the rescue loop, forwarded to
         :func:`~ftmwpipeline.fitting.residual_rescue.rescue_and_consolidate`
         (``snr_threshold``, ``prominence_threshold``,
-        ``coherence_cluster_fwhm``, ``coherence_ratio_threshold``,
-        ``rescue_significance``, ``knockout_significance``). The
-        round-cap lives separately on ``max_residual_rescue_rounds``.
-        Ignored when ``max_residual_rescue_rounds == 0``.
+        ``rescue_significance``, ``knockout_significance``,
+        ``shape_error_epsilon``). The round-cap lives separately on
+        ``max_residual_rescue_rounds``. Ignored when
+        ``max_residual_rescue_rounds == 0``.
 
     Returns
     -------
@@ -1932,7 +1920,6 @@ def _apply_rescue_to_outcome(
             round_idx=diag.round_idx,
             n_initial_peaks=diag.n_initial_peaks,
             n_candidates=len(diag.rescue.candidates),
-            n_rejected_by_coherence=len(diag.rescue.rejected_by_coherence),
             n_rescue_added=diag.n_rescue_added,
             n_pruned_by_knockout=diag.n_pruned_total,
             n_pruned_rescue_origin=diag.n_pruned_rescue_origin,
@@ -1944,7 +1931,6 @@ def _apply_rescue_to_outcome(
             accepted=diag.accepted,
             reason=diag.reason,
             candidates=list(diag.rescue.candidates),
-            rejected_by_coherence=list(diag.rescue.rejected_by_coherence),
         )
         events.append(ev)
         outcome.rescue_events.append(ev)

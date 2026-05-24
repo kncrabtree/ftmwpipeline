@@ -300,16 +300,12 @@ def _rescue_round_to_json(r: RescueRoundInfo) -> Dict[str, Any]:
         "accepted": bool(r.accepted),
         "reason": str(r.reason),
         "candidates": [_rescue_candidate_to_json(c) for c in r.candidates],
-        "rejected_by_coherence": [
-            _rescue_candidate_to_json(c) for c in r.rejected_by_coherence
-        ],
     }
 
 
 def _json_to_rescue_round(blob: Dict[str, Any], where: str) -> RescueRoundInfo:
     try:
         candidates_raw = blob.get("candidates", []) or []
-        rejected_raw = blob.get("rejected_by_coherence", []) or []
         return RescueRoundInfo(
             window_id=int(blob["window_id"]),
             round_idx=int(blob["round_idx"]),
@@ -327,12 +323,6 @@ def _json_to_rescue_round(blob: Dict[str, Any], where: str) -> RescueRoundInfo:
             candidates=[
                 _json_to_rescue_candidate(c, f"{where}.candidates[{i}]")
                 for i, c in enumerate(candidates_raw)
-            ],
-            rejected_by_coherence=[
-                _json_to_rescue_candidate(
-                    c, f"{where}.rejected_by_coherence[{i}]"
-                )
-                for i, c in enumerate(rejected_raw)
             ],
         )
     except KeyError as exc:

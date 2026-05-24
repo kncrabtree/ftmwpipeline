@@ -569,7 +569,6 @@ def _sample_rescue_round(
     accepted: bool = True,
     reason: str = "joint refit consolidated rescue contribution",
     candidates: list[RescueCandidateInfo] | None = None,
-    rejected_by_coherence: list[RescueCandidateInfo] | None = None,
 ) -> RescueRoundInfo:
     return RescueRoundInfo(
         window_id=window_id,
@@ -586,7 +585,6 @@ def _sample_rescue_round(
         accepted=accepted,
         reason=reason,
         candidates=candidates or [],
-        rejected_by_coherence=rejected_by_coherence or [],
     )
 
 
@@ -601,21 +599,17 @@ class TestRescueRoundsRoundTrip:
             assert wf.rescue_events == []
 
     def test_single_round_round_trip(self, tmp_path):
-        """A window with one rescue round (candidates + coherence-rejected) round-trips."""
+        """A window with one rescue round (with candidates) round-trips."""
         fit = _sample_spectrum_fit()
         candidates = [
             RescueCandidateInfo(frequency_mhz=-0.18, magnitude=0.42, snr=3.6),
             RescueCandidateInfo(frequency_mhz=0.27, magnitude=0.31, snr=2.7),
-        ]
-        rejected = [
-            RescueCandidateInfo(frequency_mhz=0.05, magnitude=0.19, snr=2.5),
         ]
         round0 = _sample_rescue_round(
             window_id=0,
             round_idx=0,
             n_rescue_added=2,
             candidates=candidates,
-            rejected_by_coherence=rejected,
         )
         fit.window_fits[0].rescue_events = [round0]
         fit.rescue_history = [round0]
@@ -637,9 +631,6 @@ class TestRescueRoundsRoundTrip:
             [-0.18, 0.27]
         )
         assert got.candidates[0].snr == pytest.approx(3.6)
-        assert [c.frequency_mhz for c in got.rejected_by_coherence] == pytest.approx(
-            [0.05]
-        )
 
         # Per-window mirror.
         assert len(loaded.window_fits[0].rescue_events) == 1

@@ -130,7 +130,17 @@ contribution is being undone immediately. The current code logs
 this without acting on it. A future fallback to option A on
 windows that trip this signal repeatedly would key off it.
 
-## 3. The phase-coherence projection
+## 3. The phase-coherence projection (tried, then removed)
+
+> **Status: removed from the rescue.** The implementation, all
+> tuning knobs, and the persistence schema entry were taken out
+> after a counterfactual study on the 2638 fixture (all 347
+> windows) showed the filter was a no-op against the downstream
+> gates. The original §3 follows as the historical record of why
+> it was built and what it tried to do; §3.4 documents the
+> removal verdict; §3.5 flags the same primitive as a candidate
+> for Stage 3 peak screening (where its information role is
+> different and was not assessed by the rescue counterfactual).
 
 Magnitude alone cannot tell a real Lorentzian peak from a phase-
 rotation artifact (a coherent-residual feature whose phase rotates
@@ -219,15 +229,15 @@ The fix builds a position-dependent effective noise floor
 ```
 
 threaded as the `shape_error_epsilon` parameter (default 0.0 =
-behaviour-preserving). The rescue's detector + phase-coherence
-filter see the inflated sigma; the LSQ inside `conservative_fit`
-keeps the canonical sigma — inflation is a screening tool, not a
-fitting one. A per-bin post-filter is required because
-`find_residual_peaks` uses the *median* sigma for scipy's
-`find_peaks` height threshold, so a few-bin local inflation doesn't
-shift the global gate; the post-filter checks each detected
-candidate against `snr_threshold · σ_eff[bin] / √2` and drops those
-that fail at the inflated floor.
+behaviour-preserving). The rescue's detector (and the projection
+filter, while it existed) saw the inflated sigma; the LSQ inside
+`conservative_fit` kept the canonical sigma — inflation is a
+screening tool, not a fitting one. A per-bin post-filter is
+required because `find_residual_peaks` uses the *median* sigma
+for scipy's `find_peaks` height threshold, so a few-bin local
+inflation doesn't shift the global gate; the post-filter checks
+each detected candidate against `snr_threshold · σ_eff[bin] / √2`
+and drops those that fail at the inflated floor.
 
 ε is a **per-dataset constant** measured from the chi²_r vs SNR²
 regression on the post-rescue fits. The 2638 fixture's calibrated
@@ -237,6 +247,90 @@ sums over many bins and divides by full-window dof; the per-bin
 value is what the sigma inflation needs. This factor will likely
 differ between instruments; the cross-fixture validation doc
 covers the calibration protocol.
+
+This inflation stayed in the rescue after the projection test
+was removed — it gates the *detector* on a per-bin sigma floor
+that scales with the parent amplitude, which subsumed the
+"close-pair contamination" role the projection test was designed
+for (the candidates the projection test was meant to reject
+under a strong neighbour now don't get detected in the first
+place).
+
+### 3.4 Verdict: removed from the rescue
+
+A counterfactual study on every window of the 2638 fixture
+(347 windows, the full plan) compared the shipped rescue against
+the same chain run with the projection-test thresholds set to
+zero (no rejection) and the cluster floor set to zero (no
+sub-cluster deferral). The full filter became a structural
+no-op:
+
+- The shipped filter rejected 11 candidates across the 347
+  windows. 10 of those were "isolated"-band candidates with
+  d ≥ 5 FWHM; only 2 sat anywhere in the ramp, both right next
+  to the isolated boundary (d ≈ 4.2 / 4.6 FWHM). The lower
+  anchor (0.2 at the cluster floor) was structurally untested.
+- Force-accepting every rejected candidate gave bit-for-bit
+  identical consolidated K and chi²_r in 10 of 11 windows
+  (the 11th shifted only at the 1%-relative scale in a
+  pathological 9-chi²_r window). The downstream AICc accept
+  gate inside `conservative_fit` and the iterative cleanup
+  rejected every would-be-rescued candidate on their own.
+- Removing the sub-cluster deferral was likewise a no-op
+  (49 windows, 49 identical fits): the candidate set delivered
+  to `conservative_fit` is the same whether the sub-cluster
+  candidate skipped the test (deferred-kept) or passed it at
+  threshold zero (test-kept).
+
+The reading: the shape-error sigma inflation (§3.3) and the
+information-weighted AICc accept gate together do the work the
+projection test was designed to do — discriminate real
+Lorentzian peaks from phase artifacts and from
+neighbour-contamination residuals — without needing the
+projection test as a separate stage. Keeping a no-op filter
+adds a tuning surface (`cluster_threshold_fwhm`,
+`isolated_threshold_fwhm`, `close_threshold`,
+`isolated_threshold`) and a persistence field
+(`rejected_by_coherence` on `RescueEvent` / `RescueRoundInfo`)
+without buying anything; both were removed in the same change.
+
+The diagnostic scripts under
+`scripts/development/stage5-validation/` that produced the
+verdict (`survey_coherence.py`, `study_coherence_rejections.py`,
+`verify_filter_removal.py`) were deleted in the same commit. The
+finding is summarised here; the scripts are recoverable from git
+history if a similar audit is needed on a different fixture.
+
+### 3.5 Reuse prospect: Stage 3 peak screening
+
+The projection test was designed to discriminate Lorentzian-shape
+features from phase artifacts. The rescue counterfactual showed
+that downstream Stage 5 gates already do this in the contexts
+the rescue actually sees — the residual after an initial fit on
+a 2638-class fixture. But the **information content** of the
+test is real, and it may still be useful **earlier in the
+pipeline** where the same downstream gates are not available:
+
+- **Stage 3 peak detection** operates on the raw active-FT, not
+  a residual. Its only filter today is a magnitude-and-prominence
+  cut. Low-SNR candidates (e.g. SNR 3–5, the regime where
+  detection vs noise is genuinely ambiguous) cannot be told
+  apart from background by magnitude alone.
+- The projection test, against a unit-amplitude Lorentzian basis
+  at the candidate's bin, **does** carry that information: a
+  noise excursion produces an incoherent projection; a real
+  low-SNR line produces a coherent one. There is no Stage 5
+  AICc gate behind Stage 3 to clean up later, so the per-peak
+  evidence has to be assessed at detection time.
+- Whether the projection-test ratio (or some derivative of it)
+  works as a stage-3 discriminator on a controlled
+  noise-vs-line-injection study is an open question. The
+  rescue's counterfactual answered "is the projection test
+  doing anything net the Stage 5 gates aren't already doing?"
+  (answer: no); it did not answer "does the projection test
+  carry information the Stage 3 detector currently throws away?"
+  That is the test worth running before discarding the idea
+  entirely.
 
 ## 4. The duplicate-pair problem
 
@@ -675,6 +769,13 @@ first investigation left as transitional defaults:
   persisted initial fit, the consolidated fit, and the
   candidate lists, and re-running `rescue_and_consolidate` from
   the persisted state reproduces them.
+- **Projection test removed.** See §3.4 — the sliding-coherence
+  filter was a no-op against the AICc accept gate +
+  shape-error sigma inflation on the 2638 fixture (0/11 isolated
+  rejections, 0/49 sub-cluster deferrals changed the outcome).
+  The function, its four threshold constants, and the
+  `rejected_by_coherence` persistence field were deleted in the
+  same change.
 
 ### Still open
 
@@ -688,20 +789,15 @@ External, owned by other planning docs:
 - **Borderline real-vs-noise on w16/w104/w127/w337-class windows**
   (cross-fixture Tier-3 ground-truth check): the single-fixture
   data cannot answer it.
-- **Phase-coherence projection as a stage-3 quality filter**
-  (peak-detection plan, future enhancement): the same primitive
-  applied earlier in the pipeline.
+- **Projection test as a Stage 3 noise-vs-line discriminator.**
+  See §3.5 — the projection primitive may still be useful
+  earlier in the pipeline where the Stage 5 AICc gates are not
+  available. The discriminator-on-injected-lines study has not
+  been run; the rescue counterfactual answered a different
+  question. Owned by the peak-detection plan.
 
 Rescue-specific:
 
-- **Sliding-coherence parameter calibration.** The shipped anchor
-  pair (0.2, 0.8) was chosen on the original 15-window sample
-  and is not empirically calibrated against a wider set. Likely
-  follow-ups: replace the linear ramp with the Lorentzian-skirt
-  functional form (`threshold(Δ) = high − (high − low) · |basis(Δ, τ, T)|²`,
-  which tracks the contamination level exactly); sweep
-  `(close, isolated)` against the regime where clean windows
-  acquire spurious peaks.
 - **Per-window cost monitoring.** Every rescue round adds one
   `conservative_fit` + one joint refit + a knockout / merge /
   iterative-cleanup sweep. For the production pipeline (~400

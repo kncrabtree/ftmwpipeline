@@ -1,4 +1,4 @@
-# Stage 5 — Residual rescue and phase-coherence screening
+# Stage 5 — Residual rescue
 
 **Implementation summary** for the residual-rescue subsystem of
 the Stage 5 fitting pipeline. The algorithmic-choice provenance
@@ -26,10 +26,10 @@ A single rescue round is strictly separated from the initial fit:
 1. Compute `residual = data − model(initial.peaks, initial.tau)`.
    Done once; the initial fit is never touched again.
 2. Detect candidate peaks in the residual
-   (`fitting.residual_screening.find_residual_peaks`).
-3. Drop candidates that fail the sliding phase-coherence check
-   (`fitting.residual_screening.filter_by_phase_coherence`).
-4. Run a second `conservative_fit` on the **residual itself**, with
+   (`fitting.residual_screening.find_residual_peaks`) with the
+   shape-error-aware sigma inflation gating which detections
+   reach the fitter (see "Shape-error sigma inflation" below).
+3. Run a second `conservative_fit` on the **residual itself**, with
    tau frozen at the rescue tau. The result's peaks are exactly
    the lines the rescue added; the initial fit's peaks are not in
    this returned fit.
@@ -66,12 +66,9 @@ at "no candidates" by round 3.
 - `find_residual_peaks(...)` — `scipy.signal.find_peaks` with a
   sigma-relative height + prominence cut on `|residual|`.
   Thresholds: `snr_threshold` (default 2.5σ_c),
-  `prominence_threshold` (2.0σ_c).
-- `filter_by_phase_coherence(candidates, ..., fitted_peak_offsets=...)`
-  — projects each candidate's residual onto a unit-amplitude
-  Lorentzian basis and rejects candidates whose coherent SNR
-  ratio falls below a sliding threshold keyed on neighbour
-  distance. Three bands; see "Phase-coherence projection" below.
+  `prominence_threshold` (2.0σ_c). All detector output flows to
+  the rescue's `conservative_fit`; the downstream AICc accept
+  gate + iterative cleanup are the false-positive control.
 
 `fitting/residual_rescue.py`
 
@@ -117,17 +114,16 @@ at "no candidates" by round 3.
   extracts the tau / amp / penalty derivation. Both
   `conservative_fit` and the rescue's joint refit use it so they
   enforce identical constraints.
-- `knockout_test(...)` and `conservative_fit(...)` accept
-  `n_eff_kind` and (for `conservative_fit`)
-  `knockout_n_eff_kind` parameters; see §"AICc-with-`n_eff`
-  gates" below.
+- `knockout_test(...)` and `conservative_fit(...)` accept an
+  `n_eff_kind` parameter; see §"AICc-with-`n_eff` gates" below.
 
 ## Rescue tau policy
 
 Real molecular lines in one experiment share a tau ≈ the applied
-apodization (the canonical Stage 1 `expf_us`). The rescue must
-use the right line-shape width or the phase-coherence basis
-under-projects real peaks and the filter rejects them.
+apodization (the canonical Stage 1 `expf_us`). The rescue uses
+the initial fit's tau as the frozen line-shape width for its
+`conservative_fit`, with a structural override for broken initial
+fits.
 
 The rule:
 
@@ -137,71 +133,26 @@ The rule:
   within 5% of the lower bound (`tau_apodization_us /
   max_decay_factor`). That's the signature of a broken initial
   fit: LSQ over-narrowed tau to absorb unmodelled-peak residual.
-  Using that broken tau as the coherence basis under-projects
-  real peaks. The apodization is the right physical default.
+  Using that broken tau as the rescue basis under-projects real
+  peaks. The apodization is the right physical default.
 
 The rescue tau is also handed to the joint refit's LSQ as its
 starting tau (warm start for the apodization-override case).
 
-## Phase-coherence projection
-
-For an isolated candidate at offset `f₀`, build the unit-amplitude
-Lorentzian basis `basis(f) = h_T(f − f₀, τ, T)` and compute the
-sigma-weighted complex projection:
-
-```
-A_complex = Σ_f w_f · conj(basis(f)) · residual(f) / Σ_f w_f · |basis(f)|²
-```
-
-with `w_f = 1 / σ_c(f)²`. This is the closed-form solution for an
-amplitude+phase-only fit with offset and tau frozen.
-
-The coherent SNR at the peak is `|A_complex| · |basis(f₀)| / σ_c`.
-Compared to the detected magnitude SNR
-`|residual(f₀)| / σ_c`:
-
-- Real Lorentzian peak in clean isolation: ratio ≈ 1.
-- Real Lorentzian peak in a neighbour's skirt: ratio partially
-  suppressed by leakage from the neighbour's Lorentzian tail
-  (~50% at 1 FWHM separation, ~6% at 5 FWHM).
-- Phase-rotation artifact: ratio ≪ 1.
-
-### Sliding-threshold scheme
-
-The shipped scheme ramps the threshold by neighbour proximity in
-three bands:
-
-- **Δ < `cluster_threshold_fwhm` × FWHM** (default 1.0 FWHM):
-  defer entirely. A sub-cluster candidate is either a real blend
-  the blend-aware seeder should handle, or a phase artifact the
-  basis cannot disambiguate from a blend.
-- **`cluster_threshold_fwhm` ≤ Δ < `isolated_threshold_fwhm` × FWHM**
-  (default 1.0–5.0 FWHM): linear ramp from `close_threshold`
-  (default 0.2) at the cluster boundary up to `isolated_threshold`
-  (default 0.8) at the isolated boundary.
-- **Δ ≥ `isolated_threshold_fwhm` × FWHM**: full
-  `isolated_threshold`.
-
-The proximity check uses `min(distance to nearest other
-candidate, distance to nearest peak in current_fit)`. Including
-fitted peaks is the structural fix for real residual peaks
-sitting near freshly-fit lines.
-
 ### Shape-error sigma inflation
 
-The rescue's screening pipeline sees an inflated sigma:
+The rescue's detector sees an inflated sigma:
 
 ```
 σ_eff(f) = √( σ_c² + (ε · |current_model(f)|)² )
 ```
 
 threaded as the `shape_error_epsilon` parameter (default 0.0 =
-behaviour-preserving). The rescue's detector + phase-coherence
-filter see the inflated sigma; the LSQ inside `conservative_fit`
-keeps the canonical sigma — inflation is a screening tool, not a
-fitting one. A per-bin post-filter is required because
-`find_residual_peaks` uses the median sigma for scipy's
-`find_peaks` height threshold.
+behaviour-preserving). `find_residual_peaks` sees the inflated
+sigma; the LSQ inside `conservative_fit` keeps the canonical
+sigma — inflation is a screening tool, not a fitting one. A
+per-bin post-filter is required because `find_residual_peaks`
+uses the median sigma for scipy's `find_peaks` height threshold.
 
 ε is a **per-dataset constant**. The 2638 fixture's calibrated
 value is 0.05 (5% per-bin residual at the line center). The
@@ -271,17 +222,17 @@ chain, and emits per-window artifacts under
 - `audit-trail.png` — rescue audit trail. Top: window magnitude
   spectrum with consolidated model overlay. Bottom: per-round
   audit panel laid out bottom-to-top chronologically with
-  candidates row (coherence-accepted as green triangles,
-  coherence-rejected as red X, rescue-fit kept as open green
-  circles) and merge row (knockout-pruned with red X, red border
-  for rescue-origin failsafe firings).
+  candidates row (detector candidates as green triangles,
+  rescue-fit kept as open green circles) and merge row
+  (knockout-pruned with red X, red border for rescue-origin
+  failsafe firings).
 - `detail-rr<n>.png` — trajectory snapshots (one per chain
   round). Useful for the monotonic-residual-shrink check.
 - `report.md` — text rollup of the per-window plan, initial fit
   statistics, fitted peaks, audit trail, thaw events.
 - `report-rr.md` — per-round rollup of the rescue chain:
-  candidate list, coherence-rejections, joint-refit K and
-  chi²_r, knockout pruning broken out by origin.
+  candidate list, joint-refit K and chi²_r, knockout pruning
+  broken out by origin.
 
 Read sequentially: `detail.png` (the answer) → `audit-trail.png`
 (how we got here) → `detail-rr0.png` … `detail-rrN.png` (the
@@ -316,39 +267,23 @@ intermediate states if the audit needs forensic context).
 ## Rescue-specific open follow-ups
 
 External follow-ups (phase-degeneracy penalty, dataset-wide tau
-calibration, borderline-real ground truth, Stage 3
-projection-coherence) live in the planning docs that own each
-topic. Rescue-specific follow-ups:
+calibration, borderline-real ground truth) live in the planning
+docs that own each topic. Rescue-specific follow-ups:
 
-- **Sliding-coherence parameter calibration.** The shipped
-  anchor pair (0.2 at the cluster floor, 0.8 at the isolated
-  ceiling, ramping linearly from 1 to 5 FWHM) was chosen on the
-  original 15-window sample and is not empirically calibrated
-  against a wider set. Likely follow-ups: replace the linear
-  ramp with the Lorentzian-skirt-magnitude functional form
-  `threshold(Δ) = high − (high − low) · |basis(Δ, τ, T)|²`
-  (tracks contamination level exactly); sweep `(close,
-  isolated)` against the regime where clean windows acquire
-  spurious peaks.
 - **Per-window cost monitoring.** Every rescue round adds one
   `conservative_fit` + one joint refit + a knockout / merge /
   iterative-cleanup sweep. For the production pipeline (~400
-  windows) the chain may multiply Stage 5 wall-time by a small
-  constant; worth measuring once the rescue is on by default.
-- **Audit-trail persistence.** The consolidated
-  `ConservativeFitResult` inherits the initial fit's
-  `audit_trail`; the rescue rounds and joint refits emit
-  `RescueRoundDiagnostics` but those stay live-only (off
-  `SpectrumFit`). Once the rescue is on by default, persist
-  the per-window `RescueEvent` list into `SpectrumFit` so the
-  on-disk fit is reconstruction-complete.
+  windows) the chain multiplies Stage 5 wall-time by a small
+  constant; worth measuring now that the rescue is on by default.
 - **Promotion to `Pipeline.visualize_fit(rounds=True)`.** The
   harness layout for `detail.png` / `audit-trail.png` is stable
-  enough to port into `visualization/fit_visualization.py`.
-  Plumbing options for the audit data (re-run-on-demand vs
-  persist `RescueRoundDiagnostics`) — re-run is the lighter
-  starting move; persistence makes sense once the rescue is on
-  by default.
+  enough to port into `visualization/fit_visualization.py`. With
+  `rescue_history` and per-window `rescue_events` on disk, the
+  audit-trail figure can be rendered from the persisted fit
+  without re-running the rescue chain; the harness's
+  `_run_window_rescue` re-run path stays useful for forensic
+  dives into the intermediate `WindowFitResult`s the persistence
+  layer deliberately skips.
 
 ## Validation-harness loose threads
 
@@ -370,13 +305,6 @@ are blockers.
   round N" for forensic comparison, not "final answer." If the
   trajectory PNGs end up being used heavily, lifting them to
   the new layout is a natural follow-up.
-- **Coherence-rejection X markers in `audit-trail.png` are
-  unexercised.** The figure has marker code for coherence-
-  rejected candidates (red X on the candidates row of each
-  round). The 15-window 2638 sample has zero coherence
-  rejections, so the markers have never rendered. A window that
-  produces coherence rejections (or a synthetic test fixture)
-  would close this gap.
 - **Top-level `overview.png` doesn't use `DisplayStyle`.** The
   spectrum-wide overview still goes through
   `fit_visualization.plot_spectrum_fit` with active-FT-native

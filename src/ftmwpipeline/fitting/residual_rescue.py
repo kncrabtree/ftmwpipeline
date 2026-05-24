@@ -35,12 +35,7 @@ import numpy as np
 
 from .peak_model import ModelPeak, model_spectrum
 from .residual_screening import (
-    DEFAULT_COHERENCE_CLOSE_THRESHOLD,
-    DEFAULT_COHERENCE_CLUSTER_FWHM,
-    DEFAULT_COHERENCE_ISOLATED_FWHM,
-    DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     ResidualPeakCandidate,
-    filter_by_phase_coherence,
     find_residual_peaks,
 )
 from .validation import (
@@ -151,13 +146,7 @@ class RescueOutcome:
         blend-aware re-seeds, accept / reject, etc.). Identical semantics
         to :attr:`ConservativeFitResult.audit_trail`.
     candidates : list of ResidualPeakCandidate
-        Detector candidates that survived the phase-coherence filter and
-        were passed to :func:`conservative_fit`.
-    rejected_by_coherence : list of ResidualPeakCandidate
-        Detector candidates the phase-coherence filter rejected as
-        phase-rotation artifacts (typically leakage from imperfect
-        neighbour fits). They never reached the rescue's conservative
-        loop.
+        Detector candidates the rescue passed to :func:`conservative_fit`.
     knockouts : list of KnockoutResult
         Knockout-test results from :func:`conservative_fit` 's final pass
         on the rescue fit.
@@ -166,7 +155,6 @@ class RescueOutcome:
     fit: WindowFitResult
     audit: List[AddStep]
     candidates: List[ResidualPeakCandidate]
-    rejected_by_coherence: List[ResidualPeakCandidate]
     knockouts: List[KnockoutResult]
 
 
@@ -557,10 +545,6 @@ def attempt_residual_rescue(
     significance: float = DEFAULT_SIGNIFICANCE,
     min_separation_factor: float = DEFAULT_MIN_SEPARATION_FACTOR,
     max_peaks: int = DEFAULT_MAX_PEAKS,
-    coherence_cluster_fwhm: float = DEFAULT_COHERENCE_CLUSTER_FWHM,
-    coherence_isolated_fwhm: float = DEFAULT_COHERENCE_ISOLATED_FWHM,
-    coherence_close_threshold: float = DEFAULT_COHERENCE_CLOSE_THRESHOLD,
-    coherence_isolated_threshold: float = DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     conservative_kwargs: Optional[dict[str, Any]] = None,
     shape_error_epsilon: float = 0.0,
     excluded_offsets: Optional[Sequence[float]] = None,
@@ -630,17 +614,18 @@ def attempt_residual_rescue(
         into a single rejection list: any detector candidate whose
         frequency falls within +/-1 grid bin of either a *currently-
         fitted peak* or an *entry of this list* is dropped before
-        phase-coherence filtering. The fitted-peak rejection prevents
-        the screening pipeline from re-nominating the same line the
-        initial fit already explains (residual structure under a
-        fitted peak is shape-error / leakage, not a missed line).
-        The explicit list is used by :func:`rescue_and_consolidate`
-        to suppress candidates that a previous round nominated and
-        the joint-refit + iterative-cleanup later rejected -- those
-        candidates are not going to survive the next round's gate
-        either, and re-detecting them clutters the audit trail.
-        ``None`` (default) disables the explicit blacklist; the
-        fitted-peak rejection always applies.
+        going to :func:`conservative_fit`. The fitted-peak rejection
+        prevents the screening pipeline from re-nominating the same
+        line the initial fit already explains (residual structure
+        under a fitted peak is shape-error / leakage, not a missed
+        line). The explicit list is used by
+        :func:`rescue_and_consolidate` to suppress candidates that a
+        previous round nominated and the joint-refit +
+        iterative-cleanup later rejected -- those candidates are not
+        going to survive the next round's gate either, and
+        re-detecting them clutters the audit trail. ``None`` (default)
+        disables the explicit blacklist; the fitted-peak rejection
+        always applies.
     """
     u = np.asarray(offset_grid_mhz, dtype=float)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
@@ -737,32 +722,7 @@ def attempt_residual_rescue(
                     for x in rejection_offsets
                 )
             ]
-    # Phase-coherence filter (sliding, fitted-peak-aware): drop candidates
-    # whose complex projection onto a Lorentzian basis at their offset
-    # doesn't recover the detected magnitude SNR by a proximity-dependent
-    # ratio. The threshold ramps from ``coherence_close_threshold`` at the
-    # cluster boundary up to ``coherence_isolated_threshold`` for fully
-    # isolated candidates -- the rationale being that a candidate sitting
-    # in a fitted peak's skirt has its projection inevitably contaminated
-    # by the neighbour, so it should not be held to the same coherence
-    # standard as a candidate in an empty part of the residual. Candidates
-    # within ``coherence_cluster_fwhm * FWHM`` of any other candidate or
-    # already-fitted peak defer entirely to the blend-aware seeder.
-    fitted_peak_offsets = [pk.offset_mhz for pk in current_fit.peaks]
-    if raw_candidates and rescue_fwhm > 0.0:
-        candidates, rejected_by_coherence = filter_by_phase_coherence(
-            raw_candidates, u, residual, sigma_screen,
-            rescue_tau_us, acquisition_us,
-            fwhm_mhz=rescue_fwhm,
-            fitted_peak_offsets=fitted_peak_offsets,
-            cluster_threshold_fwhm=coherence_cluster_fwhm,
-            isolated_threshold_fwhm=coherence_isolated_fwhm,
-            close_threshold=coherence_close_threshold,
-            isolated_threshold=coherence_isolated_threshold,
-        )
-    else:
-        candidates = list(raw_candidates)
-        rejected_by_coherence = []
+    candidates = list(raw_candidates)
     candidate_offsets = [c.frequency_mhz for c in candidates]
 
     # Run conservative_fit on the residual with tau FROZEN at the initial
@@ -787,7 +747,6 @@ def attempt_residual_rescue(
             fit=empty.fit,
             audit=empty.audit_trail,
             candidates=candidates,
-            rejected_by_coherence=rejected_by_coherence,
             knockouts=empty.knockouts,
         )
 
@@ -804,7 +763,6 @@ def attempt_residual_rescue(
         fit=rescue_result.fit,
         audit=rescue_result.audit_trail,
         candidates=candidates,
-        rejected_by_coherence=rejected_by_coherence,
         knockouts=rescue_result.knockouts,
     )
 
@@ -941,10 +899,6 @@ def rescue_and_consolidate(
     max_rescue_rounds: int = DEFAULT_RESCUE_MAX_ROUNDS,
     snr_threshold: float = DEFAULT_RESCUE_SNR_THRESHOLD,
     prominence_threshold: float = DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
-    coherence_cluster_fwhm: float = DEFAULT_COHERENCE_CLUSTER_FWHM,
-    coherence_isolated_fwhm: float = DEFAULT_COHERENCE_ISOLATED_FWHM,
-    coherence_close_threshold: float = DEFAULT_COHERENCE_CLOSE_THRESHOLD,
-    coherence_isolated_threshold: float = DEFAULT_COHERENCE_ISOLATED_THRESHOLD,
     rescue_significance: float = DEFAULT_SIGNIFICANCE,
     knockout_significance: float = DEFAULT_SIGNIFICANCE,
     rescue_max_peaks: int = DEFAULT_MAX_PEAKS,
@@ -1012,9 +966,7 @@ def rescue_and_consolidate(
         Cap on the rescue + joint-refit cycle. ``1`` reproduces a
         single-pass rescue with consolidation; the default ``3`` matches
         :data:`DEFAULT_RESCUE_MAX_ROUNDS`.
-    snr_threshold, prominence_threshold, coherence_cluster_fwhm,
-    coherence_isolated_fwhm, coherence_close_threshold,
-    coherence_isolated_threshold, rescue_significance
+    snr_threshold, prominence_threshold, rescue_significance
         Forwarded to :func:`attempt_residual_rescue` each round.
     knockout_significance
         F-test p-value threshold for ``KnockoutResult.supported``. Peaks
@@ -1099,10 +1051,6 @@ def rescue_and_consolidate(
             snr_threshold=snr_threshold,
             prominence_threshold=prominence_threshold,
             significance=rescue_significance,
-            coherence_cluster_fwhm=coherence_cluster_fwhm,
-            coherence_isolated_fwhm=coherence_isolated_fwhm,
-            coherence_close_threshold=coherence_close_threshold,
-            coherence_isolated_threshold=coherence_isolated_threshold,
             max_peaks=rescue_max_peaks,
             conservative_kwargs=ckwargs_in,
             shape_error_epsilon=shape_error_epsilon,
@@ -1250,21 +1198,17 @@ def rescue_and_consolidate(
             if in_merged and not in_pruned:
                 n_pruned_rescue += 1
         # (2) Across-rounds blacklist: every detector candidate from
-        #     this round (post-coherence-passed + coherence-rejected)
-        #     whose frequency did NOT end up as a fitted peak in the
-        #     consolidated set goes on the blacklist. The next round's
-        #     detector will skip any frequency within +/-1 grid bin of
-        #     these. Blacklisting the *detector* frequency (rather than
-        #     the LSQ-refined offset) matters: the LSQ can pull a
-        #     rescue-fit peak away from its detector position by a
-        #     bin or more, so blacklisting the refined offset misses
-        #     the detector's re-nomination of the original bin in the
-        #     next round.
+        #     this round whose frequency did NOT end up as a fitted
+        #     peak in the consolidated set goes on the blacklist. The
+        #     next round's detector will skip any frequency within
+        #     +/-1 grid bin of these. Blacklisting the *detector*
+        #     frequency (rather than the LSQ-refined offset) matters:
+        #     the LSQ can pull a rescue-fit peak away from its
+        #     detector position by a bin or more, so blacklisting the
+        #     refined offset misses the detector's re-nomination of
+        #     the original bin in the next round.
         if df_mhz > 0.0:
-            all_round_candidates = list(rescue.candidates) + list(
-                rescue.rejected_by_coherence
-            )
-            for cand in all_round_candidates:
+            for cand in rescue.candidates:
                 freq = float(cand.frequency_mhz)
                 became_peak = any(
                     abs(freq - sp) <= survival_tol for sp in survivor_offsets
