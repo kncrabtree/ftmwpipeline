@@ -40,6 +40,7 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             max_window_width_mhz=args.max_window_width_mhz,
             min_freeze_snr=args.min_freeze_snr,
             min_window_half_width_mhz=args.min_window_half_width_mhz,
+            magnitude_attachment_threshold=args.magnitude_attachment_threshold,
             tau_us=args.tau_us,
         )
         plan = result["plan"]
@@ -195,6 +196,15 @@ def register_window_commands(subparsers: Any) -> None:
         type=float,
         help="Minimum half-width of a window around an isolated weak line "
         "(default: 2.0)",
+    )
+    p_assign.add_argument(
+        "--magnitude-attachment-threshold",
+        dest="magnitude_attachment_threshold",
+        type=float,
+        help="Tier-1 contributor-attachment threshold in units of sigma_c. "
+        "A strong promoted peak is attached as a FixedContributor when its "
+        "predicted mean |skirt| on the candidate window exceeds "
+        "threshold * sigma_c(w) (default: 0.1).",
     )
     p_assign.add_argument(
         "--tau-us",

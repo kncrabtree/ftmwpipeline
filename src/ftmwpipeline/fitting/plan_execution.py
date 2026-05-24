@@ -1409,6 +1409,7 @@ _REPLAN_PARAM_KEYS = (
     "max_window_width_mhz",
     "min_freeze_snr",
     "min_window_half_width_mhz",
+    "magnitude_attachment_threshold",
     "acquisition_us",
     "tau_us",
     "start_us",

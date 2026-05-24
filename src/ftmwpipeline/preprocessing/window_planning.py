@@ -79,6 +79,14 @@ flagged as a thaw-and-re-fit candidate rather than safely frozen."""
 DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ = 2.0
 """Minimum half-width of a window built around an isolated weak line."""
 
+DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD = 0.1
+"""Tier-1 attachment threshold (in units of σ_c on the target window) for the
+analytic-skirt-magnitude contributor-attachment rule. A strong promoted peak
+is attached to a candidate window as a :class:`FixedContributor` when its
+predicted mean |skirt| on that window's grid is at least this fraction of
+σ_c(w). Default 0.1σ_c gives a median of 2 contributors per window on the
+2638 fixture (p95 = 10, max = 16); see O5-10 in stage5-fitting.md."""
+
 
 @dataclass
 class _PPeak:
@@ -224,6 +232,7 @@ def build_window_plan(
     max_window_width_mhz: float = DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -252,6 +261,12 @@ def build_window_plan(
         Freeze-eligibility SNR cutoff for fixed contributors (O4-2).
     min_window_half_width_mhz : float
         Minimum half-width of a window built around an isolated weak line.
+    magnitude_attachment_threshold : float
+        Tier-1 contributor-attachment threshold in units of σ_c. A strong
+        promoted peak is attached to a window's ``fixed_contributors`` when
+        its predicted mean |skirt| on that window's grid is at least
+        ``threshold * sigma_c(w)``. Default
+        :data:`DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD`.
     probe_freq_mhz : float
         Probe (LO) frequency in MHz, used to de-ramp the spectrum to the
         active-region turn-on before the edge-coherence statistic (see
@@ -284,6 +299,7 @@ def build_window_plan(
         "max_window_width_mhz": float(max_window_width_mhz),
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
+        "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -392,6 +408,7 @@ def build_window_plan(
     return _finalize_plan(
         windows=windows,
         ofreqs=ofreqs,
+        orms=orms,
         rolling=rolling,
         touched=touched,
         promoted=promoted,
@@ -402,6 +419,7 @@ def build_window_plan(
         edge_threshold=edge_threshold,
         max_window_width_mhz=max_window_width_mhz,
         min_freeze_snr=min_freeze_snr,
+        magnitude_attachment_threshold=magnitude_attachment_threshold,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=0,
@@ -412,6 +430,7 @@ def _finalize_plan(
     *,
     windows: List[FitWindow],
     ofreqs: np.ndarray,
+    orms: np.ndarray,
     rolling: np.ndarray,
     touched: List[Tuple[int, int]],
     promoted: List[_PPeak],
@@ -422,6 +441,7 @@ def _finalize_plan(
     edge_threshold: float,
     max_window_width_mhz: float,
     min_freeze_snr: float,
+    magnitude_attachment_threshold: float,
     acquisition_us: float,
     tau_us: Optional[float],
     plan_revision: int,
@@ -461,42 +481,67 @@ def _finalize_plan(
 
     # --- Step 4: fixed contributors + fit dependency edges ------------------
     # Recomputed from scratch so a merged window's now-internal contributors
-    # drop off automatically (the strong line is a free peak in the merged
-    # window itself, so no other window points at it).
+    # drop off automatically.
+    #
+    # Tier-1 magnitude-based attachment (O5-10): for every (strong promoted
+    # peak s, candidate window w) pair, predict the mean |skirt| s would
+    # contribute to w's grid and attach s as a FixedContributor of w when
+    # that prediction crosses ``magnitude_attachment_threshold * sigma_c(w)``.
+    # Replaces the previous "touched-region overlap" gate, which missed the
+    # long-tail cumulative-skirt bias diagnosed in scratch/stage5-validation/
+    # (see dev-docs/planning/stage5-fitting.md O5-10).
     for w in windows:
         w.fixed_contributors = []
-    primary_of_interval: Dict[int, int] = {}
-    for ti, strong_pks in strong_in_interval.items():
-        gi0 = strong_pks[0].grid_index
-        for w in windows:
-            lo, hi = w.diagnostics["grid_span"]
-            if lo <= gi0 <= hi:
-                primary_of_interval[ti] = w.window_id
-                break
+
+    # Which window owns each strong promoted peak (its primary window).
+    primary_of_strong: Dict[int, int] = {}
+    for w in windows:
+        for s in strong_by_window[w.window_id]:
+            primary_of_strong[s.list_index] = w.window_id
 
     edges: List[Tuple[int, int]] = []
     for w in windows:
         wlo, whi = w.diagnostics["grid_span"]
-        seen_sources: set = set()
-        for ti, (tlo, thi) in enumerate(touched):
-            if ti not in primary_of_interval:
+        w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
+        # Per-window noise reference: mean Stage 2 rms over the window's grid
+        # span converted to per-quadrature sigma. ``sigma_c = rms / sqrt(2)``
+        # matches the diagnostic convention (the |residual| / Rayleigh test).
+        w_rms_mean = float(np.mean(orms[wlo : whi + 1]))
+        sigma_c_w = w_rms_mean / math.sqrt(2.0) if w_rms_mean > 0 else 0.0
+        threshold = magnitude_attachment_threshold * sigma_c_w
+
+        primaries_attached: set = set()
+        for li, primary_wid in primary_of_strong.items():
+            if primary_wid == w.window_id:
                 continue
-            if whi < tlo or wlo > thi:
-                continue  # window does not overlap this leakage-touched region
-            primary = primary_of_interval[ti]
-            if primary == w.window_id or primary in seen_sources:
+            s_pk = by_list_index[li]
+            df_mhz = abs(s_pk.frequency - w_center_mhz)
+            if df_mhz <= 0.0:
+                # In-grid same-frequency case (shouldn't happen for primary
+                # vs dependent windows but guards the divide-by-zero in the
+                # envelope helper).
                 continue
-            seen_sources.add(primary)
-            for s in strong_by_window.get(primary, []):
-                w.fixed_contributors.append(
-                    FixedContributor(
-                        peak_index=s.list_index,
-                        primary_window_id=primary,
-                        frequency_mhz=s.frequency,
-                        freeze_eligible=s.snr >= min_freeze_snr,
-                    )
+            # |skirt|/|peak| = (1+e^{-T/τ})/(2π·Δf·τ_eff); intensity is the
+            # peak FT magnitude (= 0.5·A·τ_eff), so predicted_mean_skirt
+            # equals intensity · |skirt|/|peak| in the far-field limit, which
+            # is the regime every cross-window contributor sits in.
+            envelope_ratio = _leakage_envelope_fraction(
+                df_mhz * 1e6, acquisition_us, tau_us
+            )
+            predicted_skirt = s_pk.intensity * envelope_ratio
+            if predicted_skirt < threshold:
+                continue
+            w.fixed_contributors.append(
+                FixedContributor(
+                    peak_index=li,
+                    primary_window_id=primary_wid,
+                    frequency_mhz=s_pk.frequency,
+                    freeze_eligible=s_pk.snr >= min_freeze_snr,
                 )
-            edges.append((w.window_id, primary))
+            )
+            primaries_attached.add(primary_wid)
+        for primary_wid in primaries_attached:
+            edges.append((w.window_id, primary_wid))
 
     # --- Step 5: prune leakage-artifact detections from the free set --------
     total_pruned = 0
@@ -583,9 +628,27 @@ def _finalize_plan(
     for w in windows:
         w.batch = batch[w.window_id]
     if len(kept_edges) != len(edges):
-        diagnostics["dropped_cyclic_dependencies"] = [
-            list(e) for e in edges if e not in kept_edges
-        ]
+        dropped_edges = [e for e in edges if e not in kept_edges]
+        diagnostics["dropped_cyclic_dependencies"] = [list(e) for e in dropped_edges]
+        # The magnitude-based attachment rule can produce 2-cycles (two
+        # strong lines in separate windows each attaching the other as a
+        # contributor). The cycle-breaker drops the dependency edge to keep
+        # the DAG acyclic; we must also drop the matching FixedContributor
+        # from the dependent window or the fit will trip on "primary not
+        # yet fit" at execution time. The lost bias-correction falls into
+        # the long-tail residual that a Tier-2 cumulative-tail subtraction
+        # would otherwise cover (deferred -- see stage5-fitting.md O5-10).
+        drops_by_dep: Dict[int, set] = {}
+        for w_id, p_id in dropped_edges:
+            drops_by_dep.setdefault(w_id, set()).add(p_id)
+        for w in windows:
+            doomed = drops_by_dep.get(w.window_id)
+            if not doomed:
+                continue
+            w.fixed_contributors = [
+                fc for fc in w.fixed_contributors
+                if fc.primary_window_id not in doomed
+            ]
 
     # Plan-level diagnostics: leakage-touched regions with no promoted peak --
     # an early-warning hint that Stage 3 may have missed a line.
@@ -725,6 +788,7 @@ def replan(
     max_window_width_mhz: float = DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -787,6 +851,7 @@ def replan(
         "max_window_width_mhz": float(max_window_width_mhz),
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
+        "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -847,6 +912,7 @@ def replan(
     return _finalize_plan(
         windows=windows,
         ofreqs=ofreqs,
+        orms=orms,
         rolling=rolling,
         touched=touched,
         promoted=promoted,
@@ -857,6 +923,7 @@ def replan(
         edge_threshold=edge_threshold,
         max_window_width_mhz=max_window_width_mhz,
         min_freeze_snr=min_freeze_snr,
+        magnitude_attachment_threshold=magnitude_attachment_threshold,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=plan.plan_revision + 1,

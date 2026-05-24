@@ -153,11 +153,17 @@ class TestWeakLineOnSkirt:
         assert weak_w.difficulty == WindowDifficulty.HARD
 
     def test_distant_weak_line_is_independent(self):
-        """A weak line far outside any strong skirt is an easy, independent
-        window with no fixed contributor."""
+        """A weak line beyond the analytic skirt-magnitude threshold of any
+        strong line is an easy, independent window with no fixed
+        contributor. With Tier-1 magnitude-based attachment, "independent"
+        means the strong line's predicted mean |skirt| on this window's
+        grid sits below ``threshold * sigma_c`` -- not that the window
+        sits outside any rolling-coherence-touched region."""
+        # Strong intensity 0.3 at 140 MHz separation predicts mean skirt
+        # ~4.5e-5 = 0.006 * sigma_c, well below the 0.1 sigma_c threshold.
         freqs, spec, rms, peaks = _synthetic(
             [
-                (30010.0, 6.0, PeakClassification.STRONG),
+                (30010.0, 0.3, PeakClassification.STRONG),
                 (30150.0, 0.12, PeakClassification.MEDIUM),
             ],
             n=12000,
@@ -168,6 +174,107 @@ class TestWeakLineOnSkirt:
         assert weak_w.difficulty == WindowDifficulty.EASY
         assert weak_w.batch == 0
         _assert_invariants(plan)
+
+
+class TestMagnitudeAttachment:
+    """Tier-1 contributor-attachment rule (O5-10 fix).
+
+    A strong promoted peak is attached as a :class:`FixedContributor` of a
+    candidate window when its predicted mean |skirt| on that window's grid
+    exceeds ``magnitude_attachment_threshold * sigma_c(w)``. The previous
+    rule (a strong line's rolling-coherence-touched run had to reach the
+    window) missed the cumulative tail of many far-line skirts -- the bias
+    mechanism diagnosed in scratch/stage5-validation/.
+    """
+
+    def test_strong_far_skirt_above_threshold_is_attached(self):
+        """A strong line 140 MHz from a weak window predicts a mean |skirt|
+        of ~9e-4 (= 13 sigma_c at sigma=0.01), well above the 0.1 sigma_c
+        threshold. The magnitude rule attaches it; the touched-region rule
+        previously missed it."""
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30010.0, 6.0, PeakClassification.STRONG),
+                (30150.0, 0.12, PeakClassification.MEDIUM),
+            ],
+            n=12000,
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        weak_w = next(w for w in plan.windows if 1 in w.free_peak_indices)
+        strong_w = next(w for w in plan.windows if 0 in w.free_peak_indices)
+        assert len(weak_w.fixed_contributors) == 1
+        fc = weak_w.fixed_contributors[0]
+        assert fc.peak_index == 0
+        assert fc.primary_window_id == strong_w.window_id
+        assert (weak_w.window_id, strong_w.window_id) in plan.dependency_edges
+        _assert_invariants(plan)
+
+    def test_threshold_respected(self):
+        """Raising ``magnitude_attachment_threshold`` drops borderline
+        contributors; lowering it adds them. Same physical layout."""
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30010.0, 6.0, PeakClassification.STRONG),
+                (30150.0, 0.12, PeakClassification.MEDIUM),
+            ],
+            n=12000,
+        )
+        plan_low = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            magnitude_attachment_threshold=0.01,  # very permissive
+        )
+        plan_high = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            magnitude_attachment_threshold=10.0,  # very strict
+        )
+        weak_low = next(w for w in plan_low.windows if 1 in w.free_peak_indices)
+        weak_high = next(w for w in plan_high.windows if 1 in w.free_peak_indices)
+        assert len(weak_low.fixed_contributors) == 1
+        assert len(weak_high.fixed_contributors) == 0
+        _assert_invariants(plan_low)
+        _assert_invariants(plan_high)
+
+    def test_threshold_persisted_in_plan_parameters(self):
+        """The configured threshold lands in ``plan.parameters`` so a
+        downstream ``replan`` reproduces the same attachment behaviour."""
+        freqs, spec, rms, peaks = _synthetic(
+            [(30040.0, 2.0, PeakClassification.STRONG)]
+        )
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            magnitude_attachment_threshold=0.42,
+        )
+        assert plan.parameters["magnitude_attachment_threshold"] == pytest.approx(0.42)
+
+    def test_mutual_attachment_does_not_break_dag(self):
+        """Two strong lines whose skirts mutually reach each other form a
+        2-cycle in the attachment graph. The cycle-breaker drops one edge
+        from ``dependency_edges`` AND prunes the matching FixedContributor
+        from the dependent window so the fit-execution-time invariant
+        ("primary fit must exist before dependent fits") holds. Without
+        the prune, ``execute_plan`` would raise on "un-fit primary"."""
+        # Two strong lines at 30050 and 30090 -- 40 MHz apart, each strong
+        # enough that the other's skirt clears the 0.1 sigma_c threshold.
+        # They don't fall in the same touched region (clean band between
+        # them) so they end up in separate windows under the rule.
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30050.0, 8.0, PeakClassification.STRONG),
+                (30090.0, 8.0, PeakClassification.STRONG),
+            ],
+            n=8000,
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        _assert_invariants(plan)
+        # Each window's fixed_contributors are consistent with
+        # dependency_edges: every contributor's primary appears in edges.
+        for w in plan.windows:
+            for fc in w.fixed_contributors:
+                assert (w.window_id, fc.primary_window_id) in plan.dependency_edges, (
+                    f"FixedContributor on window {w.window_id} points at "
+                    f"primary {fc.primary_window_id} but that edge was "
+                    f"dropped from dependency_edges"
+                )
 
 
 class TestLeakageArtifactPruning:

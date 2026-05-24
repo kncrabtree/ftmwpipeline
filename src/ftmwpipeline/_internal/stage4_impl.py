@@ -36,6 +36,7 @@ from ..preprocessing.edge_coherence import (
 )
 from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
+    DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     DEFAULT_MIN_FREEZE_SNR,
     DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
@@ -61,6 +62,7 @@ def assign_windows_impl(
     max_window_width_mhz: Optional[float] = None,
     min_freeze_snr: Optional[float] = None,
     min_window_half_width_mhz: Optional[float] = None,
+    magnitude_attachment_threshold: Optional[float] = None,
     tau_us: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Build the Stage 4 window plan from the promoted Stage 3 peaks and persist it.
@@ -116,6 +118,11 @@ def assign_windows_impl(
         if min_window_half_width_mhz is None
         else float(min_window_half_width_mhz)
     )
+    mag_thresh_v = (
+        DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD
+        if magnitude_attachment_threshold is None
+        else float(magnitude_attachment_threshold)
+    )
 
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
@@ -152,6 +159,7 @@ def assign_windows_impl(
         max_window_width_mhz=max_width_v,
         min_freeze_snr=min_freeze_v,
         min_window_half_width_mhz=min_half_v,
+        magnitude_attachment_threshold=mag_thresh_v,
     )
 
     save_window_plan_impl(file_path, plan)

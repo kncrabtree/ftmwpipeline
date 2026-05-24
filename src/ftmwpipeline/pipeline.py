@@ -764,6 +764,7 @@ class Pipeline:
         max_window_width_mhz: Optional[float] = None,
         min_freeze_snr: Optional[float] = None,
         min_window_half_width_mhz: Optional[float] = None,
+        magnitude_attachment_threshold: Optional[float] = None,
         tau_us: Optional[float] = None,
     ) -> WindowPlan:
         """Assign analysis windows (Stage 4), turning promoted peaks into a fit plan.
@@ -796,6 +797,10 @@ class Pipeline:
         min_window_half_width_mhz : float, optional
             Minimum half-width of a window around an isolated weak line
             (default 2.0).
+        magnitude_attachment_threshold : float, optional
+            Tier-1 contributor-attachment threshold in units of σ_c
+            (default 0.1). See
+            :data:`ftmwpipeline.preprocessing.window_planning.DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD`.
         tau_us : float, optional
             Assumed decay constant for the analytic leakage reach
             (default: undamped/boxcar limit).
@@ -822,6 +827,7 @@ class Pipeline:
                 max_window_width_mhz=max_window_width_mhz,
                 min_freeze_snr=min_freeze_snr,
                 min_window_half_width_mhz=min_window_half_width_mhz,
+                magnitude_attachment_threshold=magnitude_attachment_threshold,
                 tau_us=tau_us,
             )
             self.logger.info(

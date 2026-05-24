@@ -806,6 +806,7 @@ def assign_windows(
     max_window_width_mhz: Optional[float] = None,
     min_freeze_snr: Optional[float] = None,
     min_window_half_width_mhz: Optional[float] = None,
+    magnitude_attachment_threshold: Optional[float] = None,
     tau_us: Optional[float] = None,
 ) -> WindowPlan:
     """Assign analysis windows (Stage 4), equivalent to Pipeline.assign_windows().
@@ -834,6 +835,12 @@ def assign_windows(
     min_window_half_width_mhz : float, optional
         Minimum half-width of a window around an isolated weak line
         (default 2.0).
+    magnitude_attachment_threshold : float, optional
+        Tier-1 contributor-attachment threshold in units of σ_c.
+        A strong promoted peak is attached to a window's
+        ``fixed_contributors`` when its predicted mean |skirt| on
+        that window's grid is at least ``threshold * sigma_c(w)``
+        (default 0.1).
     tau_us : float, optional
         Assumed decay constant for the analytic leakage reach
         (default: undamped/boxcar limit).
@@ -853,6 +860,7 @@ def assign_windows(
             max_window_width_mhz=max_window_width_mhz,
             min_freeze_snr=min_freeze_snr,
             min_window_half_width_mhz=min_window_half_width_mhz,
+            magnitude_attachment_threshold=magnitude_attachment_threshold,
             tau_us=tau_us,
         )
     except Exception as e:

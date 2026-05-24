@@ -656,44 +656,104 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   whose own single-cosine fit leaves an elevated local reduced χ² (a blend that
   is not the strongest line) is open — to be assessed on the real-data blended
   fixtures in task 10, alongside the open part of O5-2.
-- **O5-10 — untreated fixed-contributor skirt leakage (w337-style).** A window
-  may sit downstream of a strong fixed contributor whose Lorentzian skirt
-  carries a small but signed amount of power into the window — the complex
-  residual then shows a structured offset (e.g. Im residual systematically
-  below zero, Re slightly above) rather than a zero-mean noise floor, and
-  the |residual| histogram drifts away from the Rayleigh reference. The
-  symptom is concrete and visible in the per-window detail figure (see
-  scratch/stage5-validation/window_337/detail.png after a re-run).
+- **O5-10 — untreated fixed-contributor skirt leakage.** A window may sit
+  downstream of one or more strong lines whose Lorentzian skirts carry a
+  small but signed amount of power into the window. The complex residual
+  then shows a structured offset (e.g. mean(Im) systematically below
+  zero), and the |residual| histogram drifts away from the Rayleigh
+  reference. Symptom is concrete in
+  `scratch/stage5-validation/window_337/detail.png`.
 
-  The framework currently treats fixed contributors via
-  `FrozenPeak`/`fixed_parameters` — each window's
-  `subtract_frozen_background` evaluates the listed contributors' skirts
-  on the window grid and subtracts them. Two failure modes that produce
-  the w337 signature:
+  **Diagnostic findings (2638 fixture).** The bias is **pervasive**, not
+  a w337-only issue:
 
-  1. **Contributor not in this window's fixed-contributor list.** Stage 4
-     decides which contributors get attached to each window; if the
-     selection radius is too narrow (e.g., only same-batch neighbours),
-     a strong line a few FWHM beyond the window edge can leak in without
-     ever appearing in `fixed_parameters`.
-  2. **Contributor is listed but the wrong-frame skirt model is being
-     subtracted.** The skirt evaluation must use the right phase frame
-     and τ — and the right *primary-window-refined* freq/amp/phase. A
-     stale or wrong-phase skirt under-subtracts, leaving a signed bias.
+  | metric | initial | after cumulative-skirt subtract |
+  |---|---|---|
+  | median \|mean(Im)\|/σ_c | 0.31 | 0.17 |
+  | p95 \|mean(Im)\|/σ_c | 1.09 | 0.62 |
+  | windows with \|init Im\| > 0.5σ | 31% | — |
+  | windows where subtract reduces \|Im\| | — | 69% |
+  | windows reaching \|after Im\| < 0.1σ | — | 31% |
 
-  Diagnostic for w337: (i) identify the strongest fitted line within
-  ±10 FWHM of w337's edges (likely in an adjacent window's primary fit);
-  (ii) check whether it appears in `window_337.fixed_parameters`;
-  (iii) if yes, verify the evaluated skirt matches the actual data
-  deficit (sign + magnitude). The residual-rescue planning doc's
-  "phase-coherence projection as a general primitive" item is adjacent
-  but distinct — coherence projection would *flag* the signature; this
-  open item is about *closing the leakage at source*.
+  Roughly half of all 347 windows have measurable Im-bias from external
+  skirts. w337's visibility is incidental — it's a clean K=1 EASY window
+  where the signature shows through unobscured; HARD windows hide the
+  same effect under in-window fit structure.
 
-  When picking up: the fix likely lives in Stage 4's contributor-
-  assignment radius or in the contributor-list builder in
-  `plan_execution.py`; the Stage 5 fit itself is the downstream
-  consumer.
+  The bias source is the **coherent sum of many far-line skirts**, not
+  any single nearby strong contributor. w337 has zero `fixed_contributors`
+  attached, yet ~650 fitted peaks across the whole spectrum sum into
+  -0.60σ Im + 0.42σ Re of cumulative skirt on its grid. The DC-leakage
+  hypothesis (suggested by w337's 1.35 GHz proximity to probe) does not
+  hold — the residual bias does not track DC proximity on the
+  w337..w346 ladder, and the active-FT's apodization suppresses any
+  constant DC offset before the FFT. Diagnostic scripts and outputs in
+  `scratch/stage5-validation/diag_w337_o510.py`,
+  `scratch/stage5-validation/diag_o510_allwindows.py`, and
+  `scratch/stage5-validation/diag_w200_and_coherent.py`.
+
+  **Root cause.** Stage 4's contributor-attachment rule attaches a
+  strong line `s` as a `FixedContributor` of window `w` only when `w`
+  overlaps a rolling-coherence-touched region containing `s`. The
+  rolling-coherence statistic identifies *runs of coherent leakage above
+  threshold*; weak-but-coherent skirt power from lines 20+ MHz out of
+  band does not produce a touched region that reaches `w`, so those
+  contributors are never attached. The cumulative tail of those un-
+  attached contributors is the bias.
+
+  **Fix (v1, single-tier — magnitude-based attachment).** Replace the
+  touched-region gate in `_finalize_plan` step 4 with an analytic
+  skirt-magnitude rule: for every (strong promoted peak `s`, candidate
+  window `w`) pair, predict `s`'s mean |skirt| on `w`'s grid via
+
+  ```
+  predicted_mean_skirt ≈ (s.intensity / tau_eff) × |h_T(f_s - f_w_center, τ, T)|
+  ```
+
+  and attach `s` as a `FixedContributor` of `w` when
+  `predicted_mean_skirt ≥ T1_threshold × σ_c(w)` (default
+  `T1_threshold = 0.1`). The dependency-edges / primary-window /
+  thaw machinery is unchanged; only the attachment criterion changes.
+
+  Per the contributor-count survey, this gives manageable per-window
+  lists:
+
+  | threshold | median | p75 | p95 | max |
+  |-----------|--------|-----|-----|-----|
+  | 0.05 σ_c  | 6      | 10  | 15  | 19  |
+  | **0.1 σ_c**  | **2**  | **5** | **10** | **16** |
+  | 0.2 σ_c   | 1      | 3   | 6   | 13  |
+
+  At 0.1 σ_c the median attached count is 2, p95 is 10, max is 16. The
+  coherent-bias capture is good: top-5 contributors (by predicted
+  skirt magnitude) capture ≥80% of the Im bias in 64% of windows and
+  ≥50% in 88%. The median count to reach 90% of |coherent Im bias|
+  is 3.
+
+  **Fix (v2, future — Tier-2 cumulative-tail background).** For the
+  ~12% of windows where the long tail still carries measurable bias
+  after Tier-1 attachment, add a per-window "external bias spectrum":
+  one complex array computed as the sum of `model_spectrum`
+  evaluations over every promoted peak NOT in Tier-1, subtracted from
+  the window data before the per-window fit runs. Two implementation
+  options:
+
+  - **Plan-time, Stage 3 intensities only.** Compute the background
+    in `_finalize_plan` from each contributor's `intensity` (peak FT
+    magnitude) and an assumed-zero phase (the Lorentzian magnitude
+    contribution is phase-invariant when integrated over a wide
+    window; the *coherent* contribution depends on phase, which is
+    unknown until fit time). This captures the magnitude budget but
+    not the sign — only suitable as a chi²-correction, not as a
+    bias-subtraction.
+  - **Stage 5 multi-pass.** After Pass 1 (with Tier-1 contributors
+    only), compute Tier-2 per window from all OTHER windows' fitted
+    amplitudes + phases. Refit each window with Tier-1 + Tier-2
+    subtracted. Iterate to convergence (2 passes typically suffice).
+
+  v2 is deferred until v1 validation shows where the residual long-
+  tail bias actually lives. Likely Tier-2 is unnecessary for the 2638
+  fixture; instruments with denser line forests may need it.
 
   **Sequencing note:** this item is the prerequisite for the
   generalised effective-DoF / AICc-with-`n_eff` work described in
@@ -702,7 +762,39 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   Contributor-skirt leakage contaminates the per-window χ² and noise-
   floor baseline that every Stage 5 hypothesis test calibrates
   against; tuning effective-DoF thresholds against a contaminated
-  baseline means re-tuning afterward. Land O5-10 first.
+  baseline means re-tuning afterward. Land O5-10 (Tier-1) first.
+
+  **v1 status: landed.** Tier-1 magnitude-based attachment is wired
+  through `_finalize_plan` (`src/ftmwpipeline/preprocessing/window_planning.py`),
+  the plan parameter is persisted in `WindowPlan.parameters`, and the
+  cycle-breaker now also prunes orphaned `FixedContributor` entries
+  whose dependency edge was dropped (two strong lines whose skirts
+  mutually exceed threshold form a 2-cycle that needs both edges
+  dropped; without the prune, execute_plan tripped on "un-fit primary"
+  at fit time). 25 unit tests pass (3 new for magnitude-attach + 1 new
+  for cycle-prune) and the full integration suite (103 tests) passes.
+
+  2638 fixture validation: 71/347 windows (20.5%) now have at least one
+  fixed_contributor (was effectively zero outside the small subset
+  Stage 4's touched-region rule caught), 123 contributors attached
+  total. 68 dependency edges were dropped as cyclic (adjacent-window
+  strong-line pairs whose skirts mutually exceed threshold). Spot
+  checks:
+
+  | window | before chi²_r | after chi²_r | FC attached |
+  |--------|---------------|---------------|-------------|
+  | w337   | 1.503         | **0.985**     | 2 (from w336 doublet) |
+  | w194   | (high)        | **0.916**     | 2 (from w193) |
+  | w270   | (high)        | **21.9**      | 1 (from w269) |
+  | w281   | (high)        | **4.18**      | 2 (from w282) |
+  | w200   | 4182.9        | 4182.9        | 0 — unresolved-doublet misfit, unrelated to O5-10 |
+  | w148   | (high)        | 715           | 0 — rescue-overfit pathology, unrelated to O5-10 |
+
+  Per-window chi²_r p50/p75/p95 = 1.43 / 2.33 / 7.73 after Tier-1.
+  Residual elevation above 1.0 in HARD windows is now dominated by
+  rescue-overfit / unresolved-doublet pathologies (the agenda for the
+  rescue-AICc / phase-degeneracy work that follows this fix), not by
+  external-skirt leakage.
 
 ## Task breakdown
 
