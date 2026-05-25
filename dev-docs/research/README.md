@@ -37,6 +37,18 @@ readers.
   band, kills ~80 % of noise candidates at TPR 95 %), with a clear
   bin-vs-linewidth optimum at FWHM/bin ≈ 1–2 that translates to an
   acquisition-design principle (``T_active ≈ 3–5 · τ_eff``).
+- [Matched-filter primary peak detection](matched-filter-detection/report.md) —
+  tests whether replacing the production primary pass (BH window +
+  Sav-Gol locator) with a Lorentzian matched filter (exp-apodized FFT
+  + per-bin SNR threshold) followed by the projection screen is a
+  net win. Verdict: the prompt's pure MF+screen design fails on 2638
+  (screen has no discrimination on real data), but a hybrid (MF
+  apodization + Sav-Gol concavity locator, no screen) dominates the
+  production two-pass on synthetic data at every SNR/FWHM cell, and
+  applied as the *gap pass* (replacing the unapodized FFT with the
+  matched-filter active-FT, keeping the SavGol locator and leakage
+  mask) is a clean local win. Recommended wiring: matched-filter gap
+  pass, primary pass unchanged.
 
 ## Conventions for new reports
 
