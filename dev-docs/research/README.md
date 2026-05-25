@@ -30,6 +30,13 @@ readers.
   unapodized false positives are sinc sidelobes that no cheap local
   test can suppress, vindicates the two-pass design, and verifies on
   2638 that the primary pass should apodize with a strong window.
+- [The projection-coherence screen for peak detection](stage3-coherence-screen/report.md) —
+  simulator-driven study of the σ-weighted Lorentzian-projection
+  statistic as a low-SNR-vs-noise discriminator. Verdict: the screen
+  works (matched-τ AUC ≥ 0.9 across the FWHM/bin ∈ [1, 2], SNR ≥ 2
+  band, kills ~80 % of noise candidates at TPR 95 %), with a clear
+  bin-vs-linewidth optimum at FWHM/bin ≈ 1–2 that translates to an
+  acquisition-design principle (``T_active ≈ 3–5 · τ_eff``).
 
 ## Conventions for new reports
 
