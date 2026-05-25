@@ -39,33 +39,64 @@ on demand) and the Stage 2 `NoiseResult` (per-point noise `sd`).
 
 Two passes:
 
-1. **Primary (windowed/apodized).** Compute the magnitude spectrum *with* a
-   strong window-function apodization (clean, leakage-suppressed) and run the
-   ported `locate_peaks` with `thresh = min_snr * sd`. Close lines smearing
-   together is acceptable. This yields the robust coarse peak list.
-2. **Gap pass (unwindowed).** In the spectral regions *not* covered by a
-   primary detection, recompute the magnitude spectrum *without* apodization
-   (full resolution) and detect again at the same SNR threshold to recover weak
-   lines the apodization suppressed. This pass is **masked by the de-ramped
-   leakage-touched map** (D8) so a strong line's coherent sinc skirt is not
-   re-detected as weak lines (see Open question O1).
+1. **Primary (Blackman-Harris-apodized internal zpf=1 grid).** Compute the
+   magnitude spectrum *with* a strong window-function apodization
+   (`primary_window = "blackmanharris"` default), then run the ported
+   `locate_peaks` with `thresh = min_snr · sd`. Close lines smearing together
+   is acceptable. This yields the robust strong-line list (which also seeds
+   the leakage mask).
+
+2. **Gap pass — matched-filter exp-apodized active-region FFT.** Build a
+   separate matched-filter spectrum: slice the FID to its active region
+   `[start_us, end_us]`, exp-apodize at `τ_basis = expf_us` (the user's
+   Stage 1 apodization), mean-remove, zero-pad to `n_active · 2^zpf_active`
+   (default `zpf_active = 2` — chosen so the Lorentzian FWHM lands at ≈ 3
+   bins on the resulting grid), then rfft. Run `locate_peaks` on it with a
+   grid-aware SavGol window and detect weak lines the primary's apodization
+   smeared away. The gap pass is masked by the **de-ramped leakage-touched
+   map** (D8); since the active-region FFT's phase reference is the active-
+   region turn-on (t=0 is already at start_us implicitly), call
+   `leakage_touched_intervals(..., start_us=0.0)` to skip the de-ramp the
+   full-record-rfft path needs.
+
+   The matched filter dominates the previous unapodized gap pass across
+   the recall/FP ROC on 2638 under the new Stage 2 noise estimator. See
+   `dev-docs/research/matched-filter-detection/report.md` §10 for the
+   ROC and the algorithm derivation.
 
 Each detected peak is **classified by SNR only** into
 `PeakClassification.{WEAK, MEDIUM, STRONG}` via two configurable thresholds
 (`weak < t1 ≤ medium < t2 ≤ strong`), with `min_snr` as the detection floor.
 
-The apodization used for pass 1 is a Stage 3 parameter (`primary_window`),
-independent of the unwindowed spectrum the downstream fit uses **and** of the
-user's Stage 1 settings. It defaults to a strong window function
-(`blackmanharris`); a weaker window (Hann) or the mild Stage-1 exponential
-leaves truncation sidelobes in the primary strong-line list, polluting the
-returned peaks and the strong-line list Stage 4 consumes. The default is
-calibrated in
-`dev-docs/research/peak-detection/report.md` (§3, §6): on 2638 the mild
-exponential left ~9.5 % of primary detections as sidelobe-suspects vs ~1.9 %
-for Blackman-Harris. The primary apodization affects only *which positions*
-the pass finds — every reported amplitude/SNR is measured on the unapodized
-spectrum (see *Scoring basis* below).
+### Grid-aware Savitzky-Golay window
+
+Both passes share a single principled rule for the SavGol window:
+
+```
+sg_window = max(5, odd_round(K · FWHM_lorentz_MHz / freq_step_MHz))
+```
+
+with `K = 4` and the 5-bin floor (SavGol-with-order-3 minimum).
+`FWHM_lorentz_MHz = 1 / (π · τ)` where τ is the dominant time-domain damping
+(Stage 1 `expf_us` for the gap pass; the same for primary if Stage 1 used
+no further smoothing). On 2638 (τ = 5 µs → FWHM = 63.7 kHz):
+
+- Primary grid (zpf=1 internal, freq_step ≈ 23.8 kHz, FWHM ≈ 2.67 bins) →
+  sg_window = 11.  *Reproduces the prior empirical default exactly.*
+- MF gap grid (active zpf=2, freq_step ≈ 19.8 kHz, FWHM ≈ 3.2 bins) →
+  sg_window = 13.
+
+The gap-pass sg_window is computed automatically at detection time from
+the actual grid's `freq_step` and the Stage 1 `expf_us`; the primary
+sg_window remains user-configurable via the existing `sg_window` parameter,
+defaulting to 11 (which the rule reproduces). Helper:
+`_internal/stage3_impl.py::_grid_aware_sg_window`.
+
+The primary apodization (`primary_window`) is independent of the user's
+Stage 1 settings and affects only *which positions* the primary pass finds
+— every reported amplitude/SNR is re-measured on the user spectrum during
+snap-back. Default `"blackmanharris"` calibration in
+`dev-docs/research/peak-detection/report.md` §3, §6.
 
 ## Data structures
 
@@ -142,6 +173,20 @@ Stage output: an ordered list of classified `Peak`s.
   spectrum on a log y-axis so the noise floor and the 100s-of-× stronger
   lines are both legible. Apodized scoring remains only as a fallback when no
   unapodized spectrum is supplied.
+- **O4 — gap pass detector. RESOLVED: matched-filter active-FT.**
+  The unapodized full-record gap pass was replaced with an exp-apodized
+  active-region FFT (`_internal/stage3_impl.py::_mf_gap_spectrum`),
+  zero-padded by `_GAP_ACTIVE_ZPF = 2` so the Lorentzian FWHM lands at
+  ≈ 3 bins on the resulting grid (SavGol's operating range). Strictly
+  dominates the prior unapodized gap pass across the recall/FP ROC on
+  2638 under the new Stage 2 noise estimator (89.1 % vs 86.2 % recall
+  at fewer candidates; full ROC in
+  [`research/matched-filter-detection/report.md`](../research/matched-filter-detection/report.md) §10).
+  Pre-condition: the new Stage 2 (`stage2-noise-estimation.md`)
+  delivers a multi-bin σ on the active-FT; the prior 1-bin-σ failure
+  would have killed any σ-weighted statistic on this grid. Open work:
+  cross-instrument validation of `_GAP_ACTIVE_ZPF` and the grid-aware
+  K = 4 in `_grid_aware_sg_window`.
 - **Phase-coherence projection as a stage-3 quality filter (future
   enhancement).** The phase-coherence projection developed for Stage 5's
   residual rescue

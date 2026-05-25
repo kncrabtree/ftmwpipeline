@@ -73,6 +73,20 @@ trades sinc-sidelobe FPs (production's gap-pass headache) for
 Lorentzian-skirt FPs that the leakage mask + concavity test already
 handle. The change is local, additive, and synthetic-validated.
 
+**Status (as of the noise-grid-invariance Stage 2 rewrite):** the §10
+wiring is **shipped** at `src/ftmwpipeline/_internal/stage3_impl.py`.
+With the now-stable Stage 2 noise estimator (multi-bin σ on the
+active-FT) and active-region `zpf=2` zero-padding (so the Lorentzian
+FWHM lands at ≈ 3 bins where SavGol's concavity test is most
+effective), the MF gap pass strictly dominates the prior unapodized
+gap pass across the ROC on 2638 (89.1 % vs 86.2 % recall at fewer
+candidates). The grid-aware SavGol window rule
+`sg_window = max(5, odd_round(4 · FWHM_MHz / freq_step_MHz))` is
+codified in `_grid_aware_sg_window` and reproduces the empirical
+primary `sg_window = 11` exactly. See §10 (revised) and the
+[Stage 3 planning doc](../../planning/stage3-peak-detection.md)
+for the as-shipped algorithm.
+
 ## 1. Theory: σ-weighted Lorentzian projection ≡ apodized FFT
 
 A σ-weighted complex projection of the active-portion FT `z(f)` onto a
@@ -642,86 +656,134 @@ past a peak). Net: cleaner candidate set at high SNR, equal recall at
 low SNR. The production primary stays unchanged; the leakage mask
 stays unchanged; the screen is not adopted.
 
-## 10. Wiring proposal: matched-filter gap pass
+## 10. Wiring proposal: matched-filter gap pass — as shipped
 
-A drop-in replacement for the unapodized gap pass:
+A drop-in replacement for the unapodized gap pass, validated on 2638
+under the new Stage 2 noise estimator
+(noise-grid-invariance report) and implemented at
+`src/ftmwpipeline/_internal/stage3_impl.py::_mf_gap_spectrum` +
+`detect_peaks(..., gap_sg_window=...)`.
 
-1. **Primary pass unchanged.** Continue `_spectrum_from_fid(...,
-   expf_us=None, window_function="blackmanharris")` for the strong-
-   line list. Its purpose (clean strong-line list to seed the leakage
-   mask) is unaffected by gap-pass changes.
-2. **Replace the gap-pass spectrum**: instead of `_spectrum_from_fid(
-   ..., expf_us=None, window_function=None)` (unapodized, full FID
-   zpf=1), build the matched-filter active-FT via `compute_active_ft(
-   ..., expf_us=τ_basis, ...)`. `τ_basis` is set per experiment from
-   the Stage 1 `expf_us` (e.g. `τ_basis = expf_us` matches the user-
-   chosen apodization; `τ_basis = 2 × expf_us` is slightly narrower).
-   The exact choice is a calibration question that the validation
-   harness should decide — *but* the algorithm tolerates τ_basis
-   over a factor of 6 on 2638 with < 5 % recall variation, so the
-   sensitivity is low.
-3. **Gap detection locator unchanged.** Run `locate_peaks(sg_window=
-   max(5, fwhm_active_bins · 3), sg_order=3, thresh=min_snr · σ)` on
-   the matched-filter active-FT magnitude. The sg_window must scale
-   with grid coarseness (§8 finding) — production's `sg_window = 11`
-   is correct for the zpf=1 user grid; for the active-FT it should be
-   ~5-7.
-4. **Leakage mask unchanged.** The de-ramped coherence map still
-   gates the gap pass. The matched-filter apodization suppresses the
-   sinc skirts the mask used to exclude (now a defense-in-depth
-   layer), but Lorentzian skirts past the apodized line still warrant
-   the mask.
-5. **No screen.** Drop the projection-screen post-filter. The 2638
-   ratio distribution (§4.2) shows no discrimination on real data.
-6. **Snap-back unchanged.** Existing snap-back from the
-   gap-detection grid to the user grid handles the bin-coarseness
-   delta between detection and reporting.
+1. **Primary pass unchanged.** Continue
+   `_spectrum_from_fid(..., expf_us=None, window_function="blackmanharris")`
+   for the strong-line list. Its purpose (clean strong-line list to
+   seed the leakage mask) is unaffected by gap-pass changes. The
+   grid-aware sg_window rule (step 3 below) reproduces the existing
+   sg_window=11 on this grid, so no behavior change.
 
-Why the gap pass is the right place and not the primary:
+2. **Replace the gap-pass spectrum.** Build a matched-filter active-
+   region FFT: slice the FID to `[start_us, end_us]`, apodize with
+   `exp(-t/τ_basis)` where `τ_basis = expf_us` (the user's Stage 1
+   apodization), mean-remove, then zero-pad to `n_active · 2^zpf` and
+   rfft. The `zpf_active = 2` (4× zero-padding on the active region)
+   is chosen so the FWHM lands in SavGol's operating range: at the
+   resulting grid FWHM ≈ 3 bins, where the concavity test is most
+   effective. Wider zpf (3 or higher) does not improve recall and
+   slightly worsens FP; narrower (zpf=0 or 1) puts FWHM below SavGol's
+   minimum operating scale (§8 origin of the §8 finding).
 
-- The primary's *strong*-line list is what the leakage mask depends
-  on. Replacing it with a matched-filter primary risks introducing
-  skirt-bin candidates into the strong-line list, polluting the
-  mask. Keep the strong window for the strong-line list.
-- The gap pass's job is *weak*-line recovery. The matched filter is
-  exactly the right tool for that job (the smoke test + §7 tables
-  make this clear).
+3. **Grid-aware Savitzky-Golay window.** A single principled rule
+   covers every grid:
+   ```
+   sg_window = max(5, odd_round(K · FWHM_lorentz_MHz / freq_step_MHz))
+   ```
+   with `K = 4` and a 5-bin floor (the SavGol-with-order-3 minimum).
+   `FWHM_lorentz_MHz = 1 / (π · τ_basis)`. On 2638:
+   - Primary grid (zpf=1 internal, freq_step ≈ 23.8 kHz, FWHM ≈ 2.67
+     bins) → sg_window = 11. *Matches the prior default.*
+   - MF gap-pass grid (active zpf=2, freq_step ≈ 19.8 kHz, FWHM ≈ 3.2
+     bins) → sg_window = 13.
+   The rule is encoded as `_grid_aware_sg_window` in
+   `_internal/stage3_impl.py`. The gap-pass window is computed at
+   detection time from the actual spectrum's freq_step; the primary
+   window stays user-configurable via the existing `sg_window`
+   parameter (its default 11 also matches the rule).
 
-Estimated impact: the gap-pass change is local to
-`_spectrum_from_fid` and the gap-pass-specific `locate_peaks` call in
-`detect_peaks_impl`. Validation harness on 2638 should catch any
-regression in Stage 5 outcomes; if recall doesn't budge but
-candidate quality improves at higher-SNR fixtures, ship it.
+4. **Leakage mask still applies.** The matched-filter apodization
+   suppresses sinc sidelobes (the mask's original target) but
+   Lorentzian skirts that survive the apodization still warrant the
+   mask. The MF gap spectrum's rfft is over the *active region only*,
+   so the phase reference is the active-region turn-on (t=0 maps to
+   start_us implicitly); pass `start_us=0.0` to
+   `leakage_touched_intervals` to skip the de-ramp the full-record-
+   rfft path needs.
+
+5. **No screen.** Dropped: the §4.2 ratio collapse persists under the
+   new noise estimator (verified on 2638: ratios still cluster in
+   [0.6, 1.5] with the multi-bin σ on the active-FT). The §5 finding
+   stands — the screen rates skirt bins as Lorentzian-coherent
+   because they *are* tails of real Lorentzians, regardless of σ.
+
+6. **Snap-back unchanged.** Snap-back from the gap-detection grid to
+   the user grid handles bin-coarseness deltas between detection and
+   reporting.
+
+### ROC on 2638 (revised — under the new Stage 2 noise estimator)
+
+Production gap pass (zpf=1 internal, sg=11) vs the as-shipped MF gap
+pass (active zpf=2, sg=13). Fit-peak universe = 723 in the trim band.
+"Candidates" is total positions found in the gap pass; "FP_proxy" is
+candidates minus fit-peak hits.
+
+| Detector | min_snr | candidates | recall | FP_proxy |
+|---|---:|---:|---:|---:|
+| Production gap | 2.0 | 5158 | 623 / 723 (86.2 %) | 4535 |
+| Production gap | 2.5 | 2377 | 572 / 723 (79.1 %) | 1805 |
+| Production gap | 3.0 | 1584 | 516 / 723 (71.4 %) | 1068 |
+| **MF gap (zpf=2, sg=13)** | 2.0 | 7314 | **665 / 723 (92.0 %)** | 6649 |
+| **MF gap (zpf=2, sg=13)** | 2.5 | 4025 | **644 / 723 (89.1 %)** | 3381 |
+| **MF gap (zpf=2, sg=13)** | 3.0 | 2781 | **595 / 723 (82.3 %)** | 2186 |
+
+The MF gap pass strictly dominates the production ROC: at every
+FP-count regime its recall is higher. At the simplest one-knob swap
+(preserve current FP load) — MF gap at min_snr = 2.5 vs production gap
+at min_snr = 2.0 — MF has *fewer* candidates (4025 vs 5158) and
+*higher* recall (89.1 % vs 86.2 %). Reproducible via
+`scratch/matched-filter-detection/reassess_with_stable_noise.py`.
+
+The original §10 proposal's "no zero-padding by design" qualifier
+is relaxed by the as-shipped version: `zpf_active = 2` is necessary
+for the active-FT grid to reach FWHM ≈ 3 bins where SavGol works
+well. Zero-padding introduces Dirichlet bin-correlation (α = 0.25 at
+zpf=2), which would break a pure per-bin SNR threshold detector — but
+the hybrid (MF + SavGol) explicitly smooths across multiple bins
+through the concavity test, so the correlation does not degrade it.
 
 ## 11. Open questions
 
-- **Robust per-experiment τ calibration.** The half-max-walk auto-τ
-  is biased and noisy; a fit-based estimate adds Stage-5-like cost to
-  Stage 3. A closed-form estimator (e.g., from the second moment of
-  the active-FT magnitude around the brightest candidate) might
-  thread the needle. Less pressing now that the gap-pass τ is just
-  the Stage 1 `expf_us`.
-- **Why does the screen ratio distribution collapse on real data?**
-  The screen study saw ratios spread over [0, 2+] on synthetic
-  spectra with analytic σ. On 2638 ratios cluster in [0.6, 1.5]. The
-  Stage 2 adaptive noise estimator on the active-FT (~10⁵ bins, not
-  the user-grid ~10⁶) may behave differently than on the persisted
-  spectrum, biasing σ and so the ratio numerator. A noise-estimator
-  audit on the active-FT grid is the obvious follow-up — the user
-  has flagged this as the next study.
-- **Adaptive sg_window for the gap-pass locator.** The §8 finding —
-  sg_window must match the apodized FWHM in bins — is a calibration
-  question with one obvious answer (set sg_window from τ_basis and
-  T_active) but no empirical sweep against fixtures other than 2638.
-  Cross-instrument validation needed before shipping.
+- **Cross-instrument generality of `zpf_active = 2` and the grid-
+  aware K = 4.** 2638 is one fixture. The rule
+  `sg_window = max(5, odd_round(4 · FWHM_bins))` reproduces production's
+  empirical primary `sg_window = 11` *and* lands on the right gap-pass
+  width at zpf=2; that's a stronger signal than a single-fixture sweep
+  but still needs validation on fixtures with different
+  (FWHM, T_active, SNR-distribution) profiles. Likely outputs: the
+  `zpf_active` and `K` constants need per-instrument calibration; the
+  algorithmic skeleton stays.
+- **Stage 5 validation after the gap-pass swap.** The new gap pass
+  promotes ~25 % more peaks than the prior version on 2638 (883 vs
+  709). Some of those are true weak lines the prior gap missed;
+  others may be Lorentzian-skirt FPs the SavGol concavity test let
+  through. A clean Stage 5 re-run is the deciding test.
+- **Why does the screen ratio distribution still collapse on real
+  data after the σ fix?** The noise-grid-invariance work delivers a
+  proper multi-bin σ on the active-FT (was 1-bin → killed the
+  screen's σ-weighting entirely). Re-running the screen on 2638
+  shows >99 % of both fit-near and not-fit-near candidates pass the
+  ratio ≥ 0.6 threshold. The §5 finding — *the screen rates skirt
+  bins as Lorentzian-coherent because they are tails of real
+  Lorentzians* — is the explanation that survives. The screen is
+  structurally wrong for skirt-saturated spectra, regardless of σ.
+- **Robust per-experiment τ calibration.** Less pressing now that
+  `τ_basis = expf_us` is the as-shipped choice. The 2638 sweep showed
+  recall variation < 5 % over a factor-of-6 range in τ_basis, so the
+  sensitivity is low.
 - **High-SNR FP behaviour on real spectra.** §7.1's synthetic
   high-SNR scaling shows the hybrid beating production two-pass past
-  SNR ≈ 50. 2638's strongest lines are at SNR ~ 10³-10⁴; the wiring
-  change should improve 2638 candidate quality near those lines but
-  the 4σ noise FP rate may also shift. Worth measuring.
-- **Cross-instrument generality.** 2638 is one fixture. The matched
-  filter's synthetic advantage holds at FWHM/bin ∈ [1, 5], SNR ≥ 3;
-  fixtures outside that band might give a different verdict.
+  SNR ≈ 50. 2638's strongest lines are at SNR ~ 10³-10⁴; the as-
+  shipped change should improve 2638 candidate quality near those
+  lines, but the noise FP rate near them deserves a focused
+  measurement.
 
 ## 12. What this study is *not* covering
 

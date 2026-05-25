@@ -59,6 +59,22 @@ logger = logging.getLogger(__name__)
 # only the reported/stored spectrum (snap-back re-measures there).
 _DETECTION_ZPF = 1
 
+# Gap-pass detector: matched-filter (exp-apodized active-region FFT) on a
+# zero-padded grid that lands the Lorentzian FWHM in SavGol's sweet spot
+# (≈ 3 bins). Active-region zpf chosen so FWHM_bins from the Stage 1
+# apodization is ≥ ~3 — see dev-docs/research/matched-filter-detection §10
+# (revised) and the reassessment script under
+# scratch/matched-filter-detection/.
+_GAP_ACTIVE_ZPF = 2
+
+# Grid-aware Savitzky-Golay window: cover ~4 line-FWHM in frequency, with
+# the SavGol-minimum floor at 5 bins for order-3 polynomial stability. The
+# coefficient ≈ 4 reproduces the empirical primary-pass default
+# (sg_window=11 at FWHM ≈ 2.67 bins on the zpf=1 internal grid) and gives
+# sg_window=13 on the MF gap-pass grid (FWHM ≈ 3.2 bins at active zpf=2).
+_SG_FWHM_COVERAGE = 4.0
+_SG_MIN_WINDOW = 5
+
 # Primary-pass apodization: a strong window function suppresses truncation
 # sidelobes so the primary pass's strong-line list (which seeds the gap-pass
 # leakage mask) is clean. Blackman-Harris is the calibrated default -- on the
@@ -85,6 +101,69 @@ def _active_acquisition_us(
     lo = 0.0 if start_us is None else float(start_us)
     hi = fid_duration_us if end_us is None else float(end_us)
     return max(hi - lo, 0.0)
+
+
+def _grid_aware_sg_window(freq_step_mhz: float, fwhm_mhz: float) -> int:
+    """Pick sg_window covering ~4 line-FWHM, rounded up to odd, minimum 5."""
+    if freq_step_mhz <= 0 or fwhm_mhz <= 0:
+        return _SG_MIN_WINDOW
+    target_bins = int(round(_SG_FWHM_COVERAGE * fwhm_mhz / freq_step_mhz))
+    if target_bins % 2 == 0:
+        target_bins += 1
+    return max(_SG_MIN_WINDOW, target_bins)
+
+
+def _mf_gap_spectrum(
+    fid: Any,
+    base_pp: Any,
+    trim_range: Optional[Tuple[float, float]],
+    tau_basis_us: float,
+    zpf_active: int = _GAP_ACTIVE_ZPF,
+) -> ComplexFT:
+    """Matched-filter active-region FFT for the gap-pass detector.
+
+    The FID's [base_pp.start_us, base_pp.end_us] active region is exp-apodized
+    at ``tau_basis_us`` (Stage 1's user apodization), zero-padded by
+    ``zpf_active`` (default 2) so the FWHM in bins lands in SavGol's
+    operating range, then rfft'd. The phase reference is the active-region
+    turn-on (t=0 maps to start_us), so callers running coherence statistics
+    on this spectrum (e.g., ``leakage_touched_intervals``) must pass
+    ``start_us=0.0`` to skip the de-ramp that the full-record-rfft path
+    needs. See dev-docs/research/matched-filter-detection/report.md §10
+    (revised) for the calibration.
+    """
+    sample_dt_us = fid.spacing * 1e6
+    start_idx = int(round((base_pp.start_us or 0.0) / sample_dt_us))
+    if base_pp.end_us is None:
+        end_idx = len(fid.data)
+    else:
+        end_idx = int(round(base_pp.end_us / sample_dt_us))
+    end_idx = min(end_idx, len(fid.data))
+    n_active = end_idx - start_idx
+    if n_active <= 0:
+        raise ValueError("active region must have positive length")
+    n_padded = n_active * (2 ** int(zpf_active))
+
+    # Exp-apodize the active region, mean-remove (matching Stage 1's rdc),
+    # pad with zeros to n_padded, then rfft. compute_active_ft itself runs
+    # an rfft on n_active points only and ignores n_padded for the FFT — we
+    # need zpf > 0 here so we inline the padded rfft directly.
+    active = fid.data[start_idx:end_idx].astype(float, copy=True)
+    t_rel = np.arange(n_active) * sample_dt_us
+    active *= np.exp(-t_rel / float(tau_basis_us))
+    active -= active.mean()
+    padded = np.zeros(n_padded, dtype=float)
+    padded[:n_active] = active
+    spectrum = sample_dt_us * np.fft.rfft(padded)
+    f_bb = np.fft.rfftfreq(n_padded, d=sample_dt_us)
+    from ..fitting.peak_model import sideband_sign
+    s = sideband_sign(fid.sideband)
+    freq_mhz = float(fid.probe_freq_mhz) + s * f_bb
+
+    cft = ComplexFT.from_spectrum(spectrum.astype(np.complex128), freq_mhz.astype(float))
+    if trim_range is not None:
+        cft = cft.trim_to_range(trim_range[0], trim_range[1])
+    return cft
 
 
 def _spectrum_from_fid(
@@ -265,6 +344,7 @@ def detect_peaks_impl(
         "min_exclusion_mhz": min_excl_v,
         "run_gap_pass": run_gap_v,
         "detection_zpf": _DETECTION_ZPF,
+        "gap_active_zpf": _GAP_ACTIVE_ZPF,
         "settings_source": "stage1_canonical",
     }
 
@@ -295,13 +375,22 @@ def detect_peaks_impl(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 
-    # Internal detection grids (native zpf=1), identical physical axis. The
-    # primary pass applies a strong window (default Blackman-Harris) for
-    # sidelobe suppression; the gap pass is unapodized (full resolution).
+    # Primary detection runs on the leakage-suppressed apodized spectrum
+    # (Stage 3 internal zpf=1 grid). The gap pass runs on the matched-filter
+    # active-region FFT: exp-apodized at the Stage 1 user apodization,
+    # zero-padded so the FWHM lands in SavGol's operating range. The grid-
+    # aware sg_window for the gap pass comes from
+    # ``_grid_aware_sg_window`` driven by the line FWHM = 1/(π · expf_us).
     primary_ft = _spectrum_from_fid(
         fid, base_pp, trim_range, expf_us=None, window_function=primary_window_v
     )
-    gap_ft = _spectrum_from_fid(fid, base_pp, trim_range, expf_us=None)
+    tau_basis_us = float(base_pp.expf_us) if base_pp.expf_us else 5.0
+    gap_ft = _mf_gap_spectrum(
+        fid, base_pp, trim_range, tau_basis_us=tau_basis_us
+    )
+    line_fwhm_mhz = 1.0 / (np.pi * tau_basis_us)
+    gap_freq_step = abs(gap_ft.freq_array[1] - gap_ft.freq_array[0])
+    gap_sg_window_v = _grid_aware_sg_window(gap_freq_step, line_fwhm_mhz)
     primary_noise = estimate_noise_adaptive(
         primary_ft.freq_array, primary_ft.magnitude_spectrum
     )
@@ -310,17 +399,16 @@ def detect_peaks_impl(
     )
 
     # Gap-pass leakage mask (D8): the de-ramped coherent-leakage map on the
-    # unapodized gap spectrum the gap pass detects on. A full-record rfft makes
-    # a strong line's truncation-leakage skirt oscillate; de-ramping to the
-    # active-region turn-on restores the coherent edge statistic, whose
-    # above-threshold runs are the regions the gap pass must skip so sidelobes
-    # are not promoted as weak lines. See leakage-detection-rework.md.
+    # gap-detection spectrum. The MF gap-pass FT is computed on the active
+    # region alone, so t=0 is already at the active-region turn-on; pass
+    # ``start_us=0.0`` to ``leakage_touched_intervals`` to skip the de-ramp
+    # the full-record-rfft path needs.
     leakage_intervals = leakage_touched_intervals(
         gap_ft.freq_array,
         gap_ft.complex_spectrum,
         gap_noise.rms_noise,
         fid.probe_freq_mhz,
-        base_pp.start_us or 0.0,
+        0.0,
         threshold=GAP_MASK_EDGE_THRESHOLD,
     )
 
@@ -335,6 +423,7 @@ def detect_peaks_impl(
         weak_medium_snr=weak_medium_v,
         medium_strong_snr=medium_strong_v,
         sg_window=sg_window_v,
+        gap_sg_window=gap_sg_window_v,
         sg_order=sg_order_v,
         leakage_intervals=leakage_intervals,
         min_exclusion_mhz=min_excl_v,

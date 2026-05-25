@@ -319,6 +319,7 @@ def detect_peaks(
     weak_medium_snr: float = DEFAULT_WEAK_MEDIUM_SNR,
     medium_strong_snr: float = DEFAULT_MEDIUM_STRONG_SNR,
     sg_window: int = 11,
+    gap_sg_window: Optional[int] = None,
     sg_order: int = 3,
     leakage_intervals: Optional[List[Tuple[int, int]]] = None,
     min_exclusion_mhz: float = 0.0,
@@ -402,7 +403,8 @@ def detect_peaks(
         # No unapodized spectrum -> degrade to scoring on the apodized one.
         ref_freq, ref_mag, ref_sd = primary_freq, primary_mag, primary_sd
 
-    radius = sg_window // 2
+    gap_sg = sg_window if gap_sg_window is None else int(gap_sg_window)
+    radius = gap_sg // 2
 
     def _score(ref_idx: int, pass_name: str) -> Tuple[int, Peak]:
         sd_local = ref_sd[ref_idx]
@@ -446,12 +448,12 @@ def detect_peaks(
                     )
                 )
 
-    # --- Pass 2: masked unapodized gap pass -----------------------------
+    # --- Pass 2: masked gap-pass detector on the reference (gap) spectrum --
     if run_gap_pass and have_gap:
         gap = locate_peaks(
             ref_freq,
             ref_mag,
-            window=sg_window,
+            window=gap_sg,
             order=sg_order,
             thresh=min_snr * ref_sd,
         )
