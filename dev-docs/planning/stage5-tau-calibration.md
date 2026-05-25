@@ -1,0 +1,669 @@
+# Plan: Data-driven τ calibration via sliding-active-window STFT
+
+Status: **planning (pre-implementation).** Supersedes the
+"Dataset-wide tau calibration" §357-381 and "Broken-initial-fit
+pathology and the majority-vote-freeze proposal" §383-422 sections of
+[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md);
+both will be reduced to a back-reference once this doc lands. Builds
+on the w198 / tau-collapse findings in
+[`../research/residual-rescue/report.md`](../research/residual-rescue/report.md)
+§8.
+
+## Objective
+
+Replace the upfront exponential apodization (`expf_us = 5.0` on the
+2638 fixture) with a **data-driven, fit-free τ calibration** that
+runs after Stages 0-2 and produces a single global majority-vote
+`τ_maj ± σ_τ`. Subsequent Stages 3-5 consume `τ_maj` as:
+
+- the gap-pass matched filter's `tau_basis_us` (Stage 3),
+- the per-window LSQ seed for `τ0_us` and the centre of a
+  bidirectional Gaussian-prior penalty (Stage 5),
+- the rescue τ for `rescue_and_consolidate` and the locked value
+  for the weak-window `fit_tau = False` path.
+
+The calibration extracts τ via a **sliding-active-window STFT**:
+zero-pad the full-length record and rotate which `T_w`-long
+sub-interval contains the active samples, then read the magnitude
+at every frequency bin across the resulting STFT frames. A real
+molecular line at frequency `f₀` decays as `exp(-a/τ_mol)` vs. the
+window start `a`; a clock spur stays constant; noise bins fail the
+fit-quality gate. Per-bin exponential fits give a τ histogram of
+thousands of bins, robust to single-window pathologies (blends,
+shape error, fixed-contributor coupling) that complicate the
+LSQ-fit-and-histogram alternative.
+
+The proposal removes a regularizer (apodization) and replaces it
+with a self-calibrated one (`τ_maj`). The hypothesis is that
+molecular τ is a global property of the experimental geometry
+(beam transit time, horn coupling, collisional / Doppler broadening
+from the supersonic expansion), so it should be well-determined
+from the STFT of any fixture with at least a handful of
+above-threshold lines.
+
+## Why this is a serious change, not a tweak
+
+Apodization currently does several things that the proposal needs
+to either replace or validate independently. Inventory of removal
+consequences:
+
+| consumer | how apodization is used today | post-removal status |
+|---|---|---|
+| Stage 1 persisted FT (`FID.preprocess`) | `expf_us` multiplied into FID before rfft; the apodization decay rate adds to the molecular decay rate and widens the *effective* magnitude FWHM the user sees | gone — peaks become **narrower** in magnitude (FWHM = 1/π·τ_mol vs 1/π·τ_obs, with τ_mol > τ_obs so FWHM_mol < FWHM_obs), sidelobes longer (no exponential suppression of the sinc) |
+| Stage 2 σ estimator (`estimate_noise_adaptive`) | empirical MAD/median — no explicit apodization parameter | adaptive; should re-converge but skirt-exclusion mechanism (`STRONG_PEAK_SNR=20`, `SKIRT_EXCLUSION_K=1.5`) needs verification — narrower peaks have *narrower* HWHM γ but the 1/Δf far-field skirt extends *farther* with no exponential cap, so the exclusion radius `γ·SNR/k` can shift in either direction |
+| Stage 3 primary pass | runs its OWN apodization (`DEFAULT_PRIMARY_WINDOW="blackmanharris"`) — independent of user's `expf_us` | unaffected structurally |
+| Stage 3 gap-pass MF (`_mf_gap_spectrum`) | matched-filter uses `tau_basis_us = base_pp.expf_us or 5.0`; FWHM-in-bins calibrated against this τ; `_GAP_ACTIVE_ZPF = 2` keeps FWHM ≥ ~3 bins | switches to `tau_basis_us = τ_maj` (available after Stages 0-2 → STFT calibration → Stage 3); no fallback-to-5.0 path needed |
+| Stage 4 S_coh (`DEFAULT_EDGE_THRESHOLD = 8`) | runs on Stage 1 persisted FT with Stage 2 σ in denominator; calibrated against the apodized spectrum's sidelobe-suppressed shape | **touched fraction will increase further** (already 11 % → 17.7 % across the recent Stage 2/3 rework); T_edge=8 calibration may need re-validation; strong-cluster grouping could over-merge (more long mega-windows like w302) |
+| Stage 5 active-FT (`compute_active_ft`) | applies same `expf_us` as Stage 1; fit τ is τ_obs = combined | applies no apodization; fit τ is τ_mol |
+| Stage 5 `tau_bounds` (`derive_window_fit_constraints`) | `(τ0/k, min(τ0·k, τ_apod))` — `τ_apod` is the **hard upper bound** on the fit τ (since τ_obs ≤ τ_apod for any τ_mol > 0); also clamps how *narrow* the fitted line can be | becomes `(τ_maj/k, τ_maj·k)` centred on `τ_maj` (or `(τ_maj − N·σ_τ, τ_maj + N·σ_τ)` — see §Bidirectional penalty) |
+| Stage 5 `tau_penalty_reference` | one-sided penalty `sqrt(λ)·max(0, (τ_ref − τ)/τ_ref)`. Fires when LSQ drives τ below τ_ref. Mechanism: when too few peaks are modelled, LSQ buys χ² by driving τ DOWN (BROADENING modelled lines so they absorb the missing peaks' residual); the penalty pulls τ back UP toward τ_apod (= narrower, physical lineshape) | replaced by bidirectional Gaussian-prior penalty around `τ_maj`. Two failure modes are now possible — τ-collapse (DOWN, over-broaden to absorb residual) and τ-runaway (UP, over-narrow toward the clock-spur basin) — and only `τ_maj` anchors the physical-decay basin |
+| Residual-rescue tau policy (`residual_rescue.py:644-660`) | reads `tau_apodization_us` from `conservative_kwargs`, uses it as the rescue τ when the initial fit's τ is pegged at the lower bound (signature of a τ-collapse / over-broadened fit); otherwise uses the initial fit's τ as-is | unconditional use of `τ_maj` as the rescue τ. The lower-bound-only check is insufficient post-removal — τ can be collapsed to a value above its bound but still well below `τ_maj` (e.g. w140's 2.96 µs against an implied τ_maj ≈ 7-8 µs), and the rescue would inherit it |
+
+The proposal therefore touches every Stage 1-5 calibration point.
+The validation plan below is structured to catch regressions stage
+by stage rather than measure success only at Stage 5 chi².
+
+## Prior work this consolidates
+
+- **Cross-fixture-validation §Dataset-wide tau calibration** (lines
+  357-381): post-hoc consensus τ from strong-line windows. Did not
+  propose removing apodization; kept the consensus as a per-fixture
+  invariant.
+- **Cross-fixture-validation §Broken-initial-fit / majority-vote-freeze**
+  (lines 383-422) + **residual-rescue/report.md §8**: identified
+  the rescue's joint-refit thawing τ as the channel that defeats
+  the freeze on windows like w198.
+
+This plan **supersedes** the first (`τ_maj` replaces apodization
+rather than supplementing it) and **implements** the second's
+intent (rescue uses `τ_maj` as its anchor), via a different
+extraction method.
+
+## Definitions
+
+- **τ_mol** — the underlying molecular decay constant. Set
+  primarily by **experimental geometry** (beam transit time
+  through the cavity, horn coupling, collisional / Doppler
+  broadening from the supersonic expansion), so it is expected
+  to be a **global property of the experiment** rather than a
+  per-species value. Velocity slip in the expansion (heavy
+  species lagging the buffer gas), pressure / collisional
+  broadening on a subset of lines, and instrumental clock spurs
+  (CW LO/mixer leakage with effectively infinite τ) are the
+  canonical reasons τ extracted at fit time could split into
+  clusters.
+- **τ_apod** — the user-applied exponential apodization time
+  constant (today `expf_us`, default 5 µs on 2638). Removed by
+  this proposal.
+- **τ_obs** — what the current Stage 5 fits return with
+  apodization on: the combined decay
+  `τ_obs = τ_mol · τ_apod / (τ_mol + τ_apod)`. Bounded above
+  by τ_apod (the combined decay rate is the sum of rates, so the
+  combined τ is the harmonic-mean-ish reciprocal). On 2638's
+  τ_obs ≈ 3 µs with τ_apod = 5 µs, implied τ_mol ≈ 7.5 µs.
+- **τ_maj** — the proposal's data-driven majority-vote estimate of
+  τ_mol from the per-bin STFT decay fits. `σ_τ` is the
+  histogram's robust spread (IQR / 1.349 or the fitted Gaussian
+  width).
+- **fit τ** — the per-window LSQ-fitted value of the shared decay
+  parameter inside `window_fit.py`. Equal to τ_obs today; would
+  equal τ_mol post-change.
+
+## The STFT calibration method
+
+### What the math says
+
+For a single damped cosine `s(t) = A · exp(-t/τ_mol) · cos(2πf₀t + φ)`
+extracted on `[a, a + T_w]` and zero-padded to the full-length
+record before rfft, the on-line FT magnitude is
+
+```
+|S(a, f₀)| = (A · τ_mol / 2) · exp(-a/τ_mol) · (1 - exp(-T_w/τ_mol))
+           = constant · exp(-a/τ_mol)
+```
+
+so sliding `a ∈ [0, T_full - T_w]` traces out a pure exponential
+decay vs `a` whose rate is `1/τ_mol` directly. Single-parameter
+fit, no LSQ ambiguity.
+
+| feature | |S(a, f)| vs a |
+|---|---|
+| real molecular line | `exp(-a/τ_mol)` exponential |
+| clock spur (τ = ∞) | constant |
+| noise bin | random walk, no clean exponential |
+| strong-line skirt at f₀+Δf | `exp(-a/τ_mol)` × sinc(Δf·T_w·π) — same rate as parent |
+
+Skirts inherit their parent line's decay rate, so they reinforce
+the strong-line τ cluster in the histogram rather than producing a
+separate "skirt cluster". That's convenient — multi-counting the
+same τ is benign.
+
+Overlapping skirts of multiple strong lines can decohere across
+frames (phase factors `exp(2πi·f·a)` differ between lines), so
+bins midway between two strong sources may show faster-than-`1/τ_mol`
+apparent decay or non-monotonic structure. The per-bin
+goodness-of-fit gate drops these.
+
+### FFT grid policy
+
+**Zero-fill outside the active sub-window, do not truncate the
+record length.** Zero-fill preserves the full-record bin spacing
+`Δf = 1 / T_full`, so all STFT frames share the same frequency
+grid and per-bin time series are 1:1 comparable. Truncating to
+`T_w` would double the bin width when `T_w = T_full / 2` and break
+the comparison.
+
+### Frame schedule
+
+- **Active window length `T_w`** — calibration default
+  `T_w = T_full / N_seg` with `N_seg = 10`. Each frame contains
+  `T_full / 10` active samples (the rest zeroed).
+- **Frame stride** — non-overlapping by default
+  (`stride = T_w`, giving `N_seg = 10` frames). Optional overlap
+  factor for finer fits at the cost of correlation between
+  frames; not strictly needed when N_seg is modest.
+- **Frame midpoints** — fit τ against the frame *centre* time
+  `a_c = a + T_w/2`. Equivalent up to a constant offset for the
+  fit; documenting the convention explicitly.
+
+`N_seg` is a knob. Larger `N_seg` (more frames) → better τ fit
+per bin but lower per-frame SNR (less signal in each active
+window). 2638's expected τ_mol ≈ 7.5 µs and T_full = 12.65 µs put
+`exp(-T_full / τ_maj) ≈ 0.18` — the line is at ~18 % of its peak by
+the end of the FID, plenty of dynamic range for an exponential
+fit even at modest N_seg. The synthetic study (§Workflow phase 1)
+sweeps N_seg to pick the operating point.
+
+### Per-bin fit and classification
+
+For each frequency bin index `k`, the STFT magnitudes
+`|S_n(k)| ≡ |S(a_n, f_k)|` form an N_seg-point time series. Two
+candidate models:
+
+- **Exponential**:  `|S_n| = B + C · exp(-a_n / τ_k)`
+- **Constant**:  `|S_n| = D`
+
+Both have analytic / cheap fit kernels (the exponential is a 3-par
+NLS; on noise-poor bins a robust 1-par log-linear regression on
+`log|S_n|` is a faster precursor). Classification per bin:
+
+- **Discard** if the bin's mean magnitude is below the noise
+  threshold `T_σ · σ_x(k)` (see §Above-threshold bin selection).
+  Most bins are dropped here.
+- **Spur** if the AICc-based model choice prefers the constant
+  model OR the exponential fit returns `τ_k ≥ 0.95 · τ_max`
+  (saturating the upper τ_bound).
+- **Bad fit** if the exponential's residual sum of squares
+  exceeds an N_seg-aware threshold (e.g. > 5 × per-frame noise);
+  marks dense / contaminated bins (overlapping skirts, multi-line
+  blends) that shouldn't enter the histogram.
+- **Contributor** otherwise. The τ_k value enters the histogram
+  weighted by the bin's on-line SNR (optional refinement — gives
+  strong, low-noise bins more weight than borderline ones).
+
+### Above-threshold bin selection
+
+The STFT calibration runs after Stages 0-2, so the canonical Stage 2
+σ on the full-record FT is available. Each STFT frame's noise
+floor is **lower** than the full-record FT's by a factor that
+depends on the active fraction and the apodization in use during
+calibration (none, by hypothesis). For non-overlapping frames of
+length `T_w = T_full / N_seg`:
+
+```
+σ_frame(k) ≈ σ_x(k) · sqrt(T_w / T_full) = σ_x(k) / sqrt(N_seg)
+```
+
+(noise in a bin is the rfft of a `T_w`-long noise segment, whose
+RMS scales with `sqrt(T_w)`). The threshold per bin for
+"contributor" classification is `T_σ · max_n |S_n(k)|` against
+the *mean* (over n) of `σ_frame(k)` — i.e. require the strongest
+frame's magnitude to clear the per-frame noise by `T_σ` (default
+`T_σ = 5`). This is a tighter gate than the canonical
+"|X| ≥ T_σ · σ_x" applied to the full-record FT because we're
+asking it to hold on the smallest STFT frame.
+
+### Clock-spur cross-checks (the simple version)
+
+τ saturation already classifies most spurs as "spur". A complementary
+visualisation:
+
+- **Split-acquisition magnitude ratio.** For a flagged spur
+  candidate, compute first-half vs second-half FT magnitudes
+  (single rfft pair, no fit). The ratio
+  `R = |S_{[0, T/2]}| / |S_{[T/2, T]}|` is ≈ `exp(T / (2 · τ_maj))`
+  for a real line (≈ 2.3 on 2638 at τ_maj ≈ 7.5 µs) and ≈ 1 for a
+  spur. The STFT-derived per-bin τ_k already encodes this
+  information; the half-window ratio is a fast independent
+  sanity-check.
+
+A peak's catalogue lookup is the ground-truth filter when
+available. The calibration module should accept an optional
+`spur_frequencies_mhz` parameter; the filter then drops any bin
+within ±1 MHz of a listed harmonic regardless of the in-band
+classification.
+
+### Distribution analysis
+
+The "contributor" τ_k values form the calibration histogram. The
+user's stated hypothesis is no τ-vs-SNR correlation (above the
+threshold) and no τ-vs-frequency correlation. **Test rather than
+assume**:
+
+- **τ vs SNR.** Pearson correlation on the contributor sample.
+  Reject the null (correlated) at p < 0.05 → investigate. A real
+  positive correlation would suggest amplitude-dependent shape
+  effects (the cos²θ Voigt-deficit physics from
+  [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)
+  pulling apparent τ down on the strongest lines).
+- **τ vs frequency.** Same Pearson test, plus a horn-band partition
+  (low / mid / high thirds of the trim range) with median
+  comparison. Deviation from the global median across thirds
+  beyond ±1·σ_τ flags systematic frequency dependence.
+- **Multimodality.** Fit 1-component vs 2-component Gaussian
+  mixture by AIC. Single τ_mol globally is the physical
+  expectation; bimodal histograms call for investigation. Likely
+  causes, in rough order of likelihood on a 2638-class fixture:
+  1. **Residual clock spurs that escaped the saturation filter**
+     (e.g. a spur driven slightly off the bound by a nearby real
+     line). Check the split-acquisition ratio on the high-τ
+     cluster before treating it as physical.
+  2. **Velocity slip.** Different species at different terminal
+     velocities → different transit times → different τ_mol.
+     A real bimodal histogram with the two clusters separated by
+     10-30 % is the signature. Per-species τ assignment via
+     peak-frequency-catalogue lookup is the principled fix;
+     larger structural change, deferred to a follow-up plan.
+  3. **Multiple decay processes within one species** (pressure
+     / collisional broadening on a subset). Rare; flag for
+     manual investigation.
+  4. **Shape-error spread** (cos²θ Voigt deficit). Tighter SNR
+     cut suppresses this.
+
+  Default policy when bimodality is detected: take the dominant
+  cluster (highest weight in the GMM fit), accept residual
+  mis-fit on the minor cluster, **flag the multimodality in the
+  persisted `tau_calibration` diagnostics** so a human can audit
+  and override.
+
+Outputs: `τ_maj` (median or GMM-mode-centre), `σ_τ` (robust
+spread), the contributor count, multimodality flag, the
+spur-bin list, and per-region (frequency-third) statistics.
+
+### Pre-conditions for accepting `τ_maj`
+
+- ≥ 200 contributor bins after all filters. STFT gives orders of
+  magnitude more bins than the LSQ-fit alternative; this floor is
+  meant to catch pathological-low cases (mostly-empty spectra),
+  not to be binding on real data.
+- 2-component AIC is not strongly preferred (ΔAIC < 4 relative
+  to 1-component) OR the dominant cluster carries ≥ 70 % of the
+  weight.
+- `σ_τ / τ_maj < 0.20`. The STFT method's higher contributor
+  count justifies a tighter spread threshold than the LSQ-fit
+  alternative's 0.30.
+
+If any pre-condition fails, fall back to a **conservative
+default**: `τ0_us = acquisition_us / 3` and disable the τ-anchoring
+penalty for that fixture. This must be tested as a real path,
+not a fail-safe in name only.
+
+## Bidirectional τ penalty (LSQ-side complement)
+
+The current `tau_penalty_lambda` term in
+`window_fit._penalty_residuals_and_jacobian`:
+
+    sqrt(λ) * max(0, (tau_ref - tau) / tau_ref)
+
+is **one-sided** (fires only when `tau < tau_ref`). It exists to
+resist the τ-collapse failure mode: when the initial fit's K is
+too small, LSQ buys χ² by driving τ DOWN (= broadening each
+modelled line — recall larger τ ↔ narrower FWHM 1/(π·τ)) so the
+broadened lines absorb the residual from the missing peaks. The
+penalty pulls τ back UP toward τ_apod (= narrower, physical
+lineshape).
+
+With apodization removed and `τ_apod` no longer the natural
+anchor, two failure modes are possible:
+
+- **τ-collapse (τ below τ_maj)**: same mechanism as today, the
+  driver is unmodelled peaks broadening the modelled ones to
+  absorb their residual.
+- **τ-runaway (τ above τ_maj)**: with the upper bound now
+  `τ0·k` rather than `τ_apod`, LSQ can drive τ UP into a
+  narrow-peak basin. This is the basin clock spurs live in; an
+  unmodelled spur in or near a window can pull the shared τ
+  toward it.
+
+Both motivate a bidirectional Gaussian-prior penalty centred on
+`τ_maj`:
+
+    sqrt(λ) * (tau - tau_maj) / sigma_tau
+
+with `sigma_tau = σ_τ` from the calibration pass (floored at e.g.
+0.5 µs if the histogram is unusually tight). Strength `λ` is the
+main tuning lever; recommend starting at the current
+`DEFAULT_TAU_PENALTY_LAMBDA = 500` and adjusting on validation runs.
+
+For weak windows (the existing `weak_window_snr_threshold = 10`
+gate), `fit_tau = False` and τ is locked at `τ_maj` exactly.
+
+The penalty's Jacobian is a single non-zero entry at the τ column.
+The prior one-sided code path can be deleted once the new path is
+verified against the existing behaviour with `τ_apod` substituted
+as the centre.
+
+## Re-seeding the residual rescue
+
+`residual_rescue.py:644-660` currently chooses the rescue τ from
+the initial fit's τ, with an override only when that τ is at the
+LSQ lower bound. This is the channel that defeats anchoring: with
+apodization removed and τ-collapse possible above the bound
+(w140's 2.96 µs against an implied τ_maj ≈ 7-8 µs is well above
+any bound), the rescue inherits the broken value.
+
+Replacement: the rescue τ is `τ_maj` for every window, regardless
+of the initial fit's outcome. The rescue's `find_residual_peaks`
+matched filter uses `rescue_fwhm = feature_fwhm(τ_maj, T)` — a
+narrower FWHM (since τ_maj > current τ_obs) means a more sensitive
+detector for the same line shape. The `conservative_fit` on the
+residual runs with `fit_tau = False` and `tau = τ_maj`, which
+matches the existing "frozen τ" rescue practice.
+
+The joint refit's current τ-thaw behaviour must be **disabled**
+when calibrated τ is available. This is the specific channel the
+`stage5-cross-fixture-validation.md` §"Broken-initial-fit
+pathology" investigation identified.
+
+## Workflow (a fresh session's roadmap)
+
+The work is large enough that ordering matters. Recommend three
+phases, each gated on the previous one's success.
+
+### Phase 1: Synthetic prototype (research)
+
+**Goal**: validate the STFT calibration method on controlled
+synthetic FIDs before introducing it to any real data. All
+outputs land under `dev-docs/research/stage5-tau-calibration/`
+(`prototype.py`, `report.md`, `figures/`, `data/`).
+
+Reusable building blocks from the existing research prototypes:
+
+- `dev-docs/research/matched-filter-detection/prototype.py`
+  ::`regenerate_fid_for_sim` — constructs a noisy time-domain
+  FID from controlled `(τ_truth, line_bins, SNR, σ_time)`. The
+  closest fit to what the STFT prototype needs; extend rather
+  than re-invent.
+- `dev-docs/research/peak-detection/prototype.py`
+  ::`synthetic_spectrum` — analytic complex FT in the `h_T`
+  form. Useful for ground-truth bin-by-bin amplitudes for the
+  per-bin τ fits.
+- `dev-docs/research/noise-grid-invariance/prototype.py`
+  ::`make_synthetic_noise` — noise-only FIDs with controlled
+  σ(f). Useful for the noise-bin classification test.
+
+Synthetic cases to verify in `Phase 1`:
+
+1. **Single isolated strong line.** Sweep τ_truth ∈ {3, 5, 7.5,
+   12, 20} µs at fixed T_full = 12.65 µs and SNR = 100. Check
+   `τ_maj` recovered within ±5 % at each value. Pick `N_seg`
+   from this sweep (the empirical operating point that gives
+   recovery accuracy across the range; expect `N_seg ∈ {8, 10,
+   16}`).
+2. **SNR sweep at fixed τ.** Vary SNR ∈ {5, 10, 20, 50, 100,
+   500} at τ_truth = 7.5 µs. Test the hypothesis that the per-bin
+   τ recovery has **no SNR dependence above some floor**
+   (likely SNR ≳ 10-20 for STFT's per-frame SNR). Below the
+   floor, document the bias direction.
+3. **Clock spur isolated.** Add a CW tone at a clean frequency
+   bin. Verify it's classified as "spur" (τ_k ≥ 0.95 · τ_max,
+   constant-model wins AIC) and dropped from the contributor
+   set.
+4. **Clock spur next to a real line.** CW tone within ±5 FWHM
+   of a real damped cosine. Verify the spur classification
+   still fires on the spur's frequency bin, and the real line's
+   τ recovery is unaffected.
+5. **Dense cluster (Stage 4 mega-window analogue).** Six lines
+   within a 5 FWHM span, all τ_truth = 7.5 µs. Verify per-bin τ
+   recovery on the in-line bins; verify the contaminated
+   between-line bins are dropped by the goodness-of-fit gate.
+6. **Bimodal population (velocity slip simulation).** Half the
+   lines at τ_truth = 5 µs, half at τ_truth = 10 µs. Verify
+   the GMM 2-component AIC test fires; verify the
+   multimodality flag in the calibration result.
+7. **Voigt-deficit shape error.** Inject the cos²θ residual
+   from `scratch/stage5-validation/diag_voigt_hypothesis.py` at
+   amplitude-dependent magnitude. Verify the per-bin τ
+   distribution shows controlled mild SNR dependence (the
+   regression slope from the cross-fixture-validation work).
+
+Acceptance for Phase 1: all seven cases recover the stated
+ground-truth behaviour. Document failure modes for any that
+don't.
+
+### Phase 2: 2638 application (research)
+
+**Goal**: apply the Phase-1 STFT prototype to the 2638 fixture's
+real FID and produce a candidate `τ_maj`. Output lands under
+`dev-docs/research/stage5-tau-calibration/`.
+
+Steps:
+
+1. Re-run Stages 0-2 with `expf_us = None` on a fresh copy of
+   the 2638 fixture (CLI already supports `expf_us` as a
+   parameter, so no code change needed). Persist into
+   `scratch/stage5-tau-calibration/exp_2638_unapodized.ftmw`.
+2. Run the Phase-1 prototype on the raw FID, using the
+   unapodized Stage 2 σ as the noise reference for the
+   above-threshold bin selection.
+3. Inspect the 2D STFT heatmap (frequency × frame). Spot-check
+   the qualitative predictions: solid streaks at known clock
+   frequencies (if listed); exponential decay at the strong
+   lines anchoring 2638's previous validation windows
+   (especially the freq ranges of w216, w293, w302, w69).
+4. Plot τ_k histogram + τ_k vs frequency + τ_k vs SNR.
+   Statistical tests per §Distribution analysis.
+5. Report `τ_maj ± σ_τ` for 2638, the contributor count, the
+   bimodality test outcome, the SNR / frequency correlation
+   tests, and the list of identified spur frequencies.
+
+Acceptance for Phase 2:
+
+- Calibration pre-conditions pass on 2638.
+- `τ_maj` is consistent with the implied 7-8 µs from current
+  τ_obs ≈ 3 µs + τ_apod = 5 µs combined-decay arithmetic (within
+  ±20 %).
+- Spurs (if any) are at frequencies consistent with the
+  instrument's known clock harmonics.
+
+### Phase 3: Comparison study (research)
+
+**Goal**: cross-validate STFT against the LSQ-fit-and-histogram
+alternative on the same synthetic and 2638 datasets, so the
+choice of STFT as the primary path is empirically defended.
+
+LSQ-fit-and-histogram method (the alternative — formerly the
+primary in earlier drafts of this doc):
+
+- Run Stages 0-5 on the same unapodized fixture, no τ-anchoring
+  penalty active, `tau0_us = fid_length / 2`. The Stage 5 fits
+  produce per-window τ values.
+- Filter to EASY-difficulty K=1 windows with free-peak SNR ≥ 20,
+  no fixed contributors, `tau_err / tau < 0.10`, χ²_r < 2,
+  and τ not saturating the upper bound.
+- Histogram-fit a Gaussian → `τ_maj_lsq ± σ_τ_lsq`.
+
+Cross-validation on 2638:
+
+- `|τ_maj_stft − τ_maj_lsq| / τ_maj_stft < 0.10`. If they
+  disagree at this level, investigate; the primary candidate
+  cause would be the LSQ approach being contaminated by
+  shape-error-driven τ bias.
+- Spurs identified by both methods agree (catalogue overlap).
+- Documented assessment: under what conditions does each method
+  fail? On 2638 specifically, which is more sensitive to e.g.
+  blended pairs / shape error / dense clusters?
+
+Cross-validation on the Phase-1 synthetic cases:
+
+- For each of the seven synthetic cases, run both methods and
+  compare. The LSQ method may fail outright on (5) dense
+  cluster and (7) Voigt deficit (because LSQ τ absorbs the
+  multi-peak / shape residual); document this as one of the
+  reasons STFT is the primary.
+
+Acceptance for Phase 3: both methods agree on 2638's τ_maj
+within 10 %; STFT's advantages are quantified on the synthetic
+failure cases.
+
+### Phase 4: Production wiring
+
+Conditional on Phase 1-3 success.
+
+1. **Calibration module.** New module
+   `src/ftmwpipeline/fitting/tau_calibration.py`:
+   `extract_tau_majority(fid, sample_dt_us, start_us, end_us,
+   stage2_noise, n_seg, spur_frequencies_mhz=None) →
+   TauCalibrationResult`. Pure function; unit-testable. The
+   `TauCalibrationResult` dataclass carries `τ_maj`, `σ_τ`, the
+   per-bin τ map (for diagnostics), the spur list, the
+   multimodality flag, and the contributor count.
+2. **Persist** as a new HDF5 group `/stage5_tau_calibration`,
+   serialized via a new `io/tau_calibration_serialization.py`
+   matching the patterns of other Stage 5 outputs. Round-trip
+   tests required.
+3. **Bidirectional τ penalty.** Replace the one-sided
+   `tau_penalty_lambda` term with the bidirectional Gaussian-
+   prior form centred on `tau_penalty_reference = τ_maj`,
+   width `sigma_tau`. Update the Jacobian. Add unit tests
+   matching the pattern of `TestPairPhasePenalty` (finite-
+   difference comparison + boundary cases).
+4. **Bounds rework.** Replace the `tau_apodization_us` upper
+   clamp in `derive_window_fit_constraints` with a
+   `tau_maj_us` / `sigma_tau_us` pair. Bounds:
+   `(max(τ_maj − N·σ_τ, τ_maj/k), min(τ_maj + N·σ_τ, τ_maj·k))`
+   with `N` ≈ 3-5 and `k = max_decay_factor`.
+5. **Stage 3 wiring.** Pass `τ_maj` into `_mf_gap_spectrum` as
+   `tau_basis_us`. Removes the hardcoded `or 5.0` fallback.
+6. **Stage 5 wiring.** `_internal/stage5_impl.py`: read
+   `τ_maj` from the persisted calibration before
+   `execute_plan`; plumb into `tau0_us` and
+   `conservative_kwargs`.
+7. **Rescue wiring.** Replace `residual_rescue.py:644-660`'s
+   pegged-bound heuristic with unconditional use of `τ_maj`.
+   Disable the joint-refit's τ-thaw when `τ_maj` is available.
+8. **Stage tracker / dependencies.** Add `stage5_tau_calibration`
+   as a stage between `stage2_noise_result` and `stage3_peaks`
+   in `PipelineStageTracker.STAGE_DEPENDENCIES` (Stage 3's
+   gap-pass consumes it, so this is the correct insertion
+   point). Stage 4 inherits the dependency transitively. Stage 5
+   reads it directly.
+9. **CLI / Pipeline / functional-API surface.** Three identical
+   wrappers per the dual-interface rule. Subcommand:
+   `calibrate-tau`. New options on `fit-peaks`:
+   `--tau-maj-override`, `--sigma-tau-override` for testing.
+10. **Apodization default.** Change the default `expf_us` in
+    the Stage 1 strategy to `None`. Document the migration in
+    `CLAUDE.md` and the strategy docs. Keep `expf_us` as an
+    optional Stage 1 parameter (a user may still want to apply
+    apodization for legacy comparison).
+11. **Stage 2-4 regression validation.** Run the validation
+    harness on `scratch/stage5-validation3/` and the full
+    non-slow test suite. Compare against the current
+    post-Stage-2/3-rework / post-penalty-recast baseline. Stage
+    4's S_coh T_edge may need recalibration if the
+    leakage-touched fraction climbs above ~25 %; document and
+    address separately if it does.
+
+## Risks
+
+- **Calibration fails on 2638.** STFT pre-conditions don't pass,
+  or `τ_maj` falls outside expected range. The conservative
+  fallback (`acquisition_us / 3`, no anchoring penalty) must be
+  tested as a real production path, not a fail-safe in name only.
+- **N_seg / T_w mis-calibration.** Phase 1 picks the operating
+  point on synthetic; if 2638 needs a different N_seg than the
+  synthetic study indicated, document the deviation and the
+  reason. Probably points at a model mismatch in the synthetic
+  setup (apodization, noise statistics, line density) worth
+  fixing in the prototype.
+- **Stage 4 over-merges without apodization.** If the
+  leakage-touched fraction climbs past ~25 %, mega-windows
+  beyond w302 start appearing. Independent of `τ_maj` — Stage 4's
+  problem to solve (T_edge recalibration). Document as a separate
+  follow-up.
+- **Multi-modal τ population.** Cross-fixture validation must
+  check this before promoting single-τ_maj to default. If a
+  fixture shows two clusters, per-species τ assignment is the
+  principled fix (larger structural change, deferred).
+- **w216-class shape-error windows don't improve.** Expected, not
+  a regression. The cos²θ / Voigt-deficit work in
+  [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)
+  is the relevant lever.
+- **τ_maj is sensitive to noise threshold.** The
+  above-threshold bin count and τ_maj median should not
+  depend strongly on the threshold value. Document the
+  sensitivity in the Phase-2 report.
+
+## Acceptance gates (Phase 4 promotion)
+
+1. **Phase 1 acceptance.** All seven synthetic cases recover the
+   stated behaviour.
+2. **Phase 2 acceptance.** STFT on 2638 produces `τ_maj` within
+   ±20 % of the implied 7-8 µs; pre-conditions pass; spurs
+   classified consistent with instrument harmonics.
+3. **Phase 3 acceptance.** STFT and LSQ-fit-and-histogram agree
+   on `τ_maj` on 2638 within 10 %.
+4. **No regression on existing 14-window validation suite.**
+   χ²_r per validation window within ±20 % of the current
+   post-penalty-recast baseline (or improve).
+5. **w140 chi²_r reduces by > 50 %.** The canonical
+   τ-collapse case the proposal must fix.
+6. **Stage 4 plan remains sane.** ≥ 380 windows on 2638; max
+   width ≤ 80 MHz; hard-window fraction within 55-75 %.
+7. **Stage 5 chi²_r distribution improves or holds.** Median
+   ≤ 1.25; p95 ≤ 5.5; max ≤ 200.
+8. **Tests pass.** Full non-slow suite green; new unit tests for
+   the calibration module and the bidirectional penalty.
+
+## Outstanding open questions
+
+These are decisions the implementer will need to make during
+Phase 4, after seeing the Phase 1-3 numbers:
+
+- **Multi-fixture confidence.** Is `τ_maj` stable across fixtures
+  from the same instrument? Across instruments? Cross-fixture
+  validation (see
+  [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md))
+  is the broader programme this fits into.
+- **Per-species τ.** If multimodality is detected on any fixture,
+  does the pipeline support per-cluster τ assignment? Substantial
+  structural change (every `FixedContributor` / `FreePeak` needs
+  a τ pointer) — defer to a follow-up plan, gated on at least one
+  fixture demanding it.
+- **Apodization as a user-facing display knob.** Even with
+  apodization off for the fit, a user might want apodization
+  applied to the **displayed** spectrum for visual comparison
+  with older results. Decoupling Stage 1 storage
+  (apodization-free) from Stage 1 display (user-chosen
+  apodization) is a reasonable feature, out of scope for this
+  plan.
+- **`max_decay_factor` value.** Currently 5. With apodization
+  gone, this is the only multiplicative bound on τ. 2638's
+  expected τ_maj ≈ 7-8 µs gives an upper bound of 35-40 µs at
+  factor 5 — reasonable. May tighten to 3 once `τ_maj` is known
+  empirically; with the `σ_τ`-based bound from §Phase 4 step 4
+  this becomes less load-bearing.
+- **Persistence of `τ_maj`.** Recommended: live on the `.ftmw`
+  file under `/stage5_tau_calibration`. It's an invariant of the
+  experiment, not an on-demand quantity. The Stage 3 gap-pass
+  needs it, and re-running the STFT calibration is expensive
+  enough to want caching.
+- **Frame overlap.** The default non-overlapping schedule is
+  cheap and gives independent fits per bin. Overlapping frames
+  give more points per bin (better fit precision) but correlated
+  errors. Phase-1 study should decide.
+- **Per-bin SNR weighting.** Whether to weight contributor τ_k
+  values by the bin's on-line SNR (gives strong, low-noise bins
+  more influence). Phase-1 study should pick the weighting
+  scheme.
