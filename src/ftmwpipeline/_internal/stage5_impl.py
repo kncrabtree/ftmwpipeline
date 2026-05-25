@@ -63,6 +63,7 @@ from .stage3_impl import (
     _load_canonical_noise,
     load_peaks_impl,
 )
+from ..fitting.tau_calibration import TauCalibrationResult
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage4_impl import load_windows_impl
 
@@ -73,6 +74,55 @@ logger = logging.getLogger(__name__)
 # starting values; the planning doc calls for empirical calibration on 2638.
 DEFAULT_MAX_DECAY_FACTOR = 5.0
 DEFAULT_FIT_TAU_MIN_SNR = 50.0
+
+
+def _resolve_tau_calibration_for_fit(
+    persisted: Optional[TauCalibrationResult],
+    tau_maj_override_us: Optional[float],
+    sigma_tau_override_us: Optional[float],
+) -> Tuple[Optional[float], Optional[float], str]:
+    """Resolve which (tau_maj_us, sigma_tau_us) pair drives the Stage 5 fit.
+
+    Precedence: explicit ``(tau_maj_override_us, sigma_tau_override_us)``
+    beats the persisted Stage 2b calibration, which beats no calibration at
+    all. The two override knobs are an atomic pair -- supplying only one is
+    ambiguous (the bidirectional Gaussian-prior penalty needs both ``tau_maj``
+    and ``sigma_tau`` to be meaningful) and raises ``ValueError``. Both
+    must be strictly positive when set.
+
+    Returns
+    -------
+    tau_maj_us, sigma_tau_us : float or None
+        Resolved values forwarded into ``conservative_kwargs``; both are
+        ``None`` when no calibration is in play.
+    source : str
+        ``"override"``, ``"persisted"``, or ``"none"`` -- diagnostic label
+        recorded in ``parameters_used`` so downstream consumers (and the
+        fit log) can tell which path was taken.
+    """
+    has_tau = tau_maj_override_us is not None
+    has_sigma = sigma_tau_override_us is not None
+    if has_tau ^ has_sigma:
+        raise ValueError(
+            "tau_maj_override_us and sigma_tau_override_us must be supplied "
+            "together; supplying only one is ambiguous"
+        )
+    if has_tau:
+        tau_v = float(tau_maj_override_us)  # type: ignore[arg-type]
+        sigma_v = float(sigma_tau_override_us)  # type: ignore[arg-type]
+        if tau_v <= 0.0 or sigma_v <= 0.0:
+            raise ValueError(
+                f"tau_maj_override_us and sigma_tau_override_us must be "
+                f"positive (got tau_maj={tau_v}, sigma_tau={sigma_v})"
+            )
+        return tau_v, sigma_v, "override"
+    if persisted is not None:
+        return (
+            float(persisted.tau_maj_us),
+            float(persisted.sigma_tau_us),
+            "persisted",
+        )
+    return None, None, "none"
 
 
 def _resolve_sideband(value: Sideband | str) -> Sideband:
@@ -167,6 +217,8 @@ def fit_peaks_impl(
     max_residual_rescue_rounds: Optional[int] = None,
     rescue_snr_threshold: Optional[float] = None,
     rescue_prominence_threshold: Optional[float] = None,
+    tau_maj_override_us: Optional[float] = None,
+    sigma_tau_override_us: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -222,11 +274,19 @@ def fit_peaks_impl(
         ``|residual|`` (defaults :data:`DEFAULT_RESCUE_SNR_THRESHOLD` and
         :data:`DEFAULT_RESCUE_PROMINENCE_THRESHOLD`). Ignored when
         ``max_residual_rescue_rounds == 0``.
+    tau_maj_override_us, sigma_tau_override_us : float, optional
+        Atomic-pair manual override for the Stage 2b tau calibration. When
+        both are supplied (positive), they replace any persisted Stage 2b
+        result for this fit -- useful for A/B-ing a hand-tuned tau anchor
+        against the persisted one, or for forcing a calibrated tau on
+        fixtures where Stage 2b has not been run. Supplying only one of
+        the pair raises ``ValueError``.
 
     Raises
     ------
     ValueError
-        If Stage 4 has not been completed.
+        If Stage 4 has not been completed, or if exactly one of the
+        ``tau_maj_override_us`` / ``sigma_tau_override_us`` pair is set.
     """
     # --- Resolve parameters with their defaults -----------------------------
     max_decay_v = (
@@ -324,27 +384,39 @@ def fit_peaks_impl(
     # When present, ``tau_maj`` and ``sigma_tau`` drive the per-window tau
     # bounds and the bidirectional Gaussian-prior anchoring penalty. Stage 5
     # tolerates its absence (falls back to the legacy apodization-anchored
-    # path) so the rollout is non-breaking.
+    # path) so the rollout is non-breaking. Explicit
+    # ``(tau_maj_override_us, sigma_tau_override_us)`` beats the persisted
+    # calibration for this fit (atomic pair; supplying only one raises).
+    persisted_cal: Optional[TauCalibrationResult] = None
     if tau_calibration_present(file_path):
-        tau_cal = load_tau_calibration_impl(file_path)["tau_calibration"]
-        tau_maj_us: Optional[float] = float(tau_cal.tau_maj_us)
-        sigma_tau_us: Optional[float] = float(tau_cal.sigma_tau_us)
-        if not tau_cal.preconditions_passed:
+        persisted_cal = load_tau_calibration_impl(file_path)["tau_calibration"]
+        if not persisted_cal.preconditions_passed:
             logger.warning(
                 "Stage 2b calibration pre-conditions did not pass on %s; "
                 "Stage 5 will still consume tau_maj=%.3f (sigma_tau=%.3f). "
                 "Notes: %s",
-                file_path, tau_maj_us, sigma_tau_us,
-                "; ".join(tau_cal.preconditions_notes),
+                file_path,
+                float(persisted_cal.tau_maj_us),
+                float(persisted_cal.sigma_tau_us),
+                "; ".join(persisted_cal.preconditions_notes),
             )
+    tau_maj_us, sigma_tau_us, tau_source = _resolve_tau_calibration_for_fit(
+        persisted_cal, tau_maj_override_us, sigma_tau_override_us,
+    )
+    if tau_source == "override":
+        logger.info(
+            "Stage 5 using tau override: tau_maj=%.3f us, sigma_tau=%.3f us "
+            "(beats persisted=%s)",
+            tau_maj_us,
+            sigma_tau_us,
+            "yes" if persisted_cal is not None else "no",
+        )
+    elif tau_source == "persisted":
         logger.info(
             "Stage 5 consuming Stage 2b calibration: tau_maj=%.3f us, "
             "sigma_tau=%.3f us",
             tau_maj_us, sigma_tau_us,
         )
-    else:
-        tau_maj_us = None
-        sigma_tau_us = None
 
     # --- tau0 default --------------------------------------------------------
     if tau0_us is None:
@@ -435,6 +507,7 @@ def fit_peaks_impl(
         "sideband": sideband.value,
         "tau_maj_us": tau_maj_us,
         "sigma_tau_us": sigma_tau_us,
+        "tau_calibration_source": tau_source,
     }
     if rescue_max_v > 0:
         parameters.update(

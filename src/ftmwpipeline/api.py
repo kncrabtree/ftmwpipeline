@@ -1044,6 +1044,8 @@ def fit_peaks(
     max_residual_rescue_rounds: Optional[int] = None,
     rescue_snr_threshold: Optional[float] = None,
     rescue_prominence_threshold: Optional[float] = None,
+    tau_maj_override_us: Optional[float] = None,
+    sigma_tau_override_us: Optional[float] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1081,6 +1083,12 @@ def fit_peaks(
     rescue_snr_threshold, rescue_prominence_threshold : optional
         Rescue tuning knobs -- see :func:`Pipeline.fit_peaks` for the
         defaults. Ignored when ``max_residual_rescue_rounds`` is 0.
+    tau_maj_override_us, sigma_tau_override_us : float, optional
+        Atomic-pair manual override for the Stage 2b tau calibration. When
+        both are supplied (positive), they replace any persisted Stage 2b
+        result for this fit; useful for A/B-ing a hand-tuned tau anchor
+        against the persisted one. Supplying only one of the pair raises
+        ``ValueError``.
 
     Returns
     -------
@@ -1100,6 +1108,8 @@ def fit_peaks(
             max_residual_rescue_rounds=max_residual_rescue_rounds,
             rescue_snr_threshold=rescue_snr_threshold,
             rescue_prominence_threshold=rescue_prominence_threshold,
+            tau_maj_override_us=tau_maj_override_us,
+            sigma_tau_override_us=sigma_tau_override_us,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")

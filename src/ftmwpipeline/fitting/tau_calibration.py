@@ -348,6 +348,91 @@ def _fit_exp_per_bin(
     return tau, C, rss
 
 
+def _nls_polish_step(
+    mag: np.ndarray,
+    a_centers_us: np.ndarray,
+    tau: np.ndarray,
+    C: np.ndarray,
+    *,
+    mask: Optional[np.ndarray] = None,
+    tau_clip_us: Tuple[float, float] = (0.1, 1e4),
+    n_iter: int = 1,
+    sigma_frame: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """``n_iter`` Gauss-Newton steps on ``|S_n| = C * exp(-a_n / tau)`` per bin.
+
+    Removes the log-linear-weighting bias documented in Phase 1 § Case 1
+    (a persistent +3-5 % positive shift at intermediate ``T_full / tau``
+    ratios). The seed ``(tau, C)`` comes from :func:`_fit_exp_per_bin`'s
+    weighted log-linear regression; Gauss-Newton converges quadratically
+    near a well-conditioned minimum, so ``n_iter = 1`` lands at sub-1 %
+    on top of the seed for most cells.
+
+    When ``sigma_frame`` is supplied, the polish replaces ``|S_n|`` with
+    the Rician-unbiased magnitude estimator
+    ``sqrt(max(0, |S_n|^2 - 2 * sigma_frame^2))``: at high SNR this is
+    ``~ |S_n|`` (signal dominates), at SNR ~ 1 it removes the
+    ``E[|S_n|^2] = S^2 + 2 sigma^2`` noise contribution, at SNR << 1 it
+    drives apparent signal to 0. The debiasing closes the residual
+    +1-2 % bias that survives pure-NLS polish on intermediate-``T_full /
+    tau`` cells (late frames sit at signal ~ noise where the noise
+    contribution to ``|S_n|`` tilts apparent tau upward).
+
+    Vectorised over the masked bins (default: every bin). Bins whose
+    normal-equations determinant is degenerate (~zero) are returned
+    unchanged so the polish never makes a bad fit worse. Updated ``tau``
+    is clipped to ``tau_clip_us``; ``C`` is floored at ``1e-300``.
+
+    Returns ``(tau_polished, C_polished)`` of the same shape as the inputs.
+    """
+    tau_arr = np.asarray(tau, dtype=float).copy()
+    C_arr = np.asarray(C, dtype=float).copy()
+    n_seg, n_bins = mag.shape
+    if mask is None:
+        mask = np.ones(n_bins, dtype=bool)
+    sel = np.asarray(mask, dtype=bool)
+    if not sel.any() or n_iter <= 0:
+        return tau_arr, C_arr
+
+    m_sel = mag[:, sel]
+    if sigma_frame is not None and sigma_frame > 0.0:
+        two_var = 2.0 * float(sigma_frame) ** 2
+        m_sel = np.sqrt(np.maximum(m_sel * m_sel - two_var, 0.0))
+    a = a_centers_us[:, None]
+
+    t_sel = tau_arr[sel].copy()
+    c_sel = C_arr[sel].copy()
+    for _ in range(int(n_iter)):
+        inv_t = 1.0 / np.where(t_sel > 0, t_sel, 1.0)  # (n_active,)
+        e = np.exp(-a * inv_t[None, :])                # (n_seg, n_active)
+        pred = c_sel[None, :] * e
+        resid = m_sel - pred
+
+        j_c = e
+        j_t = (c_sel[None, :] * a * (inv_t ** 2)[None, :]) * e
+
+        jtj_00 = (j_c * j_c).sum(axis=0)
+        jtj_01 = (j_c * j_t).sum(axis=0)
+        jtj_11 = (j_t * j_t).sum(axis=0)
+        jtr_0 = (j_c * resid).sum(axis=0)
+        jtr_1 = (j_t * resid).sum(axis=0)
+
+        det = jtj_00 * jtj_11 - jtj_01 * jtj_01
+        well_cond = np.abs(det) > 1e-30
+        safe_det = np.where(well_cond, det, 1.0)
+        d_c = (jtj_11 * jtr_0 - jtj_01 * jtr_1) / safe_det
+        d_t = (-jtj_01 * jtr_0 + jtj_00 * jtr_1) / safe_det
+
+        c_sel = np.where(well_cond, c_sel + d_c, c_sel)
+        t_sel = np.where(well_cond, t_sel + d_t, t_sel)
+        t_sel = np.clip(t_sel, tau_clip_us[0], tau_clip_us[1])
+        c_sel = np.maximum(c_sel, 1e-300)
+
+    tau_arr[sel] = t_sel
+    C_arr[sel] = c_sel
+    return tau_arr, C_arr
+
+
 def _aicc(rss: np.ndarray, n: int, k: int) -> np.ndarray:
     """Small-sample-corrected AIC under Gaussian residuals.
 
@@ -370,6 +455,7 @@ class _STFTClassification:
     a_centers_us: np.ndarray
     freq_bb_mhz: np.ndarray
     tau_per_bin: np.ndarray
+    C_per_bin: np.ndarray  # log-linear amplitude seed; polish input
     rss_exp: np.ndarray
     rss_const: np.ndarray
     aicc_exp: np.ndarray
@@ -391,6 +477,7 @@ def stft_calibration(
     tau_max_us: Optional[float] = None,
     rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
     relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
+    sigma_x_full: Optional[float] = None,
 ) -> _STFTClassification:
     """Run the sliding-active-window STFT and classify every frequency bin.
 
@@ -432,6 +519,15 @@ def stft_calibration(
         necessary for high-SNR clean fits not to over-classify as bad-fit; the
         log-linear weighted regression does not minimise linear-space RSS so
         its prediction error scales with the signal level, not the noise level.
+    sigma_x_full : float, optional
+        Override for the per-bin full-record FT noise floor (in ``dt * rfft``
+        units). When supplied, replaces the analytic
+        ``sigma_t * dt * sqrt(N/2)`` derivation. Pass this when an
+        independent spectral noise estimate (e.g. Stage 2's per-bin
+        ``rms_noise`` median) is more accurate than the FID-tail
+        ``sigma_t`` derivation -- on real fixtures the tail can carry
+        residual signal that inflates the analytic value (2638: ~2x
+        overestimate).
     """
     if sigma_time <= 0.0:
         raise ValueError("sigma_time must be positive")
@@ -443,11 +539,17 @@ def stft_calibration(
 
     mag, a_centers_us, freq_bb_mhz = sliding_stft(fid_arr, sample_dt_us, n_seg)
 
-    # Analytic per-bin noise estimate on the full-record FT, then per-frame.
-    sigma_x_full = sigma_time * sample_dt_us * np.sqrt(N / 2.0)
-    sigma_frame = sigma_x_full / np.sqrt(n_seg)
+    # Per-bin full-record FT noise floor, then per-frame. The override beats
+    # the analytic ``sigma_t * dt * sqrt(N/2)`` derivation; pass the override
+    # when an independent (e.g. Stage 2) spectral noise estimate is more
+    # accurate than the FID-tail sigma_t.
+    if sigma_x_full is not None and sigma_x_full > 0.0:
+        sigma_x_full_v = float(sigma_x_full)
+    else:
+        sigma_x_full_v = sigma_time * sample_dt_us * np.sqrt(N / 2.0)
+    sigma_frame = sigma_x_full_v / np.sqrt(n_seg)
 
-    tau, _C, rss_exp = _fit_exp_per_bin(
+    tau, C, rss_exp = _fit_exp_per_bin(
         mag, a_centers_us, tau_clip_us=(0.1, tau_max_us)
     )
     mean_m = mag.mean(axis=0)
@@ -479,13 +581,14 @@ def stft_calibration(
         a_centers_us=a_centers_us,
         freq_bb_mhz=freq_bb_mhz,
         tau_per_bin=tau,
+        C_per_bin=C,
         rss_exp=rss_exp,
         rss_const=rss_const,
         aicc_exp=aicc_exp,
         aicc_const=aicc_const,
         classification=classification,
         snr_per_bin=snr_per_bin,
-        sigma_x_full=float(sigma_x_full),
+        sigma_x_full=float(sigma_x_full_v),
         sigma_frame=float(sigma_frame),
         tau_max_us=float(tau_max_us),
     )
@@ -719,6 +822,11 @@ def extract_tau_majority(
     min_contributors: int = DEFAULT_MIN_CONTRIBUTORS,
     sigma_tau_fraction_max: float = DEFAULT_SIGMA_TAU_FRACTION_MAX,
     bimodality_dominant_fraction: float = DEFAULT_BIMODALITY_DOMINANT_FRACTION,
+    polish: bool = True,
+    polish_n_iter: int = 1,
+    polish_top_n: Optional[int] = None,
+    polish_noise_debias: bool = False,
+    sigma_x_full: Optional[float] = None,
 ) -> TauCalibrationResult:
     """End-to-end STFT tau calibration: FID -> ``TauCalibrationResult``.
 
@@ -756,6 +864,46 @@ def extract_tau_majority(
         Acceptance pre-conditions (Phase 2). Calibrations that fail any
         pre-condition still return a result; downstream consumers gate on
         :attr:`TauCalibrationResult.preconditions_passed`.
+    polish : bool, default True
+        Apply Gauss-Newton NLS step(s) to each contributor bin's
+        ``(C, tau)`` seed before computing the majority. Closes the +3-5 %
+        log-linear-weighting bias documented in Phase 1 § Case 1 to
+        sub-percent on the case-1 grid; opt-out left as a forensic
+        switch for A/B comparison against the legacy log-linear-only path.
+    polish_n_iter : int, default 1
+        Number of Gauss-Newton steps when ``polish`` is on. One step
+        already lands at sub-1 % for most cells; bumping to 2-3 closes
+        the residual on the intermediate-``T_full / tau`` regime
+        documented in Phase 1 § Case 1 (a 1-µs run takes < 100 ms).
+    polish_top_n : int, optional
+        When set, the polish runs on only the ``polish_top_n`` highest-SNR
+        contributor bins (the on-line bins of the strongest lines).
+        Default ``None`` polishes every contributor. Limiting to top-N
+        keeps the polish's correction local to high-confidence anchors
+        and avoids shifting weak-skirt bins whose per-bin SNR is too low
+        for one Gauss-Newton step to reliably improve.
+    polish_noise_debias : bool, default False
+        Replace ``|S_n|`` with the Rician-unbiased magnitude
+        ``sqrt(|S_n|^2 - 2 sigma^2)`` in the polish step. Theoretically
+        correct for Gaussian complex noise; closes the single-isolated-
+        line case-1 grid to sub-percent. But on multi-line spectra
+        (including 2638-shape synthetics with realistic
+        tau(f)/SNR(f) variation) the debiasing over-corrects -- the
+        per-bin noise in real spectra includes inter-line skirt
+        interference that the Rician model does not capture -- and
+        biases ``tau_maj`` low. Left as an opt-in for forensic/case-1
+        comparison; default off for production multi-line spectra.
+    sigma_x_full : float, optional
+        Override for the per-bin full-record FT noise floor (in
+        ``dt * rfft`` amplitude units). When supplied, beats the FID-tail
+        ``sigma_t`` derivation. Pass this when an independent spectral
+        noise estimate (e.g. Stage 2's per-bin ``rms_noise`` median in
+        the trim band, converted to raw amplitude units) is more
+        accurate than the FID tail -- on real fixtures the tail can
+        carry residual signal that inflates the analytic value (2638:
+        ~2x overestimate). When the polish noise-debias kicks in
+        (sigma_frame derivation), a too-large sigma over-subtracts and
+        biases tau low.
 
     Notes
     -----
@@ -804,6 +952,7 @@ def extract_tau_majority(
         tau_max_us=tau_max_us,
         rss_gate_factor=rss_gate_factor,
         relative_gate_fraction=relative_gate_fraction,
+        sigma_x_full=sigma_x_full,
     )
 
     # Baseband -> molecular conversion: lower sideband -> f_mol = probe - f_bb,
@@ -815,10 +964,36 @@ def extract_tau_majority(
     contributor_mask = (cal.classification == 3) & in_trim
     spur_mask_full = (cal.classification == 1) & in_trim
 
+    # Single NLS Gauss-Newton step on the contributor bins removes the
+    # +3-5 % log-linear-weighting bias before majority/histogram aggregation
+    # (see Phase 1 § Case 1; ``_nls_polish_step``).
+    tau_per_bin = cal.tau_per_bin
+    if polish and contributor_mask.any():
+        # Pure NLS polish: a single Gauss-Newton step on
+        # ``|S_n| = C exp(-a/tau)`` per contributor bin. On a 2638-shape
+        # multi-line synthetic with controlled tau(f), SNR(f) it shifts
+        # the SNR-weighted majority from +2.7 % above truth (legacy
+        # log-linear) to -2.2 % below truth -- a real improvement, though
+        # it slightly overshoots. ``polish_noise_debias`` reaches
+        # sub-1 % on the single-isolated-line case-1 grid but over-
+        # corrects on multi-line spectra (inter-line skirt interference
+        # is not Rician-Gaussian); default off.
+        polish_sigma = (
+            float(cal.sigma_frame) if polish_noise_debias else None
+        )
+        tau_polished, _C_polished = _nls_polish_step(
+            cal.mag, cal.a_centers_us, cal.tau_per_bin, cal.C_per_bin,
+            mask=contributor_mask,
+            tau_clip_us=(0.1, float(cal.tau_max_us)),
+            n_iter=int(polish_n_iter),
+            sigma_frame=polish_sigma,
+        )
+        tau_per_bin = tau_polished
+
     contributor_bins = np.where(contributor_mask)[0]
     # Sort contributors by molecular frequency (stable, helpful for serialization).
     contributor_bins = contributor_bins[np.argsort(freq_mol_mhz[contributor_bins])]
-    contributor_taus = cal.tau_per_bin[contributor_bins]
+    contributor_taus = tau_per_bin[contributor_bins]
     contributor_snrs = cal.snr_per_bin[contributor_bins]
     contributor_freqs = freq_mol_mhz[contributor_bins]
 

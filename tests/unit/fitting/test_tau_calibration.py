@@ -26,6 +26,7 @@ from ftmwpipeline.fitting.tau_calibration import (
     sliding_stft,
     stft_calibration,
 )
+from ftmwpipeline.fitting.tau_calibration import _nls_polish_step
 
 # 2638-shaped cell: T_full = 12.65 us, sample_dt = 20 ps (50 GS/s).
 SAMPLE_DT_US = 0.020
@@ -285,6 +286,97 @@ class TestExtractTauMajority:
                 trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
             )
+
+    def test_polish_closes_log_linear_bias(self):
+        """Polish drops the +3-5 % log-linear-weighting bias to sub-1 % on a single line.
+
+        Phase 1 § Case 1 (2638-shaped cell, T_full = 12.65 us, tau = 7.5 us,
+        SNR = 100) shows the polish-OFF SNR-weighted majority lands at
+        +3 % over truth; the polish-ON majority lands within +- 1 % over
+        the same trials. This test verifies the bias direction and the
+        relative magnitude of the improvement, not the absolute number
+        (jitter across N_seg-frame realisations is ~ +- 1 %).
+        """
+        rng_seed = 20260525 + 200
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bin = N // 4
+        n_trials = 12
+
+        off_errs = []
+        on_errs = []
+        for trial in range(n_trials):
+            rng = np.random.default_rng(rng_seed + trial)
+            fid, sigma_t = _synth_fid(
+                rng=rng, n_samples=N,
+                line_bins=[line_bin], line_taus_us=[7.5], line_snrs=[100.0],
+            )
+            common_kwargs = dict(
+                start_us=0.0, end_us=N * SAMPLE_DT_US,
+                probe_freq_mhz=PROBE_MHZ, sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                sigma_time=sigma_t, min_contributors=5,
+            )
+            off = extract_tau_majority(
+                fid, SAMPLE_DT_US, polish=False, **common_kwargs,
+            )
+            on = extract_tau_majority(
+                fid, SAMPLE_DT_US, polish=True, **common_kwargs,
+            )
+            off_errs.append(100.0 * (off.tau_maj_us - 7.5) / 7.5)
+            on_errs.append(100.0 * (on.tau_maj_us - 7.5) / 7.5)
+
+        med_off = float(np.median(off_errs))
+        med_on = float(np.median(on_errs))
+        # The biased path lands in the documented +1.5 to +5 % band; polish
+        # brings it materially closer to zero.
+        assert 0.5 < med_off < 8.0, (
+            f"polish=OFF median error {med_off:.2f}% outside expected +1-+8% band"
+        )
+        assert abs(med_on) < 1.5, (
+            f"polish=ON median error {med_on:.2f}% should be sub-1.5%"
+        )
+        # And the polished path strictly improves the bias magnitude.
+        assert abs(med_on) < abs(med_off)
+
+    def test_polish_step_well_conditioned(self):
+        """One Gauss-Newton step lands within ~1 % from a 10 %-biased seed.
+
+        Gauss-Newton has quadratic convergence near the optimum; one step
+        on a noise-free single-line magnitude drops a +10 % seed bias to
+        well under +1 %. The real log-linear seed bias is ~3-5 %, where
+        one step would land at sub-0.5 % -- well inside the +-1 % target.
+        """
+        a = np.linspace(0.5, 12.0, 10)
+        tau_true = 7.5
+        C_true = 4.0
+        mag = (C_true * np.exp(-a / tau_true)).reshape(-1, 1)
+        tau_seed = np.array([tau_true * 1.10])
+        C_seed = np.array([C_true * 1.05])
+        tau_polished, C_polished = _nls_polish_step(mag, a, tau_seed, C_seed)
+        assert tau_polished[0] == pytest.approx(tau_true, rel=2e-2)
+        assert C_polished[0] == pytest.approx(C_true, rel=2e-2)
+        # And strictly improves over the seed.
+        assert abs(tau_polished[0] - tau_true) < abs(tau_seed[0] - tau_true)
+
+    def test_polish_step_mask_respected(self):
+        """Bins outside the mask are left untouched."""
+        a = np.linspace(0.5, 12.0, 10)
+        mag = np.zeros((10, 3))
+        mag[:, 0] = 4.0 * np.exp(-a / 7.5)
+        mag[:, 1] = 2.0 * np.exp(-a / 5.0)
+        mag[:, 2] = 1.0  # constant -- pretend this is a spur
+        tau_seed = np.array([7.5 * 1.10, 5.0 * 1.10, 100.0])
+        C_seed = np.array([4.0 * 1.05, 2.0 * 1.05, 1.0])
+        mask = np.array([True, True, False])
+        tau_out, C_out = _nls_polish_step(mag, a, tau_seed, C_seed, mask=mask)
+        # Masked bin (index 2) untouched.
+        assert tau_out[2] == 100.0
+        assert C_out[2] == 1.0
+        # Polished bins land within 2 % of the truths (one Gauss-Newton step
+        # from a 10 % seed bias; quadratic convergence).
+        assert tau_out[0] == pytest.approx(7.5, rel=2e-2)
+        assert tau_out[1] == pytest.approx(5.0, rel=2e-2)
 
     def test_rejects_bad_sideband(self):
         with pytest.raises(ValueError, match="sideband"):

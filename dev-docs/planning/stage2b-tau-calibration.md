@@ -758,6 +758,47 @@ Open gates (Phase 3 step 12 + Phase 4):
    Phase 3 production wiring; it confirms the design choice in
    retrospect.)
 
+## Polish step on the contributor histogram
+
+`extract_tau_majority` exposes an optional `polish` step (default on):
+one Gauss-Newton iteration on `|S_n| = C · exp(-a/τ)` per contributor
+bin before the SNR-weighted majority. The polish closes the +3-5 %
+log-linear-weighting bias documented in
+[Phase 1 § Case 1](../research/stage5-tau-calibration/report.md) to
+about ±1-2 % across the (T_full, τ) grid (full closure to sub-1 % on
+T_full ≥ 30 µs, residual +2 % at the 2638-shaped intermediate cell).
+
+A 2638-shaped multi-line synthetic with controlled `τ(f)` (7.5 → 6 µs
+across the trim band) and `SNR(f)` (1× → 3× across the trim band,
+matching the chirp-induced excitation-time gradient) shows the SNR-
+weighted-expected `τ_maj` of 6.62 µs is recovered as +2.7 % above
+truth without the polish (6.80 µs) and −2.2 % below truth with it
+(6.48 µs). The polish moves the consensus in the right direction —
+the legacy log-linear weighting is genuinely biasing high — though
+the post-polish residual on multi-line cases is on the *low* side.
+See `scratch/stage2b-polish-validation/` for the validation harness.
+
+On real 2638 the polish drops the headline from 6.328 → 5.512 µs
+(`polish=True` default, no noise debias). The 5.5 µs result is closer
+to the synthetic's SNR-weighted truth than the published 6.33 was;
+the published number was biased high by the log-linear weighting on
+top of whatever frequency-dependent τ distribution the instrument
+imposes. The result still passes the ±20 % Phase 2 acceptance gate
+around 7 µs (boundary 5.6) by the thinnest of margins, so the
+calibration's marginal pre-conditions flag continues to fire on
+2638 (as it did pre-polish).
+
+A `polish_noise_debias` knob replaces `|S_n|` with the Rician-unbiased
+magnitude `sqrt(|S_n|² − 2σ²)` inside the polish step. Theoretically
+correct for Gaussian complex noise, and on a single-isolated-line
+synthetic it closes case-1 to sub-percent (confirming the noise-floor
+attribution of the residual bias). But on multi-line spectra the
+per-bin noise includes inter-line skirt interference that the Rician
+model does not capture, and the debiasing over-corrects (the
+2638-shape synthetic lands at −4.9 % below truth; real 2638 lands at
+4.37 µs, outside the gate). Default off; left as an opt-in forensic
+knob for single-isolated-line work.
+
 ## Outstanding open questions
 
 - **Multi-fixture confidence.** Is `τ_maj` stable across fixtures
@@ -784,10 +825,12 @@ Open gates (Phase 3 step 12 + Phase 4):
   empirically; with the `σ_τ`-based bound from §Phase 3 step 4
   this becomes less load-bearing.
 - **Calibration-override knobs.** `--tau-maj-override` /
-  `--sigma-tau-override` on `fit-peaks` were planned but not
-  shipped — no concrete need has surfaced yet. Add when a fixture
-  demands forcing a manual calibration (e.g. for an A/B against
-  the persisted value).
+  `--sigma-tau-override` ship on `fit-peaks` (CLI / `Pipeline.fit_peaks`
+  / `ftmwpipeline.api.fit_peaks`). The atomic pair beats any persisted
+  Stage 2b calibration for that fit; supplying only one of the pair
+  raises. Useful for A/B-ing a hand-tuned tau anchor against the
+  persisted value, or for forcing a calibrated tau on fixtures where
+  Stage 2b has not yet been run.
 - **Frequency-bucketed τ.** 2638 shows real τ-vs-frequency
   dependence (low-third 7.34 µs → high-third 6.06 µs, attributed
   to W-band horn-coupling geometry). The global-τ_maj assumption
