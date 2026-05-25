@@ -642,22 +642,28 @@ def attempt_residual_rescue(
     residual = z - initial_model
 
     # Tau policy for the rescue (basis and frozen-tau refit):
-    # Default to the initial fit's tau (it's the LSQ-converged value for
-    # the actual lines in this window). Override to the apodization tau
-    # only when initial.tau is pegged at the lower bound -- that is the
-    # signature of a broken initial fit (LSQ over-narrowed tau to absorb
-    # unmodeled-peak residual, as in w198 with tau=1us at the bound),
-    # and using that broken tau as the coherence basis would
-    # under-project real residual peaks and reject them.
+    # When a Stage 2b calibration is available, use ``tau_maj`` for every
+    # window regardless of the initial fit's outcome -- the calibration is
+    # the global physical tau and the rescue should anchor to it, not the
+    # broken per-window LSQ tau. (Phase-3 step 7 of the tau-calibration
+    # plan; closes the channel the cross-fixture-validation
+    # "broken-initial-fit pathology" identified.) Legacy fallback: when no
+    # ``tau_maj`` is plumbed, default to the initial fit's tau and override
+    # to the apodization tau only when initial.tau is pegged at the lower
+    # bound -- the original w198-style heuristic.
     ckwargs_in = conservative_kwargs or {}
-    apodization_us = ckwargs_in.get("tau_apodization_us")
-    max_decay_factor_in = ckwargs_in.get("max_decay_factor", 5.0)
-    rescue_tau_us = float(current_fit.tau_us)
-    if apodization_us and apodization_us > 0.0 and max_decay_factor_in > 0.0:
-        tau_lower_bound = float(apodization_us) / float(max_decay_factor_in)
-        # 5% tolerance for "at the lower bound"
-        if current_fit.tau_us <= 1.05 * tau_lower_bound:
-            rescue_tau_us = float(apodization_us)
+    tau_maj_us = ckwargs_in.get("tau_maj_us")
+    if tau_maj_us is not None and tau_maj_us > 0.0:
+        rescue_tau_us = float(tau_maj_us)
+    else:
+        apodization_us = ckwargs_in.get("tau_apodization_us")
+        max_decay_factor_in = ckwargs_in.get("max_decay_factor", 5.0)
+        rescue_tau_us = float(current_fit.tau_us)
+        if apodization_us and apodization_us > 0.0 and max_decay_factor_in > 0.0:
+            tau_lower_bound = float(apodization_us) / float(max_decay_factor_in)
+            # 5% tolerance for "at the lower bound"
+            if current_fit.tau_us <= 1.05 * tau_lower_bound:
+                rescue_tau_us = float(apodization_us)
     rescue_fwhm = (
         feature_fwhm(rescue_tau_us, acquisition_us)
         if rescue_tau_us > 0.0
@@ -736,8 +742,13 @@ def attempt_residual_rescue(
     # converges to amp~0 with success=True and the conservative loop
     # proceeds to F-test-reject the non-physical candidate).
     ckwargs: dict[str, Any] = dict(conservative_kwargs or {})
-    # tau_apodization_us is irrelevant when tau is frozen; drop it.
+    # tau anchors are irrelevant when tau is frozen; drop them. The
+    # conservative_fit inside the rescue uses ``rescue_tau_us`` directly
+    # (held fixed via ``fit_tau=False``); the anchoring penalty and bounds
+    # would simply waste residual elements.
     ckwargs.pop("tau_apodization_us", None)
+    ckwargs.pop("tau_maj_us", None)
+    ckwargs.pop("sigma_tau_us", None)
     if not candidate_offsets:
         empty = conservative_fit(
             u, residual, sigma, [], rescue_tau_us, acquisition_us,
@@ -1020,8 +1031,11 @@ def rescue_and_consolidate(
             "amp_penalty_lambda",
             "phase_penalty_cutoff_fwhm",
             "tau_penalty_lambda",
+            "tau_penalty_n_sigma",
             "weak_window_snr_threshold",
             "tau_apodization_us",
+            "tau_maj_us",
+            "sigma_tau_us",
         )
         if k in ckwargs_in
     }
@@ -1082,21 +1096,33 @@ def rescue_and_consolidate(
             terminated_reason = "no candidates"
             break
 
-        # Joint refit: union peaks, free everything (tau bounds inherited
-        # from the original window). Start tau at the rescue's value -- if
-        # apodization-override engaged in the rescue, this is the structural
-        # mitigation for w198-like cases (previous fit's tau pegged at the
-        # lower bound; thawing alone may not escape that basin without a
-        # better starting point).
+        # Joint refit: union peaks. Tau policy depends on whether a
+        # Stage 2b calibration is plumbed: when the inner-fit kwargs carry
+        # ``tau_penalty_sigma_us`` (the bidirectional-prior signature), tau
+        # is frozen at the calibration's ``tau_maj`` here so the joint refit
+        # cannot re-introduce the tau-collapse channel the calibration is
+        # meant to close. Without calibration, tau is free under the legacy
+        # apodization-anchored bounds; start at the rescue's value (the
+        # apodization-override structural mitigation for w198-like cases).
         union_init = list(current.peaks) + list(rescue.fit.peaks)
-        joint_tau_start = _clamp(
-            float(rescue.fit.tau_us),
-            constraints.tau_bounds[0],
-            constraints.tau_bounds[1],
+        calibrated = (
+            fit_kwargs_inner.get("tau_penalty_sigma_us") is not None
+            and float(fit_kwargs_inner.get("tau_penalty_sigma_us") or 0.0) > 0.0
         )
+        if calibrated:
+            joint_tau_start = float(fit_kwargs_inner["tau_penalty_reference"])
+            joint_kwargs = dict(fit_kwargs_inner)
+            joint_kwargs["fit_tau"] = False
+        else:
+            joint_tau_start = _clamp(
+                float(rescue.fit.tau_us),
+                constraints.tau_bounds[0],
+                constraints.tau_bounds[1],
+            )
+            joint_kwargs = fit_kwargs_inner
         joint = fit_window(
             u, z, sigma, union_init, joint_tau_start, acquisition_us,
-            **fit_kwargs_inner,
+            **joint_kwargs,
         )
         if not joint.success:
             rounds.append(

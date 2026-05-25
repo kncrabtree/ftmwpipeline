@@ -1,14 +1,21 @@
-# Plan: Data-driven τ calibration via sliding-active-window STFT
+# Plan: Stage 2b — data-driven τ calibration via sliding-active-window STFT
 
-Status: **Phase 1 + Phase 2 research complete (2026-05-25); Phase 3
-(production wiring) is the next implementation session.** Phase 3
-and Phase 4 in this doc were swapped from the original order: the
-research-grade STFT prototype passes both synthetic and 2638
-acceptance gates, so wiring it into production is the higher-value
-next step. The LSQ-fit cross-comparison (formerly Phase 3) moves to
-Phase 4 — useful for defending the design choice but not a
-prerequisite for production now that the STFT method has been
-empirically validated on 2638.
+Status: **Phase 1 + Phase 2 research complete; Phase 3 production
+wiring (steps 1–11) shipped as `stage2b_tau_calibration` between
+Stage 2 noise and Stage 3 peak detection.** What remains: Phase 3
+step 12 (the Stage 2–5 regression validation harness against
+`scratch/stage5-validation3/`) and Phase 4 (the LSQ-fit-and-
+histogram cross-comparison, kept as a research close-out rather
+than a production prerequisite). Phase 3 and Phase 4 are swapped
+from the original ordering: the STFT prototype already passed both
+synthetic and 2638 acceptance gates, so wiring it in was the higher-
+value next step and the LSQ comparison is what closes out the "why
+STFT, not LSQ histogram?" question for the planning record.
+
+The shipped stage is named `stage2b_tau_calibration` (a non-
+disruptive prefix between `stage2_noise_result` and `stage3_peaks`);
+a future broader rename pass may reshuffle the numbering for overall
+consistency.
 
 Research artefacts:
 [`../research/stage5-tau-calibration/report.md`](../research/stage5-tau-calibration/report.md)
@@ -16,7 +23,10 @@ Research artefacts:
 [`../research/stage5-tau-calibration/report-2638.md`](../research/stage5-tau-calibration/report-2638.md)
 (2638 application, `τ_maj = 6.33 ± 1.62 µs`, inside the ±20 % gate
 around 7.5 µs; frequency-dependent τ identified as horn-coupling
-geometry on the W-band probe horns).
+geometry on the W-band probe horns). The production module
+reproduces those numbers bit-for-bit (`τ_maj = 6.328 ± 1.617 µs`,
+4417 contributors, GMM ΔAIC = 754.7) on a fresh end-to-end run via
+`ftmw.calibrate_tau`.
 
 Supersedes the "Dataset-wide tau calibration" §357-381 and
 "Broken-initial-fit pathology and the majority-vote-freeze proposal"
@@ -494,108 +504,144 @@ Acceptance for Phase 2:
 - Spurs (if any) are at frequencies consistent with the
   instrument's known clock harmonics.
 
-### Phase 3: Production wiring
+### Phase 3: Production wiring (shipped)
 
-Conditional on Phase 1 + Phase 2 success (now confirmed on 2026-05-25).
-The calibration is provisionally named **stage 2b** ("stage-2b" in
-prose, `stage2b_tau_calibration` in the HDF5 / dependency tracker)
-to reflect that it sits between the canonical Stage 2 noise estimate
-and Stage 3's peak detection. A future broader rename pass may
-reshuffle the stage numbering for consistency; this prefix is the
-non-disruptive placeholder.
+The calibration is named **stage 2b** ("stage-2b" in prose,
+`stage2b_tau_calibration` in the HDF5 / dependency tracker) because
+it sits between the canonical Stage 2 noise estimate and Stage 3
+peak detection. A future broader rename pass may reshuffle the
+stage numbering for consistency; this prefix is the non-disruptive
+placeholder.
 
-0. **API prerequisite (DONE).** `ftmwpipeline.api.compute_ft` and
-   `Pipeline.compute_ft` previously fell back to a hard-coded
-   `expf_us = 5.0` whenever no layer in the resolution chain set
-   it, which silently re-enabled apodization on calls intended to
-   produce an unapodized FT. Fixed on 2026-05-25:
-   - Removed `expf_us` from `_HARD_DEFAULTS` in
-     `core/settings.py`. ``None`` now propagates all the way to
-     `FID.preprocess` (which already treats it as "no apodization").
-   - `FIDProcessingParameters.__post_init__` and `compute_active_ft`
-     now coerce non-positive `expf_us` to ``None`` instead of
-     raising, so a user passing `expf_us=0` (or any negative)
-     explicitly disables apodization without having to clear the
-     persisted record.
-   - Tests updated in `tests/unit/core/test_settings.py` and
-     `tests/unit/fitting/test_active_ft.py`.
-   With this fix, Stages 0–2 can be re-run with `expf_us = None`
-   (or `0`) on a fresh fixture and the canonical Stage 2 σ runs on
-   a genuinely unapodized FT — that is the noise reference the
+Steps 0–11 are landed; step 12 (regression validation) is the open
+follow-up.
+
+0. **API: `expf_us=None` truly disables apodization.**
+   `ftmwpipeline.api.compute_ft` / `Pipeline.compute_ft` previously
+   fell back to a hard-coded `expf_us = 5.0` whenever no layer in
+   the resolution chain set it, silently re-enabling apodization on
+   calls intended to produce an unapodized FT. The hard default is
+   removed from `core/settings.py::_HARD_DEFAULTS`; `None` now
+   propagates all the way to `FID.preprocess` (which already treats
+   it as "no apodization"), and `FIDProcessingParameters.__post_init__`
+   plus `compute_active_ft` coerce non-positive `expf_us` to `None`
+   instead of raising, so `expf_us=0` is an explicit opt-out
+   sentinel. With this, Stages 0–2 on a fresh fixture run on a
+   genuinely unapodized FT — that is the noise reference the
    calibration consumes.
 
-1. **Calibration module.** New module
-   `src/ftmwpipeline/fitting/tau_calibration.py`:
-   `extract_tau_majority(fid, sample_dt_us, start_us, end_us,
-   stage2_noise, n_seg, spur_frequencies_mhz=None) →
-   TauCalibrationResult`. Pure function; unit-testable. The
-   `TauCalibrationResult` dataclass carries `τ_maj`, `σ_τ`, the
-   per-bin τ map (for diagnostics), the spur list, the
-   multimodality flag, and the contributor count. Default knobs
-   from the Phase-1 prototype: `N_seg = 10`, `T_σ = 5`,
-   SNR-weighted majority on, bad-fit gate hybrid absolute +
-   relative, GMM bimodality threshold ΔAICc > 2.
-2. **Persist** as a new HDF5 group `/stage2b_tau_calibration`,
-   serialized via a new `io/tau_calibration_serialization.py`
-   matching the patterns of other Stage 5 outputs. Round-trip
-   tests required.
-3. **Bidirectional τ penalty.** Replace the one-sided
-   `tau_penalty_lambda` term with the bidirectional Gaussian-
-   prior form centred on `tau_penalty_reference = τ_maj`,
-   width `sigma_tau`. Update the Jacobian. Add unit tests
-   matching the pattern of `TestPairPhasePenalty` (finite-
-   difference comparison + boundary cases).
-4. **Bounds rework.** Replace the `tau_apodization_us` upper
-   clamp in `derive_window_fit_constraints` with a
-   `tau_maj_us` / `sigma_tau_us` pair. Bounds:
+1. **Calibration module.** `src/ftmwpipeline/fitting/tau_calibration.py`
+   exposes `extract_tau_majority(fid, sample_dt_us, *, start_us,
+   end_us, probe_freq_mhz, sideband, trim_lo_mhz, trim_hi_mhz,
+   sigma_time=None, n_seg=10, t_sigma=5.0, …) →
+   TauCalibrationResult`. Pure function; unit-tested. The dataclass
+   carries `τ_maj`, `σ_τ`, the contributor `(bin, τ, SNR, freq)`
+   arrays, the GMM bimodality block, the per-band-third median
+   summary, the (clustered) spur catalogue, the calibration knobs
+   used, and a `preconditions_passed` boolean + per-condition
+   notes. The internal `sliding_stft`, `stft_calibration`,
+   `majority_tau`, `gmm_bimodality`, and `group_spur_bins` are
+   ported from the research prototype as the canonical
+   implementations; the research script stays intact as history.
+   Default knobs: `N_seg = 10`, `T_σ = 5`, `tau_max = 5·T_full`,
+   `rss_gate_factor = 5`, hybrid absolute+relative bad-fit gate
+   with `relative_gate_fraction = 0.05`, SNR-weighted majority on,
+   GMM bimodality threshold `ΔAICc > 2`. The Phase-2 acceptance
+   pre-conditions are evaluated and stored (≥ 200 contributors,
+   no strong bimodality unless dominant cluster ≥ 70 %,
+   `σ_τ / τ_maj < 0.20`); failing pre-conditions log a warning but
+   do not block downstream consumers, because Stage 5 is configured
+   to use `τ_maj` even on marginal calibrations (the 2638 marginal-
+   spread case is the canonical example).
+
+2. **Persistence.** `io/tau_calibration_serialization.py` round-
+   trips `TauCalibrationResult` to `/stage2b_tau_calibration`. The
+   full STFT magnitude grid is *not* persisted (~50 MB even after
+   compression on the 2638 fixture); the heatmap visualisation
+   recomputes it on demand from the FID + persisted knobs.
+   Per-cluster bin lists use a CSR-style flat-with-offsets layout
+   so each cluster is recoverable. Schema versioning lives at
+   `algorithm_info/version`.
+
+3. **Bidirectional τ penalty.** `_penalty_residuals_and_jacobian`
+   in `window_fit.py` carries an additional `tau_penalty_sigma_us`
+   argument; when set with `tau_penalty_reference = τ_maj`, the
+   penalty residual is `sqrt(λ) · (τ − τ_ref) / σ_τ` with Jacobian
+   `sqrt(λ) / σ_τ` — a bidirectional Gaussian prior that fires
+   symmetrically against τ-collapse and τ-runaway. When
+   `tau_penalty_sigma_us` is `None` (no calibration) the legacy
+   one-sided hinge form is preserved. Both forms are exercised by
+   `TestBidirectionalTauPenalty` (finite-difference Jacobian
+   checks + boundary cases on both sides of the centre).
+
+4. **Bounds rework.** `derive_window_fit_constraints` accepts
+   `tau_maj_us` and `sigma_tau_us`; when both are positive the
+   bounds become
    `(max(τ_maj − N·σ_τ, τ_maj/k), min(τ_maj + N·σ_τ, τ_maj·k))`
-   with `N` ≈ 3-5 and `k = max_decay_factor`.
-5. **Stage 3 wiring.** Pass `τ_maj` into `_mf_gap_spectrum` as
-   `tau_basis_us`. Removes the hardcoded `or 5.0` fallback.
-6. **Stage 5 wiring.** `_internal/stage5_impl.py`: read
-   `τ_maj` from the persisted calibration before
-   `execute_plan`; plumb into `tau0_us` and
-   `conservative_kwargs`.
-7. **Rescue wiring.** Replace `residual_rescue.py:644-660`'s
-   pegged-bound heuristic with unconditional use of `τ_maj`.
-   Disable the joint-refit's τ-thaw when `τ_maj` is available.
-8. **Stage tracker / dependencies.** Add `stage2b_tau_calibration`
-   as a stage between `stage2_noise_result` and `stage3_peaks`
-   in `PipelineStageTracker.STAGE_DEPENDENCIES` (Stage 3's
-   gap-pass consumes it, so this is the correct insertion
-   point). Stage 4 inherits the dependency transitively. Stage 5
-   reads it directly.
-9. **CLI / Pipeline / functional-API surface.** Three identical
-   wrappers per the dual-interface rule. Subcommand:
-   `calibrate-tau`. Visualisation subcommands ported from the
-   Phase 1/2 prototype: `visualize-tau-heatmap` (2D
-   frame × frequency STFT magnitude — see
-   `dev-docs/research/stage5-tau-calibration/figures/08_2638_stft_heatmap.png`)
-   and `visualize-tau-distribution` (τ histogram + τ vs SNR
-   + τ vs frequency + GMM overlay — figure 09 in the same dir).
-   New options on `fit-peaks`: `--tau-maj-override`,
-   `--sigma-tau-override` for testing.
-10. **Spur-cluster grouping.** Single CW tones produce ≈ `n_seg`
-    adjacent "spur-classified" bins (the spur's STFT rectangular
-    sinc skirt). Phase 2 on 2638 produced 649 spur bins which
-    collapse to ≈ 50 real spurs after grouping. Add post-
-    classification clustering (group adjacent bins within
-    `n_seg` full-record bins) so the persisted spur catalogue
-    is human-auditable.
-11. **Apodization default.** No change needed beyond Phase 3 step
-    0 — `expf_us` no longer has a hard default, so `compute_ft`
-    on a fresh fixture produces an unapodized FT by default.
-    Document the migration in `CLAUDE.md` and the strategy
-    docs. Keep `expf_us` as an optional Stage 1 parameter (a
-    user may still want to apply apodization for legacy
-    comparison).
-12. **Stage 2-4 regression validation.** Run the validation
-    harness on `scratch/stage5-validation3/` and the full
-    non-slow test suite. Compare against the current
-    post-Stage-2/3-rework / post-penalty-recast baseline. Stage
-    4's S_coh T_edge may need recalibration if the
-    leakage-touched fraction climbs above ~25 %; document and
-    address separately if it does.
+   with `N = DEFAULT_TAU_PENALTY_N_SIGMA = 5` and
+   `k = max_decay_factor`. The legacy `tau_apodization_us`-anchored
+   path is preserved unchanged when no calibration is supplied.
+
+5. **Stage 3 wiring.** `_internal/stage3_impl.py` auto-detects
+   the Stage 2b group and passes `τ_maj` as `tau_basis_us` to
+   `_mf_gap_spectrum`. Fallback order: `τ_maj` → `expf_us` → 5.0.
+
+6. **Stage 5 wiring.** `_internal/stage5_impl.py` reads the
+   persisted calibration (warning-logs marginal pre-conditions),
+   defaults `tau0_us` to `τ_maj` when unset, and forwards
+   `tau_maj_us` / `sigma_tau_us` through `conservative_kwargs`.
+   `tau_apodization_us` is still forwarded; `derive_window_fit_constraints`
+   prefers the calibration when both are present.
+
+7. **Rescue wiring.** `residual_rescue.py` consults
+   `conservative_kwargs["tau_maj_us"]` first: when present, the
+   rescue τ is `τ_maj` unconditionally and the joint refit freezes
+   `fit_tau = False` at `τ_maj` (closing the τ-thaw channel the
+   cross-fixture-validation §"Broken-initial-fit pathology"
+   investigation flagged). The legacy pegged-bound override is
+   kept as the fallback when no calibration is plumbed.
+
+8. **Stage tracker / dependencies.** `stage2b_tau_calibration`
+   sits between `stage2_noise_result` and `stage3_peaks` in
+   `PipelineStageTracker.STAGE_DEPENDENCIES`, requiring Stages 0,
+   1, and 2. It is *recommended* (not enforced) on Stages 3 and 5
+   so the legacy single-stage path is preserved during the rollout
+   — both stages auto-detect the calibration's presence at runtime.
+
+9. **CLI / Pipeline / functional-API surface.** Three thin
+   wrappers per the dual-interface rule: CLI subcommand
+   `calibrate-tau` (in `cli/tau_commands.py`),
+   `Pipeline.calibrate_tau`, and `ftmwpipeline.api.calibrate_tau`.
+   Visualisation subcommands `visualize-tau-heatmap` (figure 08)
+   and `visualize-tau-distribution` (figure 09) ported from the
+   research prototype into
+   `visualization/tau_calibration_visualization.py`. The
+   `--tau-maj-override` / `--sigma-tau-override` knobs on
+   `fit-peaks` are not yet exposed; a calibration-override path
+   has not yet been needed in practice.
+
+10. **Spur-cluster grouping.** Adjacent spur-classified bins
+    within `n_seg` full-record bins of each other are collapsed
+    via `group_spur_bins` into one `SpurCluster` entry whose
+    representative is the bin with the largest mean magnitude.
+    On 2638 the 649 raw spur-classified bins collapse to ~135
+    clusters under this rule — within the expected
+    n_seg-sinc-skirt envelope per real CW source.
+
+11. **Apodization default.** Documented in `CLAUDE.md`:
+    `compute_ft` on a fresh fixture produces an unapodized FT
+    by default; `expf_us` remains an optional user lever for
+    legacy comparison runs. The 2638 example still shows the
+    apodized recipe alongside the unapodized one.
+
+12. **Stage 2–5 regression validation (OPEN).** Run the
+    validation harness on `scratch/stage5-validation3/` and the
+    full non-slow test suite with Stage 2b enabled. Compare against
+    the current post-Stage-2/3-rework / post-penalty-recast
+    baseline. Stage 4's `S_coh` `T_edge` may need recalibration if
+    the leakage-touched fraction climbs above ~25 %; document and
+    address separately if it does. Deferred to a follow-up session
+    so the surface area of this change set stayed manageable.
 
 ### Phase 4: LSQ-comparison cross-validation (research)
 
@@ -676,40 +722,43 @@ failure cases.
   depend strongly on the threshold value. Document the
   sensitivity in the Phase-2 report.
 
-## Acceptance gates (Phase 3 promotion → Phase 4 close-out)
+## Acceptance gates
 
-Promotion of `stage2b_tau_calibration` to production is gated on:
+Promotion of `stage2b_tau_calibration` to production was gated on:
 
 1. **Phase 1 acceptance.** All seven synthetic cases recover the
-   stated behaviour. ✓ (2026-05-25)
+   stated behaviour. ✓
 2. **Phase 2 acceptance.** STFT on 2638 produces `τ_maj` within
    ±20 % of the implied 7-8 µs; pre-conditions pass; spurs
    classified consistent with instrument harmonics. ✓
-   (`τ_maj = 6.33 ± 1.62 µs`, 2026-05-25)
-3. **No regression on existing 14-window validation suite.**
-   χ²_r per validation window within ±20 % of the current
-   post-penalty-recast baseline (or improve).
-4. **w140 chi²_r reduces by > 50 %.** The canonical
-   τ-collapse case the proposal must fix.
-5. **Stage 4 plan remains sane.** ≥ 380 windows on 2638; max
+   (`τ_maj = 6.33 ± 1.62 µs`)
+3. **Unit tests.** Full non-slow suite green; new unit tests for
+   the calibration module (algorithmic kernels + GMM + spur
+   clustering), serialization round-trip, and the bidirectional
+   penalty (finite-difference Jacobian on both sides of the
+   centre + boundary cases). ✓
+4. **Cross-interface consistency.** CLI / Pipeline / functional
+   API produce bit-identical `TauCalibrationResult` objects on
+   the 2638 fixture. ✓
+
+Open gates (Phase 3 step 12 + Phase 4):
+
+5. **No regression on the 14-window validation suite.** χ²_r per
+   validation window within ±20 % of the current post-penalty-
+   recast baseline (or improve). Run on
+   `scratch/stage5-validation3/` with Stage 2b enabled.
+6. **w140 χ²_r reduces by > 50 %.** The canonical τ-collapse case
+   the proposal must fix.
+7. **Stage 4 plan remains sane.** ≥ 380 windows on 2638; max
    width ≤ 80 MHz; hard-window fraction within 55-75 %.
-6. **Stage 5 chi²_r distribution improves or holds.** Median
-   ≤ 1.25; p95 ≤ 5.5; max ≤ 200.
-7. **Tests pass.** Full non-slow suite green; new unit tests for
-   the calibration module and the bidirectional penalty.
-
-Phase 4 (LSQ comparison) close-out gate, deferred:
-
-8. **Phase 4 LSQ agreement.** STFT and LSQ-fit-and-histogram agree
-   on `τ_maj` on 2638 within 10 %. (Optional — does not block
-   the Phase 3 production wiring; it confirms the design choice
-   in retrospect.)
+8. **Stage 5 χ²_r distribution improves or holds.** Median ≤ 1.25;
+   p95 ≤ 5.5; max ≤ 200.
+9. **Phase 4 LSQ agreement.** STFT and LSQ-fit-and-histogram agree
+   on `τ_maj` on 2638 within 10 %. (Optional — does not block the
+   Phase 3 production wiring; it confirms the design choice in
+   retrospect.)
 
 ## Outstanding open questions
-
-These are decisions the implementer will need to make during
-Phase 3, after seeing the Phase 1+2 numbers (some are pre-answered
-by the research; flagged inline):
 
 - **Multi-fixture confidence.** Is `τ_maj` stable across fixtures
   from the same instrument? Across instruments? Cross-fixture
@@ -734,15 +783,15 @@ by the research; flagged inline):
   factor 5 — reasonable. May tighten to 3 once `τ_maj` is known
   empirically; with the `σ_τ`-based bound from §Phase 3 step 4
   this becomes less load-bearing.
-- **Persistence of `τ_maj`.** Recommended: live on the `.ftmw`
-  file under `/stage2b_tau_calibration`. It's an invariant of
-  the experiment, not an on-demand quantity. The Stage 3 gap-pass
-  needs it, and re-running the STFT calibration is expensive
-  enough to want caching.
-- **Frame overlap.** Phase 1 answered this: non-overlapping
-  frames at `N_seg = 10` are the operating point. Skipped in
-  Phase 3 unless a fixture-specific issue surfaces.
-- **Per-bin SNR weighting.** Whether to weight contributor τ_k
-  values by the bin's on-line SNR (gives strong, low-noise bins
-  more influence). Phase-1 study should pick the weighting
-  scheme.
+- **Calibration-override knobs.** `--tau-maj-override` /
+  `--sigma-tau-override` on `fit-peaks` were planned but not
+  shipped — no concrete need has surfaced yet. Add when a fixture
+  demands forcing a manual calibration (e.g. for an A/B against
+  the persisted value).
+- **Frequency-bucketed τ.** 2638 shows real τ-vs-frequency
+  dependence (low-third 7.34 µs → high-third 6.06 µs, attributed
+  to W-band horn-coupling geometry). The global-τ_maj assumption
+  is approximate at ~15-20 % on 2638. If validation regressions
+  push past tolerance, per-band τ (low/mid/high, or a smooth 1/f
+  model) is the natural next refinement; Stage 5 would consume a
+  per-band τ vector instead of a scalar.

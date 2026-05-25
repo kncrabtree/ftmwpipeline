@@ -384,7 +384,20 @@ def detect_peaks_impl(
     primary_ft = _spectrum_from_fid(
         fid, base_pp, trim_range, expf_us=None, window_function=primary_window_v
     )
-    tau_basis_us = float(base_pp.expf_us) if base_pp.expf_us else 5.0
+    # Gap-pass matched-filter tau: prefer the Stage 2b calibrated ``tau_maj``
+    # when available (physical molecular decay; the matched filter's FWHM
+    # then equals the true line FWHM); fall back to the Stage 1 user
+    # apodization ``expf_us`` for the pre-calibration path, and finally to
+    # the historical 5.0 µs default.
+    from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+    if tau_calibration_present(file_path):
+        tau_basis_us = float(
+            load_tau_calibration_impl(file_path)["tau_calibration"].tau_maj_us
+        )
+    elif base_pp.expf_us:
+        tau_basis_us = float(base_pp.expf_us)
+    else:
+        tau_basis_us = 5.0
     gap_ft = _mf_gap_spectrum(
         fid, base_pp, trim_range, tau_basis_us=tau_basis_us
     )

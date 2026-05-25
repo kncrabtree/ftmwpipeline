@@ -63,6 +63,7 @@ from .stage3_impl import (
     _load_canonical_noise,
     load_peaks_impl,
 )
+from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage4_impl import load_windows_impl
 
 logger = logging.getLogger(__name__)
@@ -319,9 +320,40 @@ def fit_peaks_impl(
     unsort = np.argsort(sort_idx)
     active_rms = np.asarray(active_noise.rms_noise, dtype=float)[unsort]
 
+    # --- Stage 2b calibration (optional) ------------------------------------
+    # When present, ``tau_maj`` and ``sigma_tau`` drive the per-window tau
+    # bounds and the bidirectional Gaussian-prior anchoring penalty. Stage 5
+    # tolerates its absence (falls back to the legacy apodization-anchored
+    # path) so the rollout is non-breaking.
+    if tau_calibration_present(file_path):
+        tau_cal = load_tau_calibration_impl(file_path)["tau_calibration"]
+        tau_maj_us: Optional[float] = float(tau_cal.tau_maj_us)
+        sigma_tau_us: Optional[float] = float(tau_cal.sigma_tau_us)
+        if not tau_cal.preconditions_passed:
+            logger.warning(
+                "Stage 2b calibration pre-conditions did not pass on %s; "
+                "Stage 5 will still consume tau_maj=%.3f (sigma_tau=%.3f). "
+                "Notes: %s",
+                file_path, tau_maj_us, sigma_tau_us,
+                "; ".join(tau_cal.preconditions_notes),
+            )
+        logger.info(
+            "Stage 5 consuming Stage 2b calibration: tau_maj=%.3f us, "
+            "sigma_tau=%.3f us",
+            tau_maj_us, sigma_tau_us,
+        )
+    else:
+        tau_maj_us = None
+        sigma_tau_us = None
+
     # --- tau0 default --------------------------------------------------------
     if tau0_us is None:
-        tau0_us_v = float(expf_us) if expf_us is not None else acquisition_us / 3.0
+        if tau_maj_us is not None and tau_maj_us > 0.0:
+            tau0_us_v = float(tau_maj_us)
+        elif expf_us is not None:
+            tau0_us_v = float(expf_us)
+        else:
+            tau0_us_v = acquisition_us / 3.0
     else:
         tau0_us_v = float(tau0_us)
     if tau0_us_v <= 0:
@@ -368,10 +400,19 @@ def fit_peaks_impl(
         max_thaw_rounds=max_thaw_v,
         conservative_kwargs={
             "max_decay_factor": max_decay_v,
-            # Apodization is the physics-informed hard ceiling on tau and the
-            # reference point for the stiff lower-side penalty. None disables
-            # both (no apodization means no upper bound to enforce).
+            # Two tau-anchor modes share this dict:
+            # - When Stage 2b is present, ``tau_maj_us`` and ``sigma_tau_us``
+            #   drive the bidirectional Gaussian-prior penalty and the
+            #   calibrated bounds (``tau_maj +- N*sigma_tau`` intersected with
+            #   the factor-k cap).
+            # - When Stage 2b is absent, ``tau_apodization_us`` keeps the
+            #   legacy apodization-as-ceiling / one-sided hinge behaviour.
+            # Passing both is harmless (the calibration path takes precedence
+            # inside ``derive_window_fit_constraints``); we forward all three
+            # so the rescue path can pick the same policy.
             "tau_apodization_us": expf_us,
+            "tau_maj_us": tau_maj_us,
+            "sigma_tau_us": sigma_tau_us,
         },
         replan_context=replan_ctx,
         max_residual_rescue_rounds=rescue_max_v,
@@ -392,6 +433,8 @@ def fit_peaks_impl(
         "n_active": int(active_ft.n_active),
         "n_padded": int(active_ft.n_padded),
         "sideband": sideband.value,
+        "tau_maj_us": tau_maj_us,
+        "sigma_tau_us": sigma_tau_us,
     }
     if rescue_max_v > 0:
         parameters.update(

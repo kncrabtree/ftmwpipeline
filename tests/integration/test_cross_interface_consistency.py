@@ -156,6 +156,61 @@ class TestIdenticalResults:
             "default: Functional vs CLI"
         )
 
+    def test_identical_tau_calibration_results(
+        self, cross_interface_stage1_trio, tmp_path
+    ):
+        """Verify all interfaces produce identical TauCalibrationResult.
+
+        Stage 2b runs the STFT tau calibration on the FID. Each interface
+        should land on bit-identical results (same FID + same Stage 1 + same
+        default knobs).
+        """
+        paths = cross_interface_stage1_trio
+
+        p_copy = tmp_path / "pipeline_tau.ftmw"
+        f_copy = tmp_path / "functional_tau.ftmw"
+        c_copy = tmp_path / "cli_tau.ftmw"
+        shutil.copy(paths["pipeline"], p_copy)
+        shutil.copy(paths["functional"], f_copy)
+        shutil.copy(paths["cli"], c_copy)
+
+        # Each interface needs Stage 2 first.
+        for f in (p_copy, f_copy, c_copy):
+            ftmw.estimate_noise(f)
+
+        # Run calibration via the three interfaces. Each uses defaults so
+        # the calibration knobs are identical across interfaces.
+        pipe = Pipeline.open(p_copy)
+        tc_pipeline = pipe.calibrate_tau()
+        tc_functional = ftmw.calibrate_tau(f_copy)
+        self._run_cli_command(["calibrate-tau", str(c_copy)])
+        tc_cli = ftmw.load_tau_calibration(c_copy)
+
+        # Bit-identical scalars; per-bin arrays bit-identical too because the
+        # algorithm is deterministic (no RNG, integer-grid FFT).
+        for a, b, ctx in (
+            (tc_pipeline, tc_functional, "Pipeline vs Functional"),
+            (tc_pipeline, tc_cli, "Pipeline vs CLI"),
+        ):
+            assert a.tau_maj_us == b.tau_maj_us, f"{ctx}: tau_maj differs"
+            assert a.sigma_tau_us == b.sigma_tau_us, f"{ctx}: sigma_tau differs"
+            assert a.n_contributors == b.n_contributors, f"{ctx}: n_contributors differs"
+            assert a.n_spur_bins == b.n_spur_bins, f"{ctx}: n_spur_bins differs"
+            np.testing.assert_array_equal(
+                a.contributor_taus_us, b.contributor_taus_us,
+                err_msg=f"{ctx}: contributor_taus_us differ",
+            )
+            np.testing.assert_array_equal(
+                a.contributor_snrs, b.contributor_snrs,
+                err_msg=f"{ctx}: contributor_snrs differ",
+            )
+            assert a.bimodality.delta_aic == b.bimodality.delta_aic, (
+                f"{ctx}: GMM delta_aic differs"
+            )
+            assert len(a.spur_clusters) == len(b.spur_clusters), (
+                f"{ctx}: spur cluster count differs"
+            )
+
     def _compare_complex_ft_objects(self, ft1: ComplexFT, ft2: ComplexFT, context: str):
         """Compare two ComplexFT objects for numerical consistency."""
         # Frequency arrays should be identical

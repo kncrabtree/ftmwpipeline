@@ -477,3 +477,166 @@ class TestPairPhasePenalty:
         # All three pairs have their full weight on this layout: separation
         # 0.6 / 0.8 / 0.2 FWHM, all < 2 FWHM cutoff.
         np.testing.assert_allclose(jac, fd, atol=5e-6)
+
+
+# ---------------------------------------------------------------------------
+# Bidirectional tau penalty (Gaussian prior centred on tau_maj, width sigma_tau)
+# ---------------------------------------------------------------------------
+class TestBidirectionalTauPenalty:
+    """The Phase-3 tau-anchoring penalty pulls tau toward ``tau_maj`` from
+    both sides at strength ``sqrt(lambda) / sigma_tau``. The legacy one-sided
+    hinge form is preserved when ``tau_penalty_sigma_us`` is None.
+    """
+
+    LAMBDA = 500.0
+    TAU_MAJ = 6.0
+    SIGMA_TAU = 1.5
+
+    def _packed_with_tau(self, tau_value: float) -> np.ndarray:
+        # One peak (3 params) + tau (1 param) when fit_tau=True.
+        return np.array([1.0, 0.0, 0.0, tau_value], dtype=float)
+
+    def _penalty(self, tau_value: float, *, sigma_us=None):
+        params = self._packed_with_tau(tau_value)
+        res, _ = _penalty_residuals_and_jacobian(
+            params,
+            k=1,
+            tau0_us=TAU_US,
+            fit_tau=True,
+            phase_penalty_lambda=0.0,
+            amp_penalty_lambda=0.0,
+            amp_floor=None,
+            fwhm_mhz=None,
+            phase_penalty_cutoff_fwhm=DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+            tau_penalty_lambda=self.LAMBDA,
+            tau_penalty_reference=self.TAU_MAJ,
+            tau_penalty_sigma_us=sigma_us,
+        )
+        # No other penalties enabled -> tau penalty is the only element.
+        assert res.shape == (1,)
+        return float(res[0])
+
+    def test_bidirectional_residual_below_centre(self):
+        # tau < tau_maj: residual = sqrt(L)*(tau - tau_maj)/sigma < 0.
+        r = self._penalty(self.TAU_MAJ - self.SIGMA_TAU, sigma_us=self.SIGMA_TAU)
+        expected = np.sqrt(self.LAMBDA) * (-1.0)
+        assert r == pytest.approx(expected, abs=1e-9)
+
+    def test_bidirectional_residual_above_centre(self):
+        # tau > tau_maj: residual = sqrt(L)*(tau - tau_maj)/sigma > 0.
+        r = self._penalty(self.TAU_MAJ + 0.5 * self.SIGMA_TAU, sigma_us=self.SIGMA_TAU)
+        expected = np.sqrt(self.LAMBDA) * 0.5
+        assert r == pytest.approx(expected, abs=1e-9)
+
+    def test_bidirectional_vanishes_at_centre(self):
+        r = self._penalty(self.TAU_MAJ, sigma_us=self.SIGMA_TAU)
+        assert r == pytest.approx(0.0, abs=1e-12)
+
+    def test_one_sided_hinge_above_centre(self):
+        # sigma_us is None -> legacy one-sided behaviour: penalty is zero
+        # when tau >= tau_ref.
+        r = self._penalty(self.TAU_MAJ + 1.0, sigma_us=None)
+        assert r == pytest.approx(0.0, abs=1e-12)
+
+    def test_one_sided_hinge_below_centre(self):
+        # sigma_us is None: positive residual proportional to
+        # (tau_ref - tau) / tau_ref.
+        tau_value = self.TAU_MAJ - 1.2
+        r = self._penalty(tau_value, sigma_us=None)
+        expected = np.sqrt(self.LAMBDA) * (self.TAU_MAJ - tau_value) / self.TAU_MAJ
+        assert r == pytest.approx(expected, abs=1e-9)
+
+    def test_bidirectional_jacobian_matches_finite_difference(self):
+        params = self._packed_with_tau(self.TAU_MAJ + 0.4 * self.SIGMA_TAU)
+        kwargs = dict(
+            k=1,
+            tau0_us=TAU_US,
+            fit_tau=True,
+            phase_penalty_lambda=0.0,
+            amp_penalty_lambda=0.0,
+            amp_floor=None,
+            fwhm_mhz=None,
+            phase_penalty_cutoff_fwhm=DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+            tau_penalty_lambda=self.LAMBDA,
+            tau_penalty_reference=self.TAU_MAJ,
+            tau_penalty_sigma_us=self.SIGMA_TAU,
+        )
+        _, jac = _penalty_residuals_and_jacobian(params, **kwargs)
+        # Finite-difference check.
+        eps = 1e-6
+        fd = np.zeros_like(jac)
+        for idx in range(params.size):
+            pp = params.copy(); pp[idx] += eps
+            pm = params.copy(); pm[idx] -= eps
+            rp, _ = _penalty_residuals_and_jacobian(pp, **kwargs)
+            rm, _ = _penalty_residuals_and_jacobian(pm, **kwargs)
+            fd[:, idx] = (rp - rm) / (2.0 * eps)
+        np.testing.assert_allclose(jac, fd, atol=1e-7)
+
+    def test_one_sided_hinge_jacobian_matches_finite_difference(self):
+        # Pick tau below the reference so the hinge is active.
+        params = self._packed_with_tau(self.TAU_MAJ - 1.0)
+        kwargs = dict(
+            k=1,
+            tau0_us=TAU_US,
+            fit_tau=True,
+            phase_penalty_lambda=0.0,
+            amp_penalty_lambda=0.0,
+            amp_floor=None,
+            fwhm_mhz=None,
+            phase_penalty_cutoff_fwhm=DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+            tau_penalty_lambda=self.LAMBDA,
+            tau_penalty_reference=self.TAU_MAJ,
+            tau_penalty_sigma_us=None,
+        )
+        _, jac = _penalty_residuals_and_jacobian(params, **kwargs)
+        eps = 1e-6
+        fd = np.zeros_like(jac)
+        for idx in range(params.size):
+            pp = params.copy(); pp[idx] += eps
+            pm = params.copy(); pm[idx] -= eps
+            rp, _ = _penalty_residuals_and_jacobian(pp, **kwargs)
+            rm, _ = _penalty_residuals_and_jacobian(pm, **kwargs)
+            fd[:, idx] = (rp - rm) / (2.0 * eps)
+        np.testing.assert_allclose(jac, fd, atol=1e-7)
+
+
+class TestDeriveWindowFitConstraintsCalibratedBounds:
+    """When ``tau_maj_us`` + ``sigma_tau_us`` are supplied, ``derive_window_fit_constraints``
+    builds a band of ``± N*sigma_tau`` around ``tau_maj`` intersected with
+    ``[tau_maj/k, tau_maj*k]`` and switches the penalty to the bidirectional form.
+    """
+
+    def test_bounds_use_calibration(self):
+        from ftmwpipeline.fitting.window_fit import derive_window_fit_constraints
+
+        m = 41
+        z = np.full(m, 0.5 + 0.0j)
+        sigma = np.full(m, 0.01)
+        c = derive_window_fit_constraints(
+            z, sigma, tau0_us=3.0, acquisition_us=T_US,
+            tau_maj_us=6.0, sigma_tau_us=0.5,
+            tau_penalty_n_sigma=3.0, max_decay_factor=5.0,
+        )
+        # +- 3*0.5 = +- 1.5 around 6.0 -> (4.5, 7.5), well inside the
+        # factor-5 cap (1.2, 30.0).
+        assert c.tau_bounds == pytest.approx((4.5, 7.5))
+        assert c.tau_penalty_reference == pytest.approx(6.0)
+        assert c.tau_penalty_sigma_us == pytest.approx(0.5)
+        assert c.fit_kwargs_inner["tau_penalty_sigma_us"] == pytest.approx(0.5)
+
+    def test_legacy_apodization_path(self):
+        from ftmwpipeline.fitting.window_fit import derive_window_fit_constraints
+
+        m = 41
+        z = np.full(m, 0.5 + 0.0j)
+        sigma = np.full(m, 0.01)
+        c = derive_window_fit_constraints(
+            z, sigma, tau0_us=3.0, acquisition_us=T_US,
+            tau_apodization_us=5.0, max_decay_factor=5.0,
+        )
+        # Upper bound = min(3*5, 5) = 5.
+        assert c.tau_bounds[1] == pytest.approx(5.0)
+        assert c.tau_penalty_reference == pytest.approx(5.0)
+        # No sigma -> stays on the one-sided hinge form.
+        assert c.tau_penalty_sigma_us is None

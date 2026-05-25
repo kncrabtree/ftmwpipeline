@@ -39,6 +39,7 @@ import logging
 
 from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .fitting.tau_calibration import TauCalibrationResult
 from .preprocessing.noise_estimation import NoiseResult
 
 # Module logger
@@ -642,6 +643,92 @@ def save_noise_parameters(file_path: Union[str, Path],
         logger.info(f"Saved {len(parameters)} noise parameters to {file_path}")
     except Exception as e:
         logger.error(f"Failed to save noise parameters to {file_path}: {e}")
+        raise
+
+
+# =============================================================================
+# Stage 2b: Tau Calibration Functions
+# =============================================================================
+
+
+def calibrate_tau(
+    file_path: Union[str, Path],
+    n_seg: Optional[int] = None,
+    t_sigma: Optional[float] = None,
+    tau_max_us: Optional[float] = None,
+    rss_gate_factor: Optional[float] = None,
+    sigma_time: Optional[float] = None,
+    min_contributors: Optional[int] = None,
+    sigma_tau_fraction_max: Optional[float] = None,
+    bimodality_dominant_fraction: Optional[float] = None,
+) -> TauCalibrationResult:
+    """Run the Stage 2b data-driven tau calibration, equivalent to
+    :meth:`Pipeline.calibrate_tau`.
+
+    Requires Stages 0-2 completed. Persists the calibration to
+    ``/stage2b_tau_calibration``.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.calibrate_tau(
+            n_seg=n_seg,
+            t_sigma=t_sigma,
+            tau_max_us=tau_max_us,
+            rss_gate_factor=rss_gate_factor,
+            sigma_time=sigma_time,
+            min_contributors=min_contributors,
+            sigma_tau_fraction_max=sigma_tau_fraction_max,
+            bimodality_dominant_fraction=bimodality_dominant_fraction,
+        )
+    except Exception as e:
+        logger.error(f"Failed to calibrate tau for {file_path}: {e}")
+        raise
+
+
+def load_tau_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
+    """Load the persisted Stage 2b :class:`TauCalibrationResult`."""
+    try:
+        return Pipeline.open(file_path).load_tau_calibration()
+    except Exception as e:
+        logger.error(f"Failed to load tau calibration from {file_path}: {e}")
+        raise
+
+
+def visualize_tau_heatmap(
+    file_path: Union[str, Path],
+    output_file: Optional[Union[str, Path]] = None,
+    interactive: bool = True,
+    figsize: Optional[tuple] = None,
+) -> Any:
+    """2D STFT magnitude heatmap, equivalent to
+    :meth:`Pipeline.visualize_tau_heatmap`."""
+    try:
+        return Pipeline.open(file_path).visualize_tau_heatmap(
+            output_file=output_file,
+            interactive=interactive,
+            figsize=figsize,
+        )
+    except Exception as e:
+        logger.error(f"Failed to visualize tau heatmap for {file_path}: {e}")
+        raise
+
+
+def visualize_tau_distribution(
+    file_path: Union[str, Path],
+    output_file: Optional[Union[str, Path]] = None,
+    interactive: bool = True,
+    figsize: Optional[tuple] = None,
+) -> Any:
+    """tau-distribution analysis panel, equivalent to
+    :meth:`Pipeline.visualize_tau_distribution`."""
+    try:
+        return Pipeline.open(file_path).visualize_tau_distribution(
+            output_file=output_file,
+            interactive=interactive,
+            figsize=figsize,
+        )
+    except Exception as e:
+        logger.error(f"Failed to visualize tau distribution for {file_path}: {e}")
         raise
 
 

@@ -28,7 +28,7 @@ Outputs:
 - data/      .npz cache for fast figure regeneration.
 - report.md  worked through cases with empirical answers.
 
-See ``dev-docs/planning/stage5-tau-calibration.md`` for the design
+See ``dev-docs/planning/stage2b-tau-calibration.md`` for the design
 narrative and Phase 1 acceptance gate.
 """
 

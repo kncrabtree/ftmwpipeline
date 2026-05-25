@@ -157,7 +157,20 @@ class PipelineStageTracker:
         'stage0_fid_data': [],  # Stage 0 has no dependencies
         'stage1_complex_ft': ['stage0_fid_data'],  # Stage 1 requires Stage 0
         'stage2_noise_result': ['stage1_complex_ft'],  # Stage 2 requires Stage 1
-        # Stage 3 requires Stage 1 (FT) and Stage 2 (noise) to be completed.
+        # Stage 2b runs the data-driven sliding-active-window STFT tau
+        # calibration on the raw FID. It needs Stage 1 settings (start_us,
+        # end_us, trim) to slice the FID and Stage 2 noise as the canonical
+        # σ reference so the calibration matches the user spectrum.
+        'stage2b_tau_calibration': [
+            'stage0_fid_data',
+            'stage1_complex_ft',
+            'stage2_noise_result',
+        ],
+        # Stage 3 requires Stage 1 (FT) and Stage 2 (noise). Stage 2b is a
+        # recommended dependency but not enforced as required: the gap pass
+        # falls back to ``tau_basis_us = 5.0`` when no calibration is
+        # present, preserving the legacy single-stage path during the
+        # rollout of Stage 2b.
         'stage3_peaks': ['stage1_complex_ft', 'stage2_noise_result'],
         # Stage 4 (window assignment) requires Stage 3 (peaks).
         'stage4_windows': ['stage3_peaks'],
@@ -165,7 +178,10 @@ class PipelineStageTracker:
         # FID -- the active-portion FT the fit runs on is computed on demand
         # from stage0_fid_data plus the canonical Stage 1 settings, so a
         # change to Stage 1 settings or a re-import invalidates Stage 5
-        # through the existing canonical-settings/Stage 0 path.
+        # through the existing canonical-settings/Stage 0 path. Stage 5 also
+        # reads the Stage 2b calibration when present (the bidirectional
+        # tau-anchoring penalty and rescue τ); same recommended-but-not-
+        # required policy as Stage 3.
         'stage5_fitting': ['stage0_fid_data', 'stage4_windows'],
         # Future stages...
     }
@@ -179,6 +195,7 @@ class PipelineStageTracker:
         'stage0_fid_data': 'stage0_fid_data',
         'stage1_complex_ft': 'processing_parameters/ft_processing',
         'stage2_noise_result': 'stage2_noise_result',
+        'stage2b_tau_calibration': 'stage2b_tau_calibration',
         'stage3_peaks': 'stage3_peaks',
         'stage4_windows': 'stage4_windows',
         'stage5_fitting': 'stage5_fitting',

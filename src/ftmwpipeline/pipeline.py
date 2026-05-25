@@ -25,6 +25,9 @@ from ._internal.stage1_impl import (
 from ._internal.stage2_impl import (
     compute_noise_estimation_impl, visualize_noise_impl
 )
+from ._internal.stage2b_impl import (
+    calibrate_tau_impl, load_tau_calibration_impl,
+)
 from ._internal.stage3_impl import (
     detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
 )
@@ -35,6 +38,7 @@ from ._internal.stage5_impl import (
     fit_peaks_impl, visualize_fit_impl, load_fit_impl
 )
 from .core.data_structures import Peak, SpectrumFit, WindowPlan
+from .fitting.tau_calibration import TauCalibrationResult
 
 
 class Pipeline:
@@ -594,6 +598,102 @@ class Pipeline:
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to create noise visualization: {e}") from e
+
+    def calibrate_tau(
+        self,
+        n_seg: Optional[int] = None,
+        t_sigma: Optional[float] = None,
+        tau_max_us: Optional[float] = None,
+        rss_gate_factor: Optional[float] = None,
+        sigma_time: Optional[float] = None,
+        min_contributors: Optional[int] = None,
+        sigma_tau_fraction_max: Optional[float] = None,
+        bimodality_dominant_fraction: Optional[float] = None,
+    ) -> TauCalibrationResult:
+        """Run the Stage 2b data-driven tau calibration.
+
+        Requires Stages 0-2 completed. Extracts a global majority-vote
+        molecular decay constant ``tau_maj`` (with robust spread
+        ``sigma_tau``) from the raw FID by sliding a
+        ``T_w = T_full / n_seg``-long active sub-window across the
+        zero-padded record and fitting a per-bin exponential to the
+        magnitude vs frame-start time. Persists the result to
+        ``/stage2b_tau_calibration`` and invalidates downstream stages.
+
+        Parameters left as ``None`` use the documented Phase-1 defaults.
+        See :mod:`ftmwpipeline.fitting.tau_calibration` for the operating
+        points and :func:`ftmwpipeline.fitting.tau_calibration.extract_tau_majority`
+        for the full algorithm reference.
+        """
+        try:
+            result = calibrate_tau_impl(
+                file_path=str(self.filepath),
+                n_seg=n_seg,
+                t_sigma=t_sigma,
+                tau_max_us=tau_max_us,
+                rss_gate_factor=rss_gate_factor,
+                sigma_time=sigma_time,
+                min_contributors=min_contributors,
+                sigma_tau_fraction_max=sigma_tau_fraction_max,
+                bimodality_dominant_fraction=bimodality_dominant_fraction,
+            )
+            tc = result["tau_calibration"]
+            self.logger.info(
+                "Stage 2b: tau_maj=%.3f us, sigma_tau=%.3f us, "
+                "n_contributors=%d, preconditions=%s",
+                tc.tau_maj_us, tc.sigma_tau_us, tc.n_contributors,
+                "pass" if tc.preconditions_passed else "fail",
+            )
+            return cast(TauCalibrationResult, tc)
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to calibrate tau: {e}") from e
+
+    def load_tau_calibration(self) -> TauCalibrationResult:
+        """Load the persisted Stage 2b :class:`TauCalibrationResult`."""
+        return cast(
+            TauCalibrationResult,
+            load_tau_calibration_impl(str(self.filepath))["tau_calibration"],
+        )
+
+    def visualize_tau_heatmap(
+        self,
+        output_file: Optional[Union[str, Path]] = None,
+        interactive: bool = True,
+        figsize: Optional[tuple] = None,
+    ) -> Any:
+        """Render the 2D STFT-magnitude heatmap (frame x molecular frequency)."""
+        from .visualization.tau_calibration_visualization import (
+            plot_tau_heatmap_from_file,
+        )
+        fig = plot_tau_heatmap_from_file(str(self.filepath), figsize=figsize)
+        if output_file:
+            fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
+            self.logger.info(f"Plot saved to: {output_file}")
+        elif interactive:
+            import matplotlib.pyplot as plt
+            plt.show()
+        return fig
+
+    def visualize_tau_distribution(
+        self,
+        output_file: Optional[Union[str, Path]] = None,
+        interactive: bool = True,
+        figsize: Optional[tuple] = None,
+    ) -> Any:
+        """Render the tau-distribution analysis panel."""
+        from .visualization.tau_calibration_visualization import (
+            plot_tau_distribution_from_file,
+        )
+        fig = plot_tau_distribution_from_file(str(self.filepath), figsize=figsize)
+        if output_file:
+            fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
+            self.logger.info(f"Plot saved to: {output_file}")
+        elif interactive:
+            import matplotlib.pyplot as plt
+            plt.show()
+        return fig
 
     def detect_peaks(
         self,
