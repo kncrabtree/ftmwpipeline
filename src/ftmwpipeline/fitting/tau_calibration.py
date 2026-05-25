@@ -55,12 +55,16 @@ DEFAULT_SPUR_CLUSTER_MULTIPLIER = 1.0  # cluster gap in units of n_seg full-reco
 __all__ = [
     "TauCalibrationResult",
     "SpurCluster",
+    "BandMajority",
     "extract_tau_majority",
     "sliding_stft",
     "stft_calibration",
     "majority_tau",
     "gmm_bimodality",
     "group_spur_bins",
+    "compute_band_majorities",
+    "band_majority_for_frequency",
+    "DEFAULT_BAND_LABELS",
     "DEFAULT_N_SEG",
     "DEFAULT_T_SIGMA",
     "DEFAULT_TAU_MAX_FACTOR",
@@ -155,6 +159,153 @@ class FrequencyThird:
 
 
 @dataclass(frozen=True)
+class BandMajority:
+    """SNR-weighted majority tau over one frequency band.
+
+    Stage 5 consumes this as a per-window override for ``(tau_maj_us,
+    sigma_tau_us)`` when ``Pipeline.fit_peaks(..., per_band_tau=True)`` is
+    set. The band is identified by ``[freq_lo_mhz, freq_hi_mhz)`` and
+    holds the band-local majority + spread, computed by re-running
+    :func:`majority_tau` on the contributor subset whose frequency falls
+    inside the band. ``n`` is the contributor count in the band; for
+    small-N bands the spread may be wider than the band-wide ``sigma_tau``.
+
+    Wide bands (entire trim range = one band) reduce to the band-wide
+    ``(tau_maj_us, sigma_tau_us)``; the struct is intentionally identical
+    in shape so callers can fall back transparently.
+    """
+
+    label: str
+    freq_lo_mhz: float
+    freq_hi_mhz: float
+    n: int
+    tau_maj_us: float
+    sigma_tau_us: float
+
+
+# Arithmetic-third edges (low / mid / high), default partition for
+# ``compute_band_majorities`` when no caller-supplied edges are passed.
+DEFAULT_BAND_LABELS = ("low", "mid", "high")
+
+
+def compute_band_majorities(
+    contributor_freqs_mhz: np.ndarray,
+    contributor_taus_us: np.ndarray,
+    contributor_snrs: np.ndarray,
+    *,
+    trim_lo_mhz: float,
+    trim_hi_mhz: float,
+    band_edges_mhz: Optional[Tuple[float, ...]] = None,
+    band_labels: Tuple[str, ...] = DEFAULT_BAND_LABELS,
+    min_contributors_per_band: int = 50,
+    sigma_floor_us: float = 0.5,
+) -> Tuple[BandMajority, ...]:
+    """SNR-weighted majority tau on each band of an arithmetic partition.
+
+    Default partition is the three-band arithmetic split of
+    ``[trim_lo_mhz, trim_hi_mhz)`` (the same split used by
+    [`dev-docs/research/stage5-tau-calibration/lsq_comparison.py`](../../dev-docs/research/stage5-tau-calibration/lsq_comparison.py)
+    for the Phase-4 LSQ comparison). Caller can pass explicit interior
+    edges via ``band_edges_mhz`` (a 1-D sequence of strictly-increasing
+    interior boundaries; outer edges are taken from ``trim_lo_mhz`` /
+    ``trim_hi_mhz``).
+
+    Bands with fewer than ``min_contributors_per_band`` are still returned
+    but their ``(tau_maj_us, sigma_tau_us)`` collapse to the band-wide
+    majority computed on *all* contributors. This is the safe fallback:
+    a band that lacks information should not introduce a fresh tau anchor
+    that the Stage 5 fits will follow into a worse local optimum.
+
+    ``sigma_floor_us`` floors any band-local sigma below the floor at the
+    floor; useful when a band has many contributors but they happen to
+    cluster very tightly (e.g. all on one strong line). Stage 5's
+    bidirectional Gaussian-prior penalty would otherwise become
+    over-confident.
+    """
+    freqs = np.asarray(contributor_freqs_mhz, dtype=float)
+    taus = np.asarray(contributor_taus_us, dtype=float)
+    snrs = np.asarray(contributor_snrs, dtype=float)
+    if freqs.size == 0:
+        return tuple()
+
+    if band_edges_mhz is None:
+        n_bands = len(band_labels)
+        step = (trim_hi_mhz - trim_lo_mhz) / float(n_bands)
+        interior = tuple(trim_lo_mhz + (i + 1) * step for i in range(n_bands - 1))
+    else:
+        interior = tuple(float(e) for e in band_edges_mhz)
+        if any(e <= trim_lo_mhz or e >= trim_hi_mhz for e in interior):
+            raise ValueError(
+                f"band_edges_mhz must lie strictly inside "
+                f"({trim_lo_mhz}, {trim_hi_mhz}); got {interior}"
+            )
+        if not all(interior[i] < interior[i + 1] for i in range(len(interior) - 1)):
+            raise ValueError(
+                f"band_edges_mhz must be strictly increasing; got {interior}"
+            )
+        if len(interior) + 1 != len(band_labels):
+            raise ValueError(
+                f"band_labels has {len(band_labels)} entries but "
+                f"band_edges_mhz implies {len(interior) + 1} bands"
+            )
+    edges: Tuple[float, ...] = (float(trim_lo_mhz),) + interior + (float(trim_hi_mhz),)
+
+    # Band-wide fallback for short-contributor bands.
+    fallback_tau, fallback_sigma = majority_tau(taus, snrs, weighted=True)
+
+    out: list[BandMajority] = []
+    for i, label in enumerate(band_labels):
+        lo, hi = edges[i], edges[i + 1]
+        mask = (freqs >= lo) & (freqs < hi)
+        n_in = int(mask.sum())
+        if n_in >= min_contributors_per_band:
+            tau_b, sigma_b = majority_tau(
+                taus[mask], snrs[mask], weighted=True,
+            )
+            if not np.isfinite(tau_b) or tau_b <= 0:
+                tau_b, sigma_b = fallback_tau, fallback_sigma
+        else:
+            tau_b, sigma_b = fallback_tau, fallback_sigma
+        if np.isfinite(sigma_b):
+            sigma_b = float(max(sigma_b, sigma_floor_us))
+        out.append(
+            BandMajority(
+                label=str(label),
+                freq_lo_mhz=float(lo),
+                freq_hi_mhz=float(hi),
+                n=n_in,
+                tau_maj_us=float(tau_b),
+                sigma_tau_us=float(sigma_b),
+            )
+        )
+    return tuple(out)
+
+
+def band_majority_for_frequency(
+    band_majorities: Tuple["BandMajority", ...],
+    freq_mhz: float,
+) -> Optional["BandMajority"]:
+    """Return the band whose ``[freq_lo, freq_hi)`` contains ``freq_mhz``.
+
+    Returns ``None`` if ``band_majorities`` is empty or ``freq_mhz`` lies
+    outside every band. Callers should fall back to the band-wide
+    ``(tau_maj_us, sigma_tau_us)`` in that case (the band-wide values are
+    what would be active without per-band routing).
+    """
+    if not band_majorities:
+        return None
+    for bm in band_majorities:
+        if bm.freq_lo_mhz <= freq_mhz < bm.freq_hi_mhz:
+            return bm
+    # Allow the high edge of the last band to match (closed-closed convention
+    # at the very top so a contributor exactly at trim_hi_mhz still routes).
+    last = band_majorities[-1]
+    if freq_mhz == last.freq_hi_mhz:
+        return last
+    return None
+
+
+@dataclass(frozen=True)
 class TauCalibrationResult:
     """Outcome of one STFT tau-calibration pass.
 
@@ -180,7 +331,15 @@ class TauCalibrationResult:
         Pearson correlation of molecular frequency and tau on the contributor
         set (NaN if fewer than 5 contributors).
     frequency_thirds : tuple of FrequencyThird
-        Per-band-third median tau (low / mid / high).
+        Per-band-third median tau (low / mid / high). Diagnostic only —
+        carries the median per band, not the SNR-weighted majority.
+    band_majorities : tuple of BandMajority
+        Per-band SNR-weighted majority tau + spread. Empty tuple when
+        ``compute_band_majorities=False`` was passed to
+        :func:`extract_tau_majority`. Bands with fewer than
+        ``min_contributors_per_band`` contributors fall back to the band-
+        wide ``(tau_maj_us, sigma_tau_us)``; see
+        :func:`compute_band_majorities` for the policy.
     contributor_bin_indices : np.ndarray
         Indices of contributor bins in the per-bin arrays (sorted by frequency).
     contributor_taus_us : np.ndarray
@@ -256,6 +415,12 @@ class TauCalibrationResult:
     snr_weighted: bool
     preconditions_passed: bool
     preconditions_notes: Tuple[str, ...]
+    # Optional per-band SNR-weighted majority tau. Default empty so existing
+    # construction sites (and tests) continue to work without supplying it.
+    # Stage 5 consumes this when fit_peaks_impl is called with
+    # ``per_band_tau=True``; populated by extract_tau_majority when
+    # ``compute_band_majorities_flag=True``.
+    band_majorities: Tuple[BandMajority, ...] = field(default_factory=tuple)
 
 
 # ---------------------------------------------------------------------------
@@ -827,6 +992,10 @@ def extract_tau_majority(
     polish_top_n: Optional[int] = None,
     polish_noise_debias: bool = False,
     sigma_x_full: Optional[float] = None,
+    compute_band_majorities_flag: bool = False,
+    band_edges_mhz: Optional[Tuple[float, ...]] = None,
+    band_labels: Tuple[str, ...] = DEFAULT_BAND_LABELS,
+    min_contributors_per_band: int = 50,
 ) -> TauCalibrationResult:
     """End-to-end STFT tau calibration: FID -> ``TauCalibrationResult``.
 
@@ -1068,13 +1237,28 @@ def extract_tau_majority(
 
     all_passed = bool(cond_count and cond_bimodal and cond_spread)
 
+    if compute_band_majorities_flag and contributor_freqs.size > 0:
+        bands = compute_band_majorities(
+            contributor_freqs,
+            contributor_taus,
+            contributor_snrs,
+            trim_lo_mhz=trim_lo_mhz,
+            trim_hi_mhz=trim_hi_mhz,
+            band_edges_mhz=band_edges_mhz,
+            band_labels=band_labels,
+            min_contributors_per_band=min_contributors_per_band,
+        )
+    else:
+        bands = tuple()
+
     logger.info(
         "STFT tau calibration: tau_maj=%.3f sigma_tau=%.3f us "
         "(n_contrib=%d, n_spur_bins=%d, n_clusters=%d, bimodal=%s, "
-        "preconditions=%s)",
+        "preconditions=%s, n_bands=%d)",
         tau_maj, sigma_tau, contributor_bins.size, spur_bin_indices.size,
         len(spur_clusters), bm.two_component_preferred,
         "pass" if all_passed else "fail",
+        len(bands),
     )
 
     return TauCalibrationResult(
@@ -1087,6 +1271,7 @@ def extract_tau_majority(
         pearson_r_log_snr_vs_tau=r_log_snr,
         pearson_r_freq_vs_tau=r_freq,
         frequency_thirds=tuple(thirds),
+        band_majorities=bands,
         contributor_bin_indices=contributor_bins.astype(np.int64),
         contributor_taus_us=contributor_taus.astype(np.float64),
         contributor_snrs=contributor_snrs.astype(np.float64),

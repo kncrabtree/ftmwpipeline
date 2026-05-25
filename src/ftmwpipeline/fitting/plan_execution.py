@@ -983,6 +983,7 @@ def execute_plan(
     replan_context: Optional[ReplanContext] = None,
     max_residual_rescue_rounds: int = 0,
     rescue_kwargs: Optional[dict[str, Any]] = None,
+    window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1065,6 +1066,15 @@ def execute_plan(
         ``shape_error_epsilon``). The round-cap lives separately on
         ``max_residual_rescue_rounds``. Ignored when
         ``max_residual_rescue_rounds == 0``.
+    window_tau_overrides : dict[int, (float, float)], optional
+        Per-window override of the ``(tau_maj_us, sigma_tau_us)`` pair
+        in ``conservative_kwargs``. When set, every fit on a window whose
+        id is present in the map uses the overriding pair (with all other
+        conservative_kwargs entries unchanged). Used by Stage 5 when a
+        per-band tau calibration is plumbed (:func:`fit_peaks_impl`
+        ``per_band_tau=True``); windows missing from the map keep the
+        band-wide ``tau_maj_us`` / ``sigma_tau_us`` from
+        ``conservative_kwargs`` (or ``None`` if no calibration is wired).
 
     Returns
     -------
@@ -1081,6 +1091,8 @@ def execute_plan(
     """
     if conservative_kwargs is None:
         conservative_kwargs = {}
+    if window_tau_overrides is None:
+        window_tau_overrides = {}
 
     noise = np.asarray(rms_noise, dtype=float)
     if noise.shape != active_ft.complex_spectrum.shape:
@@ -1111,6 +1123,7 @@ def execute_plan(
         conservative_kwargs=conservative_kwargs,
         max_residual_rescue_rounds=max_residual_rescue_rounds,
         rescue_kwargs=rescue_kwargs,
+        window_tau_overrides=window_tau_overrides,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1172,6 +1185,7 @@ def execute_plan(
                 conservative_kwargs=conservative_kwargs,
                 max_residual_rescue_rounds=max_residual_rescue_rounds,
                 rescue_kwargs=rescue_kwargs,
+                window_tau_overrides=window_tau_overrides,
             )
 
             applied_pairs = {
@@ -1224,6 +1238,7 @@ def _walk_windows_in_order(
     conservative_kwargs: dict[str, Any],
     max_residual_rescue_rounds: int = 0,
     rescue_kwargs: Optional[dict[str, Any]] = None,
+    window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -1231,6 +1246,11 @@ def _walk_windows_in_order(
     Mutates ``outcomes``, ``thaw_history``, and ``rescue_history`` in place.
     Shared by the initial walk and the post-replan re-walk of affected
     windows.
+
+    ``window_tau_overrides`` (optional) maps window_id to a
+    ``(tau_maj_us, sigma_tau_us)`` pair that overrides the same keys in
+    ``conservative_kwargs`` for that window only — used by the per-band
+    Stage 5 path so each window sees its band-local tau anchor.
 
     Order of work per window:
 
@@ -1241,9 +1261,17 @@ def _walk_windows_in_order(
        rescue operates on the post-thaw outcome so any contributor's line
        that thaw promoted is already part of the model.
     """
+    if window_tau_overrides is None:
+        window_tau_overrides = {}
     by_id = {w.window_id: w for w in plan.windows}
     for wid in order:
         win = by_id[wid]
+        ck_for_window = conservative_kwargs
+        if wid in window_tau_overrides:
+            tau_maj_w, sigma_tau_w = window_tau_overrides[wid]
+            ck_for_window = dict(conservative_kwargs)
+            ck_for_window["tau_maj_us"] = float(tau_maj_w)
+            ck_for_window["sigma_tau_us"] = float(sigma_tau_w)
         outcome = _fit_one_window(
             win,
             active_ft,
@@ -1255,7 +1283,7 @@ def _walk_windows_in_order(
             tau0_us=tau0_us,
             fit_tau=fit_tau,
             residual_edge_m=residual_edge_m,
-            conservative_kwargs=conservative_kwargs,
+            conservative_kwargs=ck_for_window,
         )
         outcomes[wid] = outcome
 
@@ -1286,7 +1314,7 @@ def _walk_windows_in_order(
                 acquisition_us=acquisition_us,
                 tau0_us=tau0_us,
                 residual_edge_m=residual_edge_m,
-                conservative_kwargs=conservative_kwargs,
+                conservative_kwargs=ck_for_window,
                 max_residual_rescue_rounds=max_residual_rescue_rounds,
                 rescue_kwargs=rescue_kwargs or {},
             )

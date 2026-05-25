@@ -70,6 +70,8 @@ def calibrate_tau_impl(
     min_contributors: Optional[int] = None,
     sigma_tau_fraction_max: Optional[float] = None,
     bimodality_dominant_fraction: Optional[float] = None,
+    compute_band_majorities: bool = False,
+    min_contributors_per_band: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run STFT tau calibration and persist the result to ``file_path``.
 
@@ -90,6 +92,14 @@ def calibrate_tau_impl(
     min_contributors, sigma_tau_fraction_max, bimodality_dominant_fraction
         Acceptance pre-conditions; calibrations that fail any pre-condition
         still persist (downstream consumers gate on ``preconditions_passed``).
+    compute_band_majorities : bool, default False
+        When True, also compute per-band SNR-weighted majority tau on an
+        arithmetic three-band split of the trim range (low / mid / high)
+        and persist as ``band_majorities``. Stage 5 may then consume these
+        as per-window tau anchors via ``fit_peaks(per_band_tau=True)``.
+    min_contributors_per_band : int, optional
+        Threshold below which a band falls back to the band-wide majority.
+        Defaults to 50 inside :func:`compute_band_majorities`.
 
     Returns
     -------
@@ -139,6 +149,9 @@ def calibrate_tau_impl(
         extra_kwargs["bimodality_dominant_fraction"] = float(
             bimodality_dominant_fraction
         )
+    extra_kwargs["compute_band_majorities_flag"] = bool(compute_band_majorities)
+    if min_contributors_per_band is not None:
+        extra_kwargs["min_contributors_per_band"] = int(min_contributors_per_band)
 
     sideband = (
         fid.sideband.value if hasattr(fid.sideband, "value") else str(fid.sideband)
@@ -176,6 +189,8 @@ def calibrate_tau_impl(
         "bimodality_dominant_fraction": extra_kwargs.get(
             "bimodality_dominant_fraction"
         ),
+        "compute_band_majorities": bool(compute_band_majorities),
+        "min_contributors_per_band": extra_kwargs.get("min_contributors_per_band"),
     }
     save_tau_calibration_impl(file_path, result, parameters_used=parameters_used)
     _update_stage_completion(file_path, STAGE_NAME)

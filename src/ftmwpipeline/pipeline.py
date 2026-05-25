@@ -609,6 +609,8 @@ class Pipeline:
         min_contributors: Optional[int] = None,
         sigma_tau_fraction_max: Optional[float] = None,
         bimodality_dominant_fraction: Optional[float] = None,
+        compute_band_majorities: bool = False,
+        min_contributors_per_band: Optional[int] = None,
     ) -> TauCalibrationResult:
         """Run the Stage 2b data-driven tau calibration.
 
@@ -636,6 +638,8 @@ class Pipeline:
                 min_contributors=min_contributors,
                 sigma_tau_fraction_max=sigma_tau_fraction_max,
                 bimodality_dominant_fraction=bimodality_dominant_fraction,
+                compute_band_majorities=compute_band_majorities,
+                min_contributors_per_band=min_contributors_per_band,
             )
             tc = result["tau_calibration"]
             self.logger.info(
@@ -1030,6 +1034,7 @@ class Pipeline:
         rescue_prominence_threshold: Optional[float] = None,
         tau_maj_override_us: Optional[float] = None,
         sigma_tau_override_us: Optional[float] = None,
+        per_band_tau: bool = False,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1086,6 +1091,11 @@ class Pipeline:
             tau anchor against the persisted one, or for forcing a
             calibrated tau when Stage 2b has not been run. Supplying only
             one of the pair raises ``ValueError``.
+        per_band_tau : bool, default False
+            Route each window to its band-local ``(tau_maj, sigma_tau)``
+            from the persisted Stage 2b ``band_majorities``. Requires
+            ``calibrate_tau(..., compute_band_majorities=True)`` to have
+            been run. Incompatible with the explicit override pair.
 
         Returns
         -------
@@ -1114,6 +1124,7 @@ class Pipeline:
                 rescue_prominence_threshold=rescue_prominence_threshold,
                 tau_maj_override_us=tau_maj_override_us,
                 sigma_tau_override_us=sigma_tau_override_us,
+                per_band_tau=per_band_tau,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "

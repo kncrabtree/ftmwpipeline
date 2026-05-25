@@ -63,7 +63,10 @@ from .stage3_impl import (
     _load_canonical_noise,
     load_peaks_impl,
 )
-from ..fitting.tau_calibration import TauCalibrationResult
+from ..fitting.tau_calibration import (
+    TauCalibrationResult,
+    band_majority_for_frequency,
+)
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage4_impl import load_windows_impl
 
@@ -219,6 +222,7 @@ def fit_peaks_impl(
     rescue_prominence_threshold: Optional[float] = None,
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
+    per_band_tau: bool = False,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -281,6 +285,19 @@ def fit_peaks_impl(
         against the persisted one, or for forcing a calibrated tau on
         fixtures where Stage 2b has not been run. Supplying only one of
         the pair raises ``ValueError``.
+    per_band_tau : bool, default False
+        Route each window to its band-local ``(tau_maj_us, sigma_tau_us)``
+        from the persisted Stage 2b ``band_majorities``. Requires the
+        Stage 2b calibration to have been run with
+        ``compute_band_majorities=True`` (otherwise raises ``ValueError``).
+        Windows whose centre frequency falls outside every band, and
+        windows whose band has fewer than ``min_contributors_per_band``
+        contributors (so the band's tau collapsed to the band-wide
+        fallback), inherit the band-wide ``(tau_maj_us, sigma_tau_us)``
+        unchanged. Incompatible with ``tau_maj_override_us`` /
+        ``sigma_tau_override_us`` (the explicit-override pair beats any
+        persisted calibration; per-band routing only makes sense relative
+        to the persisted band majorities).
 
     Raises
     ------
@@ -458,6 +475,49 @@ def fit_peaks_impl(
     else:
         rescue_kwargs = None
 
+    # --- Per-band tau routing (Item 4) --------------------------------------
+    # When per_band_tau=True AND the persisted Stage 2b carries
+    # ``band_majorities``, build window_tau_overrides[window_id] =
+    # (tau_maj_band, sigma_tau_band) by mapping each window's centre
+    # frequency to the band whose [freq_lo, freq_hi) contains it. The
+    # band-wide ``(tau_maj_us, sigma_tau_us)`` in conservative_kwargs
+    # remains the fallback for windows that don't match any band (e.g.
+    # window centre outside the calibration trim range).
+    window_tau_overrides: Dict[int, tuple[float, float]] = {}
+    per_band_used = False
+    if per_band_tau:
+        if tau_source == "override":
+            raise ValueError(
+                "per_band_tau is incompatible with tau_maj_override_us / "
+                "sigma_tau_override_us; the explicit override is the only "
+                "anchor for the fit and per-band routing has nothing to "
+                "vary against"
+            )
+        if persisted_cal is None or not persisted_cal.band_majorities:
+            raise ValueError(
+                "per_band_tau requires a persisted Stage 2b calibration "
+                "with band_majorities; re-run calibrate_tau(..., "
+                "compute_band_majorities=True) first"
+            )
+        for win in plan.windows:
+            centre_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
+            band = band_majority_for_frequency(
+                persisted_cal.band_majorities, centre_mhz,
+            )
+            if band is None:
+                continue
+            window_tau_overrides[int(win.window_id)] = (
+                float(band.tau_maj_us), float(band.sigma_tau_us),
+            )
+        per_band_used = True
+        logger.info(
+            "Stage 5 per-band tau routing on: %d / %d windows mapped "
+            "to a band (others use band-wide tau_maj=%.3f, sigma=%.3f)",
+            len(window_tau_overrides), len(plan.windows),
+            tau_maj_us if tau_maj_us is not None else float("nan"),
+            sigma_tau_us if sigma_tau_us is not None else float("nan"),
+        )
+
     plan_outcome = execute_plan(
         plan,
         active_ft,
@@ -489,6 +549,7 @@ def fit_peaks_impl(
         replan_context=replan_ctx,
         max_residual_rescue_rounds=rescue_max_v,
         rescue_kwargs=rescue_kwargs,
+        window_tau_overrides=window_tau_overrides if per_band_used else None,
     )
 
     parameters = {
@@ -508,6 +569,8 @@ def fit_peaks_impl(
         "tau_maj_us": tau_maj_us,
         "sigma_tau_us": sigma_tau_us,
         "tau_calibration_source": tau_source,
+        "per_band_tau": per_band_used,
+        "n_windows_band_routed": len(window_tau_overrides) if per_band_used else 0,
     }
     if rescue_max_v > 0:
         parameters.update(

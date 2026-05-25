@@ -50,6 +50,7 @@ import h5py
 import numpy as np
 
 from ..fitting.tau_calibration import (
+    BandMajority,
     FrequencyThird,
     GMMBimodality,
     SpurCluster,
@@ -201,6 +202,20 @@ def save_tau_calibration_to_hdf5(
         third_g.attrs["n"] = int(third.n)
         third_g.attrs["median_tau_us"] = float(third.median_tau_us)
 
+    # --- band majorities (optional, per-band SNR-weighted majority) ---------
+    # Empty when calibration was run without ``compute_band_majorities_flag``.
+    # When present, Stage 5 may consume these as per-window tau anchors.
+    bg = h5_group.create_group("band_majorities")
+    bg.attrs["n_bands"] = int(len(result.band_majorities))
+    for i, band in enumerate(result.band_majorities):
+        band_g = bg.create_group(f"band_{i:02d}")
+        band_g.attrs["label"] = band.label
+        band_g.attrs["freq_lo_mhz"] = float(band.freq_lo_mhz)
+        band_g.attrs["freq_hi_mhz"] = float(band.freq_hi_mhz)
+        band_g.attrs["n"] = int(band.n)
+        band_g.attrs["tau_maj_us"] = float(band.tau_maj_us)
+        band_g.attrs["sigma_tau_us"] = float(band.sigma_tau_us)
+
     # --- algorithm info -----------------------------------------------------
     ai = h5_group.create_group("algorithm_info")
     ai.attrs["method"] = "sliding_active_window_stft"
@@ -279,6 +294,28 @@ def load_tau_calibration_from_hdf5(
             )
         )
 
+    # --- band majorities (optional; missing on legacy files / opt-out runs) -
+    bands: list[BandMajority] = []
+    if "band_majorities" in h5_group:
+        bg = h5_group["band_majorities"]
+        for key in sorted(bg.keys()):
+            band_attrs = dict(bg[key].attrs)
+            label_raw = band_attrs["label"]
+            bands.append(
+                BandMajority(
+                    label=(
+                        label_raw.decode("utf-8")
+                        if isinstance(label_raw, bytes)
+                        else str(label_raw)
+                    ),
+                    freq_lo_mhz=float(band_attrs["freq_lo_mhz"]),
+                    freq_hi_mhz=float(band_attrs["freq_hi_mhz"]),
+                    n=int(band_attrs["n"]),
+                    tau_maj_us=float(band_attrs["tau_maj_us"]),
+                    sigma_tau_us=float(band_attrs["sigma_tau_us"]),
+                )
+            )
+
     # --- preconditions notes -----------------------------------------------
     notes_raw = h5_group["preconditions_notes"][:]
     notes = tuple(
@@ -300,6 +337,7 @@ def load_tau_calibration_from_hdf5(
         pearson_r_log_snr_vs_tau=r_log_snr,
         pearson_r_freq_vs_tau=r_freq,
         frequency_thirds=tuple(thirds),
+        band_majorities=tuple(bands),
         contributor_bin_indices=contributor_bin_indices,
         contributor_taus_us=contributor_taus,
         contributor_snrs=contributor_snrs,
