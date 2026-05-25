@@ -88,12 +88,17 @@ def case1_polish_replay() -> dict:
             N = int(round(T_full / PROTO_SAMPLE_DT_US))
             if (N // n_seg) < 4:
                 continue
+            # polish_snr_cap=None on the "on" / debias variants: this
+            # script documents the polish-OFF vs polish-ON-no-cap endpoint
+            # comparison the +3-5 % bias study was built around. The
+            # production default (cap=9) is a third operating point swept
+            # separately by polish_snr_cap_validation.py.
             for label, kwargs in (
                 ("off", dict(polish=False)),
-                ("on", dict(polish=True, polish_n_iter=1)),
+                ("on", dict(polish=True, polish_n_iter=1, polish_snr_cap=None)),
                 (
                     "on_noise_debias",
-                    dict(polish=True, polish_n_iter=1,
+                    dict(polish=True, polish_n_iter=1, polish_snr_cap=None,
                          polish_noise_debias=True),
                 ),
             ):
@@ -248,12 +253,13 @@ def case2638_polish() -> dict:
         fid, sigma_t, expected = build_one(rng)
         if expected_truth is None:
             expected_truth = expected
+        # polish_snr_cap=None: same rationale as case1_polish_replay above.
         for label, kwargs in (
             ("off", dict(polish=False)),
-            ("on", dict(polish=True, polish_n_iter=1)),
+            ("on", dict(polish=True, polish_n_iter=1, polish_snr_cap=None)),
             (
                 "on_noise_debias",
-                dict(polish=True, polish_n_iter=1,
+                dict(polish=True, polish_n_iter=1, polish_snr_cap=None,
                      polish_noise_debias=True),
             ),
         ):

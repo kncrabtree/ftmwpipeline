@@ -50,6 +50,16 @@ DEFAULT_MIN_CONTRIBUTORS = 200
 DEFAULT_SIGMA_TAU_FRACTION_MAX = 0.20
 DEFAULT_SIGMA_TAU_FLOOR_US = 0.5
 DEFAULT_SPUR_CLUSTER_MULTIPLIER = 1.0  # cluster gap in units of n_seg full-record bins
+# Polish gate: skip the Gauss-Newton step on contributors whose per-bin
+# SNR is at or above this cap (they keep the log-linear seed). The
+# log-linear +3-5 % bias the polish targets concentrates at modest SNR;
+# above the cap the seed is already near-unbiased so applying the polish
+# there over-corrects per-band. On 2638 the cap range [8, 12] yields
+# per-band SNR-weighted majority τ within ±5 % of the LSQ reference
+# across low/mid/high arithmetic thirds; 9 lands worst-case 3.2 %. See
+# `dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py`
+# and `report-lsq-comparison.md` for the sweep.
+DEFAULT_POLISH_SNR_CAP = 9.0
 
 
 __all__ = [
@@ -74,6 +84,7 @@ __all__ = [
     "DEFAULT_MIN_CONTRIBUTORS",
     "DEFAULT_SIGMA_TAU_FRACTION_MAX",
     "DEFAULT_SIGMA_TAU_FLOOR_US",
+    "DEFAULT_POLISH_SNR_CAP",
 ]
 
 
@@ -990,6 +1001,7 @@ def extract_tau_majority(
     polish: bool = True,
     polish_n_iter: int = 1,
     polish_top_n: Optional[int] = None,
+    polish_snr_cap: Optional[float] = DEFAULT_POLISH_SNR_CAP,
     polish_noise_debias: bool = False,
     sigma_x_full: Optional[float] = None,
     compute_band_majorities_flag: bool = False,
@@ -1051,6 +1063,18 @@ def extract_tau_majority(
         keeps the polish's correction local to high-confidence anchors
         and avoids shifting weak-skirt bins whose per-bin SNR is too low
         for one Gauss-Newton step to reliably improve.
+    polish_snr_cap : float, optional
+        When set, the polish runs only on contributors whose per-bin SNR
+        is **below** ``polish_snr_cap``; high-SNR contributors retain the
+        unpolished log-linear seed (the +3-5 % log-linear bias the polish
+        targets concentrates at modest SNR, so applying it to high-SNR
+        bins over-corrects). Pass ``None`` to disable the cap and polish
+        every contributor (the legacy polish=True behaviour). Default is
+        :data:`DEFAULT_POLISH_SNR_CAP`, calibrated against the Phase 4
+        LSQ reference on 2638 to land per-band SNR-weighted majority τ
+        within ±5 % of the LSQ low/mid/high thirds. See
+        ``dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py``
+        for the sweep.
     polish_noise_debias : bool, default False
         Replace ``|S_n|`` with the Rician-unbiased magnitude
         ``sqrt(|S_n|^2 - 2 sigma^2)`` in the polish step. Theoretically
@@ -1150,14 +1174,22 @@ def extract_tau_majority(
         polish_sigma = (
             float(cal.sigma_frame) if polish_noise_debias else None
         )
-        tau_polished, _C_polished = _nls_polish_step(
-            cal.mag, cal.a_centers_us, cal.tau_per_bin, cal.C_per_bin,
-            mask=contributor_mask,
-            tau_clip_us=(0.1, float(cal.tau_max_us)),
-            n_iter=int(polish_n_iter),
-            sigma_frame=polish_sigma,
-        )
-        tau_per_bin = tau_polished
+        polish_mask = contributor_mask
+        if polish_snr_cap is not None and polish_snr_cap > 0.0:
+            # Polish only the contributors whose per-bin SNR sits below the
+            # cap: the log-linear bias the polish targets is concentrated
+            # at modest SNR, so high-SNR contributors keep the already-
+            # near-unbiased log-linear seed.
+            polish_mask = polish_mask & (cal.snr_per_bin < float(polish_snr_cap))
+        if polish_mask.any():
+            tau_polished, _C_polished = _nls_polish_step(
+                cal.mag, cal.a_centers_us, cal.tau_per_bin, cal.C_per_bin,
+                mask=polish_mask,
+                tau_clip_us=(0.1, float(cal.tau_max_us)),
+                n_iter=int(polish_n_iter),
+                sigma_frame=polish_sigma,
+            )
+            tau_per_bin = tau_polished
 
     contributor_bins = np.where(contributor_mask)[0]
     # Sort contributors by molecular frequency (stable, helpful for serialization).

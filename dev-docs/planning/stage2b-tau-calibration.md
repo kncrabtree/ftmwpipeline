@@ -799,6 +799,59 @@ model does not capture, and the debiasing over-corrects (the
 4.37 µs, outside the gate). Default off; left as an opt-in forensic
 knob for single-isolated-line work.
 
+### `polish_snr_cap` (production default)
+
+`extract_tau_majority` accepts an optional `polish_snr_cap` that
+restricts the Gauss-Newton polish to contributors whose per-bin SNR
+(= `max_n |S_n| / σ_frame`) is **below** the cap; high-SNR contributors
+retain the unpolished log-linear seed. The +3-5 % log-linear bias the
+polish targets concentrates at modest SNR — at high per-bin SNR the
+log-linear regression is already nearly unbiased, so applying the polish
+there over-corrects. The default is `DEFAULT_POLISH_SNR_CAP = 9.0`,
+calibrated against the Phase 4 LSQ reference on 2638; pass
+`polish_snr_cap=None` to disable the cap and polish every contributor
+(legacy polish=True behaviour).
+
+The acceptance metric is per-band SNR-weighted majority τ (the quantity
+Stage 5 consumes via `Pipeline.fit_peaks(per_band_tau=True)`) measured
+against the LSQ-fit-and-histogram per-third medians from
+[`lsq_comparison.py`](../research/stage5-tau-calibration/lsq_comparison.py)
+on the unapodized 2638 fixture (low 7.87, mid 6.27, high 5.16 µs). On
+2638, per-band SNR-weighted majority τ at the production cap:
+
+| config | low maj | mid maj | high maj | worst \|Δ\| |
+|---|---|---|---|---|
+| polish=False | 7.71 (-2.0 %) | 6.44 (+2.7 %) | 5.66 (+9.7 %) | 9.7 % |
+| polish=True, cap=None (legacy) | 7.22 (-8.3 %) | 5.73 (-8.5 %) | 4.74 (-8.1 %) | 8.5 % |
+| **polish=True, cap=9.0 (default)** | **7.62 (-3.2 %)** | **6.16 (-1.8 %)** | **5.29 (+2.4 %)** | **3.2 %** |
+
+See
+[`polish_snr_cap_validation.py`](../research/stage5-tau-calibration/polish_snr_cap_validation.py)
+for the full cross-sweep over caps × `relative_gate_fraction`.
+
+The band-wide `tau_maj` is a secondary metric under per-band routing:
+at the default cap it lands at 5.96 µs (-4.8 % from LSQ band-wide 6.26
+µs), vs 5.51 (-12 %) under the legacy polish=True and 6.33 (+1 %) under
+polish=False. Callers that do not enable per-band routing should be
+aware the band-wide value sits between the two polish endpoints by
+design.
+
+#### Why an SNR cap (not a wider bad-fit gate)
+
+The 2638 contributor SNR distribution is dense in [5, 30] with a thin
+high-SNR tail; strong on-line bins (per-frame SNR 240-360) are
+classified as `bad-fit` by `stft_calibration`, not as contributors,
+because their `rss_exp` exceeds the relative gate (real molecular lines
+aren't pure single-exponentials — line shape, Doppler, saturation
+inflate the per-bin residual above the 5 %-of-mean budget). The polish
+already sees only the intermediate-SNR bins where the log-linear bias is
+largest; the cap removes the upper tail of *that* distribution where the
+log-linear seed is closest to truth. Loosening `relative_gate_fraction`
+from 0.05 to 0.20 buys an extra ~0.5 % on the worst-case majority (down
+to 2.6 %) but at the cost of a global classifier change with
+unpredictable effects on other fixtures — the simpler single-knob change
+captures most of the win and was the chosen scope.
+
 ## Outstanding open questions
 
 - **Multi-fixture confidence.** Is `τ_maj` stable across fixtures

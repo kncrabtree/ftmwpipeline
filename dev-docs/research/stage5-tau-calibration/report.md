@@ -473,20 +473,22 @@ End-to-end run on the real 2638 fixture:
 
 - polish=OFF: τ_maj = 6.328 ± 1.617 µs (reproduces the legacy headline
   in [`report-2638.md`](report-2638.md)).
-- polish=ON (new default): τ_maj = 5.512 ± 1.585 µs.
+- polish=ON, no SNR cap (legacy polish behaviour): τ_maj = 5.512 ± 1.585 µs.
+- **polish=ON, polish_snr_cap=9 (production default): τ_maj ≈ 5.96 ± 1.59 µs.**
 - polish=ON + debias (forensic): τ_maj = 4.367 ± 1.568 µs.
 
-The polish=ON headline of 5.51 µs is at the lower boundary of the
-Phase 2 ±20 % acceptance gate around 7 µs (5.6). Given the 2638-shape
-synthetic above shows the polish reduces magnitude of bias by roughly
-half (going from +2.7 % → −1.1 %), and given the published τ ≈ 7 µs
-implied number is itself a back-of-envelope inference from apodized-FT
-arithmetic, the most consistent interpretation is that the published
-6.33 µs was biased high by both the log-linear weighting and
-shape-error / Voigt-deficit effects. The polished 5.51 µs is closer to
-the underlying SNR-weighted molecular-magnitude-best-fit τ — at the
-cost of moving the headline materially from its published value. The
-calibration's marginal pre-conditions flag continues to fire on 2638
-(σ_τ/τ_maj > 0.20 in both paths), and the Phase 4 LSQ comparison is
-the deeper cross-validation that would adjudicate the "correct"
-absolute number.
+The production default ships with `polish_snr_cap = 9.0`, calibrated
+against the Phase 4 LSQ per-band reference on this fixture (see
+[`report-lsq-comparison.md`](report-lsq-comparison.md) § "Mechanism 1
+sweep result"). The cap restricts the Gauss-Newton polish to
+contributors whose per-bin SNR is below the cap, leaving high-SNR
+contributors on their log-linear seed (already near-unbiased at high
+SNR). It lands per-band SNR-weighted majority τ (the production
+quantity Stage 5 routes on via `per_band_tau=True`) within ±3.2 % of
+the LSQ reference on all three arithmetic thirds, vs ±8-10 % for
+either polish=OFF or polish=ON-no-cap.
+
+The band-wide τ_maj at the production default sits between the two
+polish endpoints by design; under per-band routing, the band-wide value
+is a secondary metric. The calibration's marginal pre-conditions flag
+continues to fire on 2638 (σ_τ/τ_maj > 0.20 across all polish variants).

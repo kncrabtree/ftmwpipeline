@@ -374,6 +374,48 @@ three thirds — which is tighter than what either polish=False or
 polish=True achieves today (their best-third agreement is ~1-2 %, but
 their worst-third is 8-18 %).
 
+### Mechanism 1 sweep result — shipped
+
+Mechanism 1 (per-bin SNR cap) landed as a production change, calibrated
+against the LSQ expanded per-band reference on this fixture. See
+[`polish_snr_cap_validation.py`](polish_snr_cap_validation.py) for the
+sweep and [`data/polish_snr_cap.json`](data/polish_snr_cap.json) for
+the full table.
+
+Two surprises during validation reshaped the analysis:
+
+1. **The right acceptance metric is per-band SNR-weighted majority τ,
+   not per-third median τ.** Stage 5 routes each window to its band's
+   `BandMajority.tau_maj_us`, which `extract_tau_majority` computes via
+   SNR-weighted quantile on the contributors inside the band. The
+   per-third median treats every contributor equally, so it answers a
+   subtly different question from the one production cares about.
+   Switching metrics narrows the gap between "passes acceptance" and
+   "fails by a hair": at `polish_snr_cap=10` the per-third median
+   worst-case is 5.5 % but the per-band majority worst-case is 4.0 %.
+
+2. **The contributor SNR distribution maxes at ~82 on 2638, not 200-
+   1000 as the report predicted.** Strong on-line bins (per-frame SNR
+   240-360) are classified as `bad-fit` by `stft_calibration` because
+   their `rss_exp` exceeds the relative gate (real lines aren't pure
+   single-exponentials, so `rss_exp` includes shape/Doppler/saturation
+   contributions). The contributor set covers only the intermediate-
+   SNR bins where the polish actually helps; the bad-fit gate already
+   does the high-SNR exclusion the report worried about. The right cap
+   range is therefore 5-30, not 100-200.
+
+Cross-sweep on cap × `relative_gate_fraction`: a wide acceptance region
+exists in the 5 % gate even at the shipped `relative_gate_fraction =
+0.05`. The chosen production default is `DEFAULT_POLISH_SNR_CAP = 9.0`,
+which lands per-band SNR-weighted majority τ at low -3.2 %, mid -1.8 %,
+high +2.4 % — worst-case 3.2 %, comfortably inside the gate. Loosening
+the bad-fit gate to 0.20 buys an extra ~0.5 % at the cost of a global
+classifier change with unpredictable downstream effects, so it was left
+out of scope.
+
+Mechanism 2 (SNR-weighted blend) was not pursued: Mechanism 1 already
+passes acceptance with the simpler hard-cap form.
+
 ## Implications for the next session(s)
 
 1. **Polish default flip (immediate, recommended).** Change

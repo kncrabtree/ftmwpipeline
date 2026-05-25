@@ -336,6 +336,10 @@ def _extract_stft_contributor_thirds(fixture: Path) -> dict[str, dict[str, dict]
 
     out: dict[str, dict[str, dict]] = {}
     for label, polish in (("polish_off", False), ("polish_on", True)):
+        # Pass polish_snr_cap=None explicitly: the production default is
+        # cap=9 (a third operating point), but this script's purpose is
+        # the polish=OFF vs polish=ON endpoint comparison underlying the
+        # bias-flip analysis.
         cal = extract_tau_majority(
             np.asarray(fid.data, dtype=float),
             sample_dt_us,
@@ -346,6 +350,7 @@ def _extract_stft_contributor_thirds(fixture: Path) -> dict[str, dict[str, dict]
             trim_lo_mhz=TRIM_LO_MHZ,
             trim_hi_mhz=TRIM_HI_MHZ,
             polish=polish,
+            polish_snr_cap=None,
         )
         freqs = np.asarray(cal.contributor_freqs_mhz, dtype=float)
         taus = np.asarray(cal.contributor_taus_us, dtype=float)
