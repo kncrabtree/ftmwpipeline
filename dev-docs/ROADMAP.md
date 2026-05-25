@@ -28,7 +28,7 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 |---|---|---|
 | 0 Data import | Implemented | — |
 | 1 FT processing | Implemented | — |
-| 2 Noise estimation | Implemented | — |
+| 2 Noise estimation | Implemented | [`planning/stage2-noise-estimation.md`](planning/stage2-noise-estimation.md) |
 | 3 Peak detection | Implemented | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
 | 4 Window assignment | Implemented | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) |
 | 5 Fitting | Planning | [`planning/stage5-fitting.md`](planning/stage5-fitting.md) |
@@ -57,6 +57,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 
 | Document | Status |
 |---|---|
+| [`planning/stage2-noise-estimation.md`](planning/stage2-noise-estimation.md) | Implementation summary — MAD/median subdivision + moving-median σ + Lorentzian-skirt exclusion. Algorithmic-choice provenance in [`research/noise-grid-invariance/report.md`](research/noise-grid-invariance/report.md) |
 | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance) |
 | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Implemented (finalized) |
 | [`planning/stage5-fitting.md`](planning/stage5-fitting.md) | Planning (step-1 plan; implementation not started) |

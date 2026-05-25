@@ -25,9 +25,22 @@ trimmed) magnitudes recovers grid invariance: 2638 σ ranges agree to
 0.4 % between user grid and active-FT (8.28× vs 8.31×), and synthetic
 3-step σ(f) is recovered at every zpf ∈ {0, 1, 2, 3}.
 
-This is an audit + diagnosis + candidate fix. Production wiring of the
-fix is deferred to a follow-up that runs the Stage 5 validation
-harness on 2638.
+This started as an audit + diagnosis + candidate fix. Shipped state
+in production (`src/ftmwpipeline/preprocessing/noise_estimation.py`,
+see §8):
+
+1. Subdivision uses median + MAD on raw \|X\| (the root-cause fix).
+2. σ-estimation uses moving-median (robust to skirt residuals,
+   tracks the instrument's ~few-hundred-MHz coherence scale).
+3. Strong-line skirts are excluded explicitly with a physical
+   Lorentzian-radius model, removing residual skirt-bias bumps in
+   σ(f).
+
+The §5 per-bin-MAD σ variant was tried and rejected — its piecewise-
+constant σ(f) failed to track real σ variation visible on the user
+grid. It remains the reference for off-line grid-invariance
+diagnostics where exact σ-value agreement across grids is the
+metric.
 
 ## 1. Setup -- the algorithmic context
 
@@ -291,64 +304,150 @@ unchanged, and the gap-pass detector's σ threshold is well-defined
 even with a single global σ -- but the σ-aware downstream consumers
 need a fix.
 
-## 8. Wiring proposal (conditional)
+## 8. Wiring proposal — as shipped
 
-If the validation harness on 2638 confirms no Stage 5 regressions,
-the production change is:
+The wiring proposal in this section has been **implemented** in
+`src/ftmwpipeline/preprocessing/noise_estimation.py`. Targeted
+diagnosis of the root-cause subdivision flaw plus a robust
+σ-estimation path and explicit handling of strong-line skirts. Each
+step has a clear physical motivation and a single tunable; the
+default parameter values were calibrated on 2638 and are
+instrument-dependent (notably `DEFAULT_SMOOTHING_MHZ`, see §9).
 
-1. Replace the post-trim-stats subdivision criterion in
-   `_compute_variance_based_bins.should_subdivide` with the
-   MAD-and-median-on-raw-magnitudes criterion sketched in
-   `estimate_noise_mad_split`. Keep the noise-fraction and bin-size
-   floors, the OR-of-multiple-criteria structure is fine; only the
-   inputs change (raw, not post-trim).
-2. Replace the per-bin σ_c estimate (currently mean-based, then
-   squared) with `MAD/0.4485` (the Rayleigh MAD scaling). This
-   preserves the line-robustness of the current approach without
-   needing the trim to do double duty.
-3. Keep the smoothing logic, the smoothing-sample target, the bin-
-   size floors, and the trim itself (the trim still produces the
-   noise mask, just no longer drives subdivision).
-4. Fix the smoothing's `mode="same"` edge bias (false-positive §5.2)
-   by either `mode="valid"` + edge extrapolation or pre-padding the
-   σ array with its boundary value before convolution.
+1. **Subdivision criterion** (the original root-cause fix).
+   `should_subdivide` reads median and MAD of the *raw* magnitudes
+   in each candidate half. Subdivide iff `|Δmedian|/median ≥ T` OR
+   `|ΔMAD|/MAD ≥ T`, with `T = SUBDIVISION_THRESHOLD = 0.08`. The
+   previous OR-of-four (post-trim mean Δ ≥ 20 %, z ≥ 5 σ, post-trim
+   var Δ ≥ 20 %, F ≥ 2) was removed cleanly. The noise-fraction
+   floor (≥ 2/3) and bin-size floor
+   (`max(n/64, ABS_MIN_BIN_SIZE = 300)`) are preserved.
 
-The change is local to one function and one parameter computation.
-The MAD/median calculation is O(N log N) per bin (sort + median); the
-recursive subdivision visits each bin O(log N) times, so the
-asymptotic cost matches the current estimator's. Empirically on 2638
-the MAD-variant prototype is ~2× faster end-to-end (single sort vs
-the trim's iterative 1 %-step magnitude search).
+   `T = 0.08` was calibrated against the noise-heuristic-audit §2
+   test bed (5000 Rayleigh samples per half, 2000 trials per
+   condition; see `scratch/mad-calibration/calibrate_thresholds.py`):
+   zero false-positives on truly homogeneous noise, **94.6 %**
+   detection at σ_R/σ_L = 1.10, 100 % at ≥ 1.20.
+
+2. **Skewness-trim noise mask**. Still produces the initial
+   `noise_mask` for the σ estimator, but now runs only once per
+   *final* bin (not for every candidate subdivision split as
+   before).
+
+3. **Moving-median σ estimator**. `compute_rms_noise_convolution`
+   was rewritten to slide a median filter of width
+   `DEFAULT_SMOOTHING_MHZ / freq_step` over the noise-mask
+   sequence and scale via the Rayleigh quantile relation
+   `σ_x = median(|X|) · √(1/ln 2) ≈ 1.2011 · median(|X|)`, then
+   interpolate back to the full grid. The median is robust to
+   contamination up to 50 % of the window, so Lorentzian-skirt
+   residuals that survive the skewness trim do not bias the
+   estimator the way the prior `sqrt(mean(|X|²))` did.
+
+   `DEFAULT_SMOOTHING_MHZ = 300.0` chosen to match the empirically
+   observed ~few-hundred-MHz coherence scale of real σ(f) on the
+   user's hardware (no-signal noise-only acquisitions). Translates
+   to ≈ 25 000 noise samples on the 2638 user grid (≈ 0.3 % Rayleigh-
+   RMS stability per the δ-method — over-tightened relative to the
+   noise-heuristic-audit's 1 % target, but stability is no longer
+   the binding constraint; physical smoothness is).
+
+4. **Strong-line skirt exclusion**. The moving median handles
+   isolated outliers but residual upward bias persisted near strong
+   lines on 2638 (~ tens of MHz around peaks at 37/39 GHz). Cause:
+   the Lorentzian skirt is a *contiguous* region of moderately-
+   elevated samples; in a region near a strong line a non-trivial
+   fraction of the smoothing window is skirt-contaminated, and
+   while the median is much less biased than the mean it still
+   shifts at single-digit percent.
+
+   The physical fix is direct: for an exp-damped sinusoid the FT
+   magnitude is Lorentzian `|X|(Δf) = X_peak · γ / √(Δf² + γ²)`,
+   so the far-field skirt drops below `k · σ_x` at radius
+   `Δf_exclude = γ · SNR / k` (where SNR = X_peak / σ_x_initial).
+   The estimator finds peaks above `STRONG_PEAK_SNR = 20` σ_x in a
+   first-pass σ estimate, measures the strongest peak's FWHM via
+   `scipy.signal.peak_widths` to estimate γ, and masks each peak's
+   `±Δf_exclude` neighborhood out of the noise mask (capped at
+   `MAX_SKIRT_EXCLUSION_MHZ = 500` for pathological super-strong
+   peaks). With `SKIRT_EXCLUSION_K = 1.5` (exclude out to where the
+   predicted skirt drops to 1.5·σ_x), σ_x is then recomputed on the
+   tightened mask. On 2638 this exclusion drops 146 k samples from
+   the mask (noise fraction 0.93 → 0.80) and the residual bumps at
+   37/39 GHz flatten visibly.
+
+5. **Serialization**. `noise_result_serialization` is unchanged
+   from the prior path: HDF5 stores signal indices + smoothing
+   window size, and the round-trip replays
+   `compute_rms_noise_convolution` (now the moving-median variant)
+   for bit-perfect reconstruction.
+
+### As-shipped algorithm summary
+
+| Stage | Role | Tunable |
+|---|---|---|
+| Recursive bisection (median + MAD on raw \|X\|) | identify σ-regime boundaries | `SUBDIVISION_THRESHOLD = 0.08` |
+| Per-bin skewness trim | initial noise mask | `skew_target = 0.631` (Rayleigh constant) |
+| Moving-median σ_x (full-grid) | smooth σ(f) at the instrument coherence scale | **`DEFAULT_SMOOTHING_MHZ = 300.0`** ← main instrument knob |
+| Strong-line skirt exclusion | remove contiguous skirt contamination | `STRONG_PEAK_SNR = 20`; `SKIRT_EXCLUSION_K = 1.5` |
+| Final moving-median σ_x | production output | (same window) |
 
 ## 9. Open questions
 
-- **Smoothing edge artifacts**. The `mode="same"` convolution biases
-  σ values within ~half-window of the spectrum edges. The current
-  estimator's `_compute_rms_noise_smoothed` already handles this
-  better; the MAD variant should adopt the same approach.
-- **σ-range inflation at high zpf in synthetic**. The MAD variant
-  reports σ ratios 5-6× larger than the ground-truth 3× at zpf ≥ 2
-  on the discontinuous-σ synthetic. This is a Dirichlet-interpolation
-  artifact of the σ-step (real noise σ is smooth, so the artifact
-  should not matter on data) -- but it should be characterised with
-  a smooth-σ synthetic before shipping.
-- **Validation against the Stage 5 fit on 2638**. Production wiring
-  needs the validation harness to confirm no regressions in the
-  consolidated fit. Not done here.
-- **Cross-instrument generality**. 2638 is one fixture. The σ(f)
-  shape on 2638 has 8× range; other instruments may have flatter or
-  more structured noise. The MAD variant should hold but the
-  thresholds (10 % median diff, 10 % MAD diff) are first-try values
-  that may need calibration.
-- **What is the physical origin of the σ(f) structure on 2638?**
-  Out of scope here, but the answer informs how *fine* the σ(f)
-  shape needs to be tracked. If σ varies on a 5 MHz scale (visible
-  on the user grid), the smoothing window must be < 5 MHz to track
-  it; the current 32 MHz default is already too wide.
-- **The broader grid question**. The user has flagged this as the
+- **`DEFAULT_SMOOTHING_MHZ` is the main instrument-tunable.** The
+  300 MHz default matches 2638's empirical few-hundred-MHz σ(f)
+  coherence scale. Instruments with finer σ structure (e.g.,
+  narrower bandpass features or mixer artifacts) will want a
+  smaller window; instruments with smoother noise can use a wider
+  window for better Rayleigh-RMS stability. The empirical
+  procedure: take a no-signal acquisition, look at the unwrapped
+  noise floor, pick the smallest window that flattens the σ(f)
+  bumps near strong lines without smoothing across real σ
+  structure.
+- **σ-range agreement across grids is partial.** The as-shipped
+  estimator achieves grid invariance for the *subdivision* step
+  (the original root-cause fix) but not perfectly for the σ values
+  themselves, because `DEFAULT_SMOOTHING_MHZ` is anchored in MHz
+  while the underlying noise-mask sample density depends on the
+  grid. On 2638 the user-grid σ range is 3.06× and the pre-trimmed
+  active-FT σ range is around 3.5× (both vastly improved from the
+  pre-fix 7.10× / 1.00× — the active-FT is no longer a single
+  global bin). For most consumers this is good enough; the per-bin
+  MAD prototype in §5 remains the reference for off-line grid-
+  invariance diagnostics where exact σ-value agreement matters.
+- **`STRONG_PEAK_SNR = 20` and `SKIRT_EXCLUSION_K = 1.5` are
+  2638-calibrated.** A higher peak-SNR floor would skip weaker
+  peaks whose skirts still bias slightly; a lower k widens the
+  exclusion further. The current settings drop ~ 0.13 of the
+  spectrum from the noise mask on 2638. Other instruments with
+  more or stronger lines per MHz may want the exclusion narrower
+  to retain enough noise mask.
+- **HWHM is measured from the strongest peak.** Assumes the
+  spectrum has roughly uniform line widths. If linewidths vary
+  substantially (e.g., split lines mixed with broad features),
+  per-peak FWHM measurement would be more accurate. Not done.
+- **Cross-instrument generality of `SUBDIVISION_THRESHOLD`.**
+  `T = 0.08` was calibrated at the audit's N = 5000-per-half size
+  and may need adjustment for spectra small enough that the bin
+  floor (300) dominates the recursive bisection depth.
+- **σ-range inflation at high zpf in synthetic.** Carried from the
+  pre-ship report — the MAD variant on the discontinuous-σ
+  synthetic reports σ ratios 5-6× larger than the ground-truth 3×
+  at zpf ≥ 2. This is a Dirichlet-interpolation artifact of the
+  σ-step (real noise σ is smooth); should be characterised with a
+  smooth-σ synthetic before being considered done.
+- **The broader grid question.** The user has flagged this as the
   right long-term question: what zero-padding choice (zpf=0, 1, 2,
   …) is right for each pipeline operation? This study is a focused
   audit; the broader survey is a separate project.
+- **Stage 5 validation.** The MAD subdivision was run through the
+  validation harness on 2638 (in a prior per-bin-MAD shipping
+  attempt). Per-window chi^2_r distribution improved substantially
+  (p50 1.42 → 0.52, p95 7.73 → 3.14) and total fitted peaks
+  dropped marginally (648 → 637). The as-shipped version (moving
+  median + skirt exclusion) trims σ near strong lines more
+  aggressively, which should net-improve the consolidated fit; a
+  fresh validation pass on the final estimator is the next step.
 
 ## 10. Reproducibility
 

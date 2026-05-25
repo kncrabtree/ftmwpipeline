@@ -299,7 +299,7 @@ def _store_convolution_parameters(noise_result: NoiseResult, h5_group: h5py.Grou
     # Calculate and store the exact bl_bin value used during creation
     # This ensures bit-perfect reconstruction
     if 'bin_edges' in bin_info and 'n_bins' in bin_info:
-        n_bins = bin_info['n_bins']
+        n_bins = int(bin_info['n_bins'])
         if n_bins <= 2:
             # This matches the fallback logic in _compute_rms_noise_smoothed
             # We need the original frequency array length for this calculation
@@ -320,56 +320,30 @@ def _store_convolution_parameters(noise_result: NoiseResult, h5_group: h5py.Grou
 
 def _reconstruct_rms_via_convolution(
     frequencies: np.ndarray,
-    magnitudes: np.ndarray, 
+    magnitudes: np.ndarray,
     noise_mask: np.ndarray,
     conv_params: h5py.Group
 ) -> np.ndarray:
-    """
-    Reconstruct RMS array using the exact convolution method from noise_estimation.
-    
-    This function now uses the exact same modularized core algorithm as the original
-    creation to achieve bit-perfect reconstruction.
-    
-    Parameters
-    ----------
-    frequencies : np.ndarray
-        Original frequency array (MHz)
-    magnitudes : np.ndarray
-        Original magnitude array  
-    noise_mask : np.ndarray
-        Reconstructed boolean noise mask
-    conv_params : h5py.Group
-        HDF5 group containing convolution parameters
-        
-    Returns
-    -------
-    np.ndarray
-        Reconstructed RMS noise array
-        
-    Raises
-    ------
-    ValueError
-        If convolution parameters are invalid or reconstruction fails
+    """Reconstruct rms_noise by replaying the production moving-RMS
+    convolution on the noise-masked magnitudes.
+
+    Reads the smoothing-window point count from ``smoothing_params`` and
+    calls :func:`compute_rms_noise_convolution` — the same path the
+    production estimator uses — for bit-perfect reproduction.
     """
     try:
-        # Reconstruct bl_bin (smoothing window size) using EXACT same logic as creation
         if 'smoothing_window_points' in conv_params.attrs:
-            # Use the exact value stored during creation
             bl_bin = int(conv_params.attrs['smoothing_window_points'])
         elif 'n_bins' in conv_params.attrs:
-            # Reconstruct using exact same logic as _compute_rms_noise_smoothed
             n_bins = int(conv_params.attrs['n_bins'])
             if n_bins <= 2:
-                # Fallback for small number of bins
                 bl_bin = len(frequencies) // 20
             else:
-                bl_bin = len(frequencies) // (n_bins // 2)  # 2× average bin width
+                bl_bin = len(frequencies) // (n_bins // 2)
         else:
-            # Ultimate fallback
             bl_bin = len(frequencies) // 20
-        
-        # Use the exact same core algorithm as the original creation
+
         return compute_rms_noise_convolution(frequencies, magnitudes, noise_mask, bl_bin)
-        
+
     except Exception as e:
         raise ValueError(f"RMS convolution reconstruction failed: {e}") from e
