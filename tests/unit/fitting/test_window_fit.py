@@ -14,9 +14,12 @@ import numpy as np
 import pytest
 
 from ftmwpipeline.fitting.peak_model import ModelPeak, effective_tau, model_spectrum
+from ftmwpipeline.fitting.validation import feature_fwhm
 from ftmwpipeline.fitting.window_fit import (
+    DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
     ParameterErrors,
     WindowFitResult,
+    _penalty_residuals_and_jacobian,
     fit_window,
     model_jacobian,
 )
@@ -373,3 +376,104 @@ class TestInputValidation:
         peak = ModelPeak(4.0, 0.0, 0.0)
         with pytest.raises(ValueError):
             fit_window(u, z, 1.0, [peak], TAU_US, T_US, max_decay_factor=1.0)
+
+
+# ---------------------------------------------------------------------------
+# Pair phase penalty (non-quadrature cos(phi_i - phi_j) form)
+# ---------------------------------------------------------------------------
+class TestPairPhasePenalty:
+    """The pair penalty fires at both the in-phase degeneracy basin and the
+    anti-phase cancellation basin, vanishes in quadrature, and the analytic
+    Jacobian matches finite differences."""
+
+    LAMBDA = 100.0
+    FWHM = feature_fwhm(TAU_US, T_US)
+    CUTOFF = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM * FWHM
+
+    def _packed(self, amp_phase_pairs):
+        """Pack (amp, offset_mhz, phase) triples into the LSQ parameter
+        vector layout."""
+        params = []
+        for amp, off, ph in amp_phase_pairs:
+            params.extend([amp, off, ph])
+        return np.array(params, dtype=float)
+
+    def _residual(self, dphi: float, sep_mhz: float) -> float:
+        params = self._packed([(1.0, 0.0, 0.0), (1.0, sep_mhz, dphi)])
+        res, _ = _penalty_residuals_and_jacobian(
+            params,
+            k=2,
+            tau0_us=TAU_US,
+            fit_tau=False,
+            phase_penalty_lambda=self.LAMBDA,
+            amp_penalty_lambda=0.0,
+            amp_floor=None,
+            fwhm_mhz=self.FWHM,
+            phase_penalty_cutoff_fwhm=DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+        )
+        # One pair, no other penalties enabled -> one residual element.
+        assert res.shape == (1,)
+        return float(res[0])
+
+    @pytest.mark.parametrize(
+        "dphi,sign",
+        [
+            (0.0, +1.0),                # in-phase degeneracy
+            (np.pi / 2.0, 0.0),          # quadrature
+            (np.pi, -1.0),               # anti-phase cancellation
+            (-np.pi / 2.0, 0.0),
+        ],
+    )
+    def test_residual_at_zero_separation(self, dphi, sign):
+        """At zero separation the residual is ``sqrt(lambda) * cos(dphi)``."""
+        r = self._residual(dphi, sep_mhz=0.0)
+        expected = np.sqrt(self.LAMBDA) * sign
+        assert r == pytest.approx(expected, abs=1e-9)
+
+    def test_residual_vanishes_beyond_cutoff(self):
+        """The closeness weight is zero at or beyond ``cutoff``."""
+        r_at = self._residual(0.0, sep_mhz=self.CUTOFF)
+        r_beyond = self._residual(0.0, sep_mhz=2.0 * self.CUTOFF)
+        assert r_at == pytest.approx(0.0, abs=1e-12)
+        assert r_beyond == pytest.approx(0.0, abs=1e-12)
+
+    def test_weight_is_linear_in_separation(self):
+        """Half-way to the cutoff the residual is half of the zero-sep value."""
+        r_zero = self._residual(0.0, sep_mhz=0.0)
+        r_half = self._residual(0.0, sep_mhz=0.5 * self.CUTOFF)
+        assert r_half == pytest.approx(0.5 * r_zero, abs=1e-9)
+
+    def test_jacobian_matches_finite_difference(self):
+        """The analytic penalty Jacobian matches central finite differences."""
+        # Three peaks: one in-phase pair, one in-quadrature pair, one cancelling.
+        params = self._packed(
+            [
+                (1.5, -0.3 * self.FWHM, 0.4),
+                (1.2, +0.3 * self.FWHM, 0.4 + np.pi / 3.0),
+                (0.8, +0.5 * self.FWHM, 0.4 + np.pi),
+            ]
+        )
+        kwargs = dict(
+            k=3,
+            tau0_us=TAU_US,
+            fit_tau=False,
+            phase_penalty_lambda=self.LAMBDA,
+            amp_penalty_lambda=0.0,
+            amp_floor=None,
+            fwhm_mhz=self.FWHM,
+            phase_penalty_cutoff_fwhm=DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
+        )
+        _, jac = _penalty_residuals_and_jacobian(params, **kwargs)
+
+        eps = 1e-6
+        fd = np.zeros_like(jac)
+        for idx in range(params.size):
+            pp = params.copy(); pp[idx] += eps
+            pm = params.copy(); pm[idx] -= eps
+            rp, _ = _penalty_residuals_and_jacobian(pp, **kwargs)
+            rm, _ = _penalty_residuals_and_jacobian(pm, **kwargs)
+            fd[:, idx] = (rp - rm) / (2.0 * eps)
+
+        # All three pairs have their full weight on this layout: separation
+        # 0.6 / 0.8 / 0.2 FWHM, all < 2 FWHM cutoff.
+        np.testing.assert_allclose(jac, fd, atol=5e-6)

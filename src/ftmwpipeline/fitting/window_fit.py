@@ -114,9 +114,12 @@ DEFAULT_SEEDER_RCHI2 = 1.5
 DEFAULT_SEEDER_STRADDLE_FACTOR = 1.0
 DEFAULT_SEEDER_MAX_K = 3
 # Soft phase-difference penalty: weak at sep = phase_penalty_cutoff_fwhm * fwhm,
-# growing linearly to (lambda * |sin(d_phase/2)|^2) at sep = 0. Catches the
-# degenerate "two peaks collapsed to the same offset with cancelling phases"
-# blend-aware re-seed pathology.
+# growing linearly to (lambda * cos(d_phase)^2) at sep = 0. Penalises both the
+# in-phase degeneracy basin (two peaks at the same offset with aligned phases
+# summing to a single feature's amplitude) and the anti-phase cancellation
+# basin (cancelling phases producing inflated amplitudes). The penalty is zero
+# only in quadrature (Δφ = π/2) -- the configuration where two close peaks
+# carry independent information.
 DEFAULT_PHASE_PENALTY_LAMBDA = 100.0
 DEFAULT_PHASE_PENALTY_CUTOFF_FWHM = 2.0
 # Soft amplitude-floor penalty: linear hinge that adds sqrt(lambda) * max(0,
@@ -539,11 +542,14 @@ def _penalty_residuals_and_jacobian(
 
     * **Pair phase penalty** -- one residual element per unordered pair
       ``(i, j)``. The penalty is
-      ``sqrt(lambda) * weight * sin((phi_i - phi_j) / 2)`` with
-      ``weight = max(0, 1 - sep / cutoff)``: zero for in-phase peaks and at
-      or beyond the cutoff separation, maximal for anti-phase peaks at zero
-      separation. The slot is *always emitted* (with value zero when
-      ``weight = 0``) so the residual vector has constant length across
+      ``sqrt(lambda) * weight * cos(phi_i - phi_j)`` with
+      ``weight = max(0, 1 - sep / cutoff)``: zero at or beyond the cutoff
+      separation, ``±sqrt(lambda)`` at zero separation. The cosine fires at
+      both the in-phase degeneracy basin (Δφ = 0 → cos = +1) and the
+      anti-phase cancellation basin (Δφ = π → cos = -1); it is zero only at
+      quadrature (Δφ = π/2), the configuration where two close peaks carry
+      independent information. The slot is *always emitted* (with value zero
+      when ``weight = 0``) so the residual vector has constant length across
       solver iterations.
     * **Amplitude floor penalty** -- one residual element per peak,
       ``sqrt(lambda) * max(0, 1 - A_i / amp_floor)``. A linear hinge that
@@ -588,24 +594,26 @@ def _penalty_residuals_and_jacobian(
                     abs_sep = abs(sep)
                     if abs_sep < cutoff:
                         weight = 1.0 - abs_sep / cutoff
-                        half_diff = 0.5 * (peaks[i].phase - peaks[j].phase)
-                        sin_half = float(np.sin(half_diff))
-                        cos_half = float(np.cos(half_diff))
-                        res[row] = sqrt_lambda * weight * sin_half
+                        d_phase = peaks[i].phase - peaks[j].phase
+                        cos_d = float(np.cos(d_phase))
+                        sin_d = float(np.sin(d_phase))
+                        res[row] = sqrt_lambda * weight * cos_d
                         sgn = (sep / abs_sep) if abs_sep > 0.0 else 0.0
                         dweight_doffi = -sgn / cutoff
                         dweight_doffj = sgn / cutoff
                         jac[row, 3 * i + 1] = (
-                            sqrt_lambda * dweight_doffi * sin_half
+                            sqrt_lambda * dweight_doffi * cos_d
                         )
                         jac[row, 3 * j + 1] = (
-                            sqrt_lambda * dweight_doffj * sin_half
+                            sqrt_lambda * dweight_doffj * cos_d
                         )
+                        # d/d(phi_i) cos(phi_i - phi_j) = -sin(phi_i - phi_j);
+                        # d/d(phi_j) is +sin(phi_i - phi_j).
                         jac[row, 3 * i + 2] = (
-                            sqrt_lambda * weight * 0.5 * cos_half
+                            -sqrt_lambda * weight * sin_d
                         )
                         jac[row, 3 * j + 2] = (
-                            -sqrt_lambda * weight * 0.5 * cos_half
+                            sqrt_lambda * weight * sin_d
                         )
                 row += 1
 

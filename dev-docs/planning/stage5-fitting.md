@@ -797,42 +797,20 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   external-skirt leakage.
 
 - **O5-11 — phase-degeneracy penalty for the conservative-fit
-  residual.** The existing pair penalty in
+  residual.** The pair penalty in
   `window_fit._penalty_residuals_and_jacobian` is
-  `sqrt(λ) · w(Δsep) · sin((φᵢ - φⱼ)/2)` — zero for in-phase pairs
-  (Δφ=0) and maximal for anti-phase pairs (Δφ=π). It catches the
-  *cancellation* pathology (a pair that fits noise by producing
-  destructive interference between two large amplitudes) but
-  explicitly does **not** penalise the *degeneracy* pathology (two
-  in-phase peaks at the same offset with similar amplitude — the
-  case in w148's A/C and B/D pairs before the AICc merge gate, and
-  the LSQ-basin difference between w198's K=4 and K=7 outcomes).
-  User framing: "Our best bet for fitting blended features would
-  likely occur when their phases are in quadrature." Quadrature
-  (Δφ = π/2) is the only configuration where two close peaks carry
-  independent information; both Δφ=0 (degenerate / co-aligned) and
-  Δφ=π (cancelling) are pathological.
-
-  The complementary penalty is `cos((φᵢ - φⱼ)/2)` — 1 at Δφ=0 (max
-  penalty) and 0 at Δφ=π (no penalty). Two wiring options:
-
-  - **Separate penalty term.** Add a
-    `phase_degeneracy_penalty_lambda` parameter and emit a second
-    penalty residual per pair with `sqrt(λ_deg) · w(Δsep) ·
-    cos((φᵢ - φⱼ)/2)`. Independent tuning; keeps the existing
-    cancellation penalty untouched.
-  - **Single non-quadrature penalty.** Replace both halves with one
-    term that fires at *both* Δφ=0 and Δφ=π, zero only at Δφ=π/2:
-    `cos(φᵢ - φⱼ)` (peaks at both 0 and π) or `|cos(φᵢ - φⱼ)|`. One
-    knob; cleaner conceptually but loses the ability to tune
-    cancellation-vs-degeneracy independently if their failure modes
-    need different λ.
-
-  Both keep the existing `weight = max(0, 1 - sep/cutoff)` closeness
-  factor so the penalty only fires for pairs near the resolution
-  limit. The degeneracy half may need a smaller cutoff (e.g. 1 FWHM
-  vs the current 2 FWHM) since the degeneracy pathology is
-  specifically a sub-FWHM problem.
+  `sqrt(λ) · w(Δsep) · cos(φᵢ - φⱼ)` — fires at both Δφ=0 (in-phase
+  degeneracy: two peaks at the same offset summing to a single
+  feature's amplitude — the w148 A/C and B/D pairs before the AICc
+  merge gate, and the LSQ-basin difference between w198's K=4 and
+  K=7 outcomes) and Δφ=π (cancellation: destructive interference
+  between two inflated amplitudes), zero only at Δφ=π/2
+  (quadrature, the configuration where two close peaks carry
+  independent information). User framing: "Our best bet for fitting
+  blended features would likely occur when their phases are in
+  quadrature." The `weight = max(0, 1 - sep / cutoff)` closeness
+  factor (default cutoff 2 FWHM) keeps the penalty active only for
+  pairs near the resolution limit.
 
   This is the LSQ-side complement to the AICc-gate work in
   [`stage5-residual-rescue.md`](stage5-residual-rescue.md): the
@@ -845,6 +823,20 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   threshold) becomes safe — tier 2 can decide between merging and
   keeping real close pairs on chi-squared evidence with the
   penalty providing the LSQ-side distinguishing signal.
+
+  **Status: landed.** Single quadrature-only `cos(φᵢ - φⱼ)` form
+  replaces the prior anti-phase-only `sin((φᵢ - φⱼ)/2)` term;
+  `DEFAULT_PHASE_PENALTY_LAMBDA = 100` and the 2-FWHM cutoff carry
+  over unchanged. The analytic Jacobian is regression-tested
+  against finite differences in
+  `tests/unit/fitting/test_window_fit.py::TestPairPhasePenalty`.
+  On 2638 the change produced +2 accepted fitted peaks, dropped
+  global χ²_r p95 from 5.99 to 5.14, and improved targeted windows
+  (w293: 3.00 → 2.74) without regressing the heavy-tail cases —
+  w140/w216 do not move because their high χ² is driven by
+  shape-mismatch / tau-collapse pathologies, not phase degeneracy
+  (w216's three peaks land at non-degenerate Δφ; w140 collapses
+  tau to ≈3µs against an apodization-anchored 5µs upper bound).
 
 ## Task breakdown
 
