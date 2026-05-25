@@ -91,10 +91,12 @@ from ftmwpipeline.visualization.fit_visualization import plot_spectrum_fit
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 # Script lives at <repo>/scripts/development/stage5-validation/; outputs go to
-# the gitignored <repo>/scratch/stage5-validation/ alongside the .ftmw fixture.
+# the gitignored <repo>/scratch/stage5-validation/ (or any other subdir picked
+# via --output-dir) alongside the .ftmw fixture. The actual paths are resolved
+# inside ``main`` after CLI parsing — these defaults exist for any helpers /
+# tests that import the module without driving the CLI.
 REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 OUTPUT_DIR = REPO_ROOT / "scratch" / "stage5-validation"
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 FTMW_PATH = OUTPUT_DIR / "exp_2638.ftmw"
 
 
@@ -1949,7 +1951,69 @@ def main() -> None:
             "are still emitted but cover only the requested windows."
         ),
     )
+    arg_parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override the output / fixture directory. Accepts an absolute "
+            "path or a path relative to the repo root. Defaults to "
+            "``scratch/stage5-validation``."
+        ),
+    )
+    arg_parser.add_argument(
+        "--fixture-name",
+        type=str,
+        default=None,
+        help=(
+            "Override the .ftmw fixture filename inside the output dir. "
+            "Defaults to ``exp_2638.ftmw``."
+        ),
+    )
+    arg_parser.add_argument(
+        "--named-window",
+        action="append",
+        dest="named_windows",
+        default=[],
+        metavar="ID:NOTE",
+        help=(
+            "Annotate a --window-id as a NAMED case in the INDEX.md "
+            "(repeatable). Format: ``--named-window 234:'34154 anomaly'``. "
+            "Only consulted when --window-id is used to override the "
+            "default EASY/HARD/NAMED samples."
+        ),
+    )
     args = arg_parser.parse_args()
+
+    # Re-bind the module-level OUTPUT_DIR / FTMW_PATH based on CLI flags.
+    # The directory may not exist yet on first --output-dir invocation; the
+    # fixture must.
+    global OUTPUT_DIR, FTMW_PATH
+    if args.output_dir is not None:
+        odir = Path(args.output_dir)
+        if not odir.is_absolute():
+            odir = REPO_ROOT / odir
+        OUTPUT_DIR = odir
+    if args.fixture_name is not None:
+        FTMW_PATH = OUTPUT_DIR / args.fixture_name
+    else:
+        FTMW_PATH = OUTPUT_DIR / FTMW_PATH.name
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"output dir: {OUTPUT_DIR}")
+    print(f"fixture:    {FTMW_PATH}")
+
+    # --named-window overrides NAMED_SAMPLE for the --window-id path.
+    cli_named: List[Tuple[int, str]] = []
+    for entry in (args.named_windows or []):
+        if ":" not in entry:
+            raise SystemExit(
+                f"--named-window expects 'ID:NOTE', got {entry!r}"
+            )
+        sid, note = entry.split(":", 1)
+        try:
+            cli_named.append((int(sid), note.strip()))
+        except ValueError as exc:
+            raise SystemExit(f"invalid --named-window id {sid!r}: {exc}")
 
     if not FTMW_PATH.exists():
         raise SystemExit(
@@ -2164,9 +2228,10 @@ def main() -> None:
     if args.window_ids:
         # --window-id overrides the deliberate samples. Bucket the
         # requested ids by their difficulty in the plan so the INDEX.md
-        # categories still make sense; named-case annotations are
-        # preserved when the id is in NAMED_SAMPLE.
-        named_lookup = dict(NAMED_SAMPLE)
+        # categories still make sense; named-case annotations come from
+        # --named-window when provided, otherwise fall back to the
+        # built-in NAMED_SAMPLE.
+        named_lookup = dict(cli_named) if cli_named else dict(NAMED_SAMPLE)
         for wid in args.window_ids:
             if wid not in plan_by_id:
                 raise SystemExit(f"window_id {wid} not in plan")
