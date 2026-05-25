@@ -1,0 +1,4 @@
+# Per dev-docs/research/README.md convention: large/regeneratable
+# intermediates stay out of git. Only figures + report are committed.
+data/
+__pycache__/

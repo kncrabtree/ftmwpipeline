@@ -37,6 +37,17 @@ readers.
   band, kills ~80 % of noise candidates at TPR 95 %), with a clear
   bin-vs-linewidth optimum at FWHM/bin ≈ 1–2 that translates to an
   acquisition-design principle (``T_active ≈ 3–5 · τ_eff``).
+- [Noise-estimator grid invariance](noise-grid-invariance/report.md) —
+  diagnoses why the Stage 2 adaptive noise estimator returns
+  different σ(f) on the persisted user grid (zpf=2) and the active-
+  portion FT (zpf=0) of the same 2638 fixture. Root cause: the
+  subdivision criterion uses post-trim mean/variance, and the
+  skewness trim aggressively flattens heterogeneous regions into
+  homogeneous-looking ones — false-negative heterogeneity detection.
+  A MAD/median-on-raw-magnitudes subdivision criterion restores
+  grid invariance (2638 σ-ranges agree to 0.4 % between grids, vs
+  49 % for the current estimator) and recovers the 3× ground-truth
+  σ structure on synthetic data at every zpf level.
 - [Matched-filter primary peak detection](matched-filter-detection/report.md) —
   tests whether replacing the production primary pass (BH window +
   Sav-Gol locator) with a Lorentzian matched filter (exp-apodized FFT
