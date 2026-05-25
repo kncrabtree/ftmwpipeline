@@ -1,7 +1,8 @@
 """Polish refinement sweep: SNR-cap × bad-fit gate cross-validation.
 
-Tests Mechanism 1 from ``report-lsq-comparison.md`` § "Toward a principled
-per-band / per-SNR polish": apply the Gauss-Newton polish only to
+Calibrates the production ``polish_snr_cap`` default by sweeping the
+cap against the LSQ-fit-and-histogram per-band reference on the
+unapodized 2638 fixture. Apply the Gauss-Newton polish only to
 contributors whose per-bin SNR is below a cap, leaving high-SNR
 contributors on their (already near-unbiased) log-linear seed.
 
@@ -89,7 +90,7 @@ ARITHMETIC_THIRDS = [
 # Phase 4 LSQ expanded medians (lsq_comparison.py output on the same fixture):
 # low 7.87 µs (N=27), mid 6.27 µs (N=33), high 5.16 µs (N=30).
 LSQ_REFERENCE = {"low": 7.87, "mid": 6.27, "high": 5.16}
-LSQ_BAND_WIDE = 6.26  # band-wide LSQ expanded mean from report-lsq-comparison
+LSQ_BAND_WIDE = 6.26  # band-wide LSQ expanded mean from lsq_comparison.py
 
 # Bad-fit gate (relative branch): rss_exp > rss_gate_factor · n_seg ·
 # (relative_gate_fraction · mean|S|)². Shipping default is 0.05. Above

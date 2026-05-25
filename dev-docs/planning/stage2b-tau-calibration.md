@@ -17,16 +17,15 @@ disruptive prefix between `stage2_noise_result` and `stage3_peaks`);
 a future broader rename pass may reshuffle the numbering for overall
 consistency.
 
-Research artefacts:
+Research artefacts: the consolidated
 [`../research/stage5-tau-calibration/report.md`](../research/stage5-tau-calibration/report.md)
-(synthetic, all 7 cases pass) and
-[`../research/stage5-tau-calibration/report-2638.md`](../research/stage5-tau-calibration/report-2638.md)
-(2638 application, `τ_maj = 6.33 ± 1.62 µs`, inside the ±20 % gate
-around 7.5 µs; frequency-dependent τ identified as horn-coupling
-geometry on the W-band probe horns). The production module
-reproduces those numbers bit-for-bit (`τ_maj = 6.328 ± 1.617 µs`,
-4417 contributors, GMM ΔAIC = 754.7) on a fresh end-to-end run via
-`ftmw.calibrate_tau`.
+covers the method, synthetic acceptance (7 cases + pathological
+corners), the 2638 application (`τ_maj ≈ 5.96 ± 1.59 µs` under the
+production defaults), the LSQ-fit-and-histogram cross-validation, and
+the polish design (`polish=True, polish_snr_cap=9`) that lands per-band
+SNR-weighted majority τ within ±3.2 % of the LSQ per-band reference on
+2638. The 2638 fixture shows a real frequency-dependent τ trend
+attributed to W-band horn-coupling geometry.
 
 Supersedes the "Dataset-wide tau calibration" §357-381 and
 "Broken-initial-fit pathology and the majority-vote-freeze proposal"
@@ -760,97 +759,34 @@ Open gates (Phase 3 step 12 + Phase 4):
 
 ## Polish step on the contributor histogram
 
-`extract_tau_majority` exposes an optional `polish` step (default on):
-one Gauss-Newton iteration on `|S_n| = C · exp(-a/τ)` per contributor
-bin before the SNR-weighted majority. The polish closes the +3-5 %
-log-linear-weighting bias documented in
-[Phase 1 § Case 1](../research/stage5-tau-calibration/report.md) to
-about ±1-2 % across the (T_full, τ) grid (full closure to sub-1 % on
-T_full ≥ 30 µs, residual +2 % at the 2638-shaped intermediate cell).
+`extract_tau_majority` exposes three polish knobs that shape how the
+log-linear weighted-regression bias is handled:
 
-A 2638-shaped multi-line synthetic with controlled `τ(f)` (7.5 → 6 µs
-across the trim band) and `SNR(f)` (1× → 3× across the trim band,
-matching the chirp-induced excitation-time gradient) shows the SNR-
-weighted-expected `τ_maj` of 6.62 µs is recovered as +2.7 % above
-truth without the polish (6.80 µs) and −2.2 % below truth with it
-(6.48 µs). The polish moves the consensus in the right direction —
-the legacy log-linear weighting is genuinely biasing high — though
-the post-polish residual on multi-line cases is on the *low* side.
-See `scratch/stage2b-polish-validation/` for the validation harness.
+- **`polish` (default `True`)** — one Gauss-Newton step on `|S_n| =
+  C · exp(-a/τ)` per contributor bin before the SNR-weighted
+  majority. Closes the synthetic +3-5 % log-linear bias documented in
+  [`report.md`](../research/stage5-tau-calibration/report.md)
+  § "Synthetic validation → Case 1" to ≤ ±2.3 % across the (T_full,
+  τ) grid (sub-1 % on T_full ≥ 30 µs).
+- **`polish_snr_cap` (default `DEFAULT_POLISH_SNR_CAP = 9.0`)** —
+  restricts the polish to contributors whose per-bin SNR is **below**
+  the cap; high-SNR contributors retain the log-linear seed. Lands
+  per-band SNR-weighted majority τ on 2638 within ±3.2 % of the LSQ
+  per-band reference (vs ±8-10 % under polish=False or
+  polish=True/no-cap). Pass `polish_snr_cap=None` to disable.
+- **`polish_noise_debias` (default `False`)** — replace `|S_n|` with
+  the Rician-unbiased magnitude `sqrt(|S_n|² − 2σ²)`. Sub-percent
+  closure on single-isolated-line synthetics but over-corrects on
+  multi-line spectra (inter-line skirt interference isn't
+  Rician-Gaussian). Opt-in forensic knob.
 
-On real 2638 the polish drops the headline from 6.328 → 5.512 µs
-(`polish=True` default, no noise debias). The 5.5 µs result is closer
-to the synthetic's SNR-weighted truth than the published 6.33 was;
-the published number was biased high by the log-linear weighting on
-top of whatever frequency-dependent τ distribution the instrument
-imposes. The result still passes the ±20 % Phase 2 acceptance gate
-around 7 µs (boundary 5.6) by the thinnest of margins, so the
-calibration's marginal pre-conditions flag continues to fire on
-2638 (as it did pre-polish).
-
-A `polish_noise_debias` knob replaces `|S_n|` with the Rician-unbiased
-magnitude `sqrt(|S_n|² − 2σ²)` inside the polish step. Theoretically
-correct for Gaussian complex noise, and on a single-isolated-line
-synthetic it closes case-1 to sub-percent (confirming the noise-floor
-attribution of the residual bias). But on multi-line spectra the
-per-bin noise includes inter-line skirt interference that the Rician
-model does not capture, and the debiasing over-corrects (the
-2638-shape synthetic lands at −4.9 % below truth; real 2638 lands at
-4.37 µs, outside the gate). Default off; left as an opt-in forensic
-knob for single-isolated-line work.
-
-### `polish_snr_cap` (production default)
-
-`extract_tau_majority` accepts an optional `polish_snr_cap` that
-restricts the Gauss-Newton polish to contributors whose per-bin SNR
-(= `max_n |S_n| / σ_frame`) is **below** the cap; high-SNR contributors
-retain the unpolished log-linear seed. The +3-5 % log-linear bias the
-polish targets concentrates at modest SNR — at high per-bin SNR the
-log-linear regression is already nearly unbiased, so applying the polish
-there over-corrects. The default is `DEFAULT_POLISH_SNR_CAP = 9.0`,
-calibrated against the Phase 4 LSQ reference on 2638; pass
-`polish_snr_cap=None` to disable the cap and polish every contributor
-(legacy polish=True behaviour).
-
-The acceptance metric is per-band SNR-weighted majority τ (the quantity
-Stage 5 consumes via `Pipeline.fit_peaks(per_band_tau=True)`) measured
-against the LSQ-fit-and-histogram per-third medians from
-[`lsq_comparison.py`](../research/stage5-tau-calibration/lsq_comparison.py)
-on the unapodized 2638 fixture (low 7.87, mid 6.27, high 5.16 µs). On
-2638, per-band SNR-weighted majority τ at the production cap:
-
-| config | low maj | mid maj | high maj | worst \|Δ\| |
-|---|---|---|---|---|
-| polish=False | 7.71 (-2.0 %) | 6.44 (+2.7 %) | 5.66 (+9.7 %) | 9.7 % |
-| polish=True, cap=None (legacy) | 7.22 (-8.3 %) | 5.73 (-8.5 %) | 4.74 (-8.1 %) | 8.5 % |
-| **polish=True, cap=9.0 (default)** | **7.62 (-3.2 %)** | **6.16 (-1.8 %)** | **5.29 (+2.4 %)** | **3.2 %** |
-
-See
-[`polish_snr_cap_validation.py`](../research/stage5-tau-calibration/polish_snr_cap_validation.py)
-for the full cross-sweep over caps × `relative_gate_fraction`.
-
-The band-wide `tau_maj` is a secondary metric under per-band routing:
-at the default cap it lands at 5.96 µs (-4.8 % from LSQ band-wide 6.26
-µs), vs 5.51 (-12 %) under the legacy polish=True and 6.33 (+1 %) under
-polish=False. Callers that do not enable per-band routing should be
-aware the band-wide value sits between the two polish endpoints by
-design.
-
-#### Why an SNR cap (not a wider bad-fit gate)
-
-The 2638 contributor SNR distribution is dense in [5, 30] with a thin
-high-SNR tail; strong on-line bins (per-frame SNR 240-360) are
-classified as `bad-fit` by `stft_calibration`, not as contributors,
-because their `rss_exp` exceeds the relative gate (real molecular lines
-aren't pure single-exponentials — line shape, Doppler, saturation
-inflate the per-bin residual above the 5 %-of-mean budget). The polish
-already sees only the intermediate-SNR bins where the log-linear bias is
-largest; the cap removes the upper tail of *that* distribution where the
-log-linear seed is closest to truth. Loosening `relative_gate_fraction`
-from 0.05 to 0.20 buys an extra ~0.5 % on the worst-case majority (down
-to 2.6 %) but at the cost of a global classifier change with
-unpredictable effects on other fixtures — the simpler single-knob change
-captures most of the win and was the chosen scope.
+The full motivation, sweep tables, per-band bias-flip pattern, and
+why an SNR cap was preferred over loosening `relative_gate_fraction`
+live in
+[`report.md`](../research/stage5-tau-calibration/report.md)
+§ "Polish design". The production-default per-band majority on 2638
+under `polish=True, polish_snr_cap=9` is 7.62 / 6.16 / 5.29 µs across
+low / mid / high arithmetic thirds.
 
 ## Outstanding open questions
 

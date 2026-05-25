@@ -22,10 +22,11 @@ so sliding ``a`` traces a pure exponential decay whose rate is ``1/tau_mol``
 directly -- single-parameter fit, no LSQ ambiguity.
 
 The operating points (``n_seg = 10``, ``T_sigma = 5``, SNR-weighted majority,
-hybrid bad-fit gate, GMM threshold ``delta_aicc > 2``) match the Phase 1
-research prototype in ``dev-docs/research/stage5-tau-calibration/prototype.py``.
-See ``dev-docs/research/stage5-tau-calibration/report.md`` for the synthetic
-acceptance gate and ``report-2638.md`` for the 2638 application.
+hybrid bad-fit gate, GMM threshold ``delta_aicc > 2``) match the research
+prototype in ``dev-docs/research/stage5-tau-calibration/prototype.py``.
+``dev-docs/research/stage5-tau-calibration/report.md`` consolidates the
+method, synthetic validation, 2638 application, LSQ cross-validation, and
+polish design (including the ``polish_snr_cap=9`` calibration).
 """
 
 from __future__ import annotations
@@ -58,7 +59,7 @@ DEFAULT_SPUR_CLUSTER_MULTIPLIER = 1.0  # cluster gap in units of n_seg full-reco
 # per-band SNR-weighted majority τ within ±5 % of the LSQ reference
 # across low/mid/high arithmetic thirds; 9 lands worst-case 3.2 %. See
 # `dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py`
-# and `report-lsq-comparison.md` for the sweep.
+# and `report.md` § "Polish design" for the sweep.
 DEFAULT_POLISH_SNR_CAP = 9.0
 
 
@@ -1070,11 +1071,13 @@ def extract_tau_majority(
         targets concentrates at modest SNR, so applying it to high-SNR
         bins over-corrects). Pass ``None`` to disable the cap and polish
         every contributor (the legacy polish=True behaviour). Default is
-        :data:`DEFAULT_POLISH_SNR_CAP`, calibrated against the Phase 4
-        LSQ reference on 2638 to land per-band SNR-weighted majority τ
-        within ±5 % of the LSQ low/mid/high thirds. See
+        :data:`DEFAULT_POLISH_SNR_CAP`, calibrated against the
+        LSQ-fit-and-histogram per-band reference on 2638 to land per-band
+        SNR-weighted majority τ within ±5 % of the LSQ low/mid/high
+        thirds. See
         ``dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py``
-        for the sweep.
+        for the sweep and ``report.md`` § "Polish design" for the
+        underlying rationale.
     polish_noise_debias : bool, default False
         Replace ``|S_n|`` with the Rician-unbiased magnitude
         ``sqrt(|S_n|^2 - 2 sigma^2)`` in the polish step. Theoretically

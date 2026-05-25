@@ -1,12 +1,12 @@
-"""Phase 4: STFT vs LSQ-fit-and-histogram tau cross-comparison on 2638.
+"""STFT vs LSQ-fit-and-histogram tau cross-comparison on 2638.
 
 Loads the persisted Stage 5 fit from the unapodized 2638 pipeline file
 (built by hand with ``expf_us=None`` so no apodization runs and Stage 2b
 is not consumed), extracts per-window tau from EASY K=1 windows that pass
 the difficulty / SNR / uncertainty / chi-squared / non-saturating filter
 gates, and fits a Gaussian to the resulting distribution. The result is
-the LSQ counterpart to the STFT majority tau reported in
-[report-2638.md](report-2638.md) and [report.md](report.md).
+the LSQ counterpart to the STFT majority tau documented in
+[report.md](report.md) § "LSQ cross-validation".
 
 Run from the repository root:
 
@@ -107,7 +107,9 @@ ARITHMETIC_THIRDS = [
     ("high", TRIM_LO_MHZ + 2.0 * (TRIM_HI_MHZ - TRIM_LO_MHZ) / 3.0, TRIM_HI_MHZ),
 ]
 
-# STFT majority headlines from report-2638.md / report.md (Post-Phase-1 polish).
+# STFT majority headlines from report.md § "Polish design" — the two
+# polish endpoints (polish=False and polish=True with no SNR cap) used as
+# the reference for the per-band bias-flip analysis.
 TAU_STFT_POLISH_OFF = 6.328
 SIGMA_TAU_STFT_POLISH_OFF = 1.617
 TAU_STFT_POLISH_ON = 5.512
@@ -614,9 +616,9 @@ def main() -> None:
 
     # Arithmetic-third analysis. Compute LSQ medians on the passing windows
     # AND STFT medians on the freshly-extracted contributor data (both polish
-    # settings) so the comparison shares the same band edges. The original
-    # report-2638.md horn-band split was asymmetric (low 7 GHz, mid+high
-    # 3.1 GHz each) and apples-to-oranges against an arithmetic-third LSQ.
+    # settings) so the comparison shares the same band edges. A horn-band
+    # split (low 7 GHz, mid+high 3.1 GHz each) would be asymmetric and
+    # apples-to-oranges against an arithmetic-third LSQ.
     logger.info("Running Stage 2b STFT extraction (polish=False and polish=True) "
                 "for STFT-vs-LSQ arithmetic-third comparison")
     stft_thirds_by_polish = _extract_stft_contributor_thirds(FIXTURE)
