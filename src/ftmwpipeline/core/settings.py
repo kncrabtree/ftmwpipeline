@@ -30,10 +30,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 _NONE = "__None__"
 
 # Hard fallbacks for the fields that must be concrete to run FID.preprocess.
-# Other fields fall back to None (a legitimate "absent" value).
+# Other fields fall back to None (a legitimate "absent" value, including
+# expf_us — None means "no exponential apodization", which is a real choice,
+# not an unset placeholder).
 _HARD_DEFAULTS: Dict[str, Any] = {
     "zpf": 1,
-    "expf_us": 5.0,
     "units_power": 6,
     "rdc": True,
 }
@@ -126,8 +127,9 @@ class FTSettings:
         # Legacy flag name kept (underscore) for backward compatibility.
         flag="--expf_us",
         argtype=float,
-        help="Exponential filter time constant in microseconds "
-        "(default: persisted/recommended, else 5.0)",
+        help="Exponential filter time constant in microseconds. "
+        "Omit (or pass <= 0) to disable apodization. No fallback default — "
+        "users who want apodization must request it explicitly.",
     )
     window_function: Optional[str] = cli_field(
         flag="--window-function",
@@ -147,6 +149,14 @@ class FTSettings:
     # Not currently user-facing on the CLI; still resolved/persisted so the
     # canonical record is complete (FID.preprocess needs a concrete rdc).
     rdc: Optional[bool] = field(default=None)
+
+    # Note on expf_us = 0 / negative: a user-supplied non-positive value is
+    # preserved here (it wins in :func:`resolve` because it is non-``None``,
+    # which is what makes it a meaningful "explicit disable" — otherwise a
+    # persisted positive value would shadow it). The downstream consumers
+    # (``FID.preprocess``, ``compute_active_ft``) coerce ``<= 0`` to
+    # ``None`` so apodization is genuinely skipped. ``to_preprocess_kwargs``
+    # passes the raw value through and lets the consumer normalise.
 
     # -- introspection -------------------------------------------------------
 

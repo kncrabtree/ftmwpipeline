@@ -241,7 +241,9 @@ def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
     zpf : int, optional
         Zero padding factor. If None, uses cached default or 1.
     expf_us : float, optional
-        Exponential filter in microseconds. If None, uses cached default or 5.0.
+        Exponential filter time constant in microseconds. ``None`` (or any
+        non-positive value) disables apodization. There is no implicit
+        fallback default — request apodization explicitly when you want it.
     trim : tuple of float, optional
         (min_freq, max_freq) in MHz to trim spectrum
     start_us : float, optional
@@ -317,7 +319,9 @@ def visualize_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
     zpf : int, optional
         Zero padding factor. If None, uses cached default or 1.
     expf_us : float, optional
-        Exponential filter in microseconds. If None, uses cached default or 5.0.
+        Exponential filter time constant in microseconds. ``None`` (or any
+        non-positive value) disables apodization. There is no implicit
+        fallback default — request apodization explicitly when you want it.
     trim : tuple of float, optional
         (min_freq, max_freq) in MHz to trim spectrum
     start_us : float, optional

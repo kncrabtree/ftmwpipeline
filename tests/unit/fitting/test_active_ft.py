@@ -225,18 +225,28 @@ class TestComputeActiveFTInputValidation:
                 n_padded=10,
             )
 
-    def test_non_positive_expf_raises(self):
-        with pytest.raises(ValueError, match="expf_us must be positive"):
-            compute_active_ft(
-                np.zeros(10),
-                sample_dt_us=DT_US,
-                start_us=0.0,
-                end_us=0.5,
-                expf_us=-1.0,
-                probe_freq_mhz=PROBE_MHZ,
-                sideband=Sideband.LOWER,
-                n_padded=10,
-            )
+    def test_non_positive_expf_disables_apodization(self):
+        """expf_us <= 0 is normalised to None (no apodization) — must
+        produce the same spectrum as an explicit ``expf_us=None`` call."""
+        rng = np.random.default_rng(0)
+        fid = rng.standard_normal(N_TOTAL)
+        kwargs = dict(
+            sample_dt_us=DT_US,
+            start_us=START_US,
+            end_us=END_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband=Sideband.LOWER,
+            n_padded=N_TOTAL,
+        )
+        result_none = compute_active_ft(fid, expf_us=None, **kwargs)
+        result_zero = compute_active_ft(fid, expf_us=0.0, **kwargs)
+        result_neg = compute_active_ft(fid, expf_us=-1.0, **kwargs)
+        np.testing.assert_allclose(
+            result_zero.complex_spectrum, result_none.complex_spectrum
+        )
+        np.testing.assert_allclose(
+            result_neg.complex_spectrum, result_none.complex_spectrum
+        )
 
     def test_n_padded_smaller_than_active_raises(self):
         with pytest.raises(ValueError, match="n_padded"):

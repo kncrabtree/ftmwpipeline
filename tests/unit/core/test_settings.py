@@ -72,9 +72,32 @@ class TestResolve:
     def test_hard_defaults_fill_run_critical_fields(self):
         result = resolve(None, None, None)
         assert result.zpf == 1
-        assert result.expf_us == 5.0
+        # expf_us has no hard default: None means "no apodization", which
+        # is a legitimate concrete choice rather than an unset placeholder.
+        assert result.expf_us is None
         assert result.units_power == 6
         assert result.rdc is True
+
+    def test_expf_us_non_positive_preserved_at_settings_layer(self):
+        """expf_us <= 0 is preserved on FTSettings so it can win resolve().
+
+        Coercion to None happens downstream (FIDProcessingParameters,
+        compute_active_ft) — see the boundary tests in their respective
+        unit suites.
+        """
+        assert FTSettings(expf_us=0).expf_us == 0
+        assert FTSettings(expf_us=-1.5).expf_us == -1.5
+        assert FTSettings(expf_us=5.0).expf_us == 5.0
+
+    def test_expf_us_explicit_zero_overrides_persisted(self):
+        """Passing expf_us=0 explicitly disables apodization even when a
+        positive value is persisted."""
+        explicit = FTSettings(expf_us=0)
+        persisted = FTSettings(expf_us=5.0)
+        result = resolve(explicit, persisted, None)
+        # explicit non-None wins; 0 propagates through the resolution chain.
+        # Downstream consumers normalise this to "no apodization".
+        assert result.expf_us == 0
 
     def test_optional_fields_stay_none_when_unset(self):
         result = resolve(None, None, None)

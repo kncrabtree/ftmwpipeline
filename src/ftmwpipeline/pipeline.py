@@ -267,7 +267,9 @@ class Pipeline:
         zpf : int, optional
             Zero-padding factor.
         expf_us : float, optional
-            Exponential filter time constant in microseconds.
+            Exponential apodization time constant in microseconds.
+            ``None`` (or any non-positive value) disables apodization;
+            there is no implicit fallback default.
         trim : tuple of float, optional
             ``(min_mhz, max_mhz)`` frequency analysis range to keep.
         start_us : float, optional
@@ -350,7 +352,9 @@ class Pipeline:
         zpf : int, optional
             Zero-padding factor.
         expf_us : float, optional
-            Exponential filter time constant in microseconds.
+            Exponential apodization time constant in microseconds.
+            ``None`` (or any non-positive value) disables apodization;
+            there is no implicit fallback default.
         trim : tuple of float, optional
             ``(min_mhz, max_mhz)`` frequency analysis range.
         start_us : float, optional

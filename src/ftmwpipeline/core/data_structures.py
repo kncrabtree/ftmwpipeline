@@ -64,7 +64,10 @@ class FIDProcessingParameters:
         if self.start_us is not None and self.end_us is not None and self.start_us >= self.end_us:
             raise ValueError("Start time must be less than end time")
         if self.expf_us is not None and self.expf_us <= 0:
-            raise ValueError("Exponential filter time constant must be positive")
+            # Non-positive expf_us means "disable apodization"; normalise to
+            # None so downstream (FID.preprocess, compute_active_ft) treats
+            # this as the canonical "off" signal.
+            self.expf_us = None
 
 
 class PreprocessedFID:

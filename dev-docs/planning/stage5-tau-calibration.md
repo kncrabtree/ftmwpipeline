@@ -1,8 +1,26 @@
 # Plan: Data-driven τ calibration via sliding-active-window STFT
 
-Status: **planning (pre-implementation).** Supersedes the
-"Dataset-wide tau calibration" §357-381 and "Broken-initial-fit
-pathology and the majority-vote-freeze proposal" §383-422 sections of
+Status: **Phase 1 + Phase 2 research complete (2026-05-25); Phase 3
+(production wiring) is the next implementation session.** Phase 3
+and Phase 4 in this doc were swapped from the original order: the
+research-grade STFT prototype passes both synthetic and 2638
+acceptance gates, so wiring it into production is the higher-value
+next step. The LSQ-fit cross-comparison (formerly Phase 3) moves to
+Phase 4 — useful for defending the design choice but not a
+prerequisite for production now that the STFT method has been
+empirically validated on 2638.
+
+Research artefacts:
+[`../research/stage5-tau-calibration/report.md`](../research/stage5-tau-calibration/report.md)
+(synthetic, all 7 cases pass) and
+[`../research/stage5-tau-calibration/report-2638.md`](../research/stage5-tau-calibration/report-2638.md)
+(2638 application, `τ_maj = 6.33 ± 1.62 µs`, inside the ±20 % gate
+around 7.5 µs; frequency-dependent τ identified as horn-coupling
+geometry on the W-band probe horns).
+
+Supersedes the "Dataset-wide tau calibration" §357-381 and
+"Broken-initial-fit pathology and the majority-vote-freeze proposal"
+§383-422 sections of
 [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md);
 both will be reduced to a back-reference once this doc lands. Builds
 on the w198 / tau-collapse findings in
@@ -476,49 +494,35 @@ Acceptance for Phase 2:
 - Spurs (if any) are at frequencies consistent with the
   instrument's known clock harmonics.
 
-### Phase 3: Comparison study (research)
+### Phase 3: Production wiring
 
-**Goal**: cross-validate STFT against the LSQ-fit-and-histogram
-alternative on the same synthetic and 2638 datasets, so the
-choice of STFT as the primary path is empirically defended.
+Conditional on Phase 1 + Phase 2 success (now confirmed on 2026-05-25).
+The calibration is provisionally named **stage 2b** ("stage-2b" in
+prose, `stage2b_tau_calibration` in the HDF5 / dependency tracker)
+to reflect that it sits between the canonical Stage 2 noise estimate
+and Stage 3's peak detection. A future broader rename pass may
+reshuffle the stage numbering for consistency; this prefix is the
+non-disruptive placeholder.
 
-LSQ-fit-and-histogram method (the alternative — formerly the
-primary in earlier drafts of this doc):
-
-- Run Stages 0-5 on the same unapodized fixture, no τ-anchoring
-  penalty active, `tau0_us = fid_length / 2`. The Stage 5 fits
-  produce per-window τ values.
-- Filter to EASY-difficulty K=1 windows with free-peak SNR ≥ 20,
-  no fixed contributors, `tau_err / tau < 0.10`, χ²_r < 2,
-  and τ not saturating the upper bound.
-- Histogram-fit a Gaussian → `τ_maj_lsq ± σ_τ_lsq`.
-
-Cross-validation on 2638:
-
-- `|τ_maj_stft − τ_maj_lsq| / τ_maj_stft < 0.10`. If they
-  disagree at this level, investigate; the primary candidate
-  cause would be the LSQ approach being contaminated by
-  shape-error-driven τ bias.
-- Spurs identified by both methods agree (catalogue overlap).
-- Documented assessment: under what conditions does each method
-  fail? On 2638 specifically, which is more sensitive to e.g.
-  blended pairs / shape error / dense clusters?
-
-Cross-validation on the Phase-1 synthetic cases:
-
-- For each of the seven synthetic cases, run both methods and
-  compare. The LSQ method may fail outright on (5) dense
-  cluster and (7) Voigt deficit (because LSQ τ absorbs the
-  multi-peak / shape residual); document this as one of the
-  reasons STFT is the primary.
-
-Acceptance for Phase 3: both methods agree on 2638's τ_maj
-within 10 %; STFT's advantages are quantified on the synthetic
-failure cases.
-
-### Phase 4: Production wiring
-
-Conditional on Phase 1-3 success.
+0. **API prerequisite (DONE).** `ftmwpipeline.api.compute_ft` and
+   `Pipeline.compute_ft` previously fell back to a hard-coded
+   `expf_us = 5.0` whenever no layer in the resolution chain set
+   it, which silently re-enabled apodization on calls intended to
+   produce an unapodized FT. Fixed on 2026-05-25:
+   - Removed `expf_us` from `_HARD_DEFAULTS` in
+     `core/settings.py`. ``None`` now propagates all the way to
+     `FID.preprocess` (which already treats it as "no apodization").
+   - `FIDProcessingParameters.__post_init__` and `compute_active_ft`
+     now coerce non-positive `expf_us` to ``None`` instead of
+     raising, so a user passing `expf_us=0` (or any negative)
+     explicitly disables apodization without having to clear the
+     persisted record.
+   - Tests updated in `tests/unit/core/test_settings.py` and
+     `tests/unit/fitting/test_active_ft.py`.
+   With this fix, Stages 0–2 can be re-run with `expf_us = None`
+   (or `0`) on a fresh fixture and the canonical Stage 2 σ runs on
+   a genuinely unapodized FT — that is the noise reference the
+   calibration consumes.
 
 1. **Calibration module.** New module
    `src/ftmwpipeline/fitting/tau_calibration.py`:
@@ -527,8 +531,11 @@ Conditional on Phase 1-3 success.
    TauCalibrationResult`. Pure function; unit-testable. The
    `TauCalibrationResult` dataclass carries `τ_maj`, `σ_τ`, the
    per-bin τ map (for diagnostics), the spur list, the
-   multimodality flag, and the contributor count.
-2. **Persist** as a new HDF5 group `/stage5_tau_calibration`,
+   multimodality flag, and the contributor count. Default knobs
+   from the Phase-1 prototype: `N_seg = 10`, `T_σ = 5`,
+   SNR-weighted majority on, bad-fit gate hybrid absolute +
+   relative, GMM bimodality threshold ΔAICc > 2.
+2. **Persist** as a new HDF5 group `/stage2b_tau_calibration`,
    serialized via a new `io/tau_calibration_serialization.py`
    matching the patterns of other Stage 5 outputs. Round-trip
    tests required.
@@ -552,7 +559,7 @@ Conditional on Phase 1-3 success.
 7. **Rescue wiring.** Replace `residual_rescue.py:644-660`'s
    pegged-bound heuristic with unconditional use of `τ_maj`.
    Disable the joint-refit's τ-thaw when `τ_maj` is available.
-8. **Stage tracker / dependencies.** Add `stage5_tau_calibration`
+8. **Stage tracker / dependencies.** Add `stage2b_tau_calibration`
    as a stage between `stage2_noise_result` and `stage3_peaks`
    in `PipelineStageTracker.STAGE_DEPENDENCIES` (Stage 3's
    gap-pass consumes it, so this is the correct insertion
@@ -560,20 +567,84 @@ Conditional on Phase 1-3 success.
    reads it directly.
 9. **CLI / Pipeline / functional-API surface.** Three identical
    wrappers per the dual-interface rule. Subcommand:
-   `calibrate-tau`. New options on `fit-peaks`:
-   `--tau-maj-override`, `--sigma-tau-override` for testing.
-10. **Apodization default.** Change the default `expf_us` in
-    the Stage 1 strategy to `None`. Document the migration in
-    `CLAUDE.md` and the strategy docs. Keep `expf_us` as an
-    optional Stage 1 parameter (a user may still want to apply
-    apodization for legacy comparison).
-11. **Stage 2-4 regression validation.** Run the validation
+   `calibrate-tau`. Visualisation subcommands ported from the
+   Phase 1/2 prototype: `visualize-tau-heatmap` (2D
+   frame × frequency STFT magnitude — see
+   `dev-docs/research/stage5-tau-calibration/figures/08_2638_stft_heatmap.png`)
+   and `visualize-tau-distribution` (τ histogram + τ vs SNR
+   + τ vs frequency + GMM overlay — figure 09 in the same dir).
+   New options on `fit-peaks`: `--tau-maj-override`,
+   `--sigma-tau-override` for testing.
+10. **Spur-cluster grouping.** Single CW tones produce ≈ `n_seg`
+    adjacent "spur-classified" bins (the spur's STFT rectangular
+    sinc skirt). Phase 2 on 2638 produced 649 spur bins which
+    collapse to ≈ 50 real spurs after grouping. Add post-
+    classification clustering (group adjacent bins within
+    `n_seg` full-record bins) so the persisted spur catalogue
+    is human-auditable.
+11. **Apodization default.** No change needed beyond Phase 3 step
+    0 — `expf_us` no longer has a hard default, so `compute_ft`
+    on a fresh fixture produces an unapodized FT by default.
+    Document the migration in `CLAUDE.md` and the strategy
+    docs. Keep `expf_us` as an optional Stage 1 parameter (a
+    user may still want to apply apodization for legacy
+    comparison).
+12. **Stage 2-4 regression validation.** Run the validation
     harness on `scratch/stage5-validation3/` and the full
     non-slow test suite. Compare against the current
     post-Stage-2/3-rework / post-penalty-recast baseline. Stage
     4's S_coh T_edge may need recalibration if the
     leakage-touched fraction climbs above ~25 %; document and
     address separately if it does.
+
+### Phase 4: LSQ-comparison cross-validation (research)
+
+**Goal**: cross-validate the STFT calibration against the
+LSQ-fit-and-histogram alternative on 2638 and the Phase-1 synthetic
+cases, defending the design choice empirically. Optional from a
+production-correctness standpoint (Phase 3 ships independently); the
+comparison is what closes out the "why STFT, not LSQ histogram?"
+question for the planning record.
+
+LSQ-fit-and-histogram method (the alternative — formerly the
+primary in earlier drafts of this doc):
+
+- Run Stages 0-5 on the same unapodized fixture, no τ-anchoring
+  penalty active, `tau0_us = fid_length / 2`. The Stage 5 fits
+  produce per-window τ values.
+- Filter to EASY-difficulty K=1 windows with free-peak SNR ≥ 20,
+  no fixed contributors, `tau_err / tau < 0.10`, χ²_r < 2,
+  and τ not saturating the upper bound.
+- Histogram-fit a Gaussian → `τ_maj_lsq ± σ_τ_lsq`.
+
+Cross-validation on 2638:
+
+- `|τ_maj_stft − τ_maj_lsq| / τ_maj_stft < 0.10`. If they
+  disagree at this level, investigate; the primary candidate
+  cause would be the LSQ approach being contaminated by
+  shape-error-driven τ bias.
+- Spurs identified by both methods agree (catalogue overlap).
+- Documented assessment: under what conditions does each method
+  fail? On 2638 specifically, which is more sensitive to e.g.
+  blended pairs / shape error / dense clusters?
+- The frequency-dependent τ signature identified in Phase 2
+  (low-third 7.34 µs → high-third 6.06 µs, attributed to W-band
+  horn-coupling beamwidth scaling): does the LSQ method reproduce
+  this slope? If yes, the physical interpretation is reinforced
+  and per-band τ wiring becomes the natural next refinement. If
+  no, the slope is a shape-error artefact in the STFT path.
+
+Cross-validation on the Phase-1 synthetic cases:
+
+- For each of the seven synthetic cases, run both methods and
+  compare. The LSQ method may fail outright on (5) dense
+  cluster and (7) Voigt deficit (because LSQ τ absorbs the
+  multi-peak / shape residual); document this as one of the
+  reasons STFT is the primary.
+
+Acceptance for Phase 4: both methods agree on 2638's τ_maj
+within 10 %; STFT's advantages are quantified on the synthetic
+failure cases.
 
 ## Risks
 
@@ -605,31 +676,40 @@ Conditional on Phase 1-3 success.
   depend strongly on the threshold value. Document the
   sensitivity in the Phase-2 report.
 
-## Acceptance gates (Phase 4 promotion)
+## Acceptance gates (Phase 3 promotion → Phase 4 close-out)
+
+Promotion of `stage2b_tau_calibration` to production is gated on:
 
 1. **Phase 1 acceptance.** All seven synthetic cases recover the
-   stated behaviour.
+   stated behaviour. ✓ (2026-05-25)
 2. **Phase 2 acceptance.** STFT on 2638 produces `τ_maj` within
    ±20 % of the implied 7-8 µs; pre-conditions pass; spurs
-   classified consistent with instrument harmonics.
-3. **Phase 3 acceptance.** STFT and LSQ-fit-and-histogram agree
-   on `τ_maj` on 2638 within 10 %.
-4. **No regression on existing 14-window validation suite.**
+   classified consistent with instrument harmonics. ✓
+   (`τ_maj = 6.33 ± 1.62 µs`, 2026-05-25)
+3. **No regression on existing 14-window validation suite.**
    χ²_r per validation window within ±20 % of the current
    post-penalty-recast baseline (or improve).
-5. **w140 chi²_r reduces by > 50 %.** The canonical
+4. **w140 chi²_r reduces by > 50 %.** The canonical
    τ-collapse case the proposal must fix.
-6. **Stage 4 plan remains sane.** ≥ 380 windows on 2638; max
+5. **Stage 4 plan remains sane.** ≥ 380 windows on 2638; max
    width ≤ 80 MHz; hard-window fraction within 55-75 %.
-7. **Stage 5 chi²_r distribution improves or holds.** Median
+6. **Stage 5 chi²_r distribution improves or holds.** Median
    ≤ 1.25; p95 ≤ 5.5; max ≤ 200.
-8. **Tests pass.** Full non-slow suite green; new unit tests for
+7. **Tests pass.** Full non-slow suite green; new unit tests for
    the calibration module and the bidirectional penalty.
+
+Phase 4 (LSQ comparison) close-out gate, deferred:
+
+8. **Phase 4 LSQ agreement.** STFT and LSQ-fit-and-histogram agree
+   on `τ_maj` on 2638 within 10 %. (Optional — does not block
+   the Phase 3 production wiring; it confirms the design choice
+   in retrospect.)
 
 ## Outstanding open questions
 
 These are decisions the implementer will need to make during
-Phase 4, after seeing the Phase 1-3 numbers:
+Phase 3, after seeing the Phase 1+2 numbers (some are pre-answered
+by the research; flagged inline):
 
 - **Multi-fixture confidence.** Is `τ_maj` stable across fixtures
   from the same instrument? Across instruments? Cross-fixture
@@ -652,17 +732,16 @@ Phase 4, after seeing the Phase 1-3 numbers:
   gone, this is the only multiplicative bound on τ. 2638's
   expected τ_maj ≈ 7-8 µs gives an upper bound of 35-40 µs at
   factor 5 — reasonable. May tighten to 3 once `τ_maj` is known
-  empirically; with the `σ_τ`-based bound from §Phase 4 step 4
+  empirically; with the `σ_τ`-based bound from §Phase 3 step 4
   this becomes less load-bearing.
 - **Persistence of `τ_maj`.** Recommended: live on the `.ftmw`
-  file under `/stage5_tau_calibration`. It's an invariant of the
-  experiment, not an on-demand quantity. The Stage 3 gap-pass
+  file under `/stage2b_tau_calibration`. It's an invariant of
+  the experiment, not an on-demand quantity. The Stage 3 gap-pass
   needs it, and re-running the STFT calibration is expensive
   enough to want caching.
-- **Frame overlap.** The default non-overlapping schedule is
-  cheap and gives independent fits per bin. Overlapping frames
-  give more points per bin (better fit precision) but correlated
-  errors. Phase-1 study should decide.
+- **Frame overlap.** Phase 1 answered this: non-overlapping
+  frames at `N_seg = 10` are the operating point. Skipped in
+  Phase 3 unless a fixture-specific issue surfaces.
 - **Per-bin SNR weighting.** Whether to weight contributor τ_k
   values by the bin's on-line SNR (gives strong, low-noise bins
   more influence). Phase-1 study should pick the weighting

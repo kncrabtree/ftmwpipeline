@@ -143,8 +143,9 @@ def compute_active_ft(
         zero; ``end_us > start_us`` is required.
     expf_us : float or None
         Exponential apodization time constant in microseconds, applied as
-        ``exp(-(t - t0)/expf_us)`` over the active region. ``None`` skips
-        apodization entirely (matching the Stage 1 ``expf_us=None`` path).
+        ``exp(-(t - t0)/expf_us)`` over the active region. ``None`` (or any
+        non-positive value, which is normalised to ``None``) skips
+        apodization entirely.
     probe_freq_mhz : float
         Probe (LO) frequency in MHz. The molecular frequency grid is
         ``f = probe + s * f_bb`` with ``s`` from :func:`sideband_sign`.
@@ -168,8 +169,7 @@ def compute_active_ft(
     ------
     ValueError
         If ``fid`` is not 1-D, ``sample_dt_us`` is non-positive, the active
-        region is empty or out of bounds, ``expf_us`` is provided and
-        non-positive, or ``n_padded < n_active``.
+        region is empty or out of bounds, or ``n_padded < n_active``.
     """
     fid_arr = np.asarray(fid, dtype=float)
     if fid_arr.ndim != 1:
@@ -181,7 +181,8 @@ def compute_active_ft(
     if end_us <= start_us:
         raise ValueError("end_us must be greater than start_us")
     if expf_us is not None and expf_us <= 0:
-        raise ValueError("expf_us must be positive when provided")
+        # Non-positive expf_us means "disable apodization"; treat as None.
+        expf_us = None
 
     n_total = fid_arr.size
     if n_total == 0:
