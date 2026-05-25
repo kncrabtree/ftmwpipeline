@@ -126,12 +126,15 @@ phase information it depends on).
 3. **Strong clusters.** Strong lines sharing one leakage-touched run
    (the rolling statistic stays above $T_{\text{edge}}$ between them)
    form a single **primary joint window** — they must be fit together;
-   none can be a fixed background for the others. Note (D8): at the
-   recalibrated $T_{\text{edge}} = 8$, 2638's 36350/36389 pair
-   (SNR 186 + 55, 39 MHz apart) does *not* stay above threshold
-   throughout and so decouples into two windows. Whether that pair
-   should be co-fit is deferred to Stage 5; see
-   [`leakage-detection-rework.md`](leakage-detection-rework.md).
+   none can be a fixed background for the others. The 2638 fixture's
+   36350/36389 pair (SNR 186 + 55, 39 MHz apart) is the canonical
+   coupled-strong-line case: under the MAD/median Stage 2 σ the
+   inter-line skirt is no longer absorbed into σ, so S_coh stays above
+   $T_{\text{edge}} = 8$ throughout the gap and the pair merges into a
+   single ~65 MHz joint window (`needs_joint_treatment`). See
+   [`leakage-detection-rework.md`](leakage-detection-rework.md) and the
+   audit at
+   [`../research/stage4-poststage23-audit/report.md`](../research/stage4-poststage23-audit/report.md).
 4. **Merge to fixpoint.** Overlapping proposed fit windows merge transitively
    in a deterministic order (by frequency, then descending strength), until
    stable → disjoint fit windows covering each point ≤ 1. The merge is a
@@ -280,10 +283,13 @@ edge-trim error (never). Lock the protocol in the Stage 5 plan; Stage
 - Invariant checks: fit windows disjoint and cover each point ≤ 1; every
   retained free peak in exactly one window's free set; dependency graph
   acyclic; topological order valid; batches independent.
-- 2638 real data: sane window count (no mega-windows; ~328 windows, max
-  width ~31 MHz at `T_edge = 8`); the strong lines anchor windows; dense
-  regions are flagged, not exploded; promoted-only consumption. (The
-  36350/36389 pair decouples at `T_edge = 8` — see step 3 and D8.)
+- 2638 real data: sane window count and shape — the strong lines anchor
+  windows, dense regions are flagged not exploded, promoted-only
+  consumption. Reference numbers under the post-Stage-2/3-rework
+  baseline: 391 windows at `T_edge = 8`, max width 65.67 MHz at the
+  recoupled 36350/36389 joint window (`needs_joint_treatment`), all
+  other widths 4–30 MHz. See step 3 and the audit at
+  [`../research/stage4-poststage23-audit/report.md`](../research/stage4-poststage23-audit/report.md).
 - Cross-interface identity (CLI/Pipeline/api); serialization round-trip +
   hand-edit; invalidation on Stage 1 canonical-settings change and on Stage 3
   re-detection.

@@ -110,10 +110,19 @@ a Stage 5 `τ` prior; final deletion is deferred to Stage 5 scoping.
   complex-Gaussian noise leaves `S_coh` at the ~0.886 null.
 - **Strong-line skirts.** Five of the six strongest lines show de-ramped
   `S_coh` 12–18 in the ±2–12 MHz skirt band, 91–100 % above `T_edge = 8`.
-- **Leakage is localized.** ~11 % of the spectrum is de-ramped
-  leakage-touched, vs 0.8 % for the raw (un-de-ramped) statistic.
-- **Stage 4 plan stays sane.** 339 windows, max width ~30 MHz, no
-  mega-windows.
+- **Leakage is localized.** Under the original Stage 2 σ, ~11 % of
+  the spectrum was de-ramped leakage-touched, vs 0.8 % for the raw
+  (un-de-ramped) statistic. Under the post-rework Stage 2 σ (MAD
+  subdivision + moving median, with strong-line skirt exclusion) the
+  touched fraction is 17.7 % — σ no longer absorbs skirt power, so
+  S_coh registers it where it lives. The qualitative localisation
+  picture is unchanged.
+- **Stage 4 plan stays sane.** Under the original Stage 2 σ: 339
+  windows, max width ~30 MHz, no mega-windows. Under the post-Stage-2/3-
+  rework: 391 windows, max width 65.67 MHz at the 36350/36389
+  recoupled cluster (`needs_joint_treatment`), all other widths in the
+  4–30 MHz range. See
+  [`../research/stage4-poststage23-audit/report.md`](../research/stage4-poststage23-audit/report.md).
 - **Regression test.**
   `tests/integration/test_stage3_peak_detection.py::test_gap_pass_does_not_promote_strong_line_sidelobes`.
 
@@ -122,10 +131,19 @@ a Stage 5 `τ` prior; final deletion is deferred to Stage 5 scoping.
 - **Window baseline padding.** Stage 4 windows end at their outermost peaks'
   extents with no noise-only margin; Stage 5 fitting will want a configurable
   per-window pad.
-- **The 36350/36389 doublet** (SNR 186 + 55, 39 MHz apart) decouples at
-  `T_edge = 8` — the de-ramped statistic dips below threshold between the two
-  lines. Each is carried into the other's window as a fixed contributor;
-  whether to re-couple the pair for fitting is a Stage 5 question.
+- **The 36350/36389 doublet** (SNR 186 + 55, 39 MHz apart) **decoupled**
+  under the original Stage 2 σ — the de-ramped statistic dipped below
+  threshold between the two lines, and each was carried into the
+  other's window as a fixed contributor. Under the post-rework Stage 2
+  σ the inter-line skirt is no longer absorbed into σ, so S_coh stays
+  above threshold throughout and strong-cluster grouping merges the two
+  lines into one primary joint window. Stage 5 honours
+  `needs_joint_treatment` via AICc-gated conservative fitting and chose
+  9 of the 33 candidate peaks on that window with chi²_r = 3.48; the
+  worst-case chi²_r over the whole spectrum simultaneously dropped from
+  4183 to 125 at an unrelated window. The "whether to re-couple"
+  question is answered by the noise estimator; the open follow-up is
+  whether 9 fits is the right model order.
 - **34154 MHz anomaly.** This SNR-172 promoted peak de-ramps to only `S_coh ≈
   3` (damped) / `≈ 1.7` (boxcar), unlike the other SNR ~170–240 lines (~12–27).
   Possibly a blend or a mis-scored detection — revisit in Stage 5.
