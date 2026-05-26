@@ -75,13 +75,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
 from typing import Union, cast
 
 import numpy as np
 from scipy.special import wofz
 
 from ftmwpipeline.core.data_structures import Sideband
+from ftmwpipeline.core.peak_shape import PeakShape
 
 __all__ = [
     "ModelPeak",
@@ -102,45 +102,6 @@ __all__ = [
     "to_baseband_offset",
 ]
 
-
-class PeakShape(str, Enum):
-    """Time-domain envelope shape selector for the Stage 5 fit.
-
-    ``LORENTZIAN`` (default) — envelope ``exp(-t/τ)``. The frequency-domain
-    line is a finite-T-windowed Lorentzian. This is the historical Stage 5
-    model; ``h_T`` / ``h_T_jacobian`` / ``effective_tau`` carry it.
-
-    ``GAUSSIAN`` — envelope ``exp(-(t/τ_G)²)``. The frequency-domain line is
-    a finite-T-windowed Gaussian. Motivated by the Voigt-deficit prototype
-    on 2638 (per-window joint ``(τ_L, τ_G)`` LSQ degenerated to Gaussian-
-    dominant with ``τ_L`` pinning at the upper bound), shipping as an
-    alternative when the data is supersonic-beam-geometry-shaped rather
-    than collisional-Lorentzian-shaped. See
-    ``dev-docs/planning/stage5-gaussian-shape.md``.
-    """
-
-    LORENTZIAN = "lorentzian"
-    GAUSSIAN = "gaussian"
-
-    @classmethod
-    def coerce(cls, value: "PeakShape | str") -> "PeakShape":
-        """Convert a shape-like value into a :class:`PeakShape`.
-
-        Accepts the enum itself or one of the string members
-        (case-insensitive). Useful at API boundaries where callers may
-        pass either ``PeakShape.GAUSSIAN`` or ``"gaussian"``.
-        """
-        if isinstance(value, cls):
-            return value
-        if isinstance(value, str):
-            try:
-                return cls(value.strip().lower())
-            except ValueError:
-                pass
-        raise ValueError(
-            f"shape must be a PeakShape or one of "
-            f"{[s.value for s in cls]}; got {value!r}"
-        )
 
 SidebandLike = Union[Sideband, str]
 

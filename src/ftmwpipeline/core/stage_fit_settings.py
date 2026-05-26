@@ -1,0 +1,500 @@
+"""
+Canonical Stage 5 fit settings.
+
+``StageFitSettings`` is the single source of truth for the Stage 5 fitting
+parameters across every surface:
+
+* the public API signatures (``Pipeline.fit_peaks`` / ``api.fit_peaks``),
+* the CLI ``--preset`` flag plus the existing per-knob flags,
+* the resolution chain ``explicit > preset > persisted > recommended >
+  hard default``,
+* the persisted canonical record in ``processing_parameters/stage5_fit``,
+* the YAML preset interchange format.
+
+Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
+resolution chain). A *resolved* instance (produced by :func:`resolve`) has
+every field filled with the hard default if no layer supplied a value.
+
+The dataclass is structured into one top-level setting (``shape``) plus six
+sub-dataclasses grouping the knobs by what they configure
+(``tau``, ``seeder``, ``conservative``, ``penalties``, ``rescue``, ``thaw``).
+The grouping maps 1:1 to HDF5 subgroups under
+``processing_parameters/stage5_fit`` so each sub-block is independently
+inspectable.
+
+The ``_HARD_DEFAULTS`` nested dict mirrors the ``DEFAULT_*`` constants in the
+fitting modules. Those constants are still imported by the fitting functions
+as their parameter defaults; once every consumer reads from a resolved
+``StageFitSettings``, the constants become docstring-only and can be removed.
+
+This module is dependency-free within the package (stdlib + the local
+``__None__`` HDF5 marker convention shared with ``io.fid_serialization``,
+plus PyYAML for the preset interchange) so it can be imported from ``core``
+without cycles.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any, Dict, Mapping, Optional, Union, cast
+
+import yaml  # type: ignore[import-untyped]
+
+from .peak_shape import PeakShape
+
+# Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
+_NONE = "__None__"
+
+
+# ---------------------------------------------------------------------------
+# Shape spec (discriminated union scaffold)
+# ---------------------------------------------------------------------------
+@dataclass
+class ShapeSpec:
+    """Per-line envelope shape discriminator.
+
+    ``kind`` is the :class:`PeakShape` enum -- ``LORENTZIAN`` /
+    ``GAUSSIAN`` today, with ``VOIGT`` anticipated. Shape-specific parameter
+    blocks (e.g. ``voigt_params: Optional[VoigtParams]``) attach here when
+    Voigt support lands; no API churn elsewhere is required.
+    """
+
+    kind: PeakShape = PeakShape.LORENTZIAN
+
+    @classmethod
+    def coerce(cls, value: Any) -> Optional["ShapeSpec"]:
+        """Coerce a shape-like value into a :class:`ShapeSpec` (or ``None``).
+
+        Accepts the dataclass itself, a :class:`PeakShape`, a string member
+        (``"gaussian"``), a mapping like ``{"kind": "gaussian"}``, or ``None``.
+        Other inputs raise ``ValueError``.
+        """
+        if value is None:
+            return None
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, PeakShape):
+            return cls(kind=value)
+        if isinstance(value, str):
+            return cls(kind=PeakShape.coerce(value))
+        if isinstance(value, Mapping):
+            if "kind" not in value:
+                raise ValueError(
+                    f"ShapeSpec mapping must carry a 'kind' key; got {value!r}"
+                )
+            return cls(kind=PeakShape.coerce(value["kind"]))
+        raise ValueError(f"cannot coerce {value!r} to ShapeSpec")
+
+
+# ---------------------------------------------------------------------------
+# Sub-dataclasses (one per HDF5 subgroup / YAML block)
+# ---------------------------------------------------------------------------
+@dataclass
+class TauSubSettings:
+    """Stage 5 τ handling (initial guess, bounds, free-vs-fixed, anchoring)."""
+
+    tau0_us: Optional[float] = None
+    fit_tau: Optional[bool] = None
+    max_decay_factor: Optional[float] = None
+    fit_tau_min_snr: Optional[float] = None
+    tau_penalty_lambda: Optional[float] = None
+    tau_penalty_n_sigma: Optional[float] = None
+    tau_maj_override_us: Optional[float] = None
+    sigma_tau_override_us: Optional[float] = None
+    per_band_tau: Optional[bool] = None
+
+
+@dataclass
+class SeederSubSettings:
+    """Conservative-fit blend-aware seeder thresholds."""
+
+    seeder_rchi2: Optional[float] = None
+    seeder_straddle_factor: Optional[float] = None
+    seeder_max_k: Optional[int] = None
+
+
+@dataclass
+class ConservativeSubSettings:
+    """Add-one-peak loop gates and per-call caps."""
+
+    significance: Optional[float] = None
+    max_peaks: Optional[int] = None
+    patience: Optional[int] = None
+    min_separation_factor: Optional[float] = None
+    min_pair_separation_factor: Optional[float] = None
+    n_eff_kind: Optional[str] = None
+    weak_window_snr_threshold: Optional[float] = None
+    max_nfev: Optional[int] = None
+
+
+@dataclass
+class PenaltySubSettings:
+    """Phase / amplitude soft-penalty weights."""
+
+    phase_penalty_lambda: Optional[float] = None
+    phase_penalty_cutoff_fwhm: Optional[float] = None
+    amp_penalty_lambda: Optional[float] = None
+    amp_max_headroom: Optional[float] = None
+
+
+@dataclass
+class RescueSubSettings:
+    """Residual-rescue B-loop knobs."""
+
+    max_rounds: Optional[int] = None
+    snr_threshold: Optional[float] = None
+    prominence_threshold: Optional[float] = None
+    cleanup_significance: Optional[float] = None
+    merge_separation_factor: Optional[float] = None
+    structural_merge_factor: Optional[float] = None
+
+
+@dataclass
+class ThawSubSettings:
+    """Local-thaw + structural-replan orchestration."""
+
+    max_thaw_rounds: Optional[int] = None
+    max_replan_rounds: Optional[int] = None
+    residual_edge_threshold: Optional[float] = None
+    residual_edge_m: Optional[int] = None
+
+
+@dataclass
+class StageFitSettings:
+    """Stage 5 fit settings (see module docstring)."""
+
+    shape: Optional[ShapeSpec] = None
+    tau: TauSubSettings = field(default_factory=TauSubSettings)
+    seeder: SeederSubSettings = field(default_factory=SeederSubSettings)
+    conservative: ConservativeSubSettings = field(
+        default_factory=ConservativeSubSettings
+    )
+    penalties: PenaltySubSettings = field(default_factory=PenaltySubSettings)
+    rescue: RescueSubSettings = field(default_factory=RescueSubSettings)
+    thaw: ThawSubSettings = field(default_factory=ThawSubSettings)
+
+    def is_empty(self) -> bool:
+        """True if no field is set across any sub-dataclass."""
+        if self.shape is not None:
+            return False
+        for sub_name in _SUB_NAMES:
+            sub = getattr(self, sub_name)
+            if any(getattr(sub, f.name) is not None for f in fields(sub)):
+                return False
+        return True
+
+
+# Sub-dataclass field names on StageFitSettings, in HDF5/YAML order.
+_SUB_NAMES = ("tau", "seeder", "conservative", "penalties", "rescue", "thaw")
+
+
+# Hard defaults per sub-dataclass. These mirror the ``DEFAULT_*`` constants
+# in ``fitting/window_fit.py``, ``fitting/residual_rescue.py``,
+# ``fitting/plan_execution.py``, ``fitting/validation.py`` and
+# ``_internal/stage5_impl.py``. Kept as inline literals (rather than imported
+# from fitting/) to keep ``core`` dependency-free from ``fitting``; the
+# fitting modules' constants are the readable canonical source and these
+# must track them.
+_HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
+    "shape": {"kind": PeakShape.LORENTZIAN},
+    "tau": {
+        "max_decay_factor": 5.0,
+        "fit_tau_min_snr": 50.0,
+        "tau_penalty_lambda": 500.0,
+        "tau_penalty_n_sigma": 5.0,
+        "per_band_tau": True,
+        # ``tau0_us`` / ``fit_tau`` / overrides legitimately stay None
+        # (tau0_us derives at runtime from Stage 2b / expf_us / T_active/3;
+        # fit_tau defaults to True inside the impl; overrides are unset by
+        # design until a user supplies the atomic pair).
+    },
+    "seeder": {
+        "seeder_rchi2": 1.5,
+        "seeder_straddle_factor": 1.0,
+        "seeder_max_k": 3,
+    },
+    "conservative": {
+        "significance": 0.05,
+        "max_peaks": 8,
+        "patience": 1,
+        "min_separation_factor": 1.0,
+        "min_pair_separation_factor": 0.5,
+        "n_eff_kind": "perplexity_log1p_snr",
+        "weak_window_snr_threshold": 10.0,
+        "max_nfev": 2000,
+    },
+    "penalties": {
+        "phase_penalty_lambda": 100.0,
+        "phase_penalty_cutoff_fwhm": 2.0,
+        "amp_penalty_lambda": 10.0,
+        "amp_max_headroom": 3.0,
+    },
+    "rescue": {
+        "max_rounds": 5,
+        "snr_threshold": 2.5,
+        "prominence_threshold": 2.0,
+        "cleanup_significance": 0.05,
+        "merge_separation_factor": 0.5,
+        "structural_merge_factor": 0.5,
+    },
+    "thaw": {
+        "max_thaw_rounds": 2,
+        "max_replan_rounds": 2,
+        "residual_edge_threshold": 8.0,
+        "residual_edge_m": 32,
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Resolution chain
+# ---------------------------------------------------------------------------
+def _first_set_field(name: str, *layers: Any) -> Any:
+    """Walk layers left-to-right, returning the first non-``None`` field value."""
+    for layer in layers:
+        if layer is None:
+            continue
+        value = getattr(layer, name)
+        if value is not None:
+            return value
+    return None
+
+
+def _resolve_sub(
+    sub_name: str,
+    *layers: Optional[StageFitSettings],
+) -> Any:
+    """Per-sub-dataclass field-merge with hard-default fallback."""
+    sub_layers = [
+        getattr(s, sub_name) for s in layers if s is not None
+    ]
+    if not sub_layers:
+        sub_layers = []
+    template = getattr(StageFitSettings(), sub_name)
+    merged = type(template)()
+    for f in fields(template):
+        value = _first_set_field(f.name, *sub_layers)
+        if value is None:
+            value = _HARD_DEFAULTS.get(sub_name, {}).get(f.name)
+        setattr(merged, f.name, value)
+    return merged
+
+
+def resolve(
+    explicit: Optional[StageFitSettings] = None,
+    preset: Optional[StageFitSettings] = None,
+    persisted: Optional[StageFitSettings] = None,
+    recommended: Optional[StageFitSettings] = None,
+) -> StageFitSettings:
+    """Merge the four layers by precedence into a resolved ``StageFitSettings``.
+
+    Per-field precedence: ``explicit > preset > persisted > recommended``,
+    then any remaining ``None`` field falls back to the matching value in
+    :data:`_HARD_DEFAULTS`. The shape discriminator is resolved separately:
+    the first non-``None`` ``ShapeSpec`` across the layers wins, then the
+    ``LORENTZIAN`` hard default.
+    """
+    layers = (explicit, preset, persisted, recommended)
+    shape_resolved: Optional[ShapeSpec] = None
+    for layer in layers:
+        if layer is not None and layer.shape is not None:
+            shape_resolved = layer.shape
+            break
+    if shape_resolved is None:
+        shape_resolved = ShapeSpec(kind=_HARD_DEFAULTS["shape"]["kind"])
+    merged = StageFitSettings(shape=shape_resolved)
+    for sub_name in _SUB_NAMES:
+        setattr(merged, sub_name, _resolve_sub(sub_name, *layers))
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# Dict <-> dataclass round-trip (drives both HDF5 and YAML serialization)
+# ---------------------------------------------------------------------------
+def _encode_value(value: Any) -> Any:
+    """Encode a field value for the attrs/dict form (``None`` -> ``__None__``)."""
+    if value is None:
+        return _NONE
+    if isinstance(value, PeakShape):
+        return value.value
+    return value
+
+
+def _decode_value(value: Any) -> Any:
+    """Inverse of :func:`_encode_value`."""
+    if isinstance(value, bytes):
+        value = value.decode("utf-8")
+    if isinstance(value, str) and value == _NONE:
+        return None
+    return value
+
+
+def _sub_to_attrs(sub: Any) -> Dict[str, Any]:
+    return {f.name: _encode_value(getattr(sub, f.name)) for f in fields(sub)}
+
+
+def _sub_from_attrs(cls: type, attrs: Dict[str, Any]) -> Any:
+    kwargs: Dict[str, Any] = {}
+    for f in fields(cls):
+        if f.name not in attrs:
+            continue
+        kwargs[f.name] = _decode_value(attrs[f.name])
+    return cls(**kwargs)
+
+
+def to_attrs(settings: StageFitSettings) -> Dict[str, Any]:
+    """Nested attrs dict (one top-level key per sub-dataclass + ``shape``).
+
+    The shape is encoded as a nested dict ``{"kind": "<value>"}`` (or the
+    ``__None__`` sentinel when unset) so future shape-specific parameter
+    blocks can attach inside the same subgroup. Sub-dataclass values use
+    ``__None__`` for unset fields.
+    """
+    out: Dict[str, Any] = {}
+    if settings.shape is None:
+        out["shape"] = _NONE
+    else:
+        out["shape"] = {"kind": settings.shape.kind.value}
+    for sub_name in _SUB_NAMES:
+        out[sub_name] = _sub_to_attrs(getattr(settings, sub_name))
+    return out
+
+
+def from_attrs(attrs: Dict[str, Any]) -> StageFitSettings:
+    """Inverse of :func:`to_attrs` (tolerant of missing sub-blocks)."""
+    shape_raw = attrs.get("shape")
+    shape_spec: Optional[ShapeSpec]
+    if shape_raw is None or (isinstance(shape_raw, str) and shape_raw == _NONE):
+        shape_spec = None
+    elif isinstance(shape_raw, dict):
+        shape_spec = ShapeSpec.coerce(shape_raw)
+    elif isinstance(shape_raw, (str, PeakShape)):
+        shape_spec = ShapeSpec.coerce(shape_raw)
+    else:
+        raise ValueError(f"cannot decode shape attrs from {shape_raw!r}")
+    settings = StageFitSettings(shape=shape_spec)
+    for sub_name in _SUB_NAMES:
+        sub_attrs = attrs.get(sub_name, {})
+        if not isinstance(sub_attrs, dict):
+            raise ValueError(
+                f"sub-block {sub_name!r} must be a mapping; got {type(sub_attrs)}"
+            )
+        template = getattr(StageFitSettings(), sub_name)
+        setattr(settings, sub_name, _sub_from_attrs(type(template), sub_attrs))
+    return settings
+
+
+# ---------------------------------------------------------------------------
+# YAML interchange
+# ---------------------------------------------------------------------------
+def _yaml_sub_to_mapping(sub: Any) -> Dict[str, Any]:
+    """YAML view: drop ``None`` fields entirely (presets are sparse)."""
+    out: Dict[str, Any] = {}
+    for f in fields(sub):
+        value = getattr(sub, f.name)
+        if value is None:
+            continue
+        out[f.name] = value
+    return out
+
+
+def to_yaml_dict(settings: StageFitSettings) -> Dict[str, Any]:
+    """Sparse nested dict suitable for ``yaml.safe_dump`` (omits ``None``).
+
+    Sparseness lets a preset author write only the fields they want to
+    override. Round-trip through :func:`from_yaml_dict` reproduces the
+    same dataclass (unset fields stay ``None``).
+    """
+    out: Dict[str, Any] = {}
+    if settings.shape is not None:
+        out["shape"] = settings.shape.kind.value
+    for sub_name in _SUB_NAMES:
+        sub_dict = _yaml_sub_to_mapping(getattr(settings, sub_name))
+        if sub_dict:
+            out[sub_name] = sub_dict
+    return out
+
+
+def from_yaml_dict(data: Optional[Dict[str, Any]]) -> StageFitSettings:
+    """Build a :class:`StageFitSettings` from a YAML-shaped mapping.
+
+    Accepts a ``shape:`` shorthand string (``shape: gaussian``) at the top
+    level. Each sub-dataclass block is a mapping of field name -> value;
+    unknown keys raise ``ValueError`` so typos surface loudly.
+    """
+    if data is None:
+        return StageFitSettings()
+    if not isinstance(data, dict):
+        raise ValueError(f"preset YAML root must be a mapping; got {type(data)}")
+    settings = StageFitSettings()
+    if "shape" in data:
+        settings.shape = ShapeSpec.coerce(data["shape"])
+    known_subs = set(_SUB_NAMES)
+    for sub_name in _SUB_NAMES:
+        if sub_name not in data:
+            continue
+        block = data[sub_name]
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"preset block {sub_name!r} must be a mapping; got {type(block)}"
+            )
+        template = getattr(StageFitSettings(), sub_name)
+        valid_names = {f.name for f in fields(template)}
+        unknown = set(block) - valid_names
+        if unknown:
+            raise ValueError(
+                f"unknown {sub_name!r} fields in preset: {sorted(unknown)} "
+                f"(valid: {sorted(valid_names)})"
+            )
+        setattr(settings, sub_name, type(template)(**block))
+    # Reject top-level keys that are neither 'shape' nor a known sub-block,
+    # except for the preset metadata keys 'name' and 'description' which
+    # presets may carry for documentation but the settings parser ignores.
+    allowed_top = known_subs | {"shape", "name", "description"}
+    extra_top = set(data) - allowed_top
+    if extra_top:
+        raise ValueError(
+            f"unknown top-level preset keys: {sorted(extra_top)} "
+            f"(allowed: {sorted(allowed_top)})"
+        )
+    return settings
+
+
+def from_yaml(source: Union[str, Path]) -> StageFitSettings:
+    """Load a :class:`StageFitSettings` from a YAML file path or text."""
+    if isinstance(source, Path) or (
+        isinstance(source, str) and "\n" not in source and Path(source).exists()
+    ):
+        text = Path(source).read_text()
+    else:
+        text = str(source)
+    data = yaml.safe_load(text)
+    return from_yaml_dict(data)
+
+
+def to_yaml(settings: StageFitSettings) -> str:
+    """Serialize to a YAML string (sparse; omits unset fields)."""
+    text: Any = yaml.safe_dump(
+        to_yaml_dict(settings), sort_keys=False, default_flow_style=False
+    )
+    return cast(str, text)
+
+
+__all__ = [
+    "ShapeSpec",
+    "TauSubSettings",
+    "SeederSubSettings",
+    "ConservativeSubSettings",
+    "PenaltySubSettings",
+    "RescueSubSettings",
+    "ThawSubSettings",
+    "StageFitSettings",
+    "resolve",
+    "to_attrs",
+    "from_attrs",
+    "to_yaml",
+    "from_yaml",
+    "to_yaml_dict",
+    "from_yaml_dict",
+]
