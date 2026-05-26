@@ -1097,13 +1097,14 @@ def rescue_and_consolidate(
             break
 
         # Joint refit: union peaks. Tau policy depends on whether a
-        # Stage 2b calibration is plumbed: when the inner-fit kwargs carry
-        # ``tau_penalty_sigma_us`` (the bidirectional-prior signature), tau
-        # is frozen at the calibration's ``tau_maj`` here so the joint refit
-        # cannot re-introduce the tau-collapse channel the calibration is
-        # meant to close. Without calibration, tau is free under the legacy
-        # apodization-anchored bounds; start at the rescue's value (the
-        # apodization-override structural mitigation for w198-like cases).
+        # Stage 2b calibration is plumbed: the calibration's bidirectional
+        # Gaussian prior (``tau_penalty_sigma_us`` is the signature) stays
+        # active in the joint fit -- the penalty soft-anchors tau near
+        # ``tau_maj`` while letting data-driven drift narrow or broaden
+        # the line shape when chi2 strongly prefers it. Without calibration,
+        # tau is free under the legacy apodization-anchored bounds; start at
+        # the rescue's value (the apodization-override structural mitigation
+        # for w198-like cases).
         union_init = list(current.peaks) + list(rescue.fit.peaks)
         calibrated = (
             fit_kwargs_inner.get("tau_penalty_sigma_us") is not None
@@ -1112,7 +1113,7 @@ def rescue_and_consolidate(
         if calibrated:
             joint_tau_start = float(fit_kwargs_inner["tau_penalty_reference"])
             joint_kwargs = dict(fit_kwargs_inner)
-            joint_kwargs["fit_tau"] = False
+            joint_kwargs["fit_tau"] = True
         else:
             joint_tau_start = _clamp(
                 float(rescue.fit.tau_us),

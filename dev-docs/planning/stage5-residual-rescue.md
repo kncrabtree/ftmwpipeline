@@ -202,9 +202,15 @@ to absorb the dropped peak's contribution.
 The joint refit inside `rescue_and_consolidate` is the one
 exception — it fits tau freely from the rescue's warm start, so
 it can escape the broken-initial-fit basin (see "Rescue tau
-policy"). Locking the joint refit's tau is on the cross-fixture
-follow-up track as the dataset-wide tau majority-vote-freeze
-proposal.
+policy"). When a Stage 2b calibration is plumbed
+(`tau_penalty_sigma_us` set), the joint refit's free tau is also
+regularized by the bidirectional Gaussian prior centred on
+`tau_maj`: tau drifts freely when data strongly prefers it (e.g.
+w198 at 33724 MHz on 2638, where data lands tau ≈ 4 µs against a
+band-mid anchor of 6.16 µs and the prior contributes ~18 chi² of
+penalty) but is pulled back from runaway / collapse when data
+support is weak (the low-SNR isolated lines that would otherwise
+peg the upper bound at 5 · tau0).
 
 ## Validation harness
 
@@ -240,14 +246,13 @@ intermediate states if the audit needs forensic context).
 
 ## Known limitations
 
-- **w198 on 2638**: the rescue chain converges to K=3 at
-  χ²_r=148 instead of the K=7 at χ²_r=2.92 a tau-locked
-  configuration reaches. Root cause is the joint refit's tau
-  thaw: even when the initial fit holds tau fixed, the joint
-  refit fits tau freely and converges to a different (~2.4 µs)
-  basin from the dataset consensus (~3 µs). Resolution is the
-  dataset-wide tau majority-vote-freeze proposal in
-  [`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
+- **w198 on 2638 (resolved with Stage 2b + joint-refit unlock)**:
+  the rescue chain on the unapodized FT with Stage 2b enabled
+  lands at K=7, tau=4.0 µs, χ²_r=22 (vs the legacy apodized run's
+  K=3, tau=2.4 µs, χ²_r=148). The unapodized FT exposes the dense
+  cluster's 4 hidden peaks for the rescue to find; the
+  bidirectional Gaussian prior keeps the joint refit's tau in
+  the physical band without freezing it at `tau_maj`.
 - **Borderline real-vs-noise on w16/w104/w127/w337-class
   windows**: the rescue's iterative cleanup rejects these
   borderline second peaks each round. Whether they are real
