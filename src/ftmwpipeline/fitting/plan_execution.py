@@ -79,6 +79,7 @@ from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 from .active_ft import ActiveFTResult
 from .peak_model import (
     ModelPeak,
+    PeakShape,
     model_spectrum,
     sideband_sign,
     to_baseband_offset,
@@ -588,6 +589,8 @@ def subtract_frozen_background(
     fixed_peaks: Sequence[FrozenPeak],
     tau_us: float,
     acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> tuple[np.ndarray, np.ndarray]:
     """Evaluate the frozen-contributor background and subtract it from the data.
 
@@ -617,6 +620,7 @@ def subtract_frozen_background(
         [fp.model_peak for fp in fixed_peaks],
         tau_us,
         acquisition_us,
+        shape=shape,
     )
     return bg, np.asarray(complex_spectrum, dtype=np.complex128) - bg
 
@@ -647,8 +651,10 @@ def fit_window_with_fixed_contributors(
     tuple
         ``(fit_result, background, full_fitted_spectrum, full_residual)``.
     """
+    shape = conservative_kwargs.get("shape", "lorentzian")
     background, data_minus_bg = subtract_frozen_background(
-        offset_grid_mhz, complex_spectrum, fixed_peaks, tau0_us, acquisition_us
+        offset_grid_mhz, complex_spectrum, fixed_peaks, tau0_us, acquisition_us,
+        shape=shape,
     )
     fit_result = conservative_fit(
         offset_grid_mhz,
@@ -663,7 +669,8 @@ def fit_window_with_fixed_contributors(
     # *that* sorted grid. Re-evaluate the model on the caller's input grid so
     # the returned arrays line up bin-for-bin with the inputs.
     full_free = model_spectrum(
-        offset_grid_mhz, fit_result.fit.peaks, fit_result.fit.tau_us, acquisition_us
+        offset_grid_mhz, fit_result.fit.peaks, fit_result.fit.tau_us, acquisition_us,
+        shape=fit_result.fit.shape,
     )
     full_fitted = full_free + background
     full_residual = np.asarray(complex_spectrum, dtype=np.complex128) - full_fitted
@@ -788,6 +795,7 @@ def local_thaw_cofit(
     acquisition_us: float,
     fit_tau: bool = True,
     max_decay_factor: float = DEFAULT_MAX_DECAY_FACTOR,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> tuple[WindowFitResult, np.ndarray]:
     """Joint co-fit of two windows with one contributor unfrozen.
 
@@ -844,10 +852,12 @@ def local_thaw_cofit(
         or fp.primary_window_id != thawed.primary_window_id
     ]
     _, primary_clean = subtract_frozen_background(
-        primary_u, primary_data, primary_other, tau0_us, acquisition_us
+        primary_u, primary_data, primary_other, tau0_us, acquisition_us,
+        shape=shape,
     )
     _, dep_clean = subtract_frozen_background(
-        dep_u_in_primary, dep_data, dep_other, tau0_us, acquisition_us
+        dep_u_in_primary, dep_data, dep_other, tau0_us, acquisition_us,
+        shape=shape,
     )
 
     grid = np.concatenate([primary_u, dep_u_in_primary])
@@ -897,6 +907,7 @@ def local_thaw_cofit(
         fit_tau=fit_tau,
         max_decay_factor=max_decay_factor,
         offset_bounds=(lo, hi),
+        shape=shape,
     )
     return joint, np.array([thawed_index], dtype=int)
 
@@ -984,6 +995,7 @@ def execute_plan(
     max_residual_rescue_rounds: int = 0,
     rescue_kwargs: Optional[dict[str, Any]] = None,
     window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1091,6 +1103,8 @@ def execute_plan(
     """
     if conservative_kwargs is None:
         conservative_kwargs = {}
+    conservative_kwargs = dict(conservative_kwargs)
+    conservative_kwargs.setdefault("shape", shape)
     if window_tau_overrides is None:
         window_tau_overrides = {}
 
@@ -1298,6 +1312,7 @@ def _walk_windows_in_order(
                 fit_tau=fit_tau,
                 residual_edge_threshold=residual_edge_threshold,
                 residual_edge_m=residual_edge_m,
+                shape=conservative_kwargs.get("shape", "lorentzian"),
             )
             if not edge_events:
                 break
@@ -1594,6 +1609,7 @@ def attempt_thaw_round(
     fit_tau: bool = True,
     residual_edge_threshold: float = DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> list[ThawEvent]:
     """Run one round of the residual edge-coherence check on a window and thaw.
 
@@ -1657,6 +1673,7 @@ def attempt_thaw_round(
                 fit_tau=fit_tau,
                 residual_edge_threshold=residual_edge_threshold,
                 residual_edge_m=residual_edge_m,
+                shape=shape,
             )
         events.append(event)
         outcome.thaw_events.append(event)
@@ -1677,6 +1694,7 @@ def _perform_thaw(
     fit_tau: bool,
     residual_edge_threshold: float,
     residual_edge_m: int,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> ThawEvent:
     """Do the joint co-fit, decide accept/reject, and rebuild the outcomes."""
     primary_outcome = outcomes[thawed.primary_window_id]
@@ -1689,6 +1707,7 @@ def _perform_thaw(
         tau0_us=tau0_us,
         acquisition_us=acquisition_us,
         fit_tau=fit_tau,
+        shape=shape,
     )
     if not joint.success:
         return ThawEvent(
@@ -1757,8 +1776,10 @@ def _perform_thaw(
         dep_peaks + [thawed_in_dep],
         joint.tau_us,
         acquisition_us,
+        shape=joint.shape,
     ) + _frozen_subset_model(
-        dep_outcome.offset_grid_mhz, dep_other_peaks, joint.tau_us, acquisition_us
+        dep_outcome.offset_grid_mhz, dep_other_peaks, joint.tau_us, acquisition_us,
+        shape=joint.shape,
     )
     provisional_dep_residual = dep_outcome.complex_spectrum - provisional_dep_full
     dep_low_after, dep_high_after = residual_edge_coherence(
@@ -1820,13 +1841,16 @@ def _frozen_subset_model(
     fixed_peaks: Sequence[FrozenPeak],
     tau_us: float,
     acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> np.ndarray:
     """Convenience: re-evaluate a subset of FrozenPeaks at one tau."""
     if not fixed_peaks:
         zero: np.ndarray = np.zeros(grid.shape, dtype=np.complex128)
         return zero
     return model_spectrum(
-        grid, [fp.model_peak for fp in fixed_peaks], tau_us, acquisition_us
+        grid, [fp.model_peak for fp in fixed_peaks], tau_us, acquisition_us,
+        shape=shape,
     )
 
 
@@ -1867,12 +1891,15 @@ def _install_cofit_outcome(
     outcome.fit.fit.tau_us = tau_us
     if cofit_was_tau_free:
         outcome.fit.fit.tau_was_fit = True
+    shape_resolved = outcome.fit.fit.shape
     free_model = model_spectrum(
-        outcome.offset_grid_mhz, new_peak_list, tau_us, acquisition_us
+        outcome.offset_grid_mhz, new_peak_list, tau_us, acquisition_us,
+        shape=shape_resolved,
     )
     outcome.fit.fit.fitted_spectrum = free_model
     background = _frozen_subset_model(
-        outcome.offset_grid_mhz, outcome.fixed_peaks, tau_us, acquisition_us
+        outcome.offset_grid_mhz, outcome.fixed_peaks, tau_us, acquisition_us,
+        shape=shape_resolved,
     )
     outcome.background = background
     outcome.full_fitted_spectrum = free_model + background
@@ -1921,6 +1948,7 @@ def _apply_rescue_to_outcome(
         acquisition_us,
         max_rescue_rounds=max_residual_rescue_rounds,
         conservative_kwargs=conservative_kwargs,
+        shape=outcome.fit.fit.shape,
         **rescue_kwargs,
     )
 
@@ -1937,6 +1965,7 @@ def _apply_rescue_to_outcome(
             consolidated.fit.fit.peaks,
             consolidated.fit.fit.tau_us,
             acquisition_us,
+            shape=consolidated.fit.fit.shape,
         )
         outcome.fit.fit.fitted_spectrum = free_model
         outcome.fit.fit.residual = data_minus_bg - free_model

@@ -60,7 +60,14 @@ from typing import Any, Optional, Union, cast
 import numpy as np
 from scipy.optimize import least_squares
 
-from .peak_model import ModelPeak, effective_tau, h_T, h_T_jacobian, model_spectrum
+from .peak_model import (
+    ModelPeak,
+    PeakShape,
+    effective_tau_shape,
+    h_T_shape,
+    h_T_shape_jacobian,
+    model_spectrum,
+)
 from .validation import (
     DEFAULT_N_EFF_KIND,
     calculate_aic,
@@ -195,6 +202,7 @@ def derive_window_fit_constraints(
     tau_apodization_us: Optional[float] = None,
     tau_maj_us: Optional[float] = None,
     sigma_tau_us: Optional[float] = None,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> WindowFitConstraints:
     """Derive a window's tau / amplitude / penalty constraints from its data.
 
@@ -221,12 +229,13 @@ def derive_window_fit_constraints(
     tau_penalty_n_sigma : float, default :data:`DEFAULT_TAU_PENALTY_N_SIGMA`
         Half-width of the calibrated tau bounds in units of ``sigma_tau``.
     """
+    shape_resolved = PeakShape.coerce(shape)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
     sigma = np.asarray(rms_noise, dtype=float)
     if sigma.ndim == 0:
         sigma = np.full(z.size, float(sigma))
 
-    fwhm = feature_fwhm(tau0_us, acquisition_us)
+    fwhm = feature_fwhm(tau0_us, acquisition_us, shape=shape_resolved)
     min_separation = min_separation_factor * fwhm
 
     use_calibrated = (
@@ -259,8 +268,8 @@ def derive_window_fit_constraints(
         )
         tau_penalty_sigma_us = None
 
-    tau_eff_min = effective_tau(tau_bounds[0], acquisition_us)
-    tau_eff_nom = effective_tau(tau0_us, acquisition_us)
+    tau_eff_min = effective_tau_shape(shape_resolved, tau_bounds[0], acquisition_us)
+    tau_eff_nom = effective_tau_shape(shape_resolved, tau0_us, acquisition_us)
     max_abs = float(np.max(np.abs(z))) if z.size else 0.0
     if max_abs > 0.0 and tau_eff_min > 0.0:
         amp_max: Optional[float] = float(
@@ -404,6 +413,12 @@ class WindowFitResult:
     # explicitly override after refit so the cleaned WindowFitResult
     # advertises the original determination.
     tau_was_fit: Optional[bool] = field(default=None)
+    # Line-shape selector used for this window's fit. ``tau_us`` is the
+    # exponential τ under LORENTZIAN, the Gaussian τ_G under GAUSSIAN;
+    # the model evaluation, Jacobian, and effective_tau all route through
+    # the matching closed form. Defaults to LORENTZIAN so existing call
+    # sites and persisted-file readers behave unchanged.
+    shape: PeakShape = field(default=PeakShape.LORENTZIAN)
 
     def __post_init__(self) -> None:
         if self.tau_was_fit is None:
@@ -448,6 +463,7 @@ def model_jacobian(
     acquisition_us: float,
     *,
     include_tau: bool = False,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> np.ndarray:
     """Analytic Jacobian of :func:`model_spectrum` w.r.t. the fit parameters.
 
@@ -469,11 +485,17 @@ def model_jacobian(
     peaks : sequence of ModelPeak
         The ``K`` lines.
     tau_us : float
-        Shared decay constant ``tau`` (microseconds, ``> 0``).
+        Shared decay constant (microseconds, ``> 0``). For
+        ``shape=LORENTZIAN`` this is ``τ``; for ``shape=GAUSSIAN`` it is
+        ``τ_G``.
     acquisition_us : float
         Active acquisition length ``T`` (microseconds, ``> 0``).
     include_tau : bool, default False
         Append the shared ``d/dtau`` column.
+    shape : PeakShape or str, default LORENTZIAN
+        Line-shape selector. Routes the per-peak ``h_T`` and
+        ``h_T_jacobian`` evaluations through the matching Lorentzian or
+        Gaussian closed forms.
 
     Returns
     -------
@@ -481,6 +503,7 @@ def model_jacobian(
         Complex array of shape ``(M, 3K)`` -- or ``(M, 3K + 1)`` with
         ``include_tau`` -- where ``M = len(offset_grid_mhz)``.
     """
+    s = PeakShape.coerce(shape)
     u = np.asarray(offset_grid_mhz, dtype=float)
     k = len(peaks)
     n_params = 3 * k + (1 if include_tau else 0)
@@ -489,12 +512,12 @@ def model_jacobian(
 
     for i, pk in enumerate(peaks):
         du = u - pk.offset_mhz
-        shape = h_T(du, tau_us, acquisition_us)
-        d_shape_df, d_shape_dtau = h_T_jacobian(du, tau_us, acquisition_us)
+        line = h_T_shape(s, du, tau_us, acquisition_us)
+        d_shape_df, d_shape_dtau = h_T_shape_jacobian(s, du, tau_us, acquisition_us)
         phasor = np.exp(1j * pk.phase)
-        jac[:, 3 * i] = 0.5 * phasor * shape
+        jac[:, 3 * i] = 0.5 * phasor * line
         jac[:, 3 * i + 1] = -0.5 * pk.amplitude * phasor * d_shape_df
-        jac[:, 3 * i + 2] = 0.5j * pk.amplitude * phasor * shape
+        jac[:, 3 * i + 2] = 0.5j * pk.amplitude * phasor * line
         dmodel_dtau += 0.5 * pk.amplitude * phasor * d_shape_dtau
 
     if include_tau:
@@ -747,6 +770,7 @@ def fit_window(
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
 
@@ -928,9 +952,11 @@ def fit_window(
         or (tau_penalty_lambda > 0.0 and fit_tau)
     )
 
+    shape_resolved = PeakShape.coerce(shape)
+
     def residual(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
-        model = model_spectrum(u, peaks, tau, acquisition_us)
+        model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
         r = (z - model) / sig_ri
         data_r = np.concatenate([r.real, r.imag])
         if not penalties_active:
@@ -943,7 +969,10 @@ def fit_window(
     def jacobian(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
         # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, Re stacked over Im.
-        dmodel = model_jacobian(u, peaks, tau, acquisition_us, include_tau=fit_tau)
+        dmodel = model_jacobian(
+            u, peaks, tau, acquisition_us,
+            include_tau=fit_tau, shape=shape_resolved,
+        )
         weighted = -dmodel / sig_ri[:, np.newaxis]
         data_jac = np.concatenate([weighted.real, weighted.imag], axis=0)
         if not penalties_active:
@@ -981,13 +1010,14 @@ def fit_window(
             fitted_spectrum=np.zeros(m, dtype=np.complex128),
             residual=z.copy(),
             covariance=None,
+            shape=shape_resolved,
         )
 
     peaks, tau = _unpack(np.asarray(sol.x, dtype=float), k, tau0_us, fit_tau)
     for pk in peaks:
         pk.phase = _wrap_phase(pk.phase)
 
-    fitted = model_spectrum(u, peaks, tau, acquisition_us)
+    fitted = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
     # Reported statistics are data-only (penalties act like a prior on the
     # parameters; the F-test / AIC across K stays calibrated only if chi^2
     # counts the data residual alone).
@@ -1001,7 +1031,8 @@ def fit_window(
         # smaller (they're effectively a prior). Caller wants the data
         # likelihood's covariance.
         dmodel_sol = model_jacobian(
-            u, peaks, tau, acquisition_us, include_tau=fit_tau
+            u, peaks, tau, acquisition_us,
+            include_tau=fit_tau, shape=shape_resolved,
         )
         weighted_sol = -dmodel_sol / sig_ri[:, np.newaxis]
         data_jac = np.concatenate(
@@ -1028,6 +1059,7 @@ def fit_window(
         fitted_spectrum=fitted,
         residual=z - fitted,
         covariance=covariance,
+        shape=shape_resolved,
     )
 
 
@@ -1275,7 +1307,8 @@ def knockout_test(
         sigma = np.full(u.size, float(sigma))
 
     tau = fit.tau_us
-    full_model = model_spectrum(u, peaks, tau, acquisition_us)
+    shape_resolved = fit.shape
+    full_model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
     full_chi2 = calculate_noise_weighted_chi2(complex_spectrum, rms_noise, full_model)
 
     # n_eff is keyed on the K-fit's model magnitude -- the same value the
@@ -1288,17 +1321,18 @@ def knockout_test(
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner or {})
     refit_kwargs["fit_tau"] = False  # tau locked at the K-fit value
+    refit_kwargs.setdefault("shape", shape_resolved)
 
     results: list[KnockoutResult] = []
     for i, pk in enumerate(peaks):
         kept = [p for j, p in enumerate(peaks) if j != i]
         # Diagnostic: freeze-others delta_chi2 + expected line energy.
-        kept_model = model_spectrum(u, kept, tau, acquisition_us)
+        kept_model = model_spectrum(u, kept, tau, acquisition_us, shape=shape_resolved)
         chi2_without = calculate_noise_weighted_chi2(
             complex_spectrum, rms_noise, kept_model
         )
         delta = chi2_without - full_chi2
-        line_model = model_spectrum(u, [pk], tau, acquisition_us)
+        line_model = model_spectrum(u, [pk], tau, acquisition_us, shape=shape_resolved)
         expected = calculate_noise_weighted_chi2(line_model, rms_noise)
 
         if not kept:
@@ -1387,6 +1421,8 @@ def _seed_peak(
     residual_spectrum: np.ndarray,
     tau0_us: float,
     acquisition_us: float,
+    *,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> ModelPeak:
     """Initial-guess line at ``offset_mhz`` from the local residual.
 
@@ -1397,7 +1433,7 @@ def _seed_peak(
     mag = float(
         np.abs(np.interp(offset_mhz, offset_grid_mhz, np.abs(residual_spectrum)))
     )
-    gain = max(effective_tau(tau0_us, acquisition_us), 1e-9)
+    gain = max(effective_tau_shape(shape, tau0_us, acquisition_us), 1e-9)
     phase = float(np.interp(offset_mhz, offset_grid_mhz, np.angle(residual_spectrum)))
     return ModelPeak(
         amplitude=max(2.0 * mag / gain, 1e-6), offset_mhz=offset_mhz, phase=phase
@@ -1431,6 +1467,7 @@ def _blend_aware_seed(
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1452,6 +1489,7 @@ def _blend_aware_seed(
     ``p_value`` is computed and recorded on each :class:`AddStep` as a
     familiar diagnostic.
     """
+    shape_resolved = PeakShape.coerce(shape)
     fit_kwargs = dict(
         fit_tau=fit_tau,
         tau_bounds=tau_bounds,
@@ -1464,6 +1502,7 @@ def _blend_aware_seed(
         tau_penalty_lambda=tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_reference,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
+        shape=shape_resolved,
     )
     fit1 = fit_window(
         offset_grid_mhz,
@@ -1476,6 +1515,7 @@ def _blend_aware_seed(
                 complex_spectrum,
                 tau0_us,
                 acquisition_us,
+                shape=shape_resolved,
             )
         ],
         tau0_us,
@@ -1513,7 +1553,8 @@ def _blend_aware_seed(
         positions = seed_offset_mhz + (np.arange(k) - 0.5 * (k - 1)) * straddle
         init = [
             _seed_peak(
-                float(pos), offset_grid_mhz, complex_spectrum, tau0_us, acquisition_us
+                float(pos), offset_grid_mhz, complex_spectrum,
+                tau0_us, acquisition_us, shape=shape_resolved,
             )
             for pos in positions
         ]
@@ -1625,6 +1666,7 @@ def conservative_fit(
     tau_maj_us: Optional[float] = None,
     sigma_tau_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -1728,6 +1770,7 @@ def conservative_fit(
     ConservativeFitResult
         The final fit, the add-one-peak audit trail, and the knockout results.
     """
+    shape_resolved = PeakShape.coerce(shape)
     u = np.asarray(offset_grid_mhz, dtype=float)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
     sigma = np.asarray(rms_noise, dtype=float)
@@ -1755,6 +1798,7 @@ def conservative_fit(
         tau_apodization_us=tau_apodization_us,
         tau_maj_us=tau_maj_us,
         sigma_tau_us=sigma_tau_us,
+        shape=shape_resolved,
     )
     tau_bounds = constraints.tau_bounds
     fwhm = constraints.fwhm
@@ -1765,17 +1809,22 @@ def conservative_fit(
     tau_penalty_ref = constraints.tau_penalty_reference
     tau_penalty_sigma_us = constraints.tau_penalty_sigma_us
     effective_tau_penalty_lambda = constraints.effective_tau_penalty_lambda
-    fit_kwargs_inner = constraints.fit_kwargs_inner
+    fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
+    fit_kwargs_inner.setdefault("shape", shape_resolved)
 
     remaining = sorted(
         candidate_offsets,
         key=lambda o: -abs(float(np.interp(o, u, np.abs(z)))),
     )
     if not remaining:
-        empty = fit_window(u, z, sigma, [], tau0_us, acquisition_us)
+        empty = fit_window(
+            u, z, sigma, [], tau0_us, acquisition_us, shape=shape_resolved,
+        )
         return ConservativeFitResult(empty, [], [])
 
-    null = fit_window(u, z, sigma, [], tau0_us, acquisition_us)
+    null = fit_window(
+        u, z, sigma, [], tau0_us, acquisition_us, shape=shape_resolved,
+    )
     seed = remaining.pop(0)
     current, audit = _blend_aware_seed(
         u,
@@ -1803,6 +1852,7 @@ def conservative_fit(
         tau_penalty_reference=tau_penalty_ref,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
         n_eff_kind=n_eff_kind,
+        shape=shape_resolved,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
@@ -1811,7 +1861,9 @@ def conservative_fit(
     consecutive_rejects = 0
     while remaining and current.n_peaks + len(tentative) < max_peaks:
         in_model = list(current.peaks) + tentative
-        residual = z - model_spectrum(u, in_model, current.tau_us, acquisition_us)
+        residual = z - model_spectrum(
+            u, in_model, current.tau_us, acquisition_us, shape=shape_resolved,
+        )
         cand = max(
             remaining,
             key=lambda o: abs(float(np.interp(o, u, np.abs(residual)))),
@@ -1846,7 +1898,10 @@ def conservative_fit(
         trial_init = (
             list(current.peaks)
             + tentative
-            + [_seed_peak(cand, u, residual, current.tau_us, acquisition_us)]
+            + [_seed_peak(
+                cand, u, residual, current.tau_us, acquisition_us,
+                shape=shape_resolved,
+            )]
         )
         trial = fit_window(
             u,

@@ -33,7 +33,7 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from .peak_model import ModelPeak, model_spectrum
+from .peak_model import ModelPeak, PeakShape, model_spectrum
 from .residual_screening import (
     ResidualPeakCandidate,
     find_residual_peaks,
@@ -248,7 +248,10 @@ def merge_close_peaks_cleanup(
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
 
-    fwhm = feature_fwhm(fit.tau_us, acquisition_us) if fit.tau_us > 0.0 else 0.0
+    fwhm = (
+        feature_fwhm(fit.tau_us, acquisition_us, shape=fit.shape)
+        if fit.tau_us > 0.0 else 0.0
+    )
     if fwhm <= 0.0:
         return fit, 0
     merge_threshold = merge_separation_factor * fwhm
@@ -260,6 +263,7 @@ def merge_close_peaks_cleanup(
     # convention used by ``knockout_test`` and ``iterative_aicc_cleanup``.
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
+    refit_kwargs.setdefault("shape", fit.shape)
 
     current = fit
     n_merged = 0
@@ -364,6 +368,8 @@ def remove_and_refit_cleanup(
 
     current = fit
     n_dropped = 0
+    refit_kwargs = dict(fit_kwargs_inner)
+    refit_kwargs.setdefault("shape", fit.shape)
     while current.n_peaks > 0:
         worst_p_value = -1.0
         worst_idx = -1
@@ -393,7 +399,7 @@ def remove_and_refit_cleanup(
                 continue
             refit = fit_window(
                 u, z, sigma, reduced_init, tau0_us, acquisition_us,
-                **fit_kwargs_inner,
+                **refit_kwargs,
             )
             if not refit.success:
                 continue
@@ -417,7 +423,7 @@ def remove_and_refit_cleanup(
         if worst_refit is None:
             # Dropped the last peak -- produce an empty fit.
             current = fit_window(
-                u, z, sigma, [], tau0_us, acquisition_us, **fit_kwargs_inner,
+                u, z, sigma, [], tau0_us, acquisition_us, **refit_kwargs,
             )
         else:
             current = worst_refit
@@ -482,6 +488,7 @@ def iterative_aicc_cleanup(
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
+    refit_kwargs.setdefault("shape", fit.shape)
 
     current = fit
     n_dropped = 0
@@ -654,10 +661,12 @@ def attempt_residual_rescue(
         sigma = np.full(u.size, float(sigma))
 
     # Compute the residual ONCE, from the (frozen) initial fit. Use the
-    # initial fit's own peaks + tau here -- this is the actual model the
-    # initial fit produced, regardless of whether its tau is physical.
+    # initial fit's own peaks + tau + shape here -- this is the actual model
+    # the initial fit produced, regardless of whether its tau is physical.
+    rescue_shape = current_fit.shape
     initial_model = model_spectrum(
-        u, current_fit.peaks, current_fit.tau_us, acquisition_us
+        u, current_fit.peaks, current_fit.tau_us, acquisition_us,
+        shape=rescue_shape,
     )
     residual = z - initial_model
 
@@ -685,7 +694,7 @@ def attempt_residual_rescue(
             if current_fit.tau_us <= 1.05 * tau_lower_bound:
                 rescue_tau_us = float(apodization_us)
     rescue_fwhm = (
-        feature_fwhm(rescue_tau_us, acquisition_us)
+        feature_fwhm(rescue_tau_us, acquisition_us, shape=rescue_shape)
         if rescue_tau_us > 0.0
         else 0.0
     )
@@ -769,6 +778,7 @@ def attempt_residual_rescue(
     ckwargs.pop("tau_apodization_us", None)
     ckwargs.pop("tau_maj_us", None)
     ckwargs.pop("sigma_tau_us", None)
+    ckwargs.setdefault("shape", rescue_shape)
     if not candidate_offsets:
         empty = conservative_fit(
             u, residual, sigma, [], rescue_tau_us, acquisition_us,
@@ -938,6 +948,7 @@ def rescue_and_consolidate(
     structural_merge_factor: float = DEFAULT_STRUCTURAL_MERGE_FACTOR,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape_error_epsilon: float = 0.0,
+    shape: "PeakShape | str" = "lorentzian",
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1059,10 +1070,12 @@ def rescue_and_consolidate(
         )
         if k in ckwargs_in
     }
+    shape_resolved = PeakShape.coerce(shape)
     constraints = derive_window_fit_constraints(
-        z, sigma, tau0_us, acquisition_us, **constraints_kwargs
+        z, sigma, tau0_us, acquisition_us, shape=shape_resolved, **constraints_kwargs,
     )
-    fit_kwargs_inner = constraints.fit_kwargs_inner
+    fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
+    fit_kwargs_inner.setdefault("shape", shape_resolved)
 
     current = initial_fit
     rounds: List[RescueRoundDiagnostics] = []

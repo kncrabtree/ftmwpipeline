@@ -27,7 +27,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 from scipy.stats import f as f_distribution
 
-from .peak_model import h_T
+from .peak_model import PeakShape, h_T_shape
 
 __all__ = [
     "DEFAULT_N_EFF_KIND",
@@ -110,7 +110,12 @@ def calculate_hwhm_from_apodization(
     return float(hwhm_hz * 1e-6)
 
 
-def feature_fwhm(tau_us: float, acquisition_us: float) -> float:
+def feature_fwhm(
+    tau_us: float,
+    acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = "lorentzian",
+) -> float:
     """Full width at half maximum of the magnitude line shape ``|h_T|``.
 
     Measured numerically on a fine grid -- the exact resolution scale of the
@@ -118,14 +123,22 @@ def feature_fwhm(tau_us: float, acquisition_us: float) -> float:
     :func:`calculate_hwhm_from_apodization` estimate omits. Used to set the
     conservative loop's peak-separation constraint and the blend-aware seeder's
     straddle (the prototype's ``feature_fwhm_mhz``; ~122 kHz at the 2638
-    scale).
+    scale on Lorentzian).
+
+    The Gaussian variant uses :func:`h_T_gaussian` instead. The Gaussian
+    FWHM for τ_G = 8 µs / T = 12.65 µs is ~90 kHz -- noticeably narrower
+    in the unwindowed limit than the Lorentzian with the same τ at the
+    same acquisition.
 
     Parameters
     ----------
     tau_us : float
-        Effective decay time constant ``tau`` in microseconds (``> 0``).
+        Decay time constant (microseconds, ``> 0``). ``τ`` under
+        ``shape='lorentzian'``; ``τ_G`` under ``shape='gaussian'``.
     acquisition_us : float
         Active acquisition length ``T`` in microseconds (``> 0``).
+    shape : PeakShape or str, default 'lorentzian'
+        Line-shape selector. The FWHM is shape-dependent.
 
     Returns
     -------
@@ -143,7 +156,7 @@ def feature_fwhm(tau_us: float, acquisition_us: float) -> float:
         raise ValueError("acquisition_us must be positive")
 
     grid = np.linspace(-1.0, 1.0, 200001)
-    mag = np.abs(h_T(grid, tau_us, acquisition_us))
+    mag = np.abs(h_T_shape(shape, grid, tau_us, acquisition_us))
     above = np.where(mag >= 0.5 * mag.max())[0]
     return float(grid[above[-1]] - grid[above[0]])
 

@@ -592,6 +592,8 @@ def model_spectrum(
     peaks: Sequence[ModelPeak],
     tau_us: float,
     acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
 ) -> np.ndarray:
     """Sum of finite-T damped-cosine responses on a baseband-offset grid.
 
@@ -601,7 +603,7 @@ def model_spectrum(
 
     on the offset grid ``u`` (MHz). Free peaks and frozen fixed contributors
     are both just :class:`ModelPeak` entries -- pass them in one list. All
-    lines share the decay ``τ``.
+    lines share the decay ``τ`` and the shape ``shape``.
 
     Parameters
     ----------
@@ -611,9 +613,14 @@ def model_spectrum(
     peaks : sequence of ModelPeak
         The lines to sum. An empty sequence yields an all-zero spectrum.
     tau_us : float
-        Shared decay time constant ``τ`` in microseconds (``> 0``).
+        Shared decay time constant in microseconds (``> 0``). For
+        ``shape=LORENTZIAN`` this is ``τ`` (exponential decay); for
+        ``shape=GAUSSIAN`` this is ``τ_G`` (Gaussian decay).
     acquisition_us : float
         Active acquisition length ``T`` in microseconds (``> 0``).
+    shape : PeakShape or str, default LORENTZIAN
+        Line-shape selector. Routes the per-peak ``h_T`` evaluation through
+        :func:`h_T` (Lorentzian) or :func:`h_T_gaussian`.
 
     Returns
     -------
@@ -630,11 +637,12 @@ def model_spectrum(
     if acquisition_us <= 0.0:
         raise ValueError("acquisition_us must be positive")
 
+    s = PeakShape.coerce(shape)
     u = np.asarray(offset_grid_mhz, dtype=float)
     spectrum = np.zeros(u.shape, dtype=np.complex128)
     for pk in peaks:
         phasor = 0.5 * pk.amplitude * np.exp(1j * pk.phase)
-        spectrum += phasor * h_T(u - pk.offset_mhz, tau_us, acquisition_us)
+        spectrum += phasor * h_T_shape(s, u - pk.offset_mhz, tau_us, acquisition_us)
     return cast(np.ndarray, spectrum)
 
 

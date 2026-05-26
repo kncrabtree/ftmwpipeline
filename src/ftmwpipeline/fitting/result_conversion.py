@@ -59,7 +59,7 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 
-from .peak_model import effective_tau, molecular_frequency, sideband_sign
+from .peak_model import effective_tau_shape, molecular_frequency, sideband_sign
 from .plan_execution import (
     PlanFitOutcome,
     ReplanEvent,
@@ -297,7 +297,10 @@ def window_outcome_to_fitting_result(
     # Build FittedPeak per converged line.
     rms_mean = float(np.mean(np.asarray(outcome.rms_noise, dtype=float)))
     tau_us = inner.tau_us
-    tau_eff = effective_tau(tau_us, acquisition_us) if tau_us > 0 else float("nan")
+    tau_eff = (
+        effective_tau_shape(inner.shape, tau_us, acquisition_us)
+        if tau_us > 0 else float("nan")
+    )
     tau_error = inner.tau_error
     # d(1/tau)/d(tau) = -1/tau^2 -> decay_rate_error = tau_error / tau^2.
     decay_rate = 1.0 / tau_us if tau_us > 0 else None
