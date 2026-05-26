@@ -2083,6 +2083,11 @@ def main() -> None:
     params = fit.parameters or {}
     tau0_us_v = float(params.get("tau0_us", acquisition_us / 3.0))
     fit_tau_v = bool(params.get("fit_tau", True))
+    # Carry the persisted line-shape selector forward so the harness's
+    # re-fit on a Gaussian-fitted file reproduces the Gaussian model
+    # (otherwise conservative_fit defaults to Lorentzian and the rescue's
+    # re-fit silently drifts off the persisted fit).
+    shape_str = str(params.get("shape", "lorentzian"))
     # Single shared conservative_kwargs (used both to reproduce the
     # initial fit and to drive the rescue's per-round conservative loop).
     # ``rescue_max_peaks`` is a rescue-only override on the per-round K
@@ -2093,7 +2098,17 @@ def main() -> None:
     init_conservative_kwargs = {
         "max_decay_factor": float(params.get("max_decay_factor", 5.0)),
         "tau_apodization_us": expf_us if expf_us else None,
+        "shape": shape_str,
     }
+    # Forward the persisted Stage 2b τ_maj / σ_τ pair so the rescue's
+    # bidirectional Gaussian-prior penalty matches what fit_peaks_impl
+    # uses in production. Falls through harmlessly when the persisted
+    # parameters don't carry one (no calibration was active).
+    tau_maj_persisted = params.get("tau_maj_us")
+    sigma_tau_persisted = params.get("sigma_tau_us")
+    if tau_maj_persisted is not None and sigma_tau_persisted is not None:
+        init_conservative_kwargs["tau_maj_us"] = float(tau_maj_persisted)
+        init_conservative_kwargs["sigma_tau_us"] = float(sigma_tau_persisted)
     rescue_conservative_kwargs = dict(init_conservative_kwargs)
     rescue_kwargs = {
         "snr_threshold": DEFAULT_RESCUE_SNR_THRESHOLD,
