@@ -151,6 +151,113 @@ def test_stage1_change_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir):
         assert "stage3_peaks" not in completed
 
 
+def test_fit_peaks_gaussian_cross_interface(
+    baseline_2638_stage4, temp_ftmw_dir,
+):
+    """fit_peaks(shape='gaussian') is identical across CLI / Pipeline / api.
+
+    Drives all three interfaces on a baseline that has the Gaussian τ_G
+    calibration pre-staged, then asserts the persisted fits agree. Also
+    confirms the persisted ``/stage5_fitting`` root group carries the new
+    ``shape='gaussian'`` attribute and per-window subgroups inherit it.
+    """
+    pfile = temp_ftmw_dir / "gp.ftmw"
+    ffile = temp_ftmw_dir / "gf.ftmw"
+    cfile = temp_ftmw_dir / "gc.ftmw"
+    for fp in (pfile, ffile, cfile):
+        shutil.copy(baseline_2638_stage4, fp)
+        ftmw.calibrate_tau_G(fp)
+
+    fit_pipe = Pipeline(pfile).fit_peaks(shape="gaussian")
+    fit_func = ftmw.fit_peaks(ffile, shape="gaussian")
+    res = subprocess.run(
+        ["ftmwpipeline", "fit-peaks", str(cfile), "--shape", "gaussian"],
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
+    fit_cli = ftmw.load_fit(cfile)
+
+    _assert_fits_equivalent(fit_pipe, fit_func)
+    _assert_fits_equivalent(fit_pipe, fit_cli)
+
+    # The persisted root and per-window shape attributes are 'gaussian'.
+    for fp in (pfile, ffile, cfile):
+        with h5py.File(fp, "r") as h5f:
+            root_shape = h5f["stage5_fitting"].attrs.get("shape")
+            root_shape_str = (
+                root_shape.decode("utf-8")
+                if isinstance(root_shape, bytes)
+                else str(root_shape)
+            )
+            assert root_shape_str == "gaussian", (
+                f"{fp.name}: /stage5_fitting shape attr is {root_shape_str!r}"
+            )
+            windows_group = h5f["stage5_fitting/windows"]
+            for wname in windows_group:
+                w_shape = windows_group[wname].attrs.get("shape", "lorentzian")
+                w_shape_str = (
+                    w_shape.decode("utf-8")
+                    if isinstance(w_shape, bytes)
+                    else str(w_shape)
+                )
+                assert w_shape_str == "gaussian", (
+                    f"{fp.name}/{wname} shape attr is {w_shape_str!r}"
+                )
+
+
+def test_fit_peaks_gaussian_persists_and_loads_shape(
+    baseline_2638_stage4, temp_ftmw_dir,
+):
+    """A Gaussian fit round-trips: every loaded FittingResult carries shape='gaussian'."""
+    fp = temp_ftmw_dir / "rg.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+    ftmw.calibrate_tau_G(fp)
+    ftmw.fit_peaks(fp, shape="gaussian")
+    fit = ftmw.load_fit(fp)
+    # Every window's FittingResult must carry the persisted shape; older
+    # files would default to 'lorentzian' on the missing attribute.
+    assert fit.window_fits, "no windows in the loaded fit"
+    for wf in fit.window_fits:
+        assert wf.shape == "gaussian", (
+            f"window {wf.window_id} shape={wf.shape!r} (expected 'gaussian')"
+        )
+    # The fit's parameters dict echoes the same shape the driver used.
+    assert fit.parameters.get("shape") == "gaussian"
+
+
+def test_calibrate_tau_G_cross_interface(
+    baseline_2638_stage4, temp_ftmw_dir,
+):
+    """calibrate_tau_G is identical across CLI / Pipeline / api on 2638."""
+    pfile = temp_ftmw_dir / "tgp.ftmw"
+    ffile = temp_ftmw_dir / "tgf.ftmw"
+    cfile = temp_ftmw_dir / "tgc.ftmw"
+    for fp in (pfile, ffile, cfile):
+        shutil.copy(baseline_2638_stage4, fp)
+
+    tc_pipe = Pipeline(pfile).calibrate_tau_G()
+    tc_func = ftmw.calibrate_tau_G(ffile)
+    res = subprocess.run(
+        ["ftmwpipeline", "calibrate-tau-G", str(cfile)],
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
+    tc_cli = ftmw.load_tau_G_calibration(cfile)
+
+    # The STFT + per-bin Voigt path is deterministic from the persisted
+    # FID and Stage 1 settings; all three interfaces must land on
+    # numerically identical aggregates.
+    for other in (tc_func, tc_cli):
+        assert other.tau_maj_us == pytest.approx(tc_pipe.tau_maj_us, rel=1e-12)
+        assert other.sigma_tau_us == pytest.approx(tc_pipe.sigma_tau_us, rel=1e-12)
+        assert other.n_contributors == tc_pipe.n_contributors
+        assert len(other.band_majorities) == len(tc_pipe.band_majorities)
+
+
 def test_cli_visualize_fit_writes_output(baseline_2638_stage4, temp_ftmw_dir):
     """visualize-fit --no-interactive --output writes the image and exits 0."""
     fp = temp_ftmw_dir / "viz.ftmw"

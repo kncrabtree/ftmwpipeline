@@ -47,6 +47,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             tau_maj_override_us=args.tau_maj_override_us,
             sigma_tau_override_us=args.sigma_tau_override_us,
             per_band_tau=args.per_band_tau,
+            shape=args.shape,
         )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
@@ -251,6 +252,18 @@ def register_fitting_commands(subparsers: Any) -> None:
         "majority -- crucial for wide bands with monotonic horn-coupling "
         "tau (~ 1/f). Falls back silently to band-wide when Stage 2b "
         "band_majorities aren't persisted.",
+    )
+    p_fit.add_argument(
+        "--shape",
+        dest="shape",
+        choices=("lorentzian", "gaussian"),
+        default="lorentzian",
+        help=(
+            "Per-line envelope shape. 'lorentzian' (default) uses "
+            "exp(-t/tau); 'gaussian' uses exp(-(t/tau_G)**2). Pass "
+            "'gaussian' to consume the Stage 2b tau_G calibration "
+            "(calibrate-tau-G) in place of the pure-exp Stage 2b."
+        ),
     )
     p_fit.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"

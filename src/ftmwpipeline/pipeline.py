@@ -28,6 +28,9 @@ from ._internal.stage2_impl import (
 from ._internal.stage2b_impl import (
     calibrate_tau_impl, load_tau_calibration_impl,
 )
+from ._internal.stage2b_g_impl import (
+    calibrate_tau_G_impl, load_tau_G_calibration_impl,
+)
 from ._internal.stage3_impl import (
     detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
 )
@@ -661,6 +664,73 @@ class Pipeline:
             load_tau_calibration_impl(str(self.filepath))["tau_calibration"],
         )
 
+    def calibrate_tau_G(
+        self,
+        n_seg: Optional[int] = None,
+        t_sigma: Optional[float] = None,
+        tau_max_us: Optional[float] = None,
+        rss_gate_factor: Optional[float] = None,
+        sigma_time: Optional[float] = None,
+        snr_min: Optional[float] = None,
+        tau_G_bound_lo: Optional[float] = None,
+        tau_G_bound_hi: Optional[float] = None,
+        delta_chi2r_min: Optional[float] = None,
+        tau_G_upper_fraction: Optional[float] = None,
+        min_contributors: Optional[int] = None,
+        sigma_tau_fraction_max: Optional[float] = None,
+        bimodality_dominant_fraction: Optional[float] = None,
+        compute_band_majorities: bool = True,
+        min_contributors_per_band: Optional[int] = None,
+    ) -> TauCalibrationResult:
+        """Run the Stage 2b Gaussian-shape τ_G calibration.
+
+        Twin of :meth:`calibrate_tau`: per-bin Voigt fits on the STFT
+        contributor pool yield a per-band τ_G majority that the Stage 5
+        Gaussian path consumes. Persists to ``/stage2b_tau_G_calibration``
+        and invalidates downstream stages.
+
+        Parameters left as ``None`` use the documented defaults from
+        :mod:`ftmwpipeline.fitting.tau_calibration` (``DEFAULT_TAU_G_*``).
+        """
+        try:
+            result = calibrate_tau_G_impl(
+                file_path=str(self.filepath),
+                n_seg=n_seg,
+                t_sigma=t_sigma,
+                tau_max_us=tau_max_us,
+                rss_gate_factor=rss_gate_factor,
+                sigma_time=sigma_time,
+                snr_min=snr_min,
+                tau_G_bound_lo=tau_G_bound_lo,
+                tau_G_bound_hi=tau_G_bound_hi,
+                delta_chi2r_min=delta_chi2r_min,
+                tau_G_upper_fraction=tau_G_upper_fraction,
+                min_contributors=min_contributors,
+                sigma_tau_fraction_max=sigma_tau_fraction_max,
+                bimodality_dominant_fraction=bimodality_dominant_fraction,
+                compute_band_majorities=compute_band_majorities,
+                min_contributors_per_band=min_contributors_per_band,
+            )
+            tc = result["tau_G_calibration"]
+            self.logger.info(
+                "Stage 2b τ_G: tau_G_maj=%.3f us, sigma_tau_G=%.3f us, "
+                "n_eligible=%d, preconditions=%s",
+                tc.tau_maj_us, tc.sigma_tau_us, tc.n_contributors,
+                "pass" if tc.preconditions_passed else "fail",
+            )
+            return cast(TauCalibrationResult, tc)
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to calibrate τ_G: {e}") from e
+
+    def load_tau_G_calibration(self) -> TauCalibrationResult:
+        """Load the persisted Gaussian Stage 2b :class:`TauCalibrationResult`."""
+        return cast(
+            TauCalibrationResult,
+            load_tau_G_calibration_impl(str(self.filepath))["tau_G_calibration"],
+        )
+
     def visualize_tau_heatmap(
         self,
         output_file: Optional[Union[str, Path]] = None,
@@ -1035,6 +1105,7 @@ class Pipeline:
         tau_maj_override_us: Optional[float] = None,
         sigma_tau_override_us: Optional[float] = None,
         per_band_tau: bool = True,
+        shape: str = "lorentzian",
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1104,6 +1175,14 @@ class Pipeline:
             are available. Silently skipped when ``tau_maj_override_us``
             / ``sigma_tau_override_us`` is set (the explicit override
             wins).
+        shape : {"lorentzian", "gaussian"}, default "lorentzian"
+            Time-domain envelope of the per-line model.
+            ``"lorentzian"`` uses ``exp(-t/τ)``; ``"gaussian"`` uses
+            ``exp(-(t/τ_G)²)``. When ``"gaussian"`` is selected the
+            Stage 2b τ_G calibration (``calibrate_tau_G(...)``) is read
+            in place of the pure-exp ``calibrate_tau`` for the
+            bidirectional τ anchoring penalty; missing τ_G calibration
+            still fits, but without a prior.
 
         Returns
         -------
@@ -1133,6 +1212,7 @@ class Pipeline:
                 tau_maj_override_us=tau_maj_override_us,
                 sigma_tau_override_us=sigma_tau_override_us,
                 per_band_tau=per_band_tau,
+                shape=shape,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "

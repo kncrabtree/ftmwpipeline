@@ -1,0 +1,71 @@
+{
+  "fixture": "scratch/stage5-tau-calibration-lsq/exp_2638_unapodized.ftmw",
+  "lorentzian_file": "scratch/gaussian-shape-compare/exp_2638_unapodized_lorentzian.ftmw",
+  "gaussian_file": "scratch/gaussian-shape-compare/exp_2638_unapodized_gaussian.ftmw",
+  "lorentzian_summary": {
+    "n_windows": 382,
+    "n_fitted_peaks": 713,
+    "final_plan_revision": 0
+  },
+  "gaussian_summary": {
+    "n_windows": 382,
+    "n_fitted_peaks": 625,
+    "final_plan_revision": 0
+  },
+  "comparison": {
+    "n_windows": 382,
+    "n_windows_finite_both": 382,
+    "chi2r_lorentz_median": 1.4002822013495182,
+    "chi2r_gauss_median": 1.4124912059255308,
+    "chi2r_lorentz_p95": 6.35831910081726,
+    "chi2r_gauss_p95": 7.86889202189595,
+    "chi2r_gauss_lower_count": 182,
+    "aic_lorentz_median": 42.944607617838685,
+    "aic_gauss_median": 43.954249334038636,
+    "delta_aic_median": -0.33872600672304154,
+    "n_peaks_total_lorentz": 713,
+    "n_peaks_total_gauss": 625,
+    "n_peaks_matched": 613,
+    "freq_residual_mhz_median": 0.00043080057366751134,
+    "freq_residual_mhz_rms": 0.05521090703701819,
+    "amp_ratio_median": 0.7547214222211414,
+    "part_a_shape_error_windows": [
+      {
+        "window_id": 141,
+        "chi2r_lorentz": 20.065129127612682,
+        "chi2r_gauss": 8.87951916084072,
+        "aic_lorentz": 823.3340022642717,
+        "aic_gauss": 604.663526667587,
+        "delta_aic": 218.6704755966847,
+        "gaussian_preferred": true
+      },
+      {
+        "window_id": 213,
+        "chi2r_lorentz": 18.800592055865582,
+        "chi2r_gauss": 8.481449021240156,
+        "aic_lorentz": 367.36682529836213,
+        "aic_gauss": 271.14510439805304,
+        "delta_aic": 96.2217209003091,
+        "gaussian_preferred": true
+      },
+      {
+        "window_id": 310,
+        "chi2r_lorentz": 38.60504921494127,
+        "chi2r_gauss": 18.044969909801953,
+        "aic_lorentz": 1236.4139814091932,
+        "aic_gauss": 977.9490842674801,
+        "delta_aic": 258.4648971417131,
+        "gaussian_preferred": true
+      },
+      {
+        "window_id": 355,
+        "chi2r_lorentz": 2.3146044086218485,
+        "chi2r_gauss": 6.1142901346444685,
+        "aic_lorentz": 118.8222359447256,
+        "aic_gauss": 237.61529053461592,
+        "delta_aic": -118.79305458989032,
+        "gaussian_preferred": false
+      }
+    ]
+  }
+}

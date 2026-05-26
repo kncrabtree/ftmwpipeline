@@ -63,11 +63,16 @@ from .stage3_impl import (
     _load_canonical_noise,
     load_peaks_impl,
 )
+from ..fitting.peak_model import PeakShape
 from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
 )
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+from .stage2b_g_impl import (
+    load_tau_G_calibration_impl,
+    tau_G_calibration_present,
+)
 from .stage4_impl import load_windows_impl
 
 logger = logging.getLogger(__name__)
@@ -223,6 +228,7 @@ def fit_peaks_impl(
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
     per_band_tau: bool = True,
+    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -306,6 +312,7 @@ def fit_peaks_impl(
         ``tau_maj_override_us`` / ``sigma_tau_override_us`` pair is set.
     """
     # --- Resolve parameters with their defaults -----------------------------
+    shape_enum = PeakShape.coerce(shape)
     max_decay_v = (
         DEFAULT_MAX_DECAY_FACTOR
         if max_decay_factor is None
@@ -404,19 +411,50 @@ def fit_peaks_impl(
     # path) so the rollout is non-breaking. Explicit
     # ``(tau_maj_override_us, sigma_tau_override_us)`` beats the persisted
     # calibration for this fit (atomic pair; supplying only one raises).
+    #
+    # The Gaussian path consumes the τ_G twin
+    # (``/stage2b_tau_G_calibration``); the Lorentzian path stays on the
+    # pure-exp Stage 2b (``/stage2b_tau_calibration``). The two
+    # calibrations are independent and can coexist on one file; we route
+    # to the shape-appropriate one based on the caller's ``shape`` arg.
     persisted_cal: Optional[TauCalibrationResult] = None
-    if tau_calibration_present(file_path):
-        persisted_cal = load_tau_calibration_impl(file_path)["tau_calibration"]
-        if not persisted_cal.preconditions_passed:
+    if shape_enum is PeakShape.GAUSSIAN:
+        if tau_G_calibration_present(file_path):
+            persisted_cal = load_tau_G_calibration_impl(
+                file_path
+            )["tau_G_calibration"]
+            if not persisted_cal.preconditions_passed:
+                logger.warning(
+                    "Stage 2b τ_G calibration pre-conditions did not pass "
+                    "on %s; Stage 5 (gaussian) will still consume "
+                    "tau_G_maj=%.3f (sigma_tau_G=%.3f). Notes: %s",
+                    file_path,
+                    float(persisted_cal.tau_maj_us),
+                    float(persisted_cal.sigma_tau_us),
+                    "; ".join(persisted_cal.preconditions_notes),
+                )
+        else:
             logger.warning(
-                "Stage 2b calibration pre-conditions did not pass on %s; "
-                "Stage 5 will still consume tau_maj=%.3f (sigma_tau=%.3f). "
-                "Notes: %s",
+                "Stage 5 shape='gaussian' but no τ_G calibration is "
+                "present on %s; fitting without a τ_G prior. Run "
+                "calibrate_tau_G(...) for an anchored fit.",
                 file_path,
-                float(persisted_cal.tau_maj_us),
-                float(persisted_cal.sigma_tau_us),
-                "; ".join(persisted_cal.preconditions_notes),
             )
+    else:
+        if tau_calibration_present(file_path):
+            persisted_cal = load_tau_calibration_impl(
+                file_path
+            )["tau_calibration"]
+            if not persisted_cal.preconditions_passed:
+                logger.warning(
+                    "Stage 2b calibration pre-conditions did not pass on %s; "
+                    "Stage 5 will still consume tau_maj=%.3f (sigma_tau=%.3f). "
+                    "Notes: %s",
+                    file_path,
+                    float(persisted_cal.tau_maj_us),
+                    float(persisted_cal.sigma_tau_us),
+                    "; ".join(persisted_cal.preconditions_notes),
+                )
     tau_maj_us, sigma_tau_us, tau_source = _resolve_tau_calibration_for_fit(
         persisted_cal, tau_maj_override_us, sigma_tau_override_us,
     )
@@ -544,6 +582,7 @@ def fit_peaks_impl(
         acquisition_us=acquisition_us,
         tau0_us=tau0_us_v,
         fit_tau=fit_tau_v,
+        shape=shape_enum,
         residual_edge_threshold=edge_threshold_v,
         residual_edge_m=edge_m_v,
         max_thaw_rounds=max_thaw_v,
@@ -570,6 +609,7 @@ def fit_peaks_impl(
     )
 
     parameters = {
+        "shape": shape_enum.value,
         "tau0_us": tau0_us_v,
         "fit_tau": fit_tau_v,
         "max_decay_factor": max_decay_v,
@@ -657,15 +697,22 @@ def fit_peaks_impl(
 
 def save_spectrum_fit_impl(file_path: str, fit: SpectrumFit) -> None:
     """Persist a :class:`SpectrumFit` to ``/stage5_fitting`` (overwriting)."""
+    # The line-shape choice (lorentzian / gaussian) lives in
+    # ``fit.parameters['shape']`` from the fit driver; mirror it onto the
+    # group attrs so consumers can branch on shape without having to load
+    # the full SpectrumFit struct first.
+    shape_attr = str(fit.parameters.get("shape", PeakShape.LORENTZIAN.value))
     with h5py.File(file_path, "a") as h5f:
         if "stage5_fitting" in h5f:
             del h5f["stage5_fitting"]
         grp = h5f.create_group("stage5_fitting")
         save_spectrum_fit_to_hdf5(fit, grp)
+        grp.attrs["shape"] = shape_attr
     logger.info(
-        "Saved Stage 5 fit (%d windows, %d peaks) to %s",
+        "Saved Stage 5 fit (%d windows, %d peaks, shape=%s) to %s",
         fit.n_windows,
         fit.n_fitted_peaks,
+        shape_attr,
         file_path,
     )
 

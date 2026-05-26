@@ -166,6 +166,15 @@ class PipelineStageTracker:
             'stage1_complex_ft',
             'stage2_noise_result',
         ],
+        # Gaussian-shape twin of Stage 2b: per-bin Voigt fits on the STFT
+        # contributor pool yield the per-band τ_G majority that the
+        # Stage 5 Gaussian path consumes. Independent of the pure-exp
+        # Stage 2b (both can coexist on one file). Same dependencies.
+        'stage2b_tau_G_calibration': [
+            'stage0_fid_data',
+            'stage1_complex_ft',
+            'stage2_noise_result',
+        ],
         # Stage 3 requires Stage 1 (FT) and Stage 2 (noise). Stage 2b is a
         # recommended dependency but not enforced as required: the gap pass
         # falls back to ``tau_basis_us = 5.0`` when no calibration is
@@ -196,6 +205,7 @@ class PipelineStageTracker:
         'stage1_complex_ft': 'processing_parameters/ft_processing',
         'stage2_noise_result': 'stage2_noise_result',
         'stage2b_tau_calibration': 'stage2b_tau_calibration',
+        'stage2b_tau_G_calibration': 'stage2b_tau_G_calibration',
         'stage3_peaks': 'stage3_peaks',
         'stage4_windows': 'stage4_windows',
         'stage5_fitting': 'stage5_fitting',

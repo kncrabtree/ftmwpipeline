@@ -431,6 +431,7 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     wg.attrs["iterations"] = int(window_fit.iterations)
     wg.attrs["aic"] = float(window_fit.aic)
     wg.attrs["reduced_chi2"] = float(window_fit.reduced_chi2)
+    wg.attrs["shape"] = str(getattr(window_fit, "shape", "lorentzian"))
     wg.attrs["tau_us"] = tau_us
     wg.attrs["tau_error"] = tau_error
     # tau_fitted: 1 if tau was a free LSQ parameter, 0 if held at tau0_us,
@@ -628,6 +629,11 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
             window_id=int(wg.attrs["window_id"]),
         )
 
+    # Files that pre-date the shape attribute were Lorentzian-only.
+    shape_attr_raw = wg.attrs.get("shape", "lorentzian")
+    if isinstance(shape_attr_raw, bytes):
+        shape_attr_raw = shape_attr_raw.decode("utf-8")
+    shape_str = str(shape_attr_raw)
     result = FittingResult(
         success=bool(wg.attrs["success"]),
         fitted_spectrum=None,  # recomputed on demand
@@ -637,6 +643,7 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
         reduced_chi2=float(wg.attrs["reduced_chi2"]),
         window=window_obj,
         window_id=int(wg.attrs["window_id"]),
+        shape=shape_str,
     )
 
     tau_us = float(wg.attrs["tau_us"])

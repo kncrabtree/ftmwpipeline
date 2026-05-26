@@ -361,6 +361,10 @@ def window_outcome_to_fitting_result(
             )
         )
 
+    shape_attr = inner.shape
+    shape_str = (
+        shape_attr.value if hasattr(shape_attr, "value") else str(shape_attr)
+    )
     result = FittingResult(
         success=bool(inner.success),
         fitted_spectrum=np.asarray(outcome.full_fitted_spectrum, dtype=np.complex128),
@@ -372,6 +376,7 @@ def window_outcome_to_fitting_result(
             outcome, fit_window, sideband=sideband
         ),
         window_id=fit_window.window_id,
+        shape=shape_str,
     )
     result.fitted_peaks = fitted_peaks
 

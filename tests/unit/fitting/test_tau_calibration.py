@@ -16,9 +16,11 @@ import pytest
 from ftmwpipeline.fitting.tau_calibration import (
     DEFAULT_N_SEG,
     DEFAULT_T_SIGMA,
+    DEFAULT_TAU_G_BOUND_HI,
     SpurCluster,
     TauCalibrationResult,
     estimate_sigma_time_from_tail,
+    extract_tau_G_majority,
     extract_tau_majority,
     gmm_bimodality,
     group_spur_bins,
@@ -386,4 +388,127 @@ class TestExtractTauMajority:
                 probe_freq_mhz=PROBE_MHZ, sideband="middle",
                 trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
+            )
+
+
+# ---------------------------------------------------------------------------
+# Gaussian-twin extractor: extract_tau_G_majority
+# ---------------------------------------------------------------------------
+def _synth_gaussian_fid(
+    *,
+    rng: np.random.Generator,
+    n_samples: int,
+    line_bins: list[int],
+    line_taus_G_us: list[float],
+    line_snrs: list[float],
+) -> tuple[np.ndarray, float]:
+    """FID with Gaussian-envelope lines: ``s_i(t) = A_i cos(2π f_i t) exp(-(t/τ_G_i)²)``.
+
+    SNR is calibrated against the strongest planted line's on-line magnitude
+    in the full-record rfft (same convention as :func:`_synth_fid`); the
+    Gaussian effective area is ``∫_0^T exp(-(t/τ_G)²) dt ≈ τ_G √π / 2``
+    for ``τ_G ≪ T`` so we use that as the effective tau.
+    """
+    T_full_us = n_samples * SAMPLE_DT_US
+    t_us = np.arange(n_samples) * SAMPLE_DT_US
+    fid = np.zeros(n_samples, dtype=float)
+    f_bb_lines = np.asarray(line_bins, dtype=float) / T_full_us
+    tau_arr = np.asarray(line_taus_G_us, dtype=float)
+    snr_arr = np.asarray(line_snrs, dtype=float)
+    # ∫_0^T exp(-(t/τ_G)²) dt = (τ_G √π / 2) erf(T/τ_G). At T/τ_G ≳ 2 the
+    # erf saturates at 1, so τ_eff ≈ τ_G √π / 2.
+    from scipy.special import erf
+    tau_eff = 0.5 * tau_arr * np.sqrt(np.pi) * erf(T_full_us / tau_arr)
+    amps = snr_arr / tau_eff
+    phases = rng.uniform(0.0, 2.0 * np.pi, size=len(line_bins))
+    for i in range(len(line_bins)):
+        fid += (
+            amps[i]
+            * np.cos(2.0 * np.pi * f_bb_lines[i] * t_us + phases[i])
+            * np.exp(-((t_us / tau_arr[i]) ** 2))
+        )
+    spec_clean = SAMPLE_DT_US * np.fft.rfft(fid)
+    i_strongest = int(np.argmax(snr_arr))
+    on_line_mag = np.abs(spec_clean[line_bins[i_strongest]])
+    sigma_x = on_line_mag / float(snr_arr[i_strongest])
+    sigma_time = sigma_x / (SAMPLE_DT_US * np.sqrt(n_samples / 2.0))
+    noise = rng.normal(scale=sigma_time, size=n_samples)
+    return fid + noise, sigma_time
+
+
+class TestExtractTauGMajority:
+    def test_recovers_tau_G_for_multi_line(self):
+        """SNR-weighted majority τ_G lands in the right ballpark for Gaussian lines.
+
+        The per-bin Voigt fit on a sliding-STFT bin time series is a small-
+        sample nonlinear LSQ (only ``n_seg`` frames per bin); the slowly-
+        varying envelope approximation, the joint ``(τ_L, τ_G)``
+        identifiability slop, and the finite-frame averaging all add bias
+        on this kind of synthetic. The Part B research on 2638 saw a
+        comparable spread on real contributor bins. We hold the synthetic
+        to a generous 50 % relative band -- the unit-test scope is "did
+        the eligible-filter, per-bin Voigt fit, and SNR-weighted majority
+        machinery all run end-to-end and land somewhere reasonable", not
+        "achieve calibration-quality accuracy". Stage 5 χ² improvement is
+        the production acceptance test (validated on the 2638 fixture in
+        the comparison script, not here).
+        """
+        rng = np.random.default_rng(20260525 + 311)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
+        tau_G_truth = 6.0
+        line_taus = [tau_G_truth] * len(line_bins)
+        line_snrs = [200.0] * len(line_bins)
+        fid, sigma_t = _synth_gaussian_fid(
+            rng=rng, n_samples=N,
+            line_bins=line_bins, line_taus_G_us=line_taus, line_snrs=line_snrs,
+        )
+        result = extract_tau_G_majority(
+            fid, SAMPLE_DT_US,
+            start_us=0.0, end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ, sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+            sigma_time=sigma_t,
+            snr_min=10.0,
+            min_contributors=3,
+            min_contributors_per_band=2,
+        )
+        assert result.n_contributors >= 3, (
+            f"only {result.n_contributors} eligible bins (need ≥ 3)"
+        )
+        assert result.tau_maj_us == pytest.approx(tau_G_truth, rel=0.5), (
+            f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 50%"
+        )
+        assert result.sideband == "lower"
+        # The eligible subset must not be saturated against the upper bound.
+        assert np.all(
+            result.contributor_taus_us
+            < 0.7 * DEFAULT_TAU_G_BOUND_HI
+        )
+        # The result struct's tau_max_us mirrors the τ_G upper bound (not
+        # the underlying STFT classifier's tau_max), because under the
+        # twin's semantics the persisted ``tau_max_us`` is the Gaussian
+        # parameter ceiling that gated eligibility.
+        assert result.tau_max_us == DEFAULT_TAU_G_BOUND_HI
+
+    def test_rejects_bad_sideband(self):
+        with pytest.raises(ValueError, match="sideband"):
+            extract_tau_G_majority(
+                np.zeros(1000), SAMPLE_DT_US,
+                start_us=0.0, end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ, sideband="middle",
+                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                sigma_time=1.0,
+            )
+
+    def test_rejects_inverted_tau_g_bounds(self):
+        with pytest.raises(ValueError, match="tau_G_bound_hi"):
+            extract_tau_G_majority(
+                np.zeros(1000), SAMPLE_DT_US,
+                start_us=0.0, end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ, sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                sigma_time=1.0,
+                tau_G_bound_lo=10.0, tau_G_bound_hi=5.0,
             )

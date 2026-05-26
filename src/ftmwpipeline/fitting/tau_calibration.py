@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
+from scipy.optimize import least_squares
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +63,28 @@ DEFAULT_SPUR_CLUSTER_MULTIPLIER = 1.0  # cluster gap in units of n_seg full-reco
 # and `report.md` § "Polish design" for the sweep.
 DEFAULT_POLISH_SNR_CAP = 9.0
 
+# Gaussian-twin operating points (see ``extract_tau_G_majority``).
+# Per-bin Voigt-fit gates that decide which bins enter the τ_G calibration:
+# both must hold or the bin is filtered out before per-band aggregation.
+DEFAULT_TAU_G_SNR_MIN = 20.0
+DEFAULT_TAU_G_BOUND_LO = 0.5
+DEFAULT_TAU_G_BOUND_HI = 100.0
+DEFAULT_TAU_G_DELTA_CHI2R_MIN = 1.0
+DEFAULT_TAU_G_UPPER_FRACTION = 0.7
+DEFAULT_TAU_G_SEEDS: Tuple[float, ...] = (100.0, 50.0, 20.0, 10.0, 5.0, 3.0)
+# τ_G calibrations live on far fewer eligible bins than the pure-exp pool
+# (Part B on 2638: ~140 eligible vs ~2k pure-exp contributors); the
+# acceptance floor scales accordingly so the Gaussian preconditions can
+# actually pass on a typical fixture.
+DEFAULT_TAU_G_MIN_CONTRIBUTORS = 50
+
 
 __all__ = [
     "TauCalibrationResult",
     "SpurCluster",
     "BandMajority",
     "extract_tau_majority",
+    "extract_tau_G_majority",
     "sliding_stft",
     "stft_calibration",
     "majority_tau",
@@ -86,6 +103,13 @@ __all__ = [
     "DEFAULT_SIGMA_TAU_FRACTION_MAX",
     "DEFAULT_SIGMA_TAU_FLOOR_US",
     "DEFAULT_POLISH_SNR_CAP",
+    "DEFAULT_TAU_G_SNR_MIN",
+    "DEFAULT_TAU_G_BOUND_LO",
+    "DEFAULT_TAU_G_BOUND_HI",
+    "DEFAULT_TAU_G_DELTA_CHI2R_MIN",
+    "DEFAULT_TAU_G_UPPER_FRACTION",
+    "DEFAULT_TAU_G_SEEDS",
+    "DEFAULT_TAU_G_MIN_CONTRIBUTORS",
 ]
 
 
@@ -1314,6 +1338,436 @@ def extract_tau_majority(
         n_seg=n_seg,
         t_sigma=float(t_sigma),
         tau_max_us=float(cal.tau_max_us),
+        rss_gate_factor=float(rss_gate_factor),
+        sample_dt_us=float(sample_dt_us),
+        start_us=float(start_us),
+        end_us=float(end_us),
+        probe_freq_mhz=float(probe_freq_mhz),
+        sideband=sb,
+        trim_lo_mhz=float(trim_lo_mhz),
+        trim_hi_mhz=float(trim_hi_mhz),
+        sigma_x_full=float(cal.sigma_x_full),
+        sigma_frame=float(cal.sigma_frame),
+        snr_weighted=True,
+        preconditions_passed=all_passed,
+        preconditions_notes=tuple(notes),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Gaussian-twin calibration: per-bin Voigt fit -> τ_G majority
+# ---------------------------------------------------------------------------
+def _voigt_residuals(
+    params: np.ndarray, a: np.ndarray, y: np.ndarray
+) -> np.ndarray:
+    C, tau_L, tau_G = params
+    return C * np.exp(-a / tau_L) * np.exp(-((a / tau_G) ** 2)) - y
+
+
+def _exp_residuals(
+    params: np.ndarray, a: np.ndarray, y: np.ndarray
+) -> np.ndarray:
+    C, tau_L = params
+    return C * np.exp(-a / tau_L) - y
+
+
+def _fit_exp_nls_single(
+    a: np.ndarray,
+    y: np.ndarray,
+    C0: float,
+    tau0: float,
+    *,
+    tau_lo: float,
+    tau_hi: float,
+) -> Tuple[np.ndarray, float, bool]:
+    """Polish the log-linear exp seed with a single-start NLS fit."""
+    C0 = max(float(C0), 1e-30)
+    tau0 = float(np.clip(tau0, tau_lo * 1.05, tau_hi * 0.95))
+    res = least_squares(
+        _exp_residuals,
+        x0=np.array([C0, tau0]),
+        bounds=([0.0, tau_lo], [np.inf, tau_hi]),
+        args=(a, y),
+        method="trf",
+        max_nfev=200,
+    )
+    rss = float(np.sum(res.fun ** 2))
+    return res.x, rss, bool(res.success)
+
+
+def _fit_voigt_nls_multistart(
+    a: np.ndarray,
+    y: np.ndarray,
+    C0: float,
+    tau_L0: float,
+    *,
+    tau_lo: float,
+    tau_hi: float,
+    tau_G_seeds: Sequence[float],
+) -> Tuple[np.ndarray, float, bool, float]:
+    """Multi-start Voigt fit; returns the best-RSS basin.
+
+    Returns ``(params, rss, converged, seed_tau_G_best)`` with
+    ``params = (C, tau_L, tau_G)``.
+    """
+    C0 = max(float(C0), 1e-30)
+    tau_L0 = float(np.clip(tau_L0, tau_lo * 1.05, tau_hi * 0.95))
+    best_rss = np.inf
+    best: Optional[Tuple[np.ndarray, float, bool, float]] = None
+    for tG0 in tau_G_seeds:
+        tG0 = float(np.clip(tG0, tau_lo * 1.05, tau_hi * 0.95))
+        try:
+            res = least_squares(
+                _voigt_residuals,
+                x0=np.array([C0, tau_L0, tG0]),
+                bounds=(
+                    [0.0, tau_lo, tau_lo],
+                    [np.inf, tau_hi, tau_hi],
+                ),
+                args=(a, y),
+                method="trf",
+                max_nfev=400,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        rss = float(np.sum(res.fun ** 2))
+        if rss < best_rss:
+            best_rss = rss
+            best = (res.x, rss, bool(res.success), tG0)
+    if best is None:
+        return (
+            np.array([C0, tau_L0, tau_hi * 0.95]),
+            float("inf"),
+            False,
+            float("nan"),
+        )
+    return best
+
+
+def extract_tau_G_majority(
+    fid: np.ndarray,
+    sample_dt_us: float,
+    *,
+    start_us: float,
+    end_us: float,
+    probe_freq_mhz: float,
+    sideband: str,
+    trim_lo_mhz: float,
+    trim_hi_mhz: float,
+    sigma_time: Optional[float] = None,
+    n_seg: int = DEFAULT_N_SEG,
+    t_sigma: float = DEFAULT_T_SIGMA,
+    tau_max_us: Optional[float] = None,
+    rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
+    relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
+    spur_cluster_multiplier: float = DEFAULT_SPUR_CLUSTER_MULTIPLIER,
+    snr_min: float = DEFAULT_TAU_G_SNR_MIN,
+    tau_G_bound_lo: float = DEFAULT_TAU_G_BOUND_LO,
+    tau_G_bound_hi: float = DEFAULT_TAU_G_BOUND_HI,
+    tau_G_seeds: Sequence[float] = DEFAULT_TAU_G_SEEDS,
+    delta_chi2r_min: float = DEFAULT_TAU_G_DELTA_CHI2R_MIN,
+    tau_G_upper_fraction: float = DEFAULT_TAU_G_UPPER_FRACTION,
+    min_contributors: int = DEFAULT_TAU_G_MIN_CONTRIBUTORS,
+    sigma_tau_fraction_max: float = DEFAULT_SIGMA_TAU_FRACTION_MAX,
+    bimodality_dominant_fraction: float = DEFAULT_BIMODALITY_DOMINANT_FRACTION,
+    sigma_x_full: Optional[float] = None,
+    compute_band_majorities_flag: bool = True,
+    band_edges_mhz: Optional[Tuple[float, ...]] = None,
+    band_labels: Tuple[str, ...] = DEFAULT_BAND_LABELS,
+    min_contributors_per_band: int = 10,
+) -> TauCalibrationResult:
+    """End-to-end STFT τ_G calibration for the Gaussian-shape Stage 5 fit.
+
+    Twin of :func:`extract_tau_majority`. Algorithm:
+
+    1. Run the same sliding-active-window STFT and bin classifier.
+    2. Restrict to strong contributor bins (``classification == 3`` AND
+       per-bin ``SNR > snr_min``).
+    3. Per-bin: polish the log-linear pure-exp seed (NLS), then multi-start
+       Voigt fit ``|S_n(a)| = C exp(-a/τ_L) exp(-(a/τ_G)²)`` with the
+       ``tau_G_seeds`` grid; keep the best-RSS basin.
+    4. Calibration-eligible mask: Voigt converged, finite τ_G away from the
+       upper bound (``τ_G < tau_G_upper_fraction * tau_G_bound_hi``), and
+       Voigt beats pure-exp by at least ``delta_chi2r_min`` χ²ᵣ units.
+       Bins where the Voigt fit does not meaningfully improve get filtered
+       so their (often saturated-at-upper-bound) τ_G doesn't pull the
+       median.
+    5. Persisted "contributors" = the eligible subset. The SNR-weighted
+       majority over them gives ``τ_G_maj`` and ``σ_τ_G``; the per-band
+       majorities (when ``compute_band_majorities_flag``) use the same
+       eligibility filter inside each band.
+
+    The result reuses :class:`TauCalibrationResult` so the existing HDF5
+    serialisation can persist it unchanged (under a different group path).
+    Semantic interpretation: every ``τ`` / ``tau`` field carries ``τ_G``
+    when this twin is the producer; the group path
+    ``/stage2b_tau_G_calibration`` disambiguates from the pure-exp twin.
+
+    Parameters
+    ----------
+    fid, sample_dt_us, start_us, end_us, probe_freq_mhz, sideband,
+    trim_lo_mhz, trim_hi_mhz, sigma_time, n_seg, t_sigma, tau_max_us,
+    rss_gate_factor, relative_gate_fraction, spur_cluster_multiplier,
+    sigma_x_full
+        STFT calibration knobs; defaults match the pure-exp twin so the
+        same bin classifier produces the same contributor pool.
+    snr_min : float, default :data:`DEFAULT_TAU_G_SNR_MIN`
+        Per-bin SNR floor on the contributor pool. Below this, the per-bin
+        Voigt vs pure-exp χ²ᵣ discriminator has too little signal-to-noise
+        to be informative. Matches the Part B research script.
+    tau_G_bound_lo, tau_G_bound_hi : float
+        Bounds on the Voigt ``τ_L`` and ``τ_G`` parameters (microseconds).
+        The upper bound is the saturation ceiling whose proximity flags a
+        bin as Voigt-uninformative.
+    tau_G_seeds : sequence of float
+        Multi-start grid for the Voigt fit's τ_G seed. A bin that is
+        pure-Lorentzian lands at the upper edge; one with finite Gaussian
+        content lands at the right basin.
+    delta_chi2r_min : float, default :data:`DEFAULT_TAU_G_DELTA_CHI2R_MIN`
+        Minimum χ²ᵣ improvement (pure-exp − Voigt) required for a bin to
+        enter the calibration.
+    tau_G_upper_fraction : float, default
+        :data:`DEFAULT_TAU_G_UPPER_FRACTION`
+        Bins whose recovered τ_G ≥ ``tau_G_upper_fraction * tau_G_bound_hi``
+        are saturated against the bound and dropped (no Voigt content).
+    min_contributors, sigma_tau_fraction_max, bimodality_dominant_fraction
+        Acceptance pre-conditions. ``min_contributors`` is lower here
+        than in the pure-exp twin (defaults differ) because the eligible
+        pool is naturally smaller.
+    compute_band_majorities_flag, band_edges_mhz, band_labels,
+    min_contributors_per_band
+        Per-band SNR-weighted majority τ_G control. Default ``True`` so
+        the Gaussian Stage 5 path can pick up per-band anchors out of the
+        box.
+
+    Raises
+    ------
+    ValueError
+        On the same input-validation failures as
+        :func:`extract_tau_majority` (sideband, sample_dt_us, end_us,
+        trim_hi_mhz).
+    """
+    sb = sideband.strip().lower()
+    if sb not in ("lower", "upper"):
+        raise ValueError(f"sideband must be 'lower' or 'upper', got {sideband!r}")
+    if sample_dt_us <= 0.0:
+        raise ValueError("sample_dt_us must be positive")
+    if end_us <= start_us:
+        raise ValueError("end_us must be strictly greater than start_us")
+    if trim_hi_mhz <= trim_lo_mhz:
+        raise ValueError("trim_hi_mhz must be strictly greater than trim_lo_mhz")
+    if tau_G_bound_hi <= tau_G_bound_lo:
+        raise ValueError(
+            f"tau_G_bound_hi ({tau_G_bound_hi}) must exceed tau_G_bound_lo "
+            f"({tau_G_bound_lo})"
+        )
+    if not 0.0 < tau_G_upper_fraction < 1.0:
+        raise ValueError(
+            f"tau_G_upper_fraction must lie in (0, 1); got {tau_G_upper_fraction}"
+        )
+
+    fid_arr = np.asarray(fid, dtype=float)
+    start_idx = int(round(start_us / sample_dt_us))
+    end_idx = int(round(end_us / sample_dt_us))
+    start_idx = max(start_idx, 0)
+    end_idx = min(end_idx, fid_arr.size)
+    if end_idx - start_idx < 4 * n_seg:
+        raise ValueError(
+            f"active region [{start_us}, {end_us}) us has too few samples "
+            f"({end_idx - start_idx}) for n_seg={n_seg}"
+        )
+    active = fid_arr[start_idx:end_idx]
+    new_size = (active.size // n_seg) * n_seg
+    active = active[:new_size]
+
+    sigma_t = (
+        float(sigma_time)
+        if sigma_time is not None
+        else estimate_sigma_time_from_tail(active)
+    )
+    if sigma_t <= 0.0:
+        raise ValueError("sigma_time must be positive")
+
+    cal = stft_calibration(
+        active, sample_dt_us, sigma_t,
+        n_seg=n_seg,
+        t_sigma=t_sigma,
+        tau_max_us=tau_max_us,
+        rss_gate_factor=rss_gate_factor,
+        relative_gate_fraction=relative_gate_fraction,
+        sigma_x_full=sigma_x_full,
+    )
+
+    sign = -1.0 if sb == "lower" else +1.0
+    freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
+    in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
+
+    contributor_mask = (
+        (cal.classification == 3) & in_trim & (cal.snr_per_bin > float(snr_min))
+    )
+    bin_indices = np.where(contributor_mask)[0]
+    bin_indices = bin_indices[np.argsort(freq_mol_mhz[bin_indices])]
+
+    a_centers = cal.a_centers_us.astype(float)
+    sigma_frame = float(cal.sigma_frame)
+    dof_exp = max(int(n_seg) - 2, 1)
+    dof_voigt = max(int(n_seg) - 3, 1)
+    sigma_frame_sq = max(sigma_frame * sigma_frame, 1e-300)
+    tau_G_cap = float(tau_G_upper_fraction) * float(tau_G_bound_hi)
+    seeds = tuple(float(s) for s in tau_G_seeds)
+
+    eligible_bins: list[int] = []
+    eligible_tau_G: list[float] = []
+    eligible_snr: list[float] = []
+    eligible_freq: list[float] = []
+
+    for idx in bin_indices:
+        mag_bin = cal.mag[:, int(idx)].astype(float)
+        snr_bin = float(cal.snr_per_bin[int(idx)])
+        freq_bin = float(freq_mol_mhz[int(idx)])
+
+        C_seed = float(cal.C_per_bin[int(idx)])
+        tau_seed = float(cal.tau_per_bin[int(idx)])
+        exp_params, rss_exp, _ok_exp = _fit_exp_nls_single(
+            a_centers, mag_bin, C_seed, tau_seed,
+            tau_lo=float(tau_G_bound_lo), tau_hi=float(tau_G_bound_hi),
+        )
+        v_params, rss_voigt, ok_voigt, _seed_best = _fit_voigt_nls_multistart(
+            a_centers, mag_bin, float(exp_params[0]), float(exp_params[1]),
+            tau_lo=float(tau_G_bound_lo), tau_hi=float(tau_G_bound_hi),
+            tau_G_seeds=seeds,
+        )
+        chi2r_exp = rss_exp / sigma_frame_sq / dof_exp
+        chi2r_voigt = rss_voigt / sigma_frame_sq / dof_voigt
+        delta_chi2r = chi2r_exp - chi2r_voigt
+        tau_G = float(v_params[2])
+        if (
+            ok_voigt
+            and np.isfinite(tau_G)
+            and tau_G < tau_G_cap
+            and delta_chi2r >= float(delta_chi2r_min)
+        ):
+            eligible_bins.append(int(idx))
+            eligible_tau_G.append(tau_G)
+            eligible_snr.append(snr_bin)
+            eligible_freq.append(freq_bin)
+
+    contributor_bins = np.asarray(eligible_bins, dtype=np.int64)
+    contributor_taus = np.asarray(eligible_tau_G, dtype=np.float64)
+    contributor_snrs = np.asarray(eligible_snr, dtype=np.float64)
+    contributor_freqs = np.asarray(eligible_freq, dtype=np.float64)
+
+    tau_maj, sigma_tau = majority_tau(contributor_taus, contributor_snrs)
+    bm = gmm_bimodality(contributor_taus)
+
+    if contributor_taus.size >= 5:
+        log_snr = np.log10(np.clip(contributor_snrs, 1e-6, None))
+        r_log_snr = float(np.corrcoef(log_snr, contributor_taus)[0, 1])
+        r_freq = float(np.corrcoef(contributor_freqs, contributor_taus)[0, 1])
+    else:
+        r_log_snr = float("nan")
+        r_freq = float("nan")
+
+    thirds: list[FrequencyThird] = []
+    if contributor_freqs.size > 0:
+        edges = np.percentile(contributor_freqs, [0.0, 33.333, 66.667, 100.0])
+        for i, label in enumerate(("low", "mid", "high")):
+            lo, hi = float(edges[i]), float(edges[i + 1])
+            mask = (contributor_freqs >= lo) & (contributor_freqs <= hi)
+            if mask.any():
+                thirds.append(
+                    FrequencyThird(
+                        label=label,
+                        freq_lo_mhz=lo,
+                        freq_hi_mhz=hi,
+                        n=int(mask.sum()),
+                        median_tau_us=float(np.median(contributor_taus[mask])),
+                    )
+                )
+
+    spur_mask_full = (cal.classification == 1) & in_trim
+    spur_bin_indices = np.where(spur_mask_full)[0]
+    spur_clusters = group_spur_bins(
+        spur_bin_indices,
+        cal.mag.mean(axis=0),
+        freq_mol_mhz,
+        n_seg=n_seg,
+        cluster_multiplier=spur_cluster_multiplier,
+    )
+
+    notes: list[str] = []
+    cond_count = contributor_bins.size >= int(min_contributors)
+    notes.append(
+        "ok"
+        if cond_count
+        else f"only {contributor_bins.size} eligible bins (< {min_contributors})"
+    )
+    cond_bimodal = (
+        (not bm.two_component_preferred)
+        or (bm.dominant_weight >= bimodality_dominant_fraction)
+    )
+    notes.append(
+        "ok"
+        if cond_bimodal
+        else (
+            f"strongly bimodal (delta_aic={bm.delta_aic:.1f}) and dominant cluster "
+            f"weight {bm.dominant_weight:.2f} < {bimodality_dominant_fraction:.2f}"
+        )
+    )
+    if tau_maj > 0:
+        sigma_ratio = sigma_tau / tau_maj
+        cond_spread = sigma_ratio < sigma_tau_fraction_max
+        notes.append(
+            "ok"
+            if cond_spread
+            else f"sigma_tau/tau_maj={sigma_ratio:.2f} >= {sigma_tau_fraction_max:.2f}"
+        )
+    else:
+        cond_spread = False
+        notes.append("tau_G non-positive; spread test undefined")
+    all_passed = bool(cond_count and cond_bimodal and cond_spread)
+
+    if compute_band_majorities_flag and contributor_freqs.size > 0:
+        bands = compute_band_majorities(
+            contributor_freqs,
+            contributor_taus,
+            contributor_snrs,
+            trim_lo_mhz=trim_lo_mhz,
+            trim_hi_mhz=trim_hi_mhz,
+            band_edges_mhz=band_edges_mhz,
+            band_labels=band_labels,
+            min_contributors_per_band=int(min_contributors_per_band),
+        )
+    else:
+        bands = tuple()
+
+    logger.info(
+        "STFT τ_G calibration: tau_G_maj=%.3f sigma_tau_G=%.3f us "
+        "(n_eligible=%d / contributor_pool=%d, n_spur_bins=%d, "
+        "n_clusters=%d, preconditions=%s, n_bands=%d)",
+        tau_maj, sigma_tau, contributor_bins.size, bin_indices.size,
+        spur_bin_indices.size, len(spur_clusters),
+        "pass" if all_passed else "fail", len(bands),
+    )
+
+    return TauCalibrationResult(
+        tau_maj_us=float(tau_maj),
+        sigma_tau_us=float(sigma_tau),
+        n_contributors=int(contributor_bins.size),
+        n_spur_bins=int(spur_bin_indices.size),
+        spur_clusters=spur_clusters,
+        bimodality=bm,
+        pearson_r_log_snr_vs_tau=r_log_snr,
+        pearson_r_freq_vs_tau=r_freq,
+        frequency_thirds=tuple(thirds),
+        band_majorities=bands,
+        contributor_bin_indices=contributor_bins,
+        contributor_taus_us=contributor_taus,
+        contributor_snrs=contributor_snrs,
+        contributor_freqs_mhz=contributor_freqs,
+        n_seg=int(n_seg),
+        t_sigma=float(t_sigma),
+        tau_max_us=float(tau_G_bound_hi),
         rss_gate_factor=float(rss_gate_factor),
         sample_dt_us=float(sample_dt_us),
         start_us=float(start_us),

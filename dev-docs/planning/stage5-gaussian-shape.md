@@ -178,7 +178,8 @@ specific (per-fixture choice) rather than universal.
 
 ## Implementation progress
 
-Landed this session (`commits 699db4c`, `2c01b30`):
+Landed (`commits 699db4c`, `2c01b30`, plus the Stage 2b twin + wiring
+described below):
 
 - **Planning + ROADMAP** entry registered.
 - **`PeakShape` enum** (`LORENTZIAN`, `GAUSSIAN`) with `coerce(...)` for
@@ -209,37 +210,118 @@ Landed this session (`commits 699db4c`, `2c01b30`):
   Gaussian-fitted windows stay coherent through later evaluation.
 - **632 / 632 non-slow tests pass**; the Lorentzian default propagates
   with no behaviour change at existing call sites.
+- **Stage 2b twin**: `extract_tau_G_majority` in
+  `fitting/tau_calibration.py` (per-bin pure-exp NLS polish + multi-
+  start Voigt; eligibility gate `converged ∧ τ_G < 0.7 · τ_G_max ∧
+  Δχ²ᵣ ≥ 1`); per-band SNR-weighted majority via the existing
+  `compute_band_majorities` machinery. `_internal/stage2b_g_impl.py`
+  drives it (`calibrate_tau_G_impl`,
+  `load_tau_G_calibration_impl`, `tau_G_calibration_present`); new
+  stage name `stage2b_tau_G_calibration` registered in
+  `PipelineStageTracker.STAGE_DEPENDENCIES` (deps:
+  `[stage0_fid_data, stage1_complex_ft, stage2_noise_result]`,
+  identical to the pure-exp twin). HDF5 group
+  `/stage2b_tau_G_calibration` reuses the existing
+  `tau_calibration_serialization` writer/reader (a `shape='gaussian'`
+  attr on the root group disambiguates from the pure-exp twin).
+- **Stage 5 wiring**: `fit_peaks_impl(shape='lorentzian'|'gaussian')`
+  routes to the matching Stage 2b twin based on the caller's
+  `shape`; missing τ_G calibration logs a warning and runs without a
+  prior. `shape` is threaded into `execute_plan(...)` and recorded
+  in the persisted `SpectrumFit.parameters['shape']`. The
+  `/stage5_fitting` root group carries a new `shape` attr; per-
+  window subgroups carry it too (default `'lorentzian'` for files
+  pre-dating this attribute).
+- **HDF5 persistence**: `FittingResult` gained a `shape: str` field
+  (default `'lorentzian'`); `result_conversion` copies it from
+  `WindowFitResult.shape`; `_save_window_fit` writes the attr;
+  `_load_window_fit` reads it back with a `'lorentzian'` fallback for
+  legacy files.
+- **CLI/Pipeline/api parity**: `--shape {lorentzian,gaussian}` flag on
+  `fit-peaks`; `Pipeline.fit_peaks(shape=...)`;
+  `api.fit_peaks(shape=...)`. New `ftmwpipeline calibrate-tau-G` CLI
+  with the same knob coverage as `calibrate-tau`;
+  `Pipeline.calibrate_tau_G(...)` / `Pipeline.load_tau_G_calibration()`;
+  `api.calibrate_tau_G(...)` / `api.load_tau_G_calibration(...)`.
+- **Tests**: unit
+  `tests/unit/fitting/test_tau_calibration.py::TestExtractTauGMajority`
+  exercises the eligibility filter + multi-start Voigt + majority on
+  a synthetic Gaussian-envelope FID; integration suite
+  `tests/integration/test_stage5_fitting.py` gains
+  `test_calibrate_tau_G_cross_interface`,
+  `test_fit_peaks_gaussian_cross_interface`, and
+  `test_fit_peaks_gaussian_persists_and_loads_shape`. 635 / 635 non-
+  slow tests pass.
+- **Comparison script**:
+  `dev-docs/research/gaussian-shape/compare_shapes.py` runs both
+  shapes on the same fixture, dumps per-window χ²ᵣ / AICc / peak-
+  count CSV and JSON aggregates, matched per-peak frequency/amp CSV,
+  and a 2-panel comparison figure (per-window χ²ᵣ scatter with
+  Part A shape-error windows highlighted, per-peak frequency
+  residual vs SNR).
+
+## First validation pass on 2638 unapodized
+
+The first run of `compare_shapes.py` on `exp_2638_unapodized.ftmw` (Stage
+2b τ_G calibration: `τ_G_maj = 8.52 µs`, `σ_τ_G = 1.84 µs`, 382 windows
+band-routed) returned:
+
+- **Global aggregate**: median χ²ᵣ Lorentzian = 1.40, Gaussian = 1.41
+  (essentially tied; Gaussian < Lorentzian on 182 / 382 windows). p95
+  χ²ᵣ: Lorentzian = 6.36, Gaussian = 7.87. Median ΔAIC = −0.34. So
+  globally, Gaussian does **not** beat Lorentzian on this fixture by
+  the planning-doc bar (median χ²ᵣ drop predicted ~5×; p95 < 5).
+- **Part A shape-error windows**: three of the four predicted "Gaussian
+  wins" cases land emphatically:
+  - w141: χ²ᵣ 20.07 → 8.88, ΔAIC = **+218.7** (Gaussian preferred)
+  - w213: χ²ᵣ 18.80 → 8.48, ΔAIC = **+96.2**
+  - w310: χ²ᵣ 38.61 → 18.04, ΔAIC = **+258.5**
+  - w355: χ²ᵣ 2.31 → 6.11, ΔAIC = **−118.8** (Lorentzian preferred)
+  So the Gaussian path *does* materially reduce χ²ᵣ on the windows the
+  Voigt-deficit research nominated, but it isn't a universal win —
+  w355 was already a good Lorentzian fit and Gaussian makes it worse.
+- **Peak count / amplitude**: Gaussian fits 625 peaks vs Lorentzian's
+  713, with 613 matched on shared frequencies. Frequency agreement on
+  shared lines is excellent (median residual 0.4 kHz, RMS 55 kHz).
+  Gaussian-fitted amplitudes are systematically ~75 % of the
+  Lorentzian amplitudes on shared lines (different normalisation of
+  the time-domain envelope; expected).
+
+Interpretation: the Voigt-deficit Part A and Part B research found that
+the per-window joint `(τ_L, τ_G)` LSQ degenerated to Gaussian-dominant
+on the shape-error windows, and that's exactly where the Gaussian
+production path now wins. The non-universal global win means the line
+shape on 2638 is *not* a clean pure-Gaussian everywhere — some windows
+(at least w355) sit closer to the Lorentzian limit. A future per-window
+shape-selector (the planning doc's "out of scope" item) would let
+Stage 5 pick the best shape per window rather than committing globally;
+right now the operator picks one shape per fit and accepts the
+trade-off.
+
+The infrastructure works; the acceptance bar that needs revisiting is
+the planning-doc claim that Gaussian wins everywhere. Refine the bar
+in light of this finding, and/or commit to the per-window selector,
+before the second fixture's validation pass.
 
 Remaining work (next session):
 
-- **Stage 2b twin**: add `extract_tau_G_majority` in
-  `fitting/tau_calibration.py` (lift Part B's per-bin Voigt fit;
-  filter to converged + finite `τ_G < cap` + `Δχ²ᵣ ≥ 1` on the
-  contributor pool); add `_internal/stage2b_g_impl.py` mirroring
-  `stage2b_impl.py`; new stage name `stage2b_tau_G_calibration` with
-  the same dependencies as `stage2b_tau_calibration`. Reuse the
-  existing `TauCalibrationResult` struct + serialisation under a
-  different HDF5 path.
-- **Stage 5 wiring**: `fit_peaks_impl(shape='lorentzian'|'gaussian')`
-  reads `stage2b_tau_G_calibration` when `shape='gaussian'`. Pass
-  `shape` into `execute_plan`. Persist a `shape` attribute on
-  `/stage5_fitting` (default `'lorentzian'` for back-compat with
-  existing files).
-- **HDF5 persistence**: `fitting_serialization._save_window_fit` writes
-  the per-window `shape` attribute; `_load_window_fit` reads it back
-  into the `FittingResult` (default `'lorentzian'`).
-- **CLI/Pipeline/api parity**: `--shape` flag on `fit-peaks`;
-  `Pipeline.fit_peaks(shape=...)`; `api.fit_peaks(shape=...)`.
-  `Pipeline.calibrate_tau_G(...)` / `api.calibrate_tau_G(...)` /
-  `ftmwpipeline calibrate-tau-G` CLI.
-- **Comparison script** in
-  `dev-docs/research/gaussian-shape/compare_shapes.py`: run both
-  shapes on the same fixture; emit per-window `χ²ᵣ`, AICc, peak
-  frequencies, peak amplitudes, peak count as JSON + a 2-panel
-  figure.
-- **Tests**: unit tests for `extract_tau_G_majority`, integration test
-  exercising `fit_peaks(shape='gaussian')` on a tiny synthetic,
-  cross-interface consistency test for the Gaussian path.
+- **Reconcile the acceptance bar**: the planning-doc prediction "median
+  χ²ᵣ < Lorentzian, p95 < 5" did not hold globally on 2638. Decide
+  whether (a) the bar was over-optimistic (relax it to "Gaussian wins
+  on Part-A-style shape-error windows by ΔAIC > 5", which it does on
+  3/4), (b) the production path needs a per-window shape selector to
+  combine both shapes' strengths, or (c) something in the Gaussian
+  fit machinery is suboptimal (e.g. the tau bound, the prior
+  strength, or the rescue's behaviour with Gaussian-fitted contributors).
+- **Cross-fixture validation**: the user-supplied second fixture
+  (clean lines + internal-rotation doublets) drives the
+  generalisation check. Compare the per-window χ²ᵣ pattern: does the
+  second fixture show a different lorentzian-vs-gaussian split than
+  2638?
+- **w355 deep-dive**: w355 lost ΔAIC = −118 under Gaussian. Look at
+  the window's residual under both shapes and the per-window τ to
+  understand whether this is a true Lorentzian-dominant window
+  (rotational-cooling regime) or a fit-machinery artefact.
 
 ## Open questions
 

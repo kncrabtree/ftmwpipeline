@@ -703,6 +703,65 @@ def load_tau_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
         raise
 
 
+def calibrate_tau_G(
+    file_path: Union[str, Path],
+    n_seg: Optional[int] = None,
+    t_sigma: Optional[float] = None,
+    tau_max_us: Optional[float] = None,
+    rss_gate_factor: Optional[float] = None,
+    sigma_time: Optional[float] = None,
+    snr_min: Optional[float] = None,
+    tau_G_bound_lo: Optional[float] = None,
+    tau_G_bound_hi: Optional[float] = None,
+    delta_chi2r_min: Optional[float] = None,
+    tau_G_upper_fraction: Optional[float] = None,
+    min_contributors: Optional[int] = None,
+    sigma_tau_fraction_max: Optional[float] = None,
+    bimodality_dominant_fraction: Optional[float] = None,
+    compute_band_majorities: bool = True,
+    min_contributors_per_band: Optional[int] = None,
+) -> TauCalibrationResult:
+    """Run the Stage 2b Gaussian-shape τ_G calibration, equivalent to
+    :meth:`Pipeline.calibrate_tau_G`.
+
+    Per-bin Voigt fits on the STFT contributor pool yield a per-band τ_G
+    majority that the Stage 5 Gaussian path consumes. Persists to
+    ``/stage2b_tau_G_calibration``. Independent of the pure-exp
+    :func:`calibrate_tau`; both can coexist on one ``.ftmw`` file.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.calibrate_tau_G(
+            n_seg=n_seg,
+            t_sigma=t_sigma,
+            tau_max_us=tau_max_us,
+            rss_gate_factor=rss_gate_factor,
+            sigma_time=sigma_time,
+            snr_min=snr_min,
+            tau_G_bound_lo=tau_G_bound_lo,
+            tau_G_bound_hi=tau_G_bound_hi,
+            delta_chi2r_min=delta_chi2r_min,
+            tau_G_upper_fraction=tau_G_upper_fraction,
+            min_contributors=min_contributors,
+            sigma_tau_fraction_max=sigma_tau_fraction_max,
+            bimodality_dominant_fraction=bimodality_dominant_fraction,
+            compute_band_majorities=compute_band_majorities,
+            min_contributors_per_band=min_contributors_per_band,
+        )
+    except Exception as e:
+        logger.error(f"Failed to calibrate τ_G for {file_path}: {e}")
+        raise
+
+
+def load_tau_G_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
+    """Load the persisted Gaussian Stage 2b :class:`TauCalibrationResult`."""
+    try:
+        return Pipeline.open(file_path).load_tau_G_calibration()
+    except Exception as e:
+        logger.error(f"Failed to load τ_G calibration from {file_path}: {e}")
+        raise
+
+
 def visualize_tau_heatmap(
     file_path: Union[str, Path],
     output_file: Optional[Union[str, Path]] = None,
@@ -1056,6 +1115,7 @@ def fit_peaks(
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
     per_band_tau: bool = True,
+    shape: str = "lorentzian",
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1121,6 +1181,7 @@ def fit_peaks(
             tau_maj_override_us=tau_maj_override_us,
             sigma_tau_override_us=sigma_tau_override_us,
             per_band_tau=per_band_tau,
+            shape=shape,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")

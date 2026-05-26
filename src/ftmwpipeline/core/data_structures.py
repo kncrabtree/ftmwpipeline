@@ -927,7 +927,8 @@ class FittingResult:
     def __init__(self, success: bool = False, fitted_spectrum: Optional[np.ndarray] = None,
                  cost: float = np.inf, iterations: int = 0, aic: float = np.inf,
                  reduced_chi2: float = np.inf, window: Optional[SpectralWindow] = None,
-                 window_id: Optional[int] = None):
+                 window_id: Optional[int] = None,
+                 shape: str = "lorentzian"):
         """Initialize FittingResult."""
         self.success = success
         self.fitted_spectrum = fitted_spectrum
@@ -937,6 +938,11 @@ class FittingResult:
         self.reduced_chi2 = reduced_chi2
         self.window = window
         self.window_id = window_id
+        # Line-shape selector this window was fit with ("lorentzian" or
+        # "gaussian"); recorded per-window so a future mixed-shape fit
+        # stays representable in the persisted schema even though the
+        # current driver applies one shape across every window.
+        self.shape = shape
 
         # Fitted peaks
         self.fitted_peaks: List[FittedPeak] = []
