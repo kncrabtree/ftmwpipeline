@@ -222,7 +222,7 @@ def fit_peaks_impl(
     rescue_prominence_threshold: Optional[float] = None,
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
-    per_band_tau: bool = False,
+    per_band_tau: bool = True,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -486,37 +486,54 @@ def fit_peaks_impl(
     window_tau_overrides: Dict[int, tuple[float, float]] = {}
     per_band_used = False
     if per_band_tau:
+        # Explicit override pair is more specific than per-band routing -- if
+        # the caller supplied (tau_maj_override_us, sigma_tau_override_us)
+        # they want exactly that anchor across every window. Silently skip
+        # per-band routing in that case (the explicit override path drives
+        # the fit instead). When the user explicitly sets ``per_band_tau``
+        # AND the override pair, the override wins.
         if tau_source == "override":
-            raise ValueError(
-                "per_band_tau is incompatible with tau_maj_override_us / "
-                "sigma_tau_override_us; the explicit override is the only "
-                "anchor for the fit and per-band routing has nothing to "
-                "vary against"
+            logger.info(
+                "Stage 5 per-band tau routing requested but explicit "
+                "tau_maj_override / sigma_tau_override is set; the explicit "
+                "override drives every window and per-band routing is "
+                "skipped."
             )
-        if persisted_cal is None or not persisted_cal.band_majorities:
-            raise ValueError(
-                "per_band_tau requires a persisted Stage 2b calibration "
-                "with band_majorities; re-run calibrate_tau(..., "
-                "compute_band_majorities=True) first"
+        elif persisted_cal is None or not persisted_cal.band_majorities:
+            # Production default is per_band_tau=True so degrade gracefully
+            # when band_majorities aren't available: fall through to the
+            # band-wide prior (or no prior at all if Stage 2b also missing).
+            # An explicit per_band_tau=True caller still gets the soft
+            # fallback -- the original strict-raise behaviour penalised
+            # workflows that don't run Stage 2b without giving the caller
+            # anything actionable.
+            logger.info(
+                "Stage 5 per-band tau routing requested but no Stage 2b "
+                "band_majorities are persisted; falling back to band-wide "
+                "tau_maj=%s, sigma_tau=%s (re-run calibrate_tau(..., "
+                "compute_band_majorities=True) to enable per-band routing).",
+                tau_maj_us if tau_maj_us is not None else "None",
+                sigma_tau_us if sigma_tau_us is not None else "None",
             )
-        for win in plan.windows:
-            centre_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
-            band = band_majority_for_frequency(
-                persisted_cal.band_majorities, centre_mhz,
+        else:
+            for win in plan.windows:
+                centre_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
+                band = band_majority_for_frequency(
+                    persisted_cal.band_majorities, centre_mhz,
+                )
+                if band is None:
+                    continue
+                window_tau_overrides[int(win.window_id)] = (
+                    float(band.tau_maj_us), float(band.sigma_tau_us),
+                )
+            per_band_used = True
+            logger.info(
+                "Stage 5 per-band tau routing on: %d / %d windows mapped "
+                "to a band (others use band-wide tau_maj=%.3f, sigma=%.3f)",
+                len(window_tau_overrides), len(plan.windows),
+                tau_maj_us if tau_maj_us is not None else float("nan"),
+                sigma_tau_us if sigma_tau_us is not None else float("nan"),
             )
-            if band is None:
-                continue
-            window_tau_overrides[int(win.window_id)] = (
-                float(band.tau_maj_us), float(band.sigma_tau_us),
-            )
-        per_band_used = True
-        logger.info(
-            "Stage 5 per-band tau routing on: %d / %d windows mapped "
-            "to a band (others use band-wide tau_maj=%.3f, sigma=%.3f)",
-            len(window_tau_overrides), len(plan.windows),
-            tau_maj_us if tau_maj_us is not None else float("nan"),
-            sigma_tau_us if sigma_tau_us is not None else float("nan"),
-        )
 
     plan_outcome = execute_plan(
         plan,

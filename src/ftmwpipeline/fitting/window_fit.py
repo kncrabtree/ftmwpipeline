@@ -392,6 +392,22 @@ class WindowFitResult:
     fitted_spectrum: np.ndarray
     residual: np.ndarray
     covariance: Optional[np.ndarray] = field(default=None)
+    # Provenance flag: did this window's pipeline ever determine tau via LSQ?
+    # ``fit_tau`` is the mechanical "was tau a free parameter in *this*
+    # least-squares call" -- True on the originating conservative_fit when
+    # snr_proxy clears the weak-window gate, False on cleanup refits that lock
+    # tau by design. ``tau_was_fit`` propagates the originating answer
+    # through the cleanup/rescue chain so downstream consumers can tell
+    # frozen-by-gate (tau held at tau0_us) from data-driven-but-cleaned-up
+    # (tau came from the joint refit / original conservative_fit).
+    # ``None`` in the constructor defers to ``fit_tau``; cleanup paths
+    # explicitly override after refit so the cleaned WindowFitResult
+    # advertises the original determination.
+    tau_was_fit: Optional[bool] = field(default=None)
+
+    def __post_init__(self) -> None:
+        if self.tau_was_fit is None:
+            object.__setattr__(self, "tau_was_fit", self.fit_tau)
 
     @property
     def n_peaks(self) -> int:

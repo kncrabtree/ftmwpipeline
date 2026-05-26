@@ -708,3 +708,95 @@ class TestRescueRoundsRoundTrip:
         assert loaded.rescue_history == []
         for wf in loaded.window_fits:
             assert wf.rescue_events == []
+
+
+# ---------------------------------------------------------------------------
+# tau_fitted flag (disambiguates frozen-by-gate vs singular-covariance)
+# ---------------------------------------------------------------------------
+class TestTauFittedRoundTrip:
+    def _make_pair(
+        self,
+        *,
+        fitted_0: bool | None,
+        fitted_1: bool | None,
+        tau_error_0: float | None,
+        tau_error_1: float | None,
+    ) -> SpectrumFit:
+        peak0 = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.012)
+        peak1 = _sample_fitted_peak(peak_id=1, window_id=1, freq_mhz=36110.045)
+        win0 = _make_window_fit(0, [peak0], audit=[], thaw_events=[],
+                                tau_error=tau_error_0)
+        win1 = _make_window_fit(1, [peak1], audit=[], thaw_events=[],
+                                tau_error=tau_error_1)
+        win0.shared_parameters["tau_us"]["fitted"] = fitted_0
+        win1.shared_parameters["tau_us"]["fitted"] = fitted_1
+        return SpectrumFit(
+            window_fits=[win0, win1],
+            fitted_peaks=[peak0, peak1],
+        )
+
+    def test_true_and_false_round_trip(self, tmp_path):
+        """``fitted=True`` and ``fitted=False`` survive save/load unchanged."""
+        fit = self._make_pair(
+            fitted_0=True, fitted_1=False,
+            tau_error_0=0.05, tau_error_1=None,
+        )
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+        assert loaded.window_fits[0].shared_parameters["tau_us"]["fitted"] is True
+        assert loaded.window_fits[1].shared_parameters["tau_us"]["fitted"] is False
+
+    def test_singular_cov_round_trips_as_fitted_true(self, tmp_path):
+        """``fitted=True`` with ``error=None`` (singular cov at tau slot) is
+        preserved; the loader does not collapse it to fitted=False."""
+        fit = self._make_pair(
+            fitted_0=True, fitted_1=True,
+            tau_error_0=None, tau_error_1=0.04,
+        )
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+        entry0 = loaded.window_fits[0].shared_parameters["tau_us"]
+        assert entry0["fitted"] is True
+        assert entry0["error"] is None
+        entry1 = loaded.window_fits[1].shared_parameters["tau_us"]
+        assert entry1["fitted"] is True
+        assert entry1["error"] == pytest.approx(0.04)
+
+    def test_pre_flag_file_uses_backward_compat(self, tmp_path):
+        """A file written before the tau_fitted attr existed loads with
+        ``fitted=True`` when tau_error is finite, ``None`` (unknown) when
+        tau_error is NaN. Disambiguation isn't possible from those files;
+        ``None`` signals that to the consumer.
+        """
+        path = tmp_path / "fit.h5"
+        fit = self._make_pair(
+            fitted_0=True, fitted_1=False,
+            tau_error_0=0.05, tau_error_1=None,
+        )
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a pre-flag file: strip tau_fitted from each window.
+            for name in g["windows"]:
+                wg = g[f"windows/{name}"]
+                if "tau_fitted" in wg.attrs:
+                    del wg.attrs["tau_fitted"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        # Window 0 had finite tau_error -> backward-compat infers fitted=True.
+        assert loaded.window_fits[0].shared_parameters["tau_us"]["fitted"] is True
+        # Window 1 had tau_error=None -> backward-compat cannot tell; None.
+        assert loaded.window_fits[1].shared_parameters["tau_us"]["fitted"] is None
+
+    def test_unknown_sentinel_round_trips_as_backward_compat(self, tmp_path):
+        """A window with ``fitted=None`` (e.g. loaded from a pre-flag file
+        and re-saved) writes the -1 sentinel and reloads via the same
+        backward-compat rule. Round-trip is idempotent on re-save.
+        """
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[],
+                               tau_error=None)
+        win.shared_parameters["tau_us"]["fitted"] = None
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+        entry = loaded.window_fits[0].shared_parameters["tau_us"]
+        # tau_error None + fitted None -> backward-compat resolves to None.
+        assert entry["fitted"] is None

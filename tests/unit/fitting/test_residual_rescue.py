@@ -350,3 +350,39 @@ class TestMergeCleanupAICc:
         )
         assert n_merged == 0
         assert merged is k1_fit
+
+    def test_cleanup_preserves_tau_was_fit_and_tau_error_through_merge(self):
+        """When a merge fires, the merged fit must carry the input's
+        ``tau_was_fit`` AND ``tau_error`` forward. The cleanup refit
+        internally uses ``fit_tau=False`` (a single-window K-1 refit
+        must not broaden tau to absorb the merged peak), but the
+        persisted ``tau_us`` came from the K-peak fit upstream -- its
+        ``tau_was_fit`` and ``tau_error`` describe the actual tau
+        determination and should not be clobbered by the locked-cleanup
+        refit (whose covariance lacks a tau slot entirely).
+        """
+        rng = np.random.default_rng(SEED + 9)
+        true = ModelPeak(_amp_for_snr(120.0), 0.0, 0.5)
+        u, z = _window([true], 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        duplicate_init = [
+            ModelPeak(true.amplitude / 2, -0.5 * DF_MHZ, 0.5),
+            ModelPeak(true.amplitude / 2, +0.5 * DF_MHZ, 0.5),
+        ]
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(
+            u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs,
+        )
+        assert k2_fit.tau_was_fit is True
+        assert k2_fit.tau_error is not None and np.isfinite(k2_fit.tau_error)
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        assert n_merged == 1
+        # The merged fit's mechanical fit_tau is False (refit locked tau),
+        # but tau_was_fit + tau_error carry the originating K-fit's
+        # answers forward.
+        assert merged.fit_tau is False
+        assert merged.tau_was_fit is True
+        assert merged.tau_error == pytest.approx(k2_fit.tau_error)

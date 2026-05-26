@@ -48,6 +48,16 @@ def _assert_fits_equivalent(a: SpectrumFit, b: SpectrumFit) -> None:
             f"window {wid} peak count differs: {len(wa.fitted_peaks)} vs "
             f"{len(wb.fitted_peaks)}"
         )
+        # Shared tau and its disambiguating "fitted" flag must match exactly:
+        # the flag is set by result_conversion from the inner WindowFitResult,
+        # so all three interfaces (CLI / Pipeline / api) -- thin wrappers over
+        # the same impl -- have to land on the same value per window.
+        ta = wa.shared_parameters.get("tau_us", {})
+        tb = wb.shared_parameters.get("tau_us", {})
+        assert ta.get("fitted") == tb.get("fitted"), (
+            f"window {wid} tau_us.fitted differs: "
+            f"{ta.get('fitted')!r} vs {tb.get('fitted')!r}"
+        )
         wa_peaks = sorted(wa.fitted_peaks, key=lambda p: p.frequency_mhz)
         wb_peaks = sorted(wb.fitted_peaks, key=lambda p: p.frequency_mhz)
         for pa, pb in zip(wa_peaks, wb_peaks):

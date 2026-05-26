@@ -372,7 +372,22 @@ def window_outcome_to_fitting_result(
     )
     result.fitted_peaks = fitted_peaks
 
-    # Shared parameter: the per-window decay constant.
+    # Shared parameter: the per-window decay constant. ``fitted`` records
+    # whether tau was determined by an LSQ that included it as a free
+    # parameter (vs frozen-by-gate at ``tau0_us``). Reads
+    # ``inner.tau_was_fit`` rather than ``inner.fit_tau`` because cleanup
+    # refits (merge_close_peaks_cleanup / iterative_aicc_cleanup) and the
+    # rescue's joint refit may overwrite ``fit_tau`` on the final
+    # WindowFitResult even though the persisted ``tau_us`` came from a
+    # tau-free fit upstream; ``tau_was_fit`` preserves the originating
+    # determination through the cleanup chain. Disambiguates the two
+    # ``error=None`` cases: frozen-by-gate (fitted=False, tau held at
+    # tau0) vs free-but-singular-covariance (fitted=True, J^T J was
+    # singular at the tau slot).
+    tau_was_fit_attr = getattr(inner, "tau_was_fit", None)
+    fitted_flag = (
+        bool(tau_was_fit_attr) if tau_was_fit_attr is not None else bool(inner.fit_tau)
+    )
     result.shared_parameters["tau_us"] = {
         "value": float(tau_us),
         "error": (
@@ -380,6 +395,7 @@ def window_outcome_to_fitting_result(
             if tau_error is not None and np.isfinite(tau_error)
             else None
         ),
+        "fitted": fitted_flag,
         "peak_ids": [p.peak_id for p in fitted_peaks],
     }
 

@@ -54,17 +54,7 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 from ftmwpipeline.fitting.tau_calibration import extract_tau_majority
-from ftmwpipeline.fitting.active_ft import compute_active_ft
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 from ftmwpipeline._internal.stage0_impl import load_fid_from_pipeline_impl
-from ftmwpipeline._internal.stage5_impl import _build_active_ft_inputs
-
-# Window-level "tau is allowed to fit" gate inside
-# derive_window_fit_constraints — when max|X| / median(sigma) < this, Stage 5
-# forces fit_tau=False and tau stays at tau0_us. Used here only as a
-# diagnostic: any window with snr_proxy >= this AND tau_err==None had
-# fit_tau=True but a singular covariance at the tau slot.
-WEAK_WINDOW_SNR_THRESHOLD = 10.0
 
 HERE = Path(__file__).parent
 FIG = HERE / "figures"
@@ -134,10 +124,9 @@ class WindowRecord:
     tau_err_us: Optional[float]
     reduced_chi2: float
     max_free_peak_snr: Optional[float]
-    snr_proxy: float                # max|X| / median(sigma) on the window's active-FT
     saturates_lo: bool
     saturates_hi: bool
-    passes_tau_fit_attempted: bool  # fit_tau=True was actually used (snr_proxy >= WEAK_WINDOW_SNR_THRESHOLD)
+    passes_tau_fit_attempted: bool  # fit_tau=True in the LSQ (shared_parameters["tau_us"]["fitted"])
     passes_finite_tau_err: bool     # tau_err is a finite number (cov non-singular)
     passes_no_fixed: bool
     passes_snr: bool
@@ -184,51 +173,8 @@ class WindowRecord:
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
-def _compute_snr_proxy_per_window(
-    fixture: Path,
-    plan: WindowPlan,
-) -> dict[int, float]:
-    """Compute Stage 5's window-level `snr_proxy = max|X| / median(sigma)`
-    for every window in the plan, from the same active-FT + noise estimate
-    Stage 5 used. Needed because Stage 5 doesn't persist this per-window
-    diagnostic; we recompute from the fixture so we can tell tau-frozen-by-
-    gate windows from tau-fit-with-singular-cov windows.
-    """
-    (fid_samples, sample_dt_us, start_us, end_us, expf_us, probe_freq_mhz,
-     sideband, n_padded, acquisition_us, user_ft, user_rms) = (
-        _build_active_ft_inputs(str(fixture))
-    )
-    active_ft = compute_active_ft(
-        fid_samples, sample_dt_us, start_us=start_us, end_us=end_us,
-        expf_us=expf_us, probe_freq_mhz=probe_freq_mhz, sideband=sideband,
-        n_padded=n_padded,
-    )
-    sort_idx = np.argsort(active_ft.freq_mhz)
-    sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-    sorted_mag = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
-    active_noise = estimate_noise_adaptive(sorted_freq, sorted_mag)
-    unsort = np.argsort(sort_idx)
-    active_rms = np.asarray(active_noise.rms_noise, dtype=float)[unsort]
-
-    freq_arr = active_ft.freq_mhz
-    spec = active_ft.complex_spectrum
-    out: dict[int, float] = {}
-    for fw in plan.windows:
-        lo, hi = fw.freq_range
-        mask = (freq_arr >= lo) & (freq_arr <= hi)
-        if mask.sum() < 3:
-            out[fw.window_id] = 0.0
-            continue
-        z_win = spec[mask]
-        sig_win = active_rms[mask]
-        sig_med = float(np.median(sig_win))
-        max_abs = float(np.max(np.abs(z_win)))
-        out[fw.window_id] = max_abs / sig_med if sig_med > 0.0 else 0.0
-    return out
-
-
 def collect_records(
-    fit: SpectrumFit, plan: WindowPlan, fixture: Path,
+    fit: SpectrumFit, plan: WindowPlan,
 ) -> list[WindowRecord]:
     """Build the per-window filter table from a SpectrumFit + Stage 4 plan.
 
@@ -237,13 +183,14 @@ def collect_records(
     2 EASY K=1 windows clear SNR≥20 and both fail the tau_err gate). The
     practical realization on a dense W-band spectrum is "K≥1 (any difficulty)
     with no fixed contributors, free tau fitted, strong-peak SNR≥10, good fit,
-    bounds non-saturating". The "tau actually fit" gate has two flavors:
-    *strict* (finite σ_τ) and *expanded* (singular-cov windows also retained;
-    these are windows where fit_tau=True ran but the tau slot of J^T J was
-    non-positive at the optimum — typically tight blends where the tau column
-    becomes degenerate with the amplitude/phase columns).
+    bounds non-saturating". The "tau actually fit" gate reads
+    ``shared_parameters["tau_us"]["fitted"]`` from the persisted fit -- True
+    means fit_tau=True ran in the LSQ. It has two flavors: *strict* (finite
+    σ_τ) and *expanded* (singular-cov windows also retained; these are
+    windows where fit_tau=True ran but the tau slot of J^T J was non-positive
+    at the optimum — typically tight blends where the tau column becomes
+    degenerate with the amplitude/phase columns).
     """
-    snr_proxies = _compute_snr_proxy_per_window(fixture, plan)
     plan_by_id = {fw.window_id: fw for fw in plan.windows}
     records: list[WindowRecord] = []
     for result in fit.window_fits:
@@ -259,17 +206,19 @@ def collect_records(
         tau_err_v: Optional[float] = (
             float(tau_err) if tau_err is not None and np.isfinite(tau_err) else None
         )
+        tau_fitted = shared.get("fitted")
         rchi2 = float(result.reduced_chi2)
         snrs = [
             float(p.snr) for p in result.fitted_peaks
             if p.snr is not None and np.isfinite(p.snr)
         ]
         max_snr = max(snrs) if snrs else None
-        sp = float(snr_proxies.get(wid, 0.0))
 
         sat_lo = tau_us < TAU_LO_SATURATE_FACTOR * TAU_BOUND_LO
         sat_hi = tau_us > TAU_HI_SATURATE_FACTOR * TAU_BOUND_HI
-        passes_tau_fit_attempted = sp >= WEAK_WINDOW_SNR_THRESHOLD
+        passes_tau_fit_attempted = bool(tau_fitted) if tau_fitted is not None else (
+            tau_err_v is not None
+        )
         passes_finite_tau_err = tau_err_v is not None
         passes_no_fixed = n_fixed == 0
         passes_snr = (max_snr is not None) and (max_snr >= SNR_GATE)
@@ -293,7 +242,6 @@ def collect_records(
                 tau_err_us=tau_err_v,
                 reduced_chi2=rchi2,
                 max_free_peak_snr=max_snr,
-                snr_proxy=sp,
                 saturates_lo=sat_lo,
                 saturates_hi=sat_hi,
                 passes_tau_fit_attempted=passes_tau_fit_attempted,
@@ -546,7 +494,7 @@ def main() -> None:
         fit.n_windows, fit.final_plan_revision, fit.n_fitted_peaks,
     )
 
-    records = collect_records(fit, plan, FIXTURE)
+    records = collect_records(fit, plan)
     logger.info("Built %d window records", len(records))
 
     # Gate funnel — count both the strict (finite σ_τ) and expanded
@@ -704,7 +652,6 @@ def main() -> None:
                 "tau_err_us": r.tau_err_us,
                 "reduced_chi2": r.reduced_chi2,
                 "max_free_peak_snr": r.max_free_peak_snr,
-                "snr_proxy": r.snr_proxy,
             }
             for r in strict
         ],
@@ -716,7 +663,6 @@ def main() -> None:
                 "tau_us": r.tau_us,
                 "reduced_chi2": r.reduced_chi2,
                 "max_free_peak_snr": r.max_free_peak_snr,
-                "snr_proxy": r.snr_proxy,
                 "n_free_fit": r.n_free_fit,
             }
             for r in singular_only

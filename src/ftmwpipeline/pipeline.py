@@ -609,7 +609,7 @@ class Pipeline:
         min_contributors: Optional[int] = None,
         sigma_tau_fraction_max: Optional[float] = None,
         bimodality_dominant_fraction: Optional[float] = None,
-        compute_band_majorities: bool = False,
+        compute_band_majorities: bool = True,
         min_contributors_per_band: Optional[int] = None,
     ) -> TauCalibrationResult:
         """Run the Stage 2b data-driven tau calibration.
@@ -1034,7 +1034,7 @@ class Pipeline:
         rescue_prominence_threshold: Optional[float] = None,
         tau_maj_override_us: Optional[float] = None,
         sigma_tau_override_us: Optional[float] = None,
-        per_band_tau: bool = False,
+        per_band_tau: bool = True,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1091,11 +1091,19 @@ class Pipeline:
             tau anchor against the persisted one, or for forcing a
             calibrated tau when Stage 2b has not been run. Supplying only
             one of the pair raises ``ValueError``.
-        per_band_tau : bool, default False
+        per_band_tau : bool, default True
             Route each window to its band-local ``(tau_maj, sigma_tau)``
-            from the persisted Stage 2b ``band_majorities``. Requires
-            ``calibrate_tau(..., compute_band_majorities=True)`` to have
-            been run. Incompatible with the explicit override pair.
+            from the persisted Stage 2b ``band_majorities``. When
+            ``True`` (the default) and ``calibrate_tau(...,
+            compute_band_majorities=True)`` has been run, the per-window
+            prior reflects the band's own tau majority -- crucial for
+            wide bands with monotonic horn-coupling τ ∝ 1/f. Falls back
+            to the band-wide ``(tau_maj_us, sigma_tau_us)`` (and then to
+            no prior) when band_majorities aren't persisted. Pass
+            ``False`` to skip per-band routing even when band majorities
+            are available. Silently skipped when ``tau_maj_override_us``
+            / ``sigma_tau_override_us`` is set (the explicit override
+            wins).
 
         Returns
         -------

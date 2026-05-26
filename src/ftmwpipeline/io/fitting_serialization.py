@@ -39,6 +39,7 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
             .attrs:
                 window_id, success, cost, iterations, aic, reduced_chi2,
                 tau_us, tau_error          (NaN if None),
+                tau_fitted                  (i1, -1 if unknown from older file),
                 edge_coherence_low, edge_coherence_high,
                 fixed_parameters (JSON),    -- frozen-contributor summaries
                 quality_metrics  (JSON),
@@ -422,6 +423,7 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     tau_entry = window_fit.shared_parameters.get("tau_us") or {}
     tau_us = float(tau_entry.get("value", float("nan")))
     tau_error = _nan_if_none(tau_entry.get("error"))
+    tau_fitted_val = tau_entry.get("fitted")
 
     wg.attrs["window_id"] = int(window_fit.window_id)
     wg.attrs["success"] = bool(window_fit.success)
@@ -431,6 +433,12 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     wg.attrs["reduced_chi2"] = float(window_fit.reduced_chi2)
     wg.attrs["tau_us"] = tau_us
     wg.attrs["tau_error"] = tau_error
+    # tau_fitted: 1 if tau was a free LSQ parameter, 0 if held at tau0_us,
+    # -1 if unknown (only emitted by older files predating this flag).
+    if tau_fitted_val is None:
+        wg.attrs["tau_fitted"] = np.int8(-1)
+    else:
+        wg.attrs["tau_fitted"] = np.int8(1 if bool(tau_fitted_val) else 0)
     # Persist the window's molecular freq_range so visualization can
     # locate the window on the persisted spectrum without needing the
     # Stage 4 plan back. The complex spectrum slice itself stays
@@ -633,11 +641,25 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
 
     tau_us = float(wg.attrs["tau_us"])
     tau_error = _none_if_nan(float(wg.attrs.get("tau_error", float("nan"))))
+    # tau_fitted: 1 -> True, 0 -> False, -1 or absent -> backward-compat
+    # best-effort (finite tau_error implies tau was fit; otherwise unknown).
+    tau_fitted: Optional[bool]
+    if "tau_fitted" in wg.attrs:
+        raw = int(wg.attrs["tau_fitted"])
+        if raw == 1:
+            tau_fitted = True
+        elif raw == 0:
+            tau_fitted = False
+        else:
+            tau_fitted = True if tau_error is not None else None
+    else:
+        tau_fitted = True if tau_error is not None else None
     fitted_peaks = _load_peak_columns(wg["peaks"], where=f"{where}/peaks")
     result.fitted_peaks = fitted_peaks
     result.shared_parameters["tau_us"] = {
         "value": tau_us,
         "error": tau_error,
+        "fitted": tau_fitted,
         "peak_ids": [p.peak_id for p in fitted_peaks],
     }
     result.fixed_parameters = _load_json_attr(wg, "fixed_parameters", {})

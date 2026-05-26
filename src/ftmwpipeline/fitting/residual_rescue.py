@@ -288,6 +288,16 @@ def merge_close_peaks_cleanup(
         )
         if not refit.success:
             break
+        # Cleanup refits lock tau by design (a single-window K-1 refit must
+        # not get the extra knob of broadening tau to absorb the merged
+        # peak's contribution), but the merged fit's tau still originated
+        # in the prior K-peak fit. Carry the originating ``tau_was_fit``
+        # and ``tau_error`` forward so post-cleanup consumers can tell
+        # frozen-by-gate from data-driven-but-cleaned and still see the
+        # joint refit's tau uncertainty (the locked refit's covariance has
+        # no tau slot, so it can't report one).
+        refit.tau_was_fit = current.tau_was_fit
+        refit.tau_error = current.tau_error
 
         # Tier 1: sub-resolution -> merge unconditionally. The K-peak
         # fit at this scale is a numerical artifact; no statistical test
@@ -504,6 +514,13 @@ def iterative_aicc_cleanup(
             )
             if not refit.success:
                 continue
+            # Cleanup refits lock tau by design; carry the originating
+            # ``tau_was_fit`` and ``tau_error`` forward so the cleaned-up
+            # fit advertises the original determination (not the locked-
+            # cleanup-refit flag) and the joint refit's tau uncertainty
+            # (the locked refit's covariance has no tau slot).
+            refit.tau_was_fit = current.tau_was_fit
+            refit.tau_error = current.tau_error
             aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
             if aicc_km1 < worst_aicc_km1:
                 worst_aicc_km1 = aicc_km1
@@ -522,10 +539,13 @@ def iterative_aicc_cleanup(
             # Dropped the last peak; the cleaned fit is the null model.
             # Produce a zero-peak fit_window result so the loop's return
             # has the same type as every other branch.
-            current = fit_window(
+            null_fit = fit_window(
                 u, z, sigma, [], tau_locked, acquisition_us,
                 **refit_kwargs,
             )
+            null_fit.tau_was_fit = current.tau_was_fit
+            null_fit.tau_error = current.tau_error
+            current = null_fit
             break
         assert worst_refit is not None
         current = worst_refit

@@ -358,134 +358,111 @@ bin count. Sample (sorted by frequency):
 ## LSQ cross-validation
 
 An independent τ measurement is obtained by running Stages 0-5 on the
-same unapodized fixture with `tau0_us = T_active/2 = 6.325 µs` and
-no tau anchor (auto-disabled because Stage 2b is absent under
-`expf_us=None`), then aggregating the per-window LSQ-fit `τ_us`
-values. The script is
+same unapodized fixture with `tau0_us = T_active/2 = 6.325 µs`, then
+aggregating the per-window LSQ-fit `τ_us` values. The script is
 [`lsq_comparison.py`](lsq_comparison.py); cached numerics
 [`data/lsq_comparison.json`](data/lsq_comparison.json); figures
 [`figures/12_lsq_histogram.png`](figures/12_lsq_histogram.png) and
 [`figures/13_lsq_freq_third.png`](figures/13_lsq_freq_third.png).
 
+The persisted Stage 5 fit carries
+`shared_parameters["tau_us"]["fitted"]`, a provenance flag derived
+from `WindowFitResult.tau_was_fit`. `True` means tau was a free LSQ
+parameter at the originating fit (the initial conservative-fit OR the
+rescue's joint refit); `False` means the weak-window
+`snr_proxy < 10` gate at `derive_window_fit_constraints` held tau at
+`tau0_us`. The flag survives the cleanup chain
+(`merge_close_peaks_cleanup`, `iterative_aicc_cleanup`) which
+internally locks tau by design for `K → K-1` refits but should not
+clobber the originating-determination signal; `tau_error` is
+preserved the same way so the persisted uncertainty matches the
+fit that actually determined tau.
+
 ### Two LSQ populations
 
-Stage 5 reports `σ_τ = NaN` (coerced to `None` on persist) in two
-distinct cases:
+`σ_τ = NaN` is uncommon now that cleanup preserves `tau_error`. The
+remaining cases are genuine singular covariance at the tau slot --
+tight blends where the τ column of the Jacobian becomes degenerate
+with amplitude/phase columns at the optimum. Two LSQ populations:
 
-1. **`fit_tau = False`** — Stage 5's window-level SNR proxy
-   `max|X| / median(σ) < weak_window_snr_threshold = 10` forced
-   fit_tau false (240 of 382 windows on 2638). τ stays at `tau0_us`;
-   no LSQ τ information.
-2. **`fit_tau = True` with singular covariance** — fit ran, covariance
-   computation failed at the τ slot because `J^T J`'s diagonal was
-   non-positive (123 windows on 2638). The τ value lives in
-   `shared_parameters["tau_us"]["value"]`; only `σ_τ` is missing.
-   Typically tight blends where the τ column of the Jacobian becomes
-   degenerate with amplitude/phase columns at the optimum.
+- **Strict** — `tau_was_fit=True` AND finite `σ_τ` passing
+  `σ_τ/τ < 0.10` AND the per-window quality cuts (K ≥ 1, no fixed
+  contributors, max free-peak SNR ≥ 10, χ²_r < 3, τ not saturating
+  bounds).
+- **Expanded** — strict plus singular-covariance windows
+  (`tau_was_fit=True` with NaN `σ_τ`) that pass the per-window quality
+  cuts (σ_τ/τ gate dropped because σ_τ is undefined).
 
-The analysis distinguishes them by recomputing the window-level
-`snr_proxy` (`_compute_snr_proxy_per_window` in
-`lsq_comparison.py`). Two LSQ populations are defined:
+Singular-cov windows carry real τ information; including them is the
+right thing for a population-level central-tendency comparison.
 
-- **Strict** — finite σ_τ that passes `σ_τ/τ < 0.10` AND the
-  per-window quality cuts (K ≥ 1, no fixed contributors, max free-peak
-  SNR ≥ 10, χ²_r < 3, τ not saturating bounds). **N = 15.**
-- **Expanded** — strict plus singular-covariance windows that pass
-  the per-window quality cuts (σ_τ/τ gate dropped because σ_τ is
-  undefined). **N = 90 (= 15 finite + 2 finite-but-fail + 73 singular).**
+### Headline LSQ numbers (production default: per-band prior)
 
-Singular-cov windows are biased neither toward weak nor toward bad
-fits — they're cases where the optimizer succeeded but landed in a
-τ-amplitude-degenerate basin. They carry real τ information; including
-them is the right thing for a population-level central-tendency
-comparison. The strict gate empties to zero if the planning doc's
-original `EASY K=1, SNR ≥ 20, σ_τ/τ < 0.10, χ²_r < 2` is applied
-verbatim, because EASY K=1 windows are overwhelmingly weak isolated
-singletons whose τ is frozen by the snr_proxy gate.
+Per-arithmetic-third LSQ τ medians under the production fit
+(`per_band_tau=True`, Stage 2b band majorities active):
 
-### Headline LSQ numbers
+| third (GHz) | LSQ strict (N) | Stage 2b band majority (N) | STFT polish=False (N) |
+|---|---|---|---|
+| 26.5 - 31.0 | 7.23 (19) | 7.22 (792) | 7.76 (792) |
+| 31.0 - 35.5 | 5.77 (21) | 5.73 (1459) | 6.73 (1459) |
+| 35.5 - 40.0 | 4.75 (19) | 4.74 (2166) | 6.11 (2166) |
 
-| population | N | Gaussian µ ± σ (µs) | median (µs) | IQR / 1.349 |
-|---|---|---|---|---|
-| Strict | 15 | 6.78 ± 1.85 | 6.38 | 1.93 |
-| **Expanded** | **90** | **6.41 ± 1.64** | **6.26** | **1.71** |
+The strict per-band LSQ τ medians track the Stage 2b band majorities
+to within 0.04 µs across the band (overall N=59). The per-band prior
+is the production default; the band-wide prior squashes per-band
+variation and is documented below for comparison.
 
-Per-arithmetic-third LSQ medians:
+### Stage 2b prior strength: per-band vs band-wide vs no prior
 
-| third (GHz) | LSQ strict (N) | **LSQ expanded (N)** | STFT polish=False (N) | STFT polish=True / no cap (N) |
-|---|---|---|---|---|
-| 26.5 - 31.0 | 8.80 (6) | **7.87 (27)** | 7.76 (792) | 7.20 (792) |
-| 31.0 - 35.5 | 6.13 (4) | **6.27 (33)** | 6.73 (1459) | 5.78 (1459) |
-| 35.5 - 40.0 | 5.38 (5) | **5.16 (30)** | 6.11 (2166) | 5.07 (2166) |
+The Stage 2b calibration drives a bidirectional Gaussian prior at
+`τ_maj ± σ_τ` in Stage 5's fit. `fit_peaks(per_band_tau=True)`
+(the default) routes each window to its band-local `(τ_maj, σ_τ)`
+from the persisted `band_majorities`; `per_band_tau=False` uses the
+band-wide pair. The script
+[`prior_strength_comparison.py`](prior_strength_comparison.py)
+runs Stages 0-5 on the same fixture under three modes and emits
+[`figures/15_prior_strength.png`](figures/15_prior_strength.png):
 
-The expanded LSQ medians are the production-reference per-band τ
-targets. Strict and expanded medians/means agree within their
-respective spreads, confirming the strict subset is a clean
-subsampling of the same distribution (singular-cov windows don't
-introduce a systematic shift).
+| mode | N strict | low τ (µs) | mid τ (µs) | high τ (µs) | all-windows χ²ᵣ med |
+|---|---|---|---|---|---|
+| no prior | 73 | 8.07 ± 1.39 | 6.07 ± 1.18 | 5.17 ± 1.03 | 1.328 |
+| band-wide prior | 49 | 5.60 ± 0.11 | 5.57 ± 0.12 | 5.50 ± 0.06 | 1.415 |
+| **per-band prior** | **59** | **7.23 ± 0.09** | **5.77 ± 0.06** | **4.75 ± 0.05** | **1.402** |
 
-### Per-band bias-flip pattern (motivating the polish design)
+The no-prior fit shows the data's true horn-coupling τ ∝ 1/f profile
+with per-window scatter ~1.0-1.4 µs (the unconstrained signal-to-noise
+on τ). The band-wide prior anchors every window at the global
+`τ_maj = 5.51 µs` and squashes the band-to-band variation -- per-band
+σ collapses to ~0.06-0.12 µs but the central tendency loses the
+horn-coupling physics. The per-band prior preserves the band-to-band
+variation (per-band medians match the Stage 2b band majorities to
+≤0.04 µs) AND tightens per-window scatter to ~0.05-0.09 µs. All three
+modes have indistinguishable χ²ᵣ distributions (1.328 / 1.415 / 1.402);
+the prior is a soft constraint that picks the right tau within the
+data-allowed basin, not an additional source of model error.
 
-Without the SNR cap, polish=True applies a roughly constant downward
-shift of 0.5-1.0 µs to every contributor τ. That shift is too large
-in the low band (low-band τ is already long; polish pushes past the
-LSQ value), about right in the mid band (lands between polish=False
-over-estimate and polish=True under-estimate), and right in the high
-band (correctly corrects the polish=False over-estimate). The
-band-wide majority lands on polish=False because the two errors
-approximately cancel.
-
-The frequency trend is real horn-coupling physics: both methods
-agree on monotonic decrease across the band. The expanded LSQ slope
-(7.87 → 6.27 → 5.16, range 2.71 µs) sits between the STFT polish=False
-slope (7.76 → 6.73 → 6.11, range 1.65 µs) and the STFT polish=True
-slope (7.20 → 5.78 → 5.07, range 2.13 µs); qualitative direction and
-magnitude are robust, not an STFT shape-error artefact.
+The band-wide prior is the legacy operating point (was the production
+default before per_band_tau was flipped to True). The figure makes
+the squashing pathology visually unambiguous.
 
 ### τ-runaway and the bidirectional penalty
 
-Two of the 19 finite-σ_τ windows ran τ to the upper bound (31.625 µs)
-under the no-anchor LSQ run (wid 86, 190). Production runs with Stage
-2b enabled and the bidirectional Gaussian-prior penalty active
-constrain these back to the τ_maj basin — confirming the calibrated
-penalty's value beyond the cross-fixture-validation cases that
-originally motivated it.
-
-### LSQ filter funnel
-
-Cumulative window counts on the realised gate (unapodized 2638):
-
-| stage | strict | expanded | note |
-|---|---|---|---|
-| Total windows | 382 | 382 | |
-| `fit_tau = True` ran | 142 | 142 | snr_proxy ≥ 10 cleared the weak-window gate |
-| └─ tau_error finite | 19 | 19 | covariance non-singular at τ slot |
-| └─ tau_error NaN (singular cov) | 123 | 123 | fit converged, σ_τ undefined |
-| ∧ no fixed contributors | 17 | 138 | |
-| ∧ max free-peak SNR ≥ 10 | 17 | 138 | non-binding (already enforced by snr_proxy ≥ 10) |
-| ∧ χ²_r < 3 | 16 | 95 | drops 1 finite-σ + 43 singular |
-| ∧ τ not saturating bounds | 16 | 93 | wid 86, 190 saturate (both finite-σ) |
-| ∧ σ_τ/τ < 0.10 (strict only) | **15** | (skip) | wid 52 fails (rel = 0.155) |
-| singular-cov passes (expanded only) | (n/a) | **73** | new contribution |
-| **Final** | **15** | **90** | |
-
-The histogram (figure 12) shows the expanded sample as a single broad
-mode centered near 6.3 µs with a long right tail to ~10 µs (low-band
-windows). The frequency-third scatter (figure 13) overlays per-third
-medians for LSQ strict / LSQ expanded / STFT polish=False / STFT
-polish=True so the bias-flip pattern is visually unambiguous.
+A handful of windows (wid 86, 190 on 2638) ran τ to the upper bound
+(31.625 µs) under the no-anchor LSQ run. Both per-band and band-wide
+priors constrain them back to the τ_maj basin; the per-band prior
+additionally lets nearby tightly-constrained windows keep their
+data-driven τ values that are well-separated from the global
+majority, which the band-wide prior would have pulled in.
 
 ### Caveats
 
-- Strict sample is small (N=15) and skewed toward the low band. The
-  median is the robust descriptor; the Gaussian fit is illustrative.
-- Per-third LSQ N (27 / 33 / 30) is modest vs ~1000-2000 STFT
-  contributors per third. The systematic direction of the bias-flip is
-  robust; the exact magnitudes carry sampling uncertainty.
-- The LSQ filter selects "cleaner" windows; windows with severe
-  leakage from out-of-window strong lines (carried-frozen-contributor
-  cases) are excluded. The STFT averages over all in-band contributors
-  including those windows' bins.
+- The strict pool excludes windows with fixed contributors; the
+  per-band majorities are computed from contributors across the
+  whole band, so the two samples are not identical populations.
+- The per-band prior's bands are arithmetic thirds of the trim range
+  by default. Datasets whose horn-coupling τ profile is steeper than
+  monotonic-piecewise would benefit from finer bands; the band layout
+  is configurable on the Stage 2b calibration.
 
 ---
 

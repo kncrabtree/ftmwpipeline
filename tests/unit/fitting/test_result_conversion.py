@@ -285,6 +285,70 @@ class TestAuditAndKnockoutAttachment:
             # if the covariance was singular -- unlikely on these synthetics).
             assert entry["error"] is None or entry["error"] > 0
 
+    def test_shared_parameter_fitted_flag_tracks_inner_tau_was_fit(self):
+        """``shared_parameters['tau_us']['fitted']`` mirrors the inner
+        ``WindowFitResult.tau_was_fit`` -- the originating-determination
+        flag, not the mechanical fit_tau of the final (possibly cleanup-
+        refit) WindowFitResult. Downstream consumers use it to
+        disambiguate frozen-by-gate (fitted=False) from singular-
+        covariance (fitted=True, error=None).
+        """
+        plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()
+        fit = plan_fit_outcome_to_spectrum_fit(
+            plan_outcome,
+            plan,
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=peak_freqs,
+            acquisition_us=T_US,
+        )
+        for window_fit in fit.window_fits:
+            entry = window_fit.shared_parameters["tau_us"]
+            assert "fitted" in entry
+            inner = plan_outcome.window_outcomes[window_fit.window_id].fit.fit
+            assert entry["fitted"] is bool(inner.tau_was_fit)
+
+    def test_fitted_flag_false_when_tau_was_not_fit(self):
+        """If the inner WindowFitResult had ``tau_was_fit=False`` (tau
+        frozen at tau0_us by the weak-window gate), the converter records
+        ``fitted=False`` regardless of whether ``tau_error`` is NaN/None.
+        """
+        plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()
+        for outcome in plan_outcome.window_outcomes.values():
+            outcome.fit.fit.tau_was_fit = False
+            outcome.fit.fit.tau_error = None
+        fit = plan_fit_outcome_to_spectrum_fit(
+            plan_outcome,
+            plan,
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=peak_freqs,
+            acquisition_us=T_US,
+        )
+        for window_fit in fit.window_fits:
+            entry = window_fit.shared_parameters["tau_us"]
+            assert entry["fitted"] is False
+            assert entry["error"] is None
+
+    def test_fitted_flag_true_when_tau_was_fit_even_if_fit_tau_false(self):
+        """A cleanup refit overwrites ``fit_tau`` to False on the final
+        WindowFitResult, but ``tau_was_fit`` carries the original
+        determination forward. The converter reads ``tau_was_fit``, so
+        the persisted ``fitted`` flag stays True for data-determined tau
+        even after cleanup-refit conflation of ``fit_tau``.
+        """
+        plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()
+        for outcome in plan_outcome.window_outcomes.values():
+            outcome.fit.fit.fit_tau = False  # cleanup-refit conflation
+            outcome.fit.fit.tau_was_fit = True
+        fit = plan_fit_outcome_to_spectrum_fit(
+            plan_outcome,
+            plan,
+            sideband=SIDEBAND,
+            peak_frequencies_mhz=peak_freqs,
+            acquisition_us=T_US,
+        )
+        for window_fit in fit.window_fits:
+            assert window_fit.shared_parameters["tau_us"]["fitted"] is True
+
     def test_fixed_parameters_record_frozen_contributors(self):
         """A dependent window's frozen contributors appear in fixed_parameters."""
         plan_outcome, plan, peak_freqs, *_ = _two_window_plan_outcome()

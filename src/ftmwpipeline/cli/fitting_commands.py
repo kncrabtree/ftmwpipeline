@@ -46,6 +46,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             rescue_snr_threshold=args.rescue_snr_threshold,
             tau_maj_override_us=args.tau_maj_override_us,
             sigma_tau_override_us=args.sigma_tau_override_us,
+            per_band_tau=args.per_band_tau,
         )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
@@ -238,6 +239,18 @@ def register_fitting_commands(subparsers: Any) -> None:
         type=float,
         help="Manual override for Stage 2b sigma_tau (us). Required when "
         "--tau-maj-override is set (atomic pair).",
+    )
+    p_fit.add_argument(
+        "--no-per-band-tau",
+        dest="per_band_tau",
+        action="store_false",
+        default=True,
+        help="Skip per-band tau routing and use the Stage 2b band-wide "
+        "(tau_maj, sigma_tau) anchor for every window. The default "
+        "(per-band routing on) maps each window to its band-local tau "
+        "majority -- crucial for wide bands with monotonic horn-coupling "
+        "tau (~ 1/f). Falls back silently to band-wide when Stage 2b "
+        "band_majorities aren't persisted.",
     )
     p_fit.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"

@@ -1790,6 +1790,7 @@ def _perform_thaw(
         tau_us=joint.tau_us,
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
+        cofit_was_tau_free=bool(joint.tau_was_fit),
     )
     _install_cofit_outcome(
         dep_outcome,
@@ -1798,6 +1799,7 @@ def _perform_thaw(
         acquisition_us=acquisition_us,
         residual_edge_m=residual_edge_m,
         drop_contributor=thawed,
+        cofit_was_tau_free=bool(joint.tau_was_fit),
     )
 
     return ThawEvent(
@@ -1836,6 +1838,7 @@ def _install_cofit_outcome(
     acquisition_us: float,
     residual_edge_m: int,
     drop_contributor: Optional[FrozenPeak] = None,
+    cofit_was_tau_free: bool = False,
 ) -> None:
     """Update a WindowOutcome in place after an accepted co-fit.
 
@@ -1844,6 +1847,10 @@ def _install_cofit_outcome(
     contributor from ``fixed_peaks``. The conservative-fit audit trail and
     knockouts are preserved (they describe the original free-peak fit; the
     accepted-thaw record lives on the :class:`ThawEvent`).
+
+    When the co-fit ran with tau free (``cofit_was_tau_free=True``), the
+    persisted tau came from a tau-free LSQ -- promote ``tau_was_fit`` so
+    downstream consumers see this window's tau as data-determined.
     """
     if drop_contributor is not None:
         outcome.fixed_peaks = [
@@ -1858,6 +1865,8 @@ def _install_cofit_outcome(
     new_peak_list = [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in new_peaks]
     outcome.fit.fit.peaks = new_peak_list
     outcome.fit.fit.tau_us = tau_us
+    if cofit_was_tau_free:
+        outcome.fit.fit.tau_was_fit = True
     free_model = model_spectrum(
         outcome.offset_grid_mhz, new_peak_list, tau_us, acquisition_us
     )

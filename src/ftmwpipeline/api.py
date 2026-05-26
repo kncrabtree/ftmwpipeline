@@ -661,18 +661,19 @@ def calibrate_tau(
     min_contributors: Optional[int] = None,
     sigma_tau_fraction_max: Optional[float] = None,
     bimodality_dominant_fraction: Optional[float] = None,
-    compute_band_majorities: bool = False,
+    compute_band_majorities: bool = True,
     min_contributors_per_band: Optional[int] = None,
 ) -> TauCalibrationResult:
     """Run the Stage 2b data-driven tau calibration, equivalent to
     :meth:`Pipeline.calibrate_tau`.
 
     Requires Stages 0-2 completed. Persists the calibration to
-    ``/stage2b_tau_calibration``. When ``compute_band_majorities=True``,
-    also computes and persists a per-band SNR-weighted majority tau on
-    an arithmetic three-band split of the trim range; Stage 5 may then
-    consume these as per-window tau anchors via
-    ``fit_peaks(per_band_tau=True)``.
+    ``/stage2b_tau_calibration``. With ``compute_band_majorities=True``
+    (the default), also computes and persists per-band SNR-weighted
+    majority tau on an arithmetic three-band split of the trim range;
+    Stage 5 consumes these as per-window tau anchors via
+    ``fit_peaks(per_band_tau=True)`` (the default) -- necessary for
+    wide bands with monotonic horn-coupling τ ∝ 1/f.
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -1054,7 +1055,7 @@ def fit_peaks(
     rescue_prominence_threshold: Optional[float] = None,
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
-    per_band_tau: bool = False,
+    per_band_tau: bool = True,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
