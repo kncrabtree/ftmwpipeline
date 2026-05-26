@@ -99,6 +99,12 @@ REPO_ROOT = SCRIPT_DIR.parent.parent.parent
 OUTPUT_DIR = REPO_ROOT / "scratch" / "stage5-validation"
 FTMW_PATH = OUTPUT_DIR / "exp_2638.ftmw"
 
+# Model curves in the detail and audit-trail figures are plotted on a grid this
+# many times finer than the data grid so the lineshape reads as a smooth curve
+# instead of a polyline. Residuals, histograms, and χ² stats always use the
+# data grid (one model evaluation per data bin) so they remain fit-faithful.
+MODEL_OVERSAMPLE = 8
+
 
 # ---------------------------------------------------------------------------
 # Display-style helpers
@@ -428,8 +434,11 @@ def _compute_window_residual(
             )
         )
     all_peaks = peaks + frozen_peaks
+    shape_str = getattr(wf, "shape", "lorentzian")
     if all_peaks and tau_us > 0:
-        model_slice = model_spectrum(u_slice, all_peaks, tau_us, acquisition_us)
+        model_slice = model_spectrum(
+            u_slice, all_peaks, tau_us, acquisition_us, shape=shape_str,
+        )
     else:
         model_slice = np.zeros_like(z_slice)
     residual = z_slice - model_slice
@@ -676,6 +685,7 @@ def _build_consolidated_fittingresult(
         reduced_chi2=float(joint_fit.chi_squared / n_residual),
         window=original_wf.window,
         window_id=original_wf.window_id,
+        shape=getattr(original_wf, "shape", "lorentzian"),
     )
     new_wf.fitted_peaks = fitted_peaks
     new_wf.shared_parameters["tau_us"] = {
@@ -931,10 +941,28 @@ def _plot_consolidated_detail(
             )
         )
     all_peaks = peaks_in_window + frozen_peaks
+    shape_str = getattr(consolidated_wf, "shape", "lorentzian")
     if all_peaks and tau_us > 0.0:
-        model_slice = model_spectrum(u_slice, all_peaks, tau_us, acquisition_us)
+        model_slice = model_spectrum(
+            u_slice, all_peaks, tau_us, acquisition_us, shape=shape_str,
+        )
     else:
         model_slice = np.zeros_like(z_slice)
+    # Fine-grid model for the smooth-curve overlay on row 3; residuals,
+    # histograms, and quality stats continue to use ``model_slice`` (data grid).
+    if f_slice.size >= 2:
+        n_fine = (f_slice.size - 1) * MODEL_OVERSAMPLE + 1
+        f_fine = np.linspace(float(f_slice.min()), float(f_slice.max()), n_fine)
+        u_fine = s * (f_fine - center)
+        if all_peaks and tau_us > 0.0:
+            model_fine = model_spectrum(
+                u_fine, all_peaks, tau_us, acquisition_us, shape=shape_str,
+            )
+        else:
+            model_fine = np.zeros_like(f_fine, dtype=np.complex128)
+    else:
+        f_fine = f_slice.copy()
+        model_fine = model_slice.copy()
     residual = z_slice - model_slice
     sigma_c_slice = sigma_slice / np.sqrt(2.0)
     band = 3.0 * float(np.median(sigma_c_slice))
@@ -1074,21 +1102,24 @@ def _plot_consolidated_detail(
         ax.tick_params(axis="both", labelsize=8)
         ax.tick_params(axis="x", labelbottom=False)
 
-    # Data+model (row 3). data as thin gray line + black markers; model thick.
-    def _plot_data(ax: plt.Axes, dvals: np.ndarray, mvals: np.ndarray, mcolor: str) -> None:
+    # Data+model (row 3). data as thin gray line + black markers; model thick
+    # on the fine grid for a smooth lineshape.
+    def _plot_data(
+        ax: plt.Axes, dvals: np.ndarray, mvals_fine: np.ndarray, mcolor: str,
+    ) -> None:
         ax.plot(f_slice, dvals * amp_scale, color="#00000044", lw=0.5, zorder=1)
         ax.plot(
             f_slice, dvals * amp_scale, marker="o", linestyle="None", markersize=2.0,
             markerfacecolor="black", markeredgecolor="black", zorder=2,
         )
-        ax.plot(f_slice, mvals * amp_scale, color=mcolor, lw=1.2, zorder=3)
+        ax.plot(f_fine, mvals_fine * amp_scale, color=mcolor, lw=1.2, zorder=3)
 
     _vlines_at_peaks(ax_re_dat, with_labels=False)
     _vlines_at_peaks(ax_im_dat, with_labels=False)
     _vlines_at_peaks(ax_mag_dat, with_labels=False)
-    _plot_data(ax_re_dat, np.real(z_slice), np.real(model_slice), "tab:red")
-    _plot_data(ax_im_dat, np.imag(z_slice), np.imag(model_slice), "tab:blue")
-    _plot_data(ax_mag_dat, np.abs(z_slice), np.abs(model_slice), "tab:purple")
+    _plot_data(ax_re_dat, np.real(z_slice), np.real(model_fine), "tab:red")
+    _plot_data(ax_im_dat, np.imag(z_slice), np.imag(model_fine), "tab:blue")
+    _plot_data(ax_mag_dat, np.abs(z_slice), np.abs(model_fine), "tab:purple")
     ax_re_dat.set_ylabel(f"Re{amp_unit_suffix}", fontsize=9)
     ax_im_dat.set_ylabel(f"Im{amp_unit_suffix}", fontsize=9)
     ax_mag_dat.set_ylabel(f"|X|{amp_unit_suffix}", fontsize=9)
@@ -1179,6 +1210,8 @@ def _plot_audit_trail_figure(
     f_slice: np.ndarray,
     z_slice: np.ndarray,
     model_slice: np.ndarray,
+    f_fine: np.ndarray,
+    model_fine: np.ndarray,
     sideband,
     center_mhz: float,
     peak_provenance: Sequence[Tuple[Optional[str], Optional[float], Optional[str]]],
@@ -1258,7 +1291,7 @@ def _plot_audit_trail_figure(
         markerfacecolor="0.15", markeredgecolor="0.15", zorder=3,
     )
     ax_spec.plot(
-        f_slice, np.abs(model_slice) * amp_scale,
+        f_fine, np.abs(model_fine) * amp_scale,
         color="tab:purple", lw=1.4, label="consolidated model |X|", zorder=4,
     )
     ax_spec.set_ylabel(f"|X(f)|{amp_unit_suffix}", fontsize=9)
@@ -1492,10 +1525,28 @@ def _save_audit_trail_figure_wrapper(
                 phase=float(fp_data.get("phase", 0.0) or 0.0),
             )
         )
+    shape_str = getattr(consolidated_wf, "shape", "lorentzian")
     if all_peaks and tau_us > 0.0:
-        model_slice = model_spectrum(u_slice, all_peaks, tau_us, acquisition_us)
+        model_slice = model_spectrum(
+            u_slice, all_peaks, tau_us, acquisition_us, shape=shape_str,
+        )
     else:
         model_slice = np.zeros_like(z_slice)
+    # Fine-grid model curve for the smooth overlay on the audit-trail spectrum
+    # panel. χ²ᵣ and other stats are computed elsewhere from ``model_slice``.
+    if f_slice.size >= 2:
+        n_fine = (f_slice.size - 1) * MODEL_OVERSAMPLE + 1
+        f_fine = np.linspace(float(f_slice.min()), float(f_slice.max()), n_fine)
+        u_fine = s * (f_fine - center)
+        if all_peaks and tau_us > 0.0:
+            model_fine = model_spectrum(
+                u_fine, all_peaks, tau_us, acquisition_us, shape=shape_str,
+            )
+        else:
+            model_fine = np.zeros_like(f_fine, dtype=np.complex128)
+    else:
+        f_fine = f_slice.copy()
+        model_fine = model_slice.copy()
     provenance = _peak_provenance(
         consolidated.initial_fit, consolidated, consolidated_wf,
         sideband, center,
@@ -1521,6 +1572,7 @@ def _save_audit_trail_figure_wrapper(
         initial_fit=consolidated.initial_fit,
         consolidated=consolidated,
         f_slice=f_slice, z_slice=z_slice, model_slice=model_slice,
+        f_fine=f_fine, model_fine=model_fine,
         sideband=sideband, center_mhz=center,
         peak_provenance=provenance,
         title=title,
