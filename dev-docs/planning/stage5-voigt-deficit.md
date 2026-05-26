@@ -79,6 +79,67 @@ If conditioning fails:
 - Add a soft Gaussian prior on `τ_G` (analogous to the current
   bidirectional `τ_L` prior) sourced from Part B's calibration.
 
+### Part A outcome on 2638
+
+Implemented as
+[`research/voigt-deficit/part_a_perwindow.py`](../research/voigt-deficit/part_a_perwindow.py).
+Candidate set: 9 per-band-production windows with `χ²ᵣ > 10` AND
+`tau_was_fit=1` AND `n_peaks ≥ 2` (single-peak high-`χ²ᵣ` windows are
+prior-penalty-driven, not shape-error). The pure-exp baseline is a
+free-τ re-fit on the same active-FT subset (no prior) so the
+comparison isolates the Voigt shape benefit from prior anchoring.
+
+Per-window results (sorted by baseline `χ²ᵣ`):
+
+| wid  | freq (MHz)       | K  | baseline | voigt | τ_L  | τ_G   | factor |
+|------|------------------|----|----------|-------|------|-------|--------|
+| w300 | 36340-36355      | 4  | 76.62    | 78.97 | 5.04 | 100.0 | 1.0×   |
+| w360 | 38857-38867      | 2  | 69.56    | 40.37 | 95.2 | 5.15  | 1.7×   |
+| w148 | 31322-31331      | 3  | 54.96    | 55.45 | 7.50 | 18.4  | 1.0×   |
+| w310 | 36806-36819      | 3  | 38.72    | **17.54** | 100  | 6.09  | **2.2×** |
+| w141 | 31208-31219      | 11 | 20.05    | **8.71**  | 38.6 | 7.73  | **2.3×** |
+| w218 | 33837-33844      | 3  | 16.11    | 17.07 | 5.55 | 17.2  | 0.9×   |
+| w239 | 34558-34570      | 5  | 15.64    | 13.58 | 14.3 | 8.16  | 1.2×   |
+| w355 | 38717-38722      | 2  | 15.45    | **5.32**  | 100  | 5.73  | **2.9×** |
+| w213 | 33722-33726      | 8  | 13.79    | **6.39**  | 100  | 5.88  | **2.2×** |
+
+- 4 of 9 (44 %) clear the > 50 % reduction gate: w141, w213, w310,
+  w355. Plus w360 at 42 % (close). The four that succeed are the
+  monotonic-envelope shape-error cases.
+- 4 of 9 (w300, w148, w218, w239) show ≤ 13 % reduction — these are
+  multi-line blends where neither pure-exp nor Voigt captures the
+  line-to-line interference inside the window. Same population as
+  Part B's bad-fit pool (negative finding there).
+- w198 acceptance criterion: planning expected "w198 χ²ᵣ drops 22 →
+  ≤ 10". Per the current per-band fit w198 itself sits at χ²ᵣ ≈ 1.87,
+  but the analogous high-χ² window in the same region is w213
+  (33722-33726 MHz). Voigt drops w213 from 13.79 → 6.39 (≤ 10 ✓).
+
+**Identifiability and conditioning**: median LSQ condition number
+~5e17 — the LSQ is poorly conditioned because `τ_L` saturates at the
+upper bound (100 µs) on every window where Voigt helps. This is the
+`τ_L`/`τ_G` identifiability concern the design noted: when `τ_G < τ_L`
+the Gaussian dominates the decay envelope, so `τ_L` is loosely
+constrained and the LSQ pushes it to the bound. Recovered `τ_G` on
+the four winners (5.15-7.73 µs) tracks the Part B per-band
+calibration (low 9.24, mid 8.68, high 7.56) within ~30 % — consistent
+within band-to-band scatter and the broad `τ_G_seed` multi-start
+grid.
+
+**Architectural implications**:
+- The simple "swap pure-exp envelope for Voigt envelope" extension
+  (option A in the architectural-decision section) works for the
+  shape-error subset that's a single Voigt-shaped line per window,
+  but does not address multi-line blends.
+- Production deployment will want the Part B `τ_G` prior anchoring
+  to break the `τ_L`/`τ_G` identifiability degeneracy. With the
+  prior, `τ_L` should land near a sensible Lorentzian and `τ_G`
+  near the band-calibrated value — instead of `τ_L=100` pinning.
+- Multi-line blends (w148, w218, w300) are out of scope for a single
+  Voigt envelope; they need a different solution (joint blend fit
+  with per-component shape parameters, or a baseline-correction
+  approach for the inter-line interference).
+
 ### Part B — per-bin Voigt fit on currently-bad-fit STFT bins
 
 The Stage 2b STFT calibration's bad-fit gate
