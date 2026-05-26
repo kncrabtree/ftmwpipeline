@@ -75,23 +75,72 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Union, cast
 
 import numpy as np
+from scipy.special import wofz
 
 from ftmwpipeline.core.data_structures import Sideband
 
 __all__ = [
     "ModelPeak",
+    "PeakShape",
     "sideband_sign",
     "h_T",
     "h_T_jacobian",
+    "h_T_gaussian",
+    "h_T_gaussian_jacobian",
+    "h_T_shape",
+    "h_T_shape_jacobian",
     "effective_tau",
+    "effective_tau_gaussian",
+    "effective_tau_shape",
     "model_spectrum",
     "baseband_offset",
     "molecular_frequency",
     "to_baseband_offset",
 ]
+
+
+class PeakShape(str, Enum):
+    """Time-domain envelope shape selector for the Stage 5 fit.
+
+    ``LORENTZIAN`` (default) — envelope ``exp(-t/τ)``. The frequency-domain
+    line is a finite-T-windowed Lorentzian. This is the historical Stage 5
+    model; ``h_T`` / ``h_T_jacobian`` / ``effective_tau`` carry it.
+
+    ``GAUSSIAN`` — envelope ``exp(-(t/τ_G)²)``. The frequency-domain line is
+    a finite-T-windowed Gaussian. Motivated by the Voigt-deficit prototype
+    on 2638 (per-window joint ``(τ_L, τ_G)`` LSQ degenerated to Gaussian-
+    dominant with ``τ_L`` pinning at the upper bound), shipping as an
+    alternative when the data is supersonic-beam-geometry-shaped rather
+    than collisional-Lorentzian-shaped. See
+    ``dev-docs/planning/stage5-gaussian-shape.md``.
+    """
+
+    LORENTZIAN = "lorentzian"
+    GAUSSIAN = "gaussian"
+
+    @classmethod
+    def coerce(cls, value: "PeakShape | str") -> "PeakShape":
+        """Convert a shape-like value into a :class:`PeakShape`.
+
+        Accepts the enum itself or one of the string members
+        (case-insensitive). Useful at API boundaries where callers may
+        pass either ``PeakShape.GAUSSIAN`` or ``"gaussian"``.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls(value.strip().lower())
+            except ValueError:
+                pass
+        raise ValueError(
+            f"shape must be a PeakShape or one of "
+            f"{[s.value for s in cls]}; got {value!r}"
+        )
 
 SidebandLike = Union[Sideband, str]
 
@@ -264,6 +313,249 @@ def effective_tau(tau_us: float, acquisition_us: float) -> float:
         raise ValueError("acquisition_us must be positive")
     # -expm1(-x) = 1 - e^{-x}, stable for small x.
     return tau_us * float(-np.expm1(-acquisition_us / tau_us))
+
+
+# ---------------------------------------------------------------------------
+# Gaussian envelope variant
+# ---------------------------------------------------------------------------
+def h_T_gaussian(
+    delta_f_mhz: np.ndarray,
+    tau_G_us: float,
+    acquisition_us: float,
+) -> np.ndarray:
+    """Closed-form complex FFT of a finite-T Gaussian-windowed cosine.
+
+    For envelope ``exp(-(t/τ_G)²)`` integrated over ``[0, T]``, the natural
+    closed form via complete-the-square is
+
+        h_T(Δf; τ_G) = (τ_G √π / 2) · exp(β²) · [erf(T/τ_G + β) − erf(β)]
+        β = i π Δf τ_G  (purely imaginary).
+
+    The naive evaluation overflows for large ``|Δf|·τ_G``: ``exp(β²) =
+    exp(−π²·Δf²·τ_G²)`` underflows to zero while the bracketed
+    ``erf``-difference grows like ``exp(π²·Δf²·τ_G²)``; the floating-point
+    cancellation discards 100+ digits of precision.
+
+    The stable form cancels the ``exp(β²)`` prefactor against the erfc /
+    Faddeeva expansion ``erf(z) = 1 − exp(−z²) · wofz(i·z)``:
+
+        h_T(Δf; τ_G) = (τ_G √π / 2) · [wofz(i β) −
+            exp(−(T/τ_G)²) · exp(−i 2π Δf T) · wofz(i (T/τ_G + β))]
+
+    Every intermediate is bounded: ``i β`` is purely real,
+    ``i (T/τ_G + β)`` has bounded real and imaginary parts, the damping
+    factor ``exp(−(T/τ_G)²) ≤ 1``, and the phase factor is unit-modulus.
+
+    At centre Δf = 0, ``β = 0``, ``wofz(0) = 1``, the phase factor = 1, so
+
+        h_T(0; τ_G) = (τ_G √π / 2) · [1 − exp(−(T/τ_G)²)·wofz(i T/τ_G)]
+                    = (τ_G √π / 2) · erf(T/τ_G)
+                    = effective_tau_gaussian(τ_G, T)
+
+    matching the real-arg closed form.
+
+    Worked in µs / MHz: ``β`` is dimensionless (MHz × µs cancels), and
+    ``h_T`` carries units of µs, matching :func:`h_T`.
+
+    Parameters
+    ----------
+    delta_f_mhz : np.ndarray
+        Baseband frequency offset ``Δf`` from line centre, in MHz. Scalars
+        are accepted; the result is always an :class:`~numpy.ndarray`.
+    tau_G_us : float
+        Gaussian decay time constant ``τ_G`` in microseconds (``> 0``).
+    acquisition_us : float
+        Active acquisition length ``T`` in microseconds (``> 0``).
+
+    Returns
+    -------
+    np.ndarray
+        Complex line shape on ``delta_f_mhz``, in units of µs.
+
+    Raises
+    ------
+    ValueError
+        If ``tau_G_us`` or ``acquisition_us`` is not positive.
+    """
+    if tau_G_us <= 0.0:
+        raise ValueError("tau_G_us must be positive")
+    if acquisition_us <= 0.0:
+        raise ValueError("acquisition_us must be positive")
+    df = np.asarray(delta_f_mhz, dtype=float)
+    beta = 1j * np.pi * df * tau_G_us
+    t_over_tau = acquisition_us / tau_G_us
+    w_lo = wofz(1j * beta)
+    w_hi = wofz(1j * (t_over_tau + beta))
+    damping = np.exp(-(t_over_tau ** 2))
+    phase = np.exp(-1j * 2.0 * np.pi * df * acquisition_us)
+    response = (tau_G_us * np.sqrt(np.pi) / 2.0) * (w_lo - damping * phase * w_hi)
+    return cast(np.ndarray, response.astype(np.complex128))
+
+
+def h_T_gaussian_jacobian(
+    delta_f_mhz: np.ndarray,
+    tau_G_us: float,
+    acquisition_us: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Analytic derivatives of :func:`h_T_gaussian` w.r.t. ``Δf`` and ``τ_G``.
+
+    Derived by direct ``d/d(Δf)`` and ``d/dτ_G`` of the closed-form
+    integral. Like :func:`h_T_gaussian`, the natural form carries an
+    ``exp(β²)`` prefactor that overflows for large ``|Δf|·τ_G``; the
+    implementation cancels it analytically against the erf-to-wofz
+    rewrite. With ``β = i π Δf τ_G``, ``T̃ = T/τ_G``, ``W_L = wofz(iβ)``,
+    ``W_H = wofz(i(T̃ + β))``, ``D = exp(-T̃²)``, ``Φ = exp(-i 2π Δf T)``,
+    the stable forms are
+
+        E·(P−Q)  = W_L − D·Φ·W_H
+        E·e_P    = D·Φ
+        E·e_Q    = 1
+
+        dh/d(Δf) = (τ_G √π / 2) · (i π τ_G) · {
+            2 β (W_L − D·Φ·W_H) + (2/√π) (D·Φ − 1)
+        }
+
+        dh/dτ_G  = (√π/2)·(W_L − D·Φ·W_H)
+                   − τ_G²·π²·Δf²·√π·(W_L − D·Φ·W_H)
+                   − T̃·D·Φ + β·(D·Φ − 1)
+
+    Verified against central finite differences in the test suite to
+    relative error < 1e-6 over the operational range.
+
+    Parameters
+    ----------
+    delta_f_mhz : np.ndarray
+        Baseband frequency offset ``Δf`` from line centre, in MHz.
+    tau_G_us : float
+        Gaussian decay time constant ``τ_G`` in microseconds (``> 0``).
+    acquisition_us : float
+        Active acquisition length ``T`` in microseconds (``> 0``).
+
+    Returns
+    -------
+    tuple of np.ndarray
+        ``(dh/d(Δf_MHz), dh/d(τ_G_us))``, both complex arrays shaped like
+        ``delta_f_mhz``.
+
+    Raises
+    ------
+    ValueError
+        If ``tau_G_us`` or ``acquisition_us`` is not positive.
+    """
+    if tau_G_us <= 0.0:
+        raise ValueError("tau_G_us must be positive")
+    if acquisition_us <= 0.0:
+        raise ValueError("acquisition_us must be positive")
+    df = np.asarray(delta_f_mhz, dtype=float)
+    beta = 1j * np.pi * df * tau_G_us
+    t_over_tau = acquisition_us / tau_G_us
+    w_lo = wofz(1j * beta)
+    w_hi = wofz(1j * (t_over_tau + beta))
+    damping = np.exp(-(t_over_tau ** 2))
+    phase = np.exp(-1j * 2.0 * np.pi * df * acquisition_us)
+    sqrt_pi = np.sqrt(np.pi)
+
+    e_pq = w_lo - damping * phase * w_hi           # exp(β²) · (P − Q), stable
+    e_diff = damping * phase - 1.0                  # exp(β²) · (e_P − e_Q)
+
+    dh_ddf = (
+        (tau_G_us * sqrt_pi / 2.0)
+        * (1j * np.pi * tau_G_us)
+        * (2.0 * beta * e_pq + (2.0 / sqrt_pi) * e_diff)
+    )
+
+    dh_dtau = (
+        (sqrt_pi / 2.0) * e_pq
+        - (tau_G_us ** 2) * (np.pi ** 2) * (df ** 2) * sqrt_pi * e_pq
+        - t_over_tau * damping * phase
+        + beta * e_diff
+    )
+
+    return (
+        cast(np.ndarray, dh_ddf.astype(np.complex128)),
+        cast(np.ndarray, dh_dtau.astype(np.complex128)),
+    )
+
+
+def effective_tau_gaussian(tau_G_us: float, acquisition_us: float) -> float:
+    """On-line gain ``τ_eff = (τ_G √π / 2) · erf(T/τ_G)`` for the Gaussian.
+
+    The Gaussian analog of :func:`effective_tau`: the (real) value of
+    :func:`h_T_gaussian` at ``Δf = 0``. In the long-decay limit ``τ_G → ∞``
+    it tends to ``T`` (boxcar acquisition); in the short-decay limit
+    ``τ_G → 0`` it tends to ``(τ_G √π / 2)`` (the full Gaussian integral).
+
+    Parameters
+    ----------
+    tau_G_us : float
+        Gaussian decay time constant ``τ_G`` in microseconds (``> 0``).
+    acquisition_us : float
+        Active acquisition length ``T`` in microseconds (``> 0``).
+
+    Returns
+    -------
+    float
+        ``τ_eff`` in microseconds.
+
+    Raises
+    ------
+    ValueError
+        If ``tau_G_us`` or ``acquisition_us`` is not positive.
+    """
+    if tau_G_us <= 0.0:
+        raise ValueError("tau_G_us must be positive")
+    if acquisition_us <= 0.0:
+        raise ValueError("acquisition_us must be positive")
+    # erf is real for real argument; scipy.special.erf takes real input fine.
+    from scipy.special import erf as _real_erf  # local import: only this path
+
+    return float(
+        tau_G_us * np.sqrt(np.pi) / 2.0 * _real_erf(acquisition_us / tau_G_us)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shape-aware dispatchers
+# ---------------------------------------------------------------------------
+def h_T_shape(
+    shape: "PeakShape | str",
+    delta_f_mhz: np.ndarray,
+    tau_us: float,
+    acquisition_us: float,
+) -> np.ndarray:
+    """Route to :func:`h_T` or :func:`h_T_gaussian` by shape.
+
+    ``tau_us`` carries ``τ`` for ``PeakShape.LORENTZIAN`` and ``τ_G`` for
+    ``PeakShape.GAUSSIAN``; both shapes are single-parameter in the decay
+    constant.
+    """
+    s = PeakShape.coerce(shape)
+    if s is PeakShape.LORENTZIAN:
+        return h_T(delta_f_mhz, tau_us, acquisition_us)
+    return h_T_gaussian(delta_f_mhz, tau_us, acquisition_us)
+
+
+def h_T_shape_jacobian(
+    shape: "PeakShape | str",
+    delta_f_mhz: np.ndarray,
+    tau_us: float,
+    acquisition_us: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Route to :func:`h_T_jacobian` or :func:`h_T_gaussian_jacobian` by shape."""
+    s = PeakShape.coerce(shape)
+    if s is PeakShape.LORENTZIAN:
+        return h_T_jacobian(delta_f_mhz, tau_us, acquisition_us)
+    return h_T_gaussian_jacobian(delta_f_mhz, tau_us, acquisition_us)
+
+
+def effective_tau_shape(
+    shape: "PeakShape | str", tau_us: float, acquisition_us: float
+) -> float:
+    """Route to :func:`effective_tau` or :func:`effective_tau_gaussian` by shape."""
+    s = PeakShape.coerce(shape)
+    if s is PeakShape.LORENTZIAN:
+        return effective_tau(tau_us, acquisition_us)
+    return effective_tau_gaussian(tau_us, acquisition_us)
 
 
 # ---------------------------------------------------------------------------

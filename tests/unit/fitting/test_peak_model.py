@@ -16,10 +16,17 @@ from scipy.optimize import least_squares
 from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.fitting.peak_model import (
     ModelPeak,
+    PeakShape,
     baseband_offset,
     effective_tau,
+    effective_tau_gaussian,
+    effective_tau_shape,
     h_T,
+    h_T_gaussian,
+    h_T_gaussian_jacobian,
     h_T_jacobian,
+    h_T_shape,
+    h_T_shape_jacobian,
     model_spectrum,
     molecular_frequency,
     sideband_sign,
@@ -163,6 +170,196 @@ class TestEffectiveTau:
     def test_rejects_non_positive_parameters(self, tau, acq):
         with pytest.raises(ValueError):
             effective_tau(tau, acq)
+
+
+# ---------------------------------------------------------------------------
+# Gaussian envelope -- h_T_gaussian, Jacobian, effective_tau, dispatcher
+# ---------------------------------------------------------------------------
+TAU_G_US = 8.0  # representative τ_G from the Voigt-deficit Part B calibration
+
+
+def _numerical_fft_gaussian(
+    delta_f_mhz: np.ndarray,
+    tau_G_us: float,
+    acquisition_us: float,
+    fs_mhz: float = 50.0,
+) -> np.ndarray:
+    """Numerical FFT of a Gaussian-windowed damped cosine -- cross-check.
+
+    Synthesizes ``exp(-(t/τ_G)²) cos(2π f₀ t)`` on ``[0, T]``, rfft's the
+    zero-padded record, and interpolates onto ``delta_f_mhz``. Confirms
+    :func:`h_T_gaussian` *is* the FT of the finite-T Gaussian-windowed cosine.
+    """
+    dt_us = 1.0 / fs_mhz
+    n_active = int(round(acquisition_us / dt_us))
+    f0_mhz = 5.0
+    n_pad = 1 << (int(np.log2(n_active)) + 4)
+    t = np.arange(n_active) * dt_us
+    fid = np.cos(2.0 * np.pi * f0_mhz * t) * np.exp(-((t / tau_G_us) ** 2))
+    rec = np.zeros(n_pad)
+    rec[:n_active] = fid
+    spec = np.fft.rfft(rec) * dt_us
+    freqs_mhz = np.fft.rfftfreq(n_pad, d=dt_us)
+    offs_mhz = freqs_mhz - f0_mhz
+    keep = np.abs(offs_mhz) <= float(np.max(np.abs(delta_f_mhz))) + 1.0
+    re = np.interp(delta_f_mhz, offs_mhz[keep], (2.0 * spec[keep]).real)
+    im = np.interp(delta_f_mhz, offs_mhz[keep], (2.0 * spec[keep]).imag)
+    return re + 1j * im
+
+
+class TestHTGaussian:
+    def test_centre_is_effective_tau(self):
+        """``h_T_gaussian(0; τ_G, T) = effective_tau_gaussian(τ_G, T)``, real."""
+        z = h_T_gaussian(np.array([0.0]), TAU_G_US, T_US)
+        assert z.imag[0] == pytest.approx(0.0, abs=1e-12)
+        assert z.real[0] == pytest.approx(
+            effective_tau_gaussian(TAU_G_US, T_US), rel=1e-12,
+        )
+
+    def test_matches_numerical_fft(self):
+        """Closed-form matches a literal rfft of the Gaussian-windowed cosine."""
+        u = _offset_grid(2.0)
+        analytic = h_T_gaussian(u, TAU_G_US, T_US)
+        numerical = _numerical_fft_gaussian(u, TAU_G_US, T_US)
+        rel_err = np.abs(analytic - numerical) / np.abs(analytic).max()
+        # Same tolerance convention as TestFiniteTResponse: residual is the
+        # numerical FFT's finite-grid interpolation error, not the closed
+        # form. The closed form is verified to machine precision below
+        # against scipy.integrate.quad.
+        assert rel_err.max() < 1.5e-2
+
+    def test_matches_quadrature_to_machine_precision(self):
+        """Closed form matches direct quadrature of the time-domain integral."""
+        from scipy.integrate import quad as scipy_quad
+
+        def _quad_h(df: float, tau_G: float, T: float) -> complex:
+            re, _ = scipy_quad(
+                lambda t: np.exp(-((t / tau_G) ** 2)) * np.cos(2 * np.pi * df * t),
+                0, T, epsabs=1e-14, epsrel=1e-14,
+            )
+            im, _ = scipy_quad(
+                lambda t: -np.exp(-((t / tau_G) ** 2)) * np.sin(2 * np.pi * df * t),
+                0, T, epsabs=1e-14, epsrel=1e-14,
+            )
+            return re + 1j * im
+
+        for df in [0.0, 0.01, 0.1, 0.3, 0.5, 1.0, 2.0]:
+            analytic = h_T_gaussian(np.array([df]), TAU_G_US, T_US)[0]
+            quad_val = _quad_h(df, TAU_G_US, T_US)
+            scale = max(abs(quad_val), 1e-12)
+            assert abs(analytic - quad_val) / scale < 1e-12, (
+                f"Δf={df}: analytic={analytic} vs quad={quad_val}"
+            )
+
+    def test_hermitian_symmetry(self):
+        """``h_T_gaussian(-Δf) = conj(h_T_gaussian(Δf))`` exactly."""
+        u = _offset_grid(2.0)
+        pos = h_T_gaussian(u, TAU_G_US, T_US)
+        neg = h_T_gaussian(-u, TAU_G_US, T_US)
+        rel_err = np.abs(neg - np.conj(pos)).max() / np.abs(pos).max()
+        assert rel_err < 1e-12
+
+    def test_long_tau_limit_approaches_boxcar(self):
+        """For τ_G >> T, ``h_T_gaussian(0) → T`` (full boxcar integral)."""
+        big = h_T_gaussian(np.array([0.0]), 1e6, T_US)
+        assert big.real[0] == pytest.approx(T_US, rel=1e-4)
+
+    @pytest.mark.parametrize("tau_G,acq", [(0.0, T_US), (-1.0, T_US), (TAU_G_US, 0.0)])
+    def test_rejects_non_positive_parameters(self, tau_G, acq):
+        with pytest.raises(ValueError):
+            h_T_gaussian(_offset_grid(0.5), tau_G, acq)
+
+
+class TestHTGaussianJacobian:
+    def test_d_delta_f_matches_finite_difference(self):
+        u = _offset_grid(2.0)
+        dh_ddf, _ = h_T_gaussian_jacobian(u, TAU_G_US, T_US)
+        eps = 1e-6
+        fd = (
+            h_T_gaussian(u + eps, TAU_G_US, T_US)
+            - h_T_gaussian(u - eps, TAU_G_US, T_US)
+        ) / (2 * eps)
+        rel_err = np.abs(dh_ddf - fd).max() / np.abs(dh_ddf).max()
+        assert rel_err < 1e-6
+
+    def test_d_tau_matches_finite_difference(self):
+        u = _offset_grid(2.0)
+        _, dh_dtau = h_T_gaussian_jacobian(u, TAU_G_US, T_US)
+        eps = 1e-5
+        fd = (
+            h_T_gaussian(u, TAU_G_US + eps, T_US)
+            - h_T_gaussian(u, TAU_G_US - eps, T_US)
+        ) / (2 * eps)
+        rel_err = np.abs(dh_dtau - fd).max() / np.abs(dh_dtau).max()
+        assert rel_err < 1e-6
+
+    @pytest.mark.parametrize("tau_G,acq", [(0.0, T_US), (TAU_G_US, -1.0)])
+    def test_rejects_non_positive_parameters(self, tau_G, acq):
+        with pytest.raises(ValueError):
+            h_T_gaussian_jacobian(_offset_grid(0.5), tau_G, acq)
+
+
+class TestEffectiveTauGaussian:
+    def test_closed_form(self):
+        from scipy.special import erf
+        expected = TAU_G_US * np.sqrt(np.pi) / 2.0 * erf(T_US / TAU_G_US)
+        assert effective_tau_gaussian(TAU_G_US, T_US) == pytest.approx(
+            expected, rel=1e-12,
+        )
+
+    def test_undamped_limit(self):
+        # τ_G → ∞: full boxcar integral = T.
+        assert effective_tau_gaussian(1e9, T_US) == pytest.approx(T_US, rel=1e-4)
+
+    @pytest.mark.parametrize("tau_G,acq", [(0.0, T_US), (TAU_G_US, 0.0)])
+    def test_rejects_non_positive_parameters(self, tau_G, acq):
+        with pytest.raises(ValueError):
+            effective_tau_gaussian(tau_G, acq)
+
+
+class TestPeakShapeDispatchers:
+    def test_lorentzian_path(self):
+        u = _offset_grid(1.0)
+        assert np.array_equal(
+            h_T_shape(PeakShape.LORENTZIAN, u, TAU_US, T_US),
+            h_T(u, TAU_US, T_US),
+        )
+        a1, b1 = h_T_shape_jacobian(PeakShape.LORENTZIAN, u, TAU_US, T_US)
+        a2, b2 = h_T_jacobian(u, TAU_US, T_US)
+        assert np.array_equal(a1, a2)
+        assert np.array_equal(b1, b2)
+        assert effective_tau_shape(
+            PeakShape.LORENTZIAN, TAU_US, T_US
+        ) == pytest.approx(effective_tau(TAU_US, T_US))
+
+    def test_gaussian_path(self):
+        u = _offset_grid(1.0)
+        assert np.array_equal(
+            h_T_shape(PeakShape.GAUSSIAN, u, TAU_G_US, T_US),
+            h_T_gaussian(u, TAU_G_US, T_US),
+        )
+        a1, b1 = h_T_shape_jacobian(PeakShape.GAUSSIAN, u, TAU_G_US, T_US)
+        a2, b2 = h_T_gaussian_jacobian(u, TAU_G_US, T_US)
+        assert np.array_equal(a1, a2)
+        assert np.array_equal(b1, b2)
+        assert effective_tau_shape(
+            PeakShape.GAUSSIAN, TAU_G_US, T_US
+        ) == pytest.approx(effective_tau_gaussian(TAU_G_US, T_US))
+
+    @pytest.mark.parametrize("value,expected", [
+        ("lorentzian", PeakShape.LORENTZIAN),
+        ("Lorentzian", PeakShape.LORENTZIAN),
+        ("gaussian", PeakShape.GAUSSIAN),
+        ("GAUSSIAN", PeakShape.GAUSSIAN),
+        (PeakShape.GAUSSIAN, PeakShape.GAUSSIAN),
+    ])
+    def test_coerce_accepts(self, value, expected):
+        assert PeakShape.coerce(value) is expected
+
+    @pytest.mark.parametrize("value", ["voigt", "exp", "", None, 42])
+    def test_coerce_rejects(self, value):
+        with pytest.raises(ValueError):
+            PeakShape.coerce(value)
 
 
 # ---------------------------------------------------------------------------
