@@ -1,0 +1,35 @@
+{
+  "fixture": "scratch/stage5-tau-calibration-lsq/exp_2638_unapodized.ftmw",
+  "source_pool": "contributor",
+  "snr_gate": 20.0,
+  "calibration_delta_chi2r_min": 1.0,
+  "calibration_tau_G_upper_us": 70.0,
+  "trim_lo_mhz": 26500.0,
+  "trim_hi_mhz": 40000.0,
+  "bands": [
+    {
+      "label": "low",
+      "freq_lo_mhz": 26500.0,
+      "freq_hi_mhz": 31000.0,
+      "n_bins": 66,
+      "tau_G_us": 9.244954402008677,
+      "sigma_tau_G_us": 1.1516580377415802
+    },
+    {
+      "label": "mid",
+      "freq_lo_mhz": 31000.0,
+      "freq_hi_mhz": 35500.0,
+      "n_bins": 106,
+      "tau_G_us": 8.675261024226385,
+      "sigma_tau_G_us": 1.754241170661512
+    },
+    {
+      "label": "high",
+      "freq_lo_mhz": 35500.0,
+      "freq_hi_mhz": 40000.0,
+      "n_bins": 139,
+      "tau_G_us": 7.5569638044459575,
+      "sigma_tau_G_us": 1.4817328954754827
+    }
+  ]
+}

@@ -109,6 +109,41 @@ If Part B succeeds, we have:
 - A per-band `τ_G(f)` calibration from independent strong-line bins
 - An anchor for Part A's per-window `τ_G` fits
 
+### Part B outcome on 2638
+
+Implemented as
+[`research/voigt-deficit/part_b_perbin.py`](../research/voigt-deficit/part_b_perbin.py).
+The bad-fit-hi-SNR-bin hypothesis is **contradicted on 2638**: the 99
+bad-fit bins above SNR 100 have non-monotonic `|S_n(a)|` traces
+dominated by line-blend interference (two close lines beating inside
+one bin's resolution), and no monotonic Voigt fits them either —
+Voigt χ²ᵣ median = 887 vs pure-exp 1033, only a 1.16× factor at
+χ²ᵣ ≫ 100. The script kept the bad-fit pool as a reported "negative
+finding" and pivoted to the **strong-contributor pool** (cls=3,
+SNR > 20, 408 bins in trim on 2638):
+
+- Per-bin Voigt χ²ᵣ median = **0.80** (vs pure-exp **3.77** —
+  4.7× improvement, at the noise floor).
+- 94 % of contributors see Voigt improve over pure-exp; 311/408
+  (76 %) clear the calibration gate (`Δχ²ᵣ ≥ 1` and
+  `τ_G < 70 µs`).
+- Per-band `τ_G` median + robust σ (IQR / 1.349) on the
+  calibration-eligible subset:
+  - low  (26500-31000 MHz, N=66):  τ_G = 9.24 µs ± 1.15 µs (12 % rel)
+  - mid  (31000-35500 MHz, N=106): τ_G = 8.68 µs ± 1.75 µs (20 % rel)
+  - high (35500-40000 MHz, N=139): τ_G = 7.56 µs ± 1.48 µs (20 % rel)
+- Monotonic 1/f trend across the band — consistent with horn-coupling
+  geometry (higher f → wider velocity-projection Δf → shorter τ_G).
+- Per-band median `τ_L` runs long (17-40 µs) — when `τ_G < τ_L` the
+  Gaussian dominates the decay envelope and the data weakly
+  constrains `τ_L`. Implication for Part A: the existing
+  Stage 2b/Stage 5 `τ_maj ≈ 5-7 µs` is an *effective* decay of a
+  Gaussian-dominated Voigt, **not** the Lorentzian `τ_L`; Part A's
+  joint `(τ_L, τ_G)` LSQ should NOT use `τ_maj` as a `τ_L` prior.
+
+Calibration artefact for Part A:
+[`data/tau_G_band_majorities.json`](../research/voigt-deficit/data/tau_G_band_majorities.json).
+
 ## Architectural decision (post-prototype)
 
 Decide based on Part A + Part B evidence:
