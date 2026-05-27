@@ -93,11 +93,6 @@ class TestSubmoduleImports:
         from ftmwpipeline import io
         assert hasattr(io, '__all__')
     
-    def test_config_import(self):
-        """Test config module import."""
-        from ftmwpipeline import config
-        assert hasattr(config, '__all__')
-    
     def test_utils_import(self):
         """Test utils module import."""
         from ftmwpipeline import utils

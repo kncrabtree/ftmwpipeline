@@ -11,6 +11,7 @@ baseline estimation, peak detection, window assignment, and advanced fitting alg
 
    installation
    quickstart
+   settings_and_presets
    api/index
    examples/index
    changelog

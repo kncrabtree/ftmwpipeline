@@ -81,7 +81,7 @@ ftmwpipeline = "ftmwpipeline.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-ftmwpipeline = ["config/*.yaml", "config/*.json", "presets/*.yaml"]
+ftmwpipeline = ["presets/*.yaml"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
