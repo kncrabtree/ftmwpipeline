@@ -494,13 +494,17 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     resources (e.g. ``"instrument_bc_2638"`` ->
     ``ftmwpipeline/presets/instrument_bc_2638.yaml``); paths load
     directly. Preset YAML may wrap the Stage 5 settings inside a
-    top-level ``fit:`` block (room for a future ``ft:`` block alongside)
-    or carry the settings flat at the top level; both forms parse
-    identically.
+    top-level ``stage5:`` block (the new convention, allowing parallel
+    ``stage2b:`` / ``stage2:`` blocks for other stages), a legacy
+    ``fit:`` block (accepted for back-compat with presets written before
+    the per-stage wrapper landed), or carry the settings flat at the top
+    level; all three forms parse identically. ``stage5:`` and ``fit:``
+    must not both appear in the same file.
 
     The ``name:`` and ``description:`` metadata fields are accepted but
     ignored by the settings parser -- they're documentation for the
-    preset author.
+    preset author. Sibling stage blocks (``stage2b:``, etc.) are
+    ignored here; they belong to other stages' settings loaders.
 
     Parameters
     ----------
@@ -546,15 +550,35 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
             f"preset YAML root must be a mapping; got {type(data)} from "
             f"{name_or_path}"
         )
-    # Allow an outer ``fit:`` wrapper for stage-spanning preset files;
-    # carry ``name`` / ``description`` through as metadata.
-    if "fit" in data and isinstance(data["fit"], dict):
-        inner = dict(data["fit"])
+    # Per-stage top-level blocks are the current convention; ``fit:`` is
+    # the legacy spelling kept as a back-compat shim for presets written
+    # before the per-stage wrapper landed (see
+    # ``dev-docs/planning/settings-backfill.md`` § "Back-compat shims").
+    has_fit = "fit" in data and isinstance(data["fit"], dict)
+    has_stage5 = "stage5" in data and isinstance(data["stage5"], dict)
+    if has_fit and has_stage5:
+        raise ValueError(
+            f"preset {name_or_path!r} carries both 'fit:' (legacy) and "
+            f"'stage5:' (current) wrappers; pick one"
+        )
+    inner_block: Optional[Dict[str, Any]] = None
+    if has_stage5:
+        inner_block = dict(data["stage5"])
+    elif has_fit:
+        inner_block = dict(data["fit"])
+    if inner_block is not None:
         for meta in ("name", "description"):
-            if meta in data and meta not in inner:
-                inner[meta] = data[meta]
-        return from_yaml_dict(inner)
-    return from_yaml_dict(data)
+            if meta in data and meta not in inner_block:
+                inner_block[meta] = data[meta]
+        return from_yaml_dict(inner_block)
+    # No per-stage wrapper: treat the document root as Stage 5 settings,
+    # but strip out sibling stage blocks (``stage2b:`` etc.) so they
+    # don't trip ``from_yaml_dict``'s unknown-key rejection.
+    flat = {
+        k: v for k, v in data.items()
+        if k not in ("stage2", "stage2b", "stage3", "stage4")
+    }
+    return from_yaml_dict(flat)
 
 
 def to_yaml(settings: StageFitSettings) -> str:

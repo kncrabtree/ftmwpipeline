@@ -52,6 +52,8 @@ def cmd_calibrate_tau(args) -> int:
         kwargs["bimodality_dominant_fraction"] = float(
             args.bimodality_dominant_fraction
         )
+    if args.preset is not None:
+        kwargs["preset"] = args.preset
 
     print(f"Running STFT tau calibration for: {file_path}")
     try:
@@ -129,6 +131,8 @@ def cmd_calibrate_tau_G(args) -> int:
         kwargs["bimodality_dominant_fraction"] = float(
             args.bimodality_dominant_fraction
         )
+    if args.preset is not None:
+        kwargs["preset"] = args.preset
 
     print(f"Running STFT τ_G (Gaussian-shape) calibration for: {file_path}")
     try:
@@ -291,6 +295,14 @@ def register_tau_commands(subparsers) -> None:
         ),
     )
     parser_cal.add_argument(
+        "--preset", type=str, default=None,
+        help=(
+            "Stage 2b preset to apply (bare packaged name or path to a "
+            "YAML file). Mutually exclusive with per-knob flags that "
+            "explicitly set the same field."
+        ),
+    )
+    parser_cal.add_argument(
         "-v", "--verbose", action="store_true",
         help="Enable verbose logging",
     )
@@ -374,6 +386,13 @@ def register_tau_commands(subparsers) -> None:
         help=(
             "Pre-condition floor on dominant-cluster weight when the GMM "
             "prefers two components (default 0.70)"
+        ),
+    )
+    parser_cg.add_argument(
+        "--preset", type=str, default=None,
+        help=(
+            "Stage 2b preset to apply (bare packaged name or path to a "
+            "YAML file). The same preset block drives both τ twins."
         ),
     )
     parser_cg.add_argument(

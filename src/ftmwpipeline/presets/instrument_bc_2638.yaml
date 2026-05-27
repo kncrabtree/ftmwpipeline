@@ -24,7 +24,7 @@ description: |
     median / p25 / p75 / p90 χ²ᵣ to 3 decimals at λ=500; differences are
     LSQ basin-hopping noise on 1-2 windows. Kept at the stock k=5.
 
-fit:
+stage5:
   shape: gaussian
   tau:
     per_band_tau: true

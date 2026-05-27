@@ -1,11 +1,14 @@
 """
-Unit tests for ``load_preset`` (bare-name + path resolution, ``fit:``
-wrapper handling, error surfaces) and for the preset/explicit kwarg
-precedence inside ``resolve()``.
+Unit tests for ``load_preset`` (bare-name + path resolution, wrapper-block
+handling for ``fit:`` ↔ ``stage5:``, ``stage2b:`` sibling-block
+coexistence, error surfaces) and for the preset/explicit kwarg precedence
+inside ``resolve()``.
 
 These verify the Step 4 surface: ``ftmwpipeline fit-peaks --preset
-gaussian_default exp.ftmw`` works end-to-end on the YAML side, and the
-override precedence is honoured.
+gaussian_default exp.ftmw`` works end-to-end on the YAML side, the
+back-compat shim for the legacy ``fit:`` wrapper still parses, and the
+Stage 2b ``load_preset`` returns the matching ``stage2b:`` block on the
+same packaged preset files.
 """
 
 from __future__ import annotations
@@ -20,6 +23,9 @@ from ftmwpipeline.core.stage_fit_settings import (
     StageFitSettings,
     load_preset,
     resolve,
+)
+from ftmwpipeline.core.tau_calibration_settings import (
+    load_preset as load_tau_preset,
 )
 
 
@@ -55,10 +61,24 @@ class TestPackagedPresetResolution:
 
 
 class TestPathPresetResolution:
-    def test_load_from_path(self, tmp_path) -> None:
+    def test_load_from_path_stage5_wrapper(self, tmp_path) -> None:
         p = tmp_path / "my_preset.yaml"
         p.write_text(
             "name: my_preset\n"
+            "stage5:\n"
+            "  shape: gaussian\n"
+            "  tau:\n"
+            "    max_decay_factor: 4.0\n"
+        )
+        s = load_preset(p)
+        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
+        assert s.tau.max_decay_factor == 4.0
+
+    def test_load_from_path_legacy_fit_wrapper(self, tmp_path) -> None:
+        """The ``fit:`` wrapper is a back-compat shim for pre-rename presets."""
+        p = tmp_path / "legacy.yaml"
+        p.write_text(
+            "name: legacy_preset\n"
             "fit:\n"
             "  shape: gaussian\n"
             "  tau:\n"
@@ -68,9 +88,19 @@ class TestPathPresetResolution:
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
         assert s.tau.max_decay_factor == 4.0
 
+    def test_fit_and_stage5_both_present_raises(self, tmp_path) -> None:
+        """A preset must not declare both wrappers."""
+        p = tmp_path / "ambiguous.yaml"
+        p.write_text(
+            "fit:\n  shape: gaussian\n"
+            "stage5:\n  shape: lorentzian\n"
+        )
+        with pytest.raises(ValueError, match=r"both 'fit:' .* and 'stage5:'"):
+            load_preset(p)
+
     def test_load_from_str_path(self, tmp_path) -> None:
         p = tmp_path / "my_preset.yaml"
-        p.write_text("fit:\n  shape: lorentzian\n")
+        p.write_text("stage5:\n  shape: lorentzian\n")
         s = load_preset(str(p))
         assert s.shape is not None and s.shape.kind is PeakShape.LORENTZIAN
 
@@ -78,13 +108,67 @@ class TestPathPresetResolution:
         with pytest.raises(FileNotFoundError, match=r"preset file not found"):
             load_preset(tmp_path / "missing.yaml")
 
-    def test_flat_yaml_no_fit_wrapper(self, tmp_path) -> None:
-        """Presets without a ``fit:`` wrapper still parse."""
+    def test_flat_yaml_no_wrapper(self, tmp_path) -> None:
+        """Presets without a wrapper still parse as Stage 5 settings."""
         p = tmp_path / "flat.yaml"
         p.write_text("shape: gaussian\ntau:\n  max_decay_factor: 7.0\n")
         s = load_preset(p)
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
         assert s.tau.max_decay_factor == 7.0
+
+    def test_sibling_stage2b_block_ignored_by_stage5_loader(self, tmp_path) -> None:
+        """A ``stage2b:`` sibling block must not trip Stage 5's unknown-key gate."""
+        p = tmp_path / "two_blocks.yaml"
+        p.write_text(
+            "stage2b:\n  stft:\n    n_seg: 8\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        s = load_preset(p)
+        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
+
+
+class TestStage2bPresetResolution:
+    """The Stage 2b ``load_preset`` reads the ``stage2b:`` block from the
+    same packaged preset files Stage 5 uses; absence is not an error."""
+
+    def test_packaged_presets_load_empty_when_no_stage2b_block(self) -> None:
+        """The three packaged presets carry no ``stage2b:`` block today."""
+        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
+            s = load_tau_preset(name)
+            assert s.is_empty(), (
+                f"packaged preset {name!r} should produce an empty "
+                f"TauCalibrationSettings until a stage2b: block lands"
+            )
+
+    def test_stage2b_block_populates_dataclass(self, tmp_path) -> None:
+        p = tmp_path / "with_stage2b.yaml"
+        p.write_text(
+            "name: example\n"
+            "stage2b:\n"
+            "  stft:\n    n_seg: 8\n  polish:\n    polish_snr_cap: 12.0\n"
+            "  gaussian:\n    snr_min: 30.0\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        ts = load_tau_preset(p)
+        assert ts.stft.n_seg == 8
+        assert ts.polish.polish_snr_cap == 12.0
+        assert ts.gaussian.snr_min == 30.0
+
+    def test_stage2b_block_must_be_mapping(self, tmp_path) -> None:
+        p = tmp_path / "bad_stage2b.yaml"
+        p.write_text("stage2b: 3\n")
+        with pytest.raises(ValueError, match=r"'stage2b' block must be a mapping"):
+            load_tau_preset(p)
+
+    def test_stage2b_loader_path_resolution(self, tmp_path) -> None:
+        p = tmp_path / "stage2b_only.yaml"
+        p.write_text("stage2b:\n  stft:\n    n_seg: 4\n")
+        ts = load_tau_preset(p)
+        assert ts.stft.n_seg == 4
+
+    def test_stage2b_missing_path_raises(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError, match=r"preset file not found"):
+            load_tau_preset(tmp_path / "missing.yaml")
 
 
 class TestResolutionWithPreset:

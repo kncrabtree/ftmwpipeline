@@ -6,5 +6,5 @@ description: |
   reference for A/B comparisons against the Gaussian path or against any
   instrument preset.
 
-fit:
+stage5:
   shape: lorentzian

@@ -40,6 +40,7 @@ import logging
 from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .core.stage_fit_settings import StageFitSettings
+from .core.tau_calibration_settings import TauCalibrationSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .preprocessing.noise_estimation import NoiseResult
 
@@ -662,19 +663,22 @@ def calibrate_tau(
     min_contributors: Optional[int] = None,
     sigma_tau_fraction_max: Optional[float] = None,
     bimodality_dominant_fraction: Optional[float] = None,
-    compute_band_majorities: bool = True,
+    compute_band_majorities: Optional[bool] = None,
     min_contributors_per_band: Optional[int] = None,
+    settings: Optional[TauCalibrationSettings] = None,
+    preset: Optional[str] = None,
 ) -> TauCalibrationResult:
     """Run the Stage 2b data-driven tau calibration, equivalent to
     :meth:`Pipeline.calibrate_tau`.
 
     Requires Stages 0-2 completed. Persists the calibration to
-    ``/stage2b_tau_calibration``. With ``compute_band_majorities=True``
-    (the default), also computes and persists per-band SNR-weighted
-    majority tau on an arithmetic three-band split of the trim range;
-    Stage 5 consumes these as per-window tau anchors via
-    ``fit_peaks(per_band_tau=True)`` (the default) -- necessary for
-    wide bands with monotonic horn-coupling τ ∝ 1/f.
+    ``/stage2b_tau_calibration``. Parameters left as ``None`` fall
+    through the four-layer resolution chain (``explicit > preset >
+    persisted > recommended > hard default``); ``settings=`` and
+    ``preset=`` populate the preset layer and are mutually exclusive.
+    The resolved settings are stamped to
+    ``processing_parameters/stage2b_tau`` so a follow-up no-kwargs
+    call inherits the same recipe.
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -689,6 +693,8 @@ def calibrate_tau(
             bimodality_dominant_fraction=bimodality_dominant_fraction,
             compute_band_majorities=compute_band_majorities,
             min_contributors_per_band=min_contributors_per_band,
+            settings=settings,
+            preset=preset,
         )
     except Exception as e:
         logger.error(f"Failed to calibrate tau for {file_path}: {e}")
@@ -714,13 +720,16 @@ def calibrate_tau_G(
     snr_min: Optional[float] = None,
     tau_G_bound_lo: Optional[float] = None,
     tau_G_bound_hi: Optional[float] = None,
+    tau_G_seeds: Optional[List[float]] = None,
     delta_chi2r_min: Optional[float] = None,
     tau_G_upper_fraction: Optional[float] = None,
     min_contributors: Optional[int] = None,
     sigma_tau_fraction_max: Optional[float] = None,
     bimodality_dominant_fraction: Optional[float] = None,
-    compute_band_majorities: bool = True,
+    compute_band_majorities: Optional[bool] = None,
     min_contributors_per_band: Optional[int] = None,
+    settings: Optional[TauCalibrationSettings] = None,
+    preset: Optional[str] = None,
 ) -> TauCalibrationResult:
     """Run the Stage 2b Gaussian-shape τ_G calibration, equivalent to
     :meth:`Pipeline.calibrate_tau_G`.
@@ -729,6 +738,11 @@ def calibrate_tau_G(
     majority that the Stage 5 Gaussian path consumes. Persists to
     ``/stage2b_tau_G_calibration``. Independent of the pure-exp
     :func:`calibrate_tau`; both can coexist on one ``.ftmw`` file.
+
+    Parameters left as ``None`` fall through the four-layer resolution
+    chain; ``settings=`` and ``preset=`` populate the preset layer and
+    are mutually exclusive. The resolved settings share the
+    ``processing_parameters/stage2b_tau`` block with the pure-exp twin.
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -741,6 +755,7 @@ def calibrate_tau_G(
             snr_min=snr_min,
             tau_G_bound_lo=tau_G_bound_lo,
             tau_G_bound_hi=tau_G_bound_hi,
+            tau_G_seeds=tau_G_seeds,
             delta_chi2r_min=delta_chi2r_min,
             tau_G_upper_fraction=tau_G_upper_fraction,
             min_contributors=min_contributors,
@@ -748,6 +763,8 @@ def calibrate_tau_G(
             bimodality_dominant_fraction=bimodality_dominant_fraction,
             compute_band_majorities=compute_band_majorities,
             min_contributors_per_band=min_contributors_per_band,
+            settings=settings,
+            preset=preset,
         )
     except Exception as e:
         logger.error(f"Failed to calibrate τ_G for {file_path}: {e}")
@@ -775,6 +792,8 @@ def recommend_shape(
     tau_bound_hi: Optional[float] = None,
     tau_G_seeds: Optional[List[float]] = None,
     pure_margin_threshold: Optional[float] = None,
+    settings: Optional[TauCalibrationSettings] = None,
+    preset: Optional[str] = None,
 ) -> ShapeRecommendation:
     """Run the 3-way L/G/V shape-recommendation hook, equivalent to
     :meth:`Pipeline.recommend_shape`.
@@ -788,6 +807,10 @@ def recommend_shape(
     up automatically. Requires Stage 1 (active region + frequency trim)
     to have completed; the Stage 2b calibrations are optional but the
     persisted contract only fires when at least one of them has run.
+
+    Parameters left as ``None`` fall through the four-layer resolution
+    chain; ``settings=`` and ``preset=`` populate the preset layer and
+    are mutually exclusive.
     """
     try:
         return Pipeline.open(file_path).recommend_shape(
@@ -801,6 +824,8 @@ def recommend_shape(
             tau_bound_hi=tau_bound_hi,
             tau_G_seeds=tau_G_seeds,
             pure_margin_threshold=pure_margin_threshold,
+            settings=settings,
+            preset=preset,
         )
     except Exception as e:
         logger.error(f"Failed to recommend shape for {file_path}: {e}")

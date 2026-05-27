@@ -15,6 +15,11 @@ classifier. It writes to whichever Stage 2b groups exist; if neither is
 present the verdict is returned but no attr is stamped (callers can
 re-run after :func:`calibrate_tau` / :func:`calibrate_tau_G` if they
 want the persisted contract for Stage 5 to fire).
+
+Knob configuration follows the four-layer resolver pattern shared with
+the τ twins; the same persisted ``processing_parameters/stage2b_tau``
+settings record drives the recommender (Stage 2b is one stage, one
+settings block, three consumers).
 """
 
 from __future__ import annotations
@@ -26,24 +31,25 @@ from typing import Any, Dict, Optional, Sequence
 import numpy as np
 
 from ..core.settings import FT_PROCESSING_PATH, FTSettings
+from ..core.tau_calibration_settings import TauCalibrationSettings
 from ..file_manager import StageDependencyError
 from ..fitting.tau_calibration import (
-    DEFAULT_N_SEG,
-    DEFAULT_RSS_GATE_FACTOR,
-    DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN,
-    DEFAULT_T_SIGMA,
-    DEFAULT_TAU_G_BOUND_HI,
-    DEFAULT_TAU_G_BOUND_LO,
-    DEFAULT_TAU_G_SEEDS,
-    DEFAULT_TAU_G_SNR_MIN,
     ShapeRecommendation,
     compute_shape_recommendation,
 )
 from ..io.stage_fit_settings_serialization import (
     write_stage2b_recommended_shape,
 )
+from ..io.tau_calibration_settings_serialization import (
+    save_tau_calibration_settings_to_h5,
+)
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
+from .tau_settings_resolution import (
+    _required_float,
+    _required_int,
+    resolve_with_preset_and_persisted,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +66,43 @@ def _read_canonical_ft_settings(file_path: str) -> FTSettings:
     return settings
 
 
+def _build_explicit_from_kwargs(
+    *,
+    n_seg: Optional[int],
+    t_sigma: Optional[float],
+    tau_max_us: Optional[float],
+    rss_gate_factor: Optional[float],
+    sigma_time: Optional[float],
+    snr_min: Optional[float],
+    tau_bound_lo: Optional[float],
+    tau_bound_hi: Optional[float],
+    tau_G_seeds: Optional[Sequence[float]],
+    pure_margin_threshold: Optional[float],
+) -> TauCalibrationSettings:
+    """Bundle legacy per-knob kwargs into an explicit-layer settings instance.
+
+    The recommendation hook's per-bin knobs (``snr_min``,
+    ``tau_bound_lo`` / ``tau_bound_hi``, ``tau_G_seeds``,
+    ``pure_margin_threshold``) sit on
+    :class:`RecommendationSubSettings`, distinct from the Gaussian-twin
+    block of the same name -- the two consumers can ship independent
+    operating points.
+    """
+    explicit = TauCalibrationSettings()
+    explicit.stft.n_seg = n_seg
+    explicit.stft.t_sigma = t_sigma
+    explicit.stft.tau_max_us = tau_max_us
+    explicit.stft.rss_gate_factor = rss_gate_factor
+    explicit.stft.sigma_time = sigma_time
+    explicit.recommendation.snr_min = snr_min
+    explicit.recommendation.tau_bound_lo = tau_bound_lo
+    explicit.recommendation.tau_bound_hi = tau_bound_hi
+    if tau_G_seeds is not None:
+        explicit.recommendation.tau_G_seeds = tuple(float(v) for v in tau_G_seeds)
+    explicit.recommendation.pure_margin_threshold = pure_margin_threshold
+    return explicit
+
+
 def recommend_shape_impl(
     file_path: str,
     *,
@@ -73,6 +116,8 @@ def recommend_shape_impl(
     tau_bound_hi: Optional[float] = None,
     tau_G_seeds: Optional[Sequence[float]] = None,
     pure_margin_threshold: Optional[float] = None,
+    settings: Optional[TauCalibrationSettings] = None,
+    preset: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the 3-way shape recommendation on ``file_path`` and persist it.
 
@@ -82,8 +127,15 @@ def recommend_shape_impl(
     majority vote, and stamps the verdict's ``recommended_shape`` onto
     every Stage 2b group present on the file (Lorentzian-twin
     ``stage2b_tau_calibration`` and/or Gaussian-twin
-    ``stage2b_tau_G_calibration``). Stage 5's resolver picks the attr
-    up automatically as its *recommended* layer.
+    ``stage2b_tau_G_calibration``). Stage 5's resolver picks the attr up
+    automatically as its *recommended* layer.
+
+    Parameters left as ``None`` fall through the resolution chain
+    (``explicit > preset > persisted > recommended > hard default``); the
+    resolved settings are stamped to
+    ``processing_parameters/stage2b_tau`` so a follow-up no-kwargs call
+    inherits the same recipe. ``settings=`` and ``preset=`` are mutually
+    exclusive.
 
     Returns
     -------
@@ -96,49 +148,66 @@ def recommend_shape_impl(
         present).
     """
     file_path_obj = Path(file_path)
-    settings = _read_canonical_ft_settings(file_path)
+
+    explicit = _build_explicit_from_kwargs(
+        n_seg=n_seg,
+        t_sigma=t_sigma,
+        tau_max_us=tau_max_us,
+        rss_gate_factor=rss_gate_factor,
+        sigma_time=sigma_time,
+        snr_min=snr_min,
+        tau_bound_lo=tau_bound_lo,
+        tau_bound_hi=tau_bound_hi,
+        tau_G_seeds=tau_G_seeds,
+        pure_margin_threshold=pure_margin_threshold,
+    )
+    resolved, preset_name = resolve_with_preset_and_persisted(
+        file_path,
+        explicit=explicit,
+        settings=settings,
+        preset=preset,
+    )
+
+    ft_settings = _read_canonical_ft_settings(file_path)
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 
     start_us = (
-        float(settings.start_us) if settings.start_us is not None else 0.0
+        float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
     )
     end_us = (
-        float(settings.end_us)
-        if settings.end_us is not None
+        float(ft_settings.end_us)
+        if ft_settings.end_us is not None
         else float(fid.duration_us)
     )
-    if settings.trim is None:
+    if ft_settings.trim is None:
         raise ValueError(
             "Stage 1 canonical FT settings have no frequency trim; the "
             "shape recommendation uses the persisted trim range to match "
             "the user spectrum. Set trim on compute_ft() first."
         )
-    trim_lo_mhz, trim_hi_mhz = settings.trim
+    trim_lo_mhz, trim_hi_mhz = ft_settings.trim
     sideband = (
         fid.sideband.value if hasattr(fid.sideband, "value") else str(fid.sideband)
     )
 
-    n_seg_v = DEFAULT_N_SEG if n_seg is None else int(n_seg)
-    t_sigma_v = DEFAULT_T_SIGMA if t_sigma is None else float(t_sigma)
-    rss_gate_v = (
-        DEFAULT_RSS_GATE_FACTOR if rss_gate_factor is None else float(rss_gate_factor)
+    stft = resolved.stft
+    rec = resolved.recommendation
+    n_seg_v = _required_int(stft.n_seg, "stft.n_seg")
+    t_sigma_v = _required_float(stft.t_sigma, "stft.t_sigma")
+    rss_gate_v = _required_float(stft.rss_gate_factor, "stft.rss_gate_factor")
+    snr_min_v = _required_float(rec.snr_min, "recommendation.snr_min")
+    bound_lo_v = _required_float(rec.tau_bound_lo, "recommendation.tau_bound_lo")
+    bound_hi_v = _required_float(rec.tau_bound_hi, "recommendation.tau_bound_hi")
+    margin_v = _required_float(
+        rec.pure_margin_threshold, "recommendation.pure_margin_threshold"
     )
-    snr_min_v = DEFAULT_TAU_G_SNR_MIN if snr_min is None else float(snr_min)
-    bound_lo_v = (
-        DEFAULT_TAU_G_BOUND_LO if tau_bound_lo is None else float(tau_bound_lo)
-    )
-    bound_hi_v = (
-        DEFAULT_TAU_G_BOUND_HI if tau_bound_hi is None else float(tau_bound_hi)
-    )
-    seeds_v = (
-        DEFAULT_TAU_G_SEEDS if tau_G_seeds is None else tuple(tau_G_seeds)
-    )
-    margin_v = (
-        DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN
-        if pure_margin_threshold is None
-        else float(pure_margin_threshold)
-    )
+    if rec.tau_G_seeds is None:
+        raise AssertionError(
+            "resolved TauCalibrationSettings.recommendation.tau_G_seeds is "
+            "None; missing hard default"
+        )
+    seeds_v = tuple(float(v) for v in rec.tau_G_seeds)
 
     verdict: ShapeRecommendation = compute_shape_recommendation(
         np.asarray(fid.data, dtype=float),
@@ -149,10 +218,10 @@ def recommend_shape_impl(
         sideband=sideband,
         trim_lo_mhz=float(trim_lo_mhz),
         trim_hi_mhz=float(trim_hi_mhz),
-        sigma_time=sigma_time,
+        sigma_time=stft.sigma_time,
         n_seg=n_seg_v,
         t_sigma=t_sigma_v,
-        tau_max_us=tau_max_us,
+        tau_max_us=stft.tau_max_us,
         rss_gate_factor=rss_gate_v,
         snr_min=snr_min_v,
         tau_bound_lo=bound_lo_v,
@@ -182,6 +251,13 @@ def recommend_shape_impl(
             "resolver will not see it until a τ calibration is run.",
             file_path_obj,
         )
+
+    # Persist the resolved Stage 2b settings as the canonical record
+    # for this run -- recommend_shape is one of three consumers that
+    # share the same settings block.
+    save_tau_calibration_settings_to_h5(
+        file_path, resolved, preset_name=preset_name,
+    )
 
     return {
         "status": "success",

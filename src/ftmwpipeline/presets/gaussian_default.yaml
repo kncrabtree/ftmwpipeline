@@ -5,5 +5,5 @@ description: |
   introduce any tuning beyond the shape change; use this as the starting
   point for Gaussian retuning sweeps.
 
-fit:
+stage5:
   shape: gaussian

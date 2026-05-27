@@ -70,6 +70,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Resolved (D8) — implementation overview |
 | [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
 | [`planning/stage5-fit-settings.md`](planning/stage5-fit-settings.md) | Implementation summary — `StageFitSettings` dataclass + sub-blocks, four-layer resolution chain (explicit > preset > persisted > recommended > hard default), HDF5 persistence at `processing_parameters/stage5_fit`, YAML preset interchange (three packaged presets + bare-name/path resolution), `--preset` CLI flag, Stage 2b `recommended_shape` contract. End-user walkthrough at [`docs/source/settings_and_presets.rst`](../docs/source/settings_and_presets.rst). Unblocks Stage 5 Gaussian-path retuning sweeps |
+| [`planning/settings-backfill.md`](planning/settings-backfill.md) | In progress — extends the Stage 5 settings architecture to the rest of the pipeline. Stage 2b first (`TauCalibrationSettings`), Stages 2 / 3 / 4 queued. Catalogues the back-compat shims (notably the preset YAML `fit:` → `stage5:` wrapper rename and the legacy per-knob kwargs that stay on Stage 2b signatures) so research / dev scripts have a migration target after the project completes |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
 
 ## Code vs spec divergences
