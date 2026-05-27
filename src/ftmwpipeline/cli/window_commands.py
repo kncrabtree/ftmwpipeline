@@ -42,6 +42,7 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             min_window_half_width_mhz=args.min_window_half_width_mhz,
             magnitude_attachment_threshold=args.magnitude_attachment_threshold,
             tau_us=args.tau_us,
+            preset=args.preset,
         )
         plan = result["plan"]
         print("\nWindow assignment completed successfully!")
@@ -211,6 +212,16 @@ def register_window_commands(subparsers: Any) -> None:
         dest="tau_us",
         type=float,
         help="Assumed decay constant for leakage reach (default: undamped)",
+    )
+    p_assign.add_argument(
+        "--preset",
+        dest="preset",
+        type=str,
+        default=None,
+        help=(
+            "Stage 4 preset (bare name resolves against packaged presets, or "
+            "a path to a YAML file carrying a 'stage4:' block)."
+        ),
     )
     p_assign.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"

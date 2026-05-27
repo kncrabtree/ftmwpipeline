@@ -1,6 +1,6 @@
 # Plan: per-stage settings backfill across the pipeline
 
-Status: **Stage 2b, Stage 2, and Stage 3 shipped.** Stage 4 is queued.
+Status: **Complete.** Stages 2b, 2, 3, and 4 all shipped.
 
 ## Stage 2b state
 
@@ -163,7 +163,7 @@ continue to load without modification.
 | 2b    | `TauCalibrationSettings`          | Shipped             |
 | 2     | `NoiseSettings`                   | Shipped             |
 | 3     | `PeakDetectionSettings`           | Shipped             |
-| 4     | `WindowPlanningSettings`          | Queued              |
+| 4     | `WindowPlanningSettings`          | Shipped             |
 
 Ordering rationale: Stage 2b first because it is the shape-
 recommendation home (its persisted attr is what the Stage 5
@@ -298,6 +298,58 @@ Test coverage shipped:
   `sg_window`. The kernel floor `min_snr` is asserted to be
   `min(promotion.internal_min_snr, promotion.min_snr)` so both
   promotion knobs are exercised.
+
+## Stage 4 state
+
+The Stage 4 `WindowPlanningSettings` plumbing is live across all three
+user-facing surfaces. The full non-slow test suite is green under the
+new wiring, including the cross-interface and Stage 5 / Stage 2b /
+Stage 2 / Stage 3 propagation suites.
+
+Components landed:
+
+- **`src/ftmwpipeline/core/window_planning_settings.py`** — top-level
+  `WindowPlanningSettings` plus four sub-dataclasses
+  (`CoherenceSubSettings`, `ClusteringSubSettings`,
+  `ContributorSubSettings`, `LeakageSubSettings`). `_HARD_DEFAULTS`
+  mirrors every `DEFAULT_*` constant in
+  `preprocessing/window_planning.py` and
+  `preprocessing/edge_coherence.py`. `resolve()` walks the four-layer
+  chain; `to_attrs` / `from_attrs` / YAML helpers + `load_preset`
+  reading the `stage4:` block from packaged presets.
+  `leakage.tau_us` is allowed to remain `None` after resolution
+  (boxcar / undamped limit).
+- **`src/ftmwpipeline/io/window_planning_settings_serialization.py`** —
+  HDF5 persistence at `processing_parameters/stage4_windows` with one
+  subgroup per sub-dataclass and the standard `__None__` sentinel.
+  Intentionally distinct from the existing root-level `/stage4_windows`
+  group (settings under `processing_parameters/`, results at the root
+  — same pattern Stages 5, 2, and 3 use).
+- **`_internal/stage4_impl.assign_windows_impl`** — gains
+  `settings: Optional[WindowPlanningSettings]` and `preset:
+  Optional[str]` kwargs (mutually exclusive, matching Stages 5, 2b,
+  2, and 3). Builds an explicit `WindowPlanningSettings` from the
+  legacy per-knob kwargs, walks `resolve(...)`, lifts the resolved
+  fields into the `build_window_plan` call, and persists the
+  resolved settings via `save_window_planning_settings_to_h5`. The
+  legacy JSON-encoded `processing_parameters/window_assignment`
+  block is preserved by `save_window_parameters_impl` as a
+  back-compat shim; the new canonical record is what the resolver's
+  persisted layer reads.
+- **`Pipeline.assign_windows` / `api.assign_windows`** — gain
+  `settings=` / `preset=` kwargs.
+- **CLI** — `assign-windows` gains `--preset NAME_OR_PATH`.
+
+Test coverage shipped:
+
+- `tests/unit/core/test_window_planning_settings.py` (24 tests).
+- `tests/unit/io/test_window_planning_settings_serialization.py` (8 tests).
+- `tests/unit/io/test_preset_loading.py` extended (38 tests total) for
+  the `stage4:` block path and sibling-block coexistence.
+- `tests/integration/test_stage4_settings_propagation.py` (10 tests)
+  — every routed `WindowPlanningSettings` field reaches
+  `build_window_plan`; `settings=` + `preset=` mutual exclusion; a
+  no-kwargs follow-up inherits the persisted `edge_m`.
 
 ## Stage 2b design reference
 
@@ -476,6 +528,8 @@ do not silently delete entries.**
 | 10 | Legacy per-knob kwargs (`min_snr`, `weak_medium_snr`, `medium_strong_snr`, `sg_window`, `sg_order`, `primary_window`, `min_exclusion_mhz`, `run_gap_pass`) stay on `Pipeline.detect_peaks` / `api.detect_peaks` / `_internal/stage3_impl.detect_peaks_impl` and on the corresponding CLI flags | `_internal/stage3_impl.py`, `pipeline.py`, `api.py`, `cli/peak_commands.py` | Match the Stage 5 / Stage 2b / Stage 2 migration policy: existing call-sites that pass individual kwargs (e.g. `min_snr=4.0`) keep working; they bundle into an explicit `PeakDetectionSettings` inside the impl and route through the resolver. Note the public surface exposes only the eight historically-public knobs; the new instrument-tunable knobs (`internal_min_snr`, `sg_fwhm_coverage`, `sg_min_window`, `detection_zpf`, `gap_active_zpf`, `gap_mask_edge_threshold`) flow through `settings=` / `preset=` only. | Move kwarg payload to a `PeakDetectionSettings(...)` instance or to a YAML preset. |
 | 11 | Module-level constants (`DEFAULT_MIN_SNR`, `DEFAULT_INTERNAL_MIN_SNR`, `DEFAULT_WEAK_MEDIUM_SNR`, `DEFAULT_MEDIUM_STRONG_SNR` in `preprocessing/peak_detection.py`; `DEFAULT_PRIMARY_WINDOW`, `GAP_MASK_EDGE_THRESHOLD`, `_DETECTION_ZPF`, `_GAP_ACTIVE_ZPF`, `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW` in `_internal/stage3_impl.py`) stay live | `preprocessing/peak_detection.py`, `_internal/stage3_impl.py` | They remain the kernel/helper parameter defaults and the readable canonical source the `PeakDetectionSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `PeakDetectionSettings`, they become docstring-only. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
 | 12 | `_internal/stage3_impl._spectrum_from_fid` gains a keyword-only `zpf=` kwarg; `_grid_aware_sg_window` gains keyword-only `fwhm_coverage=` and `min_window=` kwargs | `_internal/stage3_impl.py::_spectrum_from_fid`, `::_grid_aware_sg_window` | The new kwargs default to the module-level constants (`_DETECTION_ZPF`, `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW`), so old callers see identical behaviour. The orchestrator-internal knobs now flow through `PeakDetectionSettings` end-to-end. **Landed in this project.** | None for old callers; new callers can pass per-knob kwargs or build a `PeakDetectionSettings`. |
+| 13 | Legacy per-knob kwargs (`edge_m`, `trim_m`, `edge_threshold`, `max_window_width_mhz`, `min_freeze_snr`, `min_window_half_width_mhz`, `magnitude_attachment_threshold`, `tau_us`) stay on `Pipeline.assign_windows` / `api.assign_windows` / `_internal/stage4_impl.assign_windows_impl` and on the corresponding CLI flags | `_internal/stage4_impl.py`, `pipeline.py`, `api.py`, `cli/window_commands.py` | Match the Stage 5 / Stage 2b / Stage 2 / Stage 3 migration policy: existing call-sites that pass individual kwargs keep working; they bundle into an explicit `WindowPlanningSettings` inside the impl and route through the resolver. | Move kwarg payload to a `WindowPlanningSettings(...)` instance or to a YAML preset. |
+| 14 | Module-level constants (`DEFAULT_EDGE_M`, `DEFAULT_TRIM_M`, `DEFAULT_EDGE_THRESHOLD` in `preprocessing/edge_coherence.py`; `DEFAULT_MAX_WINDOW_WIDTH_MHZ`, `DEFAULT_MIN_FREEZE_SNR`, `DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ`, `DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD` in `preprocessing/window_planning.py`) stay live | `preprocessing/edge_coherence.py`, `preprocessing/window_planning.py` | They remain the kernel's parameter defaults and the readable canonical source the `WindowPlanningSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `WindowPlanningSettings`, they become docstring-only. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
 
 ## Follow-ups (not part of this project's session work)
 
@@ -489,8 +543,6 @@ do not silently delete entries.**
   parameters. The Stage 2 noise estimator is the canonical
   instrument-tunable surface (see
   [`memory: noise-estimator-mad-shipped`](../../../.claude/projects/-home-kncrabtree-github-ftmwpipeline/memory/noise-estimator-mad-shipped.md)).
-- **Stage 4 settings (`WindowPlanningSettings`).** Clustering
-  edges and the minimum-separation factors.
 - **Cross-fixture validation of the shape-aware classifier.** The
   classifier landed against 2638 only; a clean-Lorentzian fixture
   is the generalisation check.

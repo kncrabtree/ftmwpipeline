@@ -33,6 +33,9 @@ from ftmwpipeline.core.peak_detection_settings import (
 from ftmwpipeline.core.tau_calibration_settings import (
     load_preset as load_tau_preset,
 )
+from ftmwpipeline.core.window_planning_settings import (
+    load_preset as load_window_preset,
+)
 
 
 class TestPackagedPresetResolution:
@@ -277,6 +280,62 @@ class TestStage3PresetResolution:
         p = tmp_path / "two_blocks.yaml"
         p.write_text(
             "stage3:\n  promotion:\n    min_snr: 4.0\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        s = load_preset(p)
+        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
+
+
+class TestStage4PresetResolution:
+    """The Stage 4 ``load_preset`` reads the ``stage4:`` block from the
+    same packaged preset files Stages 2, 2b, 3, and 5 use; absence is not
+    an error."""
+
+    def test_packaged_presets_load_empty_when_no_stage4_block(self) -> None:
+        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
+            s = load_window_preset(name)
+            assert s.is_empty(), (
+                f"packaged preset {name!r} should produce an empty "
+                f"WindowPlanningSettings until a stage4: block lands"
+            )
+
+    def test_stage4_block_populates_dataclass(self, tmp_path) -> None:
+        p = tmp_path / "with_stage4.yaml"
+        p.write_text(
+            "name: example\n"
+            "stage4:\n"
+            "  coherence:\n    edge_m: 128\n    edge_threshold: 10.0\n"
+            "  clustering:\n    max_window_width_mhz: 60.0\n"
+            "  leakage:\n    tau_us: 5.0\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        ws = load_window_preset(p)
+        assert ws.coherence.edge_m == 128
+        assert ws.coherence.edge_threshold == 10.0
+        assert ws.clustering.max_window_width_mhz == 60.0
+        assert ws.leakage.tau_us == 5.0
+
+    def test_stage4_block_must_be_mapping(self, tmp_path) -> None:
+        p = tmp_path / "bad_stage4.yaml"
+        p.write_text("stage4: 3\n")
+        with pytest.raises(ValueError, match=r"'stage4' block must be a mapping"):
+            load_window_preset(p)
+
+    def test_stage4_loader_path_resolution(self, tmp_path) -> None:
+        p = tmp_path / "stage4_only.yaml"
+        p.write_text("stage4:\n  contributor:\n    min_freeze_snr: 25.0\n")
+        ws = load_window_preset(p)
+        assert ws.contributor.min_freeze_snr == 25.0
+
+    def test_stage4_missing_path_raises(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError, match=r"preset file not found"):
+            load_window_preset(tmp_path / "missing.yaml")
+
+    def test_sibling_stage4_block_ignored_by_stage5_loader(self, tmp_path) -> None:
+        """A ``stage4:`` sibling block must not trip Stage 5's unknown-key gate."""
+        p = tmp_path / "two_blocks.yaml"
+        p.write_text(
+            "stage4:\n  coherence:\n    edge_m: 32\n"
             "stage5:\n  shape: gaussian\n"
         )
         s = load_preset(p)

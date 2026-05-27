@@ -25,21 +25,21 @@ from typing import Any, Dict, Optional, Tuple
 import h5py
 
 from ..core.data_structures import ComplexFT, WindowDifficulty, WindowPlan
+from ..core.window_planning_settings import (
+    WindowPlanningSettings,
+    load_preset as load_window_planning_preset,
+    resolve as resolve_window_planning_settings,
+)
+from ..io.window_planning_settings_serialization import (
+    load_window_planning_settings_from_h5,
+    save_window_planning_settings_to_h5,
+)
 from ..io.window_serialization import (
     load_window_plan_from_hdf5,
     save_window_plan_to_hdf5,
 )
-from ..preprocessing.edge_coherence import (
-    DEFAULT_EDGE_M,
-    DEFAULT_EDGE_THRESHOLD,
-    DEFAULT_TRIM_M,
-)
 from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
-    DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
-    DEFAULT_MAX_WINDOW_WIDTH_MHZ,
-    DEFAULT_MIN_FREEZE_SNR,
-    DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     build_window_plan,
 )
 from .stage0_impl import load_fid_from_pipeline_impl
@@ -54,6 +54,41 @@ from .stage3_impl import (
 logger = logging.getLogger(__name__)
 
 
+def _build_explicit_from_kwargs(
+    *,
+    edge_m: Optional[int],
+    trim_m: Optional[int],
+    edge_threshold: Optional[float],
+    max_window_width_mhz: Optional[float],
+    min_freeze_snr: Optional[float],
+    min_window_half_width_mhz: Optional[float],
+    magnitude_attachment_threshold: Optional[float],
+    tau_us: Optional[float],
+) -> WindowPlanningSettings:
+    """Bundle the legacy per-knob kwargs into an explicit-layer settings instance."""
+    explicit = WindowPlanningSettings()
+    explicit.coherence.edge_m = edge_m
+    explicit.coherence.trim_m = trim_m
+    explicit.coherence.edge_threshold = edge_threshold
+    explicit.clustering.max_window_width_mhz = max_window_width_mhz
+    explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
+    explicit.contributor.min_freeze_snr = min_freeze_snr
+    explicit.contributor.magnitude_attachment_threshold = (
+        magnitude_attachment_threshold
+    )
+    explicit.leakage.tau_us = tau_us
+    return explicit
+
+
+def _required(value: Any, name: str) -> Any:
+    """Coerce a post-resolve field that must be filled (hard default present)."""
+    if value is None:
+        raise AssertionError(
+            f"resolved WindowPlanningSettings.{name} is None; missing hard default"
+        )
+    return value
+
+
 def assign_windows_impl(
     file_path: str,
     edge_m: Optional[int] = None,
@@ -64,6 +99,9 @@ def assign_windows_impl(
     min_window_half_width_mhz: Optional[float] = None,
     magnitude_attachment_threshold: Optional[float] = None,
     tau_us: Optional[float] = None,
+    *,
+    settings: Optional[WindowPlanningSettings] = None,
+    preset: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the Stage 4 window plan from the promoted Stage 3 peaks and persist it.
 
@@ -85,44 +123,37 @@ def assign_windows_impl(
     trim_m : int, optional
         Trim-refinement band width (default 32).
     edge_threshold : float, optional
-        ``S_coh`` threshold ``T_edge`` (default 3.0).
+        ``S_coh`` threshold ``T_edge`` (default 8.0).
     max_window_width_mhz : float, optional
         Width cap; wider windows are HARD and get a split proposal (default 40).
     min_freeze_snr : float, optional
         Freeze-eligibility SNR cutoff for fixed contributors (default 50).
     min_window_half_width_mhz : float, optional
         Minimum half-width of a window around an isolated weak line (default 2).
+    magnitude_attachment_threshold : float, optional
+        Analytic-skirt-magnitude attachment cutoff in units of σ_c (default 0.1).
     tau_us : float, optional
-        Assumed decay constant for leakage reach (default: undamped/boxcar).
+        Assumed decay constant for the leakage envelope (default: undamped/boxcar).
+    settings : WindowPlanningSettings, optional
+        Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
+        chain); fields left ``None`` fall through. Mutually exclusive with
+        ``preset``.
+    preset : str, optional
+        Bare preset name or path to a YAML file carrying a ``stage4:`` block.
+        Mutually exclusive with ``settings``.
 
     Raises
     ------
     ValueError
-        If Stage 3 has not been completed.
+        If Stage 3 has not been completed, or if ``settings=`` and ``preset=``
+        are both supplied.
     """
-    edge_m_v = DEFAULT_EDGE_M if edge_m is None else int(edge_m)
-    trim_m_v = DEFAULT_TRIM_M if trim_m is None else int(trim_m)
-    edge_threshold_v = (
-        DEFAULT_EDGE_THRESHOLD if edge_threshold is None else float(edge_threshold)
-    )
-    max_width_v = (
-        DEFAULT_MAX_WINDOW_WIDTH_MHZ
-        if max_window_width_mhz is None
-        else float(max_window_width_mhz)
-    )
-    min_freeze_v = (
-        DEFAULT_MIN_FREEZE_SNR if min_freeze_snr is None else float(min_freeze_snr)
-    )
-    min_half_v = (
-        DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ
-        if min_window_half_width_mhz is None
-        else float(min_window_half_width_mhz)
-    )
-    mag_thresh_v = (
-        DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD
-        if magnitude_attachment_threshold is None
-        else float(magnitude_attachment_threshold)
-    )
+    if preset is not None and settings is not None:
+        raise ValueError(
+            "'preset' and 'settings' are alternative ways to populate "
+            "the preset layer of the window-planning-settings chain; pass "
+            "exactly one (or override individual fields via explicit kwargs)"
+        )
 
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
@@ -130,6 +161,64 @@ def assign_windows_impl(
                 "Stage 3 (peak detection) must be completed before window "
                 "assignment. Run detect_peaks()/detect-peaks first."
             )
+
+    explicit = _build_explicit_from_kwargs(
+        edge_m=edge_m,
+        trim_m=trim_m,
+        edge_threshold=edge_threshold,
+        max_window_width_mhz=max_window_width_mhz,
+        min_freeze_snr=min_freeze_snr,
+        min_window_half_width_mhz=min_window_half_width_mhz,
+        magnitude_attachment_threshold=magnitude_attachment_threshold,
+        tau_us=tau_us,
+    )
+    preset_layer: Optional[WindowPlanningSettings] = settings
+    preset_name: Optional[str] = None
+    if preset is not None:
+        preset_layer = load_window_planning_preset(preset)
+        preset_name = str(preset)
+    persisted_layer = load_window_planning_settings_from_h5(file_path)
+
+    resolved = resolve_window_planning_settings(
+        explicit=explicit,
+        preset=preset_layer,
+        persisted=persisted_layer,
+        recommended=None,
+    )
+
+    coh = resolved.coherence
+    clus = resolved.clustering
+    contrib = resolved.contributor
+    leak = resolved.leakage
+
+    edge_m_v: int = int(_required(coh.edge_m, "coherence.edge_m"))
+    trim_m_v: int = int(_required(coh.trim_m, "coherence.trim_m"))
+    edge_threshold_v: float = float(
+        _required(coh.edge_threshold, "coherence.edge_threshold")
+    )
+    max_width_v: float = float(
+        _required(clus.max_window_width_mhz, "clustering.max_window_width_mhz")
+    )
+    min_half_v: float = float(
+        _required(
+            clus.min_window_half_width_mhz,
+            "clustering.min_window_half_width_mhz",
+        )
+    )
+    min_freeze_v: float = float(
+        _required(contrib.min_freeze_snr, "contributor.min_freeze_snr")
+    )
+    mag_thresh_v: float = float(
+        _required(
+            contrib.magnitude_attachment_threshold,
+            "contributor.magnitude_attachment_threshold",
+        )
+    )
+    # ``leakage.tau_us`` is legitimately allowed to remain ``None`` after
+    # resolution -- ``None`` selects the undamped/boxcar limit downstream.
+    tau_us_v: Optional[float] = (
+        float(leak.tau_us) if leak.tau_us is not None else None
+    )
 
     loaded = load_peaks_impl(file_path)
     peaks = loaded["peaks"]
@@ -150,7 +239,7 @@ def assign_windows_impl(
         user_ft.complex_spectrum,
         user_rms,
         acquisition_us=acquisition_us,
-        tau_us=tau_us,
+        tau_us=tau_us_v,
         probe_freq_mhz=fid.probe_freq_mhz,
         start_us=base_pp.start_us or 0.0,
         edge_m=edge_m_v,
@@ -164,6 +253,14 @@ def assign_windows_impl(
 
     save_window_plan_impl(file_path, plan)
     save_window_parameters_impl(file_path, plan.parameters)
+    # Persist the resolved WindowPlanningSettings to
+    # ``processing_parameters/stage4_windows``. The legacy JSON-encoded
+    # ``processing_parameters/window_assignment`` block is kept by
+    # ``save_window_parameters_impl`` above as a back-compat shim; the new
+    # canonical record below is what the resolver's persisted layer reads.
+    save_window_planning_settings_to_h5(
+        file_path, resolved, preset_name=preset_name,
+    )
     _update_stage_completion(file_path, "stage4_windows")
     # Re-assignment supersedes any Stage 5 fit built on the old plan.
     invalidate_downstream_stages(file_path, "stage4_windows")

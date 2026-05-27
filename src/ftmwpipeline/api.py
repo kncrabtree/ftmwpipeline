@@ -43,6 +43,7 @@ from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
+from .core.window_planning_settings import WindowPlanningSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .preprocessing.noise_estimation import NoiseResult
 
@@ -1056,6 +1057,9 @@ def assign_windows(
     min_window_half_width_mhz: Optional[float] = None,
     magnitude_attachment_threshold: Optional[float] = None,
     tau_us: Optional[float] = None,
+    *,
+    settings: Optional[WindowPlanningSettings] = None,
+    preset: Optional[str] = None,
 ) -> WindowPlan:
     """Assign analysis windows (Stage 4), equivalent to Pipeline.assign_windows().
 
@@ -1092,6 +1096,13 @@ def assign_windows(
     tau_us : float, optional
         Assumed decay constant for the analytic leakage reach
         (default: undamped/boxcar limit).
+    settings : WindowPlanningSettings, optional
+        Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
+        chain); fields left ``None`` fall through. Mutually exclusive with
+        ``preset``.
+    preset : str, optional
+        Bare preset name or path to a YAML file carrying a ``stage4:`` block.
+        Mutually exclusive with ``settings``.
 
     Returns
     -------
@@ -1110,6 +1121,8 @@ def assign_windows(
             min_window_half_width_mhz=min_window_half_width_mhz,
             magnitude_attachment_threshold=magnitude_attachment_threshold,
             tau_us=tau_us,
+            settings=settings,
+            preset=preset,
         )
     except Exception as e:
         logger.error(f"Failed to assign windows for {file_path}: {e}")
