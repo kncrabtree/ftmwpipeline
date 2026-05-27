@@ -69,6 +69,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split` |
 | [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Resolved (D8) — implementation overview |
 | [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
+| [`planning/stage5-fit-settings.md`](planning/stage5-fit-settings.md) | Implementation summary — `StageFitSettings` dataclass + sub-blocks, four-layer resolution chain (explicit > preset > persisted > recommended > hard default), HDF5 persistence at `processing_parameters/stage5_fit`, YAML preset interchange (three packaged presets + bare-name/path resolution), `--preset` CLI flag, Stage 2b `recommended_shape` contract. End-user walkthrough at [`docs/source/settings_and_presets.rst`](../docs/source/settings_and_presets.rst). Unblocks Stage 5 Gaussian-path retuning sweeps |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
 
 ## Code vs spec divergences
