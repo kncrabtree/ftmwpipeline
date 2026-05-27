@@ -65,8 +65,10 @@ walkthrough at [`docs/source/settings_and_presets.rst`](../../docs/source/settin
   no-flag behaviour stays the same.
 - **`presets/`** — three packaged YAML files: `gaussian_default`
   (clean Gaussian baseline), `lorentzian_legacy` (historical default,
-  named for A/B), `instrument_bc_2638` (Gaussian + per-band τ routing,
-  starting point for the BlackChirp 2638 retuning sweeps).
+  named for A/B), `instrument_bc_2638` (Gaussian + per-band τ routing
+  + retuned `tau_penalty_lambda: 50` for the BlackChirp 2638 fixture;
+  see the preset YAML's docstring for the sweep evidence that picked
+  λ=50).
   Top-level `fit:` wrapper leaves room for a future stage-spanning
   `ft:` block.
 
@@ -163,6 +165,28 @@ it, the canonical settings dataclasses live in `core/`.
 
 ## Follow-ups (not part of this work)
 
+- **Per-band τ₀ for fixed-τ windows.** ``tau0_us`` in
+  ``_internal/stage5_impl.py:594-603`` is set once from the band-wide
+  ``tau_maj_us``. Per-band routing currently overrides only the prior
+  *anchor* (``window_tau_overrides[wid] = (tau_maj_band, sigma_band)``);
+  it does not override ``tau0_us`` per window, so weak windows with
+  ``fit_tau=False`` (SNR < ``fit_tau_min_snr``) get pinned at the
+  band-wide value rather than their band's anchor. Empirically confirmed
+  on 2638: every fixed-τ window across all three bands sits at
+  τ=8.51874 μs (the band-wide majority), independent of band. Fix is to
+  add a per-window ``tau0_us`` override into the per-band routing
+  pass. Deferred until Stage 2b's τ_G calibration itself is reassessed
+  for Gaussian (see next bullet).
+- **Stage 2b τ_G reassessment for Gaussian.** Strong-window medians
+  (max-peak-SNR ≥ 20, λ=0) on 2638 land at τ ≈ 6.79 μs -- *below* every
+  per-band anchor (low 9.23, mid 8.80, high 7.58). Two candidate
+  explanations: the τ_G calibration's deliberate exclusion of the
+  strongest STFT contributors may be biasing the estimator high; or
+  STFT-contributor τ_G is an intrinsically different estimator from
+  window-fit τ_G. Worth re-running the contributor filter at the
+  Stage 2b level. Every pre-Stage-5 stage was originally tuned for the
+  Lorentzian path; Stage 2b has had the most Gaussian work but is not
+  necessarily optimized.
 - **Stage 2b shape discriminator.** Compute a recommendation
   (`"lorentzian"` / `"gaussian"`) by comparing the persisted
   Lorentzian and Gaussian τ calibrations; write to
