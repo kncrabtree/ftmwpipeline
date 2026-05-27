@@ -440,18 +440,15 @@ class TestExtractTauGMajority:
     def test_recovers_tau_G_for_multi_line(self):
         """SNR-weighted majority τ_G lands in the right ballpark for Gaussian lines.
 
-        The per-bin Voigt fit on a sliding-STFT bin time series is a small-
-        sample nonlinear LSQ (only ``n_seg`` frames per bin); the slowly-
-        varying envelope approximation, the joint ``(τ_L, τ_G)``
-        identifiability slop, and the finite-frame averaging all add bias
-        on this kind of synthetic. The Part B research on 2638 saw a
-        comparable spread on real contributor bins. We hold the synthetic
-        to a generous 50 % relative band -- the unit-test scope is "did
-        the eligible-filter, per-bin Voigt fit, and SNR-weighted majority
-        machinery all run end-to-end and land somewhere reasonable", not
-        "achieve calibration-quality accuracy". Stage 5 χ² improvement is
-        the production acceptance test (validated on the 2638 fixture in
-        the comparison script, not here).
+        The per-bin pure-Gaussian fit on a sliding-STFT bin time series is
+        a small-sample nonlinear LSQ (only ``n_seg`` frames per bin); the
+        slowly-varying envelope approximation and finite-frame averaging
+        add bias on this kind of synthetic, so the test holds a generous
+        50 % relative band -- the unit-test scope is "did the eligible-
+        filter, per-bin pure-Gauss fit, and SNR-weighted majority machinery
+        all run end-to-end and land somewhere reasonable". Stage 5 χ²
+        improvement against the free-τ window-fit distribution on the 2638
+        fixture is the production acceptance test (validated separately).
         """
         rng = np.random.default_rng(20260525 + 311)
         N = int(round(T_FULL_US / SAMPLE_DT_US))
@@ -471,14 +468,14 @@ class TestExtractTauGMajority:
             trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
             sigma_time=sigma_t,
             snr_min=10.0,
-            min_contributors=3,
+            min_contributors=2,
             min_contributors_per_band=2,
         )
-        assert result.n_contributors >= 3, (
-            f"only {result.n_contributors} eligible bins (need ≥ 3)"
+        assert result.n_contributors >= 2, (
+            f"only {result.n_contributors} eligible bins (need ≥ 2)"
         )
-        assert result.tau_maj_us == pytest.approx(tau_G_truth, rel=0.5), (
-            f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 50%"
+        assert result.tau_maj_us == pytest.approx(tau_G_truth, rel=0.2), (
+            f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 20%"
         )
         assert result.sideband == "lower"
         # The eligible subset must not be saturated against the upper bound.

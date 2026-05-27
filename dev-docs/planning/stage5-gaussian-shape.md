@@ -94,11 +94,16 @@ model for evaluation.
 ### Stage 2b twin (`stage2bg_impl.py`, `fitting/tau_calibration.py`)
 
 A companion Stage 2b path that calibrates `τ_G_maj` + per-band
-`band_majorities_G` instead of pure-exp τ. Algorithm: lift Part B's
-per-bin Voigt fit (`_fit_voigt_multistart` on contributor bins only,
-filter to converged + finite `τ_G < cap` + `Δχ²ᵣ ≥ 1`) into
-`fitting/tau_calibration.py` as `extract_tau_G_majority`, mirroring
-`extract_tau_majority` in shape and signature.
+`band_majorities_G` instead of pure-exp τ. Algorithm: per-bin pure-exp
+NLS polish as the seed, then a multi-start pure-Gaussian fit
+`|S| = C exp(-(a/τ_G)²)` on the contributor bins, filtered to
+converged + finite `τ_G < cap` + `Δχ²ᵣ(exp − gauss) ≥ 1`. The
+estimator matches the Stage 5 `shape='gaussian'` window-fit envelope —
+a Voigt decomposition's `τ_G` would describe the Gaussian component
+*after* the Lorentzian decay is absorbed into a separate `τ_L`, which
+over-estimates the envelope-equivalent τ that the window fit recovers.
+The function `extract_tau_G_majority` mirrors `extract_tau_majority`
+in shape and signature.
 
 New stage name: `stage2b_tau_G_calibration`, with dependencies
 `[stage2_noise_result]` (same as `stage2b_tau_calibration`). The two
@@ -212,10 +217,17 @@ described below):
   with no behaviour change at existing call sites.
 - **Stage 2b twin**: `extract_tau_G_majority` in
   `fitting/tau_calibration.py` (per-bin pure-exp NLS polish + multi-
-  start Voigt; eligibility gate `converged ∧ τ_G < 0.7 · τ_G_max ∧
-  Δχ²ᵣ ≥ 1`); per-band SNR-weighted majority via the existing
-  `compute_band_majorities` machinery. `_internal/stage2b_g_impl.py`
-  drives it (`calibrate_tau_G_impl`,
+  start pure-Gaussian fit `|S| = C exp(-(a/τ_G)²)`; eligibility gate
+  `converged ∧ τ_G < 0.7 · τ_G_max ∧ Δχ²ᵣ(exp − gauss) ≥ 1`);
+  per-band SNR-weighted majority via the existing
+  `compute_band_majorities` machinery. The Voigt helpers
+  (`_voigt_residuals`, `_fit_voigt_nls_multistart`) stay in the module
+  for the future 3-way L/G/V shape-recommendation comparator but no
+  longer drive the production calibration -- their `τ_G` is the
+  pure-Gaussian component after the Lorentzian decay is absorbed into
+  a separate `τ_L`, which over-estimates the envelope-equivalent τ
+  that the Stage 5 pure-Gaussian window fit recovers.
+  `_internal/stage2b_g_impl.py` drives it (`calibrate_tau_G_impl`,
   `load_tau_G_calibration_impl`, `tau_G_calibration_present`); new
   stage name `stage2b_tau_G_calibration` registered in
   `PipelineStageTracker.STAGE_DEPENDENCIES` (deps:
@@ -245,8 +257,9 @@ described below):
   `api.calibrate_tau_G(...)` / `api.load_tau_G_calibration(...)`.
 - **Tests**: unit
   `tests/unit/fitting/test_tau_calibration.py::TestExtractTauGMajority`
-  exercises the eligibility filter + multi-start Voigt + majority on
-  a synthetic Gaussian-envelope FID; integration suite
+  exercises the eligibility filter + multi-start pure-Gauss + majority
+  on a synthetic Gaussian-envelope FID (τ_G recovery within ±20 %);
+  integration suite
   `tests/integration/test_stage5_fitting.py` gains
   `test_calibrate_tau_G_cross_interface`,
   `test_fit_peaks_gaussian_cross_interface`, and
@@ -261,6 +274,15 @@ described below):
   residual vs SNR).
 
 ## First validation pass on 2638 unapodized
+
+> Numbers here predate the Stage 2b τ_G estimator swap from Voigt to
+> pure-Gaussian. The τ_G_maj quoted below is the Voigt-anchored value;
+> on the same fixture the current pure-Gaussian estimator gives
+> `τ_G_maj = 6.96 µs` band-wide (8.39 / 6.75 / 6.24 per band). Re-run
+> `compare_shapes.py` against the new anchors before re-deriving
+> per-shape acceptance numbers; the qualitative observations
+> (Gaussian wins on Part-A shape-error windows, not everywhere) are
+> expected to hold but should be re-verified.
 
 The first run of `compare_shapes.py` on `exp_2638_unapodized.ftmw` (Stage
 2b τ_G calibration: `τ_G_maj = 8.52 µs`, `σ_τ_G = 1.84 µs`, 382 windows

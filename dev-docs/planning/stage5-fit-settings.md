@@ -165,34 +165,47 @@ it, the canonical settings dataclasses live in `core/`.
 
 ## Follow-ups (not part of this work)
 
-- **Per-band τ₀ for fixed-τ windows.** ``tau0_us`` in
-  ``_internal/stage5_impl.py:594-603`` is set once from the band-wide
-  ``tau_maj_us``. Per-band routing currently overrides only the prior
-  *anchor* (``window_tau_overrides[wid] = (tau_maj_band, sigma_band)``);
-  it does not override ``tau0_us`` per window, so weak windows with
-  ``fit_tau=False`` (SNR < ``fit_tau_min_snr``) get pinned at the
-  band-wide value rather than their band's anchor. Empirically confirmed
-  on 2638: every fixed-τ window across all three bands sits at
-  τ=8.51874 μs (the band-wide majority), independent of band. Fix is to
-  add a per-window ``tau0_us`` override into the per-band routing
-  pass. Deferred until Stage 2b's τ_G calibration itself is reassessed
-  for Gaussian (see next bullet).
-- **Stage 2b τ_G reassessment for Gaussian.** Strong-window medians
-  (max-peak-SNR ≥ 20, λ=0) on 2638 land at τ ≈ 6.79 μs -- *below* every
-  per-band anchor (low 9.23, mid 8.80, high 7.58). Two candidate
-  explanations: the τ_G calibration's deliberate exclusion of the
-  strongest STFT contributors may be biasing the estimator high; or
-  STFT-contributor τ_G is an intrinsically different estimator from
-  window-fit τ_G. Worth re-running the contributor filter at the
-  Stage 2b level. Every pre-Stage-5 stage was originally tuned for the
-  Lorentzian path; Stage 2b has had the most Gaussian work but is not
-  necessarily optimized.
-- **Stage 2b shape discriminator.** Compute a recommendation
-  (`"lorentzian"` / `"gaussian"`) by comparing the persisted
-  Lorentzian and Gaussian τ calibrations; write to
-  `stage2b_tau_calibration/.attrs/recommended_shape`. The
-  Stage 5 resolver already wires the *recommended* layer; only the
-  computation is missing.
+- **Per-band τ₀ for fixed-τ windows. Resolved.**
+  ``fitting/plan_execution.py:_walk_windows_in_order`` now derives a
+  per-window ``tau0_us`` from ``window_tau_overrides[wid][0]``
+  alongside the prior-anchor override, so fixed-τ windows
+  (``fit_tau=False``) seed at their band's τ rather than the band-wide
+  value. On 2638 the persisted fixed-τ ``tau_us`` now reads
+  8.39 / 6.75 / 6.24 μs across low / mid / high (was 6.955 across
+  every band).
+  ``tests/integration/test_stage5_settings_propagation.py::``
+  ``test_per_band_tau_routes_tau0_per_window`` asserts the kwarg
+  matches band-local ``τ_maj`` on the captured ``_fit_one_window`` call.
+- **Stage 2b τ_G reassessment for Gaussian. Resolved.**
+  The per-band-anchor / window-fit gap on 2638 was an estimator
+  mismatch, not a contributor-exclusion filter bug: the Voigt fit
+  recovers ``τ_G`` as the pure-Gaussian component *after* the
+  Lorentzian decay is absorbed into a separate ``τ_L``, while the
+  Stage 5 ``shape='gaussian'`` window fit fits a pure-Gaussian model to
+  the full envelope. Swapping the per-bin estimator in
+  ``extract_tau_G_majority`` from Voigt to pure-Gauss lands the per-
+  band anchors within 5–8 % of the λ=0 strong-window-fit medians on
+  every band (8.39 vs 8.77; 6.75 vs 6.92; 6.24 vs 5.77). The Voigt
+  helpers stay in the module for the future 3-way L/G/V comparator.
+  ``instrument_bc_2638.yaml`` keeps ``λ=50`` against the new anchors;
+  the runaway-suppression cliff (95 free-τ windows runaway at λ=0 →
+  5 at λ=50, ~98.6 %) is unchanged and higher λ degrades the bulk χ²ᵣ
+  tail in mid/high bands.
+- **Stage 2b shape discriminator -- preliminary read landed.**
+  3-way per-bin AICc(exp / gauss / voigt) helper prototyped in
+  ``scratch/stage2b-bias/diagnose_3way.py`` (not productionised). On
+  2638's 408 contributor bins the SNR-weighted vote splits 22 % L /
+  36 % G / 42 % V overall, with low band Gaussian-majority and
+  mid/high Voigt-majority (median ΔAICc(v−g) = −6.3 in high band --
+  real Voigt character consistent with W-band horn-coupling adding
+  Lorentzian width). The cross-check that the per-bin pure-Gauss τ_G
+  matches the per-window pure-Gauss fit τ end-to-end (ratios 0.96 /
+  0.98 / 1.08 per band) confirms 2638's envelope is dominantly
+  Gaussian even where Voigt narrowly wins on the +1-parameter test.
+  Productionising the helper (write to
+  ``stage2b_tau_calibration/.attrs/recommended_shape`` /
+  ``stage2b_tau_G_calibration/.attrs/recommended_shape``) plus a
+  V-majority tiebreaker rule is the next step on this thread.
 - **Backfill to other stages.** `TauCalibrationSettings`,
   `NoiseSettings`, `PeakDetectionSettings`, `WindowPlanningSettings`
   follow the same pattern. Order: Stage 2b first (shape recommendation

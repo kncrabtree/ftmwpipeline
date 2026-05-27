@@ -243,3 +243,77 @@ def test_tau_penalty_lambda_drives_real_fit(
         f"bit-identical fits across {len(common)} windows -- the LSQ is "
         f"not receiving the kwarg"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-band τ₀: every window must seed at its band's τ_maj, not the band-wide
+# ---------------------------------------------------------------------------
+def test_per_band_tau_routes_tau0_per_window(
+    baseline_2638_stage4_small: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Per-band routing forwards each window's band-local τ_maj into ``tau0_us``.
+
+    Stage 2b τ_G stamps three per-band majorities on the 2638 fixture; the
+    band-low majority differs from the band-wide value, so a per-window
+    fixed-τ window (``fit_tau=False``) in the low band that seeded at the
+    band-wide ``tau_maj_us`` would land on the wrong τ. The fix routes the
+    per-band ``tau_maj_us`` into the per-window ``tau0_us`` seed; this test
+    intercepts the first ``_fit_one_window`` call and asserts the kwarg
+    matches the band-local τ_maj rather than the band-wide one.
+    """
+    import shutil
+
+    from ftmwpipeline.fitting import plan_execution
+    from ftmwpipeline._internal.stage2b_g_impl import (
+        calibrate_tau_G_impl,
+        load_tau_G_calibration_impl,
+    )
+
+    variant = tmp_path / "per_band_tau0.ftmw"
+    shutil.copyfile(baseline_2638_stage4_small, variant)
+    # Stage 2b τ_G must be present for per-band routing to activate.
+    calibrate_tau_G_impl(str(variant))
+    tc = load_tau_G_calibration_impl(str(variant))["tau_G_calibration"]
+    assert tc.band_majorities, "Stage 2b τ_G did not produce band_majorities"
+
+    captured: Dict[str, Any] = {}
+
+    def _fake_fit_one_window(win, *args, **kwargs):  # type: ignore[no-untyped-def]
+        captured["window_id"] = int(win.window_id)
+        captured["window_freq_lo"] = float(win.freq_range[0])
+        captured["window_freq_hi"] = float(win.freq_range[1])
+        captured["tau0_us"] = float(kwargs["tau0_us"])
+        captured["conservative_kwargs"] = dict(kwargs["conservative_kwargs"])
+        raise _PlanIntercepted("intercepted on first window")
+
+    monkeypatch.setattr(plan_execution, "_fit_one_window", _fake_fit_one_window)
+
+    s = StageFitSettings(shape=ShapeSpec(kind=PeakShape.GAUSSIAN))
+    s.tau.per_band_tau = True
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    # The captured window's centre frequency tells us which band it sits in.
+    centre = 0.5 * (captured["window_freq_lo"] + captured["window_freq_hi"])
+    matching_band = None
+    for band in tc.band_majorities:
+        if band.freq_lo_mhz <= centre < band.freq_hi_mhz:
+            matching_band = band
+            break
+    assert matching_band is not None, (
+        f"window centre {centre} MHz is outside every band majority "
+        f"({[(b.label, b.freq_lo_mhz, b.freq_hi_mhz) for b in tc.band_majorities]})"
+    )
+    assert captured["tau0_us"] == pytest.approx(matching_band.tau_maj_us), (
+        f"window {captured['window_id']} (centre {centre:.1f} MHz, "
+        f"band {matching_band.label}) saw tau0_us={captured['tau0_us']:.3f} "
+        f"but the band-local τ_maj is {matching_band.tau_maj_us:.3f}. "
+        f"Band-wide τ_maj is {tc.tau_maj_us:.3f} -- if those match, the "
+        f"per-band τ₀ routing did not fire."
+    )
+    # Sanity: assert conservative_kwargs's tau_maj_us was also routed.
+    assert captured["conservative_kwargs"]["tau_maj_us"] == pytest.approx(
+        matching_band.tau_maj_us
+    )

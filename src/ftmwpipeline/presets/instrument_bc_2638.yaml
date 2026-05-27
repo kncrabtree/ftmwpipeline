@@ -1,19 +1,26 @@
 name: instrument_bc_2638
 description: |
   Stage 5 settings for the BlackChirp 2638 fixture. Gaussian shape with
-  per-band tau routing on, and a light τ-prior (``tau_penalty_lambda: 50``)
-  that suppresses runaway τ in weak windows without pulling well-fit windows
-  off their data-driven values. Knobs left unset fall through to the
-  resolver's hard defaults.
+  per-band tau routing on, and a light τ-prior
+  (``tau_penalty_lambda: 50``) that suppresses runaway τ in weak windows
+  without pulling well-fit windows off their data-driven values. Knobs
+  left unset fall through to the resolver's hard defaults.
 
-  Sweep evidence (382 windows, scratch/gaussian-retune/):
+  Sweep evidence (382 windows, scratch/gaussian-retune/, against the
+  pure-Gaussian Stage 2b τ_G anchors: band-wide 6.96 μs;
+  low / mid / high 8.39 / 6.75 / 6.24 μs):
 
-  * ``tau_penalty_lambda`` -- λ=50 dominates the stock λ=500 on every χ²ᵣ
-    statistic (median 1.36 vs 1.41, mean 3.17 vs 3.45, p90 3.77 vs 5.00)
-    and on runaway suppression (99.6% of free-τ windows within 2σ of the
-    per-band anchor vs 78% at λ=0). The cliff is between λ=0 and λ=50:
-    smaller λ leaves a long runaway tail (max |z|=5σ); larger λ keeps
-    centering already-good fits and degrades χ²ᵣ.
+  * ``tau_penalty_lambda`` -- the cliff is between λ=0 and λ=50. At
+    λ=0 the free-τ distribution sprawls (low band 6-11 μs, mid 3.5-10.5
+    μs, high 2.5-10 μs) and 95 windows are runaway (|τ − τ_band| >
+    2 σ_band); λ=50 collapses every band onto ±σ around its anchor and
+    cuts runaways to 5 (98.6 % suppression) at a 3 % cost on the
+    bulk-χ²ᵣ median. λ ≥ 250 keeps tightening τ but starts adding
+    moderate-χ²ᵣ tail in the mid and high bands (p90 climbs from
+    3.70 → 3.94 as λ goes 50 → 2500); the few remaining outliers it
+    catches are seeding pathologies (a strong line whose K=2 straddled
+    re-seed collapses within ``min_separation_factor``), not τ-prior
+    issues. Per-band runaway counts at λ=50/100/250/500: 5/3/3/0.
 
   * ``max_decay_factor`` -- k ∈ {1.5, 2, 3, 5, 8} all produce identical
     median / p25 / p75 / p90 χ²ᵣ to 3 decimals at λ=500; differences are

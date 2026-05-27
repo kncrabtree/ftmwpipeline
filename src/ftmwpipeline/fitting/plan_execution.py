@@ -1080,13 +1080,17 @@ def execute_plan(
         ``max_residual_rescue_rounds == 0``.
     window_tau_overrides : dict[int, (float, float)], optional
         Per-window override of the ``(tau_maj_us, sigma_tau_us)`` pair
-        in ``conservative_kwargs``. When set, every fit on a window whose
-        id is present in the map uses the overriding pair (with all other
-        conservative_kwargs entries unchanged). Used by Stage 5 when a
-        per-band tau calibration is plumbed (:func:`fit_peaks_impl`
-        ``per_band_tau=True``); windows missing from the map keep the
-        band-wide ``tau_maj_us`` / ``sigma_tau_us`` from
-        ``conservative_kwargs`` (or ``None`` if no calibration is wired).
+        in ``conservative_kwargs`` and the per-window ``tau0_us`` seed.
+        When set, every fit on a window whose id is present in the map
+        uses the overriding pair (with all other conservative_kwargs
+        entries unchanged) AND seeds its τ-parameter at the band-local
+        ``tau_maj_us``. Used by Stage 5 when a per-band tau calibration
+        is plumbed (:func:`fit_peaks_impl` ``per_band_tau=True``);
+        windows missing from the map keep the band-wide
+        ``tau_maj_us`` / ``sigma_tau_us`` from ``conservative_kwargs``
+        and the band-wide ``tau0_us`` (or ``None`` if no calibration is
+        wired). The ``tau0_us`` part is what gives weak windows with
+        ``fit_tau=False`` their band-local fixed τ.
 
     Returns
     -------
@@ -1263,8 +1267,14 @@ def _walk_windows_in_order(
 
     ``window_tau_overrides`` (optional) maps window_id to a
     ``(tau_maj_us, sigma_tau_us)`` pair that overrides the same keys in
-    ``conservative_kwargs`` for that window only — used by the per-band
-    Stage 5 path so each window sees its band-local tau anchor.
+    ``conservative_kwargs`` AND the per-window ``tau0_us`` seed for that
+    window only -- used by the per-band Stage 5 path so each window sees
+    its band-local tau anchor in both the prior penalty (``tau_maj_us``)
+    and the τ-parameter starting point. Without the ``tau0_us`` override
+    a weak window with ``fit_tau=False`` would sit pinned at the band-
+    wide ``tau0_us`` regardless of band; the override routes the seed to
+    the band-local majority so fixed-τ windows in different bands land
+    at different τ.
 
     Order of work per window:
 
@@ -1281,11 +1291,13 @@ def _walk_windows_in_order(
     for wid in order:
         win = by_id[wid]
         ck_for_window = conservative_kwargs
+        tau0_us_for_window = tau0_us
         if wid in window_tau_overrides:
             tau_maj_w, sigma_tau_w = window_tau_overrides[wid]
             ck_for_window = dict(conservative_kwargs)
             ck_for_window["tau_maj_us"] = float(tau_maj_w)
             ck_for_window["sigma_tau_us"] = float(sigma_tau_w)
+            tau0_us_for_window = float(tau_maj_w)
         outcome = _fit_one_window(
             win,
             active_ft,
@@ -1294,7 +1306,7 @@ def _walk_windows_in_order(
             outcomes=outcomes,
             sideband=sideband,
             acquisition_us=acquisition_us,
-            tau0_us=tau0_us,
+            tau0_us=tau0_us_for_window,
             fit_tau=fit_tau,
             residual_edge_m=residual_edge_m,
             conservative_kwargs=ck_for_window,
@@ -1308,7 +1320,7 @@ def _walk_windows_in_order(
                 outcomes=outcomes,
                 sideband=sideband,
                 acquisition_us=acquisition_us,
-                tau0_us=tau0_us,
+                tau0_us=tau0_us_for_window,
                 fit_tau=fit_tau,
                 residual_edge_threshold=residual_edge_threshold,
                 residual_edge_m=residual_edge_m,
@@ -1327,7 +1339,7 @@ def _walk_windows_in_order(
                 win,
                 outcome,
                 acquisition_us=acquisition_us,
-                tau0_us=tau0_us,
+                tau0_us=tau0_us_for_window,
                 residual_edge_m=residual_edge_m,
                 conservative_kwargs=ck_for_window,
                 max_residual_rescue_rounds=max_residual_rescue_rounds,

@@ -63,17 +63,30 @@ DEFAULT_SPUR_CLUSTER_MULTIPLIER = 1.0  # cluster gap in units of n_seg full-reco
 # and `report.md` § "Polish design" for the sweep.
 DEFAULT_POLISH_SNR_CAP = 9.0
 
-# Gaussian-twin operating points (see ``extract_tau_G_majority``).
-# Per-bin Voigt-fit gates that decide which bins enter the τ_G calibration:
-# both must hold or the bin is filtered out before per-band aggregation.
+# Gaussian-twin operating points (see ``extract_tau_G_majority``). Per-bin
+# pure-Gaussian-fit gates decide which bins enter the τ_G calibration:
+# every condition must hold or the bin is filtered out before per-band
+# aggregation. The estimator is a pure-Gaussian model
+# ``|S| = C exp(-(a/τ_G)²)``, matching the Stage 5 ``shape='gaussian'``
+# window fit -- a Voigt decomposition would extract τ_G as the Gaussian
+# component *after* the Lorentzian decay is absorbed into a separate τ_L,
+# which over-estimates the envelope's effective Gaussian τ relative to
+# what the window fit recovers. ``_voigt_residuals`` and
+# ``_fit_voigt_nls_multistart`` are exported alongside for the 3-way
+# L/G/V shape-recommendation comparison.
 DEFAULT_TAU_G_SNR_MIN = 20.0
 DEFAULT_TAU_G_BOUND_LO = 0.5
 DEFAULT_TAU_G_BOUND_HI = 100.0
+# Minimum Δχ²ᵣ = χ²ᵣ(exp) − χ²ᵣ(gauss) required for a bin to be kept:
+# bins where the data is more pure-Lorentzian than pure-Gaussian are
+# filtered out (their τ_G saturates against the upper bound). With
+# matched parameter counts (k=2 for both models) the threshold reduces
+# to a direct "Gaussian beats exp by Δχ²ᵣ ≥ 1.0" test.
 DEFAULT_TAU_G_DELTA_CHI2R_MIN = 1.0
 DEFAULT_TAU_G_UPPER_FRACTION = 0.7
 DEFAULT_TAU_G_SEEDS: Tuple[float, ...] = (100.0, 50.0, 20.0, 10.0, 5.0, 3.0)
 # τ_G calibrations live on far fewer eligible bins than the pure-exp pool
-# (Part B on 2638: ~140 eligible vs ~2k pure-exp contributors); the
+# (2638: ~210 pure-Gauss-eligible vs ~2k pure-exp contributors); the
 # acceptance floor scales accordingly so the Gaussian preconditions can
 # actually pass on a typical fixture.
 DEFAULT_TAU_G_MIN_CONTRIBUTORS = 50
@@ -1355,13 +1368,24 @@ def extract_tau_majority(
 
 
 # ---------------------------------------------------------------------------
-# Gaussian-twin calibration: per-bin Voigt fit -> τ_G majority
+# Gaussian-twin calibration: per-bin pure-Gaussian fit -> τ_G majority.
+# Voigt residual + multi-start helpers sit alongside for the 3-way
+# L/G/V shape-recommendation comparator; the production
+# ``stage2b_tau_G_calibration`` group is driven by the pure-Gaussian
+# estimator so its τ_G matches the Stage 5 ``shape='gaussian'`` envelope.
 # ---------------------------------------------------------------------------
 def _voigt_residuals(
     params: np.ndarray, a: np.ndarray, y: np.ndarray
 ) -> np.ndarray:
     C, tau_L, tau_G = params
     return C * np.exp(-a / tau_L) * np.exp(-((a / tau_G) ** 2)) - y
+
+
+def _gauss_residuals(
+    params: np.ndarray, a: np.ndarray, y: np.ndarray
+) -> np.ndarray:
+    C, tau_G = params
+    return C * np.exp(-((a / tau_G) ** 2)) - y
 
 
 def _exp_residuals(
@@ -1444,6 +1468,53 @@ def _fit_voigt_nls_multistart(
     return best
 
 
+def _fit_gauss_nls_multistart(
+    a: np.ndarray,
+    y: np.ndarray,
+    C0: float,
+    *,
+    tau_lo: float,
+    tau_hi: float,
+    tau_G_seeds: Sequence[float],
+) -> Tuple[np.ndarray, float, bool, float]:
+    """Multi-start pure-Gaussian fit ``|S| = C exp(-(a/τ_G)²)``.
+
+    Returns ``(params, rss, converged, seed_tau_G_best)`` with
+    ``params = (C, tau_G)``. Mirrors :func:`_fit_voigt_nls_multistart`
+    but with one fewer parameter -- the pure-Gaussian model is the
+    Stage 5 ``shape='gaussian'`` window-fit envelope, so its recovered
+    τ_G is what the downstream Gaussian Stage 5 fit will see.
+    """
+    C0 = max(float(C0), 1e-30)
+    best_rss = np.inf
+    best: Optional[Tuple[np.ndarray, float, bool, float]] = None
+    for tG0 in tau_G_seeds:
+        tG0 = float(np.clip(tG0, tau_lo * 1.05, tau_hi * 0.95))
+        try:
+            res = least_squares(
+                _gauss_residuals,
+                x0=np.array([C0, tG0]),
+                bounds=([0.0, tau_lo], [np.inf, tau_hi]),
+                args=(a, y),
+                method="trf",
+                max_nfev=400,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        rss = float(np.sum(res.fun ** 2))
+        if rss < best_rss:
+            best_rss = rss
+            best = (res.x, rss, bool(res.success), tG0)
+    if best is None:
+        return (
+            np.array([C0, tau_hi * 0.95]),
+            float("inf"),
+            False,
+            float("nan"),
+        )
+    return best
+
+
 def extract_tau_G_majority(
     fid: np.ndarray,
     sample_dt_us: float,
@@ -1484,14 +1555,19 @@ def extract_tau_G_majority(
     2. Restrict to strong contributor bins (``classification == 3`` AND
        per-bin ``SNR > snr_min``).
     3. Per-bin: polish the log-linear pure-exp seed (NLS), then multi-start
-       Voigt fit ``|S_n(a)| = C exp(-a/τ_L) exp(-(a/τ_G)²)`` with the
-       ``tau_G_seeds`` grid; keep the best-RSS basin.
-    4. Calibration-eligible mask: Voigt converged, finite τ_G away from the
-       upper bound (``τ_G < tau_G_upper_fraction * tau_G_bound_hi``), and
-       Voigt beats pure-exp by at least ``delta_chi2r_min`` χ²ᵣ units.
-       Bins where the Voigt fit does not meaningfully improve get filtered
-       so their (often saturated-at-upper-bound) τ_G doesn't pull the
-       median.
+       pure-Gaussian fit ``|S_n(a)| = C exp(-(a/τ_G)²)`` with the
+       ``tau_G_seeds`` grid; keep the best-RSS basin. The pure-Gaussian
+       model matches the Stage 5 ``shape='gaussian'`` window-fit envelope,
+       so the recovered ``τ_G`` is what the downstream window fit will
+       see. A Voigt decomposition's ``τ_G`` would describe the Gaussian
+       component *after* the Lorentzian decay had been absorbed into a
+       separate ``τ_L`` -- larger than the envelope-equivalent τ that the
+       window fit recovers.
+    4. Calibration-eligible mask: pure-Gauss converged, finite τ_G away
+       from the upper bound (``τ_G < tau_G_upper_fraction *
+       tau_G_bound_hi``), and pure-Gauss beats pure-exp by at least
+       ``delta_chi2r_min`` χ²ᵣ units. Bins where pure-exp wins are
+       pure-Lorentzian and contribute no τ_G information.
     5. Persisted "contributors" = the eligible subset. The SNR-weighted
        majority over them gives ``τ_G_maj`` and ``σ_τ_G``; the per-band
        majorities (when ``compute_band_majorities_flag``) use the same
@@ -1512,24 +1588,26 @@ def extract_tau_G_majority(
         STFT calibration knobs; defaults match the pure-exp twin so the
         same bin classifier produces the same contributor pool.
     snr_min : float, default :data:`DEFAULT_TAU_G_SNR_MIN`
-        Per-bin SNR floor on the contributor pool. Below this, the per-bin
-        Voigt vs pure-exp χ²ᵣ discriminator has too little signal-to-noise
-        to be informative. Matches the Part B research script.
+        Per-bin SNR floor on the contributor pool. Below this the
+        pure-Gauss vs pure-exp χ²ᵣ discriminator has too little signal-
+        to-noise to be informative.
     tau_G_bound_lo, tau_G_bound_hi : float
-        Bounds on the Voigt ``τ_L`` and ``τ_G`` parameters (microseconds).
-        The upper bound is the saturation ceiling whose proximity flags a
-        bin as Voigt-uninformative.
+        Bounds on the pure-Gaussian ``τ_G`` parameter (microseconds).
+        The upper bound is the saturation ceiling whose proximity flags
+        a bin as Gaussian-uninformative.
     tau_G_seeds : sequence of float
-        Multi-start grid for the Voigt fit's τ_G seed. A bin that is
-        pure-Lorentzian lands at the upper edge; one with finite Gaussian
-        content lands at the right basin.
+        Multi-start grid for the pure-Gaussian fit's τ_G seed; a bin
+        whose true τ_G lies far from any seed can still recover the
+        correct basin through the multi-start sweep.
     delta_chi2r_min : float, default :data:`DEFAULT_TAU_G_DELTA_CHI2R_MIN`
-        Minimum χ²ᵣ improvement (pure-exp − Voigt) required for a bin to
-        enter the calibration.
+        Minimum χ²ᵣ improvement (pure-exp − pure-Gauss) required for a
+        bin to enter the calibration. With matched parameter counts
+        (k=2 for both models) the test reduces directly to "data is
+        more pure-Gaussian than pure-Lorentzian on this bin".
     tau_G_upper_fraction : float, default
         :data:`DEFAULT_TAU_G_UPPER_FRACTION`
         Bins whose recovered τ_G ≥ ``tau_G_upper_fraction * tau_G_bound_hi``
-        are saturated against the bound and dropped (no Voigt content).
+        are saturated against the bound and dropped (no Gaussian content).
     min_contributors, sigma_tau_fraction_max, bimodality_dominant_fraction
         Acceptance pre-conditions. ``min_contributors`` is lower here
         than in the pure-exp twin (defaults differ) because the eligible
@@ -1611,7 +1689,7 @@ def extract_tau_G_majority(
     a_centers = cal.a_centers_us.astype(float)
     sigma_frame = float(cal.sigma_frame)
     dof_exp = max(int(n_seg) - 2, 1)
-    dof_voigt = max(int(n_seg) - 3, 1)
+    dof_gauss = max(int(n_seg) - 2, 1)
     sigma_frame_sq = max(sigma_frame * sigma_frame, 1e-300)
     tau_G_cap = float(tau_G_upper_fraction) * float(tau_G_bound_hi)
     seeds = tuple(float(s) for s in tau_G_seeds)
@@ -1632,17 +1710,17 @@ def extract_tau_G_majority(
             a_centers, mag_bin, C_seed, tau_seed,
             tau_lo=float(tau_G_bound_lo), tau_hi=float(tau_G_bound_hi),
         )
-        v_params, rss_voigt, ok_voigt, _seed_best = _fit_voigt_nls_multistart(
-            a_centers, mag_bin, float(exp_params[0]), float(exp_params[1]),
+        g_params, rss_gauss, ok_gauss, _seed_best = _fit_gauss_nls_multistart(
+            a_centers, mag_bin, float(exp_params[0]),
             tau_lo=float(tau_G_bound_lo), tau_hi=float(tau_G_bound_hi),
             tau_G_seeds=seeds,
         )
         chi2r_exp = rss_exp / sigma_frame_sq / dof_exp
-        chi2r_voigt = rss_voigt / sigma_frame_sq / dof_voigt
-        delta_chi2r = chi2r_exp - chi2r_voigt
-        tau_G = float(v_params[2])
+        chi2r_gauss = rss_gauss / sigma_frame_sq / dof_gauss
+        delta_chi2r = chi2r_exp - chi2r_gauss
+        tau_G = float(g_params[1])
         if (
-            ok_voigt
+            ok_gauss
             and np.isfinite(tau_G)
             and tau_G < tau_G_cap
             and delta_chi2r >= float(delta_chi2r_min)
