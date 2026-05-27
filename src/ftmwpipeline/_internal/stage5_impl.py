@@ -50,6 +50,11 @@ from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
 )
+from ..io.stage_fit_settings_serialization import (
+    load_stage_fit_settings_from_h5,
+    read_stage2b_recommended_shape,
+    save_stage_fit_settings_to_h5,
+)
 from ..preprocessing.noise_estimation import estimate_noise_adaptive
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
@@ -401,9 +406,18 @@ def fit_peaks_impl(
         per_band_tau=per_band_tau,
         shape=shape,
     )
+    persisted_settings = load_stage_fit_settings_from_h5(file_path)
+    recommended_shape_str = read_stage2b_recommended_shape(file_path)
+    recommended_settings: Optional[StageFitSettings] = None
+    if recommended_shape_str is not None:
+        recommended_settings = StageFitSettings(
+            shape=ShapeSpec.coerce(recommended_shape_str)
+        )
     resolved = resolve_stage_fit_settings(
         explicit=explicit_kwargs,
         preset=settings,
+        persisted=persisted_settings,
+        recommended=recommended_settings,
     )
     # All fields backed by ``_HARD_DEFAULTS`` are guaranteed non-None after
     # resolve(); cast through ``_required_*`` helpers so mypy sees concrete
@@ -737,6 +751,10 @@ def fit_peaks_impl(
     )
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
+    # Stamp the resolved settings as the canonical record for this fit so
+    # a follow-up call with no explicit args inherits exactly the same
+    # knobs (the persisted layer of the resolution chain).
+    save_stage_fit_settings_to_h5(file_path, resolved)
     _update_stage_completion(file_path, "stage5_fitting")
     # A Stage 5 re-fit invalidates nothing today (Stage 5 is the terminal
     # stage); this call is a no-op now and a guard for future stages.

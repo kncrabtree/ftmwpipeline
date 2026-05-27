@@ -218,7 +218,17 @@ def save_tau_calibration_impl(
     *,
     parameters_used: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Write a :class:`TauCalibrationResult` into ``/stage2b_tau_calibration``."""
+    """Write a :class:`TauCalibrationResult` into ``/stage2b_tau_calibration``.
+
+    Also stamps a ``recommended_shape`` attribute on the group. The
+    Stage 5 resolver reads this attr as the *recommended* layer of the
+    fit-settings chain; it carries the ``__None__`` sentinel (no
+    recommendation) unless a Stage 2b L/G discriminator supplies one.
+    """
+    from ..io.stage_fit_settings_serialization import (
+        write_stage2b_recommended_shape,
+    )
+
     with h5py.File(file_path, "a") as h5f:
         if TAU_GROUP_PATH in h5f:
             del h5f[TAU_GROUP_PATH]
@@ -229,6 +239,7 @@ def save_tau_calibration_impl(
             grp.attrs["parameters_used"] = json.dumps(
                 parameters_used, default=str
             )
+    write_stage2b_recommended_shape(file_path, shape=None)
 
 
 def load_tau_calibration_impl(file_path: str) -> Dict[str, Any]:
