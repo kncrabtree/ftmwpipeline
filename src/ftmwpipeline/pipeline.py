@@ -1108,6 +1108,7 @@ class Pipeline:
         per_band_tau: Optional[bool] = None,
         shape: Optional[str] = None,
         settings: Optional["StageFitSettings"] = None,
+        preset: Optional[str] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1195,6 +1196,13 @@ class Pipeline:
             :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
             or load from a preset YAML
             (:func:`~ftmwpipeline.core.stage_fit_settings.from_yaml`).
+        preset : str, optional
+            Name of a packaged preset (e.g. ``"instrument_bc_2638"``) or
+            a path to a YAML file. Enters the resolution chain at the
+            same *preset* layer as ``settings`` -- the two are
+            alternatives; passing both raises ``ValueError``. The preset
+            name is captured in the persisted Stage 5 fit's audit attrs
+            for reproducibility.
 
         Returns
         -------
@@ -1226,6 +1234,7 @@ class Pipeline:
                 per_band_tau=per_band_tau,
                 shape=shape,
                 settings=settings,
+                preset=preset,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "

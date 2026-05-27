@@ -48,6 +48,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             sigma_tau_override_us=args.sigma_tau_override_us,
             per_band_tau=args.per_band_tau,
             shape=args.shape,
+            preset=args.preset,
         )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
@@ -245,24 +246,42 @@ def register_fitting_commands(subparsers: Any) -> None:
         "--no-per-band-tau",
         dest="per_band_tau",
         action="store_false",
-        default=True,
+        default=None,
         help="Skip per-band tau routing and use the Stage 2b band-wide "
         "(tau_maj, sigma_tau) anchor for every window. The default "
         "(per-band routing on) maps each window to its band-local tau "
         "majority -- crucial for wide bands with monotonic horn-coupling "
-        "tau (~ 1/f). Falls back silently to band-wide when Stage 2b "
-        "band_majorities aren't persisted.",
+        "tau (~ 1/f). Omit both this flag and any preset that sets "
+        "per_band_tau and the resolver picks True from the hard defaults.",
     )
     p_fit.add_argument(
         "--shape",
         dest="shape",
         choices=("lorentzian", "gaussian"),
-        default="lorentzian",
+        default=None,
         help=(
             "Per-line envelope shape. 'lorentzian' (default) uses "
             "exp(-t/tau); 'gaussian' uses exp(-(t/tau_G)**2). Pass "
             "'gaussian' to consume the Stage 2b tau_G calibration "
-            "(calibrate-tau-G) in place of the pure-exp Stage 2b."
+            "(calibrate-tau-G) in place of the pure-exp Stage 2b. "
+            "Omit to fall through to the resolved StageFitSettings "
+            "(preset / persisted / hard default)."
+        ),
+    )
+    p_fit.add_argument(
+        "--preset",
+        dest="preset",
+        default=None,
+        metavar="NAME_OR_PATH",
+        help=(
+            "Load a Stage 5 fit preset by bare name (one of the "
+            "packaged presets under ftmwpipeline/presets/, e.g. "
+            "'gaussian_default', 'lorentzian_legacy', "
+            "'instrument_bc_2638') or by path to a YAML file. The "
+            "preset enters the resolution chain at the preset layer; "
+            "the per-knob CLI flags above still win per-field. "
+            "Mutually exclusive with the api/Pipeline 'settings' "
+            "kwarg."
         ),
     )
     p_fit.add_argument(

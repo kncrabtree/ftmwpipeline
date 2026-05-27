@@ -1,0 +1,12 @@
+name: instrument_bc_2638
+description: |
+  Stage 5 starting point for the BlackChirp 2638 fixture. Sets the
+  Gaussian shape (the broad-spectrum classifier on this experiment prefers
+  Gaussian at fair K) and turns on per-band tau routing; otherwise carries
+  stock values so that follow-up tuning work has a clean baseline to vary
+  from. Knobs left unset fall through to the resolver's hard defaults.
+
+fit:
+  shape: gaussian
+  tau:
+    per_band_tau: true

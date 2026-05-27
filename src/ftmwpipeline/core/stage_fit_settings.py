@@ -473,6 +473,90 @@ def from_yaml(source: Union[str, Path]) -> StageFitSettings:
     return from_yaml_dict(data)
 
 
+def _looks_like_path(name_or_path: Union[str, Path]) -> bool:
+    """Heuristic: does ``name_or_path`` reference a file rather than a bare name?
+
+    A bare preset name is a single identifier (e.g. ``instrument_bc_2638``)
+    that resolves against the packaged ``ftmwpipeline.presets`` resources.
+    Anything else -- a path with separators, a string ending in ``.yaml``,
+    or an absolute path -- gets loaded directly.
+    """
+    if isinstance(name_or_path, Path):
+        return True
+    s = str(name_or_path)
+    return ("/" in s) or ("\\" in s) or s.endswith((".yaml", ".yml"))
+
+
+def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
+    """Load a Stage 5 preset by bare name or by filesystem path.
+
+    Bare names resolve against the packaged ``ftmwpipeline.presets``
+    resources (e.g. ``"instrument_bc_2638"`` ->
+    ``ftmwpipeline/presets/instrument_bc_2638.yaml``); paths load
+    directly. Preset YAML may wrap the Stage 5 settings inside a
+    top-level ``fit:`` block (room for a future ``ft:`` block alongside)
+    or carry the settings flat at the top level; both forms parse
+    identically.
+
+    The ``name:`` and ``description:`` metadata fields are accepted but
+    ignored by the settings parser -- they're documentation for the
+    preset author.
+
+    Parameters
+    ----------
+    name_or_path :
+        Bare preset name (no extension) or a path to a YAML file.
+
+    Returns
+    -------
+    StageFitSettings
+        The parsed preset; unset fields stay ``None`` so the resolver
+        can fall through to higher-precedence layers.
+
+    Raises
+    ------
+    FileNotFoundError
+        If a bare name does not match any packaged preset, or the
+        supplied path does not exist.
+    """
+    if _looks_like_path(name_or_path):
+        path = Path(name_or_path)
+        if not path.exists():
+            raise FileNotFoundError(f"preset file not found: {path}")
+        text = path.read_text()
+    else:
+        # Bare name -> packaged resource
+        from importlib.resources import files
+
+        candidate = files("ftmwpipeline.presets") / f"{name_or_path}.yaml"
+        if not candidate.is_file():
+            available = sorted(
+                p.name[:-5]
+                for p in files("ftmwpipeline.presets").iterdir()
+                if p.name.endswith(".yaml")
+            )
+            raise FileNotFoundError(
+                f"no packaged preset named {name_or_path!r}; "
+                f"available: {available}"
+            )
+        text = candidate.read_text()
+    data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"preset YAML root must be a mapping; got {type(data)} from "
+            f"{name_or_path}"
+        )
+    # Allow an outer ``fit:`` wrapper for stage-spanning preset files;
+    # carry ``name`` / ``description`` through as metadata.
+    if "fit" in data and isinstance(data["fit"], dict):
+        inner = dict(data["fit"])
+        for meta in ("name", "description"):
+            if meta in data and meta not in inner:
+                inner[meta] = data[meta]
+        return from_yaml_dict(inner)
+    return from_yaml_dict(data)
+
+
 def to_yaml(settings: StageFitSettings) -> str:
     """Serialize to a YAML string (sparse; omits unset fields)."""
     text: Any = yaml.safe_dump(
@@ -497,4 +581,5 @@ __all__ = [
     "from_yaml",
     "to_yaml_dict",
     "from_yaml_dict",
+    "load_preset",
 ]

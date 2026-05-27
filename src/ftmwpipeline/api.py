@@ -1118,6 +1118,7 @@ def fit_peaks(
     per_band_tau: Optional[bool] = None,
     shape: Optional[str] = None,
     settings: Optional[StageFitSettings] = None,
+    preset: Optional[str] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1167,6 +1168,9 @@ def fit_peaks(
         :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
         for the layered precedence). The explicit kwargs above still win
         per-field over ``settings``.
+    preset : str, optional
+        Name of a packaged preset or a path to a YAML file -- an
+        alternative to ``settings``. Passing both raises ``ValueError``.
 
     Returns
     -------
@@ -1191,6 +1195,7 @@ def fit_peaks(
             per_band_tau=per_band_tau,
             shape=shape,
             settings=settings,
+            preset=preset,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")
