@@ -108,6 +108,55 @@ def baseline_2638_stage4(baseline_2638_stage3, tmp_path_factory):
     return fp
 
 
+@pytest.fixture(scope="session")
+def baseline_2638_stage4_small(baseline_2638_stage4, tmp_path_factory):
+    """A Stage-4 baseline trimmed to the first 3 dependency-free windows.
+
+    Cuts Stage 5 fit cost on the 2638 fixture from ~2 minutes (382 windows)
+    to ~5 seconds (3 windows) while still exercising the full fit pipeline
+    on real data. Used by tests that verify pipeline shape (cross-interface
+    bit-identity, serialization round-trip) -- not by tests that depend on
+    the full per-band statistics.
+
+    Selects the first ``n_target`` windows whose dependency edges all stay
+    within the selected set (typically window_0000 .. window_0009 are
+    dependency-free, since dep edges on 2638 start at window pair (10, 11)).
+    """
+    from ftmwpipeline._internal.stage4_impl import (
+        load_windows_impl, save_window_plan_impl,
+    )
+
+    n_target = 3
+    tmp = tmp_path_factory.mktemp("baseline_stage4_small")
+    fp = tmp / "baseline_2638_stage4_small.ftmw"
+    shutil.copy(baseline_2638_stage4, fp)
+
+    plan = load_windows_impl(str(fp))["plan"]
+    # Walk in topological order; take windows with no inter-window dep
+    # constraints with windows outside the keep set.
+    candidates = []
+    for wid in plan.topological_order:
+        deps = [
+            (a, b) for (a, b) in plan.dependency_edges
+            if a == wid or b == wid
+        ]
+        if all(a in candidates or a == wid for (a, _) in deps) and \
+           all(b in candidates or b == wid for (_, b) in deps):
+            candidates.append(wid)
+        if len(candidates) >= n_target:
+            break
+    if not candidates:
+        candidates = list(plan.topological_order[:n_target])
+    keep = set(candidates)
+    plan.windows = [w for w in plan.windows if w.window_id in keep]
+    plan.topological_order = [w for w in plan.topological_order if w in keep]
+    plan.dependency_edges = [
+        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
+    ]
+    save_window_plan_impl(str(fp), plan)
+    return fp
+
+
 # ---------------------------------------------------------------------------
 # Module-scoped cross-interface trio fixtures (one per test module)
 # ---------------------------------------------------------------------------

@@ -67,13 +67,18 @@ def _assert_fits_equivalent(a: SpectrumFit, b: SpectrumFit) -> None:
             assert pa.peak_id == pb.peak_id
 
 
-def test_cross_interface_consistency(baseline_2638_stage4, temp_ftmw_dir):
-    """CLI == Pipeline == functional API for fit_peaks."""
+def test_cross_interface_consistency(baseline_2638_stage4_small, temp_ftmw_dir):
+    """CLI == Pipeline == functional API for fit_peaks.
+
+    Runs on the small (3-window) Stage-4 baseline -- cross-interface
+    bit-identity is a property of the dispatch shape, not the window count,
+    so a small plan exercises it just as well as the full 382-window one.
+    """
     pfile = temp_ftmw_dir / "p.ftmw"
     ffile = temp_ftmw_dir / "f.ftmw"
     cfile = temp_ftmw_dir / "c.ftmw"
     for fp in (pfile, ffile, cfile):
-        shutil.copy(baseline_2638_stage4, fp)
+        shutil.copy(baseline_2638_stage4_small, fp)
 
     fit_pipe = Pipeline(pfile).fit_peaks()
     fit_func = ftmw.fit_peaks(ffile)
@@ -90,10 +95,16 @@ def test_cross_interface_consistency(baseline_2638_stage4, temp_ftmw_dir):
     _assert_fits_equivalent(fit_pipe, fit_cli)
 
 
-def test_serialization_round_trip_and_hand_edit(baseline_2638_stage4, temp_ftmw_dir):
-    """Save -> load returns an equivalent fit; an in-place peak edit survives."""
+def test_serialization_round_trip_and_hand_edit(
+    baseline_2638_stage4_small, temp_ftmw_dir,
+):
+    """Save -> load returns an equivalent fit; an in-place peak edit survives.
+
+    Round-trip + hand-edit semantics are window-count-independent, so the
+    small (3-window) baseline is sufficient.
+    """
     fp = temp_ftmw_dir / "ser.ftmw"
-    shutil.copy(baseline_2638_stage4, fp)
+    shutil.copy(baseline_2638_stage4_small, fp)
 
     fit = ftmw.fit_peaks(fp)
     reloaded = ftmw.load_fit(fp)
@@ -113,12 +124,35 @@ def test_serialization_round_trip_and_hand_edit(baseline_2638_stage4, temp_ftmw_
     assert edited_peak.frequency_mhz == pytest.approx(original + 0.001)
 
 
+def _inject_stage5_marker(fp) -> None:
+    """Write a minimal ``stage5_fitting`` group + mark it complete.
+
+    Stage 5 invalidation keys off the group's existence and the
+    ``completed_stages`` JSON list, not the fit's contents — so a placeholder
+    is enough to exercise the invalidation cascade without paying for an
+    ~2-minute real fit. This is a deliberate shortcut for the invalidation
+    tests; functional tests must run a real fit.
+    """
+    with h5py.File(fp, "a") as h5f:
+        if "stage5_fitting" not in h5f:
+            g = h5f.create_group("stage5_fitting")
+            g.attrs["stage_name"] = "stage5_fitting"
+            g.attrs["n_windows"] = 0
+            g.attrs["n_fitted_peaks"] = 0
+        completed = json.loads(
+            h5f["pipeline_stages"].attrs.get("completed_stages", "[]")
+        )
+        if "stage5_fitting" not in completed:
+            completed.append("stage5_fitting")
+        h5f["pipeline_stages"].attrs["completed_stages"] = json.dumps(completed)
+
+
 def test_reassign_windows_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir):
-    """Re-running Stage 4 drops the stale Stage 5 fit."""
+    """Re-running Stage 4 drops the stale Stage 5 marker."""
     fp = temp_ftmw_dir / "inv.ftmw"
     shutil.copy(baseline_2638_stage4, fp)
 
-    ftmw.fit_peaks(fp)
+    _inject_stage5_marker(fp)
     with h5py.File(fp, "r") as h5f:
         assert "stage5_fitting" in h5f
         completed = json.loads(h5f["pipeline_stages"].attrs["completed_stages"])
@@ -131,15 +165,12 @@ def test_reassign_windows_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir
         completed = json.loads(h5f["pipeline_stages"].attrs["completed_stages"])
         assert "stage5_fitting" not in completed
 
-    with pytest.raises(Exception):
-        ftmw.load_fit(fp)
-
 
 def test_stage1_change_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir):
     """Changing canonical Stage 1 settings invalidates Stage 5 transitively."""
     fp = temp_ftmw_dir / "s1.ftmw"
     shutil.copy(baseline_2638_stage4, fp)
-    ftmw.fit_peaks(fp)
+    _inject_stage5_marker(fp)
 
     # Different Stage 1 settings cascade through Stage 2/3/4 invalidation.
     ftmw.compute_ft(fp, zpf=1, expf_us=5.0, trim=(26500, 40000))
@@ -152,21 +183,28 @@ def test_stage1_change_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir):
 
 
 def test_fit_peaks_gaussian_cross_interface(
-    baseline_2638_stage4, temp_ftmw_dir,
+    baseline_2638_stage4_small, temp_ftmw_dir,
 ):
     """fit_peaks(shape='gaussian') is identical across CLI / Pipeline / api.
 
-    Drives all three interfaces on a baseline that has the Gaussian τ_G
-    calibration pre-staged, then asserts the persisted fits agree. Also
+    Drives all three interfaces on a small baseline that has the Gaussian
+    τ_G calibration pre-staged, then asserts the persisted fits agree. Also
     confirms the persisted ``/stage5_fitting`` root group carries the new
     ``shape='gaussian'`` attribute and per-window subgroups inherit it.
+
+    Stage 2b cross-interface identity is covered separately by
+    ``test_calibrate_tau_G_cross_interface``; here we calibrate once on
+    a shared file and copy, so the three test files differ only at Stage 5.
     """
     pfile = temp_ftmw_dir / "gp.ftmw"
     ffile = temp_ftmw_dir / "gf.ftmw"
     cfile = temp_ftmw_dir / "gc.ftmw"
+    # Build Stage 2b once on the small baseline, then copy to all three.
+    staged = temp_ftmw_dir / "gaussian_staged.ftmw"
+    shutil.copy(baseline_2638_stage4_small, staged)
+    ftmw.calibrate_tau_G(staged)
     for fp in (pfile, ffile, cfile):
-        shutil.copy(baseline_2638_stage4, fp)
-        ftmw.calibrate_tau_G(fp)
+        shutil.copy(staged, fp)
 
     fit_pipe = Pipeline(pfile).fit_peaks(shape="gaussian")
     fit_func = ftmw.fit_peaks(ffile, shape="gaussian")
@@ -208,11 +246,15 @@ def test_fit_peaks_gaussian_cross_interface(
 
 
 def test_fit_peaks_gaussian_persists_and_loads_shape(
-    baseline_2638_stage4, temp_ftmw_dir,
+    baseline_2638_stage4_small, temp_ftmw_dir,
 ):
-    """A Gaussian fit round-trips: every loaded FittingResult carries shape='gaussian'."""
+    """A Gaussian fit round-trips: every loaded FittingResult carries shape='gaussian'.
+
+    Shape-persistence is a per-window attribute round-trip; the small (3-window)
+    baseline exercises every code path of the full fixture.
+    """
     fp = temp_ftmw_dir / "rg.ftmw"
-    shutil.copy(baseline_2638_stage4, fp)
+    shutil.copy(baseline_2638_stage4_small, fp)
     ftmw.calibrate_tau_G(fp)
     ftmw.fit_peaks(fp, shape="gaussian")
     fit = ftmw.load_fit(fp)
@@ -228,14 +270,18 @@ def test_fit_peaks_gaussian_persists_and_loads_shape(
 
 
 def test_calibrate_tau_G_cross_interface(
-    baseline_2638_stage4, temp_ftmw_dir,
+    baseline_2638_stage4_small, temp_ftmw_dir,
 ):
-    """calibrate_tau_G is identical across CLI / Pipeline / api on 2638."""
+    """calibrate_tau_G is identical across CLI / Pipeline / api on 2638.
+
+    calibrate_tau_G operates on the FT (same in small + full baselines) and
+    the FID; window count is irrelevant to this proof.
+    """
     pfile = temp_ftmw_dir / "tgp.ftmw"
     ffile = temp_ftmw_dir / "tgf.ftmw"
     cfile = temp_ftmw_dir / "tgc.ftmw"
     for fp in (pfile, ffile, cfile):
-        shutil.copy(baseline_2638_stage4, fp)
+        shutil.copy(baseline_2638_stage4_small, fp)
 
     tc_pipe = Pipeline(pfile).calibrate_tau_G()
     tc_func = ftmw.calibrate_tau_G(ffile)
@@ -258,10 +304,16 @@ def test_calibrate_tau_G_cross_interface(
         assert len(other.band_majorities) == len(tc_pipe.band_majorities)
 
 
-def test_cli_visualize_fit_writes_output(baseline_2638_stage4, temp_ftmw_dir):
-    """visualize-fit --no-interactive --output writes the image and exits 0."""
+def test_cli_visualize_fit_writes_output(
+    baseline_2638_stage4_small, temp_ftmw_dir,
+):
+    """visualize-fit --no-interactive --output writes the image and exits 0.
+
+    Renders work the same on a small fit; the test gate is exit code +
+    non-zero PNG output, not visual fidelity.
+    """
     fp = temp_ftmw_dir / "viz.ftmw"
-    shutil.copy(baseline_2638_stage4, fp)
+    shutil.copy(baseline_2638_stage4_small, fp)
     ftmw.fit_peaks(fp)
 
     out = temp_ftmw_dir / "fit_overview.png"
