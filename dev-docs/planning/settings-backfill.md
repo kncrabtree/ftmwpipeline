@@ -1,6 +1,6 @@
 # Plan: per-stage settings backfill across the pipeline
 
-Status: **Stage 2b shipped.** Stages 2, 3, and 4 are queued behind it.
+Status: **Stage 2b and Stage 2 shipped.** Stages 3 and 4 are queued behind them.
 
 ## Stage 2b state
 
@@ -158,12 +158,12 @@ continue to load without modification.
 
 ## Stage ordering
 
-| Stage | Module name (planned)            | Status              |
-|------:|----------------------------------|---------------------|
-| 2b    | `TauCalibrationSettings`         | In progress (this session) |
-| 2     | `NoiseSettings`                  | Queued              |
-| 3     | `PeakDetectionSettings`          | Queued              |
-| 4     | `WindowPlanningSettings`         | Queued              |
+| Stage | Module name                       | Status              |
+|------:|-----------------------------------|---------------------|
+| 2b    | `TauCalibrationSettings`          | Shipped             |
+| 2     | `NoiseSettings`                   | Shipped             |
+| 3     | `PeakDetectionSettings`           | Queued              |
+| 4     | `WindowPlanningSettings`          | Queued              |
 
 Ordering rationale: Stage 2b first because it is the shape-
 recommendation home (its persisted attr is what the Stage 5
@@ -173,7 +173,74 @@ instrument-tunable knob and the calibration's per-bin σ feeds
 Stage 2b's `sigma_x_full_override`. Stages 3 and 4 last, in
 pipeline order.
 
-## Stage 2b — current target
+## Stage 2 state
+
+The Stage 2 `NoiseSettings` plumbing is live across all three user-facing
+surfaces. The full non-slow test suite (861 tests, +51 from the Stage 2b
+landing) is green under the new wiring, including the cross-interface
+and Stage 5 / Stage 2b propagation suites.
+
+Components landed:
+
+- **`src/ftmwpipeline/core/noise_settings.py`** — top-level
+  `NoiseSettings` plus four sub-dataclasses (`BinningSubSettings`,
+  `SkewnessSubSettings`, `SmoothingSubSettings`,
+  `SkirtExclusionSubSettings`). `_HARD_DEFAULTS` mirrors every
+  function-signature default + module-level constant in
+  `preprocessing/noise_estimation.py`. `resolve()` walks the four-layer
+  chain; `to_attrs` / `from_attrs` / YAML helpers + `load_preset`
+  reading the `stage2:` block from packaged presets.
+- **`src/ftmwpipeline/io/noise_settings_serialization.py`** — HDF5
+  persistence at `processing_parameters/stage2_noise` with one
+  subgroup per sub-dataclass and the standard `__None__` sentinel.
+  Intentionally distinct from the existing `/stage2_noise_result`
+  group (settings under `processing_parameters/`, results at the root
+  — same pattern Stage 5 uses).
+- **`preprocessing/noise_estimation.estimate_noise_adaptive`** — the
+  kernel signature gains five new keyword-only kwargs threading the
+  formerly module-level constants
+  (`subdivision_threshold`, `abs_min_bin_size`, `strong_peak_snr`,
+  `skirt_exclusion_k`, `max_skirt_exclusion_mhz`). The module-level
+  `SUBDIVISION_THRESHOLD = 0.08` / etc. remain the readable canonical
+  source the dataclass mirrors; they are the kernel's parameter
+  defaults so old callers see identical behaviour.
+  `_compute_mad_based_bins` gains `subdivision_threshold`;
+  `_exclude_strong_line_skirts` gains the three skirt-exclusion
+  kwargs.
+- **`_internal/stage2_impl.compute_noise_estimation_impl`** — gains
+  `settings: Optional[NoiseSettings]` and `preset: Optional[str]` kwargs
+  (mutually exclusive, matching Stages 5 and 2b). Builds an explicit
+  `NoiseSettings` from the four legacy per-knob kwargs, walks
+  `resolve(...)`, lifts the resolved fields into the kernel call,
+  and persists the resolved settings via
+  `save_noise_settings_to_h5`. The legacy `from_saved_params=True`
+  flag is preserved (reads the legacy `processing_parameters/noise_estimation`
+  block, ignores explicit / settings / preset / persisted-stage2_noise
+  layers); passing it alongside `settings=` / `preset=` raises
+  `ValueError`.
+- **`Pipeline.estimate_noise` / `api.estimate_noise`** — gain
+  `settings=` / `preset=` kwargs.
+- **CLI** — `estimate-noise` gains `--preset NAME_OR_PATH`.
+
+Test coverage shipped:
+
+- `tests/unit/core/test_noise_settings.py` (19 tests).
+- `tests/unit/io/test_noise_settings_serialization.py` (8 tests).
+- `tests/unit/io/test_preset_loading.py` extended (28 tests total) for
+  the `stage2:` block path and sibling-block coexistence.
+- `tests/integration/test_stage2_settings_propagation.py` (14 tests)
+  — every routed `NoiseSettings` field reaches `estimate_noise_adaptive`;
+  `settings=` + `preset=` mutual exclusion; `from_saved_params=True`
+  + `settings=` mutual exclusion; a no-kwargs follow-up inherits the
+  persisted `smoothing_window_mhz`; `from_saved_params=True` still
+  reads the legacy block (back-compat preserved).
+
+## Stage 2b design reference
+
+The sub-block layout, resolver shape, and persistence/YAML conventions
+documented here apply to the shipped Stage 2b implementation. They
+double as the reference contract for Stages 3 and 4, which inherit the
+same architectural template.
 
 ### Surface area
 
@@ -338,6 +405,10 @@ do not silently delete entries.**
 | 3 | `DEFAULT_*` constants stay live in `fitting/tau_calibration.py` | `fitting/tau_calibration.py` | The constants are still imported by the kernel functions as their parameter defaults; once every consumer reads from a resolved `TauCalibrationSettings`, the constants become docstring-only. Same status as the Stage 5 `DEFAULT_*` family. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
 | 4 | `compute_band_majorities` dropped from `bool = True` to `Optional[bool] = None` on every Stage 2b layer | `_internal/stage2b_impl.py`, `_internal/stage2b_g_impl.py`, `pipeline.py`, `api.py` | The Stage 5 pattern: a `None` default lets the resolver pick the value up from a preset or persisted layer. The hard default in `band.compute_band_majorities` is `True`, so observable no-kwargs behaviour is unchanged. **Landed in this project.** | None — the migration is internal; user-visible defaults are preserved. |
 | 5 | CLI argparse defaults for Stage 2b stay at `None` (already the case) | `cli/tau_commands.py` | Existing per-knob flags already used `type=int/float` with no explicit `default=`, so argparse defaults to `None`. The resolver picks them up unchanged; only `--preset` was added. **Landed in this project.** | None — user-visible defaults are preserved. |
+| 6 | Legacy `from_saved_params=True` on `estimate_noise` reads `processing_parameters/noise_estimation` (a separate block from the new `processing_parameters/stage2_noise` the resolver writes) | `_internal/stage2_impl.compute_noise_estimation_impl`, `_internal/stage2_impl.save_noise_parameters_impl`, `cli/noise_commands.py`, `Pipeline.estimate_noise`, `api.estimate_noise` | The cross-interface consistency suite drives a `visualize_noise(save_params=True)` → `estimate_noise(from_saved_params=True)` round-trip via the legacy block. The new resolver-persisted block is the canonical record; the legacy block stays for that contract. `from_saved_params=True` is incompatible with `settings=` / `preset=` (raises `ValueError`). | Drop `from_saved_params=True`; rely on the resolver's persisted layer (a no-kwargs follow-up call now inherits the persisted `stage2_noise` block automatically). |
+| 7 | Legacy per-knob kwargs (`skew_target`, `min_bin_fraction`, `smoothing_window_mhz`, `min_noise_fraction`) stay on `estimate_noise` signatures | `_internal/stage2_impl.py`, `pipeline.py`, `api.py`, `cli/noise_commands.py` | Match the Stage 5 / Stage 2b migration policy: existing call-sites that pass individual kwargs keep working; they bundle into an explicit `NoiseSettings` inside the impl. Note the public surface exposes only the four user-tunable knobs that were historically there; the new instrument-tunable knobs (`subdivision_threshold`, `abs_min_bin_size`, `inc`, the three skirt-exclusion knobs) flow through `settings=` / `preset=` only. | Move kwarg payload to a `NoiseSettings(...)` instance or to a YAML preset. |
+| 8 | Module-level constants (`SUBDIVISION_THRESHOLD`, `ABS_MIN_BIN_SIZE`, `STRONG_PEAK_SNR`, `SKIRT_EXCLUSION_K`, `MAX_SKIRT_EXCLUSION_MHZ`, `DEFAULT_SMOOTHING_MHZ`) stay live in `preprocessing/noise_estimation.py` | `preprocessing/noise_estimation.py` | They remain the kernel's parameter defaults and the readable canonical source the `NoiseSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `NoiseSettings`, they become docstring-only. Research scripts and docs that name these constants (`dev-docs/research/noise-grid-invariance/report.md`, `dev-docs/research/noise-heuristic-audit/report.md`) continue to work — the constants still exist. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
+| 9 | `estimate_noise_adaptive` kernel signature gains five new keyword-only kwargs (`subdivision_threshold`, `abs_min_bin_size`, `strong_peak_snr`, `skirt_exclusion_k`, `max_skirt_exclusion_mhz`) | `preprocessing/noise_estimation.py::estimate_noise_adaptive`, `_compute_mad_based_bins`, `_exclude_strong_line_skirts` | The new kwargs default to the module-level constants (e.g. `subdivision_threshold=SUBDIVISION_THRESHOLD`), so old callers see identical behaviour. The instrument-tunable constants now flow through `NoiseSettings` end-to-end. **Landed in this project.** | None for old callers; new callers can pass per-knob kwargs or build a `NoiseSettings`. |
 
 ## Follow-ups (not part of this project's session work)
 

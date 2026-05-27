@@ -24,6 +24,9 @@ from ftmwpipeline.core.stage_fit_settings import (
     load_preset,
     resolve,
 )
+from ftmwpipeline.core.noise_settings import (
+    load_preset as load_noise_preset,
+)
 from ftmwpipeline.core.tau_calibration_settings import (
     load_preset as load_tau_preset,
 )
@@ -169,6 +172,57 @@ class TestStage2bPresetResolution:
     def test_stage2b_missing_path_raises(self, tmp_path) -> None:
         with pytest.raises(FileNotFoundError, match=r"preset file not found"):
             load_tau_preset(tmp_path / "missing.yaml")
+
+
+class TestStage2PresetResolution:
+    """The Stage 2 ``load_preset`` reads the ``stage2:`` block from the
+    same packaged preset files Stages 5 and 2b use; absence is not an error."""
+
+    def test_packaged_presets_load_empty_when_no_stage2_block(self) -> None:
+        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
+            s = load_noise_preset(name)
+            assert s.is_empty(), (
+                f"packaged preset {name!r} should produce an empty "
+                f"NoiseSettings until a stage2: block lands"
+            )
+
+    def test_stage2_block_populates_dataclass(self, tmp_path) -> None:
+        p = tmp_path / "with_stage2.yaml"
+        p.write_text(
+            "name: example\n"
+            "stage2:\n"
+            "  binning:\n    subdivision_threshold: 0.05\n  smoothing:\n    smoothing_window_mhz: 100.0\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        ns = load_noise_preset(p)
+        assert ns.binning.subdivision_threshold == 0.05
+        assert ns.smoothing.smoothing_window_mhz == 100.0
+
+    def test_stage2_block_must_be_mapping(self, tmp_path) -> None:
+        p = tmp_path / "bad_stage2.yaml"
+        p.write_text("stage2: 3\n")
+        with pytest.raises(ValueError, match=r"'stage2' block must be a mapping"):
+            load_noise_preset(p)
+
+    def test_stage2_loader_path_resolution(self, tmp_path) -> None:
+        p = tmp_path / "stage2_only.yaml"
+        p.write_text("stage2:\n  smoothing:\n    smoothing_window_mhz: 50.0\n")
+        ns = load_noise_preset(p)
+        assert ns.smoothing.smoothing_window_mhz == 50.0
+
+    def test_stage2_missing_path_raises(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError, match=r"preset file not found"):
+            load_noise_preset(tmp_path / "missing.yaml")
+
+    def test_sibling_stage2_block_ignored_by_stage5_loader(self, tmp_path) -> None:
+        """A ``stage2:`` sibling block must not trip Stage 5's unknown-key gate."""
+        p = tmp_path / "two_blocks.yaml"
+        p.write_text(
+            "stage2:\n  smoothing:\n    smoothing_window_mhz: 100.0\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        s = load_preset(p)
+        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
 
 
 class TestResolutionWithPreset:

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .core.data_structures import FID, ComplexFT
 from .core.settings import FTSettings
+from .core.noise_settings import NoiseSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .preprocessing.noise_estimation import NoiseResult
@@ -462,11 +463,14 @@ class Pipeline:
                 f"Failed to create FT visualization: {e}"
             ) from e
     
-    def estimate_noise(self, skew_target: Optional[float] = None, 
+    def estimate_noise(self, skew_target: Optional[float] = None,
                        min_bin_fraction: Optional[float] = None,
                        smoothing_window_mhz: Optional[float] = None,
                        min_noise_fraction: Optional[float] = None,
-                       from_saved_params: bool = False) -> NoiseResult:
+                       from_saved_params: bool = False,
+                       *,
+                       settings: Optional[NoiseSettings] = None,
+                       preset: Optional[str] = None) -> NoiseResult:
         """
         Estimate frequency-dependent noise using adaptive binning.
         
@@ -508,7 +512,9 @@ class Pipeline:
                 min_bin_fraction=min_bin_fraction,
                 smoothing_window_mhz=smoothing_window_mhz,
                 min_noise_fraction=min_noise_fraction,
-                from_saved_params=from_saved_params
+                from_saved_params=from_saved_params,
+                settings=settings,
+                preset=preset,
             )
             
             # Storage and stage tracking handled by shared implementation

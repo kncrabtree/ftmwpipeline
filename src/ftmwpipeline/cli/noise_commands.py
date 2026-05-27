@@ -78,7 +78,9 @@ def cmd_estimate_noise(args) -> int:
         
         # Add from_saved_params flag
         params['from_saved_params'] = args.from_saved_params
-        
+        if args.preset is not None:
+            params['preset'] = args.preset
+
         print(f"Estimating noise for: {file_path}")
         
         # Print parameters being used
@@ -348,7 +350,18 @@ def register_noise_commands(subparsers):
     parser_estimate.add_argument(
         '--from-saved-params',
         action='store_true',
-        help='Use saved parameters and ignore command-line values'
+        help='Use saved parameters and ignore command-line values (legacy)'
+    )
+
+    parser_estimate.add_argument(
+        '--preset',
+        type=str,
+        default=None,
+        help=(
+            'Stage 2 preset to apply (bare packaged name or path to a '
+            'YAML file). Mutually exclusive with --from-saved-params and '
+            'with per-knob flags that explicitly set the same field.'
+        ),
     )
     
     # General options

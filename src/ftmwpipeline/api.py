@@ -39,6 +39,7 @@ import logging
 
 from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .core.noise_settings import NoiseSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
@@ -449,7 +450,10 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
                    min_bin_fraction: Optional[float] = None,
                    smoothing_window_mhz: Optional[float] = None,
                    min_noise_fraction: Optional[float] = None,
-                   from_saved_params: bool = False) -> NoiseResult:
+                   from_saved_params: bool = False,
+                   *,
+                   settings: Optional[NoiseSettings] = None,
+                   preset: Optional[str] = None) -> NoiseResult:
     """
     Estimate frequency-dependent noise using adaptive binning.
     
@@ -506,7 +510,9 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
             min_bin_fraction=min_bin_fraction,
             smoothing_window_mhz=smoothing_window_mhz,
             min_noise_fraction=min_noise_fraction,
-            from_saved_params=from_saved_params
+            from_saved_params=from_saved_params,
+            settings=settings,
+            preset=preset,
         )
         
     except Exception as e:

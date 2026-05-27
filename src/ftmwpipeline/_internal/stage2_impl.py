@@ -12,11 +12,52 @@ import logging
 import h5py
 
 from ..preprocessing.noise_estimation import estimate_noise_adaptive, NoiseResult
+from ..core.noise_settings import (
+    NoiseSettings,
+    load_preset as load_noise_preset,
+    resolve as resolve_noise_settings,
+)
 from ..io.noise_result_serialization import save_noise_result_to_hdf5, load_noise_result_from_hdf5
+from ..io.noise_settings_serialization import (
+    load_noise_settings_from_h5,
+    save_noise_settings_to_h5,
+)
 from ..file_manager import open_pipeline_file
 
 
 logger = logging.getLogger(__name__)
+
+
+def _required(value: Any, name: str) -> Any:
+    """Coerce a post-resolve field that must be filled (hard default present)."""
+    if value is None:
+        raise AssertionError(
+            f"resolved NoiseSettings.{name} is None; missing hard default"
+        )
+    return value
+
+
+def _build_explicit_from_kwargs(
+    *,
+    skew_target: Optional[float],
+    min_bin_fraction: Optional[float],
+    smoothing_window_mhz: Optional[float],
+    min_noise_fraction: Optional[float],
+) -> NoiseSettings:
+    """Bundle the four legacy per-knob kwargs into an explicit-layer settings instance.
+
+    The remaining knobs that the resolver covers
+    (``subdivision_threshold``, ``abs_min_bin_size``, ``inc``,
+    ``strong_peak_snr``, ``skirt_exclusion_k``, ``max_skirt_exclusion_mhz``)
+    are not yet on the public Stage 2 signatures; they flow through
+    ``settings=`` / ``preset=`` only.
+    """
+    explicit = NoiseSettings()
+    explicit.binning.min_bin_fraction = min_bin_fraction
+    explicit.binning.min_noise_fraction = min_noise_fraction
+    explicit.skewness.skew_target = skew_target
+    explicit.smoothing.smoothing_window_mhz = smoothing_window_mhz
+    return explicit
 
 
 def compute_noise_estimation_impl(
@@ -25,7 +66,10 @@ def compute_noise_estimation_impl(
     min_bin_fraction: Optional[float] = None,
     smoothing_window_mhz: Optional[float] = None,
     min_noise_fraction: Optional[float] = None,
-    from_saved_params: bool = False
+    from_saved_params: bool = False,
+    *,
+    settings: Optional[NoiseSettings] = None,
+    preset: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Shared implementation for noise estimation from .ftmw pipeline files.
@@ -88,9 +132,20 @@ def compute_noise_estimation_impl(
     except Exception as e:
         raise RuntimeError(f"Failed to compute ComplexFT from pipeline file {file_path}: {e}")
     
-    # Load saved noise parameters if requested or available
-    saved_params = {}
+    # When ``from_saved_params=True`` the legacy contract reads the
+    # four user-tunable knobs from ``processing_parameters/noise_estimation``
+    # and treats them as the only override layer; explicit per-knob
+    # kwargs are ignored. Kept for back-compat with code paths that
+    # round-trip those four parameters via ``visualize_noise(save_params=True)``.
     if from_saved_params:
+        if settings is not None or preset is not None:
+            raise ValueError(
+                "'from_saved_params=True' is the legacy persistence "
+                "contract; pass 'settings=' / 'preset=' instead, or drop "
+                "'from_saved_params' to let the resolver pick up the "
+                "persisted layer automatically."
+            )
+        saved_params: Dict[str, Any] = {}
         try:
             with h5py.File(file_path, 'r') as h5f:
                 if 'processing_parameters' in h5f and 'noise_estimation' in h5f['processing_parameters']:
@@ -98,52 +153,120 @@ def compute_noise_estimation_impl(
                     for param_name in ['skew_target', 'min_bin_fraction', 'smoothing_window_mhz', 'min_noise_fraction']:
                         if param_name in noise_group.attrs:
                             value = noise_group.attrs[param_name]
-                            # Handle None values stored as strings
                             if isinstance(value, str) and value == "__None__":
                                 value = None
                             saved_params[param_name] = value
                     logger.info(f"Loaded saved noise parameters: {saved_params}")
         except Exception as e:
             logger.warning(f"Could not load saved noise parameters: {e}")
-    
-    # Merge parameters (saved parameters override defaults, user parameters override both)
-    default_params = {
-        'skew_target': 0.631,
-        'min_bin_fraction': 1/64,
-        'smoothing_window_mhz': None,  # Will be auto-calculated
-        'min_noise_fraction': 2/3
+        explicit = _build_explicit_from_kwargs(
+            skew_target=saved_params.get('skew_target'),
+            min_bin_fraction=saved_params.get('min_bin_fraction'),
+            smoothing_window_mhz=saved_params.get('smoothing_window_mhz'),
+            min_noise_fraction=saved_params.get('min_noise_fraction'),
+        )
+        preset_layer: Optional[NoiseSettings] = None
+        preset_name: Optional[str] = None
+        # The legacy block does not capture the persisted ``stage2_noise``
+        # block; honour the legacy semantic by skipping the resolver's
+        # persisted layer too.
+        persisted_layer: Optional[NoiseSettings] = None
+    else:
+        if preset is not None and settings is not None:
+            raise ValueError(
+                "'preset' and 'settings' are alternative ways to populate "
+                "the preset layer of the noise-settings chain; pass exactly "
+                "one (or override individual fields via explicit kwargs)"
+            )
+        explicit = _build_explicit_from_kwargs(
+            skew_target=skew_target,
+            min_bin_fraction=min_bin_fraction,
+            smoothing_window_mhz=smoothing_window_mhz,
+            min_noise_fraction=min_noise_fraction,
+        )
+        preset_layer = settings
+        preset_name = None
+        if preset is not None:
+            preset_layer = load_noise_preset(preset)
+            preset_name = str(preset)
+        persisted_layer = load_noise_settings_from_h5(file_path)
+
+    resolved = resolve_noise_settings(
+        explicit=explicit,
+        preset=preset_layer,
+        persisted=persisted_layer,
+        recommended=None,
+    )
+
+    # Lift the resolved fields into the kernel call. Every field with a
+    # hard default in NoiseSettings._HARD_DEFAULTS is guaranteed non-None.
+    binning = resolved.binning
+    skew = resolved.skewness
+    smoothing = resolved.smoothing
+    skirt = resolved.skirt_exclusion
+    skew_target_v = _required(skew.skew_target, "skewness.skew_target")
+    inc_v = _required(skew.inc, "skewness.inc")
+    min_bin_fraction_v = _required(
+        binning.min_bin_fraction, "binning.min_bin_fraction"
+    )
+    min_noise_fraction_v = _required(
+        binning.min_noise_fraction, "binning.min_noise_fraction"
+    )
+    smoothing_window_mhz_v = smoothing.smoothing_window_mhz  # None is OK -> kernel default
+    subdivision_threshold_v = _required(
+        binning.subdivision_threshold, "binning.subdivision_threshold"
+    )
+    abs_min_bin_size_v = _required(
+        binning.abs_min_bin_size, "binning.abs_min_bin_size"
+    )
+    strong_peak_snr_v = _required(
+        skirt.strong_peak_snr, "skirt_exclusion.strong_peak_snr"
+    )
+    skirt_exclusion_k_v = _required(
+        skirt.skirt_exclusion_k, "skirt_exclusion.skirt_exclusion_k"
+    )
+    max_skirt_exclusion_mhz_v = _required(
+        skirt.max_skirt_exclusion_mhz,
+        "skirt_exclusion.max_skirt_exclusion_mhz",
+    )
+
+    # ``processing_params`` retains the legacy schema (the four user-tunable
+    # knobs) because downstream serialisation (``parameters_used`` attr on
+    # ``/stage2_noise_result``) and the legacy save/load_noise_parameters
+    # round-trip both read it.
+    processing_params: Dict[str, Any] = {
+        'skew_target': float(skew_target_v),
+        'min_bin_fraction': float(min_bin_fraction_v),
+        'smoothing_window_mhz': (
+            float(smoothing_window_mhz_v) if smoothing_window_mhz_v is not None else None
+        ),
+        'min_noise_fraction': float(min_noise_fraction_v),
     }
-    
-    # Priority: user params > saved params > defaults
-    processing_params = {}
-    for param_name in default_params.keys():
-        if from_saved_params:
-            # Use saved parameters when explicitly requested
-            processing_params[param_name] = saved_params.get(param_name, default_params[param_name])
-        else:
-            # Use user parameters if provided, otherwise saved, otherwise default
-            user_value = locals().get(param_name)  # Get the parameter from function arguments
-            if user_value is not None:
-                processing_params[param_name] = user_value
-            elif param_name in saved_params:
-                processing_params[param_name] = saved_params[param_name]
-            else:
-                processing_params[param_name] = default_params[param_name]
-    
-    logger.info("Noise estimation parameters:")
+
+    logger.info("Noise estimation parameters (resolved):")
     for param, value in processing_params.items():
         logger.info(f"  {param}: {value}")
-    
+
     # Perform noise estimation
     try:
         noise_result = estimate_noise_adaptive(
             frequencies=complex_ft.freq_array,
             magnitudes=complex_ft.magnitude_spectrum,
-            skew_target=processing_params['skew_target'],
-            min_bin_fraction=processing_params['min_bin_fraction'],
-            smoothing_window_mhz=processing_params['smoothing_window_mhz'],
-            min_noise_fraction=processing_params['min_noise_fraction'],
-            verbose=True  # Enable logging for diagnostics
+            skew_target=float(skew_target_v),
+            inc=float(inc_v),
+            min_bin_fraction=float(min_bin_fraction_v),
+            smoothing_window_mhz=(
+                float(smoothing_window_mhz_v)
+                if smoothing_window_mhz_v is not None
+                else None
+            ),
+            min_noise_fraction=float(min_noise_fraction_v),
+            verbose=True,
+            subdivision_threshold=float(subdivision_threshold_v),
+            abs_min_bin_size=int(abs_min_bin_size_v),
+            strong_peak_snr=float(strong_peak_snr_v),
+            skirt_exclusion_k=float(skirt_exclusion_k_v),
+            max_skirt_exclusion_mhz=float(max_skirt_exclusion_mhz_v),
         )
         logger.info("Noise estimation completed successfully")
         logger.info(f"  Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}")
@@ -161,12 +284,21 @@ def compute_noise_estimation_impl(
             complex_ft=complex_ft,
             parameters_used=processing_params
         )
-        
+
+        # Persist the resolved NoiseSettings to ``processing_parameters/stage2_noise``.
+        # The four legacy user-tunable kwargs continue to land in
+        # ``processing_parameters/noise_estimation`` via ``save_noise_result_impl``
+        # for ``from_saved_params=True`` back-compat; the new canonical
+        # record below is what the resolver's persisted layer reads.
+        save_noise_settings_to_h5(
+            file_path, resolved, preset_name=preset_name,
+        )
+
         # Update stage tracker to mark stage2_noise_result complete
         _update_stage_completion(file_path, 'stage2_noise_result')
-        
+
         logger.info("Stage 2: Noise estimation results saved and marked complete")
-        
+
     except Exception as e:
         logger.error(f"Failed to save noise estimation results: {e}")
         raise RuntimeError(f"Noise estimation succeeded but storage failed: {e}")

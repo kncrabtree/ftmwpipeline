@@ -104,6 +104,12 @@ def estimate_noise_adaptive(
     smoothing_window_mhz: Optional[float] = None,
     min_noise_fraction: float = 2 / 3,
     verbose: bool = False,
+    *,
+    subdivision_threshold: float = SUBDIVISION_THRESHOLD,
+    abs_min_bin_size: int = ABS_MIN_BIN_SIZE,
+    strong_peak_snr: float = STRONG_PEAK_SNR,
+    skirt_exclusion_k: float = SKIRT_EXCLUSION_K,
+    max_skirt_exclusion_mhz: float = MAX_SKIRT_EXCLUSION_MHZ,
 ) -> NoiseResult:
     """Estimate frequency-dependent σ via adaptive binning + MAD scaling.
 
@@ -161,7 +167,7 @@ def estimate_noise_adaptive(
         raise ValueError("Input arrays must be 1-dimensional")
 
     n_points = len(frequencies)
-    min_bin_size = max(int(n_points * min_bin_fraction), ABS_MIN_BIN_SIZE)
+    min_bin_size = max(int(n_points * min_bin_fraction), int(abs_min_bin_size))
 
     bin_edges = _compute_mad_based_bins(
         magnitudes,
@@ -169,6 +175,7 @@ def estimate_noise_adaptive(
         skew_target=skew_target,
         inc=inc,
         min_noise_fraction=min_noise_fraction,
+        subdivision_threshold=float(subdivision_threshold),
         frequencies=frequencies,
         verbose=verbose,
     )
@@ -184,7 +191,10 @@ def estimate_noise_adaptive(
         frequencies, magnitudes, noise_mask, smoothing_window_points
     )
     noise_mask, n_dropped, line_hwhm_mhz = _exclude_strong_line_skirts(
-        frequencies, magnitudes, noise_mask, rms_initial
+        frequencies, magnitudes, noise_mask, rms_initial,
+        strong_peak_snr=float(strong_peak_snr),
+        skirt_exclusion_k=float(skirt_exclusion_k),
+        max_skirt_exclusion_mhz=float(max_skirt_exclusion_mhz),
     )
     rms_noise = compute_rms_noise_convolution(
         frequencies, magnitudes, noise_mask, smoothing_window_points
@@ -217,6 +227,7 @@ def _compute_mad_based_bins(
     skew_target: float,
     inc: float,
     min_noise_fraction: float,
+    subdivision_threshold: float = SUBDIVISION_THRESHOLD,
     frequencies: Optional[np.ndarray] = None,
     verbose: bool = False,
 ) -> List[int]:
@@ -224,7 +235,8 @@ def _compute_mad_based_bins(
 
     Subdivision is rejected when either:
       * the region is too small to split (size < 2·min_bin_size),
-      * median and MAD agree across halves within ``SUBDIVISION_THRESHOLD``,
+      * median and MAD agree across halves within ``subdivision_threshold``
+        (defaults to the module-level ``SUBDIVISION_THRESHOLD``),
       * either half's noise fraction (skewness trim) falls below
         ``min_noise_fraction``.
 
@@ -271,7 +283,7 @@ def _compute_mad_based_bins(
             logger.debug(
                 f"  [{start}:{end}]{f_info} med_diff={med_diff:.3f} mad_diff={mad_diff:.3f}"
             )
-        if med_diff < SUBDIVISION_THRESHOLD and mad_diff < SUBDIVISION_THRESHOLD:
+        if med_diff < subdivision_threshold and mad_diff < subdivision_threshold:
             return False
 
         left_frac = noise_fraction(start, mid)
@@ -331,6 +343,10 @@ def _exclude_strong_line_skirts(
     magnitudes: np.ndarray,
     noise_mask: np.ndarray,
     sigma_x: np.ndarray,
+    *,
+    strong_peak_snr: float = STRONG_PEAK_SNR,
+    skirt_exclusion_k: float = SKIRT_EXCLUSION_K,
+    max_skirt_exclusion_mhz: float = MAX_SKIRT_EXCLUSION_MHZ,
 ) -> Tuple[np.ndarray, int, float]:
     """Exclude Lorentzian-skirt neighborhoods of strong lines from the mask.
 
@@ -347,8 +363,12 @@ def _exclude_strong_line_skirts(
     threading FT processing parameters into the noise estimator while
     still using a physical width.
 
+    ``strong_peak_snr``, ``skirt_exclusion_k`` and
+    ``max_skirt_exclusion_mhz`` default to the module-level constants of
+    the same name (upper-case), kept as the readable canonical source.
+
     Returns ``(refined_mask, n_excluded, line_hwhm_mhz)``. If no peaks
-    exceed STRONG_PEAK_SNR the mask is returned unchanged with
+    exceed ``strong_peak_snr`` the mask is returned unchanged with
     n_excluded = 0; HWHM is reported as 0.0 in that case.
     """
     n = magnitudes.shape[0]
@@ -360,11 +380,11 @@ def _exclude_strong_line_skirts(
 
     safe_sigma = np.where(sigma_x > 0.0, sigma_x, np.inf)
     snr = magnitudes / safe_sigma
-    if not np.any(snr > STRONG_PEAK_SNR):
+    if not np.any(snr > strong_peak_snr):
         return noise_mask, 0, 0.0
 
     peak_idx, _ = spsig.find_peaks(magnitudes, height=None)
-    strong = peak_idx[snr[peak_idx] > STRONG_PEAK_SNR]
+    strong = peak_idx[snr[peak_idx] > strong_peak_snr]
     if strong.size == 0:
         return noise_mask, 0, 0.0
 
@@ -375,11 +395,11 @@ def _exclude_strong_line_skirts(
     if not np.isfinite(line_hwhm_mhz) or line_hwhm_mhz <= 0.0:
         return noise_mask, 0, 0.0
 
-    max_radius_bins = int(MAX_SKIRT_EXCLUSION_MHZ / freq_step)
+    max_radius_bins = int(max_skirt_exclusion_mhz / freq_step)
     exclusion = np.zeros(n, dtype=bool)
     for p in strong:
         peak_snr = float(snr[p])
-        radius_mhz = line_hwhm_mhz * peak_snr / SKIRT_EXCLUSION_K
+        radius_mhz = line_hwhm_mhz * peak_snr / skirt_exclusion_k
         radius_bins = min(int(radius_mhz / freq_step), max_radius_bins)
         if radius_bins <= 0:
             continue
