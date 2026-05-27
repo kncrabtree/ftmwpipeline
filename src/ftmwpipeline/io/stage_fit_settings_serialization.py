@@ -52,9 +52,16 @@ STAGE_FIT_PATH = "processing_parameters/stage5_fit"
 _AUDIT_ATTRS = ("creation_time", "preset_name")
 
 # The Stage 2b recommended-shape attr lives on the Stage 2b calibration
-# group; the discriminator logic is not implemented yet, so the attr is
-# written as the ``__None__`` sentinel until that lands.
+# group(s). Both the Lorentzian-twin (``stage2b_tau_calibration``) and
+# the Gaussian-twin (``stage2b_tau_G_calibration``) groups can carry the
+# attr; the recommendation is shape-agnostic so the writer mirrors the
+# same value to whichever groups exist and the reader takes the first
+# concrete value it finds.
 _STAGE2B_RECOMMENDED_SHAPE_ATTR = "recommended_shape"
+_STAGE2B_GROUP_PATHS = (
+    "stage2b_tau_calibration",
+    "stage2b_tau_G_calibration",
+)
 _NONE_SENTINEL = "__None__"
 
 
@@ -151,48 +158,53 @@ def write_stage2b_recommended_shape(
     file_path: str,
     shape: Optional[str] = None,
 ) -> None:
-    """Stamp the ``recommended_shape`` attr on the persisted Stage 2b group.
+    """Stamp the ``recommended_shape`` attr on every persisted Stage 2b group.
 
     The attr is the contract the Stage 5 resolver reads as its
     *recommended* layer; passing ``shape=None`` (the default) writes the
     ``__None__`` sentinel, which the resolver treats as "no
-    recommendation." Concrete shape recommendations come from a Stage 2b
-    L/G discriminator and are passed through this same attr.
+    recommendation." Concrete shape recommendations come from the
+    Stage 2b 3-way L/G/V discriminator
+    (:func:`~ftmwpipeline.fitting.tau_calibration.compute_shape_recommendation`)
+    and are passed through this same attr.
 
-    No-op if no Stage 2b calibration is present.
+    The Lorentzian-twin (``stage2b_tau_calibration``) and Gaussian-twin
+    (``stage2b_tau_G_calibration``) groups can each carry the attr; the
+    recommendation is shape-agnostic so the same value is mirrored to
+    whichever groups exist. No-op if neither group is present.
     """
     encoded = _NONE_SENTINEL if shape is None else str(shape)
     with h5py.File(file_path, "a") as h5f:
-        if "stage2b_tau_calibration" not in h5f:
-            return
-        h5f["stage2b_tau_calibration"].attrs[
-            _STAGE2B_RECOMMENDED_SHAPE_ATTR
-        ] = encoded
+        for path in _STAGE2B_GROUP_PATHS:
+            if path in h5f:
+                h5f[path].attrs[_STAGE2B_RECOMMENDED_SHAPE_ATTR] = encoded
 
 
 def read_stage2b_recommended_shape(file_path: str) -> Optional[str]:
     """Read the persisted Stage 2b recommended shape, or ``None`` if absent.
 
-    Returns ``None`` for both "no Stage 2b ran" and "Stage 2b ran but
-    stamped ``__None__`` (no recommendation)". Callers don't need to
-    distinguish those because the resolver treats both as "no
-    recommended layer."
+    Returns ``None`` for "no Stage 2b group present", "the attr is
+    missing", or "the attr is the ``__None__`` sentinel". Callers
+    don't need to distinguish these because the resolver treats them all
+    as "no recommended layer." The Lorentzian-twin group is checked
+    first; if it is absent or has no concrete recommendation the
+    Gaussian-twin group is consulted.
     """
     try:
         with h5py.File(file_path, "r") as h5f:
-            if "stage2b_tau_calibration" not in h5f:
-                return None
-            attr = h5f["stage2b_tau_calibration"].attrs.get(
-                _STAGE2B_RECOMMENDED_SHAPE_ATTR
-            )
+            for path in _STAGE2B_GROUP_PATHS:
+                if path not in h5f:
+                    continue
+                attr = h5f[path].attrs.get(_STAGE2B_RECOMMENDED_SHAPE_ATTR)
+                if attr is None:
+                    continue
+                decoded = _decode_attr(attr)
+                if decoded == _NONE_SENTINEL:
+                    continue
+                return str(decoded)
     except (OSError, KeyError):
         return None
-    if attr is None:
-        return None
-    decoded = _decode_attr(attr)
-    if decoded == _NONE_SENTINEL:
-        return None
-    return str(decoded)
+    return None
 
 
 __all__ = [

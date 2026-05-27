@@ -333,3 +333,58 @@ def test_cli_visualize_fit_writes_output(
     assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
     assert out.exists()
     assert out.stat().st_size > 1000  # non-trivial PNG
+
+
+def test_recommend_shape_persists_and_feeds_resolver(
+    baseline_2638_stage4_small, temp_ftmw_dir,
+):
+    """The 3-way recommendation lands on the Stage 2b attr and Stage 5 picks it up.
+
+    Runs ``calibrate_tau_G`` then ``recommend_shape`` on the small 2638
+    baseline; verifies (a) the verdict is well-formed, (b) the
+    ``recommended_shape`` attr lands on every Stage 2b group present,
+    and (c) the Stage 5 resolver's persisted ``stage5_fit`` carries
+    that shape after a no-arg ``fit_peaks`` call. The 2638 fixture is
+    Gaussian-dominant on the strong contributor bins, so the verdict
+    is expected to be ``"gaussian"`` -- the same shape the
+    ``instrument_bc_2638`` preset picks.
+    """
+    from ftmwpipeline.io.stage_fit_settings_serialization import (
+        read_stage2b_recommended_shape,
+    )
+    fp = temp_ftmw_dir / "recommend.ftmw"
+    shutil.copy(baseline_2638_stage4_small, fp)
+
+    ftmw.calibrate_tau_G(fp)
+    rec = ftmw.recommend_shape(fp)
+    assert rec.n_contributors > 0
+    assert sum(rec.vote_rates.values()) == pytest.approx(1.0, abs=1e-6)
+    assert rec.recommended_shape == "gaussian"
+
+    # Attr lands on the Gauss twin's group (the only Stage 2b group present
+    # on this fixture path -- the Lorentzian twin is not run here).
+    with h5py.File(fp, "r") as h5:
+        assert "stage2b_tau_G_calibration" in h5
+        attr = h5["stage2b_tau_G_calibration"].attrs.get("recommended_shape")
+        assert attr is not None
+        decoded = attr.decode("utf-8") if isinstance(attr, bytes) else str(attr)
+        assert decoded == "gaussian"
+
+    # The shared reader picks up the Gauss-twin attr when the Lorentzian
+    # group is absent.
+    assert read_stage2b_recommended_shape(str(fp)) == "gaussian"
+
+    # Stage 5 resolver respects the recommendation: a no-arg fit_peaks
+    # on a file with no explicit shape and no persisted shape inherits
+    # the recommended one.
+    ftmw.fit_peaks(fp)
+    with h5py.File(fp, "r") as h5:
+        shape_attr = h5["processing_parameters/stage5_fit"].attrs.get("shape")
+        if shape_attr is None:
+            # Sub-group form
+            shape_attr = h5["processing_parameters/stage5_fit/shape"].attrs["kind"]
+        decoded_shape = (
+            shape_attr.decode("utf-8") if isinstance(shape_attr, bytes)
+            else str(shape_attr)
+        )
+        assert decoded_shape == "gaussian"

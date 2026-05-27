@@ -40,7 +40,7 @@ import logging
 from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .core.stage_fit_settings import StageFitSettings
-from .fitting.tau_calibration import TauCalibrationResult
+from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .preprocessing.noise_estimation import NoiseResult
 
 # Module logger
@@ -760,6 +760,50 @@ def load_tau_G_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
         return Pipeline.open(file_path).load_tau_G_calibration()
     except Exception as e:
         logger.error(f"Failed to load τ_G calibration from {file_path}: {e}")
+        raise
+
+
+def recommend_shape(
+    file_path: Union[str, Path],
+    n_seg: Optional[int] = None,
+    t_sigma: Optional[float] = None,
+    tau_max_us: Optional[float] = None,
+    rss_gate_factor: Optional[float] = None,
+    sigma_time: Optional[float] = None,
+    snr_min: Optional[float] = None,
+    tau_bound_lo: Optional[float] = None,
+    tau_bound_hi: Optional[float] = None,
+    tau_G_seeds: Optional[List[float]] = None,
+    pure_margin_threshold: Optional[float] = None,
+) -> ShapeRecommendation:
+    """Run the 3-way L/G/V shape-recommendation hook, equivalent to
+    :meth:`Pipeline.recommend_shape`.
+
+    Per-bin AICc vote (exp / gauss / voigt) over the same STFT
+    contributor pool the τ calibrations use; SNR-weighted majority
+    decides between the two pure shapes (Voigt is reported as a
+    diagnostic but does not enter the recommendation). The verdict's
+    ``recommended_shape`` is stamped onto every Stage 2b group present
+    on the file so the Stage 5 resolver's *recommended* layer picks it
+    up automatically. Requires Stage 1 (active region + frequency trim)
+    to have completed; the Stage 2b calibrations are optional but the
+    persisted contract only fires when at least one of them has run.
+    """
+    try:
+        return Pipeline.open(file_path).recommend_shape(
+            n_seg=n_seg,
+            t_sigma=t_sigma,
+            tau_max_us=tau_max_us,
+            rss_gate_factor=rss_gate_factor,
+            sigma_time=sigma_time,
+            snr_min=snr_min,
+            tau_bound_lo=tau_bound_lo,
+            tau_bound_hi=tau_bound_hi,
+            tau_G_seeds=tau_G_seeds,
+            pure_margin_threshold=pure_margin_threshold,
+        )
+    except Exception as e:
+        logger.error(f"Failed to recommend shape for {file_path}: {e}")
         raise
 
 

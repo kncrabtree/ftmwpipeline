@@ -17,8 +17,10 @@ from ftmwpipeline.fitting.tau_calibration import (
     DEFAULT_N_SEG,
     DEFAULT_T_SIGMA,
     DEFAULT_TAU_G_BOUND_HI,
+    ShapeRecommendation,
     SpurCluster,
     TauCalibrationResult,
+    compute_shape_recommendation,
     estimate_sigma_time_from_tail,
     extract_tau_G_majority,
     extract_tau_majority,
@@ -28,7 +30,10 @@ from ftmwpipeline.fitting.tau_calibration import (
     sliding_stft,
     stft_calibration,
 )
-from ftmwpipeline.fitting.tau_calibration import _nls_polish_step
+from ftmwpipeline.fitting.tau_calibration import (
+    _aggregate_shape_verdict,
+    _nls_polish_step,
+)
 
 # 2638-shaped cell: T_full = 12.65 us, sample_dt = 20 ps (50 GS/s).
 SAMPLE_DT_US = 0.020
@@ -508,4 +513,143 @@ class TestExtractTauGMajority:
                 trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
                 tau_G_bound_lo=10.0, tau_G_bound_hi=5.0,
+            )
+
+
+# ---------------------------------------------------------------------------
+# 3-way L / G / V shape-recommendation hook
+# ---------------------------------------------------------------------------
+def _row(verdict: str, snr: float = 100.0, **kw) -> dict:
+    """Build a minimal per-bin AICc row for the aggregator tests."""
+    base = dict(
+        idx=0, freq=30000.0, snr=snr,
+        aicc_exp=0.0, aicc_gauss=0.0, aicc_voigt=0.0,
+        d_aicc_gauss_exp=0.0, d_aicc_voigt_exp=0.0, d_aicc_voigt_gauss=0.0,
+        verdict=verdict,
+    )
+    base.update(kw)
+    return base
+
+
+class TestAggregateShapeVerdict:
+    def test_empty_rows_returns_none_with_diagnostic(self):
+        rec = _aggregate_shape_verdict([])
+        assert isinstance(rec, ShapeRecommendation)
+        assert rec.recommended_shape is None
+        assert rec.n_contributors == 0
+        assert all(r == 0.0 for r in rec.vote_rates.values())
+        assert any("no contributor" in n for n in rec.notes)
+
+    def test_pure_exp_majority_recommends_lorentzian(self):
+        rows = [_row("exp", snr=100.0)] * 70 + [_row("gauss", snr=100.0)] * 10 \
+            + [_row("voigt", snr=100.0)] * 20
+        rec = _aggregate_shape_verdict(rows)
+        assert rec.recommended_shape == "lorentzian"
+        assert rec.vote_rates["exp"] == pytest.approx(0.70)
+        assert rec.vote_rates["gauss"] == pytest.approx(0.10)
+        assert rec.vote_rates["voigt"] == pytest.approx(0.20)
+        assert rec.n_contributors == 100
+
+    def test_pure_gauss_majority_recommends_gaussian(self):
+        rows = [_row("gauss", snr=100.0)] * 70 + [_row("exp", snr=100.0)] * 10 \
+            + [_row("voigt", snr=100.0)] * 20
+        rec = _aggregate_shape_verdict(rows)
+        assert rec.recommended_shape == "gaussian"
+        assert rec.vote_rates["gauss"] == pytest.approx(0.70)
+        assert rec.vote_rates["exp"] == pytest.approx(0.10)
+
+    def test_voigt_majority_with_gauss_pure_lead_picks_gaussian(self):
+        # Voigt has the most votes but gauss beats exp on the pure-shape
+        # margin -- the aggregator picks the pure shape, not voigt.
+        rows = (
+            [_row("voigt", snr=100.0)] * 50
+            + [_row("gauss", snr=100.0)] * 35
+            + [_row("exp", snr=100.0)] * 15
+        )
+        rec = _aggregate_shape_verdict(rows)
+        assert rec.recommended_shape == "gaussian"
+
+    def test_tied_pure_shapes_no_recommendation(self):
+        # exp ≈ gauss within the margin threshold; no winner.
+        rows = (
+            [_row("exp", snr=100.0)] * 32
+            + [_row("gauss", snr=100.0)] * 30
+            + [_row("voigt", snr=100.0)] * 38
+        )
+        rec = _aggregate_shape_verdict(rows, pure_margin_threshold=0.10)
+        assert rec.recommended_shape is None
+        assert any("no clear winner" in n for n in rec.notes)
+
+    def test_snr_weighting_collapses_low_snr_noise(self):
+        # Many low-SNR ambiguous bins shouldn't override a strong on-line
+        # cluster: 10 strong gauss votes outweigh 90 weak voigt votes.
+        rows = (
+            [_row("gauss", snr=200.0)] * 10
+            + [_row("voigt", snr=5.0)] * 90
+        )
+        rec = _aggregate_shape_verdict(rows)
+        # Gauss carries 10 * 200 = 2000 SNR vs voigt's 90 * 5 = 450;
+        # gauss rate = 2000 / 2450 ≈ 0.816, voigt rate ≈ 0.184, exp = 0.
+        assert rec.vote_rates["gauss"] == pytest.approx(2000 / 2450, abs=1e-6)
+        assert rec.recommended_shape == "gaussian"
+
+
+class TestComputeShapeRecommendation:
+    def test_returns_shape_recommendation_struct(self):
+        """End-to-end on a multi-line synthetic FID returns a well-formed verdict.
+
+        The synthetic plants 8 Gaussian-envelope lines; the on-line
+        bins are filtered out by the STFT classifier's bad-fit gate (real
+        strong lines aren't pure single-exponentials on the per-frame
+        time series, same effect as on 2638), so the contributor pool
+        is dominated by sidelobe bins whose per-frame envelopes are
+        beat patterns rather than the planted envelope. The test
+        therefore only asserts well-formedness; the per-bin envelope
+        shape on sidelobes is not a clean test of the planted shape and
+        the integration suite carries the real-data verdict.
+        """
+        rng = np.random.default_rng(20260526 + 1)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
+        fid, sigma_t = _synth_gaussian_fid(
+            rng=rng, n_samples=N, line_bins=line_bins,
+            line_taus_G_us=[6.0] * len(line_bins),
+            line_snrs=[200.0] * len(line_bins),
+        )
+        rec = compute_shape_recommendation(
+            fid, SAMPLE_DT_US,
+            start_us=0.0, end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ, sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+            sigma_time=sigma_t, snr_min=10.0,
+        )
+        assert isinstance(rec, ShapeRecommendation)
+        assert rec.n_contributors >= 2
+        assert set(rec.vote_rates.keys()) == {"exp", "gauss", "voigt"}
+        assert sum(rec.vote_rates.values()) == pytest.approx(1.0, abs=1e-6)
+        assert set(rec.median_d_aicc.keys()) == {
+            "gauss_vs_exp", "voigt_vs_exp", "voigt_vs_gauss",
+        }
+        assert rec.recommended_shape in (None, "lorentzian", "gaussian")
+
+    def test_rejects_bad_sideband(self):
+        with pytest.raises(ValueError, match="sideband"):
+            compute_shape_recommendation(
+                np.zeros(1000), SAMPLE_DT_US,
+                start_us=0.0, end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ, sideband="middle",
+                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                sigma_time=1.0,
+            )
+
+    def test_rejects_inverted_tau_bounds(self):
+        with pytest.raises(ValueError, match="tau_bound_hi"):
+            compute_shape_recommendation(
+                np.zeros(1000), SAMPLE_DT_US,
+                start_us=0.0, end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ, sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                sigma_time=1.0,
+                tau_bound_lo=10.0, tau_bound_hi=5.0,
             )

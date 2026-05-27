@@ -32,6 +32,7 @@ from ._internal.stage2b_impl import (
 from ._internal.stage2b_g_impl import (
     calibrate_tau_G_impl, load_tau_G_calibration_impl,
 )
+from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage3_impl import (
     detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
 )
@@ -42,7 +43,7 @@ from ._internal.stage5_impl import (
     fit_peaks_impl, visualize_fit_impl, load_fit_impl
 )
 from .core.data_structures import Peak, SpectrumFit, WindowPlan
-from .fitting.tau_calibration import TauCalibrationResult
+from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 
 
 class Pipeline:
@@ -731,6 +732,75 @@ class Pipeline:
             TauCalibrationResult,
             load_tau_G_calibration_impl(str(self.filepath))["tau_G_calibration"],
         )
+
+    def recommend_shape(
+        self,
+        n_seg: Optional[int] = None,
+        t_sigma: Optional[float] = None,
+        tau_max_us: Optional[float] = None,
+        rss_gate_factor: Optional[float] = None,
+        sigma_time: Optional[float] = None,
+        snr_min: Optional[float] = None,
+        tau_bound_lo: Optional[float] = None,
+        tau_bound_hi: Optional[float] = None,
+        tau_G_seeds: Optional[List[float]] = None,
+        pure_margin_threshold: Optional[float] = None,
+    ) -> ShapeRecommendation:
+        """Run the 3-way L/G/V per-bin AICc shape-recommendation hook.
+
+        Mirrors the τ calibrations' STFT classifier and per-bin fit
+        machinery, then fits exp / gauss / voigt on every contributor
+        bin, computes AICc per bin, and aggregates an SNR-weighted
+        majority vote. The verdict's ``recommended_shape`` (``"lorentzian"``
+        / ``"gaussian"`` / ``None``) is stamped onto every Stage 2b
+        group present on the file so the Stage 5 resolver's *recommended*
+        layer picks it up automatically. The Voigt vote mass is
+        reported as a diagnostic but does not enter the recommendation
+        (the production Stage 5 line-shape selector supports L and G
+        only).
+
+        Requires Stage 1 (active region + frequency trim) to have
+        completed. The Stage 2b calibrations are *not* required for the
+        verdict itself, but the persisted contract only fires when at
+        least one of them has run; without a Stage 2b group the
+        verdict is returned but no attr is stamped.
+
+        Parameters left as ``None`` use the documented defaults from
+        :mod:`ftmwpipeline.fitting.tau_calibration` (``DEFAULT_TAU_G_*``
+        / ``DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN``).
+        """
+        try:
+            result = recommend_shape_impl(
+                file_path=str(self.filepath),
+                n_seg=n_seg,
+                t_sigma=t_sigma,
+                tau_max_us=tau_max_us,
+                rss_gate_factor=rss_gate_factor,
+                sigma_time=sigma_time,
+                snr_min=snr_min,
+                tau_bound_lo=tau_bound_lo,
+                tau_bound_hi=tau_bound_hi,
+                tau_G_seeds=tau_G_seeds,
+                pure_margin_threshold=pure_margin_threshold,
+            )
+            rec = result["shape_recommendation"]
+            groups = result["groups_written"]
+            self.logger.info(
+                "Shape recommendation: %s (n_contributors=%d, "
+                "vote rates exp=%.1f%%/gauss=%.1f%%/voigt=%.1f%%); "
+                "written to %s",
+                rec.recommended_shape,
+                rec.n_contributors,
+                rec.vote_rates["exp"] * 100,
+                rec.vote_rates["gauss"] * 100,
+                rec.vote_rates["voigt"] * 100,
+                groups if groups else "no Stage 2b group present",
+            )
+            return cast(ShapeRecommendation, rec)
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to recommend shape: {e}") from e
 
     def visualize_tau_heatmap(
         self,

@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -96,8 +96,10 @@ __all__ = [
     "TauCalibrationResult",
     "SpurCluster",
     "BandMajority",
+    "ShapeRecommendation",
     "extract_tau_majority",
     "extract_tau_G_majority",
+    "compute_shape_recommendation",
     "sliding_stft",
     "stft_calibration",
     "majority_tau",
@@ -123,6 +125,7 @@ __all__ = [
     "DEFAULT_TAU_G_UPPER_FRACTION",
     "DEFAULT_TAU_G_SEEDS",
     "DEFAULT_TAU_G_MIN_CONTRIBUTORS",
+    "DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN",
 ]
 
 
@@ -230,6 +233,62 @@ class BandMajority:
     n: int
     tau_maj_us: float
     sigma_tau_us: float
+
+
+# Operating points for the 3-way L/G/V per-bin shape-recommendation test.
+# The verdict aggregator picks the dominant *pure* shape (exp ⇒
+# Lorentzian, gauss ⇒ Gaussian) when one beats the other by at least
+# ``DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN`` of the SNR-weighted total
+# vote mass; Voigt votes are tabulated but never become the recommendation
+# (the production Stage 5 line-shape selector supports L and G only, with
+# Voigt reserved for future per-window unification). If neither pure
+# shape clears the margin, the recommendation is ``None`` and the Stage 5
+# resolver's *recommended* layer falls through to the next layer.
+DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN = 0.10
+
+
+@dataclass(frozen=True)
+class ShapeRecommendation:
+    """3-way per-bin model preference verdict for the Stage 5 shape selector.
+
+    Attributes
+    ----------
+    recommended_shape : str or None
+        ``"lorentzian"``, ``"gaussian"``, or ``None`` for "no clear
+        winner". Written to ``stage2b_tau_calibration/.attrs/
+        recommended_shape`` (and the Gaussian-twin's equivalent) so the
+        Stage 5 resolver's *recommended* layer picks it up automatically.
+    vote_rates : dict[str, float]
+        SNR-weighted vote rate per model. Keys: ``"exp"``, ``"gauss"``,
+        ``"voigt"``. Values sum to 1.0 over eligible contributors. The
+        per-bin verdict is ``argmin AICc(exp, gauss, voigt)``; the SNR
+        weighting collapses many low-SNR ambiguous bins onto the few
+        strong on-line bins that actually constrain the shape.
+    median_d_aicc : dict[str, float]
+        Per-row-pooled median ΔAICc. Keys:
+
+        * ``"gauss_vs_exp"``: ``AICc(gauss) − AICc(exp)``; negative ⇒
+          Gaussian beats exp.
+        * ``"voigt_vs_exp"``: ``AICc(voigt) − AICc(exp)``; negative ⇒
+          Voigt beats exp.
+        * ``"voigt_vs_gauss"``: ``AICc(voigt) − AICc(gauss)``;
+          negative ⇒ Voigt beats Gaussian.
+
+        Negative AICc differences below about −2 are conventionally
+        called "strong preference" for the model on the left of the
+        difference.
+    n_contributors : int
+        Number of bins that entered the verdict (cls=3 ∧ SNR > snr_min,
+        with all three fits converged and finite τ inside the bound).
+    notes : tuple of str
+        Diagnostic strings, one per acceptance / tiebreaker step.
+    """
+
+    recommended_shape: Optional[str]
+    vote_rates: Dict[str, float]
+    median_d_aicc: Dict[str, float]
+    n_contributors: int
+    notes: Tuple[str, ...]
 
 
 # Arithmetic-third edges (low / mid / high), default partition for
@@ -1860,3 +1919,352 @@ def extract_tau_G_majority(
         preconditions_passed=all_passed,
         preconditions_notes=tuple(notes),
     )
+
+
+# ---------------------------------------------------------------------------
+# 3-way L / G / V shape-recommendation hook (per-bin AICc vote)
+# ---------------------------------------------------------------------------
+def _fit_per_bin_three_way(
+    cal: _STFTClassification,
+    bin_indices: np.ndarray,
+    freq_mol_mhz: np.ndarray,
+    *,
+    tau_lo: float,
+    tau_hi: float,
+    tau_G_seeds: Sequence[float],
+    n_seg: int,
+) -> List[Dict[str, Any]]:
+    """For each contributor bin, fit exp / gauss / voigt and compute AICc.
+
+    Returns a list of dicts (one per converged bin). Bins where any of
+    the three fits fails to converge are skipped; the caller's
+    aggregator divides over the survivors.
+    """
+    a_centers = cal.a_centers_us.astype(float)
+    rows: List[Dict[str, Any]] = []
+    seeds = tuple(float(s) for s in tau_G_seeds)
+    for idx in bin_indices:
+        mag_bin = cal.mag[:, int(idx)].astype(float)
+        snr_bin = float(cal.snr_per_bin[int(idx)])
+        freq_bin = float(freq_mol_mhz[int(idx)])
+        C_seed = float(cal.C_per_bin[int(idx)])
+        tau_seed = float(cal.tau_per_bin[int(idx)])
+        exp_params, rss_exp, ok_exp = _fit_exp_nls_single(
+            a_centers, mag_bin, C_seed, tau_seed,
+            tau_lo=tau_lo, tau_hi=tau_hi,
+        )
+        g_params, rss_gauss, ok_gauss, _ = _fit_gauss_nls_multistart(
+            a_centers, mag_bin, float(exp_params[0]),
+            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+        )
+        v_params, rss_voigt, ok_voigt, _ = _fit_voigt_nls_multistart(
+            a_centers, mag_bin, float(exp_params[0]), float(exp_params[1]),
+            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+        )
+        if not (ok_exp and ok_gauss and ok_voigt):
+            continue
+        aicc_exp = float(_aicc(np.array([rss_exp]), n_seg, k=2)[0])
+        aicc_gauss = float(_aicc(np.array([rss_gauss]), n_seg, k=2)[0])
+        aicc_voigt = float(_aicc(np.array([rss_voigt]), n_seg, k=3)[0])
+        scores = {"exp": aicc_exp, "gauss": aicc_gauss, "voigt": aicc_voigt}
+        verdict = min(scores, key=scores.get)
+        rows.append(dict(
+            idx=int(idx), freq=freq_bin, snr=snr_bin,
+            tau_L_exp=float(exp_params[1]),
+            tau_G_gauss=float(g_params[1]),
+            tau_L_voigt=float(v_params[1]),
+            tau_G_voigt=float(v_params[2]),
+            aicc_exp=aicc_exp, aicc_gauss=aicc_gauss, aicc_voigt=aicc_voigt,
+            d_aicc_gauss_exp=aicc_gauss - aicc_exp,
+            d_aicc_voigt_exp=aicc_voigt - aicc_exp,
+            d_aicc_voigt_gauss=aicc_voigt - aicc_gauss,
+            verdict=verdict,
+        ))
+    return rows
+
+
+def _shape_recommendation_bin_clean(
+    row: Dict[str, Any], tau_cap_us: float,
+) -> bool:
+    """Per-bin acceptance gate for the 3-way recommendation pool.
+
+    A bin contributes to the vote when at least one of the three
+    candidate τ values lies strictly inside ``[0, tau_cap_us)``. A bin
+    where every fit's τ saturates against the upper bound has no
+    informative shape to vote on (its time series is essentially
+    flat or noise-dominated) and gets dropped before the SNR-weighted
+    tally.
+    """
+    return (
+        row["tau_L_exp"] < tau_cap_us
+        or row["tau_G_gauss"] < tau_cap_us
+        or row["tau_L_voigt"] < tau_cap_us
+        or row["tau_G_voigt"] < tau_cap_us
+    )
+
+
+def _aggregate_shape_verdict(
+    rows: List[Dict[str, Any]],
+    *,
+    pure_margin_threshold: float = DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN,
+) -> ShapeRecommendation:
+    """Aggregate per-bin 3-way AICc rows into a single ShapeRecommendation.
+
+    Algorithm:
+
+    1. SNR-weighted vote rates over the per-bin ``argmin AICc`` verdicts.
+    2. If neither pure shape beats the other by ``pure_margin_threshold``
+       of the total weight, return ``recommended_shape=None`` -- the data
+       does not strongly favour one pure shape over the other and the
+       Stage 5 resolver's *recommended* layer falls through. Otherwise
+       recommend the dominant pure shape (``"lorentzian"`` for exp,
+       ``"gaussian"`` for gauss). Voigt vote mass is reported but does
+       not enter the recommendation because the production Stage 5
+       line-shape selector supports L and G only.
+    """
+    if not rows:
+        return ShapeRecommendation(
+            recommended_shape=None,
+            vote_rates={"exp": 0.0, "gauss": 0.0, "voigt": 0.0},
+            median_d_aicc={
+                "gauss_vs_exp": float("nan"),
+                "voigt_vs_exp": float("nan"),
+                "voigt_vs_gauss": float("nan"),
+            },
+            n_contributors=0,
+            notes=("no contributor bins survived the per-bin three-way fit",),
+        )
+    snrs = np.asarray([r["snr"] for r in rows], dtype=float)
+    total_w = float(np.sum(snrs))
+    vote_rates: Dict[str, float] = {}
+    for m in ("exp", "gauss", "voigt"):
+        mask = np.array([r["verdict"] == m for r in rows], dtype=bool)
+        vote_rates[m] = (
+            float(np.sum(snrs[mask]) / total_w) if total_w > 0 else 0.0
+        )
+
+    median_d_aicc = {
+        "gauss_vs_exp": float(np.median([r["d_aicc_gauss_exp"] for r in rows])),
+        "voigt_vs_exp": float(np.median([r["d_aicc_voigt_exp"] for r in rows])),
+        "voigt_vs_gauss": float(np.median([r["d_aicc_voigt_gauss"] for r in rows])),
+    }
+
+    notes: List[str] = [
+        f"n_contributors={len(rows)}; "
+        f"vote rates exp={vote_rates['exp']*100:.1f}% "
+        f"gauss={vote_rates['gauss']*100:.1f}% "
+        f"voigt={vote_rates['voigt']*100:.1f}%"
+    ]
+    exp_rate = vote_rates["exp"]
+    gauss_rate = vote_rates["gauss"]
+    pure_margin = abs(exp_rate - gauss_rate)
+    if pure_margin >= pure_margin_threshold:
+        recommendation = "lorentzian" if exp_rate > gauss_rate else "gaussian"
+        notes.append(
+            f"pure-shape margin {pure_margin*100:.1f}% >= "
+            f"{pure_margin_threshold*100:.0f}% threshold; "
+            f"recommend {recommendation!r}"
+        )
+    else:
+        recommendation = None
+        notes.append(
+            f"pure-shape margin {pure_margin*100:.1f}% < "
+            f"{pure_margin_threshold*100:.0f}% threshold; "
+            f"no clear winner (recommended_shape=None)"
+        )
+
+    return ShapeRecommendation(
+        recommended_shape=recommendation,
+        vote_rates=vote_rates,
+        median_d_aicc=median_d_aicc,
+        n_contributors=len(rows),
+        notes=tuple(notes),
+    )
+
+
+def compute_shape_recommendation(
+    fid: np.ndarray,
+    sample_dt_us: float,
+    *,
+    start_us: float,
+    end_us: float,
+    probe_freq_mhz: float,
+    sideband: str,
+    trim_lo_mhz: float,
+    trim_hi_mhz: float,
+    sigma_time: Optional[float] = None,
+    n_seg: int = DEFAULT_N_SEG,
+    t_sigma: float = DEFAULT_T_SIGMA,
+    tau_max_us: Optional[float] = None,
+    rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
+    relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
+    snr_min: float = DEFAULT_TAU_G_SNR_MIN,
+    tau_bound_lo: float = DEFAULT_TAU_G_BOUND_LO,
+    tau_bound_hi: float = DEFAULT_TAU_G_BOUND_HI,
+    tau_G_seeds: Sequence[float] = DEFAULT_TAU_G_SEEDS,
+    pure_margin_threshold: float = DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN,
+    include_bad_fit_bins: bool = False,
+    sigma_x_full: Optional[float] = None,
+) -> ShapeRecommendation:
+    """Compute a 3-way L / G / V shape recommendation from a raw FID.
+
+    Runs the same sliding-active-window STFT classifier as
+    :func:`extract_tau_majority` and :func:`extract_tau_G_majority`,
+    then on every contributor bin (``classification == 3`` ∧
+    ``SNR > snr_min``) fits all three single-shape models -- pure
+    exponential (``|S| = C exp(-a/τ_L)``, k=2), pure Gaussian
+    (``|S| = C exp(-(a/τ_G)²)``, k=2), and Voigt
+    (``|S| = C exp(-a/τ_L) exp(-(a/τ_G)²)``, k=3) -- with the small-
+    sample-corrected AICc. The per-bin verdict is ``argmin AICc``; the
+    SNR-weighted majority vote across all converged bins drives the
+    recommendation.
+
+    The Voigt model is the most expressive of the three (one extra
+    parameter), and on real instrumental envelopes will often win the
+    raw vote without one pure shape being a poor description of the
+    data. The aggregator picks between the two *pure* shapes (exp ⇒
+    ``"lorentzian"``, gauss ⇒ ``"gaussian"``) based on their relative
+    vote mass; the Voigt votes are reported as diagnostic but do not
+    enter the recommendation. When neither pure shape wins by at least
+    ``pure_margin_threshold`` of the total weight, the recommendation
+    is ``None`` (the data does not strongly favour one pure shape and
+    the Stage 5 resolver's *recommended* layer falls through to the
+    next layer).
+
+    The STFT classifier (:func:`stft_calibration`) labels bins as
+    ``cls=3`` (clean contributor) using a *pure-exp* bad-fit gate;
+    strong on-line bins on Gaussian-envelope fixtures often fail that
+    gate and end up as ``cls=2`` (bad-fit per the exp model) even
+    though their pure-Gauss fit is clean. The default pool is
+    ``cls=3`` (matching the τ calibrations) so the recommendation and
+    the persisted τ are computed on the same contributor set. Setting
+    ``include_bad_fit_bins=True`` expands the pool to ``cls ∈ {2, 3}``;
+    on fixtures with many skirt / overlapping-line ``cls=2`` bins (e.g.
+    2638) the expansion dilutes the strong on-line contribution and
+    can flip the verdict to "no clear winner" -- a shape-aware
+    classifier or a Stage-3-peak-anchored contributor pool would be
+    the more principled fix and is tracked in
+    ``dev-docs/planning/stage5-gaussian-shape.md``.
+
+    See :class:`ShapeRecommendation` for the returned struct.
+
+    Parameters
+    ----------
+    fid, sample_dt_us, start_us, end_us, probe_freq_mhz, sideband,
+    trim_lo_mhz, trim_hi_mhz, sigma_time, n_seg, t_sigma, tau_max_us,
+    rss_gate_factor, relative_gate_fraction, sigma_x_full
+        STFT classifier knobs (identical defaults to
+        :func:`extract_tau_majority` /
+        :func:`extract_tau_G_majority` so the same contributor pool
+        feeds all three).
+    snr_min
+        Per-bin SNR floor on the contributor pool. Below this the
+        per-bin AICc discriminator has too little signal-to-noise to
+        be informative.
+    tau_bound_lo, tau_bound_hi
+        Bounds on τ_L and τ_G inside the fits.
+    tau_G_seeds
+        Multi-start seed grid for the Gaussian and Voigt fits.
+    pure_margin_threshold
+        Minimum SNR-weighted vote-rate margin between exp and gauss
+        for a pure-shape recommendation to fire.
+    include_bad_fit_bins
+        When ``True``, expand the candidate pool to include
+        ``classification == 2`` bins in addition to ``cls=3``. Default
+        is ``False`` so the recommendation pool matches the τ
+        calibrations' pool. On fixtures with many skirt ``cls=2``
+        bins (the typical case) the expansion dilutes the strong
+        on-line contribution; the kwarg is exposed for diagnostic
+        experiments rather than as a principled improvement to the
+        verdict.
+    """
+    sb = sideband.strip().lower()
+    if sb not in ("lower", "upper"):
+        raise ValueError(f"sideband must be 'lower' or 'upper', got {sideband!r}")
+    if sample_dt_us <= 0.0:
+        raise ValueError("sample_dt_us must be positive")
+    if end_us <= start_us:
+        raise ValueError("end_us must be strictly greater than start_us")
+    if trim_hi_mhz <= trim_lo_mhz:
+        raise ValueError("trim_hi_mhz must be strictly greater than trim_lo_mhz")
+    if tau_bound_hi <= tau_bound_lo:
+        raise ValueError(
+            f"tau_bound_hi ({tau_bound_hi}) must exceed tau_bound_lo "
+            f"({tau_bound_lo})"
+        )
+
+    fid_arr = np.asarray(fid, dtype=float)
+    start_idx = max(int(round(start_us / sample_dt_us)), 0)
+    end_idx = min(int(round(end_us / sample_dt_us)), fid_arr.size)
+    if end_idx - start_idx < 4 * n_seg:
+        raise ValueError(
+            f"active region [{start_us}, {end_us}) us has too few samples "
+            f"({end_idx - start_idx}) for n_seg={n_seg}"
+        )
+    active = fid_arr[start_idx:end_idx]
+    new_size = (active.size // n_seg) * n_seg
+    active = active[:new_size]
+
+    sigma_t = (
+        float(sigma_time)
+        if sigma_time is not None
+        else estimate_sigma_time_from_tail(active)
+    )
+    if sigma_t <= 0.0:
+        raise ValueError("sigma_time must be positive")
+
+    cal = stft_calibration(
+        active, sample_dt_us, sigma_t,
+        n_seg=n_seg,
+        t_sigma=t_sigma,
+        tau_max_us=tau_max_us,
+        rss_gate_factor=rss_gate_factor,
+        relative_gate_fraction=relative_gate_fraction,
+        sigma_x_full=sigma_x_full,
+    )
+
+    sign = -1.0 if sb == "lower" else +1.0
+    freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
+    in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
+    above_snr = cal.snr_per_bin > float(snr_min)
+    if include_bad_fit_bins:
+        contributor_mask = (
+            ((cal.classification == 3) | (cal.classification == 2))
+            & in_trim & above_snr
+        )
+    else:
+        contributor_mask = (
+            (cal.classification == 3) & in_trim & above_snr
+        )
+    bin_indices = np.where(contributor_mask)[0]
+    bin_indices = bin_indices[np.argsort(freq_mol_mhz[bin_indices])]
+
+    rows = _fit_per_bin_three_way(
+        cal, bin_indices, freq_mol_mhz,
+        tau_lo=float(tau_bound_lo), tau_hi=float(tau_bound_hi),
+        tau_G_seeds=tau_G_seeds, n_seg=int(n_seg),
+    )
+    # Per-bin acceptance: keep bins where at least one of the three
+    # candidates produces a τ that lies inside the bound, so genuine
+    # noise / blend bins (where every fit saturates against the upper
+    # bound or fails to converge) drop out of the vote.
+    tau_cap_us = float(DEFAULT_TAU_G_UPPER_FRACTION) * float(tau_bound_hi)
+    rows = [r for r in rows if _shape_recommendation_bin_clean(r, tau_cap_us)]
+    verdict = _aggregate_shape_verdict(
+        rows, pure_margin_threshold=float(pure_margin_threshold),
+    )
+
+    logger.info(
+        "3-way shape recommendation: n_contributors=%d, vote rates "
+        "exp=%.1f%% gauss=%.1f%% voigt=%.1f%%, median ΔAICc(gauss-exp)=%.2f, "
+        "ΔAICc(voigt-exp)=%.2f, ΔAICc(voigt-gauss)=%.2f -> recommendation=%s",
+        verdict.n_contributors,
+        verdict.vote_rates["exp"] * 100,
+        verdict.vote_rates["gauss"] * 100,
+        verdict.vote_rates["voigt"] * 100,
+        verdict.median_d_aicc["gauss_vs_exp"],
+        verdict.median_d_aicc["voigt_vs_exp"],
+        verdict.median_d_aicc["voigt_vs_gauss"],
+        verdict.recommended_shape,
+    )
+    return verdict

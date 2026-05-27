@@ -191,21 +191,34 @@ it, the canonical settings dataclasses live in `core/`.
   the runaway-suppression cliff (95 free-τ windows runaway at λ=0 →
   5 at λ=50, ~98.6 %) is unchanged and higher λ degrades the bulk χ²ᵣ
   tail in mid/high bands.
-- **Stage 2b shape discriminator -- preliminary read landed.**
-  3-way per-bin AICc(exp / gauss / voigt) helper prototyped in
-  ``scratch/stage2b-bias/diagnose_3way.py`` (not productionised). On
-  2638's 408 contributor bins the SNR-weighted vote splits 22 % L /
-  36 % G / 42 % V overall, with low band Gaussian-majority and
-  mid/high Voigt-majority (median ΔAICc(v−g) = −6.3 in high band --
-  real Voigt character consistent with W-band horn-coupling adding
-  Lorentzian width). The cross-check that the per-bin pure-Gauss τ_G
-  matches the per-window pure-Gauss fit τ end-to-end (ratios 0.96 /
-  0.98 / 1.08 per band) confirms 2638's envelope is dominantly
-  Gaussian even where Voigt narrowly wins on the +1-parameter test.
-  Productionising the helper (write to
-  ``stage2b_tau_calibration/.attrs/recommended_shape`` /
-  ``stage2b_tau_G_calibration/.attrs/recommended_shape``) plus a
-  V-majority tiebreaker rule is the next step on this thread.
+- **Stage 2b shape discriminator -- 3-way hook landed
+  (productionised, sidelobe-anchored pool pending fix).**
+  ``fitting/tau_calibration.compute_shape_recommendation`` returns a
+  :class:`ShapeRecommendation` (per-bin AICc(exp / gauss / voigt)
+  vote, SNR-weighted; the dominant pure shape wins when its margin
+  over the other pure shape clears
+  ``DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN``, otherwise no
+  recommendation). End-to-end orchestrator
+  ``_internal/shape_recommendation_impl.recommend_shape_impl``;
+  user-facing surfaces ``api.recommend_shape`` and
+  ``Pipeline.recommend_shape``. Persistence:
+  ``write_stage2b_recommended_shape`` now stamps both
+  ``stage2b_tau_calibration`` and ``stage2b_tau_G_calibration``
+  group attrs when present; ``read_stage2b_recommended_shape``
+  falls back from the Lorentzian twin to the Gaussian twin so the
+  Stage 5 resolver's *recommended* layer fires regardless of which
+  τ calibration ran. On 2638 the verdict reads
+  ``exp 22 % / gauss 36 % / voigt 42 %`` → recommendation
+  ``"gaussian"`` (gauss-vs-exp margin 14 % >= 10 % threshold), and
+  the Stage 5 resolver picks it up via the integration test
+  ``test_recommend_shape_persists_and_feeds_resolver``. The
+  contributor pool is still ``cls=3`` (matching the τ
+  calibrations), so the verdict relies on sidelobe behaviour --
+  the next-session shape-aware-classifier work
+  ([stage5-gaussian-shape.md](stage5-gaussian-shape.md) "Open
+  questions") will let on-line bins enter the pool directly and
+  the vote rates are expected to shift toward stronger gauss
+  dominance.
 - **Backfill to other stages.** `TauCalibrationSettings`,
   `NoiseSettings`, `PeakDetectionSettings`, `WindowPlanningSettings`
   follow the same pattern. Order: Stage 2b first (shape recommendation

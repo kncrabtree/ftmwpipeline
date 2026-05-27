@@ -364,6 +364,41 @@ Remaining work (next session):
   pure-exp `τ_maj`. (Their role is peak detection / candidate
   generation, where the Lorentzian τ is an acceptable proxy.) Only
   the Stage 5 window-fit consumes the Gaussian-twin calibration.
+- **Shape-aware STFT classifier (next-session headline; will shift
+  every downstream τ_G calibration value on 2638).**
+  `stft_calibration` labels bins via a pure-exp bad-fit gate:
+  ``rss_exp > rss_gate_factor · n_seg · (relative_gate_fraction ·
+  mean(|S|))²``. On Gaussian-envelope data this gate fires on the
+  strong on-line bins themselves (their per-frame magnitudes don't
+  follow pure-exp), so they land in `cls=2` and `extract_tau_G_majority`
+  + the 3-way shape-recommendation hook see only sidelobe `cls=3`
+  bins. The exp-only gate was set up before the Voigt-deficit work
+  established that 2638's lines are Gaussian-dominant; the
+  "rejected on-line bins must be line blends" rationale that was
+  used to defend the gate has been superseded by the finding that
+  the on-line bins fail the gate because the *model* is wrong, not
+  the data. The pure-Gauss τ_G calibration that landed in this
+  cycle matches the window-fit τ_G within 5-8 % per band on 2638
+  because sidelobes near a Gauss-envelope line carry the same Gauss
+  envelope (scaled by a sinc factor in amplitude) -- a principled
+  rather than coincidental match -- but the production stance
+  shouldn't rely on "benevolent sidelobe behaviour from an
+  objectively incorrect classifier". The next-session fix is to
+  parameterise `stft_calibration` by shape so its bad-fit gate uses
+  the shape-matched residual (pure-exp for ``shape='lorentzian'``,
+  pure-Gauss for ``shape='gaussian'``, or "best-of-three" for the
+  3-way shape-recommendation hook); both τ calibrations and the
+  recommendation hook then read shape-correct contributor pools.
+  Downstream consequences are accepted: the per-band τ_G anchors
+  on 2638 will shift (likely smaller, matching the on-line per-bin
+  pure-Gauss τ_G ≈ 6 µs from the synthetic test more closely), the
+  `instrument_bc_2638.yaml` λ choice will need re-validation, and
+  the 3-way verdict's vote rates will shift toward gauss as the
+  on-line bins enter the pool with their stronger AICc preference.
+  See ``scratch/next-session-prompt.md`` for the full plan. The
+  current ``compute_shape_recommendation(include_bad_fit_bins=True)``
+  kwarg is plumbed for diagnostic experiments only and becomes
+  obsolete once the classifier becomes shape-aware.
 
 ## Out of scope
 
