@@ -443,17 +443,17 @@ def _synth_gaussian_fid(
 
 class TestExtractTauGMajority:
     def test_recovers_tau_G_for_multi_line(self):
-        """SNR-weighted majority τ_G lands in the right ballpark for Gaussian lines.
+        """SNR-weighted majority τ_G lands within ±10 % on Gaussian lines.
 
-        The per-bin pure-Gaussian fit on a sliding-STFT bin time series is
-        a small-sample nonlinear LSQ (only ``n_seg`` frames per bin); the
-        slowly-varying envelope approximation and finite-frame averaging
-        add bias on this kind of synthetic, so the test holds a generous
-        50 % relative band -- the unit-test scope is "did the eligible-
-        filter, per-bin pure-Gauss fit, and SNR-weighted majority machinery
-        all run end-to-end and land somewhere reasonable". Stage 5 χ²
-        improvement against the free-τ window-fit distribution on the 2638
-        fixture is the production acceptance test (validated separately).
+        The shape-aware STFT classifier (``shape='gaussian'``) gates the
+        bad-fit pool on the pure-Gauss residual, so the strong on-line
+        bins planted by ``_synth_gaussian_fid`` enter the cls=3
+        contributor set directly. The SNR-weighted majority τ_G then
+        sits within ±10 % of the planted truth -- a real test of the
+        recovery, not just a "did the machinery run end-to-end" smoke
+        check. Stage 5 χ² improvement against the free-τ window-fit
+        distribution on the 2638 fixture is the production acceptance
+        test (validated separately).
         """
         rng = np.random.default_rng(20260525 + 311)
         N = int(round(T_FULL_US / SAMPLE_DT_US))
@@ -479,8 +479,8 @@ class TestExtractTauGMajority:
         assert result.n_contributors >= 2, (
             f"only {result.n_contributors} eligible bins (need ≥ 2)"
         )
-        assert result.tau_maj_us == pytest.approx(tau_G_truth, rel=0.2), (
-            f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 20%"
+        assert result.tau_maj_us == pytest.approx(tau_G_truth, rel=0.10), (
+            f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 10%"
         )
         assert result.sideband == "lower"
         # The eligible subset must not be saturated against the upper bound.
@@ -598,15 +598,13 @@ class TestComputeShapeRecommendation:
     def test_returns_shape_recommendation_struct(self):
         """End-to-end on a multi-line synthetic FID returns a well-formed verdict.
 
-        The synthetic plants 8 Gaussian-envelope lines; the on-line
-        bins are filtered out by the STFT classifier's bad-fit gate (real
-        strong lines aren't pure single-exponentials on the per-frame
-        time series, same effect as on 2638), so the contributor pool
-        is dominated by sidelobe bins whose per-frame envelopes are
-        beat patterns rather than the planted envelope. The test
-        therefore only asserts well-formedness; the per-bin envelope
-        shape on sidelobes is not a clean test of the planted shape and
-        the integration suite carries the real-data verdict.
+        The synthetic plants 8 Gaussian-envelope lines and the
+        shape-aware classifier (``shape='best_of_three'``) lets the
+        strong on-line bins into the cls=3 contributor pool, so the
+        per-bin AICc vote reflects the planted shape. The test asserts
+        well-formedness (vote rates sum to 1, recommended_shape in the
+        allowed set); the integration suite carries the real-data
+        verdict on 2638.
         """
         rng = np.random.default_rng(20260526 + 1)
         N = int(round(T_FULL_US / SAMPLE_DT_US))

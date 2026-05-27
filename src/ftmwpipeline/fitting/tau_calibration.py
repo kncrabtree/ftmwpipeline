@@ -721,6 +721,39 @@ def _aicc(rss: np.ndarray, n: int, k: int) -> np.ndarray:
 
 
 @dataclass(frozen=True)
+class _ShapeFitResults:
+    """Per-bin NLS fits the shape-aware classifier ran on its calibration pool.
+
+    Arrays are full-length (``n_bins``) with ``NaN``/``False`` at indices
+    outside the fit mask (the ``above-threshold ∧ non-spur`` set). Which
+    triples are populated depends on the shape that drove the gate:
+
+    * ``shape='lorentzian'`` → instance is ``None`` (no NLS pass; the
+      vectorised log-linear seed already lives in the parent
+      :class:`_STFTClassification`).
+    * ``shape='gaussian'`` → the ``(tau_L_exp, C_exp, rss_exp_nls,
+      converged_exp)`` and ``(tau_G_gauss, C_gauss, rss_gauss,
+      converged_gauss)`` quadruples are populated.
+    * ``shape='best_of_three'`` → all three model quadruples are populated.
+    """
+
+    shape: str
+    tau_L_exp: Optional[np.ndarray] = None
+    C_exp: Optional[np.ndarray] = None
+    rss_exp_nls: Optional[np.ndarray] = None
+    converged_exp: Optional[np.ndarray] = None
+    tau_G_gauss: Optional[np.ndarray] = None
+    C_gauss: Optional[np.ndarray] = None
+    rss_gauss: Optional[np.ndarray] = None
+    converged_gauss: Optional[np.ndarray] = None
+    tau_L_voigt: Optional[np.ndarray] = None
+    tau_G_voigt: Optional[np.ndarray] = None
+    C_voigt: Optional[np.ndarray] = None
+    rss_voigt: Optional[np.ndarray] = None
+    converged_voigt: Optional[np.ndarray] = None
+
+
+@dataclass(frozen=True)
 class _STFTClassification:
     """Internal: per-bin classification from one STFT calibration pass."""
 
@@ -738,6 +771,170 @@ class _STFTClassification:
     sigma_x_full: float
     sigma_frame: float
     tau_max_us: float
+    shape: str = "lorentzian"
+    shape_fits: Optional[_ShapeFitResults] = None
+
+
+_VALID_CLASSIFIER_SHAPES = frozenset(("lorentzian", "gaussian", "best_of_three"))
+
+
+def _run_shape_fits(
+    shape: str,
+    mag: np.ndarray,
+    a_centers_us: np.ndarray,
+    tau_seed_arr: np.ndarray,
+    C_seed_arr: np.ndarray,
+    *,
+    mask: np.ndarray,
+    tau_lo: float,
+    tau_hi: float,
+    tau_seeds: Sequence[float],
+) -> Optional[_ShapeFitResults]:
+    """Per-bin NLS fits on the above-threshold non-spur pool for shape-aware gating.
+
+    For ``shape='lorentzian'`` returns ``None`` -- the vectorised log-linear
+    seed in the parent classifier already covers the gate. For ``'gaussian'``
+    runs ``(exp_nls, gauss_nls)`` per bin in ``mask``. For ``'best_of_three'``
+    runs ``(exp_nls, gauss_nls, voigt_nls)`` per bin. ``tau_seed_arr`` /
+    ``C_seed_arr`` are the log-linear exp seeds from the classifier's
+    vectorised first pass; the exp NLS polishes from there and seeds the
+    gauss / voigt fits.
+
+    Output arrays are full-length (``n_bins``) with ``NaN`` /
+    ``False`` outside the mask. ``np.fmin``-friendly NaNs are the
+    intentional sentinel so the gate-selection helper can fall back per-bin.
+    """
+    if shape == "lorentzian":
+        return None
+    if shape not in _VALID_CLASSIFIER_SHAPES:
+        raise ValueError(
+            f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
+            f"got {shape!r}"
+        )
+
+    n_bins = mag.shape[1]
+    bin_idxs = np.where(mask)[0]
+    seeds = tuple(float(s) for s in tau_seeds)
+
+    if shape == "gaussian":
+        tau_G = np.full(n_bins, np.nan, dtype=float)
+        C_g = np.full(n_bins, np.nan, dtype=float)
+        rss_g = np.full(n_bins, np.nan, dtype=float)
+        ok_g = np.zeros(n_bins, dtype=bool)
+        tau_L = np.full(n_bins, np.nan, dtype=float)
+        C_e = np.full(n_bins, np.nan, dtype=float)
+        rss_e = np.full(n_bins, np.nan, dtype=float)
+        ok_e = np.zeros(n_bins, dtype=bool)
+        for idx in bin_idxs:
+            i = int(idx)
+            mag_bin = mag[:, i].astype(float)
+            C_seed = float(C_seed_arr[i])
+            tau_seed = float(tau_seed_arr[i])
+            ep, re_, oe = _fit_exp_nls_single(
+                a_centers_us, mag_bin, C_seed, tau_seed,
+                tau_lo=tau_lo, tau_hi=tau_hi,
+            )
+            tau_L[i] = float(ep[1])
+            C_e[i] = float(ep[0])
+            rss_e[i] = float(re_)
+            ok_e[i] = bool(oe)
+            gp, rg, og, _ = _fit_gauss_nls_multistart(
+                a_centers_us, mag_bin, float(ep[0]),
+                tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+            )
+            tau_G[i] = float(gp[1])
+            C_g[i] = float(gp[0])
+            rss_g[i] = float(rg)
+            ok_g[i] = bool(og)
+        return _ShapeFitResults(
+            shape="gaussian",
+            tau_L_exp=tau_L, C_exp=C_e, rss_exp_nls=rss_e, converged_exp=ok_e,
+            tau_G_gauss=tau_G, C_gauss=C_g, rss_gauss=rss_g,
+            converged_gauss=ok_g,
+        )
+
+    # shape == "best_of_three"
+    tau_L = np.full(n_bins, np.nan, dtype=float)
+    C_e = np.full(n_bins, np.nan, dtype=float)
+    rss_e = np.full(n_bins, np.nan, dtype=float)
+    ok_e = np.zeros(n_bins, dtype=bool)
+    tau_G = np.full(n_bins, np.nan, dtype=float)
+    C_g = np.full(n_bins, np.nan, dtype=float)
+    rss_g = np.full(n_bins, np.nan, dtype=float)
+    ok_g = np.zeros(n_bins, dtype=bool)
+    tau_Lv = np.full(n_bins, np.nan, dtype=float)
+    tau_Gv = np.full(n_bins, np.nan, dtype=float)
+    C_v = np.full(n_bins, np.nan, dtype=float)
+    rss_v = np.full(n_bins, np.nan, dtype=float)
+    ok_v = np.zeros(n_bins, dtype=bool)
+    for idx in bin_idxs:
+        i = int(idx)
+        mag_bin = mag[:, i].astype(float)
+        C_seed = float(C_seed_arr[i])
+        tau_seed = float(tau_seed_arr[i])
+        ep, re_, oe = _fit_exp_nls_single(
+            a_centers_us, mag_bin, C_seed, tau_seed,
+            tau_lo=tau_lo, tau_hi=tau_hi,
+        )
+        tau_L[i] = float(ep[1])
+        C_e[i] = float(ep[0])
+        rss_e[i] = float(re_)
+        ok_e[i] = bool(oe)
+        gp, rg, og, _ = _fit_gauss_nls_multistart(
+            a_centers_us, mag_bin, float(ep[0]),
+            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+        )
+        tau_G[i] = float(gp[1])
+        C_g[i] = float(gp[0])
+        rss_g[i] = float(rg)
+        ok_g[i] = bool(og)
+        vp, rv, ov, _ = _fit_voigt_nls_multistart(
+            a_centers_us, mag_bin, float(ep[0]), float(ep[1]),
+            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+        )
+        tau_Lv[i] = float(vp[1])
+        tau_Gv[i] = float(vp[2])
+        C_v[i] = float(vp[0])
+        rss_v[i] = float(rv)
+        ok_v[i] = bool(ov)
+    return _ShapeFitResults(
+        shape="best_of_three",
+        tau_L_exp=tau_L, C_exp=C_e, rss_exp_nls=rss_e, converged_exp=ok_e,
+        tau_G_gauss=tau_G, C_gauss=C_g, rss_gauss=rss_g, converged_gauss=ok_g,
+        tau_L_voigt=tau_Lv, tau_G_voigt=tau_Gv, C_voigt=C_v,
+        rss_voigt=rss_v, converged_voigt=ok_v,
+    )
+
+
+def _select_rss_for_gate(
+    shape: str,
+    rss_exp_loglin: np.ndarray,
+    shape_fits: Optional[_ShapeFitResults],
+) -> np.ndarray:
+    """Pick the residual array that drives the bad-fit gate for ``shape``.
+
+    NaN entries (unconverged / not-fit bins) are filled with ``+inf`` so
+    they fail the gate -- a bin where the shape-matched NLS could not
+    produce a valid residual is treated as bad-fit even though its
+    log-linear exp seed may have been finite.
+    """
+    if shape == "lorentzian" or shape_fits is None:
+        return rss_exp_loglin
+    if shape == "gaussian":
+        rss = np.array(shape_fits.rss_gauss, dtype=float, copy=True)
+    elif shape == "best_of_three":
+        rss = np.fmin(
+            np.fmin(shape_fits.rss_exp_nls, shape_fits.rss_gauss),
+            shape_fits.rss_voigt,
+        )
+        rss = np.asarray(rss, dtype=float)
+    else:
+        raise ValueError(
+            f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
+            f"got {shape!r}"
+        )
+    rss = np.where(np.isfinite(rss), rss, np.inf)
+    return rss
 
 
 def stft_calibration(
@@ -751,6 +948,10 @@ def stft_calibration(
     rss_gate_factor: float = DEFAULT_RSS_GATE_FACTOR,
     relative_gate_fraction: float = DEFAULT_RELATIVE_GATE_FRACTION,
     sigma_x_full: Optional[float] = None,
+    shape: str = "lorentzian",
+    nls_tau_lo: float = DEFAULT_TAU_G_BOUND_LO,
+    nls_tau_hi: float = DEFAULT_TAU_G_BOUND_HI,
+    nls_tau_seeds: Sequence[float] = DEFAULT_TAU_G_SEEDS,
 ) -> _STFTClassification:
     """Run the sliding-active-window STFT and classify every frequency bin.
 
@@ -760,11 +961,23 @@ def stft_calibration(
       bins land here.
     * **1 / spur**: AICc prefers the constant model OR the exponential fit
       saturates at ``0.95 * tau_max_us`` (CW tone, ``tau -> infinity``).
-    * **2 / bad-fit**: the exponential RSS exceeds
+    * **2 / bad-fit**: the shape-matched RSS exceeds
       ``rss_gate_factor * n_seg * max(sigma_frame^2, (relative_gate_fraction *
       mean(|S_n|))^2)`` (overlapping skirts, mid-blend bins).
     * **3 / contributor**: above threshold, not a spur, not a bad-fit. These
       bins enter the tau histogram.
+
+    The bad-fit gate is shape-conditioned via ``shape``. The default
+    ``'lorentzian'`` gates on the vectorised log-linear pure-exp RSS and
+    is the historical behaviour. ``'gaussian'`` runs a per-bin pure-Gauss
+    NLS on the above-threshold non-spur pool and gates on the
+    pure-Gauss RSS, so strong on-line bins on Gaussian-envelope fixtures
+    enter ``cls=3`` directly instead of being labelled bad-fit by an
+    exp model that does not describe them. ``'best_of_three'`` runs
+    per-bin exp / gauss / voigt NLS and gates on the minimum of the
+    three residuals -- a bin enters ``cls=3`` if any of the three
+    candidate models describes the data well, which is the right pool
+    for the 3-way shape-recommendation hook.
 
     Parameters
     ----------
@@ -801,9 +1014,32 @@ def stft_calibration(
         ``sigma_t`` derivation -- on real fixtures the tail can carry
         residual signal that inflates the analytic value (2638: ~2x
         overestimate).
+    shape : {'lorentzian', 'gaussian', 'best_of_three'}, default 'lorentzian'
+        Which residual feeds the bad-fit gate. ``'lorentzian'`` uses the
+        cheap vectorised log-linear pure-exp residual (legacy behaviour).
+        ``'gaussian'`` runs a per-bin pure-Gauss NLS on the above-threshold
+        non-spur pool and gates on its residual; the per-bin
+        ``(τ_G, C, rss_gauss, converged)`` results are exposed via
+        :attr:`_STFTClassification.shape_fits` so callers don't need a
+        second pass. ``'best_of_three'`` runs per-bin exp / gauss / voigt
+        NLS and gates on ``min(rss_exp, rss_gauss, rss_voigt)``; the
+        three-way fit triples are stored on ``shape_fits`` for the
+        recommendation hook to consume.
+    nls_tau_lo, nls_tau_hi : float
+        Bounds on the per-bin shape NLS τ parameter (microseconds).
+        Defaults match the Gaussian-twin operating points so the
+        shape='gaussian' gate matches ``extract_tau_G_majority``'s
+        eligibility ceiling out of the box.
+    nls_tau_seeds : sequence of float
+        Multi-start seed grid for the per-bin gauss and voigt NLS fits.
     """
     if sigma_time <= 0.0:
         raise ValueError("sigma_time must be positive")
+    if shape not in _VALID_CLASSIFIER_SHAPES:
+        raise ValueError(
+            f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
+            f"got {shape!r}"
+        )
     fid_arr = np.asarray(fid, dtype=float)
     N = fid_arr.size
     T_full_us = N * sample_dt_us
@@ -838,10 +1074,19 @@ def stft_calibration(
     spur_by_tau = tau >= 0.95 * tau_max_us
     is_spur = above & (spur_by_aicc | spur_by_tau)
 
+    shape_fits = _run_shape_fits(
+        shape, mag, a_centers_us, tau, C,
+        mask=above & ~is_spur,
+        tau_lo=float(nls_tau_lo),
+        tau_hi=float(nls_tau_hi),
+        tau_seeds=nls_tau_seeds,
+    )
+    rss_for_gate = _select_rss_for_gate(shape, rss_exp, shape_fits)
+
     rss_gate_abs = rss_gate_factor * n_seg * (sigma_frame ** 2)
     rss_gate_rel = rss_gate_factor * n_seg * (relative_gate_fraction * mean_m) ** 2
     rss_gate = np.maximum(rss_gate_abs, rss_gate_rel)
-    bad_fit = above & ~is_spur & (rss_exp > rss_gate)
+    bad_fit = above & ~is_spur & (rss_for_gate > rss_gate)
 
     contributor = above & ~is_spur & ~bad_fit
     classification = np.where(
@@ -864,6 +1109,8 @@ def stft_calibration(
         sigma_x_full=float(sigma_x_full_v),
         sigma_frame=float(sigma_frame),
         tau_max_us=float(tau_max_us),
+        shape=shape,
+        shape_fits=shape_fits,
     )
 
 
@@ -1733,25 +1980,41 @@ def extract_tau_G_majority(
         rss_gate_factor=rss_gate_factor,
         relative_gate_fraction=relative_gate_fraction,
         sigma_x_full=sigma_x_full,
+        shape="gaussian",
+        nls_tau_lo=float(tau_G_bound_lo),
+        nls_tau_hi=float(tau_G_bound_hi),
+        nls_tau_seeds=tau_G_seeds,
     )
 
     sign = -1.0 if sb == "lower" else +1.0
     freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
     in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
 
+    # Per-bin Gaussian / exponential NLS already ran inside the
+    # classifier under shape='gaussian'; the bad-fit gate dropped bins
+    # the Gaussian could not describe, so the cls=3 pool is the right
+    # candidate set. The extractor applies a stricter per-bin SNR floor
+    # (snr > snr_min) and the Δχ²ᵣ ≥ delta_chi2r_min discriminator on top.
     contributor_mask = (
         (cal.classification == 3) & in_trim & (cal.snr_per_bin > float(snr_min))
     )
     bin_indices = np.where(contributor_mask)[0]
     bin_indices = bin_indices[np.argsort(freq_mol_mhz[bin_indices])]
 
-    a_centers = cal.a_centers_us.astype(float)
     sigma_frame = float(cal.sigma_frame)
     dof_exp = max(int(n_seg) - 2, 1)
     dof_gauss = max(int(n_seg) - 2, 1)
     sigma_frame_sq = max(sigma_frame * sigma_frame, 1e-300)
     tau_G_cap = float(tau_G_upper_fraction) * float(tau_G_bound_hi)
-    seeds = tuple(float(s) for s in tau_G_seeds)
+
+    fits = cal.shape_fits
+    assert fits is not None and fits.shape == "gaussian", (
+        "stft_calibration(shape='gaussian') must populate shape_fits"
+    )
+    tau_G_arr = np.asarray(fits.tau_G_gauss, dtype=float)
+    rss_g_arr = np.asarray(fits.rss_gauss, dtype=float)
+    rss_e_arr = np.asarray(fits.rss_exp_nls, dtype=float)
+    ok_g_arr = np.asarray(fits.converged_gauss, dtype=bool)
 
     eligible_bins: list[int] = []
     eligible_tau_G: list[float] = []
@@ -1759,35 +2022,21 @@ def extract_tau_G_majority(
     eligible_freq: list[float] = []
 
     for idx in bin_indices:
-        mag_bin = cal.mag[:, int(idx)].astype(float)
-        snr_bin = float(cal.snr_per_bin[int(idx)])
-        freq_bin = float(freq_mol_mhz[int(idx)])
-
-        C_seed = float(cal.C_per_bin[int(idx)])
-        tau_seed = float(cal.tau_per_bin[int(idx)])
-        exp_params, rss_exp, _ok_exp = _fit_exp_nls_single(
-            a_centers, mag_bin, C_seed, tau_seed,
-            tau_lo=float(tau_G_bound_lo), tau_hi=float(tau_G_bound_hi),
-        )
-        g_params, rss_gauss, ok_gauss, _seed_best = _fit_gauss_nls_multistart(
-            a_centers, mag_bin, float(exp_params[0]),
-            tau_lo=float(tau_G_bound_lo), tau_hi=float(tau_G_bound_hi),
-            tau_G_seeds=seeds,
-        )
-        chi2r_exp = rss_exp / sigma_frame_sq / dof_exp
-        chi2r_gauss = rss_gauss / sigma_frame_sq / dof_gauss
+        i = int(idx)
+        tau_G = float(tau_G_arr[i])
+        rss_e = float(rss_e_arr[i])
+        rss_g = float(rss_g_arr[i])
+        if not (ok_g_arr[i] and np.isfinite(tau_G) and tau_G < tau_G_cap):
+            continue
+        chi2r_exp = rss_e / sigma_frame_sq / dof_exp
+        chi2r_gauss = rss_g / sigma_frame_sq / dof_gauss
         delta_chi2r = chi2r_exp - chi2r_gauss
-        tau_G = float(g_params[1])
-        if (
-            ok_gauss
-            and np.isfinite(tau_G)
-            and tau_G < tau_G_cap
-            and delta_chi2r >= float(delta_chi2r_min)
-        ):
-            eligible_bins.append(int(idx))
-            eligible_tau_G.append(tau_G)
-            eligible_snr.append(snr_bin)
-            eligible_freq.append(freq_bin)
+        if delta_chi2r < float(delta_chi2r_min):
+            continue
+        eligible_bins.append(i)
+        eligible_tau_G.append(tau_G)
+        eligible_snr.append(float(cal.snr_per_bin[i]))
+        eligible_freq.append(float(freq_mol_mhz[i]))
 
     contributor_bins = np.asarray(eligible_bins, dtype=np.int64)
     contributor_taus = np.asarray(eligible_tau_G, dtype=np.float64)
@@ -1924,56 +2173,53 @@ def extract_tau_G_majority(
 # ---------------------------------------------------------------------------
 # 3-way L / G / V shape-recommendation hook (per-bin AICc vote)
 # ---------------------------------------------------------------------------
-def _fit_per_bin_three_way(
+def _three_way_rows_from_shape_fits(
     cal: _STFTClassification,
     bin_indices: np.ndarray,
     freq_mol_mhz: np.ndarray,
     *,
-    tau_lo: float,
-    tau_hi: float,
-    tau_G_seeds: Sequence[float],
     n_seg: int,
 ) -> List[Dict[str, Any]]:
-    """For each contributor bin, fit exp / gauss / voigt and compute AICc.
+    """Assemble the per-bin AICc vote rows from a ``shape='best_of_three'`` pass.
 
-    Returns a list of dicts (one per converged bin). Bins where any of
-    the three fits fails to converge are skipped; the caller's
-    aggregator divides over the survivors.
+    Skips bins where any of the three model fits failed to converge --
+    the caller's aggregator divides over the survivors. ``cal.shape_fits``
+    must be the ``best_of_three`` variant; the function reads the
+    per-model τ / RSS / converged arrays straight from it.
     """
-    a_centers = cal.a_centers_us.astype(float)
+    fits = cal.shape_fits
+    assert fits is not None and fits.shape == "best_of_three", (
+        "stft_calibration(shape='best_of_three') must populate shape_fits"
+    )
+    rss_e = np.asarray(fits.rss_exp_nls, dtype=float)
+    rss_g = np.asarray(fits.rss_gauss, dtype=float)
+    rss_v = np.asarray(fits.rss_voigt, dtype=float)
+    ok_e = np.asarray(fits.converged_exp, dtype=bool)
+    ok_g = np.asarray(fits.converged_gauss, dtype=bool)
+    ok_v = np.asarray(fits.converged_voigt, dtype=bool)
+    tau_L_exp = np.asarray(fits.tau_L_exp, dtype=float)
+    tau_G_gauss = np.asarray(fits.tau_G_gauss, dtype=float)
+    tau_L_voigt = np.asarray(fits.tau_L_voigt, dtype=float)
+    tau_G_voigt = np.asarray(fits.tau_G_voigt, dtype=float)
+
     rows: List[Dict[str, Any]] = []
-    seeds = tuple(float(s) for s in tau_G_seeds)
     for idx in bin_indices:
-        mag_bin = cal.mag[:, int(idx)].astype(float)
-        snr_bin = float(cal.snr_per_bin[int(idx)])
-        freq_bin = float(freq_mol_mhz[int(idx)])
-        C_seed = float(cal.C_per_bin[int(idx)])
-        tau_seed = float(cal.tau_per_bin[int(idx)])
-        exp_params, rss_exp, ok_exp = _fit_exp_nls_single(
-            a_centers, mag_bin, C_seed, tau_seed,
-            tau_lo=tau_lo, tau_hi=tau_hi,
-        )
-        g_params, rss_gauss, ok_gauss, _ = _fit_gauss_nls_multistart(
-            a_centers, mag_bin, float(exp_params[0]),
-            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
-        )
-        v_params, rss_voigt, ok_voigt, _ = _fit_voigt_nls_multistart(
-            a_centers, mag_bin, float(exp_params[0]), float(exp_params[1]),
-            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
-        )
-        if not (ok_exp and ok_gauss and ok_voigt):
+        i = int(idx)
+        if not (ok_e[i] and ok_g[i] and ok_v[i]):
             continue
-        aicc_exp = float(_aicc(np.array([rss_exp]), n_seg, k=2)[0])
-        aicc_gauss = float(_aicc(np.array([rss_gauss]), n_seg, k=2)[0])
-        aicc_voigt = float(_aicc(np.array([rss_voigt]), n_seg, k=3)[0])
+        aicc_exp = float(_aicc(np.array([rss_e[i]]), n_seg, k=2)[0])
+        aicc_gauss = float(_aicc(np.array([rss_g[i]]), n_seg, k=2)[0])
+        aicc_voigt = float(_aicc(np.array([rss_v[i]]), n_seg, k=3)[0])
         scores = {"exp": aicc_exp, "gauss": aicc_gauss, "voigt": aicc_voigt}
         verdict = min(scores, key=scores.get)
         rows.append(dict(
-            idx=int(idx), freq=freq_bin, snr=snr_bin,
-            tau_L_exp=float(exp_params[1]),
-            tau_G_gauss=float(g_params[1]),
-            tau_L_voigt=float(v_params[1]),
-            tau_G_voigt=float(v_params[2]),
+            idx=i,
+            freq=float(freq_mol_mhz[i]),
+            snr=float(cal.snr_per_bin[i]),
+            tau_L_exp=float(tau_L_exp[i]),
+            tau_G_gauss=float(tau_G_gauss[i]),
+            tau_L_voigt=float(tau_L_voigt[i]),
+            tau_G_voigt=float(tau_G_voigt[i]),
             aicc_exp=aicc_exp, aicc_gauss=aicc_gauss, aicc_voigt=aicc_voigt,
             d_aicc_gauss_exp=aicc_gauss - aicc_exp,
             d_aicc_voigt_exp=aicc_voigt - aicc_exp,
@@ -2103,20 +2349,18 @@ def compute_shape_recommendation(
     tau_bound_hi: float = DEFAULT_TAU_G_BOUND_HI,
     tau_G_seeds: Sequence[float] = DEFAULT_TAU_G_SEEDS,
     pure_margin_threshold: float = DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN,
-    include_bad_fit_bins: bool = False,
     sigma_x_full: Optional[float] = None,
 ) -> ShapeRecommendation:
     """Compute a 3-way L / G / V shape recommendation from a raw FID.
 
-    Runs the same sliding-active-window STFT classifier as
-    :func:`extract_tau_majority` and :func:`extract_tau_G_majority`,
-    then on every contributor bin (``classification == 3`` ∧
-    ``SNR > snr_min``) fits all three single-shape models -- pure
-    exponential (``|S| = C exp(-a/τ_L)``, k=2), pure Gaussian
-    (``|S| = C exp(-(a/τ_G)²)``, k=2), and Voigt
-    (``|S| = C exp(-a/τ_L) exp(-(a/τ_G)²)``, k=3) -- with the small-
-    sample-corrected AICc. The per-bin verdict is ``argmin AICc``; the
-    SNR-weighted majority vote across all converged bins drives the
+    Runs the sliding-active-window STFT classifier in
+    ``shape='best_of_three'`` mode -- per-bin pure-exp, pure-Gauss, and
+    Voigt NLS fits with bad-fit gating on the minimum of the three
+    residuals, so on-line bins enter ``cls=3`` no matter which of the
+    three models actually describes them. On every cls=3 ∩
+    ``SNR > snr_min`` bin the small-sample-corrected AICc picks the
+    per-bin verdict ``argmin AICc(exp, gauss, voigt)``; the
+    SNR-weighted majority vote across the converged bins drives the
     recommendation.
 
     The Voigt model is the most expressive of the three (one extra
@@ -2130,21 +2374,6 @@ def compute_shape_recommendation(
     is ``None`` (the data does not strongly favour one pure shape and
     the Stage 5 resolver's *recommended* layer falls through to the
     next layer).
-
-    The STFT classifier (:func:`stft_calibration`) labels bins as
-    ``cls=3`` (clean contributor) using a *pure-exp* bad-fit gate;
-    strong on-line bins on Gaussian-envelope fixtures often fail that
-    gate and end up as ``cls=2`` (bad-fit per the exp model) even
-    though their pure-Gauss fit is clean. The default pool is
-    ``cls=3`` (matching the τ calibrations) so the recommendation and
-    the persisted τ are computed on the same contributor set. Setting
-    ``include_bad_fit_bins=True`` expands the pool to ``cls ∈ {2, 3}``;
-    on fixtures with many skirt / overlapping-line ``cls=2`` bins (e.g.
-    2638) the expansion dilutes the strong on-line contribution and
-    can flip the verdict to "no clear winner" -- a shape-aware
-    classifier or a Stage-3-peak-anchored contributor pool would be
-    the more principled fix and is tracked in
-    ``dev-docs/planning/stage5-gaussian-shape.md``.
 
     See :class:`ShapeRecommendation` for the returned struct.
 
@@ -2168,15 +2397,6 @@ def compute_shape_recommendation(
     pure_margin_threshold
         Minimum SNR-weighted vote-rate margin between exp and gauss
         for a pure-shape recommendation to fire.
-    include_bad_fit_bins
-        When ``True``, expand the candidate pool to include
-        ``classification == 2`` bins in addition to ``cls=3``. Default
-        is ``False`` so the recommendation pool matches the τ
-        calibrations' pool. On fixtures with many skirt ``cls=2``
-        bins (the typical case) the expansion dilutes the strong
-        on-line contribution; the kwarg is exposed for diagnostic
-        experiments rather than as a principled improvement to the
-        verdict.
     """
     sb = sideband.strip().lower()
     if sb not in ("lower", "upper"):
@@ -2221,28 +2441,22 @@ def compute_shape_recommendation(
         rss_gate_factor=rss_gate_factor,
         relative_gate_fraction=relative_gate_fraction,
         sigma_x_full=sigma_x_full,
+        shape="best_of_three",
+        nls_tau_lo=float(tau_bound_lo),
+        nls_tau_hi=float(tau_bound_hi),
+        nls_tau_seeds=tau_G_seeds,
     )
 
     sign = -1.0 if sb == "lower" else +1.0
     freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
     in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
     above_snr = cal.snr_per_bin > float(snr_min)
-    if include_bad_fit_bins:
-        contributor_mask = (
-            ((cal.classification == 3) | (cal.classification == 2))
-            & in_trim & above_snr
-        )
-    else:
-        contributor_mask = (
-            (cal.classification == 3) & in_trim & above_snr
-        )
+    contributor_mask = (cal.classification == 3) & in_trim & above_snr
     bin_indices = np.where(contributor_mask)[0]
     bin_indices = bin_indices[np.argsort(freq_mol_mhz[bin_indices])]
 
-    rows = _fit_per_bin_three_way(
-        cal, bin_indices, freq_mol_mhz,
-        tau_lo=float(tau_bound_lo), tau_hi=float(tau_bound_hi),
-        tau_G_seeds=tau_G_seeds, n_seg=int(n_seg),
+    rows = _three_way_rows_from_shape_fits(
+        cal, bin_indices, freq_mol_mhz, n_seg=int(n_seg),
     )
     # Per-bin acceptance: keep bins where at least one of the three
     # candidates produces a τ that lies inside the bound, so genuine

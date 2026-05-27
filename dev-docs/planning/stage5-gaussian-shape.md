@@ -364,41 +364,48 @@ Remaining work (next session):
   pure-exp `τ_maj`. (Their role is peak detection / candidate
   generation, where the Lorentzian τ is an acceptable proxy.) Only
   the Stage 5 window-fit consumes the Gaussian-twin calibration.
-- **Shape-aware STFT classifier (next-session headline; will shift
-  every downstream τ_G calibration value on 2638).**
-  `stft_calibration` labels bins via a pure-exp bad-fit gate:
-  ``rss_exp > rss_gate_factor · n_seg · (relative_gate_fraction ·
-  mean(|S|))²``. On Gaussian-envelope data this gate fires on the
-  strong on-line bins themselves (their per-frame magnitudes don't
-  follow pure-exp), so they land in `cls=2` and `extract_tau_G_majority`
-  + the 3-way shape-recommendation hook see only sidelobe `cls=3`
-  bins. The exp-only gate was set up before the Voigt-deficit work
-  established that 2638's lines are Gaussian-dominant; the
-  "rejected on-line bins must be line blends" rationale that was
-  used to defend the gate has been superseded by the finding that
-  the on-line bins fail the gate because the *model* is wrong, not
-  the data. The pure-Gauss τ_G calibration that landed in this
-  cycle matches the window-fit τ_G within 5-8 % per band on 2638
-  because sidelobes near a Gauss-envelope line carry the same Gauss
-  envelope (scaled by a sinc factor in amplitude) -- a principled
-  rather than coincidental match -- but the production stance
-  shouldn't rely on "benevolent sidelobe behaviour from an
-  objectively incorrect classifier". The next-session fix is to
-  parameterise `stft_calibration` by shape so its bad-fit gate uses
-  the shape-matched residual (pure-exp for ``shape='lorentzian'``,
-  pure-Gauss for ``shape='gaussian'``, or "best-of-three" for the
-  3-way shape-recommendation hook); both τ calibrations and the
-  recommendation hook then read shape-correct contributor pools.
-  Downstream consequences are accepted: the per-band τ_G anchors
-  on 2638 will shift (likely smaller, matching the on-line per-bin
-  pure-Gauss τ_G ≈ 6 µs from the synthetic test more closely), the
-  `instrument_bc_2638.yaml` λ choice will need re-validation, and
-  the 3-way verdict's vote rates will shift toward gauss as the
-  on-line bins enter the pool with their stronger AICc preference.
-  See ``scratch/next-session-prompt.md`` for the full plan. The
-  current ``compute_shape_recommendation(include_bad_fit_bins=True)``
-  kwarg is plumbed for diagnostic experiments only and becomes
-  obsolete once the classifier becomes shape-aware.
+- **Shape-aware STFT classifier. Resolved.**
+  ``fitting/tau_calibration.stft_calibration`` now takes a ``shape``
+  kwarg that selects which residual feeds the bad-fit gate:
+  ``'lorentzian'`` keeps the legacy vectorised log-linear pure-exp
+  residual; ``'gaussian'`` runs a per-bin pure-Gauss NLS on the
+  above-threshold non-spur pool and gates on ``rss_gauss``;
+  ``'best_of_three'`` runs per-bin exp + gauss + voigt NLS and gates
+  on ``min(rss_exp, rss_gauss, rss_voigt)``. The per-bin NLS results
+  ride on the returned ``_STFTClassification.shape_fits`` so
+  ``extract_tau_majority`` (Lorentzian twin),
+  ``extract_tau_G_majority`` (Gaussian twin), and
+  ``compute_shape_recommendation`` (3-way) each request the matching
+  shape and consume shape-correct contributor pools without a second
+  per-bin fit pass. On 2638 the per-band τ_G anchors shifted by ≤ 2 %
+  (low 8.39 → 8.34; mid 6.75 → 6.63; high 6.26 → 6.26 μs) and the
+  3-way vote sharpened from ``exp 22 % / gauss 36 % / voigt 42 %``
+  (sidelobe-dominated cls=3 pool) to ``exp 11.6 % / gauss 63.5 % /
+  voigt 24.9 %`` (on-line bins now in the pool), with median
+  ΔAICc(gauss − exp) = −14; recommendation stays ``"gaussian"`` with
+  the pure-shape margin jumping from 14 % to 52 %. The previously
+  exposed ``compute_shape_recommendation(include_bad_fit_bins=...)``
+  kwarg is removed -- it was a diagnostic for the sidelobe-anchored
+  pool that the shape-aware classifier obsoletes.
+
+  ``n_seg`` revisited under the shape-aware gate. The original choice
+  of ``n_seg = 10`` was calibrated against the pure-exp classifier
+  where each per-bin fit was a one-parameter exponential decay; under
+  ``shape='best_of_three'`` the per-bin job is the curvature-based
+  test ``exp(-t) vs exp(-t²) vs Voigt`` and more frames in principle
+  sharpen the discrimination. A 7-point sweep on 2638
+  (``scratch/stage2b-bias/sweep_n_seg.py``;
+  ``n_seg ∈ {6, 8, 10, 14, 20, 30, 40}``) confirms the discrimination
+  does steepen monotonically with ``n_seg`` (median ΔAICc(gauss − exp)
+  −7 → −30 across the grid) but the recommendation on 2638 is
+  unambiguous at every ``n_seg`` (``"gaussian"``), τ_G_maj is robust
+  (6.41–6.67 μs across the grid), and ``n_seg = 10`` already lands at
+  ΔAICc = −14 -- seven times past the conventional "strong evidence"
+  threshold. Keeping the default at 10 keeps the runtime cost and the
+  contributor pool (per-frame SNR scales as 1/√n_seg) at the original
+  operating point. The sweep result is recorded in
+  ``scratch/stage2b-bias/n_seg_sweep_summary.json`` as the reference
+  point if a future close-margin fixture motivates revisiting it.
 
 ## Out of scope
 

@@ -191,8 +191,8 @@ it, the canonical settings dataclasses live in `core/`.
   the runaway-suppression cliff (95 free-τ windows runaway at λ=0 →
   5 at λ=50, ~98.6 %) is unchanged and higher λ degrades the bulk χ²ᵣ
   tail in mid/high bands.
-- **Stage 2b shape discriminator -- 3-way hook landed
-  (productionised, sidelobe-anchored pool pending fix).**
+- **Stage 2b shape discriminator -- 3-way hook landed (productionised,
+  shape-aware classifier in place).**
   ``fitting/tau_calibration.compute_shape_recommendation`` returns a
   :class:`ShapeRecommendation` (per-bin AICc(exp / gauss / voigt)
   vote, SNR-weighted; the dominant pure shape wins when its margin
@@ -207,18 +207,15 @@ it, the canonical settings dataclasses live in `core/`.
   group attrs when present; ``read_stage2b_recommended_shape``
   falls back from the Lorentzian twin to the Gaussian twin so the
   Stage 5 resolver's *recommended* layer fires regardless of which
-  τ calibration ran. On 2638 the verdict reads
-  ``exp 22 % / gauss 36 % / voigt 42 %`` → recommendation
-  ``"gaussian"`` (gauss-vs-exp margin 14 % >= 10 % threshold), and
-  the Stage 5 resolver picks it up via the integration test
-  ``test_recommend_shape_persists_and_feeds_resolver``. The
-  contributor pool is still ``cls=3`` (matching the τ
-  calibrations), so the verdict relies on sidelobe behaviour --
-  the next-session shape-aware-classifier work
-  ([stage5-gaussian-shape.md](stage5-gaussian-shape.md) "Open
-  questions") will let on-line bins enter the pool directly and
-  the vote rates are expected to shift toward stronger gauss
-  dominance.
+  τ calibration ran. The hook runs the STFT classifier in
+  ``shape='best_of_three'`` mode so on-line bins enter the cls=3
+  contributor pool no matter which candidate model fits them. On
+  2638 the verdict reads ``exp 11.6 % / gauss 63.5 % / voigt
+  24.9 %`` (n=835 contributors, median ΔAICc(gauss−exp) = −14) →
+  recommendation ``"gaussian"`` with the pure-shape margin at
+  52 % well clear of the 10 % threshold. The Stage 5 resolver
+  picks it up via the integration test
+  ``test_recommend_shape_persists_and_feeds_resolver``.
 - **Backfill to other stages.** `TauCalibrationSettings`,
   `NoiseSettings`, `PeakDetectionSettings`, `WindowPlanningSettings`
   follow the same pattern. Order: Stage 2b first (shape recommendation
