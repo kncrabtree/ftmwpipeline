@@ -34,20 +34,16 @@ from ..core.data_structures import (
     SpectrumFit,
     WindowPlan,
 )
+from ..core.stage_fit_settings import (
+    ShapeSpec,
+    StageFitSettings,
+    resolve as resolve_stage_fit_settings,
+)
 from ..file_manager import invalidate_downstream_stages
 from ..fitting.active_ft import compute_active_ft
 from ..fitting.plan_execution import (
-    DEFAULT_MAX_REPLAN_ROUNDS,
-    DEFAULT_MAX_THAW_ROUNDS,
-    DEFAULT_RESIDUAL_EDGE_M,
-    DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     ReplanContext,
     execute_plan,
-)
-from ..fitting.residual_rescue import (
-    DEFAULT_RESCUE_MAX_ROUNDS,
-    DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
-    DEFAULT_RESCUE_SNR_THRESHOLD,
 )
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
 from ..io.fitting_serialization import (
@@ -213,6 +209,74 @@ def _build_active_ft_inputs(
     )
 
 
+def _required_float(value: Optional[float], name: str) -> float:
+    """Coerce a post-resolve field that must be filled into ``float``."""
+    if value is None:
+        raise AssertionError(
+            f"resolved StageFitSettings.{name} is None; missing hard default"
+        )
+    return float(value)
+
+
+def _required_int(value: Optional[int], name: str) -> int:
+    """Coerce a post-resolve field that must be filled into ``int``."""
+    if value is None:
+        raise AssertionError(
+            f"resolved StageFitSettings.{name} is None; missing hard default"
+        )
+    return int(value)
+
+
+def _required_bool(value: Optional[bool], name: str) -> bool:
+    """Coerce a post-resolve field that must be filled into ``bool``."""
+    if value is None:
+        raise AssertionError(
+            f"resolved StageFitSettings.{name} is None; missing hard default"
+        )
+    return bool(value)
+
+
+def _build_explicit_from_kwargs(
+    *,
+    tau0_us: Optional[float],
+    fit_tau: Optional[bool],
+    max_decay_factor: Optional[float],
+    residual_edge_threshold: Optional[float],
+    residual_edge_m: Optional[int],
+    max_thaw_rounds: Optional[int],
+    max_replan_rounds: Optional[int],
+    max_residual_rescue_rounds: Optional[int],
+    rescue_snr_threshold: Optional[float],
+    rescue_prominence_threshold: Optional[float],
+    tau_maj_override_us: Optional[float],
+    sigma_tau_override_us: Optional[float],
+    per_band_tau: Optional[bool],
+    shape: "PeakShape | str | None",
+) -> StageFitSettings:
+    """Bundle the legacy ``fit_peaks`` kwargs into an explicit-layer
+    :class:`StageFitSettings`. Any kwarg that is ``None`` (the unset
+    sentinel) leaves its sub-dataclass field at ``None``, so the resolver
+    can fall through to the preset / hard-default layers.
+    """
+    explicit = StageFitSettings()
+    if shape is not None:
+        explicit.shape = ShapeSpec.coerce(shape)
+    explicit.tau.tau0_us = tau0_us
+    explicit.tau.fit_tau = fit_tau
+    explicit.tau.max_decay_factor = max_decay_factor
+    explicit.tau.tau_maj_override_us = tau_maj_override_us
+    explicit.tau.sigma_tau_override_us = sigma_tau_override_us
+    explicit.tau.per_band_tau = per_band_tau
+    explicit.thaw.max_thaw_rounds = max_thaw_rounds
+    explicit.thaw.max_replan_rounds = max_replan_rounds
+    explicit.thaw.residual_edge_threshold = residual_edge_threshold
+    explicit.thaw.residual_edge_m = residual_edge_m
+    explicit.rescue.max_rounds = max_residual_rescue_rounds
+    explicit.rescue.snr_threshold = rescue_snr_threshold
+    explicit.rescue.prominence_threshold = rescue_prominence_threshold
+    return explicit
+
+
 def fit_peaks_impl(
     file_path: str,
     tau0_us: Optional[float] = None,
@@ -227,8 +291,9 @@ def fit_peaks_impl(
     rescue_prominence_threshold: Optional[float] = None,
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
-    per_band_tau: bool = True,
-    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
+    per_band_tau: Optional[bool] = None,
+    shape: "PeakShape | str | None" = None,
+    settings: Optional[StageFitSettings] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -311,46 +376,72 @@ def fit_peaks_impl(
         If Stage 4 has not been completed, or if exactly one of the
         ``tau_maj_override_us`` / ``sigma_tau_override_us`` pair is set.
     """
-    # --- Resolve parameters with their defaults -----------------------------
-    shape_enum = PeakShape.coerce(shape)
-    max_decay_v = (
-        DEFAULT_MAX_DECAY_FACTOR
-        if max_decay_factor is None
-        else float(max_decay_factor)
+    # --- Resolve parameters via the StageFitSettings chain ------------------
+    # Legacy per-knob kwargs are bundled into an explicit StageFitSettings;
+    # any caller-supplied ``settings`` instance enters as the preset layer.
+    # ``resolve()`` walks explicit > preset > persisted > recommended >
+    # hard default; the resolved instance is the single source of truth for
+    # every downstream call site below. ``_HARD_DEFAULTS`` mirrors each
+    # ``DEFAULT_*`` constant in :mod:`ftmwpipeline.fitting`, so an empty
+    # call (no kwargs, no settings, no persisted layer) reproduces the
+    # documented per-knob defaults exactly.
+    explicit_kwargs = _build_explicit_from_kwargs(
+        tau0_us=tau0_us,
+        fit_tau=fit_tau,
+        max_decay_factor=max_decay_factor,
+        residual_edge_threshold=residual_edge_threshold,
+        residual_edge_m=residual_edge_m,
+        max_thaw_rounds=max_thaw_rounds,
+        max_replan_rounds=max_replan_rounds,
+        max_residual_rescue_rounds=max_residual_rescue_rounds,
+        rescue_snr_threshold=rescue_snr_threshold,
+        rescue_prominence_threshold=rescue_prominence_threshold,
+        tau_maj_override_us=tau_maj_override_us,
+        sigma_tau_override_us=sigma_tau_override_us,
+        per_band_tau=per_band_tau,
+        shape=shape,
     )
-    edge_threshold_v = (
-        DEFAULT_RESIDUAL_EDGE_THRESHOLD
-        if residual_edge_threshold is None
-        else float(residual_edge_threshold)
+    resolved = resolve_stage_fit_settings(
+        explicit=explicit_kwargs,
+        preset=settings,
     )
-    edge_m_v = (
-        DEFAULT_RESIDUAL_EDGE_M if residual_edge_m is None else int(residual_edge_m)
+    # All fields backed by ``_HARD_DEFAULTS`` are guaranteed non-None after
+    # resolve(); cast through ``_required_*`` helpers so mypy sees concrete
+    # types at the call sites below.
+    assert resolved.shape is not None
+    shape_enum = resolved.shape.kind
+    max_decay_v = _required_float(resolved.tau.max_decay_factor, "tau.max_decay_factor")
+    edge_threshold_v = _required_float(
+        resolved.thaw.residual_edge_threshold, "thaw.residual_edge_threshold"
     )
-    max_thaw_v = (
-        DEFAULT_MAX_THAW_ROUNDS if max_thaw_rounds is None else int(max_thaw_rounds)
+    edge_m_v = _required_int(
+        resolved.thaw.residual_edge_m, "thaw.residual_edge_m"
     )
-    max_replan_v = (
-        DEFAULT_MAX_REPLAN_ROUNDS
-        if max_replan_rounds is None
-        else int(max_replan_rounds)
+    max_thaw_v = _required_int(
+        resolved.thaw.max_thaw_rounds, "thaw.max_thaw_rounds"
     )
-    # ``None`` resolves to the calibrated default cap; explicit ``0``
-    # disables the rescue (kept as an escape hatch). Any positive value
-    # runs the B-loop with that round cap.
-    rescue_max_v = (
-        DEFAULT_RESCUE_MAX_ROUNDS
-        if max_residual_rescue_rounds is None
-        else max(0, int(max_residual_rescue_rounds))
+    max_replan_v = _required_int(
+        resolved.thaw.max_replan_rounds, "thaw.max_replan_rounds"
     )
-    rescue_snr_v = (
-        DEFAULT_RESCUE_SNR_THRESHOLD
-        if rescue_snr_threshold is None
-        else float(rescue_snr_threshold)
+    # ``rescue.max_rounds`` resolves to the calibrated default cap; explicit
+    # ``0`` disables the rescue (kept as an escape hatch). Any positive
+    # value runs the B-loop with that round cap. Clamp to non-negative for
+    # parity with the prior ``max(0, int(...))`` behaviour.
+    rescue_max_v = max(
+        0, _required_int(resolved.rescue.max_rounds, "rescue.max_rounds")
     )
-    rescue_prom_v = (
-        DEFAULT_RESCUE_PROMINENCE_THRESHOLD
-        if rescue_prominence_threshold is None
-        else float(rescue_prominence_threshold)
+    rescue_snr_v = _required_float(
+        resolved.rescue.snr_threshold, "rescue.snr_threshold"
+    )
+    rescue_prom_v = _required_float(
+        resolved.rescue.prominence_threshold, "rescue.prominence_threshold"
+    )
+    # The override-pair and per_band_tau flag also flow through the
+    # resolved instance so a preset can carry them.
+    tau_maj_override_v = resolved.tau.tau_maj_override_us
+    sigma_tau_override_v = resolved.tau.sigma_tau_override_us
+    per_band_tau_v = _required_bool(
+        resolved.tau.per_band_tau, "tau.per_band_tau"
     )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
@@ -456,7 +547,7 @@ def fit_peaks_impl(
                     "; ".join(persisted_cal.preconditions_notes),
                 )
     tau_maj_us, sigma_tau_us, tau_source = _resolve_tau_calibration_for_fit(
-        persisted_cal, tau_maj_override_us, sigma_tau_override_us,
+        persisted_cal, tau_maj_override_v, sigma_tau_override_v,
     )
     if tau_source == "override":
         logger.info(
@@ -474,7 +565,7 @@ def fit_peaks_impl(
         )
 
     # --- tau0 default --------------------------------------------------------
-    if tau0_us is None:
+    if resolved.tau.tau0_us is None:
         if tau_maj_us is not None and tau_maj_us > 0.0:
             tau0_us_v = float(tau_maj_us)
         elif expf_us is not None:
@@ -482,13 +573,13 @@ def fit_peaks_impl(
         else:
             tau0_us_v = acquisition_us / 3.0
     else:
-        tau0_us_v = float(tau0_us)
+        tau0_us_v = float(resolved.tau.tau0_us)
     if tau0_us_v <= 0:
         raise ValueError(
             f"tau0_us must be positive (got {tau0_us_v}); the active "
             f"acquisition is {acquisition_us} us"
         )
-    fit_tau_v = True if fit_tau is None else bool(fit_tau)
+    fit_tau_v = True if resolved.tau.fit_tau is None else bool(resolved.tau.fit_tau)
 
     # --- Structural-replan context (skipped when caller asks for 0 rounds) -
     replan_ctx: Optional[ReplanContext]
@@ -523,7 +614,7 @@ def fit_peaks_impl(
     # window centre outside the calibration trim range).
     window_tau_overrides: Dict[int, tuple[float, float]] = {}
     per_band_used = False
-    if per_band_tau:
+    if per_band_tau_v:
         # Explicit override pair is more specific than per-band routing -- if
         # the caller supplied (tau_maj_override_us, sigma_tau_override_us)
         # they want exactly that anchor across every window. Silently skip

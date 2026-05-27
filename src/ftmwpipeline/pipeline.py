@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .core.data_structures import FID, ComplexFT
 from .core.settings import FTSettings
+from .core.stage_fit_settings import StageFitSettings
 from .preprocessing.noise_estimation import NoiseResult
 from .file_manager import (
     SourceMetadata, PipelineStageTracker,
@@ -1104,8 +1105,9 @@ class Pipeline:
         rescue_prominence_threshold: Optional[float] = None,
         tau_maj_override_us: Optional[float] = None,
         sigma_tau_override_us: Optional[float] = None,
-        per_band_tau: bool = True,
-        shape: str = "lorentzian",
+        per_band_tau: Optional[bool] = None,
+        shape: Optional[str] = None,
+        settings: Optional["StageFitSettings"] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1183,6 +1185,16 @@ class Pipeline:
             in place of the pure-exp ``calibrate_tau`` for the
             bidirectional τ anchoring penalty; missing τ_G calibration
             still fits, but without a prior.
+        settings : StageFitSettings, optional
+            Bundle of Stage 5 knobs that enters the resolution chain at
+            the *preset* layer. Per-kwarg explicit overrides above
+            (``tau0_us``, ``max_decay_factor``, ...) win over the
+            corresponding field on ``settings``; ``settings`` wins over
+            persisted and recommended values, which win over the hard
+            defaults. Build with
+            :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
+            or load from a preset YAML
+            (:func:`~ftmwpipeline.core.stage_fit_settings.from_yaml`).
 
         Returns
         -------
@@ -1213,6 +1225,7 @@ class Pipeline:
                 sigma_tau_override_us=sigma_tau_override_us,
                 per_band_tau=per_band_tau,
                 shape=shape,
+                settings=settings,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "

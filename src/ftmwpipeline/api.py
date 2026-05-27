@@ -39,6 +39,7 @@ import logging
 
 from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .core.stage_fit_settings import StageFitSettings
 from .fitting.tau_calibration import TauCalibrationResult
 from .preprocessing.noise_estimation import NoiseResult
 
@@ -1114,8 +1115,9 @@ def fit_peaks(
     rescue_prominence_threshold: Optional[float] = None,
     tau_maj_override_us: Optional[float] = None,
     sigma_tau_override_us: Optional[float] = None,
-    per_band_tau: bool = True,
-    shape: str = "lorentzian",
+    per_band_tau: Optional[bool] = None,
+    shape: Optional[str] = None,
+    settings: Optional[StageFitSettings] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1159,6 +1161,12 @@ def fit_peaks(
         result for this fit; useful for A/B-ing a hand-tuned tau anchor
         against the persisted one. Supplying only one of the pair raises
         ``ValueError``.
+    settings : StageFitSettings, optional
+        Bundle of Stage 5 knobs that enters the resolution chain at the
+        preset layer (see
+        :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
+        for the layered precedence). The explicit kwargs above still win
+        per-field over ``settings``.
 
     Returns
     -------
@@ -1182,6 +1190,7 @@ def fit_peaks(
             sigma_tau_override_us=sigma_tau_override_us,
             per_band_tau=per_band_tau,
             shape=shape,
+            settings=settings,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")
