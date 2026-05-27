@@ -36,12 +36,22 @@ walkthrough at [`docs/source/settings_and_presets.rst`](../../docs/source/settin
   `resolve(explicit=kwargs_built, preset=settings_or_loaded_preset,
   persisted=load_stage_fit_settings_from_h5(file_path), recommended=
   ShapeSpec(...))`, reads every downstream parameter off the resolved
-  instance, and stamps the resolved settings back onto the file after
-  the fit. Existing kwargs stay on the signature and win per field;
-  `per_band_tau` and `shape` lose their hard-coded `True` /
-  `"lorentzian"` defaults so the resolver can pick them up from a
-  preset or persisted layer (the hard defaults produce identical
-  values).
+  instance, forwards them into the `conservative_kwargs` and
+  `rescue_kwargs` dicts that drive `execute_plan` /
+  `rescue_and_consolidate`, and stamps the resolved settings back onto
+  the file after the fit. Existing kwargs stay on the signature and
+  win per field; `per_band_tau` and `shape` lose their hard-coded
+  `True` / `"lorentzian"` defaults so the resolver can pick them up
+  from a preset or persisted layer (the hard defaults produce
+  identical values). Every field with a concrete consumer in
+  `fitting/{window_fit,residual_rescue}.py` is forwarded: the
+  `tau`, `seeder`, `conservative`, `penalties`, `rescue.cleanup_*`,
+  and rescue separation knobs reach the LSQ via this driver, not via
+  the inner functions' `DEFAULT_*` fallbacks. The
+  `tests/integration/test_stage5_settings_propagation.py` suite
+  intercepts the planner call and asserts each routed field reaches
+  the kwargs bag — a "phantom field" smoke test that would catch a
+  silent drop on any future refactor.
 - **`_internal/stage2b_impl.py`** — `save_tau_calibration_impl` stamps
   `recommended_shape = __None__` on `stage2b_tau_calibration/.attrs/`
   as the contract for a future L/G discriminator.

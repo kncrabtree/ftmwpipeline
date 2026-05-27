@@ -778,6 +778,14 @@ def attempt_residual_rescue(
     ckwargs.pop("tau_apodization_us", None)
     ckwargs.pop("tau_maj_us", None)
     ckwargs.pop("sigma_tau_us", None)
+    # The rescue passes ``significance`` / ``min_separation_factor`` /
+    # ``max_peaks`` explicitly below as its own overrides, so drop any
+    # values the caller's conservative_kwargs carried for these keys --
+    # otherwise the ``**ckwargs`` spread would collide with the named
+    # arguments on the conservative_fit call.
+    ckwargs.pop("significance", None)
+    ckwargs.pop("min_separation_factor", None)
+    ckwargs.pop("max_peaks", None)
     ckwargs.setdefault("shape", rescue_shape)
     if not candidate_offsets:
         empty = conservative_fit(

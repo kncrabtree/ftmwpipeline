@@ -242,6 +242,15 @@ def _required_bool(value: Optional[bool], name: str) -> bool:
     return bool(value)
 
 
+def _required_str(value: Optional[str], name: str) -> str:
+    """Coerce a post-resolve field that must be filled into ``str``."""
+    if value is None:
+        raise AssertionError(
+            f"resolved StageFitSettings.{name} is None; missing hard default"
+        )
+    return str(value)
+
+
 def _build_explicit_from_kwargs(
     *,
     tau0_us: Optional[float],
@@ -691,6 +700,102 @@ def fit_peaks_impl(
                 sigma_tau_us if sigma_tau_us is not None else float("nan"),
             )
 
+    n_eff_kind_v = _required_str(
+        resolved.conservative.n_eff_kind, "conservative.n_eff_kind"
+    )
+    conservative_kwargs: Dict[str, Any] = {
+        "max_decay_factor": max_decay_v,
+        # Two tau-anchor modes share this dict:
+        # - When Stage 2b is present, ``tau_maj_us`` and ``sigma_tau_us``
+        #   drive the bidirectional Gaussian-prior penalty and the
+        #   calibrated bounds (``tau_maj +- N*sigma_tau`` intersected with
+        #   the factor-k cap).
+        # - When Stage 2b is absent, ``tau_apodization_us`` keeps the
+        #   legacy apodization-as-ceiling / one-sided hinge behaviour.
+        # Passing both is harmless (the calibration path takes precedence
+        # inside ``derive_window_fit_constraints``); we forward all three
+        # so the rescue path can pick the same policy.
+        "tau_apodization_us": expf_us,
+        "tau_maj_us": tau_maj_us,
+        "sigma_tau_us": sigma_tau_us,
+        # τ-prior knobs (Stage 2b consumer).
+        "tau_penalty_lambda": _required_float(
+            resolved.tau.tau_penalty_lambda, "tau.tau_penalty_lambda"
+        ),
+        "tau_penalty_n_sigma": _required_float(
+            resolved.tau.tau_penalty_n_sigma, "tau.tau_penalty_n_sigma"
+        ),
+        # Add-one-peak loop gates (F-test diagnostic + AICc gate inputs).
+        "significance": _required_float(
+            resolved.conservative.significance, "conservative.significance"
+        ),
+        "max_peaks": _required_int(
+            resolved.conservative.max_peaks, "conservative.max_peaks"
+        ),
+        "patience": _required_int(
+            resolved.conservative.patience, "conservative.patience"
+        ),
+        "min_separation_factor": _required_float(
+            resolved.conservative.min_separation_factor,
+            "conservative.min_separation_factor",
+        ),
+        "min_pair_separation_factor": _required_float(
+            resolved.conservative.min_pair_separation_factor,
+            "conservative.min_pair_separation_factor",
+        ),
+        "weak_window_snr_threshold": _required_float(
+            resolved.conservative.weak_window_snr_threshold,
+            "conservative.weak_window_snr_threshold",
+        ),
+        "n_eff_kind": n_eff_kind_v,
+        # Blend-aware seeder thresholds.
+        "seeder_rchi2_threshold": _required_float(
+            resolved.seeder.seeder_rchi2, "seeder.seeder_rchi2"
+        ),
+        "seeder_straddle_factor": _required_float(
+            resolved.seeder.seeder_straddle_factor, "seeder.seeder_straddle_factor"
+        ),
+        "seeder_max_k": _required_int(
+            resolved.seeder.seeder_max_k, "seeder.seeder_max_k"
+        ),
+        # Phase / amplitude soft penalties.
+        "phase_penalty_lambda": _required_float(
+            resolved.penalties.phase_penalty_lambda,
+            "penalties.phase_penalty_lambda",
+        ),
+        "phase_penalty_cutoff_fwhm": _required_float(
+            resolved.penalties.phase_penalty_cutoff_fwhm,
+            "penalties.phase_penalty_cutoff_fwhm",
+        ),
+        "amp_penalty_lambda": _required_float(
+            resolved.penalties.amp_penalty_lambda, "penalties.amp_penalty_lambda"
+        ),
+        "amp_max_headroom": _required_float(
+            resolved.penalties.amp_max_headroom, "penalties.amp_max_headroom"
+        ),
+    }
+    if rescue_kwargs is not None:
+        cleanup_sig = _required_float(
+            resolved.rescue.cleanup_significance, "rescue.cleanup_significance"
+        )
+        # The rescue consolidator and its inner knockout-test share the same
+        # F-test gate today; expose one dataclass field that drives both.
+        rescue_kwargs.update(
+            {
+                "rescue_significance": cleanup_sig,
+                "knockout_significance": cleanup_sig,
+                "merge_separation_factor": _required_float(
+                    resolved.rescue.merge_separation_factor,
+                    "rescue.merge_separation_factor",
+                ),
+                "structural_merge_factor": _required_float(
+                    resolved.rescue.structural_merge_factor,
+                    "rescue.structural_merge_factor",
+                ),
+                "n_eff_kind": n_eff_kind_v,
+            }
+        )
+
     plan_outcome = execute_plan(
         plan,
         active_ft,
@@ -704,22 +809,7 @@ def fit_peaks_impl(
         residual_edge_threshold=edge_threshold_v,
         residual_edge_m=edge_m_v,
         max_thaw_rounds=max_thaw_v,
-        conservative_kwargs={
-            "max_decay_factor": max_decay_v,
-            # Two tau-anchor modes share this dict:
-            # - When Stage 2b is present, ``tau_maj_us`` and ``sigma_tau_us``
-            #   drive the bidirectional Gaussian-prior penalty and the
-            #   calibrated bounds (``tau_maj +- N*sigma_tau`` intersected with
-            #   the factor-k cap).
-            # - When Stage 2b is absent, ``tau_apodization_us`` keeps the
-            #   legacy apodization-as-ceiling / one-sided hinge behaviour.
-            # Passing both is harmless (the calibration path takes precedence
-            # inside ``derive_window_fit_constraints``); we forward all three
-            # so the rescue path can pick the same policy.
-            "tau_apodization_us": expf_us,
-            "tau_maj_us": tau_maj_us,
-            "sigma_tau_us": sigma_tau_us,
-        },
+        conservative_kwargs=conservative_kwargs,
         replan_context=replan_ctx,
         max_residual_rescue_rounds=rescue_max_v,
         rescue_kwargs=rescue_kwargs,
