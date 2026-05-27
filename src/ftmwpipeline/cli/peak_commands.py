@@ -43,6 +43,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             primary_window=args.primary_window,
             min_exclusion_mhz=args.min_exclusion_mhz,
             run_gap_pass=(None if args.no_gap_pass is False else False),
+            preset=args.preset,
         )
         peaks = result["peaks"]
         promoted = [p for p in peaks if p.properties.get("promoted")]
@@ -220,6 +221,19 @@ def register_peak_commands(subparsers: Any) -> None:
         dest="no_gap_pass",
         action="store_true",
         help="Disable the unapodized gap pass (primary pass only)",
+    )
+    p_detect.add_argument(
+        "--preset",
+        dest="preset",
+        type=str,
+        default=None,
+        help=(
+            "Stage 3 preset (bare name resolves against packaged presets, or "
+            "a path to a YAML file carrying a 'stage3:' block). Knobs the "
+            "per-flag CLI does not expose -- detection_zpf, gap_active_zpf, "
+            "gap_mask_edge_threshold, internal_min_snr, sg_fwhm_coverage, "
+            "sg_min_window -- flow through this flag only."
+        ),
     )
     p_detect.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"

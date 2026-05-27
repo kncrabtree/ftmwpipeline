@@ -27,6 +27,9 @@ from ftmwpipeline.core.stage_fit_settings import (
 from ftmwpipeline.core.noise_settings import (
     load_preset as load_noise_preset,
 )
+from ftmwpipeline.core.peak_detection_settings import (
+    load_preset as load_peak_preset,
+)
 from ftmwpipeline.core.tau_calibration_settings import (
     load_preset as load_tau_preset,
 )
@@ -219,6 +222,61 @@ class TestStage2PresetResolution:
         p = tmp_path / "two_blocks.yaml"
         p.write_text(
             "stage2:\n  smoothing:\n    smoothing_window_mhz: 100.0\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        s = load_preset(p)
+        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
+
+
+class TestStage3PresetResolution:
+    """The Stage 3 ``load_preset`` reads the ``stage3:`` block from the
+    same packaged preset files Stages 2, 2b, and 5 use; absence is not an
+    error."""
+
+    def test_packaged_presets_load_empty_when_no_stage3_block(self) -> None:
+        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
+            s = load_peak_preset(name)
+            assert s.is_empty(), (
+                f"packaged preset {name!r} should produce an empty "
+                f"PeakDetectionSettings until a stage3: block lands"
+            )
+
+    def test_stage3_block_populates_dataclass(self, tmp_path) -> None:
+        p = tmp_path / "with_stage3.yaml"
+        p.write_text(
+            "name: example\n"
+            "stage3:\n"
+            "  promotion:\n    min_snr: 4.0\n    weak_medium_snr: 12.0\n"
+            "  savgol:\n    sg_window: 13\n  primary_pass:\n    primary_window: blackman\n"
+            "stage5:\n  shape: gaussian\n"
+        )
+        ps = load_peak_preset(p)
+        assert ps.promotion.min_snr == 4.0
+        assert ps.promotion.weak_medium_snr == 12.0
+        assert ps.savgol.sg_window == 13
+        assert ps.primary_pass.primary_window == "blackman"
+
+    def test_stage3_block_must_be_mapping(self, tmp_path) -> None:
+        p = tmp_path / "bad_stage3.yaml"
+        p.write_text("stage3: 3\n")
+        with pytest.raises(ValueError, match=r"'stage3' block must be a mapping"):
+            load_peak_preset(p)
+
+    def test_stage3_loader_path_resolution(self, tmp_path) -> None:
+        p = tmp_path / "stage3_only.yaml"
+        p.write_text("stage3:\n  savgol:\n    sg_window: 17\n")
+        ps = load_peak_preset(p)
+        assert ps.savgol.sg_window == 17
+
+    def test_stage3_missing_path_raises(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError, match=r"preset file not found"):
+            load_peak_preset(tmp_path / "missing.yaml")
+
+    def test_sibling_stage3_block_ignored_by_stage5_loader(self, tmp_path) -> None:
+        """A ``stage3:`` sibling block must not trip Stage 5's unknown-key gate."""
+        p = tmp_path / "two_blocks.yaml"
+        p.write_text(
+            "stage3:\n  promotion:\n    min_snr: 4.0\n"
             "stage5:\n  shape: gaussian\n"
         )
         s = load_preset(p)

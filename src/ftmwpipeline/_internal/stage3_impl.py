@@ -33,17 +33,22 @@ import h5py
 import numpy as np
 
 from ..core.data_structures import ComplexFT, Peak
+from ..core.peak_detection_settings import (
+    PeakDetectionSettings,
+    load_preset as load_peak_detection_preset,
+    resolve as resolve_peak_detection_settings,
+)
 from ..preprocessing.leakage import leakage_touched_intervals
 from ..preprocessing.noise_estimation import estimate_noise_adaptive
 from ..preprocessing.peak_detection import (
-    DEFAULT_INTERNAL_MIN_SNR,
-    DEFAULT_MEDIUM_STRONG_SNR,
-    DEFAULT_MIN_SNR,
-    DEFAULT_WEAK_MEDIUM_SNR,
     classify_by_snr,
     detect_peaks,
 )
 from ..io.noise_result_serialization import load_noise_result_from_hdf5
+from ..io.peak_detection_settings_serialization import (
+    load_peak_detection_settings_from_h5,
+    save_peak_detection_settings_to_h5,
+)
 from ..io.peak_serialization import (
     load_peaks_from_hdf5,
     save_peaks_to_hdf5,
@@ -103,14 +108,20 @@ def _active_acquisition_us(
     return max(hi - lo, 0.0)
 
 
-def _grid_aware_sg_window(freq_step_mhz: float, fwhm_mhz: float) -> int:
-    """Pick sg_window covering ~4 line-FWHM, rounded up to odd, minimum 5."""
+def _grid_aware_sg_window(
+    freq_step_mhz: float,
+    fwhm_mhz: float,
+    *,
+    fwhm_coverage: float = _SG_FWHM_COVERAGE,
+    min_window: int = _SG_MIN_WINDOW,
+) -> int:
+    """Pick sg_window covering ~K line-FWHM, rounded up to odd, floor min_window."""
     if freq_step_mhz <= 0 or fwhm_mhz <= 0:
-        return _SG_MIN_WINDOW
-    target_bins = int(round(_SG_FWHM_COVERAGE * fwhm_mhz / freq_step_mhz))
+        return int(min_window)
+    target_bins = int(round(fwhm_coverage * fwhm_mhz / freq_step_mhz))
     if target_bins % 2 == 0:
         target_bins += 1
-    return max(_SG_MIN_WINDOW, target_bins)
+    return max(int(min_window), target_bins)
 
 
 def _mf_gap_spectrum(
@@ -172,10 +183,12 @@ def _spectrum_from_fid(
     trim_range: Optional[Tuple[float, float]],
     expf_us: Optional[float],
     window_function: Optional[str] = None,
+    *,
+    zpf: int = _DETECTION_ZPF,
 ) -> ComplexFT:
     """Recompute a ComplexFT from the FID at the internal detection grid.
 
-    Always uses :data:`_DETECTION_ZPF` (native resolution -- best for apex
+    Defaults to ``zpf=_DETECTION_ZPF`` (native resolution -- best for apex
     localization). With ``expf_us=None`` and ``window_function=None`` this
     yields the unapodized boxcar spectrum used by the gap pass; passing a
     ``window_function`` (e.g. ``"blackmanharris"``) yields the
@@ -189,7 +202,7 @@ def _spectrum_from_fid(
     preprocessed = fid.preprocess(
         start_us=base_pp.start_us,
         end_us=base_pp.end_us,
-        zpf=_DETECTION_ZPF,
+        zpf=int(zpf),
         expf_us=expf_us,
         window_function=window_function,
         rdc=base_pp.rdc,
@@ -277,6 +290,46 @@ def _load_canonical_noise(file_path: str, user_ft: ComplexFT) -> np.ndarray:
     return np.asarray(noise.rms_noise, dtype=float)
 
 
+def _build_explicit_from_kwargs(
+    *,
+    min_snr: Optional[float],
+    weak_medium_snr: Optional[float],
+    medium_strong_snr: Optional[float],
+    sg_window: Optional[int],
+    sg_order: Optional[int],
+    primary_window: Optional[str],
+    min_exclusion_mhz: Optional[float],
+    run_gap_pass: Optional[bool],
+) -> PeakDetectionSettings:
+    """Bundle the legacy per-knob kwargs into an explicit-layer settings instance.
+
+    The remaining knobs that the resolver covers
+    (``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
+    ``detection_zpf``, ``gap_active_zpf``, ``gap_mask_edge_threshold``)
+    are not on the public Stage 3 signature; they flow through ``settings=``
+    / ``preset=`` only.
+    """
+    explicit = PeakDetectionSettings()
+    explicit.promotion.min_snr = min_snr
+    explicit.promotion.weak_medium_snr = weak_medium_snr
+    explicit.promotion.medium_strong_snr = medium_strong_snr
+    explicit.savgol.sg_window = sg_window
+    explicit.savgol.sg_order = sg_order
+    explicit.primary_pass.primary_window = primary_window
+    explicit.primary_pass.min_exclusion_mhz = min_exclusion_mhz
+    explicit.gap_pass.run_gap_pass = run_gap_pass
+    return explicit
+
+
+def _required(value: Any, name: str) -> Any:
+    """Coerce a post-resolve field that must be filled (hard default present)."""
+    if value is None:
+        raise AssertionError(
+            f"resolved PeakDetectionSettings.{name} is None; missing hard default"
+        )
+    return value
+
+
 def detect_peaks_impl(
     file_path: str,
     min_snr: Optional[float] = None,
@@ -287,6 +340,9 @@ def detect_peaks_impl(
     primary_window: Optional[str] = None,
     min_exclusion_mhz: Optional[float] = None,
     run_gap_pass: Optional[bool] = None,
+    *,
+    settings: Optional[PeakDetectionSettings] = None,
+    preset: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run Stage 3 two-pass peak detection and persist the result.
 
@@ -297,7 +353,7 @@ def detect_peaks_impl(
     ``min_snr`` is the **promotion cutoff** on the user-grid SNR -- which
     peaks move on to Stage 4 -- not the detection floor. Detection always runs
     aggressively on the internal zpf=1 grids at
-    ``min(DEFAULT_INTERNAL_MIN_SNR, promotion)`` (cheap, and recovers real
+    ``min(internal_min_snr, promotion)`` (cheap, and recovers real
     peaks the user-grid re-measure would otherwise miss). *Every* detected
     peak is persisted with a ``promoted`` flag; the promotion cutoff is stored
     so Stage 4 / curation can re-threshold without re-running detection.
@@ -310,27 +366,90 @@ def detect_peaks_impl(
     strong-line list that seeds the gap-pass mask. It affects only which
     positions the primary pass finds, never any reported amplitude or SNR.
 
+    ``settings`` / ``preset`` populate the same layer of the four-layer
+    resolution chain (``explicit > preset > persisted > recommended``);
+    passing both raises ``ValueError``. Knobs beyond the legacy per-knob
+    signature -- ``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
+    ``detection_zpf``, ``gap_active_zpf``, ``gap_mask_edge_threshold`` --
+    flow through ``settings=`` / ``preset=`` only.
+
     Parameters left as ``None`` fall back to documented defaults. Returns the
     full peak list (user grid) plus diagnostics; also writes ``/stage3_peaks``
     and marks the stage done.
     """
-    promotion_v: float = DEFAULT_MIN_SNR if min_snr is None else float(min_snr)
-    internal_min_snr: float = min(DEFAULT_INTERNAL_MIN_SNR, promotion_v)
-    weak_medium_v: float = (
-        DEFAULT_WEAK_MEDIUM_SNR if weak_medium_snr is None else float(weak_medium_snr)
+    if preset is not None and settings is not None:
+        raise ValueError(
+            "'preset' and 'settings' are alternative ways to populate "
+            "the preset layer of the peak-detection-settings chain; pass "
+            "exactly one (or override individual fields via explicit kwargs)"
+        )
+
+    explicit = _build_explicit_from_kwargs(
+        min_snr=min_snr,
+        weak_medium_snr=weak_medium_snr,
+        medium_strong_snr=medium_strong_snr,
+        sg_window=sg_window,
+        sg_order=sg_order,
+        primary_window=primary_window,
+        min_exclusion_mhz=min_exclusion_mhz,
+        run_gap_pass=run_gap_pass,
     )
-    medium_strong_v: float = (
-        DEFAULT_MEDIUM_STRONG_SNR
-        if medium_strong_snr is None
-        else float(medium_strong_snr)
+    preset_layer: Optional[PeakDetectionSettings] = settings
+    preset_name: Optional[str] = None
+    if preset is not None:
+        preset_layer = load_peak_detection_preset(preset)
+        preset_name = str(preset)
+    persisted_layer = load_peak_detection_settings_from_h5(file_path)
+
+    resolved = resolve_peak_detection_settings(
+        explicit=explicit,
+        preset=preset_layer,
+        persisted=persisted_layer,
+        recommended=None,
     )
-    sg_window_v: int = 11 if sg_window is None else int(sg_window)
-    sg_order_v: int = 3 if sg_order is None else int(sg_order)
-    primary_window_v: str = (
-        DEFAULT_PRIMARY_WINDOW if primary_window is None else str(primary_window)
+
+    promotion = resolved.promotion
+    savgol = resolved.savgol
+    primary = resolved.primary_pass
+    gap = resolved.gap_pass
+
+    promotion_v: float = float(_required(promotion.min_snr, "promotion.min_snr"))
+    internal_floor: float = float(
+        _required(promotion.internal_min_snr, "promotion.internal_min_snr")
     )
-    min_excl_v: float = 0.0 if min_exclusion_mhz is None else float(min_exclusion_mhz)
-    run_gap_v: bool = True if run_gap_pass is None else bool(run_gap_pass)
+    internal_min_snr: float = min(internal_floor, promotion_v)
+    weak_medium_v: float = float(
+        _required(promotion.weak_medium_snr, "promotion.weak_medium_snr")
+    )
+    medium_strong_v: float = float(
+        _required(promotion.medium_strong_snr, "promotion.medium_strong_snr")
+    )
+    sg_window_v: int = int(_required(savgol.sg_window, "savgol.sg_window"))
+    sg_order_v: int = int(_required(savgol.sg_order, "savgol.sg_order"))
+    sg_fwhm_coverage_v: float = float(
+        _required(savgol.sg_fwhm_coverage, "savgol.sg_fwhm_coverage")
+    )
+    sg_min_window_v: int = int(
+        _required(savgol.sg_min_window, "savgol.sg_min_window")
+    )
+    primary_window_v: str = str(
+        _required(primary.primary_window, "primary_pass.primary_window")
+    )
+    min_excl_v: float = float(
+        _required(primary.min_exclusion_mhz, "primary_pass.min_exclusion_mhz")
+    )
+    detection_zpf_v: int = int(
+        _required(primary.detection_zpf, "primary_pass.detection_zpf")
+    )
+    run_gap_v: bool = bool(_required(gap.run_gap_pass, "gap_pass.run_gap_pass"))
+    gap_active_zpf_v: int = int(
+        _required(gap.gap_active_zpf, "gap_pass.gap_active_zpf")
+    )
+    gap_mask_edge_threshold_v: float = float(
+        _required(
+            gap.gap_mask_edge_threshold, "gap_pass.gap_mask_edge_threshold"
+        )
+    )
 
     params: Dict[str, Any] = {
         "promotion_min_snr": promotion_v,
@@ -340,11 +459,11 @@ def detect_peaks_impl(
         "sg_window": sg_window_v,
         "sg_order": sg_order_v,
         "primary_window": primary_window_v,
-        "gap_mask_edge_threshold": GAP_MASK_EDGE_THRESHOLD,
+        "gap_mask_edge_threshold": gap_mask_edge_threshold_v,
         "min_exclusion_mhz": min_excl_v,
         "run_gap_pass": run_gap_v,
-        "detection_zpf": _DETECTION_ZPF,
-        "gap_active_zpf": _GAP_ACTIVE_ZPF,
+        "detection_zpf": detection_zpf_v,
+        "gap_active_zpf": gap_active_zpf_v,
         "settings_source": "stage1_canonical",
     }
 
@@ -382,7 +501,12 @@ def detect_peaks_impl(
     # aware sg_window for the gap pass comes from
     # ``_grid_aware_sg_window`` driven by the line FWHM = 1/(π · expf_us).
     primary_ft = _spectrum_from_fid(
-        fid, base_pp, trim_range, expf_us=None, window_function=primary_window_v
+        fid,
+        base_pp,
+        trim_range,
+        expf_us=None,
+        window_function=primary_window_v,
+        zpf=detection_zpf_v,
     )
     # Gap-pass matched-filter tau: prefer the Stage 2b calibrated ``tau_maj``
     # when available (physical molecular decay; the matched filter's FWHM
@@ -399,11 +523,20 @@ def detect_peaks_impl(
     else:
         tau_basis_us = 5.0
     gap_ft = _mf_gap_spectrum(
-        fid, base_pp, trim_range, tau_basis_us=tau_basis_us
+        fid,
+        base_pp,
+        trim_range,
+        tau_basis_us=tau_basis_us,
+        zpf_active=gap_active_zpf_v,
     )
     line_fwhm_mhz = 1.0 / (np.pi * tau_basis_us)
     gap_freq_step = abs(gap_ft.freq_array[1] - gap_ft.freq_array[0])
-    gap_sg_window_v = _grid_aware_sg_window(gap_freq_step, line_fwhm_mhz)
+    gap_sg_window_v = _grid_aware_sg_window(
+        gap_freq_step,
+        line_fwhm_mhz,
+        fwhm_coverage=sg_fwhm_coverage_v,
+        min_window=sg_min_window_v,
+    )
     primary_noise = estimate_noise_adaptive(
         primary_ft.freq_array, primary_ft.magnitude_spectrum
     )
@@ -422,7 +555,7 @@ def detect_peaks_impl(
         gap_noise.rms_noise,
         fid.probe_freq_mhz,
         0.0,
-        threshold=GAP_MASK_EDGE_THRESHOLD,
+        threshold=gap_mask_edge_threshold_v,
     )
 
     internal_peaks: List[Peak] = detect_peaks(
@@ -456,6 +589,14 @@ def detect_peaks_impl(
     full_params = {**params, "acquisition_us": acquisition_us}
     save_peaks_impl(file_path, peaks, parameters=full_params)
     save_peak_parameters_impl(file_path, full_params)
+    # Persist the resolved PeakDetectionSettings to
+    # ``processing_parameters/stage3_peaks``. The legacy JSON-encoded
+    # ``processing_parameters/peak_detection`` block is kept by
+    # ``save_peak_parameters_impl`` above as a back-compat shim; the new
+    # canonical record below is what the resolver's persisted layer reads.
+    save_peak_detection_settings_to_h5(
+        file_path, resolved, preset_name=preset_name,
+    )
     _update_stage_completion(file_path, "stage3_peaks")
     # Re-detection supersedes any Stage 4 window plan built on the old peaks.
     invalidate_downstream_stages(file_path, "stage3_peaks")

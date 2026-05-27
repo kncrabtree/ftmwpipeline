@@ -40,6 +40,7 @@ import logging
 from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .core.noise_settings import NoiseSettings
+from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
@@ -890,6 +891,9 @@ def detect_peaks(
     primary_window: Optional[str] = None,
     min_exclusion_mhz: Optional[float] = None,
     run_gap_pass: Optional[bool] = None,
+    *,
+    settings: Optional[PeakDetectionSettings] = None,
+    preset: Optional[str] = None,
 ) -> List[Peak]:
     """Detect and classify peaks (Stage 3), equivalent to Pipeline.detect_peaks().
 
@@ -925,6 +929,13 @@ def detect_peaks(
         Minimum gap-pass exclusion half-width per primary peak in MHz.
     run_gap_pass : bool, optional
         If False, disable the unapodized gap pass (primary pass only).
+    settings : PeakDetectionSettings, optional
+        Bundle of Stage 3 knobs (preset-layer of the four-layer
+        resolution chain); fields left ``None`` fall through. Mutually
+        exclusive with ``preset``.
+    preset : str, optional
+        Bare preset name or path to a YAML file carrying a ``stage3:`` block.
+        Mutually exclusive with ``settings``.
 
     Returns
     -------
@@ -944,6 +955,8 @@ def detect_peaks(
             primary_window=primary_window,
             min_exclusion_mhz=min_exclusion_mhz,
             run_gap_pass=run_gap_pass,
+            settings=settings,
+            preset=preset,
         )
     except Exception as e:
         logger.error(f"Failed to detect peaks for {file_path}: {e}")

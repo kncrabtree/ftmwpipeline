@@ -1,6 +1,6 @@
 # Plan: per-stage settings backfill across the pipeline
 
-Status: **Stage 2b and Stage 2 shipped.** Stages 3 and 4 are queued behind them.
+Status: **Stage 2b, Stage 2, and Stage 3 shipped.** Stage 4 is queued.
 
 ## Stage 2b state
 
@@ -162,7 +162,7 @@ continue to load without modification.
 |------:|-----------------------------------|---------------------|
 | 2b    | `TauCalibrationSettings`          | Shipped             |
 | 2     | `NoiseSettings`                   | Shipped             |
-| 3     | `PeakDetectionSettings`           | Queued              |
+| 3     | `PeakDetectionSettings`           | Shipped             |
 | 4     | `WindowPlanningSettings`          | Queued              |
 
 Ordering rationale: Stage 2b first because it is the shape-
@@ -234,6 +234,70 @@ Test coverage shipped:
   + `settings=` mutual exclusion; a no-kwargs follow-up inherits the
   persisted `smoothing_window_mhz`; `from_saved_params=True` still
   reads the legacy block (back-compat preserved).
+
+## Stage 3 state
+
+The Stage 3 `PeakDetectionSettings` plumbing is live across all three
+user-facing surfaces. The full non-slow test suite is green under the
+new wiring, including the cross-interface and Stage 5 / Stage 2b /
+Stage 2 propagation suites.
+
+Components landed:
+
+- **`src/ftmwpipeline/core/peak_detection_settings.py`** — top-level
+  `PeakDetectionSettings` plus four sub-dataclasses
+  (`PromotionSubSettings`, `SavgolSubSettings`,
+  `PrimaryPassSubSettings`, `GapPassSubSettings`). `_HARD_DEFAULTS`
+  mirrors every `DEFAULT_*` constant in
+  `preprocessing/peak_detection.py` and every module-level constant
+  in `_internal/stage3_impl.py` (`DEFAULT_PRIMARY_WINDOW`,
+  `GAP_MASK_EDGE_THRESHOLD`, `_DETECTION_ZPF`, `_GAP_ACTIVE_ZPF`,
+  `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW`), plus the hardcoded
+  `sg_window=11` / `sg_order=3` defaults the orchestrator carried.
+  `resolve()` walks the four-layer chain; `to_attrs` / `from_attrs` /
+  YAML helpers + `load_preset` reading the `stage3:` block from
+  packaged presets.
+- **`src/ftmwpipeline/io/peak_detection_settings_serialization.py`** —
+  HDF5 persistence at `processing_parameters/stage3_peaks` with one
+  subgroup per sub-dataclass and the standard `__None__` sentinel.
+  Intentionally distinct from the existing root-level `/stage3_peaks`
+  group (settings under `processing_parameters/`, results at the root
+  — same pattern Stages 5 and 2 use).
+- **`_internal/stage3_impl`** — `_grid_aware_sg_window` and
+  `_spectrum_from_fid` gain keyword-only kwargs threading the formerly
+  module-level constants (`fwhm_coverage`, `min_window`, `zpf`); the
+  module-level constants remain as the kernel's parameter defaults
+  so old callers see identical behaviour.
+- **`_internal/stage3_impl.detect_peaks_impl`** — gains
+  `settings: Optional[PeakDetectionSettings]` and `preset:
+  Optional[str]` kwargs (mutually exclusive, matching Stages 5, 2b,
+  and 2). Builds an explicit `PeakDetectionSettings` from the legacy
+  per-knob kwargs, walks `resolve(...)`, lifts the resolved fields
+  into the helpers and into the `detect_peaks` kernel call, and
+  persists the resolved settings via
+  `save_peak_detection_settings_to_h5`. The legacy JSON-encoded
+  `processing_parameters/peak_detection` block is preserved by
+  `save_peak_parameters_impl` as a back-compat shim; the new
+  canonical record is what the resolver's persisted layer reads.
+- **`Pipeline.detect_peaks` / `api.detect_peaks`** — gain
+  `settings=` / `preset=` kwargs.
+- **CLI** — `detect-peaks` gains `--preset NAME_OR_PATH`.
+
+Test coverage shipped:
+
+- `tests/unit/core/test_peak_detection_settings.py` (23 tests).
+- `tests/unit/io/test_peak_detection_settings_serialization.py` (8 tests).
+- `tests/unit/io/test_preset_loading.py` extended (32 tests total) for
+  the `stage3:` block path and sibling-block coexistence.
+- `tests/integration/test_stage3_settings_propagation.py` (16 tests)
+  — every routed `PeakDetectionSettings` field reaches its kernel
+  (direct: `detect_peaks`; orchestrator-internal:
+  `_spectrum_from_fid`, `_mf_gap_spectrum`, `_grid_aware_sg_window`,
+  `leakage_touched_intervals`). `settings=` + `preset=` mutual
+  exclusion; a no-kwargs follow-up inherits the persisted
+  `sg_window`. The kernel floor `min_snr` is asserted to be
+  `min(promotion.internal_min_snr, promotion.min_snr)` so both
+  promotion knobs are exercised.
 
 ## Stage 2b design reference
 
@@ -409,6 +473,9 @@ do not silently delete entries.**
 | 7 | Legacy per-knob kwargs (`skew_target`, `min_bin_fraction`, `smoothing_window_mhz`, `min_noise_fraction`) stay on `estimate_noise` signatures | `_internal/stage2_impl.py`, `pipeline.py`, `api.py`, `cli/noise_commands.py` | Match the Stage 5 / Stage 2b migration policy: existing call-sites that pass individual kwargs keep working; they bundle into an explicit `NoiseSettings` inside the impl. Note the public surface exposes only the four user-tunable knobs that were historically there; the new instrument-tunable knobs (`subdivision_threshold`, `abs_min_bin_size`, `inc`, the three skirt-exclusion knobs) flow through `settings=` / `preset=` only. | Move kwarg payload to a `NoiseSettings(...)` instance or to a YAML preset. |
 | 8 | Module-level constants (`SUBDIVISION_THRESHOLD`, `ABS_MIN_BIN_SIZE`, `STRONG_PEAK_SNR`, `SKIRT_EXCLUSION_K`, `MAX_SKIRT_EXCLUSION_MHZ`, `DEFAULT_SMOOTHING_MHZ`) stay live in `preprocessing/noise_estimation.py` | `preprocessing/noise_estimation.py` | They remain the kernel's parameter defaults and the readable canonical source the `NoiseSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `NoiseSettings`, they become docstring-only. Research scripts and docs that name these constants (`dev-docs/research/noise-grid-invariance/report.md`, `dev-docs/research/noise-heuristic-audit/report.md`) continue to work — the constants still exist. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
 | 9 | `estimate_noise_adaptive` kernel signature gains five new keyword-only kwargs (`subdivision_threshold`, `abs_min_bin_size`, `strong_peak_snr`, `skirt_exclusion_k`, `max_skirt_exclusion_mhz`) | `preprocessing/noise_estimation.py::estimate_noise_adaptive`, `_compute_mad_based_bins`, `_exclude_strong_line_skirts` | The new kwargs default to the module-level constants (e.g. `subdivision_threshold=SUBDIVISION_THRESHOLD`), so old callers see identical behaviour. The instrument-tunable constants now flow through `NoiseSettings` end-to-end. **Landed in this project.** | None for old callers; new callers can pass per-knob kwargs or build a `NoiseSettings`. |
+| 10 | Legacy per-knob kwargs (`min_snr`, `weak_medium_snr`, `medium_strong_snr`, `sg_window`, `sg_order`, `primary_window`, `min_exclusion_mhz`, `run_gap_pass`) stay on `Pipeline.detect_peaks` / `api.detect_peaks` / `_internal/stage3_impl.detect_peaks_impl` and on the corresponding CLI flags | `_internal/stage3_impl.py`, `pipeline.py`, `api.py`, `cli/peak_commands.py` | Match the Stage 5 / Stage 2b / Stage 2 migration policy: existing call-sites that pass individual kwargs (e.g. `min_snr=4.0`) keep working; they bundle into an explicit `PeakDetectionSettings` inside the impl and route through the resolver. Note the public surface exposes only the eight historically-public knobs; the new instrument-tunable knobs (`internal_min_snr`, `sg_fwhm_coverage`, `sg_min_window`, `detection_zpf`, `gap_active_zpf`, `gap_mask_edge_threshold`) flow through `settings=` / `preset=` only. | Move kwarg payload to a `PeakDetectionSettings(...)` instance or to a YAML preset. |
+| 11 | Module-level constants (`DEFAULT_MIN_SNR`, `DEFAULT_INTERNAL_MIN_SNR`, `DEFAULT_WEAK_MEDIUM_SNR`, `DEFAULT_MEDIUM_STRONG_SNR` in `preprocessing/peak_detection.py`; `DEFAULT_PRIMARY_WINDOW`, `GAP_MASK_EDGE_THRESHOLD`, `_DETECTION_ZPF`, `_GAP_ACTIVE_ZPF`, `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW` in `_internal/stage3_impl.py`) stay live | `preprocessing/peak_detection.py`, `_internal/stage3_impl.py` | They remain the kernel/helper parameter defaults and the readable canonical source the `PeakDetectionSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `PeakDetectionSettings`, they become docstring-only. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
+| 12 | `_internal/stage3_impl._spectrum_from_fid` gains a keyword-only `zpf=` kwarg; `_grid_aware_sg_window` gains keyword-only `fwhm_coverage=` and `min_window=` kwargs | `_internal/stage3_impl.py::_spectrum_from_fid`, `::_grid_aware_sg_window` | The new kwargs default to the module-level constants (`_DETECTION_ZPF`, `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW`), so old callers see identical behaviour. The orchestrator-internal knobs now flow through `PeakDetectionSettings` end-to-end. **Landed in this project.** | None for old callers; new callers can pass per-knob kwargs or build a `PeakDetectionSettings`. |
 
 ## Follow-ups (not part of this project's session work)
 
@@ -422,9 +489,6 @@ do not silently delete entries.**
   parameters. The Stage 2 noise estimator is the canonical
   instrument-tunable surface (see
   [`memory: noise-estimator-mad-shipped`](../../../.claude/projects/-home-kncrabtree-github-ftmwpipeline/memory/noise-estimator-mad-shipped.md)).
-- **Stage 3 settings (`PeakDetectionSettings`).** SG window /
-  order, matched-filter knobs, the τ-aware gap-pass parameters
-  that consume Stage 2b's `τ_maj`.
 - **Stage 4 settings (`WindowPlanningSettings`).** Clustering
   edges and the minimum-separation factors.
 - **Cross-fixture validation of the shape-aware classifier.** The
