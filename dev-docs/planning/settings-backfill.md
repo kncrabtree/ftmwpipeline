@@ -562,6 +562,134 @@ do not silently delete entries.**
   Follow-ups; deferred until a portable preset-content-hashing
   implementation is justified.
 
+## Research-script migration plan
+
+Now that all five settings dataclasses are live, the research and
+development scripts under `dev-docs/research/` can move off the legacy
+per-knob kwarg calls onto `settings=` / `preset=` for cleaner recipe
+provenance. The screen below categorises every Python script in
+`dev-docs/research/`. **Some of these scripts are stale** — operating
+points, fixture paths, or downstream behaviour they assert may have
+drifted since they were written. Re-running each migrated script and
+auditing its findings is follow-up work that may itself revise the
+script (or supersede it).
+
+### Category A — public-API users that benefit from migration
+
+Scripts that call `ftmwpipeline.api` (or a pipeline method) with
+per-knob kwargs that now have a settings/preset home. Migration target:
+replace the loose kwargs with a `settings=` instance or a `preset=`
+name. Listed in priority order (most kwargs first).
+
+1. **`dev-docs/research/stage5-tau-calibration/lsq_comparison.py`** —
+   sets up the fixture with
+   `compute_ft(zpf=2, expf_us=None, trim=(26500, 40000))`,
+   `estimate_noise(fpath)`, `detect_peaks(fpath)`,
+   `assign_windows(fpath)`, `fit_peaks(fpath, tau0_us=6.325)`. The
+   Stage-1 setup is intentionally explicit (it builds the unapodized
+   fixture for a comparison) and stays as-is; the `fit_peaks` call
+   should adopt the `instrument_bc_2638` preset plus an explicit
+   `tau0_us` override. Also calls `extract_tau_majority(...)` directly
+   (Category B — research kernel sweep, no migration needed).
+
+2. **`dev-docs/research/stage5-tau-calibration/prior_strength_comparison.py`** —
+   `ftmw.calibrate_tau(dst, compute_band_majorities=True)` and three
+   `ftmw.fit_peaks(dst, tau0_us=6.325, [per_band_tau=...])` variants.
+   Migration: route the τ knob through a `TauCalibrationSettings`
+   instance for `calibrate_tau`, and through a `StageFitSettings`
+   instance for the `fit_peaks` sweep so the recipe-vs-knob diff is
+   one dataclass per variant.
+
+3. **`dev-docs/research/gaussian-shape/compare_shapes.py`** —
+   `ftmw.fit_peaks(str(fp), shape=shape)` and `ftmw.calibrate_tau_G(str(fp))`.
+   The shape sweep is the *point* of this script, so `shape=` is an
+   appropriate explicit kwarg; migration is optional cleanup (switch
+   to a `StageFitSettings(shape=ShapeSpec(kind=...))` if the variant
+   set grows).
+
+### Category B — kernel-direct sweeps (no migration needed)
+
+Scripts that bypass the public API and call internal kernel functions
+(`estimate_noise_adaptive`, `extract_tau_majority`, `locate_peaks`,
+`compute_active_ft`, …) directly to study kernel behaviour at the raw
+parameter surface. Settings/preset migration is *not* appropriate here
+— these scripts exist to sweep the kernel knobs in isolation, and the
+dataclass layer would just hide what they are exercising.
+
+* `dev-docs/research/stage5-tau-calibration/polish_validation.py` —
+  `extract_tau_majority(...)` kernel sweep.
+* `dev-docs/research/stage5-tau-calibration/polish_snr_cap_validation.py` —
+  `extract_tau_majority(...)` kernel sweep.
+* `dev-docs/research/voigt-deficit/part_a_perwindow.py` —
+  `compute_active_ft`, `estimate_noise_adaptive`.
+* `dev-docs/research/voigt-deficit/part_b_perbin.py` —
+  `tau_calibration` kernels.
+* `dev-docs/research/peak-detection/prototype.py` — `locate_peaks` +
+  `estimate_noise_adaptive` kernels (the calibration that established
+  Stage 3's `primary_window` default).
+* `dev-docs/research/noise-heuristic-audit/prototype.py` —
+  `estimate_noise_adaptive(smoothing_window_mhz=w)` sweep (the
+  calibration that established Stage 2's `DEFAULT_SMOOTHING_MHZ`).
+* `dev-docs/research/noise-grid-invariance/prototype.py` —
+  `estimate_noise_adaptive` sweep across grids.
+* `dev-docs/research/stage3-coherence-screen/prototype.py` —
+  `estimate_noise_adaptive` + coherence-screen kernel.
+* `dev-docs/research/matched-filter-detection/prototype.py` —
+  `estimate_noise_adaptive` + `locate_peaks` + `compute_active_ft`
+  (this script *is* the matched-filter calibration the production
+  Stage 3 gap pass implements).
+* `dev-docs/research/complex-edge-coherence/prototype.py` —
+  `ftmw.compute_ft` + `ftmw.estimate_noise` (no per-knob kwargs to
+  migrate; uses the public API for setup only) plus kernel access.
+* `dev-docs/research/stage5-tau-calibration/prototype.py` — uses
+  `ftmw.load_fid(...)` for fixture loading; runs the STFT kernel
+  directly. No knob migration applicable.
+
+### Category C — pure synthetic, no API surface
+
+Scripts that don't touch `ftmwpipeline.api` at all (synthetic data
+generated in-script). Nothing to migrate.
+
+* `dev-docs/research/stage5-fitting/prototype.py` — analytic
+  rfft-grid synthetic spectra.
+
+### Migration order and risk
+
+The Category A scripts can be migrated one at a time, lowest risk
+first:
+
+1. `compare_shapes.py` — smallest delta, mostly cosmetic.
+2. `prior_strength_comparison.py` — five `fit_peaks` / `calibrate_tau`
+   calls, no fixture rebuilds. Recompute the variants under the new
+   API and confirm the report's conclusions hold.
+3. `lsq_comparison.py` — heaviest: rebuilds an unapodized fixture
+   from scratch and runs the full Stages 0–5 pipeline. Migrate the
+   `fit_peaks` call only; leave the Stage-1 fixture setup as the
+   explicit per-knob form (the explicitness is the script's whole
+   point).
+
+Each migrated script should:
+
+* re-run end-to-end under the new API in `scratch/<name>/` (never the
+  tracked working tree);
+* check that its top-line conclusion (figure, summary number) is
+  unchanged or document the new value if the operating point has
+  drifted;
+* update its own `report.md` with the new invocation form.
+
+A drift discovered while re-running is itself follow-up work — either
+fix the script against current code state, or note the divergence in
+the matching `dev-docs/planning/stage<N>-*.md` doc.
+
+### Out-of-scope for the script migration
+
+The Category B kernel-direct scripts deliberately stay on the raw
+kernel surface. If a future researcher wants to sweep a knob that the
+public API doesn't expose (e.g., Stage 2's
+`subdivision_threshold`), the right move is to call the kernel
+directly *in the script*, not to plumb the knob onto the public
+surface just to sweep it.
+
 ## Provenance
 
 - Architectural template: [`stage5-fit-settings.md`](stage5-fit-settings.md)

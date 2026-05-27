@@ -1,56 +1,103 @@
 Settings and presets
 ====================
 
-Every pipeline stage has knobs — line shape, decay-time bounds, rescue
-SNR thresholds, edge-coherence widths. ``ftmwpipeline`` exposes those
-knobs through a layered resolution chain so you can pick the level of
-detail that matches your workflow:
+Every pipeline stage past Stage 0 has knobs — adaptive-binning fractions,
+edge-coherence widths, line shape, decay-time bounds, rescue SNR cutoffs.
+``ftmwpipeline`` exposes those knobs through a single layered resolution
+chain so you can pick the level of detail that matches your workflow:
 
-* one-off experiments: pass keyword arguments to ``fit_peaks`` and
+* one-off experiments: pass keyword arguments to a stage function and
   forget about it;
 * recurring instrument workflows: load a *preset* YAML by name and
   override one or two knobs from the CLI;
-* programmatic sweeps: build a ``StageFitSettings`` dataclass in Python
-  and pass it as ``settings=``.
+* programmatic sweeps: build a settings dataclass in Python and pass
+  it as ``settings=``.
 
-The same call producing the same fit is the goal regardless of which
+The same call producing the same result is the goal regardless of which
 surface you use. This page walks through the mental model, the three
-input surfaces, persistence behaviour, and how to write your own
-presets.
+input surfaces, persistence behaviour, and how to write your own presets
+that span multiple stages.
 
 The mental model
 ----------------
 
-A fit's parameters come from layers that are merged per field. Highest
+A stage's parameters come from layers that are merged per field. Highest
 precedence first:
 
-1. **explicit kwargs** — ``fit_peaks(..., max_decay_factor=3.0)``
-2. **preset / settings** — a YAML preset loaded by name, or a
-   ``StageFitSettings`` instance you built in Python
-3. **persisted** — what the previous fit on this ``.ftmw`` file used
-4. **recommended** — a Stage 2b hint (e.g., "Gaussian fits this
-   experiment better"); currently a placeholder for a forthcoming
-   discriminator
+1. **explicit kwargs** — ``ftmw.fit_peaks(..., max_decay_factor=3.0)``
+2. **preset / settings** — a YAML preset loaded by name, or a settings
+   dataclass you built in Python
+3. **persisted** — what the previous run of this stage on this ``.ftmw``
+   file used
+4. **recommended** — an upstream-stage hint (e.g., Stage 2b's
+   ``recommended_shape`` for Stage 5); empty for stages without an
+   upstream feeder
 5. **hard defaults** — the library's stock values
 
-Each Stage 5 knob (there are about thirty) walks this chain
-independently. If you explicitly set ``max_decay_factor=3.0``, your
-value wins. Everything else falls through one layer at a time until it
-hits a concrete value. The hard defaults are guaranteed to fill any
-remaining gap so the resolved settings instance is always complete.
+Each knob walks this chain independently. If you explicitly set
+``max_decay_factor=3.0``, your value wins. Everything else falls through
+one layer at a time until it hits a concrete value. The hard defaults
+are guaranteed to fill any remaining gap so the resolved settings
+instance is always complete.
 
-The same idea applies stage-wide: Stage 1's ``FTSettings`` already
-works this way (``explicit > persisted > recommended > hard default``),
-and the remaining stages will follow Stage 5's pattern over time.
+The same template applies to every stage that exposes knobs. The five
+settings dataclasses, in pipeline order:
 
-Three ways to drive the fit
+.. list-table::
+   :header-rows: 1
+   :widths: 8 35 35 22
+
+   * - Stage
+     - Settings dataclass
+     - Sub-blocks
+     - Persisted at
+   * - 1
+     - :class:`~ftmwpipeline.core.settings.FTSettings`
+     - flat (no sub-blocks)
+     - ``processing_parameters/ft_processing``
+   * - 2
+     - :class:`~ftmwpipeline.core.noise_settings.NoiseSettings`
+     - ``binning``, ``skewness``, ``smoothing``, ``skirt_exclusion``
+     - ``processing_parameters/stage2_noise``
+   * - 2b
+     - :class:`~ftmwpipeline.core.tau_calibration_settings.TauCalibrationSettings`
+     - ``stft``, ``polish``, ``aggregation``, ``band``, ``gaussian``,
+       ``recommendation``
+     - ``processing_parameters/stage2b_tau``
+   * - 3
+     - :class:`~ftmwpipeline.core.peak_detection_settings.PeakDetectionSettings`
+     - ``promotion``, ``savgol``, ``primary_pass``, ``gap_pass``
+     - ``processing_parameters/stage3_peaks``
+   * - 4
+     - :class:`~ftmwpipeline.core.window_planning_settings.WindowPlanningSettings`
+     - ``coherence``, ``clustering``, ``contributor``, ``leakage``
+     - ``processing_parameters/stage4_windows``
+   * - 5
+     - :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
+     - ``shape``, ``tau``, ``seeder``, ``conservative``, ``penalties``,
+       ``rescue``, ``thaw``
+     - ``processing_parameters/stage5_fit``
+
+Each row is independent: you can tune Stage 2 noise binning without
+touching Stage 5, override Stage 3 SNR cutoffs without re-running the
+τ calibration, and so on. The persisted layer for one stage is
+unrelated to the persisted layer for another.
+
+Three ways to drive a stage
 ---------------------------
+
+The three input surfaces work identically across every stage. The
+examples below use Stage 5 (the fit step) because it has the most
+visible knobs; substitute ``estimate_noise``, ``calibrate_tau``,
+``detect_peaks``, ``assign_windows``, or ``fit_peaks`` and the same
+patterns apply.
 
 Stock defaults
 ~~~~~~~~~~~~~~
 
-The simplest call uses every hard default — Lorentzian shape, ``max_decay_factor=5``,
-``rescue.max_rounds=5``, and the rest of the documented stock values:
+The simplest call uses every hard default — Lorentzian shape,
+``max_decay_factor=5``, ``rescue.max_rounds=5``, and the rest of the
+documented stock values:
 
 .. code-block:: python
 
@@ -75,18 +122,26 @@ per field; unspecified knobs flow through the chain unchanged:
        max_decay_factor=3.0,
    )
 
-The CLI exposes a flag for each kwarg that's already wired up
+The CLI exposes a flag for the historically-public knobs of each stage
 (``--shape``, ``--max-decay-factor``, ``--max-residual-rescue-rounds``,
-…). Knobs not yet on the CLI surface — for instance, the seeder
-thresholds — are reachable through the Python ``settings=`` kwarg or a
-preset YAML.
+``--edge-m``, ``--min-snr``, …). Knobs beyond that public surface — the
+instrument-tunable ones such as Stage 2's
+``binning.subdivision_threshold`` or Stage 3's
+``gap_pass.gap_mask_edge_threshold`` — are reachable through the Python
+``settings=`` kwarg or a preset YAML.
 
 Presets
 ~~~~~~~
 
-A preset is a named bundle of knob values that bring an experiment or
-instrument's recipe under version control. ``ftmwpipeline`` ships
-three:
+A preset is a named bundle of knob values that brings an experiment or
+instrument's recipe under version control. A preset can cover one stage
+or several stages at once: a single YAML file can carry a ``stage2:``
+block, a ``stage2b:`` block, a ``stage3:`` block, a ``stage4:`` block,
+and a ``stage5:`` block side-by-side. Each stage's loader reads only
+its own block and ignores the rest, so one preset can drive a complete
+instrument-specific recipe.
+
+``ftmwpipeline`` ships three:
 
 * ``gaussian_default`` — clean Gaussian baseline; otherwise stock.
 * ``lorentzian_legacy`` — the historical Lorentzian default, named
@@ -110,6 +165,21 @@ Or load a YAML file you wrote yourself by path:
 
    ftmwpipeline fit-peaks exp.ftmw --preset ./my_lab_recipe.yaml
 
+The same preset name passed to any stage CLI subcommand loads only that
+stage's block:
+
+.. code-block:: shell
+
+   ftmwpipeline estimate-noise   exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline calibrate-tau    exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline detect-peaks     exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline assign-windows   exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline fit-peaks        exp.ftmw --preset instrument_bc_2638
+
+A stage whose block is missing from the preset loads an empty
+``XxxSettings`` and falls through to the next layer of the resolver —
+nothing breaks.
+
 Presets and explicit kwargs compose: kwargs win per field, so you can
 adopt a preset's recipe and tweak one knob:
 
@@ -123,9 +193,8 @@ The Python ``settings=`` kwarg
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 For programmatic sweeps — comparing several knob variants from a
-notebook, or building a recipe at runtime — construct a
-:class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
-directly:
+notebook, or building a recipe at runtime — construct the relevant
+settings dataclass directly:
 
 .. code-block:: python
 
@@ -139,6 +208,24 @@ directly:
    s.rescue.max_rounds = 3
    ftmw.fit_peaks("exp.ftmw", settings=s)
 
+Same shape for any stage:
+
+.. code-block:: python
+
+   from ftmwpipeline.core.noise_settings import NoiseSettings
+
+   s = NoiseSettings()
+   s.smoothing.smoothing_window_mhz = 100.0
+   s.skirt_exclusion.strong_peak_snr = 25.0
+   ftmw.estimate_noise("exp.ftmw", settings=s)
+
+   from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
+
+   s = PeakDetectionSettings()
+   s.promotion.min_snr = 4.0
+   s.savgol.sg_window = 13
+   ftmw.detect_peaks("exp.ftmw", settings=s)
+
 ``settings=`` and ``preset=`` are alternative ways to populate the same
 layer — passing both raises ``ValueError``. (If you want both a preset
 and dataclass-level overrides, use a preset name plus explicit kwargs
@@ -147,10 +234,11 @@ for the override.)
 Persistence and auto-inheritance
 --------------------------------
 
-Every time you call ``fit_peaks``, the resolved settings are stamped
-into the ``.ftmw`` file under ``processing_parameters/stage5_fit``.
-The next call on the same file inherits those settings unless you
-override them, so a sequence like:
+Every time a stage runs, its resolved settings are stamped into the
+``.ftmw`` file under the canonical record for that stage (see the
+*Persisted at* column in the table above). The next call to the same
+stage on that file inherits those settings unless you override them, so
+a sequence like:
 
 .. code-block:: shell
 
@@ -168,7 +256,7 @@ The persisted block is structured to be inspectable on disk::
 
    $ h5dump -A exp.ftmw | head -40
    /processing_parameters/stage5_fit
-     @creation_time = "2026-05-26T17:42:11..."
+     @creation_time = "2026-05-27T17:42:11..."
      @preset_name = "instrument_bc_2638"
      shape/
        @kind = "gaussian"
@@ -185,22 +273,22 @@ The persisted block is structured to be inspectable on disk::
        @max_rounds = 5
        ...
 
-Every sub-block (``shape/``, ``tau/``, ``seeder/``, ``conservative/``,
-``penalties/``, ``rescue/``, ``thaw/``) is its own HDF5 group so you
-can grep one block in isolation. Unset fields use the ``__None__``
-sentinel string (same convention Stage 1's ``FTSettings`` uses).
+Every sub-block of every stage is its own HDF5 group so you can grep one
+block in isolation. Unset fields use the ``__None__`` sentinel string
+(the same convention Stage 1's ``FTSettings`` uses).
 
 The ``preset_name`` attribute records the bare name (or path) you
-supplied to ``--preset`` for that fit. The reproducibility recipe is
-straightforward: the resolved values plus that name describe the fit
+supplied to ``--preset`` for that run. The reproducibility recipe is
+straightforward: the resolved values plus that name describe the run
 exactly.
 
 Writing your own preset
 -----------------------
 
-A preset is a small YAML file. The Stage 5 settings sit under a
-top-level ``fit:`` block so future stage-spanning presets can carry an
-``ft:`` block alongside without breaking the format:
+A preset is a small YAML file. Each stage's settings sit under a
+top-level per-stage block (``stage2:``, ``stage2b:``, ``stage3:``,
+``stage4:``, ``stage5:``); blocks compose freely so one YAML can drive
+the whole pipeline:
 
 .. code-block:: yaml
 
@@ -208,7 +296,39 @@ top-level ``fit:`` block so future stage-spanning presets can carry an
    description: |
      Whatever your lab calls this recipe. Multi-line markdown ok.
 
-   fit:
+   stage2:
+     smoothing:
+       smoothing_window_mhz: 100.0
+     skirt_exclusion:
+       strong_peak_snr: 25.0
+
+   stage2b:
+     stft:
+       n_seg: 10
+     polish:
+       polish_snr_cap: 9.0
+     gaussian:
+       snr_min: 20.0
+
+   stage3:
+     promotion:
+       min_snr: 4.0
+       weak_medium_snr: 12.0
+     savgol:
+       sg_window: 13
+     primary_pass:
+       primary_window: blackmanharris
+
+   stage4:
+     coherence:
+       edge_m: 64
+       edge_threshold: 8.0
+     clustering:
+       max_window_width_mhz: 40.0
+     contributor:
+       min_freeze_snr: 50.0
+
+   stage5:
      shape: gaussian
      tau:
        max_decay_factor: 3.0
@@ -221,20 +341,24 @@ top-level ``fit:`` block so future stage-spanning presets can carry an
 
 A few rules:
 
-* ``shape`` is the line-shape selector. Use the short form
-  (``shape: gaussian``); the long form
-  (``shape: {kind: gaussian}``) also works and leaves room for future
-  shape-specific parameter blocks (e.g., Voigt).
-* ``tau``, ``seeder``, ``conservative``, ``penalties``, ``rescue``,
-  ``thaw`` are the six sub-blocks; each holds a flat map of
-  ``field_name: value``.
+* Each per-stage block is independent — drop the ones you don't need.
+  A preset with only a ``stage5:`` block leaves Stages 2, 2b, 3, and 4
+  on hard defaults; a preset with only a ``stage2:`` block leaves
+  Stage 5 alone, and so on.
+* Inside a stage block, each sub-block (e.g., ``stage5.tau``,
+  ``stage3.promotion``) holds a flat map of ``field_name: value``. The
+  fields available are listed in the *Sub-blocks* column of the table
+  above and in each dataclass's docstring.
+* Stage 5's ``shape`` accepts the short form (``shape: gaussian``); the
+  long form (``shape: {kind: gaussian}``) also works and leaves room
+  for future shape-specific parameter blocks (e.g., Voigt).
 * Only set fields you care about. Anything omitted stays ``None`` so
   the resolver falls through to the next layer (probably the hard
   defaults).
 * Unknown keys raise ``ValueError`` at load time, so typos surface
   immediately rather than silently doing the wrong thing.
 * ``name`` and ``description`` at the top level are documentation —
-  the parser preserves them but the fit doesn't use them.
+  the parser preserves them but the stages don't use them.
 
 To use a YAML you wrote, pass its path:
 
@@ -245,18 +369,17 @@ To use a YAML you wrote, pass its path:
 To ship one alongside the package, drop it into
 ``src/ftmwpipeline/presets/`` and refer to it by bare name.
 
-The shape recommendation hint
------------------------------
+Cross-stage recommendations
+---------------------------
 
-Stage 2b (the τ calibration) writes a ``recommended_shape`` attribute
-on its output group as a contract for a forthcoming L/G discriminator
-that compares the Lorentzian and Gaussian τ calibrations and suggests
-whichever fits the experiment better. The attribute carries the
-``__None__`` sentinel by default — there's no recommendation until the
-discriminator is written.
-
-When a concrete recommendation lands there, Stage 5 will pick it up
-automatically as the *recommended* layer of the resolution chain — one
+The *recommended* layer of the resolution chain is where one stage
+hands a hint to a later stage. The Stage 2b → Stage 5 path is the
+canonical example: Stage 2b's τ calibration writes a
+``recommended_shape`` attribute on its output group (``lorentzian``,
+``gaussian``, or ``voigt``), and Stage 5's resolver reads it as the
+*recommended* layer of the shape field. The attribute carries the
+``__None__`` sentinel until Stage 2b's 3-way L/G/V discriminator runs;
+once it does, Stage 5 picks the recommendation up automatically — one
 step weaker than what you've persisted on the file, two steps weaker
 than an explicit kwarg or preset. The mental model is: the library has
 an opinion about the line shape, but you always get to override.
@@ -266,37 +389,47 @@ Lorentzian, the persisted value wins (you already chose). Likewise, an
 explicit ``--shape lorentzian`` always wins, regardless of the
 recommendation.
 
-Migration from per-kwarg calls
-------------------------------
-
-The legacy keyword arguments still work — they collect into a
-``StageFitSettings`` under the hood. Code written before this design
-landed:
-
-.. code-block:: python
-
-   ftmw.fit_peaks(
-       "exp.ftmw",
-       shape="gaussian",
-       max_decay_factor=3.0,
-       max_residual_rescue_rounds=3,
-   )
-
-does exactly the same thing as it always did. No deprecation warnings
-are emitted today; they'll arrive on the next release cycle. If you're
-running parameter sweeps, the win is more about the ergonomics of one
-YAML diff per variant than about new behaviour, and that's where the
-preset surface earns its keep.
+The *recommended* layer of the other four stages (2, 2b, 3, 4) is
+reserved but currently empty — no upstream feeder produces a hint for
+those stages yet. The layer is kept in every resolver's signature so a
+future cross-stage recommender (e.g., a Stage 1 ``T_active``-driven
+Stage 2 smoothing-window suggestion, or a Stage 2b ``τ_maj`` feeder
+into Stage 4's ``leakage.tau_us``) can land without API churn.
 
 Where to look in the codebase
 -----------------------------
 
-* :mod:`ftmwpipeline.core.stage_fit_settings` — the
-  ``StageFitSettings`` dataclass, the resolution chain
-  (:func:`~ftmwpipeline.core.stage_fit_settings.resolve`), YAML I/O,
-  and :func:`~ftmwpipeline.core.stage_fit_settings.load_preset`.
+Per-stage settings modules (all share the same architectural template):
+
+* :mod:`ftmwpipeline.core.noise_settings` —
+  :class:`~ftmwpipeline.core.noise_settings.NoiseSettings`, with
+  :func:`~ftmwpipeline.core.noise_settings.resolve` and
+  :func:`~ftmwpipeline.core.noise_settings.load_preset`.
+* :mod:`ftmwpipeline.core.tau_calibration_settings` —
+  :class:`~ftmwpipeline.core.tau_calibration_settings.TauCalibrationSettings`.
+* :mod:`ftmwpipeline.core.peak_detection_settings` —
+  :class:`~ftmwpipeline.core.peak_detection_settings.PeakDetectionSettings`.
+* :mod:`ftmwpipeline.core.window_planning_settings` —
+  :class:`~ftmwpipeline.core.window_planning_settings.WindowPlanningSettings`.
+* :mod:`ftmwpipeline.core.stage_fit_settings` —
+  :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`.
+
+Matching HDF5 persistence modules in ``ftmwpipeline.io``:
+
+* ``noise_settings_serialization`` →
+  ``processing_parameters/stage2_noise``
+* ``tau_calibration_settings_serialization`` →
+  ``processing_parameters/stage2b_tau``
+* ``peak_detection_settings_serialization`` →
+  ``processing_parameters/stage3_peaks``
+* ``window_planning_settings_serialization`` →
+  ``processing_parameters/stage4_windows``
+* ``stage_fit_settings_serialization`` →
+  ``processing_parameters/stage5_fit``
+
+Other useful references:
+
 * ``src/ftmwpipeline/presets/`` — the packaged preset YAML files.
-* :mod:`ftmwpipeline.io.stage_fit_settings_serialization` — HDF5
-  persistence at ``processing_parameters/stage5_fit``.
-* :mod:`ftmwpipeline.core.settings` — the Stage 1 ``FTSettings``
-  precedent the Stage 5 pattern extends.
+* :mod:`ftmwpipeline.core.settings` — the Stage 1
+  :class:`~ftmwpipeline.core.settings.FTSettings` precedent the
+  per-stage pattern extends.
