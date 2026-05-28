@@ -228,6 +228,21 @@ fixture.
 | 5 | rescue.prominence_threshold | 2.0 | — |
 | 5 | thaw.residual_edge_threshold | 8.0 | — |
 
+## Validation status (2638)
+
+The Y-rated knobs validated so far against the 2638 fixture:
+
+| stage | knob | shape-sensitivity on 2638 | verdict |
+|---|---|---|---|
+| 3 | gap-pass `tau_basis_us` source | **shape-sensitive** | shipped: shape-aware feeder routes to `τ_G_maj` when `recommended_shape='gaussian'` (`stage3_impl`). |
+| 3 | `promotion.min_snr` | shape-invariant | keep default 3.0; both shapes agree to ≤ 3.5 % across 2.0–5.0. |
+| 3 | `promotion.internal_min_snr` | shape-invariant | keep default 2.0; both shapes share the same 2.0 knee. |
+| 3 | `gap_pass.gap_mask_edge_threshold` | shape-invariant | keep default 8.0; monotonic response on both paths. |
+| 3 | `primary_pass.min_exclusion_mhz` | shape-invariant | keep default 0.0; both shapes lose ~21 % of gap detections at excl=0.5. |
+
+Audit report: [`dev-docs/research/stage3-gaussian-audit/README.md`](../research/stage3-gaussian-audit/README.md).
+The Stage 4 and Stage 5 high-Y-rated knobs are still un-audited.
+
 ## Open follow-ups against this table
 
 1. **Decide the per-instrument calibration set.** Walk the Y rows above

@@ -54,10 +54,18 @@ from ..io.peak_serialization import (
     load_peaks_from_hdf5,
     save_peaks_to_hdf5,
 )
+from ..io.stage_fit_settings_serialization import (
+    read_stage2b_recommended_shape,
+)
 from ..file_manager import invalidate_downstream_stages
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
+from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+from .stage2b_g_impl import (
+    load_tau_G_calibration_impl,
+    tau_G_calibration_present,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -527,13 +535,33 @@ def detect_peaks_impl(
         window_function=primary_window_v,
         zpf=detection_zpf_v,
     )
-    # Gap-pass matched-filter tau: prefer the Stage 2b calibrated ``tau_maj``
-    # when available (physical molecular decay; the matched filter's FWHM
-    # then equals the true line FWHM); fall back to the Stage 1 user
-    # apodization ``expf_us`` for the pre-calibration path, and finally to
-    # the historical 5.0 µs default.
-    from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
-    if tau_calibration_present(file_path):
+    # Gap-pass matched-filter tau: shape-aware feeder.
+    #
+    # Precedence:
+    #   1. Stage 2b Gaussian twin ``tau_G_maj`` when ``recommended_shape``
+    #      is ``'gaussian'`` and the twin is present -- matches the
+    #      envelope the production fit uses on Gaussian-shape data.
+    #   2. Stage 2b Lorentzian ``tau_maj`` when available (physical
+    #      molecular decay for exp-envelope data; the matched filter's
+    #      FWHM equals the true line FWHM).
+    #   3. Stage 1 user apodization ``expf_us`` for the pre-calibration
+    #      path.
+    #   4. Historical 5.0 µs default.
+    #
+    # The matched filter itself remains a pure-exp apodization in all
+    # cases; substituting tau_G into an exp filter is a mismatched-filter
+    # variant whose SNR cost is modest on the 2638 fixture (see
+    # dev-docs/research/stage3-gaussian-audit/ -- the apodization-shape
+    # question is tracked separately from the time-constant choice).
+    recommended_shape = read_stage2b_recommended_shape(file_path)
+    if (
+        recommended_shape == "gaussian"
+        and tau_G_calibration_present(file_path)
+    ):
+        tau_basis_us = float(
+            load_tau_G_calibration_impl(file_path)["tau_G_calibration"].tau_maj_us
+        )
+    elif tau_calibration_present(file_path):
         tau_basis_us = float(
             load_tau_calibration_impl(file_path)["tau_calibration"].tau_maj_us
         )
@@ -547,6 +575,19 @@ def detect_peaks_impl(
         trim_range,
         tau_basis_us=tau_basis_us,
         zpf_active=gap_active_zpf_v,
+    )
+    # Record the resolved gap-pass τ in the diagnostics dict so callers
+    # (and persisted ``/stage3_peaks`` consumers) can see which τ branch
+    # of the shape-aware feeder fired.
+    params["tau_basis_us"] = float(tau_basis_us)
+    params["tau_basis_source"] = (
+        "stage2b_tau_G_maj"
+        if recommended_shape == "gaussian" and tau_G_calibration_present(file_path)
+        else "stage2b_tau_maj"
+        if tau_calibration_present(file_path)
+        else "stage1_expf_us"
+        if base_pp.expf_us
+        else "default_5us"
     )
     line_fwhm_mhz = 1.0 / (np.pi * tau_basis_us)
     gap_freq_step = abs(gap_ft.freq_array[1] - gap_ft.freq_array[0])

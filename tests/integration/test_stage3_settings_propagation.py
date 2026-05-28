@@ -321,6 +321,159 @@ class TestMutualExclusion:
             )
 
 
+class TestGapPassTauFeeder:
+    """Shape-aware τ-feeder for the gap-pass matched filter.
+
+    The gap-pass matched-filter ``tau_basis_us`` precedence is:
+
+      1. Stage 2b Gaussian twin ``tau_G_maj`` when ``recommended_shape``
+         is ``'gaussian'`` and the twin is present.
+      2. Stage 2b Lorentzian ``tau_maj`` when available.
+      3. Stage 1 user apodization ``expf_us`` for the pre-calibration path.
+      4. Historical 5.0 µs default.
+
+    These tests pin each layer of the precedence with monkeypatched
+    helper functions and verify the right value reaches
+    ``_mf_gap_spectrum``.
+    """
+
+    @staticmethod
+    def _patch_tau_lookup(
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        tau_maj_us: Any = None,
+        tau_G_maj_us: Any = None,
+        recommended_shape: Any = None,
+    ) -> None:
+        """Pin Stage 2b loader results without materialising HDF5 groups.
+
+        Each ``None`` means "no calibration present"; a float means
+        ``tau_calibration_present`` returns True and ``load_..._impl``
+        returns an object whose ``tau_maj_us`` attribute is that value.
+        """
+        class _Stub:
+            def __init__(self, value: float) -> None:
+                self.tau_maj_us = value
+
+        monkeypatch.setattr(
+            stage3_impl,
+            "tau_calibration_present",
+            lambda fp: tau_maj_us is not None,
+        )
+        monkeypatch.setattr(
+            stage3_impl,
+            "tau_G_calibration_present",
+            lambda fp: tau_G_maj_us is not None,
+        )
+        monkeypatch.setattr(
+            stage3_impl,
+            "read_stage2b_recommended_shape",
+            lambda fp: recommended_shape,
+        )
+        if tau_maj_us is not None:
+            monkeypatch.setattr(
+                stage3_impl,
+                "load_tau_calibration_impl",
+                lambda fp: {"tau_calibration": _Stub(float(tau_maj_us))},
+            )
+        if tau_G_maj_us is not None:
+            monkeypatch.setattr(
+                stage3_impl,
+                "load_tau_G_calibration_impl",
+                lambda fp: {"tau_G_calibration": _Stub(float(tau_G_maj_us))},
+            )
+
+    def _run_with_spy(
+        self,
+        variant: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> Dict[str, Any]:
+        spy, captured = _spy(stage3_impl._mf_gap_spectrum)
+        monkeypatch.setattr(stage3_impl, "_mf_gap_spectrum", spy)
+        mock, _ = _intercept_kernel()
+        monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
+        with pytest.raises(_CalibIntercepted):
+            stage3_impl.detect_peaks_impl(str(variant))
+        assert captured["calls"], "spy never fired"
+        return captured["calls"][0]["kwargs"]
+
+    def test_gaussian_recommended_uses_tau_G_maj(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Recommended Gaussian + twin present → τ_G_maj."""
+        variant = tmp_path / "tau_feed_gaussian.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        self._patch_tau_lookup(
+            monkeypatch,
+            tau_maj_us=6.4,
+            tau_G_maj_us=7.7,
+            recommended_shape="gaussian",
+        )
+        kwargs = self._run_with_spy(variant, monkeypatch)
+        assert kwargs["tau_basis_us"] == 7.7
+
+    def test_lorentzian_recommended_uses_tau_maj(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Recommended Lorentzian (or no recommendation) + Lorentzian
+        twin present → τ_maj, even when Gaussian twin also exists."""
+        variant = tmp_path / "tau_feed_lorentzian.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        self._patch_tau_lookup(
+            monkeypatch,
+            tau_maj_us=6.4,
+            tau_G_maj_us=7.7,
+            recommended_shape="lorentzian",
+        )
+        kwargs = self._run_with_spy(variant, monkeypatch)
+        assert kwargs["tau_basis_us"] == 6.4
+
+    def test_no_recommendation_uses_tau_maj(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No recommended_shape stamp → falls through to Lorentzian τ_maj
+        even when the Gaussian twin is present. Preserves the pre-Phase-A
+        behaviour for files without an auto-recommend pass."""
+        variant = tmp_path / "tau_feed_no_rec.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        self._patch_tau_lookup(
+            monkeypatch,
+            tau_maj_us=6.4,
+            tau_G_maj_us=7.7,
+            recommended_shape=None,
+        )
+        kwargs = self._run_with_spy(variant, monkeypatch)
+        assert kwargs["tau_basis_us"] == 6.4
+
+    def test_gaussian_recommended_without_twin_falls_back(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Recommended Gaussian but no Gaussian twin → falls through
+        to Lorentzian τ_maj rather than raising."""
+        variant = tmp_path / "tau_feed_gauss_no_twin.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        self._patch_tau_lookup(
+            monkeypatch,
+            tau_maj_us=6.4,
+            tau_G_maj_us=None,
+            recommended_shape="gaussian",
+        )
+        kwargs = self._run_with_spy(variant, monkeypatch)
+        assert kwargs["tau_basis_us"] == 6.4
+
+
 class TestPersistedLayerInherit:
     """A no-kwargs follow-up call must inherit the previously resolved
     settings from the persisted ``processing_parameters/stage3_peaks`` block."""

@@ -578,8 +578,23 @@ Ordered: 1 → 2 → 4 → 5. #3 deferred. #1, #2, #4 shipped.
 5. **Stage 3 / Stage 5-rescue τ consumers** still consume the
    pure-exp `τ_maj` even when the Stage 5 shape is Gaussian. The
    classifier work resolved the upstream; the consumer-side question
-   (should the rescue τ be shape-conditioned?) is open. *Sequenced
-   after #4.*
+   (should the rescue τ be shape-conditioned?) is open.
+   *Stage 3 portion shipped*: the gap-pass matched filter's
+   `tau_basis_us` now prefers `τ_G_maj` from
+   `stage2b_tau_G_calibration` when `recommended_shape='gaussian'`
+   and the Gaussian twin is present (`_internal/stage3_impl.py`,
+   tested by `tests/integration/test_stage3_settings_propagation.py::TestGapPassTauFeeder`).
+   The matched-filter apodization itself remains a pure-exp
+   `exp(-t/τ)`; substituting `τ_G` into an exp filter is a
+   mismatched-filter variant whose SNR cost on 2638 is bounded
+   (SNR p95 9.34 → 9.02, +1.6 % promoted peaks, zero new
+   sidelobe-proxy hits; see
+   `dev-docs/research/stage3-gaussian-audit/README.md`). The four
+   other Stage 3 Y-rated knobs (`promotion.min_snr`,
+   `promotion.internal_min_snr`, `gap_pass.gap_mask_edge_threshold`,
+   `primary_pass.min_exclusion_mhz`) show shape-invariant response
+   on 2638 -- the Lorentzian-calibrated defaults stand. *Stage 4
+   `leakage.tau_us` portion and Stage 5-rescue τ portion still open.*
 
 ## Research-script migration plan
 
