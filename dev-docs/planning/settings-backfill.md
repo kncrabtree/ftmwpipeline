@@ -545,26 +545,32 @@ Ordered: 1 → 2 → 4 → 5. #3 deferred.
    per-knob kwargs), #6 (`from_saved_params=True` on `estimate_noise`),
    #7 (Stage 2 per-knob kwargs), #10 (Stage 3 per-knob kwargs), #13
    (Stage 4 per-knob kwargs), and Stage 5's per-knob kwargs.
-2. **Instrument-tunable knob defaults.** Build a one-shot table of
-   every instrument-tunable knob across all five settings dataclasses
-   (Stages 2, 2b, 3, 4, 5) listing field, current default, source of
-   truth, and what the value physically represents — to decide which
-   defaults are correct for the 2638 (BlackChirp) instrument and
-   which should be revisited for other instruments. Output is a
-   reference for picking the `instrument_bc_2638` preset values vs
-   the package hard defaults.
+2. **Instrument-tunable knob defaults.** Shipped as
+   [`instrument-tunable-knobs.md`](instrument-tunable-knobs.md) — a
+   cross-stage table of every settings-dataclass field's hard default,
+   source-of-truth constant, physical meaning, instrument-sensitivity
+   rating, and current 2638 override (if any). The follow-up work it
+   captures is the per-instrument calibration audit listed in that
+   doc's *Open follow-ups* section.
 3. **Cross-fixture validation of the shape-aware classifier.**
    *Deferred.* The classifier landed against 2638 only; a clean-
    Lorentzian fixture would be the generalisation check. Picked back
    up when a suitable fixture exists.
 4. **Productionising the 3-way recommendation as an auto-run step**
-   inside `calibrate_tau` / `calibrate_tau_G`. With the
-   shape-aware-classifier landing the per-call cost is fixed
-   (`shape='best_of_three'` ~50 s on 2638 vs the ~10 s
-   `shape='gaussian'`), so this is a settings-layer decision: should
-   `calibrate_tau_G(..., auto_recommend=True)` (a new knob in
-   `RecommendationSubSettings`) trigger the verdict for free?
-   *Sequenced after #1 and #2.*
+   inside `calibrate_tau` / `calibrate_tau_G`, plus the matching
+   default-and-preset cleanup. With the shape-aware-classifier landing
+   the per-call cost is fixed (`shape='best_of_three'` ~50 s on 2638 vs
+   the ~10 s `shape='gaussian'`), so this is a settings-layer decision:
+   should `calibrate_tau_G(..., auto_recommend=True)` (a new knob in
+   `RecommendationSubSettings`) trigger the verdict for free? Bundle:
+   bump `tau.tau_penalty_lambda` from 500 → 50 (the 2638 sweep cliff
+   evidence is generic, not fixture-specific — see
+   [`instrument-tunable-knobs.md`](instrument-tunable-knobs.md) §
+   Finding), drop the now-redundant `per_band_tau: true` and
+   `tau_penalty_lambda: 50` from `instrument_bc_2638.yaml`, and once
+   the auto-recommend is the default, drop `shape: gaussian` too so
+   the 2638 preset shrinks to just the description. *Sequenced after
+   #1 and #2.*
 5. **Stage 3 / Stage 5-rescue τ consumers** still consume the
    pure-exp `τ_maj` even when the Stage 5 shape is Gaussian. The
    classifier work resolved the upstream; the consumer-side question

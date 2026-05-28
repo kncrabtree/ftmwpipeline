@@ -1,0 +1,259 @@
+# Instrument-tunable knob defaults
+
+Cross-stage reference of every settings field's current hard default, physical
+meaning, and instrument-sensitivity rating. The purpose is to decide which
+defaults are correct for the 2638 (BlackChirp) reference instrument and which
+should be revisited when a new instrument preset is added.
+
+This document is a **reference**, not a planning doc tracking active work. The
+parent migration project is [`settings-backfill.md`](settings-backfill.md)
+Follow-up #2; that's where status updates against this table land.
+
+## How to read this
+
+Each table has six columns:
+
+| column | meaning |
+|--------|---------|
+| **field** | `sub_block.field_name` as it appears on the dataclass / in YAML / in HDF5. |
+| **default** | The hard default from `_HARD_DEFAULTS` in the matching `core/*_settings.py` module. |
+| **source** | Where the kernel's `DEFAULT_*` constant lives (the readable canonical source the dataclass mirrors). |
+| **meaning** | One-line physical description of what the value controls. |
+| **inst-sens** | Instrument-sensitivity rating: **Y** depends on hardware (sample rate, T_acquire, probe band, noise floor, line shape); **N** is pure algorithmic conditioning (convergence tolerance, recursion cap, structural search limit); **maybe** depends on chemistry/sample under test, or could be calibrated per instrument but is not strictly required. |
+| **2638** | Value from [`instrument_bc_2638.yaml`](../../src/ftmwpipeline/presets/instrument_bc_2638.yaml), or `—` if unset (i.e. inherits the hard default). |
+
+The Y / N / maybe ratings are best-effort calls based on what the knob
+controls; the final per-instrument decision is the user's. Treat **maybe**
+as "needs experimental confirmation either way" rather than "probably N."
+
+## 2638 preset coverage
+
+The shipped `instrument_bc_2638.yaml` overrides only three Stage 5 fields:
+
+* `stage5.shape = gaussian` — line-shape model selector.
+* `stage5.tau.per_band_tau = true` — Stage 5 per-band τ routing.
+* `stage5.tau.tau_penalty_lambda = 50` — τ-prior strength
+  (default 500; tuned against the 382-window 2638 sweep).
+
+Stages 2, 2b, 3, and 4 inherit the package hard defaults on 2638 — including
+several knobs rated **Y** below. That gap is the headline driver for this
+audit: any knob marked Y with `2638 = —` is a candidate for per-instrument
+calibration on this fixture, even though 2638 has been the primary
+calibration target throughout development.
+
+### Finding: the three 2638 overrides should likely all become defaults
+
+None of the three currently-overridden Stage 5 fields look genuinely
+fixture-specific:
+
+* `shape.kind` — once the 3-way shape-recommendation auto-run lands
+  (Follow-up #4 in [`settings-backfill.md`](settings-backfill.md)),
+  Stage 2b will stamp the recommended shape onto every file and the
+  Stage 5 resolver's *recommended* layer will pick it up automatically.
+  The preset override becomes unnecessary the moment that auto-run is
+  on by default.
+* `tau.per_band_tau` — *already* `True` in the package hard defaults;
+  the preset override is redundant today and can drop immediately.
+* `tau.tau_penalty_lambda` — the 2638 sweep evidence in the preset
+  header shows the λ=0 → λ=50 cliff is the load-bearing regime
+  transition (compliance climbs from 28 % to 92 % at a 5 % bulk-χ²ᵣ
+  cost); λ=50 → λ=500 keeps tightening τ-compliance at progressively
+  worse bulk-fit cost. Nothing in that analysis is hardware-specific;
+  it is a generic statement about how strong a regularization is
+  appropriate. Bumping the hard default from 500 to 50 and dropping
+  the preset override is the matching change.
+
+The implementation work — change the kernel constant + `_HARD_DEFAULTS`
+for `tau_penalty_lambda`, drop the two redundant fields from
+`instrument_bc_2638.yaml`, and audit the test suite for behavioural
+sensitivity to the new default — is tracked as Follow-up #4 in
+[`settings-backfill.md`](settings-backfill.md) (the shape half lands as
+part of the same project).
+
+## Stage 2 — `NoiseSettings`
+
+Source: [`preprocessing/noise_estimation.py`](../../src/ftmwpipeline/preprocessing/noise_estimation.py).
+Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| binning.subdivision_threshold | 0.08 | `SUBDIVISION_THRESHOLD` | Relative magnitude/MAD threshold for recursive spectrum subdivision (Rayleigh sample robustness). | N | — |
+| binning.abs_min_bin_size | 300 | `ABS_MIN_BIN_SIZE` | Minimum frequency-grid points per bin (noise-estimation stability floor). | N | — |
+| binning.min_bin_fraction | 1/64 | function default | Minimum bin size as fraction of total grid length. | N | — |
+| binning.min_noise_fraction | 2/3 | function default | Minimum fraction of trimmed-noise samples per bin half (skewness gate). | N | — |
+| skewness.skew_target | 0.631 | function default | Target sample skewness for Rayleigh-like noise trimming (Rayleigh = 0.631). | N | — |
+| skewness.inc | 0.01 | function default | Rank-step granularity for trimmed-sample skewness scan. | N | — |
+| smoothing.smoothing_window_mhz | 300.0 | `DEFAULT_SMOOTHING_MHZ` | Moving-window size for per-point noise-estimate interpolation (MHz). | **Y** | — |
+| skirt_exclusion.strong_peak_snr | 20.0 | `STRONG_PEAK_SNR` | SNR threshold above which strong lines trigger explicit Lorentzian-skirt masking. | **Y** | — |
+| skirt_exclusion.skirt_exclusion_k | 1.5 | `SKIRT_EXCLUSION_K` | Lorentzian skirt radius in units of (HWHM × SNR / k) for exclusion. | **Y** | — |
+| skirt_exclusion.max_skirt_exclusion_mhz | 500.0 | `MAX_SKIRT_EXCLUSION_MHZ` | Maximum per-line skirt-exclusion radius (caps pathologically strong peaks). | **Y** | — |
+
+## Stage 2b — `TauCalibrationSettings`
+
+Source: [`fitting/tau_calibration.py`](../../src/ftmwpipeline/fitting/tau_calibration.py).
+Planning: [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md).
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| stft.n_seg | 10 | `DEFAULT_N_SEG` | Number of non-overlapping STFT frames (window = T_full / n_seg). | **Y** | — |
+| stft.t_sigma | 5.0 | `DEFAULT_T_SIGMA` | Above-threshold SNR gate for per-frame signal detection (contributor floor). | **Y** | — |
+| stft.tau_max_factor | 5.0 | `DEFAULT_TAU_MAX_FACTOR` | Upper clip on τ as multiple of full-record acquisition time (spur candidate). | N | — |
+| stft.rss_gate_factor | 5.0 | `DEFAULT_RSS_GATE_FACTOR` | Hybrid-gate strength: bad-fit RSS threshold relative to per-frame noise. | N | — |
+| stft.relative_gate_fraction | 0.05 | `DEFAULT_RELATIVE_GATE_FRACTION` | Relative branch of RSS gate (RSS > factor × (fraction × mean_mag)²). | N | — |
+| polish.polish | True | function default | Enable Gauss-Newton polish on log-linear exponential seed. | N | — |
+| polish.polish_n_iter | 1 | function default | Gauss-Newton iterations per bin (removes +3-5 % log-linear bias). | N | — |
+| polish.polish_snr_cap | 9.0 | `DEFAULT_POLISH_SNR_CAP` | SNR above which polish is skipped (already near-unbiased; avoid over-correction). | **Y** | — |
+| polish.polish_noise_debias | False | function default | Apply Rician-unbiased magnitude on high-SNR frames (removes residual +1-2 % bias). | **Y** | — |
+| aggregation.min_contributors | 200 | `DEFAULT_MIN_CONTRIBUTORS` | Minimum contributor bins for validity of the calibration result. | N | — |
+| aggregation.sigma_tau_fraction_max | 0.20 | `DEFAULT_SIGMA_TAU_FRACTION_MAX` | Maximum relative uncertainty (σ_τ / τ_maj) for acceptance. | N | — |
+| aggregation.bimodality_dominant_fraction | 0.70 | `DEFAULT_BIMODALITY_DOMINANT_FRACTION` | Minimum dominant-cluster weight when two-component mixture preferred. | N | — |
+| aggregation.sigma_tau_floor_us | 0.5 | `DEFAULT_SIGMA_TAU_FLOOR_US` | Minimum per-band σ_τ (prevents over-confident penalties on tight clusters). | maybe | — |
+| aggregation.spur_cluster_multiplier | 1.0 | `DEFAULT_SPUR_CLUSTER_MULTIPLIER` | STFT spur-bin clustering gap in units of per-segment frequency bins. | N | — |
+| band.compute_band_majorities | True | function default | Compute per-band SNR-weighted τ majorities for Stage 5 per-band routing. | maybe | — |
+| band.min_contributors_per_band | 50 | function default | Minimum contributors per frequency band (fallback to band-wide if not met). | N | — |
+| gaussian.snr_min | 20.0 | `DEFAULT_TAU_G_SNR_MIN` | SNR minimum for pure-Gaussian model eligibility. | **Y** | — |
+| gaussian.tau_G_bound_lo | 0.5 | `DEFAULT_TAU_G_BOUND_LO` | Lower bound on Gaussian envelope decay constant τ_G (µs). | N | — |
+| gaussian.tau_G_bound_hi | 100.0 | `DEFAULT_TAU_G_BOUND_HI` | Upper bound on Gaussian envelope decay constant τ_G (µs). | N | — |
+| gaussian.tau_G_seeds | (100, 50, 20, 10, 5, 3) | `DEFAULT_TAU_G_SEEDS` | Initial-guess grid for Gaussian NLS multistart optimization. | N | — |
+| gaussian.delta_chi2r_min | 1.0 | `DEFAULT_TAU_G_DELTA_CHI2R_MIN` | Minimum χ²ᵣ difference (exp − gauss) for Gaussian eligibility. | N | — |
+| gaussian.tau_G_upper_fraction | 0.7 | `DEFAULT_TAU_G_UPPER_FRACTION` | Maximum on τ_G as fraction of calibration acquisition T. | N | — |
+| gaussian.min_contributors | 50 | `DEFAULT_TAU_G_MIN_CONTRIBUTORS` | Minimum Gaussian-eligible bins for pure-Gaussian calibration path. | N | — |
+| recommendation.snr_min | 20.0 | `DEFAULT_TAU_G_SNR_MIN` *(reused)* | SNR minimum for shape-recommendation voting. | **Y** | — |
+| recommendation.tau_bound_lo | 0.5 | `DEFAULT_TAU_G_BOUND_LO` *(reused)* | Lower τ bound for recommendation eligibility (µs). | N | — |
+| recommendation.tau_bound_hi | 100.0 | `DEFAULT_TAU_G_BOUND_HI` *(reused)* | Upper τ bound for recommendation eligibility (µs). | N | — |
+| recommendation.pure_margin_threshold | 0.10 | `DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN` | Minimum vote margin for one pure shape (L or G) to dominate Voigt. | N | — |
+
+## Stage 3 — `PeakDetectionSettings`
+
+Source: [`preprocessing/peak_detection.py`](../../src/ftmwpipeline/preprocessing/peak_detection.py) and [`_internal/stage3_impl.py`](../../src/ftmwpipeline/_internal/stage3_impl.py).
+Planning: [`stage3-peak-detection.md`](stage3-peak-detection.md).
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| promotion.min_snr | 3.0 | `DEFAULT_MIN_SNR` | Detection floor: SNR cutoff for Stage 4 promotion (user-grid measurement). | **Y** | — |
+| promotion.internal_min_snr | 2.0 | `DEFAULT_INTERNAL_MIN_SNR` | Internal detection floor on native zpf=1 grid (recovers lines apodization smears). | **Y** | — |
+| promotion.weak_medium_snr | 10.0 | `DEFAULT_WEAK_MEDIUM_SNR` | Weak/medium SNR boundary for classification (provisional, O2). | **Y** | — |
+| promotion.medium_strong_snr | 50.0 | `DEFAULT_MEDIUM_STRONG_SNR` | Medium/strong SNR boundary for classification (provisional, O2). | **Y** | — |
+| savgol.sg_window | 11 | function default | Savitzky-Golay filter window size (bins, must be odd). | N | — |
+| savgol.sg_order | 3 | function default | Savitzky-Golay polynomial order. | N | — |
+| savgol.sg_fwhm_coverage | 4.0 | `_SG_FWHM_COVERAGE` | Window-size target in units of line FWHM (sg_window auto-derived at runtime). | N | — |
+| savgol.sg_min_window | 5 | `_SG_MIN_WINDOW` | Minimum Savitzky-Golay window size (polynomial stability floor). | N | — |
+| primary_pass.primary_window | "blackmanharris" | `DEFAULT_PRIMARY_WINDOW` | Apodization function for primary-pass position finding (sidelobe suppression). | N | — |
+| primary_pass.min_exclusion_mhz | 0.0 | function default | Minimum half-width exclusion around each primary peak for gap pass (MHz). | **Y** | — |
+| primary_pass.detection_zpf | 1 | `_DETECTION_ZPF` | Zero-padding factor for primary-pass spectrum computation. | N | — |
+| gap_pass.run_gap_pass | True | function default | Enable second pass to recover weak lines primary-pass apodization suppressed. | N | — |
+| gap_pass.gap_active_zpf | 2 | `_GAP_ACTIVE_ZPF` | Zero-padding factor for matched-filter active-region FFT. | N | — |
+| gap_pass.gap_mask_edge_threshold | 8.0 | `GAP_MASK_EDGE_THRESHOLD` | Coherent-leakage threshold for masking truncation sidelobes in gap pass. | **Y** | — |
+
+## Stage 4 — `WindowPlanningSettings`
+
+Source: [`preprocessing/window_planning.py`](../../src/ftmwpipeline/preprocessing/window_planning.py) and [`preprocessing/edge_coherence.py`](../../src/ftmwpipeline/preprocessing/edge_coherence.py).
+Planning: [`stage4-window-assignment.md`](stage4-window-assignment.md).
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| coherence.edge_m | 64 | `DEFAULT_EDGE_M` | Band width for rolling complex-edge coherence statistic (cache-sized, null-tightest). | N | — |
+| coherence.trim_m | 32 | `DEFAULT_TRIM_M` | Band width for coherence refinement after leakage-region flag (finer spatial scale). | N | — |
+| coherence.edge_threshold | 8.0 | `DEFAULT_EDGE_THRESHOLD` | S_coh threshold for leakage-touched-region detection (T_edge = √M at M=64). | **Y** | — |
+| clustering.max_window_width_mhz | 40.0 | `DEFAULT_MAX_WINDOW_WIDTH_MHZ` | Window-width cap; windows exceeding this are HARD and get split proposals (MHz). | **Y** | — |
+| clustering.min_window_half_width_mhz | 2.0 | `DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ` | Minimum half-width of isolated-peak proposed windows (MHz). | maybe | — |
+| contributor.min_freeze_snr | 50.0 | `DEFAULT_MIN_FREEZE_SNR` | SNR floor for fixed-contributor freeze-eligibility (O4-2); below = thaw candidate. | **Y** | — |
+| contributor.magnitude_attachment_threshold | 0.1 | `DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD` | Tier-1 contributor attachment: predicted mean-skirt threshold in σ_c units. | **Y** | — |
+| leakage.tau_us | None | — | Decay constant for analytic leakage-skirt envelope (None = boxcar / undamped limit). | **Y** | — |
+
+## Stage 5 — `StageFitSettings`
+
+Source: [`fitting/`](../../src/ftmwpipeline/fitting/) (`plan_execution.py`, `peak_model.py`, …).
+Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.md`](stage5-fitting.md).
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| shape.kind | LORENTZIAN | `PeakShape.LORENTZIAN` *(literal default)* | Line-shape model selector: LORENTZIAN or GAUSSIAN envelope. | maybe | **gaussian** |
+| tau.max_decay_factor | 5.0 | `DEFAULT_MAX_DECAY_FACTOR` | Tau bounds multiplier: τ ∈ [τ₀ / k, τ₀ × k] (O5-4 hard cap). | N | — |
+| tau.fit_tau_min_snr | 50.0 | dataclass-only | SNR threshold above which τ becomes a free parameter (fixed below). | **Y** | — |
+| tau.tau_penalty_lambda | 500.0 | `DEFAULT_TAU_PENALTY_LAMBDA` | Strength of bidirectional Gaussian prior on τ. | N | **50** |
+| tau.tau_penalty_n_sigma | 5.0 | `DEFAULT_TAU_PENALTY_N_SIGMA` | τ-bound half-width in units of σ_τ from Stage 2b calibration. | N | — |
+| tau.per_band_tau | True | function default | Route τ to per-band majorities (True) or band-wide (False). | maybe | **true** |
+| seeder.seeder_rchi2 | 1.5 | `DEFAULT_SEEDER_RCHI2` | χ²ᵣ threshold: triggers K=2/K=3 blend-aware re-seed on single-peak fit. | N | — |
+| seeder.seeder_straddle_factor | 1.0 | `DEFAULT_SEEDER_STRADDLE_FACTOR` | Re-seed offset grid spacing in units of line FWHM (blend resolution). | N | — |
+| seeder.seeder_max_k | 3 | `DEFAULT_SEEDER_MAX_K` | Maximum escalation depth (K_initial=1 → K_max on blend detection). | N | — |
+| conservative.significance | 0.05 | `DEFAULT_SIGNIFICANCE` | F-test significance level for add-one-peak acceptance (α). | N | — |
+| conservative.max_peaks | 8 | `DEFAULT_MAX_PEAKS` | Hard cap on final peak count per window. | N | — |
+| conservative.patience | 1 | `DEFAULT_PATIENCE` | Consecutive-rejection patience: drop loop after this many fails. | N | — |
+| conservative.min_separation_factor | 1.0 | `DEFAULT_MIN_SEPARATION_FACTOR` | Minimum peak-to-peak separation in units of FWHM (unresolvable below). | N | — |
+| conservative.min_pair_separation_factor | 0.5 | `DEFAULT_MIN_PAIR_SEPARATION_FACTOR` | Sanity-check floor on post-escalation peak pairs (reject if below). | N | — |
+| conservative.n_eff_kind | "perplexity_log1p_snr" | `DEFAULT_N_EFF_KIND` | Effective-sample-size weighting (perplexity_log1p_snr vs kish_mag_sq). | N | — |
+| conservative.weak_window_snr_threshold | 10.0 | `DEFAULT_WEAK_WINDOW_SNR_THRESHOLD` | In-window SNR floor for free-τ eligibility (hold τ fixed below). | **Y** | — |
+| conservative.max_nfev | 2000 | `DEFAULT_MAX_NFEV` | Solver evaluation cap (prevents runaway on ill-conditioned problems). | N | — |
+| penalties.phase_penalty_lambda | 100.0 | `DEFAULT_PHASE_PENALTY_LAMBDA` | Soft phase-difference penalty strength (prevents in-/anti-phase degeneracy). | N | — |
+| penalties.phase_penalty_cutoff_fwhm | 2.0 | `DEFAULT_PHASE_PENALTY_CUTOFF_FWHM` | Phase-penalty range: weak at this spacing, zero in quadrature. | N | — |
+| penalties.amp_penalty_lambda | 10.0 | `DEFAULT_AMP_PENALTY_LAMBDA` | Soft amplitude-floor penalty strength (pushes noise-level peaks toward 0). | N | — |
+| penalties.amp_max_headroom | 3.0 | `DEFAULT_AMP_MAX_HEADROOM` | Hard amplitude ceiling as multiple of (2 × max_data / τ_eff_min). | N | — |
+| rescue.max_rounds | 5 | `DEFAULT_RESCUE_MAX_ROUNDS` | Maximum residual-rescue iterations per window (safety cap). | N | — |
+| rescue.snr_threshold | 2.5 | `DEFAULT_RESCUE_SNR_THRESHOLD` | Residual-peak detection floor (nominates generously, F-test gates). | **Y** | — |
+| rescue.prominence_threshold | 2.0 | `DEFAULT_RESCUE_PROMINENCE_THRESHOLD` | Residual-peak prominence threshold for candidate nomination. | **Y** | — |
+| rescue.cleanup_significance | 0.05 | `DEFAULT_CLEANUP_SIGNIFICANCE` | F-test significance for remove-and-refit post-rescue cleanup. | N | — |
+| rescue.merge_separation_factor | 0.5 | `DEFAULT_MERGE_SEPARATION_FACTOR` | AICc-gated merge threshold above-resolution (FWHM units). | N | — |
+| rescue.structural_merge_factor | 0.5 | `DEFAULT_STRUCTURAL_MERGE_FACTOR` | Sub-resolution merge floor: pairs closer than this FWHM collapse unconditionally. | N | — |
+| thaw.max_thaw_rounds | 2 | `DEFAULT_MAX_THAW_ROUNDS` | Maximum iterations of local-thaw (re-fit on frozen fixed contributors). | N | — |
+| thaw.max_replan_rounds | 2 | `DEFAULT_MAX_REPLAN_ROUNDS` | Maximum iterations of structural-replan (window boundary moves). | N | — |
+| thaw.residual_edge_threshold | 8.0 | `DEFAULT_RESIDUAL_EDGE_THRESHOLD` | S_coh threshold for residual-edge-coherence boundary violation (replan trigger). | **Y** | — |
+| thaw.residual_edge_m | 32 | `DEFAULT_RESIDUAL_EDGE_M` | Band width for residual edge-coherence detection. | N | — |
+
+## High-priority instrument-tunable knobs
+
+Filtered down to the **Y**-rated knobs across all five stages — these are
+the candidates for per-instrument calibration when adding a new
+`instrument_*` preset. Knobs already overridden in `instrument_bc_2638`
+are noted; everything else is currently riding the hard default on the 2638
+fixture.
+
+| stage | field | hard default | 2638 |
+|---|---|---|---|
+| 2 | smoothing.smoothing_window_mhz | 300.0 | — |
+| 2 | skirt_exclusion.strong_peak_snr | 20.0 | — |
+| 2 | skirt_exclusion.skirt_exclusion_k | 1.5 | — |
+| 2 | skirt_exclusion.max_skirt_exclusion_mhz | 500.0 | — |
+| 2b | stft.n_seg | 10 | — |
+| 2b | stft.t_sigma | 5.0 | — |
+| 2b | polish.polish_snr_cap | 9.0 | — |
+| 2b | polish.polish_noise_debias | False | — |
+| 2b | gaussian.snr_min | 20.0 | — |
+| 2b | recommendation.snr_min | 20.0 | — |
+| 3 | promotion.min_snr | 3.0 | — |
+| 3 | promotion.internal_min_snr | 2.0 | — |
+| 3 | promotion.weak_medium_snr | 10.0 | — |
+| 3 | promotion.medium_strong_snr | 50.0 | — |
+| 3 | primary_pass.min_exclusion_mhz | 0.0 | — |
+| 3 | gap_pass.gap_mask_edge_threshold | 8.0 | — |
+| 4 | coherence.edge_threshold | 8.0 | — |
+| 4 | clustering.max_window_width_mhz | 40.0 | — |
+| 4 | contributor.min_freeze_snr | 50.0 | — |
+| 4 | contributor.magnitude_attachment_threshold | 0.1 | — |
+| 4 | leakage.tau_us | None | — |
+| 5 | tau.fit_tau_min_snr | 50.0 | — |
+| 5 | conservative.weak_window_snr_threshold | 10.0 | — |
+| 5 | rescue.snr_threshold | 2.5 | — |
+| 5 | rescue.prominence_threshold | 2.0 | — |
+| 5 | thaw.residual_edge_threshold | 8.0 | — |
+
+## Open follow-ups against this table
+
+1. **Decide the per-instrument calibration set.** Walk the Y rows above
+   and split them into (a) values that are correct on 2638 and should
+   become the documented "good for any BlackChirp 750k-FID / 15-µs-T_full
+   instrument" defaults, and (b) values that need experimental calibration
+   on 2638 before any other instrument is brought up. Promote the (a) set
+   to the package hard defaults and route the (b) set through
+   `instrument_bc_2638.yaml`.
+2. **Re-rate the `maybe` rows.** Three rows currently sit on `maybe`
+   (`aggregation.sigma_tau_floor_us`, `band.compute_band_majorities`,
+   `clustering.min_window_half_width_mhz`, `shape.kind`,
+   `tau.per_band_tau`). Each needs a one-off study to confirm whether
+   it is genuinely instrument-sensitive or just convention.
+3. **Sanity-check the N rows.** A handful (`polish.polish_n_iter`,
+   `seeder.seeder_max_k`, `conservative.patience`, …) are rated N
+   purely on the "pure algorithmic conditioning" heuristic. Sceptical
+   reviewers should spot-check those against their own intuition; any
+   that turn out to be hardware-coupled should move to Y in a follow-up
+   revision.
