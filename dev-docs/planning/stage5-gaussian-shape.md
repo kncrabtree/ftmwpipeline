@@ -358,12 +358,25 @@ Remaining work (next session):
   same way for either shape; no schema change needed there.
 - **Knockout / residual-rescue** are shape-agnostic at the χ² level;
   no code changes beyond passing `shape` through.
-- **Stage 3 gap-pass and Stage 5 rescue τ** currently consume `τ_maj`
-  from the original Stage 2b. When `shape='gaussian'` is selected at
-  Stage 5, those upstream consumers don't change — they still use the
-  pure-exp `τ_maj`. (Their role is peak detection / candidate
-  generation, where the Lorentzian τ is an acceptable proxy.) Only
-  the Stage 5 window-fit consumes the Gaussian-twin calibration.
+- **Stage 3 gap-pass and Stage 5 rescue τ — both now shape-aware.**
+  The Stage 5 rescue τ has been shape-correct since the original
+  Gaussian-shape work landed: `_internal/stage5_impl.py:573-577`
+  picks `tau_G_calibration` when `shape=GAUSSIAN`, the resulting
+  `tau_maj_us` flows through `conservative_kwargs` into
+  `attempt_residual_rescue` (`fitting/residual_rescue.py:684`), so
+  the rescue per-window τ matches the fit shape (and with
+  per-band routing, ends up at the per-band τ_G majority on 2638).
+  The Stage 3 gap-pass τ-feeder was the only consumer that needed
+  retrofitting; it landed alongside the
+  [`stage3-gaussian-audit`](../research/stage3-gaussian-audit/README.md):
+  `_internal/stage3_impl.py` now reads `recommended_shape` from the
+  file and routes the matched filter's `tau_basis_us` to `τ_G_maj`
+  when Gaussian is recommended. Stage 4's `leakage.tau_us` was
+  audited as part of
+  [`stage4-gaussian-audit`](../research/stage4-gaussian-audit/README.md)
+  and intentionally stays on the boxcar default; the τ-feed does
+  not improve Stage 5 χ²ᵣ on 2638 (the high-χ²ᵣ tail sees identical
+  contributor sets across τ variants).
 - **Shape-aware STFT classifier. Resolved.**
   ``fitting/tau_calibration.stft_calibration`` now takes a ``shape``
   kwarg that selects which residual feeds the bad-fit gate:

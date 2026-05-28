@@ -239,9 +239,18 @@ The Y-rated knobs validated so far against the 2638 fixture:
 | 3 | `promotion.internal_min_snr` | shape-invariant | keep default 2.0; both shapes share the same 2.0 knee. |
 | 3 | `gap_pass.gap_mask_edge_threshold` | shape-invariant | keep default 8.0; monotonic response on both paths. |
 | 3 | `primary_pass.min_exclusion_mhz` | shape-invariant | keep default 0.0; both shapes lose ~21 % of gap detections at excl=0.5. |
+| 4 | `leakage.tau_us` (boxcar vs Stage 2b τ) | **shape-invariant; boxcar wins** | keep default `None` (boxcar). Window boundaries are byte-identical across τ variants (set by `min_window_half_width_mhz` + clustering, not by reach); aggregate Stage 5 χ²ᵣ is also unchanged (≤ 0.02 median, ≤ 0.18 p95). The 23-29 worst-χ²ᵣ windows get the *identical* contributor set on every variant, so τ-feed cannot remediate them. |
+| 4 | `coherence.edge_threshold` | shape-invariant | keep default 8.0; sits at hard-count plateau knee on both shapes. |
+| 4 | `clustering.max_window_width_mhz` | shape-invariant | keep default 40.0; cap is effectively dormant on 2638 (only 1 outlier window approaches it). |
+| 4 | `contributor.magnitude_attachment_threshold` | shape-invariant | keep default 0.10; sits mid-slope between 0.05 cliff and 0.20 step on both shapes. |
 
-Audit report: [`dev-docs/research/stage3-gaussian-audit/README.md`](../research/stage3-gaussian-audit/README.md).
-The Stage 4 and Stage 5 high-Y-rated knobs are still un-audited.
+Audit reports:
+[`dev-docs/research/stage3-gaussian-audit/README.md`](../research/stage3-gaussian-audit/README.md),
+[`dev-docs/research/stage4-gaussian-audit/README.md`](../research/stage4-gaussian-audit/README.md).
+The Stage 5 high-Y-rated knobs (`tau.fit_tau_min_snr`,
+`conservative.weak_window_snr_threshold`, `rescue.snr_threshold`,
+`rescue.prominence_threshold`, `thaw.residual_edge_threshold`) are
+still un-audited.
 
 ## Open follow-ups against this table
 

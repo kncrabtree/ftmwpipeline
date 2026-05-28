@@ -593,8 +593,34 @@ Ordered: 1 → 2 → 4 → 5. #3 deferred. #1, #2, #4 shipped.
    other Stage 3 Y-rated knobs (`promotion.min_snr`,
    `promotion.internal_min_snr`, `gap_pass.gap_mask_edge_threshold`,
    `primary_pass.min_exclusion_mhz`) show shape-invariant response
-   on 2638 -- the Lorentzian-calibrated defaults stand. *Stage 4
-   `leakage.tau_us` portion and Stage 5-rescue τ portion still open.*
+   on 2638 -- the Lorentzian-calibrated defaults stand.
+   *Stage 4 `leakage.tau_us` portion resolved negative on Stage 5
+   χ²ᵣ grounds*: see
+   `dev-docs/research/stage4-gaussian-audit/README.md`. Window
+   boundaries are byte-identical across boxcar / tau_maj / tau_G_maj
+   (peak clustering + `min_window_half_width_mhz` set the widths,
+   not the analytic reach); only contributor attachment changes.
+   Stage 5 aggregate χ²ᵣ is unchanged across variants (median ≤ 0.02,
+   p95 ≤ 0.18); on the 23-29 windows with χ²ᵣ > 5 on boxcar, every
+   τ variant produces the *identical* contributor set, so the
+   τ-feed cannot remediate the high-χ²ᵣ tail. The boxcar default is
+   kept. The other three Stage 4 Y-rated knobs
+   (`coherence.edge_threshold`, `clustering.max_window_width_mhz`,
+   `contributor.magnitude_attachment_threshold`) all show
+   shape-invariant response on 2638 -- their Lorentzian-calibrated
+   defaults stand.
+
+   *Stage 5-rescue τ portion already shipped*: the original Stage 5
+   Gaussian-shape work made `_internal/stage5_impl.py:573-577` route
+   to `tau_G_calibration` when `shape=GAUSSIAN`; the resulting
+   `tau_maj_us` flows through `conservative_kwargs` into
+   `attempt_residual_rescue` (`fitting/residual_rescue.py:684`)
+   without further mediation. Verified empirically: on the 2638
+   Gaussian fixture every one of 695 rescue calls saw a per-band τ_G
+   value (6.26 / 6.63 / 8.34 µs); zero Lorentzian τ_maj=5.958 leakage.
+   The note in [`stage5-gaussian-shape.md`](stage5-gaussian-shape.md)
+   § Open Questions claiming the rescue uses pure-exp τ is stale and
+   is corrected in this commit.
 
 ## Research-script migration plan
 
