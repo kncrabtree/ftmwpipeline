@@ -6,47 +6,47 @@
     31.625
   ],
   "strict": {
-    "n_passed_windows": 59,
-    "tau_lsq_mu_us": 5.909766231757401,
-    "tau_lsq_sigma_us": 1.0100715111339598,
-    "tau_lsq_median_us": 5.75843119578254,
-    "tau_lsq_iqr_over_1349_us": 1.755310738239516,
-    "median_reduced_chi2": 1.663302628009278
+    "n_passed_windows": 56,
+    "tau_lsq_mu_us": 6.42931342572481,
+    "tau_lsq_sigma_us": 0.9362782363078479,
+    "tau_lsq_median_us": 6.17970144705286,
+    "tau_lsq_iqr_over_1349_us": 1.6795846636565877,
+    "median_reduced_chi2": 1.5543625706473712
   },
   "expanded": {
     "n_passed_windows": 74,
     "n_singular_cov": 0,
-    "tau_lsq_mu_us": 5.889399169281338,
-    "tau_lsq_sigma_us": 0.9982577953614918,
-    "tau_lsq_median_us": 5.749935878267145,
-    "tau_lsq_iqr_over_1349_us": 1.7571379642401177
+    "tau_lsq_mu_us": 6.412905621203752,
+    "tau_lsq_sigma_us": 0.9436485595314215,
+    "tau_lsq_median_us": 6.1719650749944766,
+    "tau_lsq_iqr_over_1349_us": 1.6867874614759661
   },
   "stft_polish_off": {
     "label": "STFT polish=False",
     "tau_stft_us": 6.328,
     "sigma_tau_stft_us": 1.617,
-    "tau_lsq_us": 5.909766231757401,
-    "sigma_tau_lsq_us": 1.0100715111339598,
-    "abs_diff_us": 0.41823376824259917,
-    "rel_diff": 0.06609256767424133,
+    "tau_lsq_us": 6.42931342572481,
+    "sigma_tau_lsq_us": 0.9362782363078479,
+    "abs_diff_us": 0.10131342572480939,
+    "rel_diff": 0.016010339084198702,
     "passes_10pct_gate": true
   },
   "stft_polish_on": {
     "label": "STFT polish=True",
     "tau_stft_us": 5.512,
     "sigma_tau_stft_us": 1.585,
-    "tau_lsq_us": 5.909766231757401,
-    "sigma_tau_lsq_us": 1.0100715111339598,
-    "abs_diff_us": 0.39776623175740156,
-    "rel_diff": 0.07216368500678548,
-    "passes_10pct_gate": true
+    "tau_lsq_us": 6.42931342572481,
+    "sigma_tau_lsq_us": 0.9362782363078479,
+    "abs_diff_us": 0.9173134257248101,
+    "rel_diff": 0.1664211585132094,
+    "passes_10pct_gate": false
   },
   "funnel": {
-    "n_total_windows": 382,
-    "n_tau_fit_attempted": 277,
-    "n_finite_tau_err": 277,
+    "n_total_windows": 386,
+    "n_tau_fit_attempted": 279,
+    "n_finite_tau_err": 279,
     "n_singular_cov": 0,
-    "n_strict_pass": 59,
+    "n_strict_pass": 56,
     "n_expanded_pass": 74,
     "n_singular_pass": 0
   },
@@ -55,12 +55,12 @@
       "band_lo_mhz": 26500.0,
       "band_hi_mhz": 31000.0,
       "n_lsq_strict": 19,
-      "median_lsq_strict_us": 7.23181612707589,
-      "iqr_lsq_strict_us": 0.09598370111925814,
-      "n_lsq_expanded": 23,
-      "median_lsq_expanded_us": 7.222356810799355,
-      "iqr_lsq_expanded_us": 0.06562714109191603,
-      "median_lsq_us": 7.23181612707589,
+      "median_lsq_strict_us": 7.628468823821767,
+      "iqr_lsq_strict_us": 0.04545075449910385,
+      "n_lsq_expanded": 25,
+      "median_lsq_expanded_us": 7.62624127074483,
+      "iqr_lsq_expanded_us": 0.03708244584809517,
+      "median_lsq_us": 7.628468823821767,
       "n_lsq": 19,
       "stft_polish_off": {
         "n": 792,
@@ -80,14 +80,14 @@
     "mid": {
       "band_lo_mhz": 31000.0,
       "band_hi_mhz": 35500.0,
-      "n_lsq_strict": 21,
-      "median_lsq_strict_us": 5.75843119578254,
-      "iqr_lsq_strict_us": 0.06270885324746533,
-      "n_lsq_expanded": 27,
-      "median_lsq_expanded_us": 5.754573108976357,
-      "iqr_lsq_expanded_us": 0.04365658627830893,
-      "median_lsq_us": 5.75843119578254,
-      "n_lsq": 21,
+      "n_lsq_strict": 22,
+      "median_lsq_strict_us": 6.164202109284557,
+      "iqr_lsq_strict_us": 0.0545931054969353,
+      "n_lsq_expanded": 28,
+      "median_lsq_expanded_us": 6.164202109284557,
+      "iqr_lsq_expanded_us": 0.0494476650426412,
+      "median_lsq_us": 6.164202109284557,
+      "n_lsq": 22,
       "stft_polish_off": {
         "n": 1459,
         "median_us": 6.727422571839269,
@@ -106,14 +106,14 @@
     "high": {
       "band_lo_mhz": 35500.0,
       "band_hi_mhz": 40000.0,
-      "n_lsq_strict": 19,
-      "median_lsq_strict_us": 4.753622262265473,
-      "iqr_lsq_strict_us": 0.06678962318522164,
-      "n_lsq_expanded": 24,
-      "median_lsq_expanded_us": 4.752321320632884,
-      "iqr_lsq_expanded_us": 0.04780077671736471,
-      "median_lsq_us": 4.753622262265473,
-      "n_lsq": 19,
+      "n_lsq_strict": 15,
+      "median_lsq_strict_us": 5.296450559268043,
+      "iqr_lsq_strict_us": 0.034353908531839394,
+      "n_lsq_expanded": 21,
+      "median_lsq_expanded_us": 5.289254127093315,
+      "iqr_lsq_expanded_us": 0.023658948394287727,
+      "median_lsq_us": 5.296450559268043,
+      "n_lsq": 15,
       "stft_polish_off": {
         "n": 2166,
         "median_us": 6.10815107114597,
@@ -135,532 +135,505 @@
       "window_id": 3,
       "freq_lo_mhz": 26610.503635406494,
       "freq_hi_mhz": 26616.237602233887,
-      "tau_us": 7.2442823972130785,
-      "tau_err_us": 0.2878414544895171,
-      "reduced_chi2": 1.646347707298715,
-      "max_free_peak_snr": 36.23426917203896
+      "tau_us": 7.62624127074483,
+      "tau_err_us": 0.3079334455876194,
+      "reduced_chi2": 1.5981432187608007,
+      "max_free_peak_snr": 36.517758572674836
     },
     {
       "window_id": 11,
       "freq_lo_mhz": 26924.47706222534,
       "freq_hi_mhz": 26929.865322113037,
-      "tau_us": 7.281485214087009,
-      "tau_err_us": 0.1922502624158947,
-      "reduced_chi2": 2.8958949163330736,
-      "max_free_peak_snr": 64.36436325724429
+      "tau_us": 7.640316351048077,
+      "tau_err_us": 0.20651677815234765,
+      "reduced_chi2": 2.622363618733699,
+      "max_free_peak_snr": 64.96557876445287
     },
     {
       "window_id": 22,
       "freq_lo_mhz": 27317.641220092773,
-      "freq_hi_mhz": 27321.86122894287,
-      "tau_us": 7.200924470947423,
-      "tau_err_us": 0.17506041289059332,
-      "reduced_chi2": 1.6757058656154513,
-      "max_free_peak_snr": 124.26567592609535
+      "freq_hi_mhz": 27321.849308013916,
+      "tau_us": 7.561466160660454,
+      "tau_err_us": 0.16387971064540824,
+      "reduced_chi2": 1.8312076614762107,
+      "max_free_peak_snr": 124.03406536046158
     },
     {
       "window_id": 23,
       "freq_lo_mhz": 27330.07474899292,
       "freq_hi_mhz": 27335.534534454346,
-      "tau_us": 7.166575265501799,
-      "tau_err_us": 0.2217229246715539,
-      "reduced_chi2": 1.704379013472385,
-      "max_free_peak_snr": 68.71480754613906
+      "tau_us": 7.557177321032993,
+      "tau_err_us": 0.219162396508013,
+      "reduced_chi2": 1.8383049660057733,
+      "max_free_peak_snr": 68.90280549417778
     },
     {
       "window_id": 31,
-      "freq_lo_mhz": 27532.40867614746,
+      "freq_lo_mhz": 27532.229862213135,
       "freq_hi_mhz": 27536.902866363525,
-      "tau_us": 7.238858886467989,
-      "tau_err_us": 0.48705514589588816,
-      "reduced_chi2": 1.972173637287025,
-      "max_free_peak_snr": 65.11868880714856
+      "tau_us": 7.629004683562217,
+      "tau_err_us": 0.587456135806568,
+      "reduced_chi2": 1.8915521839766387,
+      "max_free_peak_snr": 64.82883320779851
     },
     {
       "window_id": 35,
       "freq_lo_mhz": 27574.02463912964,
       "freq_hi_mhz": 27578.81685256958,
-      "tau_us": 7.255121299477947,
-      "tau_err_us": 0.39062278748280715,
-      "reduced_chi2": 1.5886868559060774,
-      "max_free_peak_snr": 78.76117654679634
+      "tau_us": 7.637285459581279,
+      "tau_err_us": 0.48037141554338497,
+      "reduced_chi2": 1.543051652095531,
+      "max_free_peak_snr": 78.59035105850448
     },
     {
       "window_id": 39,
       "freq_lo_mhz": 27702.401123046875,
       "freq_hi_mhz": 27706.40655517578,
-      "tau_us": 7.225260178791784,
-      "tau_err_us": 0.43796566953334326,
-      "reduced_chi2": 0.8886863718134741,
-      "max_free_peak_snr": 78.55845904865343
+      "tau_us": 7.6194470083421475,
+      "tau_err_us": 0.5371460546059785,
+      "reduced_chi2": 0.8914843866657297,
+      "max_free_peak_snr": 78.05210790623616
     },
     {
       "window_id": 40,
       "freq_lo_mhz": 27711.163005828857,
       "freq_hi_mhz": 27716.467819213867,
-      "tau_us": 7.297059373030272,
-      "tau_err_us": 0.33019347390941023,
-      "reduced_chi2": 1.5125586144545897,
-      "max_free_peak_snr": 82.57107850635718
+      "tau_us": 7.6572908522433485,
+      "tau_err_us": 0.4052714418208938,
+      "reduced_chi2": 1.4229521444721906,
+      "max_free_peak_snr": 82.90186195298418
     },
     {
-      "window_id": 43,
+      "window_id": 44,
       "freq_lo_mhz": 27889.46434020996,
       "freq_hi_mhz": 27895.675144195557,
-      "tau_us": 7.23181612707589,
-      "tau_err_us": 0.4965597619520937,
-      "reduced_chi2": 1.0788660600186113,
-      "max_free_peak_snr": 17.36612968538183
+      "tau_us": 7.628468823821767,
+      "tau_err_us": 0.5397542344176577,
+      "reduced_chi2": 1.0637122172298823,
+      "max_free_peak_snr": 17.5425780110252
     },
     {
-      "window_id": 53,
+      "window_id": 54,
       "freq_lo_mhz": 28227.839908599854,
       "freq_hi_mhz": 28232.298336029053,
-      "tau_us": 7.2017788147879696,
-      "tau_err_us": 0.2922202901802685,
-      "reduced_chi2": 1.1432185177491048,
-      "max_free_peak_snr": 48.401428974992136
+      "tau_us": 7.596665262628239,
+      "tau_err_us": 0.3121418903088747,
+      "reduced_chi2": 1.3787646620831873,
+      "max_free_peak_snr": 47.397793757222175
     },
     {
-      "window_id": 56,
+      "window_id": 58,
       "freq_lo_mhz": 28358.73170852661,
       "freq_hi_mhz": 28367.60087966919,
-      "tau_us": 7.140852226056045,
-      "tau_err_us": 0.12690259507895862,
-      "reduced_chi2": 2.9342910810244183,
-      "max_free_peak_snr": 88.74831800576817
+      "tau_us": 7.6334056611480765,
+      "tau_err_us": 0.15216747439985115,
+      "reduced_chi2": 2.3106006357875053,
+      "max_free_peak_snr": 89.41949842159607
     },
     {
-      "window_id": 75,
+      "window_id": 69,
+      "freq_lo_mhz": 28699.51530456543,
+      "freq_hi_mhz": 28713.212451934814,
+      "tau_us": 7.813727517717899,
+      "tau_err_us": 0.07081240441209946,
+      "reduced_chi2": 2.973534365635821,
+      "max_free_peak_snr": 127.37636896292621
+    },
+    {
+      "window_id": 77,
       "freq_lo_mhz": 28962.288341522217,
       "freq_hi_mhz": 28967.34281539917,
-      "tau_us": 7.395342213707923,
-      "tau_err_us": 0.21137329272824004,
-      "reduced_chi2": 2.830234468654222,
-      "max_free_peak_snr": 56.95946358752928
+      "tau_us": 7.73533970157196,
+      "tau_err_us": 0.22455130616000257,
+      "reduced_chi2": 2.5683362090318047,
+      "max_free_peak_snr": 57.5253568668891
     },
     {
-      "window_id": 87,
+      "window_id": 89,
       "freq_lo_mhz": 29464.51707839966,
       "freq_hi_mhz": 29471.765003204346,
-      "tau_us": 7.282157077677408,
-      "tau_err_us": 0.11204520427394433,
-      "reduced_chi2": 2.385548059673667,
-      "max_free_peak_snr": 82.20945404528301
-    },
-    {
-      "window_id": 88,
-      "freq_lo_mhz": 29484.198532104492,
-      "freq_hi_mhz": 29488.2039642334,
-      "tau_us": 7.272621478964369,
-      "tau_err_us": 0.398669724806594,
-      "reduced_chi2": 1.6259469340067045,
-      "max_free_peak_snr": 65.34118837603327
+      "tau_us": 7.602863985686013,
+      "tau_err_us": 0.11964979633561189,
+      "reduced_chi2": 2.3226516303714955,
+      "max_free_peak_snr": 82.86224731920309
     },
     {
       "window_id": 90,
-      "freq_lo_mhz": 29499.719581604004,
-      "freq_hi_mhz": 29503.91574859619,
-      "tau_us": 7.3785082148605055,
-      "tau_err_us": 0.13439767044169112,
-      "reduced_chi2": 1.279057267061332,
-      "max_free_peak_snr": 96.43042834274368
+      "freq_lo_mhz": 29484.198532104492,
+      "freq_hi_mhz": 29488.2039642334,
+      "tau_us": 7.650114406264383,
+      "tau_err_us": 0.47041895219214075,
+      "reduced_chi2": 1.5511317535292972,
+      "max_free_peak_snr": 65.53731703105673
     },
     {
       "window_id": 92,
+      "freq_lo_mhz": 29499.719581604004,
+      "freq_hi_mhz": 29503.91574859619,
+      "tau_us": 7.696310619175319,
+      "tau_err_us": 0.1428622596963263,
+      "reduced_chi2": 1.0317465299471735,
+      "max_free_peak_snr": 96.83214059862864
+    },
+    {
+      "window_id": 94,
       "freq_lo_mhz": 29610.131225585938,
       "freq_hi_mhz": 29617.10496902466,
-      "tau_us": 7.195564025311062,
-      "tau_err_us": 0.671408019646537,
-      "reduced_chi2": 1.2226198901375434,
-      "max_free_peak_snr": 13.056273593135915
+      "tau_us": 7.603233905199982,
+      "tau_err_us": 0.7347033604698316,
+      "reduced_chi2": 1.2570736336251764,
+      "max_free_peak_snr": 13.110920290114736
     },
     {
-      "window_id": 127,
-      "freq_lo_mhz": 30823.7056350708,
+      "window_id": 129,
+      "freq_lo_mhz": 30823.693714141846,
       "freq_hi_mhz": 30833.56424331665,
-      "tau_us": 7.153534662800465,
-      "tau_err_us": 0.11957020415484801,
-      "reduced_chi2": 2.5177093596459246,
-      "max_free_peak_snr": 96.25311741595617
+      "tau_us": 7.505550884866726,
+      "tau_err_us": 0.12903154028907446,
+      "reduced_chi2": 2.5746832807704356,
+      "max_free_peak_snr": 97.0530746868123
     },
     {
-      "window_id": 130,
+      "window_id": 132,
       "freq_lo_mhz": 30919.561824798584,
       "freq_hi_mhz": 30929.40851211548,
-      "tau_us": 7.003327397536321,
-      "tau_err_us": 0.18225537464398434,
-      "reduced_chi2": 2.2189212142801877,
-      "max_free_peak_snr": 46.072101821045756
+      "tau_us": 7.427127282563013,
+      "tau_err_us": 0.2006129479060317,
+      "reduced_chi2": 2.453399566931177,
+      "max_free_peak_snr": 46.46335436562471
     },
     {
-      "window_id": 131,
-      "freq_lo_mhz": 30929.59924697876,
-      "freq_hi_mhz": 30933.604679107666,
-      "tau_us": 7.15737691131403,
-      "tau_err_us": 0.2192506463229835,
-      "reduced_chi2": 2.420923118529787,
-      "max_free_peak_snr": 59.66818562377137
-    },
-    {
-      "window_id": 133,
+      "window_id": 135,
       "freq_lo_mhz": 31036.017379760742,
       "freq_hi_mhz": 31040.52349090576,
-      "tau_us": 5.684420109990667,
-      "tau_err_us": 0.23925706528300306,
-      "reduced_chi2": 2.5093015274926187,
-      "max_free_peak_snr": 47.76385929384977
+      "tau_us": 6.07438693520868,
+      "tau_err_us": 0.25567821624424336,
+      "reduced_chi2": 2.6231004921683847,
+      "max_free_peak_snr": 48.46092485057072
     },
     {
-      "window_id": 144,
+      "window_id": 141,
+      "freq_lo_mhz": 31173.15574645996,
+      "freq_hi_mhz": 31180.046043395996,
+      "tau_us": 6.386327028986633,
+      "tau_err_us": 0.13651400860431112,
+      "reduced_chi2": 2.380449498208308,
+      "max_free_peak_snr": 54.39874571033873
+    },
+    {
+      "window_id": 146,
       "freq_lo_mhz": 31253.13325881958,
       "freq_hi_mhz": 31257.97315597534,
-      "tau_us": 5.75843119578254,
-      "tau_err_us": 0.18848263619248554,
-      "reduced_chi2": 2.005418836381031,
-      "max_free_peak_snr": 41.12994033702032
+      "tau_us": 6.146982473686695,
+      "tau_err_us": 0.20829822025906333,
+      "reduced_chi2": 1.706424823067368,
+      "max_free_peak_snr": 41.81131628961941
     },
     {
-      "window_id": 145,
+      "window_id": 147,
       "freq_lo_mhz": 31294.16509628296,
       "freq_hi_mhz": 31302.044830322266,
-      "tau_us": 5.655600449569214,
-      "tau_err_us": 0.3009017316290355,
-      "reduced_chi2": 2.49996279423832,
-      "max_free_peak_snr": 15.902356605517614
+      "tau_us": 6.075113260344977,
+      "tau_err_us": 0.33472269889552964,
+      "reduced_chi2": 2.6162840753015453,
+      "max_free_peak_snr": 16.111995708277433
     },
     {
-      "window_id": 156,
+      "window_id": 158,
       "freq_lo_mhz": 31688.092193603516,
       "freq_hi_mhz": 31695.185146331787,
-      "tau_us": 5.729630833414896,
-      "tau_err_us": 0.3732147897030899,
-      "reduced_chi2": 1.4792602629842706,
-      "max_free_peak_snr": 18.98729857050212
+      "tau_us": 6.141324255341601,
+      "tau_err_us": 0.40981435062416105,
+      "reduced_chi2": 1.507147552061927,
+      "max_free_peak_snr": 18.96162369491887
     },
     {
-      "window_id": 165,
+      "window_id": 163,
+      "freq_lo_mhz": 31846.569023132324,
+      "freq_hi_mhz": 31855.22361755371,
+      "tau_us": 6.195100140693426,
+      "tau_err_us": 0.29997336728538715,
+      "reduced_chi2": 1.1565631430675039,
+      "max_free_peak_snr": 99.01396715757107
+    },
+    {
+      "window_id": 167,
       "freq_lo_mhz": 32003.98488998413,
       "freq_hi_mhz": 32011.23281478882,
-      "tau_us": 5.745298647557932,
-      "tau_err_us": 0.4645366068666366,
-      "reduced_chi2": 0.9126242038476247,
-      "max_free_peak_snr": 16.752236915529476
+      "tau_us": 6.161867701628343,
+      "tau_err_us": 0.5126414436593006,
+      "reduced_chi2": 0.899725718008236,
+      "max_free_peak_snr": 17.038343310735446
     },
     {
-      "window_id": 170,
+      "window_id": 172,
       "freq_lo_mhz": 32258.317909240723,
       "freq_hi_mhz": 32265.51815032959,
-      "tau_us": 5.917713190990485,
-      "tau_err_us": 0.23842116558292875,
-      "reduced_chi2": 2.674551175255983,
-      "max_free_peak_snr": 34.353341666606106
+      "tau_us": 6.305289020048327,
+      "tau_err_us": 0.25964651711236897,
+      "reduced_chi2": 2.4408318844898664,
+      "max_free_peak_snr": 35.08566379233117
     },
     {
-      "window_id": 174,
+      "window_id": 176,
       "freq_lo_mhz": 32479.463062286377,
       "freq_hi_mhz": 32484.970531463623,
-      "tau_us": 5.800272980256148,
-      "tau_err_us": 0.12426498796604393,
-      "reduced_chi2": 1.978605056978512,
-      "max_free_peak_snr": 63.883032809649976
+      "tau_us": 6.143106271357133,
+      "tau_err_us": 0.13549957584546785,
+      "reduced_chi2": 1.9269036566822069,
+      "max_free_peak_snr": 64.81111315918028
     },
     {
-      "window_id": 175,
+      "window_id": 177,
       "freq_lo_mhz": 32503.50757598877,
       "freq_hi_mhz": 32507.89447784424,
-      "tau_us": 5.707988811447242,
-      "tau_err_us": 0.30824988936310843,
-      "reduced_chi2": 1.4519942070555356,
-      "max_free_peak_snr": 21.080290296784476
-    },
-    {
-      "window_id": 183,
-      "freq_lo_mhz": 32717.36904144287,
-      "freq_hi_mhz": 32721.374473571777,
-      "tau_us": 5.732257571562569,
-      "tau_err_us": 0.18343402449593027,
-      "reduced_chi2": 1.217524633812833,
-      "max_free_peak_snr": 45.53987373528454
+      "tau_us": 6.139105527939407,
+      "tau_err_us": 0.42310691535310996,
+      "reduced_chi2": 1.5223050981261805,
+      "max_free_peak_snr": 21.27579732992015
     },
     {
       "window_id": 185,
+      "freq_lo_mhz": 32717.36904144287,
+      "freq_hi_mhz": 32721.374473571777,
+      "tau_us": 6.123498603021796,
+      "tau_err_us": 0.19431527353100894,
+      "reduced_chi2": 1.2589251326472863,
+      "max_free_peak_snr": 46.25025999904147
+    },
+    {
+      "window_id": 187,
       "freq_lo_mhz": 32766.352138519287,
       "freq_hi_mhz": 32770.35757064819,
-      "tau_us": 5.832506422733367,
-      "tau_err_us": 0.19116076473549087,
-      "reduced_chi2": 1.060326503382328,
-      "max_free_peak_snr": 92.26685197130064
+      "tau_us": 6.201560248429689,
+      "tau_err_us": 0.23893765569459416,
+      "reduced_chi2": 0.9162568595617714,
+      "max_free_peak_snr": 92.90545941558536
     },
     {
-      "window_id": 191,
-      "freq_lo_mhz": 32988.08141708374,
-      "freq_hi_mhz": 32992.08684921265,
-      "tau_us": 5.765709753043437,
-      "tau_err_us": 0.21137606140803428,
-      "reduced_chi2": 1.4389510617687373,
-      "max_free_peak_snr": 42.20691512865053
+      "window_id": 189,
+      "freq_lo_mhz": 32823.45338821411,
+      "freq_hi_mhz": 32827.45882034302,
+      "tau_us": 6.106643521804975,
+      "tau_err_us": 0.17965172695402745,
+      "reduced_chi2": 1.4810640791421223,
+      "max_free_peak_snr": 50.079308428622376
     },
     {
-      "window_id": 198,
-      "freq_lo_mhz": 33418.98723602295,
-      "freq_hi_mhz": 33423.26684951782,
-      "tau_us": 5.909788461308583,
-      "tau_err_us": 0.16212727813455513,
-      "reduced_chi2": 1.8729513541133869,
-      "max_free_peak_snr": 155.1754830444277
-    },
-    {
-      "window_id": 200,
+      "window_id": 203,
       "freq_lo_mhz": 33494.69705581665,
       "freq_hi_mhz": 33501.491985321045,
-      "tau_us": 5.774131067413801,
-      "tau_err_us": 0.4669052655297074,
-      "reduced_chi2": 2.570321964551386,
-      "max_free_peak_snr": 77.535379512119
+      "tau_us": 6.297055493053887,
+      "tau_err_us": 0.11484801608080572,
+      "reduced_chi2": 2.0972025515882096,
+      "max_free_peak_snr": 79.3112033458246
     },
     {
-      "window_id": 201,
+      "window_id": 204,
       "freq_lo_mhz": 33532.06916809082,
-      "freq_hi_mhz": 33537.25477218628,
-      "tau_us": 5.719718105106252,
-      "tau_err_us": 0.3628498637928046,
-      "reduced_chi2": 1.6809369786116362,
-      "max_free_peak_snr": 23.562453425735537
+      "freq_hi_mhz": 33537.51703262329,
+      "tau_us": 6.134427657998486,
+      "tau_err_us": 0.40139588815927374,
+      "reduced_chi2": 1.667764875229858,
+      "max_free_peak_snr": 23.934245156156447
     },
     {
-      "window_id": 202,
+      "window_id": 205,
       "freq_lo_mhz": 33553.00231933594,
       "freq_hi_mhz": 33564.11262512207,
-      "tau_us": 5.77457178454889,
-      "tau_err_us": 0.45470306488378504,
-      "reduced_chi2": 1.3074459150526985,
-      "max_free_peak_snr": 14.414499597155901
-    },
-    {
-      "window_id": 243,
-      "freq_lo_mhz": 34613.94115447998,
-      "freq_hi_mhz": 34618.411502838135,
-      "tau_us": 5.72354763523849,
-      "tau_err_us": 0.45697318640966694,
-      "reduced_chi2": 1.284720910747013,
-      "max_free_peak_snr": 62.6800041260584
-    },
-    {
-      "window_id": 246,
-      "freq_lo_mhz": 34695.58759689331,
-      "freq_hi_mhz": 34700.975856781006,
-      "tau_us": 5.768542315216882,
-      "tau_err_us": 0.3069097957053369,
-      "reduced_chi2": 2.039731768903301,
-      "max_free_peak_snr": 19.264323286282025
+      "tau_us": 6.189718705022496,
+      "tau_err_us": 0.4990852422348787,
+      "reduced_chi2": 1.2754663460244766,
+      "max_free_peak_snr": 14.76563573964997
     },
     {
       "window_id": 249,
+      "freq_lo_mhz": 34695.58759689331,
+      "freq_hi_mhz": 34700.975856781006,
+      "tau_us": 6.17610657164022,
+      "tau_err_us": 0.33767604547080743,
+      "reduced_chi2": 1.984169033056091,
+      "max_free_peak_snr": 19.63447007819989
+    },
+    {
+      "window_id": 252,
       "freq_lo_mhz": 34816.08434677124,
       "freq_hi_mhz": 34820.08977890015,
-      "tau_us": 5.802544492818758,
-      "tau_err_us": 0.27995842268032,
-      "reduced_chi2": 1.6295369319157895,
-      "max_free_peak_snr": 85.0935243653691
+      "tau_us": 6.2038595365113665,
+      "tau_err_us": 0.3179832791227529,
+      "reduced_chi2": 1.4512593069602069,
+      "max_free_peak_snr": 84.9563871743206
     },
     {
       "window_id": 253,
+      "freq_lo_mhz": 34826.18137359619,
+      "freq_hi_mhz": 34830.1868057251,
+      "tau_us": 6.183296322465499,
+      "tau_err_us": 0.46113852078967277,
+      "reduced_chi2": 1.557593387765445,
+      "max_free_peak_snr": 72.61587408117127
+    },
+    {
+      "window_id": 256,
       "freq_lo_mhz": 34890.864334106445,
       "freq_hi_mhz": 34900.46068191528,
-      "tau_us": 5.792339686662362,
-      "tau_err_us": 0.24748423701978428,
-      "reduced_chi2": 1.231827563741566,
-      "max_free_peak_snr": 31.999540887584715
+      "tau_us": 6.191712839067285,
+      "tau_err_us": 0.4829167842112524,
+      "reduced_chi2": 1.1635853574850679,
+      "max_free_peak_snr": 32.55964031540477
     },
     {
-      "window_id": 263,
+      "window_id": 266,
       "freq_lo_mhz": 35333.881816864014,
       "freq_hi_mhz": 35340.18798828125,
-      "tau_us": 5.738608579388873,
-      "tau_err_us": 0.44183161027949863,
-      "reduced_chi2": 1.2600400599329786,
-      "max_free_peak_snr": 12.781547347003317
+      "tau_us": 6.156520966901345,
+      "tau_err_us": 0.4885155135847841,
+      "reduced_chi2": 1.2613229034428084,
+      "max_free_peak_snr": 13.030161241440904
     },
     {
-      "window_id": 269,
-      "freq_lo_mhz": 35450.52810668945,
-      "freq_hi_mhz": 35458.65818023682,
-      "tau_us": 5.731758845991177,
-      "tau_err_us": 0.5718246059458023,
-      "reduced_chi2": 1.1930393304687996,
-      "max_free_peak_snr": 13.891802081741204
+      "window_id": 268,
+      "freq_lo_mhz": 35356.61502838135,
+      "freq_hi_mhz": 35360.620460510254,
+      "tau_us": 6.166536516940771,
+      "tau_err_us": 0.574304114924367,
+      "reduced_chi2": 1.0740779402914216,
+      "max_free_peak_snr": 75.06137074845887
     },
     {
-      "window_id": 274,
+      "window_id": 277,
       "freq_lo_mhz": 35638.354263305664,
       "freq_hi_mhz": 35643.146476745605,
-      "tau_us": 4.80148678270371,
-      "tau_err_us": 0.3641269647852313,
-      "reduced_chi2": 1.663302628009278,
-      "max_free_peak_snr": 64.94161708757538
+      "tau_us": 5.334850278284713,
+      "tau_err_us": 0.4117117078116067,
+      "reduced_chi2": 1.5073473371378385,
+      "max_free_peak_snr": 65.39075633158039
     },
     {
-      "window_id": 284,
+      "window_id": 287,
       "freq_lo_mhz": 35934.06482696533,
       "freq_hi_mhz": 35947.0228767395,
-      "tau_us": 4.794392581178549,
-      "tau_err_us": 0.3499892310201816,
-      "reduced_chi2": 1.8591817326990574,
-      "max_free_peak_snr": 115.13174222562883
+      "tau_us": 5.300760880256038,
+      "tau_err_us": 0.3789693412718188,
+      "reduced_chi2": 1.8033288271234265,
+      "max_free_peak_snr": 112.91237982523259
     },
     {
-      "window_id": 304,
-      "freq_lo_mhz": 36488.5906791687,
-      "freq_hi_mhz": 36496.14854812622,
-      "tau_us": 4.703995001265889,
-      "tau_err_us": 0.24337568826026076,
-      "reduced_chi2": 1.9333736088882871,
-      "max_free_peak_snr": 23.170953611194253
-    },
-    {
-      "window_id": 305,
+      "window_id": 309,
       "freq_lo_mhz": 36599.71757888794,
       "freq_hi_mhz": 36603.723011016846,
-      "tau_us": 4.828306711679597,
-      "tau_err_us": 0.19038175594810175,
-      "reduced_chi2": 1.346161013633157,
-      "max_free_peak_snr": 72.56691535706841
+      "tau_us": 5.325270093625645,
+      "tau_err_us": 0.24983552872605078,
+      "reduced_chi2": 1.1433834291649183,
+      "max_free_peak_snr": 72.60518352762236
     },
     {
-      "window_id": 312,
+      "window_id": 316,
       "freq_lo_mhz": 36844.20391082764,
       "freq_hi_mhz": 36850.55776596069,
-      "tau_us": 4.865085367549133,
-      "tau_err_us": 0.12996529164199344,
-      "reduced_chi2": 2.4863480698120157,
-      "max_free_peak_snr": 174.18653639334747
+      "tau_us": 5.304142243261941,
+      "tau_err_us": 0.1124661871136811,
+      "reduced_chi2": 2.2809919195119974,
+      "max_free_peak_snr": 166.35713325087139
     },
     {
-      "window_id": 327,
+      "window_id": 329,
+      "freq_lo_mhz": 37703.690967559814,
+      "freq_hi_mhz": 37712.047538757324,
+      "tau_us": 5.296450559268043,
+      "tau_err_us": 0.23511588816898643,
+      "reduced_chi2": 2.0123804776261225,
+      "max_free_peak_snr": 93.54138359062966
+    },
+    {
+      "window_id": 331,
       "freq_lo_mhz": 37934.95698928833,
       "freq_hi_mhz": 37940.321407318115,
-      "tau_us": 4.6936129449126325,
-      "tau_err_us": 0.2142607966062342,
-      "reduced_chi2": 2.3016004702353885,
-      "max_free_peak_snr": 26.98327486494278
-    },
-    {
-      "window_id": 328,
-      "freq_lo_mhz": 37941.847286224365,
-      "freq_hi_mhz": 37947.52164840698,
-      "tau_us": 4.669369629460094,
-      "tau_err_us": 0.20653107953053468,
-      "reduced_chi2": 2.12205050793149,
-      "max_free_peak_snr": 26.367398984811718
+      "tau_us": 5.211879603354594,
+      "tau_err_us": 0.24700215052274577,
+      "reduced_chi2": 2.506960014524351,
+      "max_free_peak_snr": 27.66191664629205
     },
     {
       "window_id": 333,
+      "freq_lo_mhz": 37948.68989944458,
+      "freq_hi_mhz": 37952.695331573486,
+      "tau_us": 5.307442232713068,
+      "tau_err_us": 0.44037163083930225,
+      "reduced_chi2": 1.5768063647127077,
+      "max_free_peak_snr": 35.304361902545274
+    },
+    {
+      "window_id": 337,
       "freq_lo_mhz": 38095.29348373413,
       "freq_hi_mhz": 38099.29891586304,
-      "tau_us": 4.747983397261951,
-      "tau_err_us": 0.40134065091288035,
-      "reduced_chi2": 1.2402926500639442,
-      "max_free_peak_snr": 14.619746152351395
-    },
-    {
-      "window_id": 339,
-      "freq_lo_mhz": 38203.309020996094,
-      "freq_hi_mhz": 38207.314453125,
-      "tau_us": 4.760067599648502,
-      "tau_err_us": 0.30500778227133835,
-      "reduced_chi2": 1.0538954820198156,
-      "max_free_peak_snr": 25.59080882881356
-    },
-    {
-      "window_id": 341,
-      "freq_lo_mhz": 38255.74918746948,
-      "freq_hi_mhz": 38259.75461959839,
-      "tau_us": 4.780999540657434,
-      "tau_err_us": 0.36305845348799515,
-      "reduced_chi2": 1.3984043926160568,
-      "max_free_peak_snr": 33.52324005648869
-    },
-    {
-      "window_id": 342,
-      "freq_lo_mhz": 38283.33421707153,
-      "freq_hi_mhz": 38287.33964920044,
-      "tau_us": 4.737167938195242,
-      "tau_err_us": 0.32777553624433986,
-      "reduced_chi2": 1.0016253565474131,
-      "max_free_peak_snr": 35.18446731040876
+      "tau_us": 5.282176359345703,
+      "tau_err_us": 0.4613366678305038,
+      "reduced_chi2": 1.250065396548218,
+      "max_free_peak_snr": 15.071036257786572
     },
     {
       "window_id": 343,
-      "freq_lo_mhz": 38389.26359176636,
-      "freq_hi_mhz": 38398.50231170654,
-      "tau_us": 4.793731223867067,
-      "tau_err_us": 0.20615219629476073,
-      "reduced_chi2": 1.8630136747693493,
-      "max_free_peak_snr": 75.77969336567904
+      "freq_lo_mhz": 38203.309020996094,
+      "freq_hi_mhz": 38207.314453125,
+      "tau_us": 5.281159707380866,
+      "tau_err_us": 0.33521508242997194,
+      "reduced_chi2": 0.9988047183910048,
+      "max_free_peak_snr": 26.416144474281896
     },
     {
-      "window_id": 348,
-      "freq_lo_mhz": 38475.16580581665,
-      "freq_hi_mhz": 38481.26932144165,
-      "tau_us": 4.751020379000296,
-      "tau_err_us": 0.31607261224541516,
-      "reduced_chi2": 1.386485394100967,
-      "max_free_peak_snr": 15.093109586594561
+      "window_id": 345,
+      "freq_lo_mhz": 38255.74918746948,
+      "freq_hi_mhz": 38259.75461959839,
+      "tau_us": 5.307252159765423,
+      "tau_err_us": 0.41530535800489643,
+      "reduced_chi2": 1.2696733292626563,
+      "max_free_peak_snr": 34.01001641274535
     },
     {
-      "window_id": 365,
+      "window_id": 346,
+      "freq_lo_mhz": 38283.33421707153,
+      "freq_hi_mhz": 38287.33964920044,
+      "tau_us": 5.260551718357645,
+      "tau_err_us": 0.3916208086135989,
+      "reduced_chi2": 1.0463189441969143,
+      "max_free_peak_snr": 35.456986462297834
+    },
+    {
+      "window_id": 368,
       "freq_lo_mhz": 39042.84044265747,
-      "freq_hi_mhz": 39047.27502822876,
-      "tau_us": 4.767084966742918,
-      "tau_err_us": 0.47148499397960014,
-      "reduced_chi2": 1.448826207321211,
-      "max_free_peak_snr": 77.03870781669534
-    },
-    {
-      "window_id": 366,
-      "freq_lo_mhz": 39060.42381286621,
-      "freq_hi_mhz": 39065.75246810913,
-      "tau_us": 4.764560290797211,
-      "tau_err_us": 0.2910107770152336,
-      "reduced_chi2": 1.6876043910817422,
-      "max_free_peak_snr": 64.25346423073658
+      "freq_hi_mhz": 39047.29887008667,
+      "tau_us": 5.304289763941746,
+      "tau_err_us": 0.27425667625302197,
+      "reduced_chi2": 1.3324131867268771,
+      "max_free_peak_snr": 76.35199283300139
     },
     {
       "window_id": 369,
-      "freq_lo_mhz": 39502.43993759155,
-      "freq_hi_mhz": 39507.82819747925,
-      "tau_us": 4.691090789875767,
-      "tau_err_us": 0.1867158867789927,
-      "reduced_chi2": 2.4896791735869,
-      "max_free_peak_snr": 30.369651039093693
-    },
-    {
-      "window_id": 371,
-      "freq_lo_mhz": 39575.264892578125,
-      "freq_hi_mhz": 39583.645305633545,
-      "tau_us": 4.753622262265473,
-      "tau_err_us": 0.19323364216335512,
-      "reduced_chi2": 2.198044093728136,
-      "max_free_peak_snr": 74.36536442761236
+      "freq_lo_mhz": 39060.42381286621,
+      "freq_hi_mhz": 39065.77630996704,
+      "tau_us": 5.280630815547458,
+      "tau_err_us": 0.3744186110406997,
+      "reduced_chi2": 1.650683891033567,
+      "max_free_peak_snr": 63.948557420291074
     },
     {
       "window_id": 374,
-      "freq_lo_mhz": 39675.81792831421,
-      "freq_hi_mhz": 39682.124099731445,
-      "tau_us": 4.647646574085253,
-      "tau_err_us": 0.08936839704843312,
-      "reduced_chi2": 2.842129277697285,
-      "max_free_peak_snr": 61.03137522096966
+      "freq_lo_mhz": 39575.264892578125,
+      "freq_hi_mhz": 39583.645305633545,
+      "tau_us": 5.261915378438628,
+      "tau_err_us": 0.24119994395365102,
+      "reduced_chi2": 2.2528224649074886,
+      "max_free_peak_snr": 72.1650632079258
     },
     {
-      "window_id": 380,
+      "window_id": 384,
       "freq_lo_mhz": 39906.78592681885,
       "freq_hi_mhz": 39915.89351654053,
-      "tau_us": 4.737156516888168,
-      "tau_err_us": 0.25672114076958547,
-      "reduced_chi2": 1.4766308518340303,
-      "max_free_peak_snr": 17.029380690886892
+      "tau_us": 5.26220329109603,
+      "tau_err_us": 0.2949760518057597,
+      "reduced_chi2": 1.5141179702384484,
+      "max_free_peak_snr": 17.540411048950357
     }
   ],
   "passed_window_records_singular_only": []

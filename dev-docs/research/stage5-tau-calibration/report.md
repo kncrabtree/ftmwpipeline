@@ -33,13 +33,20 @@ print(ftmw.calibrate_tau(f))
 # LSQ cross-validation on the unapodized fixture
 conda run -n ftmwpipeline-dev python -c "
 import ftmwpipeline.api as ftmw
+from ftmwpipeline.core.stage_fit_settings import StageFitSettings
+from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
 f = 'scratch/stage5-tau-calibration-lsq/exp_2638_unapodized.ftmw'
 ftmw.import_data(f, source='examples/blackchirp_data/2638/', force=True)
 ftmw.compute_ft(f, zpf=2, expf_us=None, trim=(26500, 40000))
 ftmw.estimate_noise(f)
+tau_s = TauCalibrationSettings()
+tau_s.band.compute_band_majorities = True
+ftmw.calibrate_tau(f, settings=tau_s)
 ftmw.detect_peaks(f)
 ftmw.assign_windows(f)
-ftmw.fit_peaks(f, tau0_us=(15.0-2.35)/2.0)
+fit_s = StageFitSettings()
+fit_s.tau.tau0_us = (15.0-2.35)/2.0
+ftmw.fit_peaks(f, settings=fit_s)
 "
 conda run -n ftmwpipeline-dev python \
     dev-docs/research/stage5-tau-calibration/lsq_comparison.py
@@ -403,12 +410,12 @@ Per-arithmetic-third LSQ τ medians under the production fit
 
 | third (GHz) | LSQ strict (N) | Stage 2b band majority (N) | STFT polish=False (N) |
 |---|---|---|---|
-| 26.5 - 31.0 | 7.23 (19) | 7.22 (792) | 7.76 (792) |
-| 31.0 - 35.5 | 5.77 (21) | 5.73 (1459) | 6.73 (1459) |
-| 35.5 - 40.0 | 4.75 (19) | 4.74 (2166) | 6.11 (2166) |
+| 26.5 - 31.0 | 7.63 (19) | 7.62 (792) | 7.76 (792) |
+| 31.0 - 35.5 | 6.16 (22) | 6.16 (1459) | 6.73 (1459) |
+| 35.5 - 40.0 | 5.30 (15) | 5.29 (2166) | 6.11 (2166) |
 
 The strict per-band LSQ τ medians track the Stage 2b band majorities
-to within 0.04 µs across the band (overall N=59). The per-band prior
+to within 0.01 µs across the band (overall N=56). The per-band prior
 is the production default; the band-wide prior squashes per-band
 variation and is documented below for comparison.
 
@@ -425,19 +432,19 @@ runs Stages 0-5 on the same fixture under three modes and emits
 
 | mode | N strict | low τ (µs) | mid τ (µs) | high τ (µs) | all-windows χ²ᵣ med |
 |---|---|---|---|---|---|
-| no prior | 73 | 8.07 ± 1.39 | 6.07 ± 1.18 | 5.17 ± 1.03 | 1.328 |
-| band-wide prior | 49 | 5.60 ± 0.11 | 5.57 ± 0.12 | 5.50 ± 0.06 | 1.415 |
-| **per-band prior** | **59** | **7.23 ± 0.09** | **5.77 ± 0.06** | **4.75 ± 0.05** | **1.402** |
+| no prior | 75 | 8.07 ± 1.42 | 6.07 ± 1.18 | 5.17 ± 1.04 | 1.331 |
+| band-wide prior | 50 | 6.02 ± 0.22 | 5.99 ± 0.11 | 5.92 ± 0.08 | 1.375 |
+| **per-band prior** | **56** | **7.63 ± 0.08** | **6.16 ± 0.07** | **5.30 ± 0.03** | **1.379** |
 
 The no-prior fit shows the data's true horn-coupling τ ∝ 1/f profile
 with per-window scatter ~1.0-1.4 µs (the unconstrained signal-to-noise
 on τ). The band-wide prior anchors every window at the global
-`τ_maj = 5.51 µs` and squashes the band-to-band variation -- per-band
-σ collapses to ~0.06-0.12 µs but the central tendency loses the
+`τ_maj` and squashes the band-to-band variation -- per-band
+σ collapses to ~0.08-0.22 µs but the central tendency loses the
 horn-coupling physics. The per-band prior preserves the band-to-band
 variation (per-band medians match the Stage 2b band majorities to
-≤0.04 µs) AND tightens per-window scatter to ~0.05-0.09 µs. All three
-modes have indistinguishable χ²ᵣ distributions (1.328 / 1.415 / 1.402);
+≤0.01 µs) AND tightens per-window scatter to ~0.03-0.08 µs. All three
+modes have indistinguishable χ²ᵣ distributions (1.331 / 1.375 / 1.379);
 the prior is a soft constraint that picks the right tau within the
 data-allowed basin, not an additional source of model error.
 

@@ -47,6 +47,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline.core.stage_fit_settings import StageFitSettings
+from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
 
 HERE = Path(__file__).parent
 FIG = HERE / "figures"
@@ -180,16 +182,19 @@ def _build_fixture(label: str, mode: str) -> Path:
         cal = ftmw.load_tau_calibration(dst)
         if not cal.band_majorities:
             logger.info("Re-running calibrate_tau on %s to populate band_majorities", dst)
-            ftmw.calibrate_tau(dst, compute_band_majorities=True)
+            tau_s = TauCalibrationSettings()
+            tau_s.band.compute_band_majorities = True
+            ftmw.calibrate_tau(dst, settings=tau_s)
 
+    fit_s = StageFitSettings()
+    fit_s.tau.tau0_us = 6.325
     if mode == "per_band":
-        ftmw.fit_peaks(dst, tau0_us=6.325, per_band_tau=True)
+        fit_s.tau.per_band_tau = True
     elif mode == "band_wide":
-        ftmw.fit_peaks(dst, tau0_us=6.325, per_band_tau=False)
-    elif mode == "no_prior":
-        ftmw.fit_peaks(dst, tau0_us=6.325)
-    else:
+        fit_s.tau.per_band_tau = False
+    elif mode != "no_prior":
         raise ValueError(f"unknown mode: {mode!r}")
+    ftmw.fit_peaks(dst, settings=fit_s)
     return dst
 
 

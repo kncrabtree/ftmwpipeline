@@ -21,13 +21,20 @@ Outputs:
 
 Assumes the unapodized fixture and Stages 0-5 have already been run via:
 
+    from ftmwpipeline.core.stage_fit_settings import StageFitSettings
+    from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
     ftmw.import_data('scratch/stage5-tau-calibration-lsq/exp_2638_unapodized.ftmw',
                      source='examples/blackchirp_data/2638/', force=True)
     ftmw.compute_ft(fpath, zpf=2, expf_us=None, trim=(26500, 40000))
     ftmw.estimate_noise(fpath)
+    tau_s = TauCalibrationSettings()
+    tau_s.band.compute_band_majorities = True
+    ftmw.calibrate_tau(fpath, settings=tau_s)   # band majorities for per-band tau routing
     ftmw.detect_peaks(fpath)
     ftmw.assign_windows(fpath)
-    ftmw.fit_peaks(fpath, tau0_us=6.325)   # T_active / 2
+    fit_s = StageFitSettings()
+    fit_s.tau.tau0_us = 6.325   # T_active / 2
+    ftmw.fit_peaks(fpath, settings=fit_s)
 
 See ``dev-docs/planning/stage2b-tau-calibration.md`` § Phase 4 for the
 gate and motivation.

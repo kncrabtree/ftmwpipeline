@@ -582,30 +582,49 @@ replace the loose kwargs with a `settings=` instance or a `preset=`
 name. Listed in priority order (most kwargs first).
 
 1. **`dev-docs/research/stage5-tau-calibration/lsq_comparison.py`** —
-   sets up the fixture with
-   `compute_ft(zpf=2, expf_us=None, trim=(26500, 40000))`,
-   `estimate_noise(fpath)`, `detect_peaks(fpath)`,
-   `assign_windows(fpath)`, `fit_peaks(fpath, tau0_us=6.325)`. The
-   Stage-1 setup is intentionally explicit (it builds the unapodized
-   fixture for a comparison) and stays as-is; the `fit_peaks` call
-   should adopt the `instrument_bc_2638` preset plus an explicit
-   `tau0_us` override. Also calls `extract_tau_majority(...)` directly
-   (Category B — research kernel sweep, no migration needed).
+   *Migrated.* The script body only loads a persisted fit; the
+   docstring's fixture-build recipe was migrated to route `tau0_us`
+   through a `StageFitSettings` instance and to add the missing
+   `ftmw.calibrate_tau(f, settings=tau_s)` step (without it the
+   Stage 5 per-band routing has no band_majorities to anchor on, so
+   the docstring recipe was already broken on its own). The matching
+   bash recipe in `report.md` § "Reproduce headline analyses" was
+   updated the same way. Re-running the rebuilt fixture surfaces an
+   operating-point drift: the Stage 2b production default switched
+   to `polish_snr_cap=9.0` after the cached report values were
+   recorded, so per-band LSQ τ medians moved from (low 7.23, mid 5.77,
+   high 4.75 µs) to (low 7.63, mid 6.16, high 5.30 µs), tracking the
+   new Stage 2b band majorities to ≤0.01 µs. The report's two
+   numerical tables (§ "Headline LSQ numbers" and § "Stage 2b prior
+   strength") were updated to match. Also calls
+   `extract_tau_majority(...)` directly (Category B — kernel sweep,
+   no migration needed).
 
 2. **`dev-docs/research/stage5-tau-calibration/prior_strength_comparison.py`** —
-   `ftmw.calibrate_tau(dst, compute_band_majorities=True)` and three
-   `ftmw.fit_peaks(dst, tau0_us=6.325, [per_band_tau=...])` variants.
-   Migration: route the τ knob through a `TauCalibrationSettings`
-   instance for `calibrate_tau`, and through a `StageFitSettings`
-   instance for the `fit_peaks` sweep so the recipe-vs-knob diff is
-   one dataclass per variant.
+   *Migrated.* Routed `ftmw.calibrate_tau` through
+   `TauCalibrationSettings(band.compute_band_majorities=True)` and
+   each of the three `fit_peaks` variants through a
+   `StageFitSettings` instance carrying `tau.tau0_us = 6.325` and the
+   appropriate `tau.per_band_tau`. Re-running picked up the same
+   Stage 2b production-default drift as `lsq_comparison.py`; the
+   per-band-prior row in the report's prior-strength table moved
+   from N=59 / (7.23, 5.77, 4.75) µs / χ²ᵣ=1.402 to N=56 /
+   (7.63, 6.16, 5.30) µs / χ²ᵣ=1.379, with band-wide row also
+   shifting. The qualitative conclusion (per-band prior preserves
+   horn-coupling τ ∝ 1/f; band-wide squashes it; all three modes
+   have indistinguishable χ²ᵣ distributions) is unchanged.
 
 3. **`dev-docs/research/gaussian-shape/compare_shapes.py`** —
-   `ftmw.fit_peaks(str(fp), shape=shape)` and `ftmw.calibrate_tau_G(str(fp))`.
-   The shape sweep is the *point* of this script, so `shape=` is an
-   appropriate explicit kwarg; migration is optional cleanup (switch
-   to a `StageFitSettings(shape=ShapeSpec(kind=...))` if the variant
-   set grows).
+   *Migrated.* Already used the canonical `shape=` kwarg form (the
+   sweep axis is correctly explicit); no code change was needed.
+   Re-running on the rebuilt 2638 unapodized fixture surfaces a
+   small drift in fitted peak counts (Lorentzian 713 → 704,
+   Gaussian 625 → 620) and downstream aggregate stats; the four
+   Part A shape-error windows still show the same ΔAIC pattern
+   (three prefer Gaussian by Δ > 80, w355 still prefers Lorentzian).
+   The README's acceptance criteria are stated in qualitative terms
+   and unchanged; the regenerated CSVs / summary JSON / panel
+   figure are committed as the refreshed reference.
 
 ### Category B — kernel-direct sweeps (no migration needed)
 
