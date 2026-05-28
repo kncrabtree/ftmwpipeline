@@ -1,31 +1,32 @@
 name: instrument_bc_2638
 description: |
-  Stage 5 settings for the BlackChirp 2638 fixture. Gaussian shape with
-  per-band tau routing on, and a light τ-prior
-  (``tau_penalty_lambda: 50``) that suppresses runaway τ in weak windows
-  without pulling well-fit windows off their data-driven values. Knobs
-  left unset fall through to the resolver's hard defaults.
+  Stage 5 settings for the BlackChirp 2638 fixture. This preset is
+  intentionally minimal: every field that 2638 calibration would have
+  pinned -- the Gaussian line shape, per-band tau routing, the
+  tau-prior strength -- is now the package-wide hard default, and the
+  shape is additionally written to the file by Stage 2b's
+  auto-recommendation pass. The preset is kept as a stable name for
+  workflows that pin the instrument explicitly; future 2638-specific
+  knobs (when calibrated) land in this file.
 
-  Sweep evidence (382 windows, scratch/gaussian-retune/, against the
-  shape-aware-classifier Stage 2b τ_G anchors: band-wide 6.41 μs;
-  low / mid / high 8.34 / 6.63 / 6.26 μs):
+  Sweep evidence the 2638 calibration produced, archived here for
+  posterity (382 windows, scratch/gaussian-retune/, against the
+  shape-aware-classifier Stage 2b tau_G anchors: band-wide 6.41 us;
+  low / mid / high 8.34 / 6.63 / 6.26 us):
 
-  * ``tau_penalty_lambda`` -- the cliff is between λ=0 and λ=50. At
-    λ=0 the free-τ distribution sprawls (28.9 % of free-τ windows
-    within ±1σ of their band anchor, p50 |z| = 1.89, p90 |z| = 5.00);
-    λ=50 collapses the distribution onto its anchor (92.3 % within
-    ±1σ, p50 |z| = 0.05, p90 |z| = 0.90) at a 5 % cost on the
-    bulk-χ²ᵣ median (1.32 → 1.39). λ ≥ 250 keeps tightening τ
-    (|z|≤1σ climbs to 98–99 %) but degrades the bulk-χ²ᵣ tail (mean
-    3.32 → 3.83 as λ goes 50 → 2500); the marginal compliance the
-    higher λ buys is not worth the cost on the bulk-fit quality.
+  * ``tau_penalty_lambda`` -- the cliff is between lambda=0 and
+    lambda=50. At lambda=0 the free-tau distribution sprawls (28.9 %
+    of free-tau windows within +/-1 sigma of their band anchor,
+    p50 |z| = 1.89, p90 |z| = 5.00); lambda=50 collapses the
+    distribution onto its anchor (92.3 % within +/-1 sigma, p50 |z| =
+    0.05, p90 |z| = 0.90) at a 5 % cost on the bulk-chi^2_r median
+    (1.32 -> 1.39). lambda >= 250 keeps tightening tau (|z|<=1 sigma
+    climbs to 98-99 %) but degrades the bulk-chi^2_r tail (mean 3.32
+    -> 3.83 as lambda goes 50 -> 2500); the marginal compliance the
+    higher lambda buys is not worth the cost on the bulk-fit quality.
+    Promoted to the package-wide default.
 
-  * ``max_decay_factor`` -- k ∈ {1.5, 2, 3, 5, 8} all produce identical
-    median / p25 / p75 / p90 χ²ᵣ to 3 decimals at λ=500; differences are
-    LSQ basin-hopping noise on 1-2 windows. Kept at the stock k=5.
-
-stage5:
-  shape: gaussian
-  tau:
-    per_band_tau: true
-    tau_penalty_lambda: 50
+  * ``max_decay_factor`` -- k in {1.5, 2, 3, 5, 8} all produce
+    identical median / p25 / p75 / p90 chi^2_r to 3 decimals at
+    lambda=500; differences are LSQ basin-hopping noise on 1-2
+    windows. Kept at the stock k=5.

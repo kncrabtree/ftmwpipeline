@@ -201,7 +201,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "tau": {
         "max_decay_factor": 5.0,
         "fit_tau_min_snr": 50.0,
-        "tau_penalty_lambda": 500.0,
+        "tau_penalty_lambda": 50.0,
         "tau_penalty_n_sigma": 5.0,
         "per_band_tau": True,
         # ``tau0_us`` / ``fit_tau`` / overrides legitimately stay None

@@ -100,7 +100,7 @@ class TestResolve:
         merged = resolve()
         assert merged.shape is not None and merged.shape.kind is PeakShape.LORENTZIAN
         assert merged.tau.max_decay_factor == 5.0
-        assert merged.tau.tau_penalty_lambda == 500.0
+        assert merged.tau.tau_penalty_lambda == 50.0
         assert merged.conservative.significance == 0.05
         assert merged.conservative.max_peaks == 8
         assert merged.penalties.phase_penalty_lambda == 100.0

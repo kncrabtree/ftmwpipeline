@@ -394,3 +394,100 @@ class TestPersistedLayerInherit:
             "no-kwargs follow-up did not inherit the persisted n_seg; "
             "the persisted layer of the resolver is misrouted"
         )
+
+
+# ---------------------------------------------------------------------------
+# Auto-recommend: calibrate_tau / calibrate_tau_G fire compute_shape_recommendation
+# when ``recommendation.auto_recommend`` is True (the hard default)
+# ---------------------------------------------------------------------------
+class TestAutoRecommend:
+    """``RecommendationSubSettings.auto_recommend`` controls whether
+    ``calibrate_tau`` and ``calibrate_tau_G`` invoke ``recommend_shape_impl``
+    as part of the calibration flow. Default is ``True`` so the Stage 5
+    resolver's *recommended* layer fires on every fresh Stage 2b run."""
+
+    def _intercept_recommend(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> Dict[str, Any]:
+        """Patch ``recommend_shape_impl`` in both Stage 2b orchestrators.
+
+        Returns a ``{"called": bool, ...}`` capture dict that the orchestrator
+        flips when (and only when) the auto-recommend pass fires.
+        """
+        captured: Dict[str, Any] = {"called": False, "file_path": None}
+
+        def _fake_recommend(file_path: str, *args: Any, **kwargs: Any) -> Any:
+            captured["called"] = True
+            captured["file_path"] = file_path
+            return {"status": "success", "shape_recommendation": None,
+                    "groups_written": []}
+
+        monkeypatch.setattr(
+            stage2b_impl, "recommend_shape_impl", _fake_recommend,
+        )
+        monkeypatch.setattr(
+            stage2b_g_impl, "recommend_shape_impl", _fake_recommend,
+        )
+        return captured
+
+    def test_calibrate_tau_auto_recommends_by_default(
+        self, baseline_2638_stage2: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        variant = tmp_path / "auto.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        captured = self._intercept_recommend(monkeypatch)
+
+        stage2b_impl.calibrate_tau_impl(str(variant))
+
+        assert captured["called"], (
+            "default-on auto_recommend did not invoke recommend_shape_impl "
+            "after calibrate_tau"
+        )
+        assert captured["file_path"] == str(variant)
+
+    def test_calibrate_tau_skips_recommend_when_disabled(
+        self, baseline_2638_stage2: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        variant = tmp_path / "noauto.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        captured = self._intercept_recommend(monkeypatch)
+
+        s = TauCalibrationSettings()
+        s.recommendation.auto_recommend = False
+        stage2b_impl.calibrate_tau_impl(str(variant), settings=s)
+
+        assert not captured["called"], (
+            "auto_recommend=False still invoked recommend_shape_impl; "
+            "the flag does not gate the auto-run pass"
+        )
+
+    def test_calibrate_tau_G_auto_recommends_by_default(
+        self, baseline_2638_stage2: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        variant = tmp_path / "auto_g.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        captured = self._intercept_recommend(monkeypatch)
+
+        stage2b_g_impl.calibrate_tau_G_impl(str(variant))
+
+        assert captured["called"], (
+            "default-on auto_recommend did not invoke recommend_shape_impl "
+            "after calibrate_tau_G"
+        )
+
+    def test_calibrate_tau_G_skips_recommend_when_disabled(
+        self, baseline_2638_stage2: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        variant = tmp_path / "noauto_g.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        captured = self._intercept_recommend(monkeypatch)
+
+        s = TauCalibrationSettings()
+        s.recommendation.auto_recommend = False
+        stage2b_g_impl.calibrate_tau_G_impl(str(variant), settings=s)
+
+        assert not captured["called"]

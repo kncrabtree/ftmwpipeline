@@ -180,10 +180,22 @@ class TestIdenticalResults:
 
         # Run calibration via the three interfaces. Each uses defaults so
         # the calibration knobs are identical across interfaces.
+        #
+        # The Stage 2b auto-recommend pass (~50s on 2638) is unrelated to
+        # this test's τ-identity assertions; opt out via a settings instance
+        # for the in-process interfaces and a one-line preset YAML for CLI.
+        from tests.integration._stage2b_helpers import (
+            skip_auto_recommend_preset_yaml,
+            skip_auto_recommend_settings,
+        )
+        skip = skip_auto_recommend_settings()
+        skip_yaml = skip_auto_recommend_preset_yaml(tmp_path)
         pipe = Pipeline.open(p_copy)
-        tc_pipeline = pipe.calibrate_tau()
-        tc_functional = ftmw.calibrate_tau(f_copy)
-        self._run_cli_command(["calibrate-tau", str(c_copy)])
+        tc_pipeline = pipe.calibrate_tau(settings=skip)
+        tc_functional = ftmw.calibrate_tau(f_copy, settings=skip)
+        self._run_cli_command([
+            "calibrate-tau", str(c_copy), "--preset", str(skip_yaml),
+        ])
         tc_cli = ftmw.load_tau_calibration(c_copy)
 
         # Bit-identical scalars; per-bin arrays bit-identical too because the
@@ -286,13 +298,19 @@ class TestIdenticalResults:
         assert np.all(result2.rms_noise > 0), f"{context}: RMS values should be positive"
 
     def _run_cli_command(self, args):
-        """Run CLI command and ensure it succeeds."""
+        """Run CLI command and ensure it succeeds.
+
+        Timeout is 120s rather than 30s because ``calibrate-tau`` now
+        auto-runs the 3-way shape recommendation (Stage 2b
+        ``auto_recommend=True`` by default), which adds ~50s on the
+        2638 fixture beyond the τ calibration itself.
+        """
         result = subprocess.run(
             ["ftmwpipeline"] + args,
             capture_output=True,
             text=True,
             check=False,
-            timeout=30
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -475,13 +493,19 @@ class TestParameterPersistence:
         assert np.all(result2.rms_noise > 0), f"{context}: RMS values should be positive"
 
     def _run_cli_command(self, args):
-        """Run CLI command and ensure it succeeds."""
+        """Run CLI command and ensure it succeeds.
+
+        Timeout is 120s rather than 30s because ``calibrate-tau`` now
+        auto-runs the 3-way shape recommendation (Stage 2b
+        ``auto_recommend=True`` by default), which adds ~50s on the
+        2638 fixture beyond the τ calibration itself.
+        """
         result = subprocess.run(
             ["ftmwpipeline"] + args,
             capture_output=True,
             text=True,
             check=False,
-            timeout=30
+            timeout=120,
         )
 
         if result.returncode != 0:
@@ -667,13 +691,19 @@ class TestFilePortability:
         )
 
     def _run_cli_command(self, args):
-        """Run CLI command and ensure it succeeds."""
+        """Run CLI command and ensure it succeeds.
+
+        Timeout is 120s rather than 30s because ``calibrate-tau`` now
+        auto-runs the 3-way shape recommendation (Stage 2b
+        ``auto_recommend=True`` by default), which adds ~50s on the
+        2638 fixture beyond the τ calibration itself.
+        """
         result = subprocess.run(
             ["ftmwpipeline"] + args,
             capture_output=True,
             text=True,
             check=False,
-            timeout=30
+            timeout=120,
         )
 
         if result.returncode != 0:

@@ -533,7 +533,7 @@ do not silently delete entries.**
 
 ## Follow-ups
 
-Ordered: 1 → 2 → 4 → 5. #3 deferred.
+Ordered: 1 → 2 → 4 → 5. #3 deferred. #1, #2, #4 shipped.
 
 1. **`DeprecationWarning` on legacy per-knob kwargs and the `fit:`
    preset wrapper.** Single warning per call-site, not per kwarg, to
@@ -558,19 +558,23 @@ Ordered: 1 → 2 → 4 → 5. #3 deferred.
    up when a suitable fixture exists.
 4. **Productionising the 3-way recommendation as an auto-run step**
    inside `calibrate_tau` / `calibrate_tau_G`, plus the matching
-   default-and-preset cleanup. With the shape-aware-classifier landing
-   the per-call cost is fixed (`shape='best_of_three'` ~50 s on 2638 vs
-   the ~10 s `shape='gaussian'`), so this is a settings-layer decision:
-   should `calibrate_tau_G(..., auto_recommend=True)` (a new knob in
-   `RecommendationSubSettings`) trigger the verdict for free? Bundle:
-   bump `tau.tau_penalty_lambda` from 500 → 50 (the 2638 sweep cliff
-   evidence is generic, not fixture-specific — see
-   [`instrument-tunable-knobs.md`](instrument-tunable-knobs.md) §
-   Finding), drop the now-redundant `per_band_tau: true` and
-   `tau_penalty_lambda: 50` from `instrument_bc_2638.yaml`, and once
-   the auto-recommend is the default, drop `shape: gaussian` too so
-   the 2638 preset shrinks to just the description. *Sequenced after
-   #1 and #2.*
+   default-and-preset cleanup. *Shipped.* Added `auto_recommend`
+   field to `RecommendationSubSettings` defaulting `True`; the
+   Stage 2b orchestrators (`calibrate_tau_impl` /
+   `calibrate_tau_G_impl`) now invoke `recommend_shape_impl` as a
+   follow-up pass when the resolved value is True, so the Stage 5
+   resolver's *recommended* layer fires on every fresh Stage 2b run.
+   Bumped `tau.tau_penalty_lambda` hard default 500 → 50 (the 2638
+   sweep cliff evidence is a generic regularization-strength
+   statement, not fixture-specific). Simplified
+   `instrument_bc_2638.yaml` to metadata-only — all three former
+   overrides (shape, per_band_tau, tau_penalty_lambda) are now
+   inherited. Cost: ~50 s per `calibrate_tau` / `calibrate_tau_G`
+   call on the 2638 fixture for the 3-way classifier pass. Tests
+   that exercise the τ calibration for unrelated reasons can opt
+   out via the
+   `tests/integration/_stage2b_helpers.skip_auto_recommend_*`
+   helpers.
 5. **Stage 3 / Stage 5-rescue τ consumers** still consume the
    pure-exp `τ_maj` even when the Stage 5 shape is Gaussian. The
    classifier work resolved the upstream; the consumer-side question

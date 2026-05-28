@@ -65,10 +65,11 @@ walkthrough at [`docs/source/settings_and_presets.rst`](../../docs/source/settin
   no-flag behaviour stays the same.
 - **`presets/`** — three packaged YAML files: `gaussian_default`
   (clean Gaussian baseline), `lorentzian_legacy` (historical default,
-  named for A/B), `instrument_bc_2638` (Gaussian + per-band τ routing
-  + retuned `tau_penalty_lambda: 50` for the BlackChirp 2638 fixture;
-  see the preset YAML's docstring for the sweep evidence that picked
-  λ=50).
+  named for A/B), `instrument_bc_2638` (metadata-only today: every
+  field the 2638 calibration would have pinned — shape, per_band_tau,
+  τ-prior strength — is now the package-wide hard default, and shape
+  is additionally stamped by Stage 2b's auto-recommend pass; the
+  preset is kept as a stable name for future 2638-specific knobs).
   Top-level `fit:` wrapper leaves room for a future stage-spanning
   `ft:` block.
 

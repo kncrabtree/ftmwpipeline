@@ -57,12 +57,14 @@ class TestPackagedPresetResolution:
         assert s.shape is not None and s.shape.kind is PeakShape.LORENTZIAN
 
     def test_load_instrument_bc_2638(self) -> None:
+        """The 2638 preset is intentionally empty (every former override
+        is now a package-wide default or stamped by Stage 2b)."""
         s = load_preset("instrument_bc_2638")
-        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
-        assert s.tau.per_band_tau is True
-        # Unspecified knobs stay None so the resolver fills hard defaults.
-        assert s.tau.max_decay_factor is None
-        assert s.conservative.max_peaks is None
+        assert s.is_empty(), (
+            "instrument_bc_2638 should carry no Stage 5 overrides; the "
+            "shape is auto-recommended and per_band_tau / tau_penalty_lambda "
+            "are package-wide defaults"
+        )
 
     def test_unknown_bare_name_lists_available(self) -> None:
         with pytest.raises(FileNotFoundError, match=r"no packaged preset"):
@@ -352,20 +354,21 @@ class TestResolutionWithPreset:
     """Preset + explicit kwarg precedence: explicit wins per field."""
 
     def test_preset_only(self) -> None:
-        preset = load_preset("instrument_bc_2638")
+        preset = load_preset("gaussian_default")
         merged = resolve(preset=preset)
         assert merged.shape is not None and merged.shape.kind is PeakShape.GAUSSIAN
+        # per_band_tau is the package-wide hard default (True).
         assert merged.tau.per_band_tau is True
         # Hard default for an unspecified field
         assert merged.tau.max_decay_factor == 5.0
 
     def test_explicit_overrides_preset_shape(self) -> None:
         """``explicit.shape = LORENTZIAN`` beats the preset's GAUSSIAN."""
-        preset = load_preset("instrument_bc_2638")
+        preset = load_preset("gaussian_default")
         explicit = StageFitSettings(shape=ShapeSpec(kind=PeakShape.LORENTZIAN))
         merged = resolve(explicit=explicit, preset=preset)
         assert merged.shape is not None and merged.shape.kind is PeakShape.LORENTZIAN
-        # The preset still wins for fields the explicit layer didn't set
+        # The hard default still fills fields neither layer set.
         assert merged.tau.per_band_tau is True
 
     def test_explicit_overrides_preset_field(self) -> None:

@@ -148,7 +148,7 @@ DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
 # unmodeled-peak residual; the penalty discourages this with a stiff
 # quadratic hinge. Weak-only windows (no candidate clears
 # ``DEFAULT_WEAK_WINDOW_SNR_THRESHOLD``) hold ``tau`` fixed entirely.
-DEFAULT_TAU_PENALTY_LAMBDA = 500.0
+DEFAULT_TAU_PENALTY_LAMBDA = 50.0
 DEFAULT_WEAK_WINDOW_SNR_THRESHOLD = 10.0
 
 

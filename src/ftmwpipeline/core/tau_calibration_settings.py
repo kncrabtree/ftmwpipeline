@@ -128,7 +128,7 @@ class GaussianSubSettings:
 
 @dataclass
 class RecommendationSubSettings:
-    """``recommend_shape``-only knobs.
+    """``recommend_shape``-only knobs plus the calibrate_tau auto-run flag.
 
     Overlaps with :class:`GaussianSubSettings` in three fields
     (``snr_min`` / ``tau_bound_lo`` / ``tau_bound_hi`` / ``tau_G_seeds``)
@@ -136,6 +136,12 @@ class RecommendationSubSettings:
     calibration are conceptually independent and may legitimately ship
     with different operating points (the recommender's contributor pool
     can be wider or narrower than the calibration's).
+
+    ``auto_recommend`` controls whether :func:`calibrate_tau` /
+    :func:`calibrate_tau_G` invoke :func:`recommend_shape` automatically
+    after the primary calibration writes; default ``True`` so the
+    Stage 5 resolver's *recommended* layer fires on every fresh Stage 2b
+    run without a second explicit user step.
     """
 
     snr_min: Optional[float] = None
@@ -143,6 +149,7 @@ class RecommendationSubSettings:
     tau_bound_hi: Optional[float] = None
     tau_G_seeds: Optional[Tuple[float, ...]] = None
     pure_margin_threshold: Optional[float] = None
+    auto_recommend: Optional[bool] = None
 
 
 @dataclass
@@ -234,6 +241,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "tau_bound_hi": 100.0,
         "tau_G_seeds": (100.0, 50.0, 20.0, 10.0, 5.0, 3.0),
         "pure_margin_threshold": 0.10,
+        "auto_recommend": True,
     },
 }
 

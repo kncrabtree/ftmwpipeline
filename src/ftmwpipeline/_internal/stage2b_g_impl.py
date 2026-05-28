@@ -52,6 +52,7 @@ from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
 )
 from .deprecation import warn_legacy_kwargs
+from .shape_recommendation_impl import recommend_shape_impl
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
 from .stage2_impl import _update_stage_completion
@@ -371,6 +372,13 @@ def calibrate_tau_G_impl(
         logger.info(
             "Stage 2b τ_G re-run invalidated downstream stages: %s", invalidated,
         )
+
+    if resolved.recommendation.auto_recommend:
+        # Run the 3-way L/G/V shape recommendation as part of the calibration
+        # so Stage 5's resolver inherits the verdict on every fresh Stage 2b
+        # run. Re-uses the just-persisted settings via the no-kwargs call.
+        logger.info("auto_recommend on: running compute_shape_recommendation")
+        recommend_shape_impl(file_path)
 
     return {
         "status": "success",

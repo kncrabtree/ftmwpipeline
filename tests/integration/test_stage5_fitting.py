@@ -196,13 +196,18 @@ def test_fit_peaks_gaussian_cross_interface(
     ``test_calibrate_tau_G_cross_interface``; here we calibrate once on
     a shared file and copy, so the three test files differ only at Stage 5.
     """
+    from tests.integration._stage2b_helpers import skip_auto_recommend_settings
+
     pfile = temp_ftmw_dir / "gp.ftmw"
     ffile = temp_ftmw_dir / "gf.ftmw"
     cfile = temp_ftmw_dir / "gc.ftmw"
     # Build Stage 2b once on the small baseline, then copy to all three.
+    # ``shape='gaussian'`` is pinned explicitly on the fit_peaks calls below,
+    # so the Stage 2b auto-recommend verdict is not needed -- skip the ~50s
+    # 3-way classifier pass on this fixture.
     staged = temp_ftmw_dir / "gaussian_staged.ftmw"
     shutil.copy(baseline_2638_stage4_small, staged)
-    ftmw.calibrate_tau_G(staged)
+    ftmw.calibrate_tau_G(staged, settings=skip_auto_recommend_settings())
     for fp in (pfile, ffile, cfile):
         shutil.copy(staged, fp)
 
@@ -253,9 +258,13 @@ def test_fit_peaks_gaussian_persists_and_loads_shape(
     Shape-persistence is a per-window attribute round-trip; the small (3-window)
     baseline exercises every code path of the full fixture.
     """
+    from tests.integration._stage2b_helpers import skip_auto_recommend_settings
+
     fp = temp_ftmw_dir / "rg.ftmw"
     shutil.copy(baseline_2638_stage4_small, fp)
-    ftmw.calibrate_tau_G(fp)
+    # ``shape='gaussian'`` is pinned explicitly below, so the Stage 2b
+    # auto-recommend verdict is not needed -- skip the ~50s classifier pass.
+    ftmw.calibrate_tau_G(fp, settings=skip_auto_recommend_settings())
     ftmw.fit_peaks(fp, shape="gaussian")
     fit = ftmw.load_fit(fp)
     # Every window's FittingResult must carry the persisted shape; older
@@ -275,18 +284,27 @@ def test_calibrate_tau_G_cross_interface(
     """calibrate_tau_G is identical across CLI / Pipeline / api on 2638.
 
     calibrate_tau_G operates on the FT (same in small + full baselines) and
-    the FID; window count is irrelevant to this proof.
+    the FID; window count is irrelevant to this proof. The Stage 2b
+    auto-recommend pass (~50s per interface on 2638) is unrelated to the
+    τ_G identity assertion; opt out via the helper.
     """
+    from tests.integration._stage2b_helpers import (
+        skip_auto_recommend_preset_yaml,
+        skip_auto_recommend_settings,
+    )
     pfile = temp_ftmw_dir / "tgp.ftmw"
     ffile = temp_ftmw_dir / "tgf.ftmw"
     cfile = temp_ftmw_dir / "tgc.ftmw"
     for fp in (pfile, ffile, cfile):
         shutil.copy(baseline_2638_stage4_small, fp)
 
-    tc_pipe = Pipeline(pfile).calibrate_tau_G()
-    tc_func = ftmw.calibrate_tau_G(ffile)
+    skip = skip_auto_recommend_settings()
+    skip_yaml = skip_auto_recommend_preset_yaml(temp_ftmw_dir)
+    tc_pipe = Pipeline(pfile).calibrate_tau_G(settings=skip)
+    tc_func = ftmw.calibrate_tau_G(ffile, settings=skip)
     res = subprocess.run(
-        ["ftmwpipeline", "calibrate-tau-G", str(cfile)],
+        ["ftmwpipeline", "calibrate-tau-G", str(cfile),
+         "--preset", str(skip_yaml)],
         capture_output=True,
         text=True,
         timeout=600,
@@ -346,16 +364,23 @@ def test_recommend_shape_persists_and_feeds_resolver(
     and (c) the Stage 5 resolver's persisted ``stage5_fit`` carries
     that shape after a no-arg ``fit_peaks`` call. The 2638 fixture is
     Gaussian-dominant on the strong contributor bins, so the verdict
-    is expected to be ``"gaussian"`` -- the same shape the
-    ``instrument_bc_2638`` preset picks.
+    is expected to be ``"gaussian"``. ``calibrate_tau_G`` already
+    auto-runs the recommendation by default; the explicit
+    ``recommend_shape`` call here exercises the standalone surface
+    (back-compat) and re-stamps the same verdict.
     """
     from ftmwpipeline.io.stage_fit_settings_serialization import (
         read_stage2b_recommended_shape,
     )
+    from tests.integration._stage2b_helpers import skip_auto_recommend_settings
+
     fp = temp_ftmw_dir / "recommend.ftmw"
     shutil.copy(baseline_2638_stage4_small, fp)
 
-    ftmw.calibrate_tau_G(fp)
+    # Disable the calibrate_tau_G auto-recommend pass so the explicit
+    # recommend_shape call below is the one whose stamp the test verifies
+    # (otherwise the auto pass would have already stamped the same verdict).
+    ftmw.calibrate_tau_G(fp, settings=skip_auto_recommend_settings())
     rec = ftmw.recommend_shape(fp)
     assert rec.n_contributors > 0
     assert sum(rec.vote_rates.values()) == pytest.approx(1.0, abs=1e-6)

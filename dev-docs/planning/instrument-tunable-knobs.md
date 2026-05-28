@@ -28,47 +28,37 @@ as "needs experimental confirmation either way" rather than "probably N."
 
 ## 2638 preset coverage
 
-The shipped `instrument_bc_2638.yaml` overrides only three Stage 5 fields:
+`instrument_bc_2638.yaml` carries **no Stage 5 overrides**. Every field the
+preset used to set (shape, per_band_tau, tau_penalty_lambda) is now a
+package-wide hard default or, in the case of `shape.kind`, stamped onto
+the file automatically by Stage 2b's auto-recommendation pass. The
+preset is kept on disk as a stable name workflows can pin for future
+2638-specific knobs — but currently it is metadata-only.
 
-* `stage5.shape = gaussian` — line-shape model selector.
-* `stage5.tau.per_band_tau = true` — Stage 5 per-band τ routing.
-* `stage5.tau.tau_penalty_lambda = 50` — τ-prior strength
-  (default 500; tuned against the 382-window 2638 sweep).
+Stages 2, 2b, 3, and 4 inherit the package hard defaults on 2638 —
+including several knobs rated **Y** below. That gap is the headline
+driver for the per-instrument calibration audit (see *Open follow-ups*
+at the end): any knob marked Y with `2638 = —` is a candidate for
+per-instrument calibration on this fixture, even though 2638 has been
+the primary calibration target throughout development.
 
-Stages 2, 2b, 3, and 4 inherit the package hard defaults on 2638 — including
-several knobs rated **Y** below. That gap is the headline driver for this
-audit: any knob marked Y with `2638 = —` is a candidate for per-instrument
-calibration on this fixture, even though 2638 has been the primary
-calibration target throughout development.
+### Resolved: the three former 2638 overrides are now defaults
 
-### Finding: the three 2638 overrides should likely all become defaults
-
-None of the three currently-overridden Stage 5 fields look genuinely
-fixture-specific:
-
-* `shape.kind` — once the 3-way shape-recommendation auto-run lands
-  (Follow-up #4 in [`settings-backfill.md`](settings-backfill.md)),
-  Stage 2b will stamp the recommended shape onto every file and the
-  Stage 5 resolver's *recommended* layer will pick it up automatically.
-  The preset override becomes unnecessary the moment that auto-run is
-  on by default.
-* `tau.per_band_tau` — *already* `True` in the package hard defaults;
-  the preset override is redundant today and can drop immediately.
-* `tau.tau_penalty_lambda` — the 2638 sweep evidence in the preset
-  header shows the λ=0 → λ=50 cliff is the load-bearing regime
-  transition (compliance climbs from 28 % to 92 % at a 5 % bulk-χ²ᵣ
-  cost); λ=50 → λ=500 keeps tightening τ-compliance at progressively
-  worse bulk-fit cost. Nothing in that analysis is hardware-specific;
-  it is a generic statement about how strong a regularization is
-  appropriate. Bumping the hard default from 500 to 50 and dropping
-  the preset override is the matching change.
-
-The implementation work — change the kernel constant + `_HARD_DEFAULTS`
-for `tau_penalty_lambda`, drop the two redundant fields from
-`instrument_bc_2638.yaml`, and audit the test suite for behavioural
-sensitivity to the new default — is tracked as Follow-up #4 in
-[`settings-backfill.md`](settings-backfill.md) (the shape half lands as
-part of the same project).
+* `shape.kind` — Stage 2b's `auto_recommend` pass (now the default in
+  `RecommendationSubSettings`) computes the 3-way L/G/V verdict
+  inside `calibrate_tau` / `calibrate_tau_G` and stamps the
+  ``recommended_shape`` attr; the Stage 5 resolver's *recommended*
+  layer picks it up automatically. The package hard default
+  (LORENTZIAN) remains as the fallback when no Stage 2b calibration
+  is present.
+* `tau.per_band_tau` — was already the package hard default
+  (`True`); the preset override was redundant and is dropped.
+* `tau.tau_penalty_lambda` — the 2638 sweep cliff evidence
+  (λ=0 → λ=50 closes compliance from 28 % to 92 % at a 5 % bulk-χ²ᵣ
+  cost; higher λ degrades the tail) is a generic regularization-
+  strength statement, not a hardware-specific calibration. The
+  package hard default is now `50` (was `500`); the matching
+  preset override is dropped.
 
 ## Stage 2 — `NoiseSettings`
 
@@ -122,6 +112,7 @@ Planning: [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md).
 | recommendation.tau_bound_lo | 0.5 | `DEFAULT_TAU_G_BOUND_LO` *(reused)* | Lower τ bound for recommendation eligibility (µs). | N | — |
 | recommendation.tau_bound_hi | 100.0 | `DEFAULT_TAU_G_BOUND_HI` *(reused)* | Upper τ bound for recommendation eligibility (µs). | N | — |
 | recommendation.pure_margin_threshold | 0.10 | `DEFAULT_SHAPE_RECOMMENDATION_PURE_MARGIN` | Minimum vote margin for one pure shape (L or G) to dominate Voigt. | N | — |
+| recommendation.auto_recommend | True | dataclass-only | Auto-run `compute_shape_recommendation` after `calibrate_tau` / `calibrate_tau_G`. | N | — |
 
 ## Stage 3 — `PeakDetectionSettings`
 
@@ -168,12 +159,12 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 
 | field | default | source | meaning | inst-sens | 2638 |
 |---|---|---|---|---|---|
-| shape.kind | LORENTZIAN | `PeakShape.LORENTZIAN` *(literal default)* | Line-shape model selector: LORENTZIAN or GAUSSIAN envelope. | maybe | **gaussian** |
+| shape.kind | LORENTZIAN | `PeakShape.LORENTZIAN` *(literal default)* | Line-shape model selector: LORENTZIAN or GAUSSIAN envelope. Stage 2b's `auto_recommend` stamps the verdict onto the file. | maybe | — |
 | tau.max_decay_factor | 5.0 | `DEFAULT_MAX_DECAY_FACTOR` | Tau bounds multiplier: τ ∈ [τ₀ / k, τ₀ × k] (O5-4 hard cap). | N | — |
 | tau.fit_tau_min_snr | 50.0 | dataclass-only | SNR threshold above which τ becomes a free parameter (fixed below). | **Y** | — |
-| tau.tau_penalty_lambda | 500.0 | `DEFAULT_TAU_PENALTY_LAMBDA` | Strength of bidirectional Gaussian prior on τ. | N | **50** |
+| tau.tau_penalty_lambda | 50.0 | `DEFAULT_TAU_PENALTY_LAMBDA` | Strength of bidirectional Gaussian prior on τ. | N | — |
 | tau.tau_penalty_n_sigma | 5.0 | `DEFAULT_TAU_PENALTY_N_SIGMA` | τ-bound half-width in units of σ_τ from Stage 2b calibration. | N | — |
-| tau.per_band_tau | True | function default | Route τ to per-band majorities (True) or band-wide (False). | maybe | **true** |
+| tau.per_band_tau | True | function default | Route τ to per-band majorities (True) or band-wide (False). | maybe | — |
 | seeder.seeder_rchi2 | 1.5 | `DEFAULT_SEEDER_RCHI2` | χ²ᵣ threshold: triggers K=2/K=3 blend-aware re-seed on single-peak fit. | N | — |
 | seeder.seeder_straddle_factor | 1.0 | `DEFAULT_SEEDER_STRADDLE_FACTOR` | Re-seed offset grid spacing in units of line FWHM (blend resolution). | N | — |
 | seeder.seeder_max_k | 3 | `DEFAULT_SEEDER_MAX_K` | Maximum escalation depth (K_initial=1 → K_max on blend detection). | N | — |

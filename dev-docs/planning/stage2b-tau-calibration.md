@@ -369,8 +369,10 @@ Both motivate a bidirectional Gaussian-prior penalty centred on
 
 with `sigma_tau = σ_τ` from the calibration pass (floored at e.g.
 0.5 µs if the histogram is unusually tight). Strength `λ` is the
-main tuning lever; recommend starting at the current
-`DEFAULT_TAU_PENALTY_LAMBDA = 500` and adjusting on validation runs.
+main tuning lever. The shipped `DEFAULT_TAU_PENALTY_LAMBDA = 50` sits
+at the validated knee of the 2638 sweep — see
+[`instrument-tunable-knobs.md`](instrument-tunable-knobs.md) § "the
+three former 2638 overrides are now defaults" for the sweep evidence.
 
 For weak windows (the existing `weak_window_snr_threshold = 10`
 gate), `fit_tau = False` and τ is locked at `τ_maj` exactly.

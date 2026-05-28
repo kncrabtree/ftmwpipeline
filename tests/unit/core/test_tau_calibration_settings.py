@@ -85,6 +85,7 @@ class TestResolve:
         assert merged.gaussian.min_contributors == 50  # distinct from aggregation
         assert merged.recommendation.snr_min == 20.0
         assert merged.recommendation.pure_margin_threshold == 0.10
+        assert merged.recommendation.auto_recommend is True
 
     def test_min_contributors_collision_keeps_blocks_independent(self) -> None:
         """Aggregation and Gaussian both carry a ``min_contributors`` field
