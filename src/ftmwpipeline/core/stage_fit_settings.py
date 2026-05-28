@@ -565,6 +565,15 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     if has_stage5:
         inner_block = dict(data["stage5"])
     elif has_fit:
+        import warnings as _warnings
+        _warnings.warn(
+            f"preset {name_or_path!r}: top-level 'fit:' wrapper is "
+            "deprecated; rename it to 'stage5:' (per-stage block "
+            "convention -- see dev-docs/planning/settings-backfill.md "
+            "back-compat shim #1)",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         inner_block = dict(data["fit"])
     if inner_block is not None:
         for meta in ("name", "description"):

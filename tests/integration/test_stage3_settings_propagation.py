@@ -27,7 +27,12 @@ import pytest
 from ftmwpipeline._internal import stage3_impl
 from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Propagation tests deliberately exercise the legacy per-knob kwarg
+    # path; suppress the expected deprecation noise.
+    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
+]
 
 
 class _CalibIntercepted(RuntimeError):

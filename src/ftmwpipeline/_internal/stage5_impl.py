@@ -57,6 +57,7 @@ from ..io.stage_fit_settings_serialization import (
     save_stage_fit_settings_to_h5,
 )
 from ..preprocessing.noise_estimation import estimate_noise_adaptive
+from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -392,6 +393,30 @@ def fit_peaks_impl(
         If Stage 4 has not been completed, or if exactly one of the
         ``tau_maj_override_us`` / ``sigma_tau_override_us`` pair is set.
     """
+    warn_legacy_kwargs(
+        func_name="fit_peaks",
+        legacy_kwargs={
+            "tau0_us": tau0_us,
+            "fit_tau": fit_tau,
+            "max_decay_factor": max_decay_factor,
+            "residual_edge_threshold": residual_edge_threshold,
+            "residual_edge_m": residual_edge_m,
+            "max_thaw_rounds": max_thaw_rounds,
+            "max_replan_rounds": max_replan_rounds,
+            "max_residual_rescue_rounds": max_residual_rescue_rounds,
+            "rescue_snr_threshold": rescue_snr_threshold,
+            "rescue_prominence_threshold": rescue_prominence_threshold,
+            "tau_maj_override_us": tau_maj_override_us,
+            "sigma_tau_override_us": sigma_tau_override_us,
+            "per_band_tau": per_band_tau,
+            "shape": shape,
+        },
+        migration_hint=(
+            "use settings=StageFitSettings(...) or preset='name' to drive "
+            "Stage 5 from the settings resolver"
+        ),
+    )
+
     # --- Resolve parameters via the StageFitSettings chain ------------------
     # Legacy per-knob kwargs are bundled into an explicit StageFitSettings;
     # any caller-supplied ``settings`` instance enters as the preset layer.

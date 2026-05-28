@@ -531,36 +531,45 @@ do not silently delete entries.**
 | 13 | Legacy per-knob kwargs (`edge_m`, `trim_m`, `edge_threshold`, `max_window_width_mhz`, `min_freeze_snr`, `min_window_half_width_mhz`, `magnitude_attachment_threshold`, `tau_us`) stay on `Pipeline.assign_windows` / `api.assign_windows` / `_internal/stage4_impl.assign_windows_impl` and on the corresponding CLI flags | `_internal/stage4_impl.py`, `pipeline.py`, `api.py`, `cli/window_commands.py` | Match the Stage 5 / Stage 2b / Stage 2 / Stage 3 migration policy: existing call-sites that pass individual kwargs keep working; they bundle into an explicit `WindowPlanningSettings` inside the impl and route through the resolver. | Move kwarg payload to a `WindowPlanningSettings(...)` instance or to a YAML preset. |
 | 14 | Module-level constants (`DEFAULT_EDGE_M`, `DEFAULT_TRIM_M`, `DEFAULT_EDGE_THRESHOLD` in `preprocessing/edge_coherence.py`; `DEFAULT_MAX_WINDOW_WIDTH_MHZ`, `DEFAULT_MIN_FREEZE_SNR`, `DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ`, `DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD` in `preprocessing/window_planning.py`) stay live | `preprocessing/edge_coherence.py`, `preprocessing/window_planning.py` | They remain the kernel's parameter defaults and the readable canonical source the `WindowPlanningSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `WindowPlanningSettings`, they become docstring-only. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
 
-## Follow-ups (not part of this project's session work)
+## Follow-ups
 
-- **`DeprecationWarning` on legacy per-knob kwargs and the `fit:`
-  preset wrapper.** Lands on the next release cycle per the
-  migration plan in [`stage5-fit-settings.md`](stage5-fit-settings.md)
-  § Migration notes. Single warning per call-site, not per kwarg,
-  to keep the noise floor down.
-- **Stage 2 settings (`NoiseSettings`).** Instrument-tunable knobs
-  centred on `DEFAULT_SMOOTHING_MHZ` plus the MAD-binning
-  parameters. The Stage 2 noise estimator is the canonical
-  instrument-tunable surface (see
-  [`memory: noise-estimator-mad-shipped`](../../../.claude/projects/-home-kncrabtree-github-ftmwpipeline/memory/noise-estimator-mad-shipped.md)).
-- **Cross-fixture validation of the shape-aware classifier.** The
-  classifier landed against 2638 only; a clean-Lorentzian fixture
-  is the generalisation check.
-- **Productionising the 3-way recommendation as an auto-run step**
-  inside `calibrate_tau` / `calibrate_tau_G`. With the
-  shape-aware-classifier landing the per-call cost is fixed
-  (`shape='best_of_three'` ~50 s on 2638 vs the ~10 s
-  `shape='gaussian'`), so this is a settings-layer decision: should
-  `calibrate_tau_G(..., auto_recommend=True)` (a new knob in
-  `RecommendationSubSettings`) trigger the verdict for free?
-- **Stage 3 / Stage 5-rescue τ consumers** still consume the
-  pure-exp `τ_maj` even when the Stage 5 shape is Gaussian. The
-  classifier work resolved the upstream; the consumer-side
-  question (should the rescue τ be shape-conditioned?) is open.
-- **`preset_git_hash` audit attr.** Per
-  [`stage5-fit-settings.md`](stage5-fit-settings.md) §
-  Follow-ups; deferred until a portable preset-content-hashing
-  implementation is justified.
+Ordered: 1 → 2 → 4 → 5. #3 deferred.
+
+1. **`DeprecationWarning` on legacy per-knob kwargs and the `fit:`
+   preset wrapper.** Single warning per call-site, not per kwarg, to
+   keep the noise floor down. The intent is not user-facing breakage
+   notice — it is a dev-side probe that surfaces any remaining
+   legacy-form call sites in research / scratch scripts (or other
+   in-repo callers) so they can be migrated before the surrounding
+   work ships. Covers shims #1 (`fit:` ↔ `stage5:`), #2 (Stage 2b
+   per-knob kwargs), #6 (`from_saved_params=True` on `estimate_noise`),
+   #7 (Stage 2 per-knob kwargs), #10 (Stage 3 per-knob kwargs), #13
+   (Stage 4 per-knob kwargs), and Stage 5's per-knob kwargs.
+2. **Instrument-tunable knob defaults.** Build a one-shot table of
+   every instrument-tunable knob across all five settings dataclasses
+   (Stages 2, 2b, 3, 4, 5) listing field, current default, source of
+   truth, and what the value physically represents — to decide which
+   defaults are correct for the 2638 (BlackChirp) instrument and
+   which should be revisited for other instruments. Output is a
+   reference for picking the `instrument_bc_2638` preset values vs
+   the package hard defaults.
+3. **Cross-fixture validation of the shape-aware classifier.**
+   *Deferred.* The classifier landed against 2638 only; a clean-
+   Lorentzian fixture would be the generalisation check. Picked back
+   up when a suitable fixture exists.
+4. **Productionising the 3-way recommendation as an auto-run step**
+   inside `calibrate_tau` / `calibrate_tau_G`. With the
+   shape-aware-classifier landing the per-call cost is fixed
+   (`shape='best_of_three'` ~50 s on 2638 vs the ~10 s
+   `shape='gaussian'`), so this is a settings-layer decision: should
+   `calibrate_tau_G(..., auto_recommend=True)` (a new knob in
+   `RecommendationSubSettings`) trigger the verdict for free?
+   *Sequenced after #1 and #2.*
+5. **Stage 3 / Stage 5-rescue τ consumers** still consume the
+   pure-exp `τ_maj` even when the Stage 5 shape is Gaussian. The
+   classifier work resolved the upstream; the consumer-side question
+   (should the rescue τ be shape-conditioned?) is open. *Sequenced
+   after #4.*
 
 ## Research-script migration plan
 

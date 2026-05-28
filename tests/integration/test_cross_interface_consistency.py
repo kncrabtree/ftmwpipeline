@@ -308,6 +308,7 @@ class TestIdenticalResults:
 
 
 @pytest.mark.parameter_persistence
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestParameterPersistence:
     """Test parameter persistence across all interfaces.
 
@@ -315,6 +316,10 @@ class TestParameterPersistence:
     Rather than rebuilding from the raw FID (slow), each test copies the
     session-scoped baseline_2638_stage1 file into a per-test tmp location.
     Copying an HDF5 file is ~milliseconds vs. seconds for import+FT.
+
+    The legacy per-knob kwarg + ``from_saved_params=True`` paths are part
+    of the back-compat contract these tests cover; the matching
+    deprecation warnings are expected and suppressed.
     """
 
     def test_parameter_persistence_across_interfaces(
@@ -490,12 +495,17 @@ class TestParameterPersistence:
 
 
 @pytest.mark.file_portability
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 class TestFilePortability:
     """Test .ftmw file portability between interfaces.
 
     Each test needs a writable file that gets modified (FT re-computed or noise
     added by a different interface).  Rather than rebuilding from scratch, each
     test copies the session-scoped baseline into its own tmp location.
+
+    Round-trips exercise the legacy per-knob kwarg path for
+    ``estimate_noise``; the matching deprecation warnings are expected
+    and suppressed.
     """
 
     def test_file_portability_pipeline_to_functional(

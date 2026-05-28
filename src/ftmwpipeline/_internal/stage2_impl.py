@@ -23,6 +23,7 @@ from ..io.noise_settings_serialization import (
     save_noise_settings_to_h5,
 )
 from ..file_manager import open_pipeline_file
+from .deprecation import warn_legacy_flag, warn_legacy_kwargs
 
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,30 @@ def compute_noise_estimation_impl(
     ValueError
         If Stage 1 dependencies are not met or parameters are invalid
     """
+    warn_legacy_kwargs(
+        func_name="estimate_noise",
+        legacy_kwargs={
+            "skew_target": skew_target,
+            "min_bin_fraction": min_bin_fraction,
+            "smoothing_window_mhz": smoothing_window_mhz,
+            "min_noise_fraction": min_noise_fraction,
+        },
+        migration_hint=(
+            "use settings=NoiseSettings(...) or preset='name' to drive "
+            "Stage 2 from the settings resolver"
+        ),
+    )
+    if from_saved_params:
+        warn_legacy_flag(
+            func_name="estimate_noise",
+            flag_name="from_saved_params",
+            migration_hint=(
+                "drop from_saved_params=True; a no-kwargs follow-up call "
+                "now inherits the persisted stage2_noise settings block "
+                "automatically via the resolver"
+            ),
+        )
+
     # Compute ComplexFT on-demand using Stage 1 implementation (correct architecture)
     try:
         # Check that Stage 1 parameters are available (Stage 1 dependency)

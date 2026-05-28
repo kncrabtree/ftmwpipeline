@@ -38,7 +38,12 @@ from ftmwpipeline.core.tau_calibration_settings import (
     TauCalibrationSettings,
 )
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Propagation tests deliberately exercise the legacy per-knob kwarg
+    # path; suppress the expected deprecation noise.
+    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
+]
 
 
 class _CalibIntercepted(RuntimeError):

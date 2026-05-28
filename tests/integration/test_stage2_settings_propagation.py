@@ -25,7 +25,13 @@ import pytest
 from ftmwpipeline._internal import stage2_impl
 from ftmwpipeline.core.noise_settings import NoiseSettings
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # The propagation tests parametrize over the legacy per-knob kwarg
+    # path on purpose -- the deprecation warning fires there as expected
+    # and is uninformative for these tests.
+    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
+]
 
 
 class _CalibIntercepted(RuntimeError):

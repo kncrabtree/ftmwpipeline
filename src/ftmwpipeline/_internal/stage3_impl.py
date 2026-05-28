@@ -44,6 +44,7 @@ from ..preprocessing.peak_detection import (
     classify_by_snr,
     detect_peaks,
 )
+from .deprecation import warn_legacy_kwargs
 from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.peak_detection_settings_serialization import (
     load_peak_detection_settings_from_h5,
@@ -377,6 +378,24 @@ def detect_peaks_impl(
     full peak list (user grid) plus diagnostics; also writes ``/stage3_peaks``
     and marks the stage done.
     """
+    warn_legacy_kwargs(
+        func_name="detect_peaks",
+        legacy_kwargs={
+            "min_snr": min_snr,
+            "weak_medium_snr": weak_medium_snr,
+            "medium_strong_snr": medium_strong_snr,
+            "sg_window": sg_window,
+            "sg_order": sg_order,
+            "primary_window": primary_window,
+            "min_exclusion_mhz": min_exclusion_mhz,
+            "run_gap_pass": run_gap_pass,
+        },
+        migration_hint=(
+            "use settings=PeakDetectionSettings(...) or preset='name' to "
+            "drive Stage 3 from the settings resolver"
+        ),
+    )
+
     if preset is not None and settings is not None:
         raise ValueError(
             "'preset' and 'settings' are alternative ways to populate "

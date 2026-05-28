@@ -84,7 +84,12 @@ class TestPathPresetResolution:
         assert s.tau.max_decay_factor == 4.0
 
     def test_load_from_path_legacy_fit_wrapper(self, tmp_path) -> None:
-        """The ``fit:`` wrapper is a back-compat shim for pre-rename presets."""
+        """The ``fit:`` wrapper is a back-compat shim for pre-rename presets.
+
+        Loading a ``fit:``-wrapped preset still parses correctly but emits
+        a ``DeprecationWarning`` directing the author to the new
+        ``stage5:`` spelling.
+        """
         p = tmp_path / "legacy.yaml"
         p.write_text(
             "name: legacy_preset\n"
@@ -93,7 +98,8 @@ class TestPathPresetResolution:
             "  tau:\n"
             "    max_decay_factor: 4.0\n"
         )
-        s = load_preset(p)
+        with pytest.warns(DeprecationWarning, match="'fit:' wrapper is deprecated"):
+            s = load_preset(p)
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
         assert s.tau.max_decay_factor == 4.0
 

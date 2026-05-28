@@ -49,6 +49,7 @@ from ..io.tau_calibration_serialization import (
 from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
 )
+from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
 from .stage2_impl import _update_stage_completion
@@ -142,6 +143,26 @@ def calibrate_tau_impl(
         ``{"tau_calibration": TauCalibrationResult, "parameters_used": dict,
         "status": "success"}``.
     """
+    warn_legacy_kwargs(
+        func_name="calibrate_tau",
+        legacy_kwargs={
+            "n_seg": n_seg,
+            "t_sigma": t_sigma,
+            "tau_max_us": tau_max_us,
+            "rss_gate_factor": rss_gate_factor,
+            "sigma_time": sigma_time,
+            "min_contributors": min_contributors,
+            "sigma_tau_fraction_max": sigma_tau_fraction_max,
+            "bimodality_dominant_fraction": bimodality_dominant_fraction,
+            "compute_band_majorities": compute_band_majorities,
+            "min_contributors_per_band": min_contributors_per_band,
+        },
+        migration_hint=(
+            "use settings=TauCalibrationSettings(...) or preset='name' to "
+            "drive Stage 2b from the settings resolver"
+        ),
+    )
+
     file_path_obj = Path(file_path)
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:

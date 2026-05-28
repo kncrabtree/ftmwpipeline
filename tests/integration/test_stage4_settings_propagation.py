@@ -25,7 +25,12 @@ import pytest
 from ftmwpipeline._internal import stage4_impl
 from ftmwpipeline.core.window_planning_settings import WindowPlanningSettings
 
-pytestmark = [pytest.mark.integration]
+pytestmark = [
+    pytest.mark.integration,
+    # Propagation tests deliberately exercise the legacy per-knob kwarg
+    # path; suppress the expected deprecation noise.
+    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
+]
 
 
 class _CalibIntercepted(RuntimeError):

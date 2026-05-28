@@ -42,6 +42,7 @@ from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
     build_window_plan,
 )
+from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -148,6 +149,24 @@ def assign_windows_impl(
         If Stage 3 has not been completed, or if ``settings=`` and ``preset=``
         are both supplied.
     """
+    warn_legacy_kwargs(
+        func_name="assign_windows",
+        legacy_kwargs={
+            "edge_m": edge_m,
+            "trim_m": trim_m,
+            "edge_threshold": edge_threshold,
+            "max_window_width_mhz": max_window_width_mhz,
+            "min_freeze_snr": min_freeze_snr,
+            "min_window_half_width_mhz": min_window_half_width_mhz,
+            "magnitude_attachment_threshold": magnitude_attachment_threshold,
+            "tau_us": tau_us,
+        },
+        migration_hint=(
+            "use settings=WindowPlanningSettings(...) or preset='name' to "
+            "drive Stage 4 from the settings resolver"
+        ),
+    )
+
     if preset is not None and settings is not None:
         raise ValueError(
             "'preset' and 'settings' are alternative ways to populate "

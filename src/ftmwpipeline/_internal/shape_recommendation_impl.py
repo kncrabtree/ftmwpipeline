@@ -43,6 +43,7 @@ from ..io.stage_fit_settings_serialization import (
 from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
 )
+from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
 from .tau_settings_resolution import (
@@ -147,6 +148,26 @@ def recommend_shape_impl(
         returned, but Stage 5 won't pick it up until a calibration is
         present).
     """
+    warn_legacy_kwargs(
+        func_name="recommend_shape",
+        legacy_kwargs={
+            "n_seg": n_seg,
+            "t_sigma": t_sigma,
+            "tau_max_us": tau_max_us,
+            "rss_gate_factor": rss_gate_factor,
+            "sigma_time": sigma_time,
+            "snr_min": snr_min,
+            "tau_bound_lo": tau_bound_lo,
+            "tau_bound_hi": tau_bound_hi,
+            "tau_G_seeds": tau_G_seeds,
+            "pure_margin_threshold": pure_margin_threshold,
+        },
+        migration_hint=(
+            "use settings=TauCalibrationSettings(...) or preset='name' to "
+            "drive Stage 2b from the settings resolver"
+        ),
+    )
+
     file_path_obj = Path(file_path)
 
     explicit = _build_explicit_from_kwargs(
