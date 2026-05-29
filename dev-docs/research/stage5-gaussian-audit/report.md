@@ -442,10 +442,12 @@ erratic bins (which have large frame-to-frame spread) or clean decays.
 
 ### Synthesis: a joint gate
 
-The two detectors are complementary, neither a superset (the STFT misses
+The two detectors are complementary in principle (the STFT misses
 29440/28460/39820 that the frequency test catches -- 29440 is flat +
-saturated but `discard`, STFT SNR 4.2 < t_sigma 5; the frequency test
-misses the split-bin spurs the STFT catches). A true CW spur is **flat in
+saturated but `discard`, STFT SNR 4.2 < t_sigma 5; in principle a split-bin
+spur the frequency test misses could rail τ to saturation and be caught by
+the STFT, though on 2638 the split-bin spurs 39830/39930 are flagged by
+neither — see the production check below). A true CW spur is **flat in
 time** (STFT saturation) **and** at integer-MHz **and** sub-resolution
 narrow; the erratic beat/blend false positives are neither flat nor
 integer-MHz. So the design promotes the existing Stage 2b catalogue and
@@ -489,9 +491,20 @@ real-line false-positive the acceptance gate forbids. The 6 integer-MHz
 (saturation), persisted as a per-cluster `saturated` flag on
 `SpurCluster`. The frequency-domain narrowness detector remains the
 zero-false-positive primary (it independently catches 34560/29440 that
-are flat-but-not-saturated or below `t_sigma`); the flat catalogue adds
-the split-bin spurs. Neither is a superset; the joint
-integer-MHz ∧ (narrow ∨ saturated) gate stands.
+are flat-but-not-saturated or below `t_sigma`). The flat catalogue's role
+is **corroborative, not additive** on 2638: its 4 saturated clusters
+(30720/32960/35840/39040) are a strict *subset* of the narrow detections
+(production check below), so the saturated half upgrades those four to
+`narrow+saturated` provenance but gates no spur the narrowness test
+missed. The split-bin spurs 39830/39930 are caught by **neither** detector
+here — their split energy fails the narrowness ratio and is too weak/erratic
+in the STFT to rail τ to saturation, so they never enter the `spur_by_tau`
+set (consistent with the flatness table above, which enumerates exactly the
+6 saturated bins and excludes them). The mechanism — a saturated catalogue
+*can* gate a split-bin spur the narrowness test misses — holds on synthetic
+input (`test_gate_union_of_narrow_and_saturated`); it just does not fire on
+this fixture. The joint integer-MHz ∧ (narrow ∨ saturated) gate stands as a
+safe union: on 2638 the union equals the narrow set.
 
 ### Production wiring & validation (2638, Gaussian)
 
@@ -527,5 +540,81 @@ windows w88/126/193/372/386 plus w62, an unclassified spur the gate
 caught); **no real molecular line was removed** (the broad integer-MHz
 lines lack the narrowness signature and are never gated). The fixture's
 persisted Stage 2b catalogue predates the `saturated` flag, so this run
-exercised the frequency-domain detector alone; the flat-catalogue half
-adds split-bin spurs once Stage 2b is re-run.
+exercised the frequency-domain detector alone.
+
+#### Saturated-catalogue path exercised end-to-end (2638, Gaussian)
+
+The flat-catalogue half was then run in production. On a scratch copy,
+`calibrate_tau` + `calibrate_tau_G` were re-run (populating the per-cluster
+`saturated` flag), Stages 3–5 re-run, and the spur-on fit compared against
+both spur-off and the frequency-domain-only run
+(`scratch/validate_spur_saturated.py`). Findings:
+
+- **`saturated` populates as the flatness table predicts.** The persisted
+  `/stage2b_tau_G_calibration/spur_clusters/saturated` carries 4 saturated
+  clusters — 30720, 32960, 35840 (+ skirts grouped into the cluster), 39040
+  — exactly the 6 `spur_by_tau` bins of the flatness-exposure measurement.
+  The Lorentzian twin's catalogue agrees.
+- **The gate activates but adds nothing on this fixture.** The gated set is
+  the *same 8 spurs* as the frequency-domain-only run (28460, 29440, 30720,
+  32960, 34560, 35840, 39040, 39820); the saturated half upgrades 4 of them
+  to `source="narrow+saturated"` and leaves 28460/29440/34560/39820 as
+  `narrow` (flat-but-not-saturated or sub-`t_sigma`). No `saturated`-only
+  spur appears: the saturated set is a strict subset of the narrow set.
+- **Split-bin spurs 39830/39930 do not appear** in either catalogue (no
+  cluster within 0.6 MHz) and are gated by neither detector — correcting the
+  earlier expectation that the flat catalogue would rescue them (detail in
+  the next subsection).
+- **Zero regression.** χ²ᵣ recovery is identical (sum Δχ²ᵣ = 111.5 vs
+  spur-off, same as the frequency-domain-only run); window-id sets match
+  across all three arms; no non-spur window loses a peak vs the
+  frequency-domain run; w245 keeps its 3 real lines; total fitted peaks
+  625 = 625.
+
+So the saturated path is verified correct and safe end-to-end; on 2638 it
+is redundant with the narrowness detector rather than additive. It earns
+its place as a backstop for instruments/fixtures where a split-bin clock
+harmonic *does* rail τ to saturation while failing the narrowness ratio —
+not demonstrated on this dataset.
+
+#### Why 39830 / 39930 fall through both detectors (and what happens to them)
+
+Diagnosed bin-by-bin (`scratch/diag_39830_39930.py`). Both misses are for
+honest threshold reasons, and the two thresholds fail on the *same* feature
+from opposite directions — a **weak tone whose energy splits across two
+active-FT bins straddling the integer**.
+
+*Frequency-domain (narrowness) miss — a half-bin grid-aliasing effect.* The
+active-FT bin spacing is 79.05 kHz, so 10 MHz = 126.5 bins: consecutive
+×10-MHz clock harmonics drift half a bin against the FFT grid. 39820 lands a
+bin 1.8 kHz off the integer (all energy in one bin → ratio 0.22, SNR 6.1 →
+**gated**); its neighbours 39810/39830/39930 land ~38 kHz off (half a bin),
+so the tone splits across two bins. The detector keys on the bin nearest the
+integer and tests `max(neighbour)/peak ≤ 0.30`, but the split puts the
+*larger* lobe in the off-integer neighbour — ratio 1.41 (39830), 1.02
+(39930), 1.14 (39810), all ≫ 0.30. A split-bin spur reads as a *broad*
+feature to the narrowness test; 39930 additionally drops its nearest-integer
+bin to SNR 4.2 < 5. Whether a clock harmonic gates is thus partly an accident
+of grid alignment.
+
+*STFT (saturated) miss — sub-threshold per-frame SNR.* Every bin near
+39810/39830/39930 classifies `cls = 0` (discard), **not** because it looks
+like a decaying line — several are genuinely flat (τ railed to τ_max,
+`saturated=True`, e.g. 39930.04 and all of 39810) — but because the per-frame
+SNR is 1.8–4.2, below `t_sigma = 5`. The 10-frame STFT puts ⅒ the energy in
+each frame (larger `sigma_frame`), so `is_spur = (SNR ≥ t_sigma) ∧
+(saturated ∨ aicc)` fails its first clause. The flatness is real but never
+recorded as a `SpurCluster` (clusters are built only from `cls == 1` bins).
+So the full-record FT sees enough SNR but the split kills narrowness; the
+STFT sees the flatness but not enough per-frame SNR. The split-bin spurs sit
+exactly in the gap.
+
+*What the pipeline does with them.* They are **not** masked: Stage 3 detects
+them as `WEAK` peaks (39830.00 @ SNR 7.6, 39930.00 @ SNR 4.7, 39810.00 @ SNR
+6.6) and Stage 5 fits them as ordinary lines (w387, w390, w385 respectively).
+Because they are *weak* tones, a finite-T line shape fits a 2-bin feature
+acceptably — those windows floor at χ²ᵣ ≈ 1.3–1.8 (cf. the strong harmonic
+w287 at 58.5 pre-mask), so they were never in the ~106-unit spur bucket and
+missing them costs **~0 χ²ᵣ**. The cost is **line-list pollution**: three
+spurious weak lines (39810/39830/39930) enter the catalogue as if molecular.
+See the follow-up below.

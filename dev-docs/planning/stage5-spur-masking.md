@@ -60,8 +60,11 @@ the persistence half should key on **flatness / saturation** (`spur_by_tau`, or
 a slope-equivalence test) rather than the raw `cls == 1`, since true spurs are
 flat while the beat/blend bins have large frame-to-frame spread. (No real line
 trips saturation: real τ ≤ 9 µs ≪ τ_max = 100 µs, so a genuine line always
-shows decay.) Persistence also rescues the split-bin spurs the frequency test
-misses. Neither detector is a superset of the other.
+shows decay.) Persistence can in principle rescue a split-bin spur the
+frequency test misses (one that rails τ to saturation while its split energy
+fails the narrowness ratio); on the 2638 fixture this did not occur — the
+saturated set is a subset of the narrow detections and the split-bin spurs
+39830/39930 are caught by neither (see "Implementation status").
 
 **Gated spur set** = integer-MHz active-FT bins that are *either* sub-resolution
 narrow (frequency test) *or* flagged persistent by the Stage 2b catalogue. Each
@@ -169,6 +172,13 @@ flows through all three interfaces via the existing settings plumbing.
 - [x] integration validation on 2638 (sum Δχ²ᵣ = 111.5 over the classified
       spur windows; w245 keeps its 3 real lines; zero real-line removals);
       audit report § "Production wiring & validation" updated
+- [x] saturated-catalogue path exercised end-to-end on 2638
+      (`scratch/validate_spur_saturated.py`): re-running Stage 2b populates 4
+      saturated clusters (30720/32960/35840/39040), the gate upgrades those to
+      `narrow+saturated`, χ²ᵣ recovery and real-line safety are unchanged
+      (sum Δχ²ᵣ = 111.5, 625 = 625 peaks). On this fixture the saturated set is
+      a subset of the narrow detections — corroborative, not additive; the
+      split-bin spurs 39830/39930 are gated by neither detector
 - [ ] (optional, follow-up) Stage 4 spur-only window drop — currently spur-only
       windows fit to the null model (no candidates survive nomination) and
       contribute ~noise χ²ᵣ, so this is a cleanliness optimisation, not load-bearing
@@ -199,10 +209,30 @@ flows through all three interfaces via the existing settings plumbing.
 
 - **Stage 4 spur-only window drop.** Optional cleanliness step (spur-only
   windows already fit to the null model and contribute ~noise χ²ᵣ).
-- **Flat-catalogue exercise.** The 2638 fixture's persisted Stage 2b catalogue
-  predates the `saturated` flag, so the validation ran the frequency-domain
-  detector alone; re-running Stage 2b populates the flag and adds the split-bin
-  spurs the frequency test misses.
+- **Split-bin / weak clock harmonics (catalogue pollution).** On 2638 the
+  ×10-MHz harmonics 39810/39830/39930 are gated by neither detector: the
+  active-FT bin grid (79.05 kHz) puts them half a bin off the integer so their
+  energy splits across two bins (narrowness ratio > 1, the off-integer lobe is
+  larger), while the 10-frame STFT sees their flatness but at per-frame SNR
+  < `t_sigma=5` so they classify `cls=0`, not `cls=1`. They are detected as
+  `WEAK` peaks and fit as ordinary weak lines (w385/387/390) at χ²ᵣ ≈ 1.3–1.8,
+  so the χ²ᵣ cost is ~0 — but they **pollute the line list** with 3 spurious
+  lines. Closing this would need either a dedicated split-bin test (energy
+  split across two adjacent bins straddling a shared integer MHz) or a lower
+  STFT SNR floor, both with real-line false-positive risk for ~0 χ²ᵣ gain.
+  Deferred; diagnosed in `scratch/diag_39830_39930.py` and the audit report
+  § "Why 39830 / 39930 fall through both detectors".
+- **Flat-catalogue exercise.** *Done.* The 2638 fixture's persisted Stage 2b
+  catalogue predated the `saturated` flag, so the shipped validation ran the
+  frequency-domain detector alone. Re-running Stage 2b (Lorentzian + Gaussian
+  twins) populates the flag — 4 saturated clusters (30720/32960/35840/39040),
+  matching the flatness-exposure measurement — and the gate upgrades those to
+  `narrow+saturated`. It does **not** add the split-bin spurs 39830/39930 the
+  earlier write-ups expected: those rail τ to neither saturation nor pass the
+  narrowness ratio on 2638, so the saturated set is a strict subset of the
+  narrow detections (corroborative, not additive). No regression vs the
+  frequency-domain run. See `scratch/validate_spur_saturated.py` and the audit
+  report § "Saturated-catalogue path exercised end-to-end".
 
 ## Out of scope
 
