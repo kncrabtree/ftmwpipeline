@@ -209,3 +209,229 @@ weak-blend members: w020, w075, w159, w189, w303 (and w218, w360 as
 - This validation run is the baseline; future structural changes diff
   per-window chi2r against
   `scratch/stage5-validation-rescue_prominence_threshold__1p5__gaussian/`.
+
+## Shape-escalation diagnostic -- per-peak tau or Voigt? (item 2 fork)
+
+`probe_shape_escalation.py` settles the escalation-target fork for
+structural work item 2 *before* any production code moves. For each of
+the worst strong-line `shape_error` windows (w236, w308, w318, w368)
+plus w360 as a "large chi2r but excellent fit" control, it takes the
+shipped converged free-peak set as the starting model and runs a
+fixed-K joint refit under three model forms, holding the
+frozen-contributor background fixed (subtracted once at the persisted
+shared tau) so all three variants see identical data and starts -- only
+the free-peak model form differs:
+
+* `baseline` -- shared-tau single shape (reproduces the shipped floor),
+* `per_peak_tau` -- the dominant (highest-SNR) free line carries its own
+  tau (calibrated band, bidirectional-Gaussian penalty toward `tau_maj`),
+* `voigt` -- the dominant line refit as a finite-T Voigt (shared `tau_G`
+  Gaussian core + its own free Lorentzian `tau_L`), reusing the `wofz`
+  path; the prototype `h_T_voigt` is checked to reduce to `h_T_gaussian`
+  as `tau_L -> inf`.
+
+The shared / per-peak tau carry the same calibrated bounds + tau penalty
+production uses; the phase/amp penalties are dropped (the shipped peaks
+are well-separated and sensibly-amplituded, so those penalties are
+near-zero and irrelevant to the residual floor under test). Output:
+`data/shape_escalation_per_window.csv`.
+
+### Results
+
+The baseline refit reproduces the shipped per-window chi2r (w308
+93.0 -> 93.3, w368 40.3 -> 40.5), validating the harness.
+
+| window | dom SNR | baseline chi2r / rel% | per_peak_tau chi2r / rel% | voigt chi2r / rel% | voigt tau_L |
+|---|---:|---|---|---|---:|
+| w236 | 183 | 12.22 / 7.29 | **10.30 / 7.65** | 12.34 / 7.46 | 500 (railed) |
+| w308 | 401 | 93.28 / 16.23 | **54.88 / 14.39** | 55.56 / 14.37 | 4.8 |
+| w318 | 248 | 18.10 / 8.02 | 18.03 / 7.65 | 18.26 / 8.07 | 500 (railed) |
+| w368 | 353 | 40.50 / 10.98 | **35.05 / 9.30** | 40.80 / 11.00 | 500 (railed) |
+| w360 (ctrl) | 58 | 3.91 / 5.21 | 3.93 / 4.72 | 3.93 / 5.39 | 500 (railed) |
+
+(`rel%` = max `|residual| / |X|` within 3 FWHM of the dominant line.)
+
+### Verdict: per-peak tau, not Voigt
+
+**The residual is not Voigt-shaped.** In 4 of 5 windows the Voigt
+optimizer drove `tau_L` to its no-wing upper bound (500 us = pure
+Gaussian), i.e. it *declined* the Lorentzian-wing freedom. Only the
+tightly-blended w308 pulled a real wing (`tau_L = 4.8 us`), and there it
+merely *tied* `per_peak_tau` (chi2r 55.6 vs 54.9) -- the Voigt freedom
+reproduces what per-peak tau does more cheaply. Voigt never beats
+per_peak_tau in any probed window.
+
+**Per-peak tau is the lever the residual responds to**, where it
+responds at all: per_peak_tau is the best or tied-best on both chi2r and
+relative residual in every window, and -- importantly -- it *improves*
+the w360 control's relative residual (5.21 -> 4.72 %) rather than
+perturbing it, while Voigt slightly perturbs it (5.39 %). So *if* item 2
+escalates, the target would be the **smaller per-peak-tau refactor** (tau
+moves from window-level to optionally per-peak in
+`_pack`/`_unpack`/`model_jacobian`), **not** a new Voigt `PeakShape`. The
+decision on whether to escalate at all is below.
+
+**But per-peak tau does not reach the noise floor either.** It knocks
+~5-40 % off chi2r and leaves a 7-14 % relative-residual wall on the
+worst windows. The wall does not respond to Voigt, so it is *not*
+single-line functional-form mismatch -- on the blended windows (w308,
+w318) it is residual blend / contributor structure. w318 in particular
+moves under *no* lever (all three ~18.0), so it is not a
+shape-escalation target at all; its chi2r belongs to another bucket
+(blend / contributor). This sharpens the item-2 escalation gate: trigger
+on a high-chi2r *isolated* strong line (SNR-gated, tie to
+`tau.fit_tau_min_snr`), give it its own tau, and do **not** expect
+escalation to rescue tightly-blended windows -- those route to the
+blend / freeze-guard work (items 3 / O4-2), not shape escalation.
+
+### How the tau values move under per-peak tau
+
+Calibrated anchor `tau_maj = 6.41 us` (Gaussian `tau_G_maj`) on every
+window. In the per-peak model the weak lines share `tau_w` and the
+dominant carries `tau_d`; the baseline is forced onto one shared tau:
+
+| window | dom SNR | baseline tau | tau_w (weak) | tau_d (dom) | tau_d - tau_w | delta chi2r |
+|---|---:|---:|---:|---:|---:|---:|
+| w236 | 183 | 7.01 | 6.66 | 7.48 | +0.82 | -1.9 |
+| w308 | 401 | 5.90 | 8.41 | 4.78 | -3.63 | -38.4 |
+| w318 | 248 | 5.80 | 5.79 | 5.94 | +0.15 | -0.07 |
+| w368 | 353 | 5.06 | 4.52 | 5.54 | +1.02 | -5.4 |
+| w360 (ctrl) | 58 | 6.09 | 6.11 | 6.27 | +0.16 | +0.02 |
+
+The split tracks the chi2r movement exactly: where per-peak tau helped
+(w236, w368, w308) the two tau's separated; where it didn't (w318, the
+w360 control) they stayed together (< 0.16 us apart) and chi2r barely
+moved -- the optimizer self-selects. The shared baseline tau is a forced
+compromise dragged toward the strong line: in w308 freeing the dominant
+lets the weak lines relax *up* to 8.4 us (narrower) while the dominant
+drops to 4.78 us (broader), straddling the baseline 5.90 -- and the weak
+tau moves as much as the dominant, so the baseline was mis-fitting the
+whole window to accommodate the strong line, not just the strong line
+itself. w236 confirms the user's "tau higher than tau_G_maj" note
+(`tau_d = 7.48` vs majority 6.41).
+
+Caveat reinforcing the isolated-line gate: in the blended w308 the
+dominant pulled *down* (broader) -- per-peak tau partly broadened the
+strong line to soak up its unresolved partner (the over-broadening basin
+the lambda=50 tau penalty guards against; it was active and still
+allowed 4.78). On a blend, per-peak tau can mis-attribute blend
+structure to the strong line's width rather than fix a real decay
+mismatch -- another reason the escalation gate should fire on *isolated*
+strong lines.
+
+### Decision: park shape escalation (item 2)
+
+The fork resolves to per-peak tau over Voigt *if* escalating -- but the
+case for escalating at all is weak on this fixture, so item 2 is parked:
+
+- The chi2r gains are small outside the confounded blend (w236 -1.9,
+  w368 -5.4), and the relative-residual wall barely moves.
+- Fitting two nearby lines with different tau is not physically
+  justified without an independent argument for why their decay
+  constants differ; at this SNR, with no ground truth, we can't make
+  one. The known frequency-dependence of tau is *already* captured
+  band-wise by the Stage 2b STFT calibration (tau decreasing with
+  frequency across its bands); a per-line tau is a finer effect this
+  fixture cannot cleanly support.
+- The tau penalty (`lambda = 50`) may be slightly tight -- it can hold
+  tau short of its preferred value -- but `lambda = 0` overfits, and
+  re-tuning lambda on a single fixture trades one un-grounded knob for
+  another.
+- The residual per-peak tau leaves is mostly blend / contributor
+  structure (w308, w318), which routes to items 1 and 3, not shape
+  escalation.
+
+Revisit with a higher-SNR fixture, where the residual can be decomposed
+and a power / pressure series can ground the physics (radiation damping,
+saturation, self-absorption all predict tau *down* on strong lines; the
+isolated-line tau *up* seen here is unexplained by those and by blends).
+For now the finding is documented and the shipped shared-tau model
+stands -- the pipeline's purpose, frequencies and intensities, is well
+served by it. This was a throwaway diagnostic; the per-peak-tau plumbing
+and `h_T_voigt` prototype live only in `probe_shape_escalation.py` and do
+not move into production.
+
+## Spur-detection prototype (item 1)
+
+`probe_spur_detector.py` validates structural work item 1 -- detect clock
+/ LO spurs and mask them from the fit -- before any production wiring.
+
+### Fingerprint (verified, not assumed)
+
+Two robust discriminators, confirmed on the active-FT:
+
+* **exact integer-MHz center** -- every classified spur sits within a
+  fraction of a bin of an integer MHz.
+* **sub-resolution narrowness** -- a persistent CW tone is
+  transform-limited by the full boxcar (first null ~1/T ~ one bin), so
+  its peak bin is 10-25x its neighbours, whereas a real finite-T line has
+  a coherent leakage skirt where adjacent bins are comparable.
+
+The "energy in only one quadrature" criterion from the earlier item-1
+note is **false** -- both probed spurs show comparable Re/Im (the spur's
+phase relative to t0 is arbitrary), so it is dropped.
+
+### Frequency-domain detector: catches the strong spurs, zero false positives
+
+Integer-MHz + narrowness on the active-FT |X| flags 8 spur bins (29440,
+30720, 32960, 34560, 35840, 39040, plus weaker 28460/39820). The
+narrowness gate **spared all 354 real molecular lines** that sit near an
+integer MHz, including the SNR-414 line at 38861 (ratio 1.10) -- real
+lines are broad, spurs are not. Misses: split-bin spurs (39830/39930,
+where the integer falls ~38 kHz *between* bins so energy splits across
+two comparable bins) and near-noise spurs (39810).
+
+### Remediation must be a cluster mask, not a single bin
+
+The original "single non-zero bin" framing under-recovers badly. χ²ᵣ vs
+mask half-width on the affected windows, and the total sum(chi2r)
+reduction:
+
+| mask half-width (bins) | sum(chi2r) recovered |
+|---|---:|
+| +-0 (single bin) | 22.9 |
+| +-1 | 88.1 |
+| +-2 | 98.0 |
+| +-3 | 102.8 |
+
+A strong CW tone is a full-window sinc whose skirt sits ~8 sigma above
+noise for +-2-3 bins (the neighbours look small only because sigma is
+tiny). A +-2-3 bin cluster mask recovers essentially the whole ~106
+excess-chi2r spur bucket; a single bin recovers a fifth of it. w245
+floors at ~5 even fully masked -- it is a spur *plus* real lines
+(classified `other`), correctly not over-recovered.
+
+### The temporal-persistence detector already exists in Stage 2b
+
+Stage 2b's tau-calibration STFT classifies every frequency bin by
+fitting exponential-vs-constant across the STFT frames (AICc); a bin is
+labelled **spur** when the constant (persistent) model wins or tau
+saturates at tau_max (CW tone, tau -> inf). It groups adjacent
+sinc-skirt bins into a `SpurCluster` (`center_freq_mhz`, `bin_indices`)
+and **persists the catalogue** at `/stage2b_*/spur_clusters`. This is the
+temporal-persistence test in a more rigorous form than a first/last
+ratio, and the cluster `bin_indices` give a *data-driven* mask extent.
+
+**But the persisted catalogue cannot be used directly for masking.** It
+carries 135 clusters and the constant/saturation criterion conflates
+true CW spurs with **long-tau strong real lines** -- e.g. 33421.1 MHz
+(real, SNR 187) and 38744.2 MHz (real, SNR 121) are in it. Masking those
+would delete signal.
+
+### Synthesis: a joint gate
+
+The two detectors are complementary, neither a superset (the STFT misses
+29440/28460/39820 that the frequency test catches; the frequency test
+misses the split-bin spurs the STFT catches). A true CW spur is
+persistent (STFT) **and** at integer-MHz **and** sub-resolution-narrow;
+a long-tau real line is persistent but neither integer-MHz nor narrow. So
+the design promotes the existing Stage 2b catalogue and consumes it
+through a **joint integer-MHz ∧ persistence gate** -- integer-MHz is the
+guard against the long-tau-line false positive, persistence rescues the
+split-bin case. Remediation is a cluster mask over the gated spur's bins,
+used for both peak-nomination exclusion and the χ²/residual sum;
+spur-only windows can be dropped pre-Stage-5. The residual mask is still
+required for spurs that share a window with real lines (w245, w287).
+
+Design and task breakdown:
+[`../../planning/stage5-spur-masking.md`](../../planning/stage5-spur-masking.md).
