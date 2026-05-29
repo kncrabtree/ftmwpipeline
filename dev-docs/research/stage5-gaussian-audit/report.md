@@ -168,6 +168,32 @@ in the dependent window -- stops one bad window from poisoning a
 four-window chain. Same mechanism behind w309 and w367
 (`contributor_error`). This is the O4-2 / ROADMAP thread #6 + #11 gap.
 
+> **Resolution: this item was redesigned, not implemented as stated.** Two
+> prototype rounds falsified the framing on 2638 (probes
+> `scratch/probe_freeze_w223.py`, `probe_skirt_relaxation.py`,
+> `probe_baseline_trigger.py`):
+> - **Freeze guard inert.** w223's contributor is *tightly* pinned
+>   (σ_A/A ≈ 0.001) despite χ²ᵣ=202; fixture-wide, χ²ᵣ and per-peak σ are
+>   anti-correlated (high-χ²ᵣ windows are strong lines with tight σ), so a
+>   "bad χ²ᵣ AND loose σ" gate never fires and σ is defeated by shape-mismatch
+>   overconfidence. The guard also cannot touch w223's own 202 (a core/doublet
+>   shape problem) — only the ~11-unit downstream shadow.
+> - **Skirt relaxation has no slack.** A *sub-uncertainty* local τ/scale
+>   relaxation of the frozen skirt recovers only ~1.4 χ²ᵣ units; the relaxation
+>   that actually cleans the wing would inflate the dominant window's χ²ᵣ ~100×
+>   (it is a different line).
+>
+> The downstream residual is a *coherent leakage wing* (systematic positive-Im,
+> persisting across windows) from a strong line whose single-shape skirt is
+> mismodeled. The adopted fix (per-line-extraction goal, not global
+> consistency) is an evidence-triggered **low-order complex baseline** nuisance
+> term, triggered by `residual_edge_coherence > ~3.5` (recall 0.89, zero
+> harmful fires; 35 beneficial windows fixture-wide — the coarse
+> fixed-contributor rule misses the biggest wins w152/w150 which carry no
+> contributor). Line σ from the joint covariance keeps the uncertainties fair
+> (σ_A inflation ≈ ×1.01). See
+> [`../../planning/stage5-leakage-wing-baseline.md`](../../planning/stage5-leakage-wing-baseline.md).
+
 ### Linkage: `overfit` is mostly a symptom of `shape_error`
 
 The 11 `overfit` windows carry only 15 chi2 units and median chi2r 1.4.
