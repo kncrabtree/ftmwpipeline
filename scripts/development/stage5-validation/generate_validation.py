@@ -86,7 +86,11 @@ from ftmwpipeline.fitting.window_fit import (
     WindowFitResult,
 )
 from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
-from ftmwpipeline.visualization.fit_visualization import plot_spectrum_fit
+from ftmwpipeline.visualization.fit_visualization import (
+    plot_spectrum_fit,
+    _window_model_on_persisted_grid,
+    _shade_windows,
+)
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -104,6 +108,24 @@ FTMW_PATH = OUTPUT_DIR / "exp_2638.ftmw"
 # instead of a polyline. Residuals, histograms, and χ² stats always use the
 # data grid (one model evaluation per data bin) so they remain fit-faithful.
 MODEL_OVERSAMPLE = 8
+
+# Display-only zero-padding factor for the |X| panel of the per-window
+# data+model plot. The active-FT used for fitting runs at native resolution
+# (~79 kHz/bin on 2638 ≈ 1.3 bins per FWHM); plotting at native resolution
+# makes broadened molecular lines and 1-bin clock spurs look similar. A 2×
+# zero-padded FFT reveals the sinc-interpolated profile between bins --
+# real lines fan out smoothly, clock spurs keep a narrow sinc shape. Strictly
+# cosmetic: residual / χ² / AIC / noise calculations stay on the canonical
+# native grid. Mirrors the convention from
+# ``scripts/development/stage5-validation/compare_shapes_per_window.py``.
+DISPLAY_PAD_FACTOR = 2
+
+# Display-only x-axis trim for the top-level ``overview.png``. The active-FT
+# spans the full baseband range (15.96-40.96 GHz on 2638) but only the band
+# above ~26.5 GHz carries molecular signal -- below that the overview reads
+# as out-of-band noise / spurs and dominates the visible scale. Matches the
+# persisted Stage 1 trim onset on 2638.
+OVERVIEW_TRIM_MHZ: Tuple[float, float] = (26500.0, 40000.0)
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +405,126 @@ def _fixed_block(window: FitWindow, peaks: Sequence) -> str:
             f"{'yes' if fc.freeze_eligible else 'NO'} |"
         )
     return "\n".join(lines)
+
+
+def _render_validation_overview(
+    *,
+    frequencies: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    fit: SpectrumFit,
+    sideband,
+    acquisition_us: float,
+    figsize: Tuple[float, float],
+    title: str,
+    style: DisplayStyle,
+    trim_mhz: Tuple[float, float],
+) -> plt.Figure:
+    """Two-panel overview with display-style applied.
+
+    Mirrors ``fit_visualization._plot_overview`` but (a) restricts the x
+    axis to ``trim_mhz`` so the visible band is the molecular signal
+    region rather than the full active-FT (the lower baseband
+    half is dominated by out-of-band noise / spurs on 2638), and
+    (b) scales magnitudes by ``style.amplitude_scale`` so the y-axis
+    reads in the user's preferred units (e.g. µV).
+    """
+    lo, hi = float(min(trim_mhz)), float(max(trim_mhz))
+    mask = (frequencies >= lo) & (frequencies <= hi)
+    f = frequencies[mask]
+    z = complex_spectrum[mask]
+    sigma = rms_noise[mask]
+    model = _window_model_on_persisted_grid(
+        f, fit, sideband, acquisition_us, 1.0, None,
+    )
+    amp_scale = float(style.amplitude_scale)
+    units_label = style.units_label or ""
+    suffix = f" ({units_label})" if units_label else ""
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=figsize, sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+    ax_top.plot(
+        f, np.abs(z) * amp_scale, color="0.4", lw=0.7, label="data |X|",
+    )
+    ax_top.plot(
+        f, np.abs(model) * amp_scale,
+        color="tab:orange", lw=0.9, label="model |X|",
+    )
+    _shade_windows(ax_top, fit)
+    ax_top.set_xlim(lo, hi)
+    ax_top.set_ylabel(f"|X(f)|{suffix}")
+    ax_top.set_title(title)
+    ax_top.legend(loc="upper right", fontsize=8)
+
+    residual_mag = np.abs(z - model)
+    ax_bot.plot(
+        f, residual_mag * amp_scale,
+        color="tab:red", lw=0.6, label="|residual|",
+    )
+    ax_bot.plot(
+        f, sigma * amp_scale, color="0.4", lw=0.6, ls="--",
+        label="canonical sigma",
+    )
+    _shade_windows(ax_bot, fit)
+    ax_bot.set_xlim(lo, hi)
+    ax_bot.set_xlabel("frequency (MHz)")
+    ax_bot.set_ylabel(f"|residual|{suffix}")
+    ax_bot.legend(loc="upper right", fontsize=8)
+    fig.tight_layout()
+    return fig
+
+
+def _padded_active_ft(
+    fid_samples: np.ndarray,
+    sample_dt_us: float,
+    *,
+    start_us: float,
+    end_us: float,
+    expf_us: Optional[float],
+    probe_freq_mhz: float,
+    sideband,
+    pad_factor: int = DISPLAY_PAD_FACTOR,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Display-only active-FT zero-padded by ``pad_factor`` for the |X| panel.
+
+    Mirrors ``compute_active_ft``'s active-region extraction, optional
+    exponential apodization, and ``rdc`` mean removal, then pads the
+    active region to ``pad_factor × n_active`` samples before the rfft.
+    Returns ``(freq_mhz, complex_spectrum)`` sorted by ascending molecular
+    frequency. Lifted from
+    ``scripts/development/stage5-validation/compare_shapes_per_window.py``
+    so the two scripts share the convention.
+
+    This bypasses ``compute_active_ft`` deliberately: that function runs
+    the FFT at native length (``n_padded`` is informational only,
+    persisted for the noise-variance ``alpha`` factor). Padding here is
+    strictly cosmetic and must not feed into fitting / noise / χ² code.
+    """
+    fid_arr = np.asarray(fid_samples, dtype=float)
+    start_idx = int(np.floor(start_us / sample_dt_us))
+    end_idx = int(np.ceil(end_us / sample_dt_us))
+    start_idx = max(start_idx, 0)
+    end_idx = min(end_idx, fid_arr.size)
+    active = fid_arr[start_idx:end_idx].astype(float, copy=True)
+    n_active = active.size
+    if expf_us is not None and expf_us > 0:
+        t_us = np.arange(n_active) * sample_dt_us
+        active *= np.exp(-t_us / expf_us)
+    active -= active.mean()  # match rdc=True
+    n_pad = int(pad_factor) * n_active
+    padded = np.zeros(n_pad, dtype=float)
+    padded[:n_active] = active
+    spectrum = sample_dt_us * np.fft.rfft(padded)
+    f_bb = np.fft.rfftfreq(n_pad, d=sample_dt_us)
+    s = sideband_sign(sideband)
+    freq = probe_freq_mhz + s * f_bb
+    sort_idx = np.argsort(freq)
+    return (
+        np.ascontiguousarray(freq[sort_idx]),
+        np.ascontiguousarray(spectrum[sort_idx]),
+    )
 
 
 def _compute_window_residual(
@@ -897,6 +1039,8 @@ def _plot_consolidated_detail(
     peak_provenance: Sequence[Tuple[Optional[str], Optional[float], Optional[str]]],
     title: str,
     style: DisplayStyle,
+    freq_padded: Optional[np.ndarray] = None,
+    spec_padded: Optional[np.ndarray] = None,
 ) -> plt.Figure:
     """Render Figure 1 (landscape letter): consolidated per-window detail.
 
@@ -1119,7 +1263,28 @@ def _plot_consolidated_detail(
     _vlines_at_peaks(ax_mag_dat, with_labels=False)
     _plot_data(ax_re_dat, np.real(z_slice), np.real(model_fine), "tab:red")
     _plot_data(ax_im_dat, np.imag(z_slice), np.imag(model_fine), "tab:blue")
-    _plot_data(ax_mag_dat, np.abs(z_slice), np.abs(model_fine), "tab:purple")
+    # |X| data on the 2× zero-padded display grid (cosmetic only -- residuals
+    # below and every χ²/AIC stat above stay on the canonical native grid).
+    # Falls back to the native grid if the padded slice was not provided.
+    if freq_padded is not None and spec_padded is not None:
+        pad_mask = (freq_padded >= min(lo, hi)) & (freq_padded <= max(lo, hi))
+        f_disp = freq_padded[pad_mask]
+        z_disp = spec_padded[pad_mask]
+        ax_mag_dat.plot(
+            f_disp, np.abs(z_disp) * amp_scale,
+            color="#00000066", lw=0.6, zorder=1,
+        )
+        ax_mag_dat.plot(
+            f_disp, np.abs(z_disp) * amp_scale,
+            marker="o", linestyle="None", markersize=1.6,
+            markerfacecolor="black", markeredgecolor="black", zorder=2,
+        )
+        ax_mag_dat.plot(
+            f_fine, np.abs(model_fine) * amp_scale,
+            color="tab:purple", lw=1.2, zorder=3,
+        )
+    else:
+        _plot_data(ax_mag_dat, np.abs(z_slice), np.abs(model_fine), "tab:purple")
     ax_re_dat.set_ylabel(f"Re{amp_unit_suffix}", fontsize=9)
     ax_im_dat.set_ylabel(f"Im{amp_unit_suffix}", fontsize=9)
     ax_mag_dat.set_ylabel(f"|X|{amp_unit_suffix}", fontsize=9)
@@ -1596,6 +1761,8 @@ def _save_consolidated_detail(
     sideband,
     acquisition_us: float,
     style: DisplayStyle,
+    freq_padded: Optional[np.ndarray] = None,
+    spec_padded: Optional[np.ndarray] = None,
 ) -> None:
     """Write ``detail.png`` showing the final consolidated fit (Figure 1)."""
     consolidated_wf = _build_consolidated_fittingresult(
@@ -1636,6 +1803,8 @@ def _save_consolidated_detail(
         peak_provenance=provenance,
         title=title,
         style=style,
+        freq_padded=freq_padded,
+        spec_padded=spec_padded,
     )
     fig.savefig(out_dir / "detail.png", dpi=130)
     plt.close(fig)
@@ -1961,6 +2130,74 @@ def _save_window_artifacts(
     )
 
 
+_WINDOWS_TOML_HEADER = """\
+# Stage 5 per-window classifications -- {variant_id}
+#
+# Cross-iteration stable IDs: ``freq_range_mhz``. ``window_id`` can shift
+# across replan-style re-fits, so the classification analysis filters by
+# freq_range (small tolerance) rather than the integer window id.
+#
+# Convention: empty ``classification`` = "good fit / no concerns".
+# Fill in ONLY for windows that look wrong; the rest stay empty so the
+# typing budget on 380+ windows stays manageable.
+#
+# Allowed ``classification`` values:
+#   * missed_peak         -- a visible peak in |X| has no fitted line
+#   * overfit             -- a fitted peak is noise / shape artifact
+#   * baseline_offset     -- the model floats off the data baseline
+#   * shape_error         -- Lorentzian/Gaussian assumption mismatches
+#   * contributor_error   -- a frozen contributor's params look wrong
+#   * blend_unresolved    -- blend not split into per-line peaks
+#   * replan_needed       -- window edges chop a real peak
+#   * other               -- describe in ``notes``
+#
+# Free-form ``notes`` are encouraged for any non-empty classification.
+"""
+
+
+def _emit_windows_toml(
+    plan: WindowPlan,
+    fit: SpectrumFit,
+    output_dir: Path,
+    variant_id: str,
+) -> Path:
+    """Write the windows.toml classification scaffold for this variant.
+
+    One ``[window.NNN]`` table per window, ordered by window_id. The
+    cross-iteration stable id is ``freq_range_mhz`` (the integer window
+    id can shift under a future replan-style re-fit, so the analysis
+    filters by freq_range with a small tolerance).
+    """
+    fit_by_id = {wf.window_id: wf for wf in fit.window_fits}
+    out_path = output_dir / "windows.toml"
+    lines: List[str] = [_WINDOWS_TOML_HEADER.format(variant_id=variant_id)]
+    for window in sorted(plan.windows, key=lambda w: w.window_id):
+        wid = window.window_id
+        wf = fit_by_id.get(wid)
+        if wf is None:
+            continue
+        n_fixed = sum(
+            1 for k in wf.fixed_parameters if k.startswith("frozen_peak_")
+        )
+        lo, hi = window.freq_range
+        chi2r_s = (
+            f"{float(wf.reduced_chi2):.6f}"
+            if np.isfinite(wf.reduced_chi2) else "nan"
+        )
+        lines.append(f"[window.{wid:03d}]")
+        lines.append(
+            f"freq_range_mhz = [{float(lo):.4f}, {float(hi):.4f}]"
+        )
+        lines.append(f"chi2r = {chi2r_s}")
+        lines.append(f"n_peaks = {len(wf.fitted_peaks)}")
+        lines.append(f"n_fixed = {n_fixed}")
+        lines.append("classification = \"\"")
+        lines.append("notes = \"\"")
+        lines.append("")
+    out_path.write_text("\n".join(lines))
+    return out_path
+
+
 def _category_block(
     category: str,
     entries: Iterable[Tuple[int, FitWindow, FittingResult, Optional[str], Path]],
@@ -2035,6 +2272,43 @@ def main() -> None:
             "default EASY/HARD/NAMED samples."
         ),
     )
+    arg_parser.add_argument(
+        "--all-windows",
+        action="store_true",
+        help=(
+            "Iterate every window in the plan (not the EASY/HARD/NAMED "
+            "samples). Used by the Stage 5 parameter optimization audit "
+            "to walk through a single variant's per-window fits."
+        ),
+    )
+    arg_parser.add_argument(
+        "--variant-id",
+        type=str,
+        default=None,
+        help=(
+            "Variant identifier used in the windows.toml header (and as "
+            "the default output dir suffix). When set alongside "
+            "--all-windows, the per-window artifacts land under "
+            "``scratch/stage5-validation-<variant-id>/`` unless "
+            "--output-dir overrides."
+        ),
+    )
+    arg_parser.add_argument(
+        "--detail-only",
+        action="store_true",
+        help=(
+            "Fast path: re-render only overview.png and per-window "
+            "detail.png from the persisted Stage 5 fit (no live rescue "
+            "re-run, no audit-trail.png / report.md / report-rr.md / "
+            "detail-rr*.png). Used when those artifacts already exist "
+            "from a prior full run and only the display-only knobs "
+            "(|X| zero-padding, overview trim/units) need to be "
+            "applied. Requires --all-windows. Loses per-peak rescue "
+            "provenance annotation in the detail.png peak-listing "
+            "axes (all peaks render as '(joint)') -- the audit-trail "
+            "from the prior run carries the rescue chain detail."
+        ),
+    )
     args = arg_parser.parse_args()
 
     # Re-bind the module-level OUTPUT_DIR / FTMW_PATH based on CLI flags.
@@ -2046,8 +2320,23 @@ def main() -> None:
         if not odir.is_absolute():
             odir = REPO_ROOT / odir
         OUTPUT_DIR = odir
+    elif args.variant_id is not None:
+        # Default per-variant output dir when --variant-id is provided
+        # without an explicit --output-dir.
+        OUTPUT_DIR = REPO_ROOT / "scratch" / f"stage5-validation-{args.variant_id}"
     if args.fixture_name is not None:
         FTMW_PATH = OUTPUT_DIR / args.fixture_name
+    elif args.variant_id is not None:
+        # The Stage 5 audit caches per-variant fixtures under
+        # scratch/stage5-gaussian-audit/runs/<variant_id>.ftmw; point at it
+        # directly so the user doesn't have to copy fixtures around.
+        FTMW_PATH = (
+            REPO_ROOT
+            / "scratch"
+            / "stage5-gaussian-audit"
+            / "runs"
+            / f"{args.variant_id}.ftmw"
+        )
     else:
         FTMW_PATH = OUTPUT_DIR / FTMW_PATH.name
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -2107,6 +2396,16 @@ def main() -> None:
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband_enum,
         n_padded=n_padded,
+    )
+    # 2× zero-padded display FT for the |X| panel of detail.png. Cosmetic
+    # only -- residual / chi2 / noise estimates stay on the native active-FT
+    # below. ``freqs_padded`` is sorted ascending so per-window masking is
+    # cheap.
+    freqs_padded, spec_padded = _padded_active_ft(
+        fid_samples, sample_dt_us,
+        start_us=start_us, end_us=end_us, expf_us=expf_us,
+        probe_freq_mhz=probe_freq_mhz, sideband=sideband_enum,
+        pad_factor=DISPLAY_PAD_FACTOR,
     )
     # Sort active-FT by molecular frequency so the plot axis is ascending
     # (active-FT bin order is rfft order; for the lower sideband that maps to
@@ -2184,7 +2483,7 @@ def main() -> None:
         f"{fit.n_fitted_peaks} fitted peaks, plan revision {fit.final_plan_revision} "
         f"(active-FT)"
     )
-    fig = plot_spectrum_fit(
+    fig = _render_validation_overview(
         frequencies=freqs_sorted,
         complex_spectrum=spec_sorted,
         rms_noise=rms_sorted,
@@ -2193,12 +2492,67 @@ def main() -> None:
         acquisition_us=acquisition_us,
         figsize=(18, 8),
         title=overview_title,
+        style=display_style,
+        trim_mhz=OVERVIEW_TRIM_MHZ,
     )
     fig.savefig(OUTPUT_DIR / "overview.png", dpi=120)
     plt.close(fig)
 
     # --- per-window artifacts ---------------------------------------------
+    def emit_detail_only(window_id: int, _note: Optional[str]) -> Path:
+        """Fast path: re-render only detail.png from the persisted fit.
+
+        Skips the rescue chain re-run (which is the slow per-window step
+        in the full path) and uses the persisted ``FittingResult`` --
+        which is already the post-rescue final state -- as the
+        consolidated WF for the figure. Per-peak rescue provenance
+        annotations in the peak-listing axes degrade to "(joint)"; the
+        rest of detail.png (data + model overlay, residual panels,
+        |residual| histogram) is identical to the full-path output.
+        """
+        window = plan_by_id[window_id]
+        wf = fit_by_id[window_id]
+        rel_dir = OUTPUT_DIR / f"window_{window_id:03d}"
+        rel_dir.mkdir(parents=True, exist_ok=True)
+        lo, hi = window.freq_range
+        tau_us_v = float(
+            wf.shared_parameters.get("tau_us", {}).get("value", 0.0)
+        )
+        n_rounds_total = len(wf.rescue_events) if wf.rescue_events else 0
+        n_rounds_accepted = sum(
+            1 for e in (wf.rescue_events or []) if getattr(e, "accepted", False)
+        )
+        rounds_note = (
+            f"{n_rounds_accepted}/{n_rounds_total} rescue rounds accepted"
+            if n_rounds_total > 0 else "no rescue rounds"
+        )
+        title = (
+            f"Window {window_id}  [{lo:.2f}, {hi:.2f}] MHz  "
+            f"K={len(wf.fitted_peaks)}  "
+            f"chi2_r={float(wf.reduced_chi2):.2f}  "
+            f"tau={tau_us_v:.3g} us  "
+            f"(consolidated, {rounds_note})"
+        )
+        fig = _plot_consolidated_detail(
+            window, wf, [],
+            frequencies=freqs_sorted,
+            complex_spectrum=spec_sorted,
+            rms_noise=rms_sorted,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            peak_provenance=[],
+            title=title,
+            style=display_style,
+            freq_padded=freqs_padded,
+            spec_padded=spec_padded,
+        )
+        fig.savefig(rel_dir / "detail.png", dpi=130)
+        plt.close(fig)
+        return rel_dir
+
     def emit(window_id: int, note: Optional[str]) -> Path:
+        if args.detail_only:
+            return emit_detail_only(window_id, note)
         window = plan_by_id[window_id]
         wf = fit_by_id[window_id]
         rel_dir = OUTPUT_DIR / f"window_{window_id:03d}"
@@ -2254,6 +2608,8 @@ def main() -> None:
                 sideband=sideband,
                 acquisition_us=acquisition_us,
                 style=display_style,
+                freq_padded=freqs_padded,
+                spec_padded=spec_padded,
             )
             _save_audit_trail_figure_wrapper(
                 rel_dir,
@@ -2292,7 +2648,32 @@ def main() -> None:
     hard_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
     named_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
 
-    if args.window_ids:
+    if args.all_windows:
+        # Step 3 of the Stage 5 parameter optimization audit: walk through
+        # every window in the plan rather than the curated EASY/HARD/NAMED
+        # samples. Bucket by Stage 4 difficulty so the INDEX.md categories
+        # stay coherent; named cases come from --named-window if supplied
+        # so the user can still annotate specific window ids inside the
+        # full-plan walkthrough.
+        named_lookup = dict(cli_named) if cli_named else {}
+        sorted_wids = sorted(plan_by_id)
+        for wid in sorted_wids:
+            if wid not in fit_by_id:
+                # Plan window with no fit record (very rare; e.g., a
+                # window that failed to fit at all). Skip; the windows.toml
+                # row still gets emitted with chi2r/n_peaks from the fit
+                # iteration below.
+                continue
+            note = named_lookup.get(wid)
+            rel = emit(wid, note)
+            entry = (wid, plan_by_id[wid], fit_by_id[wid], note, rel)
+            if note is not None:
+                named_entries.append(entry)
+            elif plan_by_id[wid].difficulty == WindowDifficulty.HARD:
+                hard_entries.append(entry)
+            else:
+                easy_entries.append(entry)
+    elif args.window_ids:
         # --window-id overrides the deliberate samples. Bucket the
         # requested ids by their difficulty in the plan so the INDEX.md
         # categories still make sense; named-case annotations come from
@@ -2367,6 +2748,44 @@ def main() -> None:
     for entries in (easy_entries, hard_entries, named_entries):
         for wid, _w, _wf, _note, rel in entries:
             print(f"  window {wid:>3} -> {rel}/")
+
+    # ``windows.toml`` -- the classification scaffold for Step 4 of the
+    # Stage 5 parameter optimization audit. Emitted whenever the harness
+    # is run with --all-windows OR --variant-id (either signal tells us
+    # the user wants the scaffold; the standalone EASY/HARD/NAMED runs
+    # don't need it). In --detail-only mode we deliberately do NOT
+    # overwrite an existing windows.toml -- the user may already have
+    # started filling in classifications.
+    if args.all_windows or args.variant_id is not None:
+        variant_id_for_header = args.variant_id or "manual"
+        toml_dest = OUTPUT_DIR / "windows.toml"
+        if args.detail_only and toml_dest.exists():
+            print(f"windows.toml: {toml_dest} (preserved -- existing classifications kept)")
+        else:
+            toml_path = _emit_windows_toml(
+                plan, fit, OUTPUT_DIR, variant_id_for_header,
+            )
+            print(f"windows.toml: {toml_path}")
+
+    # Flat mirror of per-window detail.png: makes it easy to scrub
+    # through every window's summary plot without descending into 380+
+    # subdirectories (the per-window report.md / audit-trail.png stay
+    # in the original window_NNN/ dir for the deep dive).
+    if args.all_windows:
+        import shutil
+
+        all_dir = OUTPUT_DIR / "all_windows"
+        all_dir.mkdir(parents=True, exist_ok=True)
+        n_copied = 0
+        for entries in (easy_entries, hard_entries, named_entries):
+            for wid, _w, _wf, _note, rel in entries:
+                src = rel / "detail.png"
+                if not src.exists():
+                    continue
+                dst = all_dir / f"window_{wid:03d}.png"
+                shutil.copyfile(src, dst)
+                n_copied += 1
+        print(f"all_windows/: copied {n_copied} detail.png images to {all_dir}")
 
 
 if __name__ == "__main__":
