@@ -39,22 +39,29 @@ original audit note is empirically false and is not used):
 
 Two independent signals, combined by a **joint gate**:
 
-1. **Temporal persistence (Stage 2b STFT).** Stage 2b's τ-calibration STFT
-   already classifies every bin exponential-vs-constant (AICc) and labels a bin
-   `spur` when the constant model wins or τ saturates at τ_max. It groups
-   adjacent sinc-skirt bins into a `SpurCluster` (`center_freq_mhz`,
-   `bin_indices`) and persists the catalogue at `/stage2b_*/spur_clusters`. The
-   cluster `bin_indices` give a data-driven mask extent.
+1. **Temporal flatness (Stage 2b STFT).** Stage 2b's τ-calibration STFT
+   classifies every bin by fitting exp-vs-constant across the STFT frames; a bin
+   is `spur` when τ saturates at τ_max (`spur_by_tau`, no decay detected) or the
+   constant model beats the exp by AICc > 2 (`spur_by_aicc`). A true CW tone is
+   **flat in time** (frame magnitudes ~constant → τ saturates); this is the
+   reliable signal. It groups adjacent sinc-skirt bins into a `SpurCluster`
+   (`center_freq_mhz`, `bin_indices`) persisted at `/stage2b_*/spur_clusters`,
+   giving a data-driven mask extent.
 2. **Integer-MHz (+ narrowness) on the active-FT.** The frequency-domain test
    from the prototype.
 
-Why both: the persisted STFT catalogue alone is unusable for masking — it holds
-~135 clusters and the constant/saturation criterion conflates true spurs with
-**long-τ strong real lines** (e.g. 33421.1 MHz at SNR 187, 38744.2 MHz at SNR
-121 are in it). Masking those would delete signal. The integer-MHz requirement
-is the guard against that false positive; persistence rescues the split-bin
-spurs the frequency test misses (integer falls between bins, energy splits).
-Neither detector is a superset of the other.
+Why both: the persisted STFT `cls == 1` set is unusable for masking as-is — it
+holds ~135 clusters because the `spur_by_aicc` branch also fires on **erratic,
+non-exponential bins** (damped beats / unresolved blends: e.g. 33421.1 and
+38744.2 MHz, whose frame magnitudes bounce non-monotonically so the exp fits
+badly and the constant wins by a thin margin). Those are not spurs. Two guards
+remove them: they are **non-integer-MHz** (the integer gate rejects them), and
+the persistence half should key on **flatness / saturation** (`spur_by_tau`, or
+a slope-equivalence test) rather than the raw `cls == 1`, since true spurs are
+flat while the beat/blend bins have large frame-to-frame spread. (No real line
+trips saturation: real τ ≤ 9 µs ≪ τ_max = 100 µs, so a genuine line always
+shows decay.) Persistence also rescues the split-bin spurs the frequency test
+misses. Neither detector is a superset of the other.
 
 **Gated spur set** = integer-MHz active-FT bins that are *either* sub-resolution
 narrow (frequency test) *or* flagged persistent by the Stage 2b catalogue. Each
@@ -160,9 +167,19 @@ Acceptance, against `probe_spur_detector.py` + the per-window baseline at
 - **Mask extent source.** Data-driven from `SpurCluster.bin_indices` (mapped to
   active-FT) vs a fixed ±N half-width. The catalogue may under-cluster split-bin
   spurs; a fixed-width fallback covers them.
-- **Long-τ-line guard.** Integer-MHz (chosen) vs a τ-saturation exclusion
-  (drop STFT spurs whose bin also carries a strong fitted line). Integer-MHz is
-  simpler and the 2638 spurs are unambiguous clock harmonics.
+- **Persistence signal: flatness vs raw `cls == 1`.** The STFT `cls == 1` set
+  conflates true flat spurs (`spur_by_tau`) with erratic beat/blend bins
+  (`spur_by_aicc` misfiring where neither model fits). Use the flatness /
+  saturation signal (`spur_by_tau`, or a slope-equivalence test asserting the
+  frame evolution is flat within a tight bound) as the persistence half — it
+  catches the flat spurs without the beat/blend false positives. The original
+  `spur_by_aicc` is a noisier proxy; integer-MHz backstops either way. (Earlier
+  framing blamed "long-τ real lines" — that is wrong; real τ ≪ τ_max, so no
+  real line saturates. See `research/stage5-gaussian-audit/report.md`
+  § "The temporal-persistence detector".) A small extension to
+  `tau_calibration` to expose the per-bin flatness flag / `spur_by_tau` mask
+  (it currently only persists the clustered `cls == 1` catalogue) may be
+  warranted.
 - **Stage 4 spur-only drop** now or as a follow-up.
 
 ## Out of scope

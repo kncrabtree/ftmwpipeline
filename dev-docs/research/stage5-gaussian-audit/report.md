@@ -412,24 +412,48 @@ and **persists the catalogue** at `/stage2b_*/spur_clusters`. This is the
 temporal-persistence test in a more rigorous form than a first/last
 ratio, and the cluster `bin_indices` give a *data-driven* mask extent.
 
-**But the persisted catalogue cannot be used directly for masking.** It
-carries 135 clusters and the constant/saturation criterion conflates
-true CW spurs with **long-tau strong real lines** -- e.g. 33421.1 MHz
-(real, SNR 187) and 38744.2 MHz (real, SNR 121) are in it. Masking those
-would delete signal.
+**The classifier's spur test is two branches.** A bin is `spur` when the
+exp fit's tau saturates at tau_max (`spur_by_tau`, slope <= 0 = no decay
+detected) **or** the 1-param constant model beats the 2-param exp by
+AICc > 2 (`spur_by_aicc`). On 2638 the frame-by-frame evolution shows
+these catch *different* populations:
+
+* **True CW spurs are flat** (frame magnitudes ~0.93-1.00 across all 10
+  frames) -> tau rails to tau_max -> `spur_by_tau`. Clean and reliable.
+  No real line trips this: real tau <= 9 us << tau_max = 100 us, so a
+  genuine line always shows decay (38861: 1.00 -> 0.54 -> 0.12, tau 3.7,
+  exp wins, not a spur).
+* **`spur_by_aicc` also fires on erratic, non-exponential bins** -- e.g.
+  33421.1 MHz (frames 0.15 1.00 0.53 0.43 0.60 0.06 ...) and 38744.2 MHz
+  (0.24 1.00 0.18 0.53 ...): strong, non-monotonic, peaking in frame 2,
+  consistent with a damped beat (unresolved blend / interference).
+  Neither flat nor decaying -- the exp fits badly so the constant wins by
+  a thin margin (delta-AICc ~6). These are **not** spurs (and not long-tau
+  lines).
+
+**So the catalogue cannot be masked directly** -- its `cls == 1` set
+mixes true flat spurs with these erratic beat/blend bins. Two things
+guard against masking them: they are **non-integer-MHz** (33421.1,
+38744.2 are off by > 1 bin), which the integer gate rejects, and the
+**persistence half of the gate should key on flatness/saturation**
+(`spur_by_tau` / a slope-equivalence test), not the raw `cls == 1`. A
+positive flatness criterion catches the flat spurs without firing on the
+erratic bins (which have large frame-to-frame spread) or clean decays.
 
 ### Synthesis: a joint gate
 
 The two detectors are complementary, neither a superset (the STFT misses
-29440/28460/39820 that the frequency test catches; the frequency test
-misses the split-bin spurs the STFT catches). A true CW spur is
-persistent (STFT) **and** at integer-MHz **and** sub-resolution-narrow;
-a long-tau real line is persistent but neither integer-MHz nor narrow. So
-the design promotes the existing Stage 2b catalogue and consumes it
-through a **joint integer-MHz ∧ persistence gate** -- integer-MHz is the
-guard against the long-tau-line false positive, persistence rescues the
-split-bin case. Remediation is a cluster mask over the gated spur's bins,
-used for both peak-nomination exclusion and the χ²/residual sum;
+29440/28460/39820 that the frequency test catches -- 29440 is flat +
+saturated but `discard`, STFT SNR 4.2 < t_sigma 5; the frequency test
+misses the split-bin spurs the STFT catches). A true CW spur is **flat in
+time** (STFT saturation) **and** at integer-MHz **and** sub-resolution
+narrow; the erratic beat/blend false positives are neither flat nor
+integer-MHz. So the design promotes the existing Stage 2b catalogue and
+consumes it through a **joint integer-MHz ∧ flatness gate** -- using the
+`spur_by_tau` / slope-equivalence (flatness) signal rather than the raw
+`cls == 1` set, with integer-MHz as the backstop against the erratic
+non-integer bins. Remediation is a cluster mask over the gated spur's
+bins, used for both peak-nomination exclusion and the χ²/residual sum;
 spur-only windows can be dropped pre-Stage-5. The residual mask is still
 required for spurs that share a window with real lines (w245, w287).
 
