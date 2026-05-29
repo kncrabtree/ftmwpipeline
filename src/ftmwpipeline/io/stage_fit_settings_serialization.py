@@ -39,6 +39,7 @@ from typing import Any, Dict, Optional
 import h5py
 
 from ..core.stage_fit_settings import (
+    _SUB_NAMES,
     StageFitSettings,
     from_attrs as stage_fit_from_attrs,
     to_attrs as stage_fit_to_attrs,
@@ -133,8 +134,9 @@ def load_stage_fit_settings_from_h5(file_path: str) -> Optional[StageFitSettings
             attrs_dict["shape"] = _decode_attr(grp.attrs["shape"])
         else:
             attrs_dict["shape"] = _NONE_SENTINEL
-        # Sub-dataclass subgroups.
-        for sub_name in ("tau", "seeder", "conservative", "penalties", "rescue", "thaw"):
+        # Sub-dataclass subgroups (canonical list, so a newly added block
+        # such as ``spur`` / ``baseline`` round-trips without a second edit).
+        for sub_name in _SUB_NAMES:
             if sub_name in grp and isinstance(grp[sub_name], h5py.Group):
                 sub_grp = grp[sub_name]
                 attrs_dict[sub_name] = {

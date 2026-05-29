@@ -640,3 +640,131 @@ class TestDeriveWindowFitConstraintsCalibratedBounds:
         assert c.tau_penalty_reference == pytest.approx(5.0)
         # No sigma -> stays on the one-sided hinge form.
         assert c.tau_penalty_sigma_us is None
+
+
+# ---------------------------------------------------------------------------
+# Optional low-order complex baseline (leakage-wing nuisance term)
+# ---------------------------------------------------------------------------
+class TestComplexBaseline:
+    """The ``baseline_order`` path on :func:`fit_window`."""
+
+    def _wing(self, u, coeffs, u_s):
+        """Evaluate B(u)=Σ_k (a_k+i b_k)(u/u_s)^k from a complex coeff vector."""
+        x = u / u_s
+        return sum(c * x**k for k, c in enumerate(coeffs))
+
+    def test_baseline_absorbs_wing_spares_narrow_line(self):
+        """A const complex wing under a narrow line is absorbed; the line is
+        recovered and its sigma_A is only mildly inflated."""
+        u = _offset_grid(2.0)
+        u_s = float(np.max(np.abs(u)))
+        line = ModelPeak(amplitude=6.0, offset_mhz=0.23, phase=0.7)
+        true_coeffs = np.array([0.4 - 0.25j])  # const wing
+        z = model_spectrum(u, [line], TAU_US, T_US) + self._wing(u, true_coeffs, u_s)
+        sigma = np.full(u.size, 0.02)
+
+        init = [ModelPeak(amplitude=5.0, offset_mhz=0.10, phase=0.0)]
+        no_base = fit_window(u, z, sigma, init, TAU_US, T_US, fit_tau=False)
+        with_base = fit_window(
+            u, z, sigma, init, TAU_US, T_US, fit_tau=False, baseline_order=0
+        )
+
+        # Wing absorbed -> chi^2_r collapses toward 1.
+        assert no_base.reduced_chi2 > 5.0
+        assert with_base.reduced_chi2 < 1.5
+        # Line recovered.
+        assert with_base.peaks[0].amplitude == pytest.approx(6.0, abs=1e-3)
+        assert with_base.peaks[0].offset_mhz == pytest.approx(0.23, abs=1e-3)
+        # Coefficients recovered.
+        assert with_base.baseline_order == 0
+        assert with_base.baseline_coeffs == pytest.approx(true_coeffs, abs=1e-3)
+        assert with_base.baseline_offset_scale == pytest.approx(u_s)
+        # sigma_A from the joint covariance is finite and only mildly inflated.
+        sa0 = no_base.peak_errors[0].amplitude
+        sa1 = with_base.peak_errors[0].amplitude
+        assert np.isfinite(sa1)
+        assert 1.0 <= sa1 / sa0 < 1.3
+        # n_params counts the 2 baseline coeffs.
+        assert with_base.n_params == no_base.n_params + 2
+
+    def test_clean_window_baseline_coeffs_near_zero(self):
+        """On a clean window the baseline coefficients fit to ~0 and the line
+        parameters are essentially unchanged."""
+        u = _offset_grid(2.0)
+        line = ModelPeak(amplitude=7.0, offset_mhz=-0.18, phase=-0.5)
+        z = model_spectrum(u, [line], TAU_US, T_US)
+        sigma = np.full(u.size, 0.02)
+        init = [ModelPeak(amplitude=6.0, offset_mhz=0.0, phase=0.0)]
+
+        with_base = fit_window(
+            u, z, sigma, init, TAU_US, T_US, fit_tau=False, baseline_order=0
+        )
+        # Coeffs ~ 0 (a clean line carries no broad wing).
+        assert np.max(np.abs(with_base.baseline_coeffs)) < 1e-3
+        assert with_base.peaks[0].amplitude == pytest.approx(7.0, abs=1e-3)
+        assert with_base.peaks[0].offset_mhz == pytest.approx(-0.18, abs=1e-3)
+
+    def test_baseline_too_smooth_to_replace_a_narrow_line(self):
+        """A low-order baseline alone cannot represent a narrow line: the
+        best-fit baseline-only model leaves nearly all the line's energy in the
+        residual. This is the load-bearing guardrail -- the baseline can soak
+        up a broad wing but provably cannot mimic or absorb a real line."""
+        from ftmwpipeline.fitting.window_fit import baseline_basis
+
+        u = _offset_grid(2.0)
+        u_s = float(np.max(np.abs(u)))
+        line = ModelPeak(amplitude=8.0, offset_mhz=0.05, phase=0.3)
+        z = model_spectrum(u, [line], TAU_US, T_US)
+
+        # Least-squares fit of a linear complex baseline alone (design = the
+        # basis columns; the complex coefficients are unconstrained).
+        basis = baseline_basis(u, 1, u_s)  # (M, 2)
+        coeffs, *_ = np.linalg.lstsq(basis, z, rcond=None)
+        residual = z - basis @ coeffs
+        captured = 1.0 - np.sum(np.abs(residual) ** 2) / np.sum(np.abs(z) ** 2)
+        # The smooth baseline explains almost none of the narrow line's energy.
+        assert captured < 0.2
+
+    def test_baseline_jacobian_matches_finite_difference(self):
+        """The analytic baseline Jacobian columns match central differences."""
+        from ftmwpipeline.fitting.window_fit import baseline_basis
+
+        u = _offset_grid(1.5)
+        u_s = float(np.max(np.abs(u)))
+        peaks = [ModelPeak(amplitude=5.0, offset_mhz=0.12, phase=0.4)]
+        tau = TAU_US
+        order = 1
+        basis = baseline_basis(u, order, u_s)
+        base_cols = np.concatenate([basis, 1j * basis], axis=1)
+        analytic = np.concatenate(
+            [model_jacobian(u, peaks, tau, T_US, include_tau=True), base_cols],
+            axis=1,
+        )
+
+        def full_model(p):
+            pk = ModelPeak(p[0], p[1], p[2])
+            m = model_spectrum(u, [pk], p[3], T_US)
+            a = p[4:4 + (order + 1)]
+            b = p[4 + (order + 1):]
+            return m + basis @ a + 1j * (basis @ b)
+
+        p0 = np.array([5.0, 0.12, 0.4, tau, 0.3, -0.2, 0.05, 0.1])
+        num = np.zeros_like(analytic)
+        for j in range(p0.size):
+            h = 1e-6 * max(abs(p0[j]), 1.0)
+            pp = p0.copy(); pp[j] += h
+            pm = p0.copy(); pm[j] -= h
+            num[:, j] = (full_model(pp) - full_model(pm)) / (2 * h)
+        assert np.max(np.abs(analytic - num)) < 1e-5
+
+    def test_baseline_disabled_is_unchanged(self):
+        """``baseline_order=None`` reproduces the no-baseline fit exactly."""
+        u = _offset_grid(2.0)
+        line = ModelPeak(amplitude=7.0, offset_mhz=0.2, phase=0.5)
+        z = model_spectrum(u, [line], TAU_US, T_US)
+        sigma = np.full(u.size, 0.02)
+        init = [ModelPeak(6.0, 0.0, 0.0)]
+        r = fit_window(u, z, sigma, init, TAU_US, T_US, fit_tau=False)
+        assert r.baseline_order is None
+        assert r.baseline_coeffs is None
+        assert r.baseline_offset_scale is None

@@ -89,6 +89,7 @@ __all__ = [
     "WindowFitConstraints",
     "derive_window_fit_constraints",
     "model_jacobian",
+    "baseline_basis",
     "fit_window",
     "knockout_test",
     "conservative_fit",
@@ -420,6 +421,18 @@ class WindowFitResult:
     # the matching closed form. Defaults to LORENTZIAN so existing call
     # sites and persisted-file readers behave unchanged.
     shape: PeakShape = field(default=PeakShape.LORENTZIAN)
+    # Optional low-order complex baseline ``B(u) = Σ_{k≤p} (a_k + i b_k)
+    # (u/u_s)^k`` jointly fit with the peaks to absorb a neighbour's
+    # mismodeled leakage wing (the leakage-wing baseline nuisance term).
+    # ``baseline_order`` is ``p`` (0 = const, 1 = linear); ``None`` means
+    # no baseline was fit. ``baseline_coeffs`` is the length-``(p+1)``
+    # complex coefficient vector ``a_k + i b_k`` and ``baseline_offset_scale``
+    # is ``u_s`` (the conditioning scale ``max|u|``). The reported peak
+    # uncertainties already include the baseline's degrees of freedom: the
+    # covariance is the joint (peaks + tau + baseline) inverse ``J^T J``.
+    baseline_order: Optional[int] = field(default=None)
+    baseline_coeffs: Optional[np.ndarray] = field(default=None)
+    baseline_offset_scale: Optional[float] = field(default=None)
 
     def __post_init__(self) -> None:
         if self.tau_was_fit is None:
@@ -524,6 +537,43 @@ def model_jacobian(
     if include_tau:
         jac[:, 3 * k] = dmodel_dtau
     return cast(np.ndarray, jac)
+
+
+# ---------------------------------------------------------------------------
+# Optional low-order complex baseline (leakage-wing nuisance term)
+# ---------------------------------------------------------------------------
+def baseline_basis(
+    offset_grid_mhz: np.ndarray, order: int, offset_scale: float
+) -> np.ndarray:
+    """Real polynomial basis ``[(u/u_s)^0, ..., (u/u_s)^order]`` for the baseline.
+
+    The complex baseline ``B(u) = Σ_{k=0..p} (a_k + i b_k)(u/u_s)^k`` shares
+    one real basis column ``(u/u_s)^k`` between its real coefficient ``a_k``
+    and imaginary coefficient ``b_k``. ``offset_scale`` (``u_s``, the window's
+    ``max|u|``) normalises the abscissa so the design matrix stays well
+    conditioned across windows of different widths.
+
+    Parameters
+    ----------
+    offset_grid_mhz : np.ndarray
+        Baseband-offset grid ``u`` (MHz), 1-D.
+    order : int
+        Baseline polynomial order ``p`` (``0`` = constant, ``1`` = linear).
+    offset_scale : float
+        Conditioning scale ``u_s`` (``> 0``).
+
+    Returns
+    -------
+    np.ndarray
+        Real array of shape ``(M, order + 1)``; column ``k`` is ``(u/u_s)^k``.
+    """
+    if order < 0:
+        raise ValueError("baseline order must be non-negative")
+    if not offset_scale > 0.0:
+        raise ValueError("offset_scale must be positive")
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    x = u / float(offset_scale)
+    return cast(np.ndarray, np.vander(x, order + 1, increasing=True))
 
 
 # ---------------------------------------------------------------------------
@@ -773,6 +823,8 @@ def fit_window(
     tau_penalty_sigma_us: Optional[float] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
+    baseline_order: Optional[int] = None,
+    baseline_offset_scale: Optional[float] = None,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
 
@@ -850,6 +902,19 @@ def fit_window(
         delta no finite-T line shape can represent; excluding it stops it
         detonating the window's chi-squared. ``None`` (default) masks
         nothing.
+    baseline_order : int, optional
+        Order ``p`` of an optional complex baseline ``B(u) = Σ_{k=0..p}
+        (a_k + i b_k)(u/u_s)^k`` fit jointly with the lines (``0`` = const,
+        ``1`` = linear). ``None`` (default) fits no baseline. The baseline
+        absorbs a neighbour's mismodeled leakage wing without representing a
+        narrow line (it is too smooth to do so); its ``2(p+1)`` real
+        coefficients enter the covariance, so the reported per-line
+        uncertainties honestly price the added flexibility. The fitted
+        coefficients are returned on :attr:`WindowFitResult.baseline_coeffs`.
+    baseline_offset_scale : float, optional
+        Conditioning scale ``u_s`` for the baseline abscissa; defaults to
+        ``max|u|`` (or ``1.0`` for an all-zero grid). Only used when
+        ``baseline_order`` is set.
 
     Returns
     -------
@@ -949,6 +1014,32 @@ def fit_window(
             "and fit_tau is True"
         )
 
+    # --- optional complex baseline -----------------------------------------
+    # The baseline contributes ``2 * (baseline_order + 1)`` real parameters
+    # (a_k, b_k per order), packed after the peak / tau parameters so the
+    # peak / tau covariance slices stay at their existing offsets. Its design
+    # columns are shared by a_k and b_k: ``d(model)/d(a_k) = (u/u_s)^k`` and
+    # ``d(model)/d(b_k) = i (u/u_s)^k``.
+    baseline_active = baseline_order is not None and baseline_order >= 0
+    order_resolved = baseline_order if baseline_order is not None else 0
+    n_base = (order_resolved + 1) if baseline_active else 0
+    if baseline_active:
+        u_s = (
+            float(baseline_offset_scale)
+            if baseline_offset_scale is not None and baseline_offset_scale > 0.0
+            else float(np.max(np.abs(u)))
+        )
+        if not u_s > 0.0:
+            u_s = 1.0
+        basis = baseline_basis(u, order_resolved, u_s)  # (M, n_base) real
+        # Both real- and imag-coefficient columns of the complex model.
+        base_cols = np.concatenate([basis, 1j * basis], axis=1)  # (M, 2 n_base)
+    else:
+        u_s = None
+        basis = None
+        base_cols = None
+    base_start = 3 * k + (1 if fit_tau else 0)
+
     # --- bounds, in the packed parameter order ------------------------------
     lo: list[float] = []
     hi: list[float] = []
@@ -961,6 +1052,11 @@ def fit_window(
     lo_arr = np.asarray(lo, dtype=float)
     hi_arr = np.asarray(hi, dtype=float)
     p0 = np.clip(_pack(initial_peaks, tau0_us, fit_tau), lo_arr, hi_arr)
+    if baseline_active:
+        # Baseline coefficients are unbounded and seed at zero.
+        lo_arr = np.concatenate([lo_arr, np.full(2 * n_base, -np.inf)])
+        hi_arr = np.concatenate([hi_arr, np.full(2 * n_base, np.inf)])
+        p0 = np.concatenate([p0, np.zeros(2 * n_base, dtype=float)])
 
     penalty_kw = dict(
         phase_penalty_lambda=phase_penalty_lambda,
@@ -980,9 +1076,17 @@ def fit_window(
 
     shape_resolved = PeakShape.coerce(shape)
 
+    def _model_with_baseline(
+        peaks: Sequence[ModelPeak], tau: float, params: np.ndarray
+    ) -> np.ndarray:
+        model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
+        if baseline_active:
+            model = model + base_cols @ params[base_start:]
+        return model
+
     def residual(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
-        model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
+        model = _model_with_baseline(peaks, tau, params)
         r = (z - model) / sig_ri
         data_r = np.concatenate([r.real[keep], r.imag[keep]])
         if not penalties_active:
@@ -992,14 +1096,20 @@ def fit_window(
         )
         return cast(np.ndarray, np.concatenate([data_r, pen_r]))
 
-    def jacobian(params: np.ndarray) -> np.ndarray:
-        peaks, tau = _unpack(params, k, tau0_us, fit_tau)
-        # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, Re stacked over Im.
+    def _weighted_model_jacobian(peaks: Sequence[ModelPeak], tau: float) -> np.ndarray:
+        # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, complex, columns =
+        # peaks (+ tau), then the baseline a_k / b_k columns.
         dmodel = model_jacobian(
             u, peaks, tau, acquisition_us,
             include_tau=fit_tau, shape=shape_resolved,
         )
-        weighted = -dmodel / sig_ri[:, np.newaxis]
+        if baseline_active:
+            dmodel = np.concatenate([dmodel, base_cols], axis=1)
+        return cast(np.ndarray, -dmodel / sig_ri[:, np.newaxis])
+
+    def jacobian(params: np.ndarray) -> np.ndarray:
+        peaks, tau = _unpack(params, k, tau0_us, fit_tau)
+        weighted = _weighted_model_jacobian(peaks, tau)
         data_jac = np.concatenate(
             [weighted.real[keep], weighted.imag[keep]], axis=0
         )
@@ -1008,6 +1118,11 @@ def fit_window(
         _, pen_jac = _penalty_residuals_and_jacobian(
             params, k, tau0_us, fit_tau, **penalty_kw
         )
+        # Penalty rows do not touch the baseline parameters: pad with zeros.
+        if baseline_active and pen_jac.shape[0] > 0:
+            pen_jac = np.concatenate(
+                [pen_jac, np.zeros((pen_jac.shape[0], 2 * n_base))], axis=1
+            )
         return cast(np.ndarray, np.concatenate([data_jac, pen_jac], axis=0))
 
     try:
@@ -1041,11 +1156,17 @@ def fit_window(
             shape=shape_resolved,
         )
 
-    peaks, tau = _unpack(np.asarray(sol.x, dtype=float), k, tau0_us, fit_tau)
+    sol_x = np.asarray(sol.x, dtype=float)
+    peaks, tau = _unpack(sol_x, k, tau0_us, fit_tau)
     for pk in peaks:
         pk.phase = _wrap_phase(pk.phase)
+    baseline_coeffs: Optional[np.ndarray] = None
+    if baseline_active:
+        a = sol_x[base_start:base_start + n_base]
+        b = sol_x[base_start + n_base:base_start + 2 * n_base]
+        baseline_coeffs = a + 1j * b
 
-    fitted = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
+    fitted = _model_with_baseline(peaks, tau, sol_x)
     # Reported statistics are data-only (penalties act like a prior on the
     # parameters; the F-test / AIC across K stays calibrated only if chi^2
     # counts the data residual alone). Spur-masked bins are excluded from the
@@ -1058,12 +1179,10 @@ def fit_window(
     try:
         # Data-only Jacobian for uncertainty: penalties bias parameter errors
         # smaller (they're effectively a prior). Caller wants the data
-        # likelihood's covariance.
-        dmodel_sol = model_jacobian(
-            u, peaks, tau, acquisition_us,
-            include_tau=fit_tau, shape=shape_resolved,
-        )
-        weighted_sol = -dmodel_sol / sig_ri[:, np.newaxis]
+        # likelihood's covariance. When a baseline is fit, its columns are
+        # part of the Jacobian, so the inverse is the *joint* covariance and
+        # the per-line errors honestly include the baseline's flexibility.
+        weighted_sol = _weighted_model_jacobian(peaks, tau)
         data_jac = np.concatenate(
             [weighted_sol.real[keep], weighted_sol.imag[keep]], axis=0
         )
@@ -1071,6 +1190,9 @@ def fit_window(
         covariance = cast(np.ndarray, np.linalg.inv(jtj))
     except np.linalg.LinAlgError:
         covariance = None
+    # _parameter_errors slices the peak (front) and tau (3*k) diagonal
+    # entries; baseline coefficients sit after them, so the slicing is
+    # unchanged while the covariance already reflects the joint fit.
     peak_errors, tau_error = _parameter_errors(covariance, k, fit_tau)
 
     return WindowFitResult(
@@ -1089,6 +1211,9 @@ def fit_window(
         residual=z - fitted,
         covariance=covariance,
         shape=shape_resolved,
+        baseline_order=order_resolved if baseline_active else None,
+        baseline_coeffs=baseline_coeffs,
+        baseline_offset_scale=u_s if baseline_active else None,
     )
 
 

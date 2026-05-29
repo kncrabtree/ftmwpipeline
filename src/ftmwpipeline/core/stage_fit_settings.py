@@ -161,6 +161,25 @@ class ThawSubSettings:
 
 
 @dataclass
+class BaselineSubSettings:
+    """Leakage-wing complex-baseline nuisance term knobs.
+
+    An evidence-triggered low-order complex baseline ``B(u) = Σ_{k≤p}
+    (a_k + i b_k)(u/u_s)^k`` added to a window's fit to absorb the coherent
+    residual a neighbouring strong line's mismodeled leakage skirt leaves
+    behind. Fires only where ``residual_edge_coherence`` exceeds
+    ``edge_threshold`` (a dedicated threshold well below the thaw default of
+    8.0); fit jointly with the free lines so its flexibility is priced into
+    the reported per-line uncertainties. See
+    ``dev-docs/planning/stage5-leakage-wing-baseline.md``.
+    """
+
+    enabled: Optional[bool] = None
+    order: Optional[int] = None
+    edge_threshold: Optional[float] = None
+
+
+@dataclass
 class SpurSubSettings:
     """Clock/LO-spur detection + masking knobs.
 
@@ -193,6 +212,7 @@ class StageFitSettings:
     rescue: RescueSubSettings = field(default_factory=RescueSubSettings)
     thaw: ThawSubSettings = field(default_factory=ThawSubSettings)
     spur: SpurSubSettings = field(default_factory=SpurSubSettings)
+    baseline: BaselineSubSettings = field(default_factory=BaselineSubSettings)
 
     def is_empty(self) -> bool:
         """True if no field is set across any sub-dataclass."""
@@ -208,6 +228,7 @@ class StageFitSettings:
 # Sub-dataclass field names on StageFitSettings, in HDF5/YAML order.
 _SUB_NAMES = (
     "tau", "seeder", "conservative", "penalties", "rescue", "thaw", "spur",
+    "baseline",
 )
 
 
@@ -276,6 +297,17 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "snr_threshold": 5.0,
         "mask_half_width_bins": 2,
         "use_stft_catalogue": True,
+    },
+    "baseline": {
+        # Leakage-wing baseline defaults on: the trigger fires only on a
+        # coherent wing residual (edge-coh > 3.5, well above its ~0.9 null on
+        # clean / narrow / low-SNR windows) and was validated zero-harmful on
+        # 2638. ``const`` order is the load-bearing guardrail (too smooth to
+        # mimic a narrow line). Mirrors ``DEFAULT_BASELINE_*`` in
+        # ``fitting/plan_execution.py``.
+        "enabled": True,
+        "order": 0,
+        "edge_threshold": 3.5,
     },
 }
 
@@ -639,6 +671,7 @@ __all__ = [
     "PenaltySubSettings",
     "RescueSubSettings",
     "ThawSubSettings",
+    "BaselineSubSettings",
     "StageFitSettings",
     "resolve",
     "to_attrs",

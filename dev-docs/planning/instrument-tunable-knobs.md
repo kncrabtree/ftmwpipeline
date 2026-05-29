@@ -196,6 +196,9 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 | spur.snr_threshold | 5.0 | `DEFAULT_SNR_THRESHOLD` | Peak-bin / σ_c floor for the frequency-domain spur detector. | N | — |
 | spur.mask_half_width_bins | 2 | `DEFAULT_MASK_HALF_WIDTH_BINS` | Residual-mask half-width (active-FT bins) around a spur; ±2 recovers ~the full bucket, ±3 the last of the strongest spur. | **Y** | — |
 | spur.use_stft_catalogue | True | `_HARD_DEFAULTS["spur"]` | Consume the persisted Stage 2b flat-spur (`saturated`) catalogue as the gate's persistence half; False = frequency-domain detector only. | N | — |
+| baseline.enabled | True | `_HARD_DEFAULTS["baseline"]` | Master switch for the evidence-triggered leakage-wing complex-baseline nuisance term. | N | — |
+| baseline.order | 0 | `DEFAULT_BASELINE_ORDER` | Baseline polynomial order p (0 = const, 1 = linear; quad overfits). Low order is the guardrail — too smooth to mimic a narrow line. | maybe | — |
+| baseline.edge_threshold | 3.5 | `DEFAULT_BASELINE_EDGE_THRESHOLD` | S_coh threshold (max of the two residual edges) gating the baseline refit; a dedicated threshold well below thaw's 8.0. | **Y** | — |
 
 ## High-priority instrument-tunable knobs
 
@@ -233,6 +236,7 @@ fixture.
 | 5 | rescue.snr_threshold | 2.5 | — |
 | 5 | rescue.prominence_threshold | 2.0 | — |
 | 5 | thaw.residual_edge_threshold | 8.0 | — |
+| 5 | baseline.edge_threshold | 3.5 | — |
 
 ## Validation status (2638)
 

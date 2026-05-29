@@ -124,6 +124,34 @@ def test_serialization_round_trip_and_hand_edit(
     assert edited_peak.frequency_mhz == pytest.approx(original + 0.001)
 
 
+def test_baseline_audit_persists(baseline_2638_stage4_small, temp_ftmw_dir):
+    """A default fit records the leakage-wing baseline settings + per-window
+    audit trail on the persisted fit (window-count-independent contract)."""
+    fp = temp_ftmw_dir / "baseline_audit.ftmw"
+    shutil.copy(baseline_2638_stage4_small, fp)
+
+    fit = ftmw.fit_peaks(fp)
+    # Settings audit on the plan-level parameters.
+    assert fit.parameters.get("baseline_enabled") is True
+    assert fit.parameters.get("baseline_order") == 0
+    assert fit.parameters.get("baseline_edge_threshold") == pytest.approx(3.5)
+    n_fired = fit.parameters.get("n_baseline_windows")
+    assert isinstance(n_fired, int) and n_fired >= 0
+
+    # Every window records whether the baseline fired; fired windows carry the
+    # fitted complex coefficients + the triggering S_coh.
+    reloaded = ftmw.load_fit(fp)
+    for wf in reloaded.window_fits:
+        qa = wf.quality_metrics or {}
+        assert "baseline_applied" in qa
+        if qa.get("baseline_applied", 0.0) > 0.5:
+            order = int(qa["baseline_order"])
+            for k in range(order + 1):
+                assert f"baseline_coeff{k}_re" in qa
+                assert f"baseline_coeff{k}_im" in qa
+            assert qa["baseline_edge_coherence"] > 3.5
+
+
 def _inject_stage5_marker(fp) -> None:
     """Write a minimal ``stage5_fitting`` group + mark it complete.
 

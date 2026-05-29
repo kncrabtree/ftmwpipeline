@@ -260,6 +260,55 @@ def test_spur_disabled_passes_none(
 
 
 # ---------------------------------------------------------------------------
+# Leakage-wing baseline: settings reach the driver as execute_plan kwargs
+# ---------------------------------------------------------------------------
+def test_baseline_settings_reach_planner(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``baseline`` sub-block forwards to execute_plan's baseline kwargs."""
+    from ftmwpipeline.core.stage_fit_settings import BaselineSubSettings
+
+    variant = tmp_path / "baseline_on.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    s = _base_settings()
+    s.baseline = BaselineSubSettings(enabled=True, order=1, edge_threshold=4.25)
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    assert captured.get("baseline_enabled") is True
+    assert captured.get("baseline_order") == 1
+    assert captured.get("baseline_edge_threshold") == 4.25
+
+
+def test_baseline_disabled_passes_through(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``baseline.enabled=False`` reaches the planner as ``baseline_enabled=False``."""
+    from ftmwpipeline.core.stage_fit_settings import BaselineSubSettings
+
+    variant = tmp_path / "baseline_off.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    s = _base_settings()
+    s.baseline = BaselineSubSettings(enabled=False)
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    assert captured.get("baseline_enabled") is False
+
+
+# ---------------------------------------------------------------------------
 # End-to-end smoke: λ at two extremes must produce different persisted fits
 # ---------------------------------------------------------------------------
 @pytest.mark.slow

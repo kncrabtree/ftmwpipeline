@@ -505,6 +505,12 @@ def fit_peaks_impl(
     per_band_tau_v = _required_bool(
         resolved.tau.per_band_tau, "tau.per_band_tau"
     )
+    # Leakage-wing baseline knobs (driven by the settings block, like spur).
+    baseline_enabled_v = _required_bool(resolved.baseline.enabled, "baseline.enabled")
+    baseline_order_v = _required_int(resolved.baseline.order, "baseline.order")
+    baseline_edge_threshold_v = _required_float(
+        resolved.baseline.edge_threshold, "baseline.edge_threshold"
+    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -905,6 +911,9 @@ def fit_peaks_impl(
         rescue_kwargs=rescue_kwargs,
         window_tau_overrides=window_tau_overrides if per_band_used else None,
         spur_set=spur_set,
+        baseline_enabled=baseline_enabled_v,
+        baseline_order=baseline_order_v,
+        baseline_edge_threshold=baseline_edge_threshold_v,
     )
 
     parameters = {
@@ -938,6 +947,16 @@ def fit_peaks_impl(
         ),
         "spur_mask_half_width_bins": (
             int(spur_set.mask_half_width_bins) if spur_set else 0
+        ),
+        # Leakage-wing baseline audit: the settings this fit consumed plus
+        # how many windows the evidence trigger actually fired on.
+        "baseline_enabled": baseline_enabled_v,
+        "baseline_order": baseline_order_v,
+        "baseline_edge_threshold": baseline_edge_threshold_v,
+        "n_baseline_windows": sum(
+            1
+            for o in plan_outcome.window_outcomes.values()
+            if getattr(o, "baseline_applied", False)
         ),
     }
     if rescue_max_v > 0:

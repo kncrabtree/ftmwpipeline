@@ -1277,3 +1277,101 @@ class TestStructuralReplan:
         assert outcome.replan_history == []
         assert outcome.final_plan_revision == 0
         assert set(outcome.window_outcomes.keys()) == {0, 1}
+
+
+# ---------------------------------------------------------------------------
+# Leakage-wing baseline trigger (_apply_baseline_to_outcome)
+# ---------------------------------------------------------------------------
+def _baseline_outcome(u, z, sigma, peaks, *, tau=TAU_US):
+    """Minimal WindowOutcome (no frozen background) for baseline-trigger tests.
+
+    The fit is the converged peaks-only model; the outcome's edge-coherence is
+    measured on that residual so ``_apply_baseline_to_outcome`` reads a real
+    trigger value.
+    """
+    from ftmwpipeline.fitting.peak_model import model_spectrum
+    from ftmwpipeline.fitting.plan_execution import residual_edge_coherence
+    from ftmwpipeline.fitting.window_fit import (
+        ConservativeFitResult,
+        WindowFitResult,
+        fit_window,
+    )
+
+    fit = fit_window(u, z, sigma, peaks, tau, T_US, fit_tau=False)
+    bg = np.zeros(u.size, dtype=np.complex128)
+    full_resid = z - fit.fitted_spectrum
+    low, high = residual_edge_coherence(full_resid, sigma, band_m=16)
+    inner = fit
+    outcome = WindowOutcome(
+        window_id=1,
+        fit=ConservativeFitResult(inner, [], []),
+        fixed_peaks=[],
+        offset_grid_mhz=u,
+        complex_spectrum=z,
+        rms_noise=sigma,
+        background=bg,
+        full_fitted_spectrum=fit.fitted_spectrum,
+        full_residual=full_resid,
+        edge_coherence_low=low,
+        edge_coherence_high=high,
+    )
+    outcome._center_mhz = PROBE_MHZ  # type: ignore[attr-defined]
+    return outcome
+
+
+def test_baseline_fires_on_coherent_wing():
+    """A strong coherent wing residual (edge-coh > threshold) triggers the
+    baseline; the refit absorbs it and records the audit fields."""
+    from ftmwpipeline.fitting.peak_model import ModelPeak, model_spectrum
+    from ftmwpipeline.fitting.plan_execution import _apply_baseline_to_outcome
+
+    u = np.arange(-160, 161) * 0.0122
+    u_s = float(np.max(np.abs(u)))
+    line = ModelPeak(amplitude=6.0, offset_mhz=0.2, phase=0.5)
+    x = u / u_s
+    wing = (0.6 - 0.4j) * x**0  # const complex wing
+    z = model_spectrum(u, [line], TAU_US, T_US) + wing
+    sigma = np.full(u.size, 0.02)
+
+    outcome = _baseline_outcome(u, z, sigma, [ModelPeak(5.0, 0.0, 0.0)])
+    s_coh_before = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
+    assert s_coh_before > 3.5  # the wing makes the edge coherent
+
+    fired = _apply_baseline_to_outcome(
+        outcome, acquisition_us=T_US, residual_edge_m=16,
+        baseline_order=0, baseline_edge_threshold=3.5,
+    )
+    assert fired is True
+    assert outcome.baseline_applied is True
+    assert outcome.baseline_order == 0
+    assert outcome.baseline_edge_coherence == pytest.approx(s_coh_before)
+    assert outcome.baseline_coeffs is not None
+    # Wing absorbed -> residual edge-coherence drops back toward the null.
+    assert max(outcome.edge_coherence_low, outcome.edge_coherence_high) < s_coh_before
+    # Line still present and recovered.
+    assert outcome.fit.fit.peaks[0].amplitude == pytest.approx(6.0, abs=2e-2)
+
+
+def test_baseline_does_not_fire_below_threshold():
+    """A clean window (edge-coh ~ null) does not trigger the baseline."""
+    from ftmwpipeline.fitting.peak_model import ModelPeak
+    from ftmwpipeline.fitting.plan_execution import _apply_baseline_to_outcome
+
+    u = np.arange(-160, 161) * 0.0122
+    line = ModelPeak(amplitude=6.0, offset_mhz=0.15, phase=0.3)
+    from ftmwpipeline.fitting.peak_model import model_spectrum
+    rng = np.random.default_rng(7)
+    sigma = np.full(u.size, 0.02)
+    noise = (rng.normal(0, sigma / np.sqrt(2)) + 1j * rng.normal(0, sigma / np.sqrt(2)))
+    z = model_spectrum(u, [line], TAU_US, T_US) + noise
+
+    outcome = _baseline_outcome(u, z, sigma, [ModelPeak(5.0, 0.0, 0.0)])
+    assert max(outcome.edge_coherence_low, outcome.edge_coherence_high) < 3.5
+
+    fired = _apply_baseline_to_outcome(
+        outcome, acquisition_us=T_US, residual_edge_m=16,
+        baseline_order=0, baseline_edge_threshold=3.5,
+    )
+    assert fired is False
+    assert outcome.baseline_applied is False
+    assert outcome.baseline_coeffs is None

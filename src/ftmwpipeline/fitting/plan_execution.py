@@ -106,6 +106,9 @@ __all__ = [
     "DEFAULT_RESIDUAL_EDGE_M",
     "DEFAULT_MAX_THAW_ROUNDS",
     "DEFAULT_MAX_REPLAN_ROUNDS",
+    "DEFAULT_BASELINE_ENABLED",
+    "DEFAULT_BASELINE_ORDER",
+    "DEFAULT_BASELINE_EDGE_THRESHOLD",
     "evaluate_fixed_contributor",
     "subtract_frozen_background",
     "fit_window_with_fixed_contributors",
@@ -134,6 +137,19 @@ DEFAULT_MAX_REPLAN_ROUNDS = 2
 """Maximum structural-replan rounds per :func:`execute_plan` call. Each round
 applies at most one merge per disjoint window pair, so a chain of N adjacent
 windows wanting to coalesce resolves in O(log2(N)) rounds."""
+
+DEFAULT_BASELINE_ENABLED = True
+"""Whether the evidence-triggered leakage-wing baseline term is applied."""
+
+DEFAULT_BASELINE_ORDER = 0
+"""Baseline polynomial order ``p`` (0 = const, 1 = linear; quad overfits)."""
+
+DEFAULT_BASELINE_EDGE_THRESHOLD = 3.5
+"""``S_coh`` threshold (max of the two edges) above which a window's fit is
+refit with the complex baseline enabled. A dedicated threshold well below the
+thaw default (8.0): the thaw addresses a *missing real line* at the edge, the
+baseline a *wrong skirt shape*. Empirically settled on 2638 (recall 0.89, zero
+harmful fires); 2638-tuned, so instrument-tunable calibration debt."""
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +454,18 @@ class WindowOutcome:
     rescue_events: list[RescueEvent] = field(default_factory=list)
     edge_coherence_low: float = 0.0
     edge_coherence_high: float = 0.0
+    # Leakage-wing baseline nuisance term (when fired). ``baseline_applied``
+    # records whether the evidence-triggered complex baseline refit replaced
+    # this window's fit; ``baseline_order`` / ``baseline_coeffs`` /
+    # ``baseline_offset_scale`` carry the fitted term, and
+    # ``baseline_edge_coherence`` is the triggering ``max(low, high)`` S_coh
+    # measured on the pre-baseline residual. The peak uncertainties on
+    # ``fit.fit`` already reflect the joint (peaks + baseline) covariance.
+    baseline_applied: bool = False
+    baseline_order: Optional[int] = None
+    baseline_coeffs: Optional[np.ndarray] = None
+    baseline_offset_scale: Optional[float] = None
+    baseline_edge_coherence: float = float("nan")
 
 
 @dataclass
@@ -1015,6 +1043,9 @@ def execute_plan(
     window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
     shape: "PeakShape | str" = "lorentzian",
     spur_set: Optional[SpurSet] = None,
+    baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
+    baseline_order: int = DEFAULT_BASELINE_ORDER,
+    baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1117,6 +1148,19 @@ def execute_plan(
         nominated candidate offsets that land on a spur, and threads the
         mask into every inner fit so spur bins are excluded from the
         residual / chi-squared. ``None`` (default) disables spur masking.
+    baseline_enabled : bool, default :data:`DEFAULT_BASELINE_ENABLED`
+        Apply the evidence-triggered leakage-wing baseline term. After thaw
+        and rescue, any window whose residual ``max(edge_low, edge_high)``
+        exceeds ``baseline_edge_threshold`` is refit jointly with a complex
+        baseline of order ``baseline_order`` (the lines' tau held fixed) so a
+        neighbour's mismodeled leakage skirt is absorbed as a smooth nuisance
+        and the per-line uncertainties are priced from the joint covariance.
+    baseline_order : int, default :data:`DEFAULT_BASELINE_ORDER`
+        Baseline polynomial order ``p`` (0 = const, 1 = linear).
+    baseline_edge_threshold : float, default
+        :data:`DEFAULT_BASELINE_EDGE_THRESHOLD`
+        ``S_coh`` threshold gating the baseline refit (a dedicated threshold
+        well below the thaw default).
 
     Returns
     -------
@@ -1169,6 +1213,9 @@ def execute_plan(
         rescue_kwargs=rescue_kwargs,
         window_tau_overrides=window_tau_overrides,
         spur_set=spur_set,
+        baseline_enabled=baseline_enabled,
+        baseline_order=baseline_order,
+        baseline_edge_threshold=baseline_edge_threshold,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1232,6 +1279,9 @@ def execute_plan(
                 rescue_kwargs=rescue_kwargs,
                 window_tau_overrides=window_tau_overrides,
                 spur_set=spur_set,
+                baseline_enabled=baseline_enabled,
+                baseline_order=baseline_order,
+                baseline_edge_threshold=baseline_edge_threshold,
             )
 
             applied_pairs = {
@@ -1286,6 +1336,9 @@ def _walk_windows_in_order(
     rescue_kwargs: Optional[dict[str, Any]] = None,
     window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
     spur_set: Optional[SpurSet] = None,
+    baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
+    baseline_order: int = DEFAULT_BASELINE_ORDER,
+    baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -1313,6 +1366,10 @@ def _walk_windows_in_order(
     3. Residual-rescue B-loop, when ``max_residual_rescue_rounds > 0``. The
        rescue operates on the post-thaw outcome so any contributor's line
        that thaw promoted is already part of the model.
+    4. Leakage-wing baseline refit, when ``baseline_enabled``. Operates on
+       the final (post-thaw, post-rescue) residual so removing the wing
+       de-biases the rescue-confirmed lines and the trigger sees the
+       cleanest residual; sequenced last and independent of rescue.
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
@@ -1379,6 +1436,16 @@ def _walk_windows_in_order(
             )
             for ev in events:
                 rescue_history.append(ev)
+            outcome = outcomes[wid]
+
+        if baseline_enabled:
+            _apply_baseline_to_outcome(
+                outcome,
+                acquisition_us=acquisition_us,
+                residual_edge_m=residual_edge_m,
+                baseline_order=baseline_order,
+                baseline_edge_threshold=baseline_edge_threshold,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2086,3 +2153,88 @@ def _apply_rescue_to_outcome(
         events.append(ev)
         outcome.rescue_events.append(ev)
     return events
+
+
+def _apply_baseline_to_outcome(
+    outcome: WindowOutcome,
+    *,
+    acquisition_us: float,
+    residual_edge_m: int,
+    baseline_order: int,
+    baseline_edge_threshold: float,
+) -> bool:
+    """Refit a window with a complex baseline when its residual edge coherence
+    clears the baseline threshold; update the outcome in place.
+
+    A neighbouring strong line's mismodeled leakage skirt leaves a coherent,
+    systematic residual that inflates the dependent window's chi-squared and
+    biases the weak lines sitting on it. When ``max(edge_low, edge_high)`` on
+    the (post-thaw, post-rescue) residual exceeds ``baseline_edge_threshold``,
+    the window's established lines are refit jointly with a low-order complex
+    baseline ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` (too smooth to represent
+    a narrow line, so it can only soak up a broad wing). ``tau`` is held at the
+    window's fitted value -- the baseline addresses skirt *shape*, not decay.
+    The joint covariance then prices the baseline's degrees of freedom into the
+    reported per-line uncertainties.
+
+    Returns ``True`` iff the baseline fired (triggered, converged, and did not
+    worsen the data chi-squared); ``False`` leaves the outcome untouched.
+    """
+    s_coh = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
+    if not np.isfinite(s_coh) or s_coh <= baseline_edge_threshold:
+        return False
+    inner = outcome.fit.fit
+    if not inner.peaks:
+        # The baseline prices its flexibility against the free lines; a window
+        # carrying no free peaks (a pure frozen-background slice) has nothing
+        # to fit it against, so it cannot fire.
+        return False
+
+    data_minus_bg = outcome.complex_spectrum - outcome.background
+    spur_mask = getattr(outcome, "_spur_mask", None)
+    refit = fit_window(
+        outcome.offset_grid_mhz,
+        data_minus_bg,
+        outcome.rms_noise,
+        [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in inner.peaks],
+        inner.tau_us,
+        acquisition_us,
+        fit_tau=False,
+        shape=inner.shape,
+        spur_mask=spur_mask,
+        baseline_order=baseline_order,
+    )
+    if not refit.success or refit.chi_squared > inner.chi_squared + 1e-9:
+        return False
+
+    # Install the joint fit. ``tau_us`` / ``tau_was_fit`` / ``fit_tau`` keep
+    # their originating values (the refit only added the baseline). The
+    # fitted spectrum now carries peaks + baseline; the frozen background is
+    # added back for the full model.
+    free_plus_baseline = refit.fitted_spectrum
+    inner.peaks = refit.peaks
+    inner.peak_errors = refit.peak_errors
+    inner.covariance = refit.covariance
+    inner.chi_squared = refit.chi_squared
+    inner.cost = refit.cost
+    inner.n_params = refit.n_params
+    inner.n_data = refit.n_data
+    inner.fitted_spectrum = free_plus_baseline
+    inner.residual = data_minus_bg - free_plus_baseline
+    inner.baseline_order = refit.baseline_order
+    inner.baseline_coeffs = refit.baseline_coeffs
+    inner.baseline_offset_scale = refit.baseline_offset_scale
+
+    outcome.full_fitted_spectrum = free_plus_baseline + outcome.background
+    outcome.full_residual = outcome.complex_spectrum - outcome.full_fitted_spectrum
+    low, high = residual_edge_coherence(
+        outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
+    )
+    outcome.baseline_applied = True
+    outcome.baseline_order = refit.baseline_order
+    outcome.baseline_coeffs = refit.baseline_coeffs
+    outcome.baseline_offset_scale = refit.baseline_offset_scale
+    outcome.baseline_edge_coherence = float(s_coh)
+    outcome.edge_coherence_low = low
+    outcome.edge_coherence_high = high
+    return True

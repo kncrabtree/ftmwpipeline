@@ -425,6 +425,26 @@ def window_outcome_to_fitting_result(
         "edge_coherence_high": float(outcome.edge_coherence_high),
         "n_fixed_contributors": float(len(outcome.fixed_peaks)),
     }
+    # Leakage-wing baseline audit trail: whether the evidence trigger fired on
+    # this window, the order, the triggering S_coh, and the fitted complex
+    # coefficients. ``quality_metrics`` is ``Dict[str, float]``, so each
+    # coefficient is recorded as a pair of scalar ``baseline_coeff{k}_re`` /
+    # ``_im`` entries (``baseline_order`` says how many to expect).
+    if getattr(outcome, "baseline_applied", False):
+        coeffs = np.asarray(outcome.baseline_coeffs, dtype=np.complex128)
+        result.quality_metrics["baseline_applied"] = 1.0
+        result.quality_metrics["baseline_order"] = float(outcome.baseline_order or 0)
+        result.quality_metrics["baseline_edge_coherence"] = float(
+            outcome.baseline_edge_coherence
+        )
+        result.quality_metrics["baseline_offset_scale"] = float(
+            outcome.baseline_offset_scale or 0.0
+        )
+        for k, c in enumerate(coeffs):
+            result.quality_metrics[f"baseline_coeff{k}_re"] = float(c.real)
+            result.quality_metrics[f"baseline_coeff{k}_im"] = float(c.imag)
+    else:
+        result.quality_metrics["baseline_applied"] = 0.0
 
     # Audit trail and per-window thaw events.
     result.audit_trail = [_convert_audit_step(s_) for s_ in fit.audit_trail]

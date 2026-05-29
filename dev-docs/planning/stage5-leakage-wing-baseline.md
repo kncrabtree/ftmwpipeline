@@ -1,12 +1,57 @@
 # Stage 5 leakage-wing baseline term
 
-Add an optional, evidence-triggered low-order **complex baseline** to a Stage 5
-window's fit to absorb the coherent residual left by a neighbouring strong
-line's mismodeled leakage wing. The goal is **reliable per-line frequency and
-intensity extraction with fair uncertainties**, not a globally physically-
-consistent model: the baseline is an explicit nuisance term, deployed only
-where a coherent wing residual is detected, fit jointly with the free peaks so
-its flexibility is honestly priced into the line uncertainties.
+**Status: implemented and validated on 2638.** An optional, evidence-triggered
+low-order **complex baseline** added to a Stage 5 window's fit to absorb the
+coherent residual left by a neighbouring strong line's mismodeled leakage wing.
+The goal is **reliable per-line frequency and intensity extraction with fair
+uncertainties**, not a globally physically-consistent model: the baseline is an
+explicit nuisance term, deployed only where a coherent wing residual is
+detected, fit jointly with the free peaks so its flexibility is honestly priced
+into the line uncertainties.
+
+## Where it lives (implementation)
+
+- **`fitting/window_fit.py`** — `fit_window` takes `baseline_order`
+  (`None`/`0`/`1`) and an optional `baseline_offset_scale` (`u_s`, default
+  `max|u|`); `baseline_basis` builds the real `(u/u_s)^k` design columns,
+  appended (as `a_k` + `i b_k` columns) to the model and analytic Jacobian
+  after the peak/tau parameters. The covariance is the joint inverse `JᵀJ`, so
+  the per-line errors already price the baseline's degrees of freedom. The
+  fitted coefficients ride on `WindowFitResult.baseline_{order,coeffs,offset_scale}`.
+- **`fitting/plan_execution.py`** — `_apply_baseline_to_outcome` is the
+  trigger: after thaw **and** rescue (sequenced last, independent of rescue),
+  any window whose residual `max(edge_low, edge_high)` exceeds
+  `baseline_edge_threshold` is refit with its established lines + the baseline
+  (tau held fixed — the baseline addresses skirt *shape*, not decay). The refit
+  installs only when it converges and does not raise the data chi-squared; the
+  decision, order, coefficients, and triggering `S_coh` are recorded on the
+  `WindowOutcome`. `execute_plan` exposes `baseline_enabled` / `baseline_order`
+  / `baseline_edge_threshold` (`DEFAULT_BASELINE_*`).
+- **`core/stage_fit_settings.py`** — `BaselineSubSettings`
+  (`enabled`/`order`/`edge_threshold`) with `_HARD_DEFAULTS` `True` / `0` /
+  `3.5`. Registered in `instrument-tunable-knobs.md`; round-trips through HDF5
+  + YAML via the canonical `_SUB_NAMES` walk.
+- **`_internal/stage5_impl.py`** — resolves the block and threads it into
+  `execute_plan`; the `parameters` audit dict carries the settings plus
+  `n_baseline_windows` (how many windows fired).
+- **`fitting/result_conversion.py`** — per-window audit trail in
+  `quality_metrics` (a `Dict[str, float]`): `baseline_applied`,
+  `baseline_order`, `baseline_edge_coherence`, `baseline_offset_scale`, and the
+  coefficients as scalar `baseline_coeff{k}_re` / `baseline_coeff{k}_im` pairs.
+
+### 2638 validation (A/B, `scratch/validate_baseline_2638.py`)
+
+Baseline ON vs OFF, every other knob inherited from the persisted fixture
+(`rescue_prominence_threshold=1.5`, gaussian). 66 windows fired. Chain windows
+drop toward χ²ᵣ≈1.5 (w224 3.86→1.58, w225 2.50→1.50, w226 2.43→1.64, w309
+3.69→1.80, w367 2.68→1.59; w227 already at floor, did not fire); the largest
+absolute gains are w152 (8.45→1.49) and w150 (6.74→1.43). The regression
+sentinels w020/w075/w159/w189/w303 are byte-identical (no baseline applied;
+w189 specifically does not trigger). σ_A inflation on fired windows is median
+×1.006, max ×1.449 (the σ_f honest price). The handful of windows whose χ²ᵣ
+ticks up ≤~0.05 are the documented harmless low-precision firings — the
+data chi-squared is held monotone, so the rise is purely the +2-parameter dof
+bookkeeping.
 
 ## Motivation
 
@@ -154,17 +199,26 @@ Diff per-window χ²ᵣ + per-line σ against
 - Zero real-line removals; weak-line intensities shift ≤ ~1σ (de-biasing, not
   absorption); the w189-type windows are never triggered.
 
+## Settled during implementation
+
+- **Order selection** — shipped a *fixed* order from the settings block
+  (`const` default, `linear` selectable). Per-window AICc choice between
+  `const`/`linear` is deferred; const carries the bulk on 2638 (the linear
+  term helps only the strongest few and AICc machinery is not yet worth the
+  surface area).
+- **Thaw/baseline sequencing** — the baseline refit is sequenced **last**
+  (after thaw and rescue), and it re-measures `S_coh` on the final residual.
+  An accepted thaw lowers the edge coherence before the baseline check runs,
+  so the two do not double-count; and the baseline is too smooth to represent
+  the narrow feature a thaw promotes, so even when both are eligible they
+  address different residual structure.
+- **Frozen-contributor interaction** — kept the rigid frozen skirt *and* the
+  baseline (the prototype behaviour): the baseline fits against
+  `data − frozen_background`, so it mops up the contributor's *residual* wing
+  shape without re-fitting the contributor itself.
+
 ## Open questions
 
 - **Edge threshold cross-fixture calibration** (3.5 is 2638-tuned;
   [[stage5-penalty-tuning-debt]]). A second fixture is the real confidence
-  ceiling.
-- **Order selection per window** — fixed `const` vs. an AICc choice between
-  `const`/`linear` per window (linear helps the strongest few; AICc would prevent
-  needless params elsewhere).
-- **Thaw/baseline sequencing** at edge-coh > 8 (both eligible): confirm
-  thaw-then-baseline does not double-count and that an accepted thaw lowers
-  edge-coh below the baseline threshold (so the baseline then no-ops).
-- **Frozen-contributor interaction** — whether to keep the rigid frozen skirt
-  *and* add the baseline (current prototype) or let the baseline subsume small
-  contributors.
+  ceiling — both the threshold and the fixed `const` order are 2638 choices.
