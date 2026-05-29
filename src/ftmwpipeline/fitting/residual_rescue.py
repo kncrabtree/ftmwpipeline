@@ -38,6 +38,7 @@ from .residual_screening import (
     ResidualPeakCandidate,
     find_residual_peaks,
 )
+from .spur_detection import SpurMaskSpec
 from .validation import (
     DEFAULT_N_EFF_KIND,
     calculate_aicc,
@@ -201,6 +202,7 @@ def merge_close_peaks_cleanup(
     structural_merge_factor: float = DEFAULT_STRUCTURAL_MERGE_FACTOR,
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Two-tier merge cleanup for close peak pairs.
 
@@ -264,6 +266,7 @@ def merge_close_peaks_cleanup(
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
     refit_kwargs.setdefault("shape", fit.shape)
+    refit_kwargs["spur_mask"] = spur_mask
 
     current = fit
     n_merged = 0
@@ -341,6 +344,7 @@ def remove_and_refit_cleanup(
     *,
     fit_kwargs_inner: dict[str, Any],
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop redundant peaks (K → K-1 refit, keep if improvement
     still significant); return ``(updated_fit, n_dropped)``.
@@ -370,6 +374,13 @@ def remove_and_refit_cleanup(
     n_dropped = 0
     refit_kwargs = dict(fit_kwargs_inner)
     refit_kwargs.setdefault("shape", fit.shape)
+    refit_kwargs["spur_mask"] = spur_mask
+    keep = (
+        ~spur_mask.bin_mask(u) if spur_mask is not None
+        else np.ones(u.size, dtype=bool)
+    )
+    if not keep.any():
+        keep = np.ones(u.size, dtype=bool)
     while current.n_peaks > 0:
         worst_p_value = -1.0
         worst_idx = -1
@@ -379,8 +390,9 @@ def remove_and_refit_cleanup(
             if not reduced_init:
                 # Compare K=1 fit to K=0 (null model): use the null chi-squared
                 # directly rather than calling fit_window with an empty list.
+                # Spur bins are excluded to match the masked K-peak chi^2.
                 null_chi2 = float(
-                    np.sum(np.abs(z / (sigma / np.sqrt(2.0))) ** 2)
+                    np.sum(np.abs((z / (sigma / np.sqrt(2.0)))[keep]) ** 2)
                 )
                 # F-test convention: ``calculate_chi_squared_improvement``
                 # takes ``(simpler, complex)`` chi-squared. ``current`` is the
@@ -439,6 +451,7 @@ def iterative_aicc_cleanup(
     *,
     fit_kwargs_inner: dict[str, Any],
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop the worst AICc-with-n_eff offender until every
     remaining peak is supported.
@@ -489,6 +502,13 @@ def iterative_aicc_cleanup(
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
     refit_kwargs.setdefault("shape", fit.shape)
+    refit_kwargs["spur_mask"] = spur_mask
+    keep = (
+        ~spur_mask.bin_mask(u) if spur_mask is not None
+        else np.ones(u.size, dtype=bool)
+    )
+    if not keep.any():
+        keep = np.ones(u.size, dtype=bool)
 
     current = fit
     n_dropped = 0
@@ -507,7 +527,7 @@ def iterative_aicc_cleanup(
         for i in range(current.n_peaks):
             kept = [pk for j, pk in enumerate(current.peaks) if j != i]
             if not kept:
-                null_chi2 = calculate_noise_weighted_chi2(z, sigma)
+                null_chi2 = calculate_noise_weighted_chi2(z[keep], sigma[keep])
                 aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
                 if aicc_km1 < worst_aicc_km1:
                     worst_aicc_km1 = aicc_km1
@@ -575,6 +595,7 @@ def attempt_residual_rescue(
     conservative_kwargs: Optional[dict[str, Any]] = None,
     shape_error_epsilon: float = 0.0,
     excluded_offsets: Optional[Sequence[float]] = None,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> RescueOutcome:
     """Find peaks the initial fit missed and fit them to its residual.
 
@@ -746,6 +767,12 @@ def attempt_residual_rescue(
     rejection_offsets: List[float] = [pk.offset_mhz for pk in current_fit.peaks]
     if excluded_offsets:
         rejection_offsets.extend(float(x) for x in excluded_offsets)
+    # A spur bin has a large residual (no line shape fits it), so the
+    # detector would nominate it. Reject candidates on a spur offset so the
+    # rescue never seeds a peak there; the residual mask below is the
+    # backstop (a peak on masked bins earns no chi^2 credit and is gated out).
+    if spur_mask is not None:
+        rejection_offsets.extend(float(o) for o in spur_mask.offsets_mhz)
     if rejection_offsets and raw_candidates and u.size >= 2:
         u_sorted = np.sort(u)
         df_mhz = float(np.min(np.diff(u_sorted)))
@@ -790,7 +817,7 @@ def attempt_residual_rescue(
     if not candidate_offsets:
         empty = conservative_fit(
             u, residual, sigma, [], rescue_tau_us, acquisition_us,
-            fit_tau=False, **ckwargs,
+            fit_tau=False, spur_mask=spur_mask, **ckwargs,
         )
         return RescueOutcome(
             fit=empty.fit,
@@ -806,6 +833,7 @@ def attempt_residual_rescue(
         significance=significance,
         min_separation_factor=min_separation_factor,
         max_peaks=max_peaks,
+        spur_mask=spur_mask,
         **ckwargs,
     )
     return RescueOutcome(
@@ -957,6 +985,7 @@ def rescue_and_consolidate(
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape_error_epsilon: float = 0.0,
     shape: "PeakShape | str" = "lorentzian",
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1110,6 +1139,7 @@ def rescue_and_consolidate(
             conservative_kwargs=ckwargs_in,
             shape_error_epsilon=shape_error_epsilon,
             excluded_offsets=rejected_offsets if rejected_offsets else None,
+            spur_mask=spur_mask,
         )
         n_rescue_added = rescue.fit.n_peaks
 
@@ -1164,7 +1194,7 @@ def rescue_and_consolidate(
             joint_kwargs = fit_kwargs_inner
         joint = fit_window(
             u, z, sigma, union_init, joint_tau_start, acquisition_us,
-            **joint_kwargs,
+            spur_mask=spur_mask, **joint_kwargs,
         )
         if not joint.success:
             rounds.append(
@@ -1208,6 +1238,7 @@ def rescue_and_consolidate(
             merge_separation_factor=merge_separation_factor,
             structural_merge_factor=structural_merge_factor,
             n_eff_kind=n_eff_kind,
+            spur_mask=spur_mask,
         )
 
         # Per-peak knockout produces persisted diagnostics (n_eff,
@@ -1219,6 +1250,7 @@ def rescue_and_consolidate(
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
+            spur_mask=spur_mask,
         )
         # Iterative AICc cleanup: drops the worst offender, refits,
         # repeats. Non-iterative drops kill duplicate clusters wholesale
@@ -1230,6 +1262,7 @@ def rescue_and_consolidate(
             u, z, sigma, merged_joint_fit, acquisition_us,
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
+            spur_mask=spur_mask,
         )
         # Grid spacing for the +/-1-bin tolerance used in both the
         # rescue-survival check below and the across-rounds blacklist.
@@ -1320,6 +1353,7 @@ def rescue_and_consolidate(
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
+            spur_mask=spur_mask,
         )
 
         chi2_after = pruned_fit.chi_squared

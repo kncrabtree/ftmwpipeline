@@ -68,6 +68,7 @@ from .peak_model import (
     h_T_shape_jacobian,
     model_spectrum,
 )
+from .spur_detection import SpurMaskSpec
 from .validation import (
     DEFAULT_N_EFF_KIND,
     calculate_aic,
@@ -771,6 +772,7 @@ def fit_window(
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
 
@@ -838,6 +840,16 @@ def fit_window(
         to the bidirectional Gaussian-prior form (centred on the
         reference, width ``sigma_tau``). ``None`` keeps the legacy
         one-sided hinge form.
+    spur_mask : SpurMaskSpec, optional
+        Clock/LO-spur bins to exclude from the weighted residual, Jacobian,
+        and chi-squared. The model is still evaluated on the full grid (so
+        ``fitted_spectrum`` / ``residual`` stay full-length for downstream
+        plotting and edge-coherence), but masked bins do not contribute to
+        the cost and ``n_data`` is reduced by twice the masked-bin count so
+        reduced chi-squared stays calibrated. A spur is a single-bin CW
+        delta no finite-T line shape can represent; excluding it stops it
+        detonating the window's chi-squared. ``None`` (default) masks
+        nothing.
 
     Returns
     -------
@@ -875,12 +887,26 @@ def fit_window(
     # weighted by sigma / sqrt(2) for every element to be unit-variance (D-8).
     sig_ri = sigma / np.sqrt(2.0)
 
+    # Spur-bin exclusion: ``keep`` is True for bins that contribute to the
+    # cost. A spur is a single-bin CW delta no line shape can represent;
+    # dropping it from the residual / Jacobian / chi^2 stops it detonating
+    # the window's chi^2, and reducing n_data by 2*masked keeps chi^2_r
+    # calibrated. The model is still evaluated everywhere so the returned
+    # fitted/residual arrays stay full-length.
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u)
+        if not keep.any():
+            keep = np.ones(m, dtype=bool)
+    else:
+        keep = np.ones(m, dtype=bool)
+    n_keep = int(keep.sum())
+
     k = len(initial_peaks)
-    n_data = 2 * m
+    n_data = 2 * n_keep
 
     # --- null model: nothing to fit, but report the data's chi-squared. -----
     if k == 0:
-        r0 = z / sig_ri
+        r0 = (z / sig_ri)[keep]
         chi2 = float(np.sum(r0.real**2 + r0.imag**2))
         return WindowFitResult(
             success=False,
@@ -958,7 +984,7 @@ def fit_window(
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
         model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
         r = (z - model) / sig_ri
-        data_r = np.concatenate([r.real, r.imag])
+        data_r = np.concatenate([r.real[keep], r.imag[keep]])
         if not penalties_active:
             return cast(np.ndarray, data_r)
         pen_r, _ = _penalty_residuals_and_jacobian(
@@ -974,7 +1000,9 @@ def fit_window(
             include_tau=fit_tau, shape=shape_resolved,
         )
         weighted = -dmodel / sig_ri[:, np.newaxis]
-        data_jac = np.concatenate([weighted.real, weighted.imag], axis=0)
+        data_jac = np.concatenate(
+            [weighted.real[keep], weighted.imag[keep]], axis=0
+        )
         if not penalties_active:
             return cast(np.ndarray, data_jac)
         _, pen_jac = _penalty_residuals_and_jacobian(
@@ -1020,8 +1048,9 @@ def fit_window(
     fitted = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
     # Reported statistics are data-only (penalties act like a prior on the
     # parameters; the F-test / AIC across K stays calibrated only if chi^2
-    # counts the data residual alone).
-    data_resid = (z - fitted) / sig_ri
+    # counts the data residual alone). Spur-masked bins are excluded from the
+    # chi^2 sum to match the reduced n_data.
+    data_resid = ((z - fitted) / sig_ri)[keep]
     chi2 = float(np.sum(data_resid.real**2 + data_resid.imag**2))
     cost_data = 0.5 * chi2
 
@@ -1036,7 +1065,7 @@ def fit_window(
         )
         weighted_sol = -dmodel_sol / sig_ri[:, np.newaxis]
         data_jac = np.concatenate(
-            [weighted_sol.real, weighted_sol.imag], axis=0
+            [weighted_sol.real[keep], weighted_sol.imag[keep]], axis=0
         )
         jtj = data_jac.T @ data_jac
         covariance = cast(np.ndarray, np.linalg.inv(jtj))
@@ -1236,6 +1265,7 @@ def knockout_test(
     fit_kwargs_inner: Optional[dict[str, Any]] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     significance: float = DEFAULT_SIGNIFICANCE,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> list[KnockoutResult]:
     """Per-line knockout validation of a converged window fit.
 
@@ -1306,10 +1336,23 @@ def knockout_test(
     if sigma.ndim == 0:
         sigma = np.full(u.size, float(sigma))
 
+    # Exclude spur bins from every chi^2 in the sweep so the AICc gate sees
+    # the same masked data the K-fit's chi_squared was computed on.
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u)
+        if not keep.any():
+            keep = np.ones(u.size, dtype=bool)
+    else:
+        keep = np.ones(u.size, dtype=bool)
+    z_keep = z[keep]
+    sigma_keep = sigma[keep]
+
     tau = fit.tau_us
     shape_resolved = fit.shape
     full_model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
-    full_chi2 = calculate_noise_weighted_chi2(complex_spectrum, rms_noise, full_model)
+    full_chi2 = calculate_noise_weighted_chi2(
+        z_keep, sigma_keep, full_model[keep]
+    )
 
     # n_eff is keyed on the K-fit's model magnitude -- the same value the
     # merge cleanup uses for its AICc test -- and shared across all peaks
@@ -1329,16 +1372,16 @@ def knockout_test(
         # Diagnostic: freeze-others delta_chi2 + expected line energy.
         kept_model = model_spectrum(u, kept, tau, acquisition_us, shape=shape_resolved)
         chi2_without = calculate_noise_weighted_chi2(
-            complex_spectrum, rms_noise, kept_model
+            z_keep, sigma_keep, kept_model[keep]
         )
         delta = chi2_without - full_chi2
         line_model = model_spectrum(u, [pk], tau, acquisition_us, shape=shape_resolved)
-        expected = calculate_noise_weighted_chi2(line_model, rms_noise)
+        expected = calculate_noise_weighted_chi2(line_model[keep], sigma_keep)
 
         if not kept:
             # K=1 -> K=0 refit is the null model; no fit_window call needed.
             # The null chi-squared is the data's own noise-weighted energy.
-            null_chi2 = calculate_noise_weighted_chi2(complex_spectrum, rms_noise)
+            null_chi2 = calculate_noise_weighted_chi2(z_keep, sigma_keep)
             aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
             # Compare aicc_km1 to aicc_k directly so the both-+inf case
             # (model not identifiable at n_eff for either K or K-1) reads
@@ -1363,7 +1406,8 @@ def knockout_test(
             continue
 
         refit = fit_window(
-            u, z, sigma, kept, tau, acquisition_us, **refit_kwargs,
+            u, z, sigma, kept, tau, acquisition_us,
+            spur_mask=spur_mask, **refit_kwargs,
         )
         if not refit.success:
             # Refit failure -> the AICc gate is unable to express a
@@ -1468,6 +1512,7 @@ def _blend_aware_seed(
     tau_penalty_sigma_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1490,7 +1535,7 @@ def _blend_aware_seed(
     familiar diagnostic.
     """
     shape_resolved = PeakShape.coerce(shape)
-    fit_kwargs = dict(
+    fit_kwargs: dict[str, Any] = dict(
         fit_tau=fit_tau,
         tau_bounds=tau_bounds,
         amp_max=amp_max,
@@ -1503,6 +1548,7 @@ def _blend_aware_seed(
         tau_penalty_reference=tau_penalty_reference,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
         shape=shape_resolved,
+        spur_mask=spur_mask,
     )
     fit1 = fit_window(
         offset_grid_mhz,
@@ -1667,6 +1713,7 @@ def conservative_fit(
     sigma_tau_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
+    spur_mask: Optional[SpurMaskSpec] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -1765,6 +1812,12 @@ def conservative_fit(
         features; gates that do diverge to ``+inf`` fall through to
         their REJECT-on-tie branch (preserve the simpler model).
 
+    spur_mask : SpurMaskSpec, optional
+        Clock/LO-spur bins to exclude from every inner fit's residual /
+        chi-squared (forwarded verbatim to :func:`fit_window` and
+        :func:`knockout_test`). Keeps a spur from inflating the AICc gate
+        and the knockout sweep. ``None`` masks nothing.
+
     Returns
     -------
     ConservativeFitResult
@@ -1819,11 +1872,13 @@ def conservative_fit(
     if not remaining:
         empty = fit_window(
             u, z, sigma, [], tau0_us, acquisition_us, shape=shape_resolved,
+            spur_mask=spur_mask,
         )
         return ConservativeFitResult(empty, [], [])
 
     null = fit_window(
         u, z, sigma, [], tau0_us, acquisition_us, shape=shape_resolved,
+        spur_mask=spur_mask,
     )
     seed = remaining.pop(0)
     current, audit = _blend_aware_seed(
@@ -1853,6 +1908,7 @@ def conservative_fit(
         tau_penalty_sigma_us=tau_penalty_sigma_us,
         n_eff_kind=n_eff_kind,
         shape=shape_resolved,
+        spur_mask=spur_mask,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
@@ -1910,6 +1966,7 @@ def conservative_fit(
             trial_init,
             tau0_us,
             acquisition_us,
+            spur_mask=spur_mask,
             **fit_kwargs_inner,
         )
         p_value, f_stat, _ = calculate_chi_squared_improvement(
@@ -1994,5 +2051,6 @@ def conservative_fit(
         fit_kwargs_inner=fit_kwargs_inner,
         n_eff_kind=n_eff_kind,
         significance=significance,
+        spur_mask=spur_mask,
     )
     return ConservativeFitResult(current, audit, knockouts)

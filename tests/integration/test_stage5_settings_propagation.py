@@ -37,8 +37,10 @@ from ftmwpipeline._internal import stage5_impl  # noqa: F401  -- monkeypatch tar
 from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.core.stage_fit_settings import (
     ShapeSpec,
+    SpurSubSettings,
     StageFitSettings,
 )
+from ftmwpipeline.fitting.spur_detection import SpurSet
 
 pytestmark = [
     pytest.mark.integration,
@@ -202,6 +204,59 @@ def test_setting_field_reaches_planner(
         f"{label}: forwarded value mismatch -- expected {value!r}, got "
         f"{bag_dict[key]!r} in {bag_kwarg}[{key!r}]"
     )
+
+
+# ---------------------------------------------------------------------------
+# Spur masking: settings reach the driver as a SpurSet (or None when off)
+# ---------------------------------------------------------------------------
+def test_spur_settings_build_spur_set(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``spur.enabled=True`` makes the driver pass a built SpurSet to the plan.
+
+    The mask half-width knob must survive into the SpurSet geometry.
+    """
+    variant = tmp_path / "spur_on.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    s = _base_settings()
+    s.spur = SpurSubSettings(enabled=True, mask_half_width_bins=3)
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    assert "spur_set" in captured
+    spur_set = captured["spur_set"]
+    # The propagation contract is that enabling builds a SpurSet carrying the
+    # configured geometry; the gated *count* depends on the data (an apodized
+    # fixture smears spurs below the narrowness gate) and is validated
+    # separately on the unapodized fixture.
+    assert isinstance(spur_set, SpurSet)
+    assert spur_set.mask_half_width_bins == 3
+
+
+def test_spur_disabled_passes_none(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``spur.enabled=False`` passes ``spur_set=None`` (masking off)."""
+    variant = tmp_path / "spur_off.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    s = _base_settings()
+    s.spur = SpurSubSettings(enabled=False)
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    assert captured.get("spur_set", "MISSING") is None
 
 
 # ---------------------------------------------------------------------------

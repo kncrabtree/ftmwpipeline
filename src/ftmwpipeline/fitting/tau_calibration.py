@@ -152,12 +152,23 @@ class SpurCluster:
         Number of adjacent spur-classified bins in the cluster.
     bin_indices : tuple of int
         Indices of every spur-classified bin in this cluster (sorted).
+    saturated : bool
+        Whether the cluster's representative (peak-magnitude) bin is
+        temporally *flat* -- its STFT exp fit railed to ``tau_max``
+        (``spur_by_tau``), the signature of a genuine CW tone. ``False``
+        marks a cluster the classifier flagged only via the AICc branch
+        (``spur_by_aicc``), which also fires on erratic beat / blend bins
+        that are *not* spurs. The Stage 5 spur-masking gate keys its
+        persistence half on this flag rather than the raw ``cls == 1``
+        membership; see ``dev-docs/planning/stage5-spur-masking.md``.
+        Defaults to ``False`` on legacy catalogues that predate the flag.
     """
 
     center_freq_mhz: float
     peak_bin_index: int
     n_bins: int
     bin_indices: Tuple[int, ...]
+    saturated: bool = False
 
 
 @dataclass(frozen=True)
@@ -1253,6 +1264,7 @@ def group_spur_bins(
     *,
     n_seg: int,
     cluster_multiplier: float = DEFAULT_SPUR_CLUSTER_MULTIPLIER,
+    saturated_bins: Optional[np.ndarray] = None,
 ) -> Tuple[SpurCluster, ...]:
     """Collapse adjacent spur-classified bins into one entry per CW source.
 
@@ -1265,6 +1277,13 @@ def group_spur_bins(
     Empirically: Phase 2 on 2638 reported 649 raw spur bins that collapse to
     ~50-100 clusters under this rule, which matches the expected count for
     that instrument's clock harmonics.
+
+    ``saturated_bins`` (optional) is a per-bin boolean over the full bin grid
+    flagging the temporally-flat (``spur_by_tau``) bins. When supplied, each
+    cluster's :attr:`SpurCluster.saturated` is set from its representative
+    bin; this is the signal the Stage 5 spur gate trusts for persistence (a
+    flat CW tone vs an erratic beat/blend bin that only the AICc branch
+    flagged). When ``None`` every cluster is ``saturated=False``.
     """
     if spur_bin_indices.size == 0:
         return ()
@@ -1281,12 +1300,16 @@ def group_spur_bins(
     for g in groups:
         g_arr = np.asarray(g, dtype=np.int64)
         peak_idx = int(g_arr[int(np.argmax(mean_mag[g_arr]))])
+        saturated = (
+            bool(saturated_bins[peak_idx]) if saturated_bins is not None else False
+        )
         clusters.append(
             SpurCluster(
                 center_freq_mhz=float(freqs_mhz[peak_idx]),
                 peak_bin_index=peak_idx,
                 n_bins=len(g),
                 bin_indices=tuple(int(b) for b in g),
+                saturated=saturated,
             )
         )
     clusters.sort(key=lambda c: c.center_freq_mhz)
@@ -1573,12 +1596,17 @@ def extract_tau_majority(
                 )
 
     spur_bin_indices = np.where(spur_mask_full)[0]
+    # Flat (saturated) bins: the exp fit railed to tau_max (spur_by_tau),
+    # the reliable CW-tone signal the Stage 5 gate keys on. Mirrors the
+    # ``spur_by_tau`` test in :func:`stft_calibration`.
+    saturated_bins = cal.tau_per_bin >= 0.95 * cal.tau_max_us
     spur_clusters = group_spur_bins(
         spur_bin_indices,
         cal.mag.mean(axis=0),
         freq_mol_mhz,
         n_seg=n_seg,
         cluster_multiplier=spur_cluster_multiplier,
+        saturated_bins=saturated_bins,
     )
 
     # Pre-condition checks: report each one independently.
@@ -2073,12 +2101,14 @@ def extract_tau_G_majority(
 
     spur_mask_full = (cal.classification == 1) & in_trim
     spur_bin_indices = np.where(spur_mask_full)[0]
+    saturated_bins = cal.tau_per_bin >= 0.95 * cal.tau_max_us
     spur_clusters = group_spur_bins(
         spur_bin_indices,
         cal.mag.mean(axis=0),
         freq_mol_mhz,
         n_seg=n_seg,
         cluster_multiplier=spur_cluster_multiplier,
+        saturated_bins=saturated_bins,
     )
 
     notes: list[str] = []

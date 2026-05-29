@@ -145,42 +145,64 @@ Acceptance, against `probe_spur_detector.py` + the per-window baseline at
 - Spur-only windows (88, 126, 193, 287, 372, ...) drop or fit cleanly; mixed
   windows (245) keep their real lines and lose the spur's χ².
 
-## Implementation progress
+## Implementation status
 
-- [ ] `fitting/spur_detection.py` detector + joint gate + unit tests
-- [ ] `fit_window` spur mask (residual/Jacobian/`n_data`)
-- [ ] `plan_execution` nomination exclusion + mask threading
-- [ ] `stage5_impl` gated-set construction + Stage 2b auto-detect
-- [ ] `spur` settings sub-block + `_HARD_DEFAULTS` + instrument-knobs row
-- [ ] persistence of masked bins + cross-interface test
-- [ ] integration validation on 2638; update the audit report with recovery
-- [ ] (optional) Stage 4 spur-only window drop
+Shipped. The mechanism is `fitting/spur_detection.py` (`detect_active_ft_spurs`
+→ `gate_spurs` → `SpurSet`/`SpurMaskSpec`), consumed by `fit_window`
+(per-bin residual/Jacobian/χ² mask, `n_data` reduced), `plan_execution`
+(per-window mask, nomination exclusion, spur-contributor drop, threaded through
+the rescue + thaw paths), and built once in `stage5_impl` from the active-FT +
+the persisted Stage 2b `saturated` catalogue (auto-detected). The `spur`
+settings sub-block (`core/stage_fit_settings.py`, default on) controls it and
+flows through all three interfaces via the existing settings plumbing.
 
-## Open questions
+- [x] `fitting/spur_detection.py` detector + joint gate + unit tests
+      (`tests/unit/fitting/test_spur_detection.py`)
+- [x] `fit_window` spur mask (residual/Jacobian/`n_data`)
+- [x] `plan_execution` nomination exclusion + mask threading (+ spur-contributor
+      drop, discovered in validation: a spur fit as a peak was a fixed
+      contributor for a downstream window)
+- [x] `stage5_impl` gated-set construction + Stage 2b auto-detect
+- [x] `spur` settings sub-block + `_HARD_DEFAULTS` + instrument-knobs rows
+- [x] persistence of the gated catalogue under `stage5_fit` parameters +
+      cross-interface settings-propagation tests
+- [x] integration validation on 2638 (sum Δχ²ᵣ = 111.5 over the classified
+      spur windows; w245 keeps its 3 real lines; zero real-line removals);
+      audit report § "Production wiring & validation" updated
+- [ ] (optional, follow-up) Stage 4 spur-only window drop — currently spur-only
+      windows fit to the null model (no candidates survive nomination) and
+      contribute ~noise χ²ᵣ, so this is a cleanliness optimisation, not load-bearing
 
-- **Gate logic.** Union of (integer ∧ narrow) and (integer ∧ persistent), with
-  integer-MHz as the hard requirement on both — vs intersection (stricter,
-  fewer detections). The union catches more spurs while integer-MHz holds the
-  false-positive rate near zero; a real line at *exactly* integer MHz remains a
-  residual risk (rare; the narrowness sub-test rejects it on the frequency
-  side).
-- **Mask extent source.** Data-driven from `SpurCluster.bin_indices` (mapped to
-  active-FT) vs a fixed ±N half-width. The catalogue may under-cluster split-bin
-  spurs; a fixed-width fallback covers them.
-- **Persistence signal: flatness vs raw `cls == 1`.** The STFT `cls == 1` set
-  conflates true flat spurs (`spur_by_tau`) with erratic beat/blend bins
-  (`spur_by_aicc` misfiring where neither model fits). Use the flatness /
-  saturation signal (`spur_by_tau`, or a slope-equivalence test asserting the
-  frame evolution is flat within a tight bound) as the persistence half — it
-  catches the flat spurs without the beat/blend false positives. The original
-  `spur_by_aicc` is a noisier proxy; integer-MHz backstops either way. (Earlier
-  framing blamed "long-τ real lines" — that is wrong; real τ ≪ τ_max, so no
-  real line saturates. See `research/stage5-gaussian-audit/report.md`
-  § "The temporal-persistence detector".) A small extension to
-  `tau_calibration` to expose the per-bin flatness flag / `spur_by_tau` mask
-  (it currently only persists the clustered `cls == 1` catalogue) may be
-  warranted.
-- **Stage 4 spur-only drop** now or as a follow-up.
+## Resolved decisions
+
+- **Gate logic.** Union of (integer ∧ narrow) and (integer ∧ saturated), with
+  integer-MHz the hard requirement on both. Validated zero real-line
+  false-positive on 2638 (the 354 broad integer-MHz lines lack the narrowness
+  signature and are never gated).
+- **Mask extent.** Fixed ±N half-width (default ±2 bins) by nearest-bin in the
+  window frame, implemented as a frequency half-width on `SpurMaskSpec` so it is
+  invariant to the fit routines' internal grid re-sorting. Nomination exclusion
+  uses a tighter ~1-bin tolerance so a real line a couple of bins from a spur
+  survives nomination while the residual mask still spans ±N.
+- **Persistence signal: flatness, not raw `cls == 1`.** Settled by measurement
+  (audit report § "Flatness-exposure measurement"): of 59 integer-MHz `cls == 1`
+  bins on 2638, 53 are erratic `spur_by_aicc` real lines (e.g. 38744 @ SNR 260)
+  and only 6 are flat clock harmonics. The persistence half therefore keys on a
+  per-cluster `saturated` flag (`spur_by_tau`), added to `SpurCluster` + its
+  serialization (legacy catalogues default `saturated=False`, degrading to the
+  frequency-domain detector).
+- **Default-on.** Spur masking ships enabled (`spur.enabled=True`): the gate is
+  integer-MHz-anchored and validated zero real-line FP, unlike the transitional
+  default-off rescue.
+
+## Open follow-ups
+
+- **Stage 4 spur-only window drop.** Optional cleanliness step (spur-only
+  windows already fit to the null model and contribute ~noise χ²ᵣ).
+- **Flat-catalogue exercise.** The 2638 fixture's persisted Stage 2b catalogue
+  predates the `saturated` flag, so the validation ran the frequency-domain
+  detector alone; re-running Stage 2b populates the flag and adds the split-bin
+  spurs the frequency test misses.
 
 ## Out of scope
 

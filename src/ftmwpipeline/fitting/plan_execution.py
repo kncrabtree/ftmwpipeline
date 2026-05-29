@@ -85,6 +85,7 @@ from .peak_model import (
     to_baseband_offset,
 )
 from .residual_rescue import rescue_and_consolidate
+from .spur_detection import SpurMaskSpec, SpurSet
 from .window_fit import (
     DEFAULT_MAX_DECAY_FACTOR,
     ConservativeFitResult,
@@ -796,6 +797,7 @@ def local_thaw_cofit(
     fit_tau: bool = True,
     max_decay_factor: float = DEFAULT_MAX_DECAY_FACTOR,
     shape: "PeakShape | str" = "lorentzian",
+    spur_set: Optional[SpurSet] = None,
 ) -> tuple[WindowFitResult, np.ndarray]:
     """Joint co-fit of two windows with one contributor unfrozen.
 
@@ -897,6 +899,21 @@ def local_thaw_cofit(
     lo = float(grid.min())
     hi = float(grid.max())
 
+    # Spur mask in the joint (primary) frame: any gated spur whose offset
+    # s*(f - primary_center) lands inside the combined grid span.
+    joint_spur_mask: Optional[SpurMaskSpec] = None
+    if spur_set is not None and spur_set:
+        spur_offsets = [
+            float(s * (c - primary_center))
+            for c in spur_set.centers_mhz
+        ]
+        spur_offsets = [o for o in spur_offsets if lo <= o <= hi]
+        if spur_offsets:
+            joint_spur_mask = SpurMaskSpec(
+                offsets_mhz=tuple(spur_offsets),
+                half_width_mhz=spur_set.mask_half_width_mhz,
+            )
+
     joint = fit_window(
         grid,
         data,
@@ -908,6 +925,7 @@ def local_thaw_cofit(
         max_decay_factor=max_decay_factor,
         offset_bounds=(lo, hi),
         shape=shape,
+        spur_mask=joint_spur_mask,
     )
     return joint, np.array([thawed_index], dtype=int)
 
@@ -996,6 +1014,7 @@ def execute_plan(
     rescue_kwargs: Optional[dict[str, Any]] = None,
     window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
     shape: "PeakShape | str" = "lorentzian",
+    spur_set: Optional[SpurSet] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1091,6 +1110,13 @@ def execute_plan(
         and the band-wide ``tau0_us`` (or ``None`` if no calibration is
         wired). The ``tau0_us`` part is what gives weak windows with
         ``fit_tau=False`` their band-local fixed τ.
+    spur_set : SpurSet, optional
+        Gated clock/LO spurs (:mod:`ftmwpipeline.fitting.spur_detection`).
+        For each window the executor derives a per-window
+        :class:`~ftmwpipeline.fitting.spur_detection.SpurMaskSpec`, drops
+        nominated candidate offsets that land on a spur, and threads the
+        mask into every inner fit so spur bins are excluded from the
+        residual / chi-squared. ``None`` (default) disables spur masking.
 
     Returns
     -------
@@ -1142,6 +1168,7 @@ def execute_plan(
         max_residual_rescue_rounds=max_residual_rescue_rounds,
         rescue_kwargs=rescue_kwargs,
         window_tau_overrides=window_tau_overrides,
+        spur_set=spur_set,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1204,6 +1231,7 @@ def execute_plan(
                 max_residual_rescue_rounds=max_residual_rescue_rounds,
                 rescue_kwargs=rescue_kwargs,
                 window_tau_overrides=window_tau_overrides,
+                spur_set=spur_set,
             )
 
             applied_pairs = {
@@ -1257,6 +1285,7 @@ def _walk_windows_in_order(
     max_residual_rescue_rounds: int = 0,
     rescue_kwargs: Optional[dict[str, Any]] = None,
     window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
+    spur_set: Optional[SpurSet] = None,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -1310,6 +1339,7 @@ def _walk_windows_in_order(
             fit_tau=fit_tau,
             residual_edge_m=residual_edge_m,
             conservative_kwargs=ck_for_window,
+            spur_set=spur_set,
         )
         outcomes[wid] = outcome
 
@@ -1325,6 +1355,7 @@ def _walk_windows_in_order(
                 residual_edge_threshold=residual_edge_threshold,
                 residual_edge_m=residual_edge_m,
                 shape=conservative_kwargs.get("shape", "lorentzian"),
+                spur_set=spur_set,
             )
             if not edge_events:
                 break
@@ -1344,6 +1375,7 @@ def _walk_windows_in_order(
                 conservative_kwargs=ck_for_window,
                 max_residual_rescue_rounds=max_residual_rescue_rounds,
                 rescue_kwargs=rescue_kwargs or {},
+                spur_set=spur_set,
             )
             for ev in events:
                 rescue_history.append(ev)
@@ -1546,6 +1578,7 @@ def _fit_one_window(
     fit_tau: bool,
     residual_edge_m: int,
     conservative_kwargs: dict[str, Any],
+    spur_set: Optional[SpurSet] = None,
 ) -> WindowOutcome:
     """Fit one window with its frozen contributors; build its WindowOutcome."""
     _, offset_grid, z_slice, sig_slice, center_mhz = materialize_window(
@@ -1555,8 +1588,25 @@ def _fit_one_window(
         sideband=sideband,
     )
 
+    # Per-window spur mask: spurs that fall inside this window, in the
+    # window's baseband-offset frame. Stashed on the outcome so the thaw and
+    # rescue passes mask the same bins, and threaded into the fit below.
+    spur_mask: Optional[SpurMaskSpec] = None
+    if spur_set is not None and spur_set:
+        lo, hi = win.freq_range
+        spur_mask = spur_set.window_mask_spec(lo, hi, center_mhz, sideband)
+
     fixed_peaks: list[FrozenPeak] = []
     for contributor in win.fixed_contributors:
+        # A fixed contributor whose frequency lands on a spur is a spurious
+        # frozen term: the spur is no longer fit as a peak in its primary
+        # window (nomination exclusion), so it has no fitted peak to freeze
+        # here. Drop it -- the spur's own bins are masked from this window's
+        # residual anyway.
+        if spur_set is not None and spur_set and spur_set.candidate_on_spur(
+            contributor.frequency_mhz
+        ):
+            continue
         primary_outcome = outcomes.get(contributor.primary_window_id)
         if primary_outcome is None:
             raise ValueError(
@@ -1575,6 +1625,19 @@ def _fit_one_window(
     candidate_offsets = _peaks_to_candidate_offsets(
         win, peak_frequencies_mhz, center_mhz, sideband
     )
+    # Drop nominated candidates that land on a spur core so the fitter never
+    # seeds a peak on a spur. The residual mask still spans +/-N bins; the
+    # tighter nomination tolerance spares a real line a couple of bins away.
+    ck_for_fit = conservative_kwargs
+    if spur_mask is not None and spur_mask.offsets_mhz:
+        tol = spur_set.nomination_tol_mhz  # type: ignore[union-attr]
+        candidate_offsets = [
+            o
+            for o in candidate_offsets
+            if not any(abs(o - so) <= tol for so in spur_mask.offsets_mhz)
+        ]
+        ck_for_fit = dict(conservative_kwargs)
+        ck_for_fit["spur_mask"] = spur_mask
     fit_result, background, full_fitted, full_residual = (
         fit_window_with_fixed_contributors(
             offset_grid,
@@ -1585,7 +1648,7 @@ def _fit_one_window(
             tau0_us,
             acquisition_us,
             fit_tau=fit_tau,
-            **conservative_kwargs,
+            **ck_for_fit,
         )
     )
     low_coh, high_coh = residual_edge_coherence(
@@ -1607,6 +1670,9 @@ def _fit_one_window(
     # Stash the center on the outcome so it can be a primary for downstream
     # windows. See _window_center_mhz for the contract.
     outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
+    # Stash the per-window spur mask so the rescue pass excludes the same
+    # bins (it operates on this outcome's grid/center).
+    outcome._spur_mask = spur_mask  # type: ignore[attr-defined]
     return outcome
 
 
@@ -1622,6 +1688,7 @@ def attempt_thaw_round(
     residual_edge_threshold: float = DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     residual_edge_m: int = DEFAULT_RESIDUAL_EDGE_M,
     shape: "PeakShape | str" = "lorentzian",
+    spur_set: Optional[SpurSet] = None,
 ) -> list[ThawEvent]:
     """Run one round of the residual edge-coherence check on a window and thaw.
 
@@ -1686,6 +1753,7 @@ def attempt_thaw_round(
                 residual_edge_threshold=residual_edge_threshold,
                 residual_edge_m=residual_edge_m,
                 shape=shape,
+                spur_set=spur_set,
             )
         events.append(event)
         outcome.thaw_events.append(event)
@@ -1707,6 +1775,7 @@ def _perform_thaw(
     residual_edge_threshold: float,
     residual_edge_m: int,
     shape: "PeakShape | str" = "lorentzian",
+    spur_set: Optional[SpurSet] = None,
 ) -> ThawEvent:
     """Do the joint co-fit, decide accept/reject, and rebuild the outcomes."""
     primary_outcome = outcomes[thawed.primary_window_id]
@@ -1720,6 +1789,7 @@ def _perform_thaw(
         acquisition_us=acquisition_us,
         fit_tau=fit_tau,
         shape=shape,
+        spur_set=spur_set,
     )
     if not joint.success:
         return ThawEvent(
@@ -1934,6 +2004,7 @@ def _apply_rescue_to_outcome(
     conservative_kwargs: dict[str, Any],
     max_residual_rescue_rounds: int,
     rescue_kwargs: dict[str, Any],
+    spur_set: Optional[SpurSet] = None,
 ) -> list[RescueEvent]:
     """Run the residual-rescue B-loop on a finished window and update its
     outcome in place. Returns the per-round :class:`RescueEvent` records.
@@ -1951,6 +2022,7 @@ def _apply_rescue_to_outcome(
     set has changed.
     """
     data_minus_bg = outcome.complex_spectrum - outcome.background
+    spur_mask = getattr(outcome, "_spur_mask", None)
     consolidated = rescue_and_consolidate(
         outcome.offset_grid_mhz,
         data_minus_bg,
@@ -1961,6 +2033,7 @@ def _apply_rescue_to_outcome(
         max_rescue_rounds=max_residual_rescue_rounds,
         conservative_kwargs=conservative_kwargs,
         shape=outcome.fit.fit.shape,
+        spur_mask=spur_mask,
         **rescue_kwargs,
     )
 

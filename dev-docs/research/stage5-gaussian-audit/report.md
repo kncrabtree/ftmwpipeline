@@ -459,3 +459,73 @@ required for spurs that share a window with real lines (w245, w287).
 
 Design and task breakdown:
 [`../../planning/stage5-spur-masking.md`](../../planning/stage5-spur-masking.md).
+
+### Flatness-exposure measurement settles the persistence half
+
+The production-wiring step measured, on the 2638 fixture, whether the
+persisted `cls == 1` catalogue can be consumed directly under the integer
+gate, or whether the flatness (`spur_by_tau`) signal must be exposed.
+The integer gate alone does **not** clean the catalogue:
+
+| set | count |
+|---|---:|
+| `cls == 1` in-trim bins | 649 |
+| `cls == 1` ∧ integer-MHz | 59 |
+| ... of those, `spur_by_tau` (flat) | 6 |
+| ... of those, `spur_by_aicc`-only (erratic, **non-flat**) | 53 |
+| in-trim `spur_by_tau` (flat) bins, any freq | 70 (6 integer + 64 skirts) |
+
+So **53 of the 59 integer-MHz `cls == 1` bins are erratic `spur_by_aicc`
+false positives that the integer gate does not reject** -- e.g. 38744.03
+MHz at SNR 260 (frames `0.07 1.00 0.09 0.54 ...`, τ 3.4), a strong
+*molecular* line near an integer MHz. Masking those would be the exact
+real-line false-positive the acceptance gate forbids. The 6 integer-MHz
+`spur_by_tau` bins are all genuine clock harmonics (30720, 32960,
+35840 + skirts, 39040), dead-flat across the 10 frames (τ railed to
+τ_max).
+
+**Decision: expose the flatness signal.** `integer-MHz ∧ cls == 1` is
+*not* clean; the persistence half of the gate keys on `spur_by_tau`
+(saturation), persisted as a per-cluster `saturated` flag on
+`SpurCluster`. The frequency-domain narrowness detector remains the
+zero-false-positive primary (it independently catches 34560/29440 that
+are flat-but-not-saturated or below `t_sigma`); the flat catalogue adds
+the split-bin spurs. Neither is a superset; the joint
+integer-MHz ∧ (narrow ∨ saturated) gate stands.
+
+### Production wiring & validation (2638, Gaussian)
+
+The masking ships in `fitting/spur_detection.py` (detector + joint gate +
+`SpurSet`), consumed by `fit_window` (per-bin residual/Jacobian/χ² mask,
+`n_data` reduced) and `plan_execution.execute_plan` (per-window mask +
+candidate-nomination exclusion + spur-contributor drop), built once in
+`stage5_impl` from the active-FT + the persisted Stage 2b `saturated`
+catalogue (auto-detected). Controlled by the `StageFitSettings.spur`
+sub-block (default on, ±2-bin mask, integer-MHz band = the Stage 1 trim).
+
+Re-running Stage 5 on the audit fixture with masking **off** vs **on**
+(same Stage 3 peaks + Stage 4 plan), the frequency-domain gate flagged
+exactly the prototype's 8 in-band integer-MHz narrow spurs (28460, 29440,
+30720, 32960, 34560, 35840, 39040, 39820). Per-window χ²ᵣ (off → on):
+
+| window | off | on | Δχ²ᵣ | npeaks |
+|---|---:|---:|---:|---|
+| w287 | 58.50 | 1.44 | 57.1 | 1→1 |
+| w193 | 26.12 | 1.56 | 24.6 | 1→0 |
+| w126 | 13.59 | 1.14 | 12.4 | 1→0 |
+| w245 (spur + real) | 13.83 | 4.08 | 9.8 | 4→3 |
+| w88 | 5.79 | 0.98 | 4.8 | 1→0 |
+| w372 | 4.80 | 1.99 | 2.8 | 1→0 |
+
+**sum Δχ²ᵣ over the classified spur windows = 111.5**, at or above the
+prototype's ±2-bin figure (~98–103). w245 keeps its 3 real lines and
+floors at χ²ᵣ ≈ 4.1 (the real-line "other" content, correctly not
+over-recovered — it dropped only the spurious peak the fitter had placed
+on the spur). Globally 632 → 625 fitted peaks: the 7 removed peaks were
+all spurious peaks sitting on gated narrow integer-MHz spurs (spur-only
+windows w88/126/193/372/386 plus w62, an unclassified spur the gate
+caught); **no real molecular line was removed** (the broad integer-MHz
+lines lack the narrowness signature and are never gated). The fixture's
+persisted Stage 2b catalogue predates the `saturated` flag, so this run
+exercised the frequency-domain detector alone; the flat-catalogue half
+adds split-bin spurs once Stage 2b is re-run.

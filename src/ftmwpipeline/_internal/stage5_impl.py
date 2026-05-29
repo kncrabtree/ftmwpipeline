@@ -47,6 +47,7 @@ from ..fitting.plan_execution import (
     execute_plan,
 )
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
+from ..fitting.spur_detection import SpurSet, build_spur_set
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
@@ -625,6 +626,70 @@ def fit_peaks_impl(
             tau_maj_us, sigma_tau_us,
         )
 
+    # --- Spur gating (optional) ---------------------------------------------
+    # Build the gated clock/LO-spur set once: the frequency-domain
+    # integer-MHz + narrowness detector on the active-FT, joined with the
+    # persisted Stage 2b flat-spur (``saturated``) catalogue when present
+    # (same auto-detect pattern as ``tau_maj``). Absent Stage 2b, the
+    # detector runs frequency-domain-only. The executor derives each
+    # window's mask + nomination exclusion from this set.
+    spur_set: Optional[SpurSet] = None
+    spur_cfg = resolved.spur
+    spur_enabled = True if spur_cfg.enabled is None else bool(spur_cfg.enabled)
+    if spur_enabled:
+        use_catalogue = (
+            True
+            if spur_cfg.use_stft_catalogue is None
+            else bool(spur_cfg.use_stft_catalogue)
+        )
+        saturated_clusters = (
+            persisted_cal.spur_clusters
+            if (persisted_cal is not None and use_catalogue)
+            else ()
+        )
+        # σ_c per quadrature (canonical Stage 2 complex RMS / sqrt(2)), the
+        # SNR-floor convention the detector's threshold was calibrated on.
+        sorted_sig_c = np.asarray(active_noise.rms_noise, dtype=float) / np.sqrt(2.0)
+        # Restrict the integer-MHz sweep to the user analysis (trim) band: the
+        # fit windows all live there, and the full active-FT extends past the
+        # trim into edge regions whose integer-MHz narrow bins are artifacts,
+        # not clock harmonics the fit ever sees.
+        spur_band = (
+            float(np.min(user_ft.freq_array)),
+            float(np.max(user_ft.freq_array)),
+        )
+        spur_set = build_spur_set(
+            sorted_freq,
+            np.ascontiguousarray(active_ft.complex_spectrum[sort_idx]),
+            sorted_sig_c,
+            band=spur_band,
+            saturated_clusters=saturated_clusters,
+            integer_tol_mhz=_required_float(
+                spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
+            ),
+            narrowness_ratio=_required_float(
+                spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
+            ),
+            snr_threshold=_required_float(
+                spur_cfg.snr_threshold, "spur.snr_threshold"
+            ),
+            mask_half_width_bins=_required_int(
+                spur_cfg.mask_half_width_bins, "spur.mask_half_width_bins"
+            ),
+            use_stft_catalogue=use_catalogue,
+        )
+        if spur_set:
+            logger.info(
+                "Stage 5 spur masking: %d gated spur(s) "
+                "(sources: %s); mask half-width %d bins, catalogue=%s",
+                len(spur_set.spurs),
+                ", ".join(sorted({s.source for s in spur_set.spurs})),
+                spur_set.mask_half_width_bins,
+                "on" if (use_catalogue and saturated_clusters) else "off",
+            )
+        else:
+            logger.info("Stage 5 spur masking: enabled, no spurs gated")
+
     # --- tau0 default --------------------------------------------------------
     if resolved.tau.tau0_us is None:
         if tau_maj_us is not None and tau_maj_us > 0.0:
@@ -839,6 +904,7 @@ def fit_peaks_impl(
         max_residual_rescue_rounds=rescue_max_v,
         rescue_kwargs=rescue_kwargs,
         window_tau_overrides=window_tau_overrides if per_band_used else None,
+        spur_set=spur_set,
     )
 
     parameters = {
@@ -861,6 +927,18 @@ def fit_peaks_impl(
         "tau_calibration_source": tau_source,
         "per_band_tau": per_band_used,
         "n_windows_band_routed": len(window_tau_overrides) if per_band_used else 0,
+        # Spur-masking audit: the gated spur catalogue this fit consumed.
+        "spur_masking_enabled": spur_enabled,
+        "n_spurs_gated": len(spur_set.spurs) if spur_set else 0,
+        "spur_centers_mhz": (
+            [round(s.center_mhz, 4) for s in spur_set.spurs] if spur_set else []
+        ),
+        "spur_sources": (
+            [s.source for s in spur_set.spurs] if spur_set else []
+        ),
+        "spur_mask_half_width_bins": (
+            int(spur_set.mask_half_width_bins) if spur_set else 0
+        ),
     }
     if rescue_max_v > 0:
         parameters.update(

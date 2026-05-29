@@ -161,6 +161,25 @@ class ThawSubSettings:
 
 
 @dataclass
+class SpurSubSettings:
+    """Clock/LO-spur detection + masking knobs.
+
+    A spur is a persistent CW tone (clock harmonic): a single-bin delta no
+    finite-T line shape can represent. The gate is
+    ``integer-MHz ∧ (frequency-domain narrow ∨ Stage 2b flat/saturated)``;
+    detected spurs are dropped from peak nomination and excluded from the
+    residual / chi-squared. See ``dev-docs/planning/stage5-spur-masking.md``.
+    """
+
+    enabled: Optional[bool] = None
+    integer_tol_mhz: Optional[float] = None
+    narrowness_ratio: Optional[float] = None
+    snr_threshold: Optional[float] = None
+    mask_half_width_bins: Optional[int] = None
+    use_stft_catalogue: Optional[bool] = None
+
+
+@dataclass
 class StageFitSettings:
     """Stage 5 fit settings (see module docstring)."""
 
@@ -173,6 +192,7 @@ class StageFitSettings:
     penalties: PenaltySubSettings = field(default_factory=PenaltySubSettings)
     rescue: RescueSubSettings = field(default_factory=RescueSubSettings)
     thaw: ThawSubSettings = field(default_factory=ThawSubSettings)
+    spur: SpurSubSettings = field(default_factory=SpurSubSettings)
 
     def is_empty(self) -> bool:
         """True if no field is set across any sub-dataclass."""
@@ -186,7 +206,9 @@ class StageFitSettings:
 
 
 # Sub-dataclass field names on StageFitSettings, in HDF5/YAML order.
-_SUB_NAMES = ("tau", "seeder", "conservative", "penalties", "rescue", "thaw")
+_SUB_NAMES = (
+    "tau", "seeder", "conservative", "penalties", "rescue", "thaw", "spur",
+)
 
 
 # Hard defaults per sub-dataclass. These mirror the ``DEFAULT_*`` constants
@@ -243,6 +265,17 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_replan_rounds": 2,
         "residual_edge_threshold": 8.0,
         "residual_edge_m": 32,
+    },
+    "spur": {
+        # Spur masking defaults on: the gate is integer-MHz-anchored and
+        # validated zero real-line false-positive on 2638. These mirror the
+        # ``DEFAULT_*`` constants in ``fitting/spur_detection.py``.
+        "enabled": True,
+        "integer_tol_mhz": 0.04,
+        "narrowness_ratio": 0.30,
+        "snr_threshold": 5.0,
+        "mask_half_width_bins": 2,
+        "use_stft_catalogue": True,
     },
 }
 

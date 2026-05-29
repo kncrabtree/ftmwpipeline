@@ -190,6 +190,12 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 | thaw.max_replan_rounds | 2 | `DEFAULT_MAX_REPLAN_ROUNDS` | Maximum iterations of structural-replan (window boundary moves). | N | — |
 | thaw.residual_edge_threshold | 8.0 | `DEFAULT_RESIDUAL_EDGE_THRESHOLD` | S_coh threshold for residual-edge-coherence boundary violation (replan trigger). | **Y** | — |
 | thaw.residual_edge_m | 32 | `DEFAULT_RESIDUAL_EDGE_M` | Band width for residual edge-coherence detection. | N | — |
+| spur.enabled | True | `_HARD_DEFAULTS["spur"]` | Master switch for clock/LO-spur detection + masking. | N | — |
+| spur.integer_tol_mhz | 0.04 | `DEFAULT_INTEGER_TOL_MHZ` | Max distance (MHz) from an integer MHz for the spur gate's hard integer requirement (~½ active-FT bin). | **Y** | — |
+| spur.narrowness_ratio | 0.30 | `DEFAULT_NARROWNESS_RATIO` | max(neighbour)/peak below which an integer-MHz bin is sub-resolution narrow (CW tone vs real line with a skirt). | **Y** | — |
+| spur.snr_threshold | 5.0 | `DEFAULT_SNR_THRESHOLD` | Peak-bin / σ_c floor for the frequency-domain spur detector. | N | — |
+| spur.mask_half_width_bins | 2 | `DEFAULT_MASK_HALF_WIDTH_BINS` | Residual-mask half-width (active-FT bins) around a spur; ±2 recovers ~the full bucket, ±3 the last of the strongest spur. | **Y** | — |
+| spur.use_stft_catalogue | True | `_HARD_DEFAULTS["spur"]` | Consume the persisted Stage 2b flat-spur (`saturated`) catalogue as the gate's persistence half; False = frequency-domain detector only. | N | — |
 
 ## High-priority instrument-tunable knobs
 

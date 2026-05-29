@@ -32,6 +32,8 @@ HDF5 layout::
             center_freqs_mhz (float64)
             peak_bin_indices (int64)
             n_bins (int32)
+            saturated (bool)         per-cluster flat/CW-tone flag
+                                     (spur_by_tau); absent on legacy files
             (cluster bin-index lists are stored as a single flat int64
             dataset ``bin_indices_flat`` with an int32 ``offsets`` dataset
             so each cluster's member bins are recoverable; matches the
@@ -173,6 +175,9 @@ def save_tau_calibration_to_hdf5(
         n_bins_arr = np.asarray(
             [c.n_bins for c in clusters], dtype=np.int32
         )
+        saturated_arr = np.asarray(
+            [c.saturated for c in clusters], dtype=bool
+        )
         flat = np.concatenate(
             [np.asarray(c.bin_indices, dtype=np.int64) for c in clusters]
         )
@@ -183,11 +188,13 @@ def save_tau_calibration_to_hdf5(
         centers = np.zeros(0, dtype=np.float64)
         peak_bins = np.zeros(0, dtype=np.int64)
         n_bins_arr = np.zeros(0, dtype=np.int32)
+        saturated_arr = np.zeros(0, dtype=bool)
         flat = np.zeros(0, dtype=np.int64)
         offsets = np.zeros(1, dtype=np.int32)
     sg.create_dataset("center_freqs_mhz", data=centers)
     sg.create_dataset("peak_bin_indices", data=peak_bins)
     sg.create_dataset("n_bins", data=n_bins_arr)
+    sg.create_dataset("saturated", data=saturated_arr)
     sg.create_dataset("bin_indices_flat", data=flat, compression="gzip")
     sg.create_dataset("offsets", data=offsets)
     sg.attrs["n_clusters"] = int(n_clusters)
@@ -262,6 +269,14 @@ def load_tau_calibration_from_hdf5(
     n_bins_arr = sg["n_bins"][:]
     flat = sg["bin_indices_flat"][:]
     offsets = sg["offsets"][:]
+    # ``saturated`` is absent on catalogues written before the Stage 5 spur
+    # gate; default to all-False so legacy files load (the gate then falls
+    # back to its frequency-domain narrowness detector for those bins).
+    saturated_arr = (
+        sg["saturated"][:]
+        if "saturated" in sg
+        else np.zeros(int(centers.size), dtype=bool)
+    )
     clusters: list[SpurCluster] = []
     for i in range(int(centers.size)):
         lo = int(offsets[i])
@@ -272,6 +287,7 @@ def load_tau_calibration_from_hdf5(
                 peak_bin_index=int(peak_bins[i]),
                 n_bins=int(n_bins_arr[i]),
                 bin_indices=tuple(int(b) for b in flat[lo:hi]),
+                saturated=bool(saturated_arr[i]),
             )
         )
 
