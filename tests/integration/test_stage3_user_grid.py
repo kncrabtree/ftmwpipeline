@@ -51,7 +51,7 @@ def detection_result(exp_2638_data_path, tmp_path_factory):
     fp = str(tmp / "exp.ftmw")
     import_data_impl(fp, source=exp_2638_data_path)
     ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=TRIM)
-    ftmw.estimate_noise(fp)
+    ftmw.estimate_noise(fp, method="adaptive")  # frozen Stage 3 reference
     result = detect_peaks_impl(fp)
     return result
 

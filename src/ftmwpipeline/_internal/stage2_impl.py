@@ -11,7 +11,18 @@ from typing import Optional, Dict, Any, Union
 import logging
 import h5py
 
-from ..preprocessing.noise_estimation import estimate_noise_adaptive, NoiseResult
+from ..preprocessing.noise_estimation import (
+    estimate_noise_adaptive,
+    estimate_noise_scatter,
+    NoiseResult,
+    SCATTER_WINDOW_MHZ,
+    SCATTER_PEDESTAL_MHZ,
+    SCATTER_LINE_K,
+    SCATTER_N_ITER,
+    SCATTER_SMOOTHING_MHZ,
+    SCATTER_SMOOTHING_PERCENTILE,
+    SCATTER_CONVOLVE_MHZ,
+)
 from ..core.noise_settings import (
     NoiseSettings,
     load_preset as load_noise_preset,
@@ -69,6 +80,15 @@ def compute_noise_estimation_impl(
     min_noise_fraction: Optional[float] = None,
     from_saved_params: bool = False,
     *,
+    method: str = "scatter",
+    window_mhz: Optional[float] = None,
+    pedestal_mhz: Optional[float] = None,
+    line_k: Optional[float] = None,
+    n_iter: Optional[int] = None,
+    region_aware: bool = True,
+    smoothing_mhz: Optional[float] = None,
+    smoothing_percentile: Optional[float] = None,
+    convolve_mhz: Optional[float] = None,
     settings: Optional[NoiseSettings] = None,
     preset: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -156,7 +176,31 @@ def compute_noise_estimation_impl(
             
     except Exception as e:
         raise RuntimeError(f"Failed to compute ComplexFT from pipeline file {file_path}: {e}")
-    
+
+    if method not in ("adaptive", "scatter"):
+        raise ValueError(
+            f"unknown noise estimator method {method!r}; expected "
+            "'adaptive' or 'scatter'"
+        )
+
+    # The scatter (high-pass) estimator is self-contained — it does not share
+    # the adaptive estimator's NoiseSettings resolver chain. It carries its own
+    # four instrument-tunable knobs (window_mhz, pedestal_mhz, line_k, n_iter),
+    # each defaulting to the module-level constant when left unset.
+    if method == "scatter":
+        return _compute_noise_scatter(
+            file_path=file_path,
+            complex_ft=complex_ft,
+            window_mhz=window_mhz,
+            pedestal_mhz=pedestal_mhz,
+            line_k=line_k,
+            n_iter=n_iter,
+            region_aware=region_aware,
+            smoothing_mhz=smoothing_mhz,
+            smoothing_percentile=smoothing_percentile,
+            convolve_mhz=convolve_mhz,
+        )
+
     # When ``from_saved_params=True`` the legacy contract reads the
     # four user-tunable knobs from ``processing_parameters/noise_estimation``
     # and treats them as the only override layer; explicit per-knob
@@ -339,8 +383,105 @@ def compute_noise_estimation_impl(
         'noise_points': int(noise_result.noise_mask.sum()),
         'total_points': len(complex_ft.freq_array)
     }
-    
+
     return result
+
+
+def _compute_noise_scatter(
+    *,
+    file_path: str,
+    complex_ft: Any,
+    window_mhz: Optional[float],
+    pedestal_mhz: Optional[float],
+    line_k: Optional[float],
+    n_iter: Optional[int],
+    region_aware: bool,
+    smoothing_mhz: Optional[float],
+    smoothing_percentile: Optional[float],
+    convolve_mhz: Optional[float],
+) -> Dict[str, Any]:
+    """Run the scatter (high-pass) Stage 2 estimator and persist its result.
+
+    Self-contained sibling of the adaptive path in
+    :func:`compute_noise_estimation_impl`: it runs :func:`estimate_noise_scatter`
+    on the supplied ComplexFT, stores the NoiseResult in ``stage2_noise_result``,
+    and marks the stage complete. The four scatter knobs default to the
+    module-level constants when left unset.
+    """
+    window_mhz_v = SCATTER_WINDOW_MHZ if window_mhz is None else float(window_mhz)
+    pedestal_mhz_v = SCATTER_PEDESTAL_MHZ if pedestal_mhz is None else float(pedestal_mhz)
+    line_k_v = SCATTER_LINE_K if line_k is None else float(line_k)
+    n_iter_v = SCATTER_N_ITER if n_iter is None else int(n_iter)
+    smoothing_mhz_v = (
+        SCATTER_SMOOTHING_MHZ if smoothing_mhz is None else float(smoothing_mhz)
+    )
+    smoothing_percentile_v = (
+        SCATTER_SMOOTHING_PERCENTILE
+        if smoothing_percentile is None
+        else float(smoothing_percentile)
+    )
+    convolve_mhz_v = (
+        SCATTER_CONVOLVE_MHZ if convolve_mhz is None else float(convolve_mhz)
+    )
+
+    processing_params: Dict[str, Any] = {
+        'method': 'scatter',
+        'window_mhz': window_mhz_v,
+        'pedestal_mhz': pedestal_mhz_v,
+        'line_k': line_k_v,
+        'n_iter': n_iter_v,
+        'region_aware': bool(region_aware),
+        'smoothing_mhz': smoothing_mhz_v,
+        'smoothing_percentile': smoothing_percentile_v,
+        'convolve_mhz': convolve_mhz_v,
+    }
+
+    logger.info("Noise estimation parameters (scatter estimator):")
+    for param, value in processing_params.items():
+        logger.info(f"  {param}: {value}")
+
+    try:
+        noise_result = estimate_noise_scatter(
+            frequencies=complex_ft.freq_array,
+            magnitudes=complex_ft.magnitude_spectrum,
+            window_mhz=window_mhz_v,
+            pedestal_mhz=pedestal_mhz_v,
+            line_k=line_k_v,
+            n_iter=n_iter_v,
+            region_aware=bool(region_aware),
+            smoothing_mhz=smoothing_mhz_v,
+            smoothing_percentile=smoothing_percentile_v,
+            convolve_mhz=convolve_mhz_v,
+        )
+        logger.info("Noise estimation completed successfully")
+        logger.info(f"  Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}")
+        logger.info(f"  RMS noise range: {noise_result.rms_noise.min():.2e} - {noise_result.rms_noise.max():.2e}")
+    except Exception as e:
+        raise ValueError(f"Noise estimation failed: {e}")
+
+    try:
+        save_noise_result_impl(
+            file_path=file_path,
+            noise_result=noise_result,
+            complex_ft=complex_ft,
+            parameters_used=processing_params,
+        )
+        _update_stage_completion(file_path, 'stage2_noise_result')
+        logger.info("Stage 2: Noise estimation results saved and marked complete")
+    except Exception as e:
+        logger.error(f"Failed to save noise estimation results: {e}")
+        raise RuntimeError(f"Noise estimation succeeded but storage failed: {e}")
+
+    return {
+        'status': 'success',
+        'noise_result': noise_result,
+        'complex_ft': complex_ft,
+        'parameters_used': processing_params,
+        'frequency_points': len(complex_ft.freq_array),
+        'frequency_range': (complex_ft.freq_array[0], complex_ft.freq_array[-1]),
+        'noise_points': int(noise_result.noise_mask.sum()),
+        'total_points': len(complex_ft.freq_array),
+    }
 
 
 def visualize_noise_impl(

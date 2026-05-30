@@ -78,6 +78,33 @@ Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 | skirt_exclusion.skirt_exclusion_k | 1.5 | `SKIRT_EXCLUSION_K` | Lorentzian skirt radius in units of (HWHM × SNR / k) for exclusion. | **Y** | — |
 | skirt_exclusion.max_skirt_exclusion_mhz | 500.0 | `MAX_SKIRT_EXCLUSION_MHZ` | Maximum per-line skirt-exclusion radius (caps pathologically strong peaks). | **Y** | — |
 
+### Stage 2 (scatter estimator) — `estimate_noise_scatter`
+
+Source: [`preprocessing/noise_estimation.py`](../../src/ftmwpipeline/preprocessing/noise_estimation.py).
+Research: [`noise-snr-scaling/report.md`](../research/noise-snr-scaling/report.md).
+
+The scatter (high-pass), region-aware estimator (`method="scatter"`) is the
+pedestal-immune alternative to the adaptive estimator above. It does not share
+the `NoiseSettings` resolution chain; its four knobs are standalone module
+constants / function defaults, so they appear here rather than in a settings
+dataclass. They are instrument-family-dependent for the same reasons the
+adaptive smoothing/skirt knobs are: they encode the physical scale over which
+σ(f) and the leakage pedestal vary, plus a detection threshold.
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| window_mhz | 80.0 | `SCATTER_WINDOW_MHZ` | Width of the per-region scatter-MAD window (MHz); the scale over which σ(f) is treated as constant. Same role as the adaptive `smoothing_window_mhz`. | **Y** | — |
+| pedestal_mhz | 20.0 | `SCATTER_PEDESTAL_MHZ` | Running-median width (MHz) of the high-pass that isolates the smooth leakage pedestal from the white noise. Must be broader than the noise correlation length yet narrower than the pedestal's own curvature (set by line density + FT settings). | **Y** | — |
+| line_k | 8.0 | `SCATTER_LINE_K` | Robust-σ multiple of the high-passed residual above which a bin is self-masked as a line. A detection threshold — depends on the sample's SNR and line density. | maybe | — |
+| n_iter | 3 | `SCATTER_N_ITER` | Self-mask refinement iterations (interpolate masked lines → re-estimate pedestal). Algorithmic convergence, not hardware. | N | — |
+| smoothing_mhz | 800.0 | `SCATTER_SMOOTHING_MHZ` | Width (MHz) of the broad moving-percentile σ smoothing — a lower-envelope median that rides the noise floor through line-dense bands. Must be wide enough to span the instrument's worst line clusters yet not erase real (slow) σ(f) structure. `0` disables. | **Y** | — |
+| smoothing_percentile | 50.0 | `SCATTER_SMOOTHING_PERCENTILE` | Percentile of the smoothing filter. 50 = median (unbiased on clean spectrum, robust to ≤50 % per-window line contamination); lower = more aggressive floor de-inflation under wide dense bands at the cost of a clean-region low bias. Depends on sample line density. | maybe | — |
+| convolve_mhz | 200.0 | `SCATTER_CONVOLVE_MHZ` | Gaussian σ (MHz) of the second smoothing pass that removes the median's staircase steps. Acts on the de-inflated median output so it cannot re-inflate under lines. Mostly algorithmic (cosmetic smoothness); keep well below `smoothing_mhz` so it does not broaden real σ(f) structure. `0` disables. | N | — |
+
+`region_aware` (default `True`) selects the Rician `C(R)` lookup over a fixed
+mid-regime factor; it is an algorithmic correctness switch, not an
+instrument-calibrated knob (leave it on).
+
 ## Start detection (pre-Stage 1) — `StartDetectionSettings`
 
 Source: [`preprocessing/start_detection.py`](../../src/ftmwpipeline/preprocessing/start_detection.py).

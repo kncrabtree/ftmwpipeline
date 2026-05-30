@@ -137,10 +137,12 @@ class TestIdenticalResults:
         shutil.copy(paths["functional"], f_copy)
         shutil.copy(paths["cli"], c_copy)
 
-        # Run estimate_noise (default params) independently on each copy
-        noise_result_pipeline = ftmw.estimate_noise(p_copy)
-        noise_result_functional = ftmw.estimate_noise(f_copy)
-        noise_result_cli = ftmw.estimate_noise(c_copy)
+        # Run the adaptive estimator independently on each copy (scatter's
+        # cross-interface identity is covered by
+        # test_identical_noise_estimation_scatter).
+        noise_result_pipeline = ftmw.estimate_noise(p_copy, method="adaptive")
+        noise_result_functional = ftmw.estimate_noise(f_copy, method="adaptive")
+        noise_result_cli = ftmw.estimate_noise(c_copy, method="adaptive")
 
         # Compare results using bit-perfect consistency
         self._compare_noise_results(
@@ -154,6 +156,42 @@ class TestIdenticalResults:
         self._compare_noise_results(
             noise_result_functional, noise_result_cli,
             "default: Functional vs CLI"
+        )
+
+    def test_identical_noise_estimation_scatter(
+        self, baseline_2638_stage1_raw, tmp_path
+    ):
+        """The scatter (high-pass) estimator must be bit-identical across the
+        three interfaces.
+
+        Run on the canonical raw (zpf=0) FT — the grid scatter uses in production
+        (the zpf=2 trio would be 4× denser and needlessly slow under scatter's
+        broad-window smoothing). Stage 0/1 cross-build identity is already proven
+        by ``test_identical_noise_estimation_results``; here we copy one raw
+        baseline three ways and check the estimator + interface plumbing agree.
+        Pipeline / functional return the NoiseResult in-process; the CLI persists
+        it, so we reload the CLI file to compare.
+        """
+        from ftmwpipeline._internal.stage2_impl import load_noise_result_impl
+
+        p_copy = tmp_path / "pipeline_scatter.ftmw"
+        f_copy = tmp_path / "functional_scatter.ftmw"
+        c_copy = tmp_path / "cli_scatter.ftmw"
+        shutil.copy(baseline_2638_stage1_raw, p_copy)
+        shutil.copy(baseline_2638_stage1_raw, f_copy)
+        shutil.copy(baseline_2638_stage1_raw, c_copy)
+
+        nr_pipeline = Pipeline.open(p_copy).estimate_noise(method="scatter")
+        nr_functional = ftmw.estimate_noise(f_copy, method="scatter")
+        self._run_cli_command(["estimate-noise", str(c_copy), "--method", "scatter"])
+        nr_cli = load_noise_result_impl(c_copy)["noise_result"]
+
+        assert nr_pipeline.bin_info["algorithm"] == "scatter_highpass_region_aware"
+        self._compare_noise_results(
+            nr_pipeline, nr_functional, "scatter: Pipeline vs Functional"
+        )
+        self._compare_noise_results(
+            nr_pipeline, nr_cli, "scatter: Pipeline vs CLI"
         )
 
     def test_identical_tau_calibration_results(
@@ -437,19 +475,23 @@ class TestParameterPersistence:
             'min_bin_fraction': 1/32,
             'smoothing_window_mhz': 100.0
         }
-        pipe.estimate_noise(**noise_params)
+        pipe.estimate_noise(method="adaptive", **noise_params)
 
         # Save parameters using Pipeline class visualize_noise (mutates file)
         pipe.visualize_noise(save_params=True, interactive=False)
 
         # Load with functional API using saved params
-        noise_result_functional_saved = ftmw.estimate_noise(test_file, from_saved_params=True)
+        noise_result_functional_saved = ftmw.estimate_noise(
+            test_file, method="adaptive", from_saved_params=True
+        )
 
         # Load with Pipeline class using saved params
-        noise_result_pipeline_saved = pipe.estimate_noise(from_saved_params=True)
+        noise_result_pipeline_saved = pipe.estimate_noise(
+            method="adaptive", from_saved_params=True
+        )
 
         # Load with explicit parameters for comparison
-        noise_result_explicit = pipe.estimate_noise(**noise_params)
+        noise_result_explicit = pipe.estimate_noise(method="adaptive", **noise_params)
 
         # All should produce identical results
         self._compare_noise_results(noise_result_pipeline_saved, noise_result_explicit, "Pipeline saved vs explicit")
@@ -642,18 +684,25 @@ class TestFilePortability:
         shutil.copy(baseline_2638_stage2, test_file)
         pipe = Pipeline.open(test_file)
 
-        # Load noise result from the existing Stage 2 (default params in baseline)
-        noise_result_pipeline = pipe.estimate_noise(skew_target=0.631, min_bin_fraction=1/64)
+        # Adaptive estimator (these knobs are adaptive-specific); matches the
+        # adaptive-pinned baseline.
+        noise_result_pipeline = pipe.estimate_noise(
+            method="adaptive", skew_target=0.631, min_bin_fraction=1/64
+        )
 
         # Process with functional API
-        noise_result_functional = ftmw.estimate_noise(test_file, skew_target=0.631, min_bin_fraction=1/64)
+        noise_result_functional = ftmw.estimate_noise(
+            test_file, method="adaptive", skew_target=0.631, min_bin_fraction=1/64
+        )
 
         # Process with CLI (just verify CLI can process the file)
         self._run_cli_command([
-            "estimate-noise", str(test_file),
+            "estimate-noise", str(test_file), "--method", "adaptive",
             "--skew-target", "0.631", "--min-bin-fraction", str(1/64)
         ])
-        noise_result_cli = ftmw.estimate_noise(test_file, skew_target=0.631, min_bin_fraction=1/64)
+        noise_result_cli = ftmw.estimate_noise(
+            test_file, method="adaptive", skew_target=0.631, min_bin_fraction=1/64
+        )
 
         # Results should be identical across interfaces
         self._verify_noise_portability(noise_result_pipeline, noise_result_functional, "Pipeline to Functional portability")

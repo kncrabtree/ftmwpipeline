@@ -119,7 +119,9 @@ def test_estimate_noise_field_reaches_kernel(
     # mock's ``_CalibIntercepted`` exception is therefore visible only as
     # the wrapped ValueError; we still get the captured kwargs.
     with pytest.raises(ValueError, match=r"intercepted"):
-        stage2_impl.compute_noise_estimation_impl(str(variant), settings=s)
+        stage2_impl.compute_noise_estimation_impl(
+            str(variant), method="adaptive", settings=s
+        )
 
     kwargs = captured["kwargs"]
     assert key in kwargs, (
@@ -144,7 +146,8 @@ class TestMutualExclusion:
         s = NoiseSettings()
         with pytest.raises(ValueError, match=r"mutually|alternative"):
             stage2_impl.compute_noise_estimation_impl(
-                str(variant), settings=s, preset="instrument_bc_2638",
+                str(variant), method="adaptive", settings=s,
+                preset="instrument_bc_2638",
             )
 
     def test_from_saved_params_with_settings_raises(
@@ -157,7 +160,8 @@ class TestMutualExclusion:
         s = NoiseSettings()
         with pytest.raises(ValueError, match=r"legacy persistence contract"):
             stage2_impl.compute_noise_estimation_impl(
-                str(variant), settings=s, from_saved_params=True,
+                str(variant), method="adaptive", settings=s,
+                from_saved_params=True,
             )
 
 
@@ -186,7 +190,7 @@ class TestPersistedLayerInherit:
         monkeypatch.setattr(stage2_impl, "estimate_noise_adaptive", mock)
 
         with pytest.raises(ValueError, match=r"intercepted"):
-            stage2_impl.compute_noise_estimation_impl(str(variant))
+            stage2_impl.compute_noise_estimation_impl(str(variant), method="adaptive")
 
         assert captured["kwargs"]["smoothing_window_mhz"] == 123.0, (
             "no-kwargs follow-up did not inherit the persisted "
@@ -223,7 +227,7 @@ class TestPersistedLayerInherit:
 
         with pytest.raises(ValueError, match=r"intercepted"):
             stage2_impl.compute_noise_estimation_impl(
-                str(variant), from_saved_params=True,
+                str(variant), method="adaptive", from_saved_params=True,
             )
 
         assert captured["kwargs"]["smoothing_window_mhz"] == 50.0, (

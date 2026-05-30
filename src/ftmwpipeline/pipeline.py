@@ -474,6 +474,15 @@ class Pipeline:
                        min_noise_fraction: Optional[float] = None,
                        from_saved_params: bool = False,
                        *,
+                       method: str = "scatter",
+                       window_mhz: Optional[float] = None,
+                       pedestal_mhz: Optional[float] = None,
+                       line_k: Optional[float] = None,
+                       n_iter: Optional[int] = None,
+                       region_aware: bool = True,
+                       smoothing_mhz: Optional[float] = None,
+                       smoothing_percentile: Optional[float] = None,
+                       convolve_mhz: Optional[float] = None,
                        settings: Optional[NoiseSettings] = None,
                        preset: Optional[str] = None) -> NoiseResult:
         """
@@ -494,12 +503,27 @@ class Pipeline:
             Minimum fraction of points that must be noise per bin (default: 2/3)
         from_saved_params : bool, default False
             If True, ignore provided parameters and use saved parameters only
-            
+        method : str, default "adaptive"
+            Noise estimator to run. ``"adaptive"`` is the level-based binning
+            estimator (skew_target / min_bin_fraction / smoothing_window_mhz /
+            min_noise_fraction / settings / preset apply). ``"scatter"`` is the
+            high-pass, region-aware estimator that is immune to the leakage
+            pedestal on high-SNR, line-dense spectra; it uses its own knobs
+            (window_mhz, pedestal_mhz, line_k, n_iter, region_aware).
+        window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
+        smoothing_percentile, convolve_mhz
+            Scatter-estimator knobs (``method="scatter"`` only); each defaults to
+            the module-level constant when left unset. ``smoothing_mhz`` /
+            ``smoothing_percentile`` control the broad lower-envelope median σ
+            smoothing that rides the noise floor through line-dense bands
+            (``smoothing_mhz=0`` disables it); ``convolve_mhz`` is the Gaussian σ
+            of the second pass that removes the median's staircase.
+
         Returns
         -------
         NoiseResult
             Container with RMS noise estimate, noise mask, and diagnostics
-            
+
         Raises
         ------
         StageDependencyError
@@ -518,6 +542,15 @@ class Pipeline:
                 smoothing_window_mhz=smoothing_window_mhz,
                 min_noise_fraction=min_noise_fraction,
                 from_saved_params=from_saved_params,
+                method=method,
+                window_mhz=window_mhz,
+                pedestal_mhz=pedestal_mhz,
+                line_k=line_k,
+                n_iter=n_iter,
+                region_aware=region_aware,
+                smoothing_mhz=smoothing_mhz,
+                smoothing_percentile=smoothing_percentile,
+                convolve_mhz=convolve_mhz,
                 settings=settings,
                 preset=preset,
             )

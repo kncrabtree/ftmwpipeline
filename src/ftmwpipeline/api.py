@@ -544,6 +544,15 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
                    min_noise_fraction: Optional[float] = None,
                    from_saved_params: bool = False,
                    *,
+                   method: str = "scatter",
+                   window_mhz: Optional[float] = None,
+                   pedestal_mhz: Optional[float] = None,
+                   line_k: Optional[float] = None,
+                   n_iter: Optional[int] = None,
+                   region_aware: bool = True,
+                   smoothing_mhz: Optional[float] = None,
+                   smoothing_percentile: Optional[float] = None,
+                   convolve_mhz: Optional[float] = None,
                    settings: Optional[NoiseSettings] = None,
                    preset: Optional[str] = None) -> NoiseResult:
     """
@@ -567,7 +576,19 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
         Minimum fraction of points that must be noise per bin (default: 2/3)
     from_saved_params : bool, default False
         If True, use saved parameters and ignore provided parameters
-        
+    method : str, default "adaptive"
+        Noise estimator: ``"adaptive"`` (level-based binning; the four kwargs
+        above plus settings/preset apply) or ``"scatter"`` (high-pass,
+        region-aware; immune to the leakage pedestal on high-SNR spectra, with
+        its own window_mhz / pedestal_mhz / line_k / n_iter / region_aware knobs).
+    window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
+    smoothing_percentile, convolve_mhz
+        Scatter-estimator knobs (``method="scatter"`` only); each defaults to the
+        module-level constant when left unset. ``smoothing_mhz`` /
+        ``smoothing_percentile`` set the broad lower-envelope median σ smoothing
+        (``smoothing_mhz=0`` disables it); ``convolve_mhz`` is the Gaussian σ of
+        the second step-removing pass.
+
     Returns
     -------
     NoiseResult
@@ -603,6 +624,15 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
             smoothing_window_mhz=smoothing_window_mhz,
             min_noise_fraction=min_noise_fraction,
             from_saved_params=from_saved_params,
+            method=method,
+            window_mhz=window_mhz,
+            pedestal_mhz=pedestal_mhz,
+            line_k=line_k,
+            n_iter=n_iter,
+            region_aware=region_aware,
+            smoothing_mhz=smoothing_mhz,
+            smoothing_percentile=smoothing_percentile,
+            convolve_mhz=convolve_mhz,
             settings=settings,
             preset=preset,
         )

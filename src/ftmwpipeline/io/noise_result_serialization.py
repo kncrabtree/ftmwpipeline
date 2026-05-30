@@ -99,9 +99,23 @@ def save_noise_result_to_hdf5(
         freq_normalized = (frequencies - frequencies.mean()) / frequencies.std()
         poly_coeffs = np.polyfit(freq_normalized, noise_result.rms_noise, deg=8)
         h5_group.create_dataset('rms_poly_coeffs', data=poly_coeffs)
-        
+
         # Store convolution parameters for exact RMS reconstruction
         _store_convolution_parameters(noise_result, h5_group)
+
+        # The convolution reconstruction replays the moving-median σ of the
+        # adaptive estimator; it cannot reproduce a σ produced by a different
+        # algorithm (e.g. the scatter high-pass estimator). For any
+        # non-reconstructable estimator store the σ array verbatim so the
+        # round-trip is exact. The adaptive path writes no such dataset and is
+        # unchanged.
+        if not _is_convolution_reconstructable(noise_result):
+            h5_group.create_dataset(
+                'rms_noise_full',
+                data=np.asarray(noise_result.rms_noise, dtype=np.float64),
+                compression='gzip',
+                compression_opts=6,
+            )
         
         # Store bin_info metadata
         if noise_result.bin_info:
@@ -169,7 +183,18 @@ def load_noise_result_from_hdf5(
         # Reconstruct noise_mask from signal indices
         signal_indices = h5_group['signal_indices'][:]
         noise_mask = _reconstruct_noise_mask(signal_indices, len(frequencies))
-        
+
+        # A verbatim σ array is stored for estimators whose σ is not
+        # reproducible from the moving-median convolution (e.g. scatter). Use it
+        # directly when present; otherwise fall through to the adaptive
+        # reconstruction path below.
+        if 'rms_noise_full' in h5_group:
+            rms_noise = h5_group['rms_noise_full'][:]
+            bin_info = _load_bin_info(h5_group)
+            return NoiseResult(
+                rms_noise=rms_noise, noise_mask=noise_mask, bin_info=bin_info
+            )
+
         # Attempt convolution-based exact reconstruction first
         try:
             if 'smoothing_params' in h5_group:
@@ -190,30 +215,48 @@ def load_noise_result_from_hdf5(
             # Ensure positive values
             rms_noise = np.maximum(rms_noise, np.min(magnitudes[noise_mask]) if np.any(noise_mask) else 1e-6)
         
-        # Reconstruct bin_info
-        bin_info = {}
-        if 'bin_info' in h5_group:
-            bin_group = h5_group['bin_info']
-            
-            # Load datasets
-            for key in bin_group.keys():
-                bin_info[key] = bin_group[key][:]
-            
-            # Load attributes
-            for key in bin_group.attrs.keys():
-                value = bin_group.attrs[key]
-                if isinstance(value, bytes):
-                    value = value.decode('utf-8')
-                bin_info[key] = value
-        
+        bin_info = _load_bin_info(h5_group)
+
         return NoiseResult(
             rms_noise=rms_noise,
             noise_mask=noise_mask,
             bin_info=bin_info
         )
-        
+
     except Exception as e:
         raise RuntimeError(f"Failed to load NoiseResult from HDF5: {e}") from e
+
+
+def _load_bin_info(h5_group: h5py.Group) -> Dict[str, Any]:
+    """Reconstruct the ``bin_info`` dict from a serialized NoiseResult group."""
+    bin_info: Dict[str, Any] = {}
+    if 'bin_info' in h5_group:
+        bin_group = h5_group['bin_info']
+
+        # Load datasets
+        for key in bin_group.keys():
+            bin_info[key] = bin_group[key][:]
+
+        # Load attributes
+        for key in bin_group.attrs.keys():
+            value = bin_group.attrs[key]
+            if isinstance(value, bytes):
+                value = value.decode('utf-8')
+            bin_info[key] = value
+    return bin_info
+
+
+# Algorithm tags whose σ is exactly reproducible by replaying the moving-median
+# convolution from the persisted noise mask (the adaptive estimator). Any other
+# estimator stores its σ array verbatim instead (see ``rms_noise_full``).
+_CONVOLUTION_RECONSTRUCTABLE_ALGORITHMS = frozenset({"mad_median_subdivision"})
+
+
+def _is_convolution_reconstructable(noise_result: NoiseResult) -> bool:
+    """Whether ``noise_result.rms_noise`` can be rebuilt by the moving-median
+    convolution path on load (adaptive estimator) rather than stored verbatim."""
+    algorithm = str(noise_result.bin_info.get("algorithm", ""))
+    return algorithm in _CONVOLUTION_RECONSTRUCTABLE_ALGORITHMS
 
 
 def _extract_signal_indices(noise_mask: np.ndarray) -> np.ndarray:

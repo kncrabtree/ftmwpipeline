@@ -115,7 +115,13 @@ formats are pluggable via a loader registry: `src/ftmwpipeline/io/data_loaders/`
 (raw time-domain, has `.ft(...)`), `ComplexFT` (frequency domain, has `.trim_to_range(...)`),
 `FIDProcessingParameters`, `Sideband`, plus the not-yet-wired `Peak`/`FittedPeak`/
 `SpectralWindow`/`FittingResult`. `NoiseResult` lives in
-`preprocessing/noise_estimation.py` (adaptive variance-based binning + skewness filtering).
+`preprocessing/noise_estimation.py`. Two estimators produce it: the default
+`estimate_noise_scatter` (`method="scatter"`) — a high-pass, region-aware,
+Rician-corrected scatter MAD with broad lower-envelope smoothing, immune to the
+leakage-pedestal σ inflation on high-SNR line-dense spectra — and the legacy
+`estimate_noise_adaptive` (`method="adaptive"`, variance-based binning + skewness
+filtering), kept for comparison and its settings/preset chain. Both emit the same
+per-bin complex-RMS σ_x. See `dev-docs/research/noise-snr-scaling/report.md`.
 
 ## Example data and reference parameters
 
