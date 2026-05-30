@@ -79,13 +79,29 @@ def test_guard_margin_override():
     assert res.start_us == pytest.approx(res.chirp_end_us + 0.3, abs=1e-6)
 
 
-def test_no_chirp_is_flagged():
+def test_no_chirp_is_flagged_and_recommends_zero():
     fid = _make_fid(with_chirp=True, chirp_amp=0.0)  # tone only, no excitation
     res = detect_start_time(fid, settings=_FAST)
     assert not res.chirp_detected
     assert res.chirp_end_us == 0.0
-    # Falls back to the bare guard margin.
-    assert res.start_us == pytest.approx(_FAST.guard_margin_us, abs=1e-6)
+    # Nothing to exclude without a chirp -> recommend the full FID.
+    assert res.start_us == 0.0
+
+
+def test_chopping_off_the_chirp_recovers_a_near_zero_start():
+    """Excise the chirp+ringdown (mimicking a pre-trimmed FID): no collapse
+    remains, so the detector must report no chirp and recommend ~0."""
+    fid = _make_fid(chirp_start_us=1.0, chirp_dur_us=1.0)
+    n_chop = int(round(4.0e-6 / fid.spacing))  # drop the first 4 us
+    chopped = FID(
+        data=fid.data[n_chop:],
+        spacing=fid.spacing,
+        probe_freq_mhz=fid.probe_freq_mhz,
+        sideband=fid.sideband,
+    )
+    res = detect_start_time(chopped, settings=_FAST)
+    assert not res.chirp_detected
+    assert res.start_us == 0.0
 
 
 def test_band_override_restricts_integration():

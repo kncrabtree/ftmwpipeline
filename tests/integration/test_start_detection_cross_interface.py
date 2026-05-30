@@ -14,7 +14,9 @@ import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
+from ftmwpipeline.core.data_structures import FID
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
+from ftmwpipeline.preprocessing.start_detection import detect_start_time
 from ftmwpipeline.pipeline import Pipeline
 
 # Coarse, band-restricted sweep so the three runs are quick but still resolve
@@ -84,6 +86,38 @@ def test_start_detection_identical_across_interfaces(exp_2638_data_path, tmp_pat
     # Sanity: a real chirp was found near the expected 2638 location.
     assert res_pipeline.chirp_detected
     assert res_pipeline.start_us == pytest.approx(2.35, abs=0.25)
+
+
+@pytest.mark.integration
+def test_chopped_fixture_has_no_chirp(exp_2638_data_path, tmp_path):
+    """Excise the first 5 us (chirp + ringdown) from the real 2638 FID; the
+    remaining pure molecular decay must read as no-chirp with a ~0 start."""
+    path = tmp_path / "chop.ftmw"
+    ftmw.import_data(str(path), source=exp_2638_data_path, force=True)
+    fid = ftmw.load_fid(path)
+
+    settings = StartDetectionSettings(
+        step_us=0.05, band_min_mhz=26500.0, band_max_mhz=40000.0
+    )
+    full = detect_start_time(fid, settings=settings)
+
+    n_chop = int(round(5.0e-6 / fid.spacing))
+    chopped = FID(
+        data=fid.data[n_chop:],
+        spacing=fid.spacing,
+        probe_freq_mhz=fid.probe_freq_mhz,
+        sideband=fid.sideband,
+        shots=fid.shots,
+    )
+    chop = detect_start_time(chopped, settings=settings)
+
+    # The intact FID has an unmistakable chirp; the chopped one does not.
+    assert full.chirp_detected
+    assert not chop.chirp_detected
+    assert chop.start_us == 0.0
+    # The drop ratio cleanly separates the two cases around the gate.
+    assert full.plateau / full.floor > settings.min_chirp_drop_ratio
+    assert chop.plateau / chop.floor < settings.min_chirp_drop_ratio
 
 
 @pytest.mark.integration

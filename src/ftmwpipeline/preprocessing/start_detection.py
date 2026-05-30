@@ -171,7 +171,9 @@ def detect_start_time(
         knee_us, knee_strength = chirp_end, 0.0
     knee_confident = bool(knee_strength >= settings.knee_strength_min)
 
-    start_us = chirp_end + settings.guard_margin_us
+    # With a chirp present, skip past it plus the ringdown guard margin; with no
+    # chirp collapse there is nothing to exclude, so recommend the full FID.
+    start_us = chirp_end + settings.guard_margin_us if chirp_detected else 0.0
 
     return StartDetectionResult(
         start_us=start_us,
