@@ -172,7 +172,8 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 | conservative.max_peaks | 8 | `DEFAULT_MAX_PEAKS` | Hard cap on final peak count per window. | N | — |
 | conservative.patience | 1 | `DEFAULT_PATIENCE` | Consecutive-rejection patience: drop loop after this many fails. | N | — |
 | conservative.min_separation_factor | 1.0 | `DEFAULT_MIN_SEPARATION_FACTOR` | Minimum peak-to-peak separation in units of FWHM (unresolvable below). | N | — |
-| conservative.min_pair_separation_factor | 0.5 | `DEFAULT_MIN_PAIR_SEPARATION_FACTOR` | Sanity-check floor on post-escalation peak pairs (reject if below). | N | — |
+| conservative.min_pair_separation_factor | 0.5 | `DEFAULT_MIN_PAIR_SEPARATION_FACTOR` | Sanity-check floor on post-escalation peak pairs (reject if below), in FWHM units. | N | — |
+| conservative.min_pair_separation_resolution_factor | 1.0 | `DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR` | Resolution-referenced floor on the minimum pair separation, in active-FT elements `1/T_active`; effective floor is `max(min_pair_separation_factor·FWHM, this·(1/T_active))`. Gates sub-resolution duplicate overfits (issue #13). | N | cross-fixture `k` + amp-ratio tiebreaker debt |
 | conservative.n_eff_kind | "perplexity_log1p_snr" | `DEFAULT_N_EFF_KIND` | Effective-sample-size weighting (perplexity_log1p_snr vs kish_mag_sq). | N | — |
 | conservative.weak_window_snr_threshold | 10.0 | `DEFAULT_WEAK_WINDOW_SNR_THRESHOLD` | In-window SNR floor for free-τ eligibility (hold τ fixed below). | **Y** | — |
 | conservative.max_nfev | 2000 | `DEFAULT_MAX_NFEV` | Solver evaluation cap (prevents runaway on ill-conditioned problems). | N | — |
@@ -186,6 +187,8 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 | rescue.cleanup_significance | 0.05 | `DEFAULT_CLEANUP_SIGNIFICANCE` | F-test significance for remove-and-refit post-rescue cleanup. | N | — |
 | rescue.merge_separation_factor | 0.5 | `DEFAULT_MERGE_SEPARATION_FACTOR` | AICc-gated merge threshold above-resolution (FWHM units). | N | — |
 | rescue.structural_merge_factor | 0.5 | `DEFAULT_STRUCTURAL_MERGE_FACTOR` | Sub-resolution merge floor: pairs closer than this FWHM collapse unconditionally. | N | — |
+| rescue.overfit_amp_ratio_band | 1.5 | `DEFAULT_OVERFIT_AMP_RATIO_BAND` | Upper bound (in `1/T_active` resolution elements) of the amplitude-ratio merge tier that collapses supra-resolution shape-error absorbers (issue #13). | N | cross-fixture calibration debt |
+| rescue.overfit_amp_ratio_threshold | 6.0 | `DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD` | Larger/smaller amplitude ratio above which a pair in the amp-ratio band is collapsed as an absorber (issue #13). Set 0 to disable. | N | cross-fixture calibration debt |
 | thaw.max_thaw_rounds | 2 | `DEFAULT_MAX_THAW_ROUNDS` | Maximum iterations of local-thaw (re-fit on frozen fixed contributors). | N | — |
 | thaw.max_replan_rounds | 2 | `DEFAULT_MAX_REPLAN_ROUNDS` | Maximum iterations of structural-replan (window boundary moves). | N | — |
 | thaw.residual_edge_threshold | 8.0 | `DEFAULT_RESIDUAL_EDGE_THRESHOLD` | S_coh threshold for residual-edge-coherence boundary violation (replan trigger). | **Y** | — |

@@ -123,6 +123,7 @@ class ConservativeSubSettings:
     patience: Optional[int] = None
     min_separation_factor: Optional[float] = None
     min_pair_separation_factor: Optional[float] = None
+    min_pair_separation_resolution_factor: Optional[float] = None
     n_eff_kind: Optional[str] = None
     weak_window_snr_threshold: Optional[float] = None
     max_nfev: Optional[int] = None
@@ -148,6 +149,8 @@ class RescueSubSettings:
     cleanup_significance: Optional[float] = None
     merge_separation_factor: Optional[float] = None
     structural_merge_factor: Optional[float] = None
+    overfit_amp_ratio_band: Optional[float] = None
+    overfit_amp_ratio_threshold: Optional[float] = None
 
 
 @dataclass
@@ -263,6 +266,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "patience": 1,
         "min_separation_factor": 1.0,
         "min_pair_separation_factor": 0.5,
+        "min_pair_separation_resolution_factor": 1.0,
         "n_eff_kind": "perplexity_log1p_snr",
         "weak_window_snr_threshold": 10.0,
         "max_nfev": 2000,
@@ -280,6 +284,8 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "cleanup_significance": 0.05,
         "merge_separation_factor": 0.5,
         "structural_merge_factor": 0.5,
+        "overfit_amp_ratio_band": 1.5,
+        "overfit_amp_ratio_threshold": 6.0,
     },
     "thaw": {
         "max_thaw_rounds": 2,

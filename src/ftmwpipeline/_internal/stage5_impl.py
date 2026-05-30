@@ -839,6 +839,10 @@ def fit_peaks_impl(
             resolved.conservative.min_pair_separation_factor,
             "conservative.min_pair_separation_factor",
         ),
+        "min_pair_separation_resolution_factor": _required_float(
+            resolved.conservative.min_pair_separation_resolution_factor,
+            "conservative.min_pair_separation_resolution_factor",
+        ),
         "weak_window_snr_threshold": _required_float(
             resolved.conservative.weak_window_snr_threshold,
             "conservative.weak_window_snr_threshold",
@@ -887,6 +891,14 @@ def fit_peaks_impl(
                 "structural_merge_factor": _required_float(
                     resolved.rescue.structural_merge_factor,
                     "rescue.structural_merge_factor",
+                ),
+                "overfit_amp_ratio_band": _required_float(
+                    resolved.rescue.overfit_amp_ratio_band,
+                    "rescue.overfit_amp_ratio_band",
+                ),
+                "overfit_amp_ratio_threshold": _required_float(
+                    resolved.rescue.overfit_amp_ratio_threshold,
+                    "rescue.overfit_amp_ratio_threshold",
                 ),
                 "n_eff_kind": n_eff_kind_v,
             }

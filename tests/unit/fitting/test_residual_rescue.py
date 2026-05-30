@@ -334,6 +334,105 @@ class TestMergeCleanupAICc:
         assert n_merged == 0
         assert merged.n_peaks == 2
 
+    def test_resolution_floor_merges_subresolution_pair(self):
+        """A pair separated by less than one active-FT resolution element
+        (``1/T_active``) but more than ``structural_merge_factor * FWHM`` is
+        merged unconditionally only because of the resolution-referenced floor
+        (GitHub issue #13). With the floor disabled it survives the FWHM-only
+        structural cutoff."""
+        rng = np.random.default_rng(SEED + 11)
+        # 0.5*FWHM = 0.0609 MHz < sep < 1/T_active = 0.0790 MHz: the band the
+        # FWHM-only floor licenses but the resolution floor catches.
+        sep = 0.070
+        assert 0.5 * FWHM < sep < 1.0 / T_US
+        true = [
+            ModelPeak(_amp_for_snr(200.0), -sep / 2, 0.4),
+            ModelPeak(_amp_for_snr(200.0), +sep / 2, 2.3),
+        ]
+        u, z = _window(true, 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(u, z, sigma, true, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.success and k2_fit.n_peaks == 2
+        offs = sorted(p.offset_mhz for p in k2_fit.peaks)
+        pair_sep = offs[1] - offs[0]
+        assert 0.5 * FWHM < pair_sep < 1.0 / T_US
+
+        # Floor disabled (k=0): FWHM-only structural cutoff leaves the pair.
+        _, n_off = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+            min_pair_separation_resolution_factor=0.0,
+        )
+        assert n_off == 0
+
+        # Floor on (k=1): the sub-resolution pair is collapsed.
+        merged, n_on = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+            min_pair_separation_resolution_factor=1.0,
+        )
+        assert n_on == 1
+        assert merged.n_peaks == 1
+
+    def test_amp_ratio_tier_collapses_supraresolution_absorber(self):
+        """A pair just *above* the resolution floor (so tiers 1-2 leave it) with
+        a large amplitude ratio is collapsed by the amplitude-ratio tier -- the
+        weak member is a rescue-parked shape-error absorber, not a real doublet
+        (GitHub issue #13, the w281/w143 class). A balanced pair in the same
+        band survives."""
+        rng = np.random.default_rng(SEED + 21)
+        sep = 0.10  # MHz ~ 1.27 resolution elements: in [1.0, 1.5] elem band.
+        assert 1.0 / T_US < sep < 1.5 / T_US
+        true = [
+            ModelPeak(_amp_for_snr(150.0), -sep / 2, 0.4),
+            ModelPeak(_amp_for_snr(15.0), +sep / 2, 0.4),  # 10:1 absorber
+        ]
+        u, z = _window(true, 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(u, z, sigma, true, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.success and k2_fit.n_peaks == 2
+
+        # Tier disabled (threshold above the 10:1 ratio): supra-resolution pair
+        # is preserved (tiers 1-2 do not reach it).
+        _, n_off = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+            overfit_amp_ratio_threshold=100.0,
+        )
+        assert n_off == 0
+
+        # Tier on (default threshold 6 < 10): the absorber is collapsed.
+        merged, n_on = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        assert n_on == 1
+        assert merged.n_peaks == 1
+
+    def test_amp_ratio_tier_preserves_balanced_supraresolution_pair(self):
+        """A balanced (ratio ~1) pair in the amplitude-ratio band is a real
+        close doublet and is NOT collapsed."""
+        rng = np.random.default_rng(SEED + 22)
+        sep = 0.10
+        assert 1.0 / T_US < sep < 1.5 / T_US
+        true = [
+            ModelPeak(_amp_for_snr(120.0), -sep / 2, 0.3),
+            ModelPeak(_amp_for_snr(120.0), +sep / 2, 2.4),  # 1:1, distinct phase
+        ]
+        u, z = _window(true, 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(u, z, sigma, true, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.success and k2_fit.n_peaks == 2
+        merged, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US,
+            fit_kwargs_inner=fit_kwargs,
+        )
+        assert n_merged == 0
+        assert merged.n_peaks == 2
+
     def test_k1_input_returns_unchanged(self):
         """K<2 short-circuits to (fit, 0)."""
         rng = np.random.default_rng(SEED + 4)

@@ -19,6 +19,7 @@ from ftmwpipeline.fitting.window_fit import (
     DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
     ParameterErrors,
     WindowFitResult,
+    _effective_min_pair_separation,
     _penalty_residuals_and_jacobian,
     fit_window,
     model_jacobian,
@@ -45,6 +46,38 @@ def _noise(m: int, sigma: float, rng: np.random.Generator) -> np.ndarray:
     """Complex Gaussian noise with per-bin RMS sigma (E[|n|^2] = sigma^2)."""
     s = sigma / np.sqrt(2.0)
     return rng.normal(0.0, s, m) + 1j * rng.normal(0.0, s, m)
+
+
+# ---------------------------------------------------------------------------
+# Minimum-pair-separation floor (GitHub issue #13)
+# ---------------------------------------------------------------------------
+class TestEffectiveMinPairSeparation:
+    """The resolution-referenced floor on the minimum allowed pair separation."""
+
+    def test_fwhm_term_dominates_on_broad_features(self):
+        # 0.5 * 0.30 = 0.15 MHz vs 1/T = 0.079 MHz -> FWHM term wins.
+        sep = _effective_min_pair_separation(0.30, T_US, 0.5, 1.0)
+        assert sep == pytest.approx(0.15)
+
+    def test_resolution_term_dominates_on_narrow_features(self):
+        # 0.5 * 0.116 = 0.058 MHz vs 1/T = 0.079 MHz -> resolution term wins.
+        sep = _effective_min_pair_separation(0.116, T_US, 0.5, 1.0)
+        assert sep == pytest.approx(1.0 / T_US)
+
+    def test_resolution_factor_scales_the_floor(self):
+        assert _effective_min_pair_separation(0.0, T_US, 0.5, 2.0) == pytest.approx(
+            2.0 / T_US
+        )
+
+    def test_zero_resolution_factor_falls_back_to_fwhm(self):
+        assert _effective_min_pair_separation(0.116, T_US, 0.5, 0.0) == pytest.approx(
+            0.5 * 0.116
+        )
+
+    def test_nonpositive_acquisition_falls_back_to_fwhm(self):
+        assert _effective_min_pair_separation(0.116, 0.0, 0.5, 1.0) == pytest.approx(
+            0.5 * 0.116
+        )
 
 
 # ---------------------------------------------------------------------------
