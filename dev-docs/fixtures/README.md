@@ -21,5 +21,8 @@ All current fixtures are from the **same instrument** (downconversion LO/probe
 
 `start_us` is data-derived (`ftmwpipeline detect-start`, ≈ chirp_duration +
 1.35 µs — the chirp end plus the switch-bounce ringdown). Recommended FT for
-new analyses: `zpf=2`, `expf_us=None` (unapodized), `trim=(26500, 40000)`,
-then `calibrate_tau` before peak detection.
+new analyses: **no zero-padding** (`zpf=0`), `expf_us=None` (unapodized),
+`trim=(26500, 40000)`, then `calibrate_tau` before peak detection. The pipeline
+runs on the raw (un-padded) FT; zero-padding interpolates the bins and corrupts
+the Stage 2/5 statistics, so a suggested `zpf` is never adopted. Stage 3 peak
+detection applies its own internal zero-padding for position-finding only.
