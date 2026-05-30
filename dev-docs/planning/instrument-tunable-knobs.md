@@ -271,11 +271,11 @@ still un-audited.
    on 2638 before any other instrument is brought up. Promote the (a) set
    to the package hard defaults and route the (b) set through
    `instrument_bc_2638.yaml`.
-2. **Re-rate the `maybe` rows.** Three rows currently sit on `maybe`
+2. **Re-rate the `maybe` rows.** Six rows currently sit on `maybe`
    (`aggregation.sigma_tau_floor_us`, `band.compute_band_majorities`,
    `clustering.min_window_half_width_mhz`, `shape.kind`,
-   `tau.per_band_tau`). Each needs a one-off study to confirm whether
-   it is genuinely instrument-sensitive or just convention.
+   `tau.per_band_tau`, `baseline.order`). Each needs a one-off study to
+   confirm whether it is genuinely instrument-sensitive or just convention.
 3. **Sanity-check the N rows.** A handful (`polish.polish_n_iter`,
    `seeder.seeder_max_k`, `conservative.patience`, …) are rated N
    purely on the "pure algorithmic conditioning" heuristic. Sceptical

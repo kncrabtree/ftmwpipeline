@@ -1,10 +1,13 @@
 # Stage 5 Gaussian-shape extension
 
-Add a Gaussian time-domain envelope as an alternative line shape for Stage 5
-fits, selectable per `fit_peaks(...)` call. The existing pure-exponential
-(Lorentzian-frequency-domain) path is preserved unchanged as the default;
-the Gaussian path is wired alongside it through the same window-fit
-machinery via a shape-selector abstraction.
+Status: **implemented** — implementation overview. The Gaussian time-domain
+envelope is shipped as an alternative line shape for Stage 5 fits, selectable
+per `fit_peaks(...)` call and auto-recommended from Stage 2b. The existing
+pure-exponential (Lorentzian-frequency-domain) path is preserved unchanged as
+the default; the Gaussian path is wired alongside it through the same
+window-fit machinery via the `PeakShape` selector (`core/peak_shape.py`). The
+items still open are collected under *Remaining work* and *Open questions*
+below; all are gated on acquiring a second fixture.
 
 ## Motivation
 
@@ -165,7 +168,10 @@ frequencies, peak amplitudes, peak count. Aggregated as a JSON +
 2-panel figure (per-window χ² + per-peak frequency/amplitude scatter)
 per fixture.
 
-Acceptance for the Gaussian path on 2638:
+Acceptance bar set for the Gaussian path on 2638 (see *First validation pass*
+below — this global bar was **not met**; Gaussian wins on the Part-A
+shape-error windows, not spectrum-wide, so the global bar is recorded as
+falsified and reconciliation is tracked under *Remaining work*):
 - Median Stage 5 χ²ᵣ on `fit_peaks(shape='gaussian')` < median for
   `shape='lorentzian'` (the per-bin Voigt result predicts ~5× drop).
 - 95th percentile χ²ᵣ < 5 (vs the current ~50+ tail).

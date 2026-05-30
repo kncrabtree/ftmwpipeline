@@ -1,7 +1,6 @@
 # Plan: Processing-settings persistence and propagation
 
-Status: **Complete** (D7 resolved). Cross-cutting architectural fix; full
-suite green (270 passed).
+Status: **Complete** (D7 resolved). Cross-cutting architectural fix.
 
 Implemented:
 
@@ -111,17 +110,19 @@ recommendations — are the source of truth for the rest of the pipeline.
   "lightweight `.ftmw`, recompute-on-demand" model must be preserved: persist
   *settings*, not the recomputed `ComplexFT`.
 
-## Open questions
+## Resolved questions
 
-- Exact canonical set: is `trim` part of `ft_processing`, or a separate
-  analysis-region record? (Stage 4 also needs it.)
-- Snap-back mechanics for peaks: store physical frequency + amplitude
-  re-measured on the user grid (preferred) vs index remap; define precisely
-  and unit-test on both sidebands (2638 is descending/lower-sideband).
-- Should Stage 2's noise result be invalidated/recomputed when canonical
-  settings change? Stage-dependency/version implications.
-- Does changing canonical settings after later stages ran require
-  re-running / invalidating those stages (tracker semantics)?
+These were open at planning time and are settled by the implementation above:
+
+- Canonical set: `trim` lives **inside** `ft_processing` (as
+  `trim_min_mhz`/`trim_max_mhz`), not as a separate analysis-region record.
+- Peak snap-back: physical frequency + amplitude re-measured on the user grid,
+  unit-tested on both sidebands.
+- Stage 2 noise on canonical-settings change: invalidated and recomputed via
+  the dependency tracker.
+- Later-stage re-runs on canonical-settings change: an explicit override
+  invalidates every downstream stage (data dropped, removed from the completed
+  set, loud warning); an identical re-persist is idempotent.
 
 ## Test plan
 

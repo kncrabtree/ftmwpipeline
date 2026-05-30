@@ -214,10 +214,14 @@ only. Parameters (documented defaults, configurable on the file): the
 edge-test M and threshold above (`edge_M = 64`, `edge_threshold = 8.0`,
 `trim_M = 32`), `max_window_width_mhz` (default ≈ 40 on 2638-class
 experiments), `min_freeze_snr` (freeze-eligibility cutoff — see O4-2),
-assumed `τ` for reach prediction. Stage tracking: add `stage4_windows`
-to `PipelineStageTracker.STAGE_DEPENDENCIES` (depends on `stage3_peaks`)
-and `STAGE_DATA_PATHS`; it is then automatically invalidated by the
-existing canonical-settings-change mechanism.
+assumed `τ` for reach prediction. These knobs are resolved through
+`core/window_planning_settings.py` (`WindowPlanningSettings`) on the same
+four-layer chain as the other stages (commit acb900a; see
+[`settings-backfill.md`](settings-backfill.md)); the Gaussian-path defaults
+audit kept `leakage.tau_us` on the boxcar value (commit 5a72c04). Stage
+tracking: add `stage4_windows` to `PipelineStageTracker.STAGE_DEPENDENCIES`
+(depends on `stage3_peaks`) and `STAGE_DATA_PATHS`; it is then automatically
+invalidated by the existing canonical-settings-change mechanism.
 
 ## Serialization
 

@@ -1,10 +1,15 @@
 # Plan: Intra-window parameter clustering for Stage 5
 
-Status: **stub.** Registered to capture a design idea that supplanted the
-Stage 5 `split` structural renegotiation primitive
+Status: **stub.** Registered to capture a design idea that replaced the
+*proposed* Stage 5 `split` structural renegotiation primitive
 ([`stage5-fitting.md`](stage5-fitting.md) § "Renegotiation handshake with
-Stage 4"). Not on the immediate Stage 5 critical path; opened when the basic
-Stage 5 fit is exercised on real data and clustering becomes a measurable win.
+Stage 4"). That primitive was never built — Stage 5 ships merge-only, and
+`FitWindow.split_proposal` remains a carried-but-unconsumed field — so there is
+nothing to retire; this stub is the deferred replacement, not an active
+migration. Stage 5 has since been exercised on the 2638 fixture without
+covariance-block clustering becoming necessary: the merge handshake plus the
+leakage-wing baseline covered the practical need. Opened only if a future
+fixture makes intra-window decomposition a measurable win.
 
 ## Motivation
 

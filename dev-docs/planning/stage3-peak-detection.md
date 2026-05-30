@@ -64,6 +64,14 @@ Two passes:
    `dev-docs/research/matched-filter-detection/report.md` §10 for the
    ROC and the algorithm derivation.
 
+   **Shape-aware `τ_basis` (Stage 2b auto-detect).** When a
+   `stage2b_tau_calibration` is present, the matched filter's `tau_basis_us`
+   is read from Stage 2b's data-driven majority rather than the apodization
+   constant: the exponential `τ_maj`, or the Gaussian twin `tau_G_maj` when
+   Stage 2b's `recommended_shape` is Gaussian (commits 7a7a31a, d62773c). It
+   falls back to `expf_us` when Stage 2b has not run. Provenance in
+   `dev-docs/research/stage3-gaussian-audit/`.
+
 Each detected peak is **classified by SNR only** into
 `PeakClassification.{WEAK, MEDIUM, STRONG}` via two configurable thresholds
 (`weak < t1 ≤ medium < t2 ≤ strong`), with `min_snr` as the detection floor.
@@ -126,6 +134,10 @@ Stage output: an ordered list of classified `Peak`s.
   CLI `detect-peaks`; visualization via `Pipeline.visualize_peaks(...)` and CLI
   `visualize-peaks` (names reserved in `CLI_STRATEGY.md`), overlaying classified
   peaks on the spectrum.
+- **Settings:** the detection knobs (thresholds, `zpf_active`, SavGol rule, …)
+  are resolved through `core/peak_detection_settings.py` (`PeakDetectionSettings`)
+  on the same four-layer chain as the other stages (commit 28e49c8); see
+  [`settings-backfill.md`](settings-backfill.md).
 
 ## Test plan
 
@@ -203,21 +215,16 @@ Stage output: an ordered list of classified `Peak`s.
   spectrum (full record with the de-ramp phase), so the basis Lorentzian
   needs the same phase frame. Worth assessing once Stage 5 settles; not
   blocking.
-- **Trim/zpf handling — INTERIM BAND-AID, superseded by D7.** Stage 1 does
-  **not** persist the user's FT settings (trim, zpf, …), so recompute-on-demand
-  yields the recommended-default spectrum (untrimmed, zpf=0 for 2638 → DC
-  edges, ~zero noise, nonsense SNR). As a stopgap so Stage 3 functions at all,
-  it currently *owns its own* `trim`/`zpf` (`detect_peaks(..., trim=, zpf=)`,
-  CLI `--trim`/`--zpf`, `_resolve_trim`/`_resolve_zpf`, saved under
-  `processing_parameters/peak_detection`). **This is not the intended design.**
-  The root-cause fix — Stage 1 persists chosen settings; later stages respect
-  them by default; algorithmic deviations (e.g. internal zpf=1 detection) snap
-  results back onto the user grid — is the next task:
+- **Trim/zpf handling — resolved by D7.** Stage 1 now persists the user's
+  chosen FT settings (trim, zpf, …) as canonical state, and Stage 3 operates on
+  that grid by default; the earlier interim per-stage `trim`/`zpf` ownership
+  (`detect_peaks(..., trim=, zpf=)`, CLI `--trim`/`--zpf`) was removed from
+  `_internal/stage3_impl`, `Pipeline.detect_peaks`, `api.detect_peaks`, and
+  `cli/peak_commands.py`. See
   [`processing-settings-persistence.md`](processing-settings-persistence.md)
-  (ROADMAP **D7**). That task removes this band-aid. Empirical note for it:
-  detection is best run internally at **zpf=1** (sharpens apex vs zpf=0;
-  zpf=2 over-interpolates — identical apex, ~2× spurious weak detections),
-  with results snapped onto the user's chosen grid.
+  (ROADMAP **D7**). Empirical note retained: detection runs internally at
+  **zpf=1** (sharpens apex vs zpf=0; zpf=2 over-interpolates — identical apex,
+  ~2× spurious weak detections), with results snapped onto the user's grid.
 
 ## Downstream context (Stages 4–5, not in scope here)
 

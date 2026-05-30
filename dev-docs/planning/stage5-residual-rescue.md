@@ -261,13 +261,16 @@ intermediate states if the audit needs forensic context).
   truth check is the discriminator.
 - **Merge tier-2 disabled.** `DEFAULT_MERGE_SEPARATION_FACTOR =
   0.5 = DEFAULT_STRUCTURAL_MERGE_FACTOR` so pairs in [0.5, 1.0]
-  FWHM are not considered for merging. Tier 2 becomes safe to
+  FWHM are not considered for merging. Tier 2 was to become safe to
   re-enable once the phase-degeneracy penalty
   (`stage5-fitting.md` O5-11) provides the LSQ-side signal to
   distinguish real close pairs from duplicate-pair LSQ
-  artifacts. Empirically a no-op on the 2638 fixture: 6 → 4
-  total merges, knockout-pruning 22 → 24, chi²_r distribution
-  unchanged.
+  artifacts. That penalty has since landed (O5-11 status: landed,
+  `DEFAULT_PHASE_PENALTY_LAMBDA = 100`), so re-enabling tier 2 is now a
+  deliberate decision rather than a blocked item — it stays disabled
+  pending the cross-fixture Tier-3 evidence to justify the change.
+  Empirically a no-op on the 2638 fixture: 6 → 4 total merges,
+  knockout-pruning 22 → 24, chi²_r distribution unchanged.
 
 ## Rescue-specific open follow-ups
 

@@ -188,7 +188,10 @@ Cross-interface (`pipeline.py`, `api.py`, `cli/noise_commands.py`):
 
 All three converge on `_internal/stage2_impl.compute_noise_estimation_impl`
 which calls `estimate_noise_adaptive` and persists via
-`save_noise_result_to_hdf5`.
+`save_noise_result_to_hdf5`. The noise knobs (binning, skewness, smoothing,
+skirt exclusion) are resolved through `core/noise_settings.py` (`NoiseSettings`)
+on the same four-layer chain as the other stages (commit 827d963; see
+[`settings-backfill.md`](settings-backfill.md)).
 
 Stage tracker: `stage2_noise_result`, depends on `stage1_complex_ft`.
 

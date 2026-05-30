@@ -136,9 +136,9 @@ prior fit's settings.
 ## Migration notes
 
 The legacy per-knob kwargs on `fit_peaks` still work; they bundle into
-an explicit `StageFitSettings` inside `fit_peaks_impl`. No
-`DeprecationWarning` is emitted in this work cycle; the warning lands
-in the next release cycle. The `DEFAULT_*` constants in
+an explicit `StageFitSettings` inside `fit_peaks_impl`. A
+`DeprecationWarning` on those legacy kwargs and on the `fit:` preset
+wrapper is emitted (`_internal/deprecation.py`). The `DEFAULT_*` constants in
 `fitting/{window_fit,residual_rescue,plan_execution,validation}.py` and
 `_internal/stage5_impl.py` stay in place as the readable canonical
 source the resolver's `_HARD_DEFAULTS` mirrors; they can be deleted
@@ -149,13 +149,15 @@ it, the canonical settings dataclasses live in `core/`.
 
 ## What this unblocks
 
-- **Stage 5 Gaussian retuning sweeps.** The motivating workstream:
-  vary one or two knobs from `instrument_bc_2638.yaml` per sweep
-  variant, get each variant's full resolved settings persisted into
-  the experiment file. The §2 ("Gaussian acceptance retuning")
-  candidates from `scratch/settings-architecture-proposal.md` —
-  τ-penalty λ sweep, `max_decay_factor` sweep, F-test threshold
-  audit — become preset YAML diffs.
+- **Stage 5 Gaussian retuning sweeps (exercised).** The motivating
+  workstream: vary one or two knobs from `instrument_bc_2638.yaml` per
+  sweep variant, get each variant's full resolved settings persisted into
+  the experiment file. The §2 ("Gaussian acceptance retuning") candidates
+  from `scratch/settings-architecture-proposal.md` — τ-penalty λ sweep,
+  `max_decay_factor` sweep, F-test threshold audit — become preset YAML
+  diffs. The τ-penalty sweep ran and retuned `instrument_bc_2638.yaml` to
+  `tau_penalty_lambda=50` (commit 3a0059f), alongside the lowered τ-prior
+  default (4abf454).
 - **Per-instrument calibration.** Each lab/instrument ships its own
   preset YAML alongside fixture data; `--preset path/to/lab.yaml`
   reproduces the recipe.
@@ -217,10 +219,12 @@ it, the canonical settings dataclasses live in `core/`.
   52 % well clear of the 10 % threshold. The Stage 5 resolver
   picks it up via the integration test
   ``test_recommend_shape_persists_and_feeds_resolver``.
-- **Backfill to other stages.** `TauCalibrationSettings`,
+- **Backfill to other stages. Shipped.** `TauCalibrationSettings`,
   `NoiseSettings`, `PeakDetectionSettings`, `WindowPlanningSettings`
-  follow the same pattern. Order: Stage 2b first (shape recommendation
-  is its feeder into Stage 5), then Stage 2, Stage 3, Stage 4.
+  followed the same pattern (Stage 2b first as the shape-recommendation
+  feeder into Stage 5, then Stage 2, Stage 3, Stage 4) — commits
+  506df38 / 827d963 / 28e49c8 / acb900a. Tracked in
+  [`settings-backfill.md`](settings-backfill.md).
 - **`preset_git_hash` audit attr.** Optional reproducibility attr in
   the persisted record (proposal §4e). Deferred because running `git`
   from inside the library is fragile in sandboxed envs / editable
@@ -232,8 +236,8 @@ it, the canonical settings dataclasses live in `core/`.
   via metadata (analogous to `FTSettings.cli_field` /
   `cli/_argspec.py`) would surface the rest; not needed for the preset
   workflow that motivated this work, so deferred.
-- **`DeprecationWarning` on legacy per-knob kwargs.** Land on the next
-  release cycle per the migration plan in
+- **`DeprecationWarning` on legacy per-knob kwargs. Shipped** (commit
+  b18b8d8; `_internal/deprecation.py`), per the migration plan in
   `scratch/settings-architecture-proposal.md` § D4.
 
 ## Provenance

@@ -1,6 +1,6 @@
 # Stage 5 — Cross-fixture validation and per-dataset calibration
 
-Status: **planning**. This document was opened after the
+Status: **planning** (fixture-blocked). This document was opened after the
 residual-rescue and AICc-gate work
 ([`stage5-residual-rescue.md`](stage5-residual-rescue.md),
 [`../research/residual-rescue/report.md`](../research/residual-rescue/report.md))
@@ -11,7 +11,22 @@ verified or re-derived on other fixtures before any of them can be
 treated as production defaults. This document also captures the
 **lineshape model deficit** discovery from that work, since the
 same physics shows up on every FTMW instrument but with instrument-
-specific magnitude.
+specific magnitude. The cross-fixture framework itself has **not run** — it is
+gated on acquiring a second fixture; the ε knob it discusses predates this doc.
+
+Two parts of this doc have since been overtaken and should be read with the
+notes below:
+
+- The **§Dataset-wide tau calibration** and **§Broken-initial-fit /
+  freeze-at-consensus** proposals are superseded by the shipped data-driven τ
+  calibration in [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md)
+  (`τ_maj ± σ_τ`, per-band routing, bidirectional Gaussian τ penalty) — see the
+  in-section notes there.
+- The **lineshape model deficit → "treat as irreducible, inflate σ via ε"**
+  framing is partly overtaken by the Gaussian shape path
+  ([`stage5-gaussian-shape.md`](stage5-gaussian-shape.md)), which *models* the
+  deficit (Gaussian envelope) rather than only absorbing it into the noise
+  floor. The Tier 1/2/3 acceptance framework below remains the valid plan.
 
 ## Why this matters: the per-dataset ε calibration is the generalisation lever
 
@@ -356,6 +371,11 @@ work is dataset-invariant. Two reasonable outcomes:
 
 ## Dataset-wide tau calibration (related deferred work)
 
+**Superseded** by [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md):
+the data-driven `τ_maj ± σ_τ` STFT calibration with per-band routing and a
+bidirectional Gaussian τ penalty is the production answer to the per-window-τ
+inconsistency described below. Retained for the reasoning.
+
 Independent of the shape-error epsilon calibration but
 conceptually adjacent: tau (the shared decay constant in the
 finite-T line shape model) is currently fit per-window. Strong-line
@@ -381,6 +401,12 @@ Add `tau_consensus_us` and `tau_consensus_window_count` to the
 per-fixture record-keeping below.
 
 ### Broken-initial-fit pathology and the majority-vote-freeze proposal
+
+**Superseded** by [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md):
+the data-driven τ anchor + bidirectional Gaussian penalty addresses the
+tau-collapse pathology described here, rather than this section's post-hoc
+two-pass `tau_locked` consensus freeze (which was not implemented). Retained
+for the reasoning.
 
 The 2638 fixture's w198 surfaced a sharper version of the weak-window
 tau bias: when the initial fit cannot represent the true number of

@@ -36,6 +36,33 @@ on the w198 / tau-collapse findings in
 [`../research/residual-rescue/report.md`](../research/residual-rescue/report.md)
 §8.
 
+## Shape-awareness and per-band routing (shipped beyond the original plan)
+
+The original plan calibrated a single Lorentzian (exponential-decay) `τ_maj`.
+Since then the stage grew a shape-aware twin and per-band routing, all shipped
+and tracked in the line-shape planning docs — recorded here so this doc is not
+read as exponential-only:
+
+- **Gaussian τ_G twin (`stage2b_tau_G_calibration`).** A sibling stage runs a
+  pure-Gaussian per-bin fit and extracts `tau_G_maj` (`extract_tau_G_majority`
+  in `fitting/tau_calibration.py`), the Gaussian-envelope counterpart of
+  `τ_maj`. Commits 6b793cf, a22ea0c. Detail in
+  [`stage5-gaussian-shape.md`](stage5-gaussian-shape.md) and the Part-B
+  provenance in [`stage5-voigt-deficit.md`](stage5-voigt-deficit.md).
+- **Per-band τ routing.** `compute_band_majorities` produces per-band
+  SNR-weighted majorities; Stage 5 routes each window to its band's τ
+  (`per_band_tau` default True). Commits 83fb3b6, 6d6005f.
+- **3-way shape recommendation.** `compute_shape_recommendation` returns a
+  `ShapeRecommendation` (per-bin AICc vote over exp / gauss / voigt);
+  `auto_recommend` (default True) stamps the verdict onto the file, and
+  Stage 3 / Stage 5 read it (`recommended_shape`) to pick the τ basis and the
+  fit shape. Commits 4518faa, a46da3a, 4abf454. Surface and resolver in
+  [`stage5-fit-settings.md`](stage5-fit-settings.md).
+- **Settings resolver.** The calibration knobs are resolved through
+  `core/tau_calibration_settings.py` (`TauCalibrationSettings`) on the
+  four-layer chain (commit 506df38; see
+  [`settings-backfill.md`](settings-backfill.md)).
+
 ## Objective
 
 Replace the upfront exponential apodization (`expf_us = 5.0` on the

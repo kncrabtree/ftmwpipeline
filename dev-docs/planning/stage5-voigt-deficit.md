@@ -1,8 +1,16 @@
 # Stage 5 Voigt-deficit prototype
 
-Research plan for extending the Stage 5 line shape from pure exponential
-decay to a Voigt envelope (Lorentzian × Gaussian) on the small set of
-windows where the single-exponential model leaves significant residual.
+Status: **research prototype, complete.** Research record for extending the
+Stage 5 line shape from pure exponential decay to a Voigt envelope (Lorentzian
+× Gaussian) on the small set of windows where the single-exponential model
+leaves significant residual. Outcome: the Voigt joint LSQ on 2638 degenerates
+to Gaussian-dominant (τ_L pins at its upper bound), so the architectural
+decision resolved to a **pure-Gaussian** shape extension — shipped and tracked
+in [`stage5-gaussian-shape.md`](stage5-gaussian-shape.md). No production Voigt
+fit shipped (`PeakShape.VOIGT` is reserved, not implemented), and Part B's
+Voigt-anchored τ_G band numbers were superseded by the pure-Gaussian estimator
+(`extract_tau_G_majority`); the Voigt helpers survive only for a future 3-way
+L/G/V comparator.
 
 ## Motivation
 

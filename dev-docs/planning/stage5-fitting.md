@@ -1,9 +1,15 @@
 # Plan: Stage 5 — Per-window fitting
 
-Status: **planning (not started).** This is a step-1 planning document per
-[`README.md`](README.md): it describes the approach, the model, the algorithm,
-the interface surface, the serialization, and the test plan before any
-implementation. Registered in [`../ROADMAP.md`](../ROADMAP.md).
+Status: **implemented** — implementation overview per
+[`README.md`](README.md): the model, the algorithm, the interface surface, the
+serialization, and the test plan, as built. Registered in
+[`../ROADMAP.md`](../ROADMAP.md). Three line-shape/nuisance extensions built on
+top of this core are tracked in their own documents — the Gaussian envelope
+([`stage5-gaussian-shape.md`](stage5-gaussian-shape.md)), clock/LO spur masking
+([`stage5-spur-masking.md`](stage5-spur-masking.md)), and the leakage-wing
+baseline ([`stage5-leakage-wing-baseline.md`](stage5-leakage-wing-baseline.md)).
+The Stage 5 items still open are collected under *Open questions* below
+(O5-3, O5-4, O5-6, O5-9; O5-10 Tier-2 deferred).
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the Stage 5 work it tracks. It builds directly on the
@@ -796,6 +802,14 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   rescue-AICc / phase-degeneracy work that follows this fix), not by
   external-skirt leakage.
 
+  **Tier-2 disposition.** The residual *coherent* bias Tier-2 would target
+  is absorbed per-window by the evidence-triggered leakage-wing baseline
+  ([`stage5-leakage-wing-baseline.md`](stage5-leakage-wing-baseline.md)),
+  which prices a neighbouring strong line's mismodeled skirt as a low-order
+  complex nuisance term inside the joint fit (so the per-line covariance pays
+  the cost). Tier-2 cumulative-tail subtraction stays deferred; the wing
+  baseline covers the practical need on 2638.
+
 - **O5-11 — phase-degeneracy penalty for the conservative-fit
   residual.** The pair penalty in
   `window_fit._penalty_residuals_and_jacobian` is
@@ -871,10 +885,14 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    superseded by the active-portion FT contract in task 6 below (D9).** The
    algorithm survives the rewiring almost intact; only the input frame
    changes.
-6. [ ] **Active-portion FT migration (D9).** Switch Stage 5 from fitting on
-   the persisted zero-padded FT to fitting on the active-portion FT, so
-   bins are independent and reduced χ², F-test, AIC are calibrated as
-   written. Subtasks:
+6. [x] **Active-portion FT migration (D9). Landed** in
+   [`fitting/active_ft.py`](../../src/ftmwpipeline/fitting/active_ft.py)
+   (`compute_active_ft` → `ActiveFTResult`); `execute_plan` consumes the
+   active-FT slice, per-bin σ is measured by the Stage 2 estimator on the
+   active-FT magnitude, and `to_baseband_frame` is renamed
+   `to_baseband_offset`. Stage 5 fits on the active-portion FT so bins are
+   independent and reduced χ², F-test, AIC are calibrated as written. Subtasks
+   (as built):
    1. `fitting/active_ft.py` (new algorithm module):
       `compute_active_ft(fid, sample_dt_us, *, start_us, end_us, expf_us,
       probe_freq_mhz, sideband) -> ActiveFTResult` with
@@ -908,8 +926,9 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
       for the new `execute_plan` signature.
    6. Update `STATUS.md` (when wired) and confirm no α-correction is
       smuggled in; the helpers in `validation.py` stay as-written.
-7. [ ] Stage 4 `replan(plan, requests, …) → WindowPlan` entry point and the
-   residual edge-coherence structural renegotiation handshake.
+7. [x] **Stage 4 `replan` + structural renegotiation handshake. Landed.**
+   `replan(plan, requests, …) → WindowPlan` entry point and the residual
+   edge-coherence structural renegotiation handshake.
    **Merge-only**: `MergeRequest(window_a_id, window_b_id)` combines two
    adjacent windows (union of free peaks + fixed contributors with
    now-internal contributors dropped, surviving id = lower of the two);
@@ -917,12 +936,11 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    difficulty, batches) reruns on the modified window list; `WindowPlan`
    gains a `plan_revision` counter that bumps on each `replan` call. The
    `SplitRequest` primitive originally listed here is deferred to
-   [`intra-window-clustering.md`](intra-window-clustering.md). PR 7A is
-   the Stage 4 entry point + tests; PR 7B is the Stage 5 dispatcher that
-   emits `MergeRequest`s when the residual edge-coherence check flags a
-   boundary cut, re-fits the affected batches, and records the structural
-   events in the audit trail. (Implemented against the active-FT frame
-   established in task 6.)
+   [`intra-window-clustering.md`](intra-window-clustering.md). The Stage 4
+   entry point and the Stage 5 dispatcher emit `MergeRequest`s when the
+   residual edge-coherence check flags a boundary cut, re-fit the affected
+   batches, and record the structural events in the audit trail. Built against
+   the active-FT frame of task 6.
 8. [x] Data-structure wiring — `FittedPeak`/`FittingResult`/`SpectralWindow` +
    the new `SpectrumFit` aggregate + unit tests. Landed in
    [`fitting/result_conversion.py`](../../src/ftmwpipeline/fitting/result_conversion.py)
@@ -1005,5 +1023,7 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
     reserved `fit-peaks`, which is what landed across all three
     interfaces; `CLI_STRATEGY.md` now also reserves `visualize-fit` and
     `visualize-windows` alongside the other Stage 4+ commands).
-11. [ ] Cross-interface + 2638 representative-subset integration tests; the
-    doublet and 34154 cases; then the full-plan integration check.
+11. [x] **Cross-interface + 2638 integration tests. Landed** in
+    [`tests/integration/test_stage5_fitting.py`](../../tests/integration/test_stage5_fitting.py)
+    — cross-interface consistency, the representative-window subset (incl. the
+    doublet and 34154 cases), and the full-plan integration check.
