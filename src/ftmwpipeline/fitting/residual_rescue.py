@@ -49,8 +49,10 @@ from .validation import (
 )
 from .window_fit import (
     DEFAULT_MAX_PEAKS,
+    DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
     DEFAULT_MIN_SEPARATION_FACTOR,
     DEFAULT_SIGNIFICANCE,
+    _effective_min_pair_separation,
     AddStep,
     ConservativeFitResult,
     KnockoutResult,
@@ -67,6 +69,8 @@ __all__ = [
     "DEFAULT_CLEANUP_SIGNIFICANCE",
     "DEFAULT_MERGE_SEPARATION_FACTOR",
     "DEFAULT_N_EFF_KIND",
+    "DEFAULT_OVERFIT_AMP_RATIO_BAND",
+    "DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD",
     "DEFAULT_RESCUE_MAX_ROUNDS",
     "DEFAULT_STRUCTURAL_MERGE_FACTOR",
     "DEFAULT_RESCUE_SNR_THRESHOLD",
@@ -123,6 +127,20 @@ DEFAULT_MERGE_SEPARATION_FACTOR = 0.5
 # doublet. Catches the duplicate-pair overfit pathology (w148: 0.04
 # MHz separation at FWHM ~0.1 MHz).
 DEFAULT_STRUCTURAL_MERGE_FACTOR = 0.5
+# Amplitude-ratio tiebreaker (GitHub issue #13). In the supra-resolution band
+# out to ``DEFAULT_OVERFIT_AMP_RATIO_BAND`` active-FT resolution elements
+# (``1/T_active``), a pair whose larger/smaller fitted-amplitude ratio clears
+# ``DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD`` is collapsed unconditionally: the weak
+# member is a rescue-parked shape-error absorber beside a strong line, not a
+# real doublet (AICc supports it, so the resolution floor and the Tier-2 gate
+# both leave it). Balanced pairs (ratio below the threshold) in the same band
+# are genuine close doublets and are preserved. Calibrated on the 2638 gaussian
+# fixture (overfit absorbers 8-16:1, real close pairs <= ~4:1; band covers the
+# w281/w143 pairs at ~1.1-1.3 elements while the closest real control pair sits
+# at 1.08 elements with ratio ~1.2). Cross-fixture calibration debt. Set the
+# threshold to 0 (or the band to 0) to disable the tier.
+DEFAULT_OVERFIT_AMP_RATIO_BAND = 1.5
+DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD = 6.0
 # Effective-sample-size weighting for the AICc-with-n_eff gates. The
 # canonical definition lives in :mod:`ftmwpipeline.fitting.validation` so the
 # merge cleanup (this module) and the knockout test
@@ -200,24 +218,37 @@ def merge_close_peaks_cleanup(
     fit_kwargs_inner: dict[str, Any],
     merge_separation_factor: float = DEFAULT_MERGE_SEPARATION_FACTOR,
     structural_merge_factor: float = DEFAULT_STRUCTURAL_MERGE_FACTOR,
+    min_pair_separation_resolution_factor: float = (
+        DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR
+    ),
+    overfit_amp_ratio_band: float = DEFAULT_OVERFIT_AMP_RATIO_BAND,
+    overfit_amp_ratio_threshold: float = DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD,
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     spur_mask: Optional[SpurMaskSpec] = None,
 ) -> Tuple[WindowFitResult, int]:
-    """Two-tier merge cleanup for close peak pairs.
+    """Multi-tier merge cleanup for close peak pairs.
 
     Iteratively finds the closest adjacent pair and decides whether to
-    collapse it into a single peak. Two tiers, keyed on the pair's
-    fractional FWHM separation:
+    collapse it into a single peak. Three tiers, keyed on the pair's
+    separation (and, for the third, its amplitude ratio):
 
-    1. **Sub-resolution** (separation < ``structural_merge_factor *
-       fwhm``): merge unconditionally. The Lorentzian-only model
-       physically cannot distinguish these from a single peak, so any
-       LSQ that converges to two separate peaks at this scale is a
-       numerical artifact (the duplicate-pair-overfit pathology from
-       w148/w269 in the 2638 fixture).
-    2. **Above resolution** (``structural_merge_factor * fwhm`` <=
-       separation < ``merge_separation_factor * fwhm``): merge only when
+    Both resolution tier thresholds carry a resolution-referenced floor: each
+    is the larger of its FWHM-referenced factor and one active-FT resolution
+    element (``min_pair_separation_resolution_factor / T_active``). On narrow
+    features the per-window FWHM falls below the Fourier resolution limit, so a
+    FWHM-only threshold leaves sub-resolution duplicate pairs uncollapsed
+    (GitHub issue #13).
+
+    1. **Sub-resolution** (separation < the structural threshold, ``max(
+       structural_merge_factor * fwhm, min_pair_separation_resolution_factor /
+       T_active)``): merge unconditionally. The single-shape model physically
+       cannot distinguish these from a single peak, so any LSQ that converges
+       to two separate peaks at this scale is a numerical artifact (the
+       duplicate-pair-overfit pathology from w148/w269 in the 2638 fixture).
+    2. **Above resolution** (structural threshold <=
+       separation < the merge threshold ``max(merge_separation_factor * fwhm,
+       min_pair_separation_resolution_factor / T_active)``): merge only when
        AICc strictly prefers the (K-1)-peak model. ``n_eff`` (Kish on
        ``|model|^2`` by default) collapses to roughly K times the per-
        peak FWHM-in-bins, which on narrow features can put both AICc
@@ -226,6 +257,16 @@ def merge_close_peaks_cleanup(
        -- this is the structural protection for real close pairs (w198
        outer shoulders at ~1 FWHM from inner peaks) the earlier
        AICc-only gate over-merged.
+    3. **Amplitude-ratio tier** (merge threshold <= separation <
+       ``overfit_amp_ratio_band * (1 / T_active)``): merge unconditionally
+       *only* when the pair's larger/smaller amplitude ratio clears
+       ``overfit_amp_ratio_threshold``. This catches the rescue-parked
+       shape-error absorber sitting just above the resolution floor next to a
+       strong line (the w281 / w143 class on the 2638 gaussian fixture): AICc
+       supports the extra peak (it absorbs real residual), so tiers 1-2 leave
+       it, but a large amplitude ratio marks the weak member as an absorber
+       rather than a real doublet. A balanced pair in this band is a genuine
+       close doublet and is preserved. Calibration debt (GitHub issue #13).
 
     The (K-1) refit locks tau at the current K-peak fit's value (tau is
     effectively a dataset-shared parameter; a single-window refit must
@@ -256,7 +297,40 @@ def merge_close_peaks_cleanup(
     )
     if fwhm <= 0.0:
         return fit, 0
-    merge_threshold = merge_separation_factor * fwhm
+    # Both tier thresholds carry a resolution-referenced floor: the larger of
+    # the FWHM-referenced factor and one active-FT resolution element
+    # ``min_pair_separation_resolution_factor / T_active``. On narrow features
+    # the per-window FWHM falls below the Fourier resolution limit, so a
+    # FWHM-only threshold leaves sub-resolution duplicate pairs uncollapsed
+    # (GitHub issue #13). The floor pulls the unconditional (Tier 1) band up to
+    # one resolution element, where any two-peak solution is a numerical
+    # artifact a single peak cannot be statistically distinguished from.
+    merge_threshold = _effective_min_pair_separation(
+        fwhm, acquisition_us, merge_separation_factor,
+        min_pair_separation_resolution_factor,
+    )
+    structural_threshold = _effective_min_pair_separation(
+        fwhm, acquisition_us, structural_merge_factor,
+        min_pair_separation_resolution_factor,
+    )
+    # Amplitude-ratio tier (GitHub issue #13, w281/w143 class): a rescue can
+    # park a small shape-error-absorber peak just *above* the resolution floor
+    # next to a strong line (separation ~1.0-1.5 elements, amplitude ratio
+    # >> 1). AICc supports it (it soaks real residual the single-shape model
+    # leaves), so neither the structural tier nor the Tier-2 AICc gate collapse
+    # it. In a band out to ``overfit_amp_ratio_band`` resolution elements, a
+    # pair whose amplitude ratio clears ``overfit_amp_ratio_threshold`` is
+    # collapsed unconditionally -- the weak member is an absorber, not a real
+    # line. Balanced pairs (ratio below the threshold) in the same band are
+    # genuine close doublets and are preserved. Cross-fixture calibration debt.
+    amp_ratio_band = (
+        overfit_amp_ratio_band / acquisition_us
+        if acquisition_us > 0.0
+        and overfit_amp_ratio_band > 0.0
+        and overfit_amp_ratio_threshold > 0.0
+        else 0.0
+    )
+    loop_band = max(merge_threshold, amp_ratio_band)
 
     # Tau is effectively a dataset-shared parameter (transit time x natural
     # lifetime); a single-window (K-1) refit must not get the extra knob of
@@ -281,7 +355,26 @@ def merge_close_peaks_cleanup(
             if d < min_dist:
                 min_dist = d
                 merge_i = i
-        if merge_i < 0 or min_dist >= merge_threshold:
+        if merge_i < 0 or min_dist >= loop_band:
+            break
+        pair_lo = sorted_peaks[merge_i]
+        pair_hi = sorted_peaks[merge_i + 1]
+        amp_a = abs(pair_lo.amplitude)
+        amp_b = abs(pair_hi.amplitude)
+        amp_min = min(amp_a, amp_b)
+        amp_ratio = (
+            max(amp_a, amp_b) / amp_min if amp_min > 0.0 else float("inf")
+        )
+        # Lazy refit: only the closest pair is ever a merge candidate, and a
+        # balanced pair in the amplitude-ratio band (>= merge_threshold,
+        # ratio below the threshold) is a real doublet that is kept. Break
+        # before paying the (K-1) ``fit_window`` refit in that case -- nothing
+        # nearer remains, so the loop is done. (Without this, every real close
+        # doublet out to ``overfit_amp_ratio_band`` would cost a wasted refit.)
+        if (
+            min_dist >= merge_threshold
+            and amp_ratio < overfit_amp_ratio_threshold
+        ):
             break
         merged_pair = _merge_cluster(
             [sorted_peaks[merge_i], sorted_peaks[merge_i + 1]]
@@ -309,7 +402,7 @@ def merge_close_peaks_cleanup(
         # Tier 1: sub-resolution -> merge unconditionally. The K-peak
         # fit at this scale is a numerical artifact; no statistical test
         # can disambiguate it from a single peak.
-        if min_dist < structural_merge_factor * fwhm:
+        if min_dist < structural_threshold:
             current = refit
             n_merged += 1
             continue
@@ -322,15 +415,32 @@ def merge_close_peaks_cleanup(
         # +inf because n_eff < k+1) preserve the K-peak fit, which is
         # the structural protection for real close pairs the AICc-only
         # gate over-merged.
-        n_eff = effective_sample_size(
-            current.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
-        )
-        aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
-        aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
-        if aicc_km1 >= aicc_k:
-            break
-        current = refit
-        n_merged += 1
+        if min_dist < merge_threshold:
+            n_eff = effective_sample_size(
+                current.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+            )
+            aicc_k = calculate_aicc(
+                current.chi_squared, current.n_params, n_eff
+            )
+            aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+            if aicc_km1 >= aicc_k:
+                break
+            current = refit
+            n_merged += 1
+            continue
+
+        # Tier 3: amplitude-ratio tiebreaker in the supra-resolution band
+        # [merge_threshold, amp_ratio_band). AICc is deliberately NOT consulted
+        # -- it prefers keeping the absorber. A high amplitude ratio is the
+        # signal that the closer-but-resolvable weak peak is a shape-error
+        # absorber beside a strong line; collapse it. A balanced pair here is a
+        # real doublet -> stop (it is the closest pair, so nothing nearer
+        # remains).
+        if amp_ratio >= overfit_amp_ratio_threshold:
+            current = refit
+            n_merged += 1
+            continue
+        break
     return current, n_merged
 
 
@@ -660,9 +770,13 @@ def attempt_residual_rescue(
         Additional offsets (MHz) the rescue must NOT re-propose
         candidates near. Combined with ``current_fit.peaks`` 's offsets
         into a single rejection list: any detector candidate whose
-        frequency falls within +/-1 grid bin of either a *currently-
-        fitted peak* or an *entry of this list* is dropped before
-        going to :func:`conservative_fit`. The fitted-peak rejection
+        frequency falls within the locality radius of either a
+        *currently-fitted peak* or an *entry of this list* is dropped
+        before going to :func:`conservative_fit`. That radius is the
+        larger of one persisted-grid bin and one active-FT resolution
+        element (``min_pair_separation_resolution_factor / T_active``,
+        read from ``conservative_kwargs``; GitHub issue #13). The
+        fitted-peak rejection
         prevents the screening pipeline from re-nominating the same
         line the initial fit already explains (residual structure
         under a fitted peak is shape-error / leakage, not a missed
@@ -755,33 +869,65 @@ def attempt_residual_rescue(
             if c.magnitude >= snr_threshold * bin_sigma_c:
                 kept.append(c)
         raw_candidates = kept
-    # Locality rejection: drop any candidate within +/-1 grid bin of a
-    # currently-fitted peak OR an explicit blacklist entry. Fitted-peak
-    # locality means the candidate is sitting under an existing peak --
-    # the residual signal there is shape-error / leakage, not a missed
-    # line -- and re-nominating it would only invite the joint-refit /
-    # iterative-cleanup chain to drop it again. The explicit blacklist
-    # is the across-rounds memory in :func:`rescue_and_consolidate`
-    # (rescue peaks that previous rounds nominated and the cleanup
-    # later rejected).
-    rejection_offsets: List[float] = [pk.offset_mhz for pk in current_fit.peaks]
+    # Locality rejection: drop any candidate too close to a currently-fitted
+    # peak OR an explicit blacklist entry. Fitted-peak locality means the
+    # candidate is sitting under an existing peak -- the residual signal there
+    # is shape-error / leakage, not a missed line -- and re-nominating it would
+    # only invite the joint-refit / iterative-cleanup chain to drop it again.
+    # The explicit blacklist is the across-rounds memory in
+    # :func:`rescue_and_consolidate` (rescue peaks that previous rounds
+    # nominated and the cleanup later rejected).
+    #
+    # The rejection radius for fitted peaks / blacklist entries is the larger
+    # of one persisted-grid bin and one active-FT resolution element
+    # ``min_pair_separation_resolution_factor / T_active`` (GitHub issue #13):
+    # the persisted grid is oversampled (alpha-padded), so +/-1 of its bins is
+    # well below the Fourier resolution limit and lets the rescue promote a
+    # sub-resolution shape-error candidate as a duplicate line beside a strong
+    # peak. A real missed line must sit at least ~1 resolution element away.
+    k_res = float(
+        ckwargs_in.get(
+            "min_pair_separation_resolution_factor",
+            DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
+        )
+    )
+    peak_reject_offsets: List[float] = [
+        pk.offset_mhz for pk in current_fit.peaks
+    ]
     if excluded_offsets:
-        rejection_offsets.extend(float(x) for x in excluded_offsets)
+        peak_reject_offsets.extend(float(x) for x in excluded_offsets)
     # A spur bin has a large residual (no line shape fits it), so the
     # detector would nominate it. Reject candidates on a spur offset so the
     # rescue never seeds a peak there; the residual mask below is the
     # backstop (a peak on masked bins earns no chi^2 credit and is gated out).
-    if spur_mask is not None:
-        rejection_offsets.extend(float(o) for o in spur_mask.offsets_mhz)
-    if rejection_offsets and raw_candidates and u.size >= 2:
+    # Spurs are single-bin tones, so a grid-bin radius (not the resolution
+    # element) is the right locality test for them.
+    spur_reject_offsets: List[float] = (
+        [float(o) for o in spur_mask.offsets_mhz]
+        if spur_mask is not None
+        else []
+    )
+    if (peak_reject_offsets or spur_reject_offsets) and raw_candidates and (
+        u.size >= 2
+    ):
         u_sorted = np.sort(u)
         df_mhz = float(np.min(np.diff(u_sorted)))
         if df_mhz > 0.0:
+            resolution_mhz = (
+                k_res / acquisition_us
+                if acquisition_us > 0.0 and k_res > 0.0
+                else 0.0
+            )
+            peak_radius = max(df_mhz, resolution_mhz)
             raw_candidates = [
                 c for c in raw_candidates
                 if not any(
+                    abs(c.frequency_mhz - x) <= peak_radius
+                    for x in peak_reject_offsets
+                )
+                and not any(
                     abs(c.frequency_mhz - x) <= df_mhz
-                    for x in rejection_offsets
+                    for x in spur_reject_offsets
                 )
             ]
     candidates = list(raw_candidates)
@@ -982,6 +1128,8 @@ def rescue_and_consolidate(
     conservative_kwargs: Optional[dict[str, Any]] = None,
     merge_separation_factor: float = DEFAULT_MERGE_SEPARATION_FACTOR,
     structural_merge_factor: float = DEFAULT_STRUCTURAL_MERGE_FACTOR,
+    overfit_amp_ratio_band: float = DEFAULT_OVERFIT_AMP_RATIO_BAND,
+    overfit_amp_ratio_threshold: float = DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape_error_epsilon: float = 0.0,
     shape: "PeakShape | str" = "lorentzian",
@@ -1084,6 +1232,15 @@ def rescue_and_consolidate(
     # call doesn't get the same kwarg twice.
     ckwargs_in = dict(conservative_kwargs or {})
     ckwargs_in.pop("max_peaks", None)
+    # Resolution-referenced minimum-pair-separation floor (GitHub issue #13).
+    # ``attempt_residual_rescue`` reads it from ``ckwargs_in`` for its locality
+    # rejection; the merge cleanup needs it as an explicit argument.
+    merge_resolution_factor = float(
+        ckwargs_in.get(
+            "min_pair_separation_resolution_factor",
+            DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
+        )
+    )
 
     # Derive the joint refit's constraints once. The bounds (tau, amp,
     # penalty references) are properties of the window's data, not of
@@ -1237,6 +1394,9 @@ def rescue_and_consolidate(
             fit_kwargs_inner=fit_kwargs_inner,
             merge_separation_factor=merge_separation_factor,
             structural_merge_factor=structural_merge_factor,
+            min_pair_separation_resolution_factor=merge_resolution_factor,
+            overfit_amp_ratio_band=overfit_amp_ratio_band,
+            overfit_amp_ratio_threshold=overfit_amp_ratio_threshold,
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
         )

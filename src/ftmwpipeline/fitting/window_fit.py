@@ -143,6 +143,16 @@ DEFAULT_AMP_MAX_HEADROOM = 3.0
 # Post-fit sanity check in _blend_aware_seed: reject a K>=2 escalation if any
 # two of its fitted peaks collapsed to within this fraction of a FWHM.
 DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
+# Resolution-referenced floor on the minimum allowed pair separation, in units
+# of the active-FT Fourier resolution element ``1/T_active`` (= ``1 /
+# acquisition_us`` MHz). The effective minimum pair separation is
+# ``max(min_pair_separation_factor * fwhm, this_factor / acquisition_us)``: two
+# lines closer than one resolution element are fundamentally unresolvable, so a
+# pair below this floor is a numerical artifact regardless of the per-window
+# FWHM (which depends on the fitted decay tau and can fall below the resolution
+# limit). Guards the sub-resolution duplicate-overfit pathology the FWHM-only
+# floor licenses (GitHub issue #13).
+DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR = 1.0
 # Tau policy: the canonical apodization (``expf_us``) sets a hard upper bound
 # on ``tau`` -- the data cannot decay slower than the apodization itself.
 # Decreasing ``tau`` below the apodization broadens the line, so the LSQ
@@ -152,6 +162,30 @@ DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
 # ``DEFAULT_WEAK_WINDOW_SNR_THRESHOLD``) hold ``tau`` fixed entirely.
 DEFAULT_TAU_PENALTY_LAMBDA = 50.0
 DEFAULT_WEAK_WINDOW_SNR_THRESHOLD = 10.0
+
+
+def _effective_min_pair_separation(
+    fwhm_mhz: float,
+    acquisition_us: float,
+    min_pair_separation_factor: float,
+    min_pair_separation_resolution_factor: float,
+) -> float:
+    """Minimum allowed separation between two fitted lines, in MHz.
+
+    The larger of the FWHM-referenced floor
+    (``min_pair_separation_factor * fwhm_mhz``) and the active-FT resolution
+    floor (``min_pair_separation_resolution_factor / acquisition_us``, where
+    ``1/acquisition_us`` MHz is the Fourier resolution element ``1/T_active``).
+    The resolution term is what catches sub-resolution duplicate pairs the
+    FWHM-only floor licenses on narrow features (GitHub issue #13); a
+    non-positive ``acquisition_us`` (or resolution factor) leaves only the
+    FWHM term.
+    """
+    fwhm_floor = min_pair_separation_factor * fwhm_mhz
+    if acquisition_us > 0.0 and min_pair_separation_resolution_factor > 0.0:
+        resolution_floor = min_pair_separation_resolution_factor / acquisition_us
+        return max(fwhm_floor, resolution_floor)
+    return fwhm_floor
 
 
 # ---------------------------------------------------------------------------
@@ -1632,6 +1666,9 @@ def _blend_aware_seed(
     amp_penalty_lambda: float = 0.0,
     phase_penalty_cutoff_fwhm: float = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
     min_pair_separation_factor: float = DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
+    min_pair_separation_resolution_factor: float = (
+        DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR
+    ),
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
@@ -1651,9 +1688,11 @@ def _blend_aware_seed(
 
     Each K=2/K=3 trial fit is also post-checked for the "two peaks collapsed
     onto the same offset with cancelling phases" degenerate solution
-    (``min_pair_separation_factor * fwhm`` is the minimum allowed pair
-    separation); collapsed escalations are rejected even when the gate would
-    accept them.
+    (the minimum allowed pair separation is
+    ``max(min_pair_separation_factor * fwhm, min_pair_separation_resolution_factor
+    / acquisition_us)`` -- the larger of the FWHM-referenced floor and the
+    active-FT resolution element ``1/T_active``); collapsed escalations are
+    rejected even when the gate would accept them.
 
     ``significance`` is not used as a gate threshold; the F-test
     ``p_value`` is computed and recorded on each :class:`AddStep` as a
@@ -1718,7 +1757,12 @@ def _blend_aware_seed(
 
     # Elevated reduced chi-squared -> retry as a straddled blend.
     straddle = straddle_factor * fwhm_mhz
-    min_pair_sep = min_pair_separation_factor * fwhm_mhz
+    min_pair_sep = _effective_min_pair_separation(
+        fwhm_mhz,
+        acquisition_us,
+        min_pair_separation_factor,
+        min_pair_separation_resolution_factor,
+    )
     prev = fit1
     for k in range(2, max_k + 1):
         positions = seed_offset_mhz + (np.arange(k) - 0.5 * (k - 1)) * straddle
@@ -1830,6 +1874,9 @@ def conservative_fit(
     phase_penalty_cutoff_fwhm: float = DEFAULT_PHASE_PENALTY_CUTOFF_FWHM,
     amp_max_headroom: float = DEFAULT_AMP_MAX_HEADROOM,
     min_pair_separation_factor: float = DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
+    min_pair_separation_resolution_factor: float = (
+        DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR
+    ),
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     tau_penalty_n_sigma: float = DEFAULT_TAU_PENALTY_N_SIGMA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
@@ -1907,8 +1954,18 @@ def conservative_fit(
     min_pair_separation_factor : float, default
         :data:`DEFAULT_MIN_PAIR_SEPARATION_FACTOR`
         Post-fit sanity-check threshold in FWHM units; the blend-aware seeder
-        rejects an escalation whose fitted peaks ended up within
-        ``min_pair_separation_factor * fwhm`` of each other.
+        rejects an escalation whose fitted peaks ended up within the minimum
+        pair separation of each other.
+    min_pair_separation_resolution_factor : float, default
+        :data:`DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR`
+        Resolution-referenced floor on the minimum pair separation, in units
+        of the active-FT resolution element ``1/T_active`` (=
+        ``1/acquisition_us`` MHz). The effective minimum pair separation is
+        ``max(min_pair_separation_factor * fwhm,
+        min_pair_separation_resolution_factor / acquisition_us)`` -- the
+        resolution term catches sub-resolution duplicate pairs the FWHM-only
+        floor licenses on narrow features (the per-window FWHM can fall below
+        the Fourier limit). See GitHub issue #13.
     tau_penalty_lambda : float, default :data:`DEFAULT_TAU_PENALTY_LAMBDA`
         Weight of the lower-side tau penalty (see
         :func:`_penalty_residuals_and_jacobian`). ``0`` disables. The
@@ -2028,6 +2085,9 @@ def conservative_fit(
         amp_penalty_lambda=amp_penalty_lambda,
         phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
         min_pair_separation_factor=min_pair_separation_factor,
+        min_pair_separation_resolution_factor=(
+            min_pair_separation_resolution_factor
+        ),
         tau_penalty_lambda=effective_tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_ref,
         tau_penalty_sigma_us=tau_penalty_sigma_us,

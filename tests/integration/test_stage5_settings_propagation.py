@@ -105,6 +105,9 @@ PROPAGATION_FIELDS: list[tuple[str, Callable[..., None], Any, str, str]] = [
     ("conservative.min_pair_separation_factor",
      _t("conservative", "min_pair_separation_factor"), 0.77,
      "min_pair_separation_factor", "conservative"),
+    ("conservative.min_pair_separation_resolution_factor",
+     _t("conservative", "min_pair_separation_resolution_factor"), 1.3,
+     "min_pair_separation_resolution_factor", "conservative"),
     ("conservative.weak_window_snr_threshold",
      _t("conservative", "weak_window_snr_threshold"), 33.0,
      "weak_window_snr_threshold", "conservative"),
@@ -144,6 +147,12 @@ PROPAGATION_FIELDS: list[tuple[str, Callable[..., None], Any, str, str]] = [
     ("rescue.structural_merge_factor",
      _t("rescue", "structural_merge_factor"), 0.13,
      "structural_merge_factor", "rescue"),
+    ("rescue.overfit_amp_ratio_band",
+     _t("rescue", "overfit_amp_ratio_band"), 1.9,
+     "overfit_amp_ratio_band", "rescue"),
+    ("rescue.overfit_amp_ratio_threshold",
+     _t("rescue", "overfit_amp_ratio_threshold"), 7.5,
+     "overfit_amp_ratio_threshold", "rescue"),
 ]
 
 
