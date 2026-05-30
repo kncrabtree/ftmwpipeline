@@ -120,10 +120,11 @@ formats are pluggable via a loader registry: `src/ftmwpipeline/io/data_loaders/`
 ## Example data and reference parameters
 
 `examples/blackchirp_data/2638/` is a real BlackChirp experiment checked in for tests and
-manual runs. FID: 750k points, 15 µs, 40.96 GHz probe, lower sideband. Recommended
-processing for this experiment: `zpf=2`, `expf_us=5.0`, and trim the FT to the active
-region **26500–40000 MHz** before downstream analysis (matches the integration tests'
-`standard_ft_params`).
+manual runs. FID: 750k points, 15 µs, 40.96 GHz probe, lower sideband. The integration
+tests' `standard_ft_params` for this experiment are `zpf=2`, `expf_us=5.0`, trimmed to the
+active region **26500–40000 MHz** — kept for legacy comparison. **New analyses should use
+a raw, unapodized FT (`zpf=0`, `expf_us=None`) on that same trim** (see below); only the
+frequency trim carries over.
 
 ```python
 import ftmwpipeline.api as ftmw
@@ -132,14 +133,18 @@ ft = ftmw.compute_ft("exp_2638.ftmw", zpf=2, expf_us=5.0, trim=(26500, 40000))
 noise = ftmw.estimate_noise("exp_2638.ftmw")
 ```
 
-**Apodization is no longer a hard default on `compute_ft`.** Passing `expf_us=None` (or
-omitting it once nothing else has set it in the resolution chain) leaves the persisted FT
-unapodized — which is what the Stage 2b STFT τ calibration consumes. The 2638 example
-above keeps `expf_us=5.0` for legacy comparison with the apodized spectrum; new analyses
-should run `expf_us=None` and call `ftmw.calibrate_tau(...)` to extract `τ_maj ± σ_τ`
-before peak detection. Subsequent stages auto-detect Stage 2b's presence: Stage 3's
-gap-pass matched filter uses `τ_maj` for `tau_basis_us`, and Stage 5 anchors its
-bidirectional Gaussian τ penalty on `τ_maj`.
+**Run the canonical FT raw and unapodized.** The pipeline operates on the raw FT;
+**zero-padding interpolates the spectrum bins and corrupts the Stage 2/5 noise and fit
+statistics**, so a suggested `zpf` is never adopted — new analyses run `zpf=0` (Stage 3
+peak detection applies its own zero-padding internally, for position-finding only).
+Likewise, apodization is no longer a hard default on `compute_ft`: passing `expf_us=None`
+(or omitting it once nothing else has set it in the resolution chain) leaves the persisted
+FT unapodized — which is what the Stage 2b STFT τ calibration consumes. The 2638 example
+above keeps `zpf=2`/`expf_us=5.0` only for legacy comparison; new analyses should run
+`zpf=0`, `expf_us=None` and call `ftmw.calibrate_tau(...)` to extract `τ_maj ± σ_τ` before
+peak detection. Subsequent stages auto-detect Stage 2b's presence: Stage 3's gap-pass
+matched filter uses `τ_maj` for `tau_basis_us`, and Stage 5 anchors its bidirectional
+Gaussian τ penalty on `τ_maj`.
 
 ## When extending the pipeline (new stage)
 
