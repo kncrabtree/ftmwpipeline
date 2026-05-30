@@ -37,6 +37,10 @@ dependencies = [
     "h5py>=3.1.0",
     "pyyaml>=6.0",
     "tqdm>=4.60.0",
+    # 0.1.0rc2+ (the 2.0 pre-release line) exposes BCFTMW.get_fid /
+    # BCFid.is_lower_sideband and the version-tolerant enum parsing the
+    # Blackchirp loader delegates to. The stable 0.0.11 release predates them.
+    "blackchirp>=0.1.0rc2",
 ]
 
 [project.optional-dependencies]

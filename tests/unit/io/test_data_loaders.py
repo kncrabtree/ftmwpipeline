@@ -39,14 +39,16 @@ class TestBlackChirpLoader:
         fid_dir = exp_dir / "fid"
         fid_dir.mkdir(parents=True)
         
-        # Create fidparams.csv
+        # Create fidparams.csv (faithful Blackchirp layout: leading ``index``
+        # column, canonical ``LowerSideband`` enum name, ``size`` column).
         fidparams_data = {
-            'probefreq': [40960.0],
+            'index': [0],
             'spacing': [2.44140625e-11],
-            'sideband': ['Lower'],
-            'shots': [100000],
+            'probefreq': [40960.0],
             'vmult': [0.001],
-            'voffset': [0.0]
+            'shots': [100000],
+            'sideband': ['LowerSideband'],
+            'size': [9],
         }
         fidparams_df = pd.DataFrame(fidparams_data)
         fidparams_df.to_csv(fid_dir / "fidparams.csv", sep=';', index=False)
@@ -73,8 +75,10 @@ class TestBlackChirpLoader:
         header_df = pd.DataFrame(header_data)
         header_df.to_csv(exp_dir / "header.csv", sep=';', index=False)
         
+        # version.csv: first line is the CSV delimiter, then key;value rows
+        # (the format BCExperiment/BCFTMW expect).
         with open(exp_dir / "version.csv", 'w') as f:
-            f.write("1.0.0\n")
+            f.write(";\nkey;value\nBCMajorVersion;1\nBCMinorVersion;0\n")
         
         yield exp_dir
         
@@ -126,7 +130,7 @@ class TestBlackChirpLoader:
         # Check metadata
         assert result['metadata']['n_fids'] == 1
         assert result['metadata']['probe_freq_mhz'] == 40960.0
-        assert result['metadata']['sideband'] == 'Lower'
+        assert result['metadata']['sideband'] == 'LowerSideband'
         assert result['metadata']['shots'] == 100000
         assert 'spacing_us' in result['metadata']
         
@@ -144,7 +148,7 @@ class TestBlackChirpLoader:
             
             assert result['valid'] is False
             assert len(result['errors']) > 0
-            assert "Not a valid BlackChirp experiment directory" in result['errors'][0]
+            assert "Not a valid Blackchirp experiment directory" in result['errors'][0]
     
     def test_load_fid_success(self, loader, sample_blackchirp_dir):
         """Test successful FID loading."""
@@ -187,7 +191,7 @@ class TestBlackChirpLoader:
         data_file = sample_blackchirp_dir / "fid" / "0.csv"
         data_file.unlink()
         
-        with pytest.raises(LoaderError, match="Invalid BlackChirp source"):
+        with pytest.raises(LoaderError, match="Invalid Blackchirp source"):
             loader.load_fid(sample_blackchirp_dir, fid_index=0)
     
     def test_load_fid_corrupted_data(self, loader, sample_blackchirp_dir):
@@ -198,7 +202,7 @@ class TestBlackChirpLoader:
         corrupted_data = pd.DataFrame({'data': ['invalid@#$', 'not_base36!']})
         corrupted_data.to_csv(data_file, index=False)
         
-        with pytest.raises(LoaderError, match="Failed to read FID data"):
+        with pytest.raises(LoaderError, match="Failed to load Blackchirp FID"):
             loader.load_fid(sample_blackchirp_dir, fid_index=0)
     
     def test_sideband_conversion(self, loader, sample_blackchirp_dir):
@@ -206,7 +210,7 @@ class TestBlackChirpLoader:
         # Test upper sideband
         fidparams_file = sample_blackchirp_dir / "fid" / "fidparams.csv"
         fidparams_df = pd.read_csv(fidparams_file, sep=';')
-        fidparams_df['sideband'] = ['Upper']
+        fidparams_df['sideband'] = ['UpperSideband']
         fidparams_df.to_csv(fidparams_file, sep=';', index=False)
         
         fid = loader.load_fid(sample_blackchirp_dir, fid_index=0)
@@ -382,7 +386,7 @@ class TestBaseLoaderErrorHandling:
         
         # Test with invalid source
         with tempfile.TemporaryDirectory() as tmp_dir:
-            with pytest.raises(LoaderError, match="Invalid BlackChirp source"):
+            with pytest.raises(LoaderError, match="Invalid Blackchirp source"):
                 loader.load_fid(tmp_dir)
 
 
@@ -400,11 +404,13 @@ class TestDataLoadingEdgeCases:
         
         # Minimal fidparams.csv
         fidparams_data = {
-            'probefreq': [1000.0],
+            'index': [0],
             'spacing': [1e-6],
-            'sideband': ['Upper'],
+            'probefreq': [1000.0],
+            'vmult': [1.0],
             'shots': [1],
-            'vmult': [1.0]
+            'sideband': ['UpperSideband'],
+            'size': [3],
         }
         pd.DataFrame(fidparams_data).to_csv(fid_dir / "fidparams.csv", sep=';', index=False)
         
