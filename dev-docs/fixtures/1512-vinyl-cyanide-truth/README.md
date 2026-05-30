@@ -53,3 +53,29 @@ they serve as the reference for scoring our frequency accuracy.
   vinyl-cyanide-attributable lines enter the accuracy/uncertainty assessment.
 - Disambiguation (which catalog lines are cleanly observed) is part of the test,
   to be settled in the fitting-test session, not pre-baked here.
+
+## Multi-species catalogs (shared by 1512 and 655)
+
+This directory is the vinyl-cyanide molecular ground truth for **all** VyCN
+fixtures (1512 and the high-SNR 655). `lines.csv` above is the v=0 main
+isotopologue only; the high-SNR 655 work resolves additional species.
+
+`catalogs/` holds the raw SPCAT `.cat` source files (one per species); parse the
+fixed columns as documented above. `combined_lines.csv` is the parsed in-band
+(26500–40000 MHz) union of all five species — columns
+`species,tag,predicted,freq_mhz,unc_mhz,log_intensity,qn` (328 lines):
+
+| file | tag | species | in-band lines |
+|---|---|---|---|
+| `c053515_hfs.cat` | 53515 | v=0 main | 115 |
+| `c054506_hfs.cat` | 54506 | ¹³C (a) | 56 |
+| `c054507_hfs.cat` | 54507 | ¹³C (b) | 56 |
+| `c054508_hfs.cat` | 54508 | ¹³C (c) | 56 |
+| `c054509.cat` | 54509 | ¹⁵N (hfs from ¹⁴N absent) | 45 |
+
+**Tier by predicted uncertainty.** The main and ¹³C catalogs are
+calibration-grade (`unc_mhz` 0.1–2.1 kHz). The ¹⁵N catalog is mixed: some lines
+are fit-quality (sub-kHz) but others are purely predicted with uncertainties up
+to ~22 MHz (the `predicted` column / a negative raw tag flags these) — exclude
+anything with `unc_mhz` above a few kHz from frequency/uncertainty scoring; it can
+still serve for line attribution/exclusion.

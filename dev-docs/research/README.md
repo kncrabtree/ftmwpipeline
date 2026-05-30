@@ -60,6 +60,19 @@ readers.
   matched-filter active-FT, keeping the SavGol locator and leakage
   mask) is a clean local win. Recommended wiring: matched-filter gap
   pass, primary pass unchanged.
+- [Noise estimation at extreme SNR (the leakage pedestal)](noise-snr-scaling/report.md) —
+  the Stage 2 level-based estimator over-reports σ by up to ~6× on
+  high-SNR, line-dense spectra because it measures the smooth leakage
+  pedestal (summed far-wings of strong lines in the raw boxcar FT),
+  not the noise. The error is a pure SNR-scaling failure: the pedestal
+  is constant in shot count N while true noise falls as 1/√N. Validated
+  a high-pass (scatter-based) replacement against line-free
+  frame-difference noise and a cross-fixture 1/√N test (7 fixtures, two
+  samples, SNR 10³–10⁶): the old estimator's error grows 1.4× → 6× with
+  SNR and its slope goes from −0.47 to −0.02 (pedestal-pinned), while the
+  scatter estimator stays within ~15 % of truth and tracks 1/√N. The 1/√N
+  slope is the recommended acceptance invariant; a blank-FID series is
+  the recommended definitive reference.
 
 ## Conventions for new reports
 
