@@ -16,7 +16,7 @@ All current fixtures are from the **same instrument** (downconversion LO/probe
 |---|---|---|---|---|---|
 | 2638 | 1 µs | 501400 | 2.35 | manual window oracle | (primary reference; see `CLAUDE.md`) |
 | 1019 | 3 µs | 1590380 | 4.35 | yes (some peak frequencies) | [1019.md](1019.md) |
-| 1512 | 2 µs | 17860 | 3.35 | yes (some peak frequencies) | [1512.md](1512.md) |
+| 1512 | 2 µs | 17860 | 3.35 | yes (vinyl cyanide; [catalog](1512-vinyl-cyanide-truth/README.md)) | [1512.md](1512.md) |
 | 1231 | 3 µs | 74740 | 4.35 | no | [1231.md](1231.md) |
 
 `start_us` is data-derived (`ftmwpipeline detect-start`, ≈ chirp_duration +
