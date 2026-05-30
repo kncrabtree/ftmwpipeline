@@ -280,17 +280,27 @@ def effective_sample_size(
 
     - **Magnitude-concentrated** (``kish_mag_sq``, ``kish_mag``,
       ``hard_radius``). The weight is a function of ``|model|`` alone; on a
-      Lorentzian peak the result is roughly the FWHM-in-bins. Right for
-      K-vs-(K-1) tests (merge / knockout), where the question is "are these
-      K peaks each individually informative" and the structural divergence
-      of AICc at small ``n_eff`` *helps* the conservative direction (REJECT
-      a merge / preserve a peak).
+      Lorentzian peak the result is roughly the FWHM-in-bins. The structural
+      divergence of AICc at the resulting small ``n_eff`` pushes hard in the
+      conservative direction (REJECT a merge / preserve a peak) -- helpful for
+      a K-vs-(K-1) test in isolation, but it over-rejects real K-vs-(K+1)
+      escalations on narrow features.
     - **Information-weighted** (``perplexity_log1p_snr``). The weight is
       ``log(1 + |model|/sigma)`` (per-bin Shannon information of a signal-
       vs-noise detection at that SNR), aggregated as the perplexity
-      ``exp(H(p))`` of the normalised weight distribution. Right for
-      K-vs-(K+1) tests (the conservative add-one-peak loop), where the
-      same divergence over-rejects real escalations on narrow features.
+      ``exp(H(p))`` of the normalised weight distribution. It keeps ``n_eff``
+      in the AICc-identifiable regime across the realistic K-vs-(K±1)
+      transitions and only diverges when the model is genuinely
+      under-determined.
+
+    Stage 5 threads a single kind -- :data:`DEFAULT_N_EFF_KIND`
+    (``perplexity_log1p_snr``) -- into *every* gate (conservative
+    add-one-peak accept, blend-aware escalation, merge cleanup, knockout,
+    iterative cleanup). The merge / knockout K-vs-(K-1) sweeps therefore use
+    the information-weighted kind, not a magnitude-concentrated one; whether
+    those sweeps should instead take a magnitude-concentrated kind is an open
+    Stage 5 design decision (issue #9). The ``kish_*`` / ``hard_radius`` kinds
+    are available for callers that select them explicitly.
 
     Parameters
     ----------
@@ -298,7 +308,10 @@ def effective_sample_size(
         Complex (or real) model spectrum on the window grid. Only the
         magnitude is consulted.
     kind : str, default "kish_mag_sq"
-        Weighting scheme. ``"kish_mag_sq"`` uses ``w_f = |model(f)|²``
+        Weighting scheme. This default applies only to direct callers; every
+        Stage 5 gate passes :data:`DEFAULT_N_EFF_KIND`
+        (``"perplexity_log1p_snr"``) explicitly. ``"kish_mag_sq"`` uses
+        ``w_f = |model(f)|²``
         (Fisher-information density for a Gaussian likelihood). ``"kish_mag"``
         uses ``w_f = |model(f)|`` -- softer concentration. ``"hard_radius"``
         counts bins where ``|model(f)| > cutoff_fraction * max|model|`` --

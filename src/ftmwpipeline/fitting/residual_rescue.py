@@ -249,10 +249,10 @@ def merge_close_peaks_cleanup(
     2. **Above resolution** (structural threshold <=
        separation < the merge threshold ``max(merge_separation_factor * fwhm,
        min_pair_separation_resolution_factor / T_active)``): merge only when
-       AICc strictly prefers the (K-1)-peak model. ``n_eff`` (Kish on
-       ``|model|^2`` by default) collapses to roughly K times the per-
-       peak FWHM-in-bins, which on narrow features can put both AICc
-       (K) and AICc(K-1) at ``+inf`` (model not identifiable). Tied AICc
+       AICc strictly prefers the (K-1)-peak model. ``n_eff`` (the package
+       default :data:`~ftmwpipeline.fitting.validation.DEFAULT_N_EFF_KIND`,
+       ``perplexity_log1p_snr``) can still put both AICc(K) and AICc(K-1) at
+       ``+inf`` on a feature too narrow to identify either model. Tied AICc
        is read as "no evidence for merge" and preserves the K-peak fit
        -- this is the structural protection for real close pairs (w198
        outer shoulders at ~1 FWHM from inner peaks) the earlier
@@ -408,8 +408,9 @@ def merge_close_peaks_cleanup(
             continue
 
         # Tier 2: above-resolution -> AICc-with-n_eff test, with
-        # REJECT-on-tie. n_eff comes from the more-complex (K-peak)
-        # model's magnitude (Kish); both AICc evaluations share it.
+        # REJECT-on-tie. n_eff is keyed on the more-complex (K-peak) model
+        # via the default ``perplexity_log1p_snr`` kind; both AICc
+        # evaluations share it.
         # ``>=`` (rather than ``>``) makes the gate "merge only when
         # K-1 is strictly better"; ties (both AICc finite-equal or both
         # +inf because n_eff < k+1) preserve the K-peak fit, which is
