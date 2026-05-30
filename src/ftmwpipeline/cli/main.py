@@ -15,6 +15,7 @@ from ..workflows import validate_installation
 from .utils import setup_logging
 from .ft_commands import add_ft_subcommands
 from .data_commands import add_data_subcommands
+from .start_commands import register_start_commands
 from .noise_commands import register_noise_commands
 from .tau_commands import register_tau_commands
 from .peak_commands import register_peak_commands
@@ -121,7 +122,10 @@ Examples:
     
     # Add data loading commands (Stage 0)
     add_data_subcommands(subparsers)
-    
+
+    # Add start-time detection commands (pre-Stage 1)
+    register_start_commands(subparsers)
+
     # Add FT processing commands (Stage 1)
     add_ft_subcommands(subparsers)
     

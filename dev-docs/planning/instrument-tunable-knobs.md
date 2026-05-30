@@ -78,6 +78,30 @@ Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 | skirt_exclusion.skirt_exclusion_k | 1.5 | `SKIRT_EXCLUSION_K` | Lorentzian skirt radius in units of (HWHM × SNR / k) for exclusion. | **Y** | — |
 | skirt_exclusion.max_skirt_exclusion_mhz | 500.0 | `MAX_SKIRT_EXCLUSION_MHZ` | Maximum per-line skirt-exclusion radius (caps pathologically strong peaks). | **Y** | — |
 
+## Start detection (pre-Stage 1) — `StartDetectionSettings`
+
+Source: [`preprocessing/start_detection.py`](../../src/ftmwpipeline/preprocessing/start_detection.py).
+Flat frozen dataclass (no resolution chain); the only persisted output is the
+recommended `start_us` stamped into the Stage 0 `recommended_processing` layer.
+
+| field | default | source | meaning | inst-sens | 2638 |
+|---|---|---|---|---|---|
+| sweep_max_us | 7.5 | dataclass default | Upper bound of the start-time sweep (capped to FID duration). Must clear the chirp end + the floor-estimate tail. | **Y** | — |
+| step_us | 0.02 | dataclass default | Sweep step; resolution of the chirp-end corner. | maybe | — |
+| zpf | 0 | dataclass default | Zero-padding for the per-start FT; 0 is correct (integrated magnitude needs no interpolation). | N | — |
+| floor_factor | 3.0 | dataclass default | Chirp-end = first start where Σ\|FT\| < factor × deep-tail floor. | N | — |
+| floor_tail_us | 1.0 | dataclass default | Width of the deep-tail window for the robust floor estimate. | maybe | — |
+| guard_margin_us | 0.67 | dataclass default | Margin added past the chirp end for switch-bounce ringdown settling. **The primary recommendation is chirp_end + this.** Tuned on 2638-family (chirp_dur+1.35 targets ⇒ chirp_end+0.67). | **Y** | — |
+| knee_window_us | 2.8 | dataclass default | Post-chirp window scanned for the confirmatory ringdown→molecular Kneedle elbow. | maybe | — |
+| shoulder_skip_us | 0.15 | dataclass default | Skip past the chirp-end before the Kneedle scan (steps over the post-collapse shoulder). | N | — |
+| knee_strength_min | 0.10 | dataclass default | Min Kneedle strength to call the ringdown knee confident (diagnostic only; strong molecular FIDs bury it). | maybe | — |
+| min_chirp_drop_ratio | 10.0 | dataclass default | Min plateau/floor ratio for a chirp collapse to be considered present. | **Y** | — |
+
+`guard_margin_us` is the headline instrument-specific knob: it is the
+switch-bounce ringdown length, which varies with the instrument's RF
+switch/protection hardware. Re-tune per instrument (the chirp-end corner itself
+is hardware-robust; only the post-chirp margin moves).
+
 ## Stage 2b — `TauCalibrationSettings`
 
 Source: [`fitting/tau_calibration.py`](../../src/ftmwpipeline/fitting/tau_calibration.py).

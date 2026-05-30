@@ -44,8 +44,10 @@ from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
+from .core.start_detection_settings import StartDetectionSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .preprocessing.noise_estimation import NoiseResult
+from .preprocessing.start_detection import StartDetectionResult
 
 # Module logger
 logger = logging.getLogger(__name__)
@@ -226,10 +228,98 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
 
 
 # =============================================================================
-# Stage 1 FT Processing Functions  
+# Start-time Detection Functions (pre-Stage 1)
 # =============================================================================
 
-def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None, 
+def detect_start_time(
+    file_path: Union[str, Path],
+    sweep_max_us: Optional[float] = None,
+    step_us: Optional[float] = None,
+    guard_margin_us: Optional[float] = None,
+    floor_factor: Optional[float] = None,
+    knee_strength_min: Optional[float] = None,
+    band: Optional[Tuple[float, float]] = None,
+    stamp: bool = True,
+    *,
+    settings: Optional[StartDetectionSettings] = None,
+) -> StartDetectionResult:
+    """Infer a good FID ``start_us`` from the data, equivalent to
+    :meth:`Pipeline.detect_start_time`.
+
+    Sweeps the FID window start time and integrates the FT magnitude over the
+    active band; the chirp-end collapse plus an instrument-specific guard margin
+    gives the recommended ``start_us``. When ``stamp=True`` (default) the value
+    is written to the Stage 0 ``recommended_processing`` layer so a later
+    :func:`compute_ft` with no explicit ``start_us`` inherits it. Requires only
+    Stage 0 (FID); the band is resolved from the canonical Stage 1 trim when
+    present, else the full positive spectrum.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to a ``.ftmw`` file with the FID imported.
+    sweep_max_us, step_us, guard_margin_us, floor_factor, knee_strength_min :
+        Individual overrides of the matching
+        :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
+        fields.
+    band : tuple of float, optional
+        Explicit ``(min_mhz, max_mhz)`` integration band override.
+    stamp : bool, default True
+        Whether to persist the recommended ``start_us``.
+    settings : StartDetectionSettings, optional
+        A full settings bundle; the explicit kwargs above win per-field.
+
+    Returns
+    -------
+    StartDetectionResult
+        The recommendation plus diagnostics.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.detect_start_time(
+            sweep_max_us=sweep_max_us,
+            step_us=step_us,
+            guard_margin_us=guard_margin_us,
+            floor_factor=floor_factor,
+            knee_strength_min=knee_strength_min,
+            band=band,
+            stamp=stamp,
+            settings=settings,
+        )
+    except Exception as e:
+        logger.error(f"Failed to detect start time for {file_path}: {e}")
+        raise
+
+
+def visualize_start_detection(
+    file_path: Union[str, Path],
+    output_file: Optional[Union[str, Path]] = None,
+    interactive: bool = True,
+    figsize: Optional[tuple] = None,
+    *,
+    settings: Optional[StartDetectionSettings] = None,
+) -> Any:
+    """Render the start-detection sweep diagnostic, equivalent to
+    :meth:`Pipeline.visualize_start_detection` (runs detection without
+    stamping)."""
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.visualize_start_detection(
+            output_file=output_file,
+            interactive=interactive,
+            figsize=figsize,
+            settings=settings,
+        )
+    except Exception as e:
+        logger.error(f"Failed to visualize start detection for {file_path}: {e}")
+        raise
+
+
+# =============================================================================
+# Stage 1 FT Processing Functions
+# =============================================================================
+
+def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
                expf_us: Optional[float] = None, trim: Optional[Tuple[float, float]] = None,
                start_us: Optional[float] = None, end_us: Optional[float] = None,
                window_function: Optional[str] = None, units_power: Optional[int] = None,

@@ -16,7 +16,9 @@ from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
+from .core.start_detection_settings import StartDetectionSettings
 from .preprocessing.noise_estimation import NoiseResult
+from .preprocessing.start_detection import StartDetectionResult
 from .file_manager import (
     SourceMetadata, PipelineStageTracker,
     PipelineFileError, PipelineExistsError, StageDependencyError, PipelineCorruptionError,
@@ -37,6 +39,7 @@ from ._internal.stage2b_g_impl import (
     calibrate_tau_G_impl, load_tau_G_calibration_impl,
 )
 from ._internal.shape_recommendation_impl import recommend_shape_impl
+from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.stage3_impl import (
     detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
 )
@@ -864,6 +867,118 @@ class Pipeline:
             plot_tau_distribution_from_file,
         )
         fig = plot_tau_distribution_from_file(str(self.filepath), figsize=figsize)
+        if output_file:
+            fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
+            self.logger.info(f"Plot saved to: {output_file}")
+        elif interactive:
+            import matplotlib.pyplot as plt
+            plt.show()
+        return fig
+
+    def detect_start_time(
+        self,
+        sweep_max_us: Optional[float] = None,
+        step_us: Optional[float] = None,
+        guard_margin_us: Optional[float] = None,
+        floor_factor: Optional[float] = None,
+        knee_strength_min: Optional[float] = None,
+        band: Optional[Tuple[float, float]] = None,
+        stamp: bool = True,
+        *,
+        settings: Optional[StartDetectionSettings] = None,
+    ) -> StartDetectionResult:
+        """Infer a good FID ``start_us`` from the data and stamp it.
+
+        Sweeps the FID window start time, integrates the FT magnitude over the
+        active band, and locates the chirp-end collapse; the recommended start
+        is ``chirp_end + guard_margin_us`` (the switch-bounce settling time).
+        When ``stamp=True`` (default) the recommended ``start_us`` is written to
+        the Stage 0 ``recommended_processing`` layer, so a later ``compute_ft``
+        with no explicit ``start_us`` inherits it. Requires Stage 0 (FID) only;
+        the integration band is resolved from the canonical Stage 1 trim when
+        present, else the full positive spectrum. Equivalent to the CLI
+        ``detect-start`` command and ``ftmwpipeline.api.detect_start_time``.
+
+        Parameters
+        ----------
+        sweep_max_us, step_us, guard_margin_us, floor_factor, knee_strength_min :
+            Individual overrides of the matching
+            :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
+            fields. ``guard_margin_us`` is the instrument-specific ringdown
+            margin added past the chirp end.
+        band : tuple of float, optional
+            Explicit ``(min_mhz, max_mhz)`` integration band override.
+        stamp : bool, default True
+            Whether to persist the recommended ``start_us`` to the recommended
+            layer.
+        settings : StartDetectionSettings, optional
+            A full settings bundle; the explicit kwargs above win per-field.
+
+        Returns
+        -------
+        StartDetectionResult
+            The recommendation plus diagnostics (chirp-end, knee, sweep arrays).
+        """
+        resolved = self._resolve_start_detection_settings(
+            settings,
+            sweep_max_us=sweep_max_us,
+            step_us=step_us,
+            guard_margin_us=guard_margin_us,
+            floor_factor=floor_factor,
+            knee_strength_min=knee_strength_min,
+            band=band,
+        )
+        result = detect_start_time_impl(
+            str(self.filepath), settings=resolved, stamp=stamp
+        )
+        return cast(StartDetectionResult, result["start_detection"])
+
+    @staticmethod
+    def _resolve_start_detection_settings(
+        settings: Optional[StartDetectionSettings],
+        *,
+        sweep_max_us: Optional[float],
+        step_us: Optional[float],
+        guard_margin_us: Optional[float],
+        floor_factor: Optional[float],
+        knee_strength_min: Optional[float],
+        band: Optional[Tuple[float, float]],
+    ) -> StartDetectionSettings:
+        """Overlay explicit per-knob kwargs onto a base settings bundle."""
+        from dataclasses import replace
+
+        base = settings or StartDetectionSettings()
+        overrides: Dict[str, Any] = {}
+        if sweep_max_us is not None:
+            overrides["sweep_max_us"] = float(sweep_max_us)
+        if step_us is not None:
+            overrides["step_us"] = float(step_us)
+        if guard_margin_us is not None:
+            overrides["guard_margin_us"] = float(guard_margin_us)
+        if floor_factor is not None:
+            overrides["floor_factor"] = float(floor_factor)
+        if knee_strength_min is not None:
+            overrides["knee_strength_min"] = float(knee_strength_min)
+        if band is not None:
+            overrides["band_min_mhz"] = float(band[0])
+            overrides["band_max_mhz"] = float(band[1])
+        return replace(base, **overrides) if overrides else base
+
+    def visualize_start_detection(
+        self,
+        output_file: Optional[Union[str, Path]] = None,
+        interactive: bool = True,
+        figsize: Optional[tuple] = None,
+        *,
+        settings: Optional[StartDetectionSettings] = None,
+    ) -> Any:
+        """Render the start-detection sweep diagnostic (no stamping)."""
+        from .visualization.start_detection_visualization import (
+            plot_start_detection_from_file,
+        )
+        fig = plot_start_detection_from_file(
+            str(self.filepath), settings=settings, figsize=figsize
+        )
         if output_file:
             fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
             self.logger.info(f"Plot saved to: {output_file}")

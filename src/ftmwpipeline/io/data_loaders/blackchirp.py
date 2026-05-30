@@ -228,12 +228,8 @@ class BlackChirpLoader(BaseLoader):
             # Load processing parameters
             processing_params = self._load_processing_parameters(fid_dir)
             
-            # Convert sideband string to enum
-            sideband_str = fid_params['sideband'].lower()
-            if 'lower' in sideband_str:
-                sideband = Sideband.LOWER
-            else:
-                sideband = Sideband.UPPER
+            # Convert sideband cell to enum (version-tolerant; see helper)
+            sideband = self._resolve_sideband(fid_params['sideband'])
             
             # Create source metadata
             source_metadata = self._create_source_metadata(
@@ -270,6 +266,35 @@ class BlackChirpLoader(BaseLoader):
             'fid_index': 0  # Which FID to load if multiple are available
         }
     
+    @staticmethod
+    def _resolve_sideband(value: Any):
+        """Resolve a BlackChirp ``sideband`` cell to a :class:`Sideband`.
+
+        The on-disk encoding varies across BlackChirp versions: newer files
+        store the canonical Q_ENUM name (``"LowerSideband"`` /
+        ``"UpperSideband"``), older ones the underlying enum integer
+        (``1`` = lower, ``0`` = upper, matching the ``blackchirp`` module's
+        ``_SIDEBAND_INT_MAP``). Both forms -- and numeric-string variants --
+        resolve here so either generation of fixture imports cleanly.
+        """
+        _, _, Sideband = _get_fid_classes()
+
+        # Integer enum code (int, numpy integer/float, or numeric string).
+        if not isinstance(value, str):
+            return Sideband.LOWER if int(value) == 1 else Sideband.UPPER
+        s = value.strip()
+        try:
+            return Sideband.LOWER if int(s) == 1 else Sideband.UPPER
+        except ValueError:
+            pass
+
+        low = s.lower()
+        if "lower" in low:
+            return Sideband.LOWER
+        if "upper" in low:
+            return Sideband.UPPER
+        raise LoaderError(f"Unrecognised BlackChirp sideband value: {value!r}")
+
     def _load_processing_parameters(self, fid_dir: Path):
         """Load BlackChirp processing parameters."""
         # Get runtime imports
