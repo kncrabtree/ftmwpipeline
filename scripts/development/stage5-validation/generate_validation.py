@@ -1026,6 +1026,37 @@ def _full_spectrum_model(
     return total
 
 
+def _eval_window_baseline(
+    wf: FittingResult, u_offset_mhz: np.ndarray
+) -> np.ndarray:
+    """Evaluate the persisted leakage-wing baseline ``B(u)`` on an offset grid.
+
+    Reads the per-window baseline audit trail from ``wf.quality_metrics``
+    (``baseline_applied`` / ``baseline_order`` / ``baseline_offset_scale`` /
+    ``baseline_coeff{k}_re`` / ``baseline_coeff{k}_im``) and returns the complex
+    ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` on ``u_offset_mhz`` (the signed
+    baseband offset from the window centre). Returns zeros when no baseline
+    fired -- so callers can add it unconditionally. The Stage 5 fit applies the
+    baseline jointly with the de-biased lines, so the faithful plotted model is
+    ``model_spectrum(persisted_peaks) + B(u)``.
+    """
+    qa = wf.quality_metrics or {}
+    u = np.asarray(u_offset_mhz, dtype=float)
+    if float(qa.get("baseline_applied", 0.0)) < 0.5:
+        return np.zeros(u.shape, dtype=np.complex128)
+    u_s = float(qa.get("baseline_offset_scale", 0.0))
+    order = int(qa.get("baseline_order", 0))
+    if not u_s > 0.0:
+        return np.zeros(u.shape, dtype=np.complex128)
+    x = u / u_s
+    b = np.zeros(u.shape, dtype=np.complex128)
+    for k in range(order + 1):
+        a_k = float(qa.get(f"baseline_coeff{k}_re", 0.0))
+        b_k = float(qa.get(f"baseline_coeff{k}_im", 0.0))
+        b = b + (a_k + 1j * b_k) * x ** k
+    return b
+
+
 def _plot_consolidated_detail(
     window: FitWindow,
     consolidated_wf: FittingResult,
@@ -1092,6 +1123,10 @@ def _plot_consolidated_detail(
         )
     else:
         model_slice = np.zeros_like(z_slice)
+    # The Stage 5 fit jointly fits an optional leakage-wing complex baseline
+    # with the (de-biased) lines; add it back so the plotted model + residual
+    # match the persisted fit instead of exposing the wing the baseline removed.
+    model_slice = model_slice + _eval_window_baseline(consolidated_wf, u_slice)
     # Fine-grid model for the smooth-curve overlay on row 3; residuals,
     # histograms, and quality stats continue to use ``model_slice`` (data grid).
     if f_slice.size >= 2:
@@ -1104,6 +1139,7 @@ def _plot_consolidated_detail(
             )
         else:
             model_fine = np.zeros_like(f_fine, dtype=np.complex128)
+        model_fine = model_fine + _eval_window_baseline(consolidated_wf, u_fine)
     else:
         f_fine = f_slice.copy()
         model_fine = model_slice.copy()
@@ -1769,16 +1805,32 @@ def _save_consolidated_detail(
         window, original_wf, consolidated.fit.fit, sideband, center_mhz,
         label="final",
     )
-    provenance = _peak_provenance(
-        consolidated.initial_fit, consolidated, consolidated_wf,
-        sideband, center_mhz,
-    )
+    # The live rescue re-run reproduces the *pre-baseline* fit (peaks-only,
+    # absorbing the wing). When the persisted fit applied a leakage-wing
+    # baseline, that reconstruction no longer matches the stored final state,
+    # so render the persisted fit instead: its de-biased lines plus the baseline
+    # term (added in _plot_consolidated_detail) are the faithful final model.
+    # Per-peak rescue provenance degrades to "(joint)" in that case, as in the
+    # --detail-only path.
+    baseline_applied = float(
+        (original_wf.quality_metrics or {}).get("baseline_applied", 0.0)
+    ) >= 0.5
+    if baseline_applied:
+        display_wf = original_wf
+        provenance: List[str] = []
+        final_rchi2 = float(original_wf.reduced_chi2)
+    else:
+        display_wf = consolidated_wf
+        provenance = _peak_provenance(
+            consolidated.initial_fit, consolidated, consolidated_wf,
+            sideband, center_mhz,
+        )
+        final_chi2 = float(consolidated.fit.fit.chi_squared)
+        final_n_residual = max(
+            consolidated.fit.fit.n_data - consolidated.fit.fit.n_params, 1
+        )
+        final_rchi2 = final_chi2 / final_n_residual
     lo, hi = window.freq_range
-    final_chi2 = float(consolidated.fit.fit.chi_squared)
-    final_n_residual = max(
-        consolidated.fit.fit.n_data - consolidated.fit.fit.n_params, 1
-    )
-    final_rchi2 = final_chi2 / final_n_residual
     n_rounds_total = len(consolidated.rounds)
     n_rounds_accepted = sum(1 for d in consolidated.rounds if d.accepted)
     rounds_note = (
@@ -1786,15 +1838,16 @@ def _save_consolidated_detail(
         if n_rounds_total > 0
         else "no rescue rounds"
     )
+    baseline_note = " +baseline" if baseline_applied else ""
     title = (
         f"Window {window.window_id}  [{lo:.2f}, {hi:.2f}] MHz  "
-        f"K={len(consolidated_wf.fitted_peaks)}  "
+        f"K={len(display_wf.fitted_peaks)}  "
         f"chi2_r={final_rchi2:.2f}  "
         f"tau={float(consolidated.fit.fit.tau_us):.3g} us  "
-        f"(consolidated, {rounds_note})"
+        f"(consolidated, {rounds_note}{baseline_note})"
     )
     fig = _plot_consolidated_detail(
-        window, consolidated_wf, other_window_fits,
+        window, display_wf, other_window_fits,
         frequencies=freqs_sorted,
         complex_spectrum=spec_sorted,
         rms_noise=rms_sorted,
