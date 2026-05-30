@@ -83,10 +83,42 @@ high-passed residual over the survivors:
 σ(f) = k_corr · 1.4826 · MAD( |X| − medfilt_pedestal(|X|) )   over non-line bins
 ```
 
-`k_corr` maps the magnitude-scatter to the underlying complex-Gaussian σ
-(Rician high-pedestal limit → 1.0; Rayleigh limit → 0.93); a single mid-regime
-value is used here, with a regime-aware correction left as a documented
-refinement (§7).
+`k_corr` maps the magnitude-scatter to the underlying complex-Gaussian σ.
+Because `|X|` is Rician, the correct value depends on the local regime; §4.1
+makes it region-aware.
+
+### 4.1 The region-aware (Rician) correction
+
+`|X|` is Rician, so the magnitude-scatter relates to the underlying σ by a factor
+that runs from **1.0** under strong lines (pedestal ≫ σ, Rician → Gaussian) to
+**1.47** in quiet Rayleigh regions (pedestal → 0). A single fixed `k_corr` is
+therefore wrong in a *regime-dependent* way — and wrong by ~20 % at exactly the
+high-pedestal bins under lines, where χ²_r is computed.
+
+The fix needs no frames. The dimensionless **ratio `R = scatter / pedestal`** is a
+monotone function of the regime alone, so a single 1-D lookup `C(R) = σ/scatter`
+recovers the regime-correct factor from one spectrum (both `scatter` and
+`pedestal` are already computed per window). `C(R)` is built once by simulating
+the Rician magnitude (`prototype.py`, `_build_CR`); production bakes it as
+constants.
+
+Validated against the line-free frame-difference truth across the five
+multi-frame fixtures (per-region median σ_est/truth, figure
+`fig5_region_aware.png`):
+
+| | 2638 | 360 | 1019 | 655 | all (p90/p10 spread) |
+|---|---|---|---|---|---|
+| fixed `k_corr` = 1.20 | 0.86 | 0.95 | 0.86 | **1.15** | 1.70 |
+| region-aware `C(R)` | 1.03 | 1.03 | 0.99 | **0.97** | 1.42 |
+
+The fixed factor's bias is regime-dependent — most visibly +15 % on the high-SNR
+655, where the whole pedestal problem lives — and no constant can fix both the
+Rayleigh and under-line ends at once. `C(R)` centers the clean fixtures near 1.0
+and tightens the overall band. It corrects the *level*, not the within-region
+spread (which is dominated by frame-difference truth noise on the small-batch
+fixtures and near-line pedestal residual) and does not touch the 1/√N slope (§6,
+the weak-line floor). The 2-frame fixture 363 (noisiest truth) is the one
+exception and is discounted.
 
 ## 5. Validation
 
@@ -170,8 +202,10 @@ construction); `f` is a **constant floor** — weak undetected lines that pepper
 spectrum this dense, plus pedestal residual, sitting in the bins counted as
 line-free. It does not average down, so it flattens the slope at high N.
 
-This rules out the Rician magnitude factor as the cause: `k_corr` is a constant
-multiplier and cancels in the slope. Stricter line masking shrinks the floor
+This rules out the magnitude (Rician) factor as the cause: it is a multiplicative
+regime correction and cannot remove an additive floor — so neither the fixed
+`k_corr` nor the region-aware `C(R)` (§4.1) changes the slope. Stricter line
+masking shrinks the floor
 (0.0070 → 0.0055) and steepens the slope (−0.38 → −0.41) — a partial easy win —
 but cannot remove it: on a pure-VyCN spectrum at 10⁶ SNR there are weak lines
 essentially everywhere. The principled removals are (a) the N-scaling fit itself
@@ -182,10 +216,10 @@ every less-dense fixture.
 
 ## 7. Caveats and known edges
 
-- **Magnitude-regime (Rician) factor.** `k_corr` is fixed; the true mapping from
-  |X|-scatter to σ depends on local pedestal/σ (Rayleigh 0.93 → Rician 1.0). A
-  regime-aware correction (estimate pedestal/σ locally, apply the Rician factor)
-  would remove the residual per-region level bias.
+- **Magnitude-regime (Rician) factor** is handled region-aware via `C(R)` (§4.1).
+  The residual per-region spread that remains is dominated by other effects
+  (frame-difference truth noise on small-batch fixtures, near-line pedestal
+  residual), not the factor.
 - **Frame-difference is line-free-only** (§5.1); not a substitute for a blank.
 - **Self-mask vs Stage-3 peaks.** Self-masking flags ~4 % of 655 bins as lines;
   a Stage-3 peak list would mask more and shrink the floor, but Stage 2 precedes
@@ -212,10 +246,12 @@ become a unit test for any production estimator.
 Validated; the path to production:
 
 1. **Land the estimator in `preprocessing/noise_estimation.py`** as
-   `estimate_noise_scatter` (the `prototype.py` core), returning the existing
-   `NoiseResult` (per-bin σ, line mask, diagnostics) so it is a drop-in for the
-   current `estimate_noise_adaptive`. Stage 2 precedes Stage 3, so it must remain
-   self-masking — no peak-list dependency.
+   `estimate_noise_scatter` (the `prototype.py` core, region-aware `C(R)` per
+   §4.1 — bake the `(R_TAB, C_TAB)` arrays as module constants rather than
+   simulating at import), returning the existing `NoiseResult` (per-bin σ, line
+   mask, diagnostics) so it is a drop-in for the current `estimate_noise_adaptive`.
+   Stage 2 precedes Stage 3, so it must remain self-masking — no peak-list
+   dependency.
 2. **Wire through `_internal/stage2_impl.py`** only; the dual interface
    (`Pipeline.estimate_noise` / `api.estimate_noise` / `estimate-noise` CLI) and
    the persisted `stage2_noise_result` inherit it unchanged. Run the
@@ -225,15 +261,12 @@ Validated; the path to production:
    it is pedestal-independent (varying line amplitude must not change σ̂) — this
    is the regression guard the old estimator would fail. (b) No-regression on the
    2638 fixture: Stage 3/4/5 outputs must hold (the calibration fixture; the
-   estimator reads 0.86× the frame-difference truth there vs the old 1.4×, so
-   verify the fit quality and gate firing do not shift materially).
+   region-aware estimator reads ~1.0× the frame-difference truth there vs the old
+   1.4×, so verify the fit quality and gate firing do not shift materially).
 4. **Optional frame-aware mode.** When backup frames are present, expose the
    `c/N + f²` floor-corrected estimate (§6) as a higher-accuracy option and the
    in-pipeline analogue of the blank-FID measurement.
-5. **Rician refinement (v2).** Replace the fixed `k_corr` with a regime-aware
-   correction (local pedestal/σ → Rician factor) to remove the residual per-region
-   level bias and tighten the 1/√N slope toward −0.5.
-6. **Then revisit the SNR-sensitive downstream knobs.** With honest σ flowing
+5. **Then revisit the SNR-sensitive downstream knobs.** With honest σ flowing
    through, re-assess Stage 2b/3/4 thresholds (all calibrated at max SNR ~10³)
    against the now-correct ~10⁶ SNRs — the separate SNR-aware-parameters pass.
 
