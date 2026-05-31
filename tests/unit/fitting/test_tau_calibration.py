@@ -651,3 +651,86 @@ class TestComputeShapeRecommendation:
                 sigma_time=1.0,
                 tau_bound_lo=10.0, tau_bound_hi=5.0,
             )
+
+
+class TestVectorisedShapeSolver:
+    """The default vectorised shape solver agrees with the scipy oracle.
+
+    The per-bin 3-way fit (``_run_shape_fits``) defaults to a batched
+    closed-form-log-seed + clipped-Gauss-Newton solver; ``solver='scipy'``
+    keeps the per-bin ``least_squares`` multistart loop as the reference. The
+    two must agree on the contributor pool and the per-bin Gaussian τ (the
+    quantity Stage 5 consumes for Gaussian-shape windows) on a clean
+    multi-line synthetic; the production 7-fixture cross-check lives in
+    ``dev-docs`` / ``scratch``.
+    """
+
+    @staticmethod
+    def _cal(solver: str):
+        rng = np.random.default_rng(20260531 + 7)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
+        fid, sigma_t = _synth_gaussian_fid(
+            rng=rng, n_samples=N, line_bins=line_bins,
+            line_taus_G_us=[6.0] * len(line_bins),
+            line_snrs=[200.0] * len(line_bins),
+        )
+        return stft_calibration(
+            fid, SAMPLE_DT_US, sigma_t, n_seg=DEFAULT_N_SEG,
+            shape="best_of_three", shape_solver=solver,
+        )
+
+    @pytest.fixture(scope="class")
+    def vec(self):
+        return self._cal("vectorised")
+
+    @pytest.fixture(scope="class")
+    def sci(self):
+        return self._cal("scipy")
+
+    def test_pool_and_gaussian_tau_match_scipy(self, vec, sci):
+        # Identical above-threshold non-spur classification (the cls=3 pool is
+        # set before the shape fits, but the bad-fit gate uses their RSS, so
+        # this also exercises that the vectorised RSS gates the same bins).
+        assert int((vec.classification == 3).sum()) == int(
+            (sci.classification == 3).sum()
+        )
+        # Per-bin Gaussian τ agrees where both converge to an in-bound fit.
+        fv, fs = vec.shape_fits, sci.shape_fits
+        assert fv is not None and fs is not None
+        cap = 0.7 * DEFAULT_TAU_G_BOUND_HI
+        both = (
+            fv.converged_gauss & fs.converged_gauss
+            & (fv.tau_G_gauss < cap) & (fs.tau_G_gauss < cap)
+            & np.isfinite(fv.tau_G_gauss) & np.isfinite(fs.tau_G_gauss)
+        )
+        assert both.sum() >= 5, f"too few comparable gauss bins ({int(both.sum())})"
+        rel = np.abs(fv.tau_G_gauss[both] - fs.tau_G_gauss[both]) / fs.tau_G_gauss[both]
+        assert np.median(rel) < 0.02, (
+            f"vectorised gauss τ median rel error {np.median(rel)*100:.1f}% vs scipy"
+        )
+
+    def test_recommendation_matches_scipy(self, vec, sci):
+        from ftmwpipeline.fitting.tau_calibration import (
+            _three_way_rows_from_shape_fits,
+            _shape_recommendation_bin_clean,
+        )
+        cap = 0.7 * DEFAULT_TAU_G_BOUND_HI
+
+        def _rec(cal):
+            fmol = PROBE_MHZ - cal.freq_bb_mhz  # lower sideband
+            pool = (cal.classification == 3) & (cal.snr_per_bin > 20.0)
+            idx = np.where(pool)[0]
+            rows = _three_way_rows_from_shape_fits(cal, idx, fmol, n_seg=DEFAULT_N_SEG)
+            rows = [r for r in rows if _shape_recommendation_bin_clean(r, cap)]
+            return _aggregate_shape_verdict(rows).recommended_shape
+
+        assert _rec(vec) == _rec(sci)
+
+    def test_rejects_bad_solver(self):
+        with pytest.raises(ValueError, match="solver"):
+            stft_calibration(
+                np.zeros(1000), SAMPLE_DT_US, 1.0, n_seg=DEFAULT_N_SEG,
+                shape="best_of_three", shape_solver="banana",
+            )
