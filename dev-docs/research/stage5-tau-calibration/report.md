@@ -471,6 +471,37 @@ majority, which the band-wide prior would have pulled in.
   monotonic-piecewise would benefit from finer bands; the band layout
   is configurable on the Stage 2b calibration.
 
+### Noise-reference robustness (scatter σ vs FID-tail σ_t)
+
+The STFT classifier needs a per-bin noise floor for the above-threshold
+gate. The production path uses the **FID-tail** `σ_t`
+(`estimate_sigma_time_from_tail`); `extract_tau_majority` also accepts a
+`sigma_x_full` override. Now that the Stage 2 default is the scatter
+estimator (a cleaner spectral floor, ~3× *below* the FID-tail on 2638 —
+the tail still carries decaying signal), the natural question is whether
+to feed that lower σ into the calibration. The unbiased LSQ-fit-and-
+histogram per-band τ (Stages 0-5 with the prior **off**, so it is
+independent of either STFT noise reference) settles it.
+[`lsq_noise_reference.py`](lsq_noise_reference.py) /
+[`data/lsq_noise_reference.json`](data/lsq_noise_reference.json):
+
+| band (arith. third) | LSQ unbiased (indep.) | STFT FID-tail | STFT scatter σ |
+|---|---|---|---|
+| low | 7.72 | 7.62 | 7.80 |
+| mid | 5.73 | 6.16 | 6.81 |
+| high | 4.61 | 5.29 | **7.64** |
+
+The LSQ τ decreases monotonically with frequency (the horn-coupling
+profile). The FID-tail STFT reproduces that decrease; substituting the
+lower scatter σ **inverts the high band** (7.64 vs the LSQ's 4.61, +66 %)
+— the lower floor admits weak, log-linear-high-biased bins in the sparse
+high band that drag the majority up. So the tail's residual-signal
+inflation is a *beneficial* stricter above-threshold gate, not a bug:
+it keeps only well-determined on-line bins, which is what holds the
+per-band majority on the independent reference. **The production path
+keeps `sigma_x_full=None` (FID-tail); the override is for forensic
+comparison only.**
+
 ---
 
 ## Polish design

@@ -1,16 +1,23 @@
 # Plan: Stage 2b — data-driven τ calibration via sliding-active-window STFT
 
-Status: **Phase 1 + Phase 2 research complete; Phase 3 production
-wiring (steps 1–11) shipped as `stage2b_tau_calibration` between
-Stage 2 noise and Stage 3 peak detection.** What remains: Phase 3
-step 12 (the Stage 2–5 regression validation harness against
-`scratch/stage5-validation3/`) and Phase 4 (the LSQ-fit-and-
-histogram cross-comparison, kept as a research close-out rather
-than a production prerequisite). Phase 3 and Phase 4 are swapped
-from the original ordering: the STFT prototype already passed both
-synthetic and 2638 acceptance gates, so wiring it in was the higher-
-value next step and the LSQ comparison is what closes out the "why
-STFT, not LSQ histogram?" question for the planning record.
+Status: **Complete.** Phase 1 + Phase 2 research, Phase 3 production
+wiring (`stage2b_tau_calibration` between Stage 2 noise and Stage 3 peak
+detection), and the Phase 4 LSQ cross-comparison have all shipped.
+
+- **Regression validation (Phase 3 step 12).** Carried by the committed
+  integration suite, which is re-baselined to the scatter-noise production
+  grid (the per-stage pinned-value tests for Stages 2b/3/4/5 plus the
+  cross-interface suite). The ad-hoc `scratch/stage5-validation3/` runs were
+  development-time scaffolding and are superseded — committed code no longer
+  depends on them (issue #14). The acceptance gates below recorded the 2638
+  numbers at the time they were settled.
+- **Phase 4 LSQ cross-comparison.** The "why STFT, not LSQ histogram?"
+  close-out lives in [`../research/stage5-tau-calibration/report.md`](../research/stage5-tau-calibration/report.md)
+  § "LSQ cross-validation". Its § "Noise-reference robustness" extends it to
+  the production scatter-noise model: the unbiased LSQ per-band τ (prior off,
+  independent of the STFT noise reference) tracks the FID-tail STFT and not
+  the lower scatter σ, settling that τ extraction keeps the FID-tail floor.
+  Reproduced by [`../research/stage5-tau-calibration/lsq_noise_reference.py`](../research/stage5-tau-calibration/lsq_noise_reference.py).
 
 The shipped stage is named `stage2b_tau_calibration` (a non-
 disruptive prefix between `stage2_noise_result` and `stage3_peaks`);
