@@ -1,6 +1,7 @@
 # Stage 5 — Cross-fixture validation and per-dataset calibration
 
-Status: **planning** (fixture-blocked). This document was opened after the
+Status: **planning** (fixtures acquired; premise reconciled — see the
+reconciliation section next). This document was opened after the
 residual-rescue and AICc-gate work
 ([`stage5-residual-rescue.md`](stage5-residual-rescue.md),
 [`../research/residual-rescue/report.md`](../research/residual-rescue/report.md))
@@ -9,13 +10,16 @@ calibrated to 2638-specific numbers (most importantly the
 `shape_error_epsilon` constant); those calibrations need to be
 verified or re-derived on other fixtures before any of them can be
 treated as production defaults. This document also captures the
-**lineshape model deficit** discovery from that work, since the
-same physics shows up on every FTMW instrument but with instrument-
-specific magnitude. The cross-fixture framework itself has **not run** — it is
-gated on acquiring a second fixture; the ε knob it discusses predates this doc.
+**lineshape model deficit** discovery from that work.
 
-Two parts of this doc have since been overtaken and should be read with the
-notes below:
+The keystone fixture blocker (#1) is now closed: seven same-instrument fixtures
+build canonically, two with ground truth (1512 — 115 clean vinyl-cyanide lines;
+655 — 328-line 5-species union, ~120× SNR). Validating against them **overturned
+the physics premise this doc was built on**; the reconciliation below is
+normative for execution and supersedes the ε/Voigt framing in the body.
+
+Three parts of this doc have been overtaken and should be read with the notes
+below:
 
 - The **§Dataset-wide tau calibration** and **§Broken-initial-fit /
   freeze-at-consensus** proposals are superseded by the shipped data-driven τ
@@ -23,10 +27,84 @@ notes below:
   (`τ_maj ± σ_τ`, per-band routing, bidirectional Gaussian τ penalty) — see the
   in-section notes there.
 - The **lineshape model deficit → "treat as irreducible, inflate σ via ε"**
-  framing is partly overtaken by the Gaussian shape path
-  ([`stage5-gaussian-shape.md`](stage5-gaussian-shape.md)), which *models* the
-  deficit (Gaussian envelope) rather than only absorbing it into the noise
-  floor. The Tier 1/2/3 acceptance framework below remains the valid plan.
+  framing is **superseded** (not merely "partly overtaken"): the 655 ground
+  truth shows the line shape is **Lorentzian, not Voigt** (see §Reconciliation
+  point 1). The Gaussian shape path
+  ([`stage5-gaussian-shape.md`](stage5-gaussian-shape.md)) remains available but
+  did not win spectrum-wide on 2638 (#4). The Tier 1/2/3 acceptance *framework*
+  remains the valid plan; the *lever* it calibrates has changed.
+
+## Reconciliation: 655 + 1512 supersede the ε/Voigt premise (read first)
+
+The fixtures arrived and two carry ground truth. Validating against them
+overturned or refined the three premises this doc hangs on. **Read this before
+executing the Tier 1/2/3 plan below — large parts of the `shape_error_epsilon` /
+Voigt machinery are superseded.** Provenance: `655-vycn-validation` and
+`issue1-1512-fitting-test` memories; `../research/noise-snr-scaling/report.md`.
+
+1. **The line shape is Lorentzian, not Voigt/Gaussian.** On 655 (the high-SNR
+   discriminator) `recommend_shape`'s per-line L/G/V AICc vote is **exp 88% /
+   voigt 10% / gauss 2%** (Lorentzian, margin ~86%). The "Voigt-like deficit"
+   that motivated the entire `shape_error_epsilon` apparatus (§The lineshape
+   model deficit, §How to measure ε) was a **misread**: it came from fitting
+   default-Lorentzian *without* engaging the shape recommender, plus mistaking
+   beating on a near-degenerate doublet (38847) for envelope curvature.
+   **Consequence:** `shape_error_epsilon` is most likely *not* the
+   generalisation lever this doc frames it as. Before investing in cross-fixture
+   ε calibration, re-test whether ε is needed *at all* once τ and noise are
+   correct (Theme T4 below). Treat the ε sections as historical.
+
+2. **The χ²ᵣ driver is τ-calibration bias, not an irreducible shape deficit.**
+   STFT `calibrate_tau` is biased — *low* on dense/high-SNR spectra (655:
+   `τ_maj` 2.5 µs vs ~4 µs truth from `calibrate_tau_G` and the model-free
+   demodulated envelope), and *high* on low-SNR (1512: 8.3 µs). Stage 2b's τ
+   penalty anchors on the biased value and broadens per-window models → strong-
+   line χ²ᵣ blowups (655 w224 χ²ᵣ 8.3 → 1.2 under a `tau_maj_override_us=4.0`).
+   Stage 2b shipped the *mechanism* (data-driven `τ_maj ± σ_τ`, per-band
+   routing, bidirectional Gaussian penalty) but the *bias* is the live cross-
+   fixture question: on dense spectra prefer `calibrate_tau_G` / envelope τ over
+   STFT. This is Theme T2 / issue #3 and is the biggest χ²ᵣ lever.
+
+3. **The Stage 2 noise keystone is fixed.** The "inflated noise hides the
+   deficit" failure mode is resolved: `estimate_noise_scatter` (`method=
+   "scatter"`, now default) replaced the pedestal-pinned MAD that overestimated
+   σ 5–6× at extreme SNR. With honest noise, 655's predicted χ²ᵣ rises
+   0.17 → 3.0 — exposing the τ deficit (point 2), not a shape deficit. The
+   "Symptom: chi²ᵣ median > 1.5 → investigate Stage 2 first" guidance below now
+   means *confirm the scatter estimator is engaged*, not the legacy adaptive
+   one.
+
+4. **New headline the doc omits — uncertainty honesty has two layers.** 1512's
+   stated deliverable ("does σ_f match reality?") resolves on 655 into: σ_f is an
+   honest LSQ *precision* (~1 kHz on bright lines) but there is a fixed
+   **instrument absolute-accuracy floor ~10 kHz** (655 detrended residual
+   scatter 8.9 kHz, 1512 6.6 kHz, SNR-independent) from free-running digitizer
+   clock drift (1–2 ppm, removable as a linear-in-`f_RF` slope + a constant
+   offset). σ_f *structurally cannot* capture it (σ_f ∝ 1/SNR; the floor is
+   constant), so reported σ_f is honest as precision yet 8–44× overconfident *as
+   accuracy* on strong lines. This belongs in Tier 3. **Deliverable:**
+   characterize the floor per fixture, decide whether reported uncertainty
+   should carry a quadrature instrument-accuracy term, and how to calibrate it
+   (per-acquisition ppm-slope removal). Theme T3.
+
+**What survives unchanged:** the Tier 1 (distribution health) / Tier 2 (gate
+firing) / Tier 3 (ground-truth recall/precision/amplitude/uncertainty)
+acceptance *skeleton*. What changes is the lever it calibrates: **τ-source and
+the σ_f accuracy floor, not a Voigt ε.**
+
+### Execution themes (post-reconciliation)
+
+| theme | what | issues | status |
+|---|---|---|---|
+| T1 | Cross-fixture characterization harness (tracked recipe: build→fit all 7, emit Tier-1 χ²ᵣ health + Tier-2 gate-firing + τ-source comparison + σ_f floor), → roll-up | backbone for #2/#3/#4 | unblocked |
+| T2 | τ-calibration robustness: STFT bias per fixture; production τ-source decision (STFT vs `calibrate_tau_G` vs hybrid) | #3 | unblocked; biggest χ²ᵣ lever |
+| T3 | Uncertainty honesty: precision-vs-accuracy gap on 1512+655; calibrate instrument accuracy floor; decide σ_f_floor term | #2 Tier 3 | unblocked; shippable |
+| T4 | Shape/ε reconciliation: re-run Gaussian acceptance bar on 1512/655; decide if `shape_error_epsilon` is still needed once τ+noise are right | #3/#4 | unblocked; likely retires ε |
+| T5 | Land `validate-stage5-shape-error` CLI + per-fixture `dev-docs/fixtures/<n>.md` (dual-interface) | #2 | after T1 logic proven |
+
+Blocked behind a *longer-T* / *different-instrument* fixture: **#5** (3-way
+L/G/V — 2638-class T cannot separate τ_L from τ_G) and **#6's calibration half**
+(instrument-sensitive `Y`-knobs). Do not plan these here.
 
 ## Why this matters: the per-dataset ε calibration is the generalisation lever
 
@@ -52,6 +130,13 @@ instrument grows significantly. The validation plan below is designed
 to discover which of the two regimes we're in as early as possible.
 
 ## The lineshape model deficit
+
+**Superseded — see §Reconciliation point 1.** The Voigt-like residual described
+here did not survive the 655 high-SNR ground truth once the fit engaged
+`recommend_shape` (88% Lorentzian). Retained for the reasoning and the residual-
+signature diagnostics, which are still a useful *test* — but the conclusion
+("treat as irreducible, inflate σ via ε") no longer holds; the residual it
+attributed to shape is largely the τ-bias of point 2.
 
 This is the physics finding that motivates the calibration.
 Discovered during validation of the AICc-with-`n_eff` merge gate on
@@ -100,6 +185,13 @@ irreducible-by-the-current-model and inflates the noise floor under
 existing peaks via `shape_error_epsilon`.
 
 ## How to measure ε on a new fixture
+
+**Superseded — see §Reconciliation point 1.** This procedure presumes ε is the
+per-dataset generalisation lever; the 655 ground truth indicates it is not.
+Theme T4 first re-tests whether `shape_error_epsilon` is needed at all once τ
+(T2) and the scatter noise are correct. If T4 finds ε still earns its keep on
+some fixture, this measurement procedure is the starting point — until then it
+is historical.
 
 Two related but distinct ε values; the relationship between them
 matters for porting between fixtures.
@@ -352,10 +444,18 @@ regression baseline for future Stage 5 changes.
 Once two or more fixtures are characterised, summarise the
 calibrated parameters per fixture in a single table:
 
+Post-reconciliation the per-fixture invariants worth tracking are the **τ
+source/value**, the **σ_f accuracy floor**, and the Tier-1 χ²ᵣ health — not ε
+(retained as a column only if T4 keeps it). `n_eff_kind` is now globally
+`perplexity_log1p_snr` (the `kish_mag` label is stale — see the
+`neff-kind-perplexity-global` memory), so it is no longer a per-fixture knob.
+
 ```
-fixture      instrument  ε_chi²  ε_per-bin  n_eff_kind  notes
-2638         BlackChirp  0.018   0.05       kish_mag    reference
-<next>       ...         ...     ...        ...         ...
+fixture  instrument  tau_src      tau_us  sigma_f_floor_khz  chi2r_p50  notes
+2638     BlackChirp  stage2b      ~3      (tbd)              ~1.3       reference
+655      BlackChirp  tau_G/env    ~4.0    8.9                (tbd)      STFT biased low
+1512     BlackChirp  (tbd)        ~8.3?   6.6                (tbd)      STFT biased high
+<next>   ...         ...          ...     ...                ...        ...
 ```
 
 The cross-fixture pattern is what tells us whether the gate-design
@@ -449,16 +549,19 @@ w198 follow-up open after the residual-rescue restructure.
 
 ## Next steps
 
-1. Acquire a second fixture from the same instrument (BlackChirp /
-   2638's source). Run Tier 1+2 acceptance. Confirms whether the
-   single-instrument calibration is stable across experiments.
-2. Acquire a fixture from a different instrument (if available).
-   Run Tier 1+2+3 acceptance. Tests the actual generalisation
-   hypothesis.
-3. If (1)+(2) both pass with only per-fixture ε re-calibration:
-   move ε into a `SpectrumFit.parameters` entry calibrated by a
-   small helper that runs the regression on the persisted fit at
-   import time. Self-tuning.
+Superseded by the post-reconciliation themes (T1–T5) above. The original
+sequence below is retained for the different-instrument arc, which is still
+blocked.
+
+1. ~~Acquire a second fixture from the same instrument.~~ *(Done — #1 closed;
+   seven same-instrument fixtures, two with ground truth.)*
+2. Acquire a fixture from a **different** instrument (longer `T` especially).
+   Tests the actual generalisation hypothesis and unblocks the 3-way L/G/V
+   shape test (#5) and the instrument-`Y`-knob calibration half (#6). **Still
+   blocked** — no such fixture in hand.
+3. ~~Move ε into a self-tuning `SpectrumFit.parameters` entry.~~ *Reconsidered
+   — Theme T4 first decides whether ε survives at all (655 indicates it may
+   not); do not build self-tuning for a knob that may be retired.*
 4. Land the cross-fixture validation harness as a CLI subcommand
-   (`ftmwpipeline validate-stage5-shape-error`) so any user can
-   characterise a new fixture without running the scratch scripts.
+   (`ftmwpipeline validate-stage5-shape-error`) — Theme T5, after the T1 harness
+   logic is proven across the seven fixtures.
