@@ -17,6 +17,34 @@ disruptive prefix between `stage2_noise_result` and `stage3_peaks`);
 a future broader rename pass may reshuffle the numbering for overall
 consistency.
 
+**Shape-fit solver (shipped beyond the original plan).** The per-bin
+exp/gauss/voigt fits behind the bad-fit gate and the 3-way shape
+recommendation no longer run a per-bin scipy `least_squares` multistart
+loop. They run a **batched closed-form solver**: those magnitude decays
+are linear in log space with polynomial regressors in segment-time
+(`log|S| = logC - a/τ_L - (a/τ_G)²`), so a weighted log-linear solve seeds
+all three with no trust region, then a few clipped Gauss-Newton steps refine
+toward the linear-RSS optimum the AICc verdict uses (gauss/voigt multistart
+over the τ-seed grid keeping per-bin best-RSS; exp is convex in log space →
+single start). `stft_calibration(shape_solver="scipy")` keeps the per-bin
+loop as the equivalence oracle. ~150× faster on the shape pass; across the
+seven fixtures the `recommended_shape` is unchanged and the Gaussian-twin
+`τ_G` matches the scipy reference on every fixture where it is consumed.
+
+**Noise reference for τ extraction — settled (keep the FID-tail).** The
+STFT classifier's noise floor is the FID-tail `σ_t`
+(`estimate_sigma_time_from_tail`), *not* the Stage 2 `NoiseResult`. The tail
+overestimates the true spectral noise (~3× above the scatter σ on 2638)
+because the active-region tail still carries decaying signal — but that
+inflation is *beneficial*: it acts as a stricter effective above-threshold
+gate that keeps only well-determined on-line bins. Substituting the lower
+(more physically accurate) Stage 2 scatter σ admits weak,
+log-linear-high-biased bins in sparse bands and pulls the per-band majority
+away from the independent LSQ-fit-and-histogram reference — on 2638 it
+inverts the real frequency-dependent τ trend in the high band. The
+`extract_tau_majority` `sigma_x_full` override exists for forensic
+comparison only; the production path leaves it `None`.
+
 Research artefacts: the consolidated
 [`../research/stage5-tau-calibration/report.md`](../research/stage5-tau-calibration/report.md)
 covers the method, synthetic acceptance (7 cases + pathological
