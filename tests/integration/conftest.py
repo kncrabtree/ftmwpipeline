@@ -78,22 +78,23 @@ def baseline_2638_stage1_raw(exp_2638_data_path, tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def baseline_2638_stage2(baseline_2638_stage1, tmp_path_factory):
+def baseline_2638_stage2(baseline_2638_stage1_raw, tmp_path_factory):
     """
     Build the 2638 pipeline through Stage 0+1+2 ONCE per test session by
-    copying the stage1 baseline and running estimate_noise.
+    copying the raw stage1 baseline and running estimate_noise.
 
-    Pinned to ``method="adaptive"``: the Stage 3/4/5 regression baselines that
-    build on this fixture are calibrated against the adaptive noise floor. The
-    package default is now the scatter estimator; re-deriving these downstream
-    baselines against scatter is a deliberate benchmark step (see
-    ``dev-docs/planning/stage3-snr-corner-benchmark.md``), not an incidental
-    consequence of the default flip.
+    This is the **production grid**: the raw ``zpf=0`` FT (``baseline_2638_stage1_raw``)
+    with the default ``scatter`` noise estimator. The Stage 3/4/5 regression
+    baselines that chain off this fixture are calibrated against it. (Earlier
+    these baselines built on the legacy ``zpf=2`` ``standard_ft_params`` grid +
+    ``method="adaptive"`` as a frozen reference; they were re-derived onto the
+    production grid in the Stage 3 corner benchmark -- see
+    ``dev-docs/research/stage3-snr-corner/report.md``.)
     """
     tmp = tmp_path_factory.mktemp("baseline_stage2")
     fp = tmp / "baseline_2638_stage2.ftmw"
-    shutil.copy(baseline_2638_stage1, fp)
-    ftmw.estimate_noise(fp, method="adaptive")
+    shutil.copy(baseline_2638_stage1_raw, fp)
+    ftmw.estimate_noise(fp)
     return fp
 
 

@@ -1,5 +1,36 @@
 # Stage 3 cross-fixture benchmark + the SNR "corner" detection threshold
 
+## Outcome (executed)
+
+Findings and the shipped architecture are written up in
+[`../research/stage3-snr-corner/report.md`](../research/stage3-snr-corner/report.md).
+Headlines:
+
+- **The corner is global, not SNR-adaptive.** The empirical knee on `N(s)` sits
+  at 3.0–3.4 across all seven fixtures (135× max-SNR span); the frozen
+  promotion 3.0 is now a principled value. The Rayleigh model-crossover locator
+  is invalid here — the line-free exceedance is ~6× heavier-tailed than Rayleigh
+  (coherent leakage, not thermal; verified against a white-noise control).
+- **The estimator mismatch was resolved, but not by a blind swap.** Stage 3's
+  internal noise is now the honest `scatter` estimator (consistency with
+  persisted Stage 2), made safe by a new **continuous leakage-aware floor on the
+  primary pass** (`min_snr·σ + k·(S_coh/√M)·σ`, `k = primary_leakage_floor_k =
+  1.0`, fixed by a cross-fixture k sweep + direct visual ground truth on 1019).
+  A hard `S_coh` mask was ruled out — it would delete every strong line (they
+  generate the coherence). 2638 Stage 5 A/B shows no downstream regression.
+- **The Stage 3/4/5 integration baselines were re-derived onto the production
+  grid** (raw `zpf=0` + scatter): `baseline_2638_stage2` repointed to
+  `baseline_2638_stage1_raw` + scatter.
+
+Still open (tracked in the report): re-derive the orphaned gap-mask `S_coh`
+threshold 8 against the Stage-5 yardstick (D8's bimodal valley is gone on the
+production grid); validate `k` on the other fixtures; the Stage 5 χ²-noise
+`estimate_noise_adaptive` call (D9) is a separate axis.
+
+The original brief follows.
+
+---
+
 Next-session brief. Two coupled goals:
 
 1. **Benchmark Stage 3 peak detection across all seven fixtures** now that the

@@ -336,6 +336,12 @@ def test_tau_penalty_lambda_drives_real_fit(
     def _fit(tag: str, lam: float) -> list[tuple[int, float]]:
         variant = tmp_path / f"{tag}.ftmw"
         shutil.copyfile(baseline_2638_stage4, variant)
+        # The τ penalty anchors on the Stage 2b STFT τ_maj. On the canonical
+        # raw FT (expf_us=None) there is no apodization τ to fall back on, so
+        # without Stage 2b the penalty has no anchor and λ is inert. Run
+        # calibrate_tau (the production recipe) so τ_maj differs from the free
+        # per-window optimum and λ actually bites.
+        ftmw.calibrate_tau(str(variant))
         s = _base_settings()
         s.tau.tau_penalty_lambda = lam
         ftmw.fit_peaks(str(variant), settings=s)

@@ -322,6 +322,7 @@ def detect_peaks(
     gap_sg_window: Optional[int] = None,
     sg_order: int = 3,
     leakage_intervals: Optional[List[Tuple[int, int]]] = None,
+    primary_leakage_amp: Optional[np.ndarray] = None,
     min_exclusion_mhz: float = 0.0,
     run_gap_pass: bool = True,
 ) -> List[Peak]:
@@ -367,6 +368,18 @@ def detect_peaks(
         :func:`~ftmwpipeline.preprocessing.leakage.leakage_touched_intervals`.
         Gap-pass detections inside these runs are dropped as sidelobes. If
         None, the gap pass is masked only by ``min_exclusion_mhz``.
+    primary_leakage_amp : np.ndarray, optional
+        Per-bin additive amplitude (same shape as ``primary_sd``) raising the
+        primary-pass detection floor to ``min_snr * primary_sd +
+        primary_leakage_amp`` in regions carrying coherent truncation leakage.
+        It is the local leakage estimate ``k * (S_coh / sqrt(M)) * primary_sd``
+        (a per-bin coherent-leakage amplitude scaled by ``k``); a genuine line
+        towers over it while a strong line's skirt ripple -- which *is* that
+        leakage -- does not, so the primary pass stops re-detecting the skirt
+        as weak lines once its noise floor is honest (scatter). Unlike the
+        ``leakage_intervals`` hard mask (gap pass only), this is a continuous
+        floor and never removes the coherence-generating lines themselves. If
+        None, the primary floor is the plain ``min_snr * primary_sd``.
     min_exclusion_mhz : float, default 0.0
         Minimum exclusion half-width around every primary peak.
     run_gap_pass : bool, default True
@@ -424,12 +437,15 @@ def detect_peaks(
     by_index: Dict[int, Peak] = {}
 
     # --- Pass 1: positions from the apodized primary spectrum ------------
+    primary_thresh = min_snr * primary_sd
+    if primary_leakage_amp is not None:
+        primary_thresh = primary_thresh + np.asarray(primary_leakage_amp, dtype=float)
     primary = locate_peaks(
         primary_freq,
         primary_mag,
         window=sg_window,
         order=sg_order,
-        thresh=min_snr * primary_sd,
+        thresh=primary_thresh,
     )
     exclusions: List[Tuple[float, float]] = []
     if len(primary.freqs):

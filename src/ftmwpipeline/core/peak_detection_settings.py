@@ -105,12 +105,18 @@ class PrimaryPassSubSettings:
     The primary pass runs at zpf=``detection_zpf`` on a strongly-windowed
     spectrum (``primary_window``) to suppress truncation sidelobes;
     ``min_exclusion_mhz`` is the half-width around every primary detection
-    that the gap pass excludes from its mask.
+    that the gap pass excludes from its mask. ``primary_leakage_floor_k``
+    scales the continuous leakage-aware detection floor ``k·(S_coh/√M)·σ``
+    added to the primary-pass threshold so that a strong line's coherent
+    skirt ripple is not re-detected as weak lines (the primary pass has no
+    hard leakage mask -- a hard mask would delete the strong lines that
+    generate the coherence). ``0`` disables the floor.
     """
 
     primary_window: Optional[str] = None
     min_exclusion_mhz: Optional[float] = None
     detection_zpf: Optional[int] = None
+    primary_leakage_floor_k: Optional[float] = None
 
 
 @dataclass
@@ -181,6 +187,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "primary_window": "blackmanharris",
         "min_exclusion_mhz": 0.0,
         "detection_zpf": 1,
+        "primary_leakage_floor_k": 1.0,
     },
     "gap_pass": {
         "run_gap_pass": True,
