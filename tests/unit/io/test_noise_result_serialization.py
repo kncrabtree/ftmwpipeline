@@ -903,6 +903,59 @@ class TestIntegrationWithRealData:
         
 
 
+class TestScatterEstimatorRoundTrip:
+    """The scatter estimator's σ is not reproducible from the moving-median
+    convolution path; serialization must store and restore it verbatim."""
+
+    def _scatter_spectrum(self):
+        n = 20000
+        frequencies = np.linspace(26500, 40000, n)
+        rng = np.random.default_rng(0)
+        spec = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * 0.5
+        idx = np.arange(n)
+        for pos in (n // 4, n // 2, 3 * n // 4):
+            spec += 60.0 * 3.0 / ((idx - pos) + 1j * 3.0)
+        return frequencies, np.abs(spec)
+
+    def test_scatter_rms_is_stored_verbatim(self, tmp_path):
+        from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
+
+        frequencies, magnitudes = self._scatter_spectrum()
+        original = estimate_noise_scatter(frequencies, magnitudes)
+
+        path = tmp_path / "scatter_roundtrip.h5"
+        with h5py.File(path, "w") as h5f:
+            grp = h5f.create_group("noise_result")
+            save_noise_result_to_hdf5(original, frequencies, magnitudes, grp)
+            # The verbatim σ dataset is what makes the round-trip exact.
+            assert "rms_noise_full" in grp
+
+        with h5py.File(path, "r") as h5f:
+            restored = load_noise_result_from_hdf5(
+                h5f["noise_result"], frequencies, magnitudes
+            )
+
+        # Exact (not approximate) round-trip: the moving-median reconstruction
+        # would have produced a different, adaptive-style σ here.
+        np.testing.assert_array_equal(restored.rms_noise, original.rms_noise)
+        np.testing.assert_array_equal(restored.noise_mask, original.noise_mask)
+        assert restored.bin_info["algorithm"] == original.bin_info["algorithm"]
+
+    def test_adaptive_path_stores_no_verbatim_array(self, tmp_path):
+        """The adaptive estimator keeps its compact convolution-reconstruction
+        storage — no full σ array — so its footprint is unchanged."""
+        from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+
+        frequencies, magnitudes = self._scatter_spectrum()
+        original = estimate_noise_adaptive(frequencies, magnitudes)
+
+        path = tmp_path / "adaptive_roundtrip.h5"
+        with h5py.File(path, "w") as h5f:
+            grp = h5f.create_group("noise_result")
+            save_noise_result_to_hdf5(original, frequencies, magnitudes, grp)
+            assert "rms_noise_full" not in grp
+
+
 if __name__ == "__main__":
     # Run tests with verbose output
     pytest.main([__file__, "-v", "--tb=short"])

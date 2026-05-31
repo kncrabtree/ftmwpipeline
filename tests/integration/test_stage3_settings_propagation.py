@@ -11,9 +11,9 @@ These tests intercept the relevant call sites from
 :class:`PeakDetectionSettings` field reaches its kernel's kwargs bag.
 Some fields land directly on ``preprocessing.peak_detection.detect_peaks``;
 others drive the orchestrator-internal helpers ``_spectrum_from_fid``,
-``_mf_gap_spectrum``, ``_grid_aware_sg_window``, or the
-``leakage_touched_intervals`` call. Each test mocks the right hook for
-its field.
+``_mf_gap_spectrum``, ``_grid_aware_sg_window``, or the leakage-aware
+detection floor (``primary_leakage_amp`` / ``gap_leakage_amp``). Each test
+mocks the right hook for its field.
 """
 
 from __future__ import annotations
@@ -282,27 +282,50 @@ class TestSavgolCoverage:
         assert captured["calls"][0]["kwargs"]["min_window"] == 9
 
 
-class TestLeakageThreshold:
-    """``gap_pass.gap_mask_edge_threshold`` drives the
-    ``leakage_touched_intervals`` call."""
+class TestLeakageFloor:
+    """``primary_pass.primary_leakage_floor_k`` and
+    ``gap_pass.gap_leakage_floor_k`` scale the continuous leakage-aware floors
+    forwarded to ``detect_peaks`` as the per-bin ``primary_leakage_amp`` /
+    ``gap_leakage_amp`` arrays (k=0 disables the floor -> all-zero array)."""
 
-    def test_gap_mask_edge_threshold_reaches_leakage(
+    def _kernel_kwargs(
+        self, variant: Path, monkeypatch: pytest.MonkeyPatch,
+        primary_k: float, gap_k: float,
+    ) -> Dict[str, Any]:
+        mock, captured = _intercept_kernel()
+        monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
+        s = PeakDetectionSettings()
+        s.primary_pass.primary_leakage_floor_k = primary_k
+        s.gap_pass.gap_leakage_floor_k = gap_k
+        with pytest.raises(_CalibIntercepted):
+            stage3_impl.detect_peaks_impl(str(variant), settings=s)
+        return captured["kwargs"]
+
+    def test_floor_k_scales_leakage_amp(
         self, baseline_2638_stage2: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "gap_mask_threshold.ftmw"
-        shutil.copyfile(baseline_2638_stage2, variant)
-        spy, captured = _spy(stage3_impl.leakage_touched_intervals)
-        monkeypatch.setattr(stage3_impl, "leakage_touched_intervals", spy)
-        mock, _ = _intercept_kernel()
-        monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
+        import numpy as np
 
-        s = PeakDetectionSettings()
-        s.gap_pass.gap_mask_edge_threshold = 5.5
-        with pytest.raises(_CalibIntercepted):
-            stage3_impl.detect_peaks_impl(str(variant), settings=s)
-        assert captured["calls"], "spy never fired"
-        assert captured["calls"][0]["kwargs"]["threshold"] == 5.5
+        off_file = tmp_path / "floor_off.ftmw"
+        shutil.copyfile(baseline_2638_stage2, off_file)
+        off = self._kernel_kwargs(off_file, monkeypatch, 0.0, 0.0)
+        assert np.all(np.asarray(off["primary_leakage_amp"]) == 0.0), (
+            "primary_leakage_floor_k=0 must yield an all-zero floor"
+        )
+        assert np.all(np.asarray(off["gap_leakage_amp"]) == 0.0), (
+            "gap_leakage_floor_k=0 must yield an all-zero floor"
+        )
+
+        on_file = tmp_path / "floor_on.ftmw"
+        shutil.copyfile(baseline_2638_stage2, on_file)
+        on = self._kernel_kwargs(on_file, monkeypatch, 5.0, 5.0)
+        assert np.asarray(on["primary_leakage_amp"]).max() > 0.0, (
+            "primary_leakage_floor_k>0 must raise the floor where leakage exists"
+        )
+        assert np.asarray(on["gap_leakage_amp"]).max() > 0.0, (
+            "gap_leakage_floor_k>0 must raise the floor where leakage exists"
+        )
 
 
 class TestMutualExclusion:

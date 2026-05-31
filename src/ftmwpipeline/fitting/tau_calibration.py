@@ -71,9 +71,11 @@ DEFAULT_POLISH_SNR_CAP = 9.0
 # window fit -- a Voigt decomposition would extract τ_G as the Gaussian
 # component *after* the Lorentzian decay is absorbed into a separate τ_L,
 # which over-estimates the envelope's effective Gaussian τ relative to
-# what the window fit recovers. ``_voigt_residuals`` and
-# ``_fit_voigt_nls_multistart`` are exported alongside for the 3-way
-# L/G/V shape-recommendation comparison.
+# what the window fit recovers. The per-bin exp / gauss / voigt fits are
+# batched (closed-form log-linear seed + clipped Gauss-Newton, see
+# ``_vectorised_shape_fit``); ``_voigt_residuals`` /
+# ``_fit_voigt_nls_multistart`` and their siblings are the scipy reference
+# the ``solver='scipy'`` path uses as the equivalence oracle.
 DEFAULT_TAU_G_SNR_MIN = 20.0
 DEFAULT_TAU_G_BOUND_LO = 0.5
 DEFAULT_TAU_G_BOUND_HI = 100.0
@@ -788,6 +790,239 @@ class _STFTClassification:
 
 _VALID_CLASSIFIER_SHAPES = frozenset(("lorentzian", "gaussian", "best_of_three"))
 
+# Solver behind the per-bin shape gate. ``"vectorised"`` (default) uses a
+# closed-form weighted log-linear seed plus a few clipped Gauss-Newton steps,
+# batched across every masked bin -- exp/gauss/voigt magnitude decays are
+# linear in log space with polynomial regressors in segment-time
+# (``log|S| = logC - a/tau_L - (a/tau_G)^2``), so the seed is one batched
+# normal-equations solve and needs no trust region. ``"scipy"`` runs the
+# per-bin ``least_squares`` multistart loop and is retained as the reference
+# oracle (``TestVectorisedShapeSolver`` asserts the two agree). The vectorised
+# path reproduces the recommended_shape on all production fixtures and the
+# Gaussian-twin majority to <0.1 %, ~1000x faster; its only systematic
+# departure is voigt vote-mass on near-tie bins (diagnostic-only -- voigt never
+# enters the recommendation).
+_VALID_SHAPE_SOLVERS = frozenset(("vectorised", "scipy"))
+_SHAPE_SOLVER_DEFAULT = "vectorised"
+_SHAPE_GN_ITERS = 3
+
+
+def _loglin_seed_batched(
+    mag: np.ndarray,
+    a: np.ndarray,
+    basis: Sequence[np.ndarray],
+) -> np.ndarray:
+    """Weighted (``w=|S|^2``) log-linear multi-regression, batched over bins.
+
+    Solves ``log|S_n| = b0 + sum_j b_j * basis_j(a_n)`` for every column of
+    ``mag`` in one batched normal-equations solve. Returns coefs ``(k, m)``
+    with ``k = 1 + len(basis)`` (row 0 is the intercept ``log C``). Columns
+    whose normal matrix is singular come back as NaN.
+    """
+    n_seg, m = mag.shape
+    y = np.log(np.clip(mag, 1e-300, None))
+    w = mag * mag
+    cols = [np.ones(n_seg, dtype=float)] + [np.asarray(b, dtype=float) for b in basis]
+    k = len(cols)
+    A = np.empty((m, k, k), dtype=float)
+    rhs = np.empty((m, k), dtype=float)
+    for i in range(k):
+        wi = w * cols[i][:, None]
+        rhs[:, i] = (wi * y).sum(axis=0)
+        for j in range(k):
+            A[:, i, j] = (wi * cols[j][:, None]).sum(axis=0)
+    out = np.full((m, k), np.nan, dtype=float)
+    ok = np.abs(np.linalg.det(A)) > 1e-300
+    if ok.any():
+        out[ok] = np.linalg.solve(A[ok], rhs[ok][..., None])[..., 0]
+    transposed: np.ndarray = out.T
+    return transposed
+
+
+def _gn_polish_batched(
+    mag: np.ndarray,
+    a: np.ndarray,
+    params: List[np.ndarray],
+    model: str,
+    *,
+    n_iter: int,
+    tau_lo: float,
+    tau_hi: float,
+) -> List[np.ndarray]:
+    """``n_iter`` clipped Gauss-Newton steps in linear ``|S|`` space, batched.
+
+    ``model='exp'`` -> ``params=(C, tau_L)``; ``'gauss'`` -> ``(C, tau_G)``;
+    ``'voigt'`` -> ``(C, tau_L, tau_G)``. Each step clips the tau columns to
+    ``[tau_lo, tau_hi]`` *before* forming the Jacobian, so the
+    ``2 a^2 / tau^3`` term cannot overflow (the failure mode that defeated an
+    earlier hand-rolled batched solver); ``C`` is floored at 0. Columns with a
+    degenerate Hessian are left unchanged.
+    """
+    p = [np.asarray(x, dtype=float).copy() for x in params]
+    aa = a[:, None]
+    m = mag.shape[1]
+    for _ in range(int(n_iter)):
+        for ci in range(1, len(p)):
+            p[ci] = np.clip(p[ci], tau_lo, tau_hi)
+        C = p[0]
+        if model == "exp":
+            tL = p[1]
+            e = np.exp(-aa / tL[None])
+            cols = [e, C[None] * aa / tL[None] ** 2 * e]
+        elif model == "gauss":
+            tG = p[1]
+            e = np.exp(-((aa / tG[None]) ** 2))
+            cols = [e, C[None] * 2.0 * aa**2 / tG[None] ** 3 * e]
+        else:  # voigt
+            tL, tG = p[1], p[2]
+            e = np.exp(-aa / tL[None] - (aa / tG[None]) ** 2)
+            cols = [
+                e,
+                C[None] * aa / tL[None] ** 2 * e,
+                C[None] * 2.0 * aa**2 / tG[None] ** 3 * e,
+            ]
+        r = mag - C[None] * e
+        k = len(cols)
+        JtJ = np.empty((m, k, k), dtype=float)
+        Jtr = np.empty((m, k), dtype=float)
+        for i in range(k):
+            Jtr[:, i] = (cols[i] * r).sum(axis=0)
+            for j in range(k):
+                JtJ[:, i, j] = (cols[i] * cols[j]).sum(axis=0)
+        ok = np.abs(np.linalg.det(JtJ)) > 1e-300
+        if ok.any():
+            d = np.linalg.solve(JtJ[ok], Jtr[ok][..., None])[..., 0]
+            for ci in range(k):
+                p[ci][ok] = p[ci][ok] + d[:, ci]
+        p[0] = np.maximum(p[0], 0.0)
+    for ci in range(1, len(p)):
+        p[ci] = np.clip(p[ci], tau_lo, tau_hi)
+    return p
+
+
+def _vectorised_shape_fit(
+    mag_masked: np.ndarray,
+    a: np.ndarray,
+    model: str,
+    *,
+    tau_lo: float,
+    tau_hi: float,
+    tau_seeds: Sequence[float] = (),
+    n_iter: int = _SHAPE_GN_ITERS,
+) -> Dict[str, np.ndarray]:
+    """Closed-form log-linear seed + GN polish for one model on masked bins.
+
+    Returns per-masked-bin arrays: ``C``, ``rss`` (linear-space), ``converged``
+    (finite + positive amplitude), and ``tau_L`` and/or ``tau_G``. A
+    wrong-sign log-linear coefficient (no decay) seeds the tau at ``tau_hi``;
+    those saturated bins stay in the result and are dropped downstream by the
+    tau-cap clean gate, mirroring the scipy path.
+
+    ``exp`` is convex in log space (one basin), so the closed-form seed is the
+    global optimum and no multistart is needed -- matching the scipy oracle's
+    single-start exp polish. ``gauss`` / ``voigt`` add the ``tau_seeds`` grid
+    as extra GN start points and keep the per-bin best-RSS basin, reproducing
+    the scipy multistart's basin selection on poorly-conditioned (e.g.
+    Lorentzian-data) bins where the nonlinear-tau objective is multi-basin.
+    """
+    aa = a[:, None]
+    if model == "exp":
+        b = _loglin_seed_batched(mag_masked, a, [a])
+        C = np.exp(np.clip(b[0], -50.0, 50.0))
+        slope = b[1]
+        tL = np.where(slope < 0, -1.0 / np.where(slope < 0, slope, -1.0), tau_hi)
+        tL = np.clip(tL, tau_lo, tau_hi)
+        C, tL = _gn_polish_batched(
+            mag_masked,
+            a,
+            [C, tL],
+            "exp",
+            n_iter=n_iter,
+            tau_lo=tau_lo,
+            tau_hi=tau_hi,
+        )
+        pred = C[None] * np.exp(-aa / tL[None])
+        rss = ((mag_masked - pred) ** 2).sum(axis=0)
+        conv = np.isfinite(rss) & np.isfinite(C) & np.isfinite(tL) & (C > 0)
+        return dict(tau_L=tL, C=C, rss=rss, converged=conv)
+
+    m = mag_masked.shape[1]
+    seeds = [float(s) for s in tau_seeds]
+    if model == "gauss":
+        b = _loglin_seed_batched(mag_masked, a, [a**2])
+        C0 = np.exp(np.clip(b[0], -50.0, 50.0))
+        coef = b[1]
+        tG0 = np.where(coef < 0, 1.0 / np.sqrt(np.where(coef < 0, -coef, 1.0)), tau_hi)
+        tG0 = np.clip(tG0, tau_lo, tau_hi)
+        best_rss = np.full(m, np.inf)
+        best_C = C0.copy()
+        best_tG = tG0.copy()
+        for tg_start in [tG0] + [np.full(m, np.clip(s, tau_lo, tau_hi)) for s in seeds]:
+            C, tG = _gn_polish_batched(
+                mag_masked,
+                a,
+                [C0.copy(), tg_start.copy()],
+                "gauss",
+                n_iter=n_iter,
+                tau_lo=tau_lo,
+                tau_hi=tau_hi,
+            )
+            pred = C[None] * np.exp(-((aa / tG[None]) ** 2))
+            rss = ((mag_masked - pred) ** 2).sum(axis=0)
+            take = rss < best_rss
+            best_rss = np.where(take, rss, best_rss)
+            best_C = np.where(take, C, best_C)
+            best_tG = np.where(take, tG, best_tG)
+        conv = (
+            np.isfinite(best_rss)
+            & np.isfinite(best_C)
+            & np.isfinite(best_tG)
+            & (best_C > 0)
+        )
+        return dict(tau_G=best_tG, C=best_C, rss=best_rss, converged=conv)
+
+    # voigt
+    b = _loglin_seed_batched(mag_masked, a, [a, a**2])
+    C0 = np.exp(np.clip(b[0], -50.0, 50.0))
+    c1, c2 = b[1], b[2]
+    tL0 = np.clip(
+        np.where(c1 < 0, -1.0 / np.where(c1 < 0, c1, -1.0), tau_hi), tau_lo, tau_hi
+    )
+    tG0 = np.clip(
+        np.where(c2 < 0, 1.0 / np.sqrt(np.where(c2 < 0, -c2, 1.0)), tau_hi),
+        tau_lo,
+        tau_hi,
+    )
+    best_rss = np.full(m, np.inf)
+    best_C = C0.copy()
+    best_tL = tL0.copy()
+    best_tG = tG0.copy()
+    for tg_start in [tG0] + [np.full(m, np.clip(s, tau_lo, tau_hi)) for s in seeds]:
+        C, tL, tG = _gn_polish_batched(
+            mag_masked,
+            a,
+            [C0.copy(), tL0.copy(), tg_start.copy()],
+            "voigt",
+            n_iter=n_iter,
+            tau_lo=tau_lo,
+            tau_hi=tau_hi,
+        )
+        pred = C[None] * np.exp(-aa / tL[None] - (aa / tG[None]) ** 2)
+        rss = ((mag_masked - pred) ** 2).sum(axis=0)
+        take = rss < best_rss
+        best_rss = np.where(take, rss, best_rss)
+        best_C = np.where(take, C, best_C)
+        best_tL = np.where(take, tL, best_tL)
+        best_tG = np.where(take, tG, best_tG)
+    conv = (
+        np.isfinite(best_rss)
+        & np.isfinite(best_C)
+        & np.isfinite(best_tL)
+        & np.isfinite(best_tG)
+        & (best_C > 0)
+    )
+    return dict(tau_L=best_tL, tau_G=best_tG, C=best_C, rss=best_rss, converged=conv)
+
 
 def _run_shape_fits(
     shape: str,
@@ -800,20 +1035,23 @@ def _run_shape_fits(
     tau_lo: float,
     tau_hi: float,
     tau_seeds: Sequence[float],
+    solver: str = _SHAPE_SOLVER_DEFAULT,
 ) -> Optional[_ShapeFitResults]:
-    """Per-bin NLS fits on the above-threshold non-spur pool for shape-aware gating.
+    """Per-bin shape fits on the above-threshold non-spur pool for the gate.
 
     For ``shape='lorentzian'`` returns ``None`` -- the vectorised log-linear
     seed in the parent classifier already covers the gate. For ``'gaussian'``
-    runs ``(exp_nls, gauss_nls)`` per bin in ``mask``. For ``'best_of_three'``
-    runs ``(exp_nls, gauss_nls, voigt_nls)`` per bin. ``tau_seed_arr`` /
-    ``C_seed_arr`` are the log-linear exp seeds from the classifier's
-    vectorised first pass; the exp NLS polishes from there and seeds the
-    gauss / voigt fits.
+    fits ``(exp, gauss)`` per masked bin; for ``'best_of_three'`` fits
+    ``(exp, gauss, voigt)``.
 
-    Output arrays are full-length (``n_bins``) with ``NaN`` /
-    ``False`` outside the mask. ``np.fmin``-friendly NaNs are the
-    intentional sentinel so the gate-selection helper can fall back per-bin.
+    ``solver`` selects the fitting backend: ``"vectorised"`` (default) uses the
+    batched closed-form-log-seed + clipped-Gauss-Newton path
+    (:func:`_vectorised_shape_fit`); ``"scipy"`` runs the per-bin
+    ``least_squares`` multistart loop and is kept as the equivalence oracle.
+
+    Output arrays are full-length (``n_bins``) with ``NaN`` / ``False`` outside
+    the mask -- the gate-selection helper treats the NaNs as fail-the-gate
+    sentinels.
     """
     if shape == "lorentzian":
         return None
@@ -821,6 +1059,21 @@ def _run_shape_fits(
         raise ValueError(
             f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
             f"got {shape!r}"
+        )
+    if solver not in _VALID_SHAPE_SOLVERS:
+        raise ValueError(
+            f"solver must be one of {sorted(_VALID_SHAPE_SOLVERS)}; got {solver!r}"
+        )
+
+    if solver == "vectorised":
+        return _run_shape_fits_vectorised(
+            shape,
+            mag,
+            a_centers_us,
+            mask=mask,
+            tau_lo=tau_lo,
+            tau_hi=tau_hi,
+            tau_seeds=tau_seeds,
         )
 
     n_bins = mag.shape[1]
@@ -917,6 +1170,123 @@ def _run_shape_fits(
     )
 
 
+def _scatter_full(n_bins: int, bin_idxs: np.ndarray, masked: np.ndarray,
+                  *, fill: float) -> np.ndarray:
+    """Place a masked-bin array back onto the full bin grid, ``fill`` elsewhere."""
+    full: np.ndarray = np.full(n_bins, fill, dtype=float)
+    if bin_idxs.size:
+        full[bin_idxs] = masked
+    return full
+
+
+def _run_shape_fits_vectorised(
+    shape: str,
+    mag: np.ndarray,
+    a_centers_us: np.ndarray,
+    *,
+    mask: np.ndarray,
+    tau_lo: float,
+    tau_hi: float,
+    tau_seeds: Sequence[float] = (),
+) -> _ShapeFitResults:
+    """Batched closed-form-seed + GN-polish backend for :func:`_run_shape_fits`.
+
+    Fits every masked bin at once (no per-bin Python loop). Mirrors the scipy
+    backend's :class:`_ShapeFitResults` contract: full-length arrays with
+    ``NaN`` / ``False`` outside the mask.
+    """
+    n_bins = mag.shape[1]
+    bin_idxs = np.where(mask)[0]
+    a = np.asarray(a_centers_us, dtype=float)
+
+    def _nan() -> np.ndarray:
+        out: np.ndarray = np.full(n_bins, np.nan, dtype=float)
+        return out
+
+    def _false() -> np.ndarray:
+        out: np.ndarray = np.zeros(n_bins, dtype=bool)
+        return out
+
+    if bin_idxs.size == 0:
+        common = dict(
+            tau_L_exp=_nan(),
+            C_exp=_nan(),
+            rss_exp_nls=_nan(),
+            converged_exp=_false(),
+            tau_G_gauss=_nan(),
+            C_gauss=_nan(),
+            rss_gauss=_nan(),
+            converged_gauss=_false(),
+        )
+        if shape == "gaussian":
+            return _ShapeFitResults(shape="gaussian", **common)
+        return _ShapeFitResults(
+            shape="best_of_three",
+            **common,
+            tau_L_voigt=_nan(),
+            tau_G_voigt=_nan(),
+            C_voigt=_nan(),
+            rss_voigt=_nan(),
+            converged_voigt=_false(),
+        )
+
+    mag_m: np.ndarray = mag[:, bin_idxs].astype(float)
+    exp = _vectorised_shape_fit(mag_m, a, "exp", tau_lo=tau_lo, tau_hi=tau_hi)
+    gauss = _vectorised_shape_fit(
+        mag_m,
+        a,
+        "gauss",
+        tau_lo=tau_lo,
+        tau_hi=tau_hi,
+        tau_seeds=tau_seeds,
+    )
+
+    conv_e = _false()
+    conv_e[bin_idxs] = exp["converged"]
+    conv_g = _false()
+    conv_g[bin_idxs] = gauss["converged"]
+
+    if shape == "gaussian":
+        return _ShapeFitResults(
+            shape="gaussian",
+            tau_L_exp=_scatter_full(n_bins, bin_idxs, exp["tau_L"], fill=np.nan),
+            C_exp=_scatter_full(n_bins, bin_idxs, exp["C"], fill=np.nan),
+            rss_exp_nls=_scatter_full(n_bins, bin_idxs, exp["rss"], fill=np.nan),
+            converged_exp=conv_e,
+            tau_G_gauss=_scatter_full(n_bins, bin_idxs, gauss["tau_G"], fill=np.nan),
+            C_gauss=_scatter_full(n_bins, bin_idxs, gauss["C"], fill=np.nan),
+            rss_gauss=_scatter_full(n_bins, bin_idxs, gauss["rss"], fill=np.nan),
+            converged_gauss=conv_g,
+        )
+
+    voigt = _vectorised_shape_fit(
+        mag_m,
+        a,
+        "voigt",
+        tau_lo=tau_lo,
+        tau_hi=tau_hi,
+        tau_seeds=tau_seeds,
+    )
+    conv_v = _false()
+    conv_v[bin_idxs] = voigt["converged"]
+    return _ShapeFitResults(
+        shape="best_of_three",
+        tau_L_exp=_scatter_full(n_bins, bin_idxs, exp["tau_L"], fill=np.nan),
+        C_exp=_scatter_full(n_bins, bin_idxs, exp["C"], fill=np.nan),
+        rss_exp_nls=_scatter_full(n_bins, bin_idxs, exp["rss"], fill=np.nan),
+        converged_exp=conv_e,
+        tau_G_gauss=_scatter_full(n_bins, bin_idxs, gauss["tau_G"], fill=np.nan),
+        C_gauss=_scatter_full(n_bins, bin_idxs, gauss["C"], fill=np.nan),
+        rss_gauss=_scatter_full(n_bins, bin_idxs, gauss["rss"], fill=np.nan),
+        converged_gauss=conv_g,
+        tau_L_voigt=_scatter_full(n_bins, bin_idxs, voigt["tau_L"], fill=np.nan),
+        tau_G_voigt=_scatter_full(n_bins, bin_idxs, voigt["tau_G"], fill=np.nan),
+        C_voigt=_scatter_full(n_bins, bin_idxs, voigt["C"], fill=np.nan),
+        rss_voigt=_scatter_full(n_bins, bin_idxs, voigt["rss"], fill=np.nan),
+        converged_voigt=conv_v,
+    )
+
+
 def _select_rss_for_gate(
     shape: str,
     rss_exp_loglin: np.ndarray,
@@ -963,6 +1333,7 @@ def stft_calibration(
     nls_tau_lo: float = DEFAULT_TAU_G_BOUND_LO,
     nls_tau_hi: float = DEFAULT_TAU_G_BOUND_HI,
     nls_tau_seeds: Sequence[float] = DEFAULT_TAU_G_SEEDS,
+    shape_solver: str = _SHAPE_SOLVER_DEFAULT,
 ) -> _STFTClassification:
     """Run the sliding-active-window STFT and classify every frequency bin.
 
@@ -1091,6 +1462,7 @@ def stft_calibration(
         tau_lo=float(nls_tau_lo),
         tau_hi=float(nls_tau_hi),
         tau_seeds=nls_tau_seeds,
+        solver=shape_solver,
     )
     rss_for_gate = _select_rss_for_gate(shape, rss_exp, shape_fits)
 
@@ -1458,14 +1830,19 @@ def extract_tau_majority(
     sigma_x_full : float, optional
         Override for the per-bin full-record FT noise floor (in
         ``dt * rfft`` amplitude units). When supplied, beats the FID-tail
-        ``sigma_t`` derivation. Pass this when an independent spectral
-        noise estimate (e.g. Stage 2's per-bin ``rms_noise`` median in
-        the trim band, converted to raw amplitude units) is more
-        accurate than the FID tail -- on real fixtures the tail can
-        carry residual signal that inflates the analytic value (2638:
-        ~2x overestimate). When the polish noise-debias kicks in
-        (sigma_frame derivation), a too-large sigma over-subtracts and
-        biases tau low.
+        ``sigma_t`` derivation. **For tau extraction, prefer the FID-tail
+        derivation (leave this None).** The tail carries residual decaying
+        signal that inflates the floor (2638: ~3x above the Stage 2
+        scatter spectral sigma), but that inflation is *beneficial* here:
+        it acts as a stricter effective above-threshold gate that keeps
+        only well-determined on-line bins. Substituting the lower (more
+        physically accurate) Stage 2 scatter sigma admits weak,
+        log-linear-high-biased bins in sparse bands and pulls the per-band
+        majority away from the independent LSQ-fit-and-histogram reference
+        -- on 2638 it inverts the real frequency-dependent tau trend in the
+        high band. Pass an explicit override only for forensic comparison.
+        When the polish noise-debias kicks in (sigma_frame derivation), a
+        too-large sigma over-subtracts and biases tau low.
 
     Notes
     -----

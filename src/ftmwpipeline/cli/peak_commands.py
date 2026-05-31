@@ -231,8 +231,8 @@ def register_peak_commands(subparsers: Any) -> None:
             "Stage 3 preset (bare name resolves against packaged presets, or "
             "a path to a YAML file carrying a 'stage3:' block). Knobs the "
             "per-flag CLI does not expose -- detection_zpf, gap_active_zpf, "
-            "gap_mask_edge_threshold, internal_min_snr, sg_fwhm_coverage, "
-            "sg_min_window -- flow through this flag only."
+            "primary_leakage_floor_k, gap_leakage_floor_k, internal_min_snr, "
+            "sg_fwhm_coverage, sg_min_window -- flow through this flag only."
         ),
     )
     p_detect.add_argument(

@@ -51,7 +51,7 @@ def detection_result(exp_2638_data_path, tmp_path_factory):
     fp = str(tmp / "exp.ftmw")
     import_data_impl(fp, source=exp_2638_data_path)
     ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=TRIM)
-    ftmw.estimate_noise(fp)
+    ftmw.estimate_noise(fp, method="adaptive")  # frozen Stage 3 reference
     result = detect_peaks_impl(fp)
     return result
 
@@ -127,25 +127,28 @@ class TestInternalGridProperties:
             )
 
     def test_internal_grid_genuinely_differs_from_user_grid(self, detection_result):
-        """The internal zpf=1 gap spectrum must have a different number of
-        points than the user zpf=2 spectrum, confirming non-trivial snap-back."""
+        """The internal matched-filter gap spectrum must have a different number
+        of points than the user spectrum, confirming non-trivial snap-back.
+
+        The user grid is the canonical raw FT (zpf=0, full-record trimmed); the
+        gap detector runs on the active-region matched-filter FFT (zpf_active=2
+        over the active region only), so the two grids differ in size."""
         user_ft = detection_result["user_ft"]
         gap_ft = detection_result["gap_ft"]
 
         assert len(gap_ft.freq_array) != user_ft.n_points, (
             f"gap_ft and user_ft have identical point counts ({user_ft.n_points}); "
-            "zpf=1 vs zpf=2 should produce different grid sizes"
+            "the matched-filter gap grid and the user grid should differ in size"
         )
 
     def test_internal_frequency_recorded_for_all_peaks(self, detection_result):
         """All peaks must carry internal_frequency in their properties.
 
-        The snap-back translates from the internal zpf=1 detection grid to the
-        user zpf=2 grid.  internal_frequency records the detection position before
-        snapping (preserved for curation/diagnosis).  On a zpf=2 user grid the
-        zpf=1 frequency points are a strict subset of the user grid, so
-        internal_frequency may equal the user frequency -- but the property must
-        always be present and must be a finite number.
+        The snap-back translates from the internal detection grids to the user
+        spectrum (the canonical raw zpf=0 FT). internal_frequency records the
+        detection position before snapping (preserved for curation/diagnosis);
+        on the matched-filter gap grid it generally differs from the snapped
+        user frequency -- but the property must always be present and finite.
 
         Note: internal_index is intentionally NOT stored (see Stage 3 contract).
         """

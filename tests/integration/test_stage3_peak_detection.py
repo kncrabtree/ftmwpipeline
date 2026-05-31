@@ -41,7 +41,7 @@ def _prep(path, data_path):
     """
     ftmw.import_data(path, source=data_path, force=True)
     ftmw.compute_ft(path, zpf=2, expf_us=5.0, trim=TRIM)
-    ftmw.estimate_noise(path)
+    ftmw.estimate_noise(path, method="adaptive")  # frozen Stage 3 reference
 
 
 def _arr(peaks):
@@ -132,13 +132,22 @@ def test_gap_pass_recovers_a_weak_line(baseline_2638_stage2, temp_ftmw_dir):
 
     D7 Phase B: detect_peaks no longer accepts trim=; trim inherited from
     Stage 1 canonical settings.  run_gap_pass= is still accepted.
+
+    The two passes run on *separate* file copies: detect_peaks persists
+    ``run_gap_pass`` into the file's Stage 3 settings, and a later bare
+    detect_peaks resolves it from that persisted layer. Running both on one
+    file would make the gap-on call inherit the gap-off call's persisted
+    ``False`` and find nothing -- so each call gets its own file and resolves
+    against the hard defaults.
     """
-    fp = temp_ftmw_dir / "gap.ftmw"
-    shutil.copy(baseline_2638_stage2, fp)
+    fp_no = temp_ftmw_dir / "gap_off.ftmw"
+    fp_yes = temp_ftmw_dir / "gap_on.ftmw"
+    shutil.copy(baseline_2638_stage2, fp_no)
+    shutil.copy(baseline_2638_stage2, fp_yes)
 
     # D7 Phase B: trim= removed; run_gap_pass= still supported.
-    no_gap = ftmw.detect_peaks(fp, min_snr=3.0, run_gap_pass=False)
-    with_gap = ftmw.detect_peaks(fp, min_snr=3.0)
+    no_gap = ftmw.detect_peaks(fp_no, min_snr=3.0, run_gap_pass=False)
+    with_gap = ftmw.detect_peaks(fp_yes, min_snr=3.0)
 
     assert all(
         p.properties["detection_pass"] == "primary" for p in no_gap

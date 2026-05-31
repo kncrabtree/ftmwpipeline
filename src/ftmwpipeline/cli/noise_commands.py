@@ -75,11 +75,30 @@ def cmd_estimate_noise(args) -> int:
             params['smoothing_window_mhz'] = args.smoothing_window_mhz
         if args.min_noise_fraction is not None:
             params['min_noise_fraction'] = args.min_noise_fraction
-        
+
         # Add from_saved_params flag
         params['from_saved_params'] = args.from_saved_params
         if args.preset is not None:
             params['preset'] = args.preset
+
+        # Scatter (high-pass) estimator selection + knobs.
+        params['method'] = args.method
+        if args.region_aware is not None:
+            params['region_aware'] = args.region_aware
+        if args.window_mhz is not None:
+            params['window_mhz'] = args.window_mhz
+        if args.pedestal_mhz is not None:
+            params['pedestal_mhz'] = args.pedestal_mhz
+        if args.line_k is not None:
+            params['line_k'] = args.line_k
+        if args.n_iter is not None:
+            params['n_iter'] = args.n_iter
+        if args.smoothing_mhz is not None:
+            params['smoothing_mhz'] = args.smoothing_mhz
+        if args.smoothing_percentile is not None:
+            params['smoothing_percentile'] = args.smoothing_percentile
+        if args.convolve_mhz is not None:
+            params['convolve_mhz'] = args.convolve_mhz
 
         print(f"Estimating noise for: {file_path}")
         
@@ -363,7 +382,68 @@ def register_noise_commands(subparsers):
             'with per-knob flags that explicitly set the same field.'
         ),
     )
-    
+
+    # Estimator selection + scatter (high-pass) knobs.
+    parser_estimate.add_argument(
+        '--method',
+        choices=['adaptive', 'scatter'],
+        default='scatter',
+        help=(
+            'Noise estimator: "scatter" (high-pass, region-aware; default; '
+            'immune to the leakage pedestal on high-SNR, line-dense spectra) '
+            'or "adaptive" (legacy level-based binning)'
+        ),
+    )
+    parser_estimate.add_argument(
+        '--no-region-aware',
+        dest='region_aware',
+        action='store_false',
+        default=None,
+        help='Scatter estimator: use the fixed mid-regime factor instead of the '
+             'Rician C(R) lookup',
+    )
+    parser_estimate.add_argument(
+        '--window-mhz',
+        type=float,
+        help='Scatter estimator: per-region scatter-MAD window width in MHz '
+             '(default: 80)',
+    )
+    parser_estimate.add_argument(
+        '--pedestal-mhz',
+        type=float,
+        help='Scatter estimator: leakage-pedestal running-median width in MHz '
+             '(default: 20)',
+    )
+    parser_estimate.add_argument(
+        '--line-k',
+        type=float,
+        help='Scatter estimator: robust-sigma multiple flagging a bin as a line '
+             '(default: 8)',
+    )
+    parser_estimate.add_argument(
+        '--n-iter',
+        type=int,
+        help='Scatter estimator: self-mask refinement iterations (default: 3)',
+    )
+    parser_estimate.add_argument(
+        '--smoothing-mhz',
+        type=float,
+        help='Scatter estimator: broad lower-envelope sigma smoothing width in '
+             'MHz (default: 800; 0 disables)',
+    )
+    parser_estimate.add_argument(
+        '--smoothing-percentile',
+        type=float,
+        help='Scatter estimator: smoothing percentile (default: 50 = median; '
+             'lower = more aggressive floor de-inflation)',
+    )
+    parser_estimate.add_argument(
+        '--convolve-mhz',
+        type=float,
+        help='Scatter estimator: Gaussian sigma in MHz of the 2nd '
+             'step-removing smoothing pass (default: 200; 0 disables)',
+    )
+
     # General options
     parser_estimate.add_argument(
         '-v', '--verbose',

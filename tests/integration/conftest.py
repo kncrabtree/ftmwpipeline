@@ -61,17 +61,39 @@ def baseline_2638_stage1(exp_2638_data_path, tmp_path_factory):
 
 
 @pytest.fixture(scope="session")
-def baseline_2638_stage2(baseline_2638_stage1, tmp_path_factory):
+def baseline_2638_stage1_raw(exp_2638_data_path, tmp_path_factory):
+    """Stage 0+1 with the CANONICAL raw FT (zpf=0, expf_us=None) — the grid the
+    scatter noise estimator actually runs on in production.
+
+    The ``standard_ft_params`` baseline above is zpf=2 (a legacy-comparison
+    grid). Running the broad-window scatter smoother on that 4×-denser grid is
+    both unrepresentative of production and needlessly slow (the smoothing is
+    ~O(N·window)). Scatter tests use this raw fixture instead.
+    """
+    tmp = tmp_path_factory.mktemp("baseline_stage1_raw")
+    fp = tmp / "baseline_2638_stage1_raw.ftmw"
+    ftmw.import_data(fp, source=exp_2638_data_path)
+    ftmw.compute_ft(fp, zpf=0, expf_us=None, trim=(26500, 40000))
+    return fp
+
+
+@pytest.fixture(scope="session")
+def baseline_2638_stage2(baseline_2638_stage1_raw, tmp_path_factory):
     """
     Build the 2638 pipeline through Stage 0+1+2 ONCE per test session by
-    copying the stage1 baseline and running estimate_noise with default params.
+    copying the raw stage1 baseline and running estimate_noise.
 
-    Returns the Path to a read-only reference .ftmw file.  Tests that need
-    a writable copy must shutil.copy it.
+    This is the **production grid**: the raw ``zpf=0`` FT (``baseline_2638_stage1_raw``)
+    with the default ``scatter`` noise estimator. The Stage 3/4/5 regression
+    baselines that chain off this fixture are calibrated against it. (Earlier
+    these baselines built on the legacy ``zpf=2`` ``standard_ft_params`` grid +
+    ``method="adaptive"`` as a frozen reference; they were re-derived onto the
+    production grid in the Stage 3 corner benchmark -- see
+    ``dev-docs/research/stage3-snr-corner/report.md``.)
     """
     tmp = tmp_path_factory.mktemp("baseline_stage2")
     fp = tmp / "baseline_2638_stage2.ftmw"
-    shutil.copy(baseline_2638_stage1, fp)
+    shutil.copy(baseline_2638_stage1_raw, fp)
     ftmw.estimate_noise(fp)
     return fp
 
