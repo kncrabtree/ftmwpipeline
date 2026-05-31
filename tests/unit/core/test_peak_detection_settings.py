@@ -75,7 +75,7 @@ class TestResolve:
         assert merged.primary_pass.detection_zpf == 1
         assert merged.gap_pass.run_gap_pass is True
         assert merged.gap_pass.gap_active_zpf == 2
-        assert merged.gap_pass.gap_mask_edge_threshold == 8.0
+        assert merged.gap_pass.gap_leakage_floor_k == 3.0
 
     def test_explicit_beats_preset(self) -> None:
         explicit = PeakDetectionSettings()
@@ -95,17 +95,17 @@ class TestResolve:
 
     def test_persisted_beats_recommended(self) -> None:
         persisted = PeakDetectionSettings()
-        persisted.gap_pass.gap_mask_edge_threshold = 6.0
+        persisted.gap_pass.gap_leakage_floor_k = 6.0
         recommended = PeakDetectionSettings()
-        recommended.gap_pass.gap_mask_edge_threshold = 12.0
+        recommended.gap_pass.gap_leakage_floor_k = 12.0
         merged = resolve(persisted=persisted, recommended=recommended)
-        assert merged.gap_pass.gap_mask_edge_threshold == 6.0
+        assert merged.gap_pass.gap_leakage_floor_k == 6.0
 
     def test_recommended_beats_hard_default(self) -> None:
         recommended = PeakDetectionSettings()
-        recommended.gap_pass.gap_mask_edge_threshold = 12.0
+        recommended.gap_pass.gap_leakage_floor_k = 12.0
         merged = resolve(recommended=recommended)
-        assert merged.gap_pass.gap_mask_edge_threshold == 12.0
+        assert merged.gap_pass.gap_leakage_floor_k == 12.0
 
     def test_full_precedence_chain(self) -> None:
         explicit = PeakDetectionSettings()
@@ -130,7 +130,7 @@ class TestResolve:
         assert merged.gap_pass.gap_active_zpf == 4
         # hard default fills the rest
         assert merged.promotion.weak_medium_snr == 10.0
-        assert merged.gap_pass.gap_mask_edge_threshold == 8.0
+        assert merged.gap_pass.gap_leakage_floor_k == 3.0
 
     def test_sub_dataclass_independence(self) -> None:
         s = PeakDetectionSettings()
@@ -176,7 +176,7 @@ class TestAttrsRoundTrip:
         s.primary_pass.primary_window = "hann"
         s.primary_pass.detection_zpf = 0
         s.gap_pass.run_gap_pass = False
-        s.gap_pass.gap_mask_edge_threshold = 6.0
+        s.gap_pass.gap_leakage_floor_k = 6.0
         rt = from_attrs(to_attrs(s))
         assert rt.promotion.min_snr == 4.0
         assert rt.promotion.internal_min_snr == 1.5
@@ -185,7 +185,7 @@ class TestAttrsRoundTrip:
         assert rt.primary_pass.primary_window == "hann"
         assert rt.primary_pass.detection_zpf == 0
         assert rt.gap_pass.run_gap_pass is False
-        assert rt.gap_pass.gap_mask_edge_threshold == 6.0
+        assert rt.gap_pass.gap_leakage_floor_k == 6.0
         # Unset fields stay None
         assert rt.savgol.sg_fwhm_coverage is None
         assert rt.gap_pass.gap_active_zpf is None

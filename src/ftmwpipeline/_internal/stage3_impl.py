@@ -39,10 +39,7 @@ from ..core.peak_detection_settings import (
     resolve as resolve_peak_detection_settings,
 )
 from ..preprocessing.edge_coherence import DEFAULT_EDGE_M, rolling_coherence
-from ..preprocessing.leakage import (
-    deramp_to_active_start,
-    leakage_touched_intervals,
-)
+from ..preprocessing.leakage import deramp_to_active_start
 from ..preprocessing.noise_estimation import (
     estimate_noise_adaptive,
     estimate_noise_scatter,
@@ -104,32 +101,66 @@ _SG_MIN_WINDOW = 5
 # dev-docs/research/peak-detection/report.md sections 3 and 6.
 DEFAULT_PRIMARY_WINDOW = "blackmanharris"
 
-# Gap-pass leakage mask threshold (D8). The de-ramped coherent-leakage map --
-# ``S_coh`` above this value on the unapodized gap spectrum -- is excluded from
-# the gap pass so a strong line's truncation-leakage skirt does not re-detect
-# as spurious weak lines. Locked at 8 on the 2638 fixture (D8 task 4): the
-# de-ramped ``S_coh`` distribution over gap-pass promotions is bimodal with the
-# genuine-weak-line / sidelobe valley at ~6-8, and 8 = sqrt(M) is the level at
-# which a sidelobe's lobe peak clears the gap pass's ~2-sigma detection floor.
-# See dev-docs/planning/leakage-detection-rework.md.
-GAP_MASK_EDGE_THRESHOLD = 8.0
-
-# Primary-pass leakage-aware detection floor. The primary pass has no hard
-# leakage mask (unlike the gap pass) because it is the pass that finds the
-# strong/cluster lines, which *are* what generate the coherence -- a hard
-# S_coh mask would delete them. Instead the floor is raised continuously by
-# the local coherent-leakage amplitude ``k * (S_coh / sqrt(M)) * sigma``: a
-# genuine line towers over it, a strong line's skirt ripple (which is that
-# leakage) does not. This keeps the primary pass from re-detecting skirts as
-# weak lines once its internal noise floor is the honest (scatter) one. M is
-# the edge-coherence band width. ``k = 1`` is set by direct visual validation
-# on the sparse high-SNR fixture 1019 (its few very strong lines flood the
-# floorless pass with skirt ripple): at k=1 every promoted peak is a real line
-# and the skirt flood is gone, while k=2 begins removing real lines. A
-# cross-fixture k sweep confirmed catalog recall on 1512/655 is flat across
-# k in [1, 4], so k=1 costs no real lines on the line-dense fixtures either.
+# Continuous leakage-aware detection floor (both passes). Neither pass uses a
+# hard ``S_coh`` mask: the strong/cluster lines *are* what generate the
+# coherence, so a hard cutoff would delete them. Instead each pass raises its
+# detection floor continuously by the local coherent-leakage amplitude
+# ``k * (S_coh / sqrt(M)) * sigma`` -- a genuine line towers over it, a strong
+# line's truncation-skirt ripple (which is that leakage) does not. This keeps
+# both passes from re-detecting skirts as weak lines once their internal noise
+# floor is the honest (scatter) one. M is the edge-coherence band width.
+#
+# The two passes need *different* k because they run on opposite-leakage
+# spectra. The PRIMARY pass is Blackman-Harris apodized, which annihilates the
+# truncation leakage (S_coh ~0.2 across the band, below the noise-only null);
+# the window IS the primary's leakage suppression, so the floor is only a
+# surgical correction at the rare cluster cores. ``primary k = 1`` is set by
+# direct visual validation on the sparse high-SNR fixture 1019 (k=2 there starts
+# clipping real cluster lines); catalog recall on 1512/655 is flat across
+# k in [1, 4], so it costs no real lines on the dense fixtures either.
+#
+# The GAP pass is the matched filter, matched to the line shape for weak-line
+# sensitivity and so retaining the full leakage (S_coh ~4-15 typical, strong
+# wings into the thousands). Here the floor carries ALL the leakage suppression,
+# so it needs a larger ``gap k = 3``; at k=1 the floor sits at the wing level
+# and the gap pass floods with skirt ripple. ``gap k = 3`` is set by direct
+# visual validation on 1512 (the flood collapses and the survivors are genuine
+# catalogued / clean-region lines).
+#
+# This continuous floor replaces the former hard gap-mask ``S_coh`` cutoff,
+# which over-killed real lines sitting on strong wings (recall improves). See
+# dev-docs/research/stage3-snr-corner/report.md.
 PRIMARY_LEAKAGE_FLOOR_K = 1.0
-_PRIMARY_LEAKAGE_M = DEFAULT_EDGE_M
+GAP_LEAKAGE_FLOOR_K = 3.0
+_LEAKAGE_M = DEFAULT_EDGE_M
+
+
+def _leakage_floor_amp(
+    freq_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    sigma: np.ndarray,
+    probe_freq_mhz: float,
+    start_us: float,
+    k: float,
+    band_m: int = _LEAKAGE_M,
+) -> np.ndarray:
+    """Continuous leakage-aware additive floor ``k * (S_coh / sqrt(M)) * sigma``.
+
+    De-ramps the spectrum to the active-region turn-on
+    (:func:`deramp_to_active_start`; ``start_us=0`` is the identity, for the
+    active-region-only matched-filter gap FT) before the rolling complex-edge
+    coherence, so genuine coherent leakage is exposed. NaN band edges (no full
+    M-band centred) contribute no floor. ``k <= 0`` disables it (zeros).
+    """
+    if k <= 0:
+        return np.zeros_like(sigma, dtype=float)
+    deramped = deramp_to_active_start(
+        freq_mhz, complex_spectrum, probe_freq_mhz, start_us
+    )
+    scoh = rolling_coherence(deramped, sigma, band_m=band_m)
+    return (
+        k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
+    )
 
 
 def _active_acquisition_us(
@@ -338,7 +369,8 @@ def _build_explicit_from_kwargs(
 
     The remaining knobs that the resolver covers
     (``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
-    ``detection_zpf``, ``gap_active_zpf``, ``gap_mask_edge_threshold``)
+    ``detection_zpf``, ``gap_active_zpf``, ``primary_leakage_floor_k``,
+    ``gap_leakage_floor_k``)
     are not on the public Stage 3 signature; they flow through ``settings=``
     / ``preset=`` only.
     """
@@ -403,7 +435,8 @@ def detect_peaks_impl(
     resolution chain (``explicit > preset > persisted > recommended``);
     passing both raises ``ValueError``. Knobs beyond the legacy per-knob
     signature -- ``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
-    ``detection_zpf``, ``gap_active_zpf``, ``gap_mask_edge_threshold`` --
+    ``detection_zpf``, ``gap_active_zpf``, ``primary_leakage_floor_k``,
+    ``gap_leakage_floor_k`` --
     flow through ``settings=`` / ``preset=`` only.
 
     Parameters left as ``None`` fall back to documented defaults. Returns the
@@ -502,10 +535,8 @@ def detect_peaks_impl(
     gap_active_zpf_v: int = int(
         _required(gap.gap_active_zpf, "gap_pass.gap_active_zpf")
     )
-    gap_mask_edge_threshold_v: float = float(
-        _required(
-            gap.gap_mask_edge_threshold, "gap_pass.gap_mask_edge_threshold"
-        )
+    gap_leakage_floor_k_v: float = float(
+        _required(gap.gap_leakage_floor_k, "gap_pass.gap_leakage_floor_k")
     )
 
     params: Dict[str, Any] = {
@@ -516,8 +547,8 @@ def detect_peaks_impl(
         "sg_window": sg_window_v,
         "sg_order": sg_order_v,
         "primary_window": primary_window_v,
-        "gap_mask_edge_threshold": gap_mask_edge_threshold_v,
         "primary_leakage_floor_k": primary_leakage_floor_k_v,
+        "gap_leakage_floor_k": gap_leakage_floor_k_v,
         "internal_noise_method": "scatter",
         "min_exclusion_mhz": min_excl_v,
         "run_gap_pass": run_gap_v,
@@ -641,38 +672,26 @@ def detect_peaks_impl(
         gap_ft.freq_array, gap_ft.magnitude_spectrum
     )
 
-    # Primary-pass leakage-aware floor: k * (S_coh / sqrt(M)) * sigma, the
-    # local coherent-leakage amplitude. The primary FT is a full-record rfft,
-    # so de-ramp to the active-region turn-on before the coherence statistic
-    # (the gap FT is active-region-only and needs no de-ramp). NaN band edges
-    # (no full M-band centred) contribute no floor.
-    primary_deramped = deramp_to_active_start(
+    # Continuous leakage-aware floors for both passes (k * S_coh/sqrt(M) * sigma,
+    # the local coherent-leakage amplitude). The primary FT is a full-record
+    # rfft, so it is de-ramped to the active-region turn-on (start_us) before
+    # the coherence statistic; the matched-filter gap FT is active-region-only,
+    # so its phase reference is already the turn-on (start_us=0.0, identity).
+    primary_leakage_amp = _leakage_floor_amp(
         primary_ft.freq_array,
         primary_ft.complex_spectrum,
+        primary_noise.rms_noise,
         fid.probe_freq_mhz,
         base_pp.start_us or 0.0,
+        primary_leakage_floor_k_v,
     )
-    primary_scoh = rolling_coherence(
-        primary_deramped, primary_noise.rms_noise, band_m=_PRIMARY_LEAKAGE_M
-    )
-    primary_leakage_amp = (
-        primary_leakage_floor_k_v
-        * (np.nan_to_num(primary_scoh, nan=0.0) / np.sqrt(_PRIMARY_LEAKAGE_M))
-        * primary_noise.rms_noise
-    )
-
-    # Gap-pass leakage mask (D8): the de-ramped coherent-leakage map on the
-    # gap-detection spectrum. The MF gap-pass FT is computed on the active
-    # region alone, so t=0 is already at the active-region turn-on; pass
-    # ``start_us=0.0`` to ``leakage_touched_intervals`` to skip the de-ramp
-    # the full-record-rfft path needs.
-    leakage_intervals = leakage_touched_intervals(
+    gap_leakage_amp = _leakage_floor_amp(
         gap_ft.freq_array,
         gap_ft.complex_spectrum,
         gap_noise.rms_noise,
         fid.probe_freq_mhz,
         0.0,
-        threshold=gap_mask_edge_threshold_v,
+        gap_leakage_floor_k_v,
     )
 
     internal_peaks: List[Peak] = detect_peaks(
@@ -688,8 +707,8 @@ def detect_peaks_impl(
         sg_window=sg_window_v,
         gap_sg_window=gap_sg_window_v,
         sg_order=sg_order_v,
-        leakage_intervals=leakage_intervals,
         primary_leakage_amp=primary_leakage_amp,
+        gap_leakage_amp=gap_leakage_amp,
         min_exclusion_mhz=min_excl_v,
         run_gap_pass=run_gap_v,
     )

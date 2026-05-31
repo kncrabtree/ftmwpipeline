@@ -13,19 +13,23 @@ Headlines:
   (coherent leakage, not thermal; verified against a white-noise control).
 - **The estimator mismatch was resolved, but not by a blind swap.** Stage 3's
   internal noise is now the honest `scatter` estimator (consistency with
-  persisted Stage 2), made safe by a new **continuous leakage-aware floor on the
-  primary pass** (`min_snr·σ + k·(S_coh/√M)·σ`, `k = primary_leakage_floor_k =
-  1.0`, fixed by a cross-fixture k sweep + direct visual ground truth on 1019).
-  A hard `S_coh` mask was ruled out — it would delete every strong line (they
-  generate the coherence). 2638 Stage 5 A/B shows no downstream regression.
+  persisted Stage 2), made safe by a **continuous leakage-aware floor on both
+  passes** (`min_snr·σ + k·(S_coh/√M)·σ`). A hard `S_coh` mask was ruled out —
+  it would delete every strong line (they generate the coherence). The passes
+  run on opposite-leakage spectra (Blackman-Harris primary annihilates leakage;
+  matched-filter gap retains it), so they take separate, visually-calibrated
+  coefficients: `primary_leakage_floor_k = 1.0` (1019) and
+  `gap_leakage_floor_k = 3.0` (1512). The latter **retires the orphaned hard
+  gap-mask threshold 8**, and keeps real weak lines on strong wings the hard
+  mask over-killed. 2638 Stage 5 A/B shows no downstream regression.
 - **The Stage 3/4/5 integration baselines were re-derived onto the production
   grid** (raw `zpf=0` + scatter): `baseline_2638_stage2` repointed to
   `baseline_2638_stage1_raw` + scatter.
 
-Still open (tracked in the report): re-derive the orphaned gap-mask `S_coh`
-threshold 8 against the Stage-5 yardstick (D8's bimodal valley is gone on the
-production grid); validate `k` on the other fixtures; the Stage 5 χ²-noise
-`estimate_noise_adaptive` call (D9) is a separate axis.
+Still open (tracked in the report): issue #10 O4 (cross-instrument validation of
+`_GAP_ACTIVE_ZPF` and the K=4 SavGol rule); the Stage 5 χ²-noise
+`estimate_noise_adaptive` call (D9, a separate axis); and the new report's
+`scratch/` driver references (#14).
 
 The original brief follows.
 

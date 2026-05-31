@@ -38,9 +38,9 @@ The ``_HARD_DEFAULTS`` nested dict mirrors the module-level constants in
 (``DEFAULT_MIN_SNR``, ``DEFAULT_INTERNAL_MIN_SNR``,
 ``DEFAULT_WEAK_MEDIUM_SNR``, ``DEFAULT_MEDIUM_STRONG_SNR``) and in
 :mod:`ftmwpipeline._internal.stage3_impl`
-(``DEFAULT_PRIMARY_WINDOW``, ``GAP_MASK_EDGE_THRESHOLD``,
-``_DETECTION_ZPF``, ``_GAP_ACTIVE_ZPF``, ``_SG_FWHM_COVERAGE``,
-``_SG_MIN_WINDOW``), plus the hardcoded ``sg_window=11`` and
+(``DEFAULT_PRIMARY_WINDOW``, ``PRIMARY_LEAKAGE_FLOOR_K``,
+``GAP_LEAKAGE_FLOOR_K``, ``_DETECTION_ZPF``, ``_GAP_ACTIVE_ZPF``,
+``_SG_FWHM_COVERAGE``, ``_SG_MIN_WINDOW``), plus the hardcoded ``sg_window=11`` and
 ``sg_order=3`` defaults inside ``detect_peaks_impl``. Those constants
 are still imported by the kernel and orchestrator as their parameter
 defaults; once every consumer reads from a resolved
@@ -126,8 +126,11 @@ class GapPassSubSettings:
     ``run_gap_pass`` enables/disables the pass. ``gap_active_zpf`` is the
     zero-padding factor for the active-region rfft (chosen so the Lorentzian
     FWHM lands at ~3 bins on the resulting grid; SavGol's operating range).
-    ``gap_mask_edge_threshold`` is the de-ramped coherent-leakage map cutoff
-    above which gap-pass detections are dropped as sidelobes.
+    ``gap_leakage_floor_k`` scales the continuous leakage-aware detection floor
+    ``k·(S_coh/√M)·σ`` added to the gap-pass threshold -- the same mechanism
+    the primary pass uses (``primary_leakage_floor_k``) -- so a strong line's
+    coherent skirt ripple is not re-detected as weak lines. It replaces the
+    former hard ``S_coh``-cutoff mask. ``0`` disables the floor.
 
     ``tau_basis_us`` (the matched filter's exponential time constant) is
     *not* a Stage 3 knob -- it is the upstream-feeder value the Stage 3
@@ -137,7 +140,7 @@ class GapPassSubSettings:
 
     run_gap_pass: Optional[bool] = None
     gap_active_zpf: Optional[int] = None
-    gap_mask_edge_threshold: Optional[float] = None
+    gap_leakage_floor_k: Optional[float] = None
 
 
 @dataclass
@@ -192,7 +195,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "gap_pass": {
         "run_gap_pass": True,
         "gap_active_zpf": 2,
-        "gap_mask_edge_threshold": 8.0,
+        "gap_leakage_floor_k": 3.0,
     },
 }
 

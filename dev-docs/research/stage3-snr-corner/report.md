@@ -97,7 +97,11 @@ the promoted list.
 
 Drivers: `scratch/stage3_benchmark/estimator_swap.py`, `swap_leakage.py`.
 
-## 4. The leakage region (`S_coh`) needs re-deriving; threshold 8 is orphaned
+## 4. The hard gap-mask threshold 8 was orphaned — and is now retired
+
+(Resolved in §5: the hard `S_coh` cutoff is replaced by the continuous
+leakage-aware floor on both passes. This section is the diagnosis that motivated
+it.)
 
 The gap-pass leakage mask drops detections where the de-ramped coherent-edge
 statistic `S_coh = |Σz|/(σ√M)` exceeds 8 (= √M at M=64, i.e. coherent leakage
@@ -121,43 +125,62 @@ not the fix for wide windows / fit loops.
 Driver: `scratch/stage3_benchmark/scoh_study.py`, `scoh_bimodal.py`,
 `threshold_sweep_s34.py`.
 
-## 5. Architecture: a continuous leakage-aware floor on the primary pass
+## 5. Architecture: one continuous leakage-aware floor, both passes
 
-A literal `S_coh` mask on the primary pass is **destructive**: on 2638, 100% of
-strong lines (snr>50) and 95% of medium lines sit at `S_coh>8` — *they* are what
-generate the coherence — so a hard mask would delete 482 real promotions
-including every strong line. Location cannot discriminate a real cluster line
-from skirt ripple; the discriminant is **amplitude**.
+A literal `S_coh` mask is **destructive**: on 2638, 100% of strong lines
+(snr>50) and 95% of medium lines sit at `S_coh>8` — *they* are what generate the
+coherence — so a hard mask would delete 482 real promotions including every
+strong line. Location cannot discriminate a real cluster line from skirt ripple;
+the discriminant is **amplitude**.
 
-The shipped mechanism is therefore a continuous, leakage-aware detection floor
-on the primary pass:
+The shipped mechanism is therefore a continuous, leakage-aware detection floor,
+applied to **both** passes (replacing the primary's lack of a mask *and* the
+gap pass's former hard `S_coh` cutoff):
 
 ```
 thresh(bin) = min_snr·σ(bin) + k · (S_coh(bin)/√M) · σ(bin)
 ```
 
-The added term is the local coherent-leakage amplitude scaled by `k`. A genuine
-line towers over it (kept); a strong line's skirt ripple *is* that leakage, so
-it does not clear it (rejected). The strong/medium exemption is automatic — no
-SNR gate needed — because their amplitude dwarfs `k·L`. M = 64
-(`PRIMARY_LEAKAGE_FLOOR_K`). Paired with switching the two internal noise calls
-to scatter, this makes honest internal noise safe.
+The added term `(S_coh/√M)·σ` is the local coherent-leakage amplitude L, scaled
+by `k`. A genuine line towers over it (kept); a strong line's skirt ripple *is*
+≈L, so it does not clear `k·L` for `k ≥ ~2` (rejected). The strong/medium
+exemption is automatic — no SNR gate — because their amplitude dwarfs `k·L`.
+M = 64. Paired with switching the two internal noise calls to scatter, this
+makes honest internal noise safe.
 
-**Calibrating `k` (= 1.0).** A cross-fixture sweep `k ∈ {0,1,2,3,4}` shows
-catalog recall on the ground-truth fixtures (1512, 655) is **flat across
-k ∈ [1,4]** — the floor removes false detections, not real lines (precision
-rises slightly with k). The binding case is **1019** (sparse high-SNR: a few
-very strong lines whose skirts dominate): the floorless pass (k=0) promotes 381,
-of which ~288 are skirt ripple removed at k=1 (→93), then k=2→62. Direct visual
-inspection of the 1019 promotions
-(`scratch/stage3_benchmark/plot_1019_k.py`) is decisive: **at k=1 every promoted
-peak is a real line and the skirt flood is gone, while k=2 begins removing real
-lines.** So `k = 1` is the global value — initially set to 2 from the 2638
-Stage-5 χ² wash, corrected to 1 by the 1019 ground truth (recall flatness on the
-dense fixtures means k=1 costs them no real lines either).
+**The two passes need different `k` because they run on opposite-leakage
+spectra.** The primary is Blackman-Harris apodized, which annihilates the
+truncation leakage: on 1512 its `S_coh` is ~0.2 across the band (below the
+noise-only null of 0.89), spiking only at the rare cluster cores (max ~890). The
+window *is* the primary's leakage suppression; the floor is a surgical core
+correction. The gap pass is the matched filter — matched to the line shape for
+weak-line sensitivity, so it retains the full leakage: `S_coh` ~4–15 typical,
+strong wings into the thousands (max ~8200). There the floor carries all the
+suppression.
+
+**Calibrating the two `k` (primary = 1, gap = 3).** A cross-fixture sweep
+`k ∈ {0..4}` shows catalog recall on the ground-truth fixtures (1512, 655) is
+flat across the range — the floor removes false detections, not real lines.
+
+- **Primary `k = 1`**, set by direct visual validation on the sparse high-SNR
+  fixture 1019 (its few very strong lines flood the floorless pass: k=0 promotes
+  381, k=1 → 93). At k=1 every promoted peak is a real line and the skirt flood
+  is gone; k=2 begins clipping real cluster lines (whose primary `S_coh` is
+  modest, since the window cleaned their neighbourhood).
+- **Gap `k = 3`**, set by direct visual validation on 1512. At gap k=1 (the
+  primary's value) the floor sits at the wing level and the gap pass floods —
+  541 gap promotions, 4% on catalog, gap `S_coh` median **231**. Raising k lifts
+  the floor above the wing: k=2 → 37 (38% catalog), k=3 → 24, k=4 → 18 (61%
+  catalog). k=3 is the level at which the wings are excluded and the survivors
+  are genuine (catalogued, or clean-region finds at `S_coh < 3`).
+
+Replacing the gap pass's hard cutoff with this floor is a net gain over the
+orphaned threshold 8: the hard mask blanket-dropped everything in high-`S_coh`
+regions, killing real weak lines sitting on a strong wing; the continuous floor
+keeps those that tower above the local leakage (1512 recall 0.455 → ~0.50).
 
 Drivers: `scratch/stage3_benchmark/primary_mask_risk.py`, `k_sweep.py`,
-`plot_1019_k.py`.
+`gap_k_sweep.py`, `plot_1019_k.py`, `plot_1512_gap.py`.
 
 ## 6. 2638 validation: no downstream regression
 
@@ -181,12 +204,18 @@ Driver: `scratch/stage3_benchmark/assess_s5.py`.
 
 ## Open items
 
-- Productionize `PRIMARY_LEAKAGE_FLOOR_K` through `PeakDetectionSettings`
-  (resolver + serialization + interfaces) like `gap_mask_edge_threshold`.
-- Re-derive the gap-mask threshold against the Stage-5 yardstick (orphaned at 8);
-  consider unifying the gap pass onto the same continuous floor.
-- Re-baseline the pinned Stage 3/4/5 regression tests onto the production grid +
-  scatter internal noise (the brief's deliberate re-baselining task). *(Done —
-  `baseline_2638_stage2` migrated to the production grid; suite green.)*
-- ~~Validate `k` on the other fixtures.~~ *(Done — cross-fixture k sweep +
-  1019 visual ground truth fix `k = 1`; see §5.)*
+- ~~Productionize the floor coefficients through `PeakDetectionSettings`.~~
+  *(Done — `primary_pass.primary_leakage_floor_k` and
+  `gap_pass.gap_leakage_floor_k`.)*
+- ~~Re-derive the gap-mask threshold; consider unifying the gap pass onto the
+  continuous floor.~~ *(Done — the hard `S_coh` cutoff is retired; the gap pass
+  uses the continuous floor at `gap k = 3`; see §5.)*
+- ~~Re-baseline the pinned Stage 3/4/5 regression tests onto the production
+  grid.~~ *(Done — `baseline_2638_stage2` migrated to the production grid.)*
+- ~~Validate `k` on the other fixtures.~~ *(Done — cross-fixture k sweeps +
+  1019/1512 visual ground truth fix primary `k = 1`, gap `k = 3`; see §5.)*
+- O4 (#10): cross-instrument validation of `_GAP_ACTIVE_ZPF` and the K=4 SavGol
+  rule remains open (separate from the leakage-floor coefficients).
+- The benchmark drivers and `.ftmw` artifacts referenced here live under
+  untracked `scratch/` (#14): replace with tracked fixtures / regeneration
+  recipes.

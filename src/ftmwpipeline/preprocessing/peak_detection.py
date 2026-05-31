@@ -8,8 +8,10 @@ This module contains the Stage 3 detection algorithm:
   behaviour preserved exactly.
 * ``classify_by_snr`` -- SNR-only weak/medium/strong binning.
 * ``detect_peaks`` -- the two-pass driver: an apodized primary pass for the
-  robust coarse list, then an unapodized gap pass (masked by the de-ramped
-  coherent-leakage map) to recover weak lines the apodization suppressed.
+  robust coarse list, then an unapodized gap pass to recover weak lines the
+  apodization suppressed. Both passes share a continuous leakage-aware floor
+  that raises the detection threshold by the local coherent-leakage amplitude,
+  so a strong line's skirt ripple is not re-detected as weak lines.
 
 It operates on already-computed spectra so it stays pure and unit-testable.
 File orchestration -- recomputing the apodized/unapodized spectra from the FID
@@ -267,17 +269,6 @@ def _covered_mask(
     return cast(np.ndarray, covered)
 
 
-def _index_run_mask(
-    n: int, intervals: Optional[List[Tuple[int, int]]]
-) -> np.ndarray:
-    """Boolean mask of length ``n``: True inside any inclusive ``(lo, hi)`` run."""
-    mask: np.ndarray = np.zeros(n, dtype=bool)
-    if intervals:
-        for lo, hi in intervals:
-            mask[max(int(lo), 0) : int(hi) + 1] = True
-    return mask
-
-
 def _apex_snap(mag: np.ndarray, idx: int, radius: int) -> int:
     """Refine a detection to the local magnitude maximum within ``±radius``.
 
@@ -321,8 +312,8 @@ def detect_peaks(
     sg_window: int = 11,
     gap_sg_window: Optional[int] = None,
     sg_order: int = 3,
-    leakage_intervals: Optional[List[Tuple[int, int]]] = None,
     primary_leakage_amp: Optional[np.ndarray] = None,
+    gap_leakage_amp: Optional[np.ndarray] = None,
     min_exclusion_mhz: float = 0.0,
     run_gap_pass: bool = True,
 ) -> List[Peak]:
@@ -336,10 +327,13 @@ def detect_peaks(
     * **Pass 1 (primary)** runs :func:`locate_peaks` on the *apodized*,
       leakage-suppressed spectrum (robust, few sidelobe false positives).
     * **Pass 2 (gap)** runs it on the *unapodized* spectrum to recover weak
-      lines the apodization smeared away, keeping only detections **outside**
-      the leakage-touched regions (``leakage_intervals``) -- a strong line's
-      coherent truncation-leakage skirt re-detects as spurious weak lines
-      otherwise -- and outside ``±min_exclusion_mhz`` of every primary peak.
+      lines the apodization smeared away. A strong line's coherent
+      truncation-leakage skirt would otherwise re-detect as spurious weak
+      lines; the same continuous leakage-aware floor used by the primary pass
+      (``gap_leakage_amp``) raises the gap threshold by the local coherent-
+      leakage amplitude so the skirt ripple stays below it while a genuine
+      line clears it. Detections within ``±min_exclusion_mhz`` of a primary
+      peak are dropped as re-finds.
 
     Every detected position is snapped to the nearest local maximum of the
     unapodized magnitude (:func:`_apex_snap`) and de-duplicated by snapped
@@ -361,25 +355,18 @@ def detect_peaks(
     sg_window, sg_order : int
         Savitzky-Golay window/order for :func:`locate_peaks`; the apex-snap
         radius is ``sg_window // 2``.
-    leakage_intervals : list of (int, int), optional
-        Inclusive index runs on the ``gap_*`` grid where coherent truncation
-        leakage is detectable -- the de-ramped ``S_coh`` leakage-touched map
-        from
-        :func:`~ftmwpipeline.preprocessing.leakage.leakage_touched_intervals`.
-        Gap-pass detections inside these runs are dropped as sidelobes. If
-        None, the gap pass is masked only by ``min_exclusion_mhz``.
-    primary_leakage_amp : np.ndarray, optional
-        Per-bin additive amplitude (same shape as ``primary_sd``) raising the
-        primary-pass detection floor to ``min_snr * primary_sd +
-        primary_leakage_amp`` in regions carrying coherent truncation leakage.
-        It is the local leakage estimate ``k * (S_coh / sqrt(M)) * primary_sd``
-        (a per-bin coherent-leakage amplitude scaled by ``k``); a genuine line
-        towers over it while a strong line's skirt ripple -- which *is* that
-        leakage -- does not, so the primary pass stops re-detecting the skirt
-        as weak lines once its noise floor is honest (scatter). Unlike the
-        ``leakage_intervals`` hard mask (gap pass only), this is a continuous
-        floor and never removes the coherence-generating lines themselves. If
-        None, the primary floor is the plain ``min_snr * primary_sd``.
+    primary_leakage_amp, gap_leakage_amp : np.ndarray, optional
+        Per-bin additive amplitudes (same shape as ``primary_sd`` / ``gap_sd``)
+        raising each pass's detection floor to ``min_snr * sigma + leakage_amp``
+        in regions carrying coherent truncation leakage. Each is the local
+        leakage estimate ``k * (S_coh / sqrt(M)) * sigma`` (a per-bin
+        coherent-leakage amplitude scaled by ``k``) on that pass's own grid: a
+        genuine line towers over it while a strong line's skirt ripple -- which
+        *is* that leakage -- does not, so neither pass re-detects the skirt as
+        weak lines once its noise floor is honest (scatter). Being a continuous
+        floor, it never removes the coherence-generating lines themselves
+        (a hard ``S_coh`` mask would). If None, that pass's floor is the plain
+        ``min_snr * sigma``.
     min_exclusion_mhz : float, default 0.0
         Minimum exclusion half-width around every primary peak.
     run_gap_pass : bool, default True
@@ -464,21 +451,23 @@ def detect_peaks(
                     )
                 )
 
-    # --- Pass 2: masked gap-pass detector on the reference (gap) spectrum --
+    # --- Pass 2: gap-pass detector on the reference (gap) spectrum ---------
     if run_gap_pass and have_gap:
+        gap_thresh = min_snr * ref_sd
+        if gap_leakage_amp is not None:
+            gap_thresh = gap_thresh + np.asarray(gap_leakage_amp, dtype=float)
         gap = locate_peaks(
             ref_freq,
             ref_mag,
             window=gap_sg,
             order=sg_order,
-            thresh=min_snr * ref_sd,
+            thresh=gap_thresh,
         )
         merged = _merge_intervals(exclusions)
-        leakage_mask = _index_run_mask(ref_freq.size, leakage_intervals)
         if len(gap.freqs):
             covered = _covered_mask(gap.freqs, merged)
             for idx, is_cov in zip(gap.indices, covered):
-                if is_cov or leakage_mask[int(idx)]:
+                if is_cov:
                     continue
                 snapped = _apex_snap(ref_mag, int(idx), radius)
                 if snapped in by_index:
