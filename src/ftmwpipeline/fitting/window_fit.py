@@ -208,6 +208,7 @@ class WindowFitConstraints:
     fit_tau_eff: bool
     tau_penalty_reference: Optional[float]
     tau_penalty_sigma_us: Optional[float]
+    tau_penalty_sigma_lo_us: Optional[float]
     effective_tau_penalty_lambda: float
     fit_kwargs_inner: dict
 
@@ -238,6 +239,8 @@ def derive_window_fit_constraints(
     tau_apodization_us: Optional[float] = None,
     tau_maj_us: Optional[float] = None,
     sigma_tau_us: Optional[float] = None,
+    tau_anchor_us: Optional[float] = None,
+    tau_penalty_sigma_lo_factor: float = 1.0,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
 ) -> WindowFitConstraints:
     """Derive a window's tau / amplitude / penalty constraints from its data.
@@ -283,15 +286,33 @@ def derive_window_fit_constraints(
         tm = float(tau_maj_us)
         st = float(sigma_tau_us)
         n_sig = float(tau_penalty_n_sigma)
+        # Anchor the prior at the explicit long (narrow-line) anchor when given,
+        # else at the calibrated majority. The long anchor implements the "start
+        # narrow" policy: it sits above the true tau so the soft low side can
+        # broaden down onto it while the stiff high side blocks tau-runaway.
+        anchor = (
+            float(tau_anchor_us)
+            if tau_anchor_us is not None and tau_anchor_us > 0.0
+            else tm
+        )
         tau_lo = max(tm - n_sig * st, tm / max_decay_factor)
-        tau_hi = min(tm + n_sig * st, tm * max_decay_factor)
+        # The high bound must reach the anchor (the seed starts there); the
+        # stiff penalty -- not the bound -- discourages narrowing past it.
+        tau_hi = min(max(tm + n_sig * st, anchor), tm * max_decay_factor)
         # Ensure the band is non-degenerate (sigma_tau larger than tm
         # would otherwise push tau_lo below the factor-k floor).
         if not tau_lo < tau_hi:
-            tau_lo, tau_hi = tm / max_decay_factor, tm * max_decay_factor
+            tau_lo, tau_hi = tm / max_decay_factor, max(tm * max_decay_factor, anchor)
         tau_bounds = (tau_lo, tau_hi)
-        tau_penalty_ref: Optional[float] = tm
+        tau_penalty_ref: Optional[float] = anchor
         tau_penalty_sigma_us: Optional[float] = st
+        # Soft broadening side: a wider effective sigma below the anchor makes
+        # decreasing tau (broadening) cheap; 1.0 reproduces the symmetric prior.
+        tau_penalty_sigma_lo_us: Optional[float] = (
+            st * float(tau_penalty_sigma_lo_factor)
+            if tau_penalty_sigma_lo_factor and tau_penalty_sigma_lo_factor > 0.0
+            else st
+        )
     else:
         tau_upper = tau0_us * max_decay_factor
         if tau_apodization_us is not None and tau_apodization_us > 0.0:
@@ -303,6 +324,7 @@ def derive_window_fit_constraints(
             else None
         )
         tau_penalty_sigma_us = None
+        tau_penalty_sigma_lo_us = None
 
     tau_eff_min = effective_tau_shape(shape_resolved, tau_bounds[0], acquisition_us)
     tau_eff_nom = effective_tau_shape(shape_resolved, tau0_us, acquisition_us)
@@ -340,6 +362,7 @@ def derive_window_fit_constraints(
         tau_penalty_lambda=effective_tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_ref,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
+        tau_penalty_sigma_lo_us=tau_penalty_sigma_lo_us,
     )
 
     return WindowFitConstraints(
@@ -351,6 +374,7 @@ def derive_window_fit_constraints(
         fit_tau_eff=fit_tau_eff,
         tau_penalty_reference=tau_penalty_ref,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
+        tau_penalty_sigma_lo_us=tau_penalty_sigma_lo_us,
         effective_tau_penalty_lambda=effective_tau_penalty_lambda,
         fit_kwargs_inner=fit_kwargs_inner,
     )
@@ -709,6 +733,7 @@ def _penalty_residuals_and_jacobian(
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
+    tau_penalty_sigma_lo_us: Optional[float] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Penalty residuals + analytic Jacobian rows for the augmented LSQ.
 
@@ -733,13 +758,20 @@ def _penalty_residuals_and_jacobian(
     * **Tau anchoring penalty** -- one residual element when ``fit_tau``
       and ``tau_penalty_lambda > 0``. Two forms:
 
-      - **Bidirectional Gaussian prior** (``tau_penalty_sigma_us`` set, > 0):
-        ``sqrt(lambda) * (tau - tau_ref) / sigma_tau``. Pulls tau toward the
-        calibrated ``tau_ref = tau_maj`` from both sides at strength
-        ``lambda / sigma_tau^2``. Fires symmetrically against tau-collapse
-        (LSQ broadens the line by lowering tau to absorb unmodeled-peak
-        residual) and tau-runaway (LSQ narrows the line toward a CW-spur
-        basin). This is the form used when a Stage 2b calibration is
+      - **(A)symmetric Gaussian prior** (``tau_penalty_sigma_us`` set, > 0):
+        ``sqrt(lambda) * (tau - tau_ref) / sigma_eff``. Pulls tau toward
+        ``tau_ref`` at strength ``lambda / sigma_eff^2``. ``sigma_eff`` is
+        ``tau_penalty_sigma_us`` for ``tau >= tau_ref`` (the stiff *narrowing*
+        side) and ``tau_penalty_sigma_lo_us`` for ``tau < tau_ref`` (the soft
+        *broadening* side); when the latter is None both sides share
+        ``tau_penalty_sigma_us`` and the prior is the symmetric bidirectional
+        form. The asymmetry implements the "start narrow, broaden cheaply,
+        narrow expensively" policy: with ``tau_ref`` seeded at a deliberately
+        long (narrow-line) anchor, a soft low side lets the fit broaden down
+        onto the true tau (and keeps partially-blended components resolvable
+        rather than swallowed by an over-broad start), while the stiff high
+        side blocks tau-runaway toward the CW-spur basin / clean-feature
+        overfit. This is the form used when a Stage 2b calibration is
         available.
       - **One-sided hinge** (``tau_penalty_sigma_us`` is None): legacy form
         for the no-calibration path -- ``sqrt(lambda) * max(0, (tau_ref -
@@ -819,9 +851,18 @@ def _penalty_residuals_and_jacobian(
         tau_value = float(params[3 * k])
         sqrt_lambda = float(np.sqrt(tau_penalty_lambda))
         if tau_penalty_sigma_us is not None and tau_penalty_sigma_us > 0.0:
-            # Bidirectional Gaussian prior.
-            res[row] = sqrt_lambda * (tau_value - tau_penalty_reference) / tau_penalty_sigma_us
-            jac[row, 3 * k] = sqrt_lambda / tau_penalty_sigma_us
+            # (A)symmetric Gaussian prior: stiff above tau_ref (narrowing),
+            # soft below (broadening) when a distinct low-side sigma is given.
+            below = tau_value < tau_penalty_reference
+            sigma_eff = (
+                float(tau_penalty_sigma_lo_us)
+                if below
+                and tau_penalty_sigma_lo_us is not None
+                and tau_penalty_sigma_lo_us > 0.0
+                else float(tau_penalty_sigma_us)
+            )
+            res[row] = sqrt_lambda * (tau_value - tau_penalty_reference) / sigma_eff
+            jac[row, 3 * k] = sqrt_lambda / sigma_eff
         else:
             # Legacy one-sided hinge.
             ratio = (tau_penalty_reference - tau_value) / tau_penalty_reference
@@ -855,6 +896,7 @@ def fit_window(
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
+    tau_penalty_sigma_lo_us: Optional[float] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
     baseline_order: Optional[int] = None,
@@ -1101,6 +1143,7 @@ def fit_window(
         tau_penalty_lambda=tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_reference,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
+        tau_penalty_sigma_lo_us=tau_penalty_sigma_lo_us,
     )
     penalties_active = (
         phase_penalty_lambda > 0.0
@@ -1672,6 +1715,7 @@ def _blend_aware_seed(
     tau_penalty_lambda: float = 0.0,
     tau_penalty_reference: Optional[float] = None,
     tau_penalty_sigma_us: Optional[float] = None,
+    tau_penalty_sigma_lo_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
@@ -1711,6 +1755,7 @@ def _blend_aware_seed(
         tau_penalty_lambda=tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_reference,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
+        tau_penalty_sigma_lo_us=tau_penalty_sigma_lo_us,
         shape=shape_resolved,
         spur_mask=spur_mask,
     )
@@ -1883,6 +1928,8 @@ def conservative_fit(
     tau_apodization_us: Optional[float] = None,
     tau_maj_us: Optional[float] = None,
     sigma_tau_us: Optional[float] = None,
+    tau_anchor_us: Optional[float] = None,
+    tau_penalty_sigma_lo_factor: float = 1.0,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
@@ -2033,6 +2080,8 @@ def conservative_fit(
         tau_apodization_us=tau_apodization_us,
         tau_maj_us=tau_maj_us,
         sigma_tau_us=sigma_tau_us,
+        tau_anchor_us=tau_anchor_us,
+        tau_penalty_sigma_lo_factor=tau_penalty_sigma_lo_factor,
         shape=shape_resolved,
     )
     tau_bounds = constraints.tau_bounds
@@ -2091,6 +2140,7 @@ def conservative_fit(
         tau_penalty_lambda=effective_tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_ref,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
+        tau_penalty_sigma_lo_us=constraints.tau_penalty_sigma_lo_us,
         n_eff_kind=n_eff_kind,
         shape=shape_resolved,
         spur_mask=spur_mask,
