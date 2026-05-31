@@ -23,6 +23,7 @@ from ftmwpipeline.preprocessing.noise_estimation import (
     estimate_noise_scatter,
     estimate_noise_adaptive,
     SCATTER_ALGORITHM,
+    _gaussian_smooth_1d,
 )
 
 # Synthetic-spectrum geometry. A 30k-bin grid over the 2638 active band so the
@@ -50,6 +51,32 @@ def _magnitude_spectrum(sigma_c: float, line_amp: float, seed: int) -> np.ndarra
     for pos in _LINE_POSITIONS:
         spec += line_amp * _LINE_GAMMA / ((idx - pos) + 1j * _LINE_GAMMA)
     return np.abs(spec)
+
+
+@pytest.mark.parametrize("sigma_bins", [3.0, 50.0, 8389.0])
+def test_gaussian_smooth_matches_scipy(sigma_bins):
+    """The FFT-based broad σ-smoother reproduces
+    ``scipy.ndimage.gaussian_filter1d(order=0, mode="nearest")`` to round-off.
+
+    The estimator's step-removing pass uses a Gaussian whose width is a fixed
+    frequency span, which on a fine detection grid is thousands of bins -- the
+    regime where scipy's direct spatial correlation is O(N·kernel) and dominates
+    the whole estimator. ``_gaussian_smooth_1d`` swaps that for an O(N log N) FFT
+    convolution; this test pins it to the reference output it replaces.
+    """
+    from scipy.ndimage import gaussian_filter1d
+
+    rng = np.random.default_rng(7)
+    x = np.abs(rng.standard_normal(_N_BINS)) + 1e-3
+    ref = gaussian_filter1d(x, sigma=sigma_bins, mode="nearest")
+    got = _gaussian_smooth_1d(x, sigma_bins)
+    assert got.shape == x.shape
+    np.testing.assert_allclose(got, ref, rtol=1e-10, atol=1e-12)
+
+
+def test_gaussian_smooth_zero_sigma_is_identity():
+    x = np.linspace(1.0, 2.0, 100)
+    np.testing.assert_array_equal(_gaussian_smooth_1d(x, 0.0), x)
 
 
 def test_returns_noise_result_with_scatter_metadata():

@@ -21,7 +21,7 @@ import logging
 
 import numpy as np
 import scipy.signal as spsig
-from scipy.ndimage import median_filter, percentile_filter, gaussian_filter1d
+from scipy.ndimage import median_filter, percentile_filter
 from typing import NamedTuple, Tuple, Optional, Dict, Union, List
 from dataclasses import dataclass
 
@@ -536,7 +536,15 @@ def compute_rms_noise_convolution(
     if len(noise_magnitudes) == 0:
         return np.full_like(frequencies, np.min(magnitudes))
 
-    bl_bin = max(bl_bin, 1)
+    # A moving-median width wider than the data is meaningless -- it just
+    # degenerates to the global median while making scipy's rank filter cost
+    # O(N · bl_bin) for no added smoothing. Clamp to the sample count. On the
+    # full production band bl_bin (~300 MHz / df ≈ 5000) stays far below N, so
+    # this never triggers there; it only guards narrow-span inputs such as the
+    # Stage-5 active-FT (~10 MHz over thousands of fine bins), where the
+    # MHz→bin conversion would otherwise demand a window tens of times the
+    # array length.
+    bl_bin = min(max(bl_bin, 1), len(noise_magnitudes))
     # scipy median_filter handles boundaries via 'reflect' (same convention
     # as the previous bl_pre/bl_post block-padding) so no explicit padding
     # is needed here.
@@ -673,6 +681,32 @@ def _robust_sigma(values: np.ndarray) -> float:
     if values.size == 0:
         return 0.0
     return float(1.4826 * np.median(np.abs(values - np.median(values))))
+
+
+def _gaussian_smooth_1d(
+    x: np.ndarray, sigma: float, truncate: float = 4.0
+) -> np.ndarray:
+    """1-D Gaussian smoothing equivalent to ``scipy.ndimage.gaussian_filter1d``
+    (order 0, ``mode="nearest"``) but evaluated by FFT convolution.
+
+    The broad σ-smoothing of the scatter estimator uses a Gaussian whose width
+    is a fixed *frequency* span (``convolve_mhz``); on a fine detection grid
+    that is tens of thousands of bins, where the direct spatial correlation in
+    ``gaussian_filter1d`` is O(N · kernel) and dominates the whole estimator.
+    Replicating ``mode="nearest"`` by edge-padding and convolving the *same*
+    normalized Gaussian kernel via FFT is O(N log N) and matches the direct
+    result to floating-point round-off (~1e-14 relative).
+    """
+    sigma = float(sigma)
+    if sigma <= 0.0:
+        return np.asarray(x, dtype=float)
+    radius = int(truncate * sigma + 0.5)
+    offsets = np.arange(-radius, radius + 1)
+    kernel = np.exp(-0.5 * (offsets / sigma) ** 2)
+    kernel /= kernel.sum()
+    # ``mode="nearest"`` == replicate the edge value over the kernel radius.
+    padded = np.pad(np.asarray(x, dtype=float), radius, mode="edge")
+    return spsig.fftconvolve(padded, kernel, mode="valid")
 
 
 def estimate_noise_scatter(
@@ -848,7 +882,7 @@ def estimate_noise_scatter(
         # Second pass: a Gaussian removes the median's staircase. Acting on the
         # de-inflated median output, it smooths without re-inflating under lines.
         if convolve_mhz > 0.0:
-            sigma = gaussian_filter1d(sigma, sigma=convolve_mhz / df, mode="nearest")
+            sigma = _gaussian_smooth_1d(sigma, sigma=convolve_mhz / df)
 
     bin_info = _scatter_bin_info(
         window_mhz,

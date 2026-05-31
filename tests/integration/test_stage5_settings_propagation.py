@@ -322,7 +322,7 @@ def test_baseline_disabled_passes_through(
 # ---------------------------------------------------------------------------
 @pytest.mark.slow
 def test_tau_penalty_lambda_drives_real_fit(
-    baseline_2638_stage4: Path,
+    baseline_2638_stage4_small: Path,
     tmp_path: Path,
 ) -> None:
     """The τ-penalty λ sweep needs the kwarg to actually reach the LSQ.
@@ -332,16 +332,29 @@ def test_tau_penalty_lambda_drives_real_fit(
     ``reduced_chi2`` between the two persisted fits. Mock-based tests
     above confirm the kwarg reaches the planner; this test guarantees the
     planner forwards it through to the inner LSQ.
+
+    The guarantee is per-window (λ changes the τ a window lands on, hence its
+    χ²), so the small 3-window baseline proves it just as well as the full
+    382-window plan -- and the penalty is anchored on the band-wide
+    ``calibrate_tau`` τ_maj, which is window-count-independent.
     """
+    # The τ penalty anchors on the Stage 2b STFT τ_maj. On the canonical raw
+    # FT (expf_us=None) there is no apodization τ to fall back on, so without
+    # Stage 2b the penalty has no anchor and λ is inert. Run calibrate_tau (the
+    # production recipe) once -- τ_maj is a property of the FID, identical for
+    # both λ runs -- so τ_maj differs from the free per-window optimum and λ
+    # actually bites. The two λ variants copy this single calibrated file.
+    from tests.integration._stage2b_helpers import skip_auto_recommend_settings
+
+    staged = tmp_path / "tau_penalty_staged.ftmw"
+    shutil.copyfile(baseline_2638_stage4_small, staged)
+    # The λ penalty anchors on the Lorentzian τ_maj; the shape recommendation
+    # plays no part, so skip the auto-recommend NLS pass.
+    ftmw.calibrate_tau(str(staged), settings=skip_auto_recommend_settings())
+
     def _fit(tag: str, lam: float) -> list[tuple[int, float]]:
         variant = tmp_path / f"{tag}.ftmw"
-        shutil.copyfile(baseline_2638_stage4, variant)
-        # The τ penalty anchors on the Stage 2b STFT τ_maj. On the canonical
-        # raw FT (expf_us=None) there is no apodization τ to fall back on, so
-        # without Stage 2b the penalty has no anchor and λ is inert. Run
-        # calibrate_tau (the production recipe) so τ_maj differs from the free
-        # per-window optimum and λ actually bites.
-        ftmw.calibrate_tau(str(variant))
+        shutil.copyfile(staged, variant)
         s = _base_settings()
         s.tau.tau_penalty_lambda = lam
         ftmw.fit_peaks(str(variant), settings=s)
@@ -394,11 +407,14 @@ def test_per_band_tau_routes_tau0_per_window(
         calibrate_tau_G_impl,
         load_tau_G_calibration_impl,
     )
+    from tests.integration._stage2b_helpers import skip_auto_recommend_settings
 
     variant = tmp_path / "per_band_tau0.ftmw"
     shutil.copyfile(baseline_2638_stage4_small, variant)
-    # Stage 2b τ_G must be present for per-band routing to activate.
-    calibrate_tau_G_impl(str(variant))
+    # Stage 2b τ_G must be present for per-band routing to activate. The shape
+    # recommendation is irrelevant to band_majorities / per-band τ₀ routing, so
+    # skip the auto-recommend NLS pass.
+    calibrate_tau_G_impl(str(variant), settings=skip_auto_recommend_settings())
     tc = load_tau_G_calibration_impl(str(variant))["tau_G_calibration"]
     assert tc.band_majorities, "Stage 2b τ_G did not produce band_majorities"
 
