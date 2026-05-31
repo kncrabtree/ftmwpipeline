@@ -96,8 +96,8 @@ the σ_f accuracy floor, not a Voigt ε.**
 
 | theme | what | issues | status |
 |---|---|---|---|
-| T1 | Cross-fixture characterization harness (tracked recipe: build→fit all 7, emit Tier-1 χ²ᵣ health + Tier-2 gate-firing + τ-source comparison + σ_f floor), → roll-up | backbone for #2/#3/#4 | unblocked |
-| T2 | τ-calibration robustness: STFT bias per fixture; production τ-source decision (STFT vs `calibrate_tau_G` vs hybrid) | #3 | unblocked; biggest χ²ᵣ lever |
+| T1 | Cross-fixture characterization harness (tracked recipe: build→fit all 7, emit Tier-1 χ²ᵣ health + Tier-2 gate-firing + τ-source comparison + σ_f floor), → roll-up | backbone for #2/#3/#4 | **landed** (`../research/stage5-cross-fixture/stage5_cross_fixture.py`; 2638 χ²ᵣ med 1.31 anchor); re-baseline pending per-fixture shape |
+| T2 | τ-calibration robustness → **asymmetric long-anchor τ penalty** for swallowed-hyperfine blends (start narrow, broaden cheap, narrow expensive). STFT band-averaged-low / `calibrate_tau_G`-high confirmed; band-dependent τ reconfirmed | #3 | **in progress**: mechanism implemented in `window_fit` (back-compat, 295 tests green) + window-level validated (655 w29 χ²ᵣ 44865→327); production plumbing + full `fit_peaks` A/B next. See `../research/stage5-cross-fixture/report.md` |
 | T3 | Uncertainty honesty: precision-vs-accuracy gap on 1512+655; calibrate instrument accuracy floor; decide σ_f_floor term | #2 Tier 3 | unblocked; shippable |
 | T4 | Shape/ε reconciliation: re-run Gaussian acceptance bar on 1512/655; decide if `shape_error_epsilon` is still needed once τ+noise are right | #3/#4 | unblocked; likely retires ε |
 | T5 | Land `validate-stage5-shape-error` CLI + per-fixture `dev-docs/fixtures/<n>.md` (dual-interface) | #2 | after T1 logic proven |
