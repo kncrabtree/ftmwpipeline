@@ -1,9 +1,10 @@
 # Plan: Stage 3 — Peak detection
 
-Status: **implemented** (all task-breakdown items landed; O2 thresholds
-shipped provisional, pending empirical sign-off on 2638). Scope is Stage 3
-only. Stages 4 (window definition) and 5 (fitting) are kept separate — see
-*Downstream context*.
+Status: **implemented** (all task-breakdown items landed; the O2 SNR tiers and
+the O4 gap-pass grid knobs are cross-instrument validated and signed off — see
+the O2/O4 entries below and `research/stage3-snr-corner/report.md` §7–8). Scope
+is Stage 3 only. Stages 4 (window definition) and 5 (fitting) are kept separate
+— see *Downstream context*.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the Stage 3 work it tracks.
@@ -163,12 +164,16 @@ Stage output: an ordered list of classified `Peak`s.
   too narrow on real data and is demoted to an unused analytic proposal. See
   the implementation overview
   [`leakage-detection-rework.md`](leakage-detection-rework.md).
-- **O2 — classification thresholds. PROVISIONAL, pending sign-off.** Shipped
-  configurable: `weak < 10 ≤ medium < 50 ≤ strong` (SNR), detection floor
-  `min_snr = 3` (real-data evidence: at min_snr=3 the gap pass cleanly fills
-  the inter-line gaps for window seeding). `t1`/`t2` are placeholders in
-  `peak_detection.DEFAULT_*`; tune on 2638 once a reference line list is
-  available.
+- **O2 — classification thresholds. RESOLVED (#10).** Shipped configurable:
+  `weak < 10 ≤ medium < 50 ≤ strong` (SNR), detection floor `min_snr = 3`
+  (corner-validated in `research/stage3-snr-corner/report.md` §1). The
+  `10 / 50` tier boundaries are now **empirically signed off** across all seven
+  fixtures (SNR span ~3 orders of magnitude): the detected-peak SNR
+  distribution is anchored at the `min_snr` floor with a heavy upper tail, so
+  all three tiers stay populated in every regime — no collapse — and fixed
+  *absolute* boundaries generalise where percentile boundaries would not. Only
+  `t2 = 50` (STRONG) has a downstream consumer (Stage 4 HARD-window trigger);
+  `t1 = 10` is cosmetic. See `research/stage3-snr-corner/report.md` §8.
 - **O3 — is the gap pass always needed? RESOLVED: keep, switchable.** On 2638
   the gap pass recovers real weak lines, in leakage-free regions, that the
   apodized primary pass misses (integration test). It is on by default and
@@ -196,9 +201,19 @@ Stage output: an ordered list of classified `Peak`s.
   [`research/matched-filter-detection/report.md`](../research/matched-filter-detection/report.md) §10).
   Pre-condition: the new Stage 2 (`stage2-noise-estimation.md`)
   delivers a multi-bin σ on the active-FT; the prior 1-bin-σ failure
-  would have killed any σ-weighted statistic on this grid. Open work:
-  cross-instrument validation of `_GAP_ACTIVE_ZPF` and the grid-aware
-  K = 4 in `_grid_aware_sg_window`.
+  would have killed any σ-weighted statistic on this grid.
+  **Cross-instrument validation (#10): RESOLVED.** A catalog-scored
+  `zpf ∈ {0,1,2,3}` sweep on the two ground-truth fixtures (1512 + 655,
+  vinyl cyanide) shows detection quality is a **flat plateau over
+  `zpf ∈ {1,2}`** that falls off on both sides: `zpf=0` under-samples the
+  intrinsically coarse active-region FT (line < 1 bin wide), and `zpf≥3`
+  over-pads — the grid-aware `sg_window` widens and over-smooths weak lines,
+  costing recall. The fixed production `zpf=2` is the safe incumbent on the
+  plateau (`zpf=1` is its equal); the `FWHM_bins ≥ 3` sizing proxy is
+  falsified — it points to `zpf≥3`, into the falloff. The grid-aware
+  `sg_window` (`K = 4`) is independently sound (odd ≥ 5, ~4 FWHM on all
+  seven). `_GAP_ACTIVE_ZPF = 2` kept unchanged. See
+  `research/stage3-snr-corner/report.md` §7.
 - **Phase-coherence projection as a stage-3 quality filter (future
   enhancement).** The phase-coherence projection developed for Stage 5's
   residual rescue
