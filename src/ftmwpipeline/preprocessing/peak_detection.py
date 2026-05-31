@@ -39,9 +39,15 @@ import scipy.signal as spsig
 
 from ..core.data_structures import Peak, PeakClassification
 
-# Provisional SNR classification thresholds (open question O2). These are
-# documented placeholders pending empirical tuning on experiment 2638 in the
-# Stage 3 real-data work (task-breakdown item 6); ship configurable.
+# Absolute SNR classification boundaries. Cross-instrument validated across
+# seven fixtures spanning ~3 orders of magnitude in line SNR: the detected-peak
+# SNR distribution is anchored at the detection floor with a heavy upper tail,
+# so all three tiers stay populated in every regime and these fixed *absolute*
+# cutoffs generalise where percentile-based ones would not. Only the
+# medium/strong boundary has a downstream consumer (Stage 4 marks a window HARD
+# when it holds a STRONG line); the weak/medium boundary is curation labelling.
+# Configurable per instrument. See dev-docs/research/stage3-snr-corner/report.md
+# section 8.
 DEFAULT_WEAK_MEDIUM_SNR = 10.0
 DEFAULT_MEDIUM_STRONG_SNR = 50.0
 # Default user-facing *promotion* cutoff: which peaks (by user-grid SNR) move
@@ -220,9 +226,9 @@ def classify_by_snr(
     snr : float
         Peak signal-to-noise ratio.
     weak_medium_snr : float
-        Weak/medium boundary ``t1`` (provisional default, O2).
+        Weak/medium boundary ``t1`` (validated default; see module constants).
     medium_strong_snr : float
-        Medium/strong boundary ``t2`` (provisional default, O2).
+        Medium/strong boundary ``t2`` (validated default; see module constants).
 
     Returns
     -------
@@ -351,7 +357,7 @@ def detect_peaks(
     min_snr : float, default 3.0
         Detection floor in SNR units (both passes; SNR on the scoring grid).
     weak_medium_snr, medium_strong_snr : float
-        SNR classification boundaries (provisional defaults, O2).
+        SNR classification boundaries (validated defaults).
     sg_window, sg_order : int
         Savitzky-Golay window/order for :func:`locate_peaks`; the apex-snap
         radius is ``sg_window // 2``.
