@@ -157,3 +157,234 @@ Next:
    final. This partly confounds the asymmetric-τ A/B above.
 
 Out of scope (still fixture-blocked): #5 (3-way L/G/V) and #6's calibration half.
+
+## Phase 1 — Stage 4 window geometry under massive-SNR lines (NEW)
+
+Driver: `scratch/stage5_cross_fixture/phase1_window_geometry.py`,
+`phase1_inspect_offenders.py`, `bounded_merge.py`, `phase1_resegment_ab.py`
+(geometry + offender population + the bounded-merge A/B).
+
+### The "over-wide window" framing was wrong; the windows are GHz mega-windows
+
+The high-χ²ᵣ 655 windows are not ±130 MHz over-wide-with-empty-middles. They are
+**GHz-scale mega-windows packed with hundreds of genuine lines**: w262 spans 1429
+MHz with 587 detected peaks (occupancy 0.99), w259 1190 MHz/438, w39 890 MHz/286,
+w29 298 MHz/109. The detections are all `detection_pass='primary'`, all promoted,
+133/40/57/12 of them STRONG, and spread across the whole band (w262 median
+|f−f_bright| = 393 MHz; only 6/587 within 5 MHz of the bright line) — i.e. **real
+vinyl-cyanide forest lines, not a bright line's leakage skirt**. Stage 5 then fits
+only K=3–4 (the brightest doublets) under the K=8 `max_peaks` cap → χ²ᵣ 46030 on
+w262. By contrast 2638 (SNR ≤ ~400) tops out at a 70 MHz window; window width and
+detected-count scale with the brightest line's SNR.
+
+### Root cause: the Step-3 strong-cluster force-merge
+
+`build_window_plan` Step 3 force-merges every STRONG line sharing one
+leakage-touched interval into a `(min, max)` grid span. In a dense, ultra-high-SNR
+spectrum the rolling-coherence `touched` run covers the whole band (the SNR-10⁴–10⁵
+skirts + the line forest never let `S_coh` drop below `T_edge`), so all 133 strong
+lines collapse into one 1429 MHz window. The width-cap remedy is advisory only:
+over-cap windows get a single `split_proposal` (or `needs_joint_treatment=True`
+with none), and neither flag is consumed by Stage 5. This is exactly the
+"strong line's touched run → mega-windows" risk the D8 review flagged (80–100 MHz
+on 2638; GHz on 655) — the Stage-5 evidence the review deferred for.
+
+### The bounded-merge fix: necessary, and it fixes the geometry
+
+`bounded_merge.build_window_plan_bounded` (a verbatim copy with only Step 3
+changed) caps the strong-cluster merge at `max_window_width_mhz` and adds an
+*applied* post-merge split — recursively at the largest internal peak gap until
+each window holds ≤ `max_peaks` (8) and ≤ the width cap, splitting at the gap
+midpoint so windows stay disjoint and cross-window coupling is carried by the
+Step-4/5 fixed contributors. Geometry (655): 278→633 windows, max width
+1429→39.5 MHz, peaks/window max 587→8, 18→0 over-capacity windows; the fit now
+models **1675 vs 707** lines. 2638 tightens similarly (70→29.7 MHz max) with no
+loss of fittability. Bounding Step-3 alone is *insufficient* (655 is a genuine
+dense forest, median line spacing 1.6 MHz, so the per-peak ±2 MHz proto-spans
+re-chain) — the applied peak-count + width cap split is the load-bearing piece.
+
+### But χ²ᵣ is a model-fidelity-vs-SNR floor, not a windowing metric
+
+Counterintuitively the bounded plan makes Tier-1 χ²ᵣ *worse* (655 max
+46030→1.02e6, p95 12→373) even though it fits far more lines and every window is
+now sane. The reason: **per-window χ²ᵣ scales with the brightest in-window SNR**,
+independent of windowing —
+
+| max in-window SNR | windows | χ²ᵣ median |
+|---|---|---|
+| <100 | 568 | 2.9 |
+| 100–1k | 55 | 70 |
+| 1k–10k | 4 | 2364 |
+| ≥10k | 6 | 208951 |
+
+(Spearman χ²ᵣ vs maxSNR = +0.59.) The worst window (w420, maxSNR 16k) fits
+successfully — resolves the line into a hyperfine triplet with 0.02 % amplitude
+precision — yet χ²ᵣ = 1.02e6, because at SNR 10⁴–10⁵ the (correct, un-inflated
+scatter) noise is so small that a sub-percent lineshape/τ deficit is hundreds of σ
+per bin. Its fitted τ = 2.63 µs is pinned low (the STFT band-averaged bias; true
+~4 µs), so the model is too broad → systematic core residual — the asymmetric-τ
+target, but it can only lower the floor, not remove it (the analytic lineshape is
+itself imperfect at part-in-10⁵). The mega-window's *lower* χ²ᵣ was an artifact of
+diluting one bright line's residual across 587-line dof under an under-fit model.
+
+**Consequences.**
+1. The bounded merge is the right Stage 4 fix and is *required* to fit dense
+   spectra at all. **PRODUCTIONIZED**: bounded Step-3 merge + applied
+   peak-count/width cap-split live in `window_planning.build_window_plan`, gated
+   by a new `clustering.max_peaks_per_window` setting (default 8, tracking Stage 5
+   `conservative.max_peaks`), threaded through `assign_windows`
+   (api/pipeline/cli) + serialization + unit/cross-interface tests. All 7
+   fixtures re-plan clean (no window >40 MHz, none >8 peaks). The **2638 39 MHz
+   doublet regression check** was run and resolved: splitting raises the bright
+   doublet's window χ²ᵣ 21.7→199, but this was *measured* (not argued) to be pure
+   χ²ᵣ dilution — the old 70 MHz window bundled ~180 noise-only bins that diluted
+   the bright doublet's core residual; the new 7.3 MHz window excludes them,
+   concentrating the *same* residual (95 % of the χ² is the 0.133 MHz SNR-400
+   doublet core; subtracting the cycle-dropped 36389 contributor changes χ²ᵣ by
+   0.01 %; all 29 promoted peaks in the region stay covered, no gaps). The lines
+   are recovered identically (freq errors 0.2 kHz) — the fits are equivalent
+   under the SNR-aware metric. (Earlier I claimed "no regression" from a leakage
+   estimate and was wrong on the raw χ²ᵣ; the refit corrected it.)
+2. The Tier-1 χ²ᵣ gate (median≤1.5, p95≤4, max≤10) is **unachievable at extreme
+   SNR** and must be reformulated SNR-aware (judge on the maxSNR<100 bulk, or on
+   fractional residual, or with the brightest cores excluded/capped). This is the
+   same accuracy floor as the 655 σ_f and noise-vs-SNR findings.
+3. The bulk (568/633 windows, maxSNR<100) fits at χ²ᵣ median 2.9 — that is where
+   the asym-τ + correct-shape tuning is meaningful and the Phase-2 A/B belongs;
+   the bright-core windows are floor-limited, so χ²ᵣ deltas there are not the
+   right success signal.
+4. The MAX_PEAKS=8 split may be *too* tight: the bulk median rose 2.04→2.9, partly
+   from boundary windows now leaning on imperfect fixed-contributor leakage from
+   bright neighbors (the D8 "does the leakage model carry the skirt" question). A
+   window size between mega and ≤8-peak likely trades fit-capacity against
+   contributor error — a tuning knob to sweep.
+
+### SNR-aware health metric
+
+The raw Tier-1 χ²ᵣ gate is meaningless at extreme SNR (see above). Two regimes:
+low-SNR windows are noise-dominated (χ²ᵣ≈1 is the right target, the model deficit
+is invisible below noise); high-SNR windows are deficit-dominated (χ²ᵣ=(SNR·ε)²).
+The unifying gate is **χ²ᵣ ≤ 1 + (κ·SNR)²** (κ = tolerated fractional model
+deficit), which collapses to χ²ᵣ≈1 at low SNR and grows ∝SNR² at high SNR. The
+deficit-regime quantity is the fractional core residual **ε = √(max(χ²ᵣ−1,0))/SNR**;
+on 655 it *decreases* with SNR (bright isolated lines fit cleanest, ~1.5 %; the
+moderate/dense-forest windows carry larger relative residual ~3–4 %), so the model
+work belongs on the dense bulk, not the bright cores.
+
+### Window-tightness sweep (655): looser is better, but a floor at ~2.4 remains
+
+Sweeping the coupled cap C (= Stage-4 per-window peak cap = Stage-5 fit
+`max_peaks`) — width cap fixed at 40 MHz, so this varies window size ~13→40 MHz:
+
+| C | windows | lines fit | bulk χ²ᵣ med | bulk ε | all-win p95 | gate pass |
+|---|---|---|---|---|---|---|
+| 8 | 633 | 1675 | 2.85 | 14.5 % | 373 | 0.142 |
+| 16 | 492 | 1492 | 2.47 | 13.2 % | 280 | 0.175 |
+| 24 | 467 | 1435 | 2.40 | 12.4 % | 234 | 0.188 |
+
+Looser windows are monotonically better on every metric with no conditioning
+blowup; the gain plateaus (all configs are pinned at the 40 MHz width cap). But the
+**bulk χ²ᵣ floor sticks at ~2.4 regardless of window size** — window sizing alone
+cannot reach χ²ᵣ≈1.
+
+### The bulk floor is unmodeled cross-window leakage: the cycle-breaker drops ALL fixed contributors on 655
+
+Root cause of the ~2.4 floor, found by tracing the zero-contributor anomaly: 655
+gets **0 fixed contributors** from Stage 4 (2638 gets 50), even though it has the
+brightest lines (SNR 30k) and strongest skirts. The magnitude attachment *does*
+fire — it creates **2136** FixedContributors (skirts up to ~0.1, vs a ~8e-4 σ
+threshold) — but each creates a window→primary dependency edge, and on a dense
+strong-line forest the dependency graph is **densely cyclic** (windows mutually
+attach each other). The Step-7 cycle-breaker drops cyclic edges *and their
+FixedContributors* (`window_planning.py` ~648–651): on 655 **all 984 edges are
+cyclic → all dropped → 0 survive**; on sparse 2638 only 92/122 drop, 50 survive.
+So **no bright-line leakage is subtracted from any neighbor window on 655** — the
+dominant driver of the bulk floor (and a contributor to the bright-core χ²ᵣ).
+
+This is the deferred O5-10 "cumulative-tail subtraction" item, acceptable at
+SNR~10³ (2638, weak skirts, most contributors survive) but catastrophic at
+SNR~10⁴–10⁵ dense. The fix decouples leakage *subtraction* from fit *ordering*: a
+detected strong line's skirt can be subtracted as a frozen, pre-computed additive
+background (from its freq/intensity/τ) without requiring its window to fit first —
+removing the dependency edge and thus the cycle. **This is likely a larger lever on
+the 655 bulk χ²ᵣ than either window sizing or the asym-τ penalty**, and should be
+prototyped before the Phase-2 asym-τ A/B (which targets the residual lineshape/τ
+deficit that remains *after* leakage is subtracted).
+
+### Frozen-from-detection skirt prototype (`phase1_frozen_skirt_ab.py`)
+
+Reads each strong line's complex core straight from the active FT (amplitude =
+2|z_core|/τ_eff, phase = arg(z_core)) instead of from its primary window's fit, so
+the frozen skirt needs no fit-ordering dependency (no edge, no cycle). Per-window
+A/B on the bounded-C24 655 windows, subtracting the would-be contributors'
+(predicted skirt ≥ 0.1σ_c) frozen skirts before a bare `conservative_fit`:
+
+- **Mechanism validated**: large wins where a bright neighbour dominates — w65
+  χ²ᵣ 10556→342 (31×), w346 28912→12433, w425 38820→19782. The cycle-breaker drop
+  is a real, recoverable loss.
+- **Median gain modest** (bulk χ²ᵣ 10.67→8.79, −18 %) and **confounded**: (1) this
+  bare `conservative_fit` has no leakage-wing baseline, so its OLD bulk (10.67) is
+  ~4× the real `fit_peaks` bulk (2.40) — the shipped edge-coherence baseline
+  already absorbs much in-window leakage, so the marginal value *on top of it* is
+  untested here; (2) the 0.1σ threshold saturates at SNR 30k (all 304 strong lines
+  attach to every window), and summing 304 single-bin-read skirts injects
+  read-noise. The bright-core window (w381, SNR 30k) barely moves (1.22e6→1.22e6) —
+  its floor is SNR² model-fidelity, not neighbour leakage.
+
+**Decisive in-pipeline test (run; NEGATIVE).** `phase1_frozen_inpipeline.py`
+pre-subtracts every strong line's skirt (phasor from its core) from the active-FT
+spectrum *except* its home window — the center-independent global form
+`phasor_j·h_T(s·(f−f_j);τ_j)` — then runs the real `fit_peaks` (baseline + rescue
+intact) on the corrected FT via a `compute_active_ft` monkeypatch. Result: the bulk
+χ²ᵣ gets **worse**, 2.40→4.71 (bulk frac≤2 0.38→0.06, p95 234→347). Two reasons,
+both decisive:
+
+1. **The shipped leakage-wing baseline already handles bulk leakage.** The bare
+   A/B's apparent win was relative to a baseline-free `conservative_fit` (OLD bulk
+   10.67); against the real pipeline (OLD bulk 2.40) crude subtraction only hurts.
+2. **Single-bin phasor reads are pedestal-contaminated on a dense spectrum** — each
+   strong line's core bin also carries ~300 other lines' summed skirts, so every
+   `phasor_j` is over-estimated → over-subtraction → 304 accumulated residuals
+   inject more error than they remove.
+
+**Reframe:** the bulk χ²ᵣ ~2.4 floor is **not primarily recoverable cross-window
+leakage** (the baseline already covers it) — it is the genuine lineshape/τ model
+deficit. So the cycle-breaker contributor drop, though real, is *masked* by the
+baseline; a frozen-contributor fix is the wrong lever in this global crude form.
+Redirect the bulk-floor work to **Phase 2 (asym-τ + per-fixture shape)**. A frozen
+contributor is only worth revisiting in a *targeted, robust* form (a few genuinely
+adjacent bright neighbours, LSQ amplitude reads to avoid pedestal contamination) for
+the handful of bright-neighbour windows (e.g. the bare A/B's w65, 31× win) — not as
+a global pre-subtraction.
+
+## Phase 2 — asymmetric-τ penalty on the bounded bulk windows (NEGATIVE)
+
+Drivers: `phase2_asym_tau_bulk.py` (bare conservative_fit A/B over all bounded
+windows) and `phase2_asym_tau_inpipeline.py` (asym-τ injected into the real
+`fit_peaks` via a `conservative_fit` monkeypatch, baseline + rescue intact). The
+asym-τ premise was: STFT τ biased low → bulk models too broad → seed τ long
+(`tm·F`) with a soft below-anchor σ so it relaxes onto the true (~4 µs) value.
+
+**Result on the maxSNR<100 bulk: null.** Bare A/B: bulk χ²ᵣ 10.67→9.23 (F=3, the
+no-baseline level), but **τ does not relax** — median 3.12→3.09, and only 63/416
+windows moved longer despite a tm·3≈9 µs seed. In-pipeline (the decisive test):
+bulk χ²ᵣ **2.40→2.405**, bulk frac≤2 0.38→0.387, **bulk τ median 3.069→3.068**.
+The bulk data genuinely prefers τ≈3.07 per-band; the long seed is pulled straight
+back down. The asym-τ penalty's headline wins (655 w29 44865→327, w262 540233→38007)
+were **entirely the mega-window windowing artifact** — once the bounded windows
+isolate the bulk, asym-τ does nothing to it. (It may retain niche value on the
+~15 % of windows with a genuine swallowed blend, but it is not a bulk-floor lever.)
+
+### Synthesis — the bulk χ²ᵣ ~2.4 floor is irreducible model fidelity
+
+Three independent levers are now ruled out for the bulk floor: **window sizing**
+(sweep plateaus at 2.4), **cross-window leakage** (the shipped baseline already
+covers it; crude frozen subtraction makes it worse), and **τ** (no relaxation, no
+gain, in-pipeline confirmed). The bulk χ²ᵣ ≈ 2.4 at moderate SNR corresponds to a
+fractional core residual ε ≈ 3 % — the honest fidelity of the Lorentzian model +
+low-order baseline against real vinyl-cyanide lines (plus the ~10 kHz accuracy
+floor). It is **not a defect to chase to χ²ᵣ→1**; the correct response is the
+SNR-aware / fractional-residual metric (κ ≈ 3 %), under which the bulk is healthy.
+The one shippable win from this arc is the **bounded-merge Stage 4 fix**, which is
+required to fit dense spectra at all; the asym-τ production plumbing is **not**
+warranted on this evidence.
