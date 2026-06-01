@@ -33,7 +33,7 @@ stages = ftmw.list_available_stages("experiment.ftmw")
 ```
 """
 
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Optional, Sequence, Union, Any, Tuple
 from pathlib import Path
 import logging
 
@@ -1673,3 +1673,71 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
         
     except Exception as e:
         return f"Error getting workflow summary for {file_path}: {e}"
+
+
+# =============================================================================
+# Companion parameter tuning
+# =============================================================================
+
+def tune_list(stage: Optional[str] = None) -> Tuple[Any, ...]:
+    """List the registered tunable knobs, equivalent to
+    :meth:`Pipeline.tune_list`.
+
+    Parameters
+    ----------
+    stage : str, optional
+        Restrict to one stage label (e.g. ``"stage2_noise"`` /
+        ``"start_detection"``).
+
+    Returns
+    -------
+    tuple of KnobSpec
+        Path-sorted knob specifications.
+    """
+    return Pipeline.tune_list(stage)
+
+
+def tune_scan(
+    file_path: Union[str, Path],
+    knob: str,
+    grid: Optional[Sequence[Any]] = None,
+    output_dir: Optional[Union[str, Path]] = None,
+    reuse: bool = False,
+    make_plot: bool = True,
+) -> Any:
+    """Sweep a single pipeline knob across a grid, equivalent to
+    :meth:`Pipeline.tune_scan`.
+
+    Re-runs the knob's stage for each grid value on a working copy of
+    ``file_path`` (the input is never mutated) and returns a ``SweepResult``
+    with the table rows, a CSV path, an optional plot, a best-effort
+    recommendation, and instructions for applying the chosen value.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        A ``.ftmw`` already built through the knob's upstream stage.
+    knob : str
+        Dotted knob path (see :func:`tune_list`), e.g.
+        ``"stage2.scatter.window_mhz"``.
+    grid : sequence, optional
+        Values to sweep; defaults to the knob's registered grid.
+    output_dir : str or Path, optional
+        Where the CSV/plot/working-copy land (default: current directory).
+    reuse : bool, default False
+        Reuse an existing working copy instead of re-copying the input.
+    make_plot : bool, default True
+        Render the knob's plot adapter if it has one.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.tune_scan(
+            knob,
+            grid=grid,
+            output_dir=output_dir,
+            reuse=reuse,
+            make_plot=make_plot,
+        )
+    except Exception as e:
+        logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
+        raise

@@ -5,9 +5,12 @@ pipeline, implementing the dual-interface architecture alongside functional
 and CLI interfaces. Each Pipeline instance is bound to a specific .ftmw file.
 """
 
-from typing import Dict, List, Optional, Union, Any, Tuple, cast
+from typing import Dict, List, Optional, Sequence, Union, Any, Tuple, cast, TYPE_CHECKING
 import logging
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from ._internal.tuning import KnobSpec, SweepResult
 
 from .core.data_structures import FID, ComplexFT
 from .core.settings import FTSettings
@@ -1671,7 +1674,49 @@ class Pipeline:
             If file is corrupted and cannot be validated
         """
         return validate_pipeline_file(self.filepath)
-    
+
+    # =========================================================================
+    # Companion parameter tuning
+    # =========================================================================
+
+    @staticmethod
+    def tune_list(stage: Optional[str] = None) -> Tuple["KnobSpec", ...]:
+        """List the registered tunable knobs (optionally filtered to a stage).
+
+        Equivalent to :func:`ftmwpipeline.api.tune_list`. The returned
+        :class:`KnobSpec` tuple is independent of any file, so this is a
+        staticmethod; it is exposed on the class for dual-interface parity.
+        """
+        from ._internal.tuning import list_knobs
+
+        return list_knobs(stage)
+
+    def tune_scan(
+        self,
+        knob: str,
+        grid: Optional[Sequence[Any]] = None,
+        output_dir: Optional[Union[str, Path]] = None,
+        reuse: bool = False,
+        make_plot: bool = True,
+    ) -> "SweepResult":
+        """Sweep a single knob across a grid on a copy of this file.
+
+        Equivalent to :func:`ftmwpipeline.api.tune_scan`. Re-runs the knob's
+        stage for each grid value on a working copy (this file is never
+        mutated), returning a :class:`SweepResult` with the table, CSV path,
+        optional plot, recommendation, and how-to-apply instructions.
+        """
+        from ._internal.tuning import get_knob, run_scan
+
+        return run_scan(
+            get_knob(knob),
+            self.filepath,
+            grid=grid,
+            output_dir=Path(output_dir) if output_dir is not None else None,
+            reuse=reuse,
+            make_plot=make_plot,
+        )
+
     def __repr__(self) -> str:
         """String representation of Pipeline instance."""
         return (f"Pipeline(file={self.filepath.name}, "
