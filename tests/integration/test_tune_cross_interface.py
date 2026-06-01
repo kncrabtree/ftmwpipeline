@@ -2,7 +2,8 @@
 
 The CLI (`tune list`/`tune scan`), the `Pipeline` methods, and the functional
 `api` functions are thin wrappers over one engine; they must agree. Uses the
-session-scoped raw Stage 0+1 baseline so no extra build cost is incurred.
+session-scoped raw Stage 0+1 baseline and a fast, stable noise knob so no extra
+build cost is incurred.
 """
 
 from pathlib import Path
@@ -15,9 +16,10 @@ from ftmwpipeline.pipeline import Pipeline
 
 pytestmark = pytest.mark.integration
 
-# A cheap knob (start detection: no FT re-run, small sweep).
-KNOB = "start.guard_margin_us"
-GRID = [0.5, 0.67, 1.0]
+# A cheap, stable knob: re-runs only Stage 2 noise on the Stage 1 baseline.
+KNOB = "stage2.scatter.window_mhz"
+LEAF = "window_mhz"
+GRID = [40.0, 80.0]
 
 
 def _rows(result):
@@ -59,20 +61,19 @@ def test_cli_scan_matches_api(baseline_2638_stage1_raw, tmp_path, capsys):
     ])
     out = capsys.readouterr().out
     assert rc == 0
-    # the table carries the knob leaf + metric columns
-    assert "guard_margin_us" in out
+    assert LEAF in out
     for col in ra.metric_columns:
         assert col in out
-    # every swept start_us value from the api result appears in the CLI table
+    # every swept metric value from the api result appears in the CLI table
     for row in ra.rows:
-        assert f"{row.metrics['start_us']:.6g}" in out
+        assert f"{row.metrics['median_sigma']:.6g}" in out
 
 
 def test_cli_list_runs(capsys):
     rc = cli_main(["tune", "list"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "start.guard_margin_us" in out
+    assert "stage2.scatter.window_mhz" in out
 
 
 def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):

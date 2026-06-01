@@ -162,6 +162,12 @@ def register_tune_commands(subparsers: Any) -> None:
         "scan",
         help="Sweep one knob across a grid and report the metric table",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Progress streams to stderr as each value completes. If you launch "
+            "through a wrapper that captures subprocess output (e.g. `conda "
+            "run`), pass its passthrough flag (`conda run --no-capture-output`) "
+            "or run the entry point in an activated env to see it live."
+        ),
     )
     p_scan.add_argument(
         "file_path",

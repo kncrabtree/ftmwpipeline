@@ -21,8 +21,8 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from .plots import (
     plot_noise_sweep,
+    plot_spectra_ladder,
     plot_start_detection,
-    plot_start_ladder,
     plot_tau_trend,
 )
 
@@ -111,15 +111,62 @@ def _run_noise(method: str, kwarg: str) -> RunFn:
     return run
 
 
+@dataclass(frozen=True)
+class FtAtStart:
+    """A FT computed at a particular window start, with the start (and the
+    chirp-end it was referenced to, if any) retained for the ladder plot.
+
+    Both the ``stage1.start_us`` and ``start.guard_margin_us`` knobs sweep the
+    *same* thing — the spectrum as a function of where the FT window starts.
+    They differ only in how the start is specified: ``start_us`` absolutely,
+    ``guard_margin_us`` as an offset past the (separately detected) chirp end.
+    """
+
+    ft: Any
+    start_us: float
+    chirp_end_us: Optional[float] = None
+
+
 def _run_ft_start(path: Path, value: Any) -> Any:
-    """Recompute the FT at a given window start; returns the ``ComplexFT``.
+    """Recompute the FT at an absolute window start; returns an ``FtAtStart``.
 
     Other FT settings (trim, zpf, apodization) are inherited from the file's
     resolution chain, so the sweep isolates the effect of ``start_us``.
     """
     import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
 
-    return ftmw.compute_ft(path, start_us=float(value))
+    start = float(value)
+    return FtAtStart(ft=ftmw.compute_ft(path, start_us=start), start_us=start)
+
+
+def _run_guard() -> RunFn:
+    """Sweep the guard margin: the FT window start is ``chirp_end + guard``.
+
+    The chirp end is detected once per sweep (memoised on the working file's
+    identity) since the guard does not affect detection — it only shifts the
+    start past the chirp. So the sweep costs one detection plus a fast FT per
+    value, not a full detection per value.
+    """
+    cache: Dict[Any, float] = {}
+
+    def run(path: Path, value: Any) -> Any:
+        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+        chirp_end = cache.get(key)
+        if chirp_end is None:
+            cache.clear()
+            chirp_end = float(ftmw.detect_start_time(path, stamp=False).chirp_end_us)
+            cache[key] = chirp_end
+        start = chirp_end + float(value)
+        return FtAtStart(
+            ft=ftmw.compute_ft(path, start_us=start),
+            start_us=start,
+            chirp_end_us=chirp_end,
+        )
+
+    return run
 
 
 def _run_tau(sub_block: str, field_name: str) -> RunFn:
@@ -162,7 +209,7 @@ def _metric_ft_band_floor(result: Any) -> Dict[str, Any]:
     readable for both dense and diffuse spectra."""
     import numpy as np
 
-    mag = np.abs(np.asarray(result.complex_spectrum))
+    mag = np.abs(np.asarray(result.ft.complex_spectrum))
     pcts: "np.ndarray" = np.percentile(mag, [1, 5, 10, 20, 50, 100])
     return {
         "p1": round(float(pcts[0]), 5),
@@ -208,10 +255,16 @@ def _register(spec: KnobSpec) -> None:
     _REGISTRY[spec.path] = spec
 
 
-# Start detection (pre-Stage 1) — requires Stage 0 (FID).
-_START_SEE_ALSO = (
-    "stage1.start_us — stack the resulting spectra to see the effect of the "
-    "start on the FT (chirp/ringdown residue)."
+# Start handling (pre-Stage 1) — requires Stage 0 (FID).
+#
+# The guard margin is a spectrum-impact knob, not a detection knob: it only
+# shifts the FT window start past the (separately detected) chirp end, so it
+# shows the same stacked-spectra ladder as stage1.start_us. The detection knobs
+# below (sweep_max_us, min_chirp_drop_ratio) are the ones that move the chirp
+# end, so they show the Sigma|FT| detection curve.
+_DETECTION_SEE_ALSO = (
+    "start.guard_margin_us / stage1.start_us — stack the resulting spectra to "
+    "see how the detected start affects the FT (chirp/ringdown residue)."
 )
 _register(KnobSpec(
     path="start.guard_margin_us",
@@ -220,11 +273,10 @@ _register(KnobSpec(
     help="Margin past the chirp end for switch-bounce ringdown (instrument-specific).",
     inst_sensitivity="Y",
     default_grid=(0.3, 0.5, 0.67, 0.85, 1.0),
-    run=_run_start("guard_margin_us"),
-    metric=_metric_start,
-    metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
-    plot=plot_start_detection,
-    see_also=_START_SEE_ALSO,
+    run=_run_guard(),
+    metric=_metric_ft_band_floor,
+    metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
+    plot=plot_spectra_ladder,
 ))
 _register(KnobSpec(
     path="start.sweep_max_us",
@@ -237,7 +289,7 @@ _register(KnobSpec(
     metric=_metric_start,
     metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
     plot=plot_start_detection,
-    see_also=_START_SEE_ALSO,
+    see_also=_DETECTION_SEE_ALSO,
 ))
 _register(KnobSpec(
     path="start.min_chirp_drop_ratio",
@@ -250,7 +302,7 @@ _register(KnobSpec(
     metric=_metric_start,
     metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
     plot=plot_start_detection,
-    see_also=_START_SEE_ALSO,
+    see_also=_DETECTION_SEE_ALSO,
 ))
 
 # FT window start time (Stage 1) — sweep the actual start and stack the
@@ -267,7 +319,7 @@ _register(KnobSpec(
     run=_run_ft_start,
     metric=_metric_ft_band_floor,
     metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
-    plot=plot_start_ladder,
+    plot=plot_spectra_ladder,
 ))
 
 # Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.

@@ -91,11 +91,19 @@ def plot_start_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     return fig
 
 
-def plot_start_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
-    """Stacked active-band |FT| panels, one per start value (log-y), so the
-    chirp/ringdown residue (the broadband floor) can be judged by eye as the
-    start advances. Height grows with the number of values at a fixed per-panel
-    aspect."""
+def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """The spectrum-vs-start view shared by ``stage1.start_us`` and
+    ``start.guard_margin_us``.
+
+    A top FID panel marks each value's window start (and the chirp end, when the
+    knob references it), over a stack of active-band |FT| panels — one per value.
+    The spectra are **linear** with a **shared** y-limit scaled to the floor
+    (from the percentile metric) so the chirp/ringdown "fuzz" is visible and its
+    collapse from panel to panel is obvious; real lines clip off the top.
+
+    Each ``row.result`` is an ``FtAtStart`` (``.ft`` / ``.start_us`` /
+    ``.chirp_end_us``). Height grows with the number of values.
+    """
     import numpy as np
     import matplotlib.pyplot as plt
 
@@ -105,23 +113,58 @@ def plot_start_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     leaf = spec.path.split(".")[-1]
     n = len(rows)
+    colors = _value_colors(n)
     panel_h = _LADDER_WIDTH_IN / _LADDER_PANEL_ASPECT
     fig, axes_grid = plt.subplots(
-        n, 1, figsize=(_LADDER_WIDTH_IN, panel_h * n), sharex=True, squeeze=False
+        n + 1, 1, figsize=(_LADDER_WIDTH_IN, panel_h * (n + 1)), squeeze=False
     )
     axes = list(axes_grid[:, 0])
-    for ax, row in zip(axes, rows):
-        ft = row.result
-        f_ghz = np.asarray(ft.freq_array, dtype=float) / 1000.0
-        mag = np.abs(ft.complex_spectrum)
-        ax.plot(f_ghz, mag, lw=0.4)
-        ax.set_yscale("log")
-        ax.set_ylabel(f"{leaf}={row.value:g}", fontsize=9)
-        ax.grid(True, which="both", alpha=0.2)
-    axes[0].set_title(
-        f"active-band |FT| vs {leaf} (log-y; chirp/ringdown = broadband floor)"
+    fid_ax, spec_axes = axes[0], axes[1:]
+
+    starts = [getattr(r.result, "start_us", r.value) for r in rows]
+    chirp_end = next(
+        (r.result.chirp_end_us for r in rows
+         if getattr(r.result, "chirp_end_us", None) is not None),
+        None,
     )
-    axes[-1].set_xlabel("frequency (GHz)")
+
+    # Top panel: the FID with the window-start positions (and chirp end) marked.
+    try:
+        import ftmwpipeline.api as ftmw  # lazy
+
+        fid = ftmw.load_fid(ctx.ftmw_path)
+        fid_ax.plot(fid.time_array_us(), fid.data, lw=0.3, color="0.4")
+        if chirp_end is not None:
+            fid_ax.axvline(chirp_end, color="k", ls=":", lw=1.3,
+                           label=f"chirp-end {chirp_end:.2f} us")
+        for r, color, s in zip(rows, colors, starts):
+            fid_ax.axvline(s, color=color, ls="--", alpha=0.85,
+                           label=f"{leaf}={r.value:g}: start {s:.2f} us")
+        fid_ax.set_xlim(0.0, max(starts) + 1.0)
+        fid_ax.set_xlabel("time (us)")
+        fid_ax.set_ylabel("FID amplitude")
+        fid_ax.set_title("FID with window-start positions")
+        fid_ax.legend(fontsize=7)
+    except Exception:
+        fid_ax.set_visible(False)
+
+    # Shared linear y scaled to the floor so the residue (not the lines) is read.
+    p50s = [r.metrics.get("p50") for r in rows
+            if isinstance(r.metrics.get("p50"), (int, float))]
+    top = 3.0 * max(p50s) if p50s and max(p50s) > 0 else None
+
+    for ax, row, color in zip(spec_axes, rows, colors):
+        ft = row.result.ft
+        f_ghz = np.asarray(ft.freq_array, dtype=float) / 1000.0
+        ax.plot(f_ghz, np.abs(ft.complex_spectrum), lw=0.4, color=color)
+        ax.set_ylabel(f"{leaf}={row.value:g}", fontsize=9)
+        if top is not None:
+            ax.set_ylim(0.0, top)
+        ax.grid(True, alpha=0.2)
+    spec_axes[0].set_title(
+        f"active-band |FT| vs {leaf} (linear, shared y scaled to the floor)"
+    )
+    spec_axes[-1].set_xlabel("frequency (GHz)")
     fig.tight_layout()
     return fig
 
