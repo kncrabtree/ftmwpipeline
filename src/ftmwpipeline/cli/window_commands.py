@@ -42,6 +42,7 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             min_window_half_width_mhz=args.min_window_half_width_mhz,
             magnitude_attachment_threshold=args.magnitude_attachment_threshold,
             tau_us=args.tau_us,
+            max_peaks_per_window=args.max_peaks_per_window,
             preset=args.preset,
         )
         plan = result["plan"]
@@ -197,6 +198,15 @@ def register_window_commands(subparsers: Any) -> None:
         type=float,
         help="Minimum half-width of a window around an isolated weak line "
         "(default: 2.0)",
+    )
+    p_assign.add_argument(
+        "--max-peaks-per-window",
+        dest="max_peaks_per_window",
+        type=int,
+        help="Per-window promoted-peak cap; dense merged spans are split at "
+        "their sparsest gaps until each window holds at most this many peaks "
+        "and is at most --max-window-width-mhz wide. Tracks the Stage 5 "
+        "conservative.max_peaks (default: 8).",
     )
     p_assign.add_argument(
         "--magnitude-attachment-threshold",

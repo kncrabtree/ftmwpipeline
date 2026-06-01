@@ -1207,6 +1207,7 @@ class Pipeline:
         min_window_half_width_mhz: Optional[float] = None,
         magnitude_attachment_threshold: Optional[float] = None,
         tau_us: Optional[float] = None,
+        max_peaks_per_window: Optional[int] = None,
         *,
         settings: Optional[WindowPlanningSettings] = None,
         preset: Optional[str] = None,
@@ -1280,6 +1281,7 @@ class Pipeline:
                 min_window_half_width_mhz=min_window_half_width_mhz,
                 magnitude_attachment_threshold=magnitude_attachment_threshold,
                 tau_us=tau_us,
+                max_peaks_per_window=max_peaks_per_window,
                 settings=settings,
                 preset=preset,
             )
