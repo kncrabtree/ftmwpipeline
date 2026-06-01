@@ -267,6 +267,31 @@ def derive_window_fit_constraints(
         ``tau_maj_us`` is supplied.
     tau_penalty_n_sigma : float, default :data:`DEFAULT_TAU_PENALTY_N_SIGMA`
         Half-width of the calibrated tau bounds in units of ``sigma_tau``.
+    tau_anchor_us : float, optional
+        Explicit long (narrow-line) anchor for the bidirectional prior; when
+        ``None`` the anchor is the calibrated majority ``tau_maj_us``. Setting
+        it above the true tau implements a "start narrow, broaden cheaply"
+        policy (see ``tau_penalty_sigma_lo_factor``).
+    tau_penalty_sigma_lo_factor : float, default 1.0
+        Multiplier on ``sigma_tau`` for the *below-anchor* side of the penalty.
+        ``> 1`` makes broadening (decreasing tau) cheap while the stiff
+        ``sigma_tau`` above the anchor blocks tau-runaway; ``1.0`` reproduces
+        the symmetric bidirectional prior.
+
+        DORMANT: this asymmetric long-anchor penalty is a prototype with **no
+        production caller** -- nothing in the settings resolver,
+        ``fit_peaks_impl``, ``plan_execution``, or ``residual_rescue`` sets
+        ``tau_anchor_us`` or a non-unity ``tau_penalty_sigma_lo_factor``, so
+        every shipped fit runs the symmetric prior. It was prototyped to keep
+        partially-resolved hyperfine that an over-broad start would swallow
+        resolvable, but cross-fixture validation found it is **not a per-window
+        chi2r lever on the dense bulk** (the bulk tau is already at its
+        data-preferred per-band value and does not relax under the long
+        anchor); its apparent wins were confounded by the dense-spectrum
+        mega-windows the Stage 4 window peak-count cap eliminates. The knobs
+        and tests are kept for a possible future genuine-blend use case; absent
+        one, the settings/orchestrator/dual-interface wiring is omitted.
+        See ``dev-docs/research/stage5-cross-fixture/report.md`` (Phase 2).
     """
     shape_resolved = PeakShape.coerce(shape)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
@@ -2032,6 +2057,12 @@ def conservative_fit(
         tau_apodization_us)``; and (b) the tau penalty is referenced to it.
         When ``None`` the tau penalty is disabled and the upper bound stays
         ``tau0_us * max_decay_factor``.
+    tau_anchor_us, tau_penalty_sigma_lo_factor : optional
+        Asymmetric long-anchor tau penalty, forwarded to
+        :func:`derive_window_fit_constraints`. **Dormant**: the defaults
+        (``None`` / ``1.0``) reproduce the symmetric prior and no production
+        path sets them -- see that function's docstring for why the wiring is
+        deliberately omitted.
     n_eff_kind : str, default :data:`DEFAULT_N_EFF_KIND`
         Effective-sample-size kind shared by every gate this fit runs --
         the conservative add-one-peak accept gate (main loop and
