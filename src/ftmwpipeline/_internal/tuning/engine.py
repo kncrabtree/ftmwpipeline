@@ -13,19 +13,39 @@ from __future__ import annotations
 
 import csv
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO, Tuple, cast
 
 from .registry import KnobSpec
 
 
 @dataclass(frozen=True)
+class PlotContext:
+    """Side data a plot adapter may need beyond the swept rows.
+
+    ``ftmw_path`` is the working-copy ``.ftmw`` (built through the knob's
+    upstream stage), so an adapter can load source data — e.g. the FID — that
+    the per-value stage result does not carry.
+    """
+
+    ftmw_path: Path
+
+
+@dataclass(frozen=True)
 class SweepRow:
-    """One grid point: the knob value and its measured metric columns."""
+    """One grid point: the knob value, its measured metric columns, and the
+    full stage result.
+
+    ``metrics`` is what the table/CSV report; ``result`` is the raw stage output
+    (e.g. a ``NoiseResult`` / ``StartDetectionResult``) so plot adapters can
+    render rich per-knob diagnostics. ``result`` is never serialized.
+    """
 
     value: Any
     metrics: Dict[str, Any]
+    result: Any = None
 
 
 @dataclass(frozen=True)
@@ -78,6 +98,36 @@ def _fmt(value: Any) -> str:
 
 def _safe(path: str) -> str:
     return path.replace(".", "_")
+
+
+def _make_default_reporter(
+    spec: KnobSpec,
+    values: Sequence[Any],
+    stream: Optional[TextIO] = None,
+) -> Callable[[int, int, Any], None]:
+    """A terminal progress reporter: a header naming the knob and the grid,
+    then a single in-place line that updates as each value completes.
+
+    Writes to stderr by default so it never mixes with the result table a
+    caller may print to stdout. Used when ``run_scan`` is not ``quiet`` and no
+    custom callback is supplied.
+    """
+    out = stream if stream is not None else sys.stderr
+    leaf = spec.path.split(".")[-1]
+    out.write(
+        f"Scanning {spec.path} ({spec.stage}) over {len(values)} value(s): "
+        f"{', '.join(_fmt(v) for v in values)}\n"
+    )
+    if spec.see_also:
+        out.write(f"  see also: {spec.see_also}\n")
+    out.flush()
+
+    def report(done: int, total: int, value: Any) -> None:
+        end = "\n" if done == total else ""
+        out.write(f"\r  [{done}/{total}] {leaf}={_fmt(value)} done   {end}")
+        out.flush()
+
+    return report
 
 
 def _recommend(spec: KnobSpec, rows: List[SweepRow]) -> Optional[Recommendation]:
@@ -143,6 +193,8 @@ def run_scan(
     reuse: bool = False,
     make_plot: bool = True,
     interactive: bool = False,
+    quiet: bool = False,
+    progress: Optional[Callable[[int, int, Any], None]] = None,
 ) -> SweepResult:
     """Sweep ``spec`` across ``grid`` on a working copy of ``ftmw_path``.
 
@@ -163,6 +215,14 @@ def run_scan(
         Render the knob's plot adapter if it has one.
     interactive :
         Show the figure interactively (CLI-only) instead of writing a file.
+    quiet :
+        Suppress the default terminal progress indicator (header + per-value
+        line on stderr). Progress is shown by default on every surface; pass
+        ``quiet=True`` (or ``-q`` on the CLI) to silence it.
+    progress :
+        Optional custom callback invoked as ``progress(done, total, value)``
+        after each grid value completes. Overrides the default reporter; with
+        a callback set, ``quiet`` is ignored.
     """
     ftmw_path = Path(ftmw_path)
     out = Path(output_dir) if output_dir is not None else Path.cwd()
@@ -175,11 +235,22 @@ def run_scan(
         shutil.copy2(ftmw_path, work)
 
     values = spec.grid(grid)
+    reporter = progress
+    if reporter is None and not quiet:
+        reporter = _make_default_reporter(spec, values)
+
     rows: List[SweepRow] = []
     last_result: Any = None
-    for value in values:
+    total = len(values)
+    for i, value in enumerate(values):
         last_result = spec.run(work, value)
-        rows.append(SweepRow(value=value, metrics=dict(spec.metric(last_result))))
+        rows.append(SweepRow(
+            value=value,
+            metrics=dict(spec.metric(last_result)),
+            result=last_result,
+        ))
+        if reporter is not None:
+            reporter(i + 1, total, value)
 
     csv_path = out / f"tune_{_safe(spec.path)}_{ftmw_path.stem}.csv"
     _write_csv(csv_path, spec, rows)
@@ -187,7 +258,9 @@ def run_scan(
     rec = _recommend(spec, rows)
     plot_path = None
     if make_plot and spec.plot is not None:
-        plot_path = _render_plot(spec, rows, out, ftmw_path.stem, interactive)
+        plot_path = _render_plot(
+            spec, rows, out, ftmw_path.stem, interactive, PlotContext(ftmw_path=work)
+        )
 
     return SweepResult(
         knob=spec.path,
@@ -215,8 +288,9 @@ def _render_plot(
     out: Path,
     stem: str,
     interactive: bool,
+    ctx: "PlotContext",
 ) -> Optional[Path]:
-    fig = spec.plot(spec, rows)  # type: ignore[misc]
+    fig = spec.plot(spec, rows, ctx)  # type: ignore[misc]
     if fig is None:
         return None
     if interactive:

@@ -34,10 +34,10 @@ def test_tune_list_parity():
 def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
     ra = ftmw.tune_scan(
         baseline_2638_stage1_raw, KNOB, grid=GRID,
-        output_dir=tmp_path / "api", make_plot=False,
+        output_dir=tmp_path / "api", make_plot=False, quiet=True,
     )
     rp = Pipeline.open(baseline_2638_stage1_raw).tune_scan(
-        KNOB, grid=GRID, output_dir=tmp_path / "pipe", make_plot=False,
+        KNOB, grid=GRID, output_dir=tmp_path / "pipe", make_plot=False, quiet=True,
     )
     assert _rows(ra) == _rows(rp)
     assert ra.metric_columns == rp.metric_columns
@@ -46,7 +46,7 @@ def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
 def test_cli_scan_matches_api(baseline_2638_stage1_raw, tmp_path, capsys):
     ra = ftmw.tune_scan(
         baseline_2638_stage1_raw, KNOB, grid=GRID,
-        output_dir=tmp_path / "api", make_plot=False,
+        output_dir=tmp_path / "api", make_plot=False, quiet=True,
     )
     capsys.readouterr()  # clear
 
@@ -82,5 +82,5 @@ def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):
     shutil.copy(baseline_2638_stage1_raw, work)
     before = work.stat().st_size
     ftmw.tune_scan(work, KNOB, grid=GRID, output_dir=tmp_path / "o",
-                   make_plot=False)
+                   make_plot=False, quiet=True)
     assert work.stat().st_size == before

@@ -81,7 +81,14 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
             return 1
 
     output_dir = Path(args.output_dir) if args.output_dir else Path.cwd()
-    print(f"Scanning {spec.path} on {file_path} (stage: {spec.stage})")
+
+    # Quiet the per-value stage logging so the progress indicator stays clean
+    # (a sweep re-runs the stage once per value, repeating any INFO/WARNING).
+    # Verbose keeps it all. Saved/restored so in-process callers are unaffected.
+    pkg_logger = logging.getLogger("ftmwpipeline")
+    prev_level = pkg_logger.level
+    if not getattr(args, "verbose", False):
+        pkg_logger.setLevel(logging.ERROR)
     try:
         result = run_scan(
             spec,
@@ -91,6 +98,7 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
             reuse=args.reuse,
             make_plot=not args.no_plot,
             interactive=args.interactive,
+            quiet=args.quiet,
         )
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
@@ -102,6 +110,8 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
 
             traceback.print_exc()
         return 1
+    finally:
+        pkg_logger.setLevel(prev_level)
 
     print()
     print(result.as_table())
@@ -188,6 +198,11 @@ def register_tune_commands(subparsers: Any) -> None:
         "--no-plot",
         action="store_true",
         help="Skip plotting even when the knob has a plot adapter",
+    )
+    p_scan.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress the per-value progress indicator",
     )
     p_scan.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"

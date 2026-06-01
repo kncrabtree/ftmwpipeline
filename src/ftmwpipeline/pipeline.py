@@ -1698,13 +1698,15 @@ class Pipeline:
         output_dir: Optional[Union[str, Path]] = None,
         reuse: bool = False,
         make_plot: bool = True,
+        quiet: bool = False,
     ) -> "SweepResult":
         """Sweep a single knob across a grid on a copy of this file.
 
         Equivalent to :func:`ftmwpipeline.api.tune_scan`. Re-runs the knob's
         stage for each grid value on a working copy (this file is never
         mutated), returning a :class:`SweepResult` with the table, CSV path,
-        optional plot, recommendation, and how-to-apply instructions.
+        optional plot, recommendation, and how-to-apply instructions. A progress
+        indicator is printed to stderr unless ``quiet=True``.
         """
         from ._internal.tuning import get_knob, run_scan
 
@@ -1715,6 +1717,7 @@ class Pipeline:
             output_dir=Path(output_dir) if output_dir is not None else None,
             reuse=reuse,
             make_plot=make_plot,
+            quiet=quiet,
         )
 
     def __repr__(self) -> str:

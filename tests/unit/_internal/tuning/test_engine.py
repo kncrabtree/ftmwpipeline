@@ -71,7 +71,7 @@ def test_plot_adapter_writes_file(tmp_path):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    def plot(spec, rows):
+    def plot(spec, rows, ctx):
         fig, ax = plt.subplots()
         ax.plot([r.value for r in rows], [r.metrics["m"] for r in rows])
         return fig
@@ -114,6 +114,30 @@ def test_input_file_not_mutated(tmp_path):
     before = fp.read_bytes()
     run_scan(spec, fp, grid=[1.0, 2.0], output_dir=tmp_path / "out")
     assert fp.read_bytes() == before
+
+
+def test_progress_callback_invoked_per_value(tmp_path):
+    spec = _make_spec()
+    calls = []
+    run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0, 3.0],
+             output_dir=tmp_path, progress=lambda d, t, v: calls.append((d, t, v)))
+    assert calls == [(1, 3, 1.0), (2, 3, 2.0), (3, 3, 3.0)]
+
+
+def test_quiet_suppresses_default_reporter(tmp_path, capsys):
+    spec = _make_spec()
+    run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0],
+             output_dir=tmp_path, quiet=True)
+    err = capsys.readouterr().err
+    assert "Scanning" not in err
+
+
+def test_default_reporter_writes_progress_to_stderr(tmp_path, capsys):
+    spec = _make_spec()
+    run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0], output_dir=tmp_path)
+    err = capsys.readouterr().err
+    assert "Scanning stageT.block.knob" in err
+    assert "[2/2]" in err
 
 
 def test_output_dir_created_and_contains_artifacts(tmp_path):

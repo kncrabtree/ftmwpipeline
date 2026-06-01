@@ -194,7 +194,10 @@ addressing); no new settings plumbing.
    path to reload an already-built `.ftmw` (the `stage5_cross_fixture.py`
    pattern).
 2. For each grid value: set the knob via its `KnobSpec`, re-run only the
-   affected stage(s), collect the `metric`.
+   affected stage(s), collect the `metric`. A **progress indicator** (header
+   naming the knob + grid, then an in-place per-value line) is emitted to
+   stderr on every surface unless `quiet=True` (CLI `-q/--quiet`); a custom
+   `progress(done, total, value)` callback can replace it.
 3. Emit a table (always) to stdout + a CSV under a designated **output
    directory** (default: cwd; development work points it at a `scratch/`
    subdir). If `plot` is registered, render the figure to the same dir.
@@ -215,7 +218,7 @@ is a presentation concern handled at the CLI layer (below), not the engine.
 ```
 ftmwpipeline tune list                       # enumerate knobs (path, stage, Y/N, default grid)
 ftmwpipeline tune scan  <file> --knob stage3.promotion.min_snr \
-    [--grid 2,3,4,5] [--reuse] [--output-dir DIR] [--interactive]
+    [--grid 2,3,4,5] [--reuse] [--output-dir DIR] [--interactive] [-q]
 ftmwpipeline tune show  <file> --knob ...    # render the knob's plot/table for the persisted value
 ```
 
@@ -236,7 +239,9 @@ registry + engine make this cheap: same engine, three thin wrappers).
 `--interactive` is the one **CLI-only** affordance: the Pipeline/api surfaces run
 inside user-controlled scripts where the caller owns figure handling (they get
 the result object / figure back and display it themselves), so an interactive
-backend belongs only to the terminal entry point. All other behavior — output
+backend belongs only to the terminal entry point. The progress indicator, by
+contrast, is available on **all** surfaces (on by default, `quiet=True` to
+suppress) since scripts benefit from it too. All other behavior — output
 directory, grid, reuse, recommendation — is identical across the three surfaces.
 
 ## Preset emission — deferred

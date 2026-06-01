@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
+from .plots import plot_noise_sweep, plot_start_detection, plot_start_ladder
+
 # A stage runner: given a (writable) .ftmw path and a knob value, set the knob
 # and re-run the affected stage, returning the stage result object.
 RunFn = Callable[[Path, Any], Any]
@@ -55,7 +57,11 @@ class KnobSpec:
     recommend: Optional[Callable[["list[SweepRowLike]"], "Recommendation"]] = None
     """Override recommender; wins over :attr:`direction` when set."""
     plot: Optional[Callable[..., Any]] = None
-    """Optional plot adapter; ``None`` => table-only output for this knob."""
+    """Optional plot adapter ``(spec, rows, ctx) -> Figure | None``; ``None``
+    => table-only output for this knob."""
+    see_also: Optional[str] = None
+    """Optional pointer to a related knob/visualization, shown in non-quiet
+    output (e.g. a detection knob pointing at the spectrum-impact knob)."""
 
     def grid(self, override: Optional[Sequence[Any]]) -> Tuple[Any, ...]:
         """Resolve the grid to sweep: explicit override, else the default."""
@@ -100,6 +106,17 @@ def _run_noise(method: str, kwarg: str) -> RunFn:
     return run
 
 
+def _run_ft_start(path: Path, value: Any) -> Any:
+    """Recompute the FT at a given window start; returns the ``ComplexFT``.
+
+    Other FT settings (trim, zpf, apodization) are inherited from the file's
+    resolution chain, so the sweep isolates the effect of ``start_us``.
+    """
+    import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+
+    return ftmw.compute_ft(path, start_us=float(value))
+
+
 # ---------------------------------------------------------------------------
 # Metric reducers
 # ---------------------------------------------------------------------------
@@ -109,6 +126,24 @@ def _metric_start(result: Any) -> Dict[str, Any]:
         "start_us": round(float(result.start_us), 4),
         "chirp_end_us": round(float(result.chirp_end_us), 4),
         "chirp_detected": bool(result.chirp_detected),
+    }
+
+
+def _metric_ft_band_floor(result: Any) -> Dict[str, Any]:
+    """Percentiles of |FT| over the (already-trimmed) active band: a ladder of
+    floor markers (p1..p50) plus the peak, so the chirp/ringdown residue is
+    readable for both dense and diffuse spectra."""
+    import numpy as np
+
+    mag = np.abs(np.asarray(result.complex_spectrum))
+    pcts: "np.ndarray" = np.percentile(mag, [1, 5, 10, 20, 50, 100])
+    return {
+        "p1": round(float(pcts[0]), 5),
+        "p5": round(float(pcts[1]), 5),
+        "p10": round(float(pcts[2]), 5),
+        "p20": round(float(pcts[3]), 5),
+        "p50": round(float(pcts[4]), 5),
+        "max": round(float(pcts[5]), 5),
     }
 
 
@@ -139,6 +174,10 @@ def _register(spec: KnobSpec) -> None:
 
 
 # Start detection (pre-Stage 1) — requires Stage 0 (FID).
+_START_SEE_ALSO = (
+    "stage1.start_us — stack the resulting spectra to see the effect of the "
+    "start on the FT (chirp/ringdown residue)."
+)
 _register(KnobSpec(
     path="start.guard_margin_us",
     stage="start_detection",
@@ -149,6 +188,8 @@ _register(KnobSpec(
     run=_run_start("guard_margin_us"),
     metric=_metric_start,
     metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
+    plot=plot_start_detection,
+    see_also=_START_SEE_ALSO,
 ))
 _register(KnobSpec(
     path="start.sweep_max_us",
@@ -160,6 +201,8 @@ _register(KnobSpec(
     run=_run_start("sweep_max_us"),
     metric=_metric_start,
     metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
+    plot=plot_start_detection,
+    see_also=_START_SEE_ALSO,
 ))
 _register(KnobSpec(
     path="start.min_chirp_drop_ratio",
@@ -171,6 +214,25 @@ _register(KnobSpec(
     run=_run_start("min_chirp_drop_ratio"),
     metric=_metric_start,
     metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
+    plot=plot_start_detection,
+    see_also=_START_SEE_ALSO,
+))
+
+# FT window start time (Stage 1) — sweep the actual start and stack the
+# resulting active-band spectra. Requires Stage 1 settings to be resolvable
+# (built once); each value recomputes the FT.
+_register(KnobSpec(
+    path="stage1.start_us",
+    stage="stage1_ft",
+    requires="stage0_fid_data",
+    help="FID window start time for the FT; stack the active-band spectra to "
+         "judge the chirp/ringdown residue.",
+    inst_sensitivity="Y",
+    default_grid=(1.5, 1.7, 1.85, 2.0, 2.15, 2.3, 2.45, 2.6),
+    run=_run_ft_start,
+    metric=_metric_ft_band_floor,
+    metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
+    plot=plot_start_ladder,
 ))
 
 # Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.
@@ -184,6 +246,7 @@ _register(KnobSpec(
     run=_run_noise("scatter", "window_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
+    plot=plot_noise_sweep,
 ))
 _register(KnobSpec(
     path="stage2.scatter.pedestal_mhz",
@@ -195,6 +258,7 @@ _register(KnobSpec(
     run=_run_noise("scatter", "pedestal_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
+    plot=plot_noise_sweep,
 ))
 _register(KnobSpec(
     path="stage2.scatter.smoothing_mhz",
@@ -206,6 +270,7 @@ _register(KnobSpec(
     run=_run_noise("scatter", "smoothing_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
+    plot=plot_noise_sweep,
 ))
 # Stage 2 noise — adaptive estimator smoothing window (legacy method).
 _register(KnobSpec(
@@ -218,6 +283,7 @@ _register(KnobSpec(
     run=_run_noise("adaptive", "smoothing_window_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
+    plot=plot_noise_sweep,
 ))
 
 

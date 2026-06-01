@@ -1704,6 +1704,7 @@ def tune_scan(
     output_dir: Optional[Union[str, Path]] = None,
     reuse: bool = False,
     make_plot: bool = True,
+    quiet: bool = False,
 ) -> Any:
     """Sweep a single pipeline knob across a grid, equivalent to
     :meth:`Pipeline.tune_scan`.
@@ -1728,6 +1729,8 @@ def tune_scan(
         Reuse an existing working copy instead of re-copying the input.
     make_plot : bool, default True
         Render the knob's plot adapter if it has one.
+    quiet : bool, default False
+        Suppress the progress indicator (printed to stderr by default).
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -1737,6 +1740,7 @@ def tune_scan(
             output_dir=output_dir,
             reuse=reuse,
             make_plot=make_plot,
+            quiet=quiet,
         )
     except Exception as e:
         logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
