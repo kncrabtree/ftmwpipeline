@@ -424,7 +424,11 @@ precision but ~49× overconfident as absolute accuracy — the precision-vs-accu
 gap. 655's dense-union match is recall-oriented but mismatch-noisy; 1512 is the
 clean accuracy read. Per-fixture detail in `dev-docs/fixtures/{1512,655}.md`.
 
+**T4 resolved — ε retired.** Under the SNR-aware metric the per-dataset
+`shape_error_epsilon` rescue-screening knob no longer earns its keep: the gate
+absorbs the chi²ᵣ ~ SNR² shape-error floor at the acceptance layer, ε defaulted
+0.0 in production (never plumbed through `stage5_impl`), and it has been removed
+from `attempt_residual_rescue` / `rescue_and_consolidate`.
+
 **Open follow-ups** (not #2): a tighter unambiguous-line matcher to isolate 655's
-own accuracy floor; T4 (re-test whether `shape_error_epsilon` still earns its keep
-under the SNR-aware metric — the evidence suggests it retires); and per-fixture
-κ/F if a non-vinyl-cyanide instrument lands.
+own accuracy floor; and per-fixture κ/F if a non-vinyl-cyanide instrument lands.

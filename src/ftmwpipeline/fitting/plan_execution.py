@@ -1124,8 +1124,8 @@ def execute_plan(
         Tuning knobs for the rescue loop, forwarded to
         :func:`~ftmwpipeline.fitting.residual_rescue.rescue_and_consolidate`
         (``snr_threshold``, ``prominence_threshold``,
-        ``rescue_significance``, ``knockout_significance``,
-        ``shape_error_epsilon``). The round-cap lives separately on
+        ``rescue_significance``, ``knockout_significance``). The round-cap
+        lives separately on
         ``max_residual_rescue_rounds``. Ignored when
         ``max_residual_rescue_rounds == 0``.
     window_tau_overrides : dict[int, (float, float)], optional
