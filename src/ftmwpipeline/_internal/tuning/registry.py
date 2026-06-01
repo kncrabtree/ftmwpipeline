@@ -152,12 +152,14 @@ def _run_guard() -> RunFn:
     def run(path: Path, value: Any) -> Any:
         import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
 
-        st = path.stat()
-        key = (str(path), st.st_mtime_ns, st.st_size)
+        # Key on the path only: compute_ft below rewrites the working file each
+        # value (so its mtime/size are not stable), but the FID the detection
+        # reads is invariant within a sweep. cache holds just the latest file.
+        key = str(path)
         chirp_end = cache.get(key)
         if chirp_end is None:
-            cache.clear()
             chirp_end = float(ftmw.detect_start_time(path, stamp=False).chirp_end_us)
+            cache.clear()
             cache[key] = chirp_end
         start = chirp_end + float(value)
         return FtAtStart(

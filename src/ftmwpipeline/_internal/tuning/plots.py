@@ -19,6 +19,10 @@ from typing import Any, List
 # Target per-panel aspect for stacked "ladder" figures (width : height).
 _LADDER_PANEL_ASPECT = 5.5
 _LADDER_WIDTH_IN = 11.0
+# Shared y-limit for the spectra ladder: this multiple of the largest per-panel
+# median |FT| (p50). High enough that the chirp/ringdown fuzz fills the axis and
+# its collapse across panels is visible; real lines clip off the top.
+_LADDER_YMAX_P50_FACTOR = 10.0
 
 
 def _value_colors(n: int) -> List[Any]:
@@ -151,7 +155,7 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
     # Shared linear y scaled to the floor so the residue (not the lines) is read.
     p50s = [r.metrics.get("p50") for r in rows
             if isinstance(r.metrics.get("p50"), (int, float))]
-    top = 3.0 * max(p50s) if p50s and max(p50s) > 0 else None
+    top = _LADDER_YMAX_P50_FACTOR * max(p50s) if p50s and max(p50s) > 0 else None
 
     for ax, row, color in zip(spec_axes, rows, colors):
         ft = row.result.ft
