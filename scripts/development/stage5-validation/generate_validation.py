@@ -2271,15 +2271,169 @@ def _category_block(
     return "\n".join(parts)
 
 
+def _window_summary_rows(fit: SpectrumFit) -> List[dict]:
+    """Per-window summary for the print-only query modes (``--list`` /
+    ``--near``).
+
+    Built from the persisted plan + fit alone -- no active-FT, no rescue re-run
+    -- so it is fast enough to run interactively against any built fixture. Each
+    row carries the window id, frequency range, peak count, and the fit metrics
+    (reduced chi-squared, brightest in-window peak SNR, and the SNR-aware
+    acceptance verdict + fractional deficit eps).
+    """
+    from ftmwpipeline.fitting.validation import (
+        shape_error_fraction,
+        snr_aware_chi2_pass,
+    )
+
+    rows: List[dict] = []
+    for wf in fit.window_fits:
+        if wf.window is None:
+            continue
+        lo, hi = wf.window.freq_range
+        lo, hi = float(min(lo, hi)), float(max(lo, hi))
+        snrs = [
+            float(p.snr)
+            for p in wf.fitted_peaks
+            if p.snr is not None and np.isfinite(p.snr)
+        ]
+        snr_max = max(snrs) if snrs else 0.0
+        chi2r = float(getattr(wf, "reduced_chi2", float("nan")))
+        finite = bool(np.isfinite(chi2r))
+        rows.append(
+            dict(
+                window_id=int(wf.window_id),
+                lo=lo,
+                hi=hi,
+                center=0.5 * (lo + hi),
+                width=hi - lo,
+                n_peaks=len(wf.fitted_peaks),
+                chi2r=chi2r,
+                snr_max=snr_max,
+                passed=snr_aware_chi2_pass(chi2r, snr_max) if finite else False,
+                eps=shape_error_fraction(chi2r, snr_max) if finite else 0.0,
+            )
+        )
+    return rows
+
+
+def _near_distance(row: dict, freq_mhz: float) -> float:
+    """Frequency distance from ``freq_mhz`` to a window's range: 0 when the
+    window contains the frequency, else the gap to the nearer edge."""
+    if row["lo"] <= freq_mhz <= row["hi"]:
+        return 0.0
+    return min(abs(freq_mhz - row["lo"]), abs(freq_mhz - row["hi"]))
+
+
+def _print_window_table(rows: Sequence[dict], title: str) -> None:
+    """Print a per-window summary table (the ``--list`` / ``--near`` output)."""
+    print(f"\n{title}")
+    print(
+        f"{'win':>5} {'freq_lo':>10} {'freq_hi':>10} {'width':>7} "
+        f"{'npk':>4} {'chi2r':>10} {'snr_max':>10} {'pass':>5} {'eps':>8}"
+    )
+    for r in rows:
+        chi2r = f"{r['chi2r']:.3g}" if np.isfinite(r["chi2r"]) else "inf"
+        print(
+            f"{r['window_id']:>5} {r['lo']:>10.2f} {r['hi']:>10.2f} "
+            f"{r['width']:>7.2f} {r['n_peaks']:>4} {chi2r:>10} "
+            f"{r['snr_max']:>10.3g} {('Y' if r['passed'] else 'N'):>5} "
+            f"{r['eps']:>8.4f}"
+        )
+    print(
+        "\nVisualize one with: "
+        "--fixture <id> --window-id <win> (repeat --window-id to add more)."
+    )
+
+
 def main() -> None:
     import argparse
 
     arg_parser = argparse.ArgumentParser(
         description=(
-            "Generate Stage 5 validation artifacts for the 2638 fixture. "
-            "Default: emits the deliberate EASY + HARD + NAMED samples. "
-            "Pass --window-id N (repeatable) to restrict to specific windows."
+            "Generate Stage 5 validation artifacts for a built .ftmw fixture. "
+            "Default (2638): emits the deliberate EASY + HARD + NAMED samples. "
+            "For any fixture, pass --random-sample N (with --seed) to draw a "
+            "reproducible random window sample, or --window-id N (repeatable) "
+            "to restrict to specific windows."
         )
+    )
+    arg_parser.add_argument(
+        "--fixture",
+        type=str,
+        default=None,
+        metavar="ID",
+        help=(
+            "Convenience selector for a cross-fixture build. Resolves to "
+            "``scratch/stage5_cross_fixture/exp_<ID>.ftmw`` and writes "
+            "outputs to ``scratch/stage5-validation/<ID>/`` (e.g. "
+            "``--fixture 655``). Overridden by an explicit --output-dir / "
+            "--fixture-name pair."
+        ),
+    )
+    arg_parser.add_argument(
+        "--random-sample",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Draw N windows at random (without replacement) from the plan "
+            "instead of the EASY/HARD/NAMED samples or --all-windows. "
+            "Reproducible via --seed. This is the multi-fixture entry point: "
+            "the built-in EASY/HARD/NAMED lists are 2638-specific window ids "
+            "and do not exist on other fixtures."
+        ),
+    )
+    arg_parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help=(
+            "Seed for --random-sample window selection (default 0) so the "
+            "same fixture always yields the same sample."
+        ),
+    )
+    arg_parser.add_argument(
+        "--worst",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Render the N windows with the POOREST fit (highest reduced "
+            "chi-squared; non-finite chi2r sorts worst). The printed line and "
+            "the per-window detail still report SNR_max + the SNR-aware "
+            "pass/eps so a high-SNR fidelity-floor window can be told from a "
+            "genuinely bad fit."
+        ),
+    )
+    arg_parser.add_argument(
+        "--near",
+        type=float,
+        default=None,
+        metavar="FREQ_MHZ",
+        help=(
+            "PRINT-ONLY lookup: list the windows nearest FREQ_MHZ (window id, "
+            "frequency range, peak count, chi2r, SNR_max, SNR-aware pass/eps) "
+            "and exit WITHOUT rendering. Fast (reads the persisted plan + fit "
+            "only). Pick an id from the table, then re-run with --window-id to "
+            "visualize it. Count controlled by --near-count."
+        ),
+    )
+    arg_parser.add_argument(
+        "--near-count",
+        type=int,
+        default=12,
+        metavar="K",
+        help="Number of windows --near lists (default 12).",
+    )
+    arg_parser.add_argument(
+        "--list",
+        action="store_true",
+        help=(
+            "PRINT-ONLY: dump the per-window summary table for the whole "
+            "fixture (sorted by frequency) and exit WITHOUT rendering. Same "
+            "columns as --near."
+        ),
     )
     arg_parser.add_argument(
         "--window-id",
@@ -2373,12 +2527,22 @@ def main() -> None:
         if not odir.is_absolute():
             odir = REPO_ROOT / odir
         OUTPUT_DIR = odir
+    elif args.fixture is not None:
+        # --fixture <ID> writes per-fixture artifacts to a dedicated subdir so
+        # samples from different fixtures don't clobber each other.
+        OUTPUT_DIR = REPO_ROOT / "scratch" / "stage5-validation" / args.fixture
     elif args.variant_id is not None:
         # Default per-variant output dir when --variant-id is provided
         # without an explicit --output-dir.
         OUTPUT_DIR = REPO_ROOT / "scratch" / f"stage5-validation-{args.variant_id}"
     if args.fixture_name is not None:
         FTMW_PATH = OUTPUT_DIR / args.fixture_name
+    elif args.fixture is not None:
+        # The cross-fixture builds live in a shared directory; point straight
+        # at the persisted .ftmw rather than expecting a copy in OUTPUT_DIR.
+        FTMW_PATH = (
+            REPO_ROOT / "scratch" / "stage5_cross_fixture" / f"exp_{args.fixture}.ftmw"
+        )
     elif args.variant_id is not None:
         # The Stage 5 audit caches per-variant fixtures under
         # scratch/stage5-gaussian-audit/runs/<variant_id>.ftmw; point at it
@@ -2393,6 +2557,11 @@ def main() -> None:
     else:
         FTMW_PATH = OUTPUT_DIR / FTMW_PATH.name
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    # Label for figure / INDEX titles: the fixture stem with the conventional
+    # ``exp_`` prefix stripped (``exp_655.ftmw`` -> ``655``).
+    fixture_label = FTMW_PATH.stem
+    if fixture_label.startswith("exp_"):
+        fixture_label = fixture_label[len("exp_") :]
     print(f"output dir: {OUTPUT_DIR}")
     print(f"fixture:    {FTMW_PATH}")
 
@@ -2417,6 +2586,23 @@ def main() -> None:
 
     plan: WindowPlan = ftmw.load_windows(str(FTMW_PATH))
     fit: SpectrumFit = ftmw.load_fit(str(FTMW_PATH))
+
+    # Print-only query modes (--list / --near): summarize windows from the
+    # persisted plan + fit and exit before the active-FT build / rescue re-run,
+    # so a frequency lookup is fast and side-effect free.
+    if args.list or args.near is not None:
+        rows = _window_summary_rows(fit)
+        if args.near is not None:
+            rows.sort(key=lambda r: _near_distance(r, float(args.near)))
+            rows = rows[: max(int(args.near_count), 0)]
+            rows.sort(key=lambda r: r["lo"])
+            title = f"{fixture_label}: {len(rows)} windows nearest {args.near:.2f} MHz"
+        else:
+            rows.sort(key=lambda r: r["lo"])
+            title = f"{fixture_label}: all {len(rows)} windows (by frequency)"
+        _print_window_table(rows, title)
+        return
+
     peaks_loaded = ftmw.load_peaks(str(FTMW_PATH))
     display_style = _load_display_style(FTMW_PATH)
     print(f"display style: {display_style}")
@@ -2518,21 +2704,12 @@ def main() -> None:
         "snr_threshold": DEFAULT_RESCUE_SNR_THRESHOLD,
         "prominence_threshold": DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
         "rescue_max_peaks": 32,
-        # Shape-error-aware sigma inflation for the rescue's screening
-        # pipeline. epsilon = fractional Lorentzian-vs-true-lineshape
-        # residual per unit parent amplitude (per-bin, not
-        # chi^2_r-aggregated -- those are ~4-8x different in scale).
-        # Empirical sweep on the 2638 fixture (diag_phase1_merge_gate.py):
-        # epsilon=0.05 stops the w148/w269 rescue-merge limit cycle
-        # without affecting borderline real-peak rescues (w16/w104/w127/
-        # w337) or clean controls (w63/w64). Re-calibrate per dataset.
-        "shape_error_epsilon": 0.05,
     }
     peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded]
 
     # --- overview ----------------------------------------------------------
     overview_title = (
-        f"2638 Stage 5 overview - {fit.n_windows} windows, "
+        f"{fixture_label} Stage 5 overview - {fit.n_windows} windows, "
         f"{fit.n_fitted_peaks} fitted peaks, plan revision {fit.final_plan_revision} "
         f"(active-FT)"
     )
@@ -2701,7 +2878,62 @@ def main() -> None:
     hard_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
     named_entries: List[Tuple[int, FitWindow, FittingResult, Optional[str], Path]] = []
 
-    if args.all_windows:
+    if args.random_sample is not None:
+        # Reproducible random sample -- the multi-fixture entry point. Draw
+        # from the windows that have both a plan record and a persisted fit,
+        # bucket by Stage 4 difficulty so the INDEX.md categories stay
+        # coherent. --named-window annotations still apply if supplied.
+        named_lookup = dict(cli_named) if cli_named else {}
+        candidate_wids = sorted(w for w in plan_by_id if w in fit_by_id)
+        n_draw = min(int(args.random_sample), len(candidate_wids))
+        rng = np.random.RandomState(int(args.seed))
+        sampled = sorted(
+            int(w) for w in rng.choice(candidate_wids, size=n_draw, replace=False)
+        )
+        print(
+            f"random sample: {n_draw} of {len(candidate_wids)} windows "
+            f"(seed={args.seed}): {sampled}",
+            flush=True,
+        )
+        for wid in sampled:
+            note = named_lookup.get(wid)
+            rel = emit(wid, note)
+            entry = (wid, plan_by_id[wid], fit_by_id[wid], note, rel)
+            if note is not None:
+                named_entries.append(entry)
+            elif plan_by_id[wid].difficulty == WindowDifficulty.HARD:
+                hard_entries.append(entry)
+            else:
+                easy_entries.append(entry)
+    elif args.worst is not None:
+        # Poorest-fit selection: rank by reduced chi-squared descending so the
+        # worst windows render first. Non-finite chi2r (a failed fit) sorts to
+        # the very top.
+        def _chi2r_key(w: int) -> float:
+            c = float(getattr(fit_by_id[w], "reduced_chi2", float("inf")))
+            return c if np.isfinite(c) else float("inf")
+
+        ranked = sorted(
+            (w for w in plan_by_id if w in fit_by_id),
+            key=_chi2r_key,
+            reverse=True,
+        )
+        chosen = ranked[: max(int(args.worst), 0)]
+        print(
+            f"worst {len(chosen)} by chi2r: "
+            + ", ".join(f"{w}({_chi2r_key(w):.3g})" for w in chosen)
+            + "  (rendering re-runs rescue per window; the densest/worst "
+            "windows are the slowest)",
+            flush=True,
+        )
+        for wid in chosen:
+            rel = emit(wid, None)
+            entry = (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
+            if plan_by_id[wid].difficulty == WindowDifficulty.HARD:
+                hard_entries.append(entry)
+            else:
+                easy_entries.append(entry)
+    elif args.all_windows:
         # Step 3 of the Stage 5 parameter optimization audit: walk through
         # every window in the plan rather than the curated EASY/HARD/NAMED
         # samples. Bucket by Stage 4 difficulty so the INDEX.md categories
@@ -2773,9 +3005,9 @@ def main() -> None:
     n_hard = sum(1 for w in plan.windows if w.difficulty == WindowDifficulty.HARD)
 
     body = [
-        "# 2638 Stage 5 validation",
+        f"# {fixture_label} Stage 5 validation",
         "",
-        "Initial deliberate sample for visual inspection.",
+        "Sampled windows for visual inspection.",
         "",
         "## Run summary",
         f"- windows: **{fit.n_windows}** ({n_easy} easy / {n_hard} hard)",
