@@ -292,11 +292,16 @@ Built (sequencing steps 1–2):
   suppress). Plot adapters receive a `PlotContext` (working `.ftmw`) for source
   data such as the FID.
 - **Registered knobs:**
-  - Start detection — `start.guard_margin_us`, `start.sweep_max_us`,
-    `start.min_chirp_drop_ratio`: 2-panel plot (FID with chirp-end + candidate
-    starts, over the Σ|FT| sweep); `see_also` points at `stage1.start_us`.
-  - FT start — `stage1.start_us`: stacked active-band |FT| ladder (per-panel
-    aspect ~5.5:1, height grows with the grid) + percentile floor metric.
+  - Spectrum-vs-start — `stage1.start_us` and `start.guard_margin_us` share one
+    spectra ladder: a top FID panel marking the window starts (+ chirp end for
+    guard), over linear active-band |FT| panels with a shared y scaled to the
+    percentile floor, so the chirp/ringdown residue and its collapse across
+    starts are visible; percentile-floor metric. Guard only offsets the start
+    past the detected chirp end, so it detects once per sweep and varies the
+    offset (a spectrum-impact knob, not a detection knob).
+  - Detection knobs — `start.sweep_max_us`, `start.min_chirp_drop_ratio` move
+    the chirp end, so they keep the Σ|FT|-vs-start detection-curve plot and
+    `see_also`-point at the spectrum knobs.
   - Stage 2 noise — `stage2.scatter.{window_mhz,pedestal_mhz,smoothing_mhz}`,
     `stage2.smoothing.smoothing_window_mhz`: σ(f) overlay + metric trend.
   - Stage 2b tau — `stage2b.stft.{n_seg,t_sigma}`,
