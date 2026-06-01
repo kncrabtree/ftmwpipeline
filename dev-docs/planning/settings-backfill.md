@@ -553,9 +553,13 @@ Ordered: 1 → 2 → 4 → 5. #3 deferred. #1, #2, #4 shipped.
    captures is the per-instrument calibration audit listed in that
    doc's *Open follow-ups* section.
 3. **Cross-fixture validation of the shape-aware classifier.**
-   *Deferred.* The classifier landed against 2638 only; a clean-
-   Lorentzian fixture would be the generalisation check. Picked back
-   up when a suitable fixture exists.
+   *Done (issue #3).* `recommend_shape` was validated on all four
+   ground-truth fixtures: 1512 / 1019 / 655 → lorentzian (exp vote
+   0.85 / 0.98 / 0.95) and 2638 → gaussian (gauss 0.68), all correct.
+   The clean-Lorentzian generalisation check (1019 / 655) passes with a
+   wide margin. Evidence:
+   [`../research/stage5-cross-fixture/report.md`](../research/stage5-cross-fixture/report.md)
+   §"Cross-fixture knob audit".
 4. **Productionising the 3-way recommendation as an auto-run step**
    inside `calibrate_tau` / `calibrate_tau_G`, plus the matching
    default-and-preset cleanup. *Shipped.* Added `auto_recommend`

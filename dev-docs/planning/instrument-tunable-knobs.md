@@ -313,8 +313,24 @@ Audit reports:
 [`dev-docs/research/stage4-gaussian-audit/README.md`](../research/stage4-gaussian-audit/README.md).
 The Stage 5 high-Y-rated knobs (`tau.fit_tau_min_snr`,
 `conservative.weak_window_snr_threshold`, `rescue.snr_threshold`,
-`rescue.prominence_threshold`, `thaw.residual_edge_threshold`) are
-still un-audited.
+`rescue.prominence_threshold`, `thaw.residual_edge_threshold`) were
+**audited cross-fixture (all 7 same-instrument fixtures, issue #3,
+validate-and-document) and ship unchanged** — each behaves sanely
+across the SNR span (1512 lowest → 655 extreme):
+
+| stage | knob | default | cross-fixture verdict |
+|---|---|---|---|
+| 5 | `tau.fit_tau_min_snr` | 50.0 | keep. Tau-free rate rises monotonically with SNR (1512 26 % → 655 93 %); no bright window ever wrongly held. |
+| 5 | `conservative.weak_window_snr_threshold` | 10.0 | keep. Weak-window regime scales with SNR (0.84 → 0.39), never degenerate. |
+| 5 | `rescue.snr_threshold` | 2.5 | keep. Rescue does bounded, meaningful work everywhere (accept 0.4–0.7). |
+| 5 | `rescue.prominence_threshold` | 2.0 | keep. Same; no pathological all-/no-fire. |
+| 5 | `thaw.residual_edge_threshold` | 8.0 | keep. Sane trigger surface; thaw acceptance ~0 cross-fixture (near-dormant, as on 2638) — a "does thaw earn its keep" follow-up, not a threshold mistune. |
+
+Evidence: [`dev-docs/research/stage5-cross-fixture/report.md`](../research/stage5-cross-fixture/report.md)
+§"Cross-fixture knob audit"; driver `scratch/issue3_audit/audit_knobs.py`. The
+Stage 2 scatter / Stage 2b STFT+classifier knobs ride on the same builds and
+produce the sane per-fixture inputs that audit depends on; no per-fixture retune
+indicated.
 
 ## Open follow-ups against this table
 
