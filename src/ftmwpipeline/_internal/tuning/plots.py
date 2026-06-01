@@ -126,6 +126,39 @@ def plot_start_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
     return fig
 
 
+def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """tau_maj +/- sigma_tau vs the knob value, with the contributor count on a
+    twin axis. Returns ``None`` for non-numeric knobs (table-only)."""
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+    try:
+        xs = [float(r.value) for r in rows]
+    except (TypeError, ValueError):
+        return None
+
+    leaf = spec.path.split(".")[-1]
+    tau = [r.metrics.get("tau_maj_us") for r in rows]
+    sigma = [r.metrics.get("sigma_tau_us") for r in rows]
+    n_contrib = [r.metrics.get("n_contributors") for r in rows]
+
+    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    ax.errorbar(xs, tau, yerr=sigma, fmt="o-", color="tab:blue", capsize=3,
+                label=r"$\tau_{maj} \pm \sigma_\tau$")
+    ax.set_xlabel(leaf)
+    ax.set_ylabel(r"$\tau_{maj}$ (us)", color="tab:blue")
+    ax.tick_params(axis="y", labelcolor="tab:blue")
+    axn = ax.twinx()
+    axn.plot(xs, n_contrib, "s--", color="tab:green", label="n_contributors")
+    axn.set_ylabel("n_contributors", color="tab:green")
+    axn.tick_params(axis="y", labelcolor="tab:green")
+    ax.set_title(f"tau calibration vs {leaf}")
+    fig.tight_layout()
+    return fig
+
+
 def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """Two panels: σ(f) per grid value (left) and the scalar metric trend
     (right, median σ and noise-flagged fraction vs the knob)."""

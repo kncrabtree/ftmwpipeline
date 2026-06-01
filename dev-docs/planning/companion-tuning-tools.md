@@ -273,6 +273,48 @@ is proven on a low-churn stage, then fanned out.
 5. **Gap-fill** the no-tool knobs (Stage 2b `*.snr_min`, Stage 4
    `min_freeze_snr`) as registry entries.
 
+## Implementation status
+
+The surface lives in `src/ftmwpipeline/_internal/tuning/` (`registry.py`,
+`engine.py`, `plots.py`), exposed through `cli/tune_commands.py`
+(`tune list` / `tune scan`), `Pipeline.tune_scan` / `Pipeline.tune_list`, and
+`api.tune_scan` / `api.tune_list`. Tests: `tests/unit/_internal/tuning/` and
+`tests/integration/test_tune_cross_interface.py`.
+
+Built (sequencing steps 1–2):
+
+- **Engine + registry.** Dotted-path `KnobSpec` (run / metric / optional plot
+  adapter / optional recommender / `see_also`); per sweep the engine always
+  emits a table + CSV, renders the plot when an adapter is registered (else
+  table-only), produces a best-effort recommendation, and prints how-to-apply
+  text. Flags: `--output-dir` (default cwd), `--reuse`, `--interactive`
+  (CLI-only), and a progress indicator on every surface (`quiet` / `-q` to
+  suppress). Plot adapters receive a `PlotContext` (working `.ftmw`) for source
+  data such as the FID.
+- **Registered knobs:**
+  - Start detection — `start.guard_margin_us`, `start.sweep_max_us`,
+    `start.min_chirp_drop_ratio`: 2-panel plot (FID with chirp-end + candidate
+    starts, over the Σ|FT| sweep); `see_also` points at `stage1.start_us`.
+  - FT start — `stage1.start_us`: stacked active-band |FT| ladder (per-panel
+    aspect ~5.5:1, height grows with the grid) + percentile floor metric.
+  - Stage 2 noise — `stage2.scatter.{window_mhz,pedestal_mhz,smoothing_mhz}`,
+    `stage2.smoothing.smoothing_window_mhz`: σ(f) overlay + metric trend.
+  - Stage 2b tau — `stage2b.stft.{n_seg,t_sigma}`,
+    `stage2b.polish.{polish_snr_cap,polish_noise_debias}`: τ_maj ± σ_τ trend
+    with contributor count (the boolean `polish_noise_debias` is table-only).
+
+Remaining:
+
+- **Stage 3 → 4 → 5 knobs** (step 3): lift the ~13 tracked `probe_<knob>.py`
+  grids/metrics/plots into registry entries, reusing the
+  `<stage>-gaussian-audit/harness.py` builders. Stage 5 sweeps re-run
+  `fit_peaks` per value — keep grids tight, lean on `--reuse`, and test against
+  the small dependency-free-windows fixture.
+- **Preset emission** (step 4, deferred — see §Open decisions 1).
+- **Gap-fill** the no-tool knobs (step 5).
+- **Manual validation:** every knob beyond `start.guard_margin_us` still needs a
+  drive-through on real data to confirm its metric/plot before it is relied on.
+
 ## Test plan
 
 - Unit: registry well-formed (every `KnobSpec.path` resolves to a real settings

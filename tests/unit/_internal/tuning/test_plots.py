@@ -14,6 +14,7 @@ from ftmwpipeline._internal.tuning.plots import (
     plot_noise_sweep,
     plot_start_detection,
     plot_start_ladder,
+    plot_tau_trend,
 )
 
 
@@ -41,6 +42,13 @@ class _FakeNoise:
 class _FakeFT:
     freq_array: Any
     complex_spectrum: Any
+
+
+@dataclass
+class _FakeTau:
+    tau_maj_us: float
+    sigma_tau_us: float
+    n_contributors: int
 
 
 def _ctx() -> PlotContext:
@@ -101,6 +109,31 @@ def test_plot_noise_sweep_returns_figure():
     assert fig is not None
     assert len(fig.axes) >= 2  # σ(f) panel + metric-trend panel (+ twin)
     _close(fig)
+
+
+def test_plot_tau_trend_numeric_returns_figure():
+    rows = [
+        SweepRow(8, {"tau_maj_us": 5.6, "sigma_tau_us": 1.4, "n_contributors": 3990},
+                 _FakeTau(5.6, 1.4, 3990)),
+        SweepRow(12, {"tau_maj_us": 5.9, "sigma_tau_us": 1.4, "n_contributors": 5022},
+                 _FakeTau(5.9, 1.4, 5022)),
+    ]
+    fig = plot_tau_trend(get_knob("stage2b.stft.n_seg"), rows, _ctx())
+    assert fig is not None
+    _close(fig)
+
+
+def test_plot_tau_trend_none_for_nonnumeric():
+    rows = [SweepRow("foo", {"tau_maj_us": 5.6}, _FakeTau(5.6, 1.4, 10))]
+    assert plot_tau_trend(get_knob("stage2b.stft.n_seg"), rows, _ctx()) is None
+
+
+def test_2b_knob_plot_wiring():
+    assert get_knob("stage2b.stft.n_seg").plot is plot_tau_trend
+    assert get_knob("stage2b.stft.t_sigma").plot is plot_tau_trend
+    assert get_knob("stage2b.polish.polish_snr_cap").plot is plot_tau_trend
+    # the boolean knob is table-only
+    assert get_knob("stage2b.polish.polish_noise_debias").plot is None
 
 
 def test_adapters_return_none_without_results():

@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
-from .plots import plot_noise_sweep, plot_start_detection, plot_start_ladder
+from .plots import (
+    plot_noise_sweep,
+    plot_start_detection,
+    plot_start_ladder,
+    plot_tau_trend,
+)
 
 # A stage runner: given a (writable) .ftmw path and a knob value, set the knob
 # and re-run the affected stage, returning the stage result object.
@@ -117,6 +122,28 @@ def _run_ft_start(path: Path, value: Any) -> Any:
     return ftmw.compute_ft(path, start_us=float(value))
 
 
+def _run_tau(sub_block: str, field_name: str) -> RunFn:
+    """Re-run the Stage 2b tau calibration with a single settings field set.
+
+    Builds a ``TauCalibrationSettings`` bundle (the preset layer) carrying just
+    the one sub-block field, so any tau knob — including the ``polish`` fields
+    that ``calibrate_tau`` does not expose as kwargs — is sweepable uniformly.
+    """
+
+    def run(path: Path, value: Any) -> Any:
+        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+        from ftmwpipeline.core import tau_calibration_settings as tcs
+
+        sub_cls = {
+            "stft": tcs.StftSubSettings,
+            "polish": tcs.PolishSubSettings,
+        }[sub_block]
+        bundle = tcs.TauCalibrationSettings(**{sub_block: sub_cls(**{field_name: value})})
+        return ftmw.calibrate_tau(path, settings=bundle)
+
+    return run
+
+
 # ---------------------------------------------------------------------------
 # Metric reducers
 # ---------------------------------------------------------------------------
@@ -144,6 +171,14 @@ def _metric_ft_band_floor(result: Any) -> Dict[str, Any]:
         "p20": round(float(pcts[3]), 5),
         "p50": round(float(pcts[4]), 5),
         "max": round(float(pcts[5]), 5),
+    }
+
+
+def _metric_tau(result: Any) -> Dict[str, Any]:
+    return {
+        "tau_maj_us": round(float(result.tau_maj_us), 4),
+        "sigma_tau_us": round(float(result.sigma_tau_us), 4),
+        "n_contributors": int(result.n_contributors),
     }
 
 
@@ -284,6 +319,56 @@ _register(KnobSpec(
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
+))
+
+# Stage 2b tau calibration — requires Stages 0-2. Each value re-runs the STFT
+# calibration (the slowest stage), so default grids are kept modest.
+_register(KnobSpec(
+    path="stage2b.stft.n_seg",
+    stage="stage2b_tau",
+    requires="stage2_noise_result",
+    help="Number of non-overlapping STFT frames (window = T_full / n_seg).",
+    inst_sensitivity="Y",
+    default_grid=(6, 8, 10, 14, 20),
+    run=_run_tau("stft", "n_seg"),
+    metric=_metric_tau,
+    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+    plot=plot_tau_trend,
+))
+_register(KnobSpec(
+    path="stage2b.stft.t_sigma",
+    stage="stage2b_tau",
+    requires="stage2_noise_result",
+    help="Above-threshold SNR gate for per-frame signal detection (contributor floor).",
+    inst_sensitivity="Y",
+    default_grid=(3.0, 4.0, 5.0, 6.0, 8.0),
+    run=_run_tau("stft", "t_sigma"),
+    metric=_metric_tau,
+    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+    plot=plot_tau_trend,
+))
+_register(KnobSpec(
+    path="stage2b.polish.polish_snr_cap",
+    stage="stage2b_tau",
+    requires="stage2_noise_result",
+    help="SNR above which the Gauss-Newton polish is skipped (avoid over-correction).",
+    inst_sensitivity="Y",
+    default_grid=(5.0, 7.0, 9.0, 12.0),
+    run=_run_tau("polish", "polish_snr_cap"),
+    metric=_metric_tau,
+    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+    plot=plot_tau_trend,
+))
+_register(KnobSpec(
+    path="stage2b.polish.polish_noise_debias",
+    stage="stage2b_tau",
+    requires="stage2_noise_result",
+    help="Apply Rician-unbiased magnitude on high-SNR frames (removes residual bias).",
+    inst_sensitivity="Y",
+    default_grid=(False, True),
+    run=_run_tau("polish", "polish_noise_debias"),
+    metric=_metric_tau,
+    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
 ))
 
 
