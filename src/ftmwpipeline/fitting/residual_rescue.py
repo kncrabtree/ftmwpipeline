@@ -704,7 +704,6 @@ def attempt_residual_rescue(
     min_separation_factor: float = DEFAULT_MIN_SEPARATION_FACTOR,
     max_peaks: int = DEFAULT_MAX_PEAKS,
     conservative_kwargs: Optional[dict[str, Any]] = None,
-    shape_error_epsilon: float = 0.0,
     excluded_offsets: Optional[Sequence[float]] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
 ) -> RescueOutcome:
@@ -754,19 +753,6 @@ def attempt_residual_rescue(
         (e.g. ``tau_apodization_us``, ``max_decay_factor``,
         ``phase_penalty_lambda``). Pass the same options the initial fit
         received so the rescue's per-trial fits enforce the same physics.
-    shape_error_epsilon : float, default 0.0
-        Fractional lineshape-model error per unit parent amplitude.
-        Inflates the screening-pipeline noise floor by
-        ``epsilon * |current_model(f)|`` so candidates falling under
-        existing strong peaks must exceed the expected irreducible
-        Lorentzian-vs-true-shape residual to be considered. Calibrated
-        per dataset (the chi^2_r ~ SNR^2 regression slope: see
-        ``scratch/stage5-validation/diag_voigt_hypothesis.py``; ~0.0125
-        for the 2638 fixture). ``0.0`` (default) preserves the canonical
-        Stage 2 noise model and the pre-existing behaviour. The fitter
-        (LSQ inside :func:`conservative_fit`) always uses the
-        un-inflated sigma; inflation is a screening tool, not a fitting
-        one.
     excluded_offsets : sequence of float, optional
         Additional offsets (MHz) the rescue must NOT re-propose
         candidates near. Combined with ``current_fit.peaks`` 's offsets
@@ -835,41 +821,12 @@ def attempt_residual_rescue(
         else 0.0
     )
 
-    # Shape-error-aware sigma inflation for the screening pipeline.
-    # When epsilon > 0, the per-bin noise floor seen by the detector +
-    # phase-coherence filter grows by ``epsilon * |initial_model|`` --
-    # representing the irreducible Lorentzian-vs-true-lineshape residual
-    # that scales with parent amplitude (see the chi^2_r ~ SNR^2
-    # regression in scratch/stage5-validation/diag_voigt_hypothesis.py).
-    # Candidates sitting under existing strong peaks must clear this
-    # inflated floor to be considered; far-from-peak candidates see the
-    # canonical noise. conservative_fit further down still uses the raw
-    # sigma -- the inflation gates which candidates enter the fit, not
-    # how they fit.
-    if shape_error_epsilon > 0.0:
-        model_mag = np.abs(initial_model)
-        sigma_screen = np.sqrt(sigma * sigma + (shape_error_epsilon * model_mag) ** 2)
-    else:
-        sigma_screen = sigma
     raw_candidates = find_residual_peaks(
-        u, residual, sigma_screen,
+        u, residual, sigma,
         snr_threshold=snr_threshold,
         prominence_threshold=prominence_threshold,
         fwhm_mhz=rescue_fwhm if rescue_fwhm > 0.0 else None,
     )
-    # find_residual_peaks gates on the *median* sigma_c (scipy's
-    # find_peaks takes a scalar height by design here). With per-bin
-    # sigma inflation that's much larger at a few peak-center bins than
-    # at the median bin, the median-based gate is barely shifted -- the
-    # per-bin filter has to run here as a post-step. Drop any candidate
-    # whose magnitude fails the inflated-sigma SNR at its own bin.
-    if shape_error_epsilon > 0.0 and raw_candidates:
-        kept = []
-        for c in raw_candidates:
-            bin_sigma_c = sigma_screen[c.bin_index] / np.sqrt(2.0)
-            if c.magnitude >= snr_threshold * bin_sigma_c:
-                kept.append(c)
-        raw_candidates = kept
     # Locality rejection: drop any candidate too close to a currently-fitted
     # peak OR an explicit blacklist entry. Fitted-peak locality means the
     # candidate is sitting under an existing peak -- the residual signal there
@@ -1132,7 +1089,6 @@ def rescue_and_consolidate(
     overfit_amp_ratio_band: float = DEFAULT_OVERFIT_AMP_RATIO_BAND,
     overfit_amp_ratio_threshold: float = DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
-    shape_error_epsilon: float = 0.0,
     shape: "PeakShape | str" = "lorentzian",
     spur_mask: Optional[SpurMaskSpec] = None,
 ) -> ConsolidatedRescueOutcome:
@@ -1295,7 +1251,6 @@ def rescue_and_consolidate(
             significance=rescue_significance,
             max_peaks=rescue_max_peaks,
             conservative_kwargs=ckwargs_in,
-            shape_error_epsilon=shape_error_epsilon,
             excluded_offsets=rejected_offsets if rejected_offsets else None,
             spur_mask=spur_mask,
         )

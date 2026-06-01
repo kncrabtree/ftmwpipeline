@@ -99,14 +99,20 @@ the σ_f accuracy floor, not a Voigt ε.**
 | T1 | Cross-fixture characterization harness (tracked recipe: build→fit all 7, emit Tier-1 χ²ᵣ health + Tier-2 gate-firing + τ-source comparison + σ_f floor), → roll-up | backbone for #2/#3/#4 | **landed** (`../research/stage5-cross-fixture/stage5_cross_fixture.py`; 2638 χ²ᵣ med 1.31 anchor); re-baseline pending per-fixture shape |
 | T2 | τ-calibration robustness → **asymmetric long-anchor τ penalty** for swallowed-hyperfine blends (start narrow, broaden cheap, narrow expensive). STFT band-averaged-low / `calibrate_tau_G`-high confirmed; band-dependent τ reconfirmed | #3 | **in progress**: mechanism implemented in `window_fit` (back-compat, 295 tests green) + window-level validated (655 w29 χ²ᵣ 44865→327); production plumbing + full `fit_peaks` A/B next. See `../research/stage5-cross-fixture/report.md` |
 | T3 | Uncertainty honesty: precision-vs-accuracy gap on 1512+655; calibrate instrument accuracy floor; decide σ_f_floor term | #2 Tier 3 | unblocked; shippable |
-| T4 | Shape/ε reconciliation: re-run Gaussian acceptance bar on 1512/655; decide if `shape_error_epsilon` is still needed once τ+noise are right | #3/#4 | unblocked; likely retires ε |
+| T4 | Shape/ε reconciliation: re-run Gaussian acceptance bar on 1512/655; decide if `shape_error_epsilon` is still needed once τ+noise are right | #3/#4 | **resolved — ε retired**: the SNR-aware acceptance gate (`χ²ᵣ ≤ F + (κ·SNR_max)²`, D10) handles the chi²ᵣ ~ SNR² shape-error floor dataset-agnostically at the acceptance layer; ε defaulted 0.0 in production (never plumbed through `stage5_impl`) and is removed from `attempt_residual_rescue` / `rescue_and_consolidate`, dropping the per-dataset calibration burden |
 | T5 | Land `validate-stage5-shape-error` CLI + per-fixture `dev-docs/fixtures/<n>.md` (dual-interface) | #2 | **landed**: Tier-1 reconciled to the SNR-aware gate `χ²ᵣ ≤ F + (κ·SNR_max)²` (D10); acceptance primitives in `fitting/validation.py`; `validate-stage5-shape-error` (api/pipeline/cli + cross-interface test); harness re-baselined to per-fixture shape; Tier-3 ground truth run on 1512/655 (`dev-docs/fixtures/{1512,655}.md`) |
 
 Blocked behind a *longer-T* / *different-instrument* fixture: **#5** (3-way
 L/G/V — 2638-class T cannot separate τ_L from τ_G) and **#6's calibration half**
 (instrument-sensitive `Y`-knobs). Do not plan these here.
 
-## Why this matters: the per-dataset ε calibration is the generalisation lever
+## Why this matters: the per-dataset ε calibration is the generalisation lever (historical — ε retired, see T4)
+
+> **Superseded.** This section frames `shape_error_epsilon` as *the*
+> per-dataset generalisation lever. T4 resolved otherwise: the chi²ᵣ ~ SNR²
+> shape-error floor is handled dataset-agnostically by the SNR-aware
+> acceptance gate (D10), and ε has been removed. The text below is kept for
+> provenance only.
 
 The Phase 1 work added a `shape_error_epsilon` parameter to
 `rescue_and_consolidate` that drives a position-dependent noise floor

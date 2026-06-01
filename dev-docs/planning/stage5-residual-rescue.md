@@ -139,25 +139,27 @@ The rule:
 The rescue tau is also handed to the joint refit's LSQ as its
 starting tau (warm start for the apodization-override case).
 
-### Shape-error sigma inflation
+### Shape-error sigma inflation (retired)
 
-The rescue's detector sees an inflated sigma:
+An earlier prototype inflated the rescue detector's per-bin sigma by a
+parent-amplitude-proportional term — `σ_eff(f) = √(σ_c² + (ε ·
+|current_model(f)|)²)`, threaded as a `shape_error_epsilon` screening
+parameter — so candidates sitting under bright peaks had to clear the
+expected Lorentzian-vs-true-shape residual to enter the fit. ε was a
+**per-dataset constant** requiring per-fixture calibration (the chi²ᵣ ~
+SNR² regression slope).
 
-```
-σ_eff(f) = √( σ_c² + (ε · |current_model(f)|)² )
-```
-
-threaded as the `shape_error_epsilon` parameter (default 0.0 =
-behaviour-preserving). `find_residual_peaks` sees the inflated
-sigma; the LSQ inside `conservative_fit` keeps the canonical
-sigma — inflation is a screening tool, not a fitting one. A
-per-bin post-filter is required because `find_residual_peaks`
-uses the median sigma for scipy's `find_peaks` height threshold.
-
-ε is a **per-dataset constant**. The 2638 fixture's calibrated
-value is 0.05 (5% per-bin residual at the line center). The
-per-fixture calibration protocol is in
-[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md).
+It is **retired**. The same chi²ᵣ ~ SNR² shape-error floor is now handled
+dataset-agnostically and at the right layer by the SNR-aware acceptance
+gate (`snr_aware_chi2_pass` / `shape_error_fraction` in `validation.py`,
+ROADMAP D10): a window's reduced chi-squared is allowed to grow as
+`F + (κ·SNR_max)²`, so a bright line fit to its lineshape-fidelity limit
+passes the gate rather than spawning spurious sub-resolution rescue
+candidates. The screening-sigma inflation knob is therefore redundant —
+it defaulted to 0.0 in production (never plumbed through `stage5_impl`),
+and removing it drops a per-dataset calibration burden. See
+[`stage5-cross-fixture-validation.md`](stage5-cross-fixture-validation.md)
+theme T4.
 
 ## AICc-with-`n_eff` gates
 
