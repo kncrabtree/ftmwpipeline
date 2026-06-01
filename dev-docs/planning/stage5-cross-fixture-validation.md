@@ -100,7 +100,7 @@ the σ_f accuracy floor, not a Voigt ε.**
 | T2 | τ-calibration robustness → **asymmetric long-anchor τ penalty** for swallowed-hyperfine blends (start narrow, broaden cheap, narrow expensive). STFT band-averaged-low / `calibrate_tau_G`-high confirmed; band-dependent τ reconfirmed | #3 | **in progress**: mechanism implemented in `window_fit` (back-compat, 295 tests green) + window-level validated (655 w29 χ²ᵣ 44865→327); production plumbing + full `fit_peaks` A/B next. See `../research/stage5-cross-fixture/report.md` |
 | T3 | Uncertainty honesty: precision-vs-accuracy gap on 1512+655; calibrate instrument accuracy floor; decide σ_f_floor term | #2 Tier 3 | unblocked; shippable |
 | T4 | Shape/ε reconciliation: re-run Gaussian acceptance bar on 1512/655; decide if `shape_error_epsilon` is still needed once τ+noise are right | #3/#4 | unblocked; likely retires ε |
-| T5 | Land `validate-stage5-shape-error` CLI + per-fixture `dev-docs/fixtures/<n>.md` (dual-interface) | #2 | after T1 logic proven |
+| T5 | Land `validate-stage5-shape-error` CLI + per-fixture `dev-docs/fixtures/<n>.md` (dual-interface) | #2 | **landed**: Tier-1 reconciled to the SNR-aware gate `χ²ᵣ ≤ F + (κ·SNR_max)²` (D10); acceptance primitives in `fitting/validation.py`; `validate-stage5-shape-error` (api/pipeline/cli + cross-interface test); harness re-baselined to per-fixture shape; Tier-3 ground truth run on 1512/655 (`dev-docs/fixtures/{1512,655}.md`) |
 
 Blocked behind a *longer-T* / *different-instrument* fixture: **#5** (3-way
 L/G/V — 2638-class T cannot separate τ_L from τ_G) and **#6's calibration half**
@@ -266,19 +266,56 @@ explicit until at least two fixtures confirm the relationship.
 
 When validating Phase 1+ against a new fixture, the deliverables are:
 
-### Tier 1: distribution health (must pass)
+### Tier 1: distribution health (must pass) — SNR-aware
 
-A new fixture is "Stage 5 healthy" iff the post-rescue chi²_r
-distribution looks like the 2638 reference:
+**The raw χ²_r gate this section originally specified (median ≤ 1.5, p95 ≤ 4,
+max ≤ 10) is superseded** (divergence D10). At extreme SNR the per-window
+reduced χ² is a *model-fidelity floor*, not a noise statistic: a sub-percent
+lineshape/τ deficit becomes hundreds of σ per bin under a SNR ~10⁴–10⁵ line, so
+χ²_r tracks SNR² (655: maxSNR<100 → median ~2.9; ≥10⁴ → ~2·10⁵; Spearman +0.59)
+*even where the line is fit to part-in-10⁵* — its frequency recovered to 0.2 kHz.
+The raw gate is therefore unachievable on any high-SNR fixture. Window sizing,
+cross-window leakage, and τ were each falsified as levers for the ~2.4–3 χ²_r
+bulk floor (see `../research/stage5-cross-fixture/report.md`); the ~3% deficit is
+the honest Lorentzian + low-order-baseline fidelity, not a defect to chase.
 
-- **chi²_r median** ≤ 1.5 (i.e. the typical window converges near
-  noise floor)
-- **chi²_r p95** ≤ 4 (extreme cases at most a few times noise)
-- **chi²_r max** ≤ 10 (no catastrophic stuck cases — if there are,
-  investigate them individually before declaring healthy)
-- **No regression on clean controls**: pick the new fixture's
-  analogues of w63/w64 (low-K, weak-SNR, well-fit by the persisted
-  pipeline) and verify the rescue accepts no candidates.
+The replacement is a **unified SNR-aware acceptance gate**, evaluated per window
+(`fitting/validation.py`: `snr_aware_chi2_pass`, `shape_error_fraction`):
+
+- **Pass iff `χ²_r ≤ F + (κ·SNR_max)²`**, where `SNR_max` is the maximum
+  in-window peak SNR, κ (`DEFAULT_SHAPE_ERROR_KAPPA`) is the tolerated fractional
+  model deficit, and `F` (`DEFAULT_CHI2R_NOISE_FLOOR`) is the noise-regime
+  allowance. It collapses to `χ²_r ≤ F` in the noise-dominated (low-SNR) regime
+  — where a deficit is invisible below noise — and grows ∝SNR² in the
+  deficit-dominated (high-SNR) regime, matching the measured floor.
+- **κ default = 0.05.** Just above the measured ~1–3% vinyl-cyanide deficit
+  (1.3% on the 655 SNR-100–1k bin), so a cleanly-fit dense window passes and the
+  gate flags only genuinely-bad ones.
+- **F default = 3.0.** At low SNR the `(κ·SNR_max)²` term is negligible, so the
+  gate reduces to `χ²_r ≤ F`. The reduced χ² of a *good* fit has mean ~1 but
+  variance ~2/dof (95th percentile ~1.5–2 at the typical Stage-5 active-FT
+  window dof of ~10–30) plus a small constant bias from the active-FT bin
+  correlation; `F = 1` would reject that normal upward scatter, failing healthy
+  noise-dominated windows. `F = 3` admits it (655 bulk χ²_r median 2.71, 1512
+  1.17 both pass) while the catastrophic χ²_r tail (655 p95 373) still fails. At
+  high SNR `F` is negligible against the deficit term.
+- Both are surfaced as `--kappa` / `--noise-floor` for per-fixture tuning; a
+  second, non-vinyl-cyanide instrument is the real calibration ceiling.
+- **Always report the fractional deficit `ε = √(max(χ²_r−F,0)) / SNR_max`**
+  binned by `SNR_max` (<100 / 100–1k / 1k–10k / ≥10k) so the gate stays
+  auditable. Subtracting `F` (not 1) zeroes ε in the noise regime (no measurable
+  deficit) and leaves the true deficit at high SNR: ε ≈ 0.1% on the bright cores,
+  ≈ 0.8–2% on the moderate forest. ε is meaningful only where the deficit term
+  clears the noise scatter (`SNR_max` of order 100+).
+- **No regression on clean controls**: pick the new fixture's analogues of
+  w63/w64 (low-K, weak-SNR, well-fit by the persisted pipeline) and verify the
+  rescue accepts no candidates.
+
+Measured cross-fixture (post-bounded-merge, each fixture in its recommended
+shape, κ=0.05/F=3): **2638** reference; **1512** (lorentzian) overall pass 0.93
+(bulk 0.93, χ²_r median 1.17); **655** (lorentzian) overall pass 0.69 (bulk 0.65,
+χ²_r median 2.71 — the real dense-forest fidelity floor; the SNR≥1k bins pass at
+1.0 with ε ≤ 0.5%).
 
 ### Tier 2: gate firing rates
 

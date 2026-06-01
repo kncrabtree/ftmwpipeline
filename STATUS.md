@@ -90,8 +90,8 @@ against the surviving `bcfitting` shell's contract.
     `visualize-ft`, `estimate-noise`, `visualize-noise`, `calibrate-tau`,
     `calibrate-tau-G`, `visualize-tau-heatmap`, `visualize-tau-distribution`,
     `detect-peaks`, `visualize-peaks`, `assign-windows`,
-    `visualize-windows`, `fit-peaks`, `visualize-fit`, `info`,
-    `validate`, `version`.
+    `visualize-windows`, `fit-peaks`, `visualize-fit`,
+    `validate-stage5-shape-error`, `info`, `validate`, `version`.
   - `Pipeline` is constructed via `Pipeline.create(...)`,
     `Pipeline.open(...)`, or the smart constructor `Pipeline(path)`
     (opens if present, else `FileNotFoundError` with guidance).

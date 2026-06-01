@@ -11,6 +11,7 @@ finer-grained Stage 5 prototype-fixtures + scenario tests live alongside the
 algorithm modules (``tests/unit/fitting/``).
 """
 
+import hashlib
 import json
 import shutil
 import subprocess
@@ -93,6 +94,63 @@ def test_cross_interface_consistency(baseline_2638_stage4_small, temp_ftmw_dir):
 
     _assert_fits_equivalent(fit_pipe, fit_func)
     _assert_fits_equivalent(fit_pipe, fit_cli)
+
+
+def test_validate_stage5_shape_error_cross_interface(
+    baseline_2638_stage4_small, temp_ftmw_dir, tmp_path
+):
+    """validate-stage5-shape-error: CLI == Pipeline == api, and read-only.
+
+    The command is a deterministic read over the persisted fit, so the
+    Pipeline and functional-API reports must be dict-identical; the CLI
+    (print-only) must run cleanly and report the same Tier-1 headline. The
+    validation must not mutate the file.
+    """
+    fitted = temp_ftmw_dir / "fitted.ftmw"
+    shutil.copy(baseline_2638_stage4_small, fitted)
+    fit = ftmw.fit_peaks(fitted)
+
+    # A tiny ground-truth catalog drawn from the fit's own frequencies so Tier 3
+    # has guaranteed matches and the catalog code path is exercised too.
+    freqs = sorted(p.frequency_mhz for p in fit.fitted_peaks)[:5]
+    assert freqs, "need at least one fitted peak to build a ground-truth catalog"
+    gt = tmp_path / "ground_truth.csv"
+    gt.write_text(
+        "freq_mhz,unc_mhz\n" + "".join(f"{f:.6f},0.001\n" for f in freqs)
+    )
+
+    pfile = temp_ftmw_dir / "vp.ftmw"
+    ffile = temp_ftmw_dir / "vf.ftmw"
+    cfile = temp_ftmw_dir / "vc.ftmw"
+    for fp in (pfile, ffile, cfile):
+        shutil.copy(fitted, fp)
+
+    before = hashlib.sha256(pfile.read_bytes()).hexdigest()
+    rep_pipe = Pipeline(pfile).validate_stage5_shape_error(ground_truth=gt)
+    rep_func = ftmw.validate_stage5_shape_error(ffile, ground_truth=gt)
+    after = hashlib.sha256(pfile.read_bytes()).hexdigest()
+
+    assert rep_pipe == rep_func
+    assert before == after, "validation must not mutate the .ftmw file"
+    assert rep_pipe["tier3"] is not None
+    assert rep_pipe["tier3"]["n_matched"] >= 1
+    assert rep_pipe["parameters"]["kappa"] == pytest.approx(0.05)
+
+    res = subprocess.run(
+        [
+            "ftmwpipeline",
+            "validate-stage5-shape-error",
+            str(cfile),
+            "--ground-truth",
+            str(gt),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
+    t1 = rep_pipe["tier1"]
+    assert f"{t1['n_pass']}/{t1['n_windows']} windows pass" in res.stdout
 
 
 def test_serialization_round_trip_and_hand_edit(
