@@ -65,6 +65,7 @@ def _build_explicit_from_kwargs(
     min_window_half_width_mhz: Optional[float],
     magnitude_attachment_threshold: Optional[float],
     tau_us: Optional[float],
+    max_peaks_per_window: Optional[int] = None,
 ) -> WindowPlanningSettings:
     """Bundle the legacy per-knob kwargs into an explicit-layer settings instance."""
     explicit = WindowPlanningSettings()
@@ -73,6 +74,7 @@ def _build_explicit_from_kwargs(
     explicit.coherence.edge_threshold = edge_threshold
     explicit.clustering.max_window_width_mhz = max_window_width_mhz
     explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
+    explicit.clustering.max_peaks_per_window = max_peaks_per_window
     explicit.contributor.min_freeze_snr = min_freeze_snr
     explicit.contributor.magnitude_attachment_threshold = (
         magnitude_attachment_threshold
@@ -100,6 +102,7 @@ def assign_windows_impl(
     min_window_half_width_mhz: Optional[float] = None,
     magnitude_attachment_threshold: Optional[float] = None,
     tau_us: Optional[float] = None,
+    max_peaks_per_window: Optional[int] = None,
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
@@ -135,6 +138,11 @@ def assign_windows_impl(
         Analytic-skirt-magnitude attachment cutoff in units of σ_c (default 0.1).
     tau_us : float, optional
         Assumed decay constant for the leakage envelope (default: undamped/boxcar).
+    max_peaks_per_window : int, optional
+        Per-window promoted-peak cap; dense merged spans are split at their
+        sparsest gaps until each window holds at most this many peaks and is at
+        most ``max_window_width_mhz`` wide (default 8, tracking Stage 5
+        ``conservative.max_peaks``).
     settings : WindowPlanningSettings, optional
         Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
         chain); fields left ``None`` fall through. Mutually exclusive with
@@ -160,6 +168,7 @@ def assign_windows_impl(
             "min_window_half_width_mhz": min_window_half_width_mhz,
             "magnitude_attachment_threshold": magnitude_attachment_threshold,
             "tau_us": tau_us,
+            "max_peaks_per_window": max_peaks_per_window,
         },
         migration_hint=(
             "use settings=WindowPlanningSettings(...) or preset='name' to "
@@ -190,6 +199,7 @@ def assign_windows_impl(
         min_window_half_width_mhz=min_window_half_width_mhz,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
         tau_us=tau_us,
+        max_peaks_per_window=max_peaks_per_window,
     )
     preset_layer: Optional[WindowPlanningSettings] = settings
     preset_name: Optional[str] = None
@@ -223,6 +233,9 @@ def assign_windows_impl(
             clus.min_window_half_width_mhz,
             "clustering.min_window_half_width_mhz",
         )
+    )
+    max_peaks_per_window_v: int = int(
+        _required(clus.max_peaks_per_window, "clustering.max_peaks_per_window")
     )
     min_freeze_v: float = float(
         _required(contrib.min_freeze_snr, "contributor.min_freeze_snr")
@@ -268,6 +281,7 @@ def assign_windows_impl(
         min_freeze_snr=min_freeze_v,
         min_window_half_width_mhz=min_half_v,
         magnitude_attachment_threshold=mag_thresh_v,
+        max_peaks_per_window=max_peaks_per_window_v,
     )
 
     save_window_plan_impl(file_path, plan)

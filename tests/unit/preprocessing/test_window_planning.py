@@ -318,6 +318,68 @@ class TestDifficultyAndWidthCap:
         assert (w.split_proposal is not None) or w.needs_joint_treatment
 
 
+class TestBoundedMergeAndCapSplit:
+    """The strong-cluster merge is bounded at the width cap and merged spans are
+    split at their sparsest gaps until each window is <= max_peaks_per_window and
+    <= max_window_width_mhz, so a dense, mutually-coupled strong-line forest does
+    not collapse into one unfittable mega-window."""
+
+    @staticmethod
+    def _dense_cluster():
+        # 20 strong lines 3 MHz apart over ~57 MHz: the per-peak proto-spans
+        # (+/- 2 MHz) overlap and the skirts keep S_coh lit between them, so the
+        # legacy build would chain them into one ~61 MHz / 20-peak window.
+        lines = [
+            (30040.0 + 3.0 * i, 3.0, PeakClassification.STRONG) for i in range(20)
+        ]
+        return _synthetic(lines, n=8000)
+
+    def test_dense_strong_forest_is_split_to_caps(self):
+        freqs, spec, rms, peaks = self._dense_cluster()
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        _assert_invariants(plan)
+        # Must NOT be one mega-window.
+        assert plan.n_windows >= 3
+        for w in plan.windows:
+            assert w.width_mhz <= 40.0 + 1e-6, "window exceeds the width cap"
+            assert len(w.free_peak_indices) <= 8, "window exceeds the peak cap"
+        # Every promoted line is still covered exactly once (no dropped peaks).
+        covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
+        assert covered == list(range(len(peaks)))
+
+    def test_tighter_peak_cap_makes_more_windows(self):
+        freqs, spec, rms, peaks = self._dense_cluster()
+        loose = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        tight = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=4
+        )
+        assert tight.n_windows > loose.n_windows
+        for w in tight.windows:
+            assert len(w.free_peak_indices) <= 4
+        _assert_invariants(tight)
+
+    def test_coupled_pair_within_cap_stays_merged(self):
+        # Two strong lines a few MHz apart (< the width cap, < the peak cap) must
+        # still merge into one joint window -- the cap split must not break a
+        # genuinely-coupled close pair (the 2638 doublet back-compat case).
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30038.0, 3.0, PeakClassification.STRONG),
+                (30042.0, 3.0, PeakClassification.STRONG),
+            ]
+        )
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        assert plan.n_windows == 1
+        assert sorted(plan.windows[0].free_peak_indices) == [0, 1]
+
+    def test_max_peaks_per_window_recorded_in_parameters(self):
+        freqs, spec, rms, peaks = self._dense_cluster()
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=6
+        )
+        assert plan.parameters["max_peaks_per_window"] == 6
+
+
 class TestEmptyAndEdgeCases:
     def test_no_promoted_peaks_gives_empty_plan(self):
         freqs, spec, rms, peaks = _synthetic(

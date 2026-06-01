@@ -84,10 +84,17 @@ class ClusteringSubSettings:
     ``max_window_width_mhz`` is the width cap above which a window is
     classified as HARD and gets a split proposal; ``min_window_half_width_mhz``
     is the minimum half-width of a window built around an isolated weak line.
+    ``max_peaks_per_window`` is the per-window promoted-peak cap: the
+    strong-cluster merge is bounded at the width cap and merged spans are split
+    at their sparsest gaps until each window holds at most this many promoted
+    peaks (and is at most ``max_window_width_mhz`` wide), so dense ultra-high-SNR
+    spectra cannot collapse into one unfittable mega-window. It tracks the Stage 5
+    ``conservative.max_peaks`` (default 8) so windows are sized to be fittable.
     """
 
     max_window_width_mhz: Optional[float] = None
     min_window_half_width_mhz: Optional[float] = None
+    max_peaks_per_window: Optional[int] = None
 
 
 @dataclass
@@ -161,6 +168,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "clustering": {
         "max_window_width_mhz": 40.0,
         "min_window_half_width_mhz": 2.0,
+        "max_peaks_per_window": 8,
     },
     "contributor": {
         "min_freeze_snr": 50.0,
