@@ -1435,6 +1435,33 @@ def load_fit(file_path: Union[str, Path]) -> SpectrumFit:
         raise
 
 
+def validate_stage5_shape_error(
+    file_path: Union[str, Path],
+    kappa: Optional[float] = None,
+    noise_floor: Optional[float] = None,
+    ground_truth: Optional[Union[str, Path]] = None,
+    match_tol_fwhm: float = 0.5,
+) -> Dict[str, Any]:
+    """Assess a persisted Stage 5 fit against the SNR-aware acceptance framework.
+
+    Read-only. Returns the Tier 1 (SNR-aware health) / Tier 2 (gate firing) /
+    Tier 3 (known-line ground truth, when ``ground_truth`` is given) report,
+    equivalent to :meth:`Pipeline.validate_stage5_shape_error`.
+    """
+    try:
+        return Pipeline.open(file_path).validate_stage5_shape_error(
+            kappa=kappa,
+            noise_floor=noise_floor,
+            ground_truth=ground_truth,
+            match_tol_fwhm=match_tol_fwhm,
+        )
+    except Exception as e:
+        logger.error(
+            f"Failed to validate Stage 5 shape error for {file_path}: {e}"
+        )
+        raise
+
+
 def visualize_fit(
     file_path: Union[str, Path],
     figsize: Optional[tuple] = None,

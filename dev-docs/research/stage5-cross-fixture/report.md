@@ -388,3 +388,43 @@ SNR-aware / fractional-residual metric (κ ≈ 3 %), under which the bulk is hea
 The one shippable win from this arc is the **bounded-merge Stage 4 fix**, which is
 required to fit dense spectra at all; the asym-τ production plumbing is **not**
 warranted on this evidence.
+
+## Issue #2 — metric reconciled, CLI landed, Tier 3 run
+
+The SNR-aware metric is now production. The Tier-1 gate is reformulated (ROADMAP
+D10) as **`χ²ᵣ ≤ F + (κ·SNR_max)²`** with the fractional deficit
+**`ε = √(max(χ²ᵣ−F,0))/SNR_max`** reported, binned by `SNR_max`. The primitives
+(`snr_aware_chi2_pass`, `shape_error_fraction`, `DEFAULT_SHAPE_ERROR_KAPPA=0.05`,
+`DEFAULT_CHI2R_NOISE_FLOOR=3.0`) live in `fitting/validation.py` and are consumed
+by the dual-interface read-only command **`validate-stage5-shape-error`**
+(`_internal/stage5_validation_impl.py` → api/pipeline/cli + a cross-interface
+test). The two regimes:
+
+- **Noise-dominated** (low SNR): the deficit term vanishes, the gate is
+  `χ²ᵣ ≤ F`. `F=3` budgets for the reduced-χ² sampling scatter of a *good* fit
+  (mean ~1, variance ~2/dof) — `F=1` would reject healthy noise-dominated windows
+  for normal upward fluctuation. With it, ε reads 0 there (no measurable deficit).
+- **Deficit-dominated** (high SNR): `(κ·SNR)²` governs; bright cores fit to
+  part-in-10⁵ pass (χ²ᵣ up to ~10³–10⁴) instead of failing for being bright.
+
+The earlier claim that the dense bulk "is healthy at κ≈3%" was incomplete: the
+bulk's elevated χ²ᵣ at *low* SNR is noise-regime scatter, not a fractional
+deficit (ε is meaningless there) — it is the noise floor `F`, not κ, that admits
+it. The true fractional deficit, measured where it is measurable (SNR≥100), is
+**~0.8–1.3%** on 655 — *better* than the ~3% the bulk-floor synthesis above
+inferred from low-SNR χ²ᵣ.
+
+Cross-fixture, post-bounded-merge, each fixture in its recommended shape
+(κ=0.05/F=3): **1512** (lorentzian, low-SNR) overall pass 0.93, bulk χ²ᵣ median
+1.17; **655** (lorentzian, dense extreme-SNR) overall pass 0.69, bulk χ²ᵣ median
+2.71 (the genuine fidelity floor), SNR≥1k bins pass 1.0. Tier 3: the **frequency-
+accuracy floor** is ~9 kHz on the sparse 1512 VC list (detrended; raw 16 kHz, a
+2.3 kHz/GHz clock drift + a −84 kHz offset) and the reported LSQ σ_f is honest as
+precision but ~49× overconfident as absolute accuracy — the precision-vs-accuracy
+gap. 655's dense-union match is recall-oriented but mismatch-noisy; 1512 is the
+clean accuracy read. Per-fixture detail in `dev-docs/fixtures/{1512,655}.md`.
+
+**Open follow-ups** (not #2): a tighter unambiguous-line matcher to isolate 655's
+own accuracy floor; T4 (re-test whether `shape_error_epsilon` still earns its keep
+under the SNR-aware metric — the evidence suggests it retires); and per-fixture
+κ/F if a non-vinyl-cyanide instrument lands.

@@ -11,6 +11,8 @@ import pytest
 
 from ftmwpipeline.fitting.peak_model import ModelPeak, model_spectrum
 from ftmwpipeline.fitting.validation import (
+    DEFAULT_CHI2R_NOISE_FLOOR,
+    DEFAULT_SHAPE_ERROR_KAPPA,
     calculate_aic,
     calculate_aicc,
     calculate_chi_squared_improvement,
@@ -20,6 +22,8 @@ from ftmwpipeline.fitting.validation import (
     effective_sample_size,
     feature_fwhm,
     passes_significance_test,
+    shape_error_fraction,
+    snr_aware_chi2_pass,
     validate_peak_separation,
 )
 
@@ -285,3 +289,67 @@ class TestPeakSeparation:
         ok, pairs = validate_peak_separation(np.array([0.0, 0.02, 0.04]), 0.1)
         assert not ok
         assert set(pairs) == {(0, 1), (0, 2), (1, 2)}
+
+
+# ---------------------------------------------------------------------------
+# SNR-aware acceptance
+# ---------------------------------------------------------------------------
+class TestShapeErrorFraction:
+    def test_inverts_the_deficit_regime(self):
+        """eps recovers the fractional deficit above the noise floor."""
+        eps, snr, F = 0.03, 500.0, 2.0
+        chi2r = F + (eps * snr) ** 2
+        assert shape_error_fraction(chi2r, snr, noise_floor=F) == pytest.approx(
+            eps, rel=1e-9
+        )
+
+    def test_noise_floor_gives_zero(self):
+        """At/below the noise-regime allowance there is no resolvable deficit."""
+        assert shape_error_fraction(DEFAULT_CHI2R_NOISE_FLOOR, 1000.0) == 0.0
+        assert shape_error_fraction(0.5, 1000.0) == 0.0
+        # Elevated chi2r that is still below F reads as no deficit.
+        assert shape_error_fraction(2.5, 1000.0, noise_floor=3.0) == 0.0
+
+    def test_zero_or_negative_snr_guard(self):
+        """A window with no line cannot resolve a deficit."""
+        assert shape_error_fraction(1e6, 0.0) == 0.0
+        assert shape_error_fraction(1e6, -5.0) == 0.0
+
+    def test_decreases_with_snr_at_fixed_chi2r(self):
+        """The same chi2r is a smaller fractional deficit on a brighter line."""
+        chi2r = 100.0
+        assert shape_error_fraction(chi2r, 1000.0) < shape_error_fraction(chi2r, 100.0)
+
+
+class TestSNRAwareChi2Pass:
+    def test_low_snr_collapses_to_noise_floor(self):
+        """Noise-dominated: the gate is essentially chi2r <= F."""
+        # snr=10, kappa=0.05 -> deficit term 0.25, so allowance ~ F + 0.25.
+        assert snr_aware_chi2_pass(3.0, 10.0, kappa=0.05, noise_floor=3.0)
+        assert not snr_aware_chi2_pass(3.5, 10.0, kappa=0.05, noise_floor=3.0)
+
+    def test_high_snr_allows_snr2_growth(self):
+        """Deficit-dominated: a bright clean line passes at large chi2r."""
+        snr, kappa = 1e4, 0.05
+        # allowance = F + (0.05*1e4)^2 ~ 250000; F is negligible here.
+        assert snr_aware_chi2_pass(2.0e5, snr, kappa=kappa)
+        assert not snr_aware_chi2_pass(3.0e5, snr, kappa=kappa)
+
+    def test_boundary_is_inclusive(self):
+        """The flip happens exactly at F + (kappa*snr)^2."""
+        snr, kappa, F = 200.0, 0.05, 3.0
+        boundary = F + (kappa * snr) ** 2
+        assert snr_aware_chi2_pass(boundary, snr, kappa=kappa, noise_floor=F)
+        assert not snr_aware_chi2_pass(
+            np.nextafter(boundary, np.inf), snr, kappa=kappa, noise_floor=F
+        )
+
+    def test_nonfinite_chi2r_fails(self):
+        assert not snr_aware_chi2_pass(np.inf, 100.0)
+        assert not snr_aware_chi2_pass(np.nan, 100.0)
+
+    def test_defaults_are_the_module_constants(self):
+        snr = 100.0
+        boundary = DEFAULT_CHI2R_NOISE_FLOOR + (DEFAULT_SHAPE_ERROR_KAPPA * snr) ** 2
+        assert snr_aware_chi2_pass(boundary, snr)
+        assert not snr_aware_chi2_pass(boundary + 1e-6, snr)

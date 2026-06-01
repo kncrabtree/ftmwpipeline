@@ -51,6 +51,12 @@ import numpy as np
 import ftmwpipeline.api as ftmw
 from ftmwpipeline.core.data_structures import SpectrumFit
 from ftmwpipeline.fitting.tau_calibration import TauCalibrationResult
+from ftmwpipeline.fitting.validation import (
+    DEFAULT_CHI2R_NOISE_FLOOR,
+    DEFAULT_SHAPE_ERROR_KAPPA,
+    shape_error_fraction,
+    snr_aware_chi2_pass,
+)
 
 HERE = Path(__file__).parent
 DATA = HERE / "data"
@@ -85,10 +91,15 @@ def build(fid: str, reuse: bool = False) -> tuple[str, SpectrumFit, TauCalibrati
     """Canonical production pipeline through Stage 5 for one fixture.
 
     import -> detect_start_time(stamp) -> compute_ft(zpf=0, expf=None, trim) ->
-    estimate_noise(scatter) -> calibrate_tau -> detect_peaks -> assign_windows ->
-    fit_peaks. With ``reuse=True`` and an already-fit file present, reload the
-    persisted ``SpectrumFit`` and tau calibration instead of re-running the slow
-    ``fit_peaks`` NLS.
+    estimate_noise(scatter) -> calibrate_tau -> recommend_shape -> [calibrate_tau_G
+    if gaussian] -> detect_peaks -> assign_windows -> fit_peaks(shape). The fit
+    runs in each fixture's *recommended* shape (the per-line L/G/V AICc vote):
+    2638 is gaussian (consuming the ``calibrate_tau_G`` band majorities), 655 is
+    lorentzian (the STFT ``calibrate_tau`` band majorities). Fitting the wrong
+    shape inflates chi2r via the Lorentzian-core/Gaussian-wing residual, so the
+    cross-fixture Tier-1 numbers are only meaningful in the correct shape. With
+    ``reuse=True`` and an already-fit file present, reload the persisted
+    ``SpectrumFit`` and tau calibration instead of re-running the slow NLS.
     """
     SCRATCH.mkdir(parents=True, exist_ok=True)
     fp = str(SCRATCH / f"exp_{fid}.ftmw")
@@ -102,38 +113,96 @@ def build(fid: str, reuse: bool = False) -> tuple[str, SpectrumFit, TauCalibrati
     ftmw.compute_ft(fp, zpf=0, expf_us=None, trim=TRIM)
     ftmw.estimate_noise(fp)  # scatter default
     cal = ftmw.calibrate_tau(fp)
+    # recommend_shape returns "lorentzian" (exp wins) / "gaussian" (gauss wins) /
+    # None (no clear winner -- voigt mass reported but unrepresentable here);
+    # fall through to the Lorentzian default in the no-winner case.
+    shape = ftmw.recommend_shape(fp).recommended_shape or "lorentzian"
+    if shape == "gaussian":
+        ftmw.calibrate_tau_G(fp)  # the gaussian-path tau_G band majorities
     ftmw.detect_peaks(fp)
     ftmw.assign_windows(fp)
-    fit = ftmw.fit_peaks(fp)
+    fit = ftmw.fit_peaks(fp, shape=shape)
     return fp, fit, cal
 
 
-def tier1_metrics(fit: SpectrumFit) -> dict:
-    """Per-window reduced-chi2 distribution health (planning-doc Tier 1)."""
-    chi2 = np.array(
-        [
-            float(wf.reduced_chi2)
-            for wf in fit.window_fits
-            if np.isfinite(getattr(wf, "reduced_chi2", np.inf))
-        ]
-    )
-    if chi2.size == 0:
+# SNR_max bins -- the natural breakdown (noise-dominated bulk -> floor-limited
+# bright cores), matching ``_internal/stage5_validation_impl.py``.
+SNR_BIN_EDGES = (100.0, 1000.0, 10000.0)
+SNR_BIN_LABELS = ("<100", "100-1k", "1k-10k", ">=10k")
+
+
+def _window_snr_max(wf) -> float:
+    """Brightest in-window fitted-peak SNR (0 for an empty / SNR-less window)."""
+    snrs = [
+        float(p.snr)
+        for p in wf.fitted_peaks
+        if p.snr is not None and np.isfinite(p.snr)
+    ]
+    return max(snrs) if snrs else 0.0
+
+
+def _snr_bin(snr: float) -> str:
+    for i, edge in enumerate(SNR_BIN_EDGES):
+        if snr < edge:
+            return SNR_BIN_LABELS[i]
+    return SNR_BIN_LABELS[-1]
+
+
+def tier1_metrics(
+    fit: SpectrumFit,
+    kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
+    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+) -> dict:
+    """SNR-aware per-window acceptance (planning-doc Tier 1, post-D10).
+
+    The raw chi2r gate (median<=1.5/p95<=4/max<=10) is a model-fidelity-vs-SNR
+    floor, not a health metric, so it is unachievable at extreme SNR. The gate
+    is now ``chi2r <= F + (kappa*SNR_max)**2`` per window (F the noise-regime
+    allowance) with the fractional deficit ``eps`` reported, binned by the
+    brightest in-window peak SNR.
+    """
+    rows = []
+    for wf in fit.window_fits:
+        chi2r = float(getattr(wf, "reduced_chi2", np.inf))
+        snr_max = _window_snr_max(wf)
+        rows.append(
+            dict(
+                chi2r=chi2r,
+                snr_max=snr_max,
+                eps=shape_error_fraction(chi2r, snr_max, noise_floor),
+                snr_bin=_snr_bin(snr_max),
+                passed=snr_aware_chi2_pass(chi2r, snr_max, kappa, noise_floor),
+            )
+        )
+    if not rows:
         return dict(n_windows=0)
+
+    finite = np.array([r["chi2r"] for r in rows if np.isfinite(r["chi2r"])])
+    n_pass = sum(r["passed"] for r in rows)
+    bins = {}
+    for label in SNR_BIN_LABELS:
+        brows = [r for r in rows if r["snr_bin"] == label]
+        if not brows:
+            continue
+        bfin = np.array([r["chi2r"] for r in brows if np.isfinite(r["chi2r"])])
+        bins[label] = dict(
+            n=len(brows),
+            chi2r_median=round(float(np.median(bfin)), 3) if bfin.size else None,
+            eps_median=round(float(np.median([r["eps"] for r in brows])), 5),
+            pass_rate=round(sum(r["passed"] for r in brows) / len(brows), 3),
+        )
     return dict(
-        n_windows=int(chi2.size),
-        chi2r_median=round(float(np.median(chi2)), 3),
-        chi2r_p95=round(float(np.percentile(chi2, 95)), 3),
-        chi2r_max=round(float(chi2.max()), 3),
-        n_gt10=int((chi2 > 10).sum()),
-        n_gt4=int((chi2 > 4).sum()),
-        n_le1p5=int((chi2 <= 1.5).sum()),
-        frac_le1p5=round(float((chi2 <= 1.5).mean()), 3),
-        # Tier-1 acceptance per the planning doc (median<=1.5, p95<=4, max<=10).
-        tier1_pass=bool(
-            np.median(chi2) <= 1.5
-            and np.percentile(chi2, 95) <= 4.0
-            and chi2.max() <= 10.0
-        ),
+        n_windows=len(rows),
+        kappa=kappa,
+        noise_floor=noise_floor,
+        pass_rate=round(n_pass / len(rows), 3),
+        n_pass=int(n_pass),
+        # Raw distribution kept for reference (the superseded gate's numbers).
+        chi2r_median=round(float(np.median(finite)), 3) if finite.size else None,
+        chi2r_p95=round(float(np.percentile(finite, 95)), 3) if finite.size else None,
+        chi2r_max=round(float(finite.max()), 3) if finite.size else None,
+        snr_bins=bins,
+        tier1_pass=bool(n_pass == len(rows)),
     )
 
 
@@ -262,6 +331,7 @@ def capture(fid: str, reuse: bool = False) -> dict:
     tau = tau_comparison(fp, fit, cal, reuse=reuse)
     out = dict(
         fixture=fid,
+        shape=str(fit.parameters.get("shape", "lorentzian")),
         n_windows=t1.get("n_windows", 0),
         n_fitted_peaks=len(fit.fitted_peaks),
         tier1=t1,
@@ -269,9 +339,10 @@ def capture(fid: str, reuse: bool = False) -> dict:
         tau=tau,
     )
     print(
-        f"[{fid}] win={t1.get('n_windows')} peaks={len(fit.fitted_peaks)} "
-        f"| T1 chi2r med={t1.get('chi2r_median')} p95={t1.get('chi2r_p95')} "
-        f"max={t1.get('chi2r_max')} pass={t1.get('tier1_pass')} "
+        f"[{fid}] shape={out['shape']} win={t1.get('n_windows')} "
+        f"peaks={len(fit.fitted_peaks)} "
+        f"| T1 SNR-aware pass={t1.get('pass_rate')} "
+        f"(chi2r med={t1.get('chi2r_median')} p95={t1.get('chi2r_p95')}) "
         f"| T2 merge={t2['merge_fire_rate']} origin_pruned={t2['n_pruned_rescue_origin']} "
         f"lc={t2['limit_cycle_rounds']} "
         f"| tau stft={tau['tau_stft_us']} G={tau['tau_G_us']} "
@@ -293,18 +364,25 @@ def main() -> int:
     (DATA / "stage5_cross_fixture.json").write_text(json.dumps(results, indent=2))
     print(f"\nwrote {DATA / 'stage5_cross_fixture.json'}")
 
-    # Tier 1 distribution-health summary.
-    print("\n=== Tier 1: per-window chi2_r health ===")
-    print(f"{'fix':>5} {'win':>5} {'median':>7} {'p95':>7} {'max':>9} "
-          f"{'>10':>4} {'>4':>4} {'<=1.5':>6} {'pass':>5}")
+    # Tier 1 SNR-aware acceptance summary (chi2r med/p95 retained for reference,
+    # but the gate is chi2r <= 1 + (kappa*SNR_max)^2; bulk = the <100 SNR bin).
+    print("\n=== Tier 1: SNR-aware per-window acceptance ===")
+    print(f"{'fix':>5} {'shape':>6} {'win':>5} {'pass':>6} {'med':>6} {'p95':>8} "
+          f"{'bulk_n':>7} {'bulk_med':>9} {'bulk_eps':>9} {'bulk_pass':>10}")
     for r in results:
         t1 = r.get("tier1")
         if not t1 or not t1.get("n_windows"):
             continue
-        print(f"{r['fixture']:>5} {t1['n_windows']:>5} {t1['chi2r_median']:>7.2f} "
-              f"{t1['chi2r_p95']:>7.2f} {t1['chi2r_max']:>9.2f} {t1['n_gt10']:>4} "
-              f"{t1['n_gt4']:>4} {t1['n_le1p5']:>6} "
-              f"{'PASS' if t1['tier1_pass'] else 'FAIL':>5}")
+        bulk = (t1.get("snr_bins") or {}).get("<100", {})
+        bm = bulk.get("chi2r_median")
+        print(f"{r['fixture']:>5} {r.get('shape', '?'):>6} {t1['n_windows']:>5} "
+              f"{t1['pass_rate']:>6.3f} "
+              f"{(t1['chi2r_median'] or float('nan')):>6.2f} "
+              f"{(t1['chi2r_p95'] or float('nan')):>8.2f} "
+              f"{bulk.get('n', 0):>7} "
+              f"{(bm if bm is not None else float('nan')):>9.2f} "
+              f"{bulk.get('eps_median', float('nan'))*100:>8.2f}% "
+              f"{bulk.get('pass_rate', float('nan')):>10.3f}")
 
     # Tier 2 gate-firing summary.
     print("\n=== Tier 2: rescue/merge gate firing ===")

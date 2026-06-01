@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .._internal.stage5_impl import fit_peaks_impl, visualize_fit_impl
+from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from .utils import print_error, setup_logging
 
 
@@ -142,6 +143,109 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
 
             traceback.print_exc()
         return 1
+
+
+def cmd_validate_stage5_shape_error(args: argparse.Namespace) -> int:
+    """Assess a persisted Stage 5 fit against the SNR-aware framework.
+
+    Read-only. Prints Tier 1 (SNR-aware per-window acceptance, binned by the
+    brightest in-window peak SNR), Tier 2 (rescue/merge/thaw gate firing), and,
+    when ``--ground-truth`` is given, Tier 3 (known-line recall/precision,
+    frequency accuracy, and the instrument accuracy floor). Requires a completed
+    Stage 5 fit; does not modify the file.
+    """
+    setup_logging(args.verbose)
+    try:
+        file_path = _ensure_ftmw(args.file_path)
+        report = validate_stage5_shape_error_impl(
+            file_path=file_path,
+            kappa=args.kappa,
+            noise_floor=args.noise_floor,
+            ground_truth=args.ground_truth,
+            match_tol_fwhm=args.match_tol_fwhm,
+        )
+        _print_validation_report(report)
+        return 0
+    except FileNotFoundError as e:
+        print_error(f"File not found: {e}")
+        return 1
+    except ValueError as e:
+        print_error(f"Invalid parameters or missing Stage 5 fit: {e}")
+        print("Hint: run 'fit-peaks' first")
+        return 1
+    except Exception as e:
+        print_error(f"Stage 5 validation failed: {e}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return 1
+
+
+def _print_validation_report(report: dict) -> None:
+    """Render the validate-stage5-shape-error report as text."""
+    params = report["parameters"]
+    t1 = report["tier1"]
+    print(
+        f"\nStage 5 shape-error validation (shape={params['shape']}, "
+        f"kappa={params['kappa']:.3g}, F={params['noise_floor']:.3g})"
+    )
+    print(
+        f"  Tier 1 (SNR-aware, chi2r <= F + (kappa*SNR_max)^2): "
+        f"{t1.get('n_pass', 0)}/{t1.get('n_windows', 0)} windows pass "
+        f"(rate {t1.get('pass_rate', 0.0):.3f})"
+    )
+    print(
+        f"    {'SNR_max bin':>11} {'n':>5} {'chi2r_med':>10} "
+        f"{'eps_med':>9} {'pass_rate':>10}"
+    )
+    for b in t1.get("snr_bins", []):
+        med = b["chi2r_median"]
+        print(
+            f"    {b['snr_bin']:>11} {b['n']:>5} "
+            f"{(med if med is not None else float('nan')):>10.3f} "
+            f"{b['epsilon_median']*100:>8.2f}% {b['pass_rate']:>10.3f}"
+        )
+
+    t2 = report["tier2"]
+    print(
+        f"  Tier 2 (gate firing): merge {t2['merge_fire_rate']:.3f}, "
+        f"rescue-origin pruned {t2['n_pruned_rescue_origin']}, "
+        f"limit-cycle {t2['limit_cycle_rounds']}, "
+        f"rescue {t2['n_rescue_accepted']}/{t2['n_rescue_rounds']}, "
+        f"thaw {t2['n_thaw_accepted']}/{t2['n_thaw']}, "
+        f"replan {t2['n_replan']}"
+    )
+
+    t3 = report.get("tier3")
+    if t3:
+        print(
+            f"  Tier 3 (ground truth {Path(t3['ground_truth']).name}): "
+            f"recall {t3['recall']:.3f} ({t3['n_matched']}/{t3['n_catalog']}), "
+            f"precision {t3.get('precision', 0.0):.3f} "
+            f"(of {t3['n_fitted']} fitted; loose)"
+        )
+        fr = t3.get("freq_residual_khz")
+        if fr:
+            print(
+                f"    freq residual: median {fr['median']:+.3f} kHz, "
+                f"rms {fr['rms']:.3f} kHz, max |.| {fr['max_abs']:.3f} kHz"
+            )
+        af = t3.get("accuracy_floor")
+        if af:
+            print(
+                f"    accuracy floor (detrended): {af['detrended_rms_khz']:.3f} kHz "
+                f"(raw {af['raw_rms_khz']:.3f}, drift "
+                f"{af['drift_slope_khz_per_ghz']:+.3f} kHz/GHz) "
+                f"-- instrument, not a defect"
+            )
+        sh = t3.get("sigma_f_honesty")
+        if sh:
+            print(
+                f"    sigma_f honesty: reported median "
+                f"{sh['median_reported_sigma_khz']:.3f} kHz, "
+                f"residual/sigma median {sh['median_residual_over_sigma']:.2f}"
+            )
 
 
 def register_fitting_commands(subparsers: Any) -> None:
@@ -325,3 +429,63 @@ def register_fitting_commands(subparsers: Any) -> None:
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"
     )
     p_vis.set_defaults(func=cmd_visualize_fit)
+
+    p_val = subparsers.add_parser(
+        "validate-stage5-shape-error",
+        help="Assess a Stage 5 fit against the SNR-aware acceptance framework",
+        description=(
+            "Read-only cross-fixture validation of a completed Stage 5 fit.\n\n"
+            "Tier 1 is the SNR-aware acceptance gate: a window passes iff\n"
+            "chi2r <= F + (kappa*SNR_max)^2 (F the noise-regime allowance), with\n"
+            "the fractional model deficit eps = sqrt(max(chi2r-F,0))/SNR_max\n"
+            "reported and binned by the brightest in-window peak SNR. At extreme\n"
+            "SNR the per-window\n"
+            "reduced chi-squared is a model-fidelity floor, not a noise\n"
+            "statistic, so the raw chi2r gate is meaningless. Tier 2 reports\n"
+            "rescue/merge/thaw gate firing. With --ground-truth, Tier 3 matches\n"
+            "fitted lines to a catalog CSV and reports recall, frequency\n"
+            "accuracy, and the instrument accuracy floor. Does not modify the\n"
+            "file. Run 'fit-peaks' first."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_val.add_argument(
+        "file_path", help="Path to .ftmw file with Stage 5 results"
+    )
+    p_val.add_argument(
+        "--kappa",
+        dest="kappa",
+        type=float,
+        default=None,
+        help="Tolerated fractional model deficit for the SNR-aware gate "
+        "(default 0.05, just above the measured ~1-3%% vinyl-cyanide deficit).",
+    )
+    p_val.add_argument(
+        "--noise-floor",
+        dest="noise_floor",
+        type=float,
+        default=None,
+        help="Noise-regime allowance F in chi2r <= F + (kappa*SNR_max)^2 "
+        "(default 3.0; budgets for the reduced-chi2 sampling scatter of a good "
+        "fit at low SNR, where the deficit term is negligible).",
+    )
+    p_val.add_argument(
+        "--ground-truth",
+        dest="ground_truth",
+        type=str,
+        default=None,
+        metavar="CSV",
+        help="Catalog CSV (a 'freq_mhz' column) to run Tier 3 against.",
+    )
+    p_val.add_argument(
+        "--match-tol-fwhm",
+        dest="match_tol_fwhm",
+        type=float,
+        default=0.5,
+        help="Tier-3 match tolerance in units of the per-window line FWHM "
+        "(default 0.5).",
+    )
+    p_val.add_argument(
+        "-v", "--verbose", action="store_true", help="Verbose diagnostics"
+    )
+    p_val.set_defaults(func=cmd_validate_stage5_shape_error)

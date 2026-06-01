@@ -31,6 +31,8 @@ from .peak_model import PeakShape, h_T_shape
 
 __all__ = [
     "DEFAULT_N_EFF_KIND",
+    "DEFAULT_SHAPE_ERROR_KAPPA",
+    "DEFAULT_CHI2R_NOISE_FLOOR",
     "calculate_hwhm_from_apodization",
     "feature_fwhm",
     "calculate_rms_residuals",
@@ -41,6 +43,8 @@ __all__ = [
     "effective_sample_size",
     "passes_significance_test",
     "validate_peak_separation",
+    "shape_error_fraction",
+    "snr_aware_chi2_pass",
 ]
 
 NoiseLike = Union[float, np.ndarray]
@@ -59,6 +63,33 @@ NoiseLike = Union[float, np.ndarray]
 # each gate falls through to "preserve the simpler model" (do not add /
 # do not merge / do not drop the peak), which is the conservative direction.
 DEFAULT_N_EFF_KIND = "perplexity_log1p_snr"
+
+# Tolerated per-bin fractional model deficit in the SNR-aware acceptance gate
+# (:func:`snr_aware_chi2_pass`). At extreme SNR the per-window reduced
+# chi-squared is a model-fidelity floor, not a noise statistic: a sub-percent
+# lineshape/tau deficit becomes hundreds of sigma per bin under a SNR ~ 1e4-1e5
+# line, so chi-squared_r tracks SNR^2 even on a line fit to part-in-1e5. The
+# dense vinyl-cyanide bulk sits at an honest ~1-3% Lorentzian + low-order-
+# baseline fidelity floor (ruled not a defect: window sizing, cross-window
+# leakage, and tau were each falsified as levers). kappa = 0.05 sits just above
+# that measured floor so a cleanly-fit dense window passes and the gate flags
+# only genuinely bad ones; the fractional residual
+# (:func:`shape_error_fraction`) is reported alongside so the gate stays
+# auditable. A second, non-vinyl-cyanide instrument is the real calibration
+# ceiling for this number.
+DEFAULT_SHAPE_ERROR_KAPPA = 0.05
+
+# Noise-regime allowance ``F`` in the SNR-aware gate ``chi2r <= F +
+# (kappa*SNR_max)**2``. At low SNR the ``(kappa*SNR_max)**2`` deficit term is
+# negligible, so the gate reduces to ``chi2r <= F``; ``F`` must therefore budget
+# for the sampling distribution of a *good* fit's reduced chi-squared, which has
+# mean ~1 but variance ~2/dof (95th percentile ~1.5-2 at the typical Stage-5
+# active-FT window dof of ~10-30) plus a small constant bias from the active-FT
+# bin correlation. Without it the gate would reject the normal upward scatter of
+# a healthy noise-dominated window. F = 3 admits that scatter (and the elevated
+# but non-deficit low-SNR bulk) while the catastrophic chi2r tail still fails;
+# at high SNR the deficit term dominates and F is negligible.
+DEFAULT_CHI2R_NOISE_FLOOR = 3.0
 
 
 # ---------------------------------------------------------------------------
@@ -523,6 +554,104 @@ def passes_significance_test(
         old_chi2, new_chi2, dof_change, n_data, n_params_new
     )
     return p_value < significance
+
+
+# ---------------------------------------------------------------------------
+# SNR-aware acceptance (the lineshape-fidelity floor)
+# ---------------------------------------------------------------------------
+def shape_error_fraction(
+    reduced_chi2: float,
+    snr_max: float,
+    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+) -> float:
+    """Per-bin fractional model deficit implied by a window's reduced chi-squared.
+
+    Inverts the deficit-dominated regime of the SNR-aware gate: a fractional
+    lineshape deficit ``eps`` under a line of peak SNR ``snr_max`` contributes
+    ``(eps * snr_max)**2`` to the reduced chi-squared above the noise-regime
+    allowance ``F`` (:data:`DEFAULT_CHI2R_NOISE_FLOOR`), so
+
+        eps = sqrt(max(reduced_chi2 - F, 0)) / snr_max .
+
+    Subtracting ``F`` rather than 1 makes ``eps`` a clean deficit estimate: in
+    the noise-dominated regime (``reduced_chi2 <= F``) it returns 0 (no
+    measurable deficit), and at high SNR the ``F`` offset is negligible against
+    ``(eps * snr_max)**2``. On the high-SNR vinyl-cyanide fixtures it reads
+    ~0.1% on the bright cores and ~1-2% on the moderate forest -- the honest
+    fidelity of the analytic line shape plus the low-order leakage baseline, not
+    a defect to drive to zero. It is the deficit-regime readout reported next to
+    the pass/fail gate, and is only meaningful where the deficit term clears the
+    noise scatter (``snr_max`` of order 100+).
+
+    Parameters
+    ----------
+    reduced_chi2 : float
+        Per-window reduced chi-squared of the fit.
+    snr_max : float
+        Maximum peak SNR in the window (the brightest line drives the deficit).
+    noise_floor : float, default :data:`DEFAULT_CHI2R_NOISE_FLOOR`
+        Noise-regime allowance ``F`` subtracted before taking the root.
+
+    Returns
+    -------
+    float
+        The fractional deficit ``eps``; ``0.0`` when ``snr_max <= 0`` (no line
+        to resolve a deficit against) or the reduced chi-squared is at/below the
+        noise-regime allowance.
+    """
+    if snr_max <= 0.0:
+        return 0.0
+    excess = max(float(reduced_chi2) - float(noise_floor), 0.0)
+    return float(np.sqrt(excess) / snr_max)
+
+
+def snr_aware_chi2_pass(
+    reduced_chi2: float,
+    snr_max: float,
+    kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
+    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+) -> bool:
+    """Unified SNR-aware Stage 5 window acceptance gate.
+
+    A window passes iff
+
+        reduced_chi2 <= F + (kappa * snr_max)**2 ,
+
+    where ``kappa`` is the tolerated per-bin fractional model deficit
+    (:data:`DEFAULT_SHAPE_ERROR_KAPPA`) and ``F`` is the noise-regime allowance
+    (:data:`DEFAULT_CHI2R_NOISE_FLOOR`). The gate has two physical regimes that
+    the raw ``reduced_chi2 <= threshold`` gate conflates:
+
+    - **Noise-dominated** (low ``snr_max``): the ``(kappa * snr_max)**2`` term
+      is negligible, the gate collapses to ``reduced_chi2 <= F``, and a model
+      deficit is invisible below the noise. ``F`` (rather than 1) budgets for
+      the sampling scatter of a good fit's reduced chi-squared so a healthy
+      noise-dominated window is not rejected for normal upward fluctuation.
+    - **Deficit-dominated** (high ``snr_max``): the allowance grows as
+      ``snr_max**2``, matching the measured chi-squared_r ~ SNR^2 floor, so a
+      bright line fit to its lineshape-fidelity limit passes rather than failing
+      purely for being bright; ``F`` is negligible there.
+
+    Parameters
+    ----------
+    reduced_chi2 : float
+        Per-window reduced chi-squared of the fit.
+    snr_max : float
+        Maximum peak SNR in the window.
+    kappa : float, default :data:`DEFAULT_SHAPE_ERROR_KAPPA`
+        Tolerated fractional model deficit.
+    noise_floor : float, default :data:`DEFAULT_CHI2R_NOISE_FLOOR`
+        Noise-regime allowance ``F``.
+
+    Returns
+    -------
+    bool
+        ``True`` if the window is acceptable under the SNR-aware gate.
+    """
+    if not np.isfinite(reduced_chi2):
+        return False
+    allowance = float(noise_floor) + (kappa * max(float(snr_max), 0.0)) ** 2
+    return bool(float(reduced_chi2) <= allowance)
 
 
 def validate_peak_separation(

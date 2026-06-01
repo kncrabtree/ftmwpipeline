@@ -49,6 +49,7 @@ from ._internal.stage4_impl import (
 from ._internal.stage5_impl import (
     fit_peaks_impl, visualize_fit_impl, load_fit_impl
 )
+from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from .core.data_structures import Peak, SpectrumFit, WindowPlan
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 
@@ -1536,6 +1537,44 @@ class Pipeline:
     def load_fit(self) -> SpectrumFit:
         """Load the persisted Stage 5 fit (validates structure loudly)."""
         return cast(SpectrumFit, load_fit_impl(str(self.filepath))["fit"])
+
+    def validate_stage5_shape_error(
+        self,
+        kappa: Optional[float] = None,
+        noise_floor: Optional[float] = None,
+        ground_truth: Optional[Union[str, Path]] = None,
+        match_tol_fwhm: float = 0.5,
+    ) -> Dict[str, Any]:
+        """Assess the persisted Stage 5 fit against the SNR-aware framework.
+
+        Read-only. Returns a Tier 1 (SNR-aware per-window acceptance
+        ``chi2r <= F + (kappa*SNR_max)**2`` with the fractional deficit ``eps``
+        binned by SNR) / Tier 2 (rescue/merge/thaw gate firing) / Tier 3
+        (known-line ground truth, when ``ground_truth`` is given) report.
+        Equivalent to the CLI ``validate-stage5-shape-error`` command. Requires
+        Stage 5 completed.
+        """
+        try:
+            report = validate_stage5_shape_error_impl(
+                file_path=str(self.filepath),
+                kappa=kappa,
+                noise_floor=noise_floor,
+                ground_truth=str(ground_truth) if ground_truth is not None else None,
+                match_tol_fwhm=match_tol_fwhm,
+            )
+            t1 = report["tier1"]
+            self.logger.info(
+                "Stage 5 shape-error validation: %d windows, SNR-aware pass "
+                "rate %.3f (kappa=%.3g)",
+                t1.get("n_windows", 0),
+                t1.get("pass_rate", 0.0),
+                report["parameters"]["kappa"],
+            )
+            return report
+        except StageDependencyError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to validate Stage 5 shape error: {e}") from e
 
     def visualize_fit(
         self,
