@@ -51,28 +51,12 @@ def _swallow_downstream_errors():
 class TestImplLevelWarnings:
     """Each impl emits ``DeprecationWarning`` for legacy per-knob kwargs."""
 
-    def test_stage2_estimate_noise_legacy_kwarg(self, tmp_path) -> None:
-        bogus = tmp_path / "no_such.ftmw"
-        with pytest.warns(DeprecationWarning, match=r"estimate_noise.*skew_target"):
-            with _swallow_downstream_errors():
-                stage2_impl.compute_noise_estimation_impl(
-                    str(bogus), skew_target=0.7,
-                )
-
     def test_stage2_estimate_noise_scatter_legacy_kwarg(self, tmp_path) -> None:
         bogus = tmp_path / "no_such.ftmw"
         with pytest.warns(DeprecationWarning, match=r"estimate_noise.*window_mhz"):
             with _swallow_downstream_errors():
                 stage2_impl.compute_noise_estimation_impl(
-                    str(bogus), method="scatter", window_mhz=60.0,
-                )
-
-    def test_stage2_from_saved_params_warns(self, tmp_path) -> None:
-        bogus = tmp_path / "no_such.ftmw"
-        with pytest.warns(DeprecationWarning, match=r"from_saved_params"):
-            with _swallow_downstream_errors():
-                stage2_impl.compute_noise_estimation_impl(
-                    str(bogus), from_saved_params=True,
+                    str(bogus), window_mhz=60.0,
                 )
 
     def test_stage2b_calibrate_tau_legacy_kwarg(self, tmp_path) -> None:
@@ -146,5 +130,5 @@ class TestApiChainPropagation:
     ) -> None:
         fp = tmp_path / "warn_api.ftmw"
         shutil.copy(baseline_2638_stage1, fp)
-        with pytest.warns(DeprecationWarning, match=r"estimate_noise.*skew_target"):
-            ftmw.estimate_noise(str(fp), skew_target=0.631)
+        with pytest.warns(DeprecationWarning, match=r"estimate_noise.*window_mhz"):
+            ftmw.estimate_noise(str(fp), window_mhz=60.0)

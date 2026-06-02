@@ -50,12 +50,10 @@ the companion surface must cover.
 | sweep_max_us | `scratch/issue1_start_time/` | scratch |
 | min_chirp_drop_ratio | `scratch/issue1_start_time/` | scratch |
 
-### Stage 2 — noise σ(f) (`NoiseSettings` adaptive + scatter)
+### Stage 2 — noise σ(f) (`NoiseSettings` scatter)
 
 | knob | existing tool | kind |
 |---|---|---|
-| smoothing.smoothing_window_mhz | `scratch/noise_viz/`, `mad-calibration/` | scratch |
-| skirt_exclusion.{strong_peak_snr, skirt_exclusion_k, max_skirt_exclusion_mhz} | `scratch/noise_research/` | scratch |
 | scatter window_mhz / pedestal_mhz / smoothing_mhz / line_k / smoothing_percentile | `scratch/noise_research/`, `noise_viz/`; `research/noise-snr-scaling/prototype.py` | scratch + prototype |
 
 The `noise_viz/` family is already multi-fixture (`FIXTURES = [...]`) — the
@@ -322,14 +320,16 @@ FID/spectrum.
   corrupt the Stage 2/5 noise + fit statistics). `units_power` is excluded as a
   sweep (degenerate rescale) and deferred to the resolved-settings verb (#28).
   Trim default grids are MHz-absolute and 2638-shaped — override with `--grid`.
-- **Stage 2 (noise, `NoiseSettings`).** Primary:
-  `scatter.{window_mhz,pedestal_mhz,smoothing_mhz}`,
-  `smoothing.smoothing_window_mhz`. Advanced: the rest of `scatter`
-  (`line_k,n_iter,region_aware,smoothing_percentile,convolve_mhz`) and the whole
-  adaptive estimator (`binning`, `skewness`, `skirt_exclusion`). Every Stage 2
-  sweep drives through a `NoiseSettings` bundle — the scatter estimator was
-  backfilled into `NoiseSettings` for this (`settings-backfill.md` shims #15/#16).
-  Plot: σ-trend + a full-width σ(f)-over-spectrum overlay zoomed to the noise band.
+- **Stage 2 (noise, `NoiseSettings`).** The scatter estimator is the sole
+  Stage 2 method (the legacy adaptive estimator was retired as a user-facing
+  method). The knobs are flat on `NoiseSettings` (no sub-block — Stage 2 has one
+  estimator), so the paths are `stage2.<field>`. Primary:
+  `stage2.{window_mhz,pedestal_mhz,smoothing_mhz}`. Advanced: the rest
+  (`line_k,n_iter,region_aware,smoothing_percentile,convolve_mhz`). Every
+  Stage 2 sweep drives through a `NoiseSettings` bundle —
+  the scatter estimator was backfilled into `NoiseSettings` for this
+  (`settings-backfill.md` shims #15/#16). Plot: σ-trend + a full-width
+  σ(f)-over-spectrum overlay zoomed to the noise band.
 - **Stage 2b (τ, `TauCalibrationSettings`).** Full surface across all sub-blocks:
   `stft`, `polish`, `aggregation`, `band` (multi-band majorities), `gaussian`
   (Gaussian τ_G via `calibrate_tau_G`), `recommendation` (exp-vs-gauss shape vote

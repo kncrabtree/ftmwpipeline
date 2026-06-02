@@ -306,7 +306,7 @@ def register_tune_commands(subparsers: Any) -> None:
     p_scan.add_argument(
         "--knob",
         required=True,
-        help="Dotted knob path (see 'tune list'), e.g. stage2.scatter.window_mhz",
+        help="Dotted knob path (see 'tune list'), e.g. stage2.window_mhz",
     )
     p_scan.add_argument(
         "--grid",

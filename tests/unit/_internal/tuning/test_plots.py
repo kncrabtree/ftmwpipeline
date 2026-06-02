@@ -152,7 +152,7 @@ def test_plot_noise_sweep_returns_figure():
         SweepRow(80.0, {"median_sigma": 0.52, "noise_fraction": 0.98},
                  _FakeNoise(sigma * 1.01, mask)),
     ]
-    fig = plot_noise_sweep(get_knob("stage2.scatter.window_mhz"), rows, _ctx())
+    fig = plot_noise_sweep(get_knob("stage2.window_mhz"), rows, _ctx())
     assert fig is not None
     assert len(fig.axes) >= 2
     _close(fig)
@@ -211,7 +211,7 @@ def test_plot_tau_trend_none_for_nonnumeric():
 def test_adapters_return_none_without_results():
     rows = [SweepRow(40.0, {"median_sigma": 0.5}, None)]
     ctx = _ctx()
-    assert plot_noise_sweep(get_knob("stage2.scatter.window_mhz"), rows, ctx) is None
+    assert plot_noise_sweep(get_knob("stage2.window_mhz"), rows, ctx) is None
     assert plot_start_detection(get_knob("stage0.sweep_max_us"), rows, ctx) is None
     assert plot_spectra_ladder(get_knob("stage1.start_us"), rows, ctx) is None
 
@@ -222,7 +222,7 @@ def test_knob_plot_wiring():
     assert get_knob("stage0.guard_margin_us").plot is plot_spectra_ladder
     assert get_knob("stage0.sweep_max_us").plot is plot_start_detection
     assert get_knob("stage0.min_chirp_drop_ratio").plot is plot_start_detection
-    assert get_knob("stage2.scatter.window_mhz").plot is plot_noise_sweep
+    assert get_knob("stage2.window_mhz").plot is plot_noise_sweep
 
 
 def test_detection_knobs_point_at_spectrum_knobs():

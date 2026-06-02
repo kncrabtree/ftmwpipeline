@@ -17,7 +17,7 @@ from ftmwpipeline.pipeline import Pipeline
 pytestmark = pytest.mark.integration
 
 # A cheap, stable knob: re-runs only Stage 2 noise on the Stage 1 baseline.
-KNOB = "stage2.scatter.window_mhz"
+KNOB = "stage2.window_mhz"
 LEAF = "window_mhz"
 GRID = [40.0, 80.0]
 
@@ -59,13 +59,13 @@ def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
 
 
 def test_api_pipeline_scan_batch_parity(baseline_2638_stage1_raw, tmp_path):
-    # the stage2.scatter sub-block (all primary, Stage-1-only deps) batch-scans
+    # the stage2 knobs (all primary, Stage-1-only deps) batch-scans
     a = ftmw.tune_scan_batch(
-        baseline_2638_stage1_raw, "stage2.scatter",
+        baseline_2638_stage1_raw, "stage2",
         output_dir=tmp_path / "api", make_plot=False, quiet=True,
     )
     p = Pipeline.open(baseline_2638_stage1_raw).tune_scan_batch(
-        "stage2.scatter", output_dir=tmp_path / "pipe", make_plot=False, quiet=True,
+        "stage2", output_dir=tmp_path / "pipe", make_plot=False, quiet=True,
     )
     assert [it.knob for it in a] == [it.knob for it in p]
     assert len(a) == 3 and all(it.ok for it in a)

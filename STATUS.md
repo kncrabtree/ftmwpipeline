@@ -37,13 +37,15 @@ dependencies (`file_manager.py: PipelineStageTracker.STAGE_DEPENDENCIES`).
 **Stages 0–2 (implemented):** data loading (BlackChirp / CSV / HDF5 via a
 loader registry, format auto-detection), FT processing (preprocess → FFT →
 `ComplexFT`, optional trim, parameter persistence), and per-bin noise
-estimation (`NoiseResult`). Two estimators produce it: the **default**
-`estimate_noise_scatter` (`method="scatter"`) — a high-pass, region-aware,
-Rician-corrected scatter MAD with broad lower-envelope smoothing, immune to
-the leakage-pedestal σ inflation on high-SNR line-dense spectra — and the
-legacy `estimate_noise_adaptive` (`method="adaptive"`, variance/skewness
-binning), kept for comparison. Each stage is exposed identically through all
-three interfaces with HDF5 (de)serialization and diagnostic visualization.
+estimation (`NoiseResult`). The Stage 2 estimator is `estimate_noise_scatter`
+— a high-pass, region-aware, Rician-corrected scatter MAD with broad
+lower-envelope smoothing, immune to the leakage-pedestal σ inflation on
+high-SNR line-dense spectra. (The legacy `estimate_noise_adaptive` variance/
+skewness binning estimator is no longer user-selectable; it survives only as
+an internal helper for Stage 3's display fallback and Stage 5's per-window
+active-FT noise, pending `dev-docs/planning/stage2-noise-authority.md`.) Each
+stage is exposed identically through all three interfaces with HDF5
+(de)serialization and diagnostic visualization.
 
 **Stage 2b (implemented):** `stage2b_tau_calibration` extracts a data-driven
 molecular decay constant `τ_maj ± σ_τ` from a sliding-active-window STFT on

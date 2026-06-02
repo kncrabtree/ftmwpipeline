@@ -1,9 +1,9 @@
 """
 Unit tests for :mod:`ftmwpipeline.io.noise_settings_serialization`.
 
-Verifies the HDF5 round-trip for ``NoiseSettings`` (nested subgroup
-layout under ``processing_parameters/stage2_noise``), audit attrs,
-overwrite semantics, and sparse-settings handling.
+Verifies the HDF5 round-trip for ``NoiseSettings`` (flat attrs on the
+``processing_parameters/stage2_noise`` group), audit attrs, overwrite
+semantics, and sparse-settings handling.
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ import pytest
 
 from ftmwpipeline.core.noise_settings import (
     NoiseSettings,
-    _SUB_NAMES,
     resolve,
 )
 from ftmwpipeline.io.noise_settings_serialization import (
@@ -43,37 +42,28 @@ class TestStage2NoiseSettingsPersistence:
         assert noise_settings_present(empty_ftmw)
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
-        assert loaded.binning.subdivision_threshold == original.binning.subdivision_threshold
-        assert loaded.skewness.skew_target == original.skewness.skew_target
-        assert loaded.smoothing.smoothing_window_mhz == original.smoothing.smoothing_window_mhz
-        assert loaded.skirt_exclusion.strong_peak_snr == original.skirt_exclusion.strong_peak_snr
-        assert loaded.scatter.window_mhz == original.scatter.window_mhz
-        assert loaded.scatter.n_iter == original.scatter.n_iter
-        assert loaded.scatter.region_aware == original.scatter.region_aware
+        assert loaded.window_mhz == original.window_mhz
+        assert loaded.n_iter == original.n_iter
+        assert loaded.region_aware == original.region_aware
 
-    def test_round_trip_scatter_bool_and_int(self, empty_ftmw) -> None:
-        """The scatter region_aware bool and n_iter int survive the HDF5 round-trip."""
-        s = NoiseSettings()
-        s.scatter.window_mhz = 60.0
-        s.scatter.n_iter = 5
-        s.scatter.region_aware = False
+    def test_round_trip_bool_and_int(self, empty_ftmw) -> None:
+        """The region_aware bool and n_iter int survive the HDF5 round-trip."""
+        s = NoiseSettings(window_mhz=60.0, n_iter=5, region_aware=False)
         save_noise_settings_to_h5(empty_ftmw, s)
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
-        assert loaded.scatter.window_mhz == 60.0
-        assert loaded.scatter.n_iter == 5
-        assert bool(loaded.scatter.region_aware) is False
+        assert loaded.window_mhz == 60.0
+        assert loaded.n_iter == 5
+        assert bool(loaded.region_aware) is False
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
-        s = NoiseSettings()
-        save_noise_settings_to_h5(empty_ftmw, s)
+        save_noise_settings_to_h5(empty_ftmw, NoiseSettings())
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.is_empty()
 
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
-        s = NoiseSettings()
-        s.smoothing.smoothing_window_mhz = 100.0
+        s = NoiseSettings(window_mhz=60.0)
         save_noise_settings_to_h5(
             empty_ftmw, s, preset_name="instrument_bc_2638"
         )
@@ -82,43 +72,37 @@ class TestStage2NoiseSettingsPersistence:
         assert attrs.get("preset_name") == "instrument_bc_2638"
         assert "creation_time" in attrs
 
-    def test_overwrites_prior_block(self, empty_ftmw) -> None:
-        s1 = NoiseSettings()
-        s1.smoothing.smoothing_window_mhz = 100.0
-        save_noise_settings_to_h5(empty_ftmw, s1)
-        s2 = NoiseSettings()
-        s2.smoothing.smoothing_window_mhz = 200.0
-        save_noise_settings_to_h5(empty_ftmw, s2)
+    def test_audit_attrs_do_not_leak_into_settings(self, empty_ftmw) -> None:
+        """creation_time / preset_name are group bookkeeping, not fields."""
+        save_noise_settings_to_h5(
+            empty_ftmw, NoiseSettings(window_mhz=60.0), preset_name="p"
+        )
         loaded = load_noise_settings_from_h5(empty_ftmw)
         assert loaded is not None
-        assert loaded.smoothing.smoothing_window_mhz == 200.0
+        assert loaded.window_mhz == 60.0
+        # Only the eight settings fields are populated; no stray attrs.
+        assert loaded.pedestal_mhz is None
 
-    def test_hdf5_subgroup_layout(self, empty_ftmw) -> None:
-        s = resolve()
-        save_noise_settings_to_h5(empty_ftmw, s)
+    def test_overwrites_prior_block(self, empty_ftmw) -> None:
+        save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
+        save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=120.0))
+        loaded = load_noise_settings_from_h5(empty_ftmw)
+        assert loaded is not None
+        assert loaded.window_mhz == 120.0
+
+    def test_hdf5_attr_layout(self, empty_ftmw) -> None:
+        save_noise_settings_to_h5(empty_ftmw, resolve())
         with h5py.File(empty_ftmw, "r") as h5f:
             grp = h5f[STAGE2_NOISE_SETTINGS_PATH]
-            for sub_name in _SUB_NAMES:
-                assert sub_name in grp
-                assert isinstance(grp[sub_name], h5py.Group)
-
-    def test_load_tolerates_missing_subgroup(self, empty_ftmw) -> None:
-        s = NoiseSettings()
-        s.smoothing.smoothing_window_mhz = 100.0
-        save_noise_settings_to_h5(empty_ftmw, s)
-        with h5py.File(empty_ftmw, "a") as h5f:
-            del h5f[STAGE2_NOISE_SETTINGS_PATH]["skirt_exclusion"]
-        loaded = load_noise_settings_from_h5(empty_ftmw)
-        assert loaded is not None
-        assert loaded.smoothing.smoothing_window_mhz == 100.0
-        assert loaded.skirt_exclusion.strong_peak_snr is None
+            # Flat: fields are attrs on the group, no sub-groups.
+            assert len(grp.keys()) == 0
+            assert "window_mhz" in grp.attrs
+            assert "convolve_mhz" in grp.attrs
 
     def test_distinct_from_stage2_noise_result(self, empty_ftmw) -> None:
         """Settings persist under processing_parameters/stage2_noise — distinct
         from the /stage2_noise_result results group."""
-        s = NoiseSettings()
-        s.smoothing.smoothing_window_mhz = 100.0
-        save_noise_settings_to_h5(empty_ftmw, s)
+        save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
         with h5py.File(empty_ftmw, "r") as h5f:
             assert STAGE2_NOISE_SETTINGS_PATH in h5f
             assert "stage2_noise_result" not in h5f, (

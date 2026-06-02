@@ -472,13 +472,8 @@ class Pipeline:
                 f"Failed to create FT visualization: {e}"
             ) from e
     
-    def estimate_noise(self, skew_target: Optional[float] = None,
-                       min_bin_fraction: Optional[float] = None,
-                       smoothing_window_mhz: Optional[float] = None,
-                       min_noise_fraction: Optional[float] = None,
-                       from_saved_params: bool = False,
+    def estimate_noise(self,
                        *,
-                       method: str = "scatter",
                        window_mhz: Optional[float] = None,
                        pedestal_mhz: Optional[float] = None,
                        line_k: Optional[float] = None,
@@ -490,38 +485,26 @@ class Pipeline:
                        settings: Optional[NoiseSettings] = None,
                        preset: Optional[str] = None) -> NoiseResult:
         """
-        Estimate frequency-dependent noise using adaptive binning.
-        
+        Estimate frequency-dependent noise with the scatter estimator.
+
         This method implements Stage 2 noise estimation, equivalent to the CLI
         estimate-noise command. Requires Stage 1 (FT computation) to be completed.
-        
+
+        The scatter estimator is high-pass and region-aware: it is immune to the
+        leakage pedestal on high-SNR, line-dense spectra.
+
         Parameters
         ----------
-        skew_target : float, optional
-            Target skewness for noise identification (default: 0.631 for Rayleigh)
-        min_bin_fraction : float, optional
-            Minimum bin size as fraction of total data (default: 1/64)
-        smoothing_window_mhz : float, optional
-            RMS smoothing window size in MHz (default: auto-calculated)
-        min_noise_fraction : float, optional
-            Minimum fraction of points that must be noise per bin (default: 2/3)
-        from_saved_params : bool, default False
-            If True, ignore provided parameters and use saved parameters only
-        method : str, default "adaptive"
-            Noise estimator to run. ``"adaptive"`` is the level-based binning
-            estimator (skew_target / min_bin_fraction / smoothing_window_mhz /
-            min_noise_fraction / settings / preset apply). ``"scatter"`` is the
-            high-pass, region-aware estimator that is immune to the leakage
-            pedestal on high-SNR, line-dense spectra; it uses its own knobs
-            (window_mhz, pedestal_mhz, line_k, n_iter, region_aware).
         window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
         smoothing_percentile, convolve_mhz
-            Scatter-estimator knobs (``method="scatter"`` only); each defaults to
-            the module-level constant when left unset. ``smoothing_mhz`` /
-            ``smoothing_percentile`` control the broad lower-envelope median σ
-            smoothing that rides the noise floor through line-dense bands
-            (``smoothing_mhz=0`` disables it); ``convolve_mhz`` is the Gaussian σ
-            of the second pass that removes the median's staircase.
+            Scatter-estimator knobs; each defaults to the kernel's hard default
+            when left unset. ``smoothing_mhz`` / ``smoothing_percentile`` control
+            the broad lower-envelope median σ smoothing that rides the noise
+            floor through line-dense bands (``smoothing_mhz=0`` disables it);
+            ``convolve_mhz`` is the Gaussian σ of the second pass that removes
+            the median's staircase.
+        settings, preset
+            Alternative ways to populate the preset layer of the settings chain.
 
         Returns
         -------
@@ -541,12 +524,6 @@ class Pipeline:
             # Compute noise estimation using shared implementation (handles dependency checking and storage)
             result = compute_noise_estimation_impl(
                 file_path=str(self.filepath),
-                skew_target=skew_target,
-                min_bin_fraction=min_bin_fraction,
-                smoothing_window_mhz=smoothing_window_mhz,
-                min_noise_fraction=min_noise_fraction,
-                from_saved_params=from_saved_params,
-                method=method,
                 window_mhz=window_mhz,
                 pedestal_mhz=pedestal_mhz,
                 line_k=line_k,
@@ -573,16 +550,16 @@ class Pipeline:
                         figsize: Optional[tuple] = None, title: Optional[str] = None,
                         show_bin_boundaries: Optional[bool] = None,
                         show_noise_points: Optional[bool] = None,
-                        save_params: bool = False, backend: str = 'matplotlib',
+                        backend: str = 'matplotlib',
                         interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
                         **plot_kwargs):
         """
         Create noise estimation diagnostic visualization.
-        
+
         This method creates diagnostic plots showing spectrum, noise points,
-        adaptive bin boundaries, and RMS noise estimates. Equivalent to the CLI
+        bin boundaries, and RMS noise estimates. Equivalent to the CLI
         visualize-noise command.
-        
+
         Parameters
         ----------
         y_max_factor : float, optional
@@ -592,11 +569,9 @@ class Pipeline:
         title : str, optional
             Custom title for the plot
         show_bin_boundaries : bool, optional
-            Whether to show adaptive bin boundaries (default: True)
+            Whether to show bin boundaries (default: True)
         show_noise_points : bool, optional
             Whether to highlight noise points (default: True)
-        save_params : bool, default False
-            Whether to save custom parameters for future use
         backend : str, default 'matplotlib'
             Plotting backend ('matplotlib' or 'plotly')
         interactive : bool, default True
@@ -605,12 +580,12 @@ class Pipeline:
             If provided, save plot to this file
         **plot_kwargs
             Additional plotting parameters
-            
+
         Returns
         -------
         matplotlib.Figure or plotly.Figure
             The created figure object
-            
+
         Raises
         ------
         StageDependencyError
@@ -619,7 +594,7 @@ class Pipeline:
             If visualization fails
         """
         try:
-            # Create visualization using shared implementation (handles dependency checking and parameter saving)
+            # Create visualization using shared implementation (handles dependency checking)
             fig = visualize_noise_impl(
                 file_path=str(self.filepath),
                 y_max_factor=y_max_factor,
@@ -629,7 +604,6 @@ class Pipeline:
                 show_noise_points=show_noise_points,
                 backend=backend,
                 interactive=interactive,
-                save_params=save_params,
                 **plot_kwargs
             )
             

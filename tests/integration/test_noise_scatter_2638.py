@@ -21,6 +21,7 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage2_impl import load_noise_result_impl
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 
 
 @pytest.mark.integration
@@ -28,12 +29,20 @@ class TestScatterNoRegression2638:
     def test_scatter_matches_adaptive_level_on_2638(
         self, baseline_2638_stage1_raw, tmp_path
     ):
-        """Scatter σ ≈ adaptive σ on the raw (production) 2638 FT."""
+        """Scatter σ ≈ adaptive σ on the raw (production) 2638 FT.
+
+        The adaptive estimator is no longer a user-facing Stage 2 method, but
+        the kernel survives as an internal helper; we call it directly on the
+        canonical FT for the level-agreement reference.
+        """
         fp = tmp_path / "scatter_2638.ftmw"
         shutil.copy(baseline_2638_stage1_raw, fp)
 
-        nr_adaptive = ftmw.estimate_noise(fp, method="adaptive")
-        nr_scatter = ftmw.estimate_noise(fp, method="scatter")
+        ft = ftmw.compute_ft(fp)
+        nr_adaptive = estimate_noise_adaptive(
+            ft.freq_array, ft.magnitude_spectrum, verbose=False
+        )
+        nr_scatter = ftmw.estimate_noise(fp)
 
         assert nr_scatter.bin_info["algorithm"] == "scatter_highpass_region_aware"
         assert np.all(np.isfinite(nr_scatter.rms_noise))
@@ -60,7 +69,7 @@ class TestScatterNoRegression2638:
         fp = tmp_path / "scatter_2638_rt.ftmw"
         shutil.copy(baseline_2638_stage1_raw, fp)
 
-        nr = ftmw.estimate_noise(fp, method="scatter")
+        nr = ftmw.estimate_noise(fp)
         reloaded = load_noise_result_impl(fp)["noise_result"]
 
         np.testing.assert_array_equal(reloaded.rms_noise, nr.rms_noise)

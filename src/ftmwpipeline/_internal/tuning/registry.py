@@ -5,7 +5,7 @@ engine needs: how to set the knob and re-run the affected stage (``run``), how
 to reduce that stage's result to one or more named metric columns (``metric``),
 an optional plot adapter, and an optional recommender (or a simple
 ``direction`` for the built-in best-value pick). Knobs are addressed by a
-dotted settings path (e.g. ``stage2.scatter.window_mhz``) that mirrors the
+dotted settings path (e.g. ``stage2.window_mhz``) that mirrors the
 table in ``dev-docs/planning/instrument-tunable-knobs.md``.
 
 ``run`` callables import :mod:`ftmwpipeline.api` lazily so this module carries
@@ -40,7 +40,7 @@ class KnobSpec:
     """One tunable parameter and how to sweep/measure/plot/recommend it."""
 
     path: str
-    """Dotted settings path, e.g. ``"stage2.scatter.window_mhz"``."""
+    """Dotted settings path, e.g. ``"stage2.window_mhz"``."""
     stage: str
     """Human stage label, e.g. ``"stage2_noise"`` / ``"start_detection"``."""
     requires: str
@@ -114,27 +114,20 @@ def _run_start(field_name: str) -> RunFn:
     return run
 
 
-def _run_noise(method: str, sub_block: str, field_name: str) -> RunFn:
+def _run_noise(field_name: str) -> RunFn:
     """Re-run noise estimation with a single ``NoiseSettings`` field set.
 
-    Sets the one field on the given sub-block of a ``NoiseSettings`` bundle and
-    passes it as ``settings=``, so the sweep drives the estimator through the
-    settings resolver rather than the (deprecated) per-knob kwargs.
+    Sets the one field on a ``NoiseSettings`` bundle and passes it as
+    ``settings=``, so the sweep drives the estimator through the settings
+    resolver rather than the (deprecated) per-knob kwargs.
     """
 
     def run(path: Path, value: Any) -> Any:
         import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
         from ftmwpipeline.core import noise_settings as ns
 
-        sub_cls = {
-            "binning": ns.BinningSubSettings,
-            "skewness": ns.SkewnessSubSettings,
-            "smoothing": ns.SmoothingSubSettings,
-            "skirt_exclusion": ns.SkirtExclusionSubSettings,
-            "scatter": ns.ScatterSubSettings,
-        }[sub_block]
-        bundle = ns.NoiseSettings(**{sub_block: sub_cls(**{field_name: value})})
-        return ftmw.estimate_noise(path, method=method, settings=bundle)
+        bundle = ns.NoiseSettings(**{field_name: value})
+        return ftmw.estimate_noise(path, settings=bundle)
 
     return run
 
@@ -493,107 +486,66 @@ _register(KnobSpec(
 
 # Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.
 _register(KnobSpec(
-    path="stage2.scatter.window_mhz",
+    path="stage2.window_mhz",
     stage="stage2_noise",
     requires="stage1_complex_ft",
     help="Width of the per-region scatter-MAD window (scale over which sigma(f) is constant).",
     inst_sensitivity="Y",
     default_grid=(40.0, 60.0, 80.0, 120.0, 160.0),
-    run=_run_noise("scatter", "scatter", "window_mhz"),
+    run=_run_noise("window_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
 ))
 _register(KnobSpec(
-    path="stage2.scatter.pedestal_mhz",
+    path="stage2.pedestal_mhz",
     stage="stage2_noise",
     requires="stage1_complex_ft",
     help="High-pass running-median width isolating the smooth leakage pedestal.",
     inst_sensitivity="Y",
     default_grid=(10.0, 20.0, 40.0, 80.0),
-    run=_run_noise("scatter", "scatter", "pedestal_mhz"),
+    run=_run_noise("pedestal_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
 ))
 _register(KnobSpec(
-    path="stage2.scatter.smoothing_mhz",
+    path="stage2.smoothing_mhz",
     stage="stage2_noise",
     requires="stage1_complex_ft",
     help="Broad lower-envelope median sigma smoothing width (0 disables).",
     inst_sensitivity="Y",
     default_grid=(0.0, 400.0, 800.0, 1200.0),
-    run=_run_noise("scatter", "scatter", "smoothing_mhz"),
-    metric=_metric_noise,
-    metric_columns=("median_sigma", "noise_fraction"),
-    plot=plot_noise_sweep,
-))
-# Stage 2 noise — adaptive estimator smoothing window (legacy method).
-_register(KnobSpec(
-    path="stage2.smoothing.smoothing_window_mhz",
-    stage="stage2_noise",
-    requires="stage1_complex_ft",
-    help="Adaptive estimator: moving-window size for per-point sigma interpolation.",
-    inst_sensitivity="Y",
-    default_grid=(150.0, 300.0, 600.0),
-    run=_run_noise("adaptive", "smoothing", "smoothing_window_mhz"),
+    run=_run_noise("smoothing_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
 ))
 
-# Stage 2 advanced — remaining scatter knobs + the adaptive estimator's
-# binning / skewness / skirt-exclusion blocks. All re-run Stage 2 and report the
+# Stage 2 advanced — remaining scatter knobs. All re-run Stage 2 and report the
 # same sigma trend + sigma(f)-over-spectrum overlay.
 _NOISE_COLS = ("median_sigma", "noise_fraction")
-for _method, _sub, _field, _help, _grid, _inst in (
-    ("scatter", "scatter", "line_k",
+for _field, _help, _grid, _inst in (
+    ("line_k",
      "Robust-sigma multiple above which a bin is flagged a line (excluded).",
      (4.0, 6.0, 8.0, 12.0), "maybe"),
-    ("scatter", "scatter", "n_iter",
+    ("n_iter",
      "Self-mask refinement iterations of the scatter estimator.",
      (1, 2, 3, 5), "N"),
-    ("scatter", "scatter", "region_aware",
+    ("region_aware",
      "Use the region-aware Rician correction (else a fixed mid-regime factor).",
      (False, True), "maybe"),
-    ("scatter", "scatter", "smoothing_percentile",
+    ("smoothing_percentile",
      "Percentile of the broad sigma smoothing (50=median; lower=lower-envelope).",
      (25.0, 50.0, 75.0), "maybe"),
-    ("scatter", "scatter", "convolve_mhz",
+    ("convolve_mhz",
      "Gaussian sigma (MHz) of the second, step-removing smoothing pass (0=off).",
      (0.0, 100.0, 200.0, 400.0), "maybe"),
-    ("adaptive", "binning", "subdivision_threshold",
-     "Adaptive: median-ratio threshold to split a bin during subdivision.",
-     (0.04, 0.08, 0.16), "N"),
-    ("adaptive", "binning", "abs_min_bin_size",
-     "Adaptive: minimum bin size (points) the subdivision will produce.",
-     (150, 300, 600), "N"),
-    ("adaptive", "binning", "min_bin_fraction",
-     "Adaptive: minimum bin size as a fraction of the spectrum length.",
-     (1 / 128, 1 / 64, 1 / 32), "N"),
-    ("adaptive", "binning", "min_noise_fraction",
-     "Adaptive: minimum fraction of a bin that must be noise to accept it.",
-     (0.5, 2 / 3, 0.8), "N"),
-    ("adaptive", "skewness", "skew_target",
-     "Adaptive: Rayleigh-target skewness the per-bin trim drives toward.",
-     (0.5, 0.631, 0.75), "maybe"),
-    ("adaptive", "skewness", "inc",
-     "Adaptive: trim increment per iteration toward the skew target.",
-     (0.005, 0.01, 0.02), "N"),
-    ("adaptive", "skirt_exclusion", "strong_peak_snr",
-     "Adaptive: SNR above which a line's Lorentzian skirt is masked.",
-     (10.0, 20.0, 40.0), "maybe"),
-    ("adaptive", "skirt_exclusion", "skirt_exclusion_k",
-     "Adaptive: skirt mask half-width in units of the line width.",
-     (1.0, 1.5, 2.0), "maybe"),
-    ("adaptive", "skirt_exclusion", "max_skirt_exclusion_mhz",
-     "Adaptive: cap (MHz) on the masked skirt half-width per line.",
-     (250.0, 500.0, 1000.0), "maybe"),
 ):
     _register(KnobSpec(
-        path=f"stage2.{_sub}.{_field}", stage="stage2_noise",
+        path=f"stage2.{_field}", stage="stage2_noise",
         requires="stage1_complex_ft", help=_help, inst_sensitivity=_inst,
-        default_grid=_grid, run=_run_noise(_method, _sub, _field),
+        default_grid=_grid, run=_run_noise(_field),
         metric=_metric_noise, metric_columns=_NOISE_COLS, plot=plot_noise_sweep,
         tier="advanced",
     ))

@@ -18,71 +18,45 @@ from .utils import (
 
 # Import shared implementations
 from .._internal.stage2_impl import (
-    compute_noise_estimation_impl, 
-    visualize_noise_impl, 
-    save_noise_parameters_impl
+    compute_noise_estimation_impl,
+    visualize_noise_impl,
 )
 
 
 def cmd_estimate_noise(args) -> int:
     """
-    Estimate frequency-dependent noise using adaptive binning.
-    
+    Estimate frequency-dependent noise with the scatter estimator.
+
     This command performs Stage 2 noise estimation on ComplexFT data stored
-    in a .ftmw pipeline file. The algorithm uses recursive binary subdivision
-    to create adaptive frequency bins, then identifies noise points within each
-    bin by iteratively removing high-magnitude points until target skewness
-    is reached (typically ~0.631 for Rayleigh-distributed noise).
-    
-    Key algorithm features:
-    - Adaptive binning based on local variance to handle varying spectral features
-    - Skewness-based noise identification for robust separation of signal/noise
-    - RMS smoothing for stable noise estimates across frequency
-    - Configurable parameters for different experiment types
-    
+    in a .ftmw pipeline file. The scatter estimator is high-pass and
+    region-aware: it removes the smooth leakage pedestal, measures a robust
+    scatter-MAD over per-region windows with Rician correction, and rides a
+    broad lower-envelope σ floor through line-dense bands.
+
     Use this command to:
     - Generate noise estimates for SNR calculations and peak detection thresholds
     - Create baseline noise models for spectral fitting algorithms
     - Validate noise characteristics across different frequency regions
     - Prepare data for subsequent peak detection and analysis stages
-    
+
     Stage dependencies:
     - Requires Stage 1 (FT computation) to be completed first
     - Results are saved to Stage 2 cache for visualization and analysis
-    
-    Workflow:
-    1. Load ComplexFT data from .ftmw pipeline file (Stage 1 requirement)
-    2. Apply adaptive binning strategy based on local spectral variance
-    3. Identify noise points within each bin using skewness optimization
-    4. Compute smoothed RMS noise estimate across the frequency range
-    5. Save NoiseResult with diagnostics to Stage 2 cache
     """
     setup_logging(args.verbose)
-    
+
     try:
         # Ensure file path has .ftmw extension
         file_path = args.file_path
         if not file_path.endswith('.ftmw'):
             file_path = file_path + '.ftmw'
-        
+
         # Prepare parameters, filtering out None values
         params = {}
-        if args.skew_target is not None:
-            params['skew_target'] = args.skew_target
-        if args.min_bin_fraction is not None:
-            params['min_bin_fraction'] = args.min_bin_fraction
-        if args.smoothing_window_mhz is not None:
-            params['smoothing_window_mhz'] = args.smoothing_window_mhz
-        if args.min_noise_fraction is not None:
-            params['min_noise_fraction'] = args.min_noise_fraction
-
-        # Add from_saved_params flag
-        params['from_saved_params'] = args.from_saved_params
         if args.preset is not None:
             params['preset'] = args.preset
 
-        # Scatter (high-pass) estimator selection + knobs.
-        params['method'] = args.method
+        # Scatter (high-pass) estimator knobs.
         if args.region_aware is not None:
             params['region_aware'] = args.region_aware
         if args.window_mhz is not None:
@@ -101,18 +75,15 @@ def cmd_estimate_noise(args) -> int:
             params['convolve_mhz'] = args.convolve_mhz
 
         print(f"Estimating noise for: {file_path}")
-        
+
         # Print parameters being used
         if params:
             print("\nNoise estimation parameters:")
             for param, value in params.items():
-                if param != 'from_saved_params':
-                    print(f"  {param}: {value}")
-            if args.from_saved_params:
-                print("  Using saved parameters (ignoring command-line values)")
+                print(f"  {param}: {value}")
         else:
             print("Using default parameters for all settings")
-        
+
         # Perform noise estimation using shared implementation
         result = compute_noise_estimation_impl(
             file_path=file_path,
@@ -275,27 +246,6 @@ def cmd_visualize_noise(args) -> int:
                 print_error(f"Failed to save visualization: {e}")
                 return 1
         
-        # Save parameters if requested
-        if args.save_params:
-            try:
-                # Filter parameters to save (exclude None and default values)
-                params_to_save = {}
-                if viz_params.get('y_max_factor') is not None and viz_params['y_max_factor'] != 20.0:
-                    params_to_save['y_max_factor'] = viz_params['y_max_factor']
-                if viz_params.get('show_bin_boundaries') is not None and viz_params['show_bin_boundaries'] != True:
-                    params_to_save['show_bin_boundaries'] = viz_params['show_bin_boundaries']
-                if viz_params.get('show_noise_points') is not None and viz_params['show_noise_points'] != True:
-                    params_to_save['show_noise_points'] = viz_params['show_noise_points']
-                
-                if params_to_save:
-                    save_noise_parameters_impl(file_path, {'visualization': params_to_save})
-                    print(f"Saved {len(params_to_save)} visualization parameters")
-                else:
-                    print("No custom parameters to save")
-                    
-            except Exception as e:
-                print_error(f"Warning: Failed to save parameters: {e}")
-        
         print("Noise visualization completed successfully!")
         
         # Show the plot if not saving to file (and interactive mode)
@@ -329,47 +279,15 @@ def register_noise_commands(subparsers):
     # estimate-noise command
     parser_estimate = subparsers.add_parser(
         'estimate-noise',
-        help='Estimate frequency-dependent noise using adaptive binning',
+        help='Estimate frequency-dependent noise with the scatter estimator',
         description='Perform Stage 2 noise estimation with configurable parameters',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    
+
     # File argument
     parser_estimate.add_argument(
         'file_path',
         help='Path to .ftmw pipeline file (.ftmw extension added if missing)'
-    )
-    
-    # Noise estimation parameters
-    parser_estimate.add_argument(
-        '--skew-target',
-        type=float,
-        help='Target skewness for noise identification (default: 0.631 for Rayleigh distribution)'
-    )
-    
-    parser_estimate.add_argument(
-        '--min-bin-fraction',
-        type=float,
-        help='Minimum bin size as fraction of total data (default: 1/64 = 0.0156)'
-    )
-    
-    parser_estimate.add_argument(
-        '--smoothing-window-mhz',
-        type=float,
-        help='RMS smoothing window size in MHz (default: auto-calculated from bin width)'
-    )
-    
-    parser_estimate.add_argument(
-        '--min-noise-fraction',
-        type=float,
-        help='Minimum fraction of points that must be noise per bin (default: 2/3 = 0.667)'
-    )
-    
-    # Parameter management
-    parser_estimate.add_argument(
-        '--from-saved-params',
-        action='store_true',
-        help='Use saved parameters and ignore command-line values (legacy)'
     )
 
     parser_estimate.add_argument(
@@ -378,22 +296,12 @@ def register_noise_commands(subparsers):
         default=None,
         help=(
             'Stage 2 preset to apply (bare packaged name or path to a '
-            'YAML file). Mutually exclusive with --from-saved-params and '
-            'with per-knob flags that explicitly set the same field.'
+            'YAML file). Mutually exclusive with per-knob flags that '
+            'explicitly set the same field.'
         ),
     )
 
-    # Estimator selection + scatter (high-pass) knobs.
-    parser_estimate.add_argument(
-        '--method',
-        choices=['adaptive', 'scatter'],
-        default='scatter',
-        help=(
-            'Noise estimator: "scatter" (high-pass, region-aware; default; '
-            'immune to the leakage pedestal on high-SNR, line-dense spectra) '
-            'or "adaptive" (legacy level-based binning)'
-        ),
-    )
+    # Scatter (high-pass) estimator knobs.
     parser_estimate.add_argument(
         '--no-region-aware',
         dest='region_aware',
@@ -489,7 +397,7 @@ def register_noise_commands(subparsers):
     parser_visualize.add_argument(
         '--show-bin-boundaries',
         type=lambda x: x.lower() in ('true', '1', 'yes'),
-        help='Show adaptive bin boundaries as vertical lines (default: true)'
+        help='Show bin boundaries as vertical lines (default: true)'
     )
     
     parser_visualize.add_argument(
@@ -516,13 +424,7 @@ def register_noise_commands(subparsers):
         type=str,
         help='Save plot to file (format determined by extension: .png, .pdf, .svg, .html)'
     )
-    
-    parser_visualize.add_argument(
-        '--save-params',
-        action='store_true',
-        help='Save custom visualization parameters for future use'
-    )
-    
+
     # General options
     parser_visualize.add_argument(
         '-v', '--verbose',

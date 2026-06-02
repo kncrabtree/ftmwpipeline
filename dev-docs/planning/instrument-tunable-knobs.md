@@ -60,10 +60,22 @@ the primary calibration target throughout development.
   package hard default is now `50` (was `500`); the matching
   preset override is dropped.
 
-## Stage 2 — `NoiseSettings`
+## Stage 2 — `NoiseSettings` (scatter estimator)
 
 Source: [`preprocessing/noise_estimation.py`](../../src/ftmwpipeline/preprocessing/noise_estimation.py).
 Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
+
+The **scatter estimator is the sole Stage 2 method**; its knobs are the flat
+`NoiseSettings` table further below (`stage2.<field>`, no sub-block). The legacy
+adaptive estimator
+(`estimate_noise_adaptive`) was retired as a user-facing method — its kernel
+survives only as an internal helper (Stage 3 display fallback, Stage 5
+per-window active-FT noise), tracked for removal in
+[`stage2-noise-authority.md`](stage2-noise-authority.md). The adaptive knob
+table below is retained for historical reference only; these fields no longer
+appear on any settings dataclass, CLI flag, or `tune` knob.
+
+### Adaptive estimator (retired internal helper) — `estimate_noise_adaptive`
 
 | field | default | source | meaning | inst-sens | 2638 |
 |---|---|---|---|---|---|
@@ -83,13 +95,12 @@ Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 Source: [`preprocessing/noise_estimation.py`](../../src/ftmwpipeline/preprocessing/noise_estimation.py).
 Research: [`noise-snr-scaling/report.md`](../research/noise-snr-scaling/report.md).
 
-The scatter (high-pass), region-aware estimator (`method="scatter"`) is the
-pedestal-immune alternative to the adaptive estimator above. It does not share
-the `NoiseSettings` resolution chain; its four knobs are standalone module
-constants / function defaults, so they appear here rather than in a settings
-dataclass. They are instrument-family-dependent for the same reasons the
-adaptive smoothing/skirt knobs are: they encode the physical scale over which
-σ(f) and the leakage pedestal vary, plus a detection threshold.
+The scatter (high-pass), region-aware estimator is the canonical and only
+Stage 2 method: pedestal-immune on high-SNR, line-dense spectra. Its knobs sit
+directly on `NoiseSettings` (a flat dataclass — Stage 2 has one estimator) and
+resolve through the same four-layer chain as Stages 2b/5. They are
+instrument-family-dependent because they encode the physical scale over which
+σ(f) and the leakage pedestal vary, plus a line-detection threshold.
 
 | field | default | source | meaning | inst-sens | 2638 |
 |---|---|---|---|---|---|

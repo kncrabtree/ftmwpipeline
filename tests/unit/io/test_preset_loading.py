@@ -205,12 +205,12 @@ class TestStage2PresetResolution:
         p.write_text(
             "name: example\n"
             "stage2:\n"
-            "  binning:\n    subdivision_threshold: 0.05\n  smoothing:\n    smoothing_window_mhz: 100.0\n"
+            "  window_mhz: 120.0\n  line_k: 6.0\n"
             "stage5:\n  shape: gaussian\n"
         )
         ns = load_noise_preset(p)
-        assert ns.binning.subdivision_threshold == 0.05
-        assert ns.smoothing.smoothing_window_mhz == 100.0
+        assert ns.window_mhz == 120.0
+        assert ns.line_k == 6.0
 
     def test_stage2_block_must_be_mapping(self, tmp_path) -> None:
         p = tmp_path / "bad_stage2.yaml"
@@ -220,9 +220,9 @@ class TestStage2PresetResolution:
 
     def test_stage2_loader_path_resolution(self, tmp_path) -> None:
         p = tmp_path / "stage2_only.yaml"
-        p.write_text("stage2:\n  smoothing:\n    smoothing_window_mhz: 50.0\n")
+        p.write_text("stage2:\n  window_mhz: 50.0\n")
         ns = load_noise_preset(p)
-        assert ns.smoothing.smoothing_window_mhz == 50.0
+        assert ns.window_mhz == 50.0
 
     def test_stage2_missing_path_raises(self, tmp_path) -> None:
         with pytest.raises(FileNotFoundError, match=r"preset file not found"):
@@ -232,7 +232,7 @@ class TestStage2PresetResolution:
         """A ``stage2:`` sibling block must not trip Stage 5's unknown-key gate."""
         p = tmp_path / "two_blocks.yaml"
         p.write_text(
-            "stage2:\n  smoothing:\n    smoothing_window_mhz: 100.0\n"
+            "stage2:\n  window_mhz: 120.0\n"
             "stage5:\n  shape: gaussian\n"
         )
         s = load_preset(p)
