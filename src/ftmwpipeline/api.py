@@ -1752,3 +1752,45 @@ def tune_scan(
     except Exception as e:
         logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
         raise
+
+
+def tune_scan_batch(
+    file_path: Union[str, Path],
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+    output_dir: Optional[Union[str, Path]] = None,
+    reuse: bool = False,
+    make_plot: bool = True,
+    quiet: bool = False,
+) -> Any:
+    """Sweep every knob matched by ``selector`` on its default grid, equivalent
+    to :meth:`Pipeline.tune_scan_batch`.
+
+    A convenience over :func:`tune_scan` for reviewing a whole stage / sub-block
+    at once instead of driving knobs one-by-one. ``selector`` filters by
+    dotted-path prefix (e.g. ``"stage2b"`` / ``"stage2b.gaussian"``) just like
+    :func:`tune_list`; ``include_advanced`` adds the advanced-tier knobs. Each
+    knob runs on its own working copy of ``file_path`` (never mutated); a knob
+    whose scan fails (e.g. its required stage is absent) is recorded as a failed
+    ``BatchItem`` and the batch continues.
+
+    Returns
+    -------
+    list of BatchItem
+        One per matched knob, in registry order; ``item.ok`` / ``item.result`` /
+        ``item.error`` report each knob's outcome.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.tune_scan_batch(
+            selector,
+            include_advanced=include_advanced,
+            output_dir=output_dir,
+            reuse=reuse,
+            make_plot=make_plot,
+            quiet=quiet,
+        )
+    except Exception as e:
+        logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")
+        raise

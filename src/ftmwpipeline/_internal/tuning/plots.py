@@ -445,7 +445,7 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
         ft = ftmw.compute_ft(ctx.ftmw_path)
         f_ghz = np.asarray(ft.freq_array, dtype=float) / 1000.0
-        mag = np.abs(np.asarray(ft.complex_spectrum, dtype=float))
+        mag = np.abs(np.asarray(ft.complex_spectrum))
         ax3.plot(f_ghz, mag, lw=0.4, color="0.6", label="|FT|", zorder=1)
         sigma_max = 0.0
         for row, color in zip(rows, colors):

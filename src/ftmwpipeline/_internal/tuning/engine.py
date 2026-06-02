@@ -90,6 +90,24 @@ class SweepResult:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class BatchItem:
+    """One knob's outcome within a batch scan.
+
+    Exactly one of ``result`` / ``error`` is set: ``result`` on success, or
+    ``error`` (the exception message) when that knob's scan failed — e.g. its
+    required stage is absent on the file. A batch never aborts on one failure.
+    """
+
+    knob: str
+    result: Optional[SweepResult] = None
+    error: Optional[str] = None
+
+    @property
+    def ok(self) -> bool:
+        return self.result is not None
+
+
 def _fmt(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
@@ -271,6 +289,41 @@ def run_scan(
         csv_path=csv_path,
         plot_path=plot_path,
     )
+
+
+def run_scan_batch(
+    specs: Sequence[KnobSpec],
+    ftmw_path: Path,
+    *,
+    output_dir: Optional[Path] = None,
+    reuse: bool = False,
+    make_plot: bool = True,
+    quiet: bool = False,
+) -> List[BatchItem]:
+    """Sweep every knob in ``specs`` sequentially, each on its default grid.
+
+    A convenience over :func:`run_scan` for reviewing a whole stage / sub-block
+    at once (pair with :func:`registry.list_knobs` and its selector). Each knob
+    runs independently on its own working copy of ``ftmw_path`` (never mutated);
+    a knob whose scan raises — e.g. its required stage is absent — is recorded as
+    a failed :class:`BatchItem` and the batch continues. Per-knob progress is the
+    same stderr header :func:`run_scan` prints unless ``quiet=True``.
+    """
+    items: List[BatchItem] = []
+    for spec in specs:
+        try:
+            result = run_scan(
+                spec,
+                ftmw_path,
+                output_dir=output_dir,
+                reuse=reuse,
+                make_plot=make_plot,
+                quiet=quiet,
+            )
+            items.append(BatchItem(knob=spec.path, result=result))
+        except Exception as e:  # one knob's failure must not abort the batch
+            items.append(BatchItem(knob=spec.path, error=str(e)))
+    return items
 
 
 def _write_csv(path: Path, spec: KnobSpec, rows: List[SweepRow]) -> None:

@@ -182,6 +182,65 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_tune_scan_all(args: argparse.Namespace) -> int:
+    """Sweep every knob matched by a selector, each on its default grid."""
+    setup_logging(getattr(args, "verbose", False))
+    from .._internal.tuning import list_knobs, run_scan_batch
+
+    file_path = args.file_path
+    if not file_path.endswith(".ftmw"):
+        file_path = file_path + ".ftmw"
+    if not Path(file_path).exists():
+        print_error(f"Pipeline file not found: {file_path}")
+        return 1
+
+    selector = getattr(args, "selector", None)
+    specs = list_knobs(selector, include_advanced=bool(args.all))
+    if not specs:
+        suffix = f" matching {selector!r}" if selector else ""
+        print_error(f"No tunable knobs{suffix}"
+                    + ("" if args.all else " (try --all for advanced knobs)."))
+        return 1
+
+    output_dir = Path(args.output_dir) if args.output_dir else Path.cwd()
+    print(f"Batch-scanning {len(specs)} knob(s) into {output_dir} ...")
+
+    pkg_logger = logging.getLogger("ftmwpipeline")
+    prev_level = pkg_logger.level
+    if not getattr(args, "verbose", False):
+        pkg_logger.setLevel(logging.ERROR)
+    try:
+        items = run_scan_batch(
+            specs,
+            Path(file_path),
+            output_dir=output_dir,
+            reuse=args.reuse,
+            make_plot=not args.no_plot,
+            quiet=args.quiet,
+        )
+    finally:
+        pkg_logger.setLevel(prev_level)
+
+    n_ok = 0
+    for item in items:
+        print()
+        print(f"===== {item.knob} =====")
+        if item.result is not None:
+            n_ok += 1
+            print(item.result.as_table())
+            if item.result.csv_path is not None:
+                print(f"CSV: {item.result.csv_path}")
+            if item.result.plot_path is not None:
+                print(f"Plot: {item.result.plot_path}")
+        else:
+            print_error(f"FAILED: {item.error}")
+
+    n_failed = len(items) - n_ok
+    print()
+    print(f"Batch complete: {n_ok} ok, {n_failed} failed. Outputs in {output_dir}.")
+    return 0 if n_failed == 0 else 2
+
+
 def _fmt(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
@@ -197,7 +256,8 @@ def register_tune_commands(subparsers: Any) -> None:
             "Companion tuning surface. 'tune list' enumerates the tunable "
             "knobs; 'tune scan' sweeps one across a grid on a copy of a .ftmw "
             "and reports a metric table (plus a CSV and, where available, a "
-            "plot), with instructions for applying a chosen value."
+            "plot), with instructions for applying a chosen value; 'tune "
+            "scan-all' batches that sweep over a whole stage / sub-block."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -284,6 +344,59 @@ def register_tune_commands(subparsers: Any) -> None:
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
     p_scan.set_defaults(func=cmd_tune_scan)
+
+    p_scan_all = tune_sub.add_parser(
+        "scan-all",
+        help="Sweep every knob in a stage/sub-block on its default grid",
+        description=(
+            "Batch convenience over 'tune scan': sweep every knob matched by the "
+            "selector, each on its default grid, writing each knob's table/CSV/"
+            "plot. A knob whose required stage is absent is reported as failed "
+            "and the batch continues."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_scan_all.add_argument(
+        "file_path",
+        help="Path to .ftmw built through the matched knobs' upstream stages",
+    )
+    p_scan_all.add_argument(
+        "selector",
+        nargs="?",
+        default=None,
+        help="Dotted-path prefix to scan, e.g. stage2b or stage2b.gaussian "
+             "(omit to scan every knob)",
+    )
+    p_scan_all.add_argument(
+        "--all",
+        action="store_true",
+        help="Include advanced-tier knobs (hidden by default)",
+    )
+    p_scan_all.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory for the CSVs/plots/working copies (default: current dir)",
+    )
+    p_scan_all.add_argument(
+        "--reuse",
+        action="store_true",
+        help="Reuse existing working copies instead of re-copying the input",
+    )
+    p_scan_all.add_argument(
+        "--no-plot",
+        action="store_true",
+        help="Skip plotting even when a knob has a plot adapter",
+    )
+    p_scan_all.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress the per-value progress indicator",
+    )
+    p_scan_all.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
+    p_scan_all.set_defaults(func=cmd_tune_scan_all)
 
     # 'tune' with no subcommand prints its help.
     def _tune_help(args: argparse.Namespace) -> int:

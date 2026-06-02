@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 
 if TYPE_CHECKING:
-    from ._internal.tuning import KnobSpec, SweepResult
+    from ._internal.tuning import BatchItem, KnobSpec, SweepResult
 
 from .core.data_structures import FID, ComplexFT
 from .core.settings import FTSettings
@@ -1721,6 +1721,39 @@ class Pipeline:
             get_knob(knob),
             self.filepath,
             grid=grid,
+            output_dir=Path(output_dir) if output_dir is not None else None,
+            reuse=reuse,
+            make_plot=make_plot,
+            quiet=quiet,
+        )
+
+    def tune_scan_batch(
+        self,
+        selector: Optional[str] = None,
+        *,
+        include_advanced: bool = False,
+        output_dir: Optional[Union[str, Path]] = None,
+        reuse: bool = False,
+        make_plot: bool = True,
+        quiet: bool = False,
+    ) -> "List[BatchItem]":
+        """Sweep every knob matched by ``selector`` on its default grid.
+
+        Equivalent to :func:`ftmwpipeline.api.tune_scan_batch`. A convenience
+        over :meth:`tune_scan` for reviewing a whole stage / sub-block at once:
+        ``selector`` filters by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``) exactly as :meth:`tune_list`, and
+        ``include_advanced`` adds the advanced-tier knobs. Each knob runs on its
+        own working copy (this file is never mutated); a knob whose scan fails
+        (e.g. its required stage is absent) is recorded as a failed
+        :class:`BatchItem` and the batch continues.
+        """
+        from ._internal.tuning import list_knobs, run_scan_batch
+
+        specs = list_knobs(selector, include_advanced=include_advanced)
+        return run_scan_batch(
+            specs,
+            self.filepath,
             output_dir=Path(output_dir) if output_dir is not None else None,
             reuse=reuse,
             make_plot=make_plot,

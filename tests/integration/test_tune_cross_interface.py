@@ -58,6 +58,31 @@ def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
     assert ra.metric_columns == rp.metric_columns
 
 
+def test_api_pipeline_scan_batch_parity(baseline_2638_stage1_raw, tmp_path):
+    # the stage2.scatter sub-block (all primary, Stage-1-only deps) batch-scans
+    a = ftmw.tune_scan_batch(
+        baseline_2638_stage1_raw, "stage2.scatter",
+        output_dir=tmp_path / "api", make_plot=False, quiet=True,
+    )
+    p = Pipeline.open(baseline_2638_stage1_raw).tune_scan_batch(
+        "stage2.scatter", output_dir=tmp_path / "pipe", make_plot=False, quiet=True,
+    )
+    assert [it.knob for it in a] == [it.knob for it in p]
+    assert len(a) == 3 and all(it.ok for it in a)
+    assert [_rows(it.result) for it in a] == [_rows(it.result) for it in p]
+
+
+def test_scan_batch_isolates_failures(baseline_2638_stage1_raw, tmp_path):
+    # stage2b.stft knobs drive calibrate_tau, which needs Stage 2 (absent on the
+    # Stage-0/1 baseline) -> every knob fails, but the batch never aborts: it
+    # returns one BatchItem per matched knob, each carrying its captured error.
+    items = ftmw.tune_scan_batch(
+        baseline_2638_stage1_raw, "stage2b.stft", include_advanced=True,
+        output_dir=tmp_path / "b", make_plot=False, quiet=True,
+    )
+    assert items and all(not it.ok and it.error for it in items)
+
+
 def test_cli_scan_matches_api(baseline_2638_stage1_raw, tmp_path, capsys):
     ra = ftmw.tune_scan(
         baseline_2638_stage1_raw, KNOB, grid=GRID,

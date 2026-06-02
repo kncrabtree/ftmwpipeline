@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from ftmwpipeline._internal.tuning.engine import SweepRow, run_scan
+from ftmwpipeline._internal.tuning.engine import (
+    SweepRow,
+    run_scan,
+    run_scan_batch,
+)
 from ftmwpipeline._internal.tuning.registry import KnobSpec
 
 
@@ -146,3 +150,36 @@ def test_output_dir_created_and_contains_artifacts(tmp_path):
     res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0], output_dir=out)
     assert out.is_dir()
     assert res.csv_path.parent == out
+
+
+def _named_spec(path: str, *, fail: bool = False) -> KnobSpec:
+    def _run(p, value):
+        if fail:
+            raise RuntimeError("required stage missing")
+        return value
+    return KnobSpec(
+        path=path, stage=path.split(".")[0], requires="stage0_fid_data",
+        help="synthetic", inst_sensitivity="N", default_grid=(1.0, 2.0),
+        run=_run, metric=lambda r: {"m": r}, metric_columns=("m",),
+    )
+
+
+def test_batch_runs_each_knob_and_returns_item_per_spec(tmp_path):
+    specs = [_named_spec("s.b.k1"), _named_spec("s.b.k2")]
+    items = run_scan_batch(specs, _dummy_ftmw(tmp_path),
+                           output_dir=tmp_path, quiet=True)
+    assert [it.knob for it in items] == ["s.b.k1", "s.b.k2"]
+    assert all(it.ok and it.error is None for it in items)
+    assert all(it.result is not None and it.result.csv_path.exists()
+               for it in items)
+
+
+def test_batch_continues_past_a_failing_knob(tmp_path):
+    specs = [_named_spec("s.b.ok1"), _named_spec("s.b.bad", fail=True),
+             _named_spec("s.b.ok2")]
+    items = run_scan_batch(specs, _dummy_ftmw(tmp_path),
+                           output_dir=tmp_path, quiet=True)
+    assert [it.ok for it in items] == [True, False, True]
+    bad = items[1]
+    assert bad.result is None
+    assert "required stage missing" in bad.error

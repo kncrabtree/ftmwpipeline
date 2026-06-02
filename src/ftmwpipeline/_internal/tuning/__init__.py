@@ -15,7 +15,7 @@ the repo's dual-interface rule. See
 """
 
 from .registry import KnobSpec, get_knob, list_knobs
-from .engine import SweepResult, SweepRow, run_scan
+from .engine import BatchItem, SweepResult, SweepRow, run_scan, run_scan_batch
 
 __all__ = [
     "KnobSpec",
@@ -24,4 +24,6 @@ __all__ = [
     "SweepResult",
     "SweepRow",
     "run_scan",
+    "BatchItem",
+    "run_scan_batch",
 ]
