@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from .plots import (
     plot_noise_sweep,
+    plot_shape_vote,
     plot_spectra_ladder,
     plot_start_detection,
     plot_tau_trend,
@@ -67,6 +68,10 @@ class KnobSpec:
     see_also: Optional[str] = None
     """Optional pointer to a related knob/visualization, shown in non-quiet
     output (e.g. a detection knob pointing at the spectrum-impact knob)."""
+    tier: str = "primary"
+    """``"primary"`` (shown in the default ``tune list``) or ``"advanced"``
+    (revealed only with ``--all`` / ``include_advanced``). Lets the surface
+    expose every knob while keeping the default view a short starting point."""
 
     def grid(self, override: Optional[Sequence[Any]]) -> Tuple[Any, ...]:
         """Resolve the grid to sweep: explicit override, else the default."""
@@ -194,11 +199,16 @@ def _run_guard() -> RunFn:
 
 
 def _run_tau(sub_block: str, field_name: str) -> RunFn:
-    """Re-run the Stage 2b tau calibration with a single settings field set.
+    """Re-run a Stage 2b tau extraction with a single settings field set.
 
     Builds a ``TauCalibrationSettings`` bundle (the preset layer) carrying just
-    the one sub-block field, so any tau knob — including the ``polish`` fields
-    that ``calibrate_tau`` does not expose as kwargs — is sweepable uniformly.
+    the one sub-block field, so any tau knob — including fields the orchestrators
+    do not expose as kwargs — is sweepable uniformly. The sub-block selects the
+    orchestrator: ``gaussian`` drives ``calibrate_tau_G`` (Gaussian τ_G),
+    ``recommendation`` drives ``recommend_shape`` (the exp/gauss/voigt vote), and
+    every other sub-block drives the exponential ``calibrate_tau``. All three
+    return through the same settings resolver, so the bundle's single override
+    composes with the file's persisted/default layers.
     """
 
     def run(path: Path, value: Any) -> Any:
@@ -208,8 +218,18 @@ def _run_tau(sub_block: str, field_name: str) -> RunFn:
         sub_cls = {
             "stft": tcs.StftSubSettings,
             "polish": tcs.PolishSubSettings,
+            "aggregation": tcs.AggregationSubSettings,
+            "band": tcs.BandSubSettings,
+            "gaussian": tcs.GaussianSubSettings,
+            "recommendation": tcs.RecommendationSubSettings,
         }[sub_block]
-        bundle = tcs.TauCalibrationSettings(**{sub_block: sub_cls(**{field_name: value})})
+        bundle = tcs.TauCalibrationSettings(
+            **{sub_block: sub_cls(**{field_name: value})}
+        )
+        if sub_block == "gaussian":
+            return ftmw.calibrate_tau_G(path, settings=bundle)
+        if sub_block == "recommendation":
+            return ftmw.recommend_shape(path, settings=bundle)
         return ftmw.calibrate_tau(path, settings=bundle)
 
     return run
@@ -250,6 +270,20 @@ def _metric_tau(result: Any) -> Dict[str, Any]:
         "tau_maj_us": round(float(result.tau_maj_us), 4),
         "sigma_tau_us": round(float(result.sigma_tau_us), 4),
         "n_contributors": int(result.n_contributors),
+    }
+
+
+def _metric_shape(result: Any) -> Dict[str, Any]:
+    """Reduce a ``ShapeRecommendation`` to the exp/gauss/voigt vote rates plus
+    the verdict, for the shape-recommendation knobs."""
+    rates = dict(getattr(result, "vote_rates", {}) or {})
+    rec = getattr(result, "recommended_shape", None)
+    return {
+        "recommended_shape": "none" if rec in (None, "") else str(rec),
+        "exp": round(float(rates.get("exp", float("nan"))), 4),
+        "gauss": round(float(rates.get("gauss", float("nan"))), 4),
+        "voigt": round(float(rates.get("voigt", float("nan"))), 4),
+        "n_contributors": int(getattr(result, "n_contributors", 0)),
     }
 
 
@@ -445,7 +479,158 @@ _register(KnobSpec(
     run=_run_tau("polish", "polish_noise_debias"),
     metric=_metric_tau,
     metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+    tier="advanced",
 ))
+
+# --- Stage 2b: advanced STFT gates (exp twin) -----------------------------
+_TAU_COLS = ("tau_maj_us", "sigma_tau_us", "n_contributors")
+_TAU_TWIN_SEE_ALSO = (
+    "stage2b.gaussian.* is the Gaussian τ_G twin and stage2b.recommendation.* "
+    "is the exp-vs-gauss shape vote — all three share the STFT contributor pool."
+)
+for _path, _field, _help, _grid, _inst in (
+    ("stage2b.stft.tau_max_us",
+     "tau_max_us",
+     "Hard upper clip on recovered τ (saturation → spur candidate); unset → derived.",
+     (20.0, 40.0, 80.0), "maybe"),
+    ("stage2b.stft.tau_max_factor",
+     "tau_max_factor",
+     "τ_max as a multiple of the full-record duration when tau_max_us is unset.",
+     (3.0, 5.0, 8.0, 12.0), "maybe"),
+    ("stage2b.stft.rss_gate_factor",
+     "rss_gate_factor",
+     "Bad-fit gate strength (relative-or-absolute residual hybrid).",
+     (3.0, 5.0, 8.0, 12.0), "maybe"),
+    ("stage2b.stft.relative_gate_fraction",
+     "relative_gate_fraction",
+     "Relative-RSS fraction below which a per-frame fit is accepted.",
+     (0.02, 0.05, 0.10, 0.20), "maybe"),
+):
+    _register(KnobSpec(
+        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
+        help=_help, inst_sensitivity=_inst, default_grid=_grid,
+        run=_run_tau("stft", _field), metric=_metric_tau,
+        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
+    ))
+
+# --- Stage 2b: advanced polish knobs --------------------------------------
+for _path, _field, _help, _grid in (
+    ("stage2b.polish.polish_n_iter", "polish_n_iter",
+     "Gauss-Newton polish iterations per eligible contributor.", (1, 2, 3)),
+    ("stage2b.polish.polish_top_n", "polish_top_n",
+     "Polish only the top-N contributors by SNR (unset → all).",
+     (200, 500, 1000, 2000)),
+):
+    _register(KnobSpec(
+        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
+        help=_help, inst_sensitivity="N", default_grid=_grid,
+        run=_run_tau("polish", _field), metric=_metric_tau,
+        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
+    ))
+
+# --- Stage 2b: advanced aggregation / acceptance knobs --------------------
+for _path, _field, _help, _grid, _inst in (
+    ("stage2b.aggregation.min_contributors", "min_contributors",
+     "Minimum contributor count for the calibration to pass preconditions.",
+     (100, 200, 400, 800), "N"),
+    ("stage2b.aggregation.sigma_tau_fraction_max", "sigma_tau_fraction_max",
+     "Max σ_τ/τ_maj for the calibration to pass preconditions.",
+     (0.10, 0.20, 0.30), "N"),
+    ("stage2b.aggregation.bimodality_dominant_fraction",
+     "bimodality_dominant_fraction",
+     "Dominant-mode fraction above which a bimodal histogram still passes.",
+     (0.6, 0.7, 0.8), "N"),
+    ("stage2b.aggregation.sigma_tau_floor_us", "sigma_tau_floor_us",
+     "Floor on the reported σ_τ (guards against over-tight spreads).",
+     (0.0, 0.5, 1.0), "maybe"),
+    ("stage2b.aggregation.spur_cluster_multiplier", "spur_cluster_multiplier",
+     "Scale on the spur-cluster width (wider → more bins flagged as spurs).",
+     (1.0, 1.5, 2.0), "maybe"),
+):
+    _register(KnobSpec(
+        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
+        help=_help, inst_sensitivity=_inst, default_grid=_grid,
+        run=_run_tau("aggregation", _field), metric=_metric_tau,
+        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
+    ))
+
+# --- Stage 2b: multi-band majorities --------------------------------------
+_register(KnobSpec(
+    path="stage2b.band.min_contributors_per_band",
+    stage="stage2b_tau", requires="stage2_noise_result",
+    help="Min contributors for a band to use its own τ majority (else band-wide).",
+    inst_sensitivity="Y", default_grid=(25, 50, 100, 200),
+    run=_run_tau("band", "min_contributors_per_band"), metric=_metric_tau,
+    metric_columns=_TAU_COLS, plot=plot_tau_trend, see_also=_TAU_TWIN_SEE_ALSO,
+))
+_register(KnobSpec(
+    path="stage2b.band.compute_band_majorities",
+    stage="stage2b_tau", requires="stage2_noise_result",
+    help="Compute per-band τ majorities (the τ-vs-frequency band steps).",
+    inst_sensitivity="Y", default_grid=(False, True),
+    run=_run_tau("band", "compute_band_majorities"), metric=_metric_tau,
+    metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
+))
+
+# --- Stage 2b: Gaussian τ_G twin (calibrate_tau_G) ------------------------
+_register(KnobSpec(
+    path="stage2b.gaussian.snr_min",
+    stage="stage2b_tau", requires="stage2_noise_result",
+    help="Gaussian τ_G: per-bin SNR floor for a contributor to enter the fit.",
+    inst_sensitivity="Y", default_grid=(10.0, 15.0, 20.0, 30.0),
+    run=_run_tau("gaussian", "snr_min"), metric=_metric_tau,
+    metric_columns=_TAU_COLS, plot=plot_tau_trend, see_also=_TAU_TWIN_SEE_ALSO,
+))
+for _path, _field, _help, _grid in (
+    ("stage2b.gaussian.tau_G_bound_lo", "tau_G_bound_lo",
+     "Gaussian τ_G lower fit bound (us).", (0.2, 0.5, 1.0)),
+    ("stage2b.gaussian.tau_G_bound_hi", "tau_G_bound_hi",
+     "Gaussian τ_G upper fit bound (us).", (50.0, 100.0, 200.0)),
+    ("stage2b.gaussian.delta_chi2r_min", "delta_chi2r_min",
+     "Min χ²ᵣ improvement of the Gaussian over the exp fit to count a bin.",
+     (0.5, 1.0, 2.0)),
+    ("stage2b.gaussian.tau_G_upper_fraction", "tau_G_upper_fraction",
+     "Fraction of the τ_G bound above which a fit is treated as railed.",
+     (0.5, 0.7, 0.9)),
+    ("stage2b.gaussian.min_contributors", "min_contributors",
+     "Minimum Gaussian-eligible contributor count for τ_G preconditions.",
+     (25, 50, 100)),
+):
+    _register(KnobSpec(
+        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
+        help=_help, inst_sensitivity="maybe", default_grid=_grid,
+        run=_run_tau("gaussian", _field), metric=_metric_tau,
+        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
+    ))
+
+# --- Stage 2b: exp-vs-gauss shape recommendation (recommend_shape) --------
+_SHAPE_COLS = ("recommended_shape", "exp", "gauss", "voigt", "n_contributors")
+_register(KnobSpec(
+    path="stage2b.recommendation.pure_margin_threshold",
+    stage="stage2b_tau", requires="stage2_noise_result",
+    help="Min SNR-weighted vote margin for a pure shape to win (else 'none').",
+    inst_sensitivity="maybe", default_grid=(0.05, 0.10, 0.15, 0.20),
+    run=_run_tau("recommendation", "pure_margin_threshold"),
+    metric=_metric_shape, metric_columns=_SHAPE_COLS, plot=plot_shape_vote,
+    see_also=_TAU_TWIN_SEE_ALSO,
+))
+for _path, _field, _help, _grid in (
+    ("stage2b.recommendation.snr_min", "snr_min",
+     "Shape vote: per-bin SNR floor for a contributor to vote.",
+     (10.0, 15.0, 20.0, 30.0)),
+    ("stage2b.recommendation.tau_bound_lo", "tau_bound_lo",
+     "Shape vote: lower τ fit bound shared by the per-bin model fits (us).",
+     (0.2, 0.5, 1.0)),
+    ("stage2b.recommendation.tau_bound_hi", "tau_bound_hi",
+     "Shape vote: upper τ fit bound shared by the per-bin model fits (us).",
+     (50.0, 100.0, 200.0)),
+):
+    _register(KnobSpec(
+        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
+        help=_help, inst_sensitivity="maybe", default_grid=_grid,
+        run=_run_tau("recommendation", _field), metric=_metric_shape,
+        metric_columns=_SHAPE_COLS, plot=plot_shape_vote, tier="advanced",
+    ))
 
 
 def get_knob(path: str) -> KnobSpec:
@@ -459,9 +644,27 @@ def get_knob(path: str) -> KnobSpec:
         ) from None
 
 
-def list_knobs(stage: Optional[str] = None) -> Tuple[KnobSpec, ...]:
-    """All registered knobs (optionally filtered to one ``stage``), path-sorted."""
+def list_knobs(
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+) -> Tuple[KnobSpec, ...]:
+    """Registered knobs, path-sorted.
+
+    ``selector`` filters by dotted-path prefix: a knob matches when its path
+    equals ``selector`` or begins with ``selector + "."`` (e.g. ``"stage2b"`` or
+    ``"stage2b.gaussian"``); the legacy ``stage``-label match is kept as a
+    fallback. ``include_advanced=False`` (the default) hides ``tier ==
+    "advanced"`` knobs so the default listing stays a short starting point.
+    """
     specs = sorted(_REGISTRY.values(), key=lambda s: s.path)
-    if stage is not None:
-        specs = [s for s in specs if s.stage == stage]
+    if not include_advanced:
+        specs = [s for s in specs if s.tier != "advanced"]
+    if selector is not None:
+        specs = [
+            s for s in specs
+            if s.path == selector
+            or s.path.startswith(selector + ".")
+            or s.stage == selector
+        ]
     return tuple(specs)

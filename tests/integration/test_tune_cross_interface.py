@@ -33,6 +33,19 @@ def test_tune_list_parity():
     assert len(a) > 0
 
 
+def test_tune_list_include_advanced_parity():
+    # include_advanced and the selector behave identically across the two surfaces
+    a_all = ftmw.tune_list(include_advanced=True)
+    p_all = Pipeline.tune_list(include_advanced=True)
+    assert [k.path for k in a_all] == [k.path for k in p_all]
+    # advanced reveals strictly more than the default view
+    assert len(a_all) > len(ftmw.tune_list())
+    a_sel = ftmw.tune_list("stage2b", include_advanced=True)
+    p_sel = Pipeline.tune_list("stage2b", include_advanced=True)
+    assert [k.path for k in a_sel] == [k.path for k in p_sel]
+    assert a_sel and all(k.path.startswith("stage2b.") for k in a_sel)
+
+
 def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
     ra = ftmw.tune_scan(
         baseline_2638_stage1_raw, KNOB, grid=GRID,
@@ -73,7 +86,30 @@ def test_cli_list_runs(capsys):
     rc = cli_main(["tune", "list"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "stage2.scatter.window_mhz" in out
+    # single header row, full stage-leading path, and an elided continuation
+    assert "knob" in out and "tier" in out
+    assert "stage1.start_us" in out  # first row prints its full path
+    assert ".window_mhz" in out      # a later sibling renders elided
+
+
+def test_elide_path_blanks_shared_prefix():
+    from ftmwpipeline.cli.tune_commands import _elide_path
+
+    assert _elide_path("stage2.group1.setting1", None) == "stage2.group1.setting1"
+    # shared "stage2.group1" blanked to equal-width padding, ".setting2" aligned
+    assert (
+        _elide_path("stage2.group1.setting2", "stage2.group1.setting1")
+        == " " * len("stage2.group1") + ".setting2"
+    )
+    # only "stage2" shared -> ".group2.setting1" prints from the first difference
+    assert (
+        _elide_path("stage2.group2.setting1", "stage2.group1.setting2")
+        == " " * len("stage2") + ".group2.setting1"
+    )
+    # elided cell keeps the original length so downstream columns stay aligned
+    assert len(_elide_path("stage2.group1.setting2", "stage2.group1.setting1")) == len(
+        "stage2.group1.setting2"
+    )
 
 
 def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):

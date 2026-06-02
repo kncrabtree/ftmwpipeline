@@ -26,33 +26,90 @@ from .utils import print_error, setup_logging
 logger = logging.getLogger(__name__)
 
 
+def _elide_path(path: str, prev: Optional[str]) -> str:
+    """Render ``path`` with leading dotted segments shared with ``prev`` blanked
+    to equal-width padding, so a column of paths reads as a prefix tree:
+
+        stage2.group1.setting1
+                     .setting2
+              .group2.setting1
+
+    Segments carry their leading dot (``"stage2"``, ``".group1"``, ``".s1"``);
+    once a segment differs from the previous row, it and all that follow print
+    literally. The result keeps ``len(path)`` so downstream columns stay aligned.
+    """
+    def _segs(p: str) -> List[str]:
+        parts = p.split(".")
+        return [parts[0]] + ["." + part for part in parts[1:]]
+
+    segs = _segs(path)
+    if prev is None:
+        return path
+    prev_segs = _segs(prev)
+    out: List[str] = []
+    matching = True
+    for i, seg in enumerate(segs):
+        if matching and i < len(prev_segs) and prev_segs[i] == seg:
+            out.append(" " * len(seg))
+        else:
+            matching = False
+            out.append(seg)
+    return "".join(out)
+
+
 def cmd_tune_list(args: argparse.Namespace) -> int:
-    """Print the registered tunable knobs as a table."""
+    """Print the registered tunable knobs as a single prefix-elided table.
+
+    Shows primary-tier knobs by default; ``--all`` reveals advanced ones. A
+    positional ``selector`` filters by dotted-path prefix (e.g. ``stage2b`` /
+    ``stage2b.gaussian``). Rows repeat dotted prefixes only when they change; a
+    blank line separates stages.
+    """
     from .._internal.tuning import list_knobs
 
-    specs = list_knobs(getattr(args, "stage", None))
+    selector = getattr(args, "selector", None)
+    show_all = bool(getattr(args, "all", False))
+    specs = list_knobs(selector, include_advanced=show_all)
     if not specs:
-        print("No tunable knobs registered" + (
-            f" for stage {args.stage!r}." if getattr(args, "stage", None) else "."
-        ))
+        suffix = f" matching {selector!r}." if selector else "."
+        print("No tunable knobs registered" + suffix
+              + ("" if show_all else " (try --all for advanced knobs)."))
         return 0
 
+    headers = ("knob", "tier", "inst", "default grid")
     rows = [
-        (s.path, s.stage, s.inst_sensitivity,
+        (s.path, s.tier, s.inst_sensitivity,
          ",".join(_fmt(v) for v in s.default_grid))
         for s in specs
     ]
-    headers = ("knob", "stage", "inst", "default grid")
     widths = [
         max(len(headers[i]), *(len(r[i]) for r in rows))
         for i in range(len(headers))
     ]
     sep = "  "
-    print(sep.join(headers[i].ljust(widths[i]) for i in range(len(headers))))
-    print(sep.join("-" * widths[i] for i in range(len(headers))))
-    for r in rows:
-        print(sep.join(r[i].ljust(widths[i]) for i in range(len(r))))
+
+    def _line(cells: Any) -> str:
+        return sep.join(cells[i].ljust(widths[i]) for i in range(len(cells)))
+
+    print(_line(headers))
+    print(_line(tuple("-" * widths[i] for i in range(len(headers)))))
+    prev_path: Optional[str] = None
+    for s, r in zip(specs, rows):
+        stage = s.path.split(".")[0]
+        if prev_path is not None and stage != prev_path.split(".")[0]:
+            print()  # blank line between stages
+        knob_cell = _elide_path(s.path, prev_path)
+        print(_line((knob_cell,) + r[1:]))
+        prev_path = s.path
+
     print()
+    if not show_all:
+        hidden = [
+            s for s in list_knobs(selector, include_advanced=True)
+            if s.tier == "advanced"
+        ]
+        if hidden:
+            print(f"{len(hidden)} advanced knob(s) hidden; use --all to show them.")
     print("Run 'ftmwpipeline tune scan <file> --knob <knob>' to sweep one.")
     return 0
 
@@ -148,13 +205,26 @@ def register_tune_commands(subparsers: Any) -> None:
 
     p_list = tune_sub.add_parser(
         "list",
-        help="List registered tunable knobs (optionally filtered by stage)",
+        help="List registered tunable knobs, grouped by stage -> sub-block",
+    )
+    p_list.add_argument(
+        "selector",
+        nargs="?",
+        default=None,
+        help="Filter by dotted-path prefix, e.g. stage2b or stage2b.gaussian "
+             "(a stage label like stage2_noise also matches)",
+    )
+    p_list.add_argument(
+        "--all",
+        action="store_true",
+        help="Include advanced-tier knobs (hidden by default)",
     )
     p_list.add_argument(
         "--stage",
+        dest="selector",
         type=str,
         default=None,
-        help="Restrict to one stage label, e.g. stage2_noise / start_detection",
+        help=argparse.SUPPRESS,  # back-compat alias for the positional selector
     )
     p_list.set_defaults(func=cmd_tune_list)
 

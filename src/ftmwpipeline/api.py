@@ -1679,22 +1679,29 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
 # Companion parameter tuning
 # =============================================================================
 
-def tune_list(stage: Optional[str] = None) -> Tuple[Any, ...]:
+def tune_list(
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+) -> Tuple[Any, ...]:
     """List the registered tunable knobs, equivalent to
     :meth:`Pipeline.tune_list`.
 
     Parameters
     ----------
-    stage : str, optional
-        Restrict to one stage label (e.g. ``"stage2_noise"`` /
-        ``"start_detection"``).
+    selector : str, optional
+        Filter by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``); the legacy stage-label match
+        (``"stage2_noise"`` / ``"start_detection"``) is kept as a fallback.
+    include_advanced : bool, default False
+        Reveal advanced-tier knobs hidden from the default listing.
 
     Returns
     -------
     tuple of KnobSpec
         Path-sorted knob specifications.
     """
-    return Pipeline.tune_list(stage)
+    return Pipeline.tune_list(selector, include_advanced=include_advanced)
 
 
 def tune_scan(

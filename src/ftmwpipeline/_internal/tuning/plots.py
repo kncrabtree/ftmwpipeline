@@ -180,9 +180,123 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
     return fig
 
 
+def _contrib_alpha(n: int) -> float:
+    """Per-contributor line alpha keyed to the contributor count, so the
+    overplotted decay cloud reads as a density regardless of population.
+
+    Halves once per decade: byte ``2^(5 - log10 n)`` -> 0x08 at 100, 0x04 at
+    1k, 0x02 at 10k, 0x01 at 100k. Capped at 0x10 for small populations and
+    floored at 0x01 so even a huge cloud keeps one bit of opacity.
+    """
+    import math
+
+    if n <= 1:
+        return 0x10 / 255.0
+    byte = 2.0 ** (5.0 - math.log10(n))
+    byte = max(1.0, min(float(0x10), byte))
+    return byte / 255.0
+
+
+def _plot_contributor_decays(ax: Any, row: Any, leaf: str, fit_color: str) -> None:
+    """One value's contributor population as faint per-contributor decay curves
+    (``exp(-t/τ_i)``) with the majority fit ``exp(-t/τ_maj)`` and a ±σ_τ band
+    overlaid. Hidden (axis off) when the result carries no contributor taus."""
+    import numpy as np
+    from matplotlib.collections import LineCollection
+
+    res = row.result
+    taus = np.asarray(getattr(res, "contributor_taus_us", []), dtype=float)
+    taus = taus[np.isfinite(taus) & (taus > 0.0)]
+    start = getattr(res, "start_us", None)
+    end = getattr(res, "end_us", None)
+    if taus.size == 0 or start is None or end is None or float(end) <= float(start):
+        ax.set_visible(False)
+        return
+
+    span = float(end) - float(start)
+    t = np.linspace(0.0, span, 80)
+    # Vectorised cloud: one normalised exponential per contributor.
+    curves = np.exp(-t[None, :] / taus[:, None])  # (n_contrib, n_t)
+    xs_grid = np.broadcast_to(t, curves.shape)
+    segments = np.stack([xs_grid, curves], axis=-1)  # (n_contrib, n_t, 2)
+    ax.add_collection(
+        LineCollection(segments, colors="black",
+                       alpha=_contrib_alpha(taus.size), linewidths=0.5)
+    )
+
+    tau_maj = float(res.tau_maj_us)
+    sig = float(res.sigma_tau_us)
+    ax.plot(t, np.exp(-t / tau_maj), color=fit_color, lw=2.0,
+            label=rf"fit $\tau_{{maj}}$={tau_maj:.2f} us  (n={taus.size})")
+    lo_tau = max(tau_maj - sig, 1e-3)
+    upper = np.exp(-t / (tau_maj + sig))
+    lower = np.exp(-t / lo_tau)
+    ax.fill_between(t, upper, lower, color=fit_color, alpha=0.12)
+    # Dotted opaque edges demarcate the ±σ_τ envelope clearly over the cloud.
+    ax.plot(t, upper, color=fit_color, ls=":", lw=1.3,
+            label=rf"$\pm\sigma_\tau$={sig:.2f} us")
+    ax.plot(t, lower, color=fit_color, ls=":", lw=1.3)
+    ax.set_xlim(0.0, span)
+    ax.set_ylim(0.0, 1.02)
+    ax.set_ylabel(f"{leaf}={row.value:g}\nnorm. decay", fontsize=8)
+    ax.legend(fontsize=7, loc="upper right")
+
+
+def _plot_tau_vs_freq(ax: Any, row: Any, leaf: str) -> None:
+    """One value's contributor τ vs molecular frequency, colored by log10(SNR),
+    with the per-band majority steps and the global τ_maj overlaid. Hidden (axis
+    off) when the result carries no contributor frequencies."""
+    import numpy as np
+
+    res = row.result
+    freqs = np.asarray(getattr(res, "contributor_freqs_mhz", []), dtype=float)
+    taus = np.asarray(getattr(res, "contributor_taus_us", []), dtype=float)
+    snrs = np.asarray(getattr(res, "contributor_snrs", []), dtype=float)
+    ok = (
+        freqs.size > 0
+        and freqs.size == taus.size
+        and np.isfinite(freqs).any()
+        and np.isfinite(taus).any()
+    )
+    if not ok:
+        ax.set_visible(False)
+        return
+
+    f_ghz = freqs / 1000.0
+    if snrs.size == freqs.size and np.isfinite(snrs).any():
+        c = np.log10(np.clip(snrs, 1.0, None))
+    else:
+        c = "0.4"
+    sc = ax.scatter(f_ghz, taus, c=c, s=6, alpha=0.5, cmap="viridis",
+                    linewidths=0.0)
+    if not isinstance(c, str):
+        cb = ax.figure.colorbar(sc, ax=ax, pad=0.01, fraction=0.04)
+        cb.set_label(r"$\log_{10}$ SNR", fontsize=7)
+        cb.ax.tick_params(labelsize=6)
+
+    tau_maj = float(res.tau_maj_us)
+    ax.axhline(tau_maj, color="crimson", ls="--", lw=1.5,
+               label=rf"$\tau_{{maj}}$={tau_maj:.2f} us")
+    # Per-band SNR-weighted majority as horizontal segments spanning each band.
+    bands = getattr(res, "band_majorities", ()) or ()
+    for b in bands:
+        ax.plot([b.freq_lo_mhz / 1000.0, b.freq_hi_mhz / 1000.0],
+                [b.tau_maj_us, b.tau_maj_us], color="crimson", lw=2.4,
+                solid_capstyle="butt")
+    tau_max = getattr(res, "tau_max_us", None)
+    if tau_max is not None and float(tau_max) > 0:
+        ax.set_ylim(0.0, min(float(tau_max), float(np.nanmax(taus)) * 1.15))
+    ax.set_ylabel(f"{leaf}={row.value:g}\nτ (us)", fontsize=8)
+    ax.legend(fontsize=7, loc="upper right")
+
+
 def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
-    """tau_maj +/- sigma_tau vs the knob value, with the contributor count on a
-    twin axis. Returns ``None`` for non-numeric knobs (table-only)."""
+    """tau_maj +/- sigma_tau vs the knob value with the contributor count on a
+    twin axis (top, spanning), then per grid value a pair of panels: the
+    contributor decay cloud with the majority fit (left) and contributor τ vs
+    molecular frequency with the per-band majorities (right), so both the spread
+    τ_maj summarises and any frequency-dependence are visible.
+    Returns ``None`` for non-numeric knobs (table-only)."""
     import matplotlib.pyplot as plt
 
     rows = [r for r in rows if r.result is not None]
@@ -198,7 +312,11 @@ def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
     sigma = [r.metrics.get("sigma_tau_us") for r in rows]
     n_contrib = [r.metrics.get("n_contributors") for r in rows]
 
-    fig, ax = plt.subplots(figsize=(8.0, 5.0))
+    n = len(rows)
+    fig = plt.figure(figsize=(12.0, 4.8 + 2.6 * n))
+    gs = fig.add_gridspec(n + 1, 2, height_ratios=[1.5] + [1.0] * n)
+    ax = fig.add_subplot(gs[0, :])
+
     ax.errorbar(xs, tau, yerr=sigma, fmt="o-", color="tab:blue", capsize=3,
                 label=r"$\tau_{maj} \pm \sigma_\tau$")
     ax.set_xlabel(leaf)
@@ -209,6 +327,64 @@ def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
     axn.set_ylabel("n_contributors", color="tab:green")
     axn.tick_params(axis="y", labelcolor="tab:green")
     ax.set_title(f"tau calibration vs {leaf}")
+
+    decay_axes = [fig.add_subplot(gs[i + 1, 0]) for i in range(n)]
+    freq_axes = [fig.add_subplot(gs[i + 1, 1]) for i in range(n)]
+    for axd, axf, row in zip(decay_axes, freq_axes, rows):
+        _plot_contributor_decays(axd, row, leaf, "crimson")
+        _plot_tau_vs_freq(axf, row, leaf)
+    for col_axes, xlabel in (
+        (decay_axes, "time since active-region start (us)"),
+        (freq_axes, "molecular frequency (GHz)"),
+    ):
+        for ax_ in reversed(col_axes):
+            if ax_.get_visible():
+                ax_.set_xlabel(xlabel)
+                break
+
+    fig.suptitle(f"tau calibration sweep: {spec.path}")
+    fig.tight_layout()
+    return fig
+
+
+def plot_shape_vote(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """exp / gauss / voigt SNR-weighted vote rate per grid value (grouped bars),
+    annotated with the per-value recommended shape. For the shape-recommendation
+    knobs. Returns ``None`` for non-numeric knobs (table-only)."""
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+    try:
+        xs = [float(r.value) for r in rows]
+    except (TypeError, ValueError):
+        return None
+
+    leaf = spec.path.split(".")[-1]
+    models = ("exp", "gauss", "voigt")
+    model_colors = {"exp": "tab:blue", "gauss": "crimson", "voigt": "tab:gray"}
+    idx = np.arange(len(rows), dtype=float)
+    width = 0.26
+
+    fig, ax = plt.subplots(figsize=(max(7.0, 1.6 * len(rows)), 5.0))
+    for k, model in enumerate(models):
+        vals = [float(r.metrics.get(model) or 0.0) for r in rows]
+        ax.bar(idx + (k - 1) * width, vals, width,
+               color=model_colors[model], label=model)
+    for i, r in enumerate(rows):
+        rec = r.metrics.get("recommended_shape")
+        ax.annotate("none" if rec in (None, "") else str(rec),
+                    (idx[i], 1.02), ha="center", va="bottom", fontsize=8,
+                    rotation=0)
+    ax.set_xticks(idx)
+    ax.set_xticklabels([f"{v:g}" for v in xs])
+    ax.set_ylim(0.0, 1.15)
+    ax.set_xlabel(leaf)
+    ax.set_ylabel("SNR-weighted vote rate")
+    ax.set_title(f"shape vote vs {leaf}  (label = recommended_shape)")
+    ax.legend(fontsize=8, loc="upper right")
     fig.tight_layout()
     return fig
 

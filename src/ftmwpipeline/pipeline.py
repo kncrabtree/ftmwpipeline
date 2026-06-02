@@ -1680,16 +1680,23 @@ class Pipeline:
     # =========================================================================
 
     @staticmethod
-    def tune_list(stage: Optional[str] = None) -> Tuple["KnobSpec", ...]:
-        """List the registered tunable knobs (optionally filtered to a stage).
+    def tune_list(
+        selector: Optional[str] = None,
+        *,
+        include_advanced: bool = False,
+    ) -> Tuple["KnobSpec", ...]:
+        """List the registered tunable knobs.
 
         Equivalent to :func:`ftmwpipeline.api.tune_list`. The returned
         :class:`KnobSpec` tuple is independent of any file, so this is a
         staticmethod; it is exposed on the class for dual-interface parity.
+        ``selector`` filters by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``); ``include_advanced`` reveals advanced-tier
+        knobs hidden from the default listing.
         """
         from ._internal.tuning import list_knobs
 
-        return list_knobs(stage)
+        return list_knobs(selector, include_advanced=include_advanced)
 
     def tune_scan(
         self,

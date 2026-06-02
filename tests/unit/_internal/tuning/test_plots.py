@@ -13,6 +13,7 @@ from ftmwpipeline._internal.tuning.engine import PlotContext, SweepRow
 from ftmwpipeline._internal.tuning.registry import FtAtStart
 from ftmwpipeline._internal.tuning.plots import (
     plot_noise_sweep,
+    plot_shape_vote,
     plot_spectra_ladder,
     plot_start_detection,
     plot_tau_trend,
@@ -46,9 +47,31 @@ class _FakeFT:
 
 
 @dataclass
+class _FakeBand:
+    label: str
+    freq_lo_mhz: float
+    freq_hi_mhz: float
+    tau_maj_us: float
+
+
+@dataclass
 class _FakeTau:
     tau_maj_us: float
     sigma_tau_us: float
+    n_contributors: int
+    contributor_taus_us: Any = None
+    contributor_freqs_mhz: Any = None
+    contributor_snrs: Any = None
+    band_majorities: tuple = ()
+    tau_max_us: float = 65.0
+    start_us: float = 0.0
+    end_us: float = 15.0
+
+
+@dataclass
+class _FakeShape:
+    recommended_shape: Optional[str]
+    vote_rates: dict
     n_contributors: int
 
 
@@ -125,14 +148,47 @@ def test_plot_noise_sweep_returns_figure():
     _close(fig)
 
 
+def _fake_tau(tau, sigma, n, rng):
+    bands = (
+        _FakeBand("low", 26500.0, 31000.0, tau + 0.4),
+        _FakeBand("mid", 31000.0, 35500.0, tau),
+        _FakeBand("high", 35500.0, 40000.0, tau - 0.4),
+    )
+    return _FakeTau(
+        tau, sigma, n,
+        contributor_taus_us=np.abs(rng.normal(tau, sigma, n)),
+        contributor_freqs_mhz=rng.uniform(26500.0, 40000.0, n),
+        contributor_snrs=rng.uniform(5.0, 500.0, n),
+        band_majorities=bands,
+    )
+
+
 def test_plot_tau_trend_numeric_returns_figure():
+    rng = np.random.default_rng(0)
     rows = [
         SweepRow(8, {"tau_maj_us": 5.6, "sigma_tau_us": 1.4, "n_contributors": 3990},
-                 _FakeTau(5.6, 1.4, 3990)),
+                 _fake_tau(5.6, 1.4, 3990, rng)),
         SweepRow(12, {"tau_maj_us": 5.9, "sigma_tau_us": 1.4, "n_contributors": 5022},
-                 _FakeTau(5.9, 1.4, 5022)),
+                 _fake_tau(5.9, 1.4, 5022, rng)),
     ]
     fig = plot_tau_trend(get_knob("stage2b.stft.n_seg"), rows, _ctx())
+    assert fig is not None
+    # trend (+twin) + decay panel + tau-vs-freq panel (+colorbar) per value
+    assert len(fig.axes) >= 6
+    _close(fig)
+
+
+def test_plot_shape_vote_returns_figure():
+    rows = [
+        SweepRow(0.05, {"recommended_shape": "gaussian", "exp": 0.3,
+                        "gauss": 0.6, "voigt": 0.1, "n_contributors": 210},
+                 _FakeShape("gaussian", {"exp": 0.3, "gauss": 0.6, "voigt": 0.1}, 210)),
+        SweepRow(0.20, {"recommended_shape": "none", "exp": 0.45,
+                        "gauss": 0.45, "voigt": 0.1, "n_contributors": 210},
+                 _FakeShape(None, {"exp": 0.45, "gauss": 0.45, "voigt": 0.1}, 210)),
+    ]
+    fig = plot_shape_vote(
+        get_knob("stage2b.recommendation.pure_margin_threshold"), rows, _ctx())
     assert fig is not None
     _close(fig)
 
