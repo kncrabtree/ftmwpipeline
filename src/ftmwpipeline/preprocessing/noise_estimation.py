@@ -22,7 +22,7 @@ import logging
 import numpy as np
 import scipy.signal as spsig
 from scipy.ndimage import median_filter, percentile_filter
-from typing import NamedTuple, Tuple, Optional, Dict, Union, List
+from typing import Any, NamedTuple, Tuple, Optional, Dict, Union, List
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -898,6 +898,57 @@ def estimate_noise_scatter(
         n_region_windows=n_region_windows,
     )
     return NoiseResult(rms_noise=sigma, noise_mask=keep, bin_info=bin_info)
+
+
+def estimate_active_ft_noise(
+    freq_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    **scatter_kwargs: Any,
+) -> NoiseResult:
+    """Estimate per-bin σ on an active-FT spectrum, in its native bin order.
+
+    The single noise-authority surface: it runs the scatter estimator
+    (:func:`estimate_noise_scatter`) on the magnitude of an active-portion FT
+    (the ``dt_us * rfft(active)`` spectrum :func:`compute_active_ft` produces)
+    and returns the result re-expressed on the *input* bin order. The scatter
+    estimator works on a monotonic frequency axis, but an active FT for a lower
+    sideband is descending; this wrapper sorts to ascending, estimates, then
+    un-sorts ``rms_noise`` and ``noise_mask`` back onto ``freq_mhz``'s order so
+    the σ array lines up with ``complex_spectrum`` element-for-element.
+
+    Parameters
+    ----------
+    freq_mhz : np.ndarray
+        Molecular frequency grid of the active FT (ascending or descending).
+    complex_spectrum : np.ndarray
+        Complex active FT on ``freq_mhz`` (``dt_us * rfft`` convention).
+    **scatter_kwargs
+        Forwarded verbatim to :func:`estimate_noise_scatter` (the resolved
+        Stage 2 scatter knobs).
+
+    Returns
+    -------
+    NoiseResult
+        ``rms_noise`` (per-bin σ_x) and ``noise_mask`` on ``freq_mhz``'s bin
+        order; ``bin_info`` carries the scatter diagnostics unchanged.
+    """
+    freq = np.asarray(freq_mhz, dtype=float)
+    mag = np.abs(np.asarray(complex_spectrum))
+    if freq.shape != mag.shape:
+        raise ValueError("freq_mhz and complex_spectrum must have the same shape")
+
+    sort_idx = np.argsort(freq)
+    sorted_freq = np.ascontiguousarray(freq[sort_idx])
+    sorted_mag = np.ascontiguousarray(mag[sort_idx])
+
+    result = estimate_noise_scatter(sorted_freq, sorted_mag, **scatter_kwargs)
+
+    unsort = np.argsort(sort_idx)
+    return NoiseResult(
+        rms_noise=np.asarray(result.rms_noise, dtype=float)[unsort],
+        noise_mask=np.asarray(result.noise_mask, dtype=bool)[unsort],
+        bin_info=result.bin_info,
+    )
 
 
 def _scatter_bin_info(

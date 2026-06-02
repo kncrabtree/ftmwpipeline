@@ -91,18 +91,11 @@ def cmd_estimate_noise(args) -> int:
         )
         
         noise_result = result['noise_result']
-        complex_ft = result['complex_ft']
-        parameters_used = result['parameters_used']
-        
-        # Save results to pipeline file
-        from .._internal.stage2_impl import save_noise_result_impl
-        save_noise_result_impl(
-            file_path=file_path,
-            noise_result=noise_result,
-            complex_ft=complex_ft,
-            parameters_used=parameters_used
-        )
-        
+
+        # Storage and stage tracking are handled by the shared implementation
+        # (compute_noise_estimation_impl persists the NoiseResult on the active
+        # grid); the CLI only displays the summary.
+
         # Display summary results
         print("\nNoise estimation completed successfully!")
         print("\nResults summary:")

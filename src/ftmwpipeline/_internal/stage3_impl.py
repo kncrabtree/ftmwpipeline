@@ -41,13 +41,13 @@ from ..core.peak_detection_settings import (
 from ..preprocessing.edge_coherence import DEFAULT_EDGE_M, rolling_coherence
 from ..preprocessing.leakage import deramp_to_active_start
 from ..preprocessing.noise_estimation import (
-    estimate_noise_adaptive,
     estimate_noise_scatter,
 )
 from ..preprocessing.peak_detection import (
     classify_by_snr,
     detect_peaks,
 )
+from .active_ft_support import build_active_grid_with_noise
 from .deprecation import warn_legacy_kwargs
 from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.peak_detection_settings_serialization import (
@@ -293,37 +293,39 @@ def _nearest_index(sorted_pairs: Tuple[np.ndarray, np.ndarray], value: float) ->
     return int(order[pos])
 
 
-def _snap_to_user_grid(
+def _snap_to_active_grid(
     internal_peaks: List[Peak],
-    user_ft: ComplexFT,
-    user_rms: np.ndarray,
+    snap_ft: ComplexFT,
+    snap_rms: np.ndarray,
     weak_medium_snr: float,
     medium_strong_snr: float,
     promotion_min_snr: float,
 ) -> List[Peak]:
-    """Re-express internal-grid detections on the persisted user spectrum.
+    """Re-express internal-grid detections on the canonical active FT.
 
-    For each detection: snap by physical frequency to the nearest user-grid
-    point, re-measure amplitude on the user spectrum and SNR against the
-    canonical Stage 2 noise, and reclassify. De-duplicates collisions on the
-    user grid (keeps the strongest). Internal-grid SNR/frequency are preserved
-    under ``properties`` for curation/diagnosis, and a ``promoted`` flag marks
-    whether the user-grid SNR meets the Stage 4 promotion cutoff. All
-    detections are kept (promotion is a downstream gate, not a filter here).
+    For each detection: snap by physical frequency to the nearest active-FT
+    grid point, re-measure amplitude on the active FT and SNR against the
+    active-FT authority noise, and reclassify. De-duplicates collisions on the
+    active grid (keeps the strongest). Internal-grid SNR/frequency are
+    preserved under ``properties`` for curation/diagnosis, and a ``promoted``
+    flag marks whether the active-grid SNR meets the Stage 4 promotion cutoff.
+    All detections are kept (promotion is a downstream gate, not a filter
+    here). The active FT -- not the front-zeroed full-record spectrum -- is the
+    single grid on which detection results are scored and reported.
     """
-    user_freq = user_ft.freq_array
-    user_mag = user_ft.magnitude_spectrum
-    order = np.argsort(user_freq)
-    sorted_pairs = (order, user_freq[order])
+    snap_freq = snap_ft.freq_array
+    snap_mag = snap_ft.magnitude_spectrum
+    order = np.argsort(snap_freq)
+    sorted_pairs = (order, snap_freq[order])
 
-    by_user_idx: Dict[int, Peak] = {}
+    by_idx: Dict[int, Peak] = {}
     for p in internal_peaks:
         ui = _nearest_index(sorted_pairs, p.frequency)
-        intensity = float(user_mag[ui])
-        sd = float(user_rms[ui])
+        intensity = float(snap_mag[ui])
+        sd = float(snap_rms[ui])
         snr = intensity / sd if sd > 0 else 0.0
         snapped = Peak(
-            frequency=float(user_freq[ui]),
+            frequency=float(snap_freq[ui]),
             intensity=intensity,
             index=int(ui),
             snr=snr,
@@ -336,11 +338,11 @@ def _snap_to_user_grid(
             internal_snr=p.snr,
             promoted=snr >= promotion_min_snr,
         )
-        prev = by_user_idx.get(ui)
+        prev = by_idx.get(ui)
         if prev is None or snapped.intensity > prev.intensity:
-            by_user_idx[ui] = snapped
+            by_idx[ui] = snapped
 
-    return sorted(by_user_idx.values(), key=lambda q: q.frequency)
+    return sorted(by_idx.values(), key=lambda q: q.frequency)
 
 
 def _load_canonical_noise(file_path: str, user_ft: ComplexFT) -> np.ndarray:
@@ -572,12 +574,14 @@ def detect_peaks_impl(
                 "detection. Run estimate_noise()/estimate-noise first."
             )
 
-    # The user's persisted spectrum is authoritative for reported results.
+    # The canonical active FT is the single grid on which detections are
+    # scored and reported. The full-record persisted FT is rebuilt only for
+    # its canonical processing params / trim (a display artifact otherwise).
     stage1 = compute_ft_impl(file_path=file_path)
     user_ft: ComplexFT = stage1["complex_ft"]
     base_pp = user_ft.metadata["processing_params"]
     trim_range = stage1.get("trim_range")
-    user_rms = _load_canonical_noise(file_path, user_ft)
+    snap_ft, snap_rms = build_active_grid_with_noise(file_path, trim_range)
 
     fid = load_fid_from_pipeline_impl(file_path)
     acquisition_us = _active_acquisition_us(
@@ -713,11 +717,12 @@ def detect_peaks_impl(
         run_gap_pass=run_gap_v,
     )
 
-    # Snap onto the user grid: physical frequency + re-measured amplitude/SNR.
-    peaks = _snap_to_user_grid(
+    # Snap onto the active grid: physical frequency + re-measured amplitude/SNR
+    # against the active-FT authority noise.
+    peaks = _snap_to_active_grid(
         internal_peaks,
-        user_ft,
-        user_rms,
+        snap_ft,
+        snap_rms,
         weak_medium_v,
         medium_strong_v,
         promotion_v,
@@ -739,7 +744,7 @@ def detect_peaks_impl(
     invalidate_downstream_stages(file_path, "stage3_peaks")
     n_promoted = sum(1 for p in peaks if p.properties.get("promoted"))
     logger.info(
-        "Stage 3: detected %d peaks (user grid); %d promoted at SNR>=%.3g",
+        "Stage 3: detected %d peaks (active grid); %d promoted at SNR>=%.3g",
         len(peaks),
         n_promoted,
         promotion_v,
@@ -759,8 +764,8 @@ def detect_peaks_impl(
         "n_gap": len(peaks) - n_primary,
         "parameters_used": params,
         "acquisition_us": acquisition_us,
-        "user_ft": user_ft,
-        "user_rms": user_rms,
+        "active_ft": snap_ft,
+        "active_rms": snap_rms,
         "primary_ft": primary_ft,
         "gap_ft": gap_ft,
         "primary_noise": primary_noise,
@@ -823,12 +828,12 @@ def visualize_peaks_impl(
     interactive: bool = True,
     show_snr_histogram: bool = False,
 ) -> Any:
-    """Overlay the persisted classified peaks on the user's spectrum.
+    """Overlay the persisted classified peaks on the canonical active FT.
 
-    Peaks are stored on the user grid (frequency + re-measured amplitude), so
-    the overlay is the user's persisted spectrum with the canonical Stage 2
+    Peaks are scored and stored on the active FT (frequency + re-measured
+    amplitude), so the overlay is the active FT with the active-FT authority
     noise -- exactly the surface the peaks were scored on. Requires Stage 3
-    completed. With ``show_snr_histogram`` a second panel shows the user-grid
+    completed. With ``show_snr_histogram`` a second panel shows the active-grid
     SNR distribution with the promotion cutoff marked (curation view).
     """
     loaded = load_peaks_impl(file_path)
@@ -836,33 +841,23 @@ def visualize_peaks_impl(
     promotion_min_snr = loaded.get("promotion_min_snr")
 
     stage1 = compute_ft_impl(file_path=file_path)
-    user_ft: ComplexFT = stage1["complex_ft"]
-    try:
-        user_rms = _load_canonical_noise(file_path, user_ft)
-    except Exception as e:  # Stage 2 invalidated/missing -> degrade loudly.
-        logger.warning(
-            "Canonical Stage 2 noise unavailable (%s); estimating on the "
-            "user spectrum for display only.",
-            e,
-        )
-        user_rms = estimate_noise_adaptive(
-            user_ft.freq_array, user_ft.magnitude_spectrum
-        ).rms_noise
+    trim_range = stage1.get("trim_range")
+    active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
 
     from ..visualization.peak_visualization import plot_peak_detection
 
     if title is None:
         name = Path(file_path).stem
-        fr = (user_ft.freq_array.min(), user_ft.freq_array.max())
+        fr = (active_ft.freq_array.min(), active_ft.freq_array.max())
         title = (
             f"Pipeline {name} - Stage 3 Peak Detection "
             f"({fr[0]:.0f}-{fr[1]:.0f} MHz, {len(peaks)} peaks)"
         )
 
     return plot_peak_detection(
-        frequencies=user_ft.freq_array,
-        magnitudes=user_ft.magnitude_spectrum,
-        rms_noise=user_rms,
+        frequencies=active_ft.freq_array,
+        magnitudes=active_ft.magnitude_spectrum,
+        rms_noise=active_rms,
         peaks=peaks,
         figsize=figsize if figsize is not None else (16, 6),
         title=title,

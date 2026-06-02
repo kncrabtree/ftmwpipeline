@@ -44,6 +44,36 @@ deriving) is exactly what D9 wanted (noise measured on the spectrum you fit so
 FFT-normalization cancels). We keep "measure where you fit"; we just measure
 **once** and share it, instead of each stage re-measuring.
 
+**Settled principle (active-FT truncation is the canonical domain).** Once
+`start_us` is fixed, *all real processing truncates to the active FT* — the
+slice `[start_us:end_us]` of length `n_active`, `dt_us·rfft`, unpadded
+(`compute_active_ft`'s domain). The full-length **front-zeroed** record that
+`FID.preprocess` produces (it keeps `N_total`, zeros `[:start_idx]`/`[end_idx:]`,
+then pads) and `compute_fft` normalizes by `/N_total` is a **Stage 0/1 display
+affordance only**: it holds the frequency grid fixed so a user can compare FTs
+at different `start_us`. It is *not* the substrate for noise, detection, or
+fitting. So Stage 2 measures its authoritative σ on the active FT, and the
+persisted Stage 1 `complex_ft` stays full-length purely for the comparison view.
+This is what makes fact A (below) a non-issue: there is no full-record→active
+rescale because Stage 2 never measures on the full record.
+
+**Corollary — there is no "user grid" (decided).** The persisted full-record
+spectrum is *not* a supported reporting/snap/scoring domain. Stage 3's current
+`_snap_to_user_grid` (it snaps detections to `user_ft.freq_array`, re-measures
+intensity on `user_ft.magnitude_spectrum`, and scores against the full-record
+Stage 2 σ) is **replaced** by an active-grid snap, not preserved. The single
+grid for σ, snap-back, and reported peak frequency/SNR is the active FT.
+Sequencing note: this couples the persisted-σ re-home and the Stage 3 snap
+migration into **one** landing (changing the persisted σ grid breaks the
+full-record snap, so both move together). To keep the fine detected positions
+through the coarse `1/T_active` active grid, Stage 3 snaps onto a **zero-padded**
+active FT (fine grid, active-region content, `dt_us·rfft`) and reads σ from the
+unpadded active-FT authority interpolated onto it (σ is per-bin zpf-invariant).
+The primary/gap detection-*spectrum construction* is unchanged here — that, and
+the gap-pass freq-domain template, are the deferred **kernel** work; "which grid
+we snap/score on" is separable from "what template the matched filter uses".
+Frozen Stage 3 peak references regenerate as part of this landing's revalidation.
+
 ## Noise contexts in play (the thing to collapse)
 
 Today there are three distinct active-FT noise contexts, because two detectors
@@ -135,16 +165,31 @@ Once the gap pass is reformulated, there is one base noise to produce.
    `estimate_active_ft_noise(active_region, window=...)` (name TBD), returns the
    per-bin scatter σ for a given apodization. Stage 2 calls it with the boxcar
    window and **persists the unapodized active-FT σ** as the canonical array.
+   This re-homes Stage 2's *measurement input*: today `estimate_noise_impl`
+   (`stage2_impl.py:237-239`) runs the scatter estimator on the persisted
+   full-record `complex_ft`; instead it builds the unapodized active FT on
+   demand from `stage0_fid_data` + the canonical `start_us/end_us`
+   (`compute_active_ft`, boxcar) and measures there. Per fact A the persisted
+   `complex_ft` is the front-zeroed full record, so this is a domain change, not
+   a re-sort. Knock-on sites that must move onto the active-FT grid with it:
+   `_load_canonical_noise` (currently reconstructs σ on `user_ft.freq_array`,
+   the full-record grid) and the `visualize-noise` overlay.
 2. **Stage 5 consumes it.** Replace the `estimate_noise_adaptive` call in
    `stage5_impl` with the persisted unapodized active-FT σ, regridded onto the
-   active-FT bin order (the code already re-sorts/unsorts). No transfer, no
-   scaling, *if* the persisted array is already in active-FT space at the fit's
-   active length (see "Verify first" fact A).
+   active-FT bin order (the code already re-sorts/unsorts). With Stage 2 now
+   measuring in active-FT space at the same `start_us/end_us`, the persisted
+   grid and the fit's active-FT grid coincide — no transfer, no scaling, at most
+   a regrid for bin-order alignment.
 3. **Stage 3 consumes it.** Primary/gap detection pull from the authority
    instead of the two inline `estimate_noise_scatter` calls; the display fallback
    drops its `estimate_noise_adaptive` call (Stage 3 already depends on Stage 2 —
    make a missing-Stage-2 a loud error, or draw the diagnostic without a noise
-   overlay).
+   overlay). Under the settled principle, Stage 3 detection is itself on the
+   active FT (its internal zpf does the position-finding interpolation, and σ is
+   per-bin invariant to zpf, so the active-FT σ is consumed across the padded
+   detection grid by interpolation). The snap-back reclassification, currently
+   against the full-record σ via `_load_canonical_noise`, moves onto the
+   active-FT grid with everything else.
 4. **Delete `estimate_noise_adaptive`** and its private helpers (`_mad`,
    `_compute_mad_based_bins`, `_build_noise_mask`, `_exclude_strong_line_skirts`,
    `_filter_by_skewness_cached`, `_bin_stats_from`, …), the module-level adaptive
@@ -185,22 +230,30 @@ unapodized array eagerly.
 
 ## Verify first (these size the job — read-mostly + one tiny harness)
 
-- **(A) Slice vs front-zero.** Does Stage 1 `fid.preprocess(start_us, zpf=0,
-  expf_us=None)` **slice** the FID to `[start_us, end]` (length `n_active`,
-  identical to the active FT → Stage 5 consumes Stage 2 σ with only a regrid) or
-  **zero** the pre-start samples while keeping `N_total` (a front-pad → different
-  length, needs a length reconcile)? Read `FID.preprocess` /
-  `FID.compute_fft` in `core/data_structures.py`. This decides whether Work
-  item 2 step 2 is nearly free.
+- **(A) Slice vs front-zero. — VERIFIED: front-zero.** `FID.preprocess`
+  (`core/data_structures.py:328-368`) keeps the full `N_total` array, zeros
+  `[:start_idx]` and `[end_idx:]`, then zero-pads to `n_padded`; `compute_fft`
+  (`:146-159`) rffts that full-length record and normalizes by
+  `/= original_length` (= `N_total`). So the persisted Stage 1 FT (and the
+  Stage 2 σ measured on it) lives on the **full-record** grid (fine `1/T_padded`
+  bins) in a `/N_total` amplitude convention — a *different* domain from the
+  active FT (`dt_us·rfft` of the `n_active` slice, coarse `1/T_active` bins).
+  **This does not gate Work item 2 by a rescale: per the settled principle
+  above, Stage 2's authoritative σ is re-homed to active-FT space, so the
+  full-record→active transfer never arises.** The front-zeroed full-length FT
+  remains only for the Stage 0/1 start-time comparison view.
 - **(B) Scatter-on-windowed.** Confirm `estimate_noise_scatter` on a
   BH/exp-apodized active FT recovers the correct white-noise floor
   (σ scales by `√(Σw²/N)`). Synthetic white-noise FID + a check on 2638/655.
   Justifies treating the apodized contexts as the same estimator on the windowed
   spectrum.
-- **(C) Canonical apodization off.** Confirm `base_pp.expf_us` is None in the
-  canonical Stage 5 path (so the unapodized active-FT context is genuinely
-  unapodized and equals Stage 2's domain). Check the FT settings resolution
-  chain.
+- **(C) Canonical apodization off. — VERIFIED by code.**
+  `_build_active_ft_inputs` (`stage5_impl.py:183`) takes
+  `expf_us = base_pp.expf_us` from the persisted Stage 1 processing params,
+  which is `None` canonically (the unapodized FT), so the Stage 5 active-FT
+  context is genuinely unapodized and equals Stage 2's re-homed domain. (A live
+  run-through is still worth a one-liner before the deletes land, but the code
+  path is unambiguous.)
 
 ## Work sequence
 

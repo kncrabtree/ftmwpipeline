@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Union
 import logging
 import h5py
+import numpy as np
 
 from ..preprocessing.noise_estimation import (
     estimate_noise_scatter,
@@ -256,7 +257,8 @@ def _compute_noise_scatter(
         save_noise_result_impl(
             file_path=file_path,
             noise_result=noise_result,
-            complex_ft=complex_ft,
+            frequencies=complex_ft.freq_array,
+            magnitudes=complex_ft.magnitude_spectrum,
             parameters_used=processing_params,
         )
         # Persist the resolved NoiseSettings to
@@ -407,22 +409,25 @@ def visualize_noise_impl(
 
 
 def save_noise_result_impl(
-    file_path: str, 
-    noise_result: NoiseResult, 
-    complex_ft,
+    file_path: str,
+    noise_result: NoiseResult,
+    frequencies: np.ndarray,
+    magnitudes: np.ndarray,
     parameters_used: Dict[str, Any]
 ) -> None:
     """
     Save NoiseResult to .ftmw pipeline file in stage2_noise_result group.
-    
+
     Parameters
     ----------
     file_path : str
         Path to the .ftmw pipeline file
     noise_result : NoiseResult
         NoiseResult object to save
-    complex_ft : ComplexFT
-        ComplexFT object used for noise estimation (for freq/mag arrays)
+    frequencies, magnitudes : np.ndarray
+        The active-FT grid the noise was measured on (bin order). The σ array
+        is stored verbatim against this grid; the loader rebuilds the identical
+        canonical active FT to reconstruct on the same grid.
     parameters_used : dict
         Parameters used for noise estimation
     """
@@ -431,15 +436,15 @@ def save_noise_result_impl(
             # Remove existing noise result if present
             if 'stage2_noise_result' in h5f:
                 del h5f['stage2_noise_result']
-            
+
             # Create stage2_noise_result group
             stage2_group = h5f.create_group('stage2_noise_result')
-            
+
             # Save NoiseResult using existing serialization
             save_noise_result_to_hdf5(
                 noise_result=noise_result,
-                frequencies=complex_ft.freq_array,
-                magnitudes=complex_ft.magnitude_spectrum,
+                frequencies=np.asarray(frequencies, dtype=float),
+                magnitudes=np.asarray(magnitudes, dtype=float),
                 h5_group=stage2_group
             )
             
@@ -482,17 +487,17 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
         from .stage1_impl import compute_ft_impl
         stage1_result = compute_ft_impl(file_path=file_path)
         complex_ft = stage1_result['complex_ft']
-        
+
         # Load NoiseResult using computed ComplexFT
         with h5py.File(file_path, 'r') as h5f:
-            
+
             # Load NoiseResult
             noise_result = load_noise_result_from_hdf5(
                 h5f['stage2_noise_result'],
                 complex_ft.freq_array,
                 complex_ft.magnitude_spectrum
             )
-            
+
             # Load metadata
             stage2_group = h5f['stage2_noise_result']
             creation_time = stage2_group.attrs.get('creation_time', 'unknown')

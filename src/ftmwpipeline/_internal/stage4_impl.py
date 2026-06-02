@@ -42,13 +42,13 @@ from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
     build_window_plan,
 )
+from .active_ft_support import build_active_grid_with_noise
 from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
 from .stage3_impl import (
     _active_acquisition_us,
-    _load_canonical_noise,
     load_peaks_impl,
 )
 
@@ -258,7 +258,11 @@ def assign_windows_impl(
     stage1 = compute_ft_impl(file_path=file_path)
     user_ft: ComplexFT = stage1["complex_ft"]
     base_pp = user_ft.metadata["processing_params"]
-    user_rms = _load_canonical_noise(file_path, user_ft)
+    trim_range = stage1.get("trim_range")
+    # Window planning reasons over the active FT + its authority noise -- the
+    # same grid/amplitude convention Stage 3's peaks were scored on, so the
+    # magnitude-attachment / skirt comparisons stay consistent.
+    active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
 
     fid = load_fid_from_pipeline_impl(file_path)
     acquisition_us = _active_acquisition_us(
@@ -267,9 +271,9 @@ def assign_windows_impl(
 
     plan = build_window_plan(
         peaks,
-        user_ft.freq_array,
-        user_ft.complex_spectrum,
-        user_rms,
+        active_ft.freq_array,
+        active_ft.complex_spectrum,
+        active_rms,
         acquisition_us=acquisition_us,
         tau_us=tau_us_v,
         probe_freq_mhz=fid.probe_freq_mhz,
@@ -323,8 +327,8 @@ def assign_windows_impl(
         "n_dependencies": len(plan.dependency_edges),
         "n_promoted": loaded["n_promoted"],
         "parameters_used": plan.parameters,
-        "user_ft": user_ft,
-        "user_rms": user_rms,
+        "active_ft": active_ft,
+        "active_rms": active_rms,
     }
 
 
@@ -379,8 +383,8 @@ def visualize_windows_impl(
 
     peaks = load_peaks_impl(file_path)["peaks"]
     stage1 = compute_ft_impl(file_path=file_path)
-    user_ft: ComplexFT = stage1["complex_ft"]
-    user_rms = _load_canonical_noise(file_path, user_ft)
+    trim_range = stage1.get("trim_range")
+    active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
 
     from ..visualization.window_visualization import plot_window_plan
 
@@ -392,9 +396,9 @@ def visualize_windows_impl(
         )
 
     return plot_window_plan(
-        frequencies=user_ft.freq_array,
-        complex_spectrum=user_ft.complex_spectrum,
-        rms_noise=user_rms,
+        frequencies=active_ft.freq_array,
+        complex_spectrum=active_ft.complex_spectrum,
+        rms_noise=active_rms,
         peaks=peaks,
         plan=plan,
         figsize=figsize if figsize is not None else (16, 8),
