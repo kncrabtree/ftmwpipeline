@@ -143,7 +143,7 @@ class FtAtStart:
     """A FT computed at a particular window start, with the start (and the
     chirp-end it was referenced to, if any) retained for the ladder plot.
 
-    Both the ``stage1.start_us`` and ``start.guard_margin_us`` knobs sweep the
+    Both the ``stage1.start_us`` and ``stage0.guard_margin_us`` knobs sweep the
     *same* thing — the spectrum as a function of where the FT window starts.
     They differ only in how the start is specified: ``start_us`` absolutely,
     ``guard_margin_us`` as an offset past the (separately detected) chirp end.
@@ -318,14 +318,15 @@ def _register(spec: KnobSpec) -> None:
 # The guard margin is a spectrum-impact knob, not a detection knob: it only
 # shifts the FT window start past the (separately detected) chirp end, so it
 # shows the same stacked-spectra ladder as stage1.start_us. The detection knobs
+# live under the stage0 prefix (pre-Stage-1 start detection on the raw FID).
 # below (sweep_max_us, min_chirp_drop_ratio) are the ones that move the chirp
 # end, so they show the Sigma|FT| detection curve.
 _DETECTION_SEE_ALSO = (
-    "start.guard_margin_us / stage1.start_us — stack the resulting spectra to "
+    "stage0.guard_margin_us / stage1.start_us — stack the resulting spectra to "
     "see how the detected start affects the FT (chirp/ringdown residue)."
 )
 _register(KnobSpec(
-    path="start.guard_margin_us",
+    path="stage0.guard_margin_us",
     stage="start_detection",
     requires="stage0_fid_data",
     help="Margin past the chirp end for switch-bounce ringdown (instrument-specific).",
@@ -337,7 +338,7 @@ _register(KnobSpec(
     plot=plot_spectra_ladder,
 ))
 _register(KnobSpec(
-    path="start.sweep_max_us",
+    path="stage0.sweep_max_us",
     stage="start_detection",
     requires="stage0_fid_data",
     help="Upper bound of the start-time sweep (must clear chirp end + floor tail).",
@@ -350,7 +351,7 @@ _register(KnobSpec(
     see_also=_DETECTION_SEE_ALSO,
 ))
 _register(KnobSpec(
-    path="start.min_chirp_drop_ratio",
+    path="stage0.min_chirp_drop_ratio",
     stage="start_detection",
     requires="stage0_fid_data",
     help="Min plateau/floor ratio for a chirp collapse to be considered present.",

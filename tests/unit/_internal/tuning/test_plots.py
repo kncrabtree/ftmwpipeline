@@ -100,7 +100,7 @@ def test_plot_start_detection_returns_figure_without_fid():
         SweepRow(6.0, {"start_us": 2.18}, _FakeStart(2.18, 1.68, starts, mag)),
         SweepRow(9.0, {"start_us": 2.68}, _FakeStart(2.68, 1.68, starts, mag)),
     ]
-    fig = plot_start_detection(get_knob("start.sweep_max_us"), rows, _ctx())
+    fig = plot_start_detection(get_knob("stage0.sweep_max_us"), rows, _ctx())
     assert fig is not None
     assert len(fig.axes) >= 1
     _close(fig)
@@ -126,7 +126,7 @@ def test_spectra_ladder_height_grows_with_values():
 
 def test_spectra_ladder_used_by_guard_with_chirp_end():
     # guard rows carry a chirp_end; the ladder must still render
-    spec = get_knob("start.guard_margin_us")
+    spec = get_knob("stage0.guard_margin_us")
     rows = [_ft_row(0.5, 2.18, chirp_end_us=1.68), _ft_row(1.0, 2.68, chirp_end_us=1.68)]
     fig = plot_spectra_ladder(spec, rows, _ctx())
     assert fig is not None
@@ -202,20 +202,20 @@ def test_adapters_return_none_without_results():
     rows = [SweepRow(40.0, {"median_sigma": 0.5}, None)]
     ctx = _ctx()
     assert plot_noise_sweep(get_knob("stage2.scatter.window_mhz"), rows, ctx) is None
-    assert plot_start_detection(get_knob("start.sweep_max_us"), rows, ctx) is None
+    assert plot_start_detection(get_knob("stage0.sweep_max_us"), rows, ctx) is None
     assert plot_spectra_ladder(get_knob("stage1.start_us"), rows, ctx) is None
 
 
 def test_knob_plot_wiring():
     # the spectrum-impact knobs share the ladder; detection knobs show the curve
     assert get_knob("stage1.start_us").plot is plot_spectra_ladder
-    assert get_knob("start.guard_margin_us").plot is plot_spectra_ladder
-    assert get_knob("start.sweep_max_us").plot is plot_start_detection
-    assert get_knob("start.min_chirp_drop_ratio").plot is plot_start_detection
+    assert get_knob("stage0.guard_margin_us").plot is plot_spectra_ladder
+    assert get_knob("stage0.sweep_max_us").plot is plot_start_detection
+    assert get_knob("stage0.min_chirp_drop_ratio").plot is plot_start_detection
     assert get_knob("stage2.scatter.window_mhz").plot is plot_noise_sweep
 
 
 def test_detection_knobs_point_at_spectrum_knobs():
-    assert "start_us" in (get_knob("start.sweep_max_us").see_also or "")
+    assert "start_us" in (get_knob("stage0.sweep_max_us").see_also or "")
     # the guard knob is itself the spectrum view, so it carries no see_also
-    assert get_knob("start.guard_margin_us").see_also is None
+    assert get_knob("stage0.guard_margin_us").see_also is None
