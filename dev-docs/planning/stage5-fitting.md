@@ -83,20 +83,19 @@ Consequences for the rest of the plan:
 - **The σ/√2 D-8 noise weighting still applies.** It splits the per-bin
   complex variance into Re/Im halves; it is independent of the bin-
   correlation question.
-- **Per-bin noise is measured directly on the active-FT** by running the
-  existing Stage 2 adaptive estimator
-  (`preprocessing.noise_estimation.estimate_noise_adaptive`) on the
-  active-FT magnitude spectrum — the same algorithm Stage 2 uses on the
-  persisted spectrum, applied to a different spectrum. No conversion
-  factor, no `σ / √α` rescale: the noise estimate comes from the same
-  spectrum the fit sees, so any FFT-normalization choices cancel by
-  construction. (Earlier drafts of this plan derived `σ_active =
-  σ_persisted / √α` from the persisted Stage 2 result; this proved
-  fragile because the formula only holds under unitary FFT normalization,
-  and the persisted FT uses `/N_orig × 10⁶`. Measuring `σ` on the active-FT
-  is robust to that mismatch by construction. Stage 2's cost on the
-  ~½M-bin active-FT is a small fraction of the full-spectrum pass and is
-  done once per Stage 5 invocation.)
+- **Per-bin noise is the active-FT scatter authority.** Stage 5 weights its
+  fit by the scatter estimator
+  (`preprocessing.noise_estimation.estimate_active_ft_noise`, the sole Stage 2
+  estimator) measured on the active-FT magnitude spectrum it fits — the same
+  estimator and grid Stage 2 persists. No conversion factor, no `σ / √α`
+  rescale: the noise estimate comes from the same spectrum the fit sees, so any
+  FFT-normalization choices cancel by construction. (Earlier drafts derived
+  `σ_active = σ_persisted / √α` from a full-record Stage 2 result; this proved
+  fragile because the formula only holds under unitary FFT normalization, and
+  the persisted full-record FT uses `/N_orig × 10⁶`. The whole pipeline now
+  measures noise once in active-FT space — Stage 2 measures and persists σ on
+  the canonical active FT, and Stages 3/4/5 consume it — so the mismatch never
+  arises. See `planning/stage2-noise-authority.md`.)
 - **The active-FT is internal to Stage 5.** It is computed on demand from
   the persisted FID (`stage0_fid_data`) and the canonical Stage 1
   apodization settings; it is not persisted in the `.ftmw` file (small,
@@ -899,12 +898,12 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
       `(freq_mhz, complex_spectrum, alpha, n_active, n_padded)`. The FFT is
       `rfft(fid[active] * exp(-(t - t0)/τ_apod))` so the bin grid is
       `[0, T_active]`-natural — no phase ramp.
-   2. Per-bin σ on the active-FT comes from running the existing Stage 2
-      adaptive estimator (`estimate_noise_adaptive`) on the active-FT
-      magnitude spectrum directly — same algorithm, different spectrum.
-      No derivation from σ_persisted, no `/√α` rescale: σ is measured on
-      the same spectrum the fit sees, so any normalization mismatch is
-      avoided at the source.
+   2. Per-bin σ on the active-FT comes from running the Stage 2 scatter
+      estimator (`estimate_active_ft_noise`) on the active-FT magnitude
+      spectrum directly — same estimator and grid Stage 2 persists. No
+      derivation from σ_persisted, no `/√α` rescale: σ is measured on the
+      same spectrum the fit sees, so any normalization mismatch is avoided
+      at the source.
    3. Rewire `plan_execution._materialize_window` to slice the active-FT
       result instead of the persisted FT. Drop the
       `deramp_to_active_start` call from `to_baseband_frame` (the helper
@@ -914,7 +913,7 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
       instead of the persisted FT + per-bin noise. The
       `_internal/stage5_impl.py` orchestrator (task 9) computes the
       active-FT once per Stage 5 invocation from `stage0_fid_data` +
-      canonical Stage 1 settings, runs `estimate_noise_adaptive` on the
+      canonical Stage 1 settings, runs `estimate_active_ft_noise` on the
       active-FT magnitude spectrum to get the active-grid `rms_noise`,
       and passes both into `execute_plan`.
    5. Tests: `tests/unit/fitting/test_active_ft.py` (synthetic damped

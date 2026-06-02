@@ -67,13 +67,12 @@ Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 
 The **scatter estimator is the sole Stage 2 method**; its knobs are the flat
 `NoiseSettings` table further below (`stage2.<field>`, no sub-block). The legacy
-adaptive estimator
-(`estimate_noise_adaptive`) was retired as a user-facing method — its kernel
-survives only as an internal helper (Stage 3 display fallback, Stage 5
-per-window active-FT noise), tracked for removal in
-[`stage2-noise-authority.md`](stage2-noise-authority.md). The adaptive knob
-table below is retained for historical reference only; these fields no longer
-appear on any settings dataclass, CLI flag, or `tune` knob.
+adaptive estimator (`estimate_noise_adaptive`) has been **retired from the
+package** — a minimal comparison reference survives only at
+[`../research/noise-snr-scaling/legacy_adaptive.py`](../research/noise-snr-scaling/legacy_adaptive.py).
+The adaptive knob table below is retained for historical reference only; these
+fields no longer appear on any settings dataclass, CLI flag, `tune` knob, or in
+the package source.
 
 ### Adaptive estimator (retired internal helper) — `estimate_noise_adaptive`
 

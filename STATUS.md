@@ -40,12 +40,14 @@ loader registry, format auto-detection), FT processing (preprocess → FFT →
 estimation (`NoiseResult`). The Stage 2 estimator is `estimate_noise_scatter`
 — a high-pass, region-aware, Rician-corrected scatter MAD with broad
 lower-envelope smoothing, immune to the leakage-pedestal σ inflation on
-high-SNR line-dense spectra. (The legacy `estimate_noise_adaptive` variance/
-skewness binning estimator is no longer user-selectable; it survives only as
-an internal helper for Stage 3's display fallback and Stage 5's per-window
-active-FT noise, pending `dev-docs/planning/stage2-noise-authority.md`.) Each
-stage is exposed identically through all three interfaces with HDF5
-(de)serialization and diagnostic visualization.
+high-SNR line-dense spectra. It is measured and persisted on the canonical
+**active FT** (the single grid every later stage scores, plans, and fits on);
+the front-zeroed full-record FT is a Stage 0/1 comparison view only. (The legacy
+`estimate_noise_adaptive` variance/skewness binning estimator has been retired
+from the package; a minimal comparison reference survives at
+`dev-docs/research/noise-snr-scaling/legacy_adaptive.py`.) Each stage is exposed
+identically through all three interfaces with HDF5 (de)serialization and
+diagnostic visualization.
 
 **Stage 2b (implemented):** `stage2b_tau_calibration` extracts a data-driven
 molecular decay constant `τ_maj ± σ_τ` from a sliding-active-window STFT on
