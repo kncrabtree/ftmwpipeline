@@ -23,15 +23,24 @@ _LADDER_WIDTH_IN = 11.0
 # median |FT| (p50). High enough that the chirp/ringdown fuzz fills the axis and
 # its collapse across panels is visible; real lines clip off the top.
 _LADDER_YMAX_P50_FACTOR = 10.0
+# σ(f)-over-spectrum overlay: zoom the y-axis to this multiple of the largest
+# per-bin σ so the noise band sits against the spectral floor and small,
+# noise-scale features are legible; tall real lines clip off the top.
+_NOISE_OVERLAY_YMAX_FACTOR = 9.0
 
 
 def _value_colors(n: int) -> List[Any]:
     import matplotlib.pyplot as plt
 
-    cmap = plt.get_cmap("viridis")
+    # ``plasma`` clipped to its lower 0.85: a dark-purple -> magenta -> orange
+    # ramp that keeps the low->high value ordering legible. The bright-yellow
+    # tail of perceptual maps washes out on a white background, so it is
+    # dropped.
+    cmap = plt.get_cmap("plasma")
+    lo, hi = 0.0, 0.85
     if n <= 1:
-        return [cmap(0.5)]
-    return [cmap(i / (n - 1)) for i in range(n)]
+        return [cmap(lo)]
+    return [cmap(lo + (hi - lo) * i / (n - 1)) for i in range(n)]
 
 
 def plot_start_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
@@ -205,8 +214,16 @@ def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
 
 def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
-    """Two panels: σ(f) per grid value (left) and the scalar metric trend
-    (right, median σ and noise-flagged fraction vs the knob)."""
+    """Three panels: σ(f) per grid value (top-left), the scalar metric trend
+    (top-right, median σ and noise-flagged fraction vs the knob), and a
+    full-width view of each value's σ(f) superimposed on the actual spectrum
+    (bottom), zoomed to the noise band so the impact on the spectrum is legible.
+
+    The spectrum is invariant across the sweep — only the σ estimate moves — so
+    it is loaded once from ``ctx.ftmw_path`` and the per-value σ(f) curves
+    overlay it. If the spectrum cannot be loaded the bottom panel is hidden and
+    the two trend panels stand on their own.
+    """
     import numpy as np
     import matplotlib.pyplot as plt
 
@@ -216,7 +233,11 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     leaf = spec.path.split(".")[-1]
     colors = _value_colors(len(rows))
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.0, 4.8))
+    fig = plt.figure(figsize=(12.0, 9.0))
+    gs = fig.add_gridspec(2, 2, height_ratios=(1.0, 1.05))
+    ax1 = fig.add_subplot(gs[0, 0])
+    ax2 = fig.add_subplot(gs[0, 1])
+    ax3 = fig.add_subplot(gs[1, :])
 
     for row, color in zip(rows, colors):
         sigma = np.asarray(row.result.rms_noise, dtype=float)
@@ -241,6 +262,36 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax2b.set_ylabel("noise-flagged fraction", color="tab:orange")
     ax2b.tick_params(axis="y", labelcolor="tab:orange")
     ax2.set_title("metric trend")
+
+    # Bottom (full width): σ(f) over the spectrum, zoomed to the noise band.
+    try:
+        import ftmwpipeline.api as ftmw  # lazy
+
+        ft = ftmw.compute_ft(ctx.ftmw_path)
+        f_ghz = np.asarray(ft.freq_array, dtype=float) / 1000.0
+        mag = np.abs(np.asarray(ft.complex_spectrum, dtype=float))
+        ax3.plot(f_ghz, mag, lw=0.4, color="0.6", label="|FT|", zorder=1)
+        sigma_max = 0.0
+        for row, color in zip(rows, colors):
+            sigma = np.asarray(row.result.rms_noise, dtype=float)
+            if sigma.size != f_ghz.size:
+                continue
+            ax3.plot(f_ghz, sigma, color=color, lw=1.3, zorder=2,
+                     label=f"σ: {leaf}={row.value:g}")
+            sigma_max = max(sigma_max, float(np.nanmax(sigma)))
+        if sigma_max > 0.0:
+            ax3.set_ylim(0.0, _NOISE_OVERLAY_YMAX_FACTOR * sigma_max)
+        ax3.set_xlabel("frequency (GHz)")
+        ax3.set_ylabel(r"amplitude (|FT|, $\sigma_x$)")
+        ax3.set_title(
+            f"σ(f) over the spectrum "
+            f"(zoomed to {_NOISE_OVERLAY_YMAX_FACTOR:g}× max σ; real lines clip)"
+        )
+        ax3.legend(fontsize=7, ncol=2)
+        ax3.grid(True, alpha=0.2)
+    except Exception:
+        ax3.set_visible(False)
+
     fig.suptitle(f"Noise sweep: {spec.path}")
     fig.tight_layout()
     return fig

@@ -339,7 +339,7 @@ _register(KnobSpec(
     help="FID window start time for the FT; stack the active-band spectra to "
          "judge the chirp/ringdown residue.",
     inst_sensitivity="Y",
-    default_grid=(1.5, 1.7, 1.85, 2.0, 2.15, 2.3, 2.45, 2.6),
+    default_grid=(0.0, 1.0, 2.0, 3.0, 4.0, 5.0),
     run=_run_ft_start,
     metric=_metric_ft_band_floor,
     metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
