@@ -35,12 +35,14 @@ def _value_colors(n: int) -> List[Any]:
 
 
 def plot_start_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
-    """Two panels: the FID with the chirp-end and each value's recommended
-    start marked (top), and the Σ|FT|-vs-start detection sweep (bottom).
+    """Two panels: the FID with each value's detected chirp end marked (top),
+    and the Σ|FT|-vs-start detection sweep (bottom).
 
-    The top panel shows where the knob lands the start on the actual transient;
-    the bottom shows the detector's collapse curve. For the effect of ``start_us``
-    on the resulting spectrum, see the ``stage1.start_us`` knob.
+    These knobs move the *chirp end* — the detector output — so the panels mark
+    the located chirp end per value rather than a derived start (whether the
+    user hardcodes ``start_us`` or adds the guard margin is downstream of
+    detection). For the effect of the chosen start on the resulting spectrum,
+    see the ``stage1.start_us`` / ``start.guard_margin_us`` knob.
     """
     import matplotlib.pyplot as plt
 
@@ -59,32 +61,28 @@ def plot_start_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
         fid = ftmw.load_fid(ctx.ftmw_path)
         t = fid.time_array_us()
         axf.plot(t, fid.data, lw=0.3, color="0.4")
-        chirp = rows[0].result.chirp_end_us
-        axf.axvline(chirp, color="k", ls=":", lw=1.3,
-                    label=f"chirp-end {chirp:.2f} us")
         for row, color in zip(rows, colors):
+            ce = row.result.chirp_end_us
             axf.axvline(
-                row.result.start_us, color=color, ls="--", alpha=0.85,
-                label=f"{leaf}={row.value:g}: start {row.result.start_us:.2f} us",
+                ce, color=color, ls="--", alpha=0.85,
+                label=f"{leaf}={row.value:g}: chirp-end {ce:.2f} us",
             )
-        xmax = max(r.result.start_us for r in rows) + 1.0
+        xmax = max(r.result.chirp_end_us for r in rows) + 1.0
         axf.set_xlim(0.0, xmax)
         axf.set_xlabel("time (us)")
         axf.set_ylabel("FID amplitude")
-        axf.set_title("FID with chirp-end and recommended starts")
+        axf.set_title("FID with detected chirp ends")
         axf.legend(fontsize=7)
     except Exception:
         # FID unavailable — keep the detection panel useful on its own.
         axf.set_visible(False)
 
-    # Bottom: the Σ|FT|-vs-start sweep with each value's start marked.
+    # Bottom: the Σ|FT|-vs-start sweep with each value's detected chirp end marked.
     for row, color in zip(rows, colors):
         r = row.result
         axs.semilogy(r.starts_us, r.sum_magnitude, color=color, alpha=0.8, lw=1.2,
                      label=f"{leaf}={row.value:g}")
-        axs.axvline(r.start_us, color=color, ls="--", alpha=0.7)
-    axs.axvline(rows[0].result.chirp_end_us, color="k", ls=":", alpha=0.6,
-                label=f"chirp-end ~{rows[0].result.chirp_end_us:.2f} us")
+        axs.axvline(r.chirp_end_us, color=color, ls=":", alpha=0.7)
     axs.set_xlabel("FID window start (us)")
     axs.set_ylabel("Σ|FT| (integrated magnitude)")
     axs.set_title("Σ|FT| vs start")
