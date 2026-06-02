@@ -918,7 +918,6 @@ class Pipeline:
         step_us: Optional[float] = None,
         guard_margin_us: Optional[float] = None,
         floor_factor: Optional[float] = None,
-        knee_strength_min: Optional[float] = None,
         band: Optional[Tuple[float, float]] = None,
         stamp: bool = True,
         *,
@@ -938,7 +937,7 @@ class Pipeline:
 
         Parameters
         ----------
-        sweep_max_us, step_us, guard_margin_us, floor_factor, knee_strength_min :
+        sweep_max_us, step_us, guard_margin_us, floor_factor :
             Individual overrides of the matching
             :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
             fields. ``guard_margin_us`` is the instrument-specific ringdown
@@ -954,7 +953,7 @@ class Pipeline:
         Returns
         -------
         StartDetectionResult
-            The recommendation plus diagnostics (chirp-end, knee, sweep arrays).
+            The recommendation plus diagnostics (chirp-end, sweep arrays).
         """
         resolved = self._resolve_start_detection_settings(
             settings,
@@ -962,7 +961,6 @@ class Pipeline:
             step_us=step_us,
             guard_margin_us=guard_margin_us,
             floor_factor=floor_factor,
-            knee_strength_min=knee_strength_min,
             band=band,
         )
         result = detect_start_time_impl(
@@ -978,7 +976,6 @@ class Pipeline:
         step_us: Optional[float],
         guard_margin_us: Optional[float],
         floor_factor: Optional[float],
-        knee_strength_min: Optional[float],
         band: Optional[Tuple[float, float]],
     ) -> StartDetectionSettings:
         """Overlay explicit per-knob kwargs onto a base settings bundle."""
@@ -994,8 +991,6 @@ class Pipeline:
             overrides["guard_margin_us"] = float(guard_margin_us)
         if floor_factor is not None:
             overrides["floor_factor"] = float(floor_factor)
-        if knee_strength_min is not None:
-            overrides["knee_strength_min"] = float(knee_strength_min)
         if band is not None:
             overrides["band_min_mhz"] = float(band[0])
             overrides["band_max_mhz"] = float(band[1])

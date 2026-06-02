@@ -119,9 +119,6 @@ recommended `start_us` stamped into the Stage 0 `recommended_processing` layer.
 | floor_factor | 3.0 | dataclass default | Chirp-end = first start where Σ\|FT\| < factor × deep-tail floor. | N | — |
 | floor_tail_us | 1.0 | dataclass default | Width of the deep-tail window for the robust floor estimate. | maybe | — |
 | guard_margin_us | 0.67 | dataclass default | Margin added past the chirp end for switch-bounce ringdown settling. **The primary recommendation is chirp_end + this.** Tuned on 2638-family (chirp_dur+1.35 targets ⇒ chirp_end+0.67). | **Y** | — |
-| knee_window_us | 2.8 | dataclass default | Post-chirp window scanned for the confirmatory ringdown→molecular Kneedle elbow. | maybe | — |
-| shoulder_skip_us | 0.15 | dataclass default | Skip past the chirp-end before the Kneedle scan (steps over the post-collapse shoulder). | N | — |
-| knee_strength_min | 0.10 | dataclass default | Min Kneedle strength to call the ringdown knee confident (diagnostic only; strong molecular FIDs bury it). | maybe | — |
 | min_chirp_drop_ratio | 10.0 | dataclass default | Min plateau/floor ratio for a chirp collapse to be considered present. | **Y** | — |
 
 `guard_margin_us` is the headline instrument-specific knob: it is the

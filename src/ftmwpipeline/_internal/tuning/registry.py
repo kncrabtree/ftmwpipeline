@@ -423,15 +423,6 @@ for _path, _field, _help, _grid, _inst in (
     ("stage0.floor_tail_us", "floor_tail_us",
      "Deep-tail width (us) whose median defines the settled floor.",
      (0.5, 1.0, 2.0), "N"),
-    ("stage0.knee_window_us", "knee_window_us",
-     "Window (us) over which the post-collapse knee strength is measured.",
-     (1.5, 2.8, 4.0), "maybe"),
-    ("stage0.shoulder_skip_us", "shoulder_skip_us",
-     "Skip (us) past the chirp end before measuring the knee shoulder.",
-     (0.0, 0.15, 0.3), "maybe"),
-    ("stage0.knee_strength_min", "knee_strength_min",
-     "Min knee strength for the collapse to be accepted as a chirp end.",
-     (0.05, 0.10, 0.20), "maybe"),
 ):
     _register(KnobSpec(
         path=_path, stage="start_detection", requires="stage0_fid_data",

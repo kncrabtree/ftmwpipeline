@@ -310,7 +310,7 @@ FID/spectrum.
 **Knob coverage — Stages 0, 1, 2, 2b complete (tiered).**
 - **Stage 0 (start detection, `stage0.*`).** Primary: `guard_margin_us`,
   `sweep_max_us`, `min_chirp_drop_ratio`. Advanced: `step_us`, `floor_factor`,
-  `floor_tail_us`, `knee_window_us`, `shoulder_skip_us`, `knee_strength_min`.
+  `floor_tail_us`.
   `guard_margin_us` shares the spectra ladder (spectrum-impact); the rest use the
   Σ|FT|-vs-start detection-curve plot. `band_min_mhz`/`band_max_mhz` are *not*
   swept (the detector ignores them unless both are set → no meaningful solo

@@ -237,7 +237,6 @@ def detect_start_time(
     step_us: Optional[float] = None,
     guard_margin_us: Optional[float] = None,
     floor_factor: Optional[float] = None,
-    knee_strength_min: Optional[float] = None,
     band: Optional[Tuple[float, float]] = None,
     stamp: bool = True,
     *,
@@ -258,7 +257,7 @@ def detect_start_time(
     ----------
     file_path : str or Path
         Path to a ``.ftmw`` file with the FID imported.
-    sweep_max_us, step_us, guard_margin_us, floor_factor, knee_strength_min :
+    sweep_max_us, step_us, guard_margin_us, floor_factor :
         Individual overrides of the matching
         :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
         fields.
@@ -281,7 +280,6 @@ def detect_start_time(
             step_us=step_us,
             guard_margin_us=guard_margin_us,
             floor_factor=floor_factor,
-            knee_strength_min=knee_strength_min,
             band=band,
             stamp=stamp,
             settings=settings,

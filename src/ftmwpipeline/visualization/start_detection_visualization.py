@@ -3,10 +3,10 @@
 A two-panel diagnostic of the Σ|FT|-vs-start_us sweep:
 
 * top: the full sweep on a log y-axis -- the pre-chirp plateau, the chirp-end
-  collapse, and the post-chirp floor, with the detected chirp-end, recommended
-  start, and Kneedle knee marked.
-* bottom: a linear zoom on the post-chirp floor where the ringdown shoulder and
-  the (confirmatory) molecular-tail knee live.
+  collapse, and the post-chirp floor, with the detected chirp-end and
+  recommended start marked.
+* bottom: a linear zoom on the post-chirp floor where the ringdown shoulder
+  settles into the molecular tail.
 
 :func:`plot_start_detection_from_file` re-runs detection (cheap at zpf=0) so the
 CLI / Pipeline / functional-API surfaces share one orchestration.
@@ -60,11 +60,6 @@ def plot_start_detection(
         ls="--",
         label=f"recommended start {result.start_us:.2f} us",
     )
-    knee_lbl = (
-        f"knee {result.knee_us:.2f} us (strength {result.knee_strength:.2f}"
-        f"{', confident' if result.knee_confident else ''})"
-    )
-    ax_top.axvline(result.knee_us, color="m", ls="-.", label=knee_lbl)
     ax_top.set_ylabel("Σ|FT| over band")
     ax_top.legend(loc="upper right", fontsize=8)
     ax_top.set_title(title or f"Start-time detection (band {band}, zpf=0, unapodized)")
@@ -79,11 +74,10 @@ def plot_start_detection(
         )
 
     # Linear zoom on the post-chirp floor; clip the collapse spike so the
-    # ringdown shoulder + molecular-tail knee are legible.
+    # ringdown shoulder settling into the molecular tail is legible.
     zoom = (starts > result.chirp_end_us - 0.1) & (starts < result.chirp_end_us + 3.0)
     ax_bot.plot(starts[zoom], summag[zoom], "-", lw=1, color="C0")
     ax_bot.axvline(result.start_us, color="g", ls="--")
-    ax_bot.axvline(result.knee_us, color="m", ls="-.")
     if result.floor > 0:
         ax_bot.set_ylim(0, result.floor * 8.0)
     ax_bot.set_xlabel("start_us")

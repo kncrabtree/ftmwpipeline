@@ -34,8 +34,6 @@ def _settings_from_args(args: argparse.Namespace) -> StartDetectionSettings:
         overrides["guard_margin_us"] = float(args.guard_margin_us)
     if args.floor_factor is not None:
         overrides["floor_factor"] = float(args.floor_factor)
-    if args.knee_strength_min is not None:
-        overrides["knee_strength_min"] = float(args.knee_strength_min)
     if args.band is not None:
         overrides["band_min_mhz"] = float(args.band[0])
         overrides["band_max_mhz"] = float(args.band[1])
@@ -79,11 +77,6 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
     print(f"  chirp detected     : {r.chirp_detected} (plateau/floor = {drop:.0f})")
     print(f"  chirp-end          : {r.chirp_end_us:.3f} us")
     print(f"  recommended start  : {r.start_us:.3f} us")
-    print(
-        f"  ringdown knee      : {r.knee_us:.3f} us "
-        f"(strength {r.knee_strength:.3f}, "
-        f"{'confident' if r.knee_confident else 'not separable'})"
-    )
     if out["stamped"]:
         print(f"\nStamped recommended start_us = {r.start_us:.3f} us to {file_path}.")
         print("A later compute_ft with no explicit start_us will inherit it.")
@@ -170,12 +163,6 @@ def _add_detection_knobs(parser: argparse.ArgumentParser) -> None:
         help="Chirp-end = first start where Σ|FT| < factor*floor (default 3.0)",
     )
     parser.add_argument(
-        "--knee-strength-min",
-        type=float,
-        help="Minimum Kneedle strength to call the ringdown knee confident "
-        "(default 0.10)",
-    )
-    parser.add_argument(
         "--band",
         type=float,
         nargs=2,
@@ -220,8 +207,8 @@ def register_start_commands(subparsers: Any) -> None:
         help="Plot the Σ|FT|-vs-start_us sweep diagnostic",
         description=(
             "Two-panel diagnostic: the full Σ|FT| sweep (log y) with the "
-            "chirp-end, recommended start, and ringdown knee marked, plus a "
-            "linear zoom on the post-chirp floor."
+            "chirp-end and recommended start marked, plus a linear zoom on "
+            "the post-chirp floor."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
