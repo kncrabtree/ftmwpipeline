@@ -57,14 +57,14 @@ from ..io.stage_fit_settings_serialization import (
     read_stage2b_recommended_shape,
     save_stage_fit_settings_to_h5,
 )
-from ..preprocessing.noise_estimation import estimate_noise_adaptive
+from ..preprocessing.noise_estimation import estimate_active_ft_noise
+from .active_ft_support import _persisted_scatter_knobs, build_active_grid_with_noise
 from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
 from .stage3_impl import (
     _active_acquisition_us,
-    _load_canonical_noise,
     load_peaks_impl,
 )
 from ..fitting.peak_model import PeakShape
@@ -162,14 +162,14 @@ def _build_active_ft_inputs(
     int,  # n_padded
     float,  # acquisition_us (= end - start)
     ComplexFT,  # the user (persisted) ComplexFT
-    np.ndarray,  # canonical noise on user grid (for replan context)
+    Optional[Tuple[float, float]],  # trim_range (analysis band)
 ]:
     """Gather the Stage 0/1 inputs the active-FT and the replan context need.
 
     Reads the persisted FID, recomputes the user ComplexFT via the shared
-    Stage 1 path (so canonical settings drive what the user sees and what
-    Stage 5 fits on), and pulls the canonical Stage 2 noise on the user grid
-    for the structural-replan context.
+    Stage 1 path (so canonical settings drive what Stage 5 fits on), and
+    returns the canonical trim range so the active-grid replan/visualization
+    can be rebuilt on the analysis band.
     """
     fid = load_fid_from_pipeline_impl(file_path)
     stage1 = compute_ft_impl(file_path=file_path)
@@ -200,7 +200,7 @@ def _build_active_ft_inputs(
         n_active_estimate,
     )
 
-    user_rms = _load_canonical_noise(file_path, user_ft)
+    trim_range = stage1.get("trim_range")
 
     return (
         np.asarray(fid.data, dtype=float),
@@ -213,7 +213,7 @@ def _build_active_ft_inputs(
         n_padded,
         acquisition_us,
         user_ft,
-        user_rms,
+        trim_range,
     )
 
 
@@ -537,7 +537,7 @@ def fit_peaks_impl(
         n_padded,
         acquisition_us,
         user_ft,
-        user_rms,
+        trim_range,
     ) = _build_active_ft_inputs(file_path)
 
     active_ft = compute_active_ft(
@@ -551,17 +551,22 @@ def fit_peaks_impl(
         n_padded=n_padded,
     )
 
-    # Stage 2 adaptive estimator on the active-FT magnitude spectrum -- the
-    # noise is measured on the same spectrum the fit sees so any FFT
-    # normalization choices cancel by construction (D9).
+    # Scatter noise authority on the active-FT magnitude spectrum -- the noise
+    # is measured on the same spectrum the fit sees (D9), with the persisted
+    # Stage 2 scatter knobs so it matches the canonical noise estimator. The
+    # wrapper sorts/un-sorts internally, returning sigma on the active-FT bin
+    # order so it lines up with active_ft.complex_spectrum element-for-element.
+    active_rms = np.asarray(
+        estimate_active_ft_noise(
+            active_ft.freq_mhz,
+            active_ft.complex_spectrum,
+            **_persisted_scatter_knobs(file_path),
+        ).rms_noise,
+        dtype=float,
+    )
+    # Ascending-sorted views the spur sweep operates on (2638 is descending).
     sort_idx = np.argsort(active_ft.freq_mhz)
     sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-    sorted_mag = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
-    active_noise = estimate_noise_adaptive(sorted_freq, sorted_mag)
-    # Un-sort the per-bin noise back onto the active-FT's bin order so it
-    # lines up with active_ft.complex_spectrum element-for-element.
-    unsort = np.argsort(sort_idx)
-    active_rms = np.asarray(active_noise.rms_noise, dtype=float)[unsort]
 
     # --- Stage 2b calibration (optional) ------------------------------------
     # When present, ``tau_maj`` and ``sigma_tau`` drive the per-window tau
@@ -653,9 +658,9 @@ def fit_peaks_impl(
             if (persisted_cal is not None and use_catalogue)
             else ()
         )
-        # σ_c per quadrature (canonical Stage 2 complex RMS / sqrt(2)), the
+        # σ_c per quadrature (active-FT authority complex RMS / sqrt(2)), the
         # SNR-floor convention the detector's threshold was calibrated on.
-        sorted_sig_c = np.asarray(active_noise.rms_noise, dtype=float) / np.sqrt(2.0)
+        sorted_sig_c = active_rms[sort_idx] / np.sqrt(2.0)
         # Restrict the integer-MHz sweep to the user analysis (trim) band: the
         # fit windows all live there, and the full active-FT extends past the
         # trim into edge regions whose integer-MHz narrow bins are artifacts,
@@ -718,11 +723,15 @@ def fit_peaks_impl(
     if max_replan_v <= 0:
         replan_ctx = None
     else:
+        # Replan re-runs Stage 4's window planner, which now operates on the
+        # active FT + authority noise; hand it the same trimmed active grid so
+        # the re-plan is consistent with the original plan.
+        replan_ft, replan_rms = build_active_grid_with_noise(file_path, trim_range)
         replan_ctx = ReplanContext(
             peaks=peaks,
-            persisted_freq_mhz=user_ft.freq_array,
-            persisted_complex_spectrum=user_ft.complex_spectrum,
-            persisted_rms_noise=user_rms,
+            active_freq_mhz=replan_ft.freq_array,
+            active_complex_spectrum=replan_ft.complex_spectrum,
+            active_rms_noise=replan_rms,
             max_replan_rounds=max_replan_v,
         )
 
@@ -1089,18 +1098,19 @@ def visualize_fit_impl(
     backend: str = "matplotlib",
     interactive: bool = True,
 ) -> Any:
-    """Overlay the persisted Stage 5 fit on the user spectrum.
+    """Overlay the persisted Stage 5 fit on the active FT it was fit on.
 
-    Re-evaluates the fitted model on the persisted (high-res) frequency
-    grid so the overlay reads at full resolution -- the model is
-    grid-agnostic, the active-FT was only used for the fit itself.
-    Requires Stage 5 completed.
+    Re-evaluates the fitted model on the canonical active FT (the grid the
+    fit lives on), so the overlay and the model share one amplitude
+    convention -- no rescale. The full-record persisted spectrum is not a
+    display domain here. Requires Stage 5 completed.
     """
     loaded = load_fit_impl(file_path)
     fit: SpectrumFit = loaded["fit"]
     stage1 = compute_ft_impl(file_path=file_path)
     user_ft: ComplexFT = stage1["complex_ft"]
-    user_rms = _load_canonical_noise(file_path, user_ft)
+    trim_range = stage1.get("trim_range")
+    active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
     fid = load_fid_from_pipeline_impl(file_path)
     sideband = _resolve_sideband(fid.sideband)
     base_pp = user_ft.metadata["processing_params"]
@@ -1108,12 +1118,9 @@ def visualize_fit_impl(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 
-    # The fit lives in active-FT amplitude units (``dt_us * rfft(active)``);
-    # the persisted FT uses ``rfft(padded) / original_length * 10**units_power``.
-    # Convert at plot time so the model overlay reads at the persisted scale.
-    sample_dt_us = float(fid.spacing * 1e6)
-    scale_factor = float(10 ** int(base_pp.units_power))
-    model_amplitude_scale = scale_factor / (float(fid.n_points) * sample_dt_us)
+    # The fit and the active FT share the ``dt_us * rfft(active)`` amplitude
+    # convention, so the model overlay needs no rescale.
+    model_amplitude_scale = 1.0
 
     from ..visualization.fit_visualization import plot_spectrum_fit
 
@@ -1129,9 +1136,9 @@ def visualize_fit_impl(
     start_us = float(base_pp.start_us) if base_pp.start_us is not None else 0.0
 
     return plot_spectrum_fit(
-        frequencies=user_ft.freq_array,
-        complex_spectrum=user_ft.complex_spectrum,
-        rms_noise=user_rms,
+        frequencies=active_ft.freq_array,
+        complex_spectrum=active_ft.complex_spectrum,
+        rms_noise=active_rms,
         fit=fit,
         sideband=sideband,
         acquisition_us=acquisition_us,

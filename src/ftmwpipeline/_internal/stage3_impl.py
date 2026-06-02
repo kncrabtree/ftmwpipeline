@@ -49,7 +49,6 @@ from ..preprocessing.peak_detection import (
 )
 from .active_ft_support import build_active_grid_with_noise
 from .deprecation import warn_legacy_kwargs
-from ..io.noise_result_serialization import load_noise_result_from_hdf5
 from ..io.peak_detection_settings_serialization import (
     load_peak_detection_settings_from_h5,
     save_peak_detection_settings_to_h5,
@@ -343,17 +342,6 @@ def _snap_to_active_grid(
             by_idx[ui] = snapped
 
     return sorted(by_idx.values(), key=lambda q: q.frequency)
-
-
-def _load_canonical_noise(file_path: str, user_ft: ComplexFT) -> np.ndarray:
-    """Reconstruct the canonical Stage 2 noise on the user spectrum grid."""
-    with h5py.File(file_path, "r") as h5f:
-        noise = load_noise_result_from_hdf5(
-            h5f["stage2_noise_result"],
-            user_ft.freq_array,
-            user_ft.magnitude_spectrum,
-        )
-    return np.asarray(noise.rms_noise, dtype=float)
 
 
 def _build_explicit_from_kwargs(

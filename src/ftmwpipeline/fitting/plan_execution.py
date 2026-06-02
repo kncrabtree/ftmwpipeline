@@ -331,21 +331,22 @@ class ReplanContext:
     peaks : list of Peak
         Stage 3 promoted peak list. Replan keys off ``properties['promoted']``
         and ``classification`` exactly as :func:`build_window_plan` does.
-    persisted_freq_mhz : np.ndarray
-        Molecular frequency axis of the persisted Stage 1 spectrum.
-    persisted_complex_spectrum : np.ndarray
-        Complex spectrum on ``persisted_freq_mhz`` (same array as Stage 4 was
-        built on).
-    persisted_rms_noise : np.ndarray
-        Canonical Stage 2 per-bin RMS on the persisted grid.
+    active_freq_mhz : np.ndarray
+        Molecular frequency axis of the active FT (the grid Stage 4 planned
+        on -- trimmed to the analysis band).
+    active_complex_spectrum : np.ndarray
+        Complex active FT on ``active_freq_mhz`` (same array/convention Stage 4
+        was built on).
+    active_rms_noise : np.ndarray
+        Active-FT authority per-bin RMS on ``active_freq_mhz``.
     max_replan_rounds : int, default :data:`DEFAULT_MAX_REPLAN_ROUNDS`
         Cap on the structural-replan outer loop.
     """
 
     peaks: list[Peak]
-    persisted_freq_mhz: np.ndarray
-    persisted_complex_spectrum: np.ndarray
-    persisted_rms_noise: np.ndarray
+    active_freq_mhz: np.ndarray
+    active_complex_spectrum: np.ndarray
+    active_rms_noise: np.ndarray
     max_replan_rounds: int = DEFAULT_MAX_REPLAN_ROUNDS
 
 
@@ -1600,9 +1601,9 @@ def _do_replan(
         plan,
         requests,
         ctx.peaks,
-        ctx.persisted_freq_mhz,
-        ctx.persisted_complex_spectrum,
-        ctx.persisted_rms_noise,
+        ctx.active_freq_mhz,
+        ctx.active_complex_spectrum,
+        ctx.active_rms_noise,
         **kwargs,
     )
 
