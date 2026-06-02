@@ -44,6 +44,7 @@ import h5py
 
 from ..core.noise_settings import (
     NoiseSettings,
+    _SUB_NAMES,
     from_attrs as noise_from_attrs,
     to_attrs as noise_to_attrs,
 )
@@ -51,8 +52,6 @@ from ..core.noise_settings import (
 logger = logging.getLogger(__name__)
 
 STAGE2_NOISE_SETTINGS_PATH = "processing_parameters/stage2_noise"
-
-_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion")
 
 
 def _decode_attr(value: Any) -> Any:

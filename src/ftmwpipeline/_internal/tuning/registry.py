@@ -88,25 +88,47 @@ Recommendation = Any
 def _run_start(field_name: str) -> RunFn:
     """Re-run start detection with a single ``StartDetectionSettings`` field set.
 
-    Uses ``stamp=False`` so the sweep never mutates the file's recommended
-    ``start_us`` layer; the engine still operates on a working copy.
+    Sets the field on a defaults bundle and passes it as ``settings=`` so any
+    field is sweepable uniformly — only a subset of fields are exposed as
+    per-knob kwargs on ``detect_start_time``. Uses ``stamp=False`` so the sweep
+    never mutates the file's recommended ``start_us`` layer; the engine still
+    operates on a working copy.
     """
 
     def run(path: Path, value: Any) -> Any:
         import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+        from dataclasses import replace
+        from ftmwpipeline.core.start_detection_settings import (
+            StartDetectionSettings,
+        )
 
-        return ftmw.detect_start_time(path, stamp=False, **{field_name: value})
+        settings = replace(StartDetectionSettings(), **{field_name: value})
+        return ftmw.detect_start_time(path, stamp=False, settings=settings)
 
     return run
 
 
-def _run_noise(method: str, kwarg: str) -> RunFn:
-    """Re-run noise estimation with a single estimator knob set."""
+def _run_noise(method: str, sub_block: str, field_name: str) -> RunFn:
+    """Re-run noise estimation with a single ``NoiseSettings`` field set.
+
+    Sets the one field on the given sub-block of a ``NoiseSettings`` bundle and
+    passes it as ``settings=``, so the sweep drives the estimator through the
+    settings resolver rather than the (deprecated) per-knob kwargs.
+    """
 
     def run(path: Path, value: Any) -> Any:
         import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+        from ftmwpipeline.core import noise_settings as ns
 
-        return ftmw.estimate_noise(path, method=method, **{kwarg: value})
+        sub_cls = {
+            "binning": ns.BinningSubSettings,
+            "skewness": ns.SkewnessSubSettings,
+            "smoothing": ns.SmoothingSubSettings,
+            "skirt_exclusion": ns.SkirtExclusionSubSettings,
+            "scatter": ns.ScatterSubSettings,
+        }[sub_block]
+        bundle = ns.NoiseSettings(**{sub_block: sub_cls(**{field_name: value})})
+        return ftmw.estimate_noise(path, method=method, settings=bundle)
 
     return run
 
@@ -332,7 +354,7 @@ _register(KnobSpec(
     help="Width of the per-region scatter-MAD window (scale over which sigma(f) is constant).",
     inst_sensitivity="Y",
     default_grid=(40.0, 60.0, 80.0, 120.0, 160.0),
-    run=_run_noise("scatter", "window_mhz"),
+    run=_run_noise("scatter", "scatter", "window_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
@@ -344,7 +366,7 @@ _register(KnobSpec(
     help="High-pass running-median width isolating the smooth leakage pedestal.",
     inst_sensitivity="Y",
     default_grid=(10.0, 20.0, 40.0, 80.0),
-    run=_run_noise("scatter", "pedestal_mhz"),
+    run=_run_noise("scatter", "scatter", "pedestal_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
@@ -356,7 +378,7 @@ _register(KnobSpec(
     help="Broad lower-envelope median sigma smoothing width (0 disables).",
     inst_sensitivity="Y",
     default_grid=(0.0, 400.0, 800.0, 1200.0),
-    run=_run_noise("scatter", "smoothing_mhz"),
+    run=_run_noise("scatter", "scatter", "smoothing_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
@@ -369,7 +391,7 @@ _register(KnobSpec(
     help="Adaptive estimator: moving-window size for per-point sigma interpolation.",
     inst_sensitivity="Y",
     default_grid=(150.0, 300.0, 600.0),
-    run=_run_noise("adaptive", "smoothing_window_mhz"),
+    run=_run_noise("adaptive", "smoothing", "smoothing_window_mhz"),
     metric=_metric_noise,
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,

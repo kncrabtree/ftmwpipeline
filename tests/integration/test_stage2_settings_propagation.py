@@ -134,6 +134,67 @@ def test_estimate_noise_field_reaches_kernel(
     )
 
 
+# (label, setter, expected_kernel_kwarg, expected_value) for the scatter path.
+SCATTER_PROPAGATION_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
+    ("scatter.window_mhz",
+     _sub_set("scatter", "window_mhz", 60.0), "window_mhz", 60.0),
+    ("scatter.pedestal_mhz",
+     _sub_set("scatter", "pedestal_mhz", 40.0), "pedestal_mhz", 40.0),
+    ("scatter.line_k",
+     _sub_set("scatter", "line_k", 6.0), "line_k", 6.0),
+    ("scatter.n_iter",
+     _sub_set("scatter", "n_iter", 5), "n_iter", 5),
+    ("scatter.region_aware",
+     _sub_set("scatter", "region_aware", False), "region_aware", False),
+    ("scatter.smoothing_mhz",
+     _sub_set("scatter", "smoothing_mhz", 400.0), "smoothing_mhz", 400.0),
+    ("scatter.smoothing_percentile",
+     _sub_set("scatter", "smoothing_percentile", 25.0), "smoothing_percentile", 25.0),
+    ("scatter.convolve_mhz",
+     _sub_set("scatter", "convolve_mhz", 100.0), "convolve_mhz", 100.0),
+]
+
+
+@pytest.mark.parametrize(
+    "label, setter, key, value",
+    SCATTER_PROPAGATION_FIELDS,
+    ids=[c[0] for c in SCATTER_PROPAGATION_FIELDS],
+)
+def test_scatter_field_reaches_kernel(
+    baseline_2638_stage1: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    label: str,
+    setter: Callable[..., None],
+    key: str,
+    value: Any,
+) -> None:
+    """Each scatter NoiseSettings field forwards into estimate_noise_scatter."""
+    variant = tmp_path / f"scatter_propagation_{key}.ftmw"
+    shutil.copyfile(baseline_2638_stage1, variant)
+
+    mock, captured = _intercept()
+    monkeypatch.setattr(stage2_impl, "estimate_noise_scatter", mock)
+
+    s = NoiseSettings()
+    setter(s)
+
+    with pytest.raises(ValueError, match=r"intercepted"):
+        stage2_impl.compute_noise_estimation_impl(
+            str(variant), method="scatter", settings=s
+        )
+
+    kwargs = captured["kwargs"]
+    assert key in kwargs, (
+        f"{label}: dataclass value {value!r} was set but the orchestrator "
+        f"did not forward {key!r} to estimate_noise_scatter. Phantom field."
+    )
+    if isinstance(value, bool):
+        assert kwargs[key] is value
+    else:
+        assert kwargs[key] == pytest.approx(value)
+
+
 class TestMutualExclusion:
     """Passing both ``settings=`` and ``preset=`` to ``compute_noise_estimation_impl``
     must raise ``ValueError``, matching Stages 5 and 2b."""
@@ -147,6 +208,18 @@ class TestMutualExclusion:
         with pytest.raises(ValueError, match=r"mutually|alternative"):
             stage2_impl.compute_noise_estimation_impl(
                 str(variant), method="adaptive", settings=s,
+                preset="instrument_bc_2638",
+            )
+
+    def test_scatter_settings_and_preset_both_raises(
+        self, baseline_2638_stage1: Path, tmp_path: Path,
+    ) -> None:
+        variant = tmp_path / "both_scatter.ftmw"
+        shutil.copyfile(baseline_2638_stage1, variant)
+        s = NoiseSettings()
+        with pytest.raises(ValueError, match=r"mutually|alternative"):
+            stage2_impl.compute_noise_estimation_impl(
+                str(variant), method="scatter", settings=s,
                 preset="instrument_bc_2638",
             )
 
@@ -196,6 +269,35 @@ class TestPersistedLayerInherit:
             "no-kwargs follow-up did not inherit the persisted "
             "smoothing_window_mhz; the persisted layer of the resolver "
             "is misrouted"
+        )
+
+    def test_scatter_inherits_persisted_window(
+        self,
+        baseline_2638_stage1: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ftmwpipeline.io.noise_settings_serialization import (
+            save_noise_settings_to_h5,
+        )
+
+        variant = tmp_path / "scatter_inherit.ftmw"
+        shutil.copyfile(baseline_2638_stage1, variant)
+
+        persisted = NoiseSettings()
+        persisted.scatter.window_mhz = 137.0
+        save_noise_settings_to_h5(str(variant), persisted)
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage2_impl, "estimate_noise_scatter", mock)
+
+        with pytest.raises(ValueError, match=r"intercepted"):
+            stage2_impl.compute_noise_estimation_impl(str(variant), method="scatter")
+
+        assert captured["kwargs"]["window_mhz"] == 137.0, (
+            "no-kwargs scatter follow-up did not inherit the persisted "
+            "scatter.window_mhz; the persisted layer of the resolver "
+            "is misrouted for the scatter path"
         )
 
     def test_from_saved_params_uses_legacy_block_not_resolver(

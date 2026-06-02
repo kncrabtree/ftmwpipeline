@@ -59,6 +59,14 @@ class TestImplLevelWarnings:
                     str(bogus), skew_target=0.7,
                 )
 
+    def test_stage2_estimate_noise_scatter_legacy_kwarg(self, tmp_path) -> None:
+        bogus = tmp_path / "no_such.ftmw"
+        with pytest.warns(DeprecationWarning, match=r"estimate_noise.*window_mhz"):
+            with _swallow_downstream_errors():
+                stage2_impl.compute_noise_estimation_impl(
+                    str(bogus), method="scatter", window_mhz=60.0,
+                )
+
     def test_stage2_from_saved_params_warns(self, tmp_path) -> None:
         bogus = tmp_path / "no_such.ftmw"
         with pytest.warns(DeprecationWarning, match=r"from_saved_params"):

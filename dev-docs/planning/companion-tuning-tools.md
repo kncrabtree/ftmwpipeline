@@ -304,6 +304,11 @@ Built (sequencing steps 1–2):
     `see_also`-point at the spectrum knobs.
   - Stage 2 noise — `stage2.scatter.{window_mhz,pedestal_mhz,smoothing_mhz}`,
     `stage2.smoothing.smoothing_window_mhz`: σ(f) overlay + metric trend.
+    Every Stage 2 sweep drives the estimator through a `NoiseSettings`
+    bundle (`settings=`), not the deprecated per-knob kwargs — this
+    required backfilling a `scatter` sub-block into `NoiseSettings` (the
+    scatter estimator, the default, previously had no settings route); see
+    `settings-backfill.md` shims #15/#16.
   - Stage 2b tau — `stage2b.stft.{n_seg,t_sigma}`,
     `stage2b.polish.{polish_snr_cap,polish_noise_debias}`: τ_maj ± σ_τ trend
     with contributor count (the boolean `polish_noise_debias` is table-only).

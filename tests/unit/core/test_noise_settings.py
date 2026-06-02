@@ -16,6 +16,7 @@ import pytest
 from ftmwpipeline.core.noise_settings import (
     BinningSubSettings,
     NoiseSettings,
+    ScatterSubSettings,
     SkewnessSubSettings,
     SkirtExclusionSubSettings,
     SmoothingSubSettings,
@@ -30,7 +31,7 @@ from ftmwpipeline.core.noise_settings import (
 )
 
 
-_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion")
+_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion", "scatter")
 
 
 # ---------------------------------------------------------------------------
@@ -72,6 +73,34 @@ class TestResolve:
         assert merged.skirt_exclusion.strong_peak_snr == 20.0
         assert merged.skirt_exclusion.skirt_exclusion_k == 1.5
         assert merged.skirt_exclusion.max_skirt_exclusion_mhz == 500.0
+        assert merged.scatter.window_mhz == 80.0
+        assert merged.scatter.pedestal_mhz == 20.0
+        assert merged.scatter.line_k == 8.0
+        assert merged.scatter.n_iter == 3
+        assert merged.scatter.region_aware is True
+        assert merged.scatter.smoothing_mhz == 800.0
+        assert merged.scatter.smoothing_percentile == 50.0
+        assert merged.scatter.convolve_mhz == 200.0
+
+    def test_scatter_subblock_precedence_and_independence(self) -> None:
+        explicit = NoiseSettings()
+        explicit.scatter.window_mhz = 40.0
+        preset = NoiseSettings()
+        preset.scatter.window_mhz = 120.0
+        preset.scatter.line_k = 6.0
+        persisted = NoiseSettings()
+        persisted.scatter.region_aware = False
+        merged = resolve(explicit=explicit, preset=preset, persisted=persisted)
+        # explicit wins for window_mhz
+        assert merged.scatter.window_mhz == 40.0
+        # preset wins for line_k (no higher layer set it)
+        assert merged.scatter.line_k == 6.0
+        # persisted wins for region_aware
+        assert merged.scatter.region_aware is False
+        # hard default fills the untouched scatter field
+        assert merged.scatter.pedestal_mhz == 20.0
+        # adaptive sub-blocks untouched
+        assert merged.smoothing.smoothing_window_mhz == 300.0
 
     def test_explicit_beats_preset(self) -> None:
         explicit = NoiseSettings()
@@ -180,6 +209,18 @@ class TestAttrsRoundTrip:
         assert rt.skewness.inc is None
         assert rt.skirt_exclusion.max_skirt_exclusion_mhz is None
 
+    def test_scatter_round_trip_preserves_values(self) -> None:
+        s = NoiseSettings()
+        s.scatter.window_mhz = 60.0
+        s.scatter.n_iter = 5
+        s.scatter.region_aware = False
+        rt = from_attrs(to_attrs(s))
+        assert rt.scatter.window_mhz == 60.0
+        assert rt.scatter.n_iter == 5
+        assert rt.scatter.region_aware is False
+        # Unset scatter fields stay None
+        assert rt.scatter.pedestal_mhz is None
+
     def test_none_round_trip_per_field(self) -> None:
         s = NoiseSettings()
         attrs = to_attrs(s)
@@ -213,6 +254,14 @@ class TestYamlIo:
         rt = from_yaml(text)
         assert rt.binning.subdivision_threshold == 0.05
         assert rt.smoothing.smoothing_window_mhz == 100.0
+
+    def test_scatter_yaml_round_trip(self) -> None:
+        s = NoiseSettings()
+        s.scatter.window_mhz = 120.0
+        s.scatter.region_aware = False
+        rt = from_yaml(to_yaml(s))
+        assert rt.scatter.window_mhz == 120.0
+        assert rt.scatter.region_aware is False
 
     def test_yaml_sparse_output_omits_none(self) -> None:
         s = NoiseSettings()

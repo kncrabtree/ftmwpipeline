@@ -530,6 +530,8 @@ do not silently delete entries.**
 | 12 | `_internal/stage3_impl._spectrum_from_fid` gains a keyword-only `zpf=` kwarg; `_grid_aware_sg_window` gains keyword-only `fwhm_coverage=` and `min_window=` kwargs | `_internal/stage3_impl.py::_spectrum_from_fid`, `::_grid_aware_sg_window` | The new kwargs default to the module-level constants (`_DETECTION_ZPF`, `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW`), so old callers see identical behaviour. The orchestrator-internal knobs now flow through `PeakDetectionSettings` end-to-end. **Landed in this project.** | None for old callers; new callers can pass per-knob kwargs or build a `PeakDetectionSettings`. |
 | 13 | Legacy per-knob kwargs (`edge_m`, `trim_m`, `edge_threshold`, `max_window_width_mhz`, `min_freeze_snr`, `min_window_half_width_mhz`, `magnitude_attachment_threshold`, `tau_us`) stay on `Pipeline.assign_windows` / `api.assign_windows` / `_internal/stage4_impl.assign_windows_impl` and on the corresponding CLI flags | `_internal/stage4_impl.py`, `pipeline.py`, `api.py`, `cli/window_commands.py` | Match the Stage 5 / Stage 2b / Stage 2 / Stage 3 migration policy: existing call-sites that pass individual kwargs keep working; they bundle into an explicit `WindowPlanningSettings` inside the impl and route through the resolver. | Move kwarg payload to a `WindowPlanningSettings(...)` instance or to a YAML preset. |
 | 14 | Module-level constants (`DEFAULT_EDGE_M`, `DEFAULT_TRIM_M`, `DEFAULT_EDGE_THRESHOLD` in `preprocessing/edge_coherence.py`; `DEFAULT_MAX_WINDOW_WIDTH_MHZ`, `DEFAULT_MIN_FREEZE_SNR`, `DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ`, `DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD` in `preprocessing/window_planning.py`) stay live | `preprocessing/edge_coherence.py`, `preprocessing/window_planning.py` | They remain the kernel's parameter defaults and the readable canonical source the `WindowPlanningSettings._HARD_DEFAULTS` table mirrors. Once every consumer reads from a resolved `WindowPlanningSettings`, they become docstring-only. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
+| 15 | Legacy per-knob kwargs for the **scatter** estimator (`window_mhz`, `pedestal_mhz`, `line_k`, `n_iter`, `region_aware`, `smoothing_mhz`, `smoothing_percentile`, `convolve_mhz`) stay on `estimate_noise` signatures | `_internal/stage2_impl.py`, `pipeline.py`, `api.py`, `cli/noise_commands.py` | The scatter estimator was originally self-contained (kwarg-driven, no resolver). It now backfills into a `NoiseSettings.scatter` sub-block and resolves through the same `explicit > preset > persisted > hard default` chain as the adaptive path; the per-knob kwargs bundle into the explicit layer inside the impl and fire the shared `warn_legacy_kwargs` probe. **Landed in this project.** | Move kwarg payload to a `NoiseSettings(scatter=ScatterSubSettings(...))` instance or to a YAML preset's `stage2:` block. |
+| 16 | `region_aware` dropped from `bool = True` to `Optional[bool] = None` on every Stage 2 layer | `_internal/stage2_impl.py`, `pipeline.py`, `api.py` | Same pattern as shim #4 (`compute_band_majorities`): a `None` default lets the resolver pick the value up from a preset / persisted layer; an explicit `True`/`False` flows through the explicit layer and triggers the legacy-kwarg probe. The hard default in `NoiseSettings._HARD_DEFAULTS["scatter"]` is `True`, so observable no-kwargs behaviour is unchanged. **Landed in this project.** | None — the migration is internal; user-visible defaults are preserved. |
 
 ## Follow-ups
 
@@ -543,8 +545,11 @@ Ordered: 1 → 2 → 4 → 5. #3 deferred. #1, #2, #4 shipped.
    in-repo callers) so they can be migrated before the surrounding
    work ships. Covers shims #1 (`fit:` ↔ `stage5:`), #2 (Stage 2b
    per-knob kwargs), #6 (`from_saved_params=True` on `estimate_noise`),
-   #7 (Stage 2 per-knob kwargs), #10 (Stage 3 per-knob kwargs), #13
-   (Stage 4 per-knob kwargs), and Stage 5's per-knob kwargs.
+   #7 (Stage 2 adaptive per-knob kwargs), #10 (Stage 3 per-knob kwargs),
+   #13 (Stage 4 per-knob kwargs), #15 (Stage 2 scatter per-knob kwargs),
+   #16 (`region_aware`), and Stage 5's per-knob kwargs. Shims #15/#16
+   already emit the `DeprecationWarning` (the scatter kwargs join the
+   shared `estimate_noise` probe).
 2. **Instrument-tunable knob defaults.** Shipped as
    [`instrument-tunable-knobs.md`](instrument-tunable-knobs.md) — a
    cross-stage table of every settings-dataclass field's hard default,

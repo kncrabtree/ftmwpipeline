@@ -15,16 +15,10 @@ from ..preprocessing.noise_estimation import (
     estimate_noise_adaptive,
     estimate_noise_scatter,
     NoiseResult,
-    SCATTER_WINDOW_MHZ,
-    SCATTER_PEDESTAL_MHZ,
-    SCATTER_LINE_K,
-    SCATTER_N_ITER,
-    SCATTER_SMOOTHING_MHZ,
-    SCATTER_SMOOTHING_PERCENTILE,
-    SCATTER_CONVOLVE_MHZ,
 )
 from ..core.noise_settings import (
     NoiseSettings,
+    ScatterSubSettings,
     load_preset as load_noise_preset,
     resolve as resolve_noise_settings,
 )
@@ -72,6 +66,37 @@ def _build_explicit_from_kwargs(
     return explicit
 
 
+def _build_scatter_explicit_from_kwargs(
+    *,
+    window_mhz: Optional[float],
+    pedestal_mhz: Optional[float],
+    line_k: Optional[float],
+    n_iter: Optional[int],
+    region_aware: Optional[bool],
+    smoothing_mhz: Optional[float],
+    smoothing_percentile: Optional[float],
+    convolve_mhz: Optional[float],
+) -> NoiseSettings:
+    """Bundle the scatter per-knob kwargs into an explicit-layer settings instance.
+
+    Sibling of :func:`_build_explicit_from_kwargs` for the scatter (high-pass)
+    estimator; populates only the ``scatter`` sub-block so the resolver merges it
+    with any preset / persisted layer.
+    """
+    explicit = NoiseSettings()
+    explicit.scatter = ScatterSubSettings(
+        window_mhz=window_mhz,
+        pedestal_mhz=pedestal_mhz,
+        line_k=line_k,
+        n_iter=n_iter,
+        region_aware=region_aware,
+        smoothing_mhz=smoothing_mhz,
+        smoothing_percentile=smoothing_percentile,
+        convolve_mhz=convolve_mhz,
+    )
+    return explicit
+
+
 def compute_noise_estimation_impl(
     file_path: str,
     skew_target: Optional[float] = None,
@@ -85,7 +110,7 @@ def compute_noise_estimation_impl(
     pedestal_mhz: Optional[float] = None,
     line_k: Optional[float] = None,
     n_iter: Optional[int] = None,
-    region_aware: bool = True,
+    region_aware: Optional[bool] = None,
     smoothing_mhz: Optional[float] = None,
     smoothing_percentile: Optional[float] = None,
     convolve_mhz: Optional[float] = None,
@@ -138,6 +163,14 @@ def compute_noise_estimation_impl(
             "min_bin_fraction": min_bin_fraction,
             "smoothing_window_mhz": smoothing_window_mhz,
             "min_noise_fraction": min_noise_fraction,
+            "window_mhz": window_mhz,
+            "pedestal_mhz": pedestal_mhz,
+            "line_k": line_k,
+            "n_iter": n_iter,
+            "region_aware": region_aware,
+            "smoothing_mhz": smoothing_mhz,
+            "smoothing_percentile": smoothing_percentile,
+            "convolve_mhz": convolve_mhz,
         },
         migration_hint=(
             "use settings=NoiseSettings(...) or preset='name' to drive "
@@ -183,14 +216,18 @@ def compute_noise_estimation_impl(
             "'adaptive' or 'scatter'"
         )
 
-    # The scatter (high-pass) estimator is self-contained — it does not share
-    # the adaptive estimator's NoiseSettings resolver chain. It carries its own
-    # four instrument-tunable knobs (window_mhz, pedestal_mhz, line_k, n_iter),
-    # each defaulting to the module-level constant when left unset.
+    # The scatter (high-pass) estimator resolves its ``scatter`` sub-block
+    # through the same four-layer chain as the adaptive path: explicit per-knob
+    # kwargs > preset > persisted > hard default. ``from_saved_params`` is the
+    # adaptive-only legacy contract and is not honoured here.
     if method == "scatter":
-        return _compute_noise_scatter(
-            file_path=file_path,
-            complex_ft=complex_ft,
+        if preset is not None and settings is not None:
+            raise ValueError(
+                "'preset' and 'settings' are alternative ways to populate "
+                "the preset layer of the noise-settings chain; pass exactly "
+                "one (or override individual fields via explicit kwargs)"
+            )
+        scatter_explicit = _build_scatter_explicit_from_kwargs(
             window_mhz=window_mhz,
             pedestal_mhz=pedestal_mhz,
             line_k=line_k,
@@ -199,6 +236,23 @@ def compute_noise_estimation_impl(
             smoothing_mhz=smoothing_mhz,
             smoothing_percentile=smoothing_percentile,
             convolve_mhz=convolve_mhz,
+        )
+        scatter_preset_layer = settings
+        scatter_preset_name: Optional[str] = None
+        if preset is not None:
+            scatter_preset_layer = load_noise_preset(preset)
+            scatter_preset_name = str(preset)
+        scatter_resolved = resolve_noise_settings(
+            explicit=scatter_explicit,
+            preset=scatter_preset_layer,
+            persisted=load_noise_settings_from_h5(file_path),
+            recommended=None,
+        )
+        return _compute_noise_scatter(
+            file_path=file_path,
+            complex_ft=complex_ft,
+            settings=scatter_resolved,
+            preset_name=scatter_preset_name,
         )
 
     # When ``from_saved_params=True`` the legacy contract reads the
@@ -391,38 +445,29 @@ def _compute_noise_scatter(
     *,
     file_path: str,
     complex_ft: Any,
-    window_mhz: Optional[float],
-    pedestal_mhz: Optional[float],
-    line_k: Optional[float],
-    n_iter: Optional[int],
-    region_aware: bool,
-    smoothing_mhz: Optional[float],
-    smoothing_percentile: Optional[float],
-    convolve_mhz: Optional[float],
+    settings: NoiseSettings,
+    preset_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the scatter (high-pass) Stage 2 estimator and persist its result.
 
-    Self-contained sibling of the adaptive path in
-    :func:`compute_noise_estimation_impl`: it runs :func:`estimate_noise_scatter`
-    on the supplied ComplexFT, stores the NoiseResult in ``stage2_noise_result``,
-    and marks the stage complete. The four scatter knobs default to the
-    module-level constants when left unset.
+    Sibling of the adaptive path in :func:`compute_noise_estimation_impl`: it
+    runs :func:`estimate_noise_scatter` on the supplied ComplexFT, stores the
+    NoiseResult in ``stage2_noise_result``, persists the resolved
+    :class:`NoiseSettings` to ``stage2_noise``, and marks the stage complete.
+    The ``settings`` argument is a *resolved* bundle whose ``scatter`` sub-block
+    has every field filled from the hard defaults if no layer supplied one.
     """
-    window_mhz_v = SCATTER_WINDOW_MHZ if window_mhz is None else float(window_mhz)
-    pedestal_mhz_v = SCATTER_PEDESTAL_MHZ if pedestal_mhz is None else float(pedestal_mhz)
-    line_k_v = SCATTER_LINE_K if line_k is None else float(line_k)
-    n_iter_v = SCATTER_N_ITER if n_iter is None else int(n_iter)
-    smoothing_mhz_v = (
-        SCATTER_SMOOTHING_MHZ if smoothing_mhz is None else float(smoothing_mhz)
+    scatter = settings.scatter
+    window_mhz_v = float(_required(scatter.window_mhz, "scatter.window_mhz"))
+    pedestal_mhz_v = float(_required(scatter.pedestal_mhz, "scatter.pedestal_mhz"))
+    line_k_v = float(_required(scatter.line_k, "scatter.line_k"))
+    n_iter_v = int(_required(scatter.n_iter, "scatter.n_iter"))
+    region_aware_v = bool(_required(scatter.region_aware, "scatter.region_aware"))
+    smoothing_mhz_v = float(_required(scatter.smoothing_mhz, "scatter.smoothing_mhz"))
+    smoothing_percentile_v = float(
+        _required(scatter.smoothing_percentile, "scatter.smoothing_percentile")
     )
-    smoothing_percentile_v = (
-        SCATTER_SMOOTHING_PERCENTILE
-        if smoothing_percentile is None
-        else float(smoothing_percentile)
-    )
-    convolve_mhz_v = (
-        SCATTER_CONVOLVE_MHZ if convolve_mhz is None else float(convolve_mhz)
-    )
+    convolve_mhz_v = float(_required(scatter.convolve_mhz, "scatter.convolve_mhz"))
 
     processing_params: Dict[str, Any] = {
         'method': 'scatter',
@@ -430,13 +475,13 @@ def _compute_noise_scatter(
         'pedestal_mhz': pedestal_mhz_v,
         'line_k': line_k_v,
         'n_iter': n_iter_v,
-        'region_aware': bool(region_aware),
+        'region_aware': region_aware_v,
         'smoothing_mhz': smoothing_mhz_v,
         'smoothing_percentile': smoothing_percentile_v,
         'convolve_mhz': convolve_mhz_v,
     }
 
-    logger.info("Noise estimation parameters (scatter estimator):")
+    logger.info("Noise estimation parameters (scatter estimator, resolved):")
     for param, value in processing_params.items():
         logger.info(f"  {param}: {value}")
 
@@ -448,7 +493,7 @@ def _compute_noise_scatter(
             pedestal_mhz=pedestal_mhz_v,
             line_k=line_k_v,
             n_iter=n_iter_v,
-            region_aware=bool(region_aware),
+            region_aware=region_aware_v,
             smoothing_mhz=smoothing_mhz_v,
             smoothing_percentile=smoothing_percentile_v,
             convolve_mhz=convolve_mhz_v,
@@ -466,6 +511,10 @@ def _compute_noise_scatter(
             complex_ft=complex_ft,
             parameters_used=processing_params,
         )
+        # Persist the resolved NoiseSettings (scatter sub-block) to
+        # ``processing_parameters/stage2_noise`` so a no-kwargs re-run inherits
+        # it via the resolver's persisted layer — mirrors the adaptive path.
+        save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
         _update_stage_completion(file_path, 'stage2_noise_result')
         logger.info("Stage 2: Noise estimation results saved and marked complete")
     except Exception as e:

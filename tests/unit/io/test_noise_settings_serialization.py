@@ -13,6 +13,7 @@ import pytest
 
 from ftmwpipeline.core.noise_settings import (
     NoiseSettings,
+    _SUB_NAMES,
     resolve,
 )
 from ftmwpipeline.io.noise_settings_serialization import (
@@ -21,9 +22,6 @@ from ftmwpipeline.io.noise_settings_serialization import (
     noise_settings_present,
     save_noise_settings_to_h5,
 )
-
-
-_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion")
 
 
 @pytest.fixture
@@ -49,6 +47,22 @@ class TestStage2NoiseSettingsPersistence:
         assert loaded.skewness.skew_target == original.skewness.skew_target
         assert loaded.smoothing.smoothing_window_mhz == original.smoothing.smoothing_window_mhz
         assert loaded.skirt_exclusion.strong_peak_snr == original.skirt_exclusion.strong_peak_snr
+        assert loaded.scatter.window_mhz == original.scatter.window_mhz
+        assert loaded.scatter.n_iter == original.scatter.n_iter
+        assert loaded.scatter.region_aware == original.scatter.region_aware
+
+    def test_round_trip_scatter_bool_and_int(self, empty_ftmw) -> None:
+        """The scatter region_aware bool and n_iter int survive the HDF5 round-trip."""
+        s = NoiseSettings()
+        s.scatter.window_mhz = 60.0
+        s.scatter.n_iter = 5
+        s.scatter.region_aware = False
+        save_noise_settings_to_h5(empty_ftmw, s)
+        loaded = load_noise_settings_from_h5(empty_ftmw)
+        assert loaded is not None
+        assert loaded.scatter.window_mhz == 60.0
+        assert loaded.scatter.n_iter == 5
+        assert bool(loaded.scatter.region_aware) is False
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
         s = NoiseSettings()

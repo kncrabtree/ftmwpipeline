@@ -483,7 +483,7 @@ class Pipeline:
                        pedestal_mhz: Optional[float] = None,
                        line_k: Optional[float] = None,
                        n_iter: Optional[int] = None,
-                       region_aware: bool = True,
+                       region_aware: Optional[bool] = None,
                        smoothing_mhz: Optional[float] = None,
                        smoothing_percentile: Optional[float] = None,
                        convolve_mhz: Optional[float] = None,

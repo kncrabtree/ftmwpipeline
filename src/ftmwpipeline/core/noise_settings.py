@@ -18,11 +18,13 @@ every field is ``Optional`` with ``None`` meaning *unset* (fall through the
 resolution chain). A *resolved* instance (produced by :func:`resolve`) has
 every field filled with a hard default if no layer supplied a value.
 
-The dataclass is structured into four sub-dataclasses grouping the knobs
-by what they configure: ``binning``, ``skewness``, ``smoothing``, and
-``skirt_exclusion``. The grouping maps 1:1 to HDF5 subgroups under
-``processing_parameters/stage2_noise`` so each sub-block is independently
-inspectable.
+The dataclass is structured into sub-dataclasses grouping the knobs by what
+they configure. The adaptive estimator uses ``binning``, ``skewness``,
+``smoothing``, and ``skirt_exclusion``; the scatter (high-pass) estimator uses
+``scatter``. Both sub-block families coexist on one instance -- the ``method``
+argument selects which the kernel consumes. The grouping maps 1:1 to HDF5
+subgroups under ``processing_parameters/stage2_noise`` so each sub-block is
+independently inspectable.
 
 The *recommended* layer of :func:`resolve` is reserved but unused for
 Stage 2 today -- Stage 2 has no upstream feeder. The layer is kept in
@@ -92,6 +94,25 @@ class SkirtExclusionSubSettings:
 
 
 @dataclass
+class ScatterSubSettings:
+    """High-pass, region-aware scatter-MAD estimator knobs.
+
+    Mirrors the ``estimate_noise_scatter`` kernel signature; the
+    ``method="scatter"`` path consumes these (the adaptive sub-blocks above
+    are ignored, and vice versa).
+    """
+
+    window_mhz: Optional[float] = None
+    pedestal_mhz: Optional[float] = None
+    line_k: Optional[float] = None
+    n_iter: Optional[int] = None
+    region_aware: Optional[bool] = None
+    smoothing_mhz: Optional[float] = None
+    smoothing_percentile: Optional[float] = None
+    convolve_mhz: Optional[float] = None
+
+
+@dataclass
 class NoiseSettings:
     """Stage 2 noise-estimation settings (see module docstring)."""
 
@@ -101,6 +122,7 @@ class NoiseSettings:
     skirt_exclusion: SkirtExclusionSubSettings = field(
         default_factory=SkirtExclusionSubSettings
     )
+    scatter: ScatterSubSettings = field(default_factory=ScatterSubSettings)
 
     def is_empty(self) -> bool:
         """True if no field is set across any sub-dataclass."""
@@ -112,7 +134,7 @@ class NoiseSettings:
 
 
 # Sub-dataclass field names on NoiseSettings, in HDF5/YAML order.
-_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion")
+_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion", "scatter")
 
 
 # Hard defaults per sub-dataclass. These mirror the module-level constants
@@ -138,6 +160,16 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "strong_peak_snr": 20.0,
         "skirt_exclusion_k": 1.5,
         "max_skirt_exclusion_mhz": 500.0,
+    },
+    "scatter": {
+        "window_mhz": 80.0,
+        "pedestal_mhz": 20.0,
+        "line_k": 8.0,
+        "n_iter": 3,
+        "region_aware": True,
+        "smoothing_mhz": 800.0,
+        "smoothing_percentile": 50.0,
+        "convolve_mhz": 200.0,
     },
 }
 
@@ -410,6 +442,7 @@ __all__ = [
     "SkewnessSubSettings",
     "SmoothingSubSettings",
     "SkirtExclusionSubSettings",
+    "ScatterSubSettings",
     "NoiseSettings",
     "resolve",
     "to_attrs",
