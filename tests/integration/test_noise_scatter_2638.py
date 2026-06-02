@@ -21,7 +21,10 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage2_impl import load_noise_result_impl
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import (
+    estimate_noise_adaptive,
+    estimate_noise_scatter,
+)
 
 
 @pytest.mark.integration
@@ -38,11 +41,14 @@ class TestScatterNoRegression2638:
         fp = tmp_path / "scatter_2638.ftmw"
         shutil.copy(baseline_2638_stage1_raw, fp)
 
+        # Estimator-level agreement is a property of the two estimators on the
+        # same spectrum -- run both directly on the canonical full-record FT,
+        # independent of which grid Stage 2 persists on.
         ft = ftmw.compute_ft(fp)
         nr_adaptive = estimate_noise_adaptive(
             ft.freq_array, ft.magnitude_spectrum, verbose=False
         )
-        nr_scatter = ftmw.estimate_noise(fp)
+        nr_scatter = estimate_noise_scatter(ft.freq_array, ft.magnitude_spectrum)
 
         assert nr_scatter.bin_info["algorithm"] == "scatter_highpass_region_aware"
         assert np.all(np.isfinite(nr_scatter.rms_noise))

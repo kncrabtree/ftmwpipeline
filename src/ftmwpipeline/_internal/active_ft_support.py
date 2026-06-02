@@ -149,27 +149,40 @@ def _persisted_scatter_knobs(file_path: str) -> dict:
     return {k: v for k, v in candidates.items() if v is not None}
 
 
+def build_trimmed_active_ft(
+    file_path: str,
+    trim_range: Optional[Tuple[float, float]] = None,
+) -> ComplexFT:
+    """Build the canonical unapodized active FT as a (trimmed) :class:`ComplexFT`.
+
+    The single active-grid surface every later stage scores, plans, fits, and
+    estimates noise on: the ``dt_us*rfft`` of the active region, wrapped as a
+    ComplexFT (so it carries the ``freq_array`` / ``magnitude_spectrum``
+    interface), trimmed to the analysis band when ``trim_range`` is given.
+    """
+    active = compute_canonical_active_ft(file_path, expf_us=None)
+    cft = ComplexFT.from_spectrum(active.complex_spectrum, active.freq_mhz)
+    if trim_range is not None:
+        cft = cft.trim_to_range(trim_range[0], trim_range[1])
+    return cft
+
+
 def build_active_grid_with_noise(
     file_path: str,
     trim_range: Optional[Tuple[float, float]] = None,
 ) -> Tuple[ComplexFT, np.ndarray]:
     """Build the canonical active FT (trimmed) and its per-bin authority σ.
 
-    The single active-grid scoring/planning surface for Stages 3 and 4: the
-    unapodized active FT as a :class:`ComplexFT` (so it carries the same
-    ``freq_array`` / ``magnitude_spectrum`` interface the stages used on the
-    persisted full-record FT) plus the scatter-estimated per-bin σ_x on that
-    same grid, measured with the persisted Stage 2 scatter knobs. σ aligns
-    with ``cft`` element-for-element.
+    The single active-grid scoring/planning surface for Stages 3, 4, and 5:
+    the unapodized active FT plus the scatter-estimated per-bin σ_x on that
+    same grid, measured with the persisted Stage 2 scatter knobs so it matches
+    the canonical noise estimator. σ aligns with ``cft`` element-for-element.
 
     ``trim_range`` restricts both to the analysis band (mirroring the
     persisted FT's trim), so the authority σ is measured region-aware over the
     same band Stage 2 used.
     """
-    active = compute_canonical_active_ft(file_path, expf_us=None)
-    cft = ComplexFT.from_spectrum(active.complex_spectrum, active.freq_mhz)
-    if trim_range is not None:
-        cft = cft.trim_to_range(trim_range[0], trim_range[1])
+    cft = build_trimmed_active_ft(file_path, trim_range)
     noise = estimate_active_ft_noise(
         cft.freq_array,
         cft.complex_spectrum,

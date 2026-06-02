@@ -13,9 +13,10 @@ import h5py
 import numpy as np
 
 from ..preprocessing.noise_estimation import (
-    estimate_noise_scatter,
+    estimate_active_ft_noise,
     NoiseResult,
 )
+from .active_ft_support import build_trimmed_active_ft
 from ..core.noise_settings import (
     NoiseSettings,
     load_preset as load_noise_preset,
@@ -187,6 +188,7 @@ def compute_noise_estimation_impl(
     return _compute_noise_scatter(
         file_path=file_path,
         complex_ft=complex_ft,
+        trim_range=stage1_result.get('trim_range'),
         settings=scatter_resolved,
         preset_name=scatter_preset_name,
     )
@@ -196,16 +198,20 @@ def _compute_noise_scatter(
     *,
     file_path: str,
     complex_ft: Any,
+    trim_range: Optional[tuple] = None,
     settings: NoiseSettings,
     preset_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run the scatter (high-pass) Stage 2 estimator and persist its result.
 
-    Runs :func:`estimate_noise_scatter` on the supplied ComplexFT, stores the
-    NoiseResult in ``stage2_noise_result``, persists the resolved
-    :class:`NoiseSettings` to ``stage2_noise``, and marks the stage complete.
-    The ``settings`` argument is a *resolved* bundle with every field filled
-    from the hard defaults if no layer supplied one.
+    Measures noise on the canonical **unapodized active FT** (trimmed to the
+    analysis band) -- the single grid every later stage scores, plans, and
+    fits on -- and stores the NoiseResult in ``stage2_noise_result`` on that
+    grid. Persists the resolved :class:`NoiseSettings` to ``stage2_noise`` and
+    marks the stage complete. The full-record ``complex_ft`` is carried to the
+    result dict for the display/range summary only. The ``settings`` argument
+    is a *resolved* bundle with every field filled from the hard defaults if
+    no layer supplied one.
     """
     window_mhz_v = float(_required(settings.window_mhz, "window_mhz"))
     pedestal_mhz_v = float(_required(settings.pedestal_mhz, "pedestal_mhz"))
@@ -234,10 +240,14 @@ def _compute_noise_scatter(
     for param, value in processing_params.items():
         logger.info(f"  {param}: {value}")
 
+    # Measure on the canonical unapodized active FT (trimmed to the analysis
+    # band) -- the single grid every later stage consumes.
+    active_ft = build_trimmed_active_ft(file_path, trim_range)
+
     try:
-        noise_result = estimate_noise_scatter(
-            frequencies=complex_ft.freq_array,
-            magnitudes=complex_ft.magnitude_spectrum,
+        noise_result = estimate_active_ft_noise(
+            active_ft.freq_array,
+            active_ft.complex_spectrum,
             window_mhz=window_mhz_v,
             pedestal_mhz=pedestal_mhz_v,
             line_k=line_k_v,
@@ -257,8 +267,8 @@ def _compute_noise_scatter(
         save_noise_result_impl(
             file_path=file_path,
             noise_result=noise_result,
-            frequencies=complex_ft.freq_array,
-            magnitudes=complex_ft.magnitude_spectrum,
+            frequencies=active_ft.freq_array,
+            magnitudes=active_ft.magnitude_spectrum,
             parameters_used=processing_params,
         )
         # Persist the resolved NoiseSettings to
@@ -271,15 +281,17 @@ def _compute_noise_scatter(
         logger.error(f"Failed to save noise estimation results: {e}")
         raise RuntimeError(f"Noise estimation succeeded but storage failed: {e}")
 
+    active_freq = active_ft.freq_array
     return {
         'status': 'success',
         'noise_result': noise_result,
         'complex_ft': complex_ft,
+        'active_ft': active_ft,
         'parameters_used': processing_params,
-        'frequency_points': len(complex_ft.freq_array),
-        'frequency_range': (complex_ft.freq_array[0], complex_ft.freq_array[-1]),
+        'frequency_points': len(active_freq),
+        'frequency_range': (float(active_freq.min()), float(active_freq.max())),
         'noise_points': int(noise_result.noise_mask.sum()),
-        'total_points': len(complex_ft.freq_array),
+        'total_points': len(active_freq),
     }
 
 
@@ -350,21 +362,25 @@ def visualize_noise_impl(
                     "Run compute_ft() or compute-ft command first."
                 )
         
-        # Compute ComplexFT on-demand for visualization (consistent with Stage 2 architecture)
+        # Rebuild the canonical trimmed active FT -- the grid the noise was
+        # measured on -- and overlay sigma there (the noise diagnostic shows
+        # the same active spectrum every later stage scores/fits on).
         from .stage1_impl import compute_ft_impl
         stage1_result = compute_ft_impl(file_path=file_path)
-        complex_ft = stage1_result['complex_ft']
-        
+        complex_ft = build_trimmed_active_ft(
+            file_path, stage1_result.get('trim_range')
+        )
+
         # Load NoiseResult data
         with h5py.File(file_path, 'r') as h5f:
-            
+
             noise_result = load_noise_result_from_hdf5(
                 h5f['stage2_noise_result'],
                 complex_ft.freq_array,
                 complex_ft.magnitude_spectrum
             )
-            logger.info("Loaded NoiseResult and ComplexFT from pipeline file")
-            
+            logger.info("Loaded NoiseResult and active FT from pipeline file")
+
     except Exception as e:
         raise RuntimeError(f"Failed to load data from pipeline file {file_path}: {e}")
     
@@ -483,19 +499,24 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
             if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
                 raise ValueError("Stage 1 parameters missing - cannot compute ComplexFT for NoiseResult loading")
         
-        # Compute ComplexFT on-demand (consistent with new architecture)
+        # Rebuild the canonical trimmed active FT on-demand: the sigma was
+        # measured and stored on this grid, so reconstruction reads it back
+        # element-for-element. (The full-record FT is display-only.)
         from .stage1_impl import compute_ft_impl
         stage1_result = compute_ft_impl(file_path=file_path)
-        complex_ft = stage1_result['complex_ft']
+        active_ft = build_trimmed_active_ft(
+            file_path, stage1_result.get('trim_range')
+        )
+        complex_ft = active_ft
 
-        # Load NoiseResult using computed ComplexFT
+        # Load NoiseResult on the active-FT grid
         with h5py.File(file_path, 'r') as h5f:
 
             # Load NoiseResult
             noise_result = load_noise_result_from_hdf5(
                 h5f['stage2_noise_result'],
-                complex_ft.freq_array,
-                complex_ft.magnitude_spectrum
+                active_ft.freq_array,
+                active_ft.magnitude_spectrum,
             )
 
             # Load metadata

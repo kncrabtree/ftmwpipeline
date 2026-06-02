@@ -86,7 +86,7 @@ def test_scatter_field_reaches_kernel(
     shutil.copyfile(baseline_2638_stage1, variant)
 
     mock, captured = _intercept()
-    monkeypatch.setattr(stage2_impl, "estimate_noise_scatter", mock)
+    monkeypatch.setattr(stage2_impl, "estimate_active_ft_noise", mock)
 
     s = NoiseSettings()
     setter(s)
@@ -146,7 +146,7 @@ class TestPersistedLayerInherit:
         save_noise_settings_to_h5(str(variant), persisted)
 
         mock, captured = _intercept()
-        monkeypatch.setattr(stage2_impl, "estimate_noise_scatter", mock)
+        monkeypatch.setattr(stage2_impl, "estimate_active_ft_noise", mock)
 
         with pytest.raises(ValueError, match=r"intercepted"):
             stage2_impl.compute_noise_estimation_impl(str(variant))
