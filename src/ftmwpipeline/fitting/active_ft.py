@@ -36,13 +36,12 @@ convention, so unit tests can construct :class:`ActiveFTResult` directly.
 
 Noise convention
 ----------------
-Per-bin noise on the active-FT is measured directly by running the existing
-Stage 2 adaptive noise estimator
-(:func:`ftmwpipeline.preprocessing.noise_estimation.estimate_noise_adaptive`)
-on the active-FT spectrum -- the *same* algorithm Stage 2 uses on the
-persisted spectrum, just applied to the active-FT instead. No conversion
-factor, no ``1/sqrt(alpha)`` rescale: the noise estimate comes from the same
-spectrum the fit sees, so any normalization choices cancel by construction.
+Per-bin noise on the active-FT is the Stage 2 scatter authority
+(:func:`ftmwpipeline.preprocessing.noise_estimation.estimate_active_ft_noise`)
+measured on the active-FT spectrum -- the *same* estimator and grid Stage 2
+persists. No conversion factor, no ``1/sqrt(alpha)`` rescale: the noise
+estimate comes from the same spectrum the fit sees, so any normalization
+choices cancel by construction.
 
 References
 ----------

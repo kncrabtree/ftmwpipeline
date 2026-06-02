@@ -5,10 +5,28 @@ consumes, reformulating the Stage 3 gap-pass matched filter so it stops spawning
 a distinct apodized FT, and deleting the legacy `estimate_noise_adaptive` kernel
 once nothing calls it.
 
-**Status:** planning only — no code written yet. This doc is written to be
-self-contained for a fresh session: §"Verified facts" and §"Verify first" are
-the empirical state; §"Work sequence" is the order of operations; §"Call-site
-map" is where the edits land.
+**Status:** noise authority + "no user grid" **shipped**; the gap-pass
+matched-filter kernel reformulation (Work item 1) is **deferred** and is the
+only remaining piece.
+
+Shipped: Stage 2 measures and persists σ once on the canonical active FT
+(`estimate_active_ft_noise` + `_internal/active_ft_support.py`:
+`build_trimmed_active_ft` / `build_active_grid_with_noise` /
+`estimate_canonical_active_ft_noise`); Stage 3 snaps/scores on the active grid
+(`_snap_to_active_grid`), Stage 4 plans windows on it, and Stage 5 weights its
+fit + drives its structural replan + renders its fit overlay on it. The
+front-zeroed full-record FT is no longer a scoring/detection/planning/fit
+domain (Stage 0/1 comparison view only). The legacy `estimate_noise_adaptive`
+kernel is retired to a minimal reference at `../research/noise-snr-scaling/
+legacy_adaptive.py`. The scatter estimator now clamps its rank-filter windows
+to the data length (coarse grids no longer blow up). D9 amended in `ROADMAP.md`.
+
+Deferred (still the plan below, Work item 1): the Stage 3 gap-pass matched
+filter still exp-apodizes in the time domain (`_mf_gap_spectrum`); reformulating
+it as a shape-aware frequency-domain template convolution on the unapodized
+active FT is independent of the grid/scoring move that shipped and is unblocked
+by it. The §"Verified facts"/§"Verify first" notes below are the empirical
+state the kernel work builds on.
 
 ## Principle
 

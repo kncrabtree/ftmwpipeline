@@ -21,48 +21,33 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage2_impl import load_noise_result_impl
-from ftmwpipeline.preprocessing.noise_estimation import (
-    estimate_noise_adaptive,
-    estimate_noise_scatter,
-)
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 
 @pytest.mark.integration
 class TestScatterNoRegression2638:
-    def test_scatter_matches_adaptive_level_on_2638(
+    def test_scatter_sane_level_on_2638(
         self, baseline_2638_stage1_raw, tmp_path
     ):
-        """Scatter σ ≈ adaptive σ on the raw (production) 2638 FT.
+        """Scatter σ on the raw (production) 2638 FT is finite, positive, and
+        reads a sane noise floor.
 
-        The adaptive estimator is no longer a user-facing Stage 2 method, but
-        the kernel survives as an internal helper; we call it directly on the
-        canonical FT for the level-agreement reference.
+        2638 sits near the pedestal-free regime (SNR ~700), so the scatter
+        estimator should report a smooth, mostly-noise floor here. The
+        level-agreement against the frame-difference truth (and the contrast
+        with the retired level-based estimator) is documented in
+        ``dev-docs/research/noise-snr-scaling/report.md`` §9.
         """
         fp = tmp_path / "scatter_2638.ftmw"
         shutil.copy(baseline_2638_stage1_raw, fp)
 
-        # Estimator-level agreement is a property of the two estimators on the
-        # same spectrum -- run both directly on the canonical full-record FT,
-        # independent of which grid Stage 2 persists on.
         ft = ftmw.compute_ft(fp)
-        nr_adaptive = estimate_noise_adaptive(
-            ft.freq_array, ft.magnitude_spectrum, verbose=False
-        )
         nr_scatter = estimate_noise_scatter(ft.freq_array, ft.magnitude_spectrum)
 
         assert nr_scatter.bin_info["algorithm"] == "scatter_highpass_region_aware"
         assert np.all(np.isfinite(nr_scatter.rms_noise))
         assert np.all(nr_scatter.rms_noise > 0)
-        assert nr_scatter.rms_noise.shape == nr_adaptive.rms_noise.shape
-
-        ratio = float(
-            np.median(nr_scatter.rms_noise) / np.median(nr_adaptive.rms_noise)
-        )
-        assert 0.85 < ratio < 1.25, (
-            f"scatter/adaptive median σ ratio {ratio:.3f} on 2638 is a material "
-            "shift; the two estimators should agree on this near-pedestal-free "
-            "calibration fixture"
-        )
+        assert nr_scatter.rms_noise.shape == ft.freq_array.shape
 
         # The 2638 spectrum is mostly quiet, so the self-mask keeps the vast
         # majority of bins as noise.

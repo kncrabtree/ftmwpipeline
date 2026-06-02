@@ -38,7 +38,7 @@ from ftmwpipeline.workflows import process_experiment, batch_process_experiments
 
 # TODO: Fix imports for other modules when they're implemented
 # # Preprocessing functions
-# from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+# from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 # from ftmwpipeline.preprocessing.data_loading import load_blackchirp_data
 
 # # Peak detection
