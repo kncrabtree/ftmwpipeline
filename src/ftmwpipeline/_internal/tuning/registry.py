@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
 from .plots import (
+    plot_ft_band_stack,
     plot_noise_sweep,
     plot_shape_vote,
     plot_spectra_ladder,
@@ -150,7 +151,10 @@ class FtAtStart:
     """
 
     ft: Any
-    start_us: float
+    # start_us is set for the start ladder (start_us / guard knobs); the FT
+    # band/window knobs (trim / end_us) leave it None — their plot is the
+    # spectrum stack, which does not mark a window start.
+    start_us: Optional[float] = None
     chirp_end_us: Optional[float] = None
 
 
@@ -164,6 +168,46 @@ def _run_ft_start(path: Path, value: Any) -> Any:
 
     start = float(value)
     return FtAtStart(ft=ftmw.compute_ft(path, start_us=start), start_us=start)
+
+
+def _run_ft_end() -> RunFn:
+    """Recompute the FT with the window end set to each value; isolates the
+    effect of ``end_us`` (FID truncation), inheriting the rest of the chain."""
+
+    def run(path: Path, value: Any) -> Any:
+        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+
+        return FtAtStart(ft=ftmw.compute_ft(path, end_us=float(value)))
+
+    return run
+
+
+def _run_ft_trim(edge: str) -> RunFn:
+    """Sweep one edge of the FT frequency trim, holding the other at the file's
+    canonical value. ``edge`` is ``"min"`` or ``"max"``.
+
+    The canonical trim edges are read once from the persisted FT (its
+    ``freq_array`` spans the active band; the array is sideband-ordered, so the
+    edges are its min/max, not its endpoints) and memoised for the sweep.
+    """
+    cache: Dict[Any, Tuple[float, float]] = {}
+
+    def run(path: Path, value: Any) -> Any:
+        import numpy as np
+        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
+
+        key = str(path)
+        edges = cache.get(key)
+        if edges is None:
+            freqs = np.asarray(ftmw.compute_ft(path).freq_array, dtype=float)
+            edges = (float(freqs.min()), float(freqs.max()))
+            cache.clear()
+            cache[key] = edges
+        lo, hi = edges
+        trim = (float(value), hi) if edge == "min" else (lo, float(value))
+        return FtAtStart(ft=ftmw.compute_ft(path, trim=trim))
+
+    return run
 
 
 def _run_guard() -> RunFn:
@@ -364,6 +408,38 @@ _register(KnobSpec(
     see_also=_DETECTION_SEE_ALSO,
 ))
 
+# Stage 0 advanced detection internals (chirp-end localisation + sweep). The
+# band_min_mhz / band_max_mhz integration-band override is intentionally not a
+# sweep knob — the detector ignores it unless both edges are set, so neither
+# sweeps meaningfully alone (reach them via settings= / preset=).
+_START_COLS = ("start_us", "chirp_end_us", "chirp_detected")
+for _path, _field, _help, _grid, _inst in (
+    ("stage0.step_us", "step_us",
+     "Start-time sweep step (us): the resolution of the Sigma|FT| curve.",
+     (0.01, 0.02, 0.05), "maybe"),
+    ("stage0.floor_factor", "floor_factor",
+     "Multiple of the floor at which Sigma|FT| is considered settled (chirp end).",
+     (2.0, 3.0, 5.0), "maybe"),
+    ("stage0.floor_tail_us", "floor_tail_us",
+     "Deep-tail width (us) whose median defines the settled floor.",
+     (0.5, 1.0, 2.0), "N"),
+    ("stage0.knee_window_us", "knee_window_us",
+     "Window (us) over which the post-collapse knee strength is measured.",
+     (1.5, 2.8, 4.0), "maybe"),
+    ("stage0.shoulder_skip_us", "shoulder_skip_us",
+     "Skip (us) past the chirp end before measuring the knee shoulder.",
+     (0.0, 0.15, 0.3), "maybe"),
+    ("stage0.knee_strength_min", "knee_strength_min",
+     "Min knee strength for the collapse to be accepted as a chirp end.",
+     (0.05, 0.10, 0.20), "maybe"),
+):
+    _register(KnobSpec(
+        path=_path, stage="start_detection", requires="stage0_fid_data",
+        help=_help, inst_sensitivity=_inst, default_grid=_grid,
+        run=_run_start(_field), metric=_metric_start,
+        metric_columns=_START_COLS, plot=plot_start_detection, tier="advanced",
+    ))
+
 # FT window start time (Stage 1) — sweep the actual start and stack the
 # resulting active-band spectra. Requires Stage 1 settings to be resolvable
 # (built once); each value recomputes the FT.
@@ -379,6 +455,49 @@ _register(KnobSpec(
     metric=_metric_ft_band_floor,
     metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
     plot=plot_spectra_ladder,
+))
+
+# FT frequency trim + window end. The trim default grids are MHz-absolute and
+# 2638-shaped; pass --grid for another instrument's band. zpf / expf_us /
+# window_function are intentionally NOT exposed — the canonical analysis runs a
+# raw, unapodized FT (they corrupt the Stage 2/5 noise and fit statistics);
+# units_power is a display-scale choice surfaced by the resolved-settings view.
+_FT_BAND_COLS = ("p1", "p5", "p10", "p20", "p50", "max")
+_register(KnobSpec(
+    path="stage1.trim_min_mhz",
+    stage="stage1_ft",
+    requires="stage0_fid_data",
+    help="Lower edge of the FT frequency trim (MHz, absolute; --grid for your band).",
+    inst_sensitivity="Y",
+    default_grid=(26000.0, 27000.0, 28000.0, 30000.0),
+    run=_run_ft_trim("min"),
+    metric=_metric_ft_band_floor,
+    metric_columns=_FT_BAND_COLS,
+    plot=plot_ft_band_stack,
+))
+_register(KnobSpec(
+    path="stage1.trim_max_mhz",
+    stage="stage1_ft",
+    requires="stage0_fid_data",
+    help="Upper edge of the FT frequency trim (MHz, absolute; --grid for your band).",
+    inst_sensitivity="Y",
+    default_grid=(36000.0, 38000.0, 40000.0),
+    run=_run_ft_trim("max"),
+    metric=_metric_ft_band_floor,
+    metric_columns=_FT_BAND_COLS,
+    plot=plot_ft_band_stack,
+))
+_register(KnobSpec(
+    path="stage1.end_us",
+    stage="stage1_ft",
+    requires="stage0_fid_data",
+    help="FID window end time (us): truncates the record before the FT.",
+    inst_sensitivity="Y",
+    default_grid=(5.0, 10.0, 15.0),
+    run=_run_ft_end(),
+    metric=_metric_ft_band_floor,
+    metric_columns=_FT_BAND_COLS,
+    plot=plot_ft_band_stack,
 ))
 
 # Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.
@@ -431,6 +550,62 @@ _register(KnobSpec(
     metric_columns=("median_sigma", "noise_fraction"),
     plot=plot_noise_sweep,
 ))
+
+# Stage 2 advanced — remaining scatter knobs + the adaptive estimator's
+# binning / skewness / skirt-exclusion blocks. All re-run Stage 2 and report the
+# same sigma trend + sigma(f)-over-spectrum overlay.
+_NOISE_COLS = ("median_sigma", "noise_fraction")
+for _method, _sub, _field, _help, _grid, _inst in (
+    ("scatter", "scatter", "line_k",
+     "Robust-sigma multiple above which a bin is flagged a line (excluded).",
+     (4.0, 6.0, 8.0, 12.0), "maybe"),
+    ("scatter", "scatter", "n_iter",
+     "Self-mask refinement iterations of the scatter estimator.",
+     (1, 2, 3, 5), "N"),
+    ("scatter", "scatter", "region_aware",
+     "Use the region-aware Rician correction (else a fixed mid-regime factor).",
+     (False, True), "maybe"),
+    ("scatter", "scatter", "smoothing_percentile",
+     "Percentile of the broad sigma smoothing (50=median; lower=lower-envelope).",
+     (25.0, 50.0, 75.0), "maybe"),
+    ("scatter", "scatter", "convolve_mhz",
+     "Gaussian sigma (MHz) of the second, step-removing smoothing pass (0=off).",
+     (0.0, 100.0, 200.0, 400.0), "maybe"),
+    ("adaptive", "binning", "subdivision_threshold",
+     "Adaptive: median-ratio threshold to split a bin during subdivision.",
+     (0.04, 0.08, 0.16), "N"),
+    ("adaptive", "binning", "abs_min_bin_size",
+     "Adaptive: minimum bin size (points) the subdivision will produce.",
+     (150, 300, 600), "N"),
+    ("adaptive", "binning", "min_bin_fraction",
+     "Adaptive: minimum bin size as a fraction of the spectrum length.",
+     (1 / 128, 1 / 64, 1 / 32), "N"),
+    ("adaptive", "binning", "min_noise_fraction",
+     "Adaptive: minimum fraction of a bin that must be noise to accept it.",
+     (0.5, 2 / 3, 0.8), "N"),
+    ("adaptive", "skewness", "skew_target",
+     "Adaptive: Rayleigh-target skewness the per-bin trim drives toward.",
+     (0.5, 0.631, 0.75), "maybe"),
+    ("adaptive", "skewness", "inc",
+     "Adaptive: trim increment per iteration toward the skew target.",
+     (0.005, 0.01, 0.02), "N"),
+    ("adaptive", "skirt_exclusion", "strong_peak_snr",
+     "Adaptive: SNR above which a line's Lorentzian skirt is masked.",
+     (10.0, 20.0, 40.0), "maybe"),
+    ("adaptive", "skirt_exclusion", "skirt_exclusion_k",
+     "Adaptive: skirt mask half-width in units of the line width.",
+     (1.0, 1.5, 2.0), "maybe"),
+    ("adaptive", "skirt_exclusion", "max_skirt_exclusion_mhz",
+     "Adaptive: cap (MHz) on the masked skirt half-width per line.",
+     (250.0, 500.0, 1000.0), "maybe"),
+):
+    _register(KnobSpec(
+        path=f"stage2.{_sub}.{_field}", stage="stage2_noise",
+        requires="stage1_complex_ft", help=_help, inst_sensitivity=_inst,
+        default_grid=_grid, run=_run_noise(_method, _sub, _field),
+        metric=_metric_noise, metric_columns=_NOISE_COLS, plot=plot_noise_sweep,
+        tier="advanced",
+    ))
 
 # Stage 2b tau calibration — requires Stages 0-2. Each value re-runs the STFT
 # calibration (the slowest stage), so default grids are kept modest.

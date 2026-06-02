@@ -227,5 +227,9 @@ output/
 # Conventional untracked scratch directory for run/test artifacts
 scratch/
 
+# Tuning-sweep working copies (the `tune` engine writes these under its
+# output dir, which defaults to cwd)
+.tune_work/
+
 # Claude Code per-session bookkeeping (scheduled-task locks, etc.)
 .claude/

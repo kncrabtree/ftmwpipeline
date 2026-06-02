@@ -12,6 +12,7 @@ from ftmwpipeline._internal.tuning import get_knob
 from ftmwpipeline._internal.tuning.engine import PlotContext, SweepRow
 from ftmwpipeline._internal.tuning.registry import FtAtStart
 from ftmwpipeline._internal.tuning.plots import (
+    plot_ft_band_stack,
     plot_noise_sweep,
     plot_shape_vote,
     plot_spectra_ladder,
@@ -130,6 +131,15 @@ def test_spectra_ladder_used_by_guard_with_chirp_end():
     rows = [_ft_row(0.5, 2.18, chirp_end_us=1.68), _ft_row(1.0, 2.68, chirp_end_us=1.68)]
     fig = plot_spectra_ladder(spec, rows, _ctx())
     assert fig is not None
+    _close(fig)
+
+
+def test_plot_ft_band_stack_panel_per_value():
+    # trim / end_us knobs use this adapter: one spectrum panel per value, no FID
+    spec = get_knob("stage1.trim_min_mhz")
+    rows = [_ft_row(26000.0 + 1000.0 * i, start_us=2.0) for i in range(3)]
+    fig = plot_ft_band_stack(spec, rows, _ctx())
+    assert len(fig.axes) == 3
     _close(fig)
 
 

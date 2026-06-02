@@ -259,71 +259,126 @@ Stable stages first (issue #27 deliverable 5, confirmed): the spine
 (registry + engine + dual-interface scaffolding + table/plot-adapter contract)
 is proven on a low-churn stage, then fanned out.
 
-1. **Spine on a stable stage.** Build `registry.py` + `engine.py` +
+1. **Spine on a stable stage.** *(done)* `registry.py` + `engine.py` +
    `cli/tune_commands.py` + Pipeline/api wrappers + cross-interface test, with
-   **Stage 2 noise** and **start detection** as the first registered knobs
-   (these were scratch-only and are algorithmically stable). Lift `noise_viz/`
-   and `issue1_start_time/` intent into their plot adapters.
-2. **Stage 2b τ calibration.** Register `n_seg`, `t_sigma`, `polish_snr_cap`,
-   `polish_noise_debias`; lift `stage2b-bias/` and `stage2b-polish-validation/`.
-3. **Stage 3 -> 4 -> 5.** Heaviest; register the ~13 tracked `probe_<knob>.py`
-   grids/metrics/plots verbatim into the registry (they already encode grid +
-   metric + plot). Reuse the `<stage>-gaussian-audit/harness.py` builders.
-4. **Preset emission** (resolve the deferred decision) once the surface is felt.
-5. **Gap-fill** the no-tool knobs (Stage 2b `*.snr_min`, Stage 4
-   `min_freeze_snr`) as registry entries.
+   Stage 2 noise and start detection as the first registered knobs.
+2. **Stage 2b τ calibration.** *(done)* — and extended well past the initial
+   four knobs: the full τ surface (exp τ, Gaussian τ_G, multi-band, shape vote)
+   is registered (see §Implementation status).
+3. **Stages 0, 1, 2 full coverage + surface ergonomics.** *(done)* Every
+   instrument-relevant knob for Stages 0–2 is registered and tiered; the
+   listing, batch mode, and spectrum-impact plots landed here.
+4. **Stage 3 -> 4 -> 5.** *(next)* Heaviest; register the ~13 tracked
+   `probe_<knob>.py` grids/metrics/plots into the registry (they already encode
+   grid + metric + plot). Reuse the `<stage>-gaussian-audit/harness.py`
+   builders. Follow the conventions in §Lessons for the fan-out.
+5. **Preset emission** (resolve the deferred decision) once the surface is felt;
+   and the resolved-settings inspection verb (issue #28).
+6. **Gap-fill** any remaining no-tool knobs as registry entries.
 
 ## Implementation status
 
 The surface lives in `src/ftmwpipeline/_internal/tuning/` (`registry.py`,
 `engine.py`, `plots.py`), exposed through `cli/tune_commands.py`
-(`tune list` / `tune scan`), `Pipeline.tune_scan` / `Pipeline.tune_list`, and
-`api.tune_scan` / `api.tune_list`. Tests: `tests/unit/_internal/tuning/` and
+(`tune list` / `tune scan` / `tune scan-all`), `Pipeline.tune_{list,scan,scan_batch}`,
+and `api.tune_{list,scan,scan_batch}`. Tests: `tests/unit/_internal/tuning/` and
 `tests/integration/test_tune_cross_interface.py`.
 
-Built (sequencing steps 1–2):
+**Engine + registry.** Dotted-path `KnobSpec` (run / metric / optional plot
+adapter / optional recommender / `see_also` / `tier`); per sweep the engine
+always emits a table + CSV, renders the plot when an adapter is registered (else
+table-only), produces a best-effort recommendation, and prints how-to-apply
+text. `run_scan_batch` sweeps a list of knobs, isolating per-knob failures into
+`BatchItem`s. Flags: `--output-dir` (default cwd; the engine writes working
+copies under a `.tune_work/` subdir there — gitignored), `--reuse`,
+`--interactive` (CLI-only), progress on every surface (`quiet` / `-q`). Plot
+adapters receive a `PlotContext` (working `.ftmw`) for source data such as the
+FID/spectrum.
 
-- **Engine + registry.** Dotted-path `KnobSpec` (run / metric / optional plot
-  adapter / optional recommender / `see_also`); per sweep the engine always
-  emits a table + CSV, renders the plot when an adapter is registered (else
-  table-only), produces a best-effort recommendation, and prints how-to-apply
-  text. Flags: `--output-dir` (default cwd), `--reuse`, `--interactive`
-  (CLI-only), and a progress indicator on every surface (`quiet` / `-q` to
-  suppress). Plot adapters receive a `PlotContext` (working `.ftmw`) for source
-  data such as the FID.
-- **Registered knobs:**
-  - Spectrum-vs-start — `stage1.start_us` and `start.guard_margin_us` share one
-    spectra ladder: a top FID panel marking the window starts (+ chirp end for
-    guard), over linear active-band |FT| panels with a shared y scaled to the
-    percentile floor, so the chirp/ringdown residue and its collapse across
-    starts are visible; percentile-floor metric. Guard only offsets the start
-    past the detected chirp end, so it detects once per sweep and varies the
-    offset (a spectrum-impact knob, not a detection knob).
-  - Detection knobs — `start.sweep_max_us`, `start.min_chirp_drop_ratio` move
-    the chirp end, so they keep the Σ|FT|-vs-start detection-curve plot and
-    `see_also`-point at the spectrum knobs.
-  - Stage 2 noise — `stage2.scatter.{window_mhz,pedestal_mhz,smoothing_mhz}`,
-    `stage2.smoothing.smoothing_window_mhz`: σ(f) overlay + metric trend.
-    Every Stage 2 sweep drives the estimator through a `NoiseSettings`
-    bundle (`settings=`), not the deprecated per-knob kwargs — this
-    required backfilling a `scatter` sub-block into `NoiseSettings` (the
-    scatter estimator, the default, previously had no settings route); see
-    `settings-backfill.md` shims #15/#16.
-  - Stage 2b tau — `stage2b.stft.{n_seg,t_sigma}`,
-    `stage2b.polish.{polish_snr_cap,polish_noise_debias}`: τ_maj ± σ_τ trend
-    with contributor count (the boolean `polish_noise_debias` is table-only).
+**Surface ergonomics.**
+- **Tier + sub-block grouping.** Each `KnobSpec` carries `tier`
+  (`primary` / `advanced`). `tune list` shows primary knobs by default (a short
+  curated entry point), `--all` reveals advanced; a positional path-prefix
+  selector (`tune list stage2b.gaussian`) filters; `list_knobs(selector,
+  include_advanced=)` is the shared data filter. The listing is a single
+  prefix-elided table (`cli/tune_commands.py::_elide_path`) — repeated dotted
+  prefixes are blanked/padded, a blank line separates stages.
+- **Batch mode.** `tune scan-all <file> [selector] [--all]` sweeps every matched
+  knob on its default grid; a knob whose required stage is absent is reported as
+  a failed `BatchItem` and the batch continues.
+
+**Knob coverage — Stages 0, 1, 2, 2b complete (tiered).**
+- **Stage 0 (start detection, `stage0.*`).** Primary: `guard_margin_us`,
+  `sweep_max_us`, `min_chirp_drop_ratio`. Advanced: `step_us`, `floor_factor`,
+  `floor_tail_us`, `knee_window_us`, `shoulder_skip_us`, `knee_strength_min`.
+  `guard_margin_us` shares the spectra ladder (spectrum-impact); the rest use the
+  Σ|FT|-vs-start detection-curve plot. `band_min_mhz`/`band_max_mhz` are *not*
+  swept (the detector ignores them unless both are set → no meaningful solo
+  sweep; reach via `settings=`/`preset=`).
+- **Stage 1 (FT, `stage1.*`).** Primary: `start_us` (start ladder),
+  `trim_min_mhz`, `trim_max_mhz`, `end_us` (a no-FID-panel band-stack plot —
+  the spectrum *is* the impact). `zpf` / `expf_us` / `window_function` are
+  deliberately excluded (the canonical analysis is a raw, unapodized FT; they
+  corrupt the Stage 2/5 noise + fit statistics). `units_power` is excluded as a
+  sweep (degenerate rescale) and deferred to the resolved-settings verb (#28).
+  Trim default grids are MHz-absolute and 2638-shaped — override with `--grid`.
+- **Stage 2 (noise, `NoiseSettings`).** Primary:
+  `scatter.{window_mhz,pedestal_mhz,smoothing_mhz}`,
+  `smoothing.smoothing_window_mhz`. Advanced: the rest of `scatter`
+  (`line_k,n_iter,region_aware,smoothing_percentile,convolve_mhz`) and the whole
+  adaptive estimator (`binning`, `skewness`, `skirt_exclusion`). Every Stage 2
+  sweep drives through a `NoiseSettings` bundle — the scatter estimator was
+  backfilled into `NoiseSettings` for this (`settings-backfill.md` shims #15/#16).
+  Plot: σ-trend + a full-width σ(f)-over-spectrum overlay zoomed to the noise band.
+- **Stage 2b (τ, `TauCalibrationSettings`).** Full surface across all sub-blocks:
+  `stft`, `polish`, `aggregation`, `band` (multi-band majorities), `gaussian`
+  (Gaussian τ_G via `calibrate_tau_G`), `recommendation` (exp-vs-gauss shape vote
+  via `recommend_shape`). `_run_tau` routes by sub-block to the right
+  orchestrator; all three return `TauCalibrationResult`/`ShapeRecommendation`.
+  Plots: τ trend + per-value contributor decay-cloud and τ-vs-frequency panels;
+  a vote-bar plot for the shape knobs. Tuple-valued fields (`band_edges_mhz`,
+  `tau_G_seeds`) and workflow toggles (`auto_recommend`) are not swept.
 
 Remaining:
 
-- **Stage 3 → 4 → 5 knobs** (step 3): lift the ~13 tracked `probe_<knob>.py`
-  grids/metrics/plots into registry entries, reusing the
+- **Stage 3 → 4 → 5 knobs** (sequencing step 4): lift the ~13 tracked
+  `probe_<knob>.py` grids/metrics/plots into registry entries, reusing the
   `<stage>-gaussian-audit/harness.py` builders. Stage 5 sweeps re-run
   `fit_peaks` per value — keep grids tight, lean on `--reuse`, and test against
-  the small dependency-free-windows fixture.
-- **Preset emission** (step 4, deferred — see §Open decisions 1).
-- **Gap-fill** the no-tool knobs (step 5).
-- **Manual validation:** every knob beyond `start.guard_margin_us` still needs a
-  drive-through on real data to confirm its metric/plot before it is relied on.
+  the small dependency-free-windows fixture. Apply the §Lessons conventions.
+- **Preset emission** (deferred — see §Open decisions 1) and the resolved-settings
+  inspection verb (issue **#28**): a `tune settings` view of resolved per-knob
+  values + provenance (`.ftmw`/`.yml`/default), reusing the registry walk +
+  selector + tiering.
+- **Manual validation:** the Stage 0/1/2/2b knobs await a user drive-through on
+  real data to confirm each metric/plot before they are relied on.
+
+## Lessons / conventions for the Stage 3→5 fan-out
+
+Patterns proven on Stages 0–2b that the Stage 3→5 registration should follow:
+
+- **Expose everything, but tier it.** Register every instrument-relevant knob;
+  mark the few headline ones `primary` and the rest `advanced`. The default
+  `tune list` stays a short starting point; `--all` reaches the long tail. This
+  resolved the "don't drown the user" tension.
+- **Drive stages through their `settings=` bundle, never per-knob kwargs.** The
+  kwargs are deprecation-bound (`settings-backfill.md`). `_run_*` helpers build a
+  one-field settings instance and pass `settings=`. If a stage's estimator has no
+  settings representation, backfill one first (as was done for scatter).
+- **The spectrum impact is what users care about.** Where a knob changes the
+  spectrum/fit, the plot should show that directly (band-stack, σ(f)-over-spectrum
+  overlay, per-window fit overlays for Stage 5) — not only a scalar-metric trend.
+- **Per-value diagnostic panels** (the τ decay-cloud / τ-vs-frequency pattern)
+  generalise: for Stage 4/5, consider per-window fit + residual panels per grid
+  value, gridspec-stacked, degrading gracefully when data is absent.
+- **Don't expose knobs that break the canonical analysis or are display-only.**
+  `zpf`/`expf_us`/`window_function` (raw-FT invariant) and `units_power` (scale)
+  were excluded deliberately; apply the same judgement to Stage 3–5 internals.
+- **Skip un-sweepable fields.** Tuple-valued knobs and toggles with no solo
+  effect (`band_edges_mhz`, `tau_G_seeds`, `auto_recommend`, `band_min/max_mhz`)
+  are reachable via `settings=`/`preset=` but are not registered as scalar sweeps.
+- **Batch + grouping make review tractable.** `tune scan-all stage3` will sweep a
+  whole stage in one pass; lean on it (and `--reuse`) for the heavy Stage 5 grids.
 
 ## Test plan
 

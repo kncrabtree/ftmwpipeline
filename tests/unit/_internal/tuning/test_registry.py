@@ -40,6 +40,15 @@ def test_tier_filtering():
     assert any(s.tier == "advanced" for s in everything)
 
 
+def test_stage1_exposes_band_and_window_not_apodization():
+    paths = {s.path for s in list_knobs("stage1", include_advanced=True)}
+    assert {"stage1.start_us", "stage1.trim_min_mhz", "stage1.trim_max_mhz",
+            "stage1.end_us"} <= paths
+    # zpf / expf_us / window_function / units are deliberately not swept
+    for excluded in ("zpf", "expf", "window_function", "units"):
+        assert not any(excluded in p for p in paths), excluded
+
+
 def test_selector_matches_path_prefix():
     gauss = list_knobs("stage2b.gaussian", include_advanced=True)
     assert gauss

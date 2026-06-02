@@ -180,6 +180,52 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
     return fig
 
 
+def plot_ft_band_stack(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stack each value's active-band |FT| (one panel per value), for the FT
+    band/window knobs (``trim_min_mhz`` / ``trim_max_mhz`` / ``end_us``) where
+    the spectrum itself is the thing the knob changes.
+
+    Linear, with a shared y-limit scaled to the floor (from the percentile
+    metric) so the noise floor and its change across values are readable; real
+    lines clip off the top. No FID panel — unlike the start ladder these knobs
+    do not move the window start. Each ``row.result`` carries ``.ft``.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+
+    leaf = spec.path.split(".")[-1]
+    n = len(rows)
+    colors = _value_colors(n)
+    panel_h = _LADDER_WIDTH_IN / _LADDER_PANEL_ASPECT
+    fig, axes_grid = plt.subplots(
+        n, 1, figsize=(_LADDER_WIDTH_IN, panel_h * n), squeeze=False
+    )
+    axes = list(axes_grid[:, 0])
+
+    p50s = [r.metrics.get("p50") for r in rows
+            if isinstance(r.metrics.get("p50"), (int, float))]
+    top = _LADDER_YMAX_P50_FACTOR * max(p50s) if p50s and max(p50s) > 0 else None
+
+    for ax, row, color in zip(axes, rows, colors):
+        ft = row.result.ft
+        f_ghz = np.asarray(ft.freq_array, dtype=float) / 1000.0
+        ax.plot(f_ghz, np.abs(ft.complex_spectrum), lw=0.4, color=color)
+        ax.set_ylabel(f"{leaf}={row.value:g}", fontsize=9)
+        if top is not None:
+            ax.set_ylim(0.0, top)
+        ax.grid(True, alpha=0.2)
+    axes[0].set_title(
+        f"active-band |FT| vs {leaf} (linear, shared y scaled to the floor)"
+    )
+    axes[-1].set_xlabel("frequency (GHz)")
+    fig.tight_layout()
+    return fig
+
+
 def _contrib_alpha(n: int) -> float:
     """Per-contributor line alpha keyed to the contributor count, so the
     overplotted decay cloud reads as a density regardless of population.

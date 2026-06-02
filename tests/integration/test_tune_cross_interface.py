@@ -113,8 +113,8 @@ def test_cli_list_runs(capsys):
     assert rc == 0
     # single header row, full stage-leading path, and an elided continuation
     assert "knob" in out and "tier" in out
-    assert "stage1.start_us" in out  # first row prints its full path
-    assert ".window_mhz" in out      # a later sibling renders elided
+    assert "stage0.guard_margin_us" in out  # first row prints its full path
+    assert ".window_mhz" in out             # a later sibling renders elided
 
 
 def test_elide_path_blanks_shared_prefix():
