@@ -77,10 +77,38 @@ on that spectrum. Both are resolved in `_internal/stage3_impl.py`:
   shape-aware matched filter, with `detect_peaks` itself making no assumption
   about how either spectrum was built.
 
+## Primary pass: single-source collapse rejected (deferred sibling)
+
+The deferred sibling — collapsing the **primary** pass onto the single active-FT
+authority too — was investigated and **rejected**. Both routes regress:
+
+- **Move the primary to the active-region frame** (clean window-gain
+  propagation): the Blackman-Harris spectrum's `S_coh` runs ~7× higher in the
+  active frame than in the full-record-de-ramped frame, so
+  `PRIMARY_LEAKAGE_FLOOR_K=1.0` over-suppresses and ~halves the primary list.
+- **Keep the full-record BH spectrum, propagate its noise** (convention factor
+  `10^units_power·√(Σw²)/(N_total·dt·√N_active)`): matches a direct scatter
+  estimate within a few % on white noise, but on dense real data the propagated
+  σ is +26% on 655 (+4% on 2638) and loses ~41% of promoted lines.
+
+**Why:** the BH primary spectrum genuinely has a *lower, cleaner* noise floor —
+BH apodization suppresses the truncation leakage that inflates the boxcar
+active-FT authority σ on a line-dense spectrum. Propagating the authority σ
+over-estimates the primary's true floor. The primary's leakage-suppressed
+spectrum must have its noise measured **on that spectrum**.
+
+**The primary therefore keeps a dedicated noise floor — but it needs a proper
+home.** Today that floor is an inline `estimate_noise_scatter` on the
+full-record BH spectrum inside `stage3_impl` (a stopgap, not part of the
+noise-authority model). The follow-up is to **calibrate and persist a second
+Stage 2 noise level** for the apodized / leakage-suppressed domain — the same
+canonical scatter machinery as the active-FT authority, but on the primary's
+spectrum — so the primary consumes a first-class Stage 2 quantity rather than an
+ad-hoc estimate. **This is a prerequisite for assessing any Stage 3 knobs** (the
+tune surface needs a stable, calibrated noise definition to score against).
+
 ## Out of scope / unchanged
 
 - **Stage 2b keeps its own FID-tail σ reference** for τ extraction (see
   `stage2b-tau-calibration.md`); "Stage 2 is the noise authority" applies to the
   frequency-domain σ(f) consumers (Stages 3/4/5).
-- The deferred sibling question — moving the **primary** pass onto the
-  unapodized active FT too — remains open and untouched.
