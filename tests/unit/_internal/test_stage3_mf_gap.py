@@ -9,8 +9,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import scipy.signal as spsig
+
 from ftmwpipeline._internal.stage3_impl import (
     _mf_gap_spectrum,
+    _primary_active_spectrum,
     _propagate_active_sigma_to_grid,
 )
 
@@ -57,6 +60,32 @@ def test_shape_changes_spectrum_and_gain():
     # The two matched windows produce materially different spectra and gains.
     assert gain_l != pytest.approx(gain_g, rel=1e-3)
     assert not np.allclose(cft_l.magnitude_spectrum, cft_g.magnitude_spectrum)
+
+
+def test_primary_active_spectrum_gain_matches_window():
+    fid = _fake_fid()
+    base_pp = _base_pp()
+    dt_us = fid.spacing * 1e6
+    n_active = int(round(base_pp.end_us / dt_us)) - int(round(base_pp.start_us / dt_us))
+    cft, gain = _primary_active_spectrum(
+        fid, base_pp, None, window_function="blackmanharris"
+    )
+    w = spsig.get_window("blackmanharris", n_active)
+    assert gain == pytest.approx(float(np.sqrt(np.sum(w * w) / n_active)), rel=1e-9)
+    assert 0.0 < gain < 0.6  # Blackman-Harris concentrates energy heavily
+    assert cft.freq_array.shape == cft.magnitude_spectrum.shape
+
+
+def test_primary_and_gap_share_active_grid():
+    # Same active region + same active zpf -> identical detection grid, so the
+    # primary and gap spectra are co-registered on the active FT.
+    fid = _fake_fid()
+    base_pp = _base_pp()
+    prim, _ = _primary_active_spectrum(
+        fid, base_pp, None, window_function="blackmanharris", zpf_active=2
+    )
+    gap, _ = _mf_gap_spectrum(fid, base_pp, None, tau_basis_us=3.0, zpf_active=2)
+    assert np.array_equal(prim.freq_array, gap.freq_array)
 
 
 def test_propagation_boxcar_identity():

@@ -102,8 +102,10 @@ class SavgolSubSettings:
 class PrimaryPassSubSettings:
     """Primary-pass apodization + zpf knobs.
 
-    The primary pass runs at zpf=``detection_zpf`` on a strongly-windowed
-    spectrum (``primary_window``) to suppress truncation sidelobes;
+    The primary pass runs on the active-region ``dt·rfft`` frame (the same frame
+    as the gap pass and the canonical active FT), zero-padded by
+    ``detection_zpf``, on a strongly-windowed spectrum (``primary_window``) to
+    suppress truncation sidelobes;
     ``min_exclusion_mhz`` is the half-width around every primary detection
     that the gap pass excludes from its mask. ``primary_leakage_floor_k``
     scales the continuous leakage-aware detection floor ``k·(S_coh/√M)·σ``
@@ -189,7 +191,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "primary_pass": {
         "primary_window": "blackmanharris",
         "min_exclusion_mhz": 0.0,
-        "detection_zpf": 1,
+        "detection_zpf": 2,
         "primary_leakage_floor_k": 1.0,
     },
     "gap_pass": {

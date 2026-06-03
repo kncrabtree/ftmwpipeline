@@ -77,35 +77,46 @@ on that spectrum. Both are resolved in `_internal/stage3_impl.py`:
   shape-aware matched filter, with `detect_peaks` itself making no assumption
   about how either spectrum was built.
 
-## Primary pass: single-source collapse rejected (deferred sibling)
+## Primary pass moved onto the active FT
 
-The deferred sibling — collapsing the **primary** pass onto the single active-FT
-authority too — was investigated and **rejected**. Both routes regress:
+The primary pass now builds its leakage-suppressed (Blackman-Harris) detection
+spectrum on the **active-region `dt·rfft` frame** — the same frame as the gap
+pass and the canonical active FT — via the shared `_active_windowed_spectrum`
+builder. The former full-record, front-zeroed `_spectrum_from_fid` path is
+retired.
 
-- **Move the primary to the active-region frame** (clean window-gain
-  propagation): the Blackman-Harris spectrum's `S_coh` runs ~7× higher in the
-  active frame than in the full-record-de-ramped frame, so
-  `PRIMARY_LEAKAGE_FLOOR_K=1.0` over-suppresses and ~halves the primary list.
-- **Keep the full-record BH spectrum, propagate its noise** (convention factor
-  `10^units_power·√(Σw²)/(N_total·dt·√N_active)`): matches a direct scatter
-  estimate within a few % on white noise, but on dense real data the propagated
-  σ is +26% on 655 (+4% on 2638) and loses ~41% of promoted lines.
+**Why the full-record frame was wrong, not just inelegant.** Its low edge
+coherence (`S_coh` ~7× below the active frame), which made
+`PRIMARY_LEAKAGE_FLOOR_K=1.0` a near-no-op, was an **artifact of the
+front-zeroing phase roll** `exp(±i2πf·start_us)`: the de-ramp + roll interaction.
+That roll only exists when a leading chirp/dead-time is zeroed, so the behavior
+was *fortuitously* correct and would misbehave on a no-leading-chirp waveform.
+The active-frame `S_coh` is the honest, robust value. (Confirmed: pre-padding
+instead of front-zeroing cannot recover the low value — by the shift theorem,
+pre-pad + de-ramp is bit-identical to post-pad, so the de-ramp cancels any
+introduced roll.)
 
-**Why:** the BH primary spectrum genuinely has a *lower, cleaner* noise floor —
-BH apodization suppresses the truncation leakage that inflates the boxcar
-active-FT authority σ on a line-dense spectrum. Propagating the authority σ
-over-estimates the primary's true floor. The primary's leakage-suppressed
-spectrum must have its noise measured **on that spectrum**.
+**Calibration held, not re-tuned.** An earlier attempt appeared to regress
+(~halved primary list), but that was the primary running at the stale
+`detection_zpf=1` settings default plus persisted-settings contamination — not
+the frame. At the intended **active `zpf=2` with the unchanged `k=1.0`**, the
+active-frame primary **matches or beats** the full-record baseline: on 655
+strong-line recall rises (top-25% 0.83 vs 0.81) with fewer false positives; 2638
+is unchanged (promoted 756≈755); and every strong line on the sparse 1019 fixture
+is preserved (only marginal SNR 3–10 detections are trimmed). `k=1.0` on the
+honest (higher) active-frame `S_coh` does real, beneficial leakage suppression
+where the full-record floor was a near-no-op. `k` and `detection_zpf` remain
+tunable per-instrument knobs.
 
-**The primary therefore keeps a dedicated noise floor — but it needs a proper
-home.** Today that floor is an inline `estimate_noise_scatter` on the
-full-record BH spectrum inside `stage3_impl` (a stopgap, not part of the
-noise-authority model). The follow-up is to **calibrate and persist a second
-Stage 2 noise level** for the apodized / leakage-suppressed domain — the same
-canonical scatter machinery as the active-FT authority, but on the primary's
-spectrum — so the primary consumes a first-class Stage 2 quantity rather than an
-ad-hoc estimate. **This is a prerequisite for assessing any Stage 3 knobs** (the
-tune surface needs a stable, calibrated noise definition to score against).
+## Second (apodized-domain) noise level — follow-up
+
+The primary's noise is measured **on its own active-frame BH spectrum** (it can't
+be propagated from the unapodized authority: BH suppresses the leakage that
+inflates the boxcar authority σ on dense spectra, so the BH floor is genuinely
+lower). Today that measurement is an inline `estimate_noise_scatter` with default
+knobs. Promoting it to a **calibrated, settings-driven second noise level** (its
+own scatter knobs, tunable) is the remaining follow-up that fully unblocks the
+Stage 3 tune surface.
 
 ## Out of scope / unchanged
 

@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 import h5py
 import numpy as np
+import scipy.signal as spsig
 
 from ..core.data_structures import ComplexFT, Peak
 from ..core.peak_detection_settings import (
@@ -76,9 +77,11 @@ from .stage2b_g_impl import (
 
 logger = logging.getLogger(__name__)
 
-# Apex localization runs at the native grid; the user's persisted zpf governs
-# only the reported/stored spectrum (snap-back re-measures there).
-_DETECTION_ZPF = 1
+# Primary-pass active-region zero-padding. The primary runs on the active-region
+# dt·rfft frame (like the gap pass and the authority); this zpf lands its grid
+# step (≈ 0.02 MHz on 2638) close to the former full-record zpf=1 primary so apex
+# localization and the calibrated sg_window are preserved.
+_DETECTION_ZPF = 2
 
 # Gap-pass detector: matched-filter (exp-apodized active-region FFT) on a
 # zero-padded grid that lands the Lorentzian FWHM in SavGol's sweet spot
@@ -114,13 +117,16 @@ DEFAULT_PRIMARY_WINDOW = "blackmanharris"
 # floor is the honest (scatter) one. M is the edge-coherence band width.
 #
 # The two passes need *different* k because they run on opposite-leakage
-# spectra. The PRIMARY pass is Blackman-Harris apodized, which annihilates the
-# truncation leakage (S_coh ~0.2 across the band, below the noise-only null);
-# the window IS the primary's leakage suppression, so the floor is only a
-# surgical correction at the rare cluster cores. ``primary k = 1`` is set by
-# direct visual validation on the sparse high-SNR fixture 1019 (k=2 there starts
-# clipping real cluster lines); catalog recall on 1512/655 is flat across
-# k in [1, 4], so it costs no real lines on the dense fixtures either.
+# spectra. The PRIMARY pass is Blackman-Harris apodized, which suppresses most
+# of the truncation leakage; the floor is the residual correction at cluster
+# cores. ``primary k = 1`` is retained on the active-region frame: on the active
+# FT the edge coherence is the honest (higher) value -- the former full-record
+# primary read a fortuitously low S_coh because front-zeroing imposed a phase
+# roll, so its k=1 floor was a near-no-op -- yet k=1 on the active frame matches
+# or beats the old behavior (655 strong-line recall up, fewer false positives;
+# 2638 unchanged) and preserves every strong line on the sparse 1019 fixture
+# (it trims only marginal SNR 3-10 detections). k stays a tunable per-instrument
+# knob.
 #
 # The GAP pass is the matched filter, matched to the line shape for weak-line
 # sensitivity and so retaining the full leakage (S_coh ~4-15 typical, strong
@@ -191,38 +197,12 @@ def _grid_aware_sg_window(
     return max(int(min_window), target_bins)
 
 
-def _mf_gap_spectrum(
-    fid: Any,
-    base_pp: Any,
-    trim_range: Optional[Tuple[float, float]],
-    tau_basis_us: float,
-    shape: str = "lorentzian",
-    zpf_active: int = _GAP_ACTIVE_ZPF,
-) -> Tuple[ComplexFT, float]:
-    """Shape-aware matched-filter active-region FFT for the gap-pass detector.
+def _active_window_indices(fid: Any, base_pp: Any) -> Tuple[int, int, float]:
+    """Active-region ``(start_idx, end_idx, sample_dt_us)`` for the detection FFTs.
 
-    The FID's [base_pp.start_us, base_pp.end_us] active region is multiplied by
-    the line shape's matched window at ``tau_basis_us`` -- ``exp(-t/τ)`` for a
-    Lorentzian instrument, ``exp(-(t/τ)²)`` for a Gaussian one (the same
-    ``exp(-(t/τ_G)²)`` envelope convention the production fit uses; see
-    :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`). This is the exact
-    time-domain matched filter for that line shape. The result is mean-removed
-    (matching Stage 1's rdc), zero-padded by ``zpf_active`` (default 2) so the
-    FWHM in bins lands in SavGol's operating range, then rfft'd.
-
-    The phase reference is the active-region turn-on (t=0 maps to start_us), so
-    callers running coherence statistics on this spectrum (e.g.,
-    ``leakage_touched_intervals``) must pass ``start_us=0.0`` to skip the de-ramp
-    that the full-record-rfft path needs. See
-    dev-docs/research/matched-filter-detection/report.md §10 (revised) for the
-    calibration.
-
-    Returns the trimmed ``ComplexFT`` and the window's white-noise gain
-    ``√(Σ w² / N_active)``: the factor by which the matched filter scales the
-    per-bin σ relative to the unapodized active FT, so the caller can propagate
-    the active-FT authority noise onto this grid analytically instead of
-    re-estimating it (white-noise-exact; padding leaves per-bin variance
-    unchanged). The boxcar limit ``w ≡ 1`` gives gain 1.
+    Mirrors :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`'s active-
+    region convention so every Stage 3 detection spectrum spans the same samples
+    as the canonical active FT.
     """
     sample_dt_us = fid.spacing * 1e6
     start_idx = int(round((base_pp.start_us or 0.0) / sample_dt_us))
@@ -231,21 +211,43 @@ def _mf_gap_spectrum(
     else:
         end_idx = int(round(base_pp.end_us / sample_dt_us))
     end_idx = min(end_idx, len(fid.data))
-    n_active = end_idx - start_idx
-    if n_active <= 0:
+    if end_idx - start_idx <= 0:
         raise ValueError("active region must have positive length")
+    return start_idx, end_idx, sample_dt_us
+
+
+def _active_windowed_spectrum(
+    fid: Any,
+    base_pp: Any,
+    trim_range: Optional[Tuple[float, float]],
+    window: np.ndarray,
+    zpf_active: int,
+) -> Tuple[ComplexFT, float]:
+    """``dt·rfft`` of the active region times ``window``, zero-padded + trimmed.
+
+    The single builder for both Stage 3 detection spectra: it extracts the
+    ``[start_us, end_us]`` active region (the same samples as the canonical
+    active FT), multiplies by ``window`` (length ``N_active``), mean-removes
+    (matching Stage 1's rdc), zero-pads by ``zpf_active`` so the feature lands in
+    SavGol's operating range, then ``dt·rfft``s -- the same amplitude convention
+    as :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`. The phase
+    reference is the active-region turn-on (t=0 maps to start_us), so callers
+    running coherence statistics pass ``start_us=0.0`` -- there is no full-record
+    phase ramp to de-ramp.
+
+    Returns the trimmed ``ComplexFT`` and the window's white-noise gain
+    ``√(Σ w² / N_active)`` (a boxcar window gives gain 1).
+    """
+    start_idx, end_idx, sample_dt_us = _active_window_indices(fid, base_pp)
+    n_active = end_idx - start_idx
+    window = np.asarray(window, dtype=float)
+    if window.shape != (n_active,):
+        raise ValueError(
+            f"window length {window.shape} must match active length {n_active}"
+        )
     n_padded = n_active * (2 ** int(zpf_active))
 
-    # Shape-aware matched window over the active region, mean-removed (matching
-    # Stage 1's rdc), zero-padded to n_padded, then rfft. compute_active_ft
-    # itself runs an rfft on n_active points only and ignores n_padded for the
-    # FFT -- we need zpf > 0 here so we inline the padded rfft directly.
     active = fid.data[start_idx:end_idx].astype(float, copy=True)
-    t_rel = np.arange(n_active) * sample_dt_us
-    if shape == "gaussian":
-        window = np.exp(-((t_rel / float(tau_basis_us)) ** 2))
-    else:
-        window = np.exp(-t_rel / float(tau_basis_us))
     active *= window
     active -= active.mean()
     gain = float(np.sqrt(np.sum(window * window) / n_active))
@@ -257,10 +259,62 @@ def _mf_gap_spectrum(
     s = sideband_sign(fid.sideband)
     freq_mhz = float(fid.probe_freq_mhz) + s * f_bb
 
-    cft = ComplexFT.from_spectrum(spectrum.astype(np.complex128), freq_mhz.astype(float))
+    cft = ComplexFT.from_spectrum(
+        spectrum.astype(np.complex128), freq_mhz.astype(float)
+    )
     if trim_range is not None:
         cft = cft.trim_to_range(trim_range[0], trim_range[1])
     return cft, gain
+
+
+def _mf_gap_spectrum(
+    fid: Any,
+    base_pp: Any,
+    trim_range: Optional[Tuple[float, float]],
+    tau_basis_us: float,
+    shape: str = "lorentzian",
+    zpf_active: int = _GAP_ACTIVE_ZPF,
+) -> Tuple[ComplexFT, float]:
+    """Shape-aware matched-filter active-region FFT for the gap-pass detector.
+
+    The active region is multiplied by the line shape's matched window at
+    ``tau_basis_us`` -- ``exp(-t/τ)`` for a Lorentzian instrument, ``exp(-(t/τ)²)``
+    for a Gaussian one (the same ``exp(-(t/τ_G)²)`` envelope convention the
+    production fit uses). The exact time-domain matched filter for that shape,
+    built on the shared :func:`_active_windowed_spectrum`. See
+    dev-docs/research/matched-filter-detection/report.md §10 (revised) for the
+    zpf calibration.
+    """
+    start_idx, end_idx, sample_dt_us = _active_window_indices(fid, base_pp)
+    t_rel = np.arange(end_idx - start_idx) * sample_dt_us
+    if shape == "gaussian":
+        window = np.exp(-((t_rel / float(tau_basis_us)) ** 2))
+    else:
+        window = np.exp(-t_rel / float(tau_basis_us))
+    return _active_windowed_spectrum(fid, base_pp, trim_range, window, zpf_active)
+
+
+def _primary_active_spectrum(
+    fid: Any,
+    base_pp: Any,
+    trim_range: Optional[Tuple[float, float]],
+    window_function: str,
+    zpf_active: int = _DETECTION_ZPF,
+) -> Tuple[ComplexFT, float]:
+    """Leakage-suppressed primary detection spectrum on the active-region frame.
+
+    Applies the strong apodization ``window_function`` (default
+    ``blackmanharris``) over the active region to suppress truncation sidelobes,
+    so the primary's strong-line list -- which seeds the gap pass's exclusions
+    and leakage mask -- is clean. Built on the shared
+    :func:`_active_windowed_spectrum`, so the primary lives in the same
+    active-region ``dt·rfft`` frame as the gap pass and the canonical active FT
+    (no full-record front-zeroing, no phase ramp). The apodization is a Stage 3
+    position-finding choice, independent of the user's Stage 1 ``winf``.
+    """
+    start_idx, end_idx, _ = _active_window_indices(fid, base_pp)
+    window = spsig.get_window(window_function, end_idx - start_idx)
+    return _active_windowed_spectrum(fid, base_pp, trim_range, window, zpf_active)
 
 
 def _propagate_active_sigma_to_grid(
@@ -288,44 +342,6 @@ def _propagate_active_sigma_to_grid(
         np.asarray(active_sigma, dtype=float)[order],
     )
     return cast(np.ndarray, np.asarray(interp, dtype=float) * float(gain))
-
-
-def _spectrum_from_fid(
-    fid: Any,
-    base_pp: Any,
-    trim_range: Optional[Tuple[float, float]],
-    expf_us: Optional[float],
-    window_function: Optional[str] = None,
-    *,
-    zpf: int = _DETECTION_ZPF,
-) -> ComplexFT:
-    """Recompute a ComplexFT from the FID at the internal detection grid.
-
-    Defaults to ``zpf=_DETECTION_ZPF`` (native resolution -- best for apex
-    localization). With ``expf_us=None`` and ``window_function=None`` this
-    yields the unapodized boxcar spectrum used by the gap pass; passing a
-    ``window_function`` (e.g. ``"blackmanharris"``) yields the
-    leakage-suppressed primary spectrum. Window bounds, units, rdc and the
-    persisted ``trim`` are held identical to the user's settings so both
-    detection spectra share a consistent physical-frequency axis with the
-    user spectrum. The primary apodization is deliberately *not* tied to the
-    user's Stage 1 ``winf``/``expf_us``: it is a Stage 3 position-finding
-    choice only (see the module docstring).
-    """
-    preprocessed = fid.preprocess(
-        start_us=base_pp.start_us,
-        end_us=base_pp.end_us,
-        zpf=int(zpf),
-        expf_us=expf_us,
-        window_function=window_function,
-        rdc=base_pp.rdc,
-        units_power=base_pp.units_power,
-    )
-    spectrum, freqs = preprocessed.compute_fft()
-    cft = ComplexFT.from_spectrum(spectrum, freqs)
-    if trim_range is not None:
-        cft = cft.trim_to_range(trim_range[0], trim_range[1])
-    return cft
 
 
 def _nearest_index(sorted_pairs: Tuple[np.ndarray, np.ndarray], value: float) -> int:
@@ -626,19 +642,17 @@ def detect_peaks_impl(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
 
-    # Primary detection runs on the leakage-suppressed apodized spectrum
-    # (Stage 3 internal zpf=1 grid). The gap pass runs on the matched-filter
-    # active-region FFT: exp-apodized at the Stage 1 user apodization,
-    # zero-padded so the FWHM lands in SavGol's operating range. The grid-
-    # aware sg_window for the gap pass comes from
-    # ``_grid_aware_sg_window`` driven by the line FWHM = 1/(π · expf_us).
-    primary_ft = _spectrum_from_fid(
+    # Both detection spectra are built on the same active-region dt·rfft frame as
+    # the canonical active FT. The primary applies a strong leakage-suppressing
+    # window (Blackman-Harris) for a clean strong-line list; the gap pass applies
+    # the shape-aware matched filter. Both are zero-padded so the feature lands
+    # in SavGol's operating range.
+    primary_ft, primary_gain = _primary_active_spectrum(
         fid,
         base_pp,
         trim_range,
-        expf_us=None,
         window_function=primary_window_v,
-        zpf=detection_zpf_v,
+        zpf_active=detection_zpf_v,
     )
     # Gap-pass matched filter: shape and τ are both shape-aware feeders.
     #
@@ -741,16 +755,15 @@ def detect_peaks_impl(
     )
 
     # Continuous leakage-aware floors for both passes (k * S_coh/sqrt(M) * sigma,
-    # the local coherent-leakage amplitude). The primary FT is a full-record
-    # rfft, so it is de-ramped to the active-region turn-on (start_us) before
-    # the coherence statistic; the matched-filter gap FT is active-region-only,
-    # so its phase reference is already the turn-on (start_us=0.0, identity).
+    # the local coherent-leakage amplitude). Both spectra are active-region-only
+    # dt·rffts, so their phase reference is already the turn-on -- the de-ramp is
+    # the identity (start_us=0.0) for both.
     primary_leakage_amp = _leakage_floor_amp(
         primary_ft.freq_array,
         primary_ft.complex_spectrum,
         primary_noise.rms_noise,
         fid.probe_freq_mhz,
-        base_pp.start_us or 0.0,
+        0.0,
         primary_leakage_floor_k_v,
     )
     gap_leakage_amp = _leakage_floor_amp(

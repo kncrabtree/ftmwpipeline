@@ -10,7 +10,7 @@ These tests intercept the relevant call sites from
 ``_internal/stage3_impl.detect_peaks_impl`` and assert that every routed
 :class:`PeakDetectionSettings` field reaches its kernel's kwargs bag.
 Some fields land directly on ``preprocessing.peak_detection.detect_peaks``;
-others drive the orchestrator-internal helpers ``_spectrum_from_fid``,
+others drive the orchestrator-internal helpers ``_primary_active_spectrum``,
 ``_mf_gap_spectrum``, ``_grid_aware_sg_window``, or the leakage-aware
 detection floor (``primary_leakage_amp`` / ``gap_leakage_amp``). Each test
 mocks the right hook for its field.
@@ -176,16 +176,16 @@ class TestPromotionFlooring:
 
 class TestPrimaryPassSpectrum:
     """``primary_pass.primary_window`` + ``primary_pass.detection_zpf`` drive
-    ``_spectrum_from_fid``."""
+    ``_primary_active_spectrum``."""
 
-    def test_primary_window_reaches_spectrum_from_fid(
+    def test_primary_window_reaches_primary_spectrum(
         self, baseline_2638_stage2: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "primary_window.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
-        spy, captured = _spy(stage3_impl._spectrum_from_fid)
-        monkeypatch.setattr(stage3_impl, "_spectrum_from_fid", spy)
+        spy, captured = _spy(stage3_impl._primary_active_spectrum)
+        monkeypatch.setattr(stage3_impl, "_primary_active_spectrum", spy)
         # Stop the run after the spy fires (downstream noise estimation is
         # slow); intercept detect_peaks.
         mock, _ = _intercept_kernel()
@@ -195,19 +195,19 @@ class TestPrimaryPassSpectrum:
         s.primary_pass.primary_window = "hann"
         with pytest.raises(_CalibIntercepted):
             stage3_impl.detect_peaks_impl(str(variant), settings=s)
-        # _spectrum_from_fid is called once for the primary pass.
+        # _primary_active_spectrum is called once for the primary pass.
         assert captured["calls"], "spy never fired"
         primary_call = captured["calls"][0]
         assert primary_call["kwargs"]["window_function"] == "hann"
 
-    def test_detection_zpf_reaches_spectrum_from_fid(
+    def test_detection_zpf_reaches_primary_spectrum(
         self, baseline_2638_stage2: Path, tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "detection_zpf.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
-        spy, captured = _spy(stage3_impl._spectrum_from_fid)
-        monkeypatch.setattr(stage3_impl, "_spectrum_from_fid", spy)
+        spy, captured = _spy(stage3_impl._primary_active_spectrum)
+        monkeypatch.setattr(stage3_impl, "_primary_active_spectrum", spy)
         mock, _ = _intercept_kernel()
         monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
 
@@ -216,7 +216,7 @@ class TestPrimaryPassSpectrum:
         with pytest.raises(_CalibIntercepted):
             stage3_impl.detect_peaks_impl(str(variant), settings=s)
         primary_call = captured["calls"][0]
-        assert primary_call["kwargs"]["zpf"] == 0
+        assert primary_call["kwargs"]["zpf_active"] == 0
 
 
 class TestGapPassSpectrum:

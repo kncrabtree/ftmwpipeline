@@ -72,7 +72,7 @@ class TestResolve:
         assert merged.savgol.sg_min_window == 5
         assert merged.primary_pass.primary_window == "blackmanharris"
         assert merged.primary_pass.min_exclusion_mhz == 0.0
-        assert merged.primary_pass.detection_zpf == 1
+        assert merged.primary_pass.detection_zpf == 2
         assert merged.gap_pass.run_gap_pass is True
         assert merged.gap_pass.gap_active_zpf == 2
         assert merged.gap_pass.gap_leakage_floor_k == 3.0
