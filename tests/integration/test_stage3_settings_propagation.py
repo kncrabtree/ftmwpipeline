@@ -241,6 +241,33 @@ class TestGapPassSpectrum:
         assert captured["calls"][0]["kwargs"]["zpf_active"] == 3
 
 
+class TestPrimaryNoiseKnobs:
+    """``primary_pass.noise_*`` drive the apodized-domain ``estimate_noise_scatter``
+    measured on the primary spectrum (the second Stage 3 noise level)."""
+
+    def test_primary_noise_knobs_reach_scatter_estimator(
+        self, baseline_2638_stage2: Path, tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        variant = tmp_path / "primary_noise.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+        spy, captured = _spy(stage3_impl.estimate_noise_scatter)
+        monkeypatch.setattr(stage3_impl, "estimate_noise_scatter", spy)
+        # Stop after the primary noise estimate fires.
+        mock, _ = _intercept_kernel()
+        monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
+
+        s = PeakDetectionSettings()
+        s.primary_pass.noise_window_mhz = 55.0
+        s.primary_pass.noise_line_k = 6.5
+        with pytest.raises(_CalibIntercepted):
+            stage3_impl.detect_peaks_impl(str(variant), settings=s)
+        assert captured["calls"], "spy never fired"
+        kw = captured["calls"][0]["kwargs"]
+        assert kw["window_mhz"] == 55.0
+        assert kw["line_k"] == 6.5
+
+
 class TestSavgolCoverage:
     """``savgol.sg_fwhm_coverage`` and ``savgol.sg_min_window`` drive
     ``_grid_aware_sg_window``."""

@@ -108,15 +108,21 @@ honest (higher) active-frame `S_coh` does real, beneficial leakage suppression
 where the full-record floor was a near-no-op. `k` and `detection_zpf` remain
 tunable per-instrument knobs.
 
-## Second (apodized-domain) noise level — follow-up
+## Second (apodized-domain) noise level
 
 The primary's noise is measured **on its own active-frame BH spectrum** (it can't
 be propagated from the unapodized authority: BH suppresses the leakage that
 inflates the boxcar authority σ on dense spectra, so the BH floor is genuinely
-lower). Today that measurement is an inline `estimate_noise_scatter` with default
-knobs. Promoting it to a **calibrated, settings-driven second noise level** (its
-own scatter knobs, tunable) is the remaining follow-up that fully unblocks the
-Stage 3 tune surface.
+lower). That measurement is now **calibrated and settings-driven**: the eight
+scatter knobs live on `PeakDetectionSettings.primary_pass` as `noise_*` fields
+(mirroring the Stage 2 `NoiseSettings` knobs and defaults), resolved by the
+Stage 3 four-layer resolver and forwarded to `estimate_noise_scatter` on the
+primary spectrum. They are housed in `primary_pass` (not a separate Stage 2
+group) because the floor is intrinsic to the Stage-3 primary spectrum and the
+tune surface already sweeps `PeakDetectionSettings`; defaults reproduce the prior
+behavior, so this is purely additive tunability. There are thus two measured
+noise levels: the unapodized active-FT authority (gap propagation + snap-back
+scoring) and the apodized primary floor (primary detection threshold).
 
 ## Out of scope / unchanged
 

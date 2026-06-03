@@ -587,6 +587,24 @@ def detect_peaks_impl(
             "primary_pass.primary_leakage_floor_k",
         )
     )
+    # Apodized-domain scatter knobs for the primary's own per-bin σ (the second
+    # Stage 3 noise level, measured on the BH active-FT spectrum). Resolved from
+    # the primary_pass sub-block; None-valued knobs fall through to the
+    # estimator's own defaults.
+    primary_noise_knobs: Dict[str, Any] = {
+        k: v
+        for k, v in {
+            "window_mhz": primary.noise_window_mhz,
+            "pedestal_mhz": primary.noise_pedestal_mhz,
+            "line_k": primary.noise_line_k,
+            "n_iter": primary.noise_n_iter,
+            "region_aware": primary.noise_region_aware,
+            "smoothing_mhz": primary.noise_smoothing_mhz,
+            "smoothing_percentile": primary.noise_smoothing_percentile,
+            "convolve_mhz": primary.noise_convolve_mhz,
+        }.items()
+        if v is not None
+    }
     run_gap_v: bool = bool(_required(gap.run_gap_pass, "gap_pass.run_gap_pass"))
     gap_active_zpf_v: int = int(
         _required(gap.gap_active_zpf, "gap_pass.gap_active_zpf")
@@ -729,13 +747,16 @@ def detect_peaks_impl(
         fwhm_coverage=sg_fwhm_coverage_v,
         min_window=sg_min_window_v,
     )
-    # Primary detection noise is the same honest scatter estimator the
-    # persisted Stage 2 uses (consistency with the snap-back SNR scale). The
-    # scatter floor is lower than the legacy adaptive one in leakage-pedestal
-    # regions; the primary pass is kept safe by the leakage-aware floor below
-    # rather than by adaptive's incidental pedestal inflation.
+    # The primary's per-bin σ is measured on its OWN apodized active-FT spectrum
+    # (the second Stage 3 noise level) -- not propagated from the unapodized
+    # authority, because the Blackman-Harris window suppresses the leakage that
+    # inflates the boxcar authority σ on dense spectra, so the primary floor is
+    # genuinely lower. The scatter knobs come from the primary_pass settings
+    # (``noise_*``), so this floor is tunable through the Stage 3 resolver.
     primary_noise = estimate_noise_scatter(
-        primary_ft.freq_array, primary_ft.magnitude_spectrum
+        primary_ft.freq_array,
+        primary_ft.magnitude_spectrum,
+        **primary_noise_knobs,
     )
     # The gap σ is NOT a third independent estimate: the matched filter is a
     # linear transform of the active region, so under white noise its per-bin σ
