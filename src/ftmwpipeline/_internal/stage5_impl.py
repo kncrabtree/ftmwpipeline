@@ -81,11 +81,10 @@ from .stage4_impl import load_windows_impl
 
 logger = logging.getLogger(__name__)
 
-# Default per-window tau bound factor k (tau in [tau0/k, tau0*k]) and the
-# strongest-line SNR below which a window holds tau fixed (O5-4). These are
-# starting values; the planning doc calls for empirical calibration on 2638.
+# Default per-window tau bound factor k (tau in [tau0/k, tau0*k]). The free-τ
+# SNR floor lives with the gate it drives (fitting.window_fit, composed against
+# the weak-window floor); it is not duplicated here.
 DEFAULT_MAX_DECAY_FACTOR = 5.0
-DEFAULT_FIT_TAU_MIN_SNR = 50.0
 
 
 def _resolve_tau_calibration_for_fit(
@@ -855,6 +854,9 @@ def fit_peaks_impl(
         "weak_window_snr_threshold": _required_float(
             resolved.conservative.weak_window_snr_threshold,
             "conservative.weak_window_snr_threshold",
+        ),
+        "fit_tau_min_snr": _required_float(
+            resolved.tau.fit_tau_min_snr, "tau.fit_tau_min_snr"
         ),
         "n_eff_kind": n_eff_kind_v,
         # Blend-aware seeder thresholds.

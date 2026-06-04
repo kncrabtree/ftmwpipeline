@@ -162,6 +162,11 @@ DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR = 1.0
 # ``DEFAULT_WEAK_WINDOW_SNR_THRESHOLD``) hold ``tau`` fixed entirely.
 DEFAULT_TAU_PENALTY_LAMBDA = 50.0
 DEFAULT_WEAK_WINDOW_SNR_THRESHOLD = 10.0
+# τ is freed only in windows clearing *both* the general weak-window floor
+# (``weak_window_snr_threshold``) and this τ-specific bar; the effective floor is
+# their max. Defaulting it to the weak-window floor keeps the gate where it
+# historically sat (a single SNR-10 cutoff) until tuned upward.
+DEFAULT_FIT_TAU_MIN_SNR = 10.0
 
 
 def _effective_min_pair_separation(
@@ -236,6 +241,7 @@ def derive_window_fit_constraints(
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     tau_penalty_n_sigma: float = DEFAULT_TAU_PENALTY_N_SIGMA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
+    fit_tau_min_snr: float = DEFAULT_FIT_TAU_MIN_SNR,
     tau_apodization_us: Optional[float] = None,
     tau_maj_us: Optional[float] = None,
     sigma_tau_us: Optional[float] = None,
@@ -368,7 +374,13 @@ def derive_window_fit_constraints(
 
     fit_tau_eff = fit_tau
     snr_proxy = (max_abs / sig_median) if sig_median > 0.0 else 0.0
-    if fit_tau_eff and snr_proxy < weak_window_snr_threshold:
+    # τ is freed only above *both* the general weak-window floor and the
+    # τ-specific bar, so the effective free-τ floor is their max. With both at
+    # their default of 10 this is the historical single SNR-10 cutoff; raising
+    # ``fit_tau_min_snr`` tightens τ freedom without touching the weak-window
+    # floor that governs the rest of the conservative treatment.
+    tau_free_floor = max(weak_window_snr_threshold, fit_tau_min_snr)
+    if fit_tau_eff and snr_proxy < tau_free_floor:
         fit_tau_eff = False
 
     effective_tau_penalty_lambda = (
@@ -1950,6 +1962,7 @@ def conservative_fit(
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     tau_penalty_n_sigma: float = DEFAULT_TAU_PENALTY_N_SIGMA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
+    fit_tau_min_snr: float = DEFAULT_FIT_TAU_MIN_SNR,
     tau_apodization_us: Optional[float] = None,
     tau_maj_us: Optional[float] = None,
     sigma_tau_us: Optional[float] = None,
@@ -2108,6 +2121,7 @@ def conservative_fit(
         tau_penalty_lambda=tau_penalty_lambda,
         tau_penalty_n_sigma=tau_penalty_n_sigma,
         weak_window_snr_threshold=weak_window_snr_threshold,
+        fit_tau_min_snr=fit_tau_min_snr,
         tau_apodization_us=tau_apodization_us,
         tau_maj_us=tau_maj_us,
         sigma_tau_us=sigma_tau_us,

@@ -235,7 +235,7 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 |---|---|---|---|---|---|
 | shape.kind | LORENTZIAN | `PeakShape.LORENTZIAN` *(literal default)* | Line-shape model selector: LORENTZIAN or GAUSSIAN envelope. Stage 2b's `auto_recommend` stamps the verdict onto the file. | maybe | — |
 | tau.max_decay_factor | 5.0 | `DEFAULT_MAX_DECAY_FACTOR` | Tau bounds multiplier: τ ∈ [τ₀ / k, τ₀ × k] (O5-4 hard cap). | N | — |
-| tau.fit_tau_min_snr | 50.0 | dataclass-only | SNR threshold above which τ becomes a free parameter (fixed below). | **Y** | — |
+| tau.fit_tau_min_snr | 10.0 | `DEFAULT_FIT_TAU_MIN_SNR` | SNR threshold above which τ becomes a free parameter. The effective free-τ floor is `max(fit_tau_min_snr, conservative.weak_window_snr_threshold)`; the default 10 equals the weak-window floor, so τ-freedom is unchanged until this is raised above it. (Was 50 and orphaned — never read — until wired into the gate in `window_fit`.) | **Y** | — |
 | tau.tau_penalty_lambda | 50.0 | `DEFAULT_TAU_PENALTY_LAMBDA` | Strength of bidirectional Gaussian prior on τ. | N | — |
 | tau.tau_penalty_n_sigma | 5.0 | `DEFAULT_TAU_PENALTY_N_SIGMA` | τ-bound half-width in units of σ_τ from Stage 2b calibration. | N | — |
 | tau.per_band_tau | True | function default | Route τ to per-band majorities (True) or band-wide (False). | maybe | — |
@@ -249,7 +249,7 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 | conservative.min_pair_separation_factor | 0.5 | `DEFAULT_MIN_PAIR_SEPARATION_FACTOR` | Sanity-check floor on post-escalation peak pairs (reject if below), in FWHM units. | N | — |
 | conservative.min_pair_separation_resolution_factor | 1.0 | `DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR` | Resolution-referenced floor on the minimum pair separation, in active-FT elements `1/T_active`; effective floor is `max(min_pair_separation_factor·FWHM, this·(1/T_active))`. Gates sub-resolution duplicate overfits (issue #13). | N | cross-fixture `k` + amp-ratio tiebreaker debt |
 | conservative.n_eff_kind | "perplexity_log1p_snr" | `DEFAULT_N_EFF_KIND` | Effective-sample-size weighting (perplexity_log1p_snr vs kish_mag_sq). | N | — |
-| conservative.weak_window_snr_threshold | 10.0 | `DEFAULT_WEAK_WINDOW_SNR_THRESHOLD` | In-window SNR floor for free-τ eligibility (hold τ fixed below). | **Y** | — |
+| conservative.weak_window_snr_threshold | 10.0 | `DEFAULT_WEAK_WINDOW_SNR_THRESHOLD` | General weak-window SNR floor (windows below it hold τ fixed). Composes with `tau.fit_tau_min_snr`: the effective free-τ floor is the max of the two, so this is the lower/general bar and `fit_tau_min_snr` the τ-specific one. | **Y** | — |
 | conservative.max_nfev | 2000 | `DEFAULT_MAX_NFEV` | Solver evaluation cap (prevents runaway on ill-conditioned problems). | N | — |
 | penalties.phase_penalty_lambda | 100.0 | `DEFAULT_PHASE_PENALTY_LAMBDA` | Soft phase-difference penalty strength (prevents in-/anti-phase degeneracy). | N | — |
 | penalties.phase_penalty_cutoff_fwhm | 2.0 | `DEFAULT_PHASE_PENALTY_CUTOFF_FWHM` | Phase-penalty range: weak at this spacing, zero in quadrature. | N | — |
@@ -312,7 +312,7 @@ fixture.
 | 4 | contributor.min_freeze_snr | 50.0 | — |
 | 4 | contributor.magnitude_attachment_threshold | 0.1 | — |
 | 4 | leakage.tau_us | None | — |
-| 5 | tau.fit_tau_min_snr | 50.0 | — |
+| 5 | tau.fit_tau_min_snr | 10.0 | — |
 | 5 | conservative.weak_window_snr_threshold | 10.0 | — |
 | 5 | rescue.snr_threshold | 2.5 | — |
 | 5 | rescue.prominence_threshold | 2.0 | — |
@@ -347,7 +347,7 @@ across the SNR span (1512 lowest → 655 extreme):
 
 | stage | knob | default | cross-fixture verdict |
 |---|---|---|---|
-| 5 | `tau.fit_tau_min_snr` | 50.0 | keep. Tau-free rate rises monotonically with SNR (1512 26 % → 655 93 %); no bright window ever wrongly held. |
+| 5 | `tau.fit_tau_min_snr` | 10.0 | re-audit. The prior "keep 50" audit predates wiring: the knob was orphaned, so the observed tau-free rate tracked `weak_window_snr_threshold` (10), not this knob. Now wired as the τ-specific floor `max(fit_tau_min_snr, weak_window_snr_threshold)`, default 10 (behaviour-preserving). Re-derive the free-τ floor on a fixture with the gate actually live. |
 | 5 | `conservative.weak_window_snr_threshold` | 10.0 | keep. Weak-window regime scales with SNR (0.84 → 0.39), never degenerate. |
 | 5 | `rescue.snr_threshold` | 2.5 | keep. Rescue does bounded, meaningful work everywhere (accept 0.4–0.7). |
 | 5 | `rescue.prominence_threshold` | 2.0 | keep. Same; no pathological all-/no-fire. |
