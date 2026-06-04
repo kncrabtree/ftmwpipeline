@@ -158,6 +158,25 @@ def test_stage3_scan_runs_and_plots(baseline_2638_stage2, tmp_path):
     assert r.plot_path is not None and r.plot_path.exists()
 
 
+def test_stage4_scan_runs_and_plots(baseline_2638_stage3, tmp_path):
+    # A real Stage 4 sweep on the Stage-3 baseline: a row per grid value with the
+    # plan-shape columns, plus the boundary-overlay plot. Raising the coherence
+    # cutoff relaxes leakage flagging, so the HARD-window count cannot rise.
+    r = ftmw.tune_scan(
+        baseline_2638_stage3, "stage4.coherence.edge_threshold",
+        grid=[6.0, 8.0, 10.0], output_dir=tmp_path, quiet=True,
+    )
+    assert [row.value for row in r.rows] == [6.0, 8.0, 10.0]
+    assert r.metric_columns == (
+        "n_windows", "n_hard", "n_easy", "n_free", "n_fixed", "n_dep",
+        "n_split", "width_p50", "width_p95", "width_max",
+    )
+    hard = [row.metrics["n_hard"] for row in r.rows]
+    assert hard == sorted(hard, reverse=True)
+    assert all(row.metrics["n_windows"] > 0 for row in r.rows)
+    assert r.plot_path is not None and r.plot_path.exists()
+
+
 def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):
     import shutil
 

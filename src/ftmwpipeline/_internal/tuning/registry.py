@@ -27,6 +27,7 @@ from .plots import (
     plot_spectra_ladder,
     plot_start_detection,
     plot_tau_trend,
+    plot_window_planning,
 )
 
 # A stage runner: given a (writable) .ftmw path and a knob value, set the knob
@@ -302,6 +303,33 @@ def _run_peaks(sub_block: str, field_name: str) -> RunFn:
     return run
 
 
+def _run_windows(sub_block: str, field_name: str) -> RunFn:
+    """Re-run Stage 4 window assignment with a single settings field set.
+
+    Builds a ``WindowPlanningSettings`` bundle (the preset layer) carrying just
+    the one sub-block field, so any Stage 4 knob is sweepable uniformly. The
+    ``assign_windows_impl`` result carries the plan, the active FT, and the
+    active σ the boundary/coherence overlay plot needs.
+    """
+
+    def run(path: Path, value: Any) -> Any:
+        from ftmwpipeline._internal.stage4_impl import assign_windows_impl  # lazy
+        from ftmwpipeline.core import window_planning_settings as wps
+
+        sub_cls = {
+            "coherence": wps.CoherenceSubSettings,
+            "clustering": wps.ClusteringSubSettings,
+            "contributor": wps.ContributorSubSettings,
+            "leakage": wps.LeakageSubSettings,
+        }[sub_block]
+        bundle = wps.WindowPlanningSettings(
+            **{sub_block: sub_cls(**{field_name: value})}
+        )
+        return assign_windows_impl(str(path), settings=bundle)
+
+    return run
+
+
 # ---------------------------------------------------------------------------
 # Metric reducers
 # ---------------------------------------------------------------------------
@@ -393,6 +421,39 @@ def _metric_peaks(result: Any) -> Dict[str, Any]:
         "snr_p50": _pct(50),
         "snr_p90": _pct(90),
         "snr_max": round(float(snrs.max()), 3) if snrs.size else 0.0,
+    }
+
+
+def _metric_windows(result: Any) -> Dict[str, Any]:
+    """Reduce a Stage 4 result to the plan's shape: window counts split by
+    difficulty, the contributor/dependency bookkeeping, and the window-width
+    distribution.
+
+    What a user tunes Stage 4 for is how the band partitions — how many windows,
+    how many are HARD (oversized / leakage-touched), how many out-of-window lines
+    are frozen as fixed contributors, how many windows the knob forces a split
+    on, and how wide the windows run. The width tail (p95/max) is the headline
+    for the width-cap knob; the HARD/split counts track the coherence and cap
+    knobs.
+    """
+    import numpy as np
+
+    plan = result["plan"]
+    widths = np.asarray([w.width_mhz for w in plan.windows], dtype=float)
+    if widths.size == 0:
+        widths = np.zeros(1)
+    n_split = sum(1 for w in plan.windows if w.split_proposal is not None)
+    return {
+        "n_windows": int(result["n_windows"]),
+        "n_hard": int(result["n_hard"]),
+        "n_easy": int(result["n_easy"]),
+        "n_free": int(result["n_free_peaks"]),
+        "n_fixed": int(result["n_fixed_contributors"]),
+        "n_dep": int(result["n_dependencies"]),
+        "n_split": int(n_split),
+        "width_p50": round(float(np.median(widths)), 3),
+        "width_p95": round(float(np.percentile(widths, 95)), 3),
+        "width_max": round(float(widths.max()), 3),
     }
 
 
@@ -965,6 +1026,95 @@ _peak_knob(
     "stage3.gap_pass.gap_active_zpf", "gap_pass", "gap_active_zpf",
     "Zero-padding factor for the matched-filter active-region FFT.",
     "N", (1, 2, 3), tier="advanced",
+)
+
+
+# ---------------------------------------------------------------------------
+# Stage 4 window assignment — requires Stage 3 (peaks). Every Stage 4 sweep
+# re-runs assign_windows and renders the same view: a window-count trend, a
+# band-wide boundary-shift overlay (each value's window edges coloured by
+# value), then per-value × per-region zoom panels showing how the partition,
+# its difficulty, and the driving S_coh statistic move across the grid.
+# ---------------------------------------------------------------------------
+_WINDOW_COLS = (
+    "n_windows", "n_hard", "n_easy", "n_free", "n_fixed", "n_dep", "n_split",
+    "width_p50", "width_p95", "width_max",
+)
+_WINDOW_SEE_ALSO = (
+    "the table reports the plan shape (window/hard/contributor counts + the "
+    "width distribution); the panels show how the boundaries move — read "
+    "alongside the Stage 3 promoted peaks (stage3.*) that seed the partition."
+)
+
+
+def _window_knob(
+    path: str, sub_block: str, field_name: str, help_: str,
+    inst: str, grid: Tuple[Any, ...], tier: str = "primary",
+    see_also: Optional[str] = None,
+) -> None:
+    _register(KnobSpec(
+        path=path, stage="stage4_windows", requires="stage3_peaks",
+        help=help_, inst_sensitivity=inst, default_grid=grid,
+        run=_run_windows(sub_block, field_name), metric=_metric_windows,
+        metric_columns=_WINDOW_COLS, plot=plot_window_planning, tier=tier,
+        see_also=see_also,
+    ))
+
+
+# Primary tier — the Y-rated partition-shaping knobs (grids lifted from the
+# tracked stage4-gaussian-audit probes).
+_window_knob(
+    "stage4.coherence.edge_threshold", "coherence", "edge_threshold",
+    "S_coh cutoff (T_edge) for flagging leakage-touched regions that force "
+    "window boundaries.",
+    "Y", (4.0, 6.0, 8.0, 10.0, 12.0), see_also=_WINDOW_SEE_ALSO,
+)
+_window_knob(
+    "stage4.clustering.max_window_width_mhz", "clustering",
+    "max_window_width_mhz",
+    "Width cap (MHz) above which a window is HARD and gains a split proposal.",
+    "Y", (20.0, 30.0, 40.0, 60.0, 80.0), see_also=_WINDOW_SEE_ALSO,
+)
+_window_knob(
+    "stage4.contributor.magnitude_attachment_threshold", "contributor",
+    "magnitude_attachment_threshold",
+    "Tier-1 contributor attachment: predicted mean-skirt threshold (σ_c units).",
+    "Y", (0.05, 0.075, 0.1, 0.15, 0.2), see_also=_WINDOW_SEE_ALSO,
+)
+_window_knob(
+    "stage4.contributor.min_freeze_snr", "contributor", "min_freeze_snr",
+    "SNR floor for fixed-contributor freeze-eligibility (below = thaw candidate).",
+    "Y", (20.0, 35.0, 50.0, 75.0, 100.0), see_also=_WINDOW_SEE_ALSO,
+)
+_window_knob(
+    "stage4.leakage.tau_us", "leakage", "tau_us",
+    "Decay constant (µs) for the analytic leakage-skirt envelope; None = boxcar "
+    "(undamped) limit. Reach the Stage 2b τ anchors via settings=/preset=.",
+    "Y", (None, 3.0, 6.0, 12.0), see_also=_WINDOW_SEE_ALSO,
+)
+
+# Advanced — coherence band scales and the isolated-peak / per-window caps.
+_window_knob(
+    "stage4.coherence.edge_m", "coherence", "edge_m",
+    "Band width (bins) for the rolling complex-edge coherence statistic.",
+    "N", (32, 48, 64, 96, 128), tier="advanced",
+)
+_window_knob(
+    "stage4.coherence.trim_m", "coherence", "trim_m",
+    "Band width (bins) for coherence refinement after a leakage-region flag.",
+    "N", (16, 24, 32, 48), tier="advanced",
+)
+_window_knob(
+    "stage4.clustering.min_window_half_width_mhz", "clustering",
+    "min_window_half_width_mhz",
+    "Minimum half-width (MHz) of an isolated-peak proposed window.",
+    "maybe", (1.0, 2.0, 3.0, 4.0), tier="advanced",
+)
+_window_knob(
+    "stage4.clustering.max_peaks_per_window", "clustering",
+    "max_peaks_per_window",
+    "Per-window promoted-peak cap (windows over it are split).",
+    "N", (8, 12, 16, 24), tier="advanced",
 )
 
 

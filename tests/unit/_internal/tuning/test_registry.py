@@ -109,3 +109,41 @@ def test_stage3_leakage_floor_supersedes_hard_mask():
     assert "stage3.gap_pass.gap_leakage_floor_k" in paths
     assert "stage3.primary_pass.primary_leakage_floor_k" in paths
     assert not any("gap_mask_edge" in p for p in paths)
+
+
+def test_stage4_paths_resolve_to_settings_fields():
+    from dataclasses import fields
+
+    from ftmwpipeline.core import window_planning_settings as wps
+
+    tmpl = wps.WindowPlanningSettings()
+    stage4 = list_knobs("stage4", include_advanced=True)
+    assert stage4
+    for spec in stage4:
+        assert spec.stage == "stage4_windows"
+        assert spec.requires == "stage3_peaks"
+        _, sub, field = spec.path.split(".")
+        names = {f.name for f in fields(getattr(tmpl, sub))}
+        assert field in names, spec.path
+        assert spec.metric_columns == (
+            "n_windows", "n_hard", "n_easy", "n_free", "n_fixed", "n_dep",
+            "n_split", "width_p50", "width_p95", "width_max",
+        )
+
+
+def test_stage4_leakage_tau_grid_includes_boxcar():
+    # the boxcar (undamped) limit is tau_us=None — it must be a swept grid value,
+    # not just reachable via settings=.
+    spec = get_knob("stage4.leakage.tau_us")
+    assert None in spec.default_grid
+
+
+def test_stage4_primary_tier_covers_y_rated_knobs():
+    primary = {s.path for s in list_knobs("stage4")}  # default = primary only
+    assert primary == {
+        "stage4.coherence.edge_threshold",
+        "stage4.clustering.max_window_width_mhz",
+        "stage4.contributor.magnitude_attachment_threshold",
+        "stage4.contributor.min_freeze_snr",
+        "stage4.leakage.tau_us",
+    }

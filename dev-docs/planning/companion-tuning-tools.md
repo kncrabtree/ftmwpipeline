@@ -269,8 +269,8 @@ is proven on a low-churn stage, then fanned out.
 4. **Stage 3 -> 4 -> 5.** Heaviest; register the tracked `probe_<knob>.py`
    grids/metrics/plots into the registry (they already encode grid + metric +
    plot). Reuse the `<stage>-gaussian-audit/harness.py` builders. Follow the
-   conventions in §Lessons for the fan-out. **Stage 3 done** (see
-   §Implementation status); Stage 4 -> 5 next.
+   conventions in §Lessons for the fan-out. **Stages 3 and 4 done** (see
+   §Implementation status); Stage 5 next.
 5. **Preset emission** (resolve the deferred decision) once the surface is felt;
    and the resolved-settings inspection verb (issue #28).
 6. **Gap-fill** any remaining no-tool knobs as registry entries.
@@ -372,19 +372,54 @@ the gap pass falls back to the user apodization).
 - The replaced `gap_pass.gap_mask_edge_threshold` (hard `S_coh` mask) is *not*
   registered; its continuous-floor successor `gap_pass.gap_leakage_floor_k` is.
 
+**Knob coverage — Stage 4 complete (tiered).** Every `WindowPlanningSettings`
+field is registered as `stage4.<sub_block>.<field>` (9 knobs), all driving
+`assign_windows_impl` through a one-field settings bundle (`_run_windows`) and
+sharing one metric (the plan shape: `n_windows / n_hard / n_easy / n_free /
+n_fixed / n_dep / n_split` + the `width_p50/p95/max` distribution) and one plot
+(`plot_window_planning`). `requires="stage3_peaks"`.
+- **Primary** (the Y-rated partition-shaping knobs, grids lifted from the
+  `stage4-gaussian-audit` probes): `coherence.edge_threshold`,
+  `clustering.max_window_width_mhz`,
+  `contributor.magnitude_attachment_threshold`, `contributor.min_freeze_snr`
+  (the no-tool gap, filled with a sensible grid), and `leakage.tau_us` — whose
+  grid *includes the `None` boxcar limit* as a swept value (the Stage 2b τ
+  anchors stay reachable via `settings=`/`preset=`, not a static grid).
+- **Advanced**: the coherence band scales (`coherence.edge_m` / `trim_m`) and
+  the isolated-peak / per-window caps (`clustering.min_window_half_width_mhz` /
+  `max_peaks_per_window`).
+- **Plot:** the active FT is invariant across the sweep, so the figure stacks
+  (1) a plan-count trend (`n_windows` / `n_hard` / `n_fixed` / `n_split` vs the
+  swept value), (2) a full-width **boundary-shift overlay** — the band drawn
+  once with *every* swept value's window boundaries overlaid as vertical lines
+  coloured by value (HARD spans hatched, split proposals dotted), the zoom
+  regions `axvspan`-shaded — so a glance shows how the partition walks as the
+  knob changes, and (3) per-value × per-region zoom detail: each row one swept
+  value, each column one auto-selected ~150 MHz region (ranked by how much the
+  *partition* — window-edge and HARD counts — diverges across values, richest-
+  region fallback), log-scaled with the noise floor near the axis bottom, window
+  spans shaded by difficulty (easy = green, hard = red) with boundaries and
+  split proposals, free peaks (filled) vs fixed contributors (open square), and
+  the driving `S_coh` coherence statistic with its `T_edge` threshold on a twin
+  axis. This is the "where does this value move the boundaries, and what does
+  the statistic that set them look like" readout — the spectrum-impact
+  convention applied to Stage 4. *(On a dense fixture like 2638 — ~300–500
+  windows — the band-wide overlay reads as a forest of edges; it is most legible
+  on sparser instruments. The zoom rows carry the per-region detail regardless.)*
+
 Remaining:
 
-- **Stage 4 → 5 knobs** (sequencing step 4): lift the tracked
+- **Stage 5 knobs** (sequencing step 4): lift the tracked
   `probe_<knob>.py` grids/metrics/plots into registry entries, reusing the
-  `<stage>-gaussian-audit/harness.py` builders. Stage 5 sweeps re-run
+  `stage5-gaussian-audit/harness.py` builders. Stage 5 sweeps re-run
   `fit_peaks` per value — keep grids tight, lean on `--reuse`, and test against
   the small dependency-free-windows fixture. Apply the §Lessons conventions.
 - **Preset emission** (deferred — see §Open decisions 1) and the resolved-settings
   inspection verb (issue **#28**): a `tune settings` view of resolved per-knob
   values + provenance (`.ftmw`/`.yml`/default), reusing the registry walk +
   selector + tiering.
-- **Manual validation:** the Stage 0/1/2/2b knobs await a user drive-through on
-  real data to confirm each metric/plot before they are relied on.
+- **Manual validation:** the Stage 0/1/2/2b/3/4 knobs await a user drive-through
+  on real data to confirm each metric/plot before they are relied on.
 
 ## Lessons / conventions for the Stage 3→5 fan-out
 

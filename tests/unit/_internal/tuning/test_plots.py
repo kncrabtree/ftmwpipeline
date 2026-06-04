@@ -19,6 +19,7 @@ from ftmwpipeline._internal.tuning.plots import (
     plot_spectra_ladder,
     plot_start_detection,
     plot_tau_trend,
+    plot_window_planning,
 )
 
 
@@ -316,6 +317,131 @@ def test_peak_persistence_buckets_by_last_surviving_value():
     assert pers[35000] == 0  # drops out after the first value
 
 
+# --- Stage 4 window-planning adapter --------------------------------------
+
+
+@dataclass
+class _FakeDifficulty:
+    value: str
+
+
+@dataclass
+class _FakeContributor:
+    peak_index: int
+    frequency_mhz: float
+
+
+@dataclass
+class _FakeWindow:
+    freq_range: tuple
+    difficulty: _FakeDifficulty
+    free_peak_indices: list
+    fixed_contributors: list
+    split_proposal: Optional[float] = None
+
+    @property
+    def width_mhz(self) -> float:
+        return self.freq_range[1] - self.freq_range[0]
+
+
+@dataclass
+class _FakePlan:
+    windows: list
+    parameters: dict
+
+
+def _window(lo, hi, diff="easy", free=(), fixed=(), split=None):
+    return _FakeWindow(
+        (lo, hi), _FakeDifficulty(diff), list(free),
+        [_FakeContributor(i, f) for i, f in fixed], split,
+    )
+
+
+def _windows_result(windows):
+    # Active FT across the 2638 band; flat σ; parameters for the S_coh overlay.
+    freqs = np.linspace(26500.0, 40000.0, 1400)
+    mag = np.full(freqs.shape, 0.02)
+    ft = _FakeFT(freqs, mag.astype(complex))
+    plan = _FakePlan(windows, {"edge_m": 64, "edge_threshold": 8.0,
+                               "probe_freq_mhz": 0.0, "start_us": 0.0})
+    n_hard = sum(1 for w in windows if w.difficulty.value == "hard")
+    n_fixed = sum(len(w.fixed_contributors) for w in windows)
+    return {
+        "plan": plan, "active_ft": ft,
+        "active_rms": np.full(freqs.shape, 0.01),
+        "n_windows": len(windows), "n_hard": n_hard,
+        "n_easy": len(windows) - n_hard,
+        "n_free_peaks": sum(len(w.free_peak_indices) for w in windows),
+        "n_fixed_contributors": n_fixed, "n_dependencies": 0,
+    }
+
+
+def _window_metrics(res):
+    plan = res["plan"]
+    return {
+        "n_windows": res["n_windows"], "n_hard": res["n_hard"],
+        "n_fixed": res["n_fixed_contributors"],
+        "n_split": sum(1 for w in plan.windows if w.split_proposal is not None),
+    }
+
+
+def test_plot_window_planning_returns_figure():
+    # two values whose partition differs -> a region is auto-selected to zoom.
+    r1 = _windows_result([
+        _window(27000.0, 27040.0, "hard", free=(0,), split=27020.0),
+        _window(35000.0, 35020.0, "easy", free=(1,), fixed=((2, 35010.0),)),
+    ])
+    r2 = _windows_result([
+        _window(27000.0, 27020.0, "easy", free=(0,)),
+        _window(27020.0, 27040.0, "easy"),
+        _window(35000.0, 35020.0, "easy", free=(1,)),
+    ])
+    rows = [SweepRow(20.0, _window_metrics(r1), r1),
+            SweepRow(40.0, _window_metrics(r2), r2)]
+    fig = plot_window_planning(
+        get_knob("stage4.clustering.max_window_width_mhz"), rows, _ctx()
+    )
+    assert fig is not None
+    assert len(fig.axes) >= 3  # trend + boundary overlay + zoom panels
+    _close(fig)
+
+
+def test_plot_window_planning_handles_none_value():
+    # leakage.tau_us sweeps over None (boxcar) + floats; the categorical trend
+    # x and labels must not raise on the None.
+    r1 = _windows_result([_window(27000.0, 27040.0, "hard", free=(0,))])
+    r2 = _windows_result([_window(27000.0, 27040.0, "easy", free=(0,))])
+    rows = [SweepRow(None, _window_metrics(r1), r1),
+            SweepRow(3.0, _window_metrics(r2), r2)]
+    fig = plot_window_planning(get_knob("stage4.leakage.tau_us"), rows, _ctx())
+    assert fig is not None
+    _close(fig)
+
+
+def test_plot_window_planning_none_without_results():
+    rows = [SweepRow(8.0, {"n_windows": 0}, None)]
+    assert plot_window_planning(
+        get_knob("stage4.coherence.edge_threshold"), rows, _ctx()
+    ) is None
+
+
+def test_select_window_regions_ranks_by_divergence():
+    from ftmwpipeline._internal.tuning.plots import _select_window_regions
+
+    # value A splits the 27000 band into two windows; value B leaves it whole.
+    # The 27000 region diverges (different edge counts); 35000 is identical.
+    rA = _windows_result([
+        _window(27000.0, 27050.0, "easy"), _window(27050.0, 27100.0, "easy"),
+        _window(35000.0, 35050.0, "easy"),
+    ])
+    rB = _windows_result([
+        _window(27000.0, 27100.0, "easy"), _window(35000.0, 35050.0, "easy"),
+    ])
+    rows = [SweepRow(1, {}, rA), SweepRow(2, {}, rB)]
+    regions = _select_window_regions(rows, 150.0, 1)
+    assert regions and regions[0][0] <= 27000.0 <= regions[0][1]
+
+
 def test_knob_plot_wiring():
     # the spectrum-impact knobs share the ladder; detection knobs show the curve
     assert get_knob("stage1.start_us").plot is plot_spectra_ladder
@@ -326,6 +452,9 @@ def test_knob_plot_wiring():
     # every Stage 3 knob renders the peak-detection spectrum-overlay view
     assert get_knob("stage3.promotion.min_snr").plot is plot_peak_detection
     assert get_knob("stage3.gap_pass.gap_leakage_floor_k").plot is plot_peak_detection
+    # every Stage 4 knob renders the window-planning boundary-overlay view
+    assert get_knob("stage4.coherence.edge_threshold").plot is plot_window_planning
+    assert get_knob("stage4.leakage.tau_us").plot is plot_window_planning
 
 
 def test_detection_knobs_point_at_spectrum_knobs():

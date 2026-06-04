@@ -745,6 +745,352 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     return fig
 
 
+# Stage 4 window-planning zoom panels: each region is a touch wider than the
+# Stage 3 ones (a fit window runs up to tens of MHz, so the panel must hold a
+# few of them and show their boundaries move). y-floor + ceiling mirror the
+# peak panels so the noise band sits near the axis bottom.
+_WINDOW_REGION_WIDTH_MHZ = 150.0
+_WINDOW_N_REGIONS = 3
+_WINDOW_YMIN_SIGMA_FRACTION = 0.5
+_WINDOW_YMAX_PEAK_FACTOR = 1.5
+_DIFFICULTY_COLORS = {"easy": "tab:green", "hard": "tab:red"}
+
+
+def _difficulty(w: Any) -> str:
+    return getattr(getattr(w, "difficulty", None), "value", "easy")
+
+
+def _coherence_curve(result: Any) -> Any:
+    """Recompute the rolling complex-edge coherence S_coh and its T_edge
+    threshold for one Stage 4 result — the statistic that drove the partition.
+
+    Mirrors the single-value window visualizer: de-ramp to the active turn-on,
+    then roll the coherence over the persisted ``edge_m`` band. Returns
+    ``(freqs_ordered, S_coh, threshold)`` or ``None`` when the inputs are absent.
+    """
+    import numpy as np
+
+    plan = result.get("plan")
+    ft = result.get("active_ft")
+    rms = result.get("active_rms")
+    if plan is None or ft is None or rms is None:
+        return None
+    try:
+        from ...preprocessing.edge_coherence import rolling_coherence
+        from ...preprocessing.leakage import deramp_to_active_start
+    except Exception:
+        return None
+    params = getattr(plan, "parameters", {}) or {}
+    freqs = np.asarray(ft.freq_array, dtype=float)
+    spec = np.asarray(ft.complex_spectrum, dtype=complex)
+    order = np.argsort(freqs)
+    edge_m = int(params.get("edge_m", 64))
+    thr = float(params.get("edge_threshold", 8.0))
+    referenced = deramp_to_active_start(
+        freqs, spec,
+        float(params.get("probe_freq_mhz", 0.0)),
+        float(params.get("start_us", 0.0)),
+    )
+    rolling = rolling_coherence(
+        referenced[order], np.asarray(rms, dtype=float)[order], band_m=edge_m,
+    )
+    return freqs[order], np.asarray(rolling, dtype=float), thr
+
+
+def _select_window_regions(rows: List[Any], width_mhz: float, k: int) -> List[Any]:
+    """Pick up to ``k`` ~``width_mhz``-wide windows to zoom into, ranked by how
+    much the *partition* diverges across the swept values.
+
+    Per candidate window the score is the variance, across values, of the number
+    of window edges falling inside it plus the variance of the count of HARD
+    windows touching it — so the panels land where the knob actually moves
+    boundaries or flips difficulty. When nothing diverges the ranking falls back
+    to the richest windows (most edges), so the panels still show structure.
+    Returns ``(lo_mhz, hi_mhz)`` tuples, low-frequency first.
+    """
+    import numpy as np
+
+    fts = [r.result.get("active_ft") for r in rows if r.result is not None]
+    fts = [ft for ft in fts if ft is not None]
+    if not fts:
+        return []
+    freqs = np.asarray(fts[0].freq_array, dtype=float)
+    f_lo, f_hi = float(freqs.min()), float(freqs.max())
+    if not np.isfinite(f_lo) or f_hi <= f_lo:
+        return []
+
+    n_bins = max(1, int(np.ceil((f_hi - f_lo) / width_mhz)))
+    edges = [(f_lo + i * width_mhz, min(f_lo + (i + 1) * width_mhz, f_hi))
+             for i in range(n_bins)]
+    plans = [r.result.get("plan") for r in rows if r.result is not None]
+    plans = [p for p in plans if p is not None]
+
+    scored = []
+    for lo, hi in edges:
+        n_edges, n_hard = [], []
+        for p in plans:
+            e_in = h_in = 0
+            for w in p.windows:
+                wlo, whi = w.freq_range
+                if whi < lo or wlo > hi:
+                    continue
+                e_in += sum(1 for e in (wlo, whi) if lo <= e <= hi)
+                if _difficulty(w) == "hard":
+                    h_in += 1
+            n_edges.append(e_in)
+            n_hard.append(h_in)
+        ne = np.asarray(n_edges, dtype=float)
+        nh = np.asarray(n_hard, dtype=float)
+        richness = float(ne.max()) if ne.size else 0.0
+        if richness <= 0.0:
+            continue  # no windows here — nothing to show
+        scored.append((float(ne.var() + nh.var()), richness, lo, hi))
+    if not scored:
+        return []
+
+    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    chosen = scored[:k]
+    chosen.sort(key=lambda s: s[2])  # low frequency first for reading order
+    return [(lo, hi) for _, _, lo, hi in chosen]
+
+
+def _plot_boundary_shift(
+    ax: Any, rows: List[Any], regions: List[Any], leaf: str, labels: List[str],
+) -> None:
+    """Full-width log spectrum drawn once, with every swept value's window
+    boundaries overlaid as vertical lines coloured by value and its HARD windows
+    hatched in the same colour — so a glance shows how the partition walks as the
+    knob changes. The zoom regions detailed below are shaded."""
+    import numpy as np
+
+    ft = rows[0].result.get("active_ft")
+    if ft is None:
+        ax.set_visible(False)
+        return
+    freqs = np.asarray(ft.freq_array, dtype=float)
+    mag = np.abs(np.asarray(ft.complex_spectrum))
+    order = np.argsort(freqs)
+    ax.plot(freqs[order], mag[order], lw=0.4, color="0.45", zorder=1)
+
+    n = len(rows)
+    colors = _value_colors(n)
+    for i, row in enumerate(rows):
+        plan = row.result.get("plan")
+        if plan is None:
+            continue
+        for w in plan.windows:
+            lo, hi = w.freq_range
+            if _difficulty(w) == "hard":
+                ax.axvspan(lo, hi, color=colors[i], alpha=0.10, lw=0,
+                           hatch="///", zorder=0)
+            for edge in (lo, hi):
+                ax.axvline(edge, color=colors[i], lw=0.6, alpha=0.65, zorder=2)
+            if w.split_proposal is not None:
+                ax.axvline(w.split_proposal, color=colors[i], lw=0.7,
+                           ls=":", alpha=0.8, zorder=2)
+        ax.plot([], [], color=colors[i], lw=1.4, label=f"{leaf}={labels[i]}")
+
+    for lo, hi in regions:
+        ax.axvspan(lo, hi, color="#6baed6", alpha=0.10, zorder=0)
+
+    sigma = np.asarray(rows[0].result.get("active_rms", []), dtype=float)
+    finite = sigma[np.isfinite(sigma)]
+    top = float(mag.max()) if mag.size else 1.0
+    ymin = (_WINDOW_YMIN_SIGMA_FRACTION * float(np.median(finite))
+            if finite.size and float(np.median(finite)) > 0.0
+            else max(top * 1e-3, 1e-12))
+    ax.set_yscale("log")
+    ax.set_ylim(ymin, _WINDOW_YMAX_PEAK_FACTOR * top)
+    ax.set_xlim(float(freqs.min()), float(freqs.max()))
+    ax.set_xlabel("frequency (MHz)")
+    ax.set_ylabel("|FT|")
+    ax.grid(True, alpha=0.2, which="both")
+    ax.legend(fontsize=7, ncol=min(n, 6), loc="upper right")
+    ax.set_title(
+        "window boundaries per swept value (coloured by value; hatched = HARD, "
+        "dotted = split proposal; shaded = zoom regions below)"
+    )
+
+
+def _draw_window_panel(
+    ax: Any, value_label: str, result: Any, peaks: Any, lo: float, hi: float,
+) -> None:
+    """One value × one region: the log active-FT magnitude zoomed to the region,
+    the window spans shaded by difficulty with their boundaries and split
+    proposals, free peaks (filled) vs fixed contributors (open square), and the
+    S_coh coherence statistic with its T_edge threshold on a twin axis."""
+    import numpy as np
+
+    ft = result.get("active_ft")
+    freqs = np.asarray(ft.freq_array, dtype=float)
+    mag = np.abs(np.asarray(ft.complex_spectrum))
+    sel = (freqs >= lo) & (freqs <= hi)
+    if not sel.any():
+        ax.set_visible(False)
+        return
+    f_sel, m_sel = freqs[sel], mag[sel]
+    order = np.argsort(f_sel)
+    f_sel, m_sel = f_sel[order], m_sel[order]
+    ax.plot(f_sel, m_sel, lw=0.5, color="0.35", zorder=1)
+
+    plan = result.get("plan")
+    for w in plan.windows:
+        wlo, whi = w.freq_range
+        if whi < lo or wlo > hi:
+            continue
+        ax.axvspan(max(wlo, lo), min(whi, hi),
+                   color=_DIFFICULTY_COLORS.get(_difficulty(w), "tab:gray"),
+                   alpha=0.13, zorder=0)
+        for edge in (wlo, whi):
+            if lo <= edge <= hi:
+                ax.axvline(edge, color="0.4", lw=0.6, zorder=2)
+        if w.split_proposal is not None and lo <= w.split_proposal <= hi:
+            ax.axvline(w.split_proposal, color="purple", lw=1.0, ls=":", zorder=3)
+
+    # Free peaks (filled black) vs fixed contributors (open blue square).
+    for w in plan.windows:
+        for li in w.free_peak_indices:
+            if 0 <= li < len(peaks) and lo <= float(peaks[li].frequency) <= hi:
+                p = peaks[li]
+                ax.scatter([p.frequency], [p.intensity], s=18, marker="o",
+                           color="black", zorder=5)
+        for fc in w.fixed_contributors:
+            idx = fc.peak_index
+            if 0 <= idx < len(peaks) and lo <= float(peaks[idx].frequency) <= hi:
+                p = peaks[idx]
+                ax.scatter([p.frequency], [p.intensity], s=46, marker="s",
+                           facecolors="none", edgecolors="tab:blue",
+                           linewidths=1.3, zorder=6)
+
+    coh = _coherence_curve(result)
+    if coh is not None:
+        cf, cs, thr = coh
+        csel = (cf >= lo) & (cf <= hi)
+        if csel.any():
+            axc = ax.twinx()
+            axc.plot(cf[csel], cs[csel], lw=0.8, color="tab:purple",
+                     alpha=0.55, zorder=4)
+            axc.axhline(thr, color="crimson", lw=0.9, ls="--", zorder=4)
+            axc.set_yscale("log")
+            axc.set_ylabel("S_coh", fontsize=7, color="tab:purple")
+            axc.tick_params(axis="y", labelsize=6, colors="tab:purple")
+
+    ax.set_yscale("log")
+    sig = np.asarray(result.get("active_rms", []), dtype=float)
+    finite = sig[np.isfinite(sig)]
+    region_max = float(m_sel.max()) if m_sel.size else 1.0
+    ymin = (_WINDOW_YMIN_SIGMA_FRACTION * float(np.median(finite))
+            if finite.size and float(np.median(finite)) > 0.0
+            else max(region_max * 1e-3, 1e-12))
+    ax.set_ylim(ymin, _WINDOW_YMAX_PEAK_FACTOR * region_max)
+    ax.set_xlim(lo, hi)
+    ax.set_ylabel(value_label, fontsize=8)
+    ax.grid(True, alpha=0.2, which="both")
+
+
+def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stage 4 sweep view: a window-count trend, a band-wide boundary-shift
+    overlay, then per-value × per-region zoom detail.
+
+    The active FT is invariant across the sweep — only the partition changes.
+    The top trend tracks the plan's shape (n_windows, n_hard, n_fixed
+    contributors, n_split) vs the swept value; the full-width panel below draws
+    the band once and overlays every value's window boundaries coloured by value
+    (HARD hatched, split proposals dotted), shading the zoom regions. Each
+    remaining row is one swept value and each column one auto-selected ~150 MHz
+    region (chosen where the partition diverges most across values): log-scaled,
+    window spans shaded by difficulty, free peaks filled / fixed contributors
+    open, and the S_coh coherence statistic with its T_edge threshold on a twin
+    axis — the statistic that set the boundaries.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+
+    leaf = spec.path.split(".")[-1]
+    # Peaks are the Stage 3 output — invariant across the Stage 4 sweep — so
+    # load them once from the working copy for the free/fixed markers.
+    try:
+        import ftmwpipeline.api as ftmw
+        peaks = ftmw.load_peaks(ctx.ftmw_path)
+    except Exception:
+        peaks = []
+
+    regions = _select_window_regions(rows, _WINDOW_REGION_WIDTH_MHZ,
+                                     _WINDOW_N_REGIONS)
+    n = len(rows)
+    ncol = max(1, len(regions))
+    has_zoom = bool(regions)
+    n_rows = (n + 2) if has_zoom else 2
+
+    fig = plt.figure(figsize=(5.0 * ncol, 5.6 + 2.0 * n))
+    height_ratios = [1.6, 1.7] + ([1.1] * n if has_zoom else [])
+    gs = fig.add_gridspec(n_rows, ncol, height_ratios=height_ratios)
+
+    ax_trend = fig.add_subplot(gs[0, :])
+    xs = np.arange(n, dtype=float)
+    labels = [f"{r.value:g}" if isinstance(r.value, (int, float))
+              else str(r.value) for r in rows]
+    for col, color, marker in (
+        ("n_windows", "0.2", "o"),
+        ("n_hard", "tab:red", "^"),
+        ("n_fixed", "tab:blue", "s"),
+        ("n_split", "tab:purple", "D"),
+    ):
+        ys = [r.metrics.get(col) for r in rows]
+        ax_trend.plot(xs, ys, marker + "-", color=color, label=col)
+    ax_trend.set_xticks(xs)
+    ax_trend.set_xticklabels(labels)
+    ax_trend.set_xlabel(leaf)
+    ax_trend.set_ylabel("plan counts")
+    ax_trend.grid(True, alpha=0.3)
+    ax_trend.legend(fontsize=8, ncol=4, loc="upper left")
+    ax_trend.set_title(f"Stage 4 window plan vs {leaf}")
+
+    _plot_boundary_shift(fig.add_subplot(gs[1, :]), rows, regions, leaf, labels)
+
+    if not has_zoom:
+        fig.suptitle(f"Window-planning sweep: {spec.path}")
+        fig.tight_layout()
+        return fig
+
+    for ri, row in enumerate(rows):
+        res = row.result
+        for ci, (lo, hi) in enumerate(regions):
+            ax = fig.add_subplot(gs[ri + 2, ci])
+            if res.get("active_ft") is None:
+                ax.set_visible(False)
+                continue
+            label = f"{leaf}={labels[ri]}" if ci == 0 else ""
+            _draw_window_panel(ax, label, res, peaks, lo, hi)
+            if ri == 0:
+                ax.set_title(f"{lo:.0f}–{hi:.0f} MHz", fontsize=9)
+            if ri == n - 1:
+                ax.set_xlabel("frequency (MHz)")
+
+    handles = [
+        Line2D([], [], marker="o", color="black", ls="none", label="free peak"),
+        Line2D([], [], marker="s", color="tab:blue", ls="none",
+               markerfacecolor="none", label="fixed contributor"),
+        Line2D([], [], color="tab:green", lw=6, alpha=0.4, label="EASY window"),
+        Line2D([], [], color="tab:red", lw=6, alpha=0.4, label="HARD window"),
+        Line2D([], [], color="tab:purple", lw=1.2, alpha=0.55,
+               label=r"$S_{coh}$ coherence"),
+        Line2D([], [], color="crimson", ls="--",
+               label=r"$T_{edge}$ coherence threshold"),
+        Line2D([], [], color="purple", ls=":", label="split proposal"),
+    ]
+    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=7,
+               bbox_to_anchor=(0.5, -0.01))
+    fig.suptitle(f"Window-planning sweep: {spec.path}")
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
+    return fig
+
+
 def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """Three panels: σ(f) per grid value (top-left), the scalar metric trend
     (top-right, median σ and noise-flagged fraction vs the knob), and a
