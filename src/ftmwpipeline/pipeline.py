@@ -1675,6 +1675,9 @@ class Pipeline:
         reuse: bool = False,
         make_plot: bool = True,
         quiet: bool = False,
+        zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+        n_zoom: Optional[int] = None,
+        zoom_width_mhz: Optional[float] = None,
     ) -> "SweepResult":
         """Sweep a single knob across a grid on a copy of this file.
 
@@ -1683,6 +1686,11 @@ class Pipeline:
         mutated), returning a :class:`SweepResult` with the table, CSV path,
         optional plot, recommendation, and how-to-apply instructions. A progress
         indicator is printed to stderr unless ``quiet=True``.
+
+        ``zoom_regions`` pins explicit ``(lo_mhz, hi_mhz)`` windows for the
+        region-based plot adapters (Stage 3 / Stage 4), overriding their
+        divergence auto-selection; ``n_zoom`` / ``zoom_width_mhz`` instead tune
+        how many regions to auto-select and how wide each is.
         """
         from ._internal.tuning import get_knob, run_scan
 
@@ -1694,6 +1702,9 @@ class Pipeline:
             reuse=reuse,
             make_plot=make_plot,
             quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
         )
 
     def tune_scan_batch(
@@ -1705,6 +1716,9 @@ class Pipeline:
         reuse: bool = False,
         make_plot: bool = True,
         quiet: bool = False,
+        zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+        n_zoom: Optional[int] = None,
+        zoom_width_mhz: Optional[float] = None,
     ) -> "List[BatchItem]":
         """Sweep every knob matched by ``selector`` on its default grid.
 
@@ -1715,7 +1729,8 @@ class Pipeline:
         ``include_advanced`` adds the advanced-tier knobs. Each knob runs on its
         own working copy (this file is never mutated); a knob whose scan fails
         (e.g. its required stage is absent) is recorded as a failed
-        :class:`BatchItem` and the batch continues.
+        :class:`BatchItem` and the batch continues. The ``zoom_*`` controls apply
+        the same explicit-regions / count-width steering to every knob's plot.
         """
         from ._internal.tuning import list_knobs, run_scan_batch
 
@@ -1727,6 +1742,9 @@ class Pipeline:
             reuse=reuse,
             make_plot=make_plot,
             quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
         )
 
     def __repr__(self) -> str:

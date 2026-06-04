@@ -177,6 +177,42 @@ def test_stage4_scan_runs_and_plots(baseline_2638_stage3, tmp_path):
     assert r.plot_path is not None and r.plot_path.exists()
 
 
+def test_parse_zoom_valid_and_invalid():
+    from ftmwpipeline.cli.tune_commands import _parse_zoom
+
+    assert _parse_zoom("35000-35800,38400-38500") == [
+        (35000.0, 35800.0), (38400.0, 38500.0),
+    ]
+    assert _parse_zoom(" 100-200 ") == [(100.0, 200.0)]
+    assert _parse_zoom("100-200,,") == [(100.0, 200.0)]  # blanks skipped
+    for bad in ("100", "200-100", "abc-200", "100-"):
+        with pytest.raises(ValueError):
+            _parse_zoom(bad)
+
+
+def test_cli_scan_explicit_zoom_renders(baseline_2638_stage2, tmp_path):
+    # --zoom flows CLI -> engine -> adapter and pins the requested windows; the
+    # plot still renders (a real Stage 3 sweep on the production baseline).
+    rc = cli_main([
+        "tune", "scan", str(baseline_2638_stage2),
+        "--knob", "stage3.promotion.min_snr", "--grid", "3,5",
+        "--zoom", "35000-35800,38400-38500",
+        "--output-dir", str(tmp_path),
+    ])
+    assert rc == 0
+    assert list(tmp_path.glob("tune_*.png")), "expected a rendered plot"
+
+
+def test_api_scan_accepts_zoom_count_width(baseline_2638_stage2, tmp_path):
+    # the auto-selector count/width override is accepted on the functional surface
+    # and produces a plot without error.
+    r = ftmw.tune_scan(
+        baseline_2638_stage2, "stage3.promotion.min_snr", grid=[3.0, 5.0],
+        output_dir=tmp_path, quiet=True, n_zoom=4, zoom_width_mhz=200.0,
+    )
+    assert r.plot_path is not None and r.plot_path.exists()
+
+
 def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):
     import shutil
 

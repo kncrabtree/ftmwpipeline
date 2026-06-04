@@ -442,6 +442,71 @@ def test_select_window_regions_ranks_by_divergence():
     assert regions and regions[0][0] <= 27000.0 <= regions[0][1]
 
 
+# --- zoom-region resolution (shared by the Stage 3 / Stage 4 adapters) -----
+
+
+def test_resolve_regions_explicit_overrides_auto_select():
+    from ftmwpipeline._internal.tuning.plots import _resolve_regions
+
+    called = []
+
+    def auto(rows, w, n):
+        called.append((w, n))
+        return [(0.0, 1.0)]
+
+    ctx = PlotContext(ftmw_path=Path("x"),
+                      zoom_regions=((100.0, 200.0), (300.0, 400.0)))
+    out = _resolve_regions(ctx, [], 150.0, 3, auto)
+    assert out == [(100.0, 200.0), (300.0, 400.0)]
+    assert not called  # explicit regions skip auto-selection entirely
+
+
+def test_resolve_regions_count_width_override_auto_select():
+    from ftmwpipeline._internal.tuning.plots import _resolve_regions
+
+    seen = {}
+
+    def auto(rows, w, n):
+        seen["w"], seen["n"] = w, n
+        return []
+
+    ctx = PlotContext(ftmw_path=Path("x"), n_zoom=5, zoom_width_mhz=222.0)
+    _resolve_regions(ctx, [], 150.0, 3, auto)
+    assert seen == {"w": 222.0, "n": 5}
+
+
+def test_resolve_regions_defaults_when_unset():
+    from ftmwpipeline._internal.tuning.plots import _resolve_regions
+
+    seen = {}
+
+    def auto(rows, w, n):
+        seen["w"], seen["n"] = w, n
+        return []
+
+    _resolve_regions(PlotContext(ftmw_path=Path("x")), [], 150.0, 3, auto)
+    assert seen == {"w": 150.0, "n": 3}
+
+
+def test_plot_window_planning_honors_explicit_zoom():
+    # two explicit windows -> exactly two zoom columns, regardless of divergence.
+    r1 = _windows_result([_window(27000.0, 27040.0, "hard", free=(0,))])
+    r2 = _windows_result([_window(27000.0, 27040.0, "easy", free=(0,))])
+    rows = [SweepRow(6.0, _window_metrics(r1), r1),
+            SweepRow(8.0, _window_metrics(r2), r2)]
+    ctx = PlotContext(ftmw_path=Path("/nonexistent/x.ftmw"),
+                      zoom_regions=((27500.0, 28000.0), (35000.0, 35500.0)))
+    fig = plot_window_planning(
+        get_knob("stage4.coherence.edge_threshold"), rows, ctx
+    )
+    assert fig is not None
+    # the two requested region titles appear on the first zoom row
+    titles = {ax.get_title() for ax in fig.axes}
+    assert "27500–28000 MHz" in titles
+    assert "35000–35500 MHz" in titles
+    _close(fig)
+
+
 def test_knob_plot_wiring():
     # the spectrum-impact knobs share the ladder; detection knobs show the curve
     assert get_knob("stage1.start_us").plot is plot_spectra_ladder

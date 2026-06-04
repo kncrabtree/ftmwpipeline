@@ -19,7 +19,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Tuple
 
 from .utils import print_error, setup_logging
 
@@ -114,6 +114,26 @@ def cmd_tune_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _parse_zoom(text: str) -> List[Tuple[float, float]]:
+    """Parse ``--zoom`` (``lo-hi,lo-hi,...``) into ``(lo, hi)`` MHz windows.
+
+    Raises ``ValueError`` on a malformed entry so the caller can report it.
+    """
+    regions: List[Tuple[float, float]] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        lo_s, _, hi_s = part.partition("-")
+        if not _ or not hi_s.strip():
+            raise ValueError(part)
+        lo, hi = float(lo_s), float(hi_s)
+        if hi <= lo:
+            raise ValueError(part)
+        regions.append((lo, hi))
+    return regions
+
+
 def cmd_tune_scan(args: argparse.Namespace) -> int:
     """Sweep a knob across a grid and report the metric table."""
     setup_logging(getattr(args, "verbose", False))
@@ -137,6 +157,17 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
             print_error(f"--grid must be comma-separated numbers, got {args.grid!r}")
             return 1
 
+    zoom_regions: Optional[List[Tuple[float, float]]] = None
+    if getattr(args, "zoom", None):
+        try:
+            zoom_regions = _parse_zoom(args.zoom)
+        except ValueError as e:
+            print_error(
+                f"--zoom must be comma-separated lo-hi MHz ranges (lo<hi), "
+                f"bad entry: {e}"
+            )
+            return 1
+
     output_dir = Path(args.output_dir) if args.output_dir else Path.cwd()
 
     # Quiet the per-value stage logging so the progress indicator stays clean
@@ -156,6 +187,9 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
             make_plot=not args.no_plot,
             interactive=args.interactive,
             quiet=args.quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=getattr(args, "n_zoom", None),
+            zoom_width_mhz=getattr(args, "zoom_width", None),
         )
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
@@ -202,6 +236,17 @@ def cmd_tune_scan_all(args: argparse.Namespace) -> int:
                     + ("" if args.all else " (try --all for advanced knobs)."))
         return 1
 
+    zoom_regions: Optional[List[Tuple[float, float]]] = None
+    if getattr(args, "zoom", None):
+        try:
+            zoom_regions = _parse_zoom(args.zoom)
+        except ValueError as e:
+            print_error(
+                f"--zoom must be comma-separated lo-hi MHz ranges (lo<hi), "
+                f"bad entry: {e}"
+            )
+            return 1
+
     output_dir = Path(args.output_dir) if args.output_dir else Path.cwd()
     print(f"Batch-scanning {len(specs)} knob(s) into {output_dir} ...")
 
@@ -217,6 +262,9 @@ def cmd_tune_scan_all(args: argparse.Namespace) -> int:
             reuse=args.reuse,
             make_plot=not args.no_plot,
             quiet=args.quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=getattr(args, "n_zoom", None),
+            zoom_width_mhz=getattr(args, "zoom_width", None),
         )
     finally:
         pkg_logger.setLevel(prev_level)
@@ -245,6 +293,34 @@ def _fmt(value: Any) -> str:
     if isinstance(value, float):
         return f"{value:.6g}"
     return str(value)
+
+
+def _add_zoom_args(parser: argparse.ArgumentParser) -> None:
+    """Attach the per-region zoom controls shared by 'scan' and 'scan-all'.
+
+    These steer the zoom panels of the region-based plots (Stage 3 peak
+    detection, Stage 4 window planning); knobs with other plots ignore them.
+    """
+    parser.add_argument(
+        "--zoom",
+        type=str,
+        default=None,
+        metavar="LO-HI,LO-HI",
+        help="Explicit MHz zoom windows for the plot's region panels, e.g. "
+             "35000-35800,38400-38500 (overrides the auto-selected regions)",
+    )
+    parser.add_argument(
+        "--n-zoom",
+        type=int,
+        default=None,
+        help="How many regions to auto-select when --zoom is not given",
+    )
+    parser.add_argument(
+        "--zoom-width",
+        type=float,
+        default=None,
+        help="Width (MHz) of each auto-selected region when --zoom is not given",
+    )
 
 
 def register_tune_commands(subparsers: Any) -> None:
@@ -340,6 +416,7 @@ def register_tune_commands(subparsers: Any) -> None:
         action="store_true",
         help="Suppress the per-value progress indicator",
     )
+    _add_zoom_args(p_scan)
     p_scan.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
@@ -393,6 +470,7 @@ def register_tune_commands(subparsers: Any) -> None:
         action="store_true",
         help="Suppress the per-value progress indicator",
     )
+    _add_zoom_args(p_scan_all)
     p_scan_all.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )

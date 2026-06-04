@@ -42,6 +42,25 @@ _PEAK_YMAX_PEAK_FACTOR = 1.5
 _PEAK_PERSIST_TOL_MHZ = 0.05
 
 
+def _resolve_regions(
+    ctx: Any, rows: List[Any], default_width: float, default_n: int,
+    auto_select: Any,
+) -> List[Any]:
+    """Resolve the zoom regions for a region-based adapter, honouring the user's
+    ``PlotContext`` zoom controls.
+
+    Explicit ``ctx.zoom_regions`` win verbatim (the user pinned the windows);
+    otherwise the adapter's ``auto_select(rows, width, n)`` runs with the user's
+    ``zoom_width_mhz`` / ``n_zoom`` when set, else the adapter defaults.
+    """
+    explicit = getattr(ctx, "zoom_regions", ()) or ()
+    if explicit:
+        return [(float(lo), float(hi)) for lo, hi in explicit]
+    width = getattr(ctx, "zoom_width_mhz", None) or default_width
+    n = getattr(ctx, "n_zoom", None) or default_n
+    return auto_select(rows, width, n)
+
+
 def _value_colors(n: int) -> List[Any]:
     import matplotlib.pyplot as plt
 
@@ -671,7 +690,9 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
         return None
 
     leaf = spec.path.split(".")[-1]
-    regions = _select_peak_regions(rows, _PEAK_REGION_WIDTH_MHZ, _PEAK_N_REGIONS)
+    regions = _resolve_regions(
+        ctx, rows, _PEAK_REGION_WIDTH_MHZ, _PEAK_N_REGIONS, _select_peak_regions
+    )
     n = len(rows)
     ncol = max(1, len(regions))
     has_zoom = bool(regions)
@@ -1020,8 +1041,10 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     except Exception:
         peaks = []
 
-    regions = _select_window_regions(rows, _WINDOW_REGION_WIDTH_MHZ,
-                                     _WINDOW_N_REGIONS)
+    regions = _resolve_regions(
+        ctx, rows, _WINDOW_REGION_WIDTH_MHZ, _WINDOW_N_REGIONS,
+        _select_window_regions,
+    )
     n = len(rows)
     ncol = max(1, len(regions))
     has_zoom = bool(regions)

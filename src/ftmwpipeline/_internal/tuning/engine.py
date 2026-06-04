@@ -28,9 +28,20 @@ class PlotContext:
     ``ftmw_path`` is the working-copy ``.ftmw`` (built through the knob's
     upstream stage), so an adapter can load source data — e.g. the FID — that
     the per-value stage result does not carry.
+
+    The ``zoom_*`` fields let the user steer the per-region zoom panels of the
+    region-based adapters (Stage 3 peak detection, Stage 4 window planning):
+    ``zoom_regions`` pins explicit ``(lo_mhz, hi_mhz)`` windows and overrides the
+    adapter's divergence auto-selection; when it is empty the adapter
+    auto-selects as usual but honours ``n_zoom`` / ``zoom_width_mhz`` (when set)
+    for how many regions to pick and how wide each is. Adapters with no zoom
+    panels ignore these.
     """
 
     ftmw_path: Path
+    zoom_regions: Tuple[Tuple[float, float], ...] = ()
+    n_zoom: Optional[int] = None
+    zoom_width_mhz: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -212,6 +223,9 @@ def run_scan(
     make_plot: bool = True,
     interactive: bool = False,
     quiet: bool = False,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+    n_zoom: Optional[int] = None,
+    zoom_width_mhz: Optional[float] = None,
     progress: Optional[Callable[[int, int, Any], None]] = None,
 ) -> SweepResult:
     """Sweep ``spec`` across ``grid`` on a working copy of ``ftmw_path``.
@@ -237,6 +251,13 @@ def run_scan(
         Suppress the default terminal progress indicator (header + per-value
         line on stderr). Progress is shown by default on every surface; pass
         ``quiet=True`` (or ``-q`` on the CLI) to silence it.
+    zoom_regions :
+        Explicit ``(lo_mhz, hi_mhz)`` windows for the region-based plot adapters
+        (Stage 3 / Stage 4). When given, they replace the divergence
+        auto-selection; otherwise the adapter auto-selects.
+    n_zoom, zoom_width_mhz :
+        How many regions to auto-select and how wide each is, when
+        ``zoom_regions`` is not given. ``None`` keeps the adapter's defaults.
     progress :
         Optional custom callback invoked as ``progress(done, total, value)``
         after each grid value completes. Overrides the default reporter; with
@@ -276,8 +297,14 @@ def run_scan(
     rec = _recommend(spec, rows)
     plot_path = None
     if make_plot and spec.plot is not None:
+        ctx = PlotContext(
+            ftmw_path=work,
+            zoom_regions=tuple(zoom_regions) if zoom_regions else (),
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
+        )
         plot_path = _render_plot(
-            spec, rows, out, ftmw_path.stem, interactive, PlotContext(ftmw_path=work)
+            spec, rows, out, ftmw_path.stem, interactive, ctx
         )
 
     return SweepResult(
@@ -299,6 +326,9 @@ def run_scan_batch(
     reuse: bool = False,
     make_plot: bool = True,
     quiet: bool = False,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+    n_zoom: Optional[int] = None,
+    zoom_width_mhz: Optional[float] = None,
 ) -> List[BatchItem]:
     """Sweep every knob in ``specs`` sequentially, each on its default grid.
 
@@ -319,6 +349,9 @@ def run_scan_batch(
                 reuse=reuse,
                 make_plot=make_plot,
                 quiet=quiet,
+                zoom_regions=zoom_regions,
+                n_zoom=n_zoom,
+                zoom_width_mhz=zoom_width_mhz,
             )
             items.append(BatchItem(knob=spec.path, result=result))
         except Exception as e:  # one knob's failure must not abort the batch

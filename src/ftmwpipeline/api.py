@@ -1630,6 +1630,9 @@ def tune_scan(
     reuse: bool = False,
     make_plot: bool = True,
     quiet: bool = False,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+    n_zoom: Optional[int] = None,
+    zoom_width_mhz: Optional[float] = None,
 ) -> Any:
     """Sweep a single pipeline knob across a grid, equivalent to
     :meth:`Pipeline.tune_scan`.
@@ -1656,6 +1659,12 @@ def tune_scan(
         Render the knob's plot adapter if it has one.
     quiet : bool, default False
         Suppress the progress indicator (printed to stderr by default).
+    zoom_regions : sequence of (lo_mhz, hi_mhz), optional
+        Explicit zoom windows for the region-based plot adapters (Stage 3 /
+        Stage 4), overriding their divergence auto-selection.
+    n_zoom, zoom_width_mhz : optional
+        When ``zoom_regions`` is not given, how many regions to auto-select and
+        how wide each is; ``None`` keeps the adapter defaults.
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -1666,6 +1675,9 @@ def tune_scan(
             reuse=reuse,
             make_plot=make_plot,
             quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
         )
     except Exception as e:
         logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
@@ -1681,6 +1693,9 @@ def tune_scan_batch(
     reuse: bool = False,
     make_plot: bool = True,
     quiet: bool = False,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+    n_zoom: Optional[int] = None,
+    zoom_width_mhz: Optional[float] = None,
 ) -> Any:
     """Sweep every knob matched by ``selector`` on its default grid, equivalent
     to :meth:`Pipeline.tune_scan_batch`.
@@ -1708,6 +1723,9 @@ def tune_scan_batch(
             reuse=reuse,
             make_plot=make_plot,
             quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
         )
     except Exception as e:
         logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")

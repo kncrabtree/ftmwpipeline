@@ -294,6 +294,16 @@ copies under a `.tune_work/` subdir there — gitignored), `--reuse`,
 adapters receive a `PlotContext` (working `.ftmw`) for source data such as the
 FID/spectrum.
 
+**Zoom controls (region-based plots).** The Stage 3 and Stage 4 plots auto-select
+their per-region zoom panels by divergence; the user can override that on every
+surface through the `PlotContext`: `--zoom LO-HI,LO-HI` (`zoom_regions=`) pins
+explicit MHz windows verbatim, or `--n-zoom` / `--zoom-width` (`n_zoom=` /
+`zoom_width_mhz=`) tune how many regions the auto-selector picks and how wide
+each is. Knobs whose plots have no zoom panels ignore these. The controls are
+plumbed identically through CLI / Pipeline / api into `run_scan` /
+`run_scan_batch`, and a single `--zoom` set applies to every knob in a batch
+(regions are knob-independent frequency windows).
+
 **Surface ergonomics.**
 - **Tier + sub-block grouping.** Each `KnobSpec` carries `tier`
   (`primary` / `advanced`). `tune list` shows primary knobs by default (a short
