@@ -80,3 +80,32 @@ def test_list_knobs_filters_by_stage():
 def test_list_knobs_is_path_sorted():
     paths = [s.path for s in list_knobs()]
     assert paths == sorted(paths)
+
+
+def test_stage3_paths_resolve_to_settings_fields():
+    from dataclasses import fields
+
+    from ftmwpipeline.core import peak_detection_settings as pds
+
+    tmpl = pds.PeakDetectionSettings()
+    stage3 = list_knobs("stage3", include_advanced=True)
+    assert stage3
+    for spec in stage3:
+        assert spec.stage == "stage3_peaks"
+        assert spec.requires == "stage2_noise_result"
+        _, sub, field = spec.path.split(".")
+        names = {f.name for f in fields(getattr(tmpl, sub))}
+        assert field in names, spec.path
+        assert spec.metric_columns == (
+            "n_total", "n_strong", "n_medium", "n_weak",
+            "snr_min", "snr_p10", "snr_p25", "snr_p50", "snr_p90", "snr_max",
+        )
+
+
+def test_stage3_leakage_floor_supersedes_hard_mask():
+    # the gap-pass hard S_coh mask knob was replaced by the continuous floor;
+    # both leakage-floor knobs are registered and the old knob is gone.
+    paths = {s.path for s in list_knobs("stage3", include_advanced=True)}
+    assert "stage3.gap_pass.gap_leakage_floor_k" in paths
+    assert "stage3.primary_pass.primary_leakage_floor_k" in paths
+    assert not any("gap_mask_edge" in p for p in paths)

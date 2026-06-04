@@ -14,6 +14,7 @@ from ftmwpipeline._internal.tuning.registry import FtAtStart
 from ftmwpipeline._internal.tuning.plots import (
     plot_ft_band_stack,
     plot_noise_sweep,
+    plot_peak_detection,
     plot_shape_vote,
     plot_spectra_ladder,
     plot_start_detection,
@@ -216,6 +217,105 @@ def test_adapters_return_none_without_results():
     assert plot_spectra_ladder(get_knob("stage1.start_us"), rows, ctx) is None
 
 
+@dataclass
+class _FakeCls:
+    value: str
+
+
+@dataclass
+class _FakePeak:
+    frequency: float
+    intensity: float
+    snr: float
+    properties: dict
+    classification: Any = None
+
+
+def _peak(f, inten, snr, promoted, dp="primary", band="weak"):
+    return _FakePeak(f, inten, snr, {"promoted": promoted, "detection_pass": dp},
+                     _FakeCls(band) if promoted else None)
+
+
+def _peaks_result(peaks, min_snr=3.0):
+    # Active FT spanning the 2638 band; a few bumps so the regions have lines.
+    freqs = np.linspace(26500.0, 40000.0, 1400)
+    mag = np.full(freqs.shape, 0.02)
+    for p in peaks:
+        mag[np.argmin(np.abs(freqs - p.frequency))] = p.intensity
+    ft = _FakeFT(freqs, mag.astype(complex))
+    rms = np.full(freqs.shape, 0.01)
+    n_prom = sum(1 for p in peaks if p.properties["promoted"])
+    n_prim = sum(1 for p in peaks if p.properties["detection_pass"] == "primary")
+    return {
+        "active_ft": ft, "active_rms": rms, "peaks": peaks,
+        "promotion_min_snr": min_snr, "n_peaks": len(peaks),
+        "n_promoted": n_prom, "n_primary": n_prim, "n_gap": len(peaks) - n_prim,
+    }
+
+
+def _peak_metrics(res):
+    promoted = [p for p in res["peaks"] if p.properties["promoted"]]
+
+    def _n(band):
+        return sum(1 for p in promoted
+                   if getattr(p.classification, "value", None) == band)
+
+    return {
+        "n_total": len(promoted), "n_strong": _n("strong"),
+        "n_medium": _n("medium"), "n_weak": _n("weak"),
+    }
+
+
+def test_plot_peak_detection_returns_figure():
+    # Two values whose promoted sets differ -> a region is auto-selected to zoom.
+    r1 = _peaks_result([
+        _peak(27000.0, 0.5, 30, True), _peak(27050.0, 0.3, 20, True, "gap"),
+        _peak(35000.0, 0.4, 25, True), _peak(35080.0, 0.05, 2, False, "gap"),
+    ], min_snr=2.0)
+    r2 = _peaks_result([
+        _peak(27000.0, 0.5, 30, True),
+        _peak(35000.0, 0.4, 25, True), _peak(35080.0, 0.05, 2, False, "gap"),
+    ], min_snr=5.0)
+    rows = [SweepRow(2.0, _peak_metrics(r1), r1), SweepRow(5.0, _peak_metrics(r2), r2)]
+    fig = plot_peak_detection(get_knob("stage3.promotion.min_snr"), rows, _ctx())
+    assert fig is not None
+    # trend (+twin) + at least one region column per value
+    assert len(fig.axes) >= 3
+    _close(fig)
+
+
+def test_plot_peak_detection_handles_nonnumeric_value():
+    # toggle knobs (run_gap_pass) sweep over bools; the categorical trend x must
+    # not raise and the panels must still render.
+    r1 = _peaks_result([_peak(27000.0, 0.5, 30, True)], min_snr=3.0)
+    r2 = _peaks_result([_peak(27000.0, 0.5, 30, True),
+                        _peak(27040.0, 0.2, 12, True, "gap")], min_snr=3.0)
+    rows = [SweepRow(False, _peak_metrics(r1), r1),
+            SweepRow(True, _peak_metrics(r2), r2)]
+    fig = plot_peak_detection(get_knob("stage3.gap_pass.run_gap_pass"), rows, _ctx())
+    assert fig is not None
+    _close(fig)
+
+
+def test_plot_peak_detection_none_without_results():
+    rows = [SweepRow(3.0, {"n_peaks": 0}, None)]
+    assert plot_peak_detection(get_knob("stage3.promotion.min_snr"), rows, _ctx()) is None
+
+
+def test_peak_persistence_buckets_by_last_surviving_value():
+    from ftmwpipeline._internal.tuning.plots import _peak_persistence
+
+    # peak A promoted in both values -> last index 1; peak B only in value 0.
+    r0 = _peaks_result([_peak(27000.0, 0.5, 30, True),
+                        _peak(35000.0, 0.4, 8, True)], min_snr=2.0)
+    r1 = _peaks_result([_peak(27000.05, 0.5, 30, True)], min_snr=5.0)
+    rows = [SweepRow(2.0, _peak_metrics(r0), r0),
+            SweepRow(5.0, _peak_metrics(r1), r1)]
+    pers = {round(f): idx for (f, _inten, idx) in _peak_persistence(rows, 0.05)}
+    assert pers[27000] == 1  # survives to the last value
+    assert pers[35000] == 0  # drops out after the first value
+
+
 def test_knob_plot_wiring():
     # the spectrum-impact knobs share the ladder; detection knobs show the curve
     assert get_knob("stage1.start_us").plot is plot_spectra_ladder
@@ -223,6 +323,9 @@ def test_knob_plot_wiring():
     assert get_knob("stage0.sweep_max_us").plot is plot_start_detection
     assert get_knob("stage0.min_chirp_drop_ratio").plot is plot_start_detection
     assert get_knob("stage2.window_mhz").plot is plot_noise_sweep
+    # every Stage 3 knob renders the peak-detection spectrum-overlay view
+    assert get_knob("stage3.promotion.min_snr").plot is plot_peak_detection
+    assert get_knob("stage3.gap_pass.gap_leakage_floor_k").plot is plot_peak_detection
 
 
 def test_detection_knobs_point_at_spectrum_knobs():

@@ -28,6 +28,19 @@ _LADDER_YMAX_P50_FACTOR = 10.0
 # noise-scale features are legible; tall real lines clip off the top.
 _NOISE_OVERLAY_YMAX_FACTOR = 9.0
 
+# Stage 3 peak-detection zoom panels: width of each zoom region (MHz), how many
+# regions to show, and the y-limits of the log-scaled spectrum so the noise
+# floor sits near the bottom of the axis (not filling it). The lower limit is
+# this fraction of the region's median σ; the upper is this multiple of the
+# region's tallest line.
+_PEAK_REGION_WIDTH_MHZ = 100.0
+_PEAK_N_REGIONS = 3
+_PEAK_YMIN_SIGMA_FRACTION = 0.5
+_PEAK_YMAX_PEAK_FACTOR = 1.5
+# Frequency tolerance (MHz) for treating a promoted peak as the "same" line
+# across swept values when colouring it by the last value at which it survives.
+_PEAK_PERSIST_TOL_MHZ = 0.05
+
 
 def _value_colors(n: int) -> List[Any]:
     import matplotlib.pyplot as plt
@@ -432,6 +445,303 @@ def plot_shape_vote(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax.set_title(f"shape vote vs {leaf}  (label = recommended_shape)")
     ax.legend(fontsize=8, loc="upper right")
     fig.tight_layout()
+    return fig
+
+
+def _peaks_in(peaks: Any, lo: float, hi: float) -> List[Any]:
+    return [p for p in peaks if lo <= float(p.frequency) <= hi]
+
+
+def _select_peak_regions(rows: List[Any], width_mhz: float, k: int) -> List[Any]:
+    """Pick up to ``k`` ~``width_mhz``-wide frequency windows to zoom into.
+
+    Regions are ranked by how much the detected/promoted peak set *diverges*
+    across the swept values (the variance, per window, of the per-value total
+    and promoted peak counts) so the panels land where the knob actually
+    changes the outcome. When nothing diverges (every value detects the same
+    set), the ranking falls back to the *richest* windows (most peaks), so the
+    panels still show where the action is.
+
+    Returns a list of ``(lo_mhz, hi_mhz)`` tuples, low-frequency first.
+    """
+    import numpy as np
+
+    fts = [r.result.get("active_ft") for r in rows if r.result is not None]
+    fts = [ft for ft in fts if ft is not None]
+    if not fts:
+        return []
+    freqs = np.asarray(fts[0].freq_array, dtype=float)
+    f_lo, f_hi = float(freqs.min()), float(freqs.max())
+    if not np.isfinite(f_lo) or f_hi <= f_lo:
+        return []
+
+    n_bins = max(1, int(np.ceil((f_hi - f_lo) / width_mhz)))
+    edges = [(f_lo + i * width_mhz, min(f_lo + (i + 1) * width_mhz, f_hi))
+             for i in range(n_bins)]
+
+    peak_sets = [r.result.get("peaks", []) for r in rows if r.result is not None]
+    scored = []
+    for lo, hi in edges:
+        totals = np.array([len(_peaks_in(ps, lo, hi)) for ps in peak_sets],
+                          dtype=float)
+        promoted = np.array(
+            [sum(1 for p in _peaks_in(ps, lo, hi)
+                 if p.properties.get("promoted")) for ps in peak_sets],
+            dtype=float,
+        )
+        divergence = float(totals.var() + promoted.var())
+        richness = float(totals.max()) if totals.size else 0.0
+        if richness <= 0.0:
+            continue  # empty window — nothing to show
+        scored.append((divergence, richness, lo, hi))
+    if not scored:
+        return []
+
+    # Primary key: divergence; tiebreak / fallback: richness. When no window
+    # diverges (all divergence == 0) this reduces to the k richest windows.
+    scored.sort(key=lambda s: (s[0], s[1]), reverse=True)
+    chosen = scored[:k]
+    chosen.sort(key=lambda s: s[2])  # low frequency first for reading order
+    return [(lo, hi) for _, _, lo, hi in chosen]
+
+
+def _draw_peak_panel(
+    ax: Any, value_label: str, ft: Any, sigma: Any, peaks: Any,
+    promotion_min_snr: float, lo: float, hi: float,
+) -> None:
+    """One value × one region: the (log) active-FT magnitude zoomed to the
+    region, the per-bin promotion threshold (``min_snr·σ``), and the value's
+    peaks marked by detection pass (primary / gap) and promotion state."""
+    import numpy as np
+
+    freqs = np.asarray(ft.freq_array, dtype=float)
+    mag = np.abs(np.asarray(ft.complex_spectrum))
+    sel = (freqs >= lo) & (freqs <= hi)
+    if not sel.any():
+        ax.set_visible(False)
+        return
+    f_sel, m_sel = freqs[sel], mag[sel]
+    order = np.argsort(f_sel)
+    f_sel, m_sel = f_sel[order], m_sel[order]
+
+    ax.plot(f_sel, m_sel, lw=0.5, color="0.55", zorder=1)
+
+    sig = np.asarray(sigma, dtype=float)
+    median_sigma = float("nan")
+    if sig.size == freqs.size:
+        sig_sel = sig[sel][order]
+        thresh = promotion_min_snr * sig_sel
+        ax.plot(f_sel, thresh, color="tab:red", ls="--", lw=0.9, zorder=2)
+        finite = sig_sel[np.isfinite(sig_sel)]
+        if finite.size:
+            median_sigma = float(np.median(finite))
+
+    # Promoted peaks only, solid, coloured by detection pass (primary vs gap).
+    # Dropped (below-cutoff) peaks are intentionally not drawn — the dashed
+    # threshold already shows the cutoff, and the band-wide persistence panel
+    # above carries the survival story.
+    pass_color = {"primary": "tab:blue", "gap": "tab:green"}
+    for p in _peaks_in(peaks, lo, hi):
+        if not p.properties.get("promoted"):
+            continue
+        dp = p.properties.get("detection_pass", "primary")
+        color = pass_color.get(dp, "tab:gray")
+        ax.scatter(
+            [float(p.frequency)], [float(p.intensity)], s=34, zorder=3,
+            marker="v", color=color, edgecolors=color, linewidths=1.1,
+        )
+
+    ax.set_yscale("log")
+    region_max = float(m_sel.max()) if m_sel.size else 1.0
+    ymin = (_PEAK_YMIN_SIGMA_FRACTION * median_sigma
+            if np.isfinite(median_sigma) and median_sigma > 0.0
+            else max(region_max * 1e-3, 1e-12))
+    ax.set_ylim(ymin, _PEAK_YMAX_PEAK_FACTOR * region_max)
+    ax.set_xlim(lo, hi)
+    ax.set_ylabel(value_label, fontsize=8)
+    ax.grid(True, alpha=0.2, which="both")
+
+
+def _peak_persistence(rows: List[Any], tol_mhz: float) -> List[Any]:
+    """Categorise each promoted peak by the *last* swept value at which it is
+    still promoted.
+
+    Promoted peaks are matched across values by frequency (within ``tol_mhz``);
+    for each matched line the highest swept-value index at which it is promoted
+    is recorded. Returns ``[(frequency_mhz, intensity, last_index), ...]`` sorted
+    by frequency — the band-wide "how deep into the sweep does this line survive"
+    summary. ``last_index`` indexes into ``rows`` (the sweep order).
+    """
+    persistence: "dict[int, tuple[int, float, float]]" = {}
+    for i, row in enumerate(rows):
+        if row.result is None:
+            continue
+        for p in row.result.get("peaks", []):
+            if not p.properties.get("promoted"):
+                continue
+            key = int(round(float(p.frequency) / tol_mhz))
+            # Iterating in sweep order and always overwriting leaves the highest
+            # index at which the line survives.
+            persistence[key] = (i, float(p.frequency), float(p.intensity))
+    return sorted(
+        ((freq, inten, idx) for idx, freq, inten in persistence.values()),
+        key=lambda t: t[0],
+    )
+
+
+def _plot_peak_persistence(
+    ax: Any, rows: List[Any], regions: List[Any], leaf: str, labels: List[str],
+) -> None:
+    """Full-width log spectrum with every promoted peak coloured by the last
+    swept value it survives (early-drop → survives-throughout), and the zoom
+    regions shaded. The active FT is invariant across the sweep, so the spectrum
+    is drawn once from the first row."""
+    import numpy as np
+
+    ft = rows[0].result.get("active_ft")
+    if ft is None:
+        ax.set_visible(False)
+        return
+    freqs = np.asarray(ft.freq_array, dtype=float)
+    mag = np.abs(np.asarray(ft.complex_spectrum))
+    order = np.argsort(freqs)
+    ax.plot(freqs[order], mag[order], lw=0.4, color="0.6", zorder=1)
+
+    # Shade the zoom regions detailed below. A cool tint + edge lines so the
+    # bands read clearly against the grey spectrum and the warm plasma peak
+    # colours (a grey shade blended in and was easy to miss).
+    for lo, hi in regions:
+        ax.axvspan(lo, hi, color="#6baed6", alpha=0.28, zorder=0)
+        for edge in (lo, hi):
+            ax.axvline(edge, color="#3182bd", lw=0.7, alpha=0.6, zorder=0)
+
+    n = len(rows)
+    colors = _value_colors(n)
+    persistence = _peak_persistence(rows, _PEAK_PERSIST_TOL_MHZ)
+    # Group by survival bucket so the legend stays one entry per swept value.
+    for idx in range(n):
+        pts = [(f, inten) for (f, inten, li) in persistence if li == idx]
+        if not pts:
+            continue
+        fs, ins = zip(*pts)
+        ax.scatter(list(fs), list(ins), s=16, color=colors[idx], zorder=3,
+                   label=f"survives to {leaf}={labels[idx]}")
+
+    sigma = np.asarray(rows[0].result.get("active_rms", []), dtype=float)
+    finite = sigma[np.isfinite(sigma)]
+    region_top = float(mag.max()) if mag.size else 1.0
+    ymin = (_PEAK_YMIN_SIGMA_FRACTION * float(np.median(finite))
+            if finite.size and float(np.median(finite)) > 0.0
+            else max(region_top * 1e-3, 1e-12))
+    ax.set_yscale("log")
+    ax.set_ylim(ymin, _PEAK_YMAX_PEAK_FACTOR * region_top)
+    ax.set_xlim(float(freqs.min()), float(freqs.max()))
+    ax.set_xlabel("frequency (MHz)")
+    ax.set_ylabel("|FT|")
+    ax.grid(True, alpha=0.2, which="both")
+    ax.legend(fontsize=7, ncol=min(n, 6), loc="upper right")
+    ax.set_title(
+        "promoted peaks coloured by the last sweep value they survive "
+        "(shaded = zoom regions below)"
+    )
+
+
+def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stage 3 sweep view: a by-SNR-band count trend, a band-wide peak-survival
+    panel, then per-value × per-region zoom detail.
+
+    The active FT is invariant across the sweep — only which peaks are found and
+    promoted changes. The top trend tracks the peaks passed to Stage 4 (total and
+    by weak/medium/strong SNR band) vs the swept value; the full-width panel
+    below it draws the whole band once and colours every
+    promoted peak by the last value at which it survives (so a glance shows which
+    lines drop out first), shading the zoom regions. Each remaining row is one
+    swept value and each column one auto-selected ~100 MHz region (chosen where
+    the peak set diverges most across values, falling back to the richest
+    regions): log-scaled with the noise floor near the axis bottom, promoted
+    peaks marked solid by detection pass (primary = blue, gap = green), the
+    per-bin promotion threshold (``min_snr·σ``) dashed in red.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+
+    leaf = spec.path.split(".")[-1]
+    regions = _select_peak_regions(rows, _PEAK_REGION_WIDTH_MHZ, _PEAK_N_REGIONS)
+    n = len(rows)
+    ncol = max(1, len(regions))
+    has_zoom = bool(regions)
+    n_rows = (n + 2) if has_zoom else 2
+
+    fig = plt.figure(figsize=(5.0 * ncol, 5.6 + 2.0 * n))
+    height_ratios = [1.6, 1.5] + ([1.0] * n if has_zoom else [])
+    gs = fig.add_gridspec(n_rows, ncol, height_ratios=height_ratios)
+
+    # Row 0 (spanning): the peaks passed to Stage 4, total and by SNR band, vs
+    # the swept value. Categorical x keeps non-numeric knobs (toggles, window
+    # names) plottable.
+    ax_trend = fig.add_subplot(gs[0, :])
+    xs = np.arange(n, dtype=float)
+    labels = [f"{r.value:g}" if isinstance(r.value, (int, float))
+              else str(r.value) for r in rows]
+    for col, color, marker in (
+        ("n_total", "0.2", "o"),
+        ("n_strong", "tab:red", "^"),
+        ("n_medium", "tab:orange", "s"),
+        ("n_weak", "tab:blue", "v"),
+    ):
+        ys = [r.metrics.get(col) for r in rows]
+        ax_trend.plot(xs, ys, marker + "-", color=color, label=col)
+    ax_trend.set_xticks(xs)
+    ax_trend.set_xticklabels(labels)
+    ax_trend.set_xlabel(leaf)
+    ax_trend.set_ylabel("peaks passed to Stage 4")
+    ax_trend.grid(True, alpha=0.3)
+    ax_trend.legend(fontsize=8, ncol=4, loc="upper left")
+    ax_trend.set_title(f"Stage 3 peaks passed to Stage 4 vs {leaf} (by SNR band)")
+
+    # Row 1 (spanning): band-wide peak survival.
+    _plot_peak_persistence(fig.add_subplot(gs[1, :]), rows, regions, leaf, labels)
+
+    if not has_zoom:
+        fig.suptitle(f"Peak-detection sweep: {spec.path}")
+        fig.tight_layout()
+        return fig
+
+    for ri, row in enumerate(rows):
+        res = row.result
+        ft = res.get("active_ft")
+        sigma = res.get("active_rms")
+        peaks = res.get("peaks", [])
+        pmin = float(res.get("promotion_min_snr", 0.0))
+        for ci, (lo, hi) in enumerate(regions):
+            ax = fig.add_subplot(gs[ri + 2, ci])
+            if ft is None:
+                ax.set_visible(False)
+                continue
+            label = f"{leaf}={labels[ri]}" if ci == 0 else ""
+            _draw_peak_panel(ax, label, ft, sigma, peaks, pmin, lo, hi)
+            if ri == 0:
+                ax.set_title(f"{lo:.0f}–{hi:.0f} MHz", fontsize=9)
+            if ri == n - 1:
+                ax.set_xlabel("frequency (MHz)")
+
+    handles = [
+        Line2D([], [], marker="v", color="tab:blue", ls="none",
+               markerfacecolor="tab:blue", label="primary (promoted)"),
+        Line2D([], [], marker="v", color="tab:green", ls="none",
+               markerfacecolor="tab:green", label="gap / secondary (promoted)"),
+        Line2D([], [], color="tab:red", ls="--",
+               label=r"promotion threshold ($min\_snr\cdot\sigma$)"),
+    ]
+    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=3,
+               bbox_to_anchor=(0.5, -0.01))
+    fig.suptitle(f"Peak-detection sweep: {spec.path}")
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
     return fig
 
 

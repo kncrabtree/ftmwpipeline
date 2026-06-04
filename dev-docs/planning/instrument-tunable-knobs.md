@@ -189,10 +189,26 @@ Planning: [`stage3-peak-detection.md`](stage3-peak-detection.md).
 | savgol.sg_min_window | 5 | `_SG_MIN_WINDOW` | Minimum Savitzky-Golay window size (polynomial stability floor). | N | — |
 | primary_pass.primary_window | "blackmanharris" | `DEFAULT_PRIMARY_WINDOW` | Apodization function for primary-pass position finding (sidelobe suppression). | N | — |
 | primary_pass.min_exclusion_mhz | 0.0 | function default | Minimum half-width exclusion around each primary peak for gap pass (MHz). | **Y** | — |
-| primary_pass.detection_zpf | 1 | `_DETECTION_ZPF` | Zero-padding factor for primary-pass spectrum computation. | N | — |
+| primary_pass.detection_zpf | 2 | `_DETECTION_ZPF` | Zero-padding factor for the active-region primary-pass spectrum (the value reproducing the former full-record grid step). | N | — |
+| primary_pass.primary_leakage_floor_k | 1.0 | `PRIMARY_LEAKAGE_FLOOR_K` | Scale on the continuous leakage-aware detection floor `k·(S_coh/√M)·σ` added to the primary threshold so a strong line's coherent skirt ripple is not re-detected as weak lines. `0` disables. | **Y** | — |
+| primary_pass.noise_window_mhz | 80.0 | `SCATTER_WINDOW_MHZ` | Primary's own apodized-domain σ: scatter-MAD window width (MHz). Mirrors `stage2.window_mhz` but measured on the Blackman-Harris primary spectrum, whose leakage-suppressed floor is genuinely lower than the unapodized Stage 2 authority. | **Y** | — |
+| primary_pass.noise_pedestal_mhz | 20.0 | `SCATTER_PEDESTAL_MHZ` | Primary's own apodized-domain σ: high-pass running-median width (MHz). Mirrors `stage2.pedestal_mhz`. | **Y** | — |
+| primary_pass.noise_line_k | 8.0 | `SCATTER_LINE_K` | Primary's own apodized-domain σ: robust-σ multiple above which a bin self-masks as a line. Mirrors `stage2.line_k`. | maybe | — |
+| primary_pass.noise_n_iter | 3 | `SCATTER_N_ITER` | Primary's own apodized-domain σ: self-mask refinement iterations. Mirrors `stage2.n_iter`. | N | — |
+| primary_pass.noise_region_aware | True | function default | Primary's own apodized-domain σ: region-aware Rician correction switch. Mirrors `stage2.region_aware`. | N | — |
+| primary_pass.noise_smoothing_mhz | 800.0 | `SCATTER_SMOOTHING_MHZ` | Primary's own apodized-domain σ: broad lower-envelope median smoothing width (MHz, `0` disables). Mirrors `stage2.smoothing_mhz`. | **Y** | — |
+| primary_pass.noise_smoothing_percentile | 50.0 | `SCATTER_SMOOTHING_PERCENTILE` | Primary's own apodized-domain σ: percentile of the broad smoothing (50 = median). Mirrors `stage2.smoothing_percentile`. | maybe | — |
+| primary_pass.noise_convolve_mhz | 200.0 | `SCATTER_CONVOLVE_MHZ` | Primary's own apodized-domain σ: Gaussian σ (MHz) of the step-removing second smoothing pass (`0` disables). Mirrors `stage2.convolve_mhz`. | N | — |
 | gap_pass.run_gap_pass | True | function default | Enable second pass to recover weak lines primary-pass apodization suppressed. | N | — |
 | gap_pass.gap_active_zpf | 2 | `_GAP_ACTIVE_ZPF` | Zero-padding factor for matched-filter active-region FFT. | N | — |
-| gap_pass.gap_mask_edge_threshold | 8.0 | `GAP_MASK_EDGE_THRESHOLD` | Coherent-leakage threshold for masking truncation sidelobes in gap pass. | **Y** | — |
+| gap_pass.gap_leakage_floor_k | 3.0 | `GAP_LEAKAGE_FLOOR_K` | Scale on the continuous leakage-aware detection floor `k·(S_coh/√M)·σ` added to the gap-pass threshold (the same mechanism `primary_leakage_floor_k` uses), replacing the former hard `S_coh`-cutoff mask. `0` disables. | **Y** | — |
+
+The gap-pass matched-filter window is selected from the Stage 2b recommended
+line shape — `exp(-t/τ)` for Lorentzian, `exp(-(t/τ)²)` for Gaussian — and its
+`tau_basis_us` is the upstream Stage 2b `τ_maj` (not a Stage 3 settings knob).
+The gap σ is the active-FT authority σ scaled by the matched-window gain
+`√(Σw²/N)`, not a separate scatter estimate; only the primary pass measures its
+own (apodized-domain) σ via the `noise_*` knobs above.
 
 ## Stage 4 — `WindowPlanningSettings`
 
@@ -286,7 +302,11 @@ fixture.
 | 3 | promotion.weak_medium_snr | 10.0 | — |
 | 3 | promotion.medium_strong_snr | 50.0 | — |
 | 3 | primary_pass.min_exclusion_mhz | 0.0 | — |
-| 3 | gap_pass.gap_mask_edge_threshold | 8.0 | — |
+| 3 | primary_pass.primary_leakage_floor_k | 1.0 | — |
+| 3 | primary_pass.noise_window_mhz | 80.0 | — |
+| 3 | primary_pass.noise_pedestal_mhz | 20.0 | — |
+| 3 | primary_pass.noise_smoothing_mhz | 800.0 | — |
+| 3 | gap_pass.gap_leakage_floor_k | 3.0 | — |
 | 4 | coherence.edge_threshold | 8.0 | — |
 | 4 | clustering.max_window_width_mhz | 40.0 | — |
 | 4 | contributor.min_freeze_snr | 50.0 | — |
@@ -308,7 +328,7 @@ The Y-rated knobs validated so far against the 2638 fixture:
 | 3 | gap-pass `tau_basis_us` source | **shape-sensitive** | shipped: shape-aware feeder routes to `τ_G_maj` when `recommended_shape='gaussian'` (`stage3_impl`). |
 | 3 | `promotion.min_snr` | shape-invariant | keep default 3.0; both shapes agree to ≤ 3.5 % across 2.0–5.0. |
 | 3 | `promotion.internal_min_snr` | shape-invariant | keep default 2.0; both shapes share the same 2.0 knee. |
-| 3 | `gap_pass.gap_mask_edge_threshold` | shape-invariant | keep default 8.0; monotonic response on both paths. |
+| 3 | `gap_pass.gap_mask_edge_threshold` *(superseded)* | shape-invariant | audited at default 8.0 (monotonic on both paths). The hard `S_coh`-cutoff mask this knob set has since been **replaced** by the continuous leakage-aware floor `gap_pass.gap_leakage_floor_k` (default 3.0); the floor is not yet cross-fixture audited. |
 | 3 | `primary_pass.min_exclusion_mhz` | shape-invariant | keep default 0.0; both shapes lose ~21 % of gap detections at excl=0.5. |
 | 4 | `leakage.tau_us` (boxcar vs Stage 2b τ) | **shape-invariant; boxcar wins** | keep default `None` (boxcar). Window boundaries are byte-identical across τ variants (set by `min_window_half_width_mhz` + clustering, not by reach); aggregate Stage 5 χ²ᵣ is also unchanged (≤ 0.02 median, ≤ 0.18 p95). The 23-29 worst-χ²ᵣ windows get the *identical* contributor set on every variant, so τ-feed cannot remediate them. |
 | 4 | `coherence.edge_threshold` | shape-invariant | keep default 8.0; sits at hard-count plateau knee on both shapes. |

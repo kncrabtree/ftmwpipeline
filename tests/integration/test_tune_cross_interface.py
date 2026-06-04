@@ -137,6 +137,27 @@ def test_elide_path_blanks_shared_prefix():
     )
 
 
+def test_stage3_scan_runs_and_plots(baseline_2638_stage2, tmp_path):
+    # A real Stage 3 sweep on the production Stage-2 baseline: a row per grid
+    # value with the by-SNR-band passed-peak columns, plus the spectrum plot.
+    r = ftmw.tune_scan(
+        baseline_2638_stage2, "stage3.promotion.min_snr", grid=[3.0, 5.0],
+        output_dir=tmp_path, quiet=True,
+    )
+    assert [row.value for row in r.rows] == [3.0, 5.0]
+    assert r.metric_columns == (
+        "n_total", "n_strong", "n_medium", "n_weak",
+        "snr_min", "snr_p10", "snr_p25", "snr_p50", "snr_p90", "snr_max",
+    )
+    # raising the promotion floor cannot pass more peaks to Stage 4
+    totals = [row.metrics["n_total"] for row in r.rows]
+    assert totals[0] >= totals[1]
+    # the lowest passed SNR tracks the promotion cutoff
+    for row in r.rows:
+        assert row.metrics["snr_min"] >= row.value - 1e-6
+    assert r.plot_path is not None and r.plot_path.exists()
+
+
 def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):
     import shutil
 

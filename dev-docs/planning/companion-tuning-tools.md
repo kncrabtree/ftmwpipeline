@@ -266,10 +266,11 @@ is proven on a low-churn stage, then fanned out.
 3. **Stages 0, 1, 2 full coverage + surface ergonomics.** *(done)* Every
    instrument-relevant knob for Stages 0–2 is registered and tiered; the
    listing, batch mode, and spectrum-impact plots landed here.
-4. **Stage 3 -> 4 -> 5.** *(next)* Heaviest; register the ~13 tracked
-   `probe_<knob>.py` grids/metrics/plots into the registry (they already encode
-   grid + metric + plot). Reuse the `<stage>-gaussian-audit/harness.py`
-   builders. Follow the conventions in §Lessons for the fan-out.
+4. **Stage 3 -> 4 -> 5.** Heaviest; register the tracked `probe_<knob>.py`
+   grids/metrics/plots into the registry (they already encode grid + metric +
+   plot). Reuse the `<stage>-gaussian-audit/harness.py` builders. Follow the
+   conventions in §Lessons for the fan-out. **Stage 3 done** (see
+   §Implementation status); Stage 4 -> 5 next.
 5. **Preset emission** (resolve the deferred decision) once the surface is felt;
    and the resolved-settings inspection verb (issue #28).
 6. **Gap-fill** any remaining no-tool knobs as registry entries.
@@ -339,9 +340,41 @@ FID/spectrum.
   a vote-bar plot for the shape knobs. Tuple-valued fields (`band_edges_mhz`,
   `tau_G_seeds`) and workflow toggles (`auto_recommend`) are not swept.
 
+**Knob coverage — Stage 3 complete (tiered).** Every `PeakDetectionSettings`
+field is registered as `stage3.<sub_block>.<field>` (23 knobs), all driving
+`detect_peaks_impl` through a one-field settings bundle (`_run_peaks`) and
+sharing one metric (`n_peaks / n_promoted / n_primary / n_gap / snr_p95`) and one
+plot (`plot_peak_detection`). `requires="stage2_noise_result"` — Stage 2b is
+optional (its presence shape-matches and τ-anchors the gap matched filter; absent,
+the gap pass falls back to the user apodization).
+- **Primary** (the Y-rated detection-shaping knobs): `promotion.min_snr`,
+  `promotion.internal_min_snr`, `primary_pass.min_exclusion_mhz`,
+  `primary_pass.primary_leakage_floor_k`, `gap_pass.gap_leakage_floor_k`.
+- **Advanced**: the classification edges (`promotion.weak_medium_snr` /
+  `medium_strong_snr`), the Savitzky-Golay block, primary apodization/zpf, the
+  primary pass's own apodized-domain σ (`primary_pass.noise_*`, mirroring the
+  Stage 2 scatter knobs — the second, leakage-suppressed noise level), and the
+  gap-pass structural toggles (`run_gap_pass`, `gap_active_zpf`).
+- **Plot:** the active FT is invariant across the sweep, so the figure stacks
+  (1) a scalar count/SNR trend, (2) a full-width band-wide **survival panel** —
+  the log spectrum drawn once with every promoted peak coloured by the *last*
+  swept value it survives (plasma ramp: early-drop → survives-throughout), with
+  the zoom regions shaded via `axvspan`, and (3) per-value × per-region zoom
+  detail: each row one swept value, each column one auto-selected ~100 MHz region
+  (ranked by how much the peak set *diverges* across values, richest-region
+  fallback), log-scaled with the noise floor pinned near the axis bottom,
+  **promoted peaks only** marked solid by pass (primary = blue, gap = green) and
+  the per-bin `min_snr·σ` threshold dashed over each. Dropped/below-cutoff
+  markers are deliberately *not* drawn (the threshold + survival panel carry that
+  story without clutter). This is the "which lines does this value find and
+  promote, and how deep into the sweep do they survive" readout — the
+  spectrum-impact convention applied to Stage 3.
+- The replaced `gap_pass.gap_mask_edge_threshold` (hard `S_coh` mask) is *not*
+  registered; its continuous-floor successor `gap_pass.gap_leakage_floor_k` is.
+
 Remaining:
 
-- **Stage 3 → 4 → 5 knobs** (sequencing step 4): lift the ~13 tracked
+- **Stage 4 → 5 knobs** (sequencing step 4): lift the tracked
   `probe_<knob>.py` grids/metrics/plots into registry entries, reusing the
   `<stage>-gaussian-audit/harness.py` builders. Stage 5 sweeps re-run
   `fit_peaks` per value — keep grids tight, lean on `--reuse`, and test against
