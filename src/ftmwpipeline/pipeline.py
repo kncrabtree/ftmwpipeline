@@ -1678,6 +1678,11 @@ class Pipeline:
         zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
         n_zoom: Optional[int] = None,
         zoom_width_mhz: Optional[float] = None,
+        fit_top_snr: int = 3,
+        fit_sample: int = 20,
+        fit_freqs: Optional[Sequence[float]] = None,
+        fit_sample_seed: int = 0,
+        fit_all: bool = False,
     ) -> "SweepResult":
         """Sweep a single knob across a grid on a copy of this file.
 
@@ -1690,7 +1695,10 @@ class Pipeline:
         ``zoom_regions`` pins explicit ``(lo_mhz, hi_mhz)`` windows for the
         region-based plot adapters (Stage 3 / Stage 4), overriding their
         divergence auto-selection; ``n_zoom`` / ``zoom_width_mhz`` instead tune
-        how many regions to auto-select and how wide each is.
+        how many regions to auto-select and how wide each is. The ``fit_*``
+        controls bound a Stage 5 fit sweep to a window subset (the ``fit_top_snr``
+        brightest + a seeded ``fit_sample`` sample + the windows nearest
+        ``fit_freqs``); ``fit_all`` re-fits every window.
         """
         from ._internal.tuning import get_knob, run_scan
 
@@ -1705,6 +1713,11 @@ class Pipeline:
             zoom_regions=zoom_regions,
             n_zoom=n_zoom,
             zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
         )
 
     def tune_scan_batch(
@@ -1719,6 +1732,11 @@ class Pipeline:
         zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
         n_zoom: Optional[int] = None,
         zoom_width_mhz: Optional[float] = None,
+        fit_top_snr: int = 3,
+        fit_sample: int = 20,
+        fit_freqs: Optional[Sequence[float]] = None,
+        fit_sample_seed: int = 0,
+        fit_all: bool = False,
     ) -> "List[BatchItem]":
         """Sweep every knob matched by ``selector`` on its default grid.
 
@@ -1745,6 +1763,11 @@ class Pipeline:
             zoom_regions=zoom_regions,
             n_zoom=n_zoom,
             zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
         )
 
     def __repr__(self) -> str:

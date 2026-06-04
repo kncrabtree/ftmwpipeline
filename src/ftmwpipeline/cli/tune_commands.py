@@ -190,6 +190,7 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
             zoom_regions=zoom_regions,
             n_zoom=getattr(args, "n_zoom", None),
             zoom_width_mhz=getattr(args, "zoom_width", None),
+            **_fit_kwargs(args),
         )
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
@@ -265,6 +266,7 @@ def cmd_tune_scan_all(args: argparse.Namespace) -> int:
             zoom_regions=zoom_regions,
             n_zoom=getattr(args, "n_zoom", None),
             zoom_width_mhz=getattr(args, "zoom_width", None),
+            **_fit_kwargs(args),
         )
     finally:
         pkg_logger.setLevel(prev_level)
@@ -321,6 +323,56 @@ def _add_zoom_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Width (MHz) of each auto-selected region when --zoom is not given",
     )
+
+
+def _add_fit_args(parser: argparse.ArgumentParser) -> None:
+    """Attach the Stage 5 fit-window selection controls shared by 'scan' and
+    'scan-all'. A fit sweep re-fits only a window subset by default; non-fit
+    knobs ignore these."""
+    parser.add_argument(
+        "--fit-top-snr",
+        type=int,
+        default=3,
+        help="Stage 5: re-fit the N highest-SNR windows (default 3)",
+    )
+    parser.add_argument(
+        "--fit-sample",
+        type=int,
+        default=20,
+        help="Stage 5: plus a seeded sample of N other windows (default 20)",
+    )
+    parser.add_argument(
+        "--fit-freqs",
+        type=str,
+        default=None,
+        metavar="MHZ,MHZ",
+        help="Stage 5: also pin the window nearest each frequency (MHz)",
+    )
+    parser.add_argument(
+        "--fit-sample-seed",
+        type=int,
+        default=0,
+        help="Stage 5: RNG seed for the window sample (default 0)",
+    )
+    parser.add_argument(
+        "--fit-all",
+        action="store_true",
+        help="Stage 5: re-fit every window (no subset; slow on dense spectra)",
+    )
+
+
+def _fit_kwargs(args: argparse.Namespace) -> dict:
+    """Resolve the Stage 5 fit-selection CLI args into run_scan kwargs."""
+    freqs = None
+    if getattr(args, "fit_freqs", None):
+        freqs = [float(x) for x in args.fit_freqs.split(",") if x.strip()]
+    return {
+        "fit_top_snr": getattr(args, "fit_top_snr", 3),
+        "fit_sample": getattr(args, "fit_sample", 20),
+        "fit_freqs": freqs,
+        "fit_sample_seed": getattr(args, "fit_sample_seed", 0),
+        "fit_all": getattr(args, "fit_all", False),
+    }
 
 
 def register_tune_commands(subparsers: Any) -> None:
@@ -417,6 +469,7 @@ def register_tune_commands(subparsers: Any) -> None:
         help="Suppress the per-value progress indicator",
     )
     _add_zoom_args(p_scan)
+    _add_fit_args(p_scan)
     p_scan.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
@@ -471,6 +524,7 @@ def register_tune_commands(subparsers: Any) -> None:
         help="Suppress the per-value progress indicator",
     )
     _add_zoom_args(p_scan_all)
+    _add_fit_args(p_scan_all)
     p_scan_all.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )

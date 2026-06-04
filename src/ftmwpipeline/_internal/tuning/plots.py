@@ -1114,6 +1114,133 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     return fig
 
 
+def _fit_quality_rows(row: Any) -> List[Any]:
+    """Per-window fit-quality dicts for one swept value (empty when absent)."""
+    from .fit_support import window_fit_quality
+
+    res = row.result
+    if res is None:
+        return []
+    fit = res.get("fit")
+    if fit is None or not getattr(fit, "window_fits", None):
+        return []
+    return [window_fit_quality(wf) for wf in fit.window_fits]
+
+
+def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stage 5 fit-quality sweep view (the shared adapter for tau / conservative
+    / penalties / seeder / baseline knobs).
+
+    The honest fit-quality lens is the SNR-normalised shape-error fraction ε, not
+    χ²ᵣ (which rides an SNR² floor). Three stacked sections:
+    (1) an ε-percentile + fail-count / peak-count trend vs the swept value;
+    (2) the headline **ε-vs-SNR scatter** — every fitted window, coloured by
+    swept value, with the pass boundary drawn as the flat line ε = κ (the gate
+    ``χ²ᵣ ≤ F + (κ·SNR)²`` is exactly ``ε ≤ κ``): watch the knob push windows
+    across the line; (3) a per-window **ε-vs-frequency strip** showing *where* on
+    the band the knob moved the misfit, coloured by value.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from ...fitting.validation import DEFAULT_SHAPE_ERROR_KAPPA
+
+    rows = [r for r in rows if r.result is not None]
+    per_value = [_fit_quality_rows(r) for r in rows]
+    if not rows or not any(per_value):
+        return None
+
+    leaf = spec.path.split(".")[-1]
+    n = len(rows)
+    labels = [f"{r.value:g}" if isinstance(r.value, (int, float))
+              else str(r.value) for r in rows]
+    colors = _value_colors(n)
+    kappa = float(DEFAULT_SHAPE_ERROR_KAPPA)
+
+    fig = plt.figure(figsize=(12.0, 12.5))
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.3, 1.6, 1.3])
+
+    # (1) trend: eps percentiles + fail / peak counts vs value.
+    ax = fig.add_subplot(gs[0, 0])
+    xs = np.arange(n, dtype=float)
+    e50 = [float(np.percentile([w["epsilon"] for w in pv], 50)) if pv else 0.0
+           for pv in per_value]
+    e95 = [float(np.percentile([w["epsilon"] for w in pv], 95)) if pv else 0.0
+           for pv in per_value]
+    ax.plot(xs, e50, "o-", color="tab:blue", label="ε p50")
+    ax.plot(xs, e95, "s--", color="tab:blue", alpha=0.6, label="ε p95")
+    ax.axhline(kappa, color="crimson", ls=":", lw=1.0,
+               label=f"κ = {kappa:g} (pass ≤ κ)")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel(leaf)
+    ax.set_ylabel("shape-error ε")
+    ax.grid(True, alpha=0.3)
+    axc = ax.twinx()
+    n_fail = [sum(1 for w in pv if not w["passed"]) for pv in per_value]
+    n_peak = [sum(w["n_peaks"] for w in pv) for pv in per_value]
+    axc.plot(xs, n_fail, "^-", color="tab:red", label="n_fail")
+    axc.plot(xs, n_peak, "D-", color="0.4", label="n_peaks")
+    axc.set_ylabel("window / peak counts")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = axc.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, loc="upper left")
+    ax.set_title(f"Stage 5 fit quality vs {leaf}")
+
+    # (2) headline: ε vs SNR, coloured by value, pass line at ε = κ.
+    ax2 = fig.add_subplot(gs[1, 0])
+    for i, pv in enumerate(per_value):
+        snr = [w["snr_max"] for w in pv if w["snr_max"] > 0]
+        eps = [w["epsilon"] for w in pv if w["snr_max"] > 0]
+        if snr:
+            ax2.scatter(snr, eps, s=20, color=colors[i], alpha=0.75,
+                        label=f"{leaf}={labels[i]}")
+    ax2.axhline(kappa, color="crimson", ls="--", lw=1.1,
+                label=f"pass boundary ε = κ = {kappa:g}")
+    ax2.set_xscale("log")
+    ax2.set_xlabel("window SNR_max (log)")
+    ax2.set_ylabel("shape-error fraction ε")
+    ax2.grid(True, alpha=0.25, which="both")
+    ax2.legend(fontsize=8, ncol=min(n + 1, 5), loc="upper right")
+    ax2.set_title("ε vs SNR — points above κ are genuine misfit "
+                  "(SNR² floor removed)")
+
+    # (3) ε vs frequency: where on the band the knob moves the misfit.
+    ax3 = fig.add_subplot(gs[2, 0])
+    for i, pv in enumerate(per_value):
+        fc = []
+        eps = []
+        for w in pv:
+            wid = w["window_id"]
+            fr = _window_center(rows[i].result, wid)
+            if fr is not None:
+                fc.append(fr)
+                eps.append(w["epsilon"])
+        if fc:
+            ax3.scatter(fc, eps, s=18, color=colors[i], alpha=0.75)
+    ax3.axhline(kappa, color="crimson", ls="--", lw=1.0)
+    ax3.set_xlabel("window centre frequency (MHz)")
+    ax3.set_ylabel("shape-error ε")
+    ax3.grid(True, alpha=0.25)
+    ax3.set_title("ε across the band by swept value "
+                  "(which windows the knob helps / hurts)")
+
+    fig.suptitle(f"Fit-quality sweep: {spec.path}")
+    fig.tight_layout(rect=(0, 0, 1, 0.99))
+    return fig
+
+
+def _window_center(result: Any, window_id: int) -> Any:
+    """Centre frequency (MHz) of a fitted window by id, or None."""
+    fit = result.get("fit") if result else None
+    if fit is None:
+        return None
+    for wf in fit.window_fits:
+        if wf.window_id == window_id and wf.window is not None:
+            lo, hi = wf.window.freq_range
+            return 0.5 * (float(lo) + float(hi))
+    return None
+
+
 def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """Three panels: σ(f) per grid value (top-left), the scalar metric trend
     (top-right, median σ and noise-flagged fraction vs the knob), and a

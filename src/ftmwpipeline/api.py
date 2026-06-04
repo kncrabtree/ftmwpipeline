@@ -1633,6 +1633,11 @@ def tune_scan(
     zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
     n_zoom: Optional[int] = None,
     zoom_width_mhz: Optional[float] = None,
+    fit_top_snr: int = 3,
+    fit_sample: int = 20,
+    fit_freqs: Optional[Sequence[float]] = None,
+    fit_sample_seed: int = 0,
+    fit_all: bool = False,
 ) -> Any:
     """Sweep a single pipeline knob across a grid, equivalent to
     :meth:`Pipeline.tune_scan`.
@@ -1665,6 +1670,11 @@ def tune_scan(
     n_zoom, zoom_width_mhz : optional
         When ``zoom_regions`` is not given, how many regions to auto-select and
         how wide each is; ``None`` keeps the adapter defaults.
+    fit_top_snr, fit_sample, fit_freqs, fit_sample_seed, fit_all : optional
+        Window selection for Stage 5 fit knobs: re-fit only the ``fit_top_snr``
+        brightest windows + a seeded ``fit_sample`` random sample + the windows
+        nearest each ``fit_freqs`` value, rather than the whole plan.
+        ``fit_all=True`` re-fits every window. Ignored by non-fit knobs.
     """
     try:
         pipeline = Pipeline.open(file_path)
@@ -1678,6 +1688,11 @@ def tune_scan(
             zoom_regions=zoom_regions,
             n_zoom=n_zoom,
             zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
         )
     except Exception as e:
         logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
@@ -1696,6 +1711,11 @@ def tune_scan_batch(
     zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
     n_zoom: Optional[int] = None,
     zoom_width_mhz: Optional[float] = None,
+    fit_top_snr: int = 3,
+    fit_sample: int = 20,
+    fit_freqs: Optional[Sequence[float]] = None,
+    fit_sample_seed: int = 0,
+    fit_all: bool = False,
 ) -> Any:
     """Sweep every knob matched by ``selector`` on its default grid, equivalent
     to :meth:`Pipeline.tune_scan_batch`.
@@ -1726,6 +1746,11 @@ def tune_scan_batch(
             zoom_regions=zoom_regions,
             n_zoom=n_zoom,
             zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
         )
     except Exception as e:
         logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")

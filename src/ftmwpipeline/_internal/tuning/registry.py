@@ -19,7 +19,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
 
+from .fit_support import reduce_plan_for_fit
 from .plots import (
+    plot_fit_quality,
     plot_ft_band_stack,
     plot_noise_sweep,
     plot_peak_detection,
@@ -75,6 +77,17 @@ class KnobSpec:
     """``"primary"`` (shown in the default ``tune list``) or ``"advanced"``
     (revealed only with ``--all`` / ``include_advanced``). Lets the surface
     expose every knob while keeping the default view a short starting point."""
+    prepare: Optional[Callable[..., None]] = None
+    """Optional one-time conditioning of the working copy before the sweep
+    (``(work_path, FitWindowSelection, spec, values) -> None``). Stage 5 fit
+    knobs set this to reduce the window plan to a representative subset so each
+    value re-fits only a few windows; ``None`` => the working copy is swept
+    as-is."""
+    select_hint: Optional[str] = None
+    """Optional hint to the ``prepare`` window-selector. ``"snr_threshold"``
+    marks a knob that gates per-window behaviour on the window's SNR, so the
+    selector straddle-samples windows across the grid's SNR range (otherwise the
+    knob can look inert when the random sample misses its regime)."""
 
     def grid(self, override: Optional[Sequence[Any]]) -> Tuple[Any, ...]:
         """Resolve the grid to sweep: explicit override, else the default."""
@@ -330,6 +343,37 @@ def _run_windows(sub_block: str, field_name: str) -> RunFn:
     return run
 
 
+def _run_fit(sub_block: str, field_name: str) -> RunFn:
+    """Re-run Stage 5 fitting with a single ``StageFitSettings`` field set.
+
+    Builds a one-field settings bundle (the preset layer) and drives
+    ``fit_peaks_impl`` so any fit knob is sweepable uniformly. The working copy's
+    window plan has already been reduced to a representative subset by the knob's
+    ``prepare`` hook, so each call fits only those windows.
+    """
+
+    def run(path: Path, value: Any) -> Any:
+        from ftmwpipeline._internal.stage5_impl import fit_peaks_impl  # lazy
+        from ftmwpipeline.core import stage_fit_settings as sfs
+
+        sub_cls = {
+            "tau": sfs.TauSubSettings,
+            "seeder": sfs.SeederSubSettings,
+            "conservative": sfs.ConservativeSubSettings,
+            "penalties": sfs.PenaltySubSettings,
+            "rescue": sfs.RescueSubSettings,
+            "thaw": sfs.ThawSubSettings,
+            "spur": sfs.SpurSubSettings,
+            "baseline": sfs.BaselineSubSettings,
+        }[sub_block]
+        bundle = sfs.StageFitSettings(
+            **{sub_block: sub_cls(**{field_name: value})}
+        )
+        return fit_peaks_impl(str(path), settings=bundle)
+
+    return run
+
+
 # ---------------------------------------------------------------------------
 # Metric reducers
 # ---------------------------------------------------------------------------
@@ -454,6 +498,52 @@ def _metric_windows(result: Any) -> Dict[str, Any]:
         "width_p50": round(float(np.median(widths)), 3),
         "width_p95": round(float(np.percentile(widths, 95)), 3),
         "width_max": round(float(widths.max()), 3),
+    }
+
+
+def _metric_fit(result: Any) -> Dict[str, Any]:
+    """Reduce a Stage 5 fit to the fit-quality lens: the SNR-normalised
+    shape-error fraction ε (and the SNR-aware fail count) as the honest quality
+    headline, the structural counts a fit knob actually moves (peaks, free-τ
+    windows, median freq uncertainty), and raw χ²ᵣ kept only as a de-emphasised
+    secondary so the SNR² floor never masquerades as misfit.
+    """
+    import numpy as np
+
+    from .fit_support import window_fit_quality
+
+    fit = result["fit"]
+    rows = [window_fit_quality(wf) for wf in fit.window_fits]
+    eps = np.asarray([r["epsilon"] for r in rows], dtype=float)
+    chi2r = np.asarray(
+        [r["chi2r"] for r in rows if np.isfinite(r["chi2r"])], dtype=float
+    )
+    n_fail = sum(1 for r in rows if not r["passed"])
+    n_peaks = sum(r["n_peaks"] for r in rows)
+
+    n_free_tau = 0
+    sig_f = []
+    for wf in fit.window_fits:
+        tau = (wf.shared_parameters or {}).get("tau_us")
+        if tau is not None and tau.get("error") is not None:
+            n_free_tau += 1
+        for p in wf.fitted_peaks:
+            fe = getattr(p, "frequency_error", None)
+            if fe is not None and np.isfinite(fe):
+                sig_f.append(float(fe))
+
+    def pct(a: Any, q: float) -> float:
+        return round(float(np.percentile(a, q)), 5) if len(a) else 0.0
+
+    return {
+        "eps_p50": pct(eps, 50),
+        "eps_p95": pct(eps, 95),
+        "n_fail": n_fail,
+        "n_peaks": n_peaks,
+        "n_free_tau": n_free_tau,
+        "sigma_f_khz": round(float(np.median(sig_f)) * 1e3, 4) if sig_f else 0.0,
+        "chi2r_p50": round(float(np.median(chi2r)), 3) if chi2r.size else 0.0,
+        "chi2r_p95": pct(chi2r, 95),
     }
 
 
@@ -1120,6 +1210,145 @@ _window_knob(
     "max_peaks_per_window",
     "Per-window promoted-peak cap (windows over it are split).",
     "N", (8, 12, 16, 24), tier="advanced",
+)
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 fitting — requires Stage 4 (windows). Each sweep re-runs fit_peaks on
+# a working copy whose plan the ``prepare`` hook has reduced to a representative
+# window subset (top-SNR + seeded sample + frequency pins), so a value costs a
+# few tens of fits, not the whole band. This is the *fit-quality* family
+# (tau / conservative / penalties / seeder / baseline); rescue / spur / thaw get
+# their own dedicated plots. The honest quality lens is the SNR-normalised
+# shape-error fraction ε (pass ⇔ ε ≤ κ), not the SNR²-floored χ²ᵣ.
+# ---------------------------------------------------------------------------
+_FIT_COLS = (
+    "eps_p50", "eps_p95", "n_fail", "n_peaks", "n_free_tau", "sigma_f_khz",
+    "chi2r_p50", "chi2r_p95",
+)
+_FIT_SEE_ALSO = (
+    "the headline is the SNR-normalised shape-error ε (pass ⇔ ε ≤ κ=0.05), not "
+    "χ²ᵣ (which rides an SNR² floor); n_peaks / n_free_tau / sigma_f_khz track "
+    "what the knob structurally moved. Sweeps a reduced window subset — widen it "
+    "with --fit-top-snr / --fit-sample / --fit-freqs (or --fit-all)."
+)
+
+
+def _fit_knob(
+    path: str, sub_block: str, field_name: str, help_: str,
+    inst: str, grid: Tuple[Any, ...], tier: str = "primary",
+    see_also: Optional[str] = None, select_hint: Optional[str] = None,
+) -> None:
+    _register(KnobSpec(
+        path=path, stage="stage5_fitting", requires="stage4_windows",
+        help=help_, inst_sensitivity=inst, default_grid=grid,
+        run=_run_fit(sub_block, field_name), metric=_metric_fit,
+        metric_columns=_FIT_COLS, plot=plot_fit_quality, tier=tier,
+        see_also=see_also, prepare=reduce_plan_for_fit, select_hint=select_hint,
+    ))
+
+
+# Primary — the Y-rated fit-quality knobs (grids lifted from the
+# stage5-gaussian-audit probes where one exists).
+_fit_knob(
+    "stage5.tau.fit_tau_min_snr", "tau", "fit_tau_min_snr",
+    "In-window SNR above which τ is freed (the free-τ floor is the max of this "
+    "and conservative.weak_window_snr_threshold; 10 = the weak-window floor).",
+    "Y", (10.0, 25.0, 50.0, 100.0), see_also=_FIT_SEE_ALSO,
+    select_hint="snr_threshold",
+)
+_fit_knob(
+    "stage5.conservative.weak_window_snr_threshold", "conservative",
+    "weak_window_snr_threshold",
+    "In-window SNR floor for free-τ eligibility (hold τ fixed below).",
+    "Y", (5.0, 10.0, 15.0, 20.0), see_also=_FIT_SEE_ALSO,
+    select_hint="snr_threshold",
+)
+_fit_knob(
+    "stage5.baseline.edge_threshold", "baseline", "edge_threshold",
+    "S_coh threshold (max residual edge) gating the leakage-wing baseline refit.",
+    "Y", (2.5, 3.5, 5.0, 8.0), see_also=_FIT_SEE_ALSO,
+)
+
+# Advanced — tau shaping (the penalty / bounds / routing knobs).
+for _p, _f, _h, _g, _inst in (
+    ("stage5.tau.tau0_us", "tau0_us",
+     "Starting shared decay τ₀ (µs); None = runtime fallback (Stage 2b / T/3).",
+     (None, 3.0, 5.0, 8.0), "maybe"),
+    ("stage5.tau.max_decay_factor", "max_decay_factor",
+     "τ bounds multiplier: τ ∈ [τ₀/k, τ₀·k].", (3.0, 5.0, 8.0), "N"),
+    ("stage5.tau.tau_penalty_lambda", "tau_penalty_lambda",
+     "Strength of the bidirectional Gaussian prior on τ.",
+     (10.0, 50.0, 100.0), "N"),
+    ("stage5.tau.tau_penalty_n_sigma", "tau_penalty_n_sigma",
+     "τ-bound half-width in units of σ_τ from Stage 2b.", (3.0, 5.0, 8.0), "N"),
+):
+    _fit_knob(_p, "tau", _f, _h, _inst, _g, tier="advanced")
+_fit_knob(
+    "stage5.tau.per_band_tau", "tau", "per_band_tau",
+    "Route τ to per-band majorities (True) or a single band-wide τ (False).",
+    "maybe", (False, True), tier="advanced",
+)
+
+# Advanced — the conservative add-one-peak loop.
+for _p, _f, _h, _g in (
+    ("stage5.conservative.significance", "significance",
+     "F-test significance α for add-one-peak acceptance.", (0.01, 0.05, 0.1)),
+    ("stage5.conservative.max_peaks", "max_peaks",
+     "Hard cap on the final peak count per window.", (4, 8, 12)),
+    ("stage5.conservative.patience", "patience",
+     "Consecutive-rejection patience before the add loop stops.", (1, 2, 3)),
+    ("stage5.conservative.min_separation_factor", "min_separation_factor",
+     "Minimum peak separation (FWHM units; unresolvable below).",
+     (0.5, 1.0, 1.5)),
+    ("stage5.conservative.min_pair_separation_factor",
+     "min_pair_separation_factor",
+     "Post-escalation pair-separation floor (FWHM units).", (0.25, 0.5, 0.75)),
+    ("stage5.conservative.min_pair_separation_resolution_factor",
+     "min_pair_separation_resolution_factor",
+     "Resolution-referenced pair floor (1/T_active elements).",
+     (0.5, 1.0, 1.5)),
+    ("stage5.conservative.max_nfev", "max_nfev",
+     "Solver evaluation cap per window.", (1000, 2000, 4000)),
+):
+    _fit_knob(_p, "conservative", _f, _h, "N", _g, tier="advanced")
+
+# Advanced — the soft penalties.
+for _p, _f, _h, _g in (
+    ("stage5.penalties.phase_penalty_lambda", "phase_penalty_lambda",
+     "Phase-difference soft-penalty strength.", (50.0, 100.0, 200.0)),
+    ("stage5.penalties.phase_penalty_cutoff_fwhm", "phase_penalty_cutoff_fwhm",
+     "Phase-penalty range (FWHM units; zero in quadrature).", (1.0, 2.0, 3.0)),
+    ("stage5.penalties.amp_penalty_lambda", "amp_penalty_lambda",
+     "Amplitude-floor soft-penalty strength.", (5.0, 10.0, 20.0)),
+    ("stage5.penalties.amp_max_headroom", "amp_max_headroom",
+     "Hard amplitude ceiling as a multiple of 2·max_data/τ_eff_min.",
+     (2.0, 3.0, 5.0)),
+):
+    _fit_knob(_p, "penalties", _f, _h, "N", _g, tier="advanced")
+
+# Advanced — the blend-aware re-seeder.
+for _p, _f, _h, _g in (
+    ("stage5.seeder.seeder_rchi2", "seeder_rchi2",
+     "χ²ᵣ threshold that triggers the K=2/3 blend-aware re-seed.",
+     (1.2, 1.5, 2.0)),
+    ("stage5.seeder.seeder_straddle_factor", "seeder_straddle_factor",
+     "Re-seed offset spacing in line-FWHM units.", (0.5, 1.0, 1.5)),
+    ("stage5.seeder.seeder_max_k", "seeder_max_k",
+     "Maximum blend-escalation depth.", (2, 3, 4)),
+):
+    _fit_knob(_p, "seeder", _f, _h, "N", _g, tier="advanced")
+
+# Advanced — the leakage-wing baseline shape / switch.
+_fit_knob(
+    "stage5.baseline.order", "baseline", "order",
+    "Baseline polynomial order (0 = const, 1 = linear; higher overfits).",
+    "maybe", (0, 1), tier="advanced",
+)
+_fit_knob(
+    "stage5.baseline.enabled", "baseline", "enabled",
+    "Master switch for the evidence-triggered leakage-wing baseline term.",
+    "N", (False, True), tier="advanced",
 )
 
 

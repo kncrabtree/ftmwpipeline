@@ -17,6 +17,7 @@ from ftmwpipeline._internal.tuning.plots import (
     plot_peak_detection,
     plot_shape_vote,
     plot_spectra_ladder,
+    plot_fit_quality,
     plot_start_detection,
     plot_tau_trend,
     plot_window_planning,
@@ -507,6 +508,58 @@ def test_plot_window_planning_honors_explicit_zoom():
     _close(fig)
 
 
+# --- Stage 5 fit-quality adapter -------------------------------------------
+
+
+@dataclass
+class _FakeFitPeak:
+    snr: float
+
+
+@dataclass
+class _FakeFitWin:
+    freq_range: tuple
+
+
+@dataclass
+class _FakeFitWF:
+    reduced_chi2: float
+    window_id: int
+    fitted_peaks: Any
+    window: Any
+    shared_parameters: dict
+
+
+def _fit_result(specs):
+    import types
+
+    wfs = [
+        _FakeFitWF(chi2, wid, [_FakeFitPeak(snr)], _FakeFitWin(fr),
+                   {"tau_us": {"value": 4.0, "error": 0.1}})
+        for (chi2, snr, wid, fr) in specs
+    ]
+    return {"fit": types.SimpleNamespace(window_fits=wfs)}
+
+
+def test_plot_fit_quality_returns_figure():
+    r1 = _fit_result([(2.0, 30.0, 0, (35000.0, 35020.0)),
+                      (1.5, 8.0, 1, (38000.0, 38030.0))])
+    r2 = _fit_result([(8.0, 300.0, 0, (35000.0, 35020.0)),
+                      (1.4, 8.0, 1, (38000.0, 38030.0))])
+    rows = [SweepRow(10.0, {}, r1), SweepRow(50.0, {}, r2)]
+    fig = plot_fit_quality(get_knob("stage5.tau.fit_tau_min_snr"), rows, _ctx())
+    assert fig is not None
+    assert len(fig.axes) >= 3  # trend (+twin) + eps-vs-SNR + eps-vs-frequency
+    _close(fig)
+
+
+def test_plot_fit_quality_none_without_results():
+    rows = [SweepRow(10.0, {}, None)]
+    assert plot_fit_quality(
+        get_knob("stage5.tau.fit_tau_min_snr"), rows, _ctx()
+    ) is None
+
+
 def test_knob_plot_wiring():
     # the spectrum-impact knobs share the ladder; detection knobs show the curve
     assert get_knob("stage1.start_us").plot is plot_spectra_ladder
@@ -520,6 +573,9 @@ def test_knob_plot_wiring():
     # every Stage 4 knob renders the window-planning boundary-overlay view
     assert get_knob("stage4.coherence.edge_threshold").plot is plot_window_planning
     assert get_knob("stage4.leakage.tau_us").plot is plot_window_planning
+    # every Stage 5 fit-quality knob renders the eps-vs-SNR view
+    assert get_knob("stage5.tau.fit_tau_min_snr").plot is plot_fit_quality
+    assert get_knob("stage5.baseline.edge_threshold").plot is plot_fit_quality
 
 
 def test_detection_knobs_point_at_spectrum_knobs():

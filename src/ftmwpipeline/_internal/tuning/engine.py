@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO, Tuple, cast
 
+from .fit_support import FitWindowSelection
 from .registry import KnobSpec
 
 
@@ -226,6 +227,11 @@ def run_scan(
     zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
     n_zoom: Optional[int] = None,
     zoom_width_mhz: Optional[float] = None,
+    fit_top_snr: int = 3,
+    fit_sample: int = 20,
+    fit_freqs: Optional[Sequence[float]] = None,
+    fit_sample_seed: int = 0,
+    fit_all: bool = False,
     progress: Optional[Callable[[int, int, Any], None]] = None,
 ) -> SweepResult:
     """Sweep ``spec`` across ``grid`` on a working copy of ``ftmw_path``.
@@ -258,6 +264,12 @@ def run_scan(
     n_zoom, zoom_width_mhz :
         How many regions to auto-select and how wide each is, when
         ``zoom_regions`` is not given. ``None`` keeps the adapter's defaults.
+    fit_top_snr, fit_sample, fit_freqs, fit_sample_seed, fit_all :
+        Window selection for the fit knobs that carry a ``prepare`` hook
+        (Stage 5): re-fit only the ``fit_top_snr`` brightest windows plus a
+        seeded ``fit_sample`` random sample plus the windows nearest each
+        ``fit_freqs`` value, rather than the whole plan. ``fit_all`` re-fits
+        every window. Knobs without a prepare hook ignore these.
     progress :
         Optional custom callback invoked as ``progress(done, total, value)``
         after each grid value completes. Overrides the default reporter; with
@@ -269,11 +281,28 @@ def run_scan(
 
     work_dir = out / ".tune_work"
     work_dir.mkdir(parents=True, exist_ok=True)
+    values = spec.grid(grid)
     work = work_dir / f"{ftmw_path.stem}__{_safe(spec.path)}.ftmw"
     if not (reuse and work.exists()):
         shutil.copy2(ftmw_path, work)
-
-    values = spec.grid(grid)
+        # A knob may reduce/condition the working copy once before the sweep
+        # (Stage 5 fit knobs trim the window plan to a representative subset so
+        # each value re-fits only a handful of windows). It gets the knob spec
+        # and resolved grid so SNR-threshold knobs can straddle-sample. Runs only
+        # on a fresh copy — a reused working file was already prepared.
+        if spec.prepare is not None:
+            spec.prepare(
+                work,
+                FitWindowSelection(
+                    top_snr=fit_top_snr,
+                    sample=fit_sample,
+                    freqs=tuple(fit_freqs) if fit_freqs else (),
+                    sample_seed=fit_sample_seed,
+                    fit_all=fit_all,
+                ),
+                spec,
+                values,
+            )
     reporter = progress
     if reporter is None and not quiet:
         reporter = _make_default_reporter(spec, values)
@@ -329,6 +358,11 @@ def run_scan_batch(
     zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
     n_zoom: Optional[int] = None,
     zoom_width_mhz: Optional[float] = None,
+    fit_top_snr: int = 3,
+    fit_sample: int = 20,
+    fit_freqs: Optional[Sequence[float]] = None,
+    fit_sample_seed: int = 0,
+    fit_all: bool = False,
 ) -> List[BatchItem]:
     """Sweep every knob in ``specs`` sequentially, each on its default grid.
 
@@ -352,6 +386,11 @@ def run_scan_batch(
                 zoom_regions=zoom_regions,
                 n_zoom=n_zoom,
                 zoom_width_mhz=zoom_width_mhz,
+                fit_top_snr=fit_top_snr,
+                fit_sample=fit_sample,
+                fit_freqs=fit_freqs,
+                fit_sample_seed=fit_sample_seed,
+                fit_all=fit_all,
             )
             items.append(BatchItem(knob=spec.path, result=result))
         except Exception as e:  # one knob's failure must not abort the batch

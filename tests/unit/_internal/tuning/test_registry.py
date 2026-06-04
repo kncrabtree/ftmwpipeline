@@ -138,6 +138,38 @@ def test_stage4_leakage_tau_grid_includes_boxcar():
     assert None in spec.default_grid
 
 
+def test_stage5_paths_resolve_to_settings_fields():
+    from dataclasses import fields
+
+    from ftmwpipeline.core import stage_fit_settings as sfs
+
+    tmpl = sfs.StageFitSettings()
+    stage5 = list_knobs("stage5", include_advanced=True)
+    assert stage5
+    for spec in stage5:
+        assert spec.stage == "stage5_fitting"
+        assert spec.requires == "stage4_windows"
+        # every fit knob carries the window-reduction prepare hook
+        assert spec.prepare is not None
+        _, sub, field = spec.path.split(".")
+        names = {f.name for f in fields(getattr(tmpl, sub))}
+        assert field in names, spec.path
+        assert spec.metric_columns == (
+            "eps_p50", "eps_p95", "n_fail", "n_peaks", "n_free_tau",
+            "sigma_f_khz", "chi2r_p50", "chi2r_p95",
+        )
+
+
+def test_stage5_snr_threshold_knobs_hinted():
+    # the two window-SNR-gated knobs carry the straddle-sampling hint; others not
+    assert get_knob("stage5.tau.fit_tau_min_snr").select_hint == "snr_threshold"
+    assert (
+        get_knob("stage5.conservative.weak_window_snr_threshold").select_hint
+        == "snr_threshold"
+    )
+    assert get_knob("stage5.baseline.edge_threshold").select_hint is None
+
+
 def test_stage4_primary_tier_covers_y_rated_knobs():
     primary = {s.path for s in list_knobs("stage4")}  # default = primary only
     # leakage.tau_us is Y-rated but demoted to advanced: the boxcar default only

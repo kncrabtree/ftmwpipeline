@@ -269,8 +269,9 @@ is proven on a low-churn stage, then fanned out.
 4. **Stage 3 -> 4 -> 5.** Heaviest; register the tracked `probe_<knob>.py`
    grids/metrics/plots into the registry (they already encode grid + metric +
    plot). Reuse the `<stage>-gaussian-audit/harness.py` builders. Follow the
-   conventions in §Lessons for the fan-out. **Stages 3 and 4 done** (see
-   §Implementation status); Stage 5 next.
+   conventions in §Lessons for the fan-out. **Stages 3 and 4 done; Stage 5
+   fit-quality family done** (see §Implementation status); Stage 5 rescue / spur
+   / thaw families next.
 5. **Preset emission** (resolve the deferred decision) once the surface is felt;
    and the resolved-settings inspection verb (issue #28).
 6. **Gap-fill** any remaining no-tool knobs as registry entries.
@@ -421,19 +422,54 @@ n_fixed / n_dep / n_split` + the `width_p50/p95/max` distribution) and one plot
   windows — the band-wide overlay reads as a forest of edges; it is most legible
   on sparser instruments. The zoom rows carry the per-region detail regardless.)*
 
+**Knob coverage — Stage 5 fit-quality family done (tiered).** Stage 5 has
+*heterogeneous* knobs (rescue adds peaks, spur masks bins, thaw moves
+boundaries, τ frees linewidth), so unlike Stages 3–4 it gets **knob-family
+plots** rather than one shared plot. The first family — *fit quality*
+(`tau` / `conservative` / `penalties` / `seeder` / `baseline`, 24 knobs, 3
+primary: `tau.fit_tau_min_snr`, `conservative.weak_window_snr_threshold`,
+`baseline.edge_threshold`) — is registered as `stage5.<sub_block>.<field>`, all
+driving `fit_peaks_impl` through a one-field bundle (`_run_fit`),
+`requires="stage4_windows"`.
+- **Metric (`_metric_fit`):** the honest quality lens is the SNR-normalised
+  shape-error fraction **ε** (`eps_p50/p95`) and the SNR-aware fail count
+  (`n_fail`), reusing the shipped `fitting.validation`
+  (`shape_error_fraction` / `snr_aware_chi2_pass`, κ=0.05, F=3.0) so the tuning
+  surface and the Stage 5 health report agree — *not* raw χ²ᵣ, which rides an
+  SNR² floor and is kept only as a de-emphasised secondary (`chi2r_p50/p95`).
+  The category columns `n_peaks` / `n_free_tau` / `sigma_f_khz` track what a fit
+  knob structurally moves.
+- **Plot (`plot_fit_quality`):** (1) an ε-percentile + fail/peak trend; (2) the
+  headline **ε-vs-SNR scatter** coloured by swept value with the pass boundary
+  drawn as the flat line `ε = κ` (the gate `χ²ᵣ ≤ F+(κ·SNR)²` *is* `ε ≤ κ`); (3)
+  an ε-vs-frequency strip showing where on the band the knob moved the misfit.
+- **Window selection (the Stage 5 cost-control, `_internal/tuning/fit_support.py`):**
+  a fit sweep would re-fit every window per value (~300 on 2638), so a knob's
+  `prepare` hook reduces the plan *once* on the working copy to a representative
+  subset — the `fit_top_snr` (3) brightest + a seeded `fit_sample` (20) sample +
+  the windows nearest each `fit_freqs` value — closed over joint-fit dependency
+  components (out-of-subset fixed contributors stay frozen). For SNR-threshold
+  knobs (`select_hint="snr_threshold"`) the sample straddles the grid's SNR range
+  so the knob is guaranteed to bite instead of looking inert from a coverage gap.
+  Exposed on every surface as `--fit-top-snr` / `--fit-sample` / `--fit-freqs` /
+  `--fit-sample-seed` / `--fit-all`. *(Finding: several Stage 5 knobs read flat
+  on 2638 — first-try defaults / low leverage; and `fit_tau_min_snr` was orphaned
+  until wired — see the §Lessons note.)*
+
 Remaining:
 
-- **Stage 5 knobs** (sequencing step 4): lift the tracked
-  `probe_<knob>.py` grids/metrics/plots into registry entries, reusing the
-  `stage5-gaussian-audit/harness.py` builders. Stage 5 sweeps re-run
-  `fit_peaks` per value — keep grids tight, lean on `--reuse`, and test against
-  the small dependency-free-windows fixture. Apply the §Lessons conventions.
+- **Stage 5 rescue / spur / thaw families** (sequencing step 4): the dedicated
+  `plot_rescue` (added/pruned residual peaks), `plot_spur` (masked bins), and
+  `plot_thaw` (boundary moves) adapters + their metrics, reusing the same
+  `_run_fit` runner and window selection. Keep grids tight; test against the
+  small dependency-free-windows fixture.
 - **Preset emission** (deferred — see §Open decisions 1) and the resolved-settings
   inspection verb (issue **#28**): a `tune settings` view of resolved per-knob
   values + provenance (`.ftmw`/`.yml`/default), reusing the registry walk +
   selector + tiering.
-- **Manual validation:** the Stage 0/1/2/2b/3/4 knobs await a user drive-through
-  on real data to confirm each metric/plot before they are relied on.
+- **Manual validation:** the Stage 0/1/2/2b/3/4 knobs and the Stage 5
+  fit-quality family await a user drive-through on real data to confirm each
+  metric/plot before they are relied on.
 
 ## Lessons / conventions for the Stage 3→5 fan-out
 
@@ -461,6 +497,14 @@ Patterns proven on Stages 0–2b that the Stage 3→5 registration should follow
   are reachable via `settings=`/`preset=` but are not registered as scalar sweeps.
 - **Batch + grouping make review tractable.** `tune scan-all stage3` will sweep a
   whole stage in one pass; lean on it (and `--reuse`) for the heavy Stage 5 grids.
+- **A flat sweep can mean a dead knob, not a robust default.** The Stage 5
+  fit-quality sweep surfaced `fit_tau_min_snr` reading completely flat — the knob
+  was orphaned (resolved + documented but consumed nowhere; the live free-τ gate
+  was `weak_window_snr_threshold`). The tuning surface is a cheap audit for this:
+  when a Y-rated knob is invariant across its whole grid (and the knob-aware
+  straddle confirms its regime is covered), suspect the wiring before trusting
+  the default. (Fixed: `fit_tau_min_snr` is now the τ-specific floor composed
+  with the weak-window floor.)
 
 ## Test plan
 
