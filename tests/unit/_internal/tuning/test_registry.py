@@ -140,10 +140,13 @@ def test_stage4_leakage_tau_grid_includes_boxcar():
 
 def test_stage4_primary_tier_covers_y_rated_knobs():
     primary = {s.path for s in list_knobs("stage4")}  # default = primary only
+    # leakage.tau_us is Y-rated but demoted to advanced: the boxcar default only
+    # widens windows (split proposals absorb it), so it is a low-leverage control
+    # whose fate is deferred to the cross-fixture audit (issue #6).
     assert primary == {
         "stage4.coherence.edge_threshold",
         "stage4.clustering.max_window_width_mhz",
         "stage4.contributor.magnitude_attachment_threshold",
         "stage4.contributor.min_freeze_snr",
-        "stage4.leakage.tau_us",
     }
+    assert get_knob("stage4.leakage.tau_us").tier == "advanced"

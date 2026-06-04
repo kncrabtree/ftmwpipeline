@@ -1086,14 +1086,19 @@ _window_knob(
     "SNR floor for fixed-contributor freeze-eligibility (below = thaw candidate).",
     "Y", (20.0, 35.0, 50.0, 75.0, 100.0), see_also=_WINDOW_SEE_ALSO,
 )
+
+# Advanced — the leakage-skirt decay, the coherence band scales, and the
+# isolated-peak / per-window caps. ``leakage.tau_us`` is demoted from primary:
+# the boxcar default only widens windows (absorbed downstream by split
+# proposals), so it is a low-leverage control whose fate — keep, auto-feed the
+# Stage 2b τ, or remove — is deferred to the cross-fixture audit (issue #6).
 _window_knob(
     "stage4.leakage.tau_us", "leakage", "tau_us",
     "Decay constant (µs) for the analytic leakage-skirt envelope; None = boxcar "
-    "(undamped) limit. Reach the Stage 2b τ anchors via settings=/preset=.",
-    "Y", (None, 3.0, 6.0, 12.0), see_also=_WINDOW_SEE_ALSO,
+    "(undamped) limit. A single band-wide scalar — Stage 2b τ is not auto-fed "
+    "here; set it explicitly via the grid / settings= / preset=.",
+    "Y", (None, 3.0, 6.0, 12.0), tier="advanced", see_also=_WINDOW_SEE_ALSO,
 )
-
-# Advanced — coherence band scales and the isolated-peak / per-window caps.
 _window_knob(
     "stage4.coherence.edge_m", "coherence", "edge_m",
     "Band width (bins) for the rolling complex-edge coherence statistic.",

@@ -391,12 +391,16 @@ n_fixed / n_dep / n_split` + the `width_p50/p95/max` distribution) and one plot
 - **Primary** (the Y-rated partition-shaping knobs, grids lifted from the
   `stage4-gaussian-audit` probes): `coherence.edge_threshold`,
   `clustering.max_window_width_mhz`,
-  `contributor.magnitude_attachment_threshold`, `contributor.min_freeze_snr`
-  (the no-tool gap, filled with a sensible grid), and `leakage.tau_us` — whose
-  grid *includes the `None` boxcar limit* as a swept value (the Stage 2b τ
-  anchors stay reachable via `settings=`/`preset=`, not a static grid).
-- **Advanced**: the coherence band scales (`coherence.edge_m` / `trim_m`) and
-  the isolated-peak / per-window caps (`clustering.min_window_half_width_mhz` /
+  `contributor.magnitude_attachment_threshold`, and `contributor.min_freeze_snr`
+  (the no-tool gap, filled with a sensible grid).
+- **Advanced**: `leakage.tau_us` — Y-rated but demoted, since the boxcar default
+  (its `None` grid value) only widens windows and the split proposals absorb
+  that downstream; it is a single band-wide scalar (Stage 2b τ is *not* auto-fed
+  into Stage 4 — the resolver's recommended layer is reserved-but-unwired), so it
+  is low-leverage and its fate (keep / wire the Stage 2b feed / remove in favour
+  of other controls) is deferred to the cross-fixture audit (issue #6). Plus the
+  coherence band scales (`coherence.edge_m` / `trim_m`) and the isolated-peak /
+  per-window caps (`clustering.min_window_half_width_mhz` /
   `max_peaks_per_window`).
 - **Plot:** the active FT is invariant across the sweep, so the figure stacks
   (1) a plan-count trend (`n_windows` / `n_hard` / `n_fixed` / `n_split` vs the
