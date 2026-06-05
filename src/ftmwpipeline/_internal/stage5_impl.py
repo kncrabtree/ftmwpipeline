@@ -420,7 +420,7 @@ def fit_peaks_impl(
     # --- Resolve parameters via the StageFitSettings chain ------------------
     # Legacy per-knob kwargs are bundled into an explicit StageFitSettings;
     # any caller-supplied ``settings`` instance enters as the preset layer.
-    # ``resolve()`` walks explicit > preset > persisted > recommended >
+    # ``resolve()`` walks explicit > persisted > preset > recommended >
     # hard default; the resolved instance is the single source of truth for
     # every downstream call site below. ``_HARD_DEFAULTS`` mirrors each
     # ``DEFAULT_*`` constant in :mod:`ftmwpipeline.fitting`, so an empty

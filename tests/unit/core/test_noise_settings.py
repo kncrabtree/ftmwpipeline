@@ -78,12 +78,12 @@ class TestResolve:
         )
         assert merged.smoothing_mhz == 100.0
 
-    def test_preset_beats_persisted(self) -> None:
+    def test_persisted_beats_preset(self) -> None:
         merged = resolve(
             preset=NoiseSettings(smoothing_mhz=200.0),
             persisted=NoiseSettings(smoothing_mhz=400.0),
         )
-        assert merged.smoothing_mhz == 200.0
+        assert merged.smoothing_mhz == 400.0
 
     def test_persisted_beats_recommended(self) -> None:
         merged = resolve(
@@ -103,7 +103,7 @@ class TestResolve:
         recommended = NoiseSettings(smoothing_mhz=400.0)
         merged = resolve(explicit, preset, persisted, recommended)
         assert merged.window_mhz == 40.0  # explicit
-        assert merged.line_k == 6.0  # preset
+        assert merged.line_k == 4.0  # persisted (outranks preset)
         assert merged.pedestal_mhz == 40.0  # persisted (no higher layer set it)
         assert merged.smoothing_mhz == 400.0  # recommended
         assert merged.n_iter == 3  # hard default

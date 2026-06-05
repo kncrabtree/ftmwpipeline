@@ -44,35 +44,39 @@ and reproducibility":
 explicit override  >  persisted (.ftmw)  >  preset (.yml)  >  recommended  >  hard default
 ```
 
-**This is a change.** The current per-stage `resolve()` in `core/*_settings.py`
-orders the layers `explicit > preset > persisted > recommended > default` — i.e.
-the `.yml` preset **overrides** the persisted `.ftmw` value, the opposite of the
-above. That ordering breaks the Principle-4 reproducibility paradigm: a `.ftmw`
-must be a self-contained, shareable artifact that reproduces identically from the
-file alone, so a `.yml` a recipient happens to have (possibly tuned for a
-different instrument) must never silently override a setting the file persists.
-The corrected order makes the preset a *seed* for fields the file has not fixed,
+**This was a change.** The Stages 2–5 per-stage `resolve()` in
+`core/*_settings.py` previously ordered the layers
+`explicit > preset > persisted > recommended > default` — i.e. the `.yml` preset
+**overrode** the persisted `.ftmw` value, the opposite of the above. That
+ordering broke the Principle-4 reproducibility paradigm: a `.ftmw` must be a
+self-contained, shareable artifact that reproduces identically from the file
+alone, so a `.yml` a recipient happens to have (possibly tuned for a different
+instrument) must never silently override a setting the file persists. The
+corrected order makes the preset a *seed* for fields the file has not fixed,
 never an override of fields it has — and restores consistency with the Stage 1
 canonical-settings order (`explicit > persisted > recommended`) that
 [`processing-settings-persistence.md`](processing-settings-persistence.md) and
 SERIALIZATION_STRATEGY already specify (the preset layer was inserted *above*
 persisted only later, in the Stages 2–5 backfill).
 
-Logged as **divergence D11** in [`../ROADMAP.md`](../ROADMAP.md). Resolving it is
-a **prerequisite task of this verb** (a verb that faithfully reports an
-unreproducible precedence would just document the bug):
+Logged as **divergence D11** in [`../ROADMAP.md`](../ROADMAP.md) and **resolved**
+— the layer flip was the prerequisite task of this verb (a verb that faithfully
+reported an unreproducible precedence would just document the bug). Done:
 
-- Flip the layer order in every stage `resolve()` (`noise_settings`,
+- Flipped the layer order in every stage `resolve()` (`noise_settings`,
   `tau_calibration_settings`, `peak_detection_settings`,
   `window_planning_settings`, `stage_fit_settings`) to put `persisted` above
-  `preset`. The per-field merge is unchanged; only the layer tuple order moves.
-- Re-baseline / re-run the settings-propagation and cross-interface integration
-  tests; add a regression test that a persisted value wins over a conflicting
-  preset for at least one field per stage.
-- Reconcile the now-stale precedence statements in
+  `preset`. The per-field merge is unchanged; only the layer tuple order moved.
+  The explicit per-knob layer still outranks persisted, so a one-off override
+  remains available without rewriting the file.
+- Re-baselined the settings-propagation and cross-interface integration tests;
+  each stage's unit suite now asserts a persisted value wins over a conflicting
+  preset (the `test_persisted_beats_preset` regression).
+- Reconciled the now-stale precedence statements in
   [`settings-backfill.md`](settings-backfill.md),
-  [`stage5-fit-settings.md`](stage5-fit-settings.md), and the matching ROADMAP
-  table descriptions (they read `explicit > preset > persisted > …`).
+  [`stage5-fit-settings.md`](stage5-fit-settings.md),
+  [`companion-tuning-tools.md`](companion-tuning-tools.md), and the matching
+  ROADMAP table descriptions.
 
 ## Source of truth: the settings dataclasses, not the knob registry
 
@@ -209,10 +213,10 @@ three surfaces:
 
 ## Sequencing
 
-1. **Precedence flip (D11).** Reorder the layers in every stage `resolve()`;
-   re-baseline tests; add the persisted-beats-preset regression. Land first — it
-   is a spec-conformance fix independent of the verb and unblocks honest
-   provenance.
+1. **Precedence flip (D11). — Done.** Reordered the layers in every stage
+   `resolve()`; re-baselined tests; added the persisted-beats-preset regression.
+   Landed first as a spec-conformance fix independent of the verb; it unblocks
+   honest provenance.
 2. **Field-enumeration + resolution core** in `_internal/tuning` returning
    structured rows with provenance.
 3. **Presentation + dual-interface** (`settings show` across CLI / Pipeline /

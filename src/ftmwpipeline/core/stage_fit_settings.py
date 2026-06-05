@@ -6,7 +6,7 @@ parameters across every surface:
 
 * the public API signatures (``Pipeline.fit_peaks`` / ``api.fit_peaks``),
 * the CLI ``--preset`` flag plus the existing per-knob flags,
-* the resolution chain ``explicit > preset > persisted > recommended >
+* the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
 * the persisted canonical record in ``processing_parameters/stage5_fit``,
 * the YAML preset interchange format.
@@ -367,13 +367,15 @@ def resolve(
 ) -> StageFitSettings:
     """Merge the four layers by precedence into a resolved ``StageFitSettings``.
 
-    Per-field precedence: ``explicit > preset > persisted > recommended``,
+    Per-field precedence: ``explicit > persisted > preset > recommended``,
     then any remaining ``None`` field falls back to the matching value in
-    :data:`_HARD_DEFAULTS`. The shape discriminator is resolved separately:
-    the first non-``None`` ``ShapeSpec`` across the layers wins, then the
-    ``LORENTZIAN`` hard default.
+    :data:`_HARD_DEFAULTS`. A value persisted in the ``.ftmw`` outranks a
+    ``.yml`` preset, so the preset only seeds fields the file has not fixed
+    and a shared experiment reproduces from the file alone. The shape
+    discriminator is resolved separately: the first non-``None`` ``ShapeSpec``
+    across the layers wins, then the ``LORENTZIAN`` hard default.
     """
-    layers = (explicit, preset, persisted, recommended)
+    layers = (explicit, persisted, preset, recommended)
     shape_resolved: Optional[ShapeSpec] = None
     for layer in layers:
         if layer is not None and layer.shape is not None:

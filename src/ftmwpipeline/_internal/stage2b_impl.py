@@ -133,7 +133,7 @@ def calibrate_tau_impl(
     needed but is the natural noise reference for downstream consistency).
 
     Parameters left as ``None`` fall through the resolution chain
-    (``explicit > preset > persisted > recommended > hard default``); the
+    (``explicit > persisted > preset > recommended > hard default``); the
     resolved settings are stamped to ``processing_parameters/stage2b_tau``
     so a follow-up no-kwargs call on the same file inherits them. Pass
     ``settings=`` to drive the calibration from a Python dataclass, or

@@ -109,13 +109,13 @@ class TestResolve:
         merged = resolve(explicit=explicit, preset=preset)
         assert merged.stft.n_seg == 16
 
-    def test_preset_beats_persisted(self) -> None:
+    def test_persisted_beats_preset(self) -> None:
         preset = TauCalibrationSettings()
         preset.stft.n_seg = 8
         persisted = TauCalibrationSettings()
         persisted.stft.n_seg = 4
         merged = resolve(preset=preset, persisted=persisted)
-        assert merged.stft.n_seg == 8
+        assert merged.stft.n_seg == 4
 
     def test_persisted_beats_recommended(self) -> None:
         persisted = TauCalibrationSettings()
@@ -132,7 +132,7 @@ class TestResolve:
         assert merged.stft.n_seg == 20
 
     def test_full_precedence_chain(self) -> None:
-        """explicit > preset > persisted > recommended > hard default, per field."""
+        """explicit > persisted > preset > recommended > hard default, per field."""
         explicit = TauCalibrationSettings()
         explicit.stft.n_seg = 1
         preset = TauCalibrationSettings()
@@ -148,8 +148,8 @@ class TestResolve:
         merged = resolve(explicit, preset, persisted, recommended)
         # explicit wins for n_seg
         assert merged.stft.n_seg == 1
-        # preset wins for polish_snr_cap
-        assert merged.polish.polish_snr_cap == 12.0
+        # persisted wins for polish_snr_cap (outranks preset)
+        assert merged.polish.polish_snr_cap == 6.0
         # persisted wins for gaussian.snr_min (preset has no value)
         assert merged.gaussian.snr_min == 30.0
         # recommended wins for recommendation.pure_margin_threshold

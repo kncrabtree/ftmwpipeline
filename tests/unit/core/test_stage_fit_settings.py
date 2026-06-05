@@ -122,13 +122,13 @@ class TestResolve:
         merged = resolve(explicit=explicit, preset=preset)
         assert merged.tau.max_decay_factor == 2.0
 
-    def test_preset_beats_persisted(self) -> None:
+    def test_persisted_beats_preset(self) -> None:
         preset = StageFitSettings()
         preset.tau.max_decay_factor = 3.0
         persisted = StageFitSettings()
         persisted.tau.max_decay_factor = 4.0
         merged = resolve(preset=preset, persisted=persisted)
-        assert merged.tau.max_decay_factor == 3.0
+        assert merged.tau.max_decay_factor == 4.0
 
     def test_persisted_beats_recommended(self) -> None:
         persisted = StageFitSettings()
@@ -145,7 +145,7 @@ class TestResolve:
         assert merged.tau.max_decay_factor == 7.0
 
     def test_full_precedence_chain(self) -> None:
-        """explicit > preset > persisted > recommended > hard default, per field."""
+        """explicit > persisted > preset > recommended > hard default, per field."""
         explicit = StageFitSettings()
         explicit.tau.max_decay_factor = 1.0
         preset = StageFitSettings()
@@ -162,8 +162,8 @@ class TestResolve:
         merged = resolve(explicit, preset, persisted, recommended)
         # explicit wins for max_decay_factor
         assert merged.tau.max_decay_factor == 1.0
-        # preset wins for max_peaks
-        assert merged.conservative.max_peaks == 6
+        # persisted wins for max_peaks (outranks preset)
+        assert merged.conservative.max_peaks == 7
         # persisted wins for rescue.max_rounds (preset has no value)
         assert merged.rescue.max_rounds == 4
         # recommended wins for thaw.max_thaw_rounds

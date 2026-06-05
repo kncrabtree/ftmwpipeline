@@ -80,13 +80,13 @@ class TestResolve:
         merged = resolve(explicit=explicit, preset=preset)
         assert merged.coherence.edge_m == 128
 
-    def test_preset_beats_persisted(self) -> None:
+    def test_persisted_beats_preset(self) -> None:
         preset = WindowPlanningSettings()
         preset.clustering.max_window_width_mhz = 25.0
         persisted = WindowPlanningSettings()
         persisted.clustering.max_window_width_mhz = 60.0
         merged = resolve(preset=preset, persisted=persisted)
-        assert merged.clustering.max_window_width_mhz == 25.0
+        assert merged.clustering.max_window_width_mhz == 60.0
 
     def test_persisted_beats_recommended(self) -> None:
         persisted = WindowPlanningSettings()
@@ -124,8 +124,8 @@ class TestResolve:
         merged = resolve(explicit, preset, persisted, recommended)
         # explicit wins for edge_m
         assert merged.coherence.edge_m == 128
-        # preset wins for max_window_width_mhz
-        assert merged.clustering.max_window_width_mhz == 25.0
+        # persisted wins for max_window_width_mhz (outranks preset)
+        assert merged.clustering.max_window_width_mhz == 60.0
         # persisted wins for min_freeze_snr
         assert merged.contributor.min_freeze_snr == 40.0
         # recommended wins for tau_us
