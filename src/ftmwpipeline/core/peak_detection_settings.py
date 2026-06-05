@@ -7,7 +7,7 @@ parameters across every surface:
 * the public API signatures (``Pipeline.detect_peaks`` /
   ``ftmwpipeline.api.detect_peaks``),
 * the CLI ``--preset`` flag plus the existing per-knob flags,
-* the resolution chain ``explicit > preset > persisted > recommended >
+* the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
 * the persisted canonical record in ``processing_parameters/stage3_peaks``,
 * the YAML preset interchange format.
@@ -263,13 +263,15 @@ def resolve(
 ) -> PeakDetectionSettings:
     """Merge the four layers by precedence into a resolved ``PeakDetectionSettings``.
 
-    Per-field precedence: ``explicit > preset > persisted > recommended``,
+    Per-field precedence: ``explicit > persisted > preset > recommended``,
     then any remaining ``None`` field falls back to the matching value in
-    :data:`_HARD_DEFAULTS`. The ``recommended`` layer is reserved for a
-    future upstream recommender; Stage 3 call sites currently pass
-    ``None`` there.
+    :data:`_HARD_DEFAULTS`. A value persisted in the ``.ftmw`` outranks a
+    ``.yml`` preset, so the preset only seeds fields the file has not fixed
+    and a shared experiment reproduces from the file alone. The
+    ``recommended`` layer is reserved for a future upstream recommender;
+    Stage 3 call sites currently pass ``None`` there.
     """
-    layers = (explicit, preset, persisted, recommended)
+    layers = (explicit, persisted, preset, recommended)
     merged = PeakDetectionSettings()
     for sub_name in _SUB_NAMES:
         setattr(merged, sub_name, _resolve_sub(sub_name, *layers))

@@ -488,7 +488,7 @@ def detect_peaks_impl(
     positions the primary pass finds, never any reported amplitude or SNR.
 
     ``settings`` / ``preset`` populate the same layer of the four-layer
-    resolution chain (``explicit > preset > persisted > recommended``);
+    resolution chain (``explicit > persisted > preset > recommended``);
     passing both raises ``ValueError``. Knobs beyond the legacy per-knob
     signature -- ``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
     ``detection_zpf``, ``gap_active_zpf``, ``primary_leakage_floor_k``,

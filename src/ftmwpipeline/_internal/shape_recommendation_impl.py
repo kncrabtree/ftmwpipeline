@@ -134,7 +134,7 @@ def recommend_shape_impl(
     automatically as its *recommended* layer.
 
     Parameters left as ``None`` fall through the resolution chain
-    (``explicit > preset > persisted > recommended > hard default``); the
+    (``explicit > persisted > preset > recommended > hard default``); the
     resolved settings are stamped to
     ``processing_parameters/stage2b_tau`` so a follow-up no-kwargs call
     inherits the same recipe. ``settings=`` and ``preset=`` are mutually

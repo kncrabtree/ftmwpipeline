@@ -7,7 +7,7 @@ across every surface:
 * the public API signatures (``Pipeline.estimate_noise`` /
   ``ftmwpipeline.api.estimate_noise``),
 * the CLI ``--preset`` flag plus the existing per-knob flags,
-* the resolution chain ``explicit > preset > persisted > recommended >
+* the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
 * the persisted canonical record in ``processing_parameters/stage2_noise``,
 * the YAML preset interchange format.
@@ -108,13 +108,15 @@ def resolve(
 ) -> NoiseSettings:
     """Merge the four layers by precedence into a resolved ``NoiseSettings``.
 
-    Per-field precedence: ``explicit > preset > persisted > recommended``,
+    Per-field precedence: ``explicit > persisted > preset > recommended``,
     then any remaining ``None`` field falls back to the matching value in
-    :data:`_HARD_DEFAULTS`. The ``recommended`` layer is reserved for a
-    future upstream recommender; Stage 2 call sites currently pass
-    ``None`` there.
+    :data:`_HARD_DEFAULTS`. A value persisted in the ``.ftmw`` outranks a
+    ``.yml`` preset, so the preset only seeds fields the file has not fixed
+    and a shared experiment reproduces from the file alone. The
+    ``recommended`` layer is reserved for a future upstream recommender;
+    Stage 2 call sites currently pass ``None`` there.
     """
-    layers = (explicit, preset, persisted, recommended)
+    layers = (explicit, persisted, preset, recommended)
     merged = NoiseSettings()
     for f in fields(NoiseSettings):
         value = _first_set_field(f.name, *layers)

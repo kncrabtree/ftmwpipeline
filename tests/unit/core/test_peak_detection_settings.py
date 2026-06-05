@@ -84,13 +84,13 @@ class TestResolve:
         merged = resolve(explicit=explicit, preset=preset)
         assert merged.promotion.min_snr == 5.0
 
-    def test_preset_beats_persisted(self) -> None:
+    def test_persisted_beats_preset(self) -> None:
         preset = PeakDetectionSettings()
         preset.savgol.sg_window = 13
         persisted = PeakDetectionSettings()
         persisted.savgol.sg_window = 21
         merged = resolve(preset=preset, persisted=persisted)
-        assert merged.savgol.sg_window == 13
+        assert merged.savgol.sg_window == 21
 
     def test_persisted_beats_recommended(self) -> None:
         persisted = PeakDetectionSettings()
@@ -121,8 +121,8 @@ class TestResolve:
         merged = resolve(explicit, preset, persisted, recommended)
         # explicit wins for min_snr
         assert merged.promotion.min_snr == 7.0
-        # preset wins for sg_window
-        assert merged.savgol.sg_window == 15
+        # persisted wins for sg_window (outranks preset)
+        assert merged.savgol.sg_window == 9
         # persisted wins for primary_window
         assert merged.primary_pass.primary_window == "blackman"
         # recommended wins for gap_active_zpf

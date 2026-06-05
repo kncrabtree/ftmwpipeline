@@ -8,7 +8,7 @@ parameters across every surface:
   ``Pipeline.calibrate_tau_G`` / ``Pipeline.recommend_shape`` and the
   matching ``ftmwpipeline.api`` functions),
 * the CLI ``--preset`` flag plus the existing per-knob flags,
-* the resolution chain ``explicit > preset > persisted > recommended >
+* the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
 * the persisted canonical record in ``processing_parameters/stage2b_tau``,
 * the YAML preset interchange format.
@@ -282,14 +282,16 @@ def resolve(
 ) -> TauCalibrationSettings:
     """Merge the four layers by precedence into a resolved ``TauCalibrationSettings``.
 
-    Per-field precedence: ``explicit > preset > persisted > recommended``,
+    Per-field precedence: ``explicit > persisted > preset > recommended``,
     then any remaining ``None`` field falls back to the matching value in
-    :data:`_HARD_DEFAULTS`. The ``recommended`` layer is reserved for a
-    future upstream recommender; it is currently always passed ``None``
-    by Stage 2b call sites, and the slot is kept here so the resolver
-    shape stays uniform with Stage 5's.
+    :data:`_HARD_DEFAULTS`. A value persisted in the ``.ftmw`` outranks a
+    ``.yml`` preset, so the preset only seeds fields the file has not fixed
+    and a shared experiment reproduces from the file alone. The
+    ``recommended`` layer is reserved for a future upstream recommender; it
+    is currently always passed ``None`` by Stage 2b call sites, and the slot
+    is kept here so the resolver shape stays uniform with Stage 5's.
     """
-    layers = (explicit, preset, persisted, recommended)
+    layers = (explicit, persisted, preset, recommended)
     merged = TauCalibrationSettings()
     for sub_name in _SUB_NAMES:
         setattr(merged, sub_name, _resolve_sub(sub_name, *layers))

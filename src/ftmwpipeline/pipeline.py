@@ -683,7 +683,7 @@ class Pipeline:
         ``/stage2b_tau_calibration`` and invalidates downstream stages.
 
         Parameters left as ``None`` fall through the resolution chain
-        (``explicit > preset > persisted > recommended > hard default``);
+        (``explicit > persisted > preset > recommended > hard default``);
         pass ``settings=`` to drive the calibration from a Python
         :class:`TauCalibrationSettings`, or ``preset=NAME_OR_PATH`` to
         load from packaged YAML. They are mutually exclusive. The
