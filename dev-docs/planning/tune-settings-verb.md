@@ -217,8 +217,18 @@ three surfaces:
    `resolve()`; re-baselined tests; added the persisted-beats-preset regression.
    Landed first as a spec-conformance fix independent of the verb; it unblocks
    honest provenance.
-2. **Field-enumeration + resolution core** in `_internal/tuning` returning
-   structured rows with provenance.
+2. **Field-enumeration + resolution core. — Done.**
+   `_internal/tuning/settings_inspection.py` exposes
+   `resolve_settings_view(file_path, selector=None, *, include_advanced=False,
+   preset=None) -> tuple[SettingRow, ...]`. It walks each stage settings
+   dataclass (`dataclasses.fields` over the class + its sub-blocks, so the
+   four unswept Stage 1 fields and `units_power` surface), runs the
+   `persisted > preset > recommended > default` chain per field, and records
+   the winning layer. `start_us` is not special-cased — it resolves through
+   the generic Stage 1 FT walk (persisted vs the `chirp_end + guard_margin`
+   recommended vs default). Rows carry registry tier/help enrichment; rows with
+   no registered knob are tiered advanced. Unit-tested in
+   `tests/unit/_internal/tuning/test_settings_inspection.py`.
 3. **Presentation + dual-interface** (`settings show` across CLI / Pipeline /
    api), reusing the `scan list` layout, selector, and tiering.
 4. **`settings set` / `settings export`** — the change-grammar (persist to
