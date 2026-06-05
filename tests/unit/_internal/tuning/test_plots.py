@@ -1,6 +1,7 @@
 """Unit tests for the registered plot adapters, using duck-typed fake stage
 results so no pipeline build is needed."""
 
+import types
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -560,6 +561,149 @@ def test_plot_fit_quality_none_without_results():
     ) is None
 
 
+# --- Stage 5 rescue / spur / thaw family adapters --------------------------
+
+
+def _rst_active_ft():
+    freqs = np.linspace(26500.0, 40000.0, 400)
+    return _FakeFT(freqs, (np.abs(np.sin(freqs / 50.0)) + 0.02).astype(complex))
+
+
+def _rst_window_fits(specs):
+    return [
+        _FakeFitWF(chi2, wid, [_FakeFitPeak(snr)], _FakeFitWin(fr),
+                   {"tau_us": {"value": 4.0, "error": 0.1}})
+        for (chi2, snr, wid, fr) in specs
+    ]
+
+
+def _rescue_round(window_id, added, pruned, accepted, chi2_before, chi2_after,
+                  cand_snrs):
+    return types.SimpleNamespace(
+        window_id=window_id, round_idx=0, n_initial_peaks=1,
+        n_rescue_added=added, n_pruned_total=pruned,
+        n_pruned_rescue_origin=pruned, n_merged=0,
+        chi2_before=chi2_before, chi2_after=chi2_after,
+        tau_us_before=4.0, tau_us_after=4.0, accepted=accepted, reason="",
+        candidates=[types.SimpleNamespace(frequency_mhz=0.0, magnitude=1.0,
+                                          snr=s) for s in cand_snrs],
+    )
+
+
+def _rst_result(*, rescue=(), thaw=(), replan=(), params=None, revision=0):
+    import types as _t
+
+    wfs = _rst_window_fits([(1.5, 50.0, 0, (35000.0, 35020.0)),
+                            (1.2, 12.0, 1, (38000.0, 38030.0))])
+    fit = _t.SimpleNamespace(
+        window_fits=wfs, rescue_history=list(rescue), thaw_history=list(thaw),
+        replan_history=list(replan), final_plan_revision=revision,
+        parameters=params or {},
+    )
+    return {"fit": fit, "active_ft": _rst_active_ft()}
+
+
+def test_plot_rescue_returns_figure():
+    from ftmwpipeline._internal.tuning.plots import plot_rescue
+
+    r1 = _rst_result(rescue=[
+        _rescue_round(0, 2, 0, True, 4.0, 2.0, [2.1, 3.0, 5.0]),
+        _rescue_round(1, 0, 1, False, 1.2, 1.2, [1.8]),
+    ])
+    r2 = _rst_result(rescue=[
+        _rescue_round(0, 1, 0, True, 4.0, 3.0, [4.0, 6.0]),
+    ])
+    rows = [SweepRow(2.0, {}, r1), SweepRow(4.0, {}, r2)]
+    fig = plot_rescue(get_knob("stage5.rescue.snr_threshold"), rows, _ctx())
+    assert fig is not None
+    assert len(fig.axes) >= 3  # trend(+twin) + where-on-band(+twin) + candidates
+    _close(fig)
+
+
+def test_plot_spur_returns_figure():
+    from ftmwpipeline._internal.tuning.plots import plot_spur
+
+    r1 = _rst_result(params={
+        "spur_centers_mhz": [28460.0, 29440.0, 30300.0],
+        "spur_sources": ["narrow", "narrow", "saturated"],
+        "n_spurs_gated": 3, "spur_mask_half_width_bins": 2})
+    r2 = _rst_result(params={
+        "spur_centers_mhz": [28460.0],
+        "spur_sources": ["narrow"],
+        "n_spurs_gated": 1, "spur_mask_half_width_bins": 2})
+    rows = [SweepRow(0.2, {}, r1), SweepRow(0.5, {}, r2)]
+    fig = plot_spur(get_knob("stage5.spur.narrowness_ratio"), rows, _ctx())
+    assert fig is not None
+    assert len(fig.axes) >= 2  # count trend + spectrum overlay
+    _close(fig)
+
+
+def test_plot_thaw_returns_figure():
+    from ftmwpipeline._internal.tuning.plots import plot_thaw
+
+    def _thaw(fc, before, after, accepted):
+        return types.SimpleNamespace(
+            dependent_window_id=1, primary_window_id=0, contributor_peak_index=3,
+            contributor_frequency_mhz=fc, edge_side="low",
+            edge_coherence_before=before, edge_coherence_after=after,
+            accepted=accepted, reason="")
+
+    r1 = _rst_result(thaw=[_thaw(35010.0, 9.0, 9.0, False),
+                           _thaw(38015.0, 11.0, 5.0, True)])
+    r2 = _rst_result(thaw=[_thaw(35010.0, 7.0, 7.0, False)])
+    rows = [SweepRow(8.0, {}, r1), SweepRow(12.0, {}, r2)]
+    fig = plot_thaw(get_knob("stage5.thaw.residual_edge_threshold"), rows, _ctx())
+    assert fig is not None
+    assert len(fig.axes) >= 3  # trend(+twin) + raster(+twin) + handshake
+    _close(fig)
+
+
+def test_rescue_spur_thaw_adapters_none_without_results():
+    from ftmwpipeline._internal.tuning.plots import (
+        plot_rescue, plot_spur, plot_thaw,
+    )
+
+    rows = [SweepRow(2.0, {}, None)]
+    assert plot_rescue(get_knob("stage5.rescue.snr_threshold"), rows, _ctx()) is None
+    assert plot_spur(get_knob("stage5.spur.narrowness_ratio"), rows, _ctx()) is None
+    assert plot_thaw(
+        get_knob("stage5.thaw.residual_edge_threshold"), rows, _ctx()) is None
+
+
+def test_metric_rescue_spur_thaw_reducers():
+    from ftmwpipeline._internal.tuning.registry import (
+        _metric_rescue, _metric_spur, _metric_thaw,
+    )
+
+    rescue = _rst_result(rescue=[
+        _rescue_round(0, 2, 0, True, 4.0, 2.0, [2.1, 3.0]),
+        _rescue_round(1, 0, 1, False, 1.2, 1.2, [1.8]),
+    ])
+    m = _metric_rescue(rescue)  # the metric takes the result dict
+    assert m["n_added"] == 2 and m["n_pruned_rescue"] == 1
+    assert m["n_rounds"] == 2 and m["n_win"] == 1
+    assert m["chi2_drop_pct"] == 50.0  # (4-2)/4
+
+    spur = _rst_result(params={
+        "spur_centers_mhz": [28460.0, 29440.0],
+        "spur_sources": ["narrow", "narrow+saturated"],
+        "n_spurs_gated": 2, "spur_mask_half_width_bins": 3})
+    s = _metric_spur(spur)
+    assert s["n_spurs"] == 2 and s["n_narrow"] == 2 and s["n_saturated"] == 1
+    assert s["mask_hw_bins"] == 3
+
+    thaw_evt = types.SimpleNamespace(
+        edge_coherence_before=11.0, edge_coherence_after=5.0, accepted=True)
+    rejected = types.SimpleNamespace(
+        edge_coherence_before=9.0, edge_coherence_after=9.0, accepted=False)
+    thaw = _rst_result(thaw=[thaw_evt, rejected],
+                       replan=[types.SimpleNamespace(accepted=False)], revision=0)
+    t = _metric_thaw(thaw)
+    assert t["n_thaw"] == 2 and t["n_thaw_acc"] == 1
+    assert t["n_replan"] == 1 and t["n_replan_acc"] == 0
+    assert t["coh_red_p50"] == 6.0  # only the accepted thaw counts
+
+
 def test_knob_plot_wiring():
     # the spectrum-impact knobs share the ladder; detection knobs show the curve
     assert get_knob("stage1.start_us").plot is plot_spectra_ladder
@@ -576,6 +720,13 @@ def test_knob_plot_wiring():
     # every Stage 5 fit-quality knob renders the eps-vs-SNR view
     assert get_knob("stage5.tau.fit_tau_min_snr").plot is plot_fit_quality
     assert get_knob("stage5.baseline.edge_threshold").plot is plot_fit_quality
+    # the rescue / spur / thaw families each render their own provenance view
+    from ftmwpipeline._internal.tuning.plots import (
+        plot_rescue, plot_spur, plot_thaw,
+    )
+    assert get_knob("stage5.rescue.snr_threshold").plot is plot_rescue
+    assert get_knob("stage5.spur.integer_tol_mhz").plot is plot_spur
+    assert get_knob("stage5.thaw.residual_edge_threshold").plot is plot_thaw
 
 
 def test_detection_knobs_point_at_spectrum_knobs():

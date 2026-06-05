@@ -1241,6 +1241,427 @@ def _window_center(result: Any, window_id: int) -> Any:
     return None
 
 
+def _band_spectrum(ctx: Any) -> Any:
+    """``(freqs_mhz, |FT|)`` (frequency-sorted) of the canonical persisted FT, or
+    ``None``. The band-overlay panels draw this once as a backdrop for the
+    per-value rescue / spur / thaw provenance.
+
+    Deliberately the *persisted* Stage 1 FT (loaded via ``ctx.ftmw_path``), not
+    the Stage 5 ``active_ft``: the active FT is an rfft of the truncated FID, so
+    it spans the full 0→Nyquist RF band (the trim is applied only downstream to
+    the windows / peaks). The persisted FT is the canonical analysis spectrum —
+    the truncated FID *and* the trimmed analysis band — which is what these
+    overlays should show. Markers (window centres, spur centres, candidates) are
+    absolute MHz, so they register on it regardless. Mirrors ``plot_noise_sweep``.
+    """
+    import numpy as np
+
+    path = getattr(ctx, "ftmw_path", None)
+    if path is None:
+        return None
+    try:
+        import ftmwpipeline.api as ftmw  # lazy
+
+        ft = ftmw.compute_ft(path)
+    except Exception:
+        return None
+    freqs = np.asarray(ft.freq_array, dtype=float)
+    mag = np.abs(np.asarray(ft.complex_spectrum))
+    order = np.argsort(freqs)
+    return freqs[order], mag[order]
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 knob-family plots (rescue / spur / thaw). Unlike the fit-quality
+# adapter these read the persisted renegotiation histories rather than the
+# per-window fit quality: each family *does* a distinct thing (rescue adds
+# residual lines, spur masks integer-MHz tones, thaw re-co-fits contested
+# window edges), so each gets its own provenance view.
+# ---------------------------------------------------------------------------
+
+# rescue.snr_threshold default — the constant gate line drawn on the candidate
+# panel when the swept knob is not snr_threshold itself.
+_RESCUE_DEFAULT_SNR_GATE = 2.5
+# thaw.residual_edge_threshold default — the constant trigger line on the
+# coherence-handshake panel when the swept knob is not the threshold itself.
+_THAW_DEFAULT_EDGE_GATE = 8.0
+
+
+def _sweep_labels(rows: List[Any]) -> List[str]:
+    return [
+        f"{r.value:g}" if isinstance(r.value, (int, float)) else str(r.value)
+        for r in rows
+    ]
+
+
+def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stage 5 residual-rescue sweep view (the ``stage5.rescue.*`` adapter).
+
+    Rescue runs a per-window B-loop that nominates residual peaks, jointly
+    refits, then prunes by AICc. The persisted ``rescue_history`` carries each
+    round's counts (added / rescue-origin-pruned / merged), the χ² before/after,
+    and the detector candidates (offset + SNR) — but not a per-peak origin flag,
+    so the view is *aggregate*: three co-equal panels —
+    (1) a count + χ²-reduction trend vs the swept value (does the knob add lines,
+    and do they lower the misfit or just churn — watch ``rescue-origin pruned``,
+    the failsafe); (2) a band-wide **where-rescue-fires** raster, one row per
+    value, marking the window centres of accepted rounds over the spectrum; and
+    (3) the **candidate-SNR-vs-gate** strip — every nominated candidate's SNR per
+    value with the ``snr_threshold`` cut drawn, so the detection gates visibly
+    bite instead of looking inert.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+    leaf = spec.path.split(".")[-1]
+    n = len(rows)
+    labels = _sweep_labels(rows)
+    colors = _value_colors(n)
+    xs = np.arange(n, dtype=float)
+
+    fig = plt.figure(figsize=(12.0, 12.5))
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.1, 1.4, 1.2])
+
+    # (1) trend: peaks added (accepted) / rescue-origin pruned + χ² reduction.
+    ax = fig.add_subplot(gs[0, 0])
+    added, pruned, drop = [], [], []
+    for r in rows:
+        rh = r.result["fit"].rescue_history
+        acc = [x for x in rh if x.accepted]
+        added.append(sum(x.n_rescue_added for x in acc))
+        pruned.append(sum(x.n_pruned_rescue_origin for x in rh))
+        vals = [
+            (x.chi2_before - x.chi2_after) / x.chi2_before for x in acc
+            if x.chi2_before > 0
+            and np.isfinite(x.chi2_before) and np.isfinite(x.chi2_after)
+        ]
+        drop.append(float(np.median(vals)) * 100.0 if vals else 0.0)
+    ax.plot(xs, added, "o-", color="tab:green", label="peaks added (accepted)")
+    ax.plot(xs, pruned, "x--", color="tab:red",
+            label="rescue-origin pruned (failsafe)")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel(leaf)
+    ax.set_ylabel("peak count")
+    ax.grid(True, alpha=0.3)
+    axc = ax.twinx()
+    axc.plot(xs, drop, "D-", color="tab:blue", alpha=0.55,
+             label="median χ² drop (%)")
+    axc.set_ylabel("median χ² reduction (%)", color="tab:blue")
+    axc.tick_params(axis="y", labelcolor="tab:blue")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = axc.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, loc="upper left")
+    ax.set_title(f"Stage 5 rescue vs {leaf}: lines added and whether they stick")
+
+    # (2) where-on-band raster: accepted-round window centres, one row per value.
+    ax2 = fig.add_subplot(gs[1, 0])
+    spec_xy = _band_spectrum(ctx)
+    if spec_xy is not None:
+        f, mag = spec_xy
+        axb = ax2.twinx()
+        axb.plot(f, mag, lw=0.4, color="0.85", zorder=0)
+        axb.set_ylabel("|FT|", color="0.6")
+        axb.tick_params(axis="y", labelcolor="0.6")
+        # A twin axis renders above its base regardless of zorder, so lift the
+        # marker axis above the spectrum and clear its (opaque) background so the
+        # FT still shows through — otherwise the markers are buried under |FT|.
+        ax2.set_zorder(axb.get_zorder() + 1)
+        ax2.patch.set_visible(False)
+    for i, r in enumerate(rows):
+        fcs = [
+            _window_center(r.result, x.window_id)
+            for x in r.result["fit"].rescue_history if x.accepted
+        ]
+        fcs = [c for c in fcs if c is not None]
+        if fcs:
+            ax2.scatter(fcs, np.full(len(fcs), i), s=26, color=colors[i],
+                        alpha=0.9, zorder=3)
+    ax2.set_yticks(range(n))
+    ax2.set_yticklabels(labels)
+    ax2.set_ylim(-0.5, n - 0.5)
+    ax2.set_ylabel(leaf)
+    ax2.set_xlabel("window centre frequency (MHz)")
+    ax2.set_title("Where rescue adds lines across the band (one row per value)")
+
+    # (3) candidate SNR vs the detection gate.
+    ax3 = fig.add_subplot(gs[2, 0])
+    for i, r in enumerate(rows):
+        snrs = np.asarray(
+            [c.snr for x in r.result["fit"].rescue_history for c in x.candidates],
+            dtype=float,
+        )
+        if snrs.size:
+            xpos = i + np.linspace(-0.32, 0.32, snrs.size)
+            ax3.scatter(xpos, snrs, s=9, color=colors[i], alpha=0.5, zorder=2)
+        if leaf == "snr_threshold" and isinstance(r.value, (int, float)):
+            ax3.hlines(float(r.value), i - 0.42, i + 0.42, color=colors[i],
+                       lw=2.0, zorder=3)
+    if leaf != "snr_threshold":
+        ax3.axhline(_RESCUE_DEFAULT_SNR_GATE, color="crimson", ls="--", lw=1.0,
+                    label=f"snr_threshold = {_RESCUE_DEFAULT_SNR_GATE:g}")
+        ax3.legend(fontsize=8, loc="upper right")
+    ax3.set_xticks(range(n))
+    ax3.set_xticklabels(labels)
+    ax3.set_xlabel(leaf)
+    ax3.set_ylabel("residual candidate SNR")
+    ax3.grid(True, alpha=0.25)
+    ax3.set_title("Residual candidates nominated vs the detection gate "
+                  "(per-value gate in colour when sweeping snr_threshold)")
+
+    fig.suptitle(f"Rescue sweep: {spec.path}")
+    fig.tight_layout(rect=(0, 0, 1, 0.99))
+    return fig
+
+
+def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stage 5 spur-masking sweep view (the ``stage5.spur.*`` adapter).
+
+    A spur is a persistent integer-MHz CW tone (clock/LO harmonic) no finite-T
+    line shape can represent; the gate drops it from nomination and masks its
+    bins out of the residual. The persisted band-level catalogue
+    (``spur_centers_mhz`` / ``spur_sources`` / ``spur_mask_half_width_bins``) is
+    computed on the whole active FT, so spur sweeps are immune to the fit's plan
+    reduction. Two panels: (1) a count-by-source trend (total / narrow /
+    saturated gated vs the swept value); and (2) the **spectrum overlay** —
+    ``|FT|`` drawn once with every gated spur as a vertical marker at its
+    integer-MHz, its ±mask half-width shaded, coloured by *how many* swept values
+    gate it (a robustness ramp: a tone gated at every value is an unambiguous
+    spur; one only the most permissive value catches is fragile). Robustness, not
+    a last-surviving value, because spur gating is not monotonic in one direction
+    across the different spur knobs — looser ``narrowness_ratio`` adds spurs while
+    a higher ``snr_threshold`` removes them, so a count is the direction-agnostic
+    readout.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+    leaf = spec.path.split(".")[-1]
+    n = len(rows)
+    labels = _sweep_labels(rows)
+    colors = _value_colors(n)
+
+    def _params(r: Any) -> Any:
+        return r.result["fit"].parameters
+
+    per_value_centers = [
+        [float(c) for c in (_params(r).get("spur_centers_mhz") or [])]
+        for r in rows
+    ]
+    # Key spurs by nearest integer MHz (the gate's anchor); a spur is "gated at
+    # value i" when an integer-equal centre is in that value's catalogue. Colour
+    # by the *number* of values that gate it (robustness) rather than a
+    # last-surviving value: spur gating is not monotonic in one direction across
+    # the spur knobs (looser narrowness_ratio adds spurs, higher snr_threshold
+    # removes them), so a directional survival ramp would collapse to one colour.
+    keyed = [{round(c): c for c in cs} for cs in per_value_centers]
+    all_keys = sorted({k for d in keyed for k in d})
+    gate_count = {}
+    rep_center = {}
+    for k in all_keys:
+        idxs = [i for i, d in enumerate(keyed) if k in d]
+        gate_count[k] = len(idxs)
+        rep_center[k] = keyed[idxs[0]][k] if idxs else float(k)
+
+    fig = plt.figure(figsize=(12.0, 10.0))
+    gs = fig.add_gridspec(2, 1, height_ratios=[1.0, 1.5])
+
+    # (1) count-by-source trend.
+    ax = fig.add_subplot(gs[0, 0])
+    xs = np.arange(n, dtype=float)
+    n_tot, n_narrow, n_sat = [], [], []
+    for r in rows:
+        srcs = list(_params(r).get("spur_sources") or [])
+        n_tot.append(len(srcs))
+        n_narrow.append(sum(1 for s in srcs if "narrow" in s))
+        n_sat.append(sum(1 for s in srcs if "saturated" in s))
+    ax.plot(xs, n_tot, "o-", color="0.2", label="gated total")
+    ax.plot(xs, n_narrow, "s--", color="tab:blue", label="narrow")
+    ax.plot(xs, n_sat, "^--", color="tab:orange", label="saturated")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel(leaf)
+    ax.set_ylabel("spurs gated")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.set_title(f"Stage 5 spur gating vs {leaf}")
+
+    # (2) spectrum overlay with the survival ramp.
+    ax2 = fig.add_subplot(gs[1, 0])
+    spec_xy = _band_spectrum(ctx)
+    bin_mhz = 0.0
+    if spec_xy is not None:
+        f, mag = spec_xy
+        ax2.plot(f, mag, lw=0.5, color="0.6", zorder=1)
+        if f.size > 1:
+            bin_mhz = float(np.median(np.diff(f)))
+    hw_bins = max(
+        (int(_params(r).get("spur_mask_half_width_bins", 0) or 0) for r in rows),
+        default=0,
+    )
+    hw_mhz = hw_bins * bin_mhz
+    # Robustness ramp keyed on the gating count 1..n (dark = fragile, bright =
+    # gated at every value); _value_colors(n) gives n distinct steps.
+    ramp = _value_colors(n)
+    for k in all_keys:
+        c = rep_center[k]
+        col = ramp[min(gate_count[k], n) - 1] if gate_count[k] else ramp[0]
+        ax2.axvline(c, color=col, lw=1.2, zorder=3)
+        if hw_mhz > 0:
+            ax2.axvspan(c - hw_mhz, c + hw_mhz, color=col, alpha=0.15, zorder=2)
+    ax2.set_xlabel("frequency (MHz)")
+    ax2.set_ylabel("|FT|")
+    ax2.set_title("Gated spurs, coloured by how many values gate them "
+                  f"(robustness; ±{hw_bins} bin mask shaded)")
+    handles = [plt.Line2D([0], [0], color=ramp[i], lw=2.5) for i in range(n)]
+    ax2.legend(handles, [f"{i + 1}/{n} values" for i in range(n)], fontsize=7,
+               ncol=min(n, 5), title="gated by", loc="upper right")
+
+    fig.suptitle(f"Spur sweep: {spec.path}")
+    fig.tight_layout(rect=(0, 0, 1, 0.99))
+    return fig
+
+
+def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
+    """Stage 5 thaw / structural-replan sweep view (the ``stage5.thaw.*``
+    adapter).
+
+    A post-fit residual edge that stays coherent triggers the renegotiation
+    handshake: unfreeze the neighbouring fixed contributor and co-fit it (thaw),
+    or, with no contributor to thaw, merge the adjacent window and re-plan
+    (replan). The persisted ``thaw_history`` / ``replan_history`` record where
+    each edge was flagged, the edge ``S_coh`` before and after, and accept/reject
+    — but *not* literal original-vs-final window boundaries, so the view is the
+    **coherence handshake**, not boundary geometry. Three panels:
+    (1) an attempt / accept count + plan-revision trend vs the swept value;
+    (2) a band-wide **contested-edge raster**, one row per value (thaw at the
+    contributor frequency, replan at the surviving-window centre; filled =
+    accepted); and (3) the **before→after coherence scatter** with the trigger
+    threshold drawn — points on the diagonal are edges the handshake left
+    unchanged (the common case: thaw is near-dormant on clean spectra).
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in rows if r.result is not None]
+    if not rows:
+        return None
+    leaf = spec.path.split(".")[-1]
+    n = len(rows)
+    labels = _sweep_labels(rows)
+    colors = _value_colors(n)
+    xs = np.arange(n, dtype=float)
+
+    fig = plt.figure(figsize=(12.0, 12.5))
+    gs = fig.add_gridspec(3, 1, height_ratios=[1.1, 1.3, 1.3])
+
+    # (1) attempt / accept counts + plan revision.
+    ax = fig.add_subplot(gs[0, 0])
+    n_th, n_th_a, n_rp, n_rp_a, rev = [], [], [], [], []
+    for r in rows:
+        fit = r.result["fit"]
+        n_th.append(len(fit.thaw_history))
+        n_th_a.append(sum(1 for t in fit.thaw_history if t.accepted))
+        n_rp.append(len(fit.replan_history))
+        n_rp_a.append(sum(1 for x in fit.replan_history if x.accepted))
+        rev.append(int(fit.final_plan_revision))
+    ax.plot(xs, n_th, "o-", color="tab:blue", label="thaw attempts")
+    ax.plot(xs, n_th_a, "o-", color="tab:green", label="thaw accepted")
+    ax.plot(xs, n_rp, "s--", color="tab:purple", label="replan attempts")
+    ax.plot(xs, n_rp_a, "s--", color="tab:red", label="replan accepted")
+    ax.set_xticks(xs)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel(leaf)
+    ax.set_ylabel("event count")
+    ax.grid(True, alpha=0.3)
+    axc = ax.twinx()
+    axc.plot(xs, rev, "D:", color="0.4", label="final plan revision")
+    axc.set_ylabel("plan revision", color="0.4")
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = axc.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, loc="upper left")
+    ax.set_title(f"Stage 5 thaw / replan handshake vs {leaf}")
+
+    # (2) contested-edge raster.
+    ax2 = fig.add_subplot(gs[1, 0])
+    spec_xy = _band_spectrum(ctx)
+    if spec_xy is not None:
+        f, mag = spec_xy
+        axb = ax2.twinx()
+        axb.plot(f, mag, lw=0.4, color="0.85", zorder=0)
+        axb.set_ylabel("|FT|", color="0.6")
+        axb.tick_params(axis="y", labelcolor="0.6")
+        # Lift the marker axis above the spectrum twin (see plot_rescue).
+        ax2.set_zorder(axb.get_zorder() + 1)
+        ax2.patch.set_visible(False)
+    for i, r in enumerate(rows):
+        fit = r.result["fit"]
+        for t in fit.thaw_history:
+            fc = t.contributor_frequency_mhz
+            if fc is None or not np.isfinite(fc):
+                continue
+            ax2.scatter([fc], [i], s=30, marker="o", zorder=3,
+                        facecolors=colors[i] if t.accepted else "none",
+                        edgecolors=colors[i])
+        for x in fit.replan_history:
+            c = (_window_center(r.result, x.surviving_window_id)
+                 or _window_center(r.result, x.triggering_window_id))
+            if c is not None:
+                ax2.scatter([c], [i], s=48, marker="^", zorder=3,
+                            facecolors=colors[i] if x.accepted else "none",
+                            edgecolors=colors[i])
+    ax2.set_yticks(range(n))
+    ax2.set_yticklabels(labels)
+    ax2.set_ylim(-0.5, n - 0.5)
+    ax2.set_ylabel(leaf)
+    ax2.set_xlabel("contested edge frequency (MHz)")
+    ax2.set_title("Where edges are contested "
+                  "(○ thaw, △ replan; filled = accepted)")
+
+    # (3) before→after coherence handshake.
+    ax3 = fig.add_subplot(gs[2, 0])
+    finite_b: List[float] = []
+    for i, r in enumerate(rows):
+        before, after = [], []
+        for t in r.result["fit"].thaw_history:
+            b, a = t.edge_coherence_before, t.edge_coherence_after
+            if np.isfinite(b):
+                before.append(float(b))
+                after.append(float(a) if np.isfinite(a) else float(b))
+        if before:
+            finite_b.extend(before)
+            ax3.scatter(before, after, s=22, color=colors[i], alpha=0.75,
+                        label=f"{leaf}={labels[i]}")
+    if finite_b:
+        lo = min(finite_b + [_THAW_DEFAULT_EDGE_GATE])
+        hi = max(finite_b + [_THAW_DEFAULT_EDGE_GATE])
+        ax3.plot([lo, hi], [lo, hi], color="0.5", ls=":", lw=1.0,
+                 label="no change (after = before)")
+    if leaf == "residual_edge_threshold":
+        for i, r in enumerate(rows):
+            if isinstance(r.value, (int, float)):
+                ax3.axvline(float(r.value), color=colors[i], ls="--", lw=0.8)
+    else:
+        ax3.axvline(_THAW_DEFAULT_EDGE_GATE, color="crimson", ls="--", lw=1.0,
+                    label=f"trigger S_coh = {_THAW_DEFAULT_EDGE_GATE:g}")
+    ax3.set_xlabel("edge S_coh before co-fit")
+    ax3.set_ylabel("edge S_coh after co-fit")
+    ax3.grid(True, alpha=0.25)
+    ax3.legend(fontsize=8, loc="upper left")
+    ax3.set_title("Coherence handshake — points on the diagonal were left "
+                  "unchanged (no improvement)")
+
+    fig.suptitle(f"Thaw sweep: {spec.path}")
+    fig.tight_layout(rect=(0, 0, 1, 0.99))
+    return fig
+
+
 def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """Three panels: σ(f) per grid value (top-left), the scalar metric trend
     (top-right, median σ and noise-flagged fraction vs the knob), and a

@@ -25,10 +25,13 @@ from .plots import (
     plot_ft_band_stack,
     plot_noise_sweep,
     plot_peak_detection,
+    plot_rescue,
     plot_shape_vote,
     plot_spectra_ladder,
+    plot_spur,
     plot_start_detection,
     plot_tau_trend,
+    plot_thaw,
     plot_window_planning,
 )
 
@@ -544,6 +547,105 @@ def _metric_fit(result: Any) -> Dict[str, Any]:
         "sigma_f_khz": round(float(np.median(sig_f)) * 1e3, 4) if sig_f else 0.0,
         "chi2r_p50": round(float(np.median(chi2r)), 3) if chi2r.size else 0.0,
         "chi2r_p95": pct(chi2r, 95),
+    }
+
+
+def _fit_eps_summary(fit: Any) -> Tuple[float, int]:
+    """``(eps_p50, n_peaks)`` for a ``SpectrumFit`` — the net fit-quality context
+    the rescue / spur / thaw metrics carry so the structural change a knob makes
+    can be read against whether the band's misfit moved."""
+    import numpy as np
+
+    from .fit_support import window_fit_quality
+
+    rows = [window_fit_quality(wf) for wf in fit.window_fits]
+    eps = np.asarray([r["epsilon"] for r in rows], dtype=float)
+    eps_p50 = round(float(np.percentile(eps, 50)), 5) if eps.size else 0.0
+    n_peaks = sum(r["n_peaks"] for r in rows)
+    return eps_p50, n_peaks
+
+
+def _metric_rescue(result: Any) -> Dict[str, Any]:
+    """Reduce a Stage 5 fit to the residual-rescue B-loop's work: peaks added by
+    accepted rounds, the rescue-origin pruned count (the failsafe — rescue adding
+    lines a later refit undoes), merges, the windows and rounds touched, and the
+    median χ² reduction across accepted rounds, plus the net ε / peak count so the
+    churn can be read against whether the fit actually improved."""
+    import numpy as np
+
+    fit = result["fit"]
+    rh = fit.rescue_history
+    acc = [r for r in rh if r.accepted]
+    drop = [
+        (r.chi2_before - r.chi2_after) / r.chi2_before for r in acc
+        if r.chi2_before > 0
+        and np.isfinite(r.chi2_before) and np.isfinite(r.chi2_after)
+    ]
+    eps_p50, n_peaks = _fit_eps_summary(fit)
+    return {
+        "n_added": sum(r.n_rescue_added for r in acc),
+        "n_pruned_rescue": sum(r.n_pruned_rescue_origin for r in rh),
+        "n_merged": sum(r.n_merged for r in rh),
+        "n_win": len({r.window_id for r in acc}),
+        "n_rounds": len(rh),
+        "chi2_drop_pct": round(float(np.median(drop)) * 100.0, 2) if drop else 0.0,
+        "eps_p50": eps_p50,
+        "n_peaks": n_peaks,
+    }
+
+
+def _metric_spur(result: Any) -> Dict[str, Any]:
+    """Reduce a Stage 5 fit to the spur gate's verdict: how many integer-MHz tones
+    were masked, split by source (narrow / saturated), the mask half-width in
+    bins, and the net ε / peak count. The catalogue is band-level (computed on the
+    full active FT), so these are unaffected by the fit's plan reduction."""
+    fit = result["fit"]
+    params = fit.parameters
+    srcs = list(params.get("spur_sources") or [])
+    centers = params.get("spur_centers_mhz") or []
+    eps_p50, n_peaks = _fit_eps_summary(fit)
+    return {
+        "n_spurs": int(params.get("n_spurs_gated", len(centers))),
+        "n_narrow": sum(1 for s in srcs if "narrow" in s),
+        "n_saturated": sum(1 for s in srcs if "saturated" in s),
+        "mask_hw_bins": int(params.get("spur_mask_half_width_bins", 0) or 0),
+        "eps_p50": eps_p50,
+        "n_peaks": n_peaks,
+    }
+
+
+def _metric_thaw(result: Any) -> Dict[str, Any]:
+    """Reduce a Stage 5 fit to the residual-edge renegotiation handshake: thaw and
+    replan attempt / accept counts, the final plan revision, the flagged-edge
+    S_coh tail (the trigger surface), the median coherence reduction on accepted
+    thaws, and the net ε. Thaw is near-dormant on clean spectra (acceptance ~0),
+    so the attempt counts and the flagged-edge tail carry the readout even when
+    nothing is accepted."""
+    import numpy as np
+
+    fit = result["fit"]
+    th = fit.thaw_history
+    rp = fit.replan_history
+    flagged = [
+        t.edge_coherence_before for t in th
+        if np.isfinite(t.edge_coherence_before)
+    ]
+    red = [
+        t.edge_coherence_before - t.edge_coherence_after for t in th
+        if t.accepted
+        and np.isfinite(t.edge_coherence_before)
+        and np.isfinite(t.edge_coherence_after)
+    ]
+    eps_p50, _ = _fit_eps_summary(fit)
+    return {
+        "n_thaw": len(th),
+        "n_thaw_acc": sum(1 for t in th if t.accepted),
+        "n_replan": len(rp),
+        "n_replan_acc": sum(1 for x in rp if x.accepted),
+        "rev": int(fit.final_plan_revision),
+        "coh_flag_p95": round(float(np.percentile(flagged, 95)), 3) if flagged else 0.0,
+        "coh_red_p50": round(float(np.median(red)), 3) if red else 0.0,
+        "eps_p50": eps_p50,
     }
 
 
@@ -1238,12 +1340,15 @@ def _fit_knob(
     path: str, sub_block: str, field_name: str, help_: str,
     inst: str, grid: Tuple[Any, ...], tier: str = "primary",
     see_also: Optional[str] = None, select_hint: Optional[str] = None,
+    metric: MetricFn = _metric_fit,
+    metric_columns: Tuple[str, ...] = _FIT_COLS,
+    plot: Optional[Callable[..., Any]] = plot_fit_quality,
 ) -> None:
     _register(KnobSpec(
         path=path, stage="stage5_fitting", requires="stage4_windows",
         help=help_, inst_sensitivity=inst, default_grid=grid,
-        run=_run_fit(sub_block, field_name), metric=_metric_fit,
-        metric_columns=_FIT_COLS, plot=plot_fit_quality, tier=tier,
+        run=_run_fit(sub_block, field_name), metric=metric,
+        metric_columns=metric_columns, plot=plot, tier=tier,
         see_also=see_also, prepare=reduce_plan_for_fit, select_hint=select_hint,
     ))
 
@@ -1350,6 +1455,144 @@ _fit_knob(
     "Master switch for the evidence-triggered leakage-wing baseline term.",
     "N", (False, True), tier="advanced",
 )
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 rescue / spur / thaw families — same ``_run_fit`` runner and window
+# reduction as the fit-quality family, but each reads a distinct persisted
+# renegotiation history and gets its own provenance plot (rescue adds residual
+# lines, spur masks integer-MHz tones, thaw re-co-fits contested window edges),
+# so they carry their own metric columns + plot adapter.
+# ---------------------------------------------------------------------------
+_RESCUE_COLS = (
+    "n_added", "n_pruned_rescue", "n_merged", "n_win", "n_rounds",
+    "chi2_drop_pct", "eps_p50", "n_peaks",
+)
+_RESCUE_SEE_ALSO = (
+    "n_added / chi2_drop_pct say whether rescue earns its keep; n_pruned_rescue "
+    "is the failsafe (lines rescue added that a later refit undid). The panels "
+    "show where on the band rescue fires and the candidate SNRs vs the gate. "
+    "Sweeps a reduced window subset — widen with --fit-* (or --fit-all)."
+)
+_SPUR_COLS = (
+    "n_spurs", "n_narrow", "n_saturated", "mask_hw_bins", "eps_p50", "n_peaks",
+)
+_SPUR_SEE_ALSO = (
+    "the gated-spur catalogue is band-level (computed on the full active FT), so "
+    "spur counts are immune to the window reduction; the overlay shows which "
+    "integer-MHz tones each value masks, coloured by the last value still "
+    "gating them."
+)
+_THAW_COLS = (
+    "n_thaw", "n_thaw_acc", "n_replan", "n_replan_acc", "rev", "coh_flag_p95",
+    "coh_red_p50", "eps_p50",
+)
+_THAW_SEE_ALSO = (
+    "thaw is near-dormant on clean spectra (n_thaw_acc ~0 on 2638); the attempt "
+    "counts + the flagged-edge S_coh tail (coh_flag_p95) carry the readout. The "
+    "before→after panel shows whether the co-fit moved the contested edge. Note "
+    "literal boundary moves are not persisted — only the coherence handshake."
+)
+
+
+# Rescue — primary: the two residual-detection gates (Y-rated). Advanced: the
+# safety cap, the cleanup F-test, and the merge / overfit-absorber factors.
+_fit_knob(
+    "stage5.rescue.snr_threshold", "rescue", "snr_threshold",
+    "Residual-peak detection floor (nominates generously; the F-test gates "
+    "acceptance).",
+    "Y", (2.0, 2.5, 3.0, 4.0), see_also=_RESCUE_SEE_ALSO,
+    metric=_metric_rescue, metric_columns=_RESCUE_COLS, plot=plot_rescue,
+)
+_fit_knob(
+    "stage5.rescue.prominence_threshold", "rescue", "prominence_threshold",
+    "Residual-peak prominence threshold for candidate nomination.",
+    "Y", (1.5, 2.0, 3.0, 4.0), see_also=_RESCUE_SEE_ALSO,
+    metric=_metric_rescue, metric_columns=_RESCUE_COLS, plot=plot_rescue,
+)
+for _p, _f, _h, _g in (
+    ("stage5.rescue.max_rounds", "max_rounds",
+     "Maximum residual-rescue iterations per window (safety cap).",
+     (1, 3, 5, 8)),
+    ("stage5.rescue.cleanup_significance", "cleanup_significance",
+     "F-test significance for the remove-and-refit post-rescue cleanup.",
+     (0.01, 0.05, 0.1)),
+    ("stage5.rescue.merge_separation_factor", "merge_separation_factor",
+     "AICc-gated merge threshold above resolution (FWHM units).",
+     (0.25, 0.5, 0.75)),
+    ("stage5.rescue.structural_merge_factor", "structural_merge_factor",
+     "Sub-resolution merge floor: pairs closer than this (FWHM units) collapse "
+     "unconditionally.",
+     (0.25, 0.5, 0.75)),
+    ("stage5.rescue.overfit_amp_ratio_band", "overfit_amp_ratio_band",
+     "Upper bound (1/T_active elements) of the amplitude-ratio merge tier that "
+     "collapses supra-resolution shape-error absorbers.",
+     (1.0, 1.5, 2.0)),
+    ("stage5.rescue.overfit_amp_ratio_threshold", "overfit_amp_ratio_threshold",
+     "Amplitude ratio above which a pair in the band collapses as an absorber "
+     "(0 disables).",
+     (0.0, 4.0, 6.0, 10.0)),
+):
+    _fit_knob(_p, "rescue", _f, _h, "N", _g, tier="advanced",
+              see_also=_RESCUE_SEE_ALSO, metric=_metric_rescue,
+              metric_columns=_RESCUE_COLS, plot=plot_rescue)
+
+# Spur — primary: the integer-MHz / narrowness gate + the mask half-width (all
+# Y-rated). Advanced: the master switch, the frequency-domain SNR floor, and the
+# Stage 2b saturated-catalogue toggle.
+for _p, _f, _h, _g in (
+    ("stage5.spur.integer_tol_mhz", "integer_tol_mhz",
+     "Max distance (MHz) from an integer MHz for the spur gate's hard integer "
+     "requirement (~½ active-FT bin).",
+     (0.02, 0.04, 0.08, 0.16)),
+    ("stage5.spur.narrowness_ratio", "narrowness_ratio",
+     "max(neighbour)/peak below which an integer-MHz bin is sub-resolution "
+     "narrow (a CW tone vs a real line with a skirt).",
+     (0.2, 0.3, 0.4, 0.5)),
+    ("stage5.spur.mask_half_width_bins", "mask_half_width_bins",
+     "Residual-mask half-width (active-FT bins) around a detected spur.",
+     (1, 2, 3, 4)),
+):
+    _fit_knob(_p, "spur", _f, _h, "Y", _g, see_also=_SPUR_SEE_ALSO,
+              metric=_metric_spur, metric_columns=_SPUR_COLS, plot=plot_spur)
+for _p, _f, _h, _g in (
+    ("stage5.spur.enabled", "enabled",
+     "Master switch for clock/LO-spur detection + masking.", (False, True)),
+    ("stage5.spur.snr_threshold", "snr_threshold",
+     "Peak-bin / σ_c floor for the frequency-domain spur detector.",
+     (3.0, 5.0, 8.0, 12.0)),
+    ("stage5.spur.use_stft_catalogue", "use_stft_catalogue",
+     "Consume the persisted Stage 2b flat-spur (saturated) catalogue as the "
+     "gate's persistence half; False = frequency-domain detector only.",
+     (False, True)),
+):
+    _fit_knob(_p, "spur", _f, _h, "N", _g, tier="advanced",
+              see_also=_SPUR_SEE_ALSO, metric=_metric_spur,
+              metric_columns=_SPUR_COLS, plot=plot_spur)
+
+# Thaw — primary: the residual-edge S_coh trigger (Y-rated). Advanced: the
+# thaw / replan round caps and the edge-detection band width.
+_fit_knob(
+    "stage5.thaw.residual_edge_threshold", "thaw", "residual_edge_threshold",
+    "S_coh threshold for a residual-edge-coherence boundary violation (the "
+    "thaw / replan trigger).",
+    "Y", (4.0, 6.0, 8.0, 10.0, 12.0), see_also=_THAW_SEE_ALSO,
+    metric=_metric_thaw, metric_columns=_THAW_COLS, plot=plot_thaw,
+)
+for _p, _f, _h, _g in (
+    ("stage5.thaw.max_thaw_rounds", "max_thaw_rounds",
+     "Maximum local-thaw iterations (re-fit a frozen contributor; 0 disables).",
+     (0, 1, 2, 3)),
+    ("stage5.thaw.max_replan_rounds", "max_replan_rounds",
+     "Maximum structural-replan iterations (window-boundary merges; 0 disables).",
+     (0, 1, 2, 3)),
+    ("stage5.thaw.residual_edge_m", "residual_edge_m",
+     "Band width (bins) for residual edge-coherence detection.",
+     (16, 32, 48, 64)),
+):
+    _fit_knob(_p, "thaw", _f, _h, "N", _g, tier="advanced",
+              see_also=_THAW_SEE_ALSO, metric=_metric_thaw,
+              metric_columns=_THAW_COLS, plot=plot_thaw)
 
 
 def get_knob(path: str) -> KnobSpec:

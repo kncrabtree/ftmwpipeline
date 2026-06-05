@@ -246,6 +246,23 @@ def test_stage5_fit_scan_runs_and_plots(baseline_2638_stage4_small, tmp_path):
     assert r.plot_path is not None and r.plot_path.exists()
 
 
+def test_stage5_rescue_scan_runs_and_plots(baseline_2638_stage4_small, tmp_path):
+    # A real Stage 5 fit sweep on a rescue-family knob: its own metric columns
+    # (read off the persisted rescue_history) plus the rescue provenance plot.
+    r = ftmw.tune_scan(
+        baseline_2638_stage4_small, "stage5.rescue.snr_threshold",
+        grid=[2.0, 4.0], output_dir=tmp_path, quiet=True, fit_all=True,
+    )
+    assert [row.value for row in r.rows] == [2.0, 4.0]
+    assert r.metric_columns == (
+        "n_added", "n_pruned_rescue", "n_merged", "n_win", "n_rounds",
+        "chi2_drop_pct", "eps_p50", "n_peaks",
+    )
+    # the rescue history is read for every value (counts are well-defined, ≥ 0)
+    assert all(row.metrics["n_rounds"] >= 0 for row in r.rows)
+    assert r.plot_path is not None and r.plot_path.exists()
+
+
 def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):
     import shutil
 

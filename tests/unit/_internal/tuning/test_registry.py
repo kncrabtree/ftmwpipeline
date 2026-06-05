@@ -144,6 +144,13 @@ def test_stage5_paths_resolve_to_settings_fields():
     from ftmwpipeline.core import stage_fit_settings as sfs
 
     tmpl = sfs.StageFitSettings()
+    # the fit-quality family (tau / seeder / conservative / penalties / baseline)
+    # shares one metric/plot; rescue / spur / thaw are their own families.
+    fit_quality_cols = (
+        "eps_p50", "eps_p95", "n_fail", "n_peaks", "n_free_tau",
+        "sigma_f_khz", "chi2r_p50", "chi2r_p95",
+    )
+    family_subs = {"rescue", "spur", "thaw"}
     stage5 = list_knobs("stage5", include_advanced=True)
     assert stage5
     for spec in stage5:
@@ -154,10 +161,37 @@ def test_stage5_paths_resolve_to_settings_fields():
         _, sub, field = spec.path.split(".")
         names = {f.name for f in fields(getattr(tmpl, sub))}
         assert field in names, spec.path
-        assert spec.metric_columns == (
-            "eps_p50", "eps_p95", "n_fail", "n_peaks", "n_free_tau",
-            "sigma_f_khz", "chi2r_p50", "chi2r_p95",
-        )
+        if sub not in family_subs:
+            assert spec.metric_columns == fit_quality_cols, spec.path
+
+
+def test_stage5_rescue_spur_thaw_families_wired():
+    from ftmwpipeline._internal.tuning.registry import (
+        _RESCUE_COLS, _SPUR_COLS, _THAW_COLS,
+    )
+
+    cases = {
+        "stage5.rescue.snr_threshold": ("plot_rescue", _RESCUE_COLS),
+        "stage5.spur.integer_tol_mhz": ("plot_spur", _SPUR_COLS),
+        "stage5.thaw.residual_edge_threshold": ("plot_thaw", _THAW_COLS),
+    }
+    for path, (plot_name, cols) in cases.items():
+        spec = get_knob(path)
+        assert spec.plot is not None and spec.plot.__name__ == plot_name
+        assert spec.metric_columns == cols
+        # the families reuse the fit runner + window-reduction prepare hook
+        assert spec.prepare is not None
+
+    # Y-rated primaries surfaced; N-rated knobs demoted to advanced.
+    primary = {s.path for s in list_knobs("stage5")}
+    assert "stage5.rescue.snr_threshold" in primary
+    assert "stage5.rescue.prominence_threshold" in primary
+    assert "stage5.spur.narrowness_ratio" in primary
+    assert "stage5.spur.mask_half_width_bins" in primary
+    assert "stage5.thaw.residual_edge_threshold" in primary
+    assert "stage5.rescue.max_rounds" not in primary
+    assert "stage5.spur.enabled" not in primary
+    assert "stage5.thaw.max_thaw_rounds" not in primary
 
 
 def test_stage5_snr_threshold_knobs_hinted():

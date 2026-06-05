@@ -205,7 +205,7 @@ addressing); no new settings plumbing.
    of whether a recommendation is produced, the engine always prints
    **how to apply** the chosen value: persist it onto the experiment's `.ftmw`
    (the persisted settings layer) or write/update a target instrument `.yml`.
-   This is the seam to the deferred preset-emit UX (§Open decisions 1).
+   This is the seam to #28's value-set grammar (§Preset emission).
 
 Per-knob output specificity is handled entirely by the `metric`/`plot`/recommender
 fields, so the engine never grows knob-specific branches. Interactive rendering
@@ -242,14 +242,20 @@ contrast, is available on **all** surfaces (on by default, `quiet=True` to
 suppress) since scripts benefit from it too. All other behavior — output
 directory, grid, reuse, recommendation — is identical across the three surfaces.
 
-## Preset emission — deferred
+## Preset emission — folds into #28
 
 Issue #27 deliverable 4 is the "tune -> write instrument preset YAML" end goal.
-**Deferred by decision:** the UX is best chosen after the
-`tune` surface is usable, to avoid committing to non-intuitive caching/merge
-behavior before the workflow is felt. The enabling infrastructure already exists
-(`to_yaml_dict()` per stage + the `stageN:`-block preset format), so this is a
-fast follow once the surface lands. Captured as an open decision below.
+**Resolved:** preset/value persistence is primarily issue **#28's** scope, not a
+separate `tune`-side emit path. #28 builds the grammar for *viewing and setting*
+resolved knob values (the `tune settings` verb — resolved per-knob value +
+provenance across `.ftmw` / `.yml` / default). Once that set-grammar exists, the
+`tune scan` text output gains a closing line per knob that tells the user how to
+persist their chosen value — into either a target `.yml` preset or the `.ftmw`
+file itself — reusing #28's set path rather than inventing a `tune`-local
+emitter. This keeps the sweep/visualization code free of caching/merge UX and
+puts a single value-persistence surface in #28. The enabling infrastructure
+already exists (`to_yaml_dict()` per stage + the `stageN:`-block preset format),
+so this is wiring on top of #28.
 
 ## Sequencing
 
@@ -269,11 +275,13 @@ is proven on a low-churn stage, then fanned out.
 4. **Stage 3 -> 4 -> 5.** Heaviest; register the tracked `probe_<knob>.py`
    grids/metrics/plots into the registry (they already encode grid + metric +
    plot). Reuse the `<stage>-gaussian-audit/harness.py` builders. Follow the
-   conventions in §Lessons for the fan-out. **Stages 3 and 4 done; Stage 5
-   fit-quality family done** (see §Implementation status); Stage 5 rescue / spur
-   / thaw families next.
-5. **Preset emission** (resolve the deferred decision) once the surface is felt;
-   and the resolved-settings inspection verb (issue #28).
+   conventions in §Lessons for the fan-out. **Stages 3, 4, and all of Stage 5
+   done** — fit-quality + rescue / spur / thaw families (see §Implementation
+   status). Issue #28 is next.
+5. **Issue #28** — the resolved-settings view/set grammar (`tune settings`).
+   Value persistence folds in here (see §Preset emission): once the set path
+   exists, `tune scan` appends per-knob instructions for writing the chosen value
+   to a `.yml` preset or the `.ftmw` file. No separate `tune`-side emitter.
 6. **Gap-fill** any remaining no-tool knobs as registry entries.
 
 ## Implementation status
@@ -456,20 +464,76 @@ driving `fit_peaks_impl` through a one-field bundle (`_run_fit`),
   on 2638 — first-try defaults / low leverage; and `fit_tau_min_snr` was orphaned
   until wired — see the §Lessons note.)*
 
+**Knob coverage — Stage 5 rescue / spur / thaw families done (tiered).** The
+three renegotiation families complete Stage 5: 18 knobs registered as
+`stage5.{rescue,spur,thaw}.<field>`, reusing the fit-quality family's `_run_fit`
+runner and the window-reduction `prepare` hook, but each with its own metric +
+provenance plot (the families *do* distinct things, so a shared plot would lie).
+Primaries are the Y-rated gates: `rescue.{snr_threshold, prominence_threshold}`,
+`spur.{integer_tol_mhz, narrowness_ratio, mask_half_width_bins}`,
+`thaw.residual_edge_threshold`; the round-caps, cleanup/merge factors, and
+detector floors are advanced. The plots read the *persisted renegotiation
+histories* (`SpectrumFit.rescue_history` / `thaw_history` / `replan_history` and
+the band-level spur catalogue in `parameters`), so no fitting-code change was
+needed — but they are bounded by what is persisted. The band-overlay backdrop
+(`_band_spectrum`) is the **persisted canonical FT** (loaded via `ctx`), *not*
+the Stage 5 `active_ft`: the active FT is an rfft of the truncated FID and so
+spans the full 0→Nyquist RF band (the trim is applied only downstream to
+windows/peaks), whereas the persisted FT is the truncated-FID *and* trimmed-band
+analysis spectrum — what the overlays should show. Markers are absolute MHz, so
+they register on it either way. The families are:
+- **Rescue (`_metric_rescue` / `plot_rescue`):** per-round counts (added /
+  rescue-origin-pruned / merged), χ² before→after, and the detector candidates
+  (offset + SNR) are persisted; a per-peak "came from rescue" origin flag is
+  *not*, so the view is aggregate. Three co-equal panels (user-chosen): (1) a
+  count + median-χ²-drop trend vs value (watch `n_pruned_rescue`, the failsafe —
+  lines rescue added that a later refit undid); (2) a band-wide where-rescue-fires
+  raster, one row per value, over the spectrum; (3) the candidate-SNR-vs-gate
+  strip (per-value gate line in colour when sweeping `snr_threshold`). Columns:
+  `n_added / n_pruned_rescue / n_merged / n_win / n_rounds / chi2_drop_pct /
+  eps_p50 / n_peaks`.
+- **Spur (`_metric_spur` / `plot_spur`):** the gated catalogue
+  (`spur_centers_mhz` / `spur_sources` / `spur_mask_half_width_bins`) is computed
+  on the *full active FT*, so spur counts are immune to the plan reduction. Plot
+  (user-chosen spectrum overlay): (1) a count-by-source trend (total / narrow /
+  saturated); (2) `|FT|` drawn once with each gated integer-MHz spur as a vertical
+  marker, ±mask half-width shaded, coloured by *how many* values gate it (a
+  robustness ramp, not a last-surviving ramp: spur gating is not monotonic in one
+  direction across the spur knobs — looser `narrowness_ratio` adds spurs while a
+  higher `snr_threshold` removes them — so a directional survival colour would
+  collapse to one shade). Columns: `n_spurs / n_narrow / n_saturated /
+  mask_hw_bins / eps_p50 / n_peaks`.
+- **Thaw (`_metric_thaw` / `plot_thaw`):** literal original-vs-final window
+  boundaries are *not* persisted — only the edge-coherence handshake events — so
+  the plan's "`plot_thaw` = boundary moves" is realised as the **coherence
+  handshake** (user-confirmed). On 2638 thaw accepts 0/12 (replan 0/7), so the
+  view must read at zero accepts. Three panels: (1) thaw/replan attempt+accept
+  counts + plan-revision trend; (2) a contested-edge raster (○ thaw at the
+  contributor freq, △ replan at the surviving-window centre; filled = accepted);
+  (3) the before→after edge-S_coh scatter with the trigger threshold drawn —
+  diagonal points are edges the handshake left unchanged. Columns: `n_thaw /
+  n_thaw_acc / n_replan / n_replan_acc / rev / coh_flag_p95 / coh_red_p50 /
+  eps_p50`.
+
+Tests: `_metric_rescue/spur/thaw` reducers + the three adapters in
+`tests/unit/_internal/tuning/{test_registry,test_plots}.py` (fake duck-typed
+results), plus the real-fit smoke on the 2638 stage-4 fixture.
+
 Remaining:
 
-- **Stage 5 rescue / spur / thaw families** (sequencing step 4): the dedicated
-  `plot_rescue` (added/pruned residual peaks), `plot_spur` (masked bins), and
-  `plot_thaw` (boundary moves) adapters + their metrics, reusing the same
-  `_run_fit` runner and window selection. Keep grids tight; test against the
-  small dependency-free-windows fixture.
-- **Preset emission** (deferred — see §Open decisions 1) and the resolved-settings
-  inspection verb (issue **#28**): a `tune settings` view of resolved per-knob
-  values + provenance (`.ftmw`/`.yml`/default), reusing the registry walk +
-  selector + tiering.
-- **Manual validation:** the Stage 0/1/2/2b/3/4 knobs and the Stage 5
-  fit-quality family await a user drive-through on real data to confirm each
-  metric/plot before they are relied on.
+- **Issue #28 — resolved-settings view/set grammar** (`tune settings`): a view of
+  resolved per-knob values + provenance (`.ftmw`/`.yml`/default), reusing the
+  registry walk + selector + tiering, plus the set path that writes a chosen value
+  to a `.yml` preset or the `.ftmw` file. Value persistence (the #27 deliverable-4
+  "tune -> preset" goal) folds in here: once the set path exists, `tune scan`
+  appends per-knob persistence instructions (see §Preset emission). This closes
+  out the #27 surface.
+- **Manual validation:** the Stage 0/1/2/2b/3/4 knobs and the full Stage 5
+  surface (fit-quality + rescue / spur / thaw) await a user drive-through on real
+  data to confirm each metric/plot before they are relied on. Known low-leverage
+  spots on 2638: many fit knobs read flat (first-try defaults), and thaw accepts
+  ~0 — so the thaw plot is validated for "reads correctly at zero accepts", not
+  for showing accepted handshakes.
 
 ## Lessons / conventions for the Stage 3→5 fan-out
 
@@ -531,12 +595,12 @@ Patterns proven on Stages 0–2b that the Stage 3→5 registration should follow
 
 ## Open decisions
 
-1. **Preset-emit UX** (deferred above): standalone `emit-preset` vs
-   `--save-preset` on `tune scan` vs both; and the merge/caching semantics when
-   building a preset incrementally across sessions. Recommendation: engine stage
-   prints recommended setting and shows user how to persist if desired: either
-   local to the `.ftmw` file or to a target `.yml` file. Likely best to separate
-   from the raw sweep/visualization code.
+1. **Preset-emit UX** — *resolved* (see §Preset emission): value persistence
+   folds into issue **#28**. #28 owns the view/set grammar; once its set path
+   lands, `tune scan` appends per-knob instructions for persisting the chosen
+   value into a `.yml` preset or the `.ftmw` file. No standalone `tune`-side
+   `emit-preset` / `--save-preset` path, and no caching/merge logic in the sweep
+   code.
 2. **Plot-adapter depth at first landing**: ship table-only for all knobs first
    and add plot adapters incrementally, or port each knob's plot as it is
    registered. Leaning table-first to get the surface usable fast.
