@@ -451,9 +451,9 @@ class TestPairPhasePenalty:
     @pytest.mark.parametrize(
         "dphi,sign",
         [
-            (0.0, +1.0),                # in-phase degeneracy
-            (np.pi / 2.0, 0.0),          # quadrature
-            (np.pi, -1.0),               # anti-phase cancellation
+            (0.0, +1.0),  # in-phase degeneracy
+            (np.pi / 2.0, 0.0),  # quadrature
+            (np.pi, -1.0),  # anti-phase cancellation
             (-np.pi / 2.0, 0.0),
         ],
     )
@@ -501,8 +501,10 @@ class TestPairPhasePenalty:
         eps = 1e-6
         fd = np.zeros_like(jac)
         for idx in range(params.size):
-            pp = params.copy(); pp[idx] += eps
-            pm = params.copy(); pm[idx] -= eps
+            pp = params.copy()
+            pp[idx] += eps
+            pm = params.copy()
+            pm[idx] -= eps
             rp, _ = _penalty_residuals_and_jacobian(pp, **kwargs)
             rm, _ = _penalty_residuals_and_jacobian(pm, **kwargs)
             fd[:, idx] = (rp - rm) / (2.0 * eps)
@@ -599,8 +601,10 @@ class TestBidirectionalTauPenalty:
         eps = 1e-6
         fd = np.zeros_like(jac)
         for idx in range(params.size):
-            pp = params.copy(); pp[idx] += eps
-            pm = params.copy(); pm[idx] -= eps
+            pp = params.copy()
+            pp[idx] += eps
+            pm = params.copy()
+            pm[idx] -= eps
             rp, _ = _penalty_residuals_and_jacobian(pp, **kwargs)
             rm, _ = _penalty_residuals_and_jacobian(pm, **kwargs)
             fd[:, idx] = (rp - rm) / (2.0 * eps)
@@ -626,8 +630,10 @@ class TestBidirectionalTauPenalty:
         eps = 1e-6
         fd = np.zeros_like(jac)
         for idx in range(params.size):
-            pp = params.copy(); pp[idx] += eps
-            pm = params.copy(); pm[idx] -= eps
+            pp = params.copy()
+            pp[idx] += eps
+            pm = params.copy()
+            pm[idx] -= eps
             rp, _ = _penalty_residuals_and_jacobian(pp, **kwargs)
             rm, _ = _penalty_residuals_and_jacobian(pm, **kwargs)
             fd[:, idx] = (rp - rm) / (2.0 * eps)
@@ -647,9 +653,14 @@ class TestDeriveWindowFitConstraintsCalibratedBounds:
         z = np.full(m, 0.5 + 0.0j)
         sigma = np.full(m, 0.01)
         c = derive_window_fit_constraints(
-            z, sigma, tau0_us=3.0, acquisition_us=T_US,
-            tau_maj_us=6.0, sigma_tau_us=0.5,
-            tau_penalty_n_sigma=3.0, max_decay_factor=5.0,
+            z,
+            sigma,
+            tau0_us=3.0,
+            acquisition_us=T_US,
+            tau_maj_us=6.0,
+            sigma_tau_us=0.5,
+            tau_penalty_n_sigma=3.0,
+            max_decay_factor=5.0,
         )
         # +- 3*0.5 = +- 1.5 around 6.0 -> (4.5, 7.5), well inside the
         # factor-5 cap (1.2, 30.0).
@@ -665,8 +676,12 @@ class TestDeriveWindowFitConstraintsCalibratedBounds:
         z = np.full(m, 0.5 + 0.0j)
         sigma = np.full(m, 0.01)
         c = derive_window_fit_constraints(
-            z, sigma, tau0_us=3.0, acquisition_us=T_US,
-            tau_apodization_us=5.0, max_decay_factor=5.0,
+            z,
+            sigma,
+            tau0_us=3.0,
+            acquisition_us=T_US,
+            tau_apodization_us=5.0,
+            max_decay_factor=5.0,
         )
         # Upper bound = min(3*5, 5) = 5.
         assert c.tau_bounds[1] == pytest.approx(5.0)
@@ -777,16 +792,18 @@ class TestComplexBaseline:
         def full_model(p):
             pk = ModelPeak(p[0], p[1], p[2])
             m = model_spectrum(u, [pk], p[3], T_US)
-            a = p[4:4 + (order + 1)]
-            b = p[4 + (order + 1):]
+            a = p[4 : 4 + (order + 1)]
+            b = p[4 + (order + 1) :]
             return m + basis @ a + 1j * (basis @ b)
 
         p0 = np.array([5.0, 0.12, 0.4, tau, 0.3, -0.2, 0.05, 0.1])
         num = np.zeros_like(analytic)
         for j in range(p0.size):
             h = 1e-6 * max(abs(p0[j]), 1.0)
-            pp = p0.copy(); pp[j] += h
-            pm = p0.copy(); pm[j] -= h
+            pp = p0.copy()
+            pp[j] += h
+            pm = p0.copy()
+            pm[j] -= h
             num[:, j] = (full_model(pp) - full_model(pm)) / (2 * h)
         assert np.max(np.abs(analytic - num)) < 1e-5
 

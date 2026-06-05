@@ -56,7 +56,8 @@ class TestImplLevelWarnings:
         with pytest.warns(DeprecationWarning, match=r"estimate_noise.*window_mhz"):
             with _swallow_downstream_errors():
                 stage2_impl.compute_noise_estimation_impl(
-                    str(bogus), window_mhz=60.0,
+                    str(bogus),
+                    window_mhz=60.0,
                 )
 
     def test_stage2b_calibrate_tau_legacy_kwarg(self, tmp_path) -> None:
@@ -74,11 +75,13 @@ class TestImplLevelWarnings:
     def test_shape_recommendation_legacy_kwarg(self, tmp_path) -> None:
         bogus = tmp_path / "no_such.ftmw"
         with pytest.warns(
-            DeprecationWarning, match=r"recommend_shape.*pure_margin_threshold",
+            DeprecationWarning,
+            match=r"recommend_shape.*pure_margin_threshold",
         ):
             with _swallow_downstream_errors():
                 _shape_recommendation_impl.recommend_shape_impl(
-                    str(bogus), pure_margin_threshold=0.05,
+                    str(bogus),
+                    pure_margin_threshold=0.05,
                 )
 
     def test_stage3_detect_peaks_legacy_kwarg(self, tmp_path) -> None:
@@ -126,7 +129,9 @@ class TestApiChainPropagation:
     """
 
     def test_api_estimate_noise_emits_warning_for_legacy_kwarg(
-        self, baseline_2638_stage1, tmp_path,
+        self,
+        baseline_2638_stage1,
+        tmp_path,
     ) -> None:
         fp = tmp_path / "warn_api.ftmw"
         shutil.copy(baseline_2638_stage1, fp)

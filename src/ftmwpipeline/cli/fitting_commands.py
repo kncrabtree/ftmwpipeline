@@ -449,9 +449,7 @@ def register_fitting_commands(subparsers: Any) -> None:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_val.add_argument(
-        "file_path", help="Path to .ftmw file with Stage 5 results"
-    )
+    p_val.add_argument("file_path", help="Path to .ftmw file with Stage 5 results")
     p_val.add_argument(
         "--kappa",
         dest="kappa",

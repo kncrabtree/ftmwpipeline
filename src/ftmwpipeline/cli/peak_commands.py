@@ -58,9 +58,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             if p.classification and p.classification.value == "medium"
         )
         n_weak = sum(
-            1
-            for p in promoted
-            if p.classification and p.classification.value == "weak"
+            1 for p in promoted if p.classification and p.classification.value == "weak"
         )
         print("\nPeak detection completed successfully!")
         print(f"  Active acquisition T: {result['acquisition_us']:.2f} us")

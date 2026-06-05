@@ -64,9 +64,7 @@ class TestStage2NoiseSettingsPersistence:
 
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = NoiseSettings(window_mhz=60.0)
-        save_noise_settings_to_h5(
-            empty_ftmw, s, preset_name="instrument_bc_2638"
-        )
+        save_noise_settings_to_h5(empty_ftmw, s, preset_name="instrument_bc_2638")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE2_NOISE_SETTINGS_PATH].attrs)
         assert attrs.get("preset_name") == "instrument_bc_2638"
@@ -105,6 +103,6 @@ class TestStage2NoiseSettingsPersistence:
         save_noise_settings_to_h5(empty_ftmw, NoiseSettings(window_mhz=60.0))
         with h5py.File(empty_ftmw, "r") as h5f:
             assert STAGE2_NOISE_SETTINGS_PATH in h5f
-            assert "stage2_noise_result" not in h5f, (
-                "save_noise_settings_to_h5 must not touch the results group"
-            )
+            assert (
+                "stage2_noise_result" not in h5f
+            ), "save_noise_settings_to_h5 must not touch the results group"

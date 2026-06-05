@@ -37,12 +37,11 @@ def _plot_snr_histogram(
         [p.snr for p in peaks if p.snr is not None and p.snr > 0], dtype=float
     )
     if snrs.size == 0:
-        ax.text(0.5, 0.5, "no SNR data", ha="center", va="center",
-                transform=ax.transAxes)
+        ax.text(
+            0.5, 0.5, "no SNR data", ha="center", va="center", transform=ax.transAxes
+        )
         return
-    bins = np.logspace(
-        np.log10(max(snrs.min(), 0.5)), np.log10(snrs.max()), 60
-    )
+    bins = np.logspace(np.log10(max(snrs.min(), 0.5)), np.log10(snrs.max()), 60)
     ax.hist(snrs, bins=bins, color="steelblue", alpha=0.8)
     ax.set_xscale("log")
     ax.set_yscale("log")

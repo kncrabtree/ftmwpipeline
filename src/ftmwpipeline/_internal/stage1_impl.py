@@ -56,9 +56,7 @@ def _read_settings_layer(file_path: str, group_path: str) -> Optional[FTSettings
     return FTSettings.from_attrs(attrs)
 
 
-def _resolve_settings(
-    file_path: str, explicit: Optional[FTSettings]
-) -> FTSettings:
+def _resolve_settings(file_path: str, explicit: Optional[FTSettings]) -> FTSettings:
     """Resolve effective FT settings for ``file_path`` (the D7 chain)."""
     persisted = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     recommended = _read_settings_layer(file_path, RECOMMENDED_PATH)
@@ -99,9 +97,7 @@ def compute_ft_impl(
         fid = load_fid_from_pipeline_impl(file_path)
         logger.info(f"Loaded FID with {len(fid.data):,} points from pipeline file")
     except Exception as e:
-        raise RuntimeError(
-            f"Failed to load FID from pipeline file {file_path}: {e}"
-        )
+        raise RuntimeError(f"Failed to load FID from pipeline file {file_path}: {e}")
 
     resolved = _resolve_settings(file_path, settings)
     trim_range = resolved.trim
@@ -113,9 +109,7 @@ def compute_ft_impl(
 
     try:
         preprocessed_fid = fid.preprocess(**resolved.to_preprocess_kwargs())
-        logger.info(
-            f"Preprocessing complete: {len(preprocessed_fid.data):,} points"
-        )
+        logger.info(f"Preprocessing complete: {len(preprocessed_fid.data):,} points")
     except Exception as e:
         raise ValueError(f"FID preprocessing failed: {e}")
 
@@ -169,9 +163,7 @@ def compute_ft_impl(
                 "fid_context": fid_context,
             },
         )
-        logger.info(
-            f"ComplexFT created: {len(complex_ft.complex_spectrum):,} points"
-        )
+        logger.info(f"ComplexFT created: {len(complex_ft.complex_spectrum):,} points")
     except Exception as e:
         raise RuntimeError(f"ComplexFT creation failed: {e}")
 
@@ -338,9 +330,7 @@ def _persist_canonical_settings(file_path: str, resolved: FTSettings) -> None:
     logger.info("FT parameters and stage tracking saved to pipeline file")
 
 
-def save_ft_parameters_impl(
-    file_path: str, parameters: Dict[str, Any]
-) -> None:
+def save_ft_parameters_impl(file_path: str, parameters: Dict[str, Any]) -> None:
     """Persist an explicit settings dict as canonical (used by --save flows)."""
     settings = FTSettings.from_attrs(parameters)
     resolved = _resolve_settings(file_path, settings)

@@ -7,13 +7,16 @@ Implementation pending for Phase 8.
 
 # Placeholder functions - will be implemented in Phase 8
 
+
 def plot_fit_results(*args, **kwargs):
     """Placeholder for fit results plotting."""
     raise NotImplementedError("Will be implemented in Phase 8")
 
+
 def plot_residuals(*args, **kwargs):
     """Placeholder for residual plotting."""
     raise NotImplementedError("Will be implemented in Phase 8")
+
 
 def plot_time_domain_fit(*args, **kwargs):
     """Placeholder for time-domain fit plotting."""

@@ -129,14 +129,10 @@ def batch_process_experiments(
     results: List[Dict[str, Any]] = []
     for source in sources:
         try:
-            results.append(
-                process_experiment(source, output_dir=output_dir, **kwargs)
-            )
+            results.append(process_experiment(source, output_dir=output_dir, **kwargs))
         except Exception as e:  # noqa: BLE001 - report per-experiment, keep going
             logger.error("Failed to process %s: %s", source, e)
-            results.append(
-                {"source": str(source), "status": "error", "error": str(e)}
-            )
+            results.append({"source": str(source), "status": "error", "error": str(e)})
     return results
 
 
@@ -184,8 +180,8 @@ def validate_installation() -> Dict[str, bool]:
 
     # The pipeline is file-bound: construction happens through the
     # create()/open() factory classmethods, not a bare constructor.
-    validation_results["pipeline_creation"] = hasattr(
-        Pipeline, "create"
-    ) and hasattr(Pipeline, "open")
+    validation_results["pipeline_creation"] = hasattr(Pipeline, "create") and hasattr(
+        Pipeline, "open"
+    )
 
     return validation_results

@@ -357,14 +357,8 @@ def project_candidates(
             continue
         median_sigma_c = float(np.median(finite_sigma_c))
         coherent_snr = (coherent_amp * h_T_on_line) / median_sigma_c
-        detected_snr_active = float(
-            abs(spec_s[c_sorted]) / safe_sigma_c[c_sorted]
-        )
-        ratio = (
-            coherent_snr / detected_snr_active
-            if detected_snr_active > 0.0
-            else 0.0
-        )
+        detected_snr_active = float(abs(spec_s[c_sorted]) / safe_sigma_c[c_sorted])
+        ratio = coherent_snr / detected_snr_active if detected_snr_active > 0.0 else 0.0
 
         results.append(
             ProjectionResult(

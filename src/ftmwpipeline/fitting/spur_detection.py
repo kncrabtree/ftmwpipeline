@@ -57,9 +57,9 @@ __all__ = [
 
 # Detection thresholds (validated on the 2638 fixture; instrument-tunable
 # via the Stage 5 ``spur`` settings sub-block).
-DEFAULT_INTEGER_TOL_MHZ = 0.04    # ~half a bin (active-FT spacing ~79 kHz)
-DEFAULT_NARROWNESS_RATIO = 0.30   # max(neighbour)/peak below this => narrow
-DEFAULT_SNR_THRESHOLD = 5.0       # peak-bin magnitude / local sigma_c floor
+DEFAULT_INTEGER_TOL_MHZ = 0.04  # ~half a bin (active-FT spacing ~79 kHz)
+DEFAULT_NARROWNESS_RATIO = 0.30  # max(neighbour)/peak below this => narrow
+DEFAULT_SNR_THRESHOLD = 5.0  # peak-bin magnitude / local sigma_c floor
 DEFAULT_MASK_HALF_WIDTH_BINS = 2  # residual-mask half-width in active-FT bins
 
 
@@ -145,9 +145,9 @@ class SpurSet:
 
     @property
     def centers_mhz(self) -> np.ndarray:
-        return cast(np.ndarray, np.asarray(
-            [s.center_mhz for s in self.spurs], dtype=float
-        ))
+        return cast(
+            np.ndarray, np.asarray([s.center_mhz for s in self.spurs], dtype=float)
+        )
 
     @property
     def mask_half_width_mhz(self) -> float:
@@ -197,9 +197,7 @@ class SpurSet:
         sideband: Any,
     ) -> List[float]:
         """Spur baseband offsets to reject during peak nomination."""
-        spec = self.window_mask_spec(
-            freq_lo_mhz, freq_hi_mhz, center_mhz, sideband
-        )
+        spec = self.window_mask_spec(freq_lo_mhz, freq_hi_mhz, center_mhz, sideband)
         return list(spec.offsets_mhz) if spec is not None else []
 
     def candidate_on_spur(self, freq_mhz: float) -> bool:
@@ -306,13 +304,18 @@ def gate_spurs(
         keep_freq = existing
         if source == "narrow":
             keep_freq = GatedSpur(
-                center_mhz=center, integer_mhz=f_int, source=merged_source,
-                snr=snr, narrowness_ratio=ratio,
+                center_mhz=center,
+                integer_mhz=f_int,
+                source=merged_source,
+                snr=snr,
+                narrowness_ratio=ratio,
             )
         else:
             keep_freq = GatedSpur(
-                center_mhz=existing.center_mhz, integer_mhz=f_int,
-                source=merged_source, snr=existing.snr,
+                center_mhz=existing.center_mhz,
+                integer_mhz=f_int,
+                source=merged_source,
+                snr=existing.snr,
                 narrowness_ratio=existing.narrowness_ratio,
             )
         by_int[f_int] = keep_freq

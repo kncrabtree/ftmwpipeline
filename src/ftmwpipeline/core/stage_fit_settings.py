@@ -230,7 +230,13 @@ class StageFitSettings:
 
 # Sub-dataclass field names on StageFitSettings, in HDF5/YAML order.
 _SUB_NAMES = (
-    "tau", "seeder", "conservative", "penalties", "rescue", "thaw", "spur",
+    "tau",
+    "seeder",
+    "conservative",
+    "penalties",
+    "rescue",
+    "thaw",
+    "spur",
     "baseline",
 )
 
@@ -340,9 +346,7 @@ def _resolve_sub(
     *layers: Optional[StageFitSettings],
 ) -> Any:
     """Per-sub-dataclass field-merge with hard-default fallback."""
-    sub_layers = [
-        getattr(s, sub_name) for s in layers if s is not None
-    ]
+    sub_layers = [getattr(s, sub_name) for s in layers if s is not None]
     if not sub_layers:
         sub_layers = []
     template = getattr(StageFitSettings(), sub_name)
@@ -614,8 +618,7 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
                 if p.name.endswith(".yaml")
             )
             raise FileNotFoundError(
-                f"no packaged preset named {name_or_path!r}; "
-                f"available: {available}"
+                f"no packaged preset named {name_or_path!r}; " f"available: {available}"
             )
         text = candidate.read_text()
     data = yaml.safe_load(text)
@@ -640,6 +643,7 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
         inner_block = dict(data["stage5"])
     elif has_fit:
         import warnings as _warnings
+
         _warnings.warn(
             f"preset {name_or_path!r}: top-level 'fit:' wrapper is "
             "deprecated; rename it to 'stage5:' (per-stage block "
@@ -658,7 +662,8 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     # but strip out sibling stage blocks (``stage2b:`` etc.) so they
     # don't trip ``from_yaml_dict``'s unknown-key rejection.
     flat = {
-        k: v for k, v in data.items()
+        k: v
+        for k, v in data.items()
         if k not in ("stage2", "stage2b", "stage3", "stage4")
     }
     return from_yaml_dict(flat)

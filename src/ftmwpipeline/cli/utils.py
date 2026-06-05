@@ -14,57 +14,59 @@ def setup_logging(verbose: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
         level=level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[logging.StreamHandler()]
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        handlers=[logging.StreamHandler()],
     )
 
 
 def parse_frequency_range(range_str: str) -> Tuple[float, float]:
     """
     Parse frequency range string in format 'min:max'.
-    
+
     Parameters
     ----------
     range_str : str
         Frequency range as 'min:max' in MHz
-        
+
     Returns
     -------
     tuple of float
         (min_freq, max_freq) in MHz
-        
+
     Raises
     ------
     ValueError
         If range_str format is invalid
     """
     try:
-        min_freq, max_freq = range_str.split(':')
+        min_freq, max_freq = range_str.split(":")
         min_freq = float(min_freq)
         max_freq = float(max_freq)
-        
+
         if min_freq >= max_freq:
             raise ValueError("Minimum frequency must be less than maximum frequency")
-            
+
         return min_freq, max_freq
     except (ValueError, TypeError) as e:
-        raise ValueError(f"Invalid frequency range format '{range_str}'. Expected 'min:max' in MHz") from e
+        raise ValueError(
+            f"Invalid frequency range format '{range_str}'. Expected 'min:max' in MHz"
+        ) from e
 
 
 def validate_experiment_source(source_path: str) -> Path:
     """
     Validate experiment source path.
-    
+
     Parameters
     ----------
     source_path : str
         Path to experiment data directory
-        
+
     Returns
     -------
     Path
         Validated path object
-        
+
     Raises
     ------
     FileNotFoundError
@@ -74,19 +76,21 @@ def validate_experiment_source(source_path: str) -> Path:
     if not path.exists():
         raise FileNotFoundError(f"Experiment source path does not exist: {source_path}")
     if not path.is_dir():
-        raise NotADirectoryError(f"Experiment source path is not a directory: {source_path}")
+        raise NotADirectoryError(
+            f"Experiment source path is not a directory: {source_path}"
+        )
     return path
 
 
 def validate_cache_dir(cache_dir: str) -> Path:
     """
     Validate and create cache directory if needed.
-    
+
     Parameters
     ----------
     cache_dir : str
         Path to cache directory
-        
+
     Returns
     -------
     Path
@@ -103,7 +107,9 @@ def print_error(message: str, exit_code: int = 1) -> None:
     sys.exit(exit_code)
 
 
-def print_processing_params(zpf: int, expf_us: float, trim_range: Optional[Tuple[float, float]]) -> None:
+def print_processing_params(
+    zpf: int, expf_us: float, trim_range: Optional[Tuple[float, float]]
+) -> None:
     """Print processing parameters for user confirmation."""
     print("Processing parameters:")
     print(f"  Zero padding factor: {zpf}")

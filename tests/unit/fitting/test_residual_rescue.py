@@ -83,7 +83,12 @@ class TestRescueAddsMissedPeak:
         assert initial.fit.reduced_chi2 > 2.0  # the missed peak makes chi^2 bad
 
         consolidated = rescue_and_consolidate(
-            u, z, sigma, initial, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            initial,
+            TAU_US,
+            T_US,
             max_rescue_rounds=DEFAULT_RESCUE_MAX_ROUNDS,
         )
 
@@ -120,7 +125,12 @@ class TestRescueAddsMissedPeak:
         initial = conservative_fit(u, z, sigma, [-0.6], TAU_US, T_US)
         original_trail = list(initial.audit_trail)
         consolidated = rescue_and_consolidate(
-            u, z, sigma, initial, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            initial,
+            TAU_US,
+            T_US,
         )
         assert consolidated.fit.audit_trail is initial.audit_trail or (
             consolidated.fit.audit_trail == original_trail
@@ -144,7 +154,12 @@ class TestRescueOnCleanWindow:
         assert initial.fit.reduced_chi2 < 1.5
 
         consolidated = rescue_and_consolidate(
-            u, z, sigma, initial, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            initial,
+            TAU_US,
+            T_US,
         )
         # The chain terminates with no candidates (eventually): noise-only
         # residual on a final cleaner round.
@@ -174,7 +189,12 @@ class TestRescueShortCircuit:
         # no rescue runs and we get the initial back verbatim.
         initial = conservative_fit(u, z, sigma, [-0.5], TAU_US, T_US)
         consolidated = rescue_and_consolidate(
-            u, z, sigma, initial, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            initial,
+            TAU_US,
+            T_US,
             max_rescue_rounds=0,
         )
         assert consolidated.fit is initial
@@ -196,7 +216,12 @@ class TestRescueDiagnosticsShape:
 
         initial = conservative_fit(u, z, sigma, [-0.6], TAU_US, T_US)
         consolidated = rescue_and_consolidate(
-            u, z, sigma, initial, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            initial,
+            TAU_US,
+            T_US,
         )
         assert isinstance(consolidated, ConsolidatedRescueOutcome)
         # Origin invariant: joint_fit.peaks = previous-round peaks +
@@ -207,8 +232,7 @@ class TestRescueDiagnosticsShape:
             if diag.joint_fit is None:
                 continue
             assert (
-                len(diag.joint_fit.peaks)
-                == diag.n_initial_peaks + diag.n_rescue_added
+                len(diag.joint_fit.peaks) == diag.n_initial_peaks + diag.n_rescue_added
             ), (
                 f"origin invariant broken: round {diag.round_idx} has "
                 f"{len(diag.joint_fit.peaks)} joint peaks but "
@@ -245,12 +269,23 @@ class TestMergeCleanupAICc:
         ]
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
         k2_fit = fit_window(
-            u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs,
+            u,
+            z,
+            sigma,
+            duplicate_init,
+            TAU_US,
+            T_US,
+            **fit_kwargs,
         )
         assert k2_fit.success and k2_fit.n_peaks == 2
 
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         assert n_merged == 1
@@ -270,12 +305,23 @@ class TestMergeCleanupAICc:
         sigma = np.full(u.size, 1.0)
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
         k2_fit = fit_window(
-            u, z, sigma, true, TAU_US, T_US, **fit_kwargs,
+            u,
+            z,
+            sigma,
+            true,
+            TAU_US,
+            T_US,
+            **fit_kwargs,
         )
         assert k2_fit.success and k2_fit.n_peaks == 2
 
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         assert n_merged == 0
@@ -293,10 +339,21 @@ class TestMergeCleanupAICc:
         sigma = np.full(u.size, 1.0)
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
         k2_fit = fit_window(
-            u, z, sigma, true, TAU_US, T_US, **fit_kwargs,
+            u,
+            z,
+            sigma,
+            true,
+            TAU_US,
+            T_US,
+            **fit_kwargs,
         )
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
             merge_separation_factor=1.0,
         )
@@ -321,12 +378,23 @@ class TestMergeCleanupAICc:
         sigma = np.full(u.size, 1.0)
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
         k2_fit = fit_window(
-            u, z, sigma, true, TAU_US, T_US, **fit_kwargs,
+            u,
+            z,
+            sigma,
+            true,
+            TAU_US,
+            T_US,
+            **fit_kwargs,
         )
         assert k2_fit.success and k2_fit.n_peaks == 2
 
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         # Real pair must survive the gate even when AICc cannot
@@ -360,7 +428,12 @@ class TestMergeCleanupAICc:
 
         # Floor disabled (k=0): FWHM-only structural cutoff leaves the pair.
         _, n_off = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
             min_pair_separation_resolution_factor=0.0,
         )
@@ -368,7 +441,12 @@ class TestMergeCleanupAICc:
 
         # Floor on (k=1): the sub-resolution pair is collapsed.
         merged, n_on = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
             min_pair_separation_resolution_factor=1.0,
         )
@@ -397,7 +475,12 @@ class TestMergeCleanupAICc:
         # Tier disabled (threshold above the 10:1 ratio): supra-resolution pair
         # is preserved (tiers 1-2 do not reach it).
         _, n_off = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
             overfit_amp_ratio_threshold=100.0,
         )
@@ -405,7 +488,12 @@ class TestMergeCleanupAICc:
 
         # Tier on (default threshold 6 < 10): the absorber is collapsed.
         merged, n_on = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         assert n_on == 1
@@ -427,7 +515,12 @@ class TestMergeCleanupAICc:
         k2_fit = fit_window(u, z, sigma, true, TAU_US, T_US, **fit_kwargs)
         assert k2_fit.success and k2_fit.n_peaks == 2
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         assert n_merged == 0
@@ -441,10 +534,21 @@ class TestMergeCleanupAICc:
         sigma = np.full(u.size, 1.0)
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
         k1_fit = fit_window(
-            u, z, sigma, [true], TAU_US, T_US, **fit_kwargs,
+            u,
+            z,
+            sigma,
+            [true],
+            TAU_US,
+            T_US,
+            **fit_kwargs,
         )
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k1_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k1_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         assert n_merged == 0
@@ -470,12 +574,23 @@ class TestMergeCleanupAICc:
         ]
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
         k2_fit = fit_window(
-            u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs,
+            u,
+            z,
+            sigma,
+            duplicate_init,
+            TAU_US,
+            T_US,
+            **fit_kwargs,
         )
         assert k2_fit.tau_was_fit is True
         assert k2_fit.tau_error is not None and np.isfinite(k2_fit.tau_error)
         merged, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, k2_fit, TAU_US, T_US,
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
             fit_kwargs_inner=fit_kwargs,
         )
         assert n_merged == 1

@@ -1,7 +1,7 @@
 """
 Functional API for FTMW Pipeline - Stateless file-based operations.
 
-This module provides a functional, stateless API for FTMW spectroscopy data 
+This module provides a functional, stateless API for FTMW spectroscopy data
 processing as an alternative to the object-oriented Pipeline class. All functions
 operate on .ftmw file paths and delegate to the Pipeline class internally to
 ensure identical behavior and avoid code duplication.
@@ -19,7 +19,7 @@ import ftmwpipeline.api as ftmw
 # Create pipeline from data
 ftmw.import_data("experiment.ftmw", source="examples/blackchirp_data/2638/")
 
-# Load and process data  
+# Load and process data
 fid = ftmw.load_fid("experiment.ftmw")
 complex_ft = ftmw.compute_ft("experiment.ftmw", zpf=2, expf_us=5.0, trim=(26500, 40000))
 
@@ -57,16 +57,22 @@ logger = logging.getLogger(__name__)
 # File Management Functions
 # =============================================================================
 
-def import_data(file_path: Union[str, Path], source: Union[str, Path], 
-                format_name: Optional[str] = None, fid_index: Optional[int] = None,
-                force: bool = False, **loader_params) -> Dict[str, Any]:
+
+def import_data(
+    file_path: Union[str, Path],
+    source: Union[str, Path],
+    format_name: Optional[str] = None,
+    fid_index: Optional[int] = None,
+    force: bool = False,
+    **loader_params,
+) -> Dict[str, Any]:
     """
     Create new pipeline from raw experimental data.
-    
+
     This function creates a new .ftmw pipeline file from experimental data,
     equivalent to Pipeline.create(). It handles format detection, data loading,
     and source metadata tracking.
-    
+
     Parameters
     ----------
     file_path : str or Path
@@ -81,12 +87,12 @@ def import_data(file_path: Union[str, Path], source: Union[str, Path],
         If True, overwrite existing file even with different source
     **loader_params
         Additional parameters for data loader
-        
+
     Returns
     -------
     dict
         Import result with pipeline file path, source info, and FID metadata
-        
+
     Raises
     ------
     PipelineExistsError
@@ -97,11 +103,11 @@ def import_data(file_path: Union[str, Path], source: Union[str, Path],
         If format detection or validation fails
     RuntimeError
         If data loading or file creation fails
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
-    >>> result = ftmw.import_data("exp_2638.ftmw", 
+    >>> result = ftmw.import_data("exp_2638.ftmw",
     ...                           source="examples/blackchirp_data/2638/")
     >>> print(f"Created: {result['pipeline_file']}")
     """
@@ -113,37 +119,37 @@ def import_data(file_path: Union[str, Path], source: Union[str, Path],
             format_name=format_name,
             fid_index=fid_index,
             force=force,
-            **loader_params
+            **loader_params,
         )
-        
+
         # Get pipeline info to return
         info = pipeline.info()
-        
+
         # Return result consistent with _internal implementation
         result = {
-            'pipeline_file': str(pipeline.filepath),
-            'source_path': info['source_path'],
-            'format_name': info['format'],
-            'status': 'success'
+            "pipeline_file": str(pipeline.filepath),
+            "source_path": info["source_path"],
+            "format_name": info["format"],
+            "status": "success",
         }
-        
+
         # Add FID metadata if available
         try:
             fid = pipeline.load_data()
-            result['fid_metadata'] = {
-                'n_points': fid.n_points,
-                'duration_us': fid.duration_us,
-                'probe_freq_mhz': fid.probe_freq_mhz,
-                'sideband': fid.sideband.value,
-                'shots': fid.shots,
-                'spacing': fid.spacing
+            result["fid_metadata"] = {
+                "n_points": fid.n_points,
+                "duration_us": fid.duration_us,
+                "probe_freq_mhz": fid.probe_freq_mhz,
+                "sideband": fid.sideband.value,
+                "shots": fid.shots,
+                "spacing": fid.spacing,
             }
         except Exception as e:
             logger.warning(f"Could not load FID metadata: {e}")
-        
+
         logger.info(f"Pipeline created successfully: {pipeline.filepath}")
         return result
-        
+
     except Exception as e:
         logger.error(f"Failed to import data: {e}")
         raise
@@ -152,20 +158,20 @@ def import_data(file_path: Union[str, Path], source: Union[str, Path],
 def load_fid(file_path: Union[str, Path]) -> FID:
     """
     Load FID data from pipeline file.
-    
+
     This function loads the raw FID data stored in a .ftmw pipeline file,
     equivalent to Pipeline.load_data().
-    
+
     Parameters
     ----------
     file_path : str or Path
         Path to existing .ftmw pipeline file
-        
+
     Returns
     -------
     FID
         The loaded FID object with all metadata
-        
+
     Raises
     ------
     FileNotFoundError
@@ -174,7 +180,7 @@ def load_fid(file_path: Union[str, Path]) -> FID:
         If file is corrupted or invalid
     RuntimeError
         If FID loading fails
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -192,20 +198,20 @@ def load_fid(file_path: Union[str, Path]) -> FID:
 def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
     """
     Validate pipeline file integrity.
-    
+
     This function performs comprehensive validation of a .ftmw pipeline file,
     equivalent to Pipeline.validate().
-    
+
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file to validate
-        
+
     Returns
     -------
     dict
         Validation report with status and any issues found
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -221,15 +227,16 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to validate {file_path}: {e}")
         return {
-            'valid': False,
-            'errors': [f"Failed to validate pipeline file: {e}"],
-            'warnings': []
+            "valid": False,
+            "errors": [f"Failed to validate pipeline file: {e}"],
+            "warnings": [],
         }
 
 
 # =============================================================================
 # Start-time Detection Functions (pre-Stage 1)
 # =============================================================================
+
 
 def detect_start_time(
     file_path: Union[str, Path],
@@ -317,17 +324,24 @@ def visualize_start_detection(
 # Stage 1 FT Processing Functions
 # =============================================================================
 
-def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
-               expf_us: Optional[float] = None, trim: Optional[Tuple[float, float]] = None,
-               start_us: Optional[float] = None, end_us: Optional[float] = None,
-               window_function: Optional[str] = None, units_power: Optional[int] = None,
-               from_saved_params: bool = False) -> ComplexFT:
+
+def compute_ft(
+    file_path: Union[str, Path],
+    zpf: Optional[int] = None,
+    expf_us: Optional[float] = None,
+    trim: Optional[Tuple[float, float]] = None,
+    start_us: Optional[float] = None,
+    end_us: Optional[float] = None,
+    window_function: Optional[str] = None,
+    units_power: Optional[int] = None,
+    from_saved_params: bool = False,
+) -> ComplexFT:
     """
     Compute Fourier Transform with specified processing parameters.
-    
+
     This function performs FT computation on FID data stored in a .ftmw pipeline
     file, equivalent to Pipeline.compute_ft(). Can be called multiple times safely.
-    
+
     Parameters
     ----------
     file_path : str or Path
@@ -343,7 +357,7 @@ def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
     start_us : float, optional
         FID window start time in microseconds
     end_us : float, optional
-        FID window end time in microseconds  
+        FID window end time in microseconds
     window_function : str, optional
         Windowing function name
     units_power : int, optional
@@ -386,26 +400,34 @@ def compute_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
             end_us=end_us,
             window_function=window_function,
             units_power=units_power,
-            from_saved_params=from_saved_params
+            from_saved_params=from_saved_params,
         )
     except Exception as e:
         logger.error(f"Failed to compute FT for {file_path}: {e}")
         raise
 
 
-def visualize_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
-                 expf_us: Optional[float] = None, trim: Optional[Tuple[float, float]] = None,
-                 start_us: Optional[float] = None, end_us: Optional[float] = None,
-                 window_function: Optional[str] = None, units_power: Optional[int] = None,
-                 save_params: bool = False, backend: str = 'matplotlib',
-                 interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
-                 show_fid_panels: bool = True):
+def visualize_ft(
+    file_path: Union[str, Path],
+    zpf: Optional[int] = None,
+    expf_us: Optional[float] = None,
+    trim: Optional[Tuple[float, float]] = None,
+    start_us: Optional[float] = None,
+    end_us: Optional[float] = None,
+    window_function: Optional[str] = None,
+    units_power: Optional[int] = None,
+    save_params: bool = False,
+    backend: str = "matplotlib",
+    interactive: bool = True,
+    output_file: Optional[Union[str, Path]] = None,
+    show_fid_panels: bool = True,
+):
     """
     Create enhanced FT visualization with processing workflow display.
-    
+
     This function creates comprehensive FT visualization showing the complete
     FID-to-spectrum processing workflow, equivalent to Pipeline.visualize_ft().
-    
+
     Parameters
     ----------
     file_path : str or Path
@@ -436,12 +458,12 @@ def visualize_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
         Path to save plot image (for non-interactive mode)
     show_fid_panels : bool, default True
         Whether to show FID processing panels
-        
+
     Returns
     -------
     figure
         Matplotlib or Plotly figure object
-        
+
     Raises
     ------
     FileNotFoundError
@@ -450,14 +472,14 @@ def visualize_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
         If required dependencies are not available
     RuntimeError
         If visualization fails
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
     >>> # Create interactive visualization with custom parameters
     >>> fig = ftmw.visualize_ft("experiment.ftmw", zpf=2, expf_us=5.0,
     ...                         save_params=True)
-    >>> 
+    >>>
     >>> # Save plot to file
     >>> fig = ftmw.visualize_ft("experiment.ftmw", interactive=False,
     ...                         output_file="spectrum.png")
@@ -476,21 +498,20 @@ def visualize_ft(file_path: Union[str, Path], zpf: Optional[int] = None,
             backend=backend,
             interactive=interactive,
             output_file=output_file,
-            show_fid_panels=show_fid_panels
+            show_fid_panels=show_fid_panels,
         )
     except Exception as e:
         logger.error(f"Failed to visualize FT for {file_path}: {e}")
         raise
 
 
-def save_ft_parameters(file_path: Union[str, Path], 
-                       parameters: Dict[str, Any]) -> None:
+def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) -> None:
     """
     Save FT processing parameters as defaults for pipeline file.
-    
+
     This function saves processing parameters to the .ftmw pipeline file
     for use in subsequent computations with from_saved_params=True.
-    
+
     Parameters
     ----------
     file_path : str or Path
@@ -503,14 +524,14 @@ def save_ft_parameters(file_path: Union[str, Path],
         - 'window_function': Windowing function name
         - 'units_power': Scaling factor
         - 'trim_min_mhz', 'trim_max_mhz': Frequency trimming range
-        
+
     Raises
     ------
     FileNotFoundError
         If pipeline file does not exist
     RuntimeError
         If parameter saving fails
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -525,6 +546,7 @@ def save_ft_parameters(file_path: Union[str, Path],
     try:
         # Use internal implementation for parameter saving
         from ._internal.stage1_impl import save_ft_parameters_impl
+
         save_ft_parameters_impl(str(file_path), parameters)
         logger.info(f"Saved {len(parameters)} FT parameters to {file_path}")
     except Exception as e:
@@ -536,18 +558,21 @@ def save_ft_parameters(file_path: Union[str, Path],
 # Stage 2: Noise Estimation Functions
 # =============================================================================
 
-def estimate_noise(file_path: Union[str, Path],
-                   *,
-                   window_mhz: Optional[float] = None,
-                   pedestal_mhz: Optional[float] = None,
-                   line_k: Optional[float] = None,
-                   n_iter: Optional[int] = None,
-                   region_aware: Optional[bool] = None,
-                   smoothing_mhz: Optional[float] = None,
-                   smoothing_percentile: Optional[float] = None,
-                   convolve_mhz: Optional[float] = None,
-                   settings: Optional[NoiseSettings] = None,
-                   preset: Optional[str] = None) -> NoiseResult:
+
+def estimate_noise(
+    file_path: Union[str, Path],
+    *,
+    window_mhz: Optional[float] = None,
+    pedestal_mhz: Optional[float] = None,
+    line_k: Optional[float] = None,
+    n_iter: Optional[int] = None,
+    region_aware: Optional[bool] = None,
+    smoothing_mhz: Optional[float] = None,
+    smoothing_percentile: Optional[float] = None,
+    convolve_mhz: Optional[float] = None,
+    settings: Optional[NoiseSettings] = None,
+    preset: Optional[str] = None,
+) -> NoiseResult:
     """
     Estimate frequency-dependent noise with the scatter (high-pass) estimator.
 
@@ -614,13 +639,18 @@ def estimate_noise(file_path: Union[str, Path],
         raise
 
 
-def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] = None,
-                    figsize: Optional[tuple] = None, title: Optional[str] = None,
-                    show_bin_boundaries: Optional[bool] = None,
-                    show_noise_points: Optional[bool] = None,
-                    backend: str = 'matplotlib',
-                    interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
-                    **plot_kwargs):
+def visualize_noise(
+    file_path: Union[str, Path],
+    y_max_factor: Optional[float] = None,
+    figsize: Optional[tuple] = None,
+    title: Optional[str] = None,
+    show_bin_boundaries: Optional[bool] = None,
+    show_noise_points: Optional[bool] = None,
+    backend: str = "matplotlib",
+    interactive: bool = True,
+    output_file: Optional[Union[str, Path]] = None,
+    **plot_kwargs,
+):
     """
     Create noise estimation diagnostic visualization.
 
@@ -686,7 +716,7 @@ def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] =
             backend=backend,
             interactive=interactive,
             output_file=output_file,
-            **plot_kwargs
+            **plot_kwargs,
         )
 
     except Exception as e:
@@ -920,6 +950,7 @@ def visualize_tau_distribution(
 # Stage 3: Peak Detection Functions
 # =============================================================================
 
+
 def detect_peaks(
     file_path: Union[str, Path],
     min_snr: Optional[float] = None,
@@ -1063,17 +1094,17 @@ def visualize_peaks(
             show_snr_histogram=show_snr_histogram,
         )
     except Exception as e:
-        logger.error(
-            f"Failed to create peak visualization for {file_path}: {e}"
-        )
+        logger.error(f"Failed to create peak visualization for {file_path}: {e}")
         raise
 
 
-def save_peak_parameters(file_path: Union[str, Path],
-                         parameters: Dict[str, Any]) -> None:
+def save_peak_parameters(
+    file_path: Union[str, Path], parameters: Dict[str, Any]
+) -> None:
     """Save Stage 3 detection parameters for reuse."""
     try:
         from ._internal.stage3_impl import save_peak_parameters_impl
+
         save_peak_parameters_impl(str(file_path), parameters)
         logger.info(f"Saved {len(parameters)} peak parameters to {file_path}")
     except Exception as e:
@@ -1084,6 +1115,7 @@ def save_peak_parameters(file_path: Union[str, Path],
 # =============================================================================
 # Stage 4: Window Assignment Functions
 # =============================================================================
+
 
 def assign_windows(
     file_path: Union[str, Path],
@@ -1224,17 +1256,17 @@ def visualize_windows(
             output_file=output_file,
         )
     except Exception as e:
-        logger.error(
-            f"Failed to create window visualization for {file_path}: {e}"
-        )
+        logger.error(f"Failed to create window visualization for {file_path}: {e}")
         raise
 
 
-def save_window_parameters(file_path: Union[str, Path],
-                            parameters: Dict[str, Any]) -> None:
+def save_window_parameters(
+    file_path: Union[str, Path], parameters: Dict[str, Any]
+) -> None:
     """Save Stage 4 window-assignment parameters for reuse."""
     try:
         from ._internal.stage4_impl import save_window_parameters_impl
+
         save_window_parameters_impl(str(file_path), parameters)
         logger.info(f"Saved {len(parameters)} window parameters to {file_path}")
     except Exception as e:
@@ -1374,9 +1406,7 @@ def validate_stage5_shape_error(
             match_tol_fwhm=match_tol_fwhm,
         )
     except Exception as e:
-        logger.error(
-            f"Failed to validate Stage 5 shape error for {file_path}: {e}"
-        )
+        logger.error(f"Failed to validate Stage 5 shape error for {file_path}: {e}")
         raise
 
 
@@ -1430,19 +1460,20 @@ def visualize_fit(
 # Utility Functions
 # =============================================================================
 
+
 def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
     """
     Get pipeline file information and status.
-    
+
     This function retrieves comprehensive information about a .ftmw pipeline
     file including source metadata, completed stages, and validation status,
     equivalent to Pipeline.info().
-    
+
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file
-        
+
     Returns
     -------
     dict
@@ -1456,7 +1487,7 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
         - 'next_available_stages': Stages ready to run
         - 'errors': List of issues if invalid
         - 'warnings': List of warnings if any
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -1471,36 +1502,36 @@ def get_pipeline_info(file_path: Union[str, Path]) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Failed to get info for {file_path}: {e}")
         return {
-            'filepath': str(file_path),
-            'valid': False,
-            'error': f"Failed to get pipeline info: {e}"
+            "filepath": str(file_path),
+            "valid": False,
+            "error": f"Failed to get pipeline info: {e}",
         }
 
 
 def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     """
     Get list of processing stages ready to run.
-    
+
     This function returns the names of processing stages that can be executed
     based on the current completion status of the pipeline file.
-    
+
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file
-        
+
     Returns
     -------
     list of str
         Names of stages that can be executed next
-        
+
     Raises
     ------
     FileNotFoundError
         If pipeline file does not exist
     RuntimeError
         If stage information cannot be retrieved
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -1511,7 +1542,7 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     """
     try:
         info = get_pipeline_info(file_path)
-        return info.get('next_available_stages', [])
+        return info.get("next_available_stages", [])
     except Exception as e:
         logger.error(f"Failed to get available stages for {file_path}: {e}")
         raise RuntimeError(f"Could not determine available stages: {e}")
@@ -1521,23 +1552,24 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
 # Module-level convenience functions
 # =============================================================================
 
+
 def workflow_summary(file_path: Union[str, Path]) -> str:
     """
     Generate a human-readable summary of pipeline status and workflow.
-    
+
     This convenience function provides a formatted summary of the pipeline
     file status, completed stages, and suggested next steps.
-    
+
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file
-        
+
     Returns
     -------
     str
         Formatted summary string
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
@@ -1547,48 +1579,50 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
     Status: Valid
     Completed: ['stage0_data_import']
     Next available: ['stage1_complex_ft']
-    
+
     Suggested workflow:
     1. ftmw.compute_ft("experiment.ftmw", zpf=2, expf_us=5.0)
     2. ftmw.visualize_ft("experiment.ftmw", save_params=True)
     """
     try:
         info = get_pipeline_info(file_path)
-        
+
         lines = [
             f"Pipeline: {Path(file_path).name}",
             f"Source: {Path(info['source_path']).name} ({info['format']} format)",
             f"Status: {'Valid' if info['valid'] else 'Invalid'}",
             f"Completed: {info['completed_stages']}",
-            f"Next available: {info['next_available_stages']}"
+            f"Next available: {info['next_available_stages']}",
         ]
-        
+
         # Add suggested workflow for common stages
-        if 'stage1_complex_ft' in info['next_available_stages']:
-            lines.extend([
-                "",
-                "Suggested workflow:",
-                f"1. ftmw.compute_ft(\"{Path(file_path).name}\", zpf=2, expf_us=5.0)",
-                f"2. ftmw.visualize_ft(\"{Path(file_path).name}\", save_params=True)"
-            ])
-        elif 'stage2_noise_estimation' in info['next_available_stages']:
-            lines.extend([
-                "",
-                "Suggested workflow:",
-                f"1. ftmw.estimate_noise(\"{Path(file_path).name}\")",
-                f"2. ftmw.visualize_noise(\"{Path(file_path).name}\")"
-            ])
-        
+        if "stage1_complex_ft" in info["next_available_stages"]:
+            lines.extend(
+                [
+                    "",
+                    "Suggested workflow:",
+                    f'1. ftmw.compute_ft("{Path(file_path).name}", zpf=2, expf_us=5.0)',
+                    f'2. ftmw.visualize_ft("{Path(file_path).name}", save_params=True)',
+                ]
+            )
+        elif "stage2_noise_estimation" in info["next_available_stages"]:
+            lines.extend(
+                [
+                    "",
+                    "Suggested workflow:",
+                    f'1. ftmw.estimate_noise("{Path(file_path).name}")',
+                    f'2. ftmw.visualize_noise("{Path(file_path).name}")',
+                ]
+            )
+
         # Add error information if invalid
-        if not info['valid'] and 'errors' in info:
-            lines.extend([
-                "",
-                "Issues found:",
-                *[f"  - {error}" for error in info['errors']]
-            ])
-        
+        if not info["valid"] and "errors" in info:
+            lines.extend(
+                ["", "Issues found:", *[f"  - {error}" for error in info["errors"]]]
+            )
+
         return "\n".join(lines)
-        
+
     except Exception as e:
         return f"Error getting workflow summary for {file_path}: {e}"
 
@@ -1596,6 +1630,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
 # =============================================================================
 # Companion parameter tuning
 # =============================================================================
+
 
 def tune_list(
     selector: Optional[str] = None,

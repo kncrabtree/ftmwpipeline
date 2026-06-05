@@ -24,6 +24,7 @@ A module-scoped fixture runs detection once; individual tests reuse the result.
 import numpy as np
 import pytest
 import matplotlib
+
 matplotlib.use("Agg")  # non-interactive backend for CI
 
 import h5py
@@ -48,6 +49,7 @@ TRIM = (26500.0, 40000.0)
 # Module-scoped fixture: one detection run shared across tests in this file
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def stage3_result(exp_2638_data_path, tmp_path_factory):
     """
@@ -70,6 +72,7 @@ def stage3_result(exp_2638_data_path, tmp_path_factory):
 # ---------------------------------------------------------------------------
 # Core promotion / floor assertions
 # ---------------------------------------------------------------------------
+
 
 class TestPromotionDefaults:
     def test_internal_min_snr_is_floor(self, stage3_result):
@@ -100,13 +103,16 @@ class TestPromotionDefaults:
         r, _ = stage3_result
         cutoff = r["promotion_min_snr"]
         bad = [
-            p for p in r["peaks"]
-            if p.snr is not None and p.snr >= cutoff
+            p
+            for p in r["peaks"]
+            if p.snr is not None
+            and p.snr >= cutoff
             and not p.properties.get("promoted")
         ]
-        assert not bad, (
-            f"{len(bad)} peaks with snr>=cutoff lack promoted=True: "
-            + ", ".join(f"{p.frequency:.2f} MHz (snr={p.snr:.2f})" for p in bad[:5])
+        assert (
+            not bad
+        ), f"{len(bad)} peaks with snr>=cutoff lack promoted=True: " + ", ".join(
+            f"{p.frequency:.2f} MHz (snr={p.snr:.2f})" for p in bad[:5]
         )
 
     def test_promoted_flag_false_when_snr_below_cutoff(self, stage3_result):
@@ -114,13 +120,16 @@ class TestPromotionDefaults:
         r, _ = stage3_result
         cutoff = r["promotion_min_snr"]
         bad = [
-            p for p in r["peaks"]
-            if p.snr is not None and p.snr < cutoff
+            p
+            for p in r["peaks"]
+            if p.snr is not None
+            and p.snr < cutoff
             and p.properties.get("promoted") is not False
         ]
-        assert not bad, (
-            f"{len(bad)} peaks with snr<cutoff lack promoted=False: "
-            + ", ".join(f"{p.frequency:.2f} MHz (snr={p.snr:.2f})" for p in bad[:5])
+        assert (
+            not bad
+        ), f"{len(bad)} peaks with snr<cutoff lack promoted=False: " + ", ".join(
+            f"{p.frequency:.2f} MHz (snr={p.snr:.2f})" for p in bad[:5]
         )
 
     def test_no_mismatched_promoted_flags(self, stage3_result):
@@ -143,64 +152,64 @@ class TestPromotionDefaults:
 # Provenance properties
 # ---------------------------------------------------------------------------
 
+
 class TestProvenanceProperties:
     def test_internal_snr_in_properties(self, stage3_result):
         """Every peak must have internal_snr in properties."""
         r, _ = stage3_result
         peaks = r["peaks"]
         missing = [p for p in peaks if "internal_snr" not in p.properties]
-        assert not missing, (
-            f"{len(missing)} peaks lack properties['internal_snr']"
-        )
+        assert not missing, f"{len(missing)} peaks lack properties['internal_snr']"
 
     def test_internal_frequency_in_properties(self, stage3_result):
         """Every peak must have internal_frequency in properties."""
         r, _ = stage3_result
         peaks = r["peaks"]
         missing = [p for p in peaks if "internal_frequency" not in p.properties]
-        assert not missing, (
-            f"{len(missing)} peaks lack properties['internal_frequency']"
-        )
+        assert (
+            not missing
+        ), f"{len(missing)} peaks lack properties['internal_frequency']"
 
     def test_internal_index_absent(self, stage3_result):
         """internal_index must NOT be in peak properties (intentionally dropped)."""
         r, _ = stage3_result
         peaks = r["peaks"]
         present = [p for p in peaks if "internal_index" in p.properties]
-        assert not present, (
-            f"{len(present)} peaks unexpectedly carry 'internal_index' in properties"
-        )
+        assert (
+            not present
+        ), f"{len(present)} peaks unexpectedly carry 'internal_index' in properties"
 
     def test_internal_intensity_absent(self, stage3_result):
         """internal_intensity must NOT be in peak properties (intentionally dropped)."""
         r, _ = stage3_result
         peaks = r["peaks"]
         present = [p for p in peaks if "internal_intensity" in p.properties]
-        assert not present, (
-            f"{len(present)} peaks unexpectedly carry 'internal_intensity' in properties"
-        )
+        assert (
+            not present
+        ), f"{len(present)} peaks unexpectedly carry 'internal_intensity' in properties"
 
 
 # ---------------------------------------------------------------------------
 # On-disk structure: HDF5 datasets and attrs
 # ---------------------------------------------------------------------------
 
+
 class TestOnDiskStructure:
     def test_internal_snr_dataset_present(self, stage3_result):
         """stage3_peaks group must contain an internal_snr dataset."""
         _, fp = stage3_result
         with h5py.File(fp, "r") as h5:
-            assert "internal_snr" in h5["stage3_peaks"], (
-                "internal_snr dataset missing from stage3_peaks group"
-            )
+            assert (
+                "internal_snr" in h5["stage3_peaks"]
+            ), "internal_snr dataset missing from stage3_peaks group"
 
     def test_internal_frequency_dataset_present(self, stage3_result):
         """stage3_peaks group must contain an internal_frequency dataset."""
         _, fp = stage3_result
         with h5py.File(fp, "r") as h5:
-            assert "internal_frequency" in h5["stage3_peaks"], (
-                "internal_frequency dataset missing from stage3_peaks group"
-            )
+            assert (
+                "internal_frequency" in h5["stage3_peaks"]
+            ), "internal_frequency dataset missing from stage3_peaks group"
 
     def test_promotion_min_snr_attr(self, stage3_result):
         """promotion_min_snr group attr must equal 3.0."""
@@ -243,6 +252,7 @@ class TestOnDiskStructure:
 # Variable promotion cutoff (function-scoped; re-run detect on module file)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture(scope="module")
 def stage3_file(stage3_result):
     """Return just the file path from the module fixture (pre-Stage-2 already done)."""
@@ -253,18 +263,18 @@ def stage3_file(stage3_result):
 def test_min_snr_below_floor_lowers_internal_floor(stage3_file):
     """min_snr=1.5 (below DEFAULT_INTERNAL_MIN_SNR=2.0) -> internal_min_snr=1.5."""
     r = detect_peaks_impl(stage3_file, min_snr=1.5)
-    assert r["internal_min_snr"] == pytest.approx(1.5), (
-        f"Expected internal_min_snr=1.5, got {r['internal_min_snr']}"
-    )
+    assert r["internal_min_snr"] == pytest.approx(
+        1.5
+    ), f"Expected internal_min_snr=1.5, got {r['internal_min_snr']}"
     assert r["promotion_min_snr"] == pytest.approx(1.5)
 
 
 def test_min_snr_above_floor_keeps_internal_floor(stage3_file):
     """min_snr=10.0 -> internal_min_snr stays at 2.0 (floor is not raised)."""
     r = detect_peaks_impl(stage3_file, min_snr=10.0)
-    assert r["internal_min_snr"] == pytest.approx(DEFAULT_INTERNAL_MIN_SNR), (
-        f"Expected internal_min_snr=2.0, got {r['internal_min_snr']}"
-    )
+    assert r["internal_min_snr"] == pytest.approx(
+        DEFAULT_INTERNAL_MIN_SNR
+    ), f"Expected internal_min_snr=2.0, got {r['internal_min_snr']}"
     assert r["promotion_min_snr"] == pytest.approx(10.0)
 
 

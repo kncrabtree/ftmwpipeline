@@ -70,9 +70,7 @@ def compute_canonical_active_ft(
     sample_dt_us = float(fid.spacing * 1e6)
     start_us = float(base_pp.start_us) if base_pp.start_us is not None else 0.0
     end_us = (
-        float(base_pp.end_us)
-        if base_pp.end_us is not None
-        else float(fid.duration_us)
+        float(base_pp.end_us) if base_pp.end_us is not None else float(fid.duration_us)
     )
     acquisition_us = _active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us

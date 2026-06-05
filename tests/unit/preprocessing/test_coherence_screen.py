@@ -58,9 +58,8 @@ def _synthetic_active_ft(
 
     if noise_sigma > 0.0:
         rng = np.random.default_rng(rng_seed)
-        noise = (
-            rng.normal(scale=noise_sigma, size=n_bins)
-            + 1j * rng.normal(scale=noise_sigma, size=n_bins)
+        noise = rng.normal(scale=noise_sigma, size=n_bins) + 1j * rng.normal(
+            scale=noise_sigma, size=n_bins
         )
         spec = spec + noise
         sigma_arr = np.full(n_bins, noise_sigma * np.sqrt(2.0))
@@ -114,8 +113,13 @@ class TestLorentzianRecovery:
             noise_sigma=0.0,
         )
         result = project_candidates(
-            freq, spec, sigma, [f_c],
-            tau_us=5.0, acquisition_us=15.0, sideband=sideband,
+            freq,
+            spec,
+            sigma,
+            [f_c],
+            tau_us=5.0,
+            acquisition_us=15.0,
+            sideband=sideband,
         )[0]
         # A noise-free single Lorentzian projects to coherent/detected = 1
         # exactly: the σ-weighted inner product recovers |A| from a basis
@@ -138,8 +142,13 @@ class TestLorentzianRecovery:
             rng_seed=1,
         )
         result = project_candidates(
-            freq, spec, sigma, [f_c],
-            tau_us=5.0, acquisition_us=15.0, sideband=Sideband.LOWER,
+            freq,
+            spec,
+            sigma,
+            [f_c],
+            tau_us=5.0,
+            acquisition_us=15.0,
+            sideband=Sideband.LOWER,
         )[0]
         assert result.detected_snr_active > 50.0  # high-SNR sanity
         assert 0.9 < result.ratio < 1.1
@@ -162,18 +171,22 @@ class TestNoiseRejection:
         ratios: list[float] = []
         for trial in range(40):
             rng_trial = np.random.default_rng(100 + trial)
-            spec = (
-                rng_trial.normal(scale=noise_sigma, size=n_bins)
-                + 1j * rng_trial.normal(scale=noise_sigma, size=n_bins)
-            )
+            spec = rng_trial.normal(
+                scale=noise_sigma, size=n_bins
+            ) + 1j * rng_trial.normal(scale=noise_sigma, size=n_bins)
             sigma_arr = np.full(n_bins, noise_sigma * np.sqrt(2.0))
             # Candidate at a bin between 20 and n_bins-20 to keep the
             # sub-window inside the grid.
             bin_idx = int(rng.integers(20, n_bins - 20))
             f_c = freq[bin_idx]
             r = project_candidates(
-                freq, spec, sigma_arr, [f_c],
-                tau_us=5.0, acquisition_us=15.0, sideband=Sideband.LOWER,
+                freq,
+                spec,
+                sigma_arr,
+                [f_c],
+                tau_us=5.0,
+                acquisition_us=15.0,
+                sideband=Sideband.LOWER,
             )[0]
             ratios.append(r.ratio)
         median_ratio = float(np.median(ratios))
@@ -193,8 +206,13 @@ class TestInputValidation:
         sigma = np.ones_like(freq)
         with pytest.raises(ValueError, match="tau_us"):
             project_candidates(
-                freq, spec, sigma, [40005.0],
-                tau_us=0.0, acquisition_us=15.0, sideband=Sideband.LOWER,
+                freq,
+                spec,
+                sigma,
+                [40005.0],
+                tau_us=0.0,
+                acquisition_us=15.0,
+                sideband=Sideband.LOWER,
             )
 
     def test_rejects_non_positive_acquisition(self) -> None:
@@ -203,8 +221,13 @@ class TestInputValidation:
         sigma = np.ones_like(freq)
         with pytest.raises(ValueError, match="acquisition_us"):
             project_candidates(
-                freq, spec, sigma, [40005.0],
-                tau_us=5.0, acquisition_us=0.0, sideband=Sideband.LOWER,
+                freq,
+                spec,
+                sigma,
+                [40005.0],
+                tau_us=5.0,
+                acquisition_us=0.0,
+                sideband=Sideband.LOWER,
             )
 
     def test_rejects_shape_mismatch(self) -> None:
@@ -213,8 +236,13 @@ class TestInputValidation:
         sigma = np.ones(64)
         with pytest.raises(ValueError, match="same shape"):
             project_candidates(
-                freq, spec, sigma, [40005.0],
-                tau_us=5.0, acquisition_us=15.0, sideband=Sideband.LOWER,
+                freq,
+                spec,
+                sigma,
+                [40005.0],
+                tau_us=5.0,
+                acquisition_us=15.0,
+                sideband=Sideband.LOWER,
             )
 
     def test_rejects_empty_grid(self) -> None:
@@ -223,6 +251,11 @@ class TestInputValidation:
         sigma = np.array([], dtype=float)
         with pytest.raises(ValueError, match="non-empty"):
             project_candidates(
-                freq, spec, sigma, [40005.0],
-                tau_us=5.0, acquisition_us=15.0, sideband=Sideband.LOWER,
+                freq,
+                spec,
+                sigma,
+                [40005.0],
+                tau_us=5.0,
+                acquisition_us=15.0,
+                sideband=Sideband.LOWER,
             )

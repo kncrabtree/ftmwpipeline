@@ -13,7 +13,7 @@ directly by users. Instead, they should use one of the public interfaces:
 
 Architecture:
 - stage0_impl.py: Data import and FID visualization implementations
-- stage1_impl.py: FT processing and spectrum visualization implementations  
+- stage1_impl.py: FT processing and spectrum visualization implementations
 - stage2_impl.py: Noise estimation and visualization implementations (future)
 - shared_utils.py: Common utilities used across pipeline stages
 """

@@ -91,8 +91,15 @@ def test_returns_noise_result_with_scatter_metadata():
     assert np.all(result.rms_noise > 0)
     assert result.bin_info["algorithm"] == SCATTER_ALGORITHM
     # All instrument-tunable knobs are recorded for provenance.
-    for knob in ("window_mhz", "pedestal_mhz", "line_k", "n_iter",
-                 "smoothing_mhz", "smoothing_percentile", "convolve_mhz"):
+    for knob in (
+        "window_mhz",
+        "pedestal_mhz",
+        "line_k",
+        "n_iter",
+        "smoothing_mhz",
+        "smoothing_percentile",
+        "convolve_mhz",
+    ):
         assert knob in result.bin_info
 
 
@@ -183,11 +190,13 @@ def test_gaussian_pass_removes_median_staircase():
     def roughness(y):
         return float(np.mean(np.abs(np.diff(y, 2))) / np.median(y))
 
-    assert roughness(two_stage) < roughness(median_only), (
-        "Gaussian pass should reduce staircase roughness"
-    )
+    assert roughness(two_stage) < roughness(
+        median_only
+    ), "Gaussian pass should reduce staircase roughness"
     level_ratio = float(np.median(two_stage) / np.median(median_only))
-    assert 0.97 < level_ratio < 1.03, f"convolution shifted the level ({level_ratio:.3f})"
+    assert (
+        0.97 < level_ratio < 1.03
+    ), f"convolution shifted the level ({level_ratio:.3f})"
 
 
 def test_smoothing_disabled_passes_through():

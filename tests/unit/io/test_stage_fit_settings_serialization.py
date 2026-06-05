@@ -100,7 +100,14 @@ class TestStageFitPersistence:
         with h5py.File(empty_ftmw, "r") as h5f:
             grp = h5f[STAGE_FIT_PATH]
             assert isinstance(grp["shape"], h5py.Group)
-            for sub_name in ("tau", "seeder", "conservative", "penalties", "rescue", "thaw"):
+            for sub_name in (
+                "tau",
+                "seeder",
+                "conservative",
+                "penalties",
+                "rescue",
+                "thaw",
+            ):
                 assert sub_name in grp
                 assert isinstance(grp[sub_name], h5py.Group)
 
@@ -121,7 +128,9 @@ class TestStage2bRecommendedShape:
         with h5py.File(empty_ftmw, "a") as h5f:
             h5f.create_group("stage2b_tau_calibration")
         write_stage2b_recommended_shape(empty_ftmw, shape=None)
-        assert read_stage2b_recommended_shape(empty_ftmw) is None  # sentinel decodes back
+        assert (
+            read_stage2b_recommended_shape(empty_ftmw) is None
+        )  # sentinel decodes back
 
     def test_stamps_concrete_shape(self, empty_ftmw) -> None:
         with h5py.File(empty_ftmw, "a") as h5f:

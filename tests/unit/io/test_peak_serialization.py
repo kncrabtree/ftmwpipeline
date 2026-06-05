@@ -19,13 +19,19 @@ from ftmwpipeline.io.peak_serialization import (
 def _sample_peaks():
     return [
         Peak(
-            frequency=30000.0, intensity=1.0, index=10, snr=300.0,
+            frequency=30000.0,
+            intensity=1.0,
+            index=10,
+            snr=300.0,
             noise_std_local=0.0033,
             classification=PeakClassification.STRONG,
             detection_pass="primary",
         ),
         Peak(
-            frequency=31000.0, intensity=0.05, index=200, snr=5.0,
+            frequency=31000.0,
+            intensity=0.05,
+            index=200,
+            snr=5.0,
             noise_std_local=0.01,
             classification=PeakClassification.WEAK,
             detection_pass="gap",
@@ -39,8 +45,9 @@ def test_round_trip_preserves_peaks(tmp_path):
     f = tmp_path / "peaks.h5"
     peaks = _sample_peaks()
     with h5py.File(f, "w") as h5:
-        save_peaks_to_hdf5(peaks, h5.create_group("stage3_peaks"),
-                           parameters={"min_snr": 3.0})
+        save_peaks_to_hdf5(
+            peaks, h5.create_group("stage3_peaks"), parameters={"min_snr": 3.0}
+        )
     with h5py.File(f, "r") as h5:
         loaded = load_peaks_from_hdf5(h5["stage3_peaks"])
 

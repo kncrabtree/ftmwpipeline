@@ -52,8 +52,6 @@ def settings_from_namespace(
     the unset sentinel so the resolution chain fills it.
     """
     values = {
-        f.name: getattr(args, f.name, None)
-        for f in fields(cls)
-        if "cli" in f.metadata
+        f.name: getattr(args, f.name, None) for f in fields(cls) if "cli" in f.metadata
     }
     return cls(**values)

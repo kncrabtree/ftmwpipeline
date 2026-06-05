@@ -13,10 +13,10 @@ from ftmwpipeline.core.settings import (
 )
 from ftmwpipeline.cli._argspec import add_settings_args, settings_from_namespace
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser()
@@ -27,6 +27,7 @@ def _make_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 # is_empty / overrides
 # ---------------------------------------------------------------------------
+
 
 class TestIsEmptyAndOverrides:
     def test_default_instance_is_empty(self):
@@ -53,6 +54,7 @@ class TestIsEmptyAndOverrides:
 # ---------------------------------------------------------------------------
 # resolve() precedence
 # ---------------------------------------------------------------------------
+
 
 class TestResolve:
     def test_explicit_beats_persisted_beats_recommended(self):
@@ -135,10 +137,10 @@ class TestResolve:
 
         result = resolve(e, p, r)
 
-        assert result.zpf == 10        # explicit
-        assert result.expf_us == 2.0   # persisted (explicit absent)
+        assert result.zpf == 10  # explicit
+        assert result.expf_us == 2.0  # persisted (explicit absent)
         assert result.start_us == 1.0  # persisted (explicit absent)
-        assert result.units_power == 5 # recommended (only one set)
+        assert result.units_power == 5  # recommended (only one set)
 
     def test_rdc_default_true(self):
         result = resolve(None, None, None)
@@ -154,9 +156,12 @@ class TestResolve:
 # to_attrs / from_attrs round-trips
 # ---------------------------------------------------------------------------
 
+
 class TestToAttrsFromAttrs:
     def test_roundtrip_with_trim_set(self):
-        s = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0), units_power=6, rdc=True)
+        s = FTSettings(
+            zpf=2, expf_us=5.0, trim=(26500.0, 40000.0), units_power=6, rdc=True
+        )
         attrs = s.to_attrs()
         restored = FTSettings.from_attrs(attrs)
 
@@ -253,16 +258,24 @@ class TestToAttrsFromAttrs:
 # Argspec: add_settings_args / settings_from_namespace
 # ---------------------------------------------------------------------------
 
+
 class TestArgspec:
     def test_full_parse_produces_correct_ftsettings(self):
         p = _make_parser()
-        ns = p.parse_args([
-            "--zpf", "2",
-            "--expf_us", "5.0",
-            "--trim", "26500:40000",
-            "--window-function", "hann",
-            "--start-us", "1.0",
-        ])
+        ns = p.parse_args(
+            [
+                "--zpf",
+                "2",
+                "--expf_us",
+                "5.0",
+                "--trim",
+                "26500:40000",
+                "--window-function",
+                "hann",
+                "--start-us",
+                "1.0",
+            ]
+        )
         s = settings_from_namespace(ns)
 
         assert s.zpf == 2

@@ -36,7 +36,9 @@ __all__ = [
 ]
 
 
-def _figsize_or_default(figsize: Optional[Tuple[float, float]], default: Tuple[float, float]):
+def _figsize_or_default(
+    figsize: Optional[Tuple[float, float]], default: Tuple[float, float]
+):
     return figsize if figsize is not None else default
 
 
@@ -73,7 +75,9 @@ def plot_tau_heatmap(
     # Map baseband to molecular and restrict to trim.
     sign = -1.0 if result.sideband == "lower" else +1.0
     freq_mol_mhz = result.probe_freq_mhz + sign * freq_bb_mhz
-    in_trim = (freq_mol_mhz >= result.trim_lo_mhz) & (freq_mol_mhz <= result.trim_hi_mhz)
+    in_trim = (freq_mol_mhz >= result.trim_lo_mhz) & (
+        freq_mol_mhz <= result.trim_hi_mhz
+    )
     trim_idx = np.where(in_trim)[0]
     freqs_mol = freq_mol_mhz[trim_idx]
     mag_trim = mag[:, trim_idx]
@@ -146,10 +150,16 @@ def plot_tau_distribution(
 
     # 1. Histogram
     ax = axes[0, 0]
-    ax.hist(taus, bins=n_bins, color="C0", alpha=0.7,
-            label=f"contributors (n={taus.size})")
-    ax.axvline(tau_maj, color="C3", ls="--", lw=2,
-               label=f"tau_maj = {tau_maj:.2f} us (sigma_tau = {sigma_tau:.2f})")
+    ax.hist(
+        taus, bins=n_bins, color="C0", alpha=0.7, label=f"contributors (n={taus.size})"
+    )
+    ax.axvline(
+        tau_maj,
+        color="C3",
+        ls="--",
+        lw=2,
+        label=f"tau_maj = {tau_maj:.2f} us (sigma_tau = {sigma_tau:.2f})",
+    )
     ax.set_xlabel("recovered tau (us)")
     ax.set_ylabel("count")
     ax.set_title("Per-bin tau histogram")
@@ -164,10 +174,7 @@ def plot_tau_distribution(
     ax.axhline(tau_maj, color="C3", ls="--", lw=1)
     ax.set_xlabel("contributor on-line SNR (per-frame)")
     ax.set_ylabel("tau_k (us)")
-    ax.set_title(
-        "tau vs SNR (Pearson r = "
-        f"{result.pearson_r_log_snr_vs_tau:.3f})"
-    )
+    ax.set_title("tau vs SNR (Pearson r = " f"{result.pearson_r_log_snr_vs_tau:.3f})")
     ax.grid(alpha=0.3)
 
     # 3. tau vs molecular freq
@@ -178,8 +185,7 @@ def plot_tau_distribution(
     ax.set_xlabel("molecular frequency (MHz)")
     ax.set_ylabel("tau_k (us)")
     ax.set_title(
-        "tau vs frequency (Pearson r = "
-        f"{result.pearson_r_freq_vs_tau:.3f})"
+        "tau vs frequency (Pearson r = " f"{result.pearson_r_freq_vs_tau:.3f})"
     )
     ax.grid(alpha=0.3)
     # Annotate the frequency thirds when present.
@@ -189,7 +195,10 @@ def plot_tau_distribution(
             0.5 * (third.freq_lo_mhz + third.freq_hi_mhz),
             third.median_tau_us,
             f"{third.label}: {third.median_tau_us:.2f}",
-            fontsize=7, ha="center", va="bottom", color="C2",
+            fontsize=7,
+            ha="center",
+            va="bottom",
+            color="C2",
         )
 
     # 4. GMM overlay
@@ -197,19 +206,20 @@ def plot_tau_distribution(
     if taus.size > 0:
         ax.hist(taus, bins=n_bins, color="C0", alpha=0.5, density=True)
     if not np.isnan(bm.mu_a) and tau_maj > 0:
-        xs = np.linspace(0.0, max(tau_maj * 3.0, taus.max() * 1.1 if taus.size else tau_maj), 400)
+        xs = np.linspace(
+            0.0, max(tau_maj * 3.0, taus.max() * 1.1 if taus.size else tau_maj), 400
+        )
         ya = (
             bm.pi_a
-            / np.sqrt(2 * np.pi * bm.sigma_a ** 2)
+            / np.sqrt(2 * np.pi * bm.sigma_a**2)
             * np.exp(-0.5 * ((xs - bm.mu_a) / bm.sigma_a) ** 2)
         )
         yb = (
             (1.0 - bm.pi_a)
-            / np.sqrt(2 * np.pi * bm.sigma_b ** 2)
+            / np.sqrt(2 * np.pi * bm.sigma_b**2)
             * np.exp(-0.5 * ((xs - bm.mu_b) / bm.sigma_b) ** 2)
         )
-        ax.plot(xs, ya, "C3", lw=1,
-                label=f"GMM mu_a={bm.mu_a:.2f}, pi_a={bm.pi_a:.2f}")
+        ax.plot(xs, ya, "C3", lw=1, label=f"GMM mu_a={bm.mu_a:.2f}, pi_a={bm.pi_a:.2f}")
         ax.plot(xs, yb, "C2", lw=1, label=f"GMM mu_b={bm.mu_b:.2f}")
         ax.plot(xs, ya + yb, "k", lw=1, alpha=0.6)
     ax.set_xlabel("tau (us)")

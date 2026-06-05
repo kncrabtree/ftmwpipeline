@@ -347,7 +347,7 @@ def h_T_gaussian(
     t_over_tau = acquisition_us / tau_G_us
     w_lo = wofz(1j * beta)
     w_hi = wofz(1j * (t_over_tau + beta))
-    damping = np.exp(-(t_over_tau ** 2))
+    damping = np.exp(-(t_over_tau**2))
     phase = np.exp(-1j * 2.0 * np.pi * df * acquisition_us)
     response = (tau_G_us * np.sqrt(np.pi) / 2.0) * (w_lo - damping * phase * w_hi)
     return cast(np.ndarray, response.astype(np.complex128))
@@ -412,12 +412,12 @@ def h_T_gaussian_jacobian(
     t_over_tau = acquisition_us / tau_G_us
     w_lo = wofz(1j * beta)
     w_hi = wofz(1j * (t_over_tau + beta))
-    damping = np.exp(-(t_over_tau ** 2))
+    damping = np.exp(-(t_over_tau**2))
     phase = np.exp(-1j * 2.0 * np.pi * df * acquisition_us)
     sqrt_pi = np.sqrt(np.pi)
 
-    e_pq = w_lo - damping * phase * w_hi           # exp(β²) · (P − Q), stable
-    e_diff = damping * phase - 1.0                  # exp(β²) · (e_P − e_Q)
+    e_pq = w_lo - damping * phase * w_hi  # exp(β²) · (P − Q), stable
+    e_diff = damping * phase - 1.0  # exp(β²) · (e_P − e_Q)
 
     dh_ddf = (
         (tau_G_us * sqrt_pi / 2.0)
@@ -427,7 +427,7 @@ def h_T_gaussian_jacobian(
 
     dh_dtau = (
         (sqrt_pi / 2.0) * e_pq
-        - (tau_G_us ** 2) * (np.pi ** 2) * (df ** 2) * sqrt_pi * e_pq
+        - (tau_G_us**2) * (np.pi**2) * (df**2) * sqrt_pi * e_pq
         - t_over_tau * damping * phase
         + beta * e_diff
     )
@@ -470,9 +470,7 @@ def effective_tau_gaussian(tau_G_us: float, acquisition_us: float) -> float:
     # erf is real for real argument; scipy.special.erf takes real input fine.
     from scipy.special import erf as _real_erf  # local import: only this path
 
-    return float(
-        tau_G_us * np.sqrt(np.pi) / 2.0 * _real_erf(acquisition_us / tau_G_us)
-    )
+    return float(tau_G_us * np.sqrt(np.pi) / 2.0 * _real_erf(acquisition_us / tau_G_us))
 
 
 # ---------------------------------------------------------------------------

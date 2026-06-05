@@ -76,9 +76,7 @@ def _build_explicit_from_kwargs(
     explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
     explicit.clustering.max_peaks_per_window = max_peaks_per_window
     explicit.contributor.min_freeze_snr = min_freeze_snr
-    explicit.contributor.magnitude_attachment_threshold = (
-        magnitude_attachment_threshold
-    )
+    explicit.contributor.magnitude_attachment_threshold = magnitude_attachment_threshold
     explicit.leakage.tau_us = tau_us
     return explicit
 
@@ -248,9 +246,7 @@ def assign_windows_impl(
     )
     # ``leakage.tau_us`` is legitimately allowed to remain ``None`` after
     # resolution -- ``None`` selects the undamped/boxcar limit downstream.
-    tau_us_v: Optional[float] = (
-        float(leak.tau_us) if leak.tau_us is not None else None
-    )
+    tau_us_v: Optional[float] = float(leak.tau_us) if leak.tau_us is not None else None
 
     loaded = load_peaks_impl(file_path)
     peaks = loaded["peaks"]
@@ -296,7 +292,9 @@ def assign_windows_impl(
     # ``save_window_parameters_impl`` above as a back-compat shim; the new
     # canonical record below is what the resolver's persisted layer reads.
     save_window_planning_settings_to_h5(
-        file_path, resolved, preset_name=preset_name,
+        file_path,
+        resolved,
+        preset_name=preset_name,
     )
     _update_stage_completion(file_path, "stage4_windows")
     # Re-assignment supersedes any Stage 5 fit built on the old plan.

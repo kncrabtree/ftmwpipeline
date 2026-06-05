@@ -25,18 +25,23 @@ from ftmwpipeline.fitting.tau_calibration import (
 
 
 def _make_persisted(
-    tau_maj_us: float = 6.5, sigma_tau_us: float = 1.7,
+    tau_maj_us: float = 6.5,
+    sigma_tau_us: float = 1.7,
 ) -> TauCalibrationResult:
     """Build a minimal TauCalibrationResult for tests (only the two scalars matter)."""
     empty_int = np.array([], dtype=np.int64)
     empty_float = np.array([], dtype=np.float64)
     bm = GMMBimodality(
         n=0,
-        mu1=float("nan"), sigma1=float("nan"),
-        mu_a=float("nan"), sigma_a=float("nan"),
-        mu_b=float("nan"), sigma_b=float("nan"),
+        mu1=float("nan"),
+        sigma1=float("nan"),
+        mu_a=float("nan"),
+        sigma_a=float("nan"),
+        mu_b=float("nan"),
+        sigma_b=float("nan"),
         pi_a=float("nan"),
-        aic1=float("nan"), aic2=float("nan"),
+        aic1=float("nan"),
+        aic2=float("nan"),
         delta_aic=float("nan"),
         two_component_preferred=False,
         dominant_weight=float("nan"),
@@ -79,7 +84,9 @@ class TestResolveTauCalibrationForFit:
 
     def test_no_calibration_no_override_returns_none(self) -> None:
         tau, sigma, source = _resolve_tau_calibration_for_fit(
-            None, None, None,
+            None,
+            None,
+            None,
         )
         assert tau is None
         assert sigma is None
@@ -88,7 +95,9 @@ class TestResolveTauCalibrationForFit:
     def test_persisted_only(self) -> None:
         persisted = _make_persisted(tau_maj_us=6.5, sigma_tau_us=1.7)
         tau, sigma, source = _resolve_tau_calibration_for_fit(
-            persisted, None, None,
+            persisted,
+            None,
+            None,
         )
         assert tau == pytest.approx(6.5)
         assert sigma == pytest.approx(1.7)
@@ -96,7 +105,9 @@ class TestResolveTauCalibrationForFit:
 
     def test_override_no_persisted(self) -> None:
         tau, sigma, source = _resolve_tau_calibration_for_fit(
-            None, 8.0, 2.0,
+            None,
+            8.0,
+            2.0,
         )
         assert tau == pytest.approx(8.0)
         assert sigma == pytest.approx(2.0)
@@ -105,7 +116,9 @@ class TestResolveTauCalibrationForFit:
     def test_override_beats_persisted(self) -> None:
         persisted = _make_persisted(tau_maj_us=6.5, sigma_tau_us=1.7)
         tau, sigma, source = _resolve_tau_calibration_for_fit(
-            persisted, 9.0, 0.5,
+            persisted,
+            9.0,
+            0.5,
         )
         assert tau == pytest.approx(9.0)
         assert sigma == pytest.approx(0.5)

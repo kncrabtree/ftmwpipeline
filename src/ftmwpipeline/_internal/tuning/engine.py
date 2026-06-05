@@ -90,8 +90,11 @@ class SweepResult:
             for r in self.rows
         ]
         widths = [
-            max(len(headers[i]), *(len(row[i]) for row in rows)) if rows
-            else len(headers[i])
+            (
+                max(len(headers[i]), *(len(row[i]) for row in rows))
+                if rows
+                else len(headers[i])
+            )
             for i in range(len(headers))
         ]
         sep = "  "
@@ -170,10 +173,7 @@ def _recommend(spec: KnobSpec, rows: List[SweepRow]) -> Optional[Recommendation]
     if spec.direction not in ("min", "max") or spec.primary_metric is None:
         return None
     metric = spec.primary_metric
-    candidates = [
-        r for r in rows
-        if isinstance(r.metrics.get(metric), (int, float))
-    ]
+    candidates = [r for r in rows if isinstance(r.metrics.get(metric), (int, float))]
     if not candidates:
         return None
     pick = (min if spec.direction == "min" else max)(
@@ -200,8 +200,8 @@ def _apply_instructions(spec: KnobSpec, rec: Optional[Recommendation]) -> str:
         "No automatic recommendation for this knob — inspect the table"
         + (" / plot" if spec.plot is not None else "")
         + " and choose a value."
-        if rec is None else
-        f"Recommended: {spec.path} = {chosen} ({rec.reason})."
+        if rec is None
+        else f"Recommended: {spec.path} = {chosen} ({rec.reason})."
     )
     return (
         f"{note}\n"
@@ -312,11 +312,13 @@ def run_scan(
     total = len(values)
     for i, value in enumerate(values):
         last_result = spec.run(work, value)
-        rows.append(SweepRow(
-            value=value,
-            metrics=dict(spec.metric(last_result)),
-            result=last_result,
-        ))
+        rows.append(
+            SweepRow(
+                value=value,
+                metrics=dict(spec.metric(last_result)),
+                result=last_result,
+            )
+        )
         if reporter is not None:
             reporter(i + 1, total, value)
 
@@ -332,9 +334,7 @@ def run_scan(
             n_zoom=n_zoom,
             zoom_width_mhz=zoom_width_mhz,
         )
-        plot_path = _render_plot(
-            spec, rows, out, ftmw_path.stem, interactive, ctx
-        )
+        plot_path = _render_plot(spec, rows, out, ftmw_path.stem, interactive, ctx)
 
     return SweepResult(
         knob=spec.path,

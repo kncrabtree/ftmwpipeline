@@ -30,7 +30,6 @@ from ftmwpipeline.core.window_planning_settings import (
     to_yaml_dict,
 )
 
-
 _SUB_NAMES = ("coherence", "clustering", "contributor", "leakage")
 
 
@@ -43,9 +42,9 @@ class TestEmptyDataclass:
         for sub_name in _SUB_NAMES:
             sub = getattr(s, sub_name)
             for f in fields(sub):
-                assert getattr(sub, f.name) is None, (
-                    f"{sub_name}.{f.name} should default to None"
-                )
+                assert (
+                    getattr(sub, f.name) is None
+                ), f"{sub_name}.{f.name} should default to None"
 
     def test_is_empty(self) -> None:
         assert WindowPlanningSettings().is_empty()
@@ -148,9 +147,9 @@ class TestResolve:
         for sub_name, defaults in _HARD_DEFAULTS.items():
             sub = getattr(merged, sub_name)
             for field_name in defaults:
-                assert getattr(sub, field_name) is not None, (
-                    f"{sub_name}.{field_name} should be non-None after resolve"
-                )
+                assert (
+                    getattr(sub, field_name) is not None
+                ), f"{sub_name}.{field_name} should be non-None after resolve"
 
     def test_recommended_layer_currently_unused_does_not_break_resolve(self) -> None:
         s = WindowPlanningSettings()

@@ -22,7 +22,6 @@ from ftmwpipeline.io.tau_calibration_settings_serialization import (
     tau_calibration_settings_present,
 )
 
-
 _SUB_NAMES = (
     "stft",
     "polish",
@@ -55,9 +54,14 @@ class TestStage2bTauSettingsPersistence:
         assert loaded is not None
         assert loaded.stft.n_seg == original.stft.n_seg
         assert loaded.polish.polish_snr_cap == original.polish.polish_snr_cap
-        assert loaded.aggregation.min_contributors == original.aggregation.min_contributors
+        assert (
+            loaded.aggregation.min_contributors == original.aggregation.min_contributors
+        )
         assert loaded.gaussian.tau_G_seeds == original.gaussian.tau_G_seeds
-        assert loaded.recommendation.pure_margin_threshold == original.recommendation.pure_margin_threshold
+        assert (
+            loaded.recommendation.pure_margin_threshold
+            == original.recommendation.pure_margin_threshold
+        )
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
         s = TauCalibrationSettings()

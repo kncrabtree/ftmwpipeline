@@ -272,9 +272,7 @@ def _rescue_candidate_to_json(c: RescueCandidateInfo) -> Dict[str, Any]:
     }
 
 
-def _json_to_rescue_candidate(
-    blob: Dict[str, Any], where: str
-) -> RescueCandidateInfo:
+def _json_to_rescue_candidate(blob: Dict[str, Any], where: str) -> RescueCandidateInfo:
     try:
         return RescueCandidateInfo(
             frequency_mhz=float(blob["frequency_mhz"]),

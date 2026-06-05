@@ -41,9 +41,7 @@ from ftmwpipeline.core.window_planning_settings import (
 class TestPackagedPresetResolution:
     def test_packaged_preset_dir_exists(self) -> None:
         pkg = files("ftmwpipeline.presets")
-        names = sorted(
-            p.name for p in pkg.iterdir() if p.name.endswith(".yaml")
-        )
+        names = sorted(p.name for p in pkg.iterdir() if p.name.endswith(".yaml"))
         assert "gaussian_default.yaml" in names
         assert "lorentzian_legacy.yaml" in names
         assert "instrument_bc_2638.yaml" in names
@@ -108,10 +106,7 @@ class TestPathPresetResolution:
     def test_fit_and_stage5_both_present_raises(self, tmp_path) -> None:
         """A preset must not declare both wrappers."""
         p = tmp_path / "ambiguous.yaml"
-        p.write_text(
-            "fit:\n  shape: gaussian\n"
-            "stage5:\n  shape: lorentzian\n"
-        )
+        p.write_text("fit:\n  shape: gaussian\n" "stage5:\n  shape: lorentzian\n")
         with pytest.raises(ValueError, match=r"both 'fit:' .* and 'stage5:'"):
             load_preset(p)
 
@@ -136,10 +131,7 @@ class TestPathPresetResolution:
     def test_sibling_stage2b_block_ignored_by_stage5_loader(self, tmp_path) -> None:
         """A ``stage2b:`` sibling block must not trip Stage 5's unknown-key gate."""
         p = tmp_path / "two_blocks.yaml"
-        p.write_text(
-            "stage2b:\n  stft:\n    n_seg: 8\n"
-            "stage5:\n  shape: gaussian\n"
-        )
+        p.write_text("stage2b:\n  stft:\n    n_seg: 8\n" "stage5:\n  shape: gaussian\n")
         s = load_preset(p)
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
 
@@ -231,10 +223,7 @@ class TestStage2PresetResolution:
     def test_sibling_stage2_block_ignored_by_stage5_loader(self, tmp_path) -> None:
         """A ``stage2:`` sibling block must not trip Stage 5's unknown-key gate."""
         p = tmp_path / "two_blocks.yaml"
-        p.write_text(
-            "stage2:\n  window_mhz: 120.0\n"
-            "stage5:\n  shape: gaussian\n"
-        )
+        p.write_text("stage2:\n  window_mhz: 120.0\n" "stage5:\n  shape: gaussian\n")
         s = load_preset(p)
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
 
@@ -287,8 +276,7 @@ class TestStage3PresetResolution:
         """A ``stage3:`` sibling block must not trip Stage 5's unknown-key gate."""
         p = tmp_path / "two_blocks.yaml"
         p.write_text(
-            "stage3:\n  promotion:\n    min_snr: 4.0\n"
-            "stage5:\n  shape: gaussian\n"
+            "stage3:\n  promotion:\n    min_snr: 4.0\n" "stage5:\n  shape: gaussian\n"
         )
         s = load_preset(p)
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
@@ -343,8 +331,7 @@ class TestStage4PresetResolution:
         """A ``stage4:`` sibling block must not trip Stage 5's unknown-key gate."""
         p = tmp_path / "two_blocks.yaml"
         p.write_text(
-            "stage4:\n  coherence:\n    edge_m: 32\n"
-            "stage5:\n  shape: gaussian\n"
+            "stage4:\n  coherence:\n    edge_m: 32\n" "stage5:\n  shape: gaussian\n"
         )
         s = load_preset(p)
         assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN

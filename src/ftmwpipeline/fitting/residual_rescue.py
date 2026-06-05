@@ -64,7 +64,6 @@ from .window_fit import (
     knockout_test,
 )
 
-
 __all__ = [
     "DEFAULT_CLEANUP_SIGNIFICANCE",
     "DEFAULT_MERGE_SEPARATION_FACTOR",
@@ -293,7 +292,8 @@ def merge_close_peaks_cleanup(
 
     fwhm = (
         feature_fwhm(fit.tau_us, acquisition_us, shape=fit.shape)
-        if fit.tau_us > 0.0 else 0.0
+        if fit.tau_us > 0.0
+        else 0.0
     )
     if fwhm <= 0.0:
         return fit, 0
@@ -306,11 +306,15 @@ def merge_close_peaks_cleanup(
     # one resolution element, where any two-peak solution is a numerical
     # artifact a single peak cannot be statistically distinguished from.
     merge_threshold = _effective_min_pair_separation(
-        fwhm, acquisition_us, merge_separation_factor,
+        fwhm,
+        acquisition_us,
+        merge_separation_factor,
         min_pair_separation_resolution_factor,
     )
     structural_threshold = _effective_min_pair_separation(
-        fwhm, acquisition_us, structural_merge_factor,
+        fwhm,
+        acquisition_us,
+        structural_merge_factor,
         min_pair_separation_resolution_factor,
     )
     # Amplitude-ratio tier (GitHub issue #13, w281/w143 class): a rescue can
@@ -362,28 +366,26 @@ def merge_close_peaks_cleanup(
         amp_a = abs(pair_lo.amplitude)
         amp_b = abs(pair_hi.amplitude)
         amp_min = min(amp_a, amp_b)
-        amp_ratio = (
-            max(amp_a, amp_b) / amp_min if amp_min > 0.0 else float("inf")
-        )
+        amp_ratio = max(amp_a, amp_b) / amp_min if amp_min > 0.0 else float("inf")
         # Lazy refit: only the closest pair is ever a merge candidate, and a
         # balanced pair in the amplitude-ratio band (>= merge_threshold,
         # ratio below the threshold) is a real doublet that is kept. Break
         # before paying the (K-1) ``fit_window`` refit in that case -- nothing
         # nearer remains, so the loop is done. (Without this, every real close
         # doublet out to ``overfit_amp_ratio_band`` would cost a wasted refit.)
-        if (
-            min_dist >= merge_threshold
-            and amp_ratio < overfit_amp_ratio_threshold
-        ):
+        if min_dist >= merge_threshold and amp_ratio < overfit_amp_ratio_threshold:
             break
-        merged_pair = _merge_cluster(
-            [sorted_peaks[merge_i], sorted_peaks[merge_i + 1]]
-        )
+        merged_pair = _merge_cluster([sorted_peaks[merge_i], sorted_peaks[merge_i + 1]])
         merged_init = (
-            sorted_peaks[:merge_i] + [merged_pair] + sorted_peaks[merge_i + 2:]
+            sorted_peaks[:merge_i] + [merged_pair] + sorted_peaks[merge_i + 2 :]
         )
         refit = fit_window(
-            u, z, sigma, merged_init, float(current.tau_us), acquisition_us,
+            u,
+            z,
+            sigma,
+            merged_init,
+            float(current.tau_us),
+            acquisition_us,
             **refit_kwargs,
         )
         if not refit.success:
@@ -418,11 +420,11 @@ def merge_close_peaks_cleanup(
         # gate over-merged.
         if min_dist < merge_threshold:
             n_eff = effective_sample_size(
-                current.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+                current.fitted_spectrum,
+                kind=n_eff_kind,
+                sigma=sigma,
             )
-            aicc_k = calculate_aicc(
-                current.chi_squared, current.n_params, n_eff
-            )
+            aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
             aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
             if aicc_km1 >= aicc_k:
                 break
@@ -487,8 +489,7 @@ def remove_and_refit_cleanup(
     refit_kwargs.setdefault("shape", fit.shape)
     refit_kwargs["spur_mask"] = spur_mask
     keep = (
-        ~spur_mask.bin_mask(u) if spur_mask is not None
-        else np.ones(u.size, dtype=bool)
+        ~spur_mask.bin_mask(u) if spur_mask is not None else np.ones(u.size, dtype=bool)
     )
     if not keep.any():
         keep = np.ones(u.size, dtype=bool)
@@ -521,7 +522,12 @@ def remove_and_refit_cleanup(
                     worst_refit = None  # special: drop to empty fit
                 continue
             refit = fit_window(
-                u, z, sigma, reduced_init, tau0_us, acquisition_us,
+                u,
+                z,
+                sigma,
+                reduced_init,
+                tau0_us,
+                acquisition_us,
                 **refit_kwargs,
             )
             if not refit.success:
@@ -546,7 +552,13 @@ def remove_and_refit_cleanup(
         if worst_refit is None:
             # Dropped the last peak -- produce an empty fit.
             current = fit_window(
-                u, z, sigma, [], tau0_us, acquisition_us, **refit_kwargs,
+                u,
+                z,
+                sigma,
+                [],
+                tau0_us,
+                acquisition_us,
+                **refit_kwargs,
             )
         else:
             current = worst_refit
@@ -615,8 +627,7 @@ def iterative_aicc_cleanup(
     refit_kwargs.setdefault("shape", fit.shape)
     refit_kwargs["spur_mask"] = spur_mask
     keep = (
-        ~spur_mask.bin_mask(u) if spur_mask is not None
-        else np.ones(u.size, dtype=bool)
+        ~spur_mask.bin_mask(u) if spur_mask is not None else np.ones(u.size, dtype=bool)
     )
     if not keep.any():
         keep = np.ones(u.size, dtype=bool)
@@ -626,7 +637,9 @@ def iterative_aicc_cleanup(
     while current.n_peaks > 0:
         tau_locked = float(current.tau_us)
         n_eff = effective_sample_size(
-            current.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+            current.fitted_spectrum,
+            kind=n_eff_kind,
+            sigma=sigma,
         )
         aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
 
@@ -647,7 +660,12 @@ def iterative_aicc_cleanup(
                     worst_is_null = True
                 continue
             refit = fit_window(
-                u, z, sigma, kept, tau_locked, acquisition_us,
+                u,
+                z,
+                sigma,
+                kept,
+                tau_locked,
+                acquisition_us,
                 **refit_kwargs,
             )
             if not refit.success:
@@ -678,7 +696,12 @@ def iterative_aicc_cleanup(
             # Produce a zero-peak fit_window result so the loop's return
             # has the same type as every other branch.
             null_fit = fit_window(
-                u, z, sigma, [], tau_locked, acquisition_us,
+                u,
+                z,
+                sigma,
+                [],
+                tau_locked,
+                acquisition_us,
                 **refit_kwargs,
             )
             null_fit.tau_was_fit = current.tau_was_fit
@@ -787,7 +810,10 @@ def attempt_residual_rescue(
     # the initial fit produced, regardless of whether its tau is physical.
     rescue_shape = current_fit.shape
     initial_model = model_spectrum(
-        u, current_fit.peaks, current_fit.tau_us, acquisition_us,
+        u,
+        current_fit.peaks,
+        current_fit.tau_us,
+        acquisition_us,
         shape=rescue_shape,
     )
     residual = z - initial_model
@@ -822,7 +848,9 @@ def attempt_residual_rescue(
     )
 
     raw_candidates = find_residual_peaks(
-        u, residual, sigma,
+        u,
+        residual,
+        sigma,
         snr_threshold=snr_threshold,
         prominence_threshold=prominence_threshold,
         fwhm_mhz=rescue_fwhm if rescue_fwhm > 0.0 else None,
@@ -849,9 +877,7 @@ def attempt_residual_rescue(
             DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
         )
     )
-    peak_reject_offsets: List[float] = [
-        pk.offset_mhz for pk in current_fit.peaks
-    ]
+    peak_reject_offsets: List[float] = [pk.offset_mhz for pk in current_fit.peaks]
     if excluded_offsets:
         peak_reject_offsets.extend(float(x) for x in excluded_offsets)
     # A spur bin has a large residual (no line shape fits it), so the
@@ -861,31 +887,28 @@ def attempt_residual_rescue(
     # Spurs are single-bin tones, so a grid-bin radius (not the resolution
     # element) is the right locality test for them.
     spur_reject_offsets: List[float] = (
-        [float(o) for o in spur_mask.offsets_mhz]
-        if spur_mask is not None
-        else []
+        [float(o) for o in spur_mask.offsets_mhz] if spur_mask is not None else []
     )
-    if (peak_reject_offsets or spur_reject_offsets) and raw_candidates and (
-        u.size >= 2
+    if (
+        (peak_reject_offsets or spur_reject_offsets)
+        and raw_candidates
+        and (u.size >= 2)
     ):
         u_sorted = np.sort(u)
         df_mhz = float(np.min(np.diff(u_sorted)))
         if df_mhz > 0.0:
             resolution_mhz = (
-                k_res / acquisition_us
-                if acquisition_us > 0.0 and k_res > 0.0
-                else 0.0
+                k_res / acquisition_us if acquisition_us > 0.0 and k_res > 0.0 else 0.0
             )
             peak_radius = max(df_mhz, resolution_mhz)
             raw_candidates = [
-                c for c in raw_candidates
+                c
+                for c in raw_candidates
                 if not any(
-                    abs(c.frequency_mhz - x) <= peak_radius
-                    for x in peak_reject_offsets
+                    abs(c.frequency_mhz - x) <= peak_radius for x in peak_reject_offsets
                 )
                 and not any(
-                    abs(c.frequency_mhz - x) <= df_mhz
-                    for x in spur_reject_offsets
+                    abs(c.frequency_mhz - x) <= df_mhz for x in spur_reject_offsets
                 )
             ]
     candidates = list(raw_candidates)
@@ -920,8 +943,15 @@ def attempt_residual_rescue(
     ckwargs.setdefault("shape", rescue_shape)
     if not candidate_offsets:
         empty = conservative_fit(
-            u, residual, sigma, [], rescue_tau_us, acquisition_us,
-            fit_tau=False, spur_mask=spur_mask, **ckwargs,
+            u,
+            residual,
+            sigma,
+            [],
+            rescue_tau_us,
+            acquisition_us,
+            fit_tau=False,
+            spur_mask=spur_mask,
+            **ckwargs,
         )
         return RescueOutcome(
             fit=empty.fit,
@@ -931,8 +961,12 @@ def attempt_residual_rescue(
         )
 
     rescue_result: ConservativeFitResult = conservative_fit(
-        u, residual, sigma, candidate_offsets,
-        rescue_tau_us, acquisition_us,
+        u,
+        residual,
+        sigma,
+        candidate_offsets,
+        rescue_tau_us,
+        acquisition_us,
         fit_tau=False,
         significance=significance,
         min_separation_factor=min_separation_factor,
@@ -1224,7 +1258,12 @@ def rescue_and_consolidate(
     }
     shape_resolved = PeakShape.coerce(shape)
     constraints = derive_window_fit_constraints(
-        z, sigma, tau0_us, acquisition_us, shape=shape_resolved, **constraints_kwargs,
+        z,
+        sigma,
+        tau0_us,
+        acquisition_us,
+        shape=shape_resolved,
+        **constraints_kwargs,
     )
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
@@ -1246,7 +1285,12 @@ def rescue_and_consolidate(
         tau_before = float(current.fit.tau_us)
 
         rescue = attempt_residual_rescue(
-            u, z, sigma, current.fit, tau0_us, acquisition_us,
+            u,
+            z,
+            sigma,
+            current.fit,
+            tau0_us,
+            acquisition_us,
             snr_threshold=snr_threshold,
             prominence_threshold=prominence_threshold,
             significance=rescue_significance,
@@ -1307,8 +1351,14 @@ def rescue_and_consolidate(
             )
             joint_kwargs = fit_kwargs_inner
         joint = fit_window(
-            u, z, sigma, union_init, joint_tau_start, acquisition_us,
-            spur_mask=spur_mask, **joint_kwargs,
+            u,
+            z,
+            sigma,
+            union_init,
+            joint_tau_start,
+            acquisition_us,
+            spur_mask=spur_mask,
+            **joint_kwargs,
         )
         if not joint.success:
             rounds.append(
@@ -1346,8 +1396,12 @@ def rescue_and_consolidate(
         # where AICc is tied (e.g. w198 outer shoulders at ~1 FWHM) survive
         # the merge and are then evaluated peak-by-peak by knockout.
         merged_joint_fit, n_merged = merge_close_peaks_cleanup(
-            u, z, sigma, joint,
-            float(joint.tau_us), acquisition_us,
+            u,
+            z,
+            sigma,
+            joint,
+            float(joint.tau_us),
+            acquisition_us,
             fit_kwargs_inner=fit_kwargs_inner,
             merge_separation_factor=merge_separation_factor,
             structural_merge_factor=structural_merge_factor,
@@ -1363,7 +1417,11 @@ def rescue_and_consolidate(
         # diagnostic snapshot before iterative cleanup -- callers can
         # see what the per-peak gate said about the joint set.
         joint_knockouts = knockout_test(
-            u, z, sigma, merged_joint_fit, acquisition_us,
+            u,
+            z,
+            sigma,
+            merged_joint_fit,
+            acquisition_us,
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
@@ -1376,7 +1434,11 @@ def rescue_and_consolidate(
         # contribution and re-evaluates, so a cluster of N duplicates
         # of one real feature converges to a single supported peak.
         pruned_fit_candidate, n_pruned_total = iterative_aicc_cleanup(
-            u, z, sigma, merged_joint_fit, acquisition_us,
+            u,
+            z,
+            sigma,
+            merged_joint_fit,
+            acquisition_us,
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
@@ -1384,9 +1446,7 @@ def rescue_and_consolidate(
         # Grid spacing for the +/-1-bin tolerance used in both the
         # rescue-survival check below and the across-rounds blacklist.
         u_sorted = np.sort(u)
-        df_mhz = (
-            float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
-        )
+        df_mhz = float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
         survival_tol = max(df_mhz, 1e-3)
         # Two-purpose bookkeeping:
         #
@@ -1406,8 +1466,7 @@ def rescue_and_consolidate(
         n_pruned_rescue = 0
         for rescue_pk in rescue.fit.peaks:
             in_merged = any(
-                abs(rescue_pk.offset_mhz - mo) <= survival_tol
-                for mo in merged_offsets
+                abs(rescue_pk.offset_mhz - mo) <= survival_tol for mo in merged_offsets
             )
             in_pruned = any(
                 abs(rescue_pk.offset_mhz - sp) <= survival_tol
@@ -1466,7 +1525,11 @@ def rescue_and_consolidate(
         # Final per-peak diagnostics on the consolidated set. These are
         # the ones persisted to KnockoutInfo on the surviving peaks.
         pruned_knockouts = knockout_test(
-            u, z, sigma, pruned_fit, acquisition_us,
+            u,
+            z,
+            sigma,
+            pruned_fit,
+            acquisition_us,
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,

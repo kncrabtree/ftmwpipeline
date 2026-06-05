@@ -309,8 +309,10 @@ def derive_window_fit_constraints(
     min_separation = min_separation_factor * fwhm
 
     use_calibrated = (
-        tau_maj_us is not None and tau_maj_us > 0.0
-        and sigma_tau_us is not None and sigma_tau_us > 0.0
+        tau_maj_us is not None
+        and tau_maj_us > 0.0
+        and sigma_tau_us is not None
+        and sigma_tau_us > 0.0
     )
 
     if use_calibrated:
@@ -361,9 +363,7 @@ def derive_window_fit_constraints(
     tau_eff_nom = effective_tau_shape(shape_resolved, tau0_us, acquisition_us)
     max_abs = float(np.max(np.abs(z))) if z.size else 0.0
     if max_abs > 0.0 and tau_eff_min > 0.0:
-        amp_max: Optional[float] = float(
-            amp_max_headroom * 2.0 * max_abs / tau_eff_min
-        )
+        amp_max: Optional[float] = float(amp_max_headroom * 2.0 * max_abs / tau_eff_min)
     else:
         amp_max = None
     sig_median = float(np.median(sigma)) if sigma.size else 0.0
@@ -831,11 +831,7 @@ def _penalty_residuals_and_jacobian(
 
     row = 0
     if phase_penalty_lambda > 0.0 and k > 1:
-        cutoff = (
-            phase_penalty_cutoff_fwhm * fwhm_mhz
-            if fwhm_mhz is not None
-            else 0.0
-        )
+        cutoff = phase_penalty_cutoff_fwhm * fwhm_mhz if fwhm_mhz is not None else 0.0
         sqrt_lambda = float(np.sqrt(phase_penalty_lambda))
         for i in range(k):
             for j in range(i + 1, k):
@@ -853,20 +849,12 @@ def _penalty_residuals_and_jacobian(
                         sgn = (sep / abs_sep) if abs_sep > 0.0 else 0.0
                         dweight_doffi = -sgn / cutoff
                         dweight_doffj = sgn / cutoff
-                        jac[row, 3 * i + 1] = (
-                            sqrt_lambda * dweight_doffi * cos_d
-                        )
-                        jac[row, 3 * j + 1] = (
-                            sqrt_lambda * dweight_doffj * cos_d
-                        )
+                        jac[row, 3 * i + 1] = sqrt_lambda * dweight_doffi * cos_d
+                        jac[row, 3 * j + 1] = sqrt_lambda * dweight_doffj * cos_d
                         # d/d(phi_i) cos(phi_i - phi_j) = -sin(phi_i - phi_j);
                         # d/d(phi_j) is +sin(phi_i - phi_j).
-                        jac[row, 3 * i + 2] = (
-                            -sqrt_lambda * weight * sin_d
-                        )
-                        jac[row, 3 * j + 2] = (
-                            sqrt_lambda * weight * sin_d
-                        )
+                        jac[row, 3 * i + 2] = -sqrt_lambda * weight * sin_d
+                        jac[row, 3 * j + 2] = sqrt_lambda * weight * sin_d
                 row += 1
 
     if amp_penalty_lambda > 0.0 and amp_floor is not None and amp_floor > 0.0:
@@ -1214,8 +1202,12 @@ def fit_window(
         # d(residual)/d(p) = -(d(model)/d(p)) / sig_ri, complex, columns =
         # peaks (+ tau), then the baseline a_k / b_k columns.
         dmodel = model_jacobian(
-            u, peaks, tau, acquisition_us,
-            include_tau=fit_tau, shape=shape_resolved,
+            u,
+            peaks,
+            tau,
+            acquisition_us,
+            include_tau=fit_tau,
+            shape=shape_resolved,
         )
         if baseline_active:
             dmodel = np.concatenate([dmodel, base_cols], axis=1)
@@ -1224,9 +1216,7 @@ def fit_window(
     def jacobian(params: np.ndarray) -> np.ndarray:
         peaks, tau = _unpack(params, k, tau0_us, fit_tau)
         weighted = _weighted_model_jacobian(peaks, tau)
-        data_jac = np.concatenate(
-            [weighted.real[keep], weighted.imag[keep]], axis=0
-        )
+        data_jac = np.concatenate([weighted.real[keep], weighted.imag[keep]], axis=0)
         if not penalties_active:
             return cast(np.ndarray, data_jac)
         _, pen_jac = _penalty_residuals_and_jacobian(
@@ -1276,8 +1266,8 @@ def fit_window(
         pk.phase = _wrap_phase(pk.phase)
     baseline_coeffs: Optional[np.ndarray] = None
     if baseline_active:
-        a = sol_x[base_start:base_start + n_base]
-        b = sol_x[base_start + n_base:base_start + 2 * n_base]
+        a = sol_x[base_start : base_start + n_base]
+        b = sol_x[base_start + n_base : base_start + 2 * n_base]
         baseline_coeffs = a + 1j * b
 
     fitted = _model_with_baseline(peaks, tau, sol_x)
@@ -1589,15 +1579,15 @@ def knockout_test(
     tau = fit.tau_us
     shape_resolved = fit.shape
     full_model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
-    full_chi2 = calculate_noise_weighted_chi2(
-        z_keep, sigma_keep, full_model[keep]
-    )
+    full_chi2 = calculate_noise_weighted_chi2(z_keep, sigma_keep, full_model[keep])
 
     # n_eff is keyed on the K-fit's model magnitude -- the same value the
     # merge cleanup uses for its AICc test -- and shared across all peaks
     # in the sweep so per-peak comparisons sit on a common scale.
     n_eff = effective_sample_size(
-        fit.fitted_spectrum, kind=n_eff_kind, sigma=rms_noise,
+        fit.fitted_spectrum,
+        kind=n_eff_kind,
+        sigma=rms_noise,
     )
     aicc_k = calculate_aicc(fit.chi_squared, fit.n_params, n_eff)
 
@@ -1645,8 +1635,14 @@ def knockout_test(
             continue
 
         refit = fit_window(
-            u, z, sigma, kept, tau, acquisition_us,
-            spur_mask=spur_mask, **refit_kwargs,
+            u,
+            z,
+            sigma,
+            kept,
+            tau,
+            acquisition_us,
+            spur_mask=spur_mask,
+            **refit_kwargs,
         )
         if not refit.success:
             # Refit failure -> the AICc gate is unable to express a
@@ -1850,8 +1846,12 @@ def _blend_aware_seed(
         positions = seed_offset_mhz + (np.arange(k) - 0.5 * (k - 1)) * straddle
         init = [
             _seed_peak(
-                float(pos), offset_grid_mhz, complex_spectrum,
-                tau0_us, acquisition_us, shape=shape_resolved,
+                float(pos),
+                offset_grid_mhz,
+                complex_spectrum,
+                tau0_us,
+                acquisition_us,
+                shape=shape_resolved,
             )
             for pos in positions
         ]
@@ -1894,7 +1894,9 @@ def _blend_aware_seed(
         # inverted because here K+1 is the more-complex model.
         if trial.success:
             n_eff = effective_sample_size(
-                trial.fitted_spectrum, kind=n_eff_kind, sigma=rms_noise,
+                trial.fitted_spectrum,
+                kind=n_eff_kind,
+                sigma=rms_noise,
             )
             aicc_prev = calculate_aicc(prev.chi_squared, prev.n_params, n_eff)
             aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
@@ -2147,13 +2149,25 @@ def conservative_fit(
     )
     if not remaining:
         empty = fit_window(
-            u, z, sigma, [], tau0_us, acquisition_us, shape=shape_resolved,
+            u,
+            z,
+            sigma,
+            [],
+            tau0_us,
+            acquisition_us,
+            shape=shape_resolved,
             spur_mask=spur_mask,
         )
         return ConservativeFitResult(empty, [], [])
 
     null = fit_window(
-        u, z, sigma, [], tau0_us, acquisition_us, shape=shape_resolved,
+        u,
+        z,
+        sigma,
+        [],
+        tau0_us,
+        acquisition_us,
+        shape=shape_resolved,
         spur_mask=spur_mask,
     )
     seed = remaining.pop(0)
@@ -2179,9 +2193,7 @@ def conservative_fit(
         amp_penalty_lambda=amp_penalty_lambda,
         phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
         min_pair_separation_factor=min_pair_separation_factor,
-        min_pair_separation_resolution_factor=(
-            min_pair_separation_resolution_factor
-        ),
+        min_pair_separation_resolution_factor=(min_pair_separation_resolution_factor),
         tau_penalty_lambda=effective_tau_penalty_lambda,
         tau_penalty_reference=tau_penalty_ref,
         tau_penalty_sigma_us=tau_penalty_sigma_us,
@@ -2198,7 +2210,11 @@ def conservative_fit(
     while remaining and current.n_peaks + len(tentative) < max_peaks:
         in_model = list(current.peaks) + tentative
         residual = z - model_spectrum(
-            u, in_model, current.tau_us, acquisition_us, shape=shape_resolved,
+            u,
+            in_model,
+            current.tau_us,
+            acquisition_us,
+            shape=shape_resolved,
         )
         cand = max(
             remaining,
@@ -2234,10 +2250,16 @@ def conservative_fit(
         trial_init = (
             list(current.peaks)
             + tentative
-            + [_seed_peak(
-                cand, u, residual, current.tau_us, acquisition_us,
-                shape=shape_resolved,
-            )]
+            + [
+                _seed_peak(
+                    cand,
+                    u,
+                    residual,
+                    current.tau_us,
+                    acquisition_us,
+                    shape=shape_resolved,
+                )
+            ]
         )
         trial = fit_window(
             u,
@@ -2267,11 +2289,11 @@ def conservative_fit(
         # inverted because here K+1 is the more-complex model.
         if trial.success:
             n_eff = effective_sample_size(
-                trial.fitted_spectrum, kind=n_eff_kind, sigma=sigma,
+                trial.fitted_spectrum,
+                kind=n_eff_kind,
+                sigma=sigma,
             )
-            aicc_current = calculate_aicc(
-                current.chi_squared, current.n_params, n_eff
-            )
+            aicc_current = calculate_aicc(current.chi_squared, current.n_params, n_eff)
             aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
             aicc_delta = aicc_trial - aicc_current
             passes = aicc_trial < aicc_current
@@ -2327,7 +2349,11 @@ def conservative_fit(
                 break
 
     knockouts = knockout_test(
-        u, z, sigma, current, acquisition_us,
+        u,
+        z,
+        sigma,
+        current,
+        acquisition_us,
         fit_kwargs_inner=fit_kwargs_inner,
         n_eff_kind=n_eff_kind,
         significance=significance,

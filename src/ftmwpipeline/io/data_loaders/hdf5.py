@@ -17,13 +17,13 @@ from .base import BaseLoader, LoaderError
 class HDF5Loader(BaseLoader):
     """
     Placeholder loader for HDF5 data format.
-    
+
     HDF5 files can contain structured FTMW data including:
     - Time-domain voltage data
     - Acquisition parameters (spacing, probe frequency, etc.)
     - Processing parameters
     - Experimental metadata
-    
+
     Expected HDF5 structure:
     /fid_data/
     ├── voltage_data        [dataset: time series data]
@@ -35,83 +35,80 @@ class HDF5Loader(BaseLoader):
     └── processing/         [group: processing parameters]
         └── [FIDProcessingParameters attributes]
     """
-    
+
     format_name = "hdf5"
     file_extensions = [".h5", ".hdf5"]
     directory_indicators = []
-    
+
     def can_load(self, source_path: Union[str, Path]) -> bool:
         """
         Check if source is an HDF5 file with FTMW data.
-        
+
         This checks file extension and basic HDF5 structure.
         """
         source_path = Path(source_path)
-        
+
         if not source_path.exists():
             return False
-        
+
         if not source_path.is_file():
             return False
-        
+
         if source_path.suffix.lower() not in self.file_extensions:
             return False
-        
+
         # Check if it's a valid HDF5 file with expected structure
         try:
-            with h5py.File(source_path, 'r') as h5f:
+            with h5py.File(source_path, "r") as h5f:
                 # Look for FTMW data structure
-                return 'fid_data' in h5f or 'voltage_data' in h5f
+                return "fid_data" in h5f or "voltage_data" in h5f
         except Exception:
             return False
-    
-    def validate_source(self, source_path: Union[str, Path], **kwargs) -> Dict[str, Any]:
+
+    def validate_source(
+        self, source_path: Union[str, Path], **kwargs
+    ) -> Dict[str, Any]:
         """
         Validate HDF5 file structure and extract metadata.
         """
-        result = {
-            'valid': False,
-            'metadata': {},
-            'options': {},
-            'errors': []
-        }
-        
+        result = {"valid": False, "metadata": {}, "options": {}, "errors": []}
+
         source_path = Path(source_path)
-        
+
         try:
             # Check basic file type
             if not self.can_load(source_path):
-                result['errors'].append("Not a valid HDF5 file with FTMW data")
+                result["errors"].append("Not a valid HDF5 file with FTMW data")
                 return result
-            
+
             # TODO: Implement HDF5 validation when needed
             # This is a placeholder
-            result['errors'].append(
+            result["errors"].append(
                 "HDF5 loader validation not yet implemented. "
                 "This is a placeholder for future development."
             )
             return result
-            
+
         except Exception as e:
-            result['errors'].append(f"Validation failed: {e}")
+            result["errors"].append(f"Validation failed: {e}")
             return result
-    
-    def load_fid(self, source_path: Union[str, Path], **kwargs) -> 'FID':
+
+    def load_fid(self, source_path: Union[str, Path], **kwargs) -> "FID":
         """
         Load FID data from HDF5 file.
-        
+
         Parameters
         ----------
         source_path : str or Path
             Path to HDF5 file
         **kwargs
             Additional parameters (may override file metadata)
-            
+
         Returns
         -------
         FID
             Loaded FID object
-            
+
         Raises
         ------
         LoaderError
@@ -137,14 +134,14 @@ class HDF5Loader(BaseLoader):
             "    # ... create FID object\n"
             "```"
         )
-    
+
     def get_required_parameters(self) -> List[str]:
         """HDF5 files should contain all required metadata."""
         return []
-    
+
     def get_optional_parameters(self) -> Dict[str, Any]:
         """Get optional parameters for HDF5 loading."""
         return {
-            'dataset_path': '/fid_data/voltage_data',  # Path to voltage data in HDF5
-            'metadata_group': '/fid_data/metadata'     # Path to metadata group
+            "dataset_path": "/fid_data/voltage_data",  # Path to voltage data in HDF5
+            "metadata_group": "/fid_data/metadata",  # Path to metadata group
         }

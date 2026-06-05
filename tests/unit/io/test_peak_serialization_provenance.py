@@ -22,10 +22,10 @@ from ftmwpipeline.io.peak_serialization import (
     _COLUMNS,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_peaks_with_provenance():
     """Two peaks: one promoted (snr=5.0 >= 3.0), one not (snr=2.1 < 3.0)."""
@@ -57,6 +57,7 @@ def _make_peaks_with_provenance():
 # ---------------------------------------------------------------------------
 # Round-trip with provenance columns
 # ---------------------------------------------------------------------------
+
 
 class TestProvenanceRoundTrip:
     def test_optional_datasets_written(self, tmp_path):
@@ -185,6 +186,7 @@ class TestProvenanceRoundTrip:
 # Promotion boundary: exactly at the cutoff
 # ---------------------------------------------------------------------------
 
+
 class TestPromotionBoundary:
     def test_snr_exactly_at_cutoff_is_promoted(self, tmp_path):
         """A peak whose snr == promotion_min_snr exactly must be promoted."""
@@ -234,6 +236,7 @@ class TestPromotionBoundary:
 # ---------------------------------------------------------------------------
 # Backward compatibility: old file (no optional columns / no promotion attr)
 # ---------------------------------------------------------------------------
+
 
 class TestBackwardCompatibility:
     def _build_old_format_group(self, h5_group: h5py.Group, peaks) -> None:

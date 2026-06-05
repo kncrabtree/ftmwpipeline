@@ -27,7 +27,7 @@ __all__ = [
     "detect_peaks",
     "estimate_leakage_reach",
     "load_blackchirp_data",
-    "load_fid_data", 
+    "load_fid_data",
     "validate_fid_data",
     "validate_frequency_data",
 ]

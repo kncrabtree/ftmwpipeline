@@ -48,7 +48,9 @@ def sample_spectrum_data():
         peak_width = 50
         peak_indices = np.arange(peak_idx - peak_width, peak_idx + peak_width + 1)
         peak_indices = peak_indices[(peak_indices >= 0) & (peak_indices < n_points)]
-        gaussian = np.exp(-((peak_indices - peak_idx) ** 2) / (2 * (peak_width / 3) ** 2))
+        gaussian = np.exp(
+            -((peak_indices - peak_idx) ** 2) / (2 * (peak_width / 3) ** 2)
+        )
         magnitudes[peak_indices] += 10 * gaussian
 
     return frequencies, magnitudes
@@ -118,12 +120,8 @@ class TestSaveLoadRoundtrip:
                 f["noise_result"], frequencies, magnitudes
             )
 
-        np.testing.assert_array_equal(
-            loaded.noise_mask, sample_noise_result.noise_mask
-        )
-        np.testing.assert_array_equal(
-            loaded.rms_noise, sample_noise_result.rms_noise
-        )
+        np.testing.assert_array_equal(loaded.noise_mask, sample_noise_result.noise_mask)
+        np.testing.assert_array_equal(loaded.rms_noise, sample_noise_result.rms_noise)
         assert loaded.bin_info.keys() == sample_noise_result.bin_info.keys()
         for key in ("noise_fraction", "algorithm"):
             if key in sample_noise_result.bin_info:

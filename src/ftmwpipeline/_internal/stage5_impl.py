@@ -475,12 +475,8 @@ def fit_peaks_impl(
     edge_threshold_v = _required_float(
         resolved.thaw.residual_edge_threshold, "thaw.residual_edge_threshold"
     )
-    edge_m_v = _required_int(
-        resolved.thaw.residual_edge_m, "thaw.residual_edge_m"
-    )
-    max_thaw_v = _required_int(
-        resolved.thaw.max_thaw_rounds, "thaw.max_thaw_rounds"
-    )
+    edge_m_v = _required_int(resolved.thaw.residual_edge_m, "thaw.residual_edge_m")
+    max_thaw_v = _required_int(resolved.thaw.max_thaw_rounds, "thaw.max_thaw_rounds")
     max_replan_v = _required_int(
         resolved.thaw.max_replan_rounds, "thaw.max_replan_rounds"
     )
@@ -501,9 +497,7 @@ def fit_peaks_impl(
     # resolved instance so a preset can carry them.
     tau_maj_override_v = resolved.tau.tau_maj_override_us
     sigma_tau_override_v = resolved.tau.sigma_tau_override_us
-    per_band_tau_v = _required_bool(
-        resolved.tau.per_band_tau, "tau.per_band_tau"
-    )
+    per_band_tau_v = _required_bool(resolved.tau.per_band_tau, "tau.per_band_tau")
     # Leakage-wing baseline knobs (driven by the settings block, like spur).
     baseline_enabled_v = _required_bool(resolved.baseline.enabled, "baseline.enabled")
     baseline_order_v = _required_int(resolved.baseline.order, "baseline.order")
@@ -583,9 +577,7 @@ def fit_peaks_impl(
     persisted_cal: Optional[TauCalibrationResult] = None
     if shape_enum is PeakShape.GAUSSIAN:
         if tau_G_calibration_present(file_path):
-            persisted_cal = load_tau_G_calibration_impl(
-                file_path
-            )["tau_G_calibration"]
+            persisted_cal = load_tau_G_calibration_impl(file_path)["tau_G_calibration"]
             if not persisted_cal.preconditions_passed:
                 logger.warning(
                     "Stage 2b τ_G calibration pre-conditions did not pass "
@@ -605,9 +597,7 @@ def fit_peaks_impl(
             )
     else:
         if tau_calibration_present(file_path):
-            persisted_cal = load_tau_calibration_impl(
-                file_path
-            )["tau_calibration"]
+            persisted_cal = load_tau_calibration_impl(file_path)["tau_calibration"]
             if not persisted_cal.preconditions_passed:
                 logger.warning(
                     "Stage 2b calibration pre-conditions did not pass on %s; "
@@ -619,7 +609,9 @@ def fit_peaks_impl(
                     "; ".join(persisted_cal.preconditions_notes),
                 )
     tau_maj_us, sigma_tau_us, tau_source = _resolve_tau_calibration_for_fit(
-        persisted_cal, tau_maj_override_v, sigma_tau_override_v,
+        persisted_cal,
+        tau_maj_override_v,
+        sigma_tau_override_v,
     )
     if tau_source == "override":
         logger.info(
@@ -633,7 +625,8 @@ def fit_peaks_impl(
         logger.info(
             "Stage 5 consuming Stage 2b calibration: tau_maj=%.3f us, "
             "sigma_tau=%.3f us",
-            tau_maj_us, sigma_tau_us,
+            tau_maj_us,
+            sigma_tau_us,
         )
 
     # --- Spur gating (optional) ---------------------------------------------
@@ -680,9 +673,7 @@ def fit_peaks_impl(
             narrowness_ratio=_required_float(
                 spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
             ),
-            snr_threshold=_required_float(
-                spur_cfg.snr_threshold, "spur.snr_threshold"
-            ),
+            snr_threshold=_required_float(spur_cfg.snr_threshold, "spur.snr_threshold"),
             mask_half_width_bins=_required_int(
                 spur_cfg.mask_half_width_bins, "spur.mask_half_width_bins"
             ),
@@ -788,18 +779,21 @@ def fit_peaks_impl(
             for win in plan.windows:
                 centre_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
                 band = band_majority_for_frequency(
-                    persisted_cal.band_majorities, centre_mhz,
+                    persisted_cal.band_majorities,
+                    centre_mhz,
                 )
                 if band is None:
                     continue
                 window_tau_overrides[int(win.window_id)] = (
-                    float(band.tau_maj_us), float(band.sigma_tau_us),
+                    float(band.tau_maj_us),
+                    float(band.sigma_tau_us),
                 )
             per_band_used = True
             logger.info(
                 "Stage 5 per-band tau routing on: %d / %d windows mapped "
                 "to a band (others use band-wide tau_maj=%.3f, sigma=%.3f)",
-                len(window_tau_overrides), len(plan.windows),
+                len(window_tau_overrides),
+                len(plan.windows),
                 tau_maj_us if tau_maj_us is not None else float("nan"),
                 sigma_tau_us if sigma_tau_us is not None else float("nan"),
             )
@@ -965,9 +959,7 @@ def fit_peaks_impl(
         "spur_centers_mhz": (
             [round(s.center_mhz, 4) for s in spur_set.spurs] if spur_set else []
         ),
-        "spur_sources": (
-            [s.source for s in spur_set.spurs] if spur_set else []
-        ),
+        "spur_sources": ([s.source for s in spur_set.spurs] if spur_set else []),
         "spur_mask_half_width_bins": (
             int(spur_set.mask_half_width_bins) if spur_set else 0
         ),

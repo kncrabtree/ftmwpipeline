@@ -26,7 +26,7 @@ __all__ = [
     "frequency_to_time_domain",
     "time_to_frequency_domain",
     "f_test",
-    "aic_comparison", 
+    "aic_comparison",
     "chi_squared_test",
     "calculate_line_strength",
     "doppler_broadening",

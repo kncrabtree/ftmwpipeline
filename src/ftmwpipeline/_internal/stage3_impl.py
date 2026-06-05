@@ -167,9 +167,7 @@ def _leakage_floor_amp(
         freq_mhz, complex_spectrum, probe_freq_mhz, start_us
     )
     scoh = rolling_coherence(deramped, sigma, band_m=band_m)
-    return (
-        k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
-    )
+    return k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
 
 
 def _active_acquisition_us(
@@ -256,6 +254,7 @@ def _active_windowed_spectrum(
     spectrum = sample_dt_us * np.fft.rfft(padded)
     f_bb = np.fft.rfftfreq(n_padded, d=sample_dt_us)
     from ..fitting.peak_model import sideband_sign
+
     s = sideband_sign(fid.sideband)
     freq_mhz = float(fid.probe_freq_mhz) + s * f_bb
 
@@ -338,7 +337,8 @@ def _propagate_active_sigma_to_grid(
     af = np.asarray(active_freq, dtype=float)
     order = np.argsort(af)
     interp = np.interp(
-        np.asarray(gap_freq, dtype=float), af[order],
+        np.asarray(gap_freq, dtype=float),
+        af[order],
         np.asarray(active_sigma, dtype=float)[order],
     )
     return cast(np.ndarray, np.asarray(interp, dtype=float) * float(gain))
@@ -395,9 +395,7 @@ def _snap_to_active_grid(
             index=int(ui),
             snr=snr,
             noise_std_local=sd,
-            classification=classify_by_snr(
-                snr, weak_medium_snr, medium_strong_snr
-            ),
+            classification=classify_by_snr(snr, weak_medium_snr, medium_strong_snr),
             detection_pass=p.properties.get("detection_pass"),
             internal_frequency=p.frequency,
             internal_snr=p.snr,
@@ -569,9 +567,7 @@ def detect_peaks_impl(
     sg_fwhm_coverage_v: float = float(
         _required(savgol.sg_fwhm_coverage, "savgol.sg_fwhm_coverage")
     )
-    sg_min_window_v: int = int(
-        _required(savgol.sg_min_window, "savgol.sg_min_window")
-    )
+    sg_min_window_v: int = int(_required(savgol.sg_min_window, "savgol.sg_min_window"))
     primary_window_v: str = str(
         _required(primary.primary_window, "primary_pass.primary_window")
     )
@@ -690,10 +686,7 @@ def detect_peaks_impl(
     # else an exponential ``exp(-t/τ)``. This is the true matched filter for
     # the line shape, not an exp filter fed a Gaussian τ.
     recommended_shape = read_stage2b_recommended_shape(file_path)
-    if (
-        recommended_shape == "gaussian"
-        and tau_G_calibration_present(file_path)
-    ):
+    if recommended_shape == "gaussian" and tau_G_calibration_present(file_path):
         tau_basis_us = float(
             load_tau_G_calibration_impl(file_path)["tau_G_calibration"].tau_maj_us
         )
@@ -724,11 +717,11 @@ def detect_peaks_impl(
     params["tau_basis_source"] = (
         "stage2b_tau_G_maj"
         if gap_shape == "gaussian"
-        else "stage2b_tau_maj"
-        if tau_calibration_present(file_path)
-        else "stage1_expf_us"
-        if base_pp.expf_us
-        else "default_5us"
+        else (
+            "stage2b_tau_maj"
+            if tau_calibration_present(file_path)
+            else "stage1_expf_us" if base_pp.expf_us else "default_5us"
+        )
     )
     # SavGol window feed: the line's nominal FWHM at ``tau_basis``. The
     # ``_SG_FWHM_COVERAGE`` coefficient was empirically calibrated against the
@@ -835,7 +828,9 @@ def detect_peaks_impl(
     # ``save_peak_parameters_impl`` above as a back-compat shim; the new
     # canonical record below is what the resolver's persisted layer reads.
     save_peak_detection_settings_to_h5(
-        file_path, resolved, preset_name=preset_name,
+        file_path,
+        resolved,
+        preset_name=preset_name,
     )
     _update_stage_completion(file_path, "stage3_peaks")
     # Re-detection supersedes any Stage 4 window plan built on the old peaks.
@@ -848,9 +843,7 @@ def detect_peaks_impl(
         promotion_v,
     )
 
-    n_primary = sum(
-        1 for p in peaks if p.properties.get("detection_pass") == "primary"
-    )
+    n_primary = sum(1 for p in peaks if p.properties.get("detection_pass") == "primary")
     return {
         "status": "success",
         "peaks": peaks,

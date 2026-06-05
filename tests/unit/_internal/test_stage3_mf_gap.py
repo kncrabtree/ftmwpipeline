@@ -4,6 +4,7 @@ Covers the shape-aware matched window in :func:`_mf_gap_spectrum` (exp vs
 Gaussian) and its white-noise gain, plus the analytic σ propagation that
 replaces a third scatter estimate on the gap spectrum.
 """
+
 from types import SimpleNamespace
 
 import numpy as np
@@ -54,8 +55,12 @@ def test_gain_matches_window_and_is_below_one(shape):
 def test_shape_changes_spectrum_and_gain():
     fid = _fake_fid()
     base_pp = _base_pp()
-    cft_l, gain_l = _mf_gap_spectrum(fid, base_pp, None, tau_basis_us=3.0, shape="lorentzian")
-    cft_g, gain_g = _mf_gap_spectrum(fid, base_pp, None, tau_basis_us=3.0, shape="gaussian")
+    cft_l, gain_l = _mf_gap_spectrum(
+        fid, base_pp, None, tau_basis_us=3.0, shape="lorentzian"
+    )
+    cft_g, gain_g = _mf_gap_spectrum(
+        fid, base_pp, None, tau_basis_us=3.0, shape="gaussian"
+    )
     assert cft_l.freq_array.shape == cft_g.freq_array.shape
     # The two matched windows produce materially different spectra and gains.
     assert gain_l != pytest.approx(gain_g, rel=1e-3)

@@ -155,9 +155,7 @@ def save_peaks_to_hdf5(
     h5_group.attrs["parameters"] = json.dumps(params, default=str)
     for attr in ("promotion_min_snr", "internal_min_snr"):
         value = params.get(attr)
-        h5_group.attrs[attr] = (
-            float("nan") if value is None else float(value)
-        )
+        h5_group.attrs[attr] = float("nan") if value is None else float(value)
 
 
 def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
@@ -214,9 +212,7 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
             opt_val = float(cols[opt][i])
             extra[opt] = None if np.isnan(opt_val) else opt_val
         if promotion_min_snr is not None:
-            extra["promoted"] = (
-                not np.isnan(snr_val) and snr_val >= promotion_min_snr
-            )
+            extra["promoted"] = not np.isnan(snr_val) and snr_val >= promotion_min_snr
 
         peaks.append(
             Peak(

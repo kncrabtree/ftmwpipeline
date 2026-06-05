@@ -26,10 +26,10 @@ from ftmwpipeline._internal.stage1_impl import compute_ft_impl
 from ftmwpipeline.core.settings import FTSettings, FT_PROCESSING_PATH
 from ftmwpipeline.core.data_structures import ComplexFT
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _create_ftmw(source: str, tmp_path: Path) -> Path:
     """Import experiment 2638 into a fresh .ftmw file and return its path."""
@@ -48,7 +48,10 @@ def _read_ft_attrs(file_path: str) -> dict:
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
     result = subprocess.run(
         ["ftmwpipeline", *args],
-        capture_output=True, text=True, check=False, timeout=60,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
     )
     return result
 
@@ -56,6 +59,7 @@ def _run_cli(*args: str) -> subprocess.CompletedProcess:
 # ---------------------------------------------------------------------------
 # Core D7 regression: impl-level persistence
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.integration
 class TestD7ImplPersistence:
@@ -99,17 +103,19 @@ class TestD7ImplPersistence:
         second = compute_ft_impl(str(f))
         ft2: ComplexFT = second["complex_ft"]
 
-        assert ft1.n_points == ft2.n_points, (
-            "No-arg reproduce: n_points mismatch"
-        )
+        assert ft1.n_points == ft2.n_points, "No-arg reproduce: n_points mismatch"
         np.testing.assert_allclose(
-            ft1.freq_array, ft2.freq_array,
-            rtol=1e-12, atol=0,
+            ft1.freq_array,
+            ft2.freq_array,
+            rtol=1e-12,
+            atol=0,
             err_msg="No-arg reproduce: freq_array differs",
         )
         np.testing.assert_allclose(
-            ft1.magnitude_spectrum, ft2.magnitude_spectrum,
-            rtol=1e-12, atol=0,
+            ft1.magnitude_spectrum,
+            ft2.magnitude_spectrum,
+            rtol=1e-12,
+            atol=0,
             err_msg="No-arg reproduce: magnitude_spectrum differs",
         )
 
@@ -123,12 +129,12 @@ class TestD7ImplPersistence:
         result = compute_ft_impl(str(f))
         ft: ComplexFT = result["complex_ft"]
 
-        assert ft.freq_array.min() >= 26499.0, (
-            f"freq min {ft.freq_array.min():.1f} < trim_min 26500"
-        )
-        assert ft.freq_array.max() <= 40001.0, (
-            f"freq max {ft.freq_array.max():.1f} > trim_max 40000"
-        )
+        assert (
+            ft.freq_array.min() >= 26499.0
+        ), f"freq min {ft.freq_array.min():.1f} < trim_min 26500"
+        assert (
+            ft.freq_array.max() <= 40001.0
+        ), f"freq max {ft.freq_array.max():.1f} > trim_max 40000"
 
     def test_persisted_settings_survive_fresh_open(self, exp_2638_data_path, tmp_path):
         """
@@ -170,6 +176,7 @@ class TestD7ImplPersistence:
 # or TypeError until Task #3 (API surface refactor) lands — that is expected.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.integration
 class TestCrossInterfaceD7:
     """
@@ -187,13 +194,22 @@ class TestCrossInterfaceD7:
             pytest.fail(f"import-data failed:\n{r.stderr}")
 
     def _run_cli_compute_ft(
-        self, ftmw_file: Path, zpf: int, expf_us: float, trim_min: float, trim_max: float
+        self,
+        ftmw_file: Path,
+        zpf: int,
+        expf_us: float,
+        trim_min: float,
+        trim_max: float,
     ) -> None:
         r = _run_cli(
-            "compute-ft", str(ftmw_file),
-            "--zpf", str(zpf),
-            "--expf_us", str(expf_us),
-            "--trim", f"{trim_min}:{trim_max}",
+            "compute-ft",
+            str(ftmw_file),
+            "--zpf",
+            str(zpf),
+            "--expf_us",
+            str(expf_us),
+            "--trim",
+            f"{trim_min}:{trim_max}",
         )
         if r.returncode != 0:
             pytest.fail(f"compute-ft failed:\n{r.stderr}")
@@ -245,22 +261,30 @@ class TestCrossInterfaceD7:
         assert float(cli_attrs["trim_max_mhz"]) == pytest.approx(40000.0)
 
         # -- Numerical consistency across all three --
-        assert ft_pipe.n_points == ft_api.n_points == ft_cli.n_points, (
-            "n_points mismatch across interfaces"
-        )
+        assert (
+            ft_pipe.n_points == ft_api.n_points == ft_cli.n_points
+        ), "n_points mismatch across interfaces"
         np.testing.assert_allclose(
-            ft_pipe.freq_array, ft_api.freq_array, rtol=1e-12,
+            ft_pipe.freq_array,
+            ft_api.freq_array,
+            rtol=1e-12,
             err_msg="Pipeline vs API: freq_array differs",
         )
         np.testing.assert_allclose(
-            ft_pipe.freq_array, ft_cli.freq_array, rtol=1e-12,
+            ft_pipe.freq_array,
+            ft_cli.freq_array,
+            rtol=1e-12,
             err_msg="Pipeline vs CLI: freq_array differs",
         )
         np.testing.assert_allclose(
-            ft_pipe.magnitude_spectrum, ft_api.magnitude_spectrum, rtol=1e-10,
+            ft_pipe.magnitude_spectrum,
+            ft_api.magnitude_spectrum,
+            rtol=1e-10,
             err_msg="Pipeline vs API: magnitude_spectrum differs",
         )
         np.testing.assert_allclose(
-            ft_pipe.magnitude_spectrum, ft_cli.magnitude_spectrum, rtol=1e-10,
+            ft_pipe.magnitude_spectrum,
+            ft_cli.magnitude_spectrum,
+            rtol=1e-10,
             err_msg="Pipeline vs CLI: magnitude_spectrum differs",
         )

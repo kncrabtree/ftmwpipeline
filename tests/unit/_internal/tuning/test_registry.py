@@ -42,8 +42,12 @@ def test_tier_filtering():
 
 def test_stage1_exposes_band_and_window_not_apodization():
     paths = {s.path for s in list_knobs("stage1", include_advanced=True)}
-    assert {"stage1.start_us", "stage1.trim_min_mhz", "stage1.trim_max_mhz",
-            "stage1.end_us"} <= paths
+    assert {
+        "stage1.start_us",
+        "stage1.trim_min_mhz",
+        "stage1.trim_max_mhz",
+        "stage1.end_us",
+    } <= paths
     # zpf / expf_us / window_function / units are deliberately not swept
     for excluded in ("zpf", "expf", "window_function", "units"):
         assert not any(excluded in p for p in paths), excluded
@@ -97,8 +101,16 @@ def test_stage3_paths_resolve_to_settings_fields():
         names = {f.name for f in fields(getattr(tmpl, sub))}
         assert field in names, spec.path
         assert spec.metric_columns == (
-            "n_total", "n_strong", "n_medium", "n_weak",
-            "snr_min", "snr_p10", "snr_p25", "snr_p50", "snr_p90", "snr_max",
+            "n_total",
+            "n_strong",
+            "n_medium",
+            "n_weak",
+            "snr_min",
+            "snr_p10",
+            "snr_p25",
+            "snr_p50",
+            "snr_p90",
+            "snr_max",
         )
 
 
@@ -126,8 +138,16 @@ def test_stage4_paths_resolve_to_settings_fields():
         names = {f.name for f in fields(getattr(tmpl, sub))}
         assert field in names, spec.path
         assert spec.metric_columns == (
-            "n_windows", "n_hard", "n_easy", "n_free", "n_fixed", "n_dep",
-            "n_split", "width_p50", "width_p95", "width_max",
+            "n_windows",
+            "n_hard",
+            "n_easy",
+            "n_free",
+            "n_fixed",
+            "n_dep",
+            "n_split",
+            "width_p50",
+            "width_p95",
+            "width_max",
         )
 
 
@@ -147,8 +167,14 @@ def test_stage5_paths_resolve_to_settings_fields():
     # the fit-quality family (tau / seeder / conservative / penalties / baseline)
     # shares one metric/plot; rescue / spur / thaw are their own families.
     fit_quality_cols = (
-        "eps_p50", "eps_p95", "n_fail", "n_peaks", "n_free_tau",
-        "sigma_f_khz", "chi2r_p50", "chi2r_p95",
+        "eps_p50",
+        "eps_p95",
+        "n_fail",
+        "n_peaks",
+        "n_free_tau",
+        "sigma_f_khz",
+        "chi2r_p50",
+        "chi2r_p95",
     )
     family_subs = {"rescue", "spur", "thaw"}
     stage5 = list_knobs("stage5", include_advanced=True)
@@ -167,7 +193,9 @@ def test_stage5_paths_resolve_to_settings_fields():
 
 def test_stage5_rescue_spur_thaw_families_wired():
     from ftmwpipeline._internal.tuning.registry import (
-        _RESCUE_COLS, _SPUR_COLS, _THAW_COLS,
+        _RESCUE_COLS,
+        _SPUR_COLS,
+        _THAW_COLS,
     )
 
     cases = {

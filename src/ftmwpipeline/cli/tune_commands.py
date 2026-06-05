@@ -38,6 +38,7 @@ def _elide_path(path: str, prev: Optional[str]) -> str:
     once a segment differs from the previous row, it and all that follow print
     literally. The result keeps ``len(path)`` so downstream columns stay aligned.
     """
+
     def _segs(p: str) -> List[str]:
         parts = p.split(".")
         return [parts[0]] + ["." + part for part in parts[1:]]
@@ -72,19 +73,20 @@ def cmd_tune_list(args: argparse.Namespace) -> int:
     specs = list_knobs(selector, include_advanced=show_all)
     if not specs:
         suffix = f" matching {selector!r}." if selector else "."
-        print("No tunable knobs registered" + suffix
-              + ("" if show_all else " (try --all for advanced knobs)."))
+        print(
+            "No tunable knobs registered"
+            + suffix
+            + ("" if show_all else " (try --all for advanced knobs).")
+        )
         return 0
 
     headers = ("knob", "tier", "inst", "default grid")
     rows = [
-        (s.path, s.tier, s.inst_sensitivity,
-         ",".join(_fmt(v) for v in s.default_grid))
+        (s.path, s.tier, s.inst_sensitivity, ",".join(_fmt(v) for v in s.default_grid))
         for s in specs
     ]
     widths = [
-        max(len(headers[i]), *(len(r[i]) for r in rows))
-        for i in range(len(headers))
+        max(len(headers[i]), *(len(r[i]) for r in rows)) for i in range(len(headers))
     ]
     sep = "  "
 
@@ -105,7 +107,8 @@ def cmd_tune_list(args: argparse.Namespace) -> int:
     print()
     if not show_all:
         hidden = [
-            s for s in list_knobs(selector, include_advanced=True)
+            s
+            for s in list_knobs(selector, include_advanced=True)
             if s.tier == "advanced"
         ]
         if hidden:
@@ -233,8 +236,10 @@ def cmd_tune_scan_all(args: argparse.Namespace) -> int:
     specs = list_knobs(selector, include_advanced=bool(args.all))
     if not specs:
         suffix = f" matching {selector!r}" if selector else ""
-        print_error(f"No tunable knobs{suffix}"
-                    + ("" if args.all else " (try --all for advanced knobs)."))
+        print_error(
+            f"No tunable knobs{suffix}"
+            + ("" if args.all else " (try --all for advanced knobs).")
+        )
         return 1
 
     zoom_regions: Optional[List[Tuple[float, float]]] = None
@@ -309,7 +314,7 @@ def _add_zoom_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="LO-HI,LO-HI",
         help="Explicit MHz zoom windows for the plot's region panels, e.g. "
-             "35000-35800,38400-38500 (overrides the auto-selected regions)",
+        "35000-35800,38400-38500 (overrides the auto-selected regions)",
     )
     parser.add_argument(
         "--n-zoom",
@@ -400,7 +405,7 @@ def register_tune_commands(subparsers: Any) -> None:
         nargs="?",
         default=None,
         help="Filter by dotted-path prefix, e.g. stage2b or stage2b.gaussian "
-             "(a stage label like stage2_noise also matches)",
+        "(a stage label like stage2_noise also matches)",
     )
     p_list.add_argument(
         "--all",
@@ -464,7 +469,8 @@ def register_tune_commands(subparsers: Any) -> None:
         help="Skip plotting even when the knob has a plot adapter",
     )
     p_scan.add_argument(
-        "-q", "--quiet",
+        "-q",
+        "--quiet",
         action="store_true",
         help="Suppress the per-value progress indicator",
     )
@@ -495,7 +501,7 @@ def register_tune_commands(subparsers: Any) -> None:
         nargs="?",
         default=None,
         help="Dotted-path prefix to scan, e.g. stage2b or stage2b.gaussian "
-             "(omit to scan every knob)",
+        "(omit to scan every knob)",
     )
     p_scan_all.add_argument(
         "--all",
@@ -519,7 +525,8 @@ def register_tune_commands(subparsers: Any) -> None:
         help="Skip plotting even when a knob has a plot adapter",
     )
     p_scan_all.add_argument(
-        "-q", "--quiet",
+        "-q",
+        "--quiet",
         action="store_true",
         help="Suppress the per-value progress indicator",
     )

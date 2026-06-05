@@ -71,9 +71,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
                 f"   Preprocessed to {result['preprocessed_points']:,} points "
                 f"(zero-padded)"
             )
-            print(
-                f"   Final spectrum: {result['frequency_points']:,} frequency points"
-            )
+            print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
             if "trimmed_points" in result:
                 print(f"   After trimming: {result['trimmed_points']:,} points")
 
@@ -93,12 +91,8 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
         except FileNotFoundError:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
-            print(
-                "Stage 0 (Data Import) must be completed before FT processing."
-            )
-            print(
-                f"Run: ftmwpipeline import-data {file_path} --source <path>"
-            )
+            print("Stage 0 (Data Import) must be completed before FT processing.")
+            print(f"Run: ftmwpipeline import-data {file_path} --source <path>")
             print("")
             print("For example:")
             print(
@@ -172,9 +166,7 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
             pipeline_name = Path(file_path).stem
             plot_title = f"Pipeline {pipeline_name} - Enhanced FT Visualization"
             if trim_range:
-                plot_title += (
-                    f" ({trim_range[0]:.0f}-{trim_range[1]:.0f} MHz)"
-                )
+                plot_title += f" ({trim_range[0]:.0f}-{trim_range[1]:.0f} MHz)"
 
             fig = visualize_ft_impl(
                 file_path=file_path,
@@ -207,25 +199,17 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
             print()
             print("ComplexFT calculated on-demand from pipeline file")
             print("   Try different parameters without permanent storage:")
-            print(
-                f"   ftmwpipeline visualize-ft {file_path} --zpf 2 --expf_us 3.0"
-            )
+            print(f"   ftmwpipeline visualize-ft {file_path} --zpf 2 --expf_us 3.0")
             if not trim_range:
-                print(
-                    f"   ftmwpipeline visualize-ft {file_path} --trim 26500:40000"
-                )
+                print(f"   ftmwpipeline visualize-ft {file_path} --trim 26500:40000")
 
             return 0
 
         except FileNotFoundError:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
-            print(
-                "Stage 0 (Data Import) must be completed before FT visualization."
-            )
-            print(
-                f"Run: ftmwpipeline import-data {file_path} --source <path>"
-            )
+            print("Stage 0 (Data Import) must be completed before FT visualization.")
+            print(f"Run: ftmwpipeline import-data {file_path} --source <path>")
             print("")
             print("For example:")
             print(
