@@ -84,7 +84,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 
 import numpy as np
 
@@ -331,7 +331,7 @@ def project_candidates(
             )
             continue
 
-        numer = np.sum(np.conj(basis) * z_slice * w_slice)
+        numer: np.complexfloating[Any, Any] = np.sum(np.conj(basis) * z_slice * w_slice)
         amp = numer / denom
         coherent_amp = float(abs(amp))
 
@@ -357,14 +357,8 @@ def project_candidates(
             continue
         median_sigma_c = float(np.median(finite_sigma_c))
         coherent_snr = (coherent_amp * h_T_on_line) / median_sigma_c
-        detected_snr_active = float(
-            abs(spec_s[c_sorted]) / safe_sigma_c[c_sorted]
-        )
-        ratio = (
-            coherent_snr / detected_snr_active
-            if detected_snr_active > 0.0
-            else 0.0
-        )
+        detected_snr_active = float(abs(spec_s[c_sorted]) / safe_sigma_c[c_sorted])
+        ratio = coherent_snr / detected_snr_active if detected_snr_active > 0.0 else 0.0
 
         results.append(
             ProjectionResult(

@@ -10,7 +10,7 @@ integration suite.
 import numpy as np
 import pytest
 
-from ftmwpipeline.preprocessing.peak_detection import locate_peaks, PeakResult
+from ftmwpipeline.preprocessing.peak_detection import PeakResult, locate_peaks
 
 
 def _gaussian(x, center, amp, width):

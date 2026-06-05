@@ -7,6 +7,7 @@ Implementation pending for Phase 4.
 
 # Placeholder function - will be implemented in Phase 4
 
-def locate_peaks_hybrid(*args, **kwargs):
+
+def locate_peaks_hybrid(*args: object, **kwargs: object) -> None:
     """Placeholder for hybrid peak detection."""
-    raise NotImplementedError("Will be implemented in Phase 4")
+    raise NotImplementedError("Not yet implemented")

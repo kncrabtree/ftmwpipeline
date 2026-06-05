@@ -20,6 +20,8 @@ from ftmwpipeline.fitting.tau_calibration import (
     ShapeRecommendation,
     SpurCluster,
     TauCalibrationResult,
+    _aggregate_shape_verdict,
+    _nls_polish_step,
     compute_shape_recommendation,
     estimate_sigma_time_from_tail,
     extract_tau_G_majority,
@@ -29,10 +31,6 @@ from ftmwpipeline.fitting.tau_calibration import (
     majority_tau,
     sliding_stft,
     stft_calibration,
-)
-from ftmwpipeline.fitting.tau_calibration import (
-    _aggregate_shape_verdict,
-    _nls_polish_step,
 )
 
 # 2638-shaped cell: T_full = 12.65 us, sample_dt = 20 ps (50 GS/s).
@@ -112,7 +110,9 @@ class TestSlidingSTFT:
         # Sub-window length = N / n_seg samples, midpoint at (Nw - 1) * dt / 2.
         Nw = N // n_seg
         assert a_centers_us[0] == pytest.approx(
-            (Nw - 1) * 0.5 * SAMPLE_DT_US, rel=0, abs=1e-12,
+            (Nw - 1) * 0.5 * SAMPLE_DT_US,
+            rel=0,
+            abs=1e-12,
         )
 
     def test_rejects_oversize_n_seg(self):
@@ -129,8 +129,11 @@ class TestStftCalibrationSingleLine:
         N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
         line_bin = N // 4
         fid, sigma_t = _synth_fid(
-            rng=rng, n_samples=N,
-            line_bins=[line_bin], line_taus_us=[7.5], line_snrs=[100.0],
+            rng=rng,
+            n_samples=N,
+            line_bins=[line_bin],
+            line_taus_us=[7.5],
+            line_snrs=[100.0],
         )
         cal = stft_calibration(fid, SAMPLE_DT_US, sigma_t, n_seg=DEFAULT_N_SEG)
         # On-line bin classified as contributor.
@@ -152,9 +155,13 @@ class TestStftCalibrationSpur:
         spur_bin = N // 3
         line_bin = N // 5
         fid, sigma_t = _synth_fid(
-            rng=rng, n_samples=N,
-            line_bins=[line_bin], line_taus_us=[7.5], line_snrs=[50.0],
-            spur_bins=[spur_bin], spur_snrs=[100.0],
+            rng=rng,
+            n_samples=N,
+            line_bins=[line_bin],
+            line_taus_us=[7.5],
+            line_snrs=[50.0],
+            spur_bins=[spur_bin],
+            spur_snrs=[100.0],
         )
         cal = stft_calibration(fid, SAMPLE_DT_US, sigma_t, n_seg=DEFAULT_N_SEG)
         assert cal.classification[spur_bin] == 1, "spur bin should classify as spur"
@@ -216,9 +223,7 @@ class TestGroupSpurBins:
     def test_groups_adjacent_within_n_seg(self):
         # Three CW sources: a 10-bin cluster around bin 100, another at 500,
         # one isolated bin at 800.
-        spur_bins = np.concatenate(
-            [np.arange(95, 106), np.arange(498, 503), [800]]
-        )
+        spur_bins = np.concatenate([np.arange(95, 106), np.arange(498, 503), [800]])
         mean_mag = np.zeros(1000)
         mean_mag[100] = 5.0
         mean_mag[500] = 3.0
@@ -235,7 +240,9 @@ class TestGroupSpurBins:
 
     def test_empty(self):
         clusters = group_spur_bins(
-            np.array([], dtype=np.int64), np.zeros(10), np.arange(10.0),
+            np.array([], dtype=np.int64),
+            np.zeros(10),
+            np.arange(10.0),
             n_seg=10,
         )
         assert clusters == ()
@@ -254,8 +261,11 @@ class TestExtractTauMajority:
         line_taus = [6.0] * len(line_bins)
         line_snrs = [200.0] * len(line_bins)
         fid, sigma_t = _synth_fid(
-            rng=rng, n_samples=N,
-            line_bins=line_bins, line_taus_us=line_taus, line_snrs=line_snrs,
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
+            line_taus_us=line_taus,
+            line_snrs=line_snrs,
         )
         # Embed in the trim band: probe = 40000 MHz, lower sideband,
         # f_bb maps to molecular f = probe - f_bb. line_bins live at
@@ -263,10 +273,14 @@ class TestExtractTauMajority:
         # frequencies sit at probe - f_bb in [33.8, 39] GHz — comfortably inside
         # 26500-40000.
         result = extract_tau_majority(
-            fid, SAMPLE_DT_US,
-            start_us=0.0, end_us=N * SAMPLE_DT_US,
-            probe_freq_mhz=PROBE_MHZ, sideband="lower",
-            trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+            fid,
+            SAMPLE_DT_US,
+            start_us=0.0,
+            end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ,
+            trim_hi_mhz=TRIM_HI_MHZ,
             sigma_time=sigma_t,
             min_contributors=20,  # synthetic, just a few lines
         )
@@ -287,10 +301,14 @@ class TestExtractTauMajority:
     def test_rejects_empty_active_region(self):
         with pytest.raises(ValueError, match="too few samples"):
             extract_tau_majority(
-                np.zeros(50), SAMPLE_DT_US,
-                start_us=0.0, end_us=0.1,
-                probe_freq_mhz=PROBE_MHZ, sideband="lower",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                np.zeros(50),
+                SAMPLE_DT_US,
+                start_us=0.0,
+                end_us=0.1,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
             )
 
@@ -315,20 +333,33 @@ class TestExtractTauMajority:
         for trial in range(n_trials):
             rng = np.random.default_rng(rng_seed + trial)
             fid, sigma_t = _synth_fid(
-                rng=rng, n_samples=N,
-                line_bins=[line_bin], line_taus_us=[7.5], line_snrs=[100.0],
+                rng=rng,
+                n_samples=N,
+                line_bins=[line_bin],
+                line_taus_us=[7.5],
+                line_snrs=[100.0],
             )
             common_kwargs = dict(
-                start_us=0.0, end_us=N * SAMPLE_DT_US,
-                probe_freq_mhz=PROBE_MHZ, sideband="lower",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
-                sigma_time=sigma_t, min_contributors=5,
+                start_us=0.0,
+                end_us=N * SAMPLE_DT_US,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
+                sigma_time=sigma_t,
+                min_contributors=5,
             )
             off = extract_tau_majority(
-                fid, SAMPLE_DT_US, polish=False, **common_kwargs,
+                fid,
+                SAMPLE_DT_US,
+                polish=False,
+                **common_kwargs,
             )
             on = extract_tau_majority(
-                fid, SAMPLE_DT_US, polish=True, **common_kwargs,
+                fid,
+                SAMPLE_DT_US,
+                polish=True,
+                **common_kwargs,
             )
             off_errs.append(100.0 * (off.tau_maj_us - 7.5) / 7.5)
             on_errs.append(100.0 * (on.tau_maj_us - 7.5) / 7.5)
@@ -337,12 +368,12 @@ class TestExtractTauMajority:
         med_on = float(np.median(on_errs))
         # The biased path lands in the documented +1.5 to +5 % band; polish
         # brings it materially closer to zero.
-        assert 0.5 < med_off < 8.0, (
-            f"polish=OFF median error {med_off:.2f}% outside expected +1-+8% band"
-        )
-        assert abs(med_on) < 1.5, (
-            f"polish=ON median error {med_on:.2f}% should be sub-1.5%"
-        )
+        assert (
+            0.5 < med_off < 8.0
+        ), f"polish=OFF median error {med_off:.2f}% outside expected +1-+8% band"
+        assert (
+            abs(med_on) < 1.5
+        ), f"polish=ON median error {med_on:.2f}% should be sub-1.5%"
         # And the polished path strictly improves the bias magnitude.
         assert abs(med_on) < abs(med_off)
 
@@ -388,10 +419,14 @@ class TestExtractTauMajority:
     def test_rejects_bad_sideband(self):
         with pytest.raises(ValueError, match="sideband"):
             extract_tau_majority(
-                np.zeros(1000), SAMPLE_DT_US,
-                start_us=0.0, end_us=1.0,
-                probe_freq_mhz=PROBE_MHZ, sideband="middle",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                np.zeros(1000),
+                SAMPLE_DT_US,
+                start_us=0.0,
+                end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="middle",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
             )
 
@@ -423,6 +458,7 @@ def _synth_gaussian_fid(
     # ∫_0^T exp(-(t/τ_G)²) dt = (τ_G √π / 2) erf(T/τ_G). At T/τ_G ≳ 2 the
     # erf saturates at 1, so τ_eff ≈ τ_G √π / 2.
     from scipy.special import erf
+
     tau_eff = 0.5 * tau_arr * np.sqrt(np.pi) * erf(T_full_us / tau_arr)
     amps = snr_arr / tau_eff
     phases = rng.uniform(0.0, 2.0 * np.pi, size=len(line_bins))
@@ -463,31 +499,35 @@ class TestExtractTauGMajority:
         line_taus = [tau_G_truth] * len(line_bins)
         line_snrs = [200.0] * len(line_bins)
         fid, sigma_t = _synth_gaussian_fid(
-            rng=rng, n_samples=N,
-            line_bins=line_bins, line_taus_G_us=line_taus, line_snrs=line_snrs,
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
+            line_taus_G_us=line_taus,
+            line_snrs=line_snrs,
         )
         result = extract_tau_G_majority(
-            fid, SAMPLE_DT_US,
-            start_us=0.0, end_us=N * SAMPLE_DT_US,
-            probe_freq_mhz=PROBE_MHZ, sideband="lower",
-            trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+            fid,
+            SAMPLE_DT_US,
+            start_us=0.0,
+            end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ,
+            trim_hi_mhz=TRIM_HI_MHZ,
             sigma_time=sigma_t,
             snr_min=10.0,
             min_contributors=2,
             min_contributors_per_band=2,
         )
-        assert result.n_contributors >= 2, (
-            f"only {result.n_contributors} eligible bins (need ≥ 2)"
-        )
-        assert result.tau_maj_us == pytest.approx(tau_G_truth, rel=0.10), (
-            f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 10%"
-        )
+        assert (
+            result.n_contributors >= 2
+        ), f"only {result.n_contributors} eligible bins (need ≥ 2)"
+        assert result.tau_maj_us == pytest.approx(
+            tau_G_truth, rel=0.10
+        ), f"τ_G recovered as {result.tau_maj_us:.2f} us, expected ~{tau_G_truth} ± 10%"
         assert result.sideband == "lower"
         # The eligible subset must not be saturated against the upper bound.
-        assert np.all(
-            result.contributor_taus_us
-            < 0.7 * DEFAULT_TAU_G_BOUND_HI
-        )
+        assert np.all(result.contributor_taus_us < 0.7 * DEFAULT_TAU_G_BOUND_HI)
         # The result struct's tau_max_us mirrors the τ_G upper bound (not
         # the underlying STFT classifier's tau_max), because under the
         # twin's semantics the persisted ``tau_max_us`` is the Gaussian
@@ -497,22 +537,31 @@ class TestExtractTauGMajority:
     def test_rejects_bad_sideband(self):
         with pytest.raises(ValueError, match="sideband"):
             extract_tau_G_majority(
-                np.zeros(1000), SAMPLE_DT_US,
-                start_us=0.0, end_us=1.0,
-                probe_freq_mhz=PROBE_MHZ, sideband="middle",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                np.zeros(1000),
+                SAMPLE_DT_US,
+                start_us=0.0,
+                end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="middle",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
             )
 
     def test_rejects_inverted_tau_g_bounds(self):
         with pytest.raises(ValueError, match="tau_G_bound_hi"):
             extract_tau_G_majority(
-                np.zeros(1000), SAMPLE_DT_US,
-                start_us=0.0, end_us=1.0,
-                probe_freq_mhz=PROBE_MHZ, sideband="lower",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                np.zeros(1000),
+                SAMPLE_DT_US,
+                start_us=0.0,
+                end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
-                tau_G_bound_lo=10.0, tau_G_bound_hi=5.0,
+                tau_G_bound_lo=10.0,
+                tau_G_bound_hi=5.0,
             )
 
 
@@ -522,9 +571,15 @@ class TestExtractTauGMajority:
 def _row(verdict: str, snr: float = 100.0, **kw) -> dict:
     """Build a minimal per-bin AICc row for the aggregator tests."""
     base = dict(
-        idx=0, freq=30000.0, snr=snr,
-        aicc_exp=0.0, aicc_gauss=0.0, aicc_voigt=0.0,
-        d_aicc_gauss_exp=0.0, d_aicc_voigt_exp=0.0, d_aicc_voigt_gauss=0.0,
+        idx=0,
+        freq=30000.0,
+        snr=snr,
+        aicc_exp=0.0,
+        aicc_gauss=0.0,
+        aicc_voigt=0.0,
+        d_aicc_gauss_exp=0.0,
+        d_aicc_voigt_exp=0.0,
+        d_aicc_voigt_gauss=0.0,
         verdict=verdict,
     )
     base.update(kw)
@@ -541,8 +596,11 @@ class TestAggregateShapeVerdict:
         assert any("no contributor" in n for n in rec.notes)
 
     def test_pure_exp_majority_recommends_lorentzian(self):
-        rows = [_row("exp", snr=100.0)] * 70 + [_row("gauss", snr=100.0)] * 10 \
+        rows = (
+            [_row("exp", snr=100.0)] * 70
+            + [_row("gauss", snr=100.0)] * 10
             + [_row("voigt", snr=100.0)] * 20
+        )
         rec = _aggregate_shape_verdict(rows)
         assert rec.recommended_shape == "lorentzian"
         assert rec.vote_rates["exp"] == pytest.approx(0.70)
@@ -551,8 +609,11 @@ class TestAggregateShapeVerdict:
         assert rec.n_contributors == 100
 
     def test_pure_gauss_majority_recommends_gaussian(self):
-        rows = [_row("gauss", snr=100.0)] * 70 + [_row("exp", snr=100.0)] * 10 \
+        rows = (
+            [_row("gauss", snr=100.0)] * 70
+            + [_row("exp", snr=100.0)] * 10
             + [_row("voigt", snr=100.0)] * 20
+        )
         rec = _aggregate_shape_verdict(rows)
         assert rec.recommended_shape == "gaussian"
         assert rec.vote_rates["gauss"] == pytest.approx(0.70)
@@ -583,10 +644,7 @@ class TestAggregateShapeVerdict:
     def test_snr_weighting_collapses_low_snr_noise(self):
         # Many low-SNR ambiguous bins shouldn't override a strong on-line
         # cluster: 10 strong gauss votes outweigh 90 weak voigt votes.
-        rows = (
-            [_row("gauss", snr=200.0)] * 10
-            + [_row("voigt", snr=5.0)] * 90
-        )
+        rows = [_row("gauss", snr=200.0)] * 10 + [_row("voigt", snr=5.0)] * 90
         rec = _aggregate_shape_verdict(rows)
         # Gauss carries 10 * 200 = 2000 SNR vs voigt's 90 * 5 = 450;
         # gauss rate = 2000 / 2450 ≈ 0.816, voigt rate ≈ 0.184, exp = 0.
@@ -611,45 +669,63 @@ class TestComputeShapeRecommendation:
         N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
         line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
         fid, sigma_t = _synth_gaussian_fid(
-            rng=rng, n_samples=N, line_bins=line_bins,
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
             line_taus_G_us=[6.0] * len(line_bins),
             line_snrs=[200.0] * len(line_bins),
         )
         rec = compute_shape_recommendation(
-            fid, SAMPLE_DT_US,
-            start_us=0.0, end_us=N * SAMPLE_DT_US,
-            probe_freq_mhz=PROBE_MHZ, sideband="lower",
-            trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
-            sigma_time=sigma_t, snr_min=10.0,
+            fid,
+            SAMPLE_DT_US,
+            start_us=0.0,
+            end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ,
+            trim_hi_mhz=TRIM_HI_MHZ,
+            sigma_time=sigma_t,
+            snr_min=10.0,
         )
         assert isinstance(rec, ShapeRecommendation)
         assert rec.n_contributors >= 2
         assert set(rec.vote_rates.keys()) == {"exp", "gauss", "voigt"}
         assert sum(rec.vote_rates.values()) == pytest.approx(1.0, abs=1e-6)
         assert set(rec.median_d_aicc.keys()) == {
-            "gauss_vs_exp", "voigt_vs_exp", "voigt_vs_gauss",
+            "gauss_vs_exp",
+            "voigt_vs_exp",
+            "voigt_vs_gauss",
         }
         assert rec.recommended_shape in (None, "lorentzian", "gaussian")
 
     def test_rejects_bad_sideband(self):
         with pytest.raises(ValueError, match="sideband"):
             compute_shape_recommendation(
-                np.zeros(1000), SAMPLE_DT_US,
-                start_us=0.0, end_us=1.0,
-                probe_freq_mhz=PROBE_MHZ, sideband="middle",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                np.zeros(1000),
+                SAMPLE_DT_US,
+                start_us=0.0,
+                end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="middle",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
             )
 
     def test_rejects_inverted_tau_bounds(self):
         with pytest.raises(ValueError, match="tau_bound_hi"):
             compute_shape_recommendation(
-                np.zeros(1000), SAMPLE_DT_US,
-                start_us=0.0, end_us=1.0,
-                probe_freq_mhz=PROBE_MHZ, sideband="lower",
-                trim_lo_mhz=TRIM_LO_MHZ, trim_hi_mhz=TRIM_HI_MHZ,
+                np.zeros(1000),
+                SAMPLE_DT_US,
+                start_us=0.0,
+                end_us=1.0,
+                probe_freq_mhz=PROBE_MHZ,
+                sideband="lower",
+                trim_lo_mhz=TRIM_LO_MHZ,
+                trim_hi_mhz=TRIM_HI_MHZ,
                 sigma_time=1.0,
-                tau_bound_lo=10.0, tau_bound_hi=5.0,
+                tau_bound_lo=10.0,
+                tau_bound_hi=5.0,
             )
 
 
@@ -672,13 +748,19 @@ class TestVectorisedShapeSolver:
         N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
         line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
         fid, sigma_t = _synth_gaussian_fid(
-            rng=rng, n_samples=N, line_bins=line_bins,
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
             line_taus_G_us=[6.0] * len(line_bins),
             line_snrs=[200.0] * len(line_bins),
         )
         return stft_calibration(
-            fid, SAMPLE_DT_US, sigma_t, n_seg=DEFAULT_N_SEG,
-            shape="best_of_three", shape_solver=solver,
+            fid,
+            SAMPLE_DT_US,
+            sigma_t,
+            n_seg=DEFAULT_N_SEG,
+            shape="best_of_three",
+            shape_solver=solver,
         )
 
     @pytest.fixture(scope="class")
@@ -701,21 +783,25 @@ class TestVectorisedShapeSolver:
         assert fv is not None and fs is not None
         cap = 0.7 * DEFAULT_TAU_G_BOUND_HI
         both = (
-            fv.converged_gauss & fs.converged_gauss
-            & (fv.tau_G_gauss < cap) & (fs.tau_G_gauss < cap)
-            & np.isfinite(fv.tau_G_gauss) & np.isfinite(fs.tau_G_gauss)
+            fv.converged_gauss
+            & fs.converged_gauss
+            & (fv.tau_G_gauss < cap)
+            & (fs.tau_G_gauss < cap)
+            & np.isfinite(fv.tau_G_gauss)
+            & np.isfinite(fs.tau_G_gauss)
         )
         assert both.sum() >= 5, f"too few comparable gauss bins ({int(both.sum())})"
         rel = np.abs(fv.tau_G_gauss[both] - fs.tau_G_gauss[both]) / fs.tau_G_gauss[both]
-        assert np.median(rel) < 0.02, (
-            f"vectorised gauss τ median rel error {np.median(rel)*100:.1f}% vs scipy"
-        )
+        assert (
+            np.median(rel) < 0.02
+        ), f"vectorised gauss τ median rel error {np.median(rel)*100:.1f}% vs scipy"
 
     def test_recommendation_matches_scipy(self, vec, sci):
         from ftmwpipeline.fitting.tau_calibration import (
-            _three_way_rows_from_shape_fits,
             _shape_recommendation_bin_clean,
+            _three_way_rows_from_shape_fits,
         )
+
         cap = 0.7 * DEFAULT_TAU_G_BOUND_HI
 
         def _rec(cal):
@@ -731,6 +817,10 @@ class TestVectorisedShapeSolver:
     def test_rejects_bad_solver(self):
         with pytest.raises(ValueError, match="solver"):
             stft_calibration(
-                np.zeros(1000), SAMPLE_DT_US, 1.0, n_seg=DEFAULT_N_SEG,
-                shape="best_of_three", shape_solver="banana",
+                np.zeros(1000),
+                SAMPLE_DT_US,
+                1.0,
+                n_seg=DEFAULT_N_SEG,
+                shape="best_of_three",
+                shape_solver="banana",
             )

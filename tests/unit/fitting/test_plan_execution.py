@@ -1338,8 +1338,11 @@ def test_baseline_fires_on_coherent_wing():
     assert s_coh_before > 3.5  # the wing makes the edge coherent
 
     fired = _apply_baseline_to_outcome(
-        outcome, acquisition_us=T_US, residual_edge_m=16,
-        baseline_order=0, baseline_edge_threshold=3.5,
+        outcome,
+        acquisition_us=T_US,
+        residual_edge_m=16,
+        baseline_order=0,
+        baseline_edge_threshold=3.5,
     )
     assert fired is True
     assert outcome.baseline_applied is True
@@ -1360,17 +1363,21 @@ def test_baseline_does_not_fire_below_threshold():
     u = np.arange(-160, 161) * 0.0122
     line = ModelPeak(amplitude=6.0, offset_mhz=0.15, phase=0.3)
     from ftmwpipeline.fitting.peak_model import model_spectrum
+
     rng = np.random.default_rng(7)
     sigma = np.full(u.size, 0.02)
-    noise = (rng.normal(0, sigma / np.sqrt(2)) + 1j * rng.normal(0, sigma / np.sqrt(2)))
+    noise = rng.normal(0, sigma / np.sqrt(2)) + 1j * rng.normal(0, sigma / np.sqrt(2))
     z = model_spectrum(u, [line], TAU_US, T_US) + noise
 
     outcome = _baseline_outcome(u, z, sigma, [ModelPeak(5.0, 0.0, 0.0)])
     assert max(outcome.edge_coherence_low, outcome.edge_coherence_high) < 3.5
 
     fired = _apply_baseline_to_outcome(
-        outcome, acquisition_us=T_US, residual_edge_m=16,
-        baseline_order=0, baseline_edge_threshold=3.5,
+        outcome,
+        acquisition_us=T_US,
+        residual_edge_m=16,
+        baseline_order=0,
+        baseline_edge_threshold=3.5,
     )
     assert fired is False
     assert outcome.baseline_applied is False

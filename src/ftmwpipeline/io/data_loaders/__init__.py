@@ -7,36 +7,41 @@ FID objects with proper metadata preservation.
 
 Architecture:
 - BaseLoader: Abstract interface for all loaders
-- FormatRegistry: Format detection and loader selection  
+- FormatRegistry: Format detection and loader selection
 - Specific loaders: BlackChirp, CSV, HDF5, etc.
 """
 
 from .base import BaseLoader, LoaderError
-from .registry import (
-    FormatRegistry, register_loader, detect_format, validate_source, 
-    load_fid, list_formats, get_format_info
-)
 from .blackchirp import BlackChirpLoader
 from .csv import CSVLoader
 from .hdf5 import HDF5Loader
+from .registry import (
+    FormatRegistry,
+    detect_format,
+    get_format_info,
+    list_formats,
+    load_fid,
+    register_loader,
+    validate_source,
+)
 
 # Register available loaders
-register_loader('blackchirp', BlackChirpLoader)
-register_loader('csv', CSVLoader)
-register_loader('hdf5', HDF5Loader)
+register_loader("blackchirp", BlackChirpLoader)
+register_loader("csv", CSVLoader)
+register_loader("hdf5", HDF5Loader)
 
 # Export main interface
 __all__ = [
-    'BaseLoader',
-    'LoaderError', 
-    'FormatRegistry',
-    'register_loader',
-    'detect_format',
-    'validate_source',
-    'load_fid',
-    'list_formats',
-    'get_format_info',
-    'BlackChirpLoader',
-    'CSVLoader',
-    'HDF5Loader'
+    "BaseLoader",
+    "LoaderError",
+    "FormatRegistry",
+    "register_loader",
+    "detect_format",
+    "validate_source",
+    "load_fid",
+    "list_formats",
+    "get_format_info",
+    "BlackChirpLoader",
+    "CSVLoader",
+    "HDF5Loader",
 ]

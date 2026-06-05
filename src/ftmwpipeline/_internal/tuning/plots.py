@@ -14,7 +14,7 @@ own display (file vs interactive).
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, cast
 
 # Target per-panel aspect for stacked "ladder" figures (width : height).
 _LADDER_PANEL_ASPECT = 5.5
@@ -43,7 +43,10 @@ _PEAK_PERSIST_TOL_MHZ = 0.05
 
 
 def _resolve_regions(
-    ctx: Any, rows: List[Any], default_width: float, default_n: int,
+    ctx: Any,
+    rows: List[Any],
+    default_width: float,
+    default_n: int,
     auto_select: Any,
 ) -> List[Any]:
     """Resolve the zoom regions for a region-based adapter, honouring the user's
@@ -58,7 +61,7 @@ def _resolve_regions(
         return [(float(lo), float(hi)) for lo, hi in explicit]
     width = getattr(ctx, "zoom_width_mhz", None) or default_width
     n = getattr(ctx, "n_zoom", None) or default_n
-    return auto_select(rows, width, n)
+    return cast(List[Any], auto_select(rows, width, n))
 
 
 def _value_colors(n: int) -> List[Any]:
@@ -105,7 +108,10 @@ def plot_start_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
         for row, color in zip(rows, colors):
             ce = row.result.chirp_end_us
             axf.axvline(
-                ce, color=color, ls="--", alpha=0.85,
+                ce,
+                color=color,
+                ls="--",
+                alpha=0.85,
                 label=f"{leaf}={row.value:g}: chirp-end {ce:.2f} us",
             )
         xmax = max(r.result.chirp_end_us for r in rows) + 1.0
@@ -121,8 +127,14 @@ def plot_start_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     # Bottom: the Σ|FT|-vs-start sweep with each value's detected chirp end marked.
     for row, color in zip(rows, colors):
         r = row.result
-        axs.semilogy(r.starts_us, r.sum_magnitude, color=color, alpha=0.8, lw=1.2,
-                     label=f"{leaf}={row.value:g}")
+        axs.semilogy(
+            r.starts_us,
+            r.sum_magnitude,
+            color=color,
+            alpha=0.8,
+            lw=1.2,
+            label=f"{leaf}={row.value:g}",
+        )
         axs.axvline(r.chirp_end_us, color=color, ls=":", alpha=0.7)
     axs.set_xlabel("FID window start (us)")
     axs.set_ylabel("Σ|FT| (integrated magnitude)")
@@ -147,8 +159,8 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
     Each ``row.result`` is an ``FtAtStart`` (``.ft`` / ``.start_us`` /
     ``.chirp_end_us``). Height grows with the number of values.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -166,8 +178,11 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     starts = [getattr(r.result, "start_us", r.value) for r in rows]
     chirp_end = next(
-        (r.result.chirp_end_us for r in rows
-         if getattr(r.result, "chirp_end_us", None) is not None),
+        (
+            r.result.chirp_end_us
+            for r in rows
+            if getattr(r.result, "chirp_end_us", None) is not None
+        ),
         None,
     )
 
@@ -178,11 +193,21 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
         fid = ftmw.load_fid(ctx.ftmw_path)
         fid_ax.plot(fid.time_array_us(), fid.data, lw=0.3, color="0.4")
         if chirp_end is not None:
-            fid_ax.axvline(chirp_end, color="k", ls=":", lw=1.3,
-                           label=f"chirp-end {chirp_end:.2f} us")
+            fid_ax.axvline(
+                chirp_end,
+                color="k",
+                ls=":",
+                lw=1.3,
+                label=f"chirp-end {chirp_end:.2f} us",
+            )
         for r, color, s in zip(rows, colors, starts):
-            fid_ax.axvline(s, color=color, ls="--", alpha=0.85,
-                           label=f"{leaf}={r.value:g}: start {s:.2f} us")
+            fid_ax.axvline(
+                s,
+                color=color,
+                ls="--",
+                alpha=0.85,
+                label=f"{leaf}={r.value:g}: start {s:.2f} us",
+            )
         fid_ax.set_xlim(0.0, max(starts) + 1.0)
         fid_ax.set_xlabel("time (us)")
         fid_ax.set_ylabel("FID amplitude")
@@ -192,8 +217,11 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
         fid_ax.set_visible(False)
 
     # Shared linear y scaled to the floor so the residue (not the lines) is read.
-    p50s = [r.metrics.get("p50") for r in rows
-            if isinstance(r.metrics.get("p50"), (int, float))]
+    p50s = [
+        r.metrics.get("p50")
+        for r in rows
+        if isinstance(r.metrics.get("p50"), (int, float))
+    ]
     top = _LADDER_YMAX_P50_FACTOR * max(p50s) if p50s and max(p50s) > 0 else None
 
     for ax, row, color in zip(spec_axes, rows, colors):
@@ -222,8 +250,8 @@ def plot_ft_band_stack(spec: Any, rows: List[Any], ctx: Any) -> Any:
     lines clip off the top. No FID panel — unlike the start ladder these knobs
     do not move the window start. Each ``row.result`` carries ``.ft``.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -238,8 +266,11 @@ def plot_ft_band_stack(spec: Any, rows: List[Any], ctx: Any) -> Any:
     )
     axes = list(axes_grid[:, 0])
 
-    p50s = [r.metrics.get("p50") for r in rows
-            if isinstance(r.metrics.get("p50"), (int, float))]
+    p50s = [
+        r.metrics.get("p50")
+        for r in rows
+        if isinstance(r.metrics.get("p50"), (int, float))
+    ]
     top = _LADDER_YMAX_P50_FACTOR * max(p50s) if p50s and max(p50s) > 0 else None
 
     for ax, row, color in zip(axes, rows, colors):
@@ -272,7 +303,7 @@ def _contrib_alpha(n: int) -> float:
         return 0x10 / 255.0
     byte = 2.0 ** (5.0 - math.log10(n))
     byte = max(1.0, min(float(0x10), byte))
-    return byte / 255.0
+    return float(byte / 255.0)
 
 
 def _plot_contributor_decays(ax: Any, row: Any, leaf: str, fit_color: str) -> None:
@@ -298,21 +329,33 @@ def _plot_contributor_decays(ax: Any, row: Any, leaf: str, fit_color: str) -> No
     xs_grid = np.broadcast_to(t, curves.shape)
     segments = np.stack([xs_grid, curves], axis=-1)  # (n_contrib, n_t, 2)
     ax.add_collection(
-        LineCollection(segments, colors="black",
-                       alpha=_contrib_alpha(taus.size), linewidths=0.5)
+        LineCollection(
+            segments, colors="black", alpha=_contrib_alpha(taus.size), linewidths=0.5
+        )
     )
 
     tau_maj = float(res.tau_maj_us)
     sig = float(res.sigma_tau_us)
-    ax.plot(t, np.exp(-t / tau_maj), color=fit_color, lw=2.0,
-            label=rf"fit $\tau_{{maj}}$={tau_maj:.2f} us  (n={taus.size})")
+    ax.plot(
+        t,
+        np.exp(-t / tau_maj),
+        color=fit_color,
+        lw=2.0,
+        label=rf"fit $\tau_{{maj}}$={tau_maj:.2f} us  (n={taus.size})",
+    )
     lo_tau = max(tau_maj - sig, 1e-3)
     upper = np.exp(-t / (tau_maj + sig))
     lower = np.exp(-t / lo_tau)
     ax.fill_between(t, upper, lower, color=fit_color, alpha=0.12)
     # Dotted opaque edges demarcate the ±σ_τ envelope clearly over the cloud.
-    ax.plot(t, upper, color=fit_color, ls=":", lw=1.3,
-            label=rf"$\pm\sigma_\tau$={sig:.2f} us")
+    ax.plot(
+        t,
+        upper,
+        color=fit_color,
+        ls=":",
+        lw=1.3,
+        label=rf"$\pm\sigma_\tau$={sig:.2f} us",
+    )
     ax.plot(t, lower, color=fit_color, ls=":", lw=1.3)
     ax.set_xlim(0.0, span)
     ax.set_ylim(0.0, 1.02)
@@ -345,22 +388,30 @@ def _plot_tau_vs_freq(ax: Any, row: Any, leaf: str) -> None:
         c = np.log10(np.clip(snrs, 1.0, None))
     else:
         c = "0.4"
-    sc = ax.scatter(f_ghz, taus, c=c, s=6, alpha=0.5, cmap="viridis",
-                    linewidths=0.0)
+    sc = ax.scatter(f_ghz, taus, c=c, s=6, alpha=0.5, cmap="viridis", linewidths=0.0)
     if not isinstance(c, str):
         cb = ax.figure.colorbar(sc, ax=ax, pad=0.01, fraction=0.04)
         cb.set_label(r"$\log_{10}$ SNR", fontsize=7)
         cb.ax.tick_params(labelsize=6)
 
     tau_maj = float(res.tau_maj_us)
-    ax.axhline(tau_maj, color="crimson", ls="--", lw=1.5,
-               label=rf"$\tau_{{maj}}$={tau_maj:.2f} us")
+    ax.axhline(
+        tau_maj,
+        color="crimson",
+        ls="--",
+        lw=1.5,
+        label=rf"$\tau_{{maj}}$={tau_maj:.2f} us",
+    )
     # Per-band SNR-weighted majority as horizontal segments spanning each band.
     bands = getattr(res, "band_majorities", ()) or ()
     for b in bands:
-        ax.plot([b.freq_lo_mhz / 1000.0, b.freq_hi_mhz / 1000.0],
-                [b.tau_maj_us, b.tau_maj_us], color="crimson", lw=2.4,
-                solid_capstyle="butt")
+        ax.plot(
+            [b.freq_lo_mhz / 1000.0, b.freq_hi_mhz / 1000.0],
+            [b.tau_maj_us, b.tau_maj_us],
+            color="crimson",
+            lw=2.4,
+            solid_capstyle="butt",
+        )
     tau_max = getattr(res, "tau_max_us", None)
     if tau_max is not None and float(tau_max) > 0:
         ax.set_ylim(0.0, min(float(tau_max), float(np.nanmax(taus)) * 1.15))
@@ -395,8 +446,15 @@ def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
     gs = fig.add_gridspec(n + 1, 2, height_ratios=[1.5] + [1.0] * n)
     ax = fig.add_subplot(gs[0, :])
 
-    ax.errorbar(xs, tau, yerr=sigma, fmt="o-", color="tab:blue", capsize=3,
-                label=r"$\tau_{maj} \pm \sigma_\tau$")
+    ax.errorbar(
+        xs,
+        tau,
+        yerr=sigma,
+        fmt="o-",
+        color="tab:blue",
+        capsize=3,
+        label=r"$\tau_{maj} \pm \sigma_\tau$",
+    )
     ax.set_xlabel(leaf)
     ax.set_ylabel(r"$\tau_{maj}$ (us)", color="tab:blue")
     ax.tick_params(axis="y", labelcolor="tab:blue")
@@ -429,8 +487,8 @@ def plot_shape_vote(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """exp / gauss / voigt SNR-weighted vote rate per grid value (grouped bars),
     annotated with the per-value recommended shape. For the shape-recommendation
     knobs. Returns ``None`` for non-numeric knobs (table-only)."""
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -449,13 +507,19 @@ def plot_shape_vote(spec: Any, rows: List[Any], ctx: Any) -> Any:
     fig, ax = plt.subplots(figsize=(max(7.0, 1.6 * len(rows)), 5.0))
     for k, model in enumerate(models):
         vals = [float(r.metrics.get(model) or 0.0) for r in rows]
-        ax.bar(idx + (k - 1) * width, vals, width,
-               color=model_colors[model], label=model)
+        ax.bar(
+            idx + (k - 1) * width, vals, width, color=model_colors[model], label=model
+        )
     for i, r in enumerate(rows):
         rec = r.metrics.get("recommended_shape")
-        ax.annotate("none" if rec in (None, "") else str(rec),
-                    (idx[i], 1.02), ha="center", va="bottom", fontsize=8,
-                    rotation=0)
+        ax.annotate(
+            "none" if rec in (None, "") else str(rec),
+            (idx[i], 1.02),
+            ha="center",
+            va="bottom",
+            fontsize=8,
+            rotation=0,
+        )
     ax.set_xticks(idx)
     ax.set_xticklabels([f"{v:g}" for v in xs])
     ax.set_ylim(0.0, 1.15)
@@ -495,17 +559,20 @@ def _select_peak_regions(rows: List[Any], width_mhz: float, k: int) -> List[Any]
         return []
 
     n_bins = max(1, int(np.ceil((f_hi - f_lo) / width_mhz)))
-    edges = [(f_lo + i * width_mhz, min(f_lo + (i + 1) * width_mhz, f_hi))
-             for i in range(n_bins)]
+    edges = [
+        (f_lo + i * width_mhz, min(f_lo + (i + 1) * width_mhz, f_hi))
+        for i in range(n_bins)
+    ]
 
     peak_sets = [r.result.get("peaks", []) for r in rows if r.result is not None]
     scored = []
     for lo, hi in edges:
-        totals = np.array([len(_peaks_in(ps, lo, hi)) for ps in peak_sets],
-                          dtype=float)
+        totals = np.array([len(_peaks_in(ps, lo, hi)) for ps in peak_sets], dtype=float)
         promoted = np.array(
-            [sum(1 for p in _peaks_in(ps, lo, hi)
-                 if p.properties.get("promoted")) for ps in peak_sets],
+            [
+                sum(1 for p in _peaks_in(ps, lo, hi) if p.properties.get("promoted"))
+                for ps in peak_sets
+            ],
             dtype=float,
         )
         divergence = float(totals.var() + promoted.var())
@@ -525,8 +592,14 @@ def _select_peak_regions(rows: List[Any], width_mhz: float, k: int) -> List[Any]
 
 
 def _draw_peak_panel(
-    ax: Any, value_label: str, ft: Any, sigma: Any, peaks: Any,
-    promotion_min_snr: float, lo: float, hi: float,
+    ax: Any,
+    value_label: str,
+    ft: Any,
+    sigma: Any,
+    peaks: Any,
+    promotion_min_snr: float,
+    lo: float,
+    hi: float,
 ) -> None:
     """One value × one region: the (log) active-FT magnitude zoomed to the
     region, the per-bin promotion threshold (``min_snr·σ``), and the value's
@@ -566,15 +639,23 @@ def _draw_peak_panel(
         dp = p.properties.get("detection_pass", "primary")
         color = pass_color.get(dp, "tab:gray")
         ax.scatter(
-            [float(p.frequency)], [float(p.intensity)], s=34, zorder=3,
-            marker="v", color=color, edgecolors=color, linewidths=1.1,
+            [float(p.frequency)],
+            [float(p.intensity)],
+            s=34,
+            zorder=3,
+            marker="v",
+            color=color,
+            edgecolors=color,
+            linewidths=1.1,
         )
 
     ax.set_yscale("log")
     region_max = float(m_sel.max()) if m_sel.size else 1.0
-    ymin = (_PEAK_YMIN_SIGMA_FRACTION * median_sigma
-            if np.isfinite(median_sigma) and median_sigma > 0.0
-            else max(region_max * 1e-3, 1e-12))
+    ymin = (
+        _PEAK_YMIN_SIGMA_FRACTION * median_sigma
+        if np.isfinite(median_sigma) and median_sigma > 0.0
+        else max(region_max * 1e-3, 1e-12)
+    )
     ax.set_ylim(ymin, _PEAK_YMAX_PEAK_FACTOR * region_max)
     ax.set_xlim(lo, hi)
     ax.set_ylabel(value_label, fontsize=8)
@@ -609,7 +690,11 @@ def _peak_persistence(rows: List[Any], tol_mhz: float) -> List[Any]:
 
 
 def _plot_peak_persistence(
-    ax: Any, rows: List[Any], regions: List[Any], leaf: str, labels: List[str],
+    ax: Any,
+    rows: List[Any],
+    regions: List[Any],
+    leaf: str,
+    labels: List[str],
 ) -> None:
     """Full-width log spectrum with every promoted peak coloured by the last
     swept value it survives (early-drop → survives-throughout), and the zoom
@@ -643,15 +728,23 @@ def _plot_peak_persistence(
         if not pts:
             continue
         fs, ins = zip(*pts)
-        ax.scatter(list(fs), list(ins), s=16, color=colors[idx], zorder=3,
-                   label=f"survives to {leaf}={labels[idx]}")
+        ax.scatter(
+            list(fs),
+            list(ins),
+            s=16,
+            color=colors[idx],
+            zorder=3,
+            label=f"survives to {leaf}={labels[idx]}",
+        )
 
     sigma = np.asarray(rows[0].result.get("active_rms", []), dtype=float)
     finite = sigma[np.isfinite(sigma)]
     region_top = float(mag.max()) if mag.size else 1.0
-    ymin = (_PEAK_YMIN_SIGMA_FRACTION * float(np.median(finite))
-            if finite.size and float(np.median(finite)) > 0.0
-            else max(region_top * 1e-3, 1e-12))
+    ymin = (
+        _PEAK_YMIN_SIGMA_FRACTION * float(np.median(finite))
+        if finite.size and float(np.median(finite)) > 0.0
+        else max(region_top * 1e-3, 1e-12)
+    )
     ax.set_yscale("log")
     ax.set_ylim(ymin, _PEAK_YMAX_PEAK_FACTOR * region_top)
     ax.set_xlim(float(freqs.min()), float(freqs.max()))
@@ -681,8 +774,8 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     peaks marked solid by detection pass (primary = blue, gap = green), the
     per-bin promotion threshold (``min_snr·σ``) dashed in red.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
     from matplotlib.lines import Line2D
 
     rows = [r for r in rows if r.result is not None]
@@ -707,8 +800,10 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     # names) plottable.
     ax_trend = fig.add_subplot(gs[0, :])
     xs = np.arange(n, dtype=float)
-    labels = [f"{r.value:g}" if isinstance(r.value, (int, float))
-              else str(r.value) for r in rows]
+    labels = [
+        f"{r.value:g}" if isinstance(r.value, (int, float)) else str(r.value)
+        for r in rows
+    ]
     for col, color, marker in (
         ("n_total", "0.2", "o"),
         ("n_strong", "tab:red", "^"),
@@ -752,15 +847,39 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
                 ax.set_xlabel("frequency (MHz)")
 
     handles = [
-        Line2D([], [], marker="v", color="tab:blue", ls="none",
-               markerfacecolor="tab:blue", label="primary (promoted)"),
-        Line2D([], [], marker="v", color="tab:green", ls="none",
-               markerfacecolor="tab:green", label="gap / secondary (promoted)"),
-        Line2D([], [], color="tab:red", ls="--",
-               label=r"promotion threshold ($min\_snr\cdot\sigma$)"),
+        Line2D(
+            [],
+            [],
+            marker="v",
+            color="tab:blue",
+            ls="none",
+            markerfacecolor="tab:blue",
+            label="primary (promoted)",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="v",
+            color="tab:green",
+            ls="none",
+            markerfacecolor="tab:green",
+            label="gap / secondary (promoted)",
+        ),
+        Line2D(
+            [],
+            [],
+            color="tab:red",
+            ls="--",
+            label=r"promotion threshold ($min\_snr\cdot\sigma$)",
+        ),
     ]
-    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=3,
-               bbox_to_anchor=(0.5, -0.01))
+    fig.legend(
+        handles=handles,
+        fontsize=8,
+        loc="lower center",
+        ncol=3,
+        bbox_to_anchor=(0.5, -0.01),
+    )
     fig.suptitle(f"Peak-detection sweep: {spec.path}")
     fig.tight_layout(rect=(0, 0.02, 1, 1))
     return fig
@@ -808,12 +927,15 @@ def _coherence_curve(result: Any) -> Any:
     edge_m = int(params.get("edge_m", 64))
     thr = float(params.get("edge_threshold", 8.0))
     referenced = deramp_to_active_start(
-        freqs, spec,
+        freqs,
+        spec,
         float(params.get("probe_freq_mhz", 0.0)),
         float(params.get("start_us", 0.0)),
     )
     rolling = rolling_coherence(
-        referenced[order], np.asarray(rms, dtype=float)[order], band_m=edge_m,
+        referenced[order],
+        np.asarray(rms, dtype=float)[order],
+        band_m=edge_m,
     )
     return freqs[order], np.asarray(rolling, dtype=float), thr
 
@@ -841,8 +963,10 @@ def _select_window_regions(rows: List[Any], width_mhz: float, k: int) -> List[An
         return []
 
     n_bins = max(1, int(np.ceil((f_hi - f_lo) / width_mhz)))
-    edges = [(f_lo + i * width_mhz, min(f_lo + (i + 1) * width_mhz, f_hi))
-             for i in range(n_bins)]
+    edges = [
+        (f_lo + i * width_mhz, min(f_lo + (i + 1) * width_mhz, f_hi))
+        for i in range(n_bins)
+    ]
     plans = [r.result.get("plan") for r in rows if r.result is not None]
     plans = [p for p in plans if p is not None]
 
@@ -876,7 +1000,11 @@ def _select_window_regions(rows: List[Any], width_mhz: float, k: int) -> List[An
 
 
 def _plot_boundary_shift(
-    ax: Any, rows: List[Any], regions: List[Any], leaf: str, labels: List[str],
+    ax: Any,
+    rows: List[Any],
+    regions: List[Any],
+    leaf: str,
+    labels: List[str],
 ) -> None:
     """Full-width log spectrum drawn once, with every swept value's window
     boundaries overlaid as vertical lines coloured by value and its HARD windows
@@ -902,13 +1030,20 @@ def _plot_boundary_shift(
         for w in plan.windows:
             lo, hi = w.freq_range
             if _difficulty(w) == "hard":
-                ax.axvspan(lo, hi, color=colors[i], alpha=0.10, lw=0,
-                           hatch="///", zorder=0)
+                ax.axvspan(
+                    lo, hi, color=colors[i], alpha=0.10, lw=0, hatch="///", zorder=0
+                )
             for edge in (lo, hi):
                 ax.axvline(edge, color=colors[i], lw=0.6, alpha=0.65, zorder=2)
             if w.split_proposal is not None:
-                ax.axvline(w.split_proposal, color=colors[i], lw=0.7,
-                           ls=":", alpha=0.8, zorder=2)
+                ax.axvline(
+                    w.split_proposal,
+                    color=colors[i],
+                    lw=0.7,
+                    ls=":",
+                    alpha=0.8,
+                    zorder=2,
+                )
         ax.plot([], [], color=colors[i], lw=1.4, label=f"{leaf}={labels[i]}")
 
     for lo, hi in regions:
@@ -917,9 +1052,11 @@ def _plot_boundary_shift(
     sigma = np.asarray(rows[0].result.get("active_rms", []), dtype=float)
     finite = sigma[np.isfinite(sigma)]
     top = float(mag.max()) if mag.size else 1.0
-    ymin = (_WINDOW_YMIN_SIGMA_FRACTION * float(np.median(finite))
-            if finite.size and float(np.median(finite)) > 0.0
-            else max(top * 1e-3, 1e-12))
+    ymin = (
+        _WINDOW_YMIN_SIGMA_FRACTION * float(np.median(finite))
+        if finite.size and float(np.median(finite)) > 0.0
+        else max(top * 1e-3, 1e-12)
+    )
     ax.set_yscale("log")
     ax.set_ylim(ymin, _WINDOW_YMAX_PEAK_FACTOR * top)
     ax.set_xlim(float(freqs.min()), float(freqs.max()))
@@ -934,7 +1071,12 @@ def _plot_boundary_shift(
 
 
 def _draw_window_panel(
-    ax: Any, value_label: str, result: Any, peaks: Any, lo: float, hi: float,
+    ax: Any,
+    value_label: str,
+    result: Any,
+    peaks: Any,
+    lo: float,
+    hi: float,
 ) -> None:
     """One value × one region: the log active-FT magnitude zoomed to the region,
     the window spans shaded by difficulty with their boundaries and split
@@ -959,9 +1101,13 @@ def _draw_window_panel(
         wlo, whi = w.freq_range
         if whi < lo or wlo > hi:
             continue
-        ax.axvspan(max(wlo, lo), min(whi, hi),
-                   color=_DIFFICULTY_COLORS.get(_difficulty(w), "tab:gray"),
-                   alpha=0.13, zorder=0)
+        ax.axvspan(
+            max(wlo, lo),
+            min(whi, hi),
+            color=_DIFFICULTY_COLORS.get(_difficulty(w), "tab:gray"),
+            alpha=0.13,
+            zorder=0,
+        )
         for edge in (wlo, whi):
             if lo <= edge <= hi:
                 ax.axvline(edge, color="0.4", lw=0.6, zorder=2)
@@ -973,15 +1119,28 @@ def _draw_window_panel(
         for li in w.free_peak_indices:
             if 0 <= li < len(peaks) and lo <= float(peaks[li].frequency) <= hi:
                 p = peaks[li]
-                ax.scatter([p.frequency], [p.intensity], s=18, marker="o",
-                           color="black", zorder=5)
+                ax.scatter(
+                    [p.frequency],
+                    [p.intensity],
+                    s=18,
+                    marker="o",
+                    color="black",
+                    zorder=5,
+                )
         for fc in w.fixed_contributors:
             idx = fc.peak_index
             if 0 <= idx < len(peaks) and lo <= float(peaks[idx].frequency) <= hi:
                 p = peaks[idx]
-                ax.scatter([p.frequency], [p.intensity], s=46, marker="s",
-                           facecolors="none", edgecolors="tab:blue",
-                           linewidths=1.3, zorder=6)
+                ax.scatter(
+                    [p.frequency],
+                    [p.intensity],
+                    s=46,
+                    marker="s",
+                    facecolors="none",
+                    edgecolors="tab:blue",
+                    linewidths=1.3,
+                    zorder=6,
+                )
 
     coh = _coherence_curve(result)
     if coh is not None:
@@ -989,8 +1148,9 @@ def _draw_window_panel(
         csel = (cf >= lo) & (cf <= hi)
         if csel.any():
             axc = ax.twinx()
-            axc.plot(cf[csel], cs[csel], lw=0.8, color="tab:purple",
-                     alpha=0.55, zorder=4)
+            axc.plot(
+                cf[csel], cs[csel], lw=0.8, color="tab:purple", alpha=0.55, zorder=4
+            )
             axc.axhline(thr, color="crimson", lw=0.9, ls="--", zorder=4)
             axc.set_yscale("log")
             axc.set_ylabel("S_coh", fontsize=7, color="tab:purple")
@@ -1000,9 +1160,11 @@ def _draw_window_panel(
     sig = np.asarray(result.get("active_rms", []), dtype=float)
     finite = sig[np.isfinite(sig)]
     region_max = float(m_sel.max()) if m_sel.size else 1.0
-    ymin = (_WINDOW_YMIN_SIGMA_FRACTION * float(np.median(finite))
-            if finite.size and float(np.median(finite)) > 0.0
-            else max(region_max * 1e-3, 1e-12))
+    ymin = (
+        _WINDOW_YMIN_SIGMA_FRACTION * float(np.median(finite))
+        if finite.size and float(np.median(finite)) > 0.0
+        else max(region_max * 1e-3, 1e-12)
+    )
     ax.set_ylim(ymin, _WINDOW_YMAX_PEAK_FACTOR * region_max)
     ax.set_xlim(lo, hi)
     ax.set_ylabel(value_label, fontsize=8)
@@ -1024,8 +1186,8 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     open, and the S_coh coherence statistic with its T_edge threshold on a twin
     axis — the statistic that set the boundaries.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
     from matplotlib.lines import Line2D
 
     rows = [r for r in rows if r.result is not None]
@@ -1037,12 +1199,16 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     # load them once from the working copy for the free/fixed markers.
     try:
         import ftmwpipeline.api as ftmw
+
         peaks = ftmw.load_peaks(ctx.ftmw_path)
     except Exception:
         peaks = []
 
     regions = _resolve_regions(
-        ctx, rows, _WINDOW_REGION_WIDTH_MHZ, _WINDOW_N_REGIONS,
+        ctx,
+        rows,
+        _WINDOW_REGION_WIDTH_MHZ,
+        _WINDOW_N_REGIONS,
         _select_window_regions,
     )
     n = len(rows)
@@ -1056,8 +1222,10 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     ax_trend = fig.add_subplot(gs[0, :])
     xs = np.arange(n, dtype=float)
-    labels = [f"{r.value:g}" if isinstance(r.value, (int, float))
-              else str(r.value) for r in rows]
+    labels = [
+        f"{r.value:g}" if isinstance(r.value, (int, float)) else str(r.value)
+        for r in rows
+    ]
     for col, color, marker in (
         ("n_windows", "0.2", "o"),
         ("n_hard", "tab:red", "^"),
@@ -1097,18 +1265,32 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     handles = [
         Line2D([], [], marker="o", color="black", ls="none", label="free peak"),
-        Line2D([], [], marker="s", color="tab:blue", ls="none",
-               markerfacecolor="none", label="fixed contributor"),
+        Line2D(
+            [],
+            [],
+            marker="s",
+            color="tab:blue",
+            ls="none",
+            markerfacecolor="none",
+            label="fixed contributor",
+        ),
         Line2D([], [], color="tab:green", lw=6, alpha=0.4, label="EASY window"),
         Line2D([], [], color="tab:red", lw=6, alpha=0.4, label="HARD window"),
-        Line2D([], [], color="tab:purple", lw=1.2, alpha=0.55,
-               label=r"$S_{coh}$ coherence"),
-        Line2D([], [], color="crimson", ls="--",
-               label=r"$T_{edge}$ coherence threshold"),
+        Line2D(
+            [], [], color="tab:purple", lw=1.2, alpha=0.55, label=r"$S_{coh}$ coherence"
+        ),
+        Line2D(
+            [], [], color="crimson", ls="--", label=r"$T_{edge}$ coherence threshold"
+        ),
         Line2D([], [], color="purple", ls=":", label="split proposal"),
     ]
-    fig.legend(handles=handles, fontsize=8, loc="lower center", ncol=7,
-               bbox_to_anchor=(0.5, -0.01))
+    fig.legend(
+        handles=handles,
+        fontsize=8,
+        loc="lower center",
+        ncol=7,
+        bbox_to_anchor=(0.5, -0.01),
+    )
     fig.suptitle(f"Window-planning sweep: {spec.path}")
     fig.tight_layout(rect=(0, 0.02, 1, 1))
     return fig
@@ -1140,8 +1322,9 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
     across the line; (3) a per-window **ε-vs-frequency strip** showing *where* on
     the band the knob moved the misfit, coloured by value.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
+
     from ...fitting.validation import DEFAULT_SHAPE_ERROR_KAPPA
 
     rows = [r for r in rows if r.result is not None]
@@ -1151,8 +1334,10 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     leaf = spec.path.split(".")[-1]
     n = len(rows)
-    labels = [f"{r.value:g}" if isinstance(r.value, (int, float))
-              else str(r.value) for r in rows]
+    labels = [
+        f"{r.value:g}" if isinstance(r.value, (int, float)) else str(r.value)
+        for r in rows
+    ]
     colors = _value_colors(n)
     kappa = float(DEFAULT_SHAPE_ERROR_KAPPA)
 
@@ -1162,14 +1347,19 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
     # (1) trend: eps percentiles + fail / peak counts vs value.
     ax = fig.add_subplot(gs[0, 0])
     xs = np.arange(n, dtype=float)
-    e50 = [float(np.percentile([w["epsilon"] for w in pv], 50)) if pv else 0.0
-           for pv in per_value]
-    e95 = [float(np.percentile([w["epsilon"] for w in pv], 95)) if pv else 0.0
-           for pv in per_value]
+    e50 = [
+        float(np.percentile([w["epsilon"] for w in pv], 50)) if pv else 0.0
+        for pv in per_value
+    ]
+    e95 = [
+        float(np.percentile([w["epsilon"] for w in pv], 95)) if pv else 0.0
+        for pv in per_value
+    ]
     ax.plot(xs, e50, "o-", color="tab:blue", label="ε p50")
     ax.plot(xs, e95, "s--", color="tab:blue", alpha=0.6, label="ε p95")
-    ax.axhline(kappa, color="crimson", ls=":", lw=1.0,
-               label=f"κ = {kappa:g} (pass ≤ κ)")
+    ax.axhline(
+        kappa, color="crimson", ls=":", lw=1.0, label=f"κ = {kappa:g} (pass ≤ κ)"
+    )
     ax.set_xticks(xs)
     ax.set_xticklabels(labels)
     ax.set_xlabel(leaf)
@@ -1192,17 +1382,24 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
         snr = [w["snr_max"] for w in pv if w["snr_max"] > 0]
         eps = [w["epsilon"] for w in pv if w["snr_max"] > 0]
         if snr:
-            ax2.scatter(snr, eps, s=20, color=colors[i], alpha=0.75,
-                        label=f"{leaf}={labels[i]}")
-    ax2.axhline(kappa, color="crimson", ls="--", lw=1.1,
-                label=f"pass boundary ε = κ = {kappa:g}")
+            ax2.scatter(
+                snr, eps, s=20, color=colors[i], alpha=0.75, label=f"{leaf}={labels[i]}"
+            )
+    ax2.axhline(
+        kappa,
+        color="crimson",
+        ls="--",
+        lw=1.1,
+        label=f"pass boundary ε = κ = {kappa:g}",
+    )
     ax2.set_xscale("log")
     ax2.set_xlabel("window SNR_max (log)")
     ax2.set_ylabel("shape-error fraction ε")
     ax2.grid(True, alpha=0.25, which="both")
     ax2.legend(fontsize=8, ncol=min(n + 1, 5), loc="upper right")
-    ax2.set_title("ε vs SNR — points above κ are genuine misfit "
-                  "(SNR² floor removed)")
+    ax2.set_title(
+        "ε vs SNR — points above κ are genuine misfit " "(SNR² floor removed)"
+    )
 
     # (3) ε vs frequency: where on the band the knob moves the misfit.
     ax3 = fig.add_subplot(gs[2, 0])
@@ -1221,8 +1418,9 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax3.set_xlabel("window centre frequency (MHz)")
     ax3.set_ylabel("shape-error ε")
     ax3.grid(True, alpha=0.25)
-    ax3.set_title("ε across the band by swept value "
-                  "(which windows the knob helps / hurts)")
+    ax3.set_title(
+        "ε across the band by swept value " "(which windows the knob helps / hurts)"
+    )
 
     fig.suptitle(f"Fit-quality sweep: {spec.path}")
     fig.tight_layout(rect=(0, 0, 1, 0.99))
@@ -1310,8 +1508,8 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     value with the ``snr_threshold`` cut drawn, so the detection gates visibly
     bite instead of looking inert.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1334,22 +1532,22 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
         added.append(sum(x.n_rescue_added for x in acc))
         pruned.append(sum(x.n_pruned_rescue_origin for x in rh))
         vals = [
-            (x.chi2_before - x.chi2_after) / x.chi2_before for x in acc
+            (x.chi2_before - x.chi2_after) / x.chi2_before
+            for x in acc
             if x.chi2_before > 0
-            and np.isfinite(x.chi2_before) and np.isfinite(x.chi2_after)
+            and np.isfinite(x.chi2_before)
+            and np.isfinite(x.chi2_after)
         ]
         drop.append(float(np.median(vals)) * 100.0 if vals else 0.0)
     ax.plot(xs, added, "o-", color="tab:green", label="peaks added (accepted)")
-    ax.plot(xs, pruned, "x--", color="tab:red",
-            label="rescue-origin pruned (failsafe)")
+    ax.plot(xs, pruned, "x--", color="tab:red", label="rescue-origin pruned (failsafe)")
     ax.set_xticks(xs)
     ax.set_xticklabels(labels)
     ax.set_xlabel(leaf)
     ax.set_ylabel("peak count")
     ax.grid(True, alpha=0.3)
     axc = ax.twinx()
-    axc.plot(xs, drop, "D-", color="tab:blue", alpha=0.55,
-             label="median χ² drop (%)")
+    axc.plot(xs, drop, "D-", color="tab:blue", alpha=0.55, label="median χ² drop (%)")
     axc.set_ylabel("median χ² reduction (%)", color="tab:blue")
     axc.tick_params(axis="y", labelcolor="tab:blue")
     h1, l1 = ax.get_legend_handles_labels()
@@ -1374,12 +1572,14 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     for i, r in enumerate(rows):
         fcs = [
             _window_center(r.result, x.window_id)
-            for x in r.result["fit"].rescue_history if x.accepted
+            for x in r.result["fit"].rescue_history
+            if x.accepted
         ]
         fcs = [c for c in fcs if c is not None]
         if fcs:
-            ax2.scatter(fcs, np.full(len(fcs), i), s=26, color=colors[i],
-                        alpha=0.9, zorder=3)
+            ax2.scatter(
+                fcs, np.full(len(fcs), i), s=26, color=colors[i], alpha=0.9, zorder=3
+            )
     ax2.set_yticks(range(n))
     ax2.set_yticklabels(labels)
     ax2.set_ylim(-0.5, n - 0.5)
@@ -1398,19 +1598,27 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
             xpos = i + np.linspace(-0.32, 0.32, snrs.size)
             ax3.scatter(xpos, snrs, s=9, color=colors[i], alpha=0.5, zorder=2)
         if leaf == "snr_threshold" and isinstance(r.value, (int, float)):
-            ax3.hlines(float(r.value), i - 0.42, i + 0.42, color=colors[i],
-                       lw=2.0, zorder=3)
+            ax3.hlines(
+                float(r.value), i - 0.42, i + 0.42, color=colors[i], lw=2.0, zorder=3
+            )
     if leaf != "snr_threshold":
-        ax3.axhline(_RESCUE_DEFAULT_SNR_GATE, color="crimson", ls="--", lw=1.0,
-                    label=f"snr_threshold = {_RESCUE_DEFAULT_SNR_GATE:g}")
+        ax3.axhline(
+            _RESCUE_DEFAULT_SNR_GATE,
+            color="crimson",
+            ls="--",
+            lw=1.0,
+            label=f"snr_threshold = {_RESCUE_DEFAULT_SNR_GATE:g}",
+        )
         ax3.legend(fontsize=8, loc="upper right")
     ax3.set_xticks(range(n))
     ax3.set_xticklabels(labels)
     ax3.set_xlabel(leaf)
     ax3.set_ylabel("residual candidate SNR")
     ax3.grid(True, alpha=0.25)
-    ax3.set_title("Residual candidates nominated vs the detection gate "
-                  "(per-value gate in colour when sweeping snr_threshold)")
+    ax3.set_title(
+        "Residual candidates nominated vs the detection gate "
+        "(per-value gate in colour when sweeping snr_threshold)"
+    )
 
     fig.suptitle(f"Rescue sweep: {spec.path}")
     fig.tight_layout(rect=(0, 0, 1, 0.99))
@@ -1436,8 +1644,8 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
     a higher ``snr_threshold`` removes them, so a count is the direction-agnostic
     readout.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1451,8 +1659,7 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
         return r.result["fit"].parameters
 
     per_value_centers = [
-        [float(c) for c in (_params(r).get("spur_centers_mhz") or [])]
-        for r in rows
+        [float(c) for c in (_params(r).get("spur_centers_mhz") or [])] for r in rows
     ]
     # Key spurs by nearest integer MHz (the gate's anchor); a spur is "gated at
     # value i" when an integer-equal centre is in that value's catalogue. Colour
@@ -1517,11 +1724,19 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
             ax2.axvspan(c - hw_mhz, c + hw_mhz, color=col, alpha=0.15, zorder=2)
     ax2.set_xlabel("frequency (MHz)")
     ax2.set_ylabel("|FT|")
-    ax2.set_title("Gated spurs, coloured by how many values gate them "
-                  f"(robustness; ±{hw_bins} bin mask shaded)")
+    ax2.set_title(
+        "Gated spurs, coloured by how many values gate them "
+        f"(robustness; ±{hw_bins} bin mask shaded)"
+    )
     handles = [plt.Line2D([0], [0], color=ramp[i], lw=2.5) for i in range(n)]
-    ax2.legend(handles, [f"{i + 1}/{n} values" for i in range(n)], fontsize=7,
-               ncol=min(n, 5), title="gated by", loc="upper right")
+    ax2.legend(
+        handles,
+        [f"{i + 1}/{n} values" for i in range(n)],
+        fontsize=7,
+        ncol=min(n, 5),
+        title="gated by",
+        loc="upper right",
+    )
 
     fig.suptitle(f"Spur sweep: {spec.path}")
     fig.tight_layout(rect=(0, 0, 1, 0.99))
@@ -1546,8 +1761,8 @@ def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
     threshold drawn — points on the diagonal are edges the handshake left
     unchanged (the common case: thaw is near-dormant on clean spectra).
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1606,23 +1821,35 @@ def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
             fc = t.contributor_frequency_mhz
             if fc is None or not np.isfinite(fc):
                 continue
-            ax2.scatter([fc], [i], s=30, marker="o", zorder=3,
-                        facecolors=colors[i] if t.accepted else "none",
-                        edgecolors=colors[i])
+            ax2.scatter(
+                [fc],
+                [i],
+                s=30,
+                marker="o",
+                zorder=3,
+                facecolors=colors[i] if t.accepted else "none",
+                edgecolors=colors[i],
+            )
         for x in fit.replan_history:
-            c = (_window_center(r.result, x.surviving_window_id)
-                 or _window_center(r.result, x.triggering_window_id))
+            c = _window_center(r.result, x.surviving_window_id) or _window_center(
+                r.result, x.triggering_window_id
+            )
             if c is not None:
-                ax2.scatter([c], [i], s=48, marker="^", zorder=3,
-                            facecolors=colors[i] if x.accepted else "none",
-                            edgecolors=colors[i])
+                ax2.scatter(
+                    [c],
+                    [i],
+                    s=48,
+                    marker="^",
+                    zorder=3,
+                    facecolors=colors[i] if x.accepted else "none",
+                    edgecolors=colors[i],
+                )
     ax2.set_yticks(range(n))
     ax2.set_yticklabels(labels)
     ax2.set_ylim(-0.5, n - 0.5)
     ax2.set_ylabel(leaf)
     ax2.set_xlabel("contested edge frequency (MHz)")
-    ax2.set_title("Where edges are contested "
-                  "(○ thaw, △ replan; filled = accepted)")
+    ax2.set_title("Where edges are contested " "(○ thaw, △ replan; filled = accepted)")
 
     # (3) before→after coherence handshake.
     ax3 = fig.add_subplot(gs[2, 0])
@@ -1636,26 +1863,45 @@ def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
                 after.append(float(a) if np.isfinite(a) else float(b))
         if before:
             finite_b.extend(before)
-            ax3.scatter(before, after, s=22, color=colors[i], alpha=0.75,
-                        label=f"{leaf}={labels[i]}")
+            ax3.scatter(
+                before,
+                after,
+                s=22,
+                color=colors[i],
+                alpha=0.75,
+                label=f"{leaf}={labels[i]}",
+            )
     if finite_b:
         lo = min(finite_b + [_THAW_DEFAULT_EDGE_GATE])
         hi = max(finite_b + [_THAW_DEFAULT_EDGE_GATE])
-        ax3.plot([lo, hi], [lo, hi], color="0.5", ls=":", lw=1.0,
-                 label="no change (after = before)")
+        ax3.plot(
+            [lo, hi],
+            [lo, hi],
+            color="0.5",
+            ls=":",
+            lw=1.0,
+            label="no change (after = before)",
+        )
     if leaf == "residual_edge_threshold":
         for i, r in enumerate(rows):
             if isinstance(r.value, (int, float)):
                 ax3.axvline(float(r.value), color=colors[i], ls="--", lw=0.8)
     else:
-        ax3.axvline(_THAW_DEFAULT_EDGE_GATE, color="crimson", ls="--", lw=1.0,
-                    label=f"trigger S_coh = {_THAW_DEFAULT_EDGE_GATE:g}")
+        ax3.axvline(
+            _THAW_DEFAULT_EDGE_GATE,
+            color="crimson",
+            ls="--",
+            lw=1.0,
+            label=f"trigger S_coh = {_THAW_DEFAULT_EDGE_GATE:g}",
+        )
     ax3.set_xlabel("edge S_coh before co-fit")
     ax3.set_ylabel("edge S_coh after co-fit")
     ax3.grid(True, alpha=0.25)
     ax3.legend(fontsize=8, loc="upper left")
-    ax3.set_title("Coherence handshake — points on the diagonal were left "
-                  "unchanged (no improvement)")
+    ax3.set_title(
+        "Coherence handshake — points on the diagonal were left "
+        "unchanged (no improvement)"
+    )
 
     fig.suptitle(f"Thaw sweep: {spec.path}")
     fig.tight_layout(rect=(0, 0, 1, 0.99))
@@ -1673,8 +1919,8 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     overlay it. If the spectrum cannot be loaded the bottom panel is hidden and
     the two trend panels stand on their own.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1691,7 +1937,11 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     for row, color in zip(rows, colors):
         sigma = np.asarray(row.result.rms_noise, dtype=float)
         ax1.plot(
-            np.arange(sigma.size), sigma, color=color, alpha=0.8, lw=1.0,
+            np.arange(sigma.size),
+            sigma,
+            color=color,
+            alpha=0.8,
+            lw=1.0,
             label=f"{leaf}={row.value:g}",
         )
     ax1.set_xlabel("frequency bin (trimmed grid)")
@@ -1725,8 +1975,14 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
             sigma = np.asarray(row.result.rms_noise, dtype=float)
             if sigma.size != f_ghz.size:
                 continue
-            ax3.plot(f_ghz, sigma, color=color, lw=1.3, zorder=2,
-                     label=f"σ: {leaf}={row.value:g}")
+            ax3.plot(
+                f_ghz,
+                sigma,
+                color=color,
+                lw=1.3,
+                zorder=2,
+                label=f"σ: {leaf}={row.value:g}",
+            )
             sigma_max = max(sigma_max, float(np.nanmax(sigma)))
         if sigma_max > 0.0:
             ax3.set_ylim(0.0, _NOISE_OVERLAY_YMAX_FACTOR * sigma_max)

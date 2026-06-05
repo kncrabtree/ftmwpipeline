@@ -22,7 +22,6 @@ from ftmwpipeline.io.peak_detection_settings_serialization import (
     save_peak_detection_settings_to_h5,
 )
 
-
 _SUB_NAMES = ("promotion", "savgol", "primary_pass", "gap_pass")
 
 
@@ -47,8 +46,12 @@ class TestStage3PeaksSettingsPersistence:
         assert loaded is not None
         assert loaded.promotion.min_snr == original.promotion.min_snr
         assert loaded.savgol.sg_window == original.savgol.sg_window
-        assert loaded.primary_pass.primary_window == original.primary_pass.primary_window
-        assert loaded.gap_pass.gap_leakage_floor_k == original.gap_pass.gap_leakage_floor_k
+        assert (
+            loaded.primary_pass.primary_window == original.primary_pass.primary_window
+        )
+        assert (
+            loaded.gap_pass.gap_leakage_floor_k == original.gap_pass.gap_leakage_floor_k
+        )
 
     def test_round_trip_sparse_settings(self, empty_ftmw) -> None:
         s = PeakDetectionSettings()

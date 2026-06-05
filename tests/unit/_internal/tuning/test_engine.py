@@ -40,8 +40,7 @@ def _make_spec(*, plot=None, direction="none", primary_metric=None) -> KnobSpec:
 
 def test_sweep_returns_row_per_grid_value(tmp_path):
     spec = _make_spec()
-    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0],
-                   output_dir=tmp_path)
+    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0], output_dir=tmp_path)
     assert len(res.rows) == 2
     assert [r.value for r in res.rows] == [1.0, 2.0]
     assert res.rows[0].metrics == {"m": 1.0, "k": 10.0}
@@ -72,6 +71,7 @@ def test_table_only_fallback_when_no_plot(tmp_path):
 
 def test_plot_adapter_writes_file(tmp_path):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -81,16 +81,16 @@ def test_plot_adapter_writes_file(tmp_path):
         return fig
 
     spec = _make_spec(plot=plot)
-    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0],
-                   output_dir=tmp_path)
+    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0], output_dir=tmp_path)
     assert res.plot_path is not None
     assert res.plot_path.exists()
 
 
 def test_recommender_picks_min(tmp_path):
     spec = _make_spec(direction="min", primary_metric="m")
-    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[3.0, 1.0, 2.0],
-                   output_dir=tmp_path)
+    res = run_scan(
+        spec, _dummy_ftmw(tmp_path), grid=[3.0, 1.0, 2.0], output_dir=tmp_path
+    )
     assert res.recommendation is not None
     assert res.recommendation.value == 1.0
     assert res.recommendation.metric == "m"
@@ -98,15 +98,15 @@ def test_recommender_picks_min(tmp_path):
 
 def test_recommender_picks_max(tmp_path):
     spec = _make_spec(direction="max", primary_metric="m")
-    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[3.0, 1.0, 2.0],
-                   output_dir=tmp_path)
+    res = run_scan(
+        spec, _dummy_ftmw(tmp_path), grid=[3.0, 1.0, 2.0], output_dir=tmp_path
+    )
     assert res.recommendation.value == 3.0
 
 
 def test_no_recommendation_when_direction_none(tmp_path):
     spec = _make_spec(direction="none")
-    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0],
-                   output_dir=tmp_path)
+    res = run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0], output_dir=tmp_path)
     assert res.recommendation is None
     # apply instructions are always emitted
     assert "To apply a chosen value" in res.apply_instructions
@@ -123,15 +123,21 @@ def test_input_file_not_mutated(tmp_path):
 def test_progress_callback_invoked_per_value(tmp_path):
     spec = _make_spec()
     calls = []
-    run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0, 3.0],
-             output_dir=tmp_path, progress=lambda d, t, v: calls.append((d, t, v)))
+    run_scan(
+        spec,
+        _dummy_ftmw(tmp_path),
+        grid=[1.0, 2.0, 3.0],
+        output_dir=tmp_path,
+        progress=lambda d, t, v: calls.append((d, t, v)),
+    )
     assert calls == [(1, 3, 1.0), (2, 3, 2.0), (3, 3, 3.0)]
 
 
 def test_quiet_suppresses_default_reporter(tmp_path, capsys):
     spec = _make_spec()
-    run_scan(spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0],
-             output_dir=tmp_path, quiet=True)
+    run_scan(
+        spec, _dummy_ftmw(tmp_path), grid=[1.0, 2.0], output_dir=tmp_path, quiet=True
+    )
     err = capsys.readouterr().err
     assert "Scanning" not in err
 
@@ -157,28 +163,39 @@ def _named_spec(path: str, *, fail: bool = False) -> KnobSpec:
         if fail:
             raise RuntimeError("required stage missing")
         return value
+
     return KnobSpec(
-        path=path, stage=path.split(".")[0], requires="stage0_fid_data",
-        help="synthetic", inst_sensitivity="N", default_grid=(1.0, 2.0),
-        run=_run, metric=lambda r: {"m": r}, metric_columns=("m",),
+        path=path,
+        stage=path.split(".")[0],
+        requires="stage0_fid_data",
+        help="synthetic",
+        inst_sensitivity="N",
+        default_grid=(1.0, 2.0),
+        run=_run,
+        metric=lambda r: {"m": r},
+        metric_columns=("m",),
     )
 
 
 def test_batch_runs_each_knob_and_returns_item_per_spec(tmp_path):
     specs = [_named_spec("s.b.k1"), _named_spec("s.b.k2")]
-    items = run_scan_batch(specs, _dummy_ftmw(tmp_path),
-                           output_dir=tmp_path, quiet=True)
+    items = run_scan_batch(
+        specs, _dummy_ftmw(tmp_path), output_dir=tmp_path, quiet=True
+    )
     assert [it.knob for it in items] == ["s.b.k1", "s.b.k2"]
     assert all(it.ok and it.error is None for it in items)
-    assert all(it.result is not None and it.result.csv_path.exists()
-               for it in items)
+    assert all(it.result is not None and it.result.csv_path.exists() for it in items)
 
 
 def test_batch_continues_past_a_failing_knob(tmp_path):
-    specs = [_named_spec("s.b.ok1"), _named_spec("s.b.bad", fail=True),
-             _named_spec("s.b.ok2")]
-    items = run_scan_batch(specs, _dummy_ftmw(tmp_path),
-                           output_dir=tmp_path, quiet=True)
+    specs = [
+        _named_spec("s.b.ok1"),
+        _named_spec("s.b.bad", fail=True),
+        _named_spec("s.b.ok2"),
+    ]
+    items = run_scan_batch(
+        specs, _dummy_ftmw(tmp_path), output_dir=tmp_path, quiet=True
+    )
     assert [it.ok for it in items] == [True, False, True]
     bad = items[1]
     assert bad.result is None

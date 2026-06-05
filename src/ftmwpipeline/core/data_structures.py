@@ -14,16 +14,18 @@ Architecture:
   └── FittedPeak[]: Fitted parameters for individual peaks
 """
 
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
+
 import numpy as np
 import scipy.fft as sfft
 import scipy.signal as spsig
-from typing import Optional, Dict, Any, List, Union, Tuple
-from dataclasses import dataclass, field
-from enum import Enum
 
 
 class PeakClassification(Enum):
     """Peak strength classification based on SNR."""
+
     WEAK = "weak"
     MEDIUM = "medium"
     STRONG = "strong"
@@ -31,6 +33,7 @@ class PeakClassification(Enum):
 
 class Sideband(Enum):
     """Sideband configuration for frequency conversion."""
+
     UPPER = "upper"
     LOWER = "lower"
     LSB = "lower"  # Alias for compatibility
@@ -41,19 +44,20 @@ class Sideband(Enum):
 class FIDProcessingParameters:
     """
     Processing parameters for FID-to-FT conversion.
-    
+
     Based on BlackChirp processing settings, these control how the time-domain
     FID is converted to frequency domain.
     """
+
     start_us: Optional[float] = None  # Start time in μs for windowing
-    end_us: Optional[float] = None    # End time in μs for windowing
-    winf: Optional[str] = None        # Window function name (scipy.signal compatible)
-    zpf: int = 1                      # Zero padding factor (powers of 2)
-    rdc: bool = True                  # Remove DC component (subtract average)
-    expf_us: Optional[float] = None   # Exponential decay filter time constant (μs)
-    units_power: int = 6              # Scaling factor (10^units_power, 6 for μV)
-    
-    def __post_init__(self):
+    end_us: Optional[float] = None  # End time in μs for windowing
+    winf: Optional[str] = None  # Window function name (scipy.signal compatible)
+    zpf: int = 1  # Zero padding factor (powers of 2)
+    rdc: bool = True  # Remove DC component (subtract average)
+    expf_us: Optional[float] = None  # Exponential decay filter time constant (μs)
+    units_power: int = 6  # Scaling factor (10^units_power, 6 for μV)
+
+    def __post_init__(self) -> None:
         """Validate processing parameters."""
         if self.zpf < 0:
             raise ValueError("Zero padding factor must be non-negative")
@@ -61,7 +65,11 @@ class FIDProcessingParameters:
             raise ValueError("Start time must be non-negative")
         if self.end_us is not None and self.end_us < 0:
             raise ValueError("End time must be non-negative")
-        if self.start_us is not None and self.end_us is not None and self.start_us >= self.end_us:
+        if (
+            self.start_us is not None
+            and self.end_us is not None
+            and self.start_us >= self.end_us
+        ):
             raise ValueError("Start time must be less than end time")
         if self.expf_us is not None and self.expf_us <= 0:
             # Non-positive expf_us means "disable apodization"; normalise to
@@ -73,18 +81,24 @@ class FIDProcessingParameters:
 class PreprocessedFID:
     """
     Preprocessed FID data ready for FFT calculation.
-    
+
     Contains time-domain FID data that has been preprocessed with windowing,
     zero-padding, filtering, etc. Separates preprocessing from FFT calculation.
     """
-    
-    def __init__(self, data: np.ndarray, spacing: float, 
-                 probe_freq_mhz: float, sideband: Union[str, Sideband],
-                 original_length: int, processing_params: FIDProcessingParameters,
-                 metadata: Optional[Dict[str, Any]] = None):
+
+    def __init__(
+        self,
+        data: np.ndarray,
+        spacing: float,
+        probe_freq_mhz: float,
+        sideband: Union[str, Sideband],
+        original_length: int,
+        processing_params: FIDProcessingParameters,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize PreprocessedFID object.
-        
+
         Parameters
         ----------
         data : np.ndarray
@@ -105,37 +119,37 @@ class PreprocessedFID:
         self.data = np.asarray(data, dtype=float)
         self.spacing = float(spacing)
         self.probe_freq_mhz = float(probe_freq_mhz)
-        
+
         if isinstance(sideband, str):
             self.sideband = Sideband(sideband.lower())
         else:
             self.sideband = sideband
-        
+
         self.original_length = int(original_length)
         self.processing_params = processing_params
         self.metadata = metadata or {}
-    
+
     @property
     def n_points(self) -> int:
         """Number of preprocessed data points."""
         return len(self.data)
-    
+
     def apply_molecular_frequency(self, scope_freq_mhz: np.ndarray) -> np.ndarray:
         """
         Convert scope frequency to molecular frequency.
-        
+
         For upper sideband: molecular = probe + scope
         For lower sideband: molecular = probe - scope
         """
         if self.sideband in (Sideband.LOWER, Sideband.LSB):
-            return self.probe_freq_mhz - scope_freq_mhz
+            return cast(np.ndarray, self.probe_freq_mhz - scope_freq_mhz)
         else:
-            return self.probe_freq_mhz + scope_freq_mhz
-    
+            return cast(np.ndarray, self.probe_freq_mhz + scope_freq_mhz)
+
     def compute_fft(self) -> Tuple[np.ndarray, np.ndarray]:
         """
         Compute FFT of preprocessed data.
-        
+
         Returns
         -------
         tuple
@@ -144,57 +158,63 @@ class PreprocessedFID:
         """
         # Compute real FFT (since FID data is real)
         ft_data = sfft.rfft(self.data)
-        
+
         # Generate frequency axis using rfftfreq
         scope_freqs = sfft.rfftfreq(len(self.data), d=self.spacing) / 1e6  # MHz
-        
+
         # Convert to molecular frequencies
         mol_freqs = self.apply_molecular_frequency(scope_freqs)
-        
+
         # Apply normalization (divide by original FID length, not padded length)
         ft_data /= self.original_length
-        
+
         # Apply scaling
-        scale_factor = 10 ** self.processing_params.units_power
+        scale_factor = 10**self.processing_params.units_power
         ft_data *= scale_factor
-        
+
         # Note: autoscale_MHz feature has been removed - use 'trim' for frequency range selection
-        
+
         return ft_data, mol_freqs
-    
-    def compute_complex_ft(self) -> 'ComplexFT':
+
+    def compute_complex_ft(self) -> "ComplexFT":
         """
         Complete FT processing including metadata.
-        
+
         Returns
         -------
         ComplexFT
             ComplexFT object with frequency domain data
         """
         complex_spectrum, freq_array = self.compute_fft()
-        
+
         return ComplexFT(
             freq_array=freq_array,
             complex_spectrum=complex_spectrum,
-            metadata={'processing_params': self.processing_params}
+            metadata={"processing_params": self.processing_params},
         )
 
 
 class FID:
     """
     Free Induction Decay time-domain data container.
-    
-    Contains real-valued time-domain voltage data and all parameters 
+
+    Contains real-valued time-domain voltage data and all parameters
     needed for FT processing. Designed to work with a single averaged FID.
     """
-    
-    def __init__(self, data: np.ndarray, spacing: float, 
-                 probe_freq_mhz: float, sideband: Union[str, Sideband] = Sideband.UPPER,
-                 shots: int = 1, processing: Optional[FIDProcessingParameters] = None,
-                 metadata: Optional[Dict[str, Any]] = None):
+
+    def __init__(
+        self,
+        data: np.ndarray,
+        spacing: float,
+        probe_freq_mhz: float,
+        sideband: Union[str, Sideband] = Sideband.UPPER,
+        shots: int = 1,
+        processing: Optional[FIDProcessingParameters] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize FID object.
-        
+
         Parameters
         ----------
         data : np.ndarray
@@ -215,72 +235,78 @@ class FID:
         self.data = np.asarray(data, dtype=float).flatten()  # Ensure 1D real array
         self.spacing = float(spacing)  # seconds
         self.probe_freq_mhz = float(probe_freq_mhz)
-        
+
         if isinstance(sideband, str):
             self.sideband = Sideband(sideband.lower())
         else:
             self.sideband = sideband
-            
+
         self.shots = int(shots)
         self.processing = processing or FIDProcessingParameters()
         self.metadata = metadata or {}
-        
+
         # Validate
         if self.spacing <= 0:
             raise ValueError("Spacing must be positive")
         if self.shots <= 0:
             raise ValueError("Shots must be positive")
-    
+
     @property
     def n_points(self) -> int:
         """Number of time points."""
         return len(self.data)
-    
+
     @property
     def duration(self) -> float:
         """FID duration in seconds."""
         return self.n_points * self.spacing
-    
+
     @property
     def duration_us(self) -> float:
         """FID duration in microseconds."""
         return self.duration * 1e6
-    
+
     def time_array(self) -> np.ndarray:
         """Generate time array in seconds."""
-        return np.arange(self.n_points) * self.spacing
-    
+        return cast(np.ndarray, np.arange(self.n_points) * self.spacing)
+
     def time_array_us(self) -> np.ndarray:
         """Generate time array in microseconds."""
-        return self.time_array() * 1e6
-    
+        return cast(np.ndarray, self.time_array() * 1e6)
+
     def apply_molecular_frequency(self, scope_freq_mhz: np.ndarray) -> np.ndarray:
         """
         Convert scope frequency to molecular frequency.
-        
+
         For upper sideband: molecular = probe + scope
         For lower sideband: molecular = probe - scope
         """
         if self.sideband in (Sideband.LOWER, Sideband.LSB):
-            return self.probe_freq_mhz - scope_freq_mhz
+            return cast(np.ndarray, self.probe_freq_mhz - scope_freq_mhz)
         else:
-            return self.probe_freq_mhz + scope_freq_mhz
-    
-    def preprocess(self, start_us: Optional[float] = None, end_us: Optional[float] = None, 
-                   zpf: int = 1, expf_us: Optional[float] = None, 
-                   window_function: Optional[str] = None, rdc: bool = True,
-                   units_power: int = 6) -> PreprocessedFID:
+            return cast(np.ndarray, self.probe_freq_mhz + scope_freq_mhz)
+
+    def preprocess(
+        self,
+        start_us: Optional[float] = None,
+        end_us: Optional[float] = None,
+        zpf: int = 1,
+        expf_us: Optional[float] = None,
+        window_function: Optional[str] = None,
+        rdc: bool = True,
+        units_power: int = 6,
+    ) -> PreprocessedFID:
         """
         Apply preprocessing to FID data, return new PreprocessedFID object.
-        
+
         Stage 1 of FT processing: preprocessing only, no FFT computation.
-        
+
         CRITICAL: Proper preprocessing sequence:
         1. Extract windowed data (start_us to end_us)
         2. Apply exponential filtering ONLY to windowed data
         3. Apply window function ONLY to windowed/filtered data
         4. Apply zero padding to processed window
-        
+
         Parameters
         ----------
         start_us : float, optional
@@ -297,7 +323,7 @@ class FID:
             Remove DC component (subtract average)
         units_power : int, default=6
             Scaling factor (10^units_power, 6 for μV)
-            
+
         Returns
         -------
         PreprocessedFID
@@ -311,29 +337,29 @@ class FID:
             zpf=zpf,
             rdc=rdc,
             expf_us=expf_us,
-            units_power=units_power
+            units_power=units_power,
         )
-        
+
         # Step 1: Determine windowing boundaries in original FID
         time_us = self.time_array_us()
         start_idx = 0
         end_idx = len(self.data)
-        
+
         if processing_params.start_us is not None:
-            start_idx = np.searchsorted(time_us, processing_params.start_us)
+            start_idx = int(np.searchsorted(time_us, processing_params.start_us))
         if processing_params.end_us is not None:
-            end_idx = np.searchsorted(time_us, processing_params.end_us)
-        
+            end_idx = int(np.searchsorted(time_us, processing_params.end_us))
+
         # Start with full original data and zero regions outside bounds
         windowed_data = self.data.copy()
         original_length = len(self.data)  # For proper normalization
-        
+
         # Zero out regions outside start_us/end_us bounds
         if start_idx > 0:
             windowed_data[:start_idx] = 0.0
         if end_idx < len(windowed_data):
             windowed_data[end_idx:] = 0.0
-        
+
         # Step 2: Apply exponential filtering ONLY to active (non-zeroed) region
         if processing_params.expf_us is not None and start_idx < end_idx:
             # Calculate decay relative to active region time
@@ -341,32 +367,34 @@ class FID:
             relative_time_us = active_time_us - active_time_us[0]
             decay = np.exp(-relative_time_us / processing_params.expf_us)
             windowed_data[start_idx:end_idx] *= decay
-        
+
         # Step 3: Apply window function ONLY to active region
         if processing_params.winf is not None and start_idx < end_idx:
             window = spsig.get_window(processing_params.winf, end_idx - start_idx)
             windowed_data[start_idx:end_idx] *= window
-        
+
         # Step 4: Remove DC component from active region (after windowing)
         if processing_params.rdc and start_idx < end_idx:
             active_data = windowed_data[start_idx:end_idx]
             dc_offset = np.mean(active_data)
             windowed_data[start_idx:end_idx] -= dc_offset
-        
+
         # Step 5: Zero padding to full-length processed data
         final_data = windowed_data
         if processing_params.zpf > 0:
             # Handle edge case of empty data
             if len(final_data) == 0:
                 # For empty data, create minimal padded array
-                n_padded = 2 ** processing_params.zpf
+                n_padded = 2**processing_params.zpf
             else:
                 # Pad to next power of 2, then extend by 2^zpf
-                n_padded = 2 ** (int(np.log2(len(final_data))) + 1 + processing_params.zpf)
+                n_padded = 2 ** (
+                    int(np.log2(len(final_data))) + 1 + processing_params.zpf
+                )
             fid_padded = np.zeros(n_padded, dtype=float)
-            fid_padded[:len(final_data)] = final_data
+            fid_padded[: len(final_data)] = final_data
             final_data = fid_padded
-        
+
         return PreprocessedFID(
             data=final_data,
             spacing=self.spacing,
@@ -374,12 +402,12 @@ class FID:
             sideband=self.sideband,
             original_length=original_length,
             processing_params=processing_params,
-            metadata={'source_fid_metadata': self.metadata}
+            metadata={"source_fid_metadata": self.metadata},
         )
-    
+
     # NOTE: FID.ft() method has been removed to enforce proper three-stage workflow:
     # 1. fid.preprocess(**params) -> PreprocessedFID
-    # 2. preprocessed_fid.compute_fft() -> (spectrum, freq_array) 
+    # 2. preprocessed_fid.compute_fft() -> (spectrum, freq_array)
     # 3. ComplexFT.from_spectrum(spectrum, freq_array) -> ComplexFT
     # This separation provides cleaner architecture and better control over processing stages.
 
@@ -387,16 +415,20 @@ class FID:
 class ComplexFT:
     """
     Complex Fourier Transform frequency-domain data container.
-    
+
     Contains the frequency-domain representation of FTMW data with
     associated experimental parameters. Computed from FID data.
     """
-    
-    def __init__(self, freq_array: np.ndarray, complex_spectrum: np.ndarray,
-                 metadata: Optional[Dict[str, Any]] = None):
+
+    def __init__(
+        self,
+        freq_array: np.ndarray,
+        complex_spectrum: np.ndarray,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize ComplexFT object.
-        
+
         Parameters
         ----------
         freq_array : np.ndarray
@@ -408,30 +440,34 @@ class ComplexFT:
         """
         self.freq_array = np.asarray(freq_array, dtype=float)
         self.complex_spectrum = np.asarray(complex_spectrum, dtype=complex)
-        
+
         if len(self.freq_array) != len(self.complex_spectrum):
             raise ValueError("Frequency and spectrum arrays must have same length")
-        
+
         # Note: FID back-reference removed for cleaner architecture
         self.metadata = metadata or {}
-        
+
         # Cached properties
-        self._magnitude_spectrum = None
-        self._freq_step = None
-    
+        self._magnitude_spectrum: Optional[np.ndarray] = None
+        self._freq_step: Optional[float] = None
+
     # NOTE: from_fid class method removed - use proper three-stage workflow:
     # 1. preprocessed = fid.preprocess(**params)
     # 2. spectrum, freqs = preprocessed.compute_fft()
     # 3. complex_ft = ComplexFT.from_spectrum(spectrum, freqs)
-    
+
     @classmethod
-    def from_spectrum(cls, complex_spectrum: np.ndarray, freq_array: np.ndarray,
-                     metadata: Optional[Dict[str, Any]] = None) -> 'ComplexFT':
+    def from_spectrum(
+        cls,
+        complex_spectrum: np.ndarray,
+        freq_array: np.ndarray,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "ComplexFT":
         """
         Create ComplexFT from spectrum data.
-        
+
         Used for Stage 3 post-processing after FFT computation.
-        
+
         Parameters
         ----------
         complex_spectrum : np.ndarray
@@ -440,111 +476,121 @@ class ComplexFT:
             Frequency array in MHz
         metadata : dict, optional
             Additional metadata
-            
+
         Returns
         -------
         ComplexFT
             ComplexFT object
         """
-        return cls(freq_array=freq_array, complex_spectrum=complex_spectrum,
-                  metadata=metadata)
-    
+        return cls(
+            freq_array=freq_array, complex_spectrum=complex_spectrum, metadata=metadata
+        )
+
     @property
     def magnitude_spectrum(self) -> np.ndarray:
         """Magnitude spectrum (cached)."""
         if self._magnitude_spectrum is None:
-            self._magnitude_spectrum = np.abs(self.complex_spectrum)
+            self._magnitude_spectrum = cast(np.ndarray, np.abs(self.complex_spectrum))
         return self._magnitude_spectrum
-    
+
     @property
     def real_spectrum(self) -> np.ndarray:
         """Real component of spectrum."""
-        return np.real(self.complex_spectrum)
-    
+        return cast(np.ndarray, np.real(self.complex_spectrum))
+
     @property
     def imag_spectrum(self) -> np.ndarray:
         """Imaginary component of spectrum."""
-        return np.imag(self.complex_spectrum)
-    
+        return cast(np.ndarray, np.imag(self.complex_spectrum))
+
     @property
     def freq_step(self) -> float:
         """Frequency step in MHz (cached)."""
         if self._freq_step is None:
-            self._freq_step = np.mean(np.diff(self.freq_array))
+            self._freq_step = float(np.mean(np.diff(self.freq_array)))
         return self._freq_step
-    
+
     @property
     def freq_range(self) -> Tuple[float, float]:
         """Frequency range (min, max) in MHz."""
         return float(np.min(self.freq_array)), float(np.max(self.freq_array))
-    
+
     @property
     def n_points(self) -> int:
         """Number of frequency points."""
         return len(self.freq_array)
-    
-    def extract_window(self, freq_min: float, freq_max: float) -> 'SpectralWindow':
+
+    def extract_window(self, freq_min: float, freq_max: float) -> "SpectralWindow":
         """Extract a frequency window."""
         mask = (self.freq_array >= freq_min) & (self.freq_array <= freq_max)
-        
+
         if not np.any(mask):
-            raise ValueError(f"No data points in frequency range [{freq_min}, {freq_max}] MHz")
-        
+            raise ValueError(
+                f"No data points in frequency range [{freq_min}, {freq_max}] MHz"
+            )
+
         return SpectralWindow(
             parent_ft=self,
             freq_array=self.freq_array[mask],
             complex_spectrum=self.complex_spectrum[mask],
-            freq_range=(freq_min, freq_max)
+            freq_range=(freq_min, freq_max),
         )
-    
-    def trim_to_range(self, freq_min: float, freq_max: float) -> 'ComplexFT':
+
+    def trim_to_range(self, freq_min: float, freq_max: float) -> "ComplexFT":
         """
         Create a new ComplexFT object trimmed to the specified frequency range.
-        
+
         This method is useful for removing noise regions and focusing analysis
         on the spectral activity region.
-        
+
         Parameters
         ----------
         freq_min : float
             Minimum frequency in MHz
         freq_max : float
             Maximum frequency in MHz
-            
+
         Returns
         -------
         ComplexFT
             New ComplexFT object containing only the specified frequency range
         """
         mask = (self.freq_array >= freq_min) & (self.freq_array <= freq_max)
-        
+
         if not np.any(mask):
-            raise ValueError(f"No data points in frequency range [{freq_min}, {freq_max}] MHz")
-        
+            raise ValueError(
+                f"No data points in frequency range [{freq_min}, {freq_max}] MHz"
+            )
+
         # Create new ComplexFT with trimmed data
         return ComplexFT(
             freq_array=self.freq_array[mask],
             complex_spectrum=self.complex_spectrum[mask],
-            metadata={**self.metadata, 'trimmed_range': (freq_min, freq_max)}
+            metadata={**self.metadata, "trimmed_range": (freq_min, freq_max)},
         )
 
 
 class Peak:
     """
     Pre-fitting detected peak representation.
-    
+
     Represents peaks detected in the spectrum before fitting, used for
     initial parameter guesses.
     """
-    
-    def __init__(self, frequency: float, intensity: float,
-                 index: Optional[int] = None, snr: Optional[float] = None,
-                 noise_std_local: Optional[float] = None,
-                 classification: Optional[Union[str, PeakClassification]] = None,
-                 **properties):
+
+    def __init__(
+        self,
+        frequency: float,
+        intensity: float,
+        index: Optional[int] = None,
+        snr: Optional[float] = None,
+        noise_std_local: Optional[float] = None,
+        classification: Optional[Union[str, PeakClassification]] = None,
+        **properties: Any,
+    ):
         """
         Initialize Peak object.
-        
+
         Parameters
         ----------
         frequency : float
@@ -567,8 +613,9 @@ class Peak:
         self.index = index
         self.snr = snr
         self.noise_std_local = noise_std_local
-        
+
         # Handle classification
+        self.classification: Optional[PeakClassification]
         if isinstance(classification, str):
             try:
                 self.classification = PeakClassification(classification)
@@ -576,35 +623,37 @@ class Peak:
                 self.classification = None
         else:
             self.classification = classification
-        
+
         self.properties = properties
-    
+
     @property
     def is_classified(self) -> bool:
         """Check if peak has been classified."""
         return self.classification is not None
-    
+
     @property
     def is_strong(self) -> bool:
         """Check if peak is classified as strong."""
         return self.classification == PeakClassification.STRONG
-    
+
     @property
     def is_medium(self) -> bool:
         """Check if peak is classified as medium."""
         return self.classification == PeakClassification.MEDIUM
-    
+
     @property
     def is_weak(self) -> bool:
         """Check if peak is classified as weak."""
         return self.classification == PeakClassification.WEAK
-    
+
     def __repr__(self) -> str:
-        classification_str = self.classification.value if self.classification else 'unclassified'
+        classification_str = (
+            self.classification.value if self.classification else "unclassified"
+        )
         snr_str = f"{self.snr:.1f}" if self.snr is not None else "None"
         return f"Peak(freq={self.frequency:.3f} MHz, intensity={self.intensity:.2e}, SNR={snr_str}, {classification_str})"
-    
-    def __lt__(self, other):
+
+    def __lt__(self, other: "Peak") -> bool:
         """Sort peaks by intensity (strongest first)."""
         return self.intensity > other.intensity
 
@@ -667,6 +716,7 @@ class FittedPeak:
     ``knockout`` carries the per-peak validation result from the Stage 5
     knockout test.
     """
+
     peak_id: Union[str, int]
     """Stage 3 promoted-peak index of the line (the entry in the persisted peak
     list that seeded this fit). For lines added by the blend-aware seeder
@@ -699,9 +749,7 @@ class FittedPeak:
 
     def __repr__(self) -> str:
         ferr = (
-            f"{self.frequency_error:.6f}"
-            if self.frequency_error is not None
-            else "?"
+            f"{self.frequency_error:.6f}" if self.frequency_error is not None else "?"
         )
         return (
             f"FittedPeak(id={self.peak_id}, "
@@ -713,15 +761,20 @@ class FittedPeak:
 class SpectralWindow:
     """
     Analysis window - a subset of ComplexFT data for focused analysis.
-    
+
     Represents a frequency range extracted from a ComplexFT for
     targeted peak detection and fitting operations.
     """
-    
-    def __init__(self, parent_ft: Optional[ComplexFT], freq_array: np.ndarray,
-                 complex_spectrum: np.ndarray, freq_range: Tuple[float, float],
-                 window_id: Optional[Union[str, int]] = None,
-                 peaks: Optional[List[Peak]] = None):
+
+    def __init__(
+        self,
+        parent_ft: Optional[ComplexFT],
+        freq_array: np.ndarray,
+        complex_spectrum: np.ndarray,
+        freq_range: Tuple[float, float],
+        window_id: Optional[Union[str, int]] = None,
+        peaks: Optional[List[Peak]] = None,
+    ):
         """
         Initialize SpectralWindow.
 
@@ -751,66 +804,72 @@ class SpectralWindow:
         self.freq_range = freq_range
         self.window_id = window_id
         self.peaks = peaks or []
-        
+
         if len(self.freq_array) != len(self.complex_spectrum):
             raise ValueError("Frequency and spectrum arrays must have same length")
-    
+
     @property
     def magnitude_spectrum(self) -> np.ndarray:
         """Magnitude spectrum."""
-        return np.abs(self.complex_spectrum)
-    
+        return cast(np.ndarray, np.abs(self.complex_spectrum))
+
     @property
     def real_spectrum(self) -> np.ndarray:
         """Real component."""
-        return np.real(self.complex_spectrum)
-    
+        return cast(np.ndarray, np.real(self.complex_spectrum))
+
     @property
     def imag_spectrum(self) -> np.ndarray:
         """Imaginary component."""
-        return np.imag(self.complex_spectrum)
-    
+        return cast(np.ndarray, np.imag(self.complex_spectrum))
+
     @property
     def n_points(self) -> int:
         """Number of frequency points."""
         return len(self.freq_array)
-    
+
     @property
     def n_peaks(self) -> int:
         """Number of detected peaks."""
         return len(self.peaks)
-    
+
     @property
     def center_frequency(self) -> float:
         """Center frequency in MHz."""
         return (self.freq_range[0] + self.freq_range[1]) / 2
-    
+
     @property
     def bandwidth(self) -> float:
         """Bandwidth in MHz."""
         return self.freq_range[1] - self.freq_range[0]
-    
+
     def add_peak(self, peak: Peak) -> None:
         """Add a detected peak to this window."""
         if not isinstance(peak, Peak):
             raise TypeError("peak must be a Peak object")
-        
+
         # Validate peak is within window
         if not (self.freq_range[0] <= peak.frequency <= self.freq_range[1]):
-            raise ValueError(f"Peak frequency {peak.frequency} MHz outside window range {self.freq_range}")
-        
+            raise ValueError(
+                f"Peak frequency {peak.frequency} MHz outside window range {self.freq_range}"
+            )
+
         self.peaks.append(peak)
-    
-    def get_peaks_by_classification(self, classification: Union[str, PeakClassification]) -> List[Peak]:
+
+    def get_peaks_by_classification(
+        self, classification: Union[str, PeakClassification]
+    ) -> List[Peak]:
         """Get peaks with specified classification."""
         if isinstance(classification, str):
             classification = PeakClassification(classification)
         return [peak for peak in self.peaks if peak.classification == classification]
-    
+
     def __repr__(self) -> str:
-        return (f"SpectralWindow(id={self.window_id}, "
-                f"range=[{self.freq_range[0]:.1f}, {self.freq_range[1]:.1f}] MHz, "
-                f"n_points={self.n_points}, n_peaks={self.n_peaks})")
+        return (
+            f"SpectralWindow(id={self.window_id}, "
+            f"range=[{self.freq_range[0]:.1f}, {self.freq_range[1]:.1f}] MHz, "
+            f"n_points={self.n_points}, n_peaks={self.n_peaks})"
+        )
 
 
 @dataclass
@@ -924,11 +983,18 @@ class FittingResult:
     window).
     """
 
-    def __init__(self, success: bool = False, fitted_spectrum: Optional[np.ndarray] = None,
-                 cost: float = np.inf, iterations: int = 0, aic: float = np.inf,
-                 reduced_chi2: float = np.inf, window: Optional[SpectralWindow] = None,
-                 window_id: Optional[int] = None,
-                 shape: str = "lorentzian"):
+    def __init__(
+        self,
+        success: bool = False,
+        fitted_spectrum: Optional[np.ndarray] = None,
+        cost: float = np.inf,
+        iterations: int = 0,
+        aic: float = np.inf,
+        reduced_chi2: float = np.inf,
+        window: Optional[SpectralWindow] = None,
+        window_id: Optional[int] = None,
+        shape: str = "lorentzian",
+    ):
         """Initialize FittingResult."""
         self.success = success
         self.fitted_spectrum = fitted_spectrum
@@ -967,63 +1033,75 @@ class FittingResult:
         # reference here lets it stay in execution order in the module
         # without splitting the class definitions.
         self.rescue_events: List["RescueRoundInfo"] = []
-    
+
     def add_fitted_peak(self, fitted_peak: FittedPeak) -> None:
         """Add a fitted peak result."""
         self.fitted_peaks.append(fitted_peak)
-    
-    def set_shared_parameter(self, name: str, value: float, error: Optional[float] = None,
-                            peak_ids: Optional[List] = None) -> None:
+
+    def set_shared_parameter(
+        self,
+        name: str,
+        value: float,
+        error: Optional[float] = None,
+        peak_ids: Optional[List] = None,
+    ) -> None:
         """Set a parameter shared across multiple peaks."""
         self.shared_parameters[name] = {
-            'value': value,
-            'error': error,
-            'peak_ids': peak_ids or [p.peak_id for p in self.fitted_peaks]
+            "value": value,
+            "error": error,
+            "peak_ids": peak_ids or [p.peak_id for p in self.fitted_peaks],
         }
-    
-    def set_fixed_parameter(self, name: str, value: float, 
-                           peak_ids: Optional[List] = None) -> None:
+
+    def set_fixed_parameter(
+        self, name: str, value: float, peak_ids: Optional[List] = None
+    ) -> None:
         """Set a parameter held fixed during fitting."""
         self.fixed_parameters[name] = {
-            'value': value,
-            'peak_ids': peak_ids or [p.peak_id for p in self.fitted_peaks]
+            "value": value,
+            "peak_ids": peak_ids or [p.peak_id for p in self.fitted_peaks],
         }
-    
+
     @property
     def n_peaks_fitted(self) -> int:
         """Number of fitted peaks."""
         return len(self.fitted_peaks)
-    
+
     @property
     def frequencies_mhz(self) -> List[float]:
         """Fitted frequencies for all peaks."""
         return [p.frequency_mhz for p in self.fitted_peaks]
-    
+
     @property
     def amplitudes(self) -> List[float]:
         """Fitted amplitudes for all peaks."""
         return [p.amplitude for p in self.fitted_peaks]
-    
+
     def __repr__(self) -> str:
         status = "SUCCESS" if self.success else "FAILED"
-        return (f"FittingResult(status={status}, n_peaks={self.n_peaks_fitted}, "
-                f"cost={self.cost:.2e}, AIC={self.aic:.2f})")
+        return (
+            f"FittingResult(status={status}, n_peaks={self.n_peaks_fitted}, "
+            f"cost={self.cost:.2e}, AIC={self.aic:.2f})"
+        )
 
 
 class FTMWData:
     """
     Top-level container for complete FTMW experiment data.
-    
-    Contains FID (time domain), ComplexFT (frequency domain), and 
+
+    Contains FID (time domain), ComplexFT (frequency domain), and
     analysis windows with detected peaks. Provides the main interface
     for FTMW data processing workflows.
     """
-    
-    def __init__(self, fid: FID, experiment_id: Optional[str] = None,
-                 metadata: Optional[Dict[str, Any]] = None):
+
+    def __init__(
+        self,
+        fid: FID,
+        experiment_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize FTMWData.
-        
+
         Parameters
         ----------
         fid : FID
@@ -1036,16 +1114,16 @@ class FTMWData:
         self.fid = fid
         self.experiment_id = experiment_id
         self.metadata = metadata or {}
-        
+
         # Frequency domain data (computed lazily)
         self._complex_ft: Optional[ComplexFT] = None
-        
+
         # Analysis windows
         self.spectral_windows: List[SpectralWindow] = []
-        
+
         # Fitting results
         self.fitting_results: List[FittingResult] = []
-    
+
     @property
     def complex_ft(self) -> ComplexFT:
         """Get or compute ComplexFT from FID using default parameters."""
@@ -1053,51 +1131,60 @@ class FTMWData:
             # Use three-stage workflow with default parameters
             preprocessed = self.fid.preprocess()
             spectrum, freqs = preprocessed.compute_fft()
-            self._complex_ft = ComplexFT.from_spectrum(spectrum, freqs, 
-                                                      metadata={'processing_params': preprocessed.processing_params})
+            self._complex_ft = ComplexFT.from_spectrum(
+                spectrum,
+                freqs,
+                metadata={"processing_params": preprocessed.processing_params},
+            )
         return self._complex_ft
-    
-    def compute_ft(self, **ft_kwargs) -> ComplexFT:
+
+    def compute_ft(self, **ft_kwargs: Any) -> ComplexFT:
         """Compute ComplexFT with custom parameters using three-stage workflow."""
         # Use three-stage workflow with custom parameters
         preprocessed = self.fid.preprocess(**ft_kwargs)
         spectrum, freqs = preprocessed.compute_fft()
-        self._complex_ft = ComplexFT.from_spectrum(spectrum, freqs, 
-                                                  metadata={'processing_params': preprocessed.processing_params})
+        self._complex_ft = ComplexFT.from_spectrum(
+            spectrum,
+            freqs,
+            metadata={"processing_params": preprocessed.processing_params},
+        )
         return self._complex_ft
-    
-    def create_spectral_window(self, freq_min: float, freq_max: float, 
-                              window_id: Optional[str] = None) -> SpectralWindow:
+
+    def create_spectral_window(
+        self, freq_min: float, freq_max: float, window_id: Optional[str] = None
+    ) -> SpectralWindow:
         """Create and store a new spectral window."""
         window = self.complex_ft.extract_window(freq_min, freq_max)
         window.window_id = window_id
         self.spectral_windows.append(window)
         return window
-    
+
     def add_fitting_result(self, result: FittingResult) -> None:
         """Add a fitting result."""
         self.fitting_results.append(result)
-    
+
     @property
     def n_windows(self) -> int:
         """Number of spectral windows."""
         return len(self.spectral_windows)
-    
+
     @property
     def n_fitted_results(self) -> int:
         """Number of fitting results."""
         return len(self.fitting_results)
-    
+
     @property
     def total_fitted_peaks(self) -> int:
         """Total number of fitted peaks across all results."""
         return sum(result.n_peaks_fitted for result in self.fitting_results)
-    
+
     def __repr__(self) -> str:
-        return (f"FTMWData(id={self.experiment_id}, "
-                f"fid_duration={self.fid.duration_us:.1f} μs, "
-                f"n_windows={self.n_windows}, "
-                f"n_fitted_peaks={self.total_fitted_peaks})")
+        return (
+            f"FTMWData(id={self.experiment_id}, "
+            f"fid_duration={self.fid.duration_us:.1f} μs, "
+            f"n_windows={self.n_windows}, "
+            f"n_fitted_peaks={self.total_fitted_peaks})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1307,9 +1394,7 @@ class WindowPlan:
         raise KeyError(f"no window with window_id={window_id}")
 
     def __repr__(self) -> str:
-        n_hard = sum(
-            1 for w in self.windows if w.difficulty == WindowDifficulty.HARD
-        )
+        n_hard = sum(1 for w in self.windows if w.difficulty == WindowDifficulty.HARD)
         return (
             f"WindowPlan(n_windows={self.n_windows}, hard={n_hard}, "
             f"n_batches={self.n_batches}, "

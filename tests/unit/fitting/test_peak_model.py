@@ -213,7 +213,8 @@ class TestHTGaussian:
         z = h_T_gaussian(np.array([0.0]), TAU_G_US, T_US)
         assert z.imag[0] == pytest.approx(0.0, abs=1e-12)
         assert z.real[0] == pytest.approx(
-            effective_tau_gaussian(TAU_G_US, T_US), rel=1e-12,
+            effective_tau_gaussian(TAU_G_US, T_US),
+            rel=1e-12,
         )
 
     def test_matches_numerical_fft(self):
@@ -235,11 +236,17 @@ class TestHTGaussian:
         def _quad_h(df: float, tau_G: float, T: float) -> complex:
             re, _ = scipy_quad(
                 lambda t: np.exp(-((t / tau_G) ** 2)) * np.cos(2 * np.pi * df * t),
-                0, T, epsabs=1e-14, epsrel=1e-14,
+                0,
+                T,
+                epsabs=1e-14,
+                epsrel=1e-14,
             )
             im, _ = scipy_quad(
                 lambda t: -np.exp(-((t / tau_G) ** 2)) * np.sin(2 * np.pi * df * t),
-                0, T, epsabs=1e-14, epsrel=1e-14,
+                0,
+                T,
+                epsabs=1e-14,
+                epsrel=1e-14,
             )
             return re + 1j * im
 
@@ -247,9 +254,9 @@ class TestHTGaussian:
             analytic = h_T_gaussian(np.array([df]), TAU_G_US, T_US)[0]
             quad_val = _quad_h(df, TAU_G_US, T_US)
             scale = max(abs(quad_val), 1e-12)
-            assert abs(analytic - quad_val) / scale < 1e-12, (
-                f"Δf={df}: analytic={analytic} vs quad={quad_val}"
-            )
+            assert (
+                abs(analytic - quad_val) / scale < 1e-12
+            ), f"Δf={df}: analytic={analytic} vs quad={quad_val}"
 
     def test_hermitian_symmetry(self):
         """``h_T_gaussian(-Δf) = conj(h_T_gaussian(Δf))`` exactly."""
@@ -302,9 +309,11 @@ class TestHTGaussianJacobian:
 class TestEffectiveTauGaussian:
     def test_closed_form(self):
         from scipy.special import erf
+
         expected = TAU_G_US * np.sqrt(np.pi) / 2.0 * erf(T_US / TAU_G_US)
         assert effective_tau_gaussian(TAU_G_US, T_US) == pytest.approx(
-            expected, rel=1e-12,
+            expected,
+            rel=1e-12,
         )
 
     def test_undamped_limit(self):
@@ -328,9 +337,9 @@ class TestPeakShapeDispatchers:
         a2, b2 = h_T_jacobian(u, TAU_US, T_US)
         assert np.array_equal(a1, a2)
         assert np.array_equal(b1, b2)
-        assert effective_tau_shape(
-            PeakShape.LORENTZIAN, TAU_US, T_US
-        ) == pytest.approx(effective_tau(TAU_US, T_US))
+        assert effective_tau_shape(PeakShape.LORENTZIAN, TAU_US, T_US) == pytest.approx(
+            effective_tau(TAU_US, T_US)
+        )
 
     def test_gaussian_path(self):
         u = _offset_grid(1.0)
@@ -342,17 +351,20 @@ class TestPeakShapeDispatchers:
         a2, b2 = h_T_gaussian_jacobian(u, TAU_G_US, T_US)
         assert np.array_equal(a1, a2)
         assert np.array_equal(b1, b2)
-        assert effective_tau_shape(
-            PeakShape.GAUSSIAN, TAU_G_US, T_US
-        ) == pytest.approx(effective_tau_gaussian(TAU_G_US, T_US))
+        assert effective_tau_shape(PeakShape.GAUSSIAN, TAU_G_US, T_US) == pytest.approx(
+            effective_tau_gaussian(TAU_G_US, T_US)
+        )
 
-    @pytest.mark.parametrize("value,expected", [
-        ("lorentzian", PeakShape.LORENTZIAN),
-        ("Lorentzian", PeakShape.LORENTZIAN),
-        ("gaussian", PeakShape.GAUSSIAN),
-        ("GAUSSIAN", PeakShape.GAUSSIAN),
-        (PeakShape.GAUSSIAN, PeakShape.GAUSSIAN),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("lorentzian", PeakShape.LORENTZIAN),
+            ("Lorentzian", PeakShape.LORENTZIAN),
+            ("gaussian", PeakShape.GAUSSIAN),
+            ("GAUSSIAN", PeakShape.GAUSSIAN),
+            (PeakShape.GAUSSIAN, PeakShape.GAUSSIAN),
+        ],
+    )
     def test_coerce_accepts(self, value, expected):
         assert PeakShape.coerce(value) is expected
 
@@ -485,9 +497,7 @@ class TestToBasebandOffset:
         u = _offset_grid(1.0)
         f_grid = molecular_frequency(u, f_c, "lower")  # descending in MHz
         z = model_spectrum(u, [ModelPeak(1.0, 0.1, 0.3)], TAU_US, T_US)
-        u_out, z_out = to_baseband_offset(
-            f_grid, z, center_mhz=f_c, sideband="lower"
-        )
+        u_out, z_out = to_baseband_offset(f_grid, z, center_mhz=f_c, sideband="lower")
         assert np.allclose(u_out, u)
         assert np.allclose(z_out, z)
 

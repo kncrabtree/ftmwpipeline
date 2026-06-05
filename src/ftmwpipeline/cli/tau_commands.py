@@ -18,15 +18,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .._internal.stage2b_impl import calibrate_tau_impl, load_tau_calibration_impl
 from .._internal.stage2b_g_impl import calibrate_tau_G_impl
+from .._internal.stage2b_impl import calibrate_tau_impl, load_tau_calibration_impl
 from .utils import print_error, setup_logging
-
 
 logger = logging.getLogger(__name__)
 
 
-def cmd_calibrate_tau(args) -> int:
+def cmd_calibrate_tau(args: argparse.Namespace) -> int:
     """Run the STFT tau calibration and persist the result."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -68,6 +67,7 @@ def cmd_calibrate_tau(args) -> int:
         print_error(f"Tau calibration failed: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 
@@ -75,27 +75,33 @@ def cmd_calibrate_tau(args) -> int:
     print("\nTau calibration completed successfully!")
     print("\nResults summary:")
     print(f"  tau_maj            : {tc.tau_maj_us:.3f} us")
-    print(f"  sigma_tau          : {tc.sigma_tau_us:.3f} us  "
-          f"(spread/tau_maj = {tc.sigma_tau_us / tc.tau_maj_us:.3f})")
+    print(
+        f"  sigma_tau          : {tc.sigma_tau_us:.3f} us  "
+        f"(spread/tau_maj = {tc.sigma_tau_us / tc.tau_maj_us:.3f})"
+    )
     print(f"  contributors       : {tc.n_contributors}")
     print(f"  spur bins (raw)    : {tc.n_spur_bins}")
     print(f"  spur clusters      : {len(tc.spur_clusters)}")
-    print(f"  bimodal (GMM)      : {tc.bimodality.two_component_preferred} "
-          f"(delta_aic = {tc.bimodality.delta_aic:.1f})")
+    print(
+        f"  bimodal (GMM)      : {tc.bimodality.two_component_preferred} "
+        f"(delta_aic = {tc.bimodality.delta_aic:.1f})"
+    )
     print(f"  preconditions pass : {tc.preconditions_passed}")
     if not tc.preconditions_passed:
         for note in tc.preconditions_notes:
             if note != "ok":
                 print(f"    - {note}")
     if result.get("invalidated_stages"):
-        print("\nInvalidated downstream stages: "
-              + ", ".join(result["invalidated_stages"]))
+        print(
+            "\nInvalidated downstream stages: "
+            + ", ".join(result["invalidated_stages"])
+        )
     print(f"\nResults saved to: {file_path}")
     print("Use 'visualize-tau-heatmap' / 'visualize-tau-distribution' for diagnostics.")
     return 0
 
 
-def cmd_calibrate_tau_G(args) -> int:
+def cmd_calibrate_tau_G(args: argparse.Namespace) -> int:
     """Run the STFT Gaussian-shape τ_G calibration and persist the result."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -147,6 +153,7 @@ def cmd_calibrate_tau_G(args) -> int:
         print_error(f"τ_G calibration failed: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 
@@ -155,24 +162,30 @@ def cmd_calibrate_tau_G(args) -> int:
     print("\nτ_G calibration completed successfully!")
     print("\nResults summary:")
     print(f"  tau_G_maj          : {tc.tau_maj_us:.3f} us")
-    print(f"  sigma_tau_G        : {tc.sigma_tau_us:.3f} us  "
-          f"(spread/tau_G_maj = {spread:.3f})")
+    print(
+        f"  sigma_tau_G        : {tc.sigma_tau_us:.3f} us  "
+        f"(spread/tau_G_maj = {spread:.3f})"
+    )
     print(f"  eligible bins      : {tc.n_contributors}")
-    print(f"  bimodal (GMM)      : {tc.bimodality.two_component_preferred} "
-          f"(delta_aic = {tc.bimodality.delta_aic:.1f})")
+    print(
+        f"  bimodal (GMM)      : {tc.bimodality.two_component_preferred} "
+        f"(delta_aic = {tc.bimodality.delta_aic:.1f})"
+    )
     print(f"  preconditions pass : {tc.preconditions_passed}")
     if not tc.preconditions_passed:
         for note in tc.preconditions_notes:
             if note != "ok":
                 print(f"    - {note}")
     if result.get("invalidated_stages"):
-        print("\nInvalidated downstream stages: "
-              + ", ".join(result["invalidated_stages"]))
+        print(
+            "\nInvalidated downstream stages: "
+            + ", ".join(result["invalidated_stages"])
+        )
     print(f"\nResults saved to: {file_path}")
     return 0
 
 
-def cmd_visualize_tau_heatmap(args) -> int:
+def cmd_visualize_tau_heatmap(args: argparse.Namespace) -> int:
     """Render the 2D STFT magnitude heatmap (figure 08 in the research dir)."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -189,13 +202,14 @@ def cmd_visualize_tau_heatmap(args) -> int:
         print_error(f"Failed to create tau-heatmap visualization: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 
     return _handle_figure_output(fig, args)
 
 
-def cmd_visualize_tau_distribution(args) -> int:
+def cmd_visualize_tau_distribution(args: argparse.Namespace) -> int:
     """Render the tau-distribution analysis (figure 09 in the research dir)."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -212,13 +226,14 @@ def cmd_visualize_tau_distribution(args) -> int:
         print_error(f"Failed to create tau-distribution visualization: {e}")
         if args.verbose:
             import traceback
+
             traceback.print_exc()
         return 1
 
     return _handle_figure_output(fig, args)
 
 
-def _handle_figure_output(fig, args) -> int:
+def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
     """Save or display a matplotlib figure based on CLI flags."""
     output: Optional[str] = getattr(args, "output", None)
     interactive = not output
@@ -232,6 +247,7 @@ def _handle_figure_output(fig, args) -> int:
     elif interactive:
         try:
             import matplotlib.pyplot as plt
+
             plt.show()
         except Exception as e:
             print_error(f"Could not display plot: {e}")
@@ -239,7 +255,7 @@ def _handle_figure_output(fig, args) -> int:
     return 0
 
 
-def register_tau_commands(subparsers) -> None:
+def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register Stage 2b CLI subcommands on the parent subparsers."""
     # --- calibrate-tau -----------------------------------------------------
     parser_cal = subparsers.add_parser(
@@ -257,45 +273,55 @@ def register_tau_commands(subparsers) -> None:
         "file_path", help="Path to .ftmw pipeline file (extension added if missing)"
     )
     parser_cal.add_argument(
-        "--n-seg", type=int,
+        "--n-seg",
+        type=int,
         help="Number of non-overlapping STFT frames (default 10)",
     )
     parser_cal.add_argument(
-        "--t-sigma", type=float,
+        "--t-sigma",
+        type=float,
         help="Above-threshold gate factor on per-frame SNR (default 5.0)",
     )
     parser_cal.add_argument(
-        "--tau-max-us", type=float,
+        "--tau-max-us",
+        type=float,
         help="Saturation cap on recovered tau (default 5 * T_full)",
     )
     parser_cal.add_argument(
-        "--rss-gate-factor", type=float,
+        "--rss-gate-factor",
+        type=float,
         help="Bad-fit gate strength (default 5.0)",
     )
     parser_cal.add_argument(
-        "--sigma-time", type=float,
+        "--sigma-time",
+        type=float,
         help=(
             "Time-domain sigma_t override; default measures from the FID "
             "active-region tail."
         ),
     )
     parser_cal.add_argument(
-        "--min-contributors", type=int,
+        "--min-contributors",
+        type=int,
         help="Pre-condition minimum contributor count (default 200)",
     )
     parser_cal.add_argument(
-        "--sigma-tau-fraction-max", type=float,
+        "--sigma-tau-fraction-max",
+        type=float,
         help="Pre-condition sigma_tau/tau_maj upper bound (default 0.20)",
     )
     parser_cal.add_argument(
-        "--bimodality-dominant-fraction", type=float,
+        "--bimodality-dominant-fraction",
+        type=float,
         help=(
             "Pre-condition floor on dominant-cluster weight when the GMM "
             "prefers two components (default 0.70)"
         ),
     )
     parser_cal.add_argument(
-        "--preset", type=str, default=None,
+        "--preset",
+        type=str,
+        default=None,
         help=(
             "Stage 2b preset to apply (bare packaged name or path to a "
             "YAML file). Mutually exclusive with per-knob flags that "
@@ -303,7 +329,9 @@ def register_tau_commands(subparsers) -> None:
         ),
     )
     parser_cal.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v",
+        "--verbose",
+        action="store_true",
         help="Enable verbose logging",
     )
     parser_cal.set_defaults(func=cmd_calibrate_tau)
@@ -326,77 +354,92 @@ def register_tau_commands(subparsers) -> None:
         help="Path to .ftmw pipeline file (extension added if missing)",
     )
     parser_cg.add_argument(
-        "--n-seg", type=int,
+        "--n-seg",
+        type=int,
         help="Number of non-overlapping STFT frames (default 10)",
     )
     parser_cg.add_argument(
-        "--t-sigma", type=float,
+        "--t-sigma",
+        type=float,
         help="Above-threshold gate factor on per-frame SNR (default 5.0)",
     )
     parser_cg.add_argument(
-        "--tau-max-us", type=float,
+        "--tau-max-us",
+        type=float,
         help="Saturation cap on the STFT classifier (default 5 * T_full)",
     )
     parser_cg.add_argument(
-        "--rss-gate-factor", type=float,
+        "--rss-gate-factor",
+        type=float,
         help="Bad-fit gate strength (default 5.0)",
     )
     parser_cg.add_argument(
-        "--sigma-time", type=float,
+        "--sigma-time",
+        type=float,
         help=(
             "Time-domain sigma_t override; default measures from the FID "
             "active-region tail."
         ),
     )
     parser_cg.add_argument(
-        "--snr-min", type=float,
+        "--snr-min",
+        type=float,
         help="Per-bin SNR floor on the Voigt-fit contributor pool (default 20.0)",
     )
     parser_cg.add_argument(
-        "--tau-g-bound-lo", type=float,
+        "--tau-g-bound-lo",
+        type=float,
         help="Lower bound on the Voigt τ_G parameter (default 0.5 us)",
     )
     parser_cg.add_argument(
-        "--tau-g-bound-hi", type=float,
+        "--tau-g-bound-hi",
+        type=float,
         help="Upper bound on the Voigt τ_G parameter (default 100.0 us)",
     )
     parser_cg.add_argument(
-        "--delta-chi2r-min", type=float,
+        "--delta-chi2r-min",
+        type=float,
         help=(
             "Minimum χ²ᵣ improvement (pure-exp − Voigt) for a bin to enter "
             "the calibration (default 1.0)"
         ),
     )
     parser_cg.add_argument(
-        "--tau-g-upper-fraction", type=float,
-        help=(
-            "Bins whose τ_G ≥ fraction*tau_g_bound_hi are dropped (default 0.7)"
-        ),
+        "--tau-g-upper-fraction",
+        type=float,
+        help=("Bins whose τ_G ≥ fraction*tau_g_bound_hi are dropped (default 0.7)"),
     )
     parser_cg.add_argument(
-        "--min-contributors", type=int,
+        "--min-contributors",
+        type=int,
         help="Pre-condition minimum eligible bin count (default 50)",
     )
     parser_cg.add_argument(
-        "--sigma-tau-fraction-max", type=float,
+        "--sigma-tau-fraction-max",
+        type=float,
         help="Pre-condition sigma_tau_G/tau_G_maj upper bound (default 0.20)",
     )
     parser_cg.add_argument(
-        "--bimodality-dominant-fraction", type=float,
+        "--bimodality-dominant-fraction",
+        type=float,
         help=(
             "Pre-condition floor on dominant-cluster weight when the GMM "
             "prefers two components (default 0.70)"
         ),
     )
     parser_cg.add_argument(
-        "--preset", type=str, default=None,
+        "--preset",
+        type=str,
+        default=None,
         help=(
             "Stage 2b preset to apply (bare packaged name or path to a "
             "YAML file). The same preset block drives both τ twins."
         ),
     )
     parser_cg.add_argument(
-        "-v", "--verbose", action="store_true",
+        "-v",
+        "--verbose",
+        action="store_true",
         help="Enable verbose logging",
     )
     parser_cg.set_defaults(func=cmd_calibrate_tau_G)
@@ -417,11 +460,16 @@ def register_tau_commands(subparsers) -> None:
         "file_path", help="Path to .ftmw pipeline file with Stage 2b completed"
     )
     parser_heat.add_argument(
-        "-o", "--output", type=str,
+        "-o",
+        "--output",
+        type=str,
         help="Save plot to file instead of displaying interactively",
     )
     parser_heat.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable verbose logging",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging",
     )
     parser_heat.set_defaults(func=cmd_visualize_tau_heatmap)
 
@@ -442,10 +490,15 @@ def register_tau_commands(subparsers) -> None:
         "file_path", help="Path to .ftmw pipeline file with Stage 2b completed"
     )
     parser_dist.add_argument(
-        "-o", "--output", type=str,
+        "-o",
+        "--output",
+        type=str,
         help="Save plot to file instead of displaying interactively",
     )
     parser_dist.add_argument(
-        "-v", "--verbose", action="store_true", help="Enable verbose logging",
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Enable verbose logging",
     )
     parser_dist.set_defaults(func=cmd_visualize_tau_distribution)

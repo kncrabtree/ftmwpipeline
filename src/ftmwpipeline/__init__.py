@@ -1,7 +1,7 @@
 """
 FTMW Pipeline - A Python package for FTMW spectroscopy signal processing and peak fitting.
 
-This package provides tools for processing Fourier Transform Microwave (FTMW) 
+This package provides tools for processing Fourier Transform Microwave (FTMW)
 spectroscopy data, including baseline estimation, peak detection, window assignment,
 and advanced fitting algorithms.
 """
@@ -9,32 +9,32 @@ and advanced fitting algorithms.
 __version__ = "0.1.0"
 __author__ = "FTMW Pipeline Contributors"
 
+# Functional API - can be imported as "import ftmwpipeline.api as ftmw"
+from ftmwpipeline import api
+
 # Core data structures
 from ftmwpipeline.core.data_structures import (
-    FTMWData,
     FID,
     ComplexFT,
-    SpectralWindow,
-    Peak,
+    FIDProcessingParameters,
     FittedPeak,
     FittingResult,
-    FIDProcessingParameters,
+    FitWindow,
+    FixedContributor,
+    FTMWData,
+    Peak,
     PeakClassification,
     Sideband,
+    SpectralWindow,
     WindowDifficulty,
-    FixedContributor,
-    FitWindow,
     WindowPlan,
 )
 
 # Main pipeline interface
 from ftmwpipeline.pipeline import Pipeline
 
-# Functional API - can be imported as "import ftmwpipeline.api as ftmw"
-from ftmwpipeline import api
-
 # Convenience workflow functions (thin wrappers over Pipeline)
-from ftmwpipeline.workflows import process_experiment, batch_process_experiments
+from ftmwpipeline.workflows import batch_process_experiments, process_experiment
 
 # TODO: Fix imports for other modules when they're implemented
 # # Preprocessing functions
@@ -57,7 +57,7 @@ from ftmwpipeline.workflows import process_experiment, batch_process_experiments
 # # Import submodules to make them accessible
 # from ftmwpipeline import (
 #     core,
-#     preprocessing, 
+#     preprocessing,
 #     peak_detection,
 #     window_assignment,
 #     fitting,
@@ -71,11 +71,10 @@ __all__ = [
     # Version info
     "__version__",
     "__author__",
-    
     # Core data structures
     "FTMWData",
     "FID",
-    "ComplexFT", 
+    "ComplexFT",
     "SpectralWindow",
     "Peak",
     "FittedPeak",
@@ -87,13 +86,10 @@ __all__ = [
     "FixedContributor",
     "FitWindow",
     "WindowPlan",
-
     # Main pipeline interface
     "Pipeline",
-
     # Functional API module
     "api",
-
     # Convenience workflows
     "process_experiment",
     "batch_process_experiments",
@@ -108,12 +104,14 @@ logging.getLogger(__name__).addHandler(logging.NullHandler())
 # Optional imports with graceful fallbacks
 try:
     import matplotlib
+
     _HAS_MATPLOTLIB = True
 except ImportError:
     _HAS_MATPLOTLIB = False
 
 try:
     import plotly
+
     _HAS_PLOTLY = True
 except ImportError:
     _HAS_PLOTLY = False

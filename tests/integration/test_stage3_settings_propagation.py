@@ -51,14 +51,14 @@ def _intercept_kernel() -> Tuple[Callable[..., Any], Dict[str, Any]]:
     return _fake_kernel, captured
 
 
-def _spy(real_callable: Callable[..., Any]) -> Tuple[Callable[..., Any], Dict[str, Any]]:
+def _spy(
+    real_callable: Callable[..., Any],
+) -> Tuple[Callable[..., Any], Dict[str, Any]]:
     """Wrap a callable to capture its kwargs while delegating to the real impl."""
     captured: Dict[str, Any] = {}
 
     def _wrapper(*args: Any, **kwargs: Any) -> Any:
-        captured.setdefault("calls", []).append(
-            {"args": args, "kwargs": dict(kwargs)}
-        )
+        captured.setdefault("calls", []).append({"args": args, "kwargs": dict(kwargs)})
         return real_callable(*args, **kwargs)
 
     return _wrapper, captured
@@ -67,6 +67,7 @@ def _spy(real_callable: Callable[..., Any]) -> Tuple[Callable[..., Any], Dict[st
 def _sub_set(sub_name: str, field_name: str, value: Any) -> Callable[..., None]:
     def setter(s: PeakDetectionSettings) -> None:
         setattr(getattr(s, sub_name), field_name, value)
+
     return setter
 
 
@@ -76,24 +77,32 @@ KERNEL_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     # promotion.min_snr does not flow into detect_peaks (the orchestrator
     # passes ``min(internal_min_snr, promotion)`` as ``min_snr``); checked
     # separately below.
-    ("promotion.weak_medium_snr",
-     _sub_set("promotion", "weak_medium_snr", 12.0),
-     "weak_medium_snr", 12.0),
-    ("promotion.medium_strong_snr",
-     _sub_set("promotion", "medium_strong_snr", 75.0),
-     "medium_strong_snr", 75.0),
-    ("savgol.sg_window",
-     _sub_set("savgol", "sg_window", 9),
-     "sg_window", 9),
-    ("savgol.sg_order",
-     _sub_set("savgol", "sg_order", 5),
-     "sg_order", 5),
-    ("primary_pass.min_exclusion_mhz",
-     _sub_set("primary_pass", "min_exclusion_mhz", 0.5),
-     "min_exclusion_mhz", 0.5),
-    ("gap_pass.run_gap_pass",
-     _sub_set("gap_pass", "run_gap_pass", False),
-     "run_gap_pass", False),
+    (
+        "promotion.weak_medium_snr",
+        _sub_set("promotion", "weak_medium_snr", 12.0),
+        "weak_medium_snr",
+        12.0,
+    ),
+    (
+        "promotion.medium_strong_snr",
+        _sub_set("promotion", "medium_strong_snr", 75.0),
+        "medium_strong_snr",
+        75.0,
+    ),
+    ("savgol.sg_window", _sub_set("savgol", "sg_window", 9), "sg_window", 9),
+    ("savgol.sg_order", _sub_set("savgol", "sg_order", 5), "sg_order", 5),
+    (
+        "primary_pass.min_exclusion_mhz",
+        _sub_set("primary_pass", "min_exclusion_mhz", 0.5),
+        "min_exclusion_mhz",
+        0.5,
+    ),
+    (
+        "gap_pass.run_gap_pass",
+        _sub_set("gap_pass", "run_gap_pass", False),
+        "run_gap_pass",
+        False,
+    ),
 ]
 
 
@@ -140,7 +149,9 @@ class TestPromotionFlooring:
     determine the kernel's ``min_snr`` floor as ``min(internal, promotion)``."""
 
     def test_promotion_min_snr_caps_kernel_floor(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "promotion_min_snr.ftmw"
@@ -157,7 +168,9 @@ class TestPromotionFlooring:
         assert captured["kwargs"]["min_snr"] == pytest.approx(1.0)
 
     def test_internal_min_snr_caps_kernel_floor(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "internal_min_snr.ftmw"
@@ -179,7 +192,9 @@ class TestPrimaryPassSpectrum:
     ``_primary_active_spectrum``."""
 
     def test_primary_window_reaches_primary_spectrum(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "primary_window.ftmw"
@@ -201,7 +216,9 @@ class TestPrimaryPassSpectrum:
         assert primary_call["kwargs"]["window_function"] == "hann"
 
     def test_detection_zpf_reaches_primary_spectrum(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "detection_zpf.ftmw"
@@ -223,7 +240,9 @@ class TestGapPassSpectrum:
     """``gap_pass.gap_active_zpf`` drives ``_mf_gap_spectrum``."""
 
     def test_gap_active_zpf_reaches_mf_gap_spectrum(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "gap_active_zpf.ftmw"
@@ -246,7 +265,9 @@ class TestPrimaryNoiseKnobs:
     measured on the primary spectrum (the second Stage 3 noise level)."""
 
     def test_primary_noise_knobs_reach_scatter_estimator(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "primary_noise.ftmw"
@@ -273,7 +294,9 @@ class TestSavgolCoverage:
     ``_grid_aware_sg_window``."""
 
     def test_sg_fwhm_coverage_reaches_grid_aware(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "sg_fwhm_coverage.ftmw"
@@ -291,7 +314,9 @@ class TestSavgolCoverage:
         assert captured["calls"][0]["kwargs"]["fwhm_coverage"] == 6.0
 
     def test_sg_min_window_reaches_grid_aware(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         variant = tmp_path / "sg_min_window.ftmw"
@@ -316,8 +341,11 @@ class TestLeakageFloor:
     ``gap_leakage_amp`` arrays (k=0 disables the floor -> all-zero array)."""
 
     def _kernel_kwargs(
-        self, variant: Path, monkeypatch: pytest.MonkeyPatch,
-        primary_k: float, gap_k: float,
+        self,
+        variant: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        primary_k: float,
+        gap_k: float,
     ) -> Dict[str, Any]:
         mock, captured = _intercept_kernel()
         monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
@@ -329,7 +357,9 @@ class TestLeakageFloor:
         return captured["kwargs"]
 
     def test_floor_k_scales_leakage_amp(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         import numpy as np
@@ -337,22 +367,22 @@ class TestLeakageFloor:
         off_file = tmp_path / "floor_off.ftmw"
         shutil.copyfile(baseline_2638_stage2, off_file)
         off = self._kernel_kwargs(off_file, monkeypatch, 0.0, 0.0)
-        assert np.all(np.asarray(off["primary_leakage_amp"]) == 0.0), (
-            "primary_leakage_floor_k=0 must yield an all-zero floor"
-        )
-        assert np.all(np.asarray(off["gap_leakage_amp"]) == 0.0), (
-            "gap_leakage_floor_k=0 must yield an all-zero floor"
-        )
+        assert np.all(
+            np.asarray(off["primary_leakage_amp"]) == 0.0
+        ), "primary_leakage_floor_k=0 must yield an all-zero floor"
+        assert np.all(
+            np.asarray(off["gap_leakage_amp"]) == 0.0
+        ), "gap_leakage_floor_k=0 must yield an all-zero floor"
 
         on_file = tmp_path / "floor_on.ftmw"
         shutil.copyfile(baseline_2638_stage2, on_file)
         on = self._kernel_kwargs(on_file, monkeypatch, 5.0, 5.0)
-        assert np.asarray(on["primary_leakage_amp"]).max() > 0.0, (
-            "primary_leakage_floor_k>0 must raise the floor where leakage exists"
-        )
-        assert np.asarray(on["gap_leakage_amp"]).max() > 0.0, (
-            "gap_leakage_floor_k>0 must raise the floor where leakage exists"
-        )
+        assert (
+            np.asarray(on["primary_leakage_amp"]).max() > 0.0
+        ), "primary_leakage_floor_k>0 must raise the floor where leakage exists"
+        assert (
+            np.asarray(on["gap_leakage_amp"]).max() > 0.0
+        ), "gap_leakage_floor_k>0 must raise the floor where leakage exists"
 
 
 class TestMutualExclusion:
@@ -360,14 +390,18 @@ class TestMutualExclusion:
     must raise ``ValueError``, matching Stages 5, 2b, and 2."""
 
     def test_settings_and_preset_both_raises(
-        self, baseline_2638_stage2: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
     ) -> None:
         variant = tmp_path / "both.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
         s = PeakDetectionSettings()
         with pytest.raises(ValueError, match=r"mutually|alternative"):
             stage3_impl.detect_peaks_impl(
-                str(variant), settings=s, preset="instrument_bc_2638",
+                str(variant),
+                settings=s,
+                preset="instrument_bc_2638",
             )
 
 
@@ -401,6 +435,7 @@ class TestGapPassTauFeeder:
         ``tau_calibration_present`` returns True and ``load_..._impl``
         returns an object whose ``tau_maj_us`` attribute is that value.
         """
+
         class _Stub:
             def __init__(self, value: float) -> None:
                 self.tau_maj_us = value

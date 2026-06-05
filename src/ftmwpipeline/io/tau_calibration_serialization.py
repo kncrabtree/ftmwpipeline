@@ -59,7 +59,6 @@ from ..fitting.tau_calibration import (
     TauCalibrationResult,
 )
 
-
 SCHEMA_VERSION = "1.0"
 GROUP_PATH = "stage2b_tau_calibration"
 
@@ -73,7 +72,8 @@ __all__ = [
 
 
 def save_tau_calibration_to_hdf5(
-    result: TauCalibrationResult, h5_group: h5py.Group,
+    result: TauCalibrationResult,
+    h5_group: h5py.Group,
 ) -> None:
     """Save a :class:`TauCalibrationResult` into the given HDF5 group.
 
@@ -122,11 +122,15 @@ def save_tau_calibration_to_hdf5(
     bg = h5_group.create_group("bimodality")
     for key, value in {
         "n": int(bm.n),
-        "mu1": float(bm.mu1), "sigma1": float(bm.sigma1),
-        "mu_a": float(bm.mu_a), "sigma_a": float(bm.sigma_a),
-        "mu_b": float(bm.mu_b), "sigma_b": float(bm.sigma_b),
+        "mu1": float(bm.mu1),
+        "sigma1": float(bm.sigma1),
+        "mu_a": float(bm.mu_a),
+        "sigma_a": float(bm.sigma_a),
+        "mu_b": float(bm.mu_b),
+        "sigma_b": float(bm.sigma_b),
         "pi_a": float(bm.pi_a),
-        "aic1": float(bm.aic1), "aic2": float(bm.aic2),
+        "aic1": float(bm.aic1),
+        "aic2": float(bm.aic2),
         "delta_aic": float(bm.delta_aic),
         "two_component_preferred": bool(bm.two_component_preferred),
         "dominant_weight": float(bm.dominant_weight),
@@ -143,22 +147,26 @@ def save_tau_calibration_to_hdf5(
     cg.create_dataset(
         "bin_indices",
         data=np.asarray(result.contributor_bin_indices, dtype=np.int64),
-        compression="gzip", compression_opts=6,
+        compression="gzip",
+        compression_opts=6,
     )
     cg.create_dataset(
         "taus_us",
         data=np.asarray(result.contributor_taus_us, dtype=np.float64),
-        compression="gzip", compression_opts=6,
+        compression="gzip",
+        compression_opts=6,
     )
     cg.create_dataset(
         "snrs",
         data=np.asarray(result.contributor_snrs, dtype=np.float64),
-        compression="gzip", compression_opts=6,
+        compression="gzip",
+        compression_opts=6,
     )
     cg.create_dataset(
         "freqs_mhz",
         data=np.asarray(result.contributor_freqs_mhz, dtype=np.float64),
-        compression="gzip", compression_opts=6,
+        compression="gzip",
+        compression_opts=6,
     )
 
     # --- spur clusters (CSR-style flat layout) -----------------------------
@@ -166,22 +174,14 @@ def save_tau_calibration_to_hdf5(
     clusters = list(result.spur_clusters)
     n_clusters = len(clusters)
     if n_clusters > 0:
-        centers = np.asarray(
-            [c.center_freq_mhz for c in clusters], dtype=np.float64
-        )
-        peak_bins = np.asarray(
-            [c.peak_bin_index for c in clusters], dtype=np.int64
-        )
-        n_bins_arr = np.asarray(
-            [c.n_bins for c in clusters], dtype=np.int32
-        )
-        saturated_arr = np.asarray(
-            [c.saturated for c in clusters], dtype=bool
-        )
+        centers = np.asarray([c.center_freq_mhz for c in clusters], dtype=np.float64)
+        peak_bins = np.asarray([c.peak_bin_index for c in clusters], dtype=np.int64)
+        n_bins_arr = np.asarray([c.n_bins for c in clusters], dtype=np.int32)
+        saturated_arr = np.asarray([c.saturated for c in clusters], dtype=bool)
         flat = np.concatenate(
             [np.asarray(c.bin_indices, dtype=np.int64) for c in clusters]
         )
-        offsets = np.empty(n_clusters + 1, dtype=np.int32)
+        offsets: np.ndarray = np.empty(n_clusters + 1, dtype=np.int32)
         offsets[0] = 0
         np.cumsum(n_bins_arr, out=offsets[1:])
     else:
@@ -240,11 +240,15 @@ def load_tau_calibration_from_hdf5(
     bm_attrs = dict(h5_group["bimodality"].attrs)
     bm = GMMBimodality(
         n=int(bm_attrs["n"]),
-        mu1=float(bm_attrs["mu1"]), sigma1=float(bm_attrs["sigma1"]),
-        mu_a=float(bm_attrs["mu_a"]), sigma_a=float(bm_attrs["sigma_a"]),
-        mu_b=float(bm_attrs["mu_b"]), sigma_b=float(bm_attrs["sigma_b"]),
+        mu1=float(bm_attrs["mu1"]),
+        sigma1=float(bm_attrs["sigma1"]),
+        mu_a=float(bm_attrs["mu_a"]),
+        sigma_a=float(bm_attrs["sigma_a"]),
+        mu_b=float(bm_attrs["mu_b"]),
+        sigma_b=float(bm_attrs["sigma_b"]),
         pi_a=float(bm_attrs["pi_a"]),
-        aic1=float(bm_attrs["aic1"]), aic2=float(bm_attrs["aic2"]),
+        aic1=float(bm_attrs["aic1"]),
+        aic2=float(bm_attrs["aic2"]),
         delta_aic=float(bm_attrs["delta_aic"]),
         two_component_preferred=bool(bm_attrs["two_component_preferred"]),
         dominant_weight=float(bm_attrs["dominant_weight"]),
@@ -300,9 +304,11 @@ def load_tau_calibration_from_hdf5(
         third_attrs = dict(fg[label].attrs)
         thirds.append(
             FrequencyThird(
-                label=str(third_attrs["label"]) if not isinstance(
-                    third_attrs["label"], bytes
-                ) else third_attrs["label"].decode("utf-8"),
+                label=(
+                    str(third_attrs["label"])
+                    if not isinstance(third_attrs["label"], bytes)
+                    else third_attrs["label"].decode("utf-8")
+                ),
                 freq_lo_mhz=float(third_attrs["freq_lo_mhz"]),
                 freq_hi_mhz=float(third_attrs["freq_hi_mhz"]),
                 n=int(third_attrs["n"]),
@@ -335,8 +341,7 @@ def load_tau_calibration_from_hdf5(
     # --- preconditions notes -----------------------------------------------
     notes_raw = h5_group["preconditions_notes"][:]
     notes = tuple(
-        (n.decode("utf-8") if isinstance(n, bytes) else str(n))
-        for n in notes_raw
+        (n.decode("utf-8") if isinstance(n, bytes) else str(n)) for n in notes_raw
     )
 
     sideband_attr = s_attrs["sideband"]

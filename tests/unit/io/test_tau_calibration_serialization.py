@@ -20,7 +20,9 @@ from ftmwpipeline.io.tau_calibration_serialization import (
 )
 
 
-def _make_sample_result(*, n_contrib: int = 50, n_clusters: int = 3) -> TauCalibrationResult:
+def _make_sample_result(
+    *, n_contrib: int = 50, n_clusters: int = 3
+) -> TauCalibrationResult:
     rng = np.random.default_rng(0xC0FFEE)
     taus = rng.normal(6.0, 1.0, size=n_contrib)
     snrs = rng.uniform(10.0, 100.0, size=n_contrib)
@@ -41,11 +43,15 @@ def _make_sample_result(*, n_contrib: int = 50, n_clusters: int = 3) -> TauCalib
         )
     bm = GMMBimodality(
         n=n_contrib,
-        mu1=6.0, sigma1=1.0,
-        mu_a=5.0, sigma_a=0.8,
-        mu_b=7.5, sigma_b=1.2,
+        mu1=6.0,
+        sigma1=1.0,
+        mu_a=5.0,
+        sigma_a=0.8,
+        mu_b=7.5,
+        sigma_b=1.2,
         pi_a=0.6,
-        aic1=120.0, aic2=110.5,
+        aic1=120.0,
+        aic2=110.5,
         delta_aic=9.5,
         two_component_preferred=True,
         dominant_weight=0.6,
@@ -84,27 +90,56 @@ def _make_sample_result(*, n_contrib: int = 50, n_clusters: int = 3) -> TauCalib
         sigma_frame=1.48e-7,
         snr_weighted=True,
         preconditions_passed=False,
-        preconditions_notes=("ok", "strongly bimodal", "sigma_tau/tau_maj=0.26 >= 0.20"),
+        preconditions_notes=(
+            "ok",
+            "strongly bimodal",
+            "sigma_tau/tau_maj=0.26 >= 0.20",
+        ),
     )
 
 
 def _assert_results_equal(a: TauCalibrationResult, b: TauCalibrationResult) -> None:
     # Scalars
     for field in (
-        "tau_maj_us", "sigma_tau_us", "n_contributors", "n_spur_bins",
-        "pearson_r_log_snr_vs_tau", "pearson_r_freq_vs_tau",
-        "n_seg", "t_sigma", "tau_max_us", "rss_gate_factor",
-        "sample_dt_us", "start_us", "end_us", "probe_freq_mhz",
-        "sideband", "trim_lo_mhz", "trim_hi_mhz", "sigma_x_full",
-        "sigma_frame", "snr_weighted", "preconditions_passed",
+        "tau_maj_us",
+        "sigma_tau_us",
+        "n_contributors",
+        "n_spur_bins",
+        "pearson_r_log_snr_vs_tau",
+        "pearson_r_freq_vs_tau",
+        "n_seg",
+        "t_sigma",
+        "tau_max_us",
+        "rss_gate_factor",
+        "sample_dt_us",
+        "start_us",
+        "end_us",
+        "probe_freq_mhz",
+        "sideband",
+        "trim_lo_mhz",
+        "trim_hi_mhz",
+        "sigma_x_full",
+        "sigma_frame",
+        "snr_weighted",
+        "preconditions_passed",
     ):
         assert getattr(a, field) == getattr(b, field), field
     assert tuple(a.preconditions_notes) == tuple(b.preconditions_notes)
     # Bimodality (every attribute)
     for field in (
-        "n", "mu1", "sigma1", "mu_a", "sigma_a", "mu_b", "sigma_b",
-        "pi_a", "aic1", "aic2", "delta_aic",
-        "two_component_preferred", "dominant_weight",
+        "n",
+        "mu1",
+        "sigma1",
+        "mu_a",
+        "sigma_a",
+        "mu_b",
+        "sigma_b",
+        "pi_a",
+        "aic1",
+        "aic2",
+        "delta_aic",
+        "two_component_preferred",
+        "dominant_weight",
     ):
         assert getattr(a.bimodality, field) == getattr(b.bimodality, field), field
     # Frequency thirds
@@ -145,11 +180,16 @@ class TestRoundTrip:
             n_spur_bins=0,
             spur_clusters=(),
             bimodality=GMMBimodality(
-                n=5, mu1=float("nan"), sigma1=float("nan"),
-                mu_a=float("nan"), sigma_a=float("nan"),
-                mu_b=float("nan"), sigma_b=float("nan"),
+                n=5,
+                mu1=float("nan"),
+                sigma1=float("nan"),
+                mu_a=float("nan"),
+                sigma_a=float("nan"),
+                mu_b=float("nan"),
+                sigma_b=float("nan"),
                 pi_a=float("nan"),
-                aic1=float("nan"), aic2=float("nan"),
+                aic1=float("nan"),
+                aic2=float("nan"),
                 delta_aic=float("nan"),
                 two_component_preferred=False,
                 dominant_weight=float("nan"),
@@ -161,11 +201,19 @@ class TestRoundTrip:
             contributor_taus_us=np.full(5, 5.0),
             contributor_snrs=np.full(5, 20.0),
             contributor_freqs_mhz=np.linspace(30000.0, 35000.0, 5),
-            n_seg=10, t_sigma=5.0, tau_max_us=63.25, rss_gate_factor=5.0,
-            sample_dt_us=0.020, start_us=0.0, end_us=12.65,
-            probe_freq_mhz=40000.0, sideband="lower",
-            trim_lo_mhz=26500.0, trim_hi_mhz=40000.0,
-            sigma_x_full=1e-6, sigma_frame=3e-7,
+            n_seg=10,
+            t_sigma=5.0,
+            tau_max_us=63.25,
+            rss_gate_factor=5.0,
+            sample_dt_us=0.020,
+            start_us=0.0,
+            end_us=12.65,
+            probe_freq_mhz=40000.0,
+            sideband="lower",
+            trim_lo_mhz=26500.0,
+            trim_hi_mhz=40000.0,
+            sigma_x_full=1e-6,
+            sigma_frame=3e-7,
             snr_weighted=True,
             preconditions_passed=False,
             preconditions_notes=("only 5 contributors", "ok", "ok"),
@@ -181,7 +229,8 @@ class TestRoundTrip:
         assert loaded.spur_clusters == ()
         assert loaded.frequency_thirds == ()
         np.testing.assert_array_equal(
-            loaded.contributor_taus_us, result.contributor_taus_us,
+            loaded.contributor_taus_us,
+            result.contributor_taus_us,
         )
 
     def test_overwrite_clears_old_contents(self, tmp_path):

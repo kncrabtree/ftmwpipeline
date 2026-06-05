@@ -37,9 +37,9 @@ import h5py
 
 from ..core.noise_settings import (
     NoiseSettings,
-    from_attrs as noise_from_attrs,
-    to_attrs as noise_to_attrs,
 )
+from ..core.noise_settings import from_attrs as noise_from_attrs
+from ..core.noise_settings import to_attrs as noise_to_attrs
 
 logger = logging.getLogger(__name__)
 

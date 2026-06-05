@@ -220,11 +220,19 @@ class TestMagnitudeAttachment:
             n=12000,
         )
         plan_low = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
             magnitude_attachment_threshold=0.01,  # very permissive
         )
         plan_high = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
             magnitude_attachment_threshold=10.0,  # very strict
         )
         weak_low = next(w for w in plan_low.windows if 1 in w.free_peak_indices)
@@ -241,7 +249,11 @@ class TestMagnitudeAttachment:
             [(30040.0, 2.0, PeakClassification.STRONG)]
         )
         plan = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
             magnitude_attachment_threshold=0.42,
         )
         assert plan.parameters["magnitude_attachment_threshold"] == pytest.approx(0.42)
@@ -329,9 +341,7 @@ class TestBoundedMergeAndCapSplit:
         # 20 strong lines 3 MHz apart over ~57 MHz: the per-peak proto-spans
         # (+/- 2 MHz) overlap and the skirts keep S_coh lit between them, so the
         # legacy build would chain them into one ~61 MHz / 20-peak window.
-        lines = [
-            (30040.0 + 3.0 * i, 3.0, PeakClassification.STRONG) for i in range(20)
-        ]
+        lines = [(30040.0 + 3.0 * i, 3.0, PeakClassification.STRONG) for i in range(20)]
         return _synthetic(lines, n=8000)
 
     def test_dense_strong_forest_is_split_to_caps(self):

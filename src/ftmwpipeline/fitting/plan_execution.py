@@ -683,7 +683,11 @@ def fit_window_with_fixed_contributors(
     """
     shape = conservative_kwargs.get("shape", "lorentzian")
     background, data_minus_bg = subtract_frozen_background(
-        offset_grid_mhz, complex_spectrum, fixed_peaks, tau0_us, acquisition_us,
+        offset_grid_mhz,
+        complex_spectrum,
+        fixed_peaks,
+        tau0_us,
+        acquisition_us,
         shape=shape,
     )
     fit_result = conservative_fit(
@@ -699,7 +703,10 @@ def fit_window_with_fixed_contributors(
     # *that* sorted grid. Re-evaluate the model on the caller's input grid so
     # the returned arrays line up bin-for-bin with the inputs.
     full_free = model_spectrum(
-        offset_grid_mhz, fit_result.fit.peaks, fit_result.fit.tau_us, acquisition_us,
+        offset_grid_mhz,
+        fit_result.fit.peaks,
+        fit_result.fit.tau_us,
+        acquisition_us,
         shape=fit_result.fit.shape,
     )
     full_fitted = full_free + background
@@ -883,11 +890,19 @@ def local_thaw_cofit(
         or fp.primary_window_id != thawed.primary_window_id
     ]
     _, primary_clean = subtract_frozen_background(
-        primary_u, primary_data, primary_other, tau0_us, acquisition_us,
+        primary_u,
+        primary_data,
+        primary_other,
+        tau0_us,
+        acquisition_us,
         shape=shape,
     )
     _, dep_clean = subtract_frozen_background(
-        dep_u_in_primary, dep_data, dep_other, tau0_us, acquisition_us,
+        dep_u_in_primary,
+        dep_data,
+        dep_other,
+        tau0_us,
+        acquisition_us,
         shape=shape,
     )
 
@@ -932,10 +947,7 @@ def local_thaw_cofit(
     # s*(f - primary_center) lands inside the combined grid span.
     joint_spur_mask: Optional[SpurMaskSpec] = None
     if spur_set is not None and spur_set:
-        spur_offsets = [
-            float(s * (c - primary_center))
-            for c in spur_set.centers_mhz
-        ]
+        spur_offsets = [float(s * (c - primary_center)) for c in spur_set.centers_mhz]
         spur_offsets = [o for o in spur_offsets if lo <= o <= hi]
         if spur_offsets:
             joint_spur_mask = SpurMaskSpec(
@@ -1671,8 +1683,10 @@ def _fit_one_window(
         # window (nomination exclusion), so it has no fitted peak to freeze
         # here. Drop it -- the spur's own bins are masked from this window's
         # residual anyway.
-        if spur_set is not None and spur_set and spur_set.candidate_on_spur(
-            contributor.frequency_mhz
+        if (
+            spur_set is not None
+            and spur_set
+            and spur_set.candidate_on_spur(contributor.frequency_mhz)
         ):
             continue
         primary_outcome = outcomes.get(contributor.primary_window_id)
@@ -1928,7 +1942,10 @@ def _perform_thaw(
         acquisition_us,
         shape=joint.shape,
     ) + _frozen_subset_model(
-        dep_outcome.offset_grid_mhz, dep_other_peaks, joint.tau_us, acquisition_us,
+        dep_outcome.offset_grid_mhz,
+        dep_other_peaks,
+        joint.tau_us,
+        acquisition_us,
         shape=joint.shape,
     )
     provisional_dep_residual = dep_outcome.complex_spectrum - provisional_dep_full
@@ -1999,7 +2016,10 @@ def _frozen_subset_model(
         zero: np.ndarray = np.zeros(grid.shape, dtype=np.complex128)
         return zero
     return model_spectrum(
-        grid, [fp.model_peak for fp in fixed_peaks], tau_us, acquisition_us,
+        grid,
+        [fp.model_peak for fp in fixed_peaks],
+        tau_us,
+        acquisition_us,
         shape=shape,
     )
 
@@ -2043,12 +2063,18 @@ def _install_cofit_outcome(
         outcome.fit.fit.tau_was_fit = True
     shape_resolved = outcome.fit.fit.shape
     free_model = model_spectrum(
-        outcome.offset_grid_mhz, new_peak_list, tau_us, acquisition_us,
+        outcome.offset_grid_mhz,
+        new_peak_list,
+        tau_us,
+        acquisition_us,
         shape=shape_resolved,
     )
     outcome.fit.fit.fitted_spectrum = free_model
     background = _frozen_subset_model(
-        outcome.offset_grid_mhz, outcome.fixed_peaks, tau_us, acquisition_us,
+        outcome.offset_grid_mhz,
+        outcome.fixed_peaks,
+        tau_us,
+        acquisition_us,
         shape=shape_resolved,
     )
     outcome.background = background
@@ -2123,9 +2149,7 @@ def _apply_rescue_to_outcome(
         outcome.fit.fit.fitted_spectrum = free_model
         outcome.fit.fit.residual = data_minus_bg - free_model
         outcome.full_fitted_spectrum = free_model + outcome.background
-        outcome.full_residual = (
-            outcome.complex_spectrum - outcome.full_fitted_spectrum
-        )
+        outcome.full_residual = outcome.complex_spectrum - outcome.full_fitted_spectrum
         low, high = residual_edge_coherence(
             outcome.full_residual, outcome.rms_noise, band_m=residual_edge_m
         )

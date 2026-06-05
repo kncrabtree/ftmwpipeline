@@ -51,35 +51,45 @@ def _intercept() -> Tuple[Callable[..., Any], Dict[str, Any]]:
 def _sub_set(sub_name: str, field_name: str, value: Any) -> Callable[..., None]:
     def setter(s: WindowPlanningSettings) -> None:
         setattr(getattr(s, sub_name), field_name, value)
+
     return setter
 
 
 # (label, setter, expected_kernel_kwarg, expected_value)
 PROPAGATION_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
-    ("coherence.edge_m",
-     _sub_set("coherence", "edge_m", 128),
-     "edge_m", 128),
-    ("coherence.trim_m",
-     _sub_set("coherence", "trim_m", 16),
-     "trim_m", 16),
-    ("coherence.edge_threshold",
-     _sub_set("coherence", "edge_threshold", 6.0),
-     "edge_threshold", 6.0),
-    ("clustering.max_window_width_mhz",
-     _sub_set("clustering", "max_window_width_mhz", 25.0),
-     "max_window_width_mhz", 25.0),
-    ("clustering.min_window_half_width_mhz",
-     _sub_set("clustering", "min_window_half_width_mhz", 3.5),
-     "min_window_half_width_mhz", 3.5),
-    ("contributor.min_freeze_snr",
-     _sub_set("contributor", "min_freeze_snr", 25.0),
-     "min_freeze_snr", 25.0),
-    ("contributor.magnitude_attachment_threshold",
-     _sub_set("contributor", "magnitude_attachment_threshold", 0.05),
-     "magnitude_attachment_threshold", 0.05),
-    ("leakage.tau_us",
-     _sub_set("leakage", "tau_us", 5.0),
-     "tau_us", 5.0),
+    ("coherence.edge_m", _sub_set("coherence", "edge_m", 128), "edge_m", 128),
+    ("coherence.trim_m", _sub_set("coherence", "trim_m", 16), "trim_m", 16),
+    (
+        "coherence.edge_threshold",
+        _sub_set("coherence", "edge_threshold", 6.0),
+        "edge_threshold",
+        6.0,
+    ),
+    (
+        "clustering.max_window_width_mhz",
+        _sub_set("clustering", "max_window_width_mhz", 25.0),
+        "max_window_width_mhz",
+        25.0,
+    ),
+    (
+        "clustering.min_window_half_width_mhz",
+        _sub_set("clustering", "min_window_half_width_mhz", 3.5),
+        "min_window_half_width_mhz",
+        3.5,
+    ),
+    (
+        "contributor.min_freeze_snr",
+        _sub_set("contributor", "min_freeze_snr", 25.0),
+        "min_freeze_snr",
+        25.0,
+    ),
+    (
+        "contributor.magnitude_attachment_threshold",
+        _sub_set("contributor", "magnitude_attachment_threshold", 0.05),
+        "magnitude_attachment_threshold",
+        0.05,
+    ),
+    ("leakage.tau_us", _sub_set("leakage", "tau_us", 5.0), "tau_us", 5.0),
 ]
 
 
@@ -115,7 +125,11 @@ def test_assign_windows_field_reaches_kernel(
         f"{label}: dataclass value {value!r} was set but the orchestrator "
         f"did not forward {key!r} to build_window_plan. Phantom field."
     )
-    assert kwargs[key] == pytest.approx(value) if isinstance(value, float) else kwargs[key] == value, (
+    assert (
+        kwargs[key] == pytest.approx(value)
+        if isinstance(value, float)
+        else kwargs[key] == value
+    ), (
         f"{label}: forwarded value mismatch -- expected {value!r}, "
         f"got {kwargs[key]!r} as kernel kwarg {key!r}."
     )
@@ -126,14 +140,18 @@ class TestMutualExclusion:
     must raise ``ValueError``, matching Stages 5, 2b, 2, and 3."""
 
     def test_settings_and_preset_both_raises(
-        self, baseline_2638_stage3: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage3: Path,
+        tmp_path: Path,
     ) -> None:
         variant = tmp_path / "both.ftmw"
         shutil.copyfile(baseline_2638_stage3, variant)
         s = WindowPlanningSettings()
         with pytest.raises(ValueError, match=r"mutually|alternative"):
             stage4_impl.assign_windows_impl(
-                str(variant), settings=s, preset="instrument_bc_2638",
+                str(variant),
+                settings=s,
+                preset="instrument_bc_2638",
             )
 
 

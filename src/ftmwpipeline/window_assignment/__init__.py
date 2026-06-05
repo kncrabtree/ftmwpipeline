@@ -12,6 +12,6 @@ from .window_optimization import optimize_window_boundaries, resolve_overlaps
 
 __all__ = [
     "assign_analysis_windows",
-    "optimize_window_boundaries", 
+    "optimize_window_boundaries",
     "resolve_overlaps",
 ]

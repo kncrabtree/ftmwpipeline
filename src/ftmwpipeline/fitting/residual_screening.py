@@ -29,7 +29,6 @@ from typing import List, Optional
 import numpy as np
 from scipy.signal import find_peaks
 
-
 __all__ = [
     "ResidualPeakCandidate",
     "find_residual_peaks",
@@ -153,7 +152,10 @@ def find_residual_peaks(
         distance = 1
 
     indices, props = find_peaks(
-        mag, height=height, prominence=prominence, distance=distance,
+        mag,
+        height=height,
+        prominence=prominence,
+        distance=distance,
     )
 
     existing_freqs_arr = np.asarray(existing_freqs_mhz, dtype=np.float64)

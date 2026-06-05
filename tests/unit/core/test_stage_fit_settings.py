@@ -14,6 +14,7 @@ import pytest
 
 from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.core.stage_fit_settings import (
+    _HARD_DEFAULTS,
     ConservativeSubSettings,
     PenaltySubSettings,
     RescueSubSettings,
@@ -22,7 +23,6 @@ from ftmwpipeline.core.stage_fit_settings import (
     StageFitSettings,
     TauSubSettings,
     ThawSubSettings,
-    _HARD_DEFAULTS,
     from_attrs,
     from_yaml,
     from_yaml_dict,
@@ -41,12 +41,19 @@ class TestEmptyDataclass:
         """Empty StageFitSettings has every field at None across every sub."""
         s = StageFitSettings()
         assert s.shape is None
-        for sub_name in ("tau", "seeder", "conservative", "penalties", "rescue", "thaw"):
+        for sub_name in (
+            "tau",
+            "seeder",
+            "conservative",
+            "penalties",
+            "rescue",
+            "thaw",
+        ):
             sub = getattr(s, sub_name)
             for f in fields(sub):
-                assert getattr(sub, f.name) is None, (
-                    f"{sub_name}.{f.name} should default to None"
-                )
+                assert (
+                    getattr(sub, f.name) is None
+                ), f"{sub_name}.{f.name} should default to None"
 
     def test_is_empty(self) -> None:
         assert StageFitSettings().is_empty()
@@ -194,9 +201,9 @@ class TestResolve:
                 continue
             sub = getattr(merged, sub_name)
             for field_name in defaults:
-                assert getattr(sub, field_name) is not None, (
-                    f"{sub_name}.{field_name} should be non-None after resolve"
-                )
+                assert (
+                    getattr(sub, field_name) is not None
+                ), f"{sub_name}.{field_name} should be non-None after resolve"
 
 
 # ---------------------------------------------------------------------------
@@ -233,7 +240,14 @@ class TestAttrsRoundTrip:
         """Every Optional field encodes as ``__None__`` and decodes back to None."""
         s = StageFitSettings()
         attrs = to_attrs(s)
-        for sub_name in ("tau", "seeder", "conservative", "penalties", "rescue", "thaw"):
+        for sub_name in (
+            "tau",
+            "seeder",
+            "conservative",
+            "penalties",
+            "rescue",
+            "thaw",
+        ):
             for field_name, value in attrs[sub_name].items():
                 assert value == "__None__", (
                     f"{sub_name}.{field_name} should encode as __None__; "

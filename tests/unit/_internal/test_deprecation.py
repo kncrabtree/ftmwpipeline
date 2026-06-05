@@ -25,7 +25,9 @@ class TestWarnLegacyKwargs:
             )
 
     def test_warns_when_one_kwarg_set(self) -> None:
-        with pytest.warns(DeprecationWarning, match=r"foo: legacy per-knob kwargs \['a'\]"):
+        with pytest.warns(
+            DeprecationWarning, match=r"foo: legacy per-knob kwargs \['a'\]"
+        ):
             warn_legacy_kwargs(
                 func_name="foo",
                 legacy_kwargs={"a": 1, "b": None},
@@ -56,7 +58,11 @@ class TestWarnLegacyKwargs:
                 migration_hint="migrate",
             )
         message = str(record[0].message)
-        assert message.index("'alpha'") < message.index("'mike'") < message.index("'zebra'")
+        assert (
+            message.index("'alpha'")
+            < message.index("'mike'")
+            < message.index("'zebra'")
+        )
 
     def test_migration_hint_in_message(self) -> None:
         with pytest.warns(DeprecationWarning, match="use settings=Foo"):

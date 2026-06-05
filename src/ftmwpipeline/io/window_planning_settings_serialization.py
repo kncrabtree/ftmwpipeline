@@ -47,9 +47,9 @@ import h5py
 
 from ..core.window_planning_settings import (
     WindowPlanningSettings,
-    from_attrs as window_from_attrs,
-    to_attrs as window_to_attrs,
 )
+from ..core.window_planning_settings import from_attrs as window_from_attrs
+from ..core.window_planning_settings import to_attrs as window_to_attrs
 
 logger = logging.getLogger(__name__)
 

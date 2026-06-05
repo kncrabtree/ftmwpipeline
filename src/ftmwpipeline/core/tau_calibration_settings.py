@@ -158,9 +158,7 @@ class TauCalibrationSettings:
 
     stft: StftSubSettings = field(default_factory=StftSubSettings)
     polish: PolishSubSettings = field(default_factory=PolishSubSettings)
-    aggregation: AggregationSubSettings = field(
-        default_factory=AggregationSubSettings
-    )
+    aggregation: AggregationSubSettings = field(default_factory=AggregationSubSettings)
     band: BandSubSettings = field(default_factory=BandSubSettings)
     gaussian: GaussianSubSettings = field(default_factory=GaussianSubSettings)
     recommendation: RecommendationSubSettings = field(
@@ -433,9 +431,7 @@ def from_yaml_dict(data: Optional[Mapping[str, Any]]) -> TauCalibrationSettings:
         kwargs: Dict[str, Any] = {}
         for key, value in block.items():
             if key in _TUPLE_FIELDS and value is not None:
-                kwargs[key] = tuple(
-                    _coerce_tuple_element(key, v) for v in value
-                )
+                kwargs[key] = tuple(_coerce_tuple_element(key, v) for v in value)
             else:
                 kwargs[key] = value
         setattr(settings, sub_name, type(template)(**kwargs))
@@ -519,8 +515,7 @@ def load_preset(name_or_path: Union[str, Path]) -> TauCalibrationSettings:
                 if p.name.endswith(".yaml")
             )
             raise FileNotFoundError(
-                f"no packaged preset named {name_or_path!r}; "
-                f"available: {available}"
+                f"no packaged preset named {name_or_path!r}; " f"available: {available}"
             )
         text = candidate.read_text()
     data = yaml.safe_load(text)

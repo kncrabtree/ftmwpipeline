@@ -26,9 +26,7 @@ from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 @pytest.mark.integration
 class TestScatterNoRegression2638:
-    def test_scatter_sane_level_on_2638(
-        self, baseline_2638_stage1_raw, tmp_path
-    ):
+    def test_scatter_sane_level_on_2638(self, baseline_2638_stage1_raw, tmp_path):
         """Scatter σ on the raw (production) 2638 FT is finite, positive, and
         reads a sane noise floor.
 

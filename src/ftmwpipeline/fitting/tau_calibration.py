@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -381,7 +381,9 @@ def compute_band_majorities(
         n_in = int(mask.sum())
         if n_in >= min_contributors_per_band:
             tau_b, sigma_b = majority_tau(
-                taus[mask], snrs[mask], weighted=True,
+                taus[mask],
+                snrs[mask],
+                weighted=True,
             )
             if not np.isfinite(tau_b) or tau_b <= 0:
                 tau_b, sigma_b = fallback_tau, fallback_sigma
@@ -572,12 +574,10 @@ def sliding_stft(
     N = fid_arr.size
     Nw = N // n_seg
     if Nw < 4:
-        raise ValueError(
-            f"n_seg={n_seg} too large for fid length N={N} (Nw={Nw} < 4)"
-        )
+        raise ValueError(f"n_seg={n_seg} too large for fid length N={N} (Nw={Nw} < 4)")
     n_bins = N // 2 + 1
     mag = np.empty((n_seg, n_bins), dtype=float)
-    a_centers = np.empty(n_seg, dtype=float)
+    a_centers: np.ndarray = np.empty(n_seg, dtype=float)
     padded = np.zeros(N, dtype=float)
     for k in range(n_seg):
         a_start = k * Nw
@@ -621,9 +621,7 @@ def _fit_exp_per_bin(
     denom = Sw * Swaa - Swa * Swa
     good = denom > 1e-30
     slope = np.where(good, (Sw * Swal - Swa * Swl) / np.where(good, denom, 1.0), 0.0)
-    intercept = np.where(
-        Sw > 0, (Swl - slope * Swa) / np.where(Sw > 0, Sw, 1.0), 0.0
-    )
+    intercept = np.where(Sw > 0, (Swl - slope * Swa) / np.where(Sw > 0, Sw, 1.0), 0.0)
     # Slope >= 0 means no exponential decay (constant or growing) -> assign
     # tau_max so the bin is later classified as a spur candidate.
     tau = np.where(slope < 0, -1.0 / np.where(slope < 0, slope, -1.0), tau_clip_us[1])
@@ -690,12 +688,12 @@ def _nls_polish_step(
     c_sel = C_arr[sel].copy()
     for _ in range(int(n_iter)):
         inv_t = 1.0 / np.where(t_sel > 0, t_sel, 1.0)  # (n_active,)
-        e = np.exp(-a * inv_t[None, :])                # (n_seg, n_active)
+        e = np.exp(-a * inv_t[None, :])  # (n_seg, n_active)
         pred = c_sel[None, :] * e
         resid = m_sel - pred
 
         j_c = e
-        j_t = (c_sel[None, :] * a * (inv_t ** 2)[None, :]) * e
+        j_t = (c_sel[None, :] * a * (inv_t**2)[None, :]) * e
 
         jtj_00 = (j_c * j_c).sum(axis=0)
         jtj_01 = (j_c * j_t).sum(axis=0)
@@ -727,10 +725,10 @@ def _aicc(rss: np.ndarray, n: int, k: int) -> np.ndarray:
     size).
     """
     if n - k - 1 <= 0:
-        return np.full_like(rss, np.inf, dtype=float)
+        return cast(np.ndarray, np.full_like(rss, np.inf, dtype=float))
     correction = 2.0 * k * (k + 1) / (n - k - 1)
     rss_safe = np.where(rss > 0, rss, 1e-300)
-    return n * np.log(rss_safe / n) + 2 * k + correction
+    return cast(np.ndarray, n * np.log(rss_safe / n) + 2 * k + correction)
 
 
 @dataclass(frozen=True)
@@ -1091,20 +1089,28 @@ def _run_shape_fits(
         ok_e = np.zeros(n_bins, dtype=bool)
         for idx in bin_idxs:
             i = int(idx)
-            mag_bin = mag[:, i].astype(float)
+            mag_bin: np.ndarray = mag[:, i].astype(float)
             C_seed = float(C_seed_arr[i])
             tau_seed = float(tau_seed_arr[i])
             ep, re_, oe = _fit_exp_nls_single(
-                a_centers_us, mag_bin, C_seed, tau_seed,
-                tau_lo=tau_lo, tau_hi=tau_hi,
+                a_centers_us,
+                mag_bin,
+                C_seed,
+                tau_seed,
+                tau_lo=tau_lo,
+                tau_hi=tau_hi,
             )
             tau_L[i] = float(ep[1])
             C_e[i] = float(ep[0])
             rss_e[i] = float(re_)
             ok_e[i] = bool(oe)
             gp, rg, og, _ = _fit_gauss_nls_multistart(
-                a_centers_us, mag_bin, float(ep[0]),
-                tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+                a_centers_us,
+                mag_bin,
+                float(ep[0]),
+                tau_lo=tau_lo,
+                tau_hi=tau_hi,
+                tau_G_seeds=seeds,
             )
             tau_G[i] = float(gp[1])
             C_g[i] = float(gp[0])
@@ -1112,8 +1118,13 @@ def _run_shape_fits(
             ok_g[i] = bool(og)
         return _ShapeFitResults(
             shape="gaussian",
-            tau_L_exp=tau_L, C_exp=C_e, rss_exp_nls=rss_e, converged_exp=ok_e,
-            tau_G_gauss=tau_G, C_gauss=C_g, rss_gauss=rss_g,
+            tau_L_exp=tau_L,
+            C_exp=C_e,
+            rss_exp_nls=rss_e,
+            converged_exp=ok_e,
+            tau_G_gauss=tau_G,
+            C_gauss=C_g,
+            rss_gauss=rss_g,
             converged_gauss=ok_g,
         )
 
@@ -1137,24 +1148,37 @@ def _run_shape_fits(
         C_seed = float(C_seed_arr[i])
         tau_seed = float(tau_seed_arr[i])
         ep, re_, oe = _fit_exp_nls_single(
-            a_centers_us, mag_bin, C_seed, tau_seed,
-            tau_lo=tau_lo, tau_hi=tau_hi,
+            a_centers_us,
+            mag_bin,
+            C_seed,
+            tau_seed,
+            tau_lo=tau_lo,
+            tau_hi=tau_hi,
         )
         tau_L[i] = float(ep[1])
         C_e[i] = float(ep[0])
         rss_e[i] = float(re_)
         ok_e[i] = bool(oe)
         gp, rg, og, _ = _fit_gauss_nls_multistart(
-            a_centers_us, mag_bin, float(ep[0]),
-            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+            a_centers_us,
+            mag_bin,
+            float(ep[0]),
+            tau_lo=tau_lo,
+            tau_hi=tau_hi,
+            tau_G_seeds=seeds,
         )
         tau_G[i] = float(gp[1])
         C_g[i] = float(gp[0])
         rss_g[i] = float(rg)
         ok_g[i] = bool(og)
         vp, rv, ov, _ = _fit_voigt_nls_multistart(
-            a_centers_us, mag_bin, float(ep[0]), float(ep[1]),
-            tau_lo=tau_lo, tau_hi=tau_hi, tau_G_seeds=seeds,
+            a_centers_us,
+            mag_bin,
+            float(ep[0]),
+            float(ep[1]),
+            tau_lo=tau_lo,
+            tau_hi=tau_hi,
+            tau_G_seeds=seeds,
         )
         tau_Lv[i] = float(vp[1])
         tau_Gv[i] = float(vp[2])
@@ -1163,15 +1187,25 @@ def _run_shape_fits(
         ok_v[i] = bool(ov)
     return _ShapeFitResults(
         shape="best_of_three",
-        tau_L_exp=tau_L, C_exp=C_e, rss_exp_nls=rss_e, converged_exp=ok_e,
-        tau_G_gauss=tau_G, C_gauss=C_g, rss_gauss=rss_g, converged_gauss=ok_g,
-        tau_L_voigt=tau_Lv, tau_G_voigt=tau_Gv, C_voigt=C_v,
-        rss_voigt=rss_v, converged_voigt=ok_v,
+        tau_L_exp=tau_L,
+        C_exp=C_e,
+        rss_exp_nls=rss_e,
+        converged_exp=ok_e,
+        tau_G_gauss=tau_G,
+        C_gauss=C_g,
+        rss_gauss=rss_g,
+        converged_gauss=ok_g,
+        tau_L_voigt=tau_Lv,
+        tau_G_voigt=tau_Gv,
+        C_voigt=C_v,
+        rss_voigt=rss_v,
+        converged_voigt=ok_v,
     )
 
 
-def _scatter_full(n_bins: int, bin_idxs: np.ndarray, masked: np.ndarray,
-                  *, fill: float) -> np.ndarray:
+def _scatter_full(
+    n_bins: int, bin_idxs: np.ndarray, masked: np.ndarray, *, fill: float
+) -> np.ndarray:
     """Place a masked-bin array back onto the full bin grid, ``fill`` elsewhere."""
     full: np.ndarray = np.full(n_bins, fill, dtype=float)
     if bin_idxs.size:
@@ -1314,7 +1348,7 @@ def _select_rss_for_gate(
             f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
             f"got {shape!r}"
         )
-    rss = np.where(np.isfinite(rss), rss, np.inf)
+    rss = cast(np.ndarray, np.where(np.isfinite(rss), rss, np.inf))
     return rss
 
 
@@ -1440,9 +1474,7 @@ def stft_calibration(
         sigma_x_full_v = sigma_time * sample_dt_us * np.sqrt(N / 2.0)
     sigma_frame = sigma_x_full_v / np.sqrt(n_seg)
 
-    tau, C, rss_exp = _fit_exp_per_bin(
-        mag, a_centers_us, tau_clip_us=(0.1, tau_max_us)
-    )
+    tau, C, rss_exp = _fit_exp_per_bin(mag, a_centers_us, tau_clip_us=(0.1, tau_max_us))
     mean_m = mag.mean(axis=0)
     rss_const = ((mag - mean_m[None, :]) ** 2).sum(axis=0)
     aicc_exp = _aicc(rss_exp, n_seg, k=2)
@@ -1457,7 +1489,11 @@ def stft_calibration(
     is_spur = above & (spur_by_aicc | spur_by_tau)
 
     shape_fits = _run_shape_fits(
-        shape, mag, a_centers_us, tau, C,
+        shape,
+        mag,
+        a_centers_us,
+        tau,
+        C,
         mask=above & ~is_spur,
         tau_lo=float(nls_tau_lo),
         tau_hi=float(nls_tau_hi),
@@ -1466,15 +1502,14 @@ def stft_calibration(
     )
     rss_for_gate = _select_rss_for_gate(shape, rss_exp, shape_fits)
 
-    rss_gate_abs = rss_gate_factor * n_seg * (sigma_frame ** 2)
+    rss_gate_abs = rss_gate_factor * n_seg * (sigma_frame**2)
     rss_gate_rel = rss_gate_factor * n_seg * (relative_gate_fraction * mean_m) ** 2
     rss_gate = np.maximum(rss_gate_abs, rss_gate_rel)
     bad_fit = above & ~is_spur & (rss_for_gate > rss_gate)
 
     contributor = above & ~is_spur & ~bad_fit
     classification = np.where(
-        contributor, 3,
-        np.where(bad_fit, 2, np.where(is_spur, 1, 0))
+        contributor, 3, np.where(bad_fit, 2, np.where(is_spur, 1, 0))
     ).astype(np.int8)
 
     return _STFTClassification(
@@ -1534,7 +1569,9 @@ def majority_tau(
 
 
 def gmm_bimodality(
-    contributor_taus_us: np.ndarray, *, max_iter: int = 200,
+    contributor_taus_us: np.ndarray,
+    *,
+    max_iter: int = 200,
 ) -> GMMBimodality:
     """Fit 1- and 2-component Gaussian mixtures and report the AIC preference.
 
@@ -1556,11 +1593,15 @@ def gmm_bimodality(
     if n < 20:
         return GMMBimodality(
             n=n,
-            mu1=float("nan"), sigma1=float("nan"),
-            mu_a=float("nan"), sigma_a=float("nan"),
-            mu_b=float("nan"), sigma_b=float("nan"),
+            mu1=float("nan"),
+            sigma1=float("nan"),
+            mu_a=float("nan"),
+            sigma_a=float("nan"),
+            mu_b=float("nan"),
+            sigma_b=float("nan"),
             pi_a=float("nan"),
-            aic1=float("nan"), aic2=float("nan"),
+            aic1=float("nan"),
+            aic2=float("nan"),
             delta_aic=float("nan"),
             two_component_preferred=False,
             dominant_weight=float("nan"),
@@ -1582,8 +1623,14 @@ def gmm_bimodality(
     eps = 1e-12
 
     for _ in range(max_iter):
-        ga = pi_a / np.sqrt(2.0 * np.pi * var_a) * np.exp(-0.5 * (x - mu_a) ** 2 / var_a)
-        gb = (1.0 - pi_a) / np.sqrt(2.0 * np.pi * var_b) * np.exp(-0.5 * (x - mu_b) ** 2 / var_b)
+        ga = (
+            pi_a / np.sqrt(2.0 * np.pi * var_a) * np.exp(-0.5 * (x - mu_a) ** 2 / var_a)
+        )
+        gb = (
+            (1.0 - pi_a)
+            / np.sqrt(2.0 * np.pi * var_b)
+            * np.exp(-0.5 * (x - mu_b) ** 2 / var_b)
+        )
         denom = ga + gb + eps
         wa = ga / denom
         wb = gb / denom
@@ -1596,15 +1643,27 @@ def gmm_bimodality(
         pi_a_new = float(Na / n)
         if (abs(mu_a_new - mu_a) + abs(mu_b_new - mu_b)) < 1e-9:
             mu_a, mu_b, var_a, var_b, pi_a = (
-                mu_a_new, mu_b_new, var_a_new, var_b_new, pi_a_new,
+                mu_a_new,
+                mu_b_new,
+                var_a_new,
+                var_b_new,
+                pi_a_new,
             )
             break
         mu_a, mu_b, var_a, var_b, pi_a = (
-            mu_a_new, mu_b_new, var_a_new, var_b_new, pi_a_new,
+            mu_a_new,
+            mu_b_new,
+            var_a_new,
+            var_b_new,
+            pi_a_new,
         )
 
     g_a = pi_a / np.sqrt(2.0 * np.pi * var_a) * np.exp(-0.5 * (x - mu_a) ** 2 / var_a)
-    g_b = (1.0 - pi_a) / np.sqrt(2.0 * np.pi * var_b) * np.exp(-0.5 * (x - mu_b) ** 2 / var_b)
+    g_b = (
+        (1.0 - pi_a)
+        / np.sqrt(2.0 * np.pi * var_b)
+        * np.exp(-0.5 * (x - mu_b) ** 2 / var_b)
+    )
     ll2 = float(np.sum(np.log(g_a + g_b + eps)))
     aic2 = 2 * 5 - 2 * ll2
     delta_aic = aic1 - aic2
@@ -1618,11 +1677,15 @@ def gmm_bimodality(
 
     return GMMBimodality(
         n=n,
-        mu1=mu1, sigma1=float(np.sqrt(var1)),
-        mu_a=float(mu_a), sigma_a=float(np.sqrt(var_a)),
-        mu_b=float(mu_b), sigma_b=float(np.sqrt(var_b)),
+        mu1=mu1,
+        sigma1=float(np.sqrt(var1)),
+        mu_a=float(mu_a),
+        sigma_a=float(np.sqrt(var_a)),
+        mu_b=float(mu_b),
+        sigma_b=float(np.sqrt(var_b)),
         pi_a=float(pi_a),
-        aic1=float(aic1), aic2=float(aic2),
+        aic1=float(aic1),
+        aic2=float(aic2),
         delta_aic=float(delta_aic),
         two_component_preferred=bool(delta_aic > DEFAULT_GMM_DELTA_AICC),
         dominant_weight=float(max(pi_a, 1.0 - pi_a)),
@@ -1692,7 +1755,9 @@ def group_spur_bins(
 # Time-domain noise estimate from the FID tail
 # ---------------------------------------------------------------------------
 def estimate_sigma_time_from_tail(
-    fid: np.ndarray, *, tail_fraction: float = 0.30,
+    fid: np.ndarray,
+    *,
+    tail_fraction: float = 0.30,
 ) -> float:
     """Empirical FID-tail sigma_t for the calibration noise reference.
 
@@ -1885,7 +1950,9 @@ def extract_tau_majority(
         raise ValueError("sigma_time must be positive")
 
     cal = stft_calibration(
-        active, sample_dt_us, sigma_t,
+        active,
+        sample_dt_us,
+        sigma_t,
         n_seg=n_seg,
         t_sigma=t_sigma,
         tau_max_us=tau_max_us,
@@ -1917,9 +1984,7 @@ def extract_tau_majority(
         # sub-1 % on the single-isolated-line case-1 grid but over-
         # corrects on multi-line spectra (inter-line skirt interference
         # is not Rician-Gaussian); default off.
-        polish_sigma = (
-            float(cal.sigma_frame) if polish_noise_debias else None
-        )
+        polish_sigma = float(cal.sigma_frame) if polish_noise_debias else None
         polish_mask = contributor_mask
         if polish_snr_cap is not None and polish_snr_cap > 0.0:
             # Polish only the contributors whose per-bin SNR sits below the
@@ -1929,7 +1994,10 @@ def extract_tau_majority(
             polish_mask = polish_mask & (cal.snr_per_bin < float(polish_snr_cap))
         if polish_mask.any():
             tau_polished, _C_polished = _nls_polish_step(
-                cal.mag, cal.a_centers_us, cal.tau_per_bin, cal.C_per_bin,
+                cal.mag,
+                cal.a_centers_us,
+                cal.tau_per_bin,
+                cal.C_per_bin,
                 mask=polish_mask,
                 tau_clip_us=(0.1, float(cal.tau_max_us)),
                 n_iter=int(polish_n_iter),
@@ -1994,9 +2062,8 @@ def extract_tau_majority(
         if cond_count
         else f"only {contributor_bins.size} contributors (< {min_contributors})"
     )
-    cond_bimodal = (
-        (not bm.two_component_preferred)
-        or (bm.dominant_weight >= bimodality_dominant_fraction)
+    cond_bimodal = (not bm.two_component_preferred) or (
+        bm.dominant_weight >= bimodality_dominant_fraction
     )
     notes.append(
         "ok"
@@ -2038,8 +2105,12 @@ def extract_tau_majority(
         "STFT tau calibration: tau_maj=%.3f sigma_tau=%.3f us "
         "(n_contrib=%d, n_spur_bins=%d, n_clusters=%d, bimodal=%s, "
         "preconditions=%s, n_bands=%d)",
-        tau_maj, sigma_tau, contributor_bins.size, spur_bin_indices.size,
-        len(spur_clusters), bm.two_component_preferred,
+        tau_maj,
+        sigma_tau,
+        contributor_bins.size,
+        spur_bin_indices.size,
+        len(spur_clusters),
+        bm.two_component_preferred,
         "pass" if all_passed else "fail",
         len(bands),
     )
@@ -2085,25 +2156,22 @@ def extract_tau_majority(
 # ``stage2b_tau_G_calibration`` group is driven by the pure-Gaussian
 # estimator so its τ_G matches the Stage 5 ``shape='gaussian'`` envelope.
 # ---------------------------------------------------------------------------
-def _voigt_residuals(
-    params: np.ndarray, a: np.ndarray, y: np.ndarray
-) -> np.ndarray:
+def _voigt_residuals(params: np.ndarray, a: np.ndarray, y: np.ndarray) -> np.ndarray:
     C, tau_L, tau_G = params
-    return C * np.exp(-a / tau_L) * np.exp(-((a / tau_G) ** 2)) - y
+    return cast(
+        np.ndarray,
+        C * np.exp(-a / tau_L) * np.exp(-((a / tau_G) ** 2)) - y,
+    )
 
 
-def _gauss_residuals(
-    params: np.ndarray, a: np.ndarray, y: np.ndarray
-) -> np.ndarray:
+def _gauss_residuals(params: np.ndarray, a: np.ndarray, y: np.ndarray) -> np.ndarray:
     C, tau_G = params
-    return C * np.exp(-((a / tau_G) ** 2)) - y
+    return cast(np.ndarray, C * np.exp(-((a / tau_G) ** 2)) - y)
 
 
-def _exp_residuals(
-    params: np.ndarray, a: np.ndarray, y: np.ndarray
-) -> np.ndarray:
+def _exp_residuals(params: np.ndarray, a: np.ndarray, y: np.ndarray) -> np.ndarray:
     C, tau_L = params
-    return C * np.exp(-a / tau_L) - y
+    return cast(np.ndarray, C * np.exp(-a / tau_L) - y)
 
 
 def _fit_exp_nls_single(
@@ -2126,7 +2194,7 @@ def _fit_exp_nls_single(
         method="trf",
         max_nfev=200,
     )
-    rss = float(np.sum(res.fun ** 2))
+    rss = float(np.sum(res.fun**2))
     return res.x, rss, bool(res.success)
 
 
@@ -2165,7 +2233,7 @@ def _fit_voigt_nls_multistart(
             )
         except Exception:  # noqa: BLE001
             continue
-        rss = float(np.sum(res.fun ** 2))
+        rss = float(np.sum(res.fun**2))
         if rss < best_rss:
             best_rss = rss
             best = (res.x, rss, bool(res.success), tG0)
@@ -2212,7 +2280,7 @@ def _fit_gauss_nls_multistart(
             )
         except Exception:  # noqa: BLE001
             continue
-        rss = float(np.sum(res.fun ** 2))
+        rss = float(np.sum(res.fun**2))
         if rss < best_rss:
             best_rss = rss
             best = (res.x, rss, bool(res.success), tG0)
@@ -2378,7 +2446,9 @@ def extract_tau_G_majority(
         raise ValueError("sigma_time must be positive")
 
     cal = stft_calibration(
-        active, sample_dt_us, sigma_t,
+        active,
+        sample_dt_us,
+        sigma_t,
         n_seg=n_seg,
         t_sigma=t_sigma,
         tau_max_us=tau_max_us,
@@ -2413,9 +2483,9 @@ def extract_tau_G_majority(
     tau_G_cap = float(tau_G_upper_fraction) * float(tau_G_bound_hi)
 
     fits = cal.shape_fits
-    assert fits is not None and fits.shape == "gaussian", (
-        "stft_calibration(shape='gaussian') must populate shape_fits"
-    )
+    assert (
+        fits is not None and fits.shape == "gaussian"
+    ), "stft_calibration(shape='gaussian') must populate shape_fits"
     tau_G_arr = np.asarray(fits.tau_G_gauss, dtype=float)
     rss_g_arr = np.asarray(fits.rss_gauss, dtype=float)
     rss_e_arr = np.asarray(fits.rss_exp_nls, dtype=float)
@@ -2495,9 +2565,8 @@ def extract_tau_G_majority(
         if cond_count
         else f"only {contributor_bins.size} eligible bins (< {min_contributors})"
     )
-    cond_bimodal = (
-        (not bm.two_component_preferred)
-        or (bm.dominant_weight >= bimodality_dominant_fraction)
+    cond_bimodal = (not bm.two_component_preferred) or (
+        bm.dominant_weight >= bimodality_dominant_fraction
     )
     notes.append(
         "ok"
@@ -2538,9 +2607,14 @@ def extract_tau_G_majority(
         "STFT τ_G calibration: tau_G_maj=%.3f sigma_tau_G=%.3f us "
         "(n_eligible=%d / contributor_pool=%d, n_spur_bins=%d, "
         "n_clusters=%d, preconditions=%s, n_bands=%d)",
-        tau_maj, sigma_tau, contributor_bins.size, bin_indices.size,
-        spur_bin_indices.size, len(spur_clusters),
-        "pass" if all_passed else "fail", len(bands),
+        tau_maj,
+        sigma_tau,
+        contributor_bins.size,
+        bin_indices.size,
+        spur_bin_indices.size,
+        len(spur_clusters),
+        "pass" if all_passed else "fail",
+        len(bands),
     )
 
     return TauCalibrationResult(
@@ -2595,9 +2669,9 @@ def _three_way_rows_from_shape_fits(
     per-model τ / RSS / converged arrays straight from it.
     """
     fits = cal.shape_fits
-    assert fits is not None and fits.shape == "best_of_three", (
-        "stft_calibration(shape='best_of_three') must populate shape_fits"
-    )
+    assert (
+        fits is not None and fits.shape == "best_of_three"
+    ), "stft_calibration(shape='best_of_three') must populate shape_fits"
     rss_e = np.asarray(fits.rss_exp_nls, dtype=float)
     rss_g = np.asarray(fits.rss_gauss, dtype=float)
     rss_v = np.asarray(fits.rss_voigt, dtype=float)
@@ -2618,26 +2692,31 @@ def _three_way_rows_from_shape_fits(
         aicc_gauss = float(_aicc(np.array([rss_g[i]]), n_seg, k=2)[0])
         aicc_voigt = float(_aicc(np.array([rss_v[i]]), n_seg, k=3)[0])
         scores = {"exp": aicc_exp, "gauss": aicc_gauss, "voigt": aicc_voigt}
-        verdict = min(scores, key=scores.get)
-        rows.append(dict(
-            idx=i,
-            freq=float(freq_mol_mhz[i]),
-            snr=float(cal.snr_per_bin[i]),
-            tau_L_exp=float(tau_L_exp[i]),
-            tau_G_gauss=float(tau_G_gauss[i]),
-            tau_L_voigt=float(tau_L_voigt[i]),
-            tau_G_voigt=float(tau_G_voigt[i]),
-            aicc_exp=aicc_exp, aicc_gauss=aicc_gauss, aicc_voigt=aicc_voigt,
-            d_aicc_gauss_exp=aicc_gauss - aicc_exp,
-            d_aicc_voigt_exp=aicc_voigt - aicc_exp,
-            d_aicc_voigt_gauss=aicc_voigt - aicc_gauss,
-            verdict=verdict,
-        ))
+        verdict = min(scores, key=lambda k: scores[k])
+        rows.append(
+            dict(
+                idx=i,
+                freq=float(freq_mol_mhz[i]),
+                snr=float(cal.snr_per_bin[i]),
+                tau_L_exp=float(tau_L_exp[i]),
+                tau_G_gauss=float(tau_G_gauss[i]),
+                tau_L_voigt=float(tau_L_voigt[i]),
+                tau_G_voigt=float(tau_G_voigt[i]),
+                aicc_exp=aicc_exp,
+                aicc_gauss=aicc_gauss,
+                aicc_voigt=aicc_voigt,
+                d_aicc_gauss_exp=aicc_gauss - aicc_exp,
+                d_aicc_voigt_exp=aicc_voigt - aicc_exp,
+                d_aicc_voigt_gauss=aicc_voigt - aicc_gauss,
+                verdict=verdict,
+            )
+        )
     return rows
 
 
 def _shape_recommendation_bin_clean(
-    row: Dict[str, Any], tau_cap_us: float,
+    row: Dict[str, Any],
+    tau_cap_us: float,
 ) -> bool:
     """Per-bin acceptance gate for the 3-way recommendation pool.
 
@@ -2648,7 +2727,7 @@ def _shape_recommendation_bin_clean(
     flat or noise-dominated) and gets dropped before the SNR-weighted
     tally.
     """
-    return (
+    return bool(
         row["tau_L_exp"] < tau_cap_us
         or row["tau_G_gauss"] < tau_cap_us
         or row["tau_L_voigt"] < tau_cap_us
@@ -2692,9 +2771,7 @@ def _aggregate_shape_verdict(
     vote_rates: Dict[str, float] = {}
     for m in ("exp", "gauss", "voigt"):
         mask = np.array([r["verdict"] == m for r in rows], dtype=bool)
-        vote_rates[m] = (
-            float(np.sum(snrs[mask]) / total_w) if total_w > 0 else 0.0
-        )
+        vote_rates[m] = float(np.sum(snrs[mask]) / total_w) if total_w > 0 else 0.0
 
     median_d_aicc = {
         "gauss_vs_exp": float(np.median([r["d_aicc_gauss_exp"] for r in rows])),
@@ -2841,7 +2918,9 @@ def compute_shape_recommendation(
         raise ValueError("sigma_time must be positive")
 
     cal = stft_calibration(
-        active, sample_dt_us, sigma_t,
+        active,
+        sample_dt_us,
+        sigma_t,
         n_seg=n_seg,
         t_sigma=t_sigma,
         tau_max_us=tau_max_us,
@@ -2863,7 +2942,10 @@ def compute_shape_recommendation(
     bin_indices = bin_indices[np.argsort(freq_mol_mhz[bin_indices])]
 
     rows = _three_way_rows_from_shape_fits(
-        cal, bin_indices, freq_mol_mhz, n_seg=int(n_seg),
+        cal,
+        bin_indices,
+        freq_mol_mhz,
+        n_seg=int(n_seg),
     )
     # Per-bin acceptance: keep bins where at least one of the three
     # candidates produces a τ that lies inside the bound, so genuine
@@ -2872,7 +2954,8 @@ def compute_shape_recommendation(
     tau_cap_us = float(DEFAULT_TAU_G_UPPER_FRACTION) * float(tau_bound_hi)
     rows = [r for r in rows if _shape_recommendation_bin_clean(r, tau_cap_us)]
     verdict = _aggregate_shape_verdict(
-        rows, pure_margin_threshold=float(pure_margin_threshold),
+        rows,
+        pure_margin_threshold=float(pure_margin_threshold),
     )
 
     logger.info(

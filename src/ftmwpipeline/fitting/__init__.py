@@ -26,19 +26,6 @@ from .peak_model import (
     sideband_sign,
     to_baseband_offset,
 )
-from .validation import (
-    DEFAULT_N_EFF_KIND,
-    calculate_aic,
-    calculate_aicc,
-    calculate_chi_squared_improvement,
-    calculate_hwhm_from_apodization,
-    calculate_noise_weighted_chi2,
-    calculate_rms_residuals,
-    effective_sample_size,
-    feature_fwhm,
-    passes_significance_test,
-    validate_peak_separation,
-)
 from .plan_execution import (
     DEFAULT_MAX_THAW_ROUNDS,
     DEFAULT_RESIDUAL_EDGE_M,
@@ -57,11 +44,6 @@ from .plan_execution import (
     select_contributor_to_thaw,
     subtract_frozen_background,
 )
-from .result_conversion import (
-    plan_fit_outcome_to_spectrum_fit,
-    window_outcome_to_fitting_result,
-    window_outcome_to_spectral_window,
-)
 from .residual_rescue import (
     DEFAULT_RESCUE_MAX_ROUNDS,
     DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
@@ -72,6 +54,24 @@ from .residual_rescue import (
 from .residual_screening import (
     ResidualPeakCandidate,
     find_residual_peaks,
+)
+from .result_conversion import (
+    plan_fit_outcome_to_spectrum_fit,
+    window_outcome_to_fitting_result,
+    window_outcome_to_spectral_window,
+)
+from .validation import (
+    DEFAULT_N_EFF_KIND,
+    calculate_aic,
+    calculate_aicc,
+    calculate_chi_squared_improvement,
+    calculate_hwhm_from_apodization,
+    calculate_noise_weighted_chi2,
+    calculate_rms_residuals,
+    effective_sample_size,
+    feature_fwhm,
+    passes_significance_test,
+    validate_peak_separation,
 )
 from .window_fit import (
     AddStep,

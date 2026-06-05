@@ -51,12 +51,12 @@ def _persisted_phase_ramp(
     its magnitude). Returns ``ones`` when ``start_us == 0``.
     """
     if start_us == 0.0:
-        return np.ones(np.asarray(frequencies).shape, dtype=np.complex128)
+        return cast(
+            np.ndarray, np.ones(np.asarray(frequencies).shape, dtype=np.complex128)
+        )
     s = sideband_sign(sideband)
     f_bb = s * (np.asarray(frequencies, dtype=float) - float(probe_freq_mhz))
-    return cast(
-        np.ndarray, np.exp(-1j * 2.0 * np.pi * f_bb * float(start_us))
-    )
+    return cast(np.ndarray, np.exp(-1j * 2.0 * np.pi * f_bb * float(start_us)))
 
 
 def _window_model_on_persisted_grid(
@@ -142,8 +142,12 @@ def _plot_overview(
 ) -> plt.Figure:
     """Two-panel overview: spectrum + model overlay; magnitude residual."""
     model = _window_model_on_persisted_grid(
-        frequencies, fit, sideband, acquisition_us,
-        model_amplitude_scale, persisted_phase_ramp,
+        frequencies,
+        fit,
+        sideband,
+        acquisition_us,
+        model_amplitude_scale,
+        persisted_phase_ramp,
     )
     fig, (ax_top, ax_bot) = plt.subplots(
         2, 1, figsize=figsize, sharex=True, gridspec_kw={"height_ratios": [3, 1]}
@@ -200,8 +204,12 @@ def _plot_audit_trail_on_freq(
     audit = fit_window.audit_trail
     if not audit:
         ax.text(
-            0.5, 0.5, "no audit trail",
-            ha="center", va="center", transform=ax.transAxes,
+            0.5,
+            0.5,
+            "no audit trail",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
         )
         ax.set_xlim(freq_lo, freq_hi)
         ax.set_xlabel("frequency (MHz)")
@@ -213,13 +221,17 @@ def _plot_audit_trail_on_freq(
         candidate_mhz = center_mhz + s * step.candidate_offset_mhz
         # Bar from center to candidate, oriented along frequency axis.
         ax.plot(
-            [center_mhz, candidate_mhz], [i, i],
+            [center_mhz, candidate_mhz],
+            [i, i],
             color=_AUDIT_COLORS.get(step.decision, "0.4"),
-            lw=3.0, solid_capstyle="butt",
+            lw=3.0,
+            solid_capstyle="butt",
         )
         ax.plot(
-            [candidate_mhz], [i],
-            marker="o", markersize=5,
+            [candidate_mhz],
+            [i],
+            marker="o",
+            markersize=5,
             color=_AUDIT_COLORS.get(step.decision, "0.4"),
         )
         # Text label sits just below the marker. Horizontal alignment
@@ -237,9 +249,12 @@ def _plot_audit_trail_on_freq(
         else:
             ha = "center"
         ax.text(
-            candidate_mhz, i - 0.3,
+            candidate_mhz,
+            i - 0.3,
             f"{step.decision} (p={step.p_value:.1e})",
-            va="top", ha=ha, fontsize=7,
+            va="top",
+            ha=ha,
+            fontsize=7,
         )
     ax.axvline(center_mhz, color="black", linewidth=0.5, alpha=0.5)
     ax.set_xlim(freq_lo, freq_hi)
@@ -265,8 +280,12 @@ def _plot_residual_histogram(
     sigma_c = float(np.median(sigma_slice)) / np.sqrt(2.0)
     if sigma_c <= 0.0 or mag.size == 0:
         ax.text(
-            0.5, 0.5, "no residual data",
-            ha="center", va="center", transform=ax.transAxes,
+            0.5,
+            0.5,
+            "no residual data",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
         )
         ax.set_axis_off()
         return
@@ -283,9 +302,14 @@ def _plot_residual_histogram(
     x_max = max(float(mag.max()), 5.0 * sigma_c)
     x = np.linspace(0.0, x_max, 400)
     rayleigh = (x / (sigma_c**2)) * np.exp(-(x**2) / (2.0 * sigma_c**2))
-    ax.plot(x, rayleigh, color="tab:purple", lw=1.2, label=r"Rayleigh($\sigma/\sqrt{2}$)")
+    ax.plot(
+        x, rayleigh, color="tab:purple", lw=1.2, label=r"Rayleigh($\sigma/\sqrt{2}$)"
+    )
     ax.axvline(
-        3.0 * sigma_c, color="tab:red", lw=0.7, ls="--",
+        3.0 * sigma_c,
+        color="tab:red",
+        lw=0.7,
+        ls="--",
         label=r"$3\sigma_c$ (~99%)",
     )
     ax.set_xlabel("|residual|")
@@ -303,17 +327,28 @@ def _plot_data_overlay(
 ) -> None:
     """Data (black markers + faint connecting lines) and model on one axis."""
     ax.plot(
-        f_slice, data,
-        color="#00000044", lw=0.7, zorder=1,
+        f_slice,
+        data,
+        color="#00000044",
+        lw=0.7,
+        zorder=1,
     )
     ax.plot(
-        f_slice, data,
-        marker="o", linestyle="None", markersize=3,
-        markerfacecolor="black", markeredgecolor="black", zorder=2,
+        f_slice,
+        data,
+        marker="o",
+        linestyle="None",
+        markersize=3,
+        markerfacecolor="black",
+        markeredgecolor="black",
+        zorder=2,
     )
     ax.plot(
-        f_slice, model,
-        color=model_color, lw=1.2, zorder=3,
+        f_slice,
+        model,
+        color=model_color,
+        lw=1.2,
+        zorder=3,
     )
 
 
@@ -336,14 +371,24 @@ def _plot_residual_with_band(
         ax.axhline(band, color="0.3", lw=0.6, ls="--")
         if is_magnitude:
             ax.text(
-                f_slice[0], band, " 3σ_c (~99%)",
-                fontsize=7, va="bottom", ha="left", color="0.3",
+                float(f_slice[0]),
+                band,
+                " 3σ_c (~99%)",
+                fontsize=7,
+                va="bottom",
+                ha="left",
+                color="0.3",
             )
         else:
             ax.axhline(-band, color="0.3", lw=0.6, ls="--")
             ax.text(
-                f_slice[0], band, " ±3σ_c",
-                fontsize=7, va="bottom", ha="left", color="0.3",
+                float(f_slice[0]),
+                band,
+                " ±3σ_c",
+                fontsize=7,
+                va="bottom",
+                ha="left",
+                color="0.3",
             )
 
 
@@ -442,30 +487,59 @@ def _plot_per_window_detail(
     ax_audit = fig.add_subplot(4, 2, 7, sharex=ax_re_data)
     ax_hist = fig.add_subplot(4, 2, 8)
     axes_freq_x = (
-        ax_re_data, ax_re_res, ax_im_data, ax_im_res,
-        ax_mag_data, ax_mag_res, ax_audit,
+        ax_re_data,
+        ax_re_res,
+        ax_im_data,
+        ax_im_res,
+        ax_mag_data,
+        ax_mag_res,
+        ax_audit,
     )
 
     _plot_data_overlay(
-        ax_re_data, f_slice, np.real(z_slice), np.real(model_slice), "tab:red",
+        ax_re_data,
+        f_slice,
+        np.real(z_slice),
+        np.real(model_slice),
+        "tab:red",
     )
     _plot_residual_with_band(
-        ax_re_res, f_slice, np.real(residual), band_re_im,
-        "tab:red", is_magnitude=False,
+        ax_re_res,
+        f_slice,
+        np.real(residual),
+        band_re_im,
+        "tab:red",
+        is_magnitude=False,
     )
     _plot_data_overlay(
-        ax_im_data, f_slice, np.imag(z_slice), np.imag(model_slice), "tab:blue",
+        ax_im_data,
+        f_slice,
+        np.imag(z_slice),
+        np.imag(model_slice),
+        "tab:blue",
     )
     _plot_residual_with_band(
-        ax_im_res, f_slice, np.imag(residual), band_re_im,
-        "tab:blue", is_magnitude=False,
+        ax_im_res,
+        f_slice,
+        np.imag(residual),
+        band_re_im,
+        "tab:blue",
+        is_magnitude=False,
     )
     _plot_data_overlay(
-        ax_mag_data, f_slice, np.abs(z_slice), np.abs(model_slice), "tab:purple",
+        ax_mag_data,
+        f_slice,
+        np.abs(z_slice),
+        np.abs(model_slice),
+        "tab:purple",
     )
     _plot_residual_with_band(
-        ax_mag_res, f_slice, np.abs(residual), band_mag,
-        "tab:purple", is_magnitude=True,
+        ax_mag_res,
+        f_slice,
+        np.abs(residual),
+        band_mag,
+        "tab:purple",
+        is_magnitude=True,
     )
     ax_re_data.set_ylabel("Re")
     ax_im_data.set_ylabel("Im")
@@ -479,15 +553,18 @@ def _plot_per_window_detail(
     ax_re_res.set_title("residual (data - model)", fontsize=9)
 
     _plot_audit_trail_on_freq(
-        ax_audit, window_fit, sideband, center,
-        float(min(lo, hi)), float(max(lo, hi)),
+        ax_audit,
+        window_fit,
+        sideband,
+        center,
+        float(min(lo, hi)),
+        float(max(lo, hi)),
     )
     _plot_residual_histogram(ax_hist, residual, sigma_slice)
 
     # Hide redundant x-tick labels on the rows that share the freq axis
     # except for the bottom-most (audit) row, which carries the label.
-    for ax in (ax_re_data, ax_re_res, ax_im_data, ax_im_res,
-               ax_mag_data, ax_mag_res):
+    for ax in (ax_re_data, ax_re_res, ax_im_data, ax_im_res, ax_mag_data, ax_mag_res):
         ax.tick_params(axis="x", labelbottom=False)
     ax_audit.set_xlabel("frequency (MHz)", fontsize=9)
     for ax in axes_freq_x + (ax_hist,):

@@ -16,8 +16,8 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline.core.data_structures import FID
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
-from ftmwpipeline.preprocessing.start_detection import detect_start_time
 from ftmwpipeline.pipeline import Pipeline
+from ftmwpipeline.preprocessing.start_detection import detect_start_time
 
 # Coarse, band-restricted sweep so the three runs are quick but still resolve
 # the chirp-end corner on the 2638 fixture.

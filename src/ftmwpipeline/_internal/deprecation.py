@@ -65,8 +65,5 @@ def warn_legacy_flag(
     ``estimate_noise``). Caller checks the flag is truthy before
     invoking this helper.
     """
-    msg = (
-        f"{func_name}: legacy flag {flag_name!r} is deprecated; "
-        f"{migration_hint}"
-    )
+    msg = f"{func_name}: legacy flag {flag_name!r} is deprecated; " f"{migration_hint}"
     warnings.warn(msg, DeprecationWarning, stacklevel=stacklevel)

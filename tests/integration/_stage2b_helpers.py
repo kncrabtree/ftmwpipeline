@@ -23,6 +23,7 @@ def skip_auto_recommend_settings():
     the resolver's hard defaults.
     """
     from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
+
     s = TauCalibrationSettings()
     s.recommendation.auto_recommend = False
     return s
@@ -36,9 +37,5 @@ def skip_auto_recommend_preset_yaml(dest_dir: Path) -> Path:
     ``stage2b:`` block.
     """
     p = dest_dir / "skip_auto_recommend.yaml"
-    p.write_text(
-        "stage2b:\n"
-        "  recommendation:\n"
-        "    auto_recommend: false\n"
-    )
+    p.write_text("stage2b:\n" "  recommendation:\n" "    auto_recommend: false\n")
     return p

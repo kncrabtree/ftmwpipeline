@@ -10,8 +10,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .utils import setup_logging, print_error
 from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
+from .utils import print_error, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -58,9 +58,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             if p.classification and p.classification.value == "medium"
         )
         n_weak = sum(
-            1
-            for p in promoted
-            if p.classification and p.classification.value == "weak"
+            1 for p in promoted if p.classification and p.classification.value == "weak"
         )
         print("\nPeak detection completed successfully!")
         print(f"  Active acquisition T: {result['acquisition_us']:.2f} us")

@@ -16,8 +16,8 @@ import argparse
 import logging
 from typing import Any, Dict, Optional
 
-from ..core.start_detection_settings import StartDetectionSettings
 from .._internal.start_detection_impl import detect_start_time_impl
+from ..core.start_detection_settings import StartDetectionSettings
 from .utils import print_error, setup_logging
 
 logger = logging.getLogger(__name__)

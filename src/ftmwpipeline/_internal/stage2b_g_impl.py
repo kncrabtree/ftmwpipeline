@@ -74,7 +74,9 @@ def _read_canonical_ft_settings(file_path: str) -> FTSettings:
     settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     if settings is None:
         raise StageDependencyError(
-            STAGE_NAME, ["stage1_complex_ft"], Path(file_path),
+            STAGE_NAME,
+            ["stage1_complex_ft"],
+            Path(file_path),
         )
     return settings
 
@@ -199,7 +201,9 @@ def calibrate_tau_G_impl(
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
             raise StageDependencyError(
-                STAGE_NAME, ["stage2_noise_result"], file_path_obj,
+                STAGE_NAME,
+                ["stage2_noise_result"],
+                file_path_obj,
             )
 
     explicit = _build_explicit_from_kwargs(
@@ -231,9 +235,7 @@ def calibrate_tau_G_impl(
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 
-    start_us = (
-        float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
-    )
+    start_us = float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
     end_us = (
         float(ft_settings.end_us)
         if ft_settings.end_us is not None
@@ -279,15 +281,11 @@ def calibrate_tau_G_impl(
     snr_min_v = _required_float(gauss.snr_min, "gaussian.snr_min")
     bound_lo_v = _required_float(gauss.tau_G_bound_lo, "gaussian.tau_G_bound_lo")
     bound_hi_v = _required_float(gauss.tau_G_bound_hi, "gaussian.tau_G_bound_hi")
-    delta_min_v = _required_float(
-        gauss.delta_chi2r_min, "gaussian.delta_chi2r_min"
-    )
+    delta_min_v = _required_float(gauss.delta_chi2r_min, "gaussian.delta_chi2r_min")
     upper_frac_v = _required_float(
         gauss.tau_G_upper_fraction, "gaussian.tau_G_upper_fraction"
     )
-    min_contrib_v = _required_int(
-        gauss.min_contributors, "gaussian.min_contributors"
-    )
+    min_contrib_v = _required_int(gauss.min_contributors, "gaussian.min_contributors")
     if gauss.tau_G_seeds is None:
         raise AssertionError(
             "resolved TauCalibrationSettings.gaussian.tau_G_seeds is None; "
@@ -364,13 +362,16 @@ def calibrate_tau_G_impl(
     }
     save_tau_G_calibration_impl(file_path, result, parameters_used=parameters_used)
     save_tau_calibration_settings_to_h5(
-        file_path, resolved, preset_name=preset_name,
+        file_path,
+        resolved,
+        preset_name=preset_name,
     )
     _update_stage_completion(file_path, STAGE_NAME)
     invalidated = invalidate_downstream_stages(file_path, STAGE_NAME)
     if invalidated:
         logger.info(
-            "Stage 2b τ_G re-run invalidated downstream stages: %s", invalidated,
+            "Stage 2b τ_G re-run invalidated downstream stages: %s",
+            invalidated,
         )
 
     if resolved.recommendation.auto_recommend:
@@ -403,9 +404,7 @@ def save_tau_G_calibration_impl(
         grp.attrs["creation_time"] = datetime.now().isoformat()
         grp.attrs["shape"] = "gaussian"
         if parameters_used is not None:
-            grp.attrs["parameters_used"] = json.dumps(
-                parameters_used, default=str
-            )
+            grp.attrs["parameters_used"] = json.dumps(parameters_used, default=str)
 
 
 def load_tau_G_calibration_impl(file_path: str) -> Dict[str, Any]:
@@ -425,9 +424,7 @@ def load_tau_G_calibration_impl(file_path: str) -> Dict[str, Any]:
             try:
                 parameters_used = json.loads(grp.attrs["parameters_used"])
             except (json.JSONDecodeError, TypeError):
-                logger.warning(
-                    "Could not parse saved τ_G-calibration parameters"
-                )
+                logger.warning("Could not parse saved τ_G-calibration parameters")
     return {
         "tau_G_calibration": result,
         "creation_time": creation_time,

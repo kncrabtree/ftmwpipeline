@@ -299,7 +299,8 @@ def window_outcome_to_fitting_result(
     tau_us = inner.tau_us
     tau_eff = (
         effective_tau_shape(inner.shape, tau_us, acquisition_us)
-        if tau_us > 0 else float("nan")
+        if tau_us > 0
+        else float("nan")
     )
     tau_error = inner.tau_error
     # d(1/tau)/d(tau) = -1/tau^2 -> decay_rate_error = tau_error / tau^2.
@@ -362,9 +363,7 @@ def window_outcome_to_fitting_result(
         )
 
     shape_attr = inner.shape
-    shape_str = (
-        shape_attr.value if hasattr(shape_attr, "value") else str(shape_attr)
-    )
+    shape_str = shape_attr.value if hasattr(shape_attr, "value") else str(shape_attr)
     result = FittingResult(
         success=bool(inner.success),
         fitted_spectrum=np.asarray(outcome.full_fitted_spectrum, dtype=np.complex128),
@@ -449,9 +448,7 @@ def window_outcome_to_fitting_result(
     # Audit trail and per-window thaw events.
     result.audit_trail = [_convert_audit_step(s_) for s_ in fit.audit_trail]
     result.thaw_events = [_convert_thaw_event(e) for e in outcome.thaw_events]
-    result.rescue_events = [
-        _convert_rescue_event(e) for e in outcome.rescue_events
-    ]
+    result.rescue_events = [_convert_rescue_event(e) for e in outcome.rescue_events]
 
     return result
 
@@ -533,9 +530,7 @@ def plan_fit_outcome_to_spectrum_fit(
         fitted_peaks=fitted_peaks,
         thaw_history=[_convert_thaw_event(e) for e in plan_outcome.thaw_history],
         replan_history=[_convert_replan_event(e) for e in plan_outcome.replan_history],
-        rescue_history=[
-            _convert_rescue_event(e) for e in plan_outcome.rescue_history
-        ],
+        rescue_history=[_convert_rescue_event(e) for e in plan_outcome.rescue_history],
         final_plan_revision=int(plan_outcome.final_plan_revision),
         parameters=dict(parameters) if parameters is not None else {},
         diagnostics=dict(diagnostics) if diagnostics is not None else {},

@@ -79,9 +79,7 @@ def test_narrow_noninteger_feature_rejected():
 
 def test_low_snr_integer_spike_rejected():
     freqs, spec, sig_c = _grid([(30720.0, 3.0, 0.0)], noise=1.0)
-    spurs = detect_active_ft_spurs(
-        freqs, spec, sig_c, band=BAND, snr_threshold=5.0
-    )
+    spurs = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND, snr_threshold=5.0)
     assert spurs == []
 
 
@@ -89,13 +87,14 @@ def test_low_snr_integer_spike_rejected():
 # Joint gate
 # ---------------------------------------------------------------------------
 def test_gate_union_of_narrow_and_saturated():
-    narrow = detect_active_ft_spurs(
-        *_grid([(30720.0, 100.0, 0.0)]), band=BAND
-    )
+    narrow = detect_active_ft_spurs(*_grid([(30720.0, 100.0, 0.0)]), band=BAND)
     # A split-bin spur the frequency test missed, caught by the flat catalogue.
     sat = SpurCluster(
-        center_freq_mhz=39040.0, peak_bin_index=10, n_bins=3,
-        bin_indices=(9, 10, 11), saturated=True,
+        center_freq_mhz=39040.0,
+        peak_bin_index=10,
+        n_bins=3,
+        bin_indices=(9, 10, 11),
+        saturated=True,
     )
     gated = gate_spurs(narrow, [sat])
     centers = sorted(g.integer_mhz for g in gated)
@@ -106,27 +105,34 @@ def test_gate_rejects_unsaturated_integer_cluster():
     # An integer-MHz cls==1 cluster that is NOT saturated (the erratic
     # beat/blend false positive) must not enter the gated set.
     sat = SpurCluster(
-        center_freq_mhz=38744.0, peak_bin_index=10, n_bins=1,
-        bin_indices=(10,), saturated=False,
+        center_freq_mhz=38744.0,
+        peak_bin_index=10,
+        n_bins=1,
+        bin_indices=(10,),
+        saturated=False,
     )
     assert gate_spurs([], [sat]) == []
 
 
 def test_gate_rejects_noninteger_saturated_cluster():
     sat = SpurCluster(
-        center_freq_mhz=33421.1, peak_bin_index=10, n_bins=1,
-        bin_indices=(10,), saturated=True,
+        center_freq_mhz=33421.1,
+        peak_bin_index=10,
+        n_bins=1,
+        bin_indices=(10,),
+        saturated=True,
     )
     assert gate_spurs([], [sat]) == []
 
 
 def test_gate_merges_agreeing_detections():
-    narrow = detect_active_ft_spurs(
-        *_grid([(35840.0, 100.0, 0.0)]), band=BAND
-    )
+    narrow = detect_active_ft_spurs(*_grid([(35840.0, 100.0, 0.0)]), band=BAND)
     sat = SpurCluster(
-        center_freq_mhz=35840.0, peak_bin_index=10, n_bins=3,
-        bin_indices=(9, 10, 11), saturated=True,
+        center_freq_mhz=35840.0,
+        peak_bin_index=10,
+        n_bins=3,
+        bin_indices=(9, 10, 11),
+        saturated=True,
     )
     gated = gate_spurs(narrow, [sat])
     assert len(gated) == 1
@@ -139,12 +145,19 @@ def test_gate_merges_agreeing_detections():
 def test_build_spur_set_and_window_mask():
     freqs, spec, sig_c = _grid([(30720.0, 100.0, 0.0)])
     spur_set = build_spur_set(
-        freqs, spec, sig_c, band=BAND, mask_half_width_bins=2,
+        freqs,
+        spec,
+        sig_c,
+        band=BAND,
+        mask_half_width_bins=2,
     )
     assert bool(spur_set)
     # Window straddling the spur.
     spec_mask = spur_set.window_mask_spec(
-        30715.0, 30725.0, center_mhz=30720.0, sideband=Sideband.LOWER,
+        30715.0,
+        30725.0,
+        center_mhz=30720.0,
+        sideband=Sideband.LOWER,
     )
     assert spec_mask is not None
     # The spur center maps to ~offset 0 in this window (within one bin of
@@ -162,7 +175,10 @@ def test_window_mask_none_when_no_spur_in_range():
     freqs, spec, sig_c = _grid([(30720.0, 100.0, 0.0)])
     spur_set = build_spur_set(freqs, spec, sig_c, band=BAND)
     spec_mask = spur_set.window_mask_spec(
-        31000.0, 31010.0, center_mhz=31005.0, sideband=Sideband.LOWER,
+        31000.0,
+        31010.0,
+        center_mhz=31005.0,
+        sideband=Sideband.LOWER,
     )
     assert spec_mask is None
 
@@ -178,20 +194,33 @@ def test_empty_spur_set_is_falsey():
     freqs, spec, sig_c = _grid([(32960.0, 100.0, 0.4)])  # broad line, no spur
     spur_set = build_spur_set(freqs, spec, sig_c, band=BAND)
     assert not bool(spur_set)
-    assert spur_set.window_mask_spec(
-        32955.0, 32965.0, center_mhz=32960.0, sideband=Sideband.LOWER,
-    ) is None
+    assert (
+        spur_set.window_mask_spec(
+            32955.0,
+            32965.0,
+            center_mhz=32960.0,
+            sideband=Sideband.LOWER,
+        )
+        is None
+    )
 
 
 def test_use_stft_catalogue_false_drops_flat_only_spurs():
     sat = SpurCluster(
-        center_freq_mhz=39040.0, peak_bin_index=10, n_bins=3,
-        bin_indices=(9, 10, 11), saturated=True,
+        center_freq_mhz=39040.0,
+        peak_bin_index=10,
+        n_bins=3,
+        bin_indices=(9, 10, 11),
+        saturated=True,
     )
     freqs, spec, sig_c = _grid([(32960.0, 100.0, 0.4)])  # no narrow spur
     spur_set = build_spur_set(
-        freqs, spec, sig_c, band=BAND,
-        saturated_clusters=[sat], use_stft_catalogue=False,
+        freqs,
+        spec,
+        sig_c,
+        band=BAND,
+        saturated_clusters=[sat],
+        use_stft_catalogue=False,
     )
     assert not bool(spur_set)
 

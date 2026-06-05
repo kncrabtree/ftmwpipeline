@@ -132,12 +132,8 @@ class WindowPlanningSettings:
     """Stage 4 window-planning settings (see module docstring)."""
 
     coherence: CoherenceSubSettings = field(default_factory=CoherenceSubSettings)
-    clustering: ClusteringSubSettings = field(
-        default_factory=ClusteringSubSettings
-    )
-    contributor: ContributorSubSettings = field(
-        default_factory=ContributorSubSettings
-    )
+    clustering: ClusteringSubSettings = field(default_factory=ClusteringSubSettings)
+    contributor: ContributorSubSettings = field(default_factory=ContributorSubSettings)
     leakage: LeakageSubSettings = field(default_factory=LeakageSubSettings)
 
     def is_empty(self) -> bool:
@@ -409,8 +405,7 @@ def load_preset(name_or_path: Union[str, Path]) -> WindowPlanningSettings:
                 if p.name.endswith(".yaml")
             )
             raise FileNotFoundError(
-                f"no packaged preset named {name_or_path!r}; "
-                f"available: {available}"
+                f"no packaged preset named {name_or_path!r}; " f"available: {available}"
             )
         text = candidate.read_text()
     data = yaml.safe_load(text)

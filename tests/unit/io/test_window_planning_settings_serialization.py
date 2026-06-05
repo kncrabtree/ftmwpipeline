@@ -22,7 +22,6 @@ from ftmwpipeline.io.window_planning_settings_serialization import (
     window_planning_settings_present,
 )
 
-
 _SUB_NAMES = ("coherence", "clustering", "contributor", "leakage")
 
 
@@ -46,7 +45,10 @@ class TestStage4WindowsSettingsPersistence:
         loaded = load_window_planning_settings_from_h5(empty_ftmw)
         assert loaded is not None
         assert loaded.coherence.edge_m == original.coherence.edge_m
-        assert loaded.clustering.max_window_width_mhz == original.clustering.max_window_width_mhz
+        assert (
+            loaded.clustering.max_window_width_mhz
+            == original.clustering.max_window_width_mhz
+        )
         assert loaded.contributor.min_freeze_snr == original.contributor.min_freeze_snr
         # tau_us is the legitimately-None hard default
         assert loaded.leakage.tau_us is None

@@ -41,9 +41,9 @@ import h5py
 from ..core.stage_fit_settings import (
     _SUB_NAMES,
     StageFitSettings,
-    from_attrs as stage_fit_from_attrs,
-    to_attrs as stage_fit_to_attrs,
 )
+from ..core.stage_fit_settings import from_attrs as stage_fit_from_attrs
+from ..core.stage_fit_settings import to_attrs as stage_fit_to_attrs
 
 logger = logging.getLogger(__name__)
 

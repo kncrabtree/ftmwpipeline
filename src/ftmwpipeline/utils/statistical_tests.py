@@ -7,14 +7,17 @@ Implementation pending for Phase 2.
 
 # Placeholder functions - will be implemented in Phase 2
 
-def f_test(*args, **kwargs):
+
+def f_test(*args: object, **kwargs: object) -> None:
     """Placeholder for F-test."""
-    raise NotImplementedError("Will be implemented in Phase 2")
+    raise NotImplementedError("Not yet implemented")
 
-def aic_comparison(*args, **kwargs):
+
+def aic_comparison(*args: object, **kwargs: object) -> None:
     """Placeholder for AIC comparison."""
-    raise NotImplementedError("Will be implemented in Phase 2")
+    raise NotImplementedError("Not yet implemented")
 
-def chi_squared_test(*args, **kwargs):
+
+def chi_squared_test(*args: object, **kwargs: object) -> None:
     """Placeholder for chi-squared test."""
-    raise NotImplementedError("Will be implemented in Phase 2")
+    raise NotImplementedError("Not yet implemented")

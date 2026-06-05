@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
 from .fit_support import reduce_plan_for_fit
 from .plots import (
@@ -109,6 +109,7 @@ Recommendation = Any
 # Stage runners (lazy api import to keep the import graph acyclic)
 # ---------------------------------------------------------------------------
 
+
 def _run_start(field_name: str) -> RunFn:
     """Re-run start detection with a single ``StartDetectionSettings`` field set.
 
@@ -120,8 +121,9 @@ def _run_start(field_name: str) -> RunFn:
     """
 
     def run(path: Path, value: Any) -> Any:
-        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
         from dataclasses import replace
+
+        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
         from ftmwpipeline.core.start_detection_settings import (
             StartDetectionSettings,
         )
@@ -205,6 +207,7 @@ def _run_ft_trim(edge: str) -> RunFn:
 
     def run(path: Path, value: Any) -> Any:
         import numpy as np
+
         import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
 
         key = str(path)
@@ -369,9 +372,7 @@ def _run_fit(sub_block: str, field_name: str) -> RunFn:
             "spur": sfs.SpurSubSettings,
             "baseline": sfs.BaselineSubSettings,
         }[sub_block]
-        bundle = sfs.StageFitSettings(
-            **{sub_block: sub_cls(**{field_name: value})}
-        )
+        bundle = sfs.StageFitSettings(**{sub_block: sub_cls(**{field_name: value})})
         return fit_peaks_impl(str(path), settings=bundle)
 
     return run
@@ -380,6 +381,7 @@ def _run_fit(sub_block: str, field_name: str) -> RunFn:
 # ---------------------------------------------------------------------------
 # Metric reducers
 # ---------------------------------------------------------------------------
+
 
 def _metric_start(result: Any) -> Dict[str, Any]:
     return {
@@ -522,7 +524,7 @@ def _metric_fit(result: Any) -> Dict[str, Any]:
         [r["chi2r"] for r in rows if np.isfinite(r["chi2r"])], dtype=float
     )
     n_fail = sum(1 for r in rows if not r["passed"])
-    n_peaks = sum(r["n_peaks"] for r in rows)
+    n_peaks = sum(cast(int, r["n_peaks"]) for r in rows)
 
     n_free_tau = 0
     sig_f = []
@@ -561,7 +563,7 @@ def _fit_eps_summary(fit: Any) -> Tuple[float, int]:
     rows = [window_fit_quality(wf) for wf in fit.window_fits]
     eps = np.asarray([r["epsilon"] for r in rows], dtype=float)
     eps_p50 = round(float(np.percentile(eps, 50)), 5) if eps.size else 0.0
-    n_peaks = sum(r["n_peaks"] for r in rows)
+    n_peaks = sum(cast(int, r["n_peaks"]) for r in rows)
     return eps_p50, n_peaks
 
 
@@ -577,9 +579,11 @@ def _metric_rescue(result: Any) -> Dict[str, Any]:
     rh = fit.rescue_history
     acc = [r for r in rh if r.accepted]
     drop = [
-        (r.chi2_before - r.chi2_after) / r.chi2_before for r in acc
+        (r.chi2_before - r.chi2_after) / r.chi2_before
+        for r in acc
         if r.chi2_before > 0
-        and np.isfinite(r.chi2_before) and np.isfinite(r.chi2_after)
+        and np.isfinite(r.chi2_before)
+        and np.isfinite(r.chi2_after)
     ]
     eps_p50, n_peaks = _fit_eps_summary(fit)
     return {
@@ -627,11 +631,11 @@ def _metric_thaw(result: Any) -> Dict[str, Any]:
     th = fit.thaw_history
     rp = fit.replan_history
     flagged = [
-        t.edge_coherence_before for t in th
-        if np.isfinite(t.edge_coherence_before)
+        t.edge_coherence_before for t in th if np.isfinite(t.edge_coherence_before)
     ]
     red = [
-        t.edge_coherence_before - t.edge_coherence_after for t in th
+        t.edge_coherence_before - t.edge_coherence_after
+        for t in th
         if t.accepted
         and np.isfinite(t.edge_coherence_before)
         and np.isfinite(t.edge_coherence_after)
@@ -687,84 +691,114 @@ _DETECTION_SEE_ALSO = (
     "stage0.guard_margin_us / stage1.start_us — stack the resulting spectra to "
     "see how the detected start affects the FT (chirp/ringdown residue)."
 )
-_register(KnobSpec(
-    path="stage0.guard_margin_us",
-    stage="start_detection",
-    requires="stage0_fid_data",
-    help="Margin past the chirp end for switch-bounce ringdown (instrument-specific).",
-    inst_sensitivity="Y",
-    default_grid=(0.3, 0.5, 0.67, 0.85, 1.0),
-    run=_run_guard(),
-    metric=_metric_ft_band_floor,
-    metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
-    plot=plot_spectra_ladder,
-))
-_register(KnobSpec(
-    path="stage0.sweep_max_us",
-    stage="start_detection",
-    requires="stage0_fid_data",
-    help="Upper bound of the start-time sweep (must clear chirp end + floor tail).",
-    inst_sensitivity="Y",
-    default_grid=(5.0, 6.0, 7.5, 9.0),
-    run=_run_start("sweep_max_us"),
-    metric=_metric_start,
-    metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
-    plot=plot_start_detection,
-    see_also=_DETECTION_SEE_ALSO,
-))
-_register(KnobSpec(
-    path="stage0.min_chirp_drop_ratio",
-    stage="start_detection",
-    requires="stage0_fid_data",
-    help="Min plateau/floor ratio for a chirp collapse to be considered present.",
-    inst_sensitivity="Y",
-    default_grid=(5.0, 10.0, 20.0, 40.0),
-    run=_run_start("min_chirp_drop_ratio"),
-    metric=_metric_start,
-    metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
-    plot=plot_start_detection,
-    see_also=_DETECTION_SEE_ALSO,
-))
+_register(
+    KnobSpec(
+        path="stage0.guard_margin_us",
+        stage="start_detection",
+        requires="stage0_fid_data",
+        help="Margin past the chirp end for switch-bounce ringdown (instrument-specific).",
+        inst_sensitivity="Y",
+        default_grid=(0.3, 0.5, 0.67, 0.85, 1.0),
+        run=_run_guard(),
+        metric=_metric_ft_band_floor,
+        metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
+        plot=plot_spectra_ladder,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage0.sweep_max_us",
+        stage="start_detection",
+        requires="stage0_fid_data",
+        help="Upper bound of the start-time sweep (must clear chirp end + floor tail).",
+        inst_sensitivity="Y",
+        default_grid=(5.0, 6.0, 7.5, 9.0),
+        run=_run_start("sweep_max_us"),
+        metric=_metric_start,
+        metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
+        plot=plot_start_detection,
+        see_also=_DETECTION_SEE_ALSO,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage0.min_chirp_drop_ratio",
+        stage="start_detection",
+        requires="stage0_fid_data",
+        help="Min plateau/floor ratio for a chirp collapse to be considered present.",
+        inst_sensitivity="Y",
+        default_grid=(5.0, 10.0, 20.0, 40.0),
+        run=_run_start("min_chirp_drop_ratio"),
+        metric=_metric_start,
+        metric_columns=("start_us", "chirp_end_us", "chirp_detected"),
+        plot=plot_start_detection,
+        see_also=_DETECTION_SEE_ALSO,
+    )
+)
 
 # Stage 0 advanced detection internals (chirp-end localisation + sweep). The
 # band_min_mhz / band_max_mhz integration-band override is intentionally not a
 # sweep knob — the detector ignores it unless both edges are set, so neither
 # sweeps meaningfully alone (reach them via settings= / preset=).
 _START_COLS = ("start_us", "chirp_end_us", "chirp_detected")
+_grid: Tuple[Any, ...]
 for _path, _field, _help, _grid, _inst in (
-    ("stage0.step_us", "step_us",
-     "Start-time sweep step (us): the resolution of the Sigma|FT| curve.",
-     (0.01, 0.02, 0.05), "maybe"),
-    ("stage0.floor_factor", "floor_factor",
-     "Multiple of the floor at which Sigma|FT| is considered settled (chirp end).",
-     (2.0, 3.0, 5.0), "maybe"),
-    ("stage0.floor_tail_us", "floor_tail_us",
-     "Deep-tail width (us) whose median defines the settled floor.",
-     (0.5, 1.0, 2.0), "N"),
+    (
+        "stage0.step_us",
+        "step_us",
+        "Start-time sweep step (us): the resolution of the Sigma|FT| curve.",
+        (0.01, 0.02, 0.05),
+        "maybe",
+    ),
+    (
+        "stage0.floor_factor",
+        "floor_factor",
+        "Multiple of the floor at which Sigma|FT| is considered settled (chirp end).",
+        (2.0, 3.0, 5.0),
+        "maybe",
+    ),
+    (
+        "stage0.floor_tail_us",
+        "floor_tail_us",
+        "Deep-tail width (us) whose median defines the settled floor.",
+        (0.5, 1.0, 2.0),
+        "N",
+    ),
 ):
-    _register(KnobSpec(
-        path=_path, stage="start_detection", requires="stage0_fid_data",
-        help=_help, inst_sensitivity=_inst, default_grid=_grid,
-        run=_run_start(_field), metric=_metric_start,
-        metric_columns=_START_COLS, plot=plot_start_detection, tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=_path,
+            stage="start_detection",
+            requires="stage0_fid_data",
+            help=_help,
+            inst_sensitivity=_inst,
+            default_grid=_grid,
+            run=_run_start(_field),
+            metric=_metric_start,
+            metric_columns=_START_COLS,
+            plot=plot_start_detection,
+            tier="advanced",
+        )
+    )
 
 # FT window start time (Stage 1) — sweep the actual start and stack the
 # resulting active-band spectra. Requires Stage 1 settings to be resolvable
 # (built once); each value recomputes the FT.
-_register(KnobSpec(
-    path="stage1.start_us",
-    stage="stage1_ft",
-    requires="stage0_fid_data",
-    help="FID window start time for the FT; stack the active-band spectra to "
-         "judge the chirp/ringdown residue.",
-    inst_sensitivity="Y",
-    default_grid=(0.0, 1.0, 2.0, 3.0, 4.0, 5.0),
-    run=_run_ft_start,
-    metric=_metric_ft_band_floor,
-    metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
-    plot=plot_spectra_ladder,
-))
+_register(
+    KnobSpec(
+        path="stage1.start_us",
+        stage="stage1_ft",
+        requires="stage0_fid_data",
+        help="FID window start time for the FT; stack the active-band spectra to "
+        "judge the chirp/ringdown residue.",
+        inst_sensitivity="Y",
+        default_grid=(0.0, 1.0, 2.0, 3.0, 4.0, 5.0),
+        run=_run_ft_start,
+        metric=_metric_ft_band_floor,
+        metric_columns=("p1", "p5", "p10", "p20", "p50", "max"),
+        plot=plot_spectra_ladder,
+    )
+)
 
 # FT frequency trim + window end. The trim default grids are MHz-absolute and
 # 2638-shaped; pass --grid for another instrument's band. zpf / expf_us /
@@ -772,159 +806,202 @@ _register(KnobSpec(
 # raw, unapodized FT (they corrupt the Stage 2/5 noise and fit statistics);
 # units_power is a display-scale choice surfaced by the resolved-settings view.
 _FT_BAND_COLS = ("p1", "p5", "p10", "p20", "p50", "max")
-_register(KnobSpec(
-    path="stage1.trim_min_mhz",
-    stage="stage1_ft",
-    requires="stage0_fid_data",
-    help="Lower edge of the FT frequency trim (MHz, absolute; --grid for your band).",
-    inst_sensitivity="Y",
-    default_grid=(26000.0, 27000.0, 28000.0, 30000.0),
-    run=_run_ft_trim("min"),
-    metric=_metric_ft_band_floor,
-    metric_columns=_FT_BAND_COLS,
-    plot=plot_ft_band_stack,
-))
-_register(KnobSpec(
-    path="stage1.trim_max_mhz",
-    stage="stage1_ft",
-    requires="stage0_fid_data",
-    help="Upper edge of the FT frequency trim (MHz, absolute; --grid for your band).",
-    inst_sensitivity="Y",
-    default_grid=(36000.0, 38000.0, 40000.0),
-    run=_run_ft_trim("max"),
-    metric=_metric_ft_band_floor,
-    metric_columns=_FT_BAND_COLS,
-    plot=plot_ft_band_stack,
-))
-_register(KnobSpec(
-    path="stage1.end_us",
-    stage="stage1_ft",
-    requires="stage0_fid_data",
-    help="FID window end time (us): truncates the record before the FT.",
-    inst_sensitivity="Y",
-    default_grid=(5.0, 10.0, 15.0),
-    run=_run_ft_end(),
-    metric=_metric_ft_band_floor,
-    metric_columns=_FT_BAND_COLS,
-    plot=plot_ft_band_stack,
-))
+_register(
+    KnobSpec(
+        path="stage1.trim_min_mhz",
+        stage="stage1_ft",
+        requires="stage0_fid_data",
+        help="Lower edge of the FT frequency trim (MHz, absolute; --grid for your band).",
+        inst_sensitivity="Y",
+        default_grid=(26000.0, 27000.0, 28000.0, 30000.0),
+        run=_run_ft_trim("min"),
+        metric=_metric_ft_band_floor,
+        metric_columns=_FT_BAND_COLS,
+        plot=plot_ft_band_stack,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage1.trim_max_mhz",
+        stage="stage1_ft",
+        requires="stage0_fid_data",
+        help="Upper edge of the FT frequency trim (MHz, absolute; --grid for your band).",
+        inst_sensitivity="Y",
+        default_grid=(36000.0, 38000.0, 40000.0),
+        run=_run_ft_trim("max"),
+        metric=_metric_ft_band_floor,
+        metric_columns=_FT_BAND_COLS,
+        plot=plot_ft_band_stack,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage1.end_us",
+        stage="stage1_ft",
+        requires="stage0_fid_data",
+        help="FID window end time (us): truncates the record before the FT.",
+        inst_sensitivity="Y",
+        default_grid=(5.0, 10.0, 15.0),
+        run=_run_ft_end(),
+        metric=_metric_ft_band_floor,
+        metric_columns=_FT_BAND_COLS,
+        plot=plot_ft_band_stack,
+    )
+)
 
 # Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.
-_register(KnobSpec(
-    path="stage2.window_mhz",
-    stage="stage2_noise",
-    requires="stage1_complex_ft",
-    help="Width of the per-region scatter-MAD window (scale over which sigma(f) is constant).",
-    inst_sensitivity="Y",
-    default_grid=(40.0, 60.0, 80.0, 120.0, 160.0),
-    run=_run_noise("window_mhz"),
-    metric=_metric_noise,
-    metric_columns=("median_sigma", "noise_fraction"),
-    plot=plot_noise_sweep,
-))
-_register(KnobSpec(
-    path="stage2.pedestal_mhz",
-    stage="stage2_noise",
-    requires="stage1_complex_ft",
-    help="High-pass running-median width isolating the smooth leakage pedestal.",
-    inst_sensitivity="Y",
-    default_grid=(10.0, 20.0, 40.0, 80.0),
-    run=_run_noise("pedestal_mhz"),
-    metric=_metric_noise,
-    metric_columns=("median_sigma", "noise_fraction"),
-    plot=plot_noise_sweep,
-))
-_register(KnobSpec(
-    path="stage2.smoothing_mhz",
-    stage="stage2_noise",
-    requires="stage1_complex_ft",
-    help="Broad lower-envelope median sigma smoothing width (0 disables).",
-    inst_sensitivity="Y",
-    default_grid=(0.0, 400.0, 800.0, 1200.0),
-    run=_run_noise("smoothing_mhz"),
-    metric=_metric_noise,
-    metric_columns=("median_sigma", "noise_fraction"),
-    plot=plot_noise_sweep,
-))
+_register(
+    KnobSpec(
+        path="stage2.window_mhz",
+        stage="stage2_noise",
+        requires="stage1_complex_ft",
+        help="Width of the per-region scatter-MAD window (scale over which sigma(f) is constant).",
+        inst_sensitivity="Y",
+        default_grid=(40.0, 60.0, 80.0, 120.0, 160.0),
+        run=_run_noise("window_mhz"),
+        metric=_metric_noise,
+        metric_columns=("median_sigma", "noise_fraction"),
+        plot=plot_noise_sweep,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage2.pedestal_mhz",
+        stage="stage2_noise",
+        requires="stage1_complex_ft",
+        help="High-pass running-median width isolating the smooth leakage pedestal.",
+        inst_sensitivity="Y",
+        default_grid=(10.0, 20.0, 40.0, 80.0),
+        run=_run_noise("pedestal_mhz"),
+        metric=_metric_noise,
+        metric_columns=("median_sigma", "noise_fraction"),
+        plot=plot_noise_sweep,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage2.smoothing_mhz",
+        stage="stage2_noise",
+        requires="stage1_complex_ft",
+        help="Broad lower-envelope median sigma smoothing width (0 disables).",
+        inst_sensitivity="Y",
+        default_grid=(0.0, 400.0, 800.0, 1200.0),
+        run=_run_noise("smoothing_mhz"),
+        metric=_metric_noise,
+        metric_columns=("median_sigma", "noise_fraction"),
+        plot=plot_noise_sweep,
+    )
+)
 
 # Stage 2 advanced — remaining scatter knobs. All re-run Stage 2 and report the
 # same sigma trend + sigma(f)-over-spectrum overlay.
 _NOISE_COLS = ("median_sigma", "noise_fraction")
 for _field, _help, _grid, _inst in (
-    ("line_k",
-     "Robust-sigma multiple above which a bin is flagged a line (excluded).",
-     (4.0, 6.0, 8.0, 12.0), "maybe"),
-    ("n_iter",
-     "Self-mask refinement iterations of the scatter estimator.",
-     (1, 2, 3, 5), "N"),
-    ("region_aware",
-     "Use the region-aware Rician correction (else a fixed mid-regime factor).",
-     (False, True), "maybe"),
-    ("smoothing_percentile",
-     "Percentile of the broad sigma smoothing (50=median; lower=lower-envelope).",
-     (25.0, 50.0, 75.0), "maybe"),
-    ("convolve_mhz",
-     "Gaussian sigma (MHz) of the second, step-removing smoothing pass (0=off).",
-     (0.0, 100.0, 200.0, 400.0), "maybe"),
+    (
+        "line_k",
+        "Robust-sigma multiple above which a bin is flagged a line (excluded).",
+        (4.0, 6.0, 8.0, 12.0),
+        "maybe",
+    ),
+    (
+        "n_iter",
+        "Self-mask refinement iterations of the scatter estimator.",
+        (1, 2, 3, 5),
+        "N",
+    ),
+    (
+        "region_aware",
+        "Use the region-aware Rician correction (else a fixed mid-regime factor).",
+        (False, True),
+        "maybe",
+    ),
+    (
+        "smoothing_percentile",
+        "Percentile of the broad sigma smoothing (50=median; lower=lower-envelope).",
+        (25.0, 50.0, 75.0),
+        "maybe",
+    ),
+    (
+        "convolve_mhz",
+        "Gaussian sigma (MHz) of the second, step-removing smoothing pass (0=off).",
+        (0.0, 100.0, 200.0, 400.0),
+        "maybe",
+    ),
 ):
-    _register(KnobSpec(
-        path=f"stage2.{_field}", stage="stage2_noise",
-        requires="stage1_complex_ft", help=_help, inst_sensitivity=_inst,
-        default_grid=_grid, run=_run_noise(_field),
-        metric=_metric_noise, metric_columns=_NOISE_COLS, plot=plot_noise_sweep,
-        tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=f"stage2.{_field}",
+            stage="stage2_noise",
+            requires="stage1_complex_ft",
+            help=_help,
+            inst_sensitivity=_inst,
+            default_grid=_grid,
+            run=_run_noise(_field),
+            metric=_metric_noise,
+            metric_columns=_NOISE_COLS,
+            plot=plot_noise_sweep,
+            tier="advanced",
+        )
+    )
 
 # Stage 2b tau calibration — requires Stages 0-2. Each value re-runs the STFT
 # calibration (the slowest stage), so default grids are kept modest.
-_register(KnobSpec(
-    path="stage2b.stft.n_seg",
-    stage="stage2b_tau",
-    requires="stage2_noise_result",
-    help="Number of non-overlapping STFT frames (window = T_full / n_seg).",
-    inst_sensitivity="Y",
-    default_grid=(6, 8, 10, 14, 20),
-    run=_run_tau("stft", "n_seg"),
-    metric=_metric_tau,
-    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-    plot=plot_tau_trend,
-))
-_register(KnobSpec(
-    path="stage2b.stft.t_sigma",
-    stage="stage2b_tau",
-    requires="stage2_noise_result",
-    help="Above-threshold SNR gate for per-frame signal detection (contributor floor).",
-    inst_sensitivity="Y",
-    default_grid=(3.0, 4.0, 5.0, 6.0, 8.0),
-    run=_run_tau("stft", "t_sigma"),
-    metric=_metric_tau,
-    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-    plot=plot_tau_trend,
-))
-_register(KnobSpec(
-    path="stage2b.polish.polish_snr_cap",
-    stage="stage2b_tau",
-    requires="stage2_noise_result",
-    help="SNR above which the Gauss-Newton polish is skipped (avoid over-correction).",
-    inst_sensitivity="Y",
-    default_grid=(5.0, 7.0, 9.0, 12.0),
-    run=_run_tau("polish", "polish_snr_cap"),
-    metric=_metric_tau,
-    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-    plot=plot_tau_trend,
-))
-_register(KnobSpec(
-    path="stage2b.polish.polish_noise_debias",
-    stage="stage2b_tau",
-    requires="stage2_noise_result",
-    help="Apply Rician-unbiased magnitude on high-SNR frames (removes residual bias).",
-    inst_sensitivity="Y",
-    default_grid=(False, True),
-    run=_run_tau("polish", "polish_noise_debias"),
-    metric=_metric_tau,
-    metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-    tier="advanced",
-))
+_register(
+    KnobSpec(
+        path="stage2b.stft.n_seg",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Number of non-overlapping STFT frames (window = T_full / n_seg).",
+        inst_sensitivity="Y",
+        default_grid=(6, 8, 10, 14, 20),
+        run=_run_tau("stft", "n_seg"),
+        metric=_metric_tau,
+        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+        plot=plot_tau_trend,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage2b.stft.t_sigma",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Above-threshold SNR gate for per-frame signal detection (contributor floor).",
+        inst_sensitivity="Y",
+        default_grid=(3.0, 4.0, 5.0, 6.0, 8.0),
+        run=_run_tau("stft", "t_sigma"),
+        metric=_metric_tau,
+        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+        plot=plot_tau_trend,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage2b.polish.polish_snr_cap",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="SNR above which the Gauss-Newton polish is skipped (avoid over-correction).",
+        inst_sensitivity="Y",
+        default_grid=(5.0, 7.0, 9.0, 12.0),
+        run=_run_tau("polish", "polish_snr_cap"),
+        metric=_metric_tau,
+        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+        plot=plot_tau_trend,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage2b.polish.polish_noise_debias",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Apply Rician-unbiased magnitude on high-SNR frames (removes residual bias).",
+        inst_sensitivity="Y",
+        default_grid=(False, True),
+        run=_run_tau("polish", "polish_noise_debias"),
+        metric=_metric_tau,
+        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
+        tier="advanced",
+    )
+)
 
 # --- Stage 2b: advanced STFT gates (exp twin) -----------------------------
 _TAU_COLS = ("tau_maj_us", "sigma_tau_us", "n_contributors")
@@ -933,148 +1010,284 @@ _TAU_TWIN_SEE_ALSO = (
     "is the exp-vs-gauss shape vote — all three share the STFT contributor pool."
 )
 for _path, _field, _help, _grid, _inst in (
-    ("stage2b.stft.tau_max_us",
-     "tau_max_us",
-     "Hard upper clip on recovered τ (saturation → spur candidate); unset → derived.",
-     (20.0, 40.0, 80.0), "maybe"),
-    ("stage2b.stft.tau_max_factor",
-     "tau_max_factor",
-     "τ_max as a multiple of the full-record duration when tau_max_us is unset.",
-     (3.0, 5.0, 8.0, 12.0), "maybe"),
-    ("stage2b.stft.rss_gate_factor",
-     "rss_gate_factor",
-     "Bad-fit gate strength (relative-or-absolute residual hybrid).",
-     (3.0, 5.0, 8.0, 12.0), "maybe"),
-    ("stage2b.stft.relative_gate_fraction",
-     "relative_gate_fraction",
-     "Relative-RSS fraction below which a per-frame fit is accepted.",
-     (0.02, 0.05, 0.10, 0.20), "maybe"),
+    (
+        "stage2b.stft.tau_max_us",
+        "tau_max_us",
+        "Hard upper clip on recovered τ (saturation → spur candidate); unset → derived.",
+        (20.0, 40.0, 80.0),
+        "maybe",
+    ),
+    (
+        "stage2b.stft.tau_max_factor",
+        "tau_max_factor",
+        "τ_max as a multiple of the full-record duration when tau_max_us is unset.",
+        (3.0, 5.0, 8.0, 12.0),
+        "maybe",
+    ),
+    (
+        "stage2b.stft.rss_gate_factor",
+        "rss_gate_factor",
+        "Bad-fit gate strength (relative-or-absolute residual hybrid).",
+        (3.0, 5.0, 8.0, 12.0),
+        "maybe",
+    ),
+    (
+        "stage2b.stft.relative_gate_fraction",
+        "relative_gate_fraction",
+        "Relative-RSS fraction below which a per-frame fit is accepted.",
+        (0.02, 0.05, 0.10, 0.20),
+        "maybe",
+    ),
 ):
-    _register(KnobSpec(
-        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
-        help=_help, inst_sensitivity=_inst, default_grid=_grid,
-        run=_run_tau("stft", _field), metric=_metric_tau,
-        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=_path,
+            stage="stage2b_tau",
+            requires="stage2_noise_result",
+            help=_help,
+            inst_sensitivity=_inst,
+            default_grid=_grid,
+            run=_run_tau("stft", _field),
+            metric=_metric_tau,
+            metric_columns=_TAU_COLS,
+            plot=plot_tau_trend,
+            tier="advanced",
+        )
+    )
 
 # --- Stage 2b: advanced polish knobs --------------------------------------
 for _path, _field, _help, _grid in (
-    ("stage2b.polish.polish_n_iter", "polish_n_iter",
-     "Gauss-Newton polish iterations per eligible contributor.", (1, 2, 3)),
-    ("stage2b.polish.polish_top_n", "polish_top_n",
-     "Polish only the top-N contributors by SNR (unset → all).",
-     (200, 500, 1000, 2000)),
+    (
+        "stage2b.polish.polish_n_iter",
+        "polish_n_iter",
+        "Gauss-Newton polish iterations per eligible contributor.",
+        (1, 2, 3),
+    ),
+    (
+        "stage2b.polish.polish_top_n",
+        "polish_top_n",
+        "Polish only the top-N contributors by SNR (unset → all).",
+        (200, 500, 1000, 2000),
+    ),
 ):
-    _register(KnobSpec(
-        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
-        help=_help, inst_sensitivity="N", default_grid=_grid,
-        run=_run_tau("polish", _field), metric=_metric_tau,
-        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=_path,
+            stage="stage2b_tau",
+            requires="stage2_noise_result",
+            help=_help,
+            inst_sensitivity="N",
+            default_grid=_grid,
+            run=_run_tau("polish", _field),
+            metric=_metric_tau,
+            metric_columns=_TAU_COLS,
+            plot=plot_tau_trend,
+            tier="advanced",
+        )
+    )
 
 # --- Stage 2b: advanced aggregation / acceptance knobs --------------------
 for _path, _field, _help, _grid, _inst in (
-    ("stage2b.aggregation.min_contributors", "min_contributors",
-     "Minimum contributor count for the calibration to pass preconditions.",
-     (100, 200, 400, 800), "N"),
-    ("stage2b.aggregation.sigma_tau_fraction_max", "sigma_tau_fraction_max",
-     "Max σ_τ/τ_maj for the calibration to pass preconditions.",
-     (0.10, 0.20, 0.30), "N"),
-    ("stage2b.aggregation.bimodality_dominant_fraction",
-     "bimodality_dominant_fraction",
-     "Dominant-mode fraction above which a bimodal histogram still passes.",
-     (0.6, 0.7, 0.8), "N"),
-    ("stage2b.aggregation.sigma_tau_floor_us", "sigma_tau_floor_us",
-     "Floor on the reported σ_τ (guards against over-tight spreads).",
-     (0.0, 0.5, 1.0), "maybe"),
-    ("stage2b.aggregation.spur_cluster_multiplier", "spur_cluster_multiplier",
-     "Scale on the spur-cluster width (wider → more bins flagged as spurs).",
-     (1.0, 1.5, 2.0), "maybe"),
+    (
+        "stage2b.aggregation.min_contributors",
+        "min_contributors",
+        "Minimum contributor count for the calibration to pass preconditions.",
+        (100, 200, 400, 800),
+        "N",
+    ),
+    (
+        "stage2b.aggregation.sigma_tau_fraction_max",
+        "sigma_tau_fraction_max",
+        "Max σ_τ/τ_maj for the calibration to pass preconditions.",
+        (0.10, 0.20, 0.30),
+        "N",
+    ),
+    (
+        "stage2b.aggregation.bimodality_dominant_fraction",
+        "bimodality_dominant_fraction",
+        "Dominant-mode fraction above which a bimodal histogram still passes.",
+        (0.6, 0.7, 0.8),
+        "N",
+    ),
+    (
+        "stage2b.aggregation.sigma_tau_floor_us",
+        "sigma_tau_floor_us",
+        "Floor on the reported σ_τ (guards against over-tight spreads).",
+        (0.0, 0.5, 1.0),
+        "maybe",
+    ),
+    (
+        "stage2b.aggregation.spur_cluster_multiplier",
+        "spur_cluster_multiplier",
+        "Scale on the spur-cluster width (wider → more bins flagged as spurs).",
+        (1.0, 1.5, 2.0),
+        "maybe",
+    ),
 ):
-    _register(KnobSpec(
-        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
-        help=_help, inst_sensitivity=_inst, default_grid=_grid,
-        run=_run_tau("aggregation", _field), metric=_metric_tau,
-        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=_path,
+            stage="stage2b_tau",
+            requires="stage2_noise_result",
+            help=_help,
+            inst_sensitivity=_inst,
+            default_grid=_grid,
+            run=_run_tau("aggregation", _field),
+            metric=_metric_tau,
+            metric_columns=_TAU_COLS,
+            plot=plot_tau_trend,
+            tier="advanced",
+        )
+    )
 
 # --- Stage 2b: multi-band majorities --------------------------------------
-_register(KnobSpec(
-    path="stage2b.band.min_contributors_per_band",
-    stage="stage2b_tau", requires="stage2_noise_result",
-    help="Min contributors for a band to use its own τ majority (else band-wide).",
-    inst_sensitivity="Y", default_grid=(25, 50, 100, 200),
-    run=_run_tau("band", "min_contributors_per_band"), metric=_metric_tau,
-    metric_columns=_TAU_COLS, plot=plot_tau_trend, see_also=_TAU_TWIN_SEE_ALSO,
-))
-_register(KnobSpec(
-    path="stage2b.band.compute_band_majorities",
-    stage="stage2b_tau", requires="stage2_noise_result",
-    help="Compute per-band τ majorities (the τ-vs-frequency band steps).",
-    inst_sensitivity="Y", default_grid=(False, True),
-    run=_run_tau("band", "compute_band_majorities"), metric=_metric_tau,
-    metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
-))
+_register(
+    KnobSpec(
+        path="stage2b.band.min_contributors_per_band",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Min contributors for a band to use its own τ majority (else band-wide).",
+        inst_sensitivity="Y",
+        default_grid=(25, 50, 100, 200),
+        run=_run_tau("band", "min_contributors_per_band"),
+        metric=_metric_tau,
+        metric_columns=_TAU_COLS,
+        plot=plot_tau_trend,
+        see_also=_TAU_TWIN_SEE_ALSO,
+    )
+)
+_register(
+    KnobSpec(
+        path="stage2b.band.compute_band_majorities",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Compute per-band τ majorities (the τ-vs-frequency band steps).",
+        inst_sensitivity="Y",
+        default_grid=(False, True),
+        run=_run_tau("band", "compute_band_majorities"),
+        metric=_metric_tau,
+        metric_columns=_TAU_COLS,
+        plot=plot_tau_trend,
+        tier="advanced",
+    )
+)
 
 # --- Stage 2b: Gaussian τ_G twin (calibrate_tau_G) ------------------------
-_register(KnobSpec(
-    path="stage2b.gaussian.snr_min",
-    stage="stage2b_tau", requires="stage2_noise_result",
-    help="Gaussian τ_G: per-bin SNR floor for a contributor to enter the fit.",
-    inst_sensitivity="Y", default_grid=(10.0, 15.0, 20.0, 30.0),
-    run=_run_tau("gaussian", "snr_min"), metric=_metric_tau,
-    metric_columns=_TAU_COLS, plot=plot_tau_trend, see_also=_TAU_TWIN_SEE_ALSO,
-))
+_register(
+    KnobSpec(
+        path="stage2b.gaussian.snr_min",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Gaussian τ_G: per-bin SNR floor for a contributor to enter the fit.",
+        inst_sensitivity="Y",
+        default_grid=(10.0, 15.0, 20.0, 30.0),
+        run=_run_tau("gaussian", "snr_min"),
+        metric=_metric_tau,
+        metric_columns=_TAU_COLS,
+        plot=plot_tau_trend,
+        see_also=_TAU_TWIN_SEE_ALSO,
+    )
+)
 for _path, _field, _help, _grid in (
-    ("stage2b.gaussian.tau_G_bound_lo", "tau_G_bound_lo",
-     "Gaussian τ_G lower fit bound (us).", (0.2, 0.5, 1.0)),
-    ("stage2b.gaussian.tau_G_bound_hi", "tau_G_bound_hi",
-     "Gaussian τ_G upper fit bound (us).", (50.0, 100.0, 200.0)),
-    ("stage2b.gaussian.delta_chi2r_min", "delta_chi2r_min",
-     "Min χ²ᵣ improvement of the Gaussian over the exp fit to count a bin.",
-     (0.5, 1.0, 2.0)),
-    ("stage2b.gaussian.tau_G_upper_fraction", "tau_G_upper_fraction",
-     "Fraction of the τ_G bound above which a fit is treated as railed.",
-     (0.5, 0.7, 0.9)),
-    ("stage2b.gaussian.min_contributors", "min_contributors",
-     "Minimum Gaussian-eligible contributor count for τ_G preconditions.",
-     (25, 50, 100)),
+    (
+        "stage2b.gaussian.tau_G_bound_lo",
+        "tau_G_bound_lo",
+        "Gaussian τ_G lower fit bound (us).",
+        (0.2, 0.5, 1.0),
+    ),
+    (
+        "stage2b.gaussian.tau_G_bound_hi",
+        "tau_G_bound_hi",
+        "Gaussian τ_G upper fit bound (us).",
+        (50.0, 100.0, 200.0),
+    ),
+    (
+        "stage2b.gaussian.delta_chi2r_min",
+        "delta_chi2r_min",
+        "Min χ²ᵣ improvement of the Gaussian over the exp fit to count a bin.",
+        (0.5, 1.0, 2.0),
+    ),
+    (
+        "stage2b.gaussian.tau_G_upper_fraction",
+        "tau_G_upper_fraction",
+        "Fraction of the τ_G bound above which a fit is treated as railed.",
+        (0.5, 0.7, 0.9),
+    ),
+    (
+        "stage2b.gaussian.min_contributors",
+        "min_contributors",
+        "Minimum Gaussian-eligible contributor count for τ_G preconditions.",
+        (25, 50, 100),
+    ),
 ):
-    _register(KnobSpec(
-        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
-        help=_help, inst_sensitivity="maybe", default_grid=_grid,
-        run=_run_tau("gaussian", _field), metric=_metric_tau,
-        metric_columns=_TAU_COLS, plot=plot_tau_trend, tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=_path,
+            stage="stage2b_tau",
+            requires="stage2_noise_result",
+            help=_help,
+            inst_sensitivity="maybe",
+            default_grid=_grid,
+            run=_run_tau("gaussian", _field),
+            metric=_metric_tau,
+            metric_columns=_TAU_COLS,
+            plot=plot_tau_trend,
+            tier="advanced",
+        )
+    )
 
 # --- Stage 2b: exp-vs-gauss shape recommendation (recommend_shape) --------
 _SHAPE_COLS = ("recommended_shape", "exp", "gauss", "voigt", "n_contributors")
-_register(KnobSpec(
-    path="stage2b.recommendation.pure_margin_threshold",
-    stage="stage2b_tau", requires="stage2_noise_result",
-    help="Min SNR-weighted vote margin for a pure shape to win (else 'none').",
-    inst_sensitivity="maybe", default_grid=(0.05, 0.10, 0.15, 0.20),
-    run=_run_tau("recommendation", "pure_margin_threshold"),
-    metric=_metric_shape, metric_columns=_SHAPE_COLS, plot=plot_shape_vote,
-    see_also=_TAU_TWIN_SEE_ALSO,
-))
+_register(
+    KnobSpec(
+        path="stage2b.recommendation.pure_margin_threshold",
+        stage="stage2b_tau",
+        requires="stage2_noise_result",
+        help="Min SNR-weighted vote margin for a pure shape to win (else 'none').",
+        inst_sensitivity="maybe",
+        default_grid=(0.05, 0.10, 0.15, 0.20),
+        run=_run_tau("recommendation", "pure_margin_threshold"),
+        metric=_metric_shape,
+        metric_columns=_SHAPE_COLS,
+        plot=plot_shape_vote,
+        see_also=_TAU_TWIN_SEE_ALSO,
+    )
+)
 for _path, _field, _help, _grid in (
-    ("stage2b.recommendation.snr_min", "snr_min",
-     "Shape vote: per-bin SNR floor for a contributor to vote.",
-     (10.0, 15.0, 20.0, 30.0)),
-    ("stage2b.recommendation.tau_bound_lo", "tau_bound_lo",
-     "Shape vote: lower τ fit bound shared by the per-bin model fits (us).",
-     (0.2, 0.5, 1.0)),
-    ("stage2b.recommendation.tau_bound_hi", "tau_bound_hi",
-     "Shape vote: upper τ fit bound shared by the per-bin model fits (us).",
-     (50.0, 100.0, 200.0)),
+    (
+        "stage2b.recommendation.snr_min",
+        "snr_min",
+        "Shape vote: per-bin SNR floor for a contributor to vote.",
+        (10.0, 15.0, 20.0, 30.0),
+    ),
+    (
+        "stage2b.recommendation.tau_bound_lo",
+        "tau_bound_lo",
+        "Shape vote: lower τ fit bound shared by the per-bin model fits (us).",
+        (0.2, 0.5, 1.0),
+    ),
+    (
+        "stage2b.recommendation.tau_bound_hi",
+        "tau_bound_hi",
+        "Shape vote: upper τ fit bound shared by the per-bin model fits (us).",
+        (50.0, 100.0, 200.0),
+    ),
 ):
-    _register(KnobSpec(
-        path=_path, stage="stage2b_tau", requires="stage2_noise_result",
-        help=_help, inst_sensitivity="maybe", default_grid=_grid,
-        run=_run_tau("recommendation", _field), metric=_metric_shape,
-        metric_columns=_SHAPE_COLS, plot=plot_shape_vote, tier="advanced",
-    ))
+    _register(
+        KnobSpec(
+            path=_path,
+            stage="stage2b_tau",
+            requires="stage2_noise_result",
+            help=_help,
+            inst_sensitivity="maybe",
+            default_grid=_grid,
+            run=_run_tau("recommendation", _field),
+            metric=_metric_shape,
+            metric_columns=_SHAPE_COLS,
+            plot=plot_shape_vote,
+            tier="advanced",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1085,8 +1298,16 @@ for _path, _field, _help, _grid in (
 # panels showing which peaks each value finds, drops, and promotes.
 # ---------------------------------------------------------------------------
 _PEAK_COLS = (
-    "n_total", "n_strong", "n_medium", "n_weak",
-    "snr_min", "snr_p10", "snr_p25", "snr_p50", "snr_p90", "snr_max",
+    "n_total",
+    "n_strong",
+    "n_medium",
+    "n_weak",
+    "snr_min",
+    "snr_p10",
+    "snr_p25",
+    "snr_p50",
+    "snr_p90",
+    "snr_max",
 )
 _PEAK_SEE_ALSO = (
     "the table counts the peaks passed to Stage 4 by SNR band (weak/medium/"
@@ -1097,127 +1318,231 @@ _PEAK_SEE_ALSO = (
 
 
 def _peak_knob(
-    path: str, sub_block: str, field_name: str, help_: str,
-    inst: str, grid: Tuple[Any, ...], tier: str = "primary",
+    path: str,
+    sub_block: str,
+    field_name: str,
+    help_: str,
+    inst: str,
+    grid: Tuple[Any, ...],
+    tier: str = "primary",
     see_also: Optional[str] = None,
 ) -> None:
-    _register(KnobSpec(
-        path=path, stage="stage3_peaks", requires="stage2_noise_result",
-        help=help_, inst_sensitivity=inst, default_grid=grid,
-        run=_run_peaks(sub_block, field_name), metric=_metric_peaks,
-        metric_columns=_PEAK_COLS, plot=plot_peak_detection, tier=tier,
-        see_also=see_also,
-    ))
+    _register(
+        KnobSpec(
+            path=path,
+            stage="stage3_peaks",
+            requires="stage2_noise_result",
+            help=help_,
+            inst_sensitivity=inst,
+            default_grid=grid,
+            run=_run_peaks(sub_block, field_name),
+            metric=_metric_peaks,
+            metric_columns=_PEAK_COLS,
+            plot=plot_peak_detection,
+            tier=tier,
+            see_also=see_also,
+        )
+    )
 
 
 # Primary tier — the Y-rated detection-shaping knobs.
 _peak_knob(
-    "stage3.promotion.min_snr", "promotion", "min_snr",
+    "stage3.promotion.min_snr",
+    "promotion",
+    "min_snr",
     "User-grid promotion cutoff: peaks at/above this SNR advance to Stage 4.",
-    "Y", (2.0, 2.5, 3.0, 4.0, 5.0), see_also=_PEAK_SEE_ALSO,
+    "Y",
+    (2.0, 2.5, 3.0, 4.0, 5.0),
+    see_also=_PEAK_SEE_ALSO,
 )
 _peak_knob(
-    "stage3.promotion.internal_min_snr", "promotion", "internal_min_snr",
+    "stage3.promotion.internal_min_snr",
+    "promotion",
+    "internal_min_snr",
     "Internal detection floor on the zpf grids (recovers lines apodization smears).",
-    "Y", (1.5, 2.0, 2.5, 3.0), see_also=_PEAK_SEE_ALSO,
+    "Y",
+    (1.5, 2.0, 2.5, 3.0),
+    see_also=_PEAK_SEE_ALSO,
 )
 _peak_knob(
-    "stage3.primary_pass.min_exclusion_mhz", "primary_pass", "min_exclusion_mhz",
+    "stage3.primary_pass.min_exclusion_mhz",
+    "primary_pass",
+    "min_exclusion_mhz",
     "Half-width (MHz) around each primary peak the gap pass excludes from its mask.",
-    "Y", (0.0, 0.05, 0.1, 0.2, 0.5), see_also=_PEAK_SEE_ALSO,
+    "Y",
+    (0.0, 0.05, 0.1, 0.2, 0.5),
+    see_also=_PEAK_SEE_ALSO,
 )
 _peak_knob(
-    "stage3.primary_pass.primary_leakage_floor_k", "primary_pass",
+    "stage3.primary_pass.primary_leakage_floor_k",
+    "primary_pass",
     "primary_leakage_floor_k",
     "Scale on the primary leakage-aware floor k·(S_coh/√M)·σ (0 disables).",
-    "Y", (0.0, 0.5, 1.0, 2.0, 3.0), see_also=_PEAK_SEE_ALSO,
+    "Y",
+    (0.0, 0.5, 1.0, 2.0, 3.0),
+    see_also=_PEAK_SEE_ALSO,
 )
 _peak_knob(
-    "stage3.gap_pass.gap_leakage_floor_k", "gap_pass", "gap_leakage_floor_k",
+    "stage3.gap_pass.gap_leakage_floor_k",
+    "gap_pass",
+    "gap_leakage_floor_k",
     "Scale on the gap leakage-aware floor k·(S_coh/√M)·σ (0 disables; replaces "
     "the former hard S_coh mask).",
-    "Y", (0.0, 1.0, 2.0, 3.0, 5.0), see_also=_PEAK_SEE_ALSO,
+    "Y",
+    (0.0, 1.0, 2.0, 3.0, 5.0),
+    see_also=_PEAK_SEE_ALSO,
 )
 
 # Advanced — classification edges (move only the weak/medium/strong labels).
 _peak_knob(
-    "stage3.promotion.weak_medium_snr", "promotion", "weak_medium_snr",
+    "stage3.promotion.weak_medium_snr",
+    "promotion",
+    "weak_medium_snr",
     "Weak/medium SNR classification boundary.",
-    "Y", (5.0, 10.0, 15.0, 20.0), tier="advanced",
+    "Y",
+    (5.0, 10.0, 15.0, 20.0),
+    tier="advanced",
 )
 _peak_knob(
-    "stage3.promotion.medium_strong_snr", "promotion", "medium_strong_snr",
+    "stage3.promotion.medium_strong_snr",
+    "promotion",
+    "medium_strong_snr",
     "Medium/strong SNR classification boundary.",
-    "Y", (30.0, 50.0, 75.0, 100.0), tier="advanced",
+    "Y",
+    (30.0, 50.0, 75.0, 100.0),
+    tier="advanced",
 )
 
 # Advanced — Savitzky-Golay apex localiser (algorithmic conditioning).
 for _path, _field, _help, _grid in (
-    ("stage3.savgol.sg_window", "sg_window",
-     "Primary-pass Savitzky-Golay window (bins, odd).", (7, 9, 11, 15)),
-    ("stage3.savgol.sg_order", "sg_order",
-     "Savitzky-Golay polynomial order.", (2, 3, 4)),
-    ("stage3.savgol.sg_fwhm_coverage", "sg_fwhm_coverage",
-     "Gap-pass window target in line-FWHM units (window auto-derived).",
-     (3.0, 4.0, 5.0)),
-    ("stage3.savgol.sg_min_window", "sg_min_window",
-     "Minimum Savitzky-Golay window (polynomial stability floor).", (5, 7, 9)),
+    (
+        "stage3.savgol.sg_window",
+        "sg_window",
+        "Primary-pass Savitzky-Golay window (bins, odd).",
+        (7, 9, 11, 15),
+    ),
+    (
+        "stage3.savgol.sg_order",
+        "sg_order",
+        "Savitzky-Golay polynomial order.",
+        (2, 3, 4),
+    ),
+    (
+        "stage3.savgol.sg_fwhm_coverage",
+        "sg_fwhm_coverage",
+        "Gap-pass window target in line-FWHM units (window auto-derived).",
+        (3.0, 4.0, 5.0),
+    ),
+    (
+        "stage3.savgol.sg_min_window",
+        "sg_min_window",
+        "Minimum Savitzky-Golay window (polynomial stability floor).",
+        (5, 7, 9),
+    ),
 ):
     _peak_knob(_path, "savgol", _field, _help, "N", _grid, tier="advanced")
 
 # Advanced — primary-pass apodization + zpf (position-finding only).
 _peak_knob(
-    "stage3.primary_pass.primary_window", "primary_pass", "primary_window",
+    "stage3.primary_pass.primary_window",
+    "primary_pass",
+    "primary_window",
     "Primary-pass apodization window (sidelobe suppression; affects positions only).",
-    "N", ("blackmanharris", "blackman", "hann", "hamming"), tier="advanced",
+    "N",
+    ("blackmanharris", "blackman", "hann", "hamming"),
+    tier="advanced",
 )
 _peak_knob(
-    "stage3.primary_pass.detection_zpf", "primary_pass", "detection_zpf",
+    "stage3.primary_pass.detection_zpf",
+    "primary_pass",
+    "detection_zpf",
     "Zero-padding factor for the active-region primary spectrum.",
-    "N", (1, 2, 3), tier="advanced",
+    "N",
+    (1, 2, 3),
+    tier="advanced",
 )
 
 # Advanced — the primary pass's own apodized-domain σ (scatter estimator on the
 # Blackman-Harris spectrum). Mirrors the Stage 2 NoiseSettings knobs; see
 # stage2.* for the unapodized authority twin.
 for _path, _field, _help, _grid, _inst in (
-    ("stage3.primary_pass.noise_window_mhz", "noise_window_mhz",
-     "Apodized-domain σ: scatter-MAD window width (MHz).",
-     (40.0, 60.0, 80.0, 120.0, 160.0), "Y"),
-    ("stage3.primary_pass.noise_pedestal_mhz", "noise_pedestal_mhz",
-     "Apodized-domain σ: high-pass running-median width (MHz).",
-     (10.0, 20.0, 40.0, 80.0), "Y"),
-    ("stage3.primary_pass.noise_smoothing_mhz", "noise_smoothing_mhz",
-     "Apodized-domain σ: broad lower-envelope median width (MHz; 0=off).",
-     (0.0, 400.0, 800.0, 1200.0), "Y"),
-    ("stage3.primary_pass.noise_line_k", "noise_line_k",
-     "Apodized-domain σ: robust-σ multiple above which a bin self-masks.",
-     (4.0, 6.0, 8.0, 12.0), "maybe"),
-    ("stage3.primary_pass.noise_smoothing_percentile", "noise_smoothing_percentile",
-     "Apodized-domain σ: percentile of the broad smoothing (50=median).",
-     (25.0, 50.0, 75.0), "maybe"),
-    ("stage3.primary_pass.noise_convolve_mhz", "noise_convolve_mhz",
-     "Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; 0=off).",
-     (0.0, 100.0, 200.0, 400.0), "N"),
-    ("stage3.primary_pass.noise_n_iter", "noise_n_iter",
-     "Apodized-domain σ: self-mask refinement iterations.",
-     (1, 2, 3, 5), "N"),
-    ("stage3.primary_pass.noise_region_aware", "noise_region_aware",
-     "Apodized-domain σ: region-aware Rician correction switch.",
-     (False, True), "N"),
+    (
+        "stage3.primary_pass.noise_window_mhz",
+        "noise_window_mhz",
+        "Apodized-domain σ: scatter-MAD window width (MHz).",
+        (40.0, 60.0, 80.0, 120.0, 160.0),
+        "Y",
+    ),
+    (
+        "stage3.primary_pass.noise_pedestal_mhz",
+        "noise_pedestal_mhz",
+        "Apodized-domain σ: high-pass running-median width (MHz).",
+        (10.0, 20.0, 40.0, 80.0),
+        "Y",
+    ),
+    (
+        "stage3.primary_pass.noise_smoothing_mhz",
+        "noise_smoothing_mhz",
+        "Apodized-domain σ: broad lower-envelope median width (MHz; 0=off).",
+        (0.0, 400.0, 800.0, 1200.0),
+        "Y",
+    ),
+    (
+        "stage3.primary_pass.noise_line_k",
+        "noise_line_k",
+        "Apodized-domain σ: robust-σ multiple above which a bin self-masks.",
+        (4.0, 6.0, 8.0, 12.0),
+        "maybe",
+    ),
+    (
+        "stage3.primary_pass.noise_smoothing_percentile",
+        "noise_smoothing_percentile",
+        "Apodized-domain σ: percentile of the broad smoothing (50=median).",
+        (25.0, 50.0, 75.0),
+        "maybe",
+    ),
+    (
+        "stage3.primary_pass.noise_convolve_mhz",
+        "noise_convolve_mhz",
+        "Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; 0=off).",
+        (0.0, 100.0, 200.0, 400.0),
+        "N",
+    ),
+    (
+        "stage3.primary_pass.noise_n_iter",
+        "noise_n_iter",
+        "Apodized-domain σ: self-mask refinement iterations.",
+        (1, 2, 3, 5),
+        "N",
+    ),
+    (
+        "stage3.primary_pass.noise_region_aware",
+        "noise_region_aware",
+        "Apodized-domain σ: region-aware Rician correction switch.",
+        (False, True),
+        "N",
+    ),
 ):
     _peak_knob(_path, "primary_pass", _field, _help, _inst, _grid, tier="advanced")
 
 # Advanced — gap pass structural toggles.
 _peak_knob(
-    "stage3.gap_pass.run_gap_pass", "gap_pass", "run_gap_pass",
+    "stage3.gap_pass.run_gap_pass",
+    "gap_pass",
+    "run_gap_pass",
     "Enable the matched-filter gap pass (recovers weak apodization-suppressed lines).",
-    "N", (False, True), tier="advanced",
+    "N",
+    (False, True),
+    tier="advanced",
 )
 _peak_knob(
-    "stage3.gap_pass.gap_active_zpf", "gap_pass", "gap_active_zpf",
+    "stage3.gap_pass.gap_active_zpf",
+    "gap_pass",
+    "gap_active_zpf",
     "Zero-padding factor for the matched-filter active-region FFT.",
-    "N", (1, 2, 3), tier="advanced",
+    "N",
+    (1, 2, 3),
+    tier="advanced",
 )
 
 
@@ -1229,8 +1554,16 @@ _peak_knob(
 # its difficulty, and the driving S_coh statistic move across the grid.
 # ---------------------------------------------------------------------------
 _WINDOW_COLS = (
-    "n_windows", "n_hard", "n_easy", "n_free", "n_fixed", "n_dep", "n_split",
-    "width_p50", "width_p95", "width_max",
+    "n_windows",
+    "n_hard",
+    "n_easy",
+    "n_free",
+    "n_fixed",
+    "n_dep",
+    "n_split",
+    "width_p50",
+    "width_p95",
+    "width_max",
 )
 _WINDOW_SEE_ALSO = (
     "the table reports the plan shape (window/hard/contributor counts + the "
@@ -1240,43 +1573,71 @@ _WINDOW_SEE_ALSO = (
 
 
 def _window_knob(
-    path: str, sub_block: str, field_name: str, help_: str,
-    inst: str, grid: Tuple[Any, ...], tier: str = "primary",
+    path: str,
+    sub_block: str,
+    field_name: str,
+    help_: str,
+    inst: str,
+    grid: Tuple[Any, ...],
+    tier: str = "primary",
     see_also: Optional[str] = None,
 ) -> None:
-    _register(KnobSpec(
-        path=path, stage="stage4_windows", requires="stage3_peaks",
-        help=help_, inst_sensitivity=inst, default_grid=grid,
-        run=_run_windows(sub_block, field_name), metric=_metric_windows,
-        metric_columns=_WINDOW_COLS, plot=plot_window_planning, tier=tier,
-        see_also=see_also,
-    ))
+    _register(
+        KnobSpec(
+            path=path,
+            stage="stage4_windows",
+            requires="stage3_peaks",
+            help=help_,
+            inst_sensitivity=inst,
+            default_grid=grid,
+            run=_run_windows(sub_block, field_name),
+            metric=_metric_windows,
+            metric_columns=_WINDOW_COLS,
+            plot=plot_window_planning,
+            tier=tier,
+            see_also=see_also,
+        )
+    )
 
 
 # Primary tier — the Y-rated partition-shaping knobs (grids lifted from the
 # tracked stage4-gaussian-audit probes).
 _window_knob(
-    "stage4.coherence.edge_threshold", "coherence", "edge_threshold",
+    "stage4.coherence.edge_threshold",
+    "coherence",
+    "edge_threshold",
     "S_coh cutoff (T_edge) for flagging leakage-touched regions that force "
     "window boundaries.",
-    "Y", (4.0, 6.0, 8.0, 10.0, 12.0), see_also=_WINDOW_SEE_ALSO,
+    "Y",
+    (4.0, 6.0, 8.0, 10.0, 12.0),
+    see_also=_WINDOW_SEE_ALSO,
 )
 _window_knob(
-    "stage4.clustering.max_window_width_mhz", "clustering",
+    "stage4.clustering.max_window_width_mhz",
+    "clustering",
     "max_window_width_mhz",
     "Width cap (MHz) above which a window is HARD and gains a split proposal.",
-    "Y", (20.0, 30.0, 40.0, 60.0, 80.0), see_also=_WINDOW_SEE_ALSO,
+    "Y",
+    (20.0, 30.0, 40.0, 60.0, 80.0),
+    see_also=_WINDOW_SEE_ALSO,
 )
 _window_knob(
-    "stage4.contributor.magnitude_attachment_threshold", "contributor",
+    "stage4.contributor.magnitude_attachment_threshold",
+    "contributor",
     "magnitude_attachment_threshold",
     "Tier-1 contributor attachment: predicted mean-skirt threshold (σ_c units).",
-    "Y", (0.05, 0.075, 0.1, 0.15, 0.2), see_also=_WINDOW_SEE_ALSO,
+    "Y",
+    (0.05, 0.075, 0.1, 0.15, 0.2),
+    see_also=_WINDOW_SEE_ALSO,
 )
 _window_knob(
-    "stage4.contributor.min_freeze_snr", "contributor", "min_freeze_snr",
+    "stage4.contributor.min_freeze_snr",
+    "contributor",
+    "min_freeze_snr",
     "SNR floor for fixed-contributor freeze-eligibility (below = thaw candidate).",
-    "Y", (20.0, 35.0, 50.0, 75.0, 100.0), see_also=_WINDOW_SEE_ALSO,
+    "Y",
+    (20.0, 35.0, 50.0, 75.0, 100.0),
+    see_also=_WINDOW_SEE_ALSO,
 )
 
 # Advanced — the leakage-skirt decay, the coherence band scales, and the
@@ -1285,33 +1646,52 @@ _window_knob(
 # proposals), so it is a low-leverage control whose fate — keep, auto-feed the
 # Stage 2b τ, or remove — is deferred to the cross-fixture audit (issue #6).
 _window_knob(
-    "stage4.leakage.tau_us", "leakage", "tau_us",
+    "stage4.leakage.tau_us",
+    "leakage",
+    "tau_us",
     "Decay constant (µs) for the analytic leakage-skirt envelope; None = boxcar "
     "(undamped) limit. A single band-wide scalar — Stage 2b τ is not auto-fed "
     "here; set it explicitly via the grid / settings= / preset=.",
-    "Y", (None, 3.0, 6.0, 12.0), tier="advanced", see_also=_WINDOW_SEE_ALSO,
+    "Y",
+    (None, 3.0, 6.0, 12.0),
+    tier="advanced",
+    see_also=_WINDOW_SEE_ALSO,
 )
 _window_knob(
-    "stage4.coherence.edge_m", "coherence", "edge_m",
+    "stage4.coherence.edge_m",
+    "coherence",
+    "edge_m",
     "Band width (bins) for the rolling complex-edge coherence statistic.",
-    "N", (32, 48, 64, 96, 128), tier="advanced",
+    "N",
+    (32, 48, 64, 96, 128),
+    tier="advanced",
 )
 _window_knob(
-    "stage4.coherence.trim_m", "coherence", "trim_m",
+    "stage4.coherence.trim_m",
+    "coherence",
+    "trim_m",
     "Band width (bins) for coherence refinement after a leakage-region flag.",
-    "N", (16, 24, 32, 48), tier="advanced",
+    "N",
+    (16, 24, 32, 48),
+    tier="advanced",
 )
 _window_knob(
-    "stage4.clustering.min_window_half_width_mhz", "clustering",
+    "stage4.clustering.min_window_half_width_mhz",
+    "clustering",
     "min_window_half_width_mhz",
     "Minimum half-width (MHz) of an isolated-peak proposed window.",
-    "maybe", (1.0, 2.0, 3.0, 4.0), tier="advanced",
+    "maybe",
+    (1.0, 2.0, 3.0, 4.0),
+    tier="advanced",
 )
 _window_knob(
-    "stage4.clustering.max_peaks_per_window", "clustering",
+    "stage4.clustering.max_peaks_per_window",
+    "clustering",
     "max_peaks_per_window",
     "Per-window promoted-peak cap (windows over it are split).",
-    "N", (8, 12, 16, 24), tier="advanced",
+    "N",
+    (8, 12, 16, 24),
+    tier="advanced",
 )
 
 
@@ -1325,8 +1705,14 @@ _window_knob(
 # shape-error fraction ε (pass ⇔ ε ≤ κ), not the SNR²-floored χ²ᵣ.
 # ---------------------------------------------------------------------------
 _FIT_COLS = (
-    "eps_p50", "eps_p95", "n_fail", "n_peaks", "n_free_tau", "sigma_f_khz",
-    "chi2r_p50", "chi2r_p95",
+    "eps_p50",
+    "eps_p95",
+    "n_fail",
+    "n_peaks",
+    "n_free_tau",
+    "sigma_f_khz",
+    "chi2r_p50",
+    "chi2r_p95",
 )
 _FIT_SEE_ALSO = (
     "the headline is the SNR-normalised shape-error ε (pass ⇔ ε ≤ κ=0.05), not "
@@ -1337,123 +1723,232 @@ _FIT_SEE_ALSO = (
 
 
 def _fit_knob(
-    path: str, sub_block: str, field_name: str, help_: str,
-    inst: str, grid: Tuple[Any, ...], tier: str = "primary",
-    see_also: Optional[str] = None, select_hint: Optional[str] = None,
+    path: str,
+    sub_block: str,
+    field_name: str,
+    help_: str,
+    inst: str,
+    grid: Tuple[Any, ...],
+    tier: str = "primary",
+    see_also: Optional[str] = None,
+    select_hint: Optional[str] = None,
     metric: MetricFn = _metric_fit,
     metric_columns: Tuple[str, ...] = _FIT_COLS,
     plot: Optional[Callable[..., Any]] = plot_fit_quality,
 ) -> None:
-    _register(KnobSpec(
-        path=path, stage="stage5_fitting", requires="stage4_windows",
-        help=help_, inst_sensitivity=inst, default_grid=grid,
-        run=_run_fit(sub_block, field_name), metric=metric,
-        metric_columns=metric_columns, plot=plot, tier=tier,
-        see_also=see_also, prepare=reduce_plan_for_fit, select_hint=select_hint,
-    ))
+    _register(
+        KnobSpec(
+            path=path,
+            stage="stage5_fitting",
+            requires="stage4_windows",
+            help=help_,
+            inst_sensitivity=inst,
+            default_grid=grid,
+            run=_run_fit(sub_block, field_name),
+            metric=metric,
+            metric_columns=metric_columns,
+            plot=plot,
+            tier=tier,
+            see_also=see_also,
+            prepare=reduce_plan_for_fit,
+            select_hint=select_hint,
+        )
+    )
 
 
 # Primary — the Y-rated fit-quality knobs (grids lifted from the
 # stage5-gaussian-audit probes where one exists).
 _fit_knob(
-    "stage5.tau.fit_tau_min_snr", "tau", "fit_tau_min_snr",
+    "stage5.tau.fit_tau_min_snr",
+    "tau",
+    "fit_tau_min_snr",
     "In-window SNR above which τ is freed (the free-τ floor is the max of this "
     "and conservative.weak_window_snr_threshold; 10 = the weak-window floor).",
-    "Y", (10.0, 25.0, 50.0, 100.0), see_also=_FIT_SEE_ALSO,
+    "Y",
+    (10.0, 25.0, 50.0, 100.0),
+    see_also=_FIT_SEE_ALSO,
     select_hint="snr_threshold",
 )
 _fit_knob(
-    "stage5.conservative.weak_window_snr_threshold", "conservative",
+    "stage5.conservative.weak_window_snr_threshold",
+    "conservative",
     "weak_window_snr_threshold",
     "In-window SNR floor for free-τ eligibility (hold τ fixed below).",
-    "Y", (5.0, 10.0, 15.0, 20.0), see_also=_FIT_SEE_ALSO,
+    "Y",
+    (5.0, 10.0, 15.0, 20.0),
+    see_also=_FIT_SEE_ALSO,
     select_hint="snr_threshold",
 )
 _fit_knob(
-    "stage5.baseline.edge_threshold", "baseline", "edge_threshold",
+    "stage5.baseline.edge_threshold",
+    "baseline",
+    "edge_threshold",
     "S_coh threshold (max residual edge) gating the leakage-wing baseline refit.",
-    "Y", (2.5, 3.5, 5.0, 8.0), see_also=_FIT_SEE_ALSO,
+    "Y",
+    (2.5, 3.5, 5.0, 8.0),
+    see_also=_FIT_SEE_ALSO,
 )
 
 # Advanced — tau shaping (the penalty / bounds / routing knobs).
+_g: Tuple[Any, ...]
 for _p, _f, _h, _g, _inst in (
-    ("stage5.tau.tau0_us", "tau0_us",
-     "Starting shared decay τ₀ (µs); None = runtime fallback (Stage 2b / T/3).",
-     (None, 3.0, 5.0, 8.0), "maybe"),
-    ("stage5.tau.max_decay_factor", "max_decay_factor",
-     "τ bounds multiplier: τ ∈ [τ₀/k, τ₀·k].", (3.0, 5.0, 8.0), "N"),
-    ("stage5.tau.tau_penalty_lambda", "tau_penalty_lambda",
-     "Strength of the bidirectional Gaussian prior on τ.",
-     (10.0, 50.0, 100.0), "N"),
-    ("stage5.tau.tau_penalty_n_sigma", "tau_penalty_n_sigma",
-     "τ-bound half-width in units of σ_τ from Stage 2b.", (3.0, 5.0, 8.0), "N"),
+    (
+        "stage5.tau.tau0_us",
+        "tau0_us",
+        "Starting shared decay τ₀ (µs); None = runtime fallback (Stage 2b / T/3).",
+        (None, 3.0, 5.0, 8.0),
+        "maybe",
+    ),
+    (
+        "stage5.tau.max_decay_factor",
+        "max_decay_factor",
+        "τ bounds multiplier: τ ∈ [τ₀/k, τ₀·k].",
+        (3.0, 5.0, 8.0),
+        "N",
+    ),
+    (
+        "stage5.tau.tau_penalty_lambda",
+        "tau_penalty_lambda",
+        "Strength of the bidirectional Gaussian prior on τ.",
+        (10.0, 50.0, 100.0),
+        "N",
+    ),
+    (
+        "stage5.tau.tau_penalty_n_sigma",
+        "tau_penalty_n_sigma",
+        "τ-bound half-width in units of σ_τ from Stage 2b.",
+        (3.0, 5.0, 8.0),
+        "N",
+    ),
 ):
     _fit_knob(_p, "tau", _f, _h, _inst, _g, tier="advanced")
 _fit_knob(
-    "stage5.tau.per_band_tau", "tau", "per_band_tau",
+    "stage5.tau.per_band_tau",
+    "tau",
+    "per_band_tau",
     "Route τ to per-band majorities (True) or a single band-wide τ (False).",
-    "maybe", (False, True), tier="advanced",
+    "maybe",
+    (False, True),
+    tier="advanced",
 )
 
 # Advanced — the conservative add-one-peak loop.
 for _p, _f, _h, _g in (
-    ("stage5.conservative.significance", "significance",
-     "F-test significance α for add-one-peak acceptance.", (0.01, 0.05, 0.1)),
-    ("stage5.conservative.max_peaks", "max_peaks",
-     "Hard cap on the final peak count per window.", (4, 8, 12)),
-    ("stage5.conservative.patience", "patience",
-     "Consecutive-rejection patience before the add loop stops.", (1, 2, 3)),
-    ("stage5.conservative.min_separation_factor", "min_separation_factor",
-     "Minimum peak separation (FWHM units; unresolvable below).",
-     (0.5, 1.0, 1.5)),
-    ("stage5.conservative.min_pair_separation_factor",
-     "min_pair_separation_factor",
-     "Post-escalation pair-separation floor (FWHM units).", (0.25, 0.5, 0.75)),
-    ("stage5.conservative.min_pair_separation_resolution_factor",
-     "min_pair_separation_resolution_factor",
-     "Resolution-referenced pair floor (1/T_active elements).",
-     (0.5, 1.0, 1.5)),
-    ("stage5.conservative.max_nfev", "max_nfev",
-     "Solver evaluation cap per window.", (1000, 2000, 4000)),
+    (
+        "stage5.conservative.significance",
+        "significance",
+        "F-test significance α for add-one-peak acceptance.",
+        (0.01, 0.05, 0.1),
+    ),
+    (
+        "stage5.conservative.max_peaks",
+        "max_peaks",
+        "Hard cap on the final peak count per window.",
+        (4, 8, 12),
+    ),
+    (
+        "stage5.conservative.patience",
+        "patience",
+        "Consecutive-rejection patience before the add loop stops.",
+        (1, 2, 3),
+    ),
+    (
+        "stage5.conservative.min_separation_factor",
+        "min_separation_factor",
+        "Minimum peak separation (FWHM units; unresolvable below).",
+        (0.5, 1.0, 1.5),
+    ),
+    (
+        "stage5.conservative.min_pair_separation_factor",
+        "min_pair_separation_factor",
+        "Post-escalation pair-separation floor (FWHM units).",
+        (0.25, 0.5, 0.75),
+    ),
+    (
+        "stage5.conservative.min_pair_separation_resolution_factor",
+        "min_pair_separation_resolution_factor",
+        "Resolution-referenced pair floor (1/T_active elements).",
+        (0.5, 1.0, 1.5),
+    ),
+    (
+        "stage5.conservative.max_nfev",
+        "max_nfev",
+        "Solver evaluation cap per window.",
+        (1000, 2000, 4000),
+    ),
 ):
     _fit_knob(_p, "conservative", _f, _h, "N", _g, tier="advanced")
 
 # Advanced — the soft penalties.
 for _p, _f, _h, _g in (
-    ("stage5.penalties.phase_penalty_lambda", "phase_penalty_lambda",
-     "Phase-difference soft-penalty strength.", (50.0, 100.0, 200.0)),
-    ("stage5.penalties.phase_penalty_cutoff_fwhm", "phase_penalty_cutoff_fwhm",
-     "Phase-penalty range (FWHM units; zero in quadrature).", (1.0, 2.0, 3.0)),
-    ("stage5.penalties.amp_penalty_lambda", "amp_penalty_lambda",
-     "Amplitude-floor soft-penalty strength.", (5.0, 10.0, 20.0)),
-    ("stage5.penalties.amp_max_headroom", "amp_max_headroom",
-     "Hard amplitude ceiling as a multiple of 2·max_data/τ_eff_min.",
-     (2.0, 3.0, 5.0)),
+    (
+        "stage5.penalties.phase_penalty_lambda",
+        "phase_penalty_lambda",
+        "Phase-difference soft-penalty strength.",
+        (50.0, 100.0, 200.0),
+    ),
+    (
+        "stage5.penalties.phase_penalty_cutoff_fwhm",
+        "phase_penalty_cutoff_fwhm",
+        "Phase-penalty range (FWHM units; zero in quadrature).",
+        (1.0, 2.0, 3.0),
+    ),
+    (
+        "stage5.penalties.amp_penalty_lambda",
+        "amp_penalty_lambda",
+        "Amplitude-floor soft-penalty strength.",
+        (5.0, 10.0, 20.0),
+    ),
+    (
+        "stage5.penalties.amp_max_headroom",
+        "amp_max_headroom",
+        "Hard amplitude ceiling as a multiple of 2·max_data/τ_eff_min.",
+        (2.0, 3.0, 5.0),
+    ),
 ):
     _fit_knob(_p, "penalties", _f, _h, "N", _g, tier="advanced")
 
 # Advanced — the blend-aware re-seeder.
 for _p, _f, _h, _g in (
-    ("stage5.seeder.seeder_rchi2", "seeder_rchi2",
-     "χ²ᵣ threshold that triggers the K=2/3 blend-aware re-seed.",
-     (1.2, 1.5, 2.0)),
-    ("stage5.seeder.seeder_straddle_factor", "seeder_straddle_factor",
-     "Re-seed offset spacing in line-FWHM units.", (0.5, 1.0, 1.5)),
-    ("stage5.seeder.seeder_max_k", "seeder_max_k",
-     "Maximum blend-escalation depth.", (2, 3, 4)),
+    (
+        "stage5.seeder.seeder_rchi2",
+        "seeder_rchi2",
+        "χ²ᵣ threshold that triggers the K=2/3 blend-aware re-seed.",
+        (1.2, 1.5, 2.0),
+    ),
+    (
+        "stage5.seeder.seeder_straddle_factor",
+        "seeder_straddle_factor",
+        "Re-seed offset spacing in line-FWHM units.",
+        (0.5, 1.0, 1.5),
+    ),
+    (
+        "stage5.seeder.seeder_max_k",
+        "seeder_max_k",
+        "Maximum blend-escalation depth.",
+        (2, 3, 4),
+    ),
 ):
     _fit_knob(_p, "seeder", _f, _h, "N", _g, tier="advanced")
 
 # Advanced — the leakage-wing baseline shape / switch.
 _fit_knob(
-    "stage5.baseline.order", "baseline", "order",
+    "stage5.baseline.order",
+    "baseline",
+    "order",
     "Baseline polynomial order (0 = const, 1 = linear; higher overfits).",
-    "maybe", (0, 1), tier="advanced",
+    "maybe",
+    (0, 1),
+    tier="advanced",
 )
 _fit_knob(
-    "stage5.baseline.enabled", "baseline", "enabled",
+    "stage5.baseline.enabled",
+    "baseline",
+    "enabled",
     "Master switch for the evidence-triggered leakage-wing baseline term.",
-    "N", (False, True), tier="advanced",
+    "N",
+    (False, True),
+    tier="advanced",
 )
 
 
@@ -1465,8 +1960,14 @@ _fit_knob(
 # so they carry their own metric columns + plot adapter.
 # ---------------------------------------------------------------------------
 _RESCUE_COLS = (
-    "n_added", "n_pruned_rescue", "n_merged", "n_win", "n_rounds",
-    "chi2_drop_pct", "eps_p50", "n_peaks",
+    "n_added",
+    "n_pruned_rescue",
+    "n_merged",
+    "n_win",
+    "n_rounds",
+    "chi2_drop_pct",
+    "eps_p50",
+    "n_peaks",
 )
 _RESCUE_SEE_ALSO = (
     "n_added / chi2_drop_pct say whether rescue earns its keep; n_pruned_rescue "
@@ -1475,7 +1976,12 @@ _RESCUE_SEE_ALSO = (
     "Sweeps a reduced window subset — widen with --fit-* (or --fit-all)."
 )
 _SPUR_COLS = (
-    "n_spurs", "n_narrow", "n_saturated", "mask_hw_bins", "eps_p50", "n_peaks",
+    "n_spurs",
+    "n_narrow",
+    "n_saturated",
+    "mask_hw_bins",
+    "eps_p50",
+    "n_peaks",
 )
 _SPUR_SEE_ALSO = (
     "the gated-spur catalogue is band-level (computed on the full active FT), so "
@@ -1484,8 +1990,14 @@ _SPUR_SEE_ALSO = (
     "gating them."
 )
 _THAW_COLS = (
-    "n_thaw", "n_thaw_acc", "n_replan", "n_replan_acc", "rev", "coh_flag_p95",
-    "coh_red_p50", "eps_p50",
+    "n_thaw",
+    "n_thaw_acc",
+    "n_replan",
+    "n_replan_acc",
+    "rev",
+    "coh_flag_p95",
+    "coh_red_p50",
+    "eps_p50",
 )
 _THAW_SEE_ALSO = (
     "thaw is near-dormant on clean spectra (n_thaw_acc ~0 on 2638); the attempt "
@@ -1498,101 +2010,205 @@ _THAW_SEE_ALSO = (
 # Rescue — primary: the two residual-detection gates (Y-rated). Advanced: the
 # safety cap, the cleanup F-test, and the merge / overfit-absorber factors.
 _fit_knob(
-    "stage5.rescue.snr_threshold", "rescue", "snr_threshold",
+    "stage5.rescue.snr_threshold",
+    "rescue",
+    "snr_threshold",
     "Residual-peak detection floor (nominates generously; the F-test gates "
     "acceptance).",
-    "Y", (2.0, 2.5, 3.0, 4.0), see_also=_RESCUE_SEE_ALSO,
-    metric=_metric_rescue, metric_columns=_RESCUE_COLS, plot=plot_rescue,
+    "Y",
+    (2.0, 2.5, 3.0, 4.0),
+    see_also=_RESCUE_SEE_ALSO,
+    metric=_metric_rescue,
+    metric_columns=_RESCUE_COLS,
+    plot=plot_rescue,
 )
 _fit_knob(
-    "stage5.rescue.prominence_threshold", "rescue", "prominence_threshold",
+    "stage5.rescue.prominence_threshold",
+    "rescue",
+    "prominence_threshold",
     "Residual-peak prominence threshold for candidate nomination.",
-    "Y", (1.5, 2.0, 3.0, 4.0), see_also=_RESCUE_SEE_ALSO,
-    metric=_metric_rescue, metric_columns=_RESCUE_COLS, plot=plot_rescue,
+    "Y",
+    (1.5, 2.0, 3.0, 4.0),
+    see_also=_RESCUE_SEE_ALSO,
+    metric=_metric_rescue,
+    metric_columns=_RESCUE_COLS,
+    plot=plot_rescue,
 )
 for _p, _f, _h, _g in (
-    ("stage5.rescue.max_rounds", "max_rounds",
-     "Maximum residual-rescue iterations per window (safety cap).",
-     (1, 3, 5, 8)),
-    ("stage5.rescue.cleanup_significance", "cleanup_significance",
-     "F-test significance for the remove-and-refit post-rescue cleanup.",
-     (0.01, 0.05, 0.1)),
-    ("stage5.rescue.merge_separation_factor", "merge_separation_factor",
-     "AICc-gated merge threshold above resolution (FWHM units).",
-     (0.25, 0.5, 0.75)),
-    ("stage5.rescue.structural_merge_factor", "structural_merge_factor",
-     "Sub-resolution merge floor: pairs closer than this (FWHM units) collapse "
-     "unconditionally.",
-     (0.25, 0.5, 0.75)),
-    ("stage5.rescue.overfit_amp_ratio_band", "overfit_amp_ratio_band",
-     "Upper bound (1/T_active elements) of the amplitude-ratio merge tier that "
-     "collapses supra-resolution shape-error absorbers.",
-     (1.0, 1.5, 2.0)),
-    ("stage5.rescue.overfit_amp_ratio_threshold", "overfit_amp_ratio_threshold",
-     "Amplitude ratio above which a pair in the band collapses as an absorber "
-     "(0 disables).",
-     (0.0, 4.0, 6.0, 10.0)),
+    (
+        "stage5.rescue.max_rounds",
+        "max_rounds",
+        "Maximum residual-rescue iterations per window (safety cap).",
+        (1, 3, 5, 8),
+    ),
+    (
+        "stage5.rescue.cleanup_significance",
+        "cleanup_significance",
+        "F-test significance for the remove-and-refit post-rescue cleanup.",
+        (0.01, 0.05, 0.1),
+    ),
+    (
+        "stage5.rescue.merge_separation_factor",
+        "merge_separation_factor",
+        "AICc-gated merge threshold above resolution (FWHM units).",
+        (0.25, 0.5, 0.75),
+    ),
+    (
+        "stage5.rescue.structural_merge_factor",
+        "structural_merge_factor",
+        "Sub-resolution merge floor: pairs closer than this (FWHM units) collapse "
+        "unconditionally.",
+        (0.25, 0.5, 0.75),
+    ),
+    (
+        "stage5.rescue.overfit_amp_ratio_band",
+        "overfit_amp_ratio_band",
+        "Upper bound (1/T_active elements) of the amplitude-ratio merge tier that "
+        "collapses supra-resolution shape-error absorbers.",
+        (1.0, 1.5, 2.0),
+    ),
+    (
+        "stage5.rescue.overfit_amp_ratio_threshold",
+        "overfit_amp_ratio_threshold",
+        "Amplitude ratio above which a pair in the band collapses as an absorber "
+        "(0 disables).",
+        (0.0, 4.0, 6.0, 10.0),
+    ),
 ):
-    _fit_knob(_p, "rescue", _f, _h, "N", _g, tier="advanced",
-              see_also=_RESCUE_SEE_ALSO, metric=_metric_rescue,
-              metric_columns=_RESCUE_COLS, plot=plot_rescue)
+    _fit_knob(
+        _p,
+        "rescue",
+        _f,
+        _h,
+        "N",
+        _g,
+        tier="advanced",
+        see_also=_RESCUE_SEE_ALSO,
+        metric=_metric_rescue,
+        metric_columns=_RESCUE_COLS,
+        plot=plot_rescue,
+    )
 
 # Spur — primary: the integer-MHz / narrowness gate + the mask half-width (all
 # Y-rated). Advanced: the master switch, the frequency-domain SNR floor, and the
 # Stage 2b saturated-catalogue toggle.
 for _p, _f, _h, _g in (
-    ("stage5.spur.integer_tol_mhz", "integer_tol_mhz",
-     "Max distance (MHz) from an integer MHz for the spur gate's hard integer "
-     "requirement (~½ active-FT bin).",
-     (0.02, 0.04, 0.08, 0.16)),
-    ("stage5.spur.narrowness_ratio", "narrowness_ratio",
-     "max(neighbour)/peak below which an integer-MHz bin is sub-resolution "
-     "narrow (a CW tone vs a real line with a skirt).",
-     (0.2, 0.3, 0.4, 0.5)),
-    ("stage5.spur.mask_half_width_bins", "mask_half_width_bins",
-     "Residual-mask half-width (active-FT bins) around a detected spur.",
-     (1, 2, 3, 4)),
+    (
+        "stage5.spur.integer_tol_mhz",
+        "integer_tol_mhz",
+        "Max distance (MHz) from an integer MHz for the spur gate's hard integer "
+        "requirement (~½ active-FT bin).",
+        (0.02, 0.04, 0.08, 0.16),
+    ),
+    (
+        "stage5.spur.narrowness_ratio",
+        "narrowness_ratio",
+        "max(neighbour)/peak below which an integer-MHz bin is sub-resolution "
+        "narrow (a CW tone vs a real line with a skirt).",
+        (0.2, 0.3, 0.4, 0.5),
+    ),
+    (
+        "stage5.spur.mask_half_width_bins",
+        "mask_half_width_bins",
+        "Residual-mask half-width (active-FT bins) around a detected spur.",
+        (1, 2, 3, 4),
+    ),
 ):
-    _fit_knob(_p, "spur", _f, _h, "Y", _g, see_also=_SPUR_SEE_ALSO,
-              metric=_metric_spur, metric_columns=_SPUR_COLS, plot=plot_spur)
+    _fit_knob(
+        _p,
+        "spur",
+        _f,
+        _h,
+        "Y",
+        _g,
+        see_also=_SPUR_SEE_ALSO,
+        metric=_metric_spur,
+        metric_columns=_SPUR_COLS,
+        plot=plot_spur,
+    )
 for _p, _f, _h, _g in (
-    ("stage5.spur.enabled", "enabled",
-     "Master switch for clock/LO-spur detection + masking.", (False, True)),
-    ("stage5.spur.snr_threshold", "snr_threshold",
-     "Peak-bin / σ_c floor for the frequency-domain spur detector.",
-     (3.0, 5.0, 8.0, 12.0)),
-    ("stage5.spur.use_stft_catalogue", "use_stft_catalogue",
-     "Consume the persisted Stage 2b flat-spur (saturated) catalogue as the "
-     "gate's persistence half; False = frequency-domain detector only.",
-     (False, True)),
+    (
+        "stage5.spur.enabled",
+        "enabled",
+        "Master switch for clock/LO-spur detection + masking.",
+        (False, True),
+    ),
+    (
+        "stage5.spur.snr_threshold",
+        "snr_threshold",
+        "Peak-bin / σ_c floor for the frequency-domain spur detector.",
+        (3.0, 5.0, 8.0, 12.0),
+    ),
+    (
+        "stage5.spur.use_stft_catalogue",
+        "use_stft_catalogue",
+        "Consume the persisted Stage 2b flat-spur (saturated) catalogue as the "
+        "gate's persistence half; False = frequency-domain detector only.",
+        (False, True),
+    ),
 ):
-    _fit_knob(_p, "spur", _f, _h, "N", _g, tier="advanced",
-              see_also=_SPUR_SEE_ALSO, metric=_metric_spur,
-              metric_columns=_SPUR_COLS, plot=plot_spur)
+    _fit_knob(
+        _p,
+        "spur",
+        _f,
+        _h,
+        "N",
+        _g,
+        tier="advanced",
+        see_also=_SPUR_SEE_ALSO,
+        metric=_metric_spur,
+        metric_columns=_SPUR_COLS,
+        plot=plot_spur,
+    )
 
 # Thaw — primary: the residual-edge S_coh trigger (Y-rated). Advanced: the
 # thaw / replan round caps and the edge-detection band width.
 _fit_knob(
-    "stage5.thaw.residual_edge_threshold", "thaw", "residual_edge_threshold",
+    "stage5.thaw.residual_edge_threshold",
+    "thaw",
+    "residual_edge_threshold",
     "S_coh threshold for a residual-edge-coherence boundary violation (the "
     "thaw / replan trigger).",
-    "Y", (4.0, 6.0, 8.0, 10.0, 12.0), see_also=_THAW_SEE_ALSO,
-    metric=_metric_thaw, metric_columns=_THAW_COLS, plot=plot_thaw,
+    "Y",
+    (4.0, 6.0, 8.0, 10.0, 12.0),
+    see_also=_THAW_SEE_ALSO,
+    metric=_metric_thaw,
+    metric_columns=_THAW_COLS,
+    plot=plot_thaw,
 )
 for _p, _f, _h, _g in (
-    ("stage5.thaw.max_thaw_rounds", "max_thaw_rounds",
-     "Maximum local-thaw iterations (re-fit a frozen contributor; 0 disables).",
-     (0, 1, 2, 3)),
-    ("stage5.thaw.max_replan_rounds", "max_replan_rounds",
-     "Maximum structural-replan iterations (window-boundary merges; 0 disables).",
-     (0, 1, 2, 3)),
-    ("stage5.thaw.residual_edge_m", "residual_edge_m",
-     "Band width (bins) for residual edge-coherence detection.",
-     (16, 32, 48, 64)),
+    (
+        "stage5.thaw.max_thaw_rounds",
+        "max_thaw_rounds",
+        "Maximum local-thaw iterations (re-fit a frozen contributor; 0 disables).",
+        (0, 1, 2, 3),
+    ),
+    (
+        "stage5.thaw.max_replan_rounds",
+        "max_replan_rounds",
+        "Maximum structural-replan iterations (window-boundary merges; 0 disables).",
+        (0, 1, 2, 3),
+    ),
+    (
+        "stage5.thaw.residual_edge_m",
+        "residual_edge_m",
+        "Band width (bins) for residual edge-coherence detection.",
+        (16, 32, 48, 64),
+    ),
 ):
-    _fit_knob(_p, "thaw", _f, _h, "N", _g, tier="advanced",
-              see_also=_THAW_SEE_ALSO, metric=_metric_thaw,
-              metric_columns=_THAW_COLS, plot=plot_thaw)
+    _fit_knob(
+        _p,
+        "thaw",
+        _f,
+        _h,
+        "N",
+        _g,
+        tier="advanced",
+        see_also=_THAW_SEE_ALSO,
+        metric=_metric_thaw,
+        metric_columns=_THAW_COLS,
+        plot=plot_thaw,
+    )
 
 
 def get_knob(path: str) -> KnobSpec:
@@ -1624,7 +2240,8 @@ def list_knobs(
         specs = [s for s in specs if s.tier != "advanced"]
     if selector is not None:
         specs = [
-            s for s in specs
+            s
+            for s in specs
             if s.path == selector
             or s.path.startswith(selector + ".")
             or s.stage == selector

@@ -41,8 +41,8 @@ from ..fitting.tau_calibration import (
     TauCalibrationResult,
     extract_tau_majority,
 )
+from ..io.tau_calibration_serialization import GROUP_PATH as TAU_GROUP_PATH
 from ..io.tau_calibration_serialization import (
-    GROUP_PATH as TAU_GROUP_PATH,
     load_tau_calibration_from_hdf5,
     save_tau_calibration_to_hdf5,
 )
@@ -71,7 +71,9 @@ def _read_canonical_ft_settings(file_path: str) -> FTSettings:
     settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     if settings is None:
         raise StageDependencyError(
-            STAGE_NAME, ["stage1_complex_ft"], Path(file_path),
+            STAGE_NAME,
+            ["stage1_complex_ft"],
+            Path(file_path),
         )
     return settings
 
@@ -168,7 +170,9 @@ def calibrate_tau_impl(
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
             raise StageDependencyError(
-                STAGE_NAME, ["stage2_noise_result"], file_path_obj,
+                STAGE_NAME,
+                ["stage2_noise_result"],
+                file_path_obj,
             )
 
     explicit = _build_explicit_from_kwargs(
@@ -194,9 +198,7 @@ def calibrate_tau_impl(
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 
-    start_us = (
-        float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
-    )
+    start_us = float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
     end_us = (
         float(ft_settings.end_us)
         if ft_settings.end_us is not None
@@ -318,7 +320,9 @@ def calibrate_tau_impl(
     }
     save_tau_calibration_impl(file_path, result, parameters_used=parameters_used)
     save_tau_calibration_settings_to_h5(
-        file_path, resolved, preset_name=preset_name,
+        file_path,
+        resolved,
+        preset_name=preset_name,
     )
     _update_stage_completion(file_path, STAGE_NAME)
     invalidated = invalidate_downstream_stages(file_path, STAGE_NAME)
@@ -367,9 +371,7 @@ def save_tau_calibration_impl(
         save_tau_calibration_to_hdf5(result, grp)
         grp.attrs["creation_time"] = datetime.now().isoformat()
         if parameters_used is not None:
-            grp.attrs["parameters_used"] = json.dumps(
-                parameters_used, default=str
-            )
+            grp.attrs["parameters_used"] = json.dumps(parameters_used, default=str)
     write_stage2b_recommended_shape(file_path, shape=None)
 
 

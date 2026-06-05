@@ -62,7 +62,9 @@ def _read_canonical_ft_settings(file_path: str) -> FTSettings:
     settings = _read_settings_layer(file_path, FT_PROCESSING_PATH)
     if settings is None:
         raise StageDependencyError(
-            STAGE_NAME, ["stage1_complex_ft"], Path(file_path),
+            STAGE_NAME,
+            ["stage1_complex_ft"],
+            Path(file_path),
         )
     return settings
 
@@ -193,9 +195,7 @@ def recommend_shape_impl(
     fid = load_fid_from_pipeline_impl(file_path)
     sample_dt_us = float(fid.spacing * 1e6)
 
-    start_us = (
-        float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
-    )
+    start_us = float(ft_settings.start_us) if ft_settings.start_us is not None else 0.0
     end_us = (
         float(ft_settings.end_us)
         if ft_settings.end_us is not None
@@ -256,6 +256,7 @@ def recommend_shape_impl(
     # ``recommended_shape`` is None so the attr explicitly reflects
     # "no clear winner" rather than carrying a stale prior value.
     import h5py
+
     groups_written: list[str] = []
     write_stage2b_recommended_shape(file_path, verdict.recommended_shape)
     with h5py.File(file_path, "r") as h5f:
@@ -277,7 +278,9 @@ def recommend_shape_impl(
     # for this run -- recommend_shape is one of three consumers that
     # share the same settings block.
     save_tau_calibration_settings_to_h5(
-        file_path, resolved, preset_name=preset_name,
+        file_path,
+        resolved,
+        preset_name=preset_name,
     )
 
     return {

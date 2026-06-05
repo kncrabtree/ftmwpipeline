@@ -5,93 +5,116 @@ pipeline, implementing the dual-interface architecture alongside functional
 and CLI interfaces. Each Pipeline instance is bound to a specific .ftmw file.
 """
 
-from typing import Dict, List, Optional, Sequence, Union, Any, Tuple, cast, TYPE_CHECKING
 import logging
 from pathlib import Path
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 if TYPE_CHECKING:
     from ._internal.tuning import BatchItem, KnobSpec, SweepResult
 
-from .core.data_structures import FID, ComplexFT
-from .core.settings import FTSettings
-from .core.noise_settings import NoiseSettings
-from .core.peak_detection_settings import PeakDetectionSettings
-from .core.stage_fit_settings import StageFitSettings
-from .core.tau_calibration_settings import TauCalibrationSettings
-from .core.window_planning_settings import WindowPlanningSettings
-from .core.start_detection_settings import StartDetectionSettings
-from .preprocessing.noise_estimation import NoiseResult
-from .preprocessing.start_detection import StartDetectionResult
-from .file_manager import (
-    SourceMetadata, PipelineStageTracker,
-    PipelineFileError, PipelineExistsError, StageDependencyError, PipelineCorruptionError,
-    create_pipeline_file, open_pipeline_file, validate_pipeline_file, update_processing_parameters
-)
-from .io.data_loaders import load_fid, detect_format, validate_source
+from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
-    compute_ft_impl, visualize_ft_impl, save_ft_parameters_impl
+    compute_ft_impl,
+    save_ft_parameters_impl,
+    visualize_ft_impl,
 )
-from ._internal.stage2_impl import (
-    compute_noise_estimation_impl, visualize_noise_impl
+from ._internal.stage2_impl import compute_noise_estimation_impl, visualize_noise_impl
+from ._internal.stage2b_g_impl import (
+    calibrate_tau_G_impl,
+    load_tau_G_calibration_impl,
 )
 from ._internal.stage2b_impl import (
-    calibrate_tau_impl, load_tau_calibration_impl,
+    calibrate_tau_impl,
+    load_tau_calibration_impl,
 )
-from ._internal.stage2b_g_impl import (
-    calibrate_tau_G_impl, load_tau_G_calibration_impl,
-)
-from ._internal.shape_recommendation_impl import recommend_shape_impl
-from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.stage3_impl import (
-    detect_peaks_impl, visualize_peaks_impl, load_peaks_impl
+    detect_peaks_impl,
+    load_peaks_impl,
+    visualize_peaks_impl,
 )
 from ._internal.stage4_impl import (
-    assign_windows_impl, visualize_windows_impl, load_windows_impl
+    assign_windows_impl,
+    load_windows_impl,
+    visualize_windows_impl,
 )
-from ._internal.stage5_impl import (
-    fit_peaks_impl, visualize_fit_impl, load_fit_impl
-)
+from ._internal.stage5_impl import fit_peaks_impl, load_fit_impl, visualize_fit_impl
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
-from .core.data_structures import Peak, SpectrumFit, WindowPlan
+from ._internal.start_detection_impl import detect_start_time_impl
+from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .core.noise_settings import NoiseSettings
+from .core.peak_detection_settings import PeakDetectionSettings
+from .core.settings import FTSettings
+from .core.stage_fit_settings import StageFitSettings
+from .core.start_detection_settings import StartDetectionSettings
+from .core.tau_calibration_settings import TauCalibrationSettings
+from .core.window_planning_settings import WindowPlanningSettings
+from .file_manager import (
+    PipelineCorruptionError,
+    PipelineExistsError,
+    PipelineFileError,
+    PipelineStageTracker,
+    SourceMetadata,
+    StageDependencyError,
+    create_pipeline_file,
+    open_pipeline_file,
+    update_processing_parameters,
+    validate_pipeline_file,
+)
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
+from .io.data_loaders import detect_format, load_fid, validate_source
+from .preprocessing.noise_estimation import NoiseResult
+from .preprocessing.start_detection import StartDetectionResult
 
 
 class Pipeline:
     """
     Object-oriented pipeline interface for FTMW spectroscopy data processing.
-    
+
     Each Pipeline instance is bound to a specific .ftmw pipeline file and provides
-    high-level methods for data processing and analysis. This implements the 
+    high-level methods for data processing and analysis. This implements the
     object-oriented interface of the dual-interface architecture.
-    
+
     Key Features:
     - File-bound design: each instance manages one .ftmw pipeline file
     - Safe re-execution: methods can be called multiple times
     - Consistent with CLI: methods behave identically to CLI commands
     - Error handling: clear error messages using custom exceptions
-    
+
     Example Usage:
     ```python
     # Create new pipeline from raw data
     pipe = Pipeline.create("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
-    
+
     # Open existing pipeline for analysis
     pipe = Pipeline.open("exp_2638.ftmw")
-    
+
     # Stage 1: FT Processing
     pipe.compute_ft(zpf=2, expf_us=5.0, trim=(26500, 40000))
     pipe.visualize_ft(zpf=1, expf_us=3.0, save_params=True)
-    
+
     # File info and validation
     pipe.info()       # Show pipeline status and metadata
     pipe.validate()   # Check file integrity
     ```
     """
-    
-    def __init__(self, filepath: Union[str, Path],
-                 source_metadata: Optional[SourceMetadata] = None,
-                 stage_tracker: Optional[PipelineStageTracker] = None):
+
+    def __init__(
+        self,
+        filepath: Union[str, Path],
+        source_metadata: Optional[SourceMetadata] = None,
+        stage_tracker: Optional[PipelineStageTracker] = None,
+    ):
         """
         Bind a Pipeline instance to a specific .ftmw file.
 
@@ -125,14 +148,20 @@ class Pipeline:
         self.filepath = Path(filepath)
         self.source_metadata = source_metadata
         self.stage_tracker = stage_tracker
-    
+
     @classmethod
-    def create(cls, filepath: Union[str, Path], source: Union[str, Path], 
-               format_name: Optional[str] = None, fid_index: Optional[int] = None,
-               force: bool = False, **loader_params) -> 'Pipeline':
+    def create(
+        cls,
+        filepath: Union[str, Path],
+        source: Union[str, Path],
+        format_name: Optional[str] = None,
+        fid_index: Optional[int] = None,
+        force: bool = False,
+        **loader_params: Any,
+    ) -> "Pipeline":
         """
         Create new pipeline from raw experimental data.
-        
+
         Parameters
         ----------
         filepath : str or Path
@@ -147,12 +176,12 @@ class Pipeline:
             If True, overwrite existing file even with different source
         **loader_params
             Additional parameters for data loader
-            
+
         Returns
         -------
         Pipeline
             New Pipeline instance bound to the created file
-            
+
         Raises
         ------
         PipelineExistsError
@@ -165,65 +194,65 @@ class Pipeline:
             If data loading or file creation fails
         """
         source_path = Path(source)
-        
+
         # Validate source exists
         if not source_path.exists():
             raise FileNotFoundError(f"Source path does not exist: {source_path}")
-        
+
         # Format detection if not specified
         if format_name is None:
             format_name = detect_format(source_path)
             if format_name is None:
                 raise ValueError(f"Could not detect format for: {source_path}")
-        
+
         # Validate source with format
         validation = validate_source(source_path, format_name)
-        if not validation['valid']:
-            errors = "; ".join(validation['errors'])
+        if not validation["valid"]:
+            errors = "; ".join(validation["errors"])
             raise ValueError(f"Source validation failed: {errors}")
-        
+
         # Prepare loader parameters
-        if format_name == 'blackchirp' and fid_index is not None:
-            loader_params['fid_index'] = fid_index
-        
+        if format_name == "blackchirp" and fid_index is not None:
+            loader_params["fid_index"] = fid_index
+
         # Load FID data
         try:
             fid = load_fid(source_path, format_name, **loader_params)
         except Exception as e:
             raise RuntimeError(f"Failed to load FID data: {e}") from e
-        
+
         # Create source metadata
         source_metadata = SourceMetadata(
             source_path=source_path,
             format_name=format_name,
-            loader_parameters=loader_params
+            loader_parameters=loader_params,
         )
-        
+
         # Create pipeline file
         created_filepath = create_pipeline_file(
             filepath, fid, source_metadata, force=force
         )
-        
+
         # Load file info for Pipeline instance
         filepath, source_metadata, stage_tracker = open_pipeline_file(created_filepath)
-        
+
         return cls(filepath, source_metadata, stage_tracker)
-    
+
     @classmethod
-    def open(cls, filepath: Union[str, Path]) -> 'Pipeline':
+    def open(cls, filepath: Union[str, Path]) -> "Pipeline":
         """
         Open existing pipeline file.
-        
+
         Parameters
         ----------
         filepath : str or Path
             Path to existing pipeline file
-            
+
         Returns
         -------
         Pipeline
             Pipeline instance bound to the opened file
-            
+
         Raises
         ------
         FileNotFoundError
@@ -234,21 +263,21 @@ class Pipeline:
             If file format is invalid
         """
         filepath, source_metadata, stage_tracker = open_pipeline_file(filepath)
-        
+
         return cls(filepath, source_metadata, stage_tracker)
-    
+
     def load_data(self) -> FID:
         """
         Load FID data from the pipeline file.
-        
+
         This method implements Stage 0 data loading, providing access to the
         raw FID data stored in the pipeline file.
-        
+
         Returns
         -------
         FID
             The loaded FID object with all metadata
-            
+
         Raises
         ------
         FileNotFoundError
@@ -260,11 +289,13 @@ class Pipeline:
         """
         try:
             fid = load_fid_from_pipeline_impl(str(self.filepath))
-            self.logger.info(f"Loaded FID data: {fid.n_points:,} points, {fid.duration_us:.1f} μs")
+            self.logger.info(
+                f"Loaded FID data: {fid.n_points:,} points, {fid.duration_us:.1f} μs"
+            )
             return fid
         except Exception as e:
             raise RuntimeError(f"Failed to load FID data: {e}") from e
-    
+
     def compute_ft(
         self,
         zpf: Optional[int] = None,
@@ -335,17 +366,13 @@ class Pipeline:
                 persist=True,
             )
             complex_ft: ComplexFT = result["complex_ft"]
-            self.logger.info(
-                f"FT computed: {complex_ft.n_points:,} frequency points"
-            )
+            self.logger.info(f"FT computed: {complex_ft.n_points:,} frequency points")
             if trim:
-                self.logger.info(
-                    f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz"
-                )
+                self.logger.info(f"Trimmed to {trim[0]:.1f}-{trim[1]:.1f} MHz")
             return complex_ft
         except Exception as e:
             raise RuntimeError(f"Failed to compute FT: {e}") from e
-    
+
     def visualize_ft(
         self,
         zpf: Optional[int] = None,
@@ -458,9 +485,7 @@ class Pipeline:
                     params["trim_max_mhz"] = trim[1]
                 if params:
                     save_ft_parameters_impl(str(self.filepath), params)
-                    self.logger.info(
-                        f"Saved {len(params)} processing parameters"
-                    )
+                    self.logger.info(f"Saved {len(params)} processing parameters")
                 else:
                     self.logger.info("No custom parameters to save")
 
@@ -468,22 +493,22 @@ class Pipeline:
             return fig
 
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to create FT visualization: {e}"
-            ) from e
-    
-    def estimate_noise(self,
-                       *,
-                       window_mhz: Optional[float] = None,
-                       pedestal_mhz: Optional[float] = None,
-                       line_k: Optional[float] = None,
-                       n_iter: Optional[int] = None,
-                       region_aware: Optional[bool] = None,
-                       smoothing_mhz: Optional[float] = None,
-                       smoothing_percentile: Optional[float] = None,
-                       convolve_mhz: Optional[float] = None,
-                       settings: Optional[NoiseSettings] = None,
-                       preset: Optional[str] = None) -> NoiseResult:
+            raise RuntimeError(f"Failed to create FT visualization: {e}") from e
+
+    def estimate_noise(
+        self,
+        *,
+        window_mhz: Optional[float] = None,
+        pedestal_mhz: Optional[float] = None,
+        line_k: Optional[float] = None,
+        n_iter: Optional[int] = None,
+        region_aware: Optional[bool] = None,
+        smoothing_mhz: Optional[float] = None,
+        smoothing_percentile: Optional[float] = None,
+        convolve_mhz: Optional[float] = None,
+        settings: Optional[NoiseSettings] = None,
+        preset: Optional[str] = None,
+    ) -> NoiseResult:
         """
         Estimate frequency-dependent noise with the scatter estimator.
 
@@ -535,24 +560,29 @@ class Pipeline:
                 settings=settings,
                 preset=preset,
             )
-            
+
             # Storage and stage tracking handled by shared implementation
             self.logger.info("Stage 2: Noise estimation completed successfully")
-            return result['noise_result']
-            
+            return cast(NoiseResult, result["noise_result"])
+
         except StageDependencyError:
             # Re-raise dependency errors with clear message
             raise
         except Exception as e:
             raise RuntimeError(f"Failed to estimate noise: {e}") from e
-    
-    def visualize_noise(self, y_max_factor: Optional[float] = None,
-                        figsize: Optional[tuple] = None, title: Optional[str] = None,
-                        show_bin_boundaries: Optional[bool] = None,
-                        show_noise_points: Optional[bool] = None,
-                        backend: str = 'matplotlib',
-                        interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
-                        **plot_kwargs):
+
+    def visualize_noise(
+        self,
+        y_max_factor: Optional[float] = None,
+        figsize: Optional[tuple] = None,
+        title: Optional[str] = None,
+        show_bin_boundaries: Optional[bool] = None,
+        show_noise_points: Optional[bool] = None,
+        backend: str = "matplotlib",
+        interactive: bool = True,
+        output_file: Optional[Union[str, Path]] = None,
+        **plot_kwargs: Any,
+    ) -> Any:
         """
         Create noise estimation diagnostic visualization.
 
@@ -604,23 +634,23 @@ class Pipeline:
                 show_noise_points=show_noise_points,
                 backend=backend,
                 interactive=interactive,
-                **plot_kwargs
+                **plot_kwargs,
             )
-            
+
             # Save output file if requested
             if output_file:
                 try:
-                    if backend == 'plotly':
+                    if backend == "plotly":
                         fig.write_html(str(output_file))
                     else:
-                        fig.savefig(str(output_file), dpi=300, bbox_inches='tight')
+                        fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
                     self.logger.info(f"Visualization saved to: {output_file}")
                 except Exception as e:
                     self.logger.warning(f"Failed to save visualization: {e}")
-            
+
             self.logger.info("Noise visualization completed")
             return fig
-            
+
         except StageDependencyError:
             # Re-raise dependency errors with clear message
             raise
@@ -681,7 +711,9 @@ class Pipeline:
             self.logger.info(
                 "Stage 2b: tau_maj=%.3f us, sigma_tau=%.3f us, "
                 "n_contributors=%d, preconditions=%s",
-                tc.tau_maj_us, tc.sigma_tau_us, tc.n_contributors,
+                tc.tau_maj_us,
+                tc.sigma_tau_us,
+                tc.n_contributors,
                 "pass" if tc.preconditions_passed else "fail",
             )
             return cast(TauCalibrationResult, tc)
@@ -757,7 +789,9 @@ class Pipeline:
             self.logger.info(
                 "Stage 2b τ_G: tau_G_maj=%.3f us, sigma_tau_G=%.3f us, "
                 "n_eligible=%d, preconditions=%s",
-                tc.tau_maj_us, tc.sigma_tau_us, tc.n_contributors,
+                tc.tau_maj_us,
+                tc.sigma_tau_us,
+                tc.n_contributors,
                 "pass" if tc.preconditions_passed else "fail",
             )
             return cast(TauCalibrationResult, tc)
@@ -858,12 +892,14 @@ class Pipeline:
         from .visualization.tau_calibration_visualization import (
             plot_tau_heatmap_from_file,
         )
+
         fig = plot_tau_heatmap_from_file(str(self.filepath), figsize=figsize)
         if output_file:
             fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
             self.logger.info(f"Plot saved to: {output_file}")
         elif interactive:
             import matplotlib.pyplot as plt
+
             plt.show()
         return fig
 
@@ -877,12 +913,14 @@ class Pipeline:
         from .visualization.tau_calibration_visualization import (
             plot_tau_distribution_from_file,
         )
+
         fig = plot_tau_distribution_from_file(str(self.filepath), figsize=figsize)
         if output_file:
             fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
             self.logger.info(f"Plot saved to: {output_file}")
         elif interactive:
             import matplotlib.pyplot as plt
+
             plt.show()
         return fig
 
@@ -982,6 +1020,7 @@ class Pipeline:
         from .visualization.start_detection_visualization import (
             plot_start_detection_from_file,
         )
+
         fig = plot_start_detection_from_file(
             str(self.filepath), settings=settings, figsize=figsize
         )
@@ -990,6 +1029,7 @@ class Pipeline:
             self.logger.info(f"Plot saved to: {output_file}")
         elif interactive:
             import matplotlib.pyplot as plt
+
             plt.show()
         return fig
 
@@ -1166,9 +1206,7 @@ class Pipeline:
                 plt.show()
             return fig
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to create peak visualization: {e}"
-            ) from e
+            raise RuntimeError(f"Failed to create peak visualization: {e}") from e
 
     def assign_windows(
         self,
@@ -1336,9 +1374,7 @@ class Pipeline:
                 plt.show()
             return fig
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to create window visualization: {e}"
-            ) from e
+            raise RuntimeError(f"Failed to create window visualization: {e}") from e
 
     def fit_peaks(
         self,
@@ -1582,14 +1618,12 @@ class Pipeline:
                 plt.show()
             return fig
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to create fit visualization: {e}"
-            ) from e
+            raise RuntimeError(f"Failed to create fit visualization: {e}") from e
 
     def info(self) -> Dict[str, Any]:
         """
         Get pipeline file information and status.
-        
+
         Returns
         -------
         dict
@@ -1601,42 +1635,44 @@ class Pipeline:
             # Refresh from disk: stages completed by compute_ft()/estimate_noise()
             # (or by another interface) are written to the file, so the
             # in-memory tracker captured at open()/create() time is stale.
-            _, self.source_metadata, self.stage_tracker = open_pipeline_file(self.filepath)
+            _, self.source_metadata, self.stage_tracker = open_pipeline_file(
+                self.filepath
+            )
 
             info_dict = {
-                'filepath': str(self.filepath),
-                'valid': validation_report['valid'],
-                'source_path': str(self.source_metadata.source_path),
-                'format': self.source_metadata.format_name,
-                'import_time': self.source_metadata.import_timestamp.isoformat(),
-                'completed_stages': list(self.stage_tracker.completed_stages),
-                'next_available_stages': self.stage_tracker.get_next_available_stages()
+                "filepath": str(self.filepath),
+                "valid": validation_report["valid"],
+                "source_path": str(self.source_metadata.source_path),
+                "format": self.source_metadata.format_name,
+                "import_time": self.source_metadata.import_timestamp.isoformat(),
+                "completed_stages": list(self.stage_tracker.completed_stages),
+                "next_available_stages": self.stage_tracker.get_next_available_stages(),
             }
-            
-            if not validation_report['valid']:
-                info_dict['errors'] = validation_report['errors']
-                
-            if validation_report.get('warnings'):
-                info_dict['warnings'] = validation_report['warnings']
-            
+
+            if not validation_report["valid"]:
+                info_dict["errors"] = validation_report["errors"]
+
+            if validation_report.get("warnings"):
+                info_dict["warnings"] = validation_report["warnings"]
+
             return info_dict
-            
+
         except Exception as e:
             return {
-                'filepath': str(self.filepath),
-                'valid': False,
-                'error': f"Failed to get info: {e}"
+                "filepath": str(self.filepath),
+                "valid": False,
+                "error": f"Failed to get info: {e}",
             }
-    
+
     def validate(self) -> Dict[str, Any]:
         """
         Validate pipeline file integrity.
-        
+
         Returns
         -------
         dict
             Detailed validation report
-            
+
         Raises
         ------
         PipelineCorruptionError
@@ -1772,6 +1808,8 @@ class Pipeline:
 
     def __repr__(self) -> str:
         """String representation of Pipeline instance."""
-        return (f"Pipeline(file={self.filepath.name}, "
-                f"source={self.source_metadata.source_path.name}, "
-                f"stages={len(self.stage_tracker.completed_stages)})")
+        return (
+            f"Pipeline(file={self.filepath.name}, "
+            f"source={self.source_metadata.source_path.name}, "
+            f"stages={len(self.stage_tracker.completed_stages)})"
+        )

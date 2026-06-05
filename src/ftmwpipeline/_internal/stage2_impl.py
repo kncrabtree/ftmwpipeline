@@ -2,34 +2,37 @@
 Shared implementation for Stage 2: Noise Estimation.
 
 This module contains the core implementation functions for noise estimation
-and visualization that are shared between CLI, Pipeline class, and functional 
+and visualization that are shared between CLI, Pipeline class, and functional
 API interfaces.
 """
 
-from pathlib import Path
-from typing import Optional, Dict, Any, Union
 import logging
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+
 import h5py
 import numpy as np
 
-from ..preprocessing.noise_estimation import (
-    estimate_active_ft_noise,
-    NoiseResult,
-)
-from .active_ft_support import build_trimmed_active_ft
 from ..core.noise_settings import (
     NoiseSettings,
-    load_preset as load_noise_preset,
-    resolve as resolve_noise_settings,
 )
-from ..io.noise_result_serialization import save_noise_result_to_hdf5, load_noise_result_from_hdf5
+from ..core.noise_settings import load_preset as load_noise_preset
+from ..core.noise_settings import resolve as resolve_noise_settings
+from ..file_manager import open_pipeline_file
+from ..io.noise_result_serialization import (
+    load_noise_result_from_hdf5,
+    save_noise_result_to_hdf5,
+)
 from ..io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
 )
-from ..file_manager import open_pipeline_file
+from ..preprocessing.noise_estimation import (
+    NoiseResult,
+    estimate_active_ft_noise,
+)
+from .active_ft_support import build_trimmed_active_ft
 from .deprecation import warn_legacy_kwargs
-
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +142,11 @@ def compute_noise_estimation_impl(
     # Compute ComplexFT on-demand using Stage 1 implementation (correct architecture)
     try:
         # Check that Stage 1 parameters are available (Stage 1 dependency)
-        with h5py.File(file_path, 'r') as h5f:
-            if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
+        with h5py.File(file_path, "r") as h5f:
+            if (
+                "processing_parameters" not in h5f
+                or "ft_processing" not in h5f["processing_parameters"]
+            ):
                 raise ValueError(
                     "Stage 1 (FT computation) must be completed before noise estimation. "
                     "Run compute_ft() or compute-ft command first."
@@ -152,11 +158,15 @@ def compute_noise_estimation_impl(
         # Compute ComplexFT using saved Stage 1 parameters (lightweight on-demand computation)
         stage1_result = compute_ft_impl(file_path=file_path)
 
-        complex_ft = stage1_result['complex_ft']
-        logger.info(f"Computed ComplexFT on-demand with {len(complex_ft.freq_array):,} frequency points")
+        complex_ft = stage1_result["complex_ft"]
+        logger.info(
+            f"Computed ComplexFT on-demand with {len(complex_ft.freq_array):,} frequency points"
+        )
 
     except Exception as e:
-        raise RuntimeError(f"Failed to compute ComplexFT from pipeline file {file_path}: {e}")
+        raise RuntimeError(
+            f"Failed to compute ComplexFT from pipeline file {file_path}: {e}"
+        )
 
     if preset is not None and settings is not None:
         raise ValueError(
@@ -188,7 +198,7 @@ def compute_noise_estimation_impl(
     return _compute_noise_scatter(
         file_path=file_path,
         complex_ft=complex_ft,
-        trim_range=stage1_result.get('trim_range'),
+        trim_range=stage1_result.get("trim_range"),
         settings=scatter_resolved,
         preset_name=scatter_preset_name,
     )
@@ -225,15 +235,15 @@ def _compute_noise_scatter(
     convolve_mhz_v = float(_required(settings.convolve_mhz, "convolve_mhz"))
 
     processing_params: Dict[str, Any] = {
-        'method': 'scatter',
-        'window_mhz': window_mhz_v,
-        'pedestal_mhz': pedestal_mhz_v,
-        'line_k': line_k_v,
-        'n_iter': n_iter_v,
-        'region_aware': region_aware_v,
-        'smoothing_mhz': smoothing_mhz_v,
-        'smoothing_percentile': smoothing_percentile_v,
-        'convolve_mhz': convolve_mhz_v,
+        "method": "scatter",
+        "window_mhz": window_mhz_v,
+        "pedestal_mhz": pedestal_mhz_v,
+        "line_k": line_k_v,
+        "n_iter": n_iter_v,
+        "region_aware": region_aware_v,
+        "smoothing_mhz": smoothing_mhz_v,
+        "smoothing_percentile": smoothing_percentile_v,
+        "convolve_mhz": convolve_mhz_v,
     }
 
     logger.info("Noise estimation parameters (scatter estimator, resolved):")
@@ -258,8 +268,12 @@ def _compute_noise_scatter(
             convolve_mhz=convolve_mhz_v,
         )
         logger.info("Noise estimation completed successfully")
-        logger.info(f"  Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}")
-        logger.info(f"  RMS noise range: {noise_result.rms_noise.min():.2e} - {noise_result.rms_noise.max():.2e}")
+        logger.info(
+            f"  Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}"
+        )
+        logger.info(
+            f"  RMS noise range: {noise_result.rms_noise.min():.2e} - {noise_result.rms_noise.max():.2e}"
+        )
     except Exception as e:
         raise ValueError(f"Noise estimation failed: {e}")
 
@@ -275,7 +289,7 @@ def _compute_noise_scatter(
         # ``processing_parameters/stage2_noise`` so a no-kwargs re-run inherits
         # it via the resolver's persisted layer.
         save_noise_settings_to_h5(file_path, settings, preset_name=preset_name)
-        _update_stage_completion(file_path, 'stage2_noise_result')
+        _update_stage_completion(file_path, "stage2_noise_result")
         logger.info("Stage 2: Noise estimation results saved and marked complete")
     except Exception as e:
         logger.error(f"Failed to save noise estimation results: {e}")
@@ -283,15 +297,15 @@ def _compute_noise_scatter(
 
     active_freq = active_ft.freq_array
     return {
-        'status': 'success',
-        'noise_result': noise_result,
-        'complex_ft': complex_ft,
-        'active_ft': active_ft,
-        'parameters_used': processing_params,
-        'frequency_points': len(active_freq),
-        'frequency_range': (float(active_freq.min()), float(active_freq.max())),
-        'noise_points': int(noise_result.noise_mask.sum()),
-        'total_points': len(active_freq),
+        "status": "success",
+        "noise_result": noise_result,
+        "complex_ft": complex_ft,
+        "active_ft": active_ft,
+        "parameters_used": processing_params,
+        "frequency_points": len(active_freq),
+        "frequency_range": (float(active_freq.min()), float(active_freq.max())),
+        "noise_points": int(noise_result.noise_mask.sum()),
+        "total_points": len(active_freq),
     }
 
 
@@ -302,16 +316,16 @@ def visualize_noise_impl(
     title: Optional[str] = None,
     show_bin_boundaries: Optional[bool] = None,
     show_noise_points: Optional[bool] = None,
-    backend: str = 'matplotlib',
+    backend: str = "matplotlib",
     interactive: bool = True,
-    **plot_kwargs
+    **plot_kwargs: Any,
 ) -> Any:
     """
     Shared implementation for noise visualization from .ftmw pipeline files.
-    
+
     This function creates noise estimation diagnostic plots showing spectrum,
     noise points, bin boundaries, and RMS estimates.
-    
+
     Parameters
     ----------
     file_path : str
@@ -332,12 +346,12 @@ def visualize_noise_impl(
         Whether to create interactive plots
     **plot_kwargs
         Additional plotting parameters
-        
+
     Returns
     -------
     matplotlib.Figure or plotly.Figure
         The created figure object
-        
+
     Raises
     ------
     FileNotFoundError
@@ -347,75 +361,83 @@ def visualize_noise_impl(
     """
     # Load NoiseResult and ComplexFT from pipeline file
     try:
-        with h5py.File(file_path, 'r') as h5f:
+        with h5py.File(file_path, "r") as h5f:
             # Check dependencies
-            if 'stage2_noise_result' not in h5f:
+            if "stage2_noise_result" not in h5f:
                 raise ValueError(
                     "Stage 2 (noise estimation) must be completed before visualization. "
                     "Run estimate_noise() or estimate-noise command first."
                 )
-            
+
             # Check that Stage 1 parameters exist (needed for on-demand ComplexFT computation)
-            if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
+            if (
+                "processing_parameters" not in h5f
+                or "ft_processing" not in h5f["processing_parameters"]
+            ):
                 raise ValueError(
                     "Stage 1 (FT computation) required for noise visualization. "
                     "Run compute_ft() or compute-ft command first."
                 )
-        
+
         # Rebuild the canonical trimmed active FT -- the grid the noise was
         # measured on -- and overlay sigma there (the noise diagnostic shows
         # the same active spectrum every later stage scores/fits on).
         from .stage1_impl import compute_ft_impl
+
         stage1_result = compute_ft_impl(file_path=file_path)
-        complex_ft = build_trimmed_active_ft(
-            file_path, stage1_result.get('trim_range')
-        )
+        complex_ft = build_trimmed_active_ft(file_path, stage1_result.get("trim_range"))
 
         # Load NoiseResult data
-        with h5py.File(file_path, 'r') as h5f:
+        with h5py.File(file_path, "r") as h5f:
 
             noise_result = load_noise_result_from_hdf5(
-                h5f['stage2_noise_result'],
+                h5f["stage2_noise_result"],
                 complex_ft.freq_array,
-                complex_ft.magnitude_spectrum
+                complex_ft.magnitude_spectrum,
             )
             logger.info("Loaded NoiseResult and active FT from pipeline file")
 
     except Exception as e:
         raise RuntimeError(f"Failed to load data from pipeline file {file_path}: {e}")
-    
+
     # Import visualization function
     try:
         from ..visualization.noise_visualization import plot_noise_estimation
     except ImportError:
-        raise ImportError("Noise visualization not available - visualization module missing")
-    
+        raise ImportError(
+            "Noise visualization not available - visualization module missing"
+        )
+
     # Set parameter defaults
-    plot_params = {
-        'y_max_factor': y_max_factor if y_max_factor is not None else 20.0,
-        'figsize': figsize if figsize is not None else (16, 6),
-        'show_bin_boundaries': show_bin_boundaries if show_bin_boundaries is not None else True,
-        'show_noise_points': show_noise_points if show_noise_points is not None else True,
-        'backend': backend,
+    plot_params: Dict[str, Any] = {
+        "y_max_factor": y_max_factor if y_max_factor is not None else 20.0,
+        "figsize": figsize if figsize is not None else (16, 6),
+        "show_bin_boundaries": (
+            show_bin_boundaries if show_bin_boundaries is not None else True
+        ),
+        "show_noise_points": (
+            show_noise_points if show_noise_points is not None else True
+        ),
+        "backend": backend,
     }
-    
+
     # Generate title if not provided
     if title is None:
         pipeline_name = Path(file_path).stem
         title = f"Pipeline {pipeline_name} - Noise Estimation"
         freq_range = (complex_ft.freq_array[0], complex_ft.freq_array[-1])
         title += f" ({freq_range[0]:.0f}-{freq_range[1]:.0f} MHz)"
-    
-    plot_params['title'] = title
+
+    plot_params["title"] = title
     plot_params.update(plot_kwargs)
-    
+
     # Create diagnostic plot
     try:
         fig = plot_noise_estimation(
             frequencies=complex_ft.freq_array,
             magnitudes=complex_ft.magnitude_spectrum,
             noise_result=noise_result,
-            **plot_params
+            **plot_params,
         )
 
         logger.info("Noise estimation visualization completed successfully")
@@ -429,7 +451,7 @@ def save_noise_result_impl(
     noise_result: NoiseResult,
     frequencies: np.ndarray,
     magnitudes: np.ndarray,
-    parameters_used: Dict[str, Any]
+    parameters_used: Dict[str, Any],
 ) -> None:
     """
     Save NoiseResult to .ftmw pipeline file in stage2_noise_result group.
@@ -448,27 +470,29 @@ def save_noise_result_impl(
         Parameters used for noise estimation
     """
     try:
-        with h5py.File(file_path, 'a') as h5f:
+        with h5py.File(file_path, "a") as h5f:
             # Remove existing noise result if present
-            if 'stage2_noise_result' in h5f:
-                del h5f['stage2_noise_result']
+            if "stage2_noise_result" in h5f:
+                del h5f["stage2_noise_result"]
 
             # Create stage2_noise_result group
-            stage2_group = h5f.create_group('stage2_noise_result')
+            stage2_group = h5f.create_group("stage2_noise_result")
 
             # Save NoiseResult using existing serialization
             save_noise_result_to_hdf5(
                 noise_result=noise_result,
                 frequencies=np.asarray(frequencies, dtype=float),
                 magnitudes=np.asarray(magnitudes, dtype=float),
-                h5_group=stage2_group
+                h5_group=stage2_group,
             )
-            
+
             # Add metadata and timestamp
-            stage2_group.attrs['creation_time'] = datetime.now().isoformat()
-            stage2_group.attrs['stage_name'] = 'stage2_noise_estimation'
-            stage2_group.attrs['parameters_used'] = json.dumps(parameters_used, default=str)
-            
+            stage2_group.attrs["creation_time"] = datetime.now().isoformat()
+            stage2_group.attrs["stage_name"] = "stage2_noise_estimation"
+            stage2_group.attrs["parameters_used"] = json.dumps(
+                parameters_used, default=str
+            )
+
         logger.info("NoiseResult saved to pipeline file successfully")
 
     except Exception as e:
@@ -478,77 +502,82 @@ def save_noise_result_impl(
 def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
     """
     Load NoiseResult from .ftmw pipeline file.
-    
+
     Parameters
     ----------
     file_path : str
         Path to the .ftmw pipeline file
-        
+
     Returns
     -------
     dict
         Dict containing 'noise_result', 'complex_ft', and metadata
     """
     try:
-        with h5py.File(file_path, 'r') as h5f:
+        with h5py.File(file_path, "r") as h5f:
             # Check dependencies
-            if 'stage2_noise_result' not in h5f:
+            if "stage2_noise_result" not in h5f:
                 raise ValueError("No noise estimation results found in pipeline file")
-                
+
             # Check that Stage 1 parameters exist (needed for ComplexFT computation)
-            if 'processing_parameters' not in h5f or 'ft_processing' not in h5f['processing_parameters']:
-                raise ValueError("Stage 1 parameters missing - cannot compute ComplexFT for NoiseResult loading")
-        
+            if (
+                "processing_parameters" not in h5f
+                or "ft_processing" not in h5f["processing_parameters"]
+            ):
+                raise ValueError(
+                    "Stage 1 parameters missing - cannot compute ComplexFT for NoiseResult loading"
+                )
+
         # Rebuild the canonical trimmed active FT on-demand: the sigma was
         # measured and stored on this grid, so reconstruction reads it back
         # element-for-element. (The full-record FT is display-only.)
         from .stage1_impl import compute_ft_impl
+
         stage1_result = compute_ft_impl(file_path=file_path)
-        active_ft = build_trimmed_active_ft(
-            file_path, stage1_result.get('trim_range')
-        )
+        active_ft = build_trimmed_active_ft(file_path, stage1_result.get("trim_range"))
         complex_ft = active_ft
 
         # Load NoiseResult on the active-FT grid
-        with h5py.File(file_path, 'r') as h5f:
+        with h5py.File(file_path, "r") as h5f:
 
             # Load NoiseResult
             noise_result = load_noise_result_from_hdf5(
-                h5f['stage2_noise_result'],
+                h5f["stage2_noise_result"],
                 active_ft.freq_array,
                 active_ft.magnitude_spectrum,
             )
 
             # Load metadata
-            stage2_group = h5f['stage2_noise_result']
-            creation_time = stage2_group.attrs.get('creation_time', 'unknown')
+            stage2_group = h5f["stage2_noise_result"]
+            creation_time = stage2_group.attrs.get("creation_time", "unknown")
             parameters_used = {}
-            if 'parameters_used' in stage2_group.attrs:
+            if "parameters_used" in stage2_group.attrs:
                 try:
-                    parameters_used = json.loads(stage2_group.attrs['parameters_used'])
+                    parameters_used = json.loads(stage2_group.attrs["parameters_used"])
                 except (json.JSONDecodeError, TypeError):
                     logger.warning("Could not parse saved parameters")
-            
+
         return {
-            'noise_result': noise_result,
-            'complex_ft': complex_ft,
-            'creation_time': creation_time,
-            'parameters_used': parameters_used
+            "noise_result": noise_result,
+            "complex_ft": complex_ft,
+            "creation_time": creation_time,
+            "parameters_used": parameters_used,
         }
-        
+
     except Exception as e:
         raise RuntimeError(f"Failed to load NoiseResult from pipeline file: {e}")
 
 
+import json
+
 # Add missing import
 from datetime import datetime
-import json
 
 
 def _update_stage_completion(file_path: str, stage_name: str) -> None:
     """
     Update stage completion in the pipeline file.
-    
+
     Parameters
     ----------
     file_path : str
@@ -557,23 +586,26 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
         Name of the stage to mark as completed
     """
     try:
-        with h5py.File(file_path, 'a') as h5f:
+        with h5py.File(file_path, "a") as h5f:
             # Load current stage tracker
             from ..file_manager import _load_stage_tracker
-            stage_tracker = _load_stage_tracker(file_path, h5f)
-            
+
+            stage_tracker = _load_stage_tracker(Path(file_path), h5f)
+
             # Mark stage as completed
             stage_tracker.mark_completed(stage_name)
-            
+
             # Update pipeline_stages group
-            if 'pipeline_stages' not in h5f:
-                stages_group = h5f.create_group('pipeline_stages')
+            if "pipeline_stages" not in h5f:
+                stages_group = h5f.create_group("pipeline_stages")
             else:
-                stages_group = h5f['pipeline_stages']
-            
+                stages_group = h5f["pipeline_stages"]
+
             # Save updated completion status
-            stages_group.attrs['completed_stages'] = json.dumps(list(stage_tracker.completed_stages))
-            stages_group.attrs['last_updated'] = datetime.now().isoformat()
-            
+            stages_group.attrs["completed_stages"] = json.dumps(
+                list(stage_tracker.completed_stages)
+            )
+            stages_group.attrs["last_updated"] = datetime.now().isoformat()
+
     except Exception as e:
         raise RuntimeError(f"Failed to update stage completion: {e}")

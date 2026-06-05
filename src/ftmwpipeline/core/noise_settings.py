@@ -153,9 +153,7 @@ def from_attrs(attrs: Dict[str, Any]) -> NoiseSettings:
     """Inverse of :func:`to_attrs`. Unknown keys are ignored; missing keys
     stay ``None``."""
     valid = {f.name for f in fields(NoiseSettings)}
-    kwargs = {
-        key: _decode_value(value) for key, value in attrs.items() if key in valid
-    }
+    kwargs = {key: _decode_value(value) for key, value in attrs.items() if key in valid}
     return NoiseSettings(**kwargs)
 
 
@@ -259,8 +257,7 @@ def load_preset(name_or_path: Union[str, Path]) -> NoiseSettings:
                 if p.name.endswith(".yaml")
             )
             raise FileNotFoundError(
-                f"no packaged preset named {name_or_path!r}; "
-                f"available: {available}"
+                f"no packaged preset named {name_or_path!r}; " f"available: {available}"
             )
         text = candidate.read_text()
     data = yaml.safe_load(text)

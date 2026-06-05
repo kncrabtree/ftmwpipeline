@@ -50,6 +50,7 @@ def _intercept() -> Tuple[Callable[..., Any], Dict[str, Any]]:
 def _set(field_name: str, value: Any) -> Callable[..., None]:
     def setter(s: NoiseSettings) -> None:
         setattr(s, field_name, value)
+
     return setter
 
 
@@ -61,8 +62,12 @@ SCATTER_PROPAGATION_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("n_iter", _set("n_iter", 5), "n_iter", 5),
     ("region_aware", _set("region_aware", False), "region_aware", False),
     ("smoothing_mhz", _set("smoothing_mhz", 400.0), "smoothing_mhz", 400.0),
-    ("smoothing_percentile",
-     _set("smoothing_percentile", 25.0), "smoothing_percentile", 25.0),
+    (
+        "smoothing_percentile",
+        _set("smoothing_percentile", 25.0),
+        "smoothing_percentile",
+        25.0,
+    ),
     ("convolve_mhz", _set("convolve_mhz", 100.0), "convolve_mhz", 100.0),
 ]
 
@@ -92,9 +97,7 @@ def test_scatter_field_reaches_kernel(
     setter(s)
 
     with pytest.raises(ValueError, match=r"intercepted"):
-        stage2_impl.compute_noise_estimation_impl(
-            str(variant), settings=s
-        )
+        stage2_impl.compute_noise_estimation_impl(str(variant), settings=s)
 
     kwargs = captured["kwargs"]
     assert key in kwargs, (
@@ -112,14 +115,17 @@ class TestMutualExclusion:
     must raise ``ValueError``, matching Stages 5 and 2b."""
 
     def test_settings_and_preset_both_raises(
-        self, baseline_2638_stage1: Path, tmp_path: Path,
+        self,
+        baseline_2638_stage1: Path,
+        tmp_path: Path,
     ) -> None:
         variant = tmp_path / "both_scatter.ftmw"
         shutil.copyfile(baseline_2638_stage1, variant)
         s = NoiseSettings()
         with pytest.raises(ValueError, match=r"mutually|alternative"):
             stage2_impl.compute_noise_estimation_impl(
-                str(variant), settings=s,
+                str(variant),
+                settings=s,
                 preset="instrument_bc_2638",
             )
 

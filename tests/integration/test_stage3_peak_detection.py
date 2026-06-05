@@ -23,8 +23,8 @@ import subprocess
 import numpy as np
 import pytest
 
-from ftmwpipeline import Pipeline
 import ftmwpipeline.api as ftmw
+from ftmwpipeline import Pipeline
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -73,10 +73,15 @@ def test_cross_interface_consistency(baseline_2638_stage2, temp_ftmw_dir):
 
     res = subprocess.run(
         [
-            "ftmwpipeline", "detect-peaks", str(cfile),
-            "--min-snr", "3.0",
+            "ftmwpipeline",
+            "detect-peaks",
+            str(cfile),
+            "--min-snr",
+            "3.0",
         ],
-        capture_output=True, text=True, timeout=300,
+        capture_output=True,
+        text=True,
+        timeout=300,
     )
     assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
     peaks_cli = ftmw.load_peaks(cfile)
@@ -93,9 +98,7 @@ def test_cross_interface_consistency(baseline_2638_stage2, temp_ftmw_dir):
     assert cp_ == cf_ == cc_
 
 
-def test_detection_is_sane_vs_known_lines(
-    baseline_2638_stage2, temp_ftmw_dir
-):
+def test_detection_is_sane_vs_known_lines(baseline_2638_stage2, temp_ftmw_dir):
     fp = temp_ftmw_dir / "sane.ftmw"
     shutil.copy(baseline_2638_stage2, fp)
     # D7 Phase B: no trim= on detect_peaks; Stage 1 persisted trim is used.
@@ -106,23 +109,21 @@ def test_detection_is_sane_vs_known_lines(
     # We check promoted peaks (snr >= 3.0) are in a sensible range.
     promoted = [p for p in peaks if p.properties.get("promoted")]
     assert len(peaks) > 100, f"implausible total peak count {len(peaks)}"
-    assert 50 < len(promoted) < 10000, (
-        f"implausible promoted peak count {len(promoted)}"
-    )
+    assert (
+        50 < len(promoted) < 10000
+    ), f"implausible promoted peak count {len(promoted)}"
     freqs = np.array([p.frequency for p in peaks])
     # All peaks lie within the trim window (allow 1 MHz grid snap tolerance).
     assert freqs.min() >= TRIM[0] - 1 and freqs.max() <= TRIM[1] + 1
     # Every known strong line has a detection within 1 MHz.
     for line in KNOWN_STRONG:
-        assert np.min(np.abs(freqs - line)) < 1.0, (
-            f"no detection near known line {line} MHz"
-        )
+        assert (
+            np.min(np.abs(freqs - line)) < 1.0
+        ), f"no detection near known line {line} MHz"
     # The strongest detections should be classified strong.
     strong = [p for p in peaks if p.is_strong]
     assert strong, "no peaks classified strong"
-    assert max(p.snr for p in peaks) == pytest.approx(
-        max(p.snr for p in strong)
-    )
+    assert max(p.snr for p in peaks) == pytest.approx(max(p.snr for p in strong))
 
 
 def test_gap_pass_recovers_a_weak_line(baseline_2638_stage2, temp_ftmw_dir):
@@ -149,24 +150,18 @@ def test_gap_pass_recovers_a_weak_line(baseline_2638_stage2, temp_ftmw_dir):
     no_gap = ftmw.detect_peaks(fp_no, min_snr=3.0, run_gap_pass=False)
     with_gap = ftmw.detect_peaks(fp_yes, min_snr=3.0)
 
-    assert all(
-        p.properties["detection_pass"] == "primary" for p in no_gap
-    )
-    gap_peaks = [
-        p for p in with_gap if p.properties["detection_pass"] == "gap"
-    ]
+    assert all(p.properties["detection_pass"] == "primary" for p in no_gap)
+    gap_peaks = [p for p in with_gap if p.properties["detection_pass"] == "gap"]
     assert gap_peaks, "gap pass recovered nothing"
     assert len(with_gap) > len(no_gap)
 
     # A recovered gap peak must not coincide with any primary detection
     # (it is genuinely in a gap, not a re-find of a primary line).
     primary_freqs = np.array(
-        [p.frequency for p in with_gap
-         if p.properties["detection_pass"] == "primary"]
+        [p.frequency for p in with_gap if p.properties["detection_pass"] == "primary"]
     )
     recovered = [
-        gp for gp in gap_peaks
-        if np.min(np.abs(primary_freqs - gp.frequency)) > 0.5
+        gp for gp in gap_peaks if np.min(np.abs(primary_freqs - gp.frequency)) > 0.5
     ]
     assert recovered, "no gap peak is genuinely separated from primaries"
 
@@ -189,8 +184,7 @@ def test_gap_pass_does_not_promote_strong_line_sidelobes(
     peaks = ftmw.detect_peaks(fp, min_snr=3.0)
 
     gap_freqs = np.array(
-        [p.frequency for p in peaks
-         if p.properties["detection_pass"] == "gap"]
+        [p.frequency for p in peaks if p.properties["detection_pass"] == "gap"]
     )
     assert gap_freqs.size, "gap pass recovered nothing"
     for line in KNOWN_STRONG:

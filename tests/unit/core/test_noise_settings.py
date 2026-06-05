@@ -15,8 +15,8 @@ from dataclasses import fields
 import pytest
 
 from ftmwpipeline.core.noise_settings import (
-    NoiseSettings,
     _HARD_DEFAULTS,
+    NoiseSettings,
     from_attrs,
     from_yaml,
     from_yaml_dict,
@@ -111,9 +111,9 @@ class TestResolve:
     def test_resolved_instance_has_no_none_in_hard_default_fields(self) -> None:
         merged = resolve()
         for field_name in _HARD_DEFAULTS:
-            assert getattr(merged, field_name) is not None, (
-                f"{field_name} should be non-None after resolve"
-            )
+            assert (
+                getattr(merged, field_name) is not None
+            ), f"{field_name} should be non-None after resolve"
 
     def test_recommended_layer_currently_unused_does_not_break_resolve(self) -> None:
         merged = resolve(explicit=NoiseSettings(n_iter=5), recommended=None)
@@ -140,9 +140,9 @@ class TestAttrsRoundTrip:
     def test_none_round_trip_per_field(self) -> None:
         attrs = to_attrs(NoiseSettings())
         for field_name, value in attrs.items():
-            assert value == "__None__", (
-                f"{field_name} should encode as __None__; got {value!r}"
-            )
+            assert (
+                value == "__None__"
+            ), f"{field_name} should encode as __None__; got {value!r}"
 
     def test_round_trip_ignores_unknown_keys(self) -> None:
         rt = from_attrs({"window_mhz": 60.0, "bogus": 1})
@@ -175,9 +175,7 @@ class TestYamlIo:
             from_yaml("bogus_field: 1\n")
 
     def test_yaml_allows_name_description_metadata(self) -> None:
-        s = from_yaml(
-            "name: my_preset\ndescription: a docstring\nwindow_mhz: 60.0\n"
-        )
+        s = from_yaml("name: my_preset\ndescription: a docstring\nwindow_mhz: 60.0\n")
         assert s.window_mhz == 60.0
 
     def test_yaml_root_must_be_mapping(self) -> None:

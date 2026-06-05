@@ -17,8 +17,8 @@ import subprocess
 import h5py
 import pytest
 
-from ftmwpipeline import Pipeline
 import ftmwpipeline.api as ftmw
+from ftmwpipeline import Pipeline
 from ftmwpipeline.core.data_structures import WindowDifficulty
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]

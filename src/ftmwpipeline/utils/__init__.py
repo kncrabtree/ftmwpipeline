@@ -7,18 +7,18 @@ This module provides:
 - Physics-based calculations and conversions
 """
 
+from .physics_utils import (
+    calculate_line_strength,
+    doppler_broadening,
+    pressure_broadening,
+)
 from .signal_processing import (
     apply_window_function,
     calculate_fwhm,
     frequency_to_time_domain,
     time_to_frequency_domain,
 )
-from .statistical_tests import f_test, aic_comparison, chi_squared_test
-from .physics_utils import (
-    calculate_line_strength,
-    doppler_broadening,
-    pressure_broadening,
-)
+from .statistical_tests import aic_comparison, chi_squared_test, f_test
 
 __all__ = [
     "apply_window_function",
@@ -26,7 +26,7 @@ __all__ = [
     "frequency_to_time_domain",
     "time_to_frequency_domain",
     "f_test",
-    "aic_comparison", 
+    "aic_comparison",
     "chi_squared_test",
     "calculate_line_strength",
     "doppler_broadening",

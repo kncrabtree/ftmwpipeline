@@ -17,7 +17,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
 def window_snr_max(wf: object) -> float:
@@ -27,7 +27,8 @@ def window_snr_max(wf: object) -> float:
     import numpy as np
 
     snrs = [
-        float(p.snr) for p in wf.fitted_peaks  # type: ignore[attr-defined]
+        float(p.snr)
+        for p in wf.fitted_peaks  # type: ignore[attr-defined]
         if p.snr is not None and np.isfinite(p.snr)
     ]
     return max(snrs) if snrs else 0.0
@@ -82,9 +83,7 @@ class FitWindowSelection:
     fit_all: bool = False
 
 
-def _spread_evenly(
-    ids: List[int], value_by_id: Dict[int, float], k: int
-) -> List[int]:
+def _spread_evenly(ids: List[int], value_by_id: Dict[int, float], k: int) -> List[int]:
     """Pick ``k`` ids spread evenly across their value range (here SNR), so a
     straddle sample covers the whole grid range rather than clumping."""
     if k <= 0 or not ids:
@@ -98,9 +97,7 @@ def _spread_evenly(
     return [ordered[i] for i in sorted(picks)]
 
 
-def _close_components(
-    keep: Set[int], edges: List[Tuple[int, int]]
-) -> Set[int]:
+def _close_components(keep: Set[int], edges: List[Tuple[int, int]]) -> Set[int]:
     """Grow ``keep`` to the full connected component (over ``edges``) of each
     member, so a window that may be jointly co-fit with a neighbour never loses
     that neighbour."""
@@ -123,7 +120,7 @@ def reduce_plan_for_fit(
     path: Path,
     selection: FitWindowSelection,
     spec: object = None,
-    values: object = None,
+    values: Optional[Sequence[Any]] = None,
 ) -> None:
     """Reduce the persisted Stage 4 window plan on ``path`` in place to the
     subset described by ``selection``.
@@ -143,11 +140,11 @@ def reduce_plan_for_fit(
     """
     if selection is None or selection.fit_all:
         return
+    import ftmwpipeline.api as ftmw
     from ftmwpipeline._internal.stage4_impl import (
         load_windows_impl,
         save_window_plan_impl,
     )
-    import ftmwpipeline.api as ftmw
 
     plan = load_windows_impl(str(path))["plan"]
     budget = max(0, selection.top_snr) + max(0, selection.sample)
@@ -167,8 +164,9 @@ def reduce_plan_for_fit(
 
     snr_by_id = {w.window_id: win_snr(w) for w in plan.windows}
     keep: Set[int] = set()
-    for w in sorted(plan.windows, key=lambda w: snr_by_id[w.window_id],
-                    reverse=True)[: max(0, selection.top_snr)]:
+    for w in sorted(plan.windows, key=lambda w: snr_by_id[w.window_id], reverse=True)[
+        : max(0, selection.top_snr)
+    ]:
         keep.add(w.window_id)
     for f in selection.freqs:
         nearest = min(
@@ -186,7 +184,8 @@ def reduce_plan_for_fit(
         if nums:
             lo, hi = min(nums), max(nums)
             straddle = [
-                wid for wid in snr_by_id
+                wid
+                for wid in snr_by_id
                 if wid not in keep and lo <= snr_by_id[wid] <= hi
             ]
             n_straddle = min(len(straddle), max(1, (sample_budget + 1) // 2))
@@ -206,9 +205,7 @@ def reduce_plan_for_fit(
     keep = _close_components(keep, plan.dependency_edges)
 
     plan.windows = [w for w in plan.windows if w.window_id in keep]
-    plan.topological_order = [
-        wid for wid in plan.topological_order if wid in keep
-    ]
+    plan.topological_order = [wid for wid in plan.topological_order if wid in keep]
     plan.dependency_edges = [
         (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
     ]

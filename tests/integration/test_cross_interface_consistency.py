@@ -18,16 +18,17 @@ Performance strategy:
   - TestErrorConsistency tests are lightweight and do not require sharing.
 """
 
-import pytest
 import shutil
 import subprocess
-import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Tuple
 
-from ftmwpipeline import Pipeline
+import numpy as np
+import pytest
+
 import ftmwpipeline.api as ftmw
-from ftmwpipeline.core.data_structures import ComplexFT, FID
+from ftmwpipeline import Pipeline
+from ftmwpipeline.core.data_structures import FID, ComplexFT
 from ftmwpipeline.preprocessing.noise_estimation import NoiseResult
 
 
@@ -48,13 +49,21 @@ class TestIdenticalResults:
 
         # Load FT results from the independently-built files
         complex_ft_pipeline = ftmw.compute_ft(paths["pipeline"], **standard_ft_params)
-        complex_ft_functional = ftmw.compute_ft(paths["functional"], **standard_ft_params)
+        complex_ft_functional = ftmw.compute_ft(
+            paths["functional"], **standard_ft_params
+        )
         complex_ft_cli = ftmw.compute_ft(paths["cli"], **standard_ft_params)
 
         # Compare results using strict tolerance
-        self._compare_complex_ft_objects(complex_ft_pipeline, complex_ft_functional, "Pipeline vs Functional")
-        self._compare_complex_ft_objects(complex_ft_pipeline, complex_ft_cli, "Pipeline vs CLI")
-        self._compare_complex_ft_objects(complex_ft_functional, complex_ft_cli, "Functional vs CLI")
+        self._compare_complex_ft_objects(
+            complex_ft_pipeline, complex_ft_functional, "Pipeline vs Functional"
+        )
+        self._compare_complex_ft_objects(
+            complex_ft_pipeline, complex_ft_cli, "Pipeline vs CLI"
+        )
+        self._compare_complex_ft_objects(
+            complex_ft_functional, complex_ft_cli, "Functional vs CLI"
+        )
 
     def test_identical_fid_loading(self, cross_interface_stage1_trio):
         """Verify all interfaces load identical FID data.
@@ -69,7 +78,9 @@ class TestIdenticalResults:
         fid_cli = ftmw.load_fid(paths["cli"])
 
         # Compare FID objects
-        self._compare_fid_objects(fid_pipeline, fid_functional, "Pipeline vs Functional")
+        self._compare_fid_objects(
+            fid_pipeline, fid_functional, "Pipeline vs Functional"
+        )
         self._compare_fid_objects(fid_pipeline, fid_cli, "Pipeline vs CLI")
         self._compare_fid_objects(fid_functional, fid_cli, "Functional vs CLI")
 
@@ -84,7 +95,7 @@ class TestIdenticalResults:
         trim_ranges = [
             (26500, 40000),  # Standard range
             (30000, 35000),  # Narrower range
-            (25000, 45000)   # Wider range
+            (25000, 45000),  # Wider range
         ]
 
         for i, trim_range in enumerate(trim_ranges):
@@ -96,21 +107,28 @@ class TestIdenticalResults:
             ftmw.import_data(functional_file, source=exp_2638_data_path)
 
             # Compute FT with trim
-            params = {'zpf': 2, 'expf_us': 5.0, 'trim': trim_range}
+            params = {"zpf": 2, "expf_us": 5.0, "trim": trim_range}
             complex_ft_pipeline = pipe.compute_ft(**params)
             complex_ft_functional = ftmw.compute_ft(functional_file, **params)
 
             # Verify trim was applied correctly
             min_freq, max_freq = trim_range
-            assert complex_ft_pipeline.freq_array.min() >= min_freq, f"Pipeline trim min failed for range {trim_range}"
-            assert complex_ft_pipeline.freq_array.max() <= max_freq, f"Pipeline trim max failed for range {trim_range}"
-            assert complex_ft_functional.freq_array.min() >= min_freq, f"Functional trim min failed for range {trim_range}"
-            assert complex_ft_functional.freq_array.max() <= max_freq, f"Functional trim max failed for range {trim_range}"
+            assert (
+                complex_ft_pipeline.freq_array.min() >= min_freq
+            ), f"Pipeline trim min failed for range {trim_range}"
+            assert (
+                complex_ft_pipeline.freq_array.max() <= max_freq
+            ), f"Pipeline trim max failed for range {trim_range}"
+            assert (
+                complex_ft_functional.freq_array.min() >= min_freq
+            ), f"Functional trim min failed for range {trim_range}"
+            assert (
+                complex_ft_functional.freq_array.max() <= max_freq
+            ), f"Functional trim max failed for range {trim_range}"
 
             # Compare results
             self._compare_complex_ft_objects(
-                complex_ft_pipeline, complex_ft_functional,
-                f"Trim range {trim_range}"
+                complex_ft_pipeline, complex_ft_functional, f"Trim range {trim_range}"
             )
 
     def test_identical_noise_estimation_results(
@@ -145,16 +163,15 @@ class TestIdenticalResults:
 
         # Compare results using bit-perfect consistency
         self._compare_noise_results(
-            noise_result_pipeline, noise_result_functional,
-            "default: Pipeline vs Functional"
+            noise_result_pipeline,
+            noise_result_functional,
+            "default: Pipeline vs Functional",
         )
         self._compare_noise_results(
-            noise_result_pipeline, noise_result_cli,
-            "default: Pipeline vs CLI"
+            noise_result_pipeline, noise_result_cli, "default: Pipeline vs CLI"
         )
         self._compare_noise_results(
-            noise_result_functional, noise_result_cli,
-            "default: Functional vs CLI"
+            noise_result_functional, noise_result_cli, "default: Functional vs CLI"
         )
 
     def test_identical_noise_estimation_scatter(
@@ -189,9 +206,7 @@ class TestIdenticalResults:
         self._compare_noise_results(
             nr_pipeline, nr_functional, "scatter: Pipeline vs Functional"
         )
-        self._compare_noise_results(
-            nr_pipeline, nr_cli, "scatter: Pipeline vs CLI"
-        )
+        self._compare_noise_results(nr_pipeline, nr_cli, "scatter: Pipeline vs CLI")
 
     def test_identical_tau_calibration_results(
         self, cross_interface_stage1_trio, tmp_path
@@ -225,14 +240,20 @@ class TestIdenticalResults:
             skip_auto_recommend_preset_yaml,
             skip_auto_recommend_settings,
         )
+
         skip = skip_auto_recommend_settings()
         skip_yaml = skip_auto_recommend_preset_yaml(tmp_path)
         pipe = Pipeline.open(p_copy)
         tc_pipeline = pipe.calibrate_tau(settings=skip)
         tc_functional = ftmw.calibrate_tau(f_copy, settings=skip)
-        self._run_cli_command([
-            "calibrate-tau", str(c_copy), "--preset", str(skip_yaml),
-        ])
+        self._run_cli_command(
+            [
+                "calibrate-tau",
+                str(c_copy),
+                "--preset",
+                str(skip_yaml),
+            ]
+        )
         tc_cli = ftmw.load_tau_calibration(c_copy)
 
         # Bit-identical scalars; per-bin arrays bit-identical too because the
@@ -243,69 +264,83 @@ class TestIdenticalResults:
         ):
             assert a.tau_maj_us == b.tau_maj_us, f"{ctx}: tau_maj differs"
             assert a.sigma_tau_us == b.sigma_tau_us, f"{ctx}: sigma_tau differs"
-            assert a.n_contributors == b.n_contributors, f"{ctx}: n_contributors differs"
+            assert (
+                a.n_contributors == b.n_contributors
+            ), f"{ctx}: n_contributors differs"
             assert a.n_spur_bins == b.n_spur_bins, f"{ctx}: n_spur_bins differs"
             np.testing.assert_array_equal(
-                a.contributor_taus_us, b.contributor_taus_us,
+                a.contributor_taus_us,
+                b.contributor_taus_us,
                 err_msg=f"{ctx}: contributor_taus_us differ",
             )
             np.testing.assert_array_equal(
-                a.contributor_snrs, b.contributor_snrs,
+                a.contributor_snrs,
+                b.contributor_snrs,
                 err_msg=f"{ctx}: contributor_snrs differ",
             )
-            assert a.bimodality.delta_aic == b.bimodality.delta_aic, (
-                f"{ctx}: GMM delta_aic differs"
-            )
-            assert len(a.spur_clusters) == len(b.spur_clusters), (
-                f"{ctx}: spur cluster count differs"
-            )
+            assert (
+                a.bimodality.delta_aic == b.bimodality.delta_aic
+            ), f"{ctx}: GMM delta_aic differs"
+            assert len(a.spur_clusters) == len(
+                b.spur_clusters
+            ), f"{ctx}: spur cluster count differs"
 
     def _compare_complex_ft_objects(self, ft1: ComplexFT, ft2: ComplexFT, context: str):
         """Compare two ComplexFT objects for numerical consistency."""
         # Frequency arrays should be identical
         np.testing.assert_array_equal(
-            ft1.freq_array, ft2.freq_array,
-            err_msg=f"{context}: Frequency arrays differ"
+            ft1.freq_array,
+            ft2.freq_array,
+            err_msg=f"{context}: Frequency arrays differ",
         )
 
         # Complex spectra should be numerically equivalent
         np.testing.assert_allclose(
-            ft1.complex_spectrum, ft2.complex_spectrum,
-            rtol=1e-10, atol=1e-15,
-            err_msg=f"{context}: Complex spectra differ beyond tolerance"
+            ft1.complex_spectrum,
+            ft2.complex_spectrum,
+            rtol=1e-10,
+            atol=1e-15,
+            err_msg=f"{context}: Complex spectra differ beyond tolerance",
         )
 
         # Magnitude spectra should be consistent
         np.testing.assert_allclose(
-            ft1.magnitude_spectrum, ft2.magnitude_spectrum,
-            rtol=1e-10, atol=1e-15,
-            err_msg=f"{context}: Magnitude spectra differ beyond tolerance"
+            ft1.magnitude_spectrum,
+            ft2.magnitude_spectrum,
+            rtol=1e-10,
+            atol=1e-15,
+            err_msg=f"{context}: Magnitude spectra differ beyond tolerance",
         )
 
         # Real and imaginary parts should be consistent
         np.testing.assert_allclose(
-            ft1.real_spectrum, ft2.real_spectrum,
-            rtol=1e-10, atol=1e-15,
-            err_msg=f"{context}: Real spectra differ beyond tolerance"
+            ft1.real_spectrum,
+            ft2.real_spectrum,
+            rtol=1e-10,
+            atol=1e-15,
+            err_msg=f"{context}: Real spectra differ beyond tolerance",
         )
 
         np.testing.assert_allclose(
-            ft1.imag_spectrum, ft2.imag_spectrum,
-            rtol=1e-10, atol=1e-15,
-            err_msg=f"{context}: Imaginary spectra differ beyond tolerance"
+            ft1.imag_spectrum,
+            ft2.imag_spectrum,
+            rtol=1e-10,
+            atol=1e-15,
+            err_msg=f"{context}: Imaginary spectra differ beyond tolerance",
         )
 
     def _compare_fid_objects(self, fid1: FID, fid2: FID, context: str):
         """Compare two FID objects for consistency."""
         # Data arrays should be identical
         np.testing.assert_array_equal(
-            fid1.data, fid2.data,
-            err_msg=f"{context}: FID data arrays differ"
+            fid1.data, fid2.data, err_msg=f"{context}: FID data arrays differ"
         )
 
         # Metadata should be identical
         assert fid1.spacing == fid2.spacing, f"{context}: FID spacing differs"
-        assert fid1.probe_freq_mhz == fid2.probe_freq_mhz, f"{context}: Probe frequency differs"
+        assert (
+            fid1.probe_freq_mhz == fid2.probe_freq_mhz
+        ), f"{context}: Probe frequency differs"
         assert fid1.sideband == fid2.sideband, f"{context}: Sideband differs"
         assert fid1.shots == fid2.shots, f"{context}: Shots differ"
         assert fid1.duration_us == fid2.duration_us, f"{context}: Duration differs"
@@ -313,26 +348,40 @@ class TestIdenticalResults:
 
     def _compare_noise_results(self, result1, result2, context: str):
         """Compare NoiseResult objects for bit-perfect consistency."""
-        assert isinstance(result1, NoiseResult), f"{context}: First result should be NoiseResult"
-        assert isinstance(result2, NoiseResult), f"{context}: Second result should be NoiseResult"
+        assert isinstance(
+            result1, NoiseResult
+        ), f"{context}: First result should be NoiseResult"
+        assert isinstance(
+            result2, NoiseResult
+        ), f"{context}: Second result should be NoiseResult"
 
         # RMS noise must be bit-perfect identical
         np.testing.assert_array_equal(
-            result1.rms_noise, result2.rms_noise,
-            err_msg=f"{context}: RMS noise arrays should be bit-perfect identical"
+            result1.rms_noise,
+            result2.rms_noise,
+            err_msg=f"{context}: RMS noise arrays should be bit-perfect identical",
         )
 
         # Noise masks must be identical
         np.testing.assert_array_equal(
-            result1.noise_mask, result2.noise_mask,
-            err_msg=f"{context}: Noise masks should be identical"
+            result1.noise_mask,
+            result2.noise_mask,
+            err_msg=f"{context}: Noise masks should be identical",
         )
 
         # Verify basic properties
-        assert result1.rms_noise.shape == result2.rms_noise.shape, f"{context}: RMS shape mismatch"
-        assert result1.noise_mask.dtype == result2.noise_mask.dtype == bool, f"{context}: Mask should be boolean"
-        assert np.all(result1.rms_noise > 0), f"{context}: RMS values should be positive"
-        assert np.all(result2.rms_noise > 0), f"{context}: RMS values should be positive"
+        assert (
+            result1.rms_noise.shape == result2.rms_noise.shape
+        ), f"{context}: RMS shape mismatch"
+        assert (
+            result1.noise_mask.dtype == result2.noise_mask.dtype == bool
+        ), f"{context}: Mask should be boolean"
+        assert np.all(
+            result1.rms_noise > 0
+        ), f"{context}: RMS values should be positive"
+        assert np.all(
+            result2.rms_noise > 0
+        ), f"{context}: RMS values should be positive"
 
     def _run_cli_command(self, args):
         """Run CLI command and ensure it succeeds.
@@ -399,16 +448,17 @@ class TestParameterPersistence:
 
         # All should produce identical results
         self._compare_complex_ft_results(
-            complex_ft_pipeline_saved, complex_ft_explicit,
-            "Pipeline saved vs explicit"
+            complex_ft_pipeline_saved, complex_ft_explicit, "Pipeline saved vs explicit"
         )
         self._compare_complex_ft_results(
-            complex_ft_functional_saved, complex_ft_explicit,
-            "Functional saved vs explicit"
+            complex_ft_functional_saved,
+            complex_ft_explicit,
+            "Functional saved vs explicit",
         )
         self._compare_complex_ft_results(
-            complex_ft_pipeline_saved, complex_ft_functional_saved,
-            "Pipeline saved vs Functional saved"
+            complex_ft_pipeline_saved,
+            complex_ft_functional_saved,
+            "Pipeline saved vs Functional saved",
         )
 
     def test_functional_api_parameter_saving(
@@ -421,10 +471,10 @@ class TestParameterPersistence:
 
         # Save parameters using functional API (this mutates the file)
         params_to_save = {
-            'zpf': standard_ft_params['zpf'],
-            'expf_us': standard_ft_params['expf_us'],
-            'trim_min_mhz': standard_ft_params['trim'][0],
-            'trim_max_mhz': standard_ft_params['trim'][1]
+            "zpf": standard_ft_params["zpf"],
+            "expf_us": standard_ft_params["expf_us"],
+            "trim_min_mhz": standard_ft_params["trim"][0],
+            "trim_max_mhz": standard_ft_params["trim"][1],
         }
         ftmw.save_ft_parameters(test_file, params_to_save)
 
@@ -434,8 +484,9 @@ class TestParameterPersistence:
 
         # Compare results
         self._compare_complex_ft_results(
-            complex_ft_pipeline, complex_ft_functional,
-            "Pipeline vs Functional using saved params"
+            complex_ft_pipeline,
+            complex_ft_functional,
+            "Pipeline vs Functional using saved params",
         )
 
     def test_pipeline_to_functional_parameter_transfer(
@@ -455,45 +506,63 @@ class TestParameterPersistence:
 
         # Compare results
         self._compare_complex_ft_results(
-            complex_ft_pipeline_saved, complex_ft_functional_saved,
-            "Pipeline vs Functional using Pipeline-saved params"
+            complex_ft_pipeline_saved,
+            complex_ft_functional_saved,
+            "Pipeline vs Functional using Pipeline-saved params",
         )
 
     def _compare_complex_ft_results(self, ft1: ComplexFT, ft2: ComplexFT, context: str):
         """Compare ComplexFT results for parameter persistence tests."""
         np.testing.assert_allclose(
-            ft1.complex_spectrum, ft2.complex_spectrum,
-            rtol=1e-12, atol=1e-15,
-            err_msg=f"{context}: Complex spectra differ"
+            ft1.complex_spectrum,
+            ft2.complex_spectrum,
+            rtol=1e-12,
+            atol=1e-15,
+            err_msg=f"{context}: Complex spectra differ",
         )
 
         np.testing.assert_array_equal(
-            ft1.freq_array, ft2.freq_array,
-            err_msg=f"{context}: Frequency arrays differ"
+            ft1.freq_array,
+            ft2.freq_array,
+            err_msg=f"{context}: Frequency arrays differ",
         )
 
     def _compare_noise_results(self, result1, result2, context: str):
         """Compare NoiseResult objects for bit-perfect consistency."""
-        assert isinstance(result1, NoiseResult), f"{context}: First result should be NoiseResult"
-        assert isinstance(result2, NoiseResult), f"{context}: Second result should be NoiseResult"
+        assert isinstance(
+            result1, NoiseResult
+        ), f"{context}: First result should be NoiseResult"
+        assert isinstance(
+            result2, NoiseResult
+        ), f"{context}: Second result should be NoiseResult"
 
         # RMS noise must be bit-perfect identical
         np.testing.assert_array_equal(
-            result1.rms_noise, result2.rms_noise,
-            err_msg=f"{context}: RMS noise arrays should be bit-perfect identical"
+            result1.rms_noise,
+            result2.rms_noise,
+            err_msg=f"{context}: RMS noise arrays should be bit-perfect identical",
         )
 
         # Noise masks must be identical
         np.testing.assert_array_equal(
-            result1.noise_mask, result2.noise_mask,
-            err_msg=f"{context}: Noise masks should be identical"
+            result1.noise_mask,
+            result2.noise_mask,
+            err_msg=f"{context}: Noise masks should be identical",
         )
 
         # Verify basic properties
-        assert result1.rms_noise.shape == result2.rms_noise.shape, f"{context}: RMS shape mismatch"
-        assert result1.noise_mask.dtype == result2.noise_mask.dtype == bool, f"{context}: Mask should be boolean"
-        assert np.all(result1.rms_noise > 0), f"{context}: RMS values should be positive"
-        assert np.all(result2.rms_noise > 0), f"{context}: RMS values should be positive"
+        assert (
+            result1.rms_noise.shape == result2.rms_noise.shape
+        ), f"{context}: RMS shape mismatch"
+        assert (
+            result1.noise_mask.dtype == result2.noise_mask.dtype == bool
+        ), f"{context}: Mask should be boolean"
+        assert np.all(
+            result1.rms_noise > 0
+        ), f"{context}: RMS values should be positive"
+        assert np.all(
+            result2.rms_noise > 0
+        ), f"{context}: RMS values should be positive"
 
     def _run_cli_command(self, args):
         """Run CLI command and ensure it succeeds.
@@ -563,14 +632,20 @@ class TestFilePortability:
         complex_ft_functional = ftmw.compute_ft(test_file, **standard_ft_params)
 
         # Process with CLI (re-run compute-ft on the same file to test CLI interop)
-        zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
-        trim_min, trim_max = standard_ft_params['trim']
-        self._run_cli_command([
-            "compute-ft", str(test_file),
-            "--zpf", str(zpf),
-            "--expf_us", str(expf_us),
-            "--trim", f"{trim_min}:{trim_max}"
-        ])
+        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
+        trim_min, trim_max = standard_ft_params["trim"]
+        self._run_cli_command(
+            [
+                "compute-ft",
+                str(test_file),
+                "--zpf",
+                str(zpf),
+                "--expf_us",
+                str(expf_us),
+                "--trim",
+                f"{trim_min}:{trim_max}",
+            ]
+        )
 
         # Load result with functional API for comparison
         complex_ft_cli = ftmw.compute_ft(test_file, **standard_ft_params)
@@ -590,14 +665,20 @@ class TestFilePortability:
         complex_ft_pipeline = pipe.compute_ft(**standard_ft_params)
 
         # Process with CLI for comparison
-        zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
-        trim_min, trim_max = standard_ft_params['trim']
-        self._run_cli_command([
-            "compute-ft", str(test_file),
-            "--zpf", str(zpf),
-            "--expf_us", str(expf_us),
-            "--trim", f"{trim_min}:{trim_max}"
-        ])
+        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
+        trim_min, trim_max = standard_ft_params["trim"]
+        self._run_cli_command(
+            [
+                "compute-ft",
+                str(test_file),
+                "--zpf",
+                str(zpf),
+                "--expf_us",
+                str(expf_us),
+                "--trim",
+                f"{trim_min}:{trim_max}",
+            ]
+        )
         complex_ft_cli = ftmw.compute_ft(test_file, **standard_ft_params)
 
         # Results should be identical
@@ -618,14 +699,20 @@ class TestFilePortability:
         complex_ft_functional = ftmw.compute_ft(test_file, **standard_ft_params)
 
         # Process with CLI again
-        zpf, expf_us = standard_ft_params['zpf'], standard_ft_params['expf_us']
-        trim_min, trim_max = standard_ft_params['trim']
-        self._run_cli_command([
-            "compute-ft", str(test_file),
-            "--zpf", str(zpf),
-            "--expf_us", str(expf_us),
-            "--trim", f"{trim_min}:{trim_max}"
-        ])
+        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
+        trim_min, trim_max = standard_ft_params["trim"]
+        self._run_cli_command(
+            [
+                "compute-ft",
+                str(test_file),
+                "--zpf",
+                str(zpf),
+                "--expf_us",
+                str(expf_us),
+                "--trim",
+                f"{trim_min}:{trim_max}",
+            ]
+        )
         complex_ft_cli = ftmw.compute_ft(test_file, **standard_ft_params)
 
         # All results should be identical
@@ -657,38 +744,55 @@ class TestFilePortability:
         noise_result_cli = ftmw.estimate_noise(test_file)
 
         # Results should be identical across interfaces
-        self._verify_noise_portability(noise_result_pipeline, noise_result_functional, "Pipeline to Functional portability")
-        self._verify_noise_portability(noise_result_functional, noise_result_cli, "Functional to CLI portability")
-        self._verify_noise_portability(noise_result_pipeline, noise_result_cli, "Pipeline to CLI portability")
+        self._verify_noise_portability(
+            noise_result_pipeline,
+            noise_result_functional,
+            "Pipeline to Functional portability",
+        )
+        self._verify_noise_portability(
+            noise_result_functional, noise_result_cli, "Functional to CLI portability"
+        )
+        self._verify_noise_portability(
+            noise_result_pipeline, noise_result_cli, "Pipeline to CLI portability"
+        )
 
     def _verify_file_portability(self, ft1: ComplexFT, ft2: ComplexFT):
         """Verify two ComplexFT objects are identical for portability testing."""
         # Strict comparison for portability
         np.testing.assert_array_equal(
-            ft1.freq_array, ft2.freq_array,
-            err_msg="Frequency arrays should be identical across interfaces"
+            ft1.freq_array,
+            ft2.freq_array,
+            err_msg="Frequency arrays should be identical across interfaces",
         )
 
         np.testing.assert_allclose(
-            ft1.complex_spectrum, ft2.complex_spectrum,
-            rtol=1e-12, atol=1e-15,
-            err_msg="Complex spectra should be identical across interfaces"
+            ft1.complex_spectrum,
+            ft2.complex_spectrum,
+            rtol=1e-12,
+            atol=1e-15,
+            err_msg="Complex spectra should be identical across interfaces",
         )
 
     def _verify_noise_portability(self, result1, result2, context: str):
         """Verify two NoiseResult objects are identical for portability testing."""
-        assert isinstance(result1, NoiseResult), f"{context}: First result should be NoiseResult"
-        assert isinstance(result2, NoiseResult), f"{context}: Second result should be NoiseResult"
+        assert isinstance(
+            result1, NoiseResult
+        ), f"{context}: First result should be NoiseResult"
+        assert isinstance(
+            result2, NoiseResult
+        ), f"{context}: Second result should be NoiseResult"
 
         # Strict comparison for portability
         np.testing.assert_array_equal(
-            result1.rms_noise, result2.rms_noise,
-            err_msg=f"{context}: RMS noise arrays should be identical"
+            result1.rms_noise,
+            result2.rms_noise,
+            err_msg=f"{context}: RMS noise arrays should be identical",
         )
 
         np.testing.assert_array_equal(
-            result1.noise_mask, result2.noise_mask,
-            err_msg=f"{context}: Noise masks should be identical"
+            result1.noise_mask,
+            result2.noise_mask,
+            err_msg=f"{context}: Noise masks should be identical",
         )
 
     def _run_cli_command(self, args):
@@ -742,7 +846,7 @@ class TestErrorConsistency:
             capture_output=True,
             text=True,
             check=False,
-            timeout=10
+            timeout=10,
         )
         assert result.returncode != 0, "CLI should fail with missing file"
 
@@ -761,11 +865,17 @@ class TestErrorConsistency:
 
         # CLI should fail with non-zero return code
         result = subprocess.run(
-            ["ftmwpipeline", "import-data", str(test_file), "--source", nonexistent_source],
+            [
+                "ftmwpipeline",
+                "import-data",
+                str(test_file),
+                "--source",
+                nonexistent_source,
+            ],
             capture_output=True,
             text=True,
             check=False,
-            timeout=10
+            timeout=10,
         )
         assert result.returncode != 0, "CLI should fail with invalid source"
 
@@ -790,7 +900,7 @@ class TestErrorConsistency:
             capture_output=True,
             text=True,
             check=False,
-            timeout=10
+            timeout=10,
         )
         assert result.returncode != 0, "CLI should fail with invalid zpf parameter"
 
@@ -802,15 +912,17 @@ class TestErrorConsistency:
         pipe = Pipeline.create(test_file, source=exp_2638_data_path)
 
         # Corrupt the file by truncating it
-        with open(test_file, 'r+b') as f:
+        with open(test_file, "r+b") as f:
             f.truncate(100)  # Truncate to 100 bytes
 
         # All interfaces should detect corruption
         validation_pipeline = pipe.validate()
-        assert not validation_pipeline['valid'], "Pipeline should detect corruption"
+        assert not validation_pipeline["valid"], "Pipeline should detect corruption"
 
         validation_functional = ftmw.validate_pipeline(test_file)
-        assert not validation_functional['valid'], "Functional API should detect corruption"
+        assert not validation_functional[
+            "valid"
+        ], "Functional API should detect corruption"
 
         # CLI should also detect corruption (though exact command may vary)
         result = subprocess.run(
@@ -818,7 +930,7 @@ class TestErrorConsistency:
             capture_output=True,
             text=True,
             check=False,
-            timeout=10
+            timeout=10,
         )
         assert result.returncode != 0, "CLI should fail with corrupted file"
 
@@ -831,16 +943,25 @@ class TestErrorConsistency:
         # Don't call compute_ft() - missing Stage 1
 
         # All interfaces should raise appropriate errors for missing Stage 1
-        with pytest.raises((ValueError, RuntimeError), match="Stage 1.*must be completed"):
+        with pytest.raises(
+            (ValueError, RuntimeError), match="Stage 1.*must be completed"
+        ):
             pipe.estimate_noise()
 
-        with pytest.raises((ValueError, RuntimeError), match="Stage 1.*must be completed"):
+        with pytest.raises(
+            (ValueError, RuntimeError), match="Stage 1.*must be completed"
+        ):
             ftmw.estimate_noise(test_file)
 
         # CLI should fail with non-zero return code
         result = subprocess.run(
             ["ftmwpipeline", "estimate-noise", str(test_file)],
-            capture_output=True, text=True, check=False, timeout=10
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
         )
         assert result.returncode != 0, "CLI should fail when Stage 1 missing"
-        assert "Stage 1" in result.stderr or "Stage 1" in result.stdout, "Error should mention Stage 1"
+        assert (
+            "Stage 1" in result.stderr or "Stage 1" in result.stdout
+        ), "Error should mention Stage 1"

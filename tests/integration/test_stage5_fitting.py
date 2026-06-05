@@ -115,9 +115,7 @@ def test_validate_stage5_shape_error_cross_interface(
     freqs = sorted(p.frequency_mhz for p in fit.fitted_peaks)[:5]
     assert freqs, "need at least one fitted peak to build a ground-truth catalog"
     gt = tmp_path / "ground_truth.csv"
-    gt.write_text(
-        "freq_mhz,unc_mhz\n" + "".join(f"{f:.6f},0.001\n" for f in freqs)
-    )
+    gt.write_text("freq_mhz,unc_mhz\n" + "".join(f"{f:.6f},0.001\n" for f in freqs))
 
     pfile = temp_ftmw_dir / "vp.ftmw"
     ffile = temp_ftmw_dir / "vf.ftmw"
@@ -154,7 +152,8 @@ def test_validate_stage5_shape_error_cross_interface(
 
 
 def test_serialization_round_trip_and_hand_edit(
-    baseline_2638_stage4_small, temp_ftmw_dir,
+    baseline_2638_stage4_small,
+    temp_ftmw_dir,
 ):
     """Save -> load returns an equivalent fit; an in-place peak edit survives.
 
@@ -269,7 +268,8 @@ def test_stage1_change_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir):
 
 
 def test_fit_peaks_gaussian_cross_interface(
-    baseline_2638_stage4_small, temp_ftmw_dir,
+    baseline_2638_stage4_small,
+    temp_ftmw_dir,
 ):
     """fit_peaks(shape='gaussian') is identical across CLI / Pipeline / api.
 
@@ -320,9 +320,9 @@ def test_fit_peaks_gaussian_cross_interface(
                 if isinstance(root_shape, bytes)
                 else str(root_shape)
             )
-            assert root_shape_str == "gaussian", (
-                f"{fp.name}: /stage5_fitting shape attr is {root_shape_str!r}"
-            )
+            assert (
+                root_shape_str == "gaussian"
+            ), f"{fp.name}: /stage5_fitting shape attr is {root_shape_str!r}"
             windows_group = h5f["stage5_fitting/windows"]
             for wname in windows_group:
                 w_shape = windows_group[wname].attrs.get("shape", "lorentzian")
@@ -331,13 +331,14 @@ def test_fit_peaks_gaussian_cross_interface(
                     if isinstance(w_shape, bytes)
                     else str(w_shape)
                 )
-                assert w_shape_str == "gaussian", (
-                    f"{fp.name}/{wname} shape attr is {w_shape_str!r}"
-                )
+                assert (
+                    w_shape_str == "gaussian"
+                ), f"{fp.name}/{wname} shape attr is {w_shape_str!r}"
 
 
 def test_fit_peaks_gaussian_persists_and_loads_shape(
-    baseline_2638_stage4_small, temp_ftmw_dir,
+    baseline_2638_stage4_small,
+    temp_ftmw_dir,
 ):
     """A Gaussian fit round-trips: every loaded FittingResult carries shape='gaussian'.
 
@@ -357,15 +358,16 @@ def test_fit_peaks_gaussian_persists_and_loads_shape(
     # files would default to 'lorentzian' on the missing attribute.
     assert fit.window_fits, "no windows in the loaded fit"
     for wf in fit.window_fits:
-        assert wf.shape == "gaussian", (
-            f"window {wf.window_id} shape={wf.shape!r} (expected 'gaussian')"
-        )
+        assert (
+            wf.shape == "gaussian"
+        ), f"window {wf.window_id} shape={wf.shape!r} (expected 'gaussian')"
     # The fit's parameters dict echoes the same shape the driver used.
     assert fit.parameters.get("shape") == "gaussian"
 
 
 def test_calibrate_tau_G_cross_interface(
-    baseline_2638_stage4_small, temp_ftmw_dir,
+    baseline_2638_stage4_small,
+    temp_ftmw_dir,
 ):
     """calibrate_tau_G is identical across CLI / Pipeline / api on 2638.
 
@@ -378,6 +380,7 @@ def test_calibrate_tau_G_cross_interface(
         skip_auto_recommend_preset_yaml,
         skip_auto_recommend_settings,
     )
+
     pfile = temp_ftmw_dir / "tgp.ftmw"
     ffile = temp_ftmw_dir / "tgf.ftmw"
     cfile = temp_ftmw_dir / "tgc.ftmw"
@@ -389,8 +392,7 @@ def test_calibrate_tau_G_cross_interface(
     tc_pipe = Pipeline(pfile).calibrate_tau_G(settings=skip)
     tc_func = ftmw.calibrate_tau_G(ffile, settings=skip)
     res = subprocess.run(
-        ["ftmwpipeline", "calibrate-tau-G", str(cfile),
-         "--preset", str(skip_yaml)],
+        ["ftmwpipeline", "calibrate-tau-G", str(cfile), "--preset", str(skip_yaml)],
         capture_output=True,
         text=True,
         timeout=600,
@@ -409,7 +411,8 @@ def test_calibrate_tau_G_cross_interface(
 
 
 def test_cli_visualize_fit_writes_output(
-    baseline_2638_stage4_small, temp_ftmw_dir,
+    baseline_2638_stage4_small,
+    temp_ftmw_dir,
 ):
     """visualize-fit --no-interactive --output writes the image and exits 0.
 
@@ -440,7 +443,8 @@ def test_cli_visualize_fit_writes_output(
 
 
 def test_recommend_shape_persists_and_feeds_resolver(
-    baseline_2638_stage4_small, temp_ftmw_dir,
+    baseline_2638_stage4_small,
+    temp_ftmw_dir,
 ):
     """The 3-way recommendation lands on the Stage 2b attr and Stage 5 picks it up.
 
@@ -495,7 +499,8 @@ def test_recommend_shape_persists_and_feeds_resolver(
             # Sub-group form
             shape_attr = h5["processing_parameters/stage5_fit/shape"].attrs["kind"]
         decoded_shape = (
-            shape_attr.decode("utf-8") if isinstance(shape_attr, bytes)
+            shape_attr.decode("utf-8")
+            if isinstance(shape_attr, bytes)
             else str(shape_attr)
         )
         assert decoded_shape == "gaussian"

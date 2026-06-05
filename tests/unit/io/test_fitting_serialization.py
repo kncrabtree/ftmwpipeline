@@ -627,9 +627,7 @@ class TestRescueRoundsRoundTrip:
         assert got.chi2_before == pytest.approx(12.0)
         assert got.chi2_after == pytest.approx(8.0)
         assert got.tau_us_after == pytest.approx(3.05)
-        assert [c.frequency_mhz for c in got.candidates] == pytest.approx(
-            [-0.18, 0.27]
-        )
+        assert [c.frequency_mhz for c in got.candidates] == pytest.approx([-0.18, 0.27])
         assert got.candidates[0].snr == pytest.approx(3.6)
 
         # Per-window mirror.
@@ -724,10 +722,12 @@ class TestTauFittedRoundTrip:
     ) -> SpectrumFit:
         peak0 = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.012)
         peak1 = _sample_fitted_peak(peak_id=1, window_id=1, freq_mhz=36110.045)
-        win0 = _make_window_fit(0, [peak0], audit=[], thaw_events=[],
-                                tau_error=tau_error_0)
-        win1 = _make_window_fit(1, [peak1], audit=[], thaw_events=[],
-                                tau_error=tau_error_1)
+        win0 = _make_window_fit(
+            0, [peak0], audit=[], thaw_events=[], tau_error=tau_error_0
+        )
+        win1 = _make_window_fit(
+            1, [peak1], audit=[], thaw_events=[], tau_error=tau_error_1
+        )
         win0.shared_parameters["tau_us"]["fitted"] = fitted_0
         win1.shared_parameters["tau_us"]["fitted"] = fitted_1
         return SpectrumFit(
@@ -738,8 +738,10 @@ class TestTauFittedRoundTrip:
     def test_true_and_false_round_trip(self, tmp_path):
         """``fitted=True`` and ``fitted=False`` survive save/load unchanged."""
         fit = self._make_pair(
-            fitted_0=True, fitted_1=False,
-            tau_error_0=0.05, tau_error_1=None,
+            fitted_0=True,
+            fitted_1=False,
+            tau_error_0=0.05,
+            tau_error_1=None,
         )
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
         assert loaded.window_fits[0].shared_parameters["tau_us"]["fitted"] is True
@@ -749,8 +751,10 @@ class TestTauFittedRoundTrip:
         """``fitted=True`` with ``error=None`` (singular cov at tau slot) is
         preserved; the loader does not collapse it to fitted=False."""
         fit = self._make_pair(
-            fitted_0=True, fitted_1=True,
-            tau_error_0=None, tau_error_1=0.04,
+            fitted_0=True,
+            fitted_1=True,
+            tau_error_0=None,
+            tau_error_1=0.04,
         )
         loaded = _roundtrip(fit, tmp_path / "fit.h5")
         entry0 = loaded.window_fits[0].shared_parameters["tau_us"]
@@ -768,8 +772,10 @@ class TestTauFittedRoundTrip:
         """
         path = tmp_path / "fit.h5"
         fit = self._make_pair(
-            fitted_0=True, fitted_1=False,
-            tau_error_0=0.05, tau_error_1=None,
+            fitted_0=True,
+            fitted_1=False,
+            tau_error_0=0.05,
+            tau_error_1=None,
         )
         with h5py.File(path, "w") as h5f:
             g = h5f.create_group("stage5_fitting")
@@ -792,8 +798,7 @@ class TestTauFittedRoundTrip:
         backward-compat rule. Round-trip is idempotent on re-save.
         """
         peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
-        win = _make_window_fit(0, [peak], audit=[], thaw_events=[],
-                               tau_error=None)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[], tau_error=None)
         win.shared_parameters["tau_us"]["fitted"] = None
         fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
         loaded = _roundtrip(fit, tmp_path / "fit.h5")

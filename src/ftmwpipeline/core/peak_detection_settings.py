@@ -169,9 +169,7 @@ class PeakDetectionSettings:
 
     promotion: PromotionSubSettings = field(default_factory=PromotionSubSettings)
     savgol: SavgolSubSettings = field(default_factory=SavgolSubSettings)
-    primary_pass: PrimaryPassSubSettings = field(
-        default_factory=PrimaryPassSubSettings
-    )
+    primary_pass: PrimaryPassSubSettings = field(default_factory=PrimaryPassSubSettings)
     gap_pass: GapPassSubSettings = field(default_factory=GapPassSubSettings)
 
     def is_empty(self) -> bool:
@@ -458,8 +456,7 @@ def load_preset(name_or_path: Union[str, Path]) -> PeakDetectionSettings:
                 if p.name.endswith(".yaml")
             )
             raise FileNotFoundError(
-                f"no packaged preset named {name_or_path!r}; "
-                f"available: {available}"
+                f"no packaged preset named {name_or_path!r}; " f"available: {available}"
             )
         text = candidate.read_text()
     data = yaml.safe_load(text)

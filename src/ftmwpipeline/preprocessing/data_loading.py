@@ -7,10 +7,12 @@ Implementation pending for Phase 3.
 
 # Placeholder functions - will be implemented in Phase 3
 
-def load_blackchirp_data(*args, **kwargs):
-    """Placeholder for BlackChirp data loading."""
-    raise NotImplementedError("Will be implemented in Phase 3")
 
-def load_fid_data(*args, **kwargs):
+def load_blackchirp_data(*args: object, **kwargs: object) -> None:
+    """Placeholder for BlackChirp data loading."""
+    raise NotImplementedError("Not yet implemented")
+
+
+def load_fid_data(*args: object, **kwargs: object) -> None:
     """Placeholder for FID data loading."""
-    raise NotImplementedError("Will be implemented in Phase 3")
+    raise NotImplementedError("Not yet implemented")

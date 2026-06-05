@@ -742,8 +742,7 @@ def _finalize_plan(
             if not doomed:
                 continue
             w.fixed_contributors = [
-                fc for fc in w.fixed_contributors
-                if fc.primary_window_id not in doomed
+                fc for fc in w.fixed_contributors if fc.primary_window_id not in doomed
             ]
 
     # Plan-level diagnostics: leakage-touched regions with no promoted peak --

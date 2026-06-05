@@ -16,9 +16,9 @@ Stage 3 peaks were scored on. Wrapped identically by the CLI, Pipeline class,
 and functional API. See ``dev-docs/planning/stage4-window-assignment.md``.
 """
 
-from datetime import datetime
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -27,9 +27,10 @@ import h5py
 from ..core.data_structures import ComplexFT, WindowDifficulty, WindowPlan
 from ..core.window_planning_settings import (
     WindowPlanningSettings,
-    load_preset as load_window_planning_preset,
-    resolve as resolve_window_planning_settings,
 )
+from ..core.window_planning_settings import load_preset as load_window_planning_preset
+from ..core.window_planning_settings import resolve as resolve_window_planning_settings
+from ..file_manager import invalidate_downstream_stages
 from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
@@ -38,7 +39,6 @@ from ..io.window_serialization import (
     load_window_plan_from_hdf5,
     save_window_plan_to_hdf5,
 )
-from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
     build_window_plan,
 )
@@ -76,9 +76,7 @@ def _build_explicit_from_kwargs(
     explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
     explicit.clustering.max_peaks_per_window = max_peaks_per_window
     explicit.contributor.min_freeze_snr = min_freeze_snr
-    explicit.contributor.magnitude_attachment_threshold = (
-        magnitude_attachment_threshold
-    )
+    explicit.contributor.magnitude_attachment_threshold = magnitude_attachment_threshold
     explicit.leakage.tau_us = tau_us
     return explicit
 
@@ -248,9 +246,7 @@ def assign_windows_impl(
     )
     # ``leakage.tau_us`` is legitimately allowed to remain ``None`` after
     # resolution -- ``None`` selects the undamped/boxcar limit downstream.
-    tau_us_v: Optional[float] = (
-        float(leak.tau_us) if leak.tau_us is not None else None
-    )
+    tau_us_v: Optional[float] = float(leak.tau_us) if leak.tau_us is not None else None
 
     loaded = load_peaks_impl(file_path)
     peaks = loaded["peaks"]
@@ -296,7 +292,9 @@ def assign_windows_impl(
     # ``save_window_parameters_impl`` above as a back-compat shim; the new
     # canonical record below is what the resolver's persisted layer reads.
     save_window_planning_settings_to_h5(
-        file_path, resolved, preset_name=preset_name,
+        file_path,
+        resolved,
+        preset_name=preset_name,
     )
     _update_stage_completion(file_path, "stage4_windows")
     # Re-assignment supersedes any Stage 5 fit built on the old plan.
