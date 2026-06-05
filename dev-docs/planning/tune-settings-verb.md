@@ -1,6 +1,6 @@
-# `tune settings`: resolved per-knob values and their provenance
+# `settings show`: resolved per-knob values and their provenance
 
-Plan for a settings-inspection verb that answers the question `tune list` does
+Plan for a settings-inspection verb that answers the question `scan list` does
 not: **what value is actually in effect for this experiment right now, and which
 layer supplied it.** Charter: GitHub issue #28. Companion to the tuning surface
 in [`companion-tuning-tools.md`](companion-tuning-tools.md) (issue #27), which
@@ -10,17 +10,26 @@ for the "how do I persist a chosen value" grammar deferred out of #27.
 This is the design + categorization document; nothing here re-derives a specific
 default (that is the per-knob audit, issue #3).
 
+**CLI grammar.** This work lands in the object-verb CLI grammar defined by
+[`../CLI_STRATEGY.md`](../CLI_STRATEGY.md): the cross-cutting **`settings`**
+meta-object (`settings show` / `settings set` / `settings export`) and the
+**`scan`** meta-object (`scan list` / `scan run` / `scan all`, which renames the
+legacy `tune list` / `tune scan` / `tune scan-all`). The stage-command half of
+that grammar migration (the `data import`/`<stage> run`/`<stage> show` objects)
+is tracked separately; issue #28 owns the two meta-objects. Selectors are the
+dotted registry paths (`noise`, `noise.window_mhz`, `stage2b.gaussian`).
+
 ## Problem
 
-`tune list` enumerates *what is tunable* (registry: paths, tiers, default sweep
+`scan list` enumerates *what is tunable* (registry: paths, tiers, default sweep
 grids). It is silent on *what is resolved* for a given `.ftmw`. A user driving
 the tooling on their own instrument needs the second view to decide. The
 canonical case: **"will my analysis use the data-detected `start_us`, or
 `chirp_end + guard_margin`?"** Today nothing shows the resolved value and the
 layer that produced it.
 
-Proposed: `tune settings <file.ftmw> [selector] [--all]`, grammar parallel to
-`tune list`, printing **per setting: the resolved value and its provenance
+Proposed: `settings show <file.ftmw> [selector] [--all]`, grammar parallel to
+`scan list`, printing **per setting: the resolved value and its provenance
 layer**, plus the hard default for reference, and a footer describing how to
 change a value at the `.ftmw` or `.yml` level.
 
@@ -67,7 +76,7 @@ unreproducible precedence would just document the bug):
 
 ## Source of truth: the settings dataclasses, not the knob registry
 
-`tune list` walks the **knob registry** (`_internal/tuning/registry.py`), which
+`scan list` walks the **knob registry** (`_internal/tuning/registry.py`), which
 intentionally omits fields that do not sweep meaningfully in isolation:
 `stage1.units_power` (a display/storage rescale — degenerate to sweep),
 `stage1.{zpf, expf_us, window_function}` (excluded because the canonical
@@ -103,8 +112,8 @@ chain, and record **which layer won**:
   import-time recommended FT params for Stage 1; otherwise `None`.
 - **default** — the hard default constant.
 
-Output columns (mirroring `tune list`'s prefix-elided, stage→sub-block table via
-`cli/tune_commands.py::_elide_path`):
+Output columns (mirroring `scan list`'s prefix-elided, stage→sub-block table via
+the shared `_elide_path` helper):
 
 | column | content |
 |---|---|
@@ -179,11 +188,11 @@ three surfaces:
   `path, value, source_layer, hard_default` plus the registry enrichment
   (tier/help). Returning **structured rows** (not printed text) lets Pipeline /
   api hand back data while the CLI formats the table.
-- **CLI** — `cli/tune_commands.py::cmd_tune_settings`, reusing `_elide_path` and
-  the `cmd_tune_list` layout; new `tune settings` subcommand.
-- **Pipeline** — `Pipeline.tune_settings(selector=..., include_advanced=...,
-  preset=...)` returning the rows.
-- **api** — `tune_settings(file_path, ...)` delegating to `Pipeline`.
+- **CLI** — a `settings` subcommand group (`settings show` / `set` / `export`),
+  reusing `_elide_path` and the existing `scan list` layout.
+- **Pipeline** — `Pipeline.settings_show(selector=..., include_advanced=...,
+  preset=...)` returning the rows (plus `settings_set` / `settings_export`).
+- **api** — `settings_show(file_path, ...)` delegating to `Pipeline`.
 
 ## Test plan
 
@@ -206,15 +215,20 @@ three surfaces:
    provenance.
 2. **Field-enumeration + resolution core** in `_internal/tuning` returning
    structured rows with provenance.
-3. **Presentation + dual-interface** (`tune settings` across CLI / Pipeline /
-   api), reusing the `tune list` layout, selector, and tiering.
-4. **Change-grammar footer** and the explicit `--preset` provenance path.
-5. **Doc reconciliation** of the stale precedence statements (see D11 task list).
+3. **Presentation + dual-interface** (`settings show` across CLI / Pipeline /
+   api), reusing the `scan list` layout, selector, and tiering.
+4. **`settings set` / `settings export`** — the change-grammar (persist to
+   `.ftmw`, write a `.yml` preset block) and the explicit `--preset` provenance
+   path.
+5. **`tune` → `scan` rename** — migrate the legacy `tune list` / `tune scan` /
+   `tune scan-all` to the `scan` meta-object (`list` / `run` / `all`) per
+   CLI_STRATEGY.
+6. **Doc reconciliation** of the stale precedence statements (see D11 task list).
 
 ## Open items
 
-- Whether `tune settings` subsumes the deferred `tune show` name from #27 (likely
-  yes — one resolved-settings verb).
+- The `settings` meta-object subsumes the deferred `tune show` name from #27
+  (one resolved-settings verb — settled by the object-verb grammar).
 - Help-text source for non-registered fields (dataclass field metadata vs a
   small hand-authored map) — decide during the field-enumeration build.
 - The `preset_name` audit-attr surfacing (enhancement 2) can ship after v1.
