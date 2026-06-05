@@ -20,7 +20,11 @@ How an experiment's analysis is persisted. One experiment is one self-contained
    parameter combinations; exploring parameters never requires re-importing.
 4. **Self-contained and portable.** A `.ftmw` file carries everything needed to
    continue or reproduce the analysis on another machine, with no external
-   dependencies.
+   dependencies. Sharing the file is sufficient to reproduce the result: a
+   recipient running a compatible package version obtains identical output from
+   the file alone, with no instrument preset or other side artifact required.
+   It follows that **no external artifact may silently override a setting the
+   file persists** — see *Settings resolution and reproducibility* below.
 5. **Provenance.** Source identity and import parameters are recorded (see
    [`API_STRATEGY.md`](API_STRATEGY.md)).
 
@@ -51,6 +55,35 @@ How an experiment's analysis is persisted. One experiment is one self-contained
 - **Stages 3–5.** Expensive derived results (peaks, window definitions, fitted
   parameters) are persisted; anything cheaply reconstructible from them and the
   on-demand ComplexFT is not.
+
+## Settings resolution and reproducibility
+
+A stage's effective settings are resolved from layers in this **normative
+precedence** (highest first):
+
+```
+explicit override  >  persisted (.ftmw)  >  preset (.yml)  >  recommended  >  hard default
+```
+
+- **explicit override** — a value passed by the caller for this invocation. A
+  deliberate, per-run act; it recomputes and persists intent (see
+  [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md)).
+- **persisted (.ftmw)** — the value stamped into the file when the stage was
+  last run. **Authoritative over any external artifact.**
+- **preset (.yml)** — an instrument preset the runner opted into for this
+  invocation. It supplies values the file has *not* persisted; it must **never**
+  override a value the file already persists.
+- **recommended** — an upstream advisory value (import-time recommended
+  parameters; a Stage 2b shape recommendation). Reserved/`None` where unused.
+- **hard default** — the package constant.
+
+The invariant — **persisted outranks preset** — is what makes Principle 4 hold:
+a `.yml` a recipient happens to have (possibly tuned for a different instrument)
+cannot change the output of a shared, fully-processed `.ftmw`. The preset layer
+exists to *seed* fields the file has not yet fixed, not to second-guess fields
+it has. This matches the Stage 1 canonical-settings order already specified above
+(`explicit > persisted > recommended`); the preset layer slots directly below
+persisted for every stage.
 
 ## Stage tracking
 

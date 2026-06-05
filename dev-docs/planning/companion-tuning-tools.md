@@ -255,7 +255,13 @@ file itself — reusing #28's set path rather than inventing a `tune`-local
 emitter. This keeps the sweep/visualization code free of caching/merge UX and
 puts a single value-persistence surface in #28. The enabling infrastructure
 already exists (`to_yaml_dict()` per stage + the `stageN:`-block preset format),
-so this is wiring on top of #28.
+so this is wiring on top of #28. Design now lives in
+[`tune-settings-verb.md`](tune-settings-verb.md). Note the precedence model it
+settled: the persisted `.ftmw` value **outranks** the `.yml` preset
+(reproducibility paradigm — [`../SERIALIZATION_STRATEGY.md`](../SERIALIZATION_STRATEGY.md)
+§"Settings resolution and reproducibility" / ROADMAP D11), correcting the current
+resolver; a preset therefore *seeds* unfixed fields rather than overriding the
+file.
 
 ## Sequencing
 
