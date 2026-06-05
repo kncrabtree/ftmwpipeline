@@ -51,7 +51,7 @@ def _prep_through_stage2(tmp_path, data_path) -> str:
     fp = str(tmp_path / "exp.ftmw")
     import_data_impl(fp, source=data_path)
     ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=TRIM)
-    ftmw.estimate_noise(fp, method="adaptive")  # exercises the adaptive settings chain
+    ftmw.estimate_noise(fp)  # exercises the scatter settings chain
     return fp
 
 

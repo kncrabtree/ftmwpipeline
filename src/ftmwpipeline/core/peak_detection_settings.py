@@ -102,8 +102,10 @@ class SavgolSubSettings:
 class PrimaryPassSubSettings:
     """Primary-pass apodization + zpf knobs.
 
-    The primary pass runs at zpf=``detection_zpf`` on a strongly-windowed
-    spectrum (``primary_window``) to suppress truncation sidelobes;
+    The primary pass runs on the active-region ``dt·rfft`` frame (the same frame
+    as the gap pass and the canonical active FT), zero-padded by
+    ``detection_zpf``, on a strongly-windowed spectrum (``primary_window``) to
+    suppress truncation sidelobes;
     ``min_exclusion_mhz`` is the half-width around every primary detection
     that the gap pass excludes from its mask. ``primary_leakage_floor_k``
     scales the continuous leakage-aware detection floor ``k·(S_coh/√M)·σ``
@@ -111,12 +113,30 @@ class PrimaryPassSubSettings:
     skirt ripple is not re-detected as weak lines (the primary pass has no
     hard leakage mask -- a hard mask would delete the strong lines that
     generate the coherence). ``0`` disables the floor.
+
+    The ``noise_*`` fields are the scatter-estimator knobs for the primary's
+    **own** per-bin σ, measured on its apodized active-FT spectrum (the second
+    Stage 3 noise level, distinct from the unapodized Stage 2 authority: the
+    Blackman-Harris window suppresses the leakage that inflates the boxcar
+    authority σ on dense spectra, so the primary floor is genuinely lower and
+    must be measured on its own spectrum, not propagated). They mirror the
+    Stage 2 :class:`~ftmwpipeline.core.noise_settings.NoiseSettings` knobs and
+    default to the same values; expose them here so the apodized-domain floor is
+    tunable through the same Stage 3 settings the rest of the pass uses.
     """
 
     primary_window: Optional[str] = None
     min_exclusion_mhz: Optional[float] = None
     detection_zpf: Optional[int] = None
     primary_leakage_floor_k: Optional[float] = None
+    noise_window_mhz: Optional[float] = None
+    noise_pedestal_mhz: Optional[float] = None
+    noise_line_k: Optional[float] = None
+    noise_n_iter: Optional[int] = None
+    noise_region_aware: Optional[bool] = None
+    noise_smoothing_mhz: Optional[float] = None
+    noise_smoothing_percentile: Optional[float] = None
+    noise_convolve_mhz: Optional[float] = None
 
 
 @dataclass
@@ -189,8 +209,17 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "primary_pass": {
         "primary_window": "blackmanharris",
         "min_exclusion_mhz": 0.0,
-        "detection_zpf": 1,
+        "detection_zpf": 2,
         "primary_leakage_floor_k": 1.0,
+        # Apodized-domain scatter knobs (mirror NoiseSettings hard defaults).
+        "noise_window_mhz": 80.0,
+        "noise_pedestal_mhz": 20.0,
+        "noise_line_k": 8.0,
+        "noise_n_iter": 3,
+        "noise_region_aware": True,
+        "noise_smoothing_mhz": 800.0,
+        "noise_smoothing_percentile": 50.0,
+        "noise_convolve_mhz": 200.0,
     },
     "gap_pass": {
         "run_gap_pass": True,

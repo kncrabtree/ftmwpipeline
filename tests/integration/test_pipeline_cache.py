@@ -36,7 +36,7 @@ from ftmwpipeline.io.fid_serialization import (
 )
 from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
 from ftmwpipeline.core.data_structures import ComplexFT, FID, FIDProcessingParameters
-from ftmwpipeline.preprocessing.noise_estimation import NoiseResult, estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import NoiseResult, estimate_noise_scatter
 
 
 class TestStage0FIDCaching:
@@ -391,7 +391,7 @@ class TestStage01WorkflowIntegration:
         trimmed_ft_direct = complex_ft_direct.trim_to_range(*trim_range)
         
         # Direct noise estimation
-        noise_result_direct = estimate_noise_adaptive(
+        noise_result_direct = estimate_noise_scatter(
             trimmed_ft_direct.freq_array,
             trimmed_ft_direct.magnitude_spectrum
         )
@@ -412,7 +412,7 @@ class TestStage01WorkflowIntegration:
         trimmed_ft_cached = complex_ft_cached.trim_to_range(*trim_range)
         
         # Continue with noise estimation (future Stage 2)
-        noise_result_cached = estimate_noise_adaptive(
+        noise_result_cached = estimate_noise_scatter(
             trimmed_ft_cached.freq_array,
             trimmed_ft_cached.magnitude_spectrum
         )

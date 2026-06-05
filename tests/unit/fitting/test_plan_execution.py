@@ -1091,9 +1091,9 @@ class TestStructuralReplan:
 
         ctx = ReplanContext(
             peaks=peaks,
-            persisted_freq_mhz=freq_array,
-            persisted_complex_spectrum=spectrum,
-            persisted_rms_noise=rms,
+            active_freq_mhz=freq_array,
+            active_complex_spectrum=spectrum,
+            active_rms_noise=rms,
         )
 
         outcome = execute_plan(
@@ -1169,9 +1169,9 @@ class TestStructuralReplan:
         )
         ctx = ReplanContext(
             peaks=peaks,
-            persisted_freq_mhz=freq_array,
-            persisted_complex_spectrum=spectrum,
-            persisted_rms_noise=rms,
+            active_freq_mhz=freq_array,
+            active_complex_spectrum=spectrum,
+            active_rms_noise=rms,
         )
 
         outcome = execute_plan(
@@ -1214,9 +1214,9 @@ class TestStructuralReplan:
         )
         ctx = ReplanContext(
             peaks=peaks,
-            persisted_freq_mhz=freq_array,
-            persisted_complex_spectrum=spectrum,
-            persisted_rms_noise=rms,
+            active_freq_mhz=freq_array,
+            active_complex_spectrum=spectrum,
+            active_rms_noise=rms,
         )
         outcome = execute_plan(
             plan,
@@ -1259,9 +1259,9 @@ class TestStructuralReplan:
         )
         ctx = ReplanContext(
             peaks=peaks,
-            persisted_freq_mhz=freq_array,
-            persisted_complex_spectrum=spectrum,
-            persisted_rms_noise=rms,
+            active_freq_mhz=freq_array,
+            active_complex_spectrum=spectrum,
+            active_rms_noise=rms,
             max_replan_rounds=0,
         )
         outcome = execute_plan(

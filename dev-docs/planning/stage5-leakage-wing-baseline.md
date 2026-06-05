@@ -118,8 +118,14 @@ and on narrow/low-SNR windows (w20 = 0.99, w159 = 1.86, w189 = 1.15), so a
 threshold ≥ 3.5 produces **zero harmful fires** — it never adds a baseline to a
 window where it would only inflate σ (the w189 case: ×1.16 σ_A for no χ²ᵣ gain).
 Low precision at 3.5 is harmless: firing on a window that gains only +0.2 χ²ᵣ
-costs ≈ ×1.0 on σ. The threshold is 2638-tuned → instrument-tunable calibration
-debt (see [[stage5-penalty-tuning-debt]]); cross-fixture calibration is open.
+costs ≈ ×1.0 on σ. The threshold was 2638-tuned and is now **validated
+cross-fixture (issue #3, all 7 same-instrument fixtures)**: edge ≥ 3.5 fires at a
+rate that tracks line density (0.07 on sparse 2638 → 0.93–0.96 on dense 655/363)
+with Tier-1 health preserved where it fires heavily, and the fixed `const` order
+is chosen on **100 % of fired windows on every fixture** (linear never selected).
+Both the threshold and the const order ship unchanged. Evidence:
+[`../research/stage5-cross-fixture/report.md`](../research/stage5-cross-fixture/report.md)
+§"Cross-fixture knob audit".
 
 ### Relationship to existing machinery
 
@@ -219,6 +225,10 @@ Diff per-window χ²ᵣ + per-line σ against
 
 ## Open questions
 
-- **Edge threshold cross-fixture calibration** (3.5 is 2638-tuned;
-  [[stage5-penalty-tuning-debt]]). A second fixture is the real confidence
-  ceiling — both the threshold and the fixed `const` order are 2638 choices.
+- **Edge threshold cross-fixture calibration** — **resolved (issue #3).**
+  Validated on all 7 same-instrument fixtures: edge 3.5 fires sanely (rate tracks
+  line density, Tier-1 health preserved) and `const` order is chosen on 100 % of
+  fired windows everywhere. Both ship unchanged. A *different-instrument* fixture
+  remains the ultimate ceiling but is not available; the same-instrument
+  cross-fixture debt is closed. See `../research/stage5-cross-fixture/report.md`
+  §"Cross-fixture knob audit".

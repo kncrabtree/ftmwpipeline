@@ -13,11 +13,6 @@ over the active band:
   * The empirically-good start sits a fixed guard margin past the chirp end --
     the switch-bounce ringdown settling time. ``start_us = chirp_end +
     guard_margin_us`` is the primary recommendation.
-  * As a confirmatory diagnostic, the post-chirp floor itself has two decay
-    regimes (fast ringdown, then slow molecular tail); the Kneedle elbow between
-    them lands near the same place when the ringdown is separable. Strong
-    molecular FIDs bury the ringdown and yield no knee (strength ~0), so the
-    knee is reported with a strength score rather than used as the estimate.
 
 See :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
 for the knobs and :mod:`ftmwpipeline._internal.start_detection_impl` for the
@@ -30,7 +25,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
-from scipy.ndimage import uniform_filter1d
 
 from ..core.data_structures import FID
 from ..core.start_detection_settings import StartDetectionSettings
@@ -46,14 +40,6 @@ class StartDetectionResult:
         Recommended FID window start (``chirp_end_us + guard_margin_us``).
     chirp_end_us :
         Start time at which Σ|FT| collapses to the post-chirp floor.
-    knee_us :
-        Kneedle elbow of the post-chirp floor (ringdown -> molecular). A
-        diagnostic; equals the chirp-end window left edge when no knee is found.
-    knee_strength :
-        Normalized elbow strength (0..1); larger is a sharper, more separable
-        ringdown knee.
-    knee_confident :
-        ``knee_strength >= knee_strength_min``.
     chirp_detected :
         Whether a chirp collapse (plateau/floor ratio above the configured
         minimum) was present. When ``False`` the start time could not be
@@ -70,31 +56,12 @@ class StartDetectionResult:
 
     start_us: float
     chirp_end_us: float
-    knee_us: float
-    knee_strength: float
-    knee_confident: bool
     chirp_detected: bool
     floor: float
     plateau: float
     band_mhz: Optional[Tuple[float, float]]
     starts_us: np.ndarray
     sum_magnitude: np.ndarray
-
-
-def _kneedle_elbow(x: np.ndarray, y: np.ndarray) -> Tuple[int, float]:
-    """Kneedle elbow of a decreasing curve.
-
-    Returns the index of maximum chord-minus-curve distance after min-max
-    normalization, plus that distance (0 for a straight line, larger for a
-    sharper elbow). ``x`` must be increasing and ``y`` decreasing overall.
-    """
-    if x.size < 3:
-        return 0, 0.0
-    xn = (x - x.min()) / max(x.max() - x.min(), 1e-12)
-    yn = (y - y.min()) / max(y.max() - y.min(), 1e-12)
-    diff = (1.0 - xn) - yn  # chord of a decreasing curve is (1 - xn)
-    ki = int(np.argmax(diff))
-    return ki, float(diff[ki])
 
 
 def detect_start_time(
@@ -159,18 +126,6 @@ def detect_start_time(
     else:
         chirp_end = 0.0
 
-    # Confirmatory Kneedle elbow on the post-chirp floor (skip the shoulder).
-    logs = uniform_filter1d(np.log(summag), size=5, mode="nearest")
-    win = (starts >= chirp_end + settings.shoulder_skip_us) & (
-        starts <= chirp_end + settings.knee_window_us
-    )
-    if win.sum() >= 3:
-        ki, knee_strength = _kneedle_elbow(starts[win], logs[win])
-        knee_us = float(starts[win][ki])
-    else:
-        knee_us, knee_strength = chirp_end, 0.0
-    knee_confident = bool(knee_strength >= settings.knee_strength_min)
-
     # With a chirp present, skip past it plus the ringdown guard margin; with no
     # chirp collapse there is nothing to exclude, so recommend the full FID.
     start_us = chirp_end + settings.guard_margin_us if chirp_detected else 0.0
@@ -178,9 +133,6 @@ def detect_start_time(
     return StartDetectionResult(
         start_us=start_us,
         chirp_end_us=chirp_end,
-        knee_us=knee_us,
-        knee_strength=knee_strength,
-        knee_confident=knee_confident,
         chirp_detected=chirp_detected,
         floor=floor,
         plateau=plateau,

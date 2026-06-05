@@ -21,6 +21,7 @@ from .tau_commands import register_tau_commands
 from .peak_commands import register_peak_commands
 from .window_commands import register_window_commands
 from .fitting_commands import register_fitting_commands
+from .tune_commands import register_tune_commands
 from .info_commands import add_info_subcommand
 
 
@@ -99,6 +100,10 @@ Available Commands:
     fit-peaks       Fit each window's lines (conservative add-one-peak loop)
     visualize-fit   Overlay the fitted model on the spectrum
 
+  Parameter tuning:
+    tune list       List the tunable knobs for your instrument
+    tune scan       Sweep one knob across a grid and report a metric table
+
   Utility:
     info            Show provenance and stage status for a .ftmw file
     validate        Check installation and dependencies
@@ -143,6 +148,9 @@ Examples:
 
     # Add fitting commands (Stage 5)
     register_fitting_commands(subparsers)
+
+    # Companion parameter-tuning commands
+    register_tune_commands(subparsers)
 
     # Pipeline-file info command
     add_info_subcommand(subparsers)

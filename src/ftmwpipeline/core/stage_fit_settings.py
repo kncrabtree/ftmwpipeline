@@ -246,7 +246,10 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "shape": {"kind": PeakShape.LORENTZIAN},
     "tau": {
         "max_decay_factor": 5.0,
-        "fit_tau_min_snr": 50.0,
+        # The free-τ floor: τ is freed above max(this, weak_window_snr_threshold).
+        # Defaults to the weak-window floor (10) so behaviour is unchanged until
+        # tuned upward; see fitting.window_fit.DEFAULT_FIT_TAU_MIN_SNR.
+        "fit_tau_min_snr": 10.0,
         "tau_penalty_lambda": 50.0,
         "tau_penalty_n_sigma": 5.0,
         "per_band_tau": True,

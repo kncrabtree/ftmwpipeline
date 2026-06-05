@@ -2,9 +2,9 @@
 Persistence for :class:`~ftmwpipeline.core.noise_settings.NoiseSettings`.
 
 The canonical record for a Stage 2 run's resolved knobs lives under
-``processing_parameters/stage2_noise``. The layout uses one HDF5 subgroup
-per sub-dataclass so each block is independently inspectable with
-``h5dump -p``:
+``processing_parameters/stage2_noise``. Stage 2 has a single estimator, so the
+fields are stored as attrs directly on the group (no sub-block layer),
+inspectable with ``h5dump -p``:
 
 .. code-block::
 
@@ -12,11 +12,9 @@ per sub-dataclass so each block is independently inspectable with
       stage2_noise/
         @creation_time
         @preset_name              (optional audit attr)
-        binning/
-          @subdivision_threshold
-          @abs_min_bin_size
-          ...
-        skewness/  smoothing/  skirt_exclusion/
+        @window_mhz
+        @pedestal_mhz
+        ...
 
 Unset (Optional-None) fields encode as the ``__None__`` sentinel string,
 matching :mod:`ftmwpipeline.io.stage_fit_settings_serialization` and
@@ -27,11 +25,6 @@ group (the noise-estimate payload — the σ_x array + bin diagnostics).
 Settings (knobs) live here under ``processing_parameters/``; results live
 at the root. Same pattern Stage 5 uses
 (``processing_parameters/stage5_fit`` vs ``/stage5_fitting``).
-
-The legacy ``processing_parameters/noise_estimation`` group (carrying the
-four user-tunable kwargs the older Stage 2 impl persisted to drive
-``from_saved_params=True``) is unrelated to this module; it stays in place
-as a back-compat shim and is owned by ``_internal/stage2_impl``.
 """
 
 from __future__ import annotations
@@ -52,17 +45,14 @@ logger = logging.getLogger(__name__)
 
 STAGE2_NOISE_SETTINGS_PATH = "processing_parameters/stage2_noise"
 
-_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion")
+# Group-level bookkeeping attrs that are not NoiseSettings fields.
+_AUDIT_ATTRS = ("creation_time", "preset_name")
 
 
 def _decode_attr(value: Any) -> Any:
     if isinstance(value, bytes):
         return value.decode("utf-8")
     return value
-
-
-def _read_sub_attrs(grp: h5py.Group) -> Dict[str, Any]:
-    return {key: _decode_attr(raw) for key, raw in grp.attrs.items()}
 
 
 def save_noise_settings_to_h5(
@@ -73,8 +63,10 @@ def save_noise_settings_to_h5(
 ) -> None:
     """Persist a resolved :class:`NoiseSettings` to ``processing_parameters/stage2_noise``.
 
-    Overwrites any prior group at that path. ``preset_name`` (if given) is
-    recorded as a top-level attr for audit/reproducibility.
+    The settings fields are stored as attrs directly on the group (Stage 2 has
+    a single estimator, so there is no sub-block layer). Overwrites any prior
+    group at that path. ``preset_name`` (if given) is recorded as a top-level
+    attr for audit/reproducibility.
     """
     attrs = noise_to_attrs(settings)
     with h5py.File(file_path, "a") as h5f:
@@ -84,28 +76,24 @@ def save_noise_settings_to_h5(
         grp.attrs["creation_time"] = datetime.now().isoformat()
         if preset_name is not None:
             grp.attrs["preset_name"] = preset_name
-        for sub_name in _SUB_NAMES:
-            sub_grp = grp.create_group(sub_name)
-            for field_name, value in attrs[sub_name].items():
-                sub_grp.attrs[field_name] = value
+        for field_name, value in attrs.items():
+            grp.attrs[field_name] = value
 
 
 def load_noise_settings_from_h5(file_path: str) -> Optional[NoiseSettings]:
     """Return the persisted :class:`NoiseSettings`, or ``None`` if absent.
 
-    Tolerates missing sub-blocks (a partial group still loads); fields not
-    present default to ``None``.
+    Fields not present default to ``None``; the audit attrs are skipped.
     """
     with h5py.File(file_path, "r") as h5f:
         if STAGE2_NOISE_SETTINGS_PATH not in h5f:
             return None
         grp = h5f[STAGE2_NOISE_SETTINGS_PATH]
-        attrs_dict: Dict[str, Any] = {}
-        for sub_name in _SUB_NAMES:
-            if sub_name in grp and isinstance(grp[sub_name], h5py.Group):
-                attrs_dict[sub_name] = _read_sub_attrs(grp[sub_name])
-            else:
-                attrs_dict[sub_name] = {}
+        attrs_dict: Dict[str, Any] = {
+            key: _decode_attr(raw)
+            for key, raw in grp.attrs.items()
+            if key not in _AUDIT_ATTRS
+        }
     return noise_from_attrs(attrs_dict)
 
 

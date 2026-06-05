@@ -7,16 +7,20 @@ This module contains the Stage 3 detection algorithm:
   port of the surviving reference (``bcfitting.ftmwfitting``); numeric
   behaviour preserved exactly.
 * ``classify_by_snr`` -- SNR-only weak/medium/strong binning.
-* ``detect_peaks`` -- the two-pass driver: an apodized primary pass for the
-  robust coarse list, then an unapodized gap pass to recover weak lines the
-  apodization suppressed. Both passes share a continuous leakage-aware floor
-  that raises the detection threshold by the local coherent-leakage amplitude,
-  so a strong line's skirt ripple is not re-detected as weak lines.
+* ``detect_peaks`` -- the two-pass driver: a primary pass on the apodized
+  leakage-suppressed spectrum for the robust coarse list, then a gap pass on a
+  second spectrum to recover weak lines the primary apodization suppressed. Both
+  passes share a continuous leakage-aware floor that raises the detection
+  threshold by the local coherent-leakage amplitude, so a strong line's skirt
+  ripple is not re-detected as weak lines.
 
-It operates on already-computed spectra so it stays pure and unit-testable.
-File orchestration -- recomputing the apodized/unapodized spectra from the FID
-and Stage 1 params, estimating per-point noise on each grid, persistence --
-lives in ``ftmwpipeline._internal.stage3_impl``.
+It operates on already-computed spectra so it stays pure and unit-testable: the
+two spectra are just the ``primary_*`` and ``gap_*`` arrays. In the Stage 3
+pipeline the gap spectrum is the shape-aware matched filter (see
+``ftmwpipeline._internal.stage3_impl``), but ``detect_peaks`` itself makes no
+assumption about how either spectrum was built. File orchestration --
+recomputing the two spectra from the FID and Stage 1 params, supplying
+per-point noise on each grid, persistence -- lives in that module.
 
 The detector is a Savitzky-Golay smoothed second-derivative search:
 
@@ -323,17 +327,19 @@ def detect_peaks(
     min_exclusion_mhz: float = 0.0,
     run_gap_pass: bool = True,
 ) -> List[Peak]:
-    """Two-pass peak detection scored on the unapodized (to-be-fit) spectrum.
+    """Two-pass peak detection scored on the gap (reference) spectrum.
 
     The two passes only *find positions*; every peak's amplitude, SNR and
-    classification are then measured on the **unapodized** spectrum
-    (``gap_*``), which is the spectrum actually fit downstream. This gives one
-    consistent SNR scale across both passes.
+    classification are then measured on the ``gap_*`` reference spectrum, giving
+    one consistent SNR scale across both passes. (In the Stage 3 pipeline these
+    intermediate scores are themselves superseded by a snap-back onto the
+    canonical active FT; here ``gap_*`` is simply the common reference.)
 
     * **Pass 1 (primary)** runs :func:`locate_peaks` on the *apodized*,
       leakage-suppressed spectrum (robust, few sidelobe false positives).
-    * **Pass 2 (gap)** runs it on the *unapodized* spectrum to recover weak
-      lines the apodization smeared away. A strong line's coherent
+    * **Pass 2 (gap)** runs it on the ``gap_*`` spectrum -- the shape-aware
+      matched filter in the Stage 3 pipeline -- to recover weak lines the
+      primary apodization smeared away. A strong line's coherent
       truncation-leakage skirt would otherwise re-detect as spurious weak
       lines; the same continuous leakage-aware floor used by the primary pass
       (``gap_leakage_amp``) raises the gap threshold by the local coherent-
@@ -342,18 +348,19 @@ def detect_peaks(
       peak are dropped as re-finds.
 
     Every detected position is snapped to the nearest local maximum of the
-    unapodized magnitude (:func:`_apex_snap`) and de-duplicated by snapped
+    ``gap_*`` magnitude (:func:`_apex_snap`) and de-duplicated by snapped
     index, so the split-strong-line triplets and the two passes do not double
-    count. If the unapodized (``gap_*``) spectrum is not supplied, scoring
-    falls back to the apodized spectrum (degraded) and the gap pass is skipped.
+    count. If the ``gap_*`` spectrum is not supplied, scoring falls back to the
+    apodized primary spectrum (degraded) and the gap pass is skipped.
 
     Parameters
     ----------
     primary_freq, primary_mag, primary_sd : np.ndarray
         Apodized primary spectrum (position finding), equal length, 1D.
     gap_freq, gap_mag, gap_sd : np.ndarray, optional
-        Unapodized spectrum -- the scoring/reference spectrum and the gap-pass
-        detector input. Strongly recommended; omitted -> score on apodized.
+        Gap-pass spectrum -- the scoring/reference spectrum and the gap-pass
+        detector input (the matched filter in Stage 3). Strongly recommended;
+        omitted -> score on the primary spectrum.
     min_snr : float, default 3.0
         Detection floor in SNR units (both passes; SNR on the scoring grid).
     weak_medium_snr, medium_strong_snr : float

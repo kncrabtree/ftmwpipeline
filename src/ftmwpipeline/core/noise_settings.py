@@ -12,31 +12,26 @@ across every surface:
 * the persisted canonical record in ``processing_parameters/stage2_noise``,
 * the YAML preset interchange format.
 
-The dataclass mirrors :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
-and :class:`~ftmwpipeline.core.tau_calibration_settings.TauCalibrationSettings`:
-every field is ``Optional`` with ``None`` meaning *unset* (fall through the
+Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
 resolution chain). A *resolved* instance (produced by :func:`resolve`) has
 every field filled with a hard default if no layer supplied a value.
 
-The dataclass is structured into four sub-dataclasses grouping the knobs
-by what they configure: ``binning``, ``skewness``, ``smoothing``, and
-``skirt_exclusion``. The grouping maps 1:1 to HDF5 subgroups under
-``processing_parameters/stage2_noise`` so each sub-block is independently
-inspectable.
+Stage 2 has a single estimator (the high-pass, region-aware scatter MAD), so
+the knobs sit directly on ``NoiseSettings`` -- a flat dataclass rather than the
+sub-block layout the multi-group stage settings
+(:class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`,
+:class:`~ftmwpipeline.core.tau_calibration_settings.TauCalibrationSettings`)
+use. The fields map 1:1 to attrs on the ``processing_parameters/stage2_noise``
+group and to keys under the YAML ``stage2:`` block.
 
 The *recommended* layer of :func:`resolve` is reserved but unused for
 Stage 2 today -- Stage 2 has no upstream feeder. The layer is kept in
 the signature so a future cross-stage recommender (e.g. Stage 1's
 T_active-driven smoothing-window suggestion) can land without API churn.
 
-The ``_HARD_DEFAULTS`` nested dict mirrors the module-level constants
-(``DEFAULT_SMOOTHING_MHZ``, ``ABS_MIN_BIN_SIZE``, ``SUBDIVISION_THRESHOLD``,
-``STRONG_PEAK_SNR``, ``SKIRT_EXCLUSION_K``, ``MAX_SKIRT_EXCLUSION_MHZ``) and
-function-signature defaults (``skew_target``, ``inc``, ``min_bin_fraction``,
-``min_noise_fraction``) in :mod:`ftmwpipeline.preprocessing.noise_estimation`.
-Those constants are still imported by the kernel as its parameter defaults;
-once every consumer reads from a resolved ``NoiseSettings``, the constants
-become docstring-only and can be removed.
+The ``_HARD_DEFAULTS`` dict mirrors the ``estimate_noise_scatter`` kernel's
+signature defaults in :mod:`ftmwpipeline.preprocessing.noise_estimation`; those
+defaults are the readable canonical source and these must track them.
 
 This module is dependency-free within the package (stdlib + PyYAML for
 preset interchange) so it can be imported from ``core`` without cycles.
@@ -44,7 +39,7 @@ preset interchange) so it can be imported from ``core`` without cycles.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Union, cast
 
@@ -54,98 +49,48 @@ import yaml  # type: ignore[import-untyped]
 _NONE = "__None__"
 
 
-# ---------------------------------------------------------------------------
-# Sub-dataclasses (one per HDF5 subgroup / YAML block)
-# ---------------------------------------------------------------------------
-@dataclass
-class BinningSubSettings:
-    """MAD/median recursive subdivision knobs."""
-
-    subdivision_threshold: Optional[float] = None
-    abs_min_bin_size: Optional[int] = None
-    min_bin_fraction: Optional[float] = None
-    min_noise_fraction: Optional[float] = None
-
-
-@dataclass
-class SkewnessSubSettings:
-    """Per-bin Rayleigh-target trim (drives the noise mask inside each bin)."""
-
-    skew_target: Optional[float] = None
-    inc: Optional[float] = None
-
-
-@dataclass
-class SmoothingSubSettings:
-    """Moving-mean σ_x reconstruction."""
-
-    smoothing_window_mhz: Optional[float] = None
-
-
-@dataclass
-class SkirtExclusionSubSettings:
-    """Lorentzian-skirt mask refinement around strong lines."""
-
-    strong_peak_snr: Optional[float] = None
-    skirt_exclusion_k: Optional[float] = None
-    max_skirt_exclusion_mhz: Optional[float] = None
-
-
 @dataclass
 class NoiseSettings:
-    """Stage 2 noise-estimation settings (see module docstring)."""
+    """Stage 2 scatter-estimator settings (see module docstring).
 
-    binning: BinningSubSettings = field(default_factory=BinningSubSettings)
-    skewness: SkewnessSubSettings = field(default_factory=SkewnessSubSettings)
-    smoothing: SmoothingSubSettings = field(default_factory=SmoothingSubSettings)
-    skirt_exclusion: SkirtExclusionSubSettings = field(
-        default_factory=SkirtExclusionSubSettings
-    )
+    The fields mirror the ``estimate_noise_scatter`` kernel signature.
+    """
+
+    window_mhz: Optional[float] = None
+    pedestal_mhz: Optional[float] = None
+    line_k: Optional[float] = None
+    n_iter: Optional[int] = None
+    region_aware: Optional[bool] = None
+    smoothing_mhz: Optional[float] = None
+    smoothing_percentile: Optional[float] = None
+    convolve_mhz: Optional[float] = None
 
     def is_empty(self) -> bool:
-        """True if no field is set across any sub-dataclass."""
-        for sub_name in _SUB_NAMES:
-            sub = getattr(self, sub_name)
-            if any(getattr(sub, f.name) is not None for f in fields(sub)):
-                return False
-        return True
+        """True if no field is set."""
+        return all(getattr(self, f.name) is None for f in fields(self))
 
 
-# Sub-dataclass field names on NoiseSettings, in HDF5/YAML order.
-_SUB_NAMES = ("binning", "skewness", "smoothing", "skirt_exclusion")
-
-
-# Hard defaults per sub-dataclass. These mirror the module-level constants
-# and function-signature defaults in ``preprocessing/noise_estimation.py``.
-# Kept as inline literals (rather than imported from ``preprocessing/``) to
-# keep ``core`` dependency-free from ``preprocessing``; the noise-estimator
-# constants are the readable canonical source and these must track them.
-_HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "binning": {
-        "subdivision_threshold": 0.08,
-        "abs_min_bin_size": 300,
-        "min_bin_fraction": 1 / 64,
-        "min_noise_fraction": 2 / 3,
-    },
-    "skewness": {
-        "skew_target": 0.631,
-        "inc": 0.01,
-    },
-    "smoothing": {
-        "smoothing_window_mhz": 300.0,
-    },
-    "skirt_exclusion": {
-        "strong_peak_snr": 20.0,
-        "skirt_exclusion_k": 1.5,
-        "max_skirt_exclusion_mhz": 500.0,
-    },
+# Hard defaults. These mirror the ``estimate_noise_scatter`` kernel's signature
+# defaults in ``preprocessing/noise_estimation.py``. Kept as inline literals
+# (rather than imported from ``preprocessing/``) to keep ``core`` dependency-free
+# from ``preprocessing``; the kernel defaults are the readable canonical source
+# and these must track them.
+_HARD_DEFAULTS: Dict[str, Any] = {
+    "window_mhz": 80.0,
+    "pedestal_mhz": 20.0,
+    "line_k": 8.0,
+    "n_iter": 3,
+    "region_aware": True,
+    "smoothing_mhz": 800.0,
+    "smoothing_percentile": 50.0,
+    "convolve_mhz": 200.0,
 }
 
 
 # ---------------------------------------------------------------------------
 # Resolution chain
 # ---------------------------------------------------------------------------
-def _first_set_field(name: str, *layers: Any) -> Any:
+def _first_set_field(name: str, *layers: Optional["NoiseSettings"]) -> Any:
     for layer in layers:
         if layer is None:
             continue
@@ -153,21 +98,6 @@ def _first_set_field(name: str, *layers: Any) -> Any:
         if value is not None:
             return value
     return None
-
-
-def _resolve_sub(
-    sub_name: str,
-    *layers: Optional["NoiseSettings"],
-) -> Any:
-    sub_layers = [getattr(s, sub_name) for s in layers if s is not None]
-    template = getattr(NoiseSettings(), sub_name)
-    merged = type(template)()
-    for f in fields(template):
-        value = _first_set_field(f.name, *sub_layers)
-        if value is None:
-            value = _HARD_DEFAULTS.get(sub_name, {}).get(f.name)
-        setattr(merged, f.name, value)
-    return merged
 
 
 def resolve(
@@ -186,8 +116,11 @@ def resolve(
     """
     layers = (explicit, preset, persisted, recommended)
     merged = NoiseSettings()
-    for sub_name in _SUB_NAMES:
-        setattr(merged, sub_name, _resolve_sub(sub_name, *layers))
+    for f in fields(NoiseSettings):
+        value = _first_set_field(f.name, *layers)
+        if value is None:
+            value = _HARD_DEFAULTS.get(f.name)
+        setattr(merged, f.name, value)
     return merged
 
 
@@ -208,63 +141,34 @@ def _decode_value(value: Any) -> Any:
     return value
 
 
-def _sub_to_attrs(sub: Any) -> Dict[str, Any]:
-    return {f.name: _encode_value(getattr(sub, f.name)) for f in fields(sub)}
-
-
-def _sub_from_attrs(cls: type, attrs: Dict[str, Any]) -> Any:
-    kwargs: Dict[str, Any] = {}
-    for f in fields(cls):
-        if f.name not in attrs:
-            continue
-        kwargs[f.name] = _decode_value(attrs[f.name])
-    return cls(**kwargs)
-
-
 def to_attrs(settings: NoiseSettings) -> Dict[str, Any]:
-    """Nested attrs dict (one top-level key per sub-dataclass).
+    """Flat attrs dict (one key per field).
 
-    Sub-dataclass values use ``__None__`` for unset fields.
+    Unset fields encode as the ``__None__`` sentinel string.
     """
-    out: Dict[str, Any] = {}
-    for sub_name in _SUB_NAMES:
-        out[sub_name] = _sub_to_attrs(getattr(settings, sub_name))
-    return out
+    return {f.name: _encode_value(getattr(settings, f.name)) for f in fields(settings)}
 
 
 def from_attrs(attrs: Dict[str, Any]) -> NoiseSettings:
-    settings = NoiseSettings()
-    for sub_name in _SUB_NAMES:
-        sub_attrs = attrs.get(sub_name, {})
-        if not isinstance(sub_attrs, dict):
-            raise ValueError(
-                f"sub-block {sub_name!r} must be a mapping; got {type(sub_attrs)}"
-            )
-        template = getattr(NoiseSettings(), sub_name)
-        setattr(settings, sub_name, _sub_from_attrs(type(template), sub_attrs))
-    return settings
+    """Inverse of :func:`to_attrs`. Unknown keys are ignored; missing keys
+    stay ``None``."""
+    valid = {f.name for f in fields(NoiseSettings)}
+    kwargs = {
+        key: _decode_value(value) for key, value in attrs.items() if key in valid
+    }
+    return NoiseSettings(**kwargs)
 
 
 # ---------------------------------------------------------------------------
 # YAML interchange
 # ---------------------------------------------------------------------------
-def _yaml_sub_to_mapping(sub: Any) -> Dict[str, Any]:
-    out: Dict[str, Any] = {}
-    for f in fields(sub):
-        value = getattr(sub, f.name)
-        if value is None:
-            continue
-        out[f.name] = value
-    return out
-
-
 def to_yaml_dict(settings: NoiseSettings) -> Dict[str, Any]:
-    """Sparse nested dict suitable for ``yaml.safe_dump`` (omits ``None``)."""
+    """Sparse dict suitable for ``yaml.safe_dump`` (omits ``None`` fields)."""
     out: Dict[str, Any] = {}
-    for sub_name in _SUB_NAMES:
-        sub_dict = _yaml_sub_to_mapping(getattr(settings, sub_name))
-        if sub_dict:
-            out[sub_name] = sub_dict
+    for f in fields(settings):
+        value = getattr(settings, f.name)
+        if value is not None:
+            out[f.name] = value
     return out
 
 
@@ -273,33 +177,16 @@ def from_yaml_dict(data: Optional[Mapping[str, Any]]) -> NoiseSettings:
         return NoiseSettings()
     if not isinstance(data, dict):
         raise ValueError(f"preset YAML root must be a mapping; got {type(data)}")
-    settings = NoiseSettings()
-    known_subs = set(_SUB_NAMES)
-    for sub_name in _SUB_NAMES:
-        if sub_name not in data:
-            continue
-        block = data[sub_name]
-        if not isinstance(block, dict):
-            raise ValueError(
-                f"preset block {sub_name!r} must be a mapping; got {type(block)}"
-            )
-        template = getattr(NoiseSettings(), sub_name)
-        valid_names = {f.name for f in fields(template)}
-        unknown = set(block) - valid_names
-        if unknown:
-            raise ValueError(
-                f"unknown {sub_name!r} fields in preset: {sorted(unknown)} "
-                f"(valid: {sorted(valid_names)})"
-            )
-        setattr(settings, sub_name, type(template)(**block))
-    allowed_top = known_subs | {"name", "description"}
-    extra_top = set(data) - allowed_top
-    if extra_top:
+    valid_names = {f.name for f in fields(NoiseSettings)}
+    allowed = valid_names | {"name", "description"}
+    unknown = set(data) - allowed
+    if unknown:
         raise ValueError(
-            f"unknown top-level preset keys: {sorted(extra_top)} "
-            f"(allowed: {sorted(allowed_top)})"
+            f"unknown stage2 fields in preset: {sorted(unknown)} "
+            f"(valid: {sorted(valid_names)})"
         )
-    return settings
+    kwargs = {key: data[key] for key in valid_names if key in data}
+    return NoiseSettings(**kwargs)
 
 
 def from_yaml(source: Union[str, Path]) -> NoiseSettings:
@@ -406,10 +293,6 @@ def to_yaml(settings: NoiseSettings) -> str:
 
 
 __all__ = [
-    "BinningSubSettings",
-    "SkewnessSubSettings",
-    "SmoothingSubSettings",
-    "SkirtExclusionSubSettings",
     "NoiseSettings",
     "resolve",
     "to_attrs",

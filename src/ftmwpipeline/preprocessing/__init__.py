@@ -7,7 +7,7 @@ This module handles:
 - Data validation and quality checks
 """
 
-from .noise_estimation import estimate_noise_adaptive, NoiseResult
+from .noise_estimation import estimate_noise_scatter, NoiseResult
 from .peak_detection import (
     locate_peaks,
     PeakResult,
@@ -19,7 +19,7 @@ from .data_loading import load_blackchirp_data, load_fid_data
 from .data_validation import validate_fid_data, validate_frequency_data
 
 __all__ = [
-    "estimate_noise_adaptive",
+    "estimate_noise_scatter",
     "NoiseResult",
     "locate_peaks",
     "PeakResult",

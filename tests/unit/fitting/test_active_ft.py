@@ -9,8 +9,8 @@ Covers :mod:`ftmwpipeline.fitting.active_ft`:
   no phase ramp (the active-FT is in the ``[0, T]`` form natively, so the
   spectrum's phase at the line bin equals the input phase ``phi`` -- no
   ``exp(-i*2*pi*f_bb*t0)`` factor).
-* The Stage 2 adaptive noise estimator
-  (:func:`~ftmwpipeline.preprocessing.noise_estimation.estimate_noise_adaptive`)
+* The Stage 2 scatter noise estimator
+  (:func:`~ftmwpipeline.preprocessing.noise_estimation.estimate_noise_scatter`)
   applied directly to the active-FT magnitude spectrum -- the per-bin RMS it
   reports matches the theoretical prediction for the noise actually present
   in the active-FT (no scale-conversion factor between persisted and active).
@@ -34,7 +34,7 @@ from ftmwpipeline.fitting.peak_model import (
     model_spectrum,
     sideband_sign,
 )
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 # 2638-style acquisition, scaled down for fast tests. dt = 0.05 us, full
 # record 60 us -> N_total = 1200 samples, active 50 us -> N_active = 1000.
@@ -402,8 +402,8 @@ class TestNoPhaseRamp:
 # ---------------------------------------------------------------------------
 class TestStage2NoiseOnActiveFT:
     """The active-FT's per-bin noise is measured by running the existing
-    Stage 2 adaptive estimator
-    (:func:`~ftmwpipeline.preprocessing.noise_estimation.estimate_noise_adaptive`)
+    Stage 2 scatter estimator
+    (:func:`~ftmwpipeline.preprocessing.noise_estimation.estimate_noise_scatter`)
     on the active-FT magnitude spectrum -- the *same* algorithm Stage 2 uses
     on the persisted spectrum, just applied to the active-FT instead. No
     scale conversion: σ comes from the same spectrum the fit sees, so any
@@ -444,20 +444,21 @@ class TestStage2NoiseOnActiveFT:
         order = np.argsort(active.freq_mhz)
         freq_sorted = active.freq_mhz[order]
         mag_sorted = np.abs(active.complex_spectrum[order])
-        noise_result = estimate_noise_adaptive(
+        noise_result = estimate_noise_scatter(
             frequencies=freq_sorted,
             magnitudes=mag_sorted,
-            verbose=False,
         )
 
         # All-noise spectrum: Stage 2 should report ~constant RMS across the
         # band. Theoretical complex RMS = dt_us * sqrt(N_active) * sigma_t.
-        # Stage 2 reports an RMS estimated from the magnitudes (Rayleigh
-        # distribution under complex-Gaussian assumptions), which corresponds
-        # to the same per-bin complex RMS scale.
+        # The scatter estimator high-passes |X| (subtracting a median-filter
+        # pedestal), which on a *pure-noise* synthetic with no leakage pedestal
+        # reads a few % low relative to the ideal -- it is calibrated to ~1.0x
+        # against frame-difference truth on real leakage-bearing spectra. The
+        # convention check is the dt*sqrt(N) scaling, so ~15% is the bar here.
         theory_complex_rms = DT_US * sigma_t * float(np.sqrt(active.n_active))
         median_rms = float(np.median(noise_result.rms_noise))
-        assert median_rms == pytest.approx(theory_complex_rms, rel=0.10)
+        assert median_rms == pytest.approx(theory_complex_rms, rel=0.15)
 
     def test_noise_rms_matches_under_apodization(self):
         """With the canonical Stage 1 apodization, Stage 2 still recovers the
@@ -490,10 +491,9 @@ class TestStage2NoiseOnActiveFT:
         order = np.argsort(active.freq_mhz)
         freq_sorted = active.freq_mhz[order]
         mag_sorted = np.abs(active.complex_spectrum[order])
-        noise_result = estimate_noise_adaptive(
+        noise_result = estimate_noise_scatter(
             frequencies=freq_sorted,
             magnitudes=mag_sorted,
-            verbose=False,
         )
 
         # Theoretical per-bin complex RMS with apodization:

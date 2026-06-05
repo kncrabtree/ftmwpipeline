@@ -33,7 +33,7 @@ stages = ftmw.list_available_stages("experiment.ftmw")
 ```
 """
 
-from typing import Dict, List, Optional, Union, Any, Tuple
+from typing import Dict, List, Optional, Sequence, Union, Any, Tuple
 from pathlib import Path
 import logging
 
@@ -237,7 +237,6 @@ def detect_start_time(
     step_us: Optional[float] = None,
     guard_margin_us: Optional[float] = None,
     floor_factor: Optional[float] = None,
-    knee_strength_min: Optional[float] = None,
     band: Optional[Tuple[float, float]] = None,
     stamp: bool = True,
     *,
@@ -258,7 +257,7 @@ def detect_start_time(
     ----------
     file_path : str or Path
         Path to a ``.ftmw`` file with the FID imported.
-    sweep_max_us, step_us, guard_margin_us, floor_factor, knee_strength_min :
+    sweep_max_us, step_us, guard_margin_us, floor_factor :
         Individual overrides of the matching
         :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
         fields.
@@ -281,7 +280,6 @@ def detect_start_time(
             step_us=step_us,
             guard_margin_us=guard_margin_us,
             floor_factor=floor_factor,
-            knee_strength_min=knee_strength_min,
             band=band,
             stamp=stamp,
             settings=settings,
@@ -538,62 +536,44 @@ def save_ft_parameters(file_path: Union[str, Path],
 # Stage 2: Noise Estimation Functions
 # =============================================================================
 
-def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = None,
-                   min_bin_fraction: Optional[float] = None,
-                   smoothing_window_mhz: Optional[float] = None,
-                   min_noise_fraction: Optional[float] = None,
-                   from_saved_params: bool = False,
+def estimate_noise(file_path: Union[str, Path],
                    *,
-                   method: str = "scatter",
                    window_mhz: Optional[float] = None,
                    pedestal_mhz: Optional[float] = None,
                    line_k: Optional[float] = None,
                    n_iter: Optional[int] = None,
-                   region_aware: bool = True,
+                   region_aware: Optional[bool] = None,
                    smoothing_mhz: Optional[float] = None,
                    smoothing_percentile: Optional[float] = None,
                    convolve_mhz: Optional[float] = None,
                    settings: Optional[NoiseSettings] = None,
                    preset: Optional[str] = None) -> NoiseResult:
     """
-    Estimate frequency-dependent noise using adaptive binning.
-    
+    Estimate frequency-dependent noise with the scatter (high-pass) estimator.
+
     This function performs noise estimation on ComplexFT data stored in a .ftmw
-    pipeline file, equivalent to Pipeline.estimate_noise(). Requires Stage 1 
+    pipeline file, equivalent to Pipeline.estimate_noise(). Requires Stage 1
     (FT computation) to be completed first.
-    
+
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file containing ComplexFT data
-    skew_target : float, optional
-        Target skewness for noise identification (default: 0.631 for Rayleigh)
-    min_bin_fraction : float, optional
-        Minimum bin size as fraction of total data (default: 1/64)
-    smoothing_window_mhz : float, optional
-        RMS smoothing window size in MHz (default: auto-calculated)
-    min_noise_fraction : float, optional
-        Minimum fraction of points that must be noise per bin (default: 2/3)
-    from_saved_params : bool, default False
-        If True, use saved parameters and ignore provided parameters
-    method : str, default "adaptive"
-        Noise estimator: ``"adaptive"`` (level-based binning; the four kwargs
-        above plus settings/preset apply) or ``"scatter"`` (high-pass,
-        region-aware; immune to the leakage pedestal on high-SNR spectra, with
-        its own window_mhz / pedestal_mhz / line_k / n_iter / region_aware knobs).
     window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
     smoothing_percentile, convolve_mhz
-        Scatter-estimator knobs (``method="scatter"`` only); each defaults to the
-        module-level constant when left unset. ``smoothing_mhz`` /
-        ``smoothing_percentile`` set the broad lower-envelope median σ smoothing
-        (``smoothing_mhz=0`` disables it); ``convolve_mhz`` is the Gaussian σ of
-        the second step-removing pass.
+        Scatter-estimator knobs; each defaults to the kernel's hard default
+        when left unset. ``smoothing_mhz`` / ``smoothing_percentile`` set the
+        broad lower-envelope median σ smoothing (``smoothing_mhz=0`` disables
+        it); ``convolve_mhz`` is the Gaussian σ of the second step-removing
+        pass.
+    settings, preset :
+        Alternative ways to populate the preset layer of the settings chain.
 
     Returns
     -------
     NoiseResult
         Container with RMS noise estimate, noise mask, and diagnostics
-        
+
     Raises
     ------
     FileNotFoundError
@@ -602,29 +582,21 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
         If Stage 1 dependencies are not met or parameters are invalid
     RuntimeError
         If noise estimation fails
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
     >>> # First compute FT if not already done
-    >>> ftmw.compute_ft("experiment.ftmw", zpf=2, trim=(26500, 40000))
+    >>> ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
     >>> # Estimate noise with default parameters
     >>> noise_result = ftmw.estimate_noise("experiment.ftmw")
-    >>> # Use custom parameters
-    >>> noise_result = ftmw.estimate_noise("experiment.ftmw", 
-    ...                                     skew_target=0.7, 
-    ...                                     min_bin_fraction=1/32)
+    >>> # Override a scatter knob
+    >>> noise_result = ftmw.estimate_noise("experiment.ftmw", window_mhz=120.0)
     """
     try:
         # Delegate to Pipeline class for consistent behavior
         pipeline = Pipeline.open(file_path)
         return pipeline.estimate_noise(
-            skew_target=skew_target,
-            min_bin_fraction=min_bin_fraction,
-            smoothing_window_mhz=smoothing_window_mhz,
-            min_noise_fraction=min_noise_fraction,
-            from_saved_params=from_saved_params,
-            method=method,
             window_mhz=window_mhz,
             pedestal_mhz=pedestal_mhz,
             line_k=line_k,
@@ -636,7 +608,7 @@ def estimate_noise(file_path: Union[str, Path], skew_target: Optional[float] = N
             settings=settings,
             preset=preset,
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to estimate noise for {file_path}: {e}")
         raise
@@ -646,16 +618,16 @@ def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] =
                     figsize: Optional[tuple] = None, title: Optional[str] = None,
                     show_bin_boundaries: Optional[bool] = None,
                     show_noise_points: Optional[bool] = None,
-                    save_params: bool = False, backend: str = 'matplotlib',
+                    backend: str = 'matplotlib',
                     interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
                     **plot_kwargs):
     """
     Create noise estimation diagnostic visualization.
-    
+
     This function creates diagnostic plots showing spectrum, noise points,
-    adaptive bin boundaries, and RMS noise estimates, equivalent to
+    bin boundaries, and RMS noise estimates, equivalent to
     Pipeline.visualize_noise(). Requires Stage 2 (noise estimation) completion.
-    
+
     Parameters
     ----------
     file_path : str or Path
@@ -667,11 +639,9 @@ def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] =
     title : str, optional
         Custom title for the plot
     show_bin_boundaries : bool, optional
-        Whether to show adaptive bin boundaries (default: True)
+        Whether to show bin boundaries (default: True)
     show_noise_points : bool, optional
         Whether to highlight noise points (default: True)
-    save_params : bool, default False
-        Whether to save custom parameters for future use
     backend : str, default 'matplotlib'
         Plotting backend ('matplotlib' or 'plotly')
     interactive : bool, default True
@@ -680,12 +650,12 @@ def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] =
         If provided, save plot to this file
     **plot_kwargs
         Additional plotting parameters
-        
+
     Returns
     -------
     matplotlib.Figure or plotly.Figure
         The created figure object
-        
+
     Raises
     ------
     FileNotFoundError
@@ -694,19 +664,14 @@ def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] =
         If Stage 2 dependencies are not met
     RuntimeError
         If visualization fails
-        
+
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
     >>> # Create basic noise visualization
     >>> fig = ftmw.visualize_noise("experiment.ftmw")
-    >>> # Customize visualization and save parameters
-    >>> fig = ftmw.visualize_noise("experiment.ftmw", 
-    ...                           y_max_factor=15.0, 
-    ...                           show_bin_boundaries=True,
-    ...                           save_params=True)
     >>> # Save to file
-    >>> fig = ftmw.visualize_noise("experiment.ftmw", 
+    >>> fig = ftmw.visualize_noise("experiment.ftmw",
     ...                           output_file="noise_diagnostics.png")
     """
     try:
@@ -718,61 +683,14 @@ def visualize_noise(file_path: Union[str, Path], y_max_factor: Optional[float] =
             title=title,
             show_bin_boundaries=show_bin_boundaries,
             show_noise_points=show_noise_points,
-            save_params=save_params,
             backend=backend,
             interactive=interactive,
             output_file=output_file,
             **plot_kwargs
         )
-        
+
     except Exception as e:
         logger.error(f"Failed to create noise visualization for {file_path}: {e}")
-        raise
-
-
-def save_noise_parameters(file_path: Union[str, Path], 
-                          parameters: Dict[str, Any]) -> None:
-    """
-    Save noise estimation parameters as defaults for pipeline file.
-    
-    This function saves noise estimation parameters to the .ftmw pipeline file
-    for use in subsequent computations with from_saved_params=True.
-    
-    Parameters
-    ----------
-    file_path : str or Path
-        Path to .ftmw pipeline file
-    parameters : dict
-        Noise estimation parameters to save. Valid keys include:
-        - 'skew_target': Target skewness for noise identification
-        - 'min_bin_fraction': Minimum bin size fraction
-        - 'smoothing_window_mhz': RMS smoothing window size
-        - 'min_noise_fraction': Minimum noise fraction per bin
-        
-    Raises
-    ------
-    FileNotFoundError
-        If pipeline file does not exist
-    RuntimeError
-        If parameter saving fails
-        
-    Examples
-    --------
-    >>> import ftmwpipeline.api as ftmw
-    >>> params = {
-    ...     'skew_target': 0.7,
-    ...     'min_bin_fraction': 1/32,
-    ...     'smoothing_window_mhz': 100.0
-    ... }
-    >>> ftmw.save_noise_parameters("experiment.ftmw", params)
-    """
-    try:
-        # Use internal implementation for parameter saving
-        from ._internal.stage2_impl import save_noise_parameters_impl
-        save_noise_parameters_impl(str(file_path), parameters)
-        logger.info(f"Saved {len(parameters)} noise parameters to {file_path}")
-    except Exception as e:
-        logger.error(f"Failed to save noise parameters to {file_path}: {e}")
         raise
 
 
@@ -1673,3 +1591,167 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
         
     except Exception as e:
         return f"Error getting workflow summary for {file_path}: {e}"
+
+
+# =============================================================================
+# Companion parameter tuning
+# =============================================================================
+
+def tune_list(
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+) -> Tuple[Any, ...]:
+    """List the registered tunable knobs, equivalent to
+    :meth:`Pipeline.tune_list`.
+
+    Parameters
+    ----------
+    selector : str, optional
+        Filter by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``); the legacy stage-label match
+        (``"stage2_noise"`` / ``"start_detection"``) is kept as a fallback.
+    include_advanced : bool, default False
+        Reveal advanced-tier knobs hidden from the default listing.
+
+    Returns
+    -------
+    tuple of KnobSpec
+        Path-sorted knob specifications.
+    """
+    return Pipeline.tune_list(selector, include_advanced=include_advanced)
+
+
+def tune_scan(
+    file_path: Union[str, Path],
+    knob: str,
+    grid: Optional[Sequence[Any]] = None,
+    output_dir: Optional[Union[str, Path]] = None,
+    reuse: bool = False,
+    make_plot: bool = True,
+    quiet: bool = False,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+    n_zoom: Optional[int] = None,
+    zoom_width_mhz: Optional[float] = None,
+    fit_top_snr: int = 3,
+    fit_sample: int = 20,
+    fit_freqs: Optional[Sequence[float]] = None,
+    fit_sample_seed: int = 0,
+    fit_all: bool = False,
+) -> Any:
+    """Sweep a single pipeline knob across a grid, equivalent to
+    :meth:`Pipeline.tune_scan`.
+
+    Re-runs the knob's stage for each grid value on a working copy of
+    ``file_path`` (the input is never mutated) and returns a ``SweepResult``
+    with the table rows, a CSV path, an optional plot, a best-effort
+    recommendation, and instructions for applying the chosen value.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        A ``.ftmw`` already built through the knob's upstream stage.
+    knob : str
+        Dotted knob path (see :func:`tune_list`), e.g.
+        ``"stage2.window_mhz"``.
+    grid : sequence, optional
+        Values to sweep; defaults to the knob's registered grid.
+    output_dir : str or Path, optional
+        Where the CSV/plot/working-copy land (default: current directory).
+    reuse : bool, default False
+        Reuse an existing working copy instead of re-copying the input.
+    make_plot : bool, default True
+        Render the knob's plot adapter if it has one.
+    quiet : bool, default False
+        Suppress the progress indicator (printed to stderr by default).
+    zoom_regions : sequence of (lo_mhz, hi_mhz), optional
+        Explicit zoom windows for the region-based plot adapters (Stage 3 /
+        Stage 4), overriding their divergence auto-selection.
+    n_zoom, zoom_width_mhz : optional
+        When ``zoom_regions`` is not given, how many regions to auto-select and
+        how wide each is; ``None`` keeps the adapter defaults.
+    fit_top_snr, fit_sample, fit_freqs, fit_sample_seed, fit_all : optional
+        Window selection for Stage 5 fit knobs: re-fit only the ``fit_top_snr``
+        brightest windows + a seeded ``fit_sample`` random sample + the windows
+        nearest each ``fit_freqs`` value, rather than the whole plan.
+        ``fit_all=True`` re-fits every window. Ignored by non-fit knobs.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.tune_scan(
+            knob,
+            grid=grid,
+            output_dir=output_dir,
+            reuse=reuse,
+            make_plot=make_plot,
+            quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
+        )
+    except Exception as e:
+        logger.error(f"Failed to scan knob {knob!r} for {file_path}: {e}")
+        raise
+
+
+def tune_scan_batch(
+    file_path: Union[str, Path],
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+    output_dir: Optional[Union[str, Path]] = None,
+    reuse: bool = False,
+    make_plot: bool = True,
+    quiet: bool = False,
+    zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+    n_zoom: Optional[int] = None,
+    zoom_width_mhz: Optional[float] = None,
+    fit_top_snr: int = 3,
+    fit_sample: int = 20,
+    fit_freqs: Optional[Sequence[float]] = None,
+    fit_sample_seed: int = 0,
+    fit_all: bool = False,
+) -> Any:
+    """Sweep every knob matched by ``selector`` on its default grid, equivalent
+    to :meth:`Pipeline.tune_scan_batch`.
+
+    A convenience over :func:`tune_scan` for reviewing a whole stage / sub-block
+    at once instead of driving knobs one-by-one. ``selector`` filters by
+    dotted-path prefix (e.g. ``"stage2b"`` / ``"stage2b.gaussian"``) just like
+    :func:`tune_list`; ``include_advanced`` adds the advanced-tier knobs. Each
+    knob runs on its own working copy of ``file_path`` (never mutated); a knob
+    whose scan fails (e.g. its required stage is absent) is recorded as a failed
+    ``BatchItem`` and the batch continues.
+
+    Returns
+    -------
+    list of BatchItem
+        One per matched knob, in registry order; ``item.ok`` / ``item.result`` /
+        ``item.error`` report each knob's outcome.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.tune_scan_batch(
+            selector,
+            include_advanced=include_advanced,
+            output_dir=output_dir,
+            reuse=reuse,
+            make_plot=make_plot,
+            quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
+        )
+    except Exception as e:
+        logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")
+        raise

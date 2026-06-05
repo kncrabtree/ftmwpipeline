@@ -60,10 +60,21 @@ the primary calibration target throughout development.
   package hard default is now `50` (was `500`); the matching
   preset override is dropped.
 
-## Stage 2 — `NoiseSettings`
+## Stage 2 — `NoiseSettings` (scatter estimator)
 
 Source: [`preprocessing/noise_estimation.py`](../../src/ftmwpipeline/preprocessing/noise_estimation.py).
 Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
+
+The **scatter estimator is the sole Stage 2 method**; its knobs are the flat
+`NoiseSettings` table further below (`stage2.<field>`, no sub-block). The legacy
+adaptive estimator (`estimate_noise_adaptive`) has been **retired from the
+package** — a minimal comparison reference survives only at
+[`../research/noise-snr-scaling/legacy_adaptive.py`](../research/noise-snr-scaling/legacy_adaptive.py).
+The adaptive knob table below is retained for historical reference only; these
+fields no longer appear on any settings dataclass, CLI flag, `tune` knob, or in
+the package source.
+
+### Adaptive estimator (retired internal helper) — `estimate_noise_adaptive`
 
 | field | default | source | meaning | inst-sens | 2638 |
 |---|---|---|---|---|---|
@@ -83,13 +94,12 @@ Planning: [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 Source: [`preprocessing/noise_estimation.py`](../../src/ftmwpipeline/preprocessing/noise_estimation.py).
 Research: [`noise-snr-scaling/report.md`](../research/noise-snr-scaling/report.md).
 
-The scatter (high-pass), region-aware estimator (`method="scatter"`) is the
-pedestal-immune alternative to the adaptive estimator above. It does not share
-the `NoiseSettings` resolution chain; its four knobs are standalone module
-constants / function defaults, so they appear here rather than in a settings
-dataclass. They are instrument-family-dependent for the same reasons the
-adaptive smoothing/skirt knobs are: they encode the physical scale over which
-σ(f) and the leakage pedestal vary, plus a detection threshold.
+The scatter (high-pass), region-aware estimator is the canonical and only
+Stage 2 method: pedestal-immune on high-SNR, line-dense spectra. Its knobs sit
+directly on `NoiseSettings` (a flat dataclass — Stage 2 has one estimator) and
+resolve through the same four-layer chain as Stages 2b/5. They are
+instrument-family-dependent because they encode the physical scale over which
+σ(f) and the leakage pedestal vary, plus a line-detection threshold.
 
 | field | default | source | meaning | inst-sens | 2638 |
 |---|---|---|---|---|---|
@@ -119,9 +129,6 @@ recommended `start_us` stamped into the Stage 0 `recommended_processing` layer.
 | floor_factor | 3.0 | dataclass default | Chirp-end = first start where Σ\|FT\| < factor × deep-tail floor. | N | — |
 | floor_tail_us | 1.0 | dataclass default | Width of the deep-tail window for the robust floor estimate. | maybe | — |
 | guard_margin_us | 0.67 | dataclass default | Margin added past the chirp end for switch-bounce ringdown settling. **The primary recommendation is chirp_end + this.** Tuned on 2638-family (chirp_dur+1.35 targets ⇒ chirp_end+0.67). | **Y** | — |
-| knee_window_us | 2.8 | dataclass default | Post-chirp window scanned for the confirmatory ringdown→molecular Kneedle elbow. | maybe | — |
-| shoulder_skip_us | 0.15 | dataclass default | Skip past the chirp-end before the Kneedle scan (steps over the post-collapse shoulder). | N | — |
-| knee_strength_min | 0.10 | dataclass default | Min Kneedle strength to call the ringdown knee confident (diagnostic only; strong molecular FIDs bury it). | maybe | — |
 | min_chirp_drop_ratio | 10.0 | dataclass default | Min plateau/floor ratio for a chirp collapse to be considered present. | **Y** | — |
 
 `guard_margin_us` is the headline instrument-specific knob: it is the
@@ -182,10 +189,26 @@ Planning: [`stage3-peak-detection.md`](stage3-peak-detection.md).
 | savgol.sg_min_window | 5 | `_SG_MIN_WINDOW` | Minimum Savitzky-Golay window size (polynomial stability floor). | N | — |
 | primary_pass.primary_window | "blackmanharris" | `DEFAULT_PRIMARY_WINDOW` | Apodization function for primary-pass position finding (sidelobe suppression). | N | — |
 | primary_pass.min_exclusion_mhz | 0.0 | function default | Minimum half-width exclusion around each primary peak for gap pass (MHz). | **Y** | — |
-| primary_pass.detection_zpf | 1 | `_DETECTION_ZPF` | Zero-padding factor for primary-pass spectrum computation. | N | — |
+| primary_pass.detection_zpf | 2 | `_DETECTION_ZPF` | Zero-padding factor for the active-region primary-pass spectrum (the value reproducing the former full-record grid step). | N | — |
+| primary_pass.primary_leakage_floor_k | 1.0 | `PRIMARY_LEAKAGE_FLOOR_K` | Scale on the continuous leakage-aware detection floor `k·(S_coh/√M)·σ` added to the primary threshold so a strong line's coherent skirt ripple is not re-detected as weak lines. `0` disables. | **Y** | — |
+| primary_pass.noise_window_mhz | 80.0 | `SCATTER_WINDOW_MHZ` | Primary's own apodized-domain σ: scatter-MAD window width (MHz). Mirrors `stage2.window_mhz` but measured on the Blackman-Harris primary spectrum, whose leakage-suppressed floor is genuinely lower than the unapodized Stage 2 authority. | **Y** | — |
+| primary_pass.noise_pedestal_mhz | 20.0 | `SCATTER_PEDESTAL_MHZ` | Primary's own apodized-domain σ: high-pass running-median width (MHz). Mirrors `stage2.pedestal_mhz`. | **Y** | — |
+| primary_pass.noise_line_k | 8.0 | `SCATTER_LINE_K` | Primary's own apodized-domain σ: robust-σ multiple above which a bin self-masks as a line. Mirrors `stage2.line_k`. | maybe | — |
+| primary_pass.noise_n_iter | 3 | `SCATTER_N_ITER` | Primary's own apodized-domain σ: self-mask refinement iterations. Mirrors `stage2.n_iter`. | N | — |
+| primary_pass.noise_region_aware | True | function default | Primary's own apodized-domain σ: region-aware Rician correction switch. Mirrors `stage2.region_aware`. | N | — |
+| primary_pass.noise_smoothing_mhz | 800.0 | `SCATTER_SMOOTHING_MHZ` | Primary's own apodized-domain σ: broad lower-envelope median smoothing width (MHz, `0` disables). Mirrors `stage2.smoothing_mhz`. | **Y** | — |
+| primary_pass.noise_smoothing_percentile | 50.0 | `SCATTER_SMOOTHING_PERCENTILE` | Primary's own apodized-domain σ: percentile of the broad smoothing (50 = median). Mirrors `stage2.smoothing_percentile`. | maybe | — |
+| primary_pass.noise_convolve_mhz | 200.0 | `SCATTER_CONVOLVE_MHZ` | Primary's own apodized-domain σ: Gaussian σ (MHz) of the step-removing second smoothing pass (`0` disables). Mirrors `stage2.convolve_mhz`. | N | — |
 | gap_pass.run_gap_pass | True | function default | Enable second pass to recover weak lines primary-pass apodization suppressed. | N | — |
 | gap_pass.gap_active_zpf | 2 | `_GAP_ACTIVE_ZPF` | Zero-padding factor for matched-filter active-region FFT. | N | — |
-| gap_pass.gap_mask_edge_threshold | 8.0 | `GAP_MASK_EDGE_THRESHOLD` | Coherent-leakage threshold for masking truncation sidelobes in gap pass. | **Y** | — |
+| gap_pass.gap_leakage_floor_k | 3.0 | `GAP_LEAKAGE_FLOOR_K` | Scale on the continuous leakage-aware detection floor `k·(S_coh/√M)·σ` added to the gap-pass threshold (the same mechanism `primary_leakage_floor_k` uses), replacing the former hard `S_coh`-cutoff mask. `0` disables. | **Y** | — |
+
+The gap-pass matched-filter window is selected from the Stage 2b recommended
+line shape — `exp(-t/τ)` for Lorentzian, `exp(-(t/τ)²)` for Gaussian — and its
+`tau_basis_us` is the upstream Stage 2b `τ_maj` (not a Stage 3 settings knob).
+The gap σ is the active-FT authority σ scaled by the matched-window gain
+`√(Σw²/N)`, not a separate scatter estimate; only the primary pass measures its
+own (apodized-domain) σ via the `noise_*` knobs above.
 
 ## Stage 4 — `WindowPlanningSettings`
 
@@ -212,7 +235,7 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 |---|---|---|---|---|---|
 | shape.kind | LORENTZIAN | `PeakShape.LORENTZIAN` *(literal default)* | Line-shape model selector: LORENTZIAN or GAUSSIAN envelope. Stage 2b's `auto_recommend` stamps the verdict onto the file. | maybe | — |
 | tau.max_decay_factor | 5.0 | `DEFAULT_MAX_DECAY_FACTOR` | Tau bounds multiplier: τ ∈ [τ₀ / k, τ₀ × k] (O5-4 hard cap). | N | — |
-| tau.fit_tau_min_snr | 50.0 | dataclass-only | SNR threshold above which τ becomes a free parameter (fixed below). | **Y** | — |
+| tau.fit_tau_min_snr | 10.0 | `DEFAULT_FIT_TAU_MIN_SNR` | SNR threshold above which τ becomes a free parameter. The effective free-τ floor is `max(fit_tau_min_snr, conservative.weak_window_snr_threshold)`; the default 10 equals the weak-window floor, so τ-freedom is unchanged until this is raised above it. (Was 50 and orphaned — never read — until wired into the gate in `window_fit`.) | **Y** | — |
 | tau.tau_penalty_lambda | 50.0 | `DEFAULT_TAU_PENALTY_LAMBDA` | Strength of bidirectional Gaussian prior on τ. | N | — |
 | tau.tau_penalty_n_sigma | 5.0 | `DEFAULT_TAU_PENALTY_N_SIGMA` | τ-bound half-width in units of σ_τ from Stage 2b calibration. | N | — |
 | tau.per_band_tau | True | function default | Route τ to per-band majorities (True) or band-wide (False). | maybe | — |
@@ -226,7 +249,7 @@ Planning: [`stage5-fit-settings.md`](stage5-fit-settings.md), [`stage5-fitting.m
 | conservative.min_pair_separation_factor | 0.5 | `DEFAULT_MIN_PAIR_SEPARATION_FACTOR` | Sanity-check floor on post-escalation peak pairs (reject if below), in FWHM units. | N | — |
 | conservative.min_pair_separation_resolution_factor | 1.0 | `DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR` | Resolution-referenced floor on the minimum pair separation, in active-FT elements `1/T_active`; effective floor is `max(min_pair_separation_factor·FWHM, this·(1/T_active))`. Gates sub-resolution duplicate overfits (issue #13). | N | cross-fixture `k` + amp-ratio tiebreaker debt |
 | conservative.n_eff_kind | "perplexity_log1p_snr" | `DEFAULT_N_EFF_KIND` | Effective-sample-size weighting (perplexity_log1p_snr vs kish_mag_sq). | N | — |
-| conservative.weak_window_snr_threshold | 10.0 | `DEFAULT_WEAK_WINDOW_SNR_THRESHOLD` | In-window SNR floor for free-τ eligibility (hold τ fixed below). | **Y** | — |
+| conservative.weak_window_snr_threshold | 10.0 | `DEFAULT_WEAK_WINDOW_SNR_THRESHOLD` | General weak-window SNR floor (windows below it hold τ fixed). Composes with `tau.fit_tau_min_snr`: the effective free-τ floor is the max of the two, so this is the lower/general bar and `fit_tau_min_snr` the τ-specific one. | **Y** | — |
 | conservative.max_nfev | 2000 | `DEFAULT_MAX_NFEV` | Solver evaluation cap (prevents runaway on ill-conditioned problems). | N | — |
 | penalties.phase_penalty_lambda | 100.0 | `DEFAULT_PHASE_PENALTY_LAMBDA` | Soft phase-difference penalty strength (prevents in-/anti-phase degeneracy). | N | — |
 | penalties.phase_penalty_cutoff_fwhm | 2.0 | `DEFAULT_PHASE_PENALTY_CUTOFF_FWHM` | Phase-penalty range: weak at this spacing, zero in quadrature. | N | — |
@@ -279,13 +302,17 @@ fixture.
 | 3 | promotion.weak_medium_snr | 10.0 | — |
 | 3 | promotion.medium_strong_snr | 50.0 | — |
 | 3 | primary_pass.min_exclusion_mhz | 0.0 | — |
-| 3 | gap_pass.gap_mask_edge_threshold | 8.0 | — |
+| 3 | primary_pass.primary_leakage_floor_k | 1.0 | — |
+| 3 | primary_pass.noise_window_mhz | 80.0 | — |
+| 3 | primary_pass.noise_pedestal_mhz | 20.0 | — |
+| 3 | primary_pass.noise_smoothing_mhz | 800.0 | — |
+| 3 | gap_pass.gap_leakage_floor_k | 3.0 | — |
 | 4 | coherence.edge_threshold | 8.0 | — |
 | 4 | clustering.max_window_width_mhz | 40.0 | — |
 | 4 | contributor.min_freeze_snr | 50.0 | — |
 | 4 | contributor.magnitude_attachment_threshold | 0.1 | — |
 | 4 | leakage.tau_us | None | — |
-| 5 | tau.fit_tau_min_snr | 50.0 | — |
+| 5 | tau.fit_tau_min_snr | 10.0 | — |
 | 5 | conservative.weak_window_snr_threshold | 10.0 | — |
 | 5 | rescue.snr_threshold | 2.5 | — |
 | 5 | rescue.prominence_threshold | 2.0 | — |
@@ -301,7 +328,7 @@ The Y-rated knobs validated so far against the 2638 fixture:
 | 3 | gap-pass `tau_basis_us` source | **shape-sensitive** | shipped: shape-aware feeder routes to `τ_G_maj` when `recommended_shape='gaussian'` (`stage3_impl`). |
 | 3 | `promotion.min_snr` | shape-invariant | keep default 3.0; both shapes agree to ≤ 3.5 % across 2.0–5.0. |
 | 3 | `promotion.internal_min_snr` | shape-invariant | keep default 2.0; both shapes share the same 2.0 knee. |
-| 3 | `gap_pass.gap_mask_edge_threshold` | shape-invariant | keep default 8.0; monotonic response on both paths. |
+| 3 | `gap_pass.gap_mask_edge_threshold` *(superseded)* | shape-invariant | audited at default 8.0 (monotonic on both paths). The hard `S_coh`-cutoff mask this knob set has since been **replaced** by the continuous leakage-aware floor `gap_pass.gap_leakage_floor_k` (default 3.0); the floor is not yet cross-fixture audited. |
 | 3 | `primary_pass.min_exclusion_mhz` | shape-invariant | keep default 0.0; both shapes lose ~21 % of gap detections at excl=0.5. |
 | 4 | `leakage.tau_us` (boxcar vs Stage 2b τ) | **shape-invariant; boxcar wins** | keep default `None` (boxcar). Window boundaries are byte-identical across τ variants (set by `min_window_half_width_mhz` + clustering, not by reach); aggregate Stage 5 χ²ᵣ is also unchanged (≤ 0.02 median, ≤ 0.18 p95). The 23-29 worst-χ²ᵣ windows get the *identical* contributor set on every variant, so τ-feed cannot remediate them. |
 | 4 | `coherence.edge_threshold` | shape-invariant | keep default 8.0; sits at hard-count plateau knee on both shapes. |
@@ -313,8 +340,24 @@ Audit reports:
 [`dev-docs/research/stage4-gaussian-audit/README.md`](../research/stage4-gaussian-audit/README.md).
 The Stage 5 high-Y-rated knobs (`tau.fit_tau_min_snr`,
 `conservative.weak_window_snr_threshold`, `rescue.snr_threshold`,
-`rescue.prominence_threshold`, `thaw.residual_edge_threshold`) are
-still un-audited.
+`rescue.prominence_threshold`, `thaw.residual_edge_threshold`) were
+**audited cross-fixture (all 7 same-instrument fixtures, issue #3,
+validate-and-document) and ship unchanged** — each behaves sanely
+across the SNR span (1512 lowest → 655 extreme):
+
+| stage | knob | default | cross-fixture verdict |
+|---|---|---|---|
+| 5 | `tau.fit_tau_min_snr` | 10.0 | re-audit. The prior "keep 50" audit predates wiring: the knob was orphaned, so the observed tau-free rate tracked `weak_window_snr_threshold` (10), not this knob. Now wired as the τ-specific floor `max(fit_tau_min_snr, weak_window_snr_threshold)`, default 10 (behaviour-preserving). Re-derive the free-τ floor on a fixture with the gate actually live. |
+| 5 | `conservative.weak_window_snr_threshold` | 10.0 | keep. Weak-window regime scales with SNR (0.84 → 0.39), never degenerate. |
+| 5 | `rescue.snr_threshold` | 2.5 | keep. Rescue does bounded, meaningful work everywhere (accept 0.4–0.7). |
+| 5 | `rescue.prominence_threshold` | 2.0 | keep. Same; no pathological all-/no-fire. |
+| 5 | `thaw.residual_edge_threshold` | 8.0 | keep. Sane trigger surface; thaw acceptance ~0 cross-fixture (near-dormant, as on 2638) — a "does thaw earn its keep" follow-up, not a threshold mistune. |
+
+Evidence: [`dev-docs/research/stage5-cross-fixture/report.md`](../research/stage5-cross-fixture/report.md)
+§"Cross-fixture knob audit"; driver `scratch/issue3_audit/audit_knobs.py`. The
+Stage 2 scatter / Stage 2b STFT+classifier knobs ride on the same builds and
+produce the sane per-fixture inputs that audit depends on; no per-fixture retune
+indicated.
 
 ## Open follow-ups against this table
 

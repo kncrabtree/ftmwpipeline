@@ -1215,6 +1215,7 @@ def rescue_and_consolidate(
             "tau_penalty_lambda",
             "tau_penalty_n_sigma",
             "weak_window_snr_threshold",
+            "fit_tau_min_snr",
             "tau_apodization_us",
             "tau_maj_us",
             "sigma_tau_us",

@@ -21,7 +21,6 @@ import pytest
 from ftmwpipeline.preprocessing.noise_estimation import (
     NoiseResult,
     estimate_noise_scatter,
-    estimate_noise_adaptive,
     SCATTER_ALGORITHM,
     _gaussian_smooth_1d,
 )
@@ -99,7 +98,7 @@ def test_returns_noise_result_with_scatter_metadata():
 
 def test_outputs_complex_rms_convention():
     """σ output is the complex-RMS σ_x = σ_c·√2 (the canonical Stage 2
-    convention, drop-in for the adaptive estimator), not the per-quadrature σ_c.
+    convention), not the per-quadrature σ_c.
 
     The Rayleigh-end Monte-Carlo table edge makes the absolute value read a bit
     low (~0.85× σ_x on pure noise); the band here only has to exclude the σ_c
@@ -144,31 +143,6 @@ def test_sqrt_n_slope_is_minus_half():
         sigmas.append(float(np.median(estimate_noise_scatter(f, mag).rms_noise)))
     slope = float(np.polyfit(np.log(shot_counts), np.log(sigmas), 1)[0])
     assert -0.60 < slope < -0.40, f"1/√N slope {slope:.3f} not ≈ −0.5"
-
-
-def test_old_estimator_plateaus_where_scatter_tracks():
-    """Contrast guard: the level-based adaptive estimator flattens on the same
-    high-pedestal 1/√N series (it measures the constant pedestal), confirming the
-    two estimators are genuinely different and the scatter slope is meaningful."""
-    f = _frequencies()
-    shot_counts = np.array([1.0e3, 4.0e3, 1.6e4, 6.4e4, 2.56e5])
-    base_sigma_c = 0.5
-    old, new = [], []
-    for n_shots in shot_counts:
-        sigma_c = base_sigma_c / np.sqrt(n_shots / shot_counts[0])
-        mag = _magnitude_spectrum(
-            sigma_c=sigma_c, line_amp=200.0, seed=int(n_shots) % 97 + 11
-        )
-        old.append(float(np.median(estimate_noise_adaptive(f, mag).rms_noise)))
-        new.append(float(np.median(estimate_noise_scatter(f, mag).rms_noise)))
-    old_slope = float(np.polyfit(np.log(shot_counts), np.log(old), 1)[0])
-    new_slope = float(np.polyfit(np.log(shot_counts), np.log(new), 1)[0])
-    # The pedestal flattens the old estimator well short of −0.5; the scatter
-    # estimator stays near −0.5. A clear separation is the point.
-    assert new_slope < old_slope - 0.2, (
-        f"expected scatter slope ({new_slope:.3f}) clearly steeper than old "
-        f"({old_slope:.3f})"
-    )
 
 
 def test_smoothing_reduces_under_line_inflation_without_clean_bias():

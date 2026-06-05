@@ -5,9 +5,12 @@ pipeline, implementing the dual-interface architecture alongside functional
 and CLI interfaces. Each Pipeline instance is bound to a specific .ftmw file.
 """
 
-from typing import Dict, List, Optional, Union, Any, Tuple, cast
+from typing import Dict, List, Optional, Sequence, Union, Any, Tuple, cast, TYPE_CHECKING
 import logging
 from pathlib import Path
+
+if TYPE_CHECKING:
+    from ._internal.tuning import BatchItem, KnobSpec, SweepResult
 
 from .core.data_structures import FID, ComplexFT
 from .core.settings import FTSettings
@@ -469,56 +472,39 @@ class Pipeline:
                 f"Failed to create FT visualization: {e}"
             ) from e
     
-    def estimate_noise(self, skew_target: Optional[float] = None,
-                       min_bin_fraction: Optional[float] = None,
-                       smoothing_window_mhz: Optional[float] = None,
-                       min_noise_fraction: Optional[float] = None,
-                       from_saved_params: bool = False,
+    def estimate_noise(self,
                        *,
-                       method: str = "scatter",
                        window_mhz: Optional[float] = None,
                        pedestal_mhz: Optional[float] = None,
                        line_k: Optional[float] = None,
                        n_iter: Optional[int] = None,
-                       region_aware: bool = True,
+                       region_aware: Optional[bool] = None,
                        smoothing_mhz: Optional[float] = None,
                        smoothing_percentile: Optional[float] = None,
                        convolve_mhz: Optional[float] = None,
                        settings: Optional[NoiseSettings] = None,
                        preset: Optional[str] = None) -> NoiseResult:
         """
-        Estimate frequency-dependent noise using adaptive binning.
-        
+        Estimate frequency-dependent noise with the scatter estimator.
+
         This method implements Stage 2 noise estimation, equivalent to the CLI
         estimate-noise command. Requires Stage 1 (FT computation) to be completed.
-        
+
+        The scatter estimator is high-pass and region-aware: it is immune to the
+        leakage pedestal on high-SNR, line-dense spectra.
+
         Parameters
         ----------
-        skew_target : float, optional
-            Target skewness for noise identification (default: 0.631 for Rayleigh)
-        min_bin_fraction : float, optional
-            Minimum bin size as fraction of total data (default: 1/64)
-        smoothing_window_mhz : float, optional
-            RMS smoothing window size in MHz (default: auto-calculated)
-        min_noise_fraction : float, optional
-            Minimum fraction of points that must be noise per bin (default: 2/3)
-        from_saved_params : bool, default False
-            If True, ignore provided parameters and use saved parameters only
-        method : str, default "adaptive"
-            Noise estimator to run. ``"adaptive"`` is the level-based binning
-            estimator (skew_target / min_bin_fraction / smoothing_window_mhz /
-            min_noise_fraction / settings / preset apply). ``"scatter"`` is the
-            high-pass, region-aware estimator that is immune to the leakage
-            pedestal on high-SNR, line-dense spectra; it uses its own knobs
-            (window_mhz, pedestal_mhz, line_k, n_iter, region_aware).
         window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
         smoothing_percentile, convolve_mhz
-            Scatter-estimator knobs (``method="scatter"`` only); each defaults to
-            the module-level constant when left unset. ``smoothing_mhz`` /
-            ``smoothing_percentile`` control the broad lower-envelope median σ
-            smoothing that rides the noise floor through line-dense bands
-            (``smoothing_mhz=0`` disables it); ``convolve_mhz`` is the Gaussian σ
-            of the second pass that removes the median's staircase.
+            Scatter-estimator knobs; each defaults to the kernel's hard default
+            when left unset. ``smoothing_mhz`` / ``smoothing_percentile`` control
+            the broad lower-envelope median σ smoothing that rides the noise
+            floor through line-dense bands (``smoothing_mhz=0`` disables it);
+            ``convolve_mhz`` is the Gaussian σ of the second pass that removes
+            the median's staircase.
+        settings, preset
+            Alternative ways to populate the preset layer of the settings chain.
 
         Returns
         -------
@@ -538,12 +524,6 @@ class Pipeline:
             # Compute noise estimation using shared implementation (handles dependency checking and storage)
             result = compute_noise_estimation_impl(
                 file_path=str(self.filepath),
-                skew_target=skew_target,
-                min_bin_fraction=min_bin_fraction,
-                smoothing_window_mhz=smoothing_window_mhz,
-                min_noise_fraction=min_noise_fraction,
-                from_saved_params=from_saved_params,
-                method=method,
                 window_mhz=window_mhz,
                 pedestal_mhz=pedestal_mhz,
                 line_k=line_k,
@@ -570,16 +550,16 @@ class Pipeline:
                         figsize: Optional[tuple] = None, title: Optional[str] = None,
                         show_bin_boundaries: Optional[bool] = None,
                         show_noise_points: Optional[bool] = None,
-                        save_params: bool = False, backend: str = 'matplotlib',
+                        backend: str = 'matplotlib',
                         interactive: bool = True, output_file: Optional[Union[str, Path]] = None,
                         **plot_kwargs):
         """
         Create noise estimation diagnostic visualization.
-        
+
         This method creates diagnostic plots showing spectrum, noise points,
-        adaptive bin boundaries, and RMS noise estimates. Equivalent to the CLI
+        bin boundaries, and RMS noise estimates. Equivalent to the CLI
         visualize-noise command.
-        
+
         Parameters
         ----------
         y_max_factor : float, optional
@@ -589,11 +569,9 @@ class Pipeline:
         title : str, optional
             Custom title for the plot
         show_bin_boundaries : bool, optional
-            Whether to show adaptive bin boundaries (default: True)
+            Whether to show bin boundaries (default: True)
         show_noise_points : bool, optional
             Whether to highlight noise points (default: True)
-        save_params : bool, default False
-            Whether to save custom parameters for future use
         backend : str, default 'matplotlib'
             Plotting backend ('matplotlib' or 'plotly')
         interactive : bool, default True
@@ -602,12 +580,12 @@ class Pipeline:
             If provided, save plot to this file
         **plot_kwargs
             Additional plotting parameters
-            
+
         Returns
         -------
         matplotlib.Figure or plotly.Figure
             The created figure object
-            
+
         Raises
         ------
         StageDependencyError
@@ -616,7 +594,7 @@ class Pipeline:
             If visualization fails
         """
         try:
-            # Create visualization using shared implementation (handles dependency checking and parameter saving)
+            # Create visualization using shared implementation (handles dependency checking)
             fig = visualize_noise_impl(
                 file_path=str(self.filepath),
                 y_max_factor=y_max_factor,
@@ -626,7 +604,6 @@ class Pipeline:
                 show_noise_points=show_noise_points,
                 backend=backend,
                 interactive=interactive,
-                save_params=save_params,
                 **plot_kwargs
             )
             
@@ -915,7 +892,6 @@ class Pipeline:
         step_us: Optional[float] = None,
         guard_margin_us: Optional[float] = None,
         floor_factor: Optional[float] = None,
-        knee_strength_min: Optional[float] = None,
         band: Optional[Tuple[float, float]] = None,
         stamp: bool = True,
         *,
@@ -935,7 +911,7 @@ class Pipeline:
 
         Parameters
         ----------
-        sweep_max_us, step_us, guard_margin_us, floor_factor, knee_strength_min :
+        sweep_max_us, step_us, guard_margin_us, floor_factor :
             Individual overrides of the matching
             :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
             fields. ``guard_margin_us`` is the instrument-specific ringdown
@@ -951,7 +927,7 @@ class Pipeline:
         Returns
         -------
         StartDetectionResult
-            The recommendation plus diagnostics (chirp-end, knee, sweep arrays).
+            The recommendation plus diagnostics (chirp-end, sweep arrays).
         """
         resolved = self._resolve_start_detection_settings(
             settings,
@@ -959,7 +935,6 @@ class Pipeline:
             step_us=step_us,
             guard_margin_us=guard_margin_us,
             floor_factor=floor_factor,
-            knee_strength_min=knee_strength_min,
             band=band,
         )
         result = detect_start_time_impl(
@@ -975,7 +950,6 @@ class Pipeline:
         step_us: Optional[float],
         guard_margin_us: Optional[float],
         floor_factor: Optional[float],
-        knee_strength_min: Optional[float],
         band: Optional[Tuple[float, float]],
     ) -> StartDetectionSettings:
         """Overlay explicit per-knob kwargs onto a base settings bundle."""
@@ -991,8 +965,6 @@ class Pipeline:
             overrides["guard_margin_us"] = float(guard_margin_us)
         if floor_factor is not None:
             overrides["floor_factor"] = float(floor_factor)
-        if knee_strength_min is not None:
-            overrides["knee_strength_min"] = float(knee_strength_min)
         if band is not None:
             overrides["band_min_mhz"] = float(band[0])
             overrides["band_max_mhz"] = float(band[1])
@@ -1671,7 +1643,133 @@ class Pipeline:
             If file is corrupted and cannot be validated
         """
         return validate_pipeline_file(self.filepath)
-    
+
+    # =========================================================================
+    # Companion parameter tuning
+    # =========================================================================
+
+    @staticmethod
+    def tune_list(
+        selector: Optional[str] = None,
+        *,
+        include_advanced: bool = False,
+    ) -> Tuple["KnobSpec", ...]:
+        """List the registered tunable knobs.
+
+        Equivalent to :func:`ftmwpipeline.api.tune_list`. The returned
+        :class:`KnobSpec` tuple is independent of any file, so this is a
+        staticmethod; it is exposed on the class for dual-interface parity.
+        ``selector`` filters by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``); ``include_advanced`` reveals advanced-tier
+        knobs hidden from the default listing.
+        """
+        from ._internal.tuning import list_knobs
+
+        return list_knobs(selector, include_advanced=include_advanced)
+
+    def tune_scan(
+        self,
+        knob: str,
+        grid: Optional[Sequence[Any]] = None,
+        output_dir: Optional[Union[str, Path]] = None,
+        reuse: bool = False,
+        make_plot: bool = True,
+        quiet: bool = False,
+        zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+        n_zoom: Optional[int] = None,
+        zoom_width_mhz: Optional[float] = None,
+        fit_top_snr: int = 3,
+        fit_sample: int = 20,
+        fit_freqs: Optional[Sequence[float]] = None,
+        fit_sample_seed: int = 0,
+        fit_all: bool = False,
+    ) -> "SweepResult":
+        """Sweep a single knob across a grid on a copy of this file.
+
+        Equivalent to :func:`ftmwpipeline.api.tune_scan`. Re-runs the knob's
+        stage for each grid value on a working copy (this file is never
+        mutated), returning a :class:`SweepResult` with the table, CSV path,
+        optional plot, recommendation, and how-to-apply instructions. A progress
+        indicator is printed to stderr unless ``quiet=True``.
+
+        ``zoom_regions`` pins explicit ``(lo_mhz, hi_mhz)`` windows for the
+        region-based plot adapters (Stage 3 / Stage 4), overriding their
+        divergence auto-selection; ``n_zoom`` / ``zoom_width_mhz`` instead tune
+        how many regions to auto-select and how wide each is. The ``fit_*``
+        controls bound a Stage 5 fit sweep to a window subset (the ``fit_top_snr``
+        brightest + a seeded ``fit_sample`` sample + the windows nearest
+        ``fit_freqs``); ``fit_all`` re-fits every window.
+        """
+        from ._internal.tuning import get_knob, run_scan
+
+        return run_scan(
+            get_knob(knob),
+            self.filepath,
+            grid=grid,
+            output_dir=Path(output_dir) if output_dir is not None else None,
+            reuse=reuse,
+            make_plot=make_plot,
+            quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
+        )
+
+    def tune_scan_batch(
+        self,
+        selector: Optional[str] = None,
+        *,
+        include_advanced: bool = False,
+        output_dir: Optional[Union[str, Path]] = None,
+        reuse: bool = False,
+        make_plot: bool = True,
+        quiet: bool = False,
+        zoom_regions: Optional[Sequence[Tuple[float, float]]] = None,
+        n_zoom: Optional[int] = None,
+        zoom_width_mhz: Optional[float] = None,
+        fit_top_snr: int = 3,
+        fit_sample: int = 20,
+        fit_freqs: Optional[Sequence[float]] = None,
+        fit_sample_seed: int = 0,
+        fit_all: bool = False,
+    ) -> "List[BatchItem]":
+        """Sweep every knob matched by ``selector`` on its default grid.
+
+        Equivalent to :func:`ftmwpipeline.api.tune_scan_batch`. A convenience
+        over :meth:`tune_scan` for reviewing a whole stage / sub-block at once:
+        ``selector`` filters by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``) exactly as :meth:`tune_list`, and
+        ``include_advanced`` adds the advanced-tier knobs. Each knob runs on its
+        own working copy (this file is never mutated); a knob whose scan fails
+        (e.g. its required stage is absent) is recorded as a failed
+        :class:`BatchItem` and the batch continues. The ``zoom_*`` controls apply
+        the same explicit-regions / count-width steering to every knob's plot.
+        """
+        from ._internal.tuning import list_knobs, run_scan_batch
+
+        specs = list_knobs(selector, include_advanced=include_advanced)
+        return run_scan_batch(
+            specs,
+            self.filepath,
+            output_dir=Path(output_dir) if output_dir is not None else None,
+            reuse=reuse,
+            make_plot=make_plot,
+            quiet=quiet,
+            zoom_regions=zoom_regions,
+            n_zoom=n_zoom,
+            zoom_width_mhz=zoom_width_mhz,
+            fit_top_snr=fit_top_snr,
+            fit_sample=fit_sample,
+            fit_freqs=fit_freqs,
+            fit_sample_seed=fit_sample_seed,
+            fit_all=fit_all,
+        )
+
     def __repr__(self) -> str:
         """String representation of Pipeline instance."""
         return (f"Pipeline(file={self.filepath.name}, "

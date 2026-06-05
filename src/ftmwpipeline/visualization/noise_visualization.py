@@ -35,7 +35,7 @@ def plot_noise_estimation(
     magnitudes : np.ndarray
         Magnitude spectrum values
     noise_result : NoiseResult
-        Result from estimate_noise_adaptive
+        Result from estimate_noise_scatter
     y_max_factor : float, default=20.0
         Y-axis maximum as multiple of median RMS noise
     figsize : tuple, default=(16, 6)

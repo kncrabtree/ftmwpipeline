@@ -115,13 +115,19 @@ formats are pluggable via a loader registry: `src/ftmwpipeline/io/data_loaders/`
 (raw time-domain, has `.ft(...)`), `ComplexFT` (frequency domain, has `.trim_to_range(...)`),
 `FIDProcessingParameters`, `Sideband`, plus the not-yet-wired `Peak`/`FittedPeak`/
 `SpectralWindow`/`FittingResult`. `NoiseResult` lives in
-`preprocessing/noise_estimation.py`. Two estimators produce it: the default
-`estimate_noise_scatter` (`method="scatter"`) — a high-pass, region-aware,
-Rician-corrected scatter MAD with broad lower-envelope smoothing, immune to the
-leakage-pedestal σ inflation on high-SNR line-dense spectra — and the legacy
-`estimate_noise_adaptive` (`method="adaptive"`, variance-based binning + skewness
-filtering), kept for comparison and its settings/preset chain. Both emit the same
-per-bin complex-RMS σ_x. See `dev-docs/research/noise-snr-scaling/report.md`.
+`preprocessing/noise_estimation.py`. The sole Stage 2 estimator is
+`estimate_noise_scatter` — a high-pass, region-aware, Rician-corrected scatter
+MAD with broad lower-envelope smoothing, immune to the leakage-pedestal σ
+inflation on high-SNR line-dense spectra. It emits the per-bin complex-RMS σ_x
+that every later stage consumes. See
+`dev-docs/research/noise-snr-scaling/report.md`. Stage 2 measures and persists
+this σ on the **canonical active FT** (`estimate_active_ft_noise` /
+`_internal/active_ft_support.py`), not the full-record persisted spectrum — the
+active FT is the single grid every later stage scores, plans, and fits on (see
+the noise-authority work below). The legacy level-based `estimate_noise_adaptive`
+estimator has been retired from the package; a minimal comparison reference
+survives only beside its research report at
+`dev-docs/research/noise-snr-scaling/legacy_adaptive.py`.
 
 ## Example data and reference parameters
 
