@@ -41,8 +41,8 @@ from ..fitting.tau_calibration import (
     TauCalibrationResult,
     extract_tau_majority,
 )
+from ..io.tau_calibration_serialization import GROUP_PATH as TAU_GROUP_PATH
 from ..io.tau_calibration_serialization import (
-    GROUP_PATH as TAU_GROUP_PATH,
     load_tau_calibration_from_hdf5,
     save_tau_calibration_to_hdf5,
 )

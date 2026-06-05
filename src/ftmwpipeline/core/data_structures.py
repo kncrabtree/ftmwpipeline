@@ -14,12 +14,13 @@ Architecture:
   └── FittedPeak[]: Fitted parameters for individual peaks
 """
 
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import scipy.fft as sfft
 import scipy.signal as spsig
-from typing import Optional, Dict, Any, List, Union, Tuple
-from dataclasses import dataclass, field
-from enum import Enum
 
 
 class PeakClassification(Enum):

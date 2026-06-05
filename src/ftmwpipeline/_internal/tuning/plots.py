@@ -159,8 +159,8 @@ def plot_spectra_ladder(spec: Any, rows: List[Any], ctx: Any) -> Any:
     Each ``row.result`` is an ``FtAtStart`` (``.ft`` / ``.start_us`` /
     ``.chirp_end_us``). Height grows with the number of values.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -250,8 +250,8 @@ def plot_ft_band_stack(spec: Any, rows: List[Any], ctx: Any) -> Any:
     lines clip off the top. No FID panel — unlike the start ladder these knobs
     do not move the window start. Each ``row.result`` carries ``.ft``.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -487,8 +487,8 @@ def plot_shape_vote(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """exp / gauss / voigt SNR-weighted vote rate per grid value (grouped bars),
     annotated with the per-value recommended shape. For the shape-recommendation
     knobs. Returns ``None`` for non-numeric knobs (table-only)."""
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -774,8 +774,8 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     peaks marked solid by detection pass (primary = blue, gap = green), the
     per-bin promotion threshold (``min_snr·σ``) dashed in red.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
     from matplotlib.lines import Line2D
 
     rows = [r for r in rows if r.result is not None]
@@ -1186,8 +1186,8 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     open, and the S_coh coherence statistic with its T_edge threshold on a twin
     axis — the statistic that set the boundaries.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
     from matplotlib.lines import Line2D
 
     rows = [r for r in rows if r.result is not None]
@@ -1322,8 +1322,9 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
     across the line; (3) a per-window **ε-vs-frequency strip** showing *where* on
     the band the knob moved the misfit, coloured by value.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
+
     from ...fitting.validation import DEFAULT_SHAPE_ERROR_KAPPA
 
     rows = [r for r in rows if r.result is not None]
@@ -1507,8 +1508,8 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     value with the ``snr_threshold`` cut drawn, so the detection gates visibly
     bite instead of looking inert.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1643,8 +1644,8 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
     a higher ``snr_threshold`` removes them, so a count is the direction-agnostic
     readout.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1760,8 +1761,8 @@ def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
     threshold drawn — points on the diagonal are edges the handshake left
     unchanged (the common case: thaw is near-dormant on clean spectra).
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:
@@ -1918,8 +1919,8 @@ def plot_noise_sweep(spec: Any, rows: List[Any], ctx: Any) -> Any:
     overlay it. If the spectrum cannot be loaded the bottom panel is hidden and
     the two trend panels stand on their own.
     """
-    import numpy as np
     import matplotlib.pyplot as plt
+    import numpy as np
 
     rows = [r for r in rows if r.result is not None]
     if not rows:

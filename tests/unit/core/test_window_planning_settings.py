@@ -15,12 +15,12 @@ from dataclasses import fields
 import pytest
 
 from ftmwpipeline.core.window_planning_settings import (
+    _HARD_DEFAULTS,
     ClusteringSubSettings,
     CoherenceSubSettings,
     ContributorSubSettings,
     LeakageSubSettings,
     WindowPlanningSettings,
-    _HARD_DEFAULTS,
     from_attrs,
     from_yaml,
     from_yaml_dict,

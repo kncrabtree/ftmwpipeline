@@ -11,18 +11,17 @@ from typing import List, Optional
 
 from .. import __version__
 from ..workflows import validate_installation
-
-from .utils import setup_logging
-from .ft_commands import add_ft_subcommands
 from .data_commands import add_data_subcommands
-from .start_commands import register_start_commands
-from .noise_commands import register_noise_commands
-from .tau_commands import register_tau_commands
-from .peak_commands import register_peak_commands
-from .window_commands import register_window_commands
 from .fitting_commands import register_fitting_commands
-from .tune_commands import register_tune_commands
+from .ft_commands import add_ft_subcommands
 from .info_commands import add_info_subcommand
+from .noise_commands import register_noise_commands
+from .peak_commands import register_peak_commands
+from .start_commands import register_start_commands
+from .tau_commands import register_tau_commands
+from .tune_commands import register_tune_commands
+from .utils import setup_logging
+from .window_commands import register_window_commands
 
 
 def cmd_validate(args) -> int:

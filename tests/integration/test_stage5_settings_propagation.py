@@ -507,11 +507,11 @@ def test_per_band_tau_routes_tau0_per_window(
     """
     import shutil
 
-    from ftmwpipeline.fitting import plan_execution
     from ftmwpipeline._internal.stage2b_g_impl import (
         calibrate_tau_G_impl,
         load_tau_G_calibration_impl,
     )
+    from ftmwpipeline.fitting import plan_execution
     from tests.integration._stage2b_helpers import skip_auto_recommend_settings
 
     variant = tmp_path / "per_band_tau0.ftmw"

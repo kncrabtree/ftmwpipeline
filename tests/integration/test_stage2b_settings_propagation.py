@@ -24,9 +24,9 @@ from typing import Any, Callable, Dict, Tuple
 import pytest
 
 from ftmwpipeline._internal import (
-    stage2b_impl,
-    stage2b_g_impl,
     shape_recommendation_impl,
+    stage2b_g_impl,
+    stage2b_impl,
 )
 from ftmwpipeline.core.tau_calibration_settings import (
     AggregationSubSettings,

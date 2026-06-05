@@ -17,12 +17,12 @@ reference at ``dev-docs/research/noise-snr-scaling/legacy_adaptive.py``.)
 """
 
 import logging
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple, Union
 
 import numpy as np
 import scipy.signal as spsig
 from scipy.ndimage import median_filter, percentile_filter
-from typing import Any, Tuple, Optional, Dict, Union
-from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 

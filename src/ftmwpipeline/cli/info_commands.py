@@ -10,8 +10,8 @@ import argparse
 import json
 from typing import Any
 
-from .utils import setup_logging, print_error
 from ..api import get_pipeline_info
+from .utils import print_error, setup_logging
 
 
 def cmd_info(args: argparse.Namespace) -> int:

@@ -48,7 +48,7 @@ class TestPackageImports:
 
     def test_workflow_functions_import(self):
         """Test that workflow convenience functions can be imported."""
-        from ftmwpipeline import process_experiment, batch_process_experiments
+        from ftmwpipeline import batch_process_experiments, process_experiment
 
         # Functions should be callable
         assert callable(process_experiment)

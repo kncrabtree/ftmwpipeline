@@ -10,8 +10,8 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .utils import setup_logging, print_error
 from .._internal.stage4_impl import assign_windows_impl, visualize_windows_impl
+from .utils import print_error, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:

@@ -39,9 +39,9 @@ import h5py
 
 from ..core.tau_calibration_settings import (
     TauCalibrationSettings,
-    from_attrs as tau_settings_from_attrs,
-    to_attrs as tau_settings_to_attrs,
 )
+from ..core.tau_calibration_settings import from_attrs as tau_settings_from_attrs
+from ..core.tau_calibration_settings import to_attrs as tau_settings_to_attrs
 
 logger = logging.getLogger(__name__)
 

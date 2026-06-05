@@ -20,9 +20,9 @@ from typing import Optional, Tuple
 
 from ..core.tau_calibration_settings import (
     TauCalibrationSettings,
-    load_preset as load_tau_preset,
-    resolve as resolve_tau_settings,
 )
+from ..core.tau_calibration_settings import load_preset as load_tau_preset
+from ..core.tau_calibration_settings import resolve as resolve_tau_settings
 from ..io.tau_calibration_settings_serialization import (
     load_tau_calibration_settings_from_h5,
 )

@@ -6,31 +6,32 @@ and visualization that are shared between CLI, Pipeline class, and functional
 API interfaces.
 """
 
-from pathlib import Path
-from typing import Optional, Dict, Any, Union
 import logging
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+
 import h5py
 import numpy as np
 
-from ..preprocessing.noise_estimation import (
-    estimate_active_ft_noise,
-    NoiseResult,
-)
-from .active_ft_support import build_trimmed_active_ft
 from ..core.noise_settings import (
     NoiseSettings,
-    load_preset as load_noise_preset,
-    resolve as resolve_noise_settings,
 )
+from ..core.noise_settings import load_preset as load_noise_preset
+from ..core.noise_settings import resolve as resolve_noise_settings
+from ..file_manager import open_pipeline_file
 from ..io.noise_result_serialization import (
-    save_noise_result_to_hdf5,
     load_noise_result_from_hdf5,
+    save_noise_result_to_hdf5,
 )
 from ..io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
 )
-from ..file_manager import open_pipeline_file
+from ..preprocessing.noise_estimation import (
+    NoiseResult,
+    estimate_active_ft_noise,
+)
+from .active_ft_support import build_trimmed_active_ft
 from .deprecation import warn_legacy_kwargs
 
 logger = logging.getLogger(__name__)
@@ -567,9 +568,10 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
         raise RuntimeError(f"Failed to load NoiseResult from pipeline file: {e}")
 
 
+import json
+
 # Add missing import
 from datetime import datetime
-import json
 
 
 def _update_stage_completion(file_path: str, stage_name: str) -> None:

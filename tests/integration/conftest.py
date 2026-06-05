@@ -5,20 +5,22 @@ This module provides common test infrastructure for integration tests that
 validate cross-interface consistency and real workflow functionality.
 """
 
-import pytest
+import json
+import shutil
 import subprocess
 import tempfile
-import shutil
-import json
-import numpy as np
-from pathlib import Path
-from typing import Dict, List, Tuple, Any, Optional
 import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pytest
+
+import ftmwpipeline.api as ftmw
 
 # Import all interfaces for testing
 from ftmwpipeline import Pipeline
-import ftmwpipeline.api as ftmw
-from ftmwpipeline.core.data_structures import ComplexFT, FID
+from ftmwpipeline.core.data_structures import FID, ComplexFT
 
 
 @pytest.fixture(scope="session")

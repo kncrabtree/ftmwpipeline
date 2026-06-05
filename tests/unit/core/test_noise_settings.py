@@ -15,8 +15,8 @@ from dataclasses import fields
 import pytest
 
 from ftmwpipeline.core.noise_settings import (
-    NoiseSettings,
     _HARD_DEFAULTS,
+    NoiseSettings,
     from_attrs,
     from_yaml,
     from_yaml_dict,

@@ -6,20 +6,21 @@ indices (its False positions) and the per-bin sigma array verbatim, so the
 round-trip is exact for any estimator.
 """
 
-import pytest
-import numpy as np
-import h5py
 from pathlib import Path
 
+import h5py
+import numpy as np
+import pytest
+
+from ftmwpipeline.io.noise_result_serialization import (
+    _extract_signal_indices,
+    _reconstruct_noise_mask,
+    load_noise_result_from_hdf5,
+    save_noise_result_to_hdf5,
+)
 from ftmwpipeline.preprocessing.noise_estimation import (
     NoiseResult,
     estimate_noise_scatter,
-)
-from ftmwpipeline.io.noise_result_serialization import (
-    save_noise_result_to_hdf5,
-    load_noise_result_from_hdf5,
-    _extract_signal_indices,
-    _reconstruct_noise_mask,
 )
 
 

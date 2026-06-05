@@ -5,13 +5,14 @@ No real data required; all tests are fast and free of I/O.
 """
 
 import argparse
+
 import pytest
 
+from ftmwpipeline.cli._argspec import add_settings_args, settings_from_namespace
 from ftmwpipeline.core.settings import (
     FTSettings,
     resolve,
 )
-from ftmwpipeline.cli._argspec import add_settings_args, settings_from_namespace
 
 # ---------------------------------------------------------------------------
 # Helpers

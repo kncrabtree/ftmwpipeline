@@ -9,7 +9,6 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-
 import scipy.signal as spsig
 
 from ftmwpipeline._internal.stage3_impl import (

@@ -6,12 +6,13 @@ Currently implements BlackChirp data loading.
 """
 
 import os
+from pathlib import Path
+from typing import Any, Dict, Optional, Union
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Optional, Dict, Any, Union
 
-from ..core.data_structures import FTMWData, FID, FIDProcessingParameters, Sideband
+from ..core.data_structures import FID, FIDProcessingParameters, FTMWData, Sideband
 
 
 def load_blackchirp_experiment(

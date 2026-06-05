@@ -14,12 +14,12 @@ from dataclasses import fields
 import pytest
 
 from ftmwpipeline.core.peak_detection_settings import (
+    _HARD_DEFAULTS,
     GapPassSubSettings,
     PeakDetectionSettings,
     PrimaryPassSubSettings,
     PromotionSubSettings,
     SavgolSubSettings,
-    _HARD_DEFAULTS,
     from_attrs,
     from_yaml,
     from_yaml_dict,

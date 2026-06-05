@@ -14,9 +14,10 @@ _extract_signal_indices : Convert boolean noise_mask to signal indices
 _reconstruct_noise_mask : Reconstruct boolean noise_mask from signal indices
 """
 
-import numpy as np
+from typing import Any, Dict
+
 import h5py
-from typing import Dict, Any
+import numpy as np
 
 from ..preprocessing.noise_estimation import NoiseResult
 

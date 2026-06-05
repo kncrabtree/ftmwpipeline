@@ -20,22 +20,24 @@ Individual component serialization is tested separately in unit tests.
 Test files are written to tests/output/ with proper cleanup.
 """
 
-import pytest
-import numpy as np
-import h5py
-from pathlib import Path
-import tempfile
 import shutil
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
+
+import h5py
+import numpy as np
+import pytest
+
+from ftmwpipeline.core.data_structures import FID, ComplexFT, FIDProcessingParameters
+from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
 
 # NEW imports for Stage 0-1 architecture
 from ftmwpipeline.io.fid_serialization import (
-    save_fid_cache,
     load_fid_cache,
+    save_fid_cache,
     update_fid_processing_defaults,
 )
-from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-from ftmwpipeline.core.data_structures import ComplexFT, FID, FIDProcessingParameters
 from ftmwpipeline.preprocessing.noise_estimation import (
     NoiseResult,
     estimate_noise_scatter,

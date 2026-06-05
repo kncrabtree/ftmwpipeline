@@ -5,14 +5,15 @@ This module contains interactive plotting functions for FTMW pipeline visualizat
 Supports both matplotlib and plotly backends.
 """
 
-import numpy as np
-from typing import Optional, Union, Tuple, Any
 import warnings
+from typing import Any, Optional, Tuple, Union
+
+import numpy as np
 
 # Try to import plotting libraries
 try:
-    import matplotlib.pyplot as plt
     import matplotlib.gridspec as gridspec
+    import matplotlib.pyplot as plt
 
     HAS_MATPLOTLIB = True
 except ImportError:
@@ -26,7 +27,7 @@ try:
 except ImportError:
     HAS_PLOTLY = False
 
-from ..core.data_structures import ComplexFT, SpectralWindow, FID, PreprocessedFID
+from ..core.data_structures import FID, ComplexFT, PreprocessedFID, SpectralWindow
 from ..io.fid_serialization import load_fid_cache
 
 

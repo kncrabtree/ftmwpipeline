@@ -6,25 +6,25 @@ FID caching, and FID visualization that are shared between CLI, Pipeline class,
 and functional API interfaces.
 """
 
-from pathlib import Path
-from typing import Optional, Dict, Any, Tuple
 import logging
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
-from ..io.data_loaders import (
-    detect_format,
-    validate_source,
-    load_fid,
-    list_formats,
-    get_format_info,
-)
-from ..io.fid_serialization import load_fid_from_hdf5
 from ..core.data_structures import FID
 from ..file_manager import (
+    SourceMetadata,
     create_pipeline_file,
     open_pipeline_file,
     validate_pipeline_file,
-    SourceMetadata,
 )
+from ..io.data_loaders import (
+    detect_format,
+    get_format_info,
+    list_formats,
+    load_fid,
+    validate_source,
+)
+from ..io.fid_serialization import load_fid_from_hdf5
 
 logger = logging.getLogger(__name__)
 

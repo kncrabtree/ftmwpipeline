@@ -17,9 +17,9 @@ import pytest
 
 from ftmwpipeline.core.data_structures import Peak, PeakClassification
 from ftmwpipeline.io.peak_serialization import (
+    _COLUMNS,
     load_peaks_from_hdf5,
     save_peaks_to_hdf5,
-    _COLUMNS,
 )
 
 # ---------------------------------------------------------------------------

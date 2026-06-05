@@ -6,10 +6,11 @@ handling FID data extraction from Blackchirp directory structures with
 proper metadata preservation.
 """
 
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Dict, Any, Union, List, Optional, TYPE_CHECKING
 
 from .base import BaseLoader, LoaderError
 

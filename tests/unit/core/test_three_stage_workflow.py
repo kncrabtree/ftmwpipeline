@@ -10,16 +10,17 @@ This replaces the old single-step FID.ft() method and provides better separation
 of concerns and control over processing stages.
 """
 
-import pytest
-import numpy as np
-import scipy.signal as spsig
 from pathlib import Path
+
+import numpy as np
+import pytest
+import scipy.signal as spsig
 
 from ftmwpipeline.core.data_structures import (
     FID,
-    PreprocessedFID,
     ComplexFT,
     FIDProcessingParameters,
+    PreprocessedFID,
     Sideband,
 )
 from ftmwpipeline.io import load_blackchirp_experiment

@@ -20,6 +20,8 @@ from ftmwpipeline.fitting.tau_calibration import (
     ShapeRecommendation,
     SpurCluster,
     TauCalibrationResult,
+    _aggregate_shape_verdict,
+    _nls_polish_step,
     compute_shape_recommendation,
     estimate_sigma_time_from_tail,
     extract_tau_G_majority,
@@ -29,10 +31,6 @@ from ftmwpipeline.fitting.tau_calibration import (
     majority_tau,
     sliding_stft,
     stft_calibration,
-)
-from ftmwpipeline.fitting.tau_calibration import (
-    _aggregate_shape_verdict,
-    _nls_polish_step,
 )
 
 # 2638-shaped cell: T_full = 12.65 us, sample_dt = 20 ps (50 GS/s).
@@ -800,8 +798,8 @@ class TestVectorisedShapeSolver:
 
     def test_recommendation_matches_scipy(self, vec, sci):
         from ftmwpipeline.fitting.tau_calibration import (
-            _three_way_rows_from_shape_fits,
             _shape_recommendation_bin_clean,
+            _three_way_rows_from_shape_fits,
         )
 
         cap = 0.7 * DEFAULT_TAU_G_BOUND_HI

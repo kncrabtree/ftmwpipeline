@@ -8,7 +8,8 @@ experimental formats with proper metadata preservation.
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, Any, Optional, Union, List, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+
 import numpy as np
 
 if TYPE_CHECKING:

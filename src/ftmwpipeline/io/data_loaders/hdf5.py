@@ -6,10 +6,11 @@ HDF5 files. HDF5 files can store both time-domain data and acquisition metadata
 in a structured format.
 """
 
-import numpy as np
-import h5py
 from pathlib import Path
-from typing import Dict, Any, Union, List, Optional
+from typing import Any, Dict, List, Optional, Union
+
+import h5py
+import numpy as np
 
 from .base import BaseLoader, LoaderError
 

@@ -14,8 +14,8 @@ the repo's dual-interface rule. See
 ``dev-docs/planning/companion-tuning-tools.md``.
 """
 
-from .registry import KnobSpec, get_knob, list_knobs
 from .engine import BatchItem, SweepResult, SweepRow, run_scan, run_scan_batch
+from .registry import KnobSpec, get_knob, list_knobs
 
 __all__ = [
     "KnobSpec",

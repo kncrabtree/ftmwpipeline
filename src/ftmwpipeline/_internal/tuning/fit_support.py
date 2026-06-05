@@ -140,11 +140,11 @@ def reduce_plan_for_fit(
     """
     if selection is None or selection.fit_all:
         return
+    import ftmwpipeline.api as ftmw
     from ftmwpipeline._internal.stage4_impl import (
         load_windows_impl,
         save_window_plan_impl,
     )
-    import ftmwpipeline.api as ftmw
 
     plan = load_windows_impl(str(path))["plan"]
     budget = max(0, selection.top_snr) + max(0, selection.sample)

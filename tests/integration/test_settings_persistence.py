@@ -16,15 +16,16 @@ Marked @pytest.mark.integration so they can be skipped on pure-unit runs.
 
 import json
 import subprocess
-import pytest
-import numpy as np
-import h5py
-
 from pathlib import Path
+
+import h5py
+import numpy as np
+import pytest
+
 from ftmwpipeline._internal.stage0_impl import import_data_impl
 from ftmwpipeline._internal.stage1_impl import compute_ft_impl
-from ftmwpipeline.core.settings import FTSettings, FT_PROCESSING_PATH
 from ftmwpipeline.core.data_structures import ComplexFT
+from ftmwpipeline.core.settings import FT_PROCESSING_PATH, FTSettings
 
 # ---------------------------------------------------------------------------
 # Helpers

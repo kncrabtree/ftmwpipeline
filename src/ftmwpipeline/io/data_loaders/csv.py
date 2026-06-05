@@ -6,10 +6,11 @@ CSV files. CSV files require explicit metadata parameters since the format
 cannot store acquisition parameters.
 """
 
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from typing import Dict, Any, Union, List, Optional
 
 from .base import BaseLoader, LoaderError
 

@@ -8,30 +8,31 @@ Tests functional file operations rather than interface pedantry, focusing on:
 - Error handling and edge cases that would break user workflows
 """
 
-import pytest
-import numpy as np
-import h5py
 import json
-import tempfile
 import os
 import shutil
-from pathlib import Path
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from unittest.mock import Mock, patch
 
+import h5py
+import numpy as np
+import pytest
+
+from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
 from ftmwpipeline.file_manager import (
-    SourceMetadata,
-    PipelineStageTracker,
-    PipelineFileError,
-    PipelineExistsError,
-    StageDependencyError,
     PipelineCorruptionError,
+    PipelineExistsError,
+    PipelineFileError,
+    PipelineStageTracker,
+    SourceMetadata,
+    StageDependencyError,
     create_pipeline_file,
     open_pipeline_file,
-    validate_pipeline_file,
     update_processing_parameters,
+    validate_pipeline_file,
 )
-from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
 
 
 class TestSourceMetadata:

@@ -121,8 +121,9 @@ def _run_start(field_name: str) -> RunFn:
     """
 
     def run(path: Path, value: Any) -> Any:
-        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
         from dataclasses import replace
+
+        import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
         from ftmwpipeline.core.start_detection_settings import (
             StartDetectionSettings,
         )
@@ -206,6 +207,7 @@ def _run_ft_trim(edge: str) -> RunFn:
 
     def run(path: Path, value: Any) -> Any:
         import numpy as np
+
         import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
 
         key = str(path)

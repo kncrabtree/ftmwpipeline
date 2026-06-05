@@ -10,13 +10,13 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from ..io.data_loaders import list_formats, get_format_info
 from .._internal.stage0_impl import (
+    get_pipeline_info_impl,
     import_data_impl,
     load_fid_from_pipeline_impl,
     visualize_fid_impl,
-    get_pipeline_info_impl,
 )
+from ..io.data_loaders import get_format_info, list_formats
 from .utils import setup_logging
 
 

@@ -18,8 +18,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from .._internal.stage2b_impl import calibrate_tau_impl, load_tau_calibration_impl
 from .._internal.stage2b_g_impl import calibrate_tau_G_impl
+from .._internal.stage2b_impl import calibrate_tau_impl, load_tau_calibration_impl
 from .utils import print_error, setup_logging
 
 logger = logging.getLogger(__name__)

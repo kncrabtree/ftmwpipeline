@@ -23,8 +23,8 @@ import subprocess
 import numpy as np
 import pytest
 
-from ftmwpipeline import Pipeline
 import ftmwpipeline.api as ftmw
+from ftmwpipeline import Pipeline
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 

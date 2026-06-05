@@ -21,14 +21,15 @@ All slow tests are marked @pytest.mark.integration and @pytest.mark.slow.
 A module-scoped fixture runs detection once; individual tests reuse the result.
 """
 
+import matplotlib
 import numpy as np
 import pytest
-import matplotlib
 
 matplotlib.use("Agg")  # non-interactive backend for CI
 
 import h5py
 
+import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage0_impl import import_data_impl
 from ftmwpipeline._internal.stage3_impl import (
     detect_peaks_impl,
@@ -38,7 +39,6 @@ from ftmwpipeline.preprocessing.peak_detection import (
     DEFAULT_INTERNAL_MIN_SNR,
     DEFAULT_MIN_SNR,
 )
-import ftmwpipeline.api as ftmw
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 

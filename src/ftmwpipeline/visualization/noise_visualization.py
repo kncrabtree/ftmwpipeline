@@ -5,9 +5,11 @@ This module provides visualization functions for noise estimation algorithms,
 including bin boundaries, noise masks, and RMS estimates.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
 from typing import Optional, Tuple, Union
+
+import matplotlib.pyplot as plt
+import numpy as np
+
 from ..preprocessing.noise_estimation import NoiseResult
 
 

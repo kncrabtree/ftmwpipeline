@@ -30,6 +30,8 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import (
     shape_recommendation_impl as _shape_recommendation_impl,
+)
+from ftmwpipeline._internal import (
     stage2_impl,
     stage2b_g_impl,
     stage2b_impl,

@@ -19,10 +19,10 @@ import numpy as np
 import pytest
 
 from ftmwpipeline.preprocessing.noise_estimation import (
-    NoiseResult,
-    estimate_noise_scatter,
     SCATTER_ALGORITHM,
+    NoiseResult,
     _gaussian_smooth_1d,
+    estimate_noise_scatter,
 )
 
 # Synthetic-spectrum geometry. A 30k-bin grid over the 2638 active band so the

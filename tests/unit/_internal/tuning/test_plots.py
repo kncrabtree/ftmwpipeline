@@ -11,18 +11,18 @@ import pytest
 
 from ftmwpipeline._internal.tuning import get_knob
 from ftmwpipeline._internal.tuning.engine import PlotContext, SweepRow
-from ftmwpipeline._internal.tuning.registry import FtAtStart
 from ftmwpipeline._internal.tuning.plots import (
+    plot_fit_quality,
     plot_ft_band_stack,
     plot_noise_sweep,
     plot_peak_detection,
     plot_shape_vote,
     plot_spectra_ladder,
-    plot_fit_quality,
     plot_start_detection,
     plot_tau_trend,
     plot_window_planning,
 )
+from ftmwpipeline._internal.tuning.registry import FtAtStart
 
 
 @pytest.fixture(autouse=True)

@@ -14,9 +14,9 @@ This module is a thin orchestration layer; it is wrapped identically by the
 CLI, the ``Pipeline`` class, and the functional API.
 """
 
-from datetime import datetime
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 

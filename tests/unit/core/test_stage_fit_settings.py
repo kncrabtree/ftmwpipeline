@@ -14,6 +14,7 @@ import pytest
 
 from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.core.stage_fit_settings import (
+    _HARD_DEFAULTS,
     ConservativeSubSettings,
     PenaltySubSettings,
     RescueSubSettings,
@@ -22,7 +23,6 @@ from ftmwpipeline.core.stage_fit_settings import (
     StageFitSettings,
     TauSubSettings,
     ThawSubSettings,
-    _HARD_DEFAULTS,
     from_attrs,
     from_yaml,
     from_yaml_dict,

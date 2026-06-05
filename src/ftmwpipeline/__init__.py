@@ -9,32 +9,32 @@ and advanced fitting algorithms.
 __version__ = "0.1.0"
 __author__ = "FTMW Pipeline Contributors"
 
+# Functional API - can be imported as "import ftmwpipeline.api as ftmw"
+from ftmwpipeline import api
+
 # Core data structures
 from ftmwpipeline.core.data_structures import (
-    FTMWData,
     FID,
     ComplexFT,
-    SpectralWindow,
-    Peak,
+    FIDProcessingParameters,
     FittedPeak,
     FittingResult,
-    FIDProcessingParameters,
+    FitWindow,
+    FixedContributor,
+    FTMWData,
+    Peak,
     PeakClassification,
     Sideband,
+    SpectralWindow,
     WindowDifficulty,
-    FixedContributor,
-    FitWindow,
     WindowPlan,
 )
 
 # Main pipeline interface
 from ftmwpipeline.pipeline import Pipeline
 
-# Functional API - can be imported as "import ftmwpipeline.api as ftmw"
-from ftmwpipeline import api
-
 # Convenience workflow functions (thin wrappers over Pipeline)
-from ftmwpipeline.workflows import process_experiment, batch_process_experiments
+from ftmwpipeline.workflows import batch_process_experiments, process_experiment
 
 # TODO: Fix imports for other modules when they're implemented
 # # Preprocessing functions

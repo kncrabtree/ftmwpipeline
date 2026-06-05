@@ -16,9 +16,9 @@ Stage 3 peaks were scored on. Wrapped identically by the CLI, Pipeline class,
 and functional API. See ``dev-docs/planning/stage4-window-assignment.md``.
 """
 
-from datetime import datetime
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -27,9 +27,10 @@ import h5py
 from ..core.data_structures import ComplexFT, WindowDifficulty, WindowPlan
 from ..core.window_planning_settings import (
     WindowPlanningSettings,
-    load_preset as load_window_planning_preset,
-    resolve as resolve_window_planning_settings,
 )
+from ..core.window_planning_settings import load_preset as load_window_planning_preset
+from ..core.window_planning_settings import resolve as resolve_window_planning_settings
+from ..file_manager import invalidate_downstream_stages
 from ..io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
@@ -38,7 +39,6 @@ from ..io.window_serialization import (
     load_window_plan_from_hdf5,
     save_window_plan_to_hdf5,
 )
-from ..file_manager import invalidate_downstream_stages
 from ..preprocessing.window_planning import (
     build_window_plan,
 )

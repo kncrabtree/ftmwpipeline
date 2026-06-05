@@ -34,8 +34,8 @@ fixed-contributor column lengths, unknown difficulty label) raises
 ``ValueError`` loudly rather than silently dropping or guessing.
 """
 
-from datetime import datetime
 import json
+from datetime import datetime
 from typing import Any, Dict, List
 
 import h5py

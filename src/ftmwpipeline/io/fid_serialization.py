@@ -19,12 +19,13 @@ can be overridden during FT processing.
 Storage is compact since FID data is inherently small compared to frequency-domain data.
 """
 
-import numpy as np
-import h5py
 import json
-from pathlib import Path
 from datetime import datetime
-from typing import Union, Optional
+from pathlib import Path
+from typing import Optional, Union
+
+import h5py
+import numpy as np
 
 from ..core.data_structures import FID, FIDProcessingParameters, Sideband
 

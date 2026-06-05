@@ -38,16 +38,21 @@ from ..core.stage_fit_settings import (
     ShapeSpec,
     StageFitSettings,
     load_preset,
-    resolve as resolve_stage_fit_settings,
 )
+from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ..file_manager import invalidate_downstream_stages
 from ..fitting.active_ft import compute_active_ft
+from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
     ReplanContext,
     execute_plan,
 )
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
 from ..fitting.spur_detection import SpurSet, build_spur_set
+from ..fitting.tau_calibration import (
+    TauCalibrationResult,
+    band_majority_for_frequency,
+)
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
@@ -63,19 +68,14 @@ from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
-from .stage3_impl import (
-    _active_acquisition_us,
-    load_peaks_impl,
-)
-from ..fitting.peak_model import PeakShape
-from ..fitting.tau_calibration import (
-    TauCalibrationResult,
-    band_majority_for_frequency,
-)
-from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage2b_g_impl import (
     load_tau_G_calibration_impl,
     tau_G_calibration_present,
+)
+from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+from .stage3_impl import (
+    _active_acquisition_us,
+    load_peaks_impl,
 )
 from .stage4_impl import load_windows_impl
 

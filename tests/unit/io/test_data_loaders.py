@@ -12,22 +12,23 @@ from ComplexFT processing. Covers:
 Uses experiment 2638 test data as specified in CLAUDE.md.
 """
 
-import pytest
+import shutil
+import tempfile
+from pathlib import Path
+from unittest.mock import mock_open, patch
+
 import numpy as np
 import pandas as pd
-import tempfile
-import shutil
-from pathlib import Path
-from unittest.mock import patch, mock_open
+import pytest
 
+from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
+from ftmwpipeline.io.data_loaders.base import BaseLoader, LoaderError
 from ftmwpipeline.io.data_loaders.blackchirp import BlackChirpLoader
 from ftmwpipeline.io.data_loaders.registry import (
     FormatRegistry,
-    register_loader,
     detect_format,
+    register_loader,
 )
-from ftmwpipeline.io.data_loaders.base import BaseLoader, LoaderError
-from ftmwpipeline.core.data_structures import FID, Sideband, FIDProcessingParameters
 
 
 class TestBlackChirpLoader:

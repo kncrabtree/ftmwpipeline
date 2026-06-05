@@ -5,9 +5,9 @@ This module provides a centralized registry for all data format loaders,
 enabling automatic format detection and appropriate loader selection.
 """
 
-from pathlib import Path
-from typing import Dict, Type, Union, Optional, List, Any, TYPE_CHECKING
 import logging
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Type, Union
 
 from .base import BaseLoader, LoaderError
 

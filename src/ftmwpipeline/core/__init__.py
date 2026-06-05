@@ -13,19 +13,19 @@ This module contains the fundamental data structures used throughout the pipelin
 """
 
 from .data_structures import (
-    FTMWData,
     FID,
     ComplexFT,
-    SpectralWindow,
-    Peak,
+    FIDProcessingParameters,
     FittedPeak,
     FittingResult,
-    FIDProcessingParameters,
+    FitWindow,
+    FixedContributor,
+    FTMWData,
+    Peak,
     PeakClassification,
     Sideband,
+    SpectralWindow,
     WindowDifficulty,
-    FixedContributor,
-    FitWindow,
     WindowPlan,
 )
 

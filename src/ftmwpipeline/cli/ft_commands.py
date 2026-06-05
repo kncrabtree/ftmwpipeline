@@ -9,11 +9,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from .utils import setup_logging, print_error, print_processing_params
-from ._argspec import add_settings_args, settings_from_namespace
-
 # Import shared implementations
 from .._internal.stage1_impl import compute_ft_impl, visualize_ft_impl
+from ._argspec import add_settings_args, settings_from_namespace
+from .utils import print_error, print_processing_params, setup_logging
 
 
 def cmd_ft_process(args: argparse.Namespace) -> int:

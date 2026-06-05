@@ -5,10 +5,11 @@ This module provides plotting functions for FID time-domain data,
 enabling visual validation of loaded data and assessment of signal quality.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-from typing import Optional, Tuple, Any
 from pathlib import Path
+from typing import Any, Optional, Tuple
+
+import matplotlib.pyplot as plt
+import numpy as np
 
 from ..core.data_structures import FID
 

@@ -18,16 +18,17 @@ Performance strategy:
   - TestErrorConsistency tests are lightweight and do not require sharing.
 """
 
-import pytest
 import shutil
 import subprocess
-import numpy as np
 from pathlib import Path
-from typing import Dict, Any, Tuple
+from typing import Any, Dict, Tuple
 
-from ftmwpipeline import Pipeline
+import numpy as np
+import pytest
+
 import ftmwpipeline.api as ftmw
-from ftmwpipeline.core.data_structures import ComplexFT, FID
+from ftmwpipeline import Pipeline
+from ftmwpipeline.core.data_structures import FID, ComplexFT
 from ftmwpipeline.preprocessing.noise_estimation import NoiseResult
 
 

@@ -47,9 +47,9 @@ import h5py
 
 from ..core.peak_detection_settings import (
     PeakDetectionSettings,
-    from_attrs as peak_from_attrs,
-    to_attrs as peak_to_attrs,
 )
+from ..core.peak_detection_settings import from_attrs as peak_from_attrs
+from ..core.peak_detection_settings import to_attrs as peak_to_attrs
 
 logger = logging.getLogger(__name__)
 

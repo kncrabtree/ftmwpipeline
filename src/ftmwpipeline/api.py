@@ -33,19 +33,19 @@ stages = ftmw.list_available_stages("experiment.ftmw")
 ```
 """
 
-from typing import Dict, List, Optional, Sequence, Union, Any, Tuple
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
-from .pipeline import Pipeline
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
+from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
-from .core.start_detection_settings import StartDetectionSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
+from .pipeline import Pipeline
 from .preprocessing.noise_estimation import NoiseResult
 from .preprocessing.start_detection import StartDetectionResult
 

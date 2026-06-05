@@ -17,6 +17,8 @@ from importlib.resources import files
 
 import pytest
 
+from ftmwpipeline.core.noise_settings import load_preset as load_noise_preset
+from ftmwpipeline.core.peak_detection_settings import load_preset as load_peak_preset
 from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.core.stage_fit_settings import (
     ShapeSpec,
@@ -24,18 +26,8 @@ from ftmwpipeline.core.stage_fit_settings import (
     load_preset,
     resolve,
 )
-from ftmwpipeline.core.noise_settings import (
-    load_preset as load_noise_preset,
-)
-from ftmwpipeline.core.peak_detection_settings import (
-    load_preset as load_peak_preset,
-)
-from ftmwpipeline.core.tau_calibration_settings import (
-    load_preset as load_tau_preset,
-)
-from ftmwpipeline.core.window_planning_settings import (
-    load_preset as load_window_preset,
-)
+from ftmwpipeline.core.tau_calibration_settings import load_preset as load_tau_preset
+from ftmwpipeline.core.window_planning_settings import load_preset as load_window_preset
 
 
 class TestPackagedPresetResolution:

@@ -9,9 +9,9 @@ own; all behavior is delegated to ``Pipeline`` so the result is identical to
 driving the pipeline directly or via the CLI.
 """
 
-from typing import Any, Dict, List, Optional, Union
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
 
 from .pipeline import Pipeline
 
@@ -155,7 +155,7 @@ def validate_installation() -> Dict[str, bool]:
     from importlib.util import find_spec
 
     try:
-        from . import core, preprocessing, peak_detection
+        from . import core, peak_detection, preprocessing
 
         # Reference the modules so a successful import is what we assert.
         validation_results["core_imports"] = bool(

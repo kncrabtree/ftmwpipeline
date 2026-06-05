@@ -5,77 +5,76 @@ pipeline, implementing the dual-interface architecture alongside functional
 and CLI interfaces. Each Pipeline instance is bound to a specific .ftmw file.
 """
 
+import logging
+from pathlib import Path
 from typing import (
+    TYPE_CHECKING,
+    Any,
     Dict,
     List,
     Optional,
     Sequence,
-    Union,
-    Any,
     Tuple,
+    Union,
     cast,
-    TYPE_CHECKING,
 )
-import logging
-from pathlib import Path
 
 if TYPE_CHECKING:
     from ._internal.tuning import BatchItem, KnobSpec, SweepResult
 
-from .core.data_structures import FID, ComplexFT
-from .core.settings import FTSettings
-from .core.noise_settings import NoiseSettings
-from .core.peak_detection_settings import PeakDetectionSettings
-from .core.stage_fit_settings import StageFitSettings
-from .core.tau_calibration_settings import TauCalibrationSettings
-from .core.window_planning_settings import WindowPlanningSettings
-from .core.start_detection_settings import StartDetectionSettings
-from .preprocessing.noise_estimation import NoiseResult
-from .preprocessing.start_detection import StartDetectionResult
-from .file_manager import (
-    SourceMetadata,
-    PipelineStageTracker,
-    PipelineFileError,
-    PipelineExistsError,
-    StageDependencyError,
-    PipelineCorruptionError,
-    create_pipeline_file,
-    open_pipeline_file,
-    validate_pipeline_file,
-    update_processing_parameters,
-)
-from .io.data_loaders import load_fid, detect_format, validate_source
+from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
     compute_ft_impl,
-    visualize_ft_impl,
     save_ft_parameters_impl,
+    visualize_ft_impl,
 )
 from ._internal.stage2_impl import compute_noise_estimation_impl, visualize_noise_impl
-from ._internal.stage2b_impl import (
-    calibrate_tau_impl,
-    load_tau_calibration_impl,
-)
 from ._internal.stage2b_g_impl import (
     calibrate_tau_G_impl,
     load_tau_G_calibration_impl,
 )
-from ._internal.shape_recommendation_impl import recommend_shape_impl
-from ._internal.start_detection_impl import detect_start_time_impl
+from ._internal.stage2b_impl import (
+    calibrate_tau_impl,
+    load_tau_calibration_impl,
+)
 from ._internal.stage3_impl import (
     detect_peaks_impl,
-    visualize_peaks_impl,
     load_peaks_impl,
+    visualize_peaks_impl,
 )
 from ._internal.stage4_impl import (
     assign_windows_impl,
-    visualize_windows_impl,
     load_windows_impl,
+    visualize_windows_impl,
 )
-from ._internal.stage5_impl import fit_peaks_impl, visualize_fit_impl, load_fit_impl
+from ._internal.stage5_impl import fit_peaks_impl, load_fit_impl, visualize_fit_impl
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
-from .core.data_structures import Peak, SpectrumFit, WindowPlan
+from ._internal.start_detection_impl import detect_start_time_impl
+from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .core.noise_settings import NoiseSettings
+from .core.peak_detection_settings import PeakDetectionSettings
+from .core.settings import FTSettings
+from .core.stage_fit_settings import StageFitSettings
+from .core.start_detection_settings import StartDetectionSettings
+from .core.tau_calibration_settings import TauCalibrationSettings
+from .core.window_planning_settings import WindowPlanningSettings
+from .file_manager import (
+    PipelineCorruptionError,
+    PipelineExistsError,
+    PipelineFileError,
+    PipelineStageTracker,
+    SourceMetadata,
+    StageDependencyError,
+    create_pipeline_file,
+    open_pipeline_file,
+    update_processing_parameters,
+    validate_pipeline_file,
+)
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
+from .io.data_loaders import detect_format, load_fid, validate_source
+from .preprocessing.noise_estimation import NoiseResult
+from .preprocessing.start_detection import StartDetectionResult
 
 
 class Pipeline:

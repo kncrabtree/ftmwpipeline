@@ -8,28 +8,29 @@ Tests functional FID storage and loading rather than interface pedantry, focusin
 - Error handling for corrupted files and missing data
 """
 
-import pytest
-import numpy as np
-import h5py
-import tempfile
 import json
-from pathlib import Path
+import tempfile
 from datetime import datetime
+from pathlib import Path
+
+import h5py
+import numpy as np
+import pytest
 
 from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
-from ftmwpipeline.io.fid_serialization import (
-    save_fid_to_hdf5,
-    load_fid_from_hdf5,
-    _serialize_optional_float,
-    _deserialize_optional_float,
-    _serialize_optional_str,
-    _deserialize_optional_str,
-)
 from ftmwpipeline.file_manager import (
+    SourceMetadata,
     create_pipeline_file,
     open_pipeline_file,
     update_processing_parameters,
-    SourceMetadata,
+)
+from ftmwpipeline.io.fid_serialization import (
+    _deserialize_optional_float,
+    _deserialize_optional_str,
+    _serialize_optional_float,
+    _serialize_optional_str,
+    load_fid_from_hdf5,
+    save_fid_to_hdf5,
 )
 
 

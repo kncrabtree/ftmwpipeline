@@ -14,6 +14,7 @@ from dataclasses import fields
 import pytest
 
 from ftmwpipeline.core.tau_calibration_settings import (
+    _HARD_DEFAULTS,
     AggregationSubSettings,
     BandSubSettings,
     GaussianSubSettings,
@@ -21,7 +22,6 @@ from ftmwpipeline.core.tau_calibration_settings import (
     RecommendationSubSettings,
     StftSubSettings,
     TauCalibrationSettings,
-    _HARD_DEFAULTS,
     from_attrs,
     from_yaml,
     from_yaml_dict,

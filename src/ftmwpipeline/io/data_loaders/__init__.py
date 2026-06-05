@@ -12,18 +12,18 @@ Architecture:
 """
 
 from .base import BaseLoader, LoaderError
-from .registry import (
-    FormatRegistry,
-    register_loader,
-    detect_format,
-    validate_source,
-    load_fid,
-    list_formats,
-    get_format_info,
-)
 from .blackchirp import BlackChirpLoader
 from .csv import CSVLoader
 from .hdf5 import HDF5Loader
+from .registry import (
+    FormatRegistry,
+    detect_format,
+    get_format_info,
+    list_formats,
+    load_fid,
+    register_loader,
+    validate_source,
+)
 
 # Register available loaders
 register_loader("blackchirp", BlackChirpLoader)

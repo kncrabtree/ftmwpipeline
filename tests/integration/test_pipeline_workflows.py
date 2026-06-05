@@ -6,15 +6,16 @@ to ensure they work correctly with .ftmw files and produce valid results.
 Focus is purely on functional correctness - NO performance testing.
 """
 
-import pytest
 import subprocess
-import numpy as np
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any, Dict
 
-from ftmwpipeline import Pipeline
+import numpy as np
+import pytest
+
 import ftmwpipeline.api as ftmw
-from ftmwpipeline.core.data_structures import ComplexFT, FID
+from ftmwpipeline import Pipeline
+from ftmwpipeline.core.data_structures import FID, ComplexFT
 
 
 @pytest.mark.single_interface

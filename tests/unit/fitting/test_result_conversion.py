@@ -39,10 +39,10 @@ from ftmwpipeline.fitting.peak_model import ModelPeak, molecular_frequency
 from ftmwpipeline.fitting.plan_execution import (
     DEFAULT_RESIDUAL_EDGE_THRESHOLD,
     ReplanContext,
+    attempt_thaw_round,
     evaluate_fixed_contributor,
     execute_plan,
     residual_edge_coherence,
-    attempt_thaw_round,
 )
 from ftmwpipeline.fitting.result_conversion import (
     plan_fit_outcome_to_spectrum_fit,
@@ -52,13 +52,13 @@ from ftmwpipeline.fitting.result_conversion import (
 
 # Reuse the synthetic builders from the plan-execution tests.
 from tests.unit.fitting.test_plan_execution import (
+    _STAGE4_PARAMS,
     DF_MHZ,
     PROBE_MHZ,
-    T_US,
-    TAU_US,
     SEED,
     SIDEBAND,
-    _STAGE4_PARAMS,
+    T_US,
+    TAU_US,
     _amp_for_snr,
     _complex_noise,
     _make_active_ft,

@@ -10,13 +10,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from .utils import setup_logging, print_error, print_processing_params
-
 # Import shared implementations
 from .._internal.stage2_impl import (
     compute_noise_estimation_impl,
     visualize_noise_impl,
 )
+from .utils import print_error, print_processing_params, setup_logging
 
 
 def cmd_estimate_noise(args) -> int:

@@ -5,12 +5,13 @@ This module provides common test fixtures and configuration for the
 entire test suite.
 """
 
-import pytest
-import numpy as np
-from pathlib import Path
-import tempfile
 import shutil
-from typing import Dict, List, Tuple, Any
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import pytest
 
 # Test data directory (will be populated in later phases)
 TEST_DATA_DIR = Path(__file__).parent / "fixtures"

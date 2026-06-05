@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional, Tuple, Union
 import h5py
 
 from .core.data_structures import FID
-from .io.fid_serialization import save_fid_to_hdf5, load_fid_from_hdf5
+from .io.fid_serialization import load_fid_from_hdf5, save_fid_to_hdf5
 
 # Module-level logger for file manager operations
 logger = logging.getLogger(__name__)

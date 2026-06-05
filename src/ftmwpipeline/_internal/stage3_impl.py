@@ -26,9 +26,9 @@ diagnostics. Wrapped identically by the CLI, Pipeline class, and functional
 API.
 """
 
-from datetime import datetime
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, cast
 
@@ -39,8 +39,20 @@ import scipy.signal as spsig
 from ..core.data_structures import ComplexFT, Peak
 from ..core.peak_detection_settings import (
     PeakDetectionSettings,
-    load_preset as load_peak_detection_preset,
-    resolve as resolve_peak_detection_settings,
+)
+from ..core.peak_detection_settings import load_preset as load_peak_detection_preset
+from ..core.peak_detection_settings import resolve as resolve_peak_detection_settings
+from ..file_manager import invalidate_downstream_stages
+from ..io.peak_detection_settings_serialization import (
+    load_peak_detection_settings_from_h5,
+    save_peak_detection_settings_to_h5,
+)
+from ..io.peak_serialization import (
+    load_peaks_from_hdf5,
+    save_peaks_to_hdf5,
+)
+from ..io.stage_fit_settings_serialization import (
+    read_stage2b_recommended_shape,
 )
 from ..preprocessing.edge_coherence import DEFAULT_EDGE_M, rolling_coherence
 from ..preprocessing.leakage import deramp_to_active_start
@@ -54,26 +66,14 @@ from ..preprocessing.peak_detection import (
 )
 from .active_ft_support import build_active_grid_with_noise
 from .deprecation import warn_legacy_kwargs
-from ..io.peak_detection_settings_serialization import (
-    load_peak_detection_settings_from_h5,
-    save_peak_detection_settings_to_h5,
-)
-from ..io.peak_serialization import (
-    load_peaks_from_hdf5,
-    save_peaks_to_hdf5,
-)
-from ..io.stage_fit_settings_serialization import (
-    read_stage2b_recommended_shape,
-)
-from ..file_manager import invalidate_downstream_stages
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
-from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage2b_g_impl import (
     load_tau_G_calibration_impl,
     tau_G_calibration_present,
 )
+from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 
 logger = logging.getLogger(__name__)
 
