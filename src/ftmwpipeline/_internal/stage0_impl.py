@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 def import_data_impl(
-    file_path: str, source: str, format_name: Optional[str] = None, **format_params
+    file_path: str, source: str, format_name: Optional[str] = None, **format_params: Any
 ) -> Dict[str, Any]:
     """
     Shared implementation for data import into .ftmw pipeline files.
@@ -181,7 +181,7 @@ def visualize_fid_impl(
     file_path: str,
     show_metadata: bool = False,
     title: Optional[str] = None,
-    **plot_kwargs,
+    **plot_kwargs: Any,
 ) -> Any:
     """
     Shared implementation for FID visualization from .ftmw pipeline files.

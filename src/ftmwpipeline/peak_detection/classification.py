@@ -8,11 +8,11 @@ Implementation pending for Phase 4.
 # Placeholder functions - will be implemented in Phase 4
 
 
-def classify_peaks(*args, **kwargs):
+def classify_peaks(*args: object, **kwargs: object) -> None:
     """Placeholder for peak classification."""
-    raise NotImplementedError("Will be implemented in Phase 4")
+    raise NotImplementedError("Not yet implemented")
 
 
-def find_and_classify_peaks(*args, **kwargs):
+def find_and_classify_peaks(*args: object, **kwargs: object) -> None:
     """Placeholder for peak finding and classification."""
-    raise NotImplementedError("Will be implemented in Phase 4")
+    raise NotImplementedError("Not yet implemented")

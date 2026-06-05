@@ -7,12 +7,15 @@ cannot store acquisition parameters.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import numpy as np
 import pandas as pd
 
 from .base import BaseLoader, LoaderError
+
+if TYPE_CHECKING:
+    from ...core.data_structures import FID
 
 
 class CSVLoader(BaseLoader):
@@ -49,7 +52,7 @@ class CSVLoader(BaseLoader):
         return source_path.suffix.lower() == ".csv"
 
     def validate_source(
-        self, source_path: Union[str, Path], **kwargs
+        self, source_path: Union[str, Path], **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Validate CSV file and check for required parameters.
@@ -57,7 +60,12 @@ class CSVLoader(BaseLoader):
         CSV files require explicit metadata since the format cannot
         store acquisition parameters.
         """
-        result = {"valid": False, "metadata": {}, "options": {}, "errors": []}
+        result: Dict[str, Any] = {
+            "valid": False,
+            "metadata": {},
+            "options": {},
+            "errors": [],
+        }
 
         source_path = Path(source_path)
 
@@ -146,14 +154,14 @@ class CSVLoader(BaseLoader):
             result["errors"].append(f"Validation failed: {e}")
             return result
 
-    def load_fid(
+    def load_fid(  # type: ignore[override]  # CSV loader requires extra acquisition params; hierarchy refactor tracked separately
         self,
         source_path: Union[str, Path],
         spacing_us: float,
         probe_freq_mhz: float,
         sideband: str = "upper",
         shots: int = 1,
-        **kwargs,
+        **kwargs: Any,
     ) -> "FID":
         """
         Load FID data from CSV file.

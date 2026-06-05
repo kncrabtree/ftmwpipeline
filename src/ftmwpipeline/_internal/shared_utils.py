@@ -193,7 +193,9 @@ def ensure_ftmw_extension(file_path: str) -> str:
     return file_path
 
 
-def create_result_summary(operation: str, file_path: str, **metadata) -> Dict[str, Any]:
+def create_result_summary(
+    operation: str, file_path: str, **metadata: Any
+) -> Dict[str, Any]:
     """
     Create standardized result summary for operations.
 

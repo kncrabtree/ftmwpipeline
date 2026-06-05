@@ -16,7 +16,7 @@ Architecture:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import scipy.fft as sfft
@@ -57,7 +57,7 @@ class FIDProcessingParameters:
     expf_us: Optional[float] = None  # Exponential decay filter time constant (μs)
     units_power: int = 6  # Scaling factor (10^units_power, 6 for μV)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate processing parameters."""
         if self.zpf < 0:
             raise ValueError("Zero padding factor must be non-negative")
@@ -142,9 +142,9 @@ class PreprocessedFID:
         For lower sideband: molecular = probe - scope
         """
         if self.sideband in (Sideband.LOWER, Sideband.LSB):
-            return self.probe_freq_mhz - scope_freq_mhz
+            return cast(np.ndarray, self.probe_freq_mhz - scope_freq_mhz)
         else:
-            return self.probe_freq_mhz + scope_freq_mhz
+            return cast(np.ndarray, self.probe_freq_mhz + scope_freq_mhz)
 
     def compute_fft(self) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -268,11 +268,11 @@ class FID:
 
     def time_array(self) -> np.ndarray:
         """Generate time array in seconds."""
-        return np.arange(self.n_points) * self.spacing
+        return cast(np.ndarray, np.arange(self.n_points) * self.spacing)
 
     def time_array_us(self) -> np.ndarray:
         """Generate time array in microseconds."""
-        return self.time_array() * 1e6
+        return cast(np.ndarray, self.time_array() * 1e6)
 
     def apply_molecular_frequency(self, scope_freq_mhz: np.ndarray) -> np.ndarray:
         """
@@ -282,9 +282,9 @@ class FID:
         For lower sideband: molecular = probe - scope
         """
         if self.sideband in (Sideband.LOWER, Sideband.LSB):
-            return self.probe_freq_mhz - scope_freq_mhz
+            return cast(np.ndarray, self.probe_freq_mhz - scope_freq_mhz)
         else:
-            return self.probe_freq_mhz + scope_freq_mhz
+            return cast(np.ndarray, self.probe_freq_mhz + scope_freq_mhz)
 
     def preprocess(
         self,
@@ -346,9 +346,9 @@ class FID:
         end_idx = len(self.data)
 
         if processing_params.start_us is not None:
-            start_idx = np.searchsorted(time_us, processing_params.start_us)
+            start_idx = int(np.searchsorted(time_us, processing_params.start_us))
         if processing_params.end_us is not None:
-            end_idx = np.searchsorted(time_us, processing_params.end_us)
+            end_idx = int(np.searchsorted(time_us, processing_params.end_us))
 
         # Start with full original data and zero regions outside bounds
         windowed_data = self.data.copy()
@@ -448,8 +448,8 @@ class ComplexFT:
         self.metadata = metadata or {}
 
         # Cached properties
-        self._magnitude_spectrum = None
-        self._freq_step = None
+        self._magnitude_spectrum: Optional[np.ndarray] = None
+        self._freq_step: Optional[float] = None
 
     # NOTE: from_fid class method removed - use proper three-stage workflow:
     # 1. preprocessed = fid.preprocess(**params)
@@ -490,24 +490,24 @@ class ComplexFT:
     def magnitude_spectrum(self) -> np.ndarray:
         """Magnitude spectrum (cached)."""
         if self._magnitude_spectrum is None:
-            self._magnitude_spectrum = np.abs(self.complex_spectrum)
+            self._magnitude_spectrum = cast(np.ndarray, np.abs(self.complex_spectrum))
         return self._magnitude_spectrum
 
     @property
     def real_spectrum(self) -> np.ndarray:
         """Real component of spectrum."""
-        return np.real(self.complex_spectrum)
+        return cast(np.ndarray, np.real(self.complex_spectrum))
 
     @property
     def imag_spectrum(self) -> np.ndarray:
         """Imaginary component of spectrum."""
-        return np.imag(self.complex_spectrum)
+        return cast(np.ndarray, np.imag(self.complex_spectrum))
 
     @property
     def freq_step(self) -> float:
         """Frequency step in MHz (cached)."""
         if self._freq_step is None:
-            self._freq_step = np.mean(np.diff(self.freq_array))
+            self._freq_step = float(np.mean(np.diff(self.freq_array)))
         return self._freq_step
 
     @property
@@ -586,7 +586,7 @@ class Peak:
         snr: Optional[float] = None,
         noise_std_local: Optional[float] = None,
         classification: Optional[Union[str, PeakClassification]] = None,
-        **properties,
+        **properties: Any,
     ):
         """
         Initialize Peak object.
@@ -615,6 +615,7 @@ class Peak:
         self.noise_std_local = noise_std_local
 
         # Handle classification
+        self.classification: Optional[PeakClassification]
         if isinstance(classification, str):
             try:
                 self.classification = PeakClassification(classification)
@@ -652,7 +653,7 @@ class Peak:
         snr_str = f"{self.snr:.1f}" if self.snr is not None else "None"
         return f"Peak(freq={self.frequency:.3f} MHz, intensity={self.intensity:.2e}, SNR={snr_str}, {classification_str})"
 
-    def __lt__(self, other):
+    def __lt__(self, other: "Peak") -> bool:
         """Sort peaks by intensity (strongest first)."""
         return self.intensity > other.intensity
 
@@ -810,17 +811,17 @@ class SpectralWindow:
     @property
     def magnitude_spectrum(self) -> np.ndarray:
         """Magnitude spectrum."""
-        return np.abs(self.complex_spectrum)
+        return cast(np.ndarray, np.abs(self.complex_spectrum))
 
     @property
     def real_spectrum(self) -> np.ndarray:
         """Real component."""
-        return np.real(self.complex_spectrum)
+        return cast(np.ndarray, np.real(self.complex_spectrum))
 
     @property
     def imag_spectrum(self) -> np.ndarray:
         """Imaginary component."""
-        return np.imag(self.complex_spectrum)
+        return cast(np.ndarray, np.imag(self.complex_spectrum))
 
     @property
     def n_points(self) -> int:
@@ -1137,7 +1138,7 @@ class FTMWData:
             )
         return self._complex_ft
 
-    def compute_ft(self, **ft_kwargs) -> ComplexFT:
+    def compute_ft(self, **ft_kwargs: Any) -> ComplexFT:
         """Compute ComplexFT with custom parameters using three-stage workflow."""
         # Use three-stage workflow with custom parameters
         preprocessed = self.fid.preprocess(**ft_kwargs)

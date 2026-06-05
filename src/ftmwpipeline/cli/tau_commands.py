@@ -25,7 +25,7 @@ from .utils import print_error, setup_logging
 logger = logging.getLogger(__name__)
 
 
-def cmd_calibrate_tau(args) -> int:
+def cmd_calibrate_tau(args: argparse.Namespace) -> int:
     """Run the STFT tau calibration and persist the result."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -101,7 +101,7 @@ def cmd_calibrate_tau(args) -> int:
     return 0
 
 
-def cmd_calibrate_tau_G(args) -> int:
+def cmd_calibrate_tau_G(args: argparse.Namespace) -> int:
     """Run the STFT Gaussian-shape τ_G calibration and persist the result."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -185,7 +185,7 @@ def cmd_calibrate_tau_G(args) -> int:
     return 0
 
 
-def cmd_visualize_tau_heatmap(args) -> int:
+def cmd_visualize_tau_heatmap(args: argparse.Namespace) -> int:
     """Render the 2D STFT magnitude heatmap (figure 08 in the research dir)."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -209,7 +209,7 @@ def cmd_visualize_tau_heatmap(args) -> int:
     return _handle_figure_output(fig, args)
 
 
-def cmd_visualize_tau_distribution(args) -> int:
+def cmd_visualize_tau_distribution(args: argparse.Namespace) -> int:
     """Render the tau-distribution analysis (figure 09 in the research dir)."""
     setup_logging(args.verbose)
     file_path = args.file_path
@@ -233,7 +233,7 @@ def cmd_visualize_tau_distribution(args) -> int:
     return _handle_figure_output(fig, args)
 
 
-def _handle_figure_output(fig, args) -> int:
+def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
     """Save or display a matplotlib figure based on CLI flags."""
     output: Optional[str] = getattr(args, "output", None)
     interactive = not output
@@ -255,7 +255,7 @@ def _handle_figure_output(fig, args) -> int:
     return 0
 
 
-def register_tau_commands(subparsers) -> None:
+def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register Stage 2b CLI subcommands on the parent subparsers."""
     # --- calibrate-tau -----------------------------------------------------
     parser_cal = subparsers.add_parser(

@@ -36,7 +36,7 @@ class BaseLoader(ABC):
     file_extensions: List[str] = []
     directory_indicators: List[str] = []  # Files/dirs that indicate this format
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize base loader."""
         pass
 
@@ -59,7 +59,7 @@ class BaseLoader(ABC):
 
     @abstractmethod
     def validate_source(
-        self, source_path: Union[str, Path], **kwargs
+        self, source_path: Union[str, Path], **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Validate the source and return available metadata/options.
@@ -83,7 +83,7 @@ class BaseLoader(ABC):
         pass
 
     @abstractmethod
-    def load_fid(self, source_path: Union[str, Path], **kwargs) -> "FID":
+    def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         """
         Load FID data from the source.
 
@@ -128,7 +128,7 @@ class BaseLoader(ABC):
         """
         return {}
 
-    def validate_parameters(self, **kwargs) -> Dict[str, Any]:
+    def validate_parameters(self, **kwargs: Any) -> Dict[str, Any]:
         """
         Validate loading parameters and provide defaults.
 
@@ -150,7 +150,7 @@ class BaseLoader(ABC):
         LoaderError
             If required parameters are missing or invalid
         """
-        result = {"valid": True, "parameters": {}, "errors": []}
+        result: Dict[str, Any] = {"valid": True, "parameters": {}, "errors": []}
 
         # Check required parameters
         required = self.get_required_parameters()
@@ -179,7 +179,7 @@ class BaseLoader(ABC):
         return result
 
     def _create_source_metadata(
-        self, source_path: Union[str, Path], **kwargs
+        self, source_path: Union[str, Path], **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Create source metadata for FID object.
@@ -200,7 +200,7 @@ class BaseLoader(ABC):
 
         source_path = Path(source_path)
 
-        metadata = {
+        metadata: Dict[str, Any] = {
             "source_path": str(source_path.resolve()),
             "source_format": self.format_name,
             "loader_class": self.__class__.__name__,

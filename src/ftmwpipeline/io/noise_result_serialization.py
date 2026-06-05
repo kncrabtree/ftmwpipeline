@@ -14,7 +14,7 @@ _extract_signal_indices : Convert boolean noise_mask to signal indices
 _reconstruct_noise_mask : Reconstruct boolean noise_mask from signal indices
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import h5py
 import numpy as np
@@ -99,11 +99,8 @@ def save_noise_result_to_hdf5(
             for key, value in noise_result.bin_info.items():
                 if isinstance(value, np.ndarray):
                     bin_group.create_dataset(key, data=value)
-                elif isinstance(value, (int, float, str, bool)):
-                    bin_group.attrs[key] = value
                 else:
-                    # Convert complex objects to string representation
-                    bin_group.attrs[key] = str(value)
+                    bin_group.attrs[key] = value
 
         # Store algorithm metadata
         algo_group = h5_group.create_group("algorithm_info")
@@ -212,7 +209,7 @@ def _extract_signal_indices(noise_mask: np.ndarray) -> np.ndarray:
         Integer indices where noise_mask is False (signal points)
     """
     # Signal points are where noise_mask is False
-    signal_indices = np.where(~noise_mask)[0].astype(np.int32)
+    signal_indices = cast(np.ndarray, np.where(~noise_mask)[0].astype(np.int32))
     return signal_indices
 
 
@@ -234,6 +231,6 @@ def _reconstruct_noise_mask(
     np.ndarray
         Reconstructed boolean noise_mask
     """
-    noise_mask = np.ones(total_length, dtype=bool)  # Start with all noise
+    noise_mask: np.ndarray = np.ones(total_length, dtype=bool)  # Start with all noise
     noise_mask[signal_indices] = False  # Mark signal points
     return noise_mask

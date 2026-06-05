@@ -14,7 +14,7 @@ own display (file vs interactive).
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any, List, cast
 
 # Target per-panel aspect for stacked "ladder" figures (width : height).
 _LADDER_PANEL_ASPECT = 5.5
@@ -61,7 +61,7 @@ def _resolve_regions(
         return [(float(lo), float(hi)) for lo, hi in explicit]
     width = getattr(ctx, "zoom_width_mhz", None) or default_width
     n = getattr(ctx, "n_zoom", None) or default_n
-    return auto_select(rows, width, n)
+    return cast(List[Any], auto_select(rows, width, n))
 
 
 def _value_colors(n: int) -> List[Any]:
@@ -303,7 +303,7 @@ def _contrib_alpha(n: int) -> float:
         return 0x10 / 255.0
     byte = 2.0 ** (5.0 - math.log10(n))
     byte = max(1.0, min(float(0x10), byte))
-    return byte / 255.0
+    return float(byte / 255.0)
 
 
 def _plot_contributor_decays(ax: Any, row: Any, leaf: str, fit_color: str) -> None:

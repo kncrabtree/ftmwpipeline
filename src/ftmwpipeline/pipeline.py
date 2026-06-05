@@ -157,7 +157,7 @@ class Pipeline:
         format_name: Optional[str] = None,
         fid_index: Optional[int] = None,
         force: bool = False,
-        **loader_params,
+        **loader_params: Any,
     ) -> "Pipeline":
         """
         Create new pipeline from raw experimental data.
@@ -563,7 +563,7 @@ class Pipeline:
 
             # Storage and stage tracking handled by shared implementation
             self.logger.info("Stage 2: Noise estimation completed successfully")
-            return result["noise_result"]
+            return cast(NoiseResult, result["noise_result"])
 
         except StageDependencyError:
             # Re-raise dependency errors with clear message
@@ -581,8 +581,8 @@ class Pipeline:
         backend: str = "matplotlib",
         interactive: bool = True,
         output_file: Optional[Union[str, Path]] = None,
-        **plot_kwargs,
-    ):
+        **plot_kwargs: Any,
+    ) -> Any:
         """
         Create noise estimation diagnostic visualization.
 

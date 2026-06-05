@@ -7,7 +7,7 @@ Currently implements BlackChirp data loading.
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union, cast
 
 import numpy as np
 import pandas as pd
@@ -145,7 +145,10 @@ def _load_blackchirp_processing(fid_dir: Path) -> FIDProcessingParameters:
     return FIDProcessingParameters(
         start_us=float(proc_dict.get("FidStartUs", 0)),
         end_us=end_us_val if end_us_val > 0 else None,
-        winf=_convert_window_function(proc_dict.get("FidWindowFunction", "None")),
+        winf=cast(
+            Optional[str],
+            _convert_window_function(proc_dict.get("FidWindowFunction", "None")),
+        ),
         zpf=int(proc_dict.get("FidZeroPadFactor", 0)),
         rdc=proc_dict.get("FidRemoveDC", "false").lower() == "true",
         expf_us=expf_us_val if expf_us_val > 0 else None,
@@ -153,7 +156,9 @@ def _load_blackchirp_processing(fid_dir: Path) -> FIDProcessingParameters:
     )
 
 
-def _convert_window_function(blackchirp_winf: str) -> Optional[str]:
+def _convert_window_function(
+    blackchirp_winf: str,
+) -> Optional[Union[str, Tuple[str, float]]]:
     """Convert BlackChirp window function name to scipy compatible name."""
     winf_map = {
         "None": None,
@@ -204,6 +209,6 @@ def _load_blackchirp_metadata(experiment_path: Path) -> Dict[str, Any]:
     return metadata
 
 
-def load_generic_fid(*args, **kwargs):
+def load_generic_fid(*args: Any, **kwargs: Any) -> None:
     """Placeholder for generic FID loading."""
     raise NotImplementedError("Generic FID loading will be implemented later")

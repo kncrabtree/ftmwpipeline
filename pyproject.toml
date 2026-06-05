@@ -181,6 +181,8 @@ module = [
     "scipy.*",
     "matplotlib.*",
     "h5py.*",
-    "tqdm.*",
+    "pandas.*",
+    "plotly.*",
+    "blackchirp.*",
 ]
 ignore_missing_imports = true

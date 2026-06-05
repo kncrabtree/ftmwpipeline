@@ -17,7 +17,7 @@ import random
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 
 def window_snr_max(wf: object) -> float:
@@ -120,7 +120,7 @@ def reduce_plan_for_fit(
     path: Path,
     selection: FitWindowSelection,
     spec: object = None,
-    values: object = None,
+    values: Optional[Sequence[Any]] = None,
 ) -> None:
     """Reduce the persisted Stage 4 window plan on ``path`` in place to the
     subset described by ``selection``.

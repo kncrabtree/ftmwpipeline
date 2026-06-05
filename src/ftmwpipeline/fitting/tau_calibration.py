@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
 from scipy.optimize import least_squares
@@ -577,7 +577,7 @@ def sliding_stft(
         raise ValueError(f"n_seg={n_seg} too large for fid length N={N} (Nw={Nw} < 4)")
     n_bins = N // 2 + 1
     mag = np.empty((n_seg, n_bins), dtype=float)
-    a_centers = np.empty(n_seg, dtype=float)
+    a_centers: np.ndarray = np.empty(n_seg, dtype=float)
     padded = np.zeros(N, dtype=float)
     for k in range(n_seg):
         a_start = k * Nw
@@ -725,10 +725,10 @@ def _aicc(rss: np.ndarray, n: int, k: int) -> np.ndarray:
     size).
     """
     if n - k - 1 <= 0:
-        return np.full_like(rss, np.inf, dtype=float)
+        return cast(np.ndarray, np.full_like(rss, np.inf, dtype=float))
     correction = 2.0 * k * (k + 1) / (n - k - 1)
     rss_safe = np.where(rss > 0, rss, 1e-300)
-    return n * np.log(rss_safe / n) + 2 * k + correction
+    return cast(np.ndarray, n * np.log(rss_safe / n) + 2 * k + correction)
 
 
 @dataclass(frozen=True)
@@ -1089,7 +1089,7 @@ def _run_shape_fits(
         ok_e = np.zeros(n_bins, dtype=bool)
         for idx in bin_idxs:
             i = int(idx)
-            mag_bin = mag[:, i].astype(float)
+            mag_bin: np.ndarray = mag[:, i].astype(float)
             C_seed = float(C_seed_arr[i])
             tau_seed = float(tau_seed_arr[i])
             ep, re_, oe = _fit_exp_nls_single(
@@ -1348,7 +1348,7 @@ def _select_rss_for_gate(
             f"shape must be one of {sorted(_VALID_CLASSIFIER_SHAPES)}; "
             f"got {shape!r}"
         )
-    rss = np.where(np.isfinite(rss), rss, np.inf)
+    rss = cast(np.ndarray, np.where(np.isfinite(rss), rss, np.inf))
     return rss
 
 
@@ -2158,17 +2158,20 @@ def extract_tau_majority(
 # ---------------------------------------------------------------------------
 def _voigt_residuals(params: np.ndarray, a: np.ndarray, y: np.ndarray) -> np.ndarray:
     C, tau_L, tau_G = params
-    return C * np.exp(-a / tau_L) * np.exp(-((a / tau_G) ** 2)) - y
+    return cast(
+        np.ndarray,
+        C * np.exp(-a / tau_L) * np.exp(-((a / tau_G) ** 2)) - y,
+    )
 
 
 def _gauss_residuals(params: np.ndarray, a: np.ndarray, y: np.ndarray) -> np.ndarray:
     C, tau_G = params
-    return C * np.exp(-((a / tau_G) ** 2)) - y
+    return cast(np.ndarray, C * np.exp(-((a / tau_G) ** 2)) - y)
 
 
 def _exp_residuals(params: np.ndarray, a: np.ndarray, y: np.ndarray) -> np.ndarray:
     C, tau_L = params
-    return C * np.exp(-a / tau_L) - y
+    return cast(np.ndarray, C * np.exp(-a / tau_L) - y)
 
 
 def _fit_exp_nls_single(
@@ -2689,7 +2692,7 @@ def _three_way_rows_from_shape_fits(
         aicc_gauss = float(_aicc(np.array([rss_g[i]]), n_seg, k=2)[0])
         aicc_voigt = float(_aicc(np.array([rss_v[i]]), n_seg, k=3)[0])
         scores = {"exp": aicc_exp, "gauss": aicc_gauss, "voigt": aicc_voigt}
-        verdict = min(scores, key=scores.get)
+        verdict = min(scores, key=lambda k: scores[k])
         rows.append(
             dict(
                 idx=i,
@@ -2724,7 +2727,7 @@ def _shape_recommendation_bin_clean(
     flat or noise-dominated) and gets dropped before the SNR-weighted
     tally.
     """
-    return (
+    return bool(
         row["tau_L_exp"] < tau_cap_us
         or row["tau_G_gauss"] < tau_cap_us
         or row["tau_L_voigt"] < tau_cap_us

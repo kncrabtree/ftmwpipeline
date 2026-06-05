@@ -7,12 +7,15 @@ in a structured format.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import h5py
 import numpy as np
 
 from .base import BaseLoader, LoaderError
+
+if TYPE_CHECKING:
+    from ...core.data_structures import FID
 
 
 class HDF5Loader(BaseLoader):
@@ -67,12 +70,17 @@ class HDF5Loader(BaseLoader):
             return False
 
     def validate_source(
-        self, source_path: Union[str, Path], **kwargs
+        self, source_path: Union[str, Path], **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Validate HDF5 file structure and extract metadata.
         """
-        result = {"valid": False, "metadata": {}, "options": {}, "errors": []}
+        result: Dict[str, Any] = {
+            "valid": False,
+            "metadata": {},
+            "options": {},
+            "errors": [],
+        }
 
         source_path = Path(source_path)
 
@@ -94,7 +102,7 @@ class HDF5Loader(BaseLoader):
             result["errors"].append(f"Validation failed: {e}")
             return result
 
-    def load_fid(self, source_path: Union[str, Path], **kwargs) -> "FID":
+    def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
         """
         Load FID data from HDF5 file.
 

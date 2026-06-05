@@ -18,7 +18,7 @@ from .._internal.stage2_impl import (
 from .utils import print_error, print_processing_params, setup_logging
 
 
-def cmd_estimate_noise(args) -> int:
+def cmd_estimate_noise(args: argparse.Namespace) -> int:
     """
     Estimate frequency-dependent noise with the scatter estimator.
 
@@ -139,7 +139,7 @@ def cmd_estimate_noise(args) -> int:
         return 1
 
 
-def cmd_visualize_noise(args) -> int:
+def cmd_visualize_noise(args: argparse.Namespace) -> int:
     """
     Create noise estimation diagnostic visualization.
 
@@ -264,7 +264,7 @@ def cmd_visualize_noise(args) -> int:
         return 1
 
 
-def register_noise_commands(subparsers):
+def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
     """Register noise estimation commands with the main CLI parser."""
 
     # estimate-noise command

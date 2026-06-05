@@ -20,7 +20,7 @@ from ..io.data_loaders import get_format_info, list_formats
 from .utils import setup_logging
 
 
-def cmd_data_load(args) -> int:
+def cmd_data_load(args: argparse.Namespace) -> int:
     """
     Import experimental data into a .ftmw pipeline file.
 
@@ -111,7 +111,7 @@ def cmd_data_load(args) -> int:
         return 1
 
 
-def cmd_data_visualize(args) -> int:
+def cmd_data_visualize(args: argparse.Namespace) -> int:
     """
     Visualize FID data from pipeline file.
 
@@ -187,7 +187,7 @@ def cmd_data_visualize(args) -> int:
         return 1
 
 
-def cmd_data_info(args) -> int:
+def cmd_data_info(args: argparse.Namespace) -> int:
     """
     Show information about available data formats and loaders.
     """

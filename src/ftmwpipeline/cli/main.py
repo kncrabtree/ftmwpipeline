@@ -7,7 +7,7 @@ integrating existing validation/version commands with new FT processing commands
 
 import argparse
 import sys
-from typing import List, Optional
+from typing import List, Optional, cast
 
 from .. import __version__
 from ..workflows import validate_installation
@@ -24,7 +24,7 @@ from .utils import setup_logging
 from .window_commands import register_window_commands
 
 
-def cmd_validate(args) -> int:
+def cmd_validate(args: argparse.Namespace) -> int:
     """Validate installation."""
     results = validate_installation()
 
@@ -47,7 +47,7 @@ def cmd_validate(args) -> int:
         return 1
 
 
-def cmd_version(args) -> int:
+def cmd_version(args: argparse.Namespace) -> int:
     """Show version information."""
     from .. import PACKAGE_INFO
 
@@ -177,7 +177,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         parser.print_help()
         return 1
 
-    return args.func(args)
+    return cast(int, args.func(args))
 
 
 if __name__ == "__main__":

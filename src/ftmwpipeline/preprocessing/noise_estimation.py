@@ -18,7 +18,7 @@ reference at ``dev-docs/research/noise-snr-scaling/legacy_adaptive.py``.)
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union, cast
 
 import numpy as np
 import scipy.signal as spsig
@@ -314,14 +314,14 @@ def _gaussian_smooth_1d(
     """
     sigma = float(sigma)
     if sigma <= 0.0:
-        return np.asarray(x, dtype=float)
+        return cast(np.ndarray, np.asarray(x, dtype=float))
     radius = int(truncate * sigma + 0.5)
     offsets = np.arange(-radius, radius + 1)
     kernel = np.exp(-0.5 * (offsets / sigma) ** 2)
     kernel /= kernel.sum()
     # ``mode="nearest"`` == replicate the edge value over the kernel radius.
     padded = np.pad(np.asarray(x, dtype=float), radius, mode="edge")
-    return spsig.fftconvolve(padded, kernel, mode="valid")
+    return cast(np.ndarray, spsig.fftconvolve(padded, kernel, mode="valid"))
 
 
 def estimate_noise_scatter(

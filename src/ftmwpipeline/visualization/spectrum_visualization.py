@@ -41,7 +41,7 @@ def plot_complex_ft(
     fid: Optional[FID] = None,
     preprocessed_fid: Optional[PreprocessedFID] = None,
     show_fid_panels: bool = True,
-    **kwargs,
+    **kwargs: Any,
 ) -> Any:
     """
     Create interactive plot of ComplexFT with optional FID panels showing processing stages.
@@ -164,12 +164,12 @@ def _plot_complex_ft_plotly(
     real_part: np.ndarray,
     imag_part: np.ndarray,
     title: str,
-    fid,
-    preprocessed_fid,
+    fid: Optional[FID],
+    preprocessed_fid: Optional[PreprocessedFID],
     show_raw_fid: bool,
     show_preprocessed_fid: bool,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """Create plotly interactive plot of ComplexFT with optional FID panels."""
 
     # Determine number of rows and subplot titles
@@ -198,6 +198,7 @@ def _plot_complex_ft_plotly(
 
     # Raw FID panel
     if show_raw_fid:
+        assert fid is not None
         time_us = fid.time_array_us()
         fig.add_trace(
             go.Scatter(
@@ -214,7 +215,7 @@ def _plot_complex_ft_plotly(
 
         # Add vertical lines for windowing bounds
         if hasattr(fid, "processing") and fid.processing:
-            y_range = [np.min(fid.data), np.max(fid.data)]
+            y_range: list[float] = [float(np.min(fid.data)), float(np.max(fid.data))]
             if fid.processing.start_us is not None:
                 fig.add_shape(
                     type="line",
@@ -244,6 +245,7 @@ def _plot_complex_ft_plotly(
 
     # Preprocessed FID panel
     if show_preprocessed_fid:
+        assert preprocessed_fid is not None
         # Create time array for preprocessed data
         time_us = np.arange(len(preprocessed_fid.data)) * preprocessed_fid.spacing * 1e6
         fig.add_trace(
@@ -337,12 +339,12 @@ def _plot_complex_ft_matplotlib(
     title: str,
     figsize: Tuple[float, float],
     interactive: bool,
-    fid,
-    preprocessed_fid,
+    fid: Optional[FID],
+    preprocessed_fid: Optional[PreprocessedFID],
     show_raw_fid: bool,
     show_preprocessed_fid: bool,
-    **kwargs,
-):
+    **kwargs: Any,
+) -> Any:
     """Create matplotlib plot of ComplexFT with optional FID panels."""
 
     # Check if we need FID panels
@@ -367,6 +369,7 @@ def _plot_complex_ft_matplotlib(
         # Row 1: FID panels (2 columns)
         # Raw FID panel (left column)
         if show_raw_fid:
+            assert fid is not None
             ax_raw = fig.add_subplot(gs[0, 0])
             time_us = fid.time_array_us()
             ax_raw.plot(time_us, fid.data, "k-", linewidth=1, label="Raw FID")
@@ -397,6 +400,7 @@ def _plot_complex_ft_matplotlib(
 
         # Preprocessed FID panel (right column)
         if show_preprocessed_fid:
+            assert preprocessed_fid is not None
             ax_preproc = fig.add_subplot(gs[0, 1])
             time_us = (
                 np.arange(len(preprocessed_fid.data)) * preprocessed_fid.spacing * 1e6
@@ -465,7 +469,7 @@ def plot_spectral_window(
     title: Optional[str] = None,
     backend: str = "plotly",
     show_peaks: bool = True,
-    **kwargs,
+    **kwargs: Any,
 ) -> Any:
     """
     Plot a spectral window with optional peak annotations.
@@ -506,8 +510,8 @@ def plot_spectral_window(
 
 
 def _plot_spectral_window_plotly(
-    window: SpectralWindow, title: str, show_peaks: bool, **kwargs
-):
+    window: SpectralWindow, title: str, show_peaks: bool, **kwargs: Any
+) -> Any:
     """Create plotly plot of spectral window."""
 
     freq = window.freq_array
@@ -567,8 +571,8 @@ def _plot_spectral_window_plotly(
 
 
 def _plot_spectral_window_matplotlib(
-    window: SpectralWindow, title: str, show_peaks: bool, **kwargs
-):
+    window: SpectralWindow, title: str, show_peaks: bool, **kwargs: Any
+) -> Any:
     """Create matplotlib plot of spectral window."""
 
     fig, ax = plt.subplots(figsize=(12, 6))
@@ -617,11 +621,11 @@ def _plot_spectral_window_matplotlib(
 
 
 # Legacy placeholder functions for other plots - will be implemented in Phase 8
-def plot_peaks(*args, **kwargs):
+def plot_peaks(*args: Any, **kwargs: Any) -> None:
     """Placeholder for peak plotting."""
     raise NotImplementedError("Will be implemented in Phase 8")
 
 
-def plot_windows(*args, **kwargs):
+def plot_windows(*args: Any, **kwargs: Any) -> None:
     """Placeholder for window plotting."""
     raise NotImplementedError("Will be implemented in Phase 8")

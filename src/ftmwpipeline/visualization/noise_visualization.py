@@ -5,7 +5,7 @@ This module provides visualization functions for noise estimation algorithms,
 including bin boundaries, noise masks, and RMS estimates.
 """
 
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -58,7 +58,7 @@ def plot_noise_estimation(
     """
 
     if backend == "plotly":
-        return _plot_noise_estimation_plotly(
+        plotly_fig: object = _plot_noise_estimation_plotly(
             frequencies,
             magnitudes,
             noise_result,
@@ -67,6 +67,7 @@ def plot_noise_estimation(
             show_bin_boundaries,
             show_noise_points,
         )
+        return plotly_fig
     else:
         return _plot_noise_estimation_matplotlib(
             frequencies,
@@ -138,7 +139,7 @@ def _plot_noise_estimation_matplotlib(
 
     # Add bin boundaries as thin dotted lines
     if show_bin_boundaries and "bin_edges" in noise_result.bin_info:
-        bin_edges = noise_result.bin_info["bin_edges"]
+        bin_edges = cast(np.ndarray, noise_result.bin_info["bin_edges"])
 
         # Limit number of lines if there are too many
         if len(bin_edges) > 50:
@@ -158,9 +159,13 @@ def _plot_noise_estimation_matplotlib(
             bin_edges_to_show = bin_edges
 
         for edge in bin_edges_to_show:
-            if 0 <= edge < len(frequencies):
+            if 0 <= int(edge) < len(frequencies):
                 ax.axvline(
-                    freq_mhz[edge], color="red", linestyle=":", alpha=0.6, linewidth=0.5
+                    float(freq_mhz[int(edge)]),
+                    color="red",
+                    linestyle=":",
+                    alpha=0.6,
+                    linewidth=0.5,
                 )
 
     # Set limits and labels
@@ -195,7 +200,7 @@ def _plot_noise_estimation_plotly(
     title: Optional[str],
     show_bin_boundaries: bool,
     show_noise_points: bool,
-):
+) -> object:
     """Create plotly version of noise estimation plot."""
     try:
         import plotly.graph_objects as go
@@ -273,7 +278,7 @@ def _plot_noise_estimation_plotly(
     )
 
     if show_bin_boundaries and "bin_edges" in noise_result.bin_info:
-        bin_edges = noise_result.bin_info["bin_edges"]
+        bin_edges = cast(np.ndarray, noise_result.bin_info["bin_edges"])
 
         # Limit number of lines if there are too many
         if len(bin_edges) > 50:
@@ -283,9 +288,9 @@ def _plot_noise_estimation_plotly(
             bin_edges_to_show = bin_edges
 
         for edge in bin_edges_to_show:
-            if 0 <= edge < len(frequencies):
+            if 0 <= int(edge) < len(frequencies):
                 fig.add_vline(
-                    x=freq_mhz[edge],
+                    x=float(freq_mhz[int(edge)]),
                     line_dash="dot",
                     line_color="red",
                     opacity=0.8,
@@ -373,8 +378,8 @@ def _compile_noise_statistics(
     # RMS noise statistics
     rms_mean = np.mean(noise_result.rms_noise)
     rms_std = np.std(noise_result.rms_noise)
-    rms_min = np.min(noise_result.rms_noise)
-    rms_max = np.max(noise_result.rms_noise)
+    rms_min: float = float(np.min(noise_result.rms_noise))
+    rms_max: float = float(np.max(noise_result.rms_noise))
 
     stats.append("RMS NOISE STATISTICS")
     stats.append("-" * 20)
@@ -405,8 +410,8 @@ def _compile_noise_statistics_table(
     # RMS noise statistics
     rms_mean = np.mean(noise_result.rms_noise)
     rms_std = np.std(noise_result.rms_noise)
-    rms_min = np.min(noise_result.rms_noise)
-    rms_max = np.max(noise_result.rms_noise)
+    rms_min: float = float(np.min(noise_result.rms_noise))
+    rms_max: float = float(np.max(noise_result.rms_noise))
 
     parameters = [
         "Total Points",

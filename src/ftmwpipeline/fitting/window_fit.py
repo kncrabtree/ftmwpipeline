@@ -316,6 +316,8 @@ def derive_window_fit_constraints(
     )
 
     if use_calibrated:
+        assert tau_maj_us is not None  # guaranteed by use_calibrated check above
+        assert sigma_tau_us is not None  # guaranteed by use_calibrated check above
         tm = float(tau_maj_us)
         st = float(sigma_tau_us)
         n_sig = float(tau_penalty_n_sigma)
@@ -825,8 +827,8 @@ def _penalty_residuals_and_jacobian(
     )
     if n_pen == 0:
         return np.zeros(0, dtype=float), np.zeros((0, n_params), dtype=float)
-    res = np.zeros(n_pen, dtype=float)
-    jac = np.zeros((n_pen, n_params), dtype=float)
+    res: np.ndarray = np.zeros(n_pen, dtype=float)
+    jac: np.ndarray = np.zeros((n_pen, n_params), dtype=float)
     peaks, _tau = _unpack(params, k, tau0_us, fit_tau)
 
     row = 0
@@ -1159,7 +1161,7 @@ def fit_window(
         hi_arr = np.concatenate([hi_arr, np.full(2 * n_base, np.inf)])
         p0 = np.concatenate([p0, np.zeros(2 * n_base, dtype=float)])
 
-    penalty_kw = dict(
+    penalty_kw: dict[str, Any] = dict(
         phase_penalty_lambda=phase_penalty_lambda,
         amp_penalty_lambda=amp_penalty_lambda,
         amp_floor=amp_floor,
@@ -1587,7 +1589,7 @@ def knockout_test(
     n_eff = effective_sample_size(
         fit.fitted_spectrum,
         kind=n_eff_kind,
-        sigma=rms_noise,
+        sigma=sigma,
     )
     aicc_k = calculate_aicc(fit.chi_squared, fit.n_params, n_eff)
 
@@ -1896,7 +1898,7 @@ def _blend_aware_seed(
             n_eff = effective_sample_size(
                 trial.fitted_spectrum,
                 kind=n_eff_kind,
-                sigma=rms_noise,
+                sigma=cast(np.ndarray, np.asarray(rms_noise, dtype=float)),
             )
             aicc_prev = calculate_aicc(prev.chi_squared, prev.n_params, n_eff)
             aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)

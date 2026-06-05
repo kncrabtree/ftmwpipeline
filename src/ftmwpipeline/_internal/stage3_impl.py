@@ -162,12 +162,14 @@ def _leakage_floor_amp(
     M-band centred) contribute no floor. ``k <= 0`` disables it (zeros).
     """
     if k <= 0:
-        return np.zeros_like(sigma, dtype=float)
+        return cast(np.ndarray, np.zeros_like(sigma, dtype=float))
     deramped = deramp_to_active_start(
         freq_mhz, complex_spectrum, probe_freq_mhz, start_us
     )
     scoh = rolling_coherence(deramped, sigma, band_m=band_m)
-    return k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
+    return cast(
+        np.ndarray, k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
+    )
 
 
 def _active_acquisition_us(

@@ -318,7 +318,7 @@ def visualize_noise_impl(
     show_noise_points: Optional[bool] = None,
     backend: str = "matplotlib",
     interactive: bool = True,
-    **plot_kwargs,
+    **plot_kwargs: Any,
 ) -> Any:
     """
     Shared implementation for noise visualization from .ftmw pipeline files.
@@ -409,7 +409,7 @@ def visualize_noise_impl(
         )
 
     # Set parameter defaults
-    plot_params = {
+    plot_params: Dict[str, Any] = {
         "y_max_factor": y_max_factor if y_max_factor is not None else 20.0,
         "figsize": figsize if figsize is not None else (16, 6),
         "show_bin_boundaries": (
@@ -590,7 +590,7 @@ def _update_stage_completion(file_path: str, stage_name: str) -> None:
             # Load current stage tracker
             from ..file_manager import _load_stage_tracker
 
-            stage_tracker = _load_stage_tracker(file_path, h5f)
+            stage_tracker = _load_stage_tracker(Path(file_path), h5f)
 
             # Mark stage as completed
             stage_tracker.mark_completed(stage_name)

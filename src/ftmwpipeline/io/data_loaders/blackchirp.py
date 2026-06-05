@@ -7,7 +7,7 @@ proper metadata preservation.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
 import numpy as np
 import pandas as pd
@@ -16,12 +16,14 @@ from .base import BaseLoader, LoaderError
 
 if TYPE_CHECKING:
     from ...core.data_structures import FID, FIDProcessingParameters, Sideband
-else:
-    # Runtime imports to avoid circular dependencies
-    def _get_fid_classes():
-        from ...core.data_structures import FID, FIDProcessingParameters, Sideband
 
-        return FID, FIDProcessingParameters, Sideband
+
+def _get_fid_classes() -> (
+    Tuple[Type["FID"], Type["FIDProcessingParameters"], Type["Sideband"]]
+):
+    from ...core.data_structures import FID, FIDProcessingParameters, Sideband
+
+    return FID, FIDProcessingParameters, Sideband
 
 
 class BlackChirpLoader(BaseLoader):
@@ -77,7 +79,7 @@ class BlackChirpLoader(BaseLoader):
         return len(fid_data_files) > 0
 
     def validate_source(
-        self, source_path: Union[str, Path], **kwargs
+        self, source_path: Union[str, Path], **kwargs: Any
     ) -> Dict[str, Any]:
         """
         Validate Blackchirp experiment directory.
@@ -85,7 +87,12 @@ class BlackChirpLoader(BaseLoader):
         Returns information about available FIDs, processing parameters,
         and experimental metadata.
         """
-        result = {"valid": False, "metadata": {}, "options": {}, "errors": []}
+        result: Dict[str, Any] = {
+            "valid": False,
+            "metadata": {},
+            "options": {},
+            "errors": [],
+        }
 
         source_path = Path(source_path)
 
@@ -178,7 +185,7 @@ class BlackChirpLoader(BaseLoader):
             return result
 
     def load_fid(
-        self, source_path: Union[str, Path], fid_index: int = 0, **kwargs
+        self, source_path: Union[str, Path], fid_index: int = 0, **kwargs: Any
     ) -> "FID":
         """
         Load FID data from Blackchirp experiment.
@@ -217,7 +224,7 @@ class BlackChirpLoader(BaseLoader):
             # spacing/probe/shots, frame handling) to the blackchirp module
             # rather than re-parsing the CSVs by hand.
             try:
-                from blackchirp import BCFTMW  # type: ignore[import-untyped]
+                from blackchirp import BCFTMW
             except ImportError as e:  # pragma: no cover - dependency guard
                 raise LoaderError(
                     "The 'blackchirp' package (>=0.1.0rc2) is required to load "

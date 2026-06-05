@@ -229,7 +229,7 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
         return 1
 
 
-def add_ft_subcommands(subparsers: argparse._SubParsersAction) -> None:  # type: ignore[type-arg]
+def add_ft_subcommands(subparsers: argparse._SubParsersAction) -> None:
     """Add FT processing subcommands to the argument parser."""
 
     # compute-ft command

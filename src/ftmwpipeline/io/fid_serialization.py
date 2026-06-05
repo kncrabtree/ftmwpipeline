@@ -519,7 +519,7 @@ def _serialize_optional_float(value: Optional[float]) -> Union[float, str]:
     return float(value)
 
 
-def _deserialize_optional_float(value: Union[float, str]) -> Optional[float]:
+def _deserialize_optional_float(value: Union[float, str, bytes]) -> Optional[float]:
     """Deserialize optional float value from HDF5 attribute."""
     if isinstance(value, (bytes, str)):
         if isinstance(value, bytes):

@@ -100,7 +100,7 @@ def plot_fid(
 
     # Add signal statistics
     voltage_rms = np.sqrt(np.mean(voltage_data**2))
-    voltage_max = np.max(np.abs(voltage_data))
+    voltage_max: float = float(np.max(np.abs(voltage_data)))
 
     stats_text = (
         f"RMS: {voltage_rms:.2e} {voltage_units}\n"
@@ -238,7 +238,8 @@ def plot_fid_comparison(
 
     fig, ax = plt.subplots(1, 1, figsize=figsize)
 
-    colors = plt.cm.tab10(np.linspace(0, 1, len(fids)))
+    cmap_tab10 = plt.get_cmap("tab10")
+    colors = cmap_tab10(np.linspace(0, 1, len(fids)))
 
     for i, (fid, label, color) in enumerate(zip(fids, labels, colors)):
         time_data = fid.time_array_us()
@@ -327,8 +328,8 @@ def plot_fid_overview(fid: FID, figsize: Tuple[float, float] = (15, 10)) -> Any:
     v_mean = np.mean(voltage_data)
     v_rms = np.sqrt(np.mean(voltage_data**2))
     v_std = np.std(voltage_data)
-    v_max = np.max(voltage_data)
-    v_min = np.min(voltage_data)
+    v_max: float = float(np.max(voltage_data))
+    v_min: float = float(np.min(voltage_data))
     v_pp = v_max - v_min
 
     stats_text = (

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
 from .fit_support import reduce_plan_for_fit
 from .plots import (
@@ -524,7 +524,7 @@ def _metric_fit(result: Any) -> Dict[str, Any]:
         [r["chi2r"] for r in rows if np.isfinite(r["chi2r"])], dtype=float
     )
     n_fail = sum(1 for r in rows if not r["passed"])
-    n_peaks = sum(r["n_peaks"] for r in rows)
+    n_peaks = sum(cast(int, r["n_peaks"]) for r in rows)
 
     n_free_tau = 0
     sig_f = []
@@ -563,7 +563,7 @@ def _fit_eps_summary(fit: Any) -> Tuple[float, int]:
     rows = [window_fit_quality(wf) for wf in fit.window_fits]
     eps = np.asarray([r["epsilon"] for r in rows], dtype=float)
     eps_p50 = round(float(np.percentile(eps, 50)), 5) if eps.size else 0.0
-    n_peaks = sum(r["n_peaks"] for r in rows)
+    n_peaks = sum(cast(int, r["n_peaks"]) for r in rows)
     return eps_p50, n_peaks
 
 
@@ -741,6 +741,7 @@ _register(
 # sweep knob — the detector ignores it unless both edges are set, so neither
 # sweeps meaningfully alone (reach them via settings= / preset=).
 _START_COLS = ("start_us", "chirp_end_us", "chirp_detected")
+_grid: Tuple[Any, ...]
 for _path, _field, _help, _grid, _inst in (
     (
         "stage0.step_us",
@@ -1789,6 +1790,7 @@ _fit_knob(
 )
 
 # Advanced — tau shaping (the penalty / bounds / routing knobs).
+_g: Tuple[Any, ...]
 for _p, _f, _h, _g, _inst in (
     (
         "stage5.tau.tau0_us",

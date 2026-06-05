@@ -39,9 +39,9 @@ def parse_frequency_range(range_str: str) -> Tuple[float, float]:
         If range_str format is invalid
     """
     try:
-        min_freq, max_freq = range_str.split(":")
-        min_freq = float(min_freq)
-        max_freq = float(max_freq)
+        min_str, max_str = range_str.split(":")
+        min_freq: float = float(min_str)
+        max_freq: float = float(max_str)
 
         if min_freq >= max_freq:
             raise ValueError("Minimum frequency must be less than maximum frequency")

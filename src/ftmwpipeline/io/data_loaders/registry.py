@@ -25,7 +25,7 @@ class FormatRegistry:
     and loader selection functionality.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize empty registry."""
         self._loaders: Dict[str, Type[BaseLoader]] = {}
         self._loader_instances: Dict[str, BaseLoader] = {}
@@ -157,7 +157,7 @@ class FormatRegistry:
             - 'options': dict with loading options
             - 'errors': list of validation errors
         """
-        result = {
+        result: Dict[str, Any] = {
             "format": format_name,
             "valid": False,
             "metadata": {},
@@ -190,7 +190,10 @@ class FormatRegistry:
             return result
 
     def load_fid(
-        self, source_path: Union[str, Path], format_name: Optional[str] = None, **kwargs
+        self,
+        source_path: Union[str, Path],
+        format_name: Optional[str] = None,
+        **kwargs: Any,
     ) -> "FID":
         """
         Load FID data with automatic or specified format detection.
@@ -318,7 +321,9 @@ def validate_source(
 
 
 def load_fid(
-    source_path: Union[str, Path], format_name: Optional[str] = None, **kwargs
+    source_path: Union[str, Path],
+    format_name: Optional[str] = None,
+    **kwargs: Any,
 ) -> "FID":
     """Load FID using global registry."""
     return _global_registry.load_fid(source_path, format_name, **kwargs)

@@ -181,7 +181,7 @@ def save_tau_calibration_to_hdf5(
         flat = np.concatenate(
             [np.asarray(c.bin_indices, dtype=np.int64) for c in clusters]
         )
-        offsets = np.empty(n_clusters + 1, dtype=np.int32)
+        offsets: np.ndarray = np.empty(n_clusters + 1, dtype=np.int32)
         offsets[0] = 0
         np.cumsum(n_bins_arr, out=offsets[1:])
     else:

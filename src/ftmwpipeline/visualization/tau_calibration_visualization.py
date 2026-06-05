@@ -20,7 +20,7 @@ orchestration.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -38,7 +38,7 @@ __all__ = [
 
 def _figsize_or_default(
     figsize: Optional[Tuple[float, float]], default: Tuple[float, float]
-):
+) -> Tuple[float, float]:
     return figsize if figsize is not None else default
 
 
@@ -90,12 +90,12 @@ def plot_tau_heatmap(
         np.log10(np.clip(mag_sorted, 1e-30, None)),
         aspect="auto",
         origin="lower",
-        extent=[
+        extent=(
             float(freqs_sorted[0]),
             float(freqs_sorted[-1]),
             float(a_centers_us[0]),
             float(a_centers_us[-1]),
-        ],
+        ),
         cmap=cmap,
     )
     ax.set_xlabel("molecular frequency (MHz)")
@@ -114,7 +114,7 @@ def plot_tau_heatmap(
 
 def plot_tau_heatmap_from_file(
     file_path: str,
-    **kwargs,
+    **kwargs: Any,
 ) -> "matplotlib.figure.Figure":
     """Convenience: load the FID + persisted calibration and call :func:`plot_tau_heatmap`."""
     from .._internal.stage0_impl import load_fid_from_pipeline_impl
@@ -239,7 +239,7 @@ def plot_tau_distribution(
 
 def plot_tau_distribution_from_file(
     file_path: str,
-    **kwargs,
+    **kwargs: Any,
 ) -> "matplotlib.figure.Figure":
     """Convenience: load the persisted calibration and call :func:`plot_tau_distribution`."""
     from .._internal.stage2b_impl import load_tau_calibration_impl

@@ -35,7 +35,7 @@ stages = ftmw.list_available_stages("experiment.ftmw")
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .core.noise_settings import NoiseSettings
@@ -64,7 +64,7 @@ def import_data(
     format_name: Optional[str] = None,
     fid_index: Optional[int] = None,
     force: bool = False,
-    **loader_params,
+    **loader_params: Any,
 ) -> Dict[str, Any]:
     """
     Create new pipeline from raw experimental data.
@@ -421,7 +421,7 @@ def visualize_ft(
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
     show_fid_panels: bool = True,
-):
+) -> Any:
     """
     Create enhanced FT visualization with processing workflow display.
 
@@ -649,8 +649,8 @@ def visualize_noise(
     backend: str = "matplotlib",
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
-    **plot_kwargs,
-):
+    **plot_kwargs: Any,
+) -> Any:
     """
     Create noise estimation diagnostic visualization.
 
@@ -1542,7 +1542,7 @@ def list_available_stages(file_path: Union[str, Path]) -> List[str]:
     """
     try:
         info = get_pipeline_info(file_path)
-        return info.get("next_available_stages", [])
+        return cast(List[str], info.get("next_available_stages", []))
     except Exception as e:
         logger.error(f"Failed to get available stages for {file_path}: {e}")
         raise RuntimeError(f"Could not determine available stages: {e}")

@@ -51,7 +51,9 @@ def _persisted_phase_ramp(
     its magnitude). Returns ``ones`` when ``start_us == 0``.
     """
     if start_us == 0.0:
-        return np.ones(np.asarray(frequencies).shape, dtype=np.complex128)
+        return cast(
+            np.ndarray, np.ones(np.asarray(frequencies).shape, dtype=np.complex128)
+        )
     s = sideband_sign(sideband)
     f_bb = s * (np.asarray(frequencies, dtype=float) - float(probe_freq_mhz))
     return cast(np.ndarray, np.exp(-1j * 2.0 * np.pi * f_bb * float(start_us)))
@@ -369,7 +371,7 @@ def _plot_residual_with_band(
         ax.axhline(band, color="0.3", lw=0.6, ls="--")
         if is_magnitude:
             ax.text(
-                f_slice[0],
+                float(f_slice[0]),
                 band,
                 " 3σ_c (~99%)",
                 fontsize=7,
@@ -380,7 +382,7 @@ def _plot_residual_with_band(
         else:
             ax.axhline(-band, color="0.3", lw=0.6, ls="--")
             ax.text(
-                f_slice[0],
+                float(f_slice[0]),
                 band,
                 " ±3σ_c",
                 fontsize=7,

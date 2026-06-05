@@ -8,6 +8,6 @@ Implementation pending for Phase 5.
 # Placeholder function - will be implemented in Phase 5
 
 
-def assign_analysis_windows(*args, **kwargs):
+def assign_analysis_windows(*args: object, **kwargs: object) -> None:
     """Placeholder for window assignment."""
-    raise NotImplementedError("Will be implemented in Phase 5")
+    raise NotImplementedError("Not yet implemented")
