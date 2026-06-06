@@ -397,7 +397,7 @@ class Pipeline:
     ) -> Any:
         """Create enhanced FT visualization with processing workflow display.
 
-        Equivalent to the CLI ``visualize-ft`` command.  Never persists
+        Equivalent to the CLI ``ft show`` command.  Never persists
         settings; exploration only.  Pass ``save_params=True`` to write the
         explicitly provided kwargs to the canonical ``ft_processing`` record.
 
@@ -520,7 +520,7 @@ class Pipeline:
         Estimate frequency-dependent noise with the scatter estimator.
 
         This method implements Stage 2 noise estimation, equivalent to the CLI
-        estimate-noise command. Requires Stage 1 (FT computation) to be completed.
+        ``noise run`` command. Requires Stage 1 (FT computation) to be completed.
 
         The scatter estimator is high-pass and region-aware: it is immune to the
         leakage pedestal on high-SNR, line-dense spectra.
@@ -595,7 +595,7 @@ class Pipeline:
 
         This method creates diagnostic plots showing spectrum, noise points,
         bin boundaries, and RMS noise estimates. Equivalent to the CLI
-        visualize-noise command.
+        ``noise show`` command.
 
         Parameters
         ----------
@@ -952,7 +952,7 @@ class Pipeline:
         with no explicit ``start_us`` inherits it. Requires Stage 0 (FID) only;
         the integration band is resolved from the canonical Stage 1 trim when
         present, else the full positive spectrum. Equivalent to the CLI
-        ``detect-start`` command and ``ftmwpipeline.api.detect_start_time``.
+        ``start run`` command and ``ftmwpipeline.api.detect_start_time``.
 
         Parameters
         ----------
@@ -1060,7 +1060,7 @@ class Pipeline:
         primary pass plus a leakage-masked unapodized gap pass, scores every
         peak on the unapodized spectrum, classifies by SNR, and persists ALL
         detected peaks to the .ftmw file. Equivalent to the CLI
-        ``detect-peaks`` command and ``ftmwpipeline.api.detect_peaks``.
+        ``peaks run`` command and ``ftmwpipeline.api.detect_peaks``.
 
         Detection operates on the Stage 1 persisted canonical spectrum,
         including its frequency trim range.  Peaks are reported on that user
@@ -1161,7 +1161,7 @@ class Pipeline:
     ) -> Any:
         """Overlay classified detected peaks on the unapodized spectrum (Stage 3).
 
-        Equivalent to the CLI ``visualize-peaks`` command. Interactive
+        Equivalent to the CLI ``peaks show`` command. Interactive
         matplotlib (log-y) by default; pass ``interactive=False`` with
         ``output_file`` to save instead.
 
@@ -1237,7 +1237,7 @@ class Pipeline:
         peaks to fit freely, the strong out-of-band lines whose leakage is
         carried frozen, a fit dependency order, and a difficulty class. Stage 4
         is purely structural -- it makes no fits. Equivalent to the CLI
-        ``assign-windows`` command and ``ftmwpipeline.api.assign_windows``.
+        ``windows run`` command and ``ftmwpipeline.api.assign_windows``.
 
         Consumes only the peaks flagged ``promoted`` by Stage 3, on the Stage 1
         canonical spectrum with the canonical Stage 2 noise. The result is
@@ -1333,7 +1333,7 @@ class Pipeline:
     ) -> Any:
         """Overlay the Stage 4 window plan on the spectrum.
 
-        Equivalent to the CLI ``visualize-windows`` command. Shows each fit
+        Equivalent to the CLI ``windows show`` command. Shows each fit
         window's span (shaded by difficulty), free peaks, fixed contributors,
         and the rolling complex-edge coherence statistic. Requires Stage 4
         completed.
@@ -1408,7 +1408,7 @@ class Pipeline:
         add-one-peak loop over each window with the shared per-window decay
         ``tau`` and the frozen-contributor model, then the residual
         edge-coherence handshake (local thaw + structural replan). Equivalent
-        to the CLI ``fit-peaks`` command and ``ftmwpipeline.api.fit_peaks``.
+        to the CLI ``fit run`` command and ``ftmwpipeline.api.fit_peaks``.
 
         The fit runs on the active-portion FT (computed on demand from the
         FID + canonical Stage 1 settings), so per-bin statistics are
@@ -1566,7 +1566,7 @@ class Pipeline:
         ``chi2r <= F + (kappa*SNR_max)**2`` with the fractional deficit ``eps``
         binned by SNR) / Tier 2 (rescue/merge/thaw gate firing) / Tier 3
         (known-line ground truth, when ``ground_truth`` is given) report.
-        Equivalent to the CLI ``validate-stage5-shape-error`` command. Requires
+        Equivalent to the CLI ``fit check`` command. Requires
         Stage 5 completed.
         """
         try:
@@ -1602,7 +1602,7 @@ class Pipeline:
     ) -> Any:
         """Overlay the Stage 5 fit on the spectrum.
 
-        Equivalent to the CLI ``visualize-fit`` command. With ``window_id``
+        Equivalent to the CLI ``fit show`` command. With ``window_id``
         set, draws a per-window detail figure (re/im, magnitude+residual,
         time envelope, audit-trail); otherwise an overview overlay of the
         fitted model on the persisted spectrum. Requires Stage 5 completed.

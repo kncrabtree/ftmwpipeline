@@ -1,7 +1,7 @@
 """
 Peak detection and visualization commands (Stage 3).
 
-Implements the ``detect-peaks`` and ``visualize-peaks`` subcommands. Thin
+Implements the ``peaks run`` and ``peaks show`` subcommands. Thin
 wrappers over the shared ``_internal.stage3_impl`` implementation -- identical
 behaviour to the Pipeline class and functional API.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
-from .utils import print_error, setup_logging
+from .utils import add_stage_object, print_error, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -27,7 +27,7 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
     suppressed. Peaks are classified by SNR (weak/medium/strong) and persisted
     to the file for hand-curation before Stage 4.
 
-    Requires Stage 1 (compute-ft) and Stage 2 (estimate-noise) first.
+    Requires Stage 1 ('ft run') and Stage 2 ('noise run') first.
     """
     setup_logging(args.verbose)
     try:
@@ -76,14 +76,14 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
             " (promoted only)"
         )
         print(f"\nResults saved to: {file_path}")
-        print("Use 'visualize-peaks' to inspect detected peaks")
+        print("Use 'peaks show' to inspect detected peaks")
         return 0
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: run 'compute-ft' then 'estimate-noise' first")
+        print("Hint: run 'ft run' then 'noise run' first")
         return 1
     except Exception as e:
         print_error(f"Peak detection failed: {e}")
@@ -138,7 +138,7 @@ def cmd_visualize_peaks(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: run 'detect-peaks' first")
+        print("Hint: run 'peaks run' first")
         return 1
     except Exception as e:
         print_error(f"Peak visualization failed: {e}")
@@ -150,14 +150,22 @@ def cmd_visualize_peaks(args: argparse.Namespace) -> int:
 
 
 def register_peak_commands(subparsers: Any) -> None:
-    """Register the detect-peaks and visualize-peaks subcommands."""
-    p_detect = subparsers.add_parser(
-        "detect-peaks",
+    """Register peak detection (Stage 3) object-verb subcommands."""
+    verbs = add_stage_object(
+        subparsers,
+        "peaks",
+        synonym="stage3",
+        help="Stage 3: peak detection (run / show)",
+        description="Detect/classify peaks and overlay them (Stage 3).",
+    )
+
+    p_detect = verbs.add_parser(
+        "run",
         help="Detect and classify peaks (Stage 3, two-pass)",
         description=(
             "Stage 3 two-pass peak detection with SNR classification.\n\n"
             "Detection operates on the Stage 1 persisted canonical spectrum\n"
-            "(including its frequency trim range).  Run 'compute-ft' with the\n"
+            "(including its frequency trim range).  Run 'ft run' with the\n"
             "desired --trim and --zpf to set those canonical settings first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -238,8 +246,8 @@ def register_peak_commands(subparsers: Any) -> None:
     )
     p_detect.set_defaults(func=cmd_detect_peaks)
 
-    p_vis = subparsers.add_parser(
-        "visualize-peaks",
+    p_vis = verbs.add_parser(
+        "show",
         help="Overlay classified Stage 3 peaks on the spectrum",
         description="Diagnostic plot of detected/classified peaks",
         formatter_class=argparse.RawDescriptionHelpFormatter,

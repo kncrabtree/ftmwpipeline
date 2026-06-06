@@ -62,7 +62,8 @@ def test_start_detection_identical_across_interfaces(exp_2638_data_path, tmp_pat
     res_functional = ftmw.detect_start_time(f_copy, settings=_SETTINGS)
     _run_cli(
         [
-            "detect-start",
+            "start",
+            "run",
             str(c_copy),
             "--sweep-max-us",
             "4.0",

@@ -74,7 +74,8 @@ def test_cross_interface_consistency(baseline_2638_stage2, temp_ftmw_dir):
     res = subprocess.run(
         [
             "ftmwpipeline",
-            "detect-peaks",
+            "peaks",
+            "run",
             str(cfile),
             "--min-snr",
             "3.0",

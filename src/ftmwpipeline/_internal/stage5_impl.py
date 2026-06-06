@@ -510,7 +510,7 @@ def fit_peaks_impl(
         if "stage4_windows" not in h5f:
             raise ValueError(
                 "Stage 4 (window assignment) must be completed before "
-                "fitting. Run assign_windows()/assign-windows first."
+                "fitting. Run assign_windows()/'windows run' first."
             )
 
     plan: WindowPlan = load_windows_impl(file_path)["plan"]
@@ -1070,7 +1070,7 @@ def load_fit_impl(file_path: str) -> Dict[str, Any]:
     """Load the persisted Stage 5 fit (validates structure loudly)."""
     with h5py.File(file_path, "r") as h5f:
         if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found. Run fit_peaks()/fit-peaks first.")
+            raise ValueError("No Stage 5 fit found. Run fit_peaks()/'fit run' first.")
         grp = h5f["stage5_fitting"]
         fit = load_spectrum_fit_from_hdf5(grp)
         creation_time = grp.attrs.get("creation_time", "unknown")

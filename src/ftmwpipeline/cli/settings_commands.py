@@ -250,7 +250,7 @@ def register_settings_commands(subparsers: Any) -> None:
             "Persist KNOB = VALUE into the experiment's settings. The affected "
             "stage and every downstream stage are invalidated so the file stays "
             "self-consistent; re-run them to refresh. Stage 1 FT-shaping knobs "
-            "(zpf / expf_us / window_function) are set via compute-ft instead."
+            "(zpf / expf_us / window_function) are set via 'ft run' instead."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

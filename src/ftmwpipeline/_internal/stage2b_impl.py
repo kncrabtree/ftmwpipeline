@@ -387,7 +387,7 @@ def load_tau_calibration_impl(file_path: str) -> Dict[str, Any]:
         if TAU_GROUP_PATH not in h5f:
             raise ValueError(
                 "Stage 2b (tau calibration) has not been completed for "
-                f"{file_path}. Run calibrate_tau() / calibrate-tau first."
+                f"{file_path}. Run calibrate_tau() / 'tau run' first."
             )
         grp = h5f[TAU_GROUP_PATH]
         result = load_tau_calibration_from_hdf5(grp)

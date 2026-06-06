@@ -17,7 +17,7 @@ from .._internal.stage0_impl import (
     visualize_fid_impl,
 )
 from ..io.data_loaders import get_format_info, list_formats
-from .utils import setup_logging
+from .utils import add_stage_object, setup_logging
 
 
 def cmd_data_load(args: argparse.Namespace) -> int:
@@ -98,8 +98,8 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         print(f"File size: {file_size_mb:.2f} MB")
 
         print(f"\nNext steps:")
-        print(f"   • Visualize FID: ftmwpipeline visualize-data {file_path}")
-        print(f"   • Process FT: ftmwpipeline compute-ft {file_path}")
+        print(f"   • Visualize FID: ftmwpipeline data show {file_path}")
+        print(f"   • Process FT: ftmwpipeline ft run {file_path}")
 
         return 0
 
@@ -259,40 +259,45 @@ def cmd_data_info(args: argparse.Namespace) -> int:
 
 
 def add_data_subcommands(subparsers: argparse._SubParsersAction) -> None:
-    """
-    Add data loading subcommands to the argument parser.
+    """Add data import (Stage 0) object-verb subcommands.
 
-    Parameters
-    ----------
-    subparsers : argparse._SubParsersAction
-        Subparser object to add commands to
+    The ``data`` object carries ``import`` (create the .ftmw from a source) and
+    ``show`` (visualize the imported FID). ``formats`` stays a bare utility
+    command (it is file-global, not a stage action), registered separately.
     """
+    verbs = add_stage_object(
+        subparsers,
+        "data",
+        synonym="stage0",
+        help="Stage 0: data import (import / show)",
+        description="Import experimental data into a .ftmw and visualize the FID.",
+    )
 
-    # import-data command
-    load_parser = subparsers.add_parser(
-        "import-data",
-        help="Load experimental data from various formats",
+    # data import
+    load_parser = verbs.add_parser(
+        "import",
+        help="Load experimental data from various formats, creating a .ftmw",
         description="Load FTMW experimental data and cache as FID object for pipeline processing",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Import BlackChirp experiment (auto-detect format)
-  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
-  
+  ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/
+
   # Import BlackChirp with specific FID index
-  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/ --fid-index 1
-  
-  # Import CSV file (requires explicit parameters)  
-  ftmwpipeline import-data exp_csv.ftmw --source data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
-  
+  ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/ --fid-index 1
+
+  # Import CSV file (requires explicit parameters)
+  ftmwpipeline data import exp_csv.ftmw data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
+
   # Force specific format
-  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/ --format blackchirp
+  ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/ --format blackchirp
         """,
     )
 
     load_parser.add_argument("file_path", help="Path to .ftmw pipeline file to create")
     load_parser.add_argument(
-        "--source", required=True, help="Path to data source (file or directory)"
+        "source", help="Path to data source (file or directory)"
     )
     load_parser.add_argument(
         "--format",
@@ -326,22 +331,22 @@ Examples:
 
     load_parser.set_defaults(func=cmd_data_load)
 
-    # visualize-data command
-    viz_parser = subparsers.add_parser(
-        "visualize-data",
+    # data show
+    viz_parser = verbs.add_parser(
+        "show",
         help="Visualize cached FID data",
         description="Load FID data from cache and create validation plots",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Basic FID visualization
-  ftmwpipeline visualize-data exp_2638.ftmw
-  
+  ftmwpipeline data show exp_2638.ftmw
+
   # Show metadata and save plot
-  ftmwpipeline visualize-data exp_2638.ftmw --show-metadata --save
-  
+  ftmwpipeline data show exp_2638.ftmw --show-metadata --save
+
   # Non-interactive mode
-  ftmwpipeline visualize-data exp_2638.ftmw --no-show --save
+  ftmwpipeline data show exp_2638.ftmw --no-show --save
         """,
     )
 

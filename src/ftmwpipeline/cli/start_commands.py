@@ -1,10 +1,10 @@
 """CLI subcommands for data-driven FID start-time detection (pre-Stage 1).
 
-Two subcommands:
+Two verbs on the ``start`` object:
 
-- ``detect-start``: sweep the FID window start, find the chirp-end collapse, and
+- ``start run``: sweep the FID window start, find the chirp-end collapse, and
   stamp the recommended ``start_us`` into the Stage 0 recommended layer.
-- ``visualize-start-detection``: plot the Σ|FT|-vs-start sweep diagnostic.
+- ``start show``: plot the Σ|FT|-vs-start sweep diagnostic.
 
 Both delegate to the shared :mod:`_internal.start_detection_impl` orchestration
 per the dual-interface rule.
@@ -18,7 +18,7 @@ from typing import Any, Dict, Optional
 
 from .._internal.start_detection_impl import detect_start_time_impl
 from ..core.start_detection_settings import StartDetectionSettings
-from .utils import print_error, setup_logging
+from .utils import add_stage_object, print_error, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -178,9 +178,17 @@ def _add_detection_knobs(parser: argparse.ArgumentParser) -> None:
 
 
 def register_start_commands(subparsers: Any) -> None:
-    """Register the start-detection CLI subcommands."""
-    parser_det = subparsers.add_parser(
-        "detect-start",
+    """Register start-detection (pre-Stage-1) object-verb subcommands."""
+    verbs = add_stage_object(
+        subparsers,
+        "start",
+        synonym=None,
+        help="Start detection: detect/stamp start_us (run / show)",
+        description="Detect a good FID start_us and plot the sweep diagnostic.",
+    )
+
+    parser_det = verbs.add_parser(
+        "run",
         help="Detect a good FID start_us from the data and stamp it",
         description=(
             "Sweep the FID window start time, integrate the FT magnitude over "
@@ -202,8 +210,8 @@ def register_start_commands(subparsers: Any) -> None:
     )
     parser_det.set_defaults(func=cmd_detect_start)
 
-    parser_viz = subparsers.add_parser(
-        "visualize-start-detection",
+    parser_viz = verbs.add_parser(
+        "show",
         help="Plot the Σ|FT|-vs-start_us sweep diagnostic",
         description=(
             "Two-panel diagnostic: the full Σ|FT| sweep (log y) with the "

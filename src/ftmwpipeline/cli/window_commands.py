@@ -1,7 +1,7 @@
 """
 Window-assignment commands (Stage 4).
 
-Implements the ``assign-windows`` and ``visualize-windows`` subcommands. Thin
+Implements the ``windows run`` and ``windows show`` subcommands. Thin
 wrappers over the shared ``_internal.stage4_impl`` implementation -- identical
 behaviour to the Pipeline class and functional API.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .._internal.stage4_impl import assign_windows_impl, visualize_windows_impl
-from .utils import print_error, setup_logging
+from .utils import add_stage_object, print_error, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -26,7 +26,7 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
     lines whose leakage is carried frozen, a fit dependency order, and a
     difficulty class. The plan is persisted for hand-curation before Stage 5.
 
-    Requires Stage 3 (detect-peaks) first.
+    Requires Stage 3 ('peaks run') first.
     """
     setup_logging(args.verbose)
     try:
@@ -72,14 +72,14 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
                 "promoted peak -- possible undetected line(s)"
             )
         print(f"\nResults saved to: {file_path}")
-        print("Use 'visualize-windows' to inspect the window plan")
+        print("Use 'windows show' to inspect the window plan")
         return 0
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: run 'detect-peaks' first")
+        print("Hint: run 'peaks run' first")
         return 1
     except Exception as e:
         print_error(f"Window assignment failed: {e}")
@@ -133,7 +133,7 @@ def cmd_visualize_windows(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: run 'assign-windows' first")
+        print("Hint: run 'windows run' first")
         return 1
     except Exception as e:
         print_error(f"Window visualization failed: {e}")
@@ -145,16 +145,24 @@ def cmd_visualize_windows(args: argparse.Namespace) -> int:
 
 
 def register_window_commands(subparsers: Any) -> None:
-    """Register the assign-windows and visualize-windows subcommands."""
-    p_assign = subparsers.add_parser(
-        "assign-windows",
+    """Register window assignment (Stage 4) object-verb subcommands."""
+    verbs = add_stage_object(
+        subparsers,
+        "windows",
+        synonym="stage4",
+        help="Stage 4: window assignment (run / show)",
+        description="Plan and overlay fit windows (Stage 4).",
+    )
+
+    p_assign = verbs.add_parser(
+        "run",
         help="Turn promoted peaks into a fit-window plan (Stage 4)",
         description=(
             "Stage 4 window assignment.\n\n"
             "Turns the promoted Stage 3 peaks into a fit plan: disjoint\n"
             "analysis windows, each carrying free peaks, fixed (frozen-leakage)\n"
             "contributors, a fit dependency order, and a difficulty class.\n"
-            "Run 'detect-peaks' first."
+            "Run 'peaks run' first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -238,8 +246,8 @@ def register_window_commands(subparsers: Any) -> None:
     )
     p_assign.set_defaults(func=cmd_assign_windows)
 
-    p_vis = subparsers.add_parser(
-        "visualize-windows",
+    p_vis = verbs.add_parser(
+        "show",
         help="Overlay the Stage 4 window plan on the spectrum",
         description="Diagnostic plot of the window plan",
         formatter_class=argparse.RawDescriptionHelpFormatter,

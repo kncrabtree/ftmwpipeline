@@ -1,4 +1,4 @@
-"""Stage 5 cross-fixture validation (``validate-stage5-shape-error``).
+"""Stage 5 cross-fixture validation (``fit check``).
 
 Read-only assessment of an already-persisted Stage 5 fit against the
 cross-fixture acceptance framework (``dev-docs/planning/stage5-cross-fixture-

@@ -1,13 +1,14 @@
 """CLI subcommands for Stage 2b: data-driven tau calibration.
 
-Three subcommands:
+Two verbs on the ``tau`` object:
 
-- ``calibrate-tau``: runs the STFT calibration and persists the result.
-- ``visualize-tau-heatmap``: 2D STFT magnitude across (frame x molecular freq).
-- ``visualize-tau-distribution``: tau histogram + tau-vs-SNR + tau-vs-freq +
+- ``tau run`` (``--gaussian`` for the τ_G twin): runs the STFT calibration and
+  persists the result.
+- ``tau show --kind heatmap``: 2D STFT magnitude across (frame x molecular freq).
+- ``tau show --kind distribution``: tau histogram + tau-vs-SNR + tau-vs-freq +
   GMM overlay.
 
-All three delegate to the shared :mod:`_internal.stage2b_impl` orchestration
+All delegate to the shared :mod:`_internal.stage2b_impl` orchestration
 layer per the dual-interface rule.
 """
 
@@ -20,7 +21,7 @@ from typing import Any, Dict, Optional
 
 from .._internal.stage2b_g_impl import calibrate_tau_G_impl
 from .._internal.stage2b_impl import calibrate_tau_impl, load_tau_calibration_impl
-from .utils import print_error, setup_logging
+from .utils import add_stage_object, print_error, setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ def cmd_calibrate_tau(args: argparse.Namespace) -> int:
             + ", ".join(result["invalidated_stages"])
         )
     print(f"\nResults saved to: {file_path}")
-    print("Use 'visualize-tau-heatmap' / 'visualize-tau-distribution' for diagnostics.")
+    print("Use 'tau show --kind heatmap|distribution' for diagnostics.")
     return 0
 
 
@@ -255,22 +256,59 @@ def _handle_figure_output(fig: Any, args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_tau_run(args: argparse.Namespace) -> int:
+    """Dispatch ``tau run``: ``--gaussian`` selects the τ_G twin."""
+    if getattr(args, "gaussian", False):
+        return cmd_calibrate_tau_G(args)
+    return cmd_calibrate_tau(args)
+
+
+def _cmd_tau_show(args: argparse.Namespace) -> int:
+    """Dispatch ``tau show``: ``--kind`` selects heatmap (default) or distribution."""
+    if getattr(args, "kind", "heatmap") == "distribution":
+        return cmd_visualize_tau_distribution(args)
+    return cmd_visualize_tau_heatmap(args)
+
+
 def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
-    """Register Stage 2b CLI subcommands on the parent subparsers."""
-    # --- calibrate-tau -----------------------------------------------------
-    parser_cal = subparsers.add_parser(
-        "calibrate-tau",
-        help="Run the STFT tau calibration (Stage 2b)",
+    """Register tau calibration (Stage 2b) object-verb subcommands.
+
+    The pure-exp and Gaussian-shape calibrations are unified under ``tau run``
+    (``--gaussian`` selects the τ_G twin), and the heatmap / distribution
+    diagnostics under ``tau show --kind``.
+    """
+    verbs = add_stage_object(
+        subparsers,
+        "tau",
+        synonym="stage2b",
+        help="Stage 2b: tau calibration (run / show)",
+        description="Calibrate the molecular decay constant and view diagnostics.",
+    )
+
+    # --- tau run -----------------------------------------------------------
+    parser_cal = verbs.add_parser(
+        "run",
+        help="Run the STFT tau calibration (Stage 2b; --gaussian for the τ_G twin)",
         description=(
             "Extract a data-driven majority-vote molecular decay constant "
             "(tau_maj) and its robust spread (sigma_tau) from the raw FID "
             "via the sliding-active-window STFT. Persists the result to "
-            "/stage2b_tau_calibration in the .ftmw file."
+            "/stage2b_tau_calibration in the .ftmw file.\n\n"
+            "With --gaussian, runs the Gaussian-shape twin instead: per-bin "
+            "Voigt fits on the STFT contributor pool yield a per-band tau_G "
+            "majority, persisted to /stage2b_tau_G_calibration. The two are "
+            "independent and can coexist on one .ftmw file."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser_cal.add_argument(
         "file_path", help="Path to .ftmw pipeline file (extension added if missing)"
+    )
+    parser_cal.add_argument(
+        "--gaussian",
+        action="store_true",
+        help="Run the Gaussian-shape τ_G calibration twin (Voigt-fit per-band "
+        "tau_G) instead of the pure-exp calibration",
     )
     parser_cal.add_argument(
         "--n-seg",
@@ -334,171 +372,76 @@ def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Enable verbose logging",
     )
-    parser_cal.set_defaults(func=cmd_calibrate_tau)
-
-    # --- calibrate-tau-G ----------------------------------------------------
-    parser_cg = subparsers.add_parser(
-        "calibrate-tau-G",
-        help="Run the STFT Gaussian-shape τ_G calibration (Stage 2b twin)",
-        description=(
-            "Per-bin Voigt fits on the STFT contributor pool yield a "
-            "per-band τ_G majority that the Stage 5 Gaussian-shape fit "
-            "consumes. Persists to /stage2b_tau_G_calibration. Independent "
-            "of the pure-exp calibrate-tau; both can coexist on one .ftmw "
-            "file."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser_cg.add_argument(
-        "file_path",
-        help="Path to .ftmw pipeline file (extension added if missing)",
-    )
-    parser_cg.add_argument(
-        "--n-seg",
-        type=int,
-        help="Number of non-overlapping STFT frames (default 10)",
-    )
-    parser_cg.add_argument(
-        "--t-sigma",
-        type=float,
-        help="Above-threshold gate factor on per-frame SNR (default 5.0)",
-    )
-    parser_cg.add_argument(
-        "--tau-max-us",
-        type=float,
-        help="Saturation cap on the STFT classifier (default 5 * T_full)",
-    )
-    parser_cg.add_argument(
-        "--rss-gate-factor",
-        type=float,
-        help="Bad-fit gate strength (default 5.0)",
-    )
-    parser_cg.add_argument(
-        "--sigma-time",
-        type=float,
-        help=(
-            "Time-domain sigma_t override; default measures from the FID "
-            "active-region tail."
-        ),
-    )
-    parser_cg.add_argument(
+    # Gaussian-shape (τ_G) knobs -- consumed only with --gaussian.
+    parser_cal.add_argument(
         "--snr-min",
         type=float,
-        help="Per-bin SNR floor on the Voigt-fit contributor pool (default 20.0)",
+        help="[--gaussian] Per-bin SNR floor on the Voigt-fit contributor pool "
+        "(default 20.0)",
     )
-    parser_cg.add_argument(
+    parser_cal.add_argument(
         "--tau-g-bound-lo",
         type=float,
-        help="Lower bound on the Voigt τ_G parameter (default 0.5 us)",
+        help="[--gaussian] Lower bound on the Voigt τ_G parameter (default 0.5 us)",
     )
-    parser_cg.add_argument(
+    parser_cal.add_argument(
         "--tau-g-bound-hi",
         type=float,
-        help="Upper bound on the Voigt τ_G parameter (default 100.0 us)",
+        help="[--gaussian] Upper bound on the Voigt τ_G parameter (default 100.0 us)",
     )
-    parser_cg.add_argument(
+    parser_cal.add_argument(
         "--delta-chi2r-min",
         type=float,
         help=(
-            "Minimum χ²ᵣ improvement (pure-exp − Voigt) for a bin to enter "
-            "the calibration (default 1.0)"
+            "[--gaussian] Minimum χ²ᵣ improvement (pure-exp − Voigt) for a bin "
+            "to enter the calibration (default 1.0)"
         ),
     )
-    parser_cg.add_argument(
+    parser_cal.add_argument(
         "--tau-g-upper-fraction",
         type=float,
-        help=("Bins whose τ_G ≥ fraction*tau_g_bound_hi are dropped (default 0.7)"),
-    )
-    parser_cg.add_argument(
-        "--min-contributors",
-        type=int,
-        help="Pre-condition minimum eligible bin count (default 50)",
-    )
-    parser_cg.add_argument(
-        "--sigma-tau-fraction-max",
-        type=float,
-        help="Pre-condition sigma_tau_G/tau_G_maj upper bound (default 0.20)",
-    )
-    parser_cg.add_argument(
-        "--bimodality-dominant-fraction",
-        type=float,
         help=(
-            "Pre-condition floor on dominant-cluster weight when the GMM "
-            "prefers two components (default 0.70)"
+            "[--gaussian] Bins whose τ_G ≥ fraction*tau_g_bound_hi are dropped "
+            "(default 0.7)"
         ),
     )
-    parser_cg.add_argument(
-        "--preset",
-        type=str,
-        default=None,
-        help=(
-            "Stage 2b preset to apply (bare packaged name or path to a "
-            "YAML file). The same preset block drives both τ twins."
-        ),
-    )
-    parser_cg.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging",
-    )
-    parser_cg.set_defaults(func=cmd_calibrate_tau_G)
+    parser_cal.set_defaults(func=_cmd_tau_run)
 
-    # --- visualize-tau-heatmap ---------------------------------------------
-    parser_heat = subparsers.add_parser(
-        "visualize-tau-heatmap",
-        help="2D STFT magnitude heatmap (frame x molecular frequency)",
+    # --- tau show ----------------------------------------------------------
+    parser_show = verbs.add_parser(
+        "show",
+        help="Stage 2b diagnostics (--kind heatmap | distribution)",
         description=(
-            "Plot log10 |S_n(f)| across the n_seg STFT frames and the trim "
-            "frequency range. Streaks at constant magnitude vs frame index "
-            "are clock spurs; exponential-decay streaks are real molecular "
-            "lines."
+            "--kind heatmap (default): 2D STFT magnitude heatmap (frame x "
+            "molecular frequency). Streaks at constant magnitude vs frame "
+            "index are clock spurs; exponential-decay streaks are real "
+            "molecular lines.\n\n"
+            "--kind distribution: the contributor tau histogram with the "
+            "majority-vote tau_maj overlay, plus per-bin tau vs SNR and tau "
+            "vs molecular frequency scatters and the 1- vs 2-component GMM "
+            "fit."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser_heat.add_argument(
+    parser_show.add_argument(
         "file_path", help="Path to .ftmw pipeline file with Stage 2b completed"
     )
-    parser_heat.add_argument(
+    parser_show.add_argument(
+        "--kind",
+        choices=["heatmap", "distribution"],
+        default="heatmap",
+        help="Which diagnostic to plot (default: heatmap)",
+    )
+    parser_show.add_argument(
         "-o",
         "--output",
         type=str,
         help="Save plot to file instead of displaying interactively",
     )
-    parser_heat.add_argument(
+    parser_show.add_argument(
         "-v",
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
     )
-    parser_heat.set_defaults(func=cmd_visualize_tau_heatmap)
-
-    # --- visualize-tau-distribution ----------------------------------------
-    parser_dist = subparsers.add_parser(
-        "visualize-tau-distribution",
-        help="tau histogram + tau-vs-SNR + tau-vs-freq + GMM overlay",
-        description=(
-            "Plot the contributor tau histogram with the majority-vote "
-            "tau_maj overlay, plus the per-bin tau vs SNR and tau vs "
-            "molecular frequency scatters, and the 1- vs 2-component GMM "
-            "fit. The two-third partition of the frequency range is "
-            "annotated when present."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    parser_dist.add_argument(
-        "file_path", help="Path to .ftmw pipeline file with Stage 2b completed"
-    )
-    parser_dist.add_argument(
-        "-o",
-        "--output",
-        type=str,
-        help="Save plot to file instead of displaying interactively",
-    )
-    parser_dist.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Enable verbose logging",
-    )
-    parser_dist.set_defaults(func=cmd_visualize_tau_distribution)
+    parser_show.set_defaults(func=_cmd_tau_show)

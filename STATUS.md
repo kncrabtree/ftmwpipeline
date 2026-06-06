@@ -89,15 +89,15 @@ against the surviving `bcfitting` shell's contract.
   `stage2b_tau_G_calibration`, `stage3_peaks`, `stage4_windows`,
   `stage5_fitting` (each present once its stage has run).
 - **Interfaces:**
-  - CLI subcommands: `import-data`, `visualize-data`, `formats`,
-    `detect-start`, `visualize-start-detection`, `compute-ft`,
-    `visualize-ft`, `estimate-noise`, `visualize-noise`, `calibrate-tau`,
-    `calibrate-tau-G`, `visualize-tau-heatmap`, `visualize-tau-distribution`,
-    `detect-peaks`, `visualize-peaks`, `assign-windows`,
-    `visualize-windows`, `fit-peaks`, `visualize-fit`,
-    `validate-stage5-shape-error`, the `scan` meta-object
+  - CLI (object-verb grammar): stage objects `data`/`stage0`
+    (`import`/`show`), `start` (`run`/`show`), `ft`/`stage1`
+    (`run`/`show`), `noise`/`stage2` (`run`/`show`), `tau`/`stage2b`
+    (`run [--gaussian]` / `show --kind heatmap|distribution`),
+    `peaks`/`stage3` (`run`/`show`), `windows`/`stage4` (`run`/`show`),
+    `fit`/`stage5` (`run`/`show`/`check`); the `scan` meta-object
     (`scan list`/`run`/`all`), the `settings` meta-object
-    (`settings show`/`set`/`export`), `info`, `validate`, `version`.
+    (`settings show`/`set`/`export`); bare utilities `formats`, `info`,
+    `validate`, `version`.
   - `Pipeline` is constructed via `Pipeline.create(...)`,
     `Pipeline.open(...)`, or the smart constructor `Pipeline(path)`
     (opens if present, else `FileNotFoundError` with guidance).
@@ -126,7 +126,7 @@ against the surviving `bcfitting` shell's contract.
 - **Performance/storage figures are unmeasured.** Any storage-size or timing
   claim is non-normative until a benchmark measures it; `tests/performance/`
   is empty. Tracked in `dev-docs/planning/perf-benchmarks.md` (ROADMAP D5).
-- **Test artifact location:** non-interactive `visualize-ft` writes PNGs to
+- **Test artifact location:** non-interactive `ft show` writes PNGs to
   the working directory; test runs leave `*_enhanced_spectrum.png` (now
   git-ignored). The underlying default-output-to-cwd behavior remains.
 
