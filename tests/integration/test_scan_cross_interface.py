@@ -1,6 +1,6 @@
-"""Cross-interface consistency for the companion `tune` surface.
+"""Cross-interface consistency for the `scan` surface.
 
-The CLI (`tune list`/`tune scan`), the `Pipeline` methods, and the functional
+The CLI (`scan list`/`scan run`), the `Pipeline` methods, and the functional
 `api` functions are thin wrappers over one engine; they must agree. Uses the
 session-scoped raw Stage 0+1 baseline and a fast, stable noise knob so no extra
 build cost is incurred.
@@ -26,28 +26,28 @@ def _rows(result):
     return [(r.value, r.metrics) for r in result.rows]
 
 
-def test_tune_list_parity():
-    a = ftmw.tune_list()
-    p = Pipeline.tune_list()
+def test_scan_list_parity():
+    a = ftmw.scan_list()
+    p = Pipeline.scan_list()
     assert [k.path for k in a] == [k.path for k in p]
     assert len(a) > 0
 
 
-def test_tune_list_include_advanced_parity():
+def test_scan_list_include_advanced_parity():
     # include_advanced and the selector behave identically across the two surfaces
-    a_all = ftmw.tune_list(include_advanced=True)
-    p_all = Pipeline.tune_list(include_advanced=True)
+    a_all = ftmw.scan_list(include_advanced=True)
+    p_all = Pipeline.scan_list(include_advanced=True)
     assert [k.path for k in a_all] == [k.path for k in p_all]
     # advanced reveals strictly more than the default view
-    assert len(a_all) > len(ftmw.tune_list())
-    a_sel = ftmw.tune_list("stage2b", include_advanced=True)
-    p_sel = Pipeline.tune_list("stage2b", include_advanced=True)
+    assert len(a_all) > len(ftmw.scan_list())
+    a_sel = ftmw.scan_list("stage2b", include_advanced=True)
+    p_sel = Pipeline.scan_list("stage2b", include_advanced=True)
     assert [k.path for k in a_sel] == [k.path for k in p_sel]
     assert a_sel and all(k.path.startswith("stage2b.") for k in a_sel)
 
 
 def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
-    ra = ftmw.tune_scan(
+    ra = ftmw.scan_run(
         baseline_2638_stage1_raw,
         KNOB,
         grid=GRID,
@@ -55,7 +55,7 @@ def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
         make_plot=False,
         quiet=True,
     )
-    rp = Pipeline.open(baseline_2638_stage1_raw).tune_scan(
+    rp = Pipeline.open(baseline_2638_stage1_raw).scan_run(
         KNOB,
         grid=GRID,
         output_dir=tmp_path / "pipe",
@@ -68,14 +68,14 @@ def test_api_pipeline_scan_parity(baseline_2638_stage1_raw, tmp_path):
 
 def test_api_pipeline_scan_batch_parity(baseline_2638_stage1_raw, tmp_path):
     # the stage2 knobs (all primary, Stage-1-only deps) batch-scans
-    a = ftmw.tune_scan_batch(
+    a = ftmw.scan_all(
         baseline_2638_stage1_raw,
         "stage2",
         output_dir=tmp_path / "api",
         make_plot=False,
         quiet=True,
     )
-    p = Pipeline.open(baseline_2638_stage1_raw).tune_scan_batch(
+    p = Pipeline.open(baseline_2638_stage1_raw).scan_all(
         "stage2",
         output_dir=tmp_path / "pipe",
         make_plot=False,
@@ -90,7 +90,7 @@ def test_scan_batch_isolates_failures(baseline_2638_stage1_raw, tmp_path):
     # stage2b.stft knobs drive calibrate_tau, which needs Stage 2 (absent on the
     # Stage-0/1 baseline) -> every knob fails, but the batch never aborts: it
     # returns one BatchItem per matched knob, each carrying its captured error.
-    items = ftmw.tune_scan_batch(
+    items = ftmw.scan_all(
         baseline_2638_stage1_raw,
         "stage2b.stft",
         include_advanced=True,
@@ -102,7 +102,7 @@ def test_scan_batch_isolates_failures(baseline_2638_stage1_raw, tmp_path):
 
 
 def test_cli_scan_matches_api(baseline_2638_stage1_raw, tmp_path, capsys):
-    ra = ftmw.tune_scan(
+    ra = ftmw.scan_run(
         baseline_2638_stage1_raw,
         KNOB,
         grid=GRID,
@@ -114,8 +114,8 @@ def test_cli_scan_matches_api(baseline_2638_stage1_raw, tmp_path, capsys):
 
     rc = cli_main(
         [
-            "tune",
             "scan",
+            "run",
             str(baseline_2638_stage1_raw),
             "--knob",
             KNOB,
@@ -137,7 +137,7 @@ def test_cli_scan_matches_api(baseline_2638_stage1_raw, tmp_path, capsys):
 
 
 def test_cli_list_runs(capsys):
-    rc = cli_main(["tune", "list"])
+    rc = cli_main(["scan", "list"])
     out = capsys.readouterr().out
     assert rc == 0
     # single header row, full stage-leading path, and an elided continuation
@@ -147,7 +147,7 @@ def test_cli_list_runs(capsys):
 
 
 def test_elide_path_blanks_shared_prefix():
-    from ftmwpipeline.cli.tune_commands import _elide_path
+    from ftmwpipeline.cli.scan_commands import _elide_path
 
     assert _elide_path("stage2.group1.setting1", None) == "stage2.group1.setting1"
     # shared "stage2.group1" blanked to equal-width padding, ".setting2" aligned
@@ -169,7 +169,7 @@ def test_elide_path_blanks_shared_prefix():
 def test_stage3_scan_runs_and_plots(baseline_2638_stage2, tmp_path):
     # A real Stage 3 sweep on the production Stage-2 baseline: a row per grid
     # value with the by-SNR-band passed-peak columns, plus the spectrum plot.
-    r = ftmw.tune_scan(
+    r = ftmw.scan_run(
         baseline_2638_stage2,
         "stage3.promotion.min_snr",
         grid=[3.0, 5.0],
@@ -202,7 +202,7 @@ def test_stage4_scan_runs_and_plots(baseline_2638_stage3, tmp_path):
     # A real Stage 4 sweep on the Stage-3 baseline: a row per grid value with the
     # plan-shape columns, plus the boundary-overlay plot. Raising the coherence
     # cutoff relaxes leakage flagging, so the HARD-window count cannot rise.
-    r = ftmw.tune_scan(
+    r = ftmw.scan_run(
         baseline_2638_stage3,
         "stage4.coherence.edge_threshold",
         grid=[6.0, 8.0, 10.0],
@@ -229,7 +229,7 @@ def test_stage4_scan_runs_and_plots(baseline_2638_stage3, tmp_path):
 
 
 def test_parse_zoom_valid_and_invalid():
-    from ftmwpipeline.cli.tune_commands import _parse_zoom
+    from ftmwpipeline.cli.scan_commands import _parse_zoom
 
     assert _parse_zoom("35000-35800,38400-38500") == [
         (35000.0, 35800.0),
@@ -247,8 +247,8 @@ def test_cli_scan_explicit_zoom_renders(baseline_2638_stage2, tmp_path):
     # plot still renders (a real Stage 3 sweep on the production baseline).
     rc = cli_main(
         [
-            "tune",
             "scan",
+            "run",
             str(baseline_2638_stage2),
             "--knob",
             "stage3.promotion.min_snr",
@@ -261,13 +261,13 @@ def test_cli_scan_explicit_zoom_renders(baseline_2638_stage2, tmp_path):
         ]
     )
     assert rc == 0
-    assert list(tmp_path.glob("tune_*.png")), "expected a rendered plot"
+    assert list(tmp_path.glob("scan_*.png")), "expected a rendered plot"
 
 
 def test_api_scan_accepts_zoom_count_width(baseline_2638_stage2, tmp_path):
     # the auto-selector count/width override is accepted on the functional surface
     # and produces a plot without error.
-    r = ftmw.tune_scan(
+    r = ftmw.scan_run(
         baseline_2638_stage2,
         "stage3.promotion.min_snr",
         grid=[3.0, 5.0],
@@ -300,7 +300,7 @@ def test_reduce_plan_for_fit_subsets_windows(baseline_2638_stage4, tmp_path):
 def test_stage5_fit_scan_runs_and_plots(baseline_2638_stage4_small, tmp_path):
     # A real Stage 5 fit sweep on the small (dependency-free) windows fixture:
     # the floor-aware eps/pass columns plus the fit-quality plot.
-    r = ftmw.tune_scan(
+    r = ftmw.scan_run(
         baseline_2638_stage4_small,
         "stage5.baseline.edge_threshold",
         grid=[2.5, 8.0],
@@ -326,7 +326,7 @@ def test_stage5_fit_scan_runs_and_plots(baseline_2638_stage4_small, tmp_path):
 def test_stage5_rescue_scan_runs_and_plots(baseline_2638_stage4_small, tmp_path):
     # A real Stage 5 fit sweep on a rescue-family knob: its own metric columns
     # (read off the persisted rescue_history) plus the rescue provenance plot.
-    r = ftmw.tune_scan(
+    r = ftmw.scan_run(
         baseline_2638_stage4_small,
         "stage5.rescue.snr_threshold",
         grid=[2.0, 4.0],
@@ -356,7 +356,7 @@ def test_input_file_not_mutated_by_scan(baseline_2638_stage1_raw, tmp_path):
     work = tmp_path / "copy.ftmw"
     shutil.copy(baseline_2638_stage1_raw, work)
     before = work.stat().st_size
-    ftmw.tune_scan(
+    ftmw.scan_run(
         work, KNOB, grid=GRID, output_dir=tmp_path / "o", make_plot=False, quiet=True
     )
     assert work.stat().st_size == before

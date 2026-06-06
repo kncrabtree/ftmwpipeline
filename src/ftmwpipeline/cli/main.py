@@ -17,10 +17,10 @@ from .ft_commands import add_ft_subcommands
 from .info_commands import add_info_subcommand
 from .noise_commands import register_noise_commands
 from .peak_commands import register_peak_commands
+from .scan_commands import register_scan_commands
 from .settings_commands import register_settings_commands
 from .start_commands import register_start_commands
 from .tau_commands import register_tau_commands
-from .tune_commands import register_tune_commands
 from .utils import setup_logging
 from .window_commands import register_window_commands
 
@@ -101,9 +101,15 @@ Available Commands:
     fit-peaks       Fit each window's lines (conservative add-one-peak loop)
     visualize-fit   Overlay the fitted model on the spectrum
 
-  Parameter tuning:
-    tune list       List the tunable knobs for your instrument
-    tune scan       Sweep one knob across a grid and report a metric table
+  Parameter scanning:
+    scan list       List the tunable knobs for your instrument
+    scan run        Sweep one knob across a grid and report a metric table
+    scan all        Batch the sweep over a whole stage / sub-block
+
+  Settings:
+    settings show   Resolved value + provenance per setting
+    settings set    Persist a chosen value into the .ftmw
+    settings export Write the chosen values to a .yml preset
 
   Utility:
     info            Show provenance and stage status for a .ftmw file
@@ -148,8 +154,8 @@ Examples:
     # Add fitting commands (Stage 5)
     register_fitting_commands(subparsers)
 
-    # Companion parameter-tuning commands
-    register_tune_commands(subparsers)
+    # Cross-cutting parameter-scan surface
+    register_scan_commands(subparsers)
 
     # Cross-cutting resolved-settings inspection
     register_settings_commands(subparsers)

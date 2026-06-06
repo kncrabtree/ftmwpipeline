@@ -1628,17 +1628,17 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
 
 
 # =============================================================================
-# Companion parameter tuning
+# Parameter-scan surface
 # =============================================================================
 
 
-def tune_list(
+def scan_list(
     selector: Optional[str] = None,
     *,
     include_advanced: bool = False,
 ) -> Tuple[Any, ...]:
     """List the registered tunable knobs, equivalent to
-    :meth:`Pipeline.tune_list`.
+    :meth:`Pipeline.scan_list`.
 
     Parameters
     ----------
@@ -1654,10 +1654,10 @@ def tune_list(
     tuple of KnobSpec
         Path-sorted knob specifications.
     """
-    return Pipeline.tune_list(selector, include_advanced=include_advanced)
+    return Pipeline.scan_list(selector, include_advanced=include_advanced)
 
 
-def tune_scan(
+def scan_run(
     file_path: Union[str, Path],
     knob: str,
     grid: Optional[Sequence[Any]] = None,
@@ -1675,7 +1675,7 @@ def tune_scan(
     fit_all: bool = False,
 ) -> Any:
     """Sweep a single pipeline knob across a grid, equivalent to
-    :meth:`Pipeline.tune_scan`.
+    :meth:`Pipeline.scan_run`.
 
     Re-runs the knob's stage for each grid value on a working copy of
     ``file_path`` (the input is never mutated) and returns a ``SweepResult``
@@ -1687,7 +1687,7 @@ def tune_scan(
     file_path : str or Path
         A ``.ftmw`` already built through the knob's upstream stage.
     knob : str
-        Dotted knob path (see :func:`tune_list`), e.g.
+        Dotted knob path (see :func:`scan_list`), e.g.
         ``"stage2.window_mhz"``.
     grid : sequence, optional
         Values to sweep; defaults to the knob's registered grid.
@@ -1713,7 +1713,7 @@ def tune_scan(
     """
     try:
         pipeline = Pipeline.open(file_path)
-        return pipeline.tune_scan(
+        return pipeline.scan_run(
             knob,
             grid=grid,
             output_dir=output_dir,
@@ -1734,7 +1734,7 @@ def tune_scan(
         raise
 
 
-def tune_scan_batch(
+def scan_all(
     file_path: Union[str, Path],
     selector: Optional[str] = None,
     *,
@@ -1753,12 +1753,12 @@ def tune_scan_batch(
     fit_all: bool = False,
 ) -> Any:
     """Sweep every knob matched by ``selector`` on its default grid, equivalent
-    to :meth:`Pipeline.tune_scan_batch`.
+    to :meth:`Pipeline.scan_all`.
 
-    A convenience over :func:`tune_scan` for reviewing a whole stage / sub-block
+    A convenience over :func:`scan_run` for reviewing a whole stage / sub-block
     at once instead of driving knobs one-by-one. ``selector`` filters by
     dotted-path prefix (e.g. ``"stage2b"`` / ``"stage2b.gaussian"``) just like
-    :func:`tune_list`; ``include_advanced`` adds the advanced-tier knobs. Each
+    :func:`scan_list`; ``include_advanced`` adds the advanced-tier knobs. Each
     knob runs on its own working copy of ``file_path`` (never mutated); a knob
     whose scan fails (e.g. its required stage is absent) is recorded as a failed
     ``BatchItem`` and the batch continues.
@@ -1771,7 +1771,7 @@ def tune_scan_batch(
     """
     try:
         pipeline = Pipeline.open(file_path)
-        return pipeline.tune_scan_batch(
+        return pipeline.scan_all(
             selector,
             include_advanced=include_advanced,
             output_dir=output_dir,
@@ -1804,7 +1804,7 @@ def settings_show(
 
     Reports, for each covered setting of ``file_path``, the value actually in
     effect and the layer that supplied it -- the resolved-view counterpart to
-    :func:`tune_list`'s tunable-knob listing.
+    :func:`scan_list`'s tunable-knob listing.
 
     Parameters
     ----------

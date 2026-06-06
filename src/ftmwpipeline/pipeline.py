@@ -1688,18 +1688,18 @@ class Pipeline:
         return validate_pipeline_file(self.filepath)
 
     # =========================================================================
-    # Companion parameter tuning
+    # Parameter-scan surface
     # =========================================================================
 
     @staticmethod
-    def tune_list(
+    def scan_list(
         selector: Optional[str] = None,
         *,
         include_advanced: bool = False,
     ) -> Tuple["KnobSpec", ...]:
         """List the registered tunable knobs.
 
-        Equivalent to :func:`ftmwpipeline.api.tune_list`. The returned
+        Equivalent to :func:`ftmwpipeline.api.scan_list`. The returned
         :class:`KnobSpec` tuple is independent of any file, so this is a
         staticmethod; it is exposed on the class for dual-interface parity.
         ``selector`` filters by dotted-path prefix (e.g. ``"stage2b"`` /
@@ -1710,7 +1710,7 @@ class Pipeline:
 
         return list_knobs(selector, include_advanced=include_advanced)
 
-    def tune_scan(
+    def scan_run(
         self,
         knob: str,
         grid: Optional[Sequence[Any]] = None,
@@ -1729,7 +1729,7 @@ class Pipeline:
     ) -> "SweepResult":
         """Sweep a single knob across a grid on a copy of this file.
 
-        Equivalent to :func:`ftmwpipeline.api.tune_scan`. Re-runs the knob's
+        Equivalent to :func:`ftmwpipeline.api.scan_run`. Re-runs the knob's
         stage for each grid value on a working copy (this file is never
         mutated), returning a :class:`SweepResult` with the table, CSV path,
         optional plot, recommendation, and how-to-apply instructions. A progress
@@ -1763,7 +1763,7 @@ class Pipeline:
             fit_all=fit_all,
         )
 
-    def tune_scan_batch(
+    def scan_all(
         self,
         selector: Optional[str] = None,
         *,
@@ -1783,10 +1783,10 @@ class Pipeline:
     ) -> "List[BatchItem]":
         """Sweep every knob matched by ``selector`` on its default grid.
 
-        Equivalent to :func:`ftmwpipeline.api.tune_scan_batch`. A convenience
-        over :meth:`tune_scan` for reviewing a whole stage / sub-block at once:
+        Equivalent to :func:`ftmwpipeline.api.scan_all`. A convenience
+        over :meth:`scan_run` for reviewing a whole stage / sub-block at once:
         ``selector`` filters by dotted-path prefix (e.g. ``"stage2b"`` /
-        ``"stage2b.gaussian"``) exactly as :meth:`tune_list`, and
+        ``"stage2b.gaussian"``) exactly as :meth:`scan_list`, and
         ``include_advanced`` adds the advanced-tier knobs. Each knob runs on its
         own working copy (this file is never mutated); a knob whose scan fails
         (e.g. its required stage is absent) is recorded as a failed

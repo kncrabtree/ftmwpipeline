@@ -5,6 +5,16 @@ tooling into a first-class, user-facing surface so a user can understand,
 visualize, and optimize pipeline parameters for **their own instrument**, then
 capture the result as a reusable instrument preset. Charter: GitHub issue #27.
 
+> **CLI naming note.** This document designs the surface under a `tune`
+> command namespace (`tune list` / `tune scan` / `tune scan-all`). That surface
+> shipped and was then renamed to the object-verb **`scan`** meta-object
+> (`scan list` / `scan run` / `scan all`) in issue #28, with the Python wrappers
+> renamed `scan_list` / `scan_run` / `scan_all`; the `tune` command no longer
+> exists. The preset-emit half deferred here (deliverable 4) shipped as the
+> `settings set` / `settings export` change-grammar. Read the `tune *` command
+> names below as their `scan *` equivalents; see
+> [`tune-settings-verb.md`](tune-settings-verb.md).
+
 This is the design + categorization document. Implementation is sequenced in
 §Sequencing; nothing here re-derives a specific default (that is the per-knob
 audit work tracked by [`instrument-tunable-knobs.md`](instrument-tunable-knobs.md)

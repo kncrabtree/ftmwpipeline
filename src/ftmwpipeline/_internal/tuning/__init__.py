@@ -8,9 +8,10 @@ learn how to apply the chosen value. The engine
 parameter-specific lives as data in the registry
 (:mod:`ftmwpipeline._internal.tuning.registry`).
 
-This package is the single implementation behind the CLI ``tune`` namespace and
-the ``Pipeline`` / functional-API ``tune_scan`` / ``tune_list`` wrappers, per
-the repo's dual-interface rule. See
+This package is the single implementation behind the CLI ``scan`` meta-object
+and the ``Pipeline`` / functional-API ``scan_run`` / ``scan_list`` wrappers, per
+the repo's dual-interface rule. It also backs the ``settings`` meta-object
+(:mod:`settings_inspection`, :mod:`settings_mutation`). See
 ``dev-docs/planning/companion-tuning-tools.md``.
 """
 
