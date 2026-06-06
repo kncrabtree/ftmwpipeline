@@ -55,7 +55,12 @@ from ._internal.stage4_impl import (
     load_windows_impl,
     visualize_windows_impl,
 )
-from ._internal.stage5_impl import fit_peaks_impl, load_fit_impl, visualize_fit_impl
+from ._internal.stage5_impl import (
+    fit_peaks_impl,
+    fit_show_impl,
+    load_fit_impl,
+    visualize_fit_impl,
+)
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.start_detection_impl import detect_start_time_impl
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
@@ -1626,6 +1631,53 @@ class Pipeline:
             return fig
         except Exception as e:
             raise RuntimeError(f"Failed to create fit visualization: {e}") from e
+
+    def show_fit(
+        self,
+        *,
+        window_ids: Optional[list] = None,
+        freqs: Optional[list] = None,
+        random_n: Optional[int] = None,
+        random_seed: Optional[int] = None,
+        top_snr: Optional[int] = None,
+        all_windows: bool = False,
+        output_dir: Optional[Union[str, Path]] = None,
+        show_audit: bool = False,
+        figsize: Optional[tuple] = None,
+        title: Optional[str] = None,
+        interactive: bool = False,
+    ) -> Dict[str, Any]:
+        """Show the Stage 5 fit -- overview, or a consolidated per-window detail
+        figure for each selected window.
+
+        Equivalent to the CLI ``fit show`` command. With no selector, returns
+        the spectrum-wide overview. The selectors (``window_ids`` / ``freqs`` /
+        ``random_n`` / ``top_snr`` / ``all_windows``) compose as a union; with
+        ``output_dir`` each detail figure is written as
+        ``<stem>_window_<id>.png``. Returns
+        ``{"mode", "window_ids", "figures", "paths", "log"}``. Requires Stage 5.
+        """
+        try:
+            result = fit_show_impl(
+                file_path=str(self.filepath),
+                window_ids=window_ids,
+                freqs=freqs,
+                random_n=random_n,
+                random_seed=random_seed,
+                top_snr=top_snr,
+                all_windows=all_windows,
+                output_dir=str(output_dir) if output_dir is not None else None,
+                show_audit=show_audit,
+                figsize=figsize,
+                title=title,
+            )
+            if interactive and not result["paths"]:
+                import matplotlib.pyplot as plt
+
+                plt.show()
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Failed to show fit: {e}") from e
 
     def info(self) -> Dict[str, Any]:
         """

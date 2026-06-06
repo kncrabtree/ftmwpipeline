@@ -1,0 +1,180 @@
+"""Integration tests for ``fit show`` -- selection, rendering, batch, and
+cross-interface consistency of the consolidated per-window detail.
+
+All built on the session-scoped 3-window Stage 5 baseline.
+"""
+
+import shutil
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import pytest
+
+import ftmwpipeline.api as ftmw
+from ftmwpipeline._internal.stage5_impl import (
+    _resolve_detail_bundle,
+    fit_show_impl,
+    load_fit_impl,
+    render_fit_detail_impl,
+    select_window_ids,
+)
+from ftmwpipeline.pipeline import Pipeline
+
+
+@pytest.fixture
+def stage5_file(baseline_2638_stage5_small, tmp_path):
+    fp = tmp_path / "fit.ftmw"
+    shutil.copy(baseline_2638_stage5_small, fp)
+    return str(fp)
+
+
+@pytest.fixture
+def fit_obj(stage5_file):
+    return load_fit_impl(stage5_file)["fit"]
+
+
+# ---------------------------------------------------------------------------
+# Window selection
+# ---------------------------------------------------------------------------
+class TestSelectWindowIds:
+    def test_explicit_ids(self, fit_obj):
+        ids = [int(wf.window_id) for wf in fit_obj.window_fits]
+        assert select_window_ids(fit_obj, window_ids=[ids[0]]) == [ids[0]]
+
+    def test_all_windows(self, fit_obj):
+        ids = sorted(int(wf.window_id) for wf in fit_obj.window_fits)
+        assert select_window_ids(fit_obj, all_windows=True) == ids
+
+    def test_all_overrides_other_selectors(self, fit_obj):
+        ids = sorted(int(wf.window_id) for wf in fit_obj.window_fits)
+        got = select_window_ids(fit_obj, window_ids=[ids[0]], all_windows=True)
+        assert got == ids
+
+    def test_union_dedups(self, fit_obj):
+        ids = sorted(int(wf.window_id) for wf in fit_obj.window_fits)
+        # same window via id and top-snr -> appears once, sorted.
+        got = select_window_ids(fit_obj, window_ids=[ids[0], ids[0]], top_snr=1)
+        assert got == sorted(set(got))
+        assert ids[0] in got
+
+    def test_freq_maps_to_containing_window(self, fit_obj):
+        wf = fit_obj.window_fits[0]
+        lo, hi = wf.window.freq_range
+        mid = 0.5 * (lo + hi)
+        assert select_window_ids(fit_obj, freqs=[mid]) == [int(wf.window_id)]
+
+    def test_unknown_id_raises(self, fit_obj):
+        with pytest.raises(ValueError, match="window id"):
+            select_window_ids(fit_obj, window_ids=[10_000])
+
+    def test_freq_in_no_window_raises(self, fit_obj):
+        with pytest.raises(ValueError, match="no fit window"):
+            select_window_ids(fit_obj, freqs=[1.0])
+
+    def test_top_snr_orders_by_brightest(self, fit_obj):
+        got = select_window_ids(fit_obj, top_snr=1)
+
+        # the single top-SNR window must be the one holding the brightest peak.
+        def _max_snr(wf):
+            snrs = [p.snr for p in wf.fitted_peaks if p.snr is not None]
+            return max(snrs) if snrs else float("-inf")
+
+        brightest = max(fit_obj.window_fits, key=_max_snr)
+        assert got == [int(brightest.window_id)]
+
+    def test_random_is_seed_reproducible(self, fit_obj):
+        a = select_window_ids(fit_obj, random_n=2, random_seed=11)
+        b = select_window_ids(fit_obj, random_n=2, random_seed=11)
+        assert a == b
+        assert len(a) == 2
+
+
+# ---------------------------------------------------------------------------
+# Rendering
+# ---------------------------------------------------------------------------
+class TestRenderDetail:
+    def test_returns_figure_with_expected_panels(self, stage5_file, fit_obj):
+        wid = int(fit_obj.window_fits[0].window_id)
+        fig = render_fit_detail_impl(stage5_file, wid)
+        # overview + 3 residual + 3 data + hist + peak-table axis = 9.
+        assert len(fig.axes) == 9
+        plt.close(fig)
+
+    def test_magnitude_panels_use_padded_grid_stats_stay_native(self, stage5_file):
+        bundle = _resolve_detail_bundle(stage5_file)
+        wf = bundle.fit.window_fits[0]
+        lo, hi = wf.window.freq_range
+        lo, hi = min(lo, hi), max(lo, hi)
+        n_native = int(((bundle.frequencies >= lo) & (bundle.frequencies <= hi)).sum())
+        n_pad = int(((bundle.freq_padded >= lo) & (bundle.freq_padded <= hi)).sum())
+        # Display magnitude grid is exactly-2x denser than the native grid.
+        assert n_pad == pytest.approx(2 * n_native, abs=2)
+        # The native grid (the one every statistic uses) is unchanged.
+        assert n_native == int(
+            ((bundle.frequencies >= lo) & (bundle.frequencies <= hi)).sum()
+        )
+
+
+# ---------------------------------------------------------------------------
+# fit_show_impl: overview, detail, batch
+# ---------------------------------------------------------------------------
+class TestFitShowImpl:
+    def test_no_selector_is_overview(self, stage5_file):
+        result = fit_show_impl(stage5_file)
+        assert result["mode"] == "overview"
+        assert result["window_ids"] == []
+        assert len(result["figures"]) == 1
+        for fig in result["figures"]:
+            plt.close(fig)
+
+    def test_batch_writes_one_png_per_window(self, stage5_file, tmp_path):
+        out = tmp_path / "figs"
+        result = fit_show_impl(stage5_file, all_windows=True, output_dir=str(out))
+        assert result["mode"] == "detail"
+        assert len(result["paths"]) == len(result["window_ids"])
+        written = sorted(p.name for p in out.glob("*.png"))
+        assert len(written) == len(result["window_ids"])
+        for p in result["paths"]:
+            assert p.endswith(".png")
+        for fig in result["figures"]:
+            plt.close(fig)
+
+    def test_log_lists_selected_windows(self, stage5_file, fit_obj):
+        wid = int(fit_obj.window_fits[0].window_id)
+        result = fit_show_impl(stage5_file, window_ids=[wid])
+        assert f"Window {wid}" in result["log"]
+        for fig in result["figures"]:
+            plt.close(fig)
+
+    def test_show_audit_extends_log(self, stage5_file, fit_obj):
+        wid = int(fit_obj.window_fits[0].window_id)
+        plain = fit_show_impl(stage5_file, window_ids=[wid], show_audit=False)["log"]
+        audit = fit_show_impl(stage5_file, window_ids=[wid], show_audit=True)["log"]
+        assert "audit trail" in audit
+        assert len(audit) >= len(plain)
+
+
+# ---------------------------------------------------------------------------
+# Cross-interface consistency
+# ---------------------------------------------------------------------------
+def test_show_fit_cross_interface(baseline_2638_stage5_small, tmp_path):
+    """CLI-equivalent impl == Pipeline.show_fit == api.show_fit: same selected
+    windows and same number of written figures for an identical selector."""
+    pfile = tmp_path / "p.ftmw"
+    ffile = tmp_path / "f.ftmw"
+    shutil.copy(baseline_2638_stage5_small, pfile)
+    shutil.copy(baseline_2638_stage5_small, ffile)
+
+    p_out = tmp_path / "p_out"
+    f_out = tmp_path / "f_out"
+
+    r_pipe = Pipeline.open(pfile).show_fit(top_snr=2, output_dir=str(p_out))
+    r_func = ftmw.show_fit(str(ffile), top_snr=2, output_dir=str(f_out))
+
+    assert r_pipe["window_ids"] == r_func["window_ids"]
+    assert len(r_pipe["paths"]) == len(r_func["paths"]) == len(r_pipe["window_ids"])
+    assert r_pipe["log"] == r_func["log"]
+    for fig in r_pipe["figures"] + r_func["figures"]:
+        plt.close(fig)

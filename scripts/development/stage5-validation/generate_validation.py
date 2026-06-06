@@ -91,6 +91,7 @@ from ftmwpipeline.visualization.fit_visualization import (
     _window_model_on_persisted_grid,
     _shade_windows,
 )
+from ftmwpipeline.visualization.fit_detail import plot_consolidated_detail
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -200,81 +201,6 @@ def _fmt_pm(value: Optional[float], err: Optional[float], digits: int = 6) -> st
         return "-"
     err_part = f"+/-{err:.{digits}g}" if err is not None else "+/-?"
     return f"{value:.{digits}g} {err_part}"
-
-
-def _format_spectroscopic(
-    value: Optional[float], err: Optional[float], *, n_digits: int = 2,
-) -> str:
-    """PDG-style ``value(err_digits)`` formatter.
-
-    Uses 2 digits of error by default. Bumps to 3 digits when the 2-digit
-    error rounds into the 10-19 range (the leading-1 case where the
-    per-digit precision is worst: a "13" carries ~7% rounding error,
-    "134" carries ~0.7%). Value precision is matched to the error's last
-    displayed digit.
-
-    Examples
-    --------
-    >>> _format_spectroscopic(3.06546, 0.0134)
-    '3.0655(134)'
-    >>> _format_spectroscopic(3.06546, 0.0234)
-    '3.065(23)'
-    >>> _format_spectroscopic(3.06546, 0.0094)
-    '3.066(94)'
-    """
-    import math
-    if value is None or not math.isfinite(value):
-        return "-"
-    if err is None or not math.isfinite(err) or err <= 0:
-        return f"{value:.6g}"
-    k = math.floor(math.log10(err))
-    last_pos = k - n_digits + 1
-    scale = 10.0 ** last_pos
-    err_int = int(round(err / scale))
-    # Round-up to next order (e.g., 0.999 -> 100 with 2 digits): pull back one digit.
-    if err_int >= 10 ** n_digits:
-        last_pos += 1
-        scale = 10.0 ** last_pos
-        err_int = int(round(err / scale))
-    # PDG leading-1: bump 2-digit "1X" forms to 3-digit "1XY" forms.
-    if 10 <= err_int < 20:
-        last_pos -= 1
-        scale = 10.0 ** last_pos
-        err_int = int(round(err / scale))
-    value_round = round(value / scale) * scale
-    decimals = max(0, -last_pos)
-    return f"{value_round:.{decimals}f}({err_int})"
-
-
-def _format_spectroscopic_sci(
-    value: Optional[float], err: Optional[float], *, n_digits: int = 2,
-) -> str:
-    """Spectroscopic formatter with auto scientific notation.
-
-    Falls back to :func:`_format_spectroscopic` (plain decimal form) when
-    ``|value|`` is in ``[1e-3, 1e6)``; otherwise factors out the value's
-    order of magnitude and formats the mantissa spectroscopically:
-
-    >>> _format_spectroscopic_sci(4.18e-6, 3.1e-7)
-    '4.18(31)e-06'
-    """
-    import math
-    if value is None or not math.isfinite(value):
-        return "-"
-    if value == 0.0:
-        return _format_spectroscopic(value, err, n_digits=n_digits)
-    if 1e-3 <= abs(value) < 1e6:
-        return _format_spectroscopic(value, err, n_digits=n_digits)
-    exp = int(math.floor(math.log10(abs(value))))
-    scale = 10.0 ** exp
-    m_value = value / scale
-    m_err: Optional[float]
-    if err is not None and math.isfinite(err) and err > 0:
-        m_err = err / scale
-    else:
-        m_err = None
-    body = _format_spectroscopic(m_value, m_err, n_digits=n_digits)
-    return f"{body}e{exp:+03d}"
 
 
 def _peak_table(peaks: Sequence[FittedPeak]) -> str:
@@ -959,18 +885,6 @@ def _format_p_origin(
     return f"{body} ({label})"
 
 
-def _peak_labels(n: int) -> List[str]:
-    """Generate alpha labels: A..Z, then AA..AZ, BA..BZ, ..."""
-    out = []
-    for i in range(n):
-        if i < 26:
-            out.append(chr(ord("A") + i))
-        else:
-            j = i - 26
-            out.append(chr(ord("A") + j // 26) + chr(ord("A") + j % 26))
-    return out
-
-
 def _full_spectrum_model(
     frequencies: np.ndarray,
     consolidated_wf: FittingResult,
@@ -1026,37 +940,6 @@ def _full_spectrum_model(
     return total
 
 
-def _eval_window_baseline(
-    wf: FittingResult, u_offset_mhz: np.ndarray
-) -> np.ndarray:
-    """Evaluate the persisted leakage-wing baseline ``B(u)`` on an offset grid.
-
-    Reads the per-window baseline audit trail from ``wf.quality_metrics``
-    (``baseline_applied`` / ``baseline_order`` / ``baseline_offset_scale`` /
-    ``baseline_coeff{k}_re`` / ``baseline_coeff{k}_im``) and returns the complex
-    ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` on ``u_offset_mhz`` (the signed
-    baseband offset from the window centre). Returns zeros when no baseline
-    fired -- so callers can add it unconditionally. The Stage 5 fit applies the
-    baseline jointly with the de-biased lines, so the faithful plotted model is
-    ``model_spectrum(persisted_peaks) + B(u)``.
-    """
-    qa = wf.quality_metrics or {}
-    u = np.asarray(u_offset_mhz, dtype=float)
-    if float(qa.get("baseline_applied", 0.0)) < 0.5:
-        return np.zeros(u.shape, dtype=np.complex128)
-    u_s = float(qa.get("baseline_offset_scale", 0.0))
-    order = int(qa.get("baseline_order", 0))
-    if not u_s > 0.0:
-        return np.zeros(u.shape, dtype=np.complex128)
-    x = u / u_s
-    b = np.zeros(u.shape, dtype=np.complex128)
-    for k in range(order + 1):
-        a_k = float(qa.get(f"baseline_coeff{k}_re", 0.0))
-        b_k = float(qa.get(f"baseline_coeff{k}_im", 0.0))
-        b = b + (a_k + 1j * b_k) * x ** k
-    return b
-
-
 def _plot_consolidated_detail(
     window: FitWindow,
     consolidated_wf: FittingResult,
@@ -1073,333 +956,29 @@ def _plot_consolidated_detail(
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
 ) -> plt.Figure:
-    """Render Figure 1 (landscape letter): consolidated per-window detail.
+    """Render the consolidated per-window detail via the packaged renderer.
 
-    Layout (top-to-bottom):
-      - Row 1: full active-FT magnitude overview with current window axvspan.
-      - Row 2 (3 cols, sharex): Re/Im/|z| residuals + transparent vlines at
-        every fitted peak's molecular frequency.
-      - Row 3 (3 cols, sharex): Re/Im/|z| data+model + same vlines.
-      - Row 4: |z| residual histogram (left, 1 col) + peak-listing axes
-        (right, 2 cols) with PDG-style frequency uncertainties and the
-        acceptance-step p-value per fitted peak.
+    Thin wrapper over
+    :func:`ftmwpipeline.visualization.fit_detail.plot_consolidated_detail` so the
+    harness and the ``fit show`` CLI share one figure. ``peak_provenance`` and
+    ``other_window_fits`` are accepted for call-site compatibility and ignored:
+    per-peak rescue provenance lives in the text reports (``report.md`` /
+    ``report-rr.md``), not the figure.
     """
-    s = sideband_sign(sideband)
-    lo, hi = window.freq_range
-    mask = (frequencies >= min(lo, hi)) & (frequencies <= max(lo, hi))
-    f_slice = frequencies[mask]
-    z_slice = complex_spectrum[mask]
-    sigma_slice = rms_noise[mask]
-    center = 0.5 * (lo + hi)
-    u_slice = s * (f_slice - center)
-
-    tau_us = float(consolidated_wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
-    peaks_in_window = [
-        ModelPeak(
-            amplitude=float(p.amplitude),
-            offset_mhz=float(s * (p.frequency_mhz - center)),
-            phase=float(p.phase if p.phase is not None else 0.0),
-        )
-        for p in consolidated_wf.fitted_peaks
-    ]
-    frozen_peaks: List[ModelPeak] = []
-    for key, fp_data in consolidated_wf.fixed_parameters.items():
-        if not key.startswith("frozen_peak_"):
-            continue
-        frozen_peaks.append(
-            ModelPeak(
-                amplitude=float(fp_data["amplitude"]),
-                offset_mhz=float(
-                    s * (float(fp_data["frequency_mhz"]) - center)
-                ),
-                phase=float(fp_data.get("phase", 0.0) or 0.0),
-            )
-        )
-    all_peaks = peaks_in_window + frozen_peaks
-    shape_str = getattr(consolidated_wf, "shape", "lorentzian")
-    if all_peaks and tau_us > 0.0:
-        model_slice = model_spectrum(
-            u_slice, all_peaks, tau_us, acquisition_us, shape=shape_str,
-        )
-    else:
-        model_slice = np.zeros_like(z_slice)
-    # The Stage 5 fit jointly fits an optional leakage-wing complex baseline
-    # with the (de-biased) lines; add it back so the plotted model + residual
-    # match the persisted fit instead of exposing the wing the baseline removed.
-    model_slice = model_slice + _eval_window_baseline(consolidated_wf, u_slice)
-    # Fine-grid model for the smooth-curve overlay on row 3; residuals,
-    # histograms, and quality stats continue to use ``model_slice`` (data grid).
-    if f_slice.size >= 2:
-        n_fine = (f_slice.size - 1) * MODEL_OVERSAMPLE + 1
-        f_fine = np.linspace(float(f_slice.min()), float(f_slice.max()), n_fine)
-        u_fine = s * (f_fine - center)
-        if all_peaks and tau_us > 0.0:
-            model_fine = model_spectrum(
-                u_fine, all_peaks, tau_us, acquisition_us, shape=shape_str,
-            )
-        else:
-            model_fine = np.zeros_like(f_fine, dtype=np.complex128)
-        model_fine = model_fine + _eval_window_baseline(consolidated_wf, u_fine)
-    else:
-        f_fine = f_slice.copy()
-        model_fine = model_slice.copy()
-    residual = z_slice - model_slice
-    sigma_c_slice = sigma_slice / np.sqrt(2.0)
-    band = 3.0 * float(np.median(sigma_c_slice))
-
-    # Display-only amplitude scale (e.g., 10^6 -> µV). Algorithms above all
-    # ran in active-FT native units; the figure just rescales for readability.
-    amp_scale = float(style.amplitude_scale)
-    units_lbl = style.units_label
-    amp_unit_suffix = f" ({units_lbl})" if units_lbl else ""
-
-    fig = plt.figure(figsize=(11, 8.5))
-    fig.suptitle(title, fontsize=11)
-    gs = GridSpec(
-        nrows=4, ncols=3, figure=fig,
-        height_ratios=[1.0, 1.6, 1.6, 1.6],
-        hspace=0.45, wspace=0.30,
-        left=0.06, right=0.97, top=0.92, bottom=0.07,
+    return plot_consolidated_detail(
+        consolidated_wf,
+        frequencies=frequencies,
+        complex_spectrum=complex_spectrum,
+        rms_noise=rms_noise,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        title=title,
+        amplitude_scale=style.amplitude_scale,
+        units_label=style.units_label,
+        trim_mhz=style.trim_mhz,
+        freq_padded=freq_padded,
+        spec_padded=spec_padded,
     )
-    ax_overview = fig.add_subplot(gs[0, :])
-    ax_re_res = fig.add_subplot(gs[1, 0])
-    ax_im_res = fig.add_subplot(gs[1, 1], sharex=ax_re_res)
-    ax_mag_res = fig.add_subplot(gs[1, 2], sharex=ax_re_res)
-    ax_re_dat = fig.add_subplot(gs[2, 0], sharex=ax_re_res)
-    ax_im_dat = fig.add_subplot(gs[2, 1], sharex=ax_re_res)
-    ax_mag_dat = fig.add_subplot(gs[2, 2], sharex=ax_re_res)
-    ax_hist = fig.add_subplot(gs[3, 0])
-    ax_peaks = fig.add_subplot(gs[3, 1:])
-    ax_peaks.set_axis_off()
-
-    # --- Row 1: full-spectrum overview ----------------------------------
-    # Show data magnitude only -- the model overlay is omitted here because
-    # at the full-spectrum scale (~13.5 GHz width on ~1400 px) every fitted
-    # line collapses into a thin spike that overlaps the data spike
-    # pixel-for-pixel; the model line adds no information and only obscures
-    # the data. The per-window data+model panels carry the model overlay.
-    if style.trim_mhz is not None:
-        t_lo, t_hi = style.trim_mhz
-        ov_mask = (frequencies >= min(t_lo, t_hi)) & (
-            frequencies <= max(t_lo, t_hi)
-        )
-        ov_freqs = frequencies[ov_mask]
-        ov_data = complex_spectrum[ov_mask]
-    else:
-        ov_freqs = frequencies
-        ov_data = complex_spectrum
-    ax_overview.plot(
-        ov_freqs, np.abs(ov_data) * amp_scale,
-        color="0.3", lw=0.5, label="data |X|",
-    )
-    # axvspan is narrow on the full-spectrum scale so it can render
-    # invisibly when the window is a few MHz out of a 13 GHz axis.
-    # Add a pair of edge vlines as a visibility backstop.
-    ax_overview.axvspan(
-        min(lo, hi), max(lo, hi),
-        color="tab:green", alpha=0.35, zorder=0, label="this window",
-    )
-    ax_overview.axvline(min(lo, hi), color="tab:green", lw=0.9, alpha=0.75, zorder=1)
-    ax_overview.axvline(max(lo, hi), color="tab:green", lw=0.9, alpha=0.75, zorder=1)
-    ax_overview.set_xlim(ov_freqs[0], ov_freqs[-1])
-    ax_overview.set_ylabel(f"|X(f)|{amp_unit_suffix}", fontsize=9)
-    ax_overview.set_title("full-spectrum context", fontsize=9)
-    ax_overview.tick_params(axis="both", labelsize=8)
-    ax_overview.legend(loc="upper right", fontsize=7, framealpha=0.85)
-
-    # --- Rows 2 & 3: residual + data+model panels with peak vlines ------
-    fitted_freqs = [float(p.frequency_mhz) for p in consolidated_wf.fitted_peaks]
-    labels = _peak_labels(len(fitted_freqs))
-
-    # Assign each label a row height (in axes fraction above the top of each
-    # panel) so blended peaks don't collide. Peaks sorted by frequency; if a
-    # peak falls within 1 FWHM of the previous label's freq AND would land in
-    # the same row, bump it to the next row. Cycles through 3 rows.
-    fwhm_label = 1.0 / (np.pi * tau_us) if tau_us > 0.0 else 0.0
-    n_rows = 3
-    label_row_offsets = [0] * len(fitted_freqs)
-    sort_order = sorted(range(len(fitted_freqs)), key=lambda i: fitted_freqs[i])
-    last_freq_in_row = [-float("inf")] * n_rows
-    for idx in sort_order:
-        f_here = fitted_freqs[idx]
-        chosen_row = 0
-        if fwhm_label > 0:
-            for r in range(n_rows):
-                if f_here - last_freq_in_row[r] >= fwhm_label:
-                    chosen_row = r
-                    break
-            else:
-                # All rows have a too-close prev label; pick the row whose
-                # last label is furthest left (least recent).
-                chosen_row = int(
-                    min(range(n_rows), key=lambda r: last_freq_in_row[r])
-                )
-        label_row_offsets[idx] = chosen_row
-        last_freq_in_row[chosen_row] = f_here
-
-    # Vertical offset per label row in points above the axes top.
-    row_y_offsets_pts = [2.0, 12.0, 22.0]
-
-    def _vlines_at_peaks(ax: plt.Axes, with_labels: bool) -> None:
-        for f_pk in fitted_freqs:
-            ax.axvline(
-                f_pk, color="tab:gray", lw=0.7, ls="-", alpha=0.45, zorder=1,
-            )
-        if not with_labels:
-            return
-        for f_pk, lbl, row in zip(fitted_freqs, labels, label_row_offsets):
-            y_off = row_y_offsets_pts[row]
-            ax.annotate(
-                lbl,
-                xy=(f_pk, 1.0), xycoords=("data", "axes fraction"),
-                xytext=(0, y_off), textcoords="offset points",
-                fontsize=7, ha="center", va="bottom",
-                color="0.25",
-            )
-
-    # Residuals (row 2). band lines included. Scale amplitudes by amp_scale.
-    band_scaled = band * amp_scale
-
-    def _plot_res(ax: plt.Axes, vals: np.ndarray, color: str, mag: bool) -> None:
-        if not mag:
-            ax.axhline(0.0, color="0.5", lw=0.4)
-        ax.plot(f_slice, vals * amp_scale, color=color, lw=0.7)
-        if band_scaled > 0.0:
-            ax.axhline(band_scaled, color="0.3", lw=0.5, ls="--")
-            if not mag:
-                ax.axhline(-band_scaled, color="0.3", lw=0.5, ls="--")
-
-    _vlines_at_peaks(ax_re_res, with_labels=True)
-    _vlines_at_peaks(ax_im_res, with_labels=True)
-    _vlines_at_peaks(ax_mag_res, with_labels=True)
-    _plot_res(ax_re_res, np.real(residual), "tab:red", mag=False)
-    _plot_res(ax_im_res, np.imag(residual), "tab:blue", mag=False)
-    _plot_res(ax_mag_res, np.abs(residual), "tab:purple", mag=True)
-    ax_re_res.set_ylabel(f"Re residual{amp_unit_suffix}", fontsize=9)
-    ax_im_res.set_ylabel(f"Im residual{amp_unit_suffix}", fontsize=9)
-    ax_mag_res.set_ylabel(f"|residual|{amp_unit_suffix}", fontsize=9)
-    for ax in (ax_re_res, ax_im_res, ax_mag_res):
-        ax.tick_params(axis="both", labelsize=8)
-        ax.tick_params(axis="x", labelbottom=False)
-
-    # Data+model (row 3). data as thin gray line + black markers; model thick
-    # on the fine grid for a smooth lineshape.
-    def _plot_data(
-        ax: plt.Axes, dvals: np.ndarray, mvals_fine: np.ndarray, mcolor: str,
-    ) -> None:
-        ax.plot(f_slice, dvals * amp_scale, color="#00000044", lw=0.5, zorder=1)
-        ax.plot(
-            f_slice, dvals * amp_scale, marker="o", linestyle="None", markersize=2.0,
-            markerfacecolor="black", markeredgecolor="black", zorder=2,
-        )
-        ax.plot(f_fine, mvals_fine * amp_scale, color=mcolor, lw=1.2, zorder=3)
-
-    _vlines_at_peaks(ax_re_dat, with_labels=False)
-    _vlines_at_peaks(ax_im_dat, with_labels=False)
-    _vlines_at_peaks(ax_mag_dat, with_labels=False)
-    _plot_data(ax_re_dat, np.real(z_slice), np.real(model_fine), "tab:red")
-    _plot_data(ax_im_dat, np.imag(z_slice), np.imag(model_fine), "tab:blue")
-    # |X| data on the 2× zero-padded display grid (cosmetic only -- residuals
-    # below and every χ²/AIC stat above stay on the canonical native grid).
-    # Falls back to the native grid if the padded slice was not provided.
-    if freq_padded is not None and spec_padded is not None:
-        pad_mask = (freq_padded >= min(lo, hi)) & (freq_padded <= max(lo, hi))
-        f_disp = freq_padded[pad_mask]
-        z_disp = spec_padded[pad_mask]
-        ax_mag_dat.plot(
-            f_disp, np.abs(z_disp) * amp_scale,
-            color="#00000066", lw=0.6, zorder=1,
-        )
-        ax_mag_dat.plot(
-            f_disp, np.abs(z_disp) * amp_scale,
-            marker="o", linestyle="None", markersize=1.6,
-            markerfacecolor="black", markeredgecolor="black", zorder=2,
-        )
-        ax_mag_dat.plot(
-            f_fine, np.abs(model_fine) * amp_scale,
-            color="tab:purple", lw=1.2, zorder=3,
-        )
-    else:
-        _plot_data(ax_mag_dat, np.abs(z_slice), np.abs(model_fine), "tab:purple")
-    ax_re_dat.set_ylabel(f"Re{amp_unit_suffix}", fontsize=9)
-    ax_im_dat.set_ylabel(f"Im{amp_unit_suffix}", fontsize=9)
-    ax_mag_dat.set_ylabel(f"|X|{amp_unit_suffix}", fontsize=9)
-    for ax in (ax_re_dat, ax_im_dat, ax_mag_dat):
-        ax.tick_params(axis="both", labelsize=8)
-        ax.set_xlabel("frequency (MHz)", fontsize=9)
-
-    # --- Row 4: |residual| histogram + Rayleigh ------------------------
-    mag_res = np.abs(residual) * amp_scale
-    sigma_c = (float(np.median(sigma_slice)) / np.sqrt(2.0)) * amp_scale
-    if sigma_c > 0.0 and mag_res.size > 0:
-        n_bins = max(10, min(40, mag_res.size // 5))
-        ax_hist.hist(
-            mag_res, bins=n_bins, density=True,
-            color="0.75", edgecolor="0.3", linewidth=0.4, label="|residual|",
-        )
-        x_max = max(float(mag_res.max()), 5.0 * sigma_c)
-        x = np.linspace(0.0, x_max, 400)
-        rayleigh = (x / (sigma_c ** 2)) * np.exp(-(x ** 2) / (2.0 * sigma_c ** 2))
-        ax_hist.plot(
-            x, rayleigh, color="tab:purple", lw=1.0,
-            label=r"Rayleigh($\sigma/\sqrt{2}$)",
-        )
-        ax_hist.axvline(
-            3.0 * sigma_c, color="tab:red", lw=0.6, ls="--",
-            label=r"$3\sigma_c$",
-        )
-        ax_hist.legend(loc="upper right", fontsize=7, framealpha=0.85)
-    ax_hist.set_xlabel(f"|residual|{amp_unit_suffix}", fontsize=9)
-    ax_hist.set_ylabel("density", fontsize=9)
-    ax_hist.tick_params(axis="both", labelsize=8)
-    ax_hist.set_title("|residual| vs noise", fontsize=9)
-
-    # --- Row 4 right: peak listing ------------------------------------
-    ax_peaks.set_title("Fitted peaks (consolidated)", fontsize=9, loc="left")
-    n_peaks = len(consolidated_wf.fitted_peaks)
-    line_h = 1.0 / max(n_peaks + 1, 8)  # ~8 lines comfortably, more compress
-    amp_col_header = (
-        f"amplitude ({units_lbl})" if units_lbl else "amplitude"
-    )
-    header = (
-        f"  peak |  frequency (MHz)     |  {amp_col_header:<15}  |  p_KO (origin)"
-    )
-    ax_peaks.text(
-        0.02, 0.98, header,
-        transform=ax_peaks.transAxes, family="monospace", fontsize=8.5,
-        va="top", color="0.3",
-    )
-    ax_peaks.text(
-        0.02, 0.98 - 0.5 * line_h,
-        "  " + "-" * (len(header) - 2),
-        transform=ax_peaks.transAxes, family="monospace", fontsize=8.5,
-        va="top", color="0.5",
-    )
-    for i, (pk, lbl) in enumerate(zip(consolidated_wf.fitted_peaks, labels)):
-        freq_s = _format_spectroscopic(
-            float(pk.frequency_mhz), pk.frequency_error,
-        )
-        amp_val = float(pk.amplitude) * amp_scale
-        amp_err_scaled = (
-            float(pk.amplitude_error) * amp_scale
-            if pk.amplitude_error is not None
-            else None
-        )
-        amp_s = _format_spectroscopic_sci(amp_val, amp_err_scaled)
-        prov = (
-            peak_provenance[i] if i < len(peak_provenance)
-            else (None, None, None)
-        )
-        p_s = _format_p_origin(*prov)
-        line = f"   {lbl:>2}  | {freq_s:>20} | {amp_s:>15} | {p_s}"
-        y = 0.98 - (i + 1.5) * line_h
-        ax_peaks.text(
-            0.02, y, line,
-            transform=ax_peaks.transAxes, family="monospace", fontsize=8.5,
-            va="top",
-        )
-
-    return fig
 
 
 def _plot_audit_trail_figure(

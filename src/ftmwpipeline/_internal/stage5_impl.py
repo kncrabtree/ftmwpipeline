@@ -22,8 +22,9 @@ Wrapped identically by the CLI, Pipeline class, and functional API.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple, cast
 
 import h5py
 import numpy as np
@@ -1144,3 +1145,415 @@ def visualize_fit_impl(
         probe_freq_mhz=float(fid.probe_freq_mhz),
         start_us=start_us,
     )
+
+
+# ===========================================================================
+# Consolidated per-window detail ('fit show') -- selection, render, report
+# ===========================================================================
+
+UNITS_LABEL_BY_POWER = {0: "V", 3: "mV", 6: "µV", 9: "nV", 12: "pV"}
+
+# Exactly-2x zero-fill for the magnitude display panels (the information limit
+# for a magnitude spectrum; see visualization.fit_detail).
+_DETAIL_PAD_FACTOR = 2
+
+
+@dataclass
+class _DetailBundle:
+    """Per-file inputs the detail renderer needs, resolved once and reused.
+
+    Resolving the active grid + noise + display FT is the expensive part; a
+    batch of windows from one file shares a single bundle.
+    """
+
+    fit: SpectrumFit
+    frequencies: np.ndarray  # native active grid, ascending molecular freq
+    complex_spectrum: np.ndarray
+    rms_noise: np.ndarray  # per-bin sigma_x aligned to ``frequencies``
+    freq_padded: Optional[np.ndarray]  # 2x display grid, ascending
+    spec_padded: Optional[np.ndarray]
+    sideband: Sideband
+    acquisition_us: float
+    amplitude_scale: float
+    units_label: str
+    trim_mhz: Optional[Tuple[float, float]]
+    file_stem: str
+
+
+def _load_display_style(
+    file_path: str,
+) -> Tuple[float, str, Optional[Tuple[float, float]]]:
+    """Display transforms (amplitude scale, units label, overview trim) from
+    the persisted canonical FTSettings. Falls back to (1.0, "", None)."""
+    from .stage1_impl import _read_settings_layer
+
+    settings = _read_settings_layer(file_path, "/processing_parameters/ft_processing")
+    if settings is None:
+        return 1.0, "", None
+    units_power = settings.units_power
+    if units_power is None:
+        scale, label = 1.0, ""
+    else:
+        scale = 10.0 ** int(units_power)
+        label = UNITS_LABEL_BY_POWER.get(int(units_power), f"·10^{units_power} V")
+    return scale, label, settings.trim
+
+
+def _padded_active_display_ft(
+    fid_samples: np.ndarray,
+    sample_dt_us: float,
+    *,
+    start_us: float,
+    end_us: float,
+    expf_us: Optional[float],
+    probe_freq_mhz: float,
+    sideband: Sideband,
+    pad_factor: int = _DETAIL_PAD_FACTOR,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Display-only active FT zero-filled by ``pad_factor`` for the magnitude
+    panels. Mirrors the canonical active-region extraction (same ``expf_us``
+    apodization and mean removal) so the padded curve passes through the native
+    spectrum at the measured bins; the extra bins are the single-zero-fill
+    magnitude interpolation. Returns ``(freq_mhz, complex_spectrum)`` sorted by
+    ascending molecular frequency. Never feeds fitting / noise / chi-squared."""
+    from ..fitting.peak_model import sideband_sign
+
+    fid = np.asarray(fid_samples, dtype=float)
+    start_idx = max(int(np.floor(start_us / sample_dt_us)), 0)
+    end_idx = min(int(np.ceil(end_us / sample_dt_us)), fid.size)
+    active = fid[start_idx:end_idx].astype(float, copy=True)
+    n_active = active.size
+    if expf_us is not None and expf_us > 0:
+        t_us = np.arange(n_active) * sample_dt_us
+        active *= np.exp(-t_us / expf_us)
+    active -= active.mean()  # match canonical rdc=True
+    n_pad = int(pad_factor) * n_active
+    padded = np.zeros(n_pad, dtype=float)
+    padded[:n_active] = active
+    spectrum = sample_dt_us * np.fft.rfft(padded)
+    f_bb = np.fft.rfftfreq(n_pad, d=sample_dt_us)
+    freq = probe_freq_mhz + sideband_sign(sideband) * f_bb
+    order = np.argsort(freq)
+    return (
+        np.ascontiguousarray(freq[order]),
+        np.ascontiguousarray(spectrum[order]),
+    )
+
+
+def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
+    """Resolve the shared per-file detail inputs (see :class:`_DetailBundle`)."""
+    fit = load_fit_impl(file_path)["fit"]
+    (
+        fid_samples,
+        sample_dt_us,
+        start_us,
+        end_us,
+        expf_us,
+        probe_freq_mhz,
+        sideband,
+        _n_padded,
+        acquisition_us,
+        _user_ft,
+        trim_range,
+    ) = _build_active_ft_inputs(file_path)
+
+    active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
+    order = np.argsort(active_ft.freq_array)
+    freqs_sorted = np.ascontiguousarray(np.asarray(active_ft.freq_array)[order])
+    spec_sorted = np.ascontiguousarray(np.asarray(active_ft.complex_spectrum)[order])
+    rms_sorted = np.ascontiguousarray(np.asarray(active_rms, dtype=float)[order])
+
+    # The canonical active grid (build_active_grid_with_noise) is unapodized,
+    # so the display FT is too -- otherwise a persisted expf would bend the
+    # padded magnitude away from the native markers it must pass through.
+    freq_padded, spec_padded = _padded_active_display_ft(
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        expf_us=None,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband,
+    )
+
+    amp_scale, units_label, trim_mhz = _load_display_style(file_path)
+    return _DetailBundle(
+        fit=fit,
+        frequencies=freqs_sorted,
+        complex_spectrum=spec_sorted,
+        rms_noise=rms_sorted,
+        freq_padded=freq_padded,
+        spec_padded=spec_padded,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        amplitude_scale=amp_scale,
+        units_label=units_label,
+        trim_mhz=trim_mhz,
+        file_stem=Path(file_path).stem,
+    )
+
+
+def _window_for_freq(fit: SpectrumFit, freq_mhz: float) -> Optional[int]:
+    """Window id whose fit range contains ``freq_mhz`` (windows are disjoint)."""
+    for wf in fit.window_fits:
+        if wf.window is None:
+            continue
+        lo, hi = wf.window.freq_range
+        if min(lo, hi) <= freq_mhz <= max(lo, hi):
+            return int(cast(int, wf.window_id))
+    return None
+
+
+def _windows_by_peak_snr(fit: SpectrumFit) -> list[int]:
+    """Window ids sorted by descending brightest-in-window peak SNR."""
+
+    def _max_snr(wf: Any) -> float:
+        snrs = [p.snr for p in wf.fitted_peaks if p.snr is not None]
+        return max(snrs) if snrs else float("-inf")
+
+    ranked = sorted(
+        (wf for wf in fit.window_fits if wf.window is not None),
+        key=_max_snr,
+        reverse=True,
+    )
+    return [int(cast(int, wf.window_id)) for wf in ranked]
+
+
+def select_window_ids(
+    fit: SpectrumFit,
+    *,
+    window_ids: Optional[list[int]] = None,
+    freqs: Optional[list[float]] = None,
+    random_n: Optional[int] = None,
+    random_seed: Optional[int] = None,
+    top_snr: Optional[int] = None,
+    all_windows: bool = False,
+) -> list[int]:
+    """Resolve the selectors to a sorted, de-duplicated list of window ids.
+
+    The selectors compose as a union: explicit ids, frequency lookups, the
+    top-SNR windows, and a random sample are all added to one set. ``all_windows``
+    short-circuits to every window with attached context. ``random_seed`` only
+    matters when ``random_n`` is set. Raises ``ValueError`` for an unknown id or
+    a frequency in no window.
+    """
+    available = [
+        int(cast(int, wf.window_id)) for wf in fit.window_fits if wf.window is not None
+    ]
+    if not available:
+        raise ValueError("the fit has no windows with attached context to show")
+    if all_windows:
+        return sorted(available)
+    available_set = set(available)
+    selected: set[int] = set()
+    for wid in window_ids or []:
+        if int(wid) not in available_set:
+            raise ValueError(
+                f"window id {wid} not in fit "
+                f"(available {min(available)}..{max(available)})"
+            )
+        selected.add(int(wid))
+    for fq in freqs or []:
+        fwid = _window_for_freq(fit, float(fq))
+        if fwid is None:
+            raise ValueError(f"frequency {fq} MHz falls in no fit window")
+        selected.add(fwid)
+    if top_snr:
+        for wid in _windows_by_peak_snr(fit)[: int(top_snr)]:
+            selected.add(wid)
+    if random_n:
+        rng = np.random.default_rng(random_seed)
+        pool = sorted(available)
+        k = min(int(random_n), len(pool))
+        for wid in rng.choice(pool, size=k, replace=False):
+            selected.add(int(wid))
+    return sorted(selected)
+
+
+def _detail_title(bundle: _DetailBundle, window_id: int) -> str:
+    wf = bundle.fit.window_fit(window_id)
+    lo, hi = wf.window.freq_range  # type: ignore[union-attr]
+    tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
+    return (
+        f"{bundle.file_stem}  window {window_id}  "
+        f"[{min(lo, hi):.2f}, {max(lo, hi):.2f}] MHz  "
+        f"K={len(wf.fitted_peaks)}  chi2_r={float(wf.reduced_chi2):.2f}  "
+        f"tau={tau:.3g} us  shape={getattr(wf, 'shape', 'lorentzian')}"
+    )
+
+
+def render_fit_detail_impl(
+    file_path: str,
+    window_id: int,
+    *,
+    bundle: Optional[_DetailBundle] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = None,
+) -> Any:
+    """Render the consolidated per-window detail figure for one window."""
+    from ..visualization.fit_detail import plot_consolidated_detail
+
+    bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
+    wf = bundle.fit.window_fit(window_id)
+    return plot_consolidated_detail(
+        wf,
+        frequencies=bundle.frequencies,
+        complex_spectrum=bundle.complex_spectrum,
+        rms_noise=bundle.rms_noise,
+        sideband=bundle.sideband,
+        acquisition_us=bundle.acquisition_us,
+        title=title if title is not None else _detail_title(bundle, window_id),
+        amplitude_scale=bundle.amplitude_scale,
+        units_label=bundle.units_label,
+        trim_mhz=bundle.trim_mhz,
+        freq_padded=bundle.freq_padded,
+        spec_padded=bundle.spec_padded,
+        figsize=figsize if figsize is not None else (11, 8.5),
+    )
+
+
+def fit_window_report_text(
+    file_path: str,
+    window_id: int,
+    *,
+    bundle: Optional[_DetailBundle] = None,
+    show_audit: bool = False,
+) -> str:
+    """Plain-text fit log for one window: header, fitted-peak table, and (with
+    ``show_audit``) the add-one-peak audit trail. Read-only."""
+    from ..visualization.fit_detail import _format_spectroscopic, _peak_labels
+
+    bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
+    wf = bundle.fit.window_fit(window_id)
+    lo, hi = wf.window.freq_range  # type: ignore[union-attr]
+    tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
+    units = bundle.units_label
+    amp = bundle.amplitude_scale
+    amp_hdr = f"amplitude ({units})" if units else "amplitude"
+
+    lines = [
+        f"Window {window_id}  [{min(lo, hi):.4f}, {max(lo, hi):.4f}] MHz",
+        f"  peaks={len(wf.fitted_peaks)}  chi2_r={float(wf.reduced_chi2):.3f}  "
+        f"tau={tau:.4g} us  shape={getattr(wf, 'shape', 'lorentzian')}",
+        "",
+        f"  {'pk':>2}  {'frequency (MHz)':>18}  {amp_hdr:>16}  "
+        f"{'phase (rad)':>12}  {'SNR':>6}  conf",
+    ]
+    labels = _peak_labels(len(wf.fitted_peaks))
+    for pk, lbl in zip(wf.fitted_peaks, labels):
+        freq_s = _format_spectroscopic(float(pk.frequency_mhz), pk.frequency_error)
+        amp_val = float(pk.amplitude) * amp
+        amp_err = pk.amplitude_error * amp if pk.amplitude_error is not None else None
+        amp_s = (
+            f"{amp_val:.4g}+/-{amp_err:.2g}"
+            if amp_err is not None
+            else f"{amp_val:.4g}"
+        )
+        phase_s = (
+            _format_spectroscopic(pk.phase, pk.phase_error)
+            if pk.phase is not None
+            else "-"
+        )
+        snr_s = f"{pk.snr:.2f}" if pk.snr is not None else "-"
+        lines.append(
+            f"  {lbl:>2}  {freq_s:>18}  {amp_s:>16}  {phase_s:>12}  " f"{snr_s:>6}  -"
+        )
+    if show_audit:
+        lines.append("")
+        lines.append("  audit trail (add-one-peak):")
+        audit = wf.audit_trail or []
+        if not audit:
+            lines.append("    (none)")
+        else:
+            for i, step in enumerate(audit):
+                lines.append(
+                    f"    step {i}: {step.decision} off={step.candidate_offset_mhz:+.4f} "
+                    f"MHz  p={step.p_value:.2e}  "
+                    f"chi2 {step.chi2_before:.3g}->{step.chi2_after:.3g}"
+                )
+    return "\n".join(lines)
+
+
+def _has_selection(
+    window_ids: Optional[list[int]],
+    freqs: Optional[list[float]],
+    random_n: Optional[int],
+    top_snr: Optional[int],
+    all_windows: bool,
+) -> bool:
+    return bool(window_ids or freqs or random_n or top_snr or all_windows)
+
+
+def fit_show_impl(
+    file_path: str,
+    *,
+    window_ids: Optional[list[int]] = None,
+    freqs: Optional[list[float]] = None,
+    random_n: Optional[int] = None,
+    random_seed: Optional[int] = None,
+    top_snr: Optional[int] = None,
+    all_windows: bool = False,
+    output_dir: Optional[str] = None,
+    show_audit: bool = False,
+    figsize: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Drive ``fit show``: overview (no selector) or one consolidated detail
+    figure per selected window.
+
+    Returns ``{"mode", "window_ids", "figures", "paths", "log"}``. With
+    ``output_dir`` each detail figure is written as
+    ``<stem>_window_<id>.png`` and its path collected; the figures are also
+    returned so an interactive caller can display them. The text fit log for the
+    selected windows is in ``"log"``.
+    """
+    if not _has_selection(window_ids, freqs, random_n, top_snr, all_windows):
+        fig = visualize_fit_impl(
+            file_path=file_path, figsize=figsize, title=title, window_id=None
+        )
+        return {
+            "mode": "overview",
+            "window_ids": [],
+            "figures": [fig],
+            "paths": [],
+            "log": "",
+        }
+
+    bundle = _resolve_detail_bundle(file_path)
+    ids = select_window_ids(
+        bundle.fit,
+        window_ids=window_ids,
+        freqs=freqs,
+        random_n=random_n,
+        random_seed=random_seed,
+        top_snr=top_snr,
+        all_windows=all_windows,
+    )
+
+    out_dir: Optional[Path] = None
+    if output_dir is not None:
+        out_dir = Path(output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    figures: list[Any] = []
+    paths: list[str] = []
+    reports: list[str] = []
+    for wid in ids:
+        fig = render_fit_detail_impl(
+            file_path, wid, bundle=bundle, figsize=figsize, title=title
+        )
+        figures.append(fig)
+        reports.append(
+            fit_window_report_text(file_path, wid, bundle=bundle, show_audit=show_audit)
+        )
+        if out_dir is not None:
+            dest = out_dir / f"{bundle.file_stem}_window_{wid:03d}.png"
+            fig.savefig(str(dest), dpi=130)
+            paths.append(str(dest))
+    return {
+        "mode": "detail",
+        "window_ids": ids,
+        "figures": figures,
+        "paths": paths,
+        "log": "\n\n".join(reports),
+    }

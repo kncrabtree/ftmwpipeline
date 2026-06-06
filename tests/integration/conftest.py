@@ -181,6 +181,21 @@ def baseline_2638_stage4_small(baseline_2638_stage4, tmp_path_factory):
     return fp
 
 
+@pytest.fixture(scope="session")
+def baseline_2638_stage5_small(baseline_2638_stage4_small, tmp_path_factory):
+    """Build the small (3-window) Stage 5 fit ONCE per session.
+
+    Copies the Stage-4 small baseline and runs fit_peaks. Returns a read-only
+    reference .ftmw with a completed Stage 5 fit; tests that mutate must
+    shutil.copy it first.
+    """
+    tmp = tmp_path_factory.mktemp("baseline_stage5_small")
+    fp = tmp / "baseline_2638_stage5_small.ftmw"
+    shutil.copy(baseline_2638_stage4_small, fp)
+    ftmw.fit_peaks(str(fp))
+    return fp
+
+
 # ---------------------------------------------------------------------------
 # Module-scoped cross-interface trio fixtures (one per test module)
 # ---------------------------------------------------------------------------

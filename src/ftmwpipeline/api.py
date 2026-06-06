@@ -1456,6 +1456,50 @@ def visualize_fit(
         raise
 
 
+def show_fit(
+    file_path: Union[str, Path],
+    *,
+    window_ids: Optional[list] = None,
+    freqs: Optional[list] = None,
+    random_n: Optional[int] = None,
+    random_seed: Optional[int] = None,
+    top_snr: Optional[int] = None,
+    all_windows: bool = False,
+    output_dir: Optional[Union[str, Path]] = None,
+    show_audit: bool = False,
+    figsize: Optional[tuple] = None,
+    title: Optional[str] = None,
+    interactive: bool = False,
+) -> Dict[str, Any]:
+    """Show the Stage 5 fit, equivalent to ``Pipeline.show_fit()`` and the CLI
+    ``fit show`` command.
+
+    With no selector, returns the spectrum-wide overview. Selectors
+    (``window_ids`` / ``freqs`` / ``random_n`` / ``top_snr`` / ``all_windows``)
+    compose as a union and produce one consolidated per-window detail figure
+    each. With ``output_dir`` each detail figure is written there. Returns
+    ``{"mode", "window_ids", "figures", "paths", "log"}``. Requires Stage 5.
+    """
+    try:
+        pipeline = Pipeline.open(file_path)
+        return pipeline.show_fit(
+            window_ids=window_ids,
+            freqs=freqs,
+            random_n=random_n,
+            random_seed=random_seed,
+            top_snr=top_snr,
+            all_windows=all_windows,
+            output_dir=output_dir,
+            show_audit=show_audit,
+            figsize=figsize,
+            title=title,
+            interactive=interactive,
+        )
+    except Exception as e:
+        logger.error(f"Failed to show fit for {file_path}: {e}")
+        raise
+
+
 # =============================================================================
 # Utility Functions
 # =============================================================================

@@ -10,13 +10,28 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from .._internal.stage5_impl import fit_peaks_impl, visualize_fit_impl
+from .._internal.stage5_impl import fit_peaks_impl, fit_show_impl
 from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from .utils import add_stage_object, print_error, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
     return path if path.endswith(".ftmw") else path + ".ftmw"
+
+
+def _merge_int_list(items: Any, csv: Any) -> list:
+    """Combine repeated ``--flag N`` ints with a comma-separated ``--flag-list``."""
+    out: list = list(items or [])
+    if csv:
+        out.extend(int(x) for x in str(csv).split(",") if x.strip())
+    return out
+
+
+def _merge_float_list(items: Any, csv: Any) -> list:
+    out: list = list(items or [])
+    if csv:
+        out.extend(float(x) for x in str(csv).split(",") if x.strip())
+    return out
 
 
 def cmd_fit_peaks(args: argparse.Namespace) -> int:
@@ -90,13 +105,14 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
 
 
 def cmd_visualize_fit(args: argparse.Namespace) -> int:
-    """Overlay the Stage 5 fit on the spectrum.
+    """Show the Stage 5 fit.
 
-    Default is an interactive matplotlib window showing the overview
-    (fitted-model overlay on the persisted spectrum). With ``--window-id``,
-    draws a per-window detail figure (re/im, magnitude+residual, time
-    envelope, audit-trail rendering). Pass ``--no-interactive`` together
-    with ``--output`` to save a static image instead.
+    With no window selector, draws the spectrum-wide overview (fitted-model
+    overlay + magnitude residual). Selectors (``--window`` / ``--window-list`` /
+    ``--freq`` / ``--freq-list`` / ``--random`` / ``--top-snr`` / ``--all-windows``)
+    compose as a union and draw a consolidated per-window detail figure for each
+    selected window, printing the fitted-peak log for each. With ``--output-dir``
+    every detail figure is written there; otherwise they open interactively.
     """
     setup_logging(args.verbose)
     try:
@@ -110,23 +126,53 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
                 print_error(f"Invalid figsize {args.figsize!r}; use 'width,height'")
                 return 1
 
-        print(f"Creating fit visualization for: {file_path}")
-        fig = visualize_fit_impl(
+        window_ids = _merge_int_list(args.window, args.window_list)
+        if args.window_id is not None:  # back-compat alias
+            window_ids.append(int(args.window_id))
+        freqs = _merge_float_list(args.freq, args.freq_list)
+
+        result = fit_show_impl(
             file_path=file_path,
+            window_ids=window_ids or None,
+            freqs=freqs or None,
+            random_n=args.random,
+            random_seed=args.random_seed,
+            top_snr=args.top_snr,
+            all_windows=args.all_windows,
+            output_dir=args.output_dir,
+            show_audit=args.show_audit,
             figsize=figsize,
             title=args.title,
-            window_id=args.window_id,
-            backend="matplotlib",
-            interactive=not args.no_interactive,
         )
 
-        if args.output:
-            fig.savefig(str(Path(args.output)), dpi=300, bbox_inches="tight")
-            print(f"Visualization saved to: {args.output}")
+        if result["mode"] == "overview":
+            fig = result["figures"][0]
+            if args.output:
+                fig.savefig(str(Path(args.output)), dpi=300, bbox_inches="tight")
+                print(f"Visualization saved to: {args.output}")
+            elif not args.no_interactive:
+                import matplotlib.pyplot as plt
+
+                plt.show()
+            print("Fit visualization completed successfully!")
+            return 0
+
+        # Per-window detail: print the log, then save or show.
+        print(result["log"])
+        print(f"\nSelected windows: {result['window_ids']}")
+        if result["paths"]:
+            print("Saved:")
+            for p in result["paths"]:
+                print(f"  {p}")
         elif not args.no_interactive:
             import matplotlib.pyplot as plt
 
             plt.show()
+        else:
+            print(
+                "(no --output-dir and --no-interactive: figures rendered but not "
+                "saved; pass --output-dir to write them)"
+            )
         print("Fit visualization completed successfully!")
         return 0
     except FileNotFoundError as e:
@@ -403,12 +449,21 @@ def register_fitting_commands(subparsers: Any) -> None:
 
     p_vis = verbs.add_parser(
         "show",
-        help="Overlay the Stage 5 fit on the spectrum",
+        help="Show the Stage 5 fit (overview, or per-window detail)",
         description=(
-            "Diagnostic plot of the Stage 5 fit. Default is the spectrum-\n"
-            "wide overview (fitted model overlay + residual magnitude);\n"
-            "with --window-id, shows a per-window detail figure (re/im,\n"
-            "magnitude+residual, time envelope, audit-trail rendering)."
+            "Diagnostic plot of the Stage 5 fit. With no window selector,\n"
+            "draws the spectrum-wide overview (fitted model overlay +\n"
+            "magnitude residual). Window selectors compose as a union and\n"
+            "draw a consolidated per-window detail figure for each selected\n"
+            "window (full-spectrum context, Re/Im/|X| data+model with model\n"
+            "markers at the data bins, residual panels, |residual| histogram,\n"
+            "and a fitted-peak table with uncertainties), printing the fit log\n"
+            "for each. Magnitude panels use an exactly-2x zero-filled grid\n"
+            "(information-faithful for a magnitude spectrum); all statistics\n"
+            "stay on the native grid.\n\n"
+            "Selectors: --window / --window-list / --freq / --freq-list /\n"
+            "--random (+ --random-seed) / --top-snr / --all-windows. Use\n"
+            "--output-dir to batch-write the detail figures."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -416,22 +471,90 @@ def register_fitting_commands(subparsers: Any) -> None:
     p_vis.add_argument("--figsize", type=str, help="'width,height' in inches")
     p_vis.add_argument("--title", type=str, help="Custom plot title")
     p_vis.add_argument(
+        "--window",
+        type=int,
+        action="append",
+        metavar="ID",
+        help="Show the detail figure for this window id (repeatable).",
+    )
+    p_vis.add_argument(
+        "--window-list",
+        dest="window_list",
+        type=str,
+        metavar="ID,ID,...",
+        help="Comma-separated window ids to show.",
+    )
+    p_vis.add_argument(
         "--window-id",
         dest="window_id",
         type=int,
-        help="Show a per-window detail figure for this window id.",
+        help="Alias for --window (back-compat); show this window id.",
+    )
+    p_vis.add_argument(
+        "--freq",
+        type=float,
+        action="append",
+        metavar="MHZ",
+        help="Show the detail figure for the window containing this frequency "
+        "(repeatable).",
+    )
+    p_vis.add_argument(
+        "--freq-list",
+        dest="freq_list",
+        type=str,
+        metavar="MHZ,MHZ,...",
+        help="Comma-separated frequencies; each maps to its containing window.",
+    )
+    p_vis.add_argument(
+        "--random",
+        type=int,
+        metavar="N",
+        help="Add N randomly sampled windows to the selection.",
+    )
+    p_vis.add_argument(
+        "--random-seed",
+        dest="random_seed",
+        type=int,
+        help="Seed for --random (reproducible sampling).",
+    )
+    p_vis.add_argument(
+        "--top-snr",
+        dest="top_snr",
+        type=int,
+        metavar="N",
+        help="Add the N windows with the brightest in-window peak SNR.",
+    )
+    p_vis.add_argument(
+        "--all-windows",
+        dest="all_windows",
+        action="store_true",
+        help="Show every window (overrides all other selectors).",
+    )
+    p_vis.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        type=str,
+        metavar="DIR",
+        help="Write each per-window detail figure here as " "<stem>_window_<id>.png.",
+    )
+    p_vis.add_argument(
+        "--show-audit",
+        dest="show_audit",
+        action="store_true",
+        help="Include the add-one-peak audit trail in the printed fit log.",
     )
     p_vis.add_argument(
         "--no-interactive",
         dest="no_interactive",
         action="store_true",
-        help="Do not open a window (use with --output to save)",
+        help="Do not open a window (use with --output / --output-dir to save)",
     )
     p_vis.add_argument(
         "-o",
         "--output",
         type=str,
-        help="Save plot to this path (e.g. scratch/fit.png)",
+        help="Save the overview plot to this path (e.g. scratch/fit.png). "
+        "For per-window figures use --output-dir.",
     )
     p_vis.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose diagnostics"
