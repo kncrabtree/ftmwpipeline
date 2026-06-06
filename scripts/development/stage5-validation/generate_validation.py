@@ -43,7 +43,6 @@ import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage1_impl import _read_settings_layer
 from ftmwpipeline._internal.stage3_impl import (
     _active_acquisition_us,
-    _load_canonical_noise,
 )
 from ftmwpipeline.core.settings import FTSettings
 from ftmwpipeline._internal.stage5_impl import (
@@ -85,7 +84,8 @@ from ftmwpipeline.fitting.window_fit import (
     ConservativeFitResult,
     WindowFitResult,
 )
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline._internal.active_ft_support import _persisted_scatter_knobs
+from ftmwpipeline.preprocessing.noise_estimation import estimate_active_ft_noise
 from ftmwpipeline.visualization.fit_visualization import (
     plot_spectrum_fit,
     _window_model_on_persisted_grid,
@@ -2229,18 +2229,23 @@ def main() -> None:
     # (active-FT bin order is rfft order; for the lower sideband that maps to
     # descending molecular frequency).
     sort_idx = np.argsort(active_ft.freq_mhz)
-    unsort_idx = np.argsort(sort_idx)
     freqs_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
     spec_sorted = np.ascontiguousarray(active_ft.complex_spectrum[sort_idx])
-    # Active-FT noise: Stage 2 estimator on the sorted active-FT magnitude
-    # (same way ``stage5_impl.fit_peaks_impl`` measures it for the fit).
-    active_noise = estimate_noise_adaptive(
-        freqs_sorted, np.abs(spec_sorted).astype(np.float64)
+    # Scatter noise authority on the active-FT, mirroring
+    # ``stage5_impl.fit_peaks_impl`` exactly (same estimator, same persisted
+    # scatter knobs) so the harness scores on the sigma the fit used. The
+    # estimator returns sigma in active-FT bin order aligned with
+    # ``active_ft.complex_spectrum``, so ``active_noise_arr`` feeds
+    # ``materialize_window`` directly; ``rms_sorted`` is its ascending view.
+    active_noise_arr = np.asarray(
+        estimate_active_ft_noise(
+            active_ft.freq_mhz,
+            active_ft.complex_spectrum,
+            **_persisted_scatter_knobs(str(FTMW_PATH)),
+        ).rms_noise,
+        dtype=float,
     )
-    rms_sorted = np.asarray(active_noise.rms_noise, dtype=float)
-    # materialize_window consumes the active-FT in its native (unsorted) bin
-    # order; re-index the noise back to that order.
-    active_noise_arr = rms_sorted[unsort_idx]
+    rms_sorted = np.ascontiguousarray(active_noise_arr[sort_idx])
     sideband = sideband_enum
 
     fit_by_id = {wf.window_id: wf for wf in fit.window_fits}
