@@ -141,6 +141,8 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
             all_windows=args.all_windows,
             output_dir=args.output_dir,
             show_audit=args.show_audit,
+            apodize=args.apodize,
+            apodize_us=args.apodize_us,
             figsize=figsize,
             title=args.title,
         )
@@ -542,6 +544,25 @@ def register_fitting_commands(subparsers: Any) -> None:
         dest="show_audit",
         action="store_true",
         help="Include the add-one-peak audit trail in the printed fit log.",
+    )
+    p_vis.add_argument(
+        "--apodize",
+        type=str,
+        default=None,
+        metavar="WINDOW",
+        help="Also emit a windowed (apodized) data-vs-model comparison per "
+        "window: 'exp' (matched filter, width = the line tau by default), "
+        "'gaussian', 'cosine' (trailing taper), or 'boxcar'. Diagnostic only "
+        "-- no re-fit, no fit statistics. Symmetric windows (Hann/Kaiser) are "
+        "intentionally not offered: an FID's high-SNR start must not be tapered.",
+    )
+    p_vis.add_argument(
+        "--apodize-us",
+        dest="apodize_us",
+        type=float,
+        default=None,
+        help="Width (us) for --apodize exp/gaussian; defaults to the window's "
+        "fitted tau (the matched filter).",
     )
     p_vis.add_argument(
         "--no-interactive",

@@ -1643,6 +1643,8 @@ class Pipeline:
         all_windows: bool = False,
         output_dir: Optional[Union[str, Path]] = None,
         show_audit: bool = False,
+        apodize: Optional[str] = None,
+        apodize_us: Optional[float] = None,
         figsize: Optional[tuple] = None,
         title: Optional[str] = None,
         interactive: bool = False,
@@ -1668,6 +1670,8 @@ class Pipeline:
                 all_windows=all_windows,
                 output_dir=str(output_dir) if output_dir is not None else None,
                 show_audit=show_audit,
+                apodize=apodize,
+                apodize_us=apodize_us,
                 figsize=figsize,
                 title=title,
             )

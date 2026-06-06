@@ -33,10 +33,18 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
 
+from dataclasses import dataclass
+
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
 
 SidebandLike = Union[Sideband, str]
+
+# Apodization windows offered for the windowed fit view. FTMW FIDs start at
+# full amplitude and decay, so a *symmetric* window (Hann / Hamming / Kaiser)
+# would zero the high-SNR start -- exactly wrong. The windows here all leave the
+# start intact and taper the trailing edge, where truncation leakage is born.
+APODIZATION_WINDOWS = ("boxcar", "exp", "gaussian", "cosine")
 
 # Model curves are evaluated on a grid this many times finer than the native
 # data grid so a narrow line renders as a smooth analytic shape rather than a
@@ -733,3 +741,150 @@ def _draw_peak_table(
             fontsize=8.0,
             va="top",
         )
+
+
+# ===========================================================================
+# Windowed (apodized) fit view
+# ===========================================================================
+def make_apodization(
+    name: str,
+    t_us: np.ndarray,
+    *,
+    width_us: Optional[float] = None,
+    default_width_us: Optional[float] = None,
+    taper_fraction: float = 0.3,
+) -> np.ndarray:
+    """Real apodization window ``w(t)`` on the active-region time grid.
+
+    All windows leave the FID start (its highest-SNR samples) intact and act on
+    the trailing edge -- the source of truncation leakage -- so none of them is
+    a symmetric Hann/Kaiser (those would null the start).
+
+    Parameters
+    ----------
+    name : str
+        One of :data:`APODIZATION_WINDOWS`: ``"boxcar"`` (no taper), ``"exp"``
+        (``exp(-t/W)`` -- the matched filter when ``W`` is the line's decay),
+        ``"gaussian"`` (``exp(-(t/W)^2)``), or ``"cosine"`` (unit then a
+        raised-cosine taper to zero over the trailing ``taper_fraction``).
+    t_us : np.ndarray
+        Active-region time grid (µs, ``t = 0`` at the active start).
+    width_us : float, optional
+        Time constant ``W`` for ``exp`` / ``gaussian``; falls back to
+        ``default_width_us``.
+    default_width_us : float, optional
+        Width used when ``width_us`` is ``None`` (e.g. the window's fitted τ, so
+        ``exp`` defaults to the matched filter).
+    taper_fraction : float, default 0.3
+        Trailing fraction tapered by the ``cosine`` window.
+    """
+    t = np.asarray(t_us, dtype=float)
+    key = name.strip().lower()
+    if key in ("boxcar", "none", "rect"):
+        return cast(np.ndarray, np.ones(t.shape, dtype=float))
+    if key in ("exp", "exponential"):
+        w = width_us if width_us is not None else default_width_us
+        if w is None or w <= 0:
+            raise ValueError("exp apodization needs a positive width (--apodize-us)")
+        return cast(np.ndarray, np.exp(-t / float(w)))
+    if key in ("gaussian", "gauss"):
+        w = width_us if width_us is not None else default_width_us
+        if w is None or w <= 0:
+            raise ValueError("gaussian apodization needs a positive width")
+        return cast(np.ndarray, np.exp(-((t / float(w)) ** 2)))
+    if key in ("cosine", "cos", "taper"):
+        if t.size == 0:
+            return cast(np.ndarray, np.ones(t.shape, dtype=float))
+        frac = min(max(float(taper_fraction), 0.0), 1.0)
+        w = np.ones(t.shape, dtype=float)
+        t_span = float(t[-1] - t[0]) if t.size > 1 else 0.0
+        if t_span > 0.0 and frac > 0.0:
+            t_start = t[-1] - frac * t_span
+            in_taper = t >= t_start
+            x = (t[in_taper] - t_start) / (frac * t_span)  # 0..1 across the taper
+            w[in_taper] = 0.5 * (1.0 + np.cos(np.pi * x))
+        return cast(np.ndarray, w)
+    raise ValueError(f"unknown apodization {name!r}; choose from {APODIZATION_WINDOWS}")
+
+
+@dataclass
+class WindowedView:
+    """Precomputed arrays for the windowed comparison figure (one window)."""
+
+    freq_native: np.ndarray  # ascending molecular freq over the window
+    data_native: np.ndarray  # windowed data spectrum (native grid)
+    model_native: np.ndarray  # windowed model spectrum (native grid)
+    freq_data_2x: np.ndarray  # 2x grid for the |X| data magnitude
+    data_2x: np.ndarray
+    freq_model_fine: np.ndarray  # dense grid for the smooth model curve
+    model_fine: np.ndarray
+
+
+def plot_windowed_comparison(
+    view: WindowedView,
+    *,
+    title: str,
+    apodize_label: str,
+    amplitude_scale: float = 1.0,
+    units_label: str = "",
+    figsize: Tuple[float, float] = (11, 4.2),
+) -> plt.Figure:
+    """Re/Im/|X| comparison of the data and model under the same apodization.
+
+    Strictly diagnostic: the window changes the noise correlation, so this is
+    *not* the fit metric -- no residuals or chi-squared are shown. The model is
+    the persisted fit's lines re-synthesised and windowed identically to the
+    data; the leakage-wing baseline is omitted because apodization suppresses
+    the very skirt it compensates.
+    """
+    amp = float(amplitude_scale)
+    usuffix = f" ({units_label})" if units_label else ""
+    fig, (ax_re, ax_im, ax_mag) = plt.subplots(1, 3, figsize=figsize)
+    fig.suptitle(title, fontsize=10)
+
+    _draw_data_model(
+        ax_re,
+        view.freq_native,
+        np.real(view.data_native),
+        view.freq_model_fine,
+        np.real(view.model_fine),
+        np.real(view.model_native),
+        "tab:red",
+        amp,
+    )
+    _draw_data_model(
+        ax_im,
+        view.freq_native,
+        np.imag(view.data_native),
+        view.freq_model_fine,
+        np.imag(view.model_fine),
+        np.imag(view.model_native),
+        "tab:blue",
+        amp,
+    )
+    _draw_mag_data(
+        ax_mag,
+        view.freq_native,
+        np.abs(view.data_native),
+        view.freq_model_fine,
+        np.abs(view.model_fine),
+        np.abs(view.model_native),
+        float(view.freq_native.min()) if view.freq_native.size else 0.0,
+        float(view.freq_native.max()) if view.freq_native.size else 0.0,
+        amp,
+        view.freq_data_2x,
+        view.data_2x,
+    )
+    ax_re.set_ylabel(f"Re{usuffix}", fontsize=9)
+    ax_im.set_ylabel(f"Im{usuffix}", fontsize=9)
+    ax_mag.set_ylabel(f"|X|{usuffix}", fontsize=9)
+    ax_re.set_title(
+        f"apodized: {apodize_label} (diagnostic, not the fit metric)",
+        fontsize=8,
+        loc="left",
+    )
+    for ax in (ax_re, ax_im, ax_mag):
+        ax.set_xlabel("frequency (MHz)", fontsize=9)
+        ax.tick_params(axis="both", labelsize=8)
+    fig.tight_layout()
+    return fig

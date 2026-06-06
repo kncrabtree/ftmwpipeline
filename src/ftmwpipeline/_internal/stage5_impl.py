@@ -1474,6 +1474,177 @@ def fit_window_report_text(
     return "\n".join(lines)
 
 
+def _window_peaks_baseband(
+    window_fit: Any, sideband: Sideband, probe_freq_mhz: float
+) -> list[Tuple[float, float, float]]:
+    """Window's fitted peaks + frozen contributors as (A, f_bb, phase) tuples.
+
+    ``f_bb = s*(f_molecular - f_probe)`` is the absolute baseband frequency the
+    synthesized FID modulates at -- the raw active-region frame the real data
+    lives in (not the window-centre offset frame ``model_spectrum`` uses).
+    """
+    from ..fitting.peak_model import sideband_sign
+
+    s = sideband_sign(sideband)
+    out: list[Tuple[float, float, float]] = []
+    for p in window_fit.fitted_peaks:
+        out.append(
+            (
+                float(p.amplitude),
+                float(s * (p.frequency_mhz - probe_freq_mhz)),
+                float(p.phase if p.phase is not None else 0.0),
+            )
+        )
+    for key, fp in window_fit.fixed_parameters.items():
+        if not key.startswith("frozen_peak_"):
+            continue
+        out.append(
+            (
+                float(fp["amplitude"]),
+                float(s * (float(fp["frequency_mhz"]) - probe_freq_mhz)),
+                float(fp.get("phase", 0.0) or 0.0),
+            )
+        )
+    return out
+
+
+def render_windowed_view_impl(
+    file_path: str,
+    window_id: int,
+    *,
+    apodize: str = "exp",
+    apodize_us: Optional[float] = None,
+    bundle: Optional[_DetailBundle] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = None,
+) -> Any:
+    """Render the windowed (apodized) data-vs-model comparison for one window.
+
+    Applies the same time-domain window to the real active FID and to the
+    persisted fit's re-synthesised model FID, transforms both, and overlays them
+    over the window's frequency range. Strictly diagnostic: no re-fit, no fit
+    statistics (windowing changes the noise correlation), and the leakage-wing
+    baseline is omitted because apodization suppresses the skirt it compensates.
+    """
+    from ..fitting.peak_model import sideband_sign, synthesize_fid
+    from ..visualization.fit_detail import (
+        MODEL_OVERSAMPLE,
+        WindowedView,
+        make_apodization,
+        plot_windowed_comparison,
+    )
+
+    bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
+    (
+        fid_samples,
+        sample_dt_us,
+        start_us,
+        end_us,
+        expf_us,
+        probe_freq_mhz,
+        sideband,
+        _n_padded,
+        _acquisition_us,
+        _user_ft,
+        _trim_range,
+    ) = _build_active_ft_inputs(file_path)
+
+    # Active region exactly as compute_active_ft extracts it (searchsorted
+    # bounds, rdc mean removal), but unapodized -- we apply our own window.
+    fid = np.asarray(fid_samples, dtype=float)
+    time_us = np.arange(fid.size) * sample_dt_us
+    start_idx = int(np.searchsorted(time_us, start_us))
+    end_idx = min(int(np.searchsorted(time_us, end_us)), fid.size)
+    active = fid[start_idx:end_idx].astype(float, copy=True)
+    active -= active.mean()
+    n_active = active.size
+    t_us = np.arange(n_active) * sample_dt_us
+    s = sideband_sign(sideband)
+
+    wf = bundle.fit.window_fit(window_id)
+    lo, hi = wf.window.freq_range  # type: ignore[union-attr]
+    lo_f, hi_f = float(min(lo, hi)), float(max(lo, hi))
+    tau_us = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
+    shape = str(getattr(wf, "shape", "lorentzian"))
+    peaks_bb = _window_peaks_baseband(wf, sideband, probe_freq_mhz)
+
+    # The windowed view operates on the *raw* active region, so the model must
+    # be the intrinsic signal. On a fixture fit with exponential apodization
+    # (expf_us), the fitted Lorentzian tau is the apodized *effective* tau
+    # 1/(1/tau_int + 1/expf); recover tau_int so the synthesized FID matches
+    # the un-apodized data (and any window applied to both reconciles them).
+    # Unapodized fixtures (expf_us is None) leave tau untouched.
+    tau_synth = tau_us
+    if (
+        shape.lower() == "lorentzian"
+        and expf_us is not None
+        and expf_us > 0.0
+        and tau_us > 0.0
+        and (1.0 / tau_us - 1.0 / expf_us) > 0.0
+    ):
+        tau_synth = 1.0 / (1.0 / tau_us - 1.0 / expf_us)
+
+    model_fid = synthesize_fid(t_us, peaks_bb, tau_synth, shape=shape)
+    model_fid -= model_fid.mean()
+
+    window = make_apodization(
+        apodize, t_us, width_us=apodize_us, default_width_us=tau_us
+    )
+    data_w = active * window
+    model_w = model_fid * window
+
+    def _spec(signal: np.ndarray, pad_factor: int) -> Tuple[np.ndarray, np.ndarray]:
+        n_pad = pad_factor * n_active
+        padded = np.zeros(n_pad, dtype=float)
+        padded[:n_active] = signal
+        spec = sample_dt_us * np.fft.rfft(padded)
+        freq = probe_freq_mhz + s * np.fft.rfftfreq(n_pad, d=sample_dt_us)
+        order = np.argsort(freq)
+        return np.ascontiguousarray(freq[order]), np.ascontiguousarray(spec[order])
+
+    def _slice(freq: np.ndarray, spec: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        m = (freq >= lo_f) & (freq <= hi_f)
+        return freq[m], spec[m]
+
+    f1, d1 = _spec(data_w, 1)
+    fm1, m1 = _spec(model_w, 1)
+    f2, d2 = _spec(data_w, 2)
+    ff, mf = _spec(model_w, MODEL_OVERSAMPLE)
+    freq_native, data_native = _slice(f1, d1)
+    _, model_native = _slice(fm1, m1)
+    freq_data_2x, data_2x = _slice(f2, d2)
+    freq_model_fine, model_fine = _slice(ff, mf)
+
+    view = WindowedView(
+        freq_native=freq_native,
+        data_native=data_native,
+        model_native=model_native,
+        freq_data_2x=freq_data_2x,
+        data_2x=data_2x,
+        freq_model_fine=freq_model_fine,
+        model_fine=model_fine,
+    )
+    if apodize_us is not None:
+        apo_label = f"{apodize} (W={apodize_us:.3g} us)"
+    elif apodize.lower() in ("exp", "exponential", "gaussian", "gauss"):
+        apo_label = f"{apodize} (W=tau={tau_us:.3g} us)"
+    else:
+        apo_label = apodize
+    if title is None:
+        title = (
+            f"{bundle.file_stem}  window {window_id}  "
+            f"[{lo_f:.2f}, {hi_f:.2f}] MHz  windowed view"
+        )
+    return plot_windowed_comparison(
+        view,
+        title=title,
+        apodize_label=apo_label,
+        amplitude_scale=bundle.amplitude_scale,
+        units_label=bundle.units_label,
+        figsize=figsize if figsize is not None else (11, 4.2),
+    )
+
+
 def _has_selection(
     window_ids: Optional[list[int]],
     freqs: Optional[list[float]],
@@ -1495,6 +1666,8 @@ def fit_show_impl(
     all_windows: bool = False,
     output_dir: Optional[str] = None,
     show_audit: bool = False,
+    apodize: Optional[str] = None,
+    apodize_us: Optional[float] = None,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -1505,7 +1678,9 @@ def fit_show_impl(
     ``output_dir`` each detail figure is written as
     ``<stem>_window_<id>.png`` and its path collected; the figures are also
     returned so an interactive caller can display them. The text fit log for the
-    selected windows is in ``"log"``.
+    selected windows is in ``"log"``. With ``apodize`` set, an extra windowed
+    (apodized) data-vs-model comparison figure is produced per window
+    (``<stem>_window_<id>_apodized.png``) -- a diagnostic view, not a re-fit.
     """
     if not _has_selection(window_ids, freqs, random_n, top_snr, all_windows):
         fig = visualize_fit_impl(
@@ -1550,6 +1725,19 @@ def fit_show_impl(
             dest = out_dir / f"{bundle.file_stem}_window_{wid:03d}.png"
             fig.savefig(str(dest), dpi=130)
             paths.append(str(dest))
+        if apodize:
+            wfig = render_windowed_view_impl(
+                file_path,
+                wid,
+                apodize=apodize,
+                apodize_us=apodize_us,
+                bundle=bundle,
+            )
+            figures.append(wfig)
+            if out_dir is not None:
+                wdest = out_dir / f"{bundle.file_stem}_window_{wid:03d}_apodized.png"
+                wfig.savefig(str(wdest), dpi=130)
+                paths.append(str(wdest))
     return {
         "mode": "detail",
         "window_ids": ids,

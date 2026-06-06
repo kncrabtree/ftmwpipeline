@@ -12,12 +12,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pytest
 
+import numpy as np
+
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage5_impl import (
     _resolve_detail_bundle,
     fit_show_impl,
     load_fit_impl,
     render_fit_detail_impl,
+    render_windowed_view_impl,
     select_window_ids,
 )
 from ftmwpipeline.pipeline import Pipeline
@@ -154,6 +157,50 @@ class TestFitShowImpl:
         audit = fit_show_impl(stage5_file, window_ids=[wid], show_audit=True)["log"]
         assert "audit trail" in audit
         assert len(audit) >= len(plain)
+
+
+# ---------------------------------------------------------------------------
+# Windowed (apodized) view
+# ---------------------------------------------------------------------------
+class TestWindowedView:
+    def test_boxcar_model_tracks_data(self, stage5_file, fit_obj):
+        # Under a boxcar window the re-synthesised model must reproduce the raw
+        # data at the line (the synthesizer + intrinsic-tau recovery are right).
+        # Pick the brightest window so the line dominates the panel.
+        wid = select_window_ids(fit_obj, top_snr=1)[0]
+        fig = render_windowed_view_impl(stage5_file, wid, apodize="boxcar")
+        ax_mag = fig.axes[2]  # |X| panel
+        # Lines (see _draw_mag_data): [data2x line, data2x markers, model curve, ...].
+        data_peak = np.abs(ax_mag.lines[1].get_ydata()).max()
+        model_peak = np.abs(ax_mag.lines[2].get_ydata()).max()
+        assert model_peak == pytest.approx(data_peak, rel=0.15)
+        plt.close(fig)
+
+    def test_renders_each_window_function(self, stage5_file, fit_obj):
+        wid = int(fit_obj.window_fits[0].window_id)
+        for apo in ("boxcar", "exp", "gaussian", "cosine"):
+            fig = render_windowed_view_impl(stage5_file, wid, apodize=apo)
+            assert len(fig.axes) == 3
+            plt.close(fig)
+
+    def test_unknown_window_raises(self, stage5_file, fit_obj):
+        wid = int(fit_obj.window_fits[0].window_id)
+        with pytest.raises(ValueError, match="unknown apodization"):
+            render_windowed_view_impl(stage5_file, wid, apodize="hann")
+
+    def test_apodize_adds_companion_figures(self, stage5_file, fit_obj, tmp_path):
+        wid = int(fit_obj.window_fits[0].window_id)
+        out = tmp_path / "figs"
+        result = fit_show_impl(
+            stage5_file, window_ids=[wid], apodize="exp", output_dir=str(out)
+        )
+        names = sorted(p.name for p in out.glob("*.png"))
+        # one detail + one apodized companion.
+        assert any(n.endswith("_apodized.png") for n in names)
+        assert len([n for n in names if not n.endswith("_apodized.png")]) == 1
+        assert len(result["figures"]) == 2
+        for fig in result["figures"]:
+            plt.close(fig)
 
 
 # ---------------------------------------------------------------------------

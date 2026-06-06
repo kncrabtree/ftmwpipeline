@@ -75,7 +75,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Union, cast
+from typing import Tuple, Union, cast
 
 import numpy as np
 from scipy.special import wofz
@@ -97,6 +97,7 @@ __all__ = [
     "effective_tau_gaussian",
     "effective_tau_shape",
     "model_spectrum",
+    "synthesize_fid",
     "baseband_offset",
     "molecular_frequency",
     "to_baseband_offset",
@@ -603,6 +604,69 @@ def model_spectrum(
         phasor = 0.5 * pk.amplitude * np.exp(1j * pk.phase)
         spectrum += phasor * h_T_shape(s, u - pk.offset_mhz, tau_us, acquisition_us)
     return cast(np.ndarray, spectrum)
+
+
+def synthesize_fid(
+    t_us: np.ndarray,
+    peaks_baseband: Sequence[Tuple[float, float, float]],
+    tau_us: float,
+    *,
+    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
+) -> np.ndarray:
+    """Real finite-T model FID -- the time-domain twin of :func:`model_spectrum`.
+
+    Synthesises the de-ramped active-region voltage
+
+        m(t) = Σ_j A_j · env(t; τ) · cos(2π f_bb,j t + φ_j)
+
+    on the time grid ``t_us`` (µs), with ``env`` the line-shape envelope
+    (``exp(-t/τ)`` for Lorentzian, ``exp(-(t/τ_G)²)`` for Gaussian). The
+    amplitude convention matches :func:`model_spectrum`: a real cosine of
+    amplitude ``A`` transforms to ``½ A e^{iφ} h_T`` at ``+f_bb``, so
+    ``dt · rfft(m)`` reproduces ``model_spectrum`` at every line (up to the
+    negligible in-band negative-frequency image a real signal carries).
+
+    Unlike :func:`model_spectrum`, peaks are given by their **absolute
+    baseband frequency** ``f_bb`` (MHz, ``= s·(f_molecular - f_probe)``), not a
+    window-centre offset -- the synthesised FID lives in the raw active-region
+    frame so it can be windowed in time alongside the real data and run through
+    the same ``rfft``.
+
+    Parameters
+    ----------
+    t_us : np.ndarray
+        Time grid (µs) of the active region, ``t = 0`` at the active start.
+    peaks_baseband : sequence of (amplitude, f_bb_mhz, phase)
+        One tuple per line: real amplitude ``A``, absolute baseband frequency
+        ``f_bb`` (MHz), and phase ``φ`` (radians).
+    tau_us : float
+        Shared decay constant (µs, ``> 0``): ``τ`` for Lorentzian, ``τ_G`` for
+        Gaussian.
+    shape : PeakShape or str, default LORENTZIAN
+        Envelope selector.
+
+    Returns
+    -------
+    np.ndarray
+        Real model FID sampled on ``t_us``.
+
+    Raises
+    ------
+    ValueError
+        If ``tau_us`` is not positive.
+    """
+    if tau_us <= 0.0:
+        raise ValueError("tau_us must be positive")
+    sh = PeakShape.coerce(shape)
+    t = np.asarray(t_us, dtype=float)
+    if sh is PeakShape.GAUSSIAN:
+        env = np.exp(-((t / tau_us) ** 2))
+    else:
+        env = np.exp(-t / tau_us)
+    fid = np.zeros(t.shape, dtype=float)
+    for amplitude, f_bb_mhz, phase in peaks_baseband:
+        fid += amplitude * env * np.cos(2.0 * np.pi * f_bb_mhz * t + phase)
+    return cast(np.ndarray, fid)
 
 
 # ---------------------------------------------------------------------------
