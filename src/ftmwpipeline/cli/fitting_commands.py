@@ -551,18 +551,21 @@ def register_fitting_commands(subparsers: Any) -> None:
         default=None,
         metavar="WINDOW",
         help="Also emit a windowed (apodized) data-vs-model comparison per "
-        "window: 'exp' (matched filter, width = the line tau by default), "
-        "'gaussian', 'cosine' (trailing taper), or 'boxcar'. Diagnostic only "
-        "-- no re-fit, no fit statistics. Symmetric windows (Hann/Kaiser) are "
-        "intentionally not offered: an FID's high-SNR start must not be tapered.",
+        "window. 'exp' is the FID matched filter (width = the line tau by "
+        "default, keeps the high-SNR start). Any other spec is forwarded to "
+        "scipy.signal.get_window -- the conventional symmetric windows users "
+        "compare against: 'hann', 'hamming', 'blackman', 'boxcar', or a "
+        "parameterized window with ':'-separated args ('kaiser:14', "
+        "'gaussian:50', 'tukey:0.3'). Diagnostic only -- no re-fit, no fit "
+        "statistics.",
     )
     p_vis.add_argument(
         "--apodize-us",
         dest="apodize_us",
         type=float,
         default=None,
-        help="Width (us) for --apodize exp/gaussian; defaults to the window's "
-        "fitted tau (the matched filter).",
+        help="Width (us) for --apodize exp; defaults to the window's fitted "
+        "tau (the matched filter).",
     )
     p_vis.add_argument(
         "--no-interactive",

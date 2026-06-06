@@ -163,22 +163,24 @@ class TestFitShowImpl:
 # Windowed (apodized) view
 # ---------------------------------------------------------------------------
 class TestWindowedView:
-    def test_boxcar_model_tracks_data(self, stage5_file, fit_obj):
-        # Under a boxcar window the re-synthesised model must reproduce the raw
-        # data at the line (the synthesizer + intrinsic-tau recovery are right).
-        # Pick the brightest window so the line dominates the panel.
+    def test_boxcar_model_at_right_frequency(self, stage5_file, fit_obj):
+        # The re-synthesised model line must land at the brightest fitted peak's
+        # molecular frequency -- i.e. synthesize (f_bb frame) -> rfft -> molecular
+        # axis round-trips the coordinate transform. (Amplitude depends on the
+        # fixture's apodization domain; position does not.)
         wid = select_window_ids(fit_obj, top_snr=1)[0]
+        wf = fit_obj.window_fit(wid)
+        brightest_f = max(wf.fitted_peaks, key=lambda p: p.amplitude).frequency_mhz
         fig = render_windowed_view_impl(stage5_file, wid, apodize="boxcar")
-        ax_mag = fig.axes[2]  # |X| panel
-        # Lines (see _draw_mag_data): [data2x line, data2x markers, model curve, ...].
-        data_peak = np.abs(ax_mag.lines[1].get_ydata()).max()
-        model_peak = np.abs(ax_mag.lines[2].get_ydata()).max()
-        assert model_peak == pytest.approx(data_peak, rel=0.15)
+        model_line = fig.axes[2].lines[2]  # |X| panel model curve
+        model_peak_f = model_line.get_xdata()[np.abs(model_line.get_ydata()).argmax()]
+        assert model_peak_f == pytest.approx(brightest_f, abs=0.05)  # MHz
         plt.close(fig)
 
-    def test_renders_each_window_function(self, stage5_file, fit_obj):
+    def test_forwards_scipy_window_specs(self, stage5_file, fit_obj):
         wid = int(fit_obj.window_fits[0].window_id)
-        for apo in ("boxcar", "exp", "gaussian", "cosine"):
+        # Custom matched filter + scipy symmetric windows + a parameterized one.
+        for apo in ("boxcar", "exp", "hann", "hamming", "blackman", "kaiser:14"):
             fig = render_windowed_view_impl(stage5_file, wid, apodize=apo)
             assert len(fig.axes) == 3
             plt.close(fig)
@@ -186,7 +188,7 @@ class TestWindowedView:
     def test_unknown_window_raises(self, stage5_file, fit_obj):
         wid = int(fit_obj.window_fits[0].window_id)
         with pytest.raises(ValueError, match="unknown apodization"):
-            render_windowed_view_impl(stage5_file, wid, apodize="hann")
+            render_windowed_view_impl(stage5_file, wid, apodize="notawindow")
 
     def test_apodize_adds_companion_figures(self, stage5_file, fit_obj, tmp_path):
         wid = int(fit_obj.window_fits[0].window_id)

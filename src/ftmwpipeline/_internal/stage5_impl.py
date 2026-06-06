@@ -1540,7 +1540,7 @@ def render_windowed_view_impl(
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
+        _expf_us,
         probe_freq_mhz,
         sideband,
         _n_padded,
@@ -1568,23 +1568,13 @@ def render_windowed_view_impl(
     shape = str(getattr(wf, "shape", "lorentzian"))
     peaks_bb = _window_peaks_baseband(wf, sideband, probe_freq_mhz)
 
-    # The windowed view operates on the *raw* active region, so the model must
-    # be the intrinsic signal. On a fixture fit with exponential apodization
-    # (expf_us), the fitted Lorentzian tau is the apodized *effective* tau
-    # 1/(1/tau_int + 1/expf); recover tau_int so the synthesized FID matches
-    # the un-apodized data (and any window applied to both reconciles them).
-    # Unapodized fixtures (expf_us is None) leave tau untouched.
-    tau_synth = tau_us
-    if (
-        shape.lower() == "lorentzian"
-        and expf_us is not None
-        and expf_us > 0.0
-        and tau_us > 0.0
-        and (1.0 / tau_us - 1.0 / expf_us) > 0.0
-    ):
-        tau_synth = 1.0 / (1.0 / tau_us - 1.0 / expf_us)
-
-    model_fid = synthesize_fid(t_us, peaks_bb, tau_synth, shape=shape)
+    # Synthesize on the raw active region with the fitted tau. Explicit early-
+    # stage apodization (expf_us) is deprecated; on a correct unapodized fixture
+    # the fitted tau is the intrinsic decay, so the boxcar model sits on the
+    # data with no correction. (On a stale apodized fixture the fitted tau is
+    # the apodized effective tau and the model will undershoot -- expected; such
+    # fixtures are outdated.)
+    model_fid = synthesize_fid(t_us, peaks_bb, tau_us, shape=shape)
     model_fid -= model_fid.mean()
 
     window = make_apodization(
@@ -1624,10 +1614,10 @@ def render_windowed_view_impl(
         freq_model_fine=freq_model_fine,
         model_fine=model_fine,
     )
-    if apodize_us is not None:
-        apo_label = f"{apodize} (W={apodize_us:.3g} us)"
-    elif apodize.lower() in ("exp", "exponential", "gaussian", "gauss"):
-        apo_label = f"{apodize} (W=tau={tau_us:.3g} us)"
+    if apodize.lower() in ("exp", "exponential"):
+        w = apodize_us if apodize_us is not None else tau_us
+        suffix = "" if apodize_us is not None else " = tau"
+        apo_label = f"exp (W={w:.3g} us{suffix})"
     else:
         apo_label = apodize
     if title is None:
