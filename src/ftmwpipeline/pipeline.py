@@ -20,7 +20,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from ._internal.tuning import BatchItem, KnobSpec, SweepResult
+    from ._internal.tuning import BatchItem, KnobSpec, SettingRow, SweepResult
 
 from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
@@ -1804,6 +1804,35 @@ class Pipeline:
             fit_freqs=fit_freqs,
             fit_sample_seed=fit_sample_seed,
             fit_all=fit_all,
+        )
+
+    def settings_show(
+        self,
+        selector: Optional[str] = None,
+        *,
+        include_advanced: bool = False,
+        preset: Optional[Union[str, Path]] = None,
+    ) -> "Tuple[SettingRow, ...]":
+        """Resolved value + provenance for each covered setting of this file.
+
+        Equivalent to :func:`ftmwpipeline.api.settings_show`. Returns one
+        :class:`SettingRow` per setting -- its ``path``, the resolved ``value``,
+        the ``source`` layer that supplied it (``.ftmw`` / ``.yml:<name>`` /
+        ``recommended`` / ``default``), the ``hard_default`` for reference, and
+        the registry ``tier`` / ``help`` enrichment. ``selector`` filters by
+        dotted-path prefix (e.g. ``"stage2b"`` / ``"stage2b.gaussian"``);
+        ``include_advanced`` reveals advanced-tier rows; ``preset`` (a bare name
+        or YAML path) populates the ``.yml`` provenance layer. Because a
+        persisted ``.ftmw`` value outranks a preset, a named preset changes the
+        resolved view only for fields the file has not persisted.
+        """
+        from ._internal.tuning import resolve_settings_view
+
+        return resolve_settings_view(
+            self.filepath,
+            selector,
+            include_advanced=include_advanced,
+            preset=preset,
         )
 
     def __repr__(self) -> str:

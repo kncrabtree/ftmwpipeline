@@ -1790,3 +1790,44 @@ def tune_scan_batch(
     except Exception as e:
         logger.error(f"Failed to batch-scan {selector!r} for {file_path}: {e}")
         raise
+
+
+def settings_show(
+    file_path: Union[str, Path],
+    selector: Optional[str] = None,
+    *,
+    include_advanced: bool = False,
+    preset: Optional[Union[str, Path]] = None,
+) -> Tuple[Any, ...]:
+    """Resolved value + provenance per setting, equivalent to
+    :meth:`Pipeline.settings_show`.
+
+    Reports, for each covered setting of ``file_path``, the value actually in
+    effect and the layer that supplied it -- the resolved-view counterpart to
+    :func:`tune_list`'s tunable-knob listing.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        The ``.ftmw`` experiment to inspect.
+    selector : str, optional
+        Filter by dotted-path prefix (e.g. ``"stage2b"`` /
+        ``"stage2b.gaussian"``); ``None`` returns every setting.
+    include_advanced : bool, default False
+        Reveal advanced-tier settings hidden from the default view.
+    preset : str or Path, optional
+        Populate the ``.yml`` provenance layer from this preset (bare name or
+        path). Because a persisted ``.ftmw`` value outranks a preset, a named
+        preset changes the resolved view only for fields the file has not fixed.
+
+    Returns
+    -------
+    tuple of SettingRow
+        One row per setting, carrying ``path`` / ``value`` / ``source`` /
+        ``hard_default`` / ``tier`` / ``help``.
+    """
+    return Pipeline.open(file_path).settings_show(
+        selector,
+        include_advanced=include_advanced,
+        preset=preset,
+    )

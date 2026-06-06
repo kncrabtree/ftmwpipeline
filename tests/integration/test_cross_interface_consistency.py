@@ -965,3 +965,81 @@ class TestErrorConsistency:
         assert (
             "Stage 1" in result.stderr or "Stage 1" in result.stdout
         ), "Error should mention Stage 1"
+
+
+@pytest.mark.cross_interface
+class TestSettingsShowConsistency:
+    """The resolved-settings view (issue #28) must be identical across the
+    Pipeline / functional-API surfaces, and the CLI table must reflect the same
+    rows. The headline ``start_us`` row must read correctly end to end."""
+
+    def test_pipeline_api_rows_identical(self, baseline_2638_stage2):
+        api_rows = ftmw.settings_show(baseline_2638_stage2, include_advanced=True)
+        pipe_rows = Pipeline.open(baseline_2638_stage2).settings_show(
+            include_advanced=True
+        )
+        assert api_rows == pipe_rows
+        assert len(api_rows) > 0
+
+    def test_pipeline_api_rows_identical_with_preset(
+        self, baseline_2638_stage2, tmp_path
+    ):
+        preset = tmp_path / "inst.yaml"
+        preset.write_text("name: inst\nstage2:\n  window_mhz: 137.0\n")
+        api_rows = ftmw.settings_show(
+            baseline_2638_stage2, include_advanced=True, preset=preset
+        )
+        pipe_rows = Pipeline.open(baseline_2638_stage2).settings_show(
+            include_advanced=True, preset=preset
+        )
+        assert api_rows == pipe_rows
+
+    def test_headline_start_us_resolves_to_persisted(self, baseline_2638_stage2):
+        # A file taken through compute_ft has start_us persisted in ft_processing.
+        rows = {r.path: r for r in ftmw.settings_show(baseline_2638_stage2)}
+        start = rows["stage1.start_us"]
+        assert start.source == ".ftmw"
+        assert start.value is not None
+
+    def test_cli_table_matches_rows(self, baseline_2638_stage2):
+        from ftmwpipeline.cli.settings_commands import _fmt_value
+
+        by_path = {
+            r.path: r
+            for r in ftmw.settings_show(baseline_2638_stage2, include_advanced=True)
+        }
+        stdout, _ = TestSettingsShowConsistency._run_cli(
+            ["settings", "show", str(baseline_2638_stage2), "--all"]
+        )
+        # stage2.window_mhz is the first stage2 row, so its full path prints.
+        win = by_path["stage2.window_mhz"]
+        line = next(ln for ln in stdout.splitlines() if "stage2.window_mhz" in ln)
+        assert win.source in line
+        assert _fmt_value(win.value) in line
+        # The headline start_us line carries its source too.
+        start_line = next(ln for ln in stdout.splitlines() if "stage1.start_us" in ln)
+        assert ".ftmw" in start_line
+
+    def test_cli_selector_scopes_output(self, baseline_2638_stage2):
+        stdout, _ = TestSettingsShowConsistency._run_cli(
+            ["settings", "show", str(baseline_2638_stage2), "stage2b.gaussian", "--all"]
+        )
+        assert "stage2b.gaussian.snr_min" in stdout
+        assert "stage5" not in stdout
+
+    @staticmethod
+    def _run_cli(args):
+        result = subprocess.run(
+            ["ftmwpipeline"] + args,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        if result.returncode != 0:
+            pytest.fail(
+                f"CLI command failed:\nCommand: ftmwpipeline {' '.join(args)}\n"
+                f"Return code: {result.returncode}\n"
+                f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+            )
+        return result.stdout, result.stderr

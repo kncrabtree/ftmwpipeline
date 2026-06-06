@@ -21,41 +21,10 @@ import logging
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
 
+from .utils import elide_path as _elide_path
 from .utils import print_error, setup_logging
 
 logger = logging.getLogger(__name__)
-
-
-def _elide_path(path: str, prev: Optional[str]) -> str:
-    """Render ``path`` with leading dotted segments shared with ``prev`` blanked
-    to equal-width padding, so a column of paths reads as a prefix tree:
-
-        stage2.group1.setting1
-                     .setting2
-              .group2.setting1
-
-    Segments carry their leading dot (``"stage2"``, ``".group1"``, ``".s1"``);
-    once a segment differs from the previous row, it and all that follow print
-    literally. The result keeps ``len(path)`` so downstream columns stay aligned.
-    """
-
-    def _segs(p: str) -> List[str]:
-        parts = p.split(".")
-        return [parts[0]] + ["." + part for part in parts[1:]]
-
-    segs = _segs(path)
-    if prev is None:
-        return path
-    prev_segs = _segs(prev)
-    out: List[str] = []
-    matching = True
-    for i, seg in enumerate(segs):
-        if matching and i < len(prev_segs) and prev_segs[i] == seg:
-            out.append(" " * len(seg))
-        else:
-            matching = False
-            out.append(seg)
-    return "".join(out)
 
 
 def cmd_tune_list(args: argparse.Namespace) -> int:

@@ -229,8 +229,27 @@ three surfaces:
    recommended vs default). Rows carry registry tier/help enrichment; rows with
    no registered knob are tiered advanced. Unit-tested in
    `tests/unit/_internal/tuning/test_settings_inspection.py`.
-3. **Presentation + dual-interface** (`settings show` across CLI / Pipeline /
-   api), reusing the `scan list` layout, selector, and tiering.
+3. **Presentation + dual-interface. — Done.** `settings show` lands on all
+   three surfaces: a `cli/settings_commands.py` subcommand group (reusing the
+   `scan list` table layout via the shared `cli/utils.elide_path`, the
+   primary/advanced tiering, and the dotted selector), `Pipeline.settings_show`,
+   and `api.settings_show` (delegating through `Pipeline`). The table columns are
+   `knob | value | source | default`, with a footer legend of the provenance
+   order. Cross-interface consistency + the headline `start_us` row are covered
+   in `tests/integration/test_cross_interface_consistency.py`
+   (`TestSettingsShowConsistency`).
+
+   **D11 follow-through in the sweep engine.** Flipping `persisted > preset`
+   surfaced a latent coupling in the `scan`/`tune` engine: it sweeps a knob by
+   injecting each grid value at the *preset* layer on a reused working copy, and
+   each stage run *persists* its resolved settings. Once persisted outranks
+   preset, the second grid value inherited the first value's persisted block and
+   the whole sweep pinned to the first value. Fixed in
+   `_internal/tuning/engine.py` by clearing the knob's stage settings group from
+   the working copy before each per-value run (`_clear_persisted_stage_settings`);
+   the prepared/trimmed working copy is untouched. Guarded by the existing
+   `test_stage3_scan_runs_and_plots` (its `snr_min` tracks the promotion cutoff,
+   which the pinned sweep violated).
 4. **`settings set` / `settings export`** — the change-grammar (persist to
    `.ftmw`, write a `.yml` preset block) and the explicit `--preset` provenance
    path.
@@ -243,8 +262,10 @@ three surfaces:
 
 - The `settings` meta-object subsumes the deferred `tune show` name from #27
   (one resolved-settings verb — settled by the object-verb grammar).
-- Help-text source for non-registered fields (dataclass field metadata vs a
-  small hand-authored map) — decide during the field-enumeration build.
+- Help-text source for non-registered fields — **settled**: a row with no
+  registered knob carries empty help (the dataclass fields hold no `help`
+  metadata today). A small hand-authored map for the unswept Stage 1 fields can
+  be added later if the blank cells prove confusing.
 - The `preset_name` audit-attr surfacing (enhancement 2) can ship after v1.
 
 ## Non-goals
