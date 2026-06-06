@@ -119,11 +119,11 @@ at "no candidates" by round 3.
 
 ## Rescue tau policy
 
-Real molecular lines in one experiment share a tau ≈ the applied
-apodization (the canonical Stage 1 `expf_us`). The rescue uses
-the initial fit's tau as the frozen line-shape width for its
-`conservative_fit`, with a structural override for broken initial
-fits.
+Real molecular lines in one experiment share a tau ≈ the calibrated
+molecular decay (the Stage 2b `τ_maj`; the canonical FT is unapodized).
+The rescue uses the initial fit's tau as the frozen line-shape width
+for its `conservative_fit`, with a structural override for broken
+initial fits.
 
 The rule:
 

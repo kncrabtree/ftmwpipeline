@@ -49,8 +49,10 @@ Two passes:
 
 2. **Gap pass — matched-filter exp-apodized active-region FFT.** Build a
    separate matched-filter spectrum: slice the FID to its active region
-   `[start_us, end_us]`, exp-apodize at `τ_basis = expf_us` (the user's
-   Stage 1 apodization), mean-remove, zero-pad to `n_active · 2^zpf_active`
+   `[start_us, end_us]`, exp-apodize at `τ_basis` (the Stage 2b `τ_maj` when
+   calibrated, else a default 5 µs basis — this is the gap pass's *own*
+   matched-filter window, independent of the canonical FT, which is
+   unapodized), mean-remove, zero-pad to `n_active · 2^zpf_active`
    (default `zpf_active = 2` — chosen so the Lorentzian FWHM lands at ≈ 3
    bins on the resulting grid), then rfft. Run `locate_peaks` on it with a
    grid-aware SavGol window and detect weak lines the primary's apodization
@@ -70,7 +72,7 @@ Two passes:
    is read from Stage 2b's data-driven majority rather than the apodization
    constant: the exponential `τ_maj`, or the Gaussian twin `tau_G_maj` when
    Stage 2b's `recommended_shape` is Gaussian (commits 7a7a31a, d62773c). It
-   falls back to `expf_us` when Stage 2b has not run. Provenance in
+   falls back to a default 5 µs basis when Stage 2b has not run. Provenance in
    `dev-docs/research/stage3-gaussian-audit/`.
 
 Each detected peak is **classified by SNR only** into
@@ -86,9 +88,9 @@ sg_window = max(5, odd_round(K · FWHM_lorentz_MHz / freq_step_MHz))
 ```
 
 with `K = 4` and the 5-bin floor (SavGol-with-order-3 minimum).
-`FWHM_lorentz_MHz = 1 / (π · τ)` where τ is the dominant time-domain damping
-(Stage 1 `expf_us` for the gap pass; the same for primary if Stage 1 used
-no further smoothing). On 2638 (τ = 5 µs → FWHM = 63.7 kHz):
+`FWHM_lorentz_MHz = 1 / (π · τ)` where τ is the gap pass's matched-filter
+`τ_basis` (Stage 2b `τ_maj`, else the default 5 µs). On 2638 (τ = 5 µs →
+FWHM = 63.7 kHz):
 
 - Primary grid (zpf=1 internal, freq_step ≈ 23.8 kHz, FWHM ≈ 2.67 bins) →
   sg_window = 11.  *Reproduces the prior empirical default exactly.*
@@ -96,7 +98,7 @@ no further smoothing). On 2638 (τ = 5 µs → FWHM = 63.7 kHz):
   sg_window = 13.
 
 The gap-pass sg_window is computed automatically at detection time from
-the actual grid's `freq_step` and the Stage 1 `expf_us`; the primary
+the actual grid's `freq_step` and the resolved `τ_basis`; the primary
 sg_window remains user-configurable via the existing `sg_window` parameter,
 defaulting to 11 (which the rule reproduces). Helper:
 `_internal/stage3_impl.py::_grid_aware_sg_window`.

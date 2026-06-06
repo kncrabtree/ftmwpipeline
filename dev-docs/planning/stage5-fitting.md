@@ -56,10 +56,9 @@ decisions and the blend-aware seeder's `rchi2 > 1.5` trigger.
 
 **Stage 5 fits in the active-portion FT frame** to dissolve the problem at
 source. The fit-time spectrum is the rfft of just the active-region samples
-of the persisted FID, with the same `expf_us` apodization as the canonical
-Stage 1 settings:
+of the persisted FID — unapodized, like the canonical Stage 1 FT:
 
-    active_ft[k] = rfft( fid[t0:t0+T] · exp(-(t − t0)/τ_apod) )[k]
+    active_ft[k] = rfft( fid[t0:t0+T] )[k]
 
 This representation has
 
@@ -240,9 +239,9 @@ the de-ramp — D-2. The active-FT contract supersedes that path and the call
 is dropped.)
 
 **Window function.** `h_T` models boxcar truncation × exponential decay only.
-The pipeline's goal is unwindowed fitting and 2638's canonical settings have
-`winf=None`; Stage 5 asserts `winf is None` and refuses with a clear error
-otherwise rather than carrying an apodization kernel through the model (D-3).
+The canonical FT is unconditionally unapodized and un-windowed (no
+`window_function` / `expf_us` knobs exist), so the model never has to carry an
+apodization kernel (D-3).
 
 **Near-DC mirror term.** The rfft of a real FID is conjugate-symmetric; near
 `+f_bb` the `−f_bb` mirror contributes `½A e^{−iφ} h_T(u + 2f_{bb,c} + …)`.
@@ -291,10 +290,10 @@ chirped-pulse FTMW lines in one acquisition see the same apodization and
 similar pressure broadening, so a shared `τ` lets weak lines borrow the
 constraint from a strong one. Phase is **not** shared (next section).
 
-- **Default / prior.** `τ_default` from the apodization: when the canonical
-  Stage 1 `expf_us` is set the exponential filter dominates, so
-  `τ_default ≈ expf_us` (≈ 5 µs on 2638, ≈ T/2.5); otherwise `τ_default ≈ T/3`.
-  Always applied up front as the starting value.
+- **Default / prior.** `τ_default` from the Stage 2b calibration: the per-band
+  `τ_maj` for band-routed windows, else the band-wide `τ_maj`, else `T/3` when
+  no Stage 2b calibration is present. Always applied up front as the starting
+  value.
 - **Bounds.** `[τ_default / k, τ_default · k]`, `k = max_decay_factor ≈ 5`
   (configurable; from the bcfitting reference).
 - **Free vs fixed (O5-4).** `τ` is a free shared parameter when the window has
@@ -515,8 +514,8 @@ one per fit window (padded per D-6) from the active-portion FT and the plan.
   `stage0_fid_data` (the raw FID — the active-portion FT is computed from it
   on demand) **and** `stage4_windows` (the plan), plus a `STAGE_DATA_PATHS`
   entry (`stage5_fitting`). The Stage 1 canonical settings (`start_us`,
-  `end_us`, `expf_us`, `winf`, `zpf`) parameterize the active-FT, so changes
-  to canonical Stage 1 settings invalidate Stage 5 through the existing
+  `end_us`, `trim`) parameterize the active-FT, so changes to canonical Stage 1
+  settings invalidate Stage 5 through the existing
   canonical-settings mechanism; Stage 3 re-detection and Stage 4 re-planning
   also propagate via `invalidate_downstream_stages`. The active-portion FT
   itself is *not* persisted: it is computed on demand from the FID and is
@@ -893,10 +892,10 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
    independent and reduced χ², F-test, AIC are calibrated as written. Subtasks
    (as built):
    1. `fitting/active_ft.py` (new algorithm module):
-      `compute_active_ft(fid, sample_dt_us, *, start_us, end_us, expf_us,
+      `compute_active_ft(fid, sample_dt_us, *, start_us, end_us,
       probe_freq_mhz, sideband) -> ActiveFTResult` with
       `(freq_mhz, complex_spectrum, alpha, n_active, n_padded)`. The FFT is
-      `rfft(fid[active] * exp(-(t - t0)/τ_apod))` so the bin grid is
+      `rfft(fid[active])` (unapodized) so the bin grid is
       `[0, T_active]`-natural — no phase ramp.
    2. Per-bin σ on the active-FT comes from running the Stage 2 scatter
       estimator (`estimate_active_ft_noise`) on the active-FT magnitude

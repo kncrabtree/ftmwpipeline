@@ -351,11 +351,12 @@ plumbed identically through CLI / Pipeline / api into `run_scan` /
   sweep; reach via `settings=`/`preset=`).
 - **Stage 1 (FT, `stage1.*`).** Primary: `start_us` (start ladder),
   `trim_min_mhz`, `trim_max_mhz`, `end_us` (a no-FID-panel band-stack plot —
-  the spectrum *is* the impact). `zpf` / `expf_us` / `window_function` are
-  deliberately excluded (the canonical analysis is a raw, unapodized FT; they
-  corrupt the Stage 2/5 noise + fit statistics). `units_power` is excluded as a
-  sweep (degenerate rescale) and deferred to the resolved-settings verb (#28).
-  Trim default grids are MHz-absolute and 2638-shaped — override with `--grid`.
+  the spectrum *is* the impact). The canonical FT is unconditionally unapodized
+  and native-length — there are no `zpf` / `expf_us` / `window_function` knobs
+  (apodization corrupts the Stage 2/5 noise + fit statistics). `units_power` is
+  excluded as a sweep (degenerate rescale) and deferred to the resolved-settings
+  verb (#28). Trim default grids are MHz-absolute and 2638-shaped — override with
+  `--grid`.
 - **Stage 2 (noise, `NoiseSettings`).** The scatter estimator is the sole
   Stage 2 method (the legacy adaptive estimator was retired as a user-facing
   method). The knobs are flat on `NoiseSettings` (no sub-block — Stage 2 has one
@@ -381,7 +382,7 @@ field is registered as `stage3.<sub_block>.<field>` (23 knobs), all driving
 sharing one metric (`n_peaks / n_promoted / n_primary / n_gap / snr_p95`) and one
 plot (`plot_peak_detection`). `requires="stage2_noise_result"` — Stage 2b is
 optional (its presence shape-matches and τ-anchors the gap matched filter; absent,
-the gap pass falls back to the user apodization).
+the gap pass falls back to a default `tau_basis_us`).
 - **Primary** (the Y-rated detection-shaping knobs): `promotion.min_snr`,
   `promotion.internal_min_snr`, `primary_pass.min_exclusion_mhz`,
   `primary_pass.primary_leakage_floor_k`, `gap_pass.gap_leakage_floor_k`.
@@ -570,8 +571,9 @@ Patterns proven on Stages 0–2b that the Stage 3→5 registration should follow
   generalise: for Stage 4/5, consider per-window fit + residual panels per grid
   value, gridspec-stacked, degrading gracefully when data is absent.
 - **Don't expose knobs that break the canonical analysis or are display-only.**
-  `zpf`/`expf_us`/`window_function` (raw-FT invariant) and `units_power` (scale)
-  were excluded deliberately; apply the same judgement to Stage 3–5 internals.
+  The canonical FT has no apodization knobs to expose (it is unconditionally
+  unapodized/native-length), and `units_power` (scale) is excluded as a
+  degenerate sweep; apply the same judgement to Stage 3–5 internals.
 - **Skip un-sweepable fields.** Tuple-valued knobs and toggles with no solo
   effect (`band_edges_mhz`, `tau_G_seeds`, `auto_recommend`, `band_min/max_mhz`)
   are reachable via `settings=`/`preset=` but are not registered as scalar sweeps.

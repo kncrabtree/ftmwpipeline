@@ -83,11 +83,12 @@ reported an unreproducible precedence would just document the bug). Done:
 
 `scan list` walks the **knob registry** (`_internal/tuning/registry.py`), which
 intentionally omits fields that do not sweep meaningfully in isolation:
-`stage1.units_power` (a display/storage rescale — degenerate to sweep),
-`stage1.{zpf, expf_us, window_function}` (excluded because the canonical
-analysis is a raw, unapodized FT), and `stage0.{band_min_mhz, band_max_mhz}`
-(inert unless both set). These are exactly the resolved settings a user needs to
-*see and change* — `units_power` is the worked example in the issue thread.
+`stage1.units_power` (a display/storage rescale — degenerate to sweep) and
+`stage0.{band_min_mhz, band_max_mhz}` (inert unless both set). (The canonical FT
+is unconditionally unapodized and native-length — there are no
+`zpf`/`expf_us`/`window_function` fields to omit.) These are exactly the
+resolved settings a user needs to *see and change* — `units_power` is the worked
+example in the issue thread.
 
 So the verb's source of truth is the **settings dataclasses themselves**
 (`dataclasses.fields()` over each stage settings class and its sub-blocks), not
@@ -258,10 +259,10 @@ three surfaces:
    value to the field's declared type, writes it to the persisted layer, and
    invalidates the affected stage **and** every downstream stage (results
    dropped, completion cleared) so the file never carries results inconsistent
-   with its settings. Stage 1 FT-shaping knobs (`zpf` / `expf_us` /
-   `window_function`) are rejected — they go through `compute-ft`; Stage 1
-   windowing knobs (`start_us` / `end_us` / `trim` / …) are settable and
-   invalidate every downstream stage (the FT is recomputed on demand from them).
+   with its settings. The canonical FT is unapodized and native-length, so there
+   are no FT apodization knobs to set; the Stage 1 data-selection knobs
+   (`start_us` / `end_us` / `trim` / …) are settable and invalidate every
+   downstream stage (the FT is recomputed on demand from them).
    `export` serializes the file's chosen Stage 2–5 values through each stage's
    `to_yaml_dict` into the matching `stageN:` block (selector-filtered), and the
    result round-trips through `load_preset`; Stage 1 is excluded (presets do not

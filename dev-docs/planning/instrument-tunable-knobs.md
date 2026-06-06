@@ -125,7 +125,6 @@ recommended `start_us` stamped into the Stage 0 `recommended_processing` layer.
 |---|---|---|---|---|---|
 | sweep_max_us | 7.5 | dataclass default | Upper bound of the start-time sweep (capped to FID duration). Must clear the chirp end + the floor-estimate tail. | **Y** | — |
 | step_us | 0.02 | dataclass default | Sweep step; resolution of the chirp-end corner. | maybe | — |
-| zpf | 0 | dataclass default | Zero-padding for the per-start FT; 0 is correct (integrated magnitude needs no interpolation). | N | — |
 | floor_factor | 3.0 | dataclass default | Chirp-end = first start where Σ\|FT\| < factor × deep-tail floor. | N | — |
 | floor_tail_us | 1.0 | dataclass default | Width of the deep-tail window for the robust floor estimate. | maybe | — |
 | guard_margin_us | 0.67 | dataclass default | Margin added past the chirp end for switch-bounce ringdown settling. **The primary recommendation is chirp_end + this.** Tuned on 2638-family (chirp_dur+1.35 targets ⇒ chirp_end+0.67). | **Y** | — |
