@@ -8,8 +8,8 @@ A two-panel diagnostic of the Σ|FT|-vs-start_us sweep:
 * bottom: a linear zoom on the post-chirp floor where the ringdown shoulder
   settles into the molecular tail.
 
-:func:`plot_start_detection_from_file` re-runs detection (cheap at zpf=0) so the
-CLI / Pipeline / functional-API surfaces share one orchestration.
+:func:`plot_start_detection_from_file` re-runs detection (cheap, native-length)
+so the CLI / Pipeline / functional-API surfaces share one orchestration.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def plot_start_detection(
     )
     ax_top.set_ylabel("Σ|FT| over band")
     ax_top.legend(loc="upper right", fontsize=8)
-    ax_top.set_title(title or f"Start-time detection (band {band}, zpf=0, unapodized)")
+    ax_top.set_title(title or f"Start-time detection (band {band}, unapodized)")
     if not result.chirp_detected:
         ax_top.text(
             0.02,

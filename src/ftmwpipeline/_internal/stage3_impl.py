@@ -679,9 +679,7 @@ def detect_peaks_impl(
     #   2. Stage 2b Lorentzian ``tau_maj`` when available (physical
     #      molecular decay for exp-envelope data; the matched filter's
     #      FWHM equals the true line FWHM).
-    #   3. Stage 1 user apodization ``expf_us`` for the pre-calibration
-    #      path.
-    #   4. Historical 5.0 µs default.
+    #   3. Historical 5.0 µs default (pre-calibration path).
     #
     # The matched window's *shape* tracks the same selector: a Gaussian
     # instrument gets a Gaussian matched window ``exp(-(t/τ)²)``, everything
@@ -699,8 +697,6 @@ def detect_peaks_impl(
             tau_basis_us = float(
                 load_tau_calibration_impl(file_path)["tau_calibration"].tau_maj_us
             )
-        elif base_pp.expf_us:
-            tau_basis_us = float(base_pp.expf_us)
         else:
             tau_basis_us = 5.0
     gap_ft, gap_gain = _mf_gap_spectrum(
@@ -722,7 +718,7 @@ def detect_peaks_impl(
         else (
             "stage2b_tau_maj"
             if tau_calibration_present(file_path)
-            else "stage1_expf_us" if base_pp.expf_us else "default_5us"
+            else "default_5us"
         )
     )
     # SavGol window feed: the line's nominal FWHM at ``tau_basis``. The

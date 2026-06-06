@@ -99,7 +99,8 @@ Stages are tracked by name with explicit dependencies (`PipelineStageTracker.STA
   STFT on the raw FID; requires stages 0, 1, 2. Optional dependency of Stages 3+5:
   the gap-pass matched filter consumes `τ_maj` for its tau_basis_us; Stage 5 uses
   it as the anchor for the bidirectional Gaussian tau penalty and the rescue τ.
-  Stage 3 and Stage 5 still run without it (legacy apodization-anchored paths).
+  Stage 3 and Stage 5 still run without it (Stage 3 falls back to a default
+  `tau_basis_us`; Stage 5's τ₀ falls back to `T_active/3`).
 
 Running a stage whose dependency is missing raises `StageDependencyError`. Other custom
 exceptions (all subclass `PipelineFileError`): `PipelineExistsError` (create over a file
@@ -136,30 +137,31 @@ survives only beside its research report at
 
 `examples/blackchirp_data/2638/` is a real BlackChirp experiment checked in for tests and
 manual runs. FID: 750k points, 15 µs, 40.96 GHz probe, lower sideband. The integration
-tests' `standard_ft_params` for this experiment are `zpf=2`, `expf_us=5.0`, trimmed to the
-active region **26500–40000 MHz** — kept for legacy comparison. **New analyses should use
-a raw, unapodized FT (`zpf=0`, `expf_us=None`) on that same trim** (see below); only the
-frequency trim carries over.
+tests' `standard_ft_params` for this experiment is just the frequency trim to the active
+region **26500–40000 MHz**; the canonical FT itself is unapodized and native-length.
 
 ```python
 import ftmwpipeline.api as ftmw
 ftmw.import_data("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
-ft = ftmw.compute_ft("exp_2638.ftmw", zpf=2, expf_us=5.0, trim=(26500, 40000))
+ft = ftmw.compute_ft("exp_2638.ftmw", trim=(26500, 40000))
 noise = ftmw.estimate_noise("exp_2638.ftmw")
 ```
 
-**Run the canonical FT raw and unapodized.** The pipeline operates on the raw FT;
-**zero-padding interpolates the spectrum bins and corrupts the Stage 2/5 noise and fit
-statistics**, so a suggested `zpf` is never adopted — new analyses run `zpf=0` (Stage 3
-peak detection applies its own zero-padding internally, for position-finding only).
-Likewise, apodization is no longer a hard default on `compute_ft`: passing `expf_us=None`
-(or omitting it once nothing else has set it in the resolution chain) leaves the persisted
-FT unapodized — which is what the Stage 2b STFT τ calibration consumes. The 2638 example
-above keeps `zpf=2`/`expf_us=5.0` only for legacy comparison; new analyses should run
-`zpf=0`, `expf_us=None` and call `ftmw.calibrate_tau(...)` to extract `τ_maj ± σ_τ` before
-peak detection. Subsequent stages auto-detect Stage 2b's presence: Stage 3's gap-pass
-matched filter uses `τ_maj` for `tau_basis_us`, and Stage 5 anchors its bidirectional
-Gaussian τ penalty on `τ_maj`.
+**The canonical FT is unconditionally unapodized, un-windowed, and native-length.**
+Explicit user apodization of the canonical FT has been removed: the `expf_us`
+(exponential apodization), `window_function` / `winf` (FID window), and `zpf` (zero-pad
+factor) knobs no longer exist on `compute_ft` / `FTSettings` / the settings + scan
+surfaces. Apodization trades resolution and biases the line shape; zero-padding
+interpolates the spectrum bins and corrupts the Stage 2/5 noise and χ² statistics — the
+robust per-window fit is the intended alternative. `compute_ft` accepts only data
+selection (`start_us` / `end_us` / `trim`) plus display knobs (`units_power` / `rdc`).
+Stage 3 peak detection still applies its *own* internal zero-padding for sub-bin
+position finding (a throwaway grid, independent of the removed `zpf`). Legacy `.ftmw`
+files carrying the retired keys open with a warning and are recomputed unapodized. Run
+`ftmw.calibrate_tau(...)` to extract `τ_maj ± σ_τ` before peak detection: Stage 3's
+gap-pass matched filter uses `τ_maj` for `tau_basis_us`, and Stage 5 anchors its
+bidirectional Gaussian τ penalty on `τ_maj` (the per-window starting τ₀ defaults to the
+band-local `τ_maj`, else the band-wide `τ_maj`, else `T_active/3`).
 
 ## When extending the pipeline (new stage)
 

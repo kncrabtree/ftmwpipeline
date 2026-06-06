@@ -119,14 +119,7 @@ def format_processing_summary(params: Dict[str, Any]) -> str:
     """
     lines = ["Processing parameters:"]
     for param, value in params.items():
-        if value is None:
-            formatted_value = "None (default)"
-        elif param == "expf_us" and value is None:
-            formatted_value = "None (no exponential filter)"
-        elif param == "window_function" and value is None:
-            formatted_value = "None (no windowing)"
-        else:
-            formatted_value = str(value)
+        formatted_value = "None (default)" if value is None else str(value)
         lines.append(f"  {param}: {formatted_value}")
 
     return "\n".join(lines)

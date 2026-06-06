@@ -232,8 +232,6 @@ class TestFunctionalAPIWorkflows:
 
         # Save parameters directly
         params_to_save = {
-            "zpf": standard_ft_params["zpf"],
-            "expf_us": standard_ft_params["expf_us"],
             "trim_min_mhz": standard_ft_params["trim"][0],
             "trim_max_mhz": standard_ft_params["trim"][1],
         }
@@ -331,7 +329,6 @@ class TestCLIWorkflows:
         ), "Import success message missing"
 
         # Stage 1: Process FT
-        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
         trim_min, trim_max = standard_ft_params["trim"]
 
         success, stdout, stderr = self.run_cli_command(
@@ -339,10 +336,6 @@ class TestCLIWorkflows:
                 "ft",
                 "run",
                 str(temp_ftmw_file),
-                "--zpf",
-                str(zpf),
-                "--expf_us",
-                str(expf_us),
                 "--trim",
                 f"{trim_min}:{trim_max}",
             ]
@@ -359,10 +352,6 @@ class TestCLIWorkflows:
                 "ft",
                 "show",
                 str(temp_ftmw_file),
-                "--zpf",
-                str(zpf),
-                "--expf_us",
-                str(expf_us),
                 "--trim",
                 f"{trim_min}:{trim_max}",
                 "--no-interactive",

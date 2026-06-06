@@ -97,7 +97,7 @@ Utility (bare commands):
 
 Examples:
   ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/
-  ftmwpipeline ft run exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
+  ftmwpipeline ft run exp_2638.ftmw --trim 26500:40000
   ftmwpipeline noise run exp_2638.ftmw
   ftmwpipeline info exp_2638.ftmw --format json
         """,

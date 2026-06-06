@@ -1,7 +1,15 @@
 # FT apodization removal (expf / winf / zpf)
 
-**Status: Plan (execution deferred).** Drafted for later execution; no code
-changed yet.
+**Status: Shipped.** Executed in full. The canonical FT is now unconditionally
+unapodized, un-windowed, and native-length; the `expf_us` / `window_function` /
+`winf` / `zpf` knobs are removed from every interface and the FT path. The three
+couplings were resolved as: Stage 5 τ₀ defaults to the per-band Stage 2b `τ_maj`
+(else band-wide `τ_maj`, else `T_active/3`); `compute_active_ft` dropped its
+`expf_us` parameter; legacy `.ftmw` files carrying the retired keys open with a
+warning and recompute unapodized. Removed CLI flags hard-error (argparse).
+Fixtures rebuilt unapodized, value-specific assertions re-baselined, full suite
+green. See ROADMAP divergence D13. The plan body below is retained as the
+execution record.
 
 ## Decision
 

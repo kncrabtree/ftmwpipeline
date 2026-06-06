@@ -329,7 +329,8 @@ def register_fitting_commands(subparsers: Any) -> None:
         dest="tau0_us",
         type=float,
         help="Starting / default shared decay constant per window (us). "
-        "Defaults to the Stage 1 expf_us when set, otherwise to T_active/3.",
+        "Defaults to the Stage 2b tau_maj when calibrated, otherwise to "
+        "T_active/3.",
     )
     p_fit.add_argument(
         "--no-fit-tau",

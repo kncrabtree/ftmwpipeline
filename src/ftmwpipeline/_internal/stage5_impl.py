@@ -10,8 +10,9 @@ list (the persistent :class:`~ftmwpipeline.core.data_structures.SpectrumFit`).
 
 Stage 5 owns no FT settings: the active-portion FT it fits on is computed
 on demand from the persisted FID plus the canonical Stage 1 settings (the
-same ``start_us``, ``end_us``, ``expf_us``, ``rdc`` the user picked for the
-persisted spectrum). Per-bin noise on the active-FT is measured fresh by
+same ``start_us``, ``end_us``, ``rdc`` the user picked for the persisted
+spectrum; the canonical FT is unapodized and native-length). Per-bin noise on
+the active-FT is measured fresh by
 running the Stage 2 adaptive estimator on the active-FT magnitude spectrum
 (see ``dev-docs/planning/stage5-fitting.md`` § "Spectral domain for the fit"
 for why we measure rather than rescale).
@@ -156,7 +157,6 @@ def _build_active_ft_inputs(
     float,  # sample dt (us)
     float,  # start_us
     float,  # end_us (active end)
-    Optional[float],  # expf_us
     float,  # probe_freq_mhz
     Sideband,
     int,  # n_padded
@@ -180,7 +180,6 @@ def _build_active_ft_inputs(
     end_us = (
         float(base_pp.end_us) if base_pp.end_us is not None else float(fid.duration_us)
     )
-    expf_us = float(base_pp.expf_us) if base_pp.expf_us is not None else None
     acquisition_us = _active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
     )
@@ -191,14 +190,10 @@ def _build_active_ft_inputs(
         )
     sideband = _resolve_sideband(fid.sideband)
 
-    # n_padded: the zero-padded FFT length the persisted FT uses.
-    # base_pp.zpf parameterizes this; the active-FT records alpha for
-    # diagnostic only -- the fit itself is independent of n_padded.
-    n_active_estimate = int(round(acquisition_us / sample_dt_us))
-    n_padded = max(
-        2 ** (int(np.log2(max(n_active_estimate, 1))) + 1 + int(base_pp.zpf)),
-        n_active_estimate,
-    )
+    # n_padded: the canonical full-record FT input length (the native FID
+    # length -- the persisted FT is unpadded). The active-FT records alpha for
+    # diagnostic only; the fit itself is independent of n_padded.
+    n_padded = int(np.asarray(fid.data).size)
 
     trim_range = stage1.get("trim_range")
 
@@ -207,7 +202,6 @@ def _build_active_ft_inputs(
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
         float(fid.probe_freq_mhz),
         sideband,
         n_padded,
@@ -331,8 +325,8 @@ def fit_peaks_impl(
         Path to the .ftmw pipeline file.
     tau0_us : float, optional
         Starting / default shared decay constant per window (microseconds).
-        Defaults to the Stage 1 ``expf_us`` when set (the apodization
-        dominates the line shape), otherwise to ``T/3``.
+        Defaults to the Stage 2b ``tau_maj`` when a calibration is present
+        (per-band ``tau_maj`` for band-routed windows), otherwise to ``T/3``.
     fit_tau : bool, optional
         Free vs fixed per-window tau. ``None`` (the default) lets each
         window keep tau free (the strong-anchor common case); a future
@@ -525,7 +519,6 @@ def fit_peaks_impl(
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
         probe_freq_mhz,
         sideband,
         n_padded,
@@ -539,7 +532,6 @@ def fit_peaks_impl(
         sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=expf_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         n_padded=n_padded,
@@ -693,11 +685,12 @@ def fit_peaks_impl(
             logger.info("Stage 5 spur masking: enabled, no spurs gated")
 
     # --- tau0 default --------------------------------------------------------
+    # The global seed is the band-wide Stage 2b ``tau_maj`` when a calibration
+    # is present, else ``T_active / 3``. Per-band routing (below) overrides the
+    # seed per window with that window's band-local ``tau_maj``.
     if resolved.tau.tau0_us is None:
         if tau_maj_us is not None and tau_maj_us > 0.0:
             tau0_us_v = float(tau_maj_us)
-        elif expf_us is not None:
-            tau0_us_v = float(expf_us)
         else:
             tau0_us_v = acquisition_us / 3.0
     else:
@@ -804,17 +797,13 @@ def fit_peaks_impl(
     )
     conservative_kwargs: Dict[str, Any] = {
         "max_decay_factor": max_decay_v,
-        # Two tau-anchor modes share this dict:
-        # - When Stage 2b is present, ``tau_maj_us`` and ``sigma_tau_us``
-        #   drive the bidirectional Gaussian-prior penalty and the
-        #   calibrated bounds (``tau_maj +- N*sigma_tau`` intersected with
-        #   the factor-k cap).
-        # - When Stage 2b is absent, ``tau_apodization_us`` keeps the
-        #   legacy apodization-as-ceiling / one-sided hinge behaviour.
-        # Passing both is harmless (the calibration path takes precedence
-        # inside ``derive_window_fit_constraints``); we forward all three
-        # so the rescue path can pick the same policy.
-        "tau_apodization_us": expf_us,
+        # tau anchoring: when Stage 2b is present, ``tau_maj_us`` and
+        # ``sigma_tau_us`` drive the bidirectional Gaussian-prior penalty and
+        # the calibrated bounds (``tau_maj +- N*sigma_tau`` intersected with
+        # the factor-k cap). Absent Stage 2b, tau is bounded by the factor-k
+        # cap alone (there is no apodization anchor -- the canonical FT is
+        # unapodized).
+        "tau_apodization_us": None,
         "tau_maj_us": tau_maj_us,
         "sigma_tau_us": sigma_tau_us,
         # τ-prior knobs (Stage 2b consumer).
@@ -1205,17 +1194,16 @@ def _padded_active_display_ft(
     *,
     start_us: float,
     end_us: float,
-    expf_us: Optional[float],
     probe_freq_mhz: float,
     sideband: Sideband,
     pad_factor: int = _DETAIL_PAD_FACTOR,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Display-only active FT zero-filled by ``pad_factor`` for the magnitude
-    panels. Mirrors the canonical active-region extraction (same ``expf_us``
-    apodization and mean removal) so the padded curve passes through the native
-    spectrum at the measured bins; the extra bins are the single-zero-fill
-    magnitude interpolation. Returns ``(freq_mhz, complex_spectrum)`` sorted by
-    ascending molecular frequency. Never feeds fitting / noise / chi-squared."""
+    panels. Mirrors the canonical (unapodized) active-region extraction and mean
+    removal so the padded curve passes through the native spectrum at the
+    measured bins; the extra bins are the single-zero-fill magnitude
+    interpolation. Returns ``(freq_mhz, complex_spectrum)`` sorted by ascending
+    molecular frequency. Never feeds fitting / noise / chi-squared."""
     from ..fitting.peak_model import sideband_sign
 
     fid = np.asarray(fid_samples, dtype=float)
@@ -1223,9 +1211,6 @@ def _padded_active_display_ft(
     end_idx = min(int(np.ceil(end_us / sample_dt_us)), fid.size)
     active = fid[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size
-    if expf_us is not None and expf_us > 0:
-        t_us = np.arange(n_active) * sample_dt_us
-        active *= np.exp(-t_us / expf_us)
     active -= active.mean()  # match canonical rdc=True
     n_pad = int(pad_factor) * n_active
     padded = np.zeros(n_pad, dtype=float)
@@ -1248,7 +1233,6 @@ def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
         probe_freq_mhz,
         sideband,
         _n_padded,
@@ -1264,14 +1248,12 @@ def _resolve_detail_bundle(file_path: str) -> _DetailBundle:
     rms_sorted = np.ascontiguousarray(np.asarray(active_rms, dtype=float)[order])
 
     # The canonical active grid (build_active_grid_with_noise) is unapodized,
-    # so the display FT is too -- otherwise a persisted expf would bend the
-    # padded magnitude away from the native markers it must pass through.
+    # so the display FT is too.
     freq_padded, spec_padded = _padded_active_display_ft(
         fid_samples,
         sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=None,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
     )
@@ -1540,7 +1522,6 @@ def render_windowed_view_impl(
         sample_dt_us,
         start_us,
         end_us,
-        _expf_us,
         probe_freq_mhz,
         sideband,
         _n_padded,
@@ -1568,12 +1549,9 @@ def render_windowed_view_impl(
     shape = str(getattr(wf, "shape", "lorentzian"))
     peaks_bb = _window_peaks_baseband(wf, sideband, probe_freq_mhz)
 
-    # Synthesize on the raw active region with the fitted tau. Explicit early-
-    # stage apodization (expf_us) is deprecated; on a correct unapodized fixture
-    # the fitted tau is the intrinsic decay, so the boxcar model sits on the
-    # data with no correction. (On a stale apodized fixture the fitted tau is
-    # the apodized effective tau and the model will undershoot -- expected; such
-    # fixtures are outdated.)
+    # Synthesize on the raw active region with the fitted tau. The canonical FT
+    # is unapodized, so the fitted tau is the intrinsic decay and the boxcar
+    # model sits on the data with no correction.
     model_fid = synthesize_fid(t_us, peaks_bb, tau_us, shape=shape)
     model_fid -= model_fid.mean()
 

@@ -40,7 +40,7 @@ def _prep(path, data_path):
     no longer accepts trim= (D7 Phase B).
     """
     ftmw.import_data(path, source=data_path, force=True)
-    ftmw.compute_ft(path, zpf=2, expf_us=5.0, trim=TRIM)
+    ftmw.compute_ft(path, trim=TRIM)
     ftmw.estimate_noise(path)  # scatter (canonical default) Stage 3 reference
 
 

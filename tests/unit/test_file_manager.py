@@ -165,7 +165,7 @@ class TestFileManagerFunctions:
             probe_freq_mhz=40960.0,  # Like experiment 2638
             sideband=Sideband.LOWER,
             shots=50000,
-            processing=FIDProcessingParameters(zpf=1, expf_us=5.0),
+            processing=FIDProcessingParameters(start_us=1.0, end_us=18.0),
             metadata={"source_path": "/test/source", "experiment_id": "test_2638"},
         )
 
@@ -326,12 +326,12 @@ class TestFileManagerFunctions:
         filepath = temp_dir / "test_pipeline.ftmw"
         create_pipeline_file(filepath, sample_fid, sample_source_metadata)
 
-        # Update processing parameters
+        # Update processing parameters (canonical FT is unapodized: only the
+        # data-selection / scaling knobs are persisted).
         new_params = {
-            "zpf": 2,
-            "expf_us": 3.0,
             "start_us": 1.0,
             "end_us": 10.0,
+            "units_power": 3,
             "trim_start_mhz": 26500.0,
             "trim_end_mhz": 40000.0,
         }
@@ -342,10 +342,9 @@ class TestFileManagerFunctions:
         with h5py.File(filepath, "r") as h5f:
             rec_proc_group = h5f["stage0_fid_data/recommended_processing"]
 
-            assert rec_proc_group.attrs["zpf"] == 2
-            assert rec_proc_group.attrs["expf_us"] == 3.0
             assert rec_proc_group.attrs["start_us"] == 1.0
             assert rec_proc_group.attrs["end_us"] == 10.0
+            assert rec_proc_group.attrs["units_power"] == 3
             assert rec_proc_group.attrs["trim_start_mhz"] == 26500.0
             assert rec_proc_group.attrs["trim_end_mhz"] == 40000.0
 
@@ -361,7 +360,7 @@ class TestFileManagerFunctions:
         create_pipeline_file(filepath, sample_fid, sample_source_metadata)
 
         # Update with None values
-        params_with_none = {"start_us": None, "end_us": None, "zpf": 2, "expf_us": None}
+        params_with_none = {"start_us": None, "end_us": None, "units_power": 6}
 
         update_processing_parameters(filepath, params_with_none)
 
@@ -371,8 +370,7 @@ class TestFileManagerFunctions:
 
             assert rec_proc_group.attrs["start_us"] == "__None__"
             assert rec_proc_group.attrs["end_us"] == "__None__"
-            assert rec_proc_group.attrs["zpf"] == 2
-            assert rec_proc_group.attrs["expf_us"] == "__None__"
+            assert rec_proc_group.attrs["units_power"] == 6
 
 
 class TestRealDataIntegration:
@@ -422,8 +420,8 @@ class TestRealDataIntegration:
 
             # 4. Update processing parameters (typical interactive workflow)
             processing_params = {
-                "zpf": 1,
-                "expf_us": 5.0,
+                "start_us": 1.0,
+                "end_us": 18.0,
                 "trim_start_mhz": 26500.0,
                 "trim_end_mhz": 40000.0,
             }
@@ -432,8 +430,8 @@ class TestRealDataIntegration:
             # 5. Verify parameters persistence
             with h5py.File(created_path, "r") as h5f:
                 rec_proc_group = h5f["stage0_fid_data/recommended_processing"]
-                assert rec_proc_group.attrs["zpf"] == 1
-                assert rec_proc_group.attrs["expf_us"] == 5.0
+                assert rec_proc_group.attrs["start_us"] == 1.0
+                assert rec_proc_group.attrs["end_us"] == 18.0
                 assert rec_proc_group.attrs["trim_start_mhz"] == 26500.0
                 assert rec_proc_group.attrs["trim_end_mhz"] == 40000.0
 
@@ -472,7 +470,7 @@ class TestErrorHandlingAndEdgeCases:
         filepath = temp_dir / "nonexistent.ftmw"
 
         with pytest.raises(FileNotFoundError) as exc_info:
-            update_processing_parameters(filepath, {"zpf": 2})
+            update_processing_parameters(filepath, {"start_us": 2.0})
 
         assert "does not exist" in str(exc_info.value)
 

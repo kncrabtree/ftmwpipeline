@@ -58,7 +58,7 @@ def process_experiment(
         FID index for multi-FID formats (e.g. BlackChirp).
     ft_params : dict, optional
         Keyword arguments forwarded to :meth:`Pipeline.compute_ft`
-        (e.g. ``{'zpf': 2, 'expf_us': 5.0, 'trim': (26500, 40000)}``).
+        (e.g. ``{'trim': (26500, 40000)}``).
     estimate_noise : bool, default True
         Whether to run Stage 2 noise estimation.
     noise_params : dict, optional

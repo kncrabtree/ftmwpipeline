@@ -51,7 +51,7 @@ def _prep_through_stage2(tmp_path, data_path) -> str:
     """Import 2638, compute FT, estimate noise; return path as str."""
     fp = str(tmp_path / "exp.ftmw")
     import_data_impl(fp, source=data_path)
-    ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=TRIM)
+    ftmw.compute_ft(fp, trim=TRIM)
     ftmw.estimate_noise(fp)  # exercises the scatter settings chain
     return fp
 
@@ -88,7 +88,7 @@ class TestIdempotentRepersist:
         fp = _prep_through_stage2(tmp_path, exp_2638_data_path)
 
         with caplog.at_level(logging.WARNING, logger="ftmwpipeline"):
-            ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=TRIM)
+            ftmw.compute_ft(fp, trim=TRIM)
 
         # Stage 2 must still be present.
         assert _has_group(
@@ -116,13 +116,15 @@ class TestIdempotentRepersist:
 
 
 class TestChangedSettingsInvalidatesStage2:
-    def test_changed_zpf_invalidates_stage2(self, exp_2638_data_path, tmp_path, caplog):
-        """Changing zpf from 2 to 3 must delete stage2 and remove from completed."""
+    def test_changed_start_us_invalidates_stage2(
+        self, exp_2638_data_path, tmp_path, caplog
+    ):
+        """Changing start_us must delete stage2 and remove from completed."""
         fp = _prep_through_stage2(tmp_path, exp_2638_data_path)
 
         with caplog.at_level(logging.WARNING, logger="ftmwpipeline"):
-            # Change zpf; this changes the resolved canonical settings.
-            ftmw.compute_ft(fp, zpf=3, expf_us=5.0, trim=TRIM)
+            # Change start_us; this changes the resolved canonical settings.
+            ftmw.compute_ft(fp, start_us=2.0, trim=TRIM)
 
         # Stage 2 data must be gone.
         assert not _has_group(
@@ -152,7 +154,7 @@ class TestChangedSettingsInvalidatesStage2:
         fp = _prep_through_stage2(tmp_path, exp_2638_data_path)
 
         with caplog.at_level(logging.WARNING, logger="ftmwpipeline"):
-            ftmw.compute_ft(fp, zpf=2, expf_us=5.0, trim=(27000.0, 39000.0))
+            ftmw.compute_ft(fp, trim=(27000.0, 39000.0))
 
         assert not _has_group(
             fp, "stage2_noise_result"
@@ -184,7 +186,7 @@ class TestChangedSettingsInvalidatesChain:
 
         # Now change canonical settings.
         with caplog.at_level(logging.WARNING, logger="ftmwpipeline"):
-            ftmw.compute_ft(fp, zpf=3, expf_us=5.0, trim=TRIM)
+            ftmw.compute_ft(fp, start_us=2.0, trim=TRIM)
 
         # Both downstream stages must be gone.
         assert not _has_group(

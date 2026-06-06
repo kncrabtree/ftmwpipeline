@@ -63,10 +63,7 @@ class TestFIDSerializationInPipelineFiles:
         processing = FIDProcessingParameters(
             start_us=0.5,
             end_us=10.0,
-            zpf=1,
-            expf_us=3.0,
             rdc=True,
-            winf="hann",
             units_power=6,
         )
 
@@ -132,10 +129,7 @@ class TestFIDSerializationInPipelineFiles:
         # Verify processing parameters
         assert loaded_fid.processing.start_us == sample_fid.processing.start_us
         assert loaded_fid.processing.end_us == sample_fid.processing.end_us
-        assert loaded_fid.processing.zpf == sample_fid.processing.zpf
-        assert loaded_fid.processing.expf_us == sample_fid.processing.expf_us
         assert loaded_fid.processing.rdc == sample_fid.processing.rdc
-        assert loaded_fid.processing.winf == sample_fid.processing.winf
         assert loaded_fid.processing.units_power == sample_fid.processing.units_power
 
         # Verify metadata preservation
@@ -199,15 +193,14 @@ class TestFIDSerializationInPipelineFiles:
         filepath = temp_dir / "test_params.ftmw"
         create_pipeline_file(filepath, sample_fid, source_metadata)
 
-        # Update processing parameters
+        # Update processing parameters (canonical FT is unapodized: only
+        # data-selection / scaling knobs are persisted).
         new_params = {
-            "zpf": 2,
-            "expf_us": 5.0,
             "start_us": 1.0,
             "end_us": 12.0,
+            "units_power": 3,
             "trim_start_mhz": 26500.0,
             "trim_end_mhz": 40000.0,
-            "winf": "blackman",
         }
 
         update_processing_parameters(filepath, new_params)
@@ -218,19 +211,17 @@ class TestFIDSerializationInPipelineFiles:
             rec_proc_group = stage0_group["recommended_processing"]
 
             # Verify all parameters were saved
-            assert rec_proc_group.attrs["zpf"] == 2
-            assert rec_proc_group.attrs["expf_us"] == 5.0
             assert rec_proc_group.attrs["start_us"] == 1.0
             assert rec_proc_group.attrs["end_us"] == 12.0
+            assert rec_proc_group.attrs["units_power"] == 3
             assert rec_proc_group.attrs["trim_start_mhz"] == 26500.0
             assert rec_proc_group.attrs["trim_end_mhz"] == 40000.0
-            assert rec_proc_group.attrs["winf"] == "blackman"
 
     def test_processing_parameters_with_none_values(self, temp_dir):
         """Test serialization with None values in processing parameters."""
         # Create FID with some None processing parameters
         processing = FIDProcessingParameters(
-            start_us=None, end_us=None, winf=None, zpf=0, expf_us=None, units_power=6
+            start_us=None, end_us=None, units_power=6
         )
 
         fid = FID(
@@ -251,9 +242,6 @@ class TestFIDSerializationInPipelineFiles:
 
         assert loaded_fid.processing.start_us is None
         assert loaded_fid.processing.end_us is None
-        assert loaded_fid.processing.winf is None
-        assert loaded_fid.processing.expf_us is None
-        assert loaded_fid.processing.zpf == 0
         assert loaded_fid.processing.units_power == 6
 
     def test_metadata_separation_in_pipeline_files(self, temp_dir, sample_fid):
@@ -453,7 +441,7 @@ class TestRealExperimentalDataIntegration:
 
             # Should be able to create ComplexFT from loaded FID (test self-containment)
             # This tests that pipeline file is truly self-contained for analysis
-            preprocessed_fid = loaded_fid.preprocess(zpf=1, expf_us=5.0)
+            preprocessed_fid = loaded_fid.preprocess()
             complex_spectrum, freq_array = preprocessed_fid.compute_fft()
 
             # Verify FFT computation works with pipeline file data
@@ -535,4 +523,4 @@ class TestErrorConditionsAndEdgeCases:
         with pytest.raises(
             RuntimeError, match="Failed to update processing parameters"
         ):
-            update_processing_parameters(filepath, {"zpf": 2})
+            update_processing_parameters(filepath, {"start_us": 2.0})

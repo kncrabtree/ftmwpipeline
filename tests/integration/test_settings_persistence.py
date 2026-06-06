@@ -67,22 +67,22 @@ class TestD7ImplPersistence:
     """Verify compute_ft_impl persist=True writes and no-arg reproduce works."""
 
     def test_persist_writes_canonical_record(self, exp_2638_data_path, tmp_path):
-        """persist=True must write trim, zpf, expf_us to ft_processing."""
+        """persist=True must write trim + data-selection knobs to ft_processing."""
         f = _create_ftmw(exp_2638_data_path, tmp_path)
 
-        settings = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0))
+        settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
         compute_ft_impl(str(f), settings=settings, persist=True)
 
         attrs = _read_ft_attrs(str(f))
         assert float(attrs["trim_min_mhz"]) == pytest.approx(26500.0)
         assert float(attrs["trim_max_mhz"]) == pytest.approx(40000.0)
-        assert int(attrs["zpf"]) == 2
-        assert float(attrs["expf_us"]) == pytest.approx(5.0)
+        assert float(attrs["start_us"]) == pytest.approx(2.0)
+        assert int(attrs["units_power"]) == 6
 
     def test_stage1_marked_complete_after_persist(self, exp_2638_data_path, tmp_path):
         """pipeline_stages.completed_stages must include stage1_complex_ft."""
         f = _create_ftmw(exp_2638_data_path, tmp_path)
-        settings = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0))
+        settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
         compute_ft_impl(str(f), settings=settings, persist=True)
 
         with h5py.File(str(f), "r") as h5f:
@@ -96,7 +96,7 @@ class TestD7ImplPersistence:
         """
         f = _create_ftmw(exp_2638_data_path, tmp_path)
 
-        settings = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0))
+        settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
         first = compute_ft_impl(str(f), settings=settings, persist=True)
         ft1: ComplexFT = first["complex_ft"]
 
@@ -124,7 +124,7 @@ class TestD7ImplPersistence:
         """No-arg reproduced spectrum must lie within the persisted trim range."""
         f = _create_ftmw(exp_2638_data_path, tmp_path)
 
-        settings = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0))
+        settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
         compute_ft_impl(str(f), settings=settings, persist=True)
 
         result = compute_ft_impl(str(f))
@@ -143,27 +143,27 @@ class TestD7ImplPersistence:
         the same values as those written at persist time.
         """
         f = _create_ftmw(exp_2638_data_path, tmp_path)
-        settings = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0))
+        settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
         compute_ft_impl(str(f), settings=settings, persist=True)
 
         # Close implicit by function; open fresh
         attrs_fresh = _read_ft_attrs(str(f))
         assert float(attrs_fresh["trim_min_mhz"]) == pytest.approx(26500.0)
         assert float(attrs_fresh["trim_max_mhz"]) == pytest.approx(40000.0)
-        assert int(attrs_fresh["zpf"]) == 2
-        assert float(attrs_fresh["expf_us"]) == pytest.approx(5.0)
+        assert float(attrs_fresh["start_us"]) == pytest.approx(2.0)
+        assert int(attrs_fresh["units_power"]) == 6
 
     def test_from_attrs_restores_persisted_record(self, exp_2638_data_path, tmp_path):
         """FTSettings.from_attrs(attrs) must round-trip the persisted record."""
         f = _create_ftmw(exp_2638_data_path, tmp_path)
-        settings = FTSettings(zpf=2, expf_us=5.0, trim=(26500.0, 40000.0))
+        settings = FTSettings(start_us=2.0, units_power=6, trim=(26500.0, 40000.0))
         compute_ft_impl(str(f), settings=settings, persist=True)
 
         attrs = _read_ft_attrs(str(f))
         restored = FTSettings.from_attrs(attrs)
 
-        assert restored.zpf == 2
-        assert restored.expf_us == pytest.approx(5.0)
+        assert restored.start_us == pytest.approx(2.0)
+        assert restored.units_power == 6
         assert restored.trim is not None
         assert restored.trim[0] == pytest.approx(26500.0)
         assert restored.trim[1] == pytest.approx(40000.0)
@@ -173,7 +173,7 @@ class TestD7ImplPersistence:
 # Cross-interface consistency (gated on public-API refactor)
 #
 # These tests call Pipeline.compute_ft / api.compute_ft / CLI compute-ft with
-# the new kwargs (zpf=, expf_us=, trim=).  They will fail with AttributeError
+# the new kwargs (trim=, start_us=, ...).  They will fail with AttributeError
 # or TypeError until Task #3 (API surface refactor) lands — that is expected.
 # ---------------------------------------------------------------------------
 
@@ -197,8 +197,6 @@ class TestCrossInterfaceD7:
     def _run_cli_compute_ft(
         self,
         ftmw_file: Path,
-        zpf: int,
-        expf_us: float,
         trim_min: float,
         trim_max: float,
     ) -> None:
@@ -206,10 +204,6 @@ class TestCrossInterfaceD7:
             "ft",
             "run",
             str(ftmw_file),
-            "--zpf",
-            str(zpf),
-            "--expf_us",
-            str(expf_us),
             "--trim",
             f"{trim_min}:{trim_max}",
         )
@@ -227,13 +221,12 @@ class TestCrossInterfaceD7:
         import ftmwpipeline.api as ftmw
         from ftmwpipeline import Pipeline
 
-        zpf, expf_us = 2, 5.0
         trim = (26500.0, 40000.0)
 
         # -- Pipeline interface --
         pipe_file = tmp_path / "pipe.ftmw"
         pipe = Pipeline.create(pipe_file, source=exp_2638_data_path)
-        ft_pipe = pipe.compute_ft(zpf=zpf, expf_us=expf_us, trim=trim)
+        ft_pipe = pipe.compute_ft(trim=trim)
         assert isinstance(ft_pipe, ComplexFT)
 
         pipe_attrs = _read_ft_attrs(str(pipe_file))
@@ -243,7 +236,7 @@ class TestCrossInterfaceD7:
         # -- Functional API --
         api_file = tmp_path / "api.ftmw"
         ftmw.import_data(api_file, source=exp_2638_data_path)
-        ft_api = ftmw.compute_ft(api_file, zpf=zpf, expf_us=expf_us, trim=trim)
+        ft_api = ftmw.compute_ft(api_file, trim=trim)
         assert isinstance(ft_api, ComplexFT)
 
         api_attrs = _read_ft_attrs(str(api_file))
@@ -253,7 +246,7 @@ class TestCrossInterfaceD7:
         # -- CLI --
         cli_file = tmp_path / "cli.ftmw"
         self._run_cli_import(cli_file, exp_2638_data_path)
-        self._run_cli_compute_ft(cli_file, zpf, expf_us, trim[0], trim[1])
+        self._run_cli_compute_ft(cli_file, trim[0], trim[1])
         # Load back via impl (CLI does not return a Python object)
         cli_result = compute_ft_impl(str(cli_file))
         ft_cli: ComplexFT = cli_result["complex_ft"]

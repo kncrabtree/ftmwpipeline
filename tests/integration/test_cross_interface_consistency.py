@@ -107,7 +107,7 @@ class TestIdenticalResults:
             ftmw.import_data(functional_file, source=exp_2638_data_path)
 
             # Compute FT with trim
-            params = {"zpf": 2, "expf_us": 5.0, "trim": trim_range}
+            params = {"trim": trim_range}
             complex_ft_pipeline = pipe.compute_ft(**params)
             complex_ft_functional = ftmw.compute_ft(functional_file, **params)
 
@@ -156,7 +156,7 @@ class TestIdenticalResults:
         shutil.copy(paths["cli"], c_copy)
 
         # Run the estimator independently on each copy; this proves the
-        # Stage 0/1 cross-build identity carries into Stage 2 on the zpf=2 trio.
+        # Stage 0/1 cross-build identity carries into Stage 2 on the trio.
         noise_result_pipeline = ftmw.estimate_noise(p_copy)
         noise_result_functional = ftmw.estimate_noise(f_copy)
         noise_result_cli = ftmw.estimate_noise(c_copy)
@@ -180,8 +180,8 @@ class TestIdenticalResults:
         """The scatter (high-pass) estimator must be bit-identical across the
         three interfaces.
 
-        Run on the canonical raw (zpf=0) FT — the grid scatter uses in production
-        (the zpf=2 trio would be 4× denser and needlessly slow under scatter's
+        Run on the canonical unapodized FT — the grid scatter uses in production
+        (an apodized/zero-padded grid would be denser and needlessly slow under scatter's
         broad-window smoothing). Stage 0/1 cross-build identity is already proven
         by ``test_identical_noise_estimation_results``; here we copy one raw
         baseline three ways and check the estimator + interface plumbing agree.
@@ -472,8 +472,6 @@ class TestParameterPersistence:
 
         # Save parameters using functional API (this mutates the file)
         params_to_save = {
-            "zpf": standard_ft_params["zpf"],
-            "expf_us": standard_ft_params["expf_us"],
             "trim_min_mhz": standard_ft_params["trim"][0],
             "trim_max_mhz": standard_ft_params["trim"][1],
         }
@@ -633,17 +631,12 @@ class TestFilePortability:
         complex_ft_functional = ftmw.compute_ft(test_file, **standard_ft_params)
 
         # Process with CLI (re-run compute-ft on the same file to test CLI interop)
-        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
         trim_min, trim_max = standard_ft_params["trim"]
         self._run_cli_command(
             [
                 "ft",
                 "run",
                 str(test_file),
-                "--zpf",
-                str(zpf),
-                "--expf_us",
-                str(expf_us),
                 "--trim",
                 f"{trim_min}:{trim_max}",
             ]
@@ -667,17 +660,12 @@ class TestFilePortability:
         complex_ft_pipeline = pipe.compute_ft(**standard_ft_params)
 
         # Process with CLI for comparison
-        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
         trim_min, trim_max = standard_ft_params["trim"]
         self._run_cli_command(
             [
                 "ft",
                 "run",
                 str(test_file),
-                "--zpf",
-                str(zpf),
-                "--expf_us",
-                str(expf_us),
                 "--trim",
                 f"{trim_min}:{trim_max}",
             ]
@@ -702,17 +690,12 @@ class TestFilePortability:
         complex_ft_functional = ftmw.compute_ft(test_file, **standard_ft_params)
 
         # Process with CLI again
-        zpf, expf_us = standard_ft_params["zpf"], standard_ft_params["expf_us"]
         trim_min, trim_max = standard_ft_params["trim"]
         self._run_cli_command(
             [
                 "ft",
                 "run",
                 str(test_file),
-                "--zpf",
-                str(zpf),
-                "--expf_us",
-                str(expf_us),
                 "--trim",
                 f"{trim_min}:{trim_max}",
             ]
@@ -891,22 +874,22 @@ class TestErrorConsistency:
         pipe = Pipeline.create(test_file, source=exp_2638_data_path)
         ftmw.import_data(test_file, source=exp_2638_data_path)
 
-        # Test invalid zpf parameter (negative value)
+        # Test invalid start_us parameter (negative value)
         with pytest.raises((ValueError, RuntimeError)):
-            pipe.compute_ft(zpf=-1)
+            pipe.compute_ft(start_us=-1.0)
 
         with pytest.raises((ValueError, RuntimeError)):
-            ftmw.compute_ft(test_file, zpf=-1)
+            ftmw.compute_ft(test_file, start_us=-1.0)
 
-        # CLI should also fail
+        # CLI should also fail (inverted trim range is rejected by the parser).
         result = subprocess.run(
-            ["ftmwpipeline", "ft", "run", str(test_file), "--zpf", "-1"],
+            ["ftmwpipeline", "ft", "run", str(test_file), "--trim", "40000:26500"],
             capture_output=True,
             text=True,
             check=False,
             timeout=10,
         )
-        assert result.returncode != 0, "CLI should fail with invalid zpf parameter"
+        assert result.returncode != 0, "CLI should fail with invalid trim range"
 
     def test_corruption_detection_consistency(self, exp_2638_data_path, temp_ftmw_dir):
         """Test all interfaces detect file corruption consistently."""

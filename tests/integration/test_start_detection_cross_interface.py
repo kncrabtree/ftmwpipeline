@@ -128,7 +128,7 @@ def test_stamped_start_us_flows_into_compute_ft(exp_2638_data_path, tmp_path):
 
     res = ftmw.detect_start_time(path, settings=_SETTINGS)
     # compute_ft with NO explicit start_us must inherit the stamped recommendation.
-    ftmw.compute_ft(path, zpf=2, trim=(26500.0, 40000.0))
+    ftmw.compute_ft(path, trim=(26500.0, 40000.0))
     with h5py.File(path, "r") as h:
         canonical = float(h["processing_parameters/ft_processing"].attrs["start_us"])
     assert canonical == pytest.approx(res.start_us, abs=1e-9)

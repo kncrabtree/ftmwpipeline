@@ -11,13 +11,12 @@ Two mutating companions to the read-only :mod:`settings_inspection` view:
   ``.yml`` preset block, the portable form a sibling experiment loads via
   ``--preset``.
 
-Stage 1 is special. Its FT-shaping knobs (``zpf`` / ``expf_us`` /
-``window_function``) define the FT itself and are *not* settable here -- they
-belong to ``ft run``, which recomputes the spectrum. Its windowing knobs
-(``start_us`` / ``end_us`` / ``trim`` / ``units_power`` / ``rdc``) are settable
-but, since the FT is recomputed on demand from these settings, change them
-invalidates every downstream stage. Presets do not carry Stage 1, so it is
-excluded from :func:`export_settings`.
+Stage 1 is special. The canonical FT is unapodized and native-length (there are
+no apodization knobs). Its data-selection knobs (``start_us`` / ``end_us`` /
+``trim`` / ``units_power`` / ``rdc``) are settable but, since the FT is
+recomputed on demand from these settings, changing them invalidates every
+downstream stage. Presets do not carry Stage 1, so it is excluded from
+:func:`export_settings`.
 """
 
 from __future__ import annotations
@@ -68,10 +67,6 @@ from ...io.window_planning_settings_serialization import (
     load_window_planning_settings_from_h5,
     save_window_planning_settings_to_h5,
 )
-
-# FT-shaping knobs that define the spectrum: only ``ft run`` may set these.
-_FT_SHAPING_FIELDS = frozenset({"zpf", "expf_us", "window_function"})
-
 
 @dataclass(frozen=True)
 class _MutSpec:
@@ -238,9 +233,8 @@ def set_setting(file_path: Union[str, Path], knob: str, raw_value: str) -> SetRe
 
     ``knob`` is a dotted settings path (``stage2.window_mhz`` /
     ``stage2b.gaussian.snr_min`` / ``stage5.shape``). The value is coerced to the
-    field's declared type. Stage 1 FT-shaping knobs (``zpf`` / ``expf_us`` /
-    ``window_function``) are rejected -- set them via ``ft run``, which
-    recomputes the spectrum.
+    field's declared type. The canonical FT is unapodized and native-length, so
+    there are no FT apodization knobs to set.
     """
     path = str(file_path)
     prefix, sub, field = _split_knob(knob)
@@ -275,11 +269,6 @@ def _set_stage1(path: str, knob: str, field: str, raw_value: str) -> SetResult:
     every downstream stage (the FT is recomputed on demand from these settings)."""
     from ..stage1_impl import _persist_canonical_settings, _resolve_settings
 
-    if field in _FT_SHAPING_FIELDS:
-        raise ValueError(
-            f"{knob!r} defines the FT and cannot be set directly; set it via "
-            f"'ft run --{field}' so the spectrum is recomputed"
-        )
     try:
         field_type = _owner_and_field_type(ft_mod.FTSettings, None, field)
     except KeyError:

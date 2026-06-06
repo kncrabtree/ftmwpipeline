@@ -166,7 +166,7 @@ def register_peak_commands(subparsers: Any) -> None:
             "Stage 3 two-pass peak detection with SNR classification.\n\n"
             "Detection operates on the Stage 1 persisted canonical spectrum\n"
             "(including its frequency trim range).  Run 'ft run' with the\n"
-            "desired --trim and --zpf to set those canonical settings first."
+            "desired --trim to set the canonical analysis band first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

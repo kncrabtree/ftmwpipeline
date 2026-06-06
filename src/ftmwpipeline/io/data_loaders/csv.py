@@ -216,4 +216,4 @@ class CSVLoader(BaseLoader):
 
     def get_optional_parameters(self) -> Dict[str, Any]:
         """Get optional parameters for CSV loading."""
-        return {"sideband": "upper", "shots": 1, "zpf": 1, "expf_us": None, "rdc": True}
+        return {"sideband": "upper", "shots": 1, "rdc": True}

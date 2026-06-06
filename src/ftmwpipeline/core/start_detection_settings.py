@@ -33,10 +33,6 @@ class StartDetectionSettings:
     step_us :
         Sweep step. Finer resolves the chirp-end corner more precisely at
         linear cost.
-    zpf :
-        Zero-padding factor for the per-start FT. ``0`` (none) is correct:
-        integrated magnitude does not benefit from interpolation and zpf=0 is
-        markedly faster.
     floor_factor :
         Chirp-end is the first start where Σ|FT| falls below
         ``floor_factor * floor`` (the deep-tail floor). The chirp collapse is
@@ -61,7 +57,6 @@ class StartDetectionSettings:
 
     sweep_max_us: float = 7.5
     step_us: float = 0.02
-    zpf: int = 0
     floor_factor: float = 3.0
     floor_tail_us: float = 1.0
     guard_margin_us: float = 0.67

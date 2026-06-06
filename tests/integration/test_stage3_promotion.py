@@ -53,7 +53,7 @@ TRIM = (26500.0, 40000.0)
 @pytest.fixture(scope="module")
 def stage3_result(exp_2638_data_path, tmp_path_factory):
     """
-    Prepare 2638 through Stage 2 with zpf=1/expf_us=5.0/trim, then run
+    Prepare 2638 through Stage 2 with the canonical (unapodized) FT, then run
     detect_peaks_impl with default settings.  The file path is also returned
     so individual tests can open it for on-disk checks.
 
@@ -63,7 +63,7 @@ def stage3_result(exp_2638_data_path, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("stage3_promotion")
     fp = str(tmp / "exp.ftmw")
     import_data_impl(fp, source=exp_2638_data_path)
-    ftmw.compute_ft(fp, zpf=1, expf_us=5.0, trim=TRIM)
+    ftmw.compute_ft(fp, trim=TRIM)
     ftmw.estimate_noise(fp)  # scatter (canonical default) Stage 3 reference
     result = detect_peaks_impl(fp)
     return result, fp

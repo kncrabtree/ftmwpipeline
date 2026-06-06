@@ -174,7 +174,7 @@ class FtAtStart:
 def _run_ft_start(path: Path, value: Any) -> Any:
     """Recompute the FT at an absolute window start; returns an ``FtAtStart``.
 
-    Other FT settings (trim, zpf, apodization) are inherited from the file's
+    Other FT settings (trim, units_power) are inherited from the file's
     resolution chain, so the sweep isolates the effect of ``start_us``.
     """
     import ftmwpipeline.api as ftmw  # lazy: avoid import cycle
@@ -801,10 +801,10 @@ _register(
 )
 
 # FT frequency trim + window end. The trim default grids are MHz-absolute and
-# 2638-shaped; pass --grid for another instrument's band. zpf / expf_us /
-# window_function are intentionally NOT exposed — the canonical analysis runs a
-# raw, unapodized FT (they corrupt the Stage 2/5 noise and fit statistics);
-# units_power is a display-scale choice surfaced by the resolved-settings view.
+# 2638-shaped; pass --grid for another instrument's band. The canonical FT is
+# unconditionally unapodized and native-length, so there are no apodization /
+# zero-pad knobs to expose; units_power is a display-scale choice surfaced by
+# the resolved-settings view.
 _FT_BAND_COLS = ("p1", "p5", "p10", "p20", "p50", "max")
 _register(
     KnobSpec(

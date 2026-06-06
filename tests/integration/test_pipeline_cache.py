@@ -118,17 +118,14 @@ class TestStage0FIDCaching:
             cached_params = cached_fid.processing
 
             assert (
-                cached_params.zpf == original_params.zpf
-            ), "Zero padding factor not preserved"
-            assert (
                 cached_params.start_us == original_params.start_us
             ), "Start time not preserved"
             assert (
                 cached_params.end_us == original_params.end_us
             ), "End time not preserved"
             assert (
-                cached_params.expf_us == original_params.expf_us
-            ), "Exponential filter not preserved"
+                cached_params.units_power == original_params.units_power
+            ), "Units power not preserved"
 
         # Metadata should preserve original experiment information
         assert cached_fid.metadata["experiment_path"] == str(
@@ -175,8 +172,9 @@ class TestStage0FIDCaching:
         cache_id = self._get_cache_id("param_update")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
-        # Update processing parameters
-        new_params = {"zpf": 2, "expf_us": 8.0, "start_us": 1.0, "end_us": 12.0}
+        # Update processing parameters (canonical FT is unapodized: only the
+        # data-selection knobs are persisted).
+        new_params = {"start_us": 1.0, "end_us": 12.0}
 
         update_fid_processing_defaults(cache_id, new_params, str(self.test_output_dir))
 
@@ -187,8 +185,6 @@ class TestStage0FIDCaching:
         np.testing.assert_array_equal(updated_fid.data, original_fid.data)
 
         # Processing parameters should be updated
-        assert updated_fid.processing.zpf == 2
-        assert updated_fid.processing.expf_us == 8.0
         assert updated_fid.processing.start_us == 1.0
         assert updated_fid.processing.end_us == 12.0
 
@@ -239,7 +235,7 @@ class TestStage1OnDemandComplexFT:
         # === TEST MULTIPLE ON-DEMAND CALCULATIONS ===
 
         # Parameters for experiment 2638 (from CLAUDE.md specifications)
-        ft_params = {"zpf": 1, "expf_us": 5.0}
+        ft_params = {"start_us": 2.0, "end_us": 14.0}
         trim_range = (26500, 40000)
 
         complex_fts = []
@@ -289,10 +285,10 @@ class TestStage1OnDemandComplexFT:
         # === TEST DIFFERENT PARAMETER COMBINATIONS ===
 
         param_sets = [
-            {"zpf": 1, "expf_us": 3.0},  # Light processing
-            {"zpf": 1, "expf_us": 5.0},  # Medium processing
-            {"zpf": 2, "expf_us": 5.0},  # Higher zero padding
-            {"zpf": 1, "expf_us": 8.0},  # Heavier exponential filter
+            {"start_us": 1.0},  # early active start
+            {"start_us": 2.0},  # later active start
+            {"start_us": 1.0, "end_us": 12.0},  # windowed
+            {"start_us": 3.0, "end_us": 14.0},  # different window
         ]
 
         complex_fts = []
@@ -337,7 +333,7 @@ class TestStage1OnDemandComplexFT:
 
         import time
 
-        ft_params = {"zpf": 1, "expf_us": 5.0}
+        ft_params = {"start_us": 2.0, "end_us": 14.0}
 
         start_time = time.time()
 
@@ -402,7 +398,7 @@ class TestStage01WorkflowIntegration:
         original_fid = ftmw_data.fid
 
         # === DIRECT PROCESSING (NO CACHE) ===
-        ft_params = {"zpf": 1, "expf_us": 5.0}
+        ft_params = {"start_us": 2.0, "end_us": 14.0}
         trim_range = (26500, 40000)
 
         # Direct FT processing
@@ -503,12 +499,12 @@ class TestStage01WorkflowIntegration:
 
         # Simulate user exploring different parameter combinations
         exploration_params = [
-            {"zpf": 0, "expf_us": None},  # No processing
-            {"zpf": 1, "expf_us": 3.0},  # Light processing
-            {"zpf": 1, "expf_us": 5.0},  # Medium processing (recommended)
-            {"zpf": 1, "expf_us": 8.0},  # Heavy processing
-            {"zpf": 2, "expf_us": 5.0},  # Higher resolution
-            {"start_us": 2.0, "end_us": 12.0, "zpf": 1, "expf_us": 5.0},  # Windowed
+            {},  # Full record, no windowing
+            {"start_us": 1.0},  # Early active start
+            {"start_us": 2.0},  # Later active start
+            {"start_us": 2.0, "end_us": 14.0},  # Windowed
+            {"start_us": 3.0, "end_us": 12.0},  # Narrower window
+            {"rdc": False},  # No DC removal
         ]
 
         results = []
@@ -536,12 +532,10 @@ class TestStage01WorkflowIntegration:
         # All results should be valid but different (where expected)
         assert len(results) == len(exploration_params)
 
-        # Different zero padding should produce different array sizes
-        zpf0_result = next(r for r in results if r["params"].get("zpf", 0) == 0)
-        zpf2_result = next(r for r in results if r["params"].get("zpf", 0) == 2)
-
-        # Zero padding by factor 2 should approximately double the points
-        assert zpf2_result["n_points"] > zpf0_result["n_points"]
+        # The canonical FT is native-length, so every combination yields the
+        # same number of points (the active window zeros, it does not resize).
+        n_points_set = {r["n_points"] for r in results}
+        assert len(n_points_set) == 1
 
         # Each ComplexFT calculation uses the same cached FID (storage efficient)
         # No permanent ComplexFT storage required (memory efficient)
@@ -644,7 +638,7 @@ class TestStage01CacheRobustness:
 
         # Subsequent processing should propagate NaN corruption to output
         # (This is mathematically correct behavior - NaN propagates through FFT)
-        preprocessed = cached_fid.preprocess(zpf=1, expf_us=5.0)
+        preprocessed = cached_fid.preprocess()
         spectrum, freqs = preprocessed.compute_fft()
 
         # Verify NaN corruption propagates to FFT output (expected behavior)

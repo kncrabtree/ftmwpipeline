@@ -101,7 +101,7 @@ def detect_start_time(
 
     summag = np.empty(starts.shape, dtype=float)
     for i, s in enumerate(starts):
-        preprocessed = fid.preprocess(start_us=float(s), zpf=settings.zpf, expf_us=None)
+        preprocessed = fid.preprocess(start_us=float(s))
         spectrum, freqs = preprocessed.compute_fft()
         if band is not None:
             mask = (freqs >= band[0]) & (freqs <= band[1])

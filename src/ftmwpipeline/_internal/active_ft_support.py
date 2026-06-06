@@ -49,16 +49,12 @@ def _active_acquisition_us(
 
 def compute_canonical_active_ft(
     file_path: str,
-    *,
-    expf_us: Optional[float] = None,
 ) -> ActiveFTResult:
     """Build the canonical active FT for a pipeline file.
 
     Loads the persisted FID and the canonical Stage 1 processing parameters,
-    then rffts just the ``[start_us, end_us]`` active region (no zero-padding)
-    via :func:`compute_active_ft`. ``expf_us`` defaults to ``None`` (boxcar /
-    unapodized) -- the authority domain. Pass the Stage 1 ``expf_us`` only when
-    a caller deliberately wants the apodized active FT.
+    then rffts just the ``[start_us, end_us]`` active region (unapodized, no
+    zero-padding) via :func:`compute_active_ft` -- the authority domain.
 
     Requires Stage 1 (canonical FT settings) to be present.
     """
@@ -81,21 +77,16 @@ def compute_canonical_active_ft(
             f"acquisition length ({acquisition_us} us)"
         )
 
-    # n_padded: the zero-padded FFT length the persisted full-record FT uses.
-    # Recorded on the result as ``alpha`` for diagnostics only; the active FT
-    # itself is unpadded.
-    n_active_estimate = int(round(acquisition_us / sample_dt_us))
-    n_padded = max(
-        2 ** (int(np.log2(max(n_active_estimate, 1))) + 1 + int(base_pp.zpf)),
-        n_active_estimate,
-    )
+    # n_padded: the canonical full-record FT input length (the native FID
+    # length -- the persisted FT is unpadded). Recorded on the result as
+    # ``alpha`` for diagnostics only; the active FT itself is unpadded.
+    n_padded = int(np.asarray(fid.data).size)
 
     return compute_active_ft(
         np.asarray(fid.data, dtype=float),
         sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=expf_us,
         probe_freq_mhz=float(fid.probe_freq_mhz),
         sideband=_resolve_sideband(fid.sideband),
         n_padded=n_padded,
@@ -113,7 +104,7 @@ def estimate_canonical_active_ft_noise(
     :class:`ActiveFTResult` it was measured on (so the caller can persist the
     σ against the same grid it lives on).
     """
-    active_ft = compute_canonical_active_ft(file_path, expf_us=None)
+    active_ft = compute_canonical_active_ft(file_path)
     noise = estimate_active_ft_noise(
         active_ft.freq_mhz, active_ft.complex_spectrum, **scatter_kwargs
     )
@@ -158,7 +149,7 @@ def build_trimmed_active_ft(
     ComplexFT (so it carries the ``freq_array`` / ``magnitude_spectrum``
     interface), trimmed to the analysis band when ``trim_range`` is given.
     """
-    active = compute_canonical_active_ft(file_path, expf_us=None)
+    active = compute_canonical_active_ft(file_path)
     cft = ComplexFT.from_spectrum(active.complex_spectrum, active.freq_mhz)
     if trim_range is not None:
         cft = cft.trim_to_range(trim_range[0], trim_range[1])
@@ -205,7 +196,7 @@ def load_canonical_active_noise(
     ValueError
         If Stage 2 (noise estimation) has not been completed.
     """
-    active_ft = compute_canonical_active_ft(file_path, expf_us=None)
+    active_ft = compute_canonical_active_ft(file_path)
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
             raise ValueError(

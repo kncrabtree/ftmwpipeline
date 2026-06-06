@@ -7,7 +7,7 @@ Currently implements BlackChirp data loading.
 
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union, cast
+from typing import Any, Dict, Union
 
 import numpy as np
 import pandas as pd
@@ -137,40 +137,17 @@ def _load_blackchirp_processing(fid_dir: Path) -> FIDProcessingParameters:
     proc_df = pd.read_csv(processing_file, sep=";", index_col="ObjKey")
     proc_dict = proc_df["Value"].to_dict()
 
-    # Convert to our parameter structure
+    # Convert to our parameter structure. The instrument's apodization /
+    # zero-pad cells are ignored -- the canonical FT is unconditionally
+    # unapodized and native-length.
     end_us_val = float(proc_dict.get("FidEndUs", 0))
-    expf_us_val = float(proc_dict.get("FidExpfUs", 0))
-    autoscale_val = float(proc_dict.get("AutoscaleIgnoreMHz", 0))
 
     return FIDProcessingParameters(
         start_us=float(proc_dict.get("FidStartUs", 0)),
         end_us=end_us_val if end_us_val > 0 else None,
-        winf=cast(
-            Optional[str],
-            _convert_window_function(proc_dict.get("FidWindowFunction", "None")),
-        ),
-        zpf=int(proc_dict.get("FidZeroPadFactor", 0)),
         rdc=proc_dict.get("FidRemoveDC", "false").lower() == "true",
-        expf_us=expf_us_val if expf_us_val > 0 else None,
         units_power=int(proc_dict.get("FtUnits", 6)),
     )
-
-
-def _convert_window_function(
-    blackchirp_winf: str,
-) -> Optional[Union[str, Tuple[str, float]]]:
-    """Convert BlackChirp window function name to scipy compatible name."""
-    winf_map = {
-        "None": None,
-        "Bartlett": "bartlett",
-        "Blackman": "blackman",
-        "BlackmanHarris": "blackmanharris",
-        "Hamming": "hamming",
-        "Hanning": "hann",
-        "KaiserBessel": ("kaiser", 14.0),
-    }
-
-    return winf_map.get(blackchirp_winf, None)
 
 
 def _load_blackchirp_metadata(experiment_path: Path) -> Dict[str, Any]:

@@ -370,6 +370,37 @@ def create_pipeline_file(
         raise RuntimeError(f"Failed to create pipeline file {filepath}: {e}") from e
 
 
+_LEGACY_FT_APODIZATION_KEYS = ("zpf", "expf_us", "window_function", "winf")
+
+
+def _warn_legacy_ft_apodization_keys(filepath: Path, h5f: "h5py.File") -> None:
+    """Warn when a legacy file carries the retired FT apodization keys.
+
+    The canonical FT is unconditionally unapodized and native-length, so any
+    persisted ``zpf`` / ``expf_us`` / ``window_function`` / ``winf`` is ignored
+    and the canonical FT is recomputed unapodized on demand. The keys are left
+    in place (the file is opened read-only here); they simply no longer affect
+    the result.
+    """
+    for group_path in (
+        "processing_parameters/ft_processing",
+        "stage0_fid_data/recommended_processing",
+    ):
+        if group_path not in h5f:
+            continue
+        attrs = h5f[group_path].attrs
+        present = [k for k in _LEGACY_FT_APODIZATION_KEYS if k in attrs]
+        if present:
+            logger.warning(
+                "%s carries retired FT apodization key(s) %s in %s; these are "
+                "ignored and the canonical FT is recomputed unapodized / "
+                "native-length.",
+                filepath.name,
+                ", ".join(present),
+                group_path,
+            )
+
+
 def open_pipeline_file(
     filepath: Union[str, Path],
 ) -> Tuple[Path, SourceMetadata, PipelineStageTracker]:
@@ -413,6 +444,8 @@ def open_pipeline_file(
 
             if source_metadata is None:
                 raise PipelineCorruptionError(filepath, "Missing source metadata")
+
+            _warn_legacy_ft_apodization_keys(filepath, h5f)
 
             return filepath, source_metadata, stage_tracker
 
@@ -623,7 +656,7 @@ def update_processing_parameters(
         Path to the pipeline file
     parameters : dict
         Processing parameters to save. Keys can include:
-        start_us, end_us, zpf, expf_us, window_function, units_power
+        start_us, end_us, units_power, rdc
 
     Raises
     ------
@@ -637,8 +670,6 @@ def update_processing_parameters(
     Example
     -------
     >>> update_processing_parameters("exp_2638.ftmw", {
-    ...     'zpf': 2,
-    ...     'expf_us': 5.0,
     ...     'start_us': 2.0,
     ...     'end_us': 12.0
     ... })

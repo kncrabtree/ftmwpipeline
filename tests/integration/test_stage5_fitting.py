@@ -259,7 +259,7 @@ def test_stage1_change_invalidates_stage5(baseline_2638_stage4, temp_ftmw_dir):
     _inject_stage5_marker(fp)
 
     # Different Stage 1 settings cascade through Stage 2/3/4 invalidation.
-    ftmw.compute_ft(fp, zpf=1, expf_us=5.0, trim=(26500, 40000))
+    ftmw.compute_ft(fp, start_us=2.0, trim=(26500, 40000))
     with h5py.File(fp, "r") as h5f:
         assert "stage5_fitting" not in h5f
         completed = json.loads(h5f["pipeline_stages"].attrs["completed_stages"])

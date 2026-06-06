@@ -44,26 +44,18 @@ Choosing the basis ``τ``
 ------------------------
 ``τ_basis`` controls the basis FWHM ``1 / (π τ_basis)`` and is *not*
 fixed by the helper -- the caller must supply a value matched to the
-expected line shape of the experiment. The apodization time constant
-``expf_us`` is the **upper bound** on the data's observed
-``τ_eff`` (``1/τ_eff = 1/τ_true + 1/τ_apod``, so ``τ_eff ≤ τ_apod``
-always), which means a basis at ``τ_basis = τ_apod`` is the
-**narrowest** matched basis the data can produce: it matches only when
-the molecular ``τ_true ≫ τ_apod`` so the apodization dominates the
-linewidth. When molecular decay is comparable to or shorter than the
-apodization (the common case for real samples), a basis built with
-``τ_basis = τ_apod`` is *narrower* than the actual line shape and the
-projection becomes dominated by the on-line bin alone, which is what
-removes the screen's discrimination power.
+expected line shape of the experiment. The canonical FT is unapodized,
+so the observed ``τ`` is the intrinsic molecular decay; a basis built
+*narrower* than the actual line shape makes the projection dominated by
+the on-line bin alone, which removes the screen's discrimination power.
 
 Practical guidance: for production use, take ``τ_basis`` from a
-data-derived estimate -- e.g. a per-experiment τ_eff fitted on the
-brightest detected lines, or an explicit override -- not from
-``expf_us`` blindly. The research project at
-``dev-docs/research/stage3-coherence-screen/`` characterises the
-screen's behaviour against linewidth-in-bin-units; consult its
-report for how sensitive the screen is to ``τ_basis`` being off by
-a factor of 2.
+data-derived estimate -- the Stage 2b ``tau_maj``, a per-experiment τ
+fitted on the brightest detected lines, or an explicit override. The
+research project at ``dev-docs/research/stage3-coherence-screen/``
+characterises the screen's behaviour against linewidth-in-bin-units;
+consult its report for how sensitive the screen is to ``τ_basis`` being
+off by a factor of 2.
 
 Why a localised projection window
 ---------------------------------
@@ -193,13 +185,9 @@ def project_candidates(
         Candidate frequencies (MHz, molecular).
     tau_us : float
         Lorentzian basis decay constant (microseconds). Set this to a
-        data-derived estimate of the experiment's observed ``τ_eff``
-        (e.g. the fitted τ on the brightest lines). ``expf_us`` is the
-        *upper bound* on the observed ``τ_eff`` and corresponds to the
-        *narrowest* possible matched basis -- it is the correct choice
-        only when the molecular ``τ_true`` is much longer than
-        ``expf_us``. See the module docstring's "Choosing the basis τ"
-        section.
+        data-derived estimate of the experiment's observed ``τ`` (e.g. the
+        Stage 2b ``tau_maj`` or the fitted τ on the brightest lines). See the
+        module docstring's "Choosing the basis τ" section.
     acquisition_us : float
         Active acquisition length ``T`` (microseconds).
     sideband : Sideband or str

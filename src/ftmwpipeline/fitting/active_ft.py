@@ -1,23 +1,23 @@
 """
 Active-portion FT for Stage 5 fitting.
 
-The persisted Stage 1 spectrum is an rfft of the *whole* zero-padded FID
-record (``zpf=2``, ``N_active << N_padded`` for 2638). Adjacent bins are
-correlated by a Dirichlet kernel (the FFT of the zero-padding indicator), so
-the effective number of independent samples in any band of ``M`` bins is
-``M * alpha`` with ``alpha = N_active / N_padded`` (~0.42 for 2638). The naive
-``N_dof = M - N_params`` overcounts by ``1/alpha``; reduced chi-squared, the
-F-test, and AIC are all biased optimistic on the persisted spectrum.
+The persisted Stage 1 spectrum is an rfft of the *whole* FID record (the
+active region embedded in a full-length array with the inactive samples
+zeroed). The active samples occupy a fraction ``alpha = N_active / N_total``
+of the record, so adjacent bins are correlated and the naive
+``N_dof = M - N_params`` overcounts the independent samples; reduced
+chi-squared, the F-test, and AIC are all biased optimistic on the persisted
+spectrum.
 
 Stage 5 dissolves the problem at source by fitting the **active-portion FT** --
-the rfft of just the ``fid[t0 : t0+T]`` active samples with the canonical
-Stage 1 apodization, no zero-padding. The result has
+the rfft of just the ``fid[t0 : t0+T]`` active samples, unapodized and with no
+zero-padding. The result has
 
-* independent bins (no Dirichlet correlation; ``alpha = 1`` by construction),
+* independent bins (``alpha = 1`` by construction),
 * no phase ramp (the active-FT is in the ``[0, T]`` form ``h_T`` models),
 * the same molecular frequency axis convention as the persisted FT (so
   windows defined as frequency ranges translate directly), with a coarser
-  bin spacing ``1/T_active`` instead of ``1/T_padded``.
+  bin spacing ``1/T_active`` instead of ``1/T_total``.
 
 This module owns the construction (:func:`compute_active_ft`). The active-FT
 is internal to Stage 5: computed on demand from ``stage0_fid_data`` and the
@@ -25,7 +25,7 @@ canonical Stage 1 settings, not persisted in the ``.ftmw`` file.
 
 Amplitude convention
 --------------------
-The complex spectrum is ``dt_us * rfft(active * apod)``, which is the
+The complex spectrum is ``dt_us * rfft(active)``, which is the
 ``[0, T]``-frame discrete approximation of the continuous Fourier transform
 in MHz / microsecond units. A line of true amplitude ``A``, phase ``phi``, and
 decay ``tau`` has on-line response ``0.5 * A * exp(i*phi) * h_T(0; tau, T)``,
@@ -53,7 +53,7 @@ References
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Union
+from typing import Union
 
 import numpy as np
 
@@ -80,20 +80,21 @@ class ActiveFTResult:
         upper sideband, descending for the lower (matching the persisted Stage
         1 convention). Bin spacing is ``1 / T_active`` MHz.
     complex_spectrum : np.ndarray
-        Complex active-FT on ``freq_mhz``, in ``dt_us * rfft(active * apod)``
-        units (natural ``h_T`` form -- see module docstring). Shape matches
+        Complex active-FT on ``freq_mhz``, in ``dt_us * rfft(active)`` units
+        (natural ``h_T`` form -- see module docstring). Shape matches
         ``freq_mhz``.
     alpha : float
         ``N_active / N_padded`` -- the persisted bin-correlation factor. Equal
-        to 1 only when no zero-padding is in play (test fixtures); for a real
-        Stage 1 pipeline with ``zpf >= 1`` this is the bin-density / variance
-        rescale factor that links persisted-FT noise to active-FT noise.
+        to 1 only when the FFT input is exactly the active region (test
+        fixtures); for the canonical full-record persisted FT this is the
+        active-sample fraction that links persisted-FT noise to active-FT
+        noise.
     n_active : int
         Number of FID samples in ``[t0, t0+T]`` -- the FFT input length.
     n_padded : int
-        Length of the canonical Stage 1 zero-padded record (informational --
-        the active-FT itself is not zero-padded). Tracked so callers can
-        compute ``alpha`` exactly without re-deriving it from the FID.
+        Length of the canonical Stage 1 full-record FT input (informational).
+        Tracked so callers can compute ``alpha`` exactly without re-deriving
+        it from the FID.
     """
 
     freq_mhz: np.ndarray
@@ -109,7 +110,6 @@ def compute_active_ft(
     *,
     start_us: float,
     end_us: float,
-    expf_us: Optional[float],
     probe_freq_mhz: float,
     sideband: SidebandLike,
     n_padded: int,
@@ -117,17 +117,16 @@ def compute_active_ft(
 ) -> ActiveFTResult:
     """Compute the active-portion FT of an FID for Stage 5 fitting.
 
-    Extracts the ``[start_us, end_us]`` active region from the FID, applies
-    the exponential apodization ``exp(-(t - t0)/expf_us)`` relative to the
-    active start ``t0 = start_us``, removes the DC component (matching the
-    canonical ``rdc=True`` Stage 1 step), then rfft's just the active region
-    -- no zero-padding. The result is in the ``[0, T]`` reference frame
-    ``h_T`` models, so the fit needs no de-ramp.
+    Extracts the ``[start_us, end_us]`` active region from the FID, removes
+    the DC component (matching the canonical ``rdc=True`` Stage 1 step), then
+    rfft's just the active region -- no apodization, no zero-padding. The
+    result is in the ``[0, T]`` reference frame ``h_T`` models, so the fit
+    needs no de-ramp.
 
-    The amplitude convention is ``dt_us * rfft(active * apod)``: a damped
-    cosine of true amplitude ``A``, phase ``phi``, decay ``tau`` has on-line
-    response ``0.5 * A * exp(i*phi) * h_T(0; tau, T)`` (units: ``us * V`` if
-    the FID is in volts), matching the prototype / synthetic-test convention.
+    The amplitude convention is ``dt_us * rfft(active)``: a damped cosine of
+    true amplitude ``A``, phase ``phi``, decay ``tau`` has on-line response
+    ``0.5 * A * exp(i*phi) * h_T(0; tau, T)`` (units: ``us * V`` if the FID is
+    in volts), matching the prototype / synthetic-test convention.
 
     Parameters
     ----------
@@ -140,24 +139,19 @@ def compute_active_ft(
     start_us, end_us : float
         Active region start / end times in microseconds. ``start_us`` may be
         zero; ``end_us > start_us`` is required.
-    expf_us : float or None
-        Exponential apodization time constant in microseconds, applied as
-        ``exp(-(t - t0)/expf_us)`` over the active region. ``None`` (or any
-        non-positive value, which is normalised to ``None``) skips
-        apodization entirely.
     probe_freq_mhz : float
         Probe (LO) frequency in MHz. The molecular frequency grid is
         ``f = probe + s * f_bb`` with ``s`` from :func:`sideband_sign`.
     sideband : Sideband or str
         Sideband configuration (``"lower"`` / ``"upper"`` or the enum).
     n_padded : int
-        Length of the canonical Stage 1 zero-padded record. Used only to
-        record ``alpha = N_active / N_padded`` on the result -- the active-FT
-        itself is not zero-padded. Pass ``N_active`` (so ``alpha = 1``) for
-        synthetic tests where there is no persisted record to compare against.
+        Length of the canonical Stage 1 full-record FT input. Used only to
+        record ``alpha = N_active / N_padded`` on the result. Pass
+        ``N_active`` (so ``alpha = 1``) for synthetic tests where there is no
+        persisted record to compare against.
     rdc : bool, default True
-        Subtract the mean of the apodized active region (matches the
-        canonical Stage 1 ``rdc=True``).
+        Subtract the mean of the active region (matches the canonical Stage 1
+        ``rdc=True``).
 
     Returns
     -------
@@ -179,9 +173,6 @@ def compute_active_ft(
         raise ValueError("start_us must be non-negative")
     if end_us <= start_us:
         raise ValueError("end_us must be greater than start_us")
-    if expf_us is not None and expf_us <= 0:
-        # Non-positive expf_us means "disable apodization"; treat as None.
-        expf_us = None
 
     n_total = fid_arr.size
     if n_total == 0:
@@ -208,17 +199,12 @@ def compute_active_ft(
     if n_padded < n_active:
         raise ValueError(f"n_padded ({n_padded}) must be >= n_active ({n_active})")
 
-    # Apodization relative to the active start: t = 0 at start_us.
-    if expf_us is not None:
-        t_relative_us = np.arange(n_active) * sample_dt_us
-        active *= np.exp(-t_relative_us / expf_us)
-
     # Match Stage 1's rdc step (mean removal) on the active region.
     if rdc:
         active -= active.mean()
 
-    # Natural h_T convention: dt * rfft(active * apod). At bin spacing
-    # 1/T_active MHz, this is the [0, T]-frame analogue of the continuous FT
+    # Natural h_T convention: dt * rfft(active). At bin spacing 1/T_active MHz,
+    # this is the [0, T]-frame analogue of the continuous FT
     # ∫_0^T x(t) e^{-i2π Δf t} dt, with no further normalization.
     spectrum = sample_dt_us * np.fft.rfft(active)
 

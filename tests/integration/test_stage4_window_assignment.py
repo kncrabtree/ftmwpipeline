@@ -180,7 +180,7 @@ def test_stage1_change_invalidates_stage4(baseline_2638_stage3, temp_ftmw_dir):
     ftmw.assign_windows(fp)
 
     # A different canonical FT setting cascades the existing invalidation.
-    ftmw.compute_ft(fp, zpf=1, expf_us=5.0, trim=(26500, 40000))
+    ftmw.compute_ft(fp, start_us=2.0, trim=(26500, 40000))
     with h5py.File(fp, "r") as h5f:
         assert "stage4_windows" not in h5f
         import json

@@ -42,7 +42,7 @@ TRIM = (26500.0, 40000.0)
 @pytest.fixture(scope="module")
 def detection_result(exp_2638_data_path, tmp_path_factory):
     """
-    Import 2638, compute the canonical raw FT (zpf=0, unapodized, trimmed),
+    Import 2638, compute the canonical FT (unapodized, native-length, trimmed),
     estimate noise, detect peaks -- once per test-module to keep the slow
     dual-pass from running for every test.
 
@@ -53,7 +53,7 @@ def detection_result(exp_2638_data_path, tmp_path_factory):
     tmp = tmp_path_factory.mktemp("stage3_active_grid")
     fp = str(tmp / "exp.ftmw")
     import_data_impl(fp, source=exp_2638_data_path)
-    ftmw.compute_ft(fp, zpf=0, expf_us=None, trim=TRIM)
+    ftmw.compute_ft(fp, trim=TRIM)
     ftmw.estimate_noise(fp)  # scatter (canonical default) Stage 2 reference
     result = detect_peaks_impl(fp)
     return result

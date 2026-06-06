@@ -43,12 +43,9 @@ def _by_path(rows: tuple[SettingRow, ...]) -> Dict[str, SettingRow]:
 def test_enumeration_covers_unswept_and_special_fields(bare_ftmw: Path) -> None:
     rows = resolve_settings_view(bare_ftmw, include_advanced=True)
     paths = {r.path for r in rows}
-    # The four Stage 1 fields the knob registry deliberately omits, plus the
+    # The Stage 1 fields the knob registry deliberately omits, plus the
     # headline start_us, the trim tuple, and the Stage 5 shape discriminator.
     for expected in (
-        "stage1.zpf",
-        "stage1.expf_us",
-        "stage1.window_function",
         "stage1.units_power",
         "stage1.trim",
         "stage1.rdc",
@@ -74,7 +71,7 @@ def test_default_provenance_matches_resolver(bare_ftmw: Path) -> None:
     assert win.value == noise_mod.resolve().window_mhz
     assert win.hard_default == noise_mod.resolve().window_mhz
     # A field whose hard default is a concrete non-None value still reads default.
-    assert rows["stage1.zpf"].value == 1
+    assert rows["stage1.units_power"].value == 6
     # A field with no hard default stays None at the default layer.
     assert rows["stage1.start_us"].value is None
 

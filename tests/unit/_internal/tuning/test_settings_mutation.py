@@ -94,8 +94,12 @@ def test_set_unknown_stage_raises(bare_ftmw: Path) -> None:
 
 # --- set_setting: Stage 1 rules --------------------------------------------
 @pytest.mark.parametrize("field", ["zpf", "expf_us", "window_function"])
-def test_set_stage1_ft_shaping_rejected(bare_ftmw: Path, field: str) -> None:
-    with pytest.raises(ValueError, match="ft run"):
+def test_set_stage1_retired_apodization_knobs_rejected(
+    bare_ftmw: Path, field: str
+) -> None:
+    """The retired apodization knobs no longer exist on FTSettings, so setting
+    them is rejected as an unknown field."""
+    with pytest.raises(ValueError, match="unknown setting"):
         set_setting(bare_ftmw, f"stage1.{field}", "2")
 
 

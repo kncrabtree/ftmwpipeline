@@ -21,11 +21,11 @@ ftmw.import_data("experiment.ftmw", source="examples/blackchirp_data/2638/")
 
 # Load and process data
 fid = ftmw.load_fid("experiment.ftmw")
-complex_ft = ftmw.compute_ft("experiment.ftmw", zpf=2, expf_us=5.0, trim=(26500, 40000))
+complex_ft = ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
 
 # Visualization and parameter management
-ftmw.visualize_ft("experiment.ftmw", zpf=2, expf_us=5.0, save_params=True)
-ftmw.save_ft_parameters("experiment.ftmw", {'zpf': 2, 'expf_us': 5.0})
+ftmw.visualize_ft("experiment.ftmw", save_params=True)
+ftmw.save_ft_parameters("experiment.ftmw", {'trim': (26500, 40000)})
 
 # File management
 info = ftmw.get_pipeline_info("experiment.ftmw")
@@ -327,12 +327,9 @@ def visualize_start_detection(
 
 def compute_ft(
     file_path: Union[str, Path],
-    zpf: Optional[int] = None,
-    expf_us: Optional[float] = None,
     trim: Optional[Tuple[float, float]] = None,
     start_us: Optional[float] = None,
     end_us: Optional[float] = None,
-    window_function: Optional[str] = None,
     units_power: Optional[int] = None,
     from_saved_params: bool = False,
 ) -> ComplexFT:
@@ -340,26 +337,20 @@ def compute_ft(
     Compute Fourier Transform with specified processing parameters.
 
     This function performs FT computation on FID data stored in a .ftmw pipeline
-    file, equivalent to Pipeline.compute_ft(). Can be called multiple times safely.
+    file, equivalent to Pipeline.compute_ft(). Can be called multiple times
+    safely. The canonical FT is unconditionally unapodized, un-windowed, and
+    native-length.
 
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file containing FID data
-    zpf : int, optional
-        Zero padding factor. If None, uses cached default or 1.
-    expf_us : float, optional
-        Exponential filter time constant in microseconds. ``None`` (or any
-        non-positive value) disables apodization. There is no implicit
-        fallback default — request apodization explicitly when you want it.
     trim : tuple of float, optional
         (min_freq, max_freq) in MHz to trim spectrum
     start_us : float, optional
         FID window start time in microseconds
     end_us : float, optional
         FID window end time in microseconds
-    window_function : str, optional
-        Windowing function name
     units_power : int, optional
         Scaling factor as power of 10. If None, uses cached default or 6.
     from_saved_params : bool, default False
@@ -384,8 +375,7 @@ def compute_ft(
     --------
     >>> import ftmwpipeline.api as ftmw
     >>> # Compute with specific parameters (persisted as canonical)
-    >>> complex_ft = ftmw.compute_ft("experiment.ftmw", zpf=2, expf_us=5.0,
-    ...                              trim=(26500, 40000))
+    >>> complex_ft = ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
     >>>
     >>> # Use saved/recommended settings only
     >>> complex_ft = ftmw.compute_ft("experiment.ftmw", from_saved_params=True)
@@ -393,12 +383,9 @@ def compute_ft(
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.compute_ft(
-            zpf=zpf,
-            expf_us=expf_us,
             trim=trim,
             start_us=start_us,
             end_us=end_us,
-            window_function=window_function,
             units_power=units_power,
             from_saved_params=from_saved_params,
         )
@@ -409,12 +396,9 @@ def compute_ft(
 
 def visualize_ft(
     file_path: Union[str, Path],
-    zpf: Optional[int] = None,
-    expf_us: Optional[float] = None,
     trim: Optional[Tuple[float, float]] = None,
     start_us: Optional[float] = None,
     end_us: Optional[float] = None,
-    window_function: Optional[str] = None,
     units_power: Optional[int] = None,
     save_params: bool = False,
     backend: str = "matplotlib",
@@ -427,25 +411,19 @@ def visualize_ft(
 
     This function creates comprehensive FT visualization showing the complete
     FID-to-spectrum processing workflow, equivalent to Pipeline.visualize_ft().
+    The canonical FT is unconditionally unapodized, un-windowed, and
+    native-length.
 
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file
-    zpf : int, optional
-        Zero padding factor. If None, uses cached default or 1.
-    expf_us : float, optional
-        Exponential filter time constant in microseconds. ``None`` (or any
-        non-positive value) disables apodization. There is no implicit
-        fallback default — request apodization explicitly when you want it.
     trim : tuple of float, optional
         (min_freq, max_freq) in MHz to trim spectrum
     start_us : float, optional
         FID window start time in microseconds
     end_us : float, optional
         FID window end time in microseconds
-    window_function : str, optional
-        Windowing function name
     units_power : int, optional
         Scaling factor as power of 10. If None, uses cached default or 6.
     save_params : bool, default False
@@ -476,9 +454,8 @@ def visualize_ft(
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
-    >>> # Create interactive visualization with custom parameters
-    >>> fig = ftmw.visualize_ft("experiment.ftmw", zpf=2, expf_us=5.0,
-    ...                         save_params=True)
+    >>> # Create interactive visualization
+    >>> fig = ftmw.visualize_ft("experiment.ftmw", save_params=True)
     >>>
     >>> # Save plot to file
     >>> fig = ftmw.visualize_ft("experiment.ftmw", interactive=False,
@@ -487,12 +464,9 @@ def visualize_ft(
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.visualize_ft(
-            zpf=zpf,
-            expf_us=expf_us,
             trim=trim,
             start_us=start_us,
             end_us=end_us,
-            window_function=window_function,
             units_power=units_power,
             save_params=save_params,
             backend=backend,
@@ -518,10 +492,7 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
         Path to .ftmw pipeline file
     parameters : dict
         Processing parameters to save. Valid keys include:
-        - 'zpf': Zero padding factor
-        - 'expf_us': Exponential filter time constant
         - 'start_us', 'end_us': FID time window
-        - 'window_function': Windowing function name
         - 'units_power': Scaling factor
         - 'trim_min_mhz', 'trim_max_mhz': Frequency trimming range
 
@@ -536,8 +507,6 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
     --------
     >>> import ftmwpipeline.api as ftmw
     >>> params = {
-    ...     'zpf': 2,
-    ...     'expf_us': 5.0,
     ...     'trim_min_mhz': 26500,
     ...     'trim_max_mhz': 40000
     ... }
@@ -1306,8 +1275,9 @@ def fit_peaks(
         Path to .ftmw pipeline file.
     tau0_us : float, optional
         Starting / default shared decay constant per window (microseconds).
-        Defaults to ``expf_us`` when the canonical Stage 1 setting is set,
-        otherwise to ``T_active / 3``.
+        Defaults to the Stage 2b ``tau_maj`` when a calibration is present
+        (per-band ``tau_maj`` for band-routed windows), otherwise to
+        ``T_active / 3``.
     fit_tau : bool, optional
         Free vs fixed per-window tau (default True).
     max_decay_factor : float, optional
@@ -1629,7 +1599,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
     Next available: ['stage1_complex_ft']
 
     Suggested workflow:
-    1. ftmw.compute_ft("experiment.ftmw", zpf=2, expf_us=5.0)
+    1. ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
     2. ftmw.visualize_ft("experiment.ftmw", save_params=True)
     """
     try:
@@ -1649,7 +1619,7 @@ def workflow_summary(file_path: Union[str, Path]) -> str:
                 [
                     "",
                     "Suggested workflow:",
-                    f'1. ftmw.compute_ft("{Path(file_path).name}", zpf=2, expf_us=5.0)',
+                    f'1. ftmw.compute_ft("{Path(file_path).name}", trim=(26500, 40000))',
                     f'2. ftmw.visualize_ft("{Path(file_path).name}", save_params=True)',
                 ]
             )
@@ -1887,9 +1857,9 @@ def settings_set(file_path: Union[str, Path], knob: str, value: str) -> Any:
 
     Coerces ``value`` to ``knob``'s field type, writes it to the persisted
     layer, and invalidates the affected stage plus every downstream stage so the
-    file never carries results inconsistent with its settings. Stage 1 FT-shaping
-    knobs (``zpf`` / ``expf_us`` / ``window_function``) are rejected -- set them
-    via :func:`compute_ft`.
+    file never carries results inconsistent with its settings. The retired
+    apodization knobs (``zpf`` / ``expf_us`` / ``window_function``) no longer
+    exist -- the canonical FT is unconditionally unapodized and native-length.
 
     Parameters
     ----------

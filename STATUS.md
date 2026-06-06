@@ -36,8 +36,10 @@ dependencies (`file_manager.py: PipelineStageTracker.STAGE_DEPENDENCIES`).
 
 **Stages 0–2 (implemented):** data loading (BlackChirp / CSV / HDF5 via a
 loader registry, format auto-detection), FT processing (preprocess → FFT →
-`ComplexFT`, optional trim, parameter persistence), and per-bin noise
-estimation (`NoiseResult`). The Stage 2 estimator is `estimate_noise_scatter`
+`ComplexFT`, optional trim, parameter persistence; the canonical FT is
+unconditionally unapodized, un-windowed, and native-length — no
+`expf_us`/`window_function`/`zpf` knobs), and per-bin noise estimation
+(`NoiseResult`). The Stage 2 estimator is `estimate_noise_scatter`
 — a high-pass, region-aware, Rician-corrected scatter MAD with broad
 lower-envelope smoothing, immune to the leakage-pedestal σ inflation on
 high-SNR line-dense spectra. It is measured and persisted on the canonical

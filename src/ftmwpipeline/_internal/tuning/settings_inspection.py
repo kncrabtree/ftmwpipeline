@@ -9,8 +9,8 @@ resolvers use, and reports the winning layer.
 Source of truth is the **settings dataclasses themselves** (``dataclasses.fields``
 over each stage class and its sub-blocks), not the knob registry -- so fields the
 registry omits because they do not sweep meaningfully in isolation
-(``stage1.units_power`` / ``zpf`` / ``expf_us`` / ``window_function``) still
-surface here, which is exactly the resolved view a user needs. The registry is
+(``stage1.units_power``) still surface here, which is exactly the resolved view a
+user needs. The registry is
 consulted only to *enrich* a row that corresponds to a registered knob (tier,
 one-line help); rows with no registered knob still appear, tiered advanced.
 

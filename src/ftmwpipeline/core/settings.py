@@ -13,10 +13,17 @@ parameters across every surface:
 
 Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
 resolution chain). A *resolved* instance (produced by :func:`resolve`) has the
-four run-critical fields (``zpf``, ``expf_us``, ``units_power``, ``rdc``)
-filled with hard defaults if no layer supplied them; ``start_us`` / ``end_us``
-/ ``window_function`` / ``trim`` may legitimately stay ``None`` (meaning no
-windowing / no window function / no trim).
+two run-critical fields (``units_power``, ``rdc``) filled with hard defaults if
+no layer supplied them; ``start_us`` / ``end_us`` / ``trim`` may legitimately
+stay ``None`` (meaning no windowing / no trim).
+
+The canonical FT is unconditionally unapodized, un-windowed, and native-length:
+there are no ``expf_us`` / ``window_function`` / ``zpf`` knobs. Apodization
+trades resolution and biases the line shape, and zero-padding interpolates bins
+and corrupts the Stage 2/5 noise and chi-squared statistics; the robust
+per-window fit is the intended alternative. ``start_us`` / ``end_us`` (active
+region) and ``trim`` (analysis band) are data *selection*, not weighting, and
+are retained.
 
 This module is intentionally dependency-free within the package (only stdlib +
 the local ``__None__`` HDF5 marker convention shared with
@@ -30,11 +37,8 @@ from typing import Any, Callable, Dict, Optional, Tuple
 _NONE = "__None__"
 
 # Hard fallbacks for the fields that must be concrete to run FID.preprocess.
-# Other fields fall back to None (a legitimate "absent" value, including
-# expf_us — None means "no exponential apodization", which is a real choice,
-# not an unset placeholder).
+# Other fields fall back to None (a legitimate "absent" value).
 _HARD_DEFAULTS: Dict[str, Any] = {
-    "zpf": 1,
     "units_power": 6,
     "rdc": True,
 }
@@ -105,9 +109,9 @@ def cli_field(
 class FTSettings:
     """Stage 1 FT processing settings (see module docstring).
 
-    ``window_function`` maps to ``FIDProcessingParameters.winf``. ``trim`` is
-    the canonical frequency analysis range (MHz) and is persisted alongside the
-    other FT settings (D7 decision: trim lives inside ``ft_processing``).
+    ``trim`` is the canonical frequency analysis range (MHz) and is persisted
+    alongside the other FT settings (D7 decision: trim lives inside
+    ``ft_processing``).
     """
 
     start_us: Optional[float] = cli_field(
@@ -117,23 +121,6 @@ class FTSettings:
     end_us: Optional[float] = cli_field(
         argtype=float,
         help="FID window end time in microseconds (later points zeroed)",
-    )
-    zpf: Optional[int] = cli_field(
-        argtype=int,
-        help="Zero-padding factor for frequency resolution "
-        "(default: persisted/recommended, else 1)",
-    )
-    expf_us: Optional[float] = cli_field(
-        # Legacy flag name kept (underscore) for backward compatibility.
-        flag="--expf_us",
-        argtype=float,
-        help="Exponential filter time constant in microseconds. "
-        "Omit (or pass <= 0) to disable apodization. No fallback default — "
-        "users who want apodization must request it explicitly.",
-    )
-    window_function: Optional[str] = cli_field(
-        flag="--window-function",
-        help="Window function (hann, blackman, hamming, ...)",
     )
     units_power: Optional[int] = cli_field(
         argtype=int,
@@ -149,14 +136,6 @@ class FTSettings:
     # Not currently user-facing on the CLI; still resolved/persisted so the
     # canonical record is complete (FID.preprocess needs a concrete rdc).
     rdc: Optional[bool] = field(default=None)
-
-    # Note on expf_us = 0 / negative: a user-supplied non-positive value is
-    # preserved here (it wins in :func:`resolve` because it is non-``None``,
-    # which is what makes it a meaningful "explicit disable" — otherwise a
-    # persisted positive value would shadow it). The downstream consumers
-    # (``FID.preprocess``, ``compute_active_ft``) coerce ``<= 0`` to
-    # ``None`` so apodization is genuinely skipped. ``to_preprocess_kwargs``
-    # passes the raw value through and lets the consumer normalise.
 
     # -- introspection -------------------------------------------------------
 
@@ -183,9 +162,6 @@ class FTSettings:
         return {
             "start_us": self.start_us,
             "end_us": self.end_us,
-            "zpf": self.zpf,
-            "expf_us": self.expf_us,
-            "window_function": self.window_function,
             "rdc": self.rdc,
             "units_power": self.units_power,
         }
@@ -202,9 +178,6 @@ class FTSettings:
         for name in (
             "start_us",
             "end_us",
-            "zpf",
-            "expf_us",
-            "window_function",
             "units_power",
             "rdc",
         ):
@@ -220,7 +193,13 @@ class FTSettings:
 
     @classmethod
     def from_attrs(cls, attrs: Dict[str, Any]) -> "FTSettings":
-        """Inverse of :meth:`to_attrs` (tolerant of missing/legacy keys)."""
+        """Inverse of :meth:`to_attrs` (tolerant of missing/legacy keys).
+
+        Legacy records may carry the retired apodization keys (``zpf`` /
+        ``expf_us`` / ``window_function`` / ``winf``); they are silently
+        ignored here. Callers that recompute the canonical FT from a legacy
+        file warn about the dropped keys at open time.
+        """
 
         def _opt(key: str) -> Any:
             if key not in attrs:
@@ -239,19 +218,11 @@ class FTSettings:
             if trim_lo is not None and trim_hi is not None
             else None
         )
-        winf = _opt("window_function")
-        # Legacy/recommended records use 'winf'; accept it as an alias.
-        if winf is None:
-            winf = _opt("winf")
-        zpf = _opt("zpf")
         units = _opt("units_power")
         rdc = _opt("rdc")
         return cls(
             start_us=_coerce_float(_opt("start_us")),
             end_us=_coerce_float(_opt("end_us")),
-            zpf=int(zpf) if zpf is not None else None,
-            expf_us=_coerce_float(_opt("expf_us")),
-            window_function=str(winf) if winf is not None else None,
             units_power=int(units) if units is not None else None,
             trim=trim,
             rdc=bool(rdc) if rdc is not None else None,

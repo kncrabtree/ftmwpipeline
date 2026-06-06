@@ -44,7 +44,7 @@ from ftmwpipeline import Pipeline
 pipe = Pipeline.create("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
 
 fid = pipe.load_data()
-complex_ft = pipe.compute_ft(zpf=2, expf_us=5.0, trim=(26500, 40000))
+complex_ft = pipe.compute_ft(trim=(26500, 40000))
 noise = pipe.estimate_noise()
 
 print(pipe.info())   # provenance, completed stages, next available stages
@@ -58,8 +58,7 @@ Open an existing analysis with `Pipeline.open("exp_2638.ftmw")`.
 import ftmwpipeline.api as ftmw
 
 ftmw.import_data("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
-complex_ft = ftmw.compute_ft("exp_2638.ftmw", zpf=2, expf_us=5.0,
-                             trim=(26500, 40000))
+complex_ft = ftmw.compute_ft("exp_2638.ftmw", trim=(26500, 40000))
 noise = ftmw.estimate_noise("exp_2638.ftmw")
 ```
 
@@ -71,7 +70,7 @@ from ftmwpipeline import process_experiment
 result = process_experiment(
     "examples/blackchirp_data/2638/",
     "exp_2638.ftmw",
-    ft_params={"zpf": 2, "expf_us": 5.0, "trim": (26500, 40000)},
+    ft_params={"trim": (26500, 40000)},
 )
 ```
 
@@ -79,7 +78,7 @@ result = process_experiment(
 
 ```bash
 ftmwpipeline data import   exp_2638.ftmw examples/blackchirp_data/2638/
-ftmwpipeline ft run        exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
+ftmwpipeline ft run        exp_2638.ftmw --trim 26500:40000
 ftmwpipeline ft show       exp_2638.ftmw --trim 26500:40000 --no-interactive
 ftmwpipeline noise run     exp_2638.ftmw
 ftmwpipeline noise show    exp_2638.ftmw
@@ -92,8 +91,8 @@ ftmwpipeline version
 ## Example data
 
 `examples/blackchirp_data/2638/` is a real BlackChirp experiment included for
-testing and trying the pipeline. Recommended processing for it: `zpf=2`,
-`expf_us=5.0`, trimmed to 26500–40000 MHz.
+testing and trying the pipeline. The canonical FT is unapodized and
+native-length; only trim to the active region 26500–40000 MHz.
 
 ## Tests
 

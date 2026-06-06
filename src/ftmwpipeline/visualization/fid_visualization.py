@@ -135,10 +135,9 @@ def plot_fid(
         proc = fid.processing
         proc_text = (
             f"Processing Parameters:\n"
-            f"  Zero Padding Factor: {proc.zpf}\n"
-            f"  Remove DC: {proc.rdc}\n"
-            f"  Exponential Filter: {proc.expf_us or 'None'} μs\n"
-            f"  Window Function: {proc.winf or 'None'}"
+            f"  Start: {proc.start_us if proc.start_us is not None else 'None'} μs\n"
+            f"  End: {proc.end_us if proc.end_us is not None else 'None'} μs\n"
+            f"  Remove DC: {proc.rdc}"
         )
 
         # Source information
@@ -354,10 +353,7 @@ def plot_fid_overview(fid: FID, figsize: Tuple[float, float] = (15, 10)) -> Any:
 
     processing_text = (
         f"Processing:\n"
-        f"  ZPF: {fid.processing.zpf}\n"
         f"  Remove DC: {fid.processing.rdc}\n"
-        f"  Exp Filter: {fid.processing.expf_us or 'None'} μs\n"
-        f"  Window: {fid.processing.winf or 'None'}\n"
         f"  Start: {fid.processing.start_us or 0:.1f} μs\n"
         f"  End: {fid.processing.end_us or fid.duration_us:.1f} μs"
     )

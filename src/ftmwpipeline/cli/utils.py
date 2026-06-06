@@ -173,13 +173,10 @@ def elide_path(path: str, prev: Optional[str]) -> str:
     return "".join(out)
 
 
-def print_processing_params(
-    zpf: int, expf_us: float, trim_range: Optional[Tuple[float, float]]
-) -> None:
+def print_processing_params(trim_range: Optional[Tuple[float, float]]) -> None:
     """Print processing parameters for user confirmation."""
     print("Processing parameters:")
-    print(f"  Zero padding factor: {zpf}")
-    print(f"  Exponential filter: {expf_us} μs")
+    print("  Canonical FT: unapodized, native-length")
     if trim_range:
         print(f"  Frequency range: {trim_range[0]:.1f}-{trim_range[1]:.1f} MHz")
     else:

@@ -1,6 +1,11 @@
 """
 Pure unit tests for FTSettings, resolve(), and argspec helpers.
 
+The canonical FT is unconditionally unapodized, un-windowed, and native-length:
+there are no ``zpf`` / ``expf_us`` / ``window_function`` knobs. The settable
+fields are data selection (``start_us`` / ``end_us`` / ``trim``) plus the
+display/scaling knobs (``units_power`` / ``rdc``).
+
 No real data required; all tests are fast and free of I/O.
 """
 
@@ -35,13 +40,13 @@ class TestIsEmptyAndOverrides:
         assert FTSettings().is_empty()
 
     def test_single_field_set_not_empty(self):
-        s = FTSettings(zpf=2)
+        s = FTSettings(units_power=2)
         assert not s.is_empty()
 
     def test_overrides_returns_only_set_fields(self):
-        s = FTSettings(zpf=2, expf_us=5.0)
+        s = FTSettings(start_us=1.0, units_power=3)
         ov = s.overrides()
-        assert ov == {"zpf": 2, "expf_us": 5.0}
+        assert ov == {"start_us": 1.0, "units_power": 3}
 
     def test_overrides_empty_when_no_fields_set(self):
         assert FTSettings().overrides() == {}
@@ -51,6 +56,13 @@ class TestIsEmptyAndOverrides:
         assert "trim" in s.overrides()
         assert s.overrides()["trim"] == (100.0, 200.0)
 
+    def test_no_apodization_fields(self):
+        """The retired apodization knobs are gone from FTSettings."""
+        s = FTSettings()
+        assert not hasattr(s, "zpf")
+        assert not hasattr(s, "expf_us")
+        assert not hasattr(s, "window_function")
+
 
 # ---------------------------------------------------------------------------
 # resolve() precedence
@@ -59,61 +71,35 @@ class TestIsEmptyAndOverrides:
 
 class TestResolve:
     def test_explicit_beats_persisted_beats_recommended(self):
-        explicit = FTSettings(zpf=4)
-        persisted = FTSettings(zpf=2, expf_us=3.0)
-        recommended = FTSettings(zpf=1, expf_us=7.0, units_power=3)
+        explicit = FTSettings(start_us=4.0)
+        persisted = FTSettings(start_us=2.0, end_us=3.0)
+        recommended = FTSettings(start_us=1.0, end_us=7.0, units_power=3)
 
         result = resolve(explicit, persisted, recommended)
 
-        # zpf: explicit wins
-        assert result.zpf == 4
-        # expf_us: explicit absent → persisted wins
-        assert result.expf_us == 3.0
+        # start_us: explicit wins
+        assert result.start_us == 4.0
+        # end_us: explicit absent → persisted wins
+        assert result.end_us == 3.0
         # units_power: only recommended set → recommended wins
         assert result.units_power == 3
 
     def test_hard_defaults_fill_run_critical_fields(self):
         result = resolve(None, None, None)
-        assert result.zpf == 1
-        # expf_us has no hard default: None means "no apodization", which
-        # is a legitimate concrete choice rather than an unset placeholder.
-        assert result.expf_us is None
         assert result.units_power == 6
         assert result.rdc is True
-
-    def test_expf_us_non_positive_preserved_at_settings_layer(self):
-        """expf_us <= 0 is preserved on FTSettings so it can win resolve().
-
-        Coercion to None happens downstream (FIDProcessingParameters,
-        compute_active_ft) — see the boundary tests in their respective
-        unit suites.
-        """
-        assert FTSettings(expf_us=0).expf_us == 0
-        assert FTSettings(expf_us=-1.5).expf_us == -1.5
-        assert FTSettings(expf_us=5.0).expf_us == 5.0
-
-    def test_expf_us_explicit_zero_overrides_persisted(self):
-        """Passing expf_us=0 explicitly disables apodization even when a
-        positive value is persisted."""
-        explicit = FTSettings(expf_us=0)
-        persisted = FTSettings(expf_us=5.0)
-        result = resolve(explicit, persisted, None)
-        # explicit non-None wins; 0 propagates through the resolution chain.
-        # Downstream consumers normalise this to "no apodization".
-        assert result.expf_us == 0
 
     def test_optional_fields_stay_none_when_unset(self):
         result = resolve(None, None, None)
         assert result.start_us is None
         assert result.end_us is None
-        assert result.window_function is None
         assert result.trim is None
 
     def test_explicit_none_falls_through_to_persisted(self):
-        explicit = FTSettings(zpf=None)
-        persisted = FTSettings(zpf=3)
+        explicit = FTSettings(start_us=None)
+        persisted = FTSettings(start_us=3.0)
         result = resolve(explicit, persisted, None)
-        assert result.zpf == 3
+        assert result.start_us == 3.0
 
     def test_trim_propagated_from_explicit(self):
         explicit = FTSettings(trim=(26500.0, 40000.0))
@@ -128,19 +114,18 @@ class TestResolve:
     def test_none_layers_treated_as_empty(self):
         """resolve(None, None, None) must not raise."""
         result = resolve(None, None, None)
-        assert result.zpf == 1
+        assert result.units_power == 6
 
     def test_field_by_field_precedence_exhaustive(self):
         """Every field independently follows explicit > persisted > recommended."""
-        e = FTSettings(zpf=10)
-        p = FTSettings(zpf=20, expf_us=2.0, start_us=1.0)
-        r = FTSettings(zpf=30, expf_us=4.0, start_us=2.0, units_power=5)
+        e = FTSettings(start_us=10.0)
+        p = FTSettings(start_us=20.0, end_us=2.0)
+        r = FTSettings(start_us=30.0, end_us=4.0, units_power=5)
 
         result = resolve(e, p, r)
 
-        assert result.zpf == 10  # explicit
-        assert result.expf_us == 2.0  # persisted (explicit absent)
-        assert result.start_us == 1.0  # persisted (explicit absent)
+        assert result.start_us == 10.0  # explicit
+        assert result.end_us == 2.0  # persisted (explicit absent)
         assert result.units_power == 5  # recommended (only one set)
 
     def test_rdc_default_true(self):
@@ -161,19 +146,18 @@ class TestResolve:
 class TestToAttrsFromAttrs:
     def test_roundtrip_with_trim_set(self):
         s = FTSettings(
-            zpf=2, expf_us=5.0, trim=(26500.0, 40000.0), units_power=6, rdc=True
+            start_us=1.0, trim=(26500.0, 40000.0), units_power=6, rdc=True
         )
         attrs = s.to_attrs()
         restored = FTSettings.from_attrs(attrs)
 
-        assert restored.zpf == 2
-        assert restored.expf_us == 5.0
+        assert restored.start_us == 1.0
         assert restored.trim == (26500.0, 40000.0)
         assert restored.units_power == 6
         assert restored.rdc is True
 
     def test_roundtrip_trim_none_uses_none_marker(self):
-        s = FTSettings(zpf=1)
+        s = FTSettings(units_power=6)
         attrs = s.to_attrs()
 
         # None serialized to __None__ marker
@@ -184,55 +168,38 @@ class TestToAttrsFromAttrs:
         restored = FTSettings.from_attrs(attrs)
         assert restored.trim is None
 
-    def test_roundtrip_window_function_none(self):
-        s = FTSettings(zpf=1)
-        attrs = s.to_attrs()
-        assert attrs["window_function"] == "__None__"
-
-        restored = FTSettings.from_attrs(attrs)
-        assert restored.window_function is None
-
-    def test_roundtrip_window_function_set(self):
-        s = FTSettings(window_function="hann")
-        attrs = s.to_attrs()
-        assert attrs["window_function"] == "hann"
-
-        restored = FTSettings.from_attrs(attrs)
-        assert restored.window_function == "hann"
-
-    def test_from_attrs_accepts_winf_alias(self):
-        """Recommended-style dicts use key 'winf'; from_attrs must accept it."""
-        attrs = {"winf": "blackman", "zpf": 1, "expf_us": 5.0}
+    def test_from_attrs_ignores_legacy_apodization_keys(self):
+        """Legacy records may carry retired apodization keys; they are ignored."""
+        attrs = {
+            "winf": "blackman",
+            "zpf": 2,
+            "expf_us": 5.0,
+            "window_function": "hann",
+            "start_us": 1.0,
+        }
         s = FTSettings.from_attrs(attrs)
-        assert s.window_function == "blackman"
-
-    def test_from_attrs_window_function_key_preferred_over_winf(self):
-        """When both 'window_function' and 'winf' present, 'window_function' wins."""
-        attrs = {"window_function": "hann", "winf": "blackman"}
-        s = FTSettings.from_attrs(attrs)
-        assert s.window_function == "hann"
+        assert s.start_us == 1.0
+        assert not hasattr(s, "zpf")
+        assert not hasattr(s, "expf_us")
+        assert not hasattr(s, "window_function")
 
     def test_from_attrs_tolerant_of_missing_keys(self):
         """Sparse dicts (e.g. old recommended records) do not raise."""
-        s = FTSettings.from_attrs({"zpf": 2})
-        assert s.zpf == 2
-        assert s.expf_us is None
+        s = FTSettings.from_attrs({"units_power": 6})
+        assert s.units_power == 6
         assert s.trim is None
 
     def test_from_attrs_bytes_values_decoded(self):
         """HDF5 sometimes returns byte strings; from_attrs must handle them."""
-        attrs = {"zpf": b"2", "expf_us": b"5.0"}
+        attrs = {"units_power": b"3", "start_us": b"1.5"}
         s = FTSettings.from_attrs(attrs)
-        assert s.zpf == 2
-        assert s.expf_us == 5.0
+        assert s.units_power == 3
+        assert s.start_us == 1.5
 
     def test_roundtrip_all_fields_set(self):
         s = FTSettings(
             start_us=1.0,
             end_us=14.0,
-            zpf=2,
-            expf_us=5.0,
-            window_function="hann",
             units_power=6,
             trim=(26500.0, 40000.0),
             rdc=True,
@@ -241,9 +208,6 @@ class TestToAttrsFromAttrs:
 
         assert restored.start_us == 1.0
         assert restored.end_us == 14.0
-        assert restored.zpf == 2
-        assert restored.expf_us == 5.0
-        assert restored.window_function == "hann"
         assert restored.units_power == 6
         assert restored.trim == (26500.0, 40000.0)
         assert restored.rdc is True
@@ -265,29 +229,29 @@ class TestArgspec:
         p = _make_parser()
         ns = p.parse_args(
             [
-                "--zpf",
-                "2",
-                "--expf_us",
-                "5.0",
                 "--trim",
                 "26500:40000",
-                "--window-function",
-                "hann",
                 "--start-us",
                 "1.0",
+                "--units-power",
+                "3",
             ]
         )
         s = settings_from_namespace(ns)
 
-        assert s.zpf == 2
-        assert s.expf_us == 5.0
         assert s.trim == (26500.0, 40000.0)
-        assert s.window_function == "hann"
         assert s.start_us == 1.0
+        assert s.units_power == 3
 
         # Fields not passed must be None
         assert s.end_us is None
-        assert s.units_power is None
+
+    def test_apodization_flags_rejected(self):
+        """The retired apodization flags no longer exist on the parser."""
+        p = _make_parser()
+        for flag in ("--zpf", "--expf_us", "--window-function"):
+            with pytest.raises(SystemExit):
+                p.parse_args([flag, "2"])
 
     def test_empty_argv_yields_all_none_ftsettings(self):
         p = _make_parser()
@@ -306,20 +270,6 @@ class TestArgspec:
         p = _make_parser()
         with pytest.raises(SystemExit):
             p.parse_args(["--trim", "40000:26500"])
-
-    def test_zpf_parsed_as_int(self):
-        p = _make_parser()
-        ns = p.parse_args(["--zpf", "4"])
-        s = settings_from_namespace(ns)
-        assert isinstance(s.zpf, int)
-        assert s.zpf == 4
-
-    def test_expf_us_parsed_as_float(self):
-        p = _make_parser()
-        ns = p.parse_args(["--expf_us", "3.5"])
-        s = settings_from_namespace(ns)
-        assert isinstance(s.expf_us, float)
-        assert s.expf_us == 3.5
 
     def test_units_power_parsed_as_int(self):
         p = _make_parser()

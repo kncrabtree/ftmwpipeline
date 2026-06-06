@@ -38,7 +38,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
 
     Stage-based workflow:
     1. Load FID data from Stage 0 cache ('data import' command output)
-    2. Test preprocessing (windowing, filtering, zero-padding)
+    2. Test preprocessing (active-region selection, DC removal)
     3. Test FFT computation and frequency range
     4. Provide detailed feedback without permanent storage
     """
@@ -53,7 +53,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
         trim_range = args.trim  # already a (float, float) tuple or None
 
         print(f"Validating FT processing parameters for '{file_path}'")
-        print_processing_params(args.zpf, args.expf_us, trim_range)
+        print_processing_params(trim_range)
         print()
 
         try:
@@ -72,8 +72,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
                 f"{result['fid_points']:,} FID points"
             )
             print(
-                f"   Preprocessed to {result['preprocessed_points']:,} points "
-                f"(zero-padded)"
+                f"   Preprocessed to {result['preprocessed_points']:,} points"
             )
             print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
             if "trimmed_points" in result:
@@ -127,14 +126,14 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
 
     Enhanced visualization features:
     - Raw FID panel with windowing bounds (start_us/end_us vertical lines)
-    - Preprocessed FID panel showing effects of filtering, windowing, zero-padding
+    - Preprocessed FID panel showing the active-region selection and DC removal
     - Traditional spectrum panels (magnitude and real/imaginary components)
     - Interactive parameter exploration with immediate visual feedback
     - Save complete parameter sets (preprocessing + postprocessing) as defaults
 
     Use this command to:
     - Visualize the complete FID-to-spectrum processing workflow
-    - Understand the effects of windowing, filtering, and preprocessing parameters
+    - Understand the effects of the active-region and trim parameters
     - Optimize parameters by seeing their impact on both time and frequency domains
     - Create comprehensive diagnostic plots for publications/presentations
     - Save optimal parameter combinations for automated processing
@@ -163,7 +162,7 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
         trim_range = args.trim  # already a (float, float) tuple or None
 
         print(f"Visualizing FT from '{file_path}' with on-demand calculation")
-        print_processing_params(args.zpf, args.expf_us, trim_range)
+        print_processing_params(trim_range)
         print()
 
         try:
@@ -203,7 +202,7 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
             print()
             print("ComplexFT calculated on-demand from pipeline file")
             print("   Try different parameters without permanent storage:")
-            print(f"   ftmwpipeline ft show {file_path} --zpf 2 --expf_us 3.0")
+            print(f"   ftmwpipeline ft show {file_path} --start-us 2.0 --end-us 12.0")
             if not trim_range:
                 print(f"   ftmwpipeline ft show {file_path} --trim 26500:40000")
 
@@ -258,13 +257,13 @@ Purpose: Validate and store user-provided processing settings
 Intended for: Power users and automated pipeline processes
 
 Examples:
-  # Validate basic processing parameters
-  ftmwpipeline ft run exp_2638.ftmw --zpf 1 --expf_us 5.0
+  # Compute the canonical (unapodized) FT
+  ftmwpipeline ft run exp_2638.ftmw
 
-  # Test parameter combinations with trimming
-  ftmwpipeline ft run exp_2638.ftmw --zpf 2 --expf_us 10.0 --trim 26500:40000
+  # Restrict to the analysis band
+  ftmwpipeline ft run exp_2638.ftmw --trim 26500:40000
 
-  # Test windowing and scaling parameters
+  # Set the active window and scaling
   ftmwpipeline ft run exp_2638.ftmw --start-us 1.0 --end-us 10.0 --units-power 3
 
 Workflow:
@@ -296,23 +295,20 @@ Intended for: Understanding processing workflow and parameter optimization
 
 Enhanced Visualization:
   - Raw FID panel shows original time-domain data with windowing bounds
-  - Preprocessed FID panel shows effects of filtering, windowing, zero-padding
+  - Preprocessed FID panel shows the active-region selection and DC removal
   - Spectrum panels show magnitude and real/imaginary frequency components
   - Interactive parameter exploration with complete processing workflow visibility
 
 Examples:
   # Enhanced visualization with windowing bounds displayed
-  ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0 --expf_us 5.0
+  ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0
 
-  # Explore custom parameters with trimmed frequency range
-  ftmwpipeline ft show exp_2638.ftmw --zpf 2 --expf_us 3.0 --trim 26500:40000
+  # Explore the active window with a trimmed frequency range
+  ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --trim 26500:40000
 
   # Static enhanced image export for presentations
   ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0 \\
       --no-interactive --output enhanced_spectrum.png
-
-  # Compare preprocessing effects with different window functions
-  ftmwpipeline ft show exp_2638.ftmw --window-function hann --expf_us 10.0
 
 Key Features:
   - Enhanced 3-panel visualization showing complete FID-to-spectrum workflow

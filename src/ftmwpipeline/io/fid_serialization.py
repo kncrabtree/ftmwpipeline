@@ -63,11 +63,7 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
     │   ├── description              [attr: str, explains these are suggestions]
     │   ├── start_us                 [attr: float or None, suggested start time]
     │   ├── end_us                   [attr: float or None, suggested end time]
-    │   ├── winf                     [attr: str or None, suggested window function]
-    │   ├── zpf                      [attr: int, suggested zero padding factor]
     │   ├── rdc                      [attr: bool, suggested DC removal]
-    │   ├── expf_us                  [attr: float or None, suggested exp filter]
-    │   ├── autoscale_MHz            [attr: float or None, suggested autoscale]
     │   └── units_power              [attr: int, suggested scaling units]
     └── metadata/                     [group: source and experimental metadata]
         ├── source_info              [dataset: JSON string with source metadata]
@@ -108,12 +104,7 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
         defaults_group.attrs["end_us"] = _serialize_optional_float(
             fid.processing.end_us
         )
-        defaults_group.attrs["winf"] = _serialize_optional_str(fid.processing.winf)
-        defaults_group.attrs["zpf"] = fid.processing.zpf
         defaults_group.attrs["rdc"] = fid.processing.rdc
-        defaults_group.attrs["expf_us"] = _serialize_optional_float(
-            fid.processing.expf_us
-        )
         defaults_group.attrs["units_power"] = fid.processing.units_power
 
         # Create metadata group and save as JSON strings
@@ -239,13 +230,13 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
             proc_group = None
 
         if proc_group is not None:
+            # Legacy files may carry retired apodization keys (winf / zpf /
+            # expf_us) in this group; they are ignored -- the canonical FT is
+            # unconditionally unapodized and native-length.
             processing = FIDProcessingParameters(
                 start_us=_deserialize_optional_float(proc_group.attrs["start_us"]),
                 end_us=_deserialize_optional_float(proc_group.attrs["end_us"]),
-                winf=_deserialize_optional_str(proc_group.attrs["winf"]),
-                zpf=int(proc_group.attrs["zpf"]),
                 rdc=bool(proc_group.attrs["rdc"]),
-                expf_us=_deserialize_optional_float(proc_group.attrs["expf_us"]),
                 units_power=int(proc_group.attrs["units_power"]),
             )
         else:
@@ -416,7 +407,7 @@ def update_fid_processing_defaults(
         Unique identifier for the experiment
     new_params : dict
         New processing parameters to save as defaults.
-        Keys can include: start_us, end_us, zpf, expf_us, window_function, rdc, units_power
+        Keys can include: start_us, end_us, rdc, units_power
     cache_dir : str, default "cache"
         Directory containing cache files
 
@@ -432,7 +423,7 @@ def update_fid_processing_defaults(
     Example
     -------
     >>> # Update default parameters from interactive session
-    >>> new_params = {'zpf': 2, 'expf_us': 3.0, 'start_us': 1.0, 'end_us': 10.0}
+    >>> new_params = {'start_us': 1.0, 'end_us': 10.0}
     >>> update_fid_processing_defaults('exp_2638', new_params, 'cache/')
     """
     try:
@@ -466,39 +457,19 @@ def update_fid_processing_defaults(
             else:
                 defaults_group = fid_group["recommended_processing"]
 
-            # Update attributes with new parameters
-            # Map window_function to winf for internal consistency
-            param_mapping = {
-                "start_us": "start_us",
-                "end_us": "end_us",
-                "window_function": "winf",
-                "winf": "winf",
-                "zpf": "zpf",
-                "rdc": "rdc",
-                "expf_us": "expf_us",
-                "units_power": "units_power",
-            }
-
+            # Update attributes with new parameters. The retired apodization
+            # knobs (window_function / winf / zpf / expf_us) are not accepted --
+            # the canonical FT is unconditionally unapodized and native-length.
             for param_name, param_value in new_params.items():
-                if param_name in param_mapping:
-                    attr_name = param_mapping[param_name]
-
-                    if attr_name in ["start_us", "end_us", "expf_us"]:
-                        # Optional float parameters
-                        defaults_group.attrs[attr_name] = _serialize_optional_float(
-                            param_value
-                        )
-                    elif attr_name == "winf":
-                        # Optional string parameter
-                        defaults_group.attrs[attr_name] = _serialize_optional_str(
-                            param_value
-                        )
-                    elif attr_name in ["zpf", "units_power"]:
-                        # Integer parameters
-                        defaults_group.attrs[attr_name] = int(param_value)
-                    elif attr_name == "rdc":
-                        # Boolean parameter
-                        defaults_group.attrs[attr_name] = bool(param_value)
+                if param_name in ("start_us", "end_us"):
+                    # Optional float parameters
+                    defaults_group.attrs[param_name] = _serialize_optional_float(
+                        param_value
+                    )
+                elif param_name == "units_power":
+                    defaults_group.attrs[param_name] = int(param_value)
+                elif param_name == "rdc":
+                    defaults_group.attrs[param_name] = bool(param_value)
 
     except Exception as e:
         if isinstance(e, (FileNotFoundError, ValueError)):

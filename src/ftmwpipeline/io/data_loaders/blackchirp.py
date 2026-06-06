@@ -345,9 +345,9 @@ class BlackChirpLoader(BaseLoader):
         Blackchirp ``processing.csv`` mapping.
 
         These values do not drive the pipeline FT (the resolved ``FTSettings``
-        do); they are retained only for display/serialization. The
-        window-function field is deliberately ignored -- it is the most
-        version-fragile cell and the pipeline applies its own apodization.
+        do); they are retained only for display/serialization. The instrument's
+        apodization / zero-pad cells are deliberately ignored -- the canonical
+        FT is unconditionally unapodized and native-length.
         """
         _, FIDProcessingParameters, _ = _get_fid_classes()
         if not proc:
@@ -361,13 +361,9 @@ class BlackChirpLoader(BaseLoader):
                 return default
 
         end_us = _f("FidEndUs", 0.0)
-        expf_us = _f("FidExpfUs", 0.0)
         return FIDProcessingParameters(
             start_us=_f("FidStartUs", 0.0),
             end_us=end_us if end_us > 0 else None,
-            winf=None,  # ignored: the pipeline sets its own window function
-            zpf=int(_f("FidZeroPadFactor", 0.0)),
             rdc=str(proc.get("FidRemoveDC", "false")).strip().lower() == "true",
-            expf_us=expf_us if expf_us > 0 else None,
             units_power=int(_f("FtUnits", 6.0)),
         )

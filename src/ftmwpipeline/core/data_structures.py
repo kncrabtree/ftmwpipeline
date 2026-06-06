@@ -20,7 +20,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import numpy as np
 import scipy.fft as sfft
-import scipy.signal as spsig
 
 
 class PeakClassification(Enum):
@@ -45,22 +44,18 @@ class FIDProcessingParameters:
     """
     Processing parameters for FID-to-FT conversion.
 
-    Based on BlackChirp processing settings, these control how the time-domain
-    FID is converted to frequency domain.
+    The canonical FT is unconditionally unapodized, un-windowed, and
+    native-length, so the only parameters are data selection (``start_us`` /
+    ``end_us``), DC removal, and the display amplitude scale.
     """
 
     start_us: Optional[float] = None  # Start time in μs for windowing
     end_us: Optional[float] = None  # End time in μs for windowing
-    winf: Optional[str] = None  # Window function name (scipy.signal compatible)
-    zpf: int = 1  # Zero padding factor (powers of 2)
     rdc: bool = True  # Remove DC component (subtract average)
-    expf_us: Optional[float] = None  # Exponential decay filter time constant (μs)
     units_power: int = 6  # Scaling factor (10^units_power, 6 for μV)
 
     def __post_init__(self) -> None:
         """Validate processing parameters."""
-        if self.zpf < 0:
-            raise ValueError("Zero padding factor must be non-negative")
         if self.start_us is not None and self.start_us < 0:
             raise ValueError("Start time must be non-negative")
         if self.end_us is not None and self.end_us < 0:
@@ -71,11 +66,6 @@ class FIDProcessingParameters:
             and self.start_us >= self.end_us
         ):
             raise ValueError("Start time must be less than end time")
-        if self.expf_us is not None and self.expf_us <= 0:
-            # Non-positive expf_us means "disable apodization"; normalise to
-            # None so downstream (FID.preprocess, compute_active_ft) treats
-            # this as the canonical "off" signal.
-            self.expf_us = None
 
 
 class PreprocessedFID:
@@ -290,22 +280,20 @@ class FID:
         self,
         start_us: Optional[float] = None,
         end_us: Optional[float] = None,
-        zpf: int = 1,
-        expf_us: Optional[float] = None,
-        window_function: Optional[str] = None,
         rdc: bool = True,
         units_power: int = 6,
     ) -> PreprocessedFID:
         """
         Apply preprocessing to FID data, return new PreprocessedFID object.
 
-        Stage 1 of FT processing: preprocessing only, no FFT computation.
+        Stage 1 of FT processing: preprocessing only, no FFT computation. The
+        canonical FT is unconditionally unapodized, un-windowed, and
+        native-length, so preprocessing is just active-region selection plus
+        optional DC removal:
 
-        CRITICAL: Proper preprocessing sequence:
-        1. Extract windowed data (start_us to end_us)
-        2. Apply exponential filtering ONLY to windowed data
-        3. Apply window function ONLY to windowed/filtered data
-        4. Apply zero padding to processed window
+        1. Extract the active region (``start_us`` to ``end_us``); points
+           outside it are zeroed.
+        2. Remove the DC component of the active region (when ``rdc``).
 
         Parameters
         ----------
@@ -313,12 +301,6 @@ class FID:
             Start time in μs for windowing
         end_us : float, optional
             End time in μs for windowing
-        zpf : int, default=1
-            Zero padding factor (powers of 2)
-        expf_us : float, optional
-            Exponential decay filter time constant (μs) - applied ONLY to windowed data
-        window_function : str, optional
-            Window function name (scipy.signal compatible) - applied ONLY to windowed data
         rdc : bool, default=True
             Remove DC component (subtract average)
         units_power : int, default=6
@@ -329,14 +311,10 @@ class FID:
         PreprocessedFID
             PreprocessedFID object ready for FFT calculation
         """
-        # Create processing parameters from inputs (autoscale_MHz deprecated and removed)
         processing_params = FIDProcessingParameters(
             start_us=start_us,
             end_us=end_us,
-            winf=window_function,
-            zpf=zpf,
             rdc=rdc,
-            expf_us=expf_us,
             units_power=units_power,
         )
 
@@ -360,43 +338,15 @@ class FID:
         if end_idx < len(windowed_data):
             windowed_data[end_idx:] = 0.0
 
-        # Step 2: Apply exponential filtering ONLY to active (non-zeroed) region
-        if processing_params.expf_us is not None and start_idx < end_idx:
-            # Calculate decay relative to active region time
-            active_time_us = time_us[start_idx:end_idx]
-            relative_time_us = active_time_us - active_time_us[0]
-            decay = np.exp(-relative_time_us / processing_params.expf_us)
-            windowed_data[start_idx:end_idx] *= decay
-
-        # Step 3: Apply window function ONLY to active region
-        if processing_params.winf is not None and start_idx < end_idx:
-            window = spsig.get_window(processing_params.winf, end_idx - start_idx)
-            windowed_data[start_idx:end_idx] *= window
-
-        # Step 4: Remove DC component from active region (after windowing)
+        # Step 2: Remove DC component from the active region
         if processing_params.rdc and start_idx < end_idx:
             active_data = windowed_data[start_idx:end_idx]
             dc_offset = np.mean(active_data)
             windowed_data[start_idx:end_idx] -= dc_offset
 
-        # Step 5: Zero padding to full-length processed data
-        final_data = windowed_data
-        if processing_params.zpf > 0:
-            # Handle edge case of empty data
-            if len(final_data) == 0:
-                # For empty data, create minimal padded array
-                n_padded = 2**processing_params.zpf
-            else:
-                # Pad to next power of 2, then extend by 2^zpf
-                n_padded = 2 ** (
-                    int(np.log2(len(final_data))) + 1 + processing_params.zpf
-                )
-            fid_padded = np.zeros(n_padded, dtype=float)
-            fid_padded[: len(final_data)] = final_data
-            final_data = fid_padded
-
+        # The canonical FT runs at native length -- no zero-padding.
         return PreprocessedFID(
-            data=final_data,
+            data=windowed_data,
             spacing=self.spacing,
             probe_freq_mhz=self.probe_freq_mhz,
             sideband=self.sideband,

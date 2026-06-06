@@ -186,12 +186,11 @@ class TestBlackChirpLoader:
         assert len(fid.data) == 9  # Number of data points in test data
         assert isinstance(fid.data[0], float)
 
-        # Check processing parameters
+        # Check processing parameters (canonical FT is unapodized: the loader
+        # records only data-selection / DC-removal knobs).
         assert isinstance(fid.processing, FIDProcessingParameters)
         assert fid.processing.start_us == 0.0
         assert fid.processing.end_us == 10.0
-        assert fid.processing.zpf == 1
-        assert fid.processing.expf_us == 5.0
         assert fid.processing.rdc is True
 
         # Check metadata preservation

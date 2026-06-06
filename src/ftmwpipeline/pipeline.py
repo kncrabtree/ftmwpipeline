@@ -111,9 +111,9 @@ class Pipeline:
     # Open existing pipeline for analysis
     pipe = Pipeline.open("exp_2638.ftmw")
 
-    # Stage 1: FT Processing
-    pipe.compute_ft(zpf=2, expf_us=5.0, trim=(26500, 40000))
-    pipe.visualize_ft(zpf=1, expf_us=3.0, save_params=True)
+    # Stage 1: FT Processing (canonical FT is unapodized, native-length)
+    pipe.compute_ft(trim=(26500, 40000))
+    pipe.visualize_ft(save_params=True)
 
     # File info and validation
     pipe.info()       # Show pipeline status and metadata
@@ -310,12 +310,9 @@ class Pipeline:
 
     def compute_ft(
         self,
-        zpf: Optional[int] = None,
-        expf_us: Optional[float] = None,
         trim: Optional[Tuple[float, float]] = None,
         start_us: Optional[float] = None,
         end_us: Optional[float] = None,
-        window_function: Optional[str] = None,
         units_power: Optional[int] = None,
         from_saved_params: bool = False,
     ) -> ComplexFT:
@@ -323,24 +320,17 @@ class Pipeline:
 
         Resolves settings through ``explicit > persisted > recommended`` and
         persists the resolved canonical settings to the ``.ftmw`` file.  Can be
-        called multiple times safely.
+        called multiple times safely. The canonical FT is unconditionally
+        unapodized, un-windowed, and native-length.
 
         Parameters
         ----------
-        zpf : int, optional
-            Zero-padding factor.
-        expf_us : float, optional
-            Exponential apodization time constant in microseconds.
-            ``None`` (or any non-positive value) disables apodization;
-            there is no implicit fallback default.
         trim : tuple of float, optional
             ``(min_mhz, max_mhz)`` frequency analysis range to keep.
         start_us : float, optional
             FID window start time in microseconds.
         end_us : float, optional
             FID window end time in microseconds.
-        window_function : str, optional
-            Window function name (hann, blackman, …).
         units_power : int, optional
             Spectrum scaling as power of 10.
         from_saved_params : bool, default False
@@ -365,9 +355,6 @@ class Pipeline:
                 settings = FTSettings(
                     start_us=start_us,
                     end_us=end_us,
-                    zpf=zpf,
-                    expf_us=expf_us,
-                    window_function=window_function,
                     units_power=units_power,
                     trim=trim,
                 )
@@ -387,12 +374,9 @@ class Pipeline:
 
     def visualize_ft(
         self,
-        zpf: Optional[int] = None,
-        expf_us: Optional[float] = None,
         trim: Optional[Tuple[float, float]] = None,
         start_us: Optional[float] = None,
         end_us: Optional[float] = None,
-        window_function: Optional[str] = None,
         units_power: Optional[int] = None,
         save_params: bool = False,
         backend: str = "matplotlib",
@@ -405,23 +389,17 @@ class Pipeline:
         Equivalent to the CLI ``ft show`` command.  Never persists
         settings; exploration only.  Pass ``save_params=True`` to write the
         explicitly provided kwargs to the canonical ``ft_processing`` record.
+        The canonical FT is unconditionally unapodized, un-windowed, and
+        native-length.
 
         Parameters
         ----------
-        zpf : int, optional
-            Zero-padding factor.
-        expf_us : float, optional
-            Exponential apodization time constant in microseconds.
-            ``None`` (or any non-positive value) disables apodization;
-            there is no implicit fallback default.
         trim : tuple of float, optional
             ``(min_mhz, max_mhz)`` frequency analysis range.
         start_us : float, optional
             FID window start time in microseconds.
         end_us : float, optional
             FID window end time in microseconds.
-        window_function : str, optional
-            Window function name.
         units_power : int, optional
             Spectrum scaling as power of 10.
         save_params : bool, default False
@@ -451,9 +429,6 @@ class Pipeline:
             settings = FTSettings(
                 start_us=start_us,
                 end_us=end_us,
-                zpf=zpf,
-                expf_us=expf_us,
-                window_function=window_function,
                 units_power=units_power,
                 trim=trim,
             )
@@ -485,9 +460,6 @@ class Pipeline:
                 for key, value in (
                     ("start_us", start_us),
                     ("end_us", end_us),
-                    ("zpf", zpf),
-                    ("expf_us", expf_us),
-                    ("window_function", window_function),
                     ("units_power", units_power),
                 ):
                     if value is not None:
