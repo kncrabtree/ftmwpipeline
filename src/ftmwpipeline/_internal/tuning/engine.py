@@ -18,8 +18,48 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, TextIO, Tuple, cast
 
+from ...io.noise_settings_serialization import STAGE2_NOISE_SETTINGS_PATH
+from ...io.peak_detection_settings_serialization import STAGE3_PEAKS_SETTINGS_PATH
+from ...io.stage_fit_settings_serialization import STAGE_FIT_PATH
+from ...io.tau_calibration_settings_serialization import STAGE2B_TAU_SETTINGS_PATH
+from ...io.window_planning_settings_serialization import STAGE4_WINDOWS_SETTINGS_PATH
 from .fit_support import FitWindowSelection
 from .registry import KnobSpec
+
+# Persisted settings group per stage prefix. A sweep clears the knob's stage
+# block before each per-value run so the swept value (which enters the resolver
+# at the preset layer) is not shadowed by the previous value's persisted
+# settings: under the canonical precedence ``persisted > preset``, re-running a
+# stage on a working copy that already carries a persisted block would otherwise
+# pin every value to the first run's settings. Stages 0/1 are exempt -- start
+# detection runs with ``stamp=False`` and the FT resolver has no preset layer.
+_STAGE_SETTINGS_GROUPS = {
+    "stage2": STAGE2_NOISE_SETTINGS_PATH,
+    "stage2b": STAGE2B_TAU_SETTINGS_PATH,
+    "stage3": STAGE3_PEAKS_SETTINGS_PATH,
+    "stage4": STAGE4_WINDOWS_SETTINGS_PATH,
+    "stage5": STAGE_FIT_PATH,
+}
+
+
+def _clear_persisted_stage_settings(work: Path, knob_path: str) -> None:
+    """Delete the knob's stage settings block from the working copy, if present.
+
+    Keeps each swept value authoritative under the ``persisted > preset``
+    precedence: the swept value is injected at the preset layer, so any settings
+    a prior value persisted to the working copy must be removed first or they
+    would outrank it. Only the settings group is removed -- a knob-prepared
+    working copy (e.g. a trimmed Stage 5 window plan) is untouched. A no-op for
+    stages with no preset-driven settings block.
+    """
+    group = _STAGE_SETTINGS_GROUPS.get(knob_path.split(".")[0])
+    if group is None:
+        return
+    import h5py
+
+    with h5py.File(work, "a") as h5f:
+        if group in h5f:
+            del h5f[group]
 
 
 @dataclass(frozen=True)
@@ -311,6 +351,7 @@ def run_scan(
     last_result: Any = None
     total = len(values)
     for i, value in enumerate(values):
+        _clear_persisted_stage_settings(work, spec.path)
         last_result = spec.run(work, value)
         rows.append(
             SweepRow(

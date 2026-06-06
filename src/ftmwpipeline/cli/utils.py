@@ -107,6 +107,38 @@ def print_error(message: str, exit_code: int = 1) -> None:
     sys.exit(exit_code)
 
 
+def elide_path(path: str, prev: Optional[str]) -> str:
+    """Render ``path`` with leading dotted segments shared with ``prev`` blanked
+    to equal-width padding, so a column of paths reads as a prefix tree:
+
+        stage2.group1.setting1
+                     .setting2
+              .group2.setting1
+
+    Segments carry their leading dot (``"stage2"``, ``".group1"``, ``".s1"``);
+    once a segment differs from the previous row, it and all that follow print
+    literally. The result keeps ``len(path)`` so downstream columns stay aligned.
+    """
+
+    def _segs(p: str) -> List[str]:
+        parts = p.split(".")
+        return [parts[0]] + ["." + part for part in parts[1:]]
+
+    segs = _segs(path)
+    if prev is None:
+        return path
+    prev_segs = _segs(prev)
+    out: List[str] = []
+    matching = True
+    for i, seg in enumerate(segs):
+        if matching and i < len(prev_segs) and prev_segs[i] == seg:
+            out.append(" " * len(seg))
+        else:
+            matching = False
+            out.append(seg)
+    return "".join(out)
+
+
 def print_processing_params(
     zpf: int, expf_us: float, trim_range: Optional[Tuple[float, float]]
 ) -> None:
