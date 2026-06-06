@@ -230,11 +230,10 @@ def _recommend(spec: KnobSpec, rows: List[SweepRow]) -> Optional[Recommendation]
 def _apply_instructions(spec: KnobSpec, rec: Optional[Recommendation]) -> str:
     """How to persist a chosen value: onto the .ftmw or into a preset YAML.
 
-    This is the seam to the deferred preset-emit UX; it tells the user the two
-    routes rather than performing the write.
+    Points the user at the ``settings`` change-grammar rather than performing
+    the write here.
     """
     chosen = _fmt(rec.value) if rec is not None else "<value>"
-    leaf = spec.path.split(".")[-1]
     stage_block = spec.path.split(".")[0]
     note = (
         "No automatic recommendation for this knob — inspect the table"
@@ -246,11 +245,10 @@ def _apply_instructions(spec: KnobSpec, rec: Optional[Recommendation]) -> str:
     return (
         f"{note}\n"
         f"To apply a chosen value:\n"
-        f"  - persist it onto this experiment by re-running the stage with the "
-        f"knob set (the result is saved into the .ftmw), e.g.\n"
-        f"      {leaf}={chosen}\n"
-        f"  - or record it in an instrument preset YAML under the "
-        f"'{stage_block}:' block for routine reuse across experiments."
+        f"  - persist it onto this experiment (invalidates downstream stages):\n"
+        f"      ftmwpipeline settings set <file.ftmw> {spec.path} {chosen}\n"
+        f"  - or capture this experiment's chosen values as a reusable preset:\n"
+        f"      ftmwpipeline settings export <file.ftmw> <out.yml> {stage_block}"
     )
 
 
@@ -319,7 +317,7 @@ def run_scan(
     out = Path(output_dir) if output_dir is not None else Path.cwd()
     out.mkdir(parents=True, exist_ok=True)
 
-    work_dir = out / ".tune_work"
+    work_dir = out / ".scan_work"
     work_dir.mkdir(parents=True, exist_ok=True)
     values = spec.grid(grid)
     work = work_dir / f"{ftmw_path.stem}__{_safe(spec.path)}.ftmw"
@@ -363,7 +361,7 @@ def run_scan(
         if reporter is not None:
             reporter(i + 1, total, value)
 
-    csv_path = out / f"tune_{_safe(spec.path)}_{ftmw_path.stem}.csv"
+    csv_path = out / f"scan_{_safe(spec.path)}_{ftmw_path.stem}.csv"
     _write_csv(csv_path, spec, rows)
 
     rec = _recommend(spec, rows)
@@ -464,7 +462,7 @@ def _render_plot(
 
         plt.show()
         return None
-    plot_path = out / f"tune_{_safe(spec.path)}_{stem}.png"
+    plot_path = out / f"scan_{_safe(spec.path)}_{stem}.png"
     fig.savefig(plot_path, dpi=150, bbox_inches="tight")
     import matplotlib.pyplot as plt  # lazy
 

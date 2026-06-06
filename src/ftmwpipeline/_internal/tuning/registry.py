@@ -77,7 +77,7 @@ class KnobSpec:
     """Optional pointer to a related knob/visualization, shown in non-quiet
     output (e.g. a detection knob pointing at the spectrum-impact knob)."""
     tier: str = "primary"
-    """``"primary"`` (shown in the default ``tune list``) or ``"advanced"``
+    """``"primary"`` (shown in the default ``scan list``) or ``"advanced"``
     (revealed only with ``--all`` / ``include_advanced``). Lets the surface
     expose every knob while keeping the default view a short starting point."""
     prepare: Optional[Callable[..., None]] = None

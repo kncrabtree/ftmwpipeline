@@ -14,7 +14,8 @@ default (that is the per-knob audit, issue #3).
 [`../CLI_STRATEGY.md`](../CLI_STRATEGY.md): the cross-cutting **`settings`**
 meta-object (`settings show` / `settings set` / `settings export`) and the
 **`scan`** meta-object (`scan list` / `scan run` / `scan all`, which renames the
-legacy `tune list` / `tune scan` / `tune scan-all`). The stage-command half of
+legacy `tune list` / `tune scan` / `tune scan-all`, now removed). The
+stage-command half of
 that grammar migration (the `data import`/`<stage> run`/`<stage> show` objects)
 is tracked separately; issue #28 owns the two meta-objects. Selectors are the
 dotted registry paths (`noise`, `noise.window_mhz`, `stage2b.gaussian`).
@@ -267,9 +268,17 @@ three surfaces:
    carry FT settings). The `settings show` footer now points at both verbs.
    Unit-tested in `tests/unit/_internal/tuning/test_settings_mutation.py`;
    cross-interface parity in `TestSettingsMutationConsistency`.
-5. **`tune` → `scan` rename** — migrate the legacy `tune list` / `tune scan` /
-   `tune scan-all` to the `scan` meta-object (`list` / `run` / `all`) per
-   CLI_STRATEGY.
+5. **`tune` → `scan` rename. — Done.** The legacy `tune` namespace is removed
+   (pre-release; no alias kept) and replaced by the `scan` meta-object: `tune
+   list` → `scan list`, `tune scan` → `scan run`, `tune scan-all` → `scan all`
+   (`cli/tune_commands.py` → `cli/scan_commands.py`,
+   `register_tune_commands` → `register_scan_commands`). The Python wrappers
+   rename in lockstep — `Pipeline` / `api` `tune_list` / `tune_scan` /
+   `tune_scan_batch` → `scan_list` / `scan_run` / `scan_all` — and the sweep
+   engine's output artifacts and `.scan_work` dir drop the `tune_` prefix. The
+   `scan run` apply-instructions now emit concrete `settings set` / `settings
+   export` commands. Cross-interface parity in
+   `tests/integration/test_scan_cross_interface.py`.
 6. **Doc reconciliation** of the stale precedence statements (see D11 task list).
 
 ## Open items

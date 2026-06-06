@@ -1,16 +1,17 @@
-"""CLI subcommands for the companion parameter-tuning surface (``tune``).
+"""CLI subcommands for the cross-cutting parameter-scan surface (``scan``).
 
-Nested subcommands under ``tune``:
+Nested subcommands under ``scan``:
 
-- ``tune list``  — enumerate the registered tunable knobs.
-- ``tune scan``  — sweep one knob across a grid on a copy of a ``.ftmw``,
+- ``scan list``  — enumerate the registered tunable knobs.
+- ``scan run``   — sweep one knob across a grid on a copy of a ``.ftmw``,
   print the metric table, write a CSV (and a plot if the knob has one), and
   show how to apply a chosen value.
+- ``scan all``   — batch ``scan run`` over a whole stage / sub-block.
 
 Per the repo's pattern (cf. ``start_commands``) the CLI reaches the shared
 ``_internal.tuning`` engine directly. ``--interactive`` is the one CLI-only
 affordance — it steers a plot to an interactive backend instead of a file; the
-``Pipeline`` / functional-API ``tune_scan`` always write a file so script
+``Pipeline`` / functional-API ``scan_run`` always write a file so script
 callers own figure handling.
 """
 
@@ -27,7 +28,7 @@ from .utils import print_error, setup_logging
 logger = logging.getLogger(__name__)
 
 
-def cmd_tune_list(args: argparse.Namespace) -> int:
+def cmd_scan_list(args: argparse.Namespace) -> int:
     """Print the registered tunable knobs as a single prefix-elided table.
 
     Shows primary-tier knobs by default; ``--all`` reveals advanced ones. A
@@ -82,7 +83,7 @@ def cmd_tune_list(args: argparse.Namespace) -> int:
         ]
         if hidden:
             print(f"{len(hidden)} advanced knob(s) hidden; use --all to show them.")
-    print("Run 'ftmwpipeline tune scan <file> --knob <knob>' to sweep one.")
+    print("Run 'ftmwpipeline scan run <file> --knob <knob>' to sweep one.")
     return 0
 
 
@@ -106,7 +107,7 @@ def _parse_zoom(text: str) -> List[Tuple[float, float]]:
     return regions
 
 
-def cmd_tune_scan(args: argparse.Namespace) -> int:
+def cmd_scan_run(args: argparse.Namespace) -> int:
     """Sweep a knob across a grid and report the metric table."""
     setup_logging(getattr(args, "verbose", False))
     from .._internal.tuning import get_knob, run_scan
@@ -189,7 +190,7 @@ def cmd_tune_scan(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_tune_scan_all(args: argparse.Namespace) -> int:
+def cmd_scan_all(args: argparse.Namespace) -> int:
     """Sweep every knob matched by a selector, each on its default grid."""
     setup_logging(getattr(args, "verbose", False))
     from .._internal.tuning import list_knobs, run_scan_batch
@@ -349,23 +350,23 @@ def _fit_kwargs(args: argparse.Namespace) -> dict:
     }
 
 
-def register_tune_commands(subparsers: Any) -> None:
-    """Register the ``tune`` namespace and its subcommands."""
-    tune = subparsers.add_parser(
-        "tune",
+def register_scan_commands(subparsers: Any) -> None:
+    """Register the ``scan`` meta-object and its subcommands."""
+    scan = subparsers.add_parser(
+        "scan",
         help="Scan/visualize tunable pipeline parameters for your instrument",
         description=(
-            "Companion tuning surface. 'tune list' enumerates the tunable "
-            "knobs; 'tune scan' sweeps one across a grid on a copy of a .ftmw "
+            "Parameter-scan surface. 'scan list' enumerates the tunable "
+            "knobs; 'scan run' sweeps one across a grid on a copy of a .ftmw "
             "and reports a metric table (plus a CSV and, where available, a "
-            "plot), with instructions for applying a chosen value; 'tune "
-            "scan-all' batches that sweep over a whole stage / sub-block."
+            "plot), with instructions for applying a chosen value; 'scan "
+            "all' batches that sweep over a whole stage / sub-block."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    tune_sub = tune.add_subparsers(dest="tune_command", help="tune subcommands")
+    scan_sub = scan.add_subparsers(dest="scan_command", help="scan subcommands")
 
-    p_list = tune_sub.add_parser(
+    p_list = scan_sub.add_parser(
         "list",
         help="List registered tunable knobs, grouped by stage -> sub-block",
     )
@@ -388,10 +389,10 @@ def register_tune_commands(subparsers: Any) -> None:
         default=None,
         help=argparse.SUPPRESS,  # back-compat alias for the positional selector
     )
-    p_list.set_defaults(func=cmd_tune_list)
+    p_list.set_defaults(func=cmd_scan_list)
 
-    p_scan = tune_sub.add_parser(
-        "scan",
+    p_scan = scan_sub.add_parser(
+        "run",
         help="Sweep one knob across a grid and report the metric table",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
@@ -408,7 +409,7 @@ def register_tune_commands(subparsers: Any) -> None:
     p_scan.add_argument(
         "--knob",
         required=True,
-        help="Dotted knob path (see 'tune list'), e.g. stage2.window_mhz",
+        help="Dotted knob path (see 'scan list'), e.g. stage2.window_mhz",
     )
     p_scan.add_argument(
         "--grid",
@@ -448,13 +449,13 @@ def register_tune_commands(subparsers: Any) -> None:
     p_scan.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
-    p_scan.set_defaults(func=cmd_tune_scan)
+    p_scan.set_defaults(func=cmd_scan_run)
 
-    p_scan_all = tune_sub.add_parser(
-        "scan-all",
+    p_scan_all = scan_sub.add_parser(
+        "all",
         help="Sweep every knob in a stage/sub-block on its default grid",
         description=(
-            "Batch convenience over 'tune scan': sweep every knob matched by the "
+            "Batch convenience over 'scan run': sweep every knob matched by the "
             "selector, each on its default grid, writing each knob's table/CSV/"
             "plot. A knob whose required stage is absent is reported as failed "
             "and the batch continues."
@@ -504,11 +505,11 @@ def register_tune_commands(subparsers: Any) -> None:
     p_scan_all.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
-    p_scan_all.set_defaults(func=cmd_tune_scan_all)
+    p_scan_all.set_defaults(func=cmd_scan_all)
 
-    # 'tune' with no subcommand prints its help.
-    def _tune_help(args: argparse.Namespace) -> int:
-        tune.print_help()
+    # 'scan' with no subcommand prints its help.
+    def _scan_help(args: argparse.Namespace) -> int:
+        scan.print_help()
         return 1
 
-    tune.set_defaults(func=_tune_help)
+    scan.set_defaults(func=_scan_help)
