@@ -106,7 +106,7 @@ documented stock values:
 
 Equivalent at the CLI::
 
-   ftmwpipeline fit-peaks exp.ftmw
+   ftmwpipeline fit run exp.ftmw
 
 One-off overrides
 ~~~~~~~~~~~~~~~~~
@@ -157,24 +157,24 @@ Use a packaged preset by bare name:
 
 .. code-block:: shell
 
-   ftmwpipeline fit-peaks exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline fit run exp.ftmw --preset instrument_bc_2638
 
 Or load a YAML file you wrote yourself by path:
 
 .. code-block:: shell
 
-   ftmwpipeline fit-peaks exp.ftmw --preset ./my_lab_recipe.yaml
+   ftmwpipeline fit run exp.ftmw --preset ./my_lab_recipe.yaml
 
 The same preset name passed to any stage CLI subcommand loads only that
 stage's block:
 
 .. code-block:: shell
 
-   ftmwpipeline estimate-noise   exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline calibrate-tau    exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline detect-peaks     exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline assign-windows   exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline fit-peaks        exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline noise run    exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline tau run      exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline peaks run    exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline windows run  exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline fit run      exp.ftmw --preset instrument_bc_2638
 
 A stage whose block is missing from the preset loads an empty
 ``XxxSettings`` and falls through to the next layer of the resolver —
@@ -185,7 +185,7 @@ adopt a preset's recipe and tweak one knob:
 
 .. code-block:: shell
 
-   ftmwpipeline fit-peaks exp.ftmw \
+   ftmwpipeline fit run exp.ftmw \
      --preset instrument_bc_2638 \
      --max-residual-rescue-rounds 3
 
@@ -242,10 +242,10 @@ a sequence like:
 
 .. code-block:: shell
 
-   ftmwpipeline fit-peaks exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline visualize-fit exp.ftmw
+   ftmwpipeline fit run exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline fit show exp.ftmw
    # ... look at the fit, decide to tighten rescue ...
-   ftmwpipeline fit-peaks exp.ftmw --max-residual-rescue-rounds 3
+   ftmwpipeline fit run exp.ftmw --max-residual-rescue-rounds 3
 
 does what you probably expect: the second fit keeps the Gaussian shape
 and the per-band τ routing from the first call's preset, and just
@@ -364,7 +364,7 @@ To use a YAML you wrote, pass its path:
 
 .. code-block:: shell
 
-   ftmwpipeline fit-peaks exp.ftmw --preset ./my_lab_recipe.yaml
+   ftmwpipeline fit run exp.ftmw --preset ./my_lab_recipe.yaml
 
 To ship one alongside the package, drop it into
 ``src/ftmwpipeline/presets/`` and refer to it by bare name.

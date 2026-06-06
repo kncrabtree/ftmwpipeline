@@ -1,7 +1,7 @@
 """
 Noise estimation and visualization commands.
 
-This module implements the estimate-noise and visualize-noise subcommands
+This module implements the ``noise run`` and ``noise show`` subcommands
 for Stage 2 noise estimation and diagnostic visualization.
 """
 
@@ -15,7 +15,12 @@ from .._internal.stage2_impl import (
     compute_noise_estimation_impl,
     visualize_noise_impl,
 )
-from .utils import print_error, print_processing_params, setup_logging
+from .utils import (
+    add_stage_object,
+    print_error,
+    print_processing_params,
+    setup_logging,
+)
 
 
 def cmd_estimate_noise(args: argparse.Namespace) -> int:
@@ -119,7 +124,7 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         )
 
         print(f"\nResults saved to: {file_path}")
-        print("Use 'visualize-noise' command to create diagnostic plots")
+        print("Use 'noise show' command to create diagnostic plots")
 
         return 0
 
@@ -128,7 +133,7 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: Run 'compute-ft' command first to generate ComplexFT data")
+        print("Hint: Run 'ft run' command first to generate ComplexFT data")
         return 1
     except Exception as e:
         print_error(f"Noise estimation failed: {e}")
@@ -253,7 +258,7 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: Run 'estimate-noise' command first to generate noise results")
+        print("Hint: Run 'noise run' command first to generate noise results")
         return 1
     except Exception as e:
         print_error(f"Noise visualization failed: {e}")
@@ -265,11 +270,18 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
 
 
 def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
-    """Register noise estimation commands with the main CLI parser."""
+    """Register noise estimation (Stage 2) object-verb subcommands."""
+    verbs = add_stage_object(
+        subparsers,
+        "noise",
+        synonym="stage2",
+        help="Stage 2: noise estimation (run / show)",
+        description="Estimate and visualize frequency-dependent noise (Stage 2).",
+    )
 
-    # estimate-noise command
-    parser_estimate = subparsers.add_parser(
-        "estimate-noise",
+    # noise run
+    parser_estimate = verbs.add_parser(
+        "run",
         help="Estimate frequency-dependent noise with the scatter estimator",
         description="Perform Stage 2 noise estimation with configurable parameters",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -353,9 +365,9 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
 
     parser_estimate.set_defaults(func=cmd_estimate_noise)
 
-    # visualize-noise command
-    parser_visualize = subparsers.add_parser(
-        "visualize-noise",
+    # noise show
+    parser_visualize = verbs.add_parser(
+        "show",
         help="Create noise estimation diagnostic visualization",
         description="Generate comprehensive diagnostic plots for noise estimation results",
         formatter_class=argparse.RawDescriptionHelpFormatter,

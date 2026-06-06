@@ -318,13 +318,13 @@ class TestCLIWorkflows:
         self, exp_2638_data_path, temp_ftmw_file, standard_ft_params
     ):
         """Test CLI creates valid .ftmw files and processes data correctly."""
-        # import-data → compute-ft → visualize-ft (via subprocess)
+        # data import → ft run → ft show (via subprocess)
 
         # Stage 0: Import data
         success, stdout, stderr = self.run_cli_command(
-            ["import-data", str(temp_ftmw_file), "--source", exp_2638_data_path]
+            ["data", "import", str(temp_ftmw_file), exp_2638_data_path]
         )
-        assert success, f"import-data failed: {stderr}"
+        assert success, f"data import failed: {stderr}"
         assert temp_ftmw_file.exists(), "Pipeline file not created by CLI"
         assert (
             "Data import completed successfully" in stdout
@@ -336,7 +336,8 @@ class TestCLIWorkflows:
 
         success, stdout, stderr = self.run_cli_command(
             [
-                "compute-ft",
+                "ft",
+                "run",
                 str(temp_ftmw_file),
                 "--zpf",
                 str(zpf),
@@ -346,7 +347,7 @@ class TestCLIWorkflows:
                 f"{trim_min}:{trim_max}",
             ]
         )
-        assert success, f"compute-ft failed: {stderr}"
+        assert success, f"ft run failed: {stderr}"
         assert (
             "FT processing validation and parameter storage completed successfully"
             in stdout
@@ -355,7 +356,8 @@ class TestCLIWorkflows:
         # Stage 1: Visualize FT (non-interactive)
         success, stdout, stderr = self.run_cli_command(
             [
-                "visualize-ft",
+                "ft",
+                "show",
                 str(temp_ftmw_file),
                 "--zpf",
                 str(zpf),
@@ -366,7 +368,7 @@ class TestCLIWorkflows:
                 "--no-interactive",
             ]
         )
-        assert success, f"visualize-ft failed: {stderr}"
+        assert success, f"ft show failed: {stderr}"
         assert "Enhanced plot saved" in stdout, "Visualization success message missing"
 
         # Verify pipeline file is valid using functional API
@@ -380,9 +382,9 @@ class TestCLIWorkflows:
         import json
 
         success, _, stderr = self.run_cli_command(
-            ["import-data", str(temp_ftmw_file), "--source", exp_2638_data_path]
+            ["data", "import", str(temp_ftmw_file), exp_2638_data_path]
         )
-        assert success, f"import-data failed: {stderr}"
+        assert success, f"data import failed: {stderr}"
 
         # Text form
         success, stdout, _ = self.run_cli_command(["info", str(temp_ftmw_file)])
@@ -402,9 +404,9 @@ class TestCLIWorkflows:
         """Test CLI file creation produces valid files usable by other interfaces."""
         # Import data with CLI
         success, stdout, stderr = self.run_cli_command(
-            ["import-data", str(temp_ftmw_file), "--source", exp_2638_data_path]
+            ["data", "import", str(temp_ftmw_file), exp_2638_data_path]
         )
-        assert success, f"import-data failed: {stderr}"
+        assert success, f"data import failed: {stderr}"
 
         # Verify file can be used by functional API
         fid = ftmw.load_fid(temp_ftmw_file)
@@ -421,25 +423,25 @@ class TestCLIWorkflows:
 
     def test_cli_error_handling(self, temp_ftmw_file):
         """Test CLI error handling for missing files and invalid parameters."""
-        # Test import-data with non-existent source
+        # Test data import with non-existent source
         success, stdout, stderr = self.run_cli_command(
-            ["import-data", str(temp_ftmw_file), "--source", "nonexistent_source"],
+            ["data", "import", str(temp_ftmw_file), "nonexistent_source"],
             check_return_code=False,
         )
-        assert not success, "import-data should fail with non-existent source"
+        assert not success, "data import should fail with non-existent source"
 
-        # Test compute-ft with non-existent file
+        # Test ft run with non-existent file
         success, stdout, stderr = self.run_cli_command(
-            ["compute-ft", "nonexistent_file.ftmw"], check_return_code=False
+            ["ft", "run", "nonexistent_file.ftmw"], check_return_code=False
         )
-        assert not success, "compute-ft should fail with non-existent file"
+        assert not success, "ft run should fail with non-existent file"
 
         # Test invalid trim range
         success, stdout, stderr = self.run_cli_command(
-            ["compute-ft", str(temp_ftmw_file), "--trim", "invalid_range"],
+            ["ft", "run", str(temp_ftmw_file), "--trim", "invalid_range"],
             check_return_code=False,
         )
-        assert not success, "compute-ft should fail with invalid trim range"
+        assert not success, "ft run should fail with invalid trim range"
 
     def test_cli_validation_commands(self):
         """Test CLI validation and info commands."""

@@ -95,7 +95,7 @@ def test_set_unknown_stage_raises(bare_ftmw: Path) -> None:
 # --- set_setting: Stage 1 rules --------------------------------------------
 @pytest.mark.parametrize("field", ["zpf", "expf_us", "window_function"])
 def test_set_stage1_ft_shaping_rejected(bare_ftmw: Path, field: str) -> None:
-    with pytest.raises(ValueError, match="compute-ft"):
+    with pytest.raises(ValueError, match="ft run"):
         set_setting(bare_ftmw, f"stage1.{field}", "2")
 
 

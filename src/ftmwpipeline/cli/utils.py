@@ -6,7 +6,41 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
+
+
+def add_stage_object(
+    subparsers: Any,
+    name: str,
+    *,
+    synonym: Optional[str] = None,
+    help: str,
+    description: Optional[str] = None,
+) -> Any:
+    """Create a stage-object parser and return its verb subparsers action.
+
+    Builds the object-verb surface for one pipeline stage: an object parser
+    ``name`` (with an optional fully-interchangeable ``stageN`` ``synonym``
+    alias, e.g. ``ft`` / ``stage1``) carrying a verb layer. Callers attach the
+    stage's verbs -- ``run`` / ``show`` and any stage-specific extras -- to the
+    returned subparsers action, putting each verb's argument block on the verb
+    parser. Invoking the object with no verb prints its help and exits 1.
+    """
+    obj = subparsers.add_parser(
+        name,
+        aliases=[synonym] if synonym else [],
+        help=help,
+        description=description or help,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    verbs = obj.add_subparsers(dest=f"{name}_verb", help=f"{name} actions")
+
+    def _print_object_help(args: argparse.Namespace) -> int:
+        obj.print_help()
+        return 1
+
+    obj.set_defaults(func=_print_object_help)
+    return verbs
 
 
 def setup_logging(verbose: bool = False) -> None:

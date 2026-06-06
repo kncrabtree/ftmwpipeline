@@ -84,7 +84,7 @@ def test_cross_interface_consistency(baseline_2638_stage4_small, temp_ftmw_dir):
     fit_pipe = Pipeline(pfile).fit_peaks()
     fit_func = ftmw.fit_peaks(ffile)
     res = subprocess.run(
-        ["ftmwpipeline", "fit-peaks", str(cfile)],
+        ["ftmwpipeline", "fit", "run", str(cfile)],
         capture_output=True,
         text=True,
         timeout=600,
@@ -137,7 +137,8 @@ def test_validate_stage5_shape_error_cross_interface(
     res = subprocess.run(
         [
             "ftmwpipeline",
-            "validate-stage5-shape-error",
+            "fit",
+            "check",
             str(cfile),
             "--ground-truth",
             str(gt),
@@ -300,7 +301,7 @@ def test_fit_peaks_gaussian_cross_interface(
     fit_pipe = Pipeline(pfile).fit_peaks(shape="gaussian")
     fit_func = ftmw.fit_peaks(ffile, shape="gaussian")
     res = subprocess.run(
-        ["ftmwpipeline", "fit-peaks", str(cfile), "--shape", "gaussian"],
+        ["ftmwpipeline", "fit", "run", str(cfile), "--shape", "gaussian"],
         capture_output=True,
         text=True,
         timeout=900,
@@ -392,7 +393,7 @@ def test_calibrate_tau_G_cross_interface(
     tc_pipe = Pipeline(pfile).calibrate_tau_G(settings=skip)
     tc_func = ftmw.calibrate_tau_G(ffile, settings=skip)
     res = subprocess.run(
-        ["ftmwpipeline", "calibrate-tau-G", str(cfile), "--preset", str(skip_yaml)],
+        ["ftmwpipeline", "tau", "run", "--gaussian", str(cfile), "--preset", str(skip_yaml)],
         capture_output=True,
         text=True,
         timeout=600,
@@ -427,7 +428,8 @@ def test_cli_visualize_fit_writes_output(
     res = subprocess.run(
         [
             "ftmwpipeline",
-            "visualize-fit",
+            "fit",
+            "show",
             str(fp),
             "--no-interactive",
             "--output",

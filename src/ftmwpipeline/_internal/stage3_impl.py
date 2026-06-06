@@ -636,12 +636,12 @@ def detect_peaks_impl(
         ):
             raise ValueError(
                 "Stage 1 (FT computation) must be completed before peak "
-                "detection. Run compute_ft()/compute-ft first."
+                "detection. Run compute_ft()/'ft run' first."
             )
         if "stage2_noise_result" not in h5f:
             raise ValueError(
                 "Stage 2 (noise estimation) must be completed before peak "
-                "detection. Run estimate_noise()/estimate-noise first."
+                "detection. Run estimate_noise()/'noise run' first."
             )
 
     # The canonical active FT is the single grid on which detections are
@@ -886,7 +886,7 @@ def load_peaks_impl(file_path: str) -> Dict[str, Any]:
         if "stage3_peaks" not in h5f:
             raise ValueError(
                 "No Stage 3 peak results found. Run detect_peaks()/"
-                "detect-peaks first."
+                "'peaks run' first."
             )
         grp = h5f["stage3_peaks"]
         peaks = load_peaks_from_hdf5(grp)

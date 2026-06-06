@@ -55,7 +55,7 @@ def test_cross_interface_consistency(baseline_2638_stage3, temp_ftmw_dir):
     plan_pipe = Pipeline(pfile).assign_windows()
     plan_func = ftmw.assign_windows(ffile)
     res = subprocess.run(
-        ["ftmwpipeline", "assign-windows", str(cfile)],
+        ["ftmwpipeline", "windows", "run", str(cfile)],
         capture_output=True,
         text=True,
         timeout=300,

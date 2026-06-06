@@ -70,56 +70,35 @@ def create_parser() -> argparse.ArgumentParser:
         description="FTMW spectroscopy signal processing and peak fitting",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Available Commands:
-  Stage 0 (Data import):
-    import-data     Import experimental data, creating a .ftmw file
-    visualize-data  Visualize imported FID data
-    formats         List available data formats
+Object-verb grammar: ftmwpipeline <object> <verb> <file.ftmw> [options]
+Every stage object accepts 'run' and 'show'; the stageN synonym is
+interchangeable with the name (ft run == stage1 run).
 
-  Stage 1 (FT processing):
-    compute-ft      Compute the Fourier transform
-    visualize-ft    Visualize the FT spectrum
+Stage objects (synonym):
+  data (stage0)     import <src> | show   Import experimental data / view FID
+  start             run | show            Detect/stamp start_us / sweep diagnostic
+  ft (stage1)       run | show            Compute / visualize the Fourier transform
+  noise (stage2)    run | show            Estimate / visualize frequency-dependent noise
+  tau (stage2b)     run [--gaussian]      STFT tau calibration (--gaussian: tau_G twin)
+                    show --kind heatmap|distribution
+  peaks (stage3)    run | show            Detect/classify peaks / overlay them
+  windows (stage4)  run | show            Plan fit windows / overlay the plan
+  fit (stage5)      run | show | check    Fit lines / overlay / SNR-aware assessment
 
-  Stage 2 (Noise estimation):
-    estimate-noise  Estimate frequency-dependent noise
-    visualize-noise Visualize noise estimation
+Meta objects (cross-cutting, optional dotted selector):
+  scan      list | run | all              Knob registry; sweep one / all knobs
+  settings  show | set | export           Resolved value + provenance; persist; preset
 
-  Stage 2b (Tau calibration):
-    calibrate-tau               Run the STFT tau calibration
-    visualize-tau-heatmap       2D STFT magnitude heatmap
-    visualize-tau-distribution  tau histogram + diagnostics
-
-  Stage 3 (Peak detection):
-    detect-peaks    Detect and classify peaks (two-pass)
-    visualize-peaks Overlay classified peaks on the spectrum
-
-  Stage 4 (Window assignment):
-    assign-windows    Turn promoted peaks into a fit-window plan
-    visualize-windows Overlay the window plan on the spectrum
-
-  Stage 5 (Fitting):
-    fit-peaks       Fit each window's lines (conservative add-one-peak loop)
-    visualize-fit   Overlay the fitted model on the spectrum
-
-  Parameter scanning:
-    scan list       List the tunable knobs for your instrument
-    scan run        Sweep one knob across a grid and report a metric table
-    scan all        Batch the sweep over a whole stage / sub-block
-
-  Settings:
-    settings show   Resolved value + provenance per setting
-    settings set    Persist a chosen value into the .ftmw
-    settings export Write the chosen values to a .yml preset
-
-  Utility:
-    info            Show provenance and stage status for a .ftmw file
-    validate        Check installation and dependencies
-    version         Show version and package information
+Utility (bare commands):
+  formats           List available data formats
+  info              Show provenance and stage status for a .ftmw file
+  validate          Check installation and dependencies
+  version           Show version and package information
 
 Examples:
-  ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
-  ftmwpipeline compute-ft exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
-  ftmwpipeline estimate-noise exp_2638.ftmw
+  ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/
+  ftmwpipeline ft run exp_2638.ftmw --zpf 2 --expf_us 5.0 --trim 26500:40000
+  ftmwpipeline noise run exp_2638.ftmw
   ftmwpipeline info exp_2638.ftmw --format json
         """,
     )

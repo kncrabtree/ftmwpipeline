@@ -185,7 +185,7 @@ def assign_windows_impl(
         if "stage3_peaks" not in h5f:
             raise ValueError(
                 "Stage 3 (peak detection) must be completed before window "
-                "assignment. Run detect_peaks()/detect-peaks first."
+                "assignment. Run detect_peaks()/'peaks run' first."
             )
 
     explicit = _build_explicit_from_kwargs(
@@ -346,7 +346,7 @@ def load_windows_impl(file_path: str) -> Dict[str, Any]:
         if "stage4_windows" not in h5f:
             raise ValueError(
                 "No Stage 4 window plan found. Run assign_windows()/"
-                "assign-windows first."
+                "'windows run' first."
             )
         grp = h5f["stage4_windows"]
         plan = load_window_plan_from_hdf5(grp)

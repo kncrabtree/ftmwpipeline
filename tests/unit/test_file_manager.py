@@ -292,7 +292,7 @@ class TestFileManagerFunctions:
         assert "Pipeline file not found" in error_message
         assert "Pipeline.create" in error_message  # Should suggest solution
         assert (
-            "ftmwpipeline import-data" in error_message
+            "ftmwpipeline data import" in error_message
         )  # Should suggest CLI alternative
 
     def test_validate_pipeline_file_functional(

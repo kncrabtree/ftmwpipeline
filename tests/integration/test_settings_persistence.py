@@ -190,9 +190,9 @@ class TestCrossInterfaceD7:
     """
 
     def _run_cli_import(self, ftmw_file: Path, source: str) -> None:
-        r = _run_cli("import-data", str(ftmw_file), "--source", source)
+        r = _run_cli("data", "import", str(ftmw_file), source)
         if r.returncode != 0:
-            pytest.fail(f"import-data failed:\n{r.stderr}")
+            pytest.fail(f"data import failed:\n{r.stderr}")
 
     def _run_cli_compute_ft(
         self,
@@ -203,7 +203,8 @@ class TestCrossInterfaceD7:
         trim_max: float,
     ) -> None:
         r = _run_cli(
-            "compute-ft",
+            "ft",
+            "run",
             str(ftmw_file),
             "--zpf",
             str(zpf),

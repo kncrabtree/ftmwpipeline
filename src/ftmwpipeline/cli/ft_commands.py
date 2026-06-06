@@ -1,7 +1,7 @@
 """
 FT processing and visualization commands.
 
-This module implements the compute-ft and visualize-ft subcommands
+This module implements the ``ft run`` and ``ft show`` subcommands
 for basic FTMW data processing and visualization.
 """
 
@@ -12,7 +12,12 @@ from pathlib import Path
 # Import shared implementations
 from .._internal.stage1_impl import compute_ft_impl, visualize_ft_impl
 from ._argspec import add_settings_args, settings_from_namespace
-from .utils import print_error, print_processing_params, setup_logging
+from .utils import (
+    add_stage_object,
+    print_error,
+    print_processing_params,
+    setup_logging,
+)
 
 
 def cmd_ft_process(args: argparse.Namespace) -> int:
@@ -29,10 +34,10 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
     - Get detailed processing statistics and information
     - Programmatically validate parameters in automated workflows
 
-    For interactive parameter exploration with visualization, use visualize-ft.
+    For interactive parameter exploration with visualization, use 'ft show'.
 
     Stage-based workflow:
-    1. Load FID data from Stage 0 cache (import-data command output)
+    1. Load FID data from Stage 0 cache ('data import' command output)
     2. Test preprocessing (windowing, filtering, zero-padding)
     3. Test FFT computation and frequency range
     4. Provide detailed feedback without permanent storage
@@ -77,11 +82,11 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
             print()
             print("Parameters stored for subsequent pipeline stages")
             print("   ComplexFT will be calculated on-demand when needed")
-            print(f"   Next steps: ftmwpipeline estimate-noise {file_path}")
-            print(f"              ftmwpipeline visualize-ft {file_path}")
+            print(f"   Next steps: ftmwpipeline noise run {file_path}")
+            print(f"              ftmwpipeline ft show {file_path}")
             if trim_range:
                 print(
-                    f"              ftmwpipeline visualize-ft {file_path} "
+                    f"              ftmwpipeline ft show {file_path} "
                     f"--trim {trim_range[0]:.0f}:{trim_range[1]:.0f}"
                 )
 
@@ -91,14 +96,14 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
             print("Stage 0 (Data Import) must be completed before FT processing.")
-            print(f"Run: ftmwpipeline import-data {file_path} --source <path>")
+            print(f"Run: ftmwpipeline data import {file_path} <path>")
             print("")
             print("For example:")
             print(
-                f"  ftmwpipeline import-data {file_path} "
-                f"--source examples/blackchirp_data/2638/"
+                f"  ftmwpipeline data import {file_path} "
+                f"examples/blackchirp_data/2638/"
             )
-            print(f"  ftmwpipeline compute-ft {file_path}")
+            print(f"  ftmwpipeline ft run {file_path}")
             return 1
         except Exception as e:
             print_error(f"Failed to process FT: {e}")
@@ -115,7 +120,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
 def cmd_ft_visualize(args: argparse.Namespace) -> int:
     """Enhanced interactive parameter exploration with FID visualization panels.
 
-    This is the companion tool to compute-ft, designed for exploratory usage
+    This is the companion tool to 'ft run', designed for exploratory usage
     where users want to experiment with different processing parameters and
     see immediate visual feedback. Creates enhanced multi-panel plots showing
     the complete processing workflow from raw FID to final spectrum.
@@ -198,9 +203,9 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
             print()
             print("ComplexFT calculated on-demand from pipeline file")
             print("   Try different parameters without permanent storage:")
-            print(f"   ftmwpipeline visualize-ft {file_path} --zpf 2 --expf_us 3.0")
+            print(f"   ftmwpipeline ft show {file_path} --zpf 2 --expf_us 3.0")
             if not trim_range:
-                print(f"   ftmwpipeline visualize-ft {file_path} --trim 26500:40000")
+                print(f"   ftmwpipeline ft show {file_path} --trim 26500:40000")
 
             return 0
 
@@ -208,14 +213,14 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
             print_error(f"Pipeline file not found: {file_path}")
             print("")
             print("Stage 0 (Data Import) must be completed before FT visualization.")
-            print(f"Run: ftmwpipeline import-data {file_path} --source <path>")
+            print(f"Run: ftmwpipeline data import {file_path} <path>")
             print("")
             print("For example:")
             print(
-                f"  ftmwpipeline import-data {file_path} "
-                f"--source examples/blackchirp_data/2638/"
+                f"  ftmwpipeline data import {file_path} "
+                f"examples/blackchirp_data/2638/"
             )
-            print(f"  ftmwpipeline visualize-ft {file_path}")
+            print(f"  ftmwpipeline ft show {file_path}")
             return 1
         except Exception as e:
             print_error(f"Failed to visualize FT: {e}")
@@ -230,11 +235,18 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
 
 
 def add_ft_subcommands(subparsers: argparse._SubParsersAction) -> None:
-    """Add FT processing subcommands to the argument parser."""
+    """Add FT processing (Stage 1) object-verb subcommands."""
+    verbs = add_stage_object(
+        subparsers,
+        "ft",
+        synonym="stage1",
+        help="Stage 1: FT processing (run / show)",
+        description="Compute and visualize the Fourier transform (Stage 1).",
+    )
 
-    # compute-ft command
-    ft_process_parser = subparsers.add_parser(
-        "compute-ft",
+    # ft run
+    ft_process_parser = verbs.add_parser(
+        "run",
         help="Validate and store user-provided FT processing settings for analysis",
         description=(
             "Power user tool to validate specific FT processing parameters "
@@ -247,19 +259,19 @@ Intended for: Power users and automated pipeline processes
 
 Examples:
   # Validate basic processing parameters
-  ftmwpipeline compute-ft exp_2638.ftmw --zpf 1 --expf_us 5.0
+  ftmwpipeline ft run exp_2638.ftmw --zpf 1 --expf_us 5.0
 
   # Test parameter combinations with trimming
-  ftmwpipeline compute-ft exp_2638.ftmw --zpf 2 --expf_us 10.0 --trim 26500:40000
+  ftmwpipeline ft run exp_2638.ftmw --zpf 2 --expf_us 10.0 --trim 26500:40000
 
   # Test windowing and scaling parameters
-  ftmwpipeline compute-ft exp_2638.ftmw --start-us 1.0 --end-us 10.0 --units-power 3
+  ftmwpipeline ft run exp_2638.ftmw --start-us 1.0 --end-us 10.0 --units-power 3
 
 Workflow:
-  1. ftmwpipeline import-data exp_2638.ftmw --source examples/blackchirp_data/2638/
-  2. ftmwpipeline compute-ft exp_2638.ftmw [--parameters]  # Power user validation
+  1. ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/
+  2. ftmwpipeline ft run exp_2638.ftmw [--parameters]   # Power user validation
      OR
-     ftmwpipeline visualize-ft exp_2638.ftmw [--parameters] # Interactive exploration
+     ftmwpipeline ft show exp_2638.ftmw [--parameters]  # Interactive exploration
         """,
     )
     ft_process_parser.add_argument("file_path", help="Path to .ftmw pipeline file")
@@ -269,12 +281,12 @@ Workflow:
     )
     ft_process_parser.set_defaults(func=cmd_ft_process)
 
-    # visualize-ft command
-    ft_visualize_parser = subparsers.add_parser(
-        "visualize-ft",
+    # ft show
+    ft_visualize_parser = verbs.add_parser(
+        "show",
         help="Enhanced interactive parameter exploration with FID visualization panels",
         description=(
-            "Enhanced companion tool to compute-ft showing complete "
+            "Enhanced companion to 'ft run' showing the complete "
             "FID-to-spectrum processing workflow."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -290,17 +302,17 @@ Enhanced Visualization:
 
 Examples:
   # Enhanced visualization with windowing bounds displayed
-  ftmwpipeline visualize-ft exp_2638.ftmw --start-us 2.0 --end-us 12.0 --expf_us 5.0
+  ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0 --expf_us 5.0
 
   # Explore custom parameters with trimmed frequency range
-  ftmwpipeline visualize-ft exp_2638.ftmw --zpf 2 --expf_us 3.0 --trim 26500:40000
+  ftmwpipeline ft show exp_2638.ftmw --zpf 2 --expf_us 3.0 --trim 26500:40000
 
   # Static enhanced image export for presentations
-  ftmwpipeline visualize-ft exp_2638.ftmw --start-us 2.0 --end-us 12.0 \\
+  ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0 \\
       --no-interactive --output enhanced_spectrum.png
 
   # Compare preprocessing effects with different window functions
-  ftmwpipeline visualize-ft exp_2638.ftmw --window-function hann --expf_us 10.0
+  ftmwpipeline ft show exp_2638.ftmw --window-function hann --expf_us 10.0
 
 Key Features:
   - Enhanced 3-panel visualization showing complete FID-to-spectrum workflow

@@ -199,7 +199,7 @@ class TestIdenticalResults:
 
         nr_pipeline = Pipeline.open(p_copy).estimate_noise()
         nr_functional = ftmw.estimate_noise(f_copy)
-        self._run_cli_command(["estimate-noise", str(c_copy)])
+        self._run_cli_command(["noise", "run", str(c_copy)])
         nr_cli = load_noise_result_impl(c_copy)["noise_result"]
 
         assert nr_pipeline.bin_info["algorithm"] == "scatter_highpass_region_aware"
@@ -248,7 +248,8 @@ class TestIdenticalResults:
         tc_functional = ftmw.calibrate_tau(f_copy, settings=skip)
         self._run_cli_command(
             [
-                "calibrate-tau",
+                "tau",
+                "run",
                 str(c_copy),
                 "--preset",
                 str(skip_yaml),
@@ -636,7 +637,8 @@ class TestFilePortability:
         trim_min, trim_max = standard_ft_params["trim"]
         self._run_cli_command(
             [
-                "compute-ft",
+                "ft",
+                "run",
                 str(test_file),
                 "--zpf",
                 str(zpf),
@@ -669,7 +671,8 @@ class TestFilePortability:
         trim_min, trim_max = standard_ft_params["trim"]
         self._run_cli_command(
             [
-                "compute-ft",
+                "ft",
+                "run",
                 str(test_file),
                 "--zpf",
                 str(zpf),
@@ -703,7 +706,8 @@ class TestFilePortability:
         trim_min, trim_max = standard_ft_params["trim"]
         self._run_cli_command(
             [
-                "compute-ft",
+                "ft",
+                "run",
                 str(test_file),
                 "--zpf",
                 str(zpf),
@@ -740,7 +744,7 @@ class TestFilePortability:
         noise_result_functional = ftmw.estimate_noise(test_file)
 
         # Process with CLI (just verify CLI can process the file)
-        self._run_cli_command(["estimate-noise", str(test_file)])
+        self._run_cli_command(["noise", "run", str(test_file)])
         noise_result_cli = ftmw.estimate_noise(test_file)
 
         # Results should be identical across interfaces
@@ -842,7 +846,7 @@ class TestErrorConsistency:
 
         # CLI should fail with non-zero return code
         result = subprocess.run(
-            ["ftmwpipeline", "compute-ft", str(nonexistent_file)],
+            ["ftmwpipeline", "ft", "run", str(nonexistent_file)],
             capture_output=True,
             text=True,
             check=False,
@@ -867,9 +871,9 @@ class TestErrorConsistency:
         result = subprocess.run(
             [
                 "ftmwpipeline",
-                "import-data",
+                "data",
+                "import",
                 str(test_file),
-                "--source",
                 nonexistent_source,
             ],
             capture_output=True,
@@ -896,7 +900,7 @@ class TestErrorConsistency:
 
         # CLI should also fail
         result = subprocess.run(
-            ["ftmwpipeline", "compute-ft", str(test_file), "--zpf", "-1"],
+            ["ftmwpipeline", "ft", "run", str(test_file), "--zpf", "-1"],
             capture_output=True,
             text=True,
             check=False,
@@ -926,7 +930,7 @@ class TestErrorConsistency:
 
         # CLI should also detect corruption (though exact command may vary)
         result = subprocess.run(
-            ["ftmwpipeline", "visualize-data", str(test_file)],
+            ["ftmwpipeline", "data", "show", str(test_file)],
             capture_output=True,
             text=True,
             check=False,
@@ -955,7 +959,7 @@ class TestErrorConsistency:
 
         # CLI should fail with non-zero return code
         result = subprocess.run(
-            ["ftmwpipeline", "estimate-noise", str(test_file)],
+            ["ftmwpipeline", "noise", "run", str(test_file)],
             capture_output=True,
             text=True,
             check=False,

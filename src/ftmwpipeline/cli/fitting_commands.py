@@ -1,7 +1,7 @@
 """
 Stage 5 fitting commands.
 
-Implements the ``fit-peaks`` and ``visualize-fit`` subcommands. Thin
+Implements the ``fit run``, ``fit show``, and ``fit check`` subcommands. Thin
 wrappers over the shared ``_internal.stage5_impl`` implementation --
 identical behaviour to the Pipeline class and functional API.
 """
@@ -12,7 +12,7 @@ from typing import Any
 
 from .._internal.stage5_impl import fit_peaks_impl, visualize_fit_impl
 from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
-from .utils import print_error, setup_logging
+from .utils import add_stage_object, print_error, setup_logging
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -28,7 +28,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
     (local thaw + structural replan). Persists the result to
     ``/stage5_fitting``.
 
-    Requires Stage 4 (assign-windows) first.
+    Requires Stage 4 ('windows run') first.
     """
     setup_logging(args.verbose)
     try:
@@ -71,14 +71,14 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             f"(final plan revision {result['final_plan_revision']})"
         )
         print(f"\nResults saved to: {file_path}")
-        print("Use 'visualize-fit' to inspect the fit")
+        print("Use 'fit show' to inspect the fit")
         return 0
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: run 'assign-windows' first")
+        print("Hint: run 'windows run' first")
         return 1
     except Exception as e:
         print_error(f"Fitting failed: {e}")
@@ -134,7 +134,7 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing dependencies: {e}")
-        print("Hint: run 'fit-peaks' first")
+        print("Hint: run 'fit run' first")
         return 1
     except Exception as e:
         print_error(f"Fit visualization failed: {e}")
@@ -171,7 +171,7 @@ def cmd_validate_stage5_shape_error(args: argparse.Namespace) -> int:
         return 1
     except ValueError as e:
         print_error(f"Invalid parameters or missing Stage 5 fit: {e}")
-        print("Hint: run 'fit-peaks' first")
+        print("Hint: run 'fit run' first")
         return 1
     except Exception as e:
         print_error(f"Stage 5 validation failed: {e}")
@@ -183,7 +183,7 @@ def cmd_validate_stage5_shape_error(args: argparse.Namespace) -> int:
 
 
 def _print_validation_report(report: dict) -> None:
-    """Render the validate-stage5-shape-error report as text."""
+    """Render the 'fit check' report as text."""
     params = report["parameters"]
     t1 = report["tier1"]
     print(
@@ -249,9 +249,17 @@ def _print_validation_report(report: dict) -> None:
 
 
 def register_fitting_commands(subparsers: Any) -> None:
-    """Register the fit-peaks and visualize-fit subcommands."""
-    p_fit = subparsers.add_parser(
-        "fit-peaks",
+    """Register fitting (Stage 5) object-verb subcommands (run / show / check)."""
+    verbs = add_stage_object(
+        subparsers,
+        "fit",
+        synonym="stage5",
+        help="Stage 5: fitting (run / show / check)",
+        description="Fit each window's lines, overlay the fit, and assess it.",
+    )
+
+    p_fit = verbs.add_parser(
+        "run",
         help="Fit each Stage 4 window's lines (Stage 5)",
         description=(
             "Stage 5 per-window fitting.\n\n"
@@ -261,7 +269,7 @@ def register_fitting_commands(subparsers: Any) -> None:
             "runs the residual edge-coherence handshake (local thaw +\n"
             "structural replan). Persists per-peak parameters, the audit\n"
             "trail, the thaw / replan histories, and the parameters used\n"
-            "to /stage5_fitting. Run 'assign-windows' first."
+            "to /stage5_fitting. Run 'windows run' first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -367,7 +375,7 @@ def register_fitting_commands(subparsers: Any) -> None:
             "Per-line envelope shape. 'lorentzian' (default) uses "
             "exp(-t/tau); 'gaussian' uses exp(-(t/tau_G)**2). Pass "
             "'gaussian' to consume the Stage 2b tau_G calibration "
-            "(calibrate-tau-G) in place of the pure-exp Stage 2b. "
+            "('tau run --gaussian') in place of the pure-exp Stage 2b. "
             "Omit to fall through to the resolved StageFitSettings "
             "(preset / persisted / hard default)."
         ),
@@ -393,8 +401,8 @@ def register_fitting_commands(subparsers: Any) -> None:
     )
     p_fit.set_defaults(func=cmd_fit_peaks)
 
-    p_vis = subparsers.add_parser(
-        "visualize-fit",
+    p_vis = verbs.add_parser(
+        "show",
         help="Overlay the Stage 5 fit on the spectrum",
         description=(
             "Diagnostic plot of the Stage 5 fit. Default is the spectrum-\n"
@@ -430,8 +438,8 @@ def register_fitting_commands(subparsers: Any) -> None:
     )
     p_vis.set_defaults(func=cmd_visualize_fit)
 
-    p_val = subparsers.add_parser(
-        "validate-stage5-shape-error",
+    p_val = verbs.add_parser(
+        "check",
         help="Assess a Stage 5 fit against the SNR-aware acceptance framework",
         description=(
             "Read-only cross-fixture validation of a completed Stage 5 fit.\n\n"
@@ -445,7 +453,7 @@ def register_fitting_commands(subparsers: Any) -> None:
             "rescue/merge/thaw gate firing. With --ground-truth, Tier 3 matches\n"
             "fitted lines to a catalog CSV and reports recall, frequency\n"
             "accuracy, and the instrument accuracy floor. Does not modify the\n"
-            "file. Run 'fit-peaks' first."
+            "file. Run 'fit run' first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

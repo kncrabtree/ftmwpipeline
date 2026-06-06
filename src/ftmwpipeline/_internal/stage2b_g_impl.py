@@ -413,7 +413,7 @@ def load_tau_G_calibration_impl(file_path: str) -> Dict[str, Any]:
         if GROUP_PATH not in h5f:
             raise ValueError(
                 "Stage 2b Gaussian τ_G calibration has not been completed "
-                f"for {file_path}. Run calibrate_tau_G() / calibrate-tau-G "
+                f"for {file_path}. Run calibrate_tau_G() / 'tau run --gaussian' "
                 "first."
             )
         grp = h5f[GROUP_PATH]

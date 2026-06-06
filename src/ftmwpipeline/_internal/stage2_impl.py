@@ -149,7 +149,7 @@ def compute_noise_estimation_impl(
             ):
                 raise ValueError(
                     "Stage 1 (FT computation) must be completed before noise estimation. "
-                    "Run compute_ft() or compute-ft command first."
+                    "Run compute_ft() or 'ft run' command first."
                 )
 
         # Import Stage 1 implementation for on-demand ComplexFT computation
@@ -366,7 +366,7 @@ def visualize_noise_impl(
             if "stage2_noise_result" not in h5f:
                 raise ValueError(
                     "Stage 2 (noise estimation) must be completed before visualization. "
-                    "Run estimate_noise() or estimate-noise command first."
+                    "Run estimate_noise() or 'noise run' command first."
                 )
 
             # Check that Stage 1 parameters exist (needed for on-demand ComplexFT computation)
@@ -376,7 +376,7 @@ def visualize_noise_impl(
             ):
                 raise ValueError(
                     "Stage 1 (FT computation) required for noise visualization. "
-                    "Run compute_ft() or compute-ft command first."
+                    "Run compute_ft() or 'ft run' command first."
                 )
 
         # Rebuild the canonical trimmed active FT -- the grid the noise was

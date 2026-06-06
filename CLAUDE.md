@@ -41,7 +41,7 @@ in the dev env, so plain `pytest` (with coverage) also works.
 command or test (plots, exports, scratch `.ftmw`/`.h5`, coverage HTML) to an *untracked*
 location: the gitignored `scratch/` directory at the repo root, or system tmp. Tests must
 write only to pytest `tmp_path` (the integration suite already does). Some CLI commands
-(`visualize-ft`/`visualize-noise` non-interactive) default to writing into the current
+(`ft show`/`noise show` non-interactive) default to writing into the current
 directory — always pass an explicit `--output scratch/...` (or run from `scratch/`) so
 nothing lands in tracked paths. `.gitignore` already covers `scratch/`, `output/`,
 `cache/`, `*.h5`, `*_enhanced_spectrum.png`; this is the backstop, not the primary
@@ -58,9 +58,12 @@ locally black/mypy-clean.
 This is the single most important thing to understand. There are **three user-facing
 interfaces that must behave identically**, and they must not duplicate logic:
 
-1. **CLI** — `src/ftmwpipeline/cli/*.py` (subcommands: `import-data`, `visualize-data`,
-   `formats`, `compute-ft`, `visualize-ft`, `estimate-noise`, `visualize-noise`,
-   `info`, `validate`, `version`). Entry point: `ftmwpipeline.cli:main`.
+1. **CLI** — `src/ftmwpipeline/cli/*.py`, an **object-verb** grammar: stage objects
+   `data`/`start`/`ft`/`noise`/`tau`/`peaks`/`windows`/`fit` (each `run`/`show`, with
+   `stageN` synonyms; `data import` creates the file, `tau run --gaussian` /
+   `tau show --kind`, `fit check`), cross-cutting meta-objects `settings`/`scan`, and
+   bare utilities `formats`/`info`/`validate`/`version`. Entry point:
+   `ftmwpipeline.cli:main`.
 2. **Pipeline class** — `src/ftmwpipeline/pipeline.py`, file-bound OO interface
    (`Pipeline.create(...)` / `Pipeline.open(...)` / `Pipeline(path)` smart constructor,
    then `.compute_ft()`, `.estimate_noise()`, …).

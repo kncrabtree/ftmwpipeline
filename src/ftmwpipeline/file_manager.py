@@ -402,7 +402,7 @@ def open_pipeline_file(
             f"To create a new pipeline:\n"
             f"  Pipeline.create('{filepath}', source='path/to/data/')\n"
             f"  # or\n"
-            f"  ftmwpipeline import-data {filepath} --source path/to/data/"
+            f"  ftmwpipeline data import {filepath} path/to/data/"
         )
 
     try:
