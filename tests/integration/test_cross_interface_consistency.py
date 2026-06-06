@@ -1043,3 +1043,51 @@ class TestSettingsShowConsistency:
                 f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
             )
         return result.stdout, result.stderr
+
+
+@pytest.mark.cross_interface
+class TestSettingsMutationConsistency:
+    """`settings set` / `settings export` (issue #28) must behave identically
+    across the Pipeline / functional-API surfaces, and the CLI must drive the
+    same core."""
+
+    def test_set_parity(self, baseline_2638_stage2, tmp_path):
+        a = tmp_path / "a.ftmw"
+        b = tmp_path / "b.ftmw"
+        shutil.copyfile(baseline_2638_stage2, a)
+        shutil.copyfile(baseline_2638_stage2, b)
+
+        ra = ftmw.settings_set(a, "stage2.window_mhz", "111")
+        rb = Pipeline.open(b).settings_set("stage2.window_mhz", "111")
+        assert ra.value == rb.value == 111.0
+        assert ra.invalidated == rb.invalidated
+        assert "stage2_noise_result" in ra.invalidated
+
+        rows_a = {r.path: r for r in ftmw.settings_show(a, include_advanced=True)}
+        rows_b = {r.path: r for r in ftmw.settings_show(b, include_advanced=True)}
+        assert rows_a["stage2.window_mhz"].value == rows_b["stage2.window_mhz"].value
+        assert rows_a["stage2.window_mhz"].source == ".ftmw"
+
+    def test_export_parity(self, baseline_2638_stage2, tmp_path):
+        out_a = tmp_path / "a.yml"
+        out_b = tmp_path / "b.yml"
+        ra = ftmw.settings_export(baseline_2638_stage2, out_a, name="inst")
+        rb = Pipeline.open(baseline_2638_stage2).settings_export(out_b, name="inst")
+        assert ra.paths == rb.paths
+        assert out_a.read_text() == out_b.read_text()
+        # The exported preset is loadable and reproduces a chosen value.
+        from ftmwpipeline.core import noise_settings as ns
+
+        loaded = ns.load_preset(out_a)
+        rows = {r.path: r for r in ftmw.settings_show(baseline_2638_stage2)}
+        assert loaded.window_mhz == rows["stage2.window_mhz"].value
+
+    def test_cli_set_then_show_reflects(self, baseline_2638_stage2, tmp_path):
+        work = tmp_path / "w.ftmw"
+        shutil.copyfile(baseline_2638_stage2, work)
+        TestSettingsShowConsistency._run_cli(
+            ["settings", "set", str(work), "stage2.smoothing_mhz", "650"]
+        )
+        row = {r.path: r for r in ftmw.settings_show(work)}["stage2.smoothing_mhz"]
+        assert row.source == ".ftmw"
+        assert row.value == 650.0

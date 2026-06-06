@@ -1831,3 +1831,73 @@ def settings_show(
         include_advanced=include_advanced,
         preset=preset,
     )
+
+
+def settings_set(file_path: Union[str, Path], knob: str, value: str) -> Any:
+    """Persist a chosen value into the ``.ftmw``, equivalent to
+    :meth:`Pipeline.settings_set`.
+
+    Coerces ``value`` to ``knob``'s field type, writes it to the persisted
+    layer, and invalidates the affected stage plus every downstream stage so the
+    file never carries results inconsistent with its settings. Stage 1 FT-shaping
+    knobs (``zpf`` / ``expf_us`` / ``window_function``) are rejected -- set them
+    via :func:`compute_ft`.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        The ``.ftmw`` to modify.
+    knob : str
+        Dotted settings path (``stage2.window_mhz`` /
+        ``stage5.tau.max_decay_factor`` / ``stage5.shape``).
+    value : str
+        The value in string form; coerced to the field's declared type.
+
+    Returns
+    -------
+    SetResult
+        Carries the knob path, the coerced value, and the invalidated stages.
+    """
+    return Pipeline.open(file_path).settings_set(knob, value)
+
+
+def settings_export(
+    file_path: Union[str, Path],
+    out_path: Union[str, Path],
+    selector: Optional[str] = None,
+    *,
+    name: Optional[str] = None,
+    description: Optional[str] = None,
+) -> Any:
+    """Write the file's chosen Stage 2--5 values to a ``.yml`` preset, equivalent
+    to :meth:`Pipeline.settings_export`.
+
+    Each stage's persisted settings serialize into the matching ``stageN:``
+    block, filtered by the dotted ``selector``; the result loads back through the
+    stages' ``--preset`` path. Stage 1 is excluded (presets do not carry FT
+    settings).
+
+    Parameters
+    ----------
+    file_path : str or Path
+        The ``.ftmw`` to read chosen values from.
+    out_path : str or Path
+        Destination ``.yml`` preset file.
+    selector : str, optional
+        Restrict the export to a dotted prefix (e.g. ``"stage5"`` /
+        ``"stage5.rescue"``); ``None`` exports every persisted Stage 2--5 value.
+    name, description : str, optional
+        Preset metadata written alongside the stage blocks (``name`` defaults to
+        the output file stem).
+
+    Returns
+    -------
+    ExportResult
+        Carries the written path and the exported setting paths.
+    """
+    return Pipeline.open(file_path).settings_export(
+        out_path,
+        selector,
+        name=name,
+        description=description,
+    )

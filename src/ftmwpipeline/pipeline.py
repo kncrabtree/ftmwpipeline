@@ -20,7 +20,14 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    from ._internal.tuning import BatchItem, KnobSpec, SettingRow, SweepResult
+    from ._internal.tuning import (
+        BatchItem,
+        ExportResult,
+        KnobSpec,
+        SettingRow,
+        SetResult,
+        SweepResult,
+    )
 
 from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
@@ -1833,6 +1840,50 @@ class Pipeline:
             selector,
             include_advanced=include_advanced,
             preset=preset,
+        )
+
+    def settings_set(self, knob: str, value: str) -> "SetResult":
+        """Persist a chosen value for ``knob`` into this file's persisted layer.
+
+        Equivalent to :func:`ftmwpipeline.api.settings_set`. ``knob`` is a dotted
+        settings path (``stage2.window_mhz`` / ``stage5.tau.max_decay_factor``);
+        ``value`` is the string form, coerced to the field's type. Because the
+        stored stage results were computed against the old value, the affected
+        stage and all downstream stages are invalidated (their results dropped
+        and completion cleared) so the file never carries results inconsistent
+        with its settings. Stage 1 FT-shaping knobs (``zpf`` / ``expf_us`` /
+        ``window_function``) are rejected -- set them via :meth:`compute_ft`.
+        Returns a :class:`SetResult` with the invalidated stage names.
+        """
+        from ._internal.tuning import set_setting
+
+        return set_setting(self.filepath, knob, value)
+
+    def settings_export(
+        self,
+        out_path: Union[str, Path],
+        selector: Optional[str] = None,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+    ) -> "ExportResult":
+        """Write this file's chosen Stage 2--5 values to a ``.yml`` preset block.
+
+        Equivalent to :func:`ftmwpipeline.api.settings_export`. Each stage's
+        persisted settings are serialized into the matching ``stageN:`` block,
+        filtered by the dotted ``selector``; the result loads back through the
+        stages' ``--preset`` path. Stage 1 is excluded (presets do not carry FT
+        settings). Returns an :class:`ExportResult` with the written path and the
+        exported setting paths.
+        """
+        from ._internal.tuning import export_settings
+
+        return export_settings(
+            self.filepath,
+            out_path,
+            selector,
+            name=name,
+            description=description,
         )
 
     def __repr__(self) -> str:
