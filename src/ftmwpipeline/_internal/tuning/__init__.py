@@ -17,6 +17,12 @@ the repo's dual-interface rule. See
 from .engine import BatchItem, SweepResult, SweepRow, run_scan, run_scan_batch
 from .registry import KnobSpec, get_knob, list_knobs
 from .settings_inspection import SettingRow, resolve_settings_view
+from .settings_mutation import (
+    ExportResult,
+    SetResult,
+    export_settings,
+    set_setting,
+)
 
 __all__ = [
     "KnobSpec",
@@ -29,4 +35,8 @@ __all__ = [
     "run_scan_batch",
     "SettingRow",
     "resolve_settings_view",
+    "SetResult",
+    "ExportResult",
+    "set_setting",
+    "export_settings",
 ]

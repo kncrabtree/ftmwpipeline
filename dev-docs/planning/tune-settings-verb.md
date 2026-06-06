@@ -250,9 +250,23 @@ three surfaces:
    the prepared/trimmed working copy is untouched. Guarded by the existing
    `test_stage3_scan_runs_and_plots` (its `snr_min` tracks the promotion cutoff,
    which the pinned sweep violated).
-4. **`settings set` / `settings export`** — the change-grammar (persist to
-   `.ftmw`, write a `.yml` preset block) and the explicit `--preset` provenance
-   path.
+4. **`settings set` / `settings export`. — Done.** The change-grammar lands in
+   `_internal/tuning/settings_mutation.py` (`set_setting` / `export_settings`),
+   exposed as `settings set <file> <knob> <value>` / `settings export <file>
+   <out.yml> [selector]` plus `Pipeline` / `api` methods. `set` coerces the
+   value to the field's declared type, writes it to the persisted layer, and
+   invalidates the affected stage **and** every downstream stage (results
+   dropped, completion cleared) so the file never carries results inconsistent
+   with its settings. Stage 1 FT-shaping knobs (`zpf` / `expf_us` /
+   `window_function`) are rejected — they go through `compute-ft`; Stage 1
+   windowing knobs (`start_us` / `end_us` / `trim` / …) are settable and
+   invalidate every downstream stage (the FT is recomputed on demand from them).
+   `export` serializes the file's chosen Stage 2–5 values through each stage's
+   `to_yaml_dict` into the matching `stageN:` block (selector-filtered), and the
+   result round-trips through `load_preset`; Stage 1 is excluded (presets do not
+   carry FT settings). The `settings show` footer now points at both verbs.
+   Unit-tested in `tests/unit/_internal/tuning/test_settings_mutation.py`;
+   cross-interface parity in `TestSettingsMutationConsistency`.
 5. **`tune` → `scan` rename** — migrate the legacy `tune list` / `tune scan` /
    `tune scan-all` to the `scan` meta-object (`list` / `run` / `all`) per
    CLI_STRATEGY.

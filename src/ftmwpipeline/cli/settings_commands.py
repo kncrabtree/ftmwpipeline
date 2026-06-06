@@ -130,6 +130,72 @@ def cmd_settings_show(args: argparse.Namespace) -> int:
         "A value persisted in the .ftmw outranks a preset; pass --preset <name> "
         "to see what a preset would seed for fields the file has not fixed."
     )
+    print(
+        "Change a value with 'settings set <file> <knob> <value>'; capture the "
+        "file's chosen values as a preset with 'settings export <file> <out.yml>'."
+    )
+    return 0
+
+
+def cmd_settings_set(args: argparse.Namespace) -> int:
+    """Persist a chosen value into the .ftmw and invalidate stale stages."""
+    from .._internal.tuning import set_setting
+
+    file_path = args.file_path
+    if not file_path.endswith(".ftmw"):
+        file_path = file_path + ".ftmw"
+    if not Path(file_path).exists():
+        print_error(f"Pipeline file not found: {file_path}")
+        return 1
+
+    try:
+        result = set_setting(file_path, args.knob, args.value)
+    except ValueError as e:
+        print_error(str(e))
+        return 1
+
+    print(f"Set {result.path} = {_fmt_value(result.value)} (persisted to .ftmw).")
+    if result.invalidated:
+        print(
+            "Invalidated downstream stage(s): "
+            + ", ".join(result.invalidated)
+            + " -- re-run them to refresh."
+        )
+    else:
+        print("No completed stages depended on this setting.")
+    return 0
+
+
+def cmd_settings_export(args: argparse.Namespace) -> int:
+    """Write the file's chosen Stage 2-5 values to a .yml preset block."""
+    from .._internal.tuning import export_settings
+
+    file_path = args.file_path
+    if not file_path.endswith(".ftmw"):
+        file_path = file_path + ".ftmw"
+    if not Path(file_path).exists():
+        print_error(f"Pipeline file not found: {file_path}")
+        return 1
+
+    result = export_settings(
+        file_path,
+        args.out_path,
+        getattr(args, "selector", None),
+        name=getattr(args, "name", None),
+        description=getattr(args, "description", None),
+    )
+    if not result.paths:
+        sel = getattr(args, "selector", None)
+        suffix = f" matching {sel!r}" if sel else ""
+        print(
+            f"No persisted Stage 2-5 values{suffix} to export; "
+            f"wrote an empty preset to {result.out_path}."
+        )
+        return 0
+    print(
+        f"Exported {len(result.paths)} setting(s) to {result.out_path}. "
+        f"Load with --preset {result.out_path}."
+    )
     return 0
 
 
@@ -176,6 +242,58 @@ def register_settings_commands(subparsers: Any) -> None:
         "(bare name or path to a YAML file)",
     )
     p_show.set_defaults(func=cmd_settings_show)
+
+    p_set = settings_sub.add_parser(
+        "set",
+        help="Persist a chosen value into the .ftmw (invalidates stale stages)",
+        description=(
+            "Persist KNOB = VALUE into the experiment's settings. The affected "
+            "stage and every downstream stage are invalidated so the file stays "
+            "self-consistent; re-run them to refresh. Stage 1 FT-shaping knobs "
+            "(zpf / expf_us / window_function) are set via compute-ft instead."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_set.add_argument("file_path", help="Path to the .ftmw experiment")
+    p_set.add_argument(
+        "knob",
+        help="Dotted settings path, e.g. stage2.window_mhz or "
+        "stage5.tau.max_decay_factor",
+    )
+    p_set.add_argument("value", help="Value to persist (coerced to the field type)")
+    p_set.set_defaults(func=cmd_settings_set)
+
+    p_export = settings_sub.add_parser(
+        "export",
+        help="Write the file's chosen Stage 2-5 values to a .yml preset block",
+        description=(
+            "Serialize the experiment's persisted Stage 2-5 settings into a "
+            "YAML preset (the portable form a sibling experiment loads via "
+            "--preset). Stage 1 is excluded -- presets do not carry FT settings."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_export.add_argument("file_path", help="Path to the .ftmw experiment")
+    p_export.add_argument("out_path", help="Destination .yml preset file")
+    p_export.add_argument(
+        "selector",
+        nargs="?",
+        default=None,
+        help="Restrict to a dotted prefix, e.g. stage5 or stage5.rescue",
+    )
+    p_export.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Preset name metadata (defaults to the output file stem)",
+    )
+    p_export.add_argument(
+        "--description",
+        type=str,
+        default=None,
+        help="Preset description metadata",
+    )
+    p_export.set_defaults(func=cmd_settings_export)
 
     # 'settings' with no subcommand prints its help.
     def _settings_help(args: argparse.Namespace) -> int:
