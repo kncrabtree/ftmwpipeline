@@ -67,10 +67,10 @@ noise from 10 K to 1 M points (`prototype.py` §1):
 
 | N         | total    | Sav-Gol (d1+d2) | argrelmin |
 |-----------|----------|-----------------|-----------|
-| 10 000    | 1.0 ms   | 0.4 ms          | 0.2 ms    |
-| 100 000   | 7.5 ms   | 2.9 ms          | 1.3 ms    |
-| 500 000   | 46.6 ms  | 18.5 ms         | 18.3 ms   |
-| 1 000 000 | 89.5 ms  | 34.7 ms         | 36.9 ms   |
+| 10 000    | 0.9 ms   | 0.4 ms          | 0.2 ms    |
+| 100 000   | 7.2 ms   | 3.0 ms          | 1.4 ms    |
+| 500 000   | 46.9 ms  | 18.3 ms         | 18.1 ms   |
+| 1 000 000 | 94.1 ms  | 35.5 ms         | 35.9 ms   |
 
 ![locate_peaks cost breakdown](figures/01_locate_peaks_cost.png)
 
@@ -79,30 +79,33 @@ Cost is split roughly evenly between the Savitzky-Golay convolution and
 no superlinear term and no pathological case.
 
 **The detector is not the stage's bottleneck.** On the 2638 fixture
-(N ≈ 566 K), the two `locate_peaks` calls cost ~88 ms combined, but the
+(N ≈ 566 K), the two `locate_peaks` calls cost ~113 ms combined, but the
 stage spends far more recomputing its inputs (`prototype.py` §2):
 
 ![Stage 3 wall-clock breakdown on 2638](figures/02_pipeline_breakdown.png)
 
 | step                | wall time |
 |---------------------|-----------|
-| primary FT recompute | 76 ms    |
-| gap FT recompute     | 70 ms    |
-| primary noise        | 88 ms    |
-| gap noise            | 86 ms    |
-| primary `locate_peaks` | 47 ms  |
-| gap `locate_peaks`   | 41 ms     |
+| primary FT recompute | 94 ms    |
+| gap FT recompute     | 76 ms    |
+| primary noise        | 240 ms   |
+| gap noise            | 251 ms   |
+| primary `locate_peaks` | 67 ms  |
+| gap `locate_peaks`   | 46 ms    |
 
-The two FFT recomputes (~150 ms) and the two full noise re-estimations
-(~175 ms) dominate; the peak finder is ~25 % of the measured work. If
-the stage's latency ever needs to come down, the redundant input
-recomputes are the target — not the detector. Two cheap detector-side
-options exist but are not pressing: the 1st-derivative Sav-Gol
-convolution is used only by the merge heuristic's sign test and could
-be elided when the merge does not fire, and `argrelmin` with
-`order = window//2` rescans a wide neighbourhood that a single-pass
-comparison would not. Neither is worth doing until the recompute cost
-is addressed first.
+The two FFT recomputes (~170 ms) and the two full noise re-estimations
+(~491 ms) dominate; the peak finder is under 15 % of the measured work.
+The noise cost is dominated by `estimate_noise_scatter`
+(the high-pass, region-aware MAD estimator), which is substantially
+more expensive than a level-based estimator but also far more
+accurate on line-dense high-SNR spectra. If the stage's latency ever
+needs to come down, the redundant input recomputes are the target —
+not the detector. Two cheap detector-side options exist but are not
+pressing: the 1st-derivative Sav-Gol convolution is used only by the
+merge heuristic's sign test and could be elided when the merge does not
+fire, and `argrelmin` with `order = window//2` rescans a wide
+neighbourhood that a single-pass comparison would not. Neither is worth
+doing until the recompute cost is addressed first.
 
 **Decision: leave the detector's performance alone.** It is linear,
 predictable, and a minority of the stage cost. Recorded here so a
@@ -113,32 +116,37 @@ future optimisation pass starts at the FFT/noise recomputes.
 The synthetic test bed builds a baseband spectrum from a known line
 list (30 lines, peak SNR log-spaced 5–500, minimum separation 3 MHz,
 T = 15 µs acquisition) by summing truncated cosines in the time domain,
-applying an apodization, and forward-FFT'ing — the same path the
-pipeline's Stage 1 takes. Complex Gaussian noise is added in the time
-domain before apodization. The locator runs at a 3σ floor; a detection
-within 0.5 MHz of a truth line is a true positive (`prototype.py` §3).
+applying an apodization, and forward-FFT'ing. The pipeline's canonical
+FT is unconditionally unapodized; the apodizations here are
+research-only choices applied via the common `apodize_fid` helper
+(`ftmwpipeline.utils.signal_processing`) to characterise the
+trade-off. Complex Gaussian noise is added in the time domain before
+apodization. The locator runs at a 3σ floor; a detection within 0.5 MHz
+of a truth line is a true positive (`prototype.py` §3).
 
 | apodization          | true positives | false positives |
 |----------------------|----------------|-----------------|
-| boxcar (unapodized)  | 30             | **234**         |
-| exponential 5 µs     | 29             | **211**         |
-| Hann                 | 30             | 13              |
-| Blackman-Harris      | 28.5           | **0**           |
-| Kaiser β = 8.6       | 29.5           | **0**           |
+| boxcar (unapodized)  | 29             | **324**         |
+| exponential 5 µs     | 26.5           | **401.5**       |
+| Hann                 | 30             | 16.5            |
+| Blackman-Harris      | 29.5           | **1.5**         |
+| Kaiser β = 8.6       | 30             | **2**           |
 
 ![True/false positives across apodizations](figures/03_apodization_tp_fp.png)
 
-The user's report is confirmed and quantified: a boxcar spectrum yields
-roughly **8× the false positives** of a Blackman-Harris or Kaiser one,
+The result is confirmed and quantified: a boxcar spectrum yields
+roughly **200× the false positives** of a Blackman-Harris or Kaiser one,
 for the same true-positive recovery. The strong windows pay for that
 with a small handful of false negatives (the weakest lines, broadened
 below the floor) — an acceptable trade for a *position-finding* pass
 whose misses are backfilled by the gap pass.
 
-The critical row is **exponential 5 µs: 211 false positives** — almost
-as bad as boxcar. A mild exponential filter barely dents the near
-sidelobes. This row matters because it is the apodization the
-pipeline's primary pass currently uses (§6).
+The critical row is **exponential 5 µs: ~400 false positives** — worse
+than boxcar in this synthetic (more FPs with fewer TPs), because the
+mild exponential does not suppress sidelobes and slightly broadens
+lines near the detection floor. This row matters because it is the
+apodization the research baseline §6 benchmarks against; the shipped
+primary pass uses Blackman-Harris instead.
 
 ## 4. Anatomy of the false positives
 
@@ -148,12 +156,12 @@ relative to, its nearest truth line (`prototype.py` §4):
 
 ![Anatomy of unapodized false positives](figures/04_fp_anatomy.png)
 
-- **99.6 %** of false positives (222 of 223) lie within the closed-form
+- **99.1 %** of false positives (320 of 323) lie within the closed-form
   leakage reach of some truth line.
-- Median distance to the nearest truth line is **0.30 MHz**; 95th
-  percentile **1.3 MHz**.
-- Median height is **2.6 %** of the parent line's peak; 95th percentile
-  33 %.
+- Median distance to the nearest truth line is **0.43 MHz**; 95th
+  percentile **1.4 MHz**.
+- Median height is **2.3 %** of the parent line's peak; 95th percentile
+  45 %.
 - The scatter tracks the analytic `1/(πΔf·T)` boxcar sidelobe envelope.
 
 The false positives are not noise excursions and not a detector defect.
@@ -172,13 +180,13 @@ measurable in a neighbourhood of one candidate separates the two
 classes. Four single-spectrum suppression heuristics were swept on the
 boxcar synthetic, plus an apodized-companion veto (`prototype.py` §5):
 
-| candidate                       | best operating point      | TP kept / 30 | FP kept / 223 |
+| candidate                       | best operating point      | TP kept / 29 | FP kept / 323 |
 |----------------------------------|---------------------------|--------------|---------------|
-| prominence ≥ α·σ                 | α = 2σ                    | 13           | 84            |
-| stronger-neighbour height ratio  | α = 0.05                  | 19           | 115           |
-| phase anti-coherence vs neighbour| thr = −0.95               | 25           | 193           |
-| closed-form reach mask (self)    | min_snr = 5               | 27           | 107           |
-| apodized-amplitude veto (BH)     | k = 1.5σ                  | 19           | 104           |
+| prominence ≥ α·σ                 | α = 2σ                    | 14           | 141           |
+| stronger-neighbour height ratio  | α = 0.05                  | 17           | 109           |
+| phase anti-coherence vs neighbour| thr = −0.95               | 23           | 288           |
+| closed-form reach mask (self)    | min_snr = 5               | 23           | 173           |
+| apodized-amplitude veto (BH)     | k = 1.5σ                  | 19           | 110           |
 
 ![Suppression candidates, TP-retained vs FP-retained](figures/05_suppression_roc.png)
 
@@ -195,7 +203,7 @@ not re-attempted:
   *same rate* at a real line's own centre and at a distant line's
   sidelobe, so no phase-gradient or anti-coherence cut on a *single
   candidate's neighbourhood* holds — the "phase anti-coherence" row
-  above confirms it (193 of 223 FPs kept). What the sweep did not test
+  above confirms it (288 of 323 FPs kept). What the sweep did not test
   is a *rolling-band* phase statistic. The windowing stage's complex-edge
   coherence statistic integrates an oriented M-point band; on the
   full-record rfft of real data the leakage signal carries a turn-on
@@ -247,48 +255,47 @@ this; the two-pass architecture *is* the fix, and it should be kept.
 
 ## 6. The primary pass is not clean — and the fix
 
-The two-pass design is sound, but its current *configuration* on the
-pipeline undercuts it. The primary pass apodizes with the user's Stage
-1 `expf_us` — 5 µs on the 2638 fixture, with no window function. That
-is the **exponential-5 µs row of §3: 211 false positives.** The
-"clean" pass is not clean: it detects its own sidelobes as lines, which
-pollutes the returned peak list — and a sidelobe mis-promoted into the
-strong-line list misleads the windowing stage that consumes it.
+The two-pass design is sound, but the research baseline — a 5 µs
+exponential primary — is a poor configuration. The exponential is a
+mild filter that leaves substantial sinc sidelobes (§3: ~400 false
+positives). The "clean" pass is not clean on that choice: it detects
+its own sidelobes as lines, which pollutes the returned peak list — and
+a sidelobe mis-promoted into the strong-line list misleads the windowing
+stage that consumes it.
 
 Verified directly on 2638 by recomputing the primary spectrum under
-four apodizations and counting detections, with the self-consistent
-reach mask flagging sidelobe-suspects (`prototype.py` §7):
+four apodizations via `apodize_fid` and counting detections, with the
+self-consistent reach mask flagging sidelobe-suspects (`prototype.py`
+§7):
 
 ![2638 primary-pass detections vs apodization](figures/07_2638_primary_apodization.png)
 
-| primary apodization        | detections | reach-flagged sidelobe-suspects |
-|----------------------------|------------|---------------------------------|
-| exponential 5 µs (current) | 5276       | 503 (9.5 %)                     |
-| Blackman-Harris            | 3074       | 58 (1.9 %)                      |
-| Blackman                   | 3484       | 72 (2.1 %)                      |
-| Hann                       | 3880       | 79 (2.0 %)                      |
+| primary apodization         | detections | reach-flagged sidelobe-suspects |
+|-----------------------------|------------|---------------------------------|
+| exponential 5 µs (baseline) | 7856       | 764 (9.7 %)                     |
+| Blackman-Harris             | 5871       | 104 (1.8 %)                     |
+| Blackman                    | 6324       | 124 (2.0 %)                     |
+| Hann                        | 6765       | 142 (2.1 %)                     |
 
-Switching the primary pass to Blackman-Harris cuts its detection count
-by ~42 % (2200 fewer detections) and its sidelobe-suspect fraction by
-~5× on the real 2638 spectrum. Those ~2200 removed detections are
-overwhelmingly sidelobes the current mild apodization fails to
-suppress.
+Switching the primary pass to Blackman-Harris cuts its sidelobe-suspect
+fraction by ~5× on the real 2638 spectrum and reduces raw detections by
+~25 %. Those removed detections are overwhelmingly sidelobes the mild
+exponential fails to suppress.
 
-**Recommendation: the primary pass should apodize with a strong window
-(Blackman-Harris is the natural default; Kaiser or Blackman are
-equivalent), independent of the user's Stage 1 `expf_us`.** The
+**The primary pass should apodize with a strong window (Blackman-Harris
+is the natural default; Kaiser or Blackman are equivalent).** The
 primary pass's sole job is robust strong-line *position* finding —
 amplitude, SNR, and the de-ramped leakage-touched map are all measured
-downstream on the unapodized spectrum, so the primary apodization has
-no effect on any reported quantity except *which positions* are found.
-For that job the most sidelobe-suppressing
-window available is unambiguously correct, and the planning doc's
-current default ("Stage 1 `expf_us`-equivalent") is the defect. The
-change is a one-line default in the stage's orchestration and is the
-single highest-value correctness fix this investigation found.
+downstream on the unapodized canonical spectrum, so the primary
+apodization has no effect on any reported quantity except *which
+positions* are found. For that job the most sidelobe-suppressing window
+available is unambiguously correct. The pipeline's shipped Stage 3
+uses Blackman-Harris internally, applying it via `apodize_fid`
+independent of the canonical (unapodized) FT — this investigation is
+the calibration that motivated that choice.
 
 The false negatives a strong window introduces (§3: Blackman-Harris
-missed ~1.5 of 30 synthetic lines) are not a concern: those are the
+missed ~0.5 of 30 synthetic lines) are not a concern: those are the
 weakest lines, and recovering weak lines is precisely the gap pass's
 job. A strong primary window shifts work to the gap pass by design.
 
@@ -322,8 +329,8 @@ masked region is dropped along with the sidelobes — but for a
 BlackChirp should also be offered the full two-pass option: if it can
 afford one extra apodized FFT, the apodized-primary + region-masked-gap
 architecture of this pipeline removes essentially all sidelobe false
-positives (§3: Blackman-Harris primary → 0) and additionally recovers
-weak lines that the single-pass mask drops.
+positives (§3: Blackman-Harris primary → ~2 on 30 synthetic lines) and
+additionally recovers weak lines that the single-pass mask drops.
 
 Both building blocks — `deramp_to_active_start` /
 `leakage_touched_intervals` and the older closed-form
@@ -346,14 +353,15 @@ a strong skirt is *lost* by the gap pass, masked along with the
 sidelobes, and recovered — if at all — by the windowed primary pass and
 the downstream fit.
 
-On 2638 the unapodized gap grid carries 4569 raw locator detections.
+On 2638 the unapodized gap grid carries 6152 raw locator detections
+(at a 2σ floor; earlier measurements at a different floor gave 4569).
 The de-ramped leakage-touched mask (`T_edge = 8`, calibrated in D8)
 removes the strong-line skirts: the gap pass promotes 1576 peaks, down
 from 2355 under the old reach mask — 779 strong-line sidelobes no
 longer reach the final list, and the per-known-strong-line skirt count
 falls to 0–1 within ±8 MHz. The improvement is twofold: a clean primary
 pass (§6) means the *strong-line list* — the part of the output the
-windowing stage trusts most — is no longer 9.5 % sidelobes, and the
+windowing stage trusts most — is no longer ~10 % sidelobes, and the
 de-ramped gap mask means the *gap* additions are no longer dominated by
 strong-line skirt ripple.
 
@@ -399,8 +407,9 @@ with:
 
 ```python
 import ftmwpipeline.api as ftmw
-ftmw.import_data("scratch/exp_2638.ftmw", source="examples/blackchirp_data/2638/")
-ftmw.compute_ft("scratch/exp_2638.ftmw", zpf=2, expf_us=5.0, trim=(26500, 40000))
+ftmw.import_data("scratch/exp_2638.ftmw", source="examples/blackchirp_data/2638", force=True)
+ftmw.detect_start_time("scratch/exp_2638.ftmw", band=(26500,40000), stamp=True)
+ftmw.compute_ft("scratch/exp_2638.ftmw", trim=(26500,40000))
 ftmw.estimate_noise("scratch/exp_2638.ftmw")
 ```
 

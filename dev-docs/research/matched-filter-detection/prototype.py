@@ -8,6 +8,18 @@ conda env:
     conda run -n ftmwpipeline-dev python \\
         dev-docs/research/matched-filter-detection/prototype.py
 
+The 2638 sections require ``scratch/stage5-validation/exp_2638.ftmw``.
+To build it canonically::
+
+    python - <<'EOF'
+    import ftmwpipeline.api as ftmw
+    P = "scratch/stage5-validation/exp_2638.ftmw"
+    ftmw.import_data(P, source="examples/blackchirp_data/2638", force=True)
+    ftmw.detect_start_time(P, band=(26500, 40000), stamp=True)
+    ftmw.compute_ft(P, trim=(26500, 40000))
+    ftmw.estimate_noise(P)
+    EOF
+
 The study tests whether replacing the peak-detection stage's primary
 pass (Savitzky-Golay second-derivative locator on a Blackman-Harris-
 apodized spectrum) with a Lorentzian matched-filter detector
@@ -69,8 +81,9 @@ from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.fitting.active_ft import ActiveFTResult, compute_active_ft
 from ftmwpipeline.fitting.peak_model import h_T, sideband_sign
 from ftmwpipeline.preprocessing.coherence_screen import project_candidates
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 from ftmwpipeline.preprocessing.peak_detection import locate_peaks
+from ftmwpipeline.utils.signal_processing import matched_filter_window
 
 # Reuse the screen study's simulator so improvements there propagate here.
 # Load via importlib to avoid the "prototype" module-name collision.
@@ -115,7 +128,8 @@ class MatchedFilterResult:
     Attributes
     ----------
     active_ft : ActiveFTResult
-        The exponentially-apodized active-FT (``expf_us = tau_basis_us``).
+        The exponentially-apodized active-FT (active samples windowed by
+        ``exp(-t/tau_basis_us)`` before the rfft).
     sigma : np.ndarray
         Per-bin |X| RMS noise on the active-FT magnitude, same shape
         as ``active_ft.freq_mhz``.
@@ -185,10 +199,10 @@ def matched_filter_detect(
         more aggressive (catches more real lines, more FPs).
     sigma : np.ndarray, optional
         Per-bin |X| RMS noise. When ``None`` the function estimates σ
-        adaptively on the resulting active-FT magnitude via
-        :func:`estimate_noise_adaptive`. Synthetic callers can pass an
+        on the resulting active-FT magnitude via
+        :func:`estimate_noise_scatter`. Synthetic callers can pass an
         analytic constant σ to isolate the detector's behaviour from
-        the adaptive estimator's quirks.
+        the scatter estimator's quirks.
     min_separation_bins : int, default 1
         Forwarded to ``find_peaks`` as the ``distance`` argument. The
         production locator uses Savitzky-Golay concavity to suppress
@@ -209,12 +223,34 @@ def matched_filter_detect(
     if detection_snr <= 0.0:
         raise ValueError("detection_snr must be positive")
 
+    # Build the exponentially-apodized active-region FT.  The current API has
+    # no expf_us knob on compute_active_ft (canonical FT is unapodized); to
+    # reproduce the matched-filter exp-apodized FFT, multiply the active-region
+    # samples by the window before calling compute_active_ft.  This mirrors
+    # stage3_impl._mf_gap_spectrum exactly: extract the active slice, multiply
+    # by matched_filter_window(t_rel, tau_basis_us), then rfft via
+    # compute_active_ft on the windowed copy.
+    fid_arr = np.asarray(fid_samples, dtype=float)
+    time_us = np.arange(fid_arr.size) * sample_dt_us
+    start_idx = int(np.searchsorted(time_us, start_us))
+    end_idx = int(np.searchsorted(time_us, end_us))
+    end_idx = min(end_idx, fid_arr.size)
+    n_active = end_idx - start_idx
+    t_rel = np.arange(n_active) * sample_dt_us
+    w = matched_filter_window(t_rel, tau_basis_us, shape="lorentzian")
+    fid_windowed = fid_arr.copy()
+    fid_windowed[start_idx:end_idx] *= w
+    # Zero out samples outside the active region so compute_active_ft sees
+    # only the windowed active samples (everything else is dead weight that
+    # rdc would subtract anyway, but be explicit).
+    fid_windowed[:start_idx] = 0.0
+    fid_windowed[end_idx:] = 0.0
+
     active_ft = compute_active_ft(
-        fid=fid_samples,
+        fid=fid_windowed,
         sample_dt_us=sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=tau_basis_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         n_padded=n_padded,
@@ -223,7 +259,7 @@ def matched_filter_detect(
     mag = np.abs(active_ft.complex_spectrum)
 
     if sigma is None:
-        noise = estimate_noise_adaptive(active_ft.freq_mhz, mag)
+        noise = estimate_noise_scatter(active_ft.freq_mhz, mag)
         sigma_arr = np.asarray(noise.rms_noise, dtype=float)
     else:
         sigma_arr = np.asarray(sigma, dtype=float)
@@ -343,12 +379,9 @@ def production_like_detect(
     mag = np.abs(spectrum)
 
     if sigma is None:
-        # Sort ascending for the noise estimator (it expects monotone).
-        sort_idx = np.argsort(freq_mhz)
-        noise_sorted = estimate_noise_adaptive(freq_mhz[sort_idx], mag[sort_idx])
-        sigma_arr = np.empty_like(noise_sorted.rms_noise)
-        sigma_arr[sort_idx] = noise_sorted.rms_noise
-        sigma_arr = np.asarray(sigma_arr, dtype=float)
+        # estimate_noise_scatter works on ascending or descending axes.
+        noise_sorted = estimate_noise_scatter(freq_mhz, mag)
+        sigma_arr = np.asarray(noise_sorted.rms_noise, dtype=float)
     else:
         sigma_arr = np.asarray(sigma, dtype=float)
         if sigma_arr.shape != mag.shape:
@@ -450,12 +483,27 @@ def matched_filter_concavity_detect(
     if min_snr <= 0.0:
         raise ValueError("min_snr must be positive")
 
+    # Windowed active-region FT: same construction as matched_filter_detect.
+    # Multiply active-region samples by exp(-t/tau_basis_us) before rfft so
+    # the apodized spectrum is the matched filter at tau_basis_us.
+    fid_arr_h = np.asarray(fid_samples, dtype=float)
+    time_us_h = np.arange(fid_arr_h.size) * sample_dt_us
+    start_idx_h = int(np.searchsorted(time_us_h, start_us))
+    end_idx_h = int(np.searchsorted(time_us_h, end_us))
+    end_idx_h = min(end_idx_h, fid_arr_h.size)
+    n_active_h = end_idx_h - start_idx_h
+    t_rel_h = np.arange(n_active_h) * sample_dt_us
+    w_h = matched_filter_window(t_rel_h, tau_basis_us, shape="lorentzian")
+    fid_windowed_h = fid_arr_h.copy()
+    fid_windowed_h[start_idx_h:end_idx_h] *= w_h
+    fid_windowed_h[:start_idx_h] = 0.0
+    fid_windowed_h[end_idx_h:] = 0.0
+
     active_ft = compute_active_ft(
-        fid=fid_samples,
+        fid=fid_windowed_h,
         sample_dt_us=sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=tau_basis_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         n_padded=n_padded,
@@ -463,13 +511,8 @@ def matched_filter_concavity_detect(
     )
     mag = np.abs(active_ft.complex_spectrum)
     if sigma is None:
-        sort_idx_n = np.argsort(active_ft.freq_mhz)
-        noise = estimate_noise_adaptive(
-            active_ft.freq_mhz[sort_idx_n], mag[sort_idx_n]
-        )
-        sigma_sorted = np.asarray(noise.rms_noise, dtype=float)
-        sigma_arr = np.empty_like(sigma_sorted)
-        sigma_arr[sort_idx_n] = sigma_sorted
+        noise = estimate_noise_scatter(active_ft.freq_mhz, mag)
+        sigma_arr = np.asarray(noise.rms_noise, dtype=float)
     else:
         sigma_arr = np.asarray(sigma, dtype=float)
         if sigma_arr.shape != mag.shape:
@@ -932,7 +975,7 @@ def _evaluate_detector(
         # active-FT with no apodization at all.
         unapod = compute_active_ft(
             fid=fid, sample_dt_us=SIM_SAMPLE_DT_US,
-            start_us=0.0, end_us=T_active, expf_us=None,
+            start_us=0.0, end_us=T_active,
             probe_freq_mhz=SIM_PROBE_MHZ, sideband=SIM_SIDEBAND,
             n_padded=SIM_N_ACTIVE, rdc=True,
         )
@@ -1446,23 +1489,35 @@ def auto_calibrate_tau_basis(
 
     Returns ``(tau_basis_us, tau_eff_observed_us, fwhm_observed_mhz_array)``.
     """
-    # First pass: detect on the production-apodized active-FT.
+    # First pass: detect on the exp-apodized active-FT (matched filter at expf_us).
+    # Build the windowed active FT by multiplying the active-region samples before
+    # passing to compute_active_ft (expf_us knob removed from API).
+    fid_arr_ac = np.asarray(fid_samples, dtype=float)
+    time_us_ac = np.arange(fid_arr_ac.size) * sample_dt_us
+    start_idx_ac = int(np.searchsorted(time_us_ac, start_us))
+    end_idx_ac = int(np.searchsorted(time_us_ac, end_us))
+    end_idx_ac = min(end_idx_ac, fid_arr_ac.size)
+    n_active_ac = end_idx_ac - start_idx_ac
+    t_rel_ac = np.arange(n_active_ac) * sample_dt_us
+    w_ac = matched_filter_window(t_rel_ac, expf_us, shape="lorentzian")
+    fid_windowed_ac = fid_arr_ac.copy()
+    fid_windowed_ac[start_idx_ac:end_idx_ac] *= w_ac
+    fid_windowed_ac[:start_idx_ac] = 0.0
+    fid_windowed_ac[end_idx_ac:] = 0.0
+
     active = compute_active_ft(
-        fid=fid_samples,
+        fid=fid_windowed_ac,
         sample_dt_us=sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=expf_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         n_padded=n_padded,
         rdc=True,
     )
     mag = np.abs(active.complex_spectrum)
-    noise = estimate_noise_adaptive(np.sort(active.freq_mhz), mag[np.argsort(active.freq_mhz)])
-    # Translate back to the unsorted grid
-    inv = np.argsort(np.argsort(active.freq_mhz))
-    sigma = np.asarray(noise.rms_noise)[inv]
+    noise = estimate_noise_scatter(active.freq_mhz, mag)
+    sigma = np.asarray(noise.rms_noise, dtype=float)
     sigma_c = sigma / np.sqrt(2.0)
     snr = np.where(sigma_c > 0.0, mag / sigma_c, 0.0)
     cand_bins, _ = find_peaks(snr, height=10.0, distance=2)
@@ -1567,31 +1622,36 @@ def run_2638_application() -> Optional[dict]:
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
         probe_freq_mhz,
         sideband,
         n_padded,
         acquisition_us,
         user_ft,
-        user_rms,
+        trim_range,
     ) = _build_active_ft_inputs(str(FTMW_PATH))
 
-    assert expf_us is not None  # 2638 canonical expf_us = 5.0
     logger.info(
-        "2638: start=%.2f end=%.2f expf=%.2f acq=%.3f us  probe=%.1f MHz  zpf-padded=%d",
-        start_us, end_us, expf_us, acquisition_us, probe_freq_mhz, n_padded,
+        "2638: start=%.2f end=%.2f acq=%.3f us  probe=%.1f MHz  zpf-padded=%d",
+        start_us, end_us, acquisition_us, probe_freq_mhz, n_padded,
     )
 
     # The user-facing spectrum is trimmed to the Stage 1 trim range
     # (26500–40000 MHz on 2638); the active-FT alone covers the full
     # [probe ± fs/2] band, so candidates outside the trim region are
     # noise-only and irrelevant to the production comparison. Pull the
-    # trim from the persisted user-FT bounds.
-    trim_lo = float(user_ft.freq_array.min())
-    trim_hi = float(user_ft.freq_array.max())
+    # trim from the canonical trim_range returned by _build_active_ft_inputs
+    # (falls back to the user-FT axis bounds for pre-trim fixtures).
+    if trim_range is not None:
+        trim_lo, trim_hi = float(trim_range[0]), float(trim_range[1])
+    else:
+        trim_lo = float(user_ft.freq_array.min())
+        trim_hi = float(user_ft.freq_array.max())
     logger.info("2638: trim range = (%.1f, %.1f) MHz", trim_lo, trim_hi)
 
-    # Step 1: auto-calibrate τ_basis
+    # Step 1: auto-calibrate τ_basis using expf_us=5.0 (the historical default
+    # Stage 1 apodization for 2638; the auto-calibrate first-pass apodizes
+    # the active region to find bright candidates).
+    _expf_us_default = 5.0
     tau_basis, tau_eff, fwhms_obs = auto_calibrate_tau_basis(
         fid_samples,
         sample_dt_us,
@@ -1600,7 +1660,7 @@ def run_2638_application() -> Optional[dict]:
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         n_padded=n_padded,
-        expf_us=expf_us,
+        expf_us=_expf_us_default,
         top_n=10,
     )
     logger.info(
@@ -1782,11 +1842,14 @@ def figure_2638_ratio_histogram() -> None:
 
     inputs = _build_active_ft_inputs(str(FTMW_PATH))
     (
-        fid_samples, sample_dt_us, start_us, end_us, expf_us, probe_freq_mhz,
-        sideband, n_padded, acquisition_us, user_ft, user_rms,
+        fid_samples, sample_dt_us, start_us, end_us, probe_freq_mhz,
+        sideband, n_padded, acquisition_us, user_ft, trim_range,
     ) = inputs
-    trim_lo = float(user_ft.freq_array.min())
-    trim_hi = float(user_ft.freq_array.max())
+    if trim_range is not None:
+        trim_lo, trim_hi = float(trim_range[0]), float(trim_range[1])
+    else:
+        trim_lo = float(user_ft.freq_array.min())
+        trim_hi = float(user_ft.freq_array.max())
     fit = ftmw.load_fit(str(FTMW_PATH))
     fitted_freqs = np.array([p.frequency_mhz for p in fit.fitted_peaks])
     fitted_freqs = fitted_freqs[(fitted_freqs >= trim_lo) & (fitted_freqs <= trim_hi)]
@@ -1849,11 +1912,14 @@ def figure_2638_threshold_sweep() -> None:
 
     inputs = _build_active_ft_inputs(str(FTMW_PATH))
     (
-        fid_samples, sample_dt_us, start_us, end_us, expf_us, probe_freq_mhz,
-        sideband, n_padded, acquisition_us, user_ft, user_rms,
+        fid_samples, sample_dt_us, start_us, end_us, probe_freq_mhz,
+        sideband, n_padded, acquisition_us, user_ft, trim_range,
     ) = inputs
-    trim_lo = float(user_ft.freq_array.min())
-    trim_hi = float(user_ft.freq_array.max())
+    if trim_range is not None:
+        trim_lo, trim_hi = float(trim_range[0]), float(trim_range[1])
+    else:
+        trim_lo = float(user_ft.freq_array.min())
+        trim_hi = float(user_ft.freq_array.max())
     prod_peaks = ftmw.load_peaks(str(FTMW_PATH))
     fit = ftmw.load_fit(str(FTMW_PATH))
     prod_freqs = np.array(
@@ -1931,11 +1997,14 @@ def run_2638_hybrid_application() -> Optional[dict]:
 
     inputs = _build_active_ft_inputs(str(FTMW_PATH))
     (
-        fid_samples, sample_dt_us, start_us, end_us, expf_us, probe_freq_mhz,
-        sideband, n_padded, acquisition_us, user_ft, user_rms,
+        fid_samples, sample_dt_us, start_us, end_us, probe_freq_mhz,
+        sideband, n_padded, acquisition_us, user_ft, trim_range,
     ) = inputs
-    trim_lo = float(user_ft.freq_array.min())
-    trim_hi = float(user_ft.freq_array.max())
+    if trim_range is not None:
+        trim_lo, trim_hi = float(trim_range[0]), float(trim_range[1])
+    else:
+        trim_lo = float(user_ft.freq_array.min())
+        trim_hi = float(user_ft.freq_array.max())
     prod_peaks = ftmw.load_peaks(str(FTMW_PATH))
     fit = ftmw.load_fit(str(FTMW_PATH))
     prod_freqs = np.array(
@@ -2043,11 +2112,14 @@ def figure_2638_hybrid_comparison() -> None:
 
     inputs = _build_active_ft_inputs(str(FTMW_PATH))
     (
-        fid_samples, sample_dt_us, start_us, end_us, expf_us, probe_freq_mhz,
-        sideband, n_padded, acquisition_us, user_ft, user_rms,
+        fid_samples, sample_dt_us, start_us, end_us, probe_freq_mhz,
+        sideband, n_padded, acquisition_us, user_ft, trim_range,
     ) = inputs
-    trim_lo = float(user_ft.freq_array.min())
-    trim_hi = float(user_ft.freq_array.max())
+    if trim_range is not None:
+        trim_lo, trim_hi = float(trim_range[0]), float(trim_range[1])
+    else:
+        trim_lo = float(user_ft.freq_array.min())
+        trim_hi = float(user_ft.freq_array.max())
     prod_peaks = ftmw.load_peaks(str(FTMW_PATH))
     fit = ftmw.load_fit(str(FTMW_PATH))
     prod_freqs = np.array(
@@ -2158,13 +2230,12 @@ def figure_2638_candidate_overlay() -> None:
         sample_dt_us,
         start_us,
         end_us,
-        _expf,
         probe_freq_mhz,
         sideband,
         n_padded,
         _acq,
         _user_ft,
-        _user_rms,
+        _trim_range,
     ) = _build_active_ft_inputs(str(FTMW_PATH))
     mf = matched_filter_detect(
         fid_samples,

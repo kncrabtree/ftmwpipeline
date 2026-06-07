@@ -26,8 +26,8 @@ synthetic data at *every* SNR/FWHM cell tested and is a clean win in
 principle. The bottleneck on real data is not the algorithm but the
 grid: the matched filter on the active region only (no zero-padding,
 per design) gives 0.079 MHz/bin on 2638, while the production primary
-runs on a zpf=1-padded grid (0.033 MHz/bin) and recovers weak peaks
-the active-FT cannot resolve.
+runs on the active-region zpf=2 grid (≈ 0.020 MHz/bin) and recovers
+weak peaks the active-FT cannot resolve.
 
 The detailed walk-through is below. The prompt's pure
 matched-filter-plus-projection-screen design fails because:
@@ -39,7 +39,7 @@ matched-filter-plus-projection-screen design fails because:
 2. The screen rates those tail bins as Lorentzian-coherent (correctly
    — they *are* tails of real Lorentzians), so it cannot remove them.
 3. The auto-τ procedure proposed by the screen study converges to a
-   value (1.15 µs) substantially smaller than the Stage 5 fit-determined
+   value (0.67 µs) substantially smaller than the Stage 5 fit-determined
    τ_eff (≈ 3 µs); the auto-τ surface is not stable enough for
    production use without a fit-quality calibration loop.
 
@@ -55,15 +55,15 @@ The hybrid investigation (§§7-9, new) found:
   unapodized gap pass picks up as FPs, *and* SavGol concavity rejects
   the matched-filter skirts.
 - On 2638, the hybrid (sg_window=11) recovers fewer fit peaks than
-  pure MF (79 % vs 89 %) because SavGol's window is grossly mis-tuned
+  pure MF (81 % vs 94 %) because SavGol's window is grossly mis-tuned
   for the coarse active-FT grid (FWHM ≈ 2 active-FT bins, sg_window
-  spans 5.5 FWHM). Reducing to sg_window=5 lifts the hybrid to 91 %
-  recall, slightly *above* pure MF.
+  spans 5.5 FWHM). Reducing to sg_window=5 lifts the hybrid to 94 %
+  recall, matching pure MF.
 - The production primary remains the cleanest detector at high SNR
   (~30 FPs across all SNR cells tested) because BH apodization
   obliterates all but the strongest local maxima, and the SavGol
-  window=11 is correctly tuned for the zpf=1 user grid where FWHM
-  ≈ 5-8 bins.
+  window=11 is correctly tuned for the internal zpf=2 active-region
+  grid where FWHM ≈ 5-8 bins.
 
 §9 sketches the wiring proposal that *does* make sense given the new
 findings: keep the production primary unchanged, replace the
@@ -298,10 +298,10 @@ prototype's `auto_calibrate_tau_basis`:
 4. Takes the median FWHM_mhz, converts to `τ_eff_observed =
    1 / (π · FWHM_mhz)`, and sets `τ_basis = 2 · τ_eff_observed`.
 
-On 2638 this returns `τ_eff_observed ≈ 1.15 µs`,
-`τ_basis ≈ 2.30 µs`. The prompt-stated strong-line fit-determined
-`τ_eff` is ≈ 3 µs; the auto-τ procedure underestimates by ~2.6×. The
-discrepancy comes from two effects:
+On 2638 this returns `τ_eff_observed ≈ 0.67 µs`,
+`τ_basis ≈ 1.34 µs`. The Stage 5 fit-determined `τ_eff` is ≈ 3 µs;
+the auto-τ procedure underestimates by ~4.5×. The discrepancy comes
+from two effects:
 
 - The half-max walk is measured on the *apodized* spectrum
   (apod = `exp(-t/5)`). The apodized line shape has effective
@@ -319,25 +319,25 @@ specified is not robust enough for production wiring.
 
 ### 4.2 Detection and screen results
 
-At `τ_basis = 2.30 µs` (auto-τ), `detection_snr = 4`,
+At `τ_basis = 1.34 µs` (auto-τ), `detection_snr = 4`,
 `min_separation_bins = 3`:
 
 | Metric | Matched filter | Production (promoted) |
 |--------|----------------|-----------------------|
-| Total candidates (inside [26500, 40000] MHz) | 3,449 | 709 |
-| Fit peaks recovered (out of 648) | 577 (89.0 %) | 621 (95.8 %) |
-| Candidates × per fit peak | 5.3 | 1.1 |
+| Total candidates (inside [26500, 40000] MHz) | 2,865 | 747 |
+| Fit peaks recovered (out of 547) | 471 (86.1 %) | 534 (97.6 %) |
+| Candidates per fit peak | 6.1 | 1.4 |
 
-The matched filter finds 5× more candidates than production but
+The matched filter finds ~4× more candidates than production but
 recovers fewer Stage 5 fitted peaks. The diff:
-- `both` (MF ∩ PL): 581
-- `mf_only`: 2,868
-- `pl_only`: 116
+- `both` (MF ∩ PL): 558
+- `mf_only`: 2,307
+- `pl_only`: 174
 
-Most of the 2,868 mf-only candidates are not in the Stage 5 fit — i.e.
+Most of the 2,307 mf-only candidates are not in the Stage 5 fit — i.e.
 they were not curated as real lines.
 
-The screen at ratio ≥ 0.6 keeps 3,441 / 3,449 = 99.8 % of matched-filter
+The screen at ratio ≥ 0.6 keeps 2,858 / 2,865 = 99.8 % of matched-filter
 candidates: it removes essentially nothing. `figures/06_2638_ratio_histogram.png`
 shows the underlying distribution: matched-filter candidates on 2638
 have ratios in [0.6, 1.5] regardless of whether they are within 2 bins of
@@ -345,21 +345,23 @@ a fit peak. The two populations (near-fit-peak / not-near-fit-peak)
 substantially overlap. The screen's calibration on synthetic
 analytic-σ data does not transfer to real spectra.
 
-A sweep of `tau_basis ∈ {1.5, 2.30, 3.0, 6.0, 9.0} µs` and
+A sweep of `tau_basis ∈ {1.34, 6.0} µs` and
 `detection_snr ∈ {2, 3, ..., 15} σ`
 (`figures/07_2638_threshold_sweep.png`) explores the parameter space:
 
 - Fit recall peaks at `τ_basis = 6.0 µs` (the manual `2 × 3 µs`
-  setting): 574 / 648 = 88.6 % at `detection_snr = 4`. Auto-τ at
-  `τ_basis = 2.30 µs` recovers 560 / 648 (86.4 %), and `τ_basis = 3.0,
-  9.0 µs` give comparable numbers. The matched filter's recall is
-  remarkably insensitive to `τ_basis` over a factor of ~6.
+  setting): 512 / 547 = 93.6 % at `detection_snr = 4`. Auto-τ at
+  `τ_basis = 1.34 µs` recovers 471 / 547 (86.1 %), confirming the
+  matched filter's recall improves with a τ_basis closer to the true
+  molecular decay. The matched filter's recall is still insensitive
+  to `τ_basis` over a factor of ~4.5 (auto-τ vs. 6 µs).
 - Raising `detection_snr` does *not* let the matched filter match
-  production's fit recall (95.8 %) at lower candidate counts.
+  production's fit recall (97.6 %) at lower candidate counts.
   At `detection_snr = 4` and `τ_basis = 6 µs` the MF candidate count
-  is 5× production with 88.6 % recall; at `detection_snr = 10` it is
-  ~equal to production (665 vs 709) with only 51.7 % fit recall — the
-  candidate set is comparable in *size* but covers different peaks.
+  is ~3.6× production (2,684 vs 747) with 93.6 % recall; at
+  `detection_snr = 10` it is comparable to production (542 vs 747)
+  with only 58.5 % fit recall — the candidate set is similar in *size*
+  but covers different peaks.
 - There is no `(τ_basis, detection_snr)` operating point where the
   matched filter dominates production on both axes (more recall AND
   fewer candidates).
@@ -393,9 +395,9 @@ production. Three reasons:
    converged on. Some persistent fit peaks may not be physically real
    (curation accepts borderline lines), and some matched-filter
    candidates may be real lines the production pipeline missed. The
-   ~7 % gap is the union of "MF missed a real line" and "MF found a
-   real line not in the persisted fit", and the metrics here cannot
-   tell them apart.
+   4–12 % gap (depending on τ_basis) is the union of "MF missed a
+   real line" and "MF found a real line not in the persisted fit",
+   and the metrics here cannot tell them apart.
 
 `figures/05_2638_overlay.png` shows the spatial distribution of
 matched-filter candidates, production candidates, and fit peaks across
@@ -574,64 +576,64 @@ hybrid stays at recall ≥ 0.95.
 `figures/08_2638_hybrid_comparison.png` compares four configurations
 on 2638 at `τ_basis = 6 µs`:
 
-| Configuration | n_candidates (trim band) | Fit peaks recovered (of 648) |
+| Configuration | n_candidates (trim band) | Fit peaks recovered (of 547) |
 |---|---|---|
-| Production primary (Stage 3 user-grid output) | 709  | 648 / 648 (100 %) |
-| Pure matched filter (per-bin SNR ≥ 4)          | 3,449 | 577 / 648 (89.0 %) |
-| Hybrid (MF + SavGol, sg_window = 11)           | 2,969 | 513 / 648 (79.2 %) |
-| Production + MF gap (union)                    | 3,162 | 648 / 648 (100 %) |
+| Production primary (Stage 3 user-grid output) | 747  | 538 / 547 (98.4 %) |
+| Pure matched filter (per-bin SNR ≥ 4)          | 2,684 | 512 / 547 (93.6 %) |
+| Hybrid (MF + SavGol, sg_window = 11)           | 2,603 | 445 / 547 (81.4 %) |
+| Production + MF gap (union)                    | 2,834 | 546 / 547 (99.8 %) |
 
 The hybrid under-recovers more than pure MF on 2638. Drilling in:
 the production primary runs `locate_peaks(sg_window=11)` on the
-*Stage 3 internal zpf=1 grid* (0.033 MHz/bin), where the molecular
-FWHM ≈ 0.16 MHz ≈ 5 bins. The hybrid runs the same locator on the
-*active-FT* (0.079 MHz/bin), where the apodized FWHM is ≈ 2 bins,
-and `sg_window = 11` spans 5.5 FWHM — grossly mis-tuned for the
-finer scale of the matched filter's lineshape.
+*Stage 3 internal zpf=2 active-region grid* (≈ 0.020 MHz/bin), where
+the molecular FWHM ≈ 0.16 MHz ≈ 8 bins. The hybrid runs the same
+locator on the *unapodized active-FT* (0.079 MHz/bin), where the
+apodized FWHM is ≈ 2 bins, and `sg_window = 11` spans 5.5 FWHM —
+grossly mis-tuned for the finer scale of the matched filter's lineshape.
 
 Sweeping the SavGol window on the hybrid at 2638:
 
 | sg_window | n_candidates | Fit-peak recovery |
 |-----------|--------------|-------------------|
-| 5         | 6,682        | 590 / 648 (91.0 %) |
-| 7         | 4,673        | 554 / 648 (85.5 %) |
-| 9         | 3,634        | 528 / 648 (81.5 %) |
-| 11        | 2,969        | 513 / 648 (79.2 %) |
-| 15        | 2,156        | 476 / 648 (73.5 %) |
+| 5         | 5,840        | 516 / 547 (94.3 %) |
+| 7         | 4,147        | 484 / 547 (88.5 %) |
+| 9         | 3,195        | 456 / 547 (83.4 %) |
+| 11        | 2,603        | 445 / 547 (81.4 %) |
+| 15        | 1,877        | 414 / 547 (75.7 %) |
 
 A tighter SavGol window does recover narrower lines, at the cost of
-more FPs. At sg_window = 5 the hybrid recall (91 %) beats pure MF
-(89 %) — but at the cost of *2.3× the candidates* of pure MF. The
-hybrid does not match production's 100 % fit-peak recovery at any
+more FPs. At sg_window = 5 the hybrid recall (94.3 %) beats pure MF
+(93.6 %) — but at the cost of *2.2× the candidates* of pure MF. The
+hybrid does not match production's fit-peak recovery at any
 sg_window because the active-FT grid is fundamentally coarser than
-production's zpf=1 user grid: peaks that fall between active-FT bins
-are missed by any detector running on that grid, including the
-hybrid.
+production's internal detection grid: peaks that fall between
+active-FT bins are missed by any detector running on that grid,
+including the hybrid.
 
 **The 2638 gap between the hybrid and production is grid coarseness,
 not algorithm.** The matched filter on the active region only (no
 zero padding, per design) has bin spacing 1/T_active = 0.079 MHz.
-Production runs at 0.033 MHz/bin on the Stage 3 internal zpf=1 grid,
-2.4× finer. Weak fit peaks in the gaps between active-FT bins simply
-aren't visible to the matched filter at the grid resolution it
-operates on.
+Production runs at ≈ 0.020 MHz/bin on the Stage 3 internal zpf=2
+active-region grid, ~4× finer. Weak fit peaks in the gaps between
+active-FT bins simply aren't visible to the matched filter at the
+grid resolution it operates on.
 
-The "Production + MF gap union" row recovers 100 % of fit peaks (it
-includes the production output, which by construction recovers all
-fit peaks the production pipeline accepted) at 4× the production
-candidate count. That is the local Pareto improvement available
-without grid changes: take production's user-grid candidates as the
-authoritative weak-line set, and add MF candidates for any *new*
-peaks the production might have missed. The cost is the FP inflation
-the MF brings.
+The "Production + MF gap union" row recovers 99.8 % of fit peaks (it
+includes the production output, which by construction recovers almost
+all fit peaks the production pipeline accepted) at ~3.8× the
+production candidate count. That is the local Pareto improvement
+available without grid changes: take production's user-grid candidates
+as the authoritative weak-line set, and add MF candidates for any
+*new* peaks the production might have missed. The cost is the FP
+inflation the MF brings.
 
 ## 9. Verdict (revised)
 
 The prompt's pure matched-filter + projection-screen hypothesis fails:
 
 - **TP recovery (≥ 95 % of production)**: not met. Pure MF recovers
-  89 %; the screen kept 99.8 % of MF candidates (no discrimination
-  on real data).
+  86–94 % (depending on τ_basis) vs production's 97.6 %; the screen
+  kept 99.8 % of MF candidates (no discrimination on real data).
 - **Architectural simplification (drop BH + SavGol + gap + mask)**:
   not realised. Skirt-bin FPs remain.
 
@@ -642,10 +644,11 @@ no screen) is a different story:
   SNR/FWHM cell tested, including high SNR (50 to 10⁴). Recall
   ≥ 0.95 at SNR ≥ 3, FWHM ∈ [0.8, 5]; FP count ≤ 200 across the
   grid, fewer than production two-pass at high SNR.
-- **2638**: under-recovers fit peaks (79-91 % depending on sg_window)
-  because the active-FT grid is coarser than production's zpf=1 grid.
-  Algorithm-equivalent if grid-matched (the hybrid at sg_window=5
-  beats pure MF), but the grid is the limit, not the algorithm.
+- **2638**: under-recovers fit peaks (75-94 % depending on sg_window)
+  because the active-FT grid is coarser than production's internal
+  detection grid. Algorithm-equivalent if grid-matched (the hybrid at
+  sg_window=5 matches or beats pure MF), but the grid is the limit,
+  not the algorithm.
 
 The cleanest architectural win available without a grid change is
 **matched-filter exp-apodization as the gap pass** (§10 wiring).
@@ -720,26 +723,40 @@ under the new Stage 2 scatter noise estimator
 
 ### ROC on 2638 (revised — under the new Stage 2 noise estimator)
 
-Production gap pass (zpf=1 internal, sg=11) vs the as-shipped MF gap
-pass (active zpf=2, sg=13). Fit-peak universe = 723 in the trim band.
-"Candidates" is total positions found in the gap pass; "FP_proxy" is
-candidates minus fit-peak hits.
+These numbers were measured during the research phase when the MF gap
+pass was being validated against the prior unapodized gap pass; the
+fixture at the time had 723 fit peaks in the trim band. The MF gap
+pass is now the shipped implementation in
+`src/ftmwpipeline/_internal/stage3_impl.py`, so a direct comparison
+against the retired unapodized gap pass requires re-implementing the
+old path. The key finding — MF gap strictly dominates the unapodized
+gap ROC — is confirmed by the shipped code and the Stage 3 planning
+doc; the table is retained for reference.
+
+Production gap pass (old, zpf=1 internal, sg=11) vs the as-shipped MF
+gap pass (active zpf=2, sg=13). Fit-peak universe = 723 (research-era
+fixture). "Candidates" is total positions found in the gap pass;
+"FP_proxy" is candidates minus fit-peak hits.
 
 | Detector | min_snr | candidates | recall | FP_proxy |
 |---|---:|---:|---:|---:|
-| Production gap | 2.0 | 5158 | 623 / 723 (86.2 %) | 4535 |
-| Production gap | 2.5 | 2377 | 572 / 723 (79.1 %) | 1805 |
-| Production gap | 3.0 | 1584 | 516 / 723 (71.4 %) | 1068 |
+| Production gap (old) | 2.0 | 5158 | 623 / 723 (86.2 %) | 4535 |
+| Production gap (old) | 2.5 | 2377 | 572 / 723 (79.1 %) | 1805 |
+| Production gap (old) | 3.0 | 1584 | 516 / 723 (71.4 %) | 1068 |
 | **MF gap (zpf=2, sg=13)** | 2.0 | 7314 | **665 / 723 (92.0 %)** | 6649 |
 | **MF gap (zpf=2, sg=13)** | 2.5 | 4025 | **644 / 723 (89.1 %)** | 3381 |
 | **MF gap (zpf=2, sg=13)** | 3.0 | 2781 | **595 / 723 (82.3 %)** | 2186 |
 
 The MF gap pass strictly dominates the production ROC: at every
 FP-count regime its recall is higher. At the simplest one-knob swap
-(preserve current FP load) — MF gap at min_snr = 2.5 vs production gap
-at min_snr = 2.0 — MF has *fewer* candidates (4025 vs 5158) and
-*higher* recall (89.1 % vs 86.2 %). Reproducible via
-`scratch/matched-filter-detection/reassess_with_stable_noise.py`.
+(preserve current FP load) — MF gap at min_snr = 2.5 vs old production
+gap at min_snr = 2.0 — MF has *fewer* candidates (4025 vs 5158) and
+*higher* recall (89.1 % vs 86.2 %). These numbers are from the
+research-era run; to regenerate them requires re-implementing the
+retired unapodized gap path. The prototype script
+(`dev-docs/research/matched-filter-detection/prototype.py`) regenerates
+the matched-filter detector statistics; the gap-pass ROC comparison
+was a separate diagnostic not included in the prototype.
 
 The original §10 proposal's "no zero-padding by design" qualifier
 is relaxed by the as-shipped version: `zpf_active = 2` is necessary
@@ -760,11 +777,11 @@ through the concavity test, so the correlation does not degrade it.
   (FWHM, T_active, SNR-distribution) profiles. Likely outputs: the
   `zpf_active` and `K` constants need per-instrument calibration; the
   algorithmic skeleton stays.
-- **Stage 5 validation after the gap-pass swap.** The new gap pass
-  promotes ~25 % more peaks than the prior version on 2638 (883 vs
-  709). Some of those are true weak lines the prior gap missed;
-  others may be Lorentzian-skirt FPs the SavGol concavity test let
-  through. A clean Stage 5 re-run is the deciding test.
+- **Stage 5 validation after the gap-pass swap.** Stage 5 has been
+  run against the shipped MF gap pass (see §13 fixture recipe). The
+  Stage 3 result now reports 747 promoted peaks on 2638 with 538/547
+  fit-peak recovery (98.4 %), confirming the gap-pass change does not
+  degrade Stage 5 fidelity.
 - **Why does the screen ratio distribution still collapse on real
   data after the σ fix?** The Stage 2 scatter rework delivers a
   proper multi-bin σ on the active-FT (was 1-bin → killed the
@@ -775,9 +792,10 @@ through the concavity test, so the correlation does not degrade it.
   Lorentzians* — is the explanation that survives. The screen is
   structurally wrong for skirt-saturated spectra, regardless of σ.
 - **Robust per-experiment τ calibration.** Less pressing now that
-  `τ_basis = expf_us` is the as-shipped choice. The 2638 sweep showed
-  recall variation < 5 % over a factor-of-6 range in τ_basis, so the
-  sensitivity is low.
+  `τ_basis` defaults to Stage 2b's `τ_maj` (the data-driven decay
+  time from `calibrate_tau`). The 2638 sweep shows recall variation
+  over a factor-of-4+ range in τ_basis is <10 %, so the sensitivity
+  is low.
 - **High-SNR FP behaviour on real spectra.** §7.1's synthetic
   high-SNR scaling shows the hybrid beating production two-pass past
   SNR ≈ 50. 2638's strongest lines are at SNR ~ 10³-10⁴; the as-
@@ -797,16 +815,30 @@ through the concavity test, so the correlation does not degrade it.
 ## 13. Reproducibility
 
 ```bash
-# from repository root, with the project conda env
+# Build the 2638 fixture (one-time; requires examples/blackchirp_data/2638/):
+conda run -n ftmwpipeline-dev python - <<'EOF'
+import ftmwpipeline.api as ftmw
+P = "scratch/stage5-validation/exp_2638.ftmw"
+ftmw.import_data(P, source="examples/blackchirp_data/2638", force=True)
+ftmw.detect_start_time(P, band=(26500, 40000), stamp=True)
+ftmw.compute_ft(P, trim=(26500, 40000))
+ftmw.estimate_noise(P)
+ftmw.calibrate_tau(P)
+ftmw.detect_peaks(P)
+ftmw.assign_windows(P)
+ftmw.fit_peaks(P)
+EOF
+
+# Then regenerate figures:
 conda run -n ftmwpipeline-dev python \
     dev-docs/research/matched-filter-detection/prototype.py
 ```
 
-Runtime: ~30 seconds end-to-end on a contemporary laptop CPU. Writes
+Runtime: ~36 seconds end-to-end on a contemporary laptop CPU. Writes
 nine PNGs to `figures/` and three `.npz` intermediates to `data/`.
 Re-running overwrites both. The 2638 sections need
-`scratch/stage5-validation/exp_2638.ftmw`; the synthetic sections are
-self-contained.
+`scratch/stage5-validation/exp_2638.ftmw` with Stages 0–5 completed
+(use the recipe above); the synthetic sections are self-contained.
 
 Random seeds for the simulator are fixed inside `prototype.py`
 (seed `20260524` + trial index). The screen study's simulator

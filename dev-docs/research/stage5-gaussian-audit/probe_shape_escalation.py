@@ -84,7 +84,7 @@ from ftmwpipeline.fitting.peak_model import (
 )
 from ftmwpipeline.fitting.plan_execution import materialize_window
 from ftmwpipeline.fitting.validation import feature_fwhm
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_FIXTURE = (
@@ -233,20 +233,18 @@ def load_fixture(fixture: Path) -> FixtureContext:
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
         probe_freq_mhz,
         sideband_enum,
         n_padded,
         acquisition_us,
         _user_ft,
-        _user_rms,
+        _trim_range,
     ) = _build_active_ft_inputs(str(fixture))
     active_ft = compute_active_ft(
         fid_samples,
         sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=expf_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband_enum,
         n_padded=n_padded,
@@ -258,7 +256,7 @@ def load_fixture(fixture: Path) -> FixtureContext:
     unsort_idx = np.argsort(sort_idx)
     freqs_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
     spec_sorted = np.ascontiguousarray(active_ft.complex_spectrum[sort_idx])
-    active_noise = estimate_noise_adaptive(
+    active_noise = estimate_noise_scatter(
         freqs_sorted, np.abs(spec_sorted).astype(np.float64)
     )
     active_noise_arr = np.asarray(active_noise.rms_noise, dtype=float)[unsort_idx]

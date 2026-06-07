@@ -25,7 +25,7 @@ conda run -n ftmwpipeline-dev python -c "
 import ftmwpipeline.api as ftmw
 f = 'scratch/exp_2638.ftmw'
 ftmw.import_data(f, source='examples/blackchirp_data/2638/', force=True)
-ftmw.compute_ft(f, zpf=2, expf_us=None, trim=(26500, 40000))
+ftmw.compute_ft(f, trim=(26500, 40000))
 ftmw.estimate_noise(f)
 print(ftmw.calibrate_tau(f))
 "
@@ -37,7 +37,7 @@ from ftmwpipeline.core.stage_fit_settings import StageFitSettings
 from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
 f = 'scratch/stage5-tau-calibration-lsq/exp_2638_unapodized.ftmw'
 ftmw.import_data(f, source='examples/blackchirp_data/2638/', force=True)
-ftmw.compute_ft(f, zpf=2, expf_us=None, trim=(26500, 40000))
+ftmw.compute_ft(f, trim=(26500, 40000))
 ftmw.estimate_noise(f)
 tau_s = TauCalibrationSettings()
 tau_s.band.compute_band_majorities = True

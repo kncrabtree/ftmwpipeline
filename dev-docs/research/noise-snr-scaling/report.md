@@ -280,7 +280,7 @@ Validated; the path to production:
    `estimate_noise_scatter` (the `prototype.py` core, region-aware `C(R)` per
    §4.1 — bake the `(R_TAB, C_TAB)` arrays as module constants rather than
    simulating at import), returning the existing `NoiseResult` (per-bin σ, line
-   mask, diagnostics) so it is a drop-in for the current `estimate_noise_adaptive`.
+   mask, diagnostics) so it is a drop-in for the level-based estimator it replaces.
    Stage 2 precedes Stage 3, so it must remain self-masking — no peak-list
    dependency.
 2. **Wire through `_internal/stage2_impl.py`** only; the dual interface

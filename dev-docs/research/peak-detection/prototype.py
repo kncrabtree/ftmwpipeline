@@ -35,6 +35,14 @@ Sections
 
 Inputs: the 2638 fixture at ``scratch/exp_2638.ftmw`` (untracked).
 Synthetic sections need no inputs; sections 2 and 6 do.
+
+Fixture build (canonical):
+
+    import ftmwpipeline.api as ftmw
+    ftmw.import_data("scratch/exp_2638.ftmw", source="examples/blackchirp_data/2638", force=True)
+    ftmw.detect_start_time("scratch/exp_2638.ftmw", band=(26500,40000), stamp=True)
+    ftmw.compute_ft("scratch/exp_2638.ftmw", trim=(26500,40000))
+    ftmw.estimate_noise("scratch/exp_2638.ftmw")
 """
 from __future__ import annotations
 
@@ -49,14 +57,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.signal as spsig
 
+import scipy.fft as sfft
 import ftmwpipeline.api as ftmw
-from ftmwpipeline.core.data_structures import ComplexFT, FID
-from ftmwpipeline.preprocessing import noise_estimation as ne
+from ftmwpipeline.core.data_structures import ComplexFT, FID, Sideband
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 from ftmwpipeline.preprocessing.leakage import estimate_leakage_reach
 from ftmwpipeline.preprocessing.peak_detection import (
     detect_peaks as pd_detect,
     locate_peaks,
 )
+from ftmwpipeline.utils.signal_processing import apodize_fid
 
 HERE = Path(__file__).parent
 FIG = HERE / "figures"
@@ -206,27 +216,49 @@ def study_pipeline_breakdown() -> None:
     trim = (user_ft.freq_array.min(), user_ft.freq_array.max())
     acq_us = (base_pp.end_us or fid.duration_us) - (base_pp.start_us or 0.0)
 
-    def _recompute(expf_us, window_function="__base__"):
-        winf = base_pp.winf if window_function == "__base__" else window_function
-        pp = fid.preprocess(
+    # The canonical FT is unconditionally unapodized; apodized spectra for
+    # the detection passes are built via apodize_fid (the common helper that
+    # replicates the removed FID.preprocess apodization chain) + a manual
+    # rfft replicating PreprocessedFID.compute_fft's freq-axis construction.
+    original_length = len(fid.data)
+    scale_factor = 10 ** base_pp.units_power
+
+    def _recompute(expf_us: Optional[float], window_function: Optional[str] = None) -> ComplexFT:
+        """Rebuild an apodized detection spectrum using apodize_fid + rfft.
+
+        Replicates the removed fid.preprocess(...).compute_fft() path:
+        active-region extraction, optional exp matched filter, optional
+        symmetric window, DC removal, zero-pad (zpf=1), rfft, probe/sideband
+        fold, normalization, and amplitude scaling.
+        """
+        processed = apodize_fid(
+            fid.data,
+            fid.time_array_us(),
             start_us=base_pp.start_us,
             end_us=base_pp.end_us,
-            zpf=1,
             expf_us=expf_us,
-            window_function=(None if expf_us is None else winf)
-            if window_function == "__base__"
-            else winf,
+            window_function=window_function,
+            zpf=1,
             rdc=base_pp.rdc,
-            units_power=base_pp.units_power,
         )
-        spec, freqs = pp.compute_fft()
-        cft = ComplexFT.from_spectrum(spec, freqs)
+        ft_data = sfft.rfft(processed)
+        scope_freqs = sfft.rfftfreq(len(processed), d=fid.spacing) / 1e6  # MHz
+        # Probe/sideband fold (matches PreprocessedFID.apply_molecular_frequency)
+        if fid.sideband in (Sideband.LOWER, Sideband.LSB):
+            mol_freqs = fid.probe_freq_mhz - scope_freqs
+        else:
+            mol_freqs = fid.probe_freq_mhz + scope_freqs
+        ft_data = ft_data / original_length * scale_factor
+        cft = ComplexFT.from_spectrum(ft_data, mol_freqs)
         return cft.trim_to_range(trim[0], trim[1])
 
-    expf_us = base_pp.expf_us if base_pp.expf_us else 5.0
+    # Historical research default: 5 µs exponential for the primary pass.
+    # The pipeline's canonical FT is now unapodized; 5 µs is used here only
+    # as the research apodization benchmark described in §6 of the report.
+    PRIMARY_EXPF_US = 5.0
 
     t = time.perf_counter()
-    primary_ft = _recompute(expf_us)
+    primary_ft = _recompute(PRIMARY_EXPF_US)
     t_primary_ft = time.perf_counter() - t
 
     t = time.perf_counter()
@@ -234,13 +266,13 @@ def study_pipeline_breakdown() -> None:
     t_gap_ft = time.perf_counter() - t
 
     t = time.perf_counter()
-    primary_noise = ne.estimate_noise_adaptive(
+    primary_noise = estimate_noise_scatter(
         primary_ft.freq_array, primary_ft.magnitude_spectrum
     )
     t_primary_noise = time.perf_counter() - t
 
     t = time.perf_counter()
-    gap_noise = ne.estimate_noise_adaptive(
+    gap_noise = estimate_noise_scatter(
         gap_ft.freq_array, gap_ft.magnitude_spectrum
     )
     t_gap_noise = time.perf_counter() - t
@@ -276,7 +308,6 @@ def study_pipeline_breakdown() -> None:
         min_snr=2.0,
         sg_window=11,
         sg_order=3,
-        acquisition_us=acq_us,
         run_gap_pass=True,
     )
     t_full = time.perf_counter() - t
@@ -443,7 +474,7 @@ def study_synthetic_correctness(n_trials: int = 4) -> Dict:
             spec_c = spec_c_full[mask]
             mag = np.abs(spec_c)
             c_band = spec_c
-            noise = ne.estimate_noise_adaptive(f_band, mag)
+            noise = estimate_noise_scatter(f_band, mag)
             res = locate_peaks(
                 f_band, mag, window=11, order=3, thresh=3.0 * noise.rms_noise
             )
@@ -995,14 +1026,12 @@ def study_2638_reality(pipe_state: Optional[Dict]) -> None:
 def study_2638_primary_apodization(pipe_state: Optional[Dict]) -> None:
     """Recompute the 2638 *primary* pass under different apodizations.
 
-    The pipeline's primary pass currently apodizes with the user's Stage-1
-    ``expf_us`` (5 µs for 2638) — a mild exponential that leaves substantial
-    sinc sidelobes (synthetic §3: 211 FP vs 0 for Blackman-Harris). The
-    primary pass's job is robust strong-line finding, and it should use the
-    most sidelobe-suppressing window available. This section measures, on the
-    real 2638 spectrum, how many primary detections the current exp-5µs
-    apodization produces vs Blackman-Harris / Blackman, and estimates the
-    sidelobe-contamination fraction via the self-consistent reach mask.
+    Measures, on the real 2638 spectrum, how many primary detections the
+    research-baseline exp-5µs apodization produces vs Blackman-Harris /
+    Blackman, and estimates the sidelobe-contamination fraction via the
+    self-consistent reach mask. The pipeline's shipped primary pass uses
+    Blackman-Harris internally; this section is the calibration study that
+    motivated that choice (§6 of the report).
     """
     if pipe_state is None:
         print("\n=== 7. 2638 primary-pass apodization — SKIPPED (no fixture) ===")
@@ -1012,7 +1041,7 @@ def study_2638_primary_apodization(pipe_state: Optional[Dict]) -> None:
     acq_us = pipe_state["acq_us"]
 
     cases = [
-        ("exp 5 µs (current default)", dict(expf_us=5.0, window_function=None)),
+        ("exp 5 µs (research baseline)", dict(expf_us=5.0, window_function=None)),
         ("Blackman-Harris", dict(expf_us=None, window_function="blackmanharris")),
         ("Blackman", dict(expf_us=None, window_function="blackman")),
         ("Hann", dict(expf_us=None, window_function="hann")),
@@ -1022,7 +1051,7 @@ def study_2638_primary_apodization(pipe_state: Optional[Dict]) -> None:
         cft = recompute(kw["expf_us"], window_function=kw["window_function"])
         f = cft.freq_array
         mag = cft.magnitude_spectrum
-        noise = ne.estimate_noise_adaptive(f, mag)
+        noise = estimate_noise_scatter(f, mag)
         rms = noise.rms_noise
         res = locate_peaks(f, mag, window=11, order=3, thresh=2.0 * rms)
         det_idx = res.indices

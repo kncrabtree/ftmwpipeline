@@ -57,7 +57,7 @@ from scipy.optimize import least_squares
 from ftmwpipeline._internal.stage5_impl import _build_active_ft_inputs
 from ftmwpipeline.fitting.active_ft import compute_active_ft
 from ftmwpipeline.fitting.peak_model import baseband_offset, sideband_sign
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 HERE = Path(__file__).parent
 FIG = HERE / "figures"
@@ -429,19 +429,21 @@ def main() -> None:
 
     logger.info("Reading active-FT inputs from %s", SOURCE_FIXTURE)
     (
-        fid_arr, sample_dt_us, start_us, end_us, expf_us,
+        fid_arr, sample_dt_us, start_us, end_us,
         probe_freq_mhz, sideband, n_padded, acquisition_us,
-        _user_ft, _user_rms,
+        _user_ft, _trim_range,
     ) = _build_active_ft_inputs(str(SOURCE_FIXTURE))
     logger.info(
-        "Active region: %.3f-%.3f us (T_active=%.3f us), expf_us=%s, sideband=%s",
-        start_us, end_us, acquisition_us, expf_us, sideband,
+        "Active region: %.3f-%.3f us (T_active=%.3f us), sideband=%s",
+        start_us, end_us, acquisition_us, sideband,
     )
 
+    # Unapodized active FT -- consistent with what Stage 5 fits on.  Apodization
+    # would convolve in the window's spectral response and bias the (tau_L, tau_G)
+    # line-shape recovery, so it is intentionally omitted here.
     active_ft = compute_active_ft(
         fid_arr, sample_dt_us,
         start_us=start_us, end_us=end_us,
-        expf_us=expf_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband, n_padded=n_padded,
     )
@@ -455,7 +457,7 @@ def main() -> None:
     sort_idx = np.argsort(active_ft.freq_mhz)
     sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
     sorted_mag = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
-    active_noise = estimate_noise_adaptive(sorted_freq, sorted_mag)
+    active_noise = estimate_noise_scatter(sorted_freq, sorted_mag)
     unsort = np.argsort(sort_idx)
     sigma_per_bin_all = np.asarray(active_noise.rms_noise, dtype=float)[unsort]
 

@@ -1092,7 +1092,8 @@ def phase2_2638() -> dict:
     """Phase 2: apply STFT calibration to the 2638 fixture.
 
     Loads the FID from the unapodized fixture (which must be built
-    separately via ``ftmwpipeline.api.compute_ft(..., expf_us=None)``),
+    separately via ``ftmwpipeline.api.compute_ft(...)`` -- the canonical
+    FT is unconditionally unapodized),
     extracts the active region [2.35, 15] µs, runs the calibration with
     N_seg = 10, and produces 2D STFT heatmap + per-bin τ histogram +
     diagnostics + statistical tests on the contributor distribution.

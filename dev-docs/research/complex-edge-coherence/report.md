@@ -550,7 +550,8 @@ the synthetic figures; recreate the fixture by running
 ```python
 import ftmwpipeline.api as ftmw
 ftmw.import_data("scratch/exp_2638.ftmw", source="examples/blackchirp_data/2638/")
-ftmw.compute_ft("scratch/exp_2638.ftmw", zpf=1, expf_us=5.0, trim=(26500, 40000))
+ftmw.detect_start_time("scratch/exp_2638.ftmw", band=(26500, 40000), stamp=True)
+ftmw.compute_ft("scratch/exp_2638.ftmw", trim=(26500, 40000))
 ftmw.estimate_noise("scratch/exp_2638.ftmw")
 ```
 

@@ -11,8 +11,8 @@ and the (already-shipped) STFT τ work in
 [`../stage5-tau-calibration/report.md`](../stage5-tau-calibration/report.md).
 
 Fixtures: `examples/blackchirp_data/{2638,655,1019,360,363,1512,1231}`. Canonical
-build per fixture: import → `detect_start_time` → `compute_ft(zpf=0, expf=None,
-trim=(26500,40000))` → `estimate_noise` (scatter) → `calibrate_tau`. Tracked
+build per fixture: import → `detect_start_time` → `compute_ft(trim=(26500,40000))`
+→ `estimate_noise` (scatter) → `calibrate_tau`. Tracked
 recipe: [`stage5_cross_fixture.py`](stage5_cross_fixture.py) (T1 harness). The
 asymmetric-τ prototype driver lives in `scratch/stage5_cross_fixture/`
 (`asym_tau_ab.py`, not committed per the scratch-driver policy).

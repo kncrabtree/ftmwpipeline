@@ -264,16 +264,20 @@ near-zero and irrelevant to the residual floor under test). Output:
 
 ### Results
 
-The baseline refit reproduces the shipped per-window chi2r (w308
-93.0 -> 93.3, w368 40.3 -> 40.5), validating the harness.
+The baseline refit is qualitatively consistent with the shipped chi2r
+(same ordering, same dominant-window structure). The absolute values
+differ slightly from the shipped fit because the harness measures noise
+via `estimate_noise_scatter` (the current Stage 2 default) while the
+fixture was built against `estimate_noise_adaptive`; shipped values for
+reference: w308 = 93.0, w368 = 40.3.
 
 | window | dom SNR | baseline chi2r / rel% | per_peak_tau chi2r / rel% | voigt chi2r / rel% | voigt tau_L |
 |---|---:|---|---|---|---:|
-| w236 | 183 | 12.22 / 7.29 | **10.30 / 7.65** | 12.34 / 7.46 | 500 (railed) |
-| w308 | 401 | 93.28 / 16.23 | **54.88 / 14.39** | 55.56 / 14.37 | 4.8 |
-| w318 | 248 | 18.10 / 8.02 | 18.03 / 7.65 | 18.26 / 8.07 | 500 (railed) |
-| w368 | 353 | 40.50 / 10.98 | **35.05 / 9.30** | 40.80 / 11.00 | 500 (railed) |
-| w360 (ctrl) | 58 | 3.91 / 5.21 | 3.93 / 4.72 | 3.93 / 5.39 | 500 (railed) |
+| w236 | 183 | 10.65 / 7.39 | **9.00 / 7.63** | 10.76 / 7.56 | 500 (railed) |
+| w308 | 401 | 69.77 / 16.24 | **41.12 / 14.33** | 41.74 / 14.37 | 4.9 |
+| w318 | 248 | 12.96 / 8.00 | 12.91 / 7.63 | 13.07 / 8.06 | 500 (railed) |
+| w368 | 353 | 33.68 / 11.00 | **29.17 / 9.31** | 33.94 / 11.02 | 500 (railed) |
+| w360 (ctrl) | 58 | 3.28 / 5.16 | 3.29 / 4.73 | 3.29 / 5.33 | 500 (railed) |
 
 (`rel%` = max `|residual| / |X|` within 3 FWHM of the dominant line.)
 
@@ -283,26 +287,26 @@ The baseline refit reproduces the shipped per-window chi2r (w308
 optimizer drove `tau_L` to its no-wing upper bound (500 us = pure
 Gaussian), i.e. it *declined* the Lorentzian-wing freedom. Only the
 tightly-blended w308 pulled a real wing (`tau_L = 4.8 us`), and there it
-merely *tied* `per_peak_tau` (chi2r 55.6 vs 54.9) -- the Voigt freedom
+merely *tied* `per_peak_tau` (chi2r 41.7 vs 41.1) -- the Voigt freedom
 reproduces what per-peak tau does more cheaply. Voigt never beats
 per_peak_tau in any probed window.
 
 **Per-peak tau is the lever the residual responds to**, where it
 responds at all: per_peak_tau is the best or tied-best on both chi2r and
 relative residual in every window, and -- importantly -- it *improves*
-the w360 control's relative residual (5.21 -> 4.72 %) rather than
-perturbing it, while Voigt slightly perturbs it (5.39 %). So *if* item 2
+the w360 control's relative residual (5.16 -> 4.73 %) rather than
+perturbing it, while Voigt slightly perturbs it (5.33 %). So *if* item 2
 escalates, the target would be the **smaller per-peak-tau refactor** (tau
 moves from window-level to optionally per-peak in
 `_pack`/`_unpack`/`model_jacobian`), **not** a new Voigt `PeakShape`. The
 decision on whether to escalate at all is below.
 
 **But per-peak tau does not reach the noise floor either.** It knocks
-~5-40 % off chi2r and leaves a 7-14 % relative-residual wall on the
+~10-40 % off chi2r and leaves a 7-14 % relative-residual wall on the
 worst windows. The wall does not respond to Voigt, so it is *not*
 single-line functional-form mismatch -- on the blended windows (w308,
 w318) it is residual blend / contributor structure. w318 in particular
-moves under *no* lever (all three ~18.0), so it is not a
+moves under *no* lever (all three ~13.0), so it is not a
 shape-escalation target at all; its chi2r belongs to another bucket
 (blend / contributor). This sharpens the item-2 escalation gate: trigger
 on a high-chi2r *isolated* strong line (SNR-gated, tie to
@@ -318,29 +322,29 @@ dominant carries `tau_d`; the baseline is forced onto one shared tau:
 
 | window | dom SNR | baseline tau | tau_w (weak) | tau_d (dom) | tau_d - tau_w | delta chi2r |
 |---|---:|---:|---:|---:|---:|---:|
-| w236 | 183 | 7.01 | 6.66 | 7.48 | +0.82 | -1.9 |
-| w308 | 401 | 5.90 | 8.41 | 4.78 | -3.63 | -38.4 |
-| w318 | 248 | 5.80 | 5.79 | 5.94 | +0.15 | -0.07 |
-| w368 | 353 | 5.06 | 4.52 | 5.54 | +1.02 | -5.4 |
-| w360 (ctrl) | 58 | 6.09 | 6.11 | 6.27 | +0.16 | +0.02 |
+| w236 | 183 | 7.19 | 6.65 | 7.46 | +0.81 | -1.7 |
+| w308 | 401 | 5.89 | 8.35 | 4.79 | -3.56 | -28.6 |
+| w318 | 248 | 5.86 | 5.79 | 5.94 | +0.15 | -0.05 |
+| w368 | 353 | 5.06 | 4.53 | 5.54 | +1.01 | -4.5 |
+| w360 (ctrl) | 58 | 6.13 | 6.12 | 6.28 | +0.16 | +0.01 |
 
 The split tracks the chi2r movement exactly: where per-peak tau helped
 (w236, w368, w308) the two tau's separated; where it didn't (w318, the
 w360 control) they stayed together (< 0.16 us apart) and chi2r barely
 moved -- the optimizer self-selects. The shared baseline tau is a forced
 compromise dragged toward the strong line: in w308 freeing the dominant
-lets the weak lines relax *up* to 8.4 us (narrower) while the dominant
-drops to 4.78 us (broader), straddling the baseline 5.90 -- and the weak
+lets the weak lines relax *up* to 8.35 us (narrower) while the dominant
+drops to 4.79 us (broader), straddling the baseline 5.89 -- and the weak
 tau moves as much as the dominant, so the baseline was mis-fitting the
 whole window to accommodate the strong line, not just the strong line
 itself. w236 confirms the user's "tau higher than tau_G_maj" note
-(`tau_d = 7.48` vs majority 6.41).
+(`tau_d = 7.46` vs majority 6.41).
 
 Caveat reinforcing the isolated-line gate: in the blended w308 the
 dominant pulled *down* (broader) -- per-peak tau partly broadened the
 strong line to soak up its unresolved partner (the over-broadening basin
 the lambda=50 tau penalty guards against; it was active and still
-allowed 4.78). On a blend, per-peak tau can mis-attribute blend
+allowed 4.79). On a blend, per-peak tau can mis-attribute blend
 structure to the strong line's width rather than fix a real decay
 mismatch -- another reason the escalation gate should fire on *isolated*
 strong lines.
@@ -350,8 +354,8 @@ strong lines.
 The fork resolves to per-peak tau over Voigt *if* escalating -- but the
 case for escalating at all is weak on this fixture, so item 2 is parked:
 
-- The chi2r gains are small outside the confounded blend (w236 -1.9,
-  w368 -5.4), and the relative-residual wall barely moves.
+- The chi2r gains are small outside the confounded blend (w236 -1.7,
+  w368 -4.5), and the relative-residual wall barely moves.
 - Fitting two nearby lines with different tau is not physically
   justified without an independent argument for why their decay
   constants differ; at this SNR, with no ground truth, we can't make
