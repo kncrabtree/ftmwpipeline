@@ -92,8 +92,8 @@ with per-bin complex noise RMS $\sigma$. Locked parameters:
   still null-safe (per-band false positives < 1%) but reads ~57% of
   2638 leakage-touched.
 - **σ source:** the per-point `rms_noise[k]` array from the upstream
-  noise stage (sample-count-stabilised default at ~1% RMS precision,
-  see the [noise-heuristic audit](../research/noise-heuristic-audit/report.md)).
+  noise stage (the high-pass scatter estimator; see the
+  [noise SNR-scaling report](../research/noise-snr-scaling/report.md)).
   σ varies up to 6× across 2638 — use the *local* value (window mean
   of `rms_noise`), not a global median.
 - **Threshold/M tunables:** both are configurable parameters on the

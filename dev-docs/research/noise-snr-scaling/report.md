@@ -27,7 +27,8 @@ max SNR ~10³ — could be assessed against a spectrum now at ~10⁶.
 ## 2. The mechanism: a leakage pedestal, not noise
 
 The canonical FT is deliberately **raw and un-apodized** (boxcar), to keep
-per-bin noise statistics independent (see `../noise-grid-invariance/`). A boxcar
+per-bin noise statistics independent (zero-padding or apodization correlates
+adjacent bins, breaking the per-bin σ the later stages assume). A boxcar
 on a strong line produces a slowly-decaying far-field: the magnitude skirt of an
 exp-damped sinusoid falls as `|X| ≈ X_peak·γ/|Δf|`, and the boxcar's own sinc
 sidelobes ring across the whole record. At SNR 10³ these wings are a small
@@ -57,6 +58,36 @@ So a level-based estimator reads `≈ √(σ(N)² + pedestal²)`: at low N the n
 dominates and the estimate tracks 1/√N; at high N the pedestal dominates and the
 estimate **plateaus**. This is exactly the observed behaviour and is the cleanest
 possible diagnostic (§5.2).
+
+### 3.1 Why patching the level estimator could not work (the retired audits)
+
+The predecessor was a *level/adaptive* estimator: recursive bisection of the
+magnitude spectrum into bins, a skewness-trimmed Rayleigh noise mask per bin, a
+moving-median σ, and a Lorentzian-skirt exclusion. Two earlier studies tried to
+make it robust, and both were ultimately overtaken by the SNR-scaling failure
+above:
+
+- A **heuristic audit** of its five tuning constants kept three on empirical
+  grounds and replaced two with closed-form Rayleigh sample-count stability
+  bounds. Worthwhile tuning — but tuning a *level* estimator cannot remove a
+  contamination that is structural in `|X|`.
+- A **grid-invariance** diagnosis found the subdivision criterion could not even
+  detect σ-heterogeneity, because the skewness trim flattened heterogeneous
+  regions before the split test saw them; a MAD/median-on-raw-magnitudes
+  subdivision criterion restored heterogeneity detection and cross-grid
+  agreement. Again a genuine fix to the wrong layer: it makes the *binning*
+  honest but still measures the pedestal level inside each bin.
+
+The lesson common to both is that no amount of better binning or trimming helps
+when the quantity being measured — the level of `|X|` — is the pedestal, not the
+noise. That is what motivated abandoning the level family entirely for the
+high-pass **scatter** estimator below. The whole adaptive estimator has since
+been retired from the package; a minimal reference survives at
+[`legacy_adaptive.py`](legacy_adaptive.py) for the comparisons in this report.
+What scatter does inherit from that lineage is purely physical: per-bin noise
+independence still requires the unpadded boxcar grid (above), and the
+Rayleigh/Rician magnitude statistics still set the MAD-to-σ scale
+(`σ_c = MAD/0.4485`, §4.1).
 
 ## 4. The high-pass (scatter) estimator
 

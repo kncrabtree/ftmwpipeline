@@ -9,7 +9,8 @@ without a join.
 
 Fixture layout per shape, matching the Stage 4 audit:
 
-* Stages 0-2 with ``zpf=2``, ``trim=(26500, 40000)``, ``expf_us=None``.
+* Stages 0-2 with ``trim=(26500, 40000)`` on the canonical unapodized,
+  native-length FT.
 * Stage 2b Lorentzian + Gaussian twins both present.
 * ``recommended_shape`` stamped on the requested shape.
 * Stage 3 peak list persisted using the shape-aware τ-feeder.
@@ -54,7 +55,6 @@ EXAMPLE_2638 = REPO_ROOT / "examples" / "blackchirp_data" / "2638"
 # same fixture; only Stage 4 differs in how the per-variant runs are set up).
 STAGE4_CACHE = REPO_ROOT / "scratch" / "stage4-gaussian-audit"
 
-FT_ZPF = 2
 FT_TRIM_MHZ: Tuple[float, float] = (26500.0, 40000.0)
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -244,7 +244,7 @@ def prepare_fixture(shape: str, *, force_rebuild: bool = False) -> Path:
         shape, fp,
     )
     ftmw.import_data(str(fp), source=str(EXAMPLE_2638), force=True)
-    ftmw.compute_ft(str(fp), zpf=FT_ZPF, expf_us=None, trim=FT_TRIM_MHZ)
+    ftmw.compute_ft(str(fp), trim=FT_TRIM_MHZ)
     ftmw.estimate_noise(str(fp))
     if not tau_calibration_present(str(fp)):
         logger.info("  running calibrate_tau (Lorentzian twin) ...")
@@ -503,7 +503,6 @@ def run_variant(
 
 __all__ = [
     "FT_TRIM_MHZ",
-    "FT_ZPF",
     "KNOB_SPEC",
     "PER_WINDOW_CSV",
     "PER_WINDOW_FIELDS",

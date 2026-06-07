@@ -25,7 +25,7 @@ Assumes the unapodized fixture and Stages 0-5 have already been run via:
     from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
     ftmw.import_data('scratch/stage5-tau-calibration-lsq/exp_2638_unapodized.ftmw',
                      source='examples/blackchirp_data/2638/', force=True)
-    ftmw.compute_ft(fpath, zpf=2, expf_us=None, trim=(26500, 40000))
+    ftmw.compute_ft(fpath, trim=(26500, 40000))
     ftmw.estimate_noise(fpath)
     tau_s = TauCalibrationSettings()
     tau_s.band.compute_band_majorities = True

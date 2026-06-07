@@ -90,7 +90,7 @@ LIMIT_CYCLE_CHI2_REL = 0.02
 def build(fid: str, reuse: bool = False) -> tuple[str, SpectrumFit, TauCalibrationResult]:
     """Canonical production pipeline through Stage 5 for one fixture.
 
-    import -> detect_start_time(stamp) -> compute_ft(zpf=0, expf=None, trim) ->
+    import -> detect_start_time(stamp) -> compute_ft(trim) ->
     estimate_noise(scatter) -> calibrate_tau -> recommend_shape -> [calibrate_tau_G
     if gaussian] -> detect_peaks -> assign_windows -> fit_peaks(shape). The fit
     runs in each fixture's *recommended* shape (the per-line L/G/V AICc vote):
@@ -110,7 +110,7 @@ def build(fid: str, reuse: bool = False) -> tuple[str, SpectrumFit, TauCalibrati
             pass  # fall through to a clean rebuild
     ftmw.import_data(fp, source=f"examples/blackchirp_data/{fid}", force=True)
     ftmw.detect_start_time(fp, band=TRIM, stamp=True)
-    ftmw.compute_ft(fp, zpf=0, expf_us=None, trim=TRIM)
+    ftmw.compute_ft(fp, trim=TRIM)
     ftmw.estimate_noise(fp)  # scatter default
     cal = ftmw.calibrate_tau(fp)
     # recommend_shape returns "lorentzian" (exp wins) / "gaussian" (gauss wins) /

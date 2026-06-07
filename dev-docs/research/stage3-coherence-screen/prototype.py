@@ -65,7 +65,7 @@ from ftmwpipeline.core.data_structures import Sideband
 from ftmwpipeline.fitting.active_ft import compute_active_ft
 from ftmwpipeline.fitting.peak_model import h_T
 from ftmwpipeline.preprocessing.coherence_screen import project_candidates
-from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
+from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 
 logger = logging.getLogger("coherence-screen-research")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -137,7 +137,7 @@ class SyntheticActiveFT:
 
 
 def _adaptive_noise(freq: np.ndarray, mag: np.ndarray) -> np.ndarray:
-    res = estimate_noise_adaptive(freq, mag)
+    res = estimate_noise_scatter(freq, mag)
     return np.asarray(res.rms_noise, dtype=float)
 
 

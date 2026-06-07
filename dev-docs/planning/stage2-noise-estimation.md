@@ -147,7 +147,7 @@ The scatter estimator's derivation, the 1/√N validation, and the region-aware
 level-based "adaptive" estimator it replaced — MAD/median subdivision +
 skewness-trim noise mask + moving-median σ + Lorentzian-skirt exclusion — is
 preserved as a minimal comparison reference at
-[`research/noise-snr-scaling/legacy_adaptive.py`](../research/noise-snr-scaling/legacy_adaptive.py);
-its original calibration provenance is in
-[`research/noise-heuristic-audit/`](../research/noise-heuristic-audit/report.md)
-and [`research/noise-grid-invariance/report.md`](../research/noise-grid-invariance/report.md).
+[`research/noise-snr-scaling/legacy_adaptive.py`](../research/noise-snr-scaling/legacy_adaptive.py).
+Why that level/adaptive family was retired (the heuristic-tuning and
+grid-invariance audits, and the SNR-scaling failure that overtook both) is in
+[`research/noise-snr-scaling/report.md`](../research/noise-snr-scaling/report.md) §3.1.

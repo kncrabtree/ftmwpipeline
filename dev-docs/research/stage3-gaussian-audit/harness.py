@@ -15,8 +15,8 @@ minutes.
 
 Fixture layout per working copy:
 
-* Stages 0-2 done with ``zpf=2``, ``trim=(26500, 40000)``,
-  ``expf_us=None`` (the unapodized spectrum the Stage 2b STFT
+* Stages 0-2 done with ``trim=(26500, 40000)`` on the canonical
+  unapodized, native-length FT (the spectrum the Stage 2b STFT
   classifier consumes).
 * Stage 2b Lorentzian (``calibrate_tau``) + Gaussian
   (``calibrate_tau_G``) both present so the shape-aware τ-feeder for
@@ -57,7 +57,6 @@ EXAMPLE_2638 = REPO_ROOT / "examples" / "blackchirp_data" / "2638"
 
 # Stage 1 settings shared with the production unapodized fixture used by
 # the gaussian-shape research dir; matches what Stage 2b expects.
-FT_ZPF = 2
 FT_TRIM_MHZ: tuple[float, float] = (26500.0, 40000.0)
 
 logger = logging.getLogger("stage3-gaussian-audit")
@@ -186,7 +185,7 @@ def prepare_fixture(shape: str, *, force_rebuild: bool = False) -> Path:
         "noise + 2x Stage 2b)", shape, fp,
     )
     ftmw.import_data(str(fp), source=str(EXAMPLE_2638), force=True)
-    ftmw.compute_ft(str(fp), zpf=FT_ZPF, expf_us=None, trim=FT_TRIM_MHZ)
+    ftmw.compute_ft(str(fp), trim=FT_TRIM_MHZ)
     ftmw.estimate_noise(str(fp))
     if not tau_calibration_present(str(fp)):
         logger.info("  running calibrate_tau (Lorentzian twin) ...")
@@ -339,7 +338,6 @@ def plot_knob_sweep(
 
 
 __all__ = [
-    "FT_ZPF",
     "FT_TRIM_MHZ",
     "SCRATCH_DIR",
     "Stage3RunResult",

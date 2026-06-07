@@ -20,7 +20,7 @@ magnitude):
   across the SNR span, or collapse (e.g. 655 -> all-strong, 363 -> all-weak).
 
 Both quantities are read off the genuine production path: each fixture is built
-canonically (import -> detect_start_time -> compute_ft zpf=0/expf=None/trim ->
+canonically (import -> detect_start_time -> compute_ft trim ->
 estimate_noise scatter -> calibrate_tau), then ``detect_peaks_impl`` is run and
 its returned ``gap_ft`` / ``parameters_used`` / promoted ``peaks`` are mined --
 no hand-recomputation of the grid.
@@ -85,7 +85,7 @@ def build(fid: str, reuse: bool = False) -> str:
             pass  # fall through to a clean rebuild
     ftmw.import_data(fp, source=f"examples/blackchirp_data/{fid}", force=True)
     ftmw.detect_start_time(fp, band=TRIM, stamp=True)
-    ftmw.compute_ft(fp, zpf=0, expf_us=None, trim=TRIM)
+    ftmw.compute_ft(fp, trim=TRIM)
     ftmw.estimate_noise(fp)  # scatter default
     cal = ftmw.calibrate_tau(fp)
     return fp, cal

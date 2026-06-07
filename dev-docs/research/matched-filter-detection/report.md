@@ -73,7 +73,7 @@ trades sinc-sidelobe FPs (production's gap-pass headache) for
 Lorentzian-skirt FPs that the leakage mask + concavity test already
 handle. The change is local, additive, and synthetic-validated.
 
-**Status (as of the noise-grid-invariance Stage 2 rewrite):** the §10
+**Status (as of the Stage 2 scatter rewrite):** the §10
 wiring is **shipped** at `src/ftmwpipeline/_internal/stage3_impl.py`.
 With the now-stable Stage 2 noise estimator (multi-bin σ on the
 active-FT) and active-region `zpf=2` zero-padding (so the Lorentzian
@@ -659,8 +659,8 @@ stays unchanged; the screen is not adopted.
 ## 10. Wiring proposal: matched-filter gap pass — as shipped
 
 A drop-in replacement for the unapodized gap pass, validated on 2638
-under the new Stage 2 noise estimator
-(noise-grid-invariance report) and implemented at
+under the new Stage 2 scatter noise estimator
+(see the noise SNR-scaling report) and implemented at
 `src/ftmwpipeline/_internal/stage3_impl.py::_mf_gap_spectrum` +
 `detect_peaks(..., gap_sg_window=...)`.
 
@@ -766,7 +766,7 @@ through the concavity test, so the correlation does not degrade it.
   others may be Lorentzian-skirt FPs the SavGol concavity test let
   through. A clean Stage 5 re-run is the deciding test.
 - **Why does the screen ratio distribution still collapse on real
-  data after the σ fix?** The noise-grid-invariance work delivers a
+  data after the σ fix?** The Stage 2 scatter rework delivers a
   proper multi-bin σ on the active-FT (was 1-bin → killed the
   screen's σ-weighting entirely). Re-running the screen on 2638
   shows >99 % of both fit-near and not-fit-near candidates pass the

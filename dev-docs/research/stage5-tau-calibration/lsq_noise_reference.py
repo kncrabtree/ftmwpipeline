@@ -66,8 +66,8 @@ def build():
     FIX.parent.mkdir(parents=True, exist_ok=True)
     ftmw.import_data(str(FIX), source=SRC, force=True)
     ftmw.detect_start_time(str(FIX), band=TRIM, stamp=True)
-    ftmw.compute_ft(str(FIX), zpf=0, expf_us=None, trim=TRIM)
-    nr = ftmw.estimate_noise(str(FIX), method="scatter")
+    ftmw.compute_ft(str(FIX), trim=TRIM)
+    nr = ftmw.estimate_noise(str(FIX))
     return nr
 
 
@@ -96,7 +96,7 @@ def stft_bands(g, sigma_x_full):
 
 def scatter_sigma_x_full(nr, g):
     """Median scatter sigma in the trim band, converted to STFT (dt*rfft) units."""
-    ft = ftmw.compute_ft(str(FIX), zpf=0, expf_us=None, trim=TRIM)
+    ft = ftmw.compute_ft(str(FIX), trim=TRIM)
     freqs = np.asarray(ft.freq_array, float)
     rms = np.asarray(nr.rms_noise, float)
     band = rms[(freqs >= TRIM[0]) & (freqs <= TRIM[1])] if freqs.size == rms.size else rms

@@ -394,8 +394,8 @@ in hindsight, mostly the 0.8 % the raw test can still see; that map was
 invalid. Everything below uses the de-ramped statistic.
 
 The second observation concerns the noise. The per-point noise estimate
-from the upstream noise stage (tuning documented in
-[the noise-heuristic-audit report](../noise-heuristic-audit/report.md))
+from the upstream noise stage (the high-pass scatter estimator; see
+[the noise SNR-scaling report](../noise-snr-scaling/report.md))
 varies from $\sigma_\text{min} \approx 0.004$ to $\sigma_\text{max}
 \approx 0.027$ across the spectrum — a factor of about 6. **The
 statistic must use the local $\sigma$**, the window-mean of the

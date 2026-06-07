@@ -8,7 +8,8 @@ recommended-shape stamping) happen once per shape.
 
 Fixture layout per working copy:
 
-* Stages 0-2 with ``zpf=2``, ``trim=(26500, 40000)``, ``expf_us=None``.
+* Stages 0-2 with ``trim=(26500, 40000)`` on the canonical unapodized,
+  native-length FT.
 * Stage 2b Lorentzian + Gaussian twins both present so the shape-aware
   Stage 3 τ-feeder (and the prospective Stage 4 τ-feeder) can pick
   either anchor.
@@ -49,7 +50,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SCRATCH_DIR = REPO_ROOT / "scratch" / "stage4-gaussian-audit"
 EXAMPLE_2638 = REPO_ROOT / "examples" / "blackchirp_data" / "2638"
 
-FT_ZPF = 2
 FT_TRIM_MHZ: tuple[float, float] = (26500.0, 40000.0)
 
 logger = logging.getLogger("stage4-gaussian-audit")
@@ -143,7 +143,7 @@ def prepare_fixture(shape: str, *, force_rebuild: bool = False) -> Path:
         shape, fp,
     )
     ftmw.import_data(str(fp), source=str(EXAMPLE_2638), force=True)
-    ftmw.compute_ft(str(fp), zpf=FT_ZPF, expf_us=None, trim=FT_TRIM_MHZ)
+    ftmw.compute_ft(str(fp), trim=FT_TRIM_MHZ)
     ftmw.estimate_noise(str(fp))
     if not tau_calibration_present(str(fp)):
         logger.info("  running calibrate_tau (Lorentzian twin) ...")
@@ -281,7 +281,6 @@ def plot_knob_sweep(
 
 
 __all__ = [
-    "FT_ZPF",
     "FT_TRIM_MHZ",
     "SCRATCH_DIR",
     "Stage4RunResult",
