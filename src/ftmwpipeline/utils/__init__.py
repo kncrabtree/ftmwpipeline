@@ -13,18 +13,18 @@ from .physics_utils import (
     pressure_broadening,
 )
 from .signal_processing import (
-    apply_window_function,
-    calculate_fwhm,
-    frequency_to_time_domain,
-    time_to_frequency_domain,
+    APODIZATION_EXAMPLES,
+    apodize_fid,
+    make_apodization,
+    matched_filter_window,
 )
 from .statistical_tests import aic_comparison, chi_squared_test, f_test
 
 __all__ = [
-    "apply_window_function",
-    "calculate_fwhm",
-    "frequency_to_time_domain",
-    "time_to_frequency_domain",
+    "APODIZATION_EXAMPLES",
+    "apodize_fid",
+    "make_apodization",
+    "matched_filter_window",
     "f_test",
     "aic_comparison",
     "chi_squared_test",

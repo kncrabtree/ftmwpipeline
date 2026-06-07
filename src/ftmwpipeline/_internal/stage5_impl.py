@@ -1509,10 +1509,10 @@ def render_windowed_view_impl(
     baseline is omitted because apodization suppresses the skirt it compensates.
     """
     from ..fitting.peak_model import sideband_sign, synthesize_fid
+    from ..utils.signal_processing import make_apodization
     from ..visualization.fit_detail import (
         MODEL_OVERSAMPLE,
         WindowedView,
-        make_apodization,
         plot_windowed_comparison,
     )
 

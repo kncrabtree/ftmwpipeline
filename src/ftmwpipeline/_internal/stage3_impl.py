@@ -34,7 +34,6 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 import h5py
 import numpy as np
-import scipy.signal as spsig
 
 from ..core.data_structures import ComplexFT, Peak
 from ..core.peak_detection_settings import (
@@ -64,6 +63,7 @@ from ..preprocessing.peak_detection import (
     classify_by_snr,
     detect_peaks,
 )
+from ..utils.signal_processing import make_apodization, matched_filter_window
 from .active_ft_support import build_active_grid_with_noise
 from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
@@ -288,10 +288,7 @@ def _mf_gap_spectrum(
     """
     start_idx, end_idx, sample_dt_us = _active_window_indices(fid, base_pp)
     t_rel = np.arange(end_idx - start_idx) * sample_dt_us
-    if shape == "gaussian":
-        window = np.exp(-((t_rel / float(tau_basis_us)) ** 2))
-    else:
-        window = np.exp(-t_rel / float(tau_basis_us))
+    window = matched_filter_window(t_rel, float(tau_basis_us), shape=shape)
     return _active_windowed_spectrum(fid, base_pp, trim_range, window, zpf_active)
 
 
@@ -314,7 +311,9 @@ def _primary_active_spectrum(
     position-finding choice, independent of the user's Stage 1 ``winf``.
     """
     start_idx, end_idx, _ = _active_window_indices(fid, base_pp)
-    window = spsig.get_window(window_function, end_idx - start_idx)
+    window = make_apodization(
+        window_function, np.arange(end_idx - start_idx, dtype=float)
+    )
     return _active_windowed_spectrum(fid, base_pp, trim_range, window, zpf_active)
 
 

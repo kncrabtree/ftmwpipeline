@@ -34,25 +34,12 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec
-from scipy.signal import get_window
 
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
+from ..utils.signal_processing import APODIZATION_EXAMPLES, make_apodization
 
 SidebandLike = Union[Sideband, str]
-
-# Apodization for the windowed fit view. Window specs are forwarded to
-# ``scipy.signal.get_window`` (the same vocabulary Blackchirp's ``BCFid.ft``
-# uses), so any scipy window is available: 'boxcar', 'hann', 'hamming',
-# 'blackman', 'blackmanharris', 'bartlett', 'kaiser:14', 'gaussian:50',
-# 'tukey:0.3', etc. (':' separates a parameterized window's float args). These
-# symmetric windows taper the FID's high-SNR start as well as the trailing
-# edge -- they are the conventional leakage-suppression tools, offered so a
-# result can be compared against the symmetric-window version a user is
-# accustomed to. The one custom, non-scipy spec is 'exp' (exp(-t/W)): the FID
-# matched filter, which keeps the start intact and only damps the trailing
-# edge. (This pipeline's robust fit is the intended alternative to apodizing.)
-APODIZATION_EXAMPLES = ("exp", "boxcar", "hann", "hamming", "blackman", "kaiser:14")
 
 # Model curves are evaluated on a grid this many times finer than the native
 # data grid so a narrow line renders as a smooth analytic shape rather than a
@@ -754,57 +741,6 @@ def _draw_peak_table(
 # ===========================================================================
 # Windowed (apodized) fit view
 # ===========================================================================
-def make_apodization(
-    spec: str,
-    t_us: np.ndarray,
-    *,
-    width_us: Optional[float] = None,
-    default_width_us: Optional[float] = None,
-) -> np.ndarray:
-    """Real apodization window ``w(t)`` on the active-region time grid.
-
-    Parameters
-    ----------
-    spec : str
-        ``"exp"`` (or ``"exponential"``) for the custom FID matched filter
-        ``exp(-t/W)`` (start-anchored). Anything else is forwarded to
-        :func:`scipy.signal.get_window`: a bare name (``"hann"``, ``"hamming"``,
-        ``"blackman"``, ``"boxcar"``, ...) or a parameterized window written with
-        ``':'``-separated float args (``"kaiser:14"``, ``"gaussian:50"``,
-        ``"tukey:0.3"`` -> ``("kaiser", 14.0)`` etc.).
-    t_us : np.ndarray
-        Active-region time grid (µs, ``t = 0`` at the active start).
-    width_us : float, optional
-        Time constant ``W`` (µs) for ``exp``; falls back to ``default_width_us``.
-    default_width_us : float, optional
-        Width used when ``width_us`` is ``None`` (e.g. the window's fitted τ, so
-        ``exp`` defaults to the matched filter).
-    """
-    t = np.asarray(t_us, dtype=float)
-    key = spec.strip()
-    low = key.lower()
-    if low in ("exp", "exponential") and ":" not in key:
-        w = width_us if width_us is not None else default_width_us
-        if w is None or w <= 0:
-            raise ValueError("exp apodization needs a positive width (--apodize-us)")
-        return cast(np.ndarray, np.exp(-t / float(w)))
-    if ":" in key:
-        parts = key.split(":")
-        try:
-            gw_spec: Any = (parts[0], *(float(p) for p in parts[1:]))
-        except ValueError as e:
-            raise ValueError(f"bad apodization spec {spec!r}: {e}") from e
-    else:
-        gw_spec = low
-    try:
-        return cast(np.ndarray, get_window(gw_spec, t.size).astype(float))
-    except Exception as e:  # scipy raises ValueError on unknown / underspecified
-        raise ValueError(
-            f"unknown apodization {spec!r}: {e} (use 'exp' or a "
-            f"scipy.signal.get_window spec, e.g. {APODIZATION_EXAMPLES})"
-        ) from e
-
-
 @dataclass
 class WindowedView:
     """Precomputed arrays for the windowed comparison figure (one window)."""
