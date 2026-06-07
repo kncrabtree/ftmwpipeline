@@ -33,9 +33,27 @@ see issues #5 and #6.
 | 363 | — | 525660 | 2 | 4.35 | no (MTBE sample) | [363.md](363.md) |
 
 `start_us` is data-derived (`ftmwpipeline detect-start`, ≈ chirp_duration +
-1.35 µs — the chirp end plus the switch-bounce ringdown). Recommended FT for
-new analyses: **no zero-padding** (`zpf=0`), `expf_us=None` (unapodized),
-`trim=(26500, 40000)`, then `calibrate_tau` before peak detection. The pipeline
-runs on the raw (un-padded) FT; zero-padding interpolates the bins and corrupts
-the Stage 2/5 statistics, so a suggested `zpf` is never adopted. Stage 3 peak
-detection applies its own internal zero-padding for position-finding only.
+1.35 µs — the chirp end plus the switch-bounce ringdown). Recommended build for
+new analyses: `detect_start_time` → `compute_ft(trim=(26500, 40000))` →
+`estimate_noise` → `calibrate_tau` before peak detection. The canonical FT is
+unconditionally unapodized and native-length — zero-padding interpolates the
+bins and corrupts the Stage 2/5 statistics, and apodization biases the line
+shape, so neither is applied. Stage 3 peak detection applies its own internal
+zero-padding for position-finding only.
+
+## Canonical reproduction set
+
+Two fixtures anchor research reproduction, regression, and documentation, each
+pairing a checked-in `examples/blackchirp_data/` experiment with a small tracked
+oracle and the regeneration recipe above:
+
+- **2638** — a manual Stage 5 window-classification oracle
+  ([`2638-gaussian-rescue1p5/`](2638-gaussian-rescue1p5/)).
+- **1512** — a vinyl-cyanide line-catalog ground truth
+  ([`1512-vinyl-cyanide-truth/`](1512-vinyl-cyanide-truth/)); the high-SNR
+  **655** shares the same molecular catalog, giving a cross-fixture pair.
+
+Rebuild any fixture's `.ftmw` from its `examples/` source via the recipe above;
+the tracked oracles are the durable labels. Large fitted `.ftmw` artifacts are
+regenerated on demand (each research report carries a `build_fixture.py` or an
+inline recipe), never committed.
