@@ -45,12 +45,14 @@ Open the emitted
 `scratch/stage5-validation-rescue_prominence_threshold__1p5__gaussian/windows.toml`
 and fill `classification = "..."` only for windows that look
 wrong. Leave the rest empty (the convention keeps the typing
-budget small on the full 386-391 windows).
+budget small on the full 386-391 windows). The completed label set
+behind this report is tracked at
+[`dev-docs/fixtures/2638-gaussian-rescue1p5/windows.toml`](../../fixtures/2638-gaussian-rescue1p5/windows.toml).
 
 ## Step 5 -- cross-reference and failure-mode analysis
 
-Classifications landed in
-`scratch/stage5-validation-rescue_prominence_threshold__1p5__gaussian/windows.toml`.
+Classifications landed in the tracked label set
+[`dev-docs/fixtures/2638-gaussian-rescue1p5/windows.toml`](../../fixtures/2638-gaussian-rescue1p5/windows.toml).
 This section reads them against the Step 1 sweep.
 
 ### Classification tally

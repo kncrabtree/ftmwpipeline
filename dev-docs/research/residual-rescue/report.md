@@ -92,12 +92,12 @@ the chain has accepted so far. The cost is the joint refit per
 round (~K² LSQ scaling, dominated by the conservative_fit cost) and
 a small constant for the knockout sweep.
 
-### 2.2 The apodization-override-aware tau
+### 2.2 The decay-aware tau
 
-Real molecular lines in one experiment share a tau ≈ the applied
-apodization (the canonical Stage 1 `expf_us`). The rescue must use
-the right line-shape width — the phase-coherence basis depends on
-it (§3) and the joint refit's warm start depends on it.
+Real molecular lines in one experiment share a tau ≈ the instrument's
+effective decay (the Stage 2b `τ_maj`). The rescue must use the right
+line-shape width — the phase-coherence basis depends on it (§3) and the
+joint refit's warm start depends on it.
 
 The shipped rule:
 
@@ -813,10 +813,10 @@ Rescue-specific:
 
 ## Reproducibility
 
-Investigation was carried out with the scratch scripts under
-`scratch/stage5-validation/` against `scratch/stage5-validation/exp_2638.ftmw`.
-Key scripts (each rebuilds the per-window state via the harness's
-`_run_window_rescue` reconstruction so the numbers compare
+Rebuild the fixture with [`build_fixture.py`](build_fixture.py) (into the
+gitignored `scratch/stage5-validation/exp_2638.ftmw`). The investigation used
+one-off diagnostic drivers against it (each rebuilds the per-window state via
+the harness's `_run_window_rescue` reconstruction so the numbers compare
 directly to the production fit):
 
 - `diag_phase1_merge_gate.py` — sweeps the merge gate's parameters
@@ -840,7 +840,6 @@ emits per-window `detail.png`, `audit-trail.png`,
 `report-rr.md` rollups under `scratch/stage5-validation/window_NNN/`.
 
 The 2638 fixture itself (FTMW data plus the post-Stage-4 plan and
-fit) lives at `scratch/stage5-validation/exp_2638.ftmw`. The
-fixture is BlackChirp data with 632k active samples, 12.65 µs
-acquisition, 5 µs apodization, and ~347 windows after Stage 4
-planning.
+fit) is Blackchirp data with 632k active samples, 12.65 µs
+acquisition on the canonical unapodized FT (effective decay
+`τ_maj` ≈ 5 µs), and ~347 windows after Stage 4 planning.

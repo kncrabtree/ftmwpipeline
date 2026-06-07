@@ -9,14 +9,12 @@ recommends actions.
 
 ## Method
 
-Fresh full-pipeline rebuild from raw blackchirp data → import → FT
-(zpf=2, expf_us=5.0, trim=(26500, 40000)) → noise → peaks → windows → fit.
-Reproduce with `scratch/stage4-audit/run_full_pipeline.py`. Side-by-side
-comparison of old (HEAD~2) vs new noise estimators in
-`scratch/stage4-audit/compare_noise.py`. Edge-coherence calibration check in
-`scratch/stage4-audit/check_edge_threshold.py`. Outlier-window inspection in
-`scratch/stage4-audit/inspect_outlier_windows.py` and
-`scratch/stage4-audit/check_doublet_recoupling.py`.
+Full-pipeline rebuild from raw blackchirp data → import → detect_start_time →
+FT (trim=(26500, 40000), canonical unapodized) → noise → peaks → windows → fit.
+Rebuild the fixture with [`build_fixture.py`](build_fixture.py). The audit's
+noise comparison (old vs scatter estimator), edge-coherence calibration check,
+outlier-window inspection, and doublet-recoupling probe were one-off diagnostic
+drivers; their findings are recorded below.
 
 ## Headline numbers (2638)
 
@@ -231,14 +229,10 @@ thresholds stay locked.
 
 ## Artefacts
 
-All in `scratch/stage4-audit/`:
-
-- `run_full_pipeline.py`, `summary.json`, `summary.txt` — fresh end-to-end run
-- `compare_noise.py`, `noise_compare.json`, `noise_compare.png` — old vs new σ
-- `check_edge_threshold.py`, `edge_threshold_check.json`,
-  `edge_threshold_check.png` — S_coh distribution + T_edge calibration
-- `inspect_outlier_windows.py`, `outlier_windows.json` — top-N windows by
-  free / FC / width
-- `check_doublet_recoupling.py`, `doublet_recoupling.json` — w302 anatomy,
-  worst-chi² windows, per-difficulty chi² split
-- `exp_2638_fresh.ftmw` — the rebuilt fixture (gitignored)
+[`build_fixture.py`](build_fixture.py) regenerates the fixture (into the
+gitignored `scratch/` tree). The numbers above came from one-off diagnostic
+drivers run against that fixture — a noise comparison (old vs scatter σ), an
+edge-coherence / T_edge calibration check, an outlier-window inspection (top-N
+by free / FC / width), and a doublet-recoupling probe (w302 anatomy, worst-χ²
+windows, per-difficulty χ² split). Their findings are recorded in the sections
+above.
