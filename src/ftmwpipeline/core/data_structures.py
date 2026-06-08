@@ -1186,12 +1186,25 @@ class FixedContributor:
         stable enough to freeze without contaminating the dependent window
         (Stage 4 open question O4-2). ``False`` flags a thaw-and-re-fit
         candidate for Stage 5.
+    edge_free : bool
+        When ``True`` this contributor carries **no fit-ordering dependency
+        edge**: its frozen ``(amplitude, phase)`` are read self-contained from
+        the active FT at fit time rather than from its primary window's
+        converged fit, so the dependent window does not have to be fit after
+        the primary. Edge-free contributors are excluded from the dependency
+        DAG, so the Step-7 cycle-breaker never drops them -- which is what lets
+        a bright neighbour's leakage skirt be subtracted from a window whose
+        ordinary (edge-bearing) attachment would otherwise be discarded to keep
+        the DAG acyclic. They are also skipped by the local-thaw handshake (a
+        thaw needs the primary's converged fit, which an edge-free contributor
+        deliberately does not depend on).
     """
 
     peak_index: int
     primary_window_id: int
     frequency_mhz: float
     freeze_eligible: bool = True
+    edge_free: bool = False
 
 
 @dataclass

@@ -89,6 +89,20 @@ collapsing into one unfittable mega-window -- without it the strong-cluster merg
 and the overlapping per-peak proto-spans chain hundreds of real lines into a single
 GHz-scale window the fit can only partially model."""
 
+DEFAULT_MAX_EDGE_FREE_NEIGHBORS = 3
+"""Cap on how many distinct primary windows per dependent window may have their
+cycle-orphaned contributors converted to edge-free skirts (the issue-#3
+leakage-subtraction recovery). When the Step-7 cycle-breaker drops a
+fit-ordering edge it would otherwise discard the attached
+:class:`~ftmwpipeline.core.data_structures.FixedContributor`; the few most
+dominant orphans (ranked by aggregated predicted skirt) are instead kept as
+``edge_free`` so their leakage is still subtracted. Capping the count keeps the
+subtraction *targeted*: a dense ultra-high-SNR forest (655) drops dozens of
+edges, and converting them all re-creates the global-crude over-subtraction that
+regressed the bulk fit (see the Phase-1 negative in the stage5 cross-fixture
+report). 3 spans the largest real adjacent cluster (the 360 w288 triplet) while
+staying well short of the forest."""
+
 DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD = 0.1
 """Tier-1 attachment threshold (in units of σ_c on the target window) for the
 analytic-skirt-magnitude contributor-attachment rule. A strong promoted peak
@@ -293,6 +307,7 @@ def build_window_plan(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
+    max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
@@ -335,6 +350,11 @@ def build_window_plan(
         its predicted mean |skirt| on that window's grid is at least
         ``threshold * sigma_c(w)``. Default
         :data:`DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD`.
+    max_edge_free_neighbors : int
+        Cap on the number of distinct primary windows whose cycle-orphaned
+        contributors are converted to edge-free skirts per dependent window
+        (see :data:`DEFAULT_MAX_EDGE_FREE_NEIGHBORS`). Keeps the
+        leakage-subtraction recovery targeted on a dense spectrum.
     probe_freq_mhz : float
         Probe (LO) frequency in MHz, used to de-ramp the spectrum to the
         active-region turn-on before the edge-coherence statistic (see
@@ -368,6 +388,7 @@ def build_window_plan(
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
+        "max_edge_free_neighbors": int(max_edge_free_neighbors),
         "max_peaks_per_window": int(max_peaks_per_window),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
@@ -516,6 +537,7 @@ def build_window_plan(
         max_window_width_mhz=max_window_width_mhz,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
+        max_edge_free_neighbors=max_edge_free_neighbors,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=0,
@@ -538,6 +560,7 @@ def _finalize_plan(
     max_window_width_mhz: float,
     min_freeze_snr: float,
     magnitude_attachment_threshold: float,
+    max_edge_free_neighbors: int,
     acquisition_us: float,
     tau_us: Optional[float],
     plan_revision: int,
@@ -726,24 +749,72 @@ def _finalize_plan(
     if len(kept_edges) != len(edges):
         dropped_edges = [e for e in edges if e not in kept_edges]
         diagnostics["dropped_cyclic_dependencies"] = [list(e) for e in dropped_edges]
-        # The magnitude-based attachment rule can produce 2-cycles (two
+        # The magnitude-based attachment rule can produce cycles (two or more
         # strong lines in separate windows each attaching the other as a
-        # contributor). The cycle-breaker drops the dependency edge to keep
-        # the DAG acyclic; we must also drop the matching FixedContributor
-        # from the dependent window or the fit will trip on "primary not
-        # yet fit" at execution time. The lost bias-correction falls into
-        # the long-tail residual that a Tier-2 cumulative-tail subtraction
-        # would otherwise cover (deferred -- see stage5-fitting.md O5-10).
+        # contributor). The cycle-breaker drops the dependency edge to keep the
+        # DAG acyclic; the matching FixedContributor can no longer be evaluated
+        # from its primary's converged fit (the primary is no longer guaranteed
+        # to precede the dependent). Discarding it outright -- the previous
+        # behaviour -- leaves a bright neighbour's leakage skirt subtracted from
+        # nowhere, the in-window lines under-fit: the issue-#3 cross-fixture
+        # failure mode. Instead, the few most *dominant* orphaned contributors
+        # per window are converted to EDGE-FREE: kept on the window but flagged
+        # so Stage 5 reads their frozen (amplitude, phase) self-contained from
+        # the active FT rather than from the un-ordered primary fit. Conversion
+        # is capped at the top ``max_edge_free_neighbors`` primary windows
+        # (ranked by aggregated predicted skirt) -- a dense, ultra-high-SNR
+        # forest drops dozens of edges, and a self-contained skirt for every one
+        # re-creates the global-crude over-subtraction that regressed the bulk
+        # fit; only genuinely dominant neighbours earn one. The rest are dropped
+        # as before.
         drops_by_dep: Dict[int, set] = {}
         for w_id, p_id in dropped_edges:
             drops_by_dep.setdefault(w_id, set()).add(p_id)
+        n_edge_free = 0
         for w in windows:
             doomed = drops_by_dep.get(w.window_id)
             if not doomed:
                 continue
-            w.fixed_contributors = [
-                fc for fc in w.fixed_contributors if fc.primary_window_id not in doomed
-            ]
+            wlo, whi = w.diagnostics["grid_span"]
+            w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
+            # Aggregate the predicted leakage skirt each orphaned primary
+            # contributes to this window, so the cap keeps the strongest
+            # neighbours (the same analytic envelope the Tier-1 attachment uses).
+            skirt_by_primary: Dict[int, float] = {}
+            for fc in w.fixed_contributors:
+                if fc.primary_window_id not in doomed:
+                    continue
+                src_pk = by_list_index.get(fc.peak_index)
+                if src_pk is None:
+                    continue
+                df_mhz = abs(src_pk.frequency - w_center_mhz)
+                if df_mhz <= 0.0:
+                    continue
+                pred = src_pk.intensity * _leakage_envelope_fraction(
+                    df_mhz * 1e6, acquisition_us, tau_us
+                )
+                skirt_by_primary[fc.primary_window_id] = (
+                    skirt_by_primary.get(fc.primary_window_id, 0.0) + pred
+                )
+            keep_primaries = set(
+                sorted(
+                    skirt_by_primary,
+                    key=lambda p: skirt_by_primary[p],
+                    reverse=True,
+                )[:max_edge_free_neighbors]
+            )
+            kept_contribs: List[FixedContributor] = []
+            for fc in w.fixed_contributors:
+                if fc.primary_window_id not in doomed:
+                    kept_contribs.append(fc)
+                elif fc.primary_window_id in keep_primaries:
+                    fc.edge_free = True
+                    kept_contribs.append(fc)
+                    n_edge_free += 1
+                # else: drop the orphaned contributor entirely.
+            w.fixed_contributors = kept_contribs
+        if n_edge_free:
+            diagnostics["n_edge_free_contributors"] = n_edge_free
 
     # Plan-level diagnostics: leakage-touched regions with no promoted peak --
     # an early-warning hint that Stage 3 may have missed a line.
@@ -884,6 +955,7 @@ def replan(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
+    max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -947,6 +1019,7 @@ def replan(
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
+        "max_edge_free_neighbors": int(max_edge_free_neighbors),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -1019,6 +1092,7 @@ def replan(
         max_window_width_mhz=max_window_width_mhz,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
+        max_edge_free_neighbors=max_edge_free_neighbors,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=plan.plan_revision + 1,

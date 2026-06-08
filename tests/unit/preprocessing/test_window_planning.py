@@ -260,11 +260,14 @@ class TestMagnitudeAttachment:
 
     def test_mutual_attachment_does_not_break_dag(self):
         """Two strong lines whose skirts mutually reach each other form a
-        2-cycle in the attachment graph. The cycle-breaker drops one edge
-        from ``dependency_edges`` AND prunes the matching FixedContributor
-        from the dependent window so the fit-execution-time invariant
-        ("primary fit must exist before dependent fits") holds. Without
-        the prune, ``execute_plan`` would raise on "un-fit primary"."""
+        2-cycle in the attachment graph. The cycle-breaker drops both
+        fit-ordering edges from ``dependency_edges`` to keep the DAG acyclic,
+        but the orphaned contributors are *not* discarded: each is converted
+        to an EDGE-FREE contributor (read self-contained at fit time), so the
+        leakage subtraction survives without a dependency edge. The
+        execution-time invariant ("primary fit must exist before an
+        edge-bearing dependent fits") still holds because an edge-free
+        contributor carries no such requirement."""
         # Two strong lines at 30050 and 30090 -- 40 MHz apart, each strong
         # enough that the other's skirt clears the 0.1 sigma_c threshold.
         # They don't fall in the same touched region (clean band between
@@ -278,15 +281,30 @@ class TestMagnitudeAttachment:
         )
         plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
         _assert_invariants(plan)
-        # Each window's fixed_contributors are consistent with
-        # dependency_edges: every contributor's primary appears in edges.
+        # Edge consistency now depends on the contributor kind: an edge-bearing
+        # contributor's (window, primary) edge must be present; an edge-free
+        # contributor's must be absent (it is deliberately out of the DAG).
         for w in plan.windows:
             for fc in w.fixed_contributors:
-                assert (w.window_id, fc.primary_window_id) in plan.dependency_edges, (
-                    f"FixedContributor on window {w.window_id} points at "
-                    f"primary {fc.primary_window_id} but that edge was "
-                    f"dropped from dependency_edges"
-                )
+                edge = (w.window_id, fc.primary_window_id)
+                if fc.edge_free:
+                    assert edge not in plan.dependency_edges, (
+                        f"edge-free contributor on window {w.window_id} must "
+                        f"not appear in dependency_edges, found {edge}"
+                    )
+                else:
+                    assert edge in plan.dependency_edges, (
+                        f"edge-bearing contributor on window {w.window_id} "
+                        f"points at primary {fc.primary_window_id} but that "
+                        f"edge was dropped from dependency_edges"
+                    )
+        # The 2-cycle's orphaned contributors are recovered as edge-free, not
+        # discarded -- this is the issue-#3 leakage-subtraction fix.
+        edge_free = [
+            fc for w in plan.windows for fc in w.fixed_contributors if fc.edge_free
+        ]
+        assert edge_free, "mutual-attachment 2-cycle should yield edge-free contributors"
+        assert plan.diagnostics.get("n_edge_free_contributors", 0) == len(edge_free)
 
 
 class TestLeakageArtifactPruning:

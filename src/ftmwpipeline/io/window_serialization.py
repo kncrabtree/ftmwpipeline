@@ -26,6 +26,7 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage4_windows``)::
             fixed_primary_window_id  [i8]
             fixed_frequency_mhz      [f8]
             fixed_freeze_eligible    [i1]  bool
+            fixed_edge_free          [i1]  bool (absent in legacy files -> False)
         window_0001/ ...
 
 Round-trip contract: ``load`` -> edit -> ``save`` -> ``load`` returns the
@@ -115,6 +116,12 @@ def save_window_plan_to_hdf5(plan: WindowPlan, h5_group: h5py.Group) -> None:
             "fixed_freeze_eligible",
             data=np.asarray([c.freeze_eligible for c in fc], dtype="i1"),
         )
+        # Edge-free flag. Written unconditionally; legacy files predating it
+        # load with the back-compat default False (see load_window_plan).
+        wg.create_dataset(
+            "fixed_edge_free",
+            data=np.asarray([c.edge_free for c in fc], dtype="i1"),
+        )
 
 
 def _load_json_attr(h5_group: h5py.Group, name: str, default: Any) -> Any:
@@ -181,12 +188,24 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
         fixed_pw = wg["fixed_primary_window_id"][:]
         fixed_f = wg["fixed_frequency_mhz"][:]
         fixed_fe = wg["fixed_freeze_eligible"][:]
+        # Optional column: legacy plans predate the edge-free attachment and
+        # carry no such dataset, so default it to all-False.
+        if "fixed_edge_free" in wg:
+            fixed_ef = wg["fixed_edge_free"][:]
+            if len(fixed_ef) != len(fixed_idx):
+                raise ValueError(
+                    f"window {name!r} fixed_edge_free length {len(fixed_ef)} "
+                    f"!= fixed_peak_index length {len(fixed_idx)}"
+                )
+        else:
+            fixed_ef = np.zeros(len(fixed_idx), dtype="i1")
         fixed_contributors = [
             FixedContributor(
                 peak_index=int(fixed_idx[i]),
                 primary_window_id=int(fixed_pw[i]),
                 frequency_mhz=float(fixed_f[i]),
                 freeze_eligible=bool(fixed_fe[i]),
+                edge_free=bool(fixed_ef[i]),
             )
             for i in range(len(fixed_idx))
         ]

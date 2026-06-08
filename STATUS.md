@@ -1,6 +1,6 @@
 # Project Status
 
-**As of:** 2026-05-31
+**As of:** 2026-06-08
 **Scope:** verified factual state of the codebase. Every claim below was
 checked against source or a test run, not against the planning docs. For where
 the project is *going*, see `dev-docs/` (roadmap); this file is only what *is*.
@@ -8,12 +8,13 @@ the project is *going*, see `dev-docs/` (roadmap); this file is only what *is*.
 ## Snapshot
 
 - Version `0.1.0`, Python >= 3.9 (dev/CI on 3.11).
-- **Tests: 1111 collected; 1058 pass with `-m "not slow"`, 0 failing** (the
-  53 `slow` tests are not run on the inner loop). Reproduce:
+- **Tests: 1247 collected; 1193 pass with `-m "not slow"`, 0 failing** (the
+  54 `slow` tests are not run on the inner loop; the full suite is 1245 passed).
+  Reproduce:
   `conda run -n ftmwpipeline-dev python -m pytest -q --no-header -o addopts="" -m "not slow"`
   (the `-o addopts=""` is required: `pyproject.toml` hardwires `--cov` flags, so
   `-p no:cov` alone breaks argument parsing).
-  - unit: 858 (`tests/unit`), integration: 253 (`tests/integration`),
+  - unit: 953 (`tests/unit`), integration: 294 (`tests/integration`),
     performance: 0 (`tests/performance` is an empty package).
 - Dev environment is the conda env `ftmwpipeline-dev` (from
   `environment-dev.yml`, the superset). `environment.yml` is the lightweight
@@ -63,9 +64,12 @@ the calibration.
 **Stages 3–5 (implemented):** peak detection (two-pass: blackman-harris
 primary + matched-filter gap pass, scored on the scatter noise behind a
 continuous leakage-aware floor), window assignment (peak-clustering-driven
-edges, `S_coh` de-ramped leakage map), and the Stage 5 fit (active-portion
-FT, conservative add-one-peak loop, blend-aware seeder, knockout test,
-residual-rescue chain, local thaw + structural replan, per-band τ routing,
+edges, `S_coh` de-ramped leakage map, plus edge-free leakage-contributor
+subtraction — a bright neighbour's skirt orphaned by the cycle-breaker is kept
+as an `edge_free` contributor and subtracted self-contained at fit time, gated
+to fire only where it strictly improves the fit), and the Stage 5 fit
+(active-portion FT, conservative add-one-peak loop, blend-aware seeder, knockout
+test, residual-rescue chain, local thaw + structural replan, per-band τ routing,
 Lorentzian/Gaussian shapes, evidence-triggered leakage-wing baseline, spur
 masking). Per-stage detail and provenance live in `dev-docs/ROADMAP.md` and
 `dev-docs/planning/`. The originally-lost `newfitting/` engine was recreated
