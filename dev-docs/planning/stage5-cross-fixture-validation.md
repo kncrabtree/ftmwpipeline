@@ -146,10 +146,8 @@ attributed to shape is largely the τ-bias of point 2.
 
 This is the physics finding that motivates the calibration.
 Discovered during validation of the AICc-with-`n_eff` merge gate on
-the 2638 fixture; see
-`scratch/stage5-validation/voigt_hypothesis.py` and the
-"Shape-error sigma inflation" section of the residual-rescue
-research report.
+the 2638 fixture; see the "Shape-error sigma inflation" section of the
+residual-rescue research report.
 
 The Stage 5 model is a finite-T damped cosine — Lorentzian-like
 magnitude profile, sharp central frequency. The true molecular
@@ -204,8 +202,7 @@ matters for porting between fixtures.
 
 ### ε_chi²: the chi²_r-aggregated regression slope
 
-The diagnostic in `scratch/stage5-validation/diag_voigt_hypothesis.py`
-fits
+The ε_chi² diagnostic fits
 
 ```
 chi²_r_post_rescue = a · SNR² + b
@@ -238,8 +235,7 @@ chi²_r ≈ (ε_per-bin · |model|)² / σ_c²  averaged over peak bins
 
 For 2638 with dof_typical ≈ 100: `ε_chi²² ≈ 1.5 · ε_per-bin² / 100`,
 i.e. `ε_per-bin ≈ 8 · ε_chi²`. The empirical sweep on the 2638
-fixture (`scratch/stage5-validation/diag_phase1_merge_gate.py`)
-landed on `ε_per-bin = 0.05` after exercising the merge-cycle stop
+fixture landed on `ε_per-bin = 0.05` after exercising the merge-cycle stop
 criterion on w148/w269/w198 — about 3× the analytic relation
 predicts, suggesting the relation has the right *scaling* but not
 exact prefactor (depends on per-window peak count, FWHM-in-bins,

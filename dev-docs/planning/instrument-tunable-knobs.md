@@ -353,7 +353,7 @@ across the SNR span (1512 lowest → 655 extreme):
 | 5 | `thaw.residual_edge_threshold` | 8.0 | keep. Sane trigger surface; thaw acceptance ~0 cross-fixture (near-dormant, as on 2638) — a "does thaw earn its keep" follow-up, not a threshold mistune. |
 
 Evidence: [`dev-docs/research/stage5-cross-fixture/report.md`](../research/stage5-cross-fixture/report.md)
-§"Cross-fixture knob audit"; driver `scratch/issue3_audit/audit_knobs.py`. The
+§"Cross-fixture knob audit". The
 Stage 2 scatter / Stage 2b STFT+classifier knobs ride on the same builds and
 produce the sane per-fixture inputs that audit depends on; no per-fixture retune
 indicated.

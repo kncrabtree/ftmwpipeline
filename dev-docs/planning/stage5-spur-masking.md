@@ -19,8 +19,8 @@ only `spur` logic in `src/` is Stage 2b's, which masks spur bins from the τ
 histogram and never propagates downstream.
 
 The prototype (`research/stage5-gaussian-audit/probe_spur_detector.py`)
-established the fingerprint and the remediation on the 2638 fixture; this plan
-turns that into production behaviour.
+established the fingerprint and the remediation on the 2638 fixture; the shipped
+mechanism is that prototype productionised.
 
 ## Fingerprint (validated)
 
@@ -87,101 +87,64 @@ spur, w287). The gated mask is consumed in two places:
 **Spur-only window drop (optional, Stage 4).** A window whose only content is a
 gated spur (no non-spur peak) is dropped before Stage 5.
 
-## Implementation surface
+## Implementation
 
-### Spur gating (`fitting/spur_detection.py`, new — pure algorithm)
-- Integer-MHz + narrowness detector on an active-FT slice (lift from the
-  prototype; arrays in, spur frequencies/clusters out).
-- Joint gate combining the active-FT detections with the persisted Stage 2b
-  `SpurCluster` catalogue; map cluster bins to the active-FT grid; emit the
-  gated spur set + per-spur bin cluster.
-- No file IO; unit-tested in isolation on synthetic spectra + synthetic
-  catalogues.
+The mechanism is `fitting/spur_detection.py` → consumed by `fit_window` and
+`plan_execution` → built once in `stage5_impl`, controlled by the `spur` settings
+sub-block (default on) and flowing through all three interfaces via the existing
+settings plumbing (no new subcommand).
+
+### Spur gating (`fitting/spur_detection.py`, pure algorithm)
+`detect_active_ft_spurs` runs the integer-MHz + narrowness detector on an
+active-FT slice (arrays in, spur frequencies/clusters out). `gate_spurs` combines
+those detections with the persisted Stage 2b `SpurCluster` catalogue — mapping
+cluster bins to the active-FT grid — and emits the gated `SpurSet` /
+`SpurMaskSpec` (gated spur set + per-spur bin cluster). No file IO; unit-tested in
+isolation on synthetic spectra + synthetic catalogues
+(`tests/unit/fitting/test_spur_detection.py`).
 
 ### Fit machinery (`window_fit.py`, `plan_execution.py`)
-- `fit_window`: accept an optional per-bin spur mask; exclude masked bins from
-  the residual/Jacobian/χ² (reduce `n_data` accordingly so χ²ᵣ stays calibrated).
-- `plan_execution`: drop nominated candidate offsets that fall on a spur
-  cluster; thread the spur mask into each window's `fit_window` call.
+`fit_window` takes an optional per-bin spur mask and excludes masked bins from the
+residual / Jacobian / χ² (reducing `n_data` so χ²ᵣ stays calibrated).
+`plan_execution` drops nominated candidate offsets that fall on a spur cluster,
+threads the spur mask into each window's `fit_window` call (including the rescue
+and thaw paths), and drops a spur that was fit as a fixed contributor for a
+downstream window.
 
 ### Stage 5 wiring (`_internal/stage5_impl.py`)
-- Build the gated spur set once (active-FT + persisted Stage 2b catalogue),
-  pass the per-window mask + nomination exclusion through `execute_plan`.
-- Auto-detect the Stage 2b catalogue's presence (same pattern as τ_maj); fall
-  back to the active-FT-only detector when absent.
-
-### Stage 4 (`_internal/stage4_impl.py` / window planning) — optional
-- Drop spur-only windows from the plan. Lower priority; can land after the
-  Stage 5 mask.
+The gated spur set is built once (active-FT + persisted Stage 2b catalogue) and
+the per-window mask + nomination exclusion pass through `execute_plan`. The Stage
+2b catalogue's presence is auto-detected (same pattern as τ_maj); absent it, the
+active-FT-only detector is used.
 
 ### Settings (`core/stage_fit_settings.py`)
-- New `spur` sub-block + `_HARD_DEFAULTS["spur"]`: `enabled`,
-  `integer_tol_mhz`, `narrowness_ratio`, `snr_threshold`, `mask_half_width_bins`,
-  `use_stft_catalogue`. Instrument-tunable (register in
-  `instrument-tunable-knobs.md`).
+The `spur` sub-block + `_HARD_DEFAULTS["spur"]` carries `enabled`,
+`integer_tol_mhz`, `narrowness_ratio`, `snr_threshold`, `mask_half_width_bins`,
+`use_stft_catalogue`; instrument-tunable (registered in
+`instrument-tunable-knobs.md`).
 
 ### Persistence (`io/`)
-- The Stage 2b catalogue is already persisted. Record which spur bins the Stage
-  5 fit masked (audit), under the `stage5_fit` parameter group.
-
-### Dual-interface
-- Spur masking is internal to the fit, controlled by the `spur` settings block,
-  so it flows through `pipeline.py` / `api.py` / CLI via the existing settings
-  plumbing — no new subcommand. Add a cross-interface consistency test.
+The Stage 2b catalogue is persisted by Stage 2b; the spur bins the Stage 5 fit
+masked are recorded for audit under the `stage5_fit` parameter group.
 
 ### Tests
-- Unit: gating function (integer-MHz gate rejects a synthetic long-τ line at an
-  integer MHz; narrowness spares a real line; persistence catches a split-bin
-  spur); `fit_window` mask reduces `n_data` and excludes the bin.
-- Integration: on the 2638 fixture, spur windows' χ²ᵣ drops toward noise on the
-  clean spurs, w245 recovers only the spur portion, and no real line is masked.
-- Cross-interface consistency.
+Unit: the gating function (integer-MHz gate rejects a synthetic long-τ line at an
+integer MHz; narrowness spares a real line; persistence catches a split-bin
+spur); the `fit_window` mask reduces `n_data` and excludes the bin. Integration:
+on 2638 the spur windows' χ²ᵣ drops toward noise, w245 recovers only the spur
+portion, and no real line is masked. Plus cross-interface consistency.
 
-## Validation
+## Validation (2638)
 
-Acceptance, against `probe_spur_detector.py` + the per-window baseline at
-`scratch/stage5-validation-rescue_prominence_threshold__1p5__gaussian/`:
-
-- Spur bucket χ²ᵣ recovery ≈ the prototype's ±2–3 bin figure (~98–103 of ~106).
-- Zero real-line false positives (the 354 spared integer-MHz lines stay
-  unmasked; no fitted peak is removed by spur exclusion).
-- Spur-only windows (88, 126, 193, 287, 372, ...) drop or fit cleanly; mixed
-  windows (245) keep their real lines and lose the spur's χ².
-
-## Implementation status
-
-Shipped. The mechanism is `fitting/spur_detection.py` (`detect_active_ft_spurs`
-→ `gate_spurs` → `SpurSet`/`SpurMaskSpec`), consumed by `fit_window`
-(per-bin residual/Jacobian/χ² mask, `n_data` reduced), `plan_execution`
-(per-window mask, nomination exclusion, spur-contributor drop, threaded through
-the rescue + thaw paths), and built once in `stage5_impl` from the active-FT +
-the persisted Stage 2b `saturated` catalogue (auto-detected). The `spur`
-settings sub-block (`core/stage_fit_settings.py`, default on) controls it and
-flows through all three interfaces via the existing settings plumbing.
-
-- [x] `fitting/spur_detection.py` detector + joint gate + unit tests
-      (`tests/unit/fitting/test_spur_detection.py`)
-- [x] `fit_window` spur mask (residual/Jacobian/`n_data`)
-- [x] `plan_execution` nomination exclusion + mask threading (+ spur-contributor
-      drop, discovered in validation: a spur fit as a peak was a fixed
-      contributor for a downstream window)
-- [x] `stage5_impl` gated-set construction + Stage 2b auto-detect
-- [x] `spur` settings sub-block + `_HARD_DEFAULTS` + instrument-knobs rows
-- [x] persistence of the gated catalogue under `stage5_fit` parameters +
-      cross-interface settings-propagation tests
-- [x] integration validation on 2638 (sum Δχ²ᵣ = 111.5 over the classified
-      spur windows; w245 keeps its 3 real lines; zero real-line removals);
-      audit report § "Production wiring & validation" updated
-- [x] saturated-catalogue path exercised end-to-end on 2638
-      (`scratch/validate_spur_saturated.py`): re-running Stage 2b populates 4
-      saturated clusters (30720/32960/35840/39040), the gate upgrades those to
-      `narrow+saturated`, χ²ᵣ recovery and real-line safety are unchanged
-      (sum Δχ²ᵣ = 111.5, 625 = 625 peaks). On this fixture the saturated set is
-      a subset of the narrow detections — corroborative, not additive; the
-      split-bin spurs 39830/39930 are gated by neither detector
-- [ ] (optional, follow-up) Stage 4 spur-only window drop — currently spur-only
-      windows fit to the null model (no candidates survive nomination) and
-      contribute ~noise χ²ᵣ, so this is a cleanliness optimisation, not load-bearing
+Sum Δχ²ᵣ = 111.5 over the classified spur windows; w245 keeps its 3 real lines;
+zero real-line removals (the 354 spared integer-MHz lines stay unmasked). The
+saturated-catalogue path is exercised end-to-end: re-running Stage 2b populates 4
+saturated clusters (30720/32960/35840/39040) and the gate upgrades them to
+`narrow+saturated` with χ²ᵣ recovery and real-line safety unchanged (625 = 625
+peaks). On this fixture the saturated set is a subset of the narrow detections —
+corroborative, not additive; the split-bin spurs 39830/39930 are gated by neither
+detector. Full detail: `research/stage5-gaussian-audit/report.md`
+§ "Production wiring & validation".
 
 ## Resolved decisions
 
@@ -220,7 +183,7 @@ flows through all three interfaces via the existing settings plumbing.
   lines. Closing this would need either a dedicated split-bin test (energy
   split across two adjacent bins straddling a shared integer MHz) or a lower
   STFT SNR floor, both with real-line false-positive risk for ~0 χ²ᵣ gain.
-  Deferred; diagnosed in `scratch/diag_39830_39930.py` and the audit report
+  Deferred; diagnosed in the audit report
   § "Why 39830 / 39930 fall through both detectors".
 - **Flat-catalogue exercise.** *Done.* The 2638 fixture's persisted Stage 2b
   catalogue predated the `saturated` flag, so the shipped validation ran the
@@ -231,8 +194,8 @@ flows through all three interfaces via the existing settings plumbing.
   earlier write-ups expected: those rail τ to neither saturation nor pass the
   narrowness ratio on 2638, so the saturated set is a strict subset of the
   narrow detections (corroborative, not additive). No regression vs the
-  frequency-domain run. See `scratch/validate_spur_saturated.py` and the audit
-  report § "Saturated-catalogue path exercised end-to-end".
+  frequency-domain run. See the audit report
+  § "Saturated-catalogue path exercised end-to-end".
 
 ## Out of scope
 

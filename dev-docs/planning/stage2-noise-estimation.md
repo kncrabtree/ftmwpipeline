@@ -2,8 +2,8 @@
 
 Status: **implemented**. Implementation overview only — the algorithm is
 landed in `src/ftmwpipeline/preprocessing/noise_estimation.py` and
-exposed identically through the CLI (`estimate-noise`,
-`visualize-noise`), `Pipeline.estimate_noise`, and `ftmw.estimate_noise`.
+exposed identically through the CLI (`noise run`,
+`noise show`), `Pipeline.estimate_noise`, and `ftmw.estimate_noise`.
 
 Normative requirements remain in `dev-docs/NOISE_STRATEGY.md`; this
 document is the implementation summary.
@@ -111,8 +111,8 @@ Cross-interface (`pipeline.py`, `api.py`, `cli/noise_commands.py`):
 
 - `Pipeline.estimate_noise(...)`
 - `ftmwpipeline.api.estimate_noise(path, ...)`
-- `ftmwpipeline estimate-noise <path> [...]`
-- `ftmwpipeline visualize-noise <path>` (overlays σ on the active FT)
+- `ftmwpipeline noise run <path> [...]`
+- `ftmwpipeline noise show <path>` (overlays σ on the active FT)
 
 All three converge on `_internal/stage2_impl.compute_noise_estimation_impl`,
 which builds the trimmed active FT, runs `estimate_active_ft_noise` (the

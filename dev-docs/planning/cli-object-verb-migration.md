@@ -1,17 +1,17 @@
 # Stage-command migration to the object-verb CLI grammar
 
-Plan for migrating the **stage commands** of the CLI from the flat verb-object
-form (`compute-ft`, `estimate-noise`, …) to the **object-verb** grammar pinned by
-[`../CLI_STRATEGY.md`](../CLI_STRATEGY.md). Charter: GitHub issue #31. The
-cross-cutting **meta-objects** (`settings`, `scan`) already landed in issue #28;
-this completes the grammar by reshaping the per-stage surface and is the second
-half of divergence **D12** in [`../ROADMAP.md`](../ROADMAP.md).
+The CLI **stage commands** use the **object-verb** grammar pinned by
+[`../CLI_STRATEGY.md`](../CLI_STRATEGY.md), having moved off the earlier flat
+verb-object form (`compute-ft`, `estimate-noise`, …). Charter: GitHub issue #31,
+resolving the second half of divergence **D12** in
+[`../ROADMAP.md`](../ROADMAP.md). The cross-cutting **meta-objects** (`settings`,
+`scan`) are the first half (issue #28).
 
-This is a CLI-surface refactor only: the analysis logic, the `_internal` impls,
+This was a CLI-surface refactor only: the analysis logic, the `_internal` impls,
 and the Pipeline / functional-API method names are unchanged (those are governed
-by [`../API_STRATEGY.md`](../API_STRATEGY.md), not the CLI grammar). What changes
-is how the argument parser is shaped and the command strings users (and tests)
-type.
+by [`../API_STRATEGY.md`](../API_STRATEGY.md), not the CLI grammar). Only the
+shape of the argument parser and the command strings users (and tests) type
+changed.
 
 ## Grammar (the contract)
 
@@ -69,14 +69,16 @@ deprecated aliases (matching the `tune` → `scan` cutover in #28).
 
 ## Test + doc reconciliation
 
-- Update the integration `_run_cli` helpers and every test that invokes a CLI
-  command string to the object-verb form (subprocess arg lists).
-- Update the cross-interface consistency tests' CLI arms.
-- Reconcile end-user docs / examples (`CLAUDE.md`, README, `docs/source`, the
-  main parser epilog) that invoke the old commands.
+- The integration `_run_cli` helpers and every test that invokes a CLI command
+  string use the object-verb form (subprocess arg lists).
+- The cross-interface consistency tests' CLI arms use the object-verb form.
+- End-user docs / examples (`CLAUDE.md`, README, `docs/source`, the main parser
+  epilog) invoke the object-verb commands.
 
-## Out of scope
+## Scope boundaries
 
-- The `settings` / `scan` meta-objects (#28, done).
-- Renaming Pipeline / functional-API methods (API grammar, not CLI).
-- Re-deriving any default (#3).
+This refactor deliberately left untouched:
+
+- The `settings` / `scan` meta-objects (#28).
+- The Pipeline / functional-API method names (API grammar, not CLI).
+- Any analysis default (#3).

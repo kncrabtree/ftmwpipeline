@@ -1,9 +1,10 @@
 # Companion tuning & visualization tools
 
-Plan for productionizing the accumulated parameter-scan and stage-visualization
-tooling into a first-class, user-facing surface so a user can understand,
-visualize, and optimize pipeline parameters for **their own instrument**, then
-capture the result as a reusable instrument preset. Charter: GitHub issue #27.
+Status: **shipped** (issue #27) as the `scan` meta-object — see §Implementation
+status. This document productionized the accumulated parameter-scan and
+stage-visualization tooling into a first-class, user-facing surface so a user can
+understand, visualize, and optimize pipeline parameters for **their own
+instrument**, then capture the result as a reusable instrument preset.
 
 > **CLI naming note.** This document designs the surface under a `tune`
 > command namespace (`tune list` / `tune scan` / `tune scan-all`). That surface
@@ -34,121 +35,38 @@ places:
   `stage5-validation/generate_validation.py` (per-window fit visualizer that
   already reads shape/probe/trim/units from any `.ftmw`) and the
   `stage3-coherence-study/` survey scripts.
-- **Gitignored** `scratch/` (~142 `.py` across ~50 dirs): the throwaway versions
-  whose *intent* is worth preserving (noise_viz, mad-calibration, noise_research,
-  issue1_start_time, stage2b-bias, stage2b-polish-validation, stage3_benchmark,
-  stage4-audit, the stage5-validation/cross-fixture families).
+- **Gitignored** `scratch/`: a large body of throwaway per-stage tuners and
+  visualizers whose *intent* (not the scripts themselves) was worth preserving.
 
 The goal is a single, discoverable, fixture-agnostic surface that subsumes their
 intent, follows the repo's dual-interface rule, and feeds the existing settings
 resolver + preset system.
 
-## Inventory and parameter -> tool map
+## Coverage backbone
 
-The backbone is the Y-rated (instrument-sensitive) knob set in
-[`instrument-tunable-knobs.md`](instrument-tunable-knobs.md). Each Y knob is
-cross-referenced below against the existing tool that scans/visualizes it. A
-**tracked probe** is a `dev-docs/research/.../probe_<knob>.py` sweep; **scratch**
-is a gitignored throwaway; **none** means no tool exists yet. This map is what
-the companion surface must cover.
-
-### Pre-Stage 1 — start detection (`StartDetectionSettings`)
-
-| knob | existing tool | kind |
-|---|---|---|
-| guard_margin_us *(headline)* | `scratch/issue1_start_time/` | scratch |
-| sweep_max_us | `scratch/issue1_start_time/` | scratch |
-| min_chirp_drop_ratio | `scratch/issue1_start_time/` | scratch |
-
-### Stage 2 — noise σ(f) (`NoiseSettings` scatter)
-
-| knob | existing tool | kind |
-|---|---|---|
-| scatter window_mhz / pedestal_mhz / smoothing_mhz / line_k / smoothing_percentile | `scratch/noise_research/`, `noise_viz/`; `research/noise-snr-scaling/prototype.py` | scratch + prototype |
-
-The `noise_viz/` family is already multi-fixture (`FIXTURES = [...]`) — the
-strongest scratch visualizer to lift.
-
-### Stage 2b — τ calibration (`TauCalibrationSettings`)
-
-| knob | existing tool | kind |
-|---|---|---|
-| stft.n_seg | `scratch/stage2b-bias/` | scratch |
-| stft.t_sigma | `scratch/stage2b-bias/`, `tau_noise_coupling/` | scratch |
-| polish.polish_snr_cap | `research/stage5-tau-calibration/polish_snr_cap_validation.py`; `scratch/stage2b-polish-validation/` | prototype + scratch |
-| polish.polish_noise_debias | `research/stage5-tau-calibration/polish_validation.py` | prototype |
-| gaussian.snr_min, recommendation.snr_min | (rides the same builds; no dedicated sweep) | none |
-
-### Stage 3 — peak detection (`PeakDetectionSettings`)
-
-| knob | existing tool | kind |
-|---|---|---|
-| promotion.min_snr | `research/stage3-gaussian-audit/probe_min_snr.py` | tracked probe |
-| promotion.internal_min_snr | `research/stage3-gaussian-audit/probe_internal_min_snr.py` | tracked probe |
-| promotion.{weak_medium_snr, medium_strong_snr} | `research/stage3-snr-corner/o2_o4_validation.py`; `scratch/stage3_benchmark/` | tracked + scratch |
-| primary_pass.min_exclusion_mhz | `research/stage3-gaussian-audit/probe_min_exclusion.py` | tracked probe |
-| gap_pass.gap_mask_edge_threshold | `research/stage3-gaussian-audit/probe_gap_mask_edge.py` | tracked probe |
-
-### Stage 4 — window assignment (`WindowPlanningSettings`)
-
-| knob | existing tool | kind |
-|---|---|---|
-| coherence.edge_threshold | `research/stage4-gaussian-audit/probe_edge_threshold.py` | tracked probe |
-| clustering.max_window_width_mhz | `research/stage4-gaussian-audit/probe_max_width.py` | tracked probe |
-| contributor.magnitude_attachment_threshold | `research/stage4-gaussian-audit/probe_mag_attachment.py` | tracked probe |
-| leakage.tau_us | `research/stage4-gaussian-audit/probe_leakage_tau.py` (+`_p5` Stage 5 χ²ᵣ follow-up) | tracked probe |
-| contributor.min_freeze_snr | (none) | none |
-
-### Stage 5 — fitting (`StageFitSettings`)
-
-| knob | existing tool | kind |
-|---|---|---|
-| tau.fit_tau_min_snr | `research/stage5-gaussian-audit/probe_fit_tau_min_snr.py` | tracked probe |
-| conservative.weak_window_snr_threshold | `research/stage5-gaussian-audit/probe_weak_window_snr.py` | tracked probe |
-| rescue.snr_threshold | `research/stage5-gaussian-audit/probe_rescue_snr_threshold.py` | tracked probe |
-| rescue.prominence_threshold | `research/stage5-gaussian-audit/probe_rescue_prominence_threshold.py` | tracked probe |
-| thaw.residual_edge_threshold | `research/stage5-gaussian-audit/probe_residual_edge_threshold.py` | tracked probe |
-| baseline.edge_threshold | `scratch/issue3_audit/audit_knobs.py`; `research/stage5-cross-fixture/` | scratch + harness |
-| spur.* | `scratch/spur-validation/`, `spur-saturated-validation/` | scratch |
-
-**Coverage summary.** Of the Y-rated knobs: Stages 3–5 have ~13 tracked
-`probe_<knob>.py` sweeps with explicit grids; start-detection, Stage 2, and
-Stage 2b were tuned in `scratch/` only; a handful (Stage 2b
-`gaussian/recommendation.snr_min`, Stage 4 `contributor.min_freeze_snr`) have no
-dedicated tool. The companion surface must (a) lift the tracked probes verbatim,
-(b) preserve the intent of the scratch tuners, and (c) fill the gaps.
-
-### Reusable harness assets
-
-These three are templates, not throwaways — the companion engine reuses them
-rather than rewriting:
-
-- **`research/<stage>-gaussian-audit/harness.py`** — build a fixture `.ftmw`
-  through the stage under study once, cache it, then run thin per-variant
-  sweeps. Exports `prepare_fixture()`, `run_variant()`, `plot_knob_sweep()`,
-  result dataclasses, `write_csv()`. This *is* the sweep loop the engine
-  formalizes.
-- **`research/stage5-cross-fixture/stage5_cross_fixture.py`** — end-to-end
-  canonical pipeline (Stages 0–5) over a fixture list with `--reuse` to reload
-  persisted results; emits tiered health metrics. The cross-instrument
-  validation template.
-- **`scripts/development/stage5-validation/generate_validation.py`** — already
-  fixture-agnostic per-window fit visualizer (`--fixture/--random-sample/--worst/--near/--list`,
-  reads shape/probe/trim/units from the file). The visualize-half template.
+The surface covers the Y-rated (instrument-sensitive) knob set catalogued in
+[`instrument-tunable-knobs.md`](instrument-tunable-knobs.md); the shipped
+per-stage coverage (which knobs are `primary` vs `advanced`, their grids,
+metrics, and plots) is recorded in §Implementation status. The engine reuses two
+tracked templates rather than rewriting them: the
+`research/<stage>-gaussian-audit/harness.py` build-once / sweep-many loop
+(`prepare_fixture` / `run_variant` / `plot_knob_sweep` / `write_csv`) and
+`scripts/development/stage5-validation/generate_validation.py`, the
+fixture-agnostic per-window fit visualizer.
 
 ## Existing surface the design builds on
 
-- **CLI** already has a per-stage `visualize-*` command for every data-producing
-  stage: `visualize-data`, `visualize-start-detection`, `visualize-ft`,
-  `visualize-noise`, `visualize-tau-*`, `visualize-peaks`, `visualize-windows`,
-  `visualize-fit`. The **scan/tune half is what is missing.**
+- **CLI** already has a per-stage `<stage> show` verb for every data-producing
+  stage (`data show`, `start show`, `ft show`, `noise show`, `tau show`,
+  `peaks show`, `windows show`, `fit show`). The **scan half was what was
+  missing** (now the `scan` meta-object).
 - **Dual-interface rule.** Every capability exists identically in CLI
   (`cli/*_commands.py`) + `Pipeline` (`pipeline.py`) + functional `api.py`, all
   thin wrappers over `_internal/stageN_impl.py`. New commands obey this.
 - **Settings system.** Each stage has a settings dataclass
   (`core/{noise,peak_detection,window_planning,stage_fit,tau_calibration,start_detection}_settings.py`)
-  composed of sub-blocks, with `resolve()` (four-layer: explicit > preset >
-  persisted > recommended > hard default), `from_yaml_dict()`, `to_yaml_dict()`,
+  composed of sub-blocks, with `resolve()` (four-layer: explicit > persisted >
+  preset > recommended > hard default), `from_yaml_dict()`, `to_yaml_dict()`,
   and `load_preset()`. Presets wrap each stage under a top-level
   `stage2:`/`stage2b:`/`stage3:`/`stage5:` block
   (`presets/instrument_bc_2638.yaml`). `to_yaml_dict()` already serializes
@@ -239,9 +157,9 @@ back to file output otherwise.
 ### Dual-interface obligations
 
 Per the rule, the sweep engine is implemented once in `_internal/tuning/` and
-exposed through all three surfaces: CLI `cli/tune_commands.py`,
-`Pipeline.tune_scan(...)` / `Pipeline.tune_list()`, and `api.tune_scan(...)` /
-`api.tune_list()`. A cross-interface consistency test accompanies it (the
+exposed through all three surfaces: CLI `cli/scan_commands.py`,
+`Pipeline.scan_run(...)` / `Pipeline.scan_list()`, and `api.scan_run(...)` /
+`api.scan_list()`. A cross-interface consistency test accompanies it (the
 registry + engine make this cheap: same engine, three thin wrappers).
 
 `--interactive` is the one **CLI-only** affordance: the Pipeline/api surfaces run
@@ -280,7 +198,7 @@ Stable stages first (issue #27 deliverable 5, confirmed): the spine
 is proven on a low-churn stage, then fanned out.
 
 1. **Spine on a stable stage.** *(done)* `registry.py` + `engine.py` +
-   `cli/tune_commands.py` + Pipeline/api wrappers + cross-interface test, with
+   `cli/scan_commands.py` + Pipeline/api wrappers + cross-interface test, with
    Stage 2 noise and start detection as the first registered knobs.
 2. **Stage 2b τ calibration.** *(done)* — and extended well past the initial
    four knobs: the full τ surface (exp τ, Gaussian τ_G, multi-band, shape vote)
@@ -293,19 +211,21 @@ is proven on a low-churn stage, then fanned out.
    plot). Reuse the `<stage>-gaussian-audit/harness.py` builders. Follow the
    conventions in §Lessons for the fan-out. **Stages 3, 4, and all of Stage 5
    done** — fit-quality + rescue / spur / thaw families (see §Implementation
-   status). Issue #28 is next.
-5. **Issue #28** — the resolved-settings view/set grammar (`tune settings`).
-   Value persistence folds in here (see §Preset emission): once the set path
-   exists, `tune scan` appends per-knob instructions for writing the chosen value
-   to a `.yml` preset or the `.ftmw` file. No separate `tune`-side emitter.
+   status).
+5. **Settings meta-object (issue #28). Shipped** — the resolved-settings view/set
+   grammar (`settings show` / `settings set` / `settings export`). Value
+   persistence folds in here (see §Preset emission): the `scan run` output
+   appends per-knob instructions for writing the chosen value to a `.yml` preset
+   or the `.ftmw` file via the settings set path, with no separate scan-side
+   emitter.
 6. **Gap-fill** any remaining no-tool knobs as registry entries.
 
 ## Implementation status
 
 The surface lives in `src/ftmwpipeline/_internal/tuning/` (`registry.py`,
-`engine.py`, `plots.py`), exposed through `cli/tune_commands.py`
-(`tune list` / `tune scan` / `tune scan-all`), `Pipeline.tune_{list,scan,scan_batch}`,
-and `api.tune_{list,scan,scan_batch}`. Tests: `tests/unit/_internal/tuning/` and
+`engine.py`, `plots.py`), exposed through `cli/scan_commands.py`
+(`scan list` / `scan run` / `scan all`), `Pipeline.scan_{list,run,all}`,
+and `api.scan_{list,run,all}`. Tests: `tests/unit/_internal/tuning/` and
 `tests/integration/test_tune_cross_interface.py`.
 
 **Engine + registry.** Dotted-path `KnobSpec` (run / metric / optional plot
@@ -335,7 +255,7 @@ plumbed identically through CLI / Pipeline / api into `run_scan` /
   curated entry point), `--all` reveals advanced; a positional path-prefix
   selector (`tune list stage2b.gaussian`) filters; `list_knobs(selector,
   include_advanced=)` is the shared data filter. The listing is a single
-  prefix-elided table (`cli/tune_commands.py::_elide_path`) — repeated dotted
+  prefix-elided table (`cli/scan_commands.py::_elide_path`) — repeated dotted
   prefixes are blanked/padded, a blank line separates stages.
 - **Batch mode.** `tune scan-all <file> [selector] [--all]` sweeps every matched
   knob on its default grid; a knob whose required stage is absent is reported as
@@ -536,15 +456,17 @@ Tests: `_metric_rescue/spur/thaw` reducers + the three adapters in
 `tests/unit/_internal/tuning/{test_registry,test_plots}.py` (fake duck-typed
 results), plus the real-fit smoke on the 2638 stage-4 fixture.
 
+**Issue #28 — resolved-settings view/set grammar. Shipped** as the
+`settings show` / `settings set` / `settings export` meta-object: a view of
+resolved per-knob values + provenance (`.ftmw`/`.yml`/default) reusing the
+registry walk + selector + tiering, plus the set path that writes a chosen value
+to a `.yml` preset or the `.ftmw` file. Value persistence (the #27 deliverable-4
+"scan → preset" goal) folds in here — `scan run` appends per-knob persistence
+instructions (see §Preset emission). This closed out the #27 surface; design in
+[`tune-settings-verb.md`](tune-settings-verb.md).
+
 Remaining:
 
-- **Issue #28 — resolved-settings view/set grammar** (`tune settings`): a view of
-  resolved per-knob values + provenance (`.ftmw`/`.yml`/default), reusing the
-  registry walk + selector + tiering, plus the set path that writes a chosen value
-  to a `.yml` preset or the `.ftmw` file. Value persistence (the #27 deliverable-4
-  "tune -> preset" goal) folds in here: once the set path exists, `tune scan`
-  appends per-knob persistence instructions (see §Preset emission). This closes
-  out the #27 surface.
 - **Manual validation:** the Stage 0/1/2/2b/3/4 knobs and the full Stage 5
   surface (fit-quality + rescue / spur / thaw) await a user drive-through on real
   data to confirm each metric/plot before they are relied on. Known low-leverage
@@ -608,8 +530,6 @@ Patterns proven on Stages 0–2b that the Stage 3→5 registration should follow
 
 - Re-deriving any specific default (per-knob audit; issue #3 /
   `instrument-tunable-knobs.md`).
-- Cleaning up / consolidating the `scratch/` duplication clusters (e.g. the
-  ~12 `stage5-validation*` dirs) — orthogonal housekeeping.
 
 ## Open decisions
 

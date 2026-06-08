@@ -218,8 +218,8 @@ peg the upper bound at 5 · tau0).
 
 `scripts/development/stage5-validation/generate_validation.py`
 reproduces the initial fit per window, runs the consolidated
-chain, and emits per-window artifacts under
-`scratch/stage5-validation/window_NNN/`:
+chain, and emits per-window artifacts to its (untracked) output
+directory:
 
 - `detail.png` — consolidated final fit. Full-spectrum overview
   + current-window axvspan; 3-column residual row (Re/Im/|z|)

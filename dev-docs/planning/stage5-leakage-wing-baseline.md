@@ -39,7 +39,7 @@ into the line uncertainties.
   `baseline_order`, `baseline_edge_coherence`, `baseline_offset_scale`, and the
   coefficients as scalar `baseline_coeff{k}_re` / `baseline_coeff{k}_im` pairs.
 
-### 2638 validation (A/B, `scratch/validate_baseline_2638.py`)
+### 2638 validation (A/B)
 
 Baseline ON vs OFF, every other knob inherited from the persisted fixture
 (`rescue_prominence_threshold=1.5`, gaussian). 66 windows fired. Chain windows
@@ -153,9 +153,9 @@ Both the threshold and the const order ship unchanged. Evidence:
   window's χ²ᵣ by 100× — i.e. it is a different line, not a consistent skirt. The
   slack the mechanism assumed does not exist for a strong line.
 
-Both negative results, plus the validated baseline numbers, live in
-`research/stage5-gaussian-audit/report.md` and the probes
-`scratch/probe_skirt_relaxation.py` / `scratch/probe_baseline_trigger.py`.
+Both negative results (the skirt-relaxation and baseline-trigger probes), plus
+the validated baseline numbers, live in
+`research/stage5-gaussian-audit/report.md`.
 
 ## Implementation surface
 
@@ -195,8 +195,8 @@ Both negative results, plus the validated baseline numbers, live in
 
 ## Validation / acceptance
 
-Diff per-window χ²ᵣ + per-line σ against
-`scratch/stage5-validation-rescue_prominence_threshold__1p5__gaussian/`:
+Diff per-window χ²ᵣ + per-line σ against the rescue_prominence=1.5 gaussian
+baseline run:
 
 - The 35 beneficial windows' χ²ᵣ drop (chain windows to ≈ 1.5; w152/w150 the
   largest absolute gains); no window with edge-coh below threshold is perturbed.

@@ -51,7 +51,7 @@ Components landed:
   unchanged (hard default matches the previous `True`). `Pipeline.calibrate_tau_G`
   / `api.calibrate_tau_G` gain `tau_G_seeds` (previously hidden from
   the public surface).
-- **CLI** — `calibrate-tau` and `calibrate-tau-G` each gain
+- **CLI** — `tau run` and `tau run --gaussian` each gain
   `--preset NAME_OR_PATH`.
 - **Packaged presets** — `instrument_bc_2638.yaml`,
   `gaussian_default.yaml`, `lorentzian_legacy.yaml` rewritten with the
@@ -196,17 +196,17 @@ Components landed:
   Intentionally distinct from the existing `/stage2_noise_result`
   group (settings under `processing_parameters/`, results at the root
   — same pattern Stage 5 uses).
-- **`preprocessing/noise_estimation.estimate_noise_adaptive`** — the
-  kernel signature gains five new keyword-only kwargs threading the
-  formerly module-level constants
-  (`subdivision_threshold`, `abs_min_bin_size`, `strong_peak_snr`,
-  `skirt_exclusion_k`, `max_skirt_exclusion_mhz`). The module-level
-  `SUBDIVISION_THRESHOLD = 0.08` / etc. remain the readable canonical
-  source the dataclass mirrors; they are the kernel's parameter
-  defaults so old callers see identical behaviour.
-  `_compute_mad_based_bins` gains `subdivision_threshold`;
-  `_exclude_strong_line_skirts` gains the three skirt-exclusion
-  kwargs.
+- **`preprocessing/noise_estimation.estimate_noise_scatter`** — the Stage 2
+  σ estimator the `NoiseSettings` fields drive. The backfill *initially*
+  targeted the adaptive estimator's kernel kwargs; when the adaptive estimator
+  was retired and the scatter estimator became the sole Stage 2 method,
+  `NoiseSettings` was re-pointed to the scatter knobs (`window_mhz`,
+  `pedestal_mhz`, `smoothing_mhz`, `line_k`, `n_iter`, `region_aware`,
+  `smoothing_percentile`, `convolve_mhz`), which remain flat on `NoiseSettings`
+  (one estimator → no sub-block). The module-level `DEFAULT_*` constants stay
+  the readable canonical source the dataclass mirrors and the kernel's parameter
+  defaults, so a no-kwargs call is unchanged. See
+  [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 - **`_internal/stage2_impl.compute_noise_estimation_impl`** — gains
   `settings: Optional[NoiseSettings]` and `preset: Optional[str]` kwargs
   (mutually exclusive, matching Stages 5 and 2b). Builds an explicit
@@ -220,7 +220,7 @@ Components landed:
   `ValueError`.
 - **`Pipeline.estimate_noise` / `api.estimate_noise`** — gain
   `settings=` / `preset=` kwargs.
-- **CLI** — `estimate-noise` gains `--preset NAME_OR_PATH`.
+- **CLI** — `noise run` gains `--preset NAME_OR_PATH`.
 
 Test coverage shipped:
 
@@ -229,7 +229,7 @@ Test coverage shipped:
 - `tests/unit/io/test_preset_loading.py` extended (28 tests total) for
   the `stage2:` block path and sibling-block coexistence.
 - `tests/integration/test_stage2_settings_propagation.py` (14 tests)
-  — every routed `NoiseSettings` field reaches `estimate_noise_adaptive`;
+  — every routed `NoiseSettings` field reaches `estimate_noise_scatter`;
   `settings=` + `preset=` mutual exclusion; `from_saved_params=True`
   + `settings=` mutual exclusion; a no-kwargs follow-up inherits the
   persisted `smoothing_window_mhz`; `from_saved_params=True` still
@@ -250,10 +250,11 @@ Components landed:
   `PrimaryPassSubSettings`, `GapPassSubSettings`). `_HARD_DEFAULTS`
   mirrors every `DEFAULT_*` constant in
   `preprocessing/peak_detection.py` and every module-level constant
-  in `_internal/stage3_impl.py` (`DEFAULT_PRIMARY_WINDOW`,
-  `GAP_MASK_EDGE_THRESHOLD`, `_DETECTION_ZPF`, `_GAP_ACTIVE_ZPF`,
-  `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW`), plus the hardcoded
-  `sg_window=11` / `sg_order=3` defaults the orchestrator carried.
+  in `_internal/stage3_impl.py` (`DEFAULT_PRIMARY_WINDOW`, the continuous
+  leakage-floor gains `primary_leakage_floor_k` / `gap_leakage_floor_k`,
+  `_DETECTION_ZPF`, `_GAP_ACTIVE_ZPF`, `_SG_FWHM_COVERAGE`, `_SG_MIN_WINDOW`),
+  plus the hardcoded `sg_window=11` / `sg_order=3` defaults the orchestrator
+  carried.
   `resolve()` walks the four-layer chain; `to_attrs` / `from_attrs` /
   YAML helpers + `load_preset` reading the `stage3:` block from
   packaged presets.
@@ -263,11 +264,11 @@ Components landed:
   Intentionally distinct from the existing root-level `/stage3_peaks`
   group (settings under `processing_parameters/`, results at the root
   — same pattern Stages 5 and 2 use).
-- **`_internal/stage3_impl`** — `_grid_aware_sg_window` and
-  `_spectrum_from_fid` gain keyword-only kwargs threading the formerly
-  module-level constants (`fwhm_coverage`, `min_window`, `zpf`); the
-  module-level constants remain as the kernel's parameter defaults
-  so old callers see identical behaviour.
+- **`_internal/stage3_impl`** — `_grid_aware_sg_window` and the
+  active-region spectrum builder (`_active_windowed_spectrum`) gain
+  keyword-only kwargs threading the formerly module-level constants
+  (`fwhm_coverage`, `min_window`, `zpf`); the module-level constants remain
+  as the kernel's parameter defaults so old callers see identical behaviour.
 - **`_internal/stage3_impl.detect_peaks_impl`** — gains
   `settings: Optional[PeakDetectionSettings]` and `preset:
   Optional[str]` kwargs (mutually exclusive, matching Stages 5, 2b,
@@ -281,7 +282,7 @@ Components landed:
   canonical record is what the resolver's persisted layer reads.
 - **`Pipeline.detect_peaks` / `api.detect_peaks`** — gain
   `settings=` / `preset=` kwargs.
-- **CLI** — `detect-peaks` gains `--preset NAME_OR_PATH`.
+- **CLI** — `peaks run` gains `--preset NAME_OR_PATH`.
 
 Test coverage shipped:
 
@@ -292,8 +293,8 @@ Test coverage shipped:
 - `tests/integration/test_stage3_settings_propagation.py` (16 tests)
   — every routed `PeakDetectionSettings` field reaches its kernel
   (direct: `detect_peaks`; orchestrator-internal:
-  `_spectrum_from_fid`, `_mf_gap_spectrum`, `_grid_aware_sg_window`,
-  `leakage_touched_intervals`). `settings=` + `preset=` mutual
+  `_active_windowed_spectrum`, `_mf_gap_spectrum`, `_grid_aware_sg_window`,
+  `_leakage_floor_amp`). `settings=` + `preset=` mutual
   exclusion; a no-kwargs follow-up inherits the persisted
   `sg_window`. The kernel floor `min_snr` is asserted to be
   `min(promotion.internal_min_snr, promotion.min_snr)` so both
@@ -338,7 +339,7 @@ Components landed:
   persisted layer reads.
 - **`Pipeline.assign_windows` / `api.assign_windows`** — gain
   `settings=` / `preset=` kwargs.
-- **CLI** — `assign-windows` gains `--preset NAME_OR_PATH`.
+- **CLI** — `windows run` gains `--preset NAME_OR_PATH`.
 
 Test coverage shipped:
 
@@ -420,8 +421,10 @@ HDF5 subgroups inspect cleanly and the YAML blocks compose:
 Four layers, matching Stage 5:
 
 ```
-explicit kwarg > preset / settings > persisted > recommended > hard default
+explicit kwarg > persisted > preset / settings > recommended > hard default
 ```
+
+(`persisted` outranks `preset`/`settings` per divergence D11.)
 
 The `recommended` slot is reserved but empty for Stage 2b — Stage 2b
 is the originator of recommendations, not a consumer. A future
@@ -477,8 +480,8 @@ stage5:
 
 ### Cross-interface parity
 
-* `cli/tau_commands.py`: `calibrate-tau`, `calibrate-tau-G`, and
-  (when added) `recommend-shape` each gain `--preset NAME_OR_PATH`.
+* `cli/tau_commands.py`: `tau run`, `tau run --gaussian`, and
+  (when added) the shape recommendation each gain `--preset NAME_OR_PATH`.
   Existing per-knob flags lose their argparse hard defaults so the
   resolver picks them up from the preset.
 * `Pipeline.calibrate_tau` / `Pipeline.calibrate_tau_G` /
@@ -516,7 +519,7 @@ do not silently delete entries.**
 
 | # | Shim | Where | Reason | Migration path |
 |--:|------|-------|--------|----------------|
-| 1 | `load_preset` accepts both `fit:` (legacy) and `stage5:` (new) spellings for the Stage 5 wrapper block | `core/stage_fit_settings.py::load_preset` | The Stage 2b backfill renames the preset wrapper from the original `fit:` to per-stage `stage2b:` / `stage5:` blocks. Pre-existing user presets and research scripts (notably `scratch/gaussian-retune/`, `dev-docs/research/stage5-tau-calibration/`) write `fit:` and must still load. | Rewrite preset YAML to use `stage5:` instead of `fit:`. After the next release cycle adds `DeprecationWarning`, the warning's stacktrace surfaces the call site. |
+| 1 | `load_preset` accepts both `fit:` (legacy) and `stage5:` (new) spellings for the Stage 5 wrapper block | `core/stage_fit_settings.py::load_preset` | The Stage 2b backfill renames the preset wrapper from the original `fit:` to per-stage `stage2b:` / `stage5:` blocks. Pre-existing user presets and research scripts (notably `dev-docs/research/stage5-tau-calibration/`) write `fit:` and must still load. | Rewrite preset YAML to use `stage5:` instead of `fit:`. After the next release cycle adds `DeprecationWarning`, the warning's stacktrace surfaces the call site. |
 | 2 | Legacy per-knob kwargs stay on `Pipeline.calibrate_tau` / `Pipeline.calibrate_tau_G` / `Pipeline.recommend_shape` and on the corresponding `api` / impl signatures | `_internal/stage2b_impl.py`, `_internal/stage2b_g_impl.py`, `_internal/shape_recommendation_impl.py`, `pipeline.py`, `api.py` | Match the Stage 5 migration policy: existing call-sites that pass individual kwargs (e.g. `polish_snr_cap=9.0`) keep working; they bundle into an explicit `TauCalibrationSettings` inside the impl and route through the resolver. | Move kwarg payload to a `TauCalibrationSettings(...)` instance or to a YAML preset. `DeprecationWarning` follow-up tracked below. |
 | 3 | `DEFAULT_*` constants stay live in `fitting/tau_calibration.py` | `fitting/tau_calibration.py` | The constants are still imported by the kernel functions as their parameter defaults; once every consumer reads from a resolved `TauCalibrationSettings`, the constants become docstring-only. Same status as the Stage 5 `DEFAULT_*` family. | Delete one release after the `DeprecationWarning` for the legacy per-knob kwargs lands. |
 | 4 | `compute_band_majorities` dropped from `bool = True` to `Optional[bool] = None` on every Stage 2b layer | `_internal/stage2b_impl.py`, `_internal/stage2b_g_impl.py`, `pipeline.py`, `api.py` | The Stage 5 pattern: a `None` default lets the resolver pick the value up from a preset or persisted layer. The hard default in `band.compute_band_majorities` is `True`, so observable no-kwargs behaviour is unchanged. **Landed in this project.** | None — the migration is internal; user-visible defaults are preserved. |
@@ -786,5 +789,3 @@ surface just to sweep it.
 - Stage 2b knob surface and operating points:
   [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md) +
   [`../research/stage5-tau-calibration/report.md`](../research/stage5-tau-calibration/report.md).
-- Original settings-architecture proposal:
-  [`../../scratch/settings-architecture-proposal.md`](../../scratch/settings-architecture-proposal.md).

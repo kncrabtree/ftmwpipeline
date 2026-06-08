@@ -40,12 +40,16 @@ on demand) and the Stage 2 `NoiseResult` (per-point noise `sd`).
 
 Two passes:
 
-1. **Primary (Blackman-Harris-apodized internal zpf=1 grid).** Compute the
-   magnitude spectrum *with* a strong window-function apodization
-   (`primary_window = "blackmanharris"` default), then run the ported
-   `locate_peaks` with `thresh = min_snr · sd`. Close lines smearing together
-   is acceptable. This yields the robust strong-line list (which also seeds
-   the leakage mask).
+1. **Primary (Blackman-Harris-apodized active-region frame).** Build the
+   magnitude spectrum as the `dt·rfft` of the active region `[start_us,
+   end_us]` times a strong window function (`primary_window = "blackmanharris"`
+   default), zero-padded by `detection_zpf = 2` (which lands the grid step
+   close to the former full-record zpf=1 primary, preserving apex localization
+   and the calibrated `sg_window`), then run the ported `locate_peaks` against a
+   detection floor of `min_snr · sd` raised by the continuous leakage-aware term
+   (`primary_leakage_floor_k = 1`; see *Leakage-aware detection floor* below).
+   Close lines smearing together is acceptable. This yields the robust
+   strong-line list (also consumed by Stage 4's leakage-touched grouping).
 
 2. **Gap pass — matched-filter exp-apodized active-region FFT.** Build a
    separate matched-filter spectrum: slice the FID to its active region
@@ -56,11 +60,8 @@ Two passes:
    (default `zpf_active = 2` — chosen so the Lorentzian FWHM lands at ≈ 3
    bins on the resulting grid), then rfft. Run `locate_peaks` on it with a
    grid-aware SavGol window and detect weak lines the primary's apodization
-   smeared away. The gap pass is masked by the **de-ramped leakage-touched
-   map** (D8); since the active-region FFT's phase reference is the active-
-   region turn-on (t=0 is already at start_us implicitly), call
-   `leakage_touched_intervals(..., start_us=0.0)` to skip the de-ramp the
-   full-record-rfft path needs.
+   smeared away, against the same continuous leakage-aware floor at a higher
+   gain (`gap_leakage_floor_k = 3`).
 
    The matched filter dominates the previous unapodized gap pass across
    the recall/FP ROC on 2638 under the new Stage 2 noise estimator. See
@@ -92,7 +93,7 @@ with `K = 4` and the 5-bin floor (SavGol-with-order-3 minimum).
 `τ_basis` (Stage 2b `τ_maj`, else the default 5 µs). On 2638 (τ = 5 µs →
 FWHM = 63.7 kHz):
 
-- Primary grid (zpf=1 internal, freq_step ≈ 23.8 kHz, FWHM ≈ 2.67 bins) →
+- Primary grid (active-region zpf=2, freq_step ≈ 23.8 kHz, FWHM ≈ 2.67 bins) →
   sg_window = 11.  *Reproduces the prior empirical default exactly.*
 - MF gap grid (active zpf=2, freq_step ≈ 19.8 kHz, FWHM ≈ 3.2 bins) →
   sg_window = 13.
@@ -105,9 +106,25 @@ defaulting to 11 (which the rule reproduces). Helper:
 
 The primary apodization (`primary_window`) is independent of the user's
 Stage 1 settings and affects only *which positions* the primary pass finds
-— every reported amplitude/SNR is re-measured on the user spectrum during
-snap-back. Default `"blackmanharris"` calibration in
+— every reported amplitude/SNR is re-measured on the canonical (unapodized)
+active FT during snap-back. Default `"blackmanharris"` calibration in
 `dev-docs/research/peak-detection/report.md` §3, §6.
+
+### Leakage-aware detection floor
+
+Neither pass uses a hard `S_coh` mask — the strong/cluster lines *are* what
+generate the coherence, so a hard cutoff would delete them. Instead each pass
+raises its detection floor continuously by the local coherent-leakage amplitude
+`k · (S_coh / √M) · σ` (`_leakage_floor_amp`): a genuine line towers over it,
+while a strong line's truncation-skirt ripple — which *is* that leakage — does
+not, so neither pass re-detects skirts as weak lines once its internal noise
+floor is the honest scatter one. The two passes need different `k` because they
+run on opposite-leakage spectra: the Blackman-Harris primary suppresses most
+truncation leakage so its floor is a small residual correction at cluster cores
+(`primary_leakage_floor_k = 1`), while the matched-filter gap pass retains the
+full leakage and needs the stronger floor (`gap_leakage_floor_k = 3`). Both `k`
+are per-instrument tunable. This continuous floor replaces the former hard
+gap-mask `S_coh` cutoff (the retired `GAP_MASK_EDGE_THRESHOLD`).
 
 ## Data structures
 
@@ -134,9 +151,8 @@ Stage output: an ordered list of classified `Peak`s.
   list must fail loudly, not silently.
 - **Interfaces (all three, shared `_internal` impl):**
   `Pipeline.detect_peaks(...)` / `ftmwpipeline.api.detect_peaks(file, ...)` /
-  CLI `detect-peaks`; visualization via `Pipeline.visualize_peaks(...)` and CLI
-  `visualize-peaks` (names reserved in `CLI_STRATEGY.md`), overlaying classified
-  peaks on the spectrum.
+  CLI `peaks run`; visualization via `Pipeline.visualize_peaks(...)` and CLI
+  `peaks show`, overlaying classified peaks on the spectrum.
 - **Settings:** the detection knobs (thresholds, `zpf_active`, SavGol rule, …)
   are resolved through `core/peak_detection_settings.py` (`PeakDetectionSettings`)
   on the same four-layer chain as the other stages (commit 28e49c8); see
@@ -156,12 +172,13 @@ Stage output: an ordered list of classified `Peak`s.
 
 ## Open questions / research
 
-- **O1 — leakage masking for the gap pass. RESOLVED (revised by D8).**
-  The gap pass is masked by the **de-ramped leakage-touched map**
-  (`preprocessing/leakage.py::leakage_touched_intervals`): de-ramping the
-  complex spectrum to the active-region turn-on restores the coherent
-  edge statistic, whose above-threshold runs are the *measured* leakage
-  extent (`GAP_MASK_EDGE_THRESHOLD = 8` in `stage3_impl.py`). The original
+- **O1 — leakage handling for the detection passes. RESOLVED (revised by D8,
+  then the continuous-floor rework).** Both passes raise their detection floor
+  continuously by the local coherent-leakage amplitude `k · (S_coh / √M) · σ`
+  (`_leakage_floor_amp`, on the de-ramped complex spectrum via
+  `rolling_coherence`) rather than applying a hard `S_coh` mask — see
+  *Leakage-aware detection floor* above. This replaced the earlier hard
+  gap-mask cutoff (the retired `GAP_MASK_EDGE_THRESHOLD`). The original
   closed-form reach estimator (`estimate_leakage_reach`) was measured 7–25×
   too narrow on real data and is demoted to an unused analytic proposal. See
   the implementation overview
@@ -188,7 +205,7 @@ Stage output: an ordered list of classified `Peak`s.
   maximum (`locate_peaks` returns the 2nd-derivative `argrelmin`, ~few points
   off the true apex for ultra-narrow lines → ~40 % amplitude error before the
   fix) and de-duplicated by snapped index (collapses split-strong-line
-  triplets and primary/gap overlap). `visualize-peaks` plots the unapodized
+  triplets and primary/gap overlap). `peaks show` plots the unapodized
   spectrum on a log y-axis so the noise floor and the 100s-of-× stronger
   lines are both legible. Apodized scoring remains only as a fallback when no
   unapodized spectrum is supplied.
@@ -277,29 +294,24 @@ before its implementation.
   synthetic signals (known A, f, φ, τ on both sidebands) before any real-data
   fitting.
 
-## Task breakdown
+## Implementation map
 
-1. [x] Port + unit-test `locate_peaks`/`PeakResult` →
-   `preprocessing/peak_detection.py` (algorithm module, per the extend-a-stage
-   pattern; `_internal` holds orchestration).
-2. [x] O1 `estimate_leakage_reach` → `preprocessing/leakage.py` + unit tests.
-3. [x] Two-pass `detect_peaks` driver + `classify_by_snr` + unit tests.
-4. [x] `io/peak_serialization.py` + `stage3_peaks` stage tracking +
-   hand-edit round-trip tests.
-5. [x] Wrappers (`Pipeline.detect_peaks/visualize_peaks/load_peaks`,
-   `api.*`, CLI `detect-peaks`/`visualize-peaks`) +
-   `visualization/peak_visualization.py`.
-6. [x] Cross-interface + real-data integration tests; O3 decided (keep,
-   switchable); O2 shipped provisional, **awaiting empirical sign-off**.
-7. [x] Detection/promotion split + provenance (post-D7 finalization).
-8. [x] Primary-pass apodization audited (`dev-docs/research/peak-detection/`);
-   default changed from the mild Stage-1 exponential to a strong window
-   (`primary_window`, default `blackmanharris`) — see *Algorithm* above.
+The stage is built from: the ported `locate_peaks`/`PeakResult` detector
+(`preprocessing/peak_detection.py`, with `_internal` holding orchestration); the
+analytic leakage reach `estimate_leakage_reach` (`preprocessing/leakage.py`,
+retained as an unused proposal — see O1); the two-pass `detect_peaks` driver +
+`classify_by_snr`; `io/peak_serialization.py` with `stage3_peaks` stage tracking
+and hand-edit round-trip support; the cross-interface wrappers
+(`Pipeline.detect_peaks/visualize_peaks/load_peaks`, `api.*`, CLI
+`peaks run`/`peaks show`) over `visualization/peak_visualization.py`; the
+detection/promotion split with provenance (post-D7); and the audited
+Blackman-Harris primary-pass apodization
+(`dev-docs/research/peak-detection/`).
 
 ## Finalized Stage 3 → Stage 4 contract
 
 Locked after a 2638 cost/storage benchmark (detection cost is flat in the SNR
-floor — bound by the fixed adaptive-noise step — and storage is ~70 B/peak):
+floor — bound by the fixed noise-estimation step — and storage is ~70 B/peak):
 
 - **Internal detection floor is fixed at `DEFAULT_INTERNAL_MIN_SNR = 2.0`**
   (not user-exposed). Detecting at 3.0 then re-measuring on the user grid
@@ -317,6 +329,6 @@ floor — bound by the fixed adaptive-noise step — and storage is ~70 B/peak):
 - **Stage 4 consumes `peaks` where `properties['promoted']`**; provenance is
   ignored by the algorithm, available to the curator. `detect_peaks`/
   `load_peaks` return the full list (curation substrate); Stage 4 filters.
-- Curation view: `visualize-peaks --snr-histogram` adds an SNR-distribution
+- Curation view: `peaks show --snr-histogram` adds an SNR-distribution
   panel with the promotion cutoff marked, so the threshold is chosen against
   the visible noise-hump vs real-line-tail split before promotion.

@@ -60,28 +60,32 @@ unaffected either way.
 `preprocessing/leakage.py`:
 
 - `deramp_to_active_start(freq_mhz, complex_spectrum, probe_freq_mhz,
-  start_us)` — the phase-multiply transform.
-- `leakage_touched_intervals(freq_mhz, complex_spectrum, rms_noise,
-  probe_freq_mhz, start_us, band_m, threshold)` — de-ramps, runs the rolling
-  complex-edge coherence, and returns the contiguous above-threshold index
-  runs (the **leakage-touched map**). Both stages call it.
+  start_us)` — the phase-multiply transform. Both stages run the rolling
+  complex-edge coherence (`edge_coherence.rolling_coherence`) on its output:
+  Stage 4's `window_planning` to build the **leakage-touched map**
+  (`above_threshold_intervals`), Stage 3's `_leakage_floor_amp` to raise the
+  detection floor (see *Stage 3* below).
+- `leakage_touched_intervals(...)` — a convenience wrapper bundling the de-ramp
+  + rolling coherence + above-threshold runs; retained in `leakage.py`, though
+  the live callers now compute those steps inline.
 
-## Stage 3 — gap-pass mask
+## Stage 3 — leakage-aware detection floor
 
-`_internal/stage3_impl.py` builds the de-ramped leakage-touched map on the
-unapodized gap spectrum and passes its index runs to
-`preprocessing/peak_detection.py:detect_peaks`, which skips gap-pass
-candidates that fall inside a touched interval. The windowed primary pass is
-unchanged (it is already sidelobe-clean). `estimate_leakage_reach` and the
-`tau_us` parameter were retired from Stage 3 — `detect_peaks` and all three
-interfaces (CLI / Pipeline / functional API).
-
-Gap-mask threshold: **`T_edge = 8`** (`GAP_MASK_EDGE_THRESHOLD` in
-`stage3_impl.py`). Calibrated on 2638: the de-ramped `S_coh` over the gap-pass
-promotions is bimodal, with the genuine-weak-line / sidelobe valley at `S_coh
-≈ 6–8`. `T_edge = √M` is the level at which a sidelobe's lobe peak clears the
-gap pass's ~2σ detection floor. On 2638 the gap pass collapsed 2355 → 1576
-promotions — 779 strong-line sidelobes no longer promoted.
+The de-ramped statistic feeds Stage 3's **continuous leakage-aware detection
+floor**, not a hard mask. Both passes raise their detection floor by
+`k · (S_coh / √M) · σ` on the de-ramped spectrum (`rolling_coherence` inside
+`_internal/stage3_impl.py:_leakage_floor_amp`): a strong line's coherent skirt
+lifts the floor where it rings out, so the matched-filter gap pass no longer
+promotes those sidelobes as weak lines, while the strong/cluster lines that
+*generate* the coherence are preserved (a hard `S_coh` cutoff would delete
+them). This continuous floor superseded D8's original hard gap-mask threshold
+(the retired `GAP_MASK_EDGE_THRESHOLD`); the de-ramp that makes the statistic
+honest is the durable D8 contribution, shared with Stage 4. Full mechanism +
+the two per-pass `k` (`primary_leakage_floor_k = 1`, `gap_leakage_floor_k = 3`)
+in [`stage3-peak-detection.md`](stage3-peak-detection.md) § "Leakage-aware
+detection floor". `estimate_leakage_reach` and the `tau_us` parameter were
+retired from `detect_peaks` and all three interfaces (CLI / Pipeline /
+functional API).
 
 ## Stage 4 — edge statistic
 
@@ -110,13 +114,13 @@ a Stage 5 `τ` prior; final deletion is deferred to Stage 5 scoping.
   complex-Gaussian noise leaves `S_coh` at the ~0.886 null.
 - **Strong-line skirts.** Five of the six strongest lines show de-ramped
   `S_coh` 12–18 in the ±2–12 MHz skirt band, 91–100 % above `T_edge = 8`.
-- **Leakage is localized.** Under the original Stage 2 σ, ~11 % of
-  the spectrum was de-ramped leakage-touched, vs 0.8 % for the raw
-  (un-de-ramped) statistic. Under the post-rework Stage 2 σ (MAD
-  subdivision + moving median, with strong-line skirt exclusion) the
-  touched fraction is 17.7 % — σ no longer absorbs skirt power, so
-  S_coh registers it where it lives. The qualitative localisation
-  picture is unchanged.
+- **Leakage is localized.** The de-ramped statistic concentrates leakage where
+  it physically rings out — ~11–18 % of the 2638 spectrum reads
+  leakage-touched, vs 0.8 % for the raw (un-de-ramped) statistic, which cancels
+  on the oscillating skirt. The exact touched fraction depends on the noise
+  estimator (a σ that absorbs skirt power into its floor hides that power from
+  `S_coh`); the qualitative localisation is robust across estimators, and the
+  current authority is the scatter σ measured on the active FT.
 - **Stage 4 plan stays sane.** Under the original Stage 2 σ: 339
   windows, max width ~30 MHz, no mega-windows. Under the post-Stage-2/3-
   rework: 391 windows, max width 65.67 MHz at the 36350/36389
@@ -150,9 +154,9 @@ a Stage 5 `τ` prior; final deletion is deferred to Stage 5 scoping.
 
 ## Reproducing
 
-The de-ramp diagnostics are ad-hoc scripts under the gitignored `scratch/`:
-`gap_mask_calibrate.py` (the Stage 3 `T_edge` sweep), `verify_task5.py` (2638
-integration through Stage 4). The research prototypes regenerate the report
-figures: `dev-docs/research/peak-detection/prototype.py` and
+The de-ramp derivation and the complex-edge calibration regenerate from the
+tracked research prototypes: `dev-docs/research/peak-detection/prototype.py` and
 `dev-docs/research/complex-edge-coherence/prototype.py` — the latter takes a
 turn-on offset `t₀` so its synthetic sweep covers the realistic `t₀ ≠ 0` case.
+The integration result is pinned by `tests/integration/`
+`test_stage3_peak_detection.py::test_gap_pass_does_not_promote_strong_line_sidelobes`.

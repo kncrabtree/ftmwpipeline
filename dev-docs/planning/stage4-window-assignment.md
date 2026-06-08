@@ -208,8 +208,8 @@ known only after the contributor's primary window is fit (hence the ordering).
 ## Interface surface (dual-interface rule)
 
 Logic in `_internal/stage4_impl.py`; thin identical wrappers:
-`Pipeline.assign_windows()` / `api.assign_windows()` / CLI `assign-windows`,
-plus `visualize-windows` and `load_windows()`. Consumes the **promoted** peaks
+`Pipeline.assign_windows()` / `api.assign_windows()` / CLI `windows run`,
+plus `windows show` and `load_windows()`. Consumes the **promoted** peaks
 only. Parameters (documented defaults, configurable on the file): the
 edge-test M and threshold above (`edge_M = 64`, `edge_threshold = 8.0`,
 `trim_M = 32`), `max_window_width_mhz` (default ≈ 40 on 2638-class
@@ -229,31 +229,27 @@ The window plan is curation/coordination substrate (like the peak list), not a
 heavy derived array, so it is **persisted** under `/stage4_windows` (flat,
 hand-editable, loud validation), not recomputed on demand — consistent with the
 SERIALIZATION spec's treatment of peaks. Round-trip + hand-edit contract as in
-peak serialization. Confirm against `SERIALIZATION_STRATEGY.md` (O4-6).
+peak serialization, per `SERIALIZATION_STRATEGY.md`.
 
-## Remaining open questions
+## Design questions (resolved)
 
-The complex-edge prototype resolved most of the originally-listed
-research items. What remains:
+The complex-edge prototype resolved the originally-listed research items
+(statistic + M + threshold, σ source, shape vs peak-list classification,
+strong-cluster grouping criterion, determinism, renegotiation-frequency
+expectation); they are folded into the algorithm text above, with the full
+derivation in the research report. Two design questions were settled at
+implementation:
 
 - **O4-2 Freeze-eligibility + error-propagation guard.** The empirical
-  "does this window have a fixed contributor" question is answered by
-  the edge-coherence test; what remains is the *parameter* side —
-  which strong lines are stable enough to freeze without their
-  parameter uncertainty contaminating dependent windows, and the
-  Stage 5 thaw-and-re-fit handshake when that bound is exceeded.
-  Defining `min_freeze_snr` and the thaw protocol is partly Stage 5
-  work; Stage 4 just needs the SNR threshold parameter and a clean
-  way to flag candidates that fail it.
-- **O4-6 Persist vs recompute** the window plan (lean: persist, per
-  the serialization spec — confirm during implementation).
-
-The prototype-resolved items (statistic + M + threshold, σ source,
-shape vs peak-list classification, strong-cluster grouping criterion,
-determinism, renegotiation-frequency expectation) are folded into the
-algorithm text above. The full derivation lives in the research
-report; this document carries only the operating-point values needed
-to implement.
+  "does this window have a fixed contributor" question is answered by the
+  edge-coherence test; the *parameter* side — which strong lines are stable
+  enough to freeze without their uncertainty contaminating dependent windows —
+  is governed by `min_freeze_snr` (default 50): a fixed contributor below it is
+  flagged `freeze_eligible=False` for the Stage 5 thaw-and-re-fit handshake (the
+  thaw protocol itself is Stage 5 work).
+- **O4-6 Persist vs recompute.** The window plan is persisted (see
+  *Serialization*), consistent with the serialization spec's treatment of the
+  peak list.
 
 ## Renegotiation handshake with Stage 5
 
@@ -298,32 +294,22 @@ edge-trim error (never). Lock the protocol in the Stage 5 plan; Stage
   hand-edit; invalidation on Stage 1 canonical-settings change and on Stage 3
   re-detection.
 
-## Task breakdown
+## Implementation map
 
-1. [x] **Research prototype** — complex-edge coherence statistic
-   calibrated on synthetic + 2638, archived as
-   [`../research/complex-edge-coherence/`](../research/complex-edge-coherence/report.md).
-   The locked statistic, M, threshold, and σ source from that report
-   are what the rest of the breakdown implements against.
-2. [x] Window-plan data structures — `WindowDifficulty`, `FixedContributor`,
-   `FitWindow`, `WindowPlan` in `core/data_structures.py` + unit tests.
-3. [x] Edge-coherence statistic — `preprocessing/edge_coherence.py`
-   (`coherence_statistic`, `rolling_coherence`, `max_cumsum_statistic`,
-   `above_threshold_intervals`) + unit tests calibrated against the report.
-4. [x] Strong-cluster grouping + merge-to-fixpoint —
-   `preprocessing/window_planning.py:build_window_plan` + unit tests.
-5. [x] Fixed-contributor attachment + leakage-artifact pruning + dependency
-   DAG + topological/batch ordering + unit tests.
-6. [x] Strong-line-driven difficulty classification + width-cap/split
-   proposal + unit tests.
-7. [x] `io/window_serialization.py` + `stage4_windows` stage tracking +
-   hand-edit round-trip tests; wired into the invalidation mechanism
-   (`file_manager.invalidate_downstream_stages`, also called on Stage 3
-   re-detection).
-8. [x] Wrappers (`Pipeline.assign_windows/visualize_windows/load_windows`,
-   `api.*`, CLI `assign-windows`/`visualize-windows`) +
-   `visualization/window_visualization.py`.
-9. [x] Cross-interface + 2638 real-data integration tests.
+The stage is built from: the window-plan data structures (`WindowDifficulty`,
+`FixedContributor`, `FitWindow`, `WindowPlan` in `core/data_structures.py`); the
+edge-coherence statistic (`preprocessing/edge_coherence.py` —
+`coherence_statistic`, `rolling_coherence`, `max_cumsum_statistic`,
+`above_threshold_intervals`, calibrated against the research report);
+strong-cluster grouping + merge-to-fixpoint
+(`preprocessing/window_planning.py:build_window_plan`); fixed-contributor
+attachment, leakage-artifact pruning, and the dependency-DAG topological/batch
+ordering; strong-line-driven difficulty classification with the width-cap/split
+proposal; `io/window_serialization.py` with `stage4_windows` stage tracking
+wired into `file_manager.invalidate_downstream_stages` (also fired on Stage 3
+re-detection); and the cross-interface wrappers
+(`Pipeline.assign_windows/visualize_windows/load_windows`, `api.*`, CLI
+`windows run`/`windows show`) over `visualization/window_visualization.py`.
 
 ## Implementation notes
 

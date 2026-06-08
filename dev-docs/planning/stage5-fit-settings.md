@@ -59,7 +59,7 @@ walkthrough at [`docs/source/settings_and_presets.rst`](../../docs/source/settin
   Optional[StageFitSettings]` and `preset: Optional[str]` kwargs.
   Mutually exclusive (passing both raises `ValueError`); both populate
   the preset layer of `resolve()`.
-- **`cli/fitting_commands.py`** — `fit-peaks` gains `--preset
+- **`cli/fitting_commands.py`** — `fit run` gains `--preset
   NAME_OR_PATH`. `--shape` and `--no-per-band-tau` drop to argparse
   `default=None` so the resolver picks them up from a preset; observable
   no-flag behaviour stays the same.
@@ -101,17 +101,19 @@ nesting.
 Per field, in `resolve()`:
 
 ```
-explicit kwarg > preset / settings > persisted > recommended > hard default
+explicit kwarg > persisted > preset / settings > recommended > hard default
 ```
 
-`preset` and `settings` populate the same layer — they're alternative
-surfaces (YAML by name/path vs Python dataclass) and are enforced
-mutually exclusive in `fit_peaks_impl`. The recommended layer reads
-from `stage2b_tau_calibration/.attrs/recommended_shape`; the persisted
-layer reads from `processing_parameters/stage5_fit`. A no-arg
-`fit_peaks` call on a fresh `.ftmw` resolves to the documented hard
-defaults; a no-arg call on a file that's already been fit inherits the
-prior fit's settings.
+`persisted` outranks `preset`/`settings` (divergence D11): a value already
+written to the `.ftmw` is authoritative over a preset re-supplied at the same
+call, so re-running a stage reproduces the prior fit unless a value is changed
+explicitly. `preset` and `settings` populate the same layer — they're
+alternative surfaces (YAML by name/path vs Python dataclass) and are enforced
+mutually exclusive in `fit_peaks_impl`. The recommended layer reads from
+`stage2b_tau_calibration/.attrs/recommended_shape`; the persisted layer reads
+from `processing_parameters/stage5_fit`. A no-arg `fit_peaks` call on a fresh
+`.ftmw` resolves to the documented hard defaults; a no-arg call on a file that's
+already been fit inherits the prior fit's settings.
 
 ## Coverage
 
@@ -152,10 +154,9 @@ it, the canonical settings dataclasses live in `core/`.
 - **Stage 5 Gaussian retuning sweeps (exercised).** The motivating
   workstream: vary one or two knobs from `instrument_bc_2638.yaml` per
   sweep variant, get each variant's full resolved settings persisted into
-  the experiment file. The §2 ("Gaussian acceptance retuning") candidates
-  from `scratch/settings-architecture-proposal.md` — τ-penalty λ sweep,
-  `max_decay_factor` sweep, F-test threshold audit — become preset YAML
-  diffs. The τ-penalty sweep ran and retuned `instrument_bc_2638.yaml` to
+  the experiment file. The Gaussian-acceptance-retuning candidates — the
+  τ-penalty λ sweep, the `max_decay_factor` sweep, and the F-test threshold
+  audit — become preset YAML diffs. The τ-penalty sweep ran and retuned `instrument_bc_2638.yaml` to
   `tau_penalty_lambda=50` (commit 3a0059f), alongside the lowered τ-prior
   default (4abf454).
 - **Per-instrument calibration.** Each lab/instrument ships its own
@@ -237,15 +238,13 @@ it, the canonical settings dataclasses live in `core/`.
   `cli/_argspec.py`) would surface the rest; not needed for the preset
   workflow that motivated this work, so deferred.
 - **`DeprecationWarning` on legacy per-knob kwargs. Shipped** (commit
-  b18b8d8; `_internal/deprecation.py`), per the migration plan in
-  `scratch/settings-architecture-proposal.md` § D4.
+  b18b8d8; `_internal/deprecation.py`).
 
 ## Provenance
 
-The design recommendations (D1–D7) and step breakdown live in
-[`../../scratch/settings-architecture-proposal.md`](../../scratch/settings-architecture-proposal.md);
-that document is the authoritative record of why each decision was
-made. Implemented over four commits on the `main` branch:
+The design recommendations (D1–D7) and step breakdown were implemented in full;
+the rationale for each decision is captured in this document and the commit
+history. Implemented over five commits on the `main` branch:
 
 - `379b12f` — dataclasses + tests; PeakShape relocated; dead
   `default_settings.py` deleted.

@@ -256,11 +256,12 @@ described below):
   `_load_window_fit` reads it back with a `'lorentzian'` fallback for
   legacy files.
 - **CLI/Pipeline/api parity**: `--shape {lorentzian,gaussian}` flag on
-  `fit-peaks`; `Pipeline.fit_peaks(shape=...)`;
-  `api.fit_peaks(shape=...)`. New `ftmwpipeline calibrate-tau-G` CLI
-  with the same knob coverage as `calibrate-tau`;
-  `Pipeline.calibrate_tau_G(...)` / `Pipeline.load_tau_G_calibration()`;
-  `api.calibrate_tau_G(...)` / `api.load_tau_G_calibration(...)`.
+  `fit run`; `Pipeline.fit_peaks(shape=...)`;
+  `api.fit_peaks(shape=...)`. The Gaussian τ_G twin runs via
+  `ftmwpipeline tau run --gaussian` with the same knob coverage as the
+  exp `tau run`; `Pipeline.calibrate_tau_G(...)` /
+  `Pipeline.load_tau_G_calibration()`; `api.calibrate_tau_G(...)` /
+  `api.load_tau_G_calibration(...)`.
 - **Tests**: unit
   `tests/unit/fitting/test_tau_calibration.py::TestExtractTauGMajority`
   exercises the eligibility filter + multi-start pure-Gauss + majority
@@ -413,8 +414,7 @@ Remaining work (next session):
   ``shape='best_of_three'`` the per-bin job is the curvature-based
   test ``exp(-t) vs exp(-t²) vs Voigt`` and more frames in principle
   sharpen the discrimination. A 7-point sweep on 2638
-  (``scratch/stage2b-bias/sweep_n_seg.py``;
-  ``n_seg ∈ {6, 8, 10, 14, 20, 30, 40}``) confirms the discrimination
+  (``n_seg ∈ {6, 8, 10, 14, 20, 30, 40}``) confirms the discrimination
   does steepen monotonically with ``n_seg`` (median ΔAICc(gauss − exp)
   −7 → −30 across the grid) but the recommendation on 2638 is
   unambiguous at every ``n_seg`` (``"gaussian"``), τ_G_maj is robust
@@ -422,8 +422,7 @@ Remaining work (next session):
   ΔAICc = −14 -- seven times past the conventional "strong evidence"
   threshold. Keeping the default at 10 keeps the runtime cost and the
   contributor pool (per-frame SNR scales as 1/√n_seg) at the original
-  operating point. The sweep result is recorded in
-  ``scratch/stage2b-bias/n_seg_sweep_summary.json`` as the reference
+  operating point. The sweep result stands as the reference
   point if a future close-margin fixture motivates revisiting it.
 
 ## Out of scope

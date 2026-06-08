@@ -94,7 +94,7 @@ final fit.
 
 ## Validation (2638 gaussian, rescue_prominence=1.5)
 
-`scratch/issue13_validate.py` rebuilds 2638 through Stage 4 (unapodized FT +
+The issue-#13 validation rebuilds 2638 through Stage 4 (unapodized FT +
 Stage 2b τ calibration) and re-fits the full feature on (defaults) vs off
 (resolution floor `k=0` **and** the amplitude-ratio tier disabled — i.e.
 pre-issue-#13 main), comparing the fitted peak count inside each fixture overfit

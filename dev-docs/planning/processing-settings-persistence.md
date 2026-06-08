@@ -9,8 +9,9 @@ Implemented:
   `explicit > persisted (ft_processing) > recommended` with hard defaults;
   `to_attrs`/`from_attrs` persist the canonical record (trim **inside**
   `ft_processing` as `trim_min_mhz`/`trim_max_mhz`). `cli/_argspec.py`
-  generates argparse options from `cli_field` metadata (legacy `--expf_us`
-  preserved).
+  generates argparse options from `cli_field` metadata. (Since the apodization
+  removal, `FTSettings` carries only `start_us` / `end_us` / `trim` plus the
+  `units_power` / `rdc` display knobs — see the banner below.)
 - `stage1_impl`: `compute_ft_impl` resolves settings and, on a user-driven
   invocation, persists the resolved record incl. `trim` as canonical; a
   no-argument recompute (Stages 2/3) reproduces exactly the user-chosen
@@ -20,17 +21,25 @@ Implemented:
 - Stage 2 noise is estimated on the persisted spectrum (inherited via the
   no-arg recompute).
 - `stage3_impl`: the interim `_resolve_trim`/`_resolve_zpf`/saved-Stage-3
-  trim+zpf and the `--trim`/`--zpf` options are gone. Detection runs
-  internally at `zpf=1` (apodized primary + unapodized gap) then snaps every
-  peak onto the persisted user grid by physical frequency, re-measuring
-  amplitude on the user spectrum and SNR against the canonical Stage 2 noise;
-  internal-grid values are kept under `Peak.properties`. `visualize-peaks`
-  overlays on the user spectrum.
+  trim+zpf and the `--trim`/`--zpf` options are gone. Detection runs on its own
+  internal grid then snaps every peak onto the persisted user grid by physical
+  frequency, re-measuring amplitude and SNR against the canonical Stage 2 noise;
+  internal-grid values are kept under `Peak.properties`. `peaks show` overlays
+  on the user spectrum. (The Stage 3 internal detection grid is documented in
+  [`stage3-peak-detection.md`](stage3-peak-detection.md).)
 - `pipeline.py` / `api.py` / CLI thread `FTSettings`; `detect_peaks` no longer
   exposes trim/zpf. `SERIALIZATION_STRATEGY.md` / `API_STRATEGY.md` amended;
   ROADMAP D7 marked resolved.
 
-The original plan (kept for provenance) follows.
+The original plan (kept for provenance) follows. It predates the removal of
+explicit FT apodization: its references to persisting `zpf`, `expf_us`, and
+`window_function` describe the settings surface as it was then. The canonical FT
+is now unconditionally unapodized and native-length — those knobs no longer
+exist — and `FTSettings` carries only `start_us` / `end_us` / `trim` plus the
+`units_power` / `rdc` display knobs; see
+[`ft-apodization-removal.md`](ft-apodization-removal.md). The D7 persistence
+contract (persist the user's chosen FT settings as canonical, later stages
+inherit them) is unchanged; only the set of persisted FT knobs shrank.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the work it tracks. Registered in
