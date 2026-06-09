@@ -5,7 +5,9 @@ alone); this resolves the dense-cluster under-fit *and* the narrow-window
 over-fit at the root. The earlier candidate-local-accept lever (modes 1 + 4) is
 **superseded and deferred** — it patched the same defect downstream at roughly
 twice the dense-fixture cost, so it is set aside until the Stage 5 NLS is sped up
-(it survives as a re-appliable patch). **Modes 2 + 3 remain open.** Follows the
+([[stage5-nls-performance]]; it survives as a re-appliable patch). **Mode 2 is
+resolved** (655's τ-collapse is a leakage pedestal, fixed by the leakage-wing
+baseline carrying it; see below); **mode 3 remains open.** Follows the
 edge-free leakage-contributor subtraction
 ([`stage4-leakage-contributor-subtraction.md`](stage4-leakage-contributor-subtraction.md)),
 which removed the dominant cross-window worst-ε driver. The Stage 5 plan
@@ -119,13 +121,14 @@ i.e. the uncapped loop does not over-fit a healthy window).
 ### Cost and the persisted-settings caveat
 
 - **Cost.** Wide, high-K windows make the dense fixtures ≈5× slower (363 / 655
-  ≈16–17 min; sparse fixtures are unaffected). The win is correctness; the cost
-  is an optimization. The lever is **smarter NLS** in `fit_window` /
-  `knockout_test` / `merge_close_peaks_cleanup`: a banded/sparse Jacobian with
-  `tr_solver='lsmr'` (a Lorentzian's derivative is negligible beyond a few
-  FWHM), warm-starting the O(K) knockout/merge refits from the K-peak solution
-  instead of re-seeding, and `x_scale='jac'`. Sequence it *after* this
-  correctness change so a perf change and a behaviour change are not conflated.
+  ≈10–17 min; sparse fixtures are unaffected) — this is the *conservative loop*
+  on the wider windows, measured as ≈97 % of 655's fit time (the mode-2 baseline
+  refit is only ~3 %). The win is correctness; the cost is an optimization,
+  consolidated in [[stage5-nls-performance]] (pin BLAS
+  threads — the per-window matrices are small enough that threading hurts;
+  banded/sparse Jacobian + `tr_solver='lsmr'`; warm-started knockout/merge
+  refits; `x_scale='jac'`). Sequence it *after* the correctness changes so a
+  perf change and a behaviour change are not conflated.
 - **Persisted settings.** Resolved settings persist into the `.ftmw` file and
   *persisted outranks the hard default*, so an existing file that already stored
   `max_peaks = 8` keeps the old behaviour until it is re-assigned with an
@@ -154,21 +157,43 @@ viz) is preserved at
 peak-adding; the `n_eff` correction is the load-bearing anti-overfit guard the
 sub-resolution work relies on — [[stage5-subresolution-overfit-discriminant]]).
 
-## Open — mode 2 (τ collapse) and mode 3 (skirt shape)
+## Resolved — mode 2 (τ collapse) is a leakage pedestal
 
-- **O2′ (supersedes the original O2 / mode-2 approach).** Re-diagnose 655's
-  τ-collapse: is it an unresolved blend (needs cluster lines that sit under the
-  broad-τ basin set during seeding) or a band-mismatched contributor-τ pedestal
-  (the frozen skirt evaluated at the wrong τ)? The τ-pin and low-side τ-floor
-  levers are falsified; do not re-propose them. Likely entry points: the
-  blend-aware seeder (escape the low-τ basin before the add-loop) and
-  per-contributor τ in `evaluate_edge_free_contributors` (mode 3's lever, here
-  masquerading as τ-collapse). Re-check 655's τ-collapse windows now that the
-  cap removal merges their fragments — some may resolve as the blend they were.
+655's τ-collapse is **not** a τ-prior deficit (the planned τ-pin/floor was
+falsified, *and* re-anchoring the τ penalty at the true ~4.0 µs was also null on
+the aggregate — the data drives τ to the 0.62 µs floor regardless of the
+anchor). It is an **un-modeled smooth leakage pedestal**: the summed far-wings of
+the hundreds of lines the discrete frozen contributors cannot individually
+subtract, which the shared τ collapses to absorb. Confirmed it is *not* fixable
+at the source — the under-subtraction is τ-independent (far-field skirt is
+τ-independent; per-contributor source-τ leaves the same ~2.5e-5 residual), so a
+better contributor model cannot capture a hundreds-line continuum per window.
+
+The fix is the **leakage-wing baseline** absorbing the pedestal instead of τ
+([[stage5-leakage-wing-baseline]]): three coupled changes — (1) it also triggers
+on a smooth in-band residual (an order-`p` F-test), not just edge coherence;
+(2) the default order is 4, enough to follow the pedestal ramp/curvature while
+staying too smooth to mimic a line (windows are ≥ ~50 bins); (3) the refit
+re-frees τ (anchored at the band majority), so τ relaxes to ~3 µs once the
+baseline carries the pedestal. 655: 51 of 56 collapsed windows recover, overall
+SNR-aware pass **0.919 → 0.950**, bulk median 1.15 → 1.11, genuinely strong
+lines preserved, 2638 control unchanged. The τ-free refit is cheap (≈3 % of
+655's fit time; 0 % on 2638) — the dense-fixture cost is the cap-removal
+conservative loop, not this baseline ([[stage5-nls-performance]]).
+
+The residual χ² floor on the few snr ≈ 10⁴–10⁵ strong-line windows is the
+*SNR² model-fidelity floor* (the model is "off" by a fraction of a percent at
+extreme SNR), which the κ·SNR² gate passes by design — a separate lineshape
+matter, not the pedestal.
+
+## Open — mode 3 (skirt shape)
+
 - **O3 (mode 3).** For the imperfect-skirt windows, separate a *slope*
   (baseline order) from a *curved skirt remainder* (single-τ skirt model); try
   the cheapest sufficient lever first, A/B against the baseline-on pipeline so
-  baseline and skirt do not double-count.
+  baseline and skirt do not double-count. Note the mode-2 baseline now carries
+  much of the broad-skirt remainder, so re-scope O3 against the post-fix
+  residual.
 
 ## Cross-cutting constraints (unchanged)
 

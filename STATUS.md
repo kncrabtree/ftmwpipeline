@@ -74,7 +74,10 @@ removed so a dense cluster is one wide window with enough `n_eff` for the gate,
 not several `n_eff`-starved fragments — blend-aware seeder, knockout test,
 residual-rescue chain, local thaw +
 structural replan, per-band τ routing, Lorentzian/Gaussian shapes,
-evidence-triggered leakage-wing baseline, spur masking). Per-stage detail and provenance live in `dev-docs/ROADMAP.md` and
+evidence-triggered leakage-wing baseline (fires on a coherent edge wing or a
+smooth in-band leakage pedestal, order-4 with a re-freed τ — the pedestal a
+dense ultra-high-SNR spectrum would otherwise force the shared τ to collapse to
+absorb), spur masking). Per-stage detail and provenance live in `dev-docs/ROADMAP.md` and
 `dev-docs/planning/`. The originally-lost `newfitting/` engine was recreated
 against the surviving `bcfitting` shell's contract.
 

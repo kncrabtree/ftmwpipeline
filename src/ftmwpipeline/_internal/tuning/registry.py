@@ -1789,6 +1789,16 @@ _fit_knob(
     (2.5, 3.5, 5.0, 8.0),
     see_also=_FIT_SEE_ALSO,
 )
+_fit_knob(
+    "stage5.baseline.smooth_threshold",
+    "baseline",
+    "smooth_threshold",
+    "Smooth-residual F-test (chi2-drop/dof) gating the baseline on an in-band "
+    "leakage pedestal.",
+    "Y",
+    (20.0, 50.0, 100.0, 200.0),
+    see_also=_FIT_SEE_ALSO,
+)
 
 # Advanced — tau shaping (the penalty / bounds / routing knobs).
 _g: Tuple[Any, ...]

@@ -499,6 +499,9 @@ def fit_peaks_impl(
     baseline_edge_threshold_v = _required_float(
         resolved.baseline.edge_threshold, "baseline.edge_threshold"
     )
+    baseline_smooth_threshold_v = _required_float(
+        resolved.baseline.smooth_threshold, "baseline.smooth_threshold"
+    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -921,6 +924,7 @@ def fit_peaks_impl(
         baseline_enabled=baseline_enabled_v,
         baseline_order=baseline_order_v,
         baseline_edge_threshold=baseline_edge_threshold_v,
+        baseline_smooth_threshold=baseline_smooth_threshold_v,
     )
 
     parameters = {
@@ -958,6 +962,7 @@ def fit_peaks_impl(
         "baseline_enabled": baseline_enabled_v,
         "baseline_order": baseline_order_v,
         "baseline_edge_threshold": baseline_edge_threshold_v,
+        "baseline_smooth_threshold": baseline_smooth_threshold_v,
         "n_baseline_windows": sum(
             1
             for o in plan_outcome.window_outcomes.values()

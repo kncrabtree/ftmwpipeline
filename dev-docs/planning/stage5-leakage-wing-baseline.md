@@ -1,35 +1,54 @@
 # Stage 5 leakage-wing baseline term
 
-**Status: implemented and validated on 2638.** An optional, evidence-triggered
-low-order **complex baseline** added to a Stage 5 window's fit to absorb the
-coherent residual left by a neighbouring strong line's mismodeled leakage wing.
-The goal is **reliable per-line frequency and intensity extraction with fair
-uncertainties**, not a globally physically-consistent model: the baseline is an
-explicit nuisance term, deployed only where a coherent wing residual is
-detected, fit jointly with the free peaks so its flexibility is honestly priced
-into the line uncertainties.
+**Status: implemented and validated (2638 + the issue-#3 cross-fixture set).** An
+optional, evidence-triggered low-order **complex baseline** added to a Stage 5
+window's fit to absorb the systematic residual leakage a discrete model cannot
+subtract: a neighbouring strong line's mismodeled wing, and — on a dense
+ultra-high-SNR spectrum — the smooth **leakage pedestal** that is the summed
+far-wings of the hundreds of lines the frozen contributors cannot individually
+carry (655 mode 2). The goal is **reliable per-line frequency and intensity
+extraction with fair uncertainties**, not a globally physically-consistent
+model: the baseline is an explicit nuisance term, deployed only where a coherent
+edge wing **or** a smooth in-band pedestal is detected, fit jointly with the free
+peaks and a re-freed shared `tau` so its flexibility is honestly priced into the
+line uncertainties.
+
+Without it a leakage pedestal is absorbed by the shared `tau` *collapsing* (655:
+`tau` → the 0.62 µs floor, far below the band majority ~3.1 µs) — one broad
+component soaking the smooth residual at the cost of every line's shape. The
+baseline carries the pedestal instead, so `tau` relaxes to its physical per-band
+value (655: 51 of 56 collapsed windows recovered; overall SNR-aware pass
+0.919 → 0.950). See [[stage5-cluster-fit-quality]] mode 2.
 
 ## Where it lives (implementation)
 
-- **`fitting/window_fit.py`** — `fit_window` takes `baseline_order`
-  (`None`/`0`/`1`) and an optional `baseline_offset_scale` (`u_s`, default
-  `max|u|`); `baseline_basis` builds the real `(u/u_s)^k` design columns,
-  appended (as `a_k` + `i b_k` columns) to the model and analytic Jacobian
-  after the peak/tau parameters. The covariance is the joint inverse `JᵀJ`, so
-  the per-line errors already price the baseline's degrees of freedom. The
-  fitted coefficients ride on `WindowFitResult.baseline_{order,coeffs,offset_scale}`.
-- **`fitting/plan_execution.py`** — `_apply_baseline_to_outcome` is the
-  trigger: after thaw **and** rescue (sequenced last, independent of rescue),
-  any window whose residual `max(edge_low, edge_high)` exceeds
-  `baseline_edge_threshold` is refit with its established lines + the baseline
-  (tau held fixed — the baseline addresses skirt *shape*, not decay). The refit
-  installs only when it converges and does not raise the data chi-squared; the
-  decision, order, coefficients, and triggering `S_coh` are recorded on the
-  `WindowOutcome`. `execute_plan` exposes `baseline_enabled` / `baseline_order`
-  / `baseline_edge_threshold` (`DEFAULT_BASELINE_*`).
+- **`fitting/window_fit.py`** — `fit_window` takes `baseline_order` (any `p ≥ 0`,
+  or `None`) and an optional `baseline_offset_scale` (`u_s`, default `max|u|`);
+  `baseline_basis` builds the real `(u/u_s)^k` design columns, appended (as `a_k`
+  + `i b_k` columns) to the model and analytic Jacobian after the peak/tau
+  parameters. The covariance is the joint inverse `JᵀJ`, so the per-line errors
+  already price the baseline's degrees of freedom. The fitted coefficients ride
+  on `WindowFitResult.baseline_{order,coeffs,offset_scale}`.
+- **`fitting/plan_execution.py`** — `_apply_baseline_to_outcome` is the trigger,
+  sequenced last (after thaw **and** rescue). A window is refit with its
+  established lines + the baseline when **either**: its residual
+  `max(edge_low, edge_high)` exceeds `baseline_edge_threshold` (a coherent edge
+  wing), **or** `_smooth_residual_stat` — an order-`p` complex-polynomial F-test
+  numerator (chi²-drop per added dof) on the residual — exceeds
+  `baseline_smooth_threshold` (a smooth in-band pedestal the edge test misses;
+  the F-form self-gates against overfitting). The refit **re-frees `tau`**,
+  re-anchored at the band majority via `derive_window_fit_constraints` (the same
+  bounds/penalty the primary fit uses), so `tau` relaxes off the collapsed value
+  once the baseline carries the pedestal. It installs only when it converges and
+  does not raise the data chi-squared; the decision, order, coefficients, and
+  triggering `S_coh` are recorded on the `WindowOutcome`. `execute_plan` exposes
+  `baseline_enabled` / `baseline_order` / `baseline_edge_threshold` /
+  `baseline_smooth_threshold` (`DEFAULT_BASELINE_*`).
 - **`core/stage_fit_settings.py`** — `BaselineSubSettings`
-  (`enabled`/`order`/`edge_threshold`) with `_HARD_DEFAULTS` `True` / `0` /
-  `3.5`. Registered in `instrument-tunable-knobs.md`; round-trips through HDF5
+  (`enabled`/`order`/`edge_threshold`/`smooth_threshold`) with `_HARD_DEFAULTS`
+  `True` / `4` / `3.5` / `50.0`. Order 4 follows a pedestal ramp/curvature while
+  staying far too smooth to mimic a narrow line (every window is ≥ ~50 active-FT
+  bins, >> the order). Registered in the scan registry; round-trips through HDF5
   + YAML via the canonical `_SUB_NAMES` walk.
 - **`_internal/stage5_impl.py`** — resolves the block and threads it into
   `execute_plan`; the `parameters` audit dict carries the settings plus
@@ -52,6 +71,29 @@ w189 specifically does not trigger). σ_A inflation on fired windows is median
 ticks up ≤~0.05 are the documented harmless low-precision firings — the
 data chi-squared is held monotone, so the rise is purely the +2-parameter dof
 bookkeeping.
+
+### 655 validation (the leakage pedestal — mode 2)
+
+The dense ultra-high-SNR fixture 655 is where the pedestal mechanism matters.
+With the cap removed, 56 windows had `tau` collapsed to the 0.62 µs floor,
+absorbing a smooth leakage pedestal the frozen contributors under-subtract by a
+roughly band-flat continuum (confirmed τ-independent — the residual is the same
+whether the contributor skirts are evaluated at the collapsed, seed, or
+per-source τ, because the far-field skirt is τ-independent and the missing part
+is the un-modeled mass of hundreds of lines). The order-4 + smooth-trigger +
+τ-free baseline recovers **51 of those 56** (`tau` → ~3 µs physical), lifts the
+SNR-aware overall pass **0.919 → 0.950** and the bulk median χ²ᵣ 1.15 → 1.11,
+and **preserves the genuinely strong lines** (w384 snr 42039, w309 snr 27670 are
+untouched). On windows whose collapsed fit reported a spuriously bright broad
+line (w306/w308), the baseline correctly reclaims that amplitude as pedestal —
+the post-fix line amplitudes are the true (smaller) ones, not eaten lines. The
+2638 control is unchanged (the const-order edge-coherence fires there are
+superseded by order 4, with no regression).
+
+**Cost.** Measured cheap: the τ-free refit is **3 %** of 655's fit time (16 s of
+605 s; 294 fires averaging ~0.03 s, capped at 400 nfev) and **0 %** on 2638. The
+dense-fixture wall-clock is the cap-removal *conservative loop*, not the baseline;
+see [[stage5-nls-performance]].
 
 ## Motivation
 

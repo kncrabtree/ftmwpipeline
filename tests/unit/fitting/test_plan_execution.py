@@ -1412,6 +1412,9 @@ def test_baseline_fires_on_coherent_wing():
         residual_edge_m=16,
         baseline_order=0,
         baseline_edge_threshold=3.5,
+        baseline_smooth_threshold=50.0,
+        tau0_us=TAU_US,
+        conservative_kwargs={},
     )
     assert fired is True
     assert outcome.baseline_applied is True
@@ -1447,6 +1450,9 @@ def test_baseline_does_not_fire_below_threshold():
         residual_edge_m=16,
         baseline_order=0,
         baseline_edge_threshold=3.5,
+        baseline_smooth_threshold=50.0,
+        tau0_us=TAU_US,
+        conservative_kwargs={},
     )
     assert fired is False
     assert outcome.baseline_applied is False

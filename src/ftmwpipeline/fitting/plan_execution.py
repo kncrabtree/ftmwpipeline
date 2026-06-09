@@ -91,6 +91,7 @@ from .window_fit import (
     ConservativeFitResult,
     WindowFitResult,
     conservative_fit,
+    derive_window_fit_constraints,
     fit_window,
 )
 
@@ -142,8 +143,23 @@ windows wanting to coalesce resolves in O(log2(N)) rounds."""
 DEFAULT_BASELINE_ENABLED = True
 """Whether the evidence-triggered leakage-wing baseline term is applied."""
 
-DEFAULT_BASELINE_ORDER = 0
-"""Baseline polynomial order ``p`` (0 = const, 1 = linear; quad overfits)."""
+DEFAULT_BASELINE_ORDER = 4
+"""Baseline polynomial order ``p``. A dense ultra-high-SNR spectrum carries a
+smooth leakage *pedestal* -- the summed far-wings of the hundreds of lines the
+discrete frozen contributors cannot fully subtract -- that ramps and curves
+across a window; a constant cannot follow it, so the shared ``tau`` collapses to
+absorb it (655 mode 2). Order 4 follows the pedestal while staying far too smooth
+to mimic a line (every window is >= ~50 active-FT bins, >> the order), and the
+F-significance trigger (:data:`DEFAULT_BASELINE_SMOOTH_THRESHOLD`) only commits it
+where it is statistically warranted."""
+
+DEFAULT_BASELINE_SMOOTH_THRESHOLD = 50.0
+"""Smooth-residual trigger: the baseline also fires when an order-``p`` complex
+polynomial explains the post-fit residual at more than this chi-squared drop per
+added real degree of freedom (an F-test numerator). This catches the smooth
+in-band leakage pedestal the edge-coherence trigger misses (it tests only the two
+edges). On 655 the collapse windows score >~2000 here while clean windows sit
+near the noise floor (~8), so the test self-gates against overfitting."""
 
 DEFAULT_EDGE_FREE_ACCEPT_FRACTION = 0.95
 """Acceptance margin for an edge-free leakage skirt. The window is fit twice --
@@ -1216,6 +1232,7 @@ def execute_plan(
     baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
     baseline_order: int = DEFAULT_BASELINE_ORDER,
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
+    baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1386,6 +1403,7 @@ def execute_plan(
         baseline_enabled=baseline_enabled,
         baseline_order=baseline_order,
         baseline_edge_threshold=baseline_edge_threshold,
+        baseline_smooth_threshold=baseline_smooth_threshold,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1452,6 +1470,7 @@ def execute_plan(
                 baseline_enabled=baseline_enabled,
                 baseline_order=baseline_order,
                 baseline_edge_threshold=baseline_edge_threshold,
+                baseline_smooth_threshold=baseline_smooth_threshold,
             )
 
             applied_pairs = {
@@ -1509,6 +1528,7 @@ def _walk_windows_in_order(
     baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
     baseline_order: int = DEFAULT_BASELINE_ORDER,
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
+    baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -1615,6 +1635,9 @@ def _walk_windows_in_order(
                 residual_edge_m=residual_edge_m,
                 baseline_order=baseline_order,
                 baseline_edge_threshold=baseline_edge_threshold,
+                baseline_smooth_threshold=baseline_smooth_threshold,
+                tau0_us=tau0_us_for_window,
+                conservative_kwargs=ck_for_window,
             )
 
 
@@ -2391,6 +2414,69 @@ def _apply_rescue_to_outcome(
     return events
 
 
+def _smooth_residual_stat(
+    offset_grid_mhz: np.ndarray,
+    residual: np.ndarray,
+    rms_noise: np.ndarray,
+    order: int,
+) -> float:
+    """F-test numerator for an order-``p`` complex polynomial fit of a residual.
+
+    Projects the complex ``residual`` onto a noise-weighted degree-``order``
+    polynomial in the scaled offset and returns the chi-squared drop the smooth
+    term explains, divided by its ``2(order+1)`` real degrees of freedom. Pure
+    noise scores ~1 per dof; a smooth leakage pedestal scores far higher. This is
+    the in-band counterpart to the edge-coherence trigger -- it catches a smooth
+    pedestal ramping across the whole window, which the two-edge test misses.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    if u.size <= order + 1:
+        return 0.0
+    sig = np.asarray(rms_noise, dtype=float)
+    if sig.ndim == 0:
+        sig = np.full(u.size, float(sig))
+    span = max(float(u.max() - u.min()), 1e-9) / 2.0
+    us = (u - u.mean()) / span
+    vander = np.vander(us, order + 1, increasing=True)
+    w = 1.0 / np.maximum(sig, 1e-30)
+    coef, *_ = np.linalg.lstsq(vander * w[:, None], residual * w, rcond=None)
+    smooth = vander @ coef
+    chi2_full = float(np.sum((np.abs(residual) / np.maximum(sig, 1e-30)) ** 2))
+    chi2_resid = float(
+        np.sum((np.abs(residual - smooth) / np.maximum(sig, 1e-30)) ** 2)
+    )
+    return (chi2_full - chi2_resid) / (2 * (order + 1))
+
+
+_BASELINE_TAU_INPUT_KEYS = (
+    "min_separation_factor",
+    "max_decay_factor",
+    "amp_max_headroom",
+    "phase_penalty_lambda",
+    "amp_penalty_lambda",
+    "phase_penalty_cutoff_fwhm",
+    "tau_penalty_lambda",
+    "tau_penalty_n_sigma",
+    "weak_window_snr_threshold",
+    "fit_tau_min_snr",
+    "tau_apodization_us",
+    "tau_maj_us",
+    "sigma_tau_us",
+)
+
+
+def _baseline_tau_inputs(conservative_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Subset of ``conservative_kwargs`` accepted by
+    :func:`~ftmwpipeline.fitting.window_fit.derive_window_fit_constraints`, so the
+    baseline's tau-free refit derives the same bounds / penalty as the primary
+    per-window fit."""
+    return {
+        k: conservative_kwargs[k]
+        for k in _BASELINE_TAU_INPUT_KEYS
+        if k in conservative_kwargs
+    }
+
+
 def _apply_baseline_to_outcome(
     outcome: WindowOutcome,
     *,
@@ -2398,27 +2484,37 @@ def _apply_baseline_to_outcome(
     residual_edge_m: int,
     baseline_order: int,
     baseline_edge_threshold: float,
+    baseline_smooth_threshold: float,
+    tau0_us: float,
+    conservative_kwargs: dict[str, Any],
 ) -> bool:
-    """Refit a window with a complex baseline when its residual edge coherence
-    clears the baseline threshold; update the outcome in place.
+    """Refit a window with a complex baseline when a coherent or smooth residual
+    clears its trigger; update the outcome in place.
 
-    A neighbouring strong line's mismodeled leakage skirt leaves a coherent,
-    systematic residual that inflates the dependent window's chi-squared and
-    biases the weak lines sitting on it. When ``max(edge_low, edge_high)`` on
-    the (post-thaw, post-rescue) residual exceeds ``baseline_edge_threshold``,
-    the window's established lines are refit jointly with a low-order complex
-    baseline ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` (too smooth to represent
-    a narrow line, so it can only soak up a broad wing). ``tau`` is held at the
-    window's fitted value -- the baseline addresses skirt *shape*, not decay.
-    The joint covariance then prices the baseline's degrees of freedom into the
-    reported per-line uncertainties.
+    A neighbouring strong line's mismodeled leakage skirt -- and, on a dense
+    ultra-high-SNR spectrum, the summed far-wings of the many lines the discrete
+    frozen contributors cannot fully subtract -- leaves a systematic residual
+    that inflates the dependent window's chi-squared and biases the lines sitting
+    on it. The window's established lines are refit jointly with a low-order
+    complex baseline ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` (too smooth to
+    represent a narrow line, so it can only soak up a broad wing or pedestal)
+    when either trigger fires:
+
+    * **edge coherence** -- ``max(edge_low, edge_high)`` on the residual exceeds
+      ``baseline_edge_threshold`` (a coherent wing at a window edge); or
+    * **smooth residual** -- an order-``p`` polynomial explains the residual at
+      more than ``baseline_smooth_threshold`` chi-squared per added dof (a smooth
+      in-band leakage pedestal the edge test misses).
+
+    ``tau`` is re-freed and re-anchored at the band majority ``tau0_us`` for the
+    joint refit: with the pedestal absorbed by the baseline, ``tau`` relaxes back
+    from the collapsed value it took to soak the pedestal to its physical
+    per-band value. The joint covariance prices the baseline's degrees of freedom
+    into the reported per-line uncertainties.
 
     Returns ``True`` iff the baseline fired (triggered, converged, and did not
     worsen the data chi-squared); ``False`` leaves the outcome untouched.
     """
-    s_coh = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
-    if not np.isfinite(s_coh) or s_coh <= baseline_edge_threshold:
-        return False
     inner = outcome.fit.fit
     if not inner.peaks:
         # The baseline prices its flexibility against the free lines; a window
@@ -2427,26 +2523,49 @@ def _apply_baseline_to_outcome(
         return False
 
     data_minus_bg = outcome.complex_spectrum - outcome.background
+    u = outcome.offset_grid_mhz
+    residual = data_minus_bg - model_spectrum(
+        u, inner.peaks, inner.tau_us, acquisition_us, shape=inner.shape
+    )
+    s_coh = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
+    edge_fire = np.isfinite(s_coh) and s_coh > baseline_edge_threshold
+    smooth_stat = _smooth_residual_stat(u, residual, outcome.rms_noise, baseline_order)
+    smooth_fire = smooth_stat > baseline_smooth_threshold
+    if not (edge_fire or smooth_fire):
+        return False
+
+    # Re-free tau (anchored at the band majority) so it relaxes off the collapsed
+    # value once the baseline carries the pedestal. The penalty / bound policy
+    # mirrors the primary fit's via ``derive_window_fit_constraints``.
+    constraints = derive_window_fit_constraints(
+        data_minus_bg,
+        outcome.rms_noise,
+        tau0_us,
+        acquisition_us,
+        fit_tau=True,
+        **_baseline_tau_inputs(conservative_kwargs),
+    )
+    refit_kwargs = dict(constraints.fit_kwargs_inner)
+    refit_kwargs.setdefault("shape", inner.shape)
     spur_mask = getattr(outcome, "_spur_mask", None)
     refit = fit_window(
-        outcome.offset_grid_mhz,
+        u,
         data_minus_bg,
         outcome.rms_noise,
         [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in inner.peaks],
-        inner.tau_us,
+        tau0_us,
         acquisition_us,
-        fit_tau=False,
-        shape=inner.shape,
         spur_mask=spur_mask,
         baseline_order=baseline_order,
+        **refit_kwargs,
     )
     if not refit.success or refit.chi_squared > inner.chi_squared + 1e-9:
         return False
 
-    # Install the joint fit. ``tau_us`` / ``tau_was_fit`` / ``fit_tau`` keep
-    # their originating values (the refit only added the baseline). The
-    # fitted spectrum now carries peaks + baseline; the frozen background is
-    # added back for the full model.
+    # Install the joint fit. The baseline carries the pedestal and the re-freed
+    # ``tau`` has relaxed to its physical value, so the re-fit ``tau`` / errors
+    # are installed too. The fitted spectrum now carries peaks + baseline; the
+    # frozen background is added back for the full model.
     free_plus_baseline = refit.fitted_spectrum
     inner.peaks = refit.peaks
     inner.peak_errors = refit.peak_errors
@@ -2455,6 +2574,9 @@ def _apply_baseline_to_outcome(
     inner.cost = refit.cost
     inner.n_params = refit.n_params
     inner.n_data = refit.n_data
+    inner.tau_us = refit.tau_us
+    inner.tau_error = refit.tau_error
+    inner.tau_was_fit = refit.tau_was_fit
     inner.fitted_spectrum = free_plus_baseline
     inner.residual = data_minus_bg - free_plus_baseline
     inner.baseline_order = refit.baseline_order
