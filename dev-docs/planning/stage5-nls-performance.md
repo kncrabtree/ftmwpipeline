@@ -93,6 +93,37 @@ not a few large ones.
   cross-fixture metric held on 1019/1512/655 but is not byte-identical).
   Net: reverted. The amplitude/shape-aware coupling model is correct physics and
   worth keeping in mind, but window decomposition is the wrong place to spend it.
+- **Stage-4 small-window retune (FIXTURE/REGION-DEPENDENT, not shipped).** A
+  different route to the same end: shrink the Stage-4 windows themselves
+  (`max_window_width_mhz` 40→~8) so each `fit_window` sees a smaller `M`, and —
+  since over a narrow window a distant bright line's `1/Δ` skirt is nearly flat
+  (pure pedestal the order-4 baseline soaks) — relax the contributor attachment
+  (`magnitude_attachment_threshold` 0.1→~1.0) so the baseline carries it instead
+  of thousands of explicit per-window subtractions. Characterisation
+  (`scratch/stage5-nls/char_stage4.py`, `char_thresh.py`): default 655 windows
+  are large (median 185 pts, p95 363); cap-8 → median 65 pts, but `n_windows`
+  3× and contributor *attachments* 3510→8393 (the same ~230 bright lines, each
+  attached to more windows — the brightest reaches 873). The current 0.1
+  threshold attaches contributors a **median 434 MHz away** (p95 ~4 GHz) — flat
+  pedestal the baseline absorbs; raising it to ~1–3 drops attachments ~9× while
+  keeping the near (curvature-driving) ones. Band-fit sampling
+  (`scratch/stage5-nls/band_fit.py`, a monkeypatched plan-load that fits only
+  windows in a frequency band): on a **moderate-density Lorentzian** band cap-8 +
+  thr-1.0 is a clean **−34 % wall, metric holds** (pass 0.987 vs 1.000, +5
+  lines); but on a **dense-blend** band it is **slower and +67 % lines** (cutting
+  a real blend), and on **363 (Gaussian/sparse)** it is **2× slower and +87 %
+  lines**. Scaling the baseline order with the point count (the natural "k=4
+  over-fits a 60-pt window" guess) **did not move the line counts** and slightly
+  hurt the metric — order-4 was helping, not over-fitting. The over-add is the
+  **same context-dependent-gate problem as 0 and 2a, arriving via Stage 4**: the
+  conservative-fit AICc accept gate keys on a *global* `n_eff` (perplexity over
+  the window) and the seeder/rescue are less constrained with fewer competing
+  peaks, so *more, smaller windows systematically over-accept lines* — even where
+  the splits are clean. It only nets positive where the speedup outweighs the
+  over-add (moderate-density Lorentzian); it regresses dense blends and Gaussian.
+  Reverted. **The structural blocker for every region-shrinking lever (0, 2a,
+  small-window) is the window-size sensitivity of the accept gate** — see the
+  context-invariant-gate sketch below.
 
 **The cross-cutting lesson** from 0 and 2a: the per-window cost is **fixed
 per-call overhead + O(M·K) assembly bound**, not the O(M·K²) solve and not the
