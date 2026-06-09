@@ -350,9 +350,10 @@ class TestDifficultyAndWidthCap:
 
 class TestBoundedMergeAndCapSplit:
     """The strong-cluster merge is bounded at the width cap and merged spans are
-    split at their sparsest gaps until each window is <= max_peaks_per_window and
-    <= max_window_width_mhz, so a dense, mutually-coupled strong-line forest does
-    not collapse into one unfittable mega-window."""
+    split at their sparsest gaps until each window is <= max_window_width_mhz (and,
+    when ``max_peaks_per_window`` is positive, <= that peak cap), so a dense,
+    mutually-coupled strong-line forest does not collapse into one mega-window. The
+    default ``max_peaks_per_window=0`` bounds windows by width alone."""
 
     @staticmethod
     def _dense_cluster():
@@ -362,28 +363,34 @@ class TestBoundedMergeAndCapSplit:
         lines = [(30040.0 + 3.0 * i, 3.0, PeakClassification.STRONG) for i in range(20)]
         return _synthetic(lines, n=8000)
 
-    def test_dense_strong_forest_is_split_to_caps(self):
+    def test_dense_strong_forest_is_split_to_width_cap(self):
+        # Default max_peaks_per_window=0: bounded by the 40 MHz width cap alone.
         freqs, spec, rms, peaks = self._dense_cluster()
         plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
         _assert_invariants(plan)
-        # Must NOT be one mega-window.
-        assert plan.n_windows >= 3
+        # The ~57 MHz forest must NOT collapse into one mega-window: the width cap
+        # splits it even with no peak cap.
+        assert plan.n_windows >= 2
         for w in plan.windows:
             assert w.width_mhz <= 40.0 + 1e-6, "window exceeds the width cap"
-            assert len(w.free_peak_indices) <= 8, "window exceeds the peak cap"
         # Every promoted line is still covered exactly once (no dropped peaks).
         covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
         assert covered == list(range(len(peaks)))
 
     def test_tighter_peak_cap_makes_more_windows(self):
+        # Two explicit positive caps: the tighter one must split into more windows.
         freqs, spec, rms, peaks = self._dense_cluster()
-        loose = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        loose = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=8
+        )
         tight = build_window_plan(
             peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=4
         )
         assert tight.n_windows > loose.n_windows
         for w in tight.windows:
             assert len(w.free_peak_indices) <= 4
+        for w in loose.windows:
+            assert len(w.free_peak_indices) <= 8
         _assert_invariants(tight)
 
     def test_coupled_pair_within_cap_stays_merged(self):

@@ -68,10 +68,13 @@ edges, `S_coh` de-ramped leakage map, plus edge-free leakage-contributor
 subtraction — a bright neighbour's skirt orphaned by the cycle-breaker is kept
 as an `edge_free` contributor and subtracted self-contained at fit time, gated
 to fire only where it strictly improves the fit), and the Stage 5 fit
-(active-portion FT, conservative add-one-peak loop, blend-aware seeder, knockout
-test, residual-rescue chain, local thaw + structural replan, per-band τ routing,
-Lorentzian/Gaussian shapes, evidence-triggered leakage-wing baseline, spur
-masking). Per-stage detail and provenance live in `dev-docs/ROADMAP.md` and
+(active-portion FT, conservative add-one-peak loop whose AICc-with-`n_eff` accept
+gate self-regulates K on width-bounded windows — the per-window peak cap is
+removed so a dense cluster is one wide window with enough `n_eff` for the gate,
+not several `n_eff`-starved fragments — blend-aware seeder, knockout test,
+residual-rescue chain, local thaw +
+structural replan, per-band τ routing, Lorentzian/Gaussian shapes,
+evidence-triggered leakage-wing baseline, spur masking). Per-stage detail and provenance live in `dev-docs/ROADMAP.md` and
 `dev-docs/planning/`. The originally-lost `newfitting/` engine was recreated
 against the surviving `bcfitting` shell's contract.
 

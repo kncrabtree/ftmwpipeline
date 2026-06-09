@@ -79,15 +79,22 @@ flagged as a thaw-and-re-fit candidate rather than safely frozen."""
 DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ = 2.0
 """Minimum half-width of a window built around an isolated weak line."""
 
-DEFAULT_MAX_PEAKS_PER_WINDOW = 8
-"""Per-window promoted-peak cap. A window holding more promoted peaks than the
-Stage 5 fit can model jointly (``conservative.max_peaks``, default 8) is split at
-its sparsest internal gaps. The default tracks the Stage 5 default so windows are
-sized to be fittable; raise both together if Stage 5's ``max_peaks`` is raised. The
-cap (with the width cap) is what keeps a dense, ultra-high-SNR spectrum from
-collapsing into one unfittable mega-window -- without it the strong-cluster merge
-and the overlapping per-peak proto-spans chain hundreds of real lines into a single
-GHz-scale window the fit can only partially model."""
+DEFAULT_MAX_PEAKS_PER_WINDOW = 0
+"""Per-window promoted-peak cap; ``0`` (the default) means *no* peak cap -- a
+window is bounded only by ``max_window_width_mhz``. A fragmenting peak cap split a
+dense cluster into windows too narrow for the Stage 5 AICc-with-``n_eff`` gate to
+behave: the perplexity ``n_eff`` collapsed on a few-point fragment, so the gate
+both under-fit (parking real lines) and over-fit (packing weak near-resolution
+peaks) on neighbouring slices of one physical cluster. Bounding a window by width
+alone gives the gate enough informative bins to self-regulate K, fixing both at
+the root (cross-fixture: every issue-#3 fixture's SNR-aware pass improved or held).
+The strong-cluster merge and the cap split are still bounded by
+``max_window_width_mhz`` (default 40), which alone keeps a dense ultra-high-SNR
+spectrum from collapsing into one GHz-scale mega-window -- the runaway the peak cap
+was wrongly credited with preventing was the unbounded strong-cluster force-merge,
+governed by the width cap. A positive value restores an explicit cap (power users /
+diagnostics); it tracks the Stage 5 ``conservative.max_peaks`` and both should be
+set together."""
 
 DEFAULT_MAX_EDGE_FREE_NEIGHBORS = 3
 """Cap on how many distinct primary windows per dependent window may have their
@@ -214,19 +221,21 @@ def _split_span_to_caps(
     cap_idx: float,
     max_peaks: int,
 ) -> List[Tuple[int, int]]:
-    """Split a merged ``(lo, hi)`` grid span until each piece holds at most
-    ``max_peaks`` promoted peaks AND spans at most ``cap_idx`` grid steps.
+    """Split a merged ``(lo, hi)`` grid span until each piece spans at most
+    ``cap_idx`` grid steps and (when ``max_peaks > 0``) holds at most ``max_peaks``
+    promoted peaks.
 
     Splits at the largest internal peak gap, placing the boundary at the gap
     midpoint so the resulting windows stay disjoint and each edge peak keeps half
     the gap as margin. ``member_gidx`` is the sorted promoted-peak grid indices
-    inside ``[lo, hi]``. A dense forest is genuinely coupled across large spans (the
-    bright lines' skirts overlap everywhere) but cannot be fit jointly past
-    ``max_peaks``; the cross-window coupling is carried by the fixed contributors,
-    the same mechanism that handles a strong line's distant skirt.
+    inside ``[lo, hi]``. ``max_peaks <= 0`` disables the peak-count split so a span
+    is bounded by ``cap_idx`` (the width cap) alone; the cross-window coupling is
+    carried by the fixed contributors, the same mechanism that handles a strong
+    line's distant skirt.
     """
     members = [g for g in member_gidx if lo <= g <= hi]
-    if (hi - lo <= cap_idx and len(members) <= max_peaks) or len(members) <= 1:
+    peaks_ok = max_peaks <= 0 or len(members) <= max_peaks
+    if (hi - lo <= cap_idx and peaks_ok) or len(members) <= 1:
         return [(lo, hi)]
     arr = np.asarray(members)
     k = int(np.argmax(np.diff(arr)))  # largest gap -> split after the k-th member
@@ -338,11 +347,12 @@ def build_window_plan(
     min_window_half_width_mhz : float
         Minimum half-width of a window built around an isolated weak line.
     max_peaks_per_window : int
-        Per-window promoted-peak cap. The strong-cluster merge is bounded at
-        ``max_window_width_mhz`` and the merged spans are then split at their
-        sparsest internal gaps until each window holds at most this many promoted
-        peaks (and is at most ``max_window_width_mhz`` wide). Tracks the Stage 5
-        ``conservative.max_peaks`` so windows are sized to be fittable; see
+        Per-window promoted-peak cap; ``0`` (the default) disables it so a window
+        is bounded only by ``max_window_width_mhz``. The strong-cluster merge is
+        bounded at ``max_window_width_mhz`` and the merged spans are split at their
+        sparsest internal gaps until each window is at most ``max_window_width_mhz``
+        wide and (when positive) holds at most this many promoted peaks. A positive
+        value tracks the Stage 5 ``conservative.max_peaks``; see
         :data:`DEFAULT_MAX_PEAKS_PER_WINDOW`.
     magnitude_attachment_threshold : float
         Tier-1 contributor-attachment threshold in units of σ_c. A strong
@@ -476,14 +486,14 @@ def build_window_plan(
 
     merged = _merge_spans(proto_spans)
 
-    # --- Cap split: enforce <= max_peaks_per_window AND <= the width cap -----
+    # --- Cap split: enforce <= the width cap (and, if set, the peak cap) ----
     # The bounded strong-merge above stops a forced GHz span, but in a dense
     # forest the overlapping per-peak proto-spans (and the capped strong spans)
-    # still chain into windows far wider and far more peak-dense than the Stage 5
-    # fit can model. Split each merged span at its sparsest internal peak gaps
-    # until every window holds at most ``max_peaks_per_window`` promoted peaks and
-    # spans at most ``max_window_width_mhz``; the cross-window coupling is carried
-    # by the fixed contributors.
+    # still chain into windows wider than the width cap. Split each merged span at
+    # its sparsest internal peak gaps until every window spans at most
+    # ``max_window_width_mhz`` (and, when ``max_peaks_per_window > 0``, holds at
+    # most that many promoted peaks); the cross-window coupling is carried by the
+    # fixed contributors.
     all_gidx = sorted(pk.grid_index for pk in promoted)
     capped: List[Tuple[int, int]] = []
     for lo, hi in merged:

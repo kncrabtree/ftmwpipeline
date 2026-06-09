@@ -84,12 +84,14 @@ class ClusteringSubSettings:
     ``max_window_width_mhz`` is the width cap above which a window is
     classified as HARD and gets a split proposal; ``min_window_half_width_mhz``
     is the minimum half-width of a window built around an isolated weak line.
-    ``max_peaks_per_window`` is the per-window promoted-peak cap: the
-    strong-cluster merge is bounded at the width cap and merged spans are split
-    at their sparsest gaps until each window holds at most this many promoted
-    peaks (and is at most ``max_window_width_mhz`` wide), so dense ultra-high-SNR
-    spectra cannot collapse into one unfittable mega-window. It tracks the Stage 5
-    ``conservative.max_peaks`` (default 8) so windows are sized to be fittable.
+    ``max_peaks_per_window`` is the per-window promoted-peak cap; ``0`` (the
+    default) disables it so a window is bounded only by ``max_window_width_mhz``.
+    Bounding by width alone keeps the Stage 5 AICc-with-``n_eff`` gate's effective
+    sample size large enough to self-regulate K on dense clusters; a fragmenting
+    peak cap starved it and drove both under- and over-fit. The width cap (and the
+    width-bounded strong-cluster merge) is what prevents a dense ultra-high-SNR
+    spectrum from collapsing into one GHz-scale mega-window. A positive value
+    restores an explicit cap and tracks the Stage 5 ``conservative.max_peaks``.
     """
 
     max_window_width_mhz: Optional[float] = None
@@ -164,7 +166,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "clustering": {
         "max_window_width_mhz": 40.0,
         "min_window_half_width_mhz": 2.0,
-        "max_peaks_per_window": 8,
+        "max_peaks_per_window": 0,
     },
     "contributor": {
         "min_freeze_snr": 50.0,

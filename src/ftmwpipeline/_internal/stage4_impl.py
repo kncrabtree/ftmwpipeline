@@ -137,10 +137,11 @@ def assign_windows_impl(
     tau_us : float, optional
         Assumed decay constant for the leakage envelope (default: undamped/boxcar).
     max_peaks_per_window : int, optional
-        Per-window promoted-peak cap; dense merged spans are split at their
-        sparsest gaps until each window holds at most this many peaks and is at
-        most ``max_window_width_mhz`` wide (default 8, tracking Stage 5
-        ``conservative.max_peaks``).
+        Per-window promoted-peak cap; ``0`` (the default) disables it so a window
+        is bounded only by ``max_window_width_mhz``. A positive value splits dense
+        merged spans at their sparsest gaps until each window holds at most this
+        many peaks (and is at most ``max_window_width_mhz`` wide), tracking Stage 5
+        ``conservative.max_peaks``.
     settings : WindowPlanningSettings, optional
         Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
         chain); fields left ``None`` fall through. Mutually exclusive with

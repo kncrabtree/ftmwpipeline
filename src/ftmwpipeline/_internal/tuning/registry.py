@@ -1688,9 +1688,10 @@ _window_knob(
     "stage4.clustering.max_peaks_per_window",
     "clustering",
     "max_peaks_per_window",
-    "Per-window promoted-peak cap (windows over it are split).",
+    "Per-window promoted-peak cap; 0 = no cap (width-bounded). Windows over a "
+    "positive cap are split at their sparsest gaps.",
     "N",
-    (8, 12, 16, 24),
+    (0, 8, 16, 32),
     tier="advanced",
 )
 
@@ -1843,8 +1844,9 @@ for _p, _f, _h, _g in (
     (
         "stage5.conservative.max_peaks",
         "max_peaks",
-        "Hard cap on the final peak count per window.",
-        (4, 8, 12),
+        "Hard cap on the final peak count per window; 0 = no cap "
+        "(candidate/patience-bounded).",
+        (0, 8, 16),
     ),
     (
         "stage5.conservative.patience",

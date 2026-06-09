@@ -109,7 +109,7 @@ class TestResolve:
         assert merged.tau.max_decay_factor == 5.0
         assert merged.tau.tau_penalty_lambda == 50.0
         assert merged.conservative.significance == 0.05
-        assert merged.conservative.max_peaks == 8
+        assert merged.conservative.max_peaks == 0  # 0 = no cap (width-bounded)
         assert merged.penalties.phase_penalty_lambda == 100.0
         assert merged.rescue.max_rounds == 5
         assert merged.thaw.max_thaw_rounds == 2

@@ -1193,10 +1193,10 @@ def rescue_and_consolidate(
     rescue_max_peaks
         Cap on the rescue's own conservative loop -- forwarded as
         :func:`attempt_residual_rescue` 's ``max_peaks``. Defaults to
-        :data:`DEFAULT_MAX_PEAKS`; the validation harness uses 32 so the
-        rescue's per-round K is gated by statistics rather than an
-        integer cap. The joint refit has no such cap (it just refits
-        whatever the rescue handed it).
+        :data:`DEFAULT_MAX_PEAKS` (``0`` = no cap), so the rescue's per-round
+        K is gated by the AICc statistics rather than an integer cap. The joint
+        refit has no such cap either (it just refits whatever the rescue handed
+        it).
     conservative_kwargs
         Forwarded to :func:`attempt_residual_rescue` and used to derive
         the joint refit's constraints. Pass the same options the initial

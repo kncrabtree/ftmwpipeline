@@ -211,10 +211,10 @@ def register_window_commands(subparsers: Any) -> None:
         "--max-peaks-per-window",
         dest="max_peaks_per_window",
         type=int,
-        help="Per-window promoted-peak cap; dense merged spans are split at "
-        "their sparsest gaps until each window holds at most this many peaks "
-        "and is at most --max-window-width-mhz wide. Tracks the Stage 5 "
-        "conservative.max_peaks (default: 8).",
+        help="Per-window promoted-peak cap; 0 (the default) disables it so a "
+        "window is bounded only by --max-window-width-mhz. A positive value "
+        "splits dense merged spans at their sparsest gaps until each window holds "
+        "at most this many peaks. Tracks the Stage 5 conservative.max_peaks.",
     )
     p_assign.add_argument(
         "--magnitude-attachment-threshold",

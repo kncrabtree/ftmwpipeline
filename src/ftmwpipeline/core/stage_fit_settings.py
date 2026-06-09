@@ -271,7 +271,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "conservative": {
         "significance": 0.05,
-        "max_peaks": 8,
+        "max_peaks": 0,
         "patience": 1,
         "min_separation_factor": 1.0,
         "min_pair_separation_factor": 0.5,

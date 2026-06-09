@@ -113,7 +113,7 @@ _PHASE_BOUND = 4.0 * np.pi
 
 # Conservative add-one-peak loop defaults.
 DEFAULT_SIGNIFICANCE = 0.05
-DEFAULT_MAX_PEAKS = 8
+DEFAULT_MAX_PEAKS = 0  # 0 = no cap; the add-loop is bounded by the candidate set
 DEFAULT_PATIENCE = 1
 DEFAULT_MIN_SEPARATION_FACTOR = 1.0
 # Blend-aware seeder: a single-cosine seed fit whose reduced chi-squared
@@ -2011,8 +2011,12 @@ def conservative_fit(
         familiar diagnostic but is not used to decide acceptance.
     min_separation_factor : float, default 1.0
         Minimum peak separation as a multiple of the feature FWHM.
-    max_peaks : int, default 8
-        Cap on the number of lines fit.
+    max_peaks : int, default 0
+        Cap on the number of lines fit; ``0`` (the default) disables the cap so the
+        add-loop is bounded by the candidate set (and ``patience`` / separation).
+        The AICc-with-``n_eff`` accept gate self-regulates K, so a hard cap only
+        truncated dense clusters the gate would otherwise resolve. A positive value
+        restores an explicit cap.
     patience : int, default 1
         Consecutive candidate rejections tolerated before the loop stops.
     max_decay_factor : float, default 5.0
@@ -2209,7 +2213,9 @@ def conservative_fit(
 
     tentative: list[ModelPeak] = []
     consecutive_rejects = 0
-    while remaining and current.n_peaks + len(tentative) < max_peaks:
+    while remaining and (
+        max_peaks <= 0 or current.n_peaks + len(tentative) < max_peaks
+    ):
         in_model = list(current.peaks) + tentative
         residual = z - model_spectrum(
             u,

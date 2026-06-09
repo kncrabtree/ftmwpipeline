@@ -1,176 +1,180 @@
 # Stage 5 — cluster fit-quality follow-ups (missing peaks, τ collapse, skirt shape)
 
-Status: **planning.** Follows the edge-free leakage-contributor subtraction
+Status: **the per-window peak cap is removed** (windows are bounded by width
+alone); this resolves the dense-cluster under-fit *and* the narrow-window
+over-fit at the root. The earlier candidate-local-accept lever (modes 1 + 4) is
+**superseded and deferred** — it patched the same defect downstream at roughly
+twice the dense-fixture cost, so it is set aside until the Stage 5 NLS is sped up
+(it survives as a re-appliable patch). **Modes 2 + 3 remain open.** Follows the
+edge-free leakage-contributor subtraction
 ([`stage4-leakage-contributor-subtraction.md`](stage4-leakage-contributor-subtraction.md)),
-which removed the dominant cross-window worst-ε driver. The post-fix worst-ε
-windows (`scratch/stage4-leakage-contributor/worst_eps_details/`, the 5
-worst-epsilon windows per fixture from the issue-#3 rerun) cluster into three
-remaining failure modes. The Stage 5 plan
+which removed the dominant cross-window worst-ε driver. The Stage 5 plan
 ([`stage5-fitting.md`](stage5-fitting.md)) and the leakage-wing baseline
 ([`stage5-leakage-wing-baseline.md`](stage5-leakage-wing-baseline.md)) remain
 authoritative for everything this work does not change.
 
-These three modes are coupled (an under-fit cluster often *also* collapses τ;
-an imperfect skirt leaves residual that mimics a missing peak), so the work is
-scoped as one coordinated per-window fit-quality pass, but each mode has a
-distinct lever and is investigated separately first.
+## What the diagnostic found (and how it revised the plan)
 
-## Failure mode 1 — windows missing real peaks
+A per-window diagnostic over the seven issue-#3 fixtures' worst-ε windows
+classified the failures and traced, for every uncovered residual line, which
+gate dropped it (Stage 3 detection / promotion, Stage 4 assignment, or the
+Stage 5 acceptance gate). The verdict collapsed the four nominally-separate
+modes into a different structure than the original plan assumed:
 
-**Evidence.** 363 w197 (`f363_w0197.png`): the |X| panel shows a clear
-doublet, the fit lands K=1, and the second line sits unmodeled in the residual
-(χ²ᵣ 38, τ 9.2 µs — τ is fine, the model is just short a line). Several other
-worst-ε windows share this signature: a resolved real line visible in |X| and
-in the residual that no model peak covers.
+- **Modes 1 and 4 are one defect.** Across 363 / 360 / 1231 / 1512 / 1019 the
+  dominant worst-ε window is a dense cluster where Stage 4 assigned 5–7 free
+  peaks and 5–7 *promoted* Stage-3 lines stand uncovered in the residual at
+  SNR 18–45 — yet the conservative loop fits **K=1**. The lines are detected,
+  promoted, *and* assigned: only the **Stage-5 AICc-with-`n_eff` accept gate**
+  drops them. On a dense cluster the perplexity `n_eff` is small (≈10–75), so
+  `n_eff·log(χ²/n_eff)` *undervalues* a 44 % χ² drop while the small-sample
+  correction `2k(k+1)/(n_eff−k−1)` *explodes* (→ `+inf` at `n_eff≈10`); every
+  real line is parked `[tentative]` and never committed (`patience=1` then ends
+  the loop). Mode 1's "comparable-strength blend partner" and mode 4's "weaker
+  line beside a bright one" are the same line dropped by the same global gate.
 
-**Root-cause candidates (diagnose first, do not assume).**
-- Stage 3 never *promoted* the line (sub-resolution apex-snap merged the
-  doublet into one detection, or the partner sits below the promotion gate), so
-  the conservative loop is never seeded at that offset.
-- The line is promoted but the conservative add-one-peak loop's significance /
-  `min_separation_factor` gate rejected it as a blend of its neighbour.
-- The residual-rescue B-loop should nominate a residual peak this obvious, and
-  does not — its `prominence_threshold` / `rescue_significance` may be too
-  strict at the window's SNR, or rescue is not reaching these windows.
+- **Mode 2's planned lever was falsified.** On the high-SNR dense fixture 655,
+  τ collapses to ≈0.62 µs (band τ_maj 3.09). The plan proposed pinning τ at the
+  band majority or adding a low-side τ-prior floor. Re-fitting with τ *pinned*
+  at 3.09 (frozen background subtracted) makes χ²ᵣ dramatically **worse**
+  (w385 55→347, w376 11.5→441); the windows genuinely fit better broad, and
+  the candidate-local lever does not lift them either. τ-collapse on 655
+  is therefore **not** an under-fit symptom a τ-prior fixes — most likely an
+  unresolved blend or a band-mismatched leakage pedestal (the frozen skirt is
+  evaluated at the dependent window's τ; a contributor from a faster-decaying
+  band leaves a broad residual only a low-τ component absorbs). Mode 2 needs
+  re-diagnosis before any lever; the τ-pin / τ-floor is out.
 
-**Approach.** For each missing-peak window, classify which of the three gates
-dropped the line (is it in `load_peaks`? promoted? nominated by rescue?). The
-likely lever is the **residual-rescue nomination** — a peak clearly standing in
-the residual is exactly what the B-loop exists to catch, so the first
-investigation is why it does not fire here (and whether seeding the conservative
-loop from residual maxima, not only promoted offsets, closes the gap without
-inflating false positives on the dense forest). Reuse the issue-#3 SNR-aware
-gate to confirm no regression.
+- **Mode 3 is separate and smaller** (2638 w274: coherent low-level residual
+  sweeping a wide window that already passes the gate).
 
-## Failure mode 2 — τ collapse on tight clusters
+Diagnostic harness and full verdict: `scratch/stage5-cluster-fit-quality/`
+(`diagnose.py`, `audit_probe.py`, `refit_probe.py`, `DIAGNOSTIC_VERDICT.md`).
 
-**Evidence.** 655 w385 (`f655_w0385.png`): K=2, **τ = 0.63 µs**, the cluster
-structure washed into a broad blob (χ²ᵣ 55). 655 w391 (`f655_w0391.png`): K=1,
-**τ = 0.63 µs**, a manifestly sharp line modeled far too broad, leaving a spike
-at line centre. Both τ are far below the 655 band majority (~3–5 µs) — the
-per-window fit walked into a low-τ (fast-decay, broad-line) basin where a few
-broad components smear over many sharp lines.
+## Resolution (modes 1 + 4) — remove the per-window peak cap
 
-**Root-cause candidates.**
-- The shared-τ NLS on a tight cluster is degenerate: dropping τ broadens every
-  line so K broad lines approximate K′>K sharp ones at lower χ² in a wrong
-  basin. This is usually a **symptom of under-fitting the cluster** (too few
-  peaks → the fit compensates with low τ), linking mode 2 to mode 1.
-- The bidirectional Gaussian τ-prior penalty (anchored on the Stage 2b
-  `τ_maj`) is too weak on the low side to hold τ near the band majority — the
-  penalty λ / decay factor are first-try 2638 values (penalty-tuning debt,
-  [`stage5-fitting.md`]).
+The `n_eff` starvation that drives modes 1 + 4 is **caused by the per-window
+peak cap**, not by the accept gate alone. Two coupled caps defaulted to 8:
+`stage4.clustering.max_peaks_per_window` (the Stage-4 split target) and
+`stage5.conservative.max_peaks` (the add-loop cap), the first tracking the
+second. On a dense forest the cap chops one physical cluster into several narrow,
+few-point windows; each fragment has a small `n_eff`, and the AICc-with-`n_eff`
+gate then misbehaves on *both* sides — it under-fits some fragments (parking real
+lines) and over-fits others (packing weak near-resolution peaks). The over-fit
+and the under-fit are the same starvation seen on neighbouring slices of one
+cluster.
 
-**Approach.**
-- Treat a converged **τ ≪ band τ_maj with a high residual** as a diagnostic
-  signal, not an accepted fit: either re-fit with τ pinned at the band-local
-  `τ_maj` (`fit_tau=False`) and let the peak count absorb the structure, or
-  add a low-side τ-prior floor (strengthen the bidirectional penalty's
-  short-τ arm; the prior asymmetric-τ prototype targeted the *high* side and
-  was null on the bulk — the low side is the unexamined arm).
-- Couple with mode 1: when τ-collapse is detected, prefer adding cluster peaks
-  (rescue) over accepting the broad blob. Quantify on the 655 / 363 dense
-  clusters; gate on the SNR-aware metric so the dense bulk does not regress.
+The fix is to **bound a window by `max_window_width_mhz` (default 40) alone** and
+remove the peak cap: both `max_peaks_per_window` and `conservative.max_peaks`
+default to `0` ( = "no cap"). With more informative bins per window the
+perplexity `n_eff` is large enough that the gate self-regulates K, fixing
+under- and over-fit together. A positive value restores an explicit cap (power
+users / diagnostics); the two should then be set together.
 
-## Failure mode 3 — imperfect frozen-skirt shape
+**Structural evidence (363, 31246–31260 MHz).** This ≈11 MHz region holds ≈37
+promoted peaks — far over any 8-peak cap — so the cap split it into seven
+contiguous fragments (inter-window gap = one grid step). The fragments fit
+inconsistently: **w197** (1.0 MHz, 3 free peaks) over-fit to **K=5**, while its
+immediate neighbours **w196 / w198** (≈2 MHz, 7 free peaks each) under-fit to
+**K=1** at χ²ᵣ **58 / 25**. Bounded by width alone the region forms a few wide
+windows the gate resolves cleanly.
 
-**Evidence.** 2638 w274 (`f2638_w0274.png`): K=2, τ 3.6 µs, a coherent *sloped*
-residual sweeps the whole window despite the edge-free contributor — the skirt
-is subtracted but its shape does not quite match, leaving a low-order coherent
-remainder.
+**Bounded, not a mega-window.** The width cap (and the width-bounded
+strong-cluster merge) is what prevents a dense ultra-high-SNR spectrum from
+collapsing into one GHz-scale window — *not* the peak cap. The documented 655
+force-merge runaway was the unbounded strong-cluster merge, governed by the
+width cap (see [[stage4-mega-window-and-chi2-snr-floor]]); with the peak cap
+removed and the 40 MHz width cap intact, 655 stays bounded (widest window
+≈ 38.7 MHz) and its SNR-aware pass *improves*. Windows now settle at K ≈ 2–19
+on their own and bind on width, not peak count — the cap was almost pure
+downside.
 
-**Root-cause candidates.**
-- A contributor is missing: a bright neighbour whose skirt reaches the window
-  was not attached (below the magnitude-attachment threshold) or fell outside
-  the `max_edge_free_neighbors` cap.
-- The frozen skirt is evaluated at the **dependent window's τ** (the `h_T`
-  "one τ per window" contract). A contributor from a different band has a
-  different physical τ, so its skirt shape is mismodeled — an edge-free
-  contributor could carry its *own* band-local τ for the skirt evaluation.
-- The leakage-wing baseline is `const` (order 0); a residual *slope* wants
-  order 1, which the baseline can already fit but only fires by edge coherence.
+### Validation (SNR-aware metric, F=3.0, κ=0.05; bulk = windows snr_max < 100)
 
-**Approach.** For each imperfect-skirt window, separate the two signatures: a
-*slope* points at the baseline order (does a linear baseline clear it without
-harming the const-baseline wins?); a *curved skirt remainder* points at the
-single-τ skirt model (try a per-contributor τ in `evaluate_edge_free_contributors`
-/ the frozen-background evaluation). Check whether a missing contributor
-explains it before changing the skirt model. A/B against the baseline-on
-pipeline so baseline and skirt do not double-count (the same O2 discipline the
-accept/reject gate already enforces).
+Full Stage 4 + Stage 5 re-fit. The table isolates the **cap effect** as a single
+variable — the candidate-local lever is held *on* in both columns, the cap goes
+8 → 40 — so the gain is attributable to the cap alone. It improves or holds the
+overall pass on **every** issue-#3 fixture; the dense fixtures gain most and the
+healthy 2638 control holds at 1.0.
 
-## Failure mode 4 — weak peaks dropped in strong-line windows
+| fixture | overall pass (cap 8 → 40) | bulk median χ²ᵣ |
+|---|---|---|
+| **363** | 0.779 → **0.871** | 1.96 → 1.46 |
+| 2638 | 1.000 → 1.000 | 1.27 → 1.25 |
+| 360 | 0.958 → **0.979** | 1.42 → 1.37 |
+| **1231** | 0.886 → **0.969** | 1.34 → 1.27 |
+| 1512 | 0.953 → **0.995** | 1.36 → 1.35 |
+| 1019 | 0.967 → 0.967 | 1.29 → 1.29 |
+| **655** | 0.856 → **0.914** | 1.21 → 1.13 |
 
-**Evidence.** Even in otherwise-good strong-line fits, clear weaker peaks are
-left completely unmodeled: 1019 w046 (`f1019_w0046.png`, K=1 at SNR 21071) shows
-3 — possibly 4 — unfit lines in the |residual|; 655 w442 (`f655_w0442.png`,
-K=2 at SNR 43814/13245) leaves a clear weaker line beside the doublet; 1019 w006
-(`f1019_w0006.png`, SNR 5779) and 655 w380 leave secondary residual peaks. In
-every case the unfit peaks stand *above 3σ_c* in the |residual| panel — they are
-plainly fittable, not noise.
+Two refinements beyond the table, both in the shipped direction: (a) going fully
+**unbounded** (the shipped default) pushes the densest fixture further — 363
+reaches **0.886** — and stays bounded (363 windows ≤ 40 MHz; 655 ≤ 38.7 MHz);
+(b) the shipped default additionally **drops** the candidate-local lever
+(cap-only), which is neutral-to-small here — the lever's standalone contribution
+is ≤ 0.017 on 363, so the cap is the dominant effect. The shipped `cap = 0`
+default is confirmed on the 2638 control (overall pass **1.000**, max K = 13,
+i.e. the uncapped loop does not over-fit a healthy window).
 
-**The tell.** These windows' χ²ᵣ is large in absolute terms (2875, 55025, ...)
-yet *far below* the SNR-aware allowance set by the dominant line
-(`(κ·SNR_max)²` is ~10⁵–10⁶ here), so the window **passes the acceptance gate**
-and nothing pushes the fit to add the weaker lines.
+### Cost and the persisted-settings caveat
 
-**Root-cause candidate.** The conservative add-one-peak loop and the
-residual-rescue both judge a candidate by its *global* χ² reduction (the F-test
-/ significance ratio over the whole window). A strong line's residual dominates
-that denominator, so a weak line's real-but-small absolute reduction never
-clears the relative threshold — it is dropped for "insufficient χ² reduction"
-even though its own residual prominence is many σ. The global chi²-improvement
-ratio is the wrong statistic in a high-dynamic-range window.
+- **Cost.** Wide, high-K windows make the dense fixtures ≈5× slower (363 / 655
+  ≈16–17 min; sparse fixtures are unaffected). The win is correctness; the cost
+  is an optimization. The lever is **smarter NLS** in `fit_window` /
+  `knockout_test` / `merge_close_peaks_cleanup`: a banded/sparse Jacobian with
+  `tr_solver='lsmr'` (a Lorentzian's derivative is negligible beyond a few
+  FWHM), warm-starting the O(K) knockout/merge refits from the K-peak solution
+  instead of re-seeding, and `x_scale='jac'`. Sequence it *after* this
+  correctness change so a perf change and a behaviour change are not conflated.
+- **Persisted settings.** Resolved settings persist into the `.ftmw` file and
+  *persisted outranks the hard default*, so an existing file that already stored
+  `max_peaks = 8` keeps the old behaviour until it is re-assigned with an
+  explicit override (or re-imported). New files get the width-bounded default
+  automatically. This is the documented resolution contract, not a regression.
 
-**Approach.** Add a **candidate-local** acceptance/nomination criterion:
-residual prominence at the candidate offset measured against the Stage 2 σ over
-a few local bins (a local SNR / Rayleigh test), independent of the window's
-global χ². A candidate that clears the local-SNR bar is nominated and kept even
-when its global χ²-ratio is buried by a brighter line. This is the natural
-complement to mode 1 (both surface as missing peaks; mode 1's missing line is a
-comparable-strength blend partner gated by detection/separation, mode 4's is a
-weaker line gated by the global significance ratio). Validate that the local
-criterion does not inflate false positives on the dense forest (655/363) — gate
-on the SNR-aware metric and, on the VC fixtures, on catalog membership of the
-recovered lines.
+## Superseded / deferred — candidate-local accept (modes 1 + 4 lever)
 
-## Cross-cutting constraints
+Before the cap was identified as the root cause, a **candidate-local accept**
+path was prototyped in `conservative_fit` (`ConservativeSubSettings.
+local_accept_snr`, default 4.0): when the global AICc-with-`n_eff` gate rejected
+a well-separated, F-significant candidate that stood ≥ 4 σ_c over the model in
+its own residual bin, the loop accepted it anyway. It patched the *symptom* (the
+gate dropping real lines on a starved window) rather than the *cause* (the
+starvation). Removing the cap subsumes it: on 363 it lifted the overall pass
+0.735 → 0.779 where the cap removal alone reaches 0.886, and adding it on top of
+the cap removal buys only +0.017 (0.854 → 0.871 measured at cap-40) at ≈2× the
+dense-fixture wall-clock (it adds peaks → more rescue/knockout sweeps).
 
-- **No numeric-default regressions.** Issue #3 confirmed the Stage 2–5 defaults
-  generalize; gate every change on the SNR-aware metric
-  (`fitting/validation.py`, F=3.0, κ=0.05) and on the healthy controls
-  (2638 w105/w106 byte-stable, dense-forest bulk medians flat-or-improved),
-  reusing `scratch/stage4-leakage-contributor/validate.py` and the issue-#3
-  rerun harness.
+It is therefore **deferred, not deleted**: revisit it once the NLS speedup makes
+its cost negligible, to catch any residual narrow-window case the gate still
+misses. The full implementation (impl + settings + serialization + scan knob +
+viz) is preserved at
+`scratch/stage5-cluster-fit-quality/leverA-mode1plus4.patch`. A second lever,
+**evaluating the AICc on `n_data` instead of `n_eff`**, was falsified (runaway
+peak-adding; the `n_eff` correction is the load-bearing anti-overfit guard the
+sub-resolution work relies on — [[stage5-subresolution-overfit-discriminant]]).
+
+## Open — mode 2 (τ collapse) and mode 3 (skirt shape)
+
+- **O2′ (supersedes the original O2 / mode-2 approach).** Re-diagnose 655's
+  τ-collapse: is it an unresolved blend (needs cluster lines that sit under the
+  broad-τ basin set during seeding) or a band-mismatched contributor-τ pedestal
+  (the frozen skirt evaluated at the wrong τ)? The τ-pin and low-side τ-floor
+  levers are falsified; do not re-propose them. Likely entry points: the
+  blend-aware seeder (escape the low-τ basin before the add-loop) and
+  per-contributor τ in `evaluate_edge_free_contributors` (mode 3's lever, here
+  masquerading as τ-collapse). Re-check 655's τ-collapse windows now that the
+  cap removal merges their fragments — some may resolve as the blend they were.
+- **O3 (mode 3).** For the imperfect-skirt windows, separate a *slope*
+  (baseline order) from a *curved skirt remainder* (single-τ skirt model); try
+  the cheapest sufficient lever first, A/B against the baseline-on pipeline so
+  baseline and skirt do not double-count.
+
+## Cross-cutting constraints (unchanged)
+
+- **No numeric-default regressions.** Gate every change on the SNR-aware metric
+  (`fitting/validation.py`, F=3.0, κ=0.05) and the healthy controls (2638
+  holds at 1.0, dense-forest bulk medians flat-or-improved).
 - **Use the Stage 2 σ array** for any noise normalization; never a local
   heuristic.
-- **Verify against physics**, not the fit's own χ²ᵣ: a recovered line on a VC
-  fixture (655 / 1512) should match the vinyl-cyanide catalog; a τ should be
-  band-physical.
-
-## Open questions
-
-- O1 — is mode 1 a detection (Stage 3) gap or a rescue-nomination gap? The
-  lever differs (promote vs rescue).
-- O2 — does τ-collapse resolve by adding peaks (mode-1 lever) or by a low-side
-  τ floor, and which generalizes across the SNR range?
-- O3 — does the imperfect skirt need a per-contributor τ, more contributors,
-  or just a linear baseline? Cheapest sufficient lever first.
-- O4 — does a candidate-local SNR/Rayleigh acceptance criterion recover the
-  mode-4 weak lines without inflating false positives on the dense forest? Is it
-  better placed in the conservative loop, the rescue nomination, or both?
-
-## Tasks
-
-1. Diagnostic pass: classify each post-fix worst-ε window into modes 1/2/3/4
-   and, for the missing-peak modes, which gate dropped the line; record the
-   per-window verdict.
-2. Mode 1: residual-rescue nomination / seeding fix (+ SNR-aware no-regression).
-3. Mode 2: τ-collapse detector + low-side prior or peak-add re-fit.
-4. Mode 3: per-window slope-vs-curvature triage → baseline order / contributor
-   set / per-contributor skirt τ.
-5. Mode 4: candidate-local SNR/Rayleigh acceptance criterion in the
-   conservative loop and/or rescue nomination, so a weak line is kept on its own
-   residual prominence rather than a global χ²-ratio buried by a brighter line.
-6. Cross-fixture rerun + controls; update this doc to an implementation
-   overview; reconcile ROADMAP / STATUS.
+- **Verify against physics**, not the fit's own χ²ᵣ.
