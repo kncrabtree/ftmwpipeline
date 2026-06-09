@@ -1,8 +1,107 @@
 # Plan: Stage 5 NLS performance
 
-Status: **proposed.** No code written. Consolidates the performance levers for
-the per-window nonlinear least-squares fit, which is the dominant wall-clock cost
-on a dense fixture (655 ≈10 min, 363 ≈16 min).
+Status: **partially resolved.** Lever 4 (`x_scale='jac'`) is shipped. Levers 1
+(BLAS threads) and 0 (geometric-batch add-loop) were prototyped and measured to
+be, respectively, null and a net regression — see *Measured outcomes* below.
+Consolidates the performance levers for the per-window nonlinear least-squares
+fit, the dominant wall-clock cost on a dense fixture (655 ≈10 min, 363 ≈16 min).
+
+## Measured outcomes (issue-3 fixtures, capture/replay on real windows)
+
+The cost model the lever ranking assumed — many *large* sequential solves whose
+cumulative cost is `O(K³)` per window — **did not hold** when measured on a
+captured subset of real 655 windows (`scratch/stage5-nls/`, `capture_windows.py`
++ `replay_bench.py` replay `conservative_fit` on its recorded call args, the
+self-contained ~97 % path). On the heavy subset (K up to 39, median 12) the
+add-loop already self-compresses to **~8 `fit_window` calls per window** (the
+blend-aware seeder and patience/tentative batching, not one-per-candidate), and
+each solve converges in **~11 nfev** — nothing approaches `DEFAULT_MAX_NFEV`. So
+the per-window cost is iteration-and-overhead bound across *many small* solves,
+not a few large ones.
+
+- **Lever 4 — `x_scale='jac'` (SHIPPED).** Trust-region scaling by the Jacobian
+  column norms. The fit parameters span amplitude ~1e3, offset ~1e-2 MHz, phase
+  ~1, tau ~5, so uniform scaling conditions the step poorly. Measured **−36 %
+  solver evaluations / −17 % wall** on the heavy 655 subset (a few percent on
+  light windows) for an identical converged minimum. Cross-fixture metric holds
+  (1019/1512 pass 1.000 unchanged, bulk χ²ᵣ unchanged; dense fixtures confirmed
+  separately). Perf-with-negligible-perturbation: the fitted line set is
+  unchanged within solver tolerance.
+- **Lever 2b-assembly — vectorise the model/Jacobian over peaks (SHIPPED,
+  byte-identical).** A cProfile of the replay pinned the per-window cost: the
+  largest self-time is the line-shape assembly (`h_T` + `h_T_jacobian` ≈ 14 %)
+  with another ~15 % of scattered Python dispatch (`PeakShape.coerce` called
+  144 k times, the per-peak `h_T_shape` wrapper, `_unpack`), while the actual
+  TRF solve (`svd`) is only ~6 %. `model_spectrum` and `model_jacobian` now
+  evaluate every line in one broadcast over the `(K, M)` offset grid (one
+  `h_T_shape` / `h_T_shape_jacobian` call, shape coerced once) instead of a
+  Python loop of K per-peak calls. **Byte-identical** (peak-set fingerprint
+  unchanged; full suite 1247 green) for **−8 % wall on the dense 655 heavy
+  subset** (6.16→5.65 s). Note `model_spectrum` alone was ~0 (its self-overhead
+  is below noise); `model_jacobian` carried it (two line-shape calls per peak +
+  the column fills). The transcendental `exp` FLOPs themselves are unchanged --
+  only banding (below) reduces those.
+- **Lever 1 — pin BLAS threads (NULL, not pursued).** OpenBLAS (16 cores, no
+  thread env) leaves these `2M × 3K+1` Jacobians **single-threaded already** —
+  the matrices are below its threading threshold. Default vs
+  `OPENBLAS_NUM_THREADS=1` are **byte-identical in result and within noise in
+  time** on both light and heavy subsets (7.52 s vs 7.49 s). The full-pipeline
+  ~1300 % CPU seen at default comes from large-array ops *outside*
+  `conservative_fit` (the active-FT FFT, window materialisation), a small share
+  of the 10-min wall — so pinning frees cores on a shared host but does not
+  speed the fit.
+- **Lever 0 — geometric-batch add-loop (NET REGRESSION, not shipped).**
+  Prototyped (doubling batch by residual prominence, bisection-on-reject, same
+  AICc gate; `scratch/stage5-nls/window_fit_xscale_plus_batch.patch`). On the
+  heavy 655 subset it was **slower (8.4 s vs 7.5 s) and over-added peaks (116 vs
+  103, count drift on 7/40 windows)**. Two compounding reasons: (a) the
+  incremental loop re-evaluates the residual after *each* add, so sidelobe
+  candidates vanish before they are considered — a batch ranked off a *stale*
+  pre-fit residual seeds those sidelobes, and the per-batch joint AICc gate
+  accepts them as a group the strong members carry; (b) the extra peaks inflate
+  every subsequent joint Jacobian, so the call-count saving (fewer, larger
+  solves) is outweighed. A prune-augmented batch (drop knockout-unsupported
+  members per batch) could recover correctness but adds the solves back, and —
+  given the loop is already only ~8 solves/window — cannot beat incremental.
+  The premise (call-count is the cost) is the part that failed.
+- **Lever 2a — frequency-window decomposition (FIXTURE-DEPENDENT, not shipped).**
+  Prototyped (`scratch/stage5-nls/window_fit_2a_decompose.patch`): cluster the
+  candidate offsets by line-coupling range, grow each cluster on its own
+  sub-band with τ fixed, then one τ-free whole-window joint polish; gate each
+  cluster against its sub-window null (the whole-window loop force-accepts only
+  the single global strongest seed). The coupling range must be **amplitude- and
+  shape-aware**: a Lorentzian dispersive wing falls only as ``1/Δ`` so a strong
+  line couples to distant weak peaks (radius ∝ amplitude / SNR); a Gaussian wing
+  falls as ``exp(-(Δ/σ)²)`` so its radius is a fixed few-FWHM regardless of
+  amplitude. With a *fixed* FWHM cutoff a strong line is wrongly split off and
+  its unmodelled wing is absorbed by spurious peaks in the neighbouring cluster
+  (655 over-added 2→7 on a heavy window); the amplitude-aware radius fixed that
+  (heavy-window peak-set mismatches 25→12 of 40). **But it does not generalise.**
+  The decisive measurement is **wall vs nfev**: on the 655 heavy subset
+  decomposition cut nfev −59 % (2291→946) but wall only −10 % (6.16→5.53 s) —
+  the per-window cost is dominated by **fixed per-`fit_window` overhead + the
+  O(M·K) model assembly** (the transcendental ``h_T`` evals over the grid), not
+  the O(M·K²) solve. So decomposing the *solve* saves little while the
+  per-cluster machinery (an extra null fit + seed + gate per cluster, plus the
+  joint polish + knockout) *adds* overhead. It nets a marginal ~10–13 % only on
+  the most expensive Lorentzian-dense windows (655); on **363 (Gaussian), where
+  fits already converge fast, it is ~2× *slower* and over-adds (67→87 lines)**.
+  It is also a behaviour change — the AICc accept gate's ``n_eff`` is global
+  (perplexity over the whole-window model), so the per-cluster gate shifts
+  marginal accept/reject decisions and relies on the downstream
+  ``iterative_aicc_cleanup`` / merge / knockout to prune the over-adds (the
+  cross-fixture metric held on 1019/1512/655 but is not byte-identical).
+  Net: reverted. The amplitude/shape-aware coupling model is correct physics and
+  worth keeping in mind, but window decomposition is the wrong place to spend it.
+
+**The cross-cutting lesson** from 0 and 2a: the per-window cost is **fixed
+per-call overhead + O(M·K) assembly bound**, not the O(M·K²) solve and not the
+call count. Reducing solve size (2a) or call count (0) therefore yields little,
+while x_scale (fewer iterations of that fixed-cost-per-iteration assembly) is the
+modest win that survives. The only remaining large lever is attacking the
+**assembly cost itself** — evaluating each peak's ``h_T`` / Jacobian only over
+its local support so per-iteration assembly drops from O(M·K) toward
+O(M·support). That perturbs results (tail truncation) → needs the metric gate.
 
 The cost is the **conservative add-one-peak loop**, not any one stage: removing
 the peak cap ([`stage5-cluster-fit-quality.md`](stage5-cluster-fit-quality.md))
@@ -100,7 +199,35 @@ plus wall-clock. Lever 2 changes the numbers slightly (tail truncation) and must
 additionally pass the SNR-aware cross-fixture metric + the 2638 control, like any
 fit-behaviour change.
 
+The lever descriptions above are the original intent; *Measured outcomes* at the
+top records which survived contact with the fixtures. Lever 4 shipped; levers 0,
+1, and 2a are closed (regression / null / fixture-dependent). The framing of
+those levers — that the add-loop runs `O(K)` large sequential solves, that the
+Jacobians are large enough to thread, and that the solve size is the cost — is
+the part the measurement falsified. The cost is fixed per-call overhead + the
+O(M·K) per-iteration model assembly.
+
 ## Task breakdown
 
-Deferred. Start with lever 1 (a clean timing A/B; cheapest, reversible) before
-the structural levers.
+- **Done:** lever 4 (`x_scale='jac'`, shipped in `fit_window`); levers 0, 1, and
+  2a prototyped and closed (see *Measured outcomes*).
+- **Next: attack the assembly cost (lever 2b — local-support model/Jacobian
+  evaluation).** This is the one lever aimed at the measured bottleneck. On a
+  wide 24–40 MHz window each peak's `h_T` (and its Jacobian columns) is
+  evaluated over the *full* grid every residual/Jacobian call, but the line
+  shape is ~0 beyond a few FWHM (Gaussian) / a wing that is cheap to bound
+  (Lorentzian). Restricting each peak's contribution to a ±N-FWHM band around
+  its centre drops the per-iteration assembly from O(M·K) toward O(M·support),
+  and this is the term the wall-vs-nfev measurement showed dominates. Unlike 2a
+  it does **not** restructure the selection or the gate — same peaks, same
+  add-loop, just a faster model/Jacobian — so the only perturbation is tail
+  truncation, gated on the cross-fixture metric + the 2638 control. Candidate
+  implementation: a banded `model_spectrum` / `model_jacobian` that sums only
+  each peak's in-band rows; validate against the dense (Lorentzian wing) and the
+  bright-line (long-wing) cases where truncation bites hardest.
+- **Lower priority:** lever 5 (short-circuit provably-supported knockouts) and
+  trimming the rescue rounds' repeated full-window work (`iterative_aicc_cleanup`
+  is `O(K²)` refits per round) — call-count multipliers in the orchestration, but
+  each `fit_window` there is itself assembly-bound, so 2b compounds with them.
+  Lever 3 (warm-start) offers little: the cleanup refits already seed from the
+  K-fit peaks minus one.
