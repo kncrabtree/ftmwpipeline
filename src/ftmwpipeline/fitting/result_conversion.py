@@ -428,16 +428,20 @@ def window_outcome_to_fitting_result(
     # this window, the order, the triggering S_coh, and the fitted complex
     # coefficients. ``quality_metrics`` is ``Dict[str, float]``, so each
     # coefficient is recorded as a pair of scalar ``baseline_coeff{k}_re`` /
-    # ``_im`` entries (``baseline_order`` says how many to expect).
-    if getattr(outcome, "baseline_applied", False):
-        coeffs = np.asarray(outcome.baseline_coeffs, dtype=np.complex128)
+    # ``_im`` entries (``baseline_order`` says how many to expect). The inner
+    # fit is the authority for the order / coefficients / scale: the early
+    # (conservative-phase) baseline rides through the rescue chain's joint
+    # refits, which re-fit its coefficients after the outcome's audit mirror
+    # was stamped.
+    if inner.baseline_order is not None and inner.baseline_coeffs is not None:
+        coeffs = np.asarray(inner.baseline_coeffs, dtype=np.complex128)
         result.quality_metrics["baseline_applied"] = 1.0
-        result.quality_metrics["baseline_order"] = float(outcome.baseline_order or 0)
+        result.quality_metrics["baseline_order"] = float(inner.baseline_order)
         result.quality_metrics["baseline_edge_coherence"] = float(
-            outcome.baseline_edge_coherence
+            getattr(outcome, "baseline_edge_coherence", 0.0) or 0.0
         )
         result.quality_metrics["baseline_offset_scale"] = float(
-            outcome.baseline_offset_scale or 0.0
+            inner.baseline_offset_scale or 0.0
         )
         for k, c in enumerate(coeffs):
             result.quality_metrics[f"baseline_coeff{k}_re"] = float(c.real)

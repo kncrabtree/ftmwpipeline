@@ -683,6 +683,32 @@ def baseline_basis(
     return cast(np.ndarray, np.vander(x, order + 1, increasing=True))
 
 
+def evaluate_baseline(
+    fit: "WindowFitResult", offset_grid_mhz: np.ndarray
+) -> np.ndarray:
+    """A fit's complex-baseline contribution on a grid (zeros when none).
+
+    The baseline is part of the fit's *model* (``fitted_spectrum`` includes
+    it), but consumers that re-evaluate the model from ``fit.peaks`` via
+    :func:`~ftmwpipeline.fitting.peak_model.model_spectrum` -- the rescue's
+    residual detector, the knockout sweep's K-fit chi-squared -- would
+    otherwise drop it and see the carried pedestal as residual.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    if (
+        fit.baseline_order is None
+        or fit.baseline_coeffs is None
+        or not fit.baseline_offset_scale
+    ):
+        return np.zeros(u.size, dtype=np.complex128)
+    basis = baseline_basis(
+        u, int(fit.baseline_order), float(fit.baseline_offset_scale)
+    )
+    return cast(
+        np.ndarray, basis @ np.asarray(fit.baseline_coeffs, dtype=np.complex128)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Parameter packing
 # ---------------------------------------------------------------------------
@@ -1611,7 +1637,12 @@ def knockout_test(
 
     tau = fit.tau_us
     shape_resolved = fit.shape
-    full_model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
+    # The K-fit model must carry the fit's baseline term (when one was fit
+    # jointly): the (K-1) refits below inherit it via ``fit_kwargs_inner``,
+    # so a peaks-only K side would unfairly carry the pedestal as misfit.
+    full_model = model_spectrum(
+        u, peaks, tau, acquisition_us, shape=shape_resolved
+    ) + evaluate_baseline(fit, u)
     full_chi2 = calculate_noise_weighted_chi2(z_keep, sigma_keep, full_model[keep])
 
     # n_eff is keyed on the K-fit's model magnitude -- the same value the
@@ -1823,6 +1854,8 @@ def _blend_aware_seed(
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    baseline_order: Optional[int] = None,
+    baseline_offset_scale: Optional[float] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1904,6 +1937,9 @@ def _blend_aware_seed(
         shape=shape_resolved,
         spur_mask=spur_mask,
     )
+    if baseline_order is not None:
+        fit_kwargs["baseline_order"] = int(baseline_order)
+        fit_kwargs["baseline_offset_scale"] = baseline_offset_scale
     fit1 = fit_window(
         offset_grid_mhz,
         complex_spectrum,
@@ -2100,6 +2136,7 @@ def conservative_fit(
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    baseline_order: Optional[int] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2300,6 +2337,18 @@ def conservative_fit(
     effective_tau_penalty_lambda = constraints.effective_tau_penalty_lambda
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
+    # Joint complex-baseline nuisance term for every inner fit (seeder
+    # escalations, add-loop trials, knockout refits). On a window whose data
+    # carries a smooth leakage pedestal the peaks-only model otherwise buys
+    # chi-squared by collapsing the shared tau onto the pedestal, which
+    # poisons every downstream decision (separations measured in a ballooned
+    # FWHM, the rescue consolidating onto bound-pinned absorbers). The
+    # caller triggers this (see ``fit_window_with_fixed_contributors``).
+    baseline_offset_scale: Optional[float] = None
+    if baseline_order is not None and u.size:
+        baseline_offset_scale = float(np.max(np.abs(u))) or 1.0
+        fit_kwargs_inner["baseline_order"] = int(baseline_order)
+        fit_kwargs_inner["baseline_offset_scale"] = baseline_offset_scale
 
     remaining = sorted(
         candidate_offsets,
@@ -2361,6 +2410,8 @@ def conservative_fit(
         shape=shape_resolved,
         spur_mask=spur_mask,
         gate_budget_extra=budget,
+        baseline_order=baseline_order,
+        baseline_offset_scale=baseline_offset_scale,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
@@ -2384,10 +2435,15 @@ def conservative_fit(
         )
         remaining.remove(cand)
 
+        # Test only the candidate's distance to the peaks already in the
+        # model. Existing-vs-existing pairs are policed by the blend seeder's
+        # own collapse check and the merge tiers -- and those legitimately
+        # admit pairs down to 0.5 FWHM, below this check's 1.0 FWHM bar, so
+        # including them here would poison the check and reject every later
+        # candidate wholesale (the deep-skirt windows lost their real
+        # Stage 3 lines exactly this way).
         existing = [pk.offset_mhz for pk in in_model]
-        sep_ok, _ = validate_peak_separation(
-            np.asarray(existing + [cand]), min_separation
-        )
+        sep_ok = all(abs(e - cand) >= min_separation for e in existing)
         if not sep_ok:
             audit.append(
                 AddStep(
@@ -2433,6 +2489,40 @@ def conservative_fit(
             spur_mask=spur_mask,
             **fit_kwargs_inner,
         )
+        # Post-fit collapse check, mirroring the blend seeder's: the NLS can
+        # migrate a legitimately-separated candidate onto an existing bright
+        # core and converge to the cancelling near-duplicate pair (huge
+        # opposite-phase amplitudes buying raw chi-squared) -- the same
+        # degenerate solution the seeder rejects on its escalations. Drop the
+        # candidate outright (NOT into the tentative batch, where it would
+        # re-collapse inside every later trial).
+        if trial.success and trial.n_peaks >= 2:
+            sep_eff = _effective_min_pair_separation(
+                fwhm,
+                acquisition_us,
+                min_pair_separation_factor,
+                min_pair_separation_resolution_factor,
+            )
+            sep_ok_post, _pairs = validate_peak_separation(
+                np.asarray([pk.offset_mhz for pk in trial.peaks]), sep_eff
+            )
+            if not sep_ok_post:
+                audit.append(
+                    AddStep(
+                        n_peaks_before=current.n_peaks,
+                        candidate_offset_mhz=cand,
+                        chi2_before=current.chi_squared,
+                        chi2_after=trial.chi_squared,
+                        f_statistic=0.0,
+                        p_value=1.0,
+                        aic_before=current.aic,
+                        aic_after=trial.aic,
+                        separation_ok=False,
+                        decision="reject",
+                        reason="trial fit collapsed peaks within min separation",
+                    )
+                )
+                continue
         p_value, f_stat, _ = calculate_chi_squared_improvement(
             current.chi_squared,
             trial.chi_squared,

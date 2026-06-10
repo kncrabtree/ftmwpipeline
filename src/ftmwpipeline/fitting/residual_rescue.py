@@ -62,6 +62,7 @@ from .window_fit import (
     _seed_peak,
     conservative_fit,
     derive_window_fit_constraints,
+    evaluate_baseline,
     fit_window,
     knockout_test,
 )
@@ -611,6 +612,8 @@ def iterative_aicc_cleanup(
     weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop the worst AICc-with-n_eff offender until every
     remaining peak is supported.
@@ -646,6 +649,18 @@ def iterative_aicc_cleanup(
     Returns ``(cleaned_fit, n_dropped)``. ``cleaned_fit`` is the
     last refit (or the input ``fit`` if nothing was dropped); ``n_dropped``
     is the number of peaks the iterative loop removed.
+
+    ``protected_offsets`` carries the offsets of peaks the rescue
+    *inherited* (the round-start set: Stage-3-seeded conservative peaks and
+    prior-round survivors). Their drop test runs without the
+    ``gate_budget_extra`` skirt budget on **both** sides of the comparison:
+    the budget exists to discount rescue-harvested skirt-fringe error, but
+    on a deep-skirt window it is proportional to the dominant |background|
+    and otherwise erases an inherited real line's entire evidence -- the
+    budgeted score then actively prefers dropping every inherited peak
+    (fewer parameters, no visible evidence lost) and the round consolidates
+    to a single absorber. Rescue-origin peaks (anything not matching a
+    protected offset within ``protected_tol_mhz``) keep the budgeted gate.
     """
     if fit.n_peaks == 0:
         return fit, 0
@@ -679,6 +694,17 @@ def iterative_aicc_cleanup(
     sigma_keep = sigma[keep]
     budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
 
+    protected = (
+        np.asarray(list(protected_offsets), dtype=float)
+        if protected_offsets is not None
+        else None
+    )
+
+    def _is_protected(offset_mhz: float) -> bool:
+        if protected is None or protected.size == 0:
+            return False
+        return bool(np.min(np.abs(protected - float(offset_mhz))) <= protected_tol_mhz)
+
     current = fit
     n_dropped = 0
     while current.n_peaks > 0:
@@ -693,28 +719,43 @@ def iterative_aicc_cleanup(
         # weighted and penalized branches of ``gate_aicc_pair`` consume them).
         cur_res_keep = np.asarray(current.residual)[keep]
         cur_model_keep = np.asarray(current.fitted_spectrum)[keep]
-        aicc_k, _ = gate_aicc_pair(
-            n_eff,
-            more_n_params=current.n_params,
-            less_n_params=current.n_params,
-            more_chi2_raw=current.chi_squared,
-            less_chi2_raw=current.chi_squared,
-            weighted=weighted,
-            more_residual=cur_res_keep,
-            less_residual=cur_res_keep,
-            rms_noise=sigma_keep,
-            weight_model=cur_model_keep,
-            n_eff_kind=n_eff_kind,
-            ref_reduced_chi2=current.reduced_chi2,
-            budget_extra=budget_keep,
+
+        def _aicc_k_for(budget_arg: Optional[np.ndarray]) -> float:
+            aicc, _ = gate_aicc_pair(
+                n_eff,
+                more_n_params=current.n_params,
+                less_n_params=current.n_params,
+                more_chi2_raw=current.chi_squared,
+                less_chi2_raw=current.chi_squared,
+                weighted=weighted,
+                more_residual=cur_res_keep,
+                less_residual=cur_res_keep,
+                rms_noise=sigma_keep,
+                weight_model=cur_model_keep,
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=current.reduced_chi2,
+                budget_extra=budget_arg,
+            )
+            return aicc
+
+        # Both sides of a peak's drop comparison must share one currency:
+        # budgeted for rescue-origin peaks, budget-free for protected
+        # (inherited) ones -- so the reference score is computed per currency.
+        aicc_k_budgeted = _aicc_k_for(budget_keep)
+        aicc_k_raw = (
+            _aicc_k_for(None) if budget_keep is not None else aicc_k_budgeted
         )
 
+        worst_margin = 0.0
         worst_aicc_km1 = float("inf")
         worst_idx = -1
         worst_refit: Optional[WindowFitResult] = None
         worst_is_null = False
 
         for i in range(current.n_peaks):
+            peak_protected = _is_protected(current.peaks[i].offset_mhz)
+            budget_i = None if peak_protected else budget_keep
+            aicc_k_i = aicc_k_raw if peak_protected else aicc_k_budgeted
             kept = [pk for j, pk in enumerate(current.peaks) if j != i]
             if not kept:
                 # Zero model -> residual is the data itself.
@@ -732,9 +773,10 @@ def iterative_aicc_cleanup(
                     weight_model=cur_model_keep,
                     n_eff_kind=n_eff_kind,
                     ref_reduced_chi2=current.reduced_chi2,
-                    budget_extra=budget_keep,
+                    budget_extra=budget_i,
                 )
-                if aicc_km1 < worst_aicc_km1:
+                if aicc_km1 - aicc_k_i < worst_margin:
+                    worst_margin = aicc_km1 - aicc_k_i
                     worst_aicc_km1 = aicc_km1
                     worst_idx = i
                     worst_refit = None
@@ -771,18 +813,22 @@ def iterative_aicc_cleanup(
                 weight_model=cur_model_keep,
                 n_eff_kind=n_eff_kind,
                 ref_reduced_chi2=current.reduced_chi2,
-                budget_extra=budget_keep,
+                budget_extra=budget_i,
             )
-            if aicc_km1 < worst_aicc_km1:
+            if aicc_km1 - aicc_k_i < worst_margin:
+                worst_margin = aicc_km1 - aicc_k_i
                 worst_aicc_km1 = aicc_km1
                 worst_idx = i
                 worst_refit = refit
                 worst_is_null = False
 
-        # REJECT-on-tie: keep the peak unless AICc(K-1) is strictly
-        # better than AICc(K). When both diverge to +inf (model not
-        # identifiable for either K), ``inf < inf`` is False -> stop.
-        if worst_idx < 0 or not (worst_aicc_km1 < aicc_k):
+        # REJECT-on-tie: keep the peak unless AICc(K-1) is strictly better
+        # than AICc(K) in that peak's own currency (``worst_margin`` starts
+        # at 0, so only a strictly-negative margin selects a drop; the
+        # both-+inf case reads as a tie and stops). Each currency's pair
+        # shares its reference score, so budgeted and budget-free
+        # comparisons never mix sides.
+        if worst_idx < 0:
             break
 
         n_dropped += 1
@@ -903,6 +949,9 @@ def attempt_residual_rescue(
     # Compute the residual ONCE, from the (frozen) initial fit. Use the
     # initial fit's own peaks + tau + shape here -- this is the actual model
     # the initial fit produced, regardless of whether its tau is physical.
+    # The fit's jointly-fit baseline term (when present) is part of that
+    # model: without it the carried pedestal would re-read as residual and
+    # the detector would nominate candidates on it.
     rescue_shape = current_fit.shape
     initial_model = model_spectrum(
         u,
@@ -910,7 +959,7 @@ def attempt_residual_rescue(
         current_fit.tau_us,
         acquisition_us,
         shape=rescue_shape,
-    )
+    ) + evaluate_baseline(current_fit, u)
     residual = z - initial_model
 
     # Tau policy for the rescue (basis and frozen-tau refit):
@@ -1370,6 +1419,19 @@ def rescue_and_consolidate(
     )
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
+    # A baseline the initial fit carries (the early conservative-phase
+    # leakage-wing term) stays in the model across the whole consolidation
+    # chain: the joint refit, the merge/knockout refits, and the iterative
+    # cleanup all re-fit it jointly, so removing a peak never re-exposes
+    # the pedestal as that peak's "evidence".
+    if (
+        initial_fit.fit.baseline_order is not None
+        and initial_fit.fit.baseline_offset_scale
+    ):
+        fit_kwargs_inner["baseline_order"] = int(initial_fit.fit.baseline_order)
+        fit_kwargs_inner["baseline_offset_scale"] = float(
+            initial_fit.fit.baseline_offset_scale
+        )
 
     current = initial_fit
     rounds: List[RescueRoundDiagnostics] = []
@@ -1386,6 +1448,10 @@ def rescue_and_consolidate(
         n_initial = len(current.peaks)
         chi2_before = current.fit.chi_squared
         tau_before = float(current.fit.tau_us)
+        # Inherited (round-start) peak offsets: the cleanup judges these in
+        # budget-free currency (see ``iterative_aicc_cleanup``); only this
+        # round's rescue-origin additions face the skirt budget.
+        inherited_offsets = [float(pk.offset_mhz) for pk in current.fit.peaks]
 
         rescue = attempt_residual_rescue(
             u,
@@ -1538,6 +1604,11 @@ def rescue_and_consolidate(
         # refit); the iterative loop redistributes the dropped peak's
         # contribution and re-evaluates, so a cluster of N duplicates
         # of one real feature converges to a single supported peak.
+        # Grid spacing for the +/-1-bin tolerance used in the protected-peak
+        # matching, the rescue-survival check below, and the blacklist.
+        u_sorted = np.sort(u)
+        df_mhz = float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
+        survival_tol = max(df_mhz, 1e-3)
         pruned_fit_candidate, n_pruned_total = iterative_aicc_cleanup(
             u,
             z,
@@ -1548,12 +1619,9 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
             gate_budget_extra=gate_budget_extra,
+            protected_offsets=inherited_offsets,
+            protected_tol_mhz=survival_tol,
         )
-        # Grid spacing for the +/-1-bin tolerance used in both the
-        # rescue-survival check below and the across-rounds blacklist.
-        u_sorted = np.sort(u)
-        df_mhz = float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
-        survival_tol = max(df_mhz, 1e-3)
         # Two-purpose bookkeeping:
         #
         # (1) Failsafe counter ``n_pruned_rescue_origin``: how many
