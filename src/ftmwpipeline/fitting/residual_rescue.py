@@ -1713,6 +1713,15 @@ def rescue_and_consolidate(
 
         chi2_after = pruned_fit.chi_squared
         tau_after = float(pruned_fit.tau_us)
+        # A round must EARN its install: the consolidated fit replaces the
+        # round-start fit only on a strict raw chi-squared improvement. The
+        # joint refit relaxes every parameter (including tau, whose penalty
+        # anchor can drag it off the data-preferred value), and the cleanup
+        # can prune the round back to nothing gained -- without this guard
+        # such a round still installed a strictly worse fit. Rejected rounds
+        # leave ``current`` untouched; their candidates are already
+        # blacklisted above, so the loop converges rather than re-proposing.
+        round_improves = chi2_after < chi2_before
         reason_parts: List[str] = []
         if n_pruned_total > 0:
             reason_parts.append(f"knockout pruned {n_pruned_total} peak(s)")
@@ -1722,27 +1731,31 @@ def rescue_and_consolidate(
             reason = "joint refit consolidated rescue contribution"
         else:
             reason = "joint refit + " + " + ".join(reason_parts)
+        if not round_improves:
+            reason += " (rejected: consolidated chi-squared did not improve)"
         rounds.append(
             RescueRoundDiagnostics(
                 round_idx=round_idx,
                 rescue=rescue,
                 joint_fit=joint,
                 joint_knockouts=joint_knockouts,
-                pruned_fit=pruned_fit,
-                pruned_knockouts=pruned_knockouts,
+                pruned_fit=pruned_fit if round_improves else None,
+                pruned_knockouts=pruned_knockouts if round_improves else [],
                 n_initial_peaks=n_initial,
                 n_rescue_added=n_rescue_added,
                 n_pruned_total=n_pruned_total,
                 n_pruned_rescue_origin=n_pruned_rescue,
                 chi2_before=chi2_before,
-                chi2_after=chi2_after,
+                chi2_after=chi2_after if round_improves else chi2_before,
                 tau_us_before=tau_before,
-                tau_us_after=tau_after,
-                accepted=True,
+                tau_us_after=tau_after if round_improves else tau_before,
+                accepted=round_improves,
                 reason=reason,
                 n_merged=n_merged,
             )
         )
+        if not round_improves:
+            continue
         current = ConservativeFitResult(
             fit=pruned_fit,
             audit_trail=initial_fit.audit_trail,

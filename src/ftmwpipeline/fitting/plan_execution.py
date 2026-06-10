@@ -936,30 +936,23 @@ def fit_window_with_fixed_contributors(
     # (the same real-line-killing failure the budget-currency seed-knockout
     # measured; raw currency is correct for Stage-3-backed candidates).
     #
-    # Early leakage-wing baseline: when the background-subtracted data still
-    # carries a smooth pedestal an order-p complex polynomial explains (the
-    # summed far-wings of many lines the discrete contributors cannot fully
-    # subtract), fit it jointly from the START. A peaks-only fit on such a
-    # window buys chi-squared by collapsing the shared tau onto the pedestal,
-    # and every downstream decision then runs on a broken model: separations
-    # measured in the ballooned FWHM block real candidates, the rescue's
-    # joint refit slides peaks onto the window bounds, and the sequenced-last
-    # baseline refit can only relax tau for whatever peak set survived. The
-    # trigger is the same smooth-residual F-statistic the late baseline uses,
-    # evaluated on the null (no-free-peak) residual.
-    if (
-        early_baseline_order is not None
-        and early_baseline_smooth_threshold is not None
-    ):
-        smooth_stat = _smooth_residual_stat(
-            np.asarray(offset_grid_mhz, dtype=float),
-            np.asarray(data_minus_bg, dtype=np.complex128),
-            rms_noise,
-            int(early_baseline_order),
-        )
-        if smooth_stat > float(early_baseline_smooth_threshold):
-            conservative_kwargs = dict(conservative_kwargs)
-            conservative_kwargs["baseline_order"] = int(early_baseline_order)
+    # Early leakage-wing baseline, re-run-on-trigger: when the fit's residual
+    # still carries a smooth pedestal an order-p complex polynomial explains
+    # (the summed far-wings of many lines the discrete contributors cannot
+    # fully subtract), the whole conservative fit is re-run with the baseline
+    # as a joint nuisance term. A peaks-only fit on such a window buys
+    # chi-squared by collapsing the shared tau onto the pedestal, and every
+    # downstream decision then runs on a broken model: separations measured
+    # in the ballooned FWHM block real candidates, the rescue's joint refit
+    # slides peaks onto the window bounds, and the sequenced-last baseline
+    # refit can only relax tau for whatever peak set survived. The trigger is
+    # the same smooth-residual F-statistic the late baseline uses, evaluated
+    # on the POST-fit residual: a null-residual (pre-fit) trigger cannot tell
+    # a pedestal from a bright line's own profile and mis-fires on every
+    # strong-line window (soaking line wings, biasing tau), while the
+    # post-fit residual of a healthy bright-line fit carries only sharp core
+    # structure the polynomial does not explain. Triggered windows pay one
+    # extra conservative pass; healthy windows pay nothing.
     fit_result = conservative_fit(
         offset_grid_mhz,
         data_minus_bg,
@@ -969,6 +962,41 @@ def fit_window_with_fixed_contributors(
         acquisition_us,
         **conservative_kwargs,
     )
+    if (
+        early_baseline_order is not None
+        and early_baseline_smooth_threshold is not None
+        and fit_result.fit.baseline_order is None
+    ):
+        u_arr = np.asarray(offset_grid_mhz, dtype=float)
+        first_residual = np.asarray(
+            data_minus_bg, dtype=np.complex128
+        ) - model_spectrum(
+            u_arr,
+            fit_result.fit.peaks,
+            fit_result.fit.tau_us,
+            acquisition_us,
+            shape=fit_result.fit.shape,
+        )
+        smooth_stat = _smooth_residual_stat(
+            u_arr, first_residual, rms_noise, int(early_baseline_order)
+        )
+        if smooth_stat > float(early_baseline_smooth_threshold):
+            retry_kwargs = dict(conservative_kwargs)
+            retry_kwargs["baseline_order"] = int(early_baseline_order)
+            retry = conservative_fit(
+                offset_grid_mhz,
+                data_minus_bg,
+                rms_noise,
+                candidate_offsets,
+                tau0_us,
+                acquisition_us,
+                **retry_kwargs,
+            )
+            # Adopt only on a strict raw-chi-squared win: the re-run spends
+            # 2(order+1) extra parameters, so a tie means the pedestal read
+            # was spurious and the peaks-only fit stands.
+            if retry.fit.success and retry.fit.chi_squared < fit_result.fit.chi_squared:
+                fit_result = retry
     # conservative_fit sorts its grid internally; its fitted_spectrum is on
     # *that* sorted grid. Re-evaluate the model on the caller's input grid so
     # the returned arrays line up bin-for-bin with the inputs. The fit's
@@ -2742,7 +2770,20 @@ def _apply_baseline_to_outcome(
     edge_fire = np.isfinite(s_coh) and s_coh > baseline_edge_threshold
     smooth_stat = _smooth_residual_stat(u, residual, outcome.rms_noise, baseline_order)
     smooth_fire = smooth_stat > baseline_smooth_threshold
-    if not (edge_fire or smooth_fire):
+    # A fit already carrying a baseline (the early conservative-phase trigger
+    # fired) always takes this joint refit: the residual credit above means
+    # neither trigger re-fires, but the refit's value on a pedestal window is
+    # the tau re-free -- the conservative phase ran tau against the pedestal
+    # and the anchor below lets it relax to the band value. The chi-squared
+    # acceptance guard below still applies.
+    if os.environ.get("FTMW_DEBUG_PHASES"):
+        print(
+            f"[late-baseline] w{outcome.window_id}: s_coh={s_coh:.2f} "
+            f"smooth={smooth_stat:.1f} edge_fire={edge_fire} "
+            f"smooth_fire={smooth_fire} carried={inner.baseline_order}",
+            flush=True,
+        )
+    if not (edge_fire or smooth_fire or inner.baseline_order is not None):
         return False
 
     # Re-free tau (anchored at the band majority) so it relaxes off the collapsed
@@ -2770,6 +2811,13 @@ def _apply_baseline_to_outcome(
         baseline_order=baseline_order,
         **refit_kwargs,
     )
+    if os.environ.get("FTMW_DEBUG_PHASES"):
+        print(
+            f"[late-baseline] w{outcome.window_id}: refit success={refit.success} "
+            f"chi2 {inner.chi_squared:.0f} -> {refit.chi_squared:.0f} "
+            f"tau {inner.tau_us:.2f} -> {refit.tau_us:.2f}",
+            flush=True,
+        )
     if not refit.success or refit.chi_squared > inner.chi_squared + 1e-9:
         return False
 

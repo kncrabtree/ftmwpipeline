@@ -79,7 +79,6 @@ from .validation import (
     effective_sample_size,
     feature_fwhm,
     gate_aicc_pair,
-    validate_peak_separation,
 )
 
 __all__ = [
@@ -2489,13 +2488,18 @@ def conservative_fit(
             spur_mask=spur_mask,
             **fit_kwargs_inner,
         )
-        # Post-fit collapse check, mirroring the blend seeder's: the NLS can
-        # migrate a legitimately-separated candidate onto an existing bright
-        # core and converge to the cancelling near-duplicate pair (huge
-        # opposite-phase amplitudes buying raw chi-squared) -- the same
-        # degenerate solution the seeder rejects on its escalations. Drop the
-        # candidate outright (NOT into the tentative batch, where it would
-        # re-collapse inside every later trial).
+        # Post-fit collapse check on the *candidate*: the NLS can migrate a
+        # legitimately-separated candidate onto an existing bright core and
+        # converge to the cancelling near-duplicate pair (huge opposite-phase
+        # amplitudes buying raw chi-squared) -- the same degenerate solution
+        # the seeder rejects on its escalations. Scope deliberately narrow:
+        # only pairs involving the candidate's fitted position (a transient
+        # collapse among *other* trial members must not veto this candidate),
+        # and only below HALF the effective separation floor (the structural
+        # scale of the merge tiers) -- real close pairs legitimately fit just
+        # under the floor and the merge/knockout machinery owns that band.
+        # Drop the candidate outright (NOT into the tentative batch, where it
+        # would re-collapse inside every later trial).
         if trial.success and trial.n_peaks >= 2:
             sep_eff = _effective_min_pair_separation(
                 fwhm,
@@ -2503,8 +2507,14 @@ def conservative_fit(
                 min_pair_separation_factor,
                 min_pair_separation_resolution_factor,
             )
-            sep_ok_post, _pairs = validate_peak_separation(
-                np.asarray([pk.offset_mhz for pk in trial.peaks]), sep_eff
+            trial_offsets = [pk.offset_mhz for pk in trial.peaks]
+            ci = min(
+                range(len(trial_offsets)), key=lambda i: abs(trial_offsets[i] - cand)
+            )
+            sep_ok_post = all(
+                abs(o - trial_offsets[ci]) >= 0.5 * sep_eff
+                for i, o in enumerate(trial_offsets)
+                if i != ci
             )
             if not sep_ok_post:
                 audit.append(
