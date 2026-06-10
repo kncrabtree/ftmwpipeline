@@ -953,6 +953,11 @@ def fit_window_with_fixed_contributors(
     # post-fit residual of a healthy bright-line fit carries only sharp core
     # structure the polynomial does not explain. Triggered windows pay one
     # extra conservative pass; healthy windows pay nothing.
+    if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+        ctx = dict(validation._fringe_window_ctx or {})
+        ctx["bg_u"] = np.asarray(offset_grid_mhz, dtype=float)
+        ctx["bg"] = np.asarray(background, dtype=np.complex128)
+        validation._fringe_window_ctx = ctx
     fit_result = conservative_fit(
         offset_grid_mhz,
         data_minus_bg,
@@ -960,6 +965,7 @@ def fit_window_with_fixed_contributors(
         candidate_offsets,
         tau0_us,
         acquisition_us,
+        gate_background=background,
         **conservative_kwargs,
     )
     if (
@@ -990,6 +996,7 @@ def fit_window_with_fixed_contributors(
                 candidate_offsets,
                 tau0_us,
                 acquisition_us,
+                gate_background=background,
                 **retry_kwargs,
             )
             # Adopt only on a strict raw-chi-squared win: the re-run spends
@@ -1713,6 +1720,12 @@ def _walk_windows_in_order(
     by_id = {w.window_id: w for w in plan.windows}
     for wid in order:
         win = by_id[wid]
+        if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+            validation._fringe_window_ctx = {
+                "wid": wid,
+                "center": 0.5 * (win.freq_range[0] + win.freq_range[1]),
+                "sign": sideband_sign(sideband),
+            }
         ck_for_window = conservative_kwargs
         tau0_us_for_window = tau0_us
         if wid in window_tau_overrides:
@@ -2563,6 +2576,11 @@ def _apply_rescue_to_outcome(
     """
     data_minus_bg = outcome.complex_spectrum - outcome.background
     spur_mask = getattr(outcome, "_spur_mask", None)
+    if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+        ctx = dict(validation._fringe_window_ctx or {})
+        ctx["bg_u"] = np.asarray(outcome.offset_grid_mhz, dtype=float)
+        ctx["bg"] = np.asarray(outcome.background, dtype=np.complex128)
+        validation._fringe_window_ctx = ctx
     # Same per-window sigma_eff skirt budget the conservative fit's gates used
     # (the rescue operates on the identical background-subtracted data).
     kappa_skirt = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT
@@ -2594,6 +2612,7 @@ def _apply_rescue_to_outcome(
         shape=outcome.fit.fit.shape,
         spur_mask=spur_mask,
         gate_budget_extra=budget_extra,
+        gate_background=outcome.background,
         **rescue_kwargs,
     )
 

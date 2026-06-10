@@ -612,6 +612,7 @@ def iterative_aicc_cleanup(
     weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    gate_background: Optional[np.ndarray] = None,
     protected_offsets: Optional[Sequence[float]] = None,
     protected_tol_mhz: float = 0.0,
 ) -> Tuple[WindowFitResult, int]:
@@ -661,6 +662,20 @@ def iterative_aicc_cleanup(
     (fewer parameters, no visible evidence lost) and the round consolidates
     to a single absorber. Rescue-origin peaks (anything not matching a
     protected offset within ``protected_tol_mhz``) keep the budgeted gate.
+
+    ``gate_background`` (the window's complex frozen-contributor model on
+    the input grid) feeds the line-evidence escape hatch: before a peak is
+    selected as the drop candidate, its disputed evidence (the K-1 refit's
+    residual on the peak's support) is matched-filter tested in raw
+    currency beyond the span of the background's skirt-error modes and the
+    surviving peaks' lineshape-error modes
+    (:func:`~ftmwpipeline.fitting.validation.line_evidence_escape`). A peak
+    whose evidence is line-like at >=10x the gate's evidence bar cannot be
+    dropped this iteration -- the budget's blind band (a real line riding
+    the skirt at comparable magnitude) and the sigma_eff self-blinding (a
+    bright peak inflating its own bins' noise) are both overruled by
+    overwhelming raw template evidence, while skirt fringes stay inside
+    the nuisance span and remain droppable.
     """
     if fit.n_peaks == 0:
         return fit, 0
@@ -675,6 +690,9 @@ def iterative_aicc_cleanup(
     budget: Optional[np.ndarray] = None
     if gate_budget_extra is not None:
         budget = np.asarray(gate_budget_extra, dtype=float)[order]
+    background: Optional[np.ndarray] = None
+    if gate_background is not None:
+        background = np.asarray(gate_background, dtype=np.complex128)[order]
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
@@ -704,6 +722,37 @@ def iterative_aicc_cleanup(
         if protected is None or protected.size == 0:
             return False
         return bool(np.min(np.abs(protected - float(offset_mhz))) <= protected_tol_mhz)
+
+    shape_coerced = PeakShape.coerce(fit.shape)
+
+    def _escape_keeps(
+        peak: ModelPeak,
+        others: List[ModelPeak],
+        evidence_keep: np.ndarray,
+        tau_locked: float,
+        n_params_peak: int,
+    ) -> Tuple[bool, float]:
+        """Line-evidence escape for a would-be drop candidate (see docstring)."""
+        if validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is None:
+            return False, 0.0
+        template = model_spectrum(
+            u, [peak], tau_locked, acquisition_us, shape=shape_coerced
+        )
+        nuisance = validation.line_escape_nuisance_columns(
+            u,
+            others,
+            tau_locked,
+            acquisition_us,
+            shape=shape_coerced,
+            background=background,
+        )
+        return validation.line_evidence_escape(
+            evidence_keep,
+            sigma_keep,
+            template[keep],
+            [col[keep] for col in nuisance],
+            n_params_peak=n_params_peak,
+        )
 
     current = fit
     n_dropped = 0
@@ -776,6 +825,15 @@ def iterative_aicc_cleanup(
                     budget_extra=budget_i,
                 )
                 if aicc_km1 - aicc_k_i < worst_margin:
+                    escaped, _ = _escape_keeps(
+                        current.peaks[i],
+                        [],
+                        z[keep],
+                        tau_locked,
+                        max(current.n_params, 1),
+                    )
+                    if escaped:
+                        continue
                     worst_margin = aicc_km1 - aicc_k_i
                     worst_aicc_km1 = aicc_km1
                     worst_idx = i
@@ -815,8 +873,44 @@ def iterative_aicc_cleanup(
                 ref_reduced_chi2=current.reduced_chi2,
                 budget_extra=budget_i,
             )
-            if aicc_km1 - aicc_k_i < worst_margin:
-                worst_margin = aicc_km1 - aicc_k_i
+            margin_i = aicc_km1 - aicc_k_i
+            escape_dchi2 = 0.0
+            if margin_i < worst_margin:
+                escaped, escape_dchi2 = _escape_keeps(
+                    current.peaks[i],
+                    kept,
+                    np.asarray(refit.residual)[keep],
+                    tau_locked,
+                    max(current.n_params - refit.n_params, 1),
+                )
+                if escaped:
+                    margin_i = float("inf")
+            validation.debug_fringe_dump(
+                "cleanup",
+                u_keep=u[keep],
+                less_res=np.asarray(refit.residual)[keep],
+                more_res=cur_res_keep,
+                sigma=sigma_keep,
+                budget=budget_i,
+                weight_model=cur_model_keep,
+                template=model_spectrum(
+                    u,
+                    [current.peaks[i]],
+                    tau_locked,
+                    acquisition_us,
+                    shape=PeakShape.coerce(current.shape),
+                )[keep],
+                cand_offset=current.peaks[i].offset_mhz,
+                tau_us=tau_locked,
+                acquisition_us=acquisition_us,
+                raw_chi2_more=current.chi_squared,
+                raw_chi2_less=refit.chi_squared,
+                aicc_delta=aicc_km1 - aicc_k_i,
+                escape_dchi2=escape_dchi2,
+                protected=int(peak_protected),
+            )
+            if margin_i < worst_margin:
+                worst_margin = margin_i
                 worst_aicc_km1 = aicc_km1
                 worst_idx = i
                 worst_refit = refit
@@ -1085,6 +1179,12 @@ def attempt_residual_rescue(
     ckwargs.pop("min_separation_factor", None)
     ckwargs.pop("max_peaks", None)
     ckwargs.setdefault("shape", rescue_shape)
+    # The rescue's inner add-loop runs without the line-evidence escape:
+    # its trial model holds only rescue peaks (the initial fit lives in the
+    # subtracted residual), so the escape would lack the established-peak
+    # nuisance context. Arbitration of the rescue's finds belongs to the
+    # joint refit + iterative cleanup, where the escape has the full model.
+    ckwargs["gate_line_escape"] = False
     if not candidate_offsets:
         empty = conservative_fit(
             u,
@@ -1270,6 +1370,7 @@ def rescue_and_consolidate(
     shape: "PeakShape | str" = "lorentzian",
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    gate_background: Optional[np.ndarray] = None,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1619,6 +1720,7 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
             gate_budget_extra=gate_budget_extra,
+            gate_background=gate_background,
             protected_offsets=inherited_offsets,
             protected_tol_mhz=survival_tol,
         )

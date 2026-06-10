@@ -2135,6 +2135,8 @@ def conservative_fit(
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    gate_background: Optional[np.ndarray] = None,
+    gate_line_escape: bool = True,
     baseline_order: Optional[int] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
@@ -2287,6 +2289,9 @@ def conservative_fit(
     budget: Optional[np.ndarray] = None
     if gate_budget_extra is not None:
         budget = np.asarray(gate_budget_extra, dtype=float)[order]
+    background: Optional[np.ndarray] = None
+    if gate_background is not None:
+        background = np.asarray(gate_background, dtype=np.complex128)[order]
 
     weighted = (
         validation.DEFAULT_WEIGHTED_GATE_CHI2
@@ -2572,12 +2577,83 @@ def conservative_fit(
             )
             aicc_delta = aicc_trial - aicc_current
             passes = aicc_trial < aicc_current
+            escape_dchi2 = 0.0
+            ci_cand = min(
+                range(len(trial.peaks)),
+                key=lambda i: abs(trial.peaks[i].offset_mhz - cand),
+            )
+            cand_template = model_spectrum(
+                u,
+                [trial.peaks[ci_cand]],
+                trial.tau_us,
+                acquisition_us,
+                shape=shape_resolved,
+            )
+            # Line-evidence escape hatch: the sigma_eff currency discounts
+            # evidence under the trial's own bright candidate (the shared
+            # weight model includes the very component being tested) and the
+            # fidelity floor scales the bar with the *remaining* unmodeled
+            # misfit -- on a multi-line blend window both conspire to reject
+            # a real bright line at raw delta-chi2 ~ 1e4-1e5 (655 w527). A
+            # rejected candidate whose disputed evidence survives the
+            # matched-filter test in raw currency -- beyond the span of the
+            # established peaks' lineshape-error modes and the frozen
+            # background's skirt-error modes -- is accepted anyway. See
+            # :data:`validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA`.
+            if (
+                not passes
+                and gate_line_escape
+                and validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is not None
+            ):
+                evidence = np.asarray(trial.residual) + cand_template
+                others = [pk for i, pk in enumerate(trial.peaks) if i != ci_cand]
+                nuisance = validation.line_escape_nuisance_columns(
+                    u,
+                    others,
+                    trial.tau_us,
+                    acquisition_us,
+                    shape=shape_resolved,
+                    background=background,
+                )
+                escaped, escape_dchi2 = validation.line_evidence_escape(
+                    evidence[keep],
+                    sigma_keep,
+                    cand_template[keep],
+                    [col[keep] for col in nuisance],
+                    n_params_peak=max(trial.n_params - current.n_params, 1),
+                )
+                if escaped:
+                    passes = True
+            validation.debug_fringe_dump(
+                "addloop",
+                u_keep=u[keep],
+                less_res=np.asarray(trial.residual)[keep] + cand_template[keep],
+                more_res=np.asarray(trial.residual)[keep],
+                cur_res=np.asarray(current.residual)[keep],
+                sigma=sigma_keep,
+                budget=budget_keep,
+                weight_model=np.asarray(trial.fitted_spectrum)[keep],
+                template=cand_template[keep],
+                cand_offset=cand,
+                fitted_offset=trial.peaks[ci_cand].offset_mhz,
+                tau_us=trial.tau_us,
+                acquisition_us=acquisition_us,
+                raw_chi2_more=trial.chi_squared,
+                raw_chi2_less=current.chi_squared,
+                aicc_delta=aicc_delta,
+                escape_dchi2=escape_dchi2,
+                passes=int(passes),
+            )
         else:
             n_eff = float("nan")
             aicc_delta = float("nan")
+            escape_dchi2 = 0.0
             passes = False
         if passes:
             decision = "promote" if tentative else "accept"
+            reason = f"+{len(tentative) + 1} line(s)"
+            if escape_dchi2 and aicc_trial >= aicc_current:
+                reason += f" (line-evidence escape dchi2={escape_dchi2:.0f})"
             audit.append(
                 AddStep(
                     n_peaks_before=current.n_peaks,
@@ -2590,7 +2666,7 @@ def conservative_fit(
                     aic_after=trial.aic,
                     separation_ok=True,
                     decision=decision,
-                    reason=f"+{len(tentative) + 1} line(s)",
+                    reason=reason,
                     n_eff=float(n_eff),
                     aicc_delta=float(aicc_delta),
                 )

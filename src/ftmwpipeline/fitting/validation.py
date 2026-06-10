@@ -22,12 +22,15 @@ sigma the correct factor is exactly ``sqrt(2)`` and nothing else.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union, cast
+import itertools
+import os
+from pathlib import Path
+from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 from scipy.stats import f as f_distribution
 
-from .peak_model import PeakShape, h_T_shape
+from .peak_model import ModelPeak, PeakShape, h_T_shape
 
 __all__ = [
     "DEFAULT_N_EFF_KIND",
@@ -36,6 +39,9 @@ __all__ = [
     "DEFAULT_GATE_FLOOR_SCALING",
     "DEFAULT_GATE_SIGMA_EFF_KAPPA",
     "DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT",
+    "DEFAULT_GATE_LINE_ESCAPE_LAMBDA",
+    "line_evidence_escape",
+    "line_escape_nuisance_columns",
     "DEFAULT_SHAPE_ERROR_KAPPA",
     "DEFAULT_CHI2R_NOISE_FLOOR",
     "calculate_hwhm_from_apodization",
@@ -167,6 +173,36 @@ DEFAULT_GATE_SIGMA_EFF_KAPPA: Optional[float] = 0.05
 # measured knee of the bright-band fringe sweep (1512 spurious in-band lines:
 # 0.2 -> 61, 0.4 -> 13) while the dense 363 anchors hold to 0.6.
 DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = 0.4
+
+# Evidence bar (per peak-parameter, in gate-lambda units) for the
+# line-evidence escape hatch (:func:`line_evidence_escape`). The sigma_eff
+# fidelity currency has two structural blind spots, both measured on real
+# windows: (1) the kappa*|model| weights are built from the more-complex
+# model, so a bright *candidate*'s own component inflates sigma_eff under
+# the very evidence for it -- on a multi-line blend window with a high
+# fidelity floor the discounted evidence saturates near ``2/kappa**2`` per
+# bin and a raw delta-chi2 of ~7e4 reads as worse-by-thousands (655 w527);
+# (2) the kappa_skirt*|background| budget is an amplitude band, blind to
+# *shape* -- a real line riding a frozen skirt at comparable magnitude sits
+# inside the band and is pruned (655 w1055). The escape hatch re-tests a
+# peak the gate is about to reject/drop with a matched-filter statistic in
+# RAW noise currency: the disputed evidence (residual of the model without
+# the peak, on the peak's support neighborhood) is fit as
+# ``alpha*template + sum_j beta_j*nuisance_j``, where the nuisance columns
+# span exactly the error modes the fidelity currency exists to tolerate --
+# the frozen background and its frequency derivative (skirt amplitude /
+# position error) and each established overlapping peak's component with
+# its frequency and tau derivatives (lineshape error under a bright line,
+# which keeps high-SNR absorber candidates dead). The template's marginal
+# delta-chi2 beyond that nuisance span is line-evidence: fringe error is
+# absorbed (bg-shaped, measured absorb ~0.7-1.0), a real line at its own
+# center is not (absorb ~0). The escape fires when
+# ``delta_chi2_line > 2 * lambda_escape * dk``; ``lambda_escape = 50``
+# demands 10x the accept gate's lambda=5 evidence, so only
+# overwhelmingly-supported peaks overrule the fidelity currency. The
+# escape is strictly additive: it can flip a reject/drop into an
+# accept/keep, never the reverse. ``None`` disables it.
+DEFAULT_GATE_LINE_ESCAPE_LAMBDA: Optional[float] = 50.0
 
 # Whether ``conservative_fit`` enforces the knockout verdict on a lone seed.
 # The K=1 seed is the one path into a window's accepted peak set that never
@@ -451,6 +487,173 @@ def sigma_eff_chi2(
         sig_eff_sq = sig_eff_sq + ex**2
     r2 = (np.real(res) ** 2 + np.imag(res) ** 2) / (sig_eff_sq / 2.0)
     return float(np.sum(r2))
+
+
+def line_escape_nuisance_columns(
+    offset_grid_mhz: np.ndarray,
+    peaks: Sequence[ModelPeak],
+    tau_us: float,
+    acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
+    background: Optional[np.ndarray] = None,
+) -> List[np.ndarray]:
+    """Nuisance columns for :func:`line_evidence_escape`.
+
+    The span of the error modes the sigma_eff fidelity currency tolerates,
+    as complex regressors on ``offset_grid_mhz``:
+
+    - the frozen contributor ``background`` and its frequency derivative
+      (skirt amplitude / position extrapolation error);
+    - each established peak's own component plus its frequency and tau
+      derivatives (lineshape error under a bright line -- the modes a
+      high-SNR absorber candidate feeds on).
+
+    ``peaks`` are the established :class:`~.peak_model.ModelPeak` entries
+    of the model *without* the disputed peak. Derivatives are central
+    finite differences (a quarter grid-bin in frequency, 5% in tau).
+    """
+    from .peak_model import model_spectrum
+
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    cols: List[np.ndarray] = []
+    if background is not None:
+        bg = np.asarray(background, dtype=np.complex128)
+        if bg.size == u.size and np.any(bg != 0):
+            cols.append(bg)
+            if u.size >= 3:
+                cols.append(np.gradient(bg, u))
+    if u.size >= 2:
+        df = float(np.median(np.abs(np.diff(np.sort(u))))) or 1e-3
+    else:
+        df = 1e-3
+    delta_f = 0.25 * df
+    delta_tau = 0.05 * float(tau_us) if tau_us > 0 else 0.0
+    for pk in peaks:
+        comp = model_spectrum(u, [pk], tau_us, acquisition_us, shape=shape)
+        cols.append(comp)
+        plus = ModelPeak(pk.amplitude, pk.offset_mhz + delta_f, pk.phase)
+        minus = ModelPeak(pk.amplitude, pk.offset_mhz - delta_f, pk.phase)
+        d_f = (
+            model_spectrum(u, [plus], tau_us, acquisition_us, shape=shape)
+            - model_spectrum(u, [minus], tau_us, acquisition_us, shape=shape)
+        ) / (2.0 * delta_f)
+        cols.append(d_f)
+        if delta_tau > 0.0:
+            d_tau = (
+                model_spectrum(u, [pk], tau_us + delta_tau, acquisition_us, shape=shape)
+                - model_spectrum(
+                    u, [pk], tau_us - delta_tau, acquisition_us, shape=shape
+                )
+            ) / (2.0 * delta_tau)
+            cols.append(d_tau)
+    return cols
+
+
+def line_evidence_escape(
+    evidence: np.ndarray,
+    rms_noise: NoiseLike,
+    template: np.ndarray,
+    nuisance_columns: List[np.ndarray],
+    *,
+    n_params_peak: int,
+    penalty_lambda: Optional[float] = None,
+    support_fraction: float = 0.15,
+    support_dilate: int = 2,
+) -> Tuple[bool, float]:
+    """Matched-filter line-evidence test for a disputed peak (raw currency).
+
+    On the peak's support neighborhood (bins where ``|template|`` is at
+    least ``support_fraction`` of its maximum, dilated by ``support_dilate``
+    bins), fit the disputed ``evidence`` (complex residual of the model
+    WITHOUT the peak) by weighted complex least squares twice -- nuisance
+    columns only, then nuisance plus the peak's ``template`` -- with raw
+    per-bin noise weights (stacked Re/Im convention). The difference
+
+        delta_chi2_line = chi2(nuisance) - chi2(nuisance + template)
+
+    is the template's marginal evidence beyond every tolerated error mode
+    (see :func:`line_escape_nuisance_columns`). Returns
+    ``(fires, delta_chi2_line)`` with ``fires = delta_chi2_line >
+    2 * penalty_lambda * n_params_peak``;
+    ``penalty_lambda`` defaults to :data:`DEFAULT_GATE_LINE_ESCAPE_LAMBDA`
+    and ``(False, 0.0)`` is returned when that is ``None`` (disabled).
+    """
+    lam = DEFAULT_GATE_LINE_ESCAPE_LAMBDA if penalty_lambda is None else penalty_lambda
+    if lam is None:
+        return False, 0.0
+    e = np.asarray(evidence, dtype=np.complex128)
+    tpl = np.asarray(template, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(e.shape, float(sigma))
+    amax = float(np.abs(tpl).max()) if tpl.size else 0.0
+    if amax <= 0.0 or e.size < 3:
+        return False, 0.0
+    sup = np.abs(tpl) >= support_fraction * amax
+    idx = np.where(sup)[0]
+    lo = max(int(idx.min()) - support_dilate, 0)
+    hi = min(int(idx.max()) + support_dilate + 1, e.size)
+    sl = slice(lo, hi)
+    m = hi - lo
+    if m < 3:
+        return False, 0.0
+
+    w = np.sqrt(2.0) / sigma[sl]
+    b = e[sl] * w
+    t_col = tpl[sl] * w
+
+    cols = []
+    for c in nuisance_columns:
+        seg = np.asarray(c, dtype=np.complex128)[sl] * w
+        n2 = float(np.sum(np.abs(seg) ** 2))
+        if n2 > 4.0:  # below ~2 sigma aggregate the column cannot matter
+            cols.append((n2, seg))
+    # Keep the design overdetermined: at most m-2 nuisance columns (each
+    # complex column spends 2 real parameters of the 2m real observations),
+    # strongest support-norm first.
+    cols.sort(key=lambda t: -t[0])
+    kept = [seg for _, seg in cols[: max(m - 2, 0)]]
+
+    def _chi2(design: List[np.ndarray]) -> float:
+        if not design:
+            return float(np.sum(np.abs(b) ** 2))
+        A = np.stack(design, axis=1)
+        coef, *_ = np.linalg.lstsq(A, b, rcond=None)
+        r = b - A @ coef
+        return float(np.sum(np.abs(r) ** 2))
+
+    chi2_nui = _chi2(kept)
+    chi2_full = _chi2(kept + [t_col])
+    delta = chi2_nui - chi2_full
+    fires = delta > 2.0 * float(lam) * float(max(n_params_peak, 1))
+    return fires, float(delta)
+
+
+_fringe_dump_counter = itertools.count()
+_fringe_window_ctx: Optional[dict[str, float]] = None
+
+
+def debug_fringe_dump(site: str, **arrays: Any) -> None:
+    """``FTMW_DEBUG_FRINGE_DIR=<dir>``: dump disputed-evidence arrays at a
+    gate decision point to ``<dir>/<site>_<n>.npz`` for offline analysis."""
+    out_dir = os.environ.get("FTMW_DEBUG_FRINGE_DIR")
+    if not out_dir:
+        return
+    path = Path(out_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    n = next(_fringe_dump_counter)
+    payload = {k: np.asarray(v) for k, v in arrays.items() if v is not None}
+    try:
+        evidence = float(payload["raw_chi2_less"]) - float(payload["raw_chi2_more"])
+        if evidence < 50.0:
+            return
+    except KeyError:
+        pass
+    if _fringe_window_ctx is not None:
+        for k, v in _fringe_window_ctx.items():
+            payload[f"ctx_{k}"] = np.asarray(v)
+    np.savez(path / f"{site}_{n:05d}.npz", **payload)
 
 
 # ---------------------------------------------------------------------------
