@@ -33,12 +33,12 @@ from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from . import validation
 from .peak_model import ModelPeak, PeakShape, model_spectrum
 from .residual_screening import (
     ResidualPeakCandidate,
     find_residual_peaks,
 )
-from . import validation
 from .spur_detection import SpurMaskSpec
 from .validation import (
     DEFAULT_N_EFF_KIND,
@@ -791,9 +791,7 @@ def iterative_aicc_cleanup(
         # budgeted for rescue-origin peaks, budget-free for protected
         # (inherited) ones -- so the reference score is computed per currency.
         aicc_k_budgeted = _aicc_k_for(budget_keep)
-        aicc_k_raw = (
-            _aicc_k_for(None) if budget_keep is not None else aicc_k_budgeted
-        )
+        aicc_k_raw = _aicc_k_for(None) if budget_keep is not None else aicc_k_budgeted
 
         worst_margin = 0.0
         worst_aicc_km1 = float("inf")

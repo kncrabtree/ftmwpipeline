@@ -601,7 +601,7 @@ def model_spectrum(
     u = np.asarray(offset_grid_mhz, dtype=float)
     k = len(peaks)
     if k == 0:
-        return np.zeros(u.shape, dtype=np.complex128)
+        return cast(np.ndarray, np.zeros(u.shape, dtype=np.complex128))
     # Evaluate every line in one broadcast over the (K, M) offset grid rather
     # than a Python loop of K per-peak ``h_T`` calls: the line shape is the
     # dominant assembly cost and a single vectorised evaluation replaces K

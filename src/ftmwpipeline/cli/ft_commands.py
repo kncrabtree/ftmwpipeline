@@ -71,9 +71,7 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
                 f"   Processing parameters validated and stored with "
                 f"{result['fid_points']:,} FID points"
             )
-            print(
-                f"   Preprocessed to {result['preprocessed_points']:,} points"
-            )
+            print(f"   Preprocessed to {result['preprocessed_points']:,} points")
             print(f"   Final spectrum: {result['frequency_points']:,} frequency points")
             if "trimmed_points" in result:
                 print(f"   After trimming: {result['trimmed_points']:,} points")

@@ -394,7 +394,15 @@ def test_calibrate_tau_G_cross_interface(
     tc_pipe = Pipeline(pfile).calibrate_tau_G(settings=skip)
     tc_func = ftmw.calibrate_tau_G(ffile, settings=skip)
     res = subprocess.run(
-        ["ftmwpipeline", "tau", "run", "--gaussian", str(cfile), "--preset", str(skip_yaml)],
+        [
+            "ftmwpipeline",
+            "tau",
+            "run",
+            "--gaussian",
+            str(cfile),
+            "--preset",
+            str(skip_yaml),
+        ],
         capture_output=True,
         text=True,
         timeout=600,

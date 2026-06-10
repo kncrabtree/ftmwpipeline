@@ -77,6 +77,7 @@ from ftmwpipeline.preprocessing.edge_coherence import (
 )
 from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
+from . import validation
 from .active_ft import ActiveFTResult
 from .peak_model import (
     ModelPeak,
@@ -85,7 +86,6 @@ from .peak_model import (
     sideband_sign,
     to_baseband_offset,
 )
-from . import validation
 from .residual_rescue import rescue_and_consolidate
 from .spur_detection import SpurMaskSpec, SpurSet
 from .window_fit import (
@@ -984,7 +984,10 @@ def fit_window_with_fixed_contributors(
             shape=fit_result.fit.shape,
         )
         smooth_stat = _smooth_residual_stat(
-            u_arr, first_residual, rms_noise, int(early_baseline_order)
+            u_arr,
+            first_residual,
+            np.asarray(rms_noise, dtype=float),
+            int(early_baseline_order),
         )
         if smooth_stat > float(early_baseline_smooth_threshold):
             retry_kwargs = dict(conservative_kwargs)

@@ -715,9 +715,7 @@ def detect_peaks_impl(
         "stage2b_tau_G_maj"
         if gap_shape == "gaussian"
         else (
-            "stage2b_tau_maj"
-            if tau_calibration_present(file_path)
-            else "default_5us"
+            "stage2b_tau_maj" if tau_calibration_present(file_path) else "default_5us"
         )
     )
     # SavGol window feed: the line's nominal FWHM at ``tau_basis``. The

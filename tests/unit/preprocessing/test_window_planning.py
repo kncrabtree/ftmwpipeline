@@ -315,7 +315,9 @@ class TestMagnitudeAttachment:
         edge_free = [
             fc for w in plan.windows for fc in w.fixed_contributors if fc.edge_free
         ]
-        assert edge_free, "mutual-attachment 2-cycle should yield edge-free contributors"
+        assert (
+            edge_free
+        ), "mutual-attachment 2-cycle should yield edge-free contributors"
         assert plan.diagnostics.get("n_edge_free_contributors", 0) == len(edge_free)
 
 
@@ -416,12 +418,22 @@ class TestBoundedMergeAndCapSplit:
         # at this fine grid step) drives the partition.
         freqs, spec, rms, peaks = self._dense_cluster()
         loose = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
-            max_peaks_per_window=8, max_window_width_points=0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_peaks_per_window=8,
+            max_window_width_points=0,
         )
         tight = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
-            max_peaks_per_window=4, max_window_width_points=0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_peaks_per_window=4,
+            max_window_width_points=0,
         )
         assert tight.n_windows > loose.n_windows
         for w in tight.windows:
@@ -464,11 +476,20 @@ class TestBoundedMergeAndCapSplit:
         cap_mhz = 12.0
         cap_points = int(round(cap_mhz / step))
         by_mhz = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
-            max_window_width_mhz=cap_mhz, max_window_width_points=0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_mhz=cap_mhz,
+            max_window_width_points=0,
         )
         by_points = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
             max_window_width_points=cap_points,
         )
         assert by_points.n_windows == by_mhz.n_windows
@@ -484,7 +505,11 @@ class TestBoundedMergeAndCapSplit:
         freqs, spec, rms, peaks = self._dense_cluster()
         step = float(np.mean(np.diff(np.sort(freqs))))
         plan = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0,
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
             max_window_width_mhz=1000.0,
             max_window_width_points=int(round(10.0 / step)),
         )

@@ -226,11 +226,15 @@ class TestEvaluateEdgeFreeContributors:
         active = _make_active_ft(freq, z)
         contributors = [
             FixedContributor(
-                peak_index=1, primary_window_id=0, frequency_mhz=36100.0,
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=36100.0,
                 edge_free=True,
             ),
             FixedContributor(
-                peak_index=2, primary_window_id=0, frequency_mhz=36100.6,
+                peak_index=2,
+                primary_window_id=0,
+                frequency_mhz=36100.6,
                 edge_free=True,
             ),
         ]
@@ -263,7 +267,9 @@ class TestEvaluateEdgeFreeContributors:
         active = _make_active_ft(freq, z)
         contributors = [
             FixedContributor(
-                peak_index=1, primary_window_id=0, frequency_mhz=36100.0,
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=36100.0,
                 edge_free=False,
             ),
         ]

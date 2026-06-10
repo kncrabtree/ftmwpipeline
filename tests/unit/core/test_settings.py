@@ -145,9 +145,7 @@ class TestResolve:
 
 class TestToAttrsFromAttrs:
     def test_roundtrip_with_trim_set(self):
-        s = FTSettings(
-            start_us=1.0, trim=(26500.0, 40000.0), units_power=6, rdc=True
-        )
+        s = FTSettings(start_us=1.0, trim=(26500.0, 40000.0), units_power=6, rdc=True)
         attrs = s.to_attrs()
         restored = FTSettings.from_attrs(attrs)
 

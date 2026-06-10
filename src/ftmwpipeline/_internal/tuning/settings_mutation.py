@@ -68,6 +68,7 @@ from ...io.window_planning_settings_serialization import (
     save_window_planning_settings_to_h5,
 )
 
+
 @dataclass(frozen=True)
 class _MutSpec:
     """How to load / save / serialize one stage's settings, plus its tracker

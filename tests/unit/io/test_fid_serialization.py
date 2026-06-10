@@ -220,9 +220,7 @@ class TestFIDSerializationInPipelineFiles:
     def test_processing_parameters_with_none_values(self, temp_dir):
         """Test serialization with None values in processing parameters."""
         # Create FID with some None processing parameters
-        processing = FIDProcessingParameters(
-            start_us=None, end_us=None, units_power=6
-        )
+        processing = FIDProcessingParameters(start_us=None, end_us=None, units_power=6)
 
         fid = FID(
             data=np.array([1.0, 0.5, 0.0]),

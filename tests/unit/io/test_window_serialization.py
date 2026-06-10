@@ -104,8 +104,7 @@ class TestRoundTrip:
         )
         loaded = _roundtrip(plan, tmp_path / "ef.h5")
         flags = {
-            fc.peak_index: fc.edge_free
-            for fc in loaded.windows[1].fixed_contributors
+            fc.peak_index: fc.edge_free for fc in loaded.windows[1].fixed_contributors
         }
         assert flags == {1: True, 2: False}
 

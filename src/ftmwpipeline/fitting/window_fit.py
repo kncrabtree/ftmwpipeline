@@ -60,6 +60,7 @@ from typing import Any, Optional, Union, cast
 import numpy as np
 from scipy.optimize import least_squares
 
+from . import validation
 from .peak_model import (
     ModelPeak,
     PeakShape,
@@ -69,7 +70,6 @@ from .peak_model import (
     model_spectrum,
 )
 from .spur_detection import SpurMaskSpec
-from . import validation
 from .validation import (
     DEFAULT_N_EFF_KIND,
     calculate_aic,
@@ -699,10 +699,8 @@ def evaluate_baseline(
         or fit.baseline_coeffs is None
         or not fit.baseline_offset_scale
     ):
-        return np.zeros(u.size, dtype=np.complex128)
-    basis = baseline_basis(
-        u, int(fit.baseline_order), float(fit.baseline_offset_scale)
-    )
+        return cast(np.ndarray, np.zeros(u.size, dtype=np.complex128))
+    basis = baseline_basis(u, int(fit.baseline_order), float(fit.baseline_offset_scale))
     return cast(
         np.ndarray, basis @ np.asarray(fit.baseline_coeffs, dtype=np.complex128)
     )
