@@ -216,6 +216,10 @@ def _window_tau_map(fit: SpectrumFit) -> Dict[int, float]:
 
 def _nearest_indices(query: np.ndarray, ref: np.ndarray) -> np.ndarray:
     """Index into sorted ``ref`` of the nearest value to each ``query`` entry."""
+    if len(ref) == 1:
+        # The left/right bracketing below needs two elements; with one, the
+        # clip bounds invert (1, 0) and can return index -1.
+        return np.zeros(len(query), dtype=int)
     pos = np.searchsorted(ref, query)
     pos = np.clip(pos, 1, len(ref) - 1)
     left = ref[pos - 1]

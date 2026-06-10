@@ -94,8 +94,10 @@ class ClusteringSubSettings:
     restores an explicit cap and tracks the Stage 5 ``conservative.max_peaks``.
     ``max_window_width_points`` is the same width cap expressed in active-FT
     grid points -- the statistically portable form (bin width varies with
-    acquisition length across instruments); ``0`` (the default) defers to the
-    MHz cap, a positive value supersedes it.
+    acquisition length across instruments); ``0`` defers to the MHz cap, a
+    positive value supersedes it. The hard default (96 points, ~8 MHz on the
+    reference 2638 grid) is the small-window operating point the Stage 5
+    window-invariant accept gates are calibrated against.
     """
 
     max_window_width_mhz: Optional[float] = None
@@ -172,7 +174,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "max_window_width_mhz": 40.0,
         "min_window_half_width_mhz": 2.0,
         "max_peaks_per_window": 0,
-        "max_window_width_points": 0,
+        "max_window_width_points": 96,
     },
     "contributor": {
         "min_freeze_snr": 50.0,

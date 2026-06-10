@@ -183,7 +183,7 @@ thaw default (8.0): the thaw addresses a *missing real line* at the edge, the
 baseline a *wrong skirt shape*. Empirically settled on 2638 (recall 0.89, zero
 harmful fires); 2638-tuned, so instrument-tunable calibration debt."""
 
-DEFAULT_EDGE_FREE_FREQ_REFINE = False
+DEFAULT_EDGE_FREE_FREQ_REFINE = True
 """Whether the edge-free contributor read refines the line frequencies.
 
 The joint complex least-squares read of
@@ -198,9 +198,8 @@ wing is harvested as spurious peaks. With this enabled, a bounded
 variable-projection refinement (frequencies free within ~1.5 grid steps,
 amplitudes/phases re-solved linearly at each trial) is run per contributor
 group before the final solve, recovering the core to a few percent and the
-wing prediction to within the fidelity budget. Experimental flag while the
-small-window retune is validated; ``False`` preserves the fixed-frequency
-read."""
+wing prediction to within the fidelity budget. ``False`` preserves the
+fixed-frequency read."""
 
 
 # ---------------------------------------------------------------------------

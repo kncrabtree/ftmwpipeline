@@ -108,10 +108,10 @@ DEFAULT_WEIGHTED_GATE_CHI2 = False
 # textbook AIC bar (``Delta chi2 > 2 Delta k``); larger ``lambda`` is a stricter
 # (BIC-like) bar. ``lambda`` is the single calibration knob, set so the 2638
 # control reproduces its shipped line count; unlike the legacy ``n_eff`` gate the
-# bar no longer drifts with window size. ``None`` keeps the legacy
-# AICc-with-``n_eff`` gate (the shipped behaviour). Read at call time so it is
-# A/B-toggleable. Takes precedence over :data:`DEFAULT_WEIGHTED_GATE_CHI2`.
-DEFAULT_GATE_PENALTY_LAMBDA: Optional[float] = None
+# bar no longer drifts with window size. ``None`` selects the legacy
+# AICc-with-``n_eff`` gate. Read at call time so it is A/B-toggleable. Takes
+# precedence over :data:`DEFAULT_WEIGHTED_GATE_CHI2`.
+DEFAULT_GATE_PENALTY_LAMBDA: Optional[float] = 5.0
 
 # Whether the penalized gate scales its bar by the model-fidelity floor
 # ``max(1, ref_reduced_chi2)`` (the more-complex model's reduced chi-squared).
@@ -144,9 +144,9 @@ DEFAULT_GATE_FLOOR_SCALING = False
 # and the high-SNR lineshape floor both raise the window's reduced
 # chi-squared, but only the floor's residuals sit under bright model bins.
 # ``None`` keeps the penalized gate on the raw chi-squared. Read at call time
-# so it is A/B-toggleable; :data:`DEFAULT_SHAPE_ERROR_KAPPA` is the natural
-# value (one fidelity budget in the system).
-DEFAULT_GATE_SIGMA_EFF_KAPPA: Optional[float] = None
+# so it is A/B-toggleable; the default tracks :data:`DEFAULT_SHAPE_ERROR_KAPPA`
+# (one fidelity budget in the system).
+DEFAULT_GATE_SIGMA_EFF_KAPPA: Optional[float] = 0.05
 
 # Fractional fidelity of a *frozen contributor background* (the subtracted
 # skirt of a bright out-of-window line), for the sigma_eff gate budget. The
@@ -163,8 +163,10 @@ DEFAULT_GATE_SIGMA_EFF_KAPPA: Optional[float] = None
 # real line riding the skirt (amplitude >> kappa_skirt * |skirt|) keeps its
 # evidence. ``None`` adds no background budget. This is a fixed fidelity
 # constant times a *model* amplitude -- not a residual-derived local noise
-# estimate (the Stage 2 sigma stays the only noise authority).
-DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = None
+# estimate (the Stage 2 sigma stays the only noise authority). 0.4 sits at the
+# measured knee of the bright-band fringe sweep (1512 spurious in-band lines:
+# 0.2 -> 61, 0.4 -> 13) while the dense 363 anchors hold to 0.6.
+DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = 0.4
 
 # Whether ``conservative_fit`` enforces the knockout verdict on a lone seed.
 # The K=1 seed is the one path into a window's accepted peak set that never
@@ -175,9 +177,12 @@ DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = None
 # every skirt-side window contributes one such sub-threshold "dust" line
 # (SNR ~ 2, zero catalog matches). With this enabled, a single-peak fit whose
 # knockout reads unsupported is replaced by the empty (null) fit at
-# ``conservative_fit`` exit. Off by default: the legacy gate keeps its own
-# dust and the no-regression suite asserts those counts.
-DEFAULT_ENFORCE_SEED_KNOCKOUT = False
+# ``conservative_fit`` exit. Enforcement reads the knockout in *raw* penalized
+# currency: a sigma_eff-budget currency was measured to remove real lines (a
+# window's lone dominant feature is often a genuine line riding the pedestal
+# the budget discounts), while the raw-currency removals are catalog-verified
+# noise (655 A/B: 0% catalog matches among removed, median SNR 1.3).
+DEFAULT_ENFORCE_SEED_KNOCKOUT = True
 
 # Tolerated per-bin fractional model deficit in the SNR-aware acceptance gate
 # (:func:`snr_aware_chi2_pass`). At extreme SNR the per-window reduced

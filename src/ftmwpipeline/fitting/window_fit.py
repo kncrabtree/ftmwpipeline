@@ -1101,6 +1101,10 @@ def fit_window(
             fitted_spectrum=np.zeros(m, dtype=np.complex128),
             residual=z.copy(),
             covariance=None,
+            # The null model has no lines, but it can stand as a window's
+            # *final* fit (seed-knockout enforcement); the persisted
+            # per-window shape attribute must still record the run's shape.
+            shape=PeakShape.coerce(shape),
         )
 
     if tau_bounds is None:

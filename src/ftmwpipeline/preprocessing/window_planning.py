@@ -72,15 +72,20 @@ DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
 """Width cap default. On 2638 a strong line's above-threshold skirt extends to
 ~40 MHz, so a single window wider than this is already dense/coupled."""
 
-DEFAULT_MAX_WINDOW_WIDTH_POINTS = 0
-"""Width cap in active-FT grid points; ``0`` (the default) disables it so the
-cap is ``max_window_width_mhz``. When positive it *replaces* the MHz cap as
+DEFAULT_MAX_WINDOW_WIDTH_POINTS = 96
+"""Width cap in active-FT grid points; ``0`` disables it so the cap is
+``max_window_width_mhz``. When positive it *replaces* the MHz cap as
 the bound on the strong-cluster merge and the cap split (the effective cap in
 MHz is ``points * grid step``). A points cap is the statistically portable
 form: the Stage 5 gates reason over bins (n_eff, per-bin sigma), and the
 active-FT bin width varies with acquisition length across instruments, so a
 fixed MHz cap yields different statistical window sizes per fixture while a
-points cap holds them constant."""
+points cap holds them constant. 96 points (~8 MHz on the reference 2638
+grid) is the small-window operating point the window-invariant accept gates
+are calibrated against: small enough that dense ultra-high-SNR fixtures fit
+in minutes (the conservative loop's NLS cost grows ~K^2 with window
+population), large enough that every window keeps tens of informative bins
+for the gate."""
 
 DEFAULT_MIN_FREEZE_SNR = 50.0
 """Freeze-eligibility SNR cutoff (O4-2): a fixed contributor below this is

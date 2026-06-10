@@ -1139,8 +1139,8 @@ def assign_windows(
         (default: undamped/boxcar limit).
     max_window_width_points : int, optional
         Width cap in active-FT grid points -- the portable form of the cap
-        (bin width varies across instruments). ``0`` (the default) defers
-        to ``max_window_width_mhz``; a positive value supersedes it.
+        (bin width varies across instruments). ``0`` defers to
+        ``max_window_width_mhz``; a positive value (default 96) supersedes it.
     settings : WindowPlanningSettings, optional
         Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
         chain); fields left ``None`` fall through. Mutually exclusive with

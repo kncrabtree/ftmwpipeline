@@ -106,14 +106,21 @@ class TestIsolatedStrongLine:
 
 class TestStrongCluster:
     def test_overlapping_strong_lines_form_one_joint_window(self):
-        """Two strong lines whose skirts overlap merge into one window."""
+        """Two strong lines whose skirts overlap merge into one window.
+
+        The points cap is pinned off: this exercises the skirt-overlap merge
+        rule on the MHz lane, and the synthetic 0.02 MHz grid makes the
+        default points cap (96 points = 1.92 MHz here) split the 4 MHz pair.
+        """
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30038.0, 3.0, PeakClassification.STRONG),
                 (30042.0, 3.0, PeakClassification.STRONG),
             ]
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         assert plan.n_windows == 1
         w = plan.windows[0]
         assert sorted(w.free_peak_indices) == [0, 1]
@@ -168,7 +175,12 @@ class TestWeakLineOnSkirt:
             ],
             n=12000,
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        # Points cap pinned off: the weak window's minimum width (2 * 2 MHz
+        # half-width) exceeds the default points cap on this fine synthetic
+        # grid (96 points = 1.92 MHz), which would flip its difficulty to HARD.
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         weak_w = next(w for w in plan.windows if 1 in w.free_peak_indices)
         assert not weak_w.fixed_contributors
         assert weak_w.difficulty == WindowDifficulty.EASY
@@ -364,9 +376,12 @@ class TestBoundedMergeAndCapSplit:
         return _synthetic(lines, n=8000)
 
     def test_dense_strong_forest_is_split_to_width_cap(self):
-        # Default max_peaks_per_window=0: bounded by the 40 MHz width cap alone.
+        # max_peaks_per_window=0 and the points cap pinned off: bounded by
+        # the 40 MHz width cap alone.
         freqs, spec, rms, peaks = self._dense_cluster()
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         _assert_invariants(plan)
         # The ~57 MHz forest must NOT collapse into one mega-window: the width cap
         # splits it even with no peak cap.
@@ -377,14 +392,36 @@ class TestBoundedMergeAndCapSplit:
         covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
         assert covered == list(range(len(peaks)))
 
+    def test_default_points_cap_bounds_windows(self):
+        # The hard default is a 96-point cap (the small-window operating
+        # point of the Stage 5 window-invariant gates); with no explicit
+        # width knobs every window respects it.
+        freqs, spec, rms, peaks = self._dense_cluster()
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        _assert_invariants(plan)
+        assert plan.parameters["max_window_width_points"] == 96
+        # A single-line window keeps the min-half-width floor (2 * 2 MHz),
+        # which exceeds the 96-point cap on this fine grid; the cap bounds
+        # the cluster merge, so no window may exceed the larger of the two.
+        bound = max(96 * step, 2 * 2.0) + 2 * step
+        for w in plan.windows:
+            assert w.width_mhz <= bound
+        covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
+        assert covered == list(range(len(peaks)))
+
     def test_tighter_peak_cap_makes_more_windows(self):
-        # Two explicit positive caps: the tighter one must split into more windows.
+        # Two explicit positive caps: the tighter one must split into more
+        # windows. Points cap pinned off so the peak cap (not the width cap
+        # at this fine grid step) drives the partition.
         freqs, spec, rms, peaks = self._dense_cluster()
         loose = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=8
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            max_peaks_per_window=8, max_window_width_points=0,
         )
         tight = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=4
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            max_peaks_per_window=4, max_window_width_points=0,
         )
         assert tight.n_windows > loose.n_windows
         for w in tight.windows:
@@ -394,16 +431,20 @@ class TestBoundedMergeAndCapSplit:
         _assert_invariants(tight)
 
     def test_coupled_pair_within_cap_stays_merged(self):
-        # Two strong lines a few MHz apart (< the width cap, < the peak cap) must
-        # still merge into one joint window -- the cap split must not break a
-        # genuinely-coupled close pair (the 2638 doublet back-compat case).
+        # Two strong lines a few MHz apart (< the MHz width cap, < the peak
+        # cap) must still merge into one joint window -- the cap split must
+        # not break a genuinely-coupled close pair (the 2638 doublet
+        # back-compat case). Points cap pinned off: on this fine grid the
+        # default points cap is narrower than the pair separation.
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30038.0, 3.0, PeakClassification.STRONG),
                 (30042.0, 3.0, PeakClassification.STRONG),
             ]
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         assert plan.n_windows == 1
         assert sorted(plan.windows[0].free_peak_indices) == [0, 1]
 
@@ -424,7 +465,7 @@ class TestBoundedMergeAndCapSplit:
         cap_points = int(round(cap_mhz / step))
         by_mhz = build_window_plan(
             peaks, freqs, spec, rms, acquisition_us=15.0,
-            max_window_width_mhz=cap_mhz,
+            max_window_width_mhz=cap_mhz, max_window_width_points=0,
         )
         by_points = build_window_plan(
             peaks, freqs, spec, rms, acquisition_us=15.0,

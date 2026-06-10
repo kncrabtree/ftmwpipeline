@@ -222,8 +222,8 @@ def register_window_commands(subparsers: Any) -> None:
         dest="max_window_width_points",
         type=int,
         help="Width cap in active-FT grid points -- the portable form of the "
-        "cap (bin width varies across instruments). 0 (the default) defers to "
-        "--max-window-width-mhz; a positive value supersedes it.",
+        "cap (bin width varies across instruments). 0 defers to "
+        "--max-window-width-mhz; a positive value (default 96) supersedes it.",
     )
     p_assign.add_argument(
         "--magnitude-attachment-threshold",
