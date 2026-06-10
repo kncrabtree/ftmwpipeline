@@ -43,6 +43,7 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             magnitude_attachment_threshold=args.magnitude_attachment_threshold,
             tau_us=args.tau_us,
             max_peaks_per_window=args.max_peaks_per_window,
+            max_window_width_points=args.max_window_width_points,
             preset=args.preset,
         )
         plan = result["plan"]
@@ -215,6 +216,14 @@ def register_window_commands(subparsers: Any) -> None:
         "window is bounded only by --max-window-width-mhz. A positive value "
         "splits dense merged spans at their sparsest gaps until each window holds "
         "at most this many peaks. Tracks the Stage 5 conservative.max_peaks.",
+    )
+    p_assign.add_argument(
+        "--max-window-width-points",
+        dest="max_window_width_points",
+        type=int,
+        help="Width cap in active-FT grid points -- the portable form of the "
+        "cap (bin width varies across instruments). 0 (the default) defers to "
+        "--max-window-width-mhz; a positive value supersedes it.",
     )
     p_assign.add_argument(
         "--magnitude-attachment-threshold",

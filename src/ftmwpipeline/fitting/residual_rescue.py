@@ -38,6 +38,7 @@ from .residual_screening import (
     ResidualPeakCandidate,
     find_residual_peaks,
 )
+from . import validation
 from .spur_detection import SpurMaskSpec
 from .validation import (
     DEFAULT_N_EFF_KIND,
@@ -46,6 +47,7 @@ from .validation import (
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
+    gate_aicc_pair,
 )
 from .window_fit import (
     DEFAULT_MAX_PEAKS,
@@ -224,7 +226,9 @@ def merge_close_peaks_cleanup(
     overfit_amp_ratio_threshold: float = DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD,
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Multi-tier merge cleanup for close peak pairs.
 
@@ -289,6 +293,23 @@ def merge_close_peaks_cleanup(
         sigma = np.full(u.size, float(sigma))
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
+    budget: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget = np.asarray(gate_budget_extra, dtype=float)[order]
+
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u)
+        if not keep.any():
+            keep = np.ones(u.size, dtype=bool)
+    else:
+        keep = np.ones(u.size, dtype=bool)
+    sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
 
     fwhm = (
         feature_fwhm(fit.tau_us, acquisition_us, shape=fit.shape)
@@ -424,8 +445,21 @@ def merge_close_peaks_cleanup(
                 kind=n_eff_kind,
                 sigma=sigma,
             )
-            aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
-            aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+            aicc_k, aicc_km1 = gate_aicc_pair(
+                n_eff,
+                more_n_params=current.n_params,
+                less_n_params=refit.n_params,
+                more_chi2_raw=current.chi_squared,
+                less_chi2_raw=refit.chi_squared,
+                weighted=weighted,
+                more_residual=np.asarray(current.residual)[keep],
+                less_residual=np.asarray(refit.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=np.asarray(current.fitted_spectrum)[keep],
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=current.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             if aicc_km1 >= aicc_k:
                 break
             current = refit
@@ -574,7 +608,9 @@ def iterative_aicc_cleanup(
     *,
     fit_kwargs_inner: dict[str, Any],
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop the worst AICc-with-n_eff offender until every
     remaining peak is supported.
@@ -621,6 +657,9 @@ def iterative_aicc_cleanup(
         sigma = np.full(u.size, float(sigma))
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
+    budget: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget = np.asarray(gate_budget_extra, dtype=float)[order]
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
@@ -632,6 +671,14 @@ def iterative_aicc_cleanup(
     if not keep.any():
         keep = np.ones(u.size, dtype=bool)
 
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
+
     current = fit
     n_dropped = 0
     while current.n_peaks > 0:
@@ -641,7 +688,26 @@ def iterative_aicc_cleanup(
             kind=n_eff_kind,
             sigma=sigma,
         )
-        aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
+        # Gate weights / residuals come from the more-complex K-peak model and
+        # are shared across this iteration's per-peak K-1 comparisons (the
+        # weighted and penalized branches of ``gate_aicc_pair`` consume them).
+        cur_res_keep = np.asarray(current.residual)[keep]
+        cur_model_keep = np.asarray(current.fitted_spectrum)[keep]
+        aicc_k, _ = gate_aicc_pair(
+            n_eff,
+            more_n_params=current.n_params,
+            less_n_params=current.n_params,
+            more_chi2_raw=current.chi_squared,
+            less_chi2_raw=current.chi_squared,
+            weighted=weighted,
+            more_residual=cur_res_keep,
+            less_residual=cur_res_keep,
+            rms_noise=sigma_keep,
+            weight_model=cur_model_keep,
+            n_eff_kind=n_eff_kind,
+            ref_reduced_chi2=current.reduced_chi2,
+            budget_extra=budget_keep,
+        )
 
         worst_aicc_km1 = float("inf")
         worst_idx = -1
@@ -651,8 +717,23 @@ def iterative_aicc_cleanup(
         for i in range(current.n_peaks):
             kept = [pk for j, pk in enumerate(current.peaks) if j != i]
             if not kept:
+                # Zero model -> residual is the data itself.
                 null_chi2 = calculate_noise_weighted_chi2(z[keep], sigma[keep])
-                aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
+                _, aicc_km1 = gate_aicc_pair(
+                    n_eff,
+                    more_n_params=current.n_params,
+                    less_n_params=0,
+                    more_chi2_raw=current.chi_squared,
+                    less_chi2_raw=null_chi2,
+                    weighted=weighted,
+                    more_residual=cur_res_keep,
+                    less_residual=z[keep],
+                    rms_noise=sigma_keep,
+                    weight_model=cur_model_keep,
+                    n_eff_kind=n_eff_kind,
+                    ref_reduced_chi2=current.reduced_chi2,
+                    budget_extra=budget_keep,
+                )
                 if aicc_km1 < worst_aicc_km1:
                     worst_aicc_km1 = aicc_km1
                     worst_idx = i
@@ -677,7 +758,21 @@ def iterative_aicc_cleanup(
             # (the locked refit's covariance has no tau slot).
             refit.tau_was_fit = current.tau_was_fit
             refit.tau_error = current.tau_error
-            aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+            _, aicc_km1 = gate_aicc_pair(
+                n_eff,
+                more_n_params=current.n_params,
+                less_n_params=refit.n_params,
+                more_chi2_raw=current.chi_squared,
+                less_chi2_raw=refit.chi_squared,
+                weighted=weighted,
+                more_residual=cur_res_keep,
+                less_residual=np.asarray(refit.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=cur_model_keep,
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=current.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             if aicc_km1 < worst_aicc_km1:
                 worst_aicc_km1 = aicc_km1
                 worst_idx = i
@@ -1125,6 +1220,7 @@ def rescue_and_consolidate(
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape: "PeakShape | str" = "lorentzian",
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1223,6 +1319,13 @@ def rescue_and_consolidate(
     # call doesn't get the same kwarg twice.
     ckwargs_in = dict(conservative_kwargs or {})
     ckwargs_in.pop("max_peaks", None)
+    # Per-window sigma_eff budget (aligned with ``offset_grid_mhz``): ride the
+    # conservative-kwargs bag into :func:`attempt_residual_rescue`'s inner
+    # conservative_fit, and thread explicitly to the cleanup gates below.
+    if gate_budget_extra is not None:
+        ckwargs_in["gate_budget_extra"] = gate_budget_extra
+    else:
+        gate_budget_extra = ckwargs_in.get("gate_budget_extra")
     # Resolution-referenced minimum-pair-separation floor (GitHub issue #13).
     # ``attempt_residual_rescue`` reads it from ``ckwargs_in`` for its locality
     # rejection; the merge cleanup needs it as an explicit argument.
@@ -1410,6 +1513,7 @@ def rescue_and_consolidate(
             overfit_amp_ratio_threshold=overfit_amp_ratio_threshold,
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
 
         # Per-peak knockout produces persisted diagnostics (n_eff,
@@ -1426,6 +1530,7 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
         # Iterative AICc cleanup: drops the worst offender, refits,
         # repeats. Non-iterative drops kill duplicate clusters wholesale
@@ -1442,6 +1547,7 @@ def rescue_and_consolidate(
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
         # Grid spacing for the +/-1-bin tolerance used in both the
         # rescue-survival check below and the across-rounds blacklist.
@@ -1534,6 +1640,7 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
 
         chi2_after = pruned_fit.chi_squared

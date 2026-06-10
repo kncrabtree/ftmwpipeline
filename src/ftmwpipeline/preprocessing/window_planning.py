@@ -72,6 +72,16 @@ DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
 """Width cap default. On 2638 a strong line's above-threshold skirt extends to
 ~40 MHz, so a single window wider than this is already dense/coupled."""
 
+DEFAULT_MAX_WINDOW_WIDTH_POINTS = 0
+"""Width cap in active-FT grid points; ``0`` (the default) disables it so the
+cap is ``max_window_width_mhz``. When positive it *replaces* the MHz cap as
+the bound on the strong-cluster merge and the cap split (the effective cap in
+MHz is ``points * grid step``). A points cap is the statistically portable
+form: the Stage 5 gates reason over bins (n_eff, per-bin sigma), and the
+active-FT bin width varies with acquisition length across instruments, so a
+fixed MHz cap yields different statistical window sizes per fixture while a
+points cap holds them constant."""
+
 DEFAULT_MIN_FREEZE_SNR = 50.0
 """Freeze-eligibility SNR cutoff (O4-2): a fixed contributor below this is
 flagged as a thaw-and-re-fit candidate rather than safely frozen."""
@@ -318,6 +328,7 @@ def build_window_plan(
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
+    max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -342,6 +353,11 @@ def build_window_plan(
         ``S_coh`` threshold ``T_edge``.
     max_window_width_mhz : float
         Width cap; a wider window is HARD and gets a split proposal.
+        Superseded by ``max_window_width_points`` when that is positive.
+    max_window_width_points : int
+        Width cap in grid points; ``0`` (the default) defers to
+        ``max_window_width_mhz``. The portable form of the cap -- see
+        :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS`.
     min_freeze_snr : float
         Freeze-eligibility SNR cutoff for fixed contributors (O4-2).
     min_window_half_width_mhz : float
@@ -400,6 +416,7 @@ def build_window_plan(
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
         "max_edge_free_neighbors": int(max_edge_free_neighbors),
         "max_peaks_per_window": int(max_peaks_per_window),
+        "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -468,7 +485,13 @@ def build_window_plan(
     # GHz-scale window. Each strong run is split at its sparsest gaps so no
     # forced span exceeds the cap; distant coupling is carried by the
     # fixed-contributor mechanism (Step 4), not by widening the window.
-    cap_idx = max_window_width_mhz / step_mhz
+    # A positive points cap is the portable form and supersedes the MHz cap
+    # (see :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS`).
+    cap_idx = (
+        float(max_window_width_points)
+        if max_window_width_points > 0
+        else max_window_width_mhz / step_mhz
+    )
     strong_in_interval: Dict[int, List[_PPeak]] = {}
     for pk in promoted:
         if not pk.is_strong:
@@ -544,7 +567,9 @@ def build_window_plan(
         edge_m=edge_m,
         trim_m=trim_m,
         edge_threshold=edge_threshold,
-        max_window_width_mhz=max_window_width_mhz,
+        # The difficulty classifier's too-wide test must match the cap the
+        # split actually enforced.
+        max_window_width_mhz=cap_idx * step_mhz,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
         max_edge_free_neighbors=max_edge_free_neighbors,
@@ -966,6 +991,7 @@ def replan(
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
+    max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -1030,6 +1056,7 @@ def replan(
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
         "max_edge_free_neighbors": int(max_edge_free_neighbors),
+        "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -1099,7 +1126,13 @@ def replan(
         edge_m=edge_m,
         trim_m=trim_m,
         edge_threshold=edge_threshold,
-        max_window_width_mhz=max_window_width_mhz,
+        # Match build_window_plan: a positive points cap supersedes the MHz
+        # cap, so classify difficulty against the cap actually in force.
+        max_window_width_mhz=(
+            max_window_width_points * step_mhz
+            if max_window_width_points > 0
+            else max_window_width_mhz
+        ),
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
         max_edge_free_neighbors=max_edge_free_neighbors,

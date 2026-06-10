@@ -414,6 +414,43 @@ class TestBoundedMergeAndCapSplit:
         )
         assert plan.parameters["max_peaks_per_window"] == 6
 
+    def test_points_cap_matches_equivalent_mhz_cap(self):
+        # The points cap is the portable form of the width cap: a positive
+        # value supersedes the MHz cap, and ``points = mhz / grid step``
+        # must reproduce the identical partition.
+        freqs, spec, rms, peaks = self._dense_cluster()
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        cap_mhz = 12.0
+        cap_points = int(round(cap_mhz / step))
+        by_mhz = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            max_window_width_mhz=cap_mhz,
+        )
+        by_points = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            max_window_width_points=cap_points,
+        )
+        assert by_points.n_windows == by_mhz.n_windows
+        assert [w.freq_range for w in by_points.windows] == [
+            w.freq_range for w in by_mhz.windows
+        ]
+        assert by_points.parameters["max_window_width_points"] == cap_points
+        _assert_invariants(by_points)
+
+    def test_points_cap_supersedes_mhz_cap(self):
+        # With both set, the points cap governs: a tight points cap splits
+        # the forest even when the MHz cap alone would not.
+        freqs, spec, rms, peaks = self._dense_cluster()
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0,
+            max_window_width_mhz=1000.0,
+            max_window_width_points=int(round(10.0 / step)),
+        )
+        assert plan.n_windows >= 4
+        for w in plan.windows:
+            assert w.width_mhz <= 10.0 + 2 * step
+
 
 class TestEmptyAndEdgeCases:
     def test_no_promoted_peaks_gives_empty_plan(self):

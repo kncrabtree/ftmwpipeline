@@ -55,9 +55,10 @@ into the persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 
@@ -84,6 +85,7 @@ from .peak_model import (
     sideband_sign,
     to_baseband_offset,
 )
+from . import validation
 from .residual_rescue import rescue_and_consolidate
 from .spur_detection import SpurMaskSpec, SpurSet
 from .window_fit import (
@@ -180,6 +182,25 @@ refit with the complex baseline enabled. A dedicated threshold well below the
 thaw default (8.0): the thaw addresses a *missing real line* at the edge, the
 baseline a *wrong skirt shape*. Empirically settled on 2638 (recall 0.89, zero
 harmful fires); 2638-tuned, so instrument-tunable calibration debt."""
+
+DEFAULT_EDGE_FREE_FREQ_REFINE = False
+"""Whether the edge-free contributor read refines the line frequencies.
+
+The joint complex least-squares read of
+:func:`evaluate_edge_free_contributors` solves only the lines' linear
+``(amplitude, phase)`` with the frequencies held at their Stage 3 detected
+positions. On an ultra-high-SNR line a sub-bin frequency error mis-phases the
+sharp core template enough that the linear solve recovers a substantially
+low amplitude (the unmatched core residual is paid instead), and the
+subtracted far-wing skirt then under-predicts the real pedestal by a factor
+the ``kappa_skirt`` fidelity budget cannot cover -- the leftover coherent
+wing is harvested as spurious peaks. With this enabled, a bounded
+variable-projection refinement (frequencies free within ~1.5 grid steps,
+amplitudes/phases re-solved linearly at each trial) is run per contributor
+group before the final solve, recovering the core to a few percent and the
+wing prediction to within the fidelity budget. Experimental flag while the
+small-window retune is validated; ``False`` preserves the fixed-frequency
+read."""
 
 
 # ---------------------------------------------------------------------------
@@ -736,13 +757,56 @@ def evaluate_edge_free_contributors(
             continue
         f_core = freq[mask]
         z_core = z[mask]
-        design = np.empty((f_core.size, len(line_freqs)), dtype=np.complex128)
-        for j, f0 in enumerate(line_freqs):
-            u_local = s * (f_core - f0)
-            design[:, j] = model_spectrum(
-                u_local, [ModelPeak(1.0, 0.0, 0.0)], tau_us, acquisition_us,
-                shape=shape,
-            )
+
+        def _design(freqs_at: Sequence[float]) -> np.ndarray:
+            d = np.empty((f_core.size, len(freqs_at)), dtype=np.complex128)
+            for j, f0 in enumerate(freqs_at):
+                u_local = s * (f_core - f0)
+                d[:, j] = model_spectrum(
+                    u_local,
+                    [ModelPeak(1.0, 0.0, 0.0)],
+                    tau_us,
+                    acquisition_us,
+                    shape=shape,
+                )
+            return cast(np.ndarray, d)
+
+        if DEFAULT_EDGE_FREE_FREQ_REFINE and f_core.size > 2 * len(line_freqs):
+            # Variable-projection frequency refinement: the detected positions
+            # carry sub-bin errors that mis-phase the sharp core template and
+            # bias the linear amplitude read low (see
+            # :data:`DEFAULT_EDGE_FREE_FREQ_REFINE`). Frequencies move within
+            # a sub-bin-scale bound (never far enough to swap identities
+            # within the group); amplitudes/phases stay linear per trial.
+            step = float(np.median(np.abs(np.diff(np.sort(f_core)))))
+            bound = 1.5 * step
+            if len(line_freqs) > 1:
+                seps = np.diff(np.sort(np.asarray(line_freqs)))
+                min_sep = float(seps.min()) if seps.size else np.inf
+                bound = min(bound, 0.45 * min_sep) if np.isfinite(min_sep) else bound
+            if bound > 0.0:
+
+                def _vp_residual(deltas: np.ndarray) -> np.ndarray:
+                    d = _design([f0 + dd for f0, dd in zip(line_freqs, deltas)])
+                    g_trial, *_ = np.linalg.lstsq(d, z_core, rcond=None)
+                    r = np.asarray(z_core - d @ g_trial)
+                    return cast(np.ndarray, np.concatenate([r.real, r.imag]))
+
+                try:
+                    from scipy.optimize import least_squares
+
+                    sol = least_squares(
+                        _vp_residual,
+                        np.zeros(len(line_freqs)),
+                        bounds=(-bound, bound),
+                        method="trf",
+                        max_nfev=60,
+                    )
+                    line_freqs = [f0 + dd for f0, dd in zip(line_freqs, sol.x)]
+                except Exception:
+                    pass  # keep the detected positions; the linear read stands
+
+        design = _design(line_freqs)
         coeffs, *_ = np.linalg.lstsq(design, z_core, rcond=None)
         for c, f0, g in zip(group, line_freqs, coeffs):
             delta_dep = s * (f0 - dependent_center_mhz)
@@ -857,6 +921,17 @@ def fit_window_with_fixed_contributors(
         acquisition_us,
         shape=shape,
     )
+    # sigma_eff skirt budget: the subtracted frozen background's extrapolation
+    # error is invisible to the gates' local |model| term, so its fidelity
+    # allowance ``kappa_skirt * |background|`` rides into every accept/merge/
+    # knockout gate of this window's fit (see
+    # :data:`~ftmwpipeline.fitting.validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT`).
+    kappa_skirt = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT
+    if kappa_skirt is not None:
+        conservative_kwargs = dict(conservative_kwargs)
+        conservative_kwargs["gate_budget_extra"] = float(kappa_skirt) * np.abs(
+            background
+        )
     fit_result = conservative_fit(
         offset_grid_mhz,
         data_minus_bg,
@@ -1773,6 +1848,7 @@ _REPLAN_PARAM_KEYS = (
     "trim_m",
     "edge_threshold",
     "max_window_width_mhz",
+    "max_window_width_points",
     "min_freeze_snr",
     "min_window_half_width_mhz",
     "magnitude_attachment_threshold",
@@ -1958,7 +2034,33 @@ def _fit_one_window(
         )
         ssr_without = _noise_weighted_ssr(full_residual, sig_slice)
         ssr_with = _noise_weighted_ssr(ef_residual, sig_slice)
-        if ssr_with <= DEFAULT_EDGE_FREE_ACCEPT_FRACTION * ssr_without:
+        # The arbitration must price model complexity in the same currency as
+        # the accept gate. The frozen skirt adds zero free parameters, but the
+        # no-skirt fit can spend *peaks* absorbing the un-subtracted skirt
+        # energy (pedestal + wing fringes) -- under a permissive gate its SSR
+        # approaches the with-skirt fit's and a raw-SSR margin then rejects
+        # the skirt, leaving the pedestal for the rescue to "explain" with
+        # spurious lines (the dependent-window flood). Under the penalized
+        # gate, score both sides as the gate does (``SSR + 2*lambda*k``) so
+        # peak-bought residual reduction is charged for; the legacy gate keeps
+        # the raw-SSR fraction rule it was calibrated with.
+        penalty_lambda = validation.DEFAULT_GATE_PENALTY_LAMBDA
+        if penalty_lambda is not None:
+            pen = 2.0 * float(penalty_lambda)
+            score_with = ssr_with + pen * float(ef_result.fit.n_params)
+            score_without = ssr_without + pen * float(fit_result.fit.n_params)
+            adopt_skirt = score_with <= score_without
+        else:
+            adopt_skirt = ssr_with <= DEFAULT_EDGE_FREE_ACCEPT_FRACTION * ssr_without
+        if os.environ.get("FTMW_DEBUG_SKIRT"):
+            print(
+                f"[skirt] w{win.window_id}: n_ef={len(edge_free_peaks)} "
+                f"ssr_with={ssr_with:.1f} ssr_without={ssr_without:.1f} "
+                f"k_with={ef_result.fit.n_params} "
+                f"k_without={fit_result.fit.n_params} adopt={adopt_skirt}",
+                flush=True,
+            )
+        if adopt_skirt:
             fit_result = ef_result
             background = ef_bg
             full_fitted = ef_full
@@ -2351,6 +2453,25 @@ def _apply_rescue_to_outcome(
     """
     data_minus_bg = outcome.complex_spectrum - outcome.background
     spur_mask = getattr(outcome, "_spur_mask", None)
+    # Same per-window sigma_eff skirt budget the conservative fit's gates used
+    # (the rescue operates on the identical background-subtracted data).
+    kappa_skirt = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT
+    budget_extra = (
+        float(kappa_skirt) * np.abs(outcome.background)
+        if kappa_skirt is not None
+        else None
+    )
+    if os.environ.get("FTMW_DEBUG_SKIRT"):
+        _sig = np.asarray(outcome.rms_noise, dtype=float)
+        _bud = 0.0 if budget_extra is None else float(np.median(budget_extra))
+        print(
+            f"[rescue-budget] w{outcome.window_id}: "
+            f"med|data|={float(np.median(np.abs(outcome.complex_spectrum))):.3e} "
+            f"med|bg|={float(np.median(np.abs(outcome.background))):.3e} "
+            f"med|resid|={float(np.median(np.abs(data_minus_bg))):.3e} "
+            f"med_sigma={float(np.median(_sig)):.3e} med_budget={_bud:.3e}",
+            flush=True,
+        )
     consolidated = rescue_and_consolidate(
         outcome.offset_grid_mhz,
         data_minus_bg,
@@ -2362,6 +2483,7 @@ def _apply_rescue_to_outcome(
         conservative_kwargs=conservative_kwargs,
         shape=outcome.fit.fit.shape,
         spur_mask=spur_mask,
+        gate_budget_extra=budget_extra,
         **rescue_kwargs,
     )
 

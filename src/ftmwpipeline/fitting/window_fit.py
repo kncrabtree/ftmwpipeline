@@ -69,6 +69,7 @@ from .peak_model import (
     model_spectrum,
 )
 from .spur_detection import SpurMaskSpec
+from . import validation
 from .validation import (
     DEFAULT_N_EFF_KIND,
     calculate_aic,
@@ -77,6 +78,7 @@ from .validation import (
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
+    gate_aicc_pair,
     validate_peak_separation,
 )
 
@@ -1370,7 +1372,9 @@ class AddStep:
         Whether the candidate cleared the peak-separation constraint.
     decision : str
         ``"seed"``, ``"seed-blend"``, ``"accept"``, ``"promote"``,
-        ``"tentative"`` or ``"reject"``.
+        ``"tentative"``, ``"reject"`` or ``"knockout-null"`` (the lone
+        seed removed at exit by its own K=1-vs-null knockout verdict, see
+        :data:`validation.DEFAULT_ENFORCE_SEED_KNOCKOUT`).
     reason : str
         Free-text note on the decision.
     n_eff : float
@@ -1513,8 +1517,10 @@ def knockout_test(
     *,
     fit_kwargs_inner: Optional[dict[str, Any]] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     significance: float = DEFAULT_SIGNIFICANCE,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> list[KnockoutResult]:
     """Per-line knockout validation of a converged window fit.
 
@@ -1595,6 +1601,9 @@ def knockout_test(
         keep = np.ones(u.size, dtype=bool)
     z_keep = z[keep]
     sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget_keep = np.asarray(gate_budget_extra, dtype=float)[keep]
 
     tau = fit.tau_us
     shape_resolved = fit.shape
@@ -1609,7 +1618,16 @@ def knockout_test(
         kind=n_eff_kind,
         sigma=sigma,
     )
-    aicc_k = calculate_aicc(fit.chi_squared, fit.n_params, n_eff)
+    # Context-invariant gate: score the K vs K-1 AICc on the information-
+    # weighted chi-squared (weights from the more-complex K-fit model) so a
+    # peak's support depends on its local evidence, not the window's bin count.
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    fit_residual_keep = np.asarray(fit.residual)[keep]
+    weight_model_keep = np.asarray(fit.fitted_spectrum)[keep]
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner or {})
     refit_kwargs["fit_tau"] = False  # tau locked at the K-fit value
@@ -1631,7 +1649,21 @@ def knockout_test(
             # K=1 -> K=0 refit is the null model; no fit_window call needed.
             # The null chi-squared is the data's own noise-weighted energy.
             null_chi2 = calculate_noise_weighted_chi2(z_keep, sigma_keep)
-            aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
+            aicc_k, aicc_km1 = gate_aicc_pair(
+                n_eff,
+                more_n_params=fit.n_params,
+                less_n_params=0,
+                more_chi2_raw=fit.chi_squared,
+                less_chi2_raw=null_chi2,
+                weighted=weighted,
+                more_residual=fit_residual_keep,
+                less_residual=z_keep,
+                rms_noise=sigma_keep,
+                weight_model=weight_model_keep,
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=fit.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             # Compare aicc_km1 to aicc_k directly so the both-+inf case
             # (model not identifiable at n_eff for either K or K-1) reads
             # as a tie and preserves the K-peak fit -- matches the merge
@@ -1684,7 +1716,20 @@ def knockout_test(
             )
             continue
 
-        aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+        aicc_k, aicc_km1 = gate_aicc_pair(
+            n_eff,
+            more_n_params=fit.n_params,
+            less_n_params=refit.n_params,
+            more_chi2_raw=fit.chi_squared,
+            less_chi2_raw=refit.chi_squared,
+            weighted=weighted,
+            more_residual=fit_residual_keep,
+            less_residual=np.asarray(refit.residual)[keep],
+            rms_noise=sigma_keep,
+            weight_model=weight_model_keep,
+            n_eff_kind=n_eff_kind,
+            budget_extra=budget_keep,
+        )
         # Diagnostic p_value: refit-based F-test (K-1 simpler vs K complex).
         p_value, _, _ = calculate_chi_squared_improvement(
             refit.chi_squared, fit.chi_squared, 3, fit.n_data, fit.n_params
@@ -1770,8 +1815,10 @@ def _blend_aware_seed(
     tau_penalty_sigma_us: Optional[float] = None,
     tau_penalty_sigma_lo_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1796,6 +1843,47 @@ def _blend_aware_seed(
     familiar diagnostic.
     """
     shape_resolved = PeakShape.coerce(shape)
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    u_grid = np.asarray(offset_grid_mhz, dtype=float)
+    sigma_arr = np.asarray(rms_noise, dtype=float)
+    if sigma_arr.ndim == 0:
+        sigma_arr = np.full(u_grid.size, float(sigma_arr))
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u_grid)
+        if not keep.any():
+            keep = np.ones(u_grid.size, dtype=bool)
+    else:
+        keep = np.ones(u_grid.size, dtype=bool)
+    sigma_keep = sigma_arr[keep]
+    budget_keep: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget_keep = np.asarray(gate_budget_extra, dtype=float)[keep]
+
+    def _trigger_rchi2(res_fit: WindowFitResult) -> float:
+        # Escalation-trigger reduced chi-squared. Under the sigma_eff gate
+        # (:data:`validation.DEFAULT_GATE_SIGMA_EFF_KAPPA`) the trigger is
+        # computed against the fidelity-inflated noise of the fit's own
+        # model: a bright line sitting at its lineshape floor reads ~1 and
+        # does not escalate (the floor is irreducible -- straddled absorber
+        # peaks are not the remedy), while a genuine unresolved blend leaves
+        # reducible misfit at bins the model under-covers and still fires.
+        kappa = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA
+        if kappa is None:
+            return float(res_fit.reduced_chi2)
+        chi2_eff = validation.sigma_eff_chi2(
+            np.asarray(res_fit.residual)[keep],
+            sigma_keep,
+            np.asarray(res_fit.fitted_spectrum)[keep],
+            kappa,
+            extra=budget_keep,
+        )
+        dof = max(res_fit.n_data - res_fit.n_params, 1)
+        return chi2_eff / dof
+
     fit_kwargs: dict[str, Any] = dict(
         fit_tau=fit_tau,
         tau_bounds=tau_bounds,
@@ -1850,7 +1938,7 @@ def _blend_aware_seed(
     ]
 
     best = fit1
-    if not fit1.success or fit1.reduced_chi2 <= rchi2_threshold:
+    if not fit1.success or _trigger_rchi2(fit1) <= rchi2_threshold:
         return best, audit
 
     # Elevated reduced chi-squared -> retry as a straddled blend.
@@ -1916,10 +2004,23 @@ def _blend_aware_seed(
             n_eff = effective_sample_size(
                 trial.fitted_spectrum,
                 kind=n_eff_kind,
-                sigma=cast(np.ndarray, np.asarray(rms_noise, dtype=float)),
+                sigma=sigma_arr,
             )
-            aicc_prev = calculate_aicc(prev.chi_squared, prev.n_params, n_eff)
-            aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
+            aicc_trial, aicc_prev = gate_aicc_pair(
+                n_eff,
+                more_n_params=trial.n_params,
+                less_n_params=prev.n_params,
+                more_chi2_raw=trial.chi_squared,
+                less_chi2_raw=prev.chi_squared,
+                weighted=weighted,
+                more_residual=np.asarray(trial.residual)[keep],
+                less_residual=np.asarray(prev.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=np.asarray(trial.fitted_spectrum)[keep],
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=trial.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             aicc_delta = aicc_trial - aicc_prev
             gate_accepts = aicc_trial < aicc_prev
         else:
@@ -1951,7 +2052,7 @@ def _blend_aware_seed(
             break
         best = trial
         prev = trial
-        if trial.reduced_chi2 <= rchi2_threshold:
+        if _trigger_rchi2(trial) <= rchi2_threshold:
             break
     return best, audit
 
@@ -1991,8 +2092,10 @@ def conservative_fit(
     tau_anchor_us: Optional[float] = None,
     tau_penalty_sigma_lo_factor: float = 1.0,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2117,6 +2220,16 @@ def conservative_fit(
         :func:`knockout_test`). Keeps a spur from inflating the AICc gate
         and the knockout sweep. ``None`` masks nothing.
 
+    gate_budget_extra : np.ndarray, optional
+        Per-bin amplitude budget (aligned with ``offset_grid_mhz``) added in
+        quadrature to the gate noise by the sigma_eff gate variant -- the
+        fidelity allowance ``kappa_skirt * |frozen background|`` for skirt
+        structure subtracted from this window's data (see
+        :data:`~ftmwpipeline.fitting.validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT`).
+        Threaded to the seeder, the add-loop gate, and the knockout sweep;
+        inert unless the sigma_eff gate is active. The NLS objective and all
+        reported chi-squared stay on the raw Stage 2 noise.
+
     Returns
     -------
     ConservativeFitResult
@@ -2131,6 +2244,23 @@ def conservative_fit(
     # np.interp needs an ascending grid; sort the window once on entry.
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
+    budget: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget = np.asarray(gate_budget_extra, dtype=float)[order]
+
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u)
+        if not keep.any():
+            keep = np.ones(u.size, dtype=bool)
+    else:
+        keep = np.ones(u.size, dtype=bool)
+    sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
 
     constraints = derive_window_fit_constraints(
         z,
@@ -2223,8 +2353,10 @@ def conservative_fit(
         tau_penalty_sigma_us=tau_penalty_sigma_us,
         tau_penalty_sigma_lo_us=constraints.tau_penalty_sigma_lo_us,
         n_eff_kind=n_eff_kind,
+        weighted_gate_chi2=weighted,
         shape=shape_resolved,
         spur_mask=spur_mask,
+        gate_budget_extra=budget,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
@@ -2319,8 +2451,21 @@ def conservative_fit(
                 kind=n_eff_kind,
                 sigma=sigma,
             )
-            aicc_current = calculate_aicc(current.chi_squared, current.n_params, n_eff)
-            aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
+            aicc_trial, aicc_current = gate_aicc_pair(
+                n_eff,
+                more_n_params=trial.n_params,
+                less_n_params=current.n_params,
+                more_chi2_raw=trial.chi_squared,
+                less_chi2_raw=current.chi_squared,
+                weighted=weighted,
+                more_residual=np.asarray(trial.residual)[keep],
+                less_residual=np.asarray(current.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=np.asarray(trial.fitted_spectrum)[keep],
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=trial.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             aicc_delta = aicc_trial - aicc_current
             passes = aicc_trial < aicc_current
         else:
@@ -2382,7 +2527,50 @@ def conservative_fit(
         acquisition_us,
         fit_kwargs_inner=fit_kwargs_inner,
         n_eff_kind=n_eff_kind,
+        weighted_gate_chi2=weighted,
         significance=significance,
         spur_mask=spur_mask,
+        gate_budget_extra=budget,
     )
+    seed_unsupported = False
+    if validation.DEFAULT_ENFORCE_SEED_KNOCKOUT and current.n_peaks == 1 and knockouts:
+        # The enforcement currency is deliberately *raw*: under the
+        # penalized gate the lone seed must clear the plain evidence bar
+        # ``Delta chi2_raw > 2*lambda*k`` against the null fit, WITHOUT
+        # the sigma_eff/skirt budget. The budget discounts evidence under
+        # bright frozen structure -- right for incremental adds chasing
+        # subtraction error, but a window's single dominant feature is
+        # routinely a real line riding that same pedestal (the dense
+        # forest case), and budget currency would delete it wholesale.
+        # Sub-bar dust (raw Delta chi2 ~ 10-20 at SNR ~ 2) still dies.
+        lam = validation.DEFAULT_GATE_PENALTY_LAMBDA
+        if lam is not None:
+            delta_raw = null.chi_squared - current.chi_squared
+            seed_unsupported = delta_raw <= 2.0 * float(lam) * float(current.n_params)
+        else:
+            seed_unsupported = not knockouts[0].supported
+    if seed_unsupported:
+        # Enforce the K=1-vs-null verdict. The seed is installed without
+        # facing the accept gate, and the consolidation sweeps that act
+        # on knockout verdicts only run inside an accepted rescue round
+        # -- so without this a quiet window keeps a lone unsupported
+        # peak (see :data:`validation.DEFAULT_ENFORCE_SEED_KNOCKOUT`).
+        audit.append(
+            AddStep(
+                n_peaks_before=1,
+                candidate_offset_mhz=float(current.peaks[0].offset_mhz),
+                chi2_before=current.chi_squared,
+                chi2_after=null.chi_squared,
+                f_statistic=float("nan"),
+                p_value=knockouts[0].p_value,
+                aic_before=current.aic,
+                aic_after=null.aic,
+                separation_ok=True,
+                decision="knockout-null",
+                reason="lone seed unsupported by its K=1-vs-null knockout",
+                n_eff=knockouts[0].n_eff,
+                aicc_delta=knockouts[0].aicc_delta,
+            )
+        )
+        return ConservativeFitResult(null, audit, [])
     return ConservativeFitResult(current, audit, knockouts)

@@ -849,7 +849,7 @@ class AuditStep:
         Whether the candidate cleared the peak-separation constraint.
     decision : str
         ``"seed"``, ``"seed-blend"``, ``"accept"``, ``"promote"``,
-        ``"tentative"``, or ``"reject"``.
+        ``"tentative"``, ``"reject"``, or ``"knockout-null"``.
     reason : str
         Free-text annotation.
     n_eff : float

@@ -1694,6 +1694,18 @@ _window_knob(
     (0, 8, 16, 32),
     tier="advanced",
 )
+_window_knob(
+    "stage4.clustering.max_window_width_points",
+    "clustering",
+    "max_window_width_points",
+    "Width cap in active-FT grid points (the portable form; bin width varies "
+    "across instruments). 0 = defer to max_window_width_mhz; positive "
+    "supersedes it.",
+    "Y",
+    (0, 64, 96, 128, 256),
+    tier="advanced",
+    see_also=_WINDOW_SEE_ALSO,
+)
 
 
 # ---------------------------------------------------------------------------

@@ -22,7 +22,7 @@ sigma the correct factor is exactly ``sqrt(2)`` and nothing else.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, cast
 
 import numpy as np
 from scipy.stats import f as f_distribution
@@ -31,6 +31,11 @@ from .peak_model import PeakShape, h_T_shape
 
 __all__ = [
     "DEFAULT_N_EFF_KIND",
+    "DEFAULT_WEIGHTED_GATE_CHI2",
+    "DEFAULT_GATE_PENALTY_LAMBDA",
+    "DEFAULT_GATE_FLOOR_SCALING",
+    "DEFAULT_GATE_SIGMA_EFF_KAPPA",
+    "DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT",
     "DEFAULT_SHAPE_ERROR_KAPPA",
     "DEFAULT_CHI2R_NOISE_FLOOR",
     "calculate_hwhm_from_apodization",
@@ -39,8 +44,12 @@ __all__ = [
     "calculate_noise_weighted_chi2",
     "calculate_aic",
     "calculate_aicc",
+    "sigma_eff_chi2",
     "calculate_chi_squared_improvement",
     "effective_sample_size",
+    "gate_information_weights",
+    "information_weighted_chi2",
+    "gate_aicc_pair",
     "passes_significance_test",
     "validate_peak_separation",
     "shape_error_fraction",
@@ -63,6 +72,112 @@ NoiseLike = Union[float, np.ndarray]
 # each gate falls through to "preserve the simpler model" (do not add /
 # do not merge / do not drop the peak), which is the conservative direction.
 DEFAULT_N_EFF_KIND = "perplexity_log1p_snr"
+
+# Whether the Stage 5 AICc gates score K vs K+/-1 on the information-weighted
+# chi-squared (:func:`information_weighted_chi2`) instead of the raw
+# noise-weighted chi-squared. The raw chi-squared is ~``2M`` for a unit-variance
+# fit over ``M`` bins, so the per-peak accept benefit ``n_eff * dchi2 / (2M)``
+# scales as ``1/M`` -- a window-size dependence the AICc gate should not have
+# (whether a line is real is local, not a function of how many empty bins
+# surround it). Weighting chi-squared by the *same* per-bin information weights
+# ``w_f = log1p(|model|/sigma)`` that define ``n_eff`` makes ``chi2_w ~ n_eff``
+# for a good fit regardless of ``M``, so the gate weights evidence by
+# information on both sides of the ledger and the window-size sensitivity
+# vanishes. Only the internal AICc gates switch; the reported chi-squared, the
+# reduced chi-squared, the SNR-aware pass metric, and the F-test stay on the raw
+# chi-squared (they are calibrated and externally meaningful). Read at call time
+# (module attribute) so the gate is A/B-toggleable; the gate functions also take
+# an explicit ``weighted_gate_chi2`` override for direct unit tests.
+#
+# Disabled by default: validated as over-permissive -- on the 2638 calibration
+# fixture the weighted gate roughly doubled the accepted line count at fixed
+# windowing, because replacing the ``~2M`` raw-chi-squared denominator with
+# ``chi2_w ~ n_eff`` removes the ``n_eff/(2M)`` shrinkage the legacy gate leans
+# on as its (window-size-dependent) evidence bar. The window-INDEPENDENT
+# recalibration that holds is the penalized raw-chi-squared gate below.
+DEFAULT_WEIGHTED_GATE_CHI2 = False
+
+# Penalty multiplier ``lambda`` of the window-independent AIC-style gate. When
+# not ``None`` the Stage 5 AICc gates score each model by
+# ``score = chi2_raw + 2 * lambda * k`` and prefer the lower score
+# (REJECT-on-tie). Because the two models compared share the same window bins,
+# the chi-squared *difference* ``Delta chi2`` is purely the local likelihood-
+# ratio statistic of the added/removed peak -- independent of the window bin
+# count ``M`` and of how many empty bins surround the feature. Accept the more
+# complex model iff ``Delta chi2 > lambda * 2 * Delta k``: ``lambda = 1`` is the
+# textbook AIC bar (``Delta chi2 > 2 Delta k``); larger ``lambda`` is a stricter
+# (BIC-like) bar. ``lambda`` is the single calibration knob, set so the 2638
+# control reproduces its shipped line count; unlike the legacy ``n_eff`` gate the
+# bar no longer drifts with window size. ``None`` keeps the legacy
+# AICc-with-``n_eff`` gate (the shipped behaviour). Read at call time so it is
+# A/B-toggleable. Takes precedence over :data:`DEFAULT_WEIGHTED_GATE_CHI2`.
+DEFAULT_GATE_PENALTY_LAMBDA: Optional[float] = None
+
+# Whether the penalized gate scales its bar by the model-fidelity floor
+# ``max(1, ref_reduced_chi2)`` (the more-complex model's reduced chi-squared).
+# Intended to restore the SNR scaling the legacy fractional benefit carried
+# (suppressing high-SNR lineshape-absorber over-add), but MEASURED to backfire:
+# a dense under-fit window has a high reduced chi-squared for a *reducible*
+# reason (missing real lines), so scaling by it raises the bar exactly where
+# recovery is needed and re-collapses the fit to K=1 (363 cap=8 w0230: K=6 ->
+# K=1, chi2_r 52.7). Reducible (dense under-fit) and irreducible (high-SNR
+# lineshape floor) both raise reduced chi-squared but want opposite bars, so
+# reduced chi-squared alone cannot discriminate them. Left OFF (floor=1, the
+# pure penalized bar) pending a discriminator that is not the current
+# reduced chi-squared. Read at call time.
+DEFAULT_GATE_FLOOR_SCALING = False
+
+# Per-bin model-fidelity noise budget ``kappa`` for the penalized gate's
+# chi-squared. When not ``None`` (and :data:`DEFAULT_GATE_PENALTY_LAMBDA` is
+# set) the penalized gate computes both models' chi-squared against the
+# inflated per-bin noise ``sigma_eff_f**2 = sigma_f**2 + (kappa*|model_f|)**2``
+# (:func:`sigma_eff_chi2`, weights model = the more-complex model, shared by
+# both sides like ``n_eff``). This is the per-bin localisation of the
+# SNR-aware window allowance ``chi2r <= F + (kappa*SNR_max)**2``
+# (:func:`snr_aware_chi2_pass`): residual evidence sitting *under a bright
+# model component* is discounted by the lineshape-fidelity budget
+# ``kappa*|model|`` (irreducible misfit -- a candidate absorbing it gains
+# ~O(dk) in chi2_eff and cannot clear the ``2*lambda*dk`` bar), while residual
+# evidence at bins where the model is small keeps its full noise weighting
+# (reducible misfit -- a missing real line still clears the bar). The
+# discriminator the chi2r-floor variant lacked is *location*: dense under-fit
+# and the high-SNR lineshape floor both raise the window's reduced
+# chi-squared, but only the floor's residuals sit under bright model bins.
+# ``None`` keeps the penalized gate on the raw chi-squared. Read at call time
+# so it is A/B-toggleable; :data:`DEFAULT_SHAPE_ERROR_KAPPA` is the natural
+# value (one fidelity budget in the system).
+DEFAULT_GATE_SIGMA_EFF_KAPPA: Optional[float] = None
+
+# Fractional fidelity of a *frozen contributor background* (the subtracted
+# skirt of a bright out-of-window line), for the sigma_eff gate budget. The
+# local ``kappa * |model|`` term cannot see subtracted structure: the
+# contributor's skirt is removed from the window data *before* fitting, so
+# its extrapolation error -- coherent wing fringes that run ~10-40% of the
+# subtracted amplitude tens of MHz from the line (the frozen (amp, freq,
+# phase) is read at the line and ``h_T`` is evaluated with the dependent
+# window's tau) -- arrives as genuinely significant residual structure on
+# bins where the *local* model is near zero. When set (and
+# :data:`DEFAULT_GATE_SIGMA_EFF_KAPPA` is active) the plan executor budgets
+# it per bin: ``extra_f = kappa_skirt * |background_f|`` enters the gate's
+# sigma_eff in quadrature, so skirt-error fringes are discounted while a
+# real line riding the skirt (amplitude >> kappa_skirt * |skirt|) keeps its
+# evidence. ``None`` adds no background budget. This is a fixed fidelity
+# constant times a *model* amplitude -- not a residual-derived local noise
+# estimate (the Stage 2 sigma stays the only noise authority).
+DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = None
+
+# Whether ``conservative_fit`` enforces the knockout verdict on a lone seed.
+# The K=1 seed is the one path into a window's accepted peak set that never
+# faces the accept gate (the blend-aware seeder installs it unconditionally),
+# and the consolidation sweeps that act on knockout verdicts only run inside
+# an accepted residual-rescue round -- so a quiet window whose only peak
+# fails its own K=1-vs-null knockout keeps it anyway. On a small-window plan
+# every skirt-side window contributes one such sub-threshold "dust" line
+# (SNR ~ 2, zero catalog matches). With this enabled, a single-peak fit whose
+# knockout reads unsupported is replaced by the empty (null) fit at
+# ``conservative_fit`` exit. Off by default: the legacy gate keeps its own
+# dust and the no-regression suite asserts those counts.
+DEFAULT_ENFORCE_SEED_KNOCKOUT = False
 
 # Tolerated per-bin fractional model deficit in the SNR-aware acceptance gate
 # (:func:`snr_aware_chi2_pass`). At extreme SNR the per-window reduced
@@ -263,6 +378,76 @@ def calculate_noise_weighted_chi2(
     return float(np.sum(r_re**2) + np.sum(r_im**2))
 
 
+def sigma_eff_chi2(
+    residual: np.ndarray,
+    rms_noise: NoiseLike,
+    model_spectrum: np.ndarray,
+    kappa: float,
+    extra: Optional[np.ndarray] = None,
+) -> float:
+    """Chi-squared against the fidelity-inflated noise ``sigma_eff``.
+
+    ``sigma_eff_f**2 = sigma_f**2 + (kappa * |model_f|)**2`` -- the per-bin
+    noise budget with the tolerated fractional model deficit ``kappa``
+    (:data:`DEFAULT_SHAPE_ERROR_KAPPA`) added in quadrature. The chi-squared
+    follows the same stacked Re/Im convention as
+    :func:`calculate_noise_weighted_chi2` (each component carries variance
+    ``sigma_eff**2 / 2``), so for ``kappa * |model| << sigma`` it reduces
+    exactly to the raw noise-weighted chi-squared of the residual.
+
+    The effect is regime-selective by *location*: bins under a bright model
+    component (``|model|/sigma >> 1/kappa``) have their residual evidence
+    shrunk to the fidelity budget -- a model fit to its lineshape floor
+    contributes ~1 per bin there instead of ``(kappa*SNR)**2`` -- while bins
+    where the model is small keep their full noise weighting. This is the
+    per-bin localisation of the window-aggregate SNR-aware allowance
+    ``F + (kappa * SNR_max)**2`` (:func:`snr_aware_chi2_pass`).
+
+    Parameters
+    ----------
+    residual : np.ndarray
+        Complex per-bin residual ``data - model`` on the (already
+        spur-masked) grid; a zero-model null is simply the data.
+    rms_noise : float or np.ndarray
+        Per-bin complex noise RMS ``sigma`` aligned with ``residual``.
+    model_spectrum : np.ndarray
+        Complex model spectrum the fidelity budget is referenced to. In a
+        K-vs-K±1 gate this is the **more-complex** model for both sides (the
+        shared-basis discipline ``n_eff`` and the gate weights follow).
+    kappa : float
+        Tolerated per-bin fractional model deficit (``>= 0``).
+    extra : np.ndarray, optional
+        Additional per-bin amplitude budget added in quadrature (e.g.
+        ``kappa_skirt * |frozen background|``,
+        :data:`DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT`) -- fidelity of bright
+        structure that was *subtracted* from the data and is therefore
+        invisible to ``|model_spectrum|``. Aligned with ``residual``.
+
+    Returns
+    -------
+    float
+        The sigma_eff-weighted chi-squared.
+
+    Raises
+    ------
+    ValueError
+        If ``rms_noise`` is not strictly positive.
+    """
+    sigma = np.asarray(rms_noise, dtype=float)
+    if np.any(sigma <= 0.0):
+        raise ValueError("rms_noise must be strictly positive")
+    res = np.asarray(residual)
+    if sigma.ndim == 0:
+        sigma = np.full(res.shape, float(sigma))
+    mag = np.abs(np.asarray(model_spectrum)).astype(float)
+    sig_eff_sq = sigma**2 + (float(kappa) * mag) ** 2
+    if extra is not None:
+        ex = np.asarray(extra, dtype=float)
+        sig_eff_sq = sig_eff_sq + ex**2
+    r2 = (np.real(res) ** 2 + np.imag(res) ** 2) / (sig_eff_sq / 2.0)
+    return float(np.sum(r2))
+
+
 # ---------------------------------------------------------------------------
 # Model comparison
 # ---------------------------------------------------------------------------
@@ -287,6 +472,154 @@ def calculate_aic(chi2: float, n_params: int, n_data: int) -> float:
     if chi2 <= 0.0 or n_data <= 0:
         return float("inf")
     return 2 * n_params + n_data * float(np.log(chi2 / n_data))
+
+
+def gate_information_weights(
+    model_spectrum: np.ndarray,
+    *,
+    kind: str = DEFAULT_N_EFF_KIND,
+    cutoff_fraction: float = 0.1,
+    sigma: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Per-bin weight vector ``w_f`` shared by ``n_eff`` and the weighted chi².
+
+    This is the single source of the bin-weighting the Stage 5 gate uses on
+    *both* sides of the AICc ledger: :func:`effective_sample_size` reduces this
+    vector to a scalar ``n_eff`` (its perplexity / Kish form), and
+    :func:`information_weighted_chi2` weights the per-bin squared residual by the
+    same vector so ``chi2_w`` and ``n_eff`` are computed from one weight
+    distribution. Factoring it out keeps the two in lock-step (the
+    context-invariant-gate fix relies on the weights matching exactly).
+
+    The weight family follows ``kind`` (see :func:`effective_sample_size` for
+    the rationale of each):
+
+    - ``"perplexity_log1p_snr"`` -> ``w_f = log1p(|model_f| / sigma_f)`` (needs
+      ``sigma``),
+    - ``"kish_mag_sq"`` -> ``w_f = |model_f|**2``,
+    - ``"kish_mag"`` -> ``w_f = |model_f|``,
+    - ``"hard_radius"`` -> ``w_f = 1`` where ``|model_f| > cutoff_fraction *
+      max|model|`` else ``0``.
+
+    Parameters
+    ----------
+    model_spectrum : np.ndarray
+        Complex (or real) model spectrum on the window grid. Only the magnitude
+        is consulted.
+    kind : str, default :data:`DEFAULT_N_EFF_KIND`
+        Weighting scheme (see above).
+    cutoff_fraction : float, default 0.1
+        ``"hard_radius"`` active-region fraction; ignored by other kinds.
+    sigma : np.ndarray, optional
+        Per-bin complex noise RMS. Required for ``"perplexity_log1p_snr"``.
+
+    Returns
+    -------
+    np.ndarray
+        The non-negative per-bin weight vector, same length as the model.
+
+    Raises
+    ------
+    ValueError
+        If ``kind`` is unknown, or ``"perplexity_log1p_snr"`` is selected
+        without ``sigma``.
+    """
+    mag = np.abs(np.asarray(model_spectrum)).astype(float)
+    n_data = int(mag.size)
+    if n_data == 0:
+        return np.zeros(0, dtype=float)
+    if kind == "kish_mag_sq":
+        return cast(np.ndarray, np.asarray(mag**2, dtype=float))
+    if kind == "kish_mag":
+        return cast(np.ndarray, np.asarray(mag, dtype=float))
+    if kind == "hard_radius":
+        max_mag = float(mag.max())
+        if max_mag <= 0.0:
+            return np.zeros(n_data, dtype=float)
+        return cast(
+            np.ndarray, np.asarray(mag > cutoff_fraction * max_mag, dtype=float)
+        )
+    if kind == "perplexity_log1p_snr":
+        if sigma is None:
+            raise ValueError(
+                "kind='perplexity_log1p_snr' requires sigma "
+                "(per-bin complex noise RMS)"
+            )
+        sig = np.asarray(sigma, dtype=float)
+        if sig.ndim == 0:
+            sig = np.full(n_data, float(sig))
+        snr = mag / np.maximum(sig, 1e-30)
+        return cast(np.ndarray, np.asarray(np.log1p(snr), dtype=float))
+    raise ValueError(f"unknown kind {kind!r}")
+
+
+def information_weighted_chi2(
+    residual: np.ndarray,
+    rms_noise: NoiseLike,
+    weights: np.ndarray,
+    n_eff: float,
+) -> float:
+    """Information-weighted chi-squared for the context-invariant AICc gate.
+
+    ``chi2_w = n_eff * ( sum_f w_f * r_f^2 ) / ( sum_f w_f )``, where
+    ``r_f^2 = |residual_f / sigma_f|^2`` is the per-bin unit-variance squared
+    residual (real+imag) -- the same quantity the raw noise-weighted chi²
+    sums, but here it averages to ~1 (using the *complex* RMS ``sigma_f``, not
+    ``sigma_f / sqrt(2)``). For a good fit ``r_f^2 ~ 1`` everywhere, so the
+    weighted mean is ~1 and ``chi2_w ~ n_eff`` -- ``chi2_w / n_eff ~ 1``,
+    **independent of the window bin count ``M``**.
+
+    Feeding ``chi2_w`` (with the same ``n_eff``) to :func:`calculate_aicc` in
+    place of the raw chi-squared makes the gate's log-likelihood term compare
+    weighted-mean residuals: a real peak that reduces ``r^2`` in its
+    high-``w`` bins drops ``chi2_w`` sharply (accept); a spurious peak that
+    only reduces ``r^2`` in low-``w`` noise bins barely moves it (reject).
+    Adding empty (``w ~ 0``) bins to widen a window moves neither ``chi2_w``
+    nor ``n_eff``, so the gate is window-size invariant.
+
+    Parameters
+    ----------
+    residual : np.ndarray
+        Complex per-bin residual ``data - model`` on the (already spur-masked)
+        grid. The zero model -- the null -- is simply ``residual = data``.
+    rms_noise : float or np.ndarray
+        Per-bin complex noise RMS ``sigma`` aligned with ``residual``.
+    weights : np.ndarray
+        The per-bin information weights from :func:`gate_information_weights`,
+        built from the **more-complex** model so both AICc sides share them,
+        aligned with ``residual``.
+    n_eff : float
+        The effective sample size (:func:`effective_sample_size`) the gate
+        already computed; the multiplier that puts ``chi2_w`` on the same scale
+        as the raw chi-squared the AICc formula expects.
+
+    Returns
+    -------
+    float
+        ``chi2_w``. When the weights sum to zero (an all-noise model with no
+        informative bins) the weighted mean is undefined and this returns
+        ``n_eff`` (weighted mean defaulted to 1), a neutral value at which the
+        AICc log-likelihood term vanishes.
+
+    Raises
+    ------
+    ValueError
+        If ``rms_noise`` is not strictly positive.
+    """
+    sigma = np.asarray(rms_noise, dtype=float)
+    if np.any(sigma <= 0.0):
+        raise ValueError("rms_noise must be strictly positive")
+    res = np.asarray(residual)
+    sig = sigma
+    if sig.ndim == 0:
+        sig = np.full(res.shape, float(sigma))
+    r2 = (np.real(res) ** 2 + np.imag(res) ** 2) / (sig**2)
+    w = np.asarray(weights, dtype=float)
+    sum_w = float(w.sum())
+    if sum_w <= 0.0:
+        return float(n_eff)
+    weighted_mean_r2 = float((w * r2).sum() / sum_w)
+    return float(n_eff) * weighted_mean_r2
 
 
 def effective_sample_size(
@@ -376,25 +709,16 @@ def effective_sample_size(
     max_mag = float(mag.max())
     if max_mag <= 0.0:
         return float(n_data)
-    if kind == "kish_mag_sq":
-        w = mag.astype(float) ** 2
-    elif kind == "kish_mag":
-        w = mag.astype(float)
-    elif kind == "hard_radius":
-        active = mag > cutoff_fraction * max_mag
-        n_eff = float(int(active.sum()))
+    # The per-bin weight vector is shared with the gate's weighted chi-squared
+    # (:func:`gate_information_weights`); only the scalar reduction differs by
+    # family.
+    w = gate_information_weights(
+        mag, kind=kind, cutoff_fraction=cutoff_fraction, sigma=sigma
+    )
+    if kind == "hard_radius":
+        n_eff = float(int(w.sum()))
         return n_eff if n_eff > 0.0 else 1.0
-    elif kind == "perplexity_log1p_snr":
-        if sigma is None:
-            raise ValueError(
-                "kind='perplexity_log1p_snr' requires sigma "
-                "(per-bin complex noise RMS)"
-            )
-        sig = np.asarray(sigma, dtype=float)
-        if sig.ndim == 0:
-            sig = np.full(n_data, float(sig))
-        snr = mag / np.maximum(sig, 1e-30)
-        w = np.log1p(snr)
+    if kind == "perplexity_log1p_snr":
         sum_w = float(w.sum())
         if sum_w <= 0.0:
             return 1.0
@@ -403,8 +727,7 @@ def effective_sample_size(
         h = float(-np.sum(pp * np.log(pp)))
         n_eff = float(np.exp(h))
         return float(min(max(n_eff, 1.0), float(n_data)))
-    else:
-        raise ValueError(f"unknown kind {kind!r}")
+    # Kish kinds (``kish_mag_sq`` / ``kish_mag``): n_eff = (sum w)^2 / sum w^2.
     sum_w = float(w.sum())
     sum_w2 = float((w * w).sum())
     if sum_w2 <= 0.0:
@@ -474,6 +797,169 @@ def calculate_aicc(
     log_term = n_eff * float(np.log(chi2 / n_eff))
     correction = 2.0 * n_params * (n_params + 1) / denom
     return 2.0 * n_params + log_term + correction
+
+
+def gate_aicc_pair(
+    n_eff: float,
+    *,
+    more_n_params: int,
+    less_n_params: int,
+    more_chi2_raw: float,
+    less_chi2_raw: float,
+    weighted: bool,
+    more_residual: Optional[np.ndarray] = None,
+    less_residual: Optional[np.ndarray] = None,
+    rms_noise: Optional[NoiseLike] = None,
+    weight_model: Optional[np.ndarray] = None,
+    n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    ref_reduced_chi2: Optional[float] = None,
+    budget_extra: Optional[np.ndarray] = None,
+) -> Tuple[float, float]:
+    """AICc pair ``(aicc_more, aicc_less)`` for a K vs K±1 accept/merge gate.
+
+    A single switch point for the context-invariant gate. When ``weighted`` is
+    ``False`` the pair is the legacy raw-chi-squared AICc -- exactly
+    ``(calculate_aicc(more_chi2_raw, ...), calculate_aicc(less_chi2_raw, ...))``.
+    When ``True`` both sides are re-scored on the information-weighted
+    chi-squared (:func:`information_weighted_chi2`), with the per-bin weights
+    built **once** from the more-complex model (``weight_model``) so the K and
+    K±1 comparisons share one weight distribution -- the same discipline
+    ``n_eff`` already follows.
+
+    The weighted branch -- and the penalized branch's sigma_eff variant
+    (:data:`DEFAULT_GATE_SIGMA_EFF_KAPPA`) -- need the per-bin residuals and
+    noise. All of ``more_residual`` / ``less_residual`` / ``rms_noise`` /
+    ``weight_model`` must be aligned and pre-restricted to the bins the gate
+    scores (spur bins already removed); ``less_residual`` for a K→0 null is
+    simply the data.
+
+    Parameters
+    ----------
+    n_eff : float
+        Shared effective sample size (:func:`effective_sample_size`).
+    more_n_params, less_n_params : int
+        Parameter counts of the more- and less-complex model.
+    more_chi2_raw, less_chi2_raw : float
+        Raw noise-weighted chi-squared of each model (used when
+        ``weighted=False`` and as the legacy reference).
+    weighted : bool
+        Select the information-weighted chi-squared gate.
+    more_residual, less_residual : np.ndarray, optional
+        Complex per-bin residuals ``data - model`` of each model (required when
+        ``weighted=True``).
+    rms_noise : float or np.ndarray, optional
+        Per-bin complex noise RMS aligned with the residuals (required when
+        ``weighted=True``).
+    weight_model : np.ndarray, optional
+        The more-complex model's complex spectrum on the scored bins; the
+        information weights are built from it (required when ``weighted=True``).
+    n_eff_kind : str, default :data:`DEFAULT_N_EFF_KIND`
+        Weighting kind for the shared weights -- match the kind used for
+        ``n_eff``.
+    ref_reduced_chi2 : float, optional
+        The more-complex model's reduced chi-squared, used (floored at 1) to
+        scale the penalized gate's evidence bar by the model-fidelity floor so
+        the bar rises with SNR. Shared by both scores. Only consulted by the
+        penalized branch (:data:`DEFAULT_GATE_PENALTY_LAMBDA` set); ``None``
+        leaves the bar unscaled (floor = 1).
+    budget_extra : np.ndarray, optional
+        Additional per-bin amplitude budget for the sigma_eff variant
+        (``kappa_skirt * |frozen background|``; see
+        :data:`DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT` and
+        :func:`sigma_eff_chi2`). Aligned with the residuals; ignored unless
+        the sigma_eff branch is active.
+
+    Returns
+    -------
+    tuple of float
+        ``(aicc_more, aicc_less)``. Compare them with the same REJECT-on-tie
+        convention the raw gate used.
+    """
+    # Window-independent penalized-chi-squared gate takes precedence: a single
+    # global ``lambda`` (:data:`DEFAULT_GATE_PENALTY_LAMBDA`) replaces the
+    # n_eff-shrunk AICc and the information-weighted variant. ``score = chi2_raw
+    # + 2*lambda*k*floor``; the lower score wins, so the more-complex model is
+    # accepted iff ``Delta chi2 > 2*lambda*Delta k * floor``. ``Delta chi2`` (the
+    # two models share the window's bins) is the local likelihood-ratio
+    # statistic -- window-size-independent. The ``floor`` is the model-fidelity
+    # level ``max(1, ref_reduced_chi2)``: it is ~1 in the noise-dominated regime
+    # (the bar reduces to the textbook ``Delta chi2 > 2*lambda*Delta k``, which
+    # recovers dense under-fit windows) and scales up as ``(kappa*SNR)^2`` under
+    # a bright line (the chi2_r ~ SNR^2 lineshape-fidelity floor), so the bar
+    # rises with SNR and rejects the lineshape-absorber peaks an absolute bar
+    # over-accepts at high SNR. This restores the SNR scaling the legacy
+    # ``n_eff * Delta chi2 / chi2_K`` benefit carried (chi2_K ~ 2M * chi2_r),
+    # without its window-size ``2M/n_eff`` drift. ``ref_reduced_chi2`` is the
+    # more-complex model's reduced chi-squared (shared by both scores, like
+    # ``n_eff``); ``None`` falls back to floor=1 (the un-scaled penalized bar).
+    penalty_lambda = DEFAULT_GATE_PENALTY_LAMBDA
+    if penalty_lambda is not None:
+        # sigma_eff variant: score both models' chi-squared against the
+        # fidelity-inflated per-bin noise (:func:`sigma_eff_chi2`,
+        # :data:`DEFAULT_GATE_SIGMA_EFF_KAPPA`) so residual evidence under a
+        # bright model component is discounted by the lineshape-fidelity
+        # budget while evidence at empty bins keeps full noise weighting.
+        # The budget is referenced to the more-complex model
+        # (``weight_model``) on both sides -- the shared-basis discipline.
+        kappa = DEFAULT_GATE_SIGMA_EFF_KAPPA
+        if kappa is not None:
+            if (
+                more_residual is None
+                or less_residual is None
+                or rms_noise is None
+                or weight_model is None
+            ):
+                raise ValueError(
+                    "sigma_eff gate requires more_residual, less_residual, "
+                    "rms_noise, and weight_model"
+                )
+            more_chi2 = sigma_eff_chi2(
+                more_residual, rms_noise, weight_model, kappa, extra=budget_extra
+            )
+            less_chi2 = sigma_eff_chi2(
+                less_residual, rms_noise, weight_model, kappa, extra=budget_extra
+            )
+        else:
+            more_chi2 = float(more_chi2_raw)
+            less_chi2 = float(less_chi2_raw)
+        floor = (
+            max(1.0, float(ref_reduced_chi2))
+            if (
+                DEFAULT_GATE_FLOOR_SCALING
+                and ref_reduced_chi2 is not None
+                and np.isfinite(ref_reduced_chi2)
+            )
+            else 1.0
+        )
+        pen = 2.0 * float(penalty_lambda) * floor
+        return (
+            more_chi2 + pen * float(more_n_params),
+            less_chi2 + pen * float(less_n_params),
+        )
+    if not weighted:
+        return (
+            calculate_aicc(more_chi2_raw, more_n_params, n_eff),
+            calculate_aicc(less_chi2_raw, less_n_params, n_eff),
+        )
+    if (
+        more_residual is None
+        or less_residual is None
+        or rms_noise is None
+        or weight_model is None
+    ):
+        raise ValueError(
+            "weighted gate requires more_residual, less_residual, rms_noise, "
+            "and weight_model"
+        )
+    weights = gate_information_weights(
+        weight_model, kind=n_eff_kind, sigma=np.asarray(rms_noise, dtype=float)
+    )
+    chi2_more = information_weighted_chi2(more_residual, rms_noise, weights, n_eff)
+    chi2_less = information_weighted_chi2(less_residual, rms_noise, weights, n_eff)
+    return (
+        calculate_aicc(chi2_more, more_n_params, n_eff),
+        calculate_aicc(chi2_less, less_n_params, n_eff),
+    )
 
 
 def calculate_chi_squared_improvement(
