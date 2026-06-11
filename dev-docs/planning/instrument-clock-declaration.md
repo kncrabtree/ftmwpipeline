@@ -73,6 +73,25 @@ spur:
 - Deliberately minimal schema. An ADC interleave factor (for predicting
   k×f_s/M image families) is a possible extension; start without it —
   the fundamental (6250) already generates the interleave grid.
+- **Auto-population from Blackchirp metadata.** The experiment's
+  `clocks.csv` records the synthesis chain directly (verified on 2638:
+  `Clock.0 ×8 → DownLO 40960`, `Clock.0 ×2 → UpLO 11520` — one
+  dual-output synth at 5120/5760, exactly the lattice fundamentals), and
+  `header.csv` carries the digitizer sample rate. The Blackchirp loader
+  should populate the declaration from these at import (user settings
+  override; the scope clock's `locked` status is the one fact the
+  metadata does not carry and defaults per the preset). `chirps.csv` +
+  header likewise fully specify the chirp template (2638: 4895→1520 MHz
+  over 1 µs, ×4 after the lower-sideband mix at 11520 → 26500→40000 ==
+  the active region) for any future chirp-timing residual fit — the
+  chirp is degenerate with chain dispersion for *absolute* ε (an LTI
+  chain shifts a CW tone's phase but never its frequency, so spurs are
+  the absolute reference), but with ε pinned by the spurs the chirp's
+  matched-filter phase residual measures trigger timing and chain
+  stability per acquisition, clipping-tolerant (zero crossings carry
+  the information). Note Blackchirp's acquisition-time chirp phase
+  correction is an *integer-sample* (20 ps) trigger-walk guard — the
+  offline chirp fit complements rather than duplicates it.
 
 ### Lattice generation
 
