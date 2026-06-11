@@ -308,6 +308,62 @@ def test_gate_accepts_probe_confirmed_flat_cluster_off_integer():
     assert abs(gated[0].center_mhz - 33421.1) < 1e-9
 
 
+def _pair_split_grid(f_int=35840.0):
+    """A CW tone between two bins: power split across the pair, sinc-level
+    second neighbours (the measured 655 35840 profile)."""
+    freqs = np.arange(f_int - 5.0, f_int + 5.0, SPACING)
+    spec = np.zeros(freqs.size, dtype=np.complex128)
+    k = int(np.argmin(np.abs(freqs - f_int)))
+    spec[k] = 100.0
+    spec[k - 1] = 65.0
+    spec[k - 2] = 25.0
+    spec[k + 1] = 27.0
+    sig_c = np.full(freqs.size, 1.0)
+    return freqs, spec, sig_c, k
+
+
+def test_pair_split_tone_nominated_as_pair():
+    # Split power defeats the single-bin test (neighbour ratio 0.65), but
+    # the two-bin pair towers over its second neighbours.
+    freqs, spec, sig_c, k = _pair_split_grid()
+    spurs = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
+    assert len(spurs) == 1
+    assert spurs[0].pair
+    assert spurs[0].bin_index == k
+    assert spurs[0].narrowness_ratio <= 0.30
+
+
+def test_pair_nominee_requires_flat_probe_to_gate():
+    freqs, spec, sig_c, _ = _pair_split_grid()
+    spurs = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
+    assert spurs and spurs[0].pair
+    # Without a probe the ambiguous frequency-domain signature is never
+    # gated (a blended doublet looks identical).
+    assert gate_spurs(spurs, []) == []
+    # A decaying probe (a real blend) keeps it out.
+    assert gate_spurs(spurs, [], decay_probe=lambda f: (0.2, 50.0)) == []
+    # Probe-confirmed flatness gates it with the pair provenance.
+    gated = gate_spurs(spurs, [], decay_probe=lambda f: (1.0, 50.0))
+    assert [g.source for g in gated] == ["narrow-pair"]
+    # Flat but below the probe-SNR floor: still skipped.
+    assert gate_spurs(spurs, [], decay_probe=lambda f: (1.0, 2.0)) == []
+
+
+def test_blended_doublet_not_pair_nominated():
+    # Two real lines ~3 bins apart around an integer MHz: the bin flanking
+    # the pair carries line wings, so the pair test fails too.
+    freqs = np.arange(35835.0, 35845.0, SPACING)
+    spec = np.zeros(freqs.size, dtype=np.complex128)
+    k = int(np.argmin(np.abs(freqs - 35840.0)))
+    spec[k] = 100.0
+    spec[k - 1] = 110.0
+    spec[k - 2] = 59.0  # the 655 39040 left-smear profile
+    spec[k + 1] = 11.0
+    sig_c = np.full(freqs.size, 1.0)
+    spurs = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
+    assert spurs == []
+
+
 def test_gate_rejects_saturated_cluster_that_decays():
     # The bare saturated flag is not trusted when the probe sees decay
     # (measured false positives on strong erratic lines).

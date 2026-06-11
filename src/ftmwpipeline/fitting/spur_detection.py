@@ -24,9 +24,14 @@ requirement is an exact integer-MHz center (clock harmonics):
   that are not spurs (measured on 2638: 53 of 59 integer-MHz ``cls == 1``
   bins are erratic real lines); only the saturated subset is trusted.
 
-The nomination gate is ``integer-MHz ∧ (narrow ∨ saturated)``. When the raw
-FID is available, every verdict is additionally **arbitrated by a direct
-time-domain decay probe** (:func:`make_decay_probe`): the FID is demodulated
+The nomination gate is ``integer-MHz ∧ (narrow ∨ saturated)``, plus a
+**pair lane** for tones that fall *between* two grid bins: the split power
+defeats the single-bin narrowness test, so the two-bin pair is tested
+against its second neighbours instead -- but that signature is ambiguous
+against a blended doublet, so pair nominees gate only with time-domain
+flatness confirmation. When the raw FID is available, every verdict is
+additionally **arbitrated by a direct time-domain decay probe**
+(:func:`make_decay_probe`): the FID is demodulated
 at the candidate's baseband frequency and block-averaged into frames, and
 the late/early amplitude ratio separates a decaying molecular line
 (ratio ~ ``exp(-dT/tau)`` << 1) from a flat CW tone (ratio ~ 1). The probe
@@ -100,7 +105,17 @@ DEFAULT_DECAY_N_FRAMES = 8  # frames over the active record
 
 @dataclass(frozen=True)
 class Spur:
-    """One integer-MHz, sub-resolution-narrow bin on the active-FT."""
+    """One integer-MHz, sub-resolution-narrow bin on the active-FT.
+
+    ``pair`` marks a *two-bin* nominee: a CW tone whose frequency falls
+    between two grid bins splits its power across them (each reads ~0.6-1.0
+    of the other), so the single-bin neighbour test fails even though the
+    pair together is transform-limited (second neighbours fall back to the
+    sinc skirt). Pair nominees are a weaker frequency-domain signature --
+    a blended doublet can mimic them -- so the joint gate only accepts them
+    with explicit time-domain flatness confirmation (never on the
+    frequency-domain evidence alone).
+    """
 
     integer_mhz: int
     center_mhz: float
@@ -108,6 +123,7 @@ class Spur:
     magnitude: float
     snr: float
     narrowness_ratio: float
+    pair: bool = False
 
 
 @dataclass(frozen=True)
@@ -296,6 +312,37 @@ def detect_active_ft_spurs(
                     narrowness_ratio=ratio,
                 )
             )
+            continue
+        # Pair lane: a tone between two bins splits its power, so neither
+        # bin passes the single-bin test. Treat the integer bin plus its
+        # stronger neighbour as the tone and test the bins flanking the
+        # pair instead. This signature alone is NOT gate-worthy (a blended
+        # doublet looks identical); the joint gate requires time-domain
+        # flatness confirmation for ``pair`` nominees.
+        j = k - 1 if left >= right else k + 1
+        if j < 0 or j >= mag.size:
+            continue
+        pair_peak = max(peak, float(mag[j]))
+        lo_i, hi_i = (k, j) if j > k else (j, k)
+        second_left = float(mag[lo_i - 1]) if lo_i > 0 else 0.0
+        second_right = float(mag[hi_i + 1]) if hi_i < mag.size - 1 else 0.0
+        pair_ratio = (
+            max(second_left, second_right) / pair_peak if pair_peak > 0 else 1.0
+        )
+        if pair_ratio <= narrowness_ratio:
+            k_top = k if peak >= float(mag[j]) else j
+            sigma_top = float(sig[k_top]) if sig[k_top] > 0 else float("nan")
+            spurs.append(
+                Spur(
+                    integer_mhz=f_int,
+                    center_mhz=float(freqs[k_top]),
+                    bin_index=k_top,
+                    magnitude=pair_peak,
+                    snr=pair_peak / sigma_top if sigma_top > 0 else 0.0,
+                    narrowness_ratio=pair_ratio,
+                    pair=True,
+                )
+            )
     return spurs
 
 
@@ -397,6 +444,13 @@ def gate_spurs(
       (``ratio < DEFAULT_DECAY_RATIO_LINE`` at
       ``amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO``) is a real line that
       happens to sit near an integer MHz -- vetoed;
+    * a *pair* nominee (split-power two-bin tone,
+      :attr:`Spur.pair`) is gated ONLY when its probe is FLAT
+      (``ratio >= DEFAULT_DECAY_RATIO_FLAT`` at
+      ``amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT``) -- source
+      ``"narrow-pair"``. Its frequency-domain signature alone is ambiguous
+      against a blended doublet, so without a probe (or without flatness
+      confirmation) it is skipped entirely;
     * ANY cluster (saturated or not, integer or not) whose probe is FLAT
       (``ratio >= DEFAULT_DECAY_RATIO_FLAT`` at
       ``amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT``) is a confirmed CW tone --
@@ -447,6 +501,22 @@ def gate_spurs(
         )
 
     for sp in active_ft_spurs:
+        if sp.pair:
+            # A two-bin (split-power) nominee: the frequency-domain
+            # signature is ambiguous against a blended doublet, so it is
+            # gated only on positive time-domain flatness confirmation --
+            # never on frequency-domain evidence alone (and never without
+            # a probe).
+            if decay_probe is None:
+                continue
+            decay_ratio, amp_snr = decay_probe(sp.center_mhz)
+            if (
+                np.isfinite(decay_ratio)
+                and decay_ratio >= DEFAULT_DECAY_RATIO_FLAT
+                and amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT
+            ):
+                _add(sp.center_mhz, "narrow-pair", sp.snr, sp.narrowness_ratio)
+            continue
         if decay_probe is not None:
             decay_ratio, amp_snr = decay_probe(sp.center_mhz)
             if (
