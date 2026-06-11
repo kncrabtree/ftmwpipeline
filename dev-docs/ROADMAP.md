@@ -20,6 +20,47 @@ Each experiment is one portable `.ftmw` file progressing through stages
 `FID → ComplexFT → NoiseResult → Peaks → Windows → FittedPeaks`. All interfaces
 share one implementation and must produce identical results.
 
+## Priorities
+
+The agreed near-term sequence (each item's detail lives in its planning doc
+or issue; this list carries only the ordering and the why):
+
+1. **Clock declaration** —
+   [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md):
+   lattice-prior spur gating, timebase self-calibration (demonstrated:
+   ε ≈ 2.2 ppm recovered from Rb-locked tones to ~0.1 ppm), Blackchirp
+   metadata auto-population, drifting-family identification. Fold in the
+   strong-tone mask width (the 363 w100 sinc-skirt leak; overlaps #11).
+   Self-contained, finishes the spur story, and the next fixture tests it
+   on arrival.
+2. **Stage 5 performance pass** — the measured inefficiency list in the
+   session handoff (merge loop re-evaluating escape-protected pairs,
+   accept-path candidate templates, per-drop-test nuisance-column rebuilds,
+   unbatched decay-probe demods). Distinct from #12's perf *benchmarks*.
+   Its gating condition — accept logic settled — is met (issue #3 closed);
+   dense fixtures sit at ~5–8 min and this likely buys 20–40%.
+3. **Cross-instrument fixture validation** (when the second-instrument
+   fixture arrives): defaults portability, the clock declaration's
+   no-code-change claim, the mod-M Stage-0 interleave cleanup hook, and it
+   unblocks the two `blocked:fixture` issues (#5 shape test, #6
+   per-instrument calibration audit).
+4. **Candidate revival / user-directed re-fit** —
+   [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md);
+   UX-first; acceptance fixtures identified (1231 w50/w425/w426, 363 w76).
+5. **Reports from the `.ftmw` record** (planning doc to be written):
+   timebase-corrected frequencies with an honest per-line uncertainty
+   budget (statistical + ε-residual + lineshape floor), candidate ledger,
+   spur provenance, catalog-match summaries. The 1512 uncertainty-accuracy
+   goal is the acceptance test. Includes promoting the scratch validation
+   harness (ship_audit / full_validation / catmatch) into a maintained
+   catalog-scoring surface that reports consume.
+
+Longer horizon, no order implied: the ultra-high-SNR **lineshape floor**
+(Phase-2 asym-τ / per-fixture shape arc; drift falsified as its cause —
+issue #5 is one piece), and **end-user documentation / release readiness**
+(the planning-doc lifecycle's "seed docs" step; start opportunistically as
+features stabilize).
+
 ## Stage status
 
 Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
