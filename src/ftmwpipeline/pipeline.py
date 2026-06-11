@@ -63,11 +63,15 @@ from ._internal.stage5_impl import (
 )
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.start_detection_impl import detect_start_time_impl
+from ._internal.timebase_impl import (
+    calibrate_timebase_impl,
+    load_timebase_calibration_impl,
+)
 from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.settings import FTSettings
-from .core.stage_fit_settings import StageFitSettings
+from .core.stage_fit_settings import StageFitSettings, coerce_clock_sources
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
@@ -84,7 +88,9 @@ from .file_manager import (
     validate_pipeline_file,
 )
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
+from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .io.data_loaders import detect_format, load_fid, validate_source
+from .io.stage_fit_settings_serialization import write_recommended_clock_sources
 from .preprocessing.noise_estimation import NoiseResult
 from .preprocessing.start_detection import StartDetectionResult
 
@@ -244,6 +250,16 @@ class Pipeline:
         created_filepath = create_pipeline_file(
             filepath, fid, source_metadata, force=force
         )
+
+        # Persist any instrument clock declaration extracted by the loader so
+        # the Stage 5 resolver can surface it at the recommended layer.
+        raw_clocks = fid.metadata.get("clock_sources")
+        if raw_clocks is not None:
+            try:
+                clock_tuple = coerce_clock_sources(raw_clocks)
+                write_recommended_clock_sources(str(created_filepath), clock_tuple)
+            except Exception:  # pragma: no cover
+                pass  # non-fatal: clock metadata is advisory
 
         # Load file info for Pipeline instance
         filepath, source_metadata, stage_tracker = open_pipeline_file(created_filepath)
@@ -711,6 +727,56 @@ class Pipeline:
         return cast(
             TauCalibrationResult,
             load_tau_calibration_impl(str(self.filepath))["tau_calibration"],
+        )
+
+    def calibrate_timebase(
+        self,
+        *,
+        clocks: Optional[Any] = None,
+        kappa_sys: Optional[float] = None,
+        snr_min: Optional[float] = None,
+    ) -> TimebaseCalibrationResult:
+        """Measure the scope-timebase scale error ``eps`` from Rb-locked tones.
+
+        Requires Stage 0 (the raw FID); the canonical Stage 1 active-region
+        bounds are read opportunistically. Resolves the instrument clock
+        declaration from the explicit ``clocks`` argument, else the persisted
+        Stage 5 ``spur.clocks``; raises ``ValueError`` if neither yields a
+        non-empty declaration with at least one locked source. Persists the
+        measured ``eps`` to ``/timebase_calibration``. Measures ``eps`` only;
+        applying it to the frequency axis is out of scope.
+        """
+        try:
+            result = calibrate_timebase_impl(
+                file_path=str(self.filepath),
+                clocks=clocks,
+                kappa_sys=kappa_sys,
+                snr_min=snr_min,
+            )
+            tc = result["timebase_calibration"]
+            self.logger.info(
+                "Timebase: eps=%+.3f ppm, sigma=%.3f ppm, used %d/%d tones, "
+                "g=%.1f MHz, preconditions=%s",
+                tc.epsilon * 1e6,
+                tc.sigma_epsilon * 1e6,
+                tc.n_used,
+                tc.n_detected,
+                tc.lattice_g_mhz,
+                "pass" if tc.preconditions_passed else "fail",
+            )
+            return cast(TimebaseCalibrationResult, tc)
+        except StageDependencyError:
+            raise
+        except ValueError:
+            raise
+        except Exception as e:
+            raise RuntimeError(f"Failed to calibrate timebase: {e}") from e
+
+    def load_timebase_calibration(self) -> TimebaseCalibrationResult:
+        """Load the persisted :class:`TimebaseCalibrationResult`."""
+        return cast(
+            TimebaseCalibrationResult,
+            load_timebase_calibration_impl(str(self.filepath))["timebase_calibration"],
         )
 
     def calibrate_tau_G(

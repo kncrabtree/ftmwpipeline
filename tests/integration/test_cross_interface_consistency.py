@@ -286,6 +286,62 @@ class TestIdenticalResults:
                 b.spur_clusters
             ), f"{ctx}: spur cluster count differs"
 
+    @pytest.mark.integration
+    def test_identical_timebase_calibration_results(
+        self, baseline_2638_stage1, tmp_path
+    ):
+        """All interfaces produce identical TimebaseCalibrationResult.
+
+        The scope-timebase self-calibration needs only Stage 0 (the FID) plus
+        the canonical Stage 1 active-region bounds and an instrument clock
+        declaration. The in-process interfaces pass the locked clocks via the
+        ``clocks=`` argument; the CLI reads the same declaration persisted as
+        ``spur.clocks`` so all three land on bit-identical results.
+        """
+        from ftmwpipeline.core.stage_fit_settings import (
+            ClockSource,
+            SpurSubSettings,
+            StageFitSettings,
+        )
+        from ftmwpipeline.io.stage_fit_settings_serialization import (
+            save_stage_fit_settings_to_h5,
+        )
+
+        clocks = [
+            ClockSource(freq_mhz=5760.0, locked=True, label="upconv"),
+            ClockSource(freq_mhz=5120.0, locked=True, label="downconv"),
+            ClockSource(freq_mhz=16000.0, locked=True, label="awg"),
+        ]
+
+        p_copy = tmp_path / "pipeline_tb.ftmw"
+        f_copy = tmp_path / "functional_tb.ftmw"
+        c_copy = tmp_path / "cli_tb.ftmw"
+        shutil.copy(baseline_2638_stage1, p_copy)
+        shutil.copy(baseline_2638_stage1, f_copy)
+        shutil.copy(baseline_2638_stage1, c_copy)
+
+        # Persist the same declaration the CLI path will read.
+        save_stage_fit_settings_to_h5(
+            str(c_copy),
+            StageFitSettings(spur=SpurSubSettings(clocks=tuple(clocks))),
+        )
+
+        tc_pipeline = Pipeline.open(p_copy).calibrate_timebase(clocks=clocks)
+        tc_functional = ftmw.calibrate_timebase(f_copy, clocks=clocks)
+        self._run_cli_command(["timebase", "run", str(c_copy)])
+        tc_cli = ftmw.load_timebase_calibration(c_copy)
+
+        for a, b, ctx in (
+            (tc_pipeline, tc_functional, "Pipeline vs Functional"),
+            (tc_pipeline, tc_cli, "Pipeline vs CLI"),
+        ):
+            assert a.epsilon == b.epsilon, f"{ctx}: epsilon differs"
+            assert a.sigma_epsilon == b.sigma_epsilon, f"{ctx}: sigma_epsilon differs"
+            assert a.n_used == b.n_used, f"{ctx}: n_used differs"
+            assert a.n_detected == b.n_detected, f"{ctx}: n_detected differs"
+            assert a.lattice_g_mhz == b.lattice_g_mhz, f"{ctx}: lattice_g differs"
+            assert len(a.tone_reads) == len(b.tone_reads), f"{ctx}: tone count differs"
+
     def _compare_complex_ft_objects(self, ft1: ComplexFT, ft2: ComplexFT, context: str):
         """Compare two ComplexFT objects for numerical consistency."""
         # Frequency arrays should be identical

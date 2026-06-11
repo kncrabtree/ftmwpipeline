@@ -25,25 +25,40 @@ share one implementation and must produce identical results.
 The agreed near-term sequence (each item's detail lives in its planning doc
 or issue; this list carries only the ordering and the why):
 
-1. **Clock declaration** —
-   [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md):
-   lattice-prior spur gating, timebase self-calibration (demonstrated:
-   ε ≈ 2.2 ppm recovered from Rb-locked tones to ~0.1 ppm), Blackchirp
-   metadata auto-population, drifting-family identification. Fold in the
-   strong-tone mask width (the 363 w100 sinc-skirt leak; overlaps #11).
-   Self-contained, finishes the spur story, and the next fixture tests it
-   on arrival.
+1. **Clock declaration** — **implemented** (see the status block in
+   [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md)):
+   lattice-prior spur gating (union nomination; 655's drifting 39040
+   gated via the locked-point band-power fallback), `timebase run/show`
+   self-calibration (ε measured on all seven fixtures, 0.8–2.2 ppm,
+   per-epoch; null test passes on the all-Rb-locked second instrument),
+   Blackchirp auto-population (recommended layer), `clock_lattice`
+   fitted-peak annotation in `fit show`, SNR-scaled masks with
+   skirt-consistent truncation. Cross-fixture re-fit matches the v9
+   reference everywhere with zero catalog-line removals. Leftovers: the
+   363 w100 interference-doublet window still fails its bar (χ²ᵣ 90→55;
+   full fix = the Stage 4 spur-only window drop), and applying the
+   measured timebase ε to reported frequencies belongs to the reports
+   feature (priority 5).
 2. **Stage 5 performance pass** — the measured inefficiency list in the
    session handoff (merge loop re-evaluating escape-protected pairs,
    accept-path candidate templates, per-drop-test nuisance-column rebuilds,
    unbatched decay-probe demods). Distinct from #12's perf *benchmarks*.
    Its gating condition — accept logic settled — is met (issue #3 closed);
    dense fixtures sit at ~5–8 min and this likely buys 20–40%.
-3. **Cross-instrument fixture validation** (when the second-instrument
-   fixture arrives): defaults portability, the clock declaration's
-   no-code-change claim, the mod-M Stage-0 interleave cleanup hook, and it
-   unblocks the two `blocked:fixture` issues (#5 shape test, #6
-   per-instrument calibration audit).
+3. **Cross-instrument fixture validation** — the fixture has arrived
+   (`Succinimide_10.mat`, Keysight UXR0204A 128 GSa/s direct-sampling,
+   8–18 GHz; bench characterization in `scratch/succinimide/` + team
+   memory): defaults portability, the clock declaration's no-code-change
+   claim, the mod-M Stage-0 interleave cleanup hook (justified there:
+   mod-16 offsets 208 LSB ≫ estimator noise, plus a real mod-512 layer),
+   and it unblocks the two `blocked:fixture` issues (#5 shape test, #6
+   per-instrument calibration audit). New requirements the bench work
+   surfaced: a .mat loader + frame slicing/averaging, ringing-aware start
+   detection (~3 µs after chirp end), and a spur lane for persistent
+   *modulated* interference — both time-dependence statistics fail on
+   that fixture (modulated carriers mimic decay; long-τ cold-beam lines
+   mimic persistence), so the gate needs a chirp-response anchor and/or
+   a chirp-off diagnostic record (requested from the user).
 4. **Candidate revival / user-directed re-fit** —
    [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md);
    UX-first; acceptance fixtures identified (1231 w50/w425/w426, 363 w76).

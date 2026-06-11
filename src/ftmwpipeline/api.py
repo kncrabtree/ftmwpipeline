@@ -45,6 +45,7 @@ from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
+from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
 from .preprocessing.noise_estimation import NoiseResult
 from .preprocessing.start_detection import StartDetectionResult
@@ -752,6 +753,46 @@ def load_tau_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
         return Pipeline.open(file_path).load_tau_calibration()
     except Exception as e:
         logger.error(f"Failed to load tau calibration from {file_path}: {e}")
+        raise
+
+
+def calibrate_timebase(
+    file_path: Union[str, Path],
+    *,
+    clocks: Optional[Any] = None,
+    kappa_sys: Optional[float] = None,
+    snr_min: Optional[float] = None,
+) -> TimebaseCalibrationResult:
+    """Measure the scope-timebase scale error ``eps``, equivalent to
+    :meth:`Pipeline.calibrate_timebase`.
+
+    Requires Stage 0 (the raw FID). Demodulates the active FID at the
+    Rb-locked clock spur lattice and fits the shared fractional scale error
+    ``eps`` (every measured frequency reads ``f_true * (1 + eps)``). The clock
+    declaration comes from the explicit ``clocks`` argument, else the persisted
+    Stage 5 ``spur.clocks``; a non-empty declaration with at least one locked
+    source is required. Persists ``eps`` to ``/timebase_calibration``;
+    measuring ``eps`` is the whole job -- applying it is out of scope.
+    """
+    try:
+        return Pipeline.open(file_path).calibrate_timebase(
+            clocks=clocks,
+            kappa_sys=kappa_sys,
+            snr_min=snr_min,
+        )
+    except Exception as e:
+        logger.error(f"Failed to calibrate timebase for {file_path}: {e}")
+        raise
+
+
+def load_timebase_calibration(
+    file_path: Union[str, Path],
+) -> TimebaseCalibrationResult:
+    """Load the persisted :class:`TimebaseCalibrationResult`."""
+    try:
+        return Pipeline.open(file_path).load_timebase_calibration()
+    except Exception as e:
+        logger.error(f"Failed to load timebase calibration from {file_path}: {e}")
         raise
 
 

@@ -35,9 +35,10 @@ without cycles.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Mapping, Optional, Union, cast
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, cast
 
 import yaml  # type: ignore[import-untyped]
 
@@ -45,6 +46,85 @@ from .peak_shape import PeakShape
 
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
+
+
+# ---------------------------------------------------------------------------
+# Instrument clock declaration (spur.clocks entries)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class ClockSource:
+    """One declared instrument clock source.
+
+    Declare chain *fundamentals* (e.g. the 5760 / 5120 MHz synthesizer
+    outputs), not derived products (11520, 40960) -- harmonics are
+    generated, so the products come for free. ``locked`` marks a source
+    referenced to the instrument's frequency standard (Rb): the locked
+    fundamentals span the exact intermod lattice (multiples of their GCD),
+    while *unlocked* sources (a free-running digitizer clock) predict a
+    drifting tone family. See
+    ``dev-docs/planning/instrument-clock-declaration.md``.
+    """
+
+    freq_mhz: float
+    locked: bool = True
+    label: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "freq_mhz": float(self.freq_mhz),
+            "locked": bool(self.locked),
+            "label": str(self.label),
+        }
+
+
+def coerce_clock_sources(
+    value: Any,
+) -> Optional[Tuple[ClockSource, ...]]:
+    """Coerce a clocks-like value into a tuple of :class:`ClockSource`.
+
+    Accepts ``None`` (unset), an empty/non-empty sequence of
+    :class:`ClockSource` or mappings (the YAML list-of-dicts form), or a
+    JSON string (the HDF5-attr encoding). Other inputs raise ``ValueError``.
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        if value == _NONE:
+            return None
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"cannot parse clock declaration from {value!r}") from e
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise ValueError(f"clock declaration must be a sequence; got {type(value)}")
+    out: List[ClockSource] = []
+    for entry in value:
+        if isinstance(entry, ClockSource):
+            out.append(entry)
+            continue
+        if not isinstance(entry, Mapping):
+            raise ValueError(
+                f"clock entry must be a mapping with 'freq_mhz'; got {entry!r}"
+            )
+        if "freq_mhz" not in entry:
+            raise ValueError(f"clock entry missing 'freq_mhz': {entry!r}")
+        unknown = set(entry) - {"freq_mhz", "locked", "label"}
+        if unknown:
+            raise ValueError(
+                f"unknown clock entry keys {sorted(unknown)} in {entry!r} "
+                f"(valid: freq_mhz, locked, label)"
+            )
+        freq = float(entry["freq_mhz"])
+        if not freq > 0:
+            raise ValueError(f"clock freq_mhz must be positive; got {freq}")
+        out.append(
+            ClockSource(
+                freq_mhz=freq,
+                locked=bool(entry.get("locked", True)),
+                label=str(entry.get("label", "")),
+            )
+        )
+    return tuple(out)
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +274,15 @@ class SpurSubSettings:
     ``integer-MHz ∧ (frequency-domain narrow ∨ Stage 2b flat/saturated)``;
     detected spurs are dropped from peak nomination and excluded from the
     residual / chi-squared. See ``dev-docs/planning/stage5-spur-masking.md``.
+
+    ``clocks`` is the declarative instrument clock tree
+    (:class:`ClockSource` entries). When non-empty it replaces the
+    integer-MHz nomination anchor with the locked-clock intermod *lattice*
+    (multiples of the locked fundamentals' GCD, tested in both the
+    molecular and baseband frames), flips the on-lattice evidence burden
+    (``lattice_decay_ratio``), and adds a drifting-tone lane for unlocked
+    clocks (``drift_*`` knobs). Empty/unset = legacy integer-MHz behavior.
+    See ``dev-docs/planning/instrument-clock-declaration.md``.
     """
 
     enabled: Optional[bool] = None
@@ -202,6 +291,22 @@ class SpurSubSettings:
     snr_threshold: Optional[float] = None
     mask_half_width_bins: Optional[int] = None
     use_stft_catalogue: Optional[bool] = None
+    clocks: Optional[Tuple[ClockSource, ...]] = None
+    lattice_decay_ratio: Optional[float] = None
+    drift_window_mhz: Optional[float] = None
+    drift_band_ratio: Optional[float] = None
+    drift_min_snr: Optional[float] = None
+    mask_target_residual_snr: Optional[float] = None
+    mask_max_half_width_bins: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        # Tolerant ingestion: YAML hands list-of-dicts, HDF5 hands a JSON
+        # string; normalize both to the canonical tuple-of-ClockSource.
+        if self.clocks is not None and not (
+            isinstance(self.clocks, tuple)
+            and all(isinstance(c, ClockSource) for c in self.clocks)
+        ):
+            self.clocks = coerce_clock_sources(self.clocks)
 
 
 @dataclass
@@ -315,6 +420,22 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "snr_threshold": 5.0,
         "mask_half_width_bins": 2,
         "use_stft_catalogue": True,
+        # Clock declaration: empty = no declaration (legacy integer-MHz
+        # anchor). The lattice/drift/mask-scaling knobs below only act when
+        # a declaration is present, except mask scaling which also applies
+        # to legacy gating when explicitly enabled (> 0).
+        "clocks": (),
+        "lattice_decay_ratio": 0.45,
+        "drift_window_mhz": 0.3,
+        "drift_band_ratio": 0.35,
+        "drift_min_snr": 10.0,
+        # SNR-scaled residual-mask half-width: half_width_bins ~=
+        # snr / (pi * mask_target_residual_snr), floored at
+        # mask_half_width_bins and capped at mask_max_half_width_bins.
+        # 0 disables (fixed legacy width). Default off until the
+        # cross-fixture calibration flips it (see the planning doc).
+        "mask_target_residual_snr": 0.0,
+        "mask_max_half_width_bins": 32,
     },
     "baseline": {
         # Leakage-wing baseline defaults on. It fires on a coherent edge wing
@@ -403,6 +524,10 @@ def _encode_value(value: Any) -> Any:
         return _NONE
     if isinstance(value, PeakShape):
         return value.value
+    if isinstance(value, tuple) and all(isinstance(c, ClockSource) for c in value):
+        # Structured clock declaration -> compact JSON string (HDF5 attrs
+        # are scalar; the dataclass __post_init__ decodes it on the way in).
+        return json.dumps([c.to_dict() for c in value])
     return value
 
 
@@ -479,6 +604,11 @@ def _yaml_sub_to_mapping(sub: Any) -> Dict[str, Any]:
     for f in fields(sub):
         value = getattr(sub, f.name)
         if value is None:
+            continue
+        if isinstance(value, tuple) and all(isinstance(c, ClockSource) for c in value):
+            # Structured clock declaration -> plain list-of-dicts so
+            # ``yaml.safe_dump`` renders the documented preset form.
+            out[f.name] = [c.to_dict() for c in value]
             continue
         out[f.name] = value
     return out
@@ -579,7 +709,7 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     resources (e.g. ``"instrument_bc_2638"`` ->
     ``ftmwpipeline/presets/instrument_bc_2638.yaml``); paths load
     directly. Preset YAML may wrap the Stage 5 settings inside a
-    top-level ``stage5:`` block (the new convention, allowing parallel
+    top-level ``stage5:`` block (the supported convention, allowing parallel
     ``stage2b:`` / ``stage2:`` blocks for other stages), a legacy
     ``fit:`` block (accepted for back-compat with presets written before
     the per-stage wrapper landed), or carry the settings flat at the top

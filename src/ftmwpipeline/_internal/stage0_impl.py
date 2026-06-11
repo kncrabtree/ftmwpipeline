@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from ..core.data_structures import FID
+from ..core.stage_fit_settings import coerce_clock_sources
 from ..file_manager import (
     SourceMetadata,
     create_pipeline_file,
@@ -25,6 +26,9 @@ from ..io.data_loaders import (
     validate_source,
 )
 from ..io.fid_serialization import load_fid_from_hdf5
+from ..io.stage_fit_settings_serialization import (
+    write_recommended_clock_sources,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +120,20 @@ def import_data_impl(
             filepath=file_path, fid=fid, source_metadata=source_metadata
         )
         logger.info(f"Pipeline file created: {pipeline_file}")
+
+        # Persist any instrument clock declaration extracted by the loader.
+        # This is written after create_pipeline_file so stage0_fid_data exists.
+        raw_clocks = fid.metadata.get("clock_sources")
+        if raw_clocks is not None:
+            try:
+                clock_tuple = coerce_clock_sources(raw_clocks)
+                write_recommended_clock_sources(str(pipeline_file), clock_tuple)
+                logger.info(
+                    "Persisted %d recommended clock source(s) from loader metadata.",
+                    len(clock_tuple) if clock_tuple is not None else 0,
+                )
+            except Exception as exc:
+                logger.warning("Could not persist recommended clock sources: %s", exc)
     except Exception as e:
         raise RuntimeError(f"Failed to create pipeline file: {e}")
 

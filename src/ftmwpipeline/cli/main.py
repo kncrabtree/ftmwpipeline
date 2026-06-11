@@ -2,7 +2,7 @@
 Main entry point for ftmwpipeline CLI.
 
 This module provides the unified command-line interface for FTMW processing tasks,
-integrating existing validation/version commands with new FT processing commands.
+integrating validation/version commands with FT processing commands.
 """
 
 import argparse
@@ -21,6 +21,7 @@ from .scan_commands import register_scan_commands
 from .settings_commands import register_settings_commands
 from .start_commands import register_start_commands
 from .tau_commands import register_tau_commands
+from .timebase_commands import register_timebase_commands
 from .utils import setup_logging
 from .window_commands import register_window_commands
 
@@ -81,6 +82,7 @@ Stage objects (synonym):
   noise (stage2)    run | show            Estimate / visualize frequency-dependent noise
   tau (stage2b)     run [--gaussian]      STFT tau calibration (--gaussian: tau_G twin)
                     show --kind heatmap|distribution
+  timebase          run | show            Scope-clock scale-error (eps) self-calibration
   peaks (stage3)    run | show            Detect/classify peaks / overlay them
   windows (stage4)  run | show            Plan fit windows / overlay the plan
   fit (stage5)      run | show | check    Fit lines / overlay / SNR-aware assessment
@@ -123,6 +125,9 @@ Examples:
 
     # Add tau calibration commands (Stage 2b)
     register_tau_commands(subparsers)
+
+    # Add scope-timebase self-calibration commands
+    register_timebase_commands(subparsers)
 
     # Add peak detection commands (Stage 3)
     register_peak_commands(subparsers)

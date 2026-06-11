@@ -805,3 +805,66 @@ class TestTauFittedRoundTrip:
         entry = loaded.window_fits[0].shared_parameters["tau_us"]
         # tau_error None + fitted None -> backward-compat resolves to None.
         assert entry["fitted"] is None
+
+
+# ---------------------------------------------------------------------------
+# Clock-lattice annotation persistence
+# ---------------------------------------------------------------------------
+class TestClockLatticeRoundTrip:
+    """The ``clock_lattice`` string persists and rehydrates correctly."""
+
+    def test_annotated_peak_round_trips(self, tmp_path):
+        """A peak with ``clock_lattice`` set survives save -> load unchanged."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak.clock_lattice = "320x6 (bb)"
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        got = loaded.fitted_peaks[0]
+        assert got.clock_lattice == "320x6 (bb)"
+        # Also survives in the per-window peak list.
+        assert loaded.window_fits[0].fitted_peaks[0].clock_lattice == "320x6 (bb)"
+
+    def test_unannotated_peak_round_trips_as_none(self, tmp_path):
+        """A peak without a lattice annotation loads with ``clock_lattice=None``."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        assert peak.clock_lattice is None
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.fitted_peaks[0].clock_lattice is None
+
+    def test_mixed_annotation_in_one_window(self, tmp_path):
+        """One annotated + one unannotated peak in the same window round-trips."""
+        pk_a = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(peak_id=1, window_id=0, freq_mhz=36105.0)
+        pk_a.clock_lattice = "6250x3 (bb, drift)"
+        # pk_b.clock_lattice stays None
+        win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[pk_a, pk_b])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        by_id = {p.peak_id: p for p in loaded.fitted_peaks}
+        assert by_id[0].clock_lattice == "6250x3 (bb, drift)"
+        assert by_id[1].clock_lattice is None
+
+    def test_legacy_file_without_column_loads_none(self, tmp_path):
+        """A file written before the ``clock_lattice`` column existed loads
+        with ``None`` on every peak -- no error, backward-compatible."""
+        path = tmp_path / "fit.h5"
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a file that pre-dates the column.
+            del g["windows/window_0000/peaks/clock_lattice"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.fitted_peaks[0].clock_lattice is None

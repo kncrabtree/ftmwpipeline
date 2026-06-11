@@ -128,12 +128,15 @@ _PEAK_COLUMNS = (
     "knockout_supported",
 )
 # Columns added after the v1 schema was set. Older files won't have them;
-# load tolerates missing entries by substituting NaN.
+# load tolerates missing entries by substituting NaN (numeric) or an empty
+# byte-string sentinel (string columns).
 _OPTIONAL_PEAK_COLUMNS = (
     "knockout_p_value",
     "knockout_n_eff",
     "knockout_aicc_delta",
 )
+# Optional string columns: absent in older files; load substitutes b"" (-> None).
+_OPTIONAL_PEAK_STR_COLUMNS = ("clock_lattice",)
 
 _VALID_AUDIT_DECISIONS = {
     "seed",
@@ -494,6 +497,9 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         "knockout_n_eff": np.empty(n, dtype="f8"),
         "knockout_aicc_delta": np.empty(n, dtype="f8"),
     }
+    # Variable-length UTF-8 string type for the clock_lattice column.
+    _vlen_str = h5py.string_dtype(encoding="utf-8")
+    clock_lattice_col: np.ndarray = np.empty(n, dtype=object)
     for i, p in enumerate(peaks):
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
@@ -523,8 +529,12 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
             columns["knockout_p_value"][i] = float(p.knockout.p_value)
             columns["knockout_n_eff"][i] = float(p.knockout.n_eff)
             columns["knockout_aicc_delta"][i] = float(p.knockout.aicc_delta)
+        # clock_lattice: empty string when absent (None), identity string when set.
+        clock_lattice_col[i] = p.clock_lattice if p.clock_lattice is not None else ""
     for name, data in columns.items():
         peaks_group.create_dataset(name, data=data)
+    # clock_lattice stored as a variable-length UTF-8 string dataset.
+    peaks_group.create_dataset("clock_lattice", data=clock_lattice_col, dtype=_vlen_str)
 
 
 # ---------------------------------------------------------------------------
@@ -706,7 +716,7 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
     if missing:
         raise ValueError(f"{where} missing required peak column(s): {missing}")
     cols = {c: peaks_group[c][:] for c in _PEAK_COLUMNS}
-    # Optional columns: silently default to NaN when absent (older files).
+    # Optional numeric columns: silently default to NaN when absent (older files).
     n_rows = len(cols["peak_id"])
     for c in _OPTIONAL_PEAK_COLUMNS:
         if c in peaks_group:
@@ -717,6 +727,16 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
     if len(set(lengths.values())) != 1:
         raise ValueError(f"{where} peak columns have mismatched lengths: {lengths}")
     n = next(iter(lengths.values()))
+    # Optional string column: absent in files written before clock-lattice annotation.
+    # An empty string encodes a None (unannotated peak).
+    if "clock_lattice" in peaks_group:
+        raw_cl = peaks_group["clock_lattice"][:]
+        clock_lattice_vals = [
+            (v.decode("utf-8") if isinstance(v, bytes) else str(v)) or None
+            for v in raw_cl
+        ]
+    else:
+        clock_lattice_vals = [None] * n
     peaks: List[FittedPeak] = []
     for i in range(n):
         ko_supported_raw = int(cols["knockout_supported"][i])
@@ -748,6 +768,7 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 chi_squared=_none_if_nan(float(cols["chi_squared"][i])),
                 window_id=None if wid_raw < 0 else wid_raw,
                 knockout=knockout,
+                clock_lattice=clock_lattice_vals[i],
             )
         )
     return peaks

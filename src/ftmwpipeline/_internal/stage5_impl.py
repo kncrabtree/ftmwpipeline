@@ -38,19 +38,26 @@ from ..core.data_structures import (
 )
 from ..core.stage_fit_settings import (
     ShapeSpec,
+    SpurSubSettings,
     StageFitSettings,
     load_preset,
 )
 from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
 from ..file_manager import invalidate_downstream_stages
 from ..fitting.active_ft import compute_active_ft
+from ..fitting.clock_lattice import ClockLattice, build_clock_lattice
 from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
     ReplanContext,
     execute_plan,
 )
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
-from ..fitting.spur_detection import SpurSet, build_spur_set, make_decay_probe
+from ..fitting.spur_detection import (
+    SpurSet,
+    build_spur_set,
+    make_band_power_probe,
+    make_decay_probe,
+)
 from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
@@ -61,6 +68,7 @@ from ..io.fitting_serialization import (
 )
 from ..io.stage_fit_settings_serialization import (
     load_stage_fit_settings_from_h5,
+    read_recommended_clock_sources,
     read_stage2b_recommended_shape,
     save_stage_fit_settings_to_h5,
 )
@@ -87,6 +95,35 @@ logger = logging.getLogger(__name__)
 # SNR floor lives with the gate it drives (fitting.window_fit, composed against
 # the weak-window floor); it is not duplicated here.
 DEFAULT_MAX_DECAY_FACTOR = 5.0
+
+
+def annotate_lattice_matches(
+    spectrum_fit: SpectrumFit, lattice: Optional[ClockLattice]
+) -> None:
+    """Stamp ``clock_lattice`` on every fitted peak whose frequency matches ``lattice``.
+
+    Called after the fit is assembled but before persistence. Sets
+    :attr:`~ftmwpipeline.core.data_structures.FittedPeak.clock_lattice` to the
+    matched :attr:`~ftmwpipeline.fitting.clock_lattice.LatticePoint.identity`
+    string on both the per-window and the merged global peak lists.  Annotation
+    is purely informational; it has no effect on the fit.
+
+    When ``lattice`` is ``None`` (no clock declaration), every peak keeps its
+    default ``clock_lattice = None`` and the function is a no-op.
+    """
+    if lattice is None:
+        return
+    # Annotate both the global list and the per-window copies (they share the
+    # same FittedPeak objects in practice, but iterate both to be safe).
+    for peak in spectrum_fit.fitted_peaks:
+        point = lattice.match(peak.frequency_mhz)
+        if point is not None:
+            peak.clock_lattice = point.identity
+    for wf in spectrum_fit.window_fits:
+        for peak in wf.fitted_peaks:
+            point = lattice.match(peak.frequency_mhz)
+            if point is not None:
+                peak.clock_lattice = point.identity
 
 
 def _resolve_tau_calibration_for_fit(
@@ -450,10 +487,16 @@ def fit_peaks_impl(
         preset_name = str(preset)
     persisted_settings = load_stage_fit_settings_from_h5(file_path)
     recommended_shape_str = read_stage2b_recommended_shape(file_path)
+    recommended_clocks = read_recommended_clock_sources(file_path)
     recommended_settings: Optional[StageFitSettings] = None
-    if recommended_shape_str is not None:
+    if recommended_shape_str is not None or recommended_clocks is not None:
         recommended_settings = StageFitSettings(
-            shape=ShapeSpec.coerce(recommended_shape_str)
+            shape=(
+                ShapeSpec.coerce(recommended_shape_str)
+                if recommended_shape_str is not None
+                else None
+            ),
+            spur=SpurSubSettings(clocks=recommended_clocks),
         )
     resolved = resolve_stage_fit_settings(
         explicit=explicit_kwargs,
@@ -670,15 +713,60 @@ def fit_peaks_impl(
             probe_freq_mhz=probe_freq_mhz,
             sideband=sideband,
         )
+        integer_tol_v = _required_float(
+            spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
+        )
+        # Clock-lattice prior: a non-empty declaration replaces the
+        # integer-MHz nomination anchor with the locked-clock intermod
+        # lattice, adds the unlocked-clock drifting lane (arbitrated by the
+        # drift-tolerant band-power probe), and flips the on-lattice
+        # evidence bar. An empty/absent declaration leaves the call
+        # byte-identical to the legacy integer-MHz gate. See
+        # ``dev-docs/planning/instrument-clock-declaration.md``.
+        clock_lattice = None
+        band_power_probe = None
+        lattice_kwargs: Dict[str, Any] = {}
+        if spur_cfg.clocks:
+            drift_window_v = _required_float(
+                spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
+            )
+            clock_lattice = build_clock_lattice(
+                spur_cfg.clocks,
+                probe_freq_mhz=probe_freq_mhz,
+                sideband=sideband,
+                band=spur_band,
+                tol_mhz=integer_tol_v,
+                drift_window_mhz=drift_window_v,
+            )
+            band_power_probe = make_band_power_probe(
+                fid_samples,
+                sample_dt_us,
+                start_us=start_us,
+                end_us=end_us,
+                probe_freq_mhz=probe_freq_mhz,
+                sideband=sideband,
+                half_mhz=drift_window_v,
+            )
+            lattice_kwargs = {
+                "lattice": clock_lattice,
+                "band_power_probe": band_power_probe,
+                "lattice_decay_ratio": _required_float(
+                    spur_cfg.lattice_decay_ratio, "spur.lattice_decay_ratio"
+                ),
+                "drift_band_ratio": _required_float(
+                    spur_cfg.drift_band_ratio, "spur.drift_band_ratio"
+                ),
+                "drift_min_snr": _required_float(
+                    spur_cfg.drift_min_snr, "spur.drift_min_snr"
+                ),
+            }
         spur_set = build_spur_set(
             sorted_freq,
             np.ascontiguousarray(active_ft.complex_spectrum[sort_idx]),
             sorted_sig_c,
             band=spur_band,
             saturated_clusters=saturated_clusters,
-            integer_tol_mhz=_required_float(
-                spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
-            ),
+            integer_tol_mhz=integer_tol_v,
             narrowness_ratio=_required_float(
                 spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
             ),
@@ -688,6 +776,13 @@ def fit_peaks_impl(
             ),
             use_stft_catalogue=use_catalogue,
             decay_probe=decay_probe,
+            mask_target_residual_snr=_required_float(
+                spur_cfg.mask_target_residual_snr, "spur.mask_target_residual_snr"
+            ),
+            mask_max_half_width_bins=_required_int(
+                spur_cfg.mask_max_half_width_bins, "spur.mask_max_half_width_bins"
+            ),
+            **lattice_kwargs,
         )
         if spur_set:
             logger.info(
@@ -724,7 +819,7 @@ def fit_peaks_impl(
     if max_replan_v <= 0:
         replan_ctx = None
     else:
-        # Replan re-runs Stage 4's window planner, which now operates on the
+        # Replan re-runs Stage 4's window planner, which operates on the
         # active FT + authority noise; hand it the same trimmed active grid so
         # the re-plan is consistent with the original plan.
         replan_ft, replan_rms = build_active_grid_with_noise(file_path, trim_range)
@@ -968,6 +1063,10 @@ def fit_peaks_impl(
             [round(s.center_mhz, 4) for s in spur_set.spurs] if spur_set else []
         ),
         "spur_sources": ([s.source for s in spur_set.spurs] if spur_set else []),
+        # Clock-lattice provenance parallel to ``spur_centers_mhz``: the
+        # matched lattice identity (or null) and the drifting-family flag.
+        "spur_lattice": ([s.lattice for s in spur_set.spurs] if spur_set else []),
+        "spur_drift": ([bool(s.drift) for s in spur_set.spurs] if spur_set else []),
         "spur_mask_half_width_bins": (
             int(spur_set.mask_half_width_bins) if spur_set else 0
         ),
@@ -996,7 +1095,17 @@ def fit_peaks_impl(
     diagnostics: Dict[str, Any] = {}
     if spur_set is not None and spur_set:
         diagnostics["gated_spurs"] = [
-            {"center_mhz": float(s.center_mhz), "source": s.source}
+            {
+                "center_mhz": float(s.center_mhz),
+                "source": s.source,
+                "lattice": s.lattice,
+                "drift": bool(s.drift),
+                "mask_half_width_bins": (
+                    int(s.mask_half_width_bins)
+                    if s.mask_half_width_bins is not None
+                    else None
+                ),
+            }
             for s in spur_set.spurs
         ]
     spectrum_fit: SpectrumFit = plan_fit_outcome_to_spectrum_fit(
@@ -1008,6 +1117,11 @@ def fit_peaks_impl(
         parameters=parameters,
         diagnostics=diagnostics,
     )
+    # Annotation pass: stamp ``clock_lattice`` on every fitted peak whose
+    # molecular frequency lands on the declared instrument lattice.  Pure
+    # read -- no effect on the fit statistics.  No-op when no declaration
+    # was present (``clock_lattice`` is ``None``).
+    annotate_lattice_matches(spectrum_fit, clock_lattice)
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
     # Stamp the resolved settings as the canonical record for this fit so
@@ -1015,8 +1129,8 @@ def fit_peaks_impl(
     # knobs (the persisted layer of the resolution chain).
     save_stage_fit_settings_to_h5(file_path, resolved, preset_name=preset_name)
     _update_stage_completion(file_path, "stage5_fitting")
-    # A Stage 5 re-fit invalidates nothing today (Stage 5 is the terminal
-    # stage); this call is a no-op now and a guard for future stages.
+    # A Stage 5 re-fit invalidates nothing (Stage 5 is the terminal
+    # stage); this call is a no-op and a guard for future stages.
     invalidate_downstream_stages(file_path, "stage5_fitting")
 
     n_thaw_accepted = sum(1 for e in spectrum_fit.thaw_history if e.accepted)
@@ -1443,13 +1557,28 @@ def fit_window_report_text(
     amp = bundle.amplitude_scale
     amp_hdr = f"amplitude ({units})" if units else "amplitude"
 
+    # Only emit the lattice column when at least one peak in this window is
+    # annotated -- the column is omitted entirely on files with no declaration.
+    show_lattice = any(
+        getattr(pk, "clock_lattice", None) is not None for pk in wf.fitted_peaks
+    )
+    lattice_col_w = 14
+    if show_lattice:
+        header = (
+            f"  {'pk':>2}  {'frequency (MHz)':>18}  {amp_hdr:>16}  "
+            f"{'phase (rad)':>12}  {'SNR':>6}  conf  {'lattice':>{lattice_col_w}}"
+        )
+    else:
+        header = (
+            f"  {'pk':>2}  {'frequency (MHz)':>18}  {amp_hdr:>16}  "
+            f"{'phase (rad)':>12}  {'SNR':>6}  conf"
+        )
     lines = [
         f"Window {window_id}  [{min(lo, hi):.4f}, {max(lo, hi):.4f}] MHz",
         f"  peaks={len(wf.fitted_peaks)}  chi2_r={float(wf.reduced_chi2):.3f}  "
         f"tau={tau:.4g} us  shape={getattr(wf, 'shape', 'lorentzian')}",
         "",
-        f"  {'pk':>2}  {'frequency (MHz)':>18}  {amp_hdr:>16}  "
-        f"{'phase (rad)':>12}  {'SNR':>6}  conf",
+        header,
     ]
     labels = _peak_labels(len(wf.fitted_peaks))
     for pk, lbl in zip(wf.fitted_peaks, labels):
@@ -1467,9 +1596,18 @@ def fit_window_report_text(
             else "-"
         )
         snr_s = f"{pk.snr:.2f}" if pk.snr is not None else "-"
-        lines.append(
-            f"  {lbl:>2}  {freq_s:>18}  {amp_s:>16}  {phase_s:>12}  " f"{snr_s:>6}  -"
-        )
+        cl = getattr(pk, "clock_lattice", None)
+        if show_lattice:
+            lattice_s = (cl or "")[:lattice_col_w]
+            lines.append(
+                f"  {lbl:>2}  {freq_s:>18}  {amp_s:>16}  {phase_s:>12}  "
+                f"{snr_s:>6}  -  {lattice_s:>{lattice_col_w}}"
+            )
+        else:
+            lines.append(
+                f"  {lbl:>2}  {freq_s:>18}  {amp_s:>16}  {phase_s:>12}  "
+                f"{snr_s:>6}  -"
+            )
     if show_audit:
         lines.append("")
         lines.append("  audit trail (add-one-peak):")

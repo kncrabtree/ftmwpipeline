@@ -49,7 +49,7 @@ wrappers are later tasks. The light dataclasses defined here
 (:class:`FrozenPeak`, :class:`ThawEvent`, :class:`WindowOutcome`,
 :class:`PlanFitOutcome`) are minimal records that later tasks will compose
 into the persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
-:class:`~ftmwpipeline.core.data_structures.FittingResult` / the new
+:class:`~ftmwpipeline.core.data_structures.FittingResult` / the
 ``SpectrumFit`` aggregate.
 """
 
@@ -58,7 +58,7 @@ from __future__ import annotations
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union, cast
+from typing import Any, List, Optional, Tuple, Union, cast
 
 import numpy as np
 
@@ -87,7 +87,7 @@ from .peak_model import (
     to_baseband_offset,
 )
 from .residual_rescue import rescue_and_consolidate
-from .spur_detection import SpurMaskSpec, SpurSet
+from .spur_detection import GatedSpur, SpurMaskSpec, SpurSet
 from .window_fit import (
     DEFAULT_MAX_DECAY_FACTOR,
     ConservativeFitResult,
@@ -1160,7 +1160,7 @@ def local_thaw_cofit(
     grid and free-peak offsets are remapped into the shared frame by adding
     ``shift = s*(dep_center - primary_center)``. The thawed contributor was
     already a free peak in the primary's fit (that is what "thaw" means: a line
-    fit freely in its primary is now also constrained by the dependent's data),
+    fit freely in its primary is also constrained by the dependent's data),
     so it is **not** added as a separate peak -- doing so would double-count
     the line. Other frozen contributors of either window stay frozen as a
     background subtraction on their respective slices.
@@ -1264,12 +1264,19 @@ def local_thaw_cofit(
     # s*(f - primary_center) lands inside the combined grid span.
     joint_spur_mask: Optional[SpurMaskSpec] = None
     if spur_set is not None and spur_set:
-        spur_offsets = [float(s * (c - primary_center)) for c in spur_set.centers_mhz]
-        spur_offsets = [o for o in spur_offsets if lo <= o <= hi]
-        if spur_offsets:
+        kept: List[Tuple[float, GatedSpur]] = []
+        for sp in spur_set.spurs:
+            off = float(s * (sp.center_mhz - primary_center))
+            if lo <= off <= hi:
+                kept.append((off, sp))
+        if kept:
+            half_widths: Optional[Tuple[float, ...]] = None
+            if any(sp.mask_half_width_bins is not None for _, sp in kept):
+                half_widths = tuple(spur_set._spur_half_width_mhz(sp) for _, sp in kept)
             joint_spur_mask = SpurMaskSpec(
-                offsets_mhz=tuple(spur_offsets),
+                offsets_mhz=tuple(off for off, _ in kept),
                 half_width_mhz=spur_set.mask_half_width_mhz,
+                half_widths_mhz=half_widths,
             )
 
     joint = fit_window(
@@ -2510,7 +2517,7 @@ def _install_cofit_outcome(
     """Update a WindowOutcome in place after an accepted co-fit.
 
     Replaces the free-peak fit's peaks/tau and recomputes the full model,
-    residual, and edge-coherence statistics; optionally drops a now-thawed
+    residual, and edge-coherence statistics; optionally drops a thawed
     contributor from ``fixed_peaks``. The conservative-fit audit trail and
     knockouts are preserved (they describe the original free-peak fit; the
     accepted-thaw record lives on the :class:`ThawEvent`).
@@ -2887,7 +2894,7 @@ def _apply_baseline_to_outcome(
 
     # Install the joint fit. The baseline carries the pedestal and the re-freed
     # ``tau`` has relaxed to its physical value, so the re-fit ``tau`` / errors
-    # are installed too. The fitted spectrum now carries peaks + baseline; the
+    # are installed too. The fitted spectrum carries peaks + baseline; the
     # frozen background is added back for the full model.
     free_plus_baseline = refit.fitted_spectrum
     inner.peaks = refit.peaks

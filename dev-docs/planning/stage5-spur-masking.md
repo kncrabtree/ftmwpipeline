@@ -209,7 +209,9 @@ module docstring for the operative contract):
   fixtures), 28460 → 12500.0 = 2×6250 (scope ADC interleave); plus
   direct RF-side harmonics 28800 = 5×5760 and 34560 = 6×5760. Every
   cross-fixture recurring spur sits on the Rb-locked intermod lattice
-  gcd(5760, 5120, 16000) = 320 MHz — only 42 lattice points in the
+  gcd(5760, 5120, 16000, 16000/2) = 320 MHz (the declared half-clock
+  supplies the factor; the bare fundamentals alone give 640) — only 42
+  lattice points in the
   26.5–40 GHz band vs the 13500 integer MHz the current gate sweeps
   (~300× tighter prior). Proposed design: a per-instrument **clock
   declaration** in settings (preset layer) generating the predicted

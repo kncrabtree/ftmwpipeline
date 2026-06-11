@@ -139,7 +139,7 @@ def _peak_confidence(peak: FittedPeak) -> Optional[float]:
 
     No principled per-peak confidence statistic exists yet; the column is wired
     here so it can be filled in one place when one does. Returns ``None`` (the
-    table renders ``-``) for now.
+    table renders ``-``).
     """
     return None
 
@@ -438,7 +438,28 @@ def plot_consolidated_detail(
             zorder=1,
             label=f"spur ({sp.get('source', '?')})" if i == 0 else None,
         )
-    if in_window_spurs:
+    # Clock-lattice annotated peaks: mark with an orange dashed vline on every
+    # panel.  Distinct from the gated-spur dotted style -- these are FITTED
+    # lines that happen to land on the lattice, not masked tones.
+    lattice_peaks = [
+        p
+        for p in window_fit.fitted_peaks
+        if getattr(p, "clock_lattice", None) is not None
+    ]
+    for i, lp in enumerate(lattice_peaks):
+        f_lp = float(lp.frequency_mhz)
+        for ax in (ax_re_res, ax_im_res, ax_mag_res, ax_re_dat, ax_im_dat):
+            ax.axvline(f_lp, color="tab:orange", lw=0.9, ls="--", alpha=0.7, zorder=2)
+        ax_mag_dat.axvline(
+            f_lp,
+            color="tab:orange",
+            lw=0.9,
+            ls="--",
+            alpha=0.7,
+            zorder=2,
+            label="lattice match" if i == 0 else None,
+        )
+    if in_window_spurs or lattice_peaks:
         ax_mag_dat.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
     _draw_residual_hist(ax_hist, residual, sigma_slice, amp, usuffix)
@@ -662,15 +683,33 @@ def _draw_peak_table(
     amp: float,
     units_label: str,
 ) -> None:
-    """Row 4 right: fitted-peak table with PDG-style uncertainties."""
+    """Row 4 right: fitted-peak table with PDG-style uncertainties.
+
+    When any peak in the window carries a ``clock_lattice`` annotation a narrow
+    "lattice" column is appended so the user can spot spur candidates at a
+    glance.  The column is omitted entirely when no peak is annotated, keeping
+    the layout clean for the common no-declaration case.
+    """
     ax.set_title("Fitted peaks", fontsize=9, loc="left")
     n = len(fitted_peaks)
     line_h = 1.0 / max(n + 1, 8)
     amp_hdr = f"amplitude ({units_label})" if units_label else "amplitude"
-    header = (
-        f"  pk | {'frequency (MHz)':>18} | {amp_hdr:>14} | "
-        f"{'phase (rad)':>12} | {'SNR':>5} | conf"
+    # Only emit the lattice column when at least one peak in this window is
+    # annotated -- the column is always absent on files with no declaration.
+    show_lattice = any(
+        getattr(pk, "clock_lattice", None) is not None for pk in fitted_peaks
     )
+    lattice_col_w = 14  # field width for the identity string
+    if show_lattice:
+        header = (
+            f"  pk | {'frequency (MHz)':>18} | {amp_hdr:>14} | "
+            f"{'phase (rad)':>12} | {'SNR':>5} | conf | {'lattice':>{lattice_col_w}}"
+        )
+    else:
+        header = (
+            f"  pk | {'frequency (MHz)':>18} | {amp_hdr:>14} | "
+            f"{'phase (rad)':>12} | {'SNR':>5} | conf"
+        )
     ax.text(
         0.02,
         0.98,
@@ -703,10 +742,21 @@ def _draw_peak_table(
         snr_s = f"{pk.snr:.2f}" if pk.snr is not None else "-"
         conf = _peak_confidence(pk)
         conf_s = f"{conf:.2f}" if conf is not None else "-"
-        line = (
-            f"  {lbl:>2} | {freq_s:>18} | {amp_s:>14} | {phase_s:>12} | "
-            f"{snr_s:>5} | {conf_s:>4}"
-        )
+        cl = getattr(pk, "clock_lattice", None)
+        if show_lattice:
+            lattice_s = (cl or "")[:lattice_col_w]
+            line = (
+                f"  {lbl:>2} | {freq_s:>18} | {amp_s:>14} | {phase_s:>12} | "
+                f"{snr_s:>5} | {conf_s:>4} | {lattice_s:>{lattice_col_w}}"
+            )
+        else:
+            line = (
+                f"  {lbl:>2} | {freq_s:>18} | {amp_s:>14} | {phase_s:>12} | "
+                f"{snr_s:>5} | {conf_s:>4}"
+            )
+        # Annotated lines are tinted orange (consistent with the gated-spur
+        # convention) so they stand out without a separate legend entry.
+        text_color = "tab:orange" if cl is not None else "black"
         ax.text(
             0.02,
             0.98 - (i + 1.5) * line_h,
@@ -715,6 +765,7 @@ def _draw_peak_table(
             family="monospace",
             fontsize=8.0,
             va="top",
+            color=text_color,
         )
 
 

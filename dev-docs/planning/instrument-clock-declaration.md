@@ -1,6 +1,49 @@
 # Instrument clock declaration — a deterministic spur prior
 
-**Status: proposed** (planning only; no implementation). Parent:
+**Status: implemented** (declaration + lattice gate + drift lane +
+annotation + SNR-scaled masks + Blackchirp auto-population + timebase
+self-calibration; cross-fixture validation below). Implementation deltas
+from the original design, all evidence-driven:
+
+1. **Union nomination, not replacement.** With a declaration the sweep
+   nominates from the union of the legacy integer-MHz anchor and the
+   lattice points; off-lattice integer nominees keep the legacy bars.
+   Replacing the integer sweep dropped real off-lattice gates (655's
+   39990; 2638's 28460/30299/39820; the 363/360 ten-MHz-family tones).
+2. **Locked-point band-power fallback with decay veto.** The drift lane
+   also sweeps locked lattice points that produced no narrow/pair
+   nominee (655's wandering 39040 = 320×6 bb fails both coherent lanes);
+   such a nominee additionally faces the lattice decay veto, because a
+   locked point can sit next to a real decaying line (measured: 655's
+   36800 clears the band bar at 0.38 but decays at 0.39 — vetoed).
+3. **Unlocked (digitizer) drift points are baseband-frame only.** An
+   unlocked ADC clock injects at digitization; generating its family in
+   the RF frame manufactured a false 6250×5 point at 31250 that gated
+   part of 363's real K=6 molecular band.
+4. **Skirt-consistent mask truncation.** The SNR-scaled mask widens only
+   while the spectrum is consistent with the gated tone's own sinc-skirt
+   envelope; the first bin significantly above it (real structure)
+   truncates that side. Without this, the scaled mask of 1512's flat
+   28440.26 tone (19 bins ≈ 1.6 MHz) swallowed four vinyl cyanide
+   catalog lines 0.5–0.8 MHz away. With it, 1512 recall returns to the
+   v9 reference (.443) while empty-window tones keep full-width masks.
+   Partial w100 outcome: the 363 interference-doublet window improves
+   K=0 χ²ᵣ ~90 → ~55 but still fails its bar — the full fix there is
+   the Stage 4 spur-only window drop (still deferred).
+
+Cross-fixture validation (full re-fit of the ship-audit fixtures with
+the declaration in the `instrument_bc_2638` preset, vs the v9
+reference): 363 .992 (=), 2638 .995 (wobble band), 360 1.0 (=),
+1231 .988 (=), 1019 1.0 (=), 1512 .992 / recall .443 (=), 655 .977 /
+recall .537 (=) — and 655's 39040 is gated (drift lane, mask 5 bins)
+with zero catalog-line removals on 1512/655. The no-declaration path is
+byte-stable (unit-tested SpurSet equality + full suite). The timebase
+self-calibration measures ε on all seven fixtures (+0.80…+2.22 ppm,
+σ ≈ 0.06–0.16 ppm, per-acquisition-epoch as expected) and passes the
+all-Rb-locked null test on the second-instrument fixture (ε = 0 ± 0.05
+ppm; see the succinimide notes in the team memory / scratch).
+
+Parent:
 [`stage5-spur-masking.md`](stage5-spur-masking.md) (the gate this feature
 feeds); siblings: [`instrument-tunable-knobs.md`](instrument-tunable-knobs.md)
 (the per-instrument preset surface this extends),
@@ -30,8 +73,12 @@ clock-lattice prior"):
 - Every cross-fixture recurring spur is a direct clock identity in one of
   two frames — baseband (f_bb = probe − f_mol: 11520, 5760, 5120, 2×5120,
   16000/2, 2×6250) or RF (5×5760, 6×5760) — and all of them sit on the
-  **Rb-locked intermod lattice**: integer combinations of multiples of
-  {5760, 5120, 16000} are exactly the multiples of gcd = **320 MHz**.
+  **Rb-locked intermod lattice** of gcd = **320 MHz**. Note the bare
+  fundamentals {5760, 5120, 16000} have gcd 640; the 320 lattice requires
+  the AWG's half-rate product (16000/2 = 8000 — itself one of the
+  strongest measured tones, and 32960 = bb 8000 is in the gated comb but
+  is not a ×640 point), so 8000 is declared as its own fundamental
+  (division is not a generated product the way harmonics are).
   Only 42 lattice points fall in band — a ~300× tighter prior than
   integer MHz.
 - The scope clock is the one *unlocked* source, predicting a **drifting
@@ -95,7 +142,8 @@ spur:
 
 ### Lattice generation
 
-From the locked clocks compute `g = gcd(freqs)` (320 MHz here; gcd of
+From the locked clocks compute `g = gcd(freqs)` (320 MHz here once the
+8000 half-clock is declared; gcd of
 integers after a sanity check that declarations are integral MHz — Rb-locked
 synthesizers are). The predicted **locked lattice** is the multiples of
 `g` intersected with the analysis band, in *both* frames:
@@ -217,6 +265,14 @@ FT). ε can be user-declared, fit from catalog matches, or — elegantly —
 self-calibrated per fixture from the Rb-locked spur tones themselves
 (their true frequencies are exact; their measured offsets give ε with no
 catalog). Directly serves the 1512 uncertainty-accuracy goal.
+Sequencing decision: the self-calibration **measures and persists** ε as
+its own calibration record (`timebase run`/`show`,
+`calibrate_timebase(...)`); *applying* (1 + ε) to the frequency axis is
+deliberately deferred to the reports feature, which consumes the
+persisted value in its corrected-frequency / uncertainty-budget output.
+Correction semantics when consumed: f_true = f_measured / (1 + ε) in the
+baseband frame, i.e. lower-sideband molecular frequencies correct as
+f_mol = probe − (probe − f_mol_measured)/(1 + ε).
 
 **Self-calibration demonstrated**
 (`scratch/stage5-skirt/timebase_selfcal{2,3}.py`): demodulate the FID at
@@ -239,6 +295,60 @@ i.e. residual worst-case position error ≲ 1.3 kHz at 13 GHz baseband
 (measured: the 2×6250 tone sits tens of kHz off its nominal frequency
 and wanders between fixtures — the drifting-family discriminant in one
 measurement).
+
+**Out-of-band calibration tones (measured; the primary ε anchors).** The
+strongest Rb-locked tones sit *above* the chirp-driven molecular band
+(baseband > ~14.5 GHz on the home instrument), a region the analysis trim
+never sees and molecular emission cannot reach — the chirp does not
+excite there. Wide-band survey + ML reads on all seven fixtures
+(`scratch/stage5-skirt/survey_oob.py`, `timebase_selfcal{4,5,6}.py`):
+
+- **15360 = 3×5120** is the strongest clock tone on *every* fixture
+  (700–7400× the spectral floor; peak/noise up to ~7000; per-tone
+  statistical σ(ε) down to ~6×10⁻¹⁰), with strong companions at
+  **17920 = 56×320** and **17280 = 3×5760**. (A tone at exactly 16000 —
+  the AWG fundamental — is weak-to-absent on these deeply averaged
+  records; "the 16 GHz spur" resolves to the 15.36 GHz identity.)
+- These tones are *window-stable* (full-record vs late-window reads agree
+  to ±0.03–0.06 ppm), unlike in-band tones, whose early-record reads are
+  molecular-pulled by up to ~0.3 ppm. Full-record reads of out-of-band
+  tones are therefore the calibration anchors; no late-window dodge is
+  needed.
+- Scope-frame controls behave exactly as the frame physics predicts:
+  18750 = 3×6250 and 25000 (Nyquist) read offsets ≈ 0 at exact rational
+  sample-space frequencies on every fixture, while every Rb-locked tone
+  carries the shared +ε·f offset — the drifting-family discriminant in a
+  single measurement.
+- ε is per-acquisition-epoch: 363/360 measure ~+0.8–0.9 ppm while the
+  other five fixtures measure ~+1.8–2.3 ppm. The calibration must be
+  per-file; a constant is wrong.
+
+**Below-chirp region (measured; not usable for ε).** The baseband region
+*below* the chirp start (< ~960 MHz) is also molecular-free and does
+carry strong tones at 320/640/960 plus a 10-MHz comb
+(`scratch/stage5-skirt/survey_lowbb.py`) — but their offsets are
+kHz-scale and **not ε-scaled** (e.g. the 320 tone reads −5.5 kHz on both
+1512 and 2638 where ε predicts +0.7 kHz; signs and magnitudes vary by
+fixture and tone). They are a third tone family sitting genuinely
+off-nominal, their ε leverage is ~50× weaker than the high-baseband
+tones', and the shared-ε consistency rejection removes them cleanly
+(verified on all seven fixtures). The production estimator keeps them
+only as rejected table entries.
+
+**Production estimator (validated prototype,
+`scratch/stage5-skirt/timebase_selfcal5.py`):** sweep *all* locked-lattice
+multiples k·g up to ~Nyquist on the full active record; per-tone ML scan;
+per-tone error σ_tot² = σ_f² + (κ_sys·f_bb)² with κ_sys ≈ 0.2 ppm (the
+measured tone-to-tone systematic floor — a fixed-kHz floor wrongly
+rejects the highest-leverage tones); iterative weighted shared-ε fit with
+4σ_tot consistency rejection. Converges to the strong-tone consensus on
+all seven fixtures, auto-rejecting the below-chirp family and in-band
+molecular contaminants. Honest accuracy: ~0.1–0.2 ppm systematic. The
+catalog-truth cross-check agrees within ~0.2–0.3 ppm; the residual is a
+real frame difference (fitted lines weight the early record where their
+amplitude lives; tones weight the record uniformly) and belongs in the
+reports feature's per-line uncertainty budget, not in the tone
+calibration.
 
 Falsified alongside (`scratch/stage5-skirt/split_fraction.py`): the
 bright-line close multiplets are NOT clock-wander sidebands — fractional

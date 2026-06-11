@@ -6,6 +6,7 @@ handling FID data extraction from Blackchirp directory structures with
 proper metadata preservation.
 """
 
+from math import gcd
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type, Union
 
@@ -177,6 +178,13 @@ class BlackChirpLoader(BaseLoader):
                             f"Warning: Could not read {filename}: {e}"
                         )
 
+            # Extract clock sources from clocks.csv + header.csv.
+            # Failure is non-fatal: missing files or malformed rows yield no
+            # clock_sources entry rather than a load failure.
+            clock_sources = self._extract_clock_sources(source_path)
+            if clock_sources is not None:
+                result["metadata"]["clock_sources"] = clock_sources
+
             result["valid"] = True
             return result
 
@@ -280,6 +288,150 @@ class BlackChirpLoader(BaseLoader):
             raise
         except Exception as e:
             raise LoaderError(f"Failed to load Blackchirp FID: {e}") from e
+
+    @staticmethod
+    def _extract_clock_sources(
+        source_path: Path,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Extract instrument clock declarations from Blackchirp metadata files.
+
+        Parses ``clocks.csv`` (synthesizer chain declarations) and
+        ``header.csv`` (AWG sample rate, digitizer sample rate) to build the
+        list of clock-source dicts that the Stage 5 spur gate consumes.
+
+        Returns a list of ``{"freq_mhz": float, "locked": bool, "label": str}``
+        dicts, or ``None`` when neither file is present or parseable.  Each
+        dict is the serialised form of a :class:`~...ClockSource`.  The caller
+        stores the list in ``result["metadata"]["clock_sources"]``.
+
+        Clock-source rules
+        ------------------
+        * ``clocks.csv`` rows: fundamental = FreqMHz / Factor when
+          Operation=="Multiply"; FreqMHz * Factor when "Divide"; pass-through
+          otherwise.  Fundamentals from distinct rows are deduplicated on the
+          (rounded) MHz value — a dual-output synthesiser driving two chains
+          produces two rows at the same fundamental.  All synthesiser sources
+          are locked (referenced to the instrument Rb standard).
+        * ``header.csv`` ChirpConfig SampleRate (MHz) → AWG entry, locked.
+        * ``header.csv`` FtmwDigitizer.0 SampleRate (Hz → MHz) → digitizer
+          entry, locked=False (scope clocks are free-running by convention;
+          the metadata does not carry the locked flag, so the conservative
+          default is unlocked).
+
+        Tolerant parsing: any missing file, missing column, or bad numeric
+        value is silently skipped — the loader must never fail because of an
+        incomplete or future-format metadata file.
+        """
+        sep = BlackChirpLoader._read_separator(source_path)
+        entries: List[Dict[str, Any]] = []
+        seen_fundamentals: set = set()
+
+        # --- clocks.csv: synthesiser chain fundamentals ---
+        clocks_file = source_path / "clocks.csv"
+        if clocks_file.exists():
+            try:
+                cdf = pd.read_csv(clocks_file, sep=sep)
+                required_cols = {
+                    "FreqMHz",
+                    "Operation",
+                    "Factor",
+                    "HwKey",
+                    "OutputNum",
+                    "ClockType",
+                }
+                if required_cols.issubset(set(cdf.columns)):
+                    for _, row in cdf.iterrows():
+                        try:
+                            freq_mhz = float(row["FreqMHz"])
+                            factor = float(row["Factor"])
+                            operation = str(row["Operation"]).strip()
+                            hw_key = str(row["HwKey"]).strip().lower()
+                            out_num = int(row["OutputNum"])
+                            clock_type = str(row["ClockType"]).strip().lower()
+
+                            if operation == "Multiply":
+                                fundamental = freq_mhz / factor
+                            elif operation == "Divide":
+                                fundamental = freq_mhz * factor
+                            else:
+                                fundamental = freq_mhz
+
+                            # Deduplicate on rounded fundamental (integer MHz
+                            # expected for Rb-locked synthesisers; round to
+                            # 3 decimal places to tolerate float representation).
+                            key = round(fundamental, 3)
+                            if key in seen_fundamentals:
+                                continue
+                            seen_fundamentals.add(key)
+
+                            label = f"{clock_type} ({hw_key}:{out_num})"
+                            entries.append(
+                                {
+                                    "freq_mhz": fundamental,
+                                    "locked": True,
+                                    "label": label,
+                                }
+                            )
+                        except (ValueError, TypeError):
+                            continue
+            except Exception:
+                pass  # malformed clocks.csv: skip silently
+
+        # --- header.csv: AWG and digitizer sample rates ---
+        header_file = source_path / "header.csv"
+        if header_file.exists():
+            try:
+                hdf = pd.read_csv(header_file, sep=sep)
+                required_cols = {"ObjKey", "ValueKey", "Value"}
+                if required_cols.issubset(set(hdf.columns)):
+
+                    def _header_value(obj_key: str, value_key: str) -> Optional[str]:
+                        """Return the first matching Value cell, or None."""
+                        mask = (hdf["ObjKey"] == obj_key) & (
+                            hdf["ValueKey"] == value_key
+                        )
+                        rows = hdf.loc[mask, "Value"]
+                        if rows.empty:
+                            return None
+                        return str(rows.iloc[0])
+
+                    # AWG: ChirpConfig / SampleRate in MHz
+                    try:
+                        raw = _header_value("ChirpConfig", "SampleRate")
+                        if raw is not None:
+                            awg_rate = float(raw)
+                            entries.append(
+                                {
+                                    "freq_mhz": awg_rate,
+                                    "locked": True,
+                                    "label": "awg",
+                                }
+                            )
+                    except (ValueError, TypeError):
+                        pass
+
+                    # Digitizer: FtmwDigitizer.0 / SampleRate in Hz → MHz.
+                    # The digitizer clock is unlocked (free-running scope
+                    # oscillator): locked=False is the conservative default
+                    # because the metadata does not carry the locked flag.
+                    try:
+                        raw = _header_value("FtmwDigitizer.0", "SampleRate")
+                        if raw is not None:
+                            dig_rate_hz = float(raw)
+                            dig_rate_mhz = dig_rate_hz / 1e6
+                            entries.append(
+                                {
+                                    "freq_mhz": dig_rate_mhz,
+                                    "locked": False,
+                                    "label": "digitizer",
+                                }
+                            )
+                    except (ValueError, TypeError):
+                        pass
+            except Exception:
+                pass  # malformed header.csv: skip silently
+
+        return entries if entries else None
 
     def get_required_parameters(self) -> List[str]:
         """Blackchirp loader has no required parameters."""

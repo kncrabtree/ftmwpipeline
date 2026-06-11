@@ -118,12 +118,19 @@ class TestPipelineStageTracker:
         assert error.stage_name == "stage2_noise_result"
         assert "stage1_complex_ft" in error.missing_dependencies
 
-        # Test next available stages
-        assert tracker.get_next_available_stages() == ["stage1_complex_ft"]
+        # Test next available stages (timebase calibration depends only on
+        # stage 0, so it is available alongside the main chain)
+        assert set(tracker.get_next_available_stages()) == {
+            "stage1_complex_ft",
+            "timebase_calibration",
+        }
 
         # After completing stage1
         tracker.mark_completed("stage1_complex_ft")
-        assert tracker.get_next_available_stages() == ["stage2_noise_result"]
+        assert set(tracker.get_next_available_stages()) == {
+            "stage2_noise_result",
+            "timebase_calibration",
+        }
 
     def test_stage_tracker_serialization(self):
         """Test stage tracker persistence."""
@@ -134,7 +141,10 @@ class TestPipelineStageTracker:
             "stage0_fid_data",
             "stage1_complex_ft",
         }
-        assert data_dict["next_available"] == ["stage2_noise_result"]
+        assert set(data_dict["next_available"]) == {
+            "stage2_noise_result",
+            "timebase_calibration",
+        }
 
 
 class TestFileManagerFunctions:

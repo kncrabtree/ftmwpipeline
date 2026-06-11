@@ -693,6 +693,13 @@ class FittedPeak:
     knockout: Optional[KnockoutInfo] = None
     """Knockout-test outcome from :func:`ftmwpipeline.fitting.window_fit.knockout_test`."""
 
+    # Clock-lattice annotation: set when the fitted frequency matches the
+    # declared instrument clock lattice (locked or drifting family).
+    # ``None`` when no declaration was present or the frequency is off-lattice.
+    # Annotation is purely informational -- it has no effect on the fit.
+    clock_lattice: Optional[str] = None
+    """Clock-lattice identity string (e.g. ``"320x6 (bb)"``), or ``None``."""
+
     # Additional fitted parameters
     extra_parameters: Dict[str, float] = field(default_factory=dict)
     extra_errors: Dict[str, float] = field(default_factory=dict)

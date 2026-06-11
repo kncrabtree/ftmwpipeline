@@ -46,7 +46,7 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
-from ...core.stage_fit_settings import ShapeSpec
+from ...core.stage_fit_settings import ClockSource, ShapeSpec, coerce_clock_sources
 from ...io.noise_settings_serialization import (
     load_noise_settings_from_h5,
     save_noise_settings_to_h5,
@@ -190,6 +190,10 @@ def _coerce(type_hint: Any, raw: str) -> Any:
     origin = get_origin(type_hint)
     if type_hint is ShapeSpec:
         return ShapeSpec.coerce(raw)
+    if origin is tuple and ClockSource in get_args(type_hint):
+        # The clock declaration sets as a JSON list:
+        # settings set stage5.spur.clocks '[{"freq_mhz": 5760, ...}, ...]'
+        return coerce_clock_sources(raw)
     if type_hint is bool:
         low = raw.strip().lower()
         if low in {"true", "1", "yes", "on"}:

@@ -32,15 +32,18 @@ matching :mod:`ftmwpipeline.io.fid_serialization` and
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import h5py
 
 from ..core.stage_fit_settings import (
     _SUB_NAMES,
+    ClockSource,
     StageFitSettings,
+    coerce_clock_sources,
 )
 from ..core.stage_fit_settings import from_attrs as stage_fit_from_attrs
 from ..core.stage_fit_settings import to_attrs as stage_fit_to_attrs
@@ -209,6 +212,68 @@ def read_stage2b_recommended_shape(file_path: str) -> Optional[str]:
     return None
 
 
+# The recommended clock declaration is stored as a JSON attr on the Stage 0
+# FID group.  This is the natural home: the clock tree is instrument metadata
+# that arrives at import time (Stage 0), before any Stage 5 processing, and
+# it is analogous to the Stage 1 ``recommended_processing`` attr stored in the
+# same group.  Storing it here (rather than alongside the Stage 2b shape
+# recommendation) keeps source-derived recommendations co-located with the
+# Stage 0 data they describe.
+_STAGE0_GROUP = "stage0_fid_data"
+_RECOMMENDED_CLOCKS_ATTR = "recommended_clock_sources"
+
+
+def write_recommended_clock_sources(
+    file_path: str,
+    clock_sources: Optional[Tuple[ClockSource, ...]],
+) -> None:
+    """Persist the import-time recommended clock declaration on the Stage 0 group.
+
+    Stores a JSON-encoded list of clock-source dicts as an attr on
+    ``stage0_fid_data``.  Passing ``None`` writes the ``__None__`` sentinel
+    (resolver reads as "no recommendation").  No-op when the Stage 0 group is
+    absent (tolerant for unit tests against bare HDF5 files).
+
+    Re-import over the same file overwrites the attr cleanly.
+    """
+    encoded: str
+    if clock_sources is None:
+        encoded = _NONE_SENTINEL
+    else:
+        encoded = json.dumps([c.to_dict() for c in clock_sources])
+    try:
+        with h5py.File(file_path, "a") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return
+            h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_CLOCKS_ATTR] = encoded
+    except (OSError, KeyError):
+        logger.warning("Could not write recommended clock sources to %s", file_path)
+
+
+def read_recommended_clock_sources(
+    file_path: str,
+) -> Optional[Tuple[ClockSource, ...]]:
+    """Read the import-time recommended clock declaration, or ``None`` if absent.
+
+    Returns ``None`` for: Stage 0 group absent, attr missing, ``__None__``
+    sentinel, or any parse error.  Callers treat all of these as "no
+    recommendation."
+    """
+    try:
+        with h5py.File(file_path, "r") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return None
+            attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_CLOCKS_ATTR)
+            if attr is None:
+                return None
+            decoded = _decode_attr(attr)
+            if decoded == _NONE_SENTINEL:
+                return None
+            return coerce_clock_sources(decoded)
+    except (OSError, KeyError, ValueError):
+        return None
+
+
 __all__ = [
     "STAGE_FIT_PATH",
     "save_stage_fit_settings_to_h5",
@@ -216,4 +281,6 @@ __all__ = [
     "stage_fit_settings_present",
     "write_stage2b_recommended_shape",
     "read_stage2b_recommended_shape",
+    "write_recommended_clock_sources",
+    "read_recommended_clock_sources",
 ]

@@ -38,13 +38,14 @@ from ...core import settings as ft_mod
 from ...core import stage_fit_settings as fit_mod
 from ...core import tau_calibration_settings as tau_mod
 from ...core import window_planning_settings as window_mod
-from ...core.stage_fit_settings import ShapeSpec
+from ...core.stage_fit_settings import ShapeSpec, SpurSubSettings
 from ...io.noise_settings_serialization import load_noise_settings_from_h5
 from ...io.peak_detection_settings_serialization import (
     load_peak_detection_settings_from_h5,
 )
 from ...io.stage_fit_settings_serialization import (
     load_stage_fit_settings_from_h5,
+    read_recommended_clock_sources,
     read_stage2b_recommended_shape,
 )
 from ...io.tau_calibration_settings_serialization import (
@@ -108,16 +109,22 @@ def _ft_persisted(file_path: str) -> Optional[Any]:
 
 
 def _fit_recommended(file_path: str) -> Optional[Any]:
-    """Stage 5 recommended layer: only ``shape``, from Stage 2b's recommendation.
+    """Stage 5 recommended layer: shape from Stage 2b + clocks from Stage 0 import.
 
-    Stage 5's resolver builds its recommended layer solely from the Stage 2b
-    auto-recommended line shape; every other Stage 5 field has no recommender.
-    Returns ``None`` when Stage 2b has not stamped a recommendation.
+    Stage 5's resolver merges two sources of recommendations:
+    - Line shape from Stage 2b's L/G/V discriminator (``recommended_shape``).
+    - Instrument clock declaration from the Blackchirp loader (stored at import
+      on ``stage0_fid_data`` as ``recommended_clock_sources``).
+    Returns ``None`` when neither source has stamped a recommendation.
     """
     shape_str = read_stage2b_recommended_shape(file_path)
-    if shape_str is None:
+    clocks = read_recommended_clock_sources(file_path)
+    if shape_str is None and clocks is None:
         return None
-    return fit_mod.StageFitSettings(shape=ShapeSpec.coerce(shape_str))
+    return fit_mod.StageFitSettings(
+        shape=ShapeSpec.coerce(shape_str) if shape_str is not None else None,
+        spur=SpurSubSettings(clocks=clocks),
+    )
 
 
 # Stage settings classes the verb covers, in display order. Stage 0 start

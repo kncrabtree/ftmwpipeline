@@ -1,4 +1,27 @@
 name: instrument_bc_2638
+stage5:
+  spur:
+    # Instrument clock tree (see dev-docs/planning/instrument-clock-declaration.md).
+    # Chain fundamentals only -- harmonics/products derive. The dual-output
+    # Valon synth (5120 -> downconversion LO x8 = 40960; 5760 -> upconversion
+    # LO x2 = 11520) and the AWG sample clock are Rb-locked: their intermod
+    # lattice is the x320 MHz comb the recurring spur catalogue sits on. The
+    # scope's interleaved-ADC fundamental (6250 = 50 GSa/s / 8) is the one
+    # free-running source: its tone family drifts against the Rb axis.
+    # The AWG's half-rate product (fs/2 = 8000; the bb-8000 tone is among the
+    # strongest measured) is declared as its own fundamental: division is not
+    # a generated product, and without it the locked gcd is 640 instead of
+    # the 320 the measured comb requires (32960 = bb 8000 = 320x25 is not a
+    # x640 point).
+    clocks:
+      - {freq_mhz: 5120, locked: true, label: synth-downconv}
+      - {freq_mhz: 5760, locked: true, label: synth-upconv}
+      - {freq_mhz: 16000, locked: true, label: awg}
+      - {freq_mhz: 8000, locked: true, label: awg-half}
+      - {freq_mhz: 6250, locked: false, label: scope-adc}
+    # Strong gated tones need a wider residual mask than the fixed 2-bin
+    # default (a sinc skirt falls ~1/(pi*bins)): scale with the tone's SNR.
+    mask_target_residual_snr: 2.0
 description: |
   Stage 5 settings for the BlackChirp 2638 fixture. This preset is
   intentionally minimal: every field that 2638 calibration would have

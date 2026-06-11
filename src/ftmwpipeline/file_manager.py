@@ -185,6 +185,13 @@ class PipelineStageTracker:
             "stage1_complex_ft",
             "stage2_noise_result",
         ],
+        # Scope-timebase self-calibration: measures the fractional scale error
+        # eps of the free-running digitizer clock from the Rb-locked spur
+        # lattice on the raw FID. Depends only on Stage 0 (the raw FID); the
+        # canonical Stage 1 active-region bounds are read opportunistically.
+        # Independent of the tau calibrations; persists only eps and does not
+        # feed downstream stages (a reports feature consumes it).
+        "timebase_calibration": ["stage0_fid_data"],
         # Stage 3 requires Stage 1 (FT) and Stage 2 (noise). Stage 2b is a
         # recommended dependency but not enforced as required: the gap pass
         # falls back to ``tau_basis_us = 5.0`` when no calibration is
@@ -216,6 +223,7 @@ class PipelineStageTracker:
         "stage2_noise_result": "stage2_noise_result",
         "stage2b_tau_calibration": "stage2b_tau_calibration",
         "stage2b_tau_G_calibration": "stage2b_tau_G_calibration",
+        "timebase_calibration": "timebase_calibration",
         "stage3_peaks": "stage3_peaks",
         "stage4_windows": "stage4_windows",
         "stage5_fitting": "stage5_fitting",

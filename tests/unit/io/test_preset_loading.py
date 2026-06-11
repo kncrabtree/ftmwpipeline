@@ -47,14 +47,23 @@ class TestPackagedPresetResolution:
         assert s.shape is not None and s.shape.kind is PeakShape.LORENTZIAN
 
     def test_load_instrument_bc_2638(self) -> None:
-        """The 2638 preset is intentionally empty (every former override
-        is now a package-wide default or stamped by Stage 2b)."""
+        """The 2638 preset declares the instrument clock tree in spur.clocks
+        and pins mask_target_residual_snr.  Shape and tau knobs are not set
+        (the shape is auto-recommended by Stage 2b; tau knobs are package-wide
+        defaults).
+        """
+        from ftmwpipeline.core.stage_fit_settings import ClockSource
+
         s = load_preset("instrument_bc_2638")
-        assert s.is_empty(), (
-            "instrument_bc_2638 should carry no Stage 5 overrides; the "
-            "shape is auto-recommended and per_band_tau / tau_penalty_lambda "
-            "are package-wide defaults"
-        )
+        assert s.spur.clocks is not None, "2638 preset should carry a clock declaration"
+        assert len(s.spur.clocks) >= 1
+        freqs = {round(c.freq_mhz, 1) for c in s.spur.clocks}
+        assert 5120.0 in freqs, "Expected 5120 MHz synth fundamental"
+        assert 5760.0 in freqs, "Expected 5760 MHz synth fundamental"
+        assert s.spur.mask_target_residual_snr is not None
+        # Shape and all other knobs remain unset.
+        assert s.shape is None, "Shape should be left to Stage 2b auto-recommendation"
+        assert s.tau.max_decay_factor is None
 
     def test_unknown_bare_name_lists_available(self) -> None:
         with pytest.raises(FileNotFoundError, match=r"no packaged preset"):
