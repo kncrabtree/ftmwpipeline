@@ -179,6 +179,56 @@ settings propagation cross-interface; an end-to-end fit on a synthetic
 FID carrying a locked on-lattice tone + a drifting tone + an on-lattice
 real (decaying) line, asserting gate/spare/annotate respectively.
 
+## Timebase scale correction (measured — add to scope)
+
+The unlocked scope clock also carries a *stable fractional offset*, and it
+is measurable on the existing fixtures: regressing catalog position
+residuals against baseband frequency
+(`scratch/stage5-skirt/drift_regression.py`, vinyl cyanide truth) gives
+**ε = 2.28×10⁻⁶ (1512) and 2.20×10⁻⁶ (655)** — the same scale error on
+two independent acquisitions, monotonic across the band (≈0 kHz at 1.5 GHz
+baseband → −22…−28 kHz at 13 GHz). Removing the linear term collapses
+1512's catalog-match rms from 9.8 to 2.4 kHz. This is the "~10 kHz
+instrument accuracy floor" previously attributed to the instrument — a
+deterministic, correctable frequency-axis scale error, not a floor.
+
+Scope addition: the unlocked-clock declaration carries an optional
+`timebase_scale` (1 + ε) applied to the frequency axis (Stage 1 / active
+FT). ε can be user-declared, fit from catalog matches, or — elegantly —
+self-calibrated per fixture from the Rb-locked spur tones themselves
+(their true frequencies are exact; their measured offsets give ε with no
+catalog). Directly serves the 1512 uncertainty-accuracy goal.
+
+**Self-calibration demonstrated**
+(`scratch/stage5-skirt/timebase_selfcal{2,3}.py`): demodulate the FID at
+each Rb-locked tone's exact lattice frequency and locate the residual
+offset by an ML fine-frequency scan of the block-averaged demod; ε =
+offset / f_bb. On the **late record** (last ~45%, molecular lines decayed,
+CW tones persist — kills line-pulling on dense spectra) the weighted mean
+gives **ε = 2.30 ± 0.06 ppm on 1512 (catalog: 2.28) and 1.94 ± 0.09 ppm
+on 655 (catalog: 2.20)**; the best single tone (the 5120 synth reference,
+peak/noise 260–1300) matches the catalog at the 0.01–0.2 ppm level on
+both. Statistical floor per strong tone is parts in 10⁸ (σ_f ≈ 60 Hz at
+5.12 GHz, full record); practical accuracy is systematics-limited
+(residual line pulling, weak-tone outliers — 1512's 11520 tone flips sign
+at peak/noise 22). Production estimator: joint shared-ε fit across all
+probe-flat Rb-locked tones, late-window or line-model-subtracted data,
+outlier rejection via shared-ε consistency — conservatively ~0.1 ppm,
+i.e. residual worst-case position error ≲ 1.3 kHz at 13 GHz baseband
+(vs 28 kHz uncorrected). Scope-derived tones are excluded and
+*identified* by the same machinery: they do not share the common ε
+(measured: the 2×6250 tone sits tens of kHz off its nominal frequency
+and wanders between fixtures — the drifting-family discriminant in one
+measurement).
+
+Falsified alongside (`scratch/stage5-skirt/split_fraction.py`): the
+bright-line close multiplets are NOT clock-wander sidebands — fractional
+splits span 1.4–160 ppm with no f_bb scaling, and the headline 655 w940
+"doublets-are-quartets" separations (4–6 kHz at 37939.x) match real
+catalog hyperfine. The ultra-high-SNR lineshape floor concentrates at
+LOW baseband where wander broadening would be weakest, so drift is not
+the bulk shape-error mechanism either; only the position error is.
+
 ## Time-domain interleave-offset subtraction (measured, out of scope here)
 
 A complementary technique used on another instrument (16 interleaved ADCs):
