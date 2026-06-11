@@ -209,7 +209,10 @@ class TestAuditTrail:
             ModelPeak(_amp_for_snr(80.0), 0.5, 2.0),
         ]
         u, z = _window(true, 2.0, 1.0, rng)
-        res = conservative_fit(u, z, 1.0, [-0.6, 0.5], TAU_US, T_US)
+        # The escalating seeder (straddle + residual re-seed) would resolve
+        # the second line at seed time; hold it at K=1 so the add-one-peak
+        # loop's accept decision is what the trail exercises.
+        res = conservative_fit(u, z, 1.0, [-0.6, 0.5], TAU_US, T_US, seeder_max_k=1)
 
         assert len(res.audit_trail) == res.n_iterations
         assert all(isinstance(s, AddStep) for s in res.audit_trail)

@@ -2023,6 +2023,42 @@ def _blend_aware_seed(
             acquisition_us,
             **fit_kwargs,
         )
+        # Residual re-seed alternative: the symmetric straddle only reaches
+        # ~straddle_factor * FWHM, so a multi-FWHM blend whose Stage 3
+        # detection was pulled off-position (a steep-skirt shoulder shifts
+        # both apparent maxima) is out of its basin. Seed the extra
+        # component at the previous fit's residual-magnitude maximum
+        # instead -- the data says where the unmodeled line is -- and keep
+        # whichever trial converges better. Attempted only on real local
+        # evidence (the blend-split bar); the collapse check and the AICc
+        # gate below judge the winning trial exactly as before.
+        res_prev = np.abs(np.asarray(prev.residual))
+        res_prev = np.where(keep, res_prev, 0.0)
+        i_res = int(np.argmax(res_prev))
+        if res_prev[i_res] >= DEFAULT_BLEND_SPLIT_MIN_SNR * sigma_arr[i_res]:
+            init_res = list(prev.peaks) + [
+                _seed_peak(
+                    float(u_grid[i_res]),
+                    offset_grid_mhz,
+                    np.asarray(prev.residual),
+                    prev.tau_us,
+                    acquisition_us,
+                    shape=shape_resolved,
+                )
+            ]
+            trial_res = fit_window(
+                offset_grid_mhz,
+                complex_spectrum,
+                rms_noise,
+                init_res,
+                tau0_us,
+                acquisition_us,
+                **fit_kwargs,
+            )
+            if trial_res.success and (
+                not trial.success or trial_res.chi_squared < trial.chi_squared
+            ):
+                trial = trial_res
         p_value, f_stat, _ = calculate_chi_squared_improvement(
             prev.chi_squared,
             trial.chi_squared,

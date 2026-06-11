@@ -78,7 +78,9 @@ class TestRescueAddsMissedPeak:
         u, z = _window(true, 1.6, 1.0, rng)
         sigma = np.full(u.size, 1.0)
 
-        initial = conservative_fit(u, z, sigma, [-0.8], TAU_US, T_US)
+        # Hold the seeder at K=1 (its residual re-seed would otherwise find
+        # the withheld peak itself); the rescue path is what this exercises.
+        initial = conservative_fit(u, z, sigma, [-0.8], TAU_US, T_US, seeder_max_k=1)
         assert initial.n_peaks == 1  # gets only the candidate we supplied
         assert initial.fit.reduced_chi2 > 2.0  # the missed peak makes chi^2 bad
 

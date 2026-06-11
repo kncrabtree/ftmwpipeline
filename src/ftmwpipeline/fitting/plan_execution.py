@@ -2154,13 +2154,32 @@ def _fit_one_window(
             adopt_skirt = score_with <= score_without
         else:
             adopt_skirt = ssr_with <= DEFAULT_EDGE_FREE_ACCEPT_FRACTION * ssr_without
+        if os.environ.get("FTMW_FORCE_SKIRT"):
+            # Forensics only: force the edge-free skirt adoption so the full
+            # downstream machinery (rescue, blend-split, baseline re-runs)
+            # can be observed on the with-skirt branch of the A/B.
+            adopt_skirt = True
         if os.environ.get("FTMW_DEBUG_SKIRT"):
+            off_with = [round(p.offset_mhz, 3) for p in ef_result.fit.peaks]
+            off_without = [round(p.offset_mhz, 3) for p in fit_result.fit.peaks]
             print(
                 f"[skirt] w{win.window_id}: n_ef={len(edge_free_peaks)} "
                 f"ssr_with={ssr_with:.1f} ssr_without={ssr_without:.1f} "
                 f"k_with={ef_result.fit.n_params} "
-                f"k_without={fit_result.fit.n_params} adopt={adopt_skirt}",
+                f"k_without={fit_result.fit.n_params} adopt={adopt_skirt} "
+                f"peaks_with={off_with} peaks_without={off_without}",
                 flush=True,
+            )
+            validation.debug_fringe_dump(
+                "skirtab",
+                u=offset_grid,
+                z=z_slice,
+                sigma=sig_slice,
+                bg_with=ef_bg,
+                bg_without=background,
+                ssr_with=ssr_with,
+                ssr_without=ssr_without,
+                adopt=int(adopt_skirt),
             )
         if adopt_skirt:
             fit_result = ef_result
