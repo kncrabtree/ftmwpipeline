@@ -1688,10 +1688,23 @@ _window_knob(
     "stage4.clustering.max_peaks_per_window",
     "clustering",
     "max_peaks_per_window",
-    "Per-window promoted-peak cap (windows over it are split).",
+    "Per-window promoted-peak cap; 0 = no cap (width-bounded). Windows over a "
+    "positive cap are split at their sparsest gaps.",
     "N",
-    (8, 12, 16, 24),
+    (0, 8, 16, 32),
     tier="advanced",
+)
+_window_knob(
+    "stage4.clustering.max_window_width_points",
+    "clustering",
+    "max_window_width_points",
+    "Width cap in active-FT grid points (the portable form; bin width varies "
+    "across instruments). 0 = defer to max_window_width_mhz; positive "
+    "supersedes it.",
+    "Y",
+    (0, 64, 96, 128, 256),
+    tier="advanced",
+    see_also=_WINDOW_SEE_ALSO,
 )
 
 
@@ -1788,6 +1801,16 @@ _fit_knob(
     (2.5, 3.5, 5.0, 8.0),
     see_also=_FIT_SEE_ALSO,
 )
+_fit_knob(
+    "stage5.baseline.smooth_threshold",
+    "baseline",
+    "smooth_threshold",
+    "Smooth-residual F-test (chi2-drop/dof) gating the baseline on an in-band "
+    "leakage pedestal.",
+    "Y",
+    (20.0, 50.0, 100.0, 200.0),
+    see_also=_FIT_SEE_ALSO,
+)
 
 # Advanced — tau shaping (the penalty / bounds / routing knobs).
 _g: Tuple[Any, ...]
@@ -1843,8 +1866,9 @@ for _p, _f, _h, _g in (
     (
         "stage5.conservative.max_peaks",
         "max_peaks",
-        "Hard cap on the final peak count per window.",
-        (4, 8, 12),
+        "Hard cap on the final peak count per window; 0 = no cap "
+        "(candidate/patience-bounded).",
+        (0, 8, 16),
     ),
     (
         "stage5.conservative.patience",

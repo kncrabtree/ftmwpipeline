@@ -66,6 +66,7 @@ def _build_explicit_from_kwargs(
     magnitude_attachment_threshold: Optional[float],
     tau_us: Optional[float],
     max_peaks_per_window: Optional[int] = None,
+    max_window_width_points: Optional[int] = None,
 ) -> WindowPlanningSettings:
     """Bundle the legacy per-knob kwargs into an explicit-layer settings instance."""
     explicit = WindowPlanningSettings()
@@ -75,6 +76,7 @@ def _build_explicit_from_kwargs(
     explicit.clustering.max_window_width_mhz = max_window_width_mhz
     explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
     explicit.clustering.max_peaks_per_window = max_peaks_per_window
+    explicit.clustering.max_window_width_points = max_window_width_points
     explicit.contributor.min_freeze_snr = min_freeze_snr
     explicit.contributor.magnitude_attachment_threshold = magnitude_attachment_threshold
     explicit.leakage.tau_us = tau_us
@@ -101,6 +103,7 @@ def assign_windows_impl(
     magnitude_attachment_threshold: Optional[float] = None,
     tau_us: Optional[float] = None,
     max_peaks_per_window: Optional[int] = None,
+    max_window_width_points: Optional[int] = None,
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
@@ -137,10 +140,15 @@ def assign_windows_impl(
     tau_us : float, optional
         Assumed decay constant for the leakage envelope (default: undamped/boxcar).
     max_peaks_per_window : int, optional
-        Per-window promoted-peak cap; dense merged spans are split at their
-        sparsest gaps until each window holds at most this many peaks and is at
-        most ``max_window_width_mhz`` wide (default 8, tracking Stage 5
-        ``conservative.max_peaks``).
+        Per-window promoted-peak cap; ``0`` (the default) disables it so a window
+        is bounded only by ``max_window_width_mhz``. A positive value splits dense
+        merged spans at their sparsest gaps until each window holds at most this
+        many peaks (and is at most ``max_window_width_mhz`` wide), tracking Stage 5
+        ``conservative.max_peaks``.
+    max_window_width_points : int, optional
+        Width cap in active-FT grid points -- the portable form of the cap
+        (bin width varies across instruments). ``0`` defers to
+        ``max_window_width_mhz``; a positive value (default 96) supersedes it.
     settings : WindowPlanningSettings, optional
         Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
         chain); fields left ``None`` fall through. Mutually exclusive with
@@ -167,6 +175,7 @@ def assign_windows_impl(
             "magnitude_attachment_threshold": magnitude_attachment_threshold,
             "tau_us": tau_us,
             "max_peaks_per_window": max_peaks_per_window,
+            "max_window_width_points": max_window_width_points,
         },
         migration_hint=(
             "use settings=WindowPlanningSettings(...) or preset='name' to "
@@ -198,6 +207,7 @@ def assign_windows_impl(
         magnitude_attachment_threshold=magnitude_attachment_threshold,
         tau_us=tau_us,
         max_peaks_per_window=max_peaks_per_window,
+        max_window_width_points=max_window_width_points,
     )
     preset_layer: Optional[WindowPlanningSettings] = settings
     preset_name: Optional[str] = None
@@ -234,6 +244,9 @@ def assign_windows_impl(
     )
     max_peaks_per_window_v: int = int(
         _required(clus.max_peaks_per_window, "clustering.max_peaks_per_window")
+    )
+    max_width_points_v: int = int(
+        _required(clus.max_window_width_points, "clustering.max_window_width_points")
     )
     min_freeze_v: float = float(
         _required(contrib.min_freeze_snr, "contributor.min_freeze_snr")
@@ -282,6 +295,7 @@ def assign_windows_impl(
         min_window_half_width_mhz=min_half_v,
         magnitude_attachment_threshold=mag_thresh_v,
         max_peaks_per_window=max_peaks_per_window_v,
+        max_window_width_points=max_width_points_v,
     )
 
     save_window_plan_impl(file_path, plan)

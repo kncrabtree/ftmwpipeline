@@ -169,17 +169,20 @@ class BaselineSubSettings:
 
     An evidence-triggered low-order complex baseline ``B(u) = Σ_{k≤p}
     (a_k + i b_k)(u/u_s)^k`` added to a window's fit to absorb the coherent
-    residual a neighbouring strong line's mismodeled leakage skirt leaves
-    behind. Fires only where ``residual_edge_coherence`` exceeds
-    ``edge_threshold`` (a dedicated threshold well below the thaw default of
-    8.0); fit jointly with the free lines so its flexibility is priced into
-    the reported per-line uncertainties. See
-    ``dev-docs/planning/stage5-leakage-wing-baseline.md``.
+    residual a neighbouring strong line's mismodeled leakage skirt -- or the
+    summed far-wings of the many lines the discrete contributors cannot fully
+    subtract -- leaves behind. Fires where ``residual_edge_coherence`` exceeds
+    ``edge_threshold`` (a coherent edge wing) OR where an order-``p`` polynomial
+    explains the residual above ``smooth_threshold`` chi-squared per added dof (a
+    smooth in-band leakage pedestal); fit jointly with the free lines and a
+    re-freed ``tau`` so the flexibility is priced into the per-line
+    uncertainties. See ``dev-docs/planning/stage5-leakage-wing-baseline.md``.
     """
 
     enabled: Optional[bool] = None
     order: Optional[int] = None
     edge_threshold: Optional[float] = None
+    smooth_threshold: Optional[float] = None
 
 
 @dataclass
@@ -271,7 +274,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     },
     "conservative": {
         "significance": 0.05,
-        "max_peaks": 8,
+        "max_peaks": 0,
         "patience": 1,
         "min_separation_factor": 1.0,
         "min_pair_separation_factor": 0.5,
@@ -314,15 +317,17 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "use_stft_catalogue": True,
     },
     "baseline": {
-        # Leakage-wing baseline defaults on: the trigger fires only on a
-        # coherent wing residual (edge-coh > 3.5, well above its ~0.9 null on
-        # clean / narrow / low-SNR windows) and was validated zero-harmful on
-        # 2638. ``const`` order is the load-bearing guardrail (too smooth to
-        # mimic a narrow line). Mirrors ``DEFAULT_BASELINE_*`` in
+        # Leakage-wing baseline defaults on. It fires on a coherent edge wing
+        # (edge-coh > 3.5) OR a smooth in-band leakage pedestal (the order-p
+        # F-test, ``smooth_threshold``). Order 4 follows the pedestal's ramp /
+        # curvature while staying far too smooth to mimic a narrow line (every
+        # window is >> 4 active-FT bins); the F-significance trigger is the
+        # overfit guardrail. Mirrors ``DEFAULT_BASELINE_*`` in
         # ``fitting/plan_execution.py``.
         "enabled": True,
-        "order": 0,
+        "order": 4,
         "edge_threshold": 3.5,
+        "smooth_threshold": 50.0,
     },
 }
 

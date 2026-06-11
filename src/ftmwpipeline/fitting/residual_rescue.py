@@ -28,11 +28,13 @@ Notes
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from . import validation
 from .peak_model import ModelPeak, PeakShape, model_spectrum
 from .residual_screening import (
     ResidualPeakCandidate,
@@ -46,6 +48,7 @@ from .validation import (
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
+    gate_aicc_pair,
 )
 from .window_fit import (
     DEFAULT_MAX_PEAKS,
@@ -60,6 +63,7 @@ from .window_fit import (
     _seed_peak,
     conservative_fit,
     derive_window_fit_constraints,
+    evaluate_baseline,
     fit_window,
     knockout_test,
 )
@@ -224,7 +228,9 @@ def merge_close_peaks_cleanup(
     overfit_amp_ratio_threshold: float = DEFAULT_OVERFIT_AMP_RATIO_THRESHOLD,
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Multi-tier merge cleanup for close peak pairs.
 
@@ -289,6 +295,23 @@ def merge_close_peaks_cleanup(
         sigma = np.full(u.size, float(sigma))
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
+    budget: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget = np.asarray(gate_budget_extra, dtype=float)[order]
+
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u)
+        if not keep.any():
+            keep = np.ones(u.size, dtype=bool)
+    else:
+        keep = np.ones(u.size, dtype=bool)
+    sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
 
     fwhm = (
         feature_fwhm(fit.tau_us, acquisition_us, shape=fit.shape)
@@ -348,13 +371,26 @@ def merge_close_peaks_cleanup(
 
     current = fit
     n_merged = 0
+    # Pairs the blend escape exempted from collapse this run: a kept pair
+    # must not be re-selected as the closest pair forever (the loop would
+    # spin), so it is keyed by its members' offsets and skipped. A merge of
+    # a DIFFERENT pair refits every peak and shifts the kept pair's offsets
+    # off its key -- it is then simply re-evaluated, which is correct (the
+    # evidence may have changed).
+    protected_pairs: set[Tuple[float, float]] = set()
+
+    def _pair_key(lo: ModelPeak, hi: ModelPeak) -> Tuple[float, float]:
+        return (round(lo.offset_mhz, 6), round(hi.offset_mhz, 6))
+
     while current.n_peaks >= 2:
         sorted_peaks = sorted(current.peaks, key=lambda p: p.offset_mhz)
         # Closest adjacent pair (after sorting, the minimum gap must be
-        # between adjacent entries).
+        # between adjacent entries), skipping escape-protected pairs.
         min_dist = float("inf")
         merge_i = -1
         for i in range(len(sorted_peaks) - 1):
+            if _pair_key(sorted_peaks[i], sorted_peaks[i + 1]) in protected_pairs:
+                continue
             d = sorted_peaks[i + 1].offset_mhz - sorted_peaks[i].offset_mhz
             if d < min_dist:
                 min_dist = d
@@ -375,6 +411,20 @@ def merge_close_peaks_cleanup(
         # doublet out to ``overfit_amp_ratio_band`` would cost a wasted refit.)
         if min_dist >= merge_threshold and amp_ratio < overfit_amp_ratio_threshold:
             break
+        if os.environ.get("FTMW_DEBUG_MERGE"):
+            tier = (
+                "T1"
+                if min_dist < structural_threshold
+                else ("T2" if min_dist < merge_threshold else "T3")
+            )
+            print(
+                f"[merge] pair ({pair_lo.offset_mhz:+.4f},{pair_hi.offset_mhz:+.4f}) "
+                f"dist={min_dist:.4f} {tier} amp_ratio={amp_ratio:.2f} "
+                f"cancel={validation.pair_cancellation_fraction(pair_lo.amplitude, pair_lo.phase, pair_hi.amplitude, pair_hi.phase):.2f} "
+                f"thr(st={structural_threshold:.4f},mg={merge_threshold:.4f},"
+                f"band={amp_ratio_band:.4f})",
+                flush=True,
+            )
         merged_pair = _merge_cluster([sorted_peaks[merge_i], sorted_peaks[merge_i + 1]])
         merged_init = (
             sorted_peaks[:merge_i] + [merged_pair] + sorted_peaks[merge_i + 2 :]
@@ -401,10 +451,26 @@ def merge_close_peaks_cleanup(
         refit.tau_was_fit = current.tau_was_fit
         refit.tau_error = current.tau_error
 
-        # Tier 1: sub-resolution -> merge unconditionally. The K-peak
-        # fit at this scale is a numerical artifact; no statistical test
-        # can disambiguate it from a single peak.
+        # Tier 1: sub-resolution -> merge unconditionally, UNLESS the pair
+        # earns the blend escape. The unconditional collapse targets the
+        # cancelling near-duplicate artifact, but the complex-domain
+        # evidence CAN distinguish a genuine sub-resolution blend from a
+        # single peak (distinct member phases produce a profile one ``h_T``
+        # cannot match): a pair whose collapse costs overwhelming raw
+        # chi-squared and whose members are constructive is physical
+        # structure, not the pathology (see
+        # :data:`validation.DEFAULT_PAIR_CANCELLATION_MAX`).
         if min_dist < structural_threshold:
+            if validation.blend_pair_escape(
+                refit.chi_squared - current.chi_squared,
+                max(current.n_params - refit.n_params, 1),
+                pair_lo.amplitude,
+                pair_lo.phase,
+                pair_hi.amplitude,
+                pair_hi.phase,
+            ):
+                protected_pairs.add(_pair_key(pair_lo, pair_hi))
+                continue
             current = refit
             n_merged += 1
             continue
@@ -424,8 +490,21 @@ def merge_close_peaks_cleanup(
                 kind=n_eff_kind,
                 sigma=sigma,
             )
-            aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
-            aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+            aicc_k, aicc_km1 = gate_aicc_pair(
+                n_eff,
+                more_n_params=current.n_params,
+                less_n_params=refit.n_params,
+                more_chi2_raw=current.chi_squared,
+                less_chi2_raw=refit.chi_squared,
+                weighted=weighted,
+                more_residual=np.asarray(current.residual)[keep],
+                less_residual=np.asarray(refit.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=np.asarray(current.fitted_spectrum)[keep],
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=current.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             if aicc_km1 >= aicc_k:
                 break
             current = refit
@@ -438,8 +517,27 @@ def merge_close_peaks_cleanup(
         # signal that the closer-but-resolvable weak peak is a shape-error
         # absorber beside a strong line; collapse it. A balanced pair here is a
         # real doublet -> stop (it is the closest pair, so nothing nearer
-        # remains).
+        # remains). The blend escape applies with the fidelity-floor-scaled
+        # bar: an absorber's win is bounded by the lineshape floor it soaks
+        # (``chi2_r ~ (kappa*SNR)^2``), so only evidence far beyond that
+        # floor marks the weak member as a real unresolved line.
         if amp_ratio >= overfit_amp_ratio_threshold:
+            floor = (
+                float(current.reduced_chi2)
+                if np.isfinite(current.reduced_chi2)
+                else 1.0
+            )
+            if validation.blend_pair_escape(
+                refit.chi_squared - current.chi_squared,
+                max(current.n_params - refit.n_params, 1),
+                pair_lo.amplitude,
+                pair_lo.phase,
+                pair_hi.amplitude,
+                pair_hi.phase,
+                evidence_floor=floor,
+            ):
+                protected_pairs.add(_pair_key(pair_lo, pair_hi))
+                continue
             current = refit
             n_merged += 1
             continue
@@ -574,7 +672,12 @@ def iterative_aicc_cleanup(
     *,
     fit_kwargs_inner: dict[str, Any],
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
+    gate_background: Optional[np.ndarray] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop the worst AICc-with-n_eff offender until every
     remaining peak is supported.
@@ -610,6 +713,32 @@ def iterative_aicc_cleanup(
     Returns ``(cleaned_fit, n_dropped)``. ``cleaned_fit`` is the
     last refit (or the input ``fit`` if nothing was dropped); ``n_dropped``
     is the number of peaks the iterative loop removed.
+
+    ``protected_offsets`` carries the offsets of peaks the rescue
+    *inherited* (the round-start set: Stage-3-seeded conservative peaks and
+    prior-round survivors). Their drop test runs without the
+    ``gate_budget_extra`` skirt budget on **both** sides of the comparison:
+    the budget exists to discount rescue-harvested skirt-fringe error, but
+    on a deep-skirt window it is proportional to the dominant |background|
+    and otherwise erases an inherited real line's entire evidence -- the
+    budgeted score then actively prefers dropping every inherited peak
+    (fewer parameters, no visible evidence lost) and the round consolidates
+    to a single absorber. Rescue-origin peaks (anything not matching a
+    protected offset within ``protected_tol_mhz``) keep the budgeted gate.
+
+    ``gate_background`` (the window's complex frozen-contributor model on
+    the input grid) feeds the line-evidence escape hatch: before a peak is
+    selected as the drop candidate, its disputed evidence (the K-1 refit's
+    residual on the peak's support) is matched-filter tested in raw
+    currency beyond the span of the background's skirt-error modes and the
+    surviving peaks' lineshape-error modes
+    (:func:`~ftmwpipeline.fitting.validation.line_evidence_escape`). A peak
+    whose evidence is line-like at >=10x the gate's evidence bar cannot be
+    dropped this iteration -- the budget's blind band (a real line riding
+    the skirt at comparable magnitude) and the sigma_eff self-blinding (a
+    bright peak inflating its own bins' noise) are both overruled by
+    overwhelming raw template evidence, while skirt fringes stay inside
+    the nuisance span and remain droppable.
     """
     if fit.n_peaks == 0:
         return fit, 0
@@ -621,6 +750,12 @@ def iterative_aicc_cleanup(
         sigma = np.full(u.size, float(sigma))
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
+    budget: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget = np.asarray(gate_budget_extra, dtype=float)[order]
+    background: Optional[np.ndarray] = None
+    if gate_background is not None:
+        background = np.asarray(gate_background, dtype=np.complex128)[order]
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False
@@ -632,6 +767,56 @@ def iterative_aicc_cleanup(
     if not keep.any():
         keep = np.ones(u.size, dtype=bool)
 
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
+
+    protected = (
+        np.asarray(list(protected_offsets), dtype=float)
+        if protected_offsets is not None
+        else None
+    )
+
+    def _is_protected(offset_mhz: float) -> bool:
+        if protected is None or protected.size == 0:
+            return False
+        return bool(np.min(np.abs(protected - float(offset_mhz))) <= protected_tol_mhz)
+
+    shape_coerced = PeakShape.coerce(fit.shape)
+
+    def _escape_keeps(
+        peak: ModelPeak,
+        others: List[ModelPeak],
+        evidence_keep: np.ndarray,
+        tau_locked: float,
+        n_params_peak: int,
+    ) -> Tuple[bool, float]:
+        """Line-evidence escape for a would-be drop candidate (see docstring)."""
+        if validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is None:
+            return False, 0.0
+        template = model_spectrum(
+            u, [peak], tau_locked, acquisition_us, shape=shape_coerced
+        )
+        nuisance = validation.line_escape_nuisance_columns(
+            u,
+            others,
+            tau_locked,
+            acquisition_us,
+            shape=shape_coerced,
+            background=background,
+        )
+        return validation.line_evidence_escape(
+            evidence_keep,
+            sigma_keep,
+            template[keep],
+            [col[keep] for col in nuisance],
+            n_params_peak=n_params_peak,
+        )
+
     current = fit
     n_dropped = 0
     while current.n_peaks > 0:
@@ -641,19 +826,76 @@ def iterative_aicc_cleanup(
             kind=n_eff_kind,
             sigma=sigma,
         )
-        aicc_k = calculate_aicc(current.chi_squared, current.n_params, n_eff)
+        # Gate weights / residuals come from the more-complex K-peak model and
+        # are shared across this iteration's per-peak K-1 comparisons (the
+        # weighted and penalized branches of ``gate_aicc_pair`` consume them).
+        cur_res_keep = np.asarray(current.residual)[keep]
+        cur_model_keep = np.asarray(current.fitted_spectrum)[keep]
 
+        def _aicc_k_for(budget_arg: Optional[np.ndarray]) -> float:
+            aicc, _ = gate_aicc_pair(
+                n_eff,
+                more_n_params=current.n_params,
+                less_n_params=current.n_params,
+                more_chi2_raw=current.chi_squared,
+                less_chi2_raw=current.chi_squared,
+                weighted=weighted,
+                more_residual=cur_res_keep,
+                less_residual=cur_res_keep,
+                rms_noise=sigma_keep,
+                weight_model=cur_model_keep,
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=current.reduced_chi2,
+                budget_extra=budget_arg,
+            )
+            return aicc
+
+        # Both sides of a peak's drop comparison must share one currency:
+        # budgeted for rescue-origin peaks, budget-free for protected
+        # (inherited) ones -- so the reference score is computed per currency.
+        aicc_k_budgeted = _aicc_k_for(budget_keep)
+        aicc_k_raw = _aicc_k_for(None) if budget_keep is not None else aicc_k_budgeted
+
+        worst_margin = 0.0
         worst_aicc_km1 = float("inf")
         worst_idx = -1
         worst_refit: Optional[WindowFitResult] = None
         worst_is_null = False
 
         for i in range(current.n_peaks):
+            peak_protected = _is_protected(current.peaks[i].offset_mhz)
+            budget_i = None if peak_protected else budget_keep
+            aicc_k_i = aicc_k_raw if peak_protected else aicc_k_budgeted
             kept = [pk for j, pk in enumerate(current.peaks) if j != i]
             if not kept:
+                # Zero model -> residual is the data itself.
                 null_chi2 = calculate_noise_weighted_chi2(z[keep], sigma[keep])
-                aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
-                if aicc_km1 < worst_aicc_km1:
+                _, aicc_km1 = gate_aicc_pair(
+                    n_eff,
+                    more_n_params=current.n_params,
+                    less_n_params=0,
+                    more_chi2_raw=current.chi_squared,
+                    less_chi2_raw=null_chi2,
+                    weighted=weighted,
+                    more_residual=cur_res_keep,
+                    less_residual=z[keep],
+                    rms_noise=sigma_keep,
+                    weight_model=cur_model_keep,
+                    n_eff_kind=n_eff_kind,
+                    ref_reduced_chi2=current.reduced_chi2,
+                    budget_extra=budget_i,
+                )
+                if aicc_km1 - aicc_k_i < worst_margin:
+                    escaped, _ = _escape_keeps(
+                        current.peaks[i],
+                        [],
+                        z[keep],
+                        tau_locked,
+                        max(current.n_params, 1),
+                    )
+                    if escaped:
+                        continue
+                    worst_margin = aicc_km1 - aicc_k_i
                     worst_aicc_km1 = aicc_km1
                     worst_idx = i
                     worst_refit = None
@@ -677,17 +919,71 @@ def iterative_aicc_cleanup(
             # (the locked refit's covariance has no tau slot).
             refit.tau_was_fit = current.tau_was_fit
             refit.tau_error = current.tau_error
-            aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
-            if aicc_km1 < worst_aicc_km1:
+            _, aicc_km1 = gate_aicc_pair(
+                n_eff,
+                more_n_params=current.n_params,
+                less_n_params=refit.n_params,
+                more_chi2_raw=current.chi_squared,
+                less_chi2_raw=refit.chi_squared,
+                weighted=weighted,
+                more_residual=cur_res_keep,
+                less_residual=np.asarray(refit.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=cur_model_keep,
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=current.reduced_chi2,
+                budget_extra=budget_i,
+            )
+            margin_i = aicc_km1 - aicc_k_i
+            escape_dchi2 = 0.0
+            if margin_i < worst_margin:
+                escaped, escape_dchi2 = _escape_keeps(
+                    current.peaks[i],
+                    kept,
+                    np.asarray(refit.residual)[keep],
+                    tau_locked,
+                    max(current.n_params - refit.n_params, 1),
+                )
+                if escaped:
+                    margin_i = float("inf")
+            validation.debug_fringe_dump(
+                "cleanup",
+                u_keep=u[keep],
+                less_res=np.asarray(refit.residual)[keep],
+                more_res=cur_res_keep,
+                sigma=sigma_keep,
+                budget=budget_i,
+                weight_model=cur_model_keep,
+                template=model_spectrum(
+                    u,
+                    [current.peaks[i]],
+                    tau_locked,
+                    acquisition_us,
+                    shape=PeakShape.coerce(current.shape),
+                )[keep],
+                cand_offset=current.peaks[i].offset_mhz,
+                tau_us=tau_locked,
+                acquisition_us=acquisition_us,
+                raw_chi2_more=current.chi_squared,
+                raw_chi2_less=refit.chi_squared,
+                aicc_delta=aicc_km1 - aicc_k_i,
+                escape_dchi2=escape_dchi2,
+                protected=int(peak_protected),
+            )
+            if margin_i < worst_margin:
+                worst_margin = margin_i
                 worst_aicc_km1 = aicc_km1
                 worst_idx = i
                 worst_refit = refit
                 worst_is_null = False
 
-        # REJECT-on-tie: keep the peak unless AICc(K-1) is strictly
-        # better than AICc(K). When both diverge to +inf (model not
-        # identifiable for either K), ``inf < inf`` is False -> stop.
-        if worst_idx < 0 or not (worst_aicc_km1 < aicc_k):
+        # REJECT-on-tie: keep the peak unless AICc(K-1) is strictly better
+        # than AICc(K) in that peak's own currency (``worst_margin`` starts
+        # at 0, so only a strictly-negative margin selects a drop; the
+        # both-+inf case reads as a tie and stops). Each currency's pair
+        # shares its reference score, so budgeted and budget-free
+        # comparisons never mix sides.
+        if worst_idx < 0:
             break
 
         n_dropped += 1
@@ -808,6 +1104,9 @@ def attempt_residual_rescue(
     # Compute the residual ONCE, from the (frozen) initial fit. Use the
     # initial fit's own peaks + tau + shape here -- this is the actual model
     # the initial fit produced, regardless of whether its tau is physical.
+    # The fit's jointly-fit baseline term (when present) is part of that
+    # model: without it the carried pedestal would re-read as residual and
+    # the detector would nominate candidates on it.
     rescue_shape = current_fit.shape
     initial_model = model_spectrum(
         u,
@@ -815,7 +1114,7 @@ def attempt_residual_rescue(
         current_fit.tau_us,
         acquisition_us,
         shape=rescue_shape,
-    )
+    ) + evaluate_baseline(current_fit, u)
     residual = z - initial_model
 
     # Tau policy for the rescue (basis and frozen-tau refit):
@@ -941,6 +1240,12 @@ def attempt_residual_rescue(
     ckwargs.pop("min_separation_factor", None)
     ckwargs.pop("max_peaks", None)
     ckwargs.setdefault("shape", rescue_shape)
+    # The rescue's inner add-loop runs without the line-evidence escape:
+    # its trial model holds only rescue peaks (the initial fit lives in the
+    # subtracted residual), so the escape would lack the established-peak
+    # nuisance context. Arbitration of the rescue's finds belongs to the
+    # joint refit + iterative cleanup, where the escape has the full model.
+    ckwargs["gate_line_escape"] = False
     if not candidate_offsets:
         empty = conservative_fit(
             u,
@@ -1125,6 +1430,8 @@ def rescue_and_consolidate(
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
     shape: "PeakShape | str" = "lorentzian",
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
+    gate_background: Optional[np.ndarray] = None,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1193,10 +1500,10 @@ def rescue_and_consolidate(
     rescue_max_peaks
         Cap on the rescue's own conservative loop -- forwarded as
         :func:`attempt_residual_rescue` 's ``max_peaks``. Defaults to
-        :data:`DEFAULT_MAX_PEAKS`; the validation harness uses 32 so the
-        rescue's per-round K is gated by statistics rather than an
-        integer cap. The joint refit has no such cap (it just refits
-        whatever the rescue handed it).
+        :data:`DEFAULT_MAX_PEAKS` (``0`` = no cap), so the rescue's per-round
+        K is gated by the AICc statistics rather than an integer cap. The joint
+        refit has no such cap either (it just refits whatever the rescue handed
+        it).
     conservative_kwargs
         Forwarded to :func:`attempt_residual_rescue` and used to derive
         the joint refit's constraints. Pass the same options the initial
@@ -1223,6 +1530,13 @@ def rescue_and_consolidate(
     # call doesn't get the same kwarg twice.
     ckwargs_in = dict(conservative_kwargs or {})
     ckwargs_in.pop("max_peaks", None)
+    # Per-window sigma_eff budget (aligned with ``offset_grid_mhz``): ride the
+    # conservative-kwargs bag into :func:`attempt_residual_rescue`'s inner
+    # conservative_fit, and thread explicitly to the cleanup gates below.
+    if gate_budget_extra is not None:
+        ckwargs_in["gate_budget_extra"] = gate_budget_extra
+    else:
+        gate_budget_extra = ckwargs_in.get("gate_budget_extra")
     # Resolution-referenced minimum-pair-separation floor (GitHub issue #13).
     # ``attempt_residual_rescue`` reads it from ``ckwargs_in`` for its locality
     # rejection; the merge cleanup needs it as an explicit argument.
@@ -1267,6 +1581,19 @@ def rescue_and_consolidate(
     )
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
+    # A baseline the initial fit carries (the early conservative-phase
+    # leakage-wing term) stays in the model across the whole consolidation
+    # chain: the joint refit, the merge/knockout refits, and the iterative
+    # cleanup all re-fit it jointly, so removing a peak never re-exposes
+    # the pedestal as that peak's "evidence".
+    if (
+        initial_fit.fit.baseline_order is not None
+        and initial_fit.fit.baseline_offset_scale
+    ):
+        fit_kwargs_inner["baseline_order"] = int(initial_fit.fit.baseline_order)
+        fit_kwargs_inner["baseline_offset_scale"] = float(
+            initial_fit.fit.baseline_offset_scale
+        )
 
     current = initial_fit
     rounds: List[RescueRoundDiagnostics] = []
@@ -1283,6 +1610,10 @@ def rescue_and_consolidate(
         n_initial = len(current.peaks)
         chi2_before = current.fit.chi_squared
         tau_before = float(current.fit.tau_us)
+        # Inherited (round-start) peak offsets: the cleanup judges these in
+        # budget-free currency (see ``iterative_aicc_cleanup``); only this
+        # round's rescue-origin additions face the skirt budget.
+        inherited_offsets = [float(pk.offset_mhz) for pk in current.fit.peaks]
 
         rescue = attempt_residual_rescue(
             u,
@@ -1410,6 +1741,7 @@ def rescue_and_consolidate(
             overfit_amp_ratio_threshold=overfit_amp_ratio_threshold,
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
 
         # Per-peak knockout produces persisted diagnostics (n_eff,
@@ -1426,6 +1758,7 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
         # Iterative AICc cleanup: drops the worst offender, refits,
         # repeats. Non-iterative drops kill duplicate clusters wholesale
@@ -1433,6 +1766,11 @@ def rescue_and_consolidate(
         # refit); the iterative loop redistributes the dropped peak's
         # contribution and re-evaluates, so a cluster of N duplicates
         # of one real feature converges to a single supported peak.
+        # Grid spacing for the +/-1-bin tolerance used in the protected-peak
+        # matching, the rescue-survival check below, and the blacklist.
+        u_sorted = np.sort(u)
+        df_mhz = float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
+        survival_tol = max(df_mhz, 1e-3)
         pruned_fit_candidate, n_pruned_total = iterative_aicc_cleanup(
             u,
             z,
@@ -1442,12 +1780,11 @@ def rescue_and_consolidate(
             fit_kwargs_inner=fit_kwargs_inner,
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
+            gate_background=gate_background,
+            protected_offsets=inherited_offsets,
+            protected_tol_mhz=survival_tol,
         )
-        # Grid spacing for the +/-1-bin tolerance used in both the
-        # rescue-survival check below and the across-rounds blacklist.
-        u_sorted = np.sort(u)
-        df_mhz = float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
-        survival_tol = max(df_mhz, 1e-3)
         # Two-purpose bookkeeping:
         #
         # (1) Failsafe counter ``n_pruned_rescue_origin``: how many
@@ -1534,10 +1871,20 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             significance=knockout_significance,
             spur_mask=spur_mask,
+            gate_budget_extra=gate_budget_extra,
         )
 
         chi2_after = pruned_fit.chi_squared
         tau_after = float(pruned_fit.tau_us)
+        # A round must EARN its install: the consolidated fit replaces the
+        # round-start fit only on a strict raw chi-squared improvement. The
+        # joint refit relaxes every parameter (including tau, whose penalty
+        # anchor can drag it off the data-preferred value), and the cleanup
+        # can prune the round back to nothing gained -- without this guard
+        # such a round still installed a strictly worse fit. Rejected rounds
+        # leave ``current`` untouched; their candidates are already
+        # blacklisted above, so the loop converges rather than re-proposing.
+        round_improves = chi2_after < chi2_before
         reason_parts: List[str] = []
         if n_pruned_total > 0:
             reason_parts.append(f"knockout pruned {n_pruned_total} peak(s)")
@@ -1547,27 +1894,31 @@ def rescue_and_consolidate(
             reason = "joint refit consolidated rescue contribution"
         else:
             reason = "joint refit + " + " + ".join(reason_parts)
+        if not round_improves:
+            reason += " (rejected: consolidated chi-squared did not improve)"
         rounds.append(
             RescueRoundDiagnostics(
                 round_idx=round_idx,
                 rescue=rescue,
                 joint_fit=joint,
                 joint_knockouts=joint_knockouts,
-                pruned_fit=pruned_fit,
-                pruned_knockouts=pruned_knockouts,
+                pruned_fit=pruned_fit if round_improves else None,
+                pruned_knockouts=pruned_knockouts if round_improves else [],
                 n_initial_peaks=n_initial,
                 n_rescue_added=n_rescue_added,
                 n_pruned_total=n_pruned_total,
                 n_pruned_rescue_origin=n_pruned_rescue,
                 chi2_before=chi2_before,
-                chi2_after=chi2_after,
+                chi2_after=chi2_after if round_improves else chi2_before,
                 tau_us_before=tau_before,
-                tau_us_after=tau_after,
-                accepted=True,
+                tau_us_after=tau_after if round_improves else tau_before,
+                accepted=round_improves,
                 reason=reason,
                 n_merged=n_merged,
             )
         )
+        if not round_improves:
+            continue
         current = ConservativeFitResult(
             fit=pruned_fit,
             audit_trail=initial_fit.audit_trail,

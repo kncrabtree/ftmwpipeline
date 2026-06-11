@@ -191,8 +191,9 @@ def test_baseline_audit_persists(baseline_2638_stage4_small, temp_ftmw_dir):
     fit = ftmw.fit_peaks(fp)
     # Settings audit on the plan-level parameters.
     assert fit.parameters.get("baseline_enabled") is True
-    assert fit.parameters.get("baseline_order") == 0
+    assert fit.parameters.get("baseline_order") == 4
     assert fit.parameters.get("baseline_edge_threshold") == pytest.approx(3.5)
+    assert fit.parameters.get("baseline_smooth_threshold") == pytest.approx(50.0)
     n_fired = fit.parameters.get("n_baseline_windows")
     assert isinstance(n_fired, int) and n_fired >= 0
 
@@ -393,7 +394,15 @@ def test_calibrate_tau_G_cross_interface(
     tc_pipe = Pipeline(pfile).calibrate_tau_G(settings=skip)
     tc_func = ftmw.calibrate_tau_G(ffile, settings=skip)
     res = subprocess.run(
-        ["ftmwpipeline", "tau", "run", "--gaussian", str(cfile), "--preset", str(skip_yaml)],
+        [
+            "ftmwpipeline",
+            "tau",
+            "run",
+            "--gaussian",
+            str(cfile),
+            "--preset",
+            str(skip_yaml),
+        ],
         capture_output=True,
         text=True,
         timeout=600,

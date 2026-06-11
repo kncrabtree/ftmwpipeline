@@ -183,6 +183,7 @@ _AUDIT_COLORS = {
     "promote": "tab:olive",
     "tentative": "0.6",
     "reject": "tab:red",
+    "knockout-null": "tab:purple",
 }
 
 

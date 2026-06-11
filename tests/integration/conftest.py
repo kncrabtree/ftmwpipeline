@@ -328,9 +328,7 @@ def cli_helper():
         @staticmethod
         def import_data(ftmw_file: Path, source: str) -> Tuple[int, str, str]:
             """Run data import command."""
-            return CLIHelper.run_command(
-                ["data", "import", str(ftmw_file), source]
-            )
+            return CLIHelper.run_command(["data", "import", str(ftmw_file), source])
 
         @staticmethod
         def compute_ft(ftmw_file: Path, **params) -> Tuple[int, str, str]:

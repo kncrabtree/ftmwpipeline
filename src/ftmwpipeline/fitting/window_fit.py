@@ -60,6 +60,7 @@ from typing import Any, Optional, Union, cast
 import numpy as np
 from scipy.optimize import least_squares
 
+from . import validation
 from .peak_model import (
     ModelPeak,
     PeakShape,
@@ -77,7 +78,7 @@ from .validation import (
     calculate_noise_weighted_chi2,
     effective_sample_size,
     feature_fwhm,
-    validate_peak_separation,
+    gate_aicc_pair,
 )
 
 __all__ = [
@@ -113,7 +114,7 @@ _PHASE_BOUND = 4.0 * np.pi
 
 # Conservative add-one-peak loop defaults.
 DEFAULT_SIGNIFICANCE = 0.05
-DEFAULT_MAX_PEAKS = 8
+DEFAULT_MAX_PEAKS = 0  # 0 = no cap; the add-loop is bounded by the candidate set
 DEFAULT_PATIENCE = 1
 DEFAULT_MIN_SEPARATION_FACTOR = 1.0
 # Blend-aware seeder: a single-cosine seed fit whose reduced chi-squared
@@ -153,6 +154,20 @@ DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
 # limit). Guards the sub-resolution duplicate-overfit pathology the FWHM-only
 # floor licenses (GitHub issue #13).
 DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR = 1.0
+# Blend-split trial: a candidate inside the pre-fit peak-separation floor of
+# an existing peak still gets a trial fit when the residual at its position
+# carries at least this many sigma of magnitude evidence (0 disables; the
+# candidate is then rejected outright as before). An existing peak parked at
+# a blend's compromise position leaves its residual maximum *inside* its own
+# separation dead zone, so the outright rejection forecloses ever resolving
+# the blend -- the trial NLS, free to move both the candidate and the
+# blocking peak, splits it instead (655 w880: a 119-kHz doublet modeled as
+# one line held a 41-sigma residual; the split drops window chi2 8503->221).
+# The post-fit collapse check (with its blend_pair_escape) and the AICc gate
+# arbitrate the outcome exactly as for an ordinary candidate; a failed
+# blend-split trial is rejected outright (never held tentative, never counted
+# against patience) so loop termination matches the legacy skip.
+DEFAULT_BLEND_SPLIT_MIN_SNR = 4.0
 # Tau policy: the canonical apodization (``expf_us``) sets a hard upper bound
 # on ``tau`` -- the data cannot decay slower than the apodization itself.
 # Decreasing ``tau`` below the apodization broadens the line, so the LSQ
@@ -619,20 +634,28 @@ def model_jacobian(
     k = len(peaks)
     n_params = 3 * k + (1 if include_tau else 0)
     jac = np.zeros((u.size, n_params), dtype=np.complex128)
-    dmodel_dtau = np.zeros(u.size, dtype=np.complex128)
+    if k == 0:
+        return cast(np.ndarray, jac)
 
-    for i, pk in enumerate(peaks):
-        du = u - pk.offset_mhz
-        line = h_T_shape(s, du, tau_us, acquisition_us)
-        d_shape_df, d_shape_dtau = h_T_shape_jacobian(s, du, tau_us, acquisition_us)
-        phasor = np.exp(1j * pk.phase)
-        jac[:, 3 * i] = 0.5 * phasor * line
-        jac[:, 3 * i + 1] = -0.5 * pk.amplitude * phasor * d_shape_df
-        jac[:, 3 * i + 2] = 0.5j * pk.amplitude * phasor * line
-        dmodel_dtau += 0.5 * pk.amplitude * phasor * d_shape_dtau
-
+    # Evaluate every line's shape and its derivatives in one broadcast over the
+    # (K, M) offset grid (one ``h_T_shape`` / ``h_T_shape_jacobian`` call,
+    # shape coerced once) instead of 2K per-peak calls. Byte-identical to the
+    # per-peak loop; only the line-shape calls are batched.
+    offsets = np.fromiter((pk.offset_mhz for pk in peaks), dtype=float, count=k)
+    amps = np.fromiter((pk.amplitude for pk in peaks), dtype=float, count=k)
+    phases = np.fromiter((pk.phase for pk in peaks), dtype=float, count=k)
+    phasors = np.exp(1j * phases)  # (K,)
+    du = u[np.newaxis, :] - offsets[:, np.newaxis]  # (K, M)
+    line = h_T_shape(s, du, tau_us, acquisition_us)  # (K, M)
+    d_shape_df, d_shape_dtau = h_T_shape_jacobian(s, du, tau_us, acquisition_us)
+    ph = phasors[:, np.newaxis]  # (K, 1)
+    amp = amps[:, np.newaxis]
+    # Columns, peak-major: [A_0, δ_0, φ_0, A_1, δ_1, φ_1, ...].
+    jac[:, 0 : 3 * k : 3] = (0.5 * ph * line).T
+    jac[:, 1 : 3 * k : 3] = (-0.5 * amp * ph * d_shape_df).T
+    jac[:, 2 : 3 * k : 3] = (0.5j * amp * ph * line).T
     if include_tau:
-        jac[:, 3 * k] = dmodel_dtau
+        jac[:, 3 * k] = np.sum(0.5 * amp * ph * d_shape_dtau, axis=0)
     return cast(np.ndarray, jac)
 
 
@@ -671,6 +694,30 @@ def baseline_basis(
     u = np.asarray(offset_grid_mhz, dtype=float)
     x = u / float(offset_scale)
     return cast(np.ndarray, np.vander(x, order + 1, increasing=True))
+
+
+def evaluate_baseline(
+    fit: "WindowFitResult", offset_grid_mhz: np.ndarray
+) -> np.ndarray:
+    """A fit's complex-baseline contribution on a grid (zeros when none).
+
+    The baseline is part of the fit's *model* (``fitted_spectrum`` includes
+    it), but consumers that re-evaluate the model from ``fit.peaks`` via
+    :func:`~ftmwpipeline.fitting.peak_model.model_spectrum` -- the rescue's
+    residual detector, the knockout sweep's K-fit chi-squared -- would
+    otherwise drop it and see the carried pedestal as residual.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    if (
+        fit.baseline_order is None
+        or fit.baseline_coeffs is None
+        or not fit.baseline_offset_scale
+    ):
+        return cast(np.ndarray, np.zeros(u.size, dtype=np.complex128))
+    basis = baseline_basis(u, int(fit.baseline_order), float(fit.baseline_offset_scale))
+    return cast(
+        np.ndarray, basis @ np.asarray(fit.baseline_coeffs, dtype=np.complex128)
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1091,6 +1138,10 @@ def fit_window(
             fitted_spectrum=np.zeros(m, dtype=np.complex128),
             residual=z.copy(),
             covariance=None,
+            # The null model has no lines, but it can stand as a window's
+            # *final* fit (seed-knockout enforcement); the persisted
+            # per-window shape attribute must still record the run's shape.
+            shape=PeakShape.coerce(shape),
         )
 
     if tau_bounds is None:
@@ -1239,6 +1290,16 @@ def fit_window(
             bounds=(lo_arr, hi_arr),
             method="trf",
             max_nfev=max_nfev,
+            # Scale the trust region by the Jacobian column norms each
+            # iteration. The fit parameters are wildly different in magnitude
+            # -- amplitude ~1e3, baseband offset ~1e-2 MHz, phase ~1, shared
+            # tau ~5 us -- so the default uniform scaling conditions the step
+            # poorly and wastes iterations crawling along the cramped
+            # directions. ``'jac'`` cuts solver evaluations by ~1/3 on the
+            # dense high-K windows (and a few percent everywhere) for an
+            # identical converged minimum; the fitted line set is unchanged
+            # within solver tolerance across the cross-fixture metric.
+            x_scale="jac",
         )
     except (ValueError, np.linalg.LinAlgError):
         return WindowFitResult(
@@ -1352,7 +1413,9 @@ class AddStep:
         Whether the candidate cleared the peak-separation constraint.
     decision : str
         ``"seed"``, ``"seed-blend"``, ``"accept"``, ``"promote"``,
-        ``"tentative"`` or ``"reject"``.
+        ``"tentative"``, ``"reject"`` or ``"knockout-null"`` (the lone
+        seed removed at exit by its own K=1-vs-null knockout verdict, see
+        :data:`validation.DEFAULT_ENFORCE_SEED_KNOCKOUT`).
     reason : str
         Free-text note on the decision.
     n_eff : float
@@ -1495,8 +1558,10 @@ def knockout_test(
     *,
     fit_kwargs_inner: Optional[dict[str, Any]] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     significance: float = DEFAULT_SIGNIFICANCE,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
 ) -> list[KnockoutResult]:
     """Per-line knockout validation of a converged window fit.
 
@@ -1577,10 +1642,18 @@ def knockout_test(
         keep = np.ones(u.size, dtype=bool)
     z_keep = z[keep]
     sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget_keep = np.asarray(gate_budget_extra, dtype=float)[keep]
 
     tau = fit.tau_us
     shape_resolved = fit.shape
-    full_model = model_spectrum(u, peaks, tau, acquisition_us, shape=shape_resolved)
+    # The K-fit model must carry the fit's baseline term (when one was fit
+    # jointly): the (K-1) refits below inherit it via ``fit_kwargs_inner``,
+    # so a peaks-only K side would unfairly carry the pedestal as misfit.
+    full_model = model_spectrum(
+        u, peaks, tau, acquisition_us, shape=shape_resolved
+    ) + evaluate_baseline(fit, u)
     full_chi2 = calculate_noise_weighted_chi2(z_keep, sigma_keep, full_model[keep])
 
     # n_eff is keyed on the K-fit's model magnitude -- the same value the
@@ -1591,7 +1664,16 @@ def knockout_test(
         kind=n_eff_kind,
         sigma=sigma,
     )
-    aicc_k = calculate_aicc(fit.chi_squared, fit.n_params, n_eff)
+    # Context-invariant gate: score the K vs K-1 AICc on the information-
+    # weighted chi-squared (weights from the more-complex K-fit model) so a
+    # peak's support depends on its local evidence, not the window's bin count.
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    fit_residual_keep = np.asarray(fit.residual)[keep]
+    weight_model_keep = np.asarray(fit.fitted_spectrum)[keep]
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner or {})
     refit_kwargs["fit_tau"] = False  # tau locked at the K-fit value
@@ -1613,7 +1695,21 @@ def knockout_test(
             # K=1 -> K=0 refit is the null model; no fit_window call needed.
             # The null chi-squared is the data's own noise-weighted energy.
             null_chi2 = calculate_noise_weighted_chi2(z_keep, sigma_keep)
-            aicc_km1 = calculate_aicc(null_chi2, 0, n_eff)
+            aicc_k, aicc_km1 = gate_aicc_pair(
+                n_eff,
+                more_n_params=fit.n_params,
+                less_n_params=0,
+                more_chi2_raw=fit.chi_squared,
+                less_chi2_raw=null_chi2,
+                weighted=weighted,
+                more_residual=fit_residual_keep,
+                less_residual=z_keep,
+                rms_noise=sigma_keep,
+                weight_model=weight_model_keep,
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=fit.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             # Compare aicc_km1 to aicc_k directly so the both-+inf case
             # (model not identifiable at n_eff for either K or K-1) reads
             # as a tie and preserves the K-peak fit -- matches the merge
@@ -1666,7 +1762,20 @@ def knockout_test(
             )
             continue
 
-        aicc_km1 = calculate_aicc(refit.chi_squared, refit.n_params, n_eff)
+        aicc_k, aicc_km1 = gate_aicc_pair(
+            n_eff,
+            more_n_params=fit.n_params,
+            less_n_params=refit.n_params,
+            more_chi2_raw=fit.chi_squared,
+            less_chi2_raw=refit.chi_squared,
+            weighted=weighted,
+            more_residual=fit_residual_keep,
+            less_residual=np.asarray(refit.residual)[keep],
+            rms_noise=sigma_keep,
+            weight_model=weight_model_keep,
+            n_eff_kind=n_eff_kind,
+            budget_extra=budget_keep,
+        )
         # Diagnostic p_value: refit-based F-test (K-1 simpler vs K complex).
         p_value, _, _ = calculate_chi_squared_improvement(
             refit.chi_squared, fit.chi_squared, 3, fit.n_data, fit.n_params
@@ -1752,8 +1861,12 @@ def _blend_aware_seed(
     tau_penalty_sigma_us: Optional[float] = None,
     tau_penalty_sigma_lo_us: Optional[float] = None,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
+    baseline_order: Optional[int] = None,
+    baseline_offset_scale: Optional[float] = None,
 ) -> tuple[WindowFitResult, list[AddStep]]:
     """Seed the window fit, escalating K=1 -> K=2 -> K=3 on an elevated chi².
 
@@ -1778,6 +1891,47 @@ def _blend_aware_seed(
     familiar diagnostic.
     """
     shape_resolved = PeakShape.coerce(shape)
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    u_grid = np.asarray(offset_grid_mhz, dtype=float)
+    sigma_arr = np.asarray(rms_noise, dtype=float)
+    if sigma_arr.ndim == 0:
+        sigma_arr = np.full(u_grid.size, float(sigma_arr))
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u_grid)
+        if not keep.any():
+            keep = np.ones(u_grid.size, dtype=bool)
+    else:
+        keep = np.ones(u_grid.size, dtype=bool)
+    sigma_keep = sigma_arr[keep]
+    budget_keep: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget_keep = np.asarray(gate_budget_extra, dtype=float)[keep]
+
+    def _trigger_rchi2(res_fit: WindowFitResult) -> float:
+        # Escalation-trigger reduced chi-squared. Under the sigma_eff gate
+        # (:data:`validation.DEFAULT_GATE_SIGMA_EFF_KAPPA`) the trigger is
+        # computed against the fidelity-inflated noise of the fit's own
+        # model: a bright line sitting at its lineshape floor reads ~1 and
+        # does not escalate (the floor is irreducible -- straddled absorber
+        # peaks are not the remedy), while a genuine unresolved blend leaves
+        # reducible misfit at bins the model under-covers and still fires.
+        kappa = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA
+        if kappa is None:
+            return float(res_fit.reduced_chi2)
+        chi2_eff = validation.sigma_eff_chi2(
+            np.asarray(res_fit.residual)[keep],
+            sigma_keep,
+            np.asarray(res_fit.fitted_spectrum)[keep],
+            kappa,
+            extra=budget_keep,
+        )
+        dof = max(res_fit.n_data - res_fit.n_params, 1)
+        return chi2_eff / dof
+
     fit_kwargs: dict[str, Any] = dict(
         fit_tau=fit_tau,
         tau_bounds=tau_bounds,
@@ -1794,6 +1948,9 @@ def _blend_aware_seed(
         shape=shape_resolved,
         spur_mask=spur_mask,
     )
+    if baseline_order is not None:
+        fit_kwargs["baseline_order"] = int(baseline_order)
+        fit_kwargs["baseline_offset_scale"] = baseline_offset_scale
     fit1 = fit_window(
         offset_grid_mhz,
         complex_spectrum,
@@ -1832,7 +1989,7 @@ def _blend_aware_seed(
     ]
 
     best = fit1
-    if not fit1.success or fit1.reduced_chi2 <= rchi2_threshold:
+    if not fit1.success or _trigger_rchi2(fit1) <= rchi2_threshold:
         return best, audit
 
     # Elevated reduced chi-squared -> retry as a straddled blend.
@@ -1866,6 +2023,42 @@ def _blend_aware_seed(
             acquisition_us,
             **fit_kwargs,
         )
+        # Residual re-seed alternative: the symmetric straddle only reaches
+        # ~straddle_factor * FWHM, so a multi-FWHM blend whose Stage 3
+        # detection was pulled off-position (a steep-skirt shoulder shifts
+        # both apparent maxima) is out of its basin. Seed the extra
+        # component at the previous fit's residual-magnitude maximum
+        # instead -- the data says where the unmodeled line is -- and keep
+        # whichever trial converges better. Attempted only on real local
+        # evidence (the blend-split bar); the collapse check and the AICc
+        # gate below judge the winning trial exactly as before.
+        res_prev = np.abs(np.asarray(prev.residual))
+        res_prev = np.where(keep, res_prev, 0.0)
+        i_res = int(np.argmax(res_prev))
+        if res_prev[i_res] >= DEFAULT_BLEND_SPLIT_MIN_SNR * sigma_arr[i_res]:
+            init_res = list(prev.peaks) + [
+                _seed_peak(
+                    float(u_grid[i_res]),
+                    offset_grid_mhz,
+                    np.asarray(prev.residual),
+                    prev.tau_us,
+                    acquisition_us,
+                    shape=shape_resolved,
+                )
+            ]
+            trial_res = fit_window(
+                offset_grid_mhz,
+                complex_spectrum,
+                rms_noise,
+                init_res,
+                tau0_us,
+                acquisition_us,
+                **fit_kwargs,
+            )
+            if trial_res.success and (
+                not trial.success or trial_res.chi_squared < trial.chi_squared
+            ):
+                trial = trial_res
         p_value, f_stat, _ = calculate_chi_squared_improvement(
             prev.chi_squared,
             trial.chi_squared,
@@ -1874,17 +2067,63 @@ def _blend_aware_seed(
             trial.n_params,
         )
         # Post-fit sanity check: reject escalations whose peaks collapsed onto
-        # the same offset (the cancelling-phase degenerate solution).
+        # the same offset (the cancelling-phase degenerate solution). A
+        # genuine sub-separation BLEND earns the escape: when the escalation's
+        # raw chi-squared win is overwhelming and every violating pair is
+        # constructive, the straddle resolved physical structure, not the
+        # pathology (see :data:`validation.DEFAULT_PAIR_CANCELLATION_MAX`;
+        # measured K=2 escalations 6-29x better in raw chi-squared were
+        # vetoed here on 363 w157/w100 and 360 w56).
         collapsed = False
         if trial.success and len(trial.peaks) >= 2 and min_pair_sep > 0.0:
+            violating: list[tuple[int, int]] = []
             offs = np.asarray([pk.offset_mhz for pk in trial.peaks], dtype=float)
             for ii in range(offs.size):
                 for jj in range(ii + 1, offs.size):
                     if abs(offs[ii] - offs[jj]) < min_pair_sep:
-                        collapsed = True
-                        break
-                if collapsed:
-                    break
+                        violating.append((ii, jj))
+            if violating:
+                collapsed = True
+                evidence = prev.chi_squared - trial.chi_squared
+                dk = max(trial.n_params - prev.n_params, 1)
+                if all(
+                    validation.blend_pair_escape(
+                        evidence,
+                        dk,
+                        trial.peaks[ii].amplitude,
+                        trial.peaks[ii].phase,
+                        trial.peaks[jj].amplitude,
+                        trial.peaks[jj].phase,
+                        # Relative lane: the escalation splits the feature the
+                        # accepted seed explains, so its evidence scale is the
+                        # seed's own null-referenced chi-squared win.
+                        feature_evidence=null_chi2 - prev.chi_squared,
+                    )
+                    for ii, jj in violating
+                ):
+                    collapsed = False
+                for ii, jj in violating:
+                    validation.debug_fringe_dump(
+                        "seeder",
+                        cand_offset=seed_offset_mhz,
+                        pair_off_a=trial.peaks[ii].offset_mhz,
+                        pair_off_b=trial.peaks[jj].offset_mhz,
+                        pair_amp_a=trial.peaks[ii].amplitude,
+                        pair_amp_b=trial.peaks[jj].amplitude,
+                        pair_cancellation=validation.pair_cancellation_fraction(
+                            trial.peaks[ii].amplitude,
+                            trial.peaks[ii].phase,
+                            trial.peaks[jj].amplitude,
+                            trial.peaks[jj].phase,
+                        ),
+                        tau_us=trial.tau_us,
+                        acquisition_us=acquisition_us,
+                        raw_chi2_more=trial.chi_squared,
+                        raw_chi2_less=prev.chi_squared,
+                        null_chi2=null_chi2,
+                        n_params_delta=dk,
+                        passes=int(not collapsed),
+                    )
         # AICc-with-n_eff gate. The K+1 trial model is the magnitude
         # basis: its fitted_spectrum defines the informative bins, and
         # both AICc evaluations share that ``n_eff`` so they sit on a
@@ -1898,10 +2137,23 @@ def _blend_aware_seed(
             n_eff = effective_sample_size(
                 trial.fitted_spectrum,
                 kind=n_eff_kind,
-                sigma=cast(np.ndarray, np.asarray(rms_noise, dtype=float)),
+                sigma=sigma_arr,
             )
-            aicc_prev = calculate_aicc(prev.chi_squared, prev.n_params, n_eff)
-            aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
+            aicc_trial, aicc_prev = gate_aicc_pair(
+                n_eff,
+                more_n_params=trial.n_params,
+                less_n_params=prev.n_params,
+                more_chi2_raw=trial.chi_squared,
+                less_chi2_raw=prev.chi_squared,
+                weighted=weighted,
+                more_residual=np.asarray(trial.residual)[keep],
+                less_residual=np.asarray(prev.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=np.asarray(trial.fitted_spectrum)[keep],
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=trial.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             aicc_delta = aicc_trial - aicc_prev
             gate_accepts = aicc_trial < aicc_prev
         else:
@@ -1933,7 +2185,7 @@ def _blend_aware_seed(
             break
         best = trial
         prev = trial
-        if trial.reduced_chi2 <= rchi2_threshold:
+        if _trigger_rchi2(trial) <= rchi2_threshold:
             break
     return best, audit
 
@@ -1963,6 +2215,7 @@ def conservative_fit(
     min_pair_separation_resolution_factor: float = (
         DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR
     ),
+    blend_split_min_snr: float = DEFAULT_BLEND_SPLIT_MIN_SNR,
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     tau_penalty_n_sigma: float = DEFAULT_TAU_PENALTY_N_SIGMA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
@@ -1973,8 +2226,13 @@ def conservative_fit(
     tau_anchor_us: Optional[float] = None,
     tau_penalty_sigma_lo_factor: float = 1.0,
     n_eff_kind: str = DEFAULT_N_EFF_KIND,
+    weighted_gate_chi2: Optional[bool] = None,
     shape: PeakShape | str = PeakShape.LORENTZIAN,
     spur_mask: Optional[SpurMaskSpec] = None,
+    gate_budget_extra: Optional[np.ndarray] = None,
+    gate_background: Optional[np.ndarray] = None,
+    gate_line_escape: bool = True,
+    baseline_order: Optional[int] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2011,8 +2269,12 @@ def conservative_fit(
         familiar diagnostic but is not used to decide acceptance.
     min_separation_factor : float, default 1.0
         Minimum peak separation as a multiple of the feature FWHM.
-    max_peaks : int, default 8
-        Cap on the number of lines fit.
+    max_peaks : int, default 0
+        Cap on the number of lines fit; ``0`` (the default) disables the cap so the
+        add-loop is bounded by the candidate set (and ``patience`` / separation).
+        The AICc-with-``n_eff`` accept gate self-regulates K, so a hard cap only
+        truncated dense clusters the gate would otherwise resolve. A positive value
+        restores an explicit cap.
     patience : int, default 1
         Consecutive candidate rejections tolerated before the loop stops.
     max_decay_factor : float, default 5.0
@@ -2055,6 +2317,12 @@ def conservative_fit(
         resolution term catches sub-resolution duplicate pairs the FWHM-only
         floor licenses on narrow features (the per-window FWHM can fall below
         the Fourier limit). See GitHub issue #13.
+    blend_split_min_snr : float, default :data:`DEFAULT_BLEND_SPLIT_MIN_SNR`
+        Residual-magnitude evidence (in local sigma) above which a candidate
+        failing the pre-fit peak-separation constraint still gets a trial
+        fit -- the blend-split trial (see
+        :data:`DEFAULT_BLEND_SPLIT_MIN_SNR`). ``0`` restores the outright
+        rejection.
     tau_penalty_lambda : float, default :data:`DEFAULT_TAU_PENALTY_LAMBDA`
         Weight of the lower-side tau penalty (see
         :func:`_penalty_residuals_and_jacobian`). ``0`` disables. The
@@ -2095,6 +2363,16 @@ def conservative_fit(
         :func:`knockout_test`). Keeps a spur from inflating the AICc gate
         and the knockout sweep. ``None`` masks nothing.
 
+    gate_budget_extra : np.ndarray, optional
+        Per-bin amplitude budget (aligned with ``offset_grid_mhz``) added in
+        quadrature to the gate noise by the sigma_eff gate variant -- the
+        fidelity allowance ``kappa_skirt * |frozen background|`` for skirt
+        structure subtracted from this window's data (see
+        :data:`~ftmwpipeline.fitting.validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT`).
+        Threaded to the seeder, the add-loop gate, and the knockout sweep;
+        inert unless the sigma_eff gate is active. The NLS objective and all
+        reported chi-squared stay on the raw Stage 2 noise.
+
     Returns
     -------
     ConservativeFitResult
@@ -2109,6 +2387,26 @@ def conservative_fit(
     # np.interp needs an ascending grid; sort the window once on entry.
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
+    budget: Optional[np.ndarray] = None
+    if gate_budget_extra is not None:
+        budget = np.asarray(gate_budget_extra, dtype=float)[order]
+    background: Optional[np.ndarray] = None
+    if gate_background is not None:
+        background = np.asarray(gate_background, dtype=np.complex128)[order]
+
+    weighted = (
+        validation.DEFAULT_WEIGHTED_GATE_CHI2
+        if weighted_gate_chi2 is None
+        else weighted_gate_chi2
+    )
+    if spur_mask is not None:
+        keep = ~spur_mask.bin_mask(u)
+        if not keep.any():
+            keep = np.ones(u.size, dtype=bool)
+    else:
+        keep = np.ones(u.size, dtype=bool)
+    sigma_keep = sigma[keep]
+    budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
 
     constraints = derive_window_fit_constraints(
         z,
@@ -2144,6 +2442,18 @@ def conservative_fit(
     effective_tau_penalty_lambda = constraints.effective_tau_penalty_lambda
     fit_kwargs_inner = dict(constraints.fit_kwargs_inner)
     fit_kwargs_inner.setdefault("shape", shape_resolved)
+    # Joint complex-baseline nuisance term for every inner fit (seeder
+    # escalations, add-loop trials, knockout refits). On a window whose data
+    # carries a smooth leakage pedestal the peaks-only model otherwise buys
+    # chi-squared by collapsing the shared tau onto the pedestal, which
+    # poisons every downstream decision (separations measured in a ballooned
+    # FWHM, the rescue consolidating onto bound-pinned absorbers). The
+    # caller triggers this (see ``fit_window_with_fixed_contributors``).
+    baseline_offset_scale: Optional[float] = None
+    if baseline_order is not None and u.size:
+        baseline_offset_scale = float(np.max(np.abs(u))) or 1.0
+        fit_kwargs_inner["baseline_order"] = int(baseline_order)
+        fit_kwargs_inner["baseline_offset_scale"] = baseline_offset_scale
 
     remaining = sorted(
         candidate_offsets,
@@ -2201,15 +2511,21 @@ def conservative_fit(
         tau_penalty_sigma_us=tau_penalty_sigma_us,
         tau_penalty_sigma_lo_us=constraints.tau_penalty_sigma_lo_us,
         n_eff_kind=n_eff_kind,
+        weighted_gate_chi2=weighted,
         shape=shape_resolved,
         spur_mask=spur_mask,
+        gate_budget_extra=budget,
+        baseline_order=baseline_order,
+        baseline_offset_scale=baseline_offset_scale,
     )
     if not current.success:
         return ConservativeFitResult(current, audit, [])
 
     tentative: list[ModelPeak] = []
     consecutive_rejects = 0
-    while remaining and current.n_peaks + len(tentative) < max_peaks:
+    while remaining and (
+        max_peaks <= 0 or current.n_peaks + len(tentative) < max_peaks
+    ):
         in_model = list(current.peaks) + tentative
         residual = z - model_spectrum(
             u,
@@ -2224,27 +2540,47 @@ def conservative_fit(
         )
         remaining.remove(cand)
 
+        # Test only the candidate's distance to the peaks already in the
+        # model. Existing-vs-existing pairs are policed by the blend seeder's
+        # own collapse check and the merge tiers -- and those legitimately
+        # admit pairs down to 0.5 FWHM, below this check's 1.0 FWHM bar, so
+        # including them here would poison the check and reject every later
+        # candidate wholesale (the deep-skirt windows lost their real
+        # Stage 3 lines exactly this way).
         existing = [pk.offset_mhz for pk in in_model]
-        sep_ok, _ = validate_peak_separation(
-            np.asarray(existing + [cand]), min_separation
-        )
+        sep_ok = all(abs(e - cand) >= min_separation for e in existing)
+        sep_waived = False
         if not sep_ok:
-            audit.append(
-                AddStep(
-                    n_peaks_before=current.n_peaks,
-                    candidate_offset_mhz=cand,
-                    chi2_before=current.chi_squared,
-                    chi2_after=current.chi_squared,
-                    f_statistic=0.0,
-                    p_value=1.0,
-                    aic_before=current.aic,
-                    aic_after=current.aic,
-                    separation_ok=False,
-                    decision="reject",
-                    reason="peak-separation constraint",
-                )
+            # Blend-split trial: an existing peak parked at a blend's
+            # compromise position leaves the residual maximum *inside* its
+            # own separation dead zone, so rejecting here forecloses ever
+            # resolving the blend. When the residual at the candidate
+            # carries real magnitude evidence, run the trial anyway -- the
+            # NLS is free to move both the candidate and the blocking peak
+            # and splits the blend when the data supports it; the post-fit
+            # collapse check and the AICc gate arbitrate as usual.
+            res_snr = abs(float(np.interp(cand, u, np.abs(residual)))) / max(
+                float(np.interp(cand, u, sigma)), float(np.finfo(float).tiny)
             )
-            continue
+            if blend_split_min_snr > 0.0 and res_snr >= blend_split_min_snr:
+                sep_waived = True
+            else:
+                audit.append(
+                    AddStep(
+                        n_peaks_before=current.n_peaks,
+                        candidate_offset_mhz=cand,
+                        chi2_before=current.chi_squared,
+                        chi2_after=current.chi_squared,
+                        f_statistic=0.0,
+                        p_value=1.0,
+                        aic_before=current.aic,
+                        aic_after=current.aic,
+                        separation_ok=False,
+                        decision="reject",
+                        reason="peak-separation constraint",
+                    )
+                )
+                continue
 
         # Trial = accepted + the whole tentative batch + this candidate, tested
         # against the last accepted model so a jointly-significant batch is
@@ -2273,6 +2609,72 @@ def conservative_fit(
             spur_mask=spur_mask,
             **fit_kwargs_inner,
         )
+        # Post-fit collapse check on the *candidate*: the NLS can migrate a
+        # legitimately-separated candidate onto an existing bright core and
+        # converge to the cancelling near-duplicate pair (huge opposite-phase
+        # amplitudes buying raw chi-squared) -- the same degenerate solution
+        # the seeder rejects on its escalations. Scope deliberately narrow:
+        # only pairs involving the candidate's fitted position (a transient
+        # collapse among *other* trial members must not veto this candidate),
+        # and only below HALF the effective separation floor (the structural
+        # scale of the merge tiers) -- real close pairs legitimately fit just
+        # under the floor and the merge/knockout machinery owns that band.
+        # Drop the candidate outright (NOT into the tentative batch, where it
+        # would re-collapse inside every later trial).
+        if trial.success and trial.n_peaks >= 2:
+            sep_eff = _effective_min_pair_separation(
+                fwhm,
+                acquisition_us,
+                min_pair_separation_factor,
+                min_pair_separation_resolution_factor,
+            )
+            trial_offsets = [pk.offset_mhz for pk in trial.peaks]
+            # The candidate is structurally the LAST trial peak (trial_init
+            # appends it; the NLS preserves parameter order). Nearest-to-seed
+            # matching misidentifies it when it migrates past an existing
+            # peak -- on a blend-split trial it routinely converges closer
+            # to the bright core than to its own seed.
+            ci = len(trial_offsets) - 1
+            sep_ok_post = all(
+                abs(o - trial_offsets[ci]) >= 0.5 * sep_eff
+                for i, o in enumerate(trial_offsets)
+                if i != ci
+            )
+            if not sep_ok_post:
+                # Blend escape: a candidate that converged sub-separation
+                # beside an existing peak with overwhelming raw evidence and
+                # a constructive pair is an unresolved blend, not the
+                # cancelling absorber this check targets.
+                cj = min(
+                    (i for i in range(len(trial_offsets)) if i != ci),
+                    key=lambda i: abs(trial_offsets[i] - trial_offsets[ci]),
+                )
+                if validation.blend_pair_escape(
+                    current.chi_squared - trial.chi_squared,
+                    max(trial.n_params - current.n_params, 1),
+                    trial.peaks[ci].amplitude,
+                    trial.peaks[ci].phase,
+                    trial.peaks[cj].amplitude,
+                    trial.peaks[cj].phase,
+                ):
+                    sep_ok_post = True
+            if not sep_ok_post:
+                audit.append(
+                    AddStep(
+                        n_peaks_before=current.n_peaks,
+                        candidate_offset_mhz=cand,
+                        chi2_before=current.chi_squared,
+                        chi2_after=trial.chi_squared,
+                        f_statistic=0.0,
+                        p_value=1.0,
+                        aic_before=current.aic,
+                        aic_after=trial.aic,
+                        separation_ok=False,
+                        decision="reject",
+                        reason="trial fit collapsed peaks within min separation",
+                    )
+                )
+                continue
         p_value, f_stat, _ = calculate_chi_squared_improvement(
             current.chi_squared,
             trial.chi_squared,
@@ -2295,16 +2697,100 @@ def conservative_fit(
                 kind=n_eff_kind,
                 sigma=sigma,
             )
-            aicc_current = calculate_aicc(current.chi_squared, current.n_params, n_eff)
-            aicc_trial = calculate_aicc(trial.chi_squared, trial.n_params, n_eff)
+            aicc_trial, aicc_current = gate_aicc_pair(
+                n_eff,
+                more_n_params=trial.n_params,
+                less_n_params=current.n_params,
+                more_chi2_raw=trial.chi_squared,
+                less_chi2_raw=current.chi_squared,
+                weighted=weighted,
+                more_residual=np.asarray(trial.residual)[keep],
+                less_residual=np.asarray(current.residual)[keep],
+                rms_noise=sigma_keep,
+                weight_model=np.asarray(trial.fitted_spectrum)[keep],
+                n_eff_kind=n_eff_kind,
+                ref_reduced_chi2=trial.reduced_chi2,
+                budget_extra=budget_keep,
+            )
             aicc_delta = aicc_trial - aicc_current
             passes = aicc_trial < aicc_current
+            escape_dchi2 = 0.0
+            # Structural index, not nearest-to-seed (see the collapse check).
+            ci_cand = len(trial.peaks) - 1
+            cand_template = model_spectrum(
+                u,
+                [trial.peaks[ci_cand]],
+                trial.tau_us,
+                acquisition_us,
+                shape=shape_resolved,
+            )
+            # Line-evidence escape hatch: the sigma_eff currency discounts
+            # evidence under the trial's own bright candidate (the shared
+            # weight model includes the very component being tested) and the
+            # fidelity floor scales the bar with the *remaining* unmodeled
+            # misfit -- on a multi-line blend window both conspire to reject
+            # a real bright line at raw delta-chi2 ~ 1e4-1e5 (655 w527). A
+            # rejected candidate whose disputed evidence survives the
+            # matched-filter test in raw currency -- beyond the span of the
+            # established peaks' lineshape-error modes and the frozen
+            # background's skirt-error modes -- is accepted anyway. See
+            # :data:`validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA`.
+            if (
+                not passes
+                and gate_line_escape
+                and validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is not None
+            ):
+                evidence = np.asarray(trial.residual) + cand_template
+                others = [pk for i, pk in enumerate(trial.peaks) if i != ci_cand]
+                nuisance = validation.line_escape_nuisance_columns(
+                    u,
+                    others,
+                    trial.tau_us,
+                    acquisition_us,
+                    shape=shape_resolved,
+                    background=background,
+                )
+                escaped, escape_dchi2 = validation.line_evidence_escape(
+                    evidence[keep],
+                    sigma_keep,
+                    cand_template[keep],
+                    [col[keep] for col in nuisance],
+                    n_params_peak=max(trial.n_params - current.n_params, 1),
+                )
+                if escaped:
+                    passes = True
+            validation.debug_fringe_dump(
+                "addloop",
+                u_keep=u[keep],
+                less_res=np.asarray(trial.residual)[keep] + cand_template[keep],
+                more_res=np.asarray(trial.residual)[keep],
+                cur_res=np.asarray(current.residual)[keep],
+                sigma=sigma_keep,
+                budget=budget_keep,
+                weight_model=np.asarray(trial.fitted_spectrum)[keep],
+                template=cand_template[keep],
+                cand_offset=cand,
+                fitted_offset=trial.peaks[ci_cand].offset_mhz,
+                tau_us=trial.tau_us,
+                acquisition_us=acquisition_us,
+                raw_chi2_more=trial.chi_squared,
+                raw_chi2_less=current.chi_squared,
+                aicc_delta=aicc_delta,
+                escape_dchi2=escape_dchi2,
+                passes=int(passes),
+            )
         else:
             n_eff = float("nan")
             aicc_delta = float("nan")
+            escape_dchi2 = 0.0
             passes = False
         if passes:
             decision = "promote" if tentative else "accept"
+            reason = f"+{len(tentative) + 1} line(s)"
+            if escape_dchi2 and aicc_trial >= aicc_current:
+                reason += f" (line-evidence escape dchi2={escape_dchi2:.0f})"
+            if sep_waived:
+                reason += " (blend-split trial)"
             audit.append(
                 AddStep(
                     n_peaks_before=current.n_peaks,
@@ -2315,9 +2801,9 @@ def conservative_fit(
                     p_value=p_value,
                     aic_before=current.aic,
                     aic_after=trial.aic,
-                    separation_ok=True,
+                    separation_ok=not sep_waived,
                     decision=decision,
-                    reason=f"+{len(tentative) + 1} line(s)",
+                    reason=reason,
                     n_eff=float(n_eff),
                     aicc_delta=float(aicc_delta),
                 )
@@ -2325,6 +2811,28 @@ def conservative_fit(
             current = trial
             tentative = []
             consecutive_rejects = 0
+        elif sep_waived:
+            # A failed blend-split trial dies outright: it must not join the
+            # tentative batch (a sub-separation peak there would re-collapse
+            # inside every later trial) and must not consume patience (the
+            # legacy path skipped these candidates without stopping the loop).
+            audit.append(
+                AddStep(
+                    n_peaks_before=current.n_peaks,
+                    candidate_offset_mhz=cand,
+                    chi2_before=current.chi_squared,
+                    chi2_after=trial.chi_squared,
+                    f_statistic=f_stat,
+                    p_value=p_value,
+                    aic_before=current.aic,
+                    aic_after=trial.aic,
+                    separation_ok=False,
+                    decision="reject",
+                    reason="blend-split trial failed the gate",
+                    n_eff=float(n_eff),
+                    aicc_delta=float(aicc_delta),
+                )
+            )
         else:
             audit.append(
                 AddStep(
@@ -2358,7 +2866,50 @@ def conservative_fit(
         acquisition_us,
         fit_kwargs_inner=fit_kwargs_inner,
         n_eff_kind=n_eff_kind,
+        weighted_gate_chi2=weighted,
         significance=significance,
         spur_mask=spur_mask,
+        gate_budget_extra=budget,
     )
+    seed_unsupported = False
+    if validation.DEFAULT_ENFORCE_SEED_KNOCKOUT and current.n_peaks == 1 and knockouts:
+        # The enforcement currency is deliberately *raw*: under the
+        # penalized gate the lone seed must clear the plain evidence bar
+        # ``Delta chi2_raw > 2*lambda*k`` against the null fit, WITHOUT
+        # the sigma_eff/skirt budget. The budget discounts evidence under
+        # bright frozen structure -- right for incremental adds chasing
+        # subtraction error, but a window's single dominant feature is
+        # routinely a real line riding that same pedestal (the dense
+        # forest case), and budget currency would delete it wholesale.
+        # Sub-bar dust (raw Delta chi2 ~ 10-20 at SNR ~ 2) still dies.
+        lam = validation.DEFAULT_GATE_PENALTY_LAMBDA
+        if lam is not None:
+            delta_raw = null.chi_squared - current.chi_squared
+            seed_unsupported = delta_raw <= 2.0 * float(lam) * float(current.n_params)
+        else:
+            seed_unsupported = not knockouts[0].supported
+    if seed_unsupported:
+        # Enforce the K=1-vs-null verdict. The seed is installed without
+        # facing the accept gate, and the consolidation sweeps that act
+        # on knockout verdicts only run inside an accepted rescue round
+        # -- so without this a quiet window keeps a lone unsupported
+        # peak (see :data:`validation.DEFAULT_ENFORCE_SEED_KNOCKOUT`).
+        audit.append(
+            AddStep(
+                n_peaks_before=1,
+                candidate_offset_mhz=float(current.peaks[0].offset_mhz),
+                chi2_before=current.chi_squared,
+                chi2_after=null.chi_squared,
+                f_statistic=float("nan"),
+                p_value=knockouts[0].p_value,
+                aic_before=current.aic,
+                aic_after=null.aic,
+                separation_ok=True,
+                decision="knockout-null",
+                reason="lone seed unsupported by its K=1-vs-null knockout",
+                n_eff=knockouts[0].n_eff,
+                aicc_delta=knockouts[0].aicc_delta,
+            )
+        )
+        return ConservativeFitResult(null, audit, [])
     return ConservativeFitResult(current, audit, knockouts)

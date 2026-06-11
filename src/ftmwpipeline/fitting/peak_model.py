@@ -599,11 +599,23 @@ def model_spectrum(
 
     s = PeakShape.coerce(shape)
     u = np.asarray(offset_grid_mhz, dtype=float)
-    spectrum = np.zeros(u.shape, dtype=np.complex128)
-    for pk in peaks:
-        phasor = 0.5 * pk.amplitude * np.exp(1j * pk.phase)
-        spectrum += phasor * h_T_shape(s, u - pk.offset_mhz, tau_us, acquisition_us)
-    return cast(np.ndarray, spectrum)
+    k = len(peaks)
+    if k == 0:
+        return cast(np.ndarray, np.zeros(u.shape, dtype=np.complex128))
+    # Evaluate every line in one broadcast over the (K, M) offset grid rather
+    # than a Python loop of K per-peak ``h_T`` calls: the line shape is the
+    # dominant assembly cost and a single vectorised evaluation replaces K
+    # calls' worth of dispatch / validation / array-setup overhead (the shape
+    # is coerced once). The summed result matches the loop to floating-point
+    # round-off -- the only difference is the reduction order.
+    offsets = np.fromiter((pk.offset_mhz for pk in peaks), dtype=float, count=k)
+    amps = np.fromiter((pk.amplitude for pk in peaks), dtype=float, count=k)
+    phases = np.fromiter((pk.phase for pk in peaks), dtype=float, count=k)
+    phasors = 0.5 * amps * np.exp(1j * phases)  # (K,)
+    du = u[np.newaxis, :] - offsets[:, np.newaxis]  # (K, M)
+    lines = h_T_shape(s, du, tau_us, acquisition_us)  # (K, M)
+    spectrum = phasors[:, np.newaxis] * lines
+    return cast(np.ndarray, spectrum.sum(axis=0))
 
 
 def synthesize_fid(

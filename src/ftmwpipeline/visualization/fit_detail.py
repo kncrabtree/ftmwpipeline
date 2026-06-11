@@ -4,8 +4,9 @@ Consolidated Stage 5 per-window detail figure.
 A single landscape-letter figure summarising one fit window:
 
 * Row 1 -- full-spectrum context (data magnitude) with the window highlighted.
-* Row 2 -- Re / Im / |z| residual panels with a vertical line at every fitted
-  peak's molecular frequency.
+* Row 2 -- Re / Im / |residual| panels with a vertical line at every fitted
+  peak's molecular frequency. All three are on the fit's native grid so
+  |residual| = sqrt(Re^2 + Im^2) bin-for-bin.
 * Row 3 -- Re / Im / |z| data + model overlays. The model is drawn on an
   oversampled grid (smooth analytic line shape) *and* as small ``x`` markers at
   the native data bins, so the eye compares model-at-bin with data-at-bin and
@@ -15,21 +16,27 @@ A single landscape-letter figure summarising one fit window:
 
 Magnitude honesty
 -----------------
-The magnitude data (``|X|``) and the magnitude *residual* traces are drawn on an
-exactly-2x zero-filled grid. For a magnitude spectrum this is information-
-faithful, not cosmetic: the magnitude operation discards the phase, and the
-half-bin magnitudes of a single zero-fill recover it (Marshall & Verdun). Every
-*statistic* -- the complex residual, the per-bin noise band, and the |residual|
-histogram -- stays on the native grid. The real and imaginary panels stay native
-too, where a zero-fill would only sinc-interpolate redundant points.
+The magnitude *data* (``|X|``, Row 3) is drawn on an exactly-2x zero-filled grid.
+For a magnitude spectrum this is information-faithful, not cosmetic: the magnitude
+operation discards the phase, and the half-bin magnitudes of a single zero-fill
+recover it (Marshall & Verdun). The model in that overlay is its smooth analytic
+curve, so the eye sees the data's between-bin truncation ringing against the
+clean model -- the point of the panel.
+
+The |residual| panel (Row 2), by contrast, stays on the native grid alongside
+Re / Im, so |residual| = sqrt(Re^2 + Im^2) bin-for-bin. It must not reuse the 2x
+data grid: subtracting the smooth analytic model from the sinc-interpolated data
+off the native bins plots the data ringing the model lacks, a spurious magnitude
+residual that can dwarf the true one near a strong line. Every *statistic* -- the
+complex residual, the per-bin noise band, and the |residual| histogram -- is
+native.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
-
 from dataclasses import dataclass
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -242,6 +249,7 @@ def plot_consolidated_detail(
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
     figsize: Tuple[float, float] = (11, 8.5),
+    spurs: Optional[Sequence[dict]] = None,
 ) -> plt.Figure:
     """Render the consolidated per-window detail figure (see module docstring).
 
@@ -249,6 +257,10 @@ def plot_consolidated_detail(
     grid (ascending molecular frequency) the fit lives on. ``freq_padded`` /
     ``spec_padded`` are the exactly-2x zero-filled display grid for the
     magnitude panels; when omitted, the magnitude panels fall back to native.
+    ``spurs`` is the fit's gated-spur catalogue
+    (``SpectrumFit.diagnostics["gated_spurs"]``: dicts with ``center_mhz``
+    and ``source``); in-window entries are marked on the data and residual
+    panels so a masked tone is never mistaken for an un-fit line.
     """
     if window_fit.window is None:
         raise ValueError(
@@ -330,7 +342,14 @@ def plot_consolidated_detail(
     labels = _peak_labels(len(fitted_freqs))
     _vline_plotter = _make_vline_plotter(fitted_freqs, labels, tau_us)
 
-    # Row 2: residuals (native re/im, 2x-zero-filled |residual|).
+    # Row 2: residuals (native re / im / |residual|), all on the fit's native
+    # grid so |residual| = sqrt(Re^2 + Im^2) bin-for-bin and the three panels
+    # agree. (The |residual| must NOT be drawn on the 2x display grid: the
+    # padded data is the sinc-interpolation of the spectrum, but the analytic
+    # model is its smooth closed form, so subtracting them off the native bins
+    # plots the data's truncation ringing the model lacks -- a spurious
+    # magnitude residual that can dwarf the true one near a strong line. The 2x
+    # grid is for the data |X| overlay only, where that ringing is the point.)
     band_s = band * amp
 
     def _res(ax: plt.Axes, vals: np.ndarray, color: str, mag: bool) -> None:
@@ -346,24 +365,7 @@ def plot_consolidated_detail(
         _vline_plotter(ax, True)
     _res(ax_re_res, np.real(residual), "tab:red", mag=False)
     _res(ax_im_res, np.imag(residual), "tab:blue", mag=False)
-    _draw_mag_residual(
-        ax_mag_res,
-        f_slice,
-        residual,
-        lo_f,
-        hi_f,
-        band_s,
-        amp,
-        window_fit,
-        peaks,
-        tau_us,
-        acquisition_us,
-        sideband,
-        center,
-        shape_str,
-        freq_padded,
-        spec_padded,
-    )
+    _res(ax_mag_res, np.abs(residual), "tab:purple", mag=True)
     ax_re_res.set_ylabel(f"Re residual{usuffix}", fontsize=9)
     ax_im_res.set_ylabel(f"Im residual{usuffix}", fontsize=9)
     ax_mag_res.set_ylabel(f"|residual|{usuffix}", fontsize=9)
@@ -414,6 +416,30 @@ def plot_consolidated_detail(
     for ax in (ax_re_dat, ax_im_dat, ax_mag_dat):
         ax.tick_params(axis="both", labelsize=8)
         ax.set_xlabel("frequency (MHz)", fontsize=9)
+
+    # Gated spurs in-window: mark the masked tone on every data/residual
+    # panel (it is deliberately absent from the model and excluded from the
+    # fit's chi-squared).
+    in_window_spurs = [
+        sp
+        for sp in (spurs or [])
+        if lo_f <= float(sp.get("center_mhz", float("nan"))) <= hi_f
+    ]
+    for i, sp in enumerate(in_window_spurs):
+        f_sp = float(sp["center_mhz"])
+        for ax in (ax_re_res, ax_im_res, ax_mag_res, ax_re_dat, ax_im_dat):
+            ax.axvline(f_sp, color="tab:orange", lw=1.0, ls=":", alpha=0.9, zorder=1)
+        ax_mag_dat.axvline(
+            f_sp,
+            color="tab:orange",
+            lw=1.0,
+            ls=":",
+            alpha=0.9,
+            zorder=1,
+            label=f"spur ({sp.get('source', '?')})" if i == 0 else None,
+        )
+    if in_window_spurs:
+        ax_mag_dat.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
     _draw_residual_hist(ax_hist, residual, sigma_slice, amp, usuffix)
     _draw_peak_table(ax_peaks, window_fit.fitted_peaks, labels, amp, units_label)
@@ -583,52 +609,6 @@ def _draw_mag_data(
         color="tab:purple",
         zorder=4,
     )
-
-
-def _draw_mag_residual(
-    ax: plt.Axes,
-    f_slice: np.ndarray,
-    residual_native: np.ndarray,
-    lo_f: float,
-    hi_f: float,
-    band_s: float,
-    amp: float,
-    window_fit: FittingResult,
-    peaks: Sequence[ModelPeak],
-    tau_us: float,
-    acquisition_us: float,
-    sideband: SidebandLike,
-    center: float,
-    shape_str: str,
-    freq_padded: Optional[np.ndarray],
-    spec_padded: Optional[np.ndarray],
-) -> None:
-    """|residual| panel on the 2x-zero-filled grid.
-
-    Zero-filling is linear, so the 2x complex residual is the zero-fill of the
-    native residual: data_2N - model_2N = zerofill(data - model). We form it as
-    spec_padded - model(padded) so the displayed |residual| passes through the
-    native |residual| at the measured bins.
-    """
-    if freq_padded is not None and spec_padded is not None:
-        pm = (freq_padded >= lo_f) & (freq_padded <= hi_f)
-        f_disp = freq_padded[pm]
-        model_pad = _eval_model(
-            f_disp,
-            window_fit,
-            peaks,
-            tau_us,
-            acquisition_us,
-            sideband,
-            center,
-            shape_str,
-        )
-        res_disp = spec_padded[pm] - model_pad
-        ax.plot(f_disp, np.abs(res_disp) * amp, color="tab:purple", lw=0.7)
-    else:
-        ax.plot(f_slice, np.abs(residual_native) * amp, color="tab:purple", lw=0.7)
-    if band_s > 0.0:
-        ax.axhline(band_s, color="0.3", lw=0.5, ls="--")
 
 
 def _draw_residual_hist(

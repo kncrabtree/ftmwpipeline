@@ -168,22 +168,84 @@ detector. Full detail: `research/stage5-gaussian-audit/report.md`
   integer-MHz-anchored and validated zero real-line FP, unlike the transitional
   default-off rescue.
 
+## Time-domain decay-probe arbitration and the pair lane
+
+Two later additions extend the joint gate (see the `spur_detection.py`
+module docstring for the operative contract):
+
+- **FID decay probe** (`make_decay_probe`): when the raw FID is available,
+  every verdict is arbitrated in the time domain — the FID is demodulated at
+  the nominee's baseband frequency, block-averaged into frames, and the
+  late/early amplitude ratio separates a decaying line (vetoes a narrow
+  nominee) from a flat CW tone (gates ANY Stage 2b cluster, integer or not,
+  saturated or not — the bare `saturated` flag is trusted in neither
+  direction; measured false positives both ways).
+- **Pair lane** (`Spur.pair`, source `"narrow-pair"`): a CW tone whose
+  frequency falls *between* two grid bins splits its power across them
+  (each bin reads ~0.6–1.0 of the other), defeating the single-bin
+  narrowness test — the 655 35840.0 spur (SNR ~300, probe ratio 1.00) was
+  fit as a molecular line this way. The detector now also tests the
+  integer bin + its stronger neighbour as a pair against the bins flanking
+  the pair; because a blended doublet can mimic that signature, a pair
+  nominee gates **only** with probe-flat confirmation (≥ `RATIO_FLAT` at
+  `amp_snr ≥ MIN_SNR_FLAT`) and is never gated without a probe.
+  Cross-fixture sweep: gates 655's 35840 plus three flat-confirmed tones
+  on 363 (one is the known recurring 28058.1 interference tone); every
+  real-line pair nominee on all seven fixtures — including SNR-10289
+  (1512) and SNR-8004 (1019) lines — decays and is correctly skipped.
+
 ## Open follow-ups
 
 - **Stage 4 spur-only window drop.** Optional cleanliness step (spur-only
   windows already fit to the null model and contribute ~noise χ²ᵣ).
+- **Instrument clock-lattice prior (the principled comb prior).** The
+  instrument's clock tree explains the gated catalogue deterministically:
+  upconversion LO 11520 (= 2×5760, ×4 after mixing), downconversion LO
+  40960 (= 8×5120), AWG 16000, scope 8× interleaved 6250 — all but the
+  scope referenced to a 10 MHz Rb clock. Verified identities across the
+  seven-fixture gated catalogue (f_bb = 40960 − f_mol): 29440 → 11520
+  (LO leakage), 35200 → 5760 (pre-doubler), 35840 → 5120 (synth
+  reference), 30720 → 2×5120, 32960 → 8000 = 16000/2 (on ALL seven
+  fixtures), 28460 → 12500.0 = 2×6250 (scope ADC interleave); plus
+  direct RF-side harmonics 28800 = 5×5760 and 34560 = 6×5760. Every
+  cross-fixture recurring spur sits on the Rb-locked intermod lattice
+  gcd(5760, 5120, 16000) = 320 MHz — only 42 lattice points in the
+  26.5–40 GHz band vs the 13500 integer MHz the current gate sweeps
+  (~300× tighter prior). Proposed design: a per-instrument **clock
+  declaration** in settings (preset layer) generating the predicted
+  lattice in BOTH frames (baseband through the LO + direct RF
+  harmonics), used to (a) lower the spur-gate evidence bar on-lattice —
+  this is what 655's 39040 (f_bb = 1920 = 6×320, probe-ambiguous at
+  0.59) needs, (b) annotate fitted lines landing on lattice points as
+  suspect in `fit show`, (c) mark unlocked-clock (scope-derived)
+  families as the *drifting* population needing a drift-tolerant
+  flatness statistic (655's 39040 measured: ~200 kHz asymmetric smear,
+  erratic amplitude beat, late band-power ratio 0.43 vs 0.12–0.28 for
+  real lines). A lattice hit raises prior odds but lines can sit on
+  lattice points — the prior lowers the bar, the probe still arbitrates.
+  Caveat: 12 of 363's 20 gated tones (the f_bb ≈ 12.9 GHz flat cluster)
+  are off-lattice, so the lattice complements, never replaces, the
+  probe-confirmed cluster lane. Analysis script:
+  `scratch/stage5-skirt/clock_lattice.py`.
+- **Strong-tone mask width / metric interaction.** Gating a strong CW
+  tone whose sinc skirt extends past the ±2-bin mask leaves an unmasked
+  skirt residual the null model cannot absorb (363 w100 after the
+  28058.09 gate: K=0, χ²ᵣ 90 over the unmasked bins — previously that
+  tone was *fit as a line*, which passed the SNR-aware metric while
+  polluting the line list). Options: scale the mask half-width with tone
+  SNR, or the Stage 4 spur-only window drop above. The pass metric
+  rewards fitting interference; catalog truth is the arbiter.
 - **Split-bin / weak clock harmonics (catalogue pollution).** On 2638 the
-  ×10-MHz harmonics 39810/39830/39930 are gated by neither detector: the
-  active-FT bin grid (79.05 kHz) puts them half a bin off the integer so their
-  energy splits across two bins (narrowness ratio > 1, the off-integer lobe is
-  larger), while the 10-frame STFT sees their flatness but at per-frame SNR
-  < `t_sigma=5` so they classify `cls=0`, not `cls=1`. They are detected as
-  `WEAK` peaks and fit as ordinary weak lines (w385/387/390) at χ²ᵣ ≈ 1.3–1.8,
-  so the χ²ᵣ cost is ~0 — but they **pollute the line list** with 3 spurious
-  lines. Closing this would need either a dedicated split-bin test (energy
-  split across two adjacent bins straddling a shared integer MHz) or a lower
-  STFT SNR floor, both with real-line false-positive risk for ~0 χ²ᵣ gain.
-  Deferred; diagnosed in the audit report
+  ×10-MHz harmonics 39810/39830/39930 are gated by neither original
+  detector: the active-FT bin grid (79.05 kHz) puts them half a bin off
+  the integer so their energy splits across two bins, while the 10-frame
+  STFT sees their flatness but at per-frame SNR < `t_sigma=5` so they
+  classify `cls=0`, not `cls=1`. The pair lane now *nominates* this class,
+  but on 2638 they stay below the probe's `MIN_SNR_FLAT` amplitude floor
+  (e.g. 39810: ratio 1.14 at amp_snr 6) so they are still fit as weak
+  lines (χ²ᵣ cost ~0, line-list pollution 3). Lowering the probe floor
+  carries real-line false-positive risk for ~0 χ²ᵣ gain. Deferred;
+  diagnosed in the audit report
   § "Why 39830 / 39930 fall through both detectors".
 - **Flat-catalogue exercise.** *Done.* The 2638 fixture's persisted Stage 2b
   catalogue predated the `saturated` flag, so the shipped validation ran the
@@ -201,6 +263,7 @@ detector. Full detail: `research/stage5-gaussian-audit/report.md`
 
 - Modeling and subtracting the CW tone (a sinc fit) instead of masking — the
   mask recovers ~the full bucket far more cheaply.
-- Non-integer instrumental tones (none observed on 2638; the gate would not
-  catch them without relaxing the integer requirement).
 - Cross-fixture spur calibration (per-instrument spur frequency catalogues).
+  (Non-integer instrumental tones are no longer out of scope: the
+  probe-confirmed flat-cluster lane gates them when Stage 2b carries a
+  cluster — e.g. 363's 28057.46.)

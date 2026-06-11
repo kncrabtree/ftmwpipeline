@@ -296,9 +296,7 @@ Examples:
     )
 
     load_parser.add_argument("file_path", help="Path to .ftmw pipeline file to create")
-    load_parser.add_argument(
-        "source", help="Path to data source (file or directory)"
-    )
+    load_parser.add_argument("source", help="Path to data source (file or directory)")
     load_parser.add_argument(
         "--format",
         choices=["blackchirp", "csv", "hdf5"],

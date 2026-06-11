@@ -46,6 +46,7 @@ from ftmwpipeline.fitting.plan_execution import (
     ThawEvent,
     WindowOutcome,
     attempt_thaw_round,
+    evaluate_edge_free_contributors,
     evaluate_fixed_contributor,
     execute_plan,
     fit_window_with_fixed_contributors,
@@ -210,6 +211,80 @@ class TestEvaluateFixedContributor:
 # ---------------------------------------------------------------------------
 # subtract_frozen_background
 # ---------------------------------------------------------------------------
+class TestEvaluateEdgeFreeContributors:
+    """The self-contained active-FT read for edge-free contributors -- a joint
+    complex LSQ of the line template over the cluster's core bins (no primary
+    fit). Recovers each line's (amplitude, phase) and remaps the offset into the
+    dependent window's frame."""
+
+    def test_joint_lsq_recovers_amplitude_phase_and_offset(self):
+        freq = np.arange(36080.0, 36140.0, DF_MHZ)
+        # A two-line cluster sharing one primary window; co-located so the joint
+        # solve must de-contaminate (the whole point vs a single-bin phasor).
+        lines = [(36100.0, 5.0, 0.3), (36100.6, 8.0, -0.7)]
+        z = _synth_spectrum(freq, lines)
+        active = _make_active_ft(freq, z)
+        contributors = [
+            FixedContributor(
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=36100.0,
+                edge_free=True,
+            ),
+            FixedContributor(
+                peak_index=2,
+                primary_window_id=0,
+                frequency_mhz=36100.6,
+                edge_free=True,
+            ),
+        ]
+        dep_center = 36120.0
+        frozen = evaluate_edge_free_contributors(
+            contributors,
+            active.freq_mhz,
+            active.complex_spectrum,
+            dependent_center_mhz=dep_center,
+            sideband=SIDEBAND,
+            tau_us=TAU_US,
+            acquisition_us=T_US,
+        )
+        assert len(frozen) == 2
+        by_pi = {f.peak_index: f for f in frozen}
+        s = -1.0
+        assert by_pi[1].model_peak.amplitude == pytest.approx(5.0, rel=1e-3)
+        assert by_pi[2].model_peak.amplitude == pytest.approx(8.0, rel=1e-3)
+        assert by_pi[1].model_peak.phase == pytest.approx(0.3, abs=1e-3)
+        assert by_pi[2].model_peak.phase == pytest.approx(-0.7, abs=1e-3)
+        assert by_pi[1].model_peak.offset_mhz == pytest.approx(
+            s * (36100.0 - dep_center)
+        )
+        assert by_pi[1].edge_free is True
+        assert by_pi[1].primary_window_id == 0
+
+    def test_non_edge_free_contributors_ignored(self):
+        freq = np.arange(36080.0, 36140.0, DF_MHZ)
+        z = _synth_spectrum(freq, [(36100.0, 5.0, 0.3)])
+        active = _make_active_ft(freq, z)
+        contributors = [
+            FixedContributor(
+                peak_index=1,
+                primary_window_id=0,
+                frequency_mhz=36100.0,
+                edge_free=False,
+            ),
+        ]
+        frozen = evaluate_edge_free_contributors(
+            contributors,
+            active.freq_mhz,
+            active.complex_spectrum,
+            dependent_center_mhz=36120.0,
+            sideband=SIDEBAND,
+            tau_us=TAU_US,
+            acquisition_us=T_US,
+        )
+        assert frozen == []
+
+
 class TestSubtractFrozenBackground:
     def test_no_contributors_returns_data_unchanged(self):
         grid = np.linspace(-1.0, 1.0, 101)
@@ -1343,6 +1418,9 @@ def test_baseline_fires_on_coherent_wing():
         residual_edge_m=16,
         baseline_order=0,
         baseline_edge_threshold=3.5,
+        baseline_smooth_threshold=50.0,
+        tau0_us=TAU_US,
+        conservative_kwargs={},
     )
     assert fired is True
     assert outcome.baseline_applied is True
@@ -1378,6 +1456,9 @@ def test_baseline_does_not_fire_below_threshold():
         residual_edge_m=16,
         baseline_order=0,
         baseline_edge_threshold=3.5,
+        baseline_smooth_threshold=50.0,
+        tau0_us=TAU_US,
+        conservative_kwargs={},
     )
     assert fired is False
     assert outcome.baseline_applied is False

@@ -50,7 +50,7 @@ from ..fitting.plan_execution import (
     execute_plan,
 )
 from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
-from ..fitting.spur_detection import SpurSet, build_spur_set
+from ..fitting.spur_detection import SpurSet, build_spur_set, make_decay_probe
 from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
@@ -499,6 +499,9 @@ def fit_peaks_impl(
     baseline_edge_threshold_v = _required_float(
         resolved.baseline.edge_threshold, "baseline.edge_threshold"
     )
+    baseline_smooth_threshold_v = _required_float(
+        resolved.baseline.smooth_threshold, "baseline.smooth_threshold"
+    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -654,6 +657,19 @@ def fit_peaks_impl(
             float(np.min(user_ft.freq_array)),
             float(np.max(user_ft.freq_array)),
         )
+        # Time-domain decay probe: the FID is in hand, so every spur verdict
+        # is arbitrated against the physics (a spur does not decay) -- the
+        # narrow path cannot eat a real line that sits near an integer MHz,
+        # and probe-confirmed flat tones are masked at any frequency. See
+        # :func:`~ftmwpipeline.fitting.spur_detection.make_decay_probe`.
+        decay_probe = make_decay_probe(
+            fid_samples,
+            sample_dt_us,
+            start_us=start_us,
+            end_us=end_us,
+            probe_freq_mhz=probe_freq_mhz,
+            sideband=sideband,
+        )
         spur_set = build_spur_set(
             sorted_freq,
             np.ascontiguousarray(active_ft.complex_spectrum[sort_idx]),
@@ -671,6 +687,7 @@ def fit_peaks_impl(
                 spur_cfg.mask_half_width_bins, "spur.mask_half_width_bins"
             ),
             use_stft_catalogue=use_catalogue,
+            decay_probe=decay_probe,
         )
         if spur_set:
             logger.info(
@@ -921,6 +938,7 @@ def fit_peaks_impl(
         baseline_enabled=baseline_enabled_v,
         baseline_order=baseline_order_v,
         baseline_edge_threshold=baseline_edge_threshold_v,
+        baseline_smooth_threshold=baseline_smooth_threshold_v,
     )
 
     parameters = {
@@ -958,6 +976,7 @@ def fit_peaks_impl(
         "baseline_enabled": baseline_enabled_v,
         "baseline_order": baseline_order_v,
         "baseline_edge_threshold": baseline_edge_threshold_v,
+        "baseline_smooth_threshold": baseline_smooth_threshold_v,
         "n_baseline_windows": sum(
             1
             for o in plan_outcome.window_outcomes.values()
@@ -971,6 +990,15 @@ def fit_peaks_impl(
                 "rescue_prominence_threshold": rescue_prom_v,
             }
         )
+    # Persist the gated spur catalogue with the fit: the masked bins are
+    # invisible in the per-window residuals, so visualizations need the
+    # spur list to label what the fit deliberately did not model.
+    diagnostics: Dict[str, Any] = {}
+    if spur_set is not None and spur_set:
+        diagnostics["gated_spurs"] = [
+            {"center_mhz": float(s.center_mhz), "source": s.source}
+            for s in spur_set.spurs
+        ]
     spectrum_fit: SpectrumFit = plan_fit_outcome_to_spectrum_fit(
         plan_outcome,
         plan,
@@ -978,6 +1006,7 @@ def fit_peaks_impl(
         peak_frequencies_mhz=peak_frequencies_mhz,
         acquisition_us=acquisition_us,
         parameters=parameters,
+        diagnostics=diagnostics,
     )
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
@@ -1391,6 +1420,7 @@ def render_fit_detail_impl(
         freq_padded=bundle.freq_padded,
         spec_padded=bundle.spec_padded,
         figsize=figsize if figsize is not None else (11, 8.5),
+        spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
     )
 
 

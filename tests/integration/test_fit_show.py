@@ -10,9 +10,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import pytest
-
 import numpy as np
+import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage5_impl import (

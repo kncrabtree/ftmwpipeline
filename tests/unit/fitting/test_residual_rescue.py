@@ -78,7 +78,9 @@ class TestRescueAddsMissedPeak:
         u, z = _window(true, 1.6, 1.0, rng)
         sigma = np.full(u.size, 1.0)
 
-        initial = conservative_fit(u, z, sigma, [-0.8], TAU_US, T_US)
+        # Hold the seeder at K=1 (its residual re-seed would otherwise find
+        # the withheld peak itself); the rescue path is what this exercises.
+        initial = conservative_fit(u, z, sigma, [-0.8], TAU_US, T_US, seeder_max_k=1)
         assert initial.n_peaks == 1  # gets only the candidate we supplied
         assert initial.fit.reduced_chi2 > 2.0  # the missed peak makes chi^2 bad
 
@@ -402,12 +404,17 @@ class TestMergeCleanupAICc:
         assert n_merged == 0
         assert merged.n_peaks == 2
 
-    def test_resolution_floor_merges_subresolution_pair(self):
+    def test_resolution_floor_merges_subresolution_pair(self, monkeypatch):
         """A pair separated by less than one active-FT resolution element
         (``1/T_active``) but more than ``structural_merge_factor * FWHM`` is
         merged unconditionally only because of the resolution-referenced floor
         (GitHub issue #13). With the floor disabled it survives the FWHM-only
-        structural cutoff."""
+        structural cutoff. The blend escape is disabled here: this test pins
+        the floor mechanics, and the injected pair is real two-line structure
+        the escape would (correctly) keep."""
+        from ftmwpipeline.fitting import validation as _validation
+
+        monkeypatch.setattr(_validation, "DEFAULT_PAIR_CANCELLATION_MAX", None)
         rng = np.random.default_rng(SEED + 11)
         # 0.5*FWHM = 0.0609 MHz < sep < 1/T_active = 0.0790 MHz: the band the
         # FWHM-only floor licenses but the resolution floor catches.
@@ -453,12 +460,17 @@ class TestMergeCleanupAICc:
         assert n_on == 1
         assert merged.n_peaks == 1
 
-    def test_amp_ratio_tier_collapses_supraresolution_absorber(self):
+    def test_amp_ratio_tier_collapses_supraresolution_absorber(self, monkeypatch):
         """A pair just *above* the resolution floor (so tiers 1-2 leave it) with
         a large amplitude ratio is collapsed by the amplitude-ratio tier -- the
         weak member is a rescue-parked shape-error absorber, not a real doublet
         (GitHub issue #13, the w281/w143 class). A balanced pair in the same
-        band survives."""
+        band survives. The blend escape is disabled here: this test pins the
+        tier mechanics with a synthetic stand-in whose weak member is genuine
+        injected structure the escape would (correctly) keep."""
+        from ftmwpipeline.fitting import validation as _validation
+
+        monkeypatch.setattr(_validation, "DEFAULT_PAIR_CANCELLATION_MAX", None)
         rng = np.random.default_rng(SEED + 21)
         sep = 0.10  # MHz ~ 1.27 resolution elements: in [1.0, 1.5] elem band.
         assert 1.0 / T_US < sep < 1.5 / T_US
@@ -498,6 +510,77 @@ class TestMergeCleanupAICc:
         )
         assert n_on == 1
         assert merged.n_peaks == 1
+
+    def test_blend_escape_keeps_constructive_subresolution_pair(self):
+        """A genuine sub-resolution two-line blend (balanced, constructive,
+        collapse costs overwhelming raw chi-squared) survives the
+        unconditional sub-resolution tier via the blend escape."""
+        rng = np.random.default_rng(SEED + 31)
+        sep = 0.070
+        assert sep < 1.0 / T_US
+        true = [
+            ModelPeak(_amp_for_snr(200.0), -sep / 2, 0.4),
+            ModelPeak(_amp_for_snr(200.0), +sep / 2, 0.9),
+        ]
+        u, z = _window(true, 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(u, z, sigma, true, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.success and k2_fit.n_peaks == 2
+        merged, n_merged = merge_close_peaks_cleanup(
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
+            fit_kwargs_inner=fit_kwargs,
+            min_pair_separation_resolution_factor=1.0,
+        )
+        assert n_merged == 0
+        assert merged.n_peaks == 2
+
+    def test_blend_escape_decision_function(self):
+        """The escape keeps only overwhelming-evidence constructive pairs:
+        the cancelling pathology and weak-evidence pairs are rejected."""
+        from ftmwpipeline.fitting.validation import (
+            blend_pair_escape,
+            pair_cancellation_fraction,
+        )
+
+        # Constructive pair, overwhelming evidence -> escape.
+        assert blend_pair_escape(5000.0, 3, 1.0, 0.4, 0.9, 0.9)
+        # Same pair, weak evidence (below 2*50*3) -> no escape.
+        assert not blend_pair_escape(250.0, 3, 1.0, 0.4, 0.9, 0.9)
+        # Near-anti-aligned (cancelling) pair -> no escape at any evidence.
+        assert pair_cancellation_fraction(1.0, 0.0, 0.95, np.pi * 0.98) > 0.9
+        assert not blend_pair_escape(1.0e6, 3, 1.0, 0.0, 0.95, np.pi * 0.98)
+        # The fidelity-floor scaling raises the bar (the Tier-3 absorber
+        # guard): evidence above the flat bar but below floor * bar fails.
+        assert blend_pair_escape(5000.0, 3, 1.0, 0.4, 0.9, 0.9, evidence_floor=1.0)
+        assert not blend_pair_escape(5000.0, 3, 1.0, 0.4, 0.9, 0.9, evidence_floor=50.0)
+
+    def test_blend_escape_relative_evidence_lane(self):
+        """A low-SNR constructive pair below the absolute bar escapes when
+        its evidence is a large fraction of the feature's own (363 w87);
+        dust pairs and small-fraction (shape-error-scale) pairs do not."""
+        from ftmwpipeline.fitting.validation import blend_pair_escape
+
+        # Below the absolute bar (2*50*3=300), no feature context -> reject.
+        assert not blend_pair_escape(169.0, 3, 1.0, 0.4, 0.9, 0.9)
+        # Same pair carrying 64% of the feature's evidence -> escape.
+        assert blend_pair_escape(169.0, 3, 1.0, 0.4, 0.9, 0.9, feature_evidence=263.0)
+        # High relative fraction but below the plain gate bar (2*5*3=30):
+        # the dust guard rejects.
+        assert not blend_pair_escape(20.0, 3, 1.0, 0.4, 0.9, 0.9, feature_evidence=40.0)
+        # Shape-error scale (a few percent of a bright feature) -> reject.
+        assert not blend_pair_escape(
+            169.0, 3, 1.0, 0.4, 0.9, 0.9, feature_evidence=10000.0
+        )
+        # The cancellation veto still applies on the relative lane.
+        assert not blend_pair_escape(
+            169.0, 3, 1.0, 0.0, 0.95, np.pi * 0.98, feature_evidence=263.0
+        )
 
     def test_amp_ratio_tier_preserves_balanced_supraresolution_pair(self):
         """A balanced (ratio ~1) pair in the amplitude-ratio band is a real

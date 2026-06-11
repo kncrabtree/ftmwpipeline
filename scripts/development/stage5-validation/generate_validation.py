@@ -955,6 +955,7 @@ def _plot_consolidated_detail(
     style: DisplayStyle,
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
+    spurs: Optional[Sequence[dict]] = None,
 ) -> plt.Figure:
     """Render the consolidated per-window detail via the packaged renderer.
 
@@ -978,6 +979,7 @@ def _plot_consolidated_detail(
         trim_mhz=style.trim_mhz,
         freq_padded=freq_padded,
         spec_padded=spec_padded,
+        spurs=spurs,
     )
 
 
@@ -1378,6 +1380,7 @@ def _save_consolidated_detail(
     style: DisplayStyle,
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
+    spurs: Optional[Sequence[dict]] = None,
 ) -> None:
     """Write ``detail.png`` showing the final consolidated fit (Figure 1)."""
     consolidated_wf = _build_consolidated_fittingresult(
@@ -1437,6 +1440,7 @@ def _save_consolidated_detail(
         style=style,
         freq_padded=freq_padded,
         spec_padded=spec_padded,
+        spurs=spurs,
     )
     fig.savefig(out_dir / "detail.png", dpi=130)
     plt.close(fig)
@@ -1986,6 +1990,47 @@ def main() -> None:
         ),
     )
     arg_parser.add_argument(
+        "--worst-eps",
+        type=int,
+        default=None,
+        dest="worst_eps",
+        metavar="N",
+        help=(
+            "Render the N windows with the largest SNR-aware fractional model "
+            "deficit eps = sqrt(max(chi2r - F, 0)) / SNR_max (ties broken by "
+            "chi2r). Unlike --worst (raw chi2r, which just surfaces the "
+            "brightest lines whose chi2r rides the SNR^2 fidelity floor), this "
+            "ranks by deficit *relative to* the SNR-aware floor 1+(kappa*SNR)^2 "
+            "-- the genuinely poor shape-aware fits."
+        ),
+    )
+    arg_parser.add_argument(
+        "--top-snr",
+        type=int,
+        default=None,
+        dest="top_snr",
+        metavar="N",
+        help=(
+            "Render the N windows with the highest brightest-in-window fitted "
+            "peak SNR (the strongest lines). Their chi2r is expected to ride "
+            "the SNR^2 model-fidelity floor; the printed line + per-window "
+            "detail still report the SNR-aware pass/eps."
+        ),
+    )
+    arg_parser.add_argument(
+        "--ftmw-path",
+        type=str,
+        default=None,
+        dest="ftmw_path",
+        help=(
+            "Explicit path to the .ftmw fixture (absolute or repo-relative), "
+            "decoupled from --output-dir. Takes precedence over the "
+            "--fixture / --fixture-name resolution so a fixture living outside "
+            "the output directory (e.g. the issue-3 per-fixture tree) can be "
+            "visualized into an arbitrary --output-dir."
+        ),
+    )
+    arg_parser.add_argument(
         "--near",
         type=float,
         default=None,
@@ -2114,7 +2159,15 @@ def main() -> None:
         # Default per-variant output dir when --variant-id is provided
         # without an explicit --output-dir.
         OUTPUT_DIR = REPO_ROOT / "scratch" / f"stage5-validation-{args.variant_id}"
-    if args.fixture_name is not None:
+    if args.ftmw_path is not None:
+        # Explicit fixture path wins over every other resolution rule so a
+        # fixture outside OUTPUT_DIR (the issue-3 per-fixture tree) can be
+        # rendered into an arbitrary --output-dir.
+        fpath = Path(args.ftmw_path)
+        if not fpath.is_absolute():
+            fpath = REPO_ROOT / fpath
+        FTMW_PATH = fpath
+    elif args.fixture_name is not None:
         FTMW_PATH = OUTPUT_DIR / args.fixture_name
     elif args.fixture is not None:
         # The cross-fixture builds live in a shared directory; point straight
@@ -2192,25 +2245,27 @@ def main() -> None:
     # ``dt_us * rfft(active)`` frame natively. The persisted FT is in a
     # different amplitude scale and a different phase frame; reconciling them
     # for production overlays is a separate concern (see TODO at top).
+    # The canonical FT is unconditionally unapodized now (the ``expf_us`` knob
+    # was removed), so ``_build_active_ft_inputs`` no longer returns it -- the
+    # active-FT and the display padding both run with ``expf_us=None``.
     (
         fid_samples,
         sample_dt_us,
         start_us,
         end_us,
-        expf_us,
         probe_freq_mhz,
         sideband_enum,
         n_padded,
         acquisition_us,
         _user_ft,
-        _user_rms,
+        _trim_range,
     ) = _build_active_ft_inputs(str(FTMW_PATH))
+    expf_us = None
     active_ft = compute_active_ft(
         fid_samples,
         sample_dt_us,
         start_us=start_us,
         end_us=end_us,
-        expf_us=expf_us,
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband_enum,
         n_padded=n_padded,
@@ -2357,6 +2412,7 @@ def main() -> None:
             peak_provenance=[],
             title=title,
             style=display_style,
+            spurs=(fit.diagnostics or {}).get("gated_spurs"),
             freq_padded=freqs_padded,
             spec_padded=spec_padded,
         )
@@ -2424,6 +2480,7 @@ def main() -> None:
                 style=display_style,
                 freq_padded=freqs_padded,
                 spec_padded=spec_padded,
+                spurs=(fit.diagnostics or {}).get("gated_spurs"),
             )
             _save_audit_trail_figure_wrapper(
                 rel_dir,
@@ -2508,6 +2565,72 @@ def main() -> None:
             + ", ".join(f"{w}({_chi2r_key(w):.3g})" for w in chosen)
             + "  (rendering re-runs rescue per window; the densest/worst "
             "windows are the slowest)",
+            flush=True,
+        )
+        for wid in chosen:
+            rel = emit(wid, None)
+            entry = (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
+            if plan_by_id[wid].difficulty == WindowDifficulty.HARD:
+                hard_entries.append(entry)
+            else:
+                easy_entries.append(entry)
+    elif args.worst_eps is not None:
+        # Shape-aware "worst" ranking: largest SNR-aware fractional deficit eps.
+        # Ranking by eps (not raw chi2r) avoids surfacing only the brightest
+        # lines, whose chi2r rides the SNR^2 fidelity floor even when the fit is
+        # excellent; eps measures the deficit relative to the 1+(kappa*SNR)^2
+        # floor. Ties (eps == 0 across the noise-dominated bulk) break by chi2r.
+        from ftmwpipeline.fitting.validation import shape_error_fraction
+
+        rows = {r["window_id"]: r for r in _window_summary_rows(fit)}
+
+        def _eps_key(w: int) -> Tuple[float, float]:
+            r = rows.get(w)
+            if r is None:
+                return (float("inf"), float("inf"))
+            chi2r = r["chi2r"]
+            chi2r = chi2r if np.isfinite(chi2r) else float("inf")
+            return (float(r["eps"]), chi2r)
+
+        ranked = sorted(
+            (w for w in plan_by_id if w in fit_by_id and w in rows),
+            key=_eps_key,
+            reverse=True,
+        )
+        chosen = ranked[: max(int(args.worst_eps), 0)]
+        print(
+            f"worst {len(chosen)} by eps (SNR-aware deficit): "
+            + ", ".join(
+                f"{w}(eps={rows[w]['eps']:.4f},chi2r={rows[w]['chi2r']:.3g},"
+                f"snr={rows[w]['snr_max']:.3g})"
+                for w in chosen
+            ),
+            flush=True,
+        )
+        for wid in chosen:
+            rel = emit(wid, None)
+            entry = (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
+            if plan_by_id[wid].difficulty == WindowDifficulty.HARD:
+                hard_entries.append(entry)
+            else:
+                easy_entries.append(entry)
+    elif args.top_snr is not None:
+        # Top brightest-in-window fitted-peak SNR: the strongest lines. Their
+        # chi2r is expected high (SNR^2 floor); rendered to show the bright
+        # cores fit cleanly under the SNR-aware metric.
+        rows = {r["window_id"]: r for r in _window_summary_rows(fit)}
+        ranked = sorted(
+            (w for w in plan_by_id if w in fit_by_id and w in rows),
+            key=lambda w: rows[w]["snr_max"],
+            reverse=True,
+        )
+        chosen = ranked[: max(int(args.top_snr), 0)]
+        print(
+            f"top {len(chosen)} by SNR_max: "
+            + ", ".join(
+                f"{w}(snr={rows[w]['snr_max']:.3g},chi2r={rows[w]['chi2r']:.3g})"
+                for w in chosen
+            ),
             flush=True,
         )
         for wid in chosen:

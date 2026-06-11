@@ -72,6 +72,21 @@ DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
 """Width cap default. On 2638 a strong line's above-threshold skirt extends to
 ~40 MHz, so a single window wider than this is already dense/coupled."""
 
+DEFAULT_MAX_WINDOW_WIDTH_POINTS = 96
+"""Width cap in active-FT grid points; ``0`` disables it so the cap is
+``max_window_width_mhz``. When positive it *replaces* the MHz cap as
+the bound on the strong-cluster merge and the cap split (the effective cap in
+MHz is ``points * grid step``). A points cap is the statistically portable
+form: the Stage 5 gates reason over bins (n_eff, per-bin sigma), and the
+active-FT bin width varies with acquisition length across instruments, so a
+fixed MHz cap yields different statistical window sizes per fixture while a
+points cap holds them constant. 96 points (~8 MHz on the reference 2638
+grid) is the small-window operating point the window-invariant accept gates
+are calibrated against: small enough that dense ultra-high-SNR fixtures fit
+in minutes (the conservative loop's NLS cost grows ~K^2 with window
+population), large enough that every window keeps tens of informative bins
+for the gate."""
+
 DEFAULT_MIN_FREEZE_SNR = 50.0
 """Freeze-eligibility SNR cutoff (O4-2): a fixed contributor below this is
 flagged as a thaw-and-re-fit candidate rather than safely frozen."""
@@ -79,15 +94,36 @@ flagged as a thaw-and-re-fit candidate rather than safely frozen."""
 DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ = 2.0
 """Minimum half-width of a window built around an isolated weak line."""
 
-DEFAULT_MAX_PEAKS_PER_WINDOW = 8
-"""Per-window promoted-peak cap. A window holding more promoted peaks than the
-Stage 5 fit can model jointly (``conservative.max_peaks``, default 8) is split at
-its sparsest internal gaps. The default tracks the Stage 5 default so windows are
-sized to be fittable; raise both together if Stage 5's ``max_peaks`` is raised. The
-cap (with the width cap) is what keeps a dense, ultra-high-SNR spectrum from
-collapsing into one unfittable mega-window -- without it the strong-cluster merge
-and the overlapping per-peak proto-spans chain hundreds of real lines into a single
-GHz-scale window the fit can only partially model."""
+DEFAULT_MAX_PEAKS_PER_WINDOW = 0
+"""Per-window promoted-peak cap; ``0`` (the default) means *no* peak cap -- a
+window is bounded only by ``max_window_width_mhz``. A fragmenting peak cap split a
+dense cluster into windows too narrow for the Stage 5 AICc-with-``n_eff`` gate to
+behave: the perplexity ``n_eff`` collapsed on a few-point fragment, so the gate
+both under-fit (parking real lines) and over-fit (packing weak near-resolution
+peaks) on neighbouring slices of one physical cluster. Bounding a window by width
+alone gives the gate enough informative bins to self-regulate K, fixing both at
+the root (cross-fixture: every issue-#3 fixture's SNR-aware pass improved or held).
+The strong-cluster merge and the cap split are still bounded by
+``max_window_width_mhz`` (default 40), which alone keeps a dense ultra-high-SNR
+spectrum from collapsing into one GHz-scale mega-window -- the runaway the peak cap
+was wrongly credited with preventing was the unbounded strong-cluster force-merge,
+governed by the width cap. A positive value restores an explicit cap (power users /
+diagnostics); it tracks the Stage 5 ``conservative.max_peaks`` and both should be
+set together."""
+
+DEFAULT_MAX_EDGE_FREE_NEIGHBORS = 3
+"""Cap on how many distinct primary windows per dependent window may have their
+cycle-orphaned contributors converted to edge-free skirts (the issue-#3
+leakage-subtraction recovery). When the Step-7 cycle-breaker drops a
+fit-ordering edge it would otherwise discard the attached
+:class:`~ftmwpipeline.core.data_structures.FixedContributor`; the few most
+dominant orphans (ranked by aggregated predicted skirt) are instead kept as
+``edge_free`` so their leakage is still subtracted. Capping the count keeps the
+subtraction *targeted*: a dense ultra-high-SNR forest (655) drops dozens of
+edges, and converting them all re-creates the global-crude over-subtraction that
+regressed the bulk fit (see the Phase-1 negative in the stage5 cross-fixture
+report). 3 spans the largest real adjacent cluster (the 360 w288 triplet) while
+staying well short of the forest."""
 
 DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD = 0.1
 """Tier-1 attachment threshold (in units of σ_c on the target window) for the
@@ -200,19 +236,21 @@ def _split_span_to_caps(
     cap_idx: float,
     max_peaks: int,
 ) -> List[Tuple[int, int]]:
-    """Split a merged ``(lo, hi)`` grid span until each piece holds at most
-    ``max_peaks`` promoted peaks AND spans at most ``cap_idx`` grid steps.
+    """Split a merged ``(lo, hi)`` grid span until each piece spans at most
+    ``cap_idx`` grid steps and (when ``max_peaks > 0``) holds at most ``max_peaks``
+    promoted peaks.
 
     Splits at the largest internal peak gap, placing the boundary at the gap
     midpoint so the resulting windows stay disjoint and each edge peak keeps half
     the gap as margin. ``member_gidx`` is the sorted promoted-peak grid indices
-    inside ``[lo, hi]``. A dense forest is genuinely coupled across large spans (the
-    bright lines' skirts overlap everywhere) but cannot be fit jointly past
-    ``max_peaks``; the cross-window coupling is carried by the fixed contributors,
-    the same mechanism that handles a strong line's distant skirt.
+    inside ``[lo, hi]``. ``max_peaks <= 0`` disables the peak-count split so a span
+    is bounded by ``cap_idx`` (the width cap) alone; the cross-window coupling is
+    carried by the fixed contributors, the same mechanism that handles a strong
+    line's distant skirt.
     """
     members = [g for g in member_gidx if lo <= g <= hi]
-    if (hi - lo <= cap_idx and len(members) <= max_peaks) or len(members) <= 1:
+    peaks_ok = max_peaks <= 0 or len(members) <= max_peaks
+    if (hi - lo <= cap_idx and peaks_ok) or len(members) <= 1:
         return [(lo, hi)]
     arr = np.asarray(members)
     k = int(np.argmax(np.diff(arr)))  # largest gap -> split after the k-th member
@@ -293,7 +331,9 @@ def build_window_plan(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
+    max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
+    max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -318,16 +358,22 @@ def build_window_plan(
         ``S_coh`` threshold ``T_edge``.
     max_window_width_mhz : float
         Width cap; a wider window is HARD and gets a split proposal.
+        Superseded by ``max_window_width_points`` when that is positive.
+    max_window_width_points : int
+        Width cap in grid points; ``0`` (the default) defers to
+        ``max_window_width_mhz``. The portable form of the cap -- see
+        :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS`.
     min_freeze_snr : float
         Freeze-eligibility SNR cutoff for fixed contributors (O4-2).
     min_window_half_width_mhz : float
         Minimum half-width of a window built around an isolated weak line.
     max_peaks_per_window : int
-        Per-window promoted-peak cap. The strong-cluster merge is bounded at
-        ``max_window_width_mhz`` and the merged spans are then split at their
-        sparsest internal gaps until each window holds at most this many promoted
-        peaks (and is at most ``max_window_width_mhz`` wide). Tracks the Stage 5
-        ``conservative.max_peaks`` so windows are sized to be fittable; see
+        Per-window promoted-peak cap; ``0`` (the default) disables it so a window
+        is bounded only by ``max_window_width_mhz``. The strong-cluster merge is
+        bounded at ``max_window_width_mhz`` and the merged spans are split at their
+        sparsest internal gaps until each window is at most ``max_window_width_mhz``
+        wide and (when positive) holds at most this many promoted peaks. A positive
+        value tracks the Stage 5 ``conservative.max_peaks``; see
         :data:`DEFAULT_MAX_PEAKS_PER_WINDOW`.
     magnitude_attachment_threshold : float
         Tier-1 contributor-attachment threshold in units of σ_c. A strong
@@ -335,6 +381,11 @@ def build_window_plan(
         its predicted mean |skirt| on that window's grid is at least
         ``threshold * sigma_c(w)``. Default
         :data:`DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD`.
+    max_edge_free_neighbors : int
+        Cap on the number of distinct primary windows whose cycle-orphaned
+        contributors are converted to edge-free skirts per dependent window
+        (see :data:`DEFAULT_MAX_EDGE_FREE_NEIGHBORS`). Keeps the
+        leakage-subtraction recovery targeted on a dense spectrum.
     probe_freq_mhz : float
         Probe (LO) frequency in MHz, used to de-ramp the spectrum to the
         active-region turn-on before the edge-coherence statistic (see
@@ -368,7 +419,9 @@ def build_window_plan(
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
+        "max_edge_free_neighbors": int(max_edge_free_neighbors),
         "max_peaks_per_window": int(max_peaks_per_window),
+        "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -437,7 +490,13 @@ def build_window_plan(
     # GHz-scale window. Each strong run is split at its sparsest gaps so no
     # forced span exceeds the cap; distant coupling is carried by the
     # fixed-contributor mechanism (Step 4), not by widening the window.
-    cap_idx = max_window_width_mhz / step_mhz
+    # A positive points cap is the portable form and supersedes the MHz cap
+    # (see :data:`DEFAULT_MAX_WINDOW_WIDTH_POINTS`).
+    cap_idx = (
+        float(max_window_width_points)
+        if max_window_width_points > 0
+        else max_window_width_mhz / step_mhz
+    )
     strong_in_interval: Dict[int, List[_PPeak]] = {}
     for pk in promoted:
         if not pk.is_strong:
@@ -455,14 +514,14 @@ def build_window_plan(
 
     merged = _merge_spans(proto_spans)
 
-    # --- Cap split: enforce <= max_peaks_per_window AND <= the width cap -----
+    # --- Cap split: enforce <= the width cap (and, if set, the peak cap) ----
     # The bounded strong-merge above stops a forced GHz span, but in a dense
     # forest the overlapping per-peak proto-spans (and the capped strong spans)
-    # still chain into windows far wider and far more peak-dense than the Stage 5
-    # fit can model. Split each merged span at its sparsest internal peak gaps
-    # until every window holds at most ``max_peaks_per_window`` promoted peaks and
-    # spans at most ``max_window_width_mhz``; the cross-window coupling is carried
-    # by the fixed contributors.
+    # still chain into windows wider than the width cap. Split each merged span at
+    # its sparsest internal peak gaps until every window spans at most
+    # ``max_window_width_mhz`` (and, when ``max_peaks_per_window > 0``, holds at
+    # most that many promoted peaks); the cross-window coupling is carried by the
+    # fixed contributors.
     all_gidx = sorted(pk.grid_index for pk in promoted)
     capped: List[Tuple[int, int]] = []
     for lo, hi in merged:
@@ -513,9 +572,12 @@ def build_window_plan(
         edge_m=edge_m,
         trim_m=trim_m,
         edge_threshold=edge_threshold,
-        max_window_width_mhz=max_window_width_mhz,
+        # The difficulty classifier's too-wide test must match the cap the
+        # split actually enforced.
+        max_window_width_mhz=cap_idx * step_mhz,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
+        max_edge_free_neighbors=max_edge_free_neighbors,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=0,
@@ -538,6 +600,7 @@ def _finalize_plan(
     max_window_width_mhz: float,
     min_freeze_snr: float,
     magnitude_attachment_threshold: float,
+    max_edge_free_neighbors: int,
     acquisition_us: float,
     tau_us: Optional[float],
     plan_revision: int,
@@ -726,24 +789,72 @@ def _finalize_plan(
     if len(kept_edges) != len(edges):
         dropped_edges = [e for e in edges if e not in kept_edges]
         diagnostics["dropped_cyclic_dependencies"] = [list(e) for e in dropped_edges]
-        # The magnitude-based attachment rule can produce 2-cycles (two
+        # The magnitude-based attachment rule can produce cycles (two or more
         # strong lines in separate windows each attaching the other as a
-        # contributor). The cycle-breaker drops the dependency edge to keep
-        # the DAG acyclic; we must also drop the matching FixedContributor
-        # from the dependent window or the fit will trip on "primary not
-        # yet fit" at execution time. The lost bias-correction falls into
-        # the long-tail residual that a Tier-2 cumulative-tail subtraction
-        # would otherwise cover (deferred -- see stage5-fitting.md O5-10).
+        # contributor). The cycle-breaker drops the dependency edge to keep the
+        # DAG acyclic; the matching FixedContributor can no longer be evaluated
+        # from its primary's converged fit (the primary is no longer guaranteed
+        # to precede the dependent). Discarding it outright -- the previous
+        # behaviour -- leaves a bright neighbour's leakage skirt subtracted from
+        # nowhere, the in-window lines under-fit: the issue-#3 cross-fixture
+        # failure mode. Instead, the few most *dominant* orphaned contributors
+        # per window are converted to EDGE-FREE: kept on the window but flagged
+        # so Stage 5 reads their frozen (amplitude, phase) self-contained from
+        # the active FT rather than from the un-ordered primary fit. Conversion
+        # is capped at the top ``max_edge_free_neighbors`` primary windows
+        # (ranked by aggregated predicted skirt) -- a dense, ultra-high-SNR
+        # forest drops dozens of edges, and a self-contained skirt for every one
+        # re-creates the global-crude over-subtraction that regressed the bulk
+        # fit; only genuinely dominant neighbours earn one. The rest are dropped
+        # as before.
         drops_by_dep: Dict[int, set] = {}
         for w_id, p_id in dropped_edges:
             drops_by_dep.setdefault(w_id, set()).add(p_id)
+        n_edge_free = 0
         for w in windows:
             doomed = drops_by_dep.get(w.window_id)
             if not doomed:
                 continue
-            w.fixed_contributors = [
-                fc for fc in w.fixed_contributors if fc.primary_window_id not in doomed
-            ]
+            wlo, whi = w.diagnostics["grid_span"]
+            w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
+            # Aggregate the predicted leakage skirt each orphaned primary
+            # contributes to this window, so the cap keeps the strongest
+            # neighbours (the same analytic envelope the Tier-1 attachment uses).
+            skirt_by_primary: Dict[int, float] = {}
+            for fc in w.fixed_contributors:
+                if fc.primary_window_id not in doomed:
+                    continue
+                src_pk = by_list_index.get(fc.peak_index)
+                if src_pk is None:
+                    continue
+                df_mhz = abs(src_pk.frequency - w_center_mhz)
+                if df_mhz <= 0.0:
+                    continue
+                pred = src_pk.intensity * _leakage_envelope_fraction(
+                    df_mhz * 1e6, acquisition_us, tau_us
+                )
+                skirt_by_primary[fc.primary_window_id] = (
+                    skirt_by_primary.get(fc.primary_window_id, 0.0) + pred
+                )
+            keep_primaries = set(
+                sorted(
+                    skirt_by_primary,
+                    key=lambda p: skirt_by_primary[p],
+                    reverse=True,
+                )[:max_edge_free_neighbors]
+            )
+            kept_contribs: List[FixedContributor] = []
+            for fc in w.fixed_contributors:
+                if fc.primary_window_id not in doomed:
+                    kept_contribs.append(fc)
+                elif fc.primary_window_id in keep_primaries:
+                    fc.edge_free = True
+                    kept_contribs.append(fc)
+                    n_edge_free += 1
+                # else: drop the orphaned contributor entirely.
+            w.fixed_contributors = kept_contribs
+        if n_edge_free:
+            diagnostics["n_edge_free_contributors"] = n_edge_free
 
     # Plan-level diagnostics: leakage-touched regions with no promoted peak --
     # an early-warning hint that Stage 3 may have missed a line.
@@ -884,6 +995,8 @@ def replan(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
+    max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
+    max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
     probe_freq_mhz: float = 0.0,
     start_us: float = 0.0,
 ) -> WindowPlan:
@@ -947,6 +1060,8 @@ def replan(
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
+        "max_edge_free_neighbors": int(max_edge_free_neighbors),
+        "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
         "start_us": float(start_us),
@@ -1016,9 +1131,16 @@ def replan(
         edge_m=edge_m,
         trim_m=trim_m,
         edge_threshold=edge_threshold,
-        max_window_width_mhz=max_window_width_mhz,
+        # Match build_window_plan: a positive points cap supersedes the MHz
+        # cap, so classify difficulty against the cap actually in force.
+        max_window_width_mhz=(
+            max_window_width_points * step_mhz
+            if max_window_width_points > 0
+            else max_window_width_mhz
+        ),
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
+        max_edge_free_neighbors=max_edge_free_neighbors,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=plan.plan_revision + 1,

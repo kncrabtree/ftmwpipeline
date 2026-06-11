@@ -55,9 +55,10 @@ into the persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
 
@@ -76,6 +77,7 @@ from ftmwpipeline.preprocessing.edge_coherence import (
 )
 from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
+from . import validation
 from .active_ft import ActiveFTResult
 from .peak_model import (
     ModelPeak,
@@ -91,6 +93,8 @@ from .window_fit import (
     ConservativeFitResult,
     WindowFitResult,
     conservative_fit,
+    derive_window_fit_constraints,
+    evaluate_baseline,
     fit_window,
 )
 
@@ -110,6 +114,7 @@ __all__ = [
     "DEFAULT_BASELINE_ORDER",
     "DEFAULT_BASELINE_EDGE_THRESHOLD",
     "evaluate_fixed_contributor",
+    "evaluate_edge_free_contributors",
     "subtract_frozen_background",
     "fit_window_with_fixed_contributors",
     "materialize_window",
@@ -141,8 +146,36 @@ windows wanting to coalesce resolves in O(log2(N)) rounds."""
 DEFAULT_BASELINE_ENABLED = True
 """Whether the evidence-triggered leakage-wing baseline term is applied."""
 
-DEFAULT_BASELINE_ORDER = 0
-"""Baseline polynomial order ``p`` (0 = const, 1 = linear; quad overfits)."""
+DEFAULT_BASELINE_ORDER = 4
+"""Baseline polynomial order ``p``. A dense ultra-high-SNR spectrum carries a
+smooth leakage *pedestal* -- the summed far-wings of the hundreds of lines the
+discrete frozen contributors cannot fully subtract -- that ramps and curves
+across a window; a constant cannot follow it, so the shared ``tau`` collapses to
+absorb it (655 mode 2). Order 4 follows the pedestal while staying far too smooth
+to mimic a line (every window is >= ~50 active-FT bins, >> the order), and the
+F-significance trigger (:data:`DEFAULT_BASELINE_SMOOTH_THRESHOLD`) only commits it
+where it is statistically warranted."""
+
+DEFAULT_BASELINE_SMOOTH_THRESHOLD = 50.0
+"""Smooth-residual trigger: the baseline also fires when an order-``p`` complex
+polynomial explains the post-fit residual at more than this chi-squared drop per
+added real degree of freedom (an F-test numerator). This catches the smooth
+in-band leakage pedestal the edge-coherence trigger misses (it tests only the two
+edges). On 655 the collapse windows score >~2000 here while clean windows sit
+near the noise floor (~8), so the test self-gates against overfitting."""
+
+DEFAULT_EDGE_FREE_ACCEPT_FRACTION = 0.95
+"""Acceptance margin for an edge-free leakage skirt. The window is fit twice --
+without the edge-free contributors (the byte-stable path a healthy window keeps,
+its in-window leakage already covered by the const leakage-wing baseline) and
+with them -- and the skirt is adopted only if it reduces the noise-weighted
+residual sum of squares to at most this fraction of the no-skirt fit's. This
+keeps the subtraction *evidence-triggered*: an orphaned bright neighbour's skirt
+(360 w287: SSR drops ~10x) is adopted, while on a window the skirt would harm
+(2638 w106, where the const baseline already handles the leakage) the no-skirt
+fit stands unchanged, so the skirt never fights the baseline (open question O2).
+The broken windows improve by far more than 5%, so the exact margin is not
+sensitive."""
 
 DEFAULT_BASELINE_EDGE_THRESHOLD = 3.5
 """``S_coh`` threshold (max of the two edges) above which a window's fit is
@@ -150,6 +183,24 @@ refit with the complex baseline enabled. A dedicated threshold well below the
 thaw default (8.0): the thaw addresses a *missing real line* at the edge, the
 baseline a *wrong skirt shape*. Empirically settled on 2638 (recall 0.89, zero
 harmful fires); 2638-tuned, so instrument-tunable calibration debt."""
+
+DEFAULT_EDGE_FREE_FREQ_REFINE = True
+"""Whether the edge-free contributor read refines the line frequencies.
+
+The joint complex least-squares read of
+:func:`evaluate_edge_free_contributors` solves only the lines' linear
+``(amplitude, phase)`` with the frequencies held at their Stage 3 detected
+positions. On an ultra-high-SNR line a sub-bin frequency error mis-phases the
+sharp core template enough that the linear solve recovers a substantially
+low amplitude (the unmatched core residual is paid instead), and the
+subtracted far-wing skirt then under-predicts the real pedestal by a factor
+the ``kappa_skirt`` fidelity budget cannot cover -- the leftover coherent
+wing is harvested as spurious peaks. With this enabled, a bounded
+variable-projection refinement (frequencies free within ~1.5 grid steps,
+amplitudes/phases re-solved linearly at each trial) is run per contributor
+group before the final solve, recovering the core to a few percent and the
+wing prediction to within the fidelity budget. ``False`` preserves the
+fixed-frequency read."""
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +229,12 @@ class FrozenPeak:
         Molecular frequency of the line (MHz), carried for diagnostics.
     freeze_eligible : bool
         Stage 4's eligibility flag, propagated for the thaw selection heuristic.
+    edge_free : bool
+        Propagated from the :class:`FixedContributor`. ``True`` means the
+        ``model_peak`` was read self-contained from the active FT (no primary
+        fit), so this contributor is excluded from the local-thaw handshake
+        (a thaw needs the primary's converged fit, which an edge-free
+        contributor has no dependency on).
     """
 
     peak_index: int
@@ -185,6 +242,7 @@ class FrozenPeak:
     model_peak: ModelPeak
     frequency_mhz: float
     freeze_eligible: bool = True
+    edge_free: bool = False
 
 
 @dataclass
@@ -613,6 +671,179 @@ def _window_center_mhz(outcome: WindowOutcome) -> float:
     return float(center)
 
 
+def evaluate_edge_free_contributors(
+    contributors: Sequence[FixedContributor],
+    active_freq_mhz: np.ndarray,
+    active_complex_spectrum: np.ndarray,
+    *,
+    dependent_center_mhz: float,
+    sideband: SidebandLike,
+    tau_us: float,
+    acquisition_us: float,
+    shape: "PeakShape | str" = "lorentzian",
+    read_half_width_mhz: Optional[float] = None,
+) -> list[FrozenPeak]:
+    """Materialize edge-free contributors via a self-contained active-FT read.
+
+    Edge-free contributors carry no fit-ordering edge, so their frozen
+    parameters cannot be read from a primary window's converged fit. Instead a
+    **joint complex least-squares** of the finite-T line template against the
+    strong lines' core bins on the active FT recovers each line's
+    ``(amplitude, phase)``. Solving the co-located lines together makes the read
+    robust to the leakage pedestal -- the global *single-bin phasor* read was
+    NEGATIVE on the dense 655 spectrum (each core bin carries ~300 other lines'
+    summed skirts; see ``dev-docs/research/stage5-cross-fixture/report.md``
+    §Phase 1).
+
+    The read uses the dependent window's ``tau_us`` -- the same decay the frozen
+    skirt is later drawn with by :func:`subtract_frozen_background` -- so the
+    recovered amplitude and the subtracted skirt stay self-consistent (reading
+    at a different tau than the skirt is drawn at biases the amplitude; verified
+    on the 360 w287 A/B).
+
+    Contributors are grouped by ``primary_window_id`` so each genuinely-adjacent
+    cluster (e.g. the 360 w288 triplet) is solved as one joint system. The
+    returned :class:`FrozenPeak` s are in the *dependent* window's offset frame
+    (``δ = s·(f_line - f_c_dependent)``); ``amplitude``/``phase`` are physical
+    and frame-independent.
+
+    Parameters
+    ----------
+    contributors : sequence of FixedContributor
+        The edge-free contributors of one dependent window. Non-edge-free
+        entries are ignored.
+    active_freq_mhz, active_complex_spectrum : np.ndarray
+        The full active-FT molecular grid and complex spectrum (the lines are
+        read from their own core bins, which lie outside the dependent window).
+    dependent_center_mhz : float
+        Reference (molecular) frequency of the dependent window.
+    sideband : Sideband or str
+        Sideband configuration.
+    tau_us : float
+        Decay constant for the read template -- the dependent window's shared
+        tau (the same value the frozen skirt is drawn with).
+    acquisition_us : float
+        Active acquisition length ``T`` (µs).
+    shape : PeakShape or str
+        Line shape for the template (must match the fit's shape).
+    read_half_width_mhz : float, optional
+        Half-width of the per-line core read region (MHz). ``None`` (default)
+        uses ``8 / T`` (eight resolution elements), the 360 w287 A/B sweet
+        spot.
+    """
+    s = sideband_sign(sideband)
+    freq = np.asarray(active_freq_mhz, dtype=float)
+    z = np.asarray(active_complex_spectrum, dtype=np.complex128)
+    if read_half_width_mhz is None:
+        read_half_width_mhz = 8.0 / acquisition_us
+
+    by_primary: dict[int, list[FixedContributor]] = {}
+    for c in contributors:
+        if not c.edge_free:
+            continue
+        by_primary.setdefault(c.primary_window_id, []).append(c)
+
+    frozen: list[FrozenPeak] = []
+    for primary_id, group in by_primary.items():
+        line_freqs = [c.frequency_mhz for c in group]
+        # Union of each line's core bins.
+        mask = np.zeros(freq.shape, dtype=bool)
+        for f0 in line_freqs:
+            mask |= np.abs(freq - f0) <= read_half_width_mhz
+        n_core = int(np.count_nonzero(mask))
+        if n_core < len(line_freqs):
+            # Too few bins to solve (line(s) off the grid edge): skip the group
+            # -- no skirt is better than a wild read.
+            continue
+        f_core = freq[mask]
+        z_core = z[mask]
+
+        def _design(freqs_at: Sequence[float]) -> np.ndarray:
+            d = np.empty((f_core.size, len(freqs_at)), dtype=np.complex128)
+            for j, f0 in enumerate(freqs_at):
+                u_local = s * (f_core - f0)
+                d[:, j] = model_spectrum(
+                    u_local,
+                    [ModelPeak(1.0, 0.0, 0.0)],
+                    tau_us,
+                    acquisition_us,
+                    shape=shape,
+                )
+            return cast(np.ndarray, d)
+
+        if DEFAULT_EDGE_FREE_FREQ_REFINE and f_core.size > 2 * len(line_freqs):
+            # Variable-projection frequency refinement: the detected positions
+            # carry sub-bin errors that mis-phase the sharp core template and
+            # bias the linear amplitude read low (see
+            # :data:`DEFAULT_EDGE_FREE_FREQ_REFINE`). Frequencies move within
+            # a sub-bin-scale bound (never far enough to swap identities
+            # within the group); amplitudes/phases stay linear per trial.
+            step = float(np.median(np.abs(np.diff(np.sort(f_core)))))
+            bound = 1.5 * step
+            if len(line_freqs) > 1:
+                seps = np.diff(np.sort(np.asarray(line_freqs)))
+                min_sep = float(seps.min()) if seps.size else np.inf
+                bound = min(bound, 0.45 * min_sep) if np.isfinite(min_sep) else bound
+            if bound > 0.0:
+
+                def _vp_residual(deltas: np.ndarray) -> np.ndarray:
+                    d = _design([f0 + dd for f0, dd in zip(line_freqs, deltas)])
+                    g_trial, *_ = np.linalg.lstsq(d, z_core, rcond=None)
+                    r = np.asarray(z_core - d @ g_trial)
+                    return cast(np.ndarray, np.concatenate([r.real, r.imag]))
+
+                try:
+                    from scipy.optimize import least_squares
+
+                    sol = least_squares(
+                        _vp_residual,
+                        np.zeros(len(line_freqs)),
+                        bounds=(-bound, bound),
+                        method="trf",
+                        max_nfev=60,
+                    )
+                    line_freqs = [f0 + dd for f0, dd in zip(line_freqs, sol.x)]
+                except Exception:
+                    pass  # keep the detected positions; the linear read stands
+
+        design = _design(line_freqs)
+        coeffs, *_ = np.linalg.lstsq(design, z_core, rcond=None)
+        for c, f0, g in zip(group, line_freqs, coeffs):
+            delta_dep = s * (f0 - dependent_center_mhz)
+            frozen.append(
+                FrozenPeak(
+                    peak_index=c.peak_index,
+                    primary_window_id=primary_id,
+                    model_peak=ModelPeak(
+                        amplitude=float(np.abs(g)),
+                        offset_mhz=float(delta_dep),
+                        phase=float(np.angle(g)),
+                    ),
+                    frequency_mhz=float(f0),
+                    freeze_eligible=c.freeze_eligible,
+                    edge_free=True,
+                )
+            )
+    return frozen
+
+
+def _noise_weighted_ssr(residual: np.ndarray, rms_noise: NoiseLike) -> float:
+    """Noise-weighted residual sum of squares ``Σ |z|² / σ²`` (complex σ_x).
+
+    The shared misfit scalar for the edge-free accept/reject A/B: lower is a
+    better fit. A scalar or per-bin ``rms_noise`` is broadcast; zero/negative
+    σ bins are dropped from the sum.
+    """
+    z = np.asarray(residual, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(z.shape, float(sigma))
+    good = sigma > 0.0
+    if not np.any(good):
+        return float("inf")
+    return float(np.sum((np.abs(z[good]) ** 2) / (sigma[good] ** 2)))
+
+
 def subtract_frozen_background(
     offset_grid_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
@@ -663,6 +894,8 @@ def fit_window_with_fixed_contributors(
     candidate_offsets: Sequence[float],
     tau0_us: float,
     acquisition_us: float,
+    early_baseline_order: Optional[int] = None,
+    early_baseline_smooth_threshold: Optional[float] = None,
     **conservative_kwargs: Any,
 ) -> tuple[ConservativeFitResult, np.ndarray, np.ndarray, np.ndarray]:
     """Conservative free-peak fit of a window with frozen contributors.
@@ -690,6 +923,41 @@ def fit_window_with_fixed_contributors(
         acquisition_us,
         shape=shape,
     )
+    # The sigma_eff skirt budget (``kappa_skirt * |background|``) deliberately
+    # does NOT gate this conservative fit. The budget exists to discount the
+    # subtracted frozen background's extrapolation error -- coherent fringes
+    # the *residual rescue* harvests as spurious lines (it injects the budget
+    # itself in ``_apply_rescue_to_outcome``). The conservative loop's
+    # candidates are the window's Stage 3 *promoted detections*: the matched
+    # filter's leakage-aware floor already vouches they are lines, and on a
+    # deep-skirt window the budget (proportional to the dominant |background|)
+    # otherwise swallows their entire evidence -- a raw delta chi-squared of
+    # ~1e5 reads as ~0 in budgeted currency and every real riding line dies
+    # (the same real-line-killing failure the budget-currency seed-knockout
+    # measured; raw currency is correct for Stage-3-backed candidates).
+    #
+    # Early leakage-wing baseline, re-run-on-trigger: when the fit's residual
+    # still carries a smooth pedestal an order-p complex polynomial explains
+    # (the summed far-wings of many lines the discrete contributors cannot
+    # fully subtract), the whole conservative fit is re-run with the baseline
+    # as a joint nuisance term. A peaks-only fit on such a window buys
+    # chi-squared by collapsing the shared tau onto the pedestal, and every
+    # downstream decision then runs on a broken model: separations measured
+    # in the ballooned FWHM block real candidates, the rescue's joint refit
+    # slides peaks onto the window bounds, and the sequenced-last baseline
+    # refit can only relax tau for whatever peak set survived. The trigger is
+    # the same smooth-residual F-statistic the late baseline uses, evaluated
+    # on the POST-fit residual: a null-residual (pre-fit) trigger cannot tell
+    # a pedestal from a bright line's own profile and mis-fires on every
+    # strong-line window (soaking line wings, biasing tau), while the
+    # post-fit residual of a healthy bright-line fit carries only sharp core
+    # structure the polynomial does not explain. Triggered windows pay one
+    # extra conservative pass; healthy windows pay nothing.
+    if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+        ctx = dict(validation._fringe_window_ctx or {})
+        ctx["bg_u"] = np.asarray(offset_grid_mhz, dtype=float)
+        ctx["bg"] = np.asarray(background, dtype=np.complex128)
+        validation._fringe_window_ctx = ctx
     fit_result = conservative_fit(
         offset_grid_mhz,
         data_minus_bg,
@@ -697,18 +965,61 @@ def fit_window_with_fixed_contributors(
         candidate_offsets,
         tau0_us,
         acquisition_us,
+        gate_background=background,
         **conservative_kwargs,
     )
+    if (
+        early_baseline_order is not None
+        and early_baseline_smooth_threshold is not None
+        and fit_result.fit.baseline_order is None
+    ):
+        u_arr = np.asarray(offset_grid_mhz, dtype=float)
+        first_residual = np.asarray(
+            data_minus_bg, dtype=np.complex128
+        ) - model_spectrum(
+            u_arr,
+            fit_result.fit.peaks,
+            fit_result.fit.tau_us,
+            acquisition_us,
+            shape=fit_result.fit.shape,
+        )
+        smooth_stat = _smooth_residual_stat(
+            u_arr,
+            first_residual,
+            np.asarray(rms_noise, dtype=float),
+            int(early_baseline_order),
+        )
+        if smooth_stat > float(early_baseline_smooth_threshold):
+            retry_kwargs = dict(conservative_kwargs)
+            retry_kwargs["baseline_order"] = int(early_baseline_order)
+            retry = conservative_fit(
+                offset_grid_mhz,
+                data_minus_bg,
+                rms_noise,
+                candidate_offsets,
+                tau0_us,
+                acquisition_us,
+                gate_background=background,
+                **retry_kwargs,
+            )
+            # Adopt only on a strict raw-chi-squared win: the re-run spends
+            # 2(order+1) extra parameters, so a tie means the pedestal read
+            # was spurious and the peaks-only fit stands.
+            if retry.fit.success and retry.fit.chi_squared < fit_result.fit.chi_squared:
+                fit_result = retry
     # conservative_fit sorts its grid internally; its fitted_spectrum is on
     # *that* sorted grid. Re-evaluate the model on the caller's input grid so
-    # the returned arrays line up bin-for-bin with the inputs.
+    # the returned arrays line up bin-for-bin with the inputs. The fit's
+    # baseline term (when one was fit jointly) is part of the model: leaving
+    # it out would re-expose the carried pedestal in ``full_residual`` and
+    # spuriously fire the edge-coherence / rescue triggers downstream.
     full_free = model_spectrum(
         offset_grid_mhz,
         fit_result.fit.peaks,
         fit_result.fit.tau_us,
         acquisition_us,
         shape=fit_result.fit.shape,
-    )
+    ) + evaluate_baseline(fit_result.fit, offset_grid_mhz)
     full_fitted = full_free + background
     full_residual = np.asarray(complex_spectrum, dtype=np.complex128) - full_fitted
     return fit_result, background, full_fitted, full_residual
@@ -806,12 +1117,18 @@ def select_contributor_to_thaw(
     if edge_side not in ("low", "high"):
         raise ValueError("edge_side must be 'low' or 'high'")
 
+    # Edge-free contributors carry no fit-ordering edge and no primary-fit
+    # dependency, so they cannot be thawed (a thaw co-fits the dependent with
+    # the contributor's converged primary, which an edge-free contributor does
+    # not have). Exclude them from the thaw pool; their mismodeled skirt, if
+    # any, is left to the leakage-wing baseline.
+    thawable = [fp for fp in fixed_peaks if not fp.edge_free]
     lo, hi = window.freq_range
     if edge_side == "low":
-        side_candidates = [fp for fp in fixed_peaks if fp.frequency_mhz <= lo]
+        side_candidates = [fp for fp in thawable if fp.frequency_mhz <= lo]
         edge_freq = lo
     else:
-        side_candidates = [fp for fp in fixed_peaks if fp.frequency_mhz >= hi]
+        side_candidates = [fp for fp in thawable if fp.frequency_mhz >= hi]
         edge_freq = hi
 
     if not side_candidates:
@@ -1036,6 +1353,19 @@ def _peaks_to_candidate_offsets(
     ]
 
 
+def _debug_phase(wid: int, phase: str, outcome: "WindowOutcome") -> None:
+    """``FTMW_DEBUG_PHASES=1``: per-window K / chi2 at each phase boundary."""
+    if not os.environ.get("FTMW_DEBUG_PHASES"):
+        return
+    inner = outcome.fit.fit
+    print(
+        f"[phase] w{wid} {phase}: K={inner.n_peaks} chi2={inner.chi_squared:.0f} "
+        f"tau={inner.tau_us:.2f} "
+        f"offsets={[round(p.offset_mhz, 3) for p in inner.peaks]}",
+        flush=True,
+    )
+
+
 def execute_plan(
     plan: WindowPlan,
     active_ft: ActiveFTResult,
@@ -1059,6 +1389,7 @@ def execute_plan(
     baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
     baseline_order: int = DEFAULT_BASELINE_ORDER,
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
+    baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1229,6 +1560,7 @@ def execute_plan(
         baseline_enabled=baseline_enabled,
         baseline_order=baseline_order,
         baseline_edge_threshold=baseline_edge_threshold,
+        baseline_smooth_threshold=baseline_smooth_threshold,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1295,6 +1627,7 @@ def execute_plan(
                 baseline_enabled=baseline_enabled,
                 baseline_order=baseline_order,
                 baseline_edge_threshold=baseline_edge_threshold,
+                baseline_smooth_threshold=baseline_smooth_threshold,
             )
 
             applied_pairs = {
@@ -1352,6 +1685,7 @@ def _walk_windows_in_order(
     baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
     baseline_order: int = DEFAULT_BASELINE_ORDER,
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
+    baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -1389,6 +1723,12 @@ def _walk_windows_in_order(
     by_id = {w.window_id: w for w in plan.windows}
     for wid in order:
         win = by_id[wid]
+        if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+            validation._fringe_window_ctx = {
+                "wid": wid,
+                "center": 0.5 * (win.freq_range[0] + win.freq_range[1]),
+                "sign": sideband_sign(sideband),
+            }
         ck_for_window = conservative_kwargs
         tau0_us_for_window = tau0_us
         if wid in window_tau_overrides:
@@ -1410,8 +1750,13 @@ def _walk_windows_in_order(
             residual_edge_m=residual_edge_m,
             conservative_kwargs=ck_for_window,
             spur_set=spur_set,
+            early_baseline_order=baseline_order if baseline_enabled else None,
+            early_baseline_smooth_threshold=(
+                baseline_smooth_threshold if baseline_enabled else None
+            ),
         )
         outcomes[wid] = outcome
+        _debug_phase(wid, "conservative", outcome)
 
         for _ in range(max_thaw_rounds):
             edge_events = attempt_thaw_round(
@@ -1434,6 +1779,7 @@ def _walk_windows_in_order(
             outcome = outcomes[wid]
             if not any(e.accepted for e in edge_events):
                 break
+        _debug_phase(wid, "post-thaw", outcome)
 
         if max_residual_rescue_rounds > 0:
             events = _apply_rescue_to_outcome(
@@ -1450,6 +1796,7 @@ def _walk_windows_in_order(
             for ev in events:
                 rescue_history.append(ev)
             outcome = outcomes[wid]
+        _debug_phase(wid, "post-rescue", outcome)
 
         if baseline_enabled:
             _apply_baseline_to_outcome(
@@ -1458,7 +1805,11 @@ def _walk_windows_in_order(
                 residual_edge_m=residual_edge_m,
                 baseline_order=baseline_order,
                 baseline_edge_threshold=baseline_edge_threshold,
+                baseline_smooth_threshold=baseline_smooth_threshold,
+                tau0_us=tau0_us_for_window,
+                conservative_kwargs=ck_for_window,
             )
+        _debug_phase(wid, "post-baseline", outcome)
 
 
 # ---------------------------------------------------------------------------
@@ -1530,10 +1881,15 @@ def _dispatch_structural_round(
         ):
             if not np.isfinite(edge_coh) or edge_coh <= residual_edge_threshold:
                 continue
+            # Only edge-bearing contributors mean "thaw owns this edge". An
+            # edge-free contributor cannot be thawed, so a still-flagged edge
+            # beside one is fair game for a structural merge (a real feature may
+            # cross the boundary that the frozen skirt cannot represent).
             side_contribs = [
                 fp
                 for fp in outcome.fixed_peaks
-                if (
+                if not fp.edge_free
+                and (
                     fp.frequency_mhz <= win.freq_range[0]
                     if edge_side == "low"
                     else fp.frequency_mhz >= win.freq_range[1]
@@ -1588,9 +1944,11 @@ _REPLAN_PARAM_KEYS = (
     "trim_m",
     "edge_threshold",
     "max_window_width_mhz",
+    "max_window_width_points",
     "min_freeze_snr",
     "min_window_half_width_mhz",
     "magnitude_attachment_threshold",
+    "max_edge_free_neighbors",
     "acquisition_us",
     "tau_us",
     "start_us",
@@ -1659,6 +2017,8 @@ def _fit_one_window(
     residual_edge_m: int,
     conservative_kwargs: dict[str, Any],
     spur_set: Optional[SpurSet] = None,
+    early_baseline_order: Optional[int] = None,
+    early_baseline_smooth_threshold: Optional[float] = None,
 ) -> WindowOutcome:
     """Fit one window with its frozen contributors; build its WindowOutcome."""
     _, offset_grid, z_slice, sig_slice, center_mhz = materialize_window(
@@ -1677,6 +2037,7 @@ def _fit_one_window(
         spur_mask = spur_set.window_mask_spec(lo, hi, center_mhz, sideband)
 
     fixed_peaks: list[FrozenPeak] = []
+    edge_free_contributors: list[FixedContributor] = []
     for contributor in win.fixed_contributors:
         # A fixed contributor whose frequency lands on a spur is a spurious
         # frozen term: the spur is no longer fit as a peak in its primary
@@ -1688,6 +2049,11 @@ def _fit_one_window(
             and spur_set
             and spur_set.candidate_on_spur(contributor.frequency_mhz)
         ):
+            continue
+        if contributor.edge_free:
+            # Read self-contained from the active FT below -- no primary
+            # outcome required (the whole point of an edge-free contributor).
+            edge_free_contributors.append(contributor)
             continue
         primary_outcome = outcomes.get(contributor.primary_window_id)
         if primary_outcome is None:
@@ -1702,6 +2068,18 @@ def _fit_one_window(
                 dependent_center_mhz=center_mhz,
                 sideband=sideband,
             )
+        )
+    edge_free_peaks: list[FrozenPeak] = []
+    if edge_free_contributors:
+        edge_free_peaks = evaluate_edge_free_contributors(
+            edge_free_contributors,
+            active_ft.freq_mhz,
+            active_ft.complex_spectrum,
+            dependent_center_mhz=center_mhz,
+            sideband=sideband,
+            tau_us=tau0_us,
+            acquisition_us=acquisition_us,
+            shape=conservative_kwargs.get("shape", "lorentzian"),
         )
 
     candidate_offsets = _peaks_to_candidate_offsets(
@@ -1720,6 +2098,12 @@ def _fit_one_window(
         ]
         ck_for_fit = dict(conservative_kwargs)
         ck_for_fit["spur_mask"] = spur_mask
+    # Edge-bearing contributors are always carried. Edge-free contributors are
+    # evidence-triggered: fit the window without them first (the byte-stable
+    # path for a healthy window whose leakage the const baseline already
+    # handles), then only adopt the edge-free skirt if it clearly reduces the
+    # noise-weighted residual -- so an orphaned bright neighbour's skirt is
+    # subtracted where it helps without fighting the baseline elsewhere (O2).
     fit_result, background, full_fitted, full_residual = (
         fit_window_with_fixed_contributors(
             offset_grid,
@@ -1730,9 +2114,80 @@ def _fit_one_window(
             tau0_us,
             acquisition_us,
             fit_tau=fit_tau,
+            early_baseline_order=early_baseline_order,
+            early_baseline_smooth_threshold=early_baseline_smooth_threshold,
             **ck_for_fit,
         )
     )
+    edge_free_accepted = False
+    if edge_free_peaks:
+        ef_result, ef_bg, ef_full, ef_residual = fit_window_with_fixed_contributors(
+            offset_grid,
+            z_slice,
+            sig_slice,
+            fixed_peaks + edge_free_peaks,
+            candidate_offsets,
+            tau0_us,
+            acquisition_us,
+            fit_tau=fit_tau,
+            early_baseline_order=early_baseline_order,
+            early_baseline_smooth_threshold=early_baseline_smooth_threshold,
+            **ck_for_fit,
+        )
+        ssr_without = _noise_weighted_ssr(full_residual, sig_slice)
+        ssr_with = _noise_weighted_ssr(ef_residual, sig_slice)
+        # The arbitration must price model complexity in the same currency as
+        # the accept gate. The frozen skirt adds zero free parameters, but the
+        # no-skirt fit can spend *peaks* absorbing the un-subtracted skirt
+        # energy (pedestal + wing fringes) -- under a permissive gate its SSR
+        # approaches the with-skirt fit's and a raw-SSR margin then rejects
+        # the skirt, leaving the pedestal for the rescue to "explain" with
+        # spurious lines (the dependent-window flood). Under the penalized
+        # gate, score both sides as the gate does (``SSR + 2*lambda*k``) so
+        # peak-bought residual reduction is charged for; the legacy gate keeps
+        # the raw-SSR fraction rule it was calibrated with.
+        penalty_lambda = validation.DEFAULT_GATE_PENALTY_LAMBDA
+        if penalty_lambda is not None:
+            pen = 2.0 * float(penalty_lambda)
+            score_with = ssr_with + pen * float(ef_result.fit.n_params)
+            score_without = ssr_without + pen * float(fit_result.fit.n_params)
+            adopt_skirt = score_with <= score_without
+        else:
+            adopt_skirt = ssr_with <= DEFAULT_EDGE_FREE_ACCEPT_FRACTION * ssr_without
+        if os.environ.get("FTMW_FORCE_SKIRT"):
+            # Forensics only: force the edge-free skirt adoption so the full
+            # downstream machinery (rescue, blend-split, baseline re-runs)
+            # can be observed on the with-skirt branch of the A/B.
+            adopt_skirt = True
+        if os.environ.get("FTMW_DEBUG_SKIRT"):
+            off_with = [round(p.offset_mhz, 3) for p in ef_result.fit.peaks]
+            off_without = [round(p.offset_mhz, 3) for p in fit_result.fit.peaks]
+            print(
+                f"[skirt] w{win.window_id}: n_ef={len(edge_free_peaks)} "
+                f"ssr_with={ssr_with:.1f} ssr_without={ssr_without:.1f} "
+                f"k_with={ef_result.fit.n_params} "
+                f"k_without={fit_result.fit.n_params} adopt={adopt_skirt} "
+                f"peaks_with={off_with} peaks_without={off_without}",
+                flush=True,
+            )
+            validation.debug_fringe_dump(
+                "skirtab",
+                u=offset_grid,
+                z=z_slice,
+                sigma=sig_slice,
+                bg_with=ef_bg,
+                bg_without=background,
+                ssr_with=ssr_with,
+                ssr_without=ssr_without,
+                adopt=int(adopt_skirt),
+            )
+        if adopt_skirt:
+            fit_result = ef_result
+            background = ef_bg
+            full_fitted = ef_full
+            full_residual = ef_residual
+            fixed_peaks = fixed_peaks + edge_free_peaks
+            edge_free_accepted = True
     low_coh, high_coh = residual_edge_coherence(
         full_residual, sig_slice, band_m=residual_edge_m
     )
@@ -1749,12 +2204,30 @@ def _fit_one_window(
         edge_coherence_low=low_coh,
         edge_coherence_high=high_coh,
     )
+    # An early (conservative-phase) leakage-wing baseline is part of the
+    # persisted model: mirror it onto the outcome's audit fields so
+    # serialization and rendering carry it even when the post-rescue
+    # baseline pass finds nothing further to do. The trigger here was the
+    # smooth-residual statistic, not an edge S_coh; the post-rescue pass
+    # overwrites these (including the coherence) if it re-fires.
+    if fit_result.fit.baseline_order is not None:
+        outcome.baseline_applied = True
+        outcome.baseline_order = fit_result.fit.baseline_order
+        outcome.baseline_coeffs = fit_result.fit.baseline_coeffs
+        outcome.baseline_offset_scale = fit_result.fit.baseline_offset_scale
+        outcome.baseline_edge_coherence = float(
+            max(low_coh, high_coh)
+            if np.isfinite(low_coh) and np.isfinite(high_coh)
+            else 0.0
+        )
     # Stash the center on the outcome so it can be a primary for downstream
     # windows. See _window_center_mhz for the contract.
     outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
     # Stash the per-window spur mask so the rescue pass excludes the same
     # bins (it operates on this outcome's grid/center).
     outcome._spur_mask = spur_mask  # type: ignore[attr-defined]
+    # Diagnostic: whether the evidence-triggered edge-free skirt was adopted.
+    outcome._edge_free_accepted = edge_free_accepted  # type: ignore[attr-defined]
     return outcome
 
 
@@ -2061,6 +2534,14 @@ def _install_cofit_outcome(
     outcome.fit.fit.tau_us = tau_us
     if cofit_was_tau_free:
         outcome.fit.fit.tau_was_fit = True
+    # The thaw co-fit carries no baseline term; clear any prior baseline so
+    # the installed fit's model and its persisted coefficients stay
+    # consistent (the post-rescue baseline pass re-derives one if the
+    # residual still warrants it).
+    outcome.fit.fit.baseline_order = None
+    outcome.fit.fit.baseline_coeffs = None
+    outcome.fit.fit.baseline_offset_scale = None
+    outcome.baseline_applied = False
     shape_resolved = outcome.fit.fit.shape
     free_model = model_spectrum(
         outcome.offset_grid_mhz,
@@ -2117,6 +2598,30 @@ def _apply_rescue_to_outcome(
     """
     data_minus_bg = outcome.complex_spectrum - outcome.background
     spur_mask = getattr(outcome, "_spur_mask", None)
+    if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+        ctx = dict(validation._fringe_window_ctx or {})
+        ctx["bg_u"] = np.asarray(outcome.offset_grid_mhz, dtype=float)
+        ctx["bg"] = np.asarray(outcome.background, dtype=np.complex128)
+        validation._fringe_window_ctx = ctx
+    # Same per-window sigma_eff skirt budget the conservative fit's gates used
+    # (the rescue operates on the identical background-subtracted data).
+    kappa_skirt = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT
+    budget_extra = (
+        float(kappa_skirt) * np.abs(outcome.background)
+        if kappa_skirt is not None
+        else None
+    )
+    if os.environ.get("FTMW_DEBUG_SKIRT"):
+        _sig = np.asarray(outcome.rms_noise, dtype=float)
+        _bud = 0.0 if budget_extra is None else float(np.median(budget_extra))
+        print(
+            f"[rescue-budget] w{outcome.window_id}: "
+            f"med|data|={float(np.median(np.abs(outcome.complex_spectrum))):.3e} "
+            f"med|bg|={float(np.median(np.abs(outcome.background))):.3e} "
+            f"med|resid|={float(np.median(np.abs(data_minus_bg))):.3e} "
+            f"med_sigma={float(np.median(_sig)):.3e} med_budget={_bud:.3e}",
+            flush=True,
+        )
     consolidated = rescue_and_consolidate(
         outcome.offset_grid_mhz,
         data_minus_bg,
@@ -2128,6 +2633,8 @@ def _apply_rescue_to_outcome(
         conservative_kwargs=conservative_kwargs,
         shape=outcome.fit.fit.shape,
         spur_mask=spur_mask,
+        gate_budget_extra=budget_extra,
+        gate_background=outcome.background,
         **rescue_kwargs,
     )
 
@@ -2145,7 +2652,7 @@ def _apply_rescue_to_outcome(
             consolidated.fit.fit.tau_us,
             acquisition_us,
             shape=consolidated.fit.fit.shape,
-        )
+        ) + evaluate_baseline(consolidated.fit.fit, outcome.offset_grid_mhz)
         outcome.fit.fit.fitted_spectrum = free_model
         outcome.fit.fit.residual = data_minus_bg - free_model
         outcome.full_fitted_spectrum = free_model + outcome.background
@@ -2177,7 +2684,93 @@ def _apply_rescue_to_outcome(
         )
         events.append(ev)
         outcome.rescue_events.append(ev)
+        if os.environ.get("FTMW_DEBUG_RESCUE"):
+            cands = [round(c.frequency_mhz, 3) for c in diag.rescue.candidates]
+            jchi = (
+                f"{diag.joint_fit.chi_squared:.0f}"
+                if diag.joint_fit is not None and diag.joint_fit.success
+                else "n/a"
+            )
+            jtau = (
+                f"{diag.joint_fit.tau_us:.2f}"
+                if diag.joint_fit is not None and diag.joint_fit.success
+                else "n/a"
+            )
+            print(
+                f"[rescue] w{win.window_id} round {ev.round_idx}: "
+                f"cands={cands} added={ev.n_rescue_added} "
+                f"merged={ev.n_merged} pruned={ev.n_pruned_by_knockout} "
+                f"(rescue-origin {ev.n_pruned_rescue_origin}) "
+                f"chi2 {ev.chi2_before:.0f}->{ev.chi2_after:.0f} "
+                f"joint chi2={jchi} tau={jtau} "
+                f"tau {ev.tau_us_before:.2f}->{ev.tau_us_after:.2f} "
+                f"accepted={ev.accepted} {ev.reason}",
+                flush=True,
+            )
     return events
+
+
+def _smooth_residual_stat(
+    offset_grid_mhz: np.ndarray,
+    residual: np.ndarray,
+    rms_noise: np.ndarray,
+    order: int,
+) -> float:
+    """F-test numerator for an order-``p`` complex polynomial fit of a residual.
+
+    Projects the complex ``residual`` onto a noise-weighted degree-``order``
+    polynomial in the scaled offset and returns the chi-squared drop the smooth
+    term explains, divided by its ``2(order+1)`` real degrees of freedom. Pure
+    noise scores ~1 per dof; a smooth leakage pedestal scores far higher. This is
+    the in-band counterpart to the edge-coherence trigger -- it catches a smooth
+    pedestal ramping across the whole window, which the two-edge test misses.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    if u.size <= order + 1:
+        return 0.0
+    sig = np.asarray(rms_noise, dtype=float)
+    if sig.ndim == 0:
+        sig = np.full(u.size, float(sig))
+    span = max(float(u.max() - u.min()), 1e-9) / 2.0
+    us = (u - u.mean()) / span
+    vander = np.vander(us, order + 1, increasing=True)
+    w = 1.0 / np.maximum(sig, 1e-30)
+    coef, *_ = np.linalg.lstsq(vander * w[:, None], residual * w, rcond=None)
+    smooth = vander @ coef
+    chi2_full = float(np.sum((np.abs(residual) / np.maximum(sig, 1e-30)) ** 2))
+    chi2_resid = float(
+        np.sum((np.abs(residual - smooth) / np.maximum(sig, 1e-30)) ** 2)
+    )
+    return (chi2_full - chi2_resid) / (2 * (order + 1))
+
+
+_BASELINE_TAU_INPUT_KEYS = (
+    "min_separation_factor",
+    "max_decay_factor",
+    "amp_max_headroom",
+    "phase_penalty_lambda",
+    "amp_penalty_lambda",
+    "phase_penalty_cutoff_fwhm",
+    "tau_penalty_lambda",
+    "tau_penalty_n_sigma",
+    "weak_window_snr_threshold",
+    "fit_tau_min_snr",
+    "tau_apodization_us",
+    "tau_maj_us",
+    "sigma_tau_us",
+)
+
+
+def _baseline_tau_inputs(conservative_kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Subset of ``conservative_kwargs`` accepted by
+    :func:`~ftmwpipeline.fitting.window_fit.derive_window_fit_constraints`, so the
+    baseline's tau-free refit derives the same bounds / penalty as the primary
+    per-window fit."""
+    return {
+        k: conservative_kwargs[k]
+        for k in _BASELINE_TAU_INPUT_KEYS
+        if k in conservative_kwargs
+    }
 
 
 def _apply_baseline_to_outcome(
@@ -2187,27 +2780,37 @@ def _apply_baseline_to_outcome(
     residual_edge_m: int,
     baseline_order: int,
     baseline_edge_threshold: float,
+    baseline_smooth_threshold: float,
+    tau0_us: float,
+    conservative_kwargs: dict[str, Any],
 ) -> bool:
-    """Refit a window with a complex baseline when its residual edge coherence
-    clears the baseline threshold; update the outcome in place.
+    """Refit a window with a complex baseline when a coherent or smooth residual
+    clears its trigger; update the outcome in place.
 
-    A neighbouring strong line's mismodeled leakage skirt leaves a coherent,
-    systematic residual that inflates the dependent window's chi-squared and
-    biases the weak lines sitting on it. When ``max(edge_low, edge_high)`` on
-    the (post-thaw, post-rescue) residual exceeds ``baseline_edge_threshold``,
-    the window's established lines are refit jointly with a low-order complex
-    baseline ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` (too smooth to represent
-    a narrow line, so it can only soak up a broad wing). ``tau`` is held at the
-    window's fitted value -- the baseline addresses skirt *shape*, not decay.
-    The joint covariance then prices the baseline's degrees of freedom into the
-    reported per-line uncertainties.
+    A neighbouring strong line's mismodeled leakage skirt -- and, on a dense
+    ultra-high-SNR spectrum, the summed far-wings of the many lines the discrete
+    frozen contributors cannot fully subtract -- leaves a systematic residual
+    that inflates the dependent window's chi-squared and biases the lines sitting
+    on it. The window's established lines are refit jointly with a low-order
+    complex baseline ``B(u) = Σ_{k≤p}(a_k + i b_k)(u/u_s)^k`` (too smooth to
+    represent a narrow line, so it can only soak up a broad wing or pedestal)
+    when either trigger fires:
+
+    * **edge coherence** -- ``max(edge_low, edge_high)`` on the residual exceeds
+      ``baseline_edge_threshold`` (a coherent wing at a window edge); or
+    * **smooth residual** -- an order-``p`` polynomial explains the residual at
+      more than ``baseline_smooth_threshold`` chi-squared per added dof (a smooth
+      in-band leakage pedestal the edge test misses).
+
+    ``tau`` is re-freed and re-anchored at the band majority ``tau0_us`` for the
+    joint refit: with the pedestal absorbed by the baseline, ``tau`` relaxes back
+    from the collapsed value it took to soak the pedestal to its physical
+    per-band value. The joint covariance prices the baseline's degrees of freedom
+    into the reported per-line uncertainties.
 
     Returns ``True`` iff the baseline fired (triggered, converged, and did not
     worsen the data chi-squared); ``False`` leaves the outcome untouched.
     """
-    s_coh = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
-    if not np.isfinite(s_coh) or s_coh <= baseline_edge_threshold:
-        return False
     inner = outcome.fit.fit
     if not inner.peaks:
         # The baseline prices its flexibility against the free lines; a window
@@ -2216,26 +2819,76 @@ def _apply_baseline_to_outcome(
         return False
 
     data_minus_bg = outcome.complex_spectrum - outcome.background
+    u = outcome.offset_grid_mhz
+    # The trigger residual must credit a baseline the fit already carries
+    # (the early conservative-phase baseline), else the carried pedestal
+    # re-reads as residual structure here.
+    residual = (
+        data_minus_bg
+        - model_spectrum(
+            u, inner.peaks, inner.tau_us, acquisition_us, shape=inner.shape
+        )
+        - evaluate_baseline(inner, u)
+    )
+    s_coh = max(outcome.edge_coherence_low, outcome.edge_coherence_high)
+    edge_fire = np.isfinite(s_coh) and s_coh > baseline_edge_threshold
+    smooth_stat = _smooth_residual_stat(u, residual, outcome.rms_noise, baseline_order)
+    smooth_fire = smooth_stat > baseline_smooth_threshold
+    # A fit already carrying a baseline (the early conservative-phase trigger
+    # fired) always takes this joint refit: the residual credit above means
+    # neither trigger re-fires, but the refit's value on a pedestal window is
+    # the tau re-free -- the conservative phase ran tau against the pedestal
+    # and the anchor below lets it relax to the band value. The chi-squared
+    # acceptance guard below still applies.
+    if os.environ.get("FTMW_DEBUG_PHASES"):
+        print(
+            f"[late-baseline] w{outcome.window_id}: s_coh={s_coh:.2f} "
+            f"smooth={smooth_stat:.1f} edge_fire={edge_fire} "
+            f"smooth_fire={smooth_fire} carried={inner.baseline_order}",
+            flush=True,
+        )
+    if not (edge_fire or smooth_fire or inner.baseline_order is not None):
+        return False
+
+    # Re-free tau (anchored at the band majority) so it relaxes off the collapsed
+    # value once the baseline carries the pedestal. The penalty / bound policy
+    # mirrors the primary fit's via ``derive_window_fit_constraints``.
+    constraints = derive_window_fit_constraints(
+        data_minus_bg,
+        outcome.rms_noise,
+        tau0_us,
+        acquisition_us,
+        fit_tau=True,
+        **_baseline_tau_inputs(conservative_kwargs),
+    )
+    refit_kwargs = dict(constraints.fit_kwargs_inner)
+    refit_kwargs.setdefault("shape", inner.shape)
     spur_mask = getattr(outcome, "_spur_mask", None)
     refit = fit_window(
-        outcome.offset_grid_mhz,
+        u,
         data_minus_bg,
         outcome.rms_noise,
         [ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in inner.peaks],
-        inner.tau_us,
+        tau0_us,
         acquisition_us,
-        fit_tau=False,
-        shape=inner.shape,
         spur_mask=spur_mask,
         baseline_order=baseline_order,
+        **refit_kwargs,
     )
+    if os.environ.get("FTMW_DEBUG_PHASES"):
+        print(
+            f"[late-baseline] w{outcome.window_id}: refit success={refit.success} "
+            f"chi2 {inner.chi_squared:.0f} -> {refit.chi_squared:.0f} "
+            f"tau {inner.tau_us:.2f} -> {refit.tau_us:.2f}",
+            flush=True,
+        )
     if not refit.success or refit.chi_squared > inner.chi_squared + 1e-9:
         return False
 
-    # Install the joint fit. ``tau_us`` / ``tau_was_fit`` / ``fit_tau`` keep
-    # their originating values (the refit only added the baseline). The
-    # fitted spectrum now carries peaks + baseline; the frozen background is
-    # added back for the full model.
+    # Install the joint fit. The baseline carries the pedestal and the re-freed
+    # ``tau`` has relaxed to its physical value, so the re-fit ``tau`` / errors
+    # are installed too. The fitted spectrum now carries peaks + baseline; the
+    # frozen background is added back for the full model.
     free_plus_baseline = refit.fitted_spectrum
     inner.peaks = refit.peaks
     inner.peak_errors = refit.peak_errors
@@ -2244,6 +2897,9 @@ def _apply_baseline_to_outcome(
     inner.cost = refit.cost
     inner.n_params = refit.n_params
     inner.n_data = refit.n_data
+    inner.tau_us = refit.tau_us
+    inner.tau_error = refit.tau_error
+    inner.tau_was_fit = refit.tau_was_fit
     inner.fitted_spectrum = free_plus_baseline
     inner.residual = data_minus_bg - free_plus_baseline
     inner.baseline_order = refit.baseline_order

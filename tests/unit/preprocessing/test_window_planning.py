@@ -106,14 +106,21 @@ class TestIsolatedStrongLine:
 
 class TestStrongCluster:
     def test_overlapping_strong_lines_form_one_joint_window(self):
-        """Two strong lines whose skirts overlap merge into one window."""
+        """Two strong lines whose skirts overlap merge into one window.
+
+        The points cap is pinned off: this exercises the skirt-overlap merge
+        rule on the MHz lane, and the synthetic 0.02 MHz grid makes the
+        default points cap (96 points = 1.92 MHz here) split the 4 MHz pair.
+        """
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30038.0, 3.0, PeakClassification.STRONG),
                 (30042.0, 3.0, PeakClassification.STRONG),
             ]
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         assert plan.n_windows == 1
         w = plan.windows[0]
         assert sorted(w.free_peak_indices) == [0, 1]
@@ -168,7 +175,12 @@ class TestWeakLineOnSkirt:
             ],
             n=12000,
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        # Points cap pinned off: the weak window's minimum width (2 * 2 MHz
+        # half-width) exceeds the default points cap on this fine synthetic
+        # grid (96 points = 1.92 MHz), which would flip its difficulty to HARD.
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         weak_w = next(w for w in plan.windows if 1 in w.free_peak_indices)
         assert not weak_w.fixed_contributors
         assert weak_w.difficulty == WindowDifficulty.EASY
@@ -260,11 +272,14 @@ class TestMagnitudeAttachment:
 
     def test_mutual_attachment_does_not_break_dag(self):
         """Two strong lines whose skirts mutually reach each other form a
-        2-cycle in the attachment graph. The cycle-breaker drops one edge
-        from ``dependency_edges`` AND prunes the matching FixedContributor
-        from the dependent window so the fit-execution-time invariant
-        ("primary fit must exist before dependent fits") holds. Without
-        the prune, ``execute_plan`` would raise on "un-fit primary"."""
+        2-cycle in the attachment graph. The cycle-breaker drops both
+        fit-ordering edges from ``dependency_edges`` to keep the DAG acyclic,
+        but the orphaned contributors are *not* discarded: each is converted
+        to an EDGE-FREE contributor (read self-contained at fit time), so the
+        leakage subtraction survives without a dependency edge. The
+        execution-time invariant ("primary fit must exist before an
+        edge-bearing dependent fits") still holds because an edge-free
+        contributor carries no such requirement."""
         # Two strong lines at 30050 and 30090 -- 40 MHz apart, each strong
         # enough that the other's skirt clears the 0.1 sigma_c threshold.
         # They don't fall in the same touched region (clean band between
@@ -278,15 +293,32 @@ class TestMagnitudeAttachment:
         )
         plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
         _assert_invariants(plan)
-        # Each window's fixed_contributors are consistent with
-        # dependency_edges: every contributor's primary appears in edges.
+        # Edge consistency now depends on the contributor kind: an edge-bearing
+        # contributor's (window, primary) edge must be present; an edge-free
+        # contributor's must be absent (it is deliberately out of the DAG).
         for w in plan.windows:
             for fc in w.fixed_contributors:
-                assert (w.window_id, fc.primary_window_id) in plan.dependency_edges, (
-                    f"FixedContributor on window {w.window_id} points at "
-                    f"primary {fc.primary_window_id} but that edge was "
-                    f"dropped from dependency_edges"
-                )
+                edge = (w.window_id, fc.primary_window_id)
+                if fc.edge_free:
+                    assert edge not in plan.dependency_edges, (
+                        f"edge-free contributor on window {w.window_id} must "
+                        f"not appear in dependency_edges, found {edge}"
+                    )
+                else:
+                    assert edge in plan.dependency_edges, (
+                        f"edge-bearing contributor on window {w.window_id} "
+                        f"points at primary {fc.primary_window_id} but that "
+                        f"edge was dropped from dependency_edges"
+                    )
+        # The 2-cycle's orphaned contributors are recovered as edge-free, not
+        # discarded -- this is the issue-#3 leakage-subtraction fix.
+        edge_free = [
+            fc for w in plan.windows for fc in w.fixed_contributors if fc.edge_free
+        ]
+        assert (
+            edge_free
+        ), "mutual-attachment 2-cycle should yield edge-free contributors"
+        assert plan.diagnostics.get("n_edge_free_contributors", 0) == len(edge_free)
 
 
 class TestLeakageArtifactPruning:
@@ -332,9 +364,10 @@ class TestDifficultyAndWidthCap:
 
 class TestBoundedMergeAndCapSplit:
     """The strong-cluster merge is bounded at the width cap and merged spans are
-    split at their sparsest gaps until each window is <= max_peaks_per_window and
-    <= max_window_width_mhz, so a dense, mutually-coupled strong-line forest does
-    not collapse into one unfittable mega-window."""
+    split at their sparsest gaps until each window is <= max_window_width_mhz (and,
+    when ``max_peaks_per_window`` is positive, <= that peak cap), so a dense,
+    mutually-coupled strong-line forest does not collapse into one mega-window. The
+    default ``max_peaks_per_window=0`` bounds windows by width alone."""
 
     @staticmethod
     def _dense_cluster():
@@ -344,41 +377,86 @@ class TestBoundedMergeAndCapSplit:
         lines = [(30040.0 + 3.0 * i, 3.0, PeakClassification.STRONG) for i in range(20)]
         return _synthetic(lines, n=8000)
 
-    def test_dense_strong_forest_is_split_to_caps(self):
+    def test_dense_strong_forest_is_split_to_width_cap(self):
+        # max_peaks_per_window=0 and the points cap pinned off: bounded by
+        # the 40 MHz width cap alone.
         freqs, spec, rms, peaks = self._dense_cluster()
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         _assert_invariants(plan)
-        # Must NOT be one mega-window.
-        assert plan.n_windows >= 3
+        # The ~57 MHz forest must NOT collapse into one mega-window: the width cap
+        # splits it even with no peak cap.
+        assert plan.n_windows >= 2
         for w in plan.windows:
             assert w.width_mhz <= 40.0 + 1e-6, "window exceeds the width cap"
-            assert len(w.free_peak_indices) <= 8, "window exceeds the peak cap"
         # Every promoted line is still covered exactly once (no dropped peaks).
         covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
         assert covered == list(range(len(peaks)))
 
-    def test_tighter_peak_cap_makes_more_windows(self):
+    def test_default_points_cap_bounds_windows(self):
+        # The hard default is a 96-point cap (the small-window operating
+        # point of the Stage 5 window-invariant gates); with no explicit
+        # width knobs every window respects it.
         freqs, spec, rms, peaks = self._dense_cluster()
-        loose = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        _assert_invariants(plan)
+        assert plan.parameters["max_window_width_points"] == 96
+        # A single-line window keeps the min-half-width floor (2 * 2 MHz),
+        # which exceeds the 96-point cap on this fine grid; the cap bounds
+        # the cluster merge, so no window may exceed the larger of the two.
+        bound = max(96 * step, 2 * 2.0) + 2 * step
+        for w in plan.windows:
+            assert w.width_mhz <= bound
+        covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
+        assert covered == list(range(len(peaks)))
+
+    def test_tighter_peak_cap_makes_more_windows(self):
+        # Two explicit positive caps: the tighter one must split into more
+        # windows. Points cap pinned off so the peak cap (not the width cap
+        # at this fine grid step) drives the partition.
+        freqs, spec, rms, peaks = self._dense_cluster()
+        loose = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_peaks_per_window=8,
+            max_window_width_points=0,
+        )
         tight = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=4
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_peaks_per_window=4,
+            max_window_width_points=0,
         )
         assert tight.n_windows > loose.n_windows
         for w in tight.windows:
             assert len(w.free_peak_indices) <= 4
+        for w in loose.windows:
+            assert len(w.free_peak_indices) <= 8
         _assert_invariants(tight)
 
     def test_coupled_pair_within_cap_stays_merged(self):
-        # Two strong lines a few MHz apart (< the width cap, < the peak cap) must
-        # still merge into one joint window -- the cap split must not break a
-        # genuinely-coupled close pair (the 2638 doublet back-compat case).
+        # Two strong lines a few MHz apart (< the MHz width cap, < the peak
+        # cap) must still merge into one joint window -- the cap split must
+        # not break a genuinely-coupled close pair (the 2638 doublet
+        # back-compat case). Points cap pinned off: on this fine grid the
+        # default points cap is narrower than the pair separation.
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30038.0, 3.0, PeakClassification.STRONG),
                 (30042.0, 3.0, PeakClassification.STRONG),
             ]
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+        )
         assert plan.n_windows == 1
         assert sorted(plan.windows[0].free_peak_indices) == [0, 1]
 
@@ -388,6 +466,56 @@ class TestBoundedMergeAndCapSplit:
             peaks, freqs, spec, rms, acquisition_us=15.0, max_peaks_per_window=6
         )
         assert plan.parameters["max_peaks_per_window"] == 6
+
+    def test_points_cap_matches_equivalent_mhz_cap(self):
+        # The points cap is the portable form of the width cap: a positive
+        # value supersedes the MHz cap, and ``points = mhz / grid step``
+        # must reproduce the identical partition.
+        freqs, spec, rms, peaks = self._dense_cluster()
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        cap_mhz = 12.0
+        cap_points = int(round(cap_mhz / step))
+        by_mhz = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_mhz=cap_mhz,
+            max_window_width_points=0,
+        )
+        by_points = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_points=cap_points,
+        )
+        assert by_points.n_windows == by_mhz.n_windows
+        assert [w.freq_range for w in by_points.windows] == [
+            w.freq_range for w in by_mhz.windows
+        ]
+        assert by_points.parameters["max_window_width_points"] == cap_points
+        _assert_invariants(by_points)
+
+    def test_points_cap_supersedes_mhz_cap(self):
+        # With both set, the points cap governs: a tight points cap splits
+        # the forest even when the MHz cap alone would not.
+        freqs, spec, rms, peaks = self._dense_cluster()
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        plan = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_mhz=1000.0,
+            max_window_width_points=int(round(10.0 / step)),
+        )
+        assert plan.n_windows >= 4
+        for w in plan.windows:
+            assert w.width_mhz <= 10.0 + 2 * step
 
 
 class TestEmptyAndEdgeCases:
