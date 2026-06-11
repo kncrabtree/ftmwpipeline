@@ -2665,6 +2665,29 @@ def _apply_rescue_to_outcome(
         )
         events.append(ev)
         outcome.rescue_events.append(ev)
+        if os.environ.get("FTMW_DEBUG_RESCUE"):
+            cands = [round(c.frequency_mhz, 3) for c in diag.rescue.candidates]
+            jchi = (
+                f"{diag.joint_fit.chi_squared:.0f}"
+                if diag.joint_fit is not None and diag.joint_fit.success
+                else "n/a"
+            )
+            jtau = (
+                f"{diag.joint_fit.tau_us:.2f}"
+                if diag.joint_fit is not None and diag.joint_fit.success
+                else "n/a"
+            )
+            print(
+                f"[rescue] w{win.window_id} round {ev.round_idx}: "
+                f"cands={cands} added={ev.n_rescue_added} "
+                f"merged={ev.n_merged} pruned={ev.n_pruned_by_knockout} "
+                f"(rescue-origin {ev.n_pruned_rescue_origin}) "
+                f"chi2 {ev.chi2_before:.0f}->{ev.chi2_after:.0f} "
+                f"joint chi2={jchi} tau={jtau} "
+                f"tau {ev.tau_us_before:.2f}->{ev.tau_us_after:.2f} "
+                f"accepted={ev.accepted} {ev.reason}",
+                flush=True,
+            )
     return events
 
 

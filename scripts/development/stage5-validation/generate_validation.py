@@ -955,6 +955,7 @@ def _plot_consolidated_detail(
     style: DisplayStyle,
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
+    spurs: Optional[Sequence[dict]] = None,
 ) -> plt.Figure:
     """Render the consolidated per-window detail via the packaged renderer.
 
@@ -978,6 +979,7 @@ def _plot_consolidated_detail(
         trim_mhz=style.trim_mhz,
         freq_padded=freq_padded,
         spec_padded=spec_padded,
+        spurs=spurs,
     )
 
 
@@ -1378,6 +1380,7 @@ def _save_consolidated_detail(
     style: DisplayStyle,
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
+    spurs: Optional[Sequence[dict]] = None,
 ) -> None:
     """Write ``detail.png`` showing the final consolidated fit (Figure 1)."""
     consolidated_wf = _build_consolidated_fittingresult(
@@ -1437,6 +1440,7 @@ def _save_consolidated_detail(
         style=style,
         freq_padded=freq_padded,
         spec_padded=spec_padded,
+        spurs=spurs,
     )
     fig.savefig(out_dir / "detail.png", dpi=130)
     plt.close(fig)
@@ -2408,6 +2412,7 @@ def main() -> None:
             peak_provenance=[],
             title=title,
             style=display_style,
+            spurs=(fit.diagnostics or {}).get("gated_spurs"),
             freq_padded=freqs_padded,
             spec_padded=spec_padded,
         )
@@ -2475,6 +2480,7 @@ def main() -> None:
                 style=display_style,
                 freq_padded=freqs_padded,
                 spec_padded=spec_padded,
+                spurs=(fit.diagnostics or {}).get("gated_spurs"),
             )
             _save_audit_trail_figure_wrapper(
                 rel_dir,

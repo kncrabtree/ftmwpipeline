@@ -24,8 +24,26 @@ requirement is an exact integer-MHz center (clock harmonics):
   that are not spurs (measured on 2638: 53 of 59 integer-MHz ``cls == 1``
   bins are erratic real lines); only the saturated subset is trusted.
 
-The gate is therefore ``integer-MHz ∧ (narrow ∨ saturated)``. See
-``dev-docs/planning/stage5-spur-masking.md`` and
+The nomination gate is ``integer-MHz ∧ (narrow ∨ saturated)``. When the raw
+FID is available, every verdict is additionally **arbitrated by a direct
+time-domain decay probe** (:func:`make_decay_probe`): the FID is demodulated
+at the candidate's baseband frequency and block-averaged into frames, and
+the late/early amplitude ratio separates a decaying molecular line
+(ratio ~ ``exp(-dT/tau)`` << 1) from a flat CW tone (ratio ~ 1). The probe
+fixes both error directions the frequency-domain gate alone carries:
+
+* a real line whose center happens to fall within ``integer_tol`` of an
+  integer MHz **and** whose ``tau`` is long enough that its on-grid profile
+  passes the narrowness test (measured: a bin-centered ``tau ~ 0.7 T`` line
+  has a neighbour ratio ~ 0.23) is *vetoed* out of the gate when the probe
+  sees it decay;
+* a genuinely flat tone at a NON-integer frequency (LO/IF intermodulation
+  rather than a clock harmonic) nominated by the Stage 2b cluster
+  catalogue is gated when the probe confirms flatness -- the ``saturated``
+  flag alone is not trusted in either direction (measured false positives
+  on decaying lines and false negatives on real tones).
+
+See ``dev-docs/planning/stage5-spur-masking.md`` and
 ``dev-docs/research/stage5-gaussian-audit/report.md`` §§ "Spur-detection
 prototype", "Flatness-exposure measurement".
 """
@@ -34,7 +52,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Tuple, cast
+from typing import Any, Callable, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -50,7 +68,13 @@ __all__ = [
     "DEFAULT_NARROWNESS_RATIO",
     "DEFAULT_SNR_THRESHOLD",
     "DEFAULT_MASK_HALF_WIDTH_BINS",
+    "DEFAULT_DECAY_RATIO_LINE",
+    "DEFAULT_DECAY_RATIO_FLAT",
+    "DEFAULT_DECAY_MIN_SNR_VETO",
+    "DEFAULT_DECAY_MIN_SNR_FLAT",
+    "DEFAULT_DECAY_N_FRAMES",
     "detect_active_ft_spurs",
+    "make_decay_probe",
     "gate_spurs",
     "build_spur_set",
 ]
@@ -61,6 +85,17 @@ DEFAULT_INTEGER_TOL_MHZ = 0.04  # ~half a bin (active-FT spacing ~79 kHz)
 DEFAULT_NARROWNESS_RATIO = 0.30  # max(neighbour)/peak below this => narrow
 DEFAULT_SNR_THRESHOLD = 5.0  # peak-bin magnitude / local sigma_c floor
 DEFAULT_MASK_HALF_WIDTH_BINS = 2  # residual-mask half-width in active-FT bins
+
+# Decay-probe arbitration thresholds (cross-fixture calibration, 7 fixtures:
+# every true clock-comb spur measured ratio >= 0.70; every decaying real
+# line at usable probe SNR measured <= 0.65, with the contested cases far
+# from the bars -- the falsely-narrow-gated SNR-1410 line at 0.29 and the
+# flat 28057.46 / 29985.35 tones at 0.97-1.20).
+DEFAULT_DECAY_RATIO_LINE = 0.6  # below this (and SNR ok) a nominee decays
+DEFAULT_DECAY_RATIO_FLAT = 0.8  # above this (and SNR ok) a nominee is flat
+DEFAULT_DECAY_MIN_SNR_VETO = 3.0  # min frame-amplitude SNR to veto a narrow spur
+DEFAULT_DECAY_MIN_SNR_FLAT = 10.0  # min frame-amplitude SNR to gate a flat tone
+DEFAULT_DECAY_N_FRAMES = 8  # frames over the active record
 
 
 @dataclass(frozen=True)
@@ -265,6 +300,80 @@ def detect_active_ft_spurs(
 
 
 # ---------------------------------------------------------------------------
+# Time-domain decay probe
+# ---------------------------------------------------------------------------
+def make_decay_probe(
+    fid_data: np.ndarray,
+    sample_dt_us: float,
+    *,
+    start_us: float,
+    end_us: float,
+    probe_freq_mhz: float,
+    sideband: Any,
+    n_frames: int = DEFAULT_DECAY_N_FRAMES,
+    n_noise_probes: int = 16,
+) -> Callable[[float], Tuple[float, float]]:
+    """Build a per-frequency FID decay probe ``f_mol -> (ratio, amp_snr)``.
+
+    Demodulates the real FID's active slice ``[start_us, end_us)`` at the
+    candidate's baseband frequency, block-averages the complex demod into
+    ``n_frames`` frames, and returns
+
+    * ``ratio`` -- median frame amplitude of the last third over the first
+      third. A molecular line decays (``~ exp(-dT/tau)``); a CW tone is ~ 1.
+    * ``amp_snr`` -- the first-third amplitude over the noise floor of a
+      frame-mean amplitude, measured once from the median frame amplitude
+      over ``n_noise_probes`` quasi-random in-band frequencies (lines are
+      sparse, so the median lands on empty bins).
+
+    The probe is the time-domain arbiter for the spur gate
+    (:func:`gate_spurs`): it tests the candidate against the physics that
+    defines a spur -- a tone that does not decay -- instead of frequency-
+    domain proxies for it.
+    """
+    x = np.asarray(fid_data, dtype=float)
+    i0 = max(int(round(start_us / sample_dt_us)), 0)
+    i1 = min(int(round(end_us / sample_dt_us)), x.size)
+    seg = x[i0:i1]
+    t_us = np.arange(i0, i1) * sample_dt_us
+    s = sideband_sign(sideband)
+    third = max(n_frames // 3, 1)
+
+    def _amps(f_bb_mhz: float) -> np.ndarray:
+        y = seg * np.exp(-2j * np.pi * f_bb_mhz * t_us)
+        return cast(
+            np.ndarray,
+            np.asarray(
+                [np.abs(fr.mean()) for fr in np.array_split(y, n_frames)], dtype=float
+            ),
+        )
+
+    def _to_bb(f_mol: float) -> float:
+        # ``f_mol = probe + s_bb * f_bb`` with ``s_bb = -s`` of the
+        # molecular-offset sign convention: lower sideband means
+        # ``f_bb = probe - f_mol``.
+        return float(abs(probe_freq_mhz - f_mol) if s < 0 else f_mol - probe_freq_mhz)
+
+    # Frame-amplitude noise floor: median frame amplitude over quasi-random
+    # baseband offsets across the Nyquist band (avoiding DC). Lines are
+    # sparse, so the median of medians lands on empty bins.
+    rng = np.random.default_rng(20260610)
+    nyquist_mhz = 0.5 / sample_dt_us
+    probes = rng.uniform(0.05 * nyquist_mhz, 0.95 * nyquist_mhz, size=n_noise_probes)
+    noise_amp = float(np.median([np.median(_amps(f)) for f in probes]))
+
+    def probe(f_mol_mhz: float) -> Tuple[float, float]:
+        amps = _amps(_to_bb(float(f_mol_mhz)))
+        early = float(np.median(amps[:third]))
+        late = float(np.median(amps[-third:]))
+        ratio = late / early if early > 0 else float("nan")
+        snr = early / noise_amp if noise_amp > 0 else float("inf")
+        return ratio, snr
+
+    return probe
+
+
+# ---------------------------------------------------------------------------
 # Joint gate
 # ---------------------------------------------------------------------------
 def gate_spurs(
@@ -273,65 +382,103 @@ def gate_spurs(
     *,
     integer_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
     merge_tol_mhz: float = DEFAULT_INTEGER_TOL_MHZ,
+    decay_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
 ) -> List[GatedSpur]:
-    """Combine the frequency-domain spurs with the saturated flat-cluster set.
+    """Combine the frequency-domain spurs with the Stage 2b cluster set.
 
-    The frequency-domain spurs already satisfy ``integer-MHz ∧ narrow``.
-    The flat clusters are filtered to those whose center is integer-MHz
-    (``saturated`` was already enforced by the caller). Detections within
-    ``merge_tol_mhz`` of each other are merged into one :class:`GatedSpur`
-    carrying the combined provenance.
+    Without ``decay_probe`` this is the legacy frequency-domain-only gate:
+    the active-FT spurs already satisfy ``integer-MHz ∧ narrow``, and the
+    clusters contribute only ``saturated`` entries at integer-MHz centers.
+
+    With ``decay_probe`` (see :func:`make_decay_probe`) every verdict is
+    arbitrated in the time domain:
+
+    * a narrow nominee whose probe DECAYS
+      (``ratio < DEFAULT_DECAY_RATIO_LINE`` at
+      ``amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO``) is a real line that
+      happens to sit near an integer MHz -- vetoed;
+    * ANY cluster (saturated or not, integer or not) whose probe is FLAT
+      (``ratio >= DEFAULT_DECAY_RATIO_FLAT`` at
+      ``amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT``) is a confirmed CW tone --
+      gated with source ``"flat"``. The bare ``saturated`` flag is not
+      trusted without probe confirmation (measured false positives on
+      strong erratic lines).
+
+    Detections within ``merge_tol_mhz`` of each other are merged into one
+    :class:`GatedSpur` carrying the combined provenance.
     """
-    by_int: dict[int, GatedSpur] = {}
+    gated: List[GatedSpur] = []
 
     def _add(center: float, source: str, snr: float, ratio: float) -> None:
-        f_int = int(round(center))
-        existing = by_int.get(f_int)
-        if existing is None:
-            by_int[f_int] = GatedSpur(
+        for i, existing in enumerate(gated):
+            if abs(existing.center_mhz - center) <= merge_tol_mhz:
+                merged_source = existing.source
+                if source not in existing.source.split("+"):
+                    merged_source = "+".join(
+                        sorted(set(existing.source.split("+")) | {source})
+                    )
+                # Prefer the frequency-domain center / SNR (a measured bin)
+                # over the catalogue center when both are present.
+                if source == "narrow":
+                    gated[i] = GatedSpur(
+                        center_mhz=center,
+                        integer_mhz=int(round(center)),
+                        source=merged_source,
+                        snr=snr,
+                        narrowness_ratio=ratio,
+                    )
+                else:
+                    gated[i] = GatedSpur(
+                        center_mhz=existing.center_mhz,
+                        integer_mhz=existing.integer_mhz,
+                        source=merged_source,
+                        snr=existing.snr,
+                        narrowness_ratio=existing.narrowness_ratio,
+                    )
+                return
+        gated.append(
+            GatedSpur(
                 center_mhz=center,
-                integer_mhz=f_int,
+                integer_mhz=int(round(center)),
                 source=source,
                 snr=snr,
                 narrowness_ratio=ratio,
             )
-            return
-        merged_source = existing.source
-        if source not in existing.source:
-            merged_source = "+".join(sorted(set(existing.source.split("+")) | {source}))
-        # Prefer the frequency-domain center / SNR (a measured bin) over the
-        # catalogue center when both are present.
-        keep_freq = existing
-        if source == "narrow":
-            keep_freq = GatedSpur(
-                center_mhz=center,
-                integer_mhz=f_int,
-                source=merged_source,
-                snr=snr,
-                narrowness_ratio=ratio,
-            )
-        else:
-            keep_freq = GatedSpur(
-                center_mhz=existing.center_mhz,
-                integer_mhz=f_int,
-                source=merged_source,
-                snr=existing.snr,
-                narrowness_ratio=existing.narrowness_ratio,
-            )
-        by_int[f_int] = keep_freq
+        )
 
     for sp in active_ft_spurs:
+        if decay_probe is not None:
+            decay_ratio, amp_snr = decay_probe(sp.center_mhz)
+            if (
+                np.isfinite(decay_ratio)
+                and decay_ratio < DEFAULT_DECAY_RATIO_LINE
+                and amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO
+            ):
+                # The tone decays: a real line near an integer MHz, not a
+                # clock spur. Veto.
+                continue
         _add(sp.center_mhz, "narrow", sp.snr, sp.narrowness_ratio)
+
     for cl in saturated_clusters:
+        center = float(cl.center_freq_mhz)
+        if decay_probe is not None:
+            decay_ratio, amp_snr = decay_probe(center)
+            if (
+                np.isfinite(decay_ratio)
+                and decay_ratio >= DEFAULT_DECAY_RATIO_FLAT
+                and amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT
+            ):
+                source = "flat+saturated" if cl.saturated else "flat"
+                _add(center, source, float("nan"), float("nan"))
+            continue
+        # Legacy (no probe): only saturated clusters at integer MHz.
         if not cl.saturated:
             continue
-        center = float(cl.center_freq_mhz)
         if abs(center - round(center)) > integer_tol_mhz:
             continue
         _add(center, "saturated", float("nan"), float("nan"))
 
-    gated = sorted(by_int.values(), key=lambda g: g.center_mhz)
-    return gated
+    return sorted(gated, key=lambda g: g.center_mhz)
 
 
 # ---------------------------------------------------------------------------
@@ -349,14 +496,17 @@ def build_spur_set(
     snr_threshold: float = DEFAULT_SNR_THRESHOLD,
     mask_half_width_bins: int = DEFAULT_MASK_HALF_WIDTH_BINS,
     use_stft_catalogue: bool = True,
+    decay_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
 ) -> SpurSet:
     """Detect + gate spurs and package them with the mask geometry.
 
     ``saturated_clusters`` is the persisted Stage 2b ``spur_clusters``
-    catalogue (only entries with ``saturated=True`` contribute). Pass an
-    empty sequence (or ``use_stft_catalogue=False``) to run the
-    frequency-domain detector alone -- the auto-detect fallback when no
-    Stage 2b calibration is present.
+    catalogue. Pass an empty sequence (or ``use_stft_catalogue=False``) to
+    run the frequency-domain detector alone -- the auto-detect fallback
+    when no Stage 2b calibration is present. ``decay_probe`` (see
+    :func:`make_decay_probe`) enables the time-domain arbitration of every
+    verdict (:func:`gate_spurs`); without it the legacy frequency-domain
+    gate applies (clusters contribute only saturated integer-MHz entries).
     """
     freqs = np.asarray(freqs_sorted_mhz, dtype=float)
     active_spurs = detect_active_ft_spurs(
@@ -373,6 +523,7 @@ def build_spur_set(
         active_spurs,
         clusters,
         integer_tol_mhz=integer_tol_mhz,
+        decay_probe=decay_probe,
     )
     if freqs.size >= 2:
         bin_spacing = float(np.median(np.abs(np.diff(freqs))))

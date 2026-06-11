@@ -40,8 +40,11 @@ __all__ = [
     "DEFAULT_GATE_SIGMA_EFF_KAPPA",
     "DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT",
     "DEFAULT_GATE_LINE_ESCAPE_LAMBDA",
+    "DEFAULT_PAIR_CANCELLATION_MAX",
     "line_evidence_escape",
     "line_escape_nuisance_columns",
+    "pair_cancellation_fraction",
+    "blend_pair_escape",
     "DEFAULT_SHAPE_ERROR_KAPPA",
     "DEFAULT_CHI2R_NOISE_FLOOR",
     "calculate_hwhm_from_apodization",
@@ -203,6 +206,32 @@ DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = 0.4
 # escape is strictly additive: it can flip a reject/drop into an
 # accept/keep, never the reverse. ``None`` disables it.
 DEFAULT_GATE_LINE_ESCAPE_LAMBDA: Optional[float] = 50.0
+
+# Maximum phasor-cancellation fraction for the sub-separation blend escape
+# (:func:`pair_cancellation_fraction`). The unconditional anti-collapse
+# layers (the merge cleanup's sub-resolution tier, the seeder's straddle
+# veto, the add-loop's post-fit collapse check) exist to kill ONE pathology:
+# the cancelling near-duplicate pair, two large opposite-phase amplitudes
+# buying chi-squared by synthesizing structure no physical pair of lines
+# produces. But the same layers also destroy genuine unresolved blends the
+# complex-domain evidence supports overwhelmingly -- measured rescue joint
+# refits 4-58x better in raw chi-squared collapsed back by the merge tier
+# and the rounds then rejected (363 w157/w100, 360 w56/w116, 1231 w51,
+# 655 w306). A physical blend's members share the molecular phase field:
+# their phasor sum is mostly constructive (cancellation ~ 0), while the
+# pathology is destructive by construction (cancellation -> 1). A
+# sub-separation pair is therefore KEPT when its raw delta-chi-squared
+# evidence clears the line-escape bar (``2 * lambda_escape * dk``, the same
+# overwhelming-evidence currency as :func:`line_evidence_escape`) AND its
+# cancellation fraction stays below this threshold. The threshold vetoes
+# only near-anti-aligned pairs: the pathology is destructive by
+# construction (cancellation ~ 1), while a real blend's members can sit at
+# any moderate relative phase (a measured balanced 1-resolution-element
+# doublet with a 21x raw win reads 0.55 -- the chirp phase field and
+# member-tau compensation legitimately rotate fitted phases). The evidence
+# bar, not this veto, is the primary gate. ``None`` disables the escape
+# (legacy unconditional collapse).
+DEFAULT_PAIR_CANCELLATION_MAX: Optional[float] = 0.75
 
 # Whether ``conservative_fit`` enforces the knockout verdict on a lone seed.
 # The K=1 seed is the one path into a window's accepted peak set that never
@@ -628,6 +657,73 @@ def line_evidence_escape(
     delta = chi2_nui - chi2_full
     fires = delta > 2.0 * float(lam) * float(max(n_params_peak, 1))
     return fires, float(delta)
+
+
+def pair_cancellation_fraction(
+    amplitude_a: float,
+    phase_a: float,
+    amplitude_b: float,
+    phase_b: float,
+) -> float:
+    """Destructive-interference fraction of a peak pair's phasor sum.
+
+    ``1 - |A_a e^{i phi_a} + A_b e^{i phi_b}| / (A_a + A_b)`` -- 0 for
+    perfectly constructive members (a physical unresolved blend sharing the
+    molecular phase field), 1 for the cancelling near-duplicate pathology
+    (two large opposite-phase amplitudes synthesizing structure no pair of
+    real lines produces).
+    """
+    a = abs(float(amplitude_a))
+    b = abs(float(amplitude_b))
+    total = a + b
+    if total <= 0.0:
+        return 0.0
+    phasor = a * np.exp(1j * float(phase_a)) + b * np.exp(1j * float(phase_b))
+    return float(1.0 - np.abs(phasor) / total)
+
+
+def blend_pair_escape(
+    delta_chi2_raw: float,
+    n_params_delta: int,
+    amplitude_a: float,
+    phase_a: float,
+    amplitude_b: float,
+    phase_b: float,
+    *,
+    evidence_floor: float = 1.0,
+) -> bool:
+    """Whether a sub-separation pair earns exemption from the collapse layers.
+
+    ``delta_chi2_raw`` is the raw chi-squared cost of collapsing the pair
+    (merged/simpler fit minus pair fit; positive when the pair is better).
+    The pair is kept when that evidence clears the overwhelming-evidence bar
+    ``2 * DEFAULT_GATE_LINE_ESCAPE_LAMBDA * n_params_delta * evidence_floor``
+    AND the pair is constructive (:func:`pair_cancellation_fraction` below
+    :data:`DEFAULT_PAIR_CANCELLATION_MAX`). Either constant set to ``None``
+    disables the escape.
+
+    ``evidence_floor`` scales the bar by the model-fidelity level (pass
+    ``max(1, reduced_chi2)``, the same floor the penalized gate uses) at
+    call sites whose target pathology is the *shape-error absorber* rather
+    than the cancelling pair: an absorber's chi-squared win is bounded by
+    the lineshape-fidelity floor it soaks, so demanding evidence far above
+    that floor keeps high-SNR absorbers collapsed while a genuine blend
+    (whose win is reducible structure the single-line model cannot
+    represent at any fidelity) still escapes.
+    """
+    lam = DEFAULT_GATE_LINE_ESCAPE_LAMBDA
+    cmax = DEFAULT_PAIR_CANCELLATION_MAX
+    if lam is None or cmax is None:
+        return False
+    bar = (
+        2.0
+        * float(lam)
+        * float(max(n_params_delta, 1))
+        * float(max(evidence_floor, 1.0))
+    )
+    if delta_chi2_raw <= bar:
+        return False
+    return pair_cancellation_fraction(amplitude_a, phase_a, amplitude_b, phase_b) < cmax
 
 
 _fringe_dump_counter = itertools.count()

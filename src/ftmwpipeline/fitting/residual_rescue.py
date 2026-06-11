@@ -28,6 +28,7 @@ Notes
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -370,13 +371,26 @@ def merge_close_peaks_cleanup(
 
     current = fit
     n_merged = 0
+    # Pairs the blend escape exempted from collapse this run: a kept pair
+    # must not be re-selected as the closest pair forever (the loop would
+    # spin), so it is keyed by its members' offsets and skipped. A merge of
+    # a DIFFERENT pair refits every peak and shifts the kept pair's offsets
+    # off its key -- it is then simply re-evaluated, which is correct (the
+    # evidence may have changed).
+    protected_pairs: set[Tuple[float, float]] = set()
+
+    def _pair_key(lo: ModelPeak, hi: ModelPeak) -> Tuple[float, float]:
+        return (round(lo.offset_mhz, 6), round(hi.offset_mhz, 6))
+
     while current.n_peaks >= 2:
         sorted_peaks = sorted(current.peaks, key=lambda p: p.offset_mhz)
         # Closest adjacent pair (after sorting, the minimum gap must be
-        # between adjacent entries).
+        # between adjacent entries), skipping escape-protected pairs.
         min_dist = float("inf")
         merge_i = -1
         for i in range(len(sorted_peaks) - 1):
+            if _pair_key(sorted_peaks[i], sorted_peaks[i + 1]) in protected_pairs:
+                continue
             d = sorted_peaks[i + 1].offset_mhz - sorted_peaks[i].offset_mhz
             if d < min_dist:
                 min_dist = d
@@ -397,6 +411,20 @@ def merge_close_peaks_cleanup(
         # doublet out to ``overfit_amp_ratio_band`` would cost a wasted refit.)
         if min_dist >= merge_threshold and amp_ratio < overfit_amp_ratio_threshold:
             break
+        if os.environ.get("FTMW_DEBUG_MERGE"):
+            tier = (
+                "T1"
+                if min_dist < structural_threshold
+                else ("T2" if min_dist < merge_threshold else "T3")
+            )
+            print(
+                f"[merge] pair ({pair_lo.offset_mhz:+.4f},{pair_hi.offset_mhz:+.4f}) "
+                f"dist={min_dist:.4f} {tier} amp_ratio={amp_ratio:.2f} "
+                f"cancel={validation.pair_cancellation_fraction(pair_lo.amplitude, pair_lo.phase, pair_hi.amplitude, pair_hi.phase):.2f} "
+                f"thr(st={structural_threshold:.4f},mg={merge_threshold:.4f},"
+                f"band={amp_ratio_band:.4f})",
+                flush=True,
+            )
         merged_pair = _merge_cluster([sorted_peaks[merge_i], sorted_peaks[merge_i + 1]])
         merged_init = (
             sorted_peaks[:merge_i] + [merged_pair] + sorted_peaks[merge_i + 2 :]
@@ -423,10 +451,26 @@ def merge_close_peaks_cleanup(
         refit.tau_was_fit = current.tau_was_fit
         refit.tau_error = current.tau_error
 
-        # Tier 1: sub-resolution -> merge unconditionally. The K-peak
-        # fit at this scale is a numerical artifact; no statistical test
-        # can disambiguate it from a single peak.
+        # Tier 1: sub-resolution -> merge unconditionally, UNLESS the pair
+        # earns the blend escape. The unconditional collapse targets the
+        # cancelling near-duplicate artifact, but the complex-domain
+        # evidence CAN distinguish a genuine sub-resolution blend from a
+        # single peak (distinct member phases produce a profile one ``h_T``
+        # cannot match): a pair whose collapse costs overwhelming raw
+        # chi-squared and whose members are constructive is physical
+        # structure, not the pathology (see
+        # :data:`validation.DEFAULT_PAIR_CANCELLATION_MAX`).
         if min_dist < structural_threshold:
+            if validation.blend_pair_escape(
+                refit.chi_squared - current.chi_squared,
+                max(current.n_params - refit.n_params, 1),
+                pair_lo.amplitude,
+                pair_lo.phase,
+                pair_hi.amplitude,
+                pair_hi.phase,
+            ):
+                protected_pairs.add(_pair_key(pair_lo, pair_hi))
+                continue
             current = refit
             n_merged += 1
             continue
@@ -473,8 +517,27 @@ def merge_close_peaks_cleanup(
         # signal that the closer-but-resolvable weak peak is a shape-error
         # absorber beside a strong line; collapse it. A balanced pair here is a
         # real doublet -> stop (it is the closest pair, so nothing nearer
-        # remains).
+        # remains). The blend escape applies with the fidelity-floor-scaled
+        # bar: an absorber's win is bounded by the lineshape floor it soaks
+        # (``chi2_r ~ (kappa*SNR)^2``), so only evidence far beyond that
+        # floor marks the weak member as a real unresolved line.
         if amp_ratio >= overfit_amp_ratio_threshold:
+            floor = (
+                float(current.reduced_chi2)
+                if np.isfinite(current.reduced_chi2)
+                else 1.0
+            )
+            if validation.blend_pair_escape(
+                refit.chi_squared - current.chi_squared,
+                max(current.n_params - refit.n_params, 1),
+                pair_lo.amplitude,
+                pair_lo.phase,
+                pair_hi.amplitude,
+                pair_hi.phase,
+                evidence_floor=floor,
+            ):
+                protected_pairs.add(_pair_key(pair_lo, pair_hi))
+                continue
             current = refit
             n_merged += 1
             continue

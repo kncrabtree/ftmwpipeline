@@ -2017,17 +2017,37 @@ def _blend_aware_seed(
             trial.n_params,
         )
         # Post-fit sanity check: reject escalations whose peaks collapsed onto
-        # the same offset (the cancelling-phase degenerate solution).
+        # the same offset (the cancelling-phase degenerate solution). A
+        # genuine sub-separation BLEND earns the escape: when the escalation's
+        # raw chi-squared win is overwhelming and every violating pair is
+        # constructive, the straddle resolved physical structure, not the
+        # pathology (see :data:`validation.DEFAULT_PAIR_CANCELLATION_MAX`;
+        # measured K=2 escalations 6-29x better in raw chi-squared were
+        # vetoed here on 363 w157/w100 and 360 w56).
         collapsed = False
         if trial.success and len(trial.peaks) >= 2 and min_pair_sep > 0.0:
+            violating: list[tuple[int, int]] = []
             offs = np.asarray([pk.offset_mhz for pk in trial.peaks], dtype=float)
             for ii in range(offs.size):
                 for jj in range(ii + 1, offs.size):
                     if abs(offs[ii] - offs[jj]) < min_pair_sep:
-                        collapsed = True
-                        break
-                if collapsed:
-                    break
+                        violating.append((ii, jj))
+            if violating:
+                collapsed = True
+                evidence = prev.chi_squared - trial.chi_squared
+                dk = max(trial.n_params - prev.n_params, 1)
+                if all(
+                    validation.blend_pair_escape(
+                        evidence,
+                        dk,
+                        trial.peaks[ii].amplitude,
+                        trial.peaks[ii].phase,
+                        trial.peaks[jj].amplitude,
+                        trial.peaks[jj].phase,
+                    )
+                    for ii, jj in violating
+                ):
+                    collapsed = False
         # AICc-with-n_eff gate. The K+1 trial model is the magnitude
         # basis: its fitted_spectrum defines the informative bins, and
         # both AICc evaluations share that ``n_eff`` so they sit on a
@@ -2519,6 +2539,24 @@ def conservative_fit(
                 for i, o in enumerate(trial_offsets)
                 if i != ci
             )
+            if not sep_ok_post:
+                # Blend escape: a candidate that converged sub-separation
+                # beside an existing peak with overwhelming raw evidence and
+                # a constructive pair is an unresolved blend, not the
+                # cancelling absorber this check targets.
+                cj = min(
+                    (i for i in range(len(trial_offsets)) if i != ci),
+                    key=lambda i: abs(trial_offsets[i] - trial_offsets[ci]),
+                )
+                if validation.blend_pair_escape(
+                    current.chi_squared - trial.chi_squared,
+                    max(trial.n_params - current.n_params, 1),
+                    trial.peaks[ci].amplitude,
+                    trial.peaks[ci].phase,
+                    trial.peaks[cj].amplitude,
+                    trial.peaks[cj].phase,
+                ):
+                    sep_ok_post = True
             if not sep_ok_post:
                 audit.append(
                     AddStep(

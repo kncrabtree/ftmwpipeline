@@ -232,6 +232,97 @@ def test_mask_spec_bin_mask_empty_offsets():
 
 
 # ---------------------------------------------------------------------------
+# Time-domain decay probe + arbitration
+# ---------------------------------------------------------------------------
+PROBE_FREQ = 40960.0
+
+
+def _synthetic_fid(tones, *, dt_us=0.002, n=7500, noise=0.001, seed=7):
+    """Real FID with the given ``(f_mol_mhz, amplitude, tau_us)`` tones.
+
+    ``tau_us = 0`` makes a non-decaying CW tone. Lower-sideband convention
+    (``f_bb = PROBE_FREQ - f_mol``), matching the fixtures.
+    """
+    rng = np.random.default_rng(seed)
+    t = np.arange(n) * dt_us
+    x = rng.normal(0.0, noise, size=n)
+    for f_mol, amp, tau in tones:
+        f_bb = PROBE_FREQ - f_mol
+        env = np.exp(-t / tau) if tau > 0 else 1.0
+        x = x + amp * env * np.cos(2 * np.pi * f_bb * t + 0.3)
+    return x, dt_us, n * dt_us
+
+
+def _probe_for(tones, **kwargs):
+    from ftmwpipeline.fitting.spur_detection import make_decay_probe
+
+    x, dt_us, dur = _synthetic_fid(tones, **kwargs)
+    return make_decay_probe(
+        x,
+        dt_us,
+        start_us=0.0,
+        end_us=dur,
+        probe_freq_mhz=PROBE_FREQ,
+        sideband=Sideband.LOWER,
+    )
+
+
+def test_decay_probe_separates_line_from_cw_tone():
+    probe = _probe_for([(30720.0, 1.0, 0.0), (33421.1, 1.0, 4.0)])
+    ratio_cw, snr_cw = probe(30720.0)
+    ratio_line, snr_line = probe(33421.1)
+    assert ratio_cw > 0.8
+    assert snr_cw > 10.0
+    assert ratio_line < 0.6
+    assert snr_line > 10.0
+
+
+def test_gate_vetoes_narrow_nominee_that_decays():
+    # A decaying line that happens to sit at an integer MHz and pass the
+    # narrowness test: the probe sees it decay and vetoes the gate.
+    freqs, spec, sig_c = _grid([(30720.0, 100.0, 0.0)])
+    narrow = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
+    assert narrow
+    probe = _probe_for([(30720.0, 1.0, 4.0)])
+    assert gate_spurs(narrow, [], decay_probe=probe) == []
+    # Flat probe keeps it gated.
+    probe_flat = _probe_for([(30720.0, 1.0, 0.0)])
+    gated = gate_spurs(narrow, [], decay_probe=probe_flat)
+    assert [g.integer_mhz for g in gated] == [30720]
+
+
+def test_gate_accepts_probe_confirmed_flat_cluster_off_integer():
+    # A non-integer, NON-saturated cluster: legacy gate drops it, but a
+    # probe-confirmed flat tone is gated with source "flat".
+    cl = SpurCluster(
+        center_freq_mhz=33421.1,
+        peak_bin_index=10,
+        n_bins=1,
+        bin_indices=(10,),
+        saturated=False,
+    )
+    probe = _probe_for([(33421.1, 1.0, 0.0)])
+    gated = gate_spurs([], [cl], decay_probe=probe)
+    assert len(gated) == 1
+    assert gated[0].source == "flat"
+    assert abs(gated[0].center_mhz - 33421.1) < 1e-9
+
+
+def test_gate_rejects_saturated_cluster_that_decays():
+    # The bare saturated flag is not trusted when the probe sees decay
+    # (measured false positives on strong erratic lines).
+    cl = SpurCluster(
+        center_freq_mhz=33421.1,
+        peak_bin_index=10,
+        n_bins=1,
+        bin_indices=(10,),
+        saturated=True,
+    )
+    probe = _probe_for([(33421.1, 1.0, 4.0)])
+    assert gate_spurs([], [cl], decay_probe=probe) == []
+
+
+# ---------------------------------------------------------------------------
 # fit_window spur-mask integration (n_data reduction + bin exclusion)
 # ---------------------------------------------------------------------------
 def test_fit_window_spur_mask_reduces_n_data_and_chi2():

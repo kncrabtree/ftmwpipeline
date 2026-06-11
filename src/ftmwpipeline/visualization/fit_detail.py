@@ -249,6 +249,7 @@ def plot_consolidated_detail(
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
     figsize: Tuple[float, float] = (11, 8.5),
+    spurs: Optional[Sequence[dict]] = None,
 ) -> plt.Figure:
     """Render the consolidated per-window detail figure (see module docstring).
 
@@ -256,6 +257,10 @@ def plot_consolidated_detail(
     grid (ascending molecular frequency) the fit lives on. ``freq_padded`` /
     ``spec_padded`` are the exactly-2x zero-filled display grid for the
     magnitude panels; when omitted, the magnitude panels fall back to native.
+    ``spurs`` is the fit's gated-spur catalogue
+    (``SpectrumFit.diagnostics["gated_spurs"]``: dicts with ``center_mhz``
+    and ``source``); in-window entries are marked on the data and residual
+    panels so a masked tone is never mistaken for an un-fit line.
     """
     if window_fit.window is None:
         raise ValueError(
@@ -411,6 +416,30 @@ def plot_consolidated_detail(
     for ax in (ax_re_dat, ax_im_dat, ax_mag_dat):
         ax.tick_params(axis="both", labelsize=8)
         ax.set_xlabel("frequency (MHz)", fontsize=9)
+
+    # Gated spurs in-window: mark the masked tone on every data/residual
+    # panel (it is deliberately absent from the model and excluded from the
+    # fit's chi-squared).
+    in_window_spurs = [
+        sp
+        for sp in (spurs or [])
+        if lo_f <= float(sp.get("center_mhz", float("nan"))) <= hi_f
+    ]
+    for i, sp in enumerate(in_window_spurs):
+        f_sp = float(sp["center_mhz"])
+        for ax in (ax_re_res, ax_im_res, ax_mag_res, ax_re_dat, ax_im_dat):
+            ax.axvline(f_sp, color="tab:orange", lw=1.0, ls=":", alpha=0.9, zorder=1)
+        ax_mag_dat.axvline(
+            f_sp,
+            color="tab:orange",
+            lw=1.0,
+            ls=":",
+            alpha=0.9,
+            zorder=1,
+            label=f"spur ({sp.get('source', '?')})" if i == 0 else None,
+        )
+    if in_window_spurs:
+        ax_mag_dat.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
     _draw_residual_hist(ax_hist, residual, sigma_slice, amp, usuffix)
     _draw_peak_table(ax_peaks, window_fit.fitted_peaks, labels, amp, units_label)
