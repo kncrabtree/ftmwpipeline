@@ -154,6 +154,20 @@ DEFAULT_MIN_PAIR_SEPARATION_FACTOR = 0.5
 # limit). Guards the sub-resolution duplicate-overfit pathology the FWHM-only
 # floor licenses (GitHub issue #13).
 DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR = 1.0
+# Blend-split trial: a candidate inside the pre-fit peak-separation floor of
+# an existing peak still gets a trial fit when the residual at its position
+# carries at least this many sigma of magnitude evidence (0 disables; the
+# candidate is then rejected outright as before). An existing peak parked at
+# a blend's compromise position leaves its residual maximum *inside* its own
+# separation dead zone, so the outright rejection forecloses ever resolving
+# the blend -- the trial NLS, free to move both the candidate and the
+# blocking peak, splits it instead (655 w880: a 119-kHz doublet modeled as
+# one line held a 41-sigma residual; the split drops window chi2 8503->221).
+# The post-fit collapse check (with its blend_pair_escape) and the AICc gate
+# arbitrate the outcome exactly as for an ordinary candidate; a failed
+# blend-split trial is rejected outright (never held tentative, never counted
+# against patience) so loop termination matches the legacy skip.
+DEFAULT_BLEND_SPLIT_MIN_SNR = 4.0
 # Tau policy: the canonical apodization (``expf_us``) sets a hard upper bound
 # on ``tau`` -- the data cannot decay slower than the apodization itself.
 # Decreasing ``tau`` below the apodization broadens the line, so the LSQ
@@ -2044,10 +2058,36 @@ def _blend_aware_seed(
                         trial.peaks[ii].phase,
                         trial.peaks[jj].amplitude,
                         trial.peaks[jj].phase,
+                        # Relative lane: the escalation splits the feature the
+                        # accepted seed explains, so its evidence scale is the
+                        # seed's own null-referenced chi-squared win.
+                        feature_evidence=null_chi2 - prev.chi_squared,
                     )
                     for ii, jj in violating
                 ):
                     collapsed = False
+                for ii, jj in violating:
+                    validation.debug_fringe_dump(
+                        "seeder",
+                        cand_offset=seed_offset_mhz,
+                        pair_off_a=trial.peaks[ii].offset_mhz,
+                        pair_off_b=trial.peaks[jj].offset_mhz,
+                        pair_amp_a=trial.peaks[ii].amplitude,
+                        pair_amp_b=trial.peaks[jj].amplitude,
+                        pair_cancellation=validation.pair_cancellation_fraction(
+                            trial.peaks[ii].amplitude,
+                            trial.peaks[ii].phase,
+                            trial.peaks[jj].amplitude,
+                            trial.peaks[jj].phase,
+                        ),
+                        tau_us=trial.tau_us,
+                        acquisition_us=acquisition_us,
+                        raw_chi2_more=trial.chi_squared,
+                        raw_chi2_less=prev.chi_squared,
+                        null_chi2=null_chi2,
+                        n_params_delta=dk,
+                        passes=int(not collapsed),
+                    )
         # AICc-with-n_eff gate. The K+1 trial model is the magnitude
         # basis: its fitted_spectrum defines the informative bins, and
         # both AICc evaluations share that ``n_eff`` so they sit on a
@@ -2139,6 +2179,7 @@ def conservative_fit(
     min_pair_separation_resolution_factor: float = (
         DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR
     ),
+    blend_split_min_snr: float = DEFAULT_BLEND_SPLIT_MIN_SNR,
     tau_penalty_lambda: float = DEFAULT_TAU_PENALTY_LAMBDA,
     tau_penalty_n_sigma: float = DEFAULT_TAU_PENALTY_N_SIGMA,
     weak_window_snr_threshold: float = DEFAULT_WEAK_WINDOW_SNR_THRESHOLD,
@@ -2240,6 +2281,12 @@ def conservative_fit(
         resolution term catches sub-resolution duplicate pairs the FWHM-only
         floor licenses on narrow features (the per-window FWHM can fall below
         the Fourier limit). See GitHub issue #13.
+    blend_split_min_snr : float, default :data:`DEFAULT_BLEND_SPLIT_MIN_SNR`
+        Residual-magnitude evidence (in local sigma) above which a candidate
+        failing the pre-fit peak-separation constraint still gets a trial
+        fit -- the blend-split trial (see
+        :data:`DEFAULT_BLEND_SPLIT_MIN_SNR`). ``0`` restores the outright
+        rejection.
     tau_penalty_lambda : float, default :data:`DEFAULT_TAU_PENALTY_LAMBDA`
         Weight of the lower-side tau penalty (see
         :func:`_penalty_residuals_and_jacobian`). ``0`` disables. The
@@ -2466,23 +2513,38 @@ def conservative_fit(
         # Stage 3 lines exactly this way).
         existing = [pk.offset_mhz for pk in in_model]
         sep_ok = all(abs(e - cand) >= min_separation for e in existing)
+        sep_waived = False
         if not sep_ok:
-            audit.append(
-                AddStep(
-                    n_peaks_before=current.n_peaks,
-                    candidate_offset_mhz=cand,
-                    chi2_before=current.chi_squared,
-                    chi2_after=current.chi_squared,
-                    f_statistic=0.0,
-                    p_value=1.0,
-                    aic_before=current.aic,
-                    aic_after=current.aic,
-                    separation_ok=False,
-                    decision="reject",
-                    reason="peak-separation constraint",
-                )
+            # Blend-split trial: an existing peak parked at a blend's
+            # compromise position leaves the residual maximum *inside* its
+            # own separation dead zone, so rejecting here forecloses ever
+            # resolving the blend. When the residual at the candidate
+            # carries real magnitude evidence, run the trial anyway -- the
+            # NLS is free to move both the candidate and the blocking peak
+            # and splits the blend when the data supports it; the post-fit
+            # collapse check and the AICc gate arbitrate as usual.
+            res_snr = abs(float(np.interp(cand, u, np.abs(residual)))) / max(
+                float(np.interp(cand, u, sigma)), float(np.finfo(float).tiny)
             )
-            continue
+            if blend_split_min_snr > 0.0 and res_snr >= blend_split_min_snr:
+                sep_waived = True
+            else:
+                audit.append(
+                    AddStep(
+                        n_peaks_before=current.n_peaks,
+                        candidate_offset_mhz=cand,
+                        chi2_before=current.chi_squared,
+                        chi2_after=current.chi_squared,
+                        f_statistic=0.0,
+                        p_value=1.0,
+                        aic_before=current.aic,
+                        aic_after=current.aic,
+                        separation_ok=False,
+                        decision="reject",
+                        reason="peak-separation constraint",
+                    )
+                )
+                continue
 
         # Trial = accepted + the whole tentative batch + this candidate, tested
         # against the last accepted model so a jointly-significant batch is
@@ -2531,9 +2593,12 @@ def conservative_fit(
                 min_pair_separation_resolution_factor,
             )
             trial_offsets = [pk.offset_mhz for pk in trial.peaks]
-            ci = min(
-                range(len(trial_offsets)), key=lambda i: abs(trial_offsets[i] - cand)
-            )
+            # The candidate is structurally the LAST trial peak (trial_init
+            # appends it; the NLS preserves parameter order). Nearest-to-seed
+            # matching misidentifies it when it migrates past an existing
+            # peak -- on a blend-split trial it routinely converges closer
+            # to the bright core than to its own seed.
+            ci = len(trial_offsets) - 1
             sep_ok_post = all(
                 abs(o - trial_offsets[ci]) >= 0.5 * sep_eff
                 for i, o in enumerate(trial_offsets)
@@ -2614,10 +2679,8 @@ def conservative_fit(
             aicc_delta = aicc_trial - aicc_current
             passes = aicc_trial < aicc_current
             escape_dchi2 = 0.0
-            ci_cand = min(
-                range(len(trial.peaks)),
-                key=lambda i: abs(trial.peaks[i].offset_mhz - cand),
-            )
+            # Structural index, not nearest-to-seed (see the collapse check).
+            ci_cand = len(trial.peaks) - 1
             cand_template = model_spectrum(
                 u,
                 [trial.peaks[ci_cand]],
@@ -2690,6 +2753,8 @@ def conservative_fit(
             reason = f"+{len(tentative) + 1} line(s)"
             if escape_dchi2 and aicc_trial >= aicc_current:
                 reason += f" (line-evidence escape dchi2={escape_dchi2:.0f})"
+            if sep_waived:
+                reason += " (blend-split trial)"
             audit.append(
                 AddStep(
                     n_peaks_before=current.n_peaks,
@@ -2700,7 +2765,7 @@ def conservative_fit(
                     p_value=p_value,
                     aic_before=current.aic,
                     aic_after=trial.aic,
-                    separation_ok=True,
+                    separation_ok=not sep_waived,
                     decision=decision,
                     reason=reason,
                     n_eff=float(n_eff),
@@ -2710,6 +2775,28 @@ def conservative_fit(
             current = trial
             tentative = []
             consecutive_rejects = 0
+        elif sep_waived:
+            # A failed blend-split trial dies outright: it must not join the
+            # tentative batch (a sub-separation peak there would re-collapse
+            # inside every later trial) and must not consume patience (the
+            # legacy path skipped these candidates without stopping the loop).
+            audit.append(
+                AddStep(
+                    n_peaks_before=current.n_peaks,
+                    candidate_offset_mhz=cand,
+                    chi2_before=current.chi_squared,
+                    chi2_after=trial.chi_squared,
+                    f_statistic=f_stat,
+                    p_value=p_value,
+                    aic_before=current.aic,
+                    aic_after=trial.aic,
+                    separation_ok=False,
+                    decision="reject",
+                    reason="blend-split trial failed the gate",
+                    n_eff=float(n_eff),
+                    aicc_delta=float(aicc_delta),
+                )
+            )
         else:
             audit.append(
                 AddStep(

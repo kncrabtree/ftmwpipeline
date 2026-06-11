@@ -40,6 +40,7 @@ __all__ = [
     "DEFAULT_GATE_SIGMA_EFF_KAPPA",
     "DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT",
     "DEFAULT_GATE_LINE_ESCAPE_LAMBDA",
+    "DEFAULT_BLEND_RELATIVE_EVIDENCE_FRACTION",
     "DEFAULT_PAIR_CANCELLATION_MAX",
     "line_evidence_escape",
     "line_escape_nuisance_columns",
@@ -232,6 +233,25 @@ DEFAULT_GATE_LINE_ESCAPE_LAMBDA: Optional[float] = 50.0
 # bar, not this veto, is the primary gate. ``None`` disables the escape
 # (legacy unconditional collapse).
 DEFAULT_PAIR_CANCELLATION_MAX: Optional[float] = 0.75
+
+# Relative-evidence lane of the sub-separation blend escape. The absolute
+# bar above (``2 * lambda_escape * dk`` ~ 300) is sized against high-SNR
+# pathologies, but a low-SNR feature can never reach it: its WHOLE line
+# carries less raw chi-squared than the bar (363 w87: a constructive
+# 0.8-resolution-element doublet at snr_max 9 whose second component is
+# worth 169 -- 64% of the feature's entire evidence of 263). The relative
+# lane keeps a sub-separation pair when its raw delta-chi-squared clears
+# this fraction of the *feature's own evidence* (the chi-squared the whole
+# feature explains vs the model without it) AND the plain accept-gate bar
+# ``2 * DEFAULT_GATE_PENALTY_LAMBDA * dk`` (kills dust pairs outright).
+# Scale-invariance argument: the kappa-floor lineshape error a shape-error
+# absorber can soak is ~ n_eff * (kappa * snr)^2, a few percent of the
+# feature evidence (~ snr^2 * n_support) at ANY snr with kappa = 0.05 --
+# so demanding 25% relative evidence excludes shape-error absorbers
+# without an SNR cutoff while admitting genuine doublets whose members
+# split the feature's information. Call sites opt in by passing
+# ``feature_evidence``; ``None`` disables the lane (absolute bar only).
+DEFAULT_BLEND_RELATIVE_EVIDENCE_FRACTION: Optional[float] = 0.25
 
 # Whether ``conservative_fit`` enforces the knockout verdict on a lone seed.
 # The K=1 seed is the one path into a window's accepted peak set that never
@@ -691,6 +711,7 @@ def blend_pair_escape(
     phase_b: float,
     *,
     evidence_floor: float = 1.0,
+    feature_evidence: Optional[float] = None,
 ) -> bool:
     """Whether a sub-separation pair earns exemption from the collapse layers.
 
@@ -710,6 +731,16 @@ def blend_pair_escape(
     that floor keeps high-SNR absorbers collapsed while a genuine blend
     (whose win is reducible structure the single-line model cannot
     represent at any fidelity) still escapes.
+
+    ``feature_evidence`` (the raw chi-squared the whole feature explains
+    against the model without it) opts the call site into the
+    relative-evidence lane: a constructive pair whose ``delta_chi2_raw``
+    clears :data:`DEFAULT_BLEND_RELATIVE_EVIDENCE_FRACTION` of the feature's
+    own evidence -- and the plain accept-gate bar
+    ``2 * DEFAULT_GATE_PENALTY_LAMBDA * n_params_delta`` -- also escapes,
+    even below the absolute bar. A low-SNR doublet's whole feature carries
+    less evidence than the absolute bar, so without this lane no low-SNR
+    blend can ever be kept (363 w87).
     """
     lam = DEFAULT_GATE_LINE_ESCAPE_LAMBDA
     cmax = DEFAULT_PAIR_CANCELLATION_MAX
@@ -721,7 +752,22 @@ def blend_pair_escape(
         * float(max(n_params_delta, 1))
         * float(max(evidence_floor, 1.0))
     )
-    if delta_chi2_raw <= bar:
+    clears = delta_chi2_raw > bar
+    if not clears:
+        frac = DEFAULT_BLEND_RELATIVE_EVIDENCE_FRACTION
+        lam_gate = DEFAULT_GATE_PENALTY_LAMBDA
+        if (
+            frac is not None
+            and lam_gate is not None
+            and feature_evidence is not None
+            and feature_evidence > 0.0
+        ):
+            gate_bar = 2.0 * float(lam_gate) * float(max(n_params_delta, 1))
+            clears = (
+                delta_chi2_raw > float(frac) * float(feature_evidence)
+                and delta_chi2_raw > gate_bar
+            )
+    if not clears:
         return False
     return pair_cancellation_fraction(amplitude_a, phase_a, amplitude_b, phase_b) < cmax
 
@@ -732,7 +778,9 @@ _fringe_window_ctx: Optional[dict[str, float]] = None
 
 def debug_fringe_dump(site: str, **arrays: Any) -> None:
     """``FTMW_DEBUG_FRINGE_DIR=<dir>``: dump disputed-evidence arrays at a
-    gate decision point to ``<dir>/<site>_<n>.npz`` for offline analysis."""
+    gate decision point to ``<dir>/<site>_<n>.npz`` for offline analysis.
+    ``FTMW_DEBUG_FRINGE_MIN`` overrides the minimum window-level raw
+    delta-chi2 an event must carry to be written (default 50)."""
     out_dir = os.environ.get("FTMW_DEBUG_FRINGE_DIR")
     if not out_dir:
         return
@@ -742,7 +790,7 @@ def debug_fringe_dump(site: str, **arrays: Any) -> None:
     payload = {k: np.asarray(v) for k, v in arrays.items() if v is not None}
     try:
         evidence = float(payload["raw_chi2_less"]) - float(payload["raw_chi2_more"])
-        if evidence < 50.0:
+        if evidence < float(os.environ.get("FTMW_DEBUG_FRINGE_MIN", "50")):
             return
     except KeyError:
         pass

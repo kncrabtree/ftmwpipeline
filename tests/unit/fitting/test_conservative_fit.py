@@ -116,6 +116,42 @@ class TestAcceptReject:
             not s.separation_ok and s.decision == "reject" for s in res.audit_trail
         )
 
+    def test_blend_split_trial_resolves_subseparation_doublet(self):
+        """A candidate inside the separation floor of a compromise-positioned
+        peak still earns a trial when the residual there carries evidence,
+        and the trial NLS splits the blend (the 655 w880 mechanism)."""
+        rng = np.random.default_rng(SEED + 5)
+        sep = 0.06  # below 1.0 * FWHM (pre-fit floor), above 0.5 * sep_eff
+        true = [
+            ModelPeak(_amp_for_snr(120.0), 0.0, 0.4),
+            ModelPeak(_amp_for_snr(80.0), sep, 0.9),
+        ]
+        u, z = _window(true, 1.5, 1.0, rng)
+        kwargs = dict(
+            min_separation_factor=1.0,
+            seeder_max_k=1,  # force the add-loop (not the seeder) to resolve it
+        )
+
+        res = conservative_fit(u, z, 1.0, [0.0, sep], TAU_US, T_US, **kwargs)
+        assert res.n_peaks == 2
+        offs = sorted(pk.offset_mhz for pk in res.fit.peaks)
+        assert abs(offs[0] - 0.0) < 0.02
+        assert abs(offs[1] - sep) < 0.02
+        assert any(
+            s.decision in ("accept", "promote") and "blend-split" in s.reason
+            for s in res.audit_trail
+        )
+
+        # Disabled (legacy): the same candidate dies on the pre-fit check.
+        res0 = conservative_fit(
+            u, z, 1.0, [0.0, sep], TAU_US, T_US, blend_split_min_snr=0.0, **kwargs
+        )
+        assert res0.n_peaks == 1
+        assert any(
+            s.decision == "reject" and s.reason == "peak-separation constraint"
+            for s in res0.audit_trail
+        )
+
 
 # ---------------------------------------------------------------------------
 # The blend-aware seeder

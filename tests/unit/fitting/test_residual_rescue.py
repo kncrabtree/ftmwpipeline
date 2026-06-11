@@ -558,6 +558,28 @@ class TestMergeCleanupAICc:
         assert blend_pair_escape(5000.0, 3, 1.0, 0.4, 0.9, 0.9, evidence_floor=1.0)
         assert not blend_pair_escape(5000.0, 3, 1.0, 0.4, 0.9, 0.9, evidence_floor=50.0)
 
+    def test_blend_escape_relative_evidence_lane(self):
+        """A low-SNR constructive pair below the absolute bar escapes when
+        its evidence is a large fraction of the feature's own (363 w87);
+        dust pairs and small-fraction (shape-error-scale) pairs do not."""
+        from ftmwpipeline.fitting.validation import blend_pair_escape
+
+        # Below the absolute bar (2*50*3=300), no feature context -> reject.
+        assert not blend_pair_escape(169.0, 3, 1.0, 0.4, 0.9, 0.9)
+        # Same pair carrying 64% of the feature's evidence -> escape.
+        assert blend_pair_escape(169.0, 3, 1.0, 0.4, 0.9, 0.9, feature_evidence=263.0)
+        # High relative fraction but below the plain gate bar (2*5*3=30):
+        # the dust guard rejects.
+        assert not blend_pair_escape(20.0, 3, 1.0, 0.4, 0.9, 0.9, feature_evidence=40.0)
+        # Shape-error scale (a few percent of a bright feature) -> reject.
+        assert not blend_pair_escape(
+            169.0, 3, 1.0, 0.4, 0.9, 0.9, feature_evidence=10000.0
+        )
+        # The cancellation veto still applies on the relative lane.
+        assert not blend_pair_escape(
+            169.0, 3, 1.0, 0.0, 0.95, np.pi * 0.98, feature_evidence=263.0
+        )
+
     def test_amp_ratio_tier_preserves_balanced_supraresolution_pair(self):
         """A balanced (ratio ~1) pair in the amplitude-ratio band is a real
         close doublet and is NOT collapsed."""
