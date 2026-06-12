@@ -86,6 +86,8 @@ def cmd_data_load(args: argparse.Namespace) -> int:
             format_params["keep_frames"] = True
         if args.channel is not None:
             format_params["channel"] = args.channel
+        if args.interleave_factors is not None:
+            format_params["interleave_factors"] = args.interleave_factors
 
         # Use shared implementation for data import
         result = import_data_impl(
@@ -418,6 +420,16 @@ Examples:
         default=None,
         help="Channel group name for keysight-mat (e.g. Channel_3); "
         "defaults to the sole channel present",
+    )
+    load_parser.add_argument(
+        "--interleave-factors",
+        dest="interleave_factors",
+        default=None,
+        type=lambda s: [int(x) for x in s.split(",")],
+        metavar="M[,M,...]",
+        help="Comma-separated ADC interleave factors for offset cleanup "
+        "(e.g. 16,512).  Applied sequentially on the pre-record before "
+        "slicing/averaging.",
     )
 
     load_parser.set_defaults(func=cmd_data_load)

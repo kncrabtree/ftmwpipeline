@@ -9,6 +9,8 @@ Tests cover:
 - Different frame param refuses without force, succeeds with force
 - Old-file backward compat (CSV pipeline file loads cleanly, no segments)
 - Acquisition segment serialization round-trip through a .ftmw file
+- Interleave-offset cleanup: estimation, subtraction, sequential factors,
+  comb removal, off-by-default, pattern round-trip, clock_sources injection
 """
 
 import json
@@ -25,7 +27,14 @@ from ftmwpipeline.file_manager import (
     SourceMetadata,
     create_pipeline_file,
 )
-from ftmwpipeline.io.acquisition_layout import AcquisitionLayout, SlicedRecord, slice_record
+from ftmwpipeline.io.acquisition_layout import (
+    AcquisitionLayout,
+    SlicedRecord,
+    apply_interleave_cleanup,
+    estimate_interleave_pattern,
+    slice_record,
+    subtract_interleave_pattern,
+)
 from ftmwpipeline.io.data_loaders import detect_format
 from ftmwpipeline.io.data_loaders.keysight_mat import KeysightMatLoader
 from ftmwpipeline.io.fid_serialization import (
@@ -33,7 +42,6 @@ from ftmwpipeline.io.fid_serialization import (
     load_fid_from_hdf5,
     save_fid_to_hdf5,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -80,7 +88,9 @@ def _make_mat_file(
     return mat_path
 
 
-def _make_segmented_mat(tmp_path: Path, *, n_frames: int = 3, yinc: float = 1.0) -> tuple:
+def _make_segmented_mat(
+    tmp_path: Path, *, n_frames: int = 3, yinc: float = 1.0
+) -> tuple:
     """Create a synthetic segmented record with a known per-frame tone.
 
     Layout: 2 µs pre-record + n_frames × 4 µs + 1 µs tail at 10 GSa/s.
@@ -113,7 +123,9 @@ def _make_segmented_mat(tmp_path: Path, *, n_frames: int = 3, yinc: float = 1.0)
         frame_period_us=frame_us,
         n_frames=n_frames,
     )
-    expected_avg = np.full(frame_s, float(sum(range(1, n_frames + 1))) / n_frames * 100 * yinc)
+    expected_avg = np.full(
+        frame_s, float(sum(range(1, n_frames + 1))) / n_frames * 100 * yinc
+    )
     return mat_path, layout, expected_avg, pre_s, frame_s, tail_s, xinc, record
 
 
@@ -293,8 +305,8 @@ class TestKeysightMatLoader:
 
     def test_load_single_frame(self, tmp_path):
         n_frames = 3
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = (
-            _make_segmented_mat(tmp_path, n_frames=n_frames)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = _make_segmented_mat(
+            tmp_path, n_frames=n_frames
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, frame=1, **layout)
@@ -303,8 +315,8 @@ class TestKeysightMatLoader:
 
     def test_keep_frames_round_trip(self, tmp_path):
         n_frames = 3
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = (
-            _make_segmented_mat(tmp_path, n_frames=n_frames)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = _make_segmented_mat(
+            tmp_path, n_frames=n_frames
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, keep_frames=True, **layout)
@@ -313,8 +325,8 @@ class TestKeysightMatLoader:
         assert frames.shape == (n_frames, frame_s)
 
     def test_pre_record_contents(self, tmp_path):
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = (
-            _make_segmented_mat(tmp_path, n_frames=3)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = _make_segmented_mat(
+            tmp_path, n_frames=3
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, **layout)
@@ -322,8 +334,8 @@ class TestKeysightMatLoader:
         np.testing.assert_allclose(pre, record[:pre_s].astype(float), rtol=1e-12)
 
     def test_tail_contents(self, tmp_path):
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = (
-            _make_segmented_mat(tmp_path, n_frames=3)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = _make_segmented_mat(
+            tmp_path, n_frames=3
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, **layout)
@@ -427,8 +439,8 @@ class TestKeysightMatLoader:
     def test_yinc_scaling_applied(self, tmp_path):
         """YInc × raw should produce the correct voltage."""
         yinc = 0.5e-3
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = (
-            _make_segmented_mat(tmp_path, yinc=yinc)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = _make_segmented_mat(
+            tmp_path, yinc=yinc
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, frame=0, **layout)
@@ -444,8 +456,8 @@ class TestKeysightMatLoader:
 class TestAcquisitionSegmentSerialization:
     def test_round_trip_no_frames(self, tmp_path):
         """Segments persist and reload correctly without per-frame data."""
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = (
-            _make_segmented_mat(tmp_path, n_frames=3)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = _make_segmented_mat(
+            tmp_path, n_frames=3
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, **layout)
@@ -472,8 +484,8 @@ class TestAcquisitionSegmentSerialization:
 
     def test_round_trip_with_frames(self, tmp_path):
         """Per-frame data persists when keep_frames=True."""
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = (
-            _make_segmented_mat(tmp_path, n_frames=3)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = _make_segmented_mat(
+            tmp_path, n_frames=3
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, keep_frames=True, **layout)
@@ -494,8 +506,8 @@ class TestAcquisitionSegmentSerialization:
         assert segs.frames.shape == (3, frame_s)
 
     def test_frame_selection_round_trip(self, tmp_path):
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = (
-            _make_segmented_mat(tmp_path, n_frames=3)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, _ = _make_segmented_mat(
+            tmp_path, n_frames=3
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, frame=2, **layout)
@@ -540,8 +552,8 @@ class TestAcquisitionSegmentSerialization:
 
     def test_segment_data_correct(self, tmp_path):
         """Segment arrays round-trip byte-for-byte."""
-        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = (
-            _make_segmented_mat(tmp_path, n_frames=3)
+        mat_path, layout, _, pre_s, frame_s, tail_s, xinc, record = _make_segmented_mat(
+            tmp_path, n_frames=3
         )
         loader = KeysightMatLoader()
         fid = loader.load_fid(mat_path, keep_frames=True, **layout)
@@ -669,3 +681,331 @@ class TestPrivateMetadataNotPersisted:
         # The segments themselves live in the dedicated group, not the JSON.
         with h5py.File(pipeline_path, "r") as f:
             assert "acquisition_segments" in f["stage0_fid_data"]
+
+
+# ---------------------------------------------------------------------------
+# Interleave-offset cleanup — pure functions
+# ---------------------------------------------------------------------------
+
+
+class TestInterleaveCleanupPureFunctions:
+    """Tests for estimate_interleave_pattern / subtract_interleave_pattern."""
+
+    def test_estimate_recovers_planted_pattern(self):
+        """Per-phase means are recovered exactly from a pure-offset record."""
+        m = 4
+        rng = np.random.default_rng(0)
+        pattern_true = np.array([10.0, -20.0, 5.0, -3.0])
+        n = 1000 * m
+        # Record whose only content is the periodic offset (no noise)
+        record = pattern_true[np.arange(n) % m]
+        estimated = estimate_interleave_pattern(record, m)
+        np.testing.assert_allclose(estimated, pattern_true, atol=1e-10)
+
+    def test_subtract_zeroes_comb(self):
+        """Subtracting the estimated pattern from the record zeroes the comb."""
+        m = 8
+        n = 800
+        pattern_true = np.arange(m, dtype=float) * 3.7 - 10.0
+        record = pattern_true[np.arange(n) % m]
+        pattern_est = estimate_interleave_pattern(record, m)
+        corrected = subtract_interleave_pattern(record, pattern_est)
+        np.testing.assert_allclose(corrected, 0.0, atol=1e-10)
+
+    def test_comb_vanishes_in_fft(self):
+        """After subtraction the fs/M comb lines drop to the noise floor."""
+        m = 16
+        n = 16 * 1000
+        # Noise + offset comb
+        rng = np.random.default_rng(7)
+        noise = rng.standard_normal(n)
+        pattern_true = np.linspace(-100.0, 100.0, m)
+        record = noise + pattern_true[np.arange(n) % m]
+
+        pattern_est = estimate_interleave_pattern(record, m)
+        corrected = subtract_interleave_pattern(record, pattern_est)
+
+        # Power at k·(n/m) bins (the comb harmonics) should drop substantially
+        spec_before = np.abs(np.fft.rfft(record))
+        spec_after = np.abs(np.fft.rfft(corrected))
+        comb_bins = [k * (n // m) for k in range(1, m // 2 + 1)]
+        power_before = sum(spec_before[b] ** 2 for b in comb_bins)
+        power_after = sum(spec_after[b] ** 2 for b in comb_bins)
+        assert power_after < power_before * 1e-6, (
+            f"Comb power not suppressed: before={power_before:.3g}, "
+            f"after={power_after:.3g}"
+        )
+
+    def test_sequential_two_factors(self):
+        """Sequential [4, 16] factors each remove their respective comb layer."""
+        m1, m2 = 4, 16
+        n = 16 * 500
+        rng = np.random.default_rng(42)
+        noise = rng.standard_normal(n) * 0.1
+        pat4 = np.array([5.0, -3.0, 2.0, -4.0])
+        pat16 = np.linspace(-8.0, 8.0, 16)
+
+        record = noise + pat4[np.arange(n) % m1] + pat16[np.arange(n) % m2]
+        quiet = record[:n]  # whole record is quiet for this test
+
+        cleaned, patterns = apply_interleave_cleanup(record, quiet, [m1, m2])
+
+        assert m1 in patterns
+        assert m2 in patterns
+        # After cleanup, residual rms should be close to the noise rms
+        noise_rms = np.std(noise)
+        assert (
+            np.std(cleaned) < noise_rms * 5
+        ), f"Residual rms {np.std(cleaned):.3g} far above noise {noise_rms:.3g}"
+
+    def test_estimate_truncates_to_multiple_of_m(self):
+        """Segments not a multiple of M are truncated, not errored."""
+        m = 7
+        pattern_true = np.arange(m, dtype=float)
+        n = 3 * m + 3  # 3 extra samples
+        record = pattern_true[np.arange(n) % m]
+        estimated = estimate_interleave_pattern(record, m)
+        np.testing.assert_allclose(estimated, pattern_true, atol=1e-10)
+
+    def test_estimate_too_short_raises(self):
+        """Fewer samples than M raises ValueError."""
+        with pytest.raises(ValueError, match="fewer than"):
+            estimate_interleave_pattern(np.array([1.0, 2.0]), m=4)
+
+    def test_subtract_empty_pattern_noop(self):
+        record = np.array([1.0, 2.0, 3.0])
+        result = subtract_interleave_pattern(record, np.array([]))
+        np.testing.assert_allclose(result, record)
+
+
+# ---------------------------------------------------------------------------
+# Interleave cleanup wired into the loader
+# ---------------------------------------------------------------------------
+
+
+def _make_mat_with_offset_comb(
+    tmp_path: Path,
+    *,
+    m: int = 4,
+    n_frames: int = 2,
+    xinc: float = 1e-10,
+    pre_us: float = 2.0,
+    frame_us: float = 4.0,
+    tail_us: float = 0.5,
+) -> tuple:
+    """Synthetic segmented .mat with a planted mod-M offset comb.
+
+    The record contains pure per-phase offsets with no other signal so that
+    after cleanup the science FID is identically zero.
+
+    Returns (mat_path, layout_kwargs, pattern_true, xinc).
+    """
+    pre_s = int(round(pre_us * 1e-6 / xinc))
+    frame_s = int(round(frame_us * 1e-6 / xinc))
+    tail_s = int(round(tail_us * 1e-6 / xinc))
+    total = pre_s + n_frames * frame_s + tail_s
+
+    pattern_true = np.arange(1, m + 1, dtype=np.float64) * 50.0
+    record = pattern_true[np.arange(total) % m].astype(np.int16)
+
+    mat_path = _make_mat_file(
+        tmp_path,
+        n_samples=total,
+        xinc=xinc,
+        yinc=1.0,
+        yorg=0.0,
+        data=record,
+        filename="offset_comb.mat",
+    )
+    layout = dict(pre_record_us=pre_us, frame_period_us=frame_us, n_frames=n_frames)
+    return mat_path, layout, pattern_true, xinc
+
+
+class TestInterleaveCleanupInLoader:
+    def test_off_by_default(self, tmp_path):
+        """Without interleave_factors the science FID is unmodified."""
+        mat_path, layout, pattern_true, xinc = _make_mat_with_offset_comb(tmp_path)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, **layout)
+        # With no cleanup the FID contains the raw offset comb (non-zero)
+        assert np.any(fid.data != 0.0)
+
+    def test_cleanup_zeroes_science_fid(self, tmp_path):
+        """After applying the correct factor, the science FID is zeroed."""
+        m = 4
+        mat_path, layout, pattern_true, xinc = _make_mat_with_offset_comb(tmp_path, m=m)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, interleave_factors=[m], **layout)
+        np.testing.assert_allclose(fid.data, 0.0, atol=1e-8)
+
+    def test_pattern_matches_planted(self, tmp_path):
+        """The recovered pattern equals the planted offset (in LSB/yinc units)."""
+        m = 4
+        mat_path, layout, pattern_true, xinc = _make_mat_with_offset_comb(tmp_path, m=m)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, interleave_factors=[m], **layout)
+        patterns = fid.metadata.get("_interleave_patterns")
+        assert patterns is not None
+        assert m in patterns
+        np.testing.assert_allclose(patterns[m], pattern_true, atol=1e-8)
+
+    def test_no_pattern_metadata_when_off(self, tmp_path):
+        """No _interleave_patterns key when interleave_factors is not given."""
+        mat_path, layout, *_ = _make_mat_with_offset_comb(tmp_path)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, **layout)
+        assert "_interleave_patterns" not in fid.metadata
+
+    def test_clock_sources_injected(self, tmp_path):
+        """clock_sources is populated with fs/M entries when factors are given."""
+        m = 4
+        xinc = 1e-10  # 10 GSa/s
+        mat_path, layout, *_ = _make_mat_with_offset_comb(tmp_path, m=m, xinc=xinc)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, interleave_factors=[m], **layout)
+        clocks = fid.metadata.get("clock_sources")
+        assert clocks is not None
+        assert len(clocks) == 1
+        expected_freq = 1.0 / xinc / 1e6 / m  # fs / m in MHz
+        assert abs(clocks[0]["freq_mhz"] - expected_freq) < 1e-3
+        assert clocks[0]["locked"] is True
+        assert "interleave_m" in clocks[0]["label"]
+
+    def test_no_clock_sources_when_off(self, tmp_path):
+        """clock_sources is absent when interleave_factors is not given."""
+        mat_path, layout, *_ = _make_mat_with_offset_comb(tmp_path)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, **layout)
+        assert "clock_sources" not in fid.metadata
+
+    def test_multiple_factors_two_clocks(self, tmp_path):
+        """Two interleave factors produce two clock_sources entries."""
+        m1, m2 = 4, 16
+        xinc = 1e-10
+        # Build a record with two comb layers
+        pre_us, frame_us = 2.0, 4.0
+        n_frames = 2
+        pre_s = int(round(pre_us * 1e-6 / xinc))
+        frame_s = int(round(frame_us * 1e-6 / xinc))
+        total = pre_s + n_frames * frame_s
+        pat4 = np.arange(1, m1 + 1, dtype=np.float64)
+        pat16 = np.arange(1, m2 + 1, dtype=np.float64) * 0.5
+        record = (pat4[np.arange(total) % m1] + pat16[np.arange(total) % m2]).astype(
+            np.int16
+        )
+        mat_path = _make_mat_file(
+            tmp_path,
+            n_samples=total,
+            xinc=xinc,
+            yinc=1.0,
+            data=record,
+            filename="two_comb.mat",
+        )
+        layout = dict(pre_record_us=pre_us, frame_period_us=frame_us, n_frames=n_frames)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, interleave_factors=[m1, m2], **layout)
+        clocks = fid.metadata.get("clock_sources")
+        assert clocks is not None
+        assert len(clocks) == 2
+        fs_mhz = 1.0 / xinc / 1e6
+        freqs = {round(c["freq_mhz"], 3) for c in clocks}
+        assert round(fs_mhz / m1, 3) in freqs
+        assert round(fs_mhz / m2, 3) in freqs
+
+
+# ---------------------------------------------------------------------------
+# Interleave pattern round-trip through a .ftmw file
+# ---------------------------------------------------------------------------
+
+
+class TestInterleavePatternSerialization:
+    def test_patterns_round_trip(self, tmp_path):
+        """Estimated patterns persist to and reload from the .ftmw file."""
+        m = 4
+        mat_path, layout, pattern_true, xinc = _make_mat_with_offset_comb(tmp_path, m=m)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, interleave_factors=[m], **layout)
+
+        pipeline_path = tmp_path / "interleave_rt.ftmw"
+        src = SourceMetadata(
+            source_path=mat_path,
+            format_name="keysight-mat",
+            loader_parameters={**layout, "interleave_factors": [m]},
+        )
+        create_pipeline_file(pipeline_path, fid, src)
+
+        import h5py
+
+        with h5py.File(pipeline_path, "r") as h5f:
+            segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
+
+        assert segs is not None
+        assert segs.interleave_patterns is not None
+        assert m in segs.interleave_patterns
+        np.testing.assert_allclose(segs.interleave_patterns[m], pattern_true, atol=1e-8)
+
+    def test_no_patterns_on_old_files(self, tmp_path):
+        """Files without interleave datasets load with interleave_patterns=None."""
+        mat_path, layout, *_ = _make_mat_with_offset_comb(tmp_path)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, **layout)  # no cleanup
+
+        pipeline_path = tmp_path / "no_patterns.ftmw"
+        src = SourceMetadata(
+            source_path=mat_path,
+            format_name="keysight-mat",
+            loader_parameters=layout,
+        )
+        create_pipeline_file(pipeline_path, fid, src)
+
+        import h5py
+
+        with h5py.File(pipeline_path, "r") as h5f:
+            segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
+
+        assert segs is not None
+        assert segs.interleave_patterns is None
+
+    def test_two_factor_patterns_both_stored(self, tmp_path):
+        """Both patterns from a two-factor cleanup are persisted."""
+        m1, m2 = 4, 8
+        pre_us, frame_us = 2.0, 4.0
+        xinc = 1e-10
+        n_frames = 2
+        pre_s = int(round(pre_us * 1e-6 / xinc))
+        frame_s = int(round(frame_us * 1e-6 / xinc))
+        total = pre_s + n_frames * frame_s
+        pat4 = np.arange(1, m1 + 1, dtype=np.float64) * 10.0
+        pat8 = np.arange(1, m2 + 1, dtype=np.float64) * 2.0
+        record = (pat4[np.arange(total) % m1] + pat8[np.arange(total) % m2]).astype(
+            np.int16
+        )
+        mat_path = _make_mat_file(
+            tmp_path,
+            n_samples=total,
+            xinc=xinc,
+            yinc=1.0,
+            data=record,
+            filename="two_factor.mat",
+        )
+        layout = dict(pre_record_us=pre_us, frame_period_us=frame_us, n_frames=n_frames)
+        loader = KeysightMatLoader()
+        fid = loader.load_fid(mat_path, interleave_factors=[m1, m2], **layout)
+
+        pipeline_path = tmp_path / "two_factor.ftmw"
+        src = SourceMetadata(
+            source_path=mat_path,
+            format_name="keysight-mat",
+            loader_parameters={**layout, "interleave_factors": [m1, m2]},
+        )
+        create_pipeline_file(pipeline_path, fid, src)
+
+        import h5py
+
+        with h5py.File(pipeline_path, "r") as h5f:
+            segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
+
+        assert segs is not None
+        assert segs.interleave_patterns is not None
+        assert m1 in segs.interleave_patterns
+        assert m2 in segs.interleave_patterns

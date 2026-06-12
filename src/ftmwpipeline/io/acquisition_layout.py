@@ -2,8 +2,8 @@
 
 A long scope record contains a quiet pre-record, N chirp-FID frames at a
 fixed repetition period, and a dead tail.  This module provides the
-*operator-supplied* segment map and a pure function that slices the record
-into its constituent parts.
+*operator-supplied* segment map, a pure function that slices the record
+into its constituent parts, and interleave-ADC offset cleanup helpers.
 
 Glossary
 --------
@@ -21,10 +21,27 @@ frame : int or None
 keep_frames : bool
     When ``True``, preserve the full per-frame data array in the returned
     result for downstream per-frame statistics.
+
+Interleave-offset cleanup
+-------------------------
+Direct-sampling ADCs that interleave M sub-ADCs produce periodic DC
+offsets at multiples of fs/M.  ``estimate_interleave_pattern`` computes
+per-phase means from the quiet pre-record; ``subtract_interleave_pattern``
+tiles and subtracts the pattern from the full record.  Multiple factors are
+applied sequentially: each factor's pattern is estimated on the *residual*
+pre-record after all previous factors have been subtracted.  The pre-record
+is truncated to a multiple of M before averaging so that every phase
+contributes the same number of samples.
+
+Phase convention: sample index 0 of the record is phase 0.  The pre-record
+occupies record indices 0..pre_samples-1, so its local indices equal the
+global phases.  When pre_samples is a multiple of every interleave factor
+(as is the case for the reference fixture where pre_samples = 1 600 000),
+the frame data inherits the same phase alignment.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -103,6 +120,118 @@ class SlicedRecord:
     sample_dt: float
     pre_samples: int
     frame_samples: int
+
+
+def estimate_interleave_pattern(quiet: np.ndarray, m: int) -> np.ndarray:
+    """Estimate per-phase DC offsets for M interleaved ADCs.
+
+    Parameters
+    ----------
+    quiet : np.ndarray
+        1-D quiet pre-record segment (real-valued, any numeric dtype).
+        The pre-record is assumed to start at record index 0, so its local
+        sample indices are the global ADC phases.
+    m : int
+        Number of interleaved ADC phases.  Must be >= 1.
+
+    Returns
+    -------
+    np.ndarray
+        Length-``m`` float64 array of per-phase means.  Phase ``k``
+        contains the mean of all pre-record samples whose index satisfies
+        ``index % m == k``.  The pre-record is truncated to the largest
+        multiple of ``m`` before averaging so every phase contributes the
+        same number of samples.
+
+    Raises
+    ------
+    ValueError
+        If ``m < 1`` or the (truncated) quiet segment is empty.
+    """
+    if m < 1:
+        raise ValueError(f"Interleave factor m must be >= 1, got {m}")
+    quiet_f: np.ndarray = np.asarray(quiet, dtype=np.float64).ravel()
+    n_full = (len(quiet_f) // m) * m
+    if n_full == 0:
+        raise ValueError(
+            f"Quiet segment has {len(quiet_f)} samples, which is fewer than "
+            f"the interleave factor m={m}."
+        )
+    q: np.ndarray = quiet_f[:n_full].reshape(-1, m)
+    result: np.ndarray = q.mean(axis=0)
+    return result
+
+
+def subtract_interleave_pattern(record: np.ndarray, pattern: np.ndarray) -> np.ndarray:
+    """Subtract a tiled interleave-offset pattern from a record.
+
+    Parameters
+    ----------
+    record : np.ndarray
+        1-D sample record (real-valued, any numeric dtype).
+    pattern : np.ndarray
+        Length-``m`` per-phase offset array (output of
+        :func:`estimate_interleave_pattern`).
+
+    Returns
+    -------
+    np.ndarray
+        Float64 copy of ``record`` with the tiled pattern subtracted.
+        The phase of sample ``i`` is ``i % m``.
+    """
+    rec: np.ndarray = np.asarray(record, dtype=np.float64).ravel()
+    m = len(pattern)
+    if m == 0:
+        return rec
+    phases: np.ndarray = np.arange(len(rec)) % m
+    out: np.ndarray = rec - pattern[phases]
+    return out
+
+
+def apply_interleave_cleanup(
+    record: np.ndarray,
+    quiet: np.ndarray,
+    factors: List[int],
+) -> tuple:
+    """Apply sequential interleave-offset cleanup to a full record.
+
+    For each factor ``m`` in ``factors``:
+
+    1. Estimate the per-phase pattern from the *residual* pre-record
+       (after all previous factors have been subtracted).
+    2. Subtract the tiled pattern from the *full* record.
+
+    Parameters
+    ----------
+    record : np.ndarray
+        Full 1-D scope record in its original units (e.g. raw LSB).
+    quiet : np.ndarray
+        Pre-record segment (first ``len(quiet)`` samples of ``record``).
+        Must equal ``record[:len(quiet)]`` before this call.
+    factors : list of int
+        Interleave factors to apply, in order.
+
+    Returns
+    -------
+    cleaned_record : np.ndarray
+        Float64 record with all patterns subtracted.
+    patterns : dict[int, np.ndarray]
+        Mapping from each factor to its estimated pattern.  The pattern
+        for factor ``m`` was estimated on the residual pre-record *after*
+        all preceding factors were subtracted.
+    """
+    record = np.asarray(record, dtype=np.float64).ravel()
+    residual_quiet = np.asarray(quiet, dtype=np.float64).ravel().copy()
+    patterns: Dict[int, np.ndarray] = {}
+
+    for m in factors:
+        pattern = estimate_interleave_pattern(residual_quiet, m)
+        patterns[m] = pattern
+        record = subtract_interleave_pattern(record, pattern)
+        # Update the residual quiet for the next factor's estimation
+        residual_quiet = subtract_interleave_pattern(residual_quiet, pattern)
+
+    return record, patterns
 
 
 def slice_record(

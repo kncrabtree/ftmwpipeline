@@ -40,10 +40,12 @@ class AcquisitionSegments:
     Attributes
     ----------
     pre_record : np.ndarray
-        Quiet pre-record voltage samples (float64).
+        Quiet pre-record voltage samples (float64).  When interleave cleanup
+        was applied these are the post-subtraction values (same units as the
+        science FID).
     tail : np.ndarray
         Trailing dead-time samples after the last frame (float64, may be
-        empty).
+        empty).  Post-cleanup when interleave factors were given.
     frames : np.ndarray or None
         Per-frame array of shape ``(n_frames, frame_samples)`` (float64),
         present only when ``keep_frames`` was ``True`` at import time.
@@ -58,6 +60,11 @@ class AcquisitionSegments:
         when all frames were averaged.
     sample_dt : float
         Sample interval in seconds.
+    interleave_patterns : dict[int, np.ndarray] or None
+        Per-phase offset patterns estimated during interleave-offset cleanup,
+        keyed by the interleave factor M.  ``None`` when no cleanup was
+        applied.  Each value is a float64 array of length M (raw sample-unit
+        DC offsets, not scaled to volts).
     """
 
     pre_record: np.ndarray
@@ -68,6 +75,7 @@ class AcquisitionSegments:
     n_frames: int
     frame_selection: Optional[int]
     sample_dt: float
+    interleave_patterns: Optional[Dict[int, np.ndarray]] = None
 
 
 def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
@@ -346,10 +354,12 @@ def save_acquisition_segments_to_hdf5(
     /acquisition_segments/
     ├── [attrs] pre_record_us, frame_period_us, n_frames, frame_selection,
     │           sample_dt
-    ├── pre_record    [dataset: float64, gzip]
-    ├── tail          [dataset: float64, gzip]
-    └── frames        [dataset: float64, gzip; shape (n_frames, frame_samples),
-                       only when keep_frames=True]
+    ├── pre_record                 [dataset: float64, gzip]
+    ├── tail                       [dataset: float64, gzip]
+    ├── frames                     [dataset: float64, gzip; shape (n_frames, frame_samples),
+    │                               only when keep_frames=True]
+    └── interleave_pattern_<M>     [dataset: float64; one per factor M when
+                                    interleave cleanup was applied]
     """
     layout_dict: Optional[Dict] = fid.metadata.get("acquisition_layout")
     pre_record: Optional[np.ndarray] = fid.metadata.get("_sliced_pre_record")
@@ -385,6 +395,17 @@ def save_acquisition_segments_to_hdf5(
         seg_group.create_dataset(
             "frames", data=np.asarray(frames, dtype=np.float64), **_ds_kwargs
         )
+
+    # Persist interleave-offset patterns for audit.  Each pattern is a small
+    # float64 array of length M stored in raw sample units (before YInc
+    # voltage scaling) for fidelity to the estimation domain.
+    interleave_patterns: Optional[Dict] = fid.metadata.get("_interleave_patterns")
+    if interleave_patterns:
+        for m, pattern in interleave_patterns.items():
+            seg_group.create_dataset(
+                f"interleave_pattern_{m}",
+                data=np.asarray(pattern, dtype=np.float64),
+            )
 
 
 def load_acquisition_segments_from_hdf5(
@@ -422,6 +443,21 @@ def load_acquisition_segments_from_hdf5(
     if "frames" in seg:
         frames = np.asarray(seg["frames"][:], dtype=np.float64)
 
+    # Load interleave patterns when present.  Dataset names follow the
+    # convention ``interleave_pattern_<M>`` written by
+    # ``save_acquisition_segments_to_hdf5``.
+    interleave_patterns: Optional[Dict[int, np.ndarray]] = None
+    for key in seg.keys():
+        if key.startswith("interleave_pattern_"):
+            suffix = key[len("interleave_pattern_") :]
+            try:
+                m = int(suffix)
+            except ValueError:
+                continue
+            if interleave_patterns is None:
+                interleave_patterns = {}
+            interleave_patterns[m] = np.asarray(seg[key][:], dtype=np.float64)
+
     return AcquisitionSegments(
         pre_record=pre_record,
         tail=tail,
@@ -431,6 +467,7 @@ def load_acquisition_segments_from_hdf5(
         n_frames=n_frames,
         frame_selection=frame_selection,
         sample_dt=sample_dt,
+        interleave_patterns=interleave_patterns,
     )
 
 

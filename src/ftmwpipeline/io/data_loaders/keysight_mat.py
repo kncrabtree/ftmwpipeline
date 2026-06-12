@@ -19,6 +19,17 @@ frequency IS the molecular frequency.  The FID is stored with
 ``probe_freq_mhz = 0`` and ``sideband = upper`` so that
 ``FID.apply_molecular_frequency(f_bb) = 0 + f_bb = f_bb`` returns the
 molecular frequency directly.
+
+Interleave-offset cleanup
+-------------------------
+When ``interleave_factors`` is given (e.g. ``[16, 512]``), the loader
+applies sequential per-phase DC subtraction before slicing/averaging.
+For each factor M the per-phase means are estimated on the quiet
+pre-record (residual after all preceding factors) and tiled over the full
+record.  The estimated patterns are persisted in the ``acquisition_segments``
+HDF5 group for audit.  The interleave clock frequencies (``fs / M``) are
+injected into ``fid.metadata["clock_sources"]`` as reference-locked entries
+so that the Stage 5 spur gate can account for them.
 """
 
 from pathlib import Path
@@ -67,6 +78,12 @@ class KeysightMatLoader(BaseLoader):
         the coherent average.  Defaults to ``None`` (coherent average).
     keep_frames : bool, optional
         Persist the per-frame array alongside the FID.  Default ``False``.
+    interleave_factors : list of int, optional
+        ADC interleave factors to apply sequentially for offset cleanup
+        (e.g. ``[16, 512]``).  Each factor M causes the per-phase means to
+        be estimated on the quiet pre-record (residual after prior factors)
+        and subtracted from the full record before slicing.  Default
+        ``None`` (no cleanup).
     """
 
     format_name = "keysight-mat"
@@ -155,6 +172,7 @@ class KeysightMatLoader(BaseLoader):
         channel : str
         frame : int or None
         keep_frames : bool
+        interleave_factors : list of int or None
 
         Returns
         -------
@@ -164,7 +182,11 @@ class KeysightMatLoader(BaseLoader):
             as ``fid.metadata["acquisition_layout"]`` for serialization.
         """
         from ...core.data_structures import FID, FIDProcessingParameters, Sideband
-        from ..acquisition_layout import AcquisitionLayout, slice_record
+        from ..acquisition_layout import (
+            AcquisitionLayout,
+            apply_interleave_cleanup,
+            slice_record,
+        )
 
         params = self.validate_parameters(**kwargs)["parameters"]
 
@@ -174,6 +196,7 @@ class KeysightMatLoader(BaseLoader):
         channel_hint: Optional[str] = params.get("channel")
         frame_sel: Optional[int] = params.get("frame")
         keep_frames: bool = bool(params.get("keep_frames", False))
+        interleave_factors: Optional[List[int]] = params.get("interleave_factors")
 
         source_path = Path(source_path)
 
@@ -225,6 +248,20 @@ class KeysightMatLoader(BaseLoader):
         except Exception as exc:
             raise LoaderError(f"Failed to read {source_path.name}: {exc}") from exc
 
+        # Interleave-offset cleanup on the raw LSB record before voltage
+        # scaling.  Estimation and subtraction in sample (LSB) units keeps
+        # the arithmetic exact and independent of the vertical calibration.
+        interleave_patterns: Optional[Dict[int, np.ndarray]] = None
+        if interleave_factors:
+            pre_samples = int(round(pre_record_us * 1e-6 / xinc))
+            quiet_raw = raw_data[:pre_samples]
+            try:
+                raw_data, interleave_patterns = apply_interleave_cleanup(
+                    raw_data, quiet_raw, interleave_factors
+                )
+            except ValueError as exc:
+                raise LoaderError(f"Interleave cleanup failed: {exc}") from exc
+
         # Scale to volts
         voltage_data = raw_data * yinc + yorg
 
@@ -250,13 +287,17 @@ class KeysightMatLoader(BaseLoader):
             n_frames=n_frames,
             frame=frame_sel,
             keep_frames=keep_frames,
+            interleave_factors=interleave_factors,
         )
         source_meta["instrument_model"] = model
         source_meta["instrument_serial"] = serial
         source_meta["xinc_s"] = xinc
         source_meta["yinc_v"] = yinc
         source_meta["yorg_v"] = yorg
-        # Carry the sliced segments so fid_serialization.py can persist them
+        # Carry the sliced segments so fid_serialization.py can persist them.
+        # The segments are the post-cleanup versions: interleave subtraction
+        # runs before slice_record, so sliced.pre_record / .tail / .frames
+        # already have the offsets removed.
         source_meta["acquisition_layout"] = {
             "pre_record_us": pre_record_us,
             "frame_period_us": frame_period_us,
@@ -268,6 +309,25 @@ class KeysightMatLoader(BaseLoader):
         source_meta["_sliced_tail"] = sliced.tail
         if keep_frames:
             source_meta["_sliced_frames"] = sliced.frames
+        # Private transport key for pattern persistence in acquisition_segments
+        if interleave_patterns is not None:
+            source_meta["_interleave_patterns"] = interleave_patterns
+
+        # Inject interleave clock frequencies as recommended clock sources.
+        # The sample rate is 1/xinc; each interleave factor M produces a
+        # comb at fs/M.  On this instrument class the ADC is driven from
+        # the Rb-locked reference, so these clocks are marked locked=True.
+        if interleave_factors:
+            fs_mhz = 1.0 / xinc / 1e6
+            clock_sources = [
+                {
+                    "freq_mhz": round(fs_mhz / m, 6),
+                    "locked": True,
+                    "label": f"interleave_m{m}",
+                }
+                for m in interleave_factors
+            ]
+            source_meta["clock_sources"] = clock_sources
 
         # Direct sampling: probe = 0, upper sideband → f_mol = 0 + f_bb = f_bb
         return FID(
@@ -288,6 +348,7 @@ class KeysightMatLoader(BaseLoader):
             "channel": None,
             "frame": None,
             "keep_frames": False,
+            "interleave_factors": None,
         }
 
     # ------------------------------------------------------------------
