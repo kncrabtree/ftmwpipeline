@@ -23,7 +23,50 @@ share one implementation and must produce identical results.
 ## Priorities
 
 The agreed near-term sequence (each item's detail lives in its planning doc
-or issue; this list carries only the ordering and the why):
+or issue; this list carries only the ordering and the why). The destination
+is **Stage 6 — user decisions, re-fits, and finalization**
+([`planning/stage6-finalization.md`](planning/stage6-finalization.md)),
+which is deliberately **gated**: every open item that can still move the
+fitted tables or the import contract lands first, so finalization freezes
+stable semantics.
+
+1. **Start-detection overshoot on high-SNR FIDs (issue #34)** — bitten
+   twice (655; the succinimide chamber ringing, where the recommended
+   start landed inside the ring-down and was overridden by hand to
+   7.0 µs). Implement the declaration-layer chirp-window / start-offset
+   fields from [`planning/scope-record-import.md`](planning/scope-record-import.md)
+   open question 3 (the minimal mechanism); detector robustness itself
+   stays a separate research question.
+2. **Residual-rescue Tier-2 merge / n_eff kind decision (issue #9)** — a
+   decision, not a build. Settle it before Stage 6 because it changes
+   fitted tables and forces a re-baseline; absorb that churn before users
+   sign off on finalized analyses.
+3. **Unblocked second-instrument work (issues #5, #6)** — the succinimide
+   fixture removed `blocked:fixture` from both. #6 (per-instrument
+   calibration audit → instrument preset) formalizes the hand-derived UXR
+   parameters (start offset, interleave factors, layout) into the preset
+   layer; #5 (Lorentzian/Gaussian/Voigt 3-way shape test) is one piece of
+   the lineshape-floor arc and may also shift tables.
+4. **Stage 5 table-affecting backlog sweep (issues #11, #4, #8)** —
+   spur-only window drop (incl. the 363 w100 clock-declaration leftover),
+   Gaussian-path reconciliation, and the O5 backlog items. Triage each:
+   land it, or explicitly defer it past finalization with the rationale
+   recorded on the issue.
+5. **Stage 6 — user decisions / re-fits / finalization**
+   ([`planning/stage6-finalization.md`](planning/stage6-finalization.md);
+   absorbs [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md)):
+   attention routing, the decision verb set with provenance, the
+   in-file decision log, finalization semantics. The finalized record is
+   the input contract for reports.
+6. **Reports from the `.ftmw` record** (planning doc to be written when
+   Stage 6 stabilizes): timebase-corrected frequencies with an honest
+   per-line uncertainty budget (statistical + ε-residual + lineshape
+   floor), decision/candidate ledgers, spur provenance, catalog-match
+   summaries; promotes the scratch validation harness into a maintained
+   catalog-scoring surface. The 1512 uncertainty-accuracy goal is the
+   acceptance test.
+
+Completed predecessors of this sequence (detail in their planning docs):
 
 1. **Clock declaration** — **implemented** (see the status block in
    [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md)):
@@ -38,7 +81,7 @@ or issue; this list carries only the ordering and the why):
    363 w100 interference-doublet window still fails its bar (χ²ᵣ 90→55;
    full fix = the Stage 4 spur-only window drop), and applying the
    measured timebase ε to reported frequencies belongs to the reports
-   feature (priority 5).
+   feature (active-sequence item 6).
 2. **Stage 5 performance pass** — **implemented**. End-to-end profiling
    reranked the handoff's inefficiency list: the dominant cost was a
    redundancy not on it — each rescue round's `knockout_test` diagnostic
@@ -86,21 +129,10 @@ or issue; this list carries only the ordering and the why):
    .844→.982). Follow-on:
    [`planning/stage5-doublet-alternative.md`](planning/stage5-doublet-alternative.md)
    (sub-resolution pair adjudication; observation-only).
-4. **Candidate revival / user-directed re-fit** —
-   [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md);
-   UX-first; acceptance fixtures identified (1231 w50/w425/w426, 363 w76).
-5. **Reports from the `.ftmw` record** (planning doc to be written):
-   timebase-corrected frequencies with an honest per-line uncertainty
-   budget (statistical + ε-residual + lineshape floor), candidate ledger,
-   spur provenance, catalog-match summaries. The 1512 uncertainty-accuracy
-   goal is the acceptance test. Includes promoting the scratch validation
-   harness (ship_audit / full_validation / catmatch) into a maintained
-   catalog-scoring surface that reports consume. Scope grows to user
-   interaction with the data products: identifying which windows merit
-   user attention and making issue resolution easy (add/remove lines,
-   adjudicate blends — the doublet-alternative statistics and the
-   candidate ledger are inputs), and where those decisions are logged
-   between the Stage 5 record and the final report artifacts.
+The former candidate-revival and reports items of this list are absorbed
+into the active sequence above: candidate revival into Stage 6
+([`planning/stage6-finalization.md`](planning/stage6-finalization.md)),
+reports as its downstream consumer.
 
 Longer horizon, no order implied: the ultra-high-SNR **lineshape floor**
 (Phase-2 asym-τ / per-fixture shape arc; drift falsified as its cause —
@@ -173,6 +205,7 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/tune-settings-verb.md`](planning/tune-settings-verb.md) | Planning (issue #28) — the `settings` and `scan` cross-cutting meta-objects of the object-verb CLI grammar (D12 / `CLI_STRATEGY.md`). `settings show <file> [selector]` reports, per setting, the resolved value and its provenance layer (`.ftmw` / `.yml:<name>` / `recommended` / `default`); `settings set` / `settings export` persist a value to the `.ftmw` or a `.yml` preset (the persistence half deferred from #27); `scan {list,run,all}` renames the legacy `tune` surface. Source of truth is the settings dataclasses, not the knob registry, so it surfaces unswept fields too (e.g. FT `units_power`). Carries the precedence correction D11 (persisted `.ftmw` must outrank `.yml` preset) as a prerequisite. Stage-command half of the grammar migration: issue #31 |
 | [`planning/cli-object-verb-migration.md`](planning/cli-object-verb-migration.md) | Planning (issue #31) — migrate the **stage** commands to the object-verb grammar (`<stage> run\|show` with `stageN` synonyms; `data import <file> <src>`; `tau run --gaussian` / `tau show --kind heatmap\|distribution`; `fit check`), completing D12 after the #28 meta-objects. Pre-release hard cutover (old flat commands removed). CLI-surface only — `_internal` impls and Pipeline / API method names unchanged; utilities (`info`/`formats`/`validate`/`version`) stay bare |
 | [`planning/stage5-doublet-alternative.md`](planning/stage5-doublet-alternative.md) | Planned — post-fit adjudication of sub-resolution fitted pairs: record a merged-single alternative fit per close pair with the D10 fidelity-floor flag (`eps_single <= kappa` ⇒ doublet not required) and a nuisance-projected orthogonal-evidence score (partner evidence orthogonal to the parent's `{h, dh/df, dh/dtau}` subspace). Observation-only (no acceptance change); calibrated on 1512 truth + the succinimide bright doublets; the FID beat view was measured under-powered below ~1.5 beat cycles (~150 kHz on a 13 µs record) and is retained as a visual check only. Presentation/adjudication UX deferred to the reports / user-interaction project |
+| [`planning/stage6-finalization.md`](planning/stage6-finalization.md) | Planned, **gated** on the open-issue sweep (ROADMAP sequence items 1–4) — Stage 6: user decisions / re-fits / finalization. Collects the established constraints (prior-free pipeline boundary; decisions bypass gates but carry `user` provenance; D11 reproducibility — decision log persists in-file; observation-only statistics flip only here) and the design areas (attention routing, decision verb set, decision-log schema/replay, finalization semantics, acceptance fixtures). Absorbs the candidate-revival plan; the finalized record is the reports input contract |
 | [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md) | Proposed — candidate ledger + user-directed window re-fit. The remaining cross-fixture misses are weak near-blend lines the gates *considered and rejected as marginal* (verified in the persisted audit record on 1231 w50/w425/w426 + 363 w76); lowering the automatic bars to capture them buys dust everywhere else, so the principled lane is human arbitration: surface rejected-but-plausible candidates (normalized/deduped, above a display bar) with the fit, and add a window-scoped `fit refit --window N --add F --remove F` verb (dual-interface) whose user edits bypass the accept gate but carry full provenance (`user` origin flag, audit `user-add`/`user-remove`, curated-vs-automatic separation in validation tooling). Also covers the overfit direction (user removes a peak on imperfect-lineshape ultra-high-SNR windows, e.g. 1019). UX is the primary design consideration |
 | [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md) | Proposed — user-declared instrument clock tree (`spur.clocks`: fundamentals + locked/unlocked flags) replaces the empirical integer-MHz spur anchor with a deterministic prior. The Rb-locked clocks' intermod lattice is the multiples of gcd(fundamentals) (= 320 MHz on the home instrument: 42 in-band points vs 13500 integer MHz, ~300× tighter), tested in both frames (RF harmonics + baseband through probe/sideband); unlocked clocks (the scope's interleaved ADCs) declare the *drifting* family needing a drift-tolerant flatness statistic — together these close the 655 39040 drifting-tone miss. Plus: `clock_lattice` annotation on fitted lines in `fit show` (the conservative half; pairs with candidate-revival's user removal), SNR-scaled spur mask width (the 363 w100 strong-tone skirt leak). Empty declaration = today's behavior, byte-stable; the planned different-instrument fixture is the real acceptance test (spurs handled by declaration alone, no code change). Verified clock identities + lattice math in `stage5-spur-masking.md` § clock-lattice prior |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
