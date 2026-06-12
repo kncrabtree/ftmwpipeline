@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import h5py
 import numpy as np
@@ -56,8 +56,10 @@ from ..fitting.spur_detection import (
     SpurSet,
     build_spur_set,
     make_band_power_probe,
+    make_chirp_response_probe,
     make_decay_probe,
 )
+from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
@@ -713,6 +715,56 @@ def fit_peaks_impl(
             probe_freq_mhz=probe_freq_mhz,
             sideband=sideband,
         )
+        # Chirp-response pre-record anchor: built only when acquisition
+        # segments are present in the file (scope records with a stored
+        # pre-record segment). Files without segments produce None here, and
+        # gate_spurs is byte-identical to before. When present, the probe
+        # ranks above the decay probe because modulated carriers can mimic
+        # FID decay and fool the coherent demod. See
+        # ``dev-docs/planning/scope-record-import.md`` §"Spur lane".
+        chirp_response_probe = None
+        with h5py.File(file_path, "r") as h5f:
+            if "stage0_fid_data" in h5f:
+                acq_segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
+                if acq_segs is not None:
+                    # Derive the interleave-cleanup comb spacings so the
+                    # chirp-response probe skips frequencies whose pre-record
+                    # absence was manufactured by the offset cleanup: the
+                    # cleanup estimates per-phase means on the pre-record and
+                    # subtracts the tiled pattern, which nulls the fs/M comb
+                    # lines in the stored pre-record exactly (by construction),
+                    # while the FID frames retain the signal-path remainder.
+                    # Without exclusion a real clock spur at such a frequency
+                    # would read ratio ≈ 0 → protect, vetoing the correct gate.
+                    excluded_comb: Optional[List[float]] = None
+                    if acq_segs.interleave_patterns is not None:
+                        # sample_dt is in seconds; convert spacing to MHz.
+                        excluded_comb = [
+                            1.0 / (m * acq_segs.sample_dt) / 1e6
+                            for m in acq_segs.interleave_patterns.keys()
+                        ]
+                        logger.info(
+                            "Stage 5 spur masking: excluding %d comb spacing(s) "
+                            "from chirp-response probe (interleave cleanup): %s MHz",
+                            len(excluded_comb),
+                            ", ".join(f"{sp:.3f}" for sp in excluded_comb),
+                        )
+                    chirp_response_probe = make_chirp_response_probe(
+                        acq_segs.pre_record,
+                        fid_samples,
+                        sample_dt_us,
+                        start_us=start_us,
+                        end_us=end_us,
+                        probe_freq_mhz=probe_freq_mhz,
+                        sideband=sideband,
+                        excluded_comb_mhz=excluded_comb,
+                    )
+                    logger.info(
+                        "Stage 5 spur masking: chirp-response probe built "
+                        "from pre-record (%d samples, %.2f µs)",
+                        acq_segs.pre_record.size,
+                        acq_segs.pre_record_us,
+                    )
         integer_tol_v = _required_float(
             spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
         )
@@ -776,6 +828,14 @@ def fit_peaks_impl(
             ),
             use_stft_catalogue=use_catalogue,
             decay_probe=decay_probe,
+            chirp_response_probe=chirp_response_probe,
+            chirp_response_gate_ratio=_required_float(
+                spur_cfg.chirp_response_gate_ratio, "spur.chirp_response_gate_ratio"
+            ),
+            chirp_response_protect_ratio=_required_float(
+                spur_cfg.chirp_response_protect_ratio,
+                "spur.chirp_response_protect_ratio",
+            ),
             mask_target_residual_snr=_required_float(
                 spur_cfg.mask_target_residual_snr, "spur.mask_target_residual_snr"
             ),

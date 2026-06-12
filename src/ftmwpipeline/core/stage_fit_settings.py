@@ -298,6 +298,8 @@ class SpurSubSettings:
     drift_min_snr: Optional[float] = None
     mask_target_residual_snr: Optional[float] = None
     mask_max_half_width_bins: Optional[int] = None
+    chirp_response_gate_ratio: Optional[float] = None
+    chirp_response_protect_ratio: Optional[float] = None
 
     def __post_init__(self) -> None:
         # Tolerant ingestion: YAML hands list-of-dicts, HDF5 hands a JSON
@@ -436,6 +438,11 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # cross-fixture calibration flips it (see the planning doc).
         "mask_target_residual_snr": 0.0,
         "mask_max_half_width_bins": 32,
+        # Chirp-response pre-record anchor thresholds. The probe only runs
+        # when acquisition segments are present (scope records); files without
+        # segments behave byte-identically to before.
+        "chirp_response_gate_ratio": 0.8,
+        "chirp_response_protect_ratio": 0.3,
     },
     "baseline": {
         # Leakage-wing baseline defaults on. It fires on a coherent edge wing

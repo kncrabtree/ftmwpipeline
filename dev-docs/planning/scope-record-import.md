@@ -1,6 +1,27 @@
 # Scope-record import — segmented raw acquisitions
 
-Status: **planning**. Driving fixture: `Succinimide_10.mat` (Keysight
+Status: **implemented** (loader, layout, segment persistence, interleave
+cleanup, chirp-response spur lane — all three interfaces + tests);
+**end-to-end fixture validation pending** (stages 0–5 on the succinimide
+record: ringing-aware start detection, defaults portability, catalog
+scoring). Implementation notes beyond the design below:
+
+- The keysight-mat loader reproduces the bench frame average exactly and,
+  with `interleave_factors=[16, 512]`, the bench-corrected average to
+  float roundoff (the bench's mod-512 reference pattern is the *total*
+  per-phase means; the sequential-residual application is equivalent).
+- Interleave patterns persist in the `acquisition_segments` group (LSB
+  units, estimated pre-volt-scaling) and the derived fs/M clocks ride the
+  recommended-clock-sources layer (`interleave_m16` 8000 MHz,
+  `interleave_m512` 250 MHz, locked).
+- The chirp-response probe carries a comb-exclusion guard, found by
+  measurement: the cleanup estimates its pattern on the pre-record and
+  therefore nulls the fs/M combs there exactly — the stored pre-record's
+  silence at those frequencies is manufactured, and an unguarded probe
+  read the 16 GHz ADC image as "protect". On cleanup-comb frequencies the
+  probe returns inconclusive and the lattice/narrowness lanes decide.
+
+Driving fixture: `Succinimide_10.mat` (Keysight
 UXR0204A, 128 GSa/s direct sampling, 8–18 GHz; bench characterization in
 `scratch/succinimide/`). Part of the cross-instrument arc (ROADMAP
 priority 3) together with

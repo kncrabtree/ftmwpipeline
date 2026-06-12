@@ -82,10 +82,13 @@ __all__ = [
     "DEFAULT_LATTICE_DECAY_RATIO",
     "DEFAULT_DRIFT_BAND_RATIO",
     "DEFAULT_DRIFT_MIN_SNR",
+    "DEFAULT_CHIRP_RESPONSE_GATE_RATIO",
+    "DEFAULT_CHIRP_RESPONSE_PROTECT_RATIO",
     "detect_active_ft_spurs",
     "detect_drift_spurs",
     "make_decay_probe",
     "make_band_power_probe",
+    "make_chirp_response_probe",
     "gate_spurs",
     "build_spur_set",
 ]
@@ -107,6 +110,20 @@ DEFAULT_DECAY_RATIO_FLAT = 0.8  # above this (and SNR ok) a nominee is flat
 DEFAULT_DECAY_MIN_SNR_VETO = 3.0  # min frame-amplitude SNR to veto a narrow spur
 DEFAULT_DECAY_MIN_SNR_FLAT = 10.0  # min frame-amplitude SNR to gate a flat tone
 DEFAULT_DECAY_N_FRAMES = 8  # frames over the active record
+
+# Chirp-response anchor thresholds. Measured on the reference instrument
+# (Keysight UXR0204A, 19-frame scope record): known interference tones have
+# pre/FID amplitude ratios 0.59–1.68 (7 of 8 catalogued >= 0.9; clock tones
+# 0.81–1.01); known chirp-responsive molecular lines have ratios <= 0.28,
+# consistent with e^{-Δt/τ} bleed from the previous chirp. The ambiguous
+# band (0.50–0.74) is left as inconclusive (fall-through to other lanes).
+# The pre-record floor is ~√N_frames worse than the science average's, so
+# only nominees bright enough to see pre-record are arbitrated; weaker ones
+# fall through unchanged.
+DEFAULT_CHIRP_RESPONSE_GATE_RATIO = 0.8  # >= this AND pre_snr >= 5 -> confirmed CW
+DEFAULT_CHIRP_RESPONSE_PROTECT_RATIO = (
+    0.3  # <= this (+ detectability) -> chirp-responsive
+)
 
 # Clock-lattice prior thresholds. On a locked-lattice point the prior odds
 # are ~300x higher than at an arbitrary integer MHz, so the evidence burden
@@ -684,6 +701,206 @@ def make_band_power_probe(
 
 
 # ---------------------------------------------------------------------------
+# Chirp-response anchor probe
+# ---------------------------------------------------------------------------
+def make_chirp_response_probe(
+    pre_record: np.ndarray,
+    fid_data: np.ndarray,
+    sample_dt_us: float,
+    *,
+    start_us: float,
+    end_us: float,
+    probe_freq_mhz: float,
+    sideband: Any,
+    pre_guard_front_us: float = 1.0,
+    pre_guard_back_us: float = 0.5,
+    excluded_comb_mhz: Optional[Sequence[float]] = None,
+) -> Callable[[float], Tuple[float, float, float]]:
+    """Build a pre-record / FID amplitude ratio probe.
+
+    The pre-record (the quiet segment before the first chirp frame in a
+    segmented scope acquisition) is the time-domain anchor for the chirp-
+    response verdict. Molecular emission requires chirp excitation, so a true
+    line is absent pre-record (or present only as weak ``e^{-Δt/τ}`` bleed
+    from the previous frame). Clock/LO interference does not care about the
+    chirp and appears pre-record at full amplitude.
+
+    Both spectra are computed as rfft amplitude spectra (``|FT| / N``). The
+    tone amplitude at the candidate's baseband frequency is read as the maximum
+    within ±3 bins; the local pre-record floor is the median within ±50 MHz.
+
+    Parameters
+    ----------
+    pre_record
+        Quiet pre-record voltage samples (real, float-convertible). Guards
+        ``pre_guard_front_us`` (from the start, to skip residual ringing) and
+        ``pre_guard_back_us`` (from the end, to skip the chirp onset transient)
+        are removed before the spectrum is computed.
+    fid_data
+        Full FID array (real, float-convertible). The active slice
+        ``[start_us, end_us)`` is used, matching the :func:`make_decay_probe`
+        convention.
+    sample_dt_us
+        Sample interval in µs (same clock for both arrays).
+    start_us, end_us
+        Active-record bounds for the FID side (µs).
+    probe_freq_mhz
+        LO / probe frequency (MHz) for the sideband transform.
+    sideband
+        Sideband convention; passed to :func:`~ftmwpipeline.fitting.peak_model.sideband_sign`.
+    pre_guard_front_us, pre_guard_back_us
+        Guard intervals (µs) trimmed from the pre-record before computing its
+        amplitude spectrum. Defaults: 1.0 µs front (ringing), 0.5 µs back.
+    excluded_comb_mhz
+        Optional list of comb spacings (MHz) whose integer multiples are
+        excluded from the pre-record/FID ratio verdict. When a candidate's
+        baseband frequency lies within ``tol`` of a nonzero multiple of any
+        listed spacing, the probe returns ``(nan, nan, nan)`` (the
+        inconclusive sentinel), letting the existing lanes (clock lattice,
+        narrowness, decay) decide.
+
+        The rationale: the interleave-offset cleanup
+        (:func:`~ftmwpipeline.io.data_loaders.keysight_mat.apply_interleave_cleanup`)
+        estimates per-phase DC offsets from the pre-record itself and
+        subtracts the tiled pattern, which nulls the ``fs/M`` comb lines in
+        the stored pre-record EXACTLY (by construction: the pre-record's own
+        per-phase means go to zero), while the FID frames retain the
+        signal-path remainder of those combs. The result is a manufactured
+        absence: pre_amp ≈ 0, ratio ≈ 0, which the protect veto mistakes for
+        a chirp-responsive molecular line. At cleanup-comb frequencies the
+        absence is not physics evidence, so the probe must be silent.
+
+    Returns
+    -------
+    Callable[[float], tuple[float, float, float]]
+        ``probe(f_mol_mhz) -> (ratio, pre_snr, fid_detectability)`` where
+
+        * ``ratio`` = ``pre_amp / fid_amp`` -- the key discriminant. A CW tone
+          reads ≈ 1; a chirp-responsive line reads ≤ e^{-Δt/τ} (≤ 0.28 on the
+          reference fixture).
+        * ``pre_snr`` = ``pre_amp / pre_floor`` -- the candidate's
+          significance in the pre-record.
+        * ``fid_detectability`` = ``fid_amp / pre_floor`` -- how far above the
+          pre-record floor the FID amplitude sits; used to ensure the probe
+          only arbitrates candidates that WOULD have been visible pre-record if
+          they were CW.
+
+        Zero/NaN edges, and frequencies on an excluded comb, are handled
+        conservatively (``nan`` is returned) so the gate falls through to the
+        existing lanes when the probe cannot decide. The NaN sentinel is safe:
+        ``_chirp_verdict`` in :func:`gate_spurs` tests ``np.isfinite(ratio)``
+        before any threshold comparison, so NaN falls through to
+        ``"inconclusive"`` without triggering either guard.
+    """
+    s = sideband_sign(sideband)
+
+    def _to_bb(f_mol: float) -> float:
+        return float(abs(probe_freq_mhz - f_mol) if s < 0 else f_mol - probe_freq_mhz)
+
+    # Pre-record side: trim guards and compute rfft amplitude spectrum (|FT|/N).
+    pre = np.asarray(pre_record, dtype=float)
+    guard_front = max(int(round(pre_guard_front_us / sample_dt_us)), 0)
+    guard_back = max(int(round(pre_guard_back_us / sample_dt_us)), 0)
+    pre_trimmed = pre[
+        guard_front : pre.size - guard_back if guard_back > 0 else pre.size
+    ]
+    pre_n = pre_trimmed.size
+    if pre_n < 4:
+        # Pre-record too short after trimming; return a probe that is always
+        # inconclusive (ratio = nan) so the gate falls through.
+        def _null_probe(f_mol_mhz: float) -> Tuple[float, float, float]:
+            return float("nan"), float("nan"), float("nan")
+
+        return _null_probe
+
+    pre_fft = np.abs(np.fft.rfft(pre_trimmed)) / pre_n
+    pre_fax = np.fft.rfftfreq(pre_n, d=sample_dt_us)  # baseband frequencies (MHz)
+
+    # FID side: active slice, same amplitude convention.
+    fid = np.asarray(fid_data, dtype=float)
+    i0 = max(int(round(start_us / sample_dt_us)), 0)
+    i1 = min(int(round(end_us / sample_dt_us)), fid.size)
+    fid_seg = fid[i0:i1]
+    fid_n = fid_seg.size
+    if fid_n < 4:
+
+        def _null_probe(f_mol_mhz: float) -> Tuple[float, float, float]:
+            return float("nan"), float("nan"), float("nan")
+
+        return _null_probe
+
+    fid_fft = np.abs(np.fft.rfft(fid_seg)) / fid_n
+    fid_fax = np.fft.rfftfreq(fid_n, d=sample_dt_us)
+
+    # Bin window (±3 bins of the candidate) at the pre-record frequency resolution.
+    half_bins = 3
+    # Floor search window: ±50 MHz of the candidate's baseband frequency.
+    floor_half_mhz = 50.0
+
+    # Comb-exclusion tolerance: at least 0.5 MHz OR 4 pre-record bin widths,
+    # whichever is larger. This covers the DC comb lines whose pre-record
+    # absence was manufactured by the interleave-offset cleanup.
+    pre_bin_width_mhz = float(pre_fax[1]) if pre_fax.size > 1 else 0.0
+    _comb_tol_mhz = max(0.5, 4.0 * pre_bin_width_mhz)
+    # Pre-compute the list of (spacing, tol) pairs once; the closure captures
+    # only these scalars plus the already-computed spectra.
+    _comb_spacings: List[float] = (
+        [float(sp) for sp in excluded_comb_mhz if float(sp) > 0.0]
+        if excluded_comb_mhz is not None
+        else []
+    )
+
+    def _on_excluded_comb(f_bb: float) -> bool:
+        """Return True when ``f_bb`` (MHz, baseband) sits on an excluded comb."""
+        for sp in _comb_spacings:
+            n = f_bb / sp
+            nearest = round(n)
+            if nearest != 0 and abs(n - nearest) * sp <= _comb_tol_mhz:
+                return True
+        return False
+
+    def probe(f_mol_mhz: float) -> Tuple[float, float, float]:
+        f_bb = _to_bb(float(f_mol_mhz))
+
+        # Interleave-cleanup comb exclusion: the cleanup nulls the fs/M comb
+        # lines in the stored pre-record exactly (the pre-record's own per-
+        # phase means go to zero), while the FID frames retain the signal-path
+        # remainder. The resulting pre_amp ≈ 0 and ratio ≈ 0 would incorrectly
+        # trigger the protect veto. Return the inconclusive sentinel instead so
+        # the existing lanes (clock lattice, narrowness, decay) decide.
+        if _on_excluded_comb(f_bb):
+            return float("nan"), float("nan"), float("nan")
+
+        # -- Pre-record amplitude --
+        k_pre = int(np.argmin(np.abs(pre_fax - f_bb)))
+        lo_pre = max(k_pre - half_bins, 0)
+        hi_pre = min(k_pre + half_bins + 1, pre_fft.size)
+        pre_amp = float(np.max(pre_fft[lo_pre:hi_pre])) if hi_pre > lo_pre else 0.0
+
+        # -- Pre-record local floor (median within ±50 MHz) --
+        floor_mask = np.abs(pre_fax - f_bb) <= floor_half_mhz
+        floor_vals = pre_fft[floor_mask]
+        pre_floor = float(np.median(floor_vals)) if floor_vals.size > 0 else 0.0
+
+        # -- FID amplitude --
+        k_fid = int(np.argmin(np.abs(fid_fax - f_bb)))
+        lo_fid = max(k_fid - half_bins, 0)
+        hi_fid = min(k_fid + half_bins + 1, fid_fft.size)
+        fid_amp = float(np.max(fid_fft[lo_fid:hi_fid])) if hi_fid > lo_fid else 0.0
+
+        # Guard against zero/NaN edges conservatively.
+        if fid_amp <= 0.0 or pre_floor <= 0.0:
+            return float("nan"), float("nan"), float("nan")
+
+        ratio = pre_amp / fid_amp
+        pre_snr = pre_amp / pre_floor
+        fid_detectability = fid_amp / pre_floor
+        return ratio, pre_snr, fid_detectability
+
+    return probe
+
+
+# ---------------------------------------------------------------------------
 # Joint gate
 # ---------------------------------------------------------------------------
 def gate_spurs(
@@ -697,6 +914,11 @@ def gate_spurs(
     band_power_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
     drift_band_ratio: float = DEFAULT_DRIFT_BAND_RATIO,
     drift_min_snr: float = DEFAULT_DRIFT_MIN_SNR,
+    chirp_response_probe: Optional[
+        Callable[[float], Tuple[float, float, float]]
+    ] = None,
+    chirp_response_gate_ratio: float = DEFAULT_CHIRP_RESPONSE_GATE_RATIO,
+    chirp_response_protect_ratio: float = DEFAULT_CHIRP_RESPONSE_PROTECT_RATIO,
 ) -> List[GatedSpur]:
     """Combine the frequency-domain spurs with the Stage 2b cluster set.
 
@@ -748,6 +970,29 @@ def gate_spurs(
       it is dropped when ``decay_ratio < lattice_decay_ratio`` at usable
       probe SNR. The genuine unlocked drift family keeps no decay veto.
       Without ``band_power_probe`` drift nominees are skipped.
+
+    Chirp-response anchor (only when ``chirp_response_probe`` is supplied,
+    built from the persisted pre-record segment via
+    :func:`make_chirp_response_probe`). The probe is evaluated for each
+    nominee BEFORE the decay probe, because modulated carriers can mimic
+    FID decay and fool the coherent demod:
+
+    * **gate-confirm**: ``ratio >= chirp_response_gate_ratio`` AND
+      ``pre_snr >= 5`` -- the tone is present pre-record at full amplitude,
+      confirming external interference. The candidate is gated regardless of
+      the decay-probe verdict (overrides a decay-probe "decays" veto).
+    * **protect**: ``ratio <= chirp_response_protect_ratio`` AND
+      ``fid_detectability >= 5 / chirp_response_protect_ratio`` -- the tone
+      is bright enough that a CW counterpart would have been detectable
+      pre-record, but it is absent (or very weak). The candidate is
+      chirp-responsive; its gating is vetoed regardless of the decay probe.
+    * **inconclusive**: anything else (ratio in the ambiguous band, or the
+      probe returned NaN) -- fall through to the existing arbitration
+      unchanged.
+
+    The probe runs only when ``chirp_response_probe`` is not ``None`` (files
+    without acquisition segments load with ``None``, and behavior is
+    byte-identical to before).
 
     Detections within ``merge_tol_mhz`` of each other are merged into one
     :class:`GatedSpur`; a non-``None`` lattice identity is preserved across
@@ -807,18 +1052,49 @@ def gate_spurs(
             )
         )
 
+    # Chirp-response probe SNR floor for both the gate-confirm and protect lanes.
+    _CR_PRE_SNR_FLOOR = 5.0
+
+    def _chirp_verdict(center_mhz: float) -> str:
+        """Return ``"gate"``, ``"protect"``, or ``"inconclusive"``."""
+        if chirp_response_probe is None:
+            return "inconclusive"
+        cr_ratio, cr_pre_snr, cr_fid_det = chirp_response_probe(center_mhz)
+        if not np.isfinite(cr_ratio):
+            return "inconclusive"
+        # Gate-confirm: pre-record amplitude comparable to FID -> CW interference.
+        if cr_ratio >= chirp_response_gate_ratio and cr_pre_snr >= _CR_PRE_SNR_FLOOR:
+            return "gate"
+        # Protect: tone is bright enough to have been seen pre-record as CW, but
+        # is absent -- it is chirp-responsive (a molecular line).
+        detect_floor = _CR_PRE_SNR_FLOOR / max(chirp_response_protect_ratio, 1e-9)
+        if cr_ratio <= chirp_response_protect_ratio and cr_fid_det >= detect_floor:
+            return "protect"
+        return "inconclusive"
+
     for sp in active_ft_spurs:
+        # Chirp-response anchor: run before the decay probe. Modulated carriers
+        # can mimic FID decay (pseudo-decay failure mode), so the pre-record
+        # presence check ranks above the coherent-demod verdict.
+        cr = _chirp_verdict(sp.center_mhz)
+        if cr == "protect":
+            # The tone is absent pre-record despite being strong enough to
+            # appear there if it were CW: chirp-responsive, not a spur.
+            continue
+
         if sp.drift:
             # Drifting-family nominee: arbitrated by the band-power probe
             # (the coherent demod is meaningless under the wander).
-            if band_power_probe is None:
+            if band_power_probe is None and cr != "gate":
                 continue
             # A locked-point band-power fallback can land near a real
             # decaying molecular line (655's 36800: band_ratio 0.38 clears
             # the drift bar but decay_ratio 0.39 clearly decays). Apply the
             # lattice decay veto to ``locked_fallback`` nominees; the genuine
             # unlocked drift family pseudo-decays and keeps no decay veto.
-            if sp.locked_fallback and decay_probe is not None:
+            # A chirp-response gate-confirm overrides: the pre-record confirms
+            # CW presence, so there is no decay to worry about.
+            if sp.locked_fallback and decay_probe is not None and cr != "gate":
                 decay_ratio, amp_snr = decay_probe(sp.center_mhz)
                 if (
                     np.isfinite(decay_ratio)
@@ -826,6 +1102,20 @@ def gate_spurs(
                     and amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO
                 ):
                     continue
+            if cr == "gate":
+                # Chirp-response gate-confirm: pre-record confirms CW, skip
+                # the band-power check.
+                _add(
+                    sp.center_mhz,
+                    "drift",
+                    sp.snr,
+                    sp.narrowness_ratio,
+                    lattice=sp.lattice,
+                    drift=True,
+                )
+                continue
+            if band_power_probe is None:
+                continue
             band_ratio, band_snr = band_power_probe(sp.center_mhz)
             if (
                 np.isfinite(band_ratio)
@@ -844,6 +1134,17 @@ def gate_spurs(
         if sp.pair:
             # A two-bin (split-power) nominee: the frequency-domain
             # signature is ambiguous against a blended doublet.
+            # Chirp-response gate-confirm overrides the flatness requirement
+            # (the pre-record confirms CW presence).
+            if cr == "gate":
+                _add(
+                    sp.center_mhz,
+                    "narrow-pair",
+                    sp.snr,
+                    sp.narrowness_ratio,
+                    lattice=sp.lattice,
+                )
+                continue
             if decay_probe is None:
                 continue
             decay_ratio, amp_snr = decay_probe(sp.center_mhz)
@@ -872,6 +1173,14 @@ def gate_spurs(
             ):
                 _add(sp.center_mhz, "narrow-pair", sp.snr, sp.narrowness_ratio)
             continue
+        # Narrow (non-pair, non-drift) nominee.
+        if cr == "gate":
+            # Pre-record confirms CW presence: gate without consulting the
+            # decay probe (overrides the modulated-carrier pseudo-decay).
+            _add(
+                sp.center_mhz, "narrow", sp.snr, sp.narrowness_ratio, lattice=sp.lattice
+            )
+            continue
         if decay_probe is not None:
             decay_ratio, amp_snr = decay_probe(sp.center_mhz)
             # On a locked-lattice point the prior odds are ~300x higher, so
@@ -893,6 +1202,15 @@ def gate_spurs(
 
     for cl in saturated_clusters:
         center = float(cl.center_freq_mhz)
+        # Chirp-response anchor applies to cluster nominees too.
+        cr = _chirp_verdict(center)
+        if cr == "protect":
+            continue
+        if cr == "gate":
+            # Pre-record confirms CW: gate regardless of the decay probe.
+            source = "flat+saturated" if cl.saturated else "flat"
+            _add(center, source, float("nan"), float("nan"))
+            continue
         if decay_probe is not None:
             decay_ratio, amp_snr = decay_probe(center)
             if (
@@ -936,6 +1254,11 @@ def build_spur_set(
     drift_min_snr: float = DEFAULT_DRIFT_MIN_SNR,
     mask_target_residual_snr: float = 0.0,
     mask_max_half_width_bins: int = 32,
+    chirp_response_probe: Optional[
+        Callable[[float], Tuple[float, float, float]]
+    ] = None,
+    chirp_response_gate_ratio: float = DEFAULT_CHIRP_RESPONSE_GATE_RATIO,
+    chirp_response_protect_ratio: float = DEFAULT_CHIRP_RESPONSE_PROTECT_RATIO,
 ) -> SpurSet:
     """Detect + gate spurs and package them with the mask geometry.
 
@@ -1070,6 +1393,9 @@ def build_spur_set(
         band_power_probe=band_power_probe,
         drift_band_ratio=drift_band_ratio,
         drift_min_snr=drift_min_snr,
+        chirp_response_probe=chirp_response_probe,
+        chirp_response_gate_ratio=chirp_response_gate_ratio,
+        chirp_response_protect_ratio=chirp_response_protect_ratio,
     )
     if freqs.size >= 2:
         bin_spacing = float(np.median(np.abs(np.diff(freqs))))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 import pytest
@@ -963,7 +964,449 @@ def test_scaled_mask_truncates_at_real_structure():
     # mask must stop short of the line while staying wider than the base.
     assert hw is not None and 2 <= hw < 6
     # and the line's own bin must not be masked
-    spec_mask = sset.window_mask_spec(center - 2.0, center + 2.0, 40000.0, Sideband.LOWER)
+    spec_mask = sset.window_mask_spec(
+        center - 2.0, center + 2.0, 40000.0, Sideband.LOWER
+    )
     assert spec_mask is not None
     u = -(freqs[np.abs(freqs - line) < 0.5 * SPACING] - 40000.0)
     assert not spec_mask.bin_mask(u).any()
+
+
+# ---------------------------------------------------------------------------
+# Chirp-response anchor probe + gate integration
+# ---------------------------------------------------------------------------
+# Use a direct-sampling geometry where the molecular frequencies ARE the
+# baseband frequencies (probe = 0, upper sideband), keeping f_bb well within
+# the Nyquist band of the test sample rate.  dt = 0.001 µs -> Nyquist 500 MHz.
+_CR_DT = 0.001  # µs (1 GSa/s)
+_CR_N_FID = 20000  # 20 µs active slice
+_CR_N_PRE = 12500  # 12.5 µs pre-record
+# Probe frequency of 0 MHz with upper sideband maps f_mol -> f_bb = f_mol - 0.
+# Use a low molecular frequency (200 MHz) well within the Nyquist band.
+_CR_PROBE_MHZ = 0.0
+_CR_FREQ_MOL = 200.0  # MHz; f_bb = 200 MHz, well within Nyquist at 1 GSa/s
+
+
+def _make_pre_and_fid(
+    *,
+    cw_amp: float = 0.0,
+    line_amp: float = 0.0,
+    tau_us: float = 4.0,
+    freq_mol_mhz: float = _CR_FREQ_MOL,
+    probe_mhz: float = _CR_PROBE_MHZ,
+    noise: float = 0.0005,
+    seed: int = 42,
+    sideband: "Sideband" = Sideband.UPPER,
+) -> tuple:
+    """Synthetic pre-record and FID for the chirp-response probe tests.
+
+    Returns ``(pre_record, fid, dt_us, start_us, end_us, probe_mhz, sideband)``.
+
+    Upper-sideband convention: f_bb = f_mol - probe (= f_mol for probe=0).
+    ``cw_amp`` sets the amplitude of a persistent CW tone (present in both
+    pre-record and FID). ``line_amp`` sets the amplitude of a chirp-responsive
+    line (present ONLY in the FID, decaying with ``tau_us``).
+    """
+    rng = np.random.default_rng(seed)
+    # Upper sideband: f_bb = f_mol - probe
+    f_bb = freq_mol_mhz - probe_mhz
+    t_pre = np.arange(_CR_N_PRE) * _CR_DT
+    t_fid = np.arange(_CR_N_FID) * _CR_DT
+
+    pre = rng.normal(0.0, noise, size=_CR_N_PRE)
+    fid = rng.normal(0.0, noise, size=_CR_N_FID)
+
+    if cw_amp > 0.0:
+        # CW tone: flat in both pre-record and FID.
+        pre = pre + cw_amp * np.cos(2 * np.pi * f_bb * t_pre + 0.1)
+        fid = fid + cw_amp * np.cos(2 * np.pi * f_bb * t_fid + 0.1)
+
+    if line_amp > 0.0:
+        # Chirp-responsive line: exponentially decaying, in FID only.
+        fid = fid + line_amp * np.exp(-t_fid / tau_us) * np.cos(
+            2 * np.pi * f_bb * t_fid + 0.5
+        )
+
+    start_us = 0.0
+    end_us = _CR_N_FID * _CR_DT
+    return pre, fid, _CR_DT, start_us, end_us, probe_mhz, sideband
+
+
+def _cr_probe_for(
+    cw_amp: float = 0.0,
+    line_amp: float = 0.0,
+    tau_us: float = 4.0,
+    freq_mol_mhz: float = _CR_FREQ_MOL,
+) -> "Callable":
+    from ftmwpipeline.fitting.spur_detection import make_chirp_response_probe
+
+    pre, fid, dt_us, start_us, end_us, probe_mhz, sband = _make_pre_and_fid(
+        cw_amp=cw_amp, line_amp=line_amp, tau_us=tau_us, freq_mol_mhz=freq_mol_mhz
+    )
+    return make_chirp_response_probe(
+        pre,
+        fid,
+        dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        probe_freq_mhz=probe_mhz,
+        sideband=sband,
+    )
+
+
+# (a) Flat CW tone in both pre-record and FID -> gate-confirm verdict, even
+#     when the decay probe reads "decays" (modulated-carrier failure mode).
+def test_chirp_response_cw_tone_gate_confirm():
+    """A flat CW tone present pre-record at full amplitude -> ratio >= 0.8."""
+    probe = _cr_probe_for(cw_amp=1.0)
+    ratio, pre_snr, fid_det = probe(_CR_FREQ_MOL)
+    assert np.isfinite(ratio), "probe returned nan for a clean CW tone"
+    assert ratio >= 0.8, f"CW tone ratio {ratio:.3f} below gate threshold"
+    assert pre_snr >= 5.0, f"CW tone pre_snr {pre_snr:.2f} below floor"
+
+
+def test_chirp_response_cw_overrides_decaying_decay_probe():
+    """Gate-confirm from chirp-response probe overrides a decay-probe 'decays' veto.
+
+    A CW tone whose phase modulation makes the coherent demod read a pseudo-
+    decay ratio < DEFAULT_DECAY_RATIO_LINE: the chirp-response probe's pre-
+    record confirmation must still gate it.
+    """
+    from ftmwpipeline.fitting.spur_detection import gate_spurs, Spur
+
+    probe = _cr_probe_for(cw_amp=1.0)
+
+    # Confirm the chirp-response probe sees ratio >= 0.8.
+    ratio, pre_snr, _ = probe(_CR_FREQ_MOL)
+    assert ratio >= 0.8 and pre_snr >= 5.0
+
+    # Construct a synthetic narrow nominee at _CR_FREQ_MOL (200 MHz) so we
+    # don't need a full active-FT grid at that frequency.
+    sp = Spur(
+        integer_mhz=int(round(_CR_FREQ_MOL)),
+        center_mhz=_CR_FREQ_MOL,
+        bin_index=10,
+        magnitude=100.0,
+        snr=50.0,
+        narrowness_ratio=0.1,
+    )
+
+    # A decay probe that reads "decays" (ratio 0.2) would veto the narrow
+    # nominee on its own.  With the chirp-response probe confirming CW, the
+    # spur must still be gated.
+    gated = gate_spurs(
+        [sp],
+        [],
+        decay_probe=lambda f: (0.2, 50.0),  # would veto alone
+        chirp_response_probe=probe,
+    )
+    assert (
+        len(gated) == 1
+    ), "chirp-response gate-confirm did not override the decay-probe veto"
+    assert gated[0].integer_mhz == int(round(_CR_FREQ_MOL))
+
+
+# (b) Decaying molecular line: absent from pre-record (or present at 0.1x)
+#     with high fid_detectability -> protect verdict vetoes the gating.
+def test_chirp_response_protect_vetoes_molecular_line():
+    """A chirp-responsive line absent pre-record is protected from gating."""
+    from ftmwpipeline.fitting.spur_detection import gate_spurs, Spur
+
+    # Strong line in FID only; CW counterpart would be bright pre-record.
+    probe = _cr_probe_for(line_amp=1.0, tau_us=4.0)
+    ratio, pre_snr, fid_det = probe(_CR_FREQ_MOL)
+    # The ratio should be well below the protect threshold (0.3) and
+    # fid_detectability should be high enough to trigger protect.
+    assert np.isfinite(ratio), "probe returned nan for a decaying line"
+
+    # Construct a synthetic narrow nominee at _CR_FREQ_MOL.
+    sp = Spur(
+        integer_mhz=int(round(_CR_FREQ_MOL)),
+        center_mhz=_CR_FREQ_MOL,
+        bin_index=10,
+        magnitude=100.0,
+        snr=50.0,
+        narrowness_ratio=0.1,
+    )
+
+    # Without the chirp-response probe the narrowness gate would fire.
+    gated_no_probe = gate_spurs([sp], [])
+    assert len(gated_no_probe) == 1  # sanity: narrowness gates it alone
+
+    # With the chirp-response probe in protect mode, the gate is vetoed.
+    gated = gate_spurs([sp], [], chirp_response_probe=probe)
+    assert gated == [], (
+        "chirp-response protect did not veto the narrowness gate for a "
+        f"molecular line (ratio={ratio:.3f}, fid_det={fid_det:.2f})"
+    )
+
+
+# (c) Weak tone below the pre-record floor -> inconclusive, existing lanes decide.
+def test_chirp_response_inconclusive_falls_through():
+    """A tone weak enough to be below the pre-record floor leaves the verdict
+    to the existing lanes (no protect, no gate-confirm)."""
+    from ftmwpipeline.fitting.spur_detection import gate_spurs, Spur
+
+    # Pure-noise probe: both pre_snr and fid_detectability will be near 1
+    # (noise-level), so neither gate-confirm nor protect fires.
+    probe = _cr_probe_for(cw_amp=0.0)
+
+    sp = Spur(
+        integer_mhz=int(round(_CR_FREQ_MOL)),
+        center_mhz=_CR_FREQ_MOL,
+        bin_index=10,
+        magnitude=100.0,
+        snr=50.0,
+        narrowness_ratio=0.1,
+    )
+
+    # Legacy narrowness gate should still fire (the probe is inconclusive).
+    gated = gate_spurs([sp], [], chirp_response_probe=probe)
+    assert len(gated) == 1, (
+        "inconclusive chirp-response probe should fall through to the "
+        "narrowness gate, but the spur was not gated"
+    )
+
+
+# (d) Sideband mapping: lower-sideband probe frequency handled correctly.
+def test_chirp_response_lower_sideband_probe_mapping():
+    """The baseband conversion is correct for a lower-sideband instrument.
+
+    Lower sideband: f_bb = probe - f_mol. Build a CW tone at probe - f_mol
+    so it lands within Nyquist of the test sample rate.
+    """
+    from ftmwpipeline.fitting.spur_detection import make_chirp_response_probe
+
+    # probe = 500 MHz, f_mol = 300 MHz -> f_bb = 200 MHz (within Nyquist 500 MHz)
+    probe_mhz = 500.0
+    freq_mol = 300.0
+    f_bb = probe_mhz - freq_mol  # = 200 MHz
+
+    rng = np.random.default_rng(99)
+    t_pre = np.arange(_CR_N_PRE) * _CR_DT
+    t_fid = np.arange(_CR_N_FID) * _CR_DT
+    cw_amp = 1.0
+    noise = 0.0005
+
+    pre = rng.normal(0.0, noise, size=_CR_N_PRE) + cw_amp * np.cos(
+        2 * np.pi * f_bb * t_pre + 0.1
+    )
+    fid = rng.normal(0.0, noise, size=_CR_N_FID) + cw_amp * np.cos(
+        2 * np.pi * f_bb * t_fid + 0.1
+    )
+
+    probe_lower = make_chirp_response_probe(
+        pre,
+        fid,
+        _CR_DT,
+        start_us=0.0,
+        end_us=_CR_N_FID * _CR_DT,
+        probe_freq_mhz=probe_mhz,
+        sideband=Sideband.LOWER,
+    )
+    ratio, pre_snr, _ = probe_lower(freq_mol)
+    assert np.isfinite(ratio), "lower-sideband probe returned nan"
+    assert ratio >= 0.8, f"lower-sideband CW ratio {ratio:.3f} below gate bar"
+    assert pre_snr >= 5.0
+
+
+# (e) No probe -> gate_spurs is byte-identical to the no-probe path.
+def test_chirp_response_none_probe_byte_identical():
+    """Passing chirp_response_probe=None must be exactly equivalent to
+    omitting it (byte-identical SpurSet)."""
+    from ftmwpipeline.fitting.spur_detection import gate_spurs
+
+    freqs, spec, sig_c = _grid([(30720.0, 100.0, 0.0)])
+    narrow = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
+    probe = _probe_for([(30720.0, 1.0, 0.0)])  # decay probe, CW
+
+    without = gate_spurs(narrow, [], decay_probe=probe)
+    with_none = gate_spurs(narrow, [], decay_probe=probe, chirp_response_probe=None)
+    assert without == with_none, "None chirp_response_probe broke byte-identity"
+
+
+# ---------------------------------------------------------------------------
+# Chirp-response probe: interleave-comb exclusion
+# ---------------------------------------------------------------------------
+# Geometry for the comb-exclusion tests: direct-sampling, probe=0, upper
+# sideband, 1 GSa/s.  A cleanup comb spacing of 250 MHz (= fs/4, for a
+# 4-phase interleave at 1 GSa/s) puts its 3rd harmonic at 750 MHz.
+_CX_DT = 0.001  # µs  (1 GSa/s, Nyquist 500 MHz)
+_CX_N_FID = 20000  # 20 µs
+_CX_N_PRE = 12500  # 12.5 µs
+_CX_PROBE = 0.0  # MHz
+_CX_SIDEBAND = Sideband.UPPER
+_CX_COMB_SPACING = 250.0  # MHz  (= 1 GHz / 4 interleave factor)
+# Put the tone ON the 1st nonzero comb multiple within Nyquist: 1 x 250 = 250 MHz
+_CX_COMB_FREQ = 250.0  # MHz (molecular = baseband for probe=0, upper sideband)
+# Put an off-comb tone within Nyquist: 300 MHz (not a multiple of 250)
+_CX_OFF_FREQ = 300.0  # MHz
+
+
+def _make_cx_pre_and_fid(
+    cw_freq_mhz: float,
+    *,
+    cw_amp: float = 1.0,
+    pre_comb_nulled: bool = True,
+) -> "tuple":
+    """Synthetic (pre_record, fid) with a CW tone at ``cw_freq_mhz``.
+
+    When ``pre_comb_nulled`` is True the pre-record amplitude at the given
+    frequency is zeroed to simulate interleave-offset cleanup nulling the
+    comb line there, while the FID retains full amplitude.
+    """
+    rng = np.random.default_rng(17)
+    noise = 0.0005
+    f_bb = cw_freq_mhz  # upper sideband, probe=0
+
+    t_pre = np.arange(_CX_N_PRE) * _CX_DT
+    t_fid = np.arange(_CX_N_FID) * _CX_DT
+
+    pre = rng.normal(0.0, noise, size=_CX_N_PRE)
+    fid = rng.normal(0.0, noise, size=_CX_N_FID)
+
+    # CW tone in FID always.
+    fid = fid + cw_amp * np.cos(2 * np.pi * f_bb * t_fid + 0.2)
+
+    if not pre_comb_nulled:
+        # CW also present in pre-record (the normal case without cleanup).
+        pre = pre + cw_amp * np.cos(2 * np.pi * f_bb * t_pre + 0.2)
+    # If pre_comb_nulled, the pre-record is left noise-only at this frequency
+    # (simulating the cleanup zeroing its per-phase means).
+
+    return pre, fid
+
+
+def _cx_probe(
+    cw_freq_mhz: float,
+    *,
+    pre_comb_nulled: bool = True,
+    excluded_comb_mhz: "Optional[Sequence[float]]" = None,
+) -> "Callable":
+    """Build a chirp-response probe for the comb-exclusion tests."""
+    from ftmwpipeline.fitting.spur_detection import make_chirp_response_probe
+
+    pre, fid = _make_cx_pre_and_fid(cw_freq_mhz, pre_comb_nulled=pre_comb_nulled)
+    return make_chirp_response_probe(
+        pre,
+        fid,
+        _CX_DT,
+        start_us=0.0,
+        end_us=_CX_N_FID * _CX_DT,
+        probe_freq_mhz=_CX_PROBE,
+        sideband=_CX_SIDEBAND,
+        excluded_comb_mhz=excluded_comb_mhz,
+    )
+
+
+def test_comb_excluded_freq_returns_inconclusive():
+    """A CW tone on a cleanup-comb multiple with exclusion active -> inconclusive.
+
+    The pre-record is null at the comb frequency (cleanup manufactured the
+    absence), so without exclusion the probe would read ratio ≈ 0 (protect).
+    With exclusion, it returns NaN (inconclusive), so the narrowness / decay
+    / lattice lanes decide instead.
+    """
+    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+
+    # Build probe with comb nulled in pre-record AND exclusion active.
+    probe = _cx_probe(
+        _CX_COMB_FREQ,
+        pre_comb_nulled=True,
+        excluded_comb_mhz=[_CX_COMB_SPACING],
+    )
+    ratio, pre_snr, fid_det = probe(_CX_COMB_FREQ)
+    # The probe must return the inconclusive sentinel (NaN) for the comb freq.
+    assert not np.isfinite(
+        ratio
+    ), f"Expected NaN sentinel for comb freq {_CX_COMB_FREQ} MHz, got ratio={ratio:.3f}"
+
+    # In gate_spurs the NaN flows through _chirp_verdict -> "inconclusive",
+    # so the narrowness gate still fires (the protect veto does NOT apply).
+    sp = Spur(
+        integer_mhz=int(round(_CX_COMB_FREQ)),
+        center_mhz=_CX_COMB_FREQ,
+        bin_index=10,
+        magnitude=3000.0,
+        snr=3000.0,
+        narrowness_ratio=0.05,
+    )
+    gated = gate_spurs([sp], [], chirp_response_probe=probe)
+    assert len(gated) == 1, (
+        "Narrowness gate should fire when chirp-response probe is inconclusive "
+        "(protect veto must NOT apply for an excluded comb frequency)"
+    )
+
+
+def test_comb_excluded_without_exclusion_triggers_protect():
+    """Without exclusion, a cleanup-nulled comb tone triggers the protect veto.
+
+    This is the defect case: ratio ≈ 0 when the pre-record was zeroed by
+    cleanup, and the probe incorrectly vetoes gating the true clock spur.
+    This test pins the CURRENT behavior so the fix is clearly validated by
+    the companion test above.
+    """
+    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
+
+    # Same nulled pre-record, but NO exclusion list.
+    probe = _cx_probe(_CX_COMB_FREQ, pre_comb_nulled=True, excluded_comb_mhz=None)
+    ratio, pre_snr, fid_det = probe(_CX_COMB_FREQ)
+    # Without exclusion the probe reads a very low (near-zero) ratio because
+    # the pre-record was zeroed at this frequency by the cleanup.  The exact
+    # value depends on the noise floor, but it should be well below 0.3.
+    # (We only assert it is finite and small; the exact value is noise-level.)
+    if np.isfinite(ratio):
+        # Only assert when the pre-floor estimate is reliable enough to return
+        # a finite ratio; if noise pushes fid_amp to zero we get NaN and the
+        # test is trivially a pass (no protect fires from NaN).
+        assert ratio <= 0.3, (
+            f"Expected low ratio for cleanup-nulled comb (defect case), "
+            f"got ratio={ratio:.3f}"
+        )
+
+    # The spur should be vetoed (protect fires when ratio is finite and low).
+    sp = Spur(
+        integer_mhz=int(round(_CX_COMB_FREQ)),
+        center_mhz=_CX_COMB_FREQ,
+        bin_index=10,
+        magnitude=3000.0,
+        snr=3000.0,
+        narrowness_ratio=0.05,
+    )
+    gated = gate_spurs([sp], [], chirp_response_probe=probe)
+    # This is the defect: the true spur is incorrectly not gated.
+    # We document this with a non-asserting note so the test is informational
+    # (the companion test above demonstrates the fix).
+    # The assert here confirms the defect: without exclusion protect fires.
+    if np.isfinite(ratio) and fid_det >= 5.0 / 0.3:
+        assert len(gated) == 0, (
+            "Expected protect veto WITHOUT exclusion (defect baseline): "
+            "the narrowness gate should be blocked by the ratio-0 artifact"
+        )
+
+
+def test_off_comb_freq_unaffected_by_exclusion():
+    """A tone NOT on a comb multiple is unaffected by the exclusion list.
+
+    A true chirp-responsive molecular line at an off-comb frequency: the
+    probe reads a normal (not manufactured) ratio and the protect verdict
+    still fires when appropriate.  And a CW tone at an off-comb frequency
+    with a real pre-record signal is not incorrectly excluded.
+    """
+    from ftmwpipeline.fitting.spur_detection import make_chirp_response_probe
+
+    # Off-comb CW tone: pre-record is NOT nulled (it's a real CW signal).
+    probe = _cx_probe(
+        _CX_OFF_FREQ,
+        pre_comb_nulled=False,
+        excluded_comb_mhz=[_CX_COMB_SPACING],
+    )
+    ratio, pre_snr, fid_det = probe(_CX_OFF_FREQ)
+    # For a real CW tone (not nulled), the ratio should be finite and near 1.
+    assert np.isfinite(
+        ratio
+    ), f"Off-comb CW tone should give a finite ratio; got NaN at {_CX_OFF_FREQ} MHz"
+    assert ratio >= 0.5, (
+        f"Off-comb CW tone ratio {ratio:.3f} unexpectedly low (exclusion should "
+        "not suppress this frequency)"
+    )
