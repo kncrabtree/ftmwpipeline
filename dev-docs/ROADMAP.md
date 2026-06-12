@@ -39,12 +39,23 @@ or issue; this list carries only the ordering and the why):
    full fix = the Stage 4 spur-only window drop), and applying the
    measured timebase ε to reported frequencies belongs to the reports
    feature (priority 5).
-2. **Stage 5 performance pass** — the measured inefficiency list in the
-   session handoff (merge loop re-evaluating escape-protected pairs,
-   accept-path candidate templates, per-drop-test nuisance-column rebuilds,
-   unbatched decay-probe demods). Distinct from #12's perf *benchmarks*.
-   Its gating condition — accept logic settled — is met (issue #3 closed);
-   dense fixtures sit at ~5–8 min and this likely buys 20–40%.
+2. **Stage 5 performance pass** — **implemented**. End-to-end profiling
+   reranked the handoff's inefficiency list: the dominant cost was a
+   redundancy not on it — each rescue round's `knockout_test` diagnostic
+   sweep and `iterative_aicc_cleanup`'s first iteration ran identical
+   (K−1) refits on the same joint fit (53% + 17% of the 1019 profile).
+   Fixed by passing knockout's refits through (`refit_sink` /
+   `initial_refits`, with a grid-sortedness guard); plus lazy add-loop
+   candidate templates and support-slice/cached escape nuisance columns.
+   Two handoff items were falsified by measurement and dropped: the
+   merge-loop protected-pair re-evaluation (~2–4 wasted refits per dense
+   fixture, <1%) and decay-probe batching (0.1%). All changes are
+   compute-avoidance only: fitted peak tables are byte-identical to the
+   pre-change baseline on all seven fixtures (`fit_peaks` is
+   deterministic, so exact table equality is the perf acceptance bar);
+   measured ~21% wall-clock on the dense fixtures (1019, 363). The
+   blend-split trial's cost is intentional algorithm spend and was left
+   alone.
 3. **Cross-instrument fixture validation** — the fixture has arrived
    (`Succinimide_10.mat`, Keysight UXR0204A 128 GSa/s direct-sampling,
    8–18 GHz; bench characterization in `scratch/succinimide/` + team

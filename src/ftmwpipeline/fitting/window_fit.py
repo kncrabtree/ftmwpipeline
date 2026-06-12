@@ -53,7 +53,8 @@ construction), giving real frequency / amplitude / phase uncertainties.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import os as import_os
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Optional, Union, cast
 
@@ -1562,6 +1563,7 @@ def knockout_test(
     significance: float = DEFAULT_SIGNIFICANCE,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    refit_sink: Optional[dict[int, WindowFitResult]] = None,
 ) -> list[KnockoutResult]:
     """Per-line knockout validation of a converged window fit.
 
@@ -1613,6 +1615,13 @@ def knockout_test(
     significance : float, default :data:`DEFAULT_SIGNIFICANCE`
         Threshold for the diagnostic F-test ``p_value`` only; ``supported``
         keys off ``aicc_delta`` (REJECT-on-tie).
+    refit_sink : dict, optional
+        When provided, every (K-1) ``fit_window`` refit computed for peak
+        index ``i`` is stored as ``refit_sink[i] = refit`` -- including
+        failed refits (``refit.success == False``). The K=1 -> K=0 null
+        branch performs no refit and stores nothing. The caller may pass
+        this dict to :func:`iterative_aicc_cleanup` as ``initial_refits``
+        to avoid recomputing the same fits in the cleanup's first iteration.
 
     Returns
     -------
@@ -1742,6 +1751,8 @@ def knockout_test(
             spur_mask=spur_mask,
             **refit_kwargs,
         )
+        if refit_sink is not None:
+            refit_sink[i] = refit
         if not refit.success:
             # Refit failure -> the AICc gate is unable to express a
             # preference. Treat the peak as supported (REJECT-on-tie's
@@ -2717,13 +2728,24 @@ def conservative_fit(
             escape_dchi2 = 0.0
             # Structural index, not nearest-to-seed (see the collapse check).
             ci_cand = len(trial.peaks) - 1
-            cand_template = model_spectrum(
-                u,
-                [trial.peaks[ci_cand]],
-                trial.tau_us,
-                acquisition_us,
-                shape=shape_resolved,
-            )
+            # cand_template is consumed only by the line-evidence escape branch
+            # and by debug_fringe_dump (a no-op unless FTMW_DEBUG_FRINGE_DIR is
+            # set).  Compute it lazily to avoid the model_spectrum eval on the
+            # majority of candidates where neither path runs.
+            _need_template = (
+                not passes
+                and gate_line_escape
+                and validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is not None
+            ) or bool(import_os.environ.get("FTMW_DEBUG_FRINGE_DIR"))
+            cand_template: Optional[np.ndarray] = None
+            if _need_template:
+                cand_template = model_spectrum(
+                    u,
+                    [trial.peaks[ci_cand]],
+                    trial.tau_us,
+                    acquisition_us,
+                    shape=shape_resolved,
+                )
             # Line-evidence escape hatch: the sigma_eff currency discounts
             # evidence under the trial's own bright candidate (the shared
             # weight model includes the very component being tested) and the
@@ -2739,36 +2761,59 @@ def conservative_fit(
                 not passes
                 and gate_line_escape
                 and validation.DEFAULT_GATE_LINE_ESCAPE_LAMBDA is not None
+                and cand_template is not None
             ):
                 evidence = np.asarray(trial.residual) + cand_template
                 others = [pk for i, pk in enumerate(trial.peaks) if i != ci_cand]
-                nuisance = validation.line_escape_nuisance_columns(
-                    u,
-                    others,
-                    trial.tau_us,
-                    acquisition_us,
-                    shape=shape_resolved,
-                    background=background,
-                )
-                escaped, escape_dchi2 = validation.line_evidence_escape(
-                    evidence[keep],
-                    sigma_keep,
-                    cand_template[keep],
-                    [col[keep] for col in nuisance],
-                    n_params_peak=max(trial.n_params - current.n_params, 1),
-                )
+                tpl_keep = cand_template[keep]
+                sl = validation.line_escape_support_slice(tpl_keep)
+                if sl is None:
+                    # Template is empty/zero or support too narrow: escape
+                    # takes the early-return path (amax<=0 / e.size<3 / m<3)
+                    # regardless of columns -- pass empty columns for speed.
+                    escaped, escape_dchi2 = validation.line_evidence_escape(
+                        evidence[keep],
+                        sigma_keep,
+                        tpl_keep,
+                        [],
+                        n_params_peak=max(trial.n_params - current.n_params, 1),
+                    )
+                else:
+                    # Build background columns on the full grid; peak columns
+                    # on the support subgrid (pointwise -- byte-identical to
+                    # full-grid eval then slicing).
+                    bg_cols = validation.line_escape_background_columns(u, background)
+                    pk_cols = validation.line_escape_peak_columns(
+                        u[keep][sl],
+                        others,
+                        trial.tau_us,
+                        acquisition_us,
+                        shape=shape_resolved,
+                    )
+                    nuisance_sliced = [col[keep][sl] for col in bg_cols] + pk_cols
+                    escaped, escape_dchi2 = validation.line_evidence_escape(
+                        evidence[keep][sl],
+                        sigma_keep[sl],
+                        tpl_keep[sl],
+                        nuisance_sliced,
+                        n_params_peak=max(trial.n_params - current.n_params, 1),
+                    )
                 if escaped:
                     passes = True
             validation.debug_fringe_dump(
                 "addloop",
                 u_keep=u[keep],
-                less_res=np.asarray(trial.residual)[keep] + cand_template[keep],
+                less_res=(
+                    np.asarray(trial.residual)[keep] + cand_template[keep]
+                    if cand_template is not None
+                    else None
+                ),
                 more_res=np.asarray(trial.residual)[keep],
                 cur_res=np.asarray(current.residual)[keep],
                 sigma=sigma_keep,
                 budget=budget_keep,
                 weight_model=np.asarray(trial.fitted_spectrum)[keep],
-                template=cand_template[keep],
+                template=cand_template[keep] if cand_template is not None else None,
                 cand_offset=cand,
                 fitted_offset=trial.peaks[ci_cand].offset_mhz,
                 tau_us=trial.tau_us,

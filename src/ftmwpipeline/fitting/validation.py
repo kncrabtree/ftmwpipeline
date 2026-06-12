@@ -44,6 +44,9 @@ __all__ = [
     "DEFAULT_PAIR_CANCELLATION_MAX",
     "line_evidence_escape",
     "line_escape_nuisance_columns",
+    "line_escape_background_columns",
+    "line_escape_peak_columns",
+    "line_escape_support_slice",
     "pair_cancellation_fraction",
     "blend_pair_escape",
     "DEFAULT_SHAPE_ERROR_KAPPA",
@@ -538,32 +541,20 @@ def sigma_eff_chi2(
     return float(np.sum(r2))
 
 
-def line_escape_nuisance_columns(
+def line_escape_background_columns(
     offset_grid_mhz: np.ndarray,
-    peaks: Sequence[ModelPeak],
-    tau_us: float,
-    acquisition_us: float,
-    *,
-    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
-    background: Optional[np.ndarray] = None,
+    background: Optional[np.ndarray],
 ) -> List[np.ndarray]:
-    """Nuisance columns for :func:`line_evidence_escape`.
+    """Background nuisance columns for :func:`line_evidence_escape`.
 
-    The span of the error modes the sigma_eff fidelity currency tolerates,
-    as complex regressors on ``offset_grid_mhz``:
+    Returns the frozen-contributor ``background`` column and its frequency
+    gradient as complex regressors on the full ``offset_grid_mhz``. These
+    must be built on the full grid (``np.gradient`` uses edge-adjacent
+    differences at the boundaries and is not pointwise) and sliced by the
+    caller after assembly.
 
-    - the frozen contributor ``background`` and its frequency derivative
-      (skirt amplitude / position extrapolation error);
-    - each established peak's own component plus its frequency and tau
-      derivatives (lineshape error under a bright line -- the modes a
-      high-SNR absorber candidate feeds on).
-
-    ``peaks`` are the established :class:`~.peak_model.ModelPeak` entries
-    of the model *without* the disputed peak. Derivatives are central
-    finite differences (a quarter grid-bin in frequency, 5% in tau).
+    Returns an empty list when ``background`` is absent or all-zero.
     """
-    from .peak_model import model_spectrum
-
     u = np.asarray(offset_grid_mhz, dtype=float)
     cols: List[np.ndarray] = []
     if background is not None:
@@ -572,6 +563,32 @@ def line_escape_nuisance_columns(
             cols.append(bg)
             if u.size >= 3:
                 cols.append(np.gradient(bg, u))
+    return cols
+
+
+def line_escape_peak_columns(
+    offset_grid_mhz: np.ndarray,
+    peaks: Sequence[ModelPeak],
+    tau_us: float,
+    acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
+) -> List[np.ndarray]:
+    """Per-peak nuisance columns for :func:`line_evidence_escape`.
+
+    For each established peak (the model WITHOUT the disputed peak): its
+    component, its frequency derivative, and its tau derivative -- 3 complex
+    columns evaluated on ``offset_grid_mhz``. Derivatives are central finite
+    differences (a quarter grid-bin in frequency, 5% in tau).
+
+    ``model_spectrum`` is pointwise in the frequency grid, so these columns
+    may be built on any subgrid of the window -- evaluating on a subgrid is
+    byte-identical to building on the full grid and slicing.
+    """
+    from .peak_model import model_spectrum
+
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    cols: List[np.ndarray] = []
     if u.size >= 2:
         df = float(np.median(np.abs(np.diff(np.sort(u))))) or 1e-3
     else:
@@ -597,6 +614,67 @@ def line_escape_nuisance_columns(
             ) / (2.0 * delta_tau)
             cols.append(d_tau)
     return cols
+
+
+def line_escape_nuisance_columns(
+    offset_grid_mhz: np.ndarray,
+    peaks: Sequence[ModelPeak],
+    tau_us: float,
+    acquisition_us: float,
+    *,
+    shape: "PeakShape | str" = PeakShape.LORENTZIAN,
+    background: Optional[np.ndarray] = None,
+) -> List[np.ndarray]:
+    """Nuisance columns for :func:`line_evidence_escape`.
+
+    The span of the error modes the sigma_eff fidelity currency tolerates,
+    as complex regressors on ``offset_grid_mhz``:
+
+    - the frozen contributor ``background`` and its frequency derivative
+      (skirt amplitude / position extrapolation error);
+    - each established peak's own component plus its frequency and tau
+      derivatives (lineshape error under a bright line -- the modes a
+      high-SNR absorber candidate feeds on).
+
+    ``peaks`` are the established :class:`~.peak_model.ModelPeak` entries
+    of the model *without* the disputed peak. Derivatives are central
+    finite differences (a quarter grid-bin in frequency, 5% in tau).
+
+    Composed from :func:`line_escape_background_columns` (full-grid, contains
+    the gradient) and :func:`line_escape_peak_columns` (pointwise, safe on a
+    subgrid) -- the column ORDER is background, background-gradient, then
+    per-peak comp/d_f/d_tau.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    bg_cols = line_escape_background_columns(u, background)
+    pk_cols = line_escape_peak_columns(u, peaks, tau_us, acquisition_us, shape=shape)
+    return bg_cols + pk_cols
+
+
+def line_escape_support_slice(
+    template: np.ndarray,
+    *,
+    support_fraction: float = 0.15,
+    support_dilate: int = 2,
+) -> Optional[slice]:
+    """Support slice for :func:`line_evidence_escape`.
+
+    Returns the contiguous ``[lo, hi)`` slice covering all bins where
+    ``|template|`` is at least ``support_fraction`` of its maximum, dilated
+    by ``support_dilate`` bins on each side. Returns ``None`` when the
+    template is empty/zero or the resulting slice spans fewer than 3 bins.
+    """
+    tpl = np.asarray(template, dtype=np.complex128)
+    amax = float(np.abs(tpl).max()) if tpl.size else 0.0
+    if amax <= 0.0 or tpl.size < 3:
+        return None
+    sup = np.abs(tpl) >= support_fraction * amax
+    idx = np.where(sup)[0]
+    lo = max(int(idx.min()) - support_dilate, 0)
+    hi = min(int(idx.max()) + support_dilate + 1, tpl.size)
+    if hi - lo < 3:
+        return None
+    return slice(lo, hi)
 
 
 def line_evidence_escape(
@@ -627,6 +705,12 @@ def line_evidence_escape(
     2 * penalty_lambda * n_params_peak``;
     ``penalty_lambda`` defaults to :data:`DEFAULT_GATE_LINE_ESCAPE_LAMBDA`
     and ``(False, 0.0)`` is returned when that is ``None`` (disabled).
+
+    Callers may pre-restrict all arrays to the template's support slice
+    (via :func:`line_escape_support_slice`) before calling: passing
+    already-sliced arrays is byte-identical because re-deriving the support
+    on a pre-sliced template yields the identity slice (dilation re-clips to
+    array bounds), so the same ``[lo, hi)`` window is selected.
     """
     lam = DEFAULT_GATE_LINE_ESCAPE_LAMBDA if penalty_lambda is None else penalty_lambda
     if lam is None:

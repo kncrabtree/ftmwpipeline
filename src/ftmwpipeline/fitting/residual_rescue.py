@@ -29,6 +29,7 @@ Notes
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple
 
@@ -678,6 +679,7 @@ def iterative_aicc_cleanup(
     gate_background: Optional[np.ndarray] = None,
     protected_offsets: Optional[Sequence[float]] = None,
     protected_tol_mhz: float = 0.0,
+    initial_refits: Optional[Mapping[int, WindowFitResult]] = None,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop the worst AICc-with-n_eff offender until every
     remaining peak is supported.
@@ -739,6 +741,20 @@ def iterative_aicc_cleanup(
     bright peak inflating its own bins' noise) are both overruled by
     overwhelming raw template evidence, while skirt fringes stay inside
     the nuisance span and remain droppable.
+
+    initial_refits : Mapping[int, WindowFitResult], optional
+        Pre-computed (K-1) refits keyed by peak index in the *caller's* grid
+        order -- valid only for the first while-iteration (``current is
+        fit``). Produced by passing ``refit_sink`` to :func:`knockout_test`
+        on the same ``fit`` object. For each peak index ``i`` with a
+        non-empty ``kept`` list: if ``initial_refits[i]`` exists it is used
+        instead of calling ``fit_window``; missing keys fall back to calling
+        ``fit_window`` as normal. Ignored from the second iteration on.
+
+        Guard: if the input grid is not already ascending (the ``argsort``
+        permutation is not the identity), ``initial_refits`` is discarded --
+        the refits were produced on the caller's grid order, which the sort
+        step would invalidate.
     """
     if fit.n_peaks == 0:
         return fit, 0
@@ -749,6 +765,12 @@ def iterative_aicc_cleanup(
     if sigma.ndim == 0:
         sigma = np.full(u.size, float(sigma))
     order = np.argsort(u)
+    # initial_refits are valid only when the input grid is already ascending
+    # (identity permutation).  If a sort step is needed the refits were
+    # produced on the caller's grid order and cannot be reused after reindex.
+    _initial_refits: Optional[Mapping[int, WindowFitResult]] = initial_refits
+    if _initial_refits is not None and not np.array_equal(order, np.arange(u.size)):
+        _initial_refits = None
     u, z, sigma = u[order], z[order], sigma[order]
     budget: Optional[np.ndarray] = None
     if gate_budget_extra is not None:
@@ -788,9 +810,21 @@ def iterative_aicc_cleanup(
 
     shape_coerced = PeakShape.coerce(fit.shape)
 
+    # Per-iteration cache for per-peak nuisance column triplets (one entry per
+    # established peak index j != i).  Keyed by peak index j; valid only within
+    # one while-iteration where tau_locked and the peak set are fixed.  Cleared
+    # at the top of each iteration.  Columns are cached on the FULL grid and
+    # sliced per call: the support slice depends on the disputed peak's
+    # template, so only full-grid columns are reusable across the iteration's
+    # per-peak escape calls (model_spectrum is pointwise, so slicing a
+    # full-grid column is byte-identical to a subgrid build).
+    _pk_col_cache: dict[int, List[np.ndarray]] = {}
+
     def _escape_keeps(
+        peak_idx: int,
         peak: ModelPeak,
         others: List[ModelPeak],
+        other_indices: List[int],
         evidence_keep: np.ndarray,
         tau_locked: float,
         n_params_peak: int,
@@ -801,25 +835,50 @@ def iterative_aicc_cleanup(
         template = model_spectrum(
             u, [peak], tau_locked, acquisition_us, shape=shape_coerced
         )
-        nuisance = validation.line_escape_nuisance_columns(
-            u,
-            others,
-            tau_locked,
-            acquisition_us,
-            shape=shape_coerced,
-            background=background,
-        )
+        tpl_keep = template[keep]
+        sl = validation.line_escape_support_slice(tpl_keep)
+        if sl is None:
+            # Template is empty/zero or support too narrow: escape takes the
+            # early-return path regardless of columns -- pass empty columns.
+            return validation.line_evidence_escape(
+                evidence_keep,
+                sigma_keep,
+                tpl_keep,
+                [],
+                n_params_peak=n_params_peak,
+            )
+        # Background columns: full-grid (gradient is not pointwise), then slice.
+        bg_cols = validation.line_escape_background_columns(u, background)
+        bg_sliced = [col[keep][sl] for col in bg_cols]
+        # Per-peak columns: cached full-grid, sliced to this call's support.
+        pk_sliced: List[np.ndarray] = []
+        for j, other_pk in zip(other_indices, others):
+            if j not in _pk_col_cache:
+                _pk_col_cache[j] = validation.line_escape_peak_columns(
+                    u,
+                    [other_pk],
+                    tau_locked,
+                    acquisition_us,
+                    shape=shape_coerced,
+                )
+            pk_sliced.extend(col[keep][sl] for col in _pk_col_cache[j])
+        nuisance_sliced = bg_sliced + pk_sliced
         return validation.line_evidence_escape(
-            evidence_keep,
-            sigma_keep,
-            template[keep],
-            [col[keep] for col in nuisance],
+            evidence_keep[sl],
+            sigma_keep[sl],
+            tpl_keep[sl],
+            nuisance_sliced,
             n_params_peak=n_params_peak,
         )
 
     current = fit
     n_dropped = 0
+    # _iter_initial_refits holds the pre-computed refits for the current
+    # iteration; cleared to None after the first iteration (refits are only
+    # valid for the starting ``fit`` object's peak set and grid order).
+    _iter_initial_refits: Optional[Mapping[int, WindowFitResult]] = _initial_refits
     while current.n_peaks > 0:
+        _pk_col_cache.clear()
         tau_locked = float(current.tau_us)
         n_eff = effective_sample_size(
             current.fitted_spectrum,
@@ -867,6 +926,7 @@ def iterative_aicc_cleanup(
             budget_i = None if peak_protected else budget_keep
             aicc_k_i = aicc_k_raw if peak_protected else aicc_k_budgeted
             kept = [pk for j, pk in enumerate(current.peaks) if j != i]
+            kept_indices = [j for j in range(current.n_peaks) if j != i]
             if not kept:
                 # Zero model -> residual is the data itself.
                 null_chi2 = calculate_noise_weighted_chi2(z[keep], sigma[keep])
@@ -887,7 +947,9 @@ def iterative_aicc_cleanup(
                 )
                 if aicc_km1 - aicc_k_i < worst_margin:
                     escaped, _ = _escape_keeps(
+                        i,
                         current.peaks[i],
+                        [],
                         [],
                         z[keep],
                         tau_locked,
@@ -901,15 +963,18 @@ def iterative_aicc_cleanup(
                     worst_refit = None
                     worst_is_null = True
                 continue
-            refit = fit_window(
-                u,
-                z,
-                sigma,
-                kept,
-                tau_locked,
-                acquisition_us,
-                **refit_kwargs,
-            )
+            if _iter_initial_refits is not None and i in _iter_initial_refits:
+                refit = _iter_initial_refits[i]
+            else:
+                refit = fit_window(
+                    u,
+                    z,
+                    sigma,
+                    kept,
+                    tau_locked,
+                    acquisition_us,
+                    **refit_kwargs,
+                )
             if not refit.success:
                 continue
             # Cleanup refits lock tau by design; carry the originating
@@ -938,8 +1003,10 @@ def iterative_aicc_cleanup(
             escape_dchi2 = 0.0
             if margin_i < worst_margin:
                 escaped, escape_dchi2 = _escape_keeps(
+                    i,
                     current.peaks[i],
                     kept,
+                    kept_indices,
                     np.asarray(refit.residual)[keep],
                     tau_locked,
                     max(current.n_params - refit.n_params, 1),
@@ -986,6 +1053,9 @@ def iterative_aicc_cleanup(
         if worst_idx < 0:
             break
 
+        # After the first iteration the peak set changes; pre-computed refits
+        # are no longer aligned with the new ``current`` object.
+        _iter_initial_refits = None
         n_dropped += 1
         if worst_is_null:
             # Dropped the last peak; the cleaned fit is the null model.
@@ -1748,6 +1818,9 @@ def rescue_and_consolidate(
         # aicc_delta, supported) on the merged joint fit. This is the
         # diagnostic snapshot before iterative cleanup -- callers can
         # see what the per-peak gate said about the joint set.
+        # The sink captures every (K-1) refit so iterative_aicc_cleanup can
+        # reuse them in its first iteration, skipping the duplicate work.
+        joint_refit_sink: dict[int, WindowFitResult] = {}
         joint_knockouts = knockout_test(
             u,
             z,
@@ -1759,6 +1832,7 @@ def rescue_and_consolidate(
             significance=knockout_significance,
             spur_mask=spur_mask,
             gate_budget_extra=gate_budget_extra,
+            refit_sink=joint_refit_sink,
         )
         # Iterative AICc cleanup: drops the worst offender, refits,
         # repeats. Non-iterative drops kill duplicate clusters wholesale
@@ -1784,6 +1858,7 @@ def rescue_and_consolidate(
             gate_background=gate_background,
             protected_offsets=inherited_offsets,
             protected_tol_mhz=survival_tol,
+            initial_refits=joint_refit_sink,
         )
         # Two-purpose bookkeeping:
         #
