@@ -144,15 +144,15 @@ doublets were spurious by construction, the designed null of the set.
 
 The reports / user-interaction layer should therefore present, per pair:
 the `eps` pair, `orth_frac` with its noise null, and the degradation-regime
-markers — and treat catalog cross-match (where available) as the decisive
-external arbiter, as it was in this calibration. A molecule-level prior is
-also available and cheap: whether the species possesses a
-resolvable-splitting mechanism at all (quadrupolar nucleus, internal
-rotor). Where no mechanism exists, an unmatched sub-resolution partner
-should default to suspect; a declared mechanism (or a hyperfine-resolved
-catalog) shifts the default the other way. Whether this enters as a user
-declaration (mirroring the instrument clock-declaration pattern) belongs
-to the reports / user-interaction design.
+markers. **Scope boundary (deliberate):** the pipeline extracts the best
+spectral model the experimental data supports, with no prior on the
+molecular physics — most target spectra will have no pre-existing catalog,
+and splittings-mechanism knowledge (like the catalogs above) serves only as
+a development-time check on over- vs under-fitting. Coupling a developing
+molecular model back into the fit as a prior is a future direction for the
+planned UI / molecular-fitting layer (cf. the `bcfitting` predecessor), and
+raises its own questions about what constitutes an independent
+measurement; it is out of scope for the analysis pipeline.
 
 ### Calibration plan
 
