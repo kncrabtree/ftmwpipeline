@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+import h5py
+
 from .._internal.stage0_impl import (
     get_pipeline_info_impl,
     import_data_impl,
@@ -17,6 +19,7 @@ from .._internal.stage0_impl import (
     visualize_fid_impl,
 )
 from ..io.data_loaders import get_format_info, list_formats
+from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from .utils import add_stage_object, setup_logging
 
 
@@ -70,11 +73,26 @@ def cmd_data_load(args: argparse.Namespace) -> int:
                 }
             )
 
+        # Keysight-MAT / segmented scope-record parameters
+        if args.pre_record_us is not None:
+            format_params["pre_record_us"] = args.pre_record_us
+        if args.frame_period_us is not None:
+            format_params["frame_period_us"] = args.frame_period_us
+        if args.n_frames is not None:
+            format_params["n_frames"] = args.n_frames
+        if args.frame is not None:
+            format_params["frame"] = args.frame
+        if args.keep_frames:
+            format_params["keep_frames"] = True
+        if args.channel is not None:
+            format_params["channel"] = args.channel
+
         # Use shared implementation for data import
         result = import_data_impl(
             file_path=file_path,
             source=args.source,
             format_name=args.format,
+            force=getattr(args, "force", False),
             **format_params,
         )
 
@@ -163,6 +181,36 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                 print(f"   Probe frequency: {fid.probe_freq_mhz:.3f} MHz")
                 print(f"   Sideband: {fid.sideband.value}")
                 print(f"   Shots: {fid.shots}")
+
+                # Show acquisition segment map when present
+                try:
+                    with h5py.File(file_path, "r") as h5f:
+                        if "stage0_fid_data" in h5f:
+                            segs = load_acquisition_segments_from_hdf5(
+                                h5f["stage0_fid_data"]
+                            )
+                            if segs is not None:
+                                frame_sel_str = (
+                                    str(segs.frame_selection)
+                                    if segs.frame_selection is not None
+                                    else "avg"
+                                )
+                                has_frames = segs.frames is not None
+                                print(f"\nAcquisition Segments:")
+                                print(
+                                    f"   Pre-record: {segs.pre_record_us:.2f} µs"
+                                    f"  ({len(segs.pre_record):,} samples)"
+                                )
+                                print(f"   Frame period: {segs.frame_period_us:.2f} µs")
+                                print(f"   Frames: {segs.n_frames}")
+                                print(f"   Frame selection: {frame_sel_str}")
+                                print(
+                                    f"   Tail: {len(segs.tail):,} samples"
+                                    f"  ({len(segs.tail) * segs.sample_dt * 1e6:.2f} µs)"
+                                )
+                                print(f"   Per-frame data stored: {has_frames}")
+                except Exception:
+                    pass  # Segment display failure is non-fatal
 
                 if args.show_metadata:
                     print(f"\nSource Metadata:")
@@ -299,11 +347,16 @@ Examples:
     load_parser.add_argument("source", help="Path to data source (file or directory)")
     load_parser.add_argument(
         "--format",
-        choices=["blackchirp", "csv", "hdf5"],
+        choices=["blackchirp", "csv", "hdf5", "keysight-mat"],
         help="Data format (auto-detected if not specified)",
     )
     load_parser.add_argument(
         "--verbose", "-v", action="store_true", help="Verbose output"
+    )
+    load_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing file even with different source or layout",
     )
 
     # BlackChirp-specific options
@@ -325,6 +378,46 @@ Examples:
     )
     load_parser.add_argument(
         "--shots", type=int, help="Number of shots for CSV (default: 1)"
+    )
+
+    # Keysight-MAT / segmented scope-record options
+    load_parser.add_argument(
+        "--pre-record-us",
+        dest="pre_record_us",
+        type=float,
+        help="Pre-record duration in µs (required for keysight-mat)",
+    )
+    load_parser.add_argument(
+        "--frame-period-us",
+        dest="frame_period_us",
+        type=float,
+        help="Frame repetition period in µs (required for keysight-mat)",
+    )
+    load_parser.add_argument(
+        "--n-frames",
+        dest="n_frames",
+        type=int,
+        help="Number of frames in the record (required for keysight-mat)",
+    )
+    load_parser.add_argument(
+        "--frame",
+        dest="frame",
+        type=int,
+        default=None,
+        help="Single frame index (0-based) to import instead of coherent average",
+    )
+    load_parser.add_argument(
+        "--keep-frames",
+        dest="keep_frames",
+        action="store_true",
+        help="Retain per-frame data in the pipeline file",
+    )
+    load_parser.add_argument(
+        "--channel",
+        dest="channel",
+        default=None,
+        help="Channel group name for keysight-mat (e.g. Channel_3); "
+        "defaults to the sole channel present",
     )
 
     load_parser.set_defaults(func=cmd_data_load)

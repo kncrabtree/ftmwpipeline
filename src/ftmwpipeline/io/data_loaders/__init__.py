@@ -15,6 +15,7 @@ from .base import BaseLoader, LoaderError
 from .blackchirp import BlackChirpLoader
 from .csv import CSVLoader
 from .hdf5 import HDF5Loader
+from .keysight_mat import KeysightMatLoader
 from .registry import (
     FormatRegistry,
     detect_format,
@@ -25,9 +26,17 @@ from .registry import (
     validate_source,
 )
 
-# Register available loaders
+# Register loaders in precedence order.
+#
+# ``keysight-mat`` must be registered BEFORE ``hdf5`` because MATLAB v7.3
+# files are HDF5 containers: both loaders can h5py-open a .mat file, but
+# the generic HDF5Loader.can_load gates on ``fid_data``/``voltage_data``
+# groups that Keysight files do not have, so there is no actual ambiguity.
+# Registering keysight-mat first is belt-and-suspenders insurance against
+# any future relaxation of HDF5Loader.can_load.
 register_loader("blackchirp", BlackChirpLoader)
 register_loader("csv", CSVLoader)
+register_loader("keysight-mat", KeysightMatLoader)
 register_loader("hdf5", HDF5Loader)
 
 # Export main interface
@@ -44,4 +53,5 @@ __all__ = [
     "BlackChirpLoader",
     "CSVLoader",
     "HDF5Loader",
+    "KeysightMatLoader",
 ]

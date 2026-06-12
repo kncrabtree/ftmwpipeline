@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 
 
 def import_data_impl(
-    file_path: str, source: str, format_name: Optional[str] = None, **format_params: Any
+    file_path: str,
+    source: str,
+    format_name: Optional[str] = None,
+    force: bool = False,
+    **format_params: Any,
 ) -> Dict[str, Any]:
     """
     Shared implementation for data import into .ftmw pipeline files.
@@ -52,6 +56,8 @@ def import_data_impl(
         Path to data source (file or directory)
     format_name : str, optional
         Data format name. If None, auto-detection is attempted
+    force : bool, default False
+        Overwrite an existing file even with a different source or layout.
     **format_params
         Format-specific loading parameters
 
@@ -117,7 +123,7 @@ def import_data_impl(
 
         # Create the pipeline file
         pipeline_file = create_pipeline_file(
-            filepath=file_path, fid=fid, source_metadata=source_metadata
+            filepath=file_path, fid=fid, source_metadata=source_metadata, force=force
         )
         logger.info(f"Pipeline file created: {pipeline_file}")
 

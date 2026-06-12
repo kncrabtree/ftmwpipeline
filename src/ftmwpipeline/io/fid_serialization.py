@@ -11,6 +11,8 @@ The serialization stores:
 - Optional format-specific processing recommendations (NOT requirements)
 - Source metadata (file path, format, loading timestamp)
 - Complete experimental metadata
+- Acquisition segments (pre-record, tail, and optional per-frame data) when the
+  source was a segmented scope record (keysight-mat loader).
 
 This design decouples FID cache from specific processing choices, making cache files
 portable and shareable. Processing parameters are stored as optional defaults that
@@ -20,14 +22,52 @@ Storage is compact since FID data is inherently small compared to frequency-doma
 """
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Dict, Optional, Union
 
 import h5py
 import numpy as np
 
 from ..core.data_structures import FID, FIDProcessingParameters, Sideband
+
+
+@dataclass
+class AcquisitionSegments:
+    """Persisted acquisition segments from a segmented scope record.
+
+    Attributes
+    ----------
+    pre_record : np.ndarray
+        Quiet pre-record voltage samples (float64).
+    tail : np.ndarray
+        Trailing dead-time samples after the last frame (float64, may be
+        empty).
+    frames : np.ndarray or None
+        Per-frame array of shape ``(n_frames, frame_samples)`` (float64),
+        present only when ``keep_frames`` was ``True`` at import time.
+    pre_record_us : float
+        Duration of the pre-record in µs (from the operator-supplied layout).
+    frame_period_us : float
+        Frame repetition period in µs.
+    n_frames : int
+        Number of frames.
+    frame_selection : int or None
+        Single-frame index that was used as the science FID, or ``None``
+        when all frames were averaged.
+    sample_dt : float
+        Sample interval in seconds.
+    """
+
+    pre_record: np.ndarray
+    tail: np.ndarray
+    frames: Optional[np.ndarray]
+    pre_record_us: float
+    frame_period_us: float
+    n_frames: int
+    frame_selection: Optional[int]
+    sample_dt: float
 
 
 def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
@@ -136,11 +176,16 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
             dtype=h5py.string_dtype(encoding="utf-8"),
         )
 
-        # Save experimental metadata (everything else)
+        # Save experimental metadata (everything else). Underscore-prefixed
+        # keys are private in-memory transport (e.g. the loader-injected
+        # ``_sliced_*`` segment arrays consumed by
+        # ``save_acquisition_segments_to_hdf5``), not persistable metadata --
+        # JSON-dumping a numpy array via ``default=str`` would store its
+        # truncated repr.
         experimental_metadata = {}
         if fid.metadata:
             for key, value in fid.metadata.items():
-                if key not in source_metadata:
+                if key not in source_metadata and not key.startswith("_"):
                     experimental_metadata[key] = value
 
         experimental_json = json.dumps(experimental_metadata, default=str, indent=2)
@@ -149,6 +194,10 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
             data=experimental_json.encode("utf-8"),
             dtype=h5py.string_dtype(encoding="utf-8"),
         )
+
+        # Persist acquisition segments when the source was a segmented scope
+        # record (keysight-mat loader injects the required metadata keys).
+        save_acquisition_segments_to_hdf5(fid, h5_group)
 
         # Add serialization metadata for portability
         h5_group.attrs["serialization_version"] = "1.0"
@@ -280,6 +329,109 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
 
     except Exception as e:
         raise RuntimeError(f"Failed to deserialize FID from HDF5: {e}") from e
+
+
+def save_acquisition_segments_to_hdf5(
+    fid: "FID",
+    h5_group: h5py.Group,
+) -> None:
+    """Persist acquisition segments alongside the FID when present.
+
+    Called from :func:`save_fid_to_hdf5`.  The segments are extracted from
+    ``fid.metadata`` keys written by the keysight-mat loader.  If those
+    keys are absent (non-scope-record sources) this function is a no-op.
+
+    HDF5 Structure
+    --------------
+    /acquisition_segments/
+    ├── [attrs] pre_record_us, frame_period_us, n_frames, frame_selection,
+    │           sample_dt
+    ├── pre_record    [dataset: float64, gzip]
+    ├── tail          [dataset: float64, gzip]
+    └── frames        [dataset: float64, gzip; shape (n_frames, frame_samples),
+                       only when keep_frames=True]
+    """
+    layout_dict: Optional[Dict] = fid.metadata.get("acquisition_layout")
+    pre_record: Optional[np.ndarray] = fid.metadata.get("_sliced_pre_record")
+    tail: Optional[np.ndarray] = fid.metadata.get("_sliced_tail")
+
+    if layout_dict is None or pre_record is None or tail is None:
+        return
+
+    seg_group = h5_group.create_group("acquisition_segments")
+
+    # Segment map attributes
+    seg_group.attrs["pre_record_us"] = float(layout_dict["pre_record_us"])
+    seg_group.attrs["frame_period_us"] = float(layout_dict["frame_period_us"])
+    seg_group.attrs["n_frames"] = int(layout_dict["n_frames"])
+    frame_sel = layout_dict.get("frame")
+    seg_group.attrs["frame_selection"] = (
+        int(frame_sel) if frame_sel is not None else -1
+    )  # -1 sentinel for None
+    # sample_dt is the FID spacing (same clock)
+    seg_group.attrs["sample_dt"] = float(fid.spacing)
+
+    # Segment datasets (float64, gzip-compressed)
+    _ds_kwargs = {"dtype": np.float64, "compression": "gzip", "compression_opts": 5}
+    seg_group.create_dataset(
+        "pre_record", data=np.asarray(pre_record, dtype=np.float64), **_ds_kwargs
+    )
+    seg_group.create_dataset(
+        "tail", data=np.asarray(tail, dtype=np.float64), **_ds_kwargs
+    )
+
+    frames: Optional[np.ndarray] = fid.metadata.get("_sliced_frames")
+    if frames is not None:
+        seg_group.create_dataset(
+            "frames", data=np.asarray(frames, dtype=np.float64), **_ds_kwargs
+        )
+
+
+def load_acquisition_segments_from_hdf5(
+    h5_group: h5py.Group,
+) -> Optional["AcquisitionSegments"]:
+    """Load acquisition segments from an HDF5 group.
+
+    Returns ``None`` if the ``acquisition_segments`` sub-group is absent
+    (old files without segments load cleanly without error).
+
+    Parameters
+    ----------
+    h5_group : h5py.Group
+        The ``stage0_fid_data`` group.
+
+    Returns
+    -------
+    AcquisitionSegments or None
+    """
+    if "acquisition_segments" not in h5_group:
+        return None
+
+    seg = h5_group["acquisition_segments"]
+
+    pre_record_us = float(seg.attrs["pre_record_us"])
+    frame_period_us = float(seg.attrs["frame_period_us"])
+    n_frames = int(seg.attrs["n_frames"])
+    frame_sel_raw = int(seg.attrs.get("frame_selection", -1))
+    frame_selection: Optional[int] = None if frame_sel_raw == -1 else frame_sel_raw
+    sample_dt = float(seg.attrs["sample_dt"])
+
+    pre_record = np.asarray(seg["pre_record"][:], dtype=np.float64)
+    tail = np.asarray(seg["tail"][:], dtype=np.float64)
+    frames: Optional[np.ndarray] = None
+    if "frames" in seg:
+        frames = np.asarray(seg["frames"][:], dtype=np.float64)
+
+    return AcquisitionSegments(
+        pre_record=pre_record,
+        tail=tail,
+        frames=frames,
+        pre_record_us=pre_record_us,
+        frame_period_us=frame_period_us,
+        n_frames=n_frames,
+        frame_selection=frame_selection,
+        sample_dt=sample_dt,
+    )
 
 
 def save_fid_cache(experiment_id: str, fid: FID, cache_dir: str = "cache") -> Path:
