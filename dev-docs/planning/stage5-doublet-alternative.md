@@ -130,10 +130,29 @@ where "no catalog match" includes real uncatalogued cluster lines):
 - **Cost**: succinimide end-to-end fit 111 s → 116 s with 97
   adjudications (~4%), within the one-refit-per-pair budget.
 
+The truth rates are not a line-density effect: resolvable sub-resolution
+multiplets arise from specific intramolecular mechanisms, and the fixture
+set was chosen to span them. Vinyl cyanide and succinimide carry a ¹⁴N
+nuclear quadrupole whose coupling to the electric-field gradient lifts the
+nuclear-spin degeneracy — hyperfine components of order 1–2 MHz at low J,
+collapsing to ~10–500 kHz in these spectral ranges (the succinimide
+catalog's own 13–22 kHz pairs are such components). MTBE (360/363) has a
+methyl internal rotor whose A/E splittings blend the Q-branches. Vinyl
+fluoride has no quadrupolar nucleus and, closed-shell, no mechanism for
+resolvable splitting (m_J-degeneracy effects ≪ 1 kHz) — so its strong-line
+doublets were spurious by construction, the designed null of the set.
+
 The reports / user-interaction layer should therefore present, per pair:
 the `eps` pair, `orth_frac` with its noise null, and the degradation-regime
 markers — and treat catalog cross-match (where available) as the decisive
-external arbiter, as it was in this calibration.
+external arbiter, as it was in this calibration. A molecule-level prior is
+also available and cheap: whether the species possesses a
+resolvable-splitting mechanism at all (quadrupolar nucleus, internal
+rotor). Where no mechanism exists, an unmatched sub-resolution partner
+should default to suspect; a declared mechanism (or a hyperfine-resolved
+catalog) shifts the default the other way. Whether this enters as a user
+declaration (mirroring the instrument clock-declaration pattern) belongs
+to the reports / user-interaction design.
 
 ### Calibration plan
 
