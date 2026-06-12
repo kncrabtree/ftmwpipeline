@@ -63,13 +63,17 @@ or issue; this list carries only the ordering and the why):
    claim, the mod-M Stage-0 interleave cleanup hook (justified there:
    mod-16 offsets 208 LSB ≫ estimator noise, plus a real mod-512 layer),
    and it unblocks the two `blocked:fixture` issues (#5 shape test, #6
-   per-instrument calibration audit). New requirements the bench work
-   surfaced: a .mat loader + frame slicing/averaging, ringing-aware start
-   detection (~3 µs after chirp end), and a spur lane for persistent
-   *modulated* interference — both time-dependence statistics fail on
-   that fixture (modulated carriers mimic decay; long-τ cold-beam lines
-   mimic persistence), so the gate needs a chirp-response anchor and/or
-   a chirp-off diagnostic record (requested from the user).
+   per-instrument calibration audit). The import design is planned in
+   [`planning/scope-record-import.md`](planning/scope-record-import.md):
+   thin `keysight-mat` loader, a loader-independent acquisition-layout
+   step (segment map, coherent frame averaging or single-frame
+   selection, pre-record/tail persisted as diagnostic payload,
+   frames discarded by default), the declaration-keyed interleave
+   cleanup, and a chirp-response spur anchor measured viable on the
+   in-file pre-record (three-way band-power-ratio probe; no dedicated
+   chirp-off record exists — it is an upgrade, not a dependency).
+   Pending from the user: the succinimide catalog simulated into
+   8–18 GHz (settles the probe's ambiguous band).
 4. **Candidate revival / user-directed re-fit** —
    [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md);
    UX-first; acceptance fixtures identified (1231 w50/w425/w426, 363 w76).
