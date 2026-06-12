@@ -55,7 +55,9 @@ into the persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple, Union, cast
@@ -97,6 +99,8 @@ from .window_fit import (
     evaluate_baseline,
     fit_window,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "FrozenPeak",
@@ -1728,8 +1732,10 @@ def _walk_windows_in_order(
     if window_tau_overrides is None:
         window_tau_overrides = {}
     by_id = {w.window_id: w for w in plan.windows}
-    for wid in order:
+    n_total = len(order)
+    for n_done, wid in enumerate(order, start=1):
         win = by_id[wid]
+        t_start = time.monotonic()
         if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
             validation._fringe_window_ctx = {
                 "wid": wid,
@@ -1817,6 +1823,21 @@ def _walk_windows_in_order(
                 conservative_kwargs=ck_for_window,
             )
         _debug_phase(wid, "post-baseline", outcome)
+
+        elapsed = time.monotonic() - t_start
+        final = outcomes[wid]
+        log = logger.warning if elapsed > 60.0 else logger.info
+        log(
+            "window %d/%d w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
+            n_done,
+            n_total,
+            wid,
+            win.freq_range[0],
+            win.freq_range[1],
+            final.fit.n_peaks,
+            final.fit.fit.reduced_chi2,
+            elapsed,
+        )
 
 
 # ---------------------------------------------------------------------------

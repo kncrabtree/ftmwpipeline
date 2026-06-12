@@ -585,19 +585,45 @@ def fit_peaks_impl(
         n_padded=n_padded,
     )
 
-    # Scatter noise authority on the active-FT magnitude spectrum -- the noise
-    # is measured on the same spectrum the fit sees (D9), with the persisted
-    # Stage 2 scatter knobs so it matches the canonical noise estimator. The
-    # wrapper sorts/un-sorts internally, returning sigma on the active-FT bin
-    # order so it lines up with active_ft.complex_spectrum element-for-element.
+    # Scatter noise on the *full* active-FT grid -- the spur sweep operates
+    # over the whole grid (out-of-band clock anchors included) and its
+    # nomination floor is calibrated on this estimate. The wrapper
+    # sorts/un-sorts internally, returning sigma on the active-FT bin order
+    # so it lines up with active_ft.complex_spectrum element-for-element.
+    scatter_knobs = _persisted_scatter_knobs(file_path)
     active_rms = np.asarray(
         estimate_active_ft_noise(
             active_ft.freq_mhz,
             active_ft.complex_spectrum,
-            **_persisted_scatter_knobs(file_path),
+            **scatter_knobs,
         ).rms_noise,
         dtype=float,
     )
+    # Fit weighting rides the canonical noise authority instead: sigma
+    # measured on the trimmed analysis band alone, exactly as Stage 2
+    # persists it (D9). The full active grid extends far beyond the trim,
+    # and out-of-band bins -- no chirp energy, often a different analog/ADC
+    # noise floor -- can sit several-fold below the in-band floor
+    # (direct-sampling instruments especially). Folding them into one
+    # region-aware estimate drags the in-band sigma down and inflates every
+    # downstream significance test, so the in-band sigma is re-measured on
+    # the band by itself.
+    rms_for_fit = active_rms
+    if trim_range is not None:
+        freq_arr = np.asarray(active_ft.freq_mhz, dtype=float)
+        in_band = (freq_arr >= float(min(trim_range))) & (
+            freq_arr <= float(max(trim_range))
+        )
+        if bool(in_band.any()) and not bool(in_band.all()):
+            rms_for_fit = active_rms.copy()
+            rms_for_fit[in_band] = np.asarray(
+                estimate_active_ft_noise(
+                    freq_arr[in_band],
+                    np.asarray(active_ft.complex_spectrum)[in_band],
+                    **scatter_knobs,
+                ).rms_noise,
+                dtype=float,
+            )
     # Ascending-sorted views the spur sweep operates on (2638 is descending).
     sort_idx = np.argsort(active_ft.freq_mhz)
     sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
@@ -1074,7 +1100,7 @@ def fit_peaks_impl(
     plan_outcome = execute_plan(
         plan,
         active_ft,
-        active_rms,
+        rms_for_fit,
         peak_frequencies_mhz,
         sideband=sideband,
         acquisition_us=acquisition_us,
