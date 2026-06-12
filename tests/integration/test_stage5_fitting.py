@@ -13,10 +13,12 @@ algorithm modules (``tests/unit/fitting/``).
 
 import hashlib
 import json
+import math
 import shutil
 import subprocess
 
 import h5py
+import numpy as np
 import pytest
 
 import ftmwpipeline.api as ftmw
@@ -515,3 +517,180 @@ def test_recommend_shape_persists_and_feeds_resolver(
             else str(shape_attr)
         )
         assert decoded_shape == "gaussian"
+
+
+# ---------------------------------------------------------------------------
+# Doublet-alternative observation-only invariant + guaranteed-trigger fixture
+# ---------------------------------------------------------------------------
+
+
+def _build_synthetic_doublet_stage4(tmp_dir):
+    """Build a Stage-4 .ftmw file whose single window contains two fitted peaks
+    guaranteed to trigger the doublet-alternative adjudication pass.
+
+    Acquisition: 10 µs at 100 MSa/s (1000 pts), upper sideband, probe 10000 MHz.
+    Resolution element = 1/T_active = 0.1 MHz.
+
+    Two molecular tones at 10001.00 and 10001.10 MHz (separation = 1.0 resolution
+    elements, below the default k_res = 1.5 trigger threshold) with amplitude
+    ratio 0.5 at SNR ≈ 50 (strong) / 25 (weak). Gaussian noise is added so the
+    noise estimator returns a finite, realistic σ. Both tones are well above the
+    Stage 3 promotion threshold and land in the same Stage 4 window, so the
+    adjudication pass receives a window with exactly the qualifying pair.
+    """
+    from ftmwpipeline.core.data_structures import FID, Sideband
+    from ftmwpipeline.file_manager import SourceMetadata, create_pipeline_file
+
+    rng = np.random.default_rng(20260612)
+
+    # --- FID parameters ---
+    dt_us = 0.01  # µs per sample → 100 MSa/s
+    dt_s = dt_us * 1e-6
+    n_pts = 1000  # 10 µs total
+    probe_mhz = 10000.0
+    tau_us = 5.0  # decay constant; longer tau → narrower lines → both peaks keep
+    # separate identity above the min-pair-separation floor (max(0.5*fwhm, 1/T))
+
+    # Two molecular frequencies (upper sideband: IF = f_mol - probe)
+    f_strong_mhz = 10001.00
+    f_weak_mhz = 10001.10
+    # Amplitude chosen so SNR ≈ 50 (strong) / 25 (weak) after noise addition.
+    amp_strong = 1.0
+    amp_weak = 0.5
+
+    t_us = np.arange(n_pts) * dt_us
+    fid_signal = amp_strong * np.exp(-t_us / tau_us) * np.cos(
+        2.0 * np.pi * (f_strong_mhz - probe_mhz) * t_us
+    ) + amp_weak * np.exp(-t_us / tau_us) * np.cos(
+        2.0 * np.pi * (f_weak_mhz - probe_mhz) * t_us
+    )
+    # Add white noise small enough for SNR >> 3 on both lines.
+    noise_sigma = 2e-3
+    fid_data = fid_signal + rng.normal(0.0, noise_sigma, n_pts)
+
+    fid = FID(
+        data=fid_data,
+        spacing=dt_s,
+        probe_freq_mhz=probe_mhz,
+        sideband=Sideband.UPPER,
+        shots=1,
+    )
+    source_meta = SourceMetadata(
+        source_path=tmp_dir / "synthetic_doublet_source",
+        format_name="synthetic",
+    )
+
+    fp = tmp_dir / "synth_doublet.ftmw"
+    create_pipeline_file(fp, fid, source_meta, force=True)
+
+    # Stage 1: unapodized FT trimmed to the active band.
+    ftmw.compute_ft(fp, start_us=0.0, end_us=10.0, trim=(9998.0, 10003.0))
+    # Stage 2: noise estimation.
+    ftmw.estimate_noise(fp)
+    # Stage 3: peak detection — the two close tones are above SNR 3 and detected.
+    ftmw.detect_peaks(fp)
+    # Stage 4: window assignment — both peaks land in the same window.
+    ftmw.assign_windows(fp)
+
+    return fp
+
+
+def test_doublet_alternative_observation_only(
+    tmp_path,
+):
+    """The doublet-alternative pass is observation-only: fitted peaks are identical
+    whether the pass is enabled or disabled; records are absent when disabled; and
+    when enabled on a fixture whose pair separation is within the trigger band,
+    at least one record fires with finite adjudication statistics.
+
+    Uses a synthetic FID with two tones separated by exactly 1.0 resolution
+    element and amplitude ratio 0.5. This guarantees the adjudication trigger
+    fires on every run, so the finite-statistics assertions below are not
+    conditional on the fixture's peak content.
+    """
+    from ftmwpipeline.core.stage_fit_settings import (
+        DoubletAlternativeSubSettings,
+        StageFitSettings,
+    )
+
+    stage4_file = _build_synthetic_doublet_stage4(tmp_path)
+
+    def _run(tag: str, enabled: bool) -> SpectrumFit:
+        fp = tmp_path / f"doublet_{tag}.ftmw"
+        shutil.copy(stage4_file, fp)
+        s = StageFitSettings()
+        s.doublet_alternative = DoubletAlternativeSubSettings(enabled=enabled)
+        return ftmw.fit_peaks(fp, settings=s)
+
+    fit_on = _run("on", enabled=True)
+    fit_off = _run("off", enabled=False)
+
+    # Fitted peaks must be identical: the pass is observation-only and must
+    # not change the production fit in any window.
+    assert fit_on.n_windows == fit_off.n_windows
+    assert fit_on.n_fitted_peaks == fit_off.n_fitted_peaks
+
+    by_on = {w.window_id: w for w in fit_on.window_fits}
+    by_off = {w.window_id: w for w in fit_off.window_fits}
+    assert set(by_on) == set(by_off)
+    for wid in by_on:
+        wa = by_on[wid]
+        wb = by_off[wid]
+        assert len(wa.fitted_peaks) == len(wb.fitted_peaks), (
+            f"window {wid}: enabled={True} has {len(wa.fitted_peaks)} peaks, "
+            f"enabled={False} has {len(wb.fitted_peaks)}"
+        )
+        for pa, pb in zip(
+            sorted(wa.fitted_peaks, key=lambda p: p.frequency_mhz),
+            sorted(wb.fitted_peaks, key=lambda p: p.frequency_mhz),
+        ):
+            assert pa.frequency_mhz == pytest.approx(
+                pb.frequency_mhz, abs=1e-9
+            ), f"window {wid}: peak frequency differs between enabled/disabled pass"
+
+    # When the pass is disabled, no records appear on any window.
+    n_alts_off = sum(
+        len(getattr(w, "doublet_alternatives", []) or []) for w in fit_off.window_fits
+    )
+    assert (
+        n_alts_off == 0
+    ), f"doublet_alternative pass is disabled but {n_alts_off} records appeared"
+
+    # When the pass is enabled on the synthetic fixture, the pair whose
+    # separation is 1.0 resolution element must produce at least one record.
+    all_alts = [
+        alt
+        for w in fit_on.window_fits
+        for alt in (getattr(w, "doublet_alternatives", None) or [])
+    ]
+    assert len(all_alts) >= 1, (
+        "doublet-alternative pass is enabled and the fixture contains a qualifying "
+        "pair (separation = 1.0 res. element, ratio = 0.5), but no adjudication "
+        "records were produced — the trigger did not fire"
+    )
+
+    # The qualifying pair must have a successful merged refit with finite stats.
+    # A NaN result means the refit raised an error that was swallowed silently.
+    successful = [a for a in all_alts if a.merged_success]
+    assert len(successful) >= 1, (
+        f"found {len(all_alts)} adjudication record(s) but none has merged_success=True; "
+        "a swallowed refit error (e.g. duplicate kwarg) would produce this pattern"
+    )
+    rec = successful[0]
+    assert math.isfinite(rec.chi2r_merged), (
+        f"merged chi2r is not finite ({rec.chi2r_merged!r}); "
+        "indicates a failed refit whose exception was silently caught"
+    )
+    assert math.isfinite(rec.delta_aicc), (
+        f"delta_aicc is not finite ({rec.delta_aicc!r}); "
+        "indicates a failed refit or degenerate AICc from a bad parameter bag"
+    )
+    assert math.isfinite(
+        rec.orth_evidence_delta_chi2
+    ), f"orth_evidence_delta_chi2 is not finite ({rec.orth_evidence_delta_chi2!r})"
+    # The merged peak must land between the two production peaks: the amplitude-
+    # weighted centroid of a ratio-0.5 pair lies between the two frequencies.
+    assert rec.frequency_a_mhz < rec.merged_frequency_mhz < rec.frequency_b_mhz, (
+        f"merged_frequency_mhz={rec.merged_frequency_mhz:.6f} is not strictly between "
+        f"frequency_a={rec.frequency_a_mhz:.6f} and frequency_b={rec.frequency_b_mhz:.6f}"
+    )

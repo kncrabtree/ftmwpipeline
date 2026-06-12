@@ -562,3 +562,62 @@ def test_per_band_tau_routes_tau0_per_window(
     assert captured["conservative_kwargs"]["tau_maj_us"] == pytest.approx(
         matching_band.tau_maj_us
     )
+
+
+# ---------------------------------------------------------------------------
+# Doublet-alternative pass: settings reach execute_plan as doublet_kwargs
+# ---------------------------------------------------------------------------
+def test_doublet_alternative_enabled_routes_kwargs(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``doublet_alternative`` sub-block forwards as ``doublet_kwargs`` to execute_plan.
+
+    A sentinel k_res routes through to the doublet_kwargs dict; doublet_kwargs
+    is not None (pass is enabled).
+    """
+    from ftmwpipeline.core.stage_fit_settings import DoubletAlternativeSubSettings
+
+    variant = tmp_path / "doublet_on.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    s = _base_settings()
+    s.doublet_alternative = DoubletAlternativeSubSettings(
+        enabled=True, k_res=2.75, r_min=0.07
+    )
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    assert (
+        "doublet_kwargs" in captured
+    ), "execute_plan was not given a doublet_kwargs argument; driver wiring broke."
+    dk = captured["doublet_kwargs"]
+    assert dk is not None, "doublet_kwargs should be a dict when enabled=True"
+    assert dk["k_res"] == pytest.approx(2.75)
+    assert dk["r_min"] == pytest.approx(0.07)
+
+
+def test_doublet_alternative_disabled_passes_none(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``doublet_alternative.enabled=False`` passes ``doublet_kwargs=None``."""
+    from ftmwpipeline.core.stage_fit_settings import DoubletAlternativeSubSettings
+
+    variant = tmp_path / "doublet_off.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    s = _base_settings()
+    s.doublet_alternative = DoubletAlternativeSubSettings(enabled=False)
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+    assert captured.get("doublet_kwargs", "MISSING") is None

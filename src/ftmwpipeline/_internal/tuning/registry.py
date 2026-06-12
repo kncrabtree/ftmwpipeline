@@ -371,6 +371,7 @@ def _run_fit(sub_block: str, field_name: str) -> RunFn:
             "thaw": sfs.ThawSubSettings,
             "spur": sfs.SpurSubSettings,
             "baseline": sfs.BaselineSubSettings,
+            "doublet_alternative": sfs.DoubletAlternativeSubSettings,
         }[sub_block]
         bundle = sfs.StageFitSettings(**{sub_block: sub_cls(**{field_name: value})})
         return fit_peaks_impl(str(path), settings=bundle)
@@ -1972,6 +1973,39 @@ _fit_knob(
     "Master switch for the evidence-triggered leakage-wing baseline term.",
     "N",
     (False, True),
+    tier="advanced",
+)
+
+# Advanced — doublet-alternative observation pass (observation-only; never
+# changes fitted peaks).
+_fit_knob(
+    "stage5.doublet_alternative.enabled",
+    "doublet_alternative",
+    "enabled",
+    "Master switch for the post-fit doublet-alternative observation pass "
+    "(attaches records, never modifies fitted peaks).",
+    "N",
+    (False, True),
+    tier="advanced",
+)
+_fit_knob(
+    "stage5.doublet_alternative.k_res",
+    "doublet_alternative",
+    "k_res",
+    "Sub-resolution separation threshold (1/T_active elements) for doublet "
+    "adjudication; pairs closer than k_res are evaluated.",
+    "N",
+    (1.0, 1.5, 2.0, 2.5),
+    tier="advanced",
+)
+_fit_knob(
+    "stage5.doublet_alternative.r_min",
+    "doublet_alternative",
+    "r_min",
+    "Minimum amplitude ratio for the weaker member to trigger doublet evaluation "
+    "(suppresses ghost pairs beside strong lines).",
+    "N",
+    (0.02, 0.05, 0.1),
     tier="advanced",
 )
 

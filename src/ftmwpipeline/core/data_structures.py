@@ -990,6 +990,10 @@ class FittingResult:
         # reference here lets it stay in execution order in the module
         # without splitting the class definitions.
         self.rescue_events: List["RescueRoundInfo"] = []
+        # Per-window doublet-alternative adjudication records. Populated by the
+        # doublet-alternative pass when enabled; empty when the pass is disabled
+        # or no close pair triggered in this window.
+        self.doublet_alternatives: List["DoubletAlternativeInfo"] = []
 
     def add_fitted_peak(self, fitted_peak: FittedPeak) -> None:
         """Add a fitted peak result."""
@@ -1457,6 +1461,80 @@ class RescueCandidateInfo:
     frequency_mhz: float
     magnitude: float
     snr: float
+
+
+@dataclass
+class DoubletAlternativeInfo:
+    """Per-pair doublet-alternative record (molecular-frame coordinates).
+
+    Persistent twin of
+    :class:`ftmwpipeline.fitting.doublet_alternative.DoubletAdjudication`.
+    All frequencies are in molecular MHz (fit-frame baseband offsets
+    converted via the window centre + sideband sign); ``merged_offset_mhz``
+    is similarly converted and stored as ``merged_frequency_mhz``.
+    NaN fields indicate a failed or undefined result (refit did not converge,
+    AICc was degenerate, etc.).
+
+    Attributes
+    ----------
+    frequency_a_mhz, frequency_b_mhz : float
+        Molecular frequencies of the two production peaks (MHz).
+    amplitude_a, amplitude_b : float
+        Amplitudes of the two production peaks.
+    separation_res_elements : float
+        ``|f_b - f_a| * acquisition_us`` — separation in resolution elements.
+    amp_ratio : float
+        Weak-to-strong amplitude ratio in ``[0, 1]``.
+    chi2r_production : float
+        Reduced chi-squared of the production (doublet) fit.
+    chi2r_merged : float
+        Reduced chi-squared of the merged alternative fit. NaN on failure.
+    delta_chi2_raw : float
+        ``chi_squared(merged) - chi_squared(production)``; positive when
+        the doublet fit is better. NaN on failure.
+    delta_aicc : float
+        ``AICc(merged) - AICc(production)``; positive favours the doublet.
+        NaN on failure or degenerate AICc.
+    merged_frequency_mhz : float
+        Molecular frequency of the merged peak. NaN on failure.
+    merged_amplitude : float
+        Amplitude of the merged peak. NaN on failure.
+    merged_phase : float
+        Phase of the merged peak. NaN on failure.
+    merged_tau_us : float
+        Shared tau of the merged refit. NaN on failure.
+    merged_success : bool
+        Whether the merged refit solver reported convergence.
+    orth_evidence_delta_chi2 : float
+        Nuisance-projected matched-filter delta-chi-squared of the weak
+        partner template on the merged residual. Large values indicate
+        genuine second-line evidence orthogonal to parent lineshape error.
+        0.0 when the support slice is degenerate; NaN on refit failure.
+    orth_evidence_n_params : int
+        Number of peak parameters in the template (always 3).
+    support_bins : int
+        Length of the support slice used for the orthogonal-evidence
+        computation (0 when the slice was unavailable).
+    """
+
+    frequency_a_mhz: float
+    frequency_b_mhz: float
+    amplitude_a: float
+    amplitude_b: float
+    separation_res_elements: float
+    amp_ratio: float
+    chi2r_production: float
+    chi2r_merged: float
+    delta_chi2_raw: float
+    delta_aicc: float
+    merged_frequency_mhz: float
+    merged_amplitude: float
+    merged_phase: float
+    merged_tau_us: float
+    merged_success: bool
+    orth_evidence_delta_chi2: float
+    orth_evidence_n_params: int
+    support_bins: int
 
 
 @dataclass

@@ -81,6 +81,7 @@ from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
 from . import validation
 from .active_ft import ActiveFTResult
+from .doublet_alternative import DoubletAdjudication, adjudicate_close_pairs
 from .peak_model import (
     ModelPeak,
     PeakShape,
@@ -93,6 +94,7 @@ from .spur_detection import GatedSpur, SpurMaskSpec, SpurSet
 from .window_fit import (
     DEFAULT_MAX_DECAY_FACTOR,
     ConservativeFitResult,
+    WindowFitConstraints,
     WindowFitResult,
     conservative_fit,
     derive_window_fit_constraints,
@@ -529,6 +531,10 @@ class WindowOutcome:
     baseline_coeffs: Optional[np.ndarray] = None
     baseline_offset_scale: Optional[float] = None
     baseline_edge_coherence: float = float("nan")
+    # Doublet-alternative adjudication records for close pairs in this window.
+    # Populated by the optional observation-only pass; empty when the pass is
+    # disabled or no qualifying pair was found.
+    doublet_adjudications: list = field(default_factory=list)
 
 
 @dataclass
@@ -1401,6 +1407,7 @@ def execute_plan(
     baseline_order: int = DEFAULT_BASELINE_ORDER,
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
+    doublet_kwargs: Optional[dict[str, Any]] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1572,6 +1579,7 @@ def execute_plan(
         baseline_order=baseline_order,
         baseline_edge_threshold=baseline_edge_threshold,
         baseline_smooth_threshold=baseline_smooth_threshold,
+        doublet_kwargs=doublet_kwargs,
     )
 
     # --- Structural renegotiation loop -------------------------------------
@@ -1639,6 +1647,7 @@ def execute_plan(
                 baseline_order=baseline_order,
                 baseline_edge_threshold=baseline_edge_threshold,
                 baseline_smooth_threshold=baseline_smooth_threshold,
+                doublet_kwargs=doublet_kwargs,
             )
 
             applied_pairs = {
@@ -1671,6 +1680,58 @@ def execute_plan(
     )
 
 
+def _build_doublet_refit_kwargs(
+    ck_for_window: dict[str, Any],
+    outcome: "WindowOutcome",
+    acquisition_us: float,
+) -> dict[str, Any]:
+    """Build the ``refit_kwargs`` dict for the doublet-alternative merged refit.
+
+    The merged refit must reproduce the production fit's penalty and constraint
+    conditions. :func:`~ftmwpipeline.fitting.window_fit.derive_window_fit_constraints`
+    is the source of truth for what ``fit_kwargs_inner`` contains; we derive it
+    here from ``ck_for_window`` and the window's data so the penalty kwargs
+    (tau, phase, amp) and fit_tau are consistent with what the production fit saw.
+    ``spur_mask`` is handled separately at the call site (not in refit_kwargs).
+    """
+    data_minus_bg = np.asarray(
+        outcome.complex_spectrum, dtype=np.complex128
+    ) - np.asarray(outcome.background, dtype=np.complex128)
+    inner = outcome.fit.fit
+    constraints = derive_window_fit_constraints(
+        data_minus_bg,
+        outcome.rms_noise,
+        float(inner.tau_us),
+        acquisition_us,
+        fit_tau=bool(inner.fit_tau),
+        **{
+            k: ck_for_window[k]
+            for k in (
+                "min_separation_factor",
+                "max_decay_factor",
+                "amp_max_headroom",
+                "amp_penalty_lambda",
+                "phase_penalty_lambda",
+                "phase_penalty_cutoff_fwhm",
+                "tau_penalty_lambda",
+                "tau_penalty_n_sigma",
+                "weak_window_snr_threshold",
+                "fit_tau_min_snr",
+                "tau_apodization_us",
+                "tau_maj_us",
+                "sigma_tau_us",
+                "tau_anchor_us",
+                "tau_penalty_sigma_lo_factor",
+                "shape",
+            )
+            if k in ck_for_window
+        },
+    )
+    refit_kwargs: dict[str, Any] = dict(constraints.fit_kwargs_inner)
+    refit_kwargs.setdefault("shape", inner.shape)
+    return refit_kwargs
+
+
 def _walk_windows_in_order(
     plan: WindowPlan,
     order: Sequence[int],
@@ -1697,6 +1758,7 @@ def _walk_windows_in_order(
     baseline_order: int = DEFAULT_BASELINE_ORDER,
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
+    doublet_kwargs: Optional[dict[str, Any]] = None,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -1823,6 +1885,39 @@ def _walk_windows_in_order(
                 conservative_kwargs=ck_for_window,
             )
         _debug_phase(wid, "post-baseline", outcome)
+
+        if doublet_kwargs is not None:
+            try:
+                inner = outcome.fit.fit
+                spur_mask_for_doublet = getattr(outcome, "_spur_mask", None)
+                # Derive refit_kwargs that reproduce the production fit conditions:
+                # the same tau-penalty, phase/amp-penalty, and fit_window-level
+                # kwargs that conservative_fit uses via derive_window_fit_constraints.
+                # Build from ck_for_window (includes per-window tau overrides).
+                refit_kwargs_for_doublet = _build_doublet_refit_kwargs(
+                    ck_for_window, outcome, acquisition_us
+                )
+                adjudications: list[DoubletAdjudication] = adjudicate_close_pairs(
+                    offset_grid_mhz=outcome.offset_grid_mhz,
+                    complex_spectrum=outcome.complex_spectrum - outcome.background,
+                    rms_noise=outcome.rms_noise,
+                    fit=inner,
+                    acquisition_us=acquisition_us,
+                    shape=ck_for_window.get("shape", "lorentzian"),
+                    k_res=doublet_kwargs["k_res"],
+                    r_min=doublet_kwargs["r_min"],
+                    frozen_background=outcome.background,
+                    spur_mask=spur_mask_for_doublet,
+                    refit_kwargs=refit_kwargs_for_doublet,
+                )
+                outcome.doublet_adjudications = adjudications
+            except Exception:
+                logger.warning(
+                    "doublet-alternative pass failed on window %d; skipping",
+                    wid,
+                    exc_info=False,
+                )
+                outcome.doublet_adjudications = []
 
         elapsed = time.monotonic() - t_start
         final = outcomes[wid]

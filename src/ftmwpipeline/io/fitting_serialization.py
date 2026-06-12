@@ -92,6 +92,7 @@ import numpy as np
 
 from ..core.data_structures import (
     AuditStep,
+    DoubletAlternativeInfo,
     FittedPeak,
     FittingResult,
     KnockoutInfo,
@@ -332,6 +333,59 @@ def _json_to_rescue_round(blob: Dict[str, Any], where: str) -> RescueRoundInfo:
         raise ValueError(f"{where} missing required field {exc.args[0]!r}") from exc
 
 
+def _doublet_alternative_to_json(d: DoubletAlternativeInfo) -> Dict[str, Any]:
+    return {
+        "frequency_a_mhz": float(d.frequency_a_mhz),
+        "frequency_b_mhz": float(d.frequency_b_mhz),
+        "amplitude_a": float(d.amplitude_a),
+        "amplitude_b": float(d.amplitude_b),
+        "separation_res_elements": float(d.separation_res_elements),
+        "amp_ratio": float(d.amp_ratio),
+        "chi2r_production": float(d.chi2r_production),
+        "chi2r_merged": float(d.chi2r_merged),
+        "delta_chi2_raw": float(d.delta_chi2_raw),
+        "delta_aicc": float(d.delta_aicc),
+        "merged_frequency_mhz": float(d.merged_frequency_mhz),
+        "merged_amplitude": float(d.merged_amplitude),
+        "merged_phase": float(d.merged_phase),
+        "merged_tau_us": float(d.merged_tau_us),
+        "merged_success": bool(d.merged_success),
+        "orth_evidence_delta_chi2": float(d.orth_evidence_delta_chi2),
+        "orth_evidence_n_params": int(d.orth_evidence_n_params),
+        "support_bins": int(d.support_bins),
+    }
+
+
+def _json_to_doublet_alternative(
+    blob: Dict[str, Any], where: str
+) -> DoubletAlternativeInfo:
+    try:
+        return DoubletAlternativeInfo(
+            frequency_a_mhz=float(blob["frequency_a_mhz"]),
+            frequency_b_mhz=float(blob["frequency_b_mhz"]),
+            amplitude_a=float(blob["amplitude_a"]),
+            amplitude_b=float(blob["amplitude_b"]),
+            separation_res_elements=float(blob["separation_res_elements"]),
+            amp_ratio=float(blob["amp_ratio"]),
+            chi2r_production=float(blob["chi2r_production"]),
+            chi2r_merged=float(blob.get("chi2r_merged", float("nan"))),
+            delta_chi2_raw=float(blob.get("delta_chi2_raw", float("nan"))),
+            delta_aicc=float(blob.get("delta_aicc", float("nan"))),
+            merged_frequency_mhz=float(blob.get("merged_frequency_mhz", float("nan"))),
+            merged_amplitude=float(blob.get("merged_amplitude", float("nan"))),
+            merged_phase=float(blob.get("merged_phase", float("nan"))),
+            merged_tau_us=float(blob.get("merged_tau_us", float("nan"))),
+            merged_success=bool(blob.get("merged_success", False)),
+            orth_evidence_delta_chi2=float(
+                blob.get("orth_evidence_delta_chi2", float("nan"))
+            ),
+            orth_evidence_n_params=int(blob.get("orth_evidence_n_params", 3)),
+            support_bins=int(blob.get("support_bins", 0)),
+        )
+    except KeyError as exc:
+        raise ValueError(f"{where} missing required field {exc.args[0]!r}") from exc
+
+
 # ---------------------------------------------------------------------------
 # Small attribute helpers
 # ---------------------------------------------------------------------------
@@ -468,6 +522,12 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     )
     wg.attrs["rescue_events"] = json.dumps(
         [_rescue_round_to_json(e) for e in window_fit.rescue_events]
+    )
+    wg.attrs["doublet_alternatives"] = json.dumps(
+        [
+            _doublet_alternative_to_json(d)
+            for d in getattr(window_fit, "doublet_alternatives", [])
+        ]
     )
 
     peaks_group = wg.create_group("peaks")
@@ -706,6 +766,12 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
     result.rescue_events = [
         _json_to_rescue_round(blob, f"{where}/rescue_events[{i}]")
         for i, blob in enumerate(raw_rescue)
+    ]
+    # Tolerate missing attr (older files predating the doublet-alternative pass).
+    raw_doublet = _load_json_attr(wg, "doublet_alternatives", [])
+    result.doublet_alternatives = [
+        _json_to_doublet_alternative(blob, f"{where}/doublet_alternatives[{i}]")
+        for i, blob in enumerate(raw_doublet)
     ]
     return result
 

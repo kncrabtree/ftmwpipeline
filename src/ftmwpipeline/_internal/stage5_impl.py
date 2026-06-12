@@ -547,6 +547,26 @@ def fit_peaks_impl(
     baseline_smooth_threshold_v = _required_float(
         resolved.baseline.smooth_threshold, "baseline.smooth_threshold"
     )
+    # Doublet-alternative observation pass: observation-only; attaches records
+    # but never modifies fitted peaks.
+    doublet_cfg = resolved.doublet_alternative
+    doublet_enabled_v = _required_bool(
+        doublet_cfg.enabled, "doublet_alternative.enabled"
+    )
+    doublet_kwargs: Optional[Dict[str, Any]]
+    if doublet_enabled_v:
+        doublet_kwargs = {
+            "k_res": _required_float(doublet_cfg.k_res, "doublet_alternative.k_res"),
+            "r_min": _required_float(doublet_cfg.r_min, "doublet_alternative.r_min"),
+        }
+        logger.info(
+            "Stage 5 doublet-alternative pass enabled "
+            "(k_res=%.2f, r_min=%.3f; observation-only)",
+            doublet_kwargs["k_res"],
+            doublet_kwargs["r_min"],
+        )
+    else:
+        doublet_kwargs = None
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -1120,6 +1140,7 @@ def fit_peaks_impl(
         baseline_order=baseline_order_v,
         baseline_edge_threshold=baseline_edge_threshold_v,
         baseline_smooth_threshold=baseline_smooth_threshold_v,
+        doublet_kwargs=doublet_kwargs,
     )
 
     parameters = {

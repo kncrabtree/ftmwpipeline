@@ -312,6 +312,25 @@ class SpurSubSettings:
 
 
 @dataclass
+class DoubletAlternativeSubSettings:
+    """Post-fit doublet-alternative adjudication pass knobs.
+
+    An observation-only pass that, for each adjacent fitted pair with
+    separation ``<= k_res * (1/T_active)`` and weak/strong amplitude ratio
+    ``>= r_min``, refits the window with the pair collapsed to one peak and
+    records statistics (Δχ², ΔAICc, orthogonal-evidence score). The pass
+    never changes any fitted peak. ``DEFAULT_DOUBLET_K_RES`` and
+    ``DEFAULT_DOUBLET_R_MIN`` in
+    :mod:`ftmwpipeline.fitting.doublet_alternative` are the canonical source
+    for the default values mirrored in :data:`_HARD_DEFAULTS`.
+    """
+
+    enabled: Optional[bool] = None
+    k_res: Optional[float] = None
+    r_min: Optional[float] = None
+
+
+@dataclass
 class StageFitSettings:
     """Stage 5 fit settings (see module docstring)."""
 
@@ -326,6 +345,9 @@ class StageFitSettings:
     thaw: ThawSubSettings = field(default_factory=ThawSubSettings)
     spur: SpurSubSettings = field(default_factory=SpurSubSettings)
     baseline: BaselineSubSettings = field(default_factory=BaselineSubSettings)
+    doublet_alternative: DoubletAlternativeSubSettings = field(
+        default_factory=DoubletAlternativeSubSettings
+    )
 
     def is_empty(self) -> bool:
         """True if no field is set across any sub-dataclass."""
@@ -348,6 +370,7 @@ _SUB_NAMES = (
     "thaw",
     "spur",
     "baseline",
+    "doublet_alternative",
 )
 
 
@@ -456,6 +479,14 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "order": 4,
         "edge_threshold": 3.5,
         "smooth_threshold": 50.0,
+    },
+    "doublet_alternative": {
+        # Doublet-alternative adjudication defaults on. ``k_res`` and ``r_min``
+        # mirror ``DEFAULT_DOUBLET_K_RES`` / ``DEFAULT_DOUBLET_R_MIN`` in
+        # ``fitting/doublet_alternative.py``.
+        "enabled": True,
+        "k_res": 1.5,
+        "r_min": 0.05,
     },
 }
 
@@ -830,6 +861,7 @@ __all__ = [
     "RescueSubSettings",
     "ThawSubSettings",
     "BaselineSubSettings",
+    "DoubletAlternativeSubSettings",
     "StageFitSettings",
     "resolve",
     "to_attrs",

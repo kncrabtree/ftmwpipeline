@@ -1,6 +1,9 @@
 # Stage 5 doublet alternative fit — sub-resolution pair adjudication
 
-Status: **planned**. Driven by the cross-instrument validation arc: strong
+Status: **implemented** (settings-gated observation-only pass, default on:
+`fitting/doublet_alternative.py` + executor hook + persistence + `fit check`
+section; see "Calibration results" below for the measured interpretation of
+the two statistics). Driven by the cross-instrument validation arc: strong
 lines are frequently fitted as a strong/weak pair at sub-resolution
 separation, where the weak partner may be a genuine second transition or may
 merely absorb lineshape-floor error (the SNR² model-fidelity deficit, D10).
@@ -89,6 +92,48 @@ The alternative fit and statistics persist with the window's audit records
 in `/stage5_fitting` (same pattern as knockout/rescue audit payloads), so
 `fit show`, future reports, and the candidate-revival ledger can consume
 them without refitting. Loaders tolerate their absence (older files).
+
+### Calibration results
+
+Measured on the post-D14 builds (`scratch/doublet-calibration/calibrate.py`;
+1512 = vinyl-cyanide truth, 45 adjudicated pairs of which 30 are true
+catalog doublets; succinimide = 97 pairs against the extrapolated catalog,
+where "no catalog match" includes real uncatalogued cluster lines):
+
+- **`eps_single > kappa` is a high-precision "doublet required" verdict.**
+  On 1512 all 10 pairs exceeding the fidelity floor after merging are
+  catalog-true (10/10); on succinimide it fires on the catalogued blend
+  w611. It fires on a minority of true doublets (10/30 on 1512) — the
+  fidelity-floor allowance at high SNR absorbs even genuine partners — so
+  its complement (`doublet_not_required`) must be read as "χ² cannot
+  adjudicate", never as "spurious".
+- **The orthogonal evidence is a fraction, not an absolute.** The
+  recorded `orth_evidence_delta_chi2` scales with partner SNR²; the
+  cross-pair currency is `orth_frac = delta_chi2 / psnr²` (partner SNR
+  from the production table). Verdict zones: *real* when `orth_frac`
+  clearly exceeds its χ²₃ noise null (`~3/psnr²`, so partner SNR ≳ 15 is
+  needed for any power) — e.g. the catalogued 16914 blend reads 39%;
+  *parent-shaped* when the fraction is tiny at high partner SNR — the
+  five catalog-unsupported succinimide bright doublets read 0.003–4%
+  (the SNR-1069 12321 pair: 0.03%), confirming the lineshape-error
+  reading; *uninformative* otherwise.
+- **Two measured degradation regimes** (both honest physics, recorded for
+  consumers): below ~0.5 resolution elements the partner template is
+  near-representable by the parent + derivatives, so `orth_frac` fades
+  regardless of truth (catalog-true pairs at 0.2–0.5 elements read
+  ≤ 1%); and in many-peak windows the nuisance basis (3 columns per
+  merged-model peak + background, truncated at `m − 2` on the support
+  slice) can nearly span the support, suppressing real partners
+  (1512's w227/w277/w289 true doublets read ~0 despite partner SNR
+  10²–10³ — `support_bins` together with the merged-model peak count
+  flags the regime).
+- **Cost**: succinimide end-to-end fit 111 s → 116 s with 97
+  adjudications (~4%), within the one-refit-per-pair budget.
+
+The reports / user-interaction layer should therefore present, per pair:
+the `eps` pair, `orth_frac` with its noise null, and the degradation-regime
+markers — and treat catalog cross-match (where available) as the decisive
+external arbiter, as it was in this calibration.
 
 ### Calibration plan
 

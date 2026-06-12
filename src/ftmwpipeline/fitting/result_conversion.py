@@ -45,6 +45,7 @@ import numpy as np
 
 from ftmwpipeline.core.data_structures import (
     AuditStep,
+    DoubletAlternativeInfo,
     FittedPeak,
     FittingResult,
     FitWindow,
@@ -59,6 +60,7 @@ from ftmwpipeline.core.data_structures import (
     WindowPlan,
 )
 
+from .doublet_alternative import DoubletAdjudication
 from .peak_model import effective_tau_shape, molecular_frequency, sideband_sign
 from .plan_execution import (
     PlanFitOutcome,
@@ -151,6 +153,41 @@ def _convert_rescue_candidate(
         frequency_mhz=float(candidate.frequency_mhz),
         magnitude=float(candidate.magnitude),
         snr=float(candidate.snr),
+    )
+
+
+def _convert_doublet_adjudication(
+    adj: DoubletAdjudication,
+    center_mhz: float,
+    s: float,
+) -> DoubletAlternativeInfo:
+    """Convert a fit-frame :class:`DoubletAdjudication` to molecular-frame persistent twin."""
+    freq_a = float(center_mhz + s * adj.offset_a_mhz)
+    freq_b = float(center_mhz + s * adj.offset_b_mhz)
+    merged_freq = (
+        float(center_mhz + s * adj.merged_offset_mhz)
+        if not (adj.merged_offset_mhz != adj.merged_offset_mhz)  # NaN check
+        else float("nan")
+    )
+    return DoubletAlternativeInfo(
+        frequency_a_mhz=freq_a,
+        frequency_b_mhz=freq_b,
+        amplitude_a=float(adj.amplitude_a),
+        amplitude_b=float(adj.amplitude_b),
+        separation_res_elements=float(adj.separation_res_elements),
+        amp_ratio=float(adj.amp_ratio),
+        chi2r_production=float(adj.chi2r_production),
+        chi2r_merged=float(adj.chi2r_merged),
+        delta_chi2_raw=float(adj.delta_chi2_raw),
+        delta_aicc=float(adj.delta_aicc),
+        merged_frequency_mhz=merged_freq,
+        merged_amplitude=float(adj.merged_amplitude),
+        merged_phase=float(adj.merged_phase),
+        merged_tau_us=float(adj.merged_tau_us),
+        merged_success=bool(adj.merged_success),
+        orth_evidence_delta_chi2=float(adj.orth_evidence_delta_chi2),
+        orth_evidence_n_params=int(adj.orth_evidence_n_params),
+        support_bins=int(adj.support_bins),
     )
 
 
@@ -453,6 +490,10 @@ def window_outcome_to_fitting_result(
     result.audit_trail = [_convert_audit_step(s_) for s_ in fit.audit_trail]
     result.thaw_events = [_convert_thaw_event(e) for e in outcome.thaw_events]
     result.rescue_events = [_convert_rescue_event(e) for e in outcome.rescue_events]
+    result.doublet_alternatives = [
+        _convert_doublet_adjudication(adj, center_mhz, s)
+        for adj in outcome.doublet_adjudications
+    ]
 
     return result
 

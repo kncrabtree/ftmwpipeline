@@ -295,6 +295,31 @@ def _print_validation_report(report: dict) -> None:
                 f"residual/sigma median {sh['median_residual_over_sigma']:.2f}"
             )
 
+    da = report.get("doublet_alternatives")
+    if da and da.get("n_pairs", 0) > 0:
+        n_pairs = da["n_pairs"]
+        n_better = da["n_doublet_better"]
+        n_req = da["n_doublet_required"]
+        print(
+            f"  Doublet alternatives ({n_pairs} pair(s) adjudicated): "
+            f"{n_better} doublet-better, {n_req} doublet-required"
+        )
+        print(
+            f"    {'win':>5} {'f_a (MHz)':>14} {'f_b (MHz)':>14} "
+            f"{'sep_res':>8} {'chi2r_1':>9} {'chi2r_2':>9} "
+            f"{'dAICc':>8} {'better?':>7}"
+        )
+        for p in da.get("pairs", []):
+            chi2r_2 = p["chi2r_doublet"]
+            print(
+                f"    {p['window_id']:>5} {p['freq_a_mhz']:>14.4f} "
+                f"{p['freq_b_mhz']:>14.4f} {p['sep_res']:>8.3f} "
+                f"{p['chi2r_single']:>9.3f} "
+                f"{(chi2r_2 if chi2r_2 is not None else float('nan')):>9.3f} "
+                f"{p['delta_aicc']:>8.2f} "
+                f"{'Y' if p['doublet_better'] else 'N':>7}"
+            )
+
 
 def register_fitting_commands(subparsers: Any) -> None:
     """Register fitting (Stage 5) object-verb subcommands (run / show / check)."""

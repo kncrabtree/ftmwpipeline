@@ -28,6 +28,7 @@ import pytest
 
 from ftmwpipeline.core.data_structures import (
     AuditStep,
+    DoubletAlternativeInfo,
     FittedPeak,
     FittingResult,
     KnockoutInfo,
@@ -868,3 +869,128 @@ class TestClockLatticeRoundTrip:
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.fitted_peaks[0].clock_lattice is None
+
+
+# ---------------------------------------------------------------------------
+# DoubletAlternativeInfo serialization
+# ---------------------------------------------------------------------------
+def _make_doublet_alt(
+    *,
+    freq_a: float = 36100.1,
+    freq_b: float = 36100.4,
+    merged_success: bool = True,
+) -> DoubletAlternativeInfo:
+    return DoubletAlternativeInfo(
+        frequency_a_mhz=freq_a,
+        frequency_b_mhz=freq_b,
+        amplitude_a=0.8,
+        amplitude_b=0.5,
+        separation_res_elements=0.9,
+        amp_ratio=0.625,
+        chi2r_production=1.4,
+        chi2r_merged=float("nan") if not merged_success else 0.9,
+        delta_chi2_raw=50.0 if merged_success else float("nan"),
+        delta_aicc=-2.5,
+        merged_frequency_mhz=freq_a + 0.15 if merged_success else float("nan"),
+        merged_amplitude=1.3 if merged_success else float("nan"),
+        merged_phase=0.1 if merged_success else float("nan"),
+        merged_tau_us=4.5 if merged_success else float("nan"),
+        merged_success=merged_success,
+        orth_evidence_delta_chi2=12.0,
+        orth_evidence_n_params=3,
+        support_bins=8,
+    )
+
+
+class TestDoubletAlternativeRoundTrip:
+    def test_round_trip_with_successful_merge(self, tmp_path):
+        """DoubletAlternativeInfo with a successful merge survives HDF5 round-trip."""
+        alt = _make_doublet_alt(merged_success=True)
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        win.doublet_alternatives = [alt]
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        alts = loaded.window_fits[0].doublet_alternatives
+        assert len(alts) == 1
+        got = alts[0]
+        assert got.frequency_a_mhz == pytest.approx(alt.frequency_a_mhz)
+        assert got.frequency_b_mhz == pytest.approx(alt.frequency_b_mhz)
+        assert got.amplitude_a == pytest.approx(alt.amplitude_a)
+        assert got.amplitude_b == pytest.approx(alt.amplitude_b)
+        assert got.separation_res_elements == pytest.approx(alt.separation_res_elements)
+        assert got.chi2r_production == pytest.approx(alt.chi2r_production)
+        assert got.chi2r_merged == pytest.approx(alt.chi2r_merged)
+        assert got.delta_chi2_raw == pytest.approx(alt.delta_chi2_raw)
+        assert got.delta_aicc == pytest.approx(alt.delta_aicc)
+        assert got.merged_success == alt.merged_success
+        assert got.orth_evidence_delta_chi2 == pytest.approx(
+            alt.orth_evidence_delta_chi2
+        )
+        assert got.orth_evidence_n_params == alt.orth_evidence_n_params
+        assert got.support_bins == alt.support_bins
+
+    def test_round_trip_with_failed_merge_nans(self, tmp_path):
+        """DoubletAlternativeInfo with NaN fields (merge failed) round-trips cleanly."""
+        alt = _make_doublet_alt(merged_success=False)
+        assert np.isnan(alt.chi2r_merged)
+        assert np.isnan(alt.delta_chi2_raw)
+
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        win.doublet_alternatives = [alt]
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        got = loaded.window_fits[0].doublet_alternatives[0]
+        assert np.isnan(got.chi2r_merged)
+        assert np.isnan(got.delta_chi2_raw)
+        assert got.merged_success is False
+
+    def test_empty_doublet_alternatives_round_trips(self, tmp_path):
+        """A window with no doublet alternatives saves and loads as an empty list."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        assert win.doublet_alternatives == []
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.window_fits[0].doublet_alternatives == []
+
+    def test_legacy_file_missing_attr_loads_as_empty(self, tmp_path):
+        """Files written before doublet_alternatives existed load with an empty list."""
+        path = tmp_path / "fit.h5"
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a file written before the attr existed.
+            if "doublet_alternatives" in g["windows/window_0000"].attrs:
+                del g["windows/window_0000"].attrs["doublet_alternatives"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.window_fits[0].doublet_alternatives == []
+
+    def test_two_alts_in_one_window_round_trip(self, tmp_path):
+        """Multiple DoubletAlternativeInfo objects per window all survive."""
+        alt1 = _make_doublet_alt(freq_a=36100.1, freq_b=36100.4, merged_success=True)
+        alt2 = _make_doublet_alt(freq_a=36200.1, freq_b=36200.35, merged_success=False)
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        win.doublet_alternatives = [alt1, alt2]
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        alts = loaded.window_fits[0].doublet_alternatives
+        assert len(alts) == 2
+        assert alts[0].frequency_a_mhz == pytest.approx(alt1.frequency_a_mhz)
+        assert alts[1].frequency_a_mhz == pytest.approx(alt2.frequency_a_mhz)
+        assert alts[0].merged_success is True
+        assert alts[1].merged_success is False

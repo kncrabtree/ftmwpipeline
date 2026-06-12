@@ -16,6 +16,7 @@ from ftmwpipeline.core.peak_shape import PeakShape
 from ftmwpipeline.core.stage_fit_settings import (
     _HARD_DEFAULTS,
     ConservativeSubSettings,
+    DoubletAlternativeSubSettings,
     PenaltySubSettings,
     RescueSubSettings,
     SeederSubSettings,
@@ -341,3 +342,59 @@ class TestYamlIo:
     def test_yaml_empty_document(self) -> None:
         s = from_yaml_dict(None)
         assert s.is_empty()
+
+
+# ---------------------------------------------------------------------------
+# DoubletAlternativeSubSettings — defaults and resolution chain
+# ---------------------------------------------------------------------------
+class TestDoubletAlternativeSubSettings:
+    def test_hard_defaults_present(self) -> None:
+        assert "doublet_alternative" in _HARD_DEFAULTS
+        da = _HARD_DEFAULTS["doublet_alternative"]
+        assert da["enabled"] is True
+        assert da["k_res"] == 1.5
+        assert da["r_min"] == 0.05
+
+    def test_resolve_gives_non_none_fields(self) -> None:
+        merged = resolve()
+        da = merged.doublet_alternative
+        assert da.enabled is True
+        assert da.k_res == 1.5
+        assert da.r_min == 0.05
+
+    def test_persisted_beats_preset(self) -> None:
+        preset = StageFitSettings()
+        preset.doublet_alternative = DoubletAlternativeSubSettings(k_res=2.0)
+        persisted = StageFitSettings()
+        persisted.doublet_alternative = DoubletAlternativeSubSettings(k_res=3.0)
+        merged = resolve(preset=preset, persisted=persisted)
+        assert merged.doublet_alternative.k_res == 3.0
+
+    def test_explicit_beats_persisted(self) -> None:
+        explicit = StageFitSettings()
+        explicit.doublet_alternative = DoubletAlternativeSubSettings(k_res=1.0)
+        persisted = StageFitSettings()
+        persisted.doublet_alternative = DoubletAlternativeSubSettings(k_res=3.0)
+        merged = resolve(explicit=explicit, persisted=persisted)
+        assert merged.doublet_alternative.k_res == 1.0
+
+    def test_attrs_round_trip(self) -> None:
+        s = StageFitSettings()
+        s.doublet_alternative = DoubletAlternativeSubSettings(
+            enabled=False, k_res=2.5, r_min=0.08
+        )
+        rt = from_attrs(to_attrs(s))
+        da = rt.doublet_alternative
+        assert da.enabled is False
+        assert da.k_res == 2.5
+        assert da.r_min == 0.08
+
+    def test_yaml_round_trip(self) -> None:
+        s = StageFitSettings()
+        s.doublet_alternative = DoubletAlternativeSubSettings(enabled=False, k_res=2.0)
+        text = to_yaml(s)
+        rt = from_yaml(text)
+        assert rt.doublet_alternative.enabled is False
+        assert rt.doublet_alternative.k_res == 2.0
+        # unset r_min stays None in the preset layer
+        assert rt.doublet_alternative.r_min is None

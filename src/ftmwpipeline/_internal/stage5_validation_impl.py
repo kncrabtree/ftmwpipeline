@@ -36,7 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ..core.data_structures import FittingResult, SpectrumFit
+from ..core.data_structures import DoubletAlternativeInfo, FittingResult, SpectrumFit
 from ..fitting.validation import (
     DEFAULT_CHI2R_NOISE_FLOOR,
     DEFAULT_SHAPE_ERROR_KAPPA,
@@ -354,6 +354,60 @@ def _tier3(
     return result
 
 
+def _doublet_alternatives_summary(fit: SpectrumFit) -> Dict[str, Any]:
+    """Aggregate the doublet-alternative observation records across all windows.
+
+    For each adjudicated pair, reports the per-pair chi2r comparison and the
+    summary counts: how many pairs were evaluated, how many favour the doublet
+    interpretation (chi2r_doublet < chi2r_single), and how many are
+    definitively required (delta_chi2_raw > 0 and merged_success).
+    """
+    pairs: List[Dict[str, Any]] = []
+    for wf in fit.window_fits:
+        alts: List[DoubletAlternativeInfo] = (
+            getattr(wf, "doublet_alternatives", None) or []
+        )
+        for alt in alts:
+            chi2r_single = float(alt.chi2r_production)
+            chi2r_doublet = (
+                float(alt.chi2r_merged)
+                if np.isfinite(alt.chi2r_merged)
+                else float("nan")
+            )
+            delta = float(alt.delta_chi2_raw)
+            doublet_better = np.isfinite(chi2r_doublet) and chi2r_doublet < chi2r_single
+            doublet_required = bool(alt.merged_success) and delta > 0.0
+            pairs.append(
+                {
+                    "window_id": (
+                        int(wf.window_id) if wf.window_id is not None else -1
+                    ),
+                    "freq_a_mhz": round(float(alt.frequency_a_mhz), 6),
+                    "freq_b_mhz": round(float(alt.frequency_b_mhz), 6),
+                    "sep_res": round(float(alt.separation_res_elements), 4),
+                    "amp_ratio": round(float(alt.amp_ratio), 4),
+                    "chi2r_single": round(chi2r_single, 4),
+                    "chi2r_doublet": (
+                        round(chi2r_doublet, 4) if np.isfinite(chi2r_doublet) else None
+                    ),
+                    "delta_chi2_raw": round(delta, 4),
+                    "delta_aicc": round(float(alt.delta_aicc), 4),
+                    "doublet_better": doublet_better,
+                    "doublet_required": doublet_required,
+                    "merged_success": bool(alt.merged_success),
+                }
+            )
+    n_pairs = len(pairs)
+    n_doublet_better = sum(1 for p in pairs if p["doublet_better"])
+    n_doublet_required = sum(1 for p in pairs if p["doublet_required"])
+    return {
+        "n_pairs": n_pairs,
+        "n_doublet_better": n_doublet_better,
+        "n_doublet_required": n_doublet_required,
+        "pairs": pairs,
+    }
+
+
 def validate_stage5_shape_error_impl(
     file_path: str,
     *,
@@ -401,6 +455,9 @@ def validate_stage5_shape_error_impl(
     tier3 = (
         _tier3(fit, ground_truth, match_tol_fwhm) if ground_truth is not None else None
     )
+    # Collect doublet-alternative records when present (observation-only; empty
+    # when the pass was disabled or the fit predates the feature).
+    doublet_alts = _doublet_alternatives_summary(fit)
     return {
         "status": "success",
         "parameters": {
@@ -414,4 +471,5 @@ def validate_stage5_shape_error_impl(
         "tier1": _tier1(fit, kappa_v, floor_v),
         "tier2": _tier2(fit),
         "tier3": tier3,
+        "doublet_alternatives": doublet_alts,
     }
