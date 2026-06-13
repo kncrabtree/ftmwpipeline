@@ -13,17 +13,23 @@ frequency trim when available, runs
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from ..core.settings import FT_PROCESSING_PATH, RECOMMENDED_PATH
 from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import update_processing_parameters
+from ..io.stage_fit_settings_serialization import read_recommended_chirp_window
 from ..preprocessing.start_detection import StartDetectionResult, detect_start_time
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
 
 logger = logging.getLogger(__name__)
+
+# Maximum allowed absolute difference between a declared chirp_end and the
+# detector's estimate before a cross-check warning is emitted (µs).
+_CHIRP_END_DISAGREE_THRESHOLD_US = 0.5
 
 
 def _resolve_band(
@@ -53,6 +59,14 @@ def detect_start_time_impl(
 ) -> Dict[str, Any]:
     """Detect a good ``start_us`` from the FID and (optionally) stamp it.
 
+    When the file carries a declared chirp-window (persisted at import time),
+    the declaration governs the recommended start:
+    ``declared chirp_end + margin`` where margin is the declared
+    ``start_margin_us`` when set, else ``settings.guard_margin_us``.
+    The sweep detector still runs as a cross-check; a ``WARNING`` is logged
+    when the two chirp-end estimates disagree by more than
+    :data:`_CHIRP_END_DISAGREE_THRESHOLD_US` or the detector finds no chirp.
+
     Parameters
     ----------
     file_path :
@@ -68,40 +82,111 @@ def detect_start_time_impl(
     -------
     dict
         ``{"status": "success", "start_detection": StartDetectionResult,
-        "start_us": float, "stamped": bool}``.
+        "start_us": float, "stamped": bool,
+        "chirp_end_declared_us": float | None,
+        "chirp_end_detected_us": float,
+        "declaration_used": bool}``.
     """
     settings = settings or StartDetectionSettings()
     fid = load_fid_from_pipeline_impl(file_path)
     band = _resolve_band(file_path, settings)
 
+    # Read any import-time declared chirp-window.
+    declared = read_recommended_chirp_window(file_path)
+
     result: StartDetectionResult = detect_start_time(fid, band=band, settings=settings)
 
-    if not result.chirp_detected:
-        logger.warning(
-            "Start detection found no chirp collapse (plateau/floor = %.1f < %.1f); "
-            "start_us could not be inferred from the data.",
-            result.plateau / result.floor if result.floor else float("inf"),
-            settings.min_chirp_drop_ratio,
+    declaration_used = False
+    final_start_us: float
+
+    if declared is not None:
+        # Declaration governs: use declared chirp_end + margin.
+        margin = (
+            declared.start_margin_us
+            if declared.start_margin_us is not None
+            else settings.guard_margin_us
         )
+        final_start_us = declared.chirp_end_us + margin
+        declaration_used = True
+
+        # Cross-check: warn when the detector disagrees with the declaration.
+        threshold = max(
+            _CHIRP_END_DISAGREE_THRESHOLD_US, 2.0 * settings.guard_margin_us
+        )
+        if not result.chirp_detected:
+            logger.warning(
+                "Declared chirp_end=%.3f us but the sweep detector found no "
+                "chirp collapse (plateau/floor = %.1f < %.1f). "
+                "Using declaration.",
+                declared.chirp_end_us,
+                result.plateau / result.floor if result.floor else float("inf"),
+                settings.min_chirp_drop_ratio,
+            )
+        elif abs(result.chirp_end_us - declared.chirp_end_us) > threshold:
+            logger.warning(
+                "Declared chirp_end=%.3f us but sweep detector found %.3f us "
+                "(difference %.3f us > threshold %.3f us). "
+                "Using declaration; verify instrument config.",
+                declared.chirp_end_us,
+                result.chirp_end_us,
+                abs(result.chirp_end_us - declared.chirp_end_us),
+                threshold,
+            )
+    else:
+        # No declaration: fall back to sweep detector behaviour.
+        if not result.chirp_detected:
+            logger.warning(
+                "Start detection found no chirp collapse (plateau/floor = %.1f < %.1f); "
+                "start_us could not be inferred from the data.",
+                result.plateau / result.floor if result.floor else float("inf"),
+                settings.min_chirp_drop_ratio,
+            )
+        final_start_us = result.start_us
+
+    # Build a result whose start_us reflects the effective recommendation so
+    # all three interfaces see a consistent value.
+    effective_result = replace(
+        result,
+        start_us=final_start_us,
+        chirp_end_declared_us=declared.chirp_end_us if declared is not None else None,
+        declaration_used=declaration_used,
+    )
 
     stamped = False
-    if stamp and result.chirp_detected:
-        update_processing_parameters(file_path, {"start_us": float(result.start_us)})
+    can_stamp = declaration_used or result.chirp_detected
+    if stamp and can_stamp:
+        update_processing_parameters(file_path, {"start_us": float(final_start_us)})
         stamped = True
-        logger.info(
-            "Stamped recommended start_us = %.3f us (chirp_end %.3f + margin %.3f) "
-            "to %s.",
-            result.start_us,
-            result.chirp_end_us,
-            settings.guard_margin_us,
-            Path(file_path).name,
-        )
+        if declaration_used and declared is not None:
+            _margin: float = margin if margin is not None else settings.guard_margin_us
+            logger.info(
+                "Stamped declaration-derived start_us = %.3f us "
+                "(declared chirp_end %.3f + margin %.3f) to %s.",
+                final_start_us,
+                declared.chirp_end_us,
+                _margin,
+                Path(file_path).name,
+            )
+        else:
+            logger.info(
+                "Stamped recommended start_us = %.3f us (chirp_end %.3f + margin %.3f) "
+                "to %s.",
+                final_start_us,
+                result.chirp_end_us,
+                settings.guard_margin_us,
+                Path(file_path).name,
+            )
 
     return {
         "status": "success",
-        "start_detection": result,
-        "start_us": float(result.start_us),
+        "start_detection": effective_result,
+        "start_us": float(final_start_us),
         "stamped": stamped,
+        "chirp_end_declared_us": (
+            declared.chirp_end_us if declared is not None else None
+        ),
+        "chirp_end_detected_us": float(result.chirp_end_us),
+        "declaration_used": declaration_used,
     }
 
 

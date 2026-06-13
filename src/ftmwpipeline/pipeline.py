@@ -261,6 +261,12 @@ class Pipeline:
             except Exception:  # pragma: no cover
                 pass  # non-fatal: clock metadata is advisory
 
+        # Chirp-window persistence + import-time start recommendation live
+        # once in the stage 0 impl.
+        from ._internal.stage0_impl import persist_chirp_window_metadata
+
+        persist_chirp_window_metadata(str(created_filepath), fid)
+
         # Load file info for Pipeline instance
         filepath, source_metadata, stage_tracker = open_pipeline_file(created_filepath)
 

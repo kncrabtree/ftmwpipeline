@@ -84,6 +84,17 @@ class KeysightMatLoader(BaseLoader):
         be estimated on the quiet pre-record (residual after prior factors)
         and subtracted from the full record before slicing.  Default
         ``None`` (no cleanup).
+    chirp_start_us : float, optional
+        Start of the chirp within each frame (µs from frame t=0).  When
+        given, ``chirp_end_us`` must also be given.  Default ``None``.
+    chirp_end_us : float, optional
+        End of the chirp within each frame (µs from frame t=0).  When given,
+        the recommended FID start is derived as
+        ``chirp_end_us + start_margin_us``.  Default ``None``.
+    start_margin_us : float, optional
+        Instrument-specific ringdown guard margin added past the chirp end.
+        Overrides the start-detector default when ``chirp_end_us`` is set.
+        Default ``None``.
     """
 
     format_name = "keysight-mat"
@@ -197,6 +208,9 @@ class KeysightMatLoader(BaseLoader):
         frame_sel: Optional[int] = params.get("frame")
         keep_frames: bool = bool(params.get("keep_frames", False))
         interleave_factors: Optional[List[int]] = params.get("interleave_factors")
+        chirp_start_us: Optional[float] = params.get("chirp_start_us")
+        chirp_end_us: Optional[float] = params.get("chirp_end_us")
+        start_margin_us: Optional[float] = params.get("start_margin_us")
 
         source_path = Path(source_path)
 
@@ -288,6 +302,9 @@ class KeysightMatLoader(BaseLoader):
             frame=frame_sel,
             keep_frames=keep_frames,
             interleave_factors=interleave_factors,
+            chirp_start_us=chirp_start_us,
+            chirp_end_us=chirp_end_us,
+            start_margin_us=start_margin_us,
         )
         source_meta["instrument_model"] = model
         source_meta["instrument_serial"] = serial
@@ -329,6 +346,16 @@ class KeysightMatLoader(BaseLoader):
             ]
             source_meta["clock_sources"] = clock_sources
 
+        # Declared chirp-window timing, when provided by the operator.
+        # Frames are sliced to t=0, so frame-relative = record-relative here.
+        if chirp_end_us is not None:
+            chirp_window: Dict[str, Any] = {"chirp_end_us": chirp_end_us}
+            if chirp_start_us is not None:
+                chirp_window["chirp_start_us"] = chirp_start_us
+            if start_margin_us is not None:
+                chirp_window["start_margin_us"] = start_margin_us
+            source_meta["chirp_window"] = chirp_window
+
         # Direct sampling: probe = 0, upper sideband → f_mol = 0 + f_bb = f_bb
         return FID(
             data=sliced.science_fid,
@@ -349,6 +376,9 @@ class KeysightMatLoader(BaseLoader):
             "frame": None,
             "keep_frames": False,
             "interleave_factors": None,
+            "chirp_start_us": None,
+            "chirp_end_us": None,
+            "start_margin_us": None,
         }
 
     # ------------------------------------------------------------------

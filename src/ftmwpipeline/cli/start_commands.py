@@ -71,16 +71,24 @@ def cmd_detect_start(args: argparse.Namespace) -> int:
         else "full spectrum"
     )
     drop = r.plateau / r.floor if r.floor else float("inf")
+    declared_end = out["chirp_end_declared_us"]
     print("\nStart detection completed!")
     print("\nResults summary:")
     print(f"  integration band   : {band}")
     print(f"  chirp detected     : {r.chirp_detected} (plateau/floor = {drop:.0f})")
-    print(f"  chirp-end          : {r.chirp_end_us:.3f} us")
-    print(f"  recommended start  : {r.start_us:.3f} us")
+    if declared_end is not None:
+        print(f"  chirp-end declared : {declared_end:.3f} us")
+        print(f"  chirp-end detected : {out['chirp_end_detected_us']:.3f} us")
+        print(f"  source             : declaration")
+    else:
+        print(f"  chirp-end          : {r.chirp_end_us:.3f} us")
+    print(f"  recommended start  : {out['start_us']:.3f} us")
     if out["stamped"]:
-        print(f"\nStamped recommended start_us = {r.start_us:.3f} us to {file_path}.")
+        print(
+            f"\nStamped recommended start_us = {out['start_us']:.3f} us to {file_path}."
+        )
         print("A later compute_ft with no explicit start_us will inherit it.")
-    elif not r.chirp_detected:
+    elif not r.chirp_detected and not out["declaration_used"]:
         print(
             "\nNo chirp collapse found; nothing stamped. Provide start_us "
             "manually or check the FID."

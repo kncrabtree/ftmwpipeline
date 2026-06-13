@@ -39,6 +39,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import h5py
 
+from ..core.data_structures import ChirpWindow
 from ..core.stage_fit_settings import (
     _SUB_NAMES,
     ClockSource,
@@ -274,6 +275,92 @@ def read_recommended_clock_sources(
         return None
 
 
+# The recommended chirp-window declaration is stored as a JSON attr on the
+# Stage 0 FID group alongside the clock-sources attr.  It carries the
+# instrument-declared chirp timing so the start detector can demote its
+# sweep to a cross-check.  The same ``__None__`` sentinel and tolerant
+# error-handling conventions as ``recommended_clock_sources`` apply.
+_RECOMMENDED_CHIRP_WINDOW_ATTR = "recommended_chirp_window"
+
+
+def write_recommended_chirp_window(
+    file_path: str,
+    chirp_window: Optional[ChirpWindow],
+) -> None:
+    """Persist the import-time recommended chirp-window declaration.
+
+    Stores a JSON-encoded dict as an attr on ``stage0_fid_data``.  Passing
+    ``None`` writes the ``__None__`` sentinel.  No-op when the Stage 0 group
+    is absent.  Re-import over the same file overwrites the attr cleanly.
+    """
+    if chirp_window is None:
+        encoded: str = _NONE_SENTINEL
+    else:
+        encoded = json.dumps(
+            {
+                "chirp_end_us": chirp_window.chirp_end_us,
+                "chirp_start_us": (
+                    chirp_window.chirp_start_us
+                    if chirp_window.chirp_start_us is not None
+                    else _NONE_SENTINEL
+                ),
+                "start_margin_us": (
+                    chirp_window.start_margin_us
+                    if chirp_window.start_margin_us is not None
+                    else _NONE_SENTINEL
+                ),
+            }
+        )
+    try:
+        with h5py.File(file_path, "a") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return
+            h5f[_STAGE0_GROUP].attrs[_RECOMMENDED_CHIRP_WINDOW_ATTR] = encoded
+    except (OSError, KeyError):
+        logger.warning("Could not write recommended chirp window to %s", file_path)
+
+
+def read_recommended_chirp_window(
+    file_path: str,
+) -> Optional[ChirpWindow]:
+    """Read the import-time recommended chirp-window declaration, or ``None``.
+
+    Returns ``None`` for: Stage 0 group absent, attr missing, ``__None__``
+    sentinel, or any parse error.
+    """
+    try:
+        with h5py.File(file_path, "r") as h5f:
+            if _STAGE0_GROUP not in h5f:
+                return None
+            attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_CHIRP_WINDOW_ATTR)
+            if attr is None:
+                return None
+            decoded = _decode_attr(attr)
+            if decoded == _NONE_SENTINEL:
+                return None
+            d = json.loads(decoded)
+            chirp_end_us = float(d["chirp_end_us"])
+            raw_start = d.get("chirp_start_us")
+            chirp_start_us: Optional[float] = (
+                None
+                if raw_start is None or raw_start == _NONE_SENTINEL
+                else float(raw_start)
+            )
+            raw_margin = d.get("start_margin_us")
+            start_margin_us: Optional[float] = (
+                None
+                if raw_margin is None or raw_margin == _NONE_SENTINEL
+                else float(raw_margin)
+            )
+            return ChirpWindow(
+                chirp_end_us=chirp_end_us,
+                chirp_start_us=chirp_start_us,
+                start_margin_us=start_margin_us,
+            )
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+
+
 __all__ = [
     "STAGE_FIT_PATH",
     "save_stage_fit_settings_to_h5",
@@ -283,4 +370,6 @@ __all__ = [
     "read_stage2b_recommended_shape",
     "write_recommended_clock_sources",
     "read_recommended_clock_sources",
+    "write_recommended_chirp_window",
+    "read_recommended_chirp_window",
 ]

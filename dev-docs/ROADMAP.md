@@ -30,13 +30,20 @@ which is deliberately **gated**: every open item that can still move the
 fitted tables or the import contract lands first, so finalization freezes
 stable semantics.
 
-1. **Start-detection overshoot on high-SNR FIDs (issue #34)** — bitten
-   twice (655; the succinimide chamber ringing, where the recommended
-   start landed inside the ring-down and was overridden by hand to
-   7.0 µs). Implement the declaration-layer chirp-window / start-offset
-   fields from [`planning/scope-record-import.md`](planning/scope-record-import.md)
-   open question 3 (the minimal mechanism); detector robustness itself
-   stays a separate research question.
+1. **Start-detection overshoot on high-SNR FIDs (issue #34)** —
+   **implemented** (declared chirp window; detail in
+   [`planning/scope-record-import.md`](planning/scope-record-import.md)
+   open question 3, resolved): loaders persist
+   `recommended_chirp_window` (Blackchirp derives it from the chirp
+   config; keysight-mat takes explicit import parameters), import
+   stamps the derived recommended start unless an experimenter start is
+   recorded, and start detection treats the declared chirp end as
+   authoritative with the sweep detector demoted to a warning
+   cross-check. 655 recommends 3.27 µs (detector overshot to 4.22);
+   succinimide imports hands-off to 7.0 µs. Re-built Blackchirp
+   fixtures shift their stamped starts slightly (2638: 2.37 → 2.27 µs)
+   — absorbed by the re-baseline after this sweep. Detector robustness
+   itself stays a separate research question.
 2. **Residual-rescue Tier-2 merge / n_eff kind decision (issue #9)** — a
    decision, not a build. Settle it before Stage 6 because it changes
    fitted tables and forces a re-baseline; absorb that churn before users

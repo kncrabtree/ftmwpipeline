@@ -10,12 +10,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from ..core.data_structures import FID
+from ..core.data_structures import ChirpWindow, FID
 from ..core.stage_fit_settings import coerce_clock_sources
+from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import (
     SourceMetadata,
     create_pipeline_file,
     open_pipeline_file,
+    update_processing_parameters,
     validate_pipeline_file,
 )
 from ..io.data_loaders import (
@@ -27,10 +29,82 @@ from ..io.data_loaders import (
 )
 from ..io.fid_serialization import load_fid_from_hdf5
 from ..io.stage_fit_settings_serialization import (
+    write_recommended_chirp_window,
     write_recommended_clock_sources,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _coerce_chirp_window(value: Any) -> ChirpWindow:
+    """Coerce a loader-injected chirp-window value to a :class:`ChirpWindow`.
+
+    Accepts a :class:`ChirpWindow` directly or a mapping with at least a
+    ``chirp_end_us`` key.  Raises ``ValueError`` on unrecognized input.
+    """
+    if isinstance(value, ChirpWindow):
+        return value
+    if isinstance(value, dict):
+        chirp_end_us = float(value["chirp_end_us"])
+        chirp_start_us = (
+            float(value["chirp_start_us"])
+            if value.get("chirp_start_us") is not None
+            else None
+        )
+        start_margin_us = (
+            float(value["start_margin_us"])
+            if value.get("start_margin_us") is not None
+            else None
+        )
+        return ChirpWindow(
+            chirp_end_us=chirp_end_us,
+            chirp_start_us=chirp_start_us,
+            start_margin_us=start_margin_us,
+        )
+    raise ValueError(f"Cannot coerce {type(value)} to ChirpWindow")
+
+
+def persist_chirp_window_metadata(file_path: str, fid: FID) -> None:
+    """Persist a loader-declared chirp window and derive the start hint.
+
+    When the loader attached ``fid.metadata["chirp_window"]``, write it to the
+    ``recommended_chirp_window`` attr and -- unless the loader already recorded
+    an experimenter start (e.g. Blackchirp ``FidStartUs``, which outranks the
+    derived value) -- stamp ``recommended_processing.start_us = chirp_end +
+    margin`` so a later FT inherits a physically grounded start without
+    running the sweep detector.  Failures are non-fatal: the declaration is
+    advisory metadata.
+    """
+    raw_chirp = fid.metadata.get("chirp_window")
+    if raw_chirp is None:
+        return
+    try:
+        chirp_window = _coerce_chirp_window(raw_chirp)
+        write_recommended_chirp_window(file_path, chirp_window)
+        logger.info(
+            "Persisted declared chirp window: chirp_end_us=%.3f, " "chirp_start_us=%s.",
+            chirp_window.chirp_end_us,
+            (
+                f"{chirp_window.chirp_start_us:.3f}"
+                if chirp_window.chirp_start_us is not None
+                else "None"
+            ),
+        )
+        if fid.processing.start_us is None:
+            margin = chirp_window.start_margin_us
+            if margin is None:
+                margin = StartDetectionSettings().guard_margin_us
+            recommended_start = chirp_window.chirp_end_us + margin
+            update_processing_parameters(file_path, {"start_us": recommended_start})
+            logger.info(
+                "Derived recommended start_us = %.3f us "
+                "(chirp_end %.3f + margin %.3f) from chirp window.",
+                recommended_start,
+                chirp_window.chirp_end_us,
+                margin,
+            )
+    except Exception as exc:
+        logger.warning("Could not persist declared chirp window: %s", exc)
 
 
 def import_data_impl(
@@ -140,6 +214,8 @@ def import_data_impl(
                 )
             except Exception as exc:
                 logger.warning("Could not persist recommended clock sources: %s", exc)
+
+        persist_chirp_window_metadata(str(pipeline_file), fid)
     except Exception as e:
         raise RuntimeError(f"Failed to create pipeline file: {e}")
 

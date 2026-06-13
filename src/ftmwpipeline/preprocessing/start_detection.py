@@ -32,14 +32,19 @@ from ..core.start_detection_settings import StartDetectionSettings
 
 @dataclass(frozen=True)
 class StartDetectionResult:
-    """Outcome of :func:`detect_start_time`.
+    """Outcome of :func:`detect_start_time` (sweep-only) or the file-bound
+    orchestration in :mod:`ftmwpipeline._internal.start_detection_impl`.
 
     Attributes
     ----------
     start_us :
-        Recommended FID window start (``chirp_end_us + guard_margin_us``).
+        Effective recommended FID window start.  When a chirp-window
+        declaration is present this is the declaration-derived value
+        (``declared chirp_end + margin``); otherwise it is the
+        detector-derived ``chirp_end_us + guard_margin_us``.
     chirp_end_us :
-        Start time at which Σ|FT| collapses to the post-chirp floor.
+        Start time at which Σ|FT| collapses to the post-chirp floor
+        (sweep-detector result; may differ from ``chirp_end_declared_us``).
     chirp_detected :
         Whether a chirp collapse (plateau/floor ratio above the configured
         minimum) was present. When ``False`` the start time could not be
@@ -52,6 +57,12 @@ class StartDetectionResult:
         Integration band actually used (``None`` = full positive spectrum).
     starts_us, sum_magnitude :
         The full sweep, retained for visualization.
+    chirp_end_declared_us :
+        Declared chirp end (µs) from the import-time chirp-window record,
+        or ``None`` when no declaration is present.
+    declaration_used :
+        ``True`` when ``start_us`` was derived from a chirp-window
+        declaration rather than from the sweep detector.
     """
 
     start_us: float
@@ -62,6 +73,9 @@ class StartDetectionResult:
     band_mhz: Optional[Tuple[float, float]]
     starts_us: np.ndarray
     sum_magnitude: np.ndarray
+    # Declaration fields — absent on pure detector results (back-compat default).
+    chirp_end_declared_us: Optional[float] = None
+    declaration_used: bool = False
 
 
 def detect_start_time(

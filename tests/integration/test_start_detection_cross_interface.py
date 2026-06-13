@@ -132,3 +132,64 @@ def test_stamped_start_us_flows_into_compute_ft(exp_2638_data_path, tmp_path):
     with h5py.File(path, "r") as h:
         canonical = float(h["processing_parameters/ft_processing"].attrs["start_us"])
     assert canonical == pytest.approx(res.start_us, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Declaration-layer tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_2638_import_persists_declared_chirp_window(exp_2638_data_path, tmp_path):
+    """Importing the 2638 Blackchirp experiment persists a chirp-window declaration."""
+    from ftmwpipeline.io.stage_fit_settings_serialization import (
+        read_recommended_chirp_window,
+    )
+
+    path = tmp_path / "decl.ftmw"
+    ftmw.import_data(str(path), source=exp_2638_data_path, force=True)
+
+    cw = read_recommended_chirp_window(str(path))
+    assert cw is not None, "Expected a declared chirp window after 2638 import"
+    # 2638: PreGate=0.5 + PreProtection=0.1 + DurationUs=1 → chirp_end=1.6 µs
+    assert cw.chirp_end_us == pytest.approx(1.6, abs=0.05)
+    assert cw.chirp_start_us is not None
+    assert cw.chirp_start_us == pytest.approx(0.6, abs=0.05)
+
+
+@pytest.mark.integration
+def test_2638_start_run_uses_declaration(exp_2638_data_path, tmp_path):
+    """After 2638 import, start run derives start_us from the declared chirp end."""
+    from ftmwpipeline.io.stage_fit_settings_serialization import (
+        read_recommended_chirp_window,
+    )
+
+    path = tmp_path / "decl_run.ftmw"
+    ftmw.import_data(str(path), source=exp_2638_data_path, force=True)
+    cw = read_recommended_chirp_window(str(path))
+    assert cw is not None
+
+    res = ftmw.detect_start_time(str(path), settings=_SETTINGS)
+    # The effective start_us must be the declaration-derived value.
+    assert res.declaration_used is True
+    expected_start = cw.chirp_end_us + _SETTINGS.guard_margin_us
+    assert res.start_us == pytest.approx(expected_start, abs=1e-6)
+
+
+@pytest.mark.integration
+def test_2638_declaration_start_flows_into_compute_ft(exp_2638_data_path, tmp_path):
+    """The declaration-derived start stamps through and flows into compute_ft."""
+    from ftmwpipeline.io.stage_fit_settings_serialization import (
+        read_recommended_chirp_window,
+    )
+
+    path = tmp_path / "decl_flow.ftmw"
+    ftmw.import_data(str(path), source=exp_2638_data_path, force=True)
+    cw = read_recommended_chirp_window(str(path))
+    assert cw is not None
+
+    res = ftmw.detect_start_time(str(path), settings=_SETTINGS)
+    ftmw.compute_ft(str(path), trim=(26500.0, 40000.0))
+    with h5py.File(str(path), "r") as h:
+        canonical = float(h["processing_parameters/ft_processing"].attrs["start_us"])
+    assert canonical == pytest.approx(res.start_us, abs=1e-9)

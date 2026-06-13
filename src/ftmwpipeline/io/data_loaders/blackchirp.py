@@ -185,6 +185,11 @@ class BlackChirpLoader(BaseLoader):
             if clock_sources is not None:
                 result["metadata"]["clock_sources"] = clock_sources
 
+            # Extract declared chirp-window timing.  Failure is non-fatal.
+            chirp_window = self._extract_chirp_window(source_path)
+            if chirp_window is not None:
+                result["metadata"]["chirp_window"] = chirp_window
+
             result["valid"] = True
             return result
 
@@ -432,6 +437,66 @@ class BlackChirpLoader(BaseLoader):
                 pass  # malformed header.csv: skip silently
 
         return entries if entries else None
+
+    @staticmethod
+    def _extract_chirp_window(
+        source_path: Path,
+    ) -> Optional[Dict[str, Any]]:
+        """Extract declared chirp-window timing from Blackchirp metadata.
+
+        Reads the chirp duration from ``chirps.csv`` (summing
+        ``DurationUs`` for the first chirp waveform index, i.e.
+        ``Chirp == 0``) and the pre-chirp hardware delay from
+        ``header.csv`` (``ChirpConfig / PreGate`` +
+        ``ChirpConfig / PreProtection``).
+
+        Returns a dict with keys ``chirp_end_us`` and optionally
+        ``chirp_start_us``, or ``None`` when the data cannot be parsed.
+        The dict is the transport form passed through ``fid.metadata``; it
+        is coerced to :class:`~ftmwpipeline.core.data_structures.ChirpWindow`
+        by Stage 0 on persistence.
+
+        Derivation
+        ----------
+        * ``chirp_start_us = PreGate + PreProtection`` — the gate delay and
+          protection interval before the AWG output begins.  Both fields are
+          in µs and are recorded by Blackchirp for every experiment.
+        * ``chirp_duration_us = sum(DurationUs for Chirp==0 rows)`` — the
+          total waveform length for the first chirp waveform (each row is one
+          segment; single-segment experiments have one row).
+        * ``chirp_end_us = chirp_start_us + chirp_duration_us``.
+
+        For the checked-in example (exp 2638):
+          PreGate=0.5 µs, PreProtection=0.1 µs, DurationUs=1.0 µs →
+          chirp_start_us=0.60 µs, chirp_end_us=1.60 µs.
+        """
+        try:
+            exp = __import__("blackchirp").BCExperiment(str(source_path))
+        except Exception:
+            return None
+
+        try:
+            # Pre-chirp delay: hardware gate + protection before AWG fires.
+            pre_gate = float(exp.header_value("ChirpConfig", "PreGate"))
+            pre_prot = float(exp.header_value("ChirpConfig", "PreProtection"))
+            chirp_start_us = pre_gate + pre_prot
+        except Exception:
+            return None  # cannot determine start; skip rather than guess
+
+        try:
+            chirps_df = exp.chirps
+            first_waveform = chirps_df[chirps_df["Chirp"] == 0]
+            if first_waveform.empty:
+                return None
+            chirp_duration_us = float(first_waveform["DurationUs"].sum())
+        except Exception:
+            return None
+
+        chirp_end_us = chirp_start_us + chirp_duration_us
+        return {
+            "chirp_start_us": chirp_start_us,
+            "chirp_end_us": chirp_end_us,
+        }
 
     def get_required_parameters(self) -> List[str]:
         """Blackchirp loader has no required parameters."""

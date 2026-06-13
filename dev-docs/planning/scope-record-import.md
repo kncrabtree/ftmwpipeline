@@ -185,9 +185,22 @@ formats.
    changes over an existing file (same source hash).
 2. Checked-in CI fixture: truncated succinimide subset (~10–20 MB)
    under `examples/`, or keep the real-file test local-only.
-3. Whether the chirp window belongs in the layout block
-   (`chirp_start_us` / `chirp_end_us` within the frame) — leaning yes;
-   it serves both ringing-aware start and the chirp-response probe's
-   FID-window definition.
+3. **Resolved (implemented):** the chirp window is a declared record
+   (`recommended_chirp_window` attr on `stage0_fid_data`:
+   `chirp_start_us` / `chirp_end_us` / `start_margin_us`, record time
+   base). The keysight-mat import takes the three values as explicit
+   parameters (`--chirp-start-us` / `--chirp-end-us`
+   / `--start-margin-us`); the Blackchirp loader derives them from the
+   experiment config (`ChirpConfig PreGate + PreProtection` for the
+   chirp start, `chirps.csv` durations for the end). At import a
+   declared `chirp_end_us` stamps `recommended_processing.start_us =
+   chirp_end + margin` unless the loader already recorded an
+   experimenter start (Blackchirp `FidStartUs` outranks). Start
+   detection treats a declared chirp end as authoritative — the sweep
+   detector runs as a cross-check and warns on disagreement — closing
+   the high-SNR chirp-end overshoot (issue #34: 655 recommends 3.27 µs
+   against the detector's 4.22 µs overshoot; the succinimide record
+   imports hands-off to start 7.0 µs). The chirp-response probe's
+   FID-window definition can consume the same record (future wiring).
 4. Succinimide catalog (user-delivered) → settles the ambiguous-band
    thresholds and classifies the six unidentified tones.

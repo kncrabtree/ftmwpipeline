@@ -88,6 +88,12 @@ def cmd_data_load(args: argparse.Namespace) -> int:
             format_params["channel"] = args.channel
         if args.interleave_factors is not None:
             format_params["interleave_factors"] = args.interleave_factors
+        if getattr(args, "chirp_start_us", None) is not None:
+            format_params["chirp_start_us"] = args.chirp_start_us
+        if getattr(args, "chirp_end_us", None) is not None:
+            format_params["chirp_end_us"] = args.chirp_end_us
+        if getattr(args, "start_margin_us", None) is not None:
+            format_params["start_margin_us"] = args.start_margin_us
 
         # Use shared implementation for data import
         result = import_data_impl(
@@ -430,6 +436,35 @@ Examples:
         help="Comma-separated ADC interleave factors for offset cleanup "
         "(e.g. 16,512).  Applied sequentially on the pre-record before "
         "slicing/averaging.",
+    )
+
+    # Declared chirp-window timing (keysight-mat and any format without
+    # embedded chirp metadata).
+    load_parser.add_argument(
+        "--chirp-start-us",
+        dest="chirp_start_us",
+        type=float,
+        default=None,
+        help="Pre-chirp hardware delay within the frame (µs from frame t=0). "
+        "Optional; used together with --chirp-end-us for provenance only.",
+    )
+    load_parser.add_argument(
+        "--chirp-end-us",
+        dest="chirp_end_us",
+        type=float,
+        default=None,
+        help="End of the chirp sweep within the frame (µs from frame t=0). "
+        "When given, a recommended start_us is derived at import time as "
+        "chirp_end_us + start_margin_us (or the default guard margin).",
+    )
+    load_parser.add_argument(
+        "--start-margin-us",
+        dest="start_margin_us",
+        type=float,
+        default=None,
+        help="Instrument-specific ringdown guard margin (µs) added past the "
+        "declared chirp end. Overrides the start-detector default (0.67 µs) "
+        "when --chirp-end-us is set.",
     )
 
     load_parser.set_defaults(func=cmd_data_load)

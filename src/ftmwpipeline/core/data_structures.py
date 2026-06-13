@@ -18,6 +18,34 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
+# ---------------------------------------------------------------------------
+# Chirp-window declaration
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ChirpWindow:
+    """Declared chirp-window timing within the recorded FID.
+
+    Times are in the imported record's time base (µs from sample 0).  The
+    record begins at t = 0; the chirp sweep occupies
+    ``[chirp_start_us, chirp_end_us)``; the FID window begins at
+    ``chirp_end_us + start_margin_us``.
+
+    ``chirp_start_us`` is the pre-chirp hardware delay before the AWG
+    output (PreGate + PreProtection in Blackchirp parlance).  It is
+    ``None`` when the loader cannot determine the offset.
+
+    ``start_margin_us`` is an instrument-specific override for the
+    switch-bounce ringdown guard margin that follows the chirp end.
+    When ``None`` the start-detector default (``guard_margin_us``) is used.
+    """
+
+    chirp_end_us: float
+    chirp_start_us: Optional[float] = None
+    start_margin_us: Optional[float] = None
+
+
 import numpy as np
 import scipy.fft as sfft
 
