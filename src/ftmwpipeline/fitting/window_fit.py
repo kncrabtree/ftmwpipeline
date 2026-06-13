@@ -2244,6 +2244,10 @@ def conservative_fit(
     gate_background: Optional[np.ndarray] = None,
     gate_line_escape: bool = True,
     baseline_order: Optional[int] = None,
+    forbidden_offsets: Optional[Sequence[float]] = None,
+    forbidden_tol_mhz: float = 0.0,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2466,8 +2470,22 @@ def conservative_fit(
         fit_kwargs_inner["baseline_order"] = int(baseline_order)
         fit_kwargs_inner["baseline_offset_scale"] = baseline_offset_scale
 
+    # Forbidden-offset filter: user-removed peaks must not be re-nominated by
+    # the add-loop. Drop any candidate within ``forbidden_tol_mhz`` of a
+    # forbidden offset before sorting into the add-loop queue.
+    _forbidden_cf: Optional[np.ndarray] = None
+    if forbidden_offsets is not None and forbidden_tol_mhz >= 0.0:
+        _forbidden_cf = np.asarray(list(forbidden_offsets), dtype=float)
+
+    def _is_forbidden_cf(off: float) -> bool:
+        return (
+            _forbidden_cf is not None
+            and _forbidden_cf.size > 0
+            and float(np.min(np.abs(_forbidden_cf - float(off)))) <= forbidden_tol_mhz
+        )
+
     remaining = sorted(
-        candidate_offsets,
+        (o for o in candidate_offsets if not _is_forbidden_cf(float(o))),
         key=lambda o: -abs(float(np.interp(o, u, np.abs(z)))),
     )
     if not remaining:

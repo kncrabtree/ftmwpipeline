@@ -1134,3 +1134,120 @@ class TestSettingsMutationConsistency:
         row = {r.path: r for r in ftmw.settings_show(work)}["stage2.smoothing_mhz"]
         assert row.source == ".ftmw"
         assert row.value == 650.0
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 review / candidate-ledger cross-interface consistency
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.cross_interface
+class TestCandidateLedgerConsistency:
+    """Verify that Pipeline.candidate_ledger == api.get_candidate_ledger == CLI review show.
+
+    Uses the small 3-window Stage 5 baseline so the test runs quickly.
+    Cross-interface correctness: all three surfaces must return the same list.
+    """
+
+    def test_pipeline_vs_api_identical(self, baseline_2638_stage5_small):
+        """Pipeline.candidate_ledger and api.get_candidate_ledger return the same list."""
+        fp = baseline_2638_stage5_small
+
+        # Pipeline interface
+        pipe = Pipeline.open(fp)
+        cands_pipe = pipe.candidate_ledger()
+
+        # Functional API
+        cands_api = ftmw.get_candidate_ledger(fp)
+
+        assert len(cands_pipe) == len(cands_api), (
+            f"Candidate count mismatch: Pipeline={len(cands_pipe)}, API={len(cands_api)}"
+        )
+        for i, (cp, ca) in enumerate(zip(cands_pipe, cands_api)):
+            assert cp.frequency_mhz == pytest.approx(ca.frequency_mhz, abs=1e-9), (
+                f"Candidate {i}: freq differs (Pipeline={cp.frequency_mhz}, API={ca.frequency_mhz})"
+            )
+            assert cp.window_id == ca.window_id, (
+                f"Candidate {i}: window_id differs"
+            )
+            assert cp.evidence_kind == ca.evidence_kind, (
+                f"Candidate {i}: evidence_kind differs"
+            )
+            assert cp.best_evidence == pytest.approx(ca.best_evidence, rel=1e-6), (
+                f"Candidate {i}: best_evidence differs"
+            )
+
+    def test_pipeline_vs_api_window_filter(self, baseline_2638_stage5_small):
+        """window_id filter returns a consistent subset."""
+        fp = baseline_2638_stage5_small
+
+        # Get all windows to find one
+        pipe = Pipeline.open(fp)
+        all_fits = pipe.load_fit().window_fits
+        if not all_fits:
+            pytest.skip("No windows in Stage 5 fit")
+
+        wid = all_fits[0].window_id
+
+        cands_pipe = pipe.candidate_ledger(window_id=wid)
+        cands_api = ftmw.get_candidate_ledger(fp, window_id=wid)
+
+        assert len(cands_pipe) == len(cands_api)
+        assert all(c.window_id == wid for c in cands_pipe)
+        assert all(c.window_id == wid for c in cands_api)
+
+    def test_cli_review_show_succeeds(self, baseline_2638_stage5_small):
+        """CLI 'review show <file>' exits 0 and produces output."""
+        fp = str(baseline_2638_stage5_small)
+        result = subprocess.run(
+            ["ftmwpipeline", "review", "show", fp],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"CLI review show failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+        # Should contain a header line
+        assert "win" in result.stdout.lower() or "window" in result.stdout.lower()
+
+    def test_cli_review_show_candidates_succeeds(self, baseline_2638_stage5_small):
+        """CLI 'review show --candidates <file>' exits 0."""
+        fp = str(baseline_2638_stage5_small)
+        result = subprocess.run(
+            ["ftmwpipeline", "review", "show", fp, "--candidates"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"CLI review show --candidates failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_cli_candidate_count_matches_api(self, baseline_2638_stage5_small):
+        """CLI candidate count (from stdout) matches API total."""
+        fp = str(baseline_2638_stage5_small)
+        # API total
+        cands_api = ftmw.get_candidate_ledger(fp)
+
+        result = subprocess.run(
+            ["ftmwpipeline", "review", "show", fp, "--candidates"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert result.returncode == 0
+
+        # The header line prints e.g. "Candidate ledger (all windows, bar=3.0): N candidate(s)"
+        header_line = result.stdout.splitlines()[0] if result.stdout else ""
+        # Extract the number from the first line
+        import re
+        m = re.search(r"(\d+) candidate", header_line)
+        if m:
+            cli_count = int(m.group(1))
+            assert cli_count == len(cands_api), (
+                f"CLI reports {cli_count} candidates but API returns {len(cands_api)}"
+            )

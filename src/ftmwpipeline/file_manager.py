@@ -209,7 +209,11 @@ class PipelineStageTracker:
         # tau-anchoring penalty and rescue τ); same recommended-but-not-
         # required policy as Stage 3.
         "stage5_fitting": ["stage0_fid_data", "stage4_windows"],
-        # Future stages...
+        # Stage 6 (user curation / review) operates on the Stage 5 fitted
+        # line list.  The implementation is not yet present; registering the
+        # stage name + dependency here allows future code to mark it complete
+        # without requiring a schema migration.
+        "stage6_review": ["stage5_fitting"],
     }
 
     # HDF5 location whose presence proves a completed stage's data is stored.
@@ -227,6 +231,7 @@ class PipelineStageTracker:
         "stage3_peaks": "stage3_peaks",
         "stage4_windows": "stage4_windows",
         "stage5_fitting": "stage5_fitting",
+        "stage6_review": "stage6_review",
     }
 
     def __init__(self, completed_stages: Optional[list] = None):

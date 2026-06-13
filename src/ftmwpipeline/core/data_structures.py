@@ -728,6 +728,13 @@ class FittedPeak:
     clock_lattice: Optional[str] = None
     """Clock-lattice identity string (e.g. ``"320x6 (bb)"``), or ``None``."""
 
+    # Stage 6 provenance: records how the peak entered the curated line list.
+    # ``"auto"`` for every peak the automatic pipeline produced; ``"user"``
+    # for a peak a Stage-6 user decision added.  Default ``"auto"`` so all
+    # existing fits carry the correct provenance without any migration.
+    origin: str = "auto"
+    """Per-peak provenance for Stage 6 curation (``"auto"`` or ``"user"``)."""
+
     # Additional fitted parameters
     extra_parameters: Dict[str, float] = field(default_factory=dict)
     extra_errors: Dict[str, float] = field(default_factory=dict)
@@ -1725,3 +1732,54 @@ class SpectrumFit:
             f"thaw={n_thaw_accept}/{n_thaw}, "
             f"replans={n_replan}, revision={self.final_plan_revision})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Stage 6: candidate ledger
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LedgerCandidate:
+    """One normalized revivable candidate from the automatic fit ledger.
+
+    Derived on demand from the already-persisted Stage 5 audit trail
+    (``FittingResult.audit_trail``) and rescue events
+    (``FittingResult.rescue_events``).  All frequencies are in **molecular
+    MHz** (audit-trail baseband offsets have been mapped through
+    ``molecular_frequency`` using the window centre and sideband sign).
+
+    Attributes
+    ----------
+    frequency_mhz : float
+        Molecular frequency (MHz) of this candidate.
+    seed_offset_mhz : float
+        Baseband offset in the window's fit frame; the revival seed for a
+        Stage 6 user add.
+    seed_amplitude : float or None
+        Recorded magnitude at the candidate bin (from the rescue detector or
+        the audit-trail ``chi2_before`` / ``chi2_after`` proxy), or ``None``
+        when not available.
+    best_evidence : float
+        Strongest evidence value seen across all decision sites (the
+        quantity named by ``evidence_kind``).
+    evidence_kind : str
+        ``"delta_chi2"``, ``"f_p"``, or ``"residual_snr"`` -- identifies what
+        ``best_evidence`` measures.
+    reasons : list of str
+        Deduped rejection / non-accept reasons across all decision sites.
+    decision_sites : list of str
+        Ordered sites where this candidate was evaluated, e.g.
+        ``"add-loop:reject"``, ``"rescue-round:2"``.
+    window_id : int
+        :attr:`FitWindow.window_id` this candidate belongs to.
+    """
+
+    frequency_mhz: float
+    seed_offset_mhz: float
+    seed_amplitude: Optional[float]
+    best_evidence: float
+    evidence_kind: str
+    reasons: List[str]
+    decision_sites: List[str]
+    window_id: int

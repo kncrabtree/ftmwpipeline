@@ -37,13 +37,14 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
-from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .core.data_structures import FID, ComplexFT, LedgerCandidate, Peak, SpectrumFit, WindowPlan
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
+from ._internal.stage6_impl import DEFAULT_DISPLAY_BAR
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
@@ -1400,6 +1401,36 @@ def load_fit(file_path: Union[str, Path]) -> SpectrumFit:
     except Exception as e:
         logger.error(f"Failed to load fit from {file_path}: {e}")
         raise
+
+
+def get_candidate_ledger(
+    file_path: Union[str, Path],
+    window_id: Optional[int] = None,
+    *,
+    bar: float = DEFAULT_DISPLAY_BAR,
+) -> List[LedgerCandidate]:
+    """Derive the Stage 6 candidate ledger from the persisted Stage 5 fit.
+
+    Returns revivable candidates from the conservative add-loop and rescue
+    records.  Equivalent to :meth:`Pipeline.candidate_ledger`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    window_id :
+        When given, return candidates for that window only.
+    bar :
+        Display SNR / evidence bar; candidates below it are dropped.
+
+    Returns
+    -------
+    list of LedgerCandidate
+        Sorted by molecular frequency.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).candidate_ledger(window_id=window_id, bar=bar)
 
 
 def validate_stage5_shape_error(

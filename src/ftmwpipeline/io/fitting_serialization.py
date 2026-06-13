@@ -71,6 +71,9 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                 knockout_aicc_delta              [f8]    (NaN -> no knockout
                                                           or older file
                                                           predating this col)
+                origin                           [str]   ("auto" or "user";
+                                                          absent in older files
+                                                          -> default "auto")
         window_0001/ ...
 
 Round-trip contract: ``save`` -> hand-edit -> ``load`` returns the edited
@@ -136,8 +139,9 @@ _OPTIONAL_PEAK_COLUMNS = (
     "knockout_n_eff",
     "knockout_aicc_delta",
 )
-# Optional string columns: absent in older files; load substitutes b"" (-> None).
-_OPTIONAL_PEAK_STR_COLUMNS = ("clock_lattice",)
+# Optional string columns: absent in older files; load substitutes b"" (-> None)
+# for clock_lattice (None when absent) and "auto" for origin (default provenance).
+_OPTIONAL_PEAK_STR_COLUMNS = ("clock_lattice", "origin")
 
 _VALID_AUDIT_DECISIONS = {
     "seed",
@@ -557,9 +561,10 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         "knockout_n_eff": np.empty(n, dtype="f8"),
         "knockout_aicc_delta": np.empty(n, dtype="f8"),
     }
-    # Variable-length UTF-8 string type for the clock_lattice column.
+    # Variable-length UTF-8 string type for string columns.
     _vlen_str = h5py.string_dtype(encoding="utf-8")
     clock_lattice_col: np.ndarray = np.empty(n, dtype=object)
+    origin_col: np.ndarray = np.empty(n, dtype=object)
     for i, p in enumerate(peaks):
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
@@ -591,10 +596,13 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
             columns["knockout_aicc_delta"][i] = float(p.knockout.aicc_delta)
         # clock_lattice: empty string when absent (None), identity string when set.
         clock_lattice_col[i] = p.clock_lattice if p.clock_lattice is not None else ""
+        # origin: always a non-empty string; default "auto" for every pipeline peak.
+        origin_col[i] = p.origin
     for name, data in columns.items():
         peaks_group.create_dataset(name, data=data)
-    # clock_lattice stored as a variable-length UTF-8 string dataset.
+    # String columns stored as variable-length UTF-8 datasets.
     peaks_group.create_dataset("clock_lattice", data=clock_lattice_col, dtype=_vlen_str)
+    peaks_group.create_dataset("origin", data=origin_col, dtype=_vlen_str)
 
 
 # ---------------------------------------------------------------------------
@@ -803,6 +811,17 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
         ]
     else:
         clock_lattice_vals = [None] * n
+    # Optional string column: absent in files written before Stage-6 provenance was
+    # added.  An absent column or an empty string both default to "auto" so that
+    # every pipeline-produced peak carries the correct provenance on load.
+    if "origin" in peaks_group:
+        raw_orig = peaks_group["origin"][:]
+        origin_vals = [
+            (v.decode("utf-8") if isinstance(v, bytes) else str(v)) or "auto"
+            for v in raw_orig
+        ]
+    else:
+        origin_vals = ["auto"] * n
     peaks: List[FittedPeak] = []
     for i in range(n):
         ko_supported_raw = int(cols["knockout_supported"][i])
@@ -835,6 +854,7 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 window_id=None if wid_raw < 0 else wid_raw,
                 knockout=knockout,
                 clock_lattice=clock_lattice_vals[i],
+                origin=origin_vals[i],
             )
         )
     return peaks

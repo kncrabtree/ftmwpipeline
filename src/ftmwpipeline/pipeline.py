@@ -62,12 +62,13 @@ from ._internal.stage5_impl import (
     visualize_fit_impl,
 )
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
+from ._internal.stage6_impl import DEFAULT_DISPLAY_BAR, get_candidate_ledger_impl
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
-from .core.data_structures import FID, ComplexFT, Peak, SpectrumFit, WindowPlan
+from .core.data_structures import FID, ComplexFT, LedgerCandidate, Peak, SpectrumFit, WindowPlan
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.settings import FTSettings
@@ -1608,6 +1609,35 @@ class Pipeline:
     def load_fit(self) -> SpectrumFit:
         """Load the persisted Stage 5 fit (validates structure loudly)."""
         return cast(SpectrumFit, load_fit_impl(str(self.filepath))["fit"])
+
+    def candidate_ledger(
+        self,
+        window_id: Optional[int] = None,
+        *,
+        bar: float = DEFAULT_DISPLAY_BAR,
+    ) -> List[LedgerCandidate]:
+        """Derive the Stage 6 candidate ledger from the persisted Stage 5 fit.
+
+        Returns revivable candidates from the conservative add-loop and rescue
+        records -- candidates that were considered but not accepted by the
+        automatic fit.  The ledger is derived on demand from the already-persisted
+        audit trail; it does not re-fit anything.
+
+        Parameters
+        ----------
+        window_id :
+            When given, return candidates for that window only.
+        bar :
+            Display SNR / evidence bar; candidates below it are dropped.
+
+        Returns
+        -------
+        list of LedgerCandidate
+            Sorted by molecular frequency.
+
+        Requires Stage 5 completed.
+        """
+        return get_candidate_ledger_impl(self.filepath, window_id=window_id, bar=bar)
 
     def validate_stage5_shape_error(
         self,

@@ -26,7 +26,9 @@ from ftmwpipeline.fitting.peak_model import ModelPeak, effective_tau, model_spec
 from ftmwpipeline.fitting.residual_rescue import (
     DEFAULT_RESCUE_MAX_ROUNDS,
     ConsolidatedRescueOutcome,
+    attempt_residual_rescue,
     merge_close_peaks_cleanup,
+    remove_and_refit_cleanup,
     rescue_and_consolidate,
 )
 from ftmwpipeline.fitting.validation import feature_fwhm
@@ -683,3 +685,239 @@ class TestMergeCleanupAICc:
         assert merged.fit_tau is False
         assert merged.tau_was_fit is True
         assert merged.tau_error == pytest.approx(k2_fit.tau_error)
+
+
+# ---------------------------------------------------------------------------
+# C1 immunity tests: user-peak protection (Tasks 1 & 2)
+# ---------------------------------------------------------------------------
+
+
+class TestMergeCleanupProtectedOffsets:
+    """Protected peaks must never be collapsed by merge_close_peaks_cleanup."""
+
+    def _constraints_kwargs(self, u, z, sigma):
+        c = derive_window_fit_constraints(z, sigma, TAU_US, T_US)
+        return c.fit_kwargs_inner
+
+    def test_protected_peak_pair_not_collapsed(self):
+        """Two sub-resolution duplicate peaks are normally collapsed (Tier 1).
+        When one member is protected, the pair must be skipped and left intact.
+        """
+        rng = np.random.default_rng(SEED + 100)
+        true = ModelPeak(_amp_for_snr(120.0), 0.0, 0.5)
+        u, z = _window([true], 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        # Force a K=2 duplicate pair at sub-resolution separation.
+        duplicate_init = [
+            ModelPeak(true.amplitude / 2, -0.5 * DF_MHZ, 0.5),
+            ModelPeak(true.amplitude / 2, +0.5 * DF_MHZ, 0.5),
+        ]
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.n_peaks == 2
+
+        # Without protection: the pair collapses (duplicate-overfit case).
+        merged_no_prot, n_merged = merge_close_peaks_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US, fit_kwargs_inner=fit_kwargs
+        )
+        assert n_merged == 1
+
+        # With one member protected: the pair must be preserved intact.
+        protected = [k2_fit.peaks[0].offset_mhz]  # protect the first member
+        merged_prot, n_merged_prot = merge_close_peaks_cleanup(
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
+            fit_kwargs_inner=fit_kwargs,
+            protected_offsets=protected,
+            protected_tol_mhz=DF_MHZ,
+        )
+        assert n_merged_prot == 0, (
+            "Protected pair should not be collapsed; n_merged=%d" % n_merged_prot
+        )
+        assert merged_prot.n_peaks == 2
+
+    def test_unprotected_pair_still_collapses(self):
+        """Without protected_offsets, the duplicate-pair collapse still fires."""
+        rng = np.random.default_rng(SEED + 101)
+        true = ModelPeak(_amp_for_snr(120.0), 0.0, 0.5)
+        u, z = _window([true], 0.8, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+        duplicate_init = [
+            ModelPeak(true.amplitude / 2, -0.5 * DF_MHZ, 0.5),
+            ModelPeak(true.amplitude / 2, +0.5 * DF_MHZ, 0.5),
+        ]
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+        k2_fit = fit_window(u, z, sigma, duplicate_init, TAU_US, T_US, **fit_kwargs)
+        # Protect a frequency far from either member: effectively no protection.
+        merged, n_merged = merge_close_peaks_cleanup(
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
+            fit_kwargs_inner=fit_kwargs,
+            protected_offsets=[5.0],  # far away; no effect
+            protected_tol_mhz=DF_MHZ,
+        )
+        assert n_merged == 1  # still collapses without protection
+
+
+class TestRemoveAndRefitProtectedOffsets:
+    """Protected peaks must never be dropped by remove_and_refit_cleanup."""
+
+    def _constraints_kwargs(self, u, z, sigma):
+        c = derive_window_fit_constraints(z, sigma, TAU_US, T_US)
+        return c.fit_kwargs_inner
+
+    def test_protected_peak_not_dropped(self):
+        """When a peak is protected, it is excluded from the drop-candidate set.
+
+        Build a noiseless K=2 fit where one peak is a very weak absorber
+        (amplitude close to 0) so the F-test reliably flags it as redundant
+        in the unprotected case.  With protection it must survive.
+        """
+        # Noiseless single-peak window -- gives a deterministic F-test result.
+        true = [ModelPeak(_amp_for_snr(200.0, sigma=1.0), 0.0, 0.5)]
+        u = _offset_grid(1.5)
+        z = model_spectrum(u, true, TAU_US, T_US)  # noiseless
+        sigma = np.full(u.size, 1.0)
+        fit_kwargs = self._constraints_kwargs(u, z, sigma)
+
+        # Ghost peak at 2× FWHM, initialised to near-zero amplitude.
+        ghost_offset = 2.0 * FWHM
+        epsilon_amp = _amp_for_snr(0.01, sigma=1.0)  # negligible amplitude
+        k2_init = [
+            ModelPeak(_amp_for_snr(200.0, sigma=1.0), 0.0, 0.5),
+            ModelPeak(epsilon_amp, ghost_offset, 0.0),
+        ]
+        k2_fit = fit_window(u, z, sigma, k2_init, TAU_US, T_US, **fit_kwargs)
+        assert k2_fit.n_peaks == 2
+
+        # Unprotected: the ghost must be dropped (it is redundant by F-test).
+        cleaned, n_dropped = remove_and_refit_cleanup(
+            u, z, sigma, k2_fit, TAU_US, T_US, fit_kwargs_inner=fit_kwargs
+        )
+        assert n_dropped >= 1, (
+            "Ghost peak should be flagged as redundant by the F-test; "
+            "n_dropped=%d, ghost amp=%.4f, peaks=%s"
+            % (
+                n_dropped,
+                k2_fit.peaks[1].amplitude,
+                [(round(p.offset_mhz, 3), round(p.amplitude, 4)) for p in k2_fit.peaks],
+            )
+        )
+
+        # Protected: the ghost must survive even though it is F-test-redundant.
+        cleaned_prot, n_dropped_prot = remove_and_refit_cleanup(
+            u,
+            z,
+            sigma,
+            k2_fit,
+            TAU_US,
+            T_US,
+            fit_kwargs_inner=fit_kwargs,
+            protected_offsets=[k2_fit.peaks[1].offset_mhz],
+            protected_tol_mhz=DF_MHZ,
+        )
+        assert n_dropped_prot < n_dropped, (
+            "Protected peak should suppress at least one drop; "
+            "n_dropped_prot=%d n_dropped=%d" % (n_dropped_prot, n_dropped)
+        )
+
+
+class TestRescueForbiddenOffsets:
+    """Forbidden offsets must not be re-nominated by attempt_residual_rescue."""
+
+    def test_forbidden_offset_not_proposed_by_rescue(self):
+        """A detected residual candidate at a forbidden offset is dropped
+        before being passed to conservative_fit.
+
+        Strategy: build a noiseless two-peak window, fit only the first peak
+        (leaving a deterministic residual at the second), then call
+        attempt_residual_rescue with all offsets in the residual forbidden
+        except a region far from any real signal.  The rescue's candidates
+        detector finds the second peak; the forbidden filter drops it; the
+        rescue accepts zero new peaks.
+        """
+        # Noiseless window: deterministic residual so the detector always
+        # nominates exactly the true second peak's offset.
+        true = [
+            ModelPeak(_amp_for_snr(150.0, sigma=1.0), -0.8, 0.5),
+            ModelPeak(_amp_for_snr(120.0, sigma=1.0), +0.7, 1.4),
+        ]
+        u = _offset_grid(2.0)
+        z = model_spectrum(u, true, TAU_US, T_US)  # noiseless
+        sigma = np.full(u.size, 1.0)
+
+        # Initial fit: only the first peak (given its exact offset).
+        initial = conservative_fit(
+            u, z, sigma, [-0.8], TAU_US, T_US, seeder_max_k=1
+        )
+        # In noiseless data the fitter installs the seed unconditionally.
+
+        # Rescue without forbidden: the detector nominates around +0.7.
+        outcome_free = attempt_residual_rescue(
+            u, z, sigma, initial.fit, TAU_US, T_US
+        )
+        # The second peak must be among the rescue's *candidates* (pre-fit).
+        cand_offsets = [c.frequency_mhz for c in outcome_free.candidates]
+        assert any(abs(o - true[1].offset_mhz) < 0.5 for o in cand_offsets), (
+            "Rescue should detect a candidate near the second peak offset; "
+            "candidates=%s" % [round(o, 3) for o in cand_offsets]
+        )
+
+        # Rescue with the second peak's offset forbidden: that specific
+        # candidate must not appear in the forbidden outcome's candidate list.
+        outcome_forbidden = attempt_residual_rescue(
+            u,
+            z,
+            sigma,
+            initial.fit,
+            TAU_US,
+            T_US,
+            forbidden_offsets=[true[1].offset_mhz],
+            forbidden_tol_mhz=0.5,  # half-MHz tolerance covers LSQ drift
+        )
+        cand_offsets_forbidden = [c.frequency_mhz for c in outcome_forbidden.candidates]
+        assert not any(
+            abs(o - true[1].offset_mhz) < 0.5 for o in cand_offsets_forbidden
+        ), (
+            "Forbidden candidate near +0.7 must not appear after filtering; "
+            "candidates=%s" % [round(o, 3) for o in cand_offsets_forbidden]
+        )
+
+    def test_conservative_fit_forbidden_filters_add_loop(self):
+        """conservative_fit drops forbidden candidates from the add-loop queue.
+
+        Call conservative_fit with one candidate that is explicitly forbidden;
+        the function must return an empty fit (no peaks accepted).
+        """
+        rng = np.random.default_rng(SEED + 301)
+        true = [ModelPeak(_amp_for_snr(200.0), 0.0, 0.5)]
+        u, z = _window(true, 1.2, 1.0, rng)
+        sigma = np.full(u.size, 1.0)
+
+        # Without forbidden: the candidate is accepted.
+        result_free = conservative_fit(u, z, sigma, [0.0], TAU_US, T_US)
+        assert result_free.n_peaks >= 1
+
+        # With the candidate's offset forbidden: the add-loop queue is empty.
+        result_forbidden = conservative_fit(
+            u,
+            z,
+            sigma,
+            [0.0],
+            TAU_US,
+            T_US,
+            forbidden_offsets=[0.0],
+            forbidden_tol_mhz=DF_MHZ,
+        )
+        assert result_forbidden.n_peaks == 0, (
+            "Forbidden candidate should be dropped from the add-loop; "
+            "got n_peaks=%d" % result_forbidden.n_peaks
+        )

@@ -550,6 +550,23 @@ class TestStageRegistration:
         tracker.mark_completed("stage4_windows")
         assert "stage5_fitting" in tracker.get_available_stages()
 
+    def test_stage6_review_dependencies(self):
+        deps = PipelineStageTracker.STAGE_DEPENDENCIES
+        assert "stage6_review" in deps
+        assert deps["stage6_review"] == ["stage5_fitting"]
+
+    def test_stage6_review_data_path(self):
+        paths = PipelineStageTracker.STAGE_DATA_PATHS
+        assert paths.get("stage6_review") == "stage6_review"
+
+    def test_stage6_review_only_available_after_stage5(self):
+        tracker = PipelineStageTracker(
+            completed_stages=["stage0_fid_data", "stage4_windows"]
+        )
+        assert "stage6_review" not in tracker.get_available_stages()
+        tracker.mark_completed("stage5_fitting")
+        assert "stage6_review" in tracker.get_available_stages()
+
 
 # ---------------------------------------------------------------------------
 # Rescue-rounds persistence (Task C)
@@ -869,6 +886,71 @@ class TestClockLatticeRoundTrip:
         with h5py.File(path, "r") as h5f:
             loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         assert loaded.fitted_peaks[0].clock_lattice is None
+
+
+# ---------------------------------------------------------------------------
+# Origin provenance persistence
+# ---------------------------------------------------------------------------
+class TestOriginRoundTrip:
+    """The ``origin`` provenance field persists and rehydrates correctly."""
+
+    def test_default_origin_is_auto(self):
+        """A freshly constructed FittedPeak carries origin='auto'."""
+        p = FittedPeak(peak_id=0, frequency_mhz=1.0, amplitude=1.0)
+        assert p.origin == "auto"
+
+    def test_auto_origin_round_trips(self, tmp_path):
+        """A peak with the default ``origin='auto'`` survives save -> load."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        assert peak.origin == "auto"
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.fitted_peaks[0].origin == "auto"
+        assert loaded.window_fits[0].fitted_peaks[0].origin == "auto"
+
+    def test_user_origin_round_trips(self, tmp_path):
+        """A peak with ``origin='user'`` survives save -> load unchanged."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        peak.origin = "user"
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        assert loaded.fitted_peaks[0].origin == "user"
+
+    def test_mixed_origins_in_one_window(self, tmp_path):
+        """One 'auto' + one 'user' peak in the same window both round-trip."""
+        pk_a = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        pk_b = _sample_fitted_peak(peak_id=1, window_id=0, freq_mhz=36105.0)
+        pk_b.origin = "user"
+        win = _make_window_fit(0, [pk_a, pk_b], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[pk_a, pk_b])
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        by_id = {p.peak_id: p for p in loaded.fitted_peaks}
+        assert by_id[0].origin == "auto"
+        assert by_id[1].origin == "user"
+
+    def test_legacy_file_without_column_loads_as_auto(self, tmp_path):
+        """A file written before the ``origin`` column existed loads with
+        ``'auto'`` on every peak -- no error, backward-compatible."""
+        path = tmp_path / "fit.h5"
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            # Simulate a file that pre-dates the column.
+            del g["windows/window_0000/peaks/origin"]
+        with h5py.File(path, "r") as h5f:
+            loaded = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        assert loaded.fitted_peaks[0].origin == "auto"
 
 
 # ---------------------------------------------------------------------------

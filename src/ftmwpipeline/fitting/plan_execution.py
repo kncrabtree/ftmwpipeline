@@ -2142,6 +2142,10 @@ def _fit_one_window(
     spur_set: Optional[SpurSet] = None,
     early_baseline_order: Optional[int] = None,
     early_baseline_smooth_threshold: Optional[float] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
+    forbidden_offsets: Optional[Sequence[float]] = None,
+    forbidden_tol_mhz: float = 0.0,
 ) -> WindowOutcome:
     """Fit one window with its frozen contributors; build its WindowOutcome."""
     _, offset_grid, z_slice, sig_slice, center_mhz = materialize_window(
@@ -2221,6 +2225,16 @@ def _fit_one_window(
         ]
         ck_for_fit = dict(conservative_kwargs)
         ck_for_fit["spur_mask"] = spur_mask
+    # Inject per-window immunity params when provided (no-op when None).
+    if protected_offsets is not None or forbidden_offsets is not None:
+        if ck_for_fit is conservative_kwargs:
+            ck_for_fit = dict(conservative_kwargs)
+        if protected_offsets is not None:
+            ck_for_fit["protected_offsets"] = protected_offsets
+            ck_for_fit["protected_tol_mhz"] = protected_tol_mhz
+        if forbidden_offsets is not None:
+            ck_for_fit["forbidden_offsets"] = forbidden_offsets
+            ck_for_fit["forbidden_tol_mhz"] = forbidden_tol_mhz
     # Edge-bearing contributors are always carried. Edge-free contributors are
     # evidence-triggered: fit the window without them first (the byte-stable
     # path for a healthy window whose leakage the const baseline already
@@ -2703,6 +2717,10 @@ def _apply_rescue_to_outcome(
     max_residual_rescue_rounds: int,
     rescue_kwargs: dict[str, Any],
     spur_set: Optional[SpurSet] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
+    forbidden_offsets: Optional[Sequence[float]] = None,
+    forbidden_tol_mhz: float = 0.0,
 ) -> list[RescueEvent]:
     """Run the residual-rescue B-loop on a finished window and update its
     outcome in place. Returns the per-round :class:`RescueEvent` records.
@@ -2758,6 +2776,10 @@ def _apply_rescue_to_outcome(
         spur_mask=spur_mask,
         gate_budget_extra=budget_extra,
         gate_background=outcome.background,
+        protected_offsets=protected_offsets,
+        protected_tol_mhz=protected_tol_mhz,
+        forbidden_offsets=forbidden_offsets,
+        forbidden_tol_mhz=forbidden_tol_mhz,
         **rescue_kwargs,
     )
 

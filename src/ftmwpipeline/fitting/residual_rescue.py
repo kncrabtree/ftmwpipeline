@@ -232,6 +232,8 @@ def merge_close_peaks_cleanup(
     weighted_gate_chi2: Optional[bool] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
 ) -> Tuple[WindowFitResult, int]:
     """Multi-tier merge cleanup for close peak pairs.
 
@@ -370,6 +372,19 @@ def merge_close_peaks_cleanup(
     refit_kwargs.setdefault("shape", fit.shape)
     refit_kwargs["spur_mask"] = spur_mask
 
+    _protected_arr = (
+        np.asarray(list(protected_offsets), dtype=float)
+        if protected_offsets is not None
+        else None
+    )
+
+    def _is_protected_peak(offset_mhz: float) -> bool:
+        if _protected_arr is None or _protected_arr.size == 0:
+            return False
+        return bool(
+            np.min(np.abs(_protected_arr - float(offset_mhz))) <= protected_tol_mhz
+        )
+
     current = fit
     n_merged = 0
     # Pairs the blend escape exempted from collapse this run: a kept pair
@@ -400,6 +415,15 @@ def merge_close_peaks_cleanup(
             break
         pair_lo = sorted_peaks[merge_i]
         pair_hi = sorted_peaks[merge_i + 1]
+        # User-added peaks are never collapsed: if either member of the pair
+        # is within ``protected_tol_mhz`` of a protected offset, skip the
+        # closest-pair selection and mark both as blend-escape-protected so the
+        # loop moves on to the next candidate (or exits if none remain).
+        if _is_protected_peak(pair_lo.offset_mhz) or _is_protected_peak(
+            pair_hi.offset_mhz
+        ):
+            protected_pairs.add(_pair_key(pair_lo, pair_hi))
+            continue
         amp_a = abs(pair_lo.amplitude)
         amp_b = abs(pair_hi.amplitude)
         amp_min = min(amp_a, amp_b)
@@ -557,6 +581,8 @@ def remove_and_refit_cleanup(
     fit_kwargs_inner: dict[str, Any],
     significance: float = DEFAULT_CLEANUP_SIGNIFICANCE,
     spur_mask: Optional[SpurMaskSpec] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
 ) -> Tuple[WindowFitResult, int]:
     """Iteratively drop redundant peaks (K → K-1 refit, keep if improvement
     still significant); return ``(updated_fit, n_dropped)``.
@@ -582,6 +608,19 @@ def remove_and_refit_cleanup(
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
 
+    _rar_protected = (
+        np.asarray(list(protected_offsets), dtype=float)
+        if protected_offsets is not None
+        else None
+    )
+
+    def _is_protected_rar(offset_mhz: float) -> bool:
+        if _rar_protected is None or _rar_protected.size == 0:
+            return False
+        return bool(
+            np.min(np.abs(_rar_protected - float(offset_mhz))) <= protected_tol_mhz
+        )
+
     current = fit
     n_dropped = 0
     refit_kwargs = dict(fit_kwargs_inner)
@@ -597,6 +636,9 @@ def remove_and_refit_cleanup(
         worst_idx = -1
         worst_refit: Optional[WindowFitResult] = None
         for i in range(current.n_peaks):
+            # User-added peaks must never be dropped by the automatic cleanup.
+            if _is_protected_rar(current.peaks[i].offset_mhz):
+                continue
             reduced_init = [pk for j, pk in enumerate(current.peaks) if j != i]
             if not reduced_init:
                 # Compare K=1 fit to K=0 (null model): use the null chi-squared
@@ -1095,6 +1137,8 @@ def attempt_residual_rescue(
     conservative_kwargs: Optional[dict[str, Any]] = None,
     excluded_offsets: Optional[Sequence[float]] = None,
     spur_mask: Optional[SpurMaskSpec] = None,
+    forbidden_offsets: Optional[Sequence[float]] = None,
+    forbidden_tol_mhz: float = 0.0,
 ) -> RescueOutcome:
     """Find peaks the initial fit missed and fit them to its residual.
 
@@ -1281,6 +1325,22 @@ def attempt_residual_rescue(
                 )
             ]
     candidates = list(raw_candidates)
+    # Forbidden-offset filter: user-removed peaks must never be re-proposed
+    # by the rescue detector. Drop any candidate whose offset is within
+    # ``forbidden_tol_mhz`` of a forbidden offset before handing the list to
+    # conservative_fit (the gate is on the detector's baseband offset, which is
+    # the same frame as ``ModelPeak.offset_mhz`` and the conservative-fit input).
+    if forbidden_offsets and candidates and forbidden_tol_mhz >= 0.0:
+        _forbidden_arr = np.asarray(list(forbidden_offsets), dtype=float)
+        candidates = [
+            c
+            for c in candidates
+            if not (
+                _forbidden_arr.size > 0
+                and float(np.min(np.abs(_forbidden_arr - float(c.frequency_mhz))))
+                <= forbidden_tol_mhz
+            )
+        ]
     candidate_offsets = [c.frequency_mhz for c in candidates]
 
     # Run conservative_fit on the residual with tau FROZEN at the initial
@@ -1502,6 +1562,10 @@ def rescue_and_consolidate(
     spur_mask: Optional[SpurMaskSpec] = None,
     gate_budget_extra: Optional[np.ndarray] = None,
     gate_background: Optional[np.ndarray] = None,
+    protected_offsets: Optional[Sequence[float]] = None,
+    protected_tol_mhz: float = 0.0,
+    forbidden_offsets: Optional[Sequence[float]] = None,
+    forbidden_tol_mhz: float = 0.0,
 ) -> ConsolidatedRescueOutcome:
     """Iterate rescue + joint refit + merge + knockout consolidation
     (option B).
@@ -1699,6 +1763,8 @@ def rescue_and_consolidate(
             conservative_kwargs=ckwargs_in,
             excluded_offsets=rejected_offsets if rejected_offsets else None,
             spur_mask=spur_mask,
+            forbidden_offsets=forbidden_offsets,
+            forbidden_tol_mhz=forbidden_tol_mhz,
         )
         n_rescue_added = rescue.fit.n_peaks
 
@@ -1812,6 +1878,8 @@ def rescue_and_consolidate(
             n_eff_kind=n_eff_kind,
             spur_mask=spur_mask,
             gate_budget_extra=gate_budget_extra,
+            protected_offsets=protected_offsets,
+            protected_tol_mhz=protected_tol_mhz,
         )
 
         # Per-peak knockout produces persisted diagnostics (n_eff,
@@ -1845,6 +1913,20 @@ def rescue_and_consolidate(
         u_sorted = np.sort(u)
         df_mhz = float(np.min(np.diff(u_sorted))) if u_sorted.size >= 2 else 0.0
         survival_tol = max(df_mhz, 1e-3)
+        # Merge user-protected offsets with inherited (round-start) offsets so
+        # that both sets are immune from iterative-AICc dropout.  The tolerance
+        # is the larger of the grid-bin tolerance (survival_tol) and the
+        # caller-supplied protected_tol_mhz so both sets share a single
+        # _is_protected check inside iterative_aicc_cleanup.
+        combined_protected: Optional[List[float]] = None
+        combined_protected_tol = survival_tol
+        if protected_offsets is not None and len(list(protected_offsets)) > 0:
+            combined_protected = list(inherited_offsets) + [
+                float(x) for x in protected_offsets
+            ]
+            combined_protected_tol = max(survival_tol, protected_tol_mhz)
+        else:
+            combined_protected = list(inherited_offsets)
         pruned_fit_candidate, n_pruned_total = iterative_aicc_cleanup(
             u,
             z,
@@ -1856,8 +1938,8 @@ def rescue_and_consolidate(
             spur_mask=spur_mask,
             gate_budget_extra=gate_budget_extra,
             gate_background=gate_background,
-            protected_offsets=inherited_offsets,
-            protected_tol_mhz=survival_tol,
+            protected_offsets=combined_protected,
+            protected_tol_mhz=combined_protected_tol,
             initial_refits=joint_refit_sink,
         )
         # Two-purpose bookkeeping:

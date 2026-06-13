@@ -13,6 +13,7 @@ from .. import __version__
 from ..workflows import validate_installation
 from .data_commands import add_data_subcommands
 from .fitting_commands import register_fitting_commands
+from .review_commands import register_review_commands
 from .ft_commands import add_ft_subcommands
 from .info_commands import add_info_subcommand
 from .noise_commands import register_noise_commands
@@ -86,6 +87,7 @@ Stage objects (synonym):
   peaks (stage3)    run | show            Detect/classify peaks / overlay them
   windows (stage4)  run | show            Plan fit windows / overlay the plan
   fit (stage5)      run | show | check    Fit lines / overlay / SNR-aware assessment
+  review (stage6)   show [--candidates]  Review fitted model and candidate ledger
 
 Meta objects (cross-cutting, optional dotted selector):
   scan      list | run | all              Knob registry; sweep one / all knobs
@@ -137,6 +139,9 @@ Examples:
 
     # Add fitting commands (Stage 5)
     register_fitting_commands(subparsers)
+
+    # Add review commands (Stage 6)
+    register_review_commands(subparsers)
 
     # Cross-cutting parameter-scan surface
     register_scan_commands(subparsers)
