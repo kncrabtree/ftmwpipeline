@@ -44,10 +44,21 @@ stable semantics.
    fixtures shift their stamped starts slightly (2638: 2.37 → 2.27 µs)
    — absorbed by the re-baseline after this sweep. Detector robustness
    itself stays a separate research question.
-2. **Residual-rescue Tier-2 merge / n_eff kind decision (issue #9)** — a
-   decision, not a build. Settle it before Stage 6 because it changes
-   fitted tables and forces a re-baseline; absorb that churn before users
-   sign off on finalized analyses.
+2. **Residual-rescue Tier-2 merge / n_eff kind decision (issue #9)** —
+   **decided: keep Tier-2 closed, keep the single information-weighted
+   n_eff kind.** A recall-gated 7-fixture A/B (`merge_separation_factor =
+   1.0`, with and without co-raising `overfit_amp_ratio_band`) showed
+   opening the Tier-2 AICc band is empirically inert: `recall_calgrade`
+   byte-identical on both ground-truth fixtures (1512 0.443 / 655 0.592),
+   χ²ᵣ median unchanged on all seven, line-count effect mixed-sign at the
+   <1% noise level — the structural Tier-1 + resolution-floor + Tier-3
+   amplitude-ratio machinery (#13) already covers the duplicate/absorber
+   class, and the only thing Tier-2 adds is an AICc test on balanced close
+   pairs that are real hyperfine/rotor doublets AICc keeps. No table churn
+   to absorb. Detail in
+   [`planning/stage5-residual-rescue.md`](planning/stage5-residual-rescue.md)
+   ("Merge tier-2 disabled"); n_eff-kind rationale recorded on
+   `effective_sample_size`.
 3. **Unblocked second-instrument work (issues #5, #6)** — the succinimide
    fixture removed `blocked:fixture` from both. #6 (per-instrument
    calibration audit → instrument preset) formalizes the hand-derived UXR

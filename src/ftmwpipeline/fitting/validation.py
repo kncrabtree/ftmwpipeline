@@ -1096,11 +1096,16 @@ def effective_sample_size(
     Stage 5 threads a single kind -- :data:`DEFAULT_N_EFF_KIND`
     (``perplexity_log1p_snr``) -- into *every* gate (conservative
     add-one-peak accept, blend-aware escalation, merge cleanup, knockout,
-    iterative cleanup). The merge / knockout K-vs-(K-1) sweeps therefore use
-    the information-weighted kind, not a magnitude-concentrated one; whether
-    those sweeps should instead take a magnitude-concentrated kind is an open
-    Stage 5 design decision (issue #9). The ``kish_*`` / ``hard_radius`` kinds
-    are available for callers that select them explicitly.
+    iterative cleanup), including the merge / knockout K-vs-(K-1) sweeps. This
+    is the deliberate, cross-gate choice (GitHub issue #9, resolved): the
+    magnitude-concentrated ``kish_*`` alternative at the K-vs-(K-1) sites gave
+    a marginally worse survey distribution and added a per-site rationale to
+    maintain without supporting evidence, so one information-weighted default
+    governs every gate. (The merge K-vs-(K-1) AICc test is itself inert under
+    the shipped defaults -- the Tier-2 band is closed, also per #9 -- so its
+    kind choice only matters to a caller that re-opens the band.) The
+    ``kish_*`` / ``hard_radius`` kinds remain available for callers that select
+    them explicitly.
 
     Parameters
     ----------

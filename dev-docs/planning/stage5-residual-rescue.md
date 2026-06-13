@@ -261,18 +261,32 @@ intermediate states if the audit needs forensic context).
   weak lines or noise cannot be determined from the 2638
   fixture alone; the cross-fixture validation Tier-3 ground-
   truth check is the discriminator.
-- **Merge tier-2 disabled.** `DEFAULT_MERGE_SEPARATION_FACTOR =
-  0.5 = DEFAULT_STRUCTURAL_MERGE_FACTOR` so pairs in [0.5, 1.0]
-  FWHM are not considered for merging. Tier 2 was to become safe to
-  re-enable once the phase-degeneracy penalty
-  (`stage5-fitting.md` O5-11) provides the LSQ-side signal to
-  distinguish real close pairs from duplicate-pair LSQ
-  artifacts. That penalty has since landed (O5-11 status: landed,
-  `DEFAULT_PHASE_PENALTY_LAMBDA = 100`), so re-enabling tier 2 is now a
-  deliberate decision rather than a blocked item — it stays disabled
-  pending the cross-fixture Tier-3 evidence to justify the change.
-  Empirically a no-op on the 2638 fixture: 6 → 4 total merges,
-  knockout-pruning 22 → 24, chi²_r distribution unchanged.
+- **Merge tier-2 disabled (decided, not blocked).**
+  `DEFAULT_MERGE_SEPARATION_FACTOR = 0.5 = DEFAULT_STRUCTURAL_MERGE_FACTOR`
+  collapses the AICc band to width zero, so pairs in `[0.5·FWHM, 1.0·FWHM]`
+  are not put through the merge gate. The structural duplicate/absorber class
+  is instead covered by the Tier-1 sub-resolution merge, the resolution-element
+  floor, and the Tier-3 amplitude-ratio merge (all measured in `1/T_active`
+  units, GitHub issue #13). The only thing a re-enabled Tier-2 adds over that
+  machinery is an AICc test on **balanced** close pairs — and on every fixture
+  those are real ¹⁴N-hyperfine / methyl-rotor doublets AICc correctly keeps,
+  so the band is empirically inert.
+
+  This is a settled decision, backed by a recall-gated 7-fixture A/B
+  (`merge_separation_factor = 1.0`, with and without co-raising
+  `overfit_amp_ratio_band` to preserve the Tier-3 absorber rule):
+  `recall_calgrade` is **byte-identical** on both ground-truth fixtures
+  (1512: 0.443; 655: 0.592 — `n_matched_calgrade` unchanged at 51 / 173), the
+  per-window χ²ᵣ median is unchanged on all seven, and the only measurable
+  line-count effect is mixed-sign at the <1% noise level (655 sheds 2 spurious
+  lines, 360 *gains* 12). Tier-2 does fire more merges when opened (655
+  `merge_fire_windows` 64 → 100), but the rescue/knockout consolidation nets
+  them back out — extra churn for no recall, χ²ᵣ, or precision gain. FWHM is
+  1.3–2.3 active-FT resolution elements on all fixtures, so opening Tier-2 also
+  evicts the Tier-3 amplitude-ratio band on the dense fixtures unless
+  `overfit_amp_ratio_band` is co-raised; the A/B confirmed both arms behave
+  the same, i.e. there is no configuration of the coupled pair that buys
+  anything. **Keep it closed.**
 
 ## Rescue-specific open follow-ups
 
