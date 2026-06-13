@@ -59,12 +59,18 @@ stable semantics.
    [`planning/stage5-residual-rescue.md`](planning/stage5-residual-rescue.md)
    ("Merge tier-2 disabled"); n_eff-kind rationale recorded on
    `effective_sample_size`.
-3. **Unblocked second-instrument work (issues #5, #6)** — the succinimide
-   fixture removed `blocked:fixture` from both. #6 (per-instrument
-   calibration audit → instrument preset) formalizes the hand-derived UXR
-   parameters (start offset, interleave factors, layout) into the preset
-   layer; #5 (Lorentzian/Gaussian/Voigt 3-way shape test) is one piece of
-   the lineshape-floor arc and may also shift tables.
+3. **Second-instrument work (issues #5, #6)** — both **resolved** on the
+   succinimide fixture. **#6 closed**: a full cross-instrument Y-knob audit
+   (`scan all`, every stage) shows the 2638 defaults generalize to the
+   genuinely-different succinimide instrument — no per-instrument
+   calibration and no knob preset needed (instrument specifics live in
+   clock-declaration/import); recorded in
+   [`planning/instrument-tunable-knobs.md`](planning/instrument-tunable-knobs.md)
+   (Cross-instrument validation). **#5 re-blocked**: succinimide fits a
+   clean Lorentzian (χ²ᵣ med 1.19, no lineshape deficit surviving a
+   baselined fit), so it is not the Voigt fixture; re-applied
+   `blocked:fixture`. Trigger to revisit: excessive shape error across many
+   lines of a fixture under the full production machinery.
 4. **Stage 5 table-affecting backlog sweep (issues #11, #4, #8)** —
    spur-only window drop (incl. the 363 w100 clock-declaration leftover),
    Gaussian-path reconciliation, and the O5 backlog items. Triage each:

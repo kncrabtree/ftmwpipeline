@@ -36,11 +36,14 @@ preset is kept on disk as a stable name workflows can pin for future
 2638-specific knobs — but currently it is metadata-only.
 
 Stages 2, 2b, 3, and 4 inherit the package hard defaults on 2638 —
-including several knobs rated **Y** below. That gap is the headline
-driver for the per-instrument calibration audit (see *Open follow-ups*
-at the end): any knob marked Y with `2638 = —` is a candidate for
-per-instrument calibration on this fixture, even though 2638 has been
-the primary calibration target throughout development.
+including several knobs rated **Y** below. That gap drove the
+per-instrument calibration audit, now **resolved** (see *Cross-instrument
+validation* near the end): every Y default both holds on 2638 and
+generalizes to the genuinely-different succinimide instrument, so the
+hard defaults stand as the cross-instrument defaults and no
+per-instrument knob preset is warranted. Instrument specifics (spur
+clocks, start offset) are handled by clock-declaration/import and the
+auto-stamped Stage 2b shape verdict, not by the tunable-knob layer.
 
 ### Resolved: the three former 2638 overrides are now defaults
 
@@ -154,9 +157,9 @@ Planning: [`stage2b-tau-calibration.md`](stage2b-tau-calibration.md).
 | aggregation.min_contributors | 200 | `DEFAULT_MIN_CONTRIBUTORS` | Minimum contributor bins for validity of the calibration result. | N | — |
 | aggregation.sigma_tau_fraction_max | 0.20 | `DEFAULT_SIGMA_TAU_FRACTION_MAX` | Maximum relative uncertainty (σ_τ / τ_maj) for acceptance. | N | — |
 | aggregation.bimodality_dominant_fraction | 0.70 | `DEFAULT_BIMODALITY_DOMINANT_FRACTION` | Minimum dominant-cluster weight when two-component mixture preferred. | N | — |
-| aggregation.sigma_tau_floor_us | 0.5 | `DEFAULT_SIGMA_TAU_FLOOR_US` | Minimum per-band σ_τ (prevents over-confident penalties on tight clusters). | maybe | — |
+| aggregation.sigma_tau_floor_us | 0.5 | `DEFAULT_SIGMA_TAU_FLOOR_US` | Minimum per-band σ_τ (prevents over-confident penalties on tight clusters). | N *(was maybe; cross-instrument: floor never binds, σ_τ ≫ floor)* | — |
 | aggregation.spur_cluster_multiplier | 1.0 | `DEFAULT_SPUR_CLUSTER_MULTIPLIER` | STFT spur-bin clustering gap in units of per-segment frequency bins. | N | — |
-| band.compute_band_majorities | True | function default | Compute per-band SNR-weighted τ majorities for Stage 5 per-band routing. | maybe | — |
+| band.compute_band_majorities | True | function default | Compute per-band SNR-weighted τ majorities for Stage 5 per-band routing. | N *(was maybe; convention — global τ invariant)* | — |
 | band.min_contributors_per_band | 50 | function default | Minimum contributors per frequency band (fallback to band-wide if not met). | N | — |
 | gaussian.snr_min | 20.0 | `DEFAULT_TAU_G_SNR_MIN` | SNR minimum for pure-Gaussian model eligibility. | **Y** | — |
 | gaussian.tau_G_bound_lo | 0.5 | `DEFAULT_TAU_G_BOUND_LO` | Lower bound on Gaussian envelope decay constant τ_G (µs). | N | — |
@@ -220,7 +223,7 @@ Planning: [`stage4-window-assignment.md`](stage4-window-assignment.md).
 | coherence.trim_m | 32 | `DEFAULT_TRIM_M` | Band width for coherence refinement after leakage-region flag (finer spatial scale). | N | — |
 | coherence.edge_threshold | 8.0 | `DEFAULT_EDGE_THRESHOLD` | S_coh threshold for leakage-touched-region detection (T_edge = √M at M=64). | **Y** | — |
 | clustering.max_window_width_mhz | 40.0 | `DEFAULT_MAX_WINDOW_WIDTH_MHZ` | Window-width cap; windows exceeding this are HARD and get split proposals (MHz). | **Y** | — |
-| clustering.min_window_half_width_mhz | 2.0 | `DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ` | Minimum half-width of isolated-peak proposed windows (MHz). | maybe | — |
+| clustering.min_window_half_width_mhz | 2.0 | `DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ` | Minimum half-width of isolated-peak proposed windows (MHz). | N *(was maybe; cross-instrument: window plan invariant across 1–4)* | — |
 | contributor.min_freeze_snr | 50.0 | `DEFAULT_MIN_FREEZE_SNR` | SNR floor for fixed-contributor freeze-eligibility (O4-2); below = thaw candidate. | **Y** | — |
 | contributor.magnitude_attachment_threshold | 0.1 | `DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD` | Tier-1 contributor attachment: predicted mean-skirt threshold in σ_c units. | **Y** | — |
 | leakage.tau_us | None | — | Decay constant for analytic leakage-skirt envelope (None = boxcar / undamped limit). | **Y** | — |
@@ -358,23 +361,62 @@ Stage 2 scatter / Stage 2b STFT+classifier knobs ride on the same builds and
 produce the sane per-fixture inputs that audit depends on; no per-fixture retune
 indicated.
 
+## Cross-instrument validation (succinimide / UXR) — defaults generalize
+
+The same-instrument audits above left open whether the 2638-calibrated defaults
+generalize to a *different* instrument. The succinimide fixture is that test: a
+genuinely different platform (Keysight UXR0204A, 128 GSa/s direct-sampling,
+8–18 GHz probe band, vs 2638's 50 GS/s 26.5–40 GHz heterodyne). Every Y-rated
+knob across all five stages was swept on succinimide with `ftmwpipeline scan all`
+(the canonical knob-scan surface), one stage at a time.
+
+**Result: every Y-knob default generalizes; no per-instrument calibration is
+needed and no `instrument_*_succinimide.yaml` knob preset is warranted.** Each
+knob is dormant, on a flat plateau, or on the same gentle monotonic slope the
+2638 audit found — no cliffs — and succinimide fits at χ²ᵣ median ≈ 1.19 on the
+default knobs (so the default Stage 2 σ is already correct: too-low inflates
+χ²ᵣ, too-high deflates it). The deep reason the MHz-scale noise/pedestal/
+smoothing widths and τ framing transfer is that they are governed by the
+resolution element `1/T_active`, not the probe band — and succinimide shares
+2638's ~13 µs T_active (77 vs 79 kHz bins); the SNR-threshold knobs are
+dimensionless. The genuinely instrument-specific content — spur-clock families
+(succinimide's 250 MHz / 10 MHz combs, 16 GHz ADC image) and the start offset —
+lives in the **clock-declaration + import** path and the auto-stamped Stage 2b
+shape verdict (lorentzian on succinimide), **not** in the tunable-knob layer.
+
+| stage | succinimide cross-instrument verdict |
+|---|---|
+| 2 | All scatter knobs flat: median σ moves ≤7 % across every sweep, no cliffs (`window_mhz`, `pedestal_mhz`, `smoothing_mhz`, `line_k` past its knee, `smoothing_percentile` gentle). Keep all defaults. |
+| 2b | τ_maj stable/physical (~11 µs); `n_seg` / `polish_snr_cap` / `polish_noise_debias` ≤5 %. `t_sigma` is the one knob with real leverage (τ_maj 10.4→12.8 over 3–8) but monotonic, default mid-range, absorbed by the per-window τ refit + penalty. Shape robustly lorentzian across `recommendation.snr_min`. Keep all defaults. |
+| 3 | Every Y-knob monotonic with a sane knee at/near the default, no cliffs (same as the 2638 cross-fixture audit). `gap_pass.gap_leakage_floor_k` (default 3) — previously **not yet cross-fixture audited** — confirmed sane (n_total 2545→863 over 0–5, default past the knee). |
+| 4 | `max_window_width_mhz`, `min_freeze_snr`, `max_peaks_per_window` dormant (as on 2638); `edge_threshold` / `magnitude_attachment_threshold` on the same mid-slope; the points-cap (`max_window_width_points`=96, resolution-relative) is the real width governor and is sane. `leakage.tau_us` boxcar holds — finite τ changes contributor count but window structure is τ-invariant. |
+| 5 | χ²ᵣ_p50 ≈ 1.17–1.28, eps_p50 = 0; rescue bounded, thaw near-dormant (n_thaw_acc ~0, matching 2638), spur detection functioning. `tau.fit_tau_min_snr` re-audit flag closed: with the gate live, 10→100 cuts free-τ windows with χ²ᵣ unchanged → keep 10. |
+
+Scan outputs: `scratch/issue6-audit/` (untracked).
+
 ## Open follow-ups against this table
 
-1. **Decide the per-instrument calibration set.** Walk the Y rows above
-   and split them into (a) values that are correct on 2638 and should
-   become the documented "good for any BlackChirp 750k-FID / 15-µs-T_full
-   instrument" defaults, and (b) values that need experimental calibration
-   on 2638 before any other instrument is brought up. Promote the (a) set
-   to the package hard defaults and route the (b) set through
-   `instrument_bc_2638.yaml`.
-2. **Re-rate the `maybe` rows.** Six rows currently sit on `maybe`
-   (`aggregation.sigma_tau_floor_us`, `band.compute_band_majorities`,
-   `clustering.min_window_half_width_mhz`, `shape.kind`,
-   `tau.per_band_tau`, `baseline.order`). Each needs a one-off study to
-   confirm whether it is genuinely instrument-sensitive or just convention.
-3. **Sanity-check the N rows.** A handful (`polish.polish_n_iter`,
-   `seeder.seeder_max_k`, `conservative.patience`, …) are rated N
-   purely on the "pure algorithmic conditioning" heuristic. Sceptical
-   reviewers should spot-check those against their own intuition; any
-   that turn out to be hardware-coupled should move to Y in a follow-up
-   revision.
+All three follow-ups below are **resolved** by the cross-instrument validation
+above (succinimide) plus the same-instrument cross-fixture audit.
+
+1. **Per-instrument calibration set — resolved: all Y defaults are set (a),
+   none need (b).** The Y rows are correct on 2638 *and* generalize to the
+   succinimide instrument, so they stand as the documented cross-instrument
+   defaults; none are routed through a per-instrument YAML. `instrument_bc_2638`
+   stays metadata-only and no succinimide knob preset is created. Instrument
+   specifics (spur clocks, start) are handled by clock-declaration/import, not
+   the knob layer.
+2. **`maybe` rows — re-rated.** `aggregation.sigma_tau_floor_us` (σ_τ/τ_maj
+   byte-identical across the sweep — the floor never binds),
+   `band.compute_band_majorities` (global τ invariant), and
+   `clustering.min_window_half_width_mhz` (window plan invariant across 1–4)
+   are **not instrument-sensitive** → effectively **N** (guardrails /
+   convention). `shape.kind` is auto-stamped by Stage 2b's recommendation
+   (lorentzian on both 2638-family and succinimide), so it is sample/instrument-
+   determined automatically rather than a manually-calibrated knob.
+   `tau.per_band_tau` and `baseline.order` remain low-risk conventions/guardrails
+   (no instrument-sensitivity observed).
+3. **N rows — spot-checked.** `polish.polish_n_iter` swept (τ_maj 10.96→11.07
+   over 1–3; negligible), confirming N. `seeder.seeder_max_k` and
+   `conservative.patience` are structural search/iteration caps with no
+   hardware coupling — confirmed N.
