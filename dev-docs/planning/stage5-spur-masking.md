@@ -196,8 +196,21 @@ module docstring for the operative contract):
 
 ## Open follow-ups
 
-- **Stage 4 spur-only window drop.** Optional cleanliness step (spur-only
+- **Stage 4 spur-only window drop. DEFERRED past finalization (issue #11),
+  with a sharpened low-risk scope.** Optional cleanliness step (spur-only
   windows already fit to the null model and contribute ~noise χ²ᵣ).
+  Cross-instrument check on the spur-rich succinimide fixture: residual spur
+  pollution in the *fitted* line list is ~10 of 790 lines (~1.3%; a modest
+  integer-MHz excess + the one 16 GHz ADC-image line) — the bulk 266-spur
+  population is already masked. An obvious spur surviving into the final list
+  is low-cost; over-tightening spur rejection to remove it risks killing a true
+  line for ~0 χ²ᵣ gain (the greater error). **Agreed scope when implemented:**
+  discard a window *iff its sole fitted line is a confidently-identified known
+  spur* — an ADC image or a declared clock-lattice frequency — never an
+  ambiguous case (single-line windows only, known-identity only). This removes
+  the unambiguous junk at zero true-line risk; every ambiguous line is left for
+  Stage 6 curation (`fit refit --remove` / attention routing), which is the
+  right place for it rather than a pre-finalization auto-gate.
 - **Instrument clock-lattice prior (the principled comb prior).** The
   instrument's clock tree explains the gated catalogue deterministically:
   upconversion LO 11520 (= 2×5760, ×4 after mixing), downconversion LO

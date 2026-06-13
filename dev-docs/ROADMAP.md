@@ -71,11 +71,19 @@ stable semantics.
    baselined fit), so it is not the Voigt fixture; re-applied
    `blocked:fixture`. Trigger to revisit: excessive shape error across many
    lines of a fixture under the full production machinery.
-4. **Stage 5 table-affecting backlog sweep (issues #11, #4, #8)** —
-   spur-only window drop (incl. the 363 w100 clock-declaration leftover),
-   Gaussian-path reconciliation, and the O5 backlog items. Triage each:
-   land it, or explicitly defer it past finalization with the rationale
-   recorded on the issue.
+4. **Stage 5 table-affecting backlog sweep (issues #11, #4, #8) — triaged.**
+   Nothing here must land before finalization (the only table-semantics
+   decision in the batch was #9, already landed as "no change"). **#4 closed**:
+   Gaussian universal-vs-specific is answered by per-fixture `recommend_shape`
+   auto-selection (shape is per-dataset, not universal); per-window selector /
+   w355 deferred as a refinement. **#8 closed**: O5-4 (τ floor) + O5-6 (thaw)
+   resolved and cross-instrument audited (#6); O5-3 (padding fallback) resolved-
+   not-triggered (context-only padding holds cross-instrument); O5-9 (mid-loop
+   seeding) deferred (no evidence of the failure mode). **#11 deferred**
+   (open): residual spur pollution is ~1.3% on succinimide and over-tightening
+   risks real lines; the agreed eventual scope is to drop a window only when its
+   sole line is a confidently-identified known spur (ADC image / declared clock
+   frequency), never ambiguous — everything else is Stage 6 curation.
 5. **Stage 6 — user decisions / re-fits / finalization**
    ([`planning/stage6-finalization.md`](planning/stage6-finalization.md);
    absorbs [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md)):

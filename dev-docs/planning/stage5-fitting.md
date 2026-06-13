@@ -8,8 +8,9 @@ top of this core are tracked in their own documents — the Gaussian envelope
 ([`stage5-gaussian-shape.md`](stage5-gaussian-shape.md)), clock/LO spur masking
 ([`stage5-spur-masking.md`](stage5-spur-masking.md)), and the leakage-wing
 baseline ([`stage5-leakage-wing-baseline.md`](stage5-leakage-wing-baseline.md)).
-The Stage 5 items still open are collected under *Open questions* below
-(O5-3, O5-4, O5-6, O5-9; O5-10 Tier-2 deferred).
+The Stage 5 *Open questions* below are triaged (issue #8): O5-3/O5-4/O5-6
+resolved (cross-instrument), O5-9 deferred (no evidence of the failure mode),
+O5-10 Tier-2 deferred.
 
 Normative requirements remain in the `*_STRATEGY.md` specs; this document is
 normative only for the Stage 5 work it tracks. It builds directly on the
@@ -632,17 +633,26 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   conservative add-one-peak loop*). An unrecognised blended fixed contributor
   biases dependent windows by ~1 kHz. Open: validating the seeder + residual
   edge-coherence flag on real blended fixtures.
-- **O5-3 — padding fallback.** Whether context-only padding (D-6) suffices, or
-  Stage 4 window widening + aggregation is required. Decided empirically once
-  fits run.
-- **O5-4 — τ free-vs-fixed threshold.** The strongest-line SNR below which a
-  window holds `τ` fixed at `τ_default`. Calibrated on 2638.
+- **O5-3 — padding fallback. RESOLVED (not triggered, issue #8).** The fallback
+  (escalate context-only padding (D-6) → Stage 4 window widening + aggregation)
+  was conditioned on fits performing poorly with context-only padding. They do
+  not: context-only padding holds at χ²ᵣ median ~1.2 across all 7 same-instrument
+  fixtures *and* the cross-instrument succinimide fixture. Reopen only if a
+  future fixture degrades.
+- **O5-4 — τ free-vs-fixed threshold. RESOLVED (issue #8).** Shipped as the dual
+  floor `max(fit_tau_min_snr, weak_window_snr_threshold)` (both default 10) in
+  `window_fit`. Calibrated on 2638 and **cross-instrument audited** (issue #6):
+  on succinimide, raising `fit_tau_min_snr` 10→100 cuts free-τ windows with χ²ᵣ
+  unchanged, so the default 10 stands.
 - **O5-5 — patience parameter. ASSESSED (prototype): marginal.** Kept as
   cheap insurance (default 1) but the matched-filter F-test is decisive, so
   patience rarely changes an outcome; the blend-aware seeder is the real fix
   for under-resolved blends. Tunable left as a parameter.
-- **O5-6 — thaw protocol details.** The exact trigger thresholds for the
-  residual edge-coherence check and the bound on renegotiation rounds.
+- **O5-6 — thaw protocol details. RESOLVED (issue #8).** The thaw +
+  structural-replan machinery shipped with `residual_edge_threshold`=8,
+  `max_thaw_rounds`=`max_replan_rounds`=2, and was cross-instrument audited
+  (issue #6): thaw is near-dormant (acceptance ~0) on both 2638-family and
+  succinimide — a sane trigger surface, not a mistune.
 - **O5-7 — parameter uncertainties. RESOLVED (prototype).** The analytic
   Jacobian of `h_T` is verified (finite-difference agreement ~3×10⁻¹⁰); use it
   from the start, with its covariance for the parameter uncertainties. No
@@ -654,11 +664,14 @@ canonical-settings change, Stage 3 re-detection, and Stage 4 re-planning.
   and diagnostics are persisted; the per-window `SpectralWindow` (the
   active-FT slice), the fitted complex spectrum, and the complex
   residual are recomputed on load.
-- **O5-9 — mid-loop blend-aware seeding.** Task 4's blend-aware seeder runs on
-  the seed only. Whether the loop also needs to re-seed a *mid-loop* candidate
-  whose own single-cosine fit leaves an elevated local reduced χ² (a blend that
-  is not the strongest line) is open — to be assessed on the real-data blended
-  fixtures in task 10, alongside the open part of O5-2.
+- **O5-9 — mid-loop blend-aware seeding. DEFERRED (no evidence of the failure
+  mode, issue #8).** Task 4's blend-aware seeder runs on the seed only. Whether
+  the loop also needs to re-seed a *mid-loop* candidate whose own single-cosine
+  fit leaves an elevated local reduced χ² (a blend that is not the strongest
+  line) remains open as a refinement — but no current fixture exhibits it
+  (eps_p50=0 / no shape-error windows across the 7 same-instrument fixtures and
+  succinimide). Reopen if a blended fixture shows a mid-loop candidate the
+  add-one-peak path misses.
 - **O5-10 — untreated fixed-contributor skirt leakage.** A window may sit
   downstream of one or more strong lines whose Lorentzian skirts carry a
   small but signed amount of power into the window. The complex residual
