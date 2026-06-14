@@ -76,6 +76,7 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     show_candidates: bool = getattr(args, "candidates", False)
     show_attention: bool = getattr(args, "attention", False)
     output_path: Optional[str] = getattr(args, "output", None)
+    output_dir: Optional[str] = getattr(args, "output_dir", None)
 
     try:
         window_fits = _load_window_fits(file_path)
@@ -91,6 +92,18 @@ def cmd_review_show(args: argparse.Namespace) -> int:
             print(f"Error: window_id={window_filter} not found in the Stage 5 fit.")
             return 1
         window_fits = wf_filtered
+
+    # ---- batch-render windows to a directory (--output-dir DIR) --------------
+    # One invocation resolves the detail bundle (FT, noise, padded grids) once
+    # and reuses it across every window, so rendering the attention set is a
+    # single file load instead of one per `--window N --output` call. The
+    # window set follows the active filter: the attention queue under
+    # ``--attention`` (severity-ranked, worst-first filenames), one window
+    # under ``--window N``, otherwise every fitted window.
+    if output_dir is not None:
+        return _render_windows_to_dir(
+            file_path, window_fits, review, output_dir, attention_only=show_attention
+        )
 
     # ---- render window fit to file (--window N --output PATH) ----------------
     if window_filter is not None and output_path is not None:
@@ -244,6 +257,82 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     if cands:
         print()
         _print_candidate_table(cands, indent=0)
+    return 0
+
+
+def _render_windows_to_dir(
+    file_path: str,
+    window_fits: List[FittingResult],
+    review: Stage6Review,
+    output_dir: str,
+    *,
+    attention_only: bool,
+) -> int:
+    """Render a set of window detail figures into ``output_dir`` (one bundle).
+
+    Resolves the detail bundle once and reuses it for every window. With
+    ``attention_only`` the set is the flagged windows, ordered worst-severity
+    first and named ``<rank>_w<id>.png`` so a file browser sorts them in
+    review order; otherwise every window in ``window_fits`` is rendered as
+    ``w<id>.png``.
+    """
+    import os
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        from .._internal.stage5_impl import (
+            _resolve_detail_bundle,
+            render_fit_detail_impl,
+        )
+    except ImportError:
+        print("Error: matplotlib is required for --output-dir rendering.")
+        return 1
+
+    # Build the (rank, window_id, filename) work list.
+    targets: List[tuple] = []
+    if attention_only:
+        rows = []
+        for wf in window_fits:
+            wid = wf.window_id if wf.window_id is not None else -1
+            status = review.window_statuses.get(wid)
+            if status is None or not status.needs_attention:
+                continue
+            severity = max(r.severity for r in status.attention_reasons)
+            rows.append((severity, wid))
+        rows.sort(key=lambda t: (-t[0], t[1]))
+        if not rows:
+            print("No windows flagged for attention; nothing to render.")
+            return 0
+        width = len(str(len(rows)))
+        for rank, (_, wid) in enumerate(rows, start=1):
+            targets.append((wid, f"{rank:0{width}d}_w{wid}.png"))
+    else:
+        for wf in sorted(window_fits, key=lambda w: w.window_id or 0):
+            wid = wf.window_id if wf.window_id is not None else -1
+            targets.append((wid, f"w{wid}.png"))
+
+    os.makedirs(output_dir, exist_ok=True)
+    bundle = _resolve_detail_bundle(file_path)
+    print(f"Rendering {len(targets)} window(s) to {output_dir} ...")
+    n_ok = 0
+    for wid, fname in targets:
+        out = os.path.join(output_dir, fname)
+        try:
+            fig = render_fit_detail_impl(file_path, wid, bundle=bundle)
+        except (ValueError, KeyError) as exc:
+            print(f"  window {wid}: skipped ({exc})")
+            continue
+        if fig is None:
+            print(f"  window {wid}: skipped (no figure)")
+            continue
+        fig.savefig(out, dpi=130, bbox_inches="tight")
+        plt.close(fig)
+        n_ok += 1
+    print(f"Rendered {n_ok}/{len(targets)} window(s) to {output_dir}")
     return 0
 
 
@@ -574,6 +663,19 @@ def register_review_commands(subparsers: Any) -> None:
         help=(
             "Render the window fit to this file (PNG/PDF). "
             "Requires --window N and Stage 5 completed."
+        ),
+    )
+    p_show.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help=(
+            "Batch-render windows to this directory (one detail PNG each), "
+            "resolving the FT/noise bundle once. With --attention renders the "
+            "flagged set worst-first; with --window N renders that one; "
+            "otherwise renders every window."
         ),
     )
     p_show.add_argument(
