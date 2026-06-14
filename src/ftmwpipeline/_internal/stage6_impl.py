@@ -43,6 +43,11 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
+from ..io.stage6_review_serialization import (
+    load_stage6_review_from_hdf5,
+    load_stage6_review_from_file,
+    save_stage6_review_to_hdf5,
+)
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
@@ -585,6 +590,7 @@ def refit_window_impl(
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    _skip_decision_recording: bool = False,
 ) -> RefitWindowResult:
     """User-directed single-window refit for Stage 6 review decisions.
 
@@ -1283,6 +1289,35 @@ def refit_window_impl(
         chi2r_before,
         chi2r_after,
     )
+
+    # Record per-frequency decisions in the Stage 6 review state.
+    # Identity refits (no add, no remove) produce no log entries.
+    # Callers that compose over this function (merge, split) pass
+    # _skip_decision_recording=True and record their own coarser entries.
+    if not _skip_decision_recording:
+        _edit_evidence: Dict[str, object] = {
+            "chi2r_before": chi2r_before,
+            "chi2r_after": chi2r_after,
+            "n_peaks_before": n_peaks_before,
+            "n_peaks_after": n_peaks_after,
+        }
+        for _f in add:
+            _record_decision(
+                path,
+                window_id=window_id,
+                frequency_mhz=float(_f),
+                kind="add",
+                evidence=_edit_evidence,
+            )
+        for _f in remove:
+            _record_decision(
+                path,
+                window_id=window_id,
+                frequency_mhz=float(_f),
+                kind="remove",
+                evidence=_edit_evidence,
+            )
+
     return RefitWindowResult(
         window_id=window_id,
         n_peaks_before=n_peaks_before,
@@ -1466,14 +1501,33 @@ def merge_peaks_impl(
             )
         ]
 
-    return refit_window_impl(
+    result = refit_window_impl(
         file_path,
         window_id,
         add=add_freqs,
         remove=remove_freqs,
         add_seeds=add_seeds,
         snap_tol_mhz=snap_tol_mhz,
+        _skip_decision_recording=True,
     )
+
+    # Record one "merge" decision entry anchored at the replacement frequency.
+    _merge_evidence: Dict[str, object] = {
+        "chi2r_before": result.chi2r_before,
+        "chi2r_after": result.chi2r_after,
+        "n_peaks_before": result.n_peaks_before,
+        "n_peaks_after": result.n_peaks_after,
+        "merged_from": [float(f) for f in peaks],
+    }
+    _record_decision(
+        path,
+        window_id=window_id,
+        frequency_mhz=merge_freq,
+        kind="merge",
+        evidence=_merge_evidence,
+    )
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -1604,14 +1658,260 @@ def split_peak_impl(
             for af in add_freqs
         ]
 
-    return refit_window_impl(
+    result = refit_window_impl(
         file_path,
         window_id,
         add=add_freqs,
         remove=[matched_freq],
         add_seeds=add_seeds,
         snap_tol_mhz=snap_tol_mhz,
+        _skip_decision_recording=True,
     )
+
+    # Record one "split" decision entry anchored at the original peak frequency.
+    _split_evidence: Dict[str, object] = {
+        "chi2r_before": result.chi2r_before,
+        "chi2r_after": result.chi2r_after,
+        "n_peaks_before": result.n_peaks_before,
+        "n_peaks_after": result.n_peaks_after,
+        "split_into": into,
+    }
+    _record_decision(
+        path,
+        window_id=window_id,
+        frequency_mhz=matched_freq,
+        kind="split",
+        evidence=_split_evidence,
+    )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Decision recording helpers and review-accept/status impls
+# ---------------------------------------------------------------------------
+
+
+def _record_decision(
+    path: str,
+    *,
+    window_id: int,
+    frequency_mhz: float,
+    kind: str,
+    evidence: Dict[str, object],
+    kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
+    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+) -> None:
+    """Append one entry to the Stage 6 decision log and update window provenance.
+
+    Loads the persisted :class:`Stage6Review` (creating an empty one if absent),
+    appends a :class:`DecisionLogEntry` for the given window and kind, sets
+    the window's provenance to ``"user-edited"``, and re-persists.
+
+    Attention reasons are refreshed from the current Stage 5 fit when available
+    (the caller's edit may have resolved a misfit); when Stage 5 is absent the
+    existing reasons are preserved.
+    """
+    with h5py.File(path, "r") as h5f:
+        existing_review: Stage6Review = (
+            load_stage6_review_from_hdf5(h5f["stage6_review"])
+            if "stage6_review" in h5f
+            else Stage6Review()
+        )
+        spectrum_fit: Optional[SpectrumFit] = (
+            load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+            if "stage5_fitting" in h5f
+            else None
+        )
+
+    new_entry = DecisionLogEntry(
+        order_index=len(existing_review.decision_log),
+        window_id=window_id,
+        frequency_mhz=frequency_mhz,
+        kind=kind,
+        provenance="user",
+        evidence=dict(evidence),
+    )
+    new_log = list(existing_review.decision_log) + [new_entry]
+
+    existing_status = existing_review.window_statuses.get(window_id)
+
+    if spectrum_fit is not None:
+        spur_centers_mhz: List[float] = [
+            float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
+        ]
+        acquisition_us: float = float(
+            spectrum_fit.parameters.get("acquisition_us", 0.0)
+        )
+        fid = load_fid_from_pipeline_impl(path)
+        sideband = _sideband_from_value(fid.sideband)
+
+        wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
+        if wf_list:
+            new_reasons = _compute_attention_reasons(
+                wf_list[0],
+                spur_centers_mhz=spur_centers_mhz,
+                acquisition_us=acquisition_us,
+                ledger_bar=DEFAULT_DISPLAY_BAR,
+                attention_candidate_evidence=DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+                sideband=sideband,
+                kappa=kappa,
+                noise_floor=noise_floor,
+            )
+        else:
+            new_reasons = (
+                list(existing_status.attention_reasons)
+                if existing_status is not None
+                else []
+            )
+    else:
+        new_reasons = (
+            list(existing_status.attention_reasons)
+            if existing_status is not None
+            else []
+        )
+
+    new_statuses = dict(existing_review.window_statuses)
+    new_statuses[window_id] = WindowReviewStatus(
+        window_id=window_id,
+        provenance="user-edited",
+        attention_reasons=new_reasons,
+        invalidated=False,
+    )
+    new_review = Stage6Review(
+        window_statuses=new_statuses,
+        decision_log=new_log,
+    )
+
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(new_review, grp)
+
+
+def review_accept_impl(
+    file_path: Union[Path, str],
+    window_id: int,
+    *,
+    candidate_freq: Optional[float] = None,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+) -> Optional[RefitWindowResult]:
+    """Accept a window as-is or accept a specific revived candidate.
+
+    With no ``candidate_freq``: records a ``"accept"`` decision log entry and
+    sets the window's provenance to ``"reviewed"`` without modifying the fit.
+    Attention reasons are preserved (they remain advisory after the user has
+    looked at the window).  Returns ``None``.
+
+    With ``candidate_freq``: delegates to :func:`refit_window_impl` with
+    ``add=[candidate_freq]``, which records a ``"add"`` decision log entry and
+    sets provenance to ``"user-edited"``.  Returns the
+    :class:`RefitWindowResult`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The :class:`~ftmwpipeline.core.data_structures.FittingResult` window
+        to accept.
+    candidate_freq :
+        When given, add this molecular frequency (MHz) as a new peak and
+        accept the resulting fit.  The frequency is snapped to the nearest
+        ledger candidate within ``snap_tol_mhz``.
+    snap_tol_mhz :
+        Maximum distance (MHz) for snapping to an existing ledger candidate.
+
+    Returns
+    -------
+    RefitWindowResult or None
+        ``None`` when accepting as-is; the refit result when ``candidate_freq``
+        was given.
+    """
+    if candidate_freq is not None:
+        return refit_window_impl(
+            file_path,
+            window_id,
+            add=[candidate_freq],
+            snap_tol_mhz=snap_tol_mhz,
+        )
+
+    path = str(file_path)
+
+    # Determine a representative anchor frequency for the log entry.
+    anchor_freq = 0.0
+    try:
+        with h5py.File(path, "r") as h5f:
+            if "stage5_fitting" in h5f:
+                sf: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+                wf_list = [wf for wf in sf.window_fits if wf.window_id == window_id]
+                if wf_list:
+                    c = _window_center(wf_list[0])
+                    if c is not None:
+                        anchor_freq = c
+                    elif wf_list[0].fitted_peaks:
+                        anchor_freq = float(
+                            max(
+                                wf_list[0].fitted_peaks,
+                                key=lambda p: (
+                                    float(p.snr) if p.snr is not None else 0.0
+                                ),
+                            ).frequency_mhz
+                        )
+    except Exception:
+        pass
+
+    existing_review: Stage6Review
+    with h5py.File(path, "r") as h5f:
+        existing_review = (
+            load_stage6_review_from_hdf5(h5f["stage6_review"])
+            if "stage6_review" in h5f
+            else Stage6Review()
+        )
+
+    existing_status = existing_review.window_statuses.get(window_id)
+    kept_reasons: List[AttentionReason] = (
+        list(existing_status.attention_reasons) if existing_status is not None else []
+    )
+
+    new_entry = DecisionLogEntry(
+        order_index=len(existing_review.decision_log),
+        window_id=window_id,
+        frequency_mhz=anchor_freq,
+        kind="accept",
+        provenance="user",
+        evidence={},
+    )
+    new_log = list(existing_review.decision_log) + [new_entry]
+
+    new_statuses = dict(existing_review.window_statuses)
+    new_statuses[window_id] = WindowReviewStatus(
+        window_id=window_id,
+        provenance="reviewed",
+        attention_reasons=kept_reasons,
+        invalidated=False,
+    )
+    new_review = Stage6Review(
+        window_statuses=new_statuses,
+        decision_log=new_log,
+    )
+
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(new_review, grp)
+
+    return None
+
+
+def get_review_status_impl(file_path: Union[Path, str]) -> Stage6Review:
+    """Load the :class:`Stage6Review` from *file_path*, or return an empty one.
+
+    Read-only: does not write anything.  Safe to call before ``review run``.
+    """
+    return load_stage6_review_from_file(str(file_path))
 
 
 # ---------------------------------------------------------------------------
@@ -1863,11 +2163,6 @@ def review_run_impl(
     ValueError
         When Stage 5 has not been run yet.
     """
-    from ..io.stage6_review_serialization import (
-        load_stage6_review_from_hdf5,
-        save_stage6_review_to_hdf5,
-    )
-
     path = str(file_path)
 
     with h5py.File(path, "r") as h5f:

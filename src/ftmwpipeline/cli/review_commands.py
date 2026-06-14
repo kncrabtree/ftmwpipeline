@@ -16,12 +16,14 @@ from .._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
     get_candidate_ledger_impl,
+    get_review_status_impl,
     merge_peaks_impl,
     refit_window_impl,
+    review_accept_impl,
     review_run_impl,
     split_peak_impl,
 )
-from ..core.data_structures import FittingResult, LedgerCandidate
+from ..core.data_structures import FittingResult, LedgerCandidate, Stage6Review
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
 
@@ -45,18 +47,35 @@ def _fmt_mhz(v: float) -> str:
     return f"{v:.4f}"
 
 
+def _combined_label(status: Optional["WindowReviewStatus"]) -> str:  # type: ignore[name-defined]
+    """Build a short combined label from provenance + attention count."""
+    if status is None:
+        return "auto"
+    prov = status.provenance
+    n_attn = len(status.attention_reasons)
+    if n_attn:
+        return f"{prov}·needs-attention[{n_attn}]"
+    return f"{prov}·—"
+
+
 def cmd_review_show(args: argparse.Namespace) -> int:
     """Show the Stage 6 review surface.
 
-    Without flags: per-window summary (fitted peak count and candidate count).
+    Without flags: per-window summary (fitted peak count, candidate count,
+    provenance label).
+    ``--attention``: windows needing attention, ranked by severity.
     ``--candidates``: tabulated candidate ledger for all (or a chosen) window.
-    ``--window N``: detail for one window (fitted peaks + its candidates).
+    ``--window N``: detail for one window (fitted peaks, candidates, review
+    status, decision log).
+    ``--window N --output PATH``: render the window fit to a PNG file.
     """
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
     bar: float = getattr(args, "bar", DEFAULT_DISPLAY_BAR)
     window_filter: Optional[int] = getattr(args, "window", None)
     show_candidates: bool = getattr(args, "candidates", False)
+    show_attention: bool = getattr(args, "attention", False)
+    output_path: Optional[str] = getattr(args, "output", None)
 
     try:
         window_fits = _load_window_fits(file_path)
@@ -64,29 +83,87 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
+    review: Stage6Review = get_review_status_impl(file_path)
+
     if window_filter is not None:
-        window_fits = [wf for wf in window_fits if wf.window_id == window_filter]
-        if not window_fits:
+        wf_filtered = [wf for wf in window_fits if wf.window_id == window_filter]
+        if not wf_filtered:
             print(f"Error: window_id={window_filter} not found in the Stage 5 fit.")
             return 1
+        window_fits = wf_filtered
+
+    # ---- render window fit to file (--window N --output PATH) ----------------
+    if window_filter is not None and output_path is not None:
+        try:
+            from .._internal.stage5_impl import render_fit_detail_impl
+            import matplotlib
+
+            matplotlib.use("Agg")
+            fig = render_fit_detail_impl(file_path, window_filter)
+            if fig is None:
+                print(
+                    f"Error: render_fit_detail_impl returned None for window {window_filter}."
+                )
+                return 1
+            fig.savefig(output_path, dpi=130, bbox_inches="tight")
+            try:
+                import matplotlib.pyplot as plt
+
+                plt.close(fig)
+            except Exception:
+                pass
+            print(f"Saved window {window_filter} fit plot to {output_path}")
+        except ImportError:
+            print("Error: matplotlib is required for --output rendering.")
+            return 1
+        except (ValueError, KeyError) as exc:
+            print(f"Error rendering window {window_filter}: {exc}")
+            return 1
+        return 0
+
+    # ---- attention-only table (--attention) ----------------------------------
+    if show_attention:
+        attention_rows = []
+        for wf in sorted(window_fits, key=lambda w: w.window_id or 0):
+            wid = wf.window_id if wf.window_id is not None else -1
+            status = review.window_statuses.get(wid)
+            if status is None or not status.needs_attention:
+                continue
+            top_reason = max(status.attention_reasons, key=lambda r: r.severity)
+            attention_rows.append((top_reason.severity, wid, status, top_reason))
+
+        attention_rows.sort(key=lambda t: t[0], reverse=True)
+        if not attention_rows:
+            print("No windows flagged for attention.")
+            return 0
+
+        print(f"{'win':>5}  {'label':<30}  {'top reason':<18}  detail")
+        print("-" * 90)
+        for _, wid, status, top_reason in attention_rows:
+            label = _combined_label(status)
+            print(
+                f"{wid:>5}  {label:<30}  {top_reason.kind:<18}  {top_reason.detail[:60]}"
+            )
+        return 0
 
     # ---- per-window summary (default) ----------------------------------------
     if not show_candidates and window_filter is None:
-        # Header
         print(
             f"{'win':>5}  {'freq_lo':>12}  {'freq_hi':>12}  "
-            f"{'peaks':>6}  {'candidates':>10}"
+            f"{'peaks':>6}  {'candidates':>10}  {'label'}"
         )
-        print("-" * 56)
+        print("-" * 74)
         for wf in sorted(window_fits, key=lambda w: w.window_id or 0):
             wid = wf.window_id if wf.window_id is not None else -1
             cands = get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
             flo = fhi = float("nan")
             if wf.window is not None and wf.window.freq_range is not None:
                 flo, fhi = wf.window.freq_range
+            status = review.window_statuses.get(wid)
+            label = _combined_label(status)
             print(
                 f"{wid:>5}  {_fmt_mhz(flo):>12}  {_fmt_mhz(fhi):>12}  "
-                f"{wf.n_peaks_fitted:>6}  {len(cands):>10}"
+                f"{wf.n_peaks_fitted:>6}  {len(cands):>10}  {label}"
             )
         return 0
 
@@ -101,6 +178,34 @@ def cmd_review_show(args: argparse.Namespace) -> int:
             f"Window {wid}  [{_fmt_mhz(flo)}, {_fmt_mhz(fhi)}] MHz  "
             f"chi2r={wf.reduced_chi2:.3f}"
         )
+
+        # Review status block
+        status = review.window_statuses.get(wid)
+        print()
+        print(f"  Review status: {_combined_label(status)}")
+        if status is not None and status.attention_reasons:
+            for reason in status.attention_reasons:
+                print(f"    [{reason.kind}] {reason.detail}")
+
+        # Decision log entries for this window
+        log_entries = [e for e in review.decision_log if e.window_id == wid]
+        if log_entries:
+            print(f"  Decision log ({len(log_entries)} entries):")
+            for entry in log_entries:
+                ev_str = (
+                    ", ".join(
+                        f"{k}={v:.4g}"
+                        for k, v in entry.evidence.items()
+                        if isinstance(v, float)
+                    )
+                    if entry.evidence
+                    else ""
+                )
+                print(
+                    f"    #{entry.order_index}  kind={entry.kind}  "
+                    f"freq={_fmt_mhz(entry.frequency_mhz)}  {ev_str}"
+                )
+
         print()
         print(f"  Fitted peaks ({wf.n_peaks_fitted}):")
         if wf.fitted_peaks:
@@ -289,6 +394,37 @@ def cmd_review_split(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_accept(args: argparse.Namespace) -> int:
+    """Accept a window as-is or accept a specific revived candidate.
+
+    Without ``--candidate``: marks the window ``provenance=reviewed`` and
+    records an ``"accept"`` decision log entry.  The fit is unchanged.
+
+    With ``--candidate F``: adds the candidate peak at ``F`` MHz via a
+    single-window refit, marking the window ``provenance=user-edited``.
+    """
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    window_id: int = args.window
+    candidate_freq: Optional[float] = getattr(args, "candidate", None)
+
+    try:
+        result = review_accept_impl(file_path, window_id, candidate_freq=candidate_freq)
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if result is None:
+        print(f"review accept  window={window_id}  provenance→reviewed")
+    else:
+        print(
+            f"review accept  window={result.window_id}  "
+            f"candidate accepted: peaks {result.n_peaks_before} → {result.n_peaks_after}  "
+            f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
+        )
+    return 0
+
+
 def cmd_review_run(args: argparse.Namespace) -> int:
     """Build or refresh the Stage 6 attention-routing curation layer."""
     setup_logging(getattr(args, "verbose", False))
@@ -420,6 +556,27 @@ def register_review_commands(subparsers: Any) -> None:
         ),
     )
     p_show.add_argument(
+        "--attention",
+        dest="attention",
+        action="store_true",
+        default=False,
+        help=(
+            "Show only windows flagged for attention, ranked by severity. "
+            "Requires 'review run' to have been called."
+        ),
+    )
+    p_show.add_argument(
+        "--output",
+        dest="output",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Render the window fit to this file (PNG/PDF). "
+            "Requires --window N and Stage 5 completed."
+        ),
+    )
+    p_show.add_argument(
         "--verbose",
         dest="verbose",
         action="store_true",
@@ -427,6 +584,48 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_show.set_defaults(func=cmd_review_show)
+
+    # ---- review accept -------------------------------------------------------
+    p_accept = verbs.add_parser(
+        "accept",
+        help="Accept a window as-is or accept a revived candidate",
+        description=(
+            "Accept a window in the Stage 6 review.\n\n"
+            "Without --candidate: marks the window as reviewed (looked, no change).\n"
+            "With --candidate F: adds peak at F MHz, marks window as user-edited."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_accept.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_accept.add_argument(
+        "--window",
+        dest="window",
+        type=int,
+        required=True,
+        metavar="N",
+        help="window_id to accept.",
+    )
+    p_accept.add_argument(
+        "--candidate",
+        dest="candidate",
+        type=float,
+        default=None,
+        metavar="F",
+        help=(
+            "Accept by adding a candidate peak at this molecular MHz. "
+            "Delegates to 'review edit --add F'."
+        ),
+    )
+    p_accept.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_accept.set_defaults(func=cmd_review_accept)
 
     # ---- review edit ---------------------------------------------------------
     p_edit = verbs.add_parser(

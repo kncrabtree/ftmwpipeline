@@ -57,6 +57,7 @@ from ._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
 )
+from .core.data_structures import Stage6Review
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
@@ -1582,6 +1583,58 @@ def review_run(
     return Pipeline.open(file_path).review_run(
         bar=bar, attention_candidate_evidence=attention_candidate_evidence
     )
+
+
+def review_accept(
+    file_path: Union[str, Path],
+    window_id: int,
+    *,
+    candidate_freq: Optional[float] = None,
+) -> Optional[RefitWindowResult]:
+    """Accept a window as-is or accept a specific revived candidate.
+
+    Equivalent to :meth:`Pipeline.review_accept`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    window_id :
+        The window to accept.
+    candidate_freq :
+        When given, accept by adding this molecular frequency (MHz) as a
+        new peak.
+
+    Returns
+    -------
+    RefitWindowResult or None
+        ``None`` when accepting as-is; the refit result when
+        ``candidate_freq`` is given.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_accept(
+        window_id, candidate_freq=candidate_freq
+    )
+
+
+def get_review_status(file_path: Union[str, Path]) -> Stage6Review:
+    """Load the Stage 6 review state from *file_path*, or return an empty one.
+
+    Equivalent to :meth:`Pipeline.review_status`.  Read-only; safe to call
+    before ``review run``.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+
+    Returns
+    -------
+    Stage6Review
+        The persisted per-window statuses and decision log.
+    """
+    return Pipeline.open(file_path).review_status()
 
 
 def validate_stage5_shape_error(

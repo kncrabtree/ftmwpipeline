@@ -68,8 +68,10 @@ from ._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
     get_candidate_ledger_impl,
+    get_review_status_impl,
     merge_peaks_impl,
     refit_window_impl,
+    review_accept_impl,
     review_run_impl,
     split_peak_impl,
 )
@@ -84,6 +86,7 @@ from .core.data_structures import (
     LedgerCandidate,
     Peak,
     SpectrumFit,
+    Stage6Review,
     WindowPlan,
 )
 from .core.noise_settings import NoiseSettings
@@ -1809,6 +1812,51 @@ class Pipeline:
             bar=bar,
             attention_candidate_evidence=attention_candidate_evidence,
         )
+
+    def review_accept(
+        self,
+        window_id: int,
+        *,
+        candidate_freq: Optional[float] = None,
+    ) -> Optional[RefitWindowResult]:
+        """Accept a window as-is or accept a specific revived candidate.
+
+        With no ``candidate_freq``: records a ``"accept"`` log entry, sets
+        the window's provenance to ``"reviewed"``, and returns ``None``.  The
+        fit is left unchanged; the acceptance is a "looked, no change needed"
+        decision.
+
+        With ``candidate_freq``: adds the candidate peak via a single-window
+        refit, records an ``"add"`` log entry, sets provenance to
+        ``"user-edited"``, and returns the :class:`RefitWindowResult`.
+
+        Parameters
+        ----------
+        window_id :
+            The window to accept.
+        candidate_freq :
+            When given, accept by adding this molecular frequency (MHz) as a
+            new peak.  Snapped to the nearest ledger candidate within 50 kHz.
+
+        Returns
+        -------
+        RefitWindowResult or None
+        """
+        return review_accept_impl(
+            self.filepath, window_id, candidate_freq=candidate_freq
+        )
+
+    def review_status(self) -> Stage6Review:
+        """Load the persisted Stage 6 review state, or return an empty one.
+
+        Read-only: safe to call before ``review run``.
+
+        Returns
+        -------
+        Stage6Review
+            The persisted per-window statuses and decision log.
+        """
+        return get_review_status_impl(self.filepath)
 
     def validate_stage5_shape_error(
         self,
