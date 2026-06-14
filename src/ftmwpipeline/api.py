@@ -51,7 +51,12 @@ from .core.stage_fit_settings import StageFitSettings
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
-from ._internal.stage6_impl import DEFAULT_DISPLAY_BAR, RefitWindowResult
+from ._internal.stage6_impl import (
+    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    DEFAULT_DISPLAY_BAR,
+    RefitWindowResult,
+    ReviewRunResult,
+)
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
@@ -1544,6 +1549,38 @@ def review_split(
     """
     return Pipeline.open(file_path).review_split(
         window_id, peak, into=into, snap_tol_mhz=snap_tol_mhz
+    )
+
+
+def review_run(
+    file_path: Union[str, Path],
+    *,
+    bar: float = DEFAULT_DISPLAY_BAR,
+    attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+) -> "ReviewRunResult":
+    """Build or refresh the Stage 6 attention-routing curation layer.
+
+    Equivalent to :meth:`Pipeline.review_run`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    bar :
+        Display bar for the candidate-bearing attention reason.
+    attention_candidate_evidence :
+        Evidence threshold above which a candidate-bearing window flags
+        (stiffer than ``bar``; keeps the attention surface actionable).
+
+    Returns
+    -------
+    ReviewRunResult
+        Total window count, attention count, and per-kind breakdown.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_run(
+        bar=bar, attention_candidate_evidence=attention_candidate_evidence
     )
 
 

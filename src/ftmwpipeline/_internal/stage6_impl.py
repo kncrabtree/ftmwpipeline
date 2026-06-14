@@ -30,7 +30,9 @@ import h5py
 import numpy as np
 
 from ..core.data_structures import (
+    AttentionReason,
     AuditStep,
+    DecisionLogEntry,
     FittedPeak,
     FittingResult,
     LedgerCandidate,
@@ -38,12 +40,16 @@ from ..core.data_structures import (
     RescueRoundInfo,
     Sideband,
     SpectrumFit,
+    Stage6Review,
+    WindowReviewStatus,
 )
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
+from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_KAPPA
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .stage0_impl import load_fid_from_pipeline_impl
+from .stage2_impl import _update_stage_completion
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +64,15 @@ logger = logging.getLogger(__name__)
 # under review), so the default is set to keep the per-window count modest on
 # the densest fixtures while preserving genuinely-marginal lines well above it.
 DEFAULT_DISPLAY_BAR: float = 4.0
+
+# Attention routing flags a window as candidate-bearing only when its strongest
+# revivable candidate clears this (higher) evidence threshold. The display bar
+# governs which candidates ``review show --candidates`` lists; the attention
+# threshold governs which windows the routing surfaces for review -- a
+# separate, stiffer cut so the attention list stays actionable (a quiet window
+# with only marginal near-misses does not flag). Tunable, orthogonal to the
+# accept gates.
+DEFAULT_ATTENTION_CANDIDATE_EVIDENCE: float = 10.0
 
 # If a candidate's evidence is within this factor of the accept gate it
 # passes the bar even when its raw SNR is below DEFAULT_DISPLAY_BAR.
@@ -1596,4 +1611,340 @@ def split_peak_impl(
         remove=[matched_freq],
         add_seeds=add_seeds,
         snap_tol_mhz=snap_tol_mhz,
+    )
+
+
+# ---------------------------------------------------------------------------
+# review_run_impl: build/refresh the per-window attention routing layer
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ReviewRunResult:
+    """Summary returned by :func:`review_run_impl`.
+
+    Attributes
+    ----------
+    n_windows : int
+        Total number of fit windows processed.
+    n_attention : int
+        Number of windows with at least one attention reason.
+    reason_counts : dict
+        Maps attention-reason ``kind`` to the number of windows flagged for
+        that reason (a window may contribute to multiple kinds).
+    """
+
+    n_windows: int
+    n_attention: int
+    reason_counts: Dict[str, int]
+
+
+def _compute_attention_reasons(
+    wf: FittingResult,
+    *,
+    spur_centers_mhz: List[float],
+    acquisition_us: float,
+    ledger_bar: float,
+    attention_candidate_evidence: float,
+    sideband: Sideband,
+    kappa: float,
+    noise_floor: float,
+) -> List[AttentionReason]:
+    """Derive the set of advisory attention reasons for one window.
+
+    Parameters
+    ----------
+    wf :
+        Per-window :class:`~ftmwpipeline.core.data_structures.FittingResult`.
+    spur_centers_mhz :
+        Gated spur center frequencies (molecular MHz) from the Stage 5
+        ``SpectrumFit.parameters["spur_centers_mhz"]``.
+    acquisition_us :
+        Active acquisition length (µs); used to compute the Fourier
+        resolution element ``1 / acquisition_us`` MHz for edge-boundary
+        detection.
+    ledger_bar :
+        Display bar passed to :func:`derive_candidate_ledger`.
+    sideband :
+        Pipeline sideband (for ledger derivation).
+    kappa :
+        Shape-error kappa for the SNR-aware gate.
+    noise_floor :
+        Noise-regime chi-squared allowance.
+
+    Returns
+    -------
+    list of AttentionReason
+        Advisory flags, possibly empty.
+    """
+    from ..fitting.validation import shape_error_fraction, snr_aware_chi2_pass
+
+    reasons: List[AttentionReason] = []
+
+    chi2r = float(getattr(wf, "reduced_chi2", float("inf")))
+    # Brightest finite in-window peak SNR -- the same definition as the Stage 5
+    # validation gate (``stage5_validation_impl._window_snr_max``), so a
+    # ``worst_eps`` flag means exactly "fails the SNR-aware acceptance gate".
+    snr_max_val = float(
+        max(
+            (
+                float(p.snr)
+                for p in wf.fitted_peaks
+                if p.snr is not None and math.isfinite(float(p.snr))
+            ),
+            default=0.0,
+        )
+    )
+
+    # --- worst_eps: flag when the window FAILS the SNR-aware gate ----------
+    passes = snr_aware_chi2_pass(chi2r, snr_max_val, kappa, noise_floor)
+    if not passes:
+        eps = shape_error_fraction(chi2r, snr_max_val, noise_floor)
+        reasons.append(
+            AttentionReason(
+                kind="worst_eps",
+                detail=(
+                    f"chi2r={chi2r:.3g} fails SNR-aware gate "
+                    f"(snr_max={snr_max_val:.1f}, eps={eps:.4f})"
+                ),
+                severity=float(eps * max(snr_max_val, 1.0)),
+            )
+        )
+
+    # --- doublet_eps_gt_kappa: flag windows with an eps>kappa doublet pair --
+    doublet_alts = getattr(wf, "doublet_alternatives", [])
+    for da in doublet_alts:
+        delta_aicc_raw = getattr(da, "delta_aicc", float("nan"))
+        delta_aicc = float(delta_aicc_raw)
+        if math.isnan(delta_aicc):
+            continue
+        # delta_aicc > 0 means the doublet (production) is AICc-preferred over
+        # the merged alternative.
+        if delta_aicc > 0 and da.merged_success:
+            reasons.append(
+                AttentionReason(
+                    kind="doublet_eps_gt_kappa",
+                    detail=(
+                        f"doublet pair at {da.frequency_a_mhz:.4f}/"
+                        f"{da.frequency_b_mhz:.4f} MHz "
+                        f"preferred over merged (delta_aicc={delta_aicc:.3g})"
+                    ),
+                    severity=float(delta_aicc),
+                )
+            )
+            break  # one per window is sufficient
+
+    # --- candidate_bearing: flag when the window has candidates above bar ----
+    center_mhz = _window_center(wf)
+    if center_mhz is not None:
+        cands = derive_candidate_ledger(
+            wf,
+            center_mhz=center_mhz,
+            sideband=sideband,
+            bar=ledger_bar,
+        )
+        if cands:
+            if any(c.evidence_kind == "residual_snr" for c in cands):
+                best_ev = max(
+                    c.best_evidence for c in cands if c.evidence_kind == "residual_snr"
+                )
+            else:
+                best_ev = max(c.best_evidence for c in cands)
+            # Flag the window only when its strongest candidate clears the
+            # attention threshold (stiffer than the display bar) -- otherwise a
+            # quiet window with only marginal near-misses would flood the
+            # routing surface. All such candidates still list under
+            # ``review show --candidates`` at the display bar.
+            if best_ev >= attention_candidate_evidence:
+                reasons.append(
+                    AttentionReason(
+                        kind="candidate_bearing",
+                        detail=(
+                            f"{len(cands)} revivable candidate(s) above "
+                            f"bar={ledger_bar:.1f} (best evidence={best_ev:.2f})"
+                        ),
+                        severity=float(len(cands) + best_ev * 0.1),
+                    )
+                )
+
+    # --- spur_adjacent: flag when a gated spur center falls in or near the window ---
+    if wf.window is not None and wf.window.freq_range is not None:
+        flo, fhi = wf.window.freq_range
+        resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.1
+        for spur_f in spur_centers_mhz:
+            if (flo - resolution_mhz) <= spur_f <= (fhi + resolution_mhz):
+                reasons.append(
+                    AttentionReason(
+                        kind="spur_adjacent",
+                        detail=(
+                            f"gated spur at {spur_f:.4f} MHz near or within window "
+                            f"[{flo:.4f}, {fhi:.4f}] MHz"
+                        ),
+                        severity=1.0,
+                    )
+                )
+                break  # one spur per window is sufficient for routing
+
+    # --- edge_boundary: flag when a fitted peak sits within 1 resolution element of edge ---
+    if wf.fitted_peaks and wf.window is not None and wf.window.freq_range is not None:
+        flo, fhi = wf.window.freq_range
+        resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.1
+        edge_peaks = [
+            p
+            for p in wf.fitted_peaks
+            if (
+                abs(float(p.frequency_mhz) - flo) <= resolution_mhz
+                or abs(float(p.frequency_mhz) - fhi) <= resolution_mhz
+            )
+        ]
+        if edge_peaks:
+            freqs_str = ", ".join(f"{p.frequency_mhz:.4f}" for p in edge_peaks[:3])
+            reasons.append(
+                AttentionReason(
+                    kind="edge_boundary",
+                    detail=(
+                        f"{len(edge_peaks)} peak(s) within 1 resolution element "
+                        f"({resolution_mhz:.4f} MHz) of window edge: {freqs_str}"
+                    ),
+                    severity=float(len(edge_peaks)),
+                )
+            )
+
+    return reasons
+
+
+def review_run_impl(
+    file_path: Union[Path, str],
+    *,
+    bar: float = DEFAULT_DISPLAY_BAR,
+    attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
+    noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+) -> ReviewRunResult:
+    """Build or refresh the Stage 6 attention-routing layer.
+
+    Loads the Stage 5 fit, computes advisory attention reasons for every
+    window, and persists a :class:`~ftmwpipeline.core.data_structures.Stage6Review`
+    to the ``stage6_review`` HDF5 group.  Marks the ``stage6_review`` tracker
+    stage complete.
+
+    Idempotent: if a ``stage6_review`` group already exists, the existing
+    per-window ``provenance`` (``"reviewed"``/``"user-edited"``) and the
+    ``decision_log`` are preserved; only ``attention_reasons`` are
+    recomputed.  The ``"auto"`` provenance is never upgraded by this call.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    bar :
+        Display bar forwarded to :func:`get_candidate_ledger_impl` for the
+        candidate-bearing attention reason (default :data:`DEFAULT_DISPLAY_BAR`).
+    attention_candidate_evidence :
+        A window flags ``candidate_bearing`` only when its strongest revivable
+        candidate's evidence clears this threshold (default
+        :data:`DEFAULT_ATTENTION_CANDIDATE_EVIDENCE`) -- stiffer than ``bar`` so
+        the attention surface stays actionable while the ledger still lists
+        every candidate above ``bar``.
+    kappa :
+        Shape-error kappa for the SNR-aware chi-squared gate (default
+        :data:`DEFAULT_SHAPE_ERROR_KAPPA`).
+    noise_floor :
+        Noise-regime chi-squared allowance (default
+        :data:`DEFAULT_CHI2R_NOISE_FLOOR`).
+
+    Returns
+    -------
+    ReviewRunResult
+        Total window count, attention window count, and per-kind counts.
+
+    Raises
+    ------
+    ValueError
+        When Stage 5 has not been run yet.
+    """
+    from ..io.stage6_review_serialization import (
+        load_stage6_review_from_hdf5,
+        save_stage6_review_to_hdf5,
+    )
+
+    path = str(file_path)
+
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        # Load existing review to preserve provenance/decision_log.
+        existing_review: Stage6Review
+        if "stage6_review" in h5f:
+            existing_review = load_stage6_review_from_hdf5(h5f["stage6_review"])
+        else:
+            existing_review = Stage6Review()
+
+    fid = load_fid_from_pipeline_impl(path)
+    sideband = _sideband_from_value(fid.sideband)
+
+    spur_centers_mhz: List[float] = [
+        float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
+    ]
+    acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+
+    new_statuses: Dict[int, WindowReviewStatus] = {}
+    for wf in spectrum_fit.window_fits:
+        wid = int(wf.window_id) if wf.window_id is not None else -1
+
+        reasons = _compute_attention_reasons(
+            wf,
+            spur_centers_mhz=spur_centers_mhz,
+            acquisition_us=acquisition_us,
+            ledger_bar=bar,
+            attention_candidate_evidence=attention_candidate_evidence,
+            sideband=sideband,
+            kappa=kappa,
+            noise_floor=noise_floor,
+        )
+
+        # Preserve existing provenance (never downgrade reviewed/user-edited to auto).
+        existing_status = existing_review.window_statuses.get(wid)
+        if existing_status is not None and existing_status.provenance != "auto":
+            provenance = existing_status.provenance
+            invalidated = existing_status.invalidated
+        else:
+            provenance = "auto"
+            invalidated = False
+
+        new_statuses[wid] = WindowReviewStatus(
+            window_id=wid,
+            provenance=provenance,
+            attention_reasons=reasons,
+            invalidated=invalidated,
+        )
+
+    new_review = Stage6Review(
+        window_statuses=new_statuses,
+        decision_log=list(existing_review.decision_log),
+    )
+
+    # Persist: write stage6_review group and mark tracker stage complete.
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(new_review, grp)
+
+    _update_stage_completion(path, "stage6_review")
+
+    # Compute summary.
+    reason_counts: Dict[str, int] = {}
+    n_attention = 0
+    for status in new_statuses.values():
+        if status.needs_attention:
+            n_attention += 1
+        for reason in status.attention_reasons:
+            reason_counts[reason.kind] = reason_counts.get(reason.kind, 0) + 1
+
+    return ReviewRunResult(
+        n_windows=len(new_statuses),
+        n_attention=n_attention,
+        reason_counts=reason_counts,
     )

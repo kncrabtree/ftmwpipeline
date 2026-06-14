@@ -1,23 +1,24 @@
 """
 Stage 6 review commands.
 
-Implements the ``review show``, ``review edit``, ``review merge``, and
-``review split`` subcommands.  Thin wrappers over
+Implements the ``review show``, ``review edit``, ``review merge``,
+``review split``, and ``review run`` subcommands.  Thin wrappers over
 :mod:`ftmwpipeline._internal.stage6_impl` -- identical behaviour to
 :class:`~ftmwpipeline.Pipeline` and the functional API.
-
-``review run``, ``review accept`` (Pass 2 verbs) are not yet implemented.
 """
 
 import argparse
 from typing import Any, List, Optional, Sequence
 
 from .._internal.stage6_impl import (
+    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
     RefitWindowResult,
+    ReviewRunResult,
     get_candidate_ledger_impl,
     merge_peaks_impl,
     refit_window_impl,
+    review_run_impl,
     split_peak_impl,
 )
 from ..core.data_structures import FittingResult, LedgerCandidate
@@ -288,8 +289,35 @@ def cmd_review_split(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_run(args: argparse.Namespace) -> int:
+    """Build or refresh the Stage 6 attention-routing curation layer."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    bar: float = getattr(args, "bar", DEFAULT_DISPLAY_BAR)
+    attention_bar: float = getattr(
+        args, "attention_bar", DEFAULT_ATTENTION_CANDIDATE_EVIDENCE
+    )
+
+    try:
+        result = review_run_impl(
+            file_path, bar=bar, attention_candidate_evidence=attention_bar
+        )
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(
+        f"review run: {result.n_windows} window(s), "
+        f"{result.n_attention} needing attention"
+    )
+    if result.reason_counts:
+        for kind, count in sorted(result.reason_counts.items()):
+            print(f"  {kind}: {count}")
+    return 0
+
+
 def register_review_commands(subparsers: Any) -> None:
-    """Register review (Stage 6 Pass 1) object-verb subcommands."""
+    """Register review (Stage 6) object-verb subcommands."""
     verbs = add_stage_object(
         subparsers,
         "review",
@@ -300,10 +328,55 @@ def register_review_commands(subparsers: Any) -> None:
             "Inspect the automatic fit, view per-window summaries, explore\n"
             "the candidate ledger, and apply user-directed edits (add, remove,\n"
             "merge, split peaks).\n\n"
-            "Verbs: show, edit, merge, split\n"
-            "Pass 2 verbs (accept / run) are not yet implemented."
+            "Verbs: run, show, edit, merge, split, accept"
         ),
     )
+
+    p_run = verbs.add_parser(
+        "run",
+        help="Build or refresh the Stage 6 attention-routing layer",
+        description=(
+            "Compute per-window advisory attention reasons and persist the\n"
+            "Stage 6 review state to the .ftmw file.\n\n"
+            "Existing provenance (reviewed/user-edited) and the decision log\n"
+            "are preserved; only attention reasons are refreshed."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_run.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_run.add_argument(
+        "--bar",
+        dest="bar",
+        type=float,
+        default=DEFAULT_DISPLAY_BAR,
+        metavar="BAR",
+        help=(
+            f"Display bar for candidate-bearing detection "
+            f"(default {DEFAULT_DISPLAY_BAR:.1f})."
+        ),
+    )
+    p_run.add_argument(
+        "--attention-bar",
+        dest="attention_bar",
+        type=float,
+        default=DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+        metavar="EV",
+        help=(
+            f"Evidence threshold for flagging a candidate-bearing window "
+            f"(stiffer than --bar; default "
+            f"{DEFAULT_ATTENTION_CANDIDATE_EVIDENCE:.1f})."
+        ),
+    )
+    p_run.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_run.set_defaults(func=cmd_review_run)
 
     p_show = verbs.add_parser(
         "show",

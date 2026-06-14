@@ -63,11 +63,14 @@ from ._internal.stage5_impl import (
 )
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.stage6_impl import (
+    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
     RefitWindowResult,
+    ReviewRunResult,
     get_candidate_ledger_impl,
     merge_peaks_impl,
     refit_window_impl,
+    review_run_impl,
     split_peak_impl,
 )
 from ._internal.start_detection_impl import detect_start_time_impl
@@ -1769,6 +1772,42 @@ class Pipeline:
             peak,
             into=into,
             snap_tol_mhz=snap_tol_mhz,
+        )
+
+    def review_run(
+        self,
+        *,
+        bar: float = DEFAULT_DISPLAY_BAR,
+        attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    ) -> ReviewRunResult:
+        """Build or refresh the Stage 6 attention-routing curation layer.
+
+        Computes advisory attention reasons for each fitted window, persists
+        the :class:`~ftmwpipeline.core.data_structures.Stage6Review` to the
+        ``stage6_review`` HDF5 group, and marks the stage complete.
+
+        Existing per-window provenance (``"reviewed"``/``"user-edited"``) and
+        the decision log are preserved; only attention reasons are refreshed.
+
+        Parameters
+        ----------
+        bar :
+            Display bar for the candidate-bearing attention reason.
+        attention_candidate_evidence :
+            Evidence threshold above which a candidate-bearing window flags
+            (stiffer than ``bar``; keeps the attention surface actionable).
+
+        Returns
+        -------
+        ReviewRunResult
+            Total window count, attention count, and per-kind breakdown.
+
+        Requires Stage 5 completed.
+        """
+        return review_run_impl(
+            self.filepath,
+            bar=bar,
+            attention_candidate_evidence=attention_candidate_evidence,
         )
 
     def validate_stage5_shape_error(

@@ -1783,3 +1783,103 @@ class LedgerCandidate:
     reasons: List[str]
     decision_sites: List[str]
     window_id: int
+
+
+# ---------------------------------------------------------------------------
+# Stage 6 Pass 2: review status and decision log
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AttentionReason:
+    """One reason why a window needs human attention during Stage 6 review.
+
+    Attributes
+    ----------
+    kind : str
+        Category: one of ``"worst_eps"``, ``"doublet_eps_gt_kappa"``,
+        ``"candidate_bearing"``, ``"spur_adjacent"``, ``"edge_boundary"``.
+    detail : str
+        Human-readable explanation of the attention trigger.
+    severity : float
+        Sortable weight for ranked display (higher = more attention).
+    """
+
+    kind: str
+    detail: str
+    severity: float
+
+
+@dataclass
+class WindowReviewStatus:
+    """Stage 6 per-window curation state.
+
+    Attributes
+    ----------
+    window_id : int
+        Matches ``FittingResult.window_id``.
+    provenance : str
+        ``"auto"`` (untouched), ``"reviewed"`` (a human inspected and accepted
+        the automatic fit), or ``"user-edited"`` (a decision was applied).
+    attention_reasons : list of AttentionReason
+        Advisory flags; empty means no attention needed.
+    invalidated : bool
+        Marks that a ``"user-edited"`` window's anchor no longer resolves
+        after an upstream stage was re-run; the sole hard bar to report
+        generation. Default ``False``.
+    """
+
+    window_id: int
+    provenance: str = "auto"
+    attention_reasons: List[AttentionReason] = field(default_factory=list)
+    invalidated: bool = False
+
+    @property
+    def needs_attention(self) -> bool:
+        """True when the window has at least one advisory attention reason."""
+        return len(self.attention_reasons) > 0
+
+
+@dataclass
+class DecisionLogEntry:
+    """One anchored user decision in the Stage 6 decision log.
+
+    Attributes
+    ----------
+    order_index : int
+        Zero-based position within the decision log (execution order).
+    window_id : int
+        The ``FitWindow.window_id`` the decision applies to.
+    frequency_mhz : float
+        Molecular frequency anchor for the decision (MHz).
+    kind : str
+        Decision type: ``"add"``, ``"remove"``, ``"merge"``, ``"split"``,
+        or ``"accept"``.
+    provenance : str
+        Always ``"user"`` for decisions recorded here.
+    evidence : dict
+        Optional evidence snapshot (χ²ᵣ before/after, peak deltas, etc.).
+    """
+
+    order_index: int
+    window_id: int
+    frequency_mhz: float
+    kind: str
+    provenance: str = "user"
+    evidence: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Stage6Review:
+    """Stage 6 curation state for the full spectrum.
+
+    Attributes
+    ----------
+    window_statuses : dict
+        Maps ``window_id`` to :class:`WindowReviewStatus`.
+    decision_log : list of DecisionLogEntry
+        Ordered list of anchored user decisions (empty until Pass 2 verbs run).
+    """
+
+    window_statuses: Dict[int, "WindowReviewStatus"] = field(default_factory=dict)
+    decision_log: List["DecisionLogEntry"] = field(default_factory=list)
