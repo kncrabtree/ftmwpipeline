@@ -602,6 +602,7 @@ def refit_window_core(
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
+    add_origin: str = "user",
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
 ) -> FittingResult:
     """In-memory single-window refit core (no file I/O, no spur replay, no
@@ -623,7 +624,10 @@ def refit_window_core(
     core (it loads the fit, builds ``fit_ctx`` with the persisted spur
     catalogue replayed, calls this core, then persists and records decisions).
     The Stage 5 peak-survival pass routes through it too, holding ``fit_ctx`` /
-    the plan / ``resolved`` live from ``fit_peaks_impl``.
+    the plan / ``resolved`` live from ``fit_peaks_impl``. ``add_origin`` stamps
+    the origin of added peaks: ``"user"`` for a user edit (the default, immune
+    to later auto-prune/cleanup), ``"auto"`` for an automatic add such as the
+    VIF-collapse merged line (a normal fitted peak, not a human decision).
 
     Returns the new per-window :class:`FittingResult`; the caller splices it
     back into the :class:`SpectrumFit` and persists.
@@ -967,7 +971,7 @@ def refit_window_core(
                     offset_mhz=add_offset,
                     phase=float(np.angle(data_minus_bg[nearest_bin])),
                 )
-        seed_peaks_with_origin.append((mp, "user"))
+        seed_peaks_with_origin.append((mp, add_origin))
         protected_offsets.append(mp.offset_mhz)
 
     # Extract final seed list in offset order.

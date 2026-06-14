@@ -332,21 +332,37 @@ class DoubletAlternativeSubSettings:
 
 @dataclass
 class PeakSurvivalSubSettings:
-    """Absolute post-fit SNR-floor prune (Phase A of the peak-survival pass).
+    """Post-fit peak-survival pass: SNR-floor prune + degenerate-overfit collapse.
 
     After Stage 5 produces the fitted :class:`~ftmwpipeline.core.data_structures.SpectrumFit`,
-    drop every automatic-origin fitted peak whose post-fit ``snr <
-    snr_survival_floor``, then drop windows left with zero peaks. This is a
-    pure filter -- no refit. ``origin == "user"`` peaks are immune. Finite SNR
-    only -- ``None``/NaN snr peaks are kept unconditionally.
+    two automatic cuts run (``origin == "user"`` peaks are immune to both):
 
-    ``enabled`` (default ``True``) and ``snr_survival_floor`` (default
-    ``3.2``, anchored to the Stage-3 detection threshold) are the two knobs.
-    See ``dev-docs/planning/stage6-peak-survival.md`` Phase A.
+    1. **SNR-floor prune.** Drop every automatic-origin fitted peak whose
+       post-fit ``snr < snr_survival_floor``, then drop windows left empty;
+       partially-pruned windows are refitted so survivors stay honest. Finite
+       SNR only -- ``None``/NaN snr peaks are kept unconditionally.
+    2. **Degenerate-overfit collapse.** Collapse a close pair into one line when
+       a member's amplitude variance-inflation factor
+       ``VIF = (amplitude_error / amplitude) * snr`` exceeds
+       ``vif_collapse_threshold`` **and** the pair sits within
+       ``collapse_max_separation_res`` resolution elements (``1 / T_active``).
+       Two lines closer than half a resolution element are unresolvable, so the
+       split is spurious; the collapse overrides chi^2 / AICc unconditionally
+       (at high SNR chi^2 is a lineshape floor that rewards the spurious split).
+
+    ``vif_attention_threshold`` is reserved for the Stage 6 attention surface
+    (computed/stored, no auto-action here). Defaults: ``enabled`` True,
+    ``snr_survival_floor`` 3.2 (Stage-3 detection threshold),
+    ``vif_collapse_threshold`` 100.0, ``collapse_max_separation_res`` 0.5,
+    ``vif_attention_threshold`` 4.0. See
+    ``dev-docs/planning/stage6-peak-survival.md``.
     """
 
     enabled: Optional[bool] = None
     snr_survival_floor: Optional[float] = None
+    vif_collapse_threshold: Optional[float] = None
+    collapse_max_separation_res: Optional[float] = None
+    vif_attention_threshold: Optional[float] = None
 
 
 @dataclass
@@ -512,12 +528,16 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "r_min": 0.05,
     },
     "peak_survival": {
-        # Phase A peak-survival prune defaults on at the Stage-3 detection
-        # threshold (3.2 sigma). Sub-floor automatic-origin peaks are dust
-        # that slipped through the conservative gate; user-origin peaks are
-        # immune regardless of SNR.
+        # Peak-survival pass defaults on. The SNR floor sits at the Stage-3
+        # detection threshold (3.2 sigma): sub-floor automatic-origin peaks are
+        # dust that slipped through the conservative gate. The VIF collapse
+        # fires only on a near-degenerate pair (VIF > 100 within < 0.5
+        # resolution elements); user-origin peaks are immune to both.
         "enabled": True,
         "snr_survival_floor": 3.2,
+        "vif_collapse_threshold": 100.0,
+        "collapse_max_separation_res": 0.5,
+        "vif_attention_threshold": 4.0,
     },
 }
 

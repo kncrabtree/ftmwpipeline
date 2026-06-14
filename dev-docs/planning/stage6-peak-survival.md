@@ -182,11 +182,28 @@ the refactor changes structure, not output.
   helper is removed. **Still pending: re-baseline the 7 fixtures and confirm
   ground-truth recall holds** (only dust-touched windows change vs the committed
   slice baseline; this is the human-judged step below).
-- **Phase B (R3) — VIF collapse** (higher risk; reuses the merged-fit machinery).
-  Build the shared VIF utility, the collapse decision (VIF>100 + sep<0.5 res,
-  overriding χ²/AICc), and the merged-params reuse, on the `refit_window_core`
-  from R2. Truth-set test: collapse w438/w217/w24; never touch
-  w161/w108/w419/w281. Then cross-fixture re-validation.
+- **Phase B (R3) — VIF collapse.** *Implemented (in tree); 7-fixture re-baseline
+  pending.* Added the shared `amplitude_vif` utility, `apply_vif_collapse`, and
+  the `vif_collapse_threshold` / `collapse_max_separation_res` /
+  `vif_attention_threshold` knobs on `PeakSurvivalSubSettings` (defaults 100.0 /
+  0.5 / 4.0; the attention threshold is reserved for the Stage 6 surface, no
+  auto-action here). The collapse runs after the SNR prune in `fit_peaks_impl`:
+  per window, each peak with `amplitude_vif > threshold` pairs greedily
+  (highest-VIF first) with its nearest neighbour within
+  `collapse_max_separation_res × (1/T_active)`; the window is refitted once
+  through `refit_window_core` (via an injected `(wf, remove_freqs, add_freqs,
+  add_seeds) -> FittingResult` callable) with the paired members removed and one
+  merged seed added per pair, stamped `origin="auto"` (a new `add_origin` param on
+  `refit_window_core`, default `"user"` keeps every existing caller unchanged).
+  The merged seed reuses the recorded `DoubletAlternativeInfo.merged_{frequency,
+  amplitude,phase}` when present, else the amplitude-weighted centroid. The
+  collapse fires on VIF + separation alone and never vetoes on the rising χ²ᵣ.
+  Truth-set validated on a fresh full 2638 fit: collapses **exactly** w24 (VIF
+  936/625, sep 0.264 res), w217 (981/978, 0.174 res), w438 (7494/7490, 0.108 res),
+  and touches none of w161/w108/w419/w281 (562 peaks = 565 post-prune − 3 pairs).
+  Unit tests cover the VIF utility + collapse gate (degenerate collapses, low-VIF
+  kept, far-pair kept, no-window-range skipped, doublet-alt snap). **Still
+  pending: the 7-fixture re-baseline + recall check (shared with R2 below).**
 
 ## Validation
 

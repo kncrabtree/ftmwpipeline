@@ -398,6 +398,224 @@ def apply_snr_survival_prune(
     }
 
 
+def amplitude_vif(peak: FittedPeak) -> Optional[float]:
+    """Diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``.
+
+    The overfit discriminant: ~1 for an identifiable line, >> 1 when a line is
+    degenerate with a sub-resolution neighbour (the pair *sum* is constrained,
+    neither amplitude individually). A pure function of already-persisted
+    per-peak fields -- no covariance matrix needed. Returns ``None`` when any
+    input is missing / non-finite or the amplitude is zero.
+    """
+    import math
+
+    amp = float(peak.amplitude)
+    amp_err = peak.amplitude_error
+    snr = peak.snr
+    if amp_err is None or snr is None:
+        return None
+    if not (math.isfinite(amp) and math.isfinite(amp_err) and math.isfinite(snr)):
+        return None
+    if abs(amp) <= 0.0:
+        return None
+    return abs(amp_err / amp) * float(snr)
+
+
+def _merged_seed_for_pair(
+    wf: FittingResult,
+    pa: FittedPeak,
+    pb: FittedPeak,
+    snap_tol_mhz: float,
+) -> Tuple[float, float, float]:
+    """Seed (frequency, amplitude, phase) for the line that collapses a pair.
+
+    Defaults to the amplitude-weighted centroid frequency and the summed
+    amplitude. When the window recorded a :class:`DoubletAlternativeInfo` for
+    exactly this pair (order-independent, within ``snap_tol_mhz``) whose merged
+    refit succeeded, reuses its converged ``merged_{frequency,amplitude,phase}``
+    instead -- the doublet-adjudication pass already fit the one-line model.
+    """
+    import math
+
+    fa = float(pa.frequency_mhz)
+    fb = float(pb.frequency_mhz)
+    aw = abs(float(pa.amplitude))
+    bw = abs(float(pb.amplitude))
+    total = aw + bw if (aw + bw) > 0 else 1.0
+    centroid_freq = (fa * aw + fb * bw) / total
+    centroid_amp = float(pa.amplitude) + float(pb.amplitude)
+
+    merge_freq, merge_amp, merge_phase = centroid_freq, centroid_amp, 0.0
+    for da in getattr(wf, "doublet_alternatives", []):
+        a, b = float(da.frequency_a_mhz), float(da.frequency_b_mhz)
+        pair_match = (abs(a - fa) <= snap_tol_mhz and abs(b - fb) <= snap_tol_mhz) or (
+            abs(a - fb) <= snap_tol_mhz and abs(b - fa) <= snap_tol_mhz
+        )
+        if (
+            pair_match
+            and da.merged_success
+            and math.isfinite(float(da.merged_frequency_mhz))
+        ):
+            merge_freq = float(da.merged_frequency_mhz)
+            if math.isfinite(float(da.merged_amplitude)):
+                merge_amp = float(da.merged_amplitude)
+            if math.isfinite(float(da.merged_phase)):
+                merge_phase = float(da.merged_phase)
+            break
+    return merge_freq, merge_amp, merge_phase
+
+
+def apply_vif_collapse(
+    fit: SpectrumFit,
+    *,
+    vif_threshold: float,
+    max_sep_res: float,
+    res_element_mhz: float,
+    sideband: Sideband,
+    refit_collapse: Callable[
+        [FittingResult, List[float], List[float], List[Any]], FittingResult
+    ],
+    snap_tol_mhz: float = 0.05,
+) -> None:
+    """Collapse degenerate sub-resolution overfit pairs (in-place).
+
+    For each window, a close pair is collapsed to one line when a member's
+    amplitude VIF exceeds ``vif_threshold`` *and* the pair sits within
+    ``max_sep_res`` resolution elements (``res_element_mhz = 1 / T_active``).
+    The collapse fires on VIF + separation **alone** and overrides chi^2 / AICc
+    unconditionally: at high SNR chi^2 is a lineshape-fidelity floor, so a
+    near-degenerate second line absorbs lineshape mismodeling and chi^2 / AICc
+    *reward* the spurious split. The window chi^2_r *rising* on collapse is
+    expected and must not veto it.
+
+    Pairs are matched greedily from the highest-VIF peak down: each high-VIF
+    peak pairs with its nearest unused neighbour within the separation bound
+    (every VIF>>1 line comes in a degenerate pair, so the partner is
+    structural). Each window with at least one pair is refitted once with all
+    paired members removed and one merged seed added per pair (origin
+    ``"auto"`` -- an automatic decision, not a human edit). The merged seed
+    reuses the recorded doublet-alternative when present (see
+    :func:`_merged_seed_for_pair`).
+
+    Parameters
+    ----------
+    fit :
+        The :class:`SpectrumFit` to collapse in place (post SNR-floor prune).
+    vif_threshold, max_sep_res :
+        Collapse gate: amplitude VIF bound and maximum pair separation in
+        resolution elements.
+    res_element_mhz :
+        One resolution element ``1 / T_active`` (MHz).
+    sideband :
+        Pipeline sideband (for the molecular -> baseband-offset seed mapping).
+    refit_collapse :
+        Callable ``(wf, remove_freqs, add_freqs, add_seeds) -> FittingResult``
+        that re-fits ``wf`` with the paired peaks removed and the merged seeds
+        added (origin ``"auto"``). In production this routes through
+        :func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`.
+    snap_tol_mhz :
+        Tolerance for matching a pair to a recorded doublet alternative.
+    """
+    from ..fitting.peak_model import ModelPeak, sideband_sign
+
+    max_sep_mhz = max_sep_res * res_element_mhz
+    s = sideband_sign(sideband)
+
+    collapse_records: List[Dict[str, Any]] = []
+    new_window_fits: List[FittingResult] = []
+
+    for wf in fit.window_fits:
+        peaks = wf.fitted_peaks
+        center: Optional[float] = None
+        if wf.window is not None and wf.window.freq_range is not None:
+            lo, hi = wf.window.freq_range
+            center = 0.5 * (lo + hi)
+        if len(peaks) < 2 or center is None:
+            new_window_fits.append(wf)
+            continue
+
+        vifs = [amplitude_vif(p) for p in peaks]
+        # High-VIF peaks first, so the most degenerate pairs form before a
+        # shared neighbour is consumed by a weaker pairing.
+        high_vif_order = sorted(
+            (i for i, v in enumerate(vifs) if v is not None and v > vif_threshold),
+            key=lambda i: -(vifs[i] or 0.0),
+        )
+        used: set[int] = set()
+        pairs: List[Tuple[int, int]] = []
+        for i in high_vif_order:
+            if i in used:
+                continue
+            best_j: Optional[int] = None
+            best_d = float("inf")
+            for j in range(len(peaks)):
+                if j == i or j in used:
+                    continue
+                d = abs(float(peaks[i].frequency_mhz) - float(peaks[j].frequency_mhz))
+                if d < best_d:
+                    best_d, best_j = d, j
+            if best_j is not None and best_d <= max_sep_mhz:
+                pairs.append((i, best_j))
+                used.add(i)
+                used.add(best_j)
+
+        if not pairs:
+            new_window_fits.append(wf)
+            continue
+
+        remove_freqs: List[float] = []
+        add_freqs: List[float] = []
+        add_seeds: List[Any] = []
+        for i, j in pairs:
+            pa, pb = peaks[i], peaks[j]
+            merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
+                wf, pa, pb, snap_tol_mhz
+            )
+            offset = float(s * (merge_freq - center))
+            add_seeds.append(
+                ModelPeak(
+                    amplitude=max(abs(merge_amp), 1e-30),
+                    offset_mhz=offset,
+                    phase=merge_phase,
+                )
+            )
+            remove_freqs.extend([float(pa.frequency_mhz), float(pb.frequency_mhz)])
+            add_freqs.append(merge_freq)
+            collapse_records.append(
+                {
+                    "window_id": int(wf.window_id) if wf.window_id is not None else -1,
+                    "frequency_a_mhz": float(pa.frequency_mhz),
+                    "frequency_b_mhz": float(pb.frequency_mhz),
+                    "vif_a": vifs[i],
+                    "vif_b": vifs[j],
+                    "separation_res": (
+                        abs(float(pa.frequency_mhz) - float(pb.frequency_mhz))
+                        / res_element_mhz
+                        if res_element_mhz > 0
+                        else None
+                    ),
+                    "merged_frequency_mhz": float(merge_freq),
+                }
+            )
+
+        new_wf = refit_collapse(wf, remove_freqs, add_freqs, add_seeds)
+        new_window_fits.append(new_wf)
+
+    fit.window_fits = new_window_fits
+
+    all_peaks: List[FittedPeak] = [p for wf in fit.window_fits for p in wf.fitted_peaks]
+    all_peaks.sort(key=lambda p: p.frequency_mhz)
+    fit.fitted_peaks = all_peaks
+
+    fit.diagnostics["vif_collapse"] = {
+        "vif_threshold": float(vif_threshold),
+        "max_separation_res": float(max_sep_res),
+        "res_element_mhz": float(res_element_mhz),
+        "n_collapsed_pairs": len(collapse_records),
+        "collapses": collapse_records,
+    }
+
+
 def _build_explicit_from_kwargs(
     *,
     tau0_us: Optional[float],
@@ -1038,12 +1256,20 @@ def fit_peaks_impl(
     else:
         doublet_kwargs = None
 
-    # Peak-survival prune (Phase A): SNR-floor dust removal.
+    # Peak-survival pass: SNR-floor dust removal + degenerate-overfit collapse.
     peak_survival_enabled_v = _required_bool(
         resolved.peak_survival.enabled, "peak_survival.enabled"
     )
     peak_survival_floor_v = _required_float(
         resolved.peak_survival.snr_survival_floor, "peak_survival.snr_survival_floor"
+    )
+    vif_collapse_threshold_v = _required_float(
+        resolved.peak_survival.vif_collapse_threshold,
+        "peak_survival.vif_collapse_threshold",
+    )
+    collapse_max_sep_res_v = _required_float(
+        resolved.peak_survival.collapse_max_separation_res,
+        "peak_survival.collapse_max_separation_res",
     )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
@@ -1534,6 +1760,53 @@ def fit_peaks_impl(
                         "dropped_window_ids", []
                     )
                 ),
+            )
+
+        # Degenerate-overfit collapse: merge near-degenerate sub-resolution
+        # pairs (high amplitude VIF within < collapse_max_separation_res
+        # resolution elements). Runs after the prune (dust gone), refits the
+        # touched window through the same core with the merged line stamped
+        # origin="auto". The resolution element is 1 / T_active (MHz).
+        def _collapse_refit(
+            wf: FittingResult,
+            remove_freqs: List[float],
+            add_freqs: List[float],
+            add_seeds: List[Any],
+        ) -> FittingResult:
+            return refit_window_core(
+                fit_ctx,
+                survival_window_map[cast(int, wf.window_id)],
+                wf,
+                resolved=resolved,
+                shape_enum=shape_enum,
+                tau_maj_us=tau_maj_us,
+                sigma_tau_us=sigma_tau_us,
+                peak_frequencies_mhz=peak_frequencies_mhz,
+                remove=tuple(remove_freqs),
+                add=tuple(add_freqs),
+                add_seeds=add_seeds,
+                add_origin="auto",
+            )
+
+        res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.0
+        apply_vif_collapse(
+            spectrum_fit,
+            vif_threshold=vif_collapse_threshold_v,
+            max_sep_res=collapse_max_sep_res_v,
+            res_element_mhz=res_element_mhz,
+            sideband=sideband,
+            refit_collapse=_collapse_refit,
+        )
+        n_collapsed = len(
+            spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])
+        )
+        if n_collapsed:
+            logger.info(
+                "Stage 5 VIF collapse: merged %d degenerate sub-resolution "
+                "pair(s) (VIF > %.0f within %.2f resolution elements)",
+                n_collapsed,
+                vif_collapse_threshold_v,
+                collapse_max_sep_res_v,
             )
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
