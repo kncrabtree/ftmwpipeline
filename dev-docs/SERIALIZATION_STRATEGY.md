@@ -58,7 +58,13 @@ How an experiment's analysis is persisted. One experiment is one self-contained
   full dense masks where that is lossless).
 - **Stages 3–5.** Expensive derived results (peaks, window definitions, fitted
   parameters) are persisted; anything cheaply reconstructible from them and the
-  on-demand ComplexFT is not.
+  on-demand ComplexFT is not.  Stage 5 additionally persists, per window, the
+  full fitted-parameter covariance matrix (inverse weighted JᵀJ at the NLS
+  solution) with a documented parameter ordering — peak-major amplitude/offset/phase,
+  then shared tau when fitted, then baseline real and imaginary polynomial
+  coefficients — supporting correlated error bars and overfit/identifiability
+  metrics downstream; the matrix is omitted when JᵀJ was singular at the
+  solution.
 
 ## Settings resolution and reproducibility
 

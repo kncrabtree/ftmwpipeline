@@ -1249,6 +1249,14 @@ def refit_window_impl(
             new_wf.fitted_peaks + thawed_held_peaks,
             key=lambda fp2: float(fp2.frequency_mhz),
         )
+        # The NLS ran with only the non-thawed peaks free; the covariance only
+        # covers those K_free params.  After re-inserting the thawed peaks the
+        # fitted_peaks list grows, so the covariance labels no longer match the
+        # full peak count.  Clear it rather than persist a partial / mislabelled
+        # matrix — the per-peak amplitude_error / frequency_error / phase_error
+        # fields already carry the per-parameter uncertainties.
+        new_wf.covariance = None
+        new_wf.covariance_param_labels = None
         logger.debug(
             "Stage 6 refit window %d: re-inserted %d thawed peak(s) verbatim",
             window_id,

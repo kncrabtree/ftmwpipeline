@@ -973,6 +973,26 @@ class FittingResult:
     add-one-peak loop's decision log) and the per-window ``thaw_events``
     (the residual-edge-coherence renegotiation outcomes that touched this
     window).
+
+    **Per-window parameter covariance** (``covariance`` / ``covariance_param_labels``):
+    the full fitted-parameter covariance matrix — the inverse of the weighted
+    JᵀJ at the NLS solution — in physical units (amplitude, MHz offset, rad
+    phase, µs tau).  ``None`` when the covariance was not computed or when JᵀJ
+    was singular at the solution.
+
+    Parameter ordering documented in ``covariance_param_labels`` (one label per
+    matrix row/column, peak-major):
+
+    * ``amplitude_{i}``, ``offset_{i}``, ``phase_{i}``  for each peak i (0-based)
+    * ``tau``  (only when the window's tau was a free LSQ parameter)
+    * ``baseline_re_{k}``  for each baseline polynomial order k (re block first)
+    * ``baseline_im_{k}``  for each baseline polynomial order k (im block after re)
+
+    The molecular-frequency variance equals the offset variance (f = center ±
+    offset; the sign flip from the sideband does not change the variance).
+    ``sqrt(diag)`` of the amplitude/offset/phase/tau diagonal entries matches the
+    per-peak ``amplitude_error`` / ``frequency_error`` / ``phase_error`` and the
+    shared ``tau_us.error`` already persisted in this object.
     """
 
     def __init__(
@@ -1029,6 +1049,13 @@ class FittingResult:
         # doublet-alternative pass when enabled; empty when the pass is disabled
         # or no close pair triggered in this window.
         self.doublet_alternatives: List["DoubletAlternativeInfo"] = []
+
+        # Full per-window parameter covariance matrix (inverse weighted JᵀJ at
+        # the NLS solution).  None when JᵀJ was singular or no covariance was
+        # computed.  The companion ``covariance_param_labels`` list documents the
+        # row/column ordering; see the class docstring for the label scheme.
+        self.covariance: Optional[np.ndarray] = None
+        self.covariance_param_labels: Optional[List[str]] = None
 
     def add_fitted_peak(self, fitted_peak: FittedPeak) -> None:
         """Add a fitted peak result."""

@@ -213,6 +213,51 @@ def test_baseline_audit_persists(baseline_2638_stage4_small, temp_ftmw_dir):
             assert qa["baseline_edge_coherence"] > 3.5
 
 
+def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_dir):
+    """After a Stage 5 fit, at least one window has a persisted covariance
+    matrix, and sqrt(diag) of the amplitude entries matches the stored
+    amplitude_error for that window (ordering sanity check).
+
+    Uses the small (3-window) baseline so the fit is fast.
+    """
+    fp = temp_ftmw_dir / "cov_check.ftmw"
+    shutil.copy(baseline_2638_stage4_small, fp)
+
+    fit = ftmw.fit_peaks(fp)
+    reloaded = ftmw.load_fit(fp)
+
+    # At least one window should have a non-None covariance (the 3-window
+    # small plan has real lines with finite JᵀJ).
+    windows_with_cov = [
+        wf for wf in reloaded.window_fits if wf.covariance is not None
+    ]
+    assert windows_with_cov, (
+        "no windows with persisted covariance in the 3-window small fit"
+    )
+
+    # For each window with a covariance, verify the amplitude diagonal entries
+    # match the stored amplitude_error (sqrt round-trip within float64 precision).
+    for wf in windows_with_cov:
+        cov = wf.covariance
+        labels = wf.covariance_param_labels
+        assert cov is not None
+        assert labels is not None
+        assert cov.shape[0] == cov.shape[1] == len(labels)
+
+        amp_indices = [i for i, lbl in enumerate(labels) if lbl.startswith("amplitude_")]
+        assert len(amp_indices) == len(wf.fitted_peaks)
+
+        for peak_idx, col_idx in enumerate(amp_indices):
+            cov_amp_err = math.sqrt(float(cov[col_idx, col_idx]))
+            stored_amp_err = wf.fitted_peaks[peak_idx].amplitude_error
+            if stored_amp_err is not None:
+                assert cov_amp_err == pytest.approx(stored_amp_err, rel=1e-6), (
+                    f"window {wf.window_id} peak {peak_idx}: "
+                    f"sqrt(cov[amp,amp])={cov_amp_err} != "
+                    f"amplitude_error={stored_amp_err}"
+                )
+
+
 def _inject_stage5_marker(fp) -> None:
     """Write a minimal ``stage5_fitting`` group + mark it complete.
 

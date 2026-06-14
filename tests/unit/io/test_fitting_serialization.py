@@ -1076,3 +1076,168 @@ class TestDoubletAlternativeRoundTrip:
         assert alts[1].frequency_a_mhz == pytest.approx(alt2.frequency_a_mhz)
         assert alts[0].merged_success is True
         assert alts[1].merged_success is False
+
+
+# ---------------------------------------------------------------------------
+# Per-window parameter covariance
+# ---------------------------------------------------------------------------
+def _make_window_fit_with_covariance(
+    window_id: int,
+    n_peaks: int,
+    *,
+    fit_tau: bool = True,
+    baseline_order: int | None = None,
+) -> FittingResult:
+    """Build a FittingResult with a synthetic covariance matrix attached."""
+    from ftmwpipeline.fitting.result_conversion import build_covariance_param_labels
+
+    peaks = [
+        _sample_fitted_peak(
+            peak_id=i, window_id=window_id, freq_mhz=36100.0 + i * 0.5
+        )
+        for i in range(n_peaks)
+    ]
+    labels = build_covariance_param_labels(
+        n_peaks=n_peaks, fit_tau=fit_tau, baseline_order=baseline_order
+    )
+    d = len(labels)
+    # Use a positive-definite symmetric matrix so the values are physically
+    # plausible; a diagonal matrix is simplest.
+    rng = np.random.default_rng(42)
+    cov = np.diag(rng.uniform(1e-6, 1e-3, size=d))
+
+    fr = _make_window_fit(window_id, peaks, audit=[], thaw_events=[])
+    fr.covariance = cov
+    fr.covariance_param_labels = labels
+    return fr
+
+
+class TestCovarianceRoundTrip:
+    def test_covariance_round_trips(self, tmp_path):
+        """A FittingResult with a covariance matrix persists and loads back
+        with the exact same values and labels."""
+        from ftmwpipeline.fitting.result_conversion import build_covariance_param_labels
+
+        win = _make_window_fit_with_covariance(
+            0, n_peaks=2, fit_tau=True, baseline_order=1
+        )
+        expected_labels = build_covariance_param_labels(
+            n_peaks=2, fit_tau=True, baseline_order=1
+        )
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=list(win.fitted_peaks))
+
+        loaded = _roundtrip(fit, tmp_path / "fit.h5")
+
+        wf = loaded.window_fits[0]
+        assert wf.covariance is not None
+        assert wf.covariance_param_labels == expected_labels
+        np.testing.assert_array_equal(wf.covariance, win.covariance)
+
+    def test_covariance_none_round_trips_as_none(self, tmp_path):
+        """A FittingResult with no covariance writes no dataset and loads back
+        as None (back-compat with older files that never had a covariance)."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        assert win.covariance is None
+        assert win.covariance_param_labels is None
+
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+        path = tmp_path / "fit.h5"
+        loaded = _roundtrip(fit, path)
+
+        # No dataset written.
+        with h5py.File(path, "r") as h5f:
+            assert "covariance" not in h5f["stage5_fitting/windows/window_0000"]
+
+        wf = loaded.window_fits[0]
+        assert wf.covariance is None
+        assert wf.covariance_param_labels is None
+
+    def test_covariance_no_tau_no_baseline_labels(self, tmp_path):
+        """Labels are peak-only when fit_tau=False and baseline_order=None."""
+        from ftmwpipeline.fitting.result_conversion import build_covariance_param_labels
+
+        labels = build_covariance_param_labels(
+            n_peaks=3, fit_tau=False, baseline_order=None
+        )
+        assert labels == [
+            "amplitude_0", "offset_0", "phase_0",
+            "amplitude_1", "offset_1", "phase_1",
+            "amplitude_2", "offset_2", "phase_2",
+        ]
+
+    def test_covariance_labels_with_tau_and_baseline(self, tmp_path):
+        """Labels include tau + baseline blocks in the right order."""
+        from ftmwpipeline.fitting.result_conversion import build_covariance_param_labels
+
+        labels = build_covariance_param_labels(
+            n_peaks=1, fit_tau=True, baseline_order=2
+        )
+        assert labels == [
+            "amplitude_0", "offset_0", "phase_0",
+            "tau",
+            "baseline_re_0", "baseline_re_1", "baseline_re_2",
+            "baseline_im_0", "baseline_im_1", "baseline_im_2",
+        ]
+
+    def test_malformed_covariance_non_square_raises(self, tmp_path):
+        """A non-square covariance dataset raises ValueError on load."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        path = tmp_path / "fit.h5"
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            wg = g["windows/window_0000"]
+            # Inject a non-square matrix and a matching-length label list.
+            wg.create_dataset("covariance", data=np.zeros((3, 4), dtype="f8"))
+            wg.attrs["covariance_param_labels"] = json.dumps(
+                ["amplitude_0", "offset_0", "phase_0"]
+            )
+        with h5py.File(path, "r") as h5f:
+            with pytest.raises(ValueError, match="not square"):
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    def test_malformed_covariance_label_length_mismatch_raises(self, tmp_path):
+        """Label list length != matrix dimension raises ValueError on load."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        path = tmp_path / "fit.h5"
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            wg = g["windows/window_0000"]
+            wg.create_dataset("covariance", data=np.eye(3, dtype="f8"))
+            # Wrong number of labels (2 instead of 3).
+            wg.attrs["covariance_param_labels"] = json.dumps(
+                ["amplitude_0", "offset_0"]
+            )
+        with h5py.File(path, "r") as h5f:
+            with pytest.raises(ValueError, match="label count"):
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    def test_malformed_covariance_amplitude_count_mismatch_raises(self, tmp_path):
+        """amplitude_* label count != fitted_peaks count raises ValueError."""
+        peak = _sample_fitted_peak(peak_id=0, window_id=0, freq_mhz=36100.0)
+        win = _make_window_fit(0, [peak], audit=[], thaw_events=[])
+        fit = SpectrumFit(window_fits=[win], fitted_peaks=[peak])
+
+        path = tmp_path / "fit.h5"
+        with h5py.File(path, "w") as h5f:
+            g = h5f.create_group("stage5_fitting")
+            save_spectrum_fit_to_hdf5(fit, g)
+            wg = g["windows/window_0000"]
+            # 2 peaks worth of labels but only 1 fitted peak.
+            labels_2peaks = [
+                "amplitude_0", "offset_0", "phase_0",
+                "amplitude_1", "offset_1", "phase_1",
+            ]
+            wg.create_dataset("covariance", data=np.eye(6, dtype="f8"))
+            wg.attrs["covariance_param_labels"] = json.dumps(labels_2peaks)
+        with h5py.File(path, "r") as h5f:
+            with pytest.raises(ValueError, match="amplitude label"):
+                load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])

@@ -39,7 +39,7 @@ D-6 is deferred (see ``dev-docs/planning/stage5-fitting.md`` "D8 open items").
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Optional, Union
+from typing import List, Optional, Union
 
 import numpy as np
 
@@ -73,12 +73,60 @@ from .residual_screening import ResidualPeakCandidate
 from .window_fit import AddStep, KnockoutResult
 
 __all__ = [
+    "build_covariance_param_labels",
     "window_outcome_to_spectral_window",
     "window_outcome_to_fitting_result",
     "plan_fit_outcome_to_spectrum_fit",
 ]
 
 SidebandLike = Union[Sideband, str]
+
+
+# ---------------------------------------------------------------------------
+# Covariance label builder
+# ---------------------------------------------------------------------------
+def build_covariance_param_labels(
+    n_peaks: int,
+    fit_tau: bool,
+    baseline_order: Optional[int],
+) -> List[str]:
+    """Return the ordered parameter labels for a per-window covariance matrix.
+
+    The label ordering mirrors the NLS parameter vector assembled by
+    :func:`~ftmwpipeline.fitting.window_fit.fit_window`:
+
+    * ``amplitude_{i}``, ``offset_{i}``, ``phase_{i}``  for each peak *i* (0-based),
+      peak-major (all three params for peak 0, then peak 1, …)
+    * ``tau``  only when *fit_tau* is True
+    * ``baseline_re_{k}``  for k in 0..baseline_order (real polynomial coefficients)
+    * ``baseline_im_{k}``  for k in 0..baseline_order (imag polynomial coefficients)
+
+    The baseline block is omitted when *baseline_order* is None or negative.
+
+    Parameters
+    ----------
+    n_peaks:
+        Number of fitted peaks (K).
+    fit_tau:
+        Whether tau was a free LSQ parameter in this window.
+    baseline_order:
+        Polynomial baseline order (non-negative) or None / negative when no
+        baseline was fitted.
+    """
+    labels: List[str] = []
+    for i in range(n_peaks):
+        labels.append(f"amplitude_{i}")
+        labels.append(f"offset_{i}")
+        labels.append(f"phase_{i}")
+    if fit_tau:
+        labels.append("tau")
+    if baseline_order is not None and baseline_order >= 0:
+        n_base = baseline_order + 1
+        for k in range(n_base):
+            labels.append(f"baseline_re_{k}")
+        for k in range(n_base):
+            labels.append(f"baseline_im_{k}")
+    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +463,22 @@ def window_outcome_to_fitting_result(
         shape=shape_str,
     )
     result.fitted_peaks = fitted_peaks
+
+    # Per-window parameter covariance.
+    cov = inner.covariance
+    if cov is not None:
+        labels = build_covariance_param_labels(
+            n_peaks=len(inner.peaks),
+            fit_tau=bool(inner.fit_tau),
+            baseline_order=inner.baseline_order,
+        )
+        n = len(labels)
+        cov_arr = np.asarray(cov, dtype=float)
+        if cov_arr.ndim == 2 and cov_arr.shape == (n, n):
+            result.covariance = cov_arr
+            result.covariance_param_labels = labels
+        # else: shape mismatch (unexpected layout / fit-internals drift);
+        # leave both None rather than persist a mislabelled matrix.
 
     # Shared parameter: the per-window decay constant. ``fitted`` records
     # whether tau was determined by an LSQ that included it as a free

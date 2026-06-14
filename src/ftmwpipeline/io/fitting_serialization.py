@@ -46,6 +46,11 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage5_fitting``)::
                 audit_trail      (JSON),    -- per-window AuditStep list
                 thaw_events      (JSON),    -- per-window ThawInfo list
                 rescue_events    (JSON)     -- per-window RescueRoundInfo list
+            covariance                       [f8, shape (D,D)]
+                                                          (omitted when JᵀJ singular)
+            .attrs:
+                covariance_param_labels (JSON)  -- ordered label list, one per row/col;
+                                                   present iff covariance dataset is
             peaks/
                 peak_id                          [i8]
                 frequency_mhz                    [f8]
@@ -534,6 +539,13 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
         ]
     )
 
+    # Per-window parameter covariance (omitted when singular / unavailable).
+    cov = getattr(window_fit, "covariance", None)
+    labels = getattr(window_fit, "covariance_param_labels", None)
+    if cov is not None and labels is not None:
+        wg.create_dataset("covariance", data=np.asarray(cov, dtype="f8"))
+        wg.attrs["covariance_param_labels"] = json.dumps(list(labels))
+
     peaks_group = wg.create_group("peaks")
     _save_peak_columns(window_fit.fitted_peaks, peaks_group)
 
@@ -781,6 +793,43 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
         _json_to_doublet_alternative(blob, f"{where}/doublet_alternatives[{i}]")
         for i, blob in enumerate(raw_doublet)
     ]
+
+    # Per-window parameter covariance: omitted in older files and when JᵀJ
+    # was singular; both cases round-trip as None.
+    if "covariance" in wg:
+        cov_arr = np.asarray(wg["covariance"], dtype="f8")
+        raw_labels = wg.attrs.get("covariance_param_labels")
+        if raw_labels is None:
+            raise ValueError(
+                f"window {where!r} has 'covariance' dataset but is missing "
+                "the 'covariance_param_labels' attribute"
+            )
+        try:
+            labels_loaded: List[str] = json.loads(raw_labels)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ValueError(
+                f"window {where!r} 'covariance_param_labels' is not valid JSON"
+            ) from exc
+        if cov_arr.ndim != 2 or cov_arr.shape[0] != cov_arr.shape[1]:
+            raise ValueError(
+                f"window {where!r} covariance matrix is not square: "
+                f"shape {cov_arr.shape}"
+            )
+        if len(labels_loaded) != cov_arr.shape[0]:
+            raise ValueError(
+                f"window {where!r} covariance label count ({len(labels_loaded)}) "
+                f"does not match matrix dimension ({cov_arr.shape[0]})"
+            )
+        n_amp_labels = sum(1 for lbl in labels_loaded if lbl.startswith("amplitude_"))
+        n_fitted_peaks = len(result.fitted_peaks)
+        if n_amp_labels != n_fitted_peaks:
+            raise ValueError(
+                f"window {where!r} covariance has {n_amp_labels} amplitude "
+                f"label(s) but {n_fitted_peaks} fitted peak(s)"
+            )
+        result.covariance = cov_arr
+        result.covariance_param_labels = labels_loaded
+
     return result
 
 
