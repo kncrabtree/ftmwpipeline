@@ -348,6 +348,67 @@ class SpurSet:
         return any(abs(freq_mhz - c) <= tol for c in self.centers_mhz)
 
 
+def spur_set_from_catalogue(
+    *,
+    centers_mhz: Sequence[float],
+    sources: Sequence[str],
+    lattice: Sequence[Optional[str]] = (),
+    drift: Sequence[bool] = (),
+    per_spur_mask_half_width_bins: Sequence[Optional[int]] = (),
+    bin_spacing_mhz: float,
+    default_mask_half_width_bins: int,
+) -> SpurSet:
+    """Reconstruct a :class:`SpurSet` from a persisted Stage 5 spur catalogue.
+
+    The gated spur catalogue is a **Stage 5 product**: it is derived once
+    during the fit (frequency-domain detector + time-domain decay/chirp
+    arbitration + clock lattice) and persisted on the ``SpectrumFit``.  A
+    later stage that needs the same per-window residual mask -- a Stage 6
+    user-directed window refit -- must *replay* that catalogue rather than
+    re-running the detector, otherwise a detection-code change between the
+    original fit and the refit silently re-masks the window and the refit no
+    longer reproduces the fit it is editing.
+
+    Only the fields that drive the residual mask
+    (:meth:`SpurSet.window_mask_spec`) and candidate nomination
+    (:meth:`SpurSet.candidate_on_spur`) are reconstructed: the per-spur
+    centre, source, lattice/drift provenance, and the per-spur mask
+    half-width override.  Measurement-only fields (``snr`` /
+    ``narrowness_ratio``) are not persisted and come back ``NaN`` -- they are
+    diagnostics, never consumed by the mask.  ``bin_spacing_mhz`` is recovered
+    from the (deterministically rebuilt) active-FT grid, not persisted.
+
+    Parallel sequences shorter than ``centers_mhz`` (legacy files written
+    before a field existed) default per entry: ``lattice`` -> ``None``,
+    ``drift`` -> ``False``, ``per_spur_mask_half_width_bins`` -> ``None``
+    (the uniform ``default_mask_half_width_bins`` then applies).
+    """
+
+    def _at(seq: Sequence[Any], i: int, default: Any) -> Any:
+        return seq[i] if i < len(seq) else default
+
+    spurs_list: List[GatedSpur] = []
+    for i in range(len(centers_mhz)):
+        lat = _at(lattice, i, None)
+        hw = _at(per_spur_mask_half_width_bins, i, None)
+        spurs_list.append(
+            GatedSpur(
+                center_mhz=float(centers_mhz[i]),
+                integer_mhz=int(round(float(centers_mhz[i]))),
+                source=str(_at(sources, i, "narrow")),
+                lattice=str(lat) if lat else None,
+                drift=bool(_at(drift, i, False)),
+                mask_half_width_bins=int(hw) if hw is not None else None,
+            )
+        )
+    spurs = tuple(spurs_list)
+    return SpurSet(
+        spurs=spurs,
+        bin_spacing_mhz=float(bin_spacing_mhz),
+        mask_half_width_bins=int(default_mask_half_width_bins),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Frequency-domain detector
 # ---------------------------------------------------------------------------

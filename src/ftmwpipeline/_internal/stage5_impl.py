@@ -23,9 +23,9 @@ Wrapped identically by the CLI, Pipeline class, and functional API.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
 
 import h5py
 import numpy as np
@@ -327,6 +327,364 @@ def _build_explicit_from_kwargs(
     return explicit
 
 
+@dataclass
+class Stage5FitContext:
+    """Shared active-FT context assembled once and consumed by fit and refit.
+
+    Produced by :func:`build_stage5_fit_context` and consumed verbatim by
+    :func:`fit_peaks_impl` (the full plan executor) and
+    :func:`~ftmwpipeline._internal.stage6_impl.refit_window_impl` (the
+    single-window user-directed refit).  All arrays are in the native
+    active-FT bin order (same as ``active_ft.complex_spectrum``).
+    """
+
+    # Active-FT result (frequencies, complex spectrum, alpha, n_active, etc.)
+    active_ft: Any  # ActiveFTResult -- avoids a cyclic import at module level
+
+    # Per-bin complex RMS on the full active-FT grid (spur sweep authority).
+    active_rms: "np.ndarray"
+
+    # Per-bin complex RMS restricted to the trim (analysis) band where
+    # available; equals ``active_rms`` when no trim is present.
+    rms_for_fit: "np.ndarray"
+
+    # Ascending-frequency sort indices for the full active-FT (the spur sweep
+    # needs ascending order; 2638 has a descending grid).
+    sort_idx: "np.ndarray"
+
+    # Sideband enum resolved from the persisted FID.
+    sideband: Sideband
+
+    # Active acquisition duration T (µs).
+    acquisition_us: float
+
+    # Probe frequency (MHz) from the persisted FID.
+    probe_freq_mhz: float
+
+    # Gated spur set (``None`` when spur masking is disabled or no spurs found).
+    spur_set: Optional[Any]  # SpurSet | None
+
+    # Declared clock-lattice (``None`` when no clock declaration was present).
+    clock_lattice: Optional[Any]  # ClockLattice | None
+
+    # FID samples and sampling parameters needed by the spur probe and the
+    # active-FT recompute inside refit_window.
+    fid_samples: "np.ndarray"
+    sample_dt_us: float
+    start_us: float
+    end_us: float
+    n_padded: int
+
+    # Trim range (lo, hi) in MHz, or None when the full active-FT is the band.
+    trim_range: Optional[Tuple[float, float]]
+
+    # The persisted ComplexFT (the user's canonical Stage 1 FT, used to
+    # derive the analysis-band extent for the spur sweep).
+    user_ft: Any  # ComplexFT
+
+
+def build_stage5_fit_context(
+    file_path: str,
+    resolved: Any,  # StageFitSettings
+    persisted_cal: Optional[Any],  # TauCalibrationResult | None
+    shape_enum: Any,  # PeakShape
+    replay_spur_catalogue: Optional[Mapping[str, Any]] = None,
+) -> Stage5FitContext:
+    """Assemble the active-FT, noise, and spur-set shared context.
+
+    Extracted from :func:`fit_peaks_impl` so the single-window
+    :func:`~ftmwpipeline._internal.stage6_impl.refit_window_impl` can
+    rebuild the same context VERBATIM (same active-FT, same noise, same
+    spur set) without duplicating the assembly logic.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    resolved :
+        Fully-resolved :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
+        from the settings chain (explicit > persisted > recommended > defaults).
+    persisted_cal :
+        Persisted Stage 2b calibration result (``None`` when absent).
+    shape_enum :
+        Resolved :class:`~ftmwpipeline.fitting.peak_model.PeakShape` for the fit.
+    replay_spur_catalogue :
+        When given (a persisted ``SpectrumFit.parameters`` mapping), the gated
+        spur catalogue is **replayed** from it -- the spur detector (decay /
+        chirp probes, frequency-domain sweep, clock lattice) does NOT run.
+        The detection is a Stage 5 product; a later stage (the Stage 6
+        single-window refit) must reproduce the exact mask the fit used rather
+        than re-deriving a possibly-drifted catalogue.  ``None`` (the
+        production first-fit path) runs the full detector.
+
+    Returns
+    -------
+    Stage5FitContext
+        Self-contained shared context ready for :func:`execute_plan` or a
+        single-window refit.
+    """
+    from ..fitting.active_ft import compute_active_ft
+    from ..fitting.clock_lattice import build_clock_lattice
+    from ..fitting.spur_detection import (
+        SpurSet,
+        build_spur_set,
+        make_band_power_probe,
+        make_chirp_response_probe,
+        make_decay_probe,
+        spur_set_from_catalogue,
+    )
+    from ..io.fid_serialization import load_acquisition_segments_from_hdf5
+    from ..preprocessing.noise_estimation import estimate_active_ft_noise
+    from .active_ft_support import _persisted_scatter_knobs
+
+    (
+        fid_samples,
+        sample_dt_us,
+        start_us,
+        end_us,
+        probe_freq_mhz,
+        sideband,
+        n_padded,
+        acquisition_us,
+        user_ft,
+        trim_range,
+    ) = _build_active_ft_inputs(file_path)
+
+    active_ft = compute_active_ft(
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband,
+        n_padded=n_padded,
+    )
+
+    scatter_knobs = _persisted_scatter_knobs(file_path)
+    active_rms = np.asarray(
+        estimate_active_ft_noise(
+            active_ft.freq_mhz,
+            active_ft.complex_spectrum,
+            **scatter_knobs,
+        ).rms_noise,
+        dtype=float,
+    )
+    rms_for_fit = active_rms
+    if trim_range is not None:
+        freq_arr = np.asarray(active_ft.freq_mhz, dtype=float)
+        in_band = (freq_arr >= float(min(trim_range))) & (
+            freq_arr <= float(max(trim_range))
+        )
+        if bool(in_band.any()) and not bool(in_band.all()):
+            rms_for_fit = active_rms.copy()
+            rms_for_fit[in_band] = np.asarray(
+                estimate_active_ft_noise(
+                    freq_arr[in_band],
+                    np.asarray(active_ft.complex_spectrum)[in_band],
+                    **scatter_knobs,
+                ).rms_noise,
+                dtype=float,
+            )
+
+    sort_idx = np.argsort(active_ft.freq_mhz)
+    sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
+
+    # --- Spur gating (optional) ------------------------------------------
+    spur_set: Optional[Any] = None
+    clock_lattice: Optional[Any] = None
+    spur_cfg = resolved.spur
+    spur_enabled = True if spur_cfg.enabled is None else bool(spur_cfg.enabled)
+    if spur_enabled and replay_spur_catalogue is not None:
+        # Replay the persisted Stage 5 gated catalogue verbatim (no detection):
+        # the catalogue is a Stage 5 product, so a later-stage refit reproduces
+        # the exact residual mask the fit used instead of re-deriving it.
+        cat = replay_spur_catalogue
+        bin_spacing = (
+            float(np.median(np.abs(np.diff(sorted_freq))))
+            if sorted_freq.size > 1
+            else 0.0
+        )
+        spur_set = spur_set_from_catalogue(
+            centers_mhz=list(cat.get("spur_centers_mhz", []) or []),
+            sources=list(cat.get("spur_sources", []) or []),
+            lattice=list(cat.get("spur_lattice", []) or []),
+            drift=list(cat.get("spur_drift", []) or []),
+            per_spur_mask_half_width_bins=list(
+                cat.get("spur_mask_half_width_bins_per_spur", []) or []
+            ),
+            bin_spacing_mhz=bin_spacing,
+            default_mask_half_width_bins=int(
+                cat.get("spur_mask_half_width_bins", 0) or 0
+            ),
+        )
+        logger.info(
+            "Stage 5 spur masking: replayed %d persisted gated spur(s) "
+            "(no re-detection)",
+            len(spur_set.spurs),
+        )
+    elif spur_enabled:
+        use_catalogue = (
+            True
+            if spur_cfg.use_stft_catalogue is None
+            else bool(spur_cfg.use_stft_catalogue)
+        )
+        saturated_clusters = (
+            persisted_cal.spur_clusters
+            if (persisted_cal is not None and use_catalogue)
+            else ()
+        )
+        sorted_sig_c = active_rms[sort_idx] / np.sqrt(2.0)
+        spur_band = (
+            float(np.min(user_ft.freq_array)),
+            float(np.max(user_ft.freq_array)),
+        )
+        decay_probe = make_decay_probe(
+            fid_samples,
+            sample_dt_us,
+            start_us=start_us,
+            end_us=end_us,
+            probe_freq_mhz=probe_freq_mhz,
+            sideband=sideband,
+        )
+        chirp_response_probe = None
+        with h5py.File(file_path, "r") as h5f:
+            if "stage0_fid_data" in h5f:
+                acq_segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
+                if acq_segs is not None:
+                    excluded_comb: Optional[List[float]] = None
+                    if acq_segs.interleave_patterns is not None:
+                        excluded_comb = [
+                            1.0 / (m * acq_segs.sample_dt) / 1e6
+                            for m in acq_segs.interleave_patterns.keys()
+                        ]
+                        logger.info(
+                            "Stage 5 spur masking: excluding %d comb spacing(s) "
+                            "from chirp-response probe (interleave cleanup): %s MHz",
+                            len(excluded_comb),
+                            ", ".join(f"{sp:.3f}" for sp in excluded_comb),
+                        )
+                    chirp_response_probe = make_chirp_response_probe(
+                        acq_segs.pre_record,
+                        fid_samples,
+                        sample_dt_us,
+                        start_us=start_us,
+                        end_us=end_us,
+                        probe_freq_mhz=probe_freq_mhz,
+                        sideband=sideband,
+                        excluded_comb_mhz=excluded_comb,
+                    )
+                    logger.info(
+                        "Stage 5 spur masking: chirp-response probe built "
+                        "from pre-record (%d samples, %.2f µs)",
+                        acq_segs.pre_record.size,
+                        acq_segs.pre_record_us,
+                    )
+        integer_tol_v = _required_float(
+            spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
+        )
+        band_power_probe = None
+        lattice_kwargs: Dict[str, Any] = {}
+        if spur_cfg.clocks:
+            drift_window_v = _required_float(
+                spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
+            )
+            clock_lattice = build_clock_lattice(
+                spur_cfg.clocks,
+                probe_freq_mhz=probe_freq_mhz,
+                sideband=sideband,
+                band=spur_band,
+                tol_mhz=integer_tol_v,
+                drift_window_mhz=drift_window_v,
+            )
+            band_power_probe = make_band_power_probe(
+                fid_samples,
+                sample_dt_us,
+                start_us=start_us,
+                end_us=end_us,
+                probe_freq_mhz=probe_freq_mhz,
+                sideband=sideband,
+                half_mhz=drift_window_v,
+            )
+            lattice_kwargs = {
+                "lattice": clock_lattice,
+                "band_power_probe": band_power_probe,
+                "lattice_decay_ratio": _required_float(
+                    spur_cfg.lattice_decay_ratio, "spur.lattice_decay_ratio"
+                ),
+                "drift_band_ratio": _required_float(
+                    spur_cfg.drift_band_ratio, "spur.drift_band_ratio"
+                ),
+                "drift_min_snr": _required_float(
+                    spur_cfg.drift_min_snr, "spur.drift_min_snr"
+                ),
+            }
+        spur_set = build_spur_set(
+            sorted_freq,
+            np.ascontiguousarray(active_ft.complex_spectrum[sort_idx]),
+            sorted_sig_c,
+            band=spur_band,
+            saturated_clusters=saturated_clusters,
+            integer_tol_mhz=integer_tol_v,
+            narrowness_ratio=_required_float(
+                spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
+            ),
+            snr_threshold=_required_float(spur_cfg.snr_threshold, "spur.snr_threshold"),
+            mask_half_width_bins=_required_int(
+                spur_cfg.mask_half_width_bins, "spur.mask_half_width_bins"
+            ),
+            use_stft_catalogue=use_catalogue,
+            decay_probe=decay_probe,
+            chirp_response_probe=chirp_response_probe,
+            chirp_response_gate_ratio=_required_float(
+                spur_cfg.chirp_response_gate_ratio,
+                "spur.chirp_response_gate_ratio",
+            ),
+            chirp_response_protect_ratio=_required_float(
+                spur_cfg.chirp_response_protect_ratio,
+                "spur.chirp_response_protect_ratio",
+            ),
+            mask_target_residual_snr=_required_float(
+                spur_cfg.mask_target_residual_snr,
+                "spur.mask_target_residual_snr",
+            ),
+            mask_max_half_width_bins=_required_int(
+                spur_cfg.mask_max_half_width_bins,
+                "spur.mask_max_half_width_bins",
+            ),
+            **lattice_kwargs,
+        )
+        if spur_set:
+            logger.info(
+                "Stage 5 spur masking: %d gated spur(s) "
+                "(sources: %s); mask half-width %d bins, catalogue=%s",
+                len(spur_set.spurs),
+                ", ".join(sorted({s.source for s in spur_set.spurs})),
+                spur_set.mask_half_width_bins,
+                "on" if (use_catalogue and saturated_clusters) else "off",
+            )
+        else:
+            logger.info("Stage 5 spur masking: enabled, no spurs gated")
+
+    return Stage5FitContext(
+        active_ft=active_ft,
+        active_rms=active_rms,
+        rms_for_fit=rms_for_fit,
+        sort_idx=sort_idx,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        probe_freq_mhz=probe_freq_mhz,
+        spur_set=spur_set,
+        clock_lattice=clock_lattice,
+        fid_samples=fid_samples,
+        sample_dt_us=sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        n_padded=n_padded,
+        trim_range=trim_range,
+        user_ft=user_ft,
+    )
+
+
 def fit_peaks_impl(
     file_path: str,
     tau0_us: Optional[float] = None,
@@ -581,73 +939,6 @@ def fit_peaks_impl(
     peaks = peaks_loaded["peaks"]
     peak_frequencies_mhz = [float(p.frequency) for p in peaks]
 
-    # --- Build the active-FT and measure noise directly on it --------------
-    (
-        fid_samples,
-        sample_dt_us,
-        start_us,
-        end_us,
-        probe_freq_mhz,
-        sideband,
-        n_padded,
-        acquisition_us,
-        user_ft,
-        trim_range,
-    ) = _build_active_ft_inputs(file_path)
-
-    active_ft = compute_active_ft(
-        fid_samples,
-        sample_dt_us,
-        start_us=start_us,
-        end_us=end_us,
-        probe_freq_mhz=probe_freq_mhz,
-        sideband=sideband,
-        n_padded=n_padded,
-    )
-
-    # Scatter noise on the *full* active-FT grid -- the spur sweep operates
-    # over the whole grid (out-of-band clock anchors included) and its
-    # nomination floor is calibrated on this estimate. The wrapper
-    # sorts/un-sorts internally, returning sigma on the active-FT bin order
-    # so it lines up with active_ft.complex_spectrum element-for-element.
-    scatter_knobs = _persisted_scatter_knobs(file_path)
-    active_rms = np.asarray(
-        estimate_active_ft_noise(
-            active_ft.freq_mhz,
-            active_ft.complex_spectrum,
-            **scatter_knobs,
-        ).rms_noise,
-        dtype=float,
-    )
-    # Fit weighting rides the canonical noise authority instead: sigma
-    # measured on the trimmed analysis band alone, exactly as Stage 2
-    # persists it (D9). The full active grid extends far beyond the trim,
-    # and out-of-band bins -- no chirp energy, often a different analog/ADC
-    # noise floor -- can sit several-fold below the in-band floor
-    # (direct-sampling instruments especially). Folding them into one
-    # region-aware estimate drags the in-band sigma down and inflates every
-    # downstream significance test, so the in-band sigma is re-measured on
-    # the band by itself.
-    rms_for_fit = active_rms
-    if trim_range is not None:
-        freq_arr = np.asarray(active_ft.freq_mhz, dtype=float)
-        in_band = (freq_arr >= float(min(trim_range))) & (
-            freq_arr <= float(max(trim_range))
-        )
-        if bool(in_band.any()) and not bool(in_band.all()):
-            rms_for_fit = active_rms.copy()
-            rms_for_fit[in_band] = np.asarray(
-                estimate_active_ft_noise(
-                    freq_arr[in_band],
-                    np.asarray(active_ft.complex_spectrum)[in_band],
-                    **scatter_knobs,
-                ).rms_noise,
-                dtype=float,
-            )
-    # Ascending-sorted views the spur sweep operates on (2638 is descending).
-    sort_idx = np.argsort(active_ft.freq_mhz)
-    sorted_freq = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-
     # --- Stage 2b calibration (optional) ------------------------------------
     # When present, ``tau_maj`` and ``sigma_tau`` drive the per-window tau
     # bounds and the bidirectional Gaussian-prior anchoring penalty. Stage 5
@@ -716,191 +1007,25 @@ def fit_peaks_impl(
             sigma_tau_us,
         )
 
-    # --- Spur gating (optional) ---------------------------------------------
-    # Build the gated clock/LO-spur set once: the frequency-domain
-    # integer-MHz + narrowness detector on the active-FT, joined with the
-    # persisted Stage 2b flat-spur (``saturated``) catalogue when present
-    # (same auto-detect pattern as ``tau_maj``). Absent Stage 2b, the
-    # detector runs frequency-domain-only. The executor derives each
-    # window's mask + nomination exclusion from this set.
-    spur_set: Optional[SpurSet] = None
-    spur_cfg = resolved.spur
-    spur_enabled = True if spur_cfg.enabled is None else bool(spur_cfg.enabled)
-    if spur_enabled:
-        use_catalogue = (
-            True
-            if spur_cfg.use_stft_catalogue is None
-            else bool(spur_cfg.use_stft_catalogue)
-        )
-        saturated_clusters = (
-            persisted_cal.spur_clusters
-            if (persisted_cal is not None and use_catalogue)
-            else ()
-        )
-        # σ_c per quadrature (active-FT authority complex RMS / sqrt(2)), the
-        # SNR-floor convention the detector's threshold was calibrated on.
-        sorted_sig_c = active_rms[sort_idx] / np.sqrt(2.0)
-        # Restrict the integer-MHz sweep to the user analysis (trim) band: the
-        # fit windows all live there, and the full active-FT extends past the
-        # trim into edge regions whose integer-MHz narrow bins are artifacts,
-        # not clock harmonics the fit ever sees.
-        spur_band = (
-            float(np.min(user_ft.freq_array)),
-            float(np.max(user_ft.freq_array)),
-        )
-        # Time-domain decay probe: the FID is in hand, so every spur verdict
-        # is arbitrated against the physics (a spur does not decay) -- the
-        # narrow path cannot eat a real line that sits near an integer MHz,
-        # and probe-confirmed flat tones are masked at any frequency. See
-        # :func:`~ftmwpipeline.fitting.spur_detection.make_decay_probe`.
-        decay_probe = make_decay_probe(
-            fid_samples,
-            sample_dt_us,
-            start_us=start_us,
-            end_us=end_us,
-            probe_freq_mhz=probe_freq_mhz,
-            sideband=sideband,
-        )
-        # Chirp-response pre-record anchor: built only when acquisition
-        # segments are present in the file (scope records with a stored
-        # pre-record segment). Files without segments produce None here, and
-        # gate_spurs is byte-identical to before. When present, the probe
-        # ranks above the decay probe because modulated carriers can mimic
-        # FID decay and fool the coherent demod. See
-        # ``dev-docs/planning/scope-record-import.md`` §"Spur lane".
-        chirp_response_probe = None
-        with h5py.File(file_path, "r") as h5f:
-            if "stage0_fid_data" in h5f:
-                acq_segs = load_acquisition_segments_from_hdf5(h5f["stage0_fid_data"])
-                if acq_segs is not None:
-                    # Derive the interleave-cleanup comb spacings so the
-                    # chirp-response probe skips frequencies whose pre-record
-                    # absence was manufactured by the offset cleanup: the
-                    # cleanup estimates per-phase means on the pre-record and
-                    # subtracts the tiled pattern, which nulls the fs/M comb
-                    # lines in the stored pre-record exactly (by construction),
-                    # while the FID frames retain the signal-path remainder.
-                    # Without exclusion a real clock spur at such a frequency
-                    # would read ratio ≈ 0 → protect, vetoing the correct gate.
-                    excluded_comb: Optional[List[float]] = None
-                    if acq_segs.interleave_patterns is not None:
-                        # sample_dt is in seconds; convert spacing to MHz.
-                        excluded_comb = [
-                            1.0 / (m * acq_segs.sample_dt) / 1e6
-                            for m in acq_segs.interleave_patterns.keys()
-                        ]
-                        logger.info(
-                            "Stage 5 spur masking: excluding %d comb spacing(s) "
-                            "from chirp-response probe (interleave cleanup): %s MHz",
-                            len(excluded_comb),
-                            ", ".join(f"{sp:.3f}" for sp in excluded_comb),
-                        )
-                    chirp_response_probe = make_chirp_response_probe(
-                        acq_segs.pre_record,
-                        fid_samples,
-                        sample_dt_us,
-                        start_us=start_us,
-                        end_us=end_us,
-                        probe_freq_mhz=probe_freq_mhz,
-                        sideband=sideband,
-                        excluded_comb_mhz=excluded_comb,
-                    )
-                    logger.info(
-                        "Stage 5 spur masking: chirp-response probe built "
-                        "from pre-record (%d samples, %.2f µs)",
-                        acq_segs.pre_record.size,
-                        acq_segs.pre_record_us,
-                    )
-        integer_tol_v = _required_float(
-            spur_cfg.integer_tol_mhz, "spur.integer_tol_mhz"
-        )
-        # Clock-lattice prior: a non-empty declaration replaces the
-        # integer-MHz nomination anchor with the locked-clock intermod
-        # lattice, adds the unlocked-clock drifting lane (arbitrated by the
-        # drift-tolerant band-power probe), and flips the on-lattice
-        # evidence bar. An empty/absent declaration leaves the call
-        # byte-identical to the legacy integer-MHz gate. See
-        # ``dev-docs/planning/instrument-clock-declaration.md``.
-        clock_lattice = None
-        band_power_probe = None
-        lattice_kwargs: Dict[str, Any] = {}
-        if spur_cfg.clocks:
-            drift_window_v = _required_float(
-                spur_cfg.drift_window_mhz, "spur.drift_window_mhz"
-            )
-            clock_lattice = build_clock_lattice(
-                spur_cfg.clocks,
-                probe_freq_mhz=probe_freq_mhz,
-                sideband=sideband,
-                band=spur_band,
-                tol_mhz=integer_tol_v,
-                drift_window_mhz=drift_window_v,
-            )
-            band_power_probe = make_band_power_probe(
-                fid_samples,
-                sample_dt_us,
-                start_us=start_us,
-                end_us=end_us,
-                probe_freq_mhz=probe_freq_mhz,
-                sideband=sideband,
-                half_mhz=drift_window_v,
-            )
-            lattice_kwargs = {
-                "lattice": clock_lattice,
-                "band_power_probe": band_power_probe,
-                "lattice_decay_ratio": _required_float(
-                    spur_cfg.lattice_decay_ratio, "spur.lattice_decay_ratio"
-                ),
-                "drift_band_ratio": _required_float(
-                    spur_cfg.drift_band_ratio, "spur.drift_band_ratio"
-                ),
-                "drift_min_snr": _required_float(
-                    spur_cfg.drift_min_snr, "spur.drift_min_snr"
-                ),
-            }
-        spur_set = build_spur_set(
-            sorted_freq,
-            np.ascontiguousarray(active_ft.complex_spectrum[sort_idx]),
-            sorted_sig_c,
-            band=spur_band,
-            saturated_clusters=saturated_clusters,
-            integer_tol_mhz=integer_tol_v,
-            narrowness_ratio=_required_float(
-                spur_cfg.narrowness_ratio, "spur.narrowness_ratio"
-            ),
-            snr_threshold=_required_float(spur_cfg.snr_threshold, "spur.snr_threshold"),
-            mask_half_width_bins=_required_int(
-                spur_cfg.mask_half_width_bins, "spur.mask_half_width_bins"
-            ),
-            use_stft_catalogue=use_catalogue,
-            decay_probe=decay_probe,
-            chirp_response_probe=chirp_response_probe,
-            chirp_response_gate_ratio=_required_float(
-                spur_cfg.chirp_response_gate_ratio, "spur.chirp_response_gate_ratio"
-            ),
-            chirp_response_protect_ratio=_required_float(
-                spur_cfg.chirp_response_protect_ratio,
-                "spur.chirp_response_protect_ratio",
-            ),
-            mask_target_residual_snr=_required_float(
-                spur_cfg.mask_target_residual_snr, "spur.mask_target_residual_snr"
-            ),
-            mask_max_half_width_bins=_required_int(
-                spur_cfg.mask_max_half_width_bins, "spur.mask_max_half_width_bins"
-            ),
-            **lattice_kwargs,
-        )
-        if spur_set:
-            logger.info(
-                "Stage 5 spur masking: %d gated spur(s) "
-                "(sources: %s); mask half-width %d bins, catalogue=%s",
-                len(spur_set.spurs),
-                ", ".join(sorted({s.source for s in spur_set.spurs})),
-                spur_set.mask_half_width_bins,
-                "on" if (use_catalogue and saturated_clusters) else "off",
-            )
-        else:
-            logger.info("Stage 5 spur masking: enabled, no spurs gated")
+    # --- Build the active-FT, noise, and spur context ----------------------
+    # Extracted into a reusable helper so the single-window Stage 6 refit can
+    # rebuild the same context verbatim (same active-FT, same noise, same spur
+    # set) without duplicating any assembly logic.  ``persisted_cal`` and
+    # ``resolved`` are resolved above before this call and forwarded verbatim.
+    fit_ctx = build_stage5_fit_context(file_path, resolved, persisted_cal, shape_enum)
+    active_ft = fit_ctx.active_ft
+    active_rms = fit_ctx.active_rms
+    rms_for_fit = fit_ctx.rms_for_fit
+    sideband = fit_ctx.sideband
+    acquisition_us = fit_ctx.acquisition_us
+    spur_set = fit_ctx.spur_set
+    clock_lattice = fit_ctx.clock_lattice
+    trim_range = fit_ctx.trim_range
+    # Derive the spur-enabled flag from the resolved settings so the parameters
+    # dict below can record it without the helper needing to return it.
+    spur_enabled: bool = (
+        True if resolved.spur.enabled is None else bool(resolved.spur.enabled)
+    )
 
     # --- tau0 default --------------------------------------------------------
     # The global seed is the band-wide Stage 2b ``tau_maj`` when a calibration
@@ -1176,6 +1301,23 @@ def fit_peaks_impl(
         "spur_drift": ([bool(s.drift) for s in spur_set.spurs] if spur_set else []),
         "spur_mask_half_width_bins": (
             int(spur_set.mask_half_width_bins) if spur_set else 0
+        ),
+        # Per-spur SNR-scaled mask half-width override (parallel to
+        # ``spur_centers_mhz``; null where the uniform default applies). A
+        # later stage replays the gated catalogue rather than re-deriving it
+        # (the detection is a Stage 5 product), so the per-spur widths must
+        # round-trip for the residual mask to reconstruct exactly.
+        "spur_mask_half_width_bins_per_spur": (
+            [
+                (
+                    int(s.mask_half_width_bins)
+                    if s.mask_half_width_bins is not None
+                    else None
+                )
+                for s in spur_set.spurs
+            ]
+            if spur_set
+            else []
         ),
         # Leakage-wing baseline audit: the settings this fit consumed plus
         # how many windows the evidence trigger actually fired on.
