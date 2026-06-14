@@ -129,6 +129,8 @@ __all__ = [
     "local_thaw_cofit",
     "attempt_thaw_round",
     "execute_plan",
+    "build_window_outcome",
+    "fit_seeds_window_outcome",
 ]
 
 NoiseLike = Union[float, np.ndarray]
@@ -1087,6 +1089,233 @@ def residual_edge_coherence(
     low = coherence_statistic(z[:m], low_sigma)
     high = coherence_statistic(z[-m:], high_sigma)
     return low, high
+
+
+# ---------------------------------------------------------------------------
+# Shared window-outcome construction core
+# ---------------------------------------------------------------------------
+def build_window_outcome(
+    fit_result: ConservativeFitResult,
+    window_id: int,
+    fixed_peaks: list[FrozenPeak],
+    offset_grid: np.ndarray,
+    z_slice: np.ndarray,
+    sig_slice: np.ndarray,
+    background: np.ndarray,
+    full_fitted: np.ndarray,
+    full_residual: np.ndarray,
+    residual_edge_m: int,
+    center_mhz: float,
+    spur_mask: "Optional[Any]",
+) -> WindowOutcome:
+    """Construct a :class:`WindowOutcome` from already-computed fit pieces.
+
+    This is the shared tail of :func:`_fit_one_window` and
+    :func:`fit_seeds_window_outcome`: given the free-peak fit result, the
+    frozen background, and the full model / residual on the window grid, it
+    computes the residual edge-coherence statistics, assembles the
+    :class:`WindowOutcome`, and stashes the window center and spur mask as
+    dynamic attributes so downstream consumers can locate the window without
+    re-materialising it.
+
+    The caller is responsible for any post-construction extras (e.g.
+    mirroring the early-baseline fields in :func:`_fit_one_window`, or
+    converting the outcome to a :class:`FittingResult` in
+    :func:`fit_seeds_window_outcome`).
+
+    Parameters
+    ----------
+    fit_result :
+        The free-peak fit against ``z_slice - background``, wrapped as a
+        :class:`ConservativeFitResult`.
+    window_id :
+        :class:`FitWindow` identifier.
+    fixed_peaks :
+        Frozen contributors used in this window.
+    offset_grid :
+        Baseband-offset grid (MHz) of the window.
+    z_slice :
+        Complex active-FT data over the window (before background subtraction).
+    sig_slice :
+        Per-bin complex noise RMS over the window.
+    background :
+        Frozen-contributor model on ``offset_grid``.
+    full_fitted :
+        ``free_model + background`` — the complete predicted spectrum.
+    full_residual :
+        ``z_slice - full_fitted``.
+    residual_edge_m :
+        Band width (bins) for the residual edge-coherence test.
+    center_mhz :
+        Molecular centre of the window (MHz); stashed as ``outcome._center_mhz``.
+    spur_mask :
+        Per-window spur mask (or ``None``); stashed as ``outcome._spur_mask``.
+
+    Returns
+    -------
+    WindowOutcome
+        Fully populated outcome with ``_center_mhz`` and ``_spur_mask``
+        dynamic attributes set.
+    """
+    low_coh, high_coh = residual_edge_coherence(
+        full_residual, sig_slice, band_m=residual_edge_m
+    )
+    outcome = WindowOutcome(
+        window_id=window_id,
+        fit=fit_result,
+        fixed_peaks=fixed_peaks,
+        offset_grid_mhz=offset_grid,
+        complex_spectrum=z_slice,
+        rms_noise=sig_slice,
+        background=background,
+        full_fitted_spectrum=full_fitted,
+        full_residual=full_residual,
+        edge_coherence_low=low_coh,
+        edge_coherence_high=high_coh,
+    )
+    # Stash the centre so this outcome can serve as a primary for downstream
+    # windows. See _window_center_mhz for the contract.
+    outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
+    # Stash the per-window spur mask so the rescue pass (and the refit) mask
+    # the same bins.
+    outcome._spur_mask = spur_mask  # type: ignore[attr-defined]
+    return outcome
+
+
+def fit_seeds_window_outcome(
+    offset_grid: np.ndarray,
+    z_slice: np.ndarray,
+    sig_slice: np.ndarray,
+    center_mhz: float,
+    background: np.ndarray,
+    data_minus_bg: np.ndarray,
+    fixed_peaks: list[FrozenPeak],
+    seed_peaks: list[ModelPeak],
+    tau0_us: float,
+    acquisition_us: float,
+    fw_kwargs: dict[str, Any],
+    spur_mask: "Optional[Any]",
+    n_eff_kind: str,
+    residual_edge_m: int,
+    window_id: int,
+) -> WindowOutcome:
+    """Bare given-set refit core: one ``fit_window`` + ``knockout_test`` → ``WindowOutcome``.
+
+    Runs a single joint NLS over ``seed_peaks`` (no conservative add-one-peak
+    search, no rescue, no thaw), wraps the result in a
+    :class:`ConservativeFitResult` (empty ``audit_trail``), computes the full
+    model and residual, and delegates to :func:`build_window_outcome`.
+
+    This captures exactly what :func:`~ftmwpipeline._internal.stage6_impl.refit_window_impl`'s
+    inner fit body does (lines that mirror :func:`_fit_one_window`).  Both the
+    Stage 6 user-directed refit and the forthcoming survival-pass refits route
+    through this core; the conservative add-one-peak *search* in
+    :func:`_fit_one_window` stays as orchestration above it.
+
+    Parameters
+    ----------
+    offset_grid :
+        Baseband-offset grid (MHz) of the window.
+    z_slice :
+        Complex active-FT data over the window (before background subtraction).
+    sig_slice :
+        Per-bin complex noise RMS over the window.
+    center_mhz :
+        Molecular centre of the window (MHz).
+    background :
+        Frozen-contributor model on ``offset_grid``.
+    data_minus_bg :
+        ``z_slice - background``; pre-computed by the caller so the frozen
+        background derivation is not repeated.
+    fixed_peaks :
+        Frozen contributors used in this window (carried verbatim onto the
+        :class:`WindowOutcome`).
+    seed_peaks :
+        Initial :class:`ModelPeak` objects for the NLS.
+    tau0_us :
+        Starting decay constant (µs) for the fit.
+    acquisition_us :
+        Active-FID length (µs).
+    fw_kwargs :
+        Keyword arguments forwarded to :func:`~ftmwpipeline.fitting.window_fit.fit_window`
+        (must include ``fit_tau``, ``shape``, penalty lambdas, etc.).
+        If ``"spur_mask"`` is present it is stripped for the inner
+        :func:`~ftmwpipeline.fitting.window_fit.knockout_test` refit.
+    spur_mask :
+        Per-window spur mask forwarded to ``knockout_test`` directly.
+    n_eff_kind :
+        Effective-count kind string for ``knockout_test``.
+    residual_edge_m :
+        Band width (bins) for the residual edge-coherence test.
+    window_id :
+        :class:`FitWindow` identifier.
+
+    Returns
+    -------
+    WindowOutcome
+        Outcome with ``_center_mhz`` and ``_spur_mask`` stashed; caller
+        converts it to a :class:`FittingResult` as needed.
+    """
+    from .peak_model import model_spectrum
+    from .window_fit import evaluate_baseline, knockout_test
+
+    fit_result: WindowFitResult = fit_window(
+        offset_grid,
+        data_minus_bg,
+        sig_slice,
+        initial_peaks=seed_peaks,
+        tau0_us=tau0_us,
+        acquisition_us=acquisition_us,
+        **fw_kwargs,
+    )
+
+    # ``knockout_test`` passes tau0_us / acquisition_us positionally and
+    # spur_mask explicitly; strip spur_mask from the inner kwargs so it does
+    # not collide on the multi-peak refit path.
+    knockout_inner = {k: v for k, v in fw_kwargs.items() if k != "spur_mask"}
+    knockouts = knockout_test(
+        offset_grid,
+        data_minus_bg,
+        sig_slice,
+        fit_result,
+        acquisition_us,
+        fit_kwargs_inner=knockout_inner,
+        spur_mask=spur_mask,
+        n_eff_kind=n_eff_kind,
+    )
+
+    # Wrap in ConservativeFitResult (empty audit_trail -- this is a joint
+    # refit, not a conservative loop; audit provenance lives in the caller).
+    conservative_result = ConservativeFitResult(
+        fit=fit_result,
+        audit_trail=[],
+        knockouts=knockouts,
+    )
+
+    free_model = model_spectrum(
+        offset_grid,
+        conservative_result.fit.peaks,
+        conservative_result.fit.tau_us,
+        acquisition_us,
+        shape=conservative_result.fit.shape,
+    ) + evaluate_baseline(conservative_result.fit, offset_grid)
+    full_fitted = free_model + background
+    full_residual = z_slice - full_fitted
+
+    return build_window_outcome(
+        conservative_result,
+        window_id,
+        fixed_peaks,
+        offset_grid,
+        z_slice,
+        sig_slice,
+        background,
+        full_fitted,
+        full_residual,
+        residual_edge_m,
+        center_mhz,
+        spur_mask,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2325,21 +2554,19 @@ def _fit_one_window(
             full_residual = ef_residual
             fixed_peaks = fixed_peaks + edge_free_peaks
             edge_free_accepted = True
-    low_coh, high_coh = residual_edge_coherence(
-        full_residual, sig_slice, band_m=residual_edge_m
-    )
-    outcome = WindowOutcome(
-        window_id=win.window_id,
-        fit=fit_result,
-        fixed_peaks=fixed_peaks,
-        offset_grid_mhz=offset_grid,
-        complex_spectrum=z_slice,
-        rms_noise=sig_slice,
-        background=background,
-        full_fitted_spectrum=full_fitted,
-        full_residual=full_residual,
-        edge_coherence_low=low_coh,
-        edge_coherence_high=high_coh,
+    outcome = build_window_outcome(
+        fit_result,
+        win.window_id,
+        fixed_peaks,
+        offset_grid,
+        z_slice,
+        sig_slice,
+        background,
+        full_fitted,
+        full_residual,
+        residual_edge_m,
+        center_mhz,
+        spur_mask,
     )
     # An early (conservative-phase) leakage-wing baseline is part of the
     # persisted model: mirror it onto the outcome's audit fields so
@@ -2353,16 +2580,11 @@ def _fit_one_window(
         outcome.baseline_coeffs = fit_result.fit.baseline_coeffs
         outcome.baseline_offset_scale = fit_result.fit.baseline_offset_scale
         outcome.baseline_edge_coherence = float(
-            max(low_coh, high_coh)
-            if np.isfinite(low_coh) and np.isfinite(high_coh)
+            max(outcome.edge_coherence_low, outcome.edge_coherence_high)
+            if np.isfinite(outcome.edge_coherence_low)
+            and np.isfinite(outcome.edge_coherence_high)
             else 0.0
         )
-    # Stash the center on the outcome so it can be a primary for downstream
-    # windows. See _window_center_mhz for the contract.
-    outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
-    # Stash the per-window spur mask so the rescue pass excludes the same
-    # bins (it operates on this outcome's grid/center).
-    outcome._spur_mask = spur_mask  # type: ignore[attr-defined]
     # Diagnostic: whether the evidence-triggered edge-free skirt was adopted.
     outcome._edge_free_accepted = edge_free_accepted  # type: ignore[attr-defined]
     return outcome

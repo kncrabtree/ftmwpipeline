@@ -656,20 +656,12 @@ def refit_window_impl(
     from ..fitting.peak_model import PeakShape
     from ..fitting.plan_execution import (
         FrozenPeak,
-        WindowOutcome,
+        fit_seeds_window_outcome,
         materialize_window,
-        residual_edge_coherence,
         subtract_frozen_background,
     )
     from ..fitting.result_conversion import window_outcome_to_fitting_result
-    from ..fitting.window_fit import (
-        ConservativeFitResult,
-        KnockoutResult,
-        WindowFitResult,
-        derive_window_fit_constraints,
-        fit_window,
-        knockout_test,
-    )
+    from ..fitting.window_fit import derive_window_fit_constraints
     from ..io.fitting_serialization import (
         load_spectrum_fit_from_hdf5,
         save_spectrum_fit_to_hdf5,
@@ -1121,43 +1113,7 @@ def refit_window_impl(
     final_seeds = [mp for mp, _ in seed_peaks_with_origin]
     origin_flags = [orig for _, orig in seed_peaks_with_origin]
 
-    # --- Single joint NLS over the seeded set (production fit_window) ------
-    fit_result: WindowFitResult = fit_window(
-        offset_grid,
-        data_minus_bg,
-        sig_slice,
-        initial_peaks=final_seeds,
-        tau0_us=tau0_for_window,
-        acquisition_us=acquisition_us,
-        **fw_kwargs,  # type: ignore[arg-type]
-    )
-
-    # Run knockout test to populate KnockoutResult per peak. ``knockout_test``
-    # passes ``tau0_us``/``acquisition_us`` (positionally) and ``spur_mask``
-    # (explicitly) into its inner ``fit_window`` refits, so ``fit_kwargs_inner``
-    # must carry only the *other* fit_window kwargs -- including any of those
-    # here would collide ("multiple values for argument") on the multi-peak
-    # path where the refit actually runs.
-    knockout_inner = {k: v for k, v in fw_kwargs.items() if k != "spur_mask"}
-    knockouts = knockout_test(
-        offset_grid,
-        data_minus_bg,
-        sig_slice,
-        fit_result,
-        acquisition_us,
-        fit_kwargs_inner=knockout_inner,
-        spur_mask=spur_mask,
-        n_eff_kind=n_eff_kind_v,
-    )
-
-    # Wrap in ConservativeFitResult (empty audit_trail — this is a joint refit,
-    # not a conservative loop; the audit provenance is the user decision log).
-    conservative_result = ConservativeFitResult(
-        fit=fit_result,
-        audit_trail=[],
-        knockouts=knockouts,
-    )
-
+    # --- Single joint NLS over the seeded set → WindowOutcome ---------------
     # A user refit is NLS-only: it holds the persisted peak set (plus/minus the
     # user's edit) and re-converges it. It deliberately does NOT run residual
     # rescue / discovery -- that pass re-litigates the whole window (it would
@@ -1167,42 +1123,23 @@ def refit_window_impl(
     # ``protected_offsets`` / ``forbidden_offsets`` are computed above for the
     # edit bookkeeping but no automatic add/prune pass runs here to consult
     # them.
-    final_conservative = conservative_result
-
-    # --- Build WindowOutcome (no thaw, no baseline re-fit in user refit) ---
-    from ..fitting.peak_model import model_spectrum
-    from ..fitting.window_fit import evaluate_baseline
-
-    free_model = model_spectrum(
+    outcome = fit_seeds_window_outcome(
         offset_grid,
-        final_conservative.fit.peaks,
-        final_conservative.fit.tau_us,
-        acquisition_us,
-        shape=shape_enum,
-    ) + evaluate_baseline(final_conservative.fit, offset_grid)
-    full_fitted = free_model + background
-    full_residual = z_slice - full_fitted
-    low_coh, high_coh = residual_edge_coherence(
-        full_residual,
+        z_slice,
         sig_slice,
-        band_m=_required_int(resolved.thaw.residual_edge_m, "thaw.residual_edge_m"),
+        center_mhz,
+        background,
+        data_minus_bg,
+        frozen_peaks,
+        final_seeds,
+        tau0_for_window,
+        acquisition_us,
+        dict(fw_kwargs),
+        spur_mask,
+        n_eff_kind_v,
+        _required_int(resolved.thaw.residual_edge_m, "thaw.residual_edge_m"),
+        window_id,
     )
-    outcome = WindowOutcome(
-        window_id=window_id,
-        fit=final_conservative,
-        fixed_peaks=frozen_peaks,
-        offset_grid_mhz=offset_grid,
-        complex_spectrum=z_slice,
-        rms_noise=sig_slice,
-        background=background,
-        full_fitted_spectrum=full_fitted,
-        full_residual=full_residual,
-        edge_coherence_low=low_coh,
-        edge_coherence_high=high_coh,
-    )
-    # Stash center and spur mask as _fit_one_window does (used by converters).
-    outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
-    outcome._spur_mask = spur_mask  # type: ignore[attr-defined]
 
     # --- Convert to FittingResult ------------------------------------------
     new_wf: FittingResult = window_outcome_to_fitting_result(
