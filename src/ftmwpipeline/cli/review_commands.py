@@ -655,24 +655,24 @@ def register_review_commands(subparsers: Any) -> None:
         "--add",
         dest="add",
         type=float,
-        nargs="*",
-        default=[],
+        action="append",
+        default=None,
         metavar="F",
         help=(
-            "Molecular MHz frequencies of peaks to add. "
-            "Accepts one or more values: --add F1 F2 ..."
+            "Molecular MHz frequency of a peak to add. "
+            "Repeat the flag for several: --add F1 --add F2 ..."
         ),
     )
     p_edit.add_argument(
         "--remove",
         dest="remove",
         type=float,
-        nargs="*",
-        default=[],
+        action="append",
+        default=None,
         metavar="F",
         help=(
-            "Molecular MHz frequencies of fitted peaks to remove. "
-            "Accepts one or more values: --remove F1 F2 ..."
+            "Molecular MHz frequency of a fitted peak to remove. "
+            "Repeat the flag for several: --remove F1 --remove F2 ..."
         ),
     )
     p_edit.add_argument(
@@ -712,10 +712,14 @@ def register_review_commands(subparsers: Any) -> None:
         "--peaks",
         dest="peaks",
         type=float,
-        nargs="+",
+        action="append",
+        default=None,
         required=True,
         metavar="F",
-        help="Molecular MHz frequencies of the peaks to collapse (≥2).",
+        help=(
+            "Molecular MHz frequency of a peak to collapse; repeat the flag "
+            "for each (≥2): --peaks F1 --peaks F2 ..."
+        ),
     )
     p_merge.add_argument(
         "--verbose",
