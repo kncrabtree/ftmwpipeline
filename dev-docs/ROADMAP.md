@@ -22,155 +22,60 @@ share one implementation and must produce identical results.
 
 ## Priorities
 
-The agreed near-term sequence (each item's detail lives in its planning doc
-or issue; this list carries only the ordering and the why). The destination
-is **Stage 6 — user decisions, re-fits, and finalization**
-([`planning/stage6-finalization.md`](planning/stage6-finalization.md)),
-which is deliberately **gated**: every open item that can still move the
-fitted tables or the import contract lands first, so finalization freezes
-stable semantics.
+Forward-looking only. Completed work — the closed gating sweep, predecessor
+milestones, and finished planning documents — is archived in
+[`COMPLETED.md`](COMPLETED.md); verified current state is in
+[`../STATUS.md`](../STATUS.md). Two tracks:
 
-1. **Start-detection overshoot on high-SNR FIDs (issue #34)** —
-   **implemented** (declared chirp window; detail in
-   [`planning/scope-record-import.md`](planning/scope-record-import.md)
-   open question 3, resolved): loaders persist
-   `recommended_chirp_window` (Blackchirp derives it from the chirp
-   config; keysight-mat takes explicit import parameters), import
-   stamps the derived recommended start unless an experimenter start is
-   recorded, and start detection treats the declared chirp end as
-   authoritative with the sweep detector demoted to a warning
-   cross-check. 655 recommends 3.27 µs (detector overshot to 4.22);
-   succinimide imports hands-off to 7.0 µs. Re-built Blackchirp
-   fixtures shift their stamped starts slightly (2638: 2.37 → 2.27 µs)
-   — absorbed by the re-baseline after this sweep. Detector robustness
-   itself stays a separate research question.
-2. **Residual-rescue Tier-2 merge / n_eff kind decision (issue #9)** —
-   **decided: keep Tier-2 closed, keep the single information-weighted
-   n_eff kind.** A recall-gated 7-fixture A/B (`merge_separation_factor =
-   1.0`, with and without co-raising `overfit_amp_ratio_band`) showed
-   opening the Tier-2 AICc band is empirically inert: `recall_calgrade`
-   byte-identical on both ground-truth fixtures (1512 0.443 / 655 0.592),
-   χ²ᵣ median unchanged on all seven, line-count effect mixed-sign at the
-   <1% noise level — the structural Tier-1 + resolution-floor + Tier-3
-   amplitude-ratio machinery (#13) already covers the duplicate/absorber
-   class, and the only thing Tier-2 adds is an AICc test on balanced close
-   pairs that are real hyperfine/rotor doublets AICc keeps. No table churn
-   to absorb. Detail in
-   [`planning/stage5-residual-rescue.md`](planning/stage5-residual-rescue.md)
-   ("Merge tier-2 disabled"); n_eff-kind rationale recorded on
-   `effective_sample_size`.
-3. **Second-instrument work (issues #5, #6)** — both **resolved** on the
-   succinimide fixture. **#6 closed**: a full cross-instrument Y-knob audit
-   (`scan all`, every stage) shows the 2638 defaults generalize to the
-   genuinely-different succinimide instrument — no per-instrument
-   calibration and no knob preset needed (instrument specifics live in
-   clock-declaration/import); recorded in
-   [`planning/instrument-tunable-knobs.md`](planning/instrument-tunable-knobs.md)
-   (Cross-instrument validation). **#5 re-blocked**: succinimide fits a
-   clean Lorentzian (χ²ᵣ med 1.19, no lineshape deficit surviving a
-   baselined fit), so it is not the Voigt fixture; re-applied
-   `blocked:fixture`. Trigger to revisit: excessive shape error across many
-   lines of a fixture under the full production machinery.
-4. **Stage 5 table-affecting backlog sweep (issues #11, #4, #8) — triaged.**
-   Nothing here must land before finalization (the only table-semantics
-   decision in the batch was #9, already landed as "no change"). **#4 closed**:
-   Gaussian universal-vs-specific is answered by per-fixture `recommend_shape`
-   auto-selection (shape is per-dataset, not universal); per-window selector /
-   w355 deferred as a refinement. **#8 closed**: O5-4 (τ floor) + O5-6 (thaw)
-   resolved and cross-instrument audited (#6); O5-3 (padding fallback) resolved-
-   not-triggered (context-only padding holds cross-instrument); O5-9 (mid-loop
-   seeding) deferred (no evidence of the failure mode). **#11 deferred**
-   (open): residual spur pollution is ~1.3% on succinimide and over-tightening
-   risks real lines; the agreed eventual scope is to drop a window only when its
-   sole line is a confidently-identified known spur (ADC image / declared clock
-   frequency), never ambiguous — everything else is Stage 6 curation.
-5. **Stage 6 — user decisions / re-fits / finalization**
-   ([`planning/stage6-finalization.md`](planning/stage6-finalization.md);
-   absorbs [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md)):
-   attention routing, the decision verb set with provenance, the
-   in-file decision log, finalization semantics. The finalized record is
-   the input contract for reports.
-6. **Reports from the `.ftmw` record** (planning doc to be written when
-   Stage 6 stabilizes): timebase-corrected frequencies with an honest
-   per-line uncertainty budget (statistical + ε-residual + lineshape
-   floor), decision/candidate ledgers, spur provenance, catalog-match
-   summaries; promotes the scratch validation harness into a maintained
-   catalog-scoring surface. The 1512 uncertainty-accuracy goal is the
-   acceptance test.
-
-Completed predecessors of this sequence (detail in their planning docs):
-
-1. **Clock declaration** — **implemented** (see the status block in
-   [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md)):
-   lattice-prior spur gating (union nomination; 655's drifting 39040
-   gated via the locked-point band-power fallback), `timebase run/show`
-   self-calibration (ε measured on all seven fixtures, 0.8–2.2 ppm,
-   per-epoch; null test passes on the all-Rb-locked second instrument),
-   Blackchirp auto-population (recommended layer), `clock_lattice`
-   fitted-peak annotation in `fit show`, SNR-scaled masks with
-   skirt-consistent truncation. Cross-fixture re-fit matches the v9
-   reference everywhere with zero catalog-line removals. Leftovers: the
-   363 w100 interference-doublet window still fails its bar (χ²ᵣ 90→55;
-   full fix = the Stage 4 spur-only window drop), and applying the
-   measured timebase ε to reported frequencies belongs to the reports
-   feature (active-sequence item 6).
-2. **Stage 5 performance pass** — **implemented**. End-to-end profiling
-   reranked the handoff's inefficiency list: the dominant cost was a
-   redundancy not on it — each rescue round's `knockout_test` diagnostic
-   sweep and `iterative_aicc_cleanup`'s first iteration ran identical
-   (K−1) refits on the same joint fit (53% + 17% of the 1019 profile).
-   Fixed by passing knockout's refits through (`refit_sink` /
-   `initial_refits`, with a grid-sortedness guard); plus lazy add-loop
-   candidate templates and support-slice/cached escape nuisance columns.
-   Two handoff items were falsified by measurement and dropped: the
-   merge-loop protected-pair re-evaluation (~2–4 wasted refits per dense
-   fixture, <1%) and decay-probe batching (0.1%). All changes are
-   compute-avoidance only: fitted peak tables are byte-identical to the
-   pre-change baseline on all seven fixtures (`fit_peaks` is
-   deterministic, so exact table equality is the perf acceptance bar);
-   measured ~21% wall-clock on the dense fixtures (1019, 363). The
-   blend-split trial's cost is intentional algorithm spend and was left
-   alone.
-3. **Cross-instrument fixture validation** — the fixture has arrived
-   (`Succinimide_10.mat`, Keysight UXR0204A 128 GSa/s direct-sampling,
-   8–18 GHz; bench characterization in `scratch/succinimide/` + team
-   memory): defaults portability, the clock declaration's no-code-change
-   claim, the mod-M Stage-0 interleave cleanup hook (justified there:
-   mod-16 offsets 208 LSB ≫ estimator noise, plus a real mod-512 layer),
-   and it unblocks the two `blocked:fixture` issues (#5 shape test, #6
-   per-instrument calibration audit). The import design is planned in
-   [`planning/scope-record-import.md`](planning/scope-record-import.md):
-   thin `keysight-mat` loader, a loader-independent acquisition-layout
-   step (segment map, coherent frame averaging or single-frame
-   selection, pre-record/tail persisted as diagnostic payload,
-   frames discarded by default), the declaration-keyed interleave
-   cleanup, and a chirp-response spur anchor measured viable on the
-   in-file pre-record (three-way band-power-ratio probe; no dedicated
-   chirp-off record exists — it is an upgrade, not a dependency).
-   Pending from the user: the succinimide catalog simulated into
-   8–18 GHz (settles the probe's ambiguous band).
-   **End-to-end validation done** (succinimide stages 0–5, catalog
-   scored against the user-delivered extrapolated `.cat`): defaults
-   carry with two findings. The Stage 0 start detector overshoots on
-   chamber ringing (chirp plateau extension; explicit `start_us = 7.0`
-   used — declaration-provided start offset remains the open
-   mechanism), and the run exposed **D14** (fit σ estimated on the
-   untrimmed active grid, 3.4× low on this instrument) — fixed, with
-   the seven-fixture re-baseline at `scratch/stage5-gate/ship-audit-d14/`
-   improving every fixture (1512 recall .365→.443, 655 tier-1 pass
-   .844→.982). Follow-on:
-   [`planning/stage5-doublet-alternative.md`](planning/stage5-doublet-alternative.md)
-   (sub-resolution pair adjudication; observation-only).
-The former candidate-revival and reports items of this list are absorbed
-into the active sequence above: candidate revival into Stage 6
-([`planning/stage6-finalization.md`](planning/stage6-finalization.md)),
-reports as its downstream consumer.
+1. **Complete Stage 6 — covariance, peak-survival metrics, window construction,
+   attention** (in progress). The read/edit surface
+   (`review run/show/edit/merge/split/accept`,
+   [`planning/stage6-finalization.md`](planning/stage6-finalization.md),
+   absorbing [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md))
+   is built; a human review pass surfaced the backlog in
+   [`planning/stage6-review-findings.md`](planning/stage6-review-findings.md)
+   (F1–F5). Land in this order, expecting iteration across the middle steps:
+   1. **Persist the per-window parameter covariance** (F4 plumbing) — the
+      enabling step. The complete second-order uncertainty of the fit
+      (correlated error bars for reports, the structure the future graphical
+      client and any molecular-fitting layer need), currently computed then
+      discarded at serialization.
+   2. **Devise variance–covariance peak-survival metrics, and iterate**
+      (F4 + F5): the SNR-normalized variance-inflation / (anti)correlation
+      discriminant for degenerate overfit (truth set w217 / w281 / w161 /
+      w108 / w419) plus the absolute SNR floor (~3) for dust (F5), driving
+      automatic peak-survival decisions. Calibrate against that truth set and
+      the ground-truth recall fixtures; iterative by nature.
+   3. **Address window construction** (F2 + F3): mid-cluster splits, off-centre
+      / sub-minimum windows, the inert `min_window_half_width_mhz`, the
+      structural-replan merge trigger, and possibly a window-level merge.
+   4. **Reconsider attention metrics** (F1): drop or stiffen the
+      `doublet_eps_gt_kappa` trigger and add the covariance/SNR-based overfit
+      reason the queue currently lacks.
+2. **Fork once Stage 6 stabilizes — report generation favored over the
+   interactive shell.**
+   - **Reports from the `.ftmw` record** (core; the favored next step, planning
+     doc to be written): timebase-corrected frequencies with an honest per-line
+     uncertainty budget (statistical + ε-residual + lineshape floor — richer
+     once the covariance is persisted), decision/candidate ledgers, spur
+     provenance, catalog-match summaries; promotes the scratch validation
+     harness into a maintained catalog-scoring surface. The 1512
+     uncertainty-accuracy goal is the acceptance test.
+   - **Interactive CLI review shell**
+     ([`planning/stage6-interactive-review.md`](planning/stage6-interactive-review.md))
+     — **polish, not core**: the non-interactive verbs already cover the
+     workflow and the planned C++/Qt client is the real graphical shell.
+     Deferred unless prioritized.
 
 Longer horizon, no order implied: the ultra-high-SNR **lineshape floor**
-(Phase-2 asym-τ / per-fixture shape arc; drift falsified as its cause —
-issue #5 is one piece), and **end-user documentation / release readiness**
-(the planning-doc lifecycle's "seed docs" step; start opportunistically as
-features stabilize).
+([`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md);
+Phase-2 asym-τ / per-fixture shape arc; drift falsified as its cause), the
+**covariance-based intra-window decomposition**
+([`planning/intra-window-clustering.md`](planning/intra-window-clustering.md);
+a natural consumer of the persisted covariance), benchmark/perf work
+([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md), deferred D5),
+and **end-user documentation / release readiness** (the planning-doc
+lifecycle's "seed docs" step; start opportunistically as features stabilize).
 
 ## Stage status
 
@@ -184,6 +89,7 @@ Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
 | 3 Peak detection | Implemented | [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) |
 | 4 Window assignment | Implemented | [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) |
 | 5 Fitting | Implemented | [`planning/stage5-fitting.md`](planning/stage5-fitting.md) |
+| 6 Review & finalization | In progress | [`planning/stage6-finalization.md`](planning/stage6-finalization.md) |
 
 Stages 3–5 are partly **port-and-refine**, partly **recreate**. The earlier
 reference `~/github/bcfitting/src/bcfitting/ftmwfitting.py` survives (detection
@@ -205,44 +111,17 @@ contract.
 ## Planning documents
 
 Per-feature implementation plans. Lifecycle and conventions:
-[`planning/README.md`](planning/README.md).
+[`planning/README.md`](planning/README.md). Completed plans are archived in [`COMPLETED.md`](COMPLETED.md).
 
 | Document | Status |
 |---|---|
-| [`planning/stage2-noise-estimation.md`](planning/stage2-noise-estimation.md) | Implementation summary — the Stage 2 estimator is `estimate_noise_scatter`: high-pass, region-aware Rician-corrected scatter MAD with broad lower-envelope smoothing, immune to the leakage-pedestal σ inflation on high-SNR line-dense spectra. The legacy `estimate_noise_adaptive` (MAD/median subdivision + moving-median σ + Lorentzian-skirt exclusion) has been **retired from the package** (minimal comparison reference at [`research/noise-snr-scaling/legacy_adaptive.py`](research/noise-snr-scaling/legacy_adaptive.py)); the scatter σ is now measured + persisted on the canonical active FT and consumed by Stages 3/4/5 (see [`planning/stage2-noise-authority.md`](planning/stage2-noise-authority.md)). Algorithmic-choice provenance — including why the level/adaptive family (and its heuristic-tuning and grid-invariance audits) was retired — in [`research/noise-snr-scaling/report.md`](research/noise-snr-scaling/report.md) (leakage-pedestal / √N study, §3.1). Stage 3 scores detection on the scatter noise behind a continuous leakage-aware floor |
-| [`planning/stage3-peak-detection.md`](planning/stage3-peak-detection.md) | Implemented (finalized; detection/promotion split + provenance). O2 (SNR tiers `10/50`) and O4 (gap-pass `_GAP_ACTIVE_ZPF=2` + `K=4` SavGol) cross-instrument validated and signed off across seven fixtures — both kept unchanged. O4: a catalog-scored `zpf∈{0,1,2,3}` sweep (1512 + 655 vinyl cyanide) shows detection quality is a flat plateau over `zpf∈{1,2}` (`zpf=0` under-samples, `zpf≥3` over-smooths); the `FWHM_bins≥3` proxy is falsified (points into the `zpf≥3` falloff). O2: the `10/50` absolute tiers generalise across the full SNR span (no collapse). Provenance + tracked recipe in [`research/stage3-snr-corner/report.md`](research/stage3-snr-corner/report.md) §7–8 (issue #10) |
-| [`planning/stage3-snr-corner-benchmark.md`](planning/stage3-snr-corner-benchmark.md) | Implementation summary — the cross-fixture Stage 3 benchmark that re-assessed every SNR-dependent decision under the scatter noise estimator and established the global detection "corner": the empirical knee on `N(s)` sits at 3.0–3.4 across all seven fixtures (the frozen `min_snr` is now principled), the Rayleigh crossover locator is invalid (leakage tails ~6× heavier than thermal), and both passes adopt the continuous leakage-aware floor (retiring the hard gap-mask threshold). Method + per-fixture cross-regime map in [`research/stage3-snr-corner/report.md`](research/stage3-snr-corner/report.md); all originally-open threads (#10 O4, former D9, #14) closed |
-| [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md) | Implemented (finalized) |
-| [`planning/stage5-fitting.md`](planning/stage5-fitting.md) | Implementation summary — Stage 5 ships against the active-portion FT (D9 resolved) with the conservative add-one-peak loop, blend-aware seeder, knockout test, residual-rescue chain, local thaw + structural replan, and per-band τ routing. `O5-10` Tier-1 magnitude-based contributor attachment shipped; the Tier-2 cumulative-tail background ships as the **edge-free leakage-contributor subtraction** ([`planning/stage4-leakage-contributor-subtraction.md`](planning/stage4-leakage-contributor-subtraction.md)) |
-| [`planning/stage5-residual-rescue.md`](planning/stage5-residual-rescue.md) | Implementation summary — rescue chain + phase-coherence screening + AICc-with-n_eff at all three hypothesis-test sites. Algorithmic-choice provenance in [`research/residual-rescue/report.md`](research/residual-rescue/report.md). |
-| [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
-| [`planning/stage2b-tau-calibration.md`](planning/stage2b-tau-calibration.md) | Implementation summary — `stage2b_tau_calibration` ships a data-driven τ_maj ± σ_τ via a sliding-active-window STFT on the raw FID. Stage 3 gap-pass and Stage 5 (bidirectional Gaussian τ penalty + calibrated bounds + rescue τ) auto-detect and consume it. The per-bin exp/gauss/voigt shape fits behind the gate and the 3-way shape recommendation run on a batched closed-form-log-seed + Gauss-Newton solver (`solver="scipy"` retained as the equivalence oracle; ~150× faster, recommended_shape and consumed τ_G validated unchanged across the seven fixtures). Settled: τ extraction keeps the FID-tail noise reference rather than the Stage 2 scatter σ — the tail's residual-signal inflation acts as a stricter above-threshold gate that holds the per-band majority on the independent LSQ reference (the lower scatter σ inverts the high-band τ trend). Stage 2–5 regression validation is carried by the committed integration suite (re-baselined to the scatter-noise grid); the Phase 4 LSQ cross-comparison + noise-reference close-out are in [`research/stage5-tau-calibration/report.md`](research/stage5-tau-calibration/report.md) §§ "LSQ cross-validation" / "Noise-reference robustness" (issue #7 closed). Supersedes the §Dataset-wide-tau and §Broken-initial-fit sections of `stage5-cross-fixture-validation.md` |
-| [`planning/stage5-voigt-deficit.md`](planning/stage5-voigt-deficit.md) | Research prototype — extend the Stage 5 line shape from pure exponential decay to a Voigt envelope (Lorentzian × Gaussian-from-supersonic-cos²θ-projection) on the ~6 shape-error windows on 2638 where the single-exponential model leaves significant residual. Two-part scope: per-window (τ_L, τ_G) LSQ on candidates + per-bin Voigt fit on the currently-bad-fit strong-SNR STFT bins as an independent τ_G(f) calibration source. Outcome: Voigt joint LSQ on 2638 reduces to Gaussian-dominant (τ_L pins at upper bound); motivated the pure-Gaussian shape extension in [`planning/stage5-gaussian-shape.md`](planning/stage5-gaussian-shape.md) |
-| [`planning/stage5-gaussian-shape.md`](planning/stage5-gaussian-shape.md) | Implementation summary — Gaussian time-domain envelope as an alternative Stage 5 line shape via a `PeakShape` selector (LORENTZIAN \| GAUSSIAN, in `core/peak_shape.py`). Shape-aware `h_T` / Jacobian, `window_fit` shape threading, the Stage 2b twin `stage2b_tau_G_calibration` (pure-Gaussian per-bin fit), and a Gaussian-vs-Lorentzian comparison harness all shipped; Stage 5 auto-reads the Stage 2b `recommended_shape`. Motivated by [`planning/stage5-voigt-deficit.md`](planning/stage5-voigt-deficit.md)'s finding that the Voigt joint LSQ degenerates to Gaussian-dominant on 2638. Open: cross-fixture acceptance bar, the `WindowFitResult.tau_us` field rename, and the w355 deep-dive |
-| [`planning/stage5-spur-masking.md`](planning/stage5-spur-masking.md) | Implementation summary — `fitting/spur_detection.py` gates clock/LO spurs by `integer-MHz ∧ (frequency-domain narrowness ∨ Stage 2b `saturated` flat-catalogue)` and keeps them out of the Stage 5 fit: per-window residual/χ² mask + `n_data` reduction in `fit_window`, peak-nomination exclusion + spur-contributor drop in `plan_execution`, built in `stage5_impl` (Stage 2b auto-detect), controlled by the default-on `StageFitSettings.spur` block. The persistence half keys on a new per-cluster `SpurCluster.saturated` flag (`spur_by_tau`), settled by the flatness-exposure measurement (`integer-MHz ∧ cls==1` is **not** clean: 53/59 such bins are erratic real lines). 2638 validation: sum Δχ²ᵣ = 111.5 over the classified spur windows, w245 keeps its 3 real lines, zero real-line removals. Saturated-catalogue path since exercised end-to-end: re-running Stage 2b populates 4 saturated clusters (30720/32960/35840/39040) and upgrades them to `narrow+saturated`, with no regression — on 2638 the saturated set is a subset of the narrow detections (corroborative, not additive); the split-bin spurs 39830/39930 are gated by neither, correcting an earlier write-up overclaim. Open follow-ups: optional Stage-4 spur-only-window drop, and split-bin/weak-harmonic catalogue pollution (39810/39830/39930 detected+fit as weak lines at ~0 χ²ᵣ cost; gated by neither detector due to half-bin grid aliasing + sub-`t_sigma` STFT SNR). Sibling structural item — shape escalation (per-peak τ vs Voigt) — was **parked** (report § "Decision: park shape escalation") |
-| [`planning/stage5-leakage-wing-baseline.md`](planning/stage5-leakage-wing-baseline.md) | Implementation summary — evidence-triggered low-order complex **baseline** nuisance term per Stage 5 window absorbs the systematic residual leakage a discrete model cannot subtract: a neighbouring strong line's mismodeled wing, and the smooth **leakage pedestal** (summed far-wings of hundreds of lines the frozen contributors cannot carry) on a dense ultra-high-SNR spectrum. `fit_window` appends `(a_k + i b_k)(u/u_s)^k` columns to model + Jacobian so the joint covariance prices the per-line σ; `plan_execution._apply_baseline_to_outcome` refits a window when **either** residual `max(edge_lo,edge_hi) > baseline_edge_threshold` (default 3.5) **or** the order-p polynomial F-test `_smooth_residual_stat > baseline_smooth_threshold` (default 50, the in-band pedestal the edge test misses), **re-freeing τ** (re-anchored at the band majority via `derive_window_fit_constraints`) so it relaxes off the value it collapsed to while soaking the pedestal; sequenced last after thaw+rescue; `StageFitSettings.baseline` (default-on, order **4**, edge 3.5, smooth 50) drives it through all interfaces; per-window order/coeffs/S_coh persisted in `quality_metrics`. **655 mode 2** (the pedestal): 51 of 56 τ-collapsed windows recover (τ 0.62→~3 µs physical), SNR-aware pass 0.919→0.950, bulk median 1.15→1.11, genuinely strong lines preserved (w384 snr 42039, w309 snr 27670), collapse-inflated broad-line amplitudes (w306/w308) correctly reclaimed as pedestal; the τ-independence of the under-subtraction (far-field skirt) confirms a per-window baseline, not a better contributor model, is the right tool. 2638 A/B (the original edge-wing case): 66 windows fired, chain w224/225/226/309/367 → χ²ᵣ≈1.5, w152 8.45→1.49 + w150 6.74→1.43 the largest gains, σ_A inflation median ×1.006 (max ×1.45 σ_f price), zero real-line removals; control unchanged under the order-4 default. Supersedes the freeze-eligibility-guard framing (O4-2 / threads #6 + #11, falsified). The earlier `const`-order conclusion held for the edge-wing case but is superseded by order 4 + the smooth trigger, which the pedestal requires. Cost is cheap (≈3 % of 655's fit, 0 % on 2638 — the dense-fixture cost is the cap-removal conservative loop, [`stage5-nls-performance.md`](planning/stage5-nls-performance.md)) |
-| [`planning/stage5-subresolution-overfit.md`](planning/stage5-subresolution-overfit.md) | Implementation summary (issue #13) — collapses Stage 5 rescue-overfit absorber peaks via a resolution-referenced minimum-pair-separation floor `max(min_pair_separation_factor·FWHM, k·(1/T_active))` (new `ConservativeSubSettings.min_pair_separation_resolution_factor`, default `k=1.0`; three sites — rescue locality rejection, seeder collapse check, merge structural tier) plus an amplitude-ratio merge tier for supra-resolution absorbers (new `RescueSubSettings.overfit_amp_ratio_band`=1.5 / `overfit_amp_ratio_threshold`=6.0; a pair within ~1.0–1.5 elements with a large amp ratio is a rescue-parked absorber beside a strong line, collapsed unconditionally; balanced pairs preserved). The FWHM-only floor (`0.5·FWHM ≈ 0.73` elements on 2638) licensed sub-resolution duplicates, and FWHM tracks per-window τ rather than the dataset-wide Fourier element `1/T_active`. 2638 gaussian/rescue_prominence=1.5 A/B (full feature vs pre-#13 main): **8/8 hand-labelled overfits collapsed, 6/6 controls peak-count-identical**, 622→604 peaks. Cross-fixture `k`/band/threshold calibration + a latent baseline-refit resolution floor deferred to `stage5-cross-fixture-validation.md` |
-| [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split`. Same frequency-coupling block structure the NLS-performance plan would exploit in-fit (block-diagonal `JᵀJ` ⇔ block-diagonal covariance) |
-| [`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md) | Partially resolved — per-window NLS wall-clock. **Shipped (byte-identical, ~25 % on dense):** `x_scale='jac'` (TRF Jacobian-norm scaling, −36 % nfev) + vectorised `model_spectrum`/`model_jacobian` over peaks (the assembly cost the profiler flagged). The original cost model was falsified by capture/replay on real windows: the add-loop already self-compresses to ~8 `fit_window`/window at ~11 nfev, so cost is **fixed per-call overhead + O(M·K) line-shape assembly**, not the O(M·K²) solve (svd ≈6 %) and not call count. **Closed negative:** (1) BLAS threads (null — matrices below OpenBLAS's threading threshold); (0) batched add-loop (regression + over-add); (2a) window decomposition (fixture-dependent: −13 % on Lorentzian-dense, 2× *slower* + over-add on Gaussian); Stage-4 small-window retune (−34 % on a moderate band but over-adds on dense/Gaussian). All three region-shrinking levers fail on the **same** cause: the AICc accept gate is window-size-sensitive (raw χ² over `M` bins ÷ `n_eff` → per-peak benefit ∝ `1/M`) → see [`stage5-context-invariant-gate.md`](planning/stage5-context-invariant-gate.md) |
-| [`planning/stage5-context-invariant-gate.md`](planning/stage5-context-invariant-gate.md) | Proposed — make the Stage 5 accept gate window-size-invariant by weighting χ² with the same `log1p(SNR)` information weights already used for `n_eff` (`χ²_w = n_eff·Σw·r²/Σw ≈ n_eff` for a good fit, independent of `M`), keeping the raw χ² for reporting/metric. Diagnoses the recurring over-add (lever 0 / 2a / small-window) as the units mismatch in `calculate_aicc`: `n_eff` is information-weighted but χ² is raw, so the `M − n_eff` noise bins dilute the per-peak accept benefit by `1/M`. Correctness fix *and* the enabler that unlocks the region-shrinking speedups (revisit the Stage-4 small-window retune, 2a, lever 0 once it holds the cross-fixture metric). Reconnects to issue #9 (the K-vs-(K−1) n_eff-kind choice) |
-| [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) | Resolved (D8) — implementation overview |
-| [`planning/stage4-leakage-contributor-subtraction.md`](planning/stage4-leakage-contributor-subtraction.md) | Implementation overview — resolves the deferred O5-10 Tier-2. The Step-7 cycle-breaker dropped a needed `FixedContributor` along with its cyclic fit-ordering edge, so a bright neighbour's leakage skirt was subtracted from no window and the in-window lines were under-fit / missed / mis-fit (issue #3's dominant worst-ε driver on **all seven fixtures**). Ships **edge-free** frozen contributors (`FixedContributor.edge_free`, no dependency edge → the cycle-breaker keeps the few dominant orphans instead of discarding them, capped by `max_edge_free_neighbors=3` primaries), read self-contained at fit time by a joint complex LSQ of the line template over the cluster's core bins at the window's τ (`evaluate_edge_free_contributors`), and **evidence-triggered** (`DEFAULT_EDGE_FREE_ACCEPT_FRACTION=0.95`: adopt only on a clear residual-SSR reduction, so a healthy baseline-handled window stays byte-stable and the skirt never fights the leakage-wing baseline — O1/O2/O3/O4 resolved). Cross-fixture (issue #3): worst-ε targets recover (360 w287 22.1→4.75 K1→2, 1019 w56 1906→556, 1231 74→13), every fixture's bulk median + SNR-aware pass flat-or-improved (the 655 *global-crude* single-bin-phasor version was negative, bulk 2.40→4.71; the targeted form lifts 655 bulk pass 0.805→0.844), 2638 w105/w106 control K=4-preserved. **Splitter skirt-proximity guard deferred** — S_coh oscillates, so coherence-min boundary relocation can drift into a bright cluster (regressed 2638 w105); needs a non-oscillating reach metric, and the edge-free subtraction covers the sliver's leakage regardless of boundary |
-| [`planning/stage5-cluster-fit-quality.md`](planning/stage5-cluster-fit-quality.md) | Resolved (modes 1+4) / open (modes 2+3) — the diagnostic collapsed the four post-edge-free modes: **modes 1 (missing real peak) and 4 (weak peak dropped beside a bright line) are one defect**, and its root cause is the **per-window peak cap**. The cap (`max_peaks_per_window` / `conservative.max_peaks`, default 8) chopped a dense cluster into narrow few-point windows where the AICc-with-`n_eff` gate's small `n_eff` (≈10–75) both under-values the χ² drop (under-fit) and explodes its small-sample correction (over-fit) — neighbouring slices of one physical cluster (363 w196/w198 K=1 χ²ᵣ58/25 beside w197 K=5). **Resolved by removing the cap**: both default to `0` (no cap), so a window is bounded by `max_window_width_mhz` (40) alone and the gate self-regulates K. The width cap (not the peak cap) is what bounds a dense ultra-high-SNR forest — 655 stays bounded (≤38.7 MHz) with the cap gone. Cross-fixture SNR-aware pass improves or holds on every fixture, isolating the cap (lever held on, cap 8→40): 363 0.779→0.871 (0.886 fully unbounded), 1231 0.886→0.969, 655 0.856→0.914; 2638 control 1.000→1.000 (confirmed at the shipped `cap=0`, max K=13). Dense fixtures are ≈5× slower (NLS speedup is the follow-up), and existing files keep their persisted cap until re-assigned. The earlier **candidate-local-accept lever** (`local_accept_snr`) patched the symptom at ≈2× cost and is **deferred** (saved as `scratch/stage5-cluster-fit-quality/leverA-mode1plus4.patch`; revisit after the NLS speedup); evaluating AICc on `n_data` was falsified (runaway overfit). **Mode 2 (655 τ-collapse) RESOLVED — it is a leakage pedestal, not a τ-prior deficit**: both the band-τ_maj pin (χ²ᵣ 55→347) and re-anchoring at the true ~4 µs are null/negative — the data collapses τ to the 0.62 µs floor to soak the summed far-wings of hundreds of lines the discrete contributors cannot subtract (τ-independent, so unfixable at the contributor source). Fixed by the leakage-wing baseline carrying the pedestal (smooth-residual trigger + order 4 + τ-free refit): 655 pass 0.919→0.950, 51/56 collapses recovered, strong lines preserved (see leakage-wing-baseline row). **Mode 3 (skirt shape, 2638 w274)** separate/smaller; open, re-scope against the post-mode-2 residual |
-| [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md) | Resolved (D7) |
-| [`planning/stage5-fit-settings.md`](planning/stage5-fit-settings.md) | Implementation summary — `StageFitSettings` dataclass + sub-blocks, four-layer resolution chain (explicit > persisted > preset > recommended > hard default), HDF5 persistence at `processing_parameters/stage5_fit`, YAML preset interchange (three packaged presets + bare-name/path resolution), `--preset` CLI flag, Stage 2b `recommended_shape` contract. End-user walkthrough at [`docs/source/settings_and_presets.rst`](../docs/source/settings_and_presets.rst). Unblocks Stage 5 Gaussian-path retuning sweeps |
-| [`planning/settings-backfill.md`](planning/settings-backfill.md) | Implementation summary — Stages 2 / 2b / 3 / 4 all plumbed through the four-layer resolver, matching the Stage 5 template. Auto-recommend (#4) shipped; follow-up #5 (Stage 3 + Stage 5 rescue τ consumers) fully resolved across Stage 3, Stage 4, and Stage 5 rescue (see `stage3-gaussian-audit` / `stage4-gaussian-audit`). Remaining follow-ups: #1 `DeprecationWarning` on legacy per-knob kwargs / `fit:` preset. #3 cross-fixture validation of the shape-aware classifier **done (issue #3): correct on all four ground-truth fixtures — 1512/1019/655 lorentzian, 2638 gaussian** (`research/stage5-cross-fixture/report.md` §"Cross-fixture knob audit") |
-| [`planning/instrument-tunable-knobs.md`](planning/instrument-tunable-knobs.md) | Reference — cross-stage table of every settings-dataclass field's hard default, source-of-truth constant, physical meaning, and instrument-sensitivity rating. Driver for the next-instrument preset and the package-default audit on 2638 |
-| [`planning/companion-tuning-tools.md`](planning/companion-tuning-tools.md) | Implementation summary (issue #27, shipped as the `scan` meta-object) — productionized the accumulated parameter-scan/stage-visualization tooling (tracked `research/*/probe_<knob>.py`, `harness.py`, `generate_validation.py`; the development-era `scratch/` sweepers) into a user-facing, fixture-agnostic surface. Design: a unified knob-registry surface (dotted settings-path -> grid/metric/plot) with table-by-default output + optional per-knob plot adapters, dual-interface, feeding the existing settings resolver + preset system. Sequenced stable-stages-first (Stage 2 noise + start detection -> 2b -> 3/4/5); preset-emit UX deferred until the surface is felt. Shipped as the `tune` namespace, since renamed to the `scan` meta-object in #28 |
-| [`planning/stage2-noise-authority.md`](planning/stage2-noise-authority.md) | **Noise authority + "no user grid" + gap-pass matched filter all shipped.** Stage 2 measures + persists σ once on the canonical active FT (`estimate_active_ft_noise` / `_internal/active_ft_support.py`); Stages 3 (snap/score), 4 (window planning), 5 (fit weighting + replan + fit-viz) all consume the active-FT σ — the front-zeroed full-record FT is excised from all scoring/detection/planning/fit and survives only as the Stage 0/1 comparison view (noise is zpf-invariant, so no analytic transfer is needed — measure once, share). The legacy `estimate_noise_adaptive` kernel is retired (minimal reference at `research/noise-snr-scaling/legacy_adaptive.py`). D9 amended accordingly. The Stage 3 **gap-pass matched filter** is now shape-aware: `_mf_gap_spectrum` applies `exp(-(t/τ)²)` on Gaussian instruments and `exp(-t/τ)` on Lorentzian ones (selected by the Stage 2b `recommended_shape`), fixing the 2638 Gaussian-mismatch bug (~+57% gap recovery, strong lines preserved, no FP inflation; 655/1512 strictly equivalent). The gap σ is no longer a third estimate — it is the active-FT authority σ scaled by the window gain `√(Σw²/N)` (`_propagate_active_sigma_to_grid`), validated within 1–4% of a direct scatter estimate on synthetic white noise. Decided against the originally-proposed frequency-domain kernel convolution (a bit-exact version is just the time-domain op plus an FFT pair, so any freq-domain form is a truncated-kernel approximation); the SavGol re-sizing (problem 3) was falsified — enlarging `gap_sg_window` widens the apex-snap radius and over-merges peaks, so the calibrated coverage is kept. The stale `detect_peaks` "unapodized" gap contract is reconciled. **Primary pass moved onto the active FT:** the leakage-suppressed (Blackman-Harris) primary spectrum now builds on the active-region `dt·rfft` frame via the shared `_active_windowed_spectrum`; the full-record front-zeroed `_spectrum_from_fid` path is retired. Its low `S_coh` was a phase-roll artifact of front-zeroing (fortuitously made `PRIMARY_LEAKAGE_FLOOR_K=1` a near-no-op; would misbehave on no-leading-chirp waveforms). At active `zpf=2` with the **unchanged `k=1.0`** the active-frame primary matches/beats baseline (655 strong-line recall up + fewer FPs, 2638 unchanged, 1019 strong lines preserved); the earlier apparent regression was the stale `detection_zpf=1` default + persisted-settings contamination, not the frame. **Second noise level shipped:** the primary noise is measured on its own active-frame BH spectrum (can't propagate — BH suppresses leakage that inflates the boxcar authority σ on dense spectra) and is now calibrated/settings-driven via `PeakDetectionSettings.primary_pass.noise_*` (the eight scatter knobs, mirroring `NoiseSettings`, resolved by the Stage 3 resolver and forwarded to `estimate_noise_scatter`; defaults reproduce prior behavior). Two measured noise levels now: the unapodized active-FT authority (gap propagation + snap-back scoring) and the apodized primary floor (primary threshold) — Stage 3 knob tuning unblocked |
-| [`planning/tune-settings-verb.md`](planning/tune-settings-verb.md) | Planning (issue #28) — the `settings` and `scan` cross-cutting meta-objects of the object-verb CLI grammar (D12 / `CLI_STRATEGY.md`). `settings show <file> [selector]` reports, per setting, the resolved value and its provenance layer (`.ftmw` / `.yml:<name>` / `recommended` / `default`); `settings set` / `settings export` persist a value to the `.ftmw` or a `.yml` preset (the persistence half deferred from #27); `scan {list,run,all}` renames the legacy `tune` surface. Source of truth is the settings dataclasses, not the knob registry, so it surfaces unswept fields too (e.g. FT `units_power`). Carries the precedence correction D11 (persisted `.ftmw` must outrank `.yml` preset) as a prerequisite. Stage-command half of the grammar migration: issue #31 |
-| [`planning/cli-object-verb-migration.md`](planning/cli-object-verb-migration.md) | Planning (issue #31) — migrate the **stage** commands to the object-verb grammar (`<stage> run\|show` with `stageN` synonyms; `data import <file> <src>`; `tau run --gaussian` / `tau show --kind heatmap\|distribution`; `fit check`), completing D12 after the #28 meta-objects. Pre-release hard cutover (old flat commands removed). CLI-surface only — `_internal` impls and Pipeline / API method names unchanged; utilities (`info`/`formats`/`validate`/`version`) stay bare |
-| [`planning/stage5-doublet-alternative.md`](planning/stage5-doublet-alternative.md) | Planned — post-fit adjudication of sub-resolution fitted pairs: record a merged-single alternative fit per close pair with the D10 fidelity-floor flag (`eps_single <= kappa` ⇒ doublet not required) and a nuisance-projected orthogonal-evidence score (partner evidence orthogonal to the parent's `{h, dh/df, dh/dtau}` subspace). Observation-only (no acceptance change); calibrated on 1512 truth + the succinimide bright doublets; the FID beat view was measured under-powered below ~1.5 beat cycles (~150 kHz on a 13 µs record) and is retained as a visual check only. Presentation/adjudication UX deferred to the reports / user-interaction project |
-| [`planning/stage6-finalization.md`](planning/stage6-finalization.md) | **Design locked** (gate cleared — sequence items 1–4 closed); implementation not started. Stage 6 = a `review` stage object (`stage6_review` group, requires `stage5_fitting`; `timebase_calibration` soft input; reports require `stage6_review`) with two roles: capture *human decisions* about the automatic model and *consolidate/calibrate* the persisted final-products table. Locked: orthogonal per-window provenance (`auto`/`reviewed`/`user-edited`) + advisory attention flags, no global finalize lock (report-readiness computed; only an invalidated `user-edited` window blocks); `review` verbs `run`/`show`/`edit`/`merge`/`split`/`accept` (merge snaps to the doublet alternative; user edits bypass the accept gate but face the NLS, immune to auto-prune); candidate ledger; anchored decision log with re-apply+diff replay; one final-products table persisted in-file (raw freqs are per-window drill-down), calibration a reported STATE not a gate (frequency-reference marker on the clock declaration; default assume Rb-locked/absolutely calibrated; free-running → self-cal recommended; never blocks reports). Built in two passes (ledger+edits, then finalization layer). Absorbs the candidate-revival plan; the finalized record is the reports input contract |
+| [`planning/stage6-finalization.md`](planning/stage6-finalization.md) | **Design locked; implementation in progress** — the `review run/show/edit/merge/split/accept` read/edit surface is built (Priorities track 1; remaining work in [`planning/stage6-review-findings.md`](planning/stage6-review-findings.md)). Stage 6 = a `review` stage object (`stage6_review` group, requires `stage5_fitting`; `timebase_calibration` soft input; reports require `stage6_review`) with two roles: capture *human decisions* about the automatic model and *consolidate/calibrate* the persisted final-products table. Locked: orthogonal per-window provenance (`auto`/`reviewed`/`user-edited`) + advisory attention flags, no global finalize lock (report-readiness computed; only an invalidated `user-edited` window blocks); `review` verbs `run`/`show`/`edit`/`merge`/`split`/`accept` (merge snaps to the doublet alternative; user edits bypass the accept gate but face the NLS, immune to auto-prune); candidate ledger; anchored decision log with re-apply+diff replay; one final-products table persisted in-file (raw freqs are per-window drill-down), calibration a reported STATE not a gate (frequency-reference marker on the clock declaration; default assume Rb-locked/absolutely calibrated; free-running → self-cal recommended; never blocks reports). Built in two passes (ledger+edits, then finalization layer). Absorbs the candidate-revival plan; the finalized record is the reports input contract |
+| [`planning/stage6-review-findings.md`](planning/stage6-review-findings.md) | Intake (not prioritized) — triage backlog of issues surfaced during human Stage 6 review of fitted files. **F1:** attention flagging is low-precision (~1-in-5 sampled windows needed an edit); `doublet_eps_gt_kappa` dominates (33/76 flagged) yet is the calibrated "doublet required" *observation* the fit usually got right, and no reason kind targets a weak/implausible fitted peak (the SNR≈2 overfit case) — candidate fixes: drop/stiffen the doublet attention trigger, add a low-evidence-peak reason. **F2:** window boundaries split inside sub-minimum gaps leaving features off-centre — windows 309/310 bisect a <1.1 MHz cluster at a 0.39 MHz Stage-3 gap (309 came out 3.77 MHz, below the 4 MHz `min_window_half_width_mhz` floor); the split arises because Stage 4 windows the sparse Stage-3 detections but Stage-5 rescue fills the gap, and the structural-replan merge net did not fire — candidate fixes: don't split a cluster that fits one min-size window / enforce the floor on split products (Stage 4), investigate the replan merge trigger (Stage 5), and possibly a window-level merge verb (Stage 6). **F3:** `clustering.min_window_half_width_mhz` (default 2.0 MHz) is inert — its one consumer `max()`-es it against `edge_m=64` bins so the bin count always wins (the MHz value would only bind above ~5 MHz), mirroring by accident the deliberate points-supersede-MHz on the max side; and no minimum *final* window width is enforced at all (the F2 enabler). Cleanup: retire the stale knob or re-express+enforce the minimum as a bin/points count. **F4:** the fit (co)variance is an unused overfit signal across **all** fitted parameters, not just amplitude. The variance-inflation factor `(amp_err/amp)×snr` is ~1 for an identifiable line and ≫1 for a non-identifiable one, but the signal can live in frequency or phase instead; each parameter needs its own normalization (amplitude vs value, frequency vs resolution element/separation, **phase vs π** — not vs the phase value). Truth set: w217 (high-SNR amplitude degeneracy — one line as two anticorrelated components at 0.17 res-elements, VIF~980 despite SNR 500-960), w281 (low-SNR pair where amplitude VIF is only ~4.5 but frequency error ~30% of the separation flags it; the phase *value* is not diagnostic — no empirical frequency–phase relationship on this instrument, so only a phase's error/correlation counts, never its value or inter-line difference), w161 (genuine identifiable doublet at 0.82 res-elements, VIF~2), and two guard cases that must NOT collapse: w108 (legitimate low-SNR quartet whose raw amplitude errors are large — 22-32%, bigger than 217's *good* peak — but VIF stays ~2.1-2.5, so a raw-error threshold would wrongly collapse it and only the SNR-normalized VIF/correlation keeps it) and w419 (true blended doublet with no visible dip — 1.79×FWHM apart, 3.8:1 amplitudes so the weak line is an unresolved shoulder; VIF ~2-3 = keep, and its χ²ᵣ 2.98 is the strong-line lineshape floor not overfit, so the covariance reads it correctly where a dip-heuristic or χ²ᵣ would not). The intended attention metric flags a window when any normalized parameter error or pairwise (anti)correlation exceeds a threshold (the high-precision overfit reason F1 lacks); legit cases sit at VIF~1-2.5 regardless of SNR, overfit explodes. Cheap diagonal flag needs no new persistence (`amplitude_error`/`frequency_error`/`phase_error`+`snr` already stored); the correlation part needs the off-diagonal covariance, computed at fit time but not serialized. **Agreed follow-up: persist the full per-window parameter covariance** (the complete second-order uncertainty of the fit — correlated error bars for the final-products table/reports, the structure the Qt frontend + molecular-fitting layer need; serialization-design task: a `stage5_fitting` per-window covariance dataset with documented parameter ordering, SERIALIZATION_STRATEGY update, tri-interface round-trip). Feeds F1's missing overfit attention reason. **F5:** fitted peaks below an absolute post-fit SNR floor (~3) should be auto-discarded — w441 is four pure-dust peaks (SNR 1.5-2.4) and file-wide 32/603 peaks are sub-3 across 16 all-dust windows. Independent of F4: F4 catches *degenerate* dust (441 A/B, VIF~9-10) but not *absolute-weak* dust (441 C/D, VIF~0.6 yet SNR~1.5); the SNR floor is the orthogonal cut. Safe — every truth-set keep is SNR≥7; anchor the floor to the Stage-3 detection threshold (~3.2). Dust reaches the model as rescue/split products whose post-fit SNR fell below promotion with nothing pruning them → needs a final post-fit cleanup pass (prune+drop emptied windows). Items graduate to their own doc on prioritization |
 | [`planning/stage6-interactive-review.md`](planning/stage6-interactive-review.md) | Proposed — terminal-interactive review shell over the existing `review` verbs. A CLI-only REPL that keeps the *current window* as session state, renders it to an image **file** (no live matplotlib, no `ipywidgets` — both ruled out), and offers a single-key menu (add `F` / remove-by-display-letter / merge / split / accept / revive-candidate) whose actions delegate 1:1 to `refit_window_impl`/`merge_peaks_impl`/`split_peak_impl`/`review_accept_impl` — so an interactive `r B` is byte-identical to `review edit --remove <freq-of-B>`. Adds **no** fit logic and **no** persisted state; quitting always leaves a consistent file. Three entry selections: attention queue (severity-ranked), browse-all, or start-nearest-`--near FREQ`. The one new coupling is the display-letter→peak map, which must reuse `_peak_labels` so figure/table/menu agree and re-derive after each edit. Interim tool for the planned C++/Qt graphical shell (the two are clients of the same Stage 6 decision-log contract); file-based rendering keeps the CLI out of the graphics-shell role. Test lever: scripted-stdin run must produce a byte-identical file to the equivalent non-interactive verb sequence |
 | [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md) | Proposed — candidate ledger + user-directed window re-fit. The remaining cross-fixture misses are weak near-blend lines the gates *considered and rejected as marginal* (verified in the persisted audit record on 1231 w50/w425/w426 + 363 w76); lowering the automatic bars to capture them buys dust everywhere else, so the principled lane is human arbitration: surface rejected-but-plausible candidates (normalized/deduped, above a display bar) with the fit, and add a window-scoped `fit refit --window N --add F --remove F` verb (dual-interface) whose user edits bypass the accept gate but carry full provenance (`user` origin flag, audit `user-add`/`user-remove`, curated-vs-automatic separation in validation tooling). Also covers the overfit direction (user removes a peak on imperfect-lineshape ultra-high-SNR windows, e.g. 1019). UX is the primary design consideration |
-| [`planning/instrument-clock-declaration.md`](planning/instrument-clock-declaration.md) | Proposed — user-declared instrument clock tree (`spur.clocks`: fundamentals + locked/unlocked flags) replaces the empirical integer-MHz spur anchor with a deterministic prior. The Rb-locked clocks' intermod lattice is the multiples of gcd(fundamentals) (= 320 MHz on the home instrument: 42 in-band points vs 13500 integer MHz, ~300× tighter), tested in both frames (RF harmonics + baseband through probe/sideband); unlocked clocks (the scope's interleaved ADCs) declare the *drifting* family needing a drift-tolerant flatness statistic — together these close the 655 39040 drifting-tone miss. Plus: `clock_lattice` annotation on fitted lines in `fit show` (the conservative half; pairs with candidate-revival's user removal), SNR-scaled spur mask width (the 363 w100 strong-tone skirt leak). Empty declaration = today's behavior, byte-stable; the planned different-instrument fixture is the real acceptance test (spurs handled by declaration alone, no code change). Verified clock identities + lattice math in `stage5-spur-masking.md` § clock-lattice prior |
+| [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
+| [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split`. Same frequency-coupling block structure the NLS-performance plan would exploit in-fit (block-diagonal `JᵀJ` ⇔ block-diagonal covariance) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
-| [`planning/ft-apodization-removal.md`](planning/ft-apodization-removal.md) | **Shipped.** Explicit user apodization of the canonical FT (`expf_us` / `window_function` / `zpf`) is removed from `FTSettings`, `FID.preprocess` / `FIDProcessingParameters`, the FT/active-FT path, the loaders + serialization, the CLI flags, and the `settings`/`scan` surfaces; the canonical FT is unconditionally unapodized/native-length. Couplings resolved: Stage 5 τ₀ defaults to the (per-band) Stage 2b `τ_maj` else `T_active/3`; `compute_active_ft` dropped its `expf_us` param (resolving the fit-show render-domain undershoot); legacy `.ftmw` files carrying the retired keys open with a warning and recompute unapodized. Fixtures rebuilt unapodized and value-specific assertions re-baselined; full suite green. The `fit show --apodize` *display* view and Stage 3's internal position-finding zero-pad were out of scope (display/throwaway, not canonical) and untouched. See divergence D13 |
 
 ## Code vs spec divergences
 
@@ -281,3 +160,4 @@ serialization spec defines invariants, not literal field names.
 - Resolve divergences explicitly; update the relevant spec or code, then strike
   the row.
 - No emojis, no dated "status" prose, no per-commit narrative.
+- Completed planning docs and closed roadmap items move to `COMPLETED.md`; the roadmap stays forward-looking.
