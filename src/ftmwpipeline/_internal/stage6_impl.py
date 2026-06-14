@@ -55,6 +55,13 @@ from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
+    from ..core.data_structures import FitWindow
+    from ..core.stage_fit_settings import StageFitSettings
+    from ..fitting.peak_model import PeakShape
+    from .stage5_impl import Stage5FitContext
 
 logger = logging.getLogger(__name__)
 
@@ -582,78 +589,45 @@ def _reconstruct_frozen_peaks(
     return frozen
 
 
-def refit_window_impl(
-    file_path: Union[Path, str],
-    window_id: int,
+def refit_window_core(
+    fit_ctx: "Stage5FitContext",
+    fit_win: "FitWindow",
+    wf: FittingResult,
     *,
+    resolved: "StageFitSettings",
+    shape_enum: "PeakShape",
+    tau_maj_us: Optional[float],
+    sigma_tau_us: Optional[float],
+    peak_frequencies_mhz: List[float],
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
-    _skip_decision_recording: bool = False,
-) -> RefitWindowResult:
-    """User-directed single-window refit for Stage 6 review decisions.
+) -> FittingResult:
+    """In-memory single-window refit core (no file I/O, no spur replay, no
+    decision recording).
 
-    Re-fits one window from the persisted Stage 5 fit using the production
-    NLS primitive (``fit_window``).  Starts from the persisted ``fitted_peaks``
-    as seed ``ModelPeak`` objects, reconstructs the frozen background from the
-    window's own persisted ``fixed_parameters`` and replays the persisted
-    leakage-wing baseline, applies the caller's ``add``/``remove`` edits, and
-    runs a single joint NLS over the full seeded set.  It is **NLS-only**: it
-    deliberately does NOT run the conservative add-one-peak discovery loop or
-    the residual-rescue pass -- a refit holds the window's peak *set* (plus or
-    minus the edit) and re-converges it, rather than re-discovering peaks (the
-    automatic discovery already ran; the persisted peaks are its result).  The
-    result replaces ONLY that window's entry in the persisted ``SpectrumFit``;
-    all other windows are untouched (no cascade, no thaw, no replan).
+    Given a window's already-loaded shared context (``fit_ctx``), its
+    :class:`~ftmwpipeline.core.data_structures.FitWindow`, and its persisted
+    :class:`~ftmwpipeline.core.data_structures.FittingResult` ``wf`` (the
+    source of the frozen background, thawed lines, replayed baseline, and
+    starting tau), this applies the caller's ``add`` / ``remove`` edits to the
+    persisted peak set and re-converges the result with a single joint NLS:
+    materialize the window, reconstruct the frozen background, derive the
+    ``fit_window`` kwargs, run :func:`fit_seeds_window_outcome`, and convert to
+    a :class:`FittingResult`.  It is NLS-only -- no conservative discovery, no
+    rescue, no thaw, no cascade.
 
-    Identity refit (``add=()`` and ``remove=()``) reproduces the persisted fit
-    to ~1e-5 MHz on a window whose peaks are a single-window optimum.  A window
-    that was subject to a **thaw co-fit** holds peaks at a *two-window* joint
-    optimum; a single-window NLS relaxes those toward the one-window optimum, so
-    such windows reproduce only to ~kHz (the neighbour's data is intentionally
-    not re-included).  This is an inherent property of thaw, not a defect.
+    The edit / thaw / origin semantics are identical to and documented on
+    :func:`refit_window_impl`, which is now a thin file-bound shell over this
+    core (it loads the fit, builds ``fit_ctx`` with the persisted spur
+    catalogue replayed, calls this core, then persists and records decisions).
+    The Stage 5 peak-survival pass routes through it too, holding ``fit_ctx`` /
+    the plan / ``resolved`` live from ``fit_peaks_impl``.
 
-    Parameters
-    ----------
-    file_path :
-        Path to the ``.ftmw`` pipeline file (read-write).
-    window_id :
-        The ``FitWindow.window_id`` / ``FittingResult.window_id`` to refit.
-    add :
-        Molecular frequencies (MHz) of peaks to add.  Each is snapped to the
-        nearest ledger candidate within ``snap_tol_mhz`` (to reuse the
-        recorded seed offset/amplitude) or seeded fresh at the given
-        frequency.  User-added peaks carry ``origin="user"``.
-    remove :
-        Molecular frequencies (MHz) of fitted peaks to remove.  Each is
-        matched to the nearest fitted peak within ``snap_tol_mhz`` and dropped
-        from the seed set before the NLS.
-    add_seeds :
-        Optional explicit :class:`~ftmwpipeline.fitting.peak_model.ModelPeak`
-        seeds (in the window's baseband-offset frame) for the added peaks.
-        When given, ``len(add_seeds)`` must equal ``len(add)`` and each seed
-        provides the starting amplitude / offset / phase for the corresponding
-        ``add`` frequency (overrides the ledger-candidate or default seed).
-    snap_tol_mhz :
-        Maximum distance (MHz) for frequency snapping to an existing peak or
-        ledger candidate.  Defaults to :data:`_REFIT_SNAP_TOL_MHZ` (50 kHz).
-
-    Returns
-    -------
-    RefitWindowResult
-        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
-
-    Raises
-    ------
-    ValueError
-        When Stage 5 has not been run, the ``window_id`` is not found,
-        ``len(add_seeds) != len(add)``, or any ``remove`` frequency does not
-        match a fitted peak within ``snap_tol_mhz``.
+    Returns the new per-window :class:`FittingResult`; the caller splices it
+    back into the :class:`SpectrumFit` and persists.
     """
-    from ..core.stage_fit_settings import ShapeSpec, StageFitSettings
-    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
-    from ..fitting.peak_model import PeakShape
     from ..fitting.plan_execution import (
         FrozenPeak,
         fit_seeds_window_outcome,
@@ -662,121 +636,9 @@ def refit_window_impl(
     )
     from ..fitting.result_conversion import window_outcome_to_fitting_result
     from ..fitting.window_fit import derive_window_fit_constraints
-    from ..io.fitting_serialization import (
-        load_spectrum_fit_from_hdf5,
-        save_spectrum_fit_to_hdf5,
-    )
-    from ..io.stage_fit_settings_serialization import (
-        load_stage_fit_settings_from_h5,
-        read_recommended_clock_sources,
-        read_stage2b_recommended_shape,
-    )
-    from .stage2b_g_impl import load_tau_G_calibration_impl, tau_G_calibration_present
-    from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
-    from .stage3_impl import load_peaks_impl
-    from .stage4_impl import load_windows_impl
-    from .stage5_impl import (
-        Stage5FitContext,
-        _required_bool,
-        _required_float,
-        _required_int,
-        _required_str,
-        _resolve_tau_calibration_for_fit,
-        build_stage5_fit_context,
-    )
+    from .stage5_impl import _required_float, _required_int, _required_str
 
-    path = str(file_path)
-
-    if add_seeds is not None and len(add_seeds) != len(add):
-        raise ValueError(
-            f"len(add_seeds)={len(add_seeds)} must equal len(add)={len(add)}"
-        )
-
-    # --- Load persisted Stage 5 fit ----------------------------------------
-    with h5py.File(path, "r") as h5f:
-        if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
-        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
-        shape_str: str = str(h5f["stage5_fitting"].attrs.get("shape", "lorentzian"))
-
-    # Locate the target window's FittingResult.
-    wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
-    if not wf_list:
-        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
-    wf: FittingResult = wf_list[0]
-    chi2r_before = float(wf.reduced_chi2)
-    n_peaks_before = len(wf.fitted_peaks)
-
-    # --- Load Stage 4 WindowPlan and locate the FitWindow ------------------
-    plan_result = load_windows_impl(path)
-    plan = plan_result["plan"]
-    fit_window_map = {w.window_id: w for w in plan.windows}
-    if window_id not in fit_window_map:
-        raise KeyError(
-            f"window_id={window_id} not found in the Stage 4 WindowPlan. "
-            "Stage 4 may have been re-run and changed the window geometry."
-        )
-    fit_win = fit_window_map[window_id]
-
-    # --- Load Stage 3 peaks (for peak_id matching in result conversion) ----
-    peaks_loaded = load_peaks_impl(path)
-    peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded["peaks"]]
-
-    # --- Resolve StageFitSettings from persisted layer + recommended -------
-    # Use the PERSISTED settings as the authoritative source so the refit
-    # operates under the same settings the original fit used.  No explicit
-    # overrides: the user's edit is at the peak level (add/remove), not the
-    # settings level.
-    persisted_settings = load_stage_fit_settings_from_h5(path)
-    recommended_shape_str = read_stage2b_recommended_shape(path)
-    recommended_clocks = read_recommended_clock_sources(path)
-    recommended_settings: Optional[StageFitSettings] = None
-    if recommended_shape_str is not None or recommended_clocks is not None:
-        from ..core.stage_fit_settings import SpurSubSettings
-
-        recommended_settings = StageFitSettings(
-            shape=(
-                ShapeSpec.coerce(recommended_shape_str)
-                if recommended_shape_str is not None
-                else None
-            ),
-            spur=SpurSubSettings(clocks=recommended_clocks),
-        )
-    resolved = resolve_stage_fit_settings(
-        explicit=StageFitSettings(),  # no explicit overrides
-        preset=None,
-        persisted=persisted_settings,
-        recommended=recommended_settings,
-    )
-    assert resolved.shape is not None
-    shape_enum = resolved.shape.kind
-
-    # --- Stage 2b calibration (shape-routed, same logic as fit_peaks_impl) -
-    persisted_cal = None
-    if shape_enum is PeakShape.GAUSSIAN:
-        if tau_G_calibration_present(path):
-            persisted_cal = load_tau_G_calibration_impl(path)["tau_G_calibration"]
-    else:
-        if tau_calibration_present(path):
-            persisted_cal = load_tau_calibration_impl(path)["tau_calibration"]
-    tau_maj_override_v = resolved.tau.tau_maj_override_us
-    sigma_tau_override_v = resolved.tau.sigma_tau_override_us
-    tau_maj_us, sigma_tau_us, _tau_source = _resolve_tau_calibration_for_fit(
-        persisted_cal, tau_maj_override_v, sigma_tau_override_v
-    )
-
-    # --- Build shared active-FT context (VERBATIM helper) ------------------
-    # Replay the persisted Stage 5 gated spur catalogue rather than re-running
-    # detection: the catalogue is a Stage 5 product, so the refit must mask the
-    # window exactly as the fit did (a detector-code change between the fit and
-    # the refit would otherwise silently re-mask the window it is editing).
-    fit_ctx: Stage5FitContext = build_stage5_fit_context(
-        path,
-        resolved,
-        persisted_cal,
-        shape_enum,
-        replay_spur_catalogue=spectrum_fit.parameters,
-    )
+    window_id = int(fit_win.window_id)
     active_ft = fit_ctx.active_ft
     rms_for_fit = fit_ctx.rms_for_fit
     sideband: Sideband = fit_ctx.sideband
@@ -840,7 +702,6 @@ def refit_window_impl(
 
     # --- Build conservative_kwargs from resolved settings ------------------
     # Mirror the subset of conservative_kwargs that fit_window needs.
-    s_sign = sideband_sign(sideband)
     max_decay_v = _required_float(resolved.tau.max_decay_factor, "tau.max_decay_factor")
     n_eff_kind_v = _required_str(
         resolved.conservative.n_eff_kind, "conservative.n_eff_kind"
@@ -1199,6 +1060,211 @@ def refit_window_impl(
             window_id,
             len(thawed_held_peaks),
         )
+
+    return new_wf
+
+
+def refit_window_impl(
+    file_path: Union[Path, str],
+    window_id: int,
+    *,
+    add: Sequence[float] = (),
+    remove: Sequence[float] = (),
+    add_seeds: Optional[List[ModelPeak]] = None,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    _skip_decision_recording: bool = False,
+) -> RefitWindowResult:
+    """User-directed single-window refit for Stage 6 review decisions.
+
+    Re-fits one window from the persisted Stage 5 fit using the production
+    NLS primitive (``fit_window``).  Starts from the persisted ``fitted_peaks``
+    as seed ``ModelPeak`` objects, reconstructs the frozen background from the
+    window's own persisted ``fixed_parameters`` and replays the persisted
+    leakage-wing baseline, applies the caller's ``add``/``remove`` edits, and
+    runs a single joint NLS over the full seeded set.  It is **NLS-only**: it
+    deliberately does NOT run the conservative add-one-peak discovery loop or
+    the residual-rescue pass -- a refit holds the window's peak *set* (plus or
+    minus the edit) and re-converges it, rather than re-discovering peaks (the
+    automatic discovery already ran; the persisted peaks are its result).  The
+    result replaces ONLY that window's entry in the persisted ``SpectrumFit``;
+    all other windows are untouched (no cascade, no thaw, no replan).
+
+    Identity refit (``add=()`` and ``remove=()``) reproduces the persisted fit
+    to ~1e-5 MHz on a window whose peaks are a single-window optimum.  A window
+    that was subject to a **thaw co-fit** holds peaks at a *two-window* joint
+    optimum; a single-window NLS relaxes those toward the one-window optimum, so
+    such windows reproduce only to ~kHz (the neighbour's data is intentionally
+    not re-included).  This is an inherent property of thaw, not a defect.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The ``FitWindow.window_id`` / ``FittingResult.window_id`` to refit.
+    add :
+        Molecular frequencies (MHz) of peaks to add.  Each is snapped to the
+        nearest ledger candidate within ``snap_tol_mhz`` (to reuse the
+        recorded seed offset/amplitude) or seeded fresh at the given
+        frequency.  User-added peaks carry ``origin="user"``.
+    remove :
+        Molecular frequencies (MHz) of fitted peaks to remove.  Each is
+        matched to the nearest fitted peak within ``snap_tol_mhz`` and dropped
+        from the seed set before the NLS.
+    add_seeds :
+        Optional explicit :class:`~ftmwpipeline.fitting.peak_model.ModelPeak`
+        seeds (in the window's baseband-offset frame) for the added peaks.
+        When given, ``len(add_seeds)`` must equal ``len(add)`` and each seed
+        provides the starting amplitude / offset / phase for the corresponding
+        ``add`` frequency (overrides the ledger-candidate or default seed).
+    snap_tol_mhz :
+        Maximum distance (MHz) for frequency snapping to an existing peak or
+        ledger candidate.  Defaults to :data:`_REFIT_SNAP_TOL_MHZ` (50 kHz).
+
+    Returns
+    -------
+    RefitWindowResult
+        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+    Raises
+    ------
+    ValueError
+        When Stage 5 has not been run, the ``window_id`` is not found,
+        ``len(add_seeds) != len(add)``, or any ``remove`` frequency does not
+        match a fitted peak within ``snap_tol_mhz``.
+    """
+    from ..core.stage_fit_settings import ShapeSpec, StageFitSettings
+    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
+    from ..fitting.peak_model import PeakShape
+    from ..io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5,
+        save_spectrum_fit_to_hdf5,
+    )
+    from ..io.stage_fit_settings_serialization import (
+        load_stage_fit_settings_from_h5,
+        read_recommended_clock_sources,
+        read_stage2b_recommended_shape,
+    )
+    from .stage2b_g_impl import load_tau_G_calibration_impl, tau_G_calibration_present
+    from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
+    from .stage3_impl import load_peaks_impl
+    from .stage4_impl import load_windows_impl
+    from .stage5_impl import (
+        Stage5FitContext,
+        _resolve_tau_calibration_for_fit,
+        build_stage5_fit_context,
+    )
+
+    path = str(file_path)
+
+    if add_seeds is not None and len(add_seeds) != len(add):
+        raise ValueError(
+            f"len(add_seeds)={len(add_seeds)} must equal len(add)={len(add)}"
+        )
+
+    # --- Load persisted Stage 5 fit ----------------------------------------
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    # Locate the target window's FittingResult.
+    wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
+    if not wf_list:
+        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+    wf: FittingResult = wf_list[0]
+    chi2r_before = float(wf.reduced_chi2)
+    n_peaks_before = len(wf.fitted_peaks)
+
+    # --- Load Stage 4 WindowPlan and locate the FitWindow ------------------
+    plan_result = load_windows_impl(path)
+    plan = plan_result["plan"]
+    fit_window_map = {w.window_id: w for w in plan.windows}
+    if window_id not in fit_window_map:
+        raise KeyError(
+            f"window_id={window_id} not found in the Stage 4 WindowPlan. "
+            "Stage 4 may have been re-run and changed the window geometry."
+        )
+    fit_win = fit_window_map[window_id]
+
+    # --- Load Stage 3 peaks (for peak_id matching in result conversion) ----
+    peaks_loaded = load_peaks_impl(path)
+    peak_frequencies_mhz = [float(p.frequency) for p in peaks_loaded["peaks"]]
+
+    # --- Resolve StageFitSettings from persisted layer + recommended -------
+    # Use the PERSISTED settings as the authoritative source so the refit
+    # operates under the same settings the original fit used.  No explicit
+    # overrides: the user's edit is at the peak level (add/remove), not the
+    # settings level.
+    persisted_settings = load_stage_fit_settings_from_h5(path)
+    recommended_shape_str = read_stage2b_recommended_shape(path)
+    recommended_clocks = read_recommended_clock_sources(path)
+    recommended_settings: Optional[StageFitSettings] = None
+    if recommended_shape_str is not None or recommended_clocks is not None:
+        from ..core.stage_fit_settings import SpurSubSettings
+
+        recommended_settings = StageFitSettings(
+            shape=(
+                ShapeSpec.coerce(recommended_shape_str)
+                if recommended_shape_str is not None
+                else None
+            ),
+            spur=SpurSubSettings(clocks=recommended_clocks),
+        )
+    resolved = resolve_stage_fit_settings(
+        explicit=StageFitSettings(),  # no explicit overrides
+        preset=None,
+        persisted=persisted_settings,
+        recommended=recommended_settings,
+    )
+    assert resolved.shape is not None
+    shape_enum = resolved.shape.kind
+
+    # --- Stage 2b calibration (shape-routed, same logic as fit_peaks_impl) -
+    persisted_cal = None
+    if shape_enum is PeakShape.GAUSSIAN:
+        if tau_G_calibration_present(path):
+            persisted_cal = load_tau_G_calibration_impl(path)["tau_G_calibration"]
+    else:
+        if tau_calibration_present(path):
+            persisted_cal = load_tau_calibration_impl(path)["tau_calibration"]
+    tau_maj_override_v = resolved.tau.tau_maj_override_us
+    sigma_tau_override_v = resolved.tau.sigma_tau_override_us
+    tau_maj_us, sigma_tau_us, _tau_source = _resolve_tau_calibration_for_fit(
+        persisted_cal, tau_maj_override_v, sigma_tau_override_v
+    )
+
+    # --- Build shared active-FT context (VERBATIM helper) ------------------
+    # Replay the persisted Stage 5 gated spur catalogue rather than re-running
+    # detection: the catalogue is a Stage 5 product, so the refit must mask the
+    # window exactly as the fit did (a detector-code change between the fit and
+    # the refit would otherwise silently re-mask the window it is editing).
+    fit_ctx: Stage5FitContext = build_stage5_fit_context(
+        path,
+        resolved,
+        persisted_cal,
+        shape_enum,
+        replay_spur_catalogue=spectrum_fit.parameters,
+    )
+    # --- In-memory refit core (materialize -> reconstruct frozen -> NLS) ---
+    # Everything from the window materialization through the thawed-line
+    # re-insertion lives in the file-I/O-free core so the survival pass can
+    # reuse it verbatim. The shell keeps the file load, spur-catalogue replay,
+    # persistence, and decision recording around this call.
+    new_wf: FittingResult = refit_window_core(
+        fit_ctx,
+        fit_win,
+        wf,
+        resolved=resolved,
+        shape_enum=shape_enum,
+        tau_maj_us=tau_maj_us,
+        sigma_tau_us=sigma_tau_us,
+        peak_frequencies_mhz=peak_frequencies_mhz,
+        add=add,
+        remove=remove,
+        add_seeds=add_seeds,
+        snap_tol_mhz=snap_tol_mhz,
+    )
 
     # --- Replace this window's entry in SpectrumFit + persist --------------
     # Update the global fitted_peaks list: remove old peaks for this window,
