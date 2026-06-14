@@ -331,6 +331,25 @@ class DoubletAlternativeSubSettings:
 
 
 @dataclass
+class PeakSurvivalSubSettings:
+    """Absolute post-fit SNR-floor prune (Phase A of the peak-survival pass).
+
+    After Stage 5 produces the fitted :class:`~ftmwpipeline.core.data_structures.SpectrumFit`,
+    drop every automatic-origin fitted peak whose post-fit ``snr <
+    snr_survival_floor``, then drop windows left with zero peaks. This is a
+    pure filter -- no refit. ``origin == "user"`` peaks are immune. Finite SNR
+    only -- ``None``/NaN snr peaks are kept unconditionally.
+
+    ``enabled`` (default ``True``) and ``snr_survival_floor`` (default
+    ``3.2``, anchored to the Stage-3 detection threshold) are the two knobs.
+    See ``dev-docs/planning/stage6-peak-survival.md`` Phase A.
+    """
+
+    enabled: Optional[bool] = None
+    snr_survival_floor: Optional[float] = None
+
+
+@dataclass
 class StageFitSettings:
     """Stage 5 fit settings (see module docstring)."""
 
@@ -347,6 +366,9 @@ class StageFitSettings:
     baseline: BaselineSubSettings = field(default_factory=BaselineSubSettings)
     doublet_alternative: DoubletAlternativeSubSettings = field(
         default_factory=DoubletAlternativeSubSettings
+    )
+    peak_survival: PeakSurvivalSubSettings = field(
+        default_factory=PeakSurvivalSubSettings
     )
 
     def is_empty(self) -> bool:
@@ -371,6 +393,7 @@ _SUB_NAMES = (
     "spur",
     "baseline",
     "doublet_alternative",
+    "peak_survival",
 )
 
 
@@ -487,6 +510,14 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "enabled": True,
         "k_res": 1.5,
         "r_min": 0.05,
+    },
+    "peak_survival": {
+        # Phase A peak-survival prune defaults on at the Stage-3 detection
+        # threshold (3.2 sigma). Sub-floor automatic-origin peaks are dust
+        # that slipped through the conservative gate; user-origin peaks are
+        # immune regardless of SNR.
+        "enabled": True,
+        "snr_survival_floor": 3.2,
     },
 }
 
@@ -862,6 +893,7 @@ __all__ = [
     "ThawSubSettings",
     "BaselineSubSettings",
     "DoubletAlternativeSubSettings",
+    "PeakSurvivalSubSettings",
     "StageFitSettings",
     "resolve",
     "to_attrs",

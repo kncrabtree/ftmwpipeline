@@ -739,3 +739,38 @@ def test_doublet_alternative_observation_only(
         f"merged_frequency_mhz={rec.merged_frequency_mhz:.6f} is not strictly between "
         f"frequency_a={rec.frequency_a_mhz:.6f} and frequency_b={rec.frequency_b_mhz:.6f}"
     )
+
+
+def test_no_auto_peak_below_snr_floor_after_fit(
+    baseline_2638_stage4_small, temp_ftmw_dir
+):
+    """After a default Stage 5 fit, no auto-origin peak has snr < 3.2.
+
+    The peak-survival prune is default-on; every surviving auto-origin fitted
+    peak must have snr >= 3.2 (or None/NaN snr, which the prune conservatively
+    keeps). User-origin peaks are exempt but cannot appear in a fresh automatic
+    fit.
+    """
+    import math
+
+    fp = temp_ftmw_dir / "snr_floor_check.ftmw"
+    shutil.copy(baseline_2638_stage4_small, fp)
+
+    fit = ftmw.fit_peaks(fp)
+    for peak in fit.fitted_peaks:
+        if peak.origin != "user":
+            snr = peak.snr
+            if snr is not None and not (isinstance(snr, float) and math.isnan(snr)):
+                assert snr >= 3.2, (
+                    f"auto peak at {peak.frequency_mhz:.4f} MHz survived with "
+                    f"snr={snr:.3f} < 3.2 (window {peak.window_id})"
+                )
+
+    # The diagnostics dict must carry the peak_survival key.
+    ps = fit.diagnostics.get("peak_survival")
+    assert ps is not None
+    assert "snr_floor" in ps
+    assert "n_pruned" in ps
+    assert "pruned" in ps
+    assert "dropped_window_ids" in ps
+    assert ps["snr_floor"] == pytest.approx(3.2)

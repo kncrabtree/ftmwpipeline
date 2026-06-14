@@ -32,6 +32,8 @@ import numpy as np
 
 from ..core.data_structures import (
     ComplexFT,
+    FittedPeak,
+    FittingResult,
     Sideband,
     SpectrumFit,
     WindowPlan,
@@ -51,7 +53,10 @@ from ..fitting.plan_execution import (
     ReplanContext,
     execute_plan,
 )
-from ..fitting.result_conversion import plan_fit_outcome_to_spectrum_fit
+from ..fitting.result_conversion import (
+    build_covariance_param_labels,
+    plan_fit_outcome_to_spectrum_fit,
+)
 from ..fitting.spur_detection import (
     SpurSet,
     build_spur_set,
@@ -284,6 +289,122 @@ def _required_str(value: Optional[str], name: str) -> str:
             f"resolved StageFitSettings.{name} is None; missing hard default"
         )
     return str(value)
+
+
+def _slice_window_covariance(
+    wf: FittingResult, kept_peak_indices: List[int], n_peaks_before: int
+) -> None:
+    """Slice a window's covariance to the surviving peaks after a prune.
+
+    The covariance is laid out peak-major (``amplitude, offset, phase`` per
+    peak), then the shared ``tau`` (if fitted), then the baseline real/imag
+    coefficients. Keeping only ``kept_peak_indices`` retains the three columns
+    of each surviving peak plus the unchanged tail (tau + baseline); the result
+    is the marginal covariance of those parameters. Labels are rebuilt so the
+    ``amplitude_{i}`` indices stay contiguous (matching the new peak count).
+    Falls back to clearing the covariance if the layout cannot be reconciled.
+    """
+    cov = wf.covariance
+    labels = wf.covariance_param_labels
+    if cov is None or labels is None:
+        return
+    has_tau = "tau" in labels
+    n_base = sum(1 for lbl in labels if lbl.startswith("baseline_re_"))
+    baseline_order = (n_base - 1) if n_base > 0 else None
+    keep_idx: List[int] = []
+    for j in kept_peak_indices:
+        keep_idx.extend([3 * j, 3 * j + 1, 3 * j + 2])
+    keep_idx.extend(range(3 * n_peaks_before, len(labels)))
+    new_labels = build_covariance_param_labels(
+        len(kept_peak_indices), has_tau, baseline_order
+    )
+    if max(keep_idx, default=-1) >= cov.shape[0] or len(keep_idx) != len(new_labels):
+        # Layout cannot be reconciled (unexpected drift): drop rather than
+        # persist a mislabelled matrix; the diagonal per-peak errors survive.
+        wf.covariance = None
+        wf.covariance_param_labels = None
+        return
+    wf.covariance = cov[np.ix_(keep_idx, keep_idx)]
+    wf.covariance_param_labels = new_labels
+
+
+def apply_snr_survival_prune(fit: SpectrumFit, floor: float) -> None:
+    """Prune fitted peaks below the SNR survival floor (in-place).
+
+    Removes every automatic-origin :class:`FittedPeak` with finite
+    ``snr < floor`` from each window's ``fitted_peaks`` list, drops any
+    :class:`FittingResult` whose ``fitted_peaks`` becomes empty, then rebuilds
+    ``fit.fitted_peaks`` sorted ascending by ``frequency_mhz``. Records the
+    prune in ``fit.diagnostics["peak_survival"]``.
+
+    Peaks with ``origin == "user"`` are immune regardless of SNR. Peaks with
+    ``None`` or NaN ``snr`` are kept unconditionally (conservative).
+
+    A window's persisted parameter covariance describes its *pre-prune* peak
+    set, so removing a peak desynchronises it (the per-peak covariance/label
+    invariant the serializer enforces). When a partial prune occurs, the
+    window's covariance is sliced to the surviving peaks (the marginal
+    covariance of those parameters from the joint fit); fully-emptied windows
+    are dropped entirely.
+    """
+    import math
+
+    pruned_records: List[Dict[str, Any]] = []
+    dropped_window_ids: List[int] = []
+
+    surviving_windows: List[FittingResult] = []
+    for wf in fit.window_fits:
+        n_peaks_before = len(wf.fitted_peaks)
+        kept: List[FittedPeak] = []
+        kept_indices: List[int] = []
+        for idx, peak in enumerate(wf.fitted_peaks):
+            snr = peak.snr
+            # Keep: user-origin, None snr, NaN snr, or snr >= floor
+            if (
+                peak.origin == "user"
+                or snr is None
+                or (isinstance(snr, float) and math.isnan(snr))
+                or snr >= floor
+            ):
+                kept.append(peak)
+                kept_indices.append(idx)
+            else:
+                pruned_records.append(
+                    {
+                        "window_id": (
+                            int(wf.window_id) if wf.window_id is not None else -1
+                        ),
+                        "frequency_mhz": float(peak.frequency_mhz),
+                        "snr": float(snr),
+                    }
+                )
+        if kept or n_peaks_before == 0:
+            # Keep the window if any peak survived, or if it was already empty
+            # before the prune (a pre-existing K=0 window is Stage 4/5's
+            # business, not the survival prune's -- dropping it here would be
+            # scope creep beyond F5 and would erase window-construction signal).
+            wf.fitted_peaks = kept
+            if len(kept) != n_peaks_before:
+                _slice_window_covariance(wf, kept_indices, n_peaks_before)
+            surviving_windows.append(wf)
+        else:
+            # The prune emptied a window that held peaks -> drop it.
+            wid = int(wf.window_id) if wf.window_id is not None else -1
+            dropped_window_ids.append(wid)
+
+    fit.window_fits = surviving_windows
+
+    # Rebuild the global sorted line list from surviving per-window peaks.
+    all_peaks: List[FittedPeak] = [p for wf in fit.window_fits for p in wf.fitted_peaks]
+    all_peaks.sort(key=lambda p: p.frequency_mhz)
+    fit.fitted_peaks = all_peaks
+
+    fit.diagnostics["peak_survival"] = {
+        "snr_floor": float(floor),
+        "n_pruned": len(pruned_records),
+        "pruned": pruned_records,
+        "dropped_window_ids": dropped_window_ids,
+    }
 
 
 def _build_explicit_from_kwargs(
@@ -926,6 +1047,14 @@ def fit_peaks_impl(
     else:
         doublet_kwargs = None
 
+    # Peak-survival prune (Phase A): SNR-floor dust removal.
+    peak_survival_enabled_v = _required_bool(
+        resolved.peak_survival.enabled, "peak_survival.enabled"
+    )
+    peak_survival_floor_v = _required_float(
+        resolved.peak_survival.snr_survival_floor, "peak_survival.snr_survival_floor"
+    )
+
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
         if "stage4_windows" not in h5f:
@@ -1371,6 +1500,24 @@ def fit_peaks_impl(
     # read -- no effect on the fit statistics.  No-op when no declaration
     # was present (``clock_lattice`` is ``None``).
     annotate_lattice_matches(spectrum_fit, clock_lattice)
+
+    # Phase A peak-survival prune: drop dust below the SNR floor.
+    if peak_survival_enabled_v:
+        n_before = spectrum_fit.n_fitted_peaks
+        apply_snr_survival_prune(spectrum_fit, peak_survival_floor_v)
+        n_pruned = n_before - spectrum_fit.n_fitted_peaks
+        if n_pruned:
+            logger.info(
+                "Stage 5 peak-survival prune: removed %d sub-floor peaks "
+                "(snr < %.2f), %d windows emptied",
+                n_pruned,
+                peak_survival_floor_v,
+                len(
+                    spectrum_fit.diagnostics.get("peak_survival", {}).get(
+                        "dropped_window_ids", []
+                    )
+                ),
+            )
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
     # Stamp the resolved settings as the canonical record for this fit so

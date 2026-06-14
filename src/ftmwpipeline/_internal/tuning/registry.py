@@ -372,6 +372,7 @@ def _run_fit(sub_block: str, field_name: str) -> RunFn:
             "spur": sfs.SpurSubSettings,
             "baseline": sfs.BaselineSubSettings,
             "doublet_alternative": sfs.DoubletAlternativeSubSettings,
+            "peak_survival": sfs.PeakSurvivalSubSettings,
         }[sub_block]
         bundle = sfs.StageFitSettings(**{sub_block: sub_cls(**{field_name: value})})
         return fit_peaks_impl(str(path), settings=bundle)
