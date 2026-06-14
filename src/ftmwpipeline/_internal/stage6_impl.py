@@ -1192,20 +1192,29 @@ def refit_window_impl(
         acquisition_us=acquisition_us,
     )
 
-    # Stamp user-origin on peaks added by the caller.  The origin_flags list
-    # mirrors the seed_peaks_with_origin order; the converged fit may have
-    # fewer/reordered peaks (rescue drops/merges), so we match by nearest
-    # frequency within snap_tol_mhz.
-    user_freq_mhz = [
-        float(center_mhz + s * mp.offset_mhz)
-        for mp, orig in zip(final_seeds, origin_flags)
-        if orig == "user"
-    ]
-    for fp in new_wf.fitted_peaks:
-        for uf in user_freq_mhz:
-            if abs(float(fp.frequency_mhz) - uf) <= snap_tol_mhz:
+    # Stamp user-origin on peaks the caller added (and on merge / split
+    # products, which seed through the same path).  A refit is NLS-only -- it
+    # neither adds nor drops peaks -- and ``window_outcome_to_fitting_result``
+    # preserves the fit's peak order, so the i-th output peak is the i-th seed:
+    # assign origin by POSITION.  Matching by frequency is unsafe here because a
+    # merge / split product can converge well beyond ``snap_tol_mhz`` from its
+    # seed.  Fall back to nearest-frequency matching only if the counts ever
+    # diverge (they should not on the NLS-only path).
+    if len(new_wf.fitted_peaks) == len(origin_flags):
+        for fp, orig in zip(new_wf.fitted_peaks, origin_flags):
+            if orig == "user":
                 fp.origin = "user"
-                break
+    else:
+        user_freq_mhz = [
+            float(center_mhz + s * mp.offset_mhz)
+            for mp, orig in zip(final_seeds, origin_flags)
+            if orig == "user"
+        ]
+        for fp in new_wf.fitted_peaks:
+            for uf in user_freq_mhz:
+                if abs(float(fp.frequency_mhz) - uf) <= snap_tol_mhz:
+                    fp.origin = "user"
+                    break
 
     # --- Re-insert thawed lines verbatim ------------------------------------
     # Thawed lines were held out of the NLS and frozen into the background so
@@ -1266,4 +1275,325 @@ def refit_window_impl(
         chi2r_before=chi2r_before,
         chi2r_after=chi2r_after,
         fitted_peaks=list(new_wf.fitted_peaks),
+    )
+
+
+# ---------------------------------------------------------------------------
+# merge_peaks_impl: collapse ≥2 fitted peaks into one
+# ---------------------------------------------------------------------------
+
+
+def merge_peaks_impl(
+    file_path: Union[Path, str],
+    window_id: int,
+    peaks: Sequence[float],
+    *,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+) -> RefitWindowResult:
+    """Collapse ≥2 fitted peaks in a window into a single peak.
+
+    A thin composition over :func:`refit_window_impl`: removes the named peaks
+    and adds one replacement seeded at their SNR-weighted centroid (or
+    amplitude-weighted centroid when SNR is unavailable).  All products carry
+    ``origin="user"``.
+
+    **Doublet-alternative snap.** When the removed set matches a persisted
+    ``DoubletAlternativeInfo`` pair (i.e. exactly two frequencies that
+    together map to a recorded doublet pair within ``snap_tol_mhz``), the
+    replacement seed is taken from the recorded ``merged_frequency_mhz`` and
+    ``merged_amplitude`` rather than the centroid.  This reuses the
+    already-converged merged-alternative optimum from the Stage 5 doublet
+    adjudication pass.
+
+    # NOTE(opus-review): doublet-alt snap is wired for the two-peak case only
+    # because DoubletAlternativeInfo records exactly one pair at a time.
+    # Multi-peak merge (K>2) falls through to the weighted-centroid seed.
+    # The snap requires a successful merged refit (``merged_success=True`` and
+    # non-NaN ``merged_frequency_mhz``); if the record is absent or the refit
+    # failed, the centroid seed is used instead — no silent error.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The window containing the peaks to merge.
+    peaks :
+        Molecular frequencies (MHz) of the peaks to collapse.  At least 2
+        must be provided.  Each is snapped to the nearest fitted peak within
+        ``snap_tol_mhz``.
+    snap_tol_mhz :
+        Maximum distance (MHz) for frequency snapping.
+
+    Returns
+    -------
+    RefitWindowResult
+        Old vs new peak count (reduced by ``len(peaks) - 1``), χ²ᵣ
+        before/after, and the new fitted peaks.
+
+    Raises
+    ------
+    ValueError
+        When fewer than 2 frequencies are supplied, any frequency does not
+        match a fitted peak within tolerance, or Stage 5 has not been run.
+    """
+    if len(peaks) < 2:
+        raise ValueError(
+            f"merge requires at least 2 peak frequencies; got {len(peaks)}"
+        )
+
+    # Load current fit to find the matched peaks and their weights.
+    path = str(file_path)
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
+    if not wf_list:
+        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+    wf: FittingResult = wf_list[0]
+
+    # Match each requested frequency to a fitted peak within snap_tol_mhz.
+    matched: List[FittedPeak] = []
+    for req_freq in peaks:
+        req_freq_f = float(req_freq)
+        best: Optional[FittedPeak] = None
+        best_dist = float("inf")
+        for fp in wf.fitted_peaks:
+            d = abs(float(fp.frequency_mhz) - req_freq_f)
+            if d < best_dist:
+                best_dist = d
+                best = fp
+        if best is None or best_dist > snap_tol_mhz:
+            raise ValueError(
+                f"merge: no fitted peak within {snap_tol_mhz:.3f} MHz of "
+                f"{req_freq_f:.4f} MHz (closest distance: "
+                f"{best_dist:.4f} MHz)"
+            )
+        if any(m.frequency_mhz == best.frequency_mhz for m in matched):
+            raise ValueError(
+                f"merge: frequency {req_freq_f:.4f} MHz matched the same "
+                f"fitted peak twice"
+            )
+        matched.append(best)
+
+    # Compute the replacement seed frequency and amplitude via weights.
+    # Weight by SNR when available; fall back to amplitude.
+    weights: List[float] = []
+    for fp in matched:
+        w = float(fp.snr) if fp.snr is not None else float(fp.amplitude)
+        weights.append(max(w, 1e-30))
+    total_w = sum(weights)
+    centroid_freq = (
+        sum(float(fp.frequency_mhz) * w for fp, w in zip(matched, weights)) / total_w
+    )
+    centroid_amp = sum(float(fp.amplitude) for fp in matched)
+
+    # Doublet-alternative snap (two-peak case only).
+    # Check the window's doublet_alternatives for a record that covers
+    # exactly the two matched frequencies (order-independent).
+    merge_freq = centroid_freq
+    merge_amp = centroid_amp
+    if len(matched) == 2:
+        fa = float(matched[0].frequency_mhz)
+        fb = float(matched[1].frequency_mhz)
+        for da in getattr(wf, "doublet_alternatives", []):
+            # Match either ordering.
+            pair_match = (
+                abs(float(da.frequency_a_mhz) - fa) <= snap_tol_mhz
+                and abs(float(da.frequency_b_mhz) - fb) <= snap_tol_mhz
+            ) or (
+                abs(float(da.frequency_a_mhz) - fb) <= snap_tol_mhz
+                and abs(float(da.frequency_b_mhz) - fa) <= snap_tol_mhz
+            )
+            if (
+                pair_match
+                and da.merged_success
+                and not math.isnan(float(da.merged_frequency_mhz))
+            ):
+                merge_freq = float(da.merged_frequency_mhz)
+                merge_amp = (
+                    float(da.merged_amplitude)
+                    if not math.isnan(float(da.merged_amplitude))
+                    else centroid_amp
+                )
+                logger.debug(
+                    "merge_peaks window %d: snapped to doublet-alt seed "
+                    "%.4f MHz (centroid was %.4f MHz)",
+                    window_id,
+                    merge_freq,
+                    centroid_freq,
+                )
+                break
+
+    remove_freqs = [float(fp.frequency_mhz) for fp in matched]
+    add_freqs = [merge_freq]
+
+    fid = load_fid_from_pipeline_impl(path)
+    sideband = _sideband_from_value(fid.sideband)
+    s = sideband_sign(sideband)
+    center_mhz: Optional[float] = None
+    if wf.window is not None and wf.window.freq_range is not None:
+        lo, hi = wf.window.freq_range
+        center_mhz = (lo + hi) / 2.0
+
+    add_seeds: Optional[List] = None
+    if center_mhz is not None:
+        from ..fitting.peak_model import ModelPeak as _ModelPeak
+
+        merge_offset = float(s * (merge_freq - center_mhz))
+        add_seeds = [
+            _ModelPeak(
+                amplitude=max(merge_amp, 1e-30),
+                offset_mhz=merge_offset,
+                phase=0.0,
+            )
+        ]
+
+    return refit_window_impl(
+        file_path,
+        window_id,
+        add=add_freqs,
+        remove=remove_freqs,
+        add_seeds=add_seeds,
+        snap_tol_mhz=snap_tol_mhz,
+    )
+
+
+# ---------------------------------------------------------------------------
+# split_peak_impl: replace one fitted peak with K peaks
+# ---------------------------------------------------------------------------
+
+
+def split_peak_impl(
+    file_path: Union[Path, str],
+    window_id: int,
+    peak: float,
+    *,
+    into: int = 2,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+) -> RefitWindowResult:
+    """Replace one fitted peak with ``into`` peaks (default 2).
+
+    A thin composition over :func:`refit_window_impl`: removes the named peak
+    and adds ``into`` replacements spread symmetrically about it by ±½ of one
+    Fourier resolution element (``1 / acquisition_us`` MHz).  All products
+    carry ``origin="user"``.
+
+    The resolution element is taken from the fit context's ``acquisition_us``
+    (the active-FT window length used during the original Stage 5 fit),
+    avoiding any recomputation.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The window containing the peak to split.
+    peak :
+        Molecular frequency (MHz) of the peak to split.  Snapped to the
+        nearest fitted peak within ``snap_tol_mhz``.
+    into :
+        Number of replacement peaks (≥2).  Default is 2.
+    snap_tol_mhz :
+        Maximum distance (MHz) for frequency snapping.
+
+    Returns
+    -------
+    RefitWindowResult
+        Old vs new peak count (increased by ``into - 1``), χ²ᵣ
+        before/after, and the new fitted peaks.
+
+    Raises
+    ------
+    ValueError
+        When ``into < 2``, the frequency does not match a fitted peak within
+        tolerance, or Stage 5 has not been run.
+    """
+    if into < 2:
+        raise ValueError(f"split requires into >= 2; got {into}")
+
+    # Load current fit to find the matched peak and the acquisition length.
+    path = str(file_path)
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
+    if not wf_list:
+        raise KeyError(f"window_id={window_id} not found in the Stage 5 fit")
+    wf: FittingResult = wf_list[0]
+
+    # Match the requested frequency to the nearest fitted peak.
+    peak_f = float(peak)
+    best: Optional[FittedPeak] = None
+    best_dist = float("inf")
+    for fp in wf.fitted_peaks:
+        d = abs(float(fp.frequency_mhz) - peak_f)
+        if d < best_dist:
+            best_dist = d
+            best = fp
+    if best is None or best_dist > snap_tol_mhz:
+        raise ValueError(
+            f"split: no fitted peak within {snap_tol_mhz:.3f} MHz of "
+            f"{peak_f:.4f} MHz (closest distance: {best_dist:.4f} MHz)"
+        )
+    matched_freq = float(best.frequency_mhz)
+    matched_amp = float(best.amplitude)
+
+    # The split seed spacing needs the active acquisition length T and the
+    # sideband, both already on the persisted fit -- no need to rebuild the
+    # active-FT context for two scalars. T is persisted as ``acquisition_us``;
+    # the seed frame matches ``materialize_window`` (window-midpoint centre).
+    fid = load_fid_from_pipeline_impl(path)
+    sideband = _sideband_from_value(fid.sideband)
+    acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+    if acquisition_us <= 0.0:
+        # Legacy fits without the persisted scalar: the FID active duration is
+        # a sufficient seed-spacing approximation (the joint NLS refines it).
+        acquisition_us = float(fid.duration_us)
+
+    # Resolution element: 1 / acquisition_us MHz.
+    resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.1
+
+    # Place the K seeds symmetrically about ``matched_freq``.  For K=2 the
+    # spacing is ±½ resolution element; for K>2 the spacing is evenly
+    # distributed over 1 resolution element centred on ``matched_freq``.
+    if into == 2:
+        offsets = [-0.5 * resolution_mhz, 0.5 * resolution_mhz]
+    else:
+        half_span = 0.5 * resolution_mhz
+        offsets = [-half_span + i * resolution_mhz / (into - 1) for i in range(into)]
+
+    add_freqs = [matched_freq + off for off in offsets]
+    per_peak_amp = matched_amp / into
+
+    s = sideband_sign(sideband)
+    center_mhz: Optional[float] = None
+    if wf.window is not None and wf.window.freq_range is not None:
+        lo, hi = wf.window.freq_range
+        center_mhz = (lo + hi) / 2.0
+
+    add_seeds: Optional[List] = None
+    if center_mhz is not None:
+        from ..fitting.peak_model import ModelPeak as _ModelPeak
+
+        add_seeds = [
+            _ModelPeak(
+                amplitude=max(per_peak_amp, 1e-30),
+                offset_mhz=float(s * (af - center_mhz)),
+                phase=0.0,
+            )
+            for af in add_freqs
+        ]
+
+    return refit_window_impl(
+        file_path,
+        window_id,
+        add=add_freqs,
+        remove=[matched_freq],
+        add_seeds=add_seeds,
+        snap_tol_mhz=snap_tol_mhz,
     )

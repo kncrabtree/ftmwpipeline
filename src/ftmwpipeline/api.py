@@ -37,14 +37,21 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
-from .core.data_structures import FID, ComplexFT, LedgerCandidate, Peak, SpectrumFit, WindowPlan
+from .core.data_structures import (
+    FID,
+    ComplexFT,
+    LedgerCandidate,
+    Peak,
+    SpectrumFit,
+    WindowPlan,
+)
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.stage_fit_settings import StageFitSettings
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
-from ._internal.stage6_impl import DEFAULT_DISPLAY_BAR
+from ._internal.stage6_impl import DEFAULT_DISPLAY_BAR, RefitWindowResult
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
@@ -1431,6 +1438,113 @@ def get_candidate_ledger(
     Requires Stage 5 completed.
     """
     return Pipeline.open(file_path).candidate_ledger(window_id=window_id, bar=bar)
+
+
+def review_edit(
+    file_path: Union[str, Path],
+    window_id: int,
+    *,
+    add: Sequence[float] = (),
+    remove: Sequence[float] = (),
+) -> RefitWindowResult:
+    """User-directed single-window refit (Stage 6 ``review edit``).
+
+    Re-fits ``window_id`` from the persisted Stage 5 fit using the production
+    NLS primitive, applying ``add``/``remove`` edits.  User-added peaks carry
+    ``origin="user"`` and survive the HDF5 round-trip; removed peaks are
+    excluded from the refit and will not be re-added by the rescue pass.
+    Equivalent to :meth:`Pipeline.review_edit`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The window to refit.
+    add :
+        Molecular frequencies (MHz) of peaks to add.
+    remove :
+        Molecular frequencies (MHz) of fitted peaks to remove.
+
+    Returns
+    -------
+    RefitWindowResult
+        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_edit(window_id, add=add, remove=remove)
+
+
+def review_merge(
+    file_path: Union[str, Path],
+    window_id: int,
+    peaks: Sequence[float],
+    *,
+    snap_tol_mhz: float = 0.05,
+) -> RefitWindowResult:
+    """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
+
+    Equivalent to :meth:`Pipeline.review_merge`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The window containing the peaks to merge.
+    peaks :
+        Molecular frequencies (MHz) of the peaks to collapse (≥2).
+    snap_tol_mhz :
+        Maximum distance (MHz) for frequency snapping.
+
+    Returns
+    -------
+    RefitWindowResult
+        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_merge(
+        window_id, peaks, snap_tol_mhz=snap_tol_mhz
+    )
+
+
+def review_split(
+    file_path: Union[str, Path],
+    window_id: int,
+    peak: float,
+    *,
+    into: int = 2,
+    snap_tol_mhz: float = 0.05,
+) -> RefitWindowResult:
+    """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
+
+    Equivalent to :meth:`Pipeline.review_split`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file (read-write).
+    window_id :
+        The window containing the peak to split.
+    peak :
+        Molecular frequency (MHz) of the peak to split.
+    into :
+        Number of replacement peaks (≥2, default 2).
+    snap_tol_mhz :
+        Maximum distance (MHz) for frequency snapping.
+
+    Returns
+    -------
+    RefitWindowResult
+        Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_split(
+        window_id, peak, into=into, snap_tol_mhz=snap_tol_mhz
+    )
 
 
 def validate_stage5_shape_error(

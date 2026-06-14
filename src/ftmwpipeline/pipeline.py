@@ -62,13 +62,27 @@ from ._internal.stage5_impl import (
     visualize_fit_impl,
 )
 from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
-from ._internal.stage6_impl import DEFAULT_DISPLAY_BAR, get_candidate_ledger_impl
+from ._internal.stage6_impl import (
+    DEFAULT_DISPLAY_BAR,
+    RefitWindowResult,
+    get_candidate_ledger_impl,
+    merge_peaks_impl,
+    refit_window_impl,
+    split_peak_impl,
+)
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
     calibrate_timebase_impl,
     load_timebase_calibration_impl,
 )
-from .core.data_structures import FID, ComplexFT, LedgerCandidate, Peak, SpectrumFit, WindowPlan
+from .core.data_structures import (
+    FID,
+    ComplexFT,
+    LedgerCandidate,
+    Peak,
+    SpectrumFit,
+    WindowPlan,
+)
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.settings import FTSettings
@@ -1638,6 +1652,124 @@ class Pipeline:
         Requires Stage 5 completed.
         """
         return get_candidate_ledger_impl(self.filepath, window_id=window_id, bar=bar)
+
+    def review_edit(
+        self,
+        window_id: int,
+        *,
+        add: Sequence[float] = (),
+        remove: Sequence[float] = (),
+    ) -> RefitWindowResult:
+        """User-directed single-window refit (Stage 6 ``review edit``).
+
+        Re-fits ``window_id`` from the persisted Stage 5 fit using the
+        production NLS primitive, applying ``add``/``remove`` edits.  User-
+        added peaks carry ``origin="user"`` and survive the HDF5 round-trip;
+        removed peaks are excluded from the refit and will not be re-added by
+        the rescue pass.
+
+        Parameters
+        ----------
+        window_id :
+            The window to refit.
+        add :
+            Molecular frequencies (MHz) of peaks to add.  Snapped to the
+            nearest ledger candidate within 50 kHz or seeded fresh at F.
+        remove :
+            Molecular frequencies (MHz) of fitted peaks to remove.  Snapped
+            to the nearest fitted peak within 50 kHz.
+
+        Returns
+        -------
+        RefitWindowResult
+            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+        Requires Stage 5 completed.
+        """
+        return refit_window_impl(
+            self.filepath,
+            window_id,
+            add=add,
+            remove=remove,
+        )
+
+    def review_merge(
+        self,
+        window_id: int,
+        peaks: Sequence[float],
+        *,
+        snap_tol_mhz: float = 0.05,
+    ) -> RefitWindowResult:
+        """Collapse ≥2 fitted peaks in a window into one (Stage 6 ``review merge``).
+
+        Removes the named peaks and adds one replacement seeded at their
+        SNR-weighted centroid (or amplitude-weighted centroid when SNR is
+        unavailable).  When the pair matches a persisted doublet-alternative
+        record with a successful merged refit, the recorded merged seed is
+        used instead of the centroid.  All products carry ``origin="user"``.
+
+        Parameters
+        ----------
+        window_id :
+            The window containing the peaks to merge.
+        peaks :
+            Molecular frequencies (MHz) of the peaks to collapse (≥2).
+        snap_tol_mhz :
+            Maximum distance (MHz) for frequency snapping to fitted peaks.
+
+        Returns
+        -------
+        RefitWindowResult
+            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+        Requires Stage 5 completed.
+        """
+        return merge_peaks_impl(
+            self.filepath,
+            window_id,
+            peaks,
+            snap_tol_mhz=snap_tol_mhz,
+        )
+
+    def review_split(
+        self,
+        window_id: int,
+        peak: float,
+        *,
+        into: int = 2,
+        snap_tol_mhz: float = 0.05,
+    ) -> RefitWindowResult:
+        """Replace one fitted peak with ``into`` peaks (Stage 6 ``review split``).
+
+        Removes the named peak and adds ``into`` replacements spread
+        symmetrically about it by ±½ of one Fourier resolution element
+        (``1 / acquisition_us`` MHz).  All products carry ``origin="user"``.
+
+        Parameters
+        ----------
+        window_id :
+            The window containing the peak to split.
+        peak :
+            Molecular frequency (MHz) of the peak to split.
+        into :
+            Number of replacement peaks (≥2, default 2).
+        snap_tol_mhz :
+            Maximum distance (MHz) for frequency snapping to fitted peaks.
+
+        Returns
+        -------
+        RefitWindowResult
+            Old vs new peak count, χ²ᵣ before/after, and the new fitted peaks.
+
+        Requires Stage 5 completed.
+        """
+        return split_peak_impl(
+            self.filepath,
+            window_id,
+            peak,
+            into=into,
+            snap_tol_mhz=snap_tol_mhz,
+        )
 
     def validate_stage5_shape_error(
         self,

@@ -1,18 +1,25 @@
 """
 Stage 6 review commands.
 
-Implements the ``review show`` subcommand (Pass 1: candidate ledger display).
-Thin wrapper over :mod:`ftmwpipeline._internal.stage6_impl` -- identical
-behaviour to :class:`~ftmwpipeline.Pipeline` and the functional API.
+Implements the ``review show``, ``review edit``, ``review merge``, and
+``review split`` subcommands.  Thin wrappers over
+:mod:`ftmwpipeline._internal.stage6_impl` -- identical behaviour to
+:class:`~ftmwpipeline.Pipeline` and the functional API.
 
-Pass 2 verbs (``review run``, ``review edit``, ``review accept``,
-``review merge``, ``review split``) are not implemented here.
+``review run``, ``review accept`` (Pass 2 verbs) are not yet implemented.
 """
 
 import argparse
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
-from .._internal.stage6_impl import DEFAULT_DISPLAY_BAR, get_candidate_ledger_impl
+from .._internal.stage6_impl import (
+    DEFAULT_DISPLAY_BAR,
+    RefitWindowResult,
+    get_candidate_ledger_impl,
+    merge_peaks_impl,
+    refit_window_impl,
+    split_peak_impl,
+)
 from ..core.data_structures import FittingResult, LedgerCandidate
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
@@ -151,20 +158,150 @@ def _print_candidate_table(cands: List[LedgerCandidate], indent: int = 0) -> Non
         )
 
 
+def cmd_review_edit(args: argparse.Namespace) -> int:
+    """Re-fit one window with user-directed add/remove edits.
+
+    Prints a before/after summary: peak counts, χ²ᵣ, which peaks were added
+    or removed, and the origin of each resulting peak.
+    """
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    window_id: int = args.window
+    add_freqs: List[float] = list(args.add or [])
+    remove_freqs: List[float] = list(args.remove or [])
+
+    if not add_freqs and not remove_freqs:
+        print(
+            "Warning: no --add or --remove frequencies given; "
+            "performing identity refit (no-op edit)."
+        )
+
+    try:
+        result: RefitWindowResult = refit_window_impl(
+            file_path,
+            window_id,
+            add=add_freqs,
+            remove=remove_freqs,
+        )
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(
+        f"review edit  window={result.window_id}  "
+        f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
+        f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
+    )
+    if add_freqs:
+        print(f"  Added seeds ({len(add_freqs)}): {[f'{f:.4f}' for f in add_freqs]}")
+    if remove_freqs:
+        print(f"  Removed ({len(remove_freqs)}): {[f'{f:.4f}' for f in remove_freqs]}")
+    if result.fitted_peaks:
+        print(f"  {'freq (MHz)':>14}  {'amp':>10}  {'snr':>8}  {'origin':>6}")
+        print("  " + "-" * 46)
+        for p in sorted(result.fitted_peaks, key=lambda pk: pk.frequency_mhz):
+            snr_str = f"{p.snr:.1f}" if p.snr is not None else "  n/a"
+            print(
+                f"  {_fmt_mhz(p.frequency_mhz):>14}  "
+                f"{p.amplitude:>10.3e}  {snr_str:>8}  {p.origin:>6}"
+            )
+    return 0
+
+
+def cmd_review_merge(args: argparse.Namespace) -> int:
+    """Collapse ≥2 fitted peaks in a window into one.
+
+    Prints a before/after summary: peak counts, χ²ᵣ, and the merged product.
+    """
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    window_id: int = args.window
+    peak_freqs: List[float] = list(args.peaks or [])
+
+    if len(peak_freqs) < 2:
+        print(
+            f"Error: --peaks requires at least 2 frequencies; "
+            f"got {len(peak_freqs)}."
+        )
+        return 1
+
+    try:
+        result = merge_peaks_impl(file_path, window_id, peak_freqs)
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(
+        f"review merge  window={result.window_id}  "
+        f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
+        f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
+    )
+    print(f"  Merged from ({len(peak_freqs)}): {[f'{f:.4f}' for f in peak_freqs]}")
+    user_peaks = [p for p in result.fitted_peaks if p.origin == "user"]
+    if user_peaks:
+        print("  Merged product(s):")
+        for p in sorted(user_peaks, key=lambda pk: pk.frequency_mhz):
+            snr_str = f"{p.snr:.1f}" if p.snr is not None else "  n/a"
+            print(
+                f"    {_fmt_mhz(p.frequency_mhz):>14} MHz  "
+                f"{p.amplitude:>10.3e}  snr={snr_str}  origin={p.origin}"
+            )
+    return 0
+
+
+def cmd_review_split(args: argparse.Namespace) -> int:
+    """Replace one fitted peak with K peaks spread across one resolution element.
+
+    Prints a before/after summary: peak counts, χ²ᵣ, and the split products.
+    """
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    window_id: int = args.window
+    peak_freq: float = args.peak
+    into: int = args.into
+
+    if into < 2:
+        print(f"Error: --into must be >= 2; got {into}.")
+        return 1
+
+    try:
+        result = split_peak_impl(file_path, window_id, peak_freq, into=into)
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print(
+        f"review split  window={result.window_id}  "
+        f"peaks {result.n_peaks_before} → {result.n_peaks_after}  "
+        f"chi2r {result.chi2r_before:.4g} → {result.chi2r_after:.4g}"
+    )
+    print(f"  Split {peak_freq:.4f} MHz into {into}")
+    user_peaks = [p for p in result.fitted_peaks if p.origin == "user"]
+    if user_peaks:
+        print("  Split product(s):")
+        for p in sorted(user_peaks, key=lambda pk: pk.frequency_mhz):
+            snr_str = f"{p.snr:.1f}" if p.snr is not None else "  n/a"
+            print(
+                f"    {_fmt_mhz(p.frequency_mhz):>14} MHz  "
+                f"{p.amplitude:>10.3e}  snr={snr_str}  origin={p.origin}"
+            )
+    return 0
+
+
 def register_review_commands(subparsers: Any) -> None:
     """Register review (Stage 6 Pass 1) object-verb subcommands."""
     verbs = add_stage_object(
         subparsers,
         "review",
         synonym="stage6",
-        help="Stage 6: review fitted model and candidate ledger (show)",
+        help="Stage 6: review fitted model and candidate ledger",
         description=(
-            "Stage 6 review surface (Pass 1).\n\n"
-            "Inspect the automatic fit, view per-window summaries, and explore\n"
-            "the candidate ledger of revivable lines that the automatic pipeline\n"
-            "considered but did not accept.\n\n"
-            "Pass 2 verbs (edit / merge / split / accept / run) are not yet\n"
-            "implemented."
+            "Stage 6 review surface.\n\n"
+            "Inspect the automatic fit, view per-window summaries, explore\n"
+            "the candidate ledger, and apply user-directed edits (add, remove,\n"
+            "merge, split peaks).\n\n"
+            "Verbs: show, edit, merge, split\n"
+            "Pass 2 verbs (accept / run) are not yet implemented."
         ),
     )
 
@@ -217,3 +354,150 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_show.set_defaults(func=cmd_review_show)
+
+    # ---- review edit ---------------------------------------------------------
+    p_edit = verbs.add_parser(
+        "edit",
+        help="Re-fit one window with user add/remove edits",
+        description=(
+            "User-directed single-window refit.\n\n"
+            "Removes named peaks and/or adds new ones, then re-converges the\n"
+            "window's NLS.  Added peaks carry origin=user and are immune to\n"
+            "automatic cleanup/rescue pruning.  Removed peaks are not re-added.\n"
+            "Other windows are untouched."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_edit.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_edit.add_argument(
+        "--window",
+        dest="window",
+        type=int,
+        required=True,
+        metavar="N",
+        help="window_id to refit.",
+    )
+    p_edit.add_argument(
+        "--add",
+        dest="add",
+        type=float,
+        nargs="*",
+        default=[],
+        metavar="F",
+        help=(
+            "Molecular MHz frequencies of peaks to add. "
+            "Accepts one or more values: --add F1 F2 ..."
+        ),
+    )
+    p_edit.add_argument(
+        "--remove",
+        dest="remove",
+        type=float,
+        nargs="*",
+        default=[],
+        metavar="F",
+        help=(
+            "Molecular MHz frequencies of fitted peaks to remove. "
+            "Accepts one or more values: --remove F1 F2 ..."
+        ),
+    )
+    p_edit.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_edit.set_defaults(func=cmd_review_edit)
+
+    # ---- review merge --------------------------------------------------------
+    p_merge = verbs.add_parser(
+        "merge",
+        help="Collapse ≥2 fitted peaks in a window into one",
+        description=(
+            "Collapse a set of fitted peaks into a single peak.\n\n"
+            "The replacement is seeded at the SNR-weighted centroid of the\n"
+            "removed peaks.  When the pair matches a persisted doublet-alternative\n"
+            "record with a successful merged refit, the recorded merged seed is\n"
+            "used instead.  All products carry origin=user."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_merge.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_merge.add_argument(
+        "--window",
+        dest="window",
+        type=int,
+        required=True,
+        metavar="N",
+        help="window_id containing the peaks to merge.",
+    )
+    p_merge.add_argument(
+        "--peaks",
+        dest="peaks",
+        type=float,
+        nargs="+",
+        required=True,
+        metavar="F",
+        help="Molecular MHz frequencies of the peaks to collapse (≥2).",
+    )
+    p_merge.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_merge.set_defaults(func=cmd_review_merge)
+
+    # ---- review split --------------------------------------------------------
+    p_split = verbs.add_parser(
+        "split",
+        help="Replace one fitted peak with K peaks",
+        description=(
+            "Replace one fitted peak with K peaks (default K=2).\n\n"
+            "The replacement peaks are spread symmetrically about the named\n"
+            "peak by ±½ of one Fourier resolution element (1/acquisition_us MHz).\n"
+            "All products carry origin=user."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_split.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_split.add_argument(
+        "--window",
+        dest="window",
+        type=int,
+        required=True,
+        metavar="N",
+        help="window_id containing the peak to split.",
+    )
+    p_split.add_argument(
+        "--peak",
+        dest="peak",
+        type=float,
+        required=True,
+        metavar="F",
+        help="Molecular MHz frequency of the peak to split.",
+    )
+    p_split.add_argument(
+        "--into",
+        dest="into",
+        type=int,
+        default=2,
+        metavar="K",
+        help="Number of replacement peaks (default 2, must be ≥2).",
+    )
+    p_split.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_split.set_defaults(func=cmd_review_split)
