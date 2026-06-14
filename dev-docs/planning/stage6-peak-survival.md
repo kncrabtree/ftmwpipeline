@@ -159,25 +159,29 @@ the refactor changes structure, not output.
   preserved, every truth-set keep retained (w441 → 0; w161/w108/w419/w217
   unchanged). The settings group also reserves `vif_collapse_threshold` /
   `collapse_max_separation_res` / `vif_attention_threshold` for Phase B.
-- **R2 — rework Phase A from slice to refit.** *Next.* The faithful "refit a
-  window with an edited peak set" already exists as `refit_window_impl`'s body: it
-  derives the per-window `fw_kwargs` from resolved settings, reconstructs the
-  frozen contributors, and (post Step 0) calls `fit_seeds_window_outcome`. The
-  survival pass needs the same without `refit_window_impl`'s file I/O,
-  spur-catalogue *re-load*, and decision recording. So extract that in-memory
-  **refit core** — `refit_window_core(fit_ctx, plan, window_id, seed_peaks, *,
-  resolved, …) -> FittingResult` (materialize → reconstruct frozen → derive
-  `fw_kwargs` → `fit_seeds_window_outcome` → `window_outcome_to_fitting_result`) —
-  and route both `refit_window_impl` (keeping its file-load/spur-replay/decision
-  shell) and the survival pass (which already holds `fit_ctx`/`plan`/`resolved`
-  live in `fit_peaks_impl`) through it. The survival pass then, per window with
-  sub-floor peaks: drop the window if all dust, else call `refit_window_core` with
-  the surviving seeds; the refit recomputes parameters + covariance + χ²ᵣ honestly
-  (no slice). Removing noise-level peaks never pushes a real survivor below the
-  floor, so one pass suffices. Extracting `refit_window_core` is itself a
-  byte-identical refactor of `refit_window_impl` (verify before the behavior
-  change); then re-baseline the 7 fixtures and confirm recall holds (only
-  dust-touched windows change).
+- **R2 — rework Phase A from slice to refit.** *Implemented (in tree); 7-fixture
+  re-baseline pending.* Extracted the in-memory **refit core**
+  `refit_window_core(fit_ctx, fit_win, wf, *, resolved, shape_enum, tau_maj_us,
+  sigma_tau_us, peak_frequencies_mhz, add, remove, …) -> FittingResult`
+  (materialize → reconstruct frozen → derive `fw_kwargs` → replay baseline →
+  `fit_seeds_window_outcome` → `window_outcome_to_fitting_result` → origin stamp →
+  thaw re-insert) from `refit_window_impl`, which is now a thin file-bound shell
+  (load, spur-catalogue replay, persistence, decision recording) over it. The
+  extraction is **byte-identical** (identity refits reproduce the persisted fit to
+  the digit on real multi-peak windows; the stage6 + cross-interface suites stay
+  green). The survival pass routes partial-prune windows through the core via a
+  `refit_window=(wf, dust_freqs) -> FittingResult` callable injected from
+  `fit_peaks_impl` (which holds `fit_ctx` / `plan` / `resolved` live): per window,
+  drop it if all dust, leave it untouched if no dust, else `refit_window_core(...,
+  remove=dust_freqs)` so the survivors' parameters + covariance + χ²ᵣ are
+  re-estimated honestly (no slice). One pass suffices (removing noise-level peaks
+  does not push a real survivor below the floor). Validated on a fresh full 2638
+  fit: 565→542 windows, 604→565 peaks (same dust the slice version found), **0**
+  auto survivors below floor, **0** windows with a covariance/peak-count mismatch
+  (the honest refit covariance replaces the slice). The `_slice_window_covariance`
+  helper is removed. **Still pending: re-baseline the 7 fixtures and confirm
+  ground-truth recall holds** (only dust-touched windows change vs the committed
+  slice baseline; this is the human-judged step below).
 - **Phase B (R3) — VIF collapse** (higher risk; reuses the merged-fit machinery).
   Build the shared VIF utility, the collapse decision (VIF>100 + sep<0.5 res,
   overriding χ²/AICc), and the merged-params reuse, on the `refit_window_core`

@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple, cast
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
 
 import h5py
 import numpy as np
@@ -54,7 +54,6 @@ from ..fitting.plan_execution import (
     execute_plan,
 )
 from ..fitting.result_conversion import (
-    build_covariance_param_labels,
     plan_fit_outcome_to_spectrum_fit,
 )
 from ..fitting.spur_detection import (
@@ -291,106 +290,98 @@ def _required_str(value: Optional[str], name: str) -> str:
     return str(value)
 
 
-def _slice_window_covariance(
-    wf: FittingResult, kept_peak_indices: List[int], n_peaks_before: int
-) -> None:
-    """Slice a window's covariance to the surviving peaks after a prune.
+def _is_survival_dust(peak: FittedPeak, floor: float) -> bool:
+    """Return True when ``peak`` is auto-origin dust below the SNR floor.
 
-    The covariance is laid out peak-major (``amplitude, offset, phase`` per
-    peak), then the shared ``tau`` (if fitted), then the baseline real/imag
-    coefficients. Keeping only ``kept_peak_indices`` retains the three columns
-    of each surviving peak plus the unchanged tail (tau + baseline); the result
-    is the marginal covariance of those parameters. Labels are rebuilt so the
-    ``amplitude_{i}`` indices stay contiguous (matching the new peak count).
-    Falls back to clearing the covariance if the layout cannot be reconciled.
-    """
-    cov = wf.covariance
-    labels = wf.covariance_param_labels
-    if cov is None or labels is None:
-        return
-    has_tau = "tau" in labels
-    n_base = sum(1 for lbl in labels if lbl.startswith("baseline_re_"))
-    baseline_order = (n_base - 1) if n_base > 0 else None
-    keep_idx: List[int] = []
-    for j in kept_peak_indices:
-        keep_idx.extend([3 * j, 3 * j + 1, 3 * j + 2])
-    keep_idx.extend(range(3 * n_peaks_before, len(labels)))
-    new_labels = build_covariance_param_labels(
-        len(kept_peak_indices), has_tau, baseline_order
-    )
-    if max(keep_idx, default=-1) >= cov.shape[0] or len(keep_idx) != len(new_labels):
-        # Layout cannot be reconciled (unexpected drift): drop rather than
-        # persist a mislabelled matrix; the diagonal per-peak errors survive.
-        wf.covariance = None
-        wf.covariance_param_labels = None
-        return
-    wf.covariance = cov[np.ix_(keep_idx, keep_idx)]
-    wf.covariance_param_labels = new_labels
-
-
-def apply_snr_survival_prune(fit: SpectrumFit, floor: float) -> None:
-    """Prune fitted peaks below the SNR survival floor (in-place).
-
-    Removes every automatic-origin :class:`FittedPeak` with finite
-    ``snr < floor`` from each window's ``fitted_peaks`` list, drops any
-    :class:`FittingResult` whose ``fitted_peaks`` becomes empty, then rebuilds
-    ``fit.fitted_peaks`` sorted ascending by ``frequency_mhz``. Records the
-    prune in ``fit.diagnostics["peak_survival"]``.
-
-    Peaks with ``origin == "user"`` are immune regardless of SNR. Peaks with
-    ``None`` or NaN ``snr`` are kept unconditionally (conservative).
-
-    A window's persisted parameter covariance describes its *pre-prune* peak
-    set, so removing a peak desynchronises it (the per-peak covariance/label
-    invariant the serializer enforces). When a partial prune occurs, the
-    window's covariance is sliced to the surviving peaks (the marginal
-    covariance of those parameters from the joint fit); fully-emptied windows
-    are dropped entirely.
+    User-origin peaks are immune; ``None`` / NaN SNR is kept unconditionally
+    (conservative).
     """
     import math
 
+    snr = peak.snr
+    if peak.origin == "user" or snr is None:
+        return False
+    if isinstance(snr, float) and math.isnan(snr):
+        return False
+    return snr < floor
+
+
+def apply_snr_survival_prune(
+    fit: SpectrumFit,
+    floor: float,
+    *,
+    refit_window: Callable[[FittingResult, List[float]], FittingResult],
+) -> None:
+    """Prune fitted peaks below the SNR survival floor (in-place).
+
+    For each window, classifies its automatic-origin peaks with finite
+    ``snr < floor`` as dust (``origin == "user"`` peaks are immune; ``None`` /
+    NaN SNR is kept). Then, per window:
+
+    - **no dust** -> the window is untouched;
+    - **all peaks are dust** (and the window held peaks) -> the window is
+      dropped from ``window_fits``;
+    - **partial dust** -> the window is **refitted** with the dust frequencies
+      removed via ``refit_window``, so the surviving peaks' point estimates,
+      covariance, and χ²ᵣ are re-estimated free of the removed peaks' influence
+      (not a marginal slice of the stale joint fit).
+
+    Finally rebuilds ``fit.fitted_peaks`` sorted ascending by ``frequency_mhz``
+    and records the prune in ``fit.diagnostics["peak_survival"]``.
+
+    Parameters
+    ----------
+    fit :
+        The :class:`SpectrumFit` to prune in place.
+    floor :
+        Absolute SNR survival floor; auto peaks below it are dust.
+    refit_window :
+        Callable ``(wf, dust_freqs) -> FittingResult`` that re-fits ``wf`` with
+        the dust molecular frequencies removed and returns the new per-window
+        result. Invoked only for partially-pruned windows. In production this
+        routes through the bare in-memory window-refit core
+        (:func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`), which
+        reconstructs the frozen background, replays the baseline, and
+        re-converges the survivors honestly.
+    """
     pruned_records: List[Dict[str, Any]] = []
     dropped_window_ids: List[int] = []
 
     surviving_windows: List[FittingResult] = []
     for wf in fit.window_fits:
         n_peaks_before = len(wf.fitted_peaks)
-        kept: List[FittedPeak] = []
-        kept_indices: List[int] = []
-        for idx, peak in enumerate(wf.fitted_peaks):
-            snr = peak.snr
-            # Keep: user-origin, None snr, NaN snr, or snr >= floor
-            if (
-                peak.origin == "user"
-                or snr is None
-                or (isinstance(snr, float) and math.isnan(snr))
-                or snr >= floor
-            ):
-                kept.append(peak)
-                kept_indices.append(idx)
-            else:
-                pruned_records.append(
-                    {
-                        "window_id": (
-                            int(wf.window_id) if wf.window_id is not None else -1
-                        ),
-                        "frequency_mhz": float(peak.frequency_mhz),
-                        "snr": float(snr),
-                    }
-                )
-        if kept or n_peaks_before == 0:
-            # Keep the window if any peak survived, or if it was already empty
-            # before the prune (a pre-existing K=0 window is Stage 4/5's
-            # business, not the survival prune's -- dropping it here would be
-            # scope creep beyond F5 and would erase window-construction signal).
-            wf.fitted_peaks = kept
-            if len(kept) != n_peaks_before:
-                _slice_window_covariance(wf, kept_indices, n_peaks_before)
+        dust = [p for p in wf.fitted_peaks if _is_survival_dust(p, floor)]
+        for peak in dust:
+            pruned_records.append(
+                {
+                    "window_id": (
+                        int(wf.window_id) if wf.window_id is not None else -1
+                    ),
+                    "frequency_mhz": float(peak.frequency_mhz),
+                    "snr": float(cast(float, peak.snr)),  # finite by _is_survival_dust
+                }
+            )
+
+        if not dust:
+            # Nothing to prune (covers pre-existing K=0 windows too): keep as-is.
             surviving_windows.append(wf)
-        else:
-            # The prune emptied a window that held peaks -> drop it.
-            wid = int(wf.window_id) if wf.window_id is not None else -1
-            dropped_window_ids.append(wid)
+            continue
+
+        if len(dust) == n_peaks_before:
+            # Every peak the window held is dust -> drop the window. A
+            # pre-existing K=0 window has no dust and is handled above, so it is
+            # never dropped here (window-construction signal is preserved).
+            dropped_window_ids.append(
+                int(wf.window_id) if wf.window_id is not None else -1
+            )
+            continue
+
+        # Partial prune: re-fit the window with the dust removed so the
+        # survivors' parameters, covariance, and χ²ᵣ are honest (no stale
+        # slice of the joint fit that still includes the removed peaks).
+        dust_freqs = [float(p.frequency_mhz) for p in dust]
+        new_wf = refit_window(wf, dust_freqs)
+        surviving_windows.append(new_wf)
 
     fit.window_fits = surviving_windows
 
@@ -1501,10 +1492,36 @@ def fit_peaks_impl(
     # was present (``clock_lattice`` is ``None``).
     annotate_lattice_matches(spectrum_fit, clock_lattice)
 
-    # Phase A peak-survival prune: drop dust below the SNR floor.
+    # Peak-survival prune: drop dust below the SNR floor, re-fitting any
+    # partially-pruned window so the surviving peaks' parameters / covariance /
+    # χ²ᵣ are re-estimated free of the removed dust (not a stale slice). The
+    # refit routes through the bare in-memory window-refit core, reusing the
+    # live fit context / plan / resolved settings -- no file reload, no spur
+    # re-derivation.
     if peak_survival_enabled_v:
+        from .stage6_impl import refit_window_core
+
+        survival_window_map = {w.window_id: w for w in plan.windows}
+
+        def _survival_refit(
+            wf: FittingResult, dust_freqs: List[float]
+        ) -> FittingResult:
+            return refit_window_core(
+                fit_ctx,
+                survival_window_map[cast(int, wf.window_id)],
+                wf,
+                resolved=resolved,
+                shape_enum=shape_enum,
+                tau_maj_us=tau_maj_us,
+                sigma_tau_us=sigma_tau_us,
+                peak_frequencies_mhz=peak_frequencies_mhz,
+                remove=tuple(dust_freqs),
+            )
+
         n_before = spectrum_fit.n_fitted_peaks
-        apply_snr_survival_prune(spectrum_fit, peak_survival_floor_v)
+        apply_snr_survival_prune(
+            spectrum_fit, peak_survival_floor_v, refit_window=_survival_refit
+        )
         n_pruned = n_before - spectrum_fit.n_fitted_peaks
         if n_pruned:
             logger.info(

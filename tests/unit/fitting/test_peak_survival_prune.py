@@ -6,8 +6,6 @@ Tests the ``apply_snr_survival_prune`` helper directly, without a real fit.
 
 from __future__ import annotations
 
-import math
-
 import pytest
 
 from ftmwpipeline._internal.stage5_impl import apply_snr_survival_prune
@@ -34,9 +32,7 @@ def _make_peak(
     )
 
 
-def _make_window(
-    window_id: int, peaks: list[FittedPeak]
-) -> FittingResult:
+def _make_window(window_id: int, peaks: list[FittedPeak]) -> FittingResult:
     wf = FittingResult(window_id=window_id)
     wf.fitted_peaks = list(peaks)
     return wf
@@ -51,18 +47,38 @@ def _make_fit(windows: list[FittingResult]) -> SpectrumFit:
     return fit
 
 
+def _stub_refit(wf: FittingResult, dust_freqs: list[float]) -> FittingResult:
+    """Stand-in for the production window-refit core.
+
+    Returns a fresh :class:`FittingResult` for ``wf`` with the dust frequencies
+    dropped from its peak list. It does no NLS (the orchestration under test
+    does not depend on the converged parameters), and it clears the covariance
+    to make the "the survivors come from a refit, not a slice" contract
+    observable in the assertions.
+    """
+    kept = [p for p in wf.fitted_peaks if float(p.frequency_mhz) not in dust_freqs]
+    new = FittingResult(window_id=wf.window_id)
+    new.fitted_peaks = kept
+    new.covariance = None
+    new.covariance_param_labels = None
+    return new
+
+
 class TestApplySnrSurvivalPrune:
     FLOOR = 3.2
 
     def test_removes_sub_floor_auto_peaks(self):
         """Auto-origin peaks below the floor are removed."""
-        w1 = _make_window(1, [
-            _make_peak(1000.0, snr=10.0),  # keep
-            _make_peak(1001.0, snr=2.0),   # drop
-            _make_peak(1002.0, snr=3.2),   # keep (== floor)
-        ])
+        w1 = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=10.0),  # keep
+                _make_peak(1001.0, snr=2.0),  # drop
+                _make_peak(1002.0, snr=3.2),  # keep (== floor)
+            ],
+        )
         fit = _make_fit([w1])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         assert len(fit.window_fits) == 1
         assert len(fit.window_fits[0].fitted_peaks) == 2
         freqs = [p.frequency_mhz for p in fit.window_fits[0].fitted_peaks]
@@ -70,12 +86,15 @@ class TestApplySnrSurvivalPrune:
 
     def test_user_origin_immune_to_prune(self):
         """A user-origin peak below the floor is always kept."""
-        w1 = _make_window(1, [
-            _make_peak(1000.0, snr=1.0, origin="user"),  # keep (user)
-            _make_peak(1001.0, snr=1.0, origin="auto"),  # drop (auto, sub-floor)
-        ])
+        w1 = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=1.0, origin="user"),  # keep (user)
+                _make_peak(1001.0, snr=1.0, origin="auto"),  # drop (auto, sub-floor)
+            ],
+        )
         fit = _make_fit([w1])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         assert len(fit.window_fits) == 1
         remaining_freqs = [p.frequency_mhz for p in fit.window_fits[0].fitted_peaks]
         assert 1000.0 in remaining_freqs
@@ -85,7 +104,7 @@ class TestApplySnrSurvivalPrune:
         """Peaks with None snr are not prunable."""
         w1 = _make_window(1, [_make_peak(1000.0, snr=None)])
         fit = _make_fit([w1])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         assert len(fit.window_fits) == 1
         assert len(fit.window_fits[0].fitted_peaks) == 1
 
@@ -93,19 +112,22 @@ class TestApplySnrSurvivalPrune:
         """Peaks with NaN snr are not prunable."""
         w1 = _make_window(1, [_make_peak(1000.0, snr=float("nan"))])
         fit = _make_fit([w1])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         assert len(fit.window_fits) == 1
         assert len(fit.window_fits[0].fitted_peaks) == 1
 
     def test_all_dust_window_dropped(self):
         """A window whose every peak is sub-floor dust is removed from window_fits."""
         w1 = _make_window(1, [_make_peak(1000.0, snr=10.0)])  # keep window
-        w2 = _make_window(2, [
-            _make_peak(2000.0, snr=1.5),   # dust
-            _make_peak(2001.0, snr=2.4),   # dust
-        ])
+        w2 = _make_window(
+            2,
+            [
+                _make_peak(2000.0, snr=1.5),  # dust
+                _make_peak(2001.0, snr=2.4),  # dust
+            ],
+        )
         fit = _make_fit([w1, w2])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         assert len(fit.window_fits) == 1
         assert fit.window_fits[0].window_id == 1
 
@@ -116,70 +138,103 @@ class TestApplySnrSurvivalPrune:
         w_empty = _make_window(1, [])  # K=0 before any prune
         w2 = _make_window(2, [_make_peak(2000.0, snr=8.0, window_id=2)])
         fit = _make_fit([w_empty, w2])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         ids = {wf.window_id for wf in fit.window_fits}
         assert ids == {1, 2}
         assert fit.diagnostics["peak_survival"]["dropped_window_ids"] == []
 
-    def test_covariance_sliced_after_partial_prune(self):
-        """A partial prune slices the window covariance to the survivors and
-        rebuilds contiguous labels, preserving the per-peak invariant
-        (amplitude-label count == fitted-peak count)."""
+    def test_partial_prune_refits_window(self):
+        """A partial prune replaces the window with the refit's result and
+        passes exactly the dust frequencies to the refit (it does not slice the
+        stale joint covariance)."""
         import numpy as np
 
-        from ftmwpipeline.fitting.result_conversion import (
-            build_covariance_param_labels,
-        )
+        captured: dict = {}
 
-        # Two peaks + a shared tau: labels A0,o0,p0,A1,o1,p1,tau -> 7x7.
-        labels = build_covariance_param_labels(2, fit_tau=True, baseline_order=None)
-        cov = np.diag(np.arange(1, len(labels) + 1).astype(float))
-        wf = _make_window(1, [
-            _make_peak(1000.0, snr=10.0, window_id=1),  # kept (idx 0)
-            _make_peak(1001.0, snr=2.0, window_id=1),   # pruned (idx 1)
-        ])
-        wf.covariance = cov
-        wf.covariance_param_labels = labels
+        def _capturing_refit(
+            wf: FittingResult, dust_freqs: list[float]
+        ) -> FittingResult:
+            captured["window_id"] = wf.window_id
+            captured["dust_freqs"] = list(dust_freqs)
+            return _stub_refit(wf, dust_freqs)
+
+        wf = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=10.0, window_id=1),  # kept
+                _make_peak(1001.0, snr=2.0, window_id=1),  # dust
+            ],
+        )
+        # A stale joint covariance from the pre-prune 2-peak fit.
+        wf.covariance = np.eye(7)
+        wf.covariance_param_labels = ["x"] * 7
         fit = _make_fit([wf])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_capturing_refit)
+
+        assert captured["window_id"] == 1
+        assert captured["dust_freqs"] == [1001.0]
         out = fit.window_fits[0]
         assert len(out.fitted_peaks) == 1
-        assert out.covariance is not None
-        # Survivor params: A0,o0,p0 (idx 0,1,2) + tau (idx 6) -> 4x4.
-        assert out.covariance.shape == (4, 4)
-        assert out.covariance_param_labels == [
-            "amplitude_0", "offset_0", "phase_0", "tau",
-        ]
-        # Diagonal entries preserved for the kept indices (1,2,3 for the peak,
-        # 7 for tau, in the 1-based fill above).
-        np.testing.assert_array_equal(
-            np.diag(out.covariance), np.array([1.0, 2.0, 3.0, 7.0])
+        assert out.fitted_peaks[0].frequency_mhz == 1000.0
+        # The result is the refit's window, not a slice of the stale matrix.
+        assert out.covariance is None
+        assert out.covariance_param_labels is None
+
+    def test_no_dust_window_not_refitted(self):
+        """A window with no sub-floor peaks is left untouched (no refit call)."""
+        called = {"n": 0}
+
+        def _counting_refit(
+            wf: FittingResult, dust_freqs: list[float]
+        ) -> FittingResult:
+            called["n"] += 1
+            return _stub_refit(wf, dust_freqs)
+
+        wf = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=10.0, window_id=1),
+                _make_peak(1001.0, snr=8.0, window_id=1),
+            ],
         )
+        fit = _make_fit([wf])
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_counting_refit)
+        assert called["n"] == 0
+        assert fit.window_fits[0] is wf  # same object, untouched
 
     def test_fitted_peaks_rebuilt_sorted(self):
         """fit.fitted_peaks is rebuilt sorted by frequency after the prune."""
-        w1 = _make_window(1, [
-            _make_peak(3000.0, snr=10.0, window_id=1),
-            _make_peak(1000.0, snr=2.0, window_id=1),  # drop
-        ])
-        w2 = _make_window(2, [
-            _make_peak(2000.0, snr=8.0, window_id=2),
-        ])
+        w1 = _make_window(
+            1,
+            [
+                _make_peak(3000.0, snr=10.0, window_id=1),
+                _make_peak(1000.0, snr=2.0, window_id=1),  # drop
+            ],
+        )
+        w2 = _make_window(
+            2,
+            [
+                _make_peak(2000.0, snr=8.0, window_id=2),
+            ],
+        )
         fit = _make_fit([w1, w2])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         freqs = [p.frequency_mhz for p in fit.fitted_peaks]
         assert freqs == sorted(freqs)
         assert 1000.0 not in freqs
 
     def test_diagnostics_populated(self):
         """diagnostics['peak_survival'] is populated with snr_floor, n_pruned, etc."""
-        w1 = _make_window(1, [
-            _make_peak(1000.0, snr=10.0),
-            _make_peak(1001.0, snr=2.0),  # dust
-        ])
+        w1 = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=10.0),
+                _make_peak(1001.0, snr=2.0),  # dust
+            ],
+        )
         w_dust = _make_window(2, [_make_peak(2000.0, snr=1.0)])  # whole window dropped
         fit = _make_fit([w1, w_dust])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         ps = fit.diagnostics["peak_survival"]
         assert ps["snr_floor"] == pytest.approx(self.FLOOR)
         assert ps["n_pruned"] == 2
@@ -190,7 +245,7 @@ class TestApplySnrSurvivalPrune:
         """diagnostics is populated even when nothing is pruned."""
         w1 = _make_window(1, [_make_peak(1000.0, snr=10.0)])
         fit = _make_fit([w1])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         ps = fit.diagnostics["peak_survival"]
         assert ps["n_pruned"] == 0
         assert ps["pruned"] == []
@@ -200,7 +255,7 @@ class TestApplySnrSurvivalPrune:
         """Each pruned record has window_id, frequency_mhz, and snr."""
         w1 = _make_window(42, [_make_peak(1234.5, snr=1.5, window_id=42)])
         fit = _make_fit([w1])
-        apply_snr_survival_prune(fit, self.FLOOR)
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_stub_refit)
         assert fit.window_fits == []  # window dropped
         ps = fit.diagnostics["peak_survival"]
         assert len(ps["pruned"]) == 1
@@ -215,11 +270,13 @@ class TestSettingsWiring:
 
     def test_hard_defaults_enabled_true(self):
         from ftmwpipeline.core.stage_fit_settings import resolve
+
         resolved = resolve()
         assert resolved.peak_survival.enabled is True
 
     def test_hard_default_snr_floor(self):
         from ftmwpipeline.core.stage_fit_settings import resolve
+
         resolved = resolve()
         assert resolved.peak_survival.snr_survival_floor == pytest.approx(3.2)
 
@@ -231,6 +288,7 @@ class TestSettingsWiring:
             StageFitSettings,
             resolve,
         )
+
         persisted = StageFitSettings(
             peak_survival=PeakSurvivalSubSettings(snr_survival_floor=5.0)
         )
@@ -243,6 +301,7 @@ class TestSettingsWiring:
             StageFitSettings,
             resolve,
         )
+
         persisted = StageFitSettings(
             peak_survival=PeakSurvivalSubSettings(snr_survival_floor=5.0)
         )
@@ -278,7 +337,9 @@ class TestSettingsRoundTrip:
         save_stage_fit_settings_to_h5(str(p), s)
         loaded = load_stage_fit_settings_from_h5(str(p))
         assert loaded is not None
-        assert loaded.peak_survival.enabled == False  # noqa: E712 (np.False_ != is False)
+        assert (
+            loaded.peak_survival.enabled == False
+        )  # noqa: E712 (np.False_ != is False)
         assert loaded.peak_survival.snr_survival_floor == pytest.approx(5.0)
 
     def test_resolved_hdf5_round_trip(self, tmp_path):
