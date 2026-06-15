@@ -60,7 +60,11 @@ Apply in order at end of Stage 5:
    VIF≈0.6 *absolute-weak* C/D that the identifiability cut misses (F4 and F5 are
    complementary). Record each prune in the per-window audit / plan diagnostics.
 
-2. **F4 degenerate-overfit collapse.** For a close pair where
+2. **F4 degenerate-pair merge.** *(Thresholds below are the original design;
+   superseded by the merge-policy update in §Settings — `vif_collapse_threshold`
+   is now 4.0 and `collapse_max_separation_res` 1.0, the merge is the default for
+   any degenerate pair, and merged windows are flagged `auto_merged_review`.)*
+   For a close pair where
    `VIF > vif_collapse_threshold` (default `100`) **and** the two lines are within
    `collapse_max_separation_res` (default `0.5`) resolution elements, collapse the
    pair to one line. The 0.5 guard is the safety lever — two lines closer than
@@ -85,11 +89,21 @@ Apply in order at end of Stage 5:
    pair (fall back to a fresh merged refit if no alternative was recorded). Record
    the collapse with provenance in the audit and decision-relevant diagnostics.
 
-3. **Attention range (feeds Stage 6, review-findings F1 — not this pass).** Peaks
-   with `VIF ≥ 4` not auto-collapsed (w281, w217 A/C), normalized frequency error
-   `> ~0.25 × separation`, or borderline post-floor SNR (3–5) become a
-   high-precision overfit attention reason in `review run`. The VIF utility built
-   here is the shared dependency; the attention wiring is roadmap Stage-6 step 4.
+3. **Attention range (feeds Stage 6, review-findings F1 — *now wired*).** Peaks
+   with `VIF ≥ vif_attention_threshold` (default 4.0) not auto-collapsed become
+   the `overfit_vif` attention reason, and peaks in the tight borderline band
+   just above the prune floor become the `low_snr` reason, both in `review run`.
+   The VIF utility built here (`amplitude_vif`) is the shared dependency;
+   `vif_attention_threshold` and `snr_survival_floor` are resolved from the file
+   in `review_run_impl`. Implementation: Stage 6 sequence step 4 in
+   `_internal/stage6_impl.py:_compute_attention_reasons` (see
+   `stage6-review-findings.md` F1). Note: in practice the high-SNR w217 A/C pair
+   clears the attention band because its degenerate B/D collapsed and the honest
+   refit normalized A/C to VIF ~3.1–3.7; w281 (1.08 res, never collapsed) is the
+   surviving marginal case. The literal "post-floor SNR 3–5" band was narrowed
+   to within ~10% of the floor — SNR 3–5 is a normal weak-line range and the wide
+   band flooded the queue. The normalized-frequency-error cut was not needed: the
+   amplitude VIF already covers w281.
 
 ## Settings
 
@@ -98,10 +112,29 @@ New resolved knobs (resolution chain `explicit > persisted > preset > recommende
 
 - `enabled` (default `True`)
 - `snr_survival_floor` (default `3.2`)
-- `vif_collapse_threshold` (default `100.0`)
-- `collapse_max_separation_res` (default `0.5`)
-- `vif_attention_threshold` (default `4.0`) — surfaced for step 4; computed/stored,
-  no auto-action.
+- `vif_collapse_threshold` (default `4.0` — see the merge-policy update below;
+  was `100.0` in the original design)
+- `collapse_max_separation_res` (default `1.0` — was `0.5`)
+- `vif_attention_threshold` (default `4.0`) — the `overfit_vif` flag for residual
+  high-VIF pairs above the merge separation bound.
+- `drop_empty_windows` (default `True`) / `drop_spur_only_windows` (default `True`)
+  — end-of-Stage-5 window cleanup (review-findings F1).
+
+> **Merge-policy update (supersedes §2/§3 thresholds; calibrated against the
+> 1512/655 catalog truth).** The collapse is the *default merge* for degenerate
+> close pairs, not a rare extreme-overfit cut. Calibration showed the amplitude
+> VIF does **not** separate real doublets from over-splits in the 0.5–1.0 res
+> band — real high-SNR multiplets carry VIF as high as over-splits, and the band
+> is ~92 % over-splits (48:4); no prior-free statistic (VIF, SNR, χ²/AICc, the
+> orthogonal second-line evidence) separates them. Prior-free, a split is a
+> high-bar claim, so the policy is **merge by default, split is opt-in**:
+> threshold dropped to the identifiability floor (`vif_collapse_threshold` 4.0)
+> and the separation bound widened to one full resolution element
+> (`collapse_max_separation_res` 1.0). Every merged window is flagged
+> `auto_merged_review` (severity 0.1) for `review split` overrule. `low_snr` was
+> retired as a flag (rework details + the candidate-currency fix are in
+> `stage6-review-findings.md` F1). Recall trade: 1512 0.443→0.400, 655
+> 0.579→0.558, χ²ᵣ flat — deliberate precision-for-conservative-multiplicity.
 
 Resolution element = `1 / T_active` (MHz), derived from the persisted canonical FT
 settings (start/end/trim) — keep it a pure function of the file.

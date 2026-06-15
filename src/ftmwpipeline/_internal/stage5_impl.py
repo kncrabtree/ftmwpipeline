@@ -476,6 +476,7 @@ def apply_vif_collapse(
         [FittingResult, List[float], List[float], List[Any]], FittingResult
     ],
     snap_tol_mhz: float = 0.05,
+    max_iterations: int = 5,
 ) -> None:
     """Collapse degenerate sub-resolution overfit pairs (in-place).
 
@@ -488,14 +489,28 @@ def apply_vif_collapse(
     *reward* the spurious split. The window chi^2_r *rising* on collapse is
     expected and must not veto it.
 
+    The separation bound (``max_sep_res``, the half-resolution-element physical
+    limit) is the real guard: two lines closer than that are unresolvable, so a
+    split there is spurious regardless of VIF, and every genuine doublet in the
+    calibration truth set sits well outside it (>= 0.82 res). ``vif_threshold``
+    is therefore only a modest sanity floor that keeps a window whose close
+    peaks are both well determined (not degenerate) from collapsing.
+
     Pairs are matched greedily from the highest-VIF peak down: each high-VIF
     peak pairs with its nearest unused neighbour within the separation bound
     (every VIF>>1 line comes in a degenerate pair, so the partner is
-    structural). Each window with at least one pair is refitted once with all
-    paired members removed and one merged seed added per pair (origin
-    ``"auto"`` -- an automatic decision, not a human edit). The merged seed
-    reuses the recorded doublet-alternative when present (see
-    :func:`_merged_seed_for_pair`).
+    structural). Each window with at least one pair is refitted with all paired
+    members removed and one merged seed added per pair (origin ``"auto"`` -- an
+    automatic decision, not a human edit). The merged seed reuses the recorded
+    doublet-alternative when present (see :func:`_merged_seed_for_pair`).
+
+    **Iterated to convergence.** A collapse refit is NLS over the surviving
+    seeds; on a dense, high-SNR window two seeds can re-converge into a *new*
+    degenerate split that a single pass would leave behind (only to be flagged
+    for attention later). The sweep therefore repeats until a full pass finds no
+    collapsible pair, capped at ``max_iterations`` (the cap is a backstop
+    against a window that oscillates collapse<->re-split; any residual pair is
+    still surfaced by the Stage 6 ``overfit_vif`` attention reason).
 
     Parameters
     ----------
@@ -515,25 +530,19 @@ def apply_vif_collapse(
         :func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`.
     snap_tol_mhz :
         Tolerance for matching a pair to a recorded doublet alternative.
+    max_iterations :
+        Maximum collapse sweeps over the window set (convergence backstop).
     """
     from ..fitting.peak_model import ModelPeak, sideband_sign
 
     max_sep_mhz = max_sep_res * res_element_mhz
     s = sideband_sign(sideband)
 
-    collapse_records: List[Dict[str, Any]] = []
-    new_window_fits: List[FittingResult] = []
-
-    for wf in fit.window_fits:
+    def _pairs_for_window(wf: FittingResult) -> List[Tuple[int, int]]:
+        """Greedy high-VIF nearest-neighbour pairs within the separation bound."""
         peaks = wf.fitted_peaks
-        center: Optional[float] = None
-        if wf.window is not None and wf.window.freq_range is not None:
-            lo, hi = wf.window.freq_range
-            center = 0.5 * (lo + hi)
-        if len(peaks) < 2 or center is None:
-            new_window_fits.append(wf)
-            continue
-
+        if len(peaks) < 2:
+            return []
         vifs = [amplitude_vif(p) for p in peaks]
         # High-VIF peaks first, so the most degenerate pairs form before a
         # shared neighbour is consumed by a weaker pairing.
@@ -558,50 +567,78 @@ def apply_vif_collapse(
                 pairs.append((i, best_j))
                 used.add(i)
                 used.add(best_j)
+        return pairs
 
-        if not pairs:
-            new_window_fits.append(wf)
-            continue
+    collapse_records: List[Dict[str, Any]] = []
+    n_iterations = 0
 
-        remove_freqs: List[float] = []
-        add_freqs: List[float] = []
-        add_seeds: List[Any] = []
-        for i, j in pairs:
-            pa, pb = peaks[i], peaks[j]
-            merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
-                wf, pa, pb, snap_tol_mhz
-            )
-            offset = float(s * (merge_freq - center))
-            add_seeds.append(
-                ModelPeak(
-                    amplitude=max(abs(merge_amp), 1e-30),
-                    offset_mhz=offset,
-                    phase=merge_phase,
+    # Iterate until a full sweep collapses nothing: an NLS collapse refit can
+    # re-converge two seeds into a fresh degenerate split, so one pass is not
+    # enough. ``max_iterations`` caps a window that oscillates collapse<->split.
+    for _ in range(max(1, max_iterations)):
+        any_collapsed = False
+        new_window_fits: List[FittingResult] = []
+        for wf in fit.window_fits:
+            peaks = wf.fitted_peaks
+            center: Optional[float] = None
+            if wf.window is not None and wf.window.freq_range is not None:
+                lo, hi = wf.window.freq_range
+                center = 0.5 * (lo + hi)
+            if center is None:
+                new_window_fits.append(wf)
+                continue
+
+            pairs = _pairs_for_window(wf)
+            if not pairs:
+                new_window_fits.append(wf)
+                continue
+
+            vifs = [amplitude_vif(p) for p in peaks]
+            remove_freqs: List[float] = []
+            add_freqs: List[float] = []
+            add_seeds: List[Any] = []
+            for i, j in pairs:
+                pa, pb = peaks[i], peaks[j]
+                merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
+                    wf, pa, pb, snap_tol_mhz
                 )
-            )
-            remove_freqs.extend([float(pa.frequency_mhz), float(pb.frequency_mhz)])
-            add_freqs.append(merge_freq)
-            collapse_records.append(
-                {
-                    "window_id": int(wf.window_id) if wf.window_id is not None else -1,
-                    "frequency_a_mhz": float(pa.frequency_mhz),
-                    "frequency_b_mhz": float(pb.frequency_mhz),
-                    "vif_a": vifs[i],
-                    "vif_b": vifs[j],
-                    "separation_res": (
-                        abs(float(pa.frequency_mhz) - float(pb.frequency_mhz))
-                        / res_element_mhz
-                        if res_element_mhz > 0
-                        else None
-                    ),
-                    "merged_frequency_mhz": float(merge_freq),
-                }
-            )
+                offset = float(s * (merge_freq - center))
+                add_seeds.append(
+                    ModelPeak(
+                        amplitude=max(abs(merge_amp), 1e-30),
+                        offset_mhz=offset,
+                        phase=merge_phase,
+                    )
+                )
+                remove_freqs.extend([float(pa.frequency_mhz), float(pb.frequency_mhz)])
+                add_freqs.append(merge_freq)
+                collapse_records.append(
+                    {
+                        "window_id": (
+                            int(wf.window_id) if wf.window_id is not None else -1
+                        ),
+                        "frequency_a_mhz": float(pa.frequency_mhz),
+                        "frequency_b_mhz": float(pb.frequency_mhz),
+                        "vif_a": vifs[i],
+                        "vif_b": vifs[j],
+                        "separation_res": (
+                            abs(float(pa.frequency_mhz) - float(pb.frequency_mhz))
+                            / res_element_mhz
+                            if res_element_mhz > 0
+                            else None
+                        ),
+                        "merged_frequency_mhz": float(merge_freq),
+                    }
+                )
 
-        new_wf = refit_collapse(wf, remove_freqs, add_freqs, add_seeds)
-        new_window_fits.append(new_wf)
+            new_wf = refit_collapse(wf, remove_freqs, add_freqs, add_seeds)
+            new_window_fits.append(new_wf)
+            any_collapsed = True
 
-    fit.window_fits = new_window_fits
+        fit.window_fits = new_window_fits
+        if not any_collapsed:
+            break
+        n_iterations += 1
 
     all_peaks: List[FittedPeak] = [p for wf in fit.window_fits for p in wf.fitted_peaks]
     all_peaks.sort(key=lambda p: p.frequency_mhz)
@@ -612,7 +649,99 @@ def apply_vif_collapse(
         "max_separation_res": float(max_sep_res),
         "res_element_mhz": float(res_element_mhz),
         "n_collapsed_pairs": len(collapse_records),
+        "n_iterations": n_iterations,
         "collapses": collapse_records,
+    }
+
+
+# Decay-probe source tags that confidently mark an instrumental (non-molecular)
+# spur: ``flat`` (non-decaying across the FID -- a real line decays) and
+# ``saturated`` (ADC clipping). ``narrow`` alone is ambiguous (erratic real
+# lines read as narrow) and ``drift`` is left to clock declaration, so neither
+# triggers a single-line-window drop on its own.
+_INSTRUMENTAL_SPUR_TAGS = ("flat", "saturated")
+
+
+def apply_window_cleanup(
+    fit: SpectrumFit,
+    *,
+    spur_set: Optional[Any],
+    res_element_mhz: float,
+    drop_empty: bool,
+    drop_spur_only: bool,
+) -> None:
+    """Drop non-product windows at the end of Stage 5 (in-place).
+
+    Two conservative cuts, both recorded in ``fit.diagnostics["window_cleanup"]``:
+
+    1. **Empty windows.** A window with no fitted peak (``K == 0``) carries no
+       product -- it is dropped when ``drop_empty`` is set.
+    2. **Spur-only windows.** A window whose *single* fitted peak sits within the
+       spur's residual-mask half-width (or one resolution element, whichever is
+       larger) of a confidently-instrumental gated spur (a
+       :data:`_INSTRUMENTAL_SPUR_TAGS` decay-probe verdict -- an ADC image or a
+       declared clock tone leaking past its mask) is dropped when
+       ``drop_spur_only`` is set. A ``user``-origin peak is never dropped, and a
+       multi-line window is never touched (the second line makes it ambiguous).
+
+    ``fitted_peaks`` is rebuilt (sorted) from the surviving windows.
+    """
+    instrumental = (
+        [
+            sp
+            for sp in spur_set.spurs
+            if any(tag in (sp.source or "") for tag in _INSTRUMENTAL_SPUR_TAGS)
+        ]
+        if (drop_spur_only and spur_set)
+        else []
+    )
+
+    kept: List[FittingResult] = []
+    dropped_empty: List[int] = []
+    dropped_spur: List[Dict[str, Any]] = []
+
+    for wf in fit.window_fits:
+        wid = int(wf.window_id) if wf.window_id is not None else -1
+        peaks = wf.fitted_peaks
+
+        if drop_empty and len(peaks) == 0:
+            dropped_empty.append(wid)
+            continue
+
+        if drop_spur_only and len(peaks) == 1 and instrumental:
+            assert spur_set is not None  # instrumental non-empty => spur_set set
+            p = peaks[0]
+            if getattr(p, "origin", "auto") != "user":
+                pf = float(p.frequency_mhz)
+                hit = None
+                for sp in instrumental:
+                    tol = max(spur_set._spur_half_width_mhz(sp), res_element_mhz)
+                    if abs(float(sp.center_mhz) - pf) <= tol:
+                        hit = sp
+                        break
+                if hit is not None:
+                    dropped_spur.append(
+                        {
+                            "window_id": wid,
+                            "frequency_mhz": pf,
+                            "spur_center_mhz": float(hit.center_mhz),
+                            "spur_source": hit.source,
+                        }
+                    )
+                    continue
+
+        kept.append(wf)
+
+    fit.window_fits = kept
+    all_peaks: List[FittedPeak] = [p for wf in kept for p in wf.fitted_peaks]
+    all_peaks.sort(key=lambda p: p.frequency_mhz)
+    fit.fitted_peaks = all_peaks
+
+    fit.diagnostics["window_cleanup"] = {
+        "n_empty_dropped": len(dropped_empty),
+        "empty_window_ids": dropped_empty,
+        "n_spur_only_dropped": len(dropped_spur),
+        "spur_only_dropped": dropped_spur,
     }
 
 
@@ -1808,6 +1937,33 @@ def fit_peaks_impl(
                 vif_collapse_threshold_v,
                 collapse_max_sep_res_v,
             )
+
+        # Final window cleanup: drop empty (K=0) windows and single-line windows
+        # whose sole peak sits on a confidently-instrumental gated spur.
+        drop_empty_v = _required_bool(
+            resolved.peak_survival.drop_empty_windows,
+            "peak_survival.drop_empty_windows",
+        )
+        drop_spur_only_v = _required_bool(
+            resolved.peak_survival.drop_spur_only_windows,
+            "peak_survival.drop_spur_only_windows",
+        )
+        if drop_empty_v or drop_spur_only_v:
+            apply_window_cleanup(
+                spectrum_fit,
+                spur_set=fit_ctx.spur_set,
+                res_element_mhz=res_element_mhz,
+                drop_empty=drop_empty_v,
+                drop_spur_only=drop_spur_only_v,
+            )
+            wc = spectrum_fit.diagnostics.get("window_cleanup", {})
+            if wc.get("n_empty_dropped") or wc.get("n_spur_only_dropped"):
+                logger.info(
+                    "Stage 5 window cleanup: dropped %d empty + %d spur-only "
+                    "window(s)",
+                    wc.get("n_empty_dropped", 0),
+                    wc.get("n_spur_only_dropped", 0),
+                )
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
     # Stamp the resolved settings as the canonical record for this fit so

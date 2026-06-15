@@ -1,6 +1,6 @@
 # Stage 6 review findings — triage backlog
 
-Status: **review pass complete; steps 1–3 implemented, step 4 (F1) open.** A
+Status: **review pass complete; steps 1–4 implemented.** A
 list of issues surfaced while a human reviewed fitted `.ftmw` files through the
 Stage 6 `review` surface. Each entry is an observation with enough evidence to
 act on. The agreed order of attack lives in the ROADMAP Priorities (Stage 6
@@ -9,15 +9,89 @@ completion): **(1)** persist the per-window parameter covariance (F4 plumbing) �
 re-baselined* ([`stage6-peak-survival.md`](stage6-peak-survival.md)), **(3)**
 window construction (F2 + F3) — *done* (overview in
 [`stage4-window-assignment.md`](stage4-window-assignment.md) §"Window margin and
-the content-bounded cap split"), **(4)** reconsider attention metrics (F1) —
-open. Once an item is scheduled it graduates to its own planning doc (or a
-section of the relevant stage doc) and is struck from here.
+the content-bounded cap split"), **(4)** attention metrics (F1) — *done* (see
+the F1 section below). Once an item is scheduled it graduates to its own planning
+doc (or a section of the relevant stage doc) and is struck from here.
 
 Reference fixture for every entry below: the rebuilt
 `scratch/stage6-drive/exp_2638_review.ftmw` (2638, fit through Stage 5,
 `review run` done — 565 windows, 76 flagged for attention).
 
-## F1 — Attention flagging is low-precision
+## F1 — Attention flagging is low-precision (RESOLVED)
+
+Resolved through a human-reviewed rework of the whole attention layer (a sample
+of flagged windows, two rounds). The guiding principle: **attention flags are
+high-precision (genuinely ambiguous cases only); automate the clear decisions
+and surface the rest on demand, never flood the queue.** The 2638 queue went
+from ~76 windows (`doublet_eps_gt_kappa`-dominated) to **5 actionable** + ~13
+low-severity advisories.
+
+**Automation / cleanup (do not flag what we can decide or drop):**
+
+- **Empty (K=0) windows dropped** at end of Stage 5 (`peak_survival.drop_empty_windows`,
+  84 on 2638) — they carry no product. Fixes `worst_eps` firing on empty
+  windows (snr_max=0), which is also guarded defensively.
+- **Spur-only windows dropped** (`peak_survival.drop_spur_only_windows`): a
+  single-line window whose sole peak sits on a confidently-instrumental gated
+  spur (`flat`/`saturated` decay-probe verdict — e.g. the ADC/2 image at
+  40960−8000 = 32960 MHz) is not fit to a line (closes issue #11, single-line +
+  known-identity only). 3 on 2638 (w115/w184/w270).
+
+**Flags retired / fixed (were low-precision):**
+
+- **`doublet_eps_gt_kappa` retired** — ε > κ is the pipeline confirming a real
+  doublet, not actionable. The per-pair adjudication stays visible in
+  `review show --window N` (a "Doublet alternatives" table).
+- **`low_snr` retired** — a weak peak just above the survival floor is rarely
+  actionable; flagging the band floods the queue. Weak windows are surfaced on
+  demand instead (planned `review rank --by min-snr`).
+- **`candidate_bearing` corrected (two bugs).** (a) shape-error sidelobes:
+  candidates within `SHAPE_ERROR_MAX_SEP_RES` (2.0) res of a fitted peak whose
+  `snr × SHAPE_ERROR_EVIDENCE_FRACTION` (0.25) ≥ the candidate evidence are
+  lineshape sidelobes (dense/bright windows), excluded from the ledger. (b) the
+  **evidence currency was incoherent**: audit candidates carry `aicc_delta` (a
+  rejection *cost* — large = decisively rejected), and the flag took `max()`
+  across that and `residual_snr` (large = support), so the most decisively-
+  rejected `tentative` (e.g. aicc_delta 59 at p=0.98) read as the strongest
+  evidence. Fix: `aicc_delta` candidates pass only as near-gate misses
+  (`≤ _NEAR_GATE_FACTOR`, no unconditional `tentative` pass), and the flag fires
+  only on a strong `residual_snr` candidate. `candidate_bearing` 22 → 1 on 2638.
+
+**The high-precision overfit signal — and why it is a MERGE, not a flag.** The
+amplitude VIF `(amp_err/amp)·snr` measures non-identifiability. Calibrating it
+against the 1512/655 catalog truth (frequency agreement within mutual
+uncertainty **and** fitted amplitude ratio vs catalog intensity ratio) settled
+the design:
+
+- In the 0.5–1.0 res band, VIF does **not** separate real doublets from
+  over-splits — real high-SNR multiplets (1512 w214: two distinct catalog lines,
+  VIF 34) carry VIF as high as true over-splits (655 w1061: two peaks on one
+  catalog line, VIF 14). No prior-free statistic (VIF, SNR, χ²/AICc, or the
+  doublet-alternative's orthogonal second-line evidence) separates them — the
+  catalog truth shows the band is **~92 % over-splits (48:4)**.
+- SNR is a necessary *enabler* of super-resolution (Δ_min ∝ 1/SNR) but not a
+  *discriminator*: over-splits are themselves a high-SNR phenomenon (lineshape
+  mismodeling becomes significant), so real tight splits and convincing
+  over-splits live in the same high-SNR regime.
+- **Policy (prior-free): a sub-resolution split is a high-bar claim; default to
+  the merged model and make the split opt-in.** The end-of-Stage-5 pass now
+  *merges* any degenerate close pair (`vif_collapse_threshold` 4.0 within
+  `collapse_max_separation_res` 1.0 res; VIF<4 identifiable = keep, ≥4 degenerate
+  = merge), iterated to convergence, and flags each merged window
+  **`auto_merged_review`** (severity 0.1) so a user with catalog/model support
+  can `review split` it. The merged window still reports a line at the feature —
+  multiplicity is conservative, not the feature missed.
+- **`overfit_vif`** remains only for residual high-VIF pairs above the merge
+  separation bound (≥ 1.0 res) — genuinely ambiguous at/above resolution.
+
+Validated on the 1512/655 catalog fixtures: recall 0.443→0.400 (1512, −5 catalog
+lines for −22 total) and 0.579→0.558 (655, −6 for −77), χ²ᵣ flat — a deliberate
+precision-for-conservative-multiplicity trade, every merge flagged and
+re-splittable.
+
+The original observation is preserved below for provenance.
+
+### Original observation (for provenance)
 
 **Observation.** A sample of flagged windows showed roughly one in five needed
 any edit. The attention queue is 76 of 565 windows; ranked by each window's

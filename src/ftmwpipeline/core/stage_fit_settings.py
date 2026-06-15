@@ -341,19 +341,25 @@ class PeakSurvivalSubSettings:
        post-fit ``snr < snr_survival_floor``, then drop windows left empty;
        partially-pruned windows are refitted so survivors stay honest. Finite
        SNR only -- ``None``/NaN snr peaks are kept unconditionally.
-    2. **Degenerate-overfit collapse.** Collapse a close pair into one line when
-       a member's amplitude variance-inflation factor
-       ``VIF = (amplitude_error / amplitude) * snr`` exceeds
+    2. **Degenerate-pair merge.** Merge a close pair into one line when a
+       member's amplitude variance-inflation factor
+       ``VIF = (amplitude_error / amplitude) * snr`` reaches
        ``vif_collapse_threshold`` **and** the pair sits within
        ``collapse_max_separation_res`` resolution elements (``1 / T_active``).
-       Two lines closer than half a resolution element are unresolvable, so the
-       split is spurious; the collapse overrides chi^2 / AICc unconditionally
-       (at high SNR chi^2 is a lineshape floor that rewards the spurious split).
+       Policy: a sub-resolution *split* is a high-bar claim a prior-free fit
+       cannot support, and the ambiguous band is ~92% over-splits, so the
+       default is to merge (VIF<4 identifiable = keep, VIF>=4 degenerate =
+       merge) and let the user opt into a split with catalog support. The merge
+       overrides chi^2 / AICc unconditionally (at high SNR chi^2 is a lineshape
+       floor that rewards the spurious split) and the sweep iterates to
+       convergence (an NLS refit can re-split a dense window). Merged windows
+       are flagged ``auto_merged_review`` for overrule.
 
-    ``vif_attention_threshold`` is reserved for the Stage 6 attention surface
-    (computed/stored, no auto-action here). Defaults: ``enabled`` True,
+    ``vif_attention_threshold`` is consumed by the Stage 6 attention surface
+    (the ``overfit_vif`` reason for residual high-VIF pairs above the merge
+    separation bound, i.e. >= 1.0 res). Defaults: ``enabled`` True,
     ``snr_survival_floor`` 3.2 (Stage-3 detection threshold),
-    ``vif_collapse_threshold`` 100.0, ``collapse_max_separation_res`` 0.5,
+    ``vif_collapse_threshold`` 4.0, ``collapse_max_separation_res`` 1.0,
     ``vif_attention_threshold`` 4.0. See
     ``dev-docs/planning/stage6-peak-survival.md``.
     """
@@ -363,6 +369,8 @@ class PeakSurvivalSubSettings:
     vif_collapse_threshold: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
     vif_attention_threshold: Optional[float] = None
+    drop_empty_windows: Optional[bool] = None
+    drop_spur_only_windows: Optional[bool] = None
 
 
 @dataclass
@@ -531,13 +539,36 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # Peak-survival pass defaults on. The SNR floor sits at the Stage-3
         # detection threshold (3.2 sigma): sub-floor automatic-origin peaks are
         # dust that slipped through the conservative gate. The VIF collapse
-        # fires only on a near-degenerate pair (VIF > 100 within < 0.5
-        # resolution elements); user-origin peaks are immune to both.
+        # MERGES any amplitude-degenerate close pair: amplitude VIF >=
+        # ``vif_collapse_threshold`` within < ``collapse_max_separation_res``
+        # resolution elements; the sweep iterates to convergence. user-origin
+        # peaks are immune. POLICY (prior-free): declaring a sub-resolution
+        # *split* is a high-bar claim that needs catalog/physical support the
+        # pipeline does not have, so the default is to merge and let the user
+        # opt into a split (``review split``). Calibrated against the 1512+655
+        # catalog truth: the 0.5-1.0 res VIF>=4 band is ~92% true over-splits
+        # (48:4), and no prior-free statistic (VIF, SNR, chi2/AICc, orthogonal
+        # second-line evidence) separates the 4 real doublets from the 48
+        # over-splits -- real high-SNR multiplets carry VIF as high as the
+        # splits. So the threshold is the identifiability floor (VIF 4, same as
+        # ``vif_attention_threshold``): VIF<4 = identifiable (keep), VIF>=4 =
+        # degenerate (merge). The few merged real doublets are flagged for the
+        # user to re-split. ``collapse_max_separation_res`` 1.0 = merge up to
+        # one full resolution element; wider pairs are resolved and kept.
         "enabled": True,
         "snr_survival_floor": 3.2,
-        "vif_collapse_threshold": 100.0,
-        "collapse_max_separation_res": 0.5,
+        "vif_collapse_threshold": 4.0,
+        "collapse_max_separation_res": 1.0,
         "vif_attention_threshold": 4.0,
+        # End-of-Stage-5 window cleanup: drop windows with no surviving fitted
+        # peak (K=0 -- pure noise, no product), and drop a single-line window
+        # whose sole peak sits on a confidently-instrumental gated spur (a
+        # ``flat``/``saturated`` decay-probe verdict -- e.g. an ADC image or a
+        # declared-clock tone leaking past its residual mask). Conservative:
+        # single-line + instrumental-spur identity only, never an ambiguous
+        # multi-line window; user-origin peaks are immune.
+        "drop_empty_windows": True,
+        "drop_spur_only_windows": True,
     },
 }
 

@@ -90,8 +90,30 @@ DEFAULT_ATTENTION_CANDIDATE_EVIDENCE: float = 10.0
 # passes the bar even when its raw SNR is below DEFAULT_DISPLAY_BAR.
 _NEAR_GATE_FACTOR: float = 10.0
 
+# Fallback amplitude-VIF attention threshold used when the file carries no
+# resolved ``peak_survival.vif_attention_threshold`` (mirrors the hard default
+# in :class:`~ftmwpipeline.core.stage_fit_settings.PeakSurvivalSubSettings`).
+# A fitted amplitude whose variance-inflation factor ``(amp_err / amp) * snr``
+# clears this is non-identifiable with a neighbour (degenerate split) even
+# though it survived the end-of-Stage-5 collapse (which fires only on the much
+# higher ``vif_collapse_threshold`` at sub-half-resolution separation).
+DEFAULT_VIF_ATTENTION_THRESHOLD: float = 4.0
+
 # Deduplicate candidates whose molecular frequencies are within this window.
 _DEDUP_TOL_MHZ: float = 0.02  # 20 kHz; roughly half an active-FT bin at 13 µs
+
+# Shape-error candidate filter. A revival "candidate" that sits within
+# SHAPE_ERROR_MAX_SEP_RES resolution elements of a fitted peak whose SNR is
+# large enough that the candidate's evidence is only a small fraction
+# (< SHAPE_ERROR_EVIDENCE_FRACTION) of it is a lineshape sidelobe of that
+# brighter line, not a missed line -- the residual-SNR currency is dominated by
+# lineshape mismodeling in bright/dense windows. Measured on the 2638 truth set:
+# this cleanly tags 22/29 rescue-round candidates as shape error and 0/18
+# conservative-loop "tentative" candidates. Same normalize-by-the-local-strong-
+# line idea as the amplitude VIF. Both are module constants (the attention layer
+# is advisory and recomputed each ``review run``, so no persisted knob).
+SHAPE_ERROR_MAX_SEP_RES: float = 2.0
+SHAPE_ERROR_EVIDENCE_FRACTION: float = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +152,39 @@ def _window_center(fit: FittingResult) -> Optional[float]:
         lo, hi = fit.window.freq_range
         return (lo + hi) / 2.0
     return None
+
+
+def _auto_merged_window_ids(spectrum_fit: SpectrumFit) -> set:
+    """Window ids the end-of-Stage-5 VIF merge touched (from the diagnostic)."""
+    vc = spectrum_fit.diagnostics.get("vif_collapse", {}) if spectrum_fit else {}
+    return {
+        int(c["window_id"])
+        for c in vc.get("collapses", [])
+        if c.get("window_id") is not None and int(c["window_id"]) >= 0
+    }
+
+
+def _resolve_vif_attention_threshold(path: str) -> float:
+    """Resolve ``peak_survival.vif_attention_threshold`` for *path*.
+
+    Reads the knob from the file's persisted settings (persisted layer over the
+    hard defaults), so the attention surface picks up exactly where the
+    end-of-Stage-5 collapse left off. Falls back to the module default when the
+    settings cannot be read.
+    """
+    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
+    from ..io.stage_fit_settings_serialization import load_stage_fit_settings_from_h5
+
+    vif = DEFAULT_VIF_ATTENTION_THRESHOLD
+    try:
+        resolved = resolve_stage_fit_settings(
+            persisted=load_stage_fit_settings_from_h5(path)
+        )
+        if resolved.peak_survival.vif_attention_threshold is not None:
+            vif = float(resolved.peak_survival.vif_attention_threshold)
+    except Exception:
+        pass
+    return vif
 
 
 # ---------------------------------------------------------------------------
@@ -291,18 +346,17 @@ def _passes_bar(candidate: Dict, bar: float) -> bool:
         return ev >= bar
 
     if kind == "aicc_delta":
-        # A ``tentative`` decision is the add-loop's *explicit* "held as a
-        # marginal near-miss" flag (the patience mechanism) -- revivable by
-        # definition, so it surfaces regardless of the AICc delta magnitude.
-        # A ``reject`` is surfaced only when it was a near-gate miss: ``ev`` is
-        # the raw positive AICc delta (>= 0 for a rejected K+1 model); a
-        # *marginal* reject has a small delta, a *decisive* reject a large one.
-        # Pass rejects whose delta is within ``_NEAR_GATE_FACTOR`` of the gate
-        # value (0) -- the "within an order of magnitude of the bar" criterion
-        # from §D of the planning doc.
-        sites = candidate.get("sites") or []
-        if any("tentative" in str(s) for s in sites):
-            return True
+        # ``aicc_delta`` is the AICc *cost* of adding the candidate peak (>= 0
+        # for a rejected K+1 model), NOT support for the line: a *large* delta
+        # means the add was decisively rejected, a *small* delta a near-gate
+        # miss. So a candidate is revivable only when its delta is within
+        # ``_NEAR_GATE_FACTOR`` of the gate value (0). This applies to BOTH
+        # ``reject`` and ``tentative`` decisions -- a ``tentative`` ("held
+        # pending a jointly-significant batch") that never became significant
+        # (large delta, high p-value) is not revivable, so it must NOT pass
+        # unconditionally (the prior "patience" pass surfaced decisively-
+        # rejected tentatives -- e.g. aicc_delta 59 at p=0.98 -- as if they
+        # were strong evidence).
         return ev <= _NEAR_GATE_FACTOR
 
     # For delta_chi2 (chi2-difference fallback): pass when evidence is large.
@@ -327,6 +381,7 @@ def derive_candidate_ledger(
     center_mhz: float,
     sideband: Sideband,
     bar: float = DEFAULT_DISPLAY_BAR,
+    res_element_mhz: Optional[float] = None,
 ) -> List[LedgerCandidate]:
     """Derive the candidate ledger for one fit window.
 
@@ -346,6 +401,13 @@ def derive_candidate_ledger(
         Pipeline sideband (``Sideband.UPPER`` or ``Sideband.LOWER``).
     bar :
         Display SNR / evidence bar.  Candidates below it are dropped.
+    res_element_mhz :
+        Fourier resolution element (``1 / T_active`` MHz). When given, the
+        shape-error filter runs: a candidate within
+        :data:`SHAPE_ERROR_MAX_SEP_RES` resolution elements of a fitted peak
+        whose ``snr * SHAPE_ERROR_EVIDENCE_FRACTION`` is at least the
+        candidate's evidence is a lineshape sidelobe of that brighter line and
+        is excluded.  ``None`` disables the filter (legacy behaviour).
 
     Returns
     -------
@@ -380,6 +442,36 @@ def derive_candidate_ledger(
         ]
     else:
         not_installed = merged
+
+    # Shape-error filter: drop a candidate that is a lineshape sidelobe of a
+    # brighter nearby fitted line (residual-SNR evidence is dominated by
+    # lineshape mismodeling in bright/dense windows). See the module constants.
+    if res_element_mhz is not None and res_element_mhz > 0.0 and fitted_freqs.size:
+        max_sep_mhz = SHAPE_ERROR_MAX_SEP_RES * res_element_mhz
+        fitted_snr = np.array(
+            [
+                (
+                    float(p.snr)
+                    if p.snr is not None and math.isfinite(float(p.snr))
+                    else 0.0
+                )
+                for p in fitting_result.fitted_peaks
+            ],
+            dtype=float,
+        )
+
+        def _is_shape_error(c: Dict) -> bool:
+            near = np.abs(fitted_freqs - c["freq_mhz"]) <= max_sep_mhz
+            if not near.any():
+                return False
+            return bool(
+                (
+                    fitted_snr[near] * SHAPE_ERROR_EVIDENCE_FRACTION
+                    >= float(c["evidence"])
+                ).any()
+            )
+
+        not_installed = [c for c in not_installed if not _is_shape_error(c)]
 
     filtered = [c for c in not_installed if _passes_bar(c, bar)]
 
@@ -441,6 +533,8 @@ def get_candidate_ledger_impl(
 
     fid = load_fid_from_pipeline_impl(path)
     sideband = _sideband_from_value(fid.sideband)
+    acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+    res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
 
     window_fits = spectrum_fit.window_fits
     if window_id is not None:
@@ -463,6 +557,7 @@ def get_candidate_ledger_impl(
                 center_mhz=center,
                 sideband=sideband,
                 bar=bar,
+                res_element_mhz=res_element_mhz,
             )
         )
 
@@ -1761,6 +1856,8 @@ def _record_decision(
         fid = load_fid_from_pipeline_impl(path)
         sideband = _sideband_from_value(fid.sideband)
 
+        vif_attention_threshold = _resolve_vif_attention_threshold(path)
+        merged_window_ids = _auto_merged_window_ids(spectrum_fit)
         wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
         if wf_list:
             new_reasons = _compute_attention_reasons(
@@ -1772,6 +1869,8 @@ def _record_decision(
                 sideband=sideband,
                 kappa=kappa,
                 noise_floor=noise_floor,
+                vif_attention_threshold=vif_attention_threshold,
+                auto_merged=window_id in merged_window_ids,
             )
         else:
             new_reasons = (
@@ -1964,6 +2063,8 @@ def _compute_attention_reasons(
     sideband: Sideband,
     kappa: float,
     noise_floor: float,
+    vif_attention_threshold: float = DEFAULT_VIF_ATTENTION_THRESHOLD,
+    auto_merged: bool = False,
 ) -> List[AttentionReason]:
     """Derive the set of advisory attention reasons for one window.
 
@@ -1986,15 +2087,38 @@ def _compute_attention_reasons(
         Shape-error kappa for the SNR-aware gate.
     noise_floor :
         Noise-regime chi-squared allowance.
+    vif_attention_threshold :
+        A window flags ``overfit_vif`` when any fitted amplitude's
+        variance-inflation factor ``(amp_err / amp) * snr`` reaches this value
+        -- the high-precision non-identifiability signal (degenerate split)
+        that survived the end-of-Stage-5 collapse.
 
     Returns
     -------
     list of AttentionReason
         Advisory flags, possibly empty.
     """
+    from .stage5_impl import amplitude_vif
     from ..fitting.validation import shape_error_fraction, snr_aware_chi2_pass
 
     reasons: List[AttentionReason] = []
+
+    # --- auto_merged_review: the end-of-Stage-5 pass merged a degenerate close
+    # pair in this window. Prior-free, multiplicity is a high-bar claim, so the
+    # default is to merge; this advisory (low severity) lets a user with catalog
+    # support find the merge and re-split it (``review split``). Not urgent --
+    # the merge is the more-likely-correct call (~92% of the band is over-fits).
+    if auto_merged:
+        reasons.append(
+            AttentionReason(
+                kind="auto_merged_review",
+                detail=(
+                    "a degenerate sub-resolution pair was auto-merged; "
+                    "re-split (review split) if catalog/model supports two lines"
+                ),
+                severity=0.1,
+            )
+        )
 
     chi2r = float(getattr(wf, "reduced_chi2", float("inf")))
     # Brightest finite in-window peak SNR -- the same definition as the Stage 5
@@ -2012,7 +2136,13 @@ def _compute_attention_reasons(
     )
 
     # --- worst_eps: flag when the window FAILS the SNR-aware gate ----------
-    passes = snr_aware_chi2_pass(chi2r, snr_max_val, kappa, noise_floor)
+    # Guard against empty / SNR-less windows: a window with no finite-SNR peak
+    # (snr_max == 0) has only a baseline "fit", so its chi2r is not a line-fit
+    # quality signal -- flagging it as a gate failure is spurious (such windows
+    # are dropped by the end-of-Stage-5 cleanup, but guard defensively).
+    passes = snr_max_val <= 0.0 or snr_aware_chi2_pass(
+        chi2r, snr_max_val, kappa, noise_floor
+    )
     if not passes:
         eps = shape_error_fraction(chi2r, snr_max_val, noise_floor)
         reasons.append(
@@ -2026,61 +2156,84 @@ def _compute_attention_reasons(
             )
         )
 
-    # --- doublet_eps_gt_kappa: flag windows with an eps>kappa doublet pair --
-    doublet_alts = getattr(wf, "doublet_alternatives", [])
-    for da in doublet_alts:
-        delta_aicc_raw = getattr(da, "delta_aicc", float("nan"))
-        delta_aicc = float(delta_aicc_raw)
-        if math.isnan(delta_aicc):
+    # --- overfit_vif: flag a non-identifiable (degenerate-split) amplitude ---
+    # The diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``
+    # is ~1 for an identifiable line and >> 1 when a line is degenerate with a
+    # sub-resolution neighbour (the pair *sum* is constrained, neither amplitude
+    # individually). The end-of-Stage-5 collapse already removed the extreme
+    # (VIF > vif_collapse_threshold, sub-half-resolution) pairs, so what reaches
+    # here is the attention band: high-VIF lines that survived because they sit
+    # above the collapse separation guard. SNR-normalized, so a genuine low-SNR
+    # multiplet (large *raw* errors, VIF still ~2) is not flagged. The
+    # AICc-preferred-doublet observation is *not* an attention trigger -- that is
+    # the pipeline confirming a real doublet, not an actionable overfit (the
+    # doublet detail still surfaces in ``review show --window N``).
+    worst_vif: Optional[float] = None
+    worst_vif_freq: float = 0.0
+    for p in wf.fitted_peaks:
+        vif = amplitude_vif(p)
+        if vif is None or not math.isfinite(vif):
             continue
-        # delta_aicc > 0 means the doublet (production) is AICc-preferred over
-        # the merged alternative.
-        if delta_aicc > 0 and da.merged_success:
-            reasons.append(
-                AttentionReason(
-                    kind="doublet_eps_gt_kappa",
-                    detail=(
-                        f"doublet pair at {da.frequency_a_mhz:.4f}/"
-                        f"{da.frequency_b_mhz:.4f} MHz "
-                        f"preferred over merged (delta_aicc={delta_aicc:.3g})"
-                    ),
-                    severity=float(delta_aicc),
-                )
+        if vif >= vif_attention_threshold and (worst_vif is None or vif > worst_vif):
+            worst_vif = vif
+            worst_vif_freq = float(p.frequency_mhz)
+    if worst_vif is not None:
+        reasons.append(
+            AttentionReason(
+                kind="overfit_vif",
+                detail=(
+                    f"amplitude VIF={worst_vif:.1f} at {worst_vif_freq:.4f} MHz "
+                    f">= {vif_attention_threshold:.1f} "
+                    f"(non-identifiable; degenerate with a neighbour)"
+                ),
+                severity=float(worst_vif),
             )
-            break  # one per window is sufficient
+        )
+
+    # NOTE: a low-SNR fitted peak is deliberately NOT an attention reason. A
+    # weak peak just above the survival floor is rarely actionable (an isolated
+    # weak false positive does little harm), so flagging the whole band floods
+    # the queue with low-value items. Weak windows are surfaced on demand via
+    # ``review rank --by min-snr`` instead (exploration decoupled from flags).
 
     # --- candidate_bearing: flag when the window has candidates above bar ----
     center_mhz = _window_center(wf)
     if center_mhz is not None:
+        res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
         cands = derive_candidate_ledger(
             wf,
             center_mhz=center_mhz,
             sideband=sideband,
             bar=ledger_bar,
+            res_element_mhz=res_element_mhz,
         )
-        if cands:
-            if any(c.evidence_kind == "residual_snr" for c in cands):
-                best_ev = max(
-                    c.best_evidence for c in cands if c.evidence_kind == "residual_snr"
+        # The attention flag fires ONLY on a strong ``residual_snr`` candidate
+        # (a genuine missed line leaves residual SNR) clearing the stiff
+        # attention threshold. The currencies are NOT comparable: an
+        # ``aicc_delta`` candidate's value is a rejection *cost* (higher = more
+        # rejected), so it must never be max()'d against residual SNR as if it
+        # were support -- doing so flagged decisively-rejected near-misses as
+        # the strongest "evidence". Audit/near-gate candidates still list under
+        # ``review show --candidates`` (and the on-demand ranking), but they do
+        # not raise an attention flag on their own.
+        strong = [
+            c
+            for c in cands
+            if c.evidence_kind == "residual_snr"
+            and c.best_evidence >= attention_candidate_evidence
+        ]
+        if strong:
+            best_ev = max(c.best_evidence for c in strong)
+            reasons.append(
+                AttentionReason(
+                    kind="candidate_bearing",
+                    detail=(
+                        f"{len(strong)} strong residual candidate(s) "
+                        f"(best residual SNR={best_ev:.2f})"
+                    ),
+                    severity=float(len(strong) + best_ev * 0.1),
                 )
-            else:
-                best_ev = max(c.best_evidence for c in cands)
-            # Flag the window only when its strongest candidate clears the
-            # attention threshold (stiffer than the display bar) -- otherwise a
-            # quiet window with only marginal near-misses would flood the
-            # routing surface. All such candidates still list under
-            # ``review show --candidates`` at the display bar.
-            if best_ev >= attention_candidate_evidence:
-                reasons.append(
-                    AttentionReason(
-                        kind="candidate_bearing",
-                        detail=(
-                            f"{len(cands)} revivable candidate(s) above "
-                            f"bar={ledger_bar:.1f} (best evidence={best_ev:.2f})"
-                        ),
-                        severity=float(len(cands) + best_ev * 0.1),
-                    )
-                )
+            )
 
     # --- spur_adjacent: flag when a gated spur center falls in or near the window ---
     if wf.window is not None and wf.window.freq_range is not None:
@@ -2198,6 +2351,8 @@ def review_run_impl(
         float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
     ]
     acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+    vif_attention_threshold = _resolve_vif_attention_threshold(path)
+    merged_window_ids = _auto_merged_window_ids(spectrum_fit)
 
     new_statuses: Dict[int, WindowReviewStatus] = {}
     for wf in spectrum_fit.window_fits:
@@ -2212,6 +2367,8 @@ def review_run_impl(
             sideband=sideband,
             kappa=kappa,
             noise_floor=noise_floor,
+            vif_attention_threshold=vif_attention_threshold,
+            auto_merged=wid in merged_window_ids,
         )
 
         # Preserve existing provenance (never downgrade reviewed/user-edited to auto).

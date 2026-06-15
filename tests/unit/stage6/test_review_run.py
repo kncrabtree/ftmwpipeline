@@ -317,6 +317,95 @@ def test_attention_reasons_edge_boundary(stage5_small_file, tmp_path):
     ), f"Expected edge_boundary reason for window {wid}; got {kinds}"
 
 
+def _first_window_with_peak(sf):
+    for wf in sf.window_fits:
+        if (
+            wf.window is not None
+            and wf.window.freq_range is not None
+            and wf.fitted_peaks
+        ):
+            return wf
+    return None
+
+
+def test_attention_reasons_overfit_vif(stage5_small_file, tmp_path):
+    """overfit_vif fires when a fitted amplitude is non-identifiable (VIF >> 1)."""
+    from ftmwpipeline.io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5,
+        save_spectrum_fit_to_hdf5,
+    )
+
+    fp = tmp_path / "vif_test.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    with h5py.File(str(fp), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    target_wf = _first_window_with_peak(sf)
+    if target_wf is None:
+        pytest.skip("No suitable window found in the 3-window fixture")
+
+    # Force a degenerate amplitude: error == amplitude, healthy SNR -> VIF == snr.
+    p = target_wf.fitted_peaks[0]
+    p.amplitude_error = abs(float(p.amplitude))
+    p.snr = 10.0  # VIF = (amp_err/amp) * snr = 10 >= 4 (default threshold)
+
+    with h5py.File(str(fp), "a") as h5f:
+        del h5f["stage5_fitting"]
+        grp = h5f.create_group("stage5_fitting")
+        save_spectrum_fit_to_hdf5(sf, grp)
+
+    review_run_impl(str(fp))
+    review = load_stage6_review_from_file(str(fp))
+
+    wid = target_wf.window_id if target_wf.window_id is not None else -1
+    kinds = {r.kind for r in review.window_statuses[wid].attention_reasons}
+    assert "overfit_vif" in kinds, f"Expected overfit_vif for window {wid}; got {kinds}"
+
+
+def test_low_snr_retired(stage5_small_file, tmp_path):
+    """A borderline-SNR fitted peak is NOT flagged: low_snr is retired as a
+    reason (weak windows are surfaced on demand via ranking, not flagged)."""
+    from ftmwpipeline.io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5,
+        save_spectrum_fit_to_hdf5,
+    )
+
+    fp = tmp_path / "lowsnr_test.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    with h5py.File(str(fp), "r") as h5f:
+        sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    target_wf = _first_window_with_peak(sf)
+    if target_wf is None:
+        pytest.skip("No suitable window found in the 3-window fixture")
+
+    # A peak just above the survival floor must no longer flag the window.
+    target_wf.fitted_peaks[0].snr = 3.3
+
+    with h5py.File(str(fp), "a") as h5f:
+        del h5f["stage5_fitting"]
+        grp = h5f.create_group("stage5_fitting")
+        save_spectrum_fit_to_hdf5(sf, grp)
+
+    result = review_run_impl(str(fp))
+    assert "low_snr" not in result.reason_counts
+
+
+def test_doublet_eps_gt_kappa_retired(stage5_multi_peak_file, tmp_path):
+    """The AICc-preferred-doublet observation is no longer an attention trigger."""
+    fp = tmp_path / "no_doublet_flag.ftmw"
+    shutil.copy(stage5_multi_peak_file, fp)
+
+    result = review_run_impl(str(fp))
+
+    assert "doublet_eps_gt_kappa" not in result.reason_counts, (
+        "doublet_eps_gt_kappa should be retired as an attention reason; "
+        f"got {result.reason_counts}"
+    )
+
+
 def test_multi_peak_candidate_bearing(stage5_multi_peak_file, tmp_path):
     """On a full 2638 fit, at least some windows have candidate_bearing flags."""
     fp = tmp_path / "multi.ftmw"

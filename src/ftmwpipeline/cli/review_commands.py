@@ -236,6 +236,30 @@ def cmd_review_show(args: argparse.Namespace) -> int:
         else:
             print("  (none)")
 
+        # Doublet alternatives: the AICc-preferred-doublet observation is no
+        # longer an attention trigger (it confirms a real doublet, not an
+        # actionable overfit), but the per-pair adjudication stays visible here
+        # for the reviewer's drill-down.
+        doublet_alts = [
+            da for da in getattr(wf, "doublet_alternatives", []) if da.merged_success
+        ]
+        if doublet_alts:
+            print()
+            print(f"  Doublet alternatives ({len(doublet_alts)}):")
+            print(
+                f"  {'pair (MHz)':>27}  {'sep (res)':>9}  "
+                f"{'amp_ratio':>9}  {'dAICc':>9}  verdict"
+            )
+            print("  " + "-" * 70)
+            for da in doublet_alts:
+                verdict = "doublet" if da.delta_aicc > 0 else "merge"
+                print(
+                    f"  {_fmt_mhz(da.frequency_a_mhz):>12}/"
+                    f"{_fmt_mhz(da.frequency_b_mhz):<12}  "
+                    f"{da.separation_res_elements:>9.2f}  "
+                    f"{da.amp_ratio:>9.2f}  {da.delta_aicc:>9.3g}  {verdict}"
+                )
+
         print()
         cands = get_candidate_ledger_impl(file_path, window_id=wid, bar=bar)
         print(f"  Candidates ({len(cands)}, bar={bar:.1f}):")

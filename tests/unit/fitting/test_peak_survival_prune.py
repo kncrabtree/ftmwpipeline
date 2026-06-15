@@ -408,6 +408,47 @@ class TestApplyVifCollapse:
         self._run(fit)
         assert len(fit.window_fits[0].fitted_peaks) == 2  # untouched
 
+    def test_iterates_until_no_resplit(self):
+        # A refit that re-splits its merged line into a fresh degenerate pair
+        # must be collapsed again, not left behind: the sweep iterates.
+        pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=10.0, snr=500.0)
+        pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=10.0, snr=500.0)
+        wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
+        fit = _make_fit([wf])
+
+        state = {"resplit": True}
+
+        def _resplitting(wf_, remove_freqs, add_freqs, add_seeds):
+            # First collapse: re-split the merged line into a new degenerate
+            # high-VIF pair (what a dense NLS refit can do). Second collapse:
+            # behave normally (one identifiable merged line) so it converges.
+            kept = [
+                p
+                for p in wf_.fitted_peaks
+                if float(p.frequency_mhz) not in remove_freqs
+            ]
+            new = FittingResult(window_id=wf_.window_id)
+            new.window = wf_.window  # production refit carries the window forward
+            if state["resplit"]:
+                state["resplit"] = False
+                f = add_freqs[0]
+                new.fitted_peaks = kept + [
+                    _cpeak(f - 0.005, amplitude=1.0, amplitude_error=10.0, snr=500.0),
+                    _cpeak(f + 0.005, amplitude=1.0, amplitude_error=10.0, snr=500.0),
+                ]
+            else:
+                new.fitted_peaks = kept + [
+                    _cpeak(g, snr=50.0, amplitude=2.0) for g in add_freqs
+                ]
+            return new
+
+        self._run(fit, refit_collapse=_resplitting)
+        out = fit.window_fits[0]
+        assert len(out.fitted_peaks) == 1  # converged: no residual degenerate pair
+        diag = fit.diagnostics["vif_collapse"]
+        assert diag["n_collapsed_pairs"] == 2  # original pair + the re-split
+        assert diag["n_iterations"] == 2
+
     def test_merged_seed_snaps_to_doublet_alternative(self):
         from ftmwpipeline.core.data_structures import DoubletAlternativeInfo
 
@@ -450,6 +491,88 @@ class TestApplyVifCollapse:
         assert captured["seed_phase"] == pytest.approx(0.3)
 
 
+def _spur_set(centers_sources):
+    """Build a minimal SpurSet (center_mhz, source) for cleanup tests."""
+    from ftmwpipeline.fitting.spur_detection import GatedSpur, SpurSet
+
+    spurs = tuple(
+        GatedSpur(center_mhz=c, integer_mhz=int(round(c)), source=src)
+        for c, src in centers_sources
+    )
+    return SpurSet(spurs=spurs, bin_spacing_mhz=1.0 / 13.0, mask_half_width_bins=2)
+
+
+class TestApplyWindowCleanup:
+    RES = 1.0 / 13.0
+
+    def _run(self, fit, spur_set=None, drop_empty=True, drop_spur_only=True):
+        from ftmwpipeline._internal.stage5_impl import apply_window_cleanup
+
+        apply_window_cleanup(
+            fit,
+            spur_set=spur_set,
+            res_element_mhz=self.RES,
+            drop_empty=drop_empty,
+            drop_spur_only=drop_spur_only,
+        )
+
+    def test_empty_window_dropped(self):
+        w1 = _window_with_range(1, [_cpeak(1000.0, snr=10.0)], (999.0, 1001.0))
+        w2 = _window_with_range(2, [], (2000.0, 2002.0))  # empty
+        fit = _make_fit([w1, w2])
+        self._run(fit)
+        assert [w.window_id for w in fit.window_fits] == [1]
+        assert fit.diagnostics["window_cleanup"]["n_empty_dropped"] == 1
+
+    def test_empty_window_kept_when_disabled(self):
+        w2 = _window_with_range(2, [], (2000.0, 2002.0))
+        fit = _make_fit([w2])
+        self._run(fit, drop_empty=False)
+        assert len(fit.window_fits) == 1
+
+    def test_spur_only_window_dropped(self):
+        ss = _spur_set([(1000.02, "flat+saturated")])
+        w1 = _window_with_range(1, [_cpeak(1000.0, snr=50.0)], (999.0, 1001.0))
+        fit = _make_fit([w1])
+        self._run(fit, spur_set=ss)
+        assert fit.window_fits == []
+        assert fit.diagnostics["window_cleanup"]["n_spur_only_dropped"] == 1
+
+    def test_spur_only_ambiguous_source_kept(self):
+        # 'narrow'/'drift' alone are not confidently instrumental -> keep.
+        ss = _spur_set([(1000.02, "narrow")])
+        w1 = _window_with_range(1, [_cpeak(1000.0, snr=50.0)], (999.0, 1001.0))
+        fit = _make_fit([w1])
+        self._run(fit, spur_set=ss)
+        assert [w.window_id for w in fit.window_fits] == [1]
+
+    def test_multi_line_window_on_spur_kept(self):
+        # Two lines -> never dropped as spur-only (ambiguous).
+        ss = _spur_set([(1000.02, "flat+saturated")])
+        w1 = _window_with_range(
+            1, [_cpeak(1000.0, snr=50.0), _cpeak(1000.5, snr=40.0)], (999.0, 1001.0)
+        )
+        fit = _make_fit([w1])
+        self._run(fit, spur_set=ss)
+        assert [w.window_id for w in fit.window_fits] == [1]
+
+    def test_user_origin_spur_line_immune(self):
+        ss = _spur_set([(1000.02, "flat+saturated")])
+        w1 = _window_with_range(
+            1, [_cpeak(1000.0, snr=50.0, origin="user")], (999.0, 1001.0)
+        )
+        fit = _make_fit([w1])
+        self._run(fit, spur_set=ss)
+        assert [w.window_id for w in fit.window_fits] == [1]
+
+    def test_line_far_from_spur_kept(self):
+        ss = _spur_set([(1000.5, "flat+saturated")])  # > 1 res from the line
+        w1 = _window_with_range(1, [_cpeak(1000.0, snr=50.0)], (999.0, 1001.0))
+        fit = _make_fit([w1])
+        self._run(fit, spur_set=ss)
+        assert [w.window_id for w in fit.window_fits] == [1]
+
+
 class TestSettingsWiring:
     """Verify the settings dataclass and hard defaults."""
 
@@ -463,9 +586,11 @@ class TestSettingsWiring:
         from ftmwpipeline.core.stage_fit_settings import resolve
 
         ps = resolve().peak_survival
-        assert ps.vif_collapse_threshold == pytest.approx(100.0)
-        assert ps.collapse_max_separation_res == pytest.approx(0.5)
+        assert ps.vif_collapse_threshold == pytest.approx(4.0)
+        assert ps.collapse_max_separation_res == pytest.approx(1.0)
         assert ps.vif_attention_threshold == pytest.approx(4.0)
+        assert ps.drop_empty_windows is True
+        assert ps.drop_spur_only_windows is True
 
     def test_hard_default_snr_floor(self):
         from ftmwpipeline.core.stage_fit_settings import resolve
