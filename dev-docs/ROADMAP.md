@@ -54,9 +54,18 @@ milestones, and finished planning documents — is archived in
       a 7-fixture re-baseline (on-vs-off recall isolation: a precision/recall
       trade — removes 22/1247 dust+degenerate lines on 1512/655 for −0.008/−0.009
       recall, all lost matches sub-3.2σ; accepted as the new baseline).
-   3. **Address window construction** (F2 + F3): mid-cluster splits, off-centre
-      / sub-minimum windows, the inert `min_window_half_width_mhz`, the
-      structural-replan merge trigger, and possibly a window-level merge.
+   3. **Address window construction** (F2 + F3) — *done*, overview in
+      [`planning/stage4-window-assignment.md`](planning/stage4-window-assignment.md)
+      §"Window margin and the content-bounded cap split". The cap split now
+      bounds peak **content** (not the padded span), so a content-fitting
+      cluster is never bisected at a sub-minimum interior gap; the window margin
+      is a coherent points knob (`min_window_half_width_points`, default 32 =
+      `trim_m`, decoupled from `edge_m`) used as the proto half-width and a
+      post-construction trim that removes the empty pedestals and the
+      `min_window_half_width_mhz` inertness. Cross-fixture re-fit: recall up on
+      both ground-truth fixtures (1512 0.435→0.443, 655 0.518→0.521),
+      `tier1_pass` up everywhere, χ²ᵣ bulk flat, 25–40% fewer/tighter/centred
+      windows, no mega-windows.
    4. **Reconsider attention metrics** (F1): drop or stiffen the
       `doublet_eps_gt_kappa` trigger and add the covariance/SNR-based overfit
       reason the queue currently lacks.

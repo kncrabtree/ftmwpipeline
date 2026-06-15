@@ -1681,10 +1681,24 @@ _window_knob(
     "stage4.clustering.min_window_half_width_mhz",
     "clustering",
     "min_window_half_width_mhz",
-    "Minimum half-width (MHz) of an isolated-peak proposed window.",
-    "maybe",
+    "MHz form of the window margin; used only when min_window_half_width_points "
+    "is 0 (the points form is the active default).",
+    "N",
     (1.0, 2.0, 3.0, 4.0),
     tier="advanced",
+)
+_window_knob(
+    "stage4.clustering.min_window_half_width_points",
+    "clustering",
+    "min_window_half_width_points",
+    "Window margin in active-FT grid points -- the noise budget each side of a "
+    "window's outermost peak (proto half-width and trim budget). Supersedes "
+    "min_window_half_width_mhz when positive. Coherent range: "
+    "trim_m..max_window_width_points/2.",
+    "Y",
+    (24, 32, 40, 48),
+    tier="advanced",
+    see_also=_WINDOW_SEE_ALSO,
 )
 _window_knob(
     "stage4.clustering.max_peaks_per_window",

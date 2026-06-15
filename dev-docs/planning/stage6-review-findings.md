@@ -1,15 +1,17 @@
 # Stage 6 review findings — triage backlog
 
-Status: **review pass complete; sequenced, implementation not started.** A list
-of issues surfaced while a human reviewed fitted `.ftmw` files through the
+Status: **review pass complete; steps 1–3 implemented, step 4 (F1) open.** A
+list of issues surfaced while a human reviewed fitted `.ftmw` files through the
 Stage 6 `review` surface. Each entry is an observation with enough evidence to
 act on. The agreed order of attack lives in the ROADMAP Priorities (Stage 6
-completion): **(1)** persist the per-window parameter covariance (F4 plumbing),
-**(2)** devise variance–covariance peak-survival metrics and iterate (F4 + F5),
-**(3)** address window construction (F2 + F3), **(4)** reconsider attention
-metrics (F1) — middle steps expected to iterate. Once an item is scheduled it
-graduates to its own planning doc (or a section of the relevant stage doc) and
-is struck from here.
+completion): **(1)** persist the per-window parameter covariance (F4 plumbing) —
+*done*, **(2)** variance–covariance peak-survival metrics (F4 + F5) — *done and
+re-baselined* ([`stage6-peak-survival.md`](stage6-peak-survival.md)), **(3)**
+window construction (F2 + F3) — *done* (overview in
+[`stage4-window-assignment.md`](stage4-window-assignment.md) §"Window margin and
+the content-bounded cap split"), **(4)** reconsider attention metrics (F1) —
+open. Once an item is scheduled it graduates to its own planning doc (or a
+section of the relevant stage doc) and is struck from here.
 
 Reference fixture for every entry below: the rebuilt
 `scratch/stage6-drive/exp_2638_review.ftmw` (2638, fit through Stage 5,
@@ -52,7 +54,24 @@ Routing + reason kinds are defined in
 [`stage6-finalization.md`](stage6-finalization.md) and the doublet calibration
 in [`stage5-doublet-alternative.md`](stage5-doublet-alternative.md).
 
-## F2 — Window boundaries split inside sub-minimum gaps, leaving features off-centre
+## F2 + F3 — Window construction (RESOLVED)
+
+Implemented as Stage 6 sequence step 3; overview in
+[`stage4-window-assignment.md`](stage4-window-assignment.md) §"Window margin and
+the content-bounded cap split". The cap split now bounds peak **content**, not
+the padded span, so a content-fitting cluster is never bisected at a
+sub-minimum interior gap (the 2638 33723.5–33724.6 cluster the review flagged as
+windows 309/310 now fits in one centred window). The window margin was
+re-expressed as a coherent points knob (`min_window_half_width_points`, default
+32 = `trim_m`), decoupled from `edge_m`, used both as the proto half-width and as
+a post-construction trim that pulls each window's edges to ≤ the margin beyond
+its outermost peak (removing the fat empty pedestals and the
+`min_window_half_width_mhz` inertness). Cross-fixture re-fit: recall up on both
+ground-truth fixtures, `tier1_pass` up everywhere, χ²ᵣ bulk flat, no
+mega-windows. The historical observation that motivated this is preserved below
+for provenance.
+
+### Original observation (for provenance)
 
 **Observation.** Windows 309 `[33720.094, 33723.865]` and 310
 `[33723.943, 33728.028]` split a single physical cluster across their shared
@@ -110,7 +129,7 @@ Window planning is [`stage4-window-assignment.md`](stage4-window-assignment.md);
 leakage-contributor freezing is
 [`stage4-leakage-contributor-subtraction.md`](stage4-leakage-contributor-subtraction.md).
 
-## F3 — `min_window_half_width_mhz` is inert; no enforced minimum window width
+### F3 (original observation) — `min_window_half_width_mhz` is inert; no enforced minimum window width
 
 **Observation.** The Stage 4 setting `clustering.min_window_half_width_mhz`
 (default 2.0 MHz, documented as "the minimum half-width of a window built around

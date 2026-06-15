@@ -314,8 +314,9 @@ re-detection); and the cross-interface wrappers
 ## Implementation notes
 
 - **Window extent is per-peak-proposed, statistic-grouped.** Each promoted
-  peak proposes a *tight* window — its core plus `min_window_half_width_mhz`,
-  **not** the leakage-touched run (a strong line's run is ~80–100 MHz wide;
+  peak proposes a *tight* window — its core plus the window margin (see "Window
+  margin and the content-bounded cap split" below), **not** the leakage-touched
+  run (a strong line's run is ~80–100 MHz wide;
   its distant leakage is carried elsewhere as a fixed contributor). Overlapping
   proposals merge to a fixpoint. The complex-edge coherence statistic supplies
   the *leakage-touched regions* used for strong-cluster grouping (strong lines
@@ -335,3 +336,50 @@ re-detection); and the cross-interface wrappers
   the file; a fixed contributor below it is flagged `freeze_eligible=False`
   for the Stage 5 thaw-and-re-fit handshake. The thaw protocol itself is
   Stage 5 work.
+
+## Window margin and the content-bounded cap split
+
+Resolves Stage 6 review findings F2 (a single cluster bisected across two
+windows, its lines piled on the inner edges) and F3 (the inert
+`min_window_half_width_mhz`). Both traced to one incoherence: the per-peak proto
+half-width was `max(min_window_half_width_mhz / step, edge_m)`, so `edge_m`
+(the coherence band, 64) always won and the MHz knob never bound — and the
+resulting 128-point proto window was *wider than the 96-point content cap*. The
+cap split then perpetually re-cut content that already fit, choosing whatever
+interior peak gap happened to be largest. On the 2638 33723.5–33724.6 cluster
+(0.94 MHz of content) that gap was a 0.39 MHz intra-cluster notch, so the
+cluster was split in half with each side leaning on the other's frozen skirt.
+
+Three coordinated changes:
+
+- **The cap split bounds peak *content*, not the padded span.** A window whose
+  promoted peaks span ≤ the cap stays whole even when its empty proto-margins
+  push the physical span over the cap. Only a genuinely over-cap *content* is
+  split, at its sparsest interior gap. A content-fitting cluster is never
+  bisected.
+- **The window margin is a coherent points knob.**
+  `min_window_half_width_points` (default 32) is the noise budget kept on each
+  side of a window's outermost peak — used both as the proto half-width and as a
+  post-construction **trim** that pulls each window's edges to ≤ the margin
+  beyond its outermost peak. It supersedes the MHz form
+  `min_window_half_width_mhz` (now the `points == 0` fallback, mirroring the
+  `max_window_width_points` / `max_window_width_mhz` pair) and is decoupled from
+  `edge_m`. The coherent operating range is `trim_m ≤ margin ≤
+  max_window_width_points / 2`: at least `trim_m` (32) so the edge-coherence
+  statistic samples the noise margin rather than a peak, and at most half the
+  content cap (48) so a lone line's `2 × margin` window never exceeds the cap.
+  The default 32 is the tight end — minimal noise dilution and NLS cost, ample
+  for the order-≤4 leakage-wing baseline.
+- **The trim removes empty pedestals and re-centres features.** A lone line's
+  window is exactly `2 × margin`; a cluster's window is its content plus the
+  margin each side. A noise-only gap may open between two trimmed windows — that
+  is fine (disjoint coverage covers each spectrum point at most once; distant
+  leakage is carried by fixed contributors, not window width). The
+  difficulty/`too_wide` classifier is likewise judged on content, so it no
+  longer flags (or proposes splitting) a correctly-sized padded window.
+
+Cross-fixture re-fit (the seven issue-3 fixtures): recall up on both
+ground-truth fixtures (1512 0.435→0.443, 655 0.518→0.521), `tier1_pass` up
+everywhere, χ²ᵣ bulk median flat, 25–40% fewer windows (consolidation), no
+mega-windows; the small fitted-line reductions are boundary-duplication
+artifacts the joint fits resolve (recall rose, so not real losses).

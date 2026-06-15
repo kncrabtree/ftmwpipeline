@@ -65,6 +65,14 @@ def _synthetic(lines, n=4000, f_lo=30000.0, step=0.02, t_us=15.0, sigma=0.01, se
     return freqs, spec, rms, peaks
 
 
+def _content_mhz(window, peaks):
+    """Span between the first and last promoted peak owned by ``window`` -- the
+    quantity the width cap bounds (not the padded ``freq_range``, which carries
+    the per-peak proto-margins)."""
+    fs = [peaks[li].frequency for li in window.free_peak_indices]
+    return (max(fs) - min(fs)) if len(fs) >= 2 else 0.0
+
+
 def _assert_invariants(plan):
     """Disjoint windows, unique free peaks, acyclic DAG, valid topo order."""
     ws = sorted(plan.windows, key=lambda w: w.freq_range[0])
@@ -108,14 +116,15 @@ class TestStrongCluster:
     def test_overlapping_strong_lines_form_one_joint_window(self):
         """Two strong lines whose skirts overlap merge into one window.
 
-        The points cap is pinned off: this exercises the skirt-overlap merge
-        rule on the MHz lane, and the synthetic 0.02 MHz grid makes the
-        default points cap (96 points = 1.92 MHz here) split the 4 MHz pair.
+        The lines are 1 MHz apart -- within 2 * the window margin and close
+        enough that their coherent skirts keep S_coh above threshold between
+        them (one shared leakage-touched region), so both the proto-overlap and
+        the strong-cluster merge bind them into one joint window.
         """
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30038.0, 3.0, PeakClassification.STRONG),
-                (30042.0, 3.0, PeakClassification.STRONG),
+                (30039.0, 3.0, PeakClassification.STRONG),
             ]
         )
         plan = build_window_plan(
@@ -343,10 +352,17 @@ class TestLeakageArtifactPruning:
 
 
 class TestDifficultyAndWidthCap:
-    def test_width_cap_flags_too_wide_window(self):
-        freqs, spec, rms, peaks = _synthetic(
-            [(30040.0, 2.0, PeakClassification.STRONG)]
-        )
+    def test_over_cap_cluster_is_split_not_flagged(self):
+        # The width cap is enforced structurally by the cap split (on peak
+        # content), so an over-cap cluster is broken into within-cap windows
+        # rather than left whole and flagged. ``width_cap_hit`` is judged on
+        # content, which the split guarantees stays within the cap -- so no
+        # surviving window is flagged too-wide, and there is nothing to propose
+        # splitting (the F2 fix: never re-bisect a content-fitting window).
+        lines = [
+            (30040.0 + 0.5 * i, 3.0, PeakClassification.STRONG) for i in range(8)
+        ]  # 8 strong lines 0.5 MHz apart -> ~3.5 MHz of coupled content
+        freqs, spec, rms, peaks = _synthetic(lines, n=8000)
         plan = build_window_plan(
             peaks,
             freqs,
@@ -354,42 +370,57 @@ class TestDifficultyAndWidthCap:
             rms,
             acquisition_us=15.0,
             max_window_width_mhz=2.0,
+            max_window_width_points=0,
         )
-        w = plan.windows[0]
-        assert w.difficulty == WindowDifficulty.HARD
-        assert w.diagnostics["width_cap_hit"] is True
-        # Too wide -> either a split proposal or a joint-treatment marker.
-        assert (w.split_proposal is not None) or w.needs_joint_treatment
+        assert plan.n_windows >= 2, "over-cap cluster must be split"
+        for w in plan.windows:
+            assert _content_mhz(w, peaks) <= 2.0 + 1e-6
+            assert w.diagnostics["width_cap_hit"] is False
+            assert w.split_proposal is None and not w.needs_joint_treatment
+        _assert_invariants(plan)
 
 
 class TestBoundedMergeAndCapSplit:
     """The strong-cluster merge is bounded at the width cap and merged spans are
-    split at their sparsest gaps until each window is <= max_window_width_mhz (and,
-    when ``max_peaks_per_window`` is positive, <= that peak cap), so a dense,
-    mutually-coupled strong-line forest does not collapse into one mega-window. The
-    default ``max_peaks_per_window=0`` bounds windows by width alone."""
+    split at their sparsest gaps until each window's *peak content* is <=
+    max_window_width_mhz (and, when ``max_peaks_per_window`` is positive, <= that
+    peak cap), so a dense, mutually-coupled strong-line forest does not collapse
+    into one mega-window. The default ``max_peaks_per_window=0`` bounds windows by
+    width alone. The bound is on the peak content, not the padded ``freq_range``:
+    a cluster whose lines fit the cap stays in one window even when its empty
+    proto-margins push the padded span over the cap (review finding F2)."""
 
     @staticmethod
     def _dense_cluster():
-        # 20 strong lines 3 MHz apart over ~57 MHz: the per-peak proto-spans
-        # (+/- 2 MHz) overlap and the skirts keep S_coh lit between them, so the
-        # legacy build would chain them into one ~61 MHz / 20-peak window.
-        lines = [(30040.0 + 3.0 * i, 3.0, PeakClassification.STRONG) for i in range(20)]
+        # 20 strong lines 0.8 MHz apart over ~15 MHz: the spacing is below
+        # 2 * the 32-point (0.64 MHz on this 0.02 MHz grid) window margin, so the
+        # per-peak proto-spans overlap and chain them into one ~15 MHz / 20-peak
+        # span -- a genuinely coupled forest the width/peak caps must break up.
+        lines = [(30040.0 + 0.8 * i, 3.0, PeakClassification.STRONG) for i in range(20)]
         return _synthetic(lines, n=8000)
 
     def test_dense_strong_forest_is_split_to_width_cap(self):
-        # max_peaks_per_window=0 and the points cap pinned off: bounded by
-        # the 40 MHz width cap alone.
+        # max_peaks_per_window=0 and the points cap pinned off: bounded by the
+        # MHz width cap alone. The cap is set below the ~15 MHz forest content so
+        # it must split (the default 40 MHz cap would hold the whole forest).
         freqs, spec, rms, peaks = self._dense_cluster()
         plan = build_window_plan(
-            peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_mhz=5.0,
+            max_window_width_points=0,
         )
         _assert_invariants(plan)
-        # The ~57 MHz forest must NOT collapse into one mega-window: the width cap
-        # splits it even with no peak cap.
+        # The forest must NOT collapse into one mega-window: the width cap splits
+        # it even with no peak cap.
         assert plan.n_windows >= 2
         for w in plan.windows:
-            assert w.width_mhz <= 40.0 + 1e-6, "window exceeds the width cap"
+            assert (
+                _content_mhz(w, peaks) <= 5.0 + 1e-6
+            ), "window peak content exceeds the width cap"
         # Every promoted line is still covered exactly once (no dropped peaks).
         covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
         assert covered == list(range(len(peaks)))
@@ -403,10 +434,10 @@ class TestBoundedMergeAndCapSplit:
         plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
         _assert_invariants(plan)
         assert plan.parameters["max_window_width_points"] == 96
-        # A single-line window keeps the min-half-width floor (2 * 2 MHz),
-        # which exceeds the 96-point cap on this fine grid; the cap bounds
-        # the cluster merge, so no window may exceed the larger of the two.
-        bound = max(96 * step, 2 * 2.0) + 2 * step
+        # A window's padded width is its peak content (bounded by the 96-point
+        # cap) plus the 32-point margin on each side, so the bound is
+        # (cap + 2 * margin) grid points.
+        bound = (96 + 2 * 32) * step + 1e-6
         for w in plan.windows:
             assert w.width_mhz <= bound
         covered = sorted(li for w in plan.windows for li in w.free_peak_indices)
@@ -443,15 +474,14 @@ class TestBoundedMergeAndCapSplit:
         _assert_invariants(tight)
 
     def test_coupled_pair_within_cap_stays_merged(self):
-        # Two strong lines a few MHz apart (< the MHz width cap, < the peak
-        # cap) must still merge into one joint window -- the cap split must
-        # not break a genuinely-coupled close pair (the 2638 doublet
-        # back-compat case). Points cap pinned off: on this fine grid the
-        # default points cap is narrower than the pair separation.
+        # Two strong lines 1 MHz apart (< the MHz width cap, < the peak cap, and
+        # within the coherence coupling range) must merge into one joint window
+        # -- the cap split must not break a genuinely-coupled close pair (the
+        # 2638 doublet back-compat case). Points cap pinned off.
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30038.0, 3.0, PeakClassification.STRONG),
-                (30042.0, 3.0, PeakClassification.STRONG),
+                (30039.0, 3.0, PeakClassification.STRONG),
             ]
         )
         plan = build_window_plan(
@@ -459,6 +489,41 @@ class TestBoundedMergeAndCapSplit:
         )
         assert plan.n_windows == 1
         assert sorted(plan.windows[0].free_peak_indices) == [0, 1]
+
+    def test_content_fitting_cluster_not_split_at_subminimum_gap(self):
+        # Review finding F2: a cluster whose peak content fits the cap must NOT
+        # be split at a sub-minimum interior gap just because its proto-margins
+        # push the padded span over the cap. Four lines spanning 0.94 MHz with a
+        # 0.39 MHz largest interior gap (the 2638 33723.5-33724.6 case): with a
+        # +/- 2 MHz proto-margin the merged span is ~4.9 MHz, over a 4 MHz cap,
+        # but the 0.94 MHz of content fits, so it stays one centred window.
+        freqs, spec, rms, peaks = _synthetic(
+            [
+                (30040.00, 1.0, PeakClassification.WEAK),
+                (30040.24, 1.0, PeakClassification.WEAK),
+                (30040.63, 1.0, PeakClassification.WEAK),
+                (30040.94, 1.0, PeakClassification.WEAK),
+            ]
+        )
+        step = float(np.mean(np.diff(np.sort(freqs))))
+        plan = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            max_window_width_points=int(round(4.0 / step)),
+        )
+        assert plan.n_windows == 1, "content-fitting cluster was split"
+        assert sorted(plan.windows[0].free_peak_indices) == [0, 1, 2, 3]
+        # The lone window is centred on its content, not edge-piled.
+        w = plan.windows[0]
+        content_lo, content_hi = 30040.00, 30040.94
+        margin_lo = content_lo - w.freq_range[0]
+        margin_hi = w.freq_range[1] - content_hi
+        assert margin_lo > 0 and margin_hi > 0
+        assert abs(margin_lo - margin_hi) < 0.5, "cluster is off-centre"
+        _assert_invariants(plan)
 
     def test_max_peaks_per_window_recorded_in_parameters(self):
         freqs, spec, rms, peaks = self._dense_cluster()
@@ -515,7 +580,7 @@ class TestBoundedMergeAndCapSplit:
         )
         assert plan.n_windows >= 4
         for w in plan.windows:
-            assert w.width_mhz <= 10.0 + 2 * step
+            assert _content_mhz(w, peaks) <= 10.0 + 2 * step
 
 
 class TestEmptyAndEdgeCases:

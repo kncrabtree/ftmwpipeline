@@ -44,6 +44,7 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
             tau_us=args.tau_us,
             max_peaks_per_window=args.max_peaks_per_window,
             max_window_width_points=args.max_window_width_points,
+            min_window_half_width_points=args.min_window_half_width_points,
             preset=args.preset,
         )
         plan = result["plan"]
@@ -205,8 +206,17 @@ def register_window_commands(subparsers: Any) -> None:
         "--min-window-half-width-mhz",
         dest="min_window_half_width_mhz",
         type=float,
-        help="Minimum half-width of a window around an isolated weak line "
-        "(default: 2.0)",
+        help="MHz form of the window margin; used only when "
+        "--min-window-half-width-points is 0 (default: 2.0)",
+    )
+    p_assign.add_argument(
+        "--min-window-half-width-points",
+        dest="min_window_half_width_points",
+        type=int,
+        help="Window margin in active-FT grid points -- the noise budget each "
+        "side of a window's outermost peak (proto half-width and trim budget). "
+        "Supersedes --min-window-half-width-mhz when positive (default 32). "
+        "Coherent range: trim_m..max-window-width-points/2.",
     )
     p_assign.add_argument(
         "--max-peaks-per-window",

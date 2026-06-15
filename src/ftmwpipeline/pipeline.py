@@ -1297,6 +1297,7 @@ class Pipeline:
         tau_us: Optional[float] = None,
         max_peaks_per_window: Optional[int] = None,
         max_window_width_points: Optional[int] = None,
+        min_window_half_width_points: Optional[int] = None,
         *,
         settings: Optional[WindowPlanningSettings] = None,
         preset: Optional[str] = None,
@@ -1343,6 +1344,11 @@ class Pipeline:
             cap (bin width varies across instruments). ``0`` defers to
             ``max_window_width_mhz``; a positive value (default 96)
             supersedes it.
+        min_window_half_width_points : int, optional
+            Window margin in active-FT grid points -- the noise budget each
+            side of a window's outermost peak (proto half-width and trim
+            budget). Supersedes ``min_window_half_width_mhz`` when positive
+            (default 32).
         settings : WindowPlanningSettings, optional
             Bundle of Stage 4 knobs (preset-layer of the four-layer
             resolution chain); fields left ``None`` fall through. Mutually
@@ -1377,6 +1383,7 @@ class Pipeline:
                 tau_us=tau_us,
                 max_peaks_per_window=max_peaks_per_window,
                 max_window_width_points=max_window_width_points,
+                min_window_half_width_points=min_window_half_width_points,
                 settings=settings,
                 preset=preset,
             )

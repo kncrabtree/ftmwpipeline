@@ -98,10 +98,19 @@ class ClusteringSubSettings:
     positive value supersedes it. The hard default (96 points, ~8 MHz on the
     reference 2638 grid) is the small-window operating point the Stage 5
     window-invariant accept gates are calibrated against.
+    ``min_window_half_width_points`` is the window margin in grid points -- the
+    noise budget kept on each side of a window's outermost peak (the proto
+    half-width and the post-construction trim budget). It supersedes the MHz form
+    ``min_window_half_width_mhz`` when positive (the default), mirroring the
+    width-cap MHz/points pair, and is decoupled from ``edge_m`` (the coherence
+    band). The coherent range is ``trim_m <= margin <= max_window_width_points / 2``
+    (so the edge statistic samples the noise margin and a lone line's window never
+    exceeds the content cap); the hard default 32 is the tight end (== ``trim_m``).
     """
 
     max_window_width_mhz: Optional[float] = None
     min_window_half_width_mhz: Optional[float] = None
+    min_window_half_width_points: Optional[int] = None
     max_peaks_per_window: Optional[int] = None
     max_window_width_points: Optional[int] = None
 
@@ -173,6 +182,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "clustering": {
         "max_window_width_mhz": 40.0,
         "min_window_half_width_mhz": 2.0,
+        "min_window_half_width_points": 32,
         "max_peaks_per_window": 0,
         "max_window_width_points": 96,
     },

@@ -67,6 +67,7 @@ def _build_explicit_from_kwargs(
     tau_us: Optional[float],
     max_peaks_per_window: Optional[int] = None,
     max_window_width_points: Optional[int] = None,
+    min_window_half_width_points: Optional[int] = None,
 ) -> WindowPlanningSettings:
     """Bundle the legacy per-knob kwargs into an explicit-layer settings instance."""
     explicit = WindowPlanningSettings()
@@ -75,6 +76,7 @@ def _build_explicit_from_kwargs(
     explicit.coherence.edge_threshold = edge_threshold
     explicit.clustering.max_window_width_mhz = max_window_width_mhz
     explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
+    explicit.clustering.min_window_half_width_points = min_window_half_width_points
     explicit.clustering.max_peaks_per_window = max_peaks_per_window
     explicit.clustering.max_window_width_points = max_window_width_points
     explicit.contributor.min_freeze_snr = min_freeze_snr
@@ -104,6 +106,7 @@ def assign_windows_impl(
     tau_us: Optional[float] = None,
     max_peaks_per_window: Optional[int] = None,
     max_window_width_points: Optional[int] = None,
+    min_window_half_width_points: Optional[int] = None,
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
@@ -134,7 +137,13 @@ def assign_windows_impl(
     min_freeze_snr : float, optional
         Freeze-eligibility SNR cutoff for fixed contributors (default 50).
     min_window_half_width_mhz : float, optional
-        Minimum half-width of a window around an isolated weak line (default 2).
+        MHz form of the window margin; used only when
+        ``min_window_half_width_points`` is 0 (default 2).
+    min_window_half_width_points : int, optional
+        Window margin in active-FT grid points -- the noise budget each side of
+        a window's outermost peak (proto half-width and trim budget). The
+        portable form; supersedes ``min_window_half_width_mhz`` when positive
+        (default 32). Coherent range ``trim_m..max_window_width_points / 2``.
     magnitude_attachment_threshold : float, optional
         Analytic-skirt-magnitude attachment cutoff in units of σ_c (default 0.1).
     tau_us : float, optional
@@ -176,6 +185,7 @@ def assign_windows_impl(
             "tau_us": tau_us,
             "max_peaks_per_window": max_peaks_per_window,
             "max_window_width_points": max_window_width_points,
+            "min_window_half_width_points": min_window_half_width_points,
         },
         migration_hint=(
             "use settings=WindowPlanningSettings(...) or preset='name' to "
@@ -208,6 +218,7 @@ def assign_windows_impl(
         tau_us=tau_us,
         max_peaks_per_window=max_peaks_per_window,
         max_window_width_points=max_window_width_points,
+        min_window_half_width_points=min_window_half_width_points,
     )
     preset_layer: Optional[WindowPlanningSettings] = settings
     preset_name: Optional[str] = None
@@ -247,6 +258,12 @@ def assign_windows_impl(
     )
     max_width_points_v: int = int(
         _required(clus.max_window_width_points, "clustering.max_window_width_points")
+    )
+    min_half_points_v: int = int(
+        _required(
+            clus.min_window_half_width_points,
+            "clustering.min_window_half_width_points",
+        )
     )
     min_freeze_v: float = float(
         _required(contrib.min_freeze_snr, "contributor.min_freeze_snr")
@@ -293,6 +310,7 @@ def assign_windows_impl(
         max_window_width_mhz=max_width_v,
         min_freeze_snr=min_freeze_v,
         min_window_half_width_mhz=min_half_v,
+        min_window_half_width_points=min_half_points_v,
         magnitude_attachment_threshold=mag_thresh_v,
         max_peaks_per_window=max_peaks_per_window_v,
         max_window_width_points=max_width_points_v,

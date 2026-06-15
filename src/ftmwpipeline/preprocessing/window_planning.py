@@ -92,7 +92,30 @@ DEFAULT_MIN_FREEZE_SNR = 50.0
 flagged as a thaw-and-re-fit candidate rather than safely frozen."""
 
 DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ = 2.0
-"""Minimum half-width of a window built around an isolated weak line."""
+"""Minimum half-width of a window built around an isolated weak line. The MHz
+form of the window margin; the points form (:data:`DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS`)
+supersedes it whenever that is positive (mirroring the width-cap MHz/points pair)."""
+
+DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS = 32
+"""The window margin in active-FT grid points: the empty noise budget kept on
+each side of a window's outermost promoted peak. It is the half-width every peak
+proposes for its proto-window *and* the budget the post-construction trim leaves
+around the content -- one number, so a window's extent tracks its peaks instead
+of carrying a fat empty pedestal. ``0`` defers to the MHz form
+``min_window_half_width_mhz`` (the portable points form is preferred, mirroring
+``max_window_width_points`` over ``max_window_width_mhz``).
+
+Decoupled from ``edge_m`` (the rolling-coherence band): the legacy proto
+half-width was ``max(min_window_half_width_mhz / step, edge_m)``, so ``edge_m=64``
+always won and the MHz knob was inert -- and worse, the resulting 2*64 = 128-point
+proto window was *wider than the 96-point content cap*, so the cap split was
+perpetually re-cutting content that already fit (review findings F2/F3). The
+coherent operating range is ``trim_m <= margin <= max_window_width_points / 2``:
+at least ``trim_m`` (default 32) so the edge-coherence statistic samples the noise
+margin rather than a peak, and at most half the content cap (default 96/2 = 48)
+so a lone line's ``2*margin`` window never exceeds the cap. The default 32 is the
+tight end of that range (== ``trim_m``): minimal noise dilution and NLS cost,
+still ample to anchor the order-<=4 leakage-wing baseline."""
 
 DEFAULT_MAX_PEAKS_PER_WINDOW = 0
 """Per-window promoted-peak cap; ``0`` (the default) means *no* peak cap -- a
@@ -236,9 +259,9 @@ def _split_span_to_caps(
     cap_idx: float,
     max_peaks: int,
 ) -> List[Tuple[int, int]]:
-    """Split a merged ``(lo, hi)`` grid span until each piece spans at most
-    ``cap_idx`` grid steps and (when ``max_peaks > 0``) holds at most ``max_peaks``
-    promoted peaks.
+    """Split a merged ``(lo, hi)`` grid span until each piece's *peak content*
+    spans at most ``cap_idx`` grid steps and (when ``max_peaks > 0``) holds at
+    most ``max_peaks`` promoted peaks.
 
     Splits at the largest internal peak gap, placing the boundary at the gap
     midpoint so the resulting windows stay disjoint and each edge peak keeps half
@@ -247,10 +270,21 @@ def _split_span_to_caps(
     is bounded by ``cap_idx`` (the width cap) alone; the cross-window coupling is
     carried by the fixed contributors, the same mechanism that handles a strong
     line's distant skirt.
+
+    The width bound is on the **peak content** (the span between the first and
+    last promoted peak), not the padded ``(lo, hi)`` span: a cluster whose lines
+    fit inside the cap must stay in one window even when its empty proto-margins
+    (the ``edge_m``-sized half-extent every peak proposes) push the padded span
+    over the cap. Bounding on the padded width instead bisects a content-fitting
+    cluster at whatever sub-minimum interior gap happens to be largest -- the
+    2638 33723.5-33724.6 cluster (0.94 MHz of content) split at a 0.39 MHz notch
+    because its ~7 MHz of margin tipped the enclosing span past the cap (review
+    finding F2).
     """
     members = [g for g in member_gidx if lo <= g <= hi]
     peaks_ok = max_peaks <= 0 or len(members) <= max_peaks
-    if (hi - lo <= cap_idx and peaks_ok) or len(members) <= 1:
+    content_idx = (members[-1] - members[0]) if len(members) >= 2 else 0
+    if (content_idx <= cap_idx and peaks_ok) or len(members) <= 1:
         return [(lo, hi)]
     arr = np.asarray(members)
     k = int(np.argmax(np.diff(arr)))  # largest gap -> split after the k-th member
@@ -330,6 +364,7 @@ def build_window_plan(
     max_window_width_mhz: float = DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    min_window_half_width_points: int = DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
@@ -366,7 +401,13 @@ def build_window_plan(
     min_freeze_snr : float
         Freeze-eligibility SNR cutoff for fixed contributors (O4-2).
     min_window_half_width_mhz : float
-        Minimum half-width of a window built around an isolated weak line.
+        The MHz form of the window margin (the noise budget each side of the
+        outermost peak). Used only when ``min_window_half_width_points <= 0``.
+    min_window_half_width_points : int
+        The window margin in grid points -- the proto half-width *and* the
+        post-construction trim budget. Supersedes ``min_window_half_width_mhz``
+        when positive (the default). See
+        :data:`DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS`.
     max_peaks_per_window : int
         Per-window promoted-peak cap; ``0`` (the default) disables it so a window
         is bounded only by ``max_window_width_mhz``. The strong-cluster merge is
@@ -418,6 +459,7 @@ def build_window_plan(
         "max_window_width_mhz": float(max_window_width_mhz),
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
+        "min_window_half_width_points": int(min_window_half_width_points),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
         "max_edge_free_neighbors": int(max_edge_free_neighbors),
         "max_peaks_per_window": int(max_peaks_per_window),
@@ -468,11 +510,16 @@ def build_window_plan(
     touched = above_threshold_intervals(rolling, edge_threshold)
 
     # --- Step 2: per-peak proposed windows (tight, uniform) -----------------
-    # A window's extent is a peak's core plus min_window_half_width -- it is
-    # NOT the leakage-touched run. A strong line's run is ~80-100 MHz wide; its
-    # distant leakage is carried by other windows as a fixed contributor, not
-    # by widening this window (see leakage-detection-rework.md).
-    half_idx = max(int(round(min_window_half_width_mhz / step_mhz)), edge_m)
+    # A window's extent is a peak's core plus the window margin -- it is NOT the
+    # leakage-touched run. A strong line's run is ~80-100 MHz wide; its distant
+    # leakage is carried by other windows as a fixed contributor, not by widening
+    # this window (see leakage-detection-rework.md). The margin is the points
+    # form when set (the default), else the MHz form -- decoupled from edge_m
+    # (the coherence band), which previously shadowed it (review findings F2/F3).
+    if min_window_half_width_points > 0:
+        half_idx = int(min_window_half_width_points)
+    else:
+        half_idx = max(int(round(min_window_half_width_mhz / step_mhz)), 1)
     proto_spans: List[Tuple[int, int]] = []
     for pk in promoted:
         lo = max(pk.grid_index - half_idx, 0)
@@ -530,6 +577,28 @@ def build_window_plan(
             _split_span_to_caps(lo, hi, span_gidx, cap_idx, max_peaks_per_window)
         )
     merged = capped
+
+    # --- Trim empty margins to the window-margin budget ---------------------
+    # Pull each window's edges in to at most ``half_idx`` grid points beyond its
+    # outermost promoted peak. The merge and cap split leave wide empty margins
+    # (a lone line proposes a full +/- half_idx span that may overlap nothing; a
+    # cap split places its boundary at a gap midpoint that can sit far from the
+    # nearest peak), which leaves the feature off-centre and dilutes the
+    # per-window statistics with noise-only bins. Trimming shrinks each span to
+    # its peak content plus the margin so the outermost peaks sit ``half_idx``
+    # points from the edge -- enough noise to anchor the leakage-wing baseline,
+    # no more. Shrinking preserves the disjoint-coverage invariant: a window
+    # covers each spectrum point at most once, and a noise-only gap that opens
+    # between two trimmed windows needs no coverage (distant leakage is carried
+    # by fixed contributors, not by window width).
+    trimmed: List[Tuple[int, int]] = []
+    for lo, hi in merged:
+        span_gidx = [g for g in all_gidx if lo <= g <= hi]
+        if span_gidx:
+            lo = max(lo, span_gidx[0] - half_idx)
+            hi = min(hi, span_gidx[-1] + half_idx)
+        trimmed.append((lo, hi))
+    merged = trimmed
 
     # --- Build fit windows from the merged disjoint spans -------------------
     windows: List[FitWindow] = []
@@ -750,7 +819,19 @@ def _finalize_plan(
     for w in windows:
         has_strong = len(strong_by_window[w.window_id]) > 0
         has_fixed = len(w.fixed_contributors) > 0
-        too_wide = w.width_mhz > max_window_width_mhz
+        # Too-wide is judged on the peak *content* span, not the padded
+        # ``width_mhz`` (which carries the noise margin every window keeps). The
+        # cap split bounds content, so a correctly-sized window has content <=
+        # the cap even when its padding makes it physically wider; comparing the
+        # padded width would flag content-fitting windows and propose a split
+        # that re-bisects them -- the F2 defect this rework removes.
+        w_members = members_by_window[w.window_id]
+        if len(w_members) >= 2:
+            w_fs = [m.frequency for m in w_members]
+            content_mhz = max(w_fs) - min(w_fs)
+        else:
+            content_mhz = 0.0
+        too_wide = content_mhz > max_window_width_mhz
         # Edge-coherence test: a window whose edge band still carries coherent
         # leakage (rolling S_coh above threshold within trim_m of either edge)
         # is materially influenced by a strong line even when none is in-band.
@@ -994,6 +1075,7 @@ def replan(
     max_window_width_mhz: float = DEFAULT_MAX_WINDOW_WIDTH_MHZ,
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
+    min_window_half_width_points: int = DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
@@ -1059,6 +1141,7 @@ def replan(
         "max_window_width_mhz": float(max_window_width_mhz),
         "min_freeze_snr": float(min_freeze_snr),
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
+        "min_window_half_width_points": int(min_window_half_width_points),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
         "max_edge_free_neighbors": int(max_edge_free_neighbors),
         "max_window_width_points": int(max_window_width_points),
