@@ -532,10 +532,13 @@ class TestLedgerCandidateDataclass:
 class TestAICcRejectSemanticFix:
     """Verify the corrected AICc-reject evidence direction.
 
-    A *marginal* AICc-reject (aicc_delta near 0) must surface; a *decisive*
-    reject (large aicc_delta) must be filtered out.
+    A *marginal* reject (aicc_delta near 0) must surface; a *decisive* reject
+    (large aicc_delta) must be filtered out. The same near-gate rule applies to
+    ``tentative`` decisions -- ``aicc_delta`` is the K+1 model's cost, not
+    support, so a never-significant tentative is no more revivable than a
+    reject.
 
-    The new rule: kind="aicc_delta", evidence=aicc_delta (raw positive delta);
+    The rule: kind="aicc_delta", evidence=aicc_delta (raw positive delta);
     _passes_bar passes when evidence <= _NEAR_GATE_FACTOR.
     """
 
@@ -585,27 +588,39 @@ class TestAICcRejectSemanticFix:
         result = self._ledger_from_step(aicc_delta=float(_NEAR_GATE_FACTOR) + 1.0)
         assert len(result) == 0, "Candidate above _NEAR_GATE_FACTOR must be filtered"
 
-    def test_tentative_surfaces_despite_large_delta(self):
-        """A `tentative` add (explicitly held) surfaces even with a large delta.
+    def test_tentative_follows_near_gate_rule_like_reject(self):
+        """A ``tentative`` is near-gate filtered on ``aicc_delta``, like ``reject``.
 
-        The add-loop's ``tentative`` decision is its own "held as a marginal
-        near-miss" flag, so the candidate is revivable regardless of the AICc
-        delta magnitude -- unlike a ``reject``, which is near-gate filtered.
-        Pins the 1231 w425 acceptance case (a tentative at aicc_delta ~= 23).
+        ``aicc_delta`` is the AICc *cost* of the K+1 model, not support for the
+        line. A ``tentative`` ("held pending a jointly-significant batch") that
+        never became significant carries a large positive delta and is no more
+        revivable than a decisive reject -- so it follows the same near-gate
+        rule (pass only when ``aicc_delta <= _NEAR_GATE_FACTOR``). Surfacing
+        large-delta tentatives unconditionally was the candidate_bearing
+        over-surfacing bug; a near-gate tentative still surfaces.
         """
-        step = _make_audit_step(1.0, decision="tentative", aicc_delta=23.0)
-        fr = _make_fitting_result(audit_trail=[step])
-        result = derive_candidate_ledger(
-            fr, center_mhz=_CENTER, sideband=_LOWER, bar=DEFAULT_DISPLAY_BAR
+        # Large delta (23 >> _NEAR_GATE_FACTOR): tentative is filtered, same as
+        # a reject at the same delta.
+        big = _make_audit_step(1.0, decision="tentative", aicc_delta=23.0)
+        fr_big = _make_fitting_result(audit_trail=[big])
+        assert (
+            len(
+                derive_candidate_ledger(
+                    fr_big, center_mhz=_CENTER, sideband=_LOWER, bar=DEFAULT_DISPLAY_BAR
+                )
+            )
+            == 0
+        ), "A large-delta tentative (23) must be filtered, like a reject"
+        assert len(self._ledger_from_step(aicc_delta=23.0)) == 0
+
+        # Near-gate delta (within _NEAR_GATE_FACTOR): tentative surfaces.
+        small = _make_audit_step(1.0, decision="tentative", aicc_delta=3.0)
+        fr_small = _make_fitting_result(audit_trail=[small])
+        near = derive_candidate_ledger(
+            fr_small, center_mhz=_CENTER, sideband=_LOWER, bar=DEFAULT_DISPLAY_BAR
         )
-        assert len(result) == 1, (
-            "A tentative (held) candidate must surface even with a large "
-            "aicc_delta (23 >> _NEAR_GATE_FACTOR)"
-        )
-        assert result[0].evidence_kind == "aicc_delta"
-        # A decisive *reject* at the same delta is still filtered.
-        rej = self._ledger_from_step(aicc_delta=23.0)
-        assert len(rej) == 0
+        assert len(near) == 1, "A near-gate tentative (3) must surface"
+        assert near[0].evidence_kind == "aicc_delta"
 
     def test_rescue_snr_path_unchanged(self):
         """Rescue-SNR candidates still use the SNR >= bar rule (path unchanged)."""
