@@ -81,13 +81,22 @@ the design:
   **`auto_merged_review`** (severity 0.1) so a user with catalog/model support
   can `review split` it. The merged window still reports a line at the feature —
   multiplicity is conservative, not the feature missed.
-- **`overfit_vif`** remains only for residual high-VIF pairs above the merge
-  separation bound (≥ 1.0 res) — genuinely ambiguous at/above resolution.
+- **Catastrophic-merge veto (`merge_chi2_veto`, default 100).** Merging at high
+  SNR can leave a 1-line model fitting catastrophically badly (1512 w250 χ²ᵣ
+  5275) — the data overwhelmingly demands two components. When the post-merge
+  reduced χ² exceeds the veto, the merge is reverted: the split is kept (flagging
+  `overfit_vif`) instead of shipping a broken fit. Bound calibrated in the gap
+  between ordinary over-split merges (χ²ᵣ ≤ ~90) and real-doublet merges
+  (≥ ~300); raw χ², since SNR-normalized eps saturates at the D10 floor. Also the
+  super-resolution boundary (low SNR can't resolve a split → merge; high SNR
+  resolves it → keep).
+- **`overfit_vif`** flags residual high-VIF pairs above the merge separation
+  bound (≥ 1.0 res) and the vetoed splits — genuinely ambiguous, human-adjudicated.
 
-Validated on the 1512/655 catalog fixtures: recall 0.443→0.400 (1512, −5 catalog
-lines for −22 total) and 0.579→0.558 (655, −6 for −77), χ²ᵣ flat — a deliberate
-precision-for-conservative-multiplicity trade, every merge flagged and
-re-splittable.
+Validated on the 1512/655 catalog fixtures (with the veto): recall 0.443→0.417
+(1512) and 0.579→0.568 (655), χ²ᵣ tail tamed (1512 p95 42→19, max 5275→88) — a
+deliberate precision-for-conservative-multiplicity trade with no broken fits,
+every merge or kept-split flagged and re-splittable.
 
 The original observation is preserved below for provenance.
 

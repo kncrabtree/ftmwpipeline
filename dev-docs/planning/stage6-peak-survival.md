@@ -133,8 +133,22 @@ New resolved knobs (resolution chain `explicit > persisted > preset > recommende
 > (`collapse_max_separation_res` 1.0). Every merged window is flagged
 > `auto_merged_review` (severity 0.1) for `review split` overrule. `low_snr` was
 > retired as a flag (rework details + the candidate-currency fix are in
-> `stage6-review-findings.md` F1). Recall trade: 1512 0.443→0.400, 655
-> 0.579→0.558, χ²ᵣ flat — deliberate precision-for-conservative-multiplicity.
+> `stage6-review-findings.md` F1).
+>
+> **Catastrophic-merge veto (`merge_chi2_veto`, default 100).** Merging a pair
+> at high SNR can leave a 1-line model fitting catastrophically badly (1512 w250
+> reached χ²ᵣ 5275) — the data overwhelmingly demands two components. When the
+> post-merge reduced χ² exceeds the veto, the merge is reverted: the split is
+> kept (and flags `overfit_vif`) rather than ship a broken fit. Calibrated on
+> the 1512/655 catalog truth — ordinary over-split merges leave χ²ᵣ ≤ ~90,
+> real-doublet merges blow up (≥ ~300), and the veto sits in that gap; the
+> SNR-normalized eps does not separate them (the D10 floor saturates it), so the
+> veto is on raw χ²ᵣ. This is also the super-resolution boundary: low SNR can't
+> resolve a split (merged χ²ᵣ stays low → merge), high SNR resolves it (merged
+> χ²ᵣ blows up → keep split). Net trade: 1512 recall 0.443→0.417, 655
+> 0.579→0.568, with the catastrophic χ²ᵣ tail removed (1512 p95 42→19, max
+> 5275→88) — precision and conservative multiplicity without shipping broken
+> fits, every merge or kept-split flagged for review.
 
 Resolution element = `1 / T_active` (MHz), derived from the persisted canonical FT
 settings (start/end/trim) — keep it a pure function of the file.

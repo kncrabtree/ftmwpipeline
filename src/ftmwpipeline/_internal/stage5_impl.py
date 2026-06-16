@@ -477,6 +477,7 @@ def apply_vif_collapse(
     ],
     snap_tol_mhz: float = 0.05,
     max_iterations: int = 5,
+    max_post_chi2r: float = float("inf"),
 ) -> None:
     """Collapse degenerate sub-resolution overfit pairs (in-place).
 
@@ -532,6 +533,12 @@ def apply_vif_collapse(
         Tolerance for matching a pair to a recorded doublet alternative.
     max_iterations :
         Maximum collapse sweeps over the window set (convergence backstop).
+    max_post_chi2r :
+        Catastrophic-merge veto: if a window's post-merge reduced chi^2 exceeds
+        this, the merge is reverted (the split is kept and will flag
+        ``overfit_vif``) -- the data overwhelmingly demands two components.
+        ``inf`` disables the veto. Raw chi2r, not SNR-normalized eps (the D10
+        lineshape floor saturates eps at high SNR).
     """
     from ..fitting.peak_model import ModelPeak, sideband_sign
 
@@ -570,6 +577,8 @@ def apply_vif_collapse(
         return pairs
 
     collapse_records: List[Dict[str, Any]] = []
+    veto_records: List[Dict[str, Any]] = []
+    vetoed_ids: set[int] = set()
     n_iterations = 0
 
     # Iterate until a full sweep collapses nothing: an NLS collapse refit can
@@ -577,14 +586,15 @@ def apply_vif_collapse(
     # enough. ``max_iterations`` caps a window that oscillates collapse<->split.
     for _ in range(max(1, max_iterations)):
         any_collapsed = False
-        new_window_fits: List[FittingResult] = []
+        new_window_fits = []
         for wf in fit.window_fits:
+            wid = int(wf.window_id) if wf.window_id is not None else -1
             peaks = wf.fitted_peaks
-            center: Optional[float] = None
+            center = None
             if wf.window is not None and wf.window.freq_range is not None:
                 lo, hi = wf.window.freq_range
                 center = 0.5 * (lo + hi)
-            if center is None:
+            if center is None or wid in vetoed_ids:
                 new_window_fits.append(wf)
                 continue
 
@@ -594,9 +604,10 @@ def apply_vif_collapse(
                 continue
 
             vifs = [amplitude_vif(p) for p in peaks]
-            remove_freqs: List[float] = []
-            add_freqs: List[float] = []
-            add_seeds: List[Any] = []
+            remove_freqs = []
+            add_freqs = []
+            add_seeds = []
+            pending: List[Dict[str, Any]] = []
             for i, j in pairs:
                 pa, pb = peaks[i], peaks[j]
                 merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
@@ -612,11 +623,9 @@ def apply_vif_collapse(
                 )
                 remove_freqs.extend([float(pa.frequency_mhz), float(pb.frequency_mhz)])
                 add_freqs.append(merge_freq)
-                collapse_records.append(
+                pending.append(
                     {
-                        "window_id": (
-                            int(wf.window_id) if wf.window_id is not None else -1
-                        ),
+                        "window_id": wid,
                         "frequency_a_mhz": float(pa.frequency_mhz),
                         "frequency_b_mhz": float(pb.frequency_mhz),
                         "vif_a": vifs[i],
@@ -632,6 +641,26 @@ def apply_vif_collapse(
                 )
 
             new_wf = refit_collapse(wf, remove_freqs, add_freqs, add_seeds)
+
+            # Catastrophic-merge veto: if collapsing the pair leaves a window the
+            # 1-line model fits this badly, the data overwhelmingly demands two
+            # components, so keep the split (it flags ``overfit_vif`` for human
+            # review) rather than ship a broken fit. Raw post-merge chi2r (not the
+            # SNR-normalized eps, which the D10 lineshape floor saturates at high
+            # SNR). The window is not retried in later iterations.
+            post_chi2r_raw = getattr(new_wf, "reduced_chi2", None)
+            post_chi2r = (
+                float(post_chi2r_raw) if post_chi2r_raw is not None else float("inf")
+            )
+            if post_chi2r > max_post_chi2r:
+                for rec in pending:
+                    rec["post_merge_chi2r"] = post_chi2r
+                veto_records.extend(pending)
+                vetoed_ids.add(wid)
+                new_window_fits.append(wf)
+                continue
+
+            collapse_records.extend(pending)
             new_window_fits.append(new_wf)
             any_collapsed = True
 
@@ -648,9 +677,12 @@ def apply_vif_collapse(
         "vif_threshold": float(vif_threshold),
         "max_separation_res": float(max_sep_res),
         "res_element_mhz": float(res_element_mhz),
+        "max_post_chi2r": float(max_post_chi2r),
         "n_collapsed_pairs": len(collapse_records),
+        "n_vetoed_pairs": len(veto_records),
         "n_iterations": n_iterations,
         "collapses": collapse_records,
+        "vetoed": veto_records,
     }
 
 
@@ -1400,6 +1432,10 @@ def fit_peaks_impl(
         resolved.peak_survival.collapse_max_separation_res,
         "peak_survival.collapse_max_separation_res",
     )
+    merge_chi2_veto_v = _required_float(
+        resolved.peak_survival.merge_chi2_veto,
+        "peak_survival.merge_chi2_veto",
+    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -1925,6 +1961,7 @@ def fit_peaks_impl(
             res_element_mhz=res_element_mhz,
             sideband=sideband,
             refit_collapse=_collapse_refit,
+            max_post_chi2r=merge_chi2_veto_v,
         )
         n_collapsed = len(
             spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])

@@ -353,7 +353,11 @@ class PeakSurvivalSubSettings:
        overrides chi^2 / AICc unconditionally (at high SNR chi^2 is a lineshape
        floor that rewards the spurious split) and the sweep iterates to
        convergence (an NLS refit can re-split a dense window). Merged windows
-       are flagged ``auto_merged_review`` for overrule.
+       are flagged ``auto_merged_review`` for overrule. **Veto:** if collapsing
+       a pair leaves the window's 1-line model fitting catastrophically badly
+       (raw post-merge reduced chi^2 above ``merge_chi2_veto``), the data
+       overwhelmingly demands two components, so the split is kept (flagged
+       ``overfit_vif``) rather than shipping a broken fit.
 
     ``vif_attention_threshold`` is consumed by the Stage 6 attention surface
     (the ``overfit_vif`` reason for residual high-VIF pairs above the merge
@@ -368,6 +372,7 @@ class PeakSurvivalSubSettings:
     snr_survival_floor: Optional[float] = None
     vif_collapse_threshold: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
+    merge_chi2_veto: Optional[float] = None
     vif_attention_threshold: Optional[float] = None
     drop_empty_windows: Optional[bool] = None
     drop_spur_only_windows: Optional[bool] = None
@@ -559,6 +564,18 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "snr_survival_floor": 3.2,
         "vif_collapse_threshold": 4.0,
         "collapse_max_separation_res": 1.0,
+        # Catastrophic-merge veto: if collapsing a degenerate pair leaves the
+        # window's 1-line model fitting this badly (raw post-merge chi2r), the
+        # data overwhelmingly demands two components, so keep the split (flagged
+        # overfit_vif for review) rather than ship a broken fit. Calibrated
+        # against 1512/655: ordinary (over-split) merges leave chi2r <= ~90,
+        # real-doublet merges blow up (>= ~300, e.g. 1512 w250 5275); the bound
+        # sits in that gap. SNR-normalized eps does NOT separate them (the D10
+        # lineshape floor saturates eps at high SNR), so the veto is on raw
+        # chi2r. This is also the super-resolution boundary: low SNR can't
+        # resolve a split (merged chi2r stays low -> merge), high SNR resolves
+        # it (merged chi2r blows up -> keep split).
+        "merge_chi2_veto": 100.0,
         "vif_attention_threshold": 4.0,
         # End-of-Stage-5 window cleanup: drop windows with no surviving fitted
         # peak (K=0 -- pure noise, no product), and drop a single-line window
