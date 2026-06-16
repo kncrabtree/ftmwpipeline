@@ -18,6 +18,7 @@ from .._internal.stage6_impl import (
     ReviewRunResult,
     _normalize_metric,
     get_candidate_ledger_impl,
+    get_final_products_impl,
     get_review_status_impl,
     merge_peaks_impl,
     rank_windows_impl,
@@ -549,10 +550,14 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     attention_bar: float = getattr(
         args, "attention_bar", DEFAULT_ATTENTION_CANDIDATE_EVIDENCE
     )
+    sigma_floor_khz: Optional[float] = getattr(args, "sigma_floor_khz", None)
 
     try:
         result = review_run_impl(
-            file_path, bar=bar, attention_candidate_evidence=attention_bar
+            file_path,
+            bar=bar,
+            attention_candidate_evidence=attention_bar,
+            sigma_floor_khz=sigma_floor_khz,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -565,6 +570,15 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     if result.reason_counts:
         for kind, count in sorted(result.reason_counts.items()):
             print(f"  {kind}: {count}")
+
+    fp = get_final_products_impl(file_path)
+    if fp is not None:
+        print(
+            f"final products: {len(fp.peaks)} peak(s), "
+            f"calibration {fp.calibration_state}"
+            + (f" (eps={fp.epsilon * 1e6:+.3f} ppm)" if fp.epsilon else "")
+            + f", sigma_floor={fp.sigma_floor_khz:.3f} kHz"
+        )
     return 0
 
 
@@ -653,6 +667,18 @@ def register_review_commands(subparsers: Any) -> None:
             f"Evidence threshold for flagging a candidate-bearing window "
             f"(stiffer than --bar; default "
             f"{DEFAULT_ATTENTION_CANDIDATE_EVIDENCE:.1f})."
+        ),
+    )
+    p_run.add_argument(
+        "--sigma-floor",
+        dest="sigma_floor_khz",
+        type=float,
+        default=None,
+        metavar="KHZ",
+        help=(
+            "Declare the systematic frequency-accuracy floor (kHz), persisted "
+            "in-file and folded into the sigma_f budget. Omit to keep the "
+            "persisted value (default 0)."
         ),
     )
     p_run.add_argument(

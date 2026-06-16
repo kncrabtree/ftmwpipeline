@@ -1869,6 +1869,143 @@ class WindowReviewStatus:
 
 
 @dataclass
+class FinalPeak:
+    """One row of the Stage 6 consolidated final-products table.
+
+    The calibrated, report-ready view of one accepted Stage 5 peak: the
+    frequency corrected for the digitizer timebase scale error and the
+    three-term frequency-uncertainty budget broken out into its components.
+    Computed by Stage 6 (``review run``) from the raw fitted peak, the
+    persisted timebase calibration, and the user-declared accuracy floor; see
+    ``dev-docs/planning/stage6-reports.md`` for the budget derivation.
+
+    Attributes
+    ----------
+    frequency_mhz : float
+        Calibrated molecular frequency (MHz): the raw fitted frequency with the
+        timebase scale error ``epsilon`` removed. Equals ``frequency_raw_mhz``
+        when no calibration was applied (Rb-locked, or ``epsilon == 0``).
+    frequency_raw_mhz : float
+        Uncalibrated fitted molecular frequency (MHz), preserved as a
+        drill-down so the correction is auditable.
+    f_baseband_mhz : float
+        Digitized baseband frequency ``|f_mol - probe|`` (MHz); the lever the
+        ``epsilon`` correction and the ``sigma_eps`` budget term scale with.
+    sigma_f_khz : float
+        Total reported 1-sigma frequency uncertainty (kHz):
+        ``sqrt(sigma_stat^2 + sigma_eps^2 + sigma_floor^2)``.
+    sigma_stat_khz : float
+        Statistical (NLS / Cramer-Rao) precision term, from the fitted
+        ``frequency_error`` (kHz).
+    sigma_eps_khz : float
+        Timebase term ``sigma_epsilon * f_baseband`` (kHz); ``0.0`` when no
+        calibration uncertainty applies.
+    sigma_floor_khz : float
+        The user-declared systematic accuracy floor folded into the budget
+        (kHz); the shipped default is ``0.0``.
+    amplitude : float
+        Fitted amplitude (carried through from the Stage 5 peak, base SI units).
+    phase : float or None
+        Fitted phase (radians), or ``None`` when unavailable.
+    snr : float or None
+        Fitted signal-to-noise ratio, or ``None`` when unavailable.
+    origin : str
+        Per-peak provenance, ``"auto"`` or ``"user"`` (Stage 6 curation).
+    window_id : int or None
+        Originating Stage 4 fit window id.
+    amplitude_error : float or None
+        1-sigma uncertainty on ``amplitude`` (same units), or ``None``.
+    phase_error : float or None
+        1-sigma uncertainty on ``phase`` (radians), or ``None``.
+    snr_error : float or None
+        1-sigma uncertainty on ``snr``, propagated from the amplitude error
+        (``snr * amplitude_error / amplitude``), or ``None``.
+    """
+
+    frequency_mhz: float
+    frequency_raw_mhz: float
+    f_baseband_mhz: float
+    sigma_f_khz: float
+    sigma_stat_khz: float
+    sigma_eps_khz: float
+    sigma_floor_khz: float
+    amplitude: float
+    phase: Optional[float] = None
+    snr: Optional[float] = None
+    origin: str = "auto"
+    window_id: Optional[int] = None
+    amplitude_error: Optional[float] = None
+    phase_error: Optional[float] = None
+    snr_error: Optional[float] = None
+
+
+@dataclass
+class FinalProducts:
+    """The Stage 6 consolidated, calibrated final-products table.
+
+    The single canonical "finalized record" reports render: the calibrated
+    line list plus the frequency-calibration state it was produced under. It is
+    self-describing (carries the calibration state, the applied ``epsilon`` and
+    its uncertainty, the probe/sideband, and the user accuracy floor) so the
+    report renders it without recomputing the calibration.
+
+    Attributes
+    ----------
+    peaks : list of FinalPeak
+        One row per accepted peak, ordered as the Stage 5 line list.
+    calibration_state : str
+        ``"rb_locked"`` (axis absolutely calibrated, ``epsilon`` is identically
+        zero / a null op), ``"self_calibrated"`` (free-running digitizer with a
+        measured ``timebase_calibration`` applied), or ``"uncalibrated"``
+        (free-running digitizer with no self-calibration; frequencies reported
+        as-is and caveated).
+    epsilon : float
+        Fractional timebase scale error applied (``0.0`` unless
+        ``self_calibrated``).
+    sigma_epsilon : float
+        1-sigma uncertainty on ``epsilon`` used for the budget term (``0.0``
+        when no calibration uncertainty applies).
+    sigma_floor_khz : float
+        The user-declared accuracy floor folded into every peak's budget (kHz).
+    probe_freq_mhz : float
+        Probe/LO frequency (MHz) the calibration frame is defined against.
+    sideband : str
+        Sideband configuration (``"upper"`` / ``"lower"``).
+    """
+
+    peaks: List["FinalPeak"] = field(default_factory=list)
+    calibration_state: str = "rb_locked"
+    epsilon: float = 0.0
+    sigma_epsilon: float = 0.0
+    sigma_floor_khz: float = 0.0
+    probe_freq_mhz: float = 0.0
+    sideband: str = "upper"
+
+
+@dataclass
+class FrequencyCalibration:
+    """File-level frequency-calibration provenance (the user's accuracy floor).
+
+    Homes the single user-declared systematic frequency-accuracy floor for the
+    experiment. Persisted as file-level provenance (a sibling of the source
+    metadata, *not* a tracked pipeline stage) so any reported ``sigma_f`` is
+    reproducible from the record alone and never depends on a transient CLI
+    flag. The calibration *state* is not stored here -- it is derived at
+    consolidation time from the clock declaration and whether the timebase was
+    self-calibrated (see ``dev-docs/planning/stage6-reports.md``).
+
+    Attributes
+    ----------
+    sigma_floor_khz : float
+        User-declared systematic accuracy floor (kHz), added in quadrature with
+        the measured budget terms. Shipped default ``0.0``: the pipeline reports
+        precision and declines to assert an accuracy floor it cannot determine.
+    """
+
+    sigma_floor_khz: float = 0.0
+
+
+@dataclass
 class DecisionLogEntry:
     """One anchored user decision in the Stage 6 decision log.
 
@@ -1907,7 +2044,11 @@ class Stage6Review:
         Maps ``window_id`` to :class:`WindowReviewStatus`.
     decision_log : list of DecisionLogEntry
         Ordered list of anchored user decisions (empty until Pass 2 verbs run).
+    final_products : FinalProducts or None
+        The consolidated, calibrated final-products table (the finalized record
+        reports render). ``None`` until ``review run`` builds it.
     """
 
     window_statuses: Dict[int, "WindowReviewStatus"] = field(default_factory=dict)
     decision_log: List["DecisionLogEntry"] = field(default_factory=list)
+    final_products: Optional["FinalProducts"] = None

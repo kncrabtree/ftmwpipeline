@@ -69,14 +69,17 @@ from ._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
     get_candidate_ledger_impl,
+    get_final_products_impl,
     get_review_status_impl,
     merge_peaks_impl,
     rank_windows_impl,
     refit_window_impl,
     review_accept_impl,
     review_run_impl,
+    set_sigma_floor_impl,
     split_peak_impl,
 )
+from ._internal.report_impl import report_table_impl
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
     calibrate_timebase_impl,
@@ -85,6 +88,7 @@ from ._internal.timebase_impl import (
 from .core.data_structures import (
     FID,
     ComplexFT,
+    FinalProducts,
     LedgerCandidate,
     Peak,
     SpectrumFit,
@@ -1791,11 +1795,14 @@ class Pipeline:
         *,
         bar: float = DEFAULT_DISPLAY_BAR,
         attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+        sigma_floor_khz: Optional[float] = None,
     ) -> ReviewRunResult:
-        """Build or refresh the Stage 6 attention-routing curation layer.
+        """Build or refresh the Stage 6 curation layer and final-products table.
 
-        Computes advisory attention reasons for each fitted window, persists
-        the :class:`~ftmwpipeline.core.data_structures.Stage6Review` to the
+        Computes advisory attention reasons for each fitted window, consolidates
+        the calibrated final-products table (timebase-corrected frequencies + the
+        three-term ``sigma_f`` budget), persists the
+        :class:`~ftmwpipeline.core.data_structures.Stage6Review` to the
         ``stage6_review`` HDF5 group, and marks the stage complete.
 
         Existing per-window provenance (``"reviewed"``/``"user-edited"``) and
@@ -1808,6 +1815,10 @@ class Pipeline:
         attention_candidate_evidence :
             Evidence threshold above which a candidate-bearing window flags
             (stiffer than ``bar``; keeps the attention surface actionable).
+        sigma_floor_khz :
+            When given, persist this user-declared accuracy floor (kHz) into the
+            file-level ``/frequency_calibration`` record and fold it into the
+            budget.  ``None`` (default) keeps the persisted floor unchanged.
 
         Returns
         -------
@@ -1820,7 +1831,50 @@ class Pipeline:
             self.filepath,
             bar=bar,
             attention_candidate_evidence=attention_candidate_evidence,
+            sigma_floor_khz=sigma_floor_khz,
         )
+
+    def set_sigma_floor(self, sigma_floor_khz: float) -> None:
+        """Declare the systematic frequency-accuracy floor (kHz), persisted in-file.
+
+        Stores the floor as file-level provenance (``/frequency_calibration``)
+        so any reported ``sigma_f`` is reproducible from the record alone.  Call
+        :meth:`review_run` afterwards to fold the new floor into the budget.
+        """
+        set_sigma_floor_impl(self.filepath, sigma_floor_khz)
+
+    def final_products(self) -> Optional[FinalProducts]:
+        """Return the persisted Stage 6 calibrated final-products table.
+
+        Read-only; ``None`` until :meth:`review_run` has built it.
+        """
+        return get_final_products_impl(self.filepath)
+
+    def report_table(
+        self,
+        *,
+        fmt: str = "csv",
+        output: Optional[Union[str, Path]] = None,
+    ) -> str:
+        """Render the calibrated final-products table (report Level 1).
+
+        Serializes the persisted :class:`FinalProducts` table to ``csv``,
+        ``json``, or a LaTeX ``booktabs`` table. Renders the persisted record;
+        does not recompute. Requires :meth:`review_run` to have built the table.
+
+        Parameters
+        ----------
+        fmt :
+            ``"csv"`` (default), ``"json"``, or ``"latex"``.
+        output :
+            When given, also write the rendered text to this path.
+
+        Returns
+        -------
+        str
+            The rendered table.
+        """
+        return report_table_impl(self.filepath, fmt=fmt, output=output)
 
     def review_accept(
         self,

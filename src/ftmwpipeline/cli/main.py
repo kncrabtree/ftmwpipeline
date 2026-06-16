@@ -18,6 +18,7 @@ from .ft_commands import add_ft_subcommands
 from .info_commands import add_info_subcommand
 from .noise_commands import register_noise_commands
 from .peak_commands import register_peak_commands
+from .report_commands import register_report_commands
 from .scan_commands import register_scan_commands
 from .settings_commands import register_settings_commands
 from .start_commands import register_start_commands
@@ -142,6 +143,9 @@ Examples:
 
     # Add review commands (Stage 6)
     register_review_commands(subparsers)
+
+    # Add report generation commands (Stage 6 reports)
+    register_report_commands(subparsers)
 
     # Cross-cutting parameter-scan surface
     register_scan_commands(subparsers)

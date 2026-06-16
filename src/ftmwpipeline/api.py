@@ -58,7 +58,7 @@ from ._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
 )
-from .core.data_structures import Stage6Review
+from .core.data_structures import FinalProducts, Stage6Review
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
@@ -1565,8 +1565,9 @@ def review_run(
     *,
     bar: float = DEFAULT_DISPLAY_BAR,
     attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    sigma_floor_khz: Optional[float] = None,
 ) -> "ReviewRunResult":
-    """Build or refresh the Stage 6 attention-routing curation layer.
+    """Build or refresh the Stage 6 curation layer and final-products table.
 
     Equivalent to :meth:`Pipeline.review_run`.
 
@@ -1579,6 +1580,9 @@ def review_run(
     attention_candidate_evidence :
         Evidence threshold above which a candidate-bearing window flags
         (stiffer than ``bar``; keeps the attention surface actionable).
+    sigma_floor_khz :
+        When given, persist this user-declared accuracy floor (kHz) and fold it
+        into the budget; ``None`` keeps the persisted floor unchanged.
 
     Returns
     -------
@@ -1588,8 +1592,44 @@ def review_run(
     Requires Stage 5 completed.
     """
     return Pipeline.open(file_path).review_run(
-        bar=bar, attention_candidate_evidence=attention_candidate_evidence
+        bar=bar,
+        attention_candidate_evidence=attention_candidate_evidence,
+        sigma_floor_khz=sigma_floor_khz,
     )
+
+
+def set_sigma_floor(file_path: Union[str, Path], sigma_floor_khz: float) -> None:
+    """Declare the systematic frequency-accuracy floor (kHz), persisted in-file.
+
+    Equivalent to :meth:`Pipeline.set_sigma_floor`.  Stores the floor as
+    file-level provenance so any reported ``sigma_f`` is reproducible from the
+    record alone.  Run :func:`review_run` afterwards to fold it into the budget.
+    """
+    Pipeline.open(file_path).set_sigma_floor(sigma_floor_khz)
+
+
+def get_final_products(file_path: Union[str, Path]) -> Optional[FinalProducts]:
+    """Return the persisted Stage 6 calibrated final-products table, or ``None``.
+
+    Equivalent to :meth:`Pipeline.final_products`.  Read-only.
+    """
+    return Pipeline.open(file_path).final_products()
+
+
+def report_table(
+    file_path: Union[str, Path],
+    *,
+    fmt: str = "csv",
+    output: Optional[Union[str, Path]] = None,
+) -> str:
+    """Render the calibrated final-products table (report Level 1).
+
+    Equivalent to :meth:`Pipeline.report_table`.  Serializes the persisted
+    final-products table to ``csv`` / ``json`` / ``latex``; renders the
+    persisted record (does not recompute).  Requires ``review_run`` to have
+    built the table.
+    """
+    return Pipeline.open(file_path).report_table(fmt=fmt, output=output)
 
 
 def review_accept(

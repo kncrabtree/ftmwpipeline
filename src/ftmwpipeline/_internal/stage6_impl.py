@@ -33,8 +33,11 @@ from ..core.data_structures import (
     AttentionReason,
     AuditStep,
     DecisionLogEntry,
+    FinalPeak,
+    FinalProducts,
     FittedPeak,
     FittingResult,
+    FrequencyCalibration,
     LedgerCandidate,
     RescueCandidateInfo,
     RescueRoundInfo,
@@ -42,6 +45,10 @@ from ..core.data_structures import (
     SpectrumFit,
     Stage6Review,
     WindowReviewStatus,
+)
+from ..io.frequency_calibration_serialization import (
+    load_frequency_calibration_from_hdf5,
+    save_frequency_calibration_to_hdf5,
 )
 from ..io.stage6_review_serialization import (
     load_stage6_review_from_hdf5,
@@ -2075,6 +2082,11 @@ def _record_decision(
 
     existing_status = existing_review.window_statuses.get(window_id)
 
+    # A decision may have changed the fit; rebuild the calibrated final-products
+    # table from the current fit so the persisted contract never goes stale.
+    # When Stage 5 is absent, carry the existing table forward unchanged.
+    final_products = existing_review.final_products
+
     if spectrum_fit is not None:
         spur_centers_mhz: List[float] = [
             float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
@@ -2107,6 +2119,19 @@ def _record_decision(
                 if existing_status is not None
                 else []
             )
+
+        with h5py.File(path, "r") as h5f:
+            floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+        cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+        final_products = _build_final_products(
+            spectrum_fit,
+            probe_freq_mhz=float(fid.probe_freq_mhz),
+            sideband=sideband,
+            calibration_state=cal_state,
+            epsilon=epsilon,
+            sigma_epsilon=sigma_eps,
+            sigma_floor_khz=floor_khz,
+        )
     else:
         new_reasons = (
             list(existing_status.attention_reasons)
@@ -2124,6 +2149,7 @@ def _record_decision(
     new_review = Stage6Review(
         window_statuses=new_statuses,
         decision_log=new_log,
+        final_products=final_products,
     )
 
     with h5py.File(path, "a") as h5f:
@@ -2235,9 +2261,12 @@ def review_accept_impl(
         attention_reasons=kept_reasons,
         invalidated=False,
     )
+    # Accepting as-is does not change the fit, so the calibrated final-products
+    # table stays valid -- carry it forward unchanged.
     new_review = Stage6Review(
         window_statuses=new_statuses,
         decision_log=new_log,
+        final_products=existing_review.final_products,
     )
 
     with h5py.File(path, "a") as h5f:
@@ -2510,6 +2539,159 @@ def _compute_attention_reasons(
     return reasons
 
 
+# ---------------------------------------------------------------------------
+# Final-products consolidation (frequency calibration + sigma_f budget)
+# ---------------------------------------------------------------------------
+
+
+def set_sigma_floor_impl(file_path: Union[Path, str], sigma_floor_khz: float) -> None:
+    """Persist the user's systematic accuracy floor into ``/frequency_calibration``.
+
+    The floor is file-level provenance (a sibling of the source metadata), so
+    any reported ``sigma_f`` is reproducible from the record alone and never
+    depends on a transient flag. Does not rebuild the final-products table;
+    call ``review run`` to fold the new floor into the budget.
+    """
+    floor = float(sigma_floor_khz)
+    if floor < 0.0 or not math.isfinite(floor):
+        raise ValueError(
+            f"sigma_floor_khz must be finite and non-negative, got {sigma_floor_khz!r}"
+        )
+    with h5py.File(str(file_path), "a") as h5f:
+        save_frequency_calibration_to_hdf5(FrequencyCalibration(floor), h5f)
+
+
+def get_final_products_impl(file_path: Union[Path, str]) -> Optional[FinalProducts]:
+    """Return the persisted Stage 6 final-products table, or ``None``."""
+    return load_stage6_review_from_file(str(file_path)).final_products
+
+
+def _derive_frequency_calibration(
+    path: str,
+) -> Tuple[str, float, float]:
+    """Derive the calibration state and the applied (epsilon, sigma_epsilon).
+
+    The state is *derived*, not stored: it follows from the clock declaration
+    (``spur.clocks``) and whether a usable ``timebase_calibration`` is present.
+
+    - No unlocked clock declared (or no declaration) -> ``"rb_locked"`` (the
+      "assume Rb-locked when nothing says otherwise" default); epsilon is a
+      null op.
+    - An unlocked digitizer declared **and** a timebase calibration whose
+      preconditions passed -> ``"self_calibrated"``; the measured epsilon and
+      its uncertainty are applied.
+    - An unlocked digitizer declared but no usable timebase calibration ->
+      ``"uncalibrated"``; frequencies are reported as-is (caveated).
+    """
+    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
+    from ..io.stage_fit_settings_serialization import load_stage_fit_settings_from_h5
+
+    clocks: Tuple = ()
+    try:
+        resolved = resolve_stage_fit_settings(
+            persisted=load_stage_fit_settings_from_h5(path)
+        )
+        clocks = tuple(resolved.spur.clocks or ())
+    except Exception:
+        clocks = ()
+
+    has_unlocked = any(not c.locked for c in clocks)
+    if not has_unlocked:
+        return "rb_locked", 0.0, 0.0
+
+    from .timebase_impl import (
+        load_timebase_calibration_impl,
+        timebase_calibration_present,
+    )
+
+    if not timebase_calibration_present(path):
+        return "uncalibrated", 0.0, 0.0
+
+    try:
+        tc = load_timebase_calibration_impl(path)["timebase_calibration"]
+    except Exception:
+        return "uncalibrated", 0.0, 0.0
+
+    if not tc.preconditions_passed or not math.isfinite(tc.sigma_epsilon):
+        return "uncalibrated", 0.0, 0.0
+
+    return "self_calibrated", float(tc.epsilon), float(tc.sigma_epsilon)
+
+
+def _build_final_products(
+    spectrum_fit: SpectrumFit,
+    *,
+    probe_freq_mhz: float,
+    sideband: Sideband,
+    calibration_state: str,
+    epsilon: float,
+    sigma_epsilon: float,
+    sigma_floor_khz: float,
+) -> FinalProducts:
+    """Consolidate the Stage 5 line list into the calibrated final-products table.
+
+    Applies the timebase scale correction in the baseband frame
+    (``f_corr = probe + (f_raw - probe)/(1+epsilon)``, sideband-independent) and
+    builds the three-term ``sigma_f`` budget per accepted peak:
+    ``sqrt(sigma_stat^2 + (sigma_epsilon * f_baseband)^2 + sigma_floor^2)``.
+    """
+    floor_khz = float(sigma_floor_khz)
+    final_peaks: List[FinalPeak] = []
+    for pk in spectrum_fit.fitted_peaks:
+        f_raw = float(pk.frequency_mhz)
+        f_baseband_mhz = abs(f_raw - probe_freq_mhz)
+
+        if epsilon != 0.0:
+            f_corr = probe_freq_mhz + (f_raw - probe_freq_mhz) / (1.0 + epsilon)
+        else:
+            f_corr = f_raw
+
+        sigma_stat_khz = (
+            float(pk.frequency_error) * 1.0e3 if pk.frequency_error is not None else 0.0
+        )
+        sigma_eps_khz = float(sigma_epsilon) * f_baseband_mhz * 1.0e3
+        sigma_f_khz = math.sqrt(sigma_stat_khz**2 + sigma_eps_khz**2 + floor_khz**2)
+
+        amp = float(pk.amplitude)
+        amp_err = None if pk.amplitude_error is None else float(pk.amplitude_error)
+        snr_val = None if pk.snr is None else float(pk.snr)
+        # Propagate the amplitude error into an SNR error (SNR scales with
+        # amplitude at fixed noise): sigma_snr = snr * sigma_amp / amp.
+        snr_err: Optional[float] = None
+        if snr_val is not None and amp_err is not None and amp != 0.0:
+            snr_err = abs(snr_val) * abs(amp_err / amp)
+
+        final_peaks.append(
+            FinalPeak(
+                frequency_mhz=f_corr,
+                frequency_raw_mhz=f_raw,
+                f_baseband_mhz=f_baseband_mhz,
+                sigma_f_khz=sigma_f_khz,
+                sigma_stat_khz=sigma_stat_khz,
+                sigma_eps_khz=sigma_eps_khz,
+                sigma_floor_khz=floor_khz,
+                amplitude=amp,
+                phase=None if pk.phase is None else float(pk.phase),
+                snr=snr_val,
+                origin=str(pk.origin),
+                window_id=None if pk.window_id is None else int(pk.window_id),
+                amplitude_error=amp_err,
+                phase_error=None if pk.phase_error is None else float(pk.phase_error),
+                snr_error=snr_err,
+            )
+        )
+
+    return FinalProducts(
+        peaks=final_peaks,
+        calibration_state=calibration_state,
+        epsilon=float(epsilon),
+        sigma_epsilon=float(sigma_epsilon),
+        sigma_floor_khz=floor_khz,
+        probe_freq_mhz=float(probe_freq_mhz),
+        sideband=sideband.value,
+    )
+
+
 def review_run_impl(
     file_path: Union[Path, str],
     *,
@@ -2517,13 +2699,17 @@ def review_run_impl(
     attention_candidate_evidence: float = DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     kappa: float = DEFAULT_SHAPE_ERROR_KAPPA,
     noise_floor: float = DEFAULT_CHI2R_NOISE_FLOOR,
+    sigma_floor_khz: Optional[float] = None,
 ) -> ReviewRunResult:
-    """Build or refresh the Stage 6 attention-routing layer.
+    """Build or refresh the Stage 6 attention-routing layer and final products.
 
     Loads the Stage 5 fit, computes advisory attention reasons for every
-    window, and persists a :class:`~ftmwpipeline.core.data_structures.Stage6Review`
-    to the ``stage6_review`` HDF5 group.  Marks the ``stage6_review`` tracker
-    stage complete.
+    window, consolidates the calibrated final-products table (frequencies
+    corrected for the digitizer timebase scale error and the three-term
+    ``sigma_f`` budget), and persists a
+    :class:`~ftmwpipeline.core.data_structures.Stage6Review` to the
+    ``stage6_review`` HDF5 group.  Marks the ``stage6_review`` tracker stage
+    complete.
 
     Idempotent: if a ``stage6_review`` group already exists, the existing
     per-window ``provenance`` (``"reviewed"``/``"user-edited"``) and the
@@ -2549,6 +2735,12 @@ def review_run_impl(
     noise_floor :
         Noise-regime chi-squared allowance (default
         :data:`DEFAULT_CHI2R_NOISE_FLOOR`).
+    sigma_floor_khz :
+        When given, persist this user-declared systematic accuracy floor (kHz)
+        into the file-level ``/frequency_calibration`` record before
+        consolidating, then fold it into every peak's ``sigma_f`` budget.  When
+        ``None`` (default) the persisted floor is used unchanged (default
+        ``0.0`` if never declared).
 
     Returns
     -------
@@ -2616,9 +2808,28 @@ def review_run_impl(
             invalidated=invalidated,
         )
 
+    # Consolidate the calibrated final-products table. A newly-declared
+    # accuracy floor is persisted as file-level provenance first, so the budget
+    # reflects exactly what the record carries (never a transient flag).
+    if sigma_floor_khz is not None:
+        set_sigma_floor_impl(path, sigma_floor_khz)
+    with h5py.File(path, "r") as h5f:
+        floor_khz = load_frequency_calibration_from_hdf5(h5f).sigma_floor_khz
+    cal_state, epsilon, sigma_eps = _derive_frequency_calibration(path)
+    final_products = _build_final_products(
+        spectrum_fit,
+        probe_freq_mhz=float(fid.probe_freq_mhz),
+        sideband=sideband,
+        calibration_state=cal_state,
+        epsilon=epsilon,
+        sigma_epsilon=sigma_eps,
+        sigma_floor_khz=floor_khz,
+    )
+
     new_review = Stage6Review(
         window_statuses=new_statuses,
         decision_log=list(existing_review.decision_log),
+        final_products=final_products,
     )
 
     # Persist: write stage6_review group and mark tracker stage complete.
