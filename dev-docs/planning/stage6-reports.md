@@ -193,15 +193,100 @@ default already declines to assert it):
 - **Locked digitizer (rejected as an operating mode)** — would set ε≡0 but the
   scope-lock test runs show massive `6250/4 = 1562.5` MHz harmonics across
   ~25 GHz (~30 µV); the unlocked clock + ε self-cal is the better operating point.
+- **Leakage-pedestal asymmetry as a `δ_down` contributor (TESTED — not the
+  driver).** A candidate mechanism for part of the per-acquisition offset: an
+  asymmetric leakage pedestal under a line biases its fitted centre. The bias is
+  set by *pedestal severity* = (noise floor) × (neighbouring strong-line leakage
+  structure), so it varies acquisition-to-acquisition. Shot counts confirm the
+  inputs differ: vinyl-cyanide 1512 = 17,860 vs 655 = 2,133,080 shots (≈119× →
+  ≈11× noise); MTBE 360 = 775,860 vs 363 = 525,660 (≈1.5× → ≈1.2× noise). The
+  pair offsets do **not** scale with the noise mismatch alone (the ≈11× VC
+  mismatch gives the *smaller* +4.2 kHz; the noise-matched MTBE pair the *larger*
+  −12.2 kHz) — but that is **not** a clean refutation, because the MTBE pair is at
+  different rotational temperatures: cold 360 has a few much stronger low-J lines
+  (more severe pedestals) while warm 363 spreads intensity over many weaker
+  lines, so pedestal severity is *not* matched even though the noise is.
 
-## C. The report itself (presentation over the persisted record)
+  **Test RUN (2026-06-16, `scratch/pedestal-test/`).** On the 7–10 isolated VC
+  lines common to 1512 (noisy) and 655 (quiet) with SNR > 50 in both, each
+  line's centre was measured under several pedestal-handling schemes and the
+  inter-acquisition offset (1512 − 655, ε-corrected) compared. **Three
+  independent pedestal *suppressors* converge** on the same offset: production
+  per-window fit (adaptive leakage-wing baseline) **+4.4…+6.3 kHz**, an explicit
+  polynomial-baseline refit **+4.7…+6.9 kHz**, and a Hann-apodized magnitude
+  centroid **+6.0…+6.7 kHz (std ≤ 3.6, stable across window half-widths
+  0.35–0.6 MHz)**. The pedestal-*exposed* estimators (no-baseline fit; boxcar
+  centroid) are wildly unstable (per-line jumps 30–75 kHz; inter-acq std
+  10–51 kHz) — confirming pedestals *do* bias raw centres, but they are not a
+  clean estimator. **Conclusions:** (1) `δ_down` does **not** collapse under
+  pedestal suppression — it survives at ~+5–7 kHz across three independent
+  suppressors, so it is a genuine per-acquisition absolute-reference offset, not
+  a pedestal artifact (confirms the §B reading). (2) The pedestal *bias itself*
+  (Hann−boxcar centre shift) is consistently **larger in the dense 655**
+  (median |20–32| kHz) than the noisy 1512 (|16–21| kHz) → driven by
+  **neighbour-line leakage density, not absolute noise level** — supporting the
+  temperature/line-strength framing and arguing *against* the original
+  "noise-level-dependent" hypothesis. (3) The production per-window fit already
+  agrees with the apodized (pedestal-suppressed) centre, so production `δ_down`
+  is the post-mitigation residual. Caveats: n = 7–10 (1512 is shot-starved →
+  few high-SNR isolated lines), ε applied as the §B catalog constants (2.28 /
+  2.20 ppm), centroid is a crude estimator — the strength is the cross-method
+  *agreement*, not any single number.
 
-Per finalization §F: one headline final-products table — corrected frequency +
-the σ_f budget (components broken out) + amplitude/phase/SNR + per-peak origin;
-raw frequencies are per-window drill-down. Plus decision/candidate ledgers, spur
-provenance (the gated catalogue + the ADC-image/clock identities), and the
-catalog-match summary when a catalog is supplied. Reports **render** the
-persisted record; they do not recompute the fit.
+## C. The report feature (presentation over the persisted record)
+
+Reports **render** the persisted record; they never recompute the fit. The
+design (settled 2026-06-16) is a top-level **`report`** stage object, with three
+content **levels** that all render one in-memory *report model* assembled from
+the `.ftmw` — **assemble once, render many**. The report model is built from the
+persisted Stage 6 `FinalProducts` table (§A/§F: corrected frequency + the
+broken-out σ_f budget + amplitude/phase/SNR + per-peak origin), the per-stage
+parameters and key results (Stages 0–5), the per-window audit/ledger/covariance
+detail, the spur provenance (gated catalogue + ADC-image/clock identities), and
+an optional catalog-match block. Generating any level **requires a built
+`FinalProducts`** (i.e. `review run` has consolidated it); reports do not run the
+fit. Catalog match is an optional `--catalog <file>` input to every level.
+
+A content **level** largely constrains its **format**: the levels differ in
+depth, and the medium follows. The pipeline emits an *unassigned* measured line
+list, so spectroscopic fitting-software line-list formats (Pickett `.lin` /
+SPFIT) are **out of scope** — they key on quantum-number assignments the pipeline
+deliberately does not produce. Report formats are therefore presentation/data
+formats only.
+
+### Level 1 — `report table` (data export)
+
+The `FinalProducts` table serialized for downstream use: **CSV** (with a
+commented provenance header — calibration state, ε ± σ_ε, σ_floor, probe,
+sideband, fixture id — so the file is self-describing as paper SI), a **JSON**
+twin for programmatic consumption, and a **LaTeX table** (`booktabs`-style) for
+direct inclusion in a paper's SI. Columns: calibrated frequency, σ_f and its
+three components, raw frequency, baseband, amplitude, phase, SNR, origin,
+window_id, clock-lattice flag. This is the cheapest level — `FinalProducts` is
+already built and persisted (build-order step 1), so L1 is a serializer over it.
+
+### Level 2 — `report summary` (methods + results document)
+
+A **Markdown** report (the source-of-truth format; html/pdf are thin
+conversions, not separate hand-built renderers) interleaving **static,
+code-versioned algorithm prose** — a "methods section" that lives in the report
+module so it stays in sync with the code, *not* pulled from the dev planning
+docs — with per-experiment numbers from each stage (start time, FT band, noise σ,
+τ, peak/window counts, χ² summary, calibration state). The full peak table is
+emitted as the companion L1 CSV rather than dumped inline; a *summary* (counts,
+band, χ² stats, strongest lines) appears inline, with `--include-table` to inline
+the full table.
+
+### Level 3 — `report full` (per-window document tree)
+
+A **local linked HTML site** (dependency-light: hand-rolled HTML + matplotlib
+PNGs, no new heavy dependency; PDF deferred): an index (summary + final table +
+window links) → per-window pages, each with the figure from the existing
+`fit show --window N` renderer, the audit/thaw/rescue history, raw + calibrated
+frequencies, all window fit parameters + covariance, and the ledger candidates.
+L3 is an **assembler** over existing artifacts + the visualization renderers, not
+new analysis. With ~10³ windows it needs a manifest/index and a `--windows`
+filter (all vs attention-only).
 
 ### σ_floor is persisted and reported (requirement, not optional)
 
@@ -213,28 +298,47 @@ report shows σ_floor as its own line alongside the broken-out σ_f components, 
 a reader sees whether the accuracy floor was declared (`> 0`) or left at the
 shipped `0`.
 
-Open implementation choice (decide at build time): *where* it is declared and
-homed. Candidates — (a) a file-level provenance field (one value per experiment,
-sitting with the calibration state / `SourceMetadata`), or (b) a Stage 6
-final-products parameter persisted with the σ_f-budget record. Leaning (a): it is
-an instrument/experiment property, not a per-window fit output, and pairs
-naturally with the ε / calibration-state record. Whichever is chosen, persistence
-+ explicit report surfacing are required; the home is the only open question.
+Resolved (implemented): σ_floor is homed in a **file-level `/frequency_calibration`
+provenance group** (option (a) — an instrument/experiment property, not a
+per-window fit output, pairing with the ε / calibration-state record), with one
+field `sigma_floor_khz` (default 0). It is reproducible from the record alone and
+surfaced explicitly in the report.
 
 ## Build order
 
-1. **Apply ε + the σ_f budget into a persisted final-products table** (the
-   contract reports render). Ship the three-term budget with **σ_floor default 0**
-   and a user-settable σ_floor field folded in quadrature. Report precision; do
-   not bake in `δ_down`.
-2. **Promote the cross-fixture validation harness** into the pull
-   calibration/diagnostic surface (how a user with a trusted reference sets their
-   own σ_floor), keeping the run-to-run (catalog-free) reproducibility path.
-3. **Render** the report (table + ledgers + provenance + catalog summary), with
-   the σ_f components broken out and a note that σ_floor is the user's accuracy
-   declaration.
+**Step 1 — persisted final-products contract (done).** Apply ε and the three-term
+σ_f budget into the persisted `FinalProducts` table reports render
+(`stage6_review` group), with **σ_floor default 0** homed file-level and folded in
+quadrature; calibration state derived (rb_locked / self_calibrated /
+uncalibrated). Built by `review run` (`--sigma-floor` sets the floor); report
+precision, do not bake in `δ_down`. Dual-interface + tests landed.
 
-Deferred / longer horizon: residual-tail characterization; the cross-instrument
-and bench tests that would *characterize* `δ_down` (not blocking — the default
-declines to assert it); a live-injected absolute reference as the only path to a
-per-acquisition `δ_down` correction.
+**Step 2 — the cross-fixture / pull calibration surface.** Promote the
+cross-fixture validation harness into the pull calibration/diagnostic surface
+(how a user with a trusted reference sets their own σ_floor), keeping the
+run-to-run (catalog-free) reproducibility path. Light, since the harness already
+computes `ground_truth.pull`.
+
+**Step 3 — the `report` feature (three levels, §C).** Top-level `report` object,
+assemble-once / render-many over the persisted record. Sequence **L1 → L2 → L3**:
+- **L1 `report table` — done.** `report table <file> --format {csv,json,latex}
+  [--output PATH]` serializes the persisted `FinalProducts` to a CSV (commented
+  provenance header), JSON, or a LaTeX `booktabs` table (state-aware caption);
+  stdout by default. Dual-interface (`Pipeline.report_table` / `api.report_table`
+  / `_internal/report_impl.py`); cross-interface + serializer tests landed.
+- **L2 `report summary`** (Markdown methods+results) — next.
+- **L3 `report full`** (dependency-light linked HTML per-window site reusing the
+  `fit show` figure renderer).
+Catalog match an optional `--catalog` cross-reference input to each (the
+fast-follow after core L1, sharing the tolerance helper with Step 2's pull
+surface): a geometric frequency-proximity annotation against a user catalog
+(match within `N·√(σ_f² + σ_cat²)`, opaque-label echo), **never** assignment —
+the pipeline emits unassigned lines, so no quantum-number logic.
+
+Deferred / longer horizon: PDF export of L2/L3 (pandoc/weasyprint, only if
+wanted); the frequency-calibration / σ_f **research report**
+([`../research/frequency-calibration-uncertainty/PLAN.md`](../research/frequency-calibration-uncertainty/PLAN.md));
+residual-tail characterization; the cross-instrument and bench tests that would
+*characterize* `δ_down` (not blocking — the default declines to assert it); a
+live-injected absolute reference as the only path to a per-acquisition `δ_down`
+correction.
