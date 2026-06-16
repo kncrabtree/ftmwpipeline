@@ -13,11 +13,14 @@ from typing import Any, List, Optional, Sequence
 from .._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    RANK_METRICS,
     RefitWindowResult,
     ReviewRunResult,
+    _normalize_metric,
     get_candidate_ledger_impl,
     get_review_status_impl,
     merge_peaks_impl,
+    rank_windows_impl,
     refit_window_impl,
     review_accept_impl,
     review_run_impl,
@@ -565,6 +568,40 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_rank(args: argparse.Namespace) -> int:
+    """Rank windows by a persisted per-window statistic (read-only)."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    by: str = args.by
+    top: Optional[int] = getattr(args, "top", None)
+
+    try:
+        ranked = rank_windows_impl(file_path, by=by, top=top)
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    desc = RANK_METRICS[_normalize_metric(by)][0]
+    review = get_review_status_impl(file_path)
+    print(f"review rank by {_normalize_metric(by)} ({desc}), worst first:")
+    if not ranked:
+        print("  (no windows with this metric defined)")
+        return 0
+    print(
+        f"  {'win':>5}  {'value':>12}  {'freq_lo':>12}  {'freq_hi':>12}  "
+        f"{'peaks':>6}  {'chi2r':>8}  label"
+    )
+    print("  " + "-" * 78)
+    for rw in ranked:
+        status = review.window_statuses.get(rw.window_id)
+        print(
+            f"  {rw.window_id:>5}  {rw.value:>12.4g}  {_fmt_mhz(rw.freq_lo):>12}  "
+            f"{_fmt_mhz(rw.freq_hi):>12}  {rw.n_peaks:>6}  "
+            f"{rw.reduced_chi2:>8.2f}  {_combined_label(status)}"
+        )
+    return 0
+
+
 def register_review_commands(subparsers: Any) -> None:
     """Register review (Stage 6) object-verb subcommands."""
     verbs = add_stage_object(
@@ -626,6 +663,46 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_run.set_defaults(func=cmd_review_run)
+
+    metric_lines = "\n".join(
+        f"  {name:<20} {desc}" for name, (desc, _) in sorted(RANK_METRICS.items())
+    )
+    p_rank = verbs.add_parser(
+        "rank",
+        help="Rank all windows by a per-window statistic (read-only)",
+        description=(
+            "Rank every fit window worst-first by a chosen persisted statistic\n"
+            "-- on-demand exploration decoupled from the attention flags. Read\n"
+            "only; nothing is written.\n\nMetrics:\n" + metric_lines
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_rank.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_rank.add_argument(
+        "--by",
+        dest="by",
+        required=True,
+        metavar="METRIC",
+        help="Ranking metric (e.g. min-snr, max-vif, chi2r; see description).",
+    )
+    p_rank.add_argument(
+        "--top",
+        dest="top",
+        type=int,
+        default=20,
+        metavar="N",
+        help="Show at most N windows (default 20; use 0 for all).",
+    )
+    p_rank.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_rank.set_defaults(func=cmd_review_rank)
 
     p_show = verbs.add_parser(
         "show",

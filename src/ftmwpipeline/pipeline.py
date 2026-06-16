@@ -65,11 +65,13 @@ from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
     get_candidate_ledger_impl,
     get_review_status_impl,
     merge_peaks_impl,
+    rank_windows_impl,
     refit_window_impl,
     review_accept_impl,
     review_run_impl,
@@ -1864,6 +1866,31 @@ class Pipeline:
             The persisted per-window statuses and decision log.
         """
         return get_review_status_impl(self.filepath)
+
+    def rank_windows(
+        self,
+        by: str,
+        *,
+        top: Optional[int] = None,
+    ) -> List["RankedWindow"]:
+        """Rank fit windows by a persisted per-window statistic (read-only).
+
+        On-demand exploration decoupled from the attention flags: ranks all
+        windows worst-first by ``by`` (see
+        :data:`~ftmwpipeline._internal.stage6_impl.RANK_METRICS` for the choices
+        -- ``min-snr``, ``max-vif``, ``chi2r``, ``candidate-evidence``,
+        ``edge-distance``, ``spur-proximity``, ``merged-chi2r``).
+
+        Parameters
+        ----------
+        by :
+            Metric name (``_`` and ``-`` interchangeable).
+        top :
+            Return at most this many windows; ``None`` returns all.
+
+        Requires Stage 5 completed.
+        """
+        return rank_windows_impl(self.filepath, by=by, top=top)
 
     def validate_stage5_shape_error(
         self,

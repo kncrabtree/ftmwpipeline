@@ -565,6 +565,235 @@ def get_candidate_ledger_impl(
 
 
 # ---------------------------------------------------------------------------
+# review rank: on-demand window ranking by any persisted per-window statistic
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RankedWindow:
+    """One window in a :func:`rank_windows_impl` result.
+
+    Attributes
+    ----------
+    window_id : int
+        The fit window id.
+    freq_lo, freq_hi : float
+        Window frequency range (molecular MHz).
+    metric : str
+        The ranking metric name.
+    value : float
+        The metric's value for this window.
+    n_peaks : int
+        Number of fitted peaks in the window.
+    reduced_chi2 : float
+        Window reduced chi-squared (context column).
+    """
+
+    window_id: int
+    freq_lo: float
+    freq_hi: float
+    metric: str
+    value: float
+    n_peaks: int
+    reduced_chi2: float
+
+
+# Ranking metric registry: name -> (one-line description, lower_is_worse).
+# ``lower_is_worse`` True means the worst windows have the smallest value
+# (sorted ascending so the most-actionable lands first); False = larger is worse.
+# Every metric is a pure function of the persisted Stage 5 fit. The surface is
+# the "surface on demand" half of the attention principle: high-precision flags
+# stay small while a user can rank ALL windows by any of these on request.
+RANK_METRICS: Dict[str, Tuple[str, bool]] = {
+    "min-snr": ("minimum fitted-peak SNR (weakest line in the window)", True),
+    "max-vif": ("maximum amplitude VIF (degeneracy / overfit pressure)", False),
+    "chi2r": ("window reduced chi-squared (fit quality)", False),
+    "candidate-evidence": (
+        "strongest revivable candidate residual SNR (possible missed line)",
+        False,
+    ),
+    "edge-distance": (
+        "closest fitted-peak-to-window-edge distance, resolution elements",
+        True,
+    ),
+    "spur-proximity": (
+        "closest fitted-peak-to-gated-spur distance, resolution elements",
+        True,
+    ),
+    "merged-chi2r": (
+        "post-merge chi2r of auto-merged windows (re-split candidates)",
+        False,
+    ),
+}
+
+
+def _normalize_metric(name: str) -> str:
+    return name.strip().lower().replace("_", "-")
+
+
+def _rank_metric_value(
+    metric: str,
+    wf: FittingResult,
+    *,
+    res_element_mhz: Optional[float],
+    sideband: Sideband,
+    spur_centers_mhz: List[float],
+    auto_merged_ids: set,
+) -> Optional[float]:
+    """Compute one ranking metric for one window, or ``None`` to exclude it."""
+    from .stage5_impl import amplitude_vif
+
+    peaks = wf.fitted_peaks
+    chi2r = float(getattr(wf, "reduced_chi2", float("nan")))
+    res = res_element_mhz if (res_element_mhz and res_element_mhz > 0.0) else None
+
+    if metric == "min-snr":
+        snrs = [
+            float(p.snr)
+            for p in peaks
+            if p.snr is not None and math.isfinite(float(p.snr))
+        ]
+        return min(snrs) if snrs else None
+
+    if metric == "max-vif":
+        vifs = [amplitude_vif(p) for p in peaks]
+        finite = [v for v in vifs if v is not None and math.isfinite(v)]
+        return max(finite) if finite else None
+
+    if metric == "chi2r":
+        return chi2r if math.isfinite(chi2r) else None
+
+    if metric == "candidate-evidence":
+        center = _window_center(wf)
+        if center is None:
+            return None
+        cands = derive_candidate_ledger(
+            wf,
+            center_mhz=center,
+            sideband=sideband,
+            bar=DEFAULT_DISPLAY_BAR,
+            res_element_mhz=res_element_mhz,
+        )
+        ev = [c.best_evidence for c in cands if c.evidence_kind == "residual_snr"]
+        return max(ev) if ev else None
+
+    if metric == "edge-distance":
+        if not peaks or wf.window is None or wf.window.freq_range is None:
+            return None
+        lo, hi = wf.window.freq_range
+        d_mhz = min(
+            min(abs(float(p.frequency_mhz) - lo), abs(hi - float(p.frequency_mhz)))
+            for p in peaks
+        )
+        return d_mhz / res if res else d_mhz
+
+    if metric == "spur-proximity":
+        if not peaks or not spur_centers_mhz:
+            return None
+        centers = np.asarray(spur_centers_mhz, dtype=float)
+        d_mhz = min(
+            float(np.min(np.abs(centers - float(p.frequency_mhz)))) for p in peaks
+        )
+        return d_mhz / res if res else d_mhz
+
+    if metric == "merged-chi2r":
+        wid = int(wf.window_id) if wf.window_id is not None else -1
+        if wid not in auto_merged_ids:
+            return None
+        return chi2r if math.isfinite(chi2r) else None
+
+    raise ValueError(f"unknown rank metric: {metric!r}")
+
+
+def rank_windows_impl(
+    file_path: Union[Path, str],
+    *,
+    by: str,
+    top: Optional[int] = None,
+) -> List[RankedWindow]:
+    """Rank fit windows by a persisted per-window statistic (read-only).
+
+    On-demand exploration decoupled from the attention flags: ranks **all**
+    windows (not just flagged ones) by ``by`` (one of :data:`RANK_METRICS`),
+    worst-first. Windows for which the metric is undefined (e.g. ``min-snr`` on
+    an empty window, ``merged-chi2r`` on a window the merge did not touch) are
+    omitted.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    by :
+        Metric name (``_`` and ``-`` are interchangeable).
+    top :
+        Return at most this many windows; ``None`` returns all.
+
+    Returns
+    -------
+    list of RankedWindow
+        Worst-first by the metric.
+
+    Raises
+    ------
+    ValueError
+        When Stage 5 has not been run, or ``by`` is not a known metric.
+    """
+    metric = _normalize_metric(by)
+    if metric not in RANK_METRICS:
+        valid = ", ".join(sorted(RANK_METRICS))
+        raise ValueError(f"unknown rank metric {by!r}; choose one of: {valid}")
+    lower_is_worse = RANK_METRICS[metric][1]
+
+    path = str(file_path)
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
+        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+
+    fid = load_fid_from_pipeline_impl(path)
+    sideband = _sideband_from_value(fid.sideband)
+    acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
+    res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
+    spur_centers_mhz = [
+        float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
+    ]
+    auto_merged_ids = _auto_merged_window_ids(spectrum_fit)
+
+    ranked: List[RankedWindow] = []
+    for wf in spectrum_fit.window_fits:
+        if wf.window is None or wf.window.freq_range is None:
+            continue
+        value = _rank_metric_value(
+            metric,
+            wf,
+            res_element_mhz=res_element_mhz,
+            sideband=sideband,
+            spur_centers_mhz=spur_centers_mhz,
+            auto_merged_ids=auto_merged_ids,
+        )
+        if value is None or not math.isfinite(value):
+            continue
+        lo, hi = wf.window.freq_range
+        chi2r = float(getattr(wf, "reduced_chi2", float("nan")))
+        ranked.append(
+            RankedWindow(
+                window_id=int(wf.window_id) if wf.window_id is not None else -1,
+                freq_lo=float(lo),
+                freq_hi=float(hi),
+                metric=metric,
+                value=float(value),
+                n_peaks=len(wf.fitted_peaks),
+                reduced_chi2=chi2r,
+            )
+        )
+
+    ranked.sort(key=lambda r: r.value, reverse=not lower_is_worse)
+    if top is not None and top > 0:
+        ranked = ranked[:top]
+    return ranked
+
+
+# ---------------------------------------------------------------------------
 # Single-window refit result
 # ---------------------------------------------------------------------------
 

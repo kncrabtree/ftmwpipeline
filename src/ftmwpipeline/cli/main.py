@@ -87,7 +87,7 @@ Stage objects (synonym):
   peaks (stage3)    run | show            Detect/classify peaks / overlay them
   windows (stage4)  run | show            Plan fit windows / overlay the plan
   fit (stage5)      run | show | check    Fit lines / overlay / SNR-aware assessment
-  review (stage6)   show [--candidates]  Review fitted model and candidate ledger
+  review (stage6)   run | show | rank | edit | merge | split | accept  Curate the fit
 
 Meta objects (cross-cutting, optional dotted selector):
   scan      list | run | all              Knob registry; sweep one / all knobs

@@ -23,7 +23,13 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
-from ftmwpipeline._internal.stage6_impl import ReviewRunResult, review_run_impl
+from ftmwpipeline._internal.stage6_impl import (
+    RANK_METRICS,
+    RankedWindow,
+    ReviewRunResult,
+    rank_windows_impl,
+    review_run_impl,
+)
 from ftmwpipeline.core.data_structures import (
     AttentionReason,
     DecisionLogEntry,
@@ -418,3 +424,71 @@ def test_multi_peak_candidate_bearing(stage5_multi_peak_file, tmp_path):
     assert (
         candidate_count > 0
     ), f"Expected candidate_bearing windows in full 2638 fit; got {result.reason_counts}"
+
+
+# ---------------------------------------------------------------------------
+# review rank
+# ---------------------------------------------------------------------------
+
+
+def test_rank_min_snr_sorted_ascending(stage5_small_file, tmp_path):
+    """min-snr ranks worst (lowest SNR) first; values are non-decreasing."""
+    fp = tmp_path / "rank.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    ranked = rank_windows_impl(str(fp), by="min-snr")
+    assert ranked and all(isinstance(r, RankedWindow) for r in ranked)
+    assert all(r.metric == "min-snr" for r in ranked)
+    values = [r.value for r in ranked]
+    assert values == sorted(values)  # ascending: weakest first
+
+
+def test_rank_max_vif_sorted_descending(stage5_small_file, tmp_path):
+    """max-vif ranks worst (highest VIF) first; values are non-increasing."""
+    fp = tmp_path / "rank.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    ranked = rank_windows_impl(str(fp), by="max_vif")  # underscore form accepted
+    values = [r.value for r in ranked]
+    assert values == sorted(values, reverse=True)
+
+
+def test_rank_top_limits(stage5_small_file, tmp_path):
+    """--top limits the result; top<=0 returns all."""
+    fp = tmp_path / "rank.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    all_rows = rank_windows_impl(str(fp), by="chi2r")
+    assert len(rank_windows_impl(str(fp), by="chi2r", top=1)) == 1
+    assert len(rank_windows_impl(str(fp), by="chi2r", top=0)) == len(all_rows)
+
+
+def test_rank_unknown_metric_raises(stage5_small_file, tmp_path):
+    fp = tmp_path / "rank.ftmw"
+    shutil.copy(stage5_small_file, fp)
+    with pytest.raises(ValueError, match="unknown rank metric"):
+        rank_windows_impl(str(fp), by="bogus")
+
+
+def test_rank_all_metrics_run(stage5_small_file, tmp_path):
+    """Every registered metric runs without error and stays in-range/sorted."""
+    fp = tmp_path / "rank.ftmw"
+    shutil.copy(stage5_small_file, fp)
+    for name, (_desc, lower_is_worse) in RANK_METRICS.items():
+        ranked = rank_windows_impl(str(fp), by=name)
+        values = [r.value for r in ranked]
+        assert values == sorted(values, reverse=not lower_is_worse)
+
+
+def test_rank_cross_interface(stage5_small_file, tmp_path):
+    """api.rank_windows and Pipeline.rank_windows agree."""
+    import ftmwpipeline.api as ftmw_api
+
+    fp = tmp_path / "rank.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    a = ftmw_api.rank_windows(str(fp), "min-snr", top=3)
+    p = Pipeline.open(fp).rank_windows("min-snr", top=3)
+    assert [(r.window_id, round(r.value, 6)) for r in a] == [
+        (r.window_id, round(r.value, 6)) for r in p
+    ]

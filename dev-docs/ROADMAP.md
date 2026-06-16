@@ -94,10 +94,12 @@ milestones, and finished planning documents — is archived in
       `collapse_max_separation_res` 1.0 supersede the original 100/0.5 in
       [`planning/stage6-peak-survival.md`](planning/stage6-peak-survival.md).)
 2. **Fork once Stage 6 stabilizes — report generation favored over the
-   interactive shell.** Near-term Stage 6 loose end before the fork: a
-   `review rank --by <metric>` on-demand command (surface weak / merged /
-   candidate windows by any persisted statistic — the "surface on demand"
-   half of the F1 principle, replacing the retired flood flags).
+   interactive shell.** The Stage 6 loose end is *done*: `review rank --by
+   <metric>` ranks all windows worst-first by any persisted per-window statistic
+   (`min-snr`, `max-vif`, `chi2r`, `candidate-evidence`, `edge-distance`,
+   `spur-proximity`, `merged-chi2r`), the "surface on demand" half of the F1
+   principle that replaced the retired flood flags — read-only, dual-interface
+   (`Pipeline.rank_windows` / `api.rank_windows`).
    - **Reports from the `.ftmw` record** (core; the favored next step, planning
      doc to be written): timebase-corrected frequencies with an honest per-line
      uncertainty budget (statistical + ε-residual + lineshape floor — richer

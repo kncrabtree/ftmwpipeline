@@ -54,6 +54,7 @@ from .core.window_planning_settings import WindowPlanningSettings
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
 )
@@ -1641,6 +1642,31 @@ def get_review_status(file_path: Union[str, Path]) -> Stage6Review:
         The persisted per-window statuses and decision log.
     """
     return Pipeline.open(file_path).review_status()
+
+
+def rank_windows(
+    file_path: Union[str, Path],
+    by: str,
+    *,
+    top: Optional[int] = None,
+) -> List["RankedWindow"]:
+    """Rank fit windows by a persisted per-window statistic (read-only).
+
+    Equivalent to :meth:`Pipeline.rank_windows`.  On-demand exploration
+    decoupled from the attention flags: ranks all windows worst-first by ``by``
+    (``min-snr``, ``max-vif``, ``chi2r``, ``candidate-evidence``,
+    ``edge-distance``, ``spur-proximity``, ``merged-chi2r``).
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    by :
+        Metric name (``_`` and ``-`` interchangeable).
+    top :
+        Return at most this many windows; ``None`` returns all.
+    """
+    return Pipeline.open(file_path).rank_windows(by, top=top)
 
 
 def validate_stage5_shape_error(
