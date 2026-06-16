@@ -1,8 +1,9 @@
 """CLI commands for the Stage 6 ``report`` object (object-verb grammar).
 
 Level 1 (``report table``): render the persisted calibrated final-products
-table to CSV / JSON / LaTeX. Reports render the persisted record; they never
-recompute the fit. Levels 2 (``summary``) and 3 (``full``) are added later.
+table to CSV / JSON / LaTeX. Level 2 (``report summary``): a Markdown methods +
+results document. Reports render the persisted record; they never recompute the
+fit. Level 3 (``full``) is added later.
 """
 
 from __future__ import annotations
@@ -10,7 +11,11 @@ from __future__ import annotations
 import argparse
 from typing import Any, Optional
 
-from .._internal.report_impl import VALID_FORMATS, report_table_impl
+from .._internal.report_impl import (
+    VALID_FORMATS,
+    report_summary_impl,
+    report_table_impl,
+)
 from .utils import add_stage_object, setup_logging
 
 
@@ -38,6 +43,28 @@ def cmd_report_table(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report_summary(args: argparse.Namespace) -> int:
+    """Render the methods + results summary document (report Level 2)."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    output: Optional[str] = getattr(args, "output", None)
+    include_table: bool = getattr(args, "include_table", False)
+
+    try:
+        text = report_summary_impl(
+            file_path, output=output, include_table=include_table
+        )
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if output is not None:
+        print(f"report summary: wrote markdown to {output}")
+    else:
+        print(text, end="")
+    return 0
+
+
 def register_report_commands(subparsers: Any) -> None:
     """Register the ``report`` object-verb subcommands."""
     verbs = add_stage_object(
@@ -48,7 +75,8 @@ def register_report_commands(subparsers: Any) -> None:
             "Report generation over the persisted Stage 6 record.\n\n"
             "Renders the finalized analysis; never recomputes the fit. Requires\n"
             "'review run' to have consolidated the calibrated final products.\n\n"
-            "Verbs: table (Level 1 data export: CSV / JSON / LaTeX)"
+            "Verbs: table (Level 1 data export: CSV / JSON / LaTeX),\n"
+            "       summary (Level 2 methods + results document: Markdown)"
         ),
     )
 
@@ -87,3 +115,41 @@ def register_report_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_table.set_defaults(func=cmd_report_table)
+
+    p_summary = verbs.add_parser(
+        "summary",
+        help="Methods + results document (Markdown)",
+        description=(
+            "Render a Markdown methods + results document: static,\n"
+            "code-versioned per-stage algorithm prose interleaved with the\n"
+            "per-experiment numbers from each persisted stage. The full line\n"
+            "list is the companion 'report table' export unless --include-table\n"
+            "inlines it."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_summary.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_summary.add_argument(
+        "--output",
+        dest="output",
+        default=None,
+        metavar="PATH",
+        help="Write to PATH instead of stdout.",
+    )
+    p_summary.add_argument(
+        "--include-table",
+        dest="include_table",
+        action="store_true",
+        default=False,
+        help="Inline the full calibrated line table instead of pointing to it.",
+    )
+    p_summary.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_summary.set_defaults(func=cmd_report_summary)

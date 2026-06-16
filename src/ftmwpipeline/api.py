@@ -1632,6 +1632,26 @@ def report_table(
     return Pipeline.open(file_path).report_table(fmt=fmt, output=output)
 
 
+def report_summary(
+    file_path: Union[str, Path],
+    *,
+    output: Optional[Union[str, Path]] = None,
+    include_table: bool = False,
+) -> str:
+    """Render the methods + results summary document (report Level 2).
+
+    Equivalent to :meth:`Pipeline.report_summary`.  Interleaves static,
+    code-versioned algorithm prose with the per-experiment numbers from each
+    persisted stage, as Markdown; renders the persisted record (does not
+    recompute).  Requires ``review_run`` to have built the final-products table.
+    The full line list is the companion Level-1 export unless *include_table*
+    inlines it.
+    """
+    return Pipeline.open(file_path).report_summary(
+        output=output, include_table=include_table
+    )
+
+
 def review_accept(
     file_path: Union[str, Path],
     window_id: int,

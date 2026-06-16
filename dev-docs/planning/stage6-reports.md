@@ -326,9 +326,20 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   provenance header), JSON, or a LaTeX `booktabs` table (state-aware caption);
   stdout by default. Dual-interface (`Pipeline.report_table` / `api.report_table`
   / `_internal/report_impl.py`); cross-interface + serializer tests landed.
-- **L2 `report summary`** (Markdown methods+results) — next.
+- **L2 `report summary` — done.** `report summary <file> [--output PATH]
+  [--include-table]` renders a Markdown methods + results document: static,
+  code-versioned per-stage algorithm prose (a methods section living in the
+  report module, not pulled from these planning docs) interleaved with the
+  per-experiment numbers read from each persisted stage (start time, FT band +
+  bin spacing, noise σ_x, τ_maj ± σ_τ and per-band τ, peak counts by class,
+  planned/fit window counts, χ²ᵣ summary, thaw/replan/rescue tallies, ε ± σ_ε,
+  σ_floor, calibration state). The full line list is the companion L1 export by
+  default; `--include-table` inlines it. A strongest-lines table (top 10 by SNR)
+  always appears inline. Assembled once from the persisted record, never
+  recomputed. Dual-interface (`Pipeline.report_summary` / `api.report_summary` /
+  `_internal/report_impl.py`); cross-interface + renderer tests landed.
 - **L3 `report full`** (dependency-light linked HTML per-window site reusing the
-  `fit show` figure renderer).
+  `fit show` figure renderer) — next.
 Catalog match an optional `--catalog` cross-reference input to each (the
 fast-follow after core L1, sharing the tolerance helper with Step 2's pull
 surface): a geometric frequency-proximity annotation against a user catalog

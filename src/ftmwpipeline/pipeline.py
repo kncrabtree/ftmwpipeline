@@ -79,7 +79,7 @@ from ._internal.stage6_impl import (
     set_sigma_floor_impl,
     split_peak_impl,
 )
-from ._internal.report_impl import report_table_impl
+from ._internal.report_impl import report_summary_impl, report_table_impl
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
     calibrate_timebase_impl,
@@ -1875,6 +1875,36 @@ class Pipeline:
             The rendered table.
         """
         return report_table_impl(self.filepath, fmt=fmt, output=output)
+
+    def report_summary(
+        self,
+        *,
+        output: Optional[Union[str, Path]] = None,
+        include_table: bool = False,
+    ) -> str:
+        """Render the methods + results summary document (report Level 2).
+
+        Interleaves static, code-versioned algorithm prose with the
+        per-experiment numbers read from each persisted stage, as Markdown.
+        Renders the persisted record; does not recompute. Requires
+        :meth:`review_run` to have built the final-products table.
+
+        Parameters
+        ----------
+        output :
+            When given, also write the rendered Markdown to this path.
+        include_table :
+            Inline the full calibrated line table rather than a summary plus a
+            pointer to the companion ``report_table`` export.
+
+        Returns
+        -------
+        str
+            The rendered Markdown document.
+        """
+        return report_summary_impl(
+            self.filepath, output=output, include_table=include_table
+        )
 
     def review_accept(
         self,
