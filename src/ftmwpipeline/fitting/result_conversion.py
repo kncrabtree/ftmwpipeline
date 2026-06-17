@@ -464,21 +464,29 @@ def window_outcome_to_fitting_result(
     )
     result.fitted_peaks = fitted_peaks
 
-    # Per-window parameter covariance.
+    # Per-window parameter covariance. Label it by the covariance's *actual*
+    # dimension rather than trusting ``inner.fit_tau``: a cleanup / knockout
+    # refit can lock tau (its covariance then has no tau row) while ``fit_tau``
+    # stays True from the upstream tau-free determination, which used to drop the
+    # matrix on a shape mismatch. Try the tau-present and tau-absent labelings
+    # and keep whichever matches, so a valid covariance is always persisted.
     cov = inner.covariance
     if cov is not None:
-        labels = build_covariance_param_labels(
-            n_peaks=len(inner.peaks),
-            fit_tau=bool(inner.fit_tau),
-            baseline_order=inner.baseline_order,
-        )
-        n = len(labels)
         cov_arr = np.asarray(cov, dtype=float)
-        if cov_arr.ndim == 2 and cov_arr.shape == (n, n):
-            result.covariance = cov_arr
-            result.covariance_param_labels = labels
-        # else: shape mismatch (unexpected layout / fit-internals drift);
-        # leave both None rather than persist a mislabelled matrix.
+        if cov_arr.ndim == 2 and cov_arr.shape[0] == cov_arr.shape[1]:
+            dim = cov_arr.shape[0]
+            for tau_flag in (bool(inner.fit_tau), not bool(inner.fit_tau)):
+                labels = build_covariance_param_labels(
+                    n_peaks=len(inner.peaks),
+                    fit_tau=tau_flag,
+                    baseline_order=inner.baseline_order,
+                )
+                if len(labels) == dim:
+                    result.covariance = cov_arr
+                    result.covariance_param_labels = labels
+                    break
+            # else: genuine layout mismatch -- leave both None rather than
+            # persist a mislabelled matrix.
 
     # Shared parameter: the per-window decay constant. ``fitted`` records
     # whether tau was determined by an LSQ that included it as a free

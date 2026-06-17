@@ -1355,8 +1355,16 @@ def fit_window(
             [weighted_sol.real[keep], weighted_sol.imag[keep]], axis=0
         )
         jtj = data_jac.T @ data_jac
-        covariance = cast(np.ndarray, np.linalg.inv(jtj))
-    except np.linalg.LinAlgError:
+        try:
+            covariance = cast(np.ndarray, np.linalg.inv(jtj))
+        except np.linalg.LinAlgError:
+            # Singular normal matrix (degenerate / collinear parameters, e.g. an
+            # unresolved over-split pair): fall back to the Moore-Penrose
+            # pseudo-inverse so a covariance is always persisted rather than
+            # dropped. Only this branch differs from a plain inverse -- a
+            # well-conditioned window takes the inv path unchanged.
+            covariance = cast(np.ndarray, np.linalg.pinv(jtj))
+    except (np.linalg.LinAlgError, ValueError):
         covariance = None
     # _parameter_errors slices the peak (front) and tau (3*k) diagonal
     # entries; baseline coefficients sit after them, so the slicing is

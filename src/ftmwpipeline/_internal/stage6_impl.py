@@ -24,7 +24,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 import h5py
 import numpy as np
@@ -46,23 +46,22 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
-from ..io.frequency_calibration_serialization import (
-    load_frequency_calibration_from_hdf5,
-    save_frequency_calibration_to_hdf5,
-)
-from ..io.stage6_review_serialization import (
-    load_stage6_review_from_hdf5,
-    load_stage6_review_from_file,
-    save_stage6_review_to_hdf5,
-)
 from ..fitting.peak_model import ModelPeak
 from ..fitting.peak_model import molecular_frequency as _molecular_frequency
 from ..fitting.peak_model import sideband_sign
 from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, DEFAULT_SHAPE_ERROR_KAPPA
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
+from ..io.frequency_calibration_serialization import (
+    load_frequency_calibration_from_hdf5,
+    save_frequency_calibration_to_hdf5,
+)
+from ..io.stage6_review_serialization import (
+    load_stage6_review_from_file,
+    load_stage6_review_from_hdf5,
+    save_stage6_review_to_hdf5,
+)
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage2_impl import _update_stage_completion
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # annotation-only imports (PEP 563 lazy)
     from ..core.data_structures import FitWindow
@@ -1396,6 +1395,15 @@ def refit_window_core(
             len(thawed_held_peaks),
         )
 
+    # Carry the construction provenance forward. A refit replays/edits the
+    # window rather than rebuilding it, so the original conservative add-one
+    # ``audit_trail`` and ``rescue_events`` stay the truthful record of how the
+    # peak set arose; the joint-refit core would otherwise leave them empty
+    # (e.g. an auto-merged VIF-collapse window, which is why such windows showed
+    # no add-one history in the report).
+    new_wf.audit_trail = list(wf.audit_trail or [])
+    new_wf.rescue_events = list(getattr(wf, "rescue_events", []) or [])
+
     return new_wf
 
 
@@ -2356,8 +2364,8 @@ def _compute_attention_reasons(
     list of AttentionReason
         Advisory flags, possibly empty.
     """
-    from .stage5_impl import amplitude_vif
     from ..fitting.validation import shape_error_fraction, snr_aware_chi2_pass
+    from .stage5_impl import amplitude_vif
 
     reasons: List[AttentionReason] = []
 
