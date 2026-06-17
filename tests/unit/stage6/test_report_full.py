@@ -478,35 +478,28 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     pages = list((out / "windows").glob("*.html"))
     figures = list((out / "figures").glob("*.png"))
     assert pages and figures
-    # One PNG per panel (overview/re/im/mag/hist) per window, plus an optional
-    # correlation heatmap (``_corr.png``) for each window that has a persisted
-    # covariance, plus the one site-level summary-distributions figure.
-    # Per-window panels carry "_window_"; the correlation heatmap ends "_corr.png";
-    # the per-distribution histograms are "<stem>_hist_<slug>.png" (no "_window_").
+    # Per window: the four zoomed panels (re/im/mag/hist) plus an aligned
+    # full-spectrum context ("_ctx.png") and an optional correlation heatmap
+    # ("_corr.png"). The index has one full-spectrum overview ("<stem>_overview.png")
+    # and one figure per distribution group ("<stem>_hist_<slug>.png").
+    zoom_suffixes = ("_re.png", "_im.png", "_mag.png", "_hist.png")
     corr_pngs = [f for f in figures if f.name.endswith("_corr.png")]
-    panel_pngs = [
-        f for f in figures if "_window_" in f.name and not f.name.endswith("_corr.png")
-    ]
-    # The index overview is "<stem>_overview.png"; the per-window panel overview
-    # is "<stem>_window_NNN_overview.png" (carries "_window_").
+    panel_pngs = [f for f in figures if f.name.endswith(zoom_suffixes)]
+    ctx_pngs = [f for f in figures if f.name.endswith("_ctx.png")]
     overview_pngs = [
         f
         for f in figures
         if f.name.endswith("_overview.png") and "_window_" not in f.name
     ]
-    hist_pngs = [
-        f
-        for f in figures
-        if "_window_" not in f.name and not f.name.endswith("_overview.png")
-    ]
-    assert len(panel_pngs) == len(pages) * len(_PANEL_ORDER)
+    hist_pngs = [f for f in figures if "_hist_" in f.name]
+    assert len(panel_pngs) == len(pages) * len(zoom_suffixes)
+    assert len(ctx_pngs) == len(pages)  # one aligned context figure per window
     assert len(corr_pngs) <= len(pages)
     # The index full-spectrum overview.
     assert len(overview_pngs) == 1
     # Distribution histograms (SNR / fit-quality / σ_f budget; pull only with a
     # catalog), one figure per group that has data.
     assert 1 <= len(hist_pngs) <= 4
-    assert all("_hist_" in f.name for f in hist_pngs)
     # The Level-2 methods page is built and linked from the index summary.
     assert (out / "methods.html").exists()
     _assert_wellformed(out)
@@ -538,13 +531,14 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert 'class="equation"' in methods
 
     page = pages[0].read_text()
+    # An aligned full-spectrum context figure sits over the window-map strip.
+    assert "<h2>Spectrum context</h2>" in page
+    assert "_ctx.png" in page
     assert "<h2>Fit</h2>" in page
-    # The fit detail is a responsive grid of separate panel images, not one
-    # figure: overview full-width on top, then the Re/Im/|X|/hist grid.
+    # The fit detail is a responsive grid of the zoomed Re/Im/|X|/hist panels.
     assert 'class="fit-panels"' in page
     assert 'class="panel-grid"' in page
-    assert page.count("<img") >= len(_PANEL_ORDER)
-    for panel in _PANEL_ORDER:
+    for panel in ("re", "im", "mag", "hist"):
         assert f"_{panel}.png" in page
     assert "Fitted lines" in page
     assert "Parameter covariance" in page

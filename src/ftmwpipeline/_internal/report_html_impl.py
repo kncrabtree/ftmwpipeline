@@ -517,27 +517,29 @@ def _index_summary_block(model: Any, products: FinalProducts) -> List[str]:
 
 
 # Symmetric horizontal margin (figure fraction) shared by the overview figure's
-# axes box and the window-map SVG, so the two line up and the edge frequency
-# labels have room. The figure drops its y-axis labels (scale shown as a ymax
-# annotation) so the plot flushes equally to both edges.
-_OVERVIEW_MARGIN_FRAC = 0.045
+# axes box and the window-map SVG, so the two line up. The margin is wide enough
+# that the y-axis tick labels and title fit in the left gutter without shifting
+# the (symmetric) axes box, and the edge frequency labels have room.
+_OVERVIEW_MARGIN_FRAC = 0.07
 
 
 def _plot_index_overview(
     bundle: Any,
     attention_ranges: List[Tuple[float, float]],
     *,
+    highlight_range: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = None,
     figsize: Tuple[float, float] = (13.0, 2.8),
 ) -> Any:
-    """Full-spectrum magnitude for the index, with attention windows shaded.
+    """Full-spectrum magnitude, with attention windows (and optionally one
+    current window) shaded.
 
-    Renders the same trimmed active-FT magnitude the per-window overview panel
-    draws, but across the whole band and marking every review-flagged window, so
-    the index opens on a picture of where the lines (and the windows needing
-    attention) sit. The y-axis carries no labels (the scale is annotated as the
-    peak magnitude) so the data flushes symmetrically to both edges, and the
-    axes box uses :data:`_OVERVIEW_MARGIN_FRAC` so it lines up with the window
-    map below it. Returns a matplotlib Figure.
+    Renders the trimmed active-FT magnitude across the whole band. The index
+    shades every review-flagged window (``attention_ranges``); a per-window
+    page passes ``highlight_range`` to mark the current window in green. The
+    axes box uses a fixed symmetric :data:`_OVERVIEW_MARGIN_FRAC` so it lines up
+    with the window-map strip beneath it, with the y-axis labels living in the
+    left gutter. Returns a matplotlib Figure.
     """
     import matplotlib.pyplot as plt
 
@@ -550,8 +552,8 @@ def _plot_index_overview(
         f, spec = f[m], spec[m]
     mag = np.abs(spec) * amp
     fig = plt.figure(figsize=figsize)
-    # Explicit axes box: symmetric L/R margins, room below for the x labels and
-    # above for the title.
+    # Explicit axes box: symmetric L/R margins (the y labels sit in the left
+    # gutter), room below for the x labels and above for the title.
     ax = fig.add_axes(
         (_OVERVIEW_MARGIN_FRAC, 0.22, 1.0 - 2.0 * _OVERVIEW_MARGIN_FRAC, 0.60)
     )
@@ -560,29 +562,22 @@ def _plot_index_overview(
         ax.axvspan(
             min(lo_w, hi_w), max(lo_w, hi_w), color="tab:orange", alpha=0.35, zorder=0
         )
+    if highlight_range is not None:
+        hlo, hhi = highlight_range
+        ax.axvspan(
+            min(hlo, hhi), max(hlo, hhi), color="tab:green", alpha=0.45, zorder=1
+        )
     if f.size:
         ax.set_xlim(float(f[0]), float(f[-1]))
     ax.set_ylim(bottom=0.0)
     ax.set_xlabel("frequency (MHz)", fontsize=9)
-    # Drop the y tick labels (the long unit string is what pushed the left
-    # margin out); keep short inner ticks as a scale cue and annotate the peak.
-    ax.tick_params(axis="y", direction="in", length=3, labelleft=False)
-    ax.tick_params(axis="x", labelsize=8)
-    ymax = float(mag.max()) if mag.size else 0.0
-    suffix = f" {bundle.units_label}" if bundle.units_label else ""
-    ax.text(
-        0.005,
-        0.97,
-        f"|X| max = {_g(ymax, 3)}{suffix}",
-        transform=ax.transAxes,
-        ha="left",
-        va="top",
-        fontsize=8,
-        color="0.35",
-    )
-    title = "full spectrum"
-    if attention_ranges:
-        title += " (attention windows shaded)"
+    suffix = f" ({bundle.units_label})" if bundle.units_label else ""
+    ax.set_ylabel(f"|X(f)|{suffix}", fontsize=9)
+    ax.tick_params(axis="both", labelsize=8)
+    if title is None:
+        title = "full spectrum"
+        if attention_ranges:
+            title += " (attention windows shaded)"
     ax.set_title(title, fontsize=10)
     return fig
 
@@ -1287,6 +1282,7 @@ def _window_page(
         List[Tuple[int, float, float, int, Optional[float], bool, bool]]
     ] = None,
     band: Optional[Tuple[float, float]] = None,
+    context_name: Optional[str] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -1304,10 +1300,18 @@ def _window_page(
         )
     nav.append("</div>")
 
-    # Window-map quick-nav (same strip as the index, this window highlighted).
-    winmap: List[str] = []
+    # Spectrum-context section: the aligned full-spectrum figure (this window
+    # highlighted) over the window-map quick-nav strip -- the same overview/strip
+    # pairing the index uses, so they line up here too.
+    context: List[str] = []
     if nav_rows and band is not None:
-        winmap = [
+        context.append("<h2>Spectrum context</h2>")
+        if context_name is not None:
+            context.append(
+                f'<div class="spectrum-overview"><img src="../figures/'
+                f'{context_name}" alt="full-spectrum context"></div>'
+            )
+        context.append(
             _window_map_svg(
                 nav_rows,
                 band,
@@ -1315,10 +1319,12 @@ def _window_page(
                 link_prefix="",
                 thumb_prefix="../figures/",
                 current_id=window_id,
-            ),
+            )
+        )
+        context.append(
             '<p class="winmap-hint">Quick-nav: each bar is a fit window (orange = '
-            "attention, outlined = this one); hover for details, click to jump.</p>",
-        ]
+            "attention, outlined = this one); hover for details, click to jump.</p>"
+        )
 
     body: List[str] = [
         *nav,
@@ -1332,8 +1338,8 @@ def _window_page(
         f"<li><strong>&tau;:</strong> {_esc(_md_num(tau, 4))} &micro;s</li>",
         f"<li><strong>Shape:</strong> {_esc(shape)}</li>",
         "</ul>",
-        *winmap,
         *_attention_block(status),
+        *context,
         "<h2>Fit</h2>",
         *_fit_panels_block(panel_files),
         "<h2>Fitted lines</h2>",
@@ -1348,7 +1354,7 @@ def _window_page(
         *_ledger_block(ledger),
         *_decision_block(decisions),
     ]
-    if winmap:
+    if context:
         body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
     return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
 
@@ -1513,13 +1519,33 @@ def report_full_impl(
     # --- per-window pages + figures -------------------------------------
     for idx, wid in enumerate(page_ids):
         wf = win_fits[wid]
-        # Each window's detail is a set of standalone panel figures (overview /
-        # re / im / mag / hist) the page lays out in a flexbox.
+        # The full-spectrum context is rendered in the index-aligned style (this
+        # window highlighted) so it lines up with the window-map strip beneath
+        # it; the per-window panels supply the zoomed re / im / mag / hist.
+        context_name: Optional[str] = None
+        if nav_band is not None:
+            try:
+                ctx_fig = _plot_index_overview(
+                    bundle,
+                    [],
+                    highlight_range=_window_range(wf),
+                    title="full-spectrum context (this window highlighted)",
+                )
+                context_name = f"{stem}_window_{wid:03d}_ctx.png"
+                ctx_fig.savefig(str(out_root / "figures" / context_name), dpi=dpi)
+                plt.close(ctx_fig)
+            except (ValueError, KeyError):
+                context_name = None
+        # The zoomed panels (the overview panel is superseded by the aligned
+        # context figure above, so it is not saved).
         panels = render_fit_panels_impl(path, wid, bundle=bundle)
         panel_files: Dict[str, str] = {}
         for panel in _PANEL_ORDER:
             pfig = panels.get(panel)
             if pfig is None:
+                continue
+            if panel == "overview":
+                plt.close(pfig)
                 continue
             fname = _panel_figure_name(stem, wid, panel)
             pfig.savefig(str(out_root / "figures" / fname), dpi=dpi)
@@ -1569,6 +1595,7 @@ def report_full_impl(
             merges=merges_by_window.get(wid),
             nav_rows=index_rows,
             band=nav_band,
+            context_name=context_name,
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
