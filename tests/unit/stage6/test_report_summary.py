@@ -233,6 +233,35 @@ def _model(**over) -> _SummaryModel:
         n_windows_gate_checked=228,
         n_windows_fail_gate=0,
         worst_windows=[],
+        chi2r_pctiles={
+            "p10": 0.94,
+            "p25": 1.11,
+            "p50": 1.37,
+            "p75": 1.8,
+            "p90": 2.91,
+            "max": 34.7,
+        },
+        eps_pctiles={
+            "p10": 0.0,
+            "p25": 0.0,
+            "p50": 0.0,
+            "p75": 0.0,
+            "p90": 0.04,
+            "max": 2.13,
+        },
+        sigma_stat_pctiles={
+            "p10": 0.45,
+            "p25": 0.81,
+            "p50": 3.62,
+            "p75": 8.6,
+            "p90": 11.0,
+            "max": 26.2,
+        },
+        snr_bin_rows=[
+            ("<100", 245, 1.3, 1.95, 5.41, 1.0, 0.0),
+            ("100-1k", 31, 4.14, 9.68, 34.7, 1.0, 0.67),
+            ("1k-10k", 1, 8.62, 8.62, 8.62, 1.0, 0.096),
+        ],
         timebase_n_used=11,
         timebase_lattice_g=640.0,
         median_sigma_stat=2.16,
@@ -401,6 +430,20 @@ def test_stage3_peak_strength_and_density_tables():
     assert "747 promoted at SNR ≥ 3" in md
     assert "**Spectral density**" in md
     assert "| Band (MHz) | Candidates | Promoted |" in md
+
+
+def test_stage5_fit_quality_distributions():
+    md = _render_markdown(_model(), "x.ftmw", include_table=False)
+    # The percentile table covers chi2r, the gate statistic, and freq precision.
+    assert "**Fit-quality distributions**" in md
+    assert "| reduced χ² (per window) |" in md
+    assert "| shape-error ε (% per bin) |" in md
+    assert "| freq precision σ_stat (kHz) |" in md
+    # The SNR-binned breakdown shows the chi2r ~ SNR^2 structure + per-bin gate.
+    assert "**Fit quality by window brightness (SNR_max)**" in md
+    assert "| SNR_max | windows | median χ²ᵣ | p90 | max | pass | median ε(%) |" in md
+    assert "| <100 |" in md
+    assert "| 100-1k |" in md
 
 
 def test_stage4_window_distribution_table():

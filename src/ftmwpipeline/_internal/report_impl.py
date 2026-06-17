@@ -567,6 +567,12 @@ class _SummaryModel:
     n_windows_gate_checked: int = 0
     n_windows_fail_gate: int = 0
     worst_windows: List[Tuple[int, float, float, float]] = field(default_factory=list)
+    chi2r_pctiles: Dict[str, float] = field(default_factory=dict)
+    eps_pctiles: Dict[str, float] = field(default_factory=dict)
+    sigma_stat_pctiles: Dict[str, float] = field(default_factory=dict)
+    snr_bin_rows: List[Tuple[str, int, float, float, float, float, float]] = field(
+        default_factory=list
+    )
     # Stage 6
     timebase_n_used: Optional[int] = None
     timebase_lattice_g: Optional[float] = None
@@ -879,19 +885,45 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         snr_by_window[p.window_id] = max(
             snr_by_window.get(p.window_id, 0.0), float(p.snr)
         )
-    n_gate_checked = 0
-    fails: List[Tuple[int, float, float, float]] = []
+    # One row per gate-checked window: (wid, chi2r, snr_max, eps, passed, bin).
+    gate_rows: List[Tuple[int, float, float, float, bool, str]] = []
     for wf in fit.window_fits:
         wid = wf.window_id
         c2 = wf.reduced_chi2
         snr_max = None if wid is None else snr_by_window.get(wid)
         if wid is None or c2 is None or not math.isfinite(float(c2)) or snr_max is None:
             continue
-        n_gate_checked += 1
-        if not snr_aware_chi2_pass(float(c2), snr_max):
-            eps = shape_error_fraction(float(c2), snr_max)
-            fails.append((int(wid), float(c2), snr_max, float(eps)))
-    fails.sort(key=lambda t: t[3], reverse=True)
+        eps = float(shape_error_fraction(float(c2), snr_max))
+        passed = snr_aware_chi2_pass(float(c2), snr_max)
+        gate_rows.append((int(wid), float(c2), snr_max, eps, passed, _snr_bin(snr_max)))
+    n_gate_checked = len(gate_rows)
+    fails = sorted(
+        ((r[0], r[1], r[2], r[3]) for r in gate_rows if not r[4]),
+        key=lambda t: t[3],
+        reverse=True,
+    )
+
+    # Fit-quality distributions for the Stage 5 statistics tables.
+    chi2r_pctiles = _percentiles([r[1] for r in gate_rows])
+    eps_pctiles = _percentiles([100.0 * r[3] for r in gate_rows])  # percent
+    snr_bin_rows: List[Tuple[str, int, float, float, float, float, float]] = []
+    for label in _SNR_BIN_LABELS:
+        brows = [r for r in gate_rows if r[5] == label]
+        if not brows:
+            continue
+        c2s = np.asarray([r[1] for r in brows], dtype=float)
+        epss = np.asarray([100.0 * r[3] for r in brows], dtype=float)
+        snr_bin_rows.append(
+            (
+                label,
+                len(brows),
+                float(np.median(c2s)),
+                float(np.percentile(c2s, 90)),
+                float(c2s.max()),
+                float(np.mean([1.0 if r[4] else 0.0 for r in brows])),
+                float(np.median(epss)),
+            )
+        )
 
     diag = fit.diagnostics or {}
     n_spurs_gated = int(fit.parameters.get("n_spurs_gated", 0) or 0)
@@ -905,6 +937,8 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         for p in products.peaks
         if p.sigma_stat_khz is not None and math.isfinite(float(p.sigma_stat_khz))
     ]
+    # The Stage 5 NLS frequency-precision distribution (statistical sigma).
+    sigma_stat_pctiles = _percentiles(s_stat)
     s_eps = [
         float(p.sigma_eps_khz)
         for p in products.peaks
@@ -1013,6 +1047,10 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         n_windows_gate_checked=n_gate_checked,
         n_windows_fail_gate=len(fails),
         worst_windows=fails[:5],
+        chi2r_pctiles=chi2r_pctiles,
+        eps_pctiles=eps_pctiles,
+        sigma_stat_pctiles=sigma_stat_pctiles,
+        snr_bin_rows=snr_bin_rows,
         timebase_n_used=timebase_n_used,
         timebase_lattice_g=timebase_lattice_g,
         median_sigma_stat=float(np.median(s_stat)) if s_stat else None,
@@ -1047,6 +1085,21 @@ def _percentiles(values: List[float]) -> Dict[str, float]:
         "p90": float(p90),
         "max": float(arr.max()),
     }
+
+
+# Brightest-in-window SNR bins -- the natural breakdown for a fit whose χ²ᵣ
+# tracks SNR² (noise-dominated bulk -> shape-floor-limited bright cores). Mirrors
+# the cross-fixture harness / `_internal/stage5_validation_impl.py`.
+_SNR_BIN_EDGES = (100.0, 1000.0, 10000.0)
+_SNR_BIN_LABELS = ("<100", "100-1k", "1k-10k", ">=10k")
+
+
+def _snr_bin(snr_max: float) -> str:
+    """Label the brightest-in-window SNR into one of :data:`_SNR_BIN_LABELS`."""
+    for edge, label in zip(_SNR_BIN_EDGES, _SNR_BIN_LABELS):
+        if snr_max < edge:
+            return label
+    return _SNR_BIN_LABELS[-1]
 
 
 def assemble_summary_model(file_path: Union[Path, str]) -> _SummaryModel:
@@ -1919,6 +1972,38 @@ def _render_markdown(
         f"(κ = {DEFAULT_SHAPE_ERROR_KAPPA}, F = {DEFAULT_CHI2R_NOISE_FLOOR}).",
         "",
     ]
+    # Per-window fit-quality distributions.
+    fit_detail += _percentile_table(
+        "Fit-quality distributions",
+        "Metric",
+        [
+            ("reduced χ² (per window)", m.chi2r_pctiles),
+            ("shape-error ε (% per bin)", m.eps_pctiles),
+            ("freq precision σ_stat (kHz)", m.sigma_stat_pctiles),
+        ],
+    )
+    # The χ²ᵣ ~ SNR² structure: χ²ᵣ and the gate broken out by window brightness.
+    if m.snr_bin_rows:
+        fit_detail.append("**Fit quality by window brightness (SNR_max)**")
+        fit_detail.append("")
+        rows = [
+            [
+                label,
+                f"{n:,}",
+                _g(med, 3),
+                _g(p90, 3),
+                _g(mx, 3),
+                f"{pass_rate*100:.0f}%",
+                _g(med_eps, 2),
+            ]
+            for (label, n, med, p90, mx, pass_rate, med_eps) in m.snr_bin_rows
+        ]
+        fit_detail += _md_table(
+            ["SNR_max", "windows", "median χ²ᵣ", "p90", "max", "pass", "median ε(%)"],
+            rows,
+            [":---", "---:", "---:", "---:", "---:", "---:", "---:"],
+        )
+        fit_detail.append("")
     _section(
         L,
         "Stage 5 -- per-window fitting",
