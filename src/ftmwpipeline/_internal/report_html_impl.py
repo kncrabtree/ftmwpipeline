@@ -193,6 +193,10 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .hist { margin: 0.5rem 0 1.25rem; }
 .hist img { max-width: 100%; width: auto; height: auto; border: 1px solid #d0d4d9;
             background: #fff; }
+/* The index full-spectrum overview spans the content width. */
+.spectrum-overview { margin: 0.5rem 0 1.25rem; }
+.spectrum-overview img { width: 100%; height: auto; border: 1px solid #d0d4d9;
+                         background: #fff; }
 /* Narrow viewport: shrink the gutters and table type so nothing overflows. */
 @media (max-width: 700px) {
   main.report { padding: 1rem 1rem 3rem; }
@@ -491,6 +495,48 @@ def _index_summary_block(model: Any, products: FinalProducts) -> List[str]:
         "</ul>",
         f"<p>{_esc(cal_phrase)}</p>",
     ]
+
+
+def _plot_index_overview(
+    bundle: Any,
+    attention_ranges: List[Tuple[float, float]],
+    *,
+    figsize: Tuple[float, float] = (13.0, 2.8),
+) -> Any:
+    """Full-spectrum magnitude for the index, with attention windows shaded.
+
+    Renders the same trimmed active-FT magnitude the per-window overview panel
+    draws, but across the whole band and marking every review-flagged window, so
+    the index opens on a picture of where the lines (and the windows needing
+    attention) sit. Returns a matplotlib Figure.
+    """
+    import matplotlib.pyplot as plt
+
+    f = np.asarray(bundle.frequencies, dtype=float)
+    spec = np.asarray(bundle.complex_spectrum)
+    amp = float(bundle.amplitude_scale)
+    if bundle.trim_mhz is not None:
+        lo, hi = float(min(bundle.trim_mhz)), float(max(bundle.trim_mhz))
+        m = (f >= lo) & (f <= hi)
+        f, spec = f[m], spec[m]
+    fig = plt.figure(figsize=figsize, constrained_layout=True)
+    ax = fig.add_subplot(111)
+    ax.plot(f, np.abs(spec) * amp, color="0.3", lw=0.5)
+    for lo_w, hi_w in attention_ranges:
+        ax.axvspan(
+            min(lo_w, hi_w), max(lo_w, hi_w), color="tab:orange", alpha=0.35, zorder=0
+        )
+    if f.size:
+        ax.set_xlim(float(f[0]), float(f[-1]))
+    ax.set_xlabel("frequency (MHz)", fontsize=9)
+    suffix = f" {bundle.units_label}" if bundle.units_label else ""
+    ax.set_ylabel(f"|X(f)|{suffix}", fontsize=9)
+    title = "full spectrum"
+    if attention_ranges:
+        title += " (attention windows shaded)"
+    ax.set_title(title, fontsize=10)
+    ax.tick_params(labelsize=8)
+    return fig
 
 
 def _index_window_table(
@@ -866,7 +912,55 @@ _AUDIT_LEGEND = (
 )
 
 
-def _audit_block(wf: Any, center_mhz: float, sideband_sign: float) -> List[str]:
+_MERGE_LEGEND = (
+    '<p class="audit-legend"><em>This window was rebuilt by an automatic '
+    "degenerate-pair <strong>merge</strong> (VIF collapse): each row is a "
+    "near-coincident line pair whose amplitudes were too correlated to resolve "
+    "(variance-inflation factor VIF), replaced by the single merged line. The "
+    "joint refit that follows a merge does not carry an add-one-peak history, so "
+    "the merge record below is the provenance.</em></p>"
+)
+
+
+def _merge_block(merges: List[Dict[str, Any]]) -> List[str]:
+    """Render a window's VIF-collapse merge records (the auto-merge provenance).
+
+    Surfaced when the add-one-peak ``audit_trail`` is empty because the window
+    was rebuilt by an auto-merge joint refit; the records come from the Stage 5
+    ``vif_collapse`` diagnostics keyed by window.
+    """
+    rows: List[List[str]] = []
+    for m in merges:
+        vif = (
+            f"{_g(m.get('vif_a'), 3)} / {_g(m.get('vif_b'), 3)}"
+            if m.get("vif_a") is not None
+            else "&mdash;"
+        )
+        rows.append(
+            [
+                _esc(_freq(m.get("merged_frequency_mhz"))),
+                _esc(_freq(m.get("frequency_a_mhz"))),
+                _esc(_freq(m.get("frequency_b_mhz"))),
+                _esc(_g(m.get("separation_res"), 3)),
+                vif,
+            ]
+        )
+    head = [
+        "Merged f (MHz)",
+        "Line A (MHz)",
+        "Line B (MHz)",
+        "Separation (res. elem.)",
+        "VIF A / B",
+    ]
+    return [_table(head, rows, cls="audit"), _MERGE_LEGEND]
+
+
+def _audit_block(
+    wf: Any,
+    center_mhz: float,
+    sideband_sign: float,
+    merges: Optional[List[Dict[str, Any]]] = None,
+) -> List[str]:
     """Render the conservative add-one-peak history as a legible table.
 
     One row per :class:`AuditStep`: the decision, the candidate's molecular
@@ -874,14 +968,17 @@ def _audit_block(wf: Any, center_mhz: float, sideband_sign: float) -> List[str]:
     the &chi;&sup2; it moved from / to, the F-test p-value, and -- most
     importantly -- the plain-language ``reason`` (which the raw fit-log text
     drops). A legend below explains the decision keywords and points at the final
-    model so a seed/seed-blend sequence's outcome is unambiguous.
+    model so a seed/seed-blend sequence's outcome is unambiguous. When the
+    window has no add-one history because it was rebuilt by an auto-merge,
+    *merges* (its VIF-collapse records) are rendered instead.
     """
     audit = getattr(wf, "audit_trail", None) or []
     if not audit:
+        if merges:
+            return _merge_block(merges)
         return [
             "<p><em>No add-one-peak history was recorded for this window "
-            "(e.g. an auto-merged or user-edited window rebuilt by a joint "
-            "refit).</em></p>"
+            "(e.g. a user-edited window rebuilt by a joint refit).</em></p>"
         ]
     rows: List[List[str]] = []
     k = 0
@@ -999,13 +1096,13 @@ def _window_page(
     status: Optional[WindowReviewStatus],
     ledger: List[LedgerCandidate],
     decisions: List[DecisionLogEntry],
-    report_text: str,
     panel_files: Dict[str, str],
     cov_heatmap_name: Optional[str],
     sideband: Any,
     prev_id: Optional[int],
     next_id: Optional[int],
     catalog_matches: Optional[List[Optional[CatalogMatch]]] = None,
+    merges: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -1042,13 +1139,13 @@ def _window_page(
         _window_peak_table(peaks, uname, uval, catalog_matches),
         "<h2>Parameter covariance</h2>",
         *_covariance_block(wf, cov_heatmap_name, sideband),
-        "<h2>Fit history (add-one-peak)</h2>",
-        *_audit_block(wf, 0.5 * (float(lo) + float(hi)), _sideband_sign(sideband)),
+        "<h2>Fit history</h2>",
+        *_audit_block(
+            wf, 0.5 * (float(lo) + float(hi)), _sideband_sign(sideband), merges
+        ),
         "<h2>Ledger candidates</h2>",
         *_ledger_block(ledger),
         *_decision_block(decisions),
-        "<h2>Fit log</h2>",
-        f"<pre>{_esc(report_text)}</pre>",
     ]
     return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
 
@@ -1113,11 +1210,7 @@ def report_full_impl(
         plot_summary_histograms,
     )
     from .report_impl import _render_markdown
-    from .stage5_impl import (
-        _resolve_detail_bundle,
-        fit_window_report_text,
-        render_fit_panels_impl,
-    )
+    from .stage5_impl import _resolve_detail_bundle, render_fit_panels_impl
     from .stage6_impl import get_candidate_ledger_impl
 
     key = str(windows).lower()
@@ -1174,6 +1267,16 @@ def report_full_impl(
     for d in review.decision_log:
         decisions_by_window.setdefault(int(d.window_id), []).append(d)
 
+    # Auto-merge (VIF-collapse) provenance, keyed by window: a merged window's
+    # joint refit carries no add-one-peak history, so this is its fit history.
+    merges_by_window: Dict[int, List[Dict[str, Any]]] = {}
+    for rec in (
+        (bundle.fit.diagnostics or {}).get("vif_collapse", {}).get("collapses", [])
+    ):
+        wid_rec = rec.get("window_id")
+        if wid_rec is not None:
+            merges_by_window.setdefault(int(wid_rec), []).append(rec)
+
     out_root = Path(output_dir)
     (out_root / "assets").mkdir(parents=True, exist_ok=True)
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
@@ -1211,9 +1314,6 @@ def report_full_impl(
             cov_heatmap_name = _panel_figure_name(stem, wid, "corr")
             hfig.savefig(str(out_root / "figures" / cov_heatmap_name), dpi=dpi)
             plt.close(hfig)
-        # The add-one-peak audit is rendered as its own structured table on the
-        # page; keep the <pre> fit log to the header + peak-parameter dump.
-        report_text = fit_window_report_text(path, wid, bundle=bundle, show_audit=False)
         ledger = get_candidate_ledger_impl(path, wid)
         prev_id = page_ids[idx - 1] if idx > 0 else None
         next_id = page_ids[idx + 1] if idx + 1 < len(page_ids) else None
@@ -1233,13 +1333,13 @@ def report_full_impl(
             status=review.window_statuses.get(wid),
             ledger=ledger,
             decisions=decisions_by_window.get(wid, []),
-            report_text=report_text,
             panel_files=panel_files,
             cov_heatmap_name=cov_heatmap_name,
             sideband=bundle.sideband,
             prev_id=prev_id,
             next_id=next_id,
             catalog_matches=win_matches,
+            merges=merges_by_window.get(wid),
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
@@ -1266,6 +1366,17 @@ def report_full_impl(
     (out_root / "methods.html").write_text(_summary_page(stem, methods_html, leftover))
 
     # --- index ----------------------------------------------------------
+    # Full-spectrum overview figure (attention windows shaded).
+    attention_ranges = [_window_range(win_fits[w]) for w in sorted(attention_ids)]
+    overview_name: Optional[str] = None
+    try:
+        ov_fig = _plot_index_overview(bundle, attention_ranges)
+        overview_name = f"{stem}_overview.png"
+        ov_fig.savefig(str(out_root / "figures" / overview_name), dpi=dpi)
+        plt.close(ov_fig)
+    except (ValueError, KeyError):
+        overview_name = None
+
     page_set = set(page_ids)
     index_rows = [
         (
@@ -1286,6 +1397,15 @@ def report_full_impl(
         '<p><a href="methods.html">Methods &amp; results &rarr;</a> '
         "&mdash; per-stage algorithm notes, parameters, statistics tables, and "
         "distribution histograms.</p>",
+        *(
+            [
+                "<h2>Spectrum</h2>",
+                f'<div class="spectrum-overview"><img src="figures/'
+                f'{overview_name}" alt="full-spectrum overview"></div>',
+            ]
+            if overview_name is not None
+            else []
+        ),
         "<h2>Windows</h2>",
         f"<p>{len(page_ids):,} of {len(all_ids):,} windows have a detail page "
         f"(<code>{_esc(key)}</code> filter); {len(attention_ids):,} flagged for "

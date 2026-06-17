@@ -234,6 +234,31 @@ def test_audit_block_frequency_and_k():
     assert "100.500000" in block
 
 
+def test_audit_block_falls_back_to_merge_history():
+    from ftmwpipeline._internal.report_html_impl import _audit_block
+
+    wf = _FakeWf(None, None, [])
+    wf.audit_trail = []  # an auto-merged window carries no add-one history
+    merges = [
+        {
+            "window_id": 222,
+            "frequency_a_mhz": 37974.470,
+            "frequency_b_mhz": 37974.511,
+            "vif_a": 45.2,
+            "vif_b": 42.7,
+            "separation_res": 0.469,
+            "merged_frequency_mhz": 37974.506,
+        }
+    ]
+    block = "\n".join(_audit_block(wf, 100.0, -1.0, merges))
+    assert "VIF" in block and "Merged f (MHz)" in block
+    assert "37974.506" in block  # the merged frequency
+    assert "merge" in block.lower()
+    # Without merges the empty-history note is shown instead.
+    empty = "\n".join(_audit_block(wf, 100.0, -1.0, None))
+    assert "No add-one-peak history" in empty
+
+
 def test_plot_summary_histograms():
     from ftmwpipeline.visualization.fit_detail import plot_summary_histograms
 
@@ -462,9 +487,22 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     panel_pngs = [
         f for f in figures if "_window_" in f.name and not f.name.endswith("_corr.png")
     ]
-    hist_pngs = [f for f in figures if "_window_" not in f.name]
+    # The index overview is "<stem>_overview.png"; the per-window panel overview
+    # is "<stem>_window_NNN_overview.png" (carries "_window_").
+    overview_pngs = [
+        f
+        for f in figures
+        if f.name.endswith("_overview.png") and "_window_" not in f.name
+    ]
+    hist_pngs = [
+        f
+        for f in figures
+        if "_window_" not in f.name and not f.name.endswith("_overview.png")
+    ]
     assert len(panel_pngs) == len(pages) * len(_PANEL_ORDER)
     assert len(corr_pngs) <= len(pages)
+    # The index full-spectrum overview.
+    assert len(overview_pngs) == 1
     # Distribution histograms (SNR / fit-quality / σ_f budget; pull only with a
     # catalog), one figure per group that has data.
     assert 1 <= len(hist_pngs) <= 4
@@ -478,6 +516,9 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "Final line list" in idx
     assert 'href="windows/window_' in idx  # links to the window pages
     assert 'href="methods.html"' in idx
+    # The full-spectrum overview is embedded on the index.
+    assert "<h2>Spectrum</h2>" in idx
+    assert "_overview.png" in idx
     methods = (out / "methods.html").read_text()
     # Histograms are interleaved beside their tables (not one trailing figure).
     assert 'class="hist"' in methods
@@ -498,7 +539,9 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "Fitted lines" in page
     assert "Parameter covariance" in page
     assert "Ledger candidates" in page
-    assert "<h2>Fit log</h2>" in page
+    assert "<h2>Fit history</h2>" in page
+    # The raw fit-log dump was removed (it duplicated the structured tables).
+    assert "Fit log" not in page
 
 
 @pytest.mark.integration
