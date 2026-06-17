@@ -251,6 +251,64 @@ class TestApplySnrSurvivalPrune:
         assert ps["pruned"] == []
         assert ps["dropped_window_ids"] == []
 
+    def test_fixpoint_reprunes_survivor_pushed_below_floor(self):
+        """A survivor the refit pushes below the floor is re-classified and
+        removed on the next pass (the single-pass classify left it sub-floor)."""
+        w1 = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=10.0),  # safe
+                _make_peak(1001.0, snr=3.3),  # above floor at first classify
+                _make_peak(1002.0, snr=3.19),  # dust
+            ],
+        )
+
+        def _refit(wf: FittingResult, remove: list[float]) -> FittingResult:
+            # Removing the 3.19 dust depresses the 1001.0 line to 3.1 (a blend
+            # artifact): a freshly sub-floor survivor the old code never rechecked.
+            kept = [p for p in wf.fitted_peaks if float(p.frequency_mhz) not in remove]
+            new = FittingResult(window_id=wf.window_id)
+            new.fitted_peaks = [
+                _make_peak(p.frequency_mhz, 3.1 if p.frequency_mhz == 1001.0 else p.snr)
+                for p in kept
+            ]
+            return new
+
+        fit = _make_fit([w1])
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_refit)
+        freqs = [p.frequency_mhz for p in fit.window_fits[0].fitted_peaks]
+        assert freqs == [1000.0]  # both 1002.0 (dust) and 1001.0 (revealed) gone
+        assert fit.diagnostics["peak_survival"]["n_pruned"] == 2
+
+    def test_borderline_neighbor_recovers_after_dust_removed(self):
+        """Removing one dust line per pass lets a borderline neighbour recover on
+        the refit (deblend) instead of being swept out with the initial dust."""
+        w1 = _make_window(
+            1,
+            [
+                _make_peak(1000.0, snr=2.0),  # true dust
+                _make_peak(1001.0, snr=3.1),  # sub-floor only because of the dust
+            ],
+        )
+
+        def _refit(wf: FittingResult, remove: list[float]) -> FittingResult:
+            kept = [p for p in wf.fitted_peaks if float(p.frequency_mhz) not in remove]
+            new = FittingResult(window_id=wf.window_id)
+            # With the dust gone the neighbour deblends up to 4.0 (above floor).
+            new.fitted_peaks = [
+                _make_peak(p.frequency_mhz, 4.0 if p.frequency_mhz == 1001.0 else p.snr)
+                for p in kept
+            ]
+            return new
+
+        fit = _make_fit([w1])
+        apply_snr_survival_prune(fit, self.FLOOR, refit_window=_refit)
+        freqs = [p.frequency_mhz for p in fit.window_fits[0].fitted_peaks]
+        # The window survives with the recovered line; a one-shot batch prune of
+        # all initial dust would have dropped the whole window.
+        assert freqs == [1001.0]
+        assert fit.diagnostics["peak_survival"]["n_pruned"] == 1
+
     def test_pruned_records_carry_expected_fields(self):
         """Each pruned record has window_id, frequency_mhz, and snr."""
         w1 = _make_window(42, [_make_peak(1234.5, snr=1.5, window_id=42)])

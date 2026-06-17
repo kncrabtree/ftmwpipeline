@@ -306,6 +306,53 @@ def _is_survival_dust(peak: FittedPeak, floor: float) -> bool:
     return snr < floor
 
 
+def _survival_prune_window(
+    wf: FittingResult,
+    floor: float,
+    refit_window: Callable[[FittingResult, List[float]], FittingResult],
+    pruned_records: List[Dict[str, Any]],
+) -> Tuple[Optional[FittingResult], int]:
+    """Prune one window's sub-floor dust to a fixpoint; return (result, n_refits).
+
+    Removes the single lowest-SNR dust peak, refits the survivors, and
+    **re-classifies** -- because the refit re-estimates the survivors free of
+    the removed line, a peak that was sub-floor only because a neighbour stole
+    its amplitude can recover and is then kept, while a survivor that the refit
+    pushes below the floor is caught on the next pass (the single-pass classify
+    left such a survivor sub-floor). Removing one peak per pass (not the whole
+    initial dust set at once) is the over-pruning-cascade guard: each borderline
+    line gets a fresh refit before its own removal is considered.
+
+    Returns ``(result, n_refits)``; ``result`` is ``None`` when the window
+    cascades to empty (its last remaining line is itself dust) and should be
+    dropped. ``n_refits`` is 0 when the window had no dust (``result is wf``).
+    """
+    current = wf
+    n_refits = 0
+    while True:
+        peaks = current.fitted_peaks
+        dust = [p for p in peaks if _is_survival_dust(p, floor)]
+        if not dust:
+            return current, n_refits
+        worst = min(dust, key=lambda p: cast(float, p.snr))
+        pruned_records.append(
+            {
+                "window_id": (
+                    int(current.window_id) if current.window_id is not None else -1
+                ),
+                "frequency_mhz": float(worst.frequency_mhz),
+                "snr": float(cast(float, worst.snr)),  # finite by _is_survival_dust
+            }
+        )
+        if len(peaks) == 1:
+            # The lone remaining line is itself dust -> drop the window. (A
+            # pre-existing K=0 window has no dust and never reaches here, so the
+            # window-construction signal is preserved.)
+            return None, n_refits
+        current = refit_window(current, [float(worst.frequency_mhz)])
+        n_refits += 1
+
+
 def apply_snr_survival_prune(
     fit: SpectrumFit,
     floor: float,
@@ -316,15 +363,20 @@ def apply_snr_survival_prune(
 
     For each window, classifies its automatic-origin peaks with finite
     ``snr < floor`` as dust (``origin == "user"`` peaks are immune; ``None`` /
-    NaN SNR is kept). Then, per window:
+    NaN SNR is kept) and prunes to a fixpoint (see
+    :func:`_survival_prune_window`):
 
     - **no dust** -> the window is untouched;
-    - **all peaks are dust** (and the window held peaks) -> the window is
-      dropped from ``window_fits``;
-    - **partial dust** -> the window is **refitted** with the dust frequencies
-      removed via ``refit_window``, so the surviving peaks' point estimates,
-      covariance, and χ²ᵣ are re-estimated free of the removed peaks' influence
-      (not a marginal slice of the stale joint fit).
+    - **partial dust** -> the lowest-SNR dust line is removed and the survivors
+      are **refitted** via ``refit_window`` so their point estimates,
+      covariance, and χ²ᵣ are re-estimated free of the removed line (not a
+      marginal slice of the stale joint fit); the result is re-classified and
+      the process repeats until no survivor is sub-floor;
+    - **cascade to empty** -> a window whose every line is sub-floor (after the
+      refits) is dropped from ``window_fits``.
+
+    Re-classifying after each refit closes the single-pass gap where a refit
+    pushed a *surviving* peak below the floor and nothing re-checked it.
 
     Finally rebuilds ``fit.fitted_peaks`` sorted ascending by ``frequency_mhz``
     and records the prune in ``fit.diagnostics["peak_survival"]``.
@@ -336,9 +388,9 @@ def apply_snr_survival_prune(
     floor :
         Absolute SNR survival floor; auto peaks below it are dust.
     refit_window :
-        Callable ``(wf, dust_freqs) -> FittingResult`` that re-fits ``wf`` with
-        the dust molecular frequencies removed and returns the new per-window
-        result. Invoked only for partially-pruned windows. In production this
+        Callable ``(wf, remove_freqs) -> FittingResult`` that re-fits ``wf``
+        with the given molecular frequencies removed and returns the new
+        per-window result. Invoked once per removed line. In production this
         routes through the bare in-memory window-refit core
         (:func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`), which
         reconstructs the frozen background, replays the baseline, and
@@ -349,39 +401,13 @@ def apply_snr_survival_prune(
 
     surviving_windows: List[FittingResult] = []
     for wf in fit.window_fits:
-        n_peaks_before = len(wf.fitted_peaks)
-        dust = [p for p in wf.fitted_peaks if _is_survival_dust(p, floor)]
-        for peak in dust:
-            pruned_records.append(
-                {
-                    "window_id": (
-                        int(wf.window_id) if wf.window_id is not None else -1
-                    ),
-                    "frequency_mhz": float(peak.frequency_mhz),
-                    "snr": float(cast(float, peak.snr)),  # finite by _is_survival_dust
-                }
-            )
-
-        if not dust:
-            # Nothing to prune (covers pre-existing K=0 windows too): keep as-is.
-            surviving_windows.append(wf)
-            continue
-
-        if len(dust) == n_peaks_before:
-            # Every peak the window held is dust -> drop the window. A
-            # pre-existing K=0 window has no dust and is handled above, so it is
-            # never dropped here (window-construction signal is preserved).
+        result, _ = _survival_prune_window(wf, floor, refit_window, pruned_records)
+        if result is None:
             dropped_window_ids.append(
                 int(wf.window_id) if wf.window_id is not None else -1
             )
-            continue
-
-        # Partial prune: re-fit the window with the dust removed so the
-        # survivors' parameters, covariance, and χ²ᵣ are honest (no stale
-        # slice of the joint fit that still includes the removed peaks).
-        dust_freqs = [float(p.frequency_mhz) for p in dust]
-        new_wf = refit_window(wf, dust_freqs)
-        surviving_windows.append(new_wf)
+        else:
+            surviving_windows.append(result)
 
     fit.window_fits = surviving_windows
 

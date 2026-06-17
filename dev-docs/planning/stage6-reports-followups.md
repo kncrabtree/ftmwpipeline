@@ -90,22 +90,23 @@ its tolerance/match helper.
   `dev-docs/research/stage5-cross-fixture/stage5_cross_fixture.py`
   (`ground_truth` / pull) is the reference to lift.
 
-## 3. Survival-prune floor recheck (deferred Stage 5 fix)
+## 3. Survival-prune floor recheck (deferred Stage 5 fix) — DONE
 
-`apply_snr_survival_prune` (`src/ftmwpipeline/_internal/stage5_impl.py`)
-classifies sub-floor auto peaks as dust **once**, then refits a partially-pruned
-window via `refit_window_core`; the refit can push a *surviving* peak below the
-3.2 floor and nothing re-checks it (observed: 2638 window 4, survivor at SNR
-3.169 after a neighbour at 3.19 is removed). Fix = **iterate to a fixpoint**
-(re-classify after each refit), guarding against an over-pruning cascade.
+`apply_snr_survival_prune` now iterates to a fixpoint: it removes the single
+lowest-SNR sub-floor line, refits the survivors, and **re-classifies** until no
+survivor is sub-floor. This closes the single-pass gap (a refit could push a
+*surviving* peak below the 3.2 floor with nothing re-checking it) and the
+one-line-per-pass removal is the over-pruning-cascade guard (a borderline
+neighbour whose SNR was depressed by the dust recovers on the refit instead of
+being swept out). New unit tests pin both behaviours.
 
-- Changes Stage 5 output → needs the **7-fixture re-baseline**. Tooling and
-  fresh keeper fixtures are ready: run
-  `dev-docs/research/stage5-cross-fixture/stage5_cross_fixture.py`
-  per-fixture in parallel (cap `OMP_NUM_THREADS`), then a `--reuse` rollup.
-  Compare on-vs-off; this *will* shift the affected windows' lines (unlike the
-  covariance/audit metadata fixes, which did not).
-- See [[stage5-survival-prune-refit-recheck]]; flagged in ROADMAP.
+7-fixture re-baseline (off-vs-on, `scratch/item3-rebaseline/`): window counts
+identical on all 7; only the dense fixtures shed sub-floor survivors (363 −3,
+655 −6, every removed peak < 3.2σ), recall unchanged on both ground-truth
+fixtures (1512 0.417, 655 0.512), and tail χ² slightly improves (655 p95
+7.22→6.97). Accepted.
+
+- See [[stage5-survival-prune-refit-recheck]].
 
 ## 4. Smaller polish follow-ons
 
