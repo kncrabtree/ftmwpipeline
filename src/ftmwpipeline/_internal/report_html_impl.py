@@ -35,6 +35,7 @@ from ..core.data_structures import (
 )
 from ..fitting.peak_model import sideband_sign as _sideband_sign
 from ..io.stage6_review_serialization import load_stage6_review_from_file
+from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
 from .report_impl import (
     _CAL_STATE_PHRASE,
     _amplitude_unit,
@@ -120,6 +121,8 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
 .badge { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 3px;
          font-size: 0.78rem; background: #f0d9a8; color: #5a4300;
          margin-left: 0.35rem; }
+/* Catalog proximity-match badge (a cross-check echo, not an assignment). */
+.badge.cat { background: #cfe8d2; color: #1d5026; margin-left: 0; cursor: help; }
 .nav { margin: 1rem 0; }
 .summary li { margin: 0.15rem 0; }
 /* Fit panels: the overview spans full width on top; the Re/Im model+residual
@@ -289,9 +292,15 @@ def _md_to_html(md: str) -> str:
     return "\n".join(out)
 
 
-def _summary_distribution_specs(model: Any) -> List[Tuple[str, str, List[float]]]:
-    """The (title, xlabel, values) histogram specs drawn from the L2 model."""
-    return [
+def _summary_distribution_specs(
+    model: Any, xref: Optional[CatalogCrossRef] = None
+) -> List[Tuple[str, str, List[float]]]:
+    """The (title, xlabel, values) histogram specs drawn from the L2 model.
+
+    When a catalog cross-reference is supplied, the σ_f pull distribution is
+    appended (the calibration surface: ~unit-normal when σ_f is honest).
+    """
+    specs = [
         ("Reduced χ² per window", "χ²_r", model.chi2r_values),
         ("Shape error ε per window", "ε (% / bin)", model.eps_values),
         ("Precision σ_stat", "σ_stat (kHz)", model.sigma_stat_values),
@@ -299,6 +308,11 @@ def _summary_distribution_specs(model: Any) -> List[Tuple[str, str, List[float]]
         ("Budget σ_f", "σ_f (kHz)", model.sigma_f_values),
         ("Promoted-peak SNR", "SNR", model.snr_values_promoted),
     ]
+    if xref is not None and xref.pull_values:
+        specs.append(
+            ("Catalog pull (f_fit−f_cat)/σ_f", "pull", xref.pull_values)
+        )
+    return specs
 
 
 def _summary_page(stem: str, md_html: str, hist_name: Optional[str]) -> str:
@@ -396,26 +410,42 @@ def _index_window_table(
     )
 
 
-def _index_final_table(products: FinalProducts) -> str:
+def _catalog_cell(m: Optional[CatalogMatch]) -> str:
+    """A catalog-match badge cell: the opaque label, Δ/pull on hover, or empty.
+
+    Proximity annotation only -- the label is echoed as a cross-check, never as
+    an assignment.
+    """
+    if m is None:
+        return ""
+    title = f"Δ {_g(m.delta_khz, 3)} kHz, pull {_g(m.pull, 2)}"
+    return f'<span class="badge cat" title="{_esc(title)}">{_esc(m.label)}</span>'
+
+
+def _index_final_table(
+    products: FinalProducts, matches: Optional[List[Optional[CatalogMatch]]] = None
+) -> str:
     uname, uval = _amplitude_unit(products)
+    with_cat = matches is not None
     rows: List[List[str]] = []
-    for p in products.peaks:
+    for i, p in enumerate(products.peaks):
         wid = p.window_id
         win_cell = (
             f'<a href="windows/{_window_page_name(wid)}">{wid}</a>'
             if wid is not None
             else ""
         )
-        rows.append(
-            [
-                _esc(_freq(p.frequency_mhz)),
-                _esc(_g(p.sigma_f_khz, 3)),
-                _esc(_scaled(p.amplitude, uval)),
-                _esc(_md_num(p.snr, 3)),
-                _esc(p.origin),
-                win_cell,
-            ]
-        )
+        row = [
+            _esc(_freq(p.frequency_mhz)),
+            _esc(_g(p.sigma_f_khz, 3)),
+            _esc(_scaled(p.amplitude, uval)),
+            _esc(_md_num(p.snr, 3)),
+            _esc(p.origin),
+            win_cell,
+        ]
+        if with_cat:
+            row.append(_catalog_cell(matches[i]))  # type: ignore[index]
+        rows.append(row)
     head = [
         "Frequency (MHz)",
         "&sigma;<sub>f</sub> (kHz)",
@@ -424,6 +454,8 @@ def _index_final_table(products: FinalProducts) -> str:
         "Origin",
         "Window",
     ]
+    if with_cat:
+        head.append("Catalog")
     return _table(head, rows, cls="final-list")
 
 
@@ -432,39 +464,45 @@ def _index_final_table(products: FinalProducts) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _window_peak_table(peaks: List[FinalPeak], uname: str, uval: float) -> str:
+def _window_peak_table(
+    peaks: List[FinalPeak],
+    uname: str,
+    uval: float,
+    matches: Optional[List[Optional[CatalogMatch]]] = None,
+) -> str:
     """The per-window fitted-lines table.
 
     Each peak carries a display letter (assigned low-to-high frequency, shared
     with the figure annotations and the fit-log table). The calibrated
     frequency, amplitude, phase, and SNR are shown in concise ``value(unc)``
     notation (uncertainty in last-digit units) -- the raw frequency and the
-    broken-out &sigma; columns stay in plain fixed/scientific form.
+    broken-out &sigma; columns stay in plain fixed/scientific form. When a
+    catalog cross-reference is supplied, a proximity-match badge column is added.
     """
     from ..visualization.fit_detail import frequency_sorted_labels
 
+    with_cat = matches is not None
     letters = frequency_sorted_labels([float(p.frequency_mhz) for p in peaks])
     rows: List[List[str]] = []
-    for lbl, p in zip(letters, peaks):
+    for i, (lbl, p) in enumerate(zip(letters, peaks)):
         sigma_f_mhz = None if p.sigma_f_khz is None else float(p.sigma_f_khz) / 1e3
         amp = None if p.amplitude is None else float(p.amplitude) / uval
         amp_err = None if p.amplitude_error is None else float(p.amplitude_error) / uval
-        rows.append(
-            [
-                _esc(lbl),
-                _esc(_concise(float(p.frequency_mhz), sigma_f_mhz)),
-                _esc(_freq(p.frequency_raw_mhz)),
-                _esc(_g(p.sigma_f_khz, 3)),
-                _esc(_g(p.sigma_stat_khz, 3)),
-                _esc(_g(p.sigma_eps_khz, 3)),
-                _esc("" if amp is None else _concise(amp, amp_err)),
-                _esc(
-                    "" if p.phase is None else _concise(float(p.phase), p.phase_error)
-                ),
-                _esc("" if p.snr is None else _concise(float(p.snr), p.snr_error)),
-                _esc(p.origin),
-            ]
-        )
+        row = [
+            _esc(lbl),
+            _esc(_concise(float(p.frequency_mhz), sigma_f_mhz)),
+            _esc(_freq(p.frequency_raw_mhz)),
+            _esc(_g(p.sigma_f_khz, 3)),
+            _esc(_g(p.sigma_stat_khz, 3)),
+            _esc(_g(p.sigma_eps_khz, 3)),
+            _esc("" if amp is None else _concise(amp, amp_err)),
+            _esc("" if p.phase is None else _concise(float(p.phase), p.phase_error)),
+            _esc("" if p.snr is None else _concise(float(p.snr), p.snr_error)),
+            _esc(p.origin),
+        ]
+        if with_cat:
+            row.append(_catalog_cell(matches[i]))  # type: ignore[index]
+        rows.append(row)
     head = [
         "Peak",
         "Calibrated f (MHz)",
@@ -477,6 +515,8 @@ def _window_peak_table(peaks: List[FinalPeak], uname: str, uval: float) -> str:
         "SNR",
         "Origin",
     ]
+    if with_cat:
+        head.append("Catalog")
     return _table(head, rows, cls="peak-list")
 
 
@@ -853,6 +893,7 @@ def _window_page(
     sideband: Any,
     prev_id: Optional[int],
     next_id: Optional[int],
+    catalog_matches: Optional[List[Optional[CatalogMatch]]] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -886,7 +927,7 @@ def _window_page(
         "<h2>Fit</h2>",
         *_fit_panels_block(panel_files),
         "<h2>Fitted lines</h2>",
-        _window_peak_table(peaks, uname, uval),
+        _window_peak_table(peaks, uname, uval, catalog_matches),
         "<h2>Parameter covariance</h2>",
         *_covariance_block(wf, cov_heatmap_name, sideband),
         "<h2>Fit history (add-one-peak)</h2>",
@@ -911,6 +952,8 @@ def report_full_impl(
     output_dir: Union[Path, str],
     windows: str = "all",
     dpi: int = 110,
+    catalog: Optional[Union[Path, str]] = None,
+    catalog_n_sigma: float = 3.0,
 ) -> str:
     """Assemble the Level-3 linked-HTML report site and return the index path.
 
@@ -926,6 +969,14 @@ def report_full_impl(
         lists every window, hyperlinking the ones with a generated page.
     dpi :
         Resolution for the per-window matplotlib figures.
+    catalog :
+        Optional frequency-catalog path. When given, a proximity-match badge
+        column is added to the index and per-window line tables, the methods
+        page gains the catalog cross-reference + pull-calibration section, and a
+        σ_f pull histogram is added to the distributions (label echo only, never
+        an assignment).
+    catalog_n_sigma :
+        Catalog match tolerance in combined sigmas (default ``3``).
 
     Returns
     -------
@@ -935,8 +986,9 @@ def report_full_impl(
     Raises
     ------
     ValueError
-        If *windows* is unknown, or no final-products table is present (the
-        Stage 6 ``review run`` consolidation has not been run).
+        If *windows* is unknown, no final-products table is present (the Stage 6
+        ``review run`` consolidation has not been run), or *catalog* is given
+        but unreadable / empty.
     """
     import matplotlib
 
@@ -976,6 +1028,16 @@ def report_full_impl(
     bundle = _resolve_detail_bundle(path)
     stem = bundle.file_stem
     uname, uval = _amplitude_unit(products)
+
+    # Catalog cross-reference (optional): matches are parallel to
+    # products.peaks; key them by peak identity so the same FinalPeak objects in
+    # peaks_by_window resolve to their match without re-running the test.
+    cross_ref = load_cross_ref(products.peaks, catalog, catalog_n_sigma)
+    match_by_peak: Dict[int, Optional[CatalogMatch]] = {}
+    if cross_ref is not None:
+        match_by_peak = {
+            id(p): cross_ref.matches[i] for i, p in enumerate(products.peaks)
+        }
 
     # Available windows (those with attached context), ascending.
     win_fits = {
@@ -1043,11 +1105,17 @@ def report_full_impl(
         ledger = get_candidate_ledger_impl(path, wid)
         prev_id = page_ids[idx - 1] if idx > 0 else None
         next_id = page_ids[idx + 1] if idx + 1 < len(page_ids) else None
+        win_peaks = peaks_by_window.get(wid, [])
+        win_matches = (
+            [match_by_peak.get(id(p)) for p in win_peaks]
+            if cross_ref is not None
+            else None
+        )
         page_html = _window_page(
             stem=stem,
             window_id=wid,
             wf=wf,
-            peaks=peaks_by_window.get(wid, []),
+            peaks=win_peaks,
             uname=uname,
             uval=uval,
             status=review.window_statuses.get(wid),
@@ -1059,12 +1127,17 @@ def report_full_impl(
             sideband=bundle.sideband,
             prev_id=prev_id,
             next_id=next_id,
+            catalog_matches=win_matches,
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
     # --- methods + results page (Level-2 content, HTML-ified, + histograms) ---
-    methods_md = _render_markdown(model, path, include_table=False)
-    hist_fig = plot_summary_histograms(_summary_distribution_specs(model))
+    methods_md = _render_markdown(
+        model, path, include_table=False, cross_ref=cross_ref
+    )
+    hist_fig = plot_summary_histograms(
+        _summary_distribution_specs(model, cross_ref)
+    )
     hist_name: Optional[str] = None
     if hist_fig is not None:
         hist_name = f"{stem}_summary_histograms.png"
@@ -1102,8 +1175,18 @@ def report_full_impl(
         _index_window_table(index_rows),
         "<h2>Final line list</h2>",
         f"<p>All {len(products.peaks):,} calibrated lines "
-        f"(amplitude in {_esc(uname)}).</p>",
-        _index_final_table(products),
+        f"(amplitude in {_esc(uname)})"
+        + (
+            f"; {cross_ref.n_matched:,} flagged against "
+            f"<code>{_esc(Path(cross_ref.catalog_path).name)}</code> "
+            f"within {cross_ref.n_sigma:g}&sigma; (proximity only)."
+            if cross_ref is not None
+            else "."
+        )
+        + "</p>",
+        _index_final_table(
+            products, cross_ref.matches if cross_ref is not None else None
+        ),
     ]
     index_html = _page(f"{stem} report", body, css_href="assets/style.css")
     index_path = out_root / "index.html"

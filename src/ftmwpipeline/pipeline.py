@@ -1856,6 +1856,8 @@ class Pipeline:
         *,
         fmt: str = "csv",
         output: Optional[Union[str, Path]] = None,
+        catalog: Optional[Union[str, Path]] = None,
+        catalog_n_sigma: float = 3.0,
     ) -> str:
         """Render the calibrated final-products table (report Level 1).
 
@@ -1869,19 +1871,33 @@ class Pipeline:
             ``"csv"`` (default), ``"json"``, or ``"latex"``.
         output :
             When given, also write the rendered text to this path.
+        catalog :
+            Optional frequency-catalog path; when given, each line is
+            proximity-flagged against the nearest catalog entry (label echo
+            only, never an assignment) and the match is added to the output.
+        catalog_n_sigma :
+            Catalog match tolerance in combined sigmas (default ``3``).
 
         Returns
         -------
         str
             The rendered table.
         """
-        return report_table_impl(self.filepath, fmt=fmt, output=output)
+        return report_table_impl(
+            self.filepath,
+            fmt=fmt,
+            output=output,
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
+        )
 
     def report_summary(
         self,
         *,
         output: Optional[Union[str, Path]] = None,
         include_table: bool = False,
+        catalog: Optional[Union[str, Path]] = None,
+        catalog_n_sigma: float = 3.0,
     ) -> str:
         """Render the methods + results summary document (report Level 2).
 
@@ -1897,6 +1913,11 @@ class Pipeline:
         include_table :
             Inline the full calibrated line table rather than a summary plus a
             pointer to the companion ``report_table`` export.
+        catalog :
+            Optional frequency-catalog path; adds a catalog cross-reference and
+            σ_f pull-calibration section (label echo only, never an assignment).
+        catalog_n_sigma :
+            Catalog match tolerance in combined sigmas (default ``3``).
 
         Returns
         -------
@@ -1904,7 +1925,11 @@ class Pipeline:
             The rendered Markdown document.
         """
         return report_summary_impl(
-            self.filepath, output=output, include_table=include_table
+            self.filepath,
+            output=output,
+            include_table=include_table,
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
         )
 
     def report_full(
@@ -1912,6 +1937,8 @@ class Pipeline:
         *,
         output_dir: Union[str, Path],
         windows: str = "all",
+        catalog: Optional[Union[str, Path]] = None,
+        catalog_n_sigma: float = 3.0,
     ) -> str:
         """Assemble the linked-HTML per-window report site (report Level 3).
 
@@ -1928,6 +1955,12 @@ class Pipeline:
         windows :
             ``"all"`` (a page per window) or ``"attention"`` (pages only for
             review-flagged windows). The index always lists every window.
+        catalog :
+            Optional frequency-catalog path; adds proximity-match badges to the
+            line tables, a catalog + pull-calibration section to the methods
+            page, and a pull histogram (label echo only, never an assignment).
+        catalog_n_sigma :
+            Catalog match tolerance in combined sigmas (default ``3``).
 
         Returns
         -------
@@ -1935,7 +1968,11 @@ class Pipeline:
             Path to the generated ``index.html``.
         """
         return report_full_impl(
-            self.filepath, output_dir=output_dir, windows=windows
+            self.filepath,
+            output_dir=output_dir,
+            windows=windows,
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
         )
 
     def review_accept(

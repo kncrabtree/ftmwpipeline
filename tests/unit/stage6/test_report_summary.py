@@ -550,6 +550,60 @@ def test_missing_products_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Catalog cross-reference section + pull calibration
+# ---------------------------------------------------------------------------
+
+
+def _xref(products, n_sigma=3.0):
+    from ftmwpipeline._internal.catalog_xref import CatalogEntry, build_cross_ref
+
+    # A catalog entry on each peak frequency (exact) -> every line matches.
+    cat = [
+        CatalogEntry(p.frequency_mhz, 0.0, f"L{i}")
+        for i, p in enumerate(products.peaks)
+    ]
+    return build_cross_ref(products.peaks, cat, catalog_path="/x/ref.csv", n_sigma=n_sigma)
+
+
+def test_catalog_section_and_summary_bullet():
+    prod = _products(n=4)
+    xref = _xref(prod)
+    md = _render_markdown(
+        _model(products=prod), "x.ftmw", include_table=False, cross_ref=xref
+    )
+    assert "## Catalog cross-reference" in md
+    assert "**Catalog match:**" in md  # summary bullet
+    assert "ref.csv" in md
+    assert "4 of 4 lines (100%)" in md
+    assert "Pull calibration" in md
+    assert "Largest pulls" in md
+    assert "never an assignment" in md
+
+
+def test_no_catalog_section_when_absent():
+    md = _render_markdown(_model(), "x.ftmw", include_table=False)
+    assert "## Catalog cross-reference" not in md
+    assert "**Catalog match:**" not in md
+
+
+def test_pull_interpretation_flags_optimistic():
+    from ftmwpipeline._internal.catalog_xref import CatalogEntry, build_cross_ref
+    from ftmwpipeline._internal.report_impl import _pull_interpretation
+
+    # Lines sit far (in sigma) from the catalog -> wide pull spread -> optimistic.
+    peaks = _products(n=6).peaks
+    cat = [
+        CatalogEntry(p.frequency_mhz - (0.01 if i % 2 else -0.01), 0.0, f"L{i}")
+        for i, p in enumerate(peaks)
+    ]  # +-10 kHz with sigma_f 1 kHz -> pull ~ +-10
+    xref = build_cross_ref(peaks, cat, catalog_path="c", n_sigma=100.0)
+    text = _pull_interpretation(xref)
+    assert "optimistic" in text
+
+
+
+
+# ---------------------------------------------------------------------------
 # Cross-interface on the small 2638 fixture
 # ---------------------------------------------------------------------------
 

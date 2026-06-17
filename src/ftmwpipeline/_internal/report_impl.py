@@ -43,6 +43,7 @@ from ..fitting.validation import (
 )
 from ..io.peak_serialization import load_peaks_from_hdf5
 from ..io.stage6_review_serialization import load_stage6_review_from_file
+from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
 
 VALID_FORMATS = ("csv", "json", "latex")
 
@@ -183,9 +184,12 @@ def _unit_latex(name: str) -> str:
 
 
 def _provenance(
-    products: FinalProducts, file_path: Union[Path, str], amp_unit: str
+    products: FinalProducts,
+    file_path: Union[Path, str],
+    amp_unit: str,
+    xref: Optional[CatalogCrossRef] = None,
 ) -> List[Tuple[str, str]]:
-    return [
+    out = [
         ("experiment", Path(file_path).stem),
         ("calibration_state", products.calibration_state),
         (
@@ -198,6 +202,21 @@ def _provenance(
         ("amplitude_unit", amp_unit),
         ("n_peaks", str(len(products.peaks))),
     ]
+    if xref is not None:
+        out += [
+            ("catalog", Path(xref.catalog_path).name),
+            ("catalog_n_sigma", f"{xref.n_sigma:g}"),
+            (
+                "catalog_matched",
+                f"{xref.n_matched}/{xref.n_total} ({xref.match_rate * 100:.0f}%)",
+            ),
+        ]
+        if xref.pull_mean is not None:
+            std = "n/a" if xref.pull_std is None else f"{xref.pull_std:.2f}"
+            out.append(
+                ("catalog_pull_mean_std", f"{xref.pull_mean:.2f} / {std}")
+            )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +242,21 @@ _CSV_COLUMNS = [
 ]
 
 
+# Proximity-annotation columns appended when a ``--catalog`` is supplied.
+_CATALOG_COLUMNS = [
+    "catalog_label",
+    "catalog_freq_mhz",
+    "catalog_delta_khz",
+    "catalog_pull",
+]
+
+
+def _catalog_csv_cells(m: Optional[CatalogMatch]) -> List[str]:
+    if m is None:
+        return ["", "", "", ""]
+    return [m.label, _freq(m.frequency_mhz), _g(m.delta_khz), _g(m.pull)]
+
+
 def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
     return [
         _freq(p.frequency_mhz),
@@ -243,13 +277,21 @@ def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
     ]
 
 
-def _render_csv(products: FinalProducts, file_path: Union[Path, str]) -> str:
+def _render_csv(
+    products: FinalProducts,
+    file_path: Union[Path, str],
+    xref: Optional[CatalogCrossRef] = None,
+) -> str:
     uname, uval = _amplitude_unit(products)
     lines = ["# ftmwpipeline final products"]
-    lines += [f"# {k}: {v}" for k, v in _provenance(products, file_path, uname)]
-    lines.append(",".join(_CSV_COLUMNS))
-    for p in products.peaks:
-        lines.append(",".join(_csv_row(p, uval)))
+    lines += [f"# {k}: {v}" for k, v in _provenance(products, file_path, uname, xref)]
+    cols = list(_CSV_COLUMNS) + (_CATALOG_COLUMNS if xref is not None else [])
+    lines.append(",".join(cols))
+    for i, p in enumerate(products.peaks):
+        row = _csv_row(p, uval)
+        if xref is not None:
+            row = row + _catalog_csv_cells(xref.matches[i])
+        lines.append(",".join(row))
     return "\n".join(lines) + "\n"
 
 
@@ -261,8 +303,26 @@ def _jnum(x: Optional[float]) -> Optional[float]:
     return xf if math.isfinite(xf) else None
 
 
-def _peak_json(p: FinalPeak, unit_value: float) -> dict:
+def _catalog_json(m: Optional[CatalogMatch]) -> Optional[dict]:
+    if m is None:
+        return None
     return {
+        "label": m.label,
+        "frequency_mhz": _jnum(m.frequency_mhz),
+        "sigma_cat_khz": _jnum(m.sigma_cat_khz),
+        "delta_khz": _jnum(m.delta_khz),
+        "pull": _jnum(m.pull),
+    }
+
+
+def _peak_json(
+    p: FinalPeak,
+    unit_value: float,
+    match: Optional[CatalogMatch] = None,
+    *,
+    with_catalog: bool = False,
+) -> dict:
+    payload: Dict[str, Any] = {
         "frequency_mhz": _jnum(p.frequency_mhz),
         "sigma_f_khz": _jnum(p.sigma_f_khz),
         "sigma_stat_khz": _jnum(p.sigma_stat_khz),
@@ -281,28 +341,57 @@ def _peak_json(p: FinalPeak, unit_value: float) -> dict:
         "origin": p.origin,
         "window_id": p.window_id,
     }
+    if with_catalog:
+        payload["catalog"] = _catalog_json(match)
+    return payload
 
 
-def _render_json(products: FinalProducts, file_path: Union[Path, str]) -> str:
-    uname, uval = _amplitude_unit(products)
-    payload = {
-        "metadata": {
-            "experiment": Path(file_path).stem,
-            "calibration_state": products.calibration_state,
-            "epsilon": _jnum(products.epsilon),
-            "sigma_epsilon": _jnum(products.sigma_epsilon),
-            "sigma_floor_khz": _jnum(products.sigma_floor_khz),
-            "probe_freq_mhz": _jnum(products.probe_freq_mhz),
-            "sideband": products.sideband,
-            "amplitude_unit": uname,
-            "n_peaks": len(products.peaks),
-        },
-        "peaks": [_peak_json(p, uval) for p in products.peaks],
+def _catalog_metadata(xref: CatalogCrossRef) -> dict:
+    return {
+        "path": xref.catalog_path,
+        "n_sigma": xref.n_sigma,
+        "n_catalog": xref.n_catalog,
+        "n_matched": xref.n_matched,
+        "n_total": xref.n_total,
+        "match_rate": _jnum(xref.match_rate),
+        "pull_mean": _jnum(xref.pull_mean),
+        "pull_std": _jnum(xref.pull_std),
     }
-    return json.dumps(payload, indent=2) + "\n"
 
 
-def _latex_caption(products: FinalProducts, amp_unit: str) -> str:
+def _render_json(
+    products: FinalProducts,
+    file_path: Union[Path, str],
+    xref: Optional[CatalogCrossRef] = None,
+) -> str:
+    uname, uval = _amplitude_unit(products)
+    metadata: Dict[str, Any] = {
+        "experiment": Path(file_path).stem,
+        "calibration_state": products.calibration_state,
+        "epsilon": _jnum(products.epsilon),
+        "sigma_epsilon": _jnum(products.sigma_epsilon),
+        "sigma_floor_khz": _jnum(products.sigma_floor_khz),
+        "probe_freq_mhz": _jnum(products.probe_freq_mhz),
+        "sideband": products.sideband,
+        "amplitude_unit": uname,
+        "n_peaks": len(products.peaks),
+    }
+    if xref is not None:
+        metadata["catalog"] = _catalog_metadata(xref)
+        peaks = [
+            _peak_json(p, uval, xref.matches[i], with_catalog=True)
+            for i, p in enumerate(products.peaks)
+        ]
+    else:
+        peaks = [_peak_json(p, uval) for p in products.peaks]
+    return json.dumps({"metadata": metadata, "peaks": peaks}, indent=2) + "\n"
+
+
+def _latex_caption(
+    products: FinalProducts,
+    amp_unit: str,
+    xref: Optional[CatalogCrossRef] = None,
+) -> str:
     state = products.calibration_state
     if state == "self_calibrated":
         freq = (
@@ -316,44 +405,85 @@ def _latex_caption(products: FinalProducts, amp_unit: str) -> str:
             "Frequencies uncalibrated (free-running digitizer, no timebase "
             "self-calibration)"
         )
+    cat = ""
+    if xref is not None:
+        cat = (
+            f" The catalog column echoes the nearest entry within "
+            f"${xref.n_sigma:g}\\sigma$ (proximity only, not an assignment); "
+            f"{xref.n_matched}/{xref.n_total} lines matched."
+        )
     return (
         f"Fitted line list. {freq}; $\\sigma_f$ is the reported precision budget. "
         f"Uncertainties are in units of the last digit; amplitude in "
-        f"{_unit_latex(amp_unit)}."
+        f"{_unit_latex(amp_unit)}.{cat}"
     )
 
 
-def _render_latex(products: FinalProducts, file_path: Union[Path, str]) -> str:
+def _latex_escape(text: str) -> str:
+    """Escape the LaTeX specials that can appear in an opaque catalog label."""
+    repl = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+        "~": r"\textasciitilde{}",
+        "^": r"\textasciicircum{}",
+    }
+    return "".join(repl.get(ch, ch) for ch in text)
+
+
+def _render_latex(
+    products: FinalProducts,
+    file_path: Union[Path, str],
+    xref: Optional[CatalogCrossRef] = None,
+) -> str:
     uname, uval = _amplitude_unit(products)
     cols = [
         (
             "Frequency (MHz)",
-            lambda p: _concise(p.frequency_mhz, p.sigma_f_khz * 1e-3),
+            lambda p, m: _concise(p.frequency_mhz, p.sigma_f_khz * 1e-3),
         ),
         (
             f"Amplitude ({_unit_latex(uname)})",
-            lambda p: _concise(
+            lambda p, m: _concise(
                 p.amplitude / uval,
                 None if p.amplitude_error is None else p.amplitude_error / uval,
             ),
         ),
         (
             "SNR",
-            lambda p: "--" if p.snr is None else _concise(p.snr, p.snr_error),
+            lambda p, m: "--" if p.snr is None else _concise(p.snr, p.snr_error),
         ),
     ]
+    if xref is not None:
+        # Proximity annotation: echo the opaque label and the offset (kHz). The
+        # column header marks the geometric tolerance; the label is never an
+        # assignment.
+        cols.append(
+            (
+                r"Catalog ($\Delta$/kHz)",
+                lambda p, m: "--"
+                if m is None
+                else f"{_latex_escape(m.label)} ({_g(m.delta_khz, 2)})",
+            )
+        )
     spec = "r" * len(cols)
     out = ["% ftmwpipeline final products -- requires \\usepackage{booktabs}"]
-    out += [f"% {k}: {v}" for k, v in _provenance(products, file_path, uname)]
+    out += [f"% {k}: {v}" for k, v in _provenance(products, file_path, uname, xref)]
     out.append(r"\begin{table}")
     out.append(r"  \centering")
-    out.append(r"  \caption{" + _latex_caption(products, uname) + r"}")
+    out.append(r"  \caption{" + _latex_caption(products, uname, xref) + r"}")
     out.append(r"  \begin{tabular}{" + spec + "}")
     out.append(r"    \toprule")
     out.append("    " + " & ".join(h for h, _ in cols) + r" \\")
     out.append(r"    \midrule")
-    for p in products.peaks:
-        out.append("    " + " & ".join(fmt(p) for _, fmt in cols) + r" \\")
+    matches = xref.matches if xref is not None else [None] * len(products.peaks)
+    for p, m in zip(products.peaks, matches):
+        out.append("    " + " & ".join(fmt(p, m) for _, fmt in cols) + r" \\")
     out.append(r"    \bottomrule")
     out.append(r"  \end{tabular}")
     out.append(r"\end{table}")
@@ -368,6 +498,8 @@ def report_table_impl(
     *,
     fmt: str = "csv",
     output: Optional[Union[Path, str]] = None,
+    catalog: Optional[Union[Path, str]] = None,
+    catalog_n_sigma: float = 3.0,
 ) -> str:
     """Render the persisted Level-1 final-products table to *fmt* and return it.
 
@@ -379,6 +511,16 @@ def report_table_impl(
         One of ``"csv"`` / ``"json"`` / ``"latex"`` (default ``"csv"``).
     output :
         When given, also write the rendered text to this path.
+    catalog :
+        Optional path to a frequency catalog (CSV: ``frequency_mhz`` plus an
+        optional uncertainty in kHz and an optional opaque label). When given,
+        each line is proximity-flagged against the nearest catalog entry within
+        ``catalog_n_sigma * sqrt(sigma_f^2 + sigma_cat^2)`` and the match
+        (label / frequency / offset / pull) is added to the output. This is a
+        cross-check echo of the catalog's opaque label, **never an assignment**;
+        it never alters the fit.
+    catalog_n_sigma :
+        Match tolerance in combined sigmas (default ``3``).
 
     Returns
     -------
@@ -388,8 +530,9 @@ def report_table_impl(
     Raises
     ------
     ValueError
-        If *fmt* is unknown, or no final-products table is present (the Stage 6
-        ``review run`` consolidation has not been run).
+        If *fmt* is unknown, no final-products table is present (the Stage 6
+        ``review run`` consolidation has not been run), or *catalog* is given
+        but unreadable / empty.
     """
     key = str(fmt).lower()
     if key not in _RENDERERS:
@@ -404,7 +547,8 @@ def report_table_impl(
             "to consolidate the calibrated final products."
         )
 
-    text = _RENDERERS[key](products, file_path)
+    xref = load_cross_ref(products.peaks, catalog, catalog_n_sigma)
+    text = _RENDERERS[key](products, file_path, xref)
     if output is not None:
         Path(output).write_text(text)
     return text
@@ -1417,6 +1561,112 @@ def _strongest_lines(products: FinalProducts, n: int = 10) -> List[FinalPeak]:
     return real[:n]
 
 
+def _pull_interpretation(xref: CatalogCrossRef) -> str:
+    """One-line read on the pull spread: optimistic / honest / conservative σ_f."""
+    n = len(xref.pull_values)
+    if n < 2 or xref.pull_std is None:
+        return (
+            f"Too few matched lines ({n}) to calibrate the σ_f budget from the "
+            "pull spread."
+        )
+    std = xref.pull_std
+    mean = xref.pull_mean if xref.pull_mean is not None else 0.0
+    if std > 1.3:
+        verdict = (
+            "the pull spread is wider than unity, so the reported σ_f looks "
+            "**optimistic** (under-estimated). Consider declaring a σ_floor "
+            "(`review run --sigma-floor`) from this calibration."
+        )
+    elif std < 0.7:
+        verdict = (
+            "the pull spread is narrower than unity, so the reported σ_f looks "
+            "**conservative** (over-estimated)."
+        )
+    else:
+        verdict = (
+            "the pull spread is consistent with unity, so the reported σ_f budget "
+            "looks honest."
+        )
+    bias = ""
+    if abs(mean) > 0.5:
+        bias = (
+            f" The mean pull is {mean:+.2f} (a systematic ~{abs(mean):.2f}σ_f "
+            "frequency offset the precision budget does not capture)."
+        )
+    return (
+        f"Pull = (f_fit − f_cat) / σ_f over {n} matched lines: mean {mean:+.2f}, "
+        f"std {std:.2f}. With σ_f honest the pull is ~unit-normal; here {verdict}"
+        f"{bias}"
+    )
+
+
+def _catalog_section(xref: CatalogCrossRef, peaks: List[FinalPeak]) -> List[str]:
+    """The Level-2 catalog cross-reference section (match rate + worst-pull table).
+
+    Proximity annotation only -- echoes the nearest catalog label per line, never
+    an assignment. Doubles as the σ_f pull-calibration surface (item 2): the pull
+    distribution validates the reported precision budget, it does not gate it.
+    """
+    name = Path(xref.catalog_path).name
+    out = ["## Catalog cross-reference", ""]
+    out.append(
+        "Each reported line is flagged against the nearest entry in "
+        f"`{name}` ({xref.n_catalog:,} entries) within "
+        f"{xref.n_sigma:g}·√(σ_f² + σ_cat²). This **echoes the catalog's opaque "
+        "label as a cross-check; it is never an assignment** and never enters "
+        "the fit."
+    )
+    out.append("")
+    out.append(
+        f"- **Match rate:** {xref.n_matched:,} of {xref.n_total:,} lines "
+        f"({xref.match_rate * 100:.0f}%) matched within {xref.n_sigma:g}σ."
+    )
+    out.append("")
+    # Pull-calibration surface.
+    out.append("**Pull calibration (σ_f validation)**")
+    out.append("")
+    out.append(_pull_interpretation(xref))
+    out.append("")
+    # Worst-pull table: the lines straining the budget hardest.
+    worst = sorted(
+        (
+            (p, m)
+            for p, m in zip(peaks, xref.matches)
+            if m is not None and math.isfinite(m.pull)
+        ),
+        key=lambda pm: abs(pm[1].pull),
+        reverse=True,
+    )[:10]
+    if worst:
+        out.append("**Largest pulls**")
+        out.append("")
+        rows = [
+            [
+                _freq(p.frequency_mhz),
+                _g(p.sigma_f_khz, 3),
+                m.label,
+                _freq(m.frequency_mhz),
+                _g(m.delta_khz, 3),
+                _g(m.pull, 3),
+            ]
+            for p, m in worst
+        ]
+        out += _md_table(
+            [
+                "Line f (MHz)",
+                "σ_f (kHz)",
+                "Catalog",
+                "Catalog f (MHz)",
+                "Δ (kHz)",
+                "pull",
+            ],
+            rows,
+            ["---:", "---:", ":---", "---:", "---:", "---:"],
+        )
+        out.append("")
+    return out
+
+
 def _md_line_table(peaks: List[FinalPeak], unit_value: float, unit_name: str) -> str:
     head = (
         f"| Frequency (MHz) | σ_f (kHz) | Amplitude ({unit_name}) | SNR | "
@@ -1682,6 +1932,7 @@ def _render_markdown(
     file_path: Union[Path, str],
     *,
     include_table: bool,
+    cross_ref: Optional[CatalogCrossRef] = None,
 ) -> str:
     m = model
     products = m.products
@@ -1745,6 +1996,15 @@ def _render_markdown(
         )
     else:
         L.append("- **Concerns flagged:** none")
+    if cross_ref is not None:
+        pull_note = ""
+        if cross_ref.pull_std is not None:
+            pull_note = f", pull std {cross_ref.pull_std:.2f}"
+        L.append(
+            f"- **Catalog match:** {cross_ref.n_matched:,}/{cross_ref.n_total:,} "
+            f"lines ({cross_ref.match_rate * 100:.0f}%) within "
+            f"{cross_ref.n_sigma:g}σ{pull_note}"
+        )
     L.append("")
     L.append(cal_phrase)
     L.append("")
@@ -2081,6 +2341,10 @@ def _render_markdown(
         concerns=_concerns_stage6(m),
     )
 
+    # --- Catalog cross-reference (optional) -----------------------------
+    if cross_ref is not None:
+        L.extend(_catalog_section(cross_ref, list(products.peaks)))
+
     # --- Strongest lines ------------------------------------------------
     L.append("## Strongest lines")
     L.append("")
@@ -2117,6 +2381,8 @@ def report_summary_impl(
     *,
     output: Optional[Union[Path, str]] = None,
     include_table: bool = False,
+    catalog: Optional[Union[Path, str]] = None,
+    catalog_n_sigma: float = 3.0,
 ) -> str:
     """Render the persisted Level-2 methods + results summary (Markdown).
 
@@ -2135,6 +2401,13 @@ def report_summary_impl(
     include_table :
         Inline the full calibrated line table rather than a summary plus a
         pointer to the companion ``report table`` export.
+    catalog :
+        Optional frequency-catalog path. When given, a "Catalog
+        cross-reference" section is added: the match rate, the largest-pull
+        lines, and the pull-calibration read on the σ_f budget (proximity
+        annotation only, never an assignment).
+    catalog_n_sigma :
+        Catalog match tolerance in combined sigmas (default ``3``).
 
     Returns
     -------
@@ -2144,10 +2417,15 @@ def report_summary_impl(
     Raises
     ------
     ValueError
-        If no final-products table is present (``review run`` has not been run).
+        If no final-products table is present (``review run`` has not been
+        run), or *catalog* is given but unreadable / empty.
     """
     model = assemble_summary_model(file_path)
-    text = _render_markdown(model, file_path, include_table=include_table)
+    assert model.products is not None  # guaranteed by assemble_summary_model
+    cross_ref = load_cross_ref(model.products.peaks, catalog, catalog_n_sigma)
+    text = _render_markdown(
+        model, file_path, include_table=include_table, cross_ref=cross_ref
+    )
     if output is not None:
         Path(output).write_text(text)
     return text

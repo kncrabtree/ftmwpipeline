@@ -1621,15 +1621,20 @@ def report_table(
     *,
     fmt: str = "csv",
     output: Optional[Union[str, Path]] = None,
+    catalog: Optional[Union[str, Path]] = None,
+    catalog_n_sigma: float = 3.0,
 ) -> str:
     """Render the calibrated final-products table (report Level 1).
 
     Equivalent to :meth:`Pipeline.report_table`.  Serializes the persisted
     final-products table to ``csv`` / ``json`` / ``latex``; renders the
     persisted record (does not recompute).  Requires ``review_run`` to have
-    built the table.
+    built the table.  Pass ``catalog`` to proximity-flag each line against a
+    frequency catalog (label echo only, never an assignment).
     """
-    return Pipeline.open(file_path).report_table(fmt=fmt, output=output)
+    return Pipeline.open(file_path).report_table(
+        fmt=fmt, output=output, catalog=catalog, catalog_n_sigma=catalog_n_sigma
+    )
 
 
 def report_summary(
@@ -1637,6 +1642,8 @@ def report_summary(
     *,
     output: Optional[Union[str, Path]] = None,
     include_table: bool = False,
+    catalog: Optional[Union[str, Path]] = None,
+    catalog_n_sigma: float = 3.0,
 ) -> str:
     """Render the methods + results summary document (report Level 2).
 
@@ -1645,10 +1652,14 @@ def report_summary(
     persisted stage, as Markdown; renders the persisted record (does not
     recompute).  Requires ``review_run`` to have built the final-products table.
     The full line list is the companion Level-1 export unless *include_table*
-    inlines it.
+    inlines it.  Pass ``catalog`` to add a catalog cross-reference and σ_f
+    pull-calibration section (label echo only, never an assignment).
     """
     return Pipeline.open(file_path).report_summary(
-        output=output, include_table=include_table
+        output=output,
+        include_table=include_table,
+        catalog=catalog,
+        catalog_n_sigma=catalog_n_sigma,
     )
 
 
@@ -1657,16 +1668,23 @@ def report_full(
     *,
     output_dir: Union[str, Path],
     windows: str = "all",
+    catalog: Optional[Union[str, Path]] = None,
+    catalog_n_sigma: float = 3.0,
 ) -> str:
     """Assemble the linked-HTML per-window report site (report Level 3).
 
     Equivalent to :meth:`Pipeline.report_full`.  Builds a local HTML site (index
     + one page per fit window, reusing the existing renderers); renders the
     persisted record (does not recompute).  Requires ``review_run`` to have
-    built the final-products table.  Returns the path to ``index.html``.
+    built the final-products table.  Returns the path to ``index.html``.  Pass
+    ``catalog`` to add proximity-match badges and the pull-calibration surface
+    (label echo only, never an assignment).
     """
     return Pipeline.open(file_path).report_full(
-        output_dir=output_dir, windows=windows
+        output_dir=output_dir,
+        windows=windows,
+        catalog=catalog,
+        catalog_n_sigma=catalog_n_sigma,
     )
 
 

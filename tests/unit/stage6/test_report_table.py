@@ -276,6 +276,93 @@ def test_amplitude_unit_in_csv_and_scaled(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Catalog cross-reference (--catalog)
+# ---------------------------------------------------------------------------
+
+
+def _catalog_file(tmp_path) -> Path:
+    # First peak at 30000.021920 (sigma_f 1.234 kHz) -- catalog entry 0.5 kHz
+    # away matches at N=3; the 39000 line has no nearby entry.
+    f = tmp_path / "cat.csv"
+    f.write_text(
+        "frequency_mhz,uncertainty_khz,label\n"
+        "30000.0214,0.0,line-A\n"
+        "35000.0,0.0,line-Z\n"
+    )
+    return f
+
+
+def test_csv_catalog_columns(tmp_path):
+    fp = _write_products_file(tmp_path)
+    cat = _catalog_file(tmp_path)
+    text = report_table_impl(str(fp), fmt="csv", catalog=str(cat))
+
+    header = [ln for ln in text.splitlines() if ln.startswith("#")]
+    assert any("catalog: cat.csv" in ln for ln in header)
+    assert any("catalog_matched: 1/2 (50%)" in ln for ln in header)
+
+    body = "\n".join(ln for ln in text.splitlines() if not ln.startswith("#"))
+    rows = list(csvmod.DictReader(io.StringIO(body)))
+    assert rows[0]["catalog_label"] == "line-A"
+    assert float(rows[0]["catalog_freq_mhz"]) == pytest.approx(30000.0214)
+    assert rows[0]["catalog_delta_khz"] != ""
+    # Second line has no match -> empty catalog cells.
+    assert rows[1]["catalog_label"] == ""
+    assert rows[1]["catalog_pull"] == ""
+
+
+def test_csv_no_catalog_omits_columns(tmp_path):
+    fp = _write_products_file(tmp_path)
+    text = report_table_impl(str(fp), fmt="csv")
+    assert "catalog_label" not in text
+
+
+def test_json_catalog_block(tmp_path):
+    fp = _write_products_file(tmp_path)
+    cat = _catalog_file(tmp_path)
+    payload = json.loads(report_table_impl(str(fp), fmt="json", catalog=str(cat)))
+    meta = payload["metadata"]["catalog"]
+    assert meta["n_matched"] == 1 and meta["n_total"] == 2
+    assert meta["n_sigma"] == 3.0
+    assert payload["peaks"][0]["catalog"]["label"] == "line-A"
+    assert payload["peaks"][1]["catalog"] is None  # key present, no match
+
+
+def test_latex_catalog_column(tmp_path):
+    fp = _write_products_file(tmp_path)
+    cat = _catalog_file(tmp_path)
+    text = report_table_impl(str(fp), fmt="latex", catalog=str(cat))
+    assert "Catalog" in text
+    assert "line-A" in text
+    assert "not an assignment" in text  # caption disclaimer
+
+
+def test_latex_label_escaped(tmp_path):
+    fp = _write_products_file(tmp_path)
+    f = tmp_path / "cat.csv"
+    f.write_text("frequency_mhz,uncertainty_khz,label\n30000.0214,0.0,a_b&c%\n")
+    text = report_table_impl(str(fp), fmt="latex", catalog=str(f))
+    assert r"a\_b\&c\%" in text
+
+
+def test_catalog_nsigma_tightens_match(tmp_path):
+    fp = _write_products_file(tmp_path)
+    # 30000.0214 is ~0.4 kHz from the 30000.02192 line; sigma_f 1.234 kHz.
+    # N=0.1 -> tol 0.12 kHz -> no match.
+    cat = _catalog_file(tmp_path)
+    payload = json.loads(
+        report_table_impl(str(fp), fmt="json", catalog=str(cat), catalog_n_sigma=0.1)
+    )
+    assert payload["metadata"]["catalog"]["n_matched"] == 0
+
+
+def test_catalog_missing_file_raises(tmp_path):
+    fp = _write_products_file(tmp_path)
+    with pytest.raises(ValueError, match="not found"):
+        report_table_impl(str(fp), fmt="csv", catalog=str(tmp_path / "nope.csv"))
+
+
+# ---------------------------------------------------------------------------
 # Cross-interface on the small 2638 fixture
 # ---------------------------------------------------------------------------
 

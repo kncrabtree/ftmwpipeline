@@ -315,6 +315,62 @@ def test_window_peak_table_letters_low_to_high_and_bce():
     assert "29147.446690" in table or "29147.44669" in table
 
 
+def test_catalog_cell_and_window_table_column():
+    from ftmwpipeline._internal.catalog_xref import CatalogMatch
+    from ftmwpipeline._internal.report_html_impl import _catalog_cell
+
+    m = CatalogMatch("line-A", 29147.4, 0.0, 1.2, 1.0, 1.2)
+    cell = _catalog_cell(m)
+    assert 'class="badge cat"' in cell
+    assert "line-A" in cell
+    assert "pull" in cell  # tooltip
+    assert _catalog_cell(None) == ""
+
+    peaks = [_final_peak(29148.0), _final_peak(29147.4)]
+    matches = [None, m]
+    table = _window_peak_table(peaks, "uV", 1e-6, matches)
+    assert "<th>Catalog</th>" in table
+    assert "line-A" in table
+    # Without matches, no catalog column.
+    assert "<th>Catalog</th>" not in _window_peak_table(peaks, "uV", 1e-6)
+
+
+def test_index_final_table_catalog_column():
+    from ftmwpipeline._internal.catalog_xref import CatalogMatch
+    from ftmwpipeline._internal.report_html_impl import _index_final_table
+    from ftmwpipeline.core.data_structures import FinalProducts
+
+    prod = FinalProducts(peaks=[_final_peak(30000.0), _final_peak(31000.0)])
+    matches = [CatalogMatch("X", 30000.0, 0.0, 0.0, 1.0, 0.0), None]
+    html_out = _index_final_table(prod, matches)
+    assert "<th>Catalog</th>" in html_out
+    assert "X" in html_out
+    assert "<th>Catalog</th>" not in _index_final_table(prod)
+
+
+def test_summary_distribution_specs_appends_pull():
+    from types import SimpleNamespace
+
+    from ftmwpipeline._internal.catalog_xref import CatalogCrossRef
+    from ftmwpipeline._internal.report_html_impl import _summary_distribution_specs
+
+    model = SimpleNamespace(
+        chi2r_values=[1.0],
+        eps_values=[1.0],
+        sigma_stat_values=[1.0],
+        sigma_eps_values=[1.0],
+        sigma_f_values=[1.0],
+        snr_values_promoted=[10.0],
+    )
+    assert len(_summary_distribution_specs(model)) == 6
+    xref = CatalogCrossRef(
+        catalog_path="c", n_sigma=3.0, n_catalog=2, matches=[], pull_values=[0.5, -0.3]
+    )
+    specs = _summary_distribution_specs(model, xref)
+    assert len(specs) == 7
+    assert specs[-1][2] == [0.5, -0.3]
+
+
 def test_name_helpers_zero_pad():
     assert _window_page_name(7) == "window_007.html"
     assert _panel_figure_name("exp_2638", 7, "mag") == "exp_2638_window_007_mag.png"
@@ -453,6 +509,37 @@ def test_full_windows_filter_attention_subset(stage5_small_file, tmp_path):
     assert 0 <= n_att <= n_all
     # The index still lists every window in both modes.
     assert "<code>attention</code> filter" in (att_out / "index.html").read_text()
+
+
+@pytest.mark.integration
+def test_full_with_catalog(stage5_small_file, tmp_path):
+    from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
+
+    # Build a catalog on the actual fitted-line frequencies so every line matches.
+    products = load_stage6_review_from_file(str(stage5_small_file)).final_products
+    assert products is not None and products.peaks
+    cat = tmp_path / "cat.csv"
+    cat.write_text(
+        "frequency_mhz,uncertainty_khz,label\n"
+        + "".join(
+            f"{p.frequency_mhz},0.0,cat-{i}\n" for i, p in enumerate(products.peaks)
+        )
+    )
+    out = tmp_path / "site"
+    report_full_impl(str(stage5_small_file), output_dir=str(out), catalog=str(cat))
+
+    idx = (out / "index.html").read_text()
+    assert "<th>Catalog</th>" in idx
+    assert "cat-0" in idx
+    assert "proximity only" in idx
+    methods = (out / "methods.html").read_text()
+    assert "Catalog cross-reference" in methods
+    # The pull histogram is added to the summary distributions figure.
+    figures = [f.name for f in (out / "figures").glob("*.png")]
+    assert any(f.endswith("_summary_histograms.png") for f in figures)
+    pages = list((out / "windows").glob("*.html"))
+    assert any("<th>Catalog</th>" in p.read_text() for p in pages)
+    _assert_wellformed(out)
 
 
 @pytest.mark.integration

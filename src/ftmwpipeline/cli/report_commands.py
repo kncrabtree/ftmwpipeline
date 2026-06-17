@@ -25,6 +25,29 @@ def _ensure_ftmw(path: str) -> str:
     return path if path.endswith(".ftmw") else path + ".ftmw"
 
 
+def _add_catalog_args(parser: argparse.ArgumentParser) -> None:
+    """Add the shared ``--catalog`` / ``--catalog-nsigma`` cross-ref options."""
+    parser.add_argument(
+        "--catalog",
+        dest="catalog",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Proximity-flag each reported line against a frequency catalog "
+            "(CSV: frequency_mhz[, uncertainty_khz[, label]]). Echoes the "
+            "nearest catalog label; never an assignment and never alters the fit."
+        ),
+    )
+    parser.add_argument(
+        "--catalog-nsigma",
+        dest="catalog_n_sigma",
+        type=float,
+        default=3.0,
+        metavar="N",
+        help="Catalog match tolerance in combined sigmas (default 3).",
+    )
+
+
 def cmd_report_table(args: argparse.Namespace) -> int:
     """Render the calibrated final-products table (report Level 1)."""
     setup_logging(getattr(args, "verbose", False))
@@ -33,7 +56,13 @@ def cmd_report_table(args: argparse.Namespace) -> int:
     output: Optional[str] = getattr(args, "output", None)
 
     try:
-        text = report_table_impl(file_path, fmt=fmt, output=output)
+        text = report_table_impl(
+            file_path,
+            fmt=fmt,
+            output=output,
+            catalog=getattr(args, "catalog", None),
+            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
+        )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -54,7 +83,11 @@ def cmd_report_summary(args: argparse.Namespace) -> int:
 
     try:
         text = report_summary_impl(
-            file_path, output=output, include_table=include_table
+            file_path,
+            output=output,
+            include_table=include_table,
+            catalog=getattr(args, "catalog", None),
+            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -75,7 +108,13 @@ def cmd_report_full(args: argparse.Namespace) -> int:
     windows: str = getattr(args, "windows", "all")
 
     try:
-        index_path = report_full_impl(file_path, output_dir=output_dir, windows=windows)
+        index_path = report_full_impl(
+            file_path,
+            output_dir=output_dir,
+            windows=windows,
+            catalog=getattr(args, "catalog", None),
+            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
+        )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -127,6 +166,7 @@ def register_report_commands(subparsers: Any) -> None:
         metavar="PATH",
         help="Write to PATH instead of stdout.",
     )
+    _add_catalog_args(p_table)
     p_table.add_argument(
         "--verbose",
         dest="verbose",
@@ -165,6 +205,7 @@ def register_report_commands(subparsers: Any) -> None:
         default=False,
         help="Inline the full calibrated line table instead of pointing to it.",
     )
+    _add_catalog_args(p_summary)
     p_summary.add_argument(
         "--verbose",
         dest="verbose",
@@ -206,6 +247,7 @@ def register_report_commands(subparsers: Any) -> None:
             "(only windows the review flagged). The index lists every window."
         ),
     )
+    _add_catalog_args(p_full)
     p_full.add_argument(
         "--verbose",
         dest="verbose",
