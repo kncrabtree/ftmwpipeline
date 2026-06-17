@@ -621,3 +621,44 @@ class TestAutoRecommend:
         stage2b_g_impl.calibrate_tau_G_impl(str(variant), settings=s)
 
         assert not captured["called"]
+
+    def test_calibrate_tau_builds_recommended_gaussian_twin(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+    ) -> None:
+        """2638 votes gaussian, so `calibrate_tau` (the Lorentzian entry) must
+        also build the gaussian twin -- otherwise Stage 5's gaussian fit finds
+        no matching calibration and silently falls back to T_active/3."""
+        from ftmwpipeline.io.stage_fit_settings_serialization import (
+            read_stage2b_recommended_shape,
+        )
+
+        variant = tmp_path / "twin.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+
+        stage2b_impl.calibrate_tau_impl(str(variant))  # real vote, no mock
+
+        assert read_stage2b_recommended_shape(str(variant)) == "gaussian"
+        assert stage2b_impl.tau_calibration_present(str(variant))
+        assert stage2b_g_impl.tau_G_calibration_present(str(variant)), (
+            "calibrate_tau on a gaussian-voting fixture did not build the "
+            "matching tau_G twin"
+        )
+
+    def test_cross_build_skipped_when_auto_recommend_off(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+    ) -> None:
+        """With auto_recommend off there is no vote, so only the requested twin
+        is built (no implicit cross-build)."""
+        variant = tmp_path / "noauto_twin.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+
+        s = TauCalibrationSettings()
+        s.recommendation.auto_recommend = False
+        stage2b_impl.calibrate_tau_impl(str(variant), settings=s)
+
+        assert stage2b_impl.tau_calibration_present(str(variant))
+        assert not stage2b_g_impl.tau_G_calibration_present(str(variant))

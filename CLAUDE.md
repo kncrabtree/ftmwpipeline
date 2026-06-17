@@ -101,6 +101,16 @@ Stages are tracked by name with explicit dependencies (`PipelineStageTracker.STA
   it as the anchor for the bidirectional Gaussian tau penalty and the rescue τ.
   Stage 3 and Stage 5 still run without it (Stage 3 falls back to a default
   `tau_basis_us`; Stage 5's τ₀ falls back to `T_active/3`).
+  **Two shape twins.** There are two τ calibrations — the exponential/Lorentzian
+  twin here and the Gaussian twin `stage2b_tau_G_calibration` (built by
+  `calibrate_tau_G`). Stage 5 fits the *recommended* shape and consumes only the
+  **matching** twin (gaussian fit → τ_G twin; lorentzian fit → exp twin); if the
+  matching twin is absent it silently falls back to `T_active/3`. So `calibrate_tau`
+  (and `calibrate_tau_G`) run the 3-way lineshape vote and, when it names the
+  *other* shape, **also build that twin** (default-on, gated by `auto_recommend`),
+  keeping Stage 2b self-consistent — a single `calibrate_tau` call yields whichever
+  twin Stage 5 will need. The fallback being driven by a missing twin (not the
+  `preconditions_passed` flag, which never blocks consumption) was a recurring trap.
 
 Running a stage whose dependency is missing raises `StageDependencyError`. Other custom
 exceptions (all subclass `PipelineFileError`): `PipelineExistsError` (create over a file

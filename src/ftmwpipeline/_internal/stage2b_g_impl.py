@@ -151,6 +151,8 @@ def calibrate_tau_G_impl(
     min_contributors_per_band: Optional[int] = None,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    _run_recommendation: bool = True,
+    _ensure_recommended_twin: bool = True,
 ) -> Dict[str, Any]:
     """Run the Gaussian-shape τ_G calibration and persist it to ``file_path``.
 
@@ -374,12 +376,20 @@ def calibrate_tau_G_impl(
             invalidated,
         )
 
-    if resolved.recommendation.auto_recommend:
+    if _run_recommendation and resolved.recommendation.auto_recommend:
         # Run the 3-way L/G/V shape recommendation as part of the calibration
         # so Stage 5's resolver inherits the verdict on every fresh Stage 2b
         # run. Re-uses the just-persisted settings via the no-kwargs call.
         logger.info("auto_recommend on: running compute_shape_recommendation")
         recommend_shape_impl(file_path)
+
+        # Self-consistency: when the vote is Lorentzian, build the exp twin too
+        # so Stage 5 consumes the matching calibration rather than the
+        # T_active/3 fallback (mirror of the Lorentzian entry's cross-build).
+        if _ensure_recommended_twin:
+            from .stage2b_impl import _build_recommended_twin
+
+            _build_recommended_twin(file_path, built="gaussian")
 
     return {
         "status": "success",

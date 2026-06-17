@@ -125,6 +125,8 @@ def calibrate_tau_impl(
     min_contributors_per_band: Optional[int] = None,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
+    _run_recommendation: bool = True,
+    _ensure_recommended_twin: bool = True,
 ) -> Dict[str, Any]:
     """Run STFT tau calibration and persist the result to ``file_path``.
 
@@ -332,12 +334,19 @@ def calibrate_tau_impl(
             invalidated,
         )
 
-    if resolved.recommendation.auto_recommend:
+    if _run_recommendation and resolved.recommendation.auto_recommend:
         # Run the 3-way L/G/V shape recommendation as part of the calibration
         # so Stage 5's resolver inherits the verdict on every fresh Stage 2b
         # run. Re-uses the just-persisted settings via the no-kwargs call.
         logger.info("auto_recommend on: running compute_shape_recommendation")
         recommend_shape_impl(file_path)
+
+        # Self-consistency: Stage 5 fits the *recommended* shape and consumes
+        # the matching tau twin. When the vote is gaussian, the Lorentzian twin
+        # this call just built is the wrong one -- build the gaussian twin too
+        # so Stage 5 never silently falls back to the T_active/3 default.
+        if _ensure_recommended_twin:
+            _build_recommended_twin(file_path, built="lorentzian")
 
     return {
         "status": "success",
@@ -345,6 +354,40 @@ def calibrate_tau_impl(
         "parameters_used": parameters_used,
         "invalidated_stages": invalidated,
     }
+
+
+def _build_recommended_twin(file_path: str, *, built: str) -> None:
+    """Build the Stage 2b tau twin matching the recommended shape, if needed.
+
+    *built* is the shape this call already produced (``"lorentzian"`` or
+    ``"gaussian"``). If the persisted ``recommended_shape`` names the *other*
+    shape, build that twin too (skipping its own recommendation re-run and its
+    own cross-build, so the pair is computed exactly once). A vote of ``None``
+    (no clear winner -> Stage 5 defaults to Lorentzian) builds nothing extra.
+    """
+    from ..io.stage_fit_settings_serialization import read_stage2b_recommended_shape
+
+    recommended = read_stage2b_recommended_shape(file_path)
+    if recommended is None or recommended == built:
+        return
+    if recommended == "gaussian":
+        from .stage2b_g_impl import calibrate_tau_G_impl
+
+        logger.info(
+            "Stage 2b vote = gaussian; building the tau_G twin so Stage 5 has "
+            "its matching calibration"
+        )
+        calibrate_tau_G_impl(
+            file_path, _run_recommendation=False, _ensure_recommended_twin=False
+        )
+    elif recommended == "lorentzian":
+        logger.info(
+            "Stage 2b vote = lorentzian; building the exp tau twin so Stage 5 "
+            "has its matching calibration"
+        )
+        calibrate_tau_impl(
+            file_path, _run_recommendation=False, _ensure_recommended_twin=False
+        )
 
 
 def save_tau_calibration_impl(
