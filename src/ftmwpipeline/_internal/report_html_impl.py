@@ -194,9 +194,26 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .hist img { max-width: 100%; width: auto; height: auto; border: 1px solid #d0d4d9;
             background: #fff; }
 /* The index full-spectrum overview spans the content width. */
-.spectrum-overview { margin: 0.5rem 0 1.25rem; }
+.spectrum-overview { margin: 0.5rem 0 0.25rem; }
 .spectrum-overview img { width: 100%; height: auto; border: 1px solid #d0d4d9;
                          background: #fff; }
+/* Window-map navigation strip: one clickable bar per window under the overview,
+   coloured by attention; hover highlights, the SVG <a> navigates, and the
+   <title> gives a native tooltip. The optional script adds a zoom thumbnail. */
+.winmap { margin: 0 0 0.4rem; }
+.winmap-svg { width: 100%; height: auto; display: block; }
+.winmap-rect { fill: #9bb0c4; stroke: #6b8298; stroke-width: 0.5; }
+.winmap-rect.attn { fill: #f4a23b; stroke: #b9741a; }
+.winmap a:hover .winmap-rect, .winmap-rect:hover { fill: #1559b3; stroke: #0d3f86;
+                                                   cursor: pointer; }
+.winmap-axis { stroke: #c0c7cf; stroke-width: 1; }
+.winmap-tick { font-size: 11px; fill: #555; }
+.winmap-hint { font-size: 0.8rem; color: #666; margin: 0 0 1.25rem; }
+.winmap-pop { position: fixed; z-index: 60; pointer-events: none; background: #fff;
+              border: 1px solid #888; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
+              padding: 4px; border-radius: 4px; }
+.winmap-pop img { display: block; width: 360px; height: auto; }
+.winmap-pop-info { font-size: 0.76rem; color: #222; padding: 0.15rem 0.1rem 0; }
 /* Narrow viewport: shrink the gutters and table type so nothing overflows. */
 @media (max-width: 700px) {
   main.report { padding: 1rem 1rem 3rem; }
@@ -537,6 +554,114 @@ def _plot_index_overview(
     ax.set_title(title, fontsize=10)
     ax.tick_params(labelsize=8)
     return fig
+
+
+# Window-map SVG geometry (a fixed viewBox the browser scales to the column
+# width; uniform scaling keeps the tick labels undistorted).
+_WINMAP_W = 1400.0
+_WINMAP_H = 64.0
+
+
+def _window_map_svg(
+    rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]],
+    band: Tuple[float, float],
+    stem: str,
+) -> str:
+    """A clickable SVG window-map strip spanning the band.
+
+    One ``<rect>`` per window, positioned by frequency and coloured by attention;
+    a window with a detail page is wrapped in an SVG ``<a>`` (click navigates)
+    and carries ``data-thumb`` (its magnitude panel) for the optional hover-zoom
+    script. Each rect's ``<title>`` is a native tooltip. ``rows`` is the index
+    table's ``(wid, lo, hi, k, chi2r, has_page, attn)`` tuples.
+    """
+    lo, hi = float(min(band)), float(max(band))
+    span = hi - lo if hi > lo else 1.0
+    pad_l = pad_r = 6.0
+    top = 6.0
+    strip_h = 40.0
+    usable = _WINMAP_W - pad_l - pad_r
+
+    def x_of(f: float) -> float:
+        return pad_l + (float(f) - lo) / span * usable
+
+    parts: List[str] = [
+        f'<svg class="winmap-svg" viewBox="0 0 {_WINMAP_W:.0f} {_WINMAP_H:.0f}" '
+        'preserveAspectRatio="xMidYMid meet" role="img" '
+        'aria-label="window navigation map">',
+        f'<line class="winmap-axis" x1="{pad_l:.1f}" y1="{top + strip_h:.1f}" '
+        f'x2="{_WINMAP_W - pad_r:.1f}" y2="{top + strip_h:.1f}"/>',
+    ]
+    for wid, wlo, whi, k, chi2r, has_page, attn in rows:
+        x0, x1 = x_of(min(wlo, whi)), x_of(max(wlo, whi))
+        w = max(x1 - x0, 2.5)
+        cls = "winmap-rect attn" if attn else "winmap-rect"
+        info = (
+            f"window {wid}: {min(wlo, whi):.3f}–{max(wlo, whi):.3f} MHz, "
+            f"{k} peak{'s' if k != 1 else ''}"
+        )
+        if chi2r is not None:
+            info += f", χ²ᵣ {chi2r:.2f}"
+        thumb = (
+            f' data-thumb="figures/{stem}_window_{wid:03d}_mag.png"' if has_page else ""
+        )
+        rect = (
+            f'<rect class="{cls}" x="{x0:.1f}" y="{top:.1f}" width="{w:.1f}" '
+            f'height="{strip_h:.1f}" data-window="{wid}" '
+            f'data-info="{_esc(info)}"{thumb}><title>{_esc(info)}</title></rect>'
+        )
+        if has_page:
+            parts.append(f'<a href="windows/{_window_page_name(wid)}">{rect}</a>')
+        else:
+            parts.append(rect)
+    n_ticks = 7
+    for i in range(n_ticks):
+        f = lo + span * i / (n_ticks - 1)
+        parts.append(
+            f'<text class="winmap-tick" x="{x_of(f):.1f}" '
+            f'y="{_WINMAP_H - 3:.1f}" text-anchor="middle">{f:.0f}</text>'
+        )
+    parts.append("</svg>")
+    return '<div class="winmap">' + "".join(parts) + "</div>"
+
+
+# Optional hover-zoom popup for the window map: a tiny, dependency-free script
+# that shows a window's magnitude thumbnail at the cursor on hover. The map is
+# fully usable without it (rects link + carry native <title> tooltips), so this
+# degrades gracefully when scripting is off.
+_WINMAP_JS = """<script>
+(function () {
+  var rects = document.querySelectorAll('.winmap [data-window]');
+  if (!rects.length) return;
+  var pop = document.createElement('div');
+  pop.className = 'winmap-pop';
+  pop.style.display = 'none';
+  document.body.appendChild(pop);
+  function move(e) {
+    var x = e.clientX + 16, y = e.clientY + 16;
+    var w = pop.offsetWidth, h = pop.offsetHeight;
+    if (x + w > window.innerWidth) x = e.clientX - w - 16;
+    if (y + h > window.innerHeight) y = window.innerHeight - h - 8;
+    pop.style.left = Math.max(4, x) + 'px';
+    pop.style.top = Math.max(4, y) + 'px';
+  }
+  function show(e) {
+    var t = e.currentTarget;
+    var thumb = t.getAttribute('data-thumb');
+    var info = t.getAttribute('data-info') || '';
+    pop.innerHTML = (thumb ? '<img src="' + thumb + '" alt="">' : '') +
+      '<div class="winmap-pop-info">' + info + '</div>';
+    pop.style.display = 'block';
+    move(e);
+  }
+  function hide() { pop.style.display = 'none'; }
+  rects.forEach(function (el) {
+    el.addEventListener('mouseenter', show);
+    el.addEventListener('mousemove', move);
+    el.addEventListener('mouseleave', hide);
+  });
+})();
+</script>"""
 
 
 def _index_window_table(
@@ -1389,6 +1514,31 @@ def report_full_impl(
         )
         for wid in all_ids
     ]
+
+    # Spectrum section: the overview image (when rendered) over an interactive
+    # window-map strip (one clickable bar per window). The band spans the trim,
+    # else the window extent.
+    spectrum_section: List[str] = []
+    if index_rows:
+        if bundle.trim_mhz is not None:
+            band = (float(min(bundle.trim_mhz)), float(max(bundle.trim_mhz)))
+        else:
+            band = (
+                min(min(r[1], r[2]) for r in index_rows),
+                max(max(r[1], r[2]) for r in index_rows),
+            )
+        spectrum_section.append("<h2>Spectrum</h2>")
+        if overview_name is not None:
+            spectrum_section.append(
+                f'<div class="spectrum-overview"><img src="figures/'
+                f'{overview_name}" alt="full-spectrum overview"></div>'
+            )
+        spectrum_section.append(_window_map_svg(index_rows, band, stem))
+        spectrum_section.append(
+            '<p class="winmap-hint">Each bar is a fit window (orange = flagged for '
+            "attention); hover for details, click to open its page.</p>"
+        )
+
     body: List[str] = [
         f"<h1>FTMW pipeline report &mdash; {_esc(stem)}</h1>",
         "<p>Generated by <code>ftmwpipeline</code>. This site renders the "
@@ -1397,15 +1547,7 @@ def report_full_impl(
         '<p><a href="methods.html">Methods &amp; results &rarr;</a> '
         "&mdash; per-stage algorithm notes, parameters, statistics tables, and "
         "distribution histograms.</p>",
-        *(
-            [
-                "<h2>Spectrum</h2>",
-                f'<div class="spectrum-overview"><img src="figures/'
-                f'{overview_name}" alt="full-spectrum overview"></div>',
-            ]
-            if overview_name is not None
-            else []
-        ),
+        *spectrum_section,
         "<h2>Windows</h2>",
         f"<p>{len(page_ids):,} of {len(all_ids):,} windows have a detail page "
         f"(<code>{_esc(key)}</code> filter); {len(attention_ids):,} flagged for "
@@ -1426,6 +1568,8 @@ def report_full_impl(
             products, cross_ref.matches if cross_ref is not None else None
         ),
     ]
+    if spectrum_section:
+        body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
     index_html = _page(f"{stem} report", body, css_href="assets/style.css")
     index_path = out_root / "index.html"
     index_path.write_text(index_html)

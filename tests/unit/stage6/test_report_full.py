@@ -519,6 +519,16 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     # The full-spectrum overview is embedded on the index.
     assert "<h2>Spectrum</h2>" in idx
     assert "_overview.png" in idx
+    # The interactive window-map strip: an SVG with clickable, attention-coloured
+    # rects (one per window), native tooltips, and the optional hover-zoom script.
+    assert 'class="winmap"' in idx
+    assert "winmap-rect" in idx
+    assert "data-window=" in idx
+    assert "<title>" in idx  # native tooltip per rect
+    assert 'data-thumb="figures/' in idx  # thumbnail for the popup
+    assert "winmap-pop" in idx  # the hover-zoom script wired in
+    # Each window bar links to its page from inside the SVG.
+    assert idx.count('<a href="windows/window_') >= 1
     methods = (out / "methods.html").read_text()
     # Histograms are interleaved beside their tables (not one trailing figure).
     assert 'class="hist"' in methods

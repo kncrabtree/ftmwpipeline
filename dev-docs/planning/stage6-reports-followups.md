@@ -137,6 +137,20 @@ Verified with the headless-Chrome screenshot workflow at 1400 px and 480 px
 equations + interleaved histograms), and per-window page all reflow to a single
 column when narrow. Dependency-free apart from the optional MathJax CDN.
 
+## 6. Report UX follow-ons — DONE
+
+- **Index spectrum overview + window-map navigation.** The index opens on a
+  full-spectrum magnitude figure (attention windows shaded) over an interactive
+  SVG window-map strip: one clickable bar per window (orange = attention),
+  frequency-positioned, with a native `<title>` tooltip and an SVG `<a>`
+  click-to-navigate. A small dependency-free script (`_WINMAP_JS`) adds a
+  hover-zoom thumbnail (the window's magnitude panel) at the cursor; the map is
+  fully usable with scripting off.
+- **Auto-merge fit history.** A VIF-collapse (auto-merged) window's joint refit
+  carries no add-one-peak trail, so its "Fit history" renders the `vif_collapse`
+  records (merged freq, line A/B, separation, VIF A/B) as the provenance.
+- **Per-window raw fit-log dump removed** (it duplicated the structured tables).
+
 ---
 
 Demo site (regenerate after changes):
