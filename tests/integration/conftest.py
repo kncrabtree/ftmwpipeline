@@ -130,24 +130,29 @@ def baseline_2638_stage4(baseline_2638_stage3, tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def baseline_2638_stage4_small(baseline_2638_stage4, tmp_path_factory):
-    """A Stage-4 baseline trimmed to the first 3 dependency-free windows.
+    """A Stage-4 baseline trimmed to the first few dependency-free windows.
 
     Cuts Stage 5 fit cost on the 2638 fixture from ~2 minutes (382 windows)
-    to ~5 seconds (3 windows) while still exercising the full fit pipeline
-    on real data. Used by tests that verify pipeline shape (cross-interface
+    to a few seconds while still exercising the full fit pipeline on real
+    data. Used by tests that verify pipeline shape (cross-interface
     bit-identity, serialization round-trip) -- not by tests that depend on
     the full per-band statistics.
 
     Selects the first ``n_target`` windows whose dependency edges all stay
     within the selected set (typically window_0000 .. window_0009 are
     dependency-free, since dep edges on 2638 start at window pair (10, 11)).
+    The earliest windows sit at the low-frequency band edge and fit to empty
+    (Stage 5 drops empty windows), so ``n_target`` is set above the intended
+    survivor count: the first four candidates leave two non-empty windows
+    after the fit, so the multi-window ``fit show`` selectors
+    (``top_snr``/``random_n``) have a real pool to draw from.
     """
     from ftmwpipeline._internal.stage4_impl import (
         load_windows_impl,
         save_window_plan_impl,
     )
 
-    n_target = 3
+    n_target = 4
     tmp = tmp_path_factory.mktemp("baseline_stage4_small")
     fp = tmp / "baseline_2638_stage4_small.ftmw"
     shutil.copy(baseline_2638_stage4, fp)
@@ -178,7 +183,7 @@ def baseline_2638_stage4_small(baseline_2638_stage4, tmp_path_factory):
 
 @pytest.fixture(scope="session")
 def baseline_2638_stage5_small(baseline_2638_stage4_small, tmp_path_factory):
-    """Build the small (3-window) Stage 5 fit ONCE per session.
+    """Build the small (few-window) Stage 5 fit ONCE per session.
 
     Copies the Stage-4 small baseline and runs fit_peaks. Returns a read-only
     reference .ftmw with a completed Stage 5 fit; tests that mutate must

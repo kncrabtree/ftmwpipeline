@@ -144,6 +144,18 @@ turns the run-to-run comparison from one pair into a stable-vs-random `δ_down`
 test), and **end-user documentation / release readiness** (the planning-doc
 lifecycle's "seed docs" step; start opportunistically as features stabilize).
 
+Smaller deferred fix — **the SNR-survival prune does not re-check the floor
+after its partial-window refit**. `apply_snr_survival_prune`
+(`_internal/stage5_impl.py`) classifies sub-floor auto peaks as dust once, then
+refits a partially-pruned window with the dust removed; the refit can push a
+*surviving* peak below the floor, and nothing re-classifies it, so a marginally
+sub-floor auto peak can persist (observed on 2638 window 4: a survivor lands at
+SNR 3.169 against the 3.2 floor after a neighbouring dust peak at 3.19 is
+removed). The fix is to iterate the prune to a fixpoint (re-classify after each
+refit), guarding against a cascade that over-prunes; it changes production Stage 5
+output, so it needs the 7-fixture re-baseline. Latent on `main` (the small fit
+fixtures did not previously include a window that triggers it).
+
 ## Stage status
 
 Authoritative detail in [`../STATUS.md`](../STATUS.md). Summary only:
