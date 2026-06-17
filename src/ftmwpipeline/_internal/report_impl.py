@@ -579,6 +579,8 @@ class _SummaryModel:
     median_sigma_stat: Optional[float] = None
     median_sigma_eps: Optional[float] = None
     median_sigma_f: Optional[float] = None
+    sigma_eps_pctiles: Dict[str, float] = field(default_factory=dict)
+    sigma_f_pctiles: Dict[str, float] = field(default_factory=dict)
     n_stat_dominated: int = 0
     n_eps_dominated: int = 0
 
@@ -1056,6 +1058,8 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         median_sigma_stat=float(np.median(s_stat)) if s_stat else None,
         median_sigma_eps=float(np.median(s_eps)) if s_eps else None,
         median_sigma_f=float(np.median(s_f)) if s_f else None,
+        sigma_eps_pctiles=_percentiles(s_eps),
+        sigma_f_pctiles=_percentiles(s_f),
         n_stat_dominated=n_stat_dom,
         n_eps_dominated=n_eps_dom,
     )
@@ -2032,6 +2036,16 @@ def _render_markdown(
             f"{m.n_eps_dominated:,} are timebase-dominated."
         )
         budget_detail.append("")
+    # Full σ_f budget distribution (parallels the Stage 5 σ_stat percentiles).
+    budget_detail += _percentile_table(
+        "σ_f budget distribution (kHz)",
+        "Component",
+        [
+            ("σ_stat (NLS precision)", m.sigma_stat_pctiles),
+            ("σ_ε (timebase)", m.sigma_eps_pctiles),
+            ("σ_f (total)", m.sigma_f_pctiles),
+        ],
+    )
     if m.timebase_n_used is not None:
         budget_detail.append(
             f"Timebase: ε from {m.timebase_n_used:,} clock tone(s)"

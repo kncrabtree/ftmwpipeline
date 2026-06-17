@@ -257,6 +257,22 @@ def _model(**over) -> _SummaryModel:
             "p90": 11.0,
             "max": 26.2,
         },
+        sigma_eps_pctiles={
+            "p10": 0.2,
+            "p25": 0.39,
+            "p50": 0.6,
+            "p75": 0.84,
+            "p90": 0.95,
+            "max": 1.05,
+        },
+        sigma_f_pctiles={
+            "p10": 0.74,
+            "p25": 1.08,
+            "p50": 3.66,
+            "p75": 8.62,
+            "p90": 11.0,
+            "max": 26.2,
+        },
         snr_bin_rows=[
             ("<100", 245, 1.3, 1.95, 5.41, 1.0, 0.0),
             ("100-1k", 31, 4.14, 9.68, 34.7, 1.0, 0.67),
@@ -444,6 +460,16 @@ def test_stage5_fit_quality_distributions():
     assert "| SNR_max | windows | median χ²ᵣ | p90 | max | pass | median ε(%) |" in md
     assert "| <100 |" in md
     assert "| 100-1k |" in md
+
+
+def test_stage6_sigma_f_budget_distribution_table():
+    md = _render_markdown(_model(), "x.ftmw", include_table=False)
+    # The σ_f budget distribution parallels the Stage 5 σ_stat percentile table.
+    assert "**σ_f budget distribution (kHz)**" in md
+    assert "| Component | p10 | p25 | median | p75 | p90 | max |" in md
+    assert "| σ_stat (NLS precision) |" in md
+    assert "| σ_ε (timebase) |" in md
+    assert "| σ_f (total) |" in md
 
 
 def test_stage4_window_distribution_table():

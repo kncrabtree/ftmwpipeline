@@ -79,6 +79,7 @@ from ._internal.stage6_impl import (
     set_sigma_floor_impl,
     split_peak_impl,
 )
+from ._internal.report_html_impl import report_full_impl
 from ._internal.report_impl import report_summary_impl, report_table_impl
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
@@ -1904,6 +1905,37 @@ class Pipeline:
         """
         return report_summary_impl(
             self.filepath, output=output, include_table=include_table
+        )
+
+    def report_full(
+        self,
+        *,
+        output_dir: Union[str, Path],
+        windows: str = "all",
+    ) -> str:
+        """Assemble the linked-HTML per-window report site (report Level 3).
+
+        Builds a local HTML site (index + one page per fit window, each with the
+        fit figure, fitted lines, parameter covariance, ledger candidates, and
+        the fit log) by reusing the existing renderers. Renders the persisted
+        record; does not recompute. Requires :meth:`review_run` to have built
+        the final-products table.
+
+        Parameters
+        ----------
+        output_dir :
+            Directory to write the site into (created if absent).
+        windows :
+            ``"all"`` (a page per window) or ``"attention"`` (pages only for
+            review-flagged windows). The index always lists every window.
+
+        Returns
+        -------
+        str
+            Path to the generated ``index.html``.
+        """
+        return report_full_impl(
+            self.filepath, output_dir=output_dir, windows=windows
         )
 
     def review_accept(

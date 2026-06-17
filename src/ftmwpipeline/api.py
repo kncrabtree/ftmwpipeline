@@ -1652,6 +1652,24 @@ def report_summary(
     )
 
 
+def report_full(
+    file_path: Union[str, Path],
+    *,
+    output_dir: Union[str, Path],
+    windows: str = "all",
+) -> str:
+    """Assemble the linked-HTML per-window report site (report Level 3).
+
+    Equivalent to :meth:`Pipeline.report_full`.  Builds a local HTML site (index
+    + one page per fit window, reusing the existing renderers); renders the
+    persisted record (does not recompute).  Requires ``review_run`` to have
+    built the final-products table.  Returns the path to ``index.html``.
+    """
+    return Pipeline.open(file_path).report_full(
+        output_dir=output_dir, windows=windows
+    )
+
+
 def review_accept(
     file_path: Union[str, Path],
     window_id: int,

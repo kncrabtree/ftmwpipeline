@@ -349,10 +349,25 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   capped/non-converged windows, SNR-aware-gate failures, uncalibrated state,
   σ_floor = 0). Read-only (the one replay is the deterministic active-FT rebuild
   for the per-band noise table). Markdown only; no emoji (Concerns use text tags).
-  Possible follow-on statistic (deferred): a σ_f **distribution** percentile table
-  in Stage 6 (parallels the Stage 5 σ_stat table; currently only medians).
-- **L3 `report full`** (dependency-light linked HTML per-window site reusing the
-  `fit show` figure renderer) — next.
+  Stage 6 also carries a σ_f **distribution** percentile table (σ_stat / σ_ε / σ_f,
+  parallel to the Stage 5 σ_stat table) alongside the medians.
+- **L3 `report full` — done (HTML; CSS polish pending).** `report full <file>
+  --output-dir DIR [--windows {all,attention}]` assembles a self-contained linked
+  HTML site: `index.html` (summary + window list with attention badges + full
+  calibrated line table) and one `windows/window_NNN.html` per fit window (the
+  `fit show` figure as a PNG, the fitted-lines table with raw + calibrated
+  frequencies and the σ_f breakdown, the parameter covariance matrix, the ledger
+  candidates, the Stage 6 user decisions, and the audit-trail fit log). `--windows
+  attention` restricts the generated *pages* to review-flagged windows; the index
+  always lists every window, hyperlinking the ones with a page. An assembler over
+  existing renderers (`render_fit_detail_impl` / `fit_window_report_text` /
+  `get_candidate_ledger_impl`) + the L2 summary model; never recomputes. Markup is
+  hand-rolled, with presentation factored into `assets/style.css` (a deliberately
+  minimal baseline — visual polish is a follow-on pass that touches only that
+  file). Dual-interface (`Pipeline.report_full` / `api.report_full` /
+  `_internal/report_html_impl.py`); unit (pure HTML helpers) + integration
+  (structure / well-formedness / read-only / cross-interface / windows-filter)
+  tests landed.
 Catalog match an optional `--catalog` cross-reference input to each (the
 fast-follow after core L1, sharing the tolerance helper with Step 2's pull
 surface): a geometric frequency-proximity annotation against a user catalog
