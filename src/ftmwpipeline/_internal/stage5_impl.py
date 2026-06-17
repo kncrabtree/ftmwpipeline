@@ -2460,7 +2460,10 @@ def fit_window_report_text(
 ) -> str:
     """Plain-text fit log for one window: header, fitted-peak table, and (with
     ``show_audit``) the add-one-peak audit trail. Read-only."""
-    from ..visualization.fit_detail import _format_spectroscopic, _peak_labels
+    from ..visualization.fit_detail import (
+        _format_spectroscopic,
+        frequency_sorted_labels,
+    )
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
@@ -2493,7 +2496,9 @@ def fit_window_report_text(
         "",
         header,
     ]
-    labels = _peak_labels(len(wf.fitted_peaks))
+    labels = frequency_sorted_labels(
+        [float(pk.frequency_mhz) for pk in wf.fitted_peaks]
+    )
     for pk, lbl in zip(wf.fitted_peaks, labels):
         freq_s = _format_spectroscopic(float(pk.frequency_mhz), pk.frequency_error)
         amp_val = float(pk.amplitude) * amp

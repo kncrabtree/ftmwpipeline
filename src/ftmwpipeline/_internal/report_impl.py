@@ -583,6 +583,14 @@ class _SummaryModel:
     sigma_f_pctiles: Dict[str, float] = field(default_factory=dict)
     n_stat_dominated: int = 0
     n_eps_dominated: int = 0
+    # Raw distributions backing the percentile tables (for histogram rendering;
+    # not used by the Markdown report, which shows percentiles only).
+    snr_values_promoted: List[float] = field(default_factory=list)
+    chi2r_values: List[float] = field(default_factory=list)
+    eps_values: List[float] = field(default_factory=list)
+    sigma_stat_values: List[float] = field(default_factory=list)
+    sigma_eps_values: List[float] = field(default_factory=list)
+    sigma_f_values: List[float] = field(default_factory=list)
 
 
 def _h5_attr_json(group: h5py.Group, key: str) -> dict:
@@ -1062,6 +1070,12 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         sigma_f_pctiles=_percentiles(s_f),
         n_stat_dominated=n_stat_dom,
         n_eps_dominated=n_eps_dom,
+        snr_values_promoted=[s for s in det_snrs if promo is None or s >= promo],
+        chi2r_values=[r[1] for r in gate_rows],
+        eps_values=[100.0 * r[3] for r in gate_rows],
+        sigma_stat_values=s_stat,
+        sigma_eps_values=s_eps,
+        sigma_f_values=s_f,
     )
 
 

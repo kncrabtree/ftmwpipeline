@@ -44,6 +44,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.gridspec import GridSpec, GridSpecBase, GridSpecFromSubplotSpec
+from matplotlib.ticker import ScalarFormatter
 
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
@@ -138,6 +139,24 @@ def _peak_labels(n: int) -> List[str]:
         else:
             j = i - 26
             out.append(chr(ord("A") + j // 26) + chr(ord("A") + j % 26))
+    return out
+
+
+def frequency_sorted_labels(freqs: Sequence[float]) -> List[str]:
+    """Alpha labels assigned by ascending frequency: the lowest-frequency peak
+    is ``A``, the next ``B``, and so on.
+
+    Returned in the *input* order -- ``labels[i]`` is the letter for
+    ``freqs[i]`` -- so callers can zip it straight onto their peak list without
+    re-sorting. This is the single source of the display letter so the figure
+    annotations, the fit-log peak table, and the HTML fitted-lines table all
+    agree.
+    """
+    n = len(freqs)
+    letters = _peak_labels(n)
+    out = [""] * n
+    for rank, i in enumerate(sorted(range(n), key=lambda j: freqs[j])):
+        out[i] = letters[rank]
     return out
 
 
@@ -354,7 +373,7 @@ def prepare_window_panels(
     band = 3.0 * float(np.median(sigma_c_slice)) if sigma_c_slice.size else 0.0
 
     fitted_freqs = [float(p.frequency_mhz) for p in window_fit.fitted_peaks]
-    labels = _peak_labels(len(fitted_freqs))
+    labels = frequency_sorted_labels(fitted_freqs)
     vline_plotter = _make_vline_plotter(fitted_freqs, labels, tau_us)
     in_window_spurs = [
         sp
@@ -564,6 +583,11 @@ def draw_component(
     ax_resid.tick_params(axis="both", labelsize=8)
     ax_resid.tick_params(axis="x", labelbottom=False)
     ax_data.tick_params(axis="both", labelsize=8)
+    # Show absolute frequencies on the shared x-axis: no "+2.96e4"-style offset
+    # and no scientific collapse, so each tick reads as a full MHz value.
+    xfmt = ScalarFormatter(useOffset=False)
+    xfmt.set_scientific(False)
+    ax_data.xaxis.set_major_formatter(xfmt)
     if show_xlabel:
         ax_data.set_xlabel("frequency (MHz)", fontsize=9)
 
@@ -674,9 +698,9 @@ def plot_window_panels(
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
     spurs: Optional[Sequence[dict]] = None,
-    panel_figsize: Tuple[float, float] = (5.4, 3.4),
+    panel_figsize: Tuple[float, float] = (6.6, 4.4),
     overview_figsize: Tuple[float, float] = (12.0, 2.6),
-    hist_figsize: Tuple[float, float] = (5.0, 3.4),
+    hist_figsize: Tuple[float, float] = (6.6, 4.4),
 ) -> Dict[str, plt.Figure]:
     """Render the per-window detail as separate, standalone panel figures.
 
@@ -718,6 +742,101 @@ def plot_window_panels(
     figures["hist"] = fig_h
 
     return figures
+
+
+def plot_correlation_heatmap(
+    covariance: np.ndarray,
+    labels: Sequence[str],
+    *,
+    figsize: Optional[Tuple[float, float]] = None,
+) -> plt.Figure:
+    """Render the parameter *correlation* matrix as a divergent heatmap.
+
+    Normalizes the covariance to correlation coefficients
+    ``rho_ij = cov_ij / sqrt(cov_ii * cov_jj)`` and draws them on a fixed
+    ``[-1, +1]`` divergent colour scale, so the off-diagonal structure (which
+    parameter pairs trade off) is legible at a glance even for a wide window
+    where the numeric matrix is unreadable. Zero-variance parameters (a
+    degenerate diagonal entry) yield a zero correlation rather than a NaN. The
+    diagonal is set to exactly 1.
+    """
+    arr = np.asarray(covariance, dtype=float)
+    n = len(labels)
+    diag = np.diag(arr).astype(float)
+    scale = np.sqrt(np.clip(diag, 0.0, None))
+    with np.errstate(divide="ignore", invalid="ignore"):
+        corr = arr / np.outer(scale, scale)
+    corr[~np.isfinite(corr)] = 0.0
+    np.fill_diagonal(corr, 1.0)
+
+    if figsize is None:
+        side = max(4.0, min(12.0, 0.32 * n + 1.6))
+        figsize = (side + 1.0, side)
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+    im = ax.imshow(corr, vmin=-1.0, vmax=1.0, cmap="RdBu_r", aspect="equal")
+    # Label every cell while the matrix is small enough to stay legible; thin
+    # the ticks out as the parameter count grows.
+    fontsize = 8.0 if n <= 20 else max(4.0, 8.0 - 0.12 * (n - 20))
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(labels, rotation=90, fontsize=fontsize)
+    ax.set_yticklabels(labels, fontsize=fontsize)
+    ax.set_title("Parameter correlation", fontsize=11)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label("correlation coefficient")
+    cbar.set_ticks([-1.0, -0.5, 0.0, 0.5, 1.0])
+    return fig
+
+
+def plot_summary_histograms(
+    specs: Sequence[Tuple[str, str, Sequence[float]]],
+    *,
+    ncols: int = 3,
+    bins: int = 30,
+) -> Optional[plt.Figure]:
+    """Render a grid of histograms for the report's summary distributions.
+
+    ``specs`` is a list of ``(title, xlabel, values)``. Each non-empty entry
+    becomes one histogram panel; a wide strictly-positive range (max/min > 100)
+    is drawn on a log x-axis so a heavy tail does not crush the bulk. Returns
+    ``None`` when no spec has data (the caller then omits the figure).
+    """
+    panels = [
+        (t, x, [float(v) for v in vals if np.isfinite(v)]) for t, x, vals in specs
+    ]
+    panels = [(t, x, v) for t, x, v in panels if v]
+    if not panels:
+        return None
+    n = len(panels)
+    ncols = max(1, min(ncols, n))
+    nrows = (n + ncols - 1) // ncols
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=(4.4 * ncols, 3.1 * nrows),
+        constrained_layout=True,
+        squeeze=False,
+    )
+    flat = list(axes.flat)
+    for ax, (title, xlabel, vals) in zip(flat, panels):
+        arr = np.asarray(vals, dtype=float)
+        lo, hi = float(arr.min()), float(arr.max())
+        if lo > 0.0 and hi / lo > 100.0:
+            edges = np.logspace(np.log10(lo), np.log10(hi), bins + 1)
+            ax.set_xscale("log")
+        else:
+            edges = np.linspace(lo, hi if hi > lo else lo + 1.0, bins + 1)
+        ax.hist(arr, bins=edges, color="tab:blue", alpha=0.8, edgecolor="white", lw=0.3)
+        med = float(np.median(arr))
+        ax.axvline(med, color="tab:red", lw=1.0, ls="--", label=f"median {med:.3g}")
+        ax.set_title(f"{title}  (n={arr.size})", fontsize=9)
+        ax.set_xlabel(xlabel, fontsize=8)
+        ax.set_ylabel("count", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.legend(fontsize=7)
+    for ax in flat[n:]:
+        ax.set_axis_off()
+    return fig
 
 
 def _make_vline_plotter(

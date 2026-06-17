@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import List
 
 import h5py
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
@@ -27,10 +31,12 @@ from ftmwpipeline._internal.report_html_impl import (
     _panel_figure_name,
     _table,
     _window_page_name,
+    _window_peak_table,
     report_full_impl,
 )
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
 from ftmwpipeline._internal.stage6_impl import review_run_impl
+from ftmwpipeline.core.data_structures import FinalPeak
 from ftmwpipeline.pipeline import Pipeline
 
 # ---------------------------------------------------------------------------
@@ -59,26 +65,254 @@ def test_page_is_wellformed_html():
     html.parser.HTMLParser().feed(doc)  # no exception => parses
 
 
+class _FakePeak:
+    def __init__(self, frequency_mhz, amplitude=1.0, phase=0.5):
+        self.frequency_mhz = frequency_mhz
+        self.amplitude = amplitude
+        self.phase = phase
+
+
+class _FakeWindow:
+    def __init__(self, freq_range):
+        self.freq_range = freq_range
+
+
+class _FakeWf:
+    """Minimal stand-in for a per-window FittingResult covariance block."""
+
+    def __init__(
+        self, cov, labels, freqs, tau=5.0, freq_range=(10.0, 20.0), quality_metrics=None
+    ):
+        self.covariance = cov
+        self.covariance_param_labels = labels
+        self.fitted_peaks = [_FakePeak(f) for f in freqs]
+        self.window = _FakeWindow(freq_range)
+        self.shared_parameters = {"tau_us": {"value": tau}}
+        self.quality_metrics = quality_metrics or {}
+
+
 def test_covariance_block_renders_small_matrix():
-    cov = np.array([[1.0, 0.5], [0.5, 2.0]])
-    block = "\n".join(_covariance_block(cov, ["amplitude_0", "offset_0"]))
-    assert "amplitude_0" in block
-    assert "offset_0" in block
-    assert "<table" in block
+    cov = np.array(
+        [
+            [1.0, 0.5, 0.0, 0.0],
+            [0.5, 2.0, 0.0, 0.0],
+            [0.0, 0.0, 3.0, 0.0],
+            [0.0, 0.0, 0.0, 0.5],
+        ]
+    )
+    wf = _FakeWf(cov, ["amplitude_0", "offset_0", "phase_0", "tau"], [12.0])
+    block = "\n".join(_covariance_block(wf, "corr.png", "lower"))
+    # Symbolic parameter labels (not the raw words) + Greek tau.
+    assert "amplitude_0" not in block
+    assert "<sub>A</sub>" in block  # amplitude of peak A
+    assert "&tau;" in block
+    # Variances table (with values), the heatmap image, and the numeric matrix.
+    assert "Variances" in block and "Value" in block
+    assert "corr.png" in block
+    assert 'class="covariance"' in block
+    assert 'class="cov-legend"' in block
 
 
 def test_covariance_block_summarizes_when_too_wide():
-    n = 30
+    n = 40
     cov = np.eye(n)
-    labels = [f"p{i}" for i in range(n)]
-    block = "\n".join(_covariance_block(cov, labels))
+    labels = [f"amplitude_{i}" for i in range(n)]
+    wf = _FakeWf(cov, labels, [10.0 + i for i in range(n)])
+    block = "\n".join(_covariance_block(wf, "corr.png", "lower"))
+    # The numeric matrix is suppressed, but the variances table and heatmap
+    # (which stay readable) are still shown.
     assert "too" in block and "wide" in block
-    assert "<table" not in block
+    assert 'class="covariance"' not in block
+    assert 'class="variances"' in block
+    assert "corr.png" in block
 
 
 def test_covariance_block_handles_missing():
-    block = "\n".join(_covariance_block(None, None))
+    wf = _FakeWf(None, None, [])
+    block = "\n".join(_covariance_block(wf, None, "lower"))
     assert "No parameter covariance" in block
+
+
+def test_param_symbol_and_value():
+    from ftmwpipeline._internal.report_html_impl import (
+        _param_symbol_html,
+        _param_symbol_mathtext,
+        _param_value,
+    )
+
+    letters = ["B", "A"]  # fit-peak 0 is the higher-frequency 'B'
+    assert _param_symbol_html("amplitude_0", letters) == "A<sub>B</sub>"
+    assert _param_symbol_html("offset_1", letters) == "f<sup>o</sup><sub>A</sub>"
+    assert _param_symbol_html("phase_0", letters) == "&phi;<sub>B</sub>"
+    assert _param_symbol_html("tau", letters) == "&tau;"
+    assert _param_symbol_html("baseline_re_2", letters) == "c<sup>Re</sup><sub>2</sub>"
+    assert _param_symbol_mathtext("phase_1", letters) == r"$\phi_{A}$"
+    assert _param_symbol_mathtext("tau", letters) == r"$\tau$"
+
+    wf = _FakeWf(
+        np.eye(4),
+        ["amplitude_0", "offset_0", "phase_0", "tau"],
+        [12.0],
+        quality_metrics={"baseline_coeff0_re": -8.4e-08, "baseline_coeff0_im": 1.2e-07},
+    )
+    wf.fitted_peaks[0].amplitude = 3.5
+    # offset value = sign * (freq - center); center of (10, 20) = 15.
+    assert _param_value("amplitude_0", wf, 15.0, 1.0) == pytest.approx(3.5)
+    assert _param_value("offset_0", wf, 15.0, 1.0) == pytest.approx(12.0 - 15.0)
+    assert _param_value("tau", wf, 15.0, 1.0) == pytest.approx(5.0)
+    # Baseline coefficients come from quality_metrics, not a wf attribute.
+    assert _param_value("baseline_re_0", wf, 15.0, 1.0) == pytest.approx(-8.4e-08)
+    assert _param_value("baseline_im_0", wf, 15.0, 1.0) == pytest.approx(1.2e-07)
+    assert _param_value("baseline_re_9", wf, 15.0, 1.0) is None
+
+
+def test_md_to_html_subset():
+    from ftmwpipeline._internal.report_html_impl import _md_to_html
+
+    md = "\n".join(
+        [
+            "# Title",
+            "",
+            "Some **bold** and `code`.",
+            "",
+            "- one",
+            "- two",
+            "",
+            "| A | B |",
+            "| --- | --- |",
+            "| 1 | 2 |",
+            "",
+            "$$",
+            "x = y + z",
+            "$$",
+        ]
+    )
+    html_out = _md_to_html(md)
+    assert "<h1>Title</h1>" in html_out
+    assert "<strong>bold</strong>" in html_out
+    assert "<code>code</code>" in html_out
+    assert "<ul>" in html_out and "<li>one</li>" in html_out
+    assert (
+        "<table>" in html_out and "<th>A</th>" in html_out and "<td>1</td>" in html_out
+    )
+    assert 'class="equation"' in html_out and "x = y + z" in html_out
+
+
+class _AuditStep:
+    def __init__(self, decision, off, c0, c1, p, reason):
+        self.decision = decision
+        self.candidate_offset_mhz = off
+        self.chi2_before = c0
+        self.chi2_after = c1
+        self.p_value = p
+        self.reason = reason
+
+
+def test_audit_block_frequency_and_k():
+    from ftmwpipeline._internal.report_html_impl import _audit_block
+
+    wf = _FakeWf(None, None, [])
+    wf.audit_trail = [
+        _AuditStep("seed", -0.5, 1e5, 5e4, 1e-9, "K=1 seed fit"),
+        _AuditStep("seed-blend", -0.5, 5e4, 2e4, 1e-9, "K=2 re-seed"),
+        _AuditStep("accept", +1.0, 2e4, 1e4, 1e-9, "+1 line(s)"),
+        _AuditStep("reject", +2.0, 1e4, 1e4, 1.0, "collapsed"),
+    ]
+    # center 100, lower sideband sign -1: freq = center - offset.
+    block = "\n".join(_audit_block(wf, 100.0, -1.0))
+    assert "Frequency (MHz)" in block and "<th>K</th>" in block
+    assert "audit-legend" in block
+    # K column: seed->1, seed-blend->2, accept->3, reject stays 3.
+    import re as _re
+
+    krows = _re.findall(r"<tr>(.*?)</tr>", block, _re.S)[1:]  # skip header
+    ks = [
+        _re.findall(r"<td>(.*?)</td>", r, _re.S)[4].strip() for r in krows
+    ]  # K is col index 4
+    assert ks == ["1", "2", "3", "3"]
+    # candidate frequency = 100 - (-0.5) = 100.5 for the seed.
+    assert "100.500000" in block
+
+
+def test_plot_summary_histograms():
+    from ftmwpipeline.visualization.fit_detail import plot_summary_histograms
+
+    fig = plot_summary_histograms(
+        [
+            ("chi2", "x", [1.0, 1.2, 1.5, 2.0, 5.0]),
+            ("empty", "y", []),
+            ("snr", "s", [3.0, 10.0, 100.0, 500.0]),
+        ]
+    )
+    try:
+        assert fig is not None
+        # Only the two non-empty specs become panels.
+        drawn = [ax for ax in fig.axes if ax.has_data()]
+        assert len(drawn) == 2
+    finally:
+        plt.close(fig)
+    assert plot_summary_histograms([("a", "x", []), ("b", "y", [])]) is None
+
+
+def _final_peak(freq_mhz, **kw):
+    defaults = dict(
+        frequency_mhz=freq_mhz,
+        frequency_raw_mhz=freq_mhz,
+        f_baseband_mhz=abs(freq_mhz - 40000.0),
+        sigma_f_khz=0.92,
+        sigma_stat_khz=0.30,
+        sigma_eps_khz=0.86,
+        sigma_floor_khz=0.0,
+        amplitude=6.0e-6,
+        phase=1.73,
+        snr=144.0,
+    )
+    defaults.update(kw)
+    return FinalPeak(**defaults)
+
+
+def test_window_peak_table_letters_low_to_high_and_bce():
+    # Pass peaks out of frequency order; letters must still go low->high.
+    peaks = [
+        _final_peak(
+            29148.12838,
+            sigma_f_khz=0.936,
+            amplitude=5.217e-6,
+            amplitude_error=0.033e-6,
+            phase=1.738,
+            phase_error=0.010,
+            snr=117.96,
+            snr_error=0.75,
+        ),
+        _final_peak(
+            29147.44669,
+            sigma_f_khz=0.917,
+            amplitude=6.377e-6,
+            amplitude_error=0.036e-6,
+            phase=1.7303,
+            phase_error=0.0086,
+            snr=144.17,
+            snr_error=0.81,
+        ),
+    ]
+    table = _window_peak_table(peaks, "uV", 1e-6)
+    assert "<th>Peak</th>" in table
+    # The lower-frequency peak (29147...) is 'A', the higher ('B'); the table
+    # rows stay in the given order, so 'A' annotates the second row's peak.
+    assert "<td>A</td>" in table and "<td>B</td>" in table
+    a_pos = table.index("29147.44669")
+    b_pos = table.index("29148.12838")
+    # 'B' label appears before 'A' label in source (first row is the high peak),
+    # but the A row holds the low frequency.
+    assert table.index("<td>A</td>") < a_pos
+    assert table.index("<td>B</td>") < b_pos
+    # BCE value(unc) for calibrated f / amplitude / phase / snr.
+    assert "29147.44669(92)" in table  # f with sigma_f 0.917 kHz
+    assert "6.377(36)" in table  # amplitude in uV
+    assert "1.7303(86)" in table  # phase
+    assert "144.17(81)" in table  # snr
+    # Raw frequency stays plain (not BCE).
+    assert "29147.446690" in table or "29147.44669" in table
 
 
 def test_name_helpers_zero_pad():
@@ -163,20 +397,38 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     pages = list((out / "windows").glob("*.html"))
     figures = list((out / "figures").glob("*.png"))
     assert pages and figures
-    # One detail page per window; one PNG per panel (overview/re/im/mag/hist).
-    assert len(figures) == len(pages) * len(_PANEL_ORDER)
+    # One PNG per panel (overview/re/im/mag/hist) per window, plus an optional
+    # correlation heatmap (``_corr.png``) for each window that has a persisted
+    # covariance, plus the one site-level summary-distributions figure.
+    corr_pngs = [f for f in figures if f.name.endswith("_corr.png")]
+    hist_pngs = [f for f in figures if f.name.endswith("_summary_histograms.png")]
+    panel_pngs = [
+        f
+        for f in figures
+        if not f.name.endswith(("_corr.png", "_summary_histograms.png"))
+    ]
+    assert len(panel_pngs) == len(pages) * len(_PANEL_ORDER)
+    assert len(corr_pngs) <= len(pages)
+    assert len(hist_pngs) == 1
+    # The Level-2 methods page is built and linked from the index summary.
+    assert (out / "methods.html").exists()
     _assert_wellformed(out)
 
     idx = (out / "index.html").read_text()
     assert "FTMW pipeline report" in idx
     assert "Final line list" in idx
     assert 'href="windows/window_' in idx  # links to the window pages
+    assert 'href="methods.html"' in idx
+    methods = (out / "methods.html").read_text()
+    assert "Distributions" in methods
+    assert "_summary_histograms.png" in methods
 
     page = pages[0].read_text()
     assert "<h2>Fit</h2>" in page
-    # The fit detail is a flexbox of separate panel images, not one figure.
+    # The fit detail is a responsive grid of separate panel images, not one
+    # figure: overview full-width on top, then the Re/Im/|X|/hist grid.
     assert 'class="fit-panels"' in page
-    assert 'class="panel-row"' in page
+    assert 'class="panel-grid"' in page
     assert page.count("<img") >= len(_PANEL_ORDER)
     for panel in _PANEL_ORDER:
         assert f"_{panel}.png" in page

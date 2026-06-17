@@ -1,11 +1,18 @@
 """Unit tests for the consolidated fit-detail formatting helpers."""
 
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 
 from ftmwpipeline.visualization.fit_detail import (
     _format_spectroscopic,
     _format_spectroscopic_sci,
     _peak_labels,
+    frequency_sorted_labels,
+    plot_correlation_heatmap,
 )
 
 
@@ -57,3 +64,40 @@ class TestPeakLabels:
 
     def test_empty(self):
         assert _peak_labels(0) == []
+
+
+class TestFrequencySortedLabels:
+    def test_lowest_frequency_is_a(self):
+        # Returned in input order; the letter tracks ascending frequency.
+        assert frequency_sorted_labels([30.0, 10.0, 20.0]) == ["C", "A", "B"]
+
+    def test_already_sorted(self):
+        assert frequency_sorted_labels([1.0, 2.0, 3.0]) == ["A", "B", "C"]
+
+    def test_empty(self):
+        assert frequency_sorted_labels([]) == []
+
+
+class TestCorrelationHeatmap:
+    def test_normalizes_and_bounds(self):
+        cov = np.array([[4.0, 2.0], [2.0, 1.0]])  # corr_01 = 2/sqrt(4*1) = 1.0
+        fig = plot_correlation_heatmap(cov, ["a", "b"])
+        try:
+            im = fig.axes[0].images[0]
+            data = im.get_array()
+            assert data[0, 0] == pytest.approx(1.0)
+            assert data[0, 1] == pytest.approx(1.0)
+            assert im.get_clim() == (-1.0, 1.0)
+        finally:
+            plt.close(fig)
+
+    def test_zero_variance_is_finite(self):
+        # A degenerate (zero-variance) parameter must not produce NaNs.
+        cov = np.array([[1.0, 0.0], [0.0, 0.0]])
+        fig = plot_correlation_heatmap(cov, ["a", "b"])
+        try:
+            data = fig.axes[0].images[0].get_array()
+            assert np.isfinite(np.asarray(data)).all()
+            assert data[1, 1] == pytest.approx(1.0)  # diagonal forced to 1
+        finally:
+            plt.close(fig)
