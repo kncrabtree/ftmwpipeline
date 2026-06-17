@@ -204,6 +204,8 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .winmap-svg { width: 100%; height: auto; display: block; }
 .winmap-rect { fill: #9bb0c4; stroke: #6b8298; stroke-width: 0.5; }
 .winmap-rect.attn { fill: #f4a23b; stroke: #b9741a; }
+/* "You are here" on a window page: a bold dark outline over the fill. */
+.winmap-rect.current { stroke: #11151a; stroke-width: 2; }
 .winmap a:hover .winmap-rect, .winmap-rect:hover { fill: #1559b3; stroke: #0d3f86;
                                                    cursor: pointer; }
 .winmap-axis { stroke: #c0c7cf; stroke-width: 1; }
@@ -514,6 +516,13 @@ def _index_summary_block(model: Any, products: FinalProducts) -> List[str]:
     ]
 
 
+# Symmetric horizontal margin (figure fraction) shared by the overview figure's
+# axes box and the window-map SVG, so the two line up and the edge frequency
+# labels have room. The figure drops its y-axis labels (scale shown as a ymax
+# annotation) so the plot flushes equally to both edges.
+_OVERVIEW_MARGIN_FRAC = 0.045
+
+
 def _plot_index_overview(
     bundle: Any,
     attention_ranges: List[Tuple[float, float]],
@@ -525,7 +534,10 @@ def _plot_index_overview(
     Renders the same trimmed active-FT magnitude the per-window overview panel
     draws, but across the whole band and marking every review-flagged window, so
     the index opens on a picture of where the lines (and the windows needing
-    attention) sit. Returns a matplotlib Figure.
+    attention) sit. The y-axis carries no labels (the scale is annotated as the
+    peak magnitude) so the data flushes symmetrically to both edges, and the
+    axes box uses :data:`_OVERVIEW_MARGIN_FRAC` so it lines up with the window
+    map below it. Returns a matplotlib Figure.
     """
     import matplotlib.pyplot as plt
 
@@ -536,23 +548,42 @@ def _plot_index_overview(
         lo, hi = float(min(bundle.trim_mhz)), float(max(bundle.trim_mhz))
         m = (f >= lo) & (f <= hi)
         f, spec = f[m], spec[m]
-    fig = plt.figure(figsize=figsize, constrained_layout=True)
-    ax = fig.add_subplot(111)
-    ax.plot(f, np.abs(spec) * amp, color="0.3", lw=0.5)
+    mag = np.abs(spec) * amp
+    fig = plt.figure(figsize=figsize)
+    # Explicit axes box: symmetric L/R margins, room below for the x labels and
+    # above for the title.
+    ax = fig.add_axes(
+        (_OVERVIEW_MARGIN_FRAC, 0.22, 1.0 - 2.0 * _OVERVIEW_MARGIN_FRAC, 0.60)
+    )
+    ax.plot(f, mag, color="0.3", lw=0.5)
     for lo_w, hi_w in attention_ranges:
         ax.axvspan(
             min(lo_w, hi_w), max(lo_w, hi_w), color="tab:orange", alpha=0.35, zorder=0
         )
     if f.size:
         ax.set_xlim(float(f[0]), float(f[-1]))
+    ax.set_ylim(bottom=0.0)
     ax.set_xlabel("frequency (MHz)", fontsize=9)
+    # Drop the y tick labels (the long unit string is what pushed the left
+    # margin out); keep short inner ticks as a scale cue and annotate the peak.
+    ax.tick_params(axis="y", direction="in", length=3, labelleft=False)
+    ax.tick_params(axis="x", labelsize=8)
+    ymax = float(mag.max()) if mag.size else 0.0
     suffix = f" {bundle.units_label}" if bundle.units_label else ""
-    ax.set_ylabel(f"|X(f)|{suffix}", fontsize=9)
+    ax.text(
+        0.005,
+        0.97,
+        f"|X| max = {_g(ymax, 3)}{suffix}",
+        transform=ax.transAxes,
+        ha="left",
+        va="top",
+        fontsize=8,
+        color="0.35",
+    )
     title = "full spectrum"
     if attention_ranges:
         title += " (attention windows shaded)"
     ax.set_title(title, fontsize=10)
-    ax.tick_params(labelsize=8)
     return fig
 
 
@@ -566,36 +597,50 @@ def _window_map_svg(
     rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]],
     band: Tuple[float, float],
     stem: str,
+    *,
+    link_prefix: str,
+    thumb_prefix: str,
+    current_id: Optional[int] = None,
 ) -> str:
     """A clickable SVG window-map strip spanning the band.
 
-    One ``<rect>`` per window, positioned by frequency and coloured by attention;
-    a window with a detail page is wrapped in an SVG ``<a>`` (click navigates)
-    and carries ``data-thumb`` (its magnitude panel) for the optional hover-zoom
-    script. Each rect's ``<title>`` is a native tooltip. ``rows`` is the index
-    table's ``(wid, lo, hi, k, chi2r, has_page, attn)`` tuples.
+    One ``<rect>`` per window, positioned by frequency and coloured by attention
+    (the *current_id* window, when on a window page, gets a "you are here"
+    outline); a window with a detail page is wrapped in an SVG ``<a>`` (click
+    navigates) and carries ``data-thumb`` (its magnitude panel) for the optional
+    hover-zoom script. Each rect's ``<title>`` is the native tooltip (and the
+    text the popup reuses). ``rows`` is the index table's
+    ``(wid, lo, hi, k, chi2r, has_page, attn)`` tuples; *link_prefix* /
+    *thumb_prefix* make the page/figure paths resolve from either the index
+    (``"windows/"`` / ``"figures/"``) or a window page (``""`` / ``"../figures/"``).
+    The horizontal margin matches the overview figure (:data:`_OVERVIEW_MARGIN_FRAC`)
+    so the strip lines up with it and the edge frequency labels are not clipped.
     """
     lo, hi = float(min(band)), float(max(band))
     span = hi - lo if hi > lo else 1.0
-    pad_l = pad_r = 6.0
+    pad = _OVERVIEW_MARGIN_FRAC * _WINMAP_W
     top = 6.0
     strip_h = 40.0
-    usable = _WINMAP_W - pad_l - pad_r
+    usable = _WINMAP_W - 2.0 * pad
 
     def x_of(f: float) -> float:
-        return pad_l + (float(f) - lo) / span * usable
+        return pad + (float(f) - lo) / span * usable
 
     parts: List[str] = [
         f'<svg class="winmap-svg" viewBox="0 0 {_WINMAP_W:.0f} {_WINMAP_H:.0f}" '
         'preserveAspectRatio="xMidYMid meet" role="img" '
         'aria-label="window navigation map">',
-        f'<line class="winmap-axis" x1="{pad_l:.1f}" y1="{top + strip_h:.1f}" '
-        f'x2="{_WINMAP_W - pad_r:.1f}" y2="{top + strip_h:.1f}"/>',
+        f'<line class="winmap-axis" x1="{pad:.1f}" y1="{top + strip_h:.1f}" '
+        f'x2="{_WINMAP_W - pad:.1f}" y2="{top + strip_h:.1f}"/>',
     ]
     for wid, wlo, whi, k, chi2r, has_page, attn in rows:
         x0, x1 = x_of(min(wlo, whi)), x_of(max(wlo, whi))
         w = max(x1 - x0, 2.5)
-        cls = "winmap-rect attn" if attn else "winmap-rect"
+        cls = "winmap-rect"
+        if attn:
+            cls += " attn"
+        if current_id is not None and wid == current_id:
+            cls += " current"
         info = (
             f"window {wid}: {min(wlo, whi):.3f}–{max(wlo, whi):.3f} MHz, "
             f"{k} peak{'s' if k != 1 else ''}"
@@ -603,15 +648,17 @@ def _window_map_svg(
         if chi2r is not None:
             info += f", χ²ᵣ {chi2r:.2f}"
         thumb = (
-            f' data-thumb="figures/{stem}_window_{wid:03d}_mag.png"' if has_page else ""
+            f' data-thumb="{thumb_prefix}{stem}_window_{wid:03d}_mag.png"'
+            if has_page
+            else ""
         )
         rect = (
             f'<rect class="{cls}" x="{x0:.1f}" y="{top:.1f}" width="{w:.1f}" '
-            f'height="{strip_h:.1f}" data-window="{wid}" '
-            f'data-info="{_esc(info)}"{thumb}><title>{_esc(info)}</title></rect>'
+            f'height="{strip_h:.1f}" data-window="{wid}"{thumb}>'
+            f"<title>{_esc(info)}</title></rect>"
         )
         if has_page:
-            parts.append(f'<a href="windows/{_window_page_name(wid)}">{rect}</a>')
+            parts.append(f'<a href="{link_prefix}{_window_page_name(wid)}">{rect}</a>')
         else:
             parts.append(rect)
     n_ticks = 7
@@ -656,6 +703,14 @@ _WINMAP_JS = """<script>
   }
   function hide() { pop.style.display = 'none'; }
   rects.forEach(function (el) {
+    // Move the native <title> into a data attribute so the popup (below) is the
+    // only tooltip when scripting is on; without this script the <title> stays
+    // and the browser shows it natively.
+    var titleEl = el.querySelector('title');
+    if (titleEl) {
+      el.setAttribute('data-info', titleEl.textContent);
+      el.removeChild(titleEl);
+    }
     el.addEventListener('mouseenter', show);
     el.addEventListener('mousemove', move);
     el.addEventListener('mouseleave', hide);
@@ -1228,6 +1283,10 @@ def _window_page(
     next_id: Optional[int],
     catalog_matches: Optional[List[Optional[CatalogMatch]]] = None,
     merges: Optional[List[Dict[str, Any]]] = None,
+    nav_rows: Optional[
+        List[Tuple[int, float, float, int, Optional[float], bool, bool]]
+    ] = None,
+    band: Optional[Tuple[float, float]] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -1245,6 +1304,22 @@ def _window_page(
         )
     nav.append("</div>")
 
+    # Window-map quick-nav (same strip as the index, this window highlighted).
+    winmap: List[str] = []
+    if nav_rows and band is not None:
+        winmap = [
+            _window_map_svg(
+                nav_rows,
+                band,
+                stem,
+                link_prefix="",
+                thumb_prefix="../figures/",
+                current_id=window_id,
+            ),
+            '<p class="winmap-hint">Quick-nav: each bar is a fit window (orange = '
+            "attention, outlined = this one); hover for details, click to jump.</p>",
+        ]
+
     body: List[str] = [
         *nav,
         f"<h1>{_esc(stem)} &mdash; window {window_id}</h1>",
@@ -1257,6 +1332,7 @@ def _window_page(
         f"<li><strong>&tau;:</strong> {_esc(_md_num(tau, 4))} &micro;s</li>",
         f"<li><strong>Shape:</strong> {_esc(shape)}</li>",
         "</ul>",
+        *winmap,
         *_attention_block(status),
         "<h2>Fit</h2>",
         *_fit_panels_block(panel_files),
@@ -1272,6 +1348,8 @@ def _window_page(
         *_ledger_block(ledger),
         *_decision_block(decisions),
     ]
+    if winmap:
+        body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
     return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
 
 
@@ -1382,6 +1460,30 @@ def report_full_impl(
         if st.needs_attention and wid in win_fits
     }
     page_ids = all_ids if key == "all" else [w for w in all_ids if w in attention_ids]
+    page_set = set(page_ids)
+
+    # Window-map rows + band, built once and shared by the index and every
+    # window page's quick-nav strip.
+    index_rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]] = [
+        (
+            wid,
+            *_window_range(win_fits[wid]),
+            len(win_fits[wid].fitted_peaks),
+            _opt_chi2(win_fits[wid]),
+            wid in page_set,
+            wid in attention_ids,
+        )
+        for wid in all_ids
+    ]
+    nav_band: Optional[Tuple[float, float]] = None
+    if index_rows:
+        if bundle.trim_mhz is not None:
+            nav_band = (float(min(bundle.trim_mhz)), float(max(bundle.trim_mhz)))
+        else:
+            nav_band = (
+                min(min(r[1], r[2]) for r in index_rows),
+                max(max(r[1], r[2]) for r in index_rows),
+            )
 
     # Group consolidated final peaks + user decisions by window.
     peaks_by_window: Dict[int, List[FinalPeak]] = {}
@@ -1465,6 +1567,8 @@ def report_full_impl(
             next_id=next_id,
             catalog_matches=win_matches,
             merges=merges_by_window.get(wid),
+            nav_rows=index_rows,
+            band=nav_band,
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
@@ -1502,38 +1606,25 @@ def report_full_impl(
     except (ValueError, KeyError):
         overview_name = None
 
-    page_set = set(page_ids)
-    index_rows = [
-        (
-            wid,
-            *_window_range(win_fits[wid]),
-            len(win_fits[wid].fitted_peaks),
-            _opt_chi2(win_fits[wid]),
-            wid in page_set,
-            wid in attention_ids,
-        )
-        for wid in all_ids
-    ]
-
     # Spectrum section: the overview image (when rendered) over an interactive
-    # window-map strip (one clickable bar per window). The band spans the trim,
-    # else the window extent.
+    # window-map strip (one clickable bar per window).
     spectrum_section: List[str] = []
-    if index_rows:
-        if bundle.trim_mhz is not None:
-            band = (float(min(bundle.trim_mhz)), float(max(bundle.trim_mhz)))
-        else:
-            band = (
-                min(min(r[1], r[2]) for r in index_rows),
-                max(max(r[1], r[2]) for r in index_rows),
-            )
+    if index_rows and nav_band is not None:
         spectrum_section.append("<h2>Spectrum</h2>")
         if overview_name is not None:
             spectrum_section.append(
                 f'<div class="spectrum-overview"><img src="figures/'
                 f'{overview_name}" alt="full-spectrum overview"></div>'
             )
-        spectrum_section.append(_window_map_svg(index_rows, band, stem))
+        spectrum_section.append(
+            _window_map_svg(
+                index_rows,
+                nav_band,
+                stem,
+                link_prefix="windows/",
+                thumb_prefix="figures/",
+            )
+        )
         spectrum_section.append(
             '<p class="winmap-hint">Each bar is a fit window (orange = flagged for '
             "attention); hover for details, click to open its page.</p>"

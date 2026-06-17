@@ -552,6 +552,13 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "<h2>Fit history</h2>" in page
     # The raw fit-log dump was removed (it duplicated the structured tables).
     assert "Fit log" not in page
+    # The window-map quick-nav is present on each window page too, with this
+    # window highlighted and figure/page paths relative to the windows/ dir.
+    assert 'class="winmap"' in page
+    assert "winmap-rect current" in page  # the "you are here" highlight
+    assert 'data-thumb="../figures/' in page  # thumbnail path from a window page
+    assert 'href="window_' in page  # same-dir links (no windows/ prefix)
+    assert "winmap-pop" in page  # the hover-zoom script
 
 
 @pytest.mark.integration
