@@ -338,6 +338,19 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   always appears inline. Assembled once from the persisted record, never
   recomputed. Dual-interface (`Pipeline.report_summary` / `api.report_summary` /
   `_internal/report_impl.py`); cross-interface + renderer tests landed.
+  Each fitting stage (2–6) additionally carries: a **parameters table** (the
+  knobs the stage ran with), the governing **equation(s)**, **detailed result
+  tables** (per-band noise σ_x and noise-fraction; per-band τ + bimodality;
+  Stage 3 peak-strength SNR percentiles + per-band candidate/promoted density;
+  Stage 4 window-width and peaks-per-window percentiles; Stage 5 χ²ᵣ / shape-error
+  ε% / σ_stat percentiles + a χ²ᵣ-and-gate breakdown binned by window brightness;
+  Stage 6 the σ_f budget breakdown), and an **auto-flagged Concerns block** with
+  recommendations (low noise fraction, bimodal τ, τ-twin/shape-mismatch fallback,
+  capped/non-converged windows, SNR-aware-gate failures, uncalibrated state,
+  σ_floor = 0). Read-only (the one replay is the deterministic active-FT rebuild
+  for the per-band noise table). Markdown only; no emoji (Concerns use text tags).
+  Possible follow-on statistic (deferred): a σ_f **distribution** percentile table
+  in Stage 6 (parallels the Stage 5 σ_stat table; currently only medians).
 - **L3 `report full`** (dependency-light linked HTML per-window site reusing the
   `fit show` figure renderer) — next.
 Catalog match an optional `--catalog` cross-reference input to each (the
