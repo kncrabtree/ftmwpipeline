@@ -579,12 +579,11 @@ def _plot_index_overview(
         if attention_ranges:
             title += " (attention windows shaded)"
     ax.set_title(title, fontsize=10)
-    # Spine-free / light-grid presentation, matching the per-window panels, with
-    # the zero baseline emphasised.
-    from ..visualization.fit_detail import _apply_bare_style, _draw_bare_zero
+    # Spine-free / light-grid presentation, matching the per-window panels. The
+    # magnitude is strictly positive, so no zero baseline.
+    from ..visualization.fit_detail import _apply_bare_style
 
     _apply_bare_style(ax)
-    _draw_bare_zero(ax)
     return fig
 
 

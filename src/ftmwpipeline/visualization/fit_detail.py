@@ -306,6 +306,40 @@ class WindowPanelData:
     title: str
 
 
+# ---------------------------------------------------------------------------
+# Spine-free / light-grid presentation (shared by the report and CLI panels)
+# ---------------------------------------------------------------------------
+
+# Distinct colour for the noise-band (+/- sigma) reference lines and the
+# peak-position vlines: amber reads as a deliberate reference mark and stays
+# clear of both the grey grid and the red / blue / purple residual traces
+# (vlines are vertical, the noise bands horizontal dashed -- distinct by
+# orientation).
+_BARE_BAND_COLOR = "#d4920a"
+# The zero baseline, emphasised so it pops out of the faint grid.
+_BARE_ZERO_COLOR = "#2a2a2a"
+
+
+def _apply_bare_style(ax: plt.Axes) -> None:
+    """Strip an axes to a spine-free, tick-mark-free look with a light major grid.
+
+    No spines (the top / right ones especially read as clutter), no tick marks
+    (labels kept), and a faint major grid in their place, sitting behind the
+    data. The reference marks (noise band, peak vlines, zero baseline) are
+    coloured distinctly so they are not mistaken for grid lines.
+    """
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(length=0)
+    ax.grid(True, which="major", color="#dbe0e6", lw=0.6, zorder=0)
+    ax.set_axisbelow(True)
+
+
+def _draw_bare_zero(ax: plt.Axes) -> None:
+    """Emphasised y = 0 baseline for a bare-style axes (darker than the grid)."""
+    ax.axhline(0.0, color=_BARE_ZERO_COLOR, lw=0.9, alpha=0.65, zorder=2.5)
+
+
 def prepare_window_panels(
     window_fit: FittingResult,
     *,
@@ -321,8 +355,8 @@ def prepare_window_panels(
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
     spurs: Optional[Sequence[dict]] = None,
-    vline_color: str = "tab:gray",
-    vline_alpha: float = 0.45,
+    vline_color: str = _BARE_BAND_COLOR,
+    vline_alpha: float = 0.7,
 ) -> WindowPanelData:
     """Prepare the per-window model, residual, and annotations once.
 
@@ -472,6 +506,8 @@ def draw_overview(ax: plt.Axes, data: WindowPanelData) -> None:
         data.usuffix,
         data.trim_mhz,
     )
+    # Spine-free / light-grid presentation; magnitude is positive, no zero line.
+    _apply_bare_style(ax)
 
 
 def _annotate_spurs_lattice(
@@ -516,36 +552,6 @@ def _annotate_spurs_lattice(
         ax_data.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
 
-def _apply_bare_style(ax: plt.Axes) -> None:
-    """Strip an axes to a spine-free, tick-mark-free look with a light major grid.
-
-    A presentation style for the spectral panels: no spines (the top/right ones
-    especially read as clutter), no tick marks (labels kept), and a faint major
-    grid in their place. The grid sits behind the data; the noise-level lines are
-    coloured distinctly (see :func:`draw_component`) so they are not mistaken for
-    grid lines.
-    """
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    ax.tick_params(length=0)
-    ax.grid(True, which="major", color="#dbe0e6", lw=0.6, zorder=0)
-    ax.set_axisbelow(True)
-
-
-# Distinct colour for the noise-band (+/- sigma) reference lines in the bare
-# style: amber reads as a deliberate reference line and stays clear of both the
-# grey grid and the red / blue / purple residual traces. Peak-position vlines
-# reuse it (vertical vs the horizontal dashed bands -- distinct by orientation).
-_BARE_BAND_COLOR = "#d4920a"
-# The zero baseline, emphasised so it pops out of the faint grid.
-_BARE_ZERO_COLOR = "#2a2a2a"
-
-
-def _draw_bare_zero(ax: plt.Axes) -> None:
-    """Emphasised y = 0 baseline for a bare-style axes (darker than the grid)."""
-    ax.axhline(0.0, color=_BARE_ZERO_COLOR, lw=0.9, alpha=0.65, zorder=2.5)
-
-
 def draw_component(
     ax_resid: plt.Axes,
     ax_data: plt.Axes,
@@ -553,24 +559,21 @@ def draw_component(
     component: str,
     *,
     show_xlabel: bool = True,
-    bare_style: bool = False,
 ) -> None:
     """Paint one component (``"re"`` / ``"im"`` / ``"mag"``).
 
     Residual strip on top, data + model below, sharing an x-axis. The residual
     stays native (so ``|residual|`` is bin-for-bin); the ``|X|`` data overlay
-    uses the 2x display grid -- see the module docstring. ``bare_style`` swaps
-    the spines/ticks for a light major grid (see :func:`_apply_bare_style`),
-    with the noise-band lines recoloured so they stay distinct.
+    uses the 2x display grid -- see the module docstring. Rendered spine-free
+    over a light major grid (:func:`_apply_bare_style`): the noise band is amber
+    dashed and the zero baseline is emphasised, both distinct from the grid. The
+    strictly-positive magnitude panels carry no zero line.
     """
     proj, color, dlabel = _COMPONENT_SPECS[component]
     amp = data.amp
     usuffix = data.usuffix
     band_s = data.band * amp
     is_mag = component == "mag"
-    band_color = _BARE_BAND_COLOR if bare_style else "0.3"
-    band_lw = 0.9 if bare_style else 0.5
-    zero_color = "#999999" if bare_style else "0.5"
 
     # Peak vlines: labelled on the residual strip (top), plain on the data panel.
     data.vline_plotter(ax_resid, True)
@@ -580,15 +583,13 @@ def draw_component(
     if is_mag:
         ax_resid.plot(data.f_slice, np.abs(data.residual) * amp, color=color, lw=0.7)
         if band_s > 0.0:
-            ax_resid.axhline(band_s, color=band_color, lw=band_lw, ls="--", zorder=2)
+            ax_resid.axhline(band_s, color=_BARE_BAND_COLOR, lw=0.9, ls="--", zorder=2)
         ax_resid.set_ylabel(f"|resid|{usuffix}", fontsize=8)
     else:
-        if not bare_style:  # bare draws an emphasised zero below
-            ax_resid.axhline(0.0, color=zero_color, lw=0.4, zorder=2)
         ax_resid.plot(data.f_slice, proj(data.residual) * amp, color=color, lw=0.7)
         if band_s > 0.0:
-            ax_resid.axhline(band_s, color=band_color, lw=band_lw, ls="--", zorder=2)
-            ax_resid.axhline(-band_s, color=band_color, lw=band_lw, ls="--", zorder=2)
+            ax_resid.axhline(band_s, color=_BARE_BAND_COLOR, lw=0.9, ls="--", zorder=2)
+            ax_resid.axhline(-band_s, color=_BARE_BAND_COLOR, lw=0.9, ls="--", zorder=2)
         ax_resid.set_ylabel(f"{dlabel} resid{usuffix}", fontsize=8)
 
     # Data + model panel.
@@ -632,19 +633,21 @@ def draw_component(
     if show_xlabel:
         ax_data.set_xlabel("frequency (MHz)", fontsize=9)
 
-    if bare_style:
-        _apply_bare_style(ax_resid)
-        _apply_bare_style(ax_data)
-        # Emphasise the zero baseline on both strips (the residual zero and the
-        # data panel's zero crossing for the dispersive re / im traces).
+    _apply_bare_style(ax_resid)
+    _apply_bare_style(ax_data)
+    # Emphasise the zero baseline only where zero is meaningful: the dispersive
+    # re / im residual and data traces cross it. The magnitude panels are
+    # strictly positive, so no zero line.
+    if not is_mag:
         _draw_bare_zero(ax_resid)
-        if not is_mag:
-            _draw_bare_zero(ax_data)
+        _draw_bare_zero(ax_data)
 
 
 def draw_residual_hist(ax: plt.Axes, data: WindowPanelData) -> None:
     """|residual| histogram against the Rayleigh noise model."""
     _draw_residual_hist(ax, data.residual, data.sigma_slice, data.amp, data.usuffix)
+    # Spine-free / light-grid presentation, matching the spectral panels.
+    _apply_bare_style(ax)
 
 
 def draw_peak_table(ax: plt.Axes, data: WindowPanelData) -> None:
@@ -761,8 +764,6 @@ def plot_window_panels(
     in-figure peak table is omitted -- the HTML page renders its own table. The
     caller owns closing the figures.
     """
-    # The report panels use the spine-free / light-grid style; the peak vlines
-    # take the amber reference colour so they stay distinct from the grid.
     data = prepare_window_panels(
         window_fit,
         frequencies=frequencies,
@@ -776,8 +777,6 @@ def plot_window_panels(
         freq_padded=freq_padded,
         spec_padded=spec_padded,
         spurs=spurs,
-        vline_color=_BARE_BAND_COLOR,
-        vline_alpha=0.55,
     )
     figures: Dict[str, plt.Figure] = {}
 
@@ -788,7 +787,7 @@ def plot_window_panels(
     for component in ("re", "im", "mag"):
         fig_c = plt.figure(figsize=panel_figsize, constrained_layout=True)
         ax_res, ax_dat = _stacked_pair(fig_c)
-        draw_component(ax_res, ax_dat, data, component, bare_style=True)
+        draw_component(ax_res, ax_dat, data, component)
         figures[component] = fig_c
 
     fig_h = plt.figure(figsize=hist_figsize, constrained_layout=True)
@@ -888,6 +887,7 @@ def plot_summary_histograms(
         ax.set_ylabel("count", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.legend(fontsize=7)
+        _apply_bare_style(ax)
     for ax in flat[n:]:
         ax.set_axis_off()
     return fig
@@ -900,7 +900,7 @@ def _make_vline_plotter(
     *,
     color: str = "tab:gray",
     alpha: float = 0.45,
-    lw: float = 0.7,
+    lw: float = 1.2,
 ) -> Callable[[plt.Axes, bool], None]:
     """Build the per-peak vertical-line annotator with row-staggered labels.
 
@@ -1003,7 +1003,7 @@ def _draw_data_model(
         markeredgecolor="black",
         zorder=2,
     )
-    ax.plot(f_fine, model_fine * amp, color=color, lw=1.2, zorder=3)
+    ax.plot(f_fine, model_fine * amp, color=color, lw=1.0, alpha=0.8, zorder=3)
     ax.plot(
         f_slice,
         model_native * amp,
@@ -1056,7 +1056,9 @@ def _draw_mag_data(
             markeredgecolor="black",
             zorder=2,
         )
-    ax.plot(f_fine, model_mag_fine * amp, color="tab:purple", lw=1.2, zorder=3)
+    ax.plot(
+        f_fine, model_mag_fine * amp, color="tab:purple", lw=1.0, alpha=0.8, zorder=3
+    )
     ax.plot(
         f_slice,
         model_mag_native * amp,
