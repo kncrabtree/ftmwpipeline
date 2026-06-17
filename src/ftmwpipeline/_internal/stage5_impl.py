@@ -2395,7 +2395,7 @@ def render_fit_detail_impl(
     title: Optional[str] = None,
 ) -> Any:
     """Render the consolidated per-window detail figure for one window."""
-    from ..visualization.fit_detail import plot_consolidated_detail
+    from ..visualization.fit_detail import DEFAULT_FIGSIZE, plot_consolidated_detail
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
@@ -2412,7 +2412,41 @@ def render_fit_detail_impl(
         trim_mhz=bundle.trim_mhz,
         freq_padded=bundle.freq_padded,
         spec_padded=bundle.spec_padded,
-        figsize=figsize if figsize is not None else (11, 8.5),
+        figsize=figsize if figsize is not None else DEFAULT_FIGSIZE,
+        spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
+    )
+
+
+def render_fit_panels_impl(
+    file_path: str,
+    window_id: int,
+    *,
+    bundle: Optional[_DetailBundle] = None,
+) -> Dict[str, Any]:
+    """Render one window's detail as separate, standalone panel figures.
+
+    Returns a dict keyed ``"overview"`` / ``"re"`` / ``"im"`` / ``"mag"`` /
+    ``"hist"`` (one :class:`~matplotlib.figure.Figure` per panel) for the HTML
+    report's flexbox -- the modular counterpart of
+    :func:`render_fit_detail_impl`, sharing its painters. The caller owns
+    closing the figures.
+    """
+    from ..visualization.fit_detail import plot_window_panels
+
+    bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
+    wf = bundle.fit.window_fit(window_id)
+    return plot_window_panels(
+        wf,
+        frequencies=bundle.frequencies,
+        complex_spectrum=bundle.complex_spectrum,
+        rms_noise=bundle.rms_noise,
+        sideband=bundle.sideband,
+        acquisition_us=bundle.acquisition_us,
+        amplitude_scale=bundle.amplitude_scale,
+        units_label=bundle.units_label,
+        trim_mhz=bundle.trim_mhz,
+        freq_padded=bundle.freq_padded,
+        spec_padded=bundle.spec_padded,
         spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
     )
 

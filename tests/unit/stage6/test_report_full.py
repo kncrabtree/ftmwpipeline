@@ -20,10 +20,11 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.report_html_impl import (
+    _PANEL_ORDER,
     _covariance_block,
     _esc,
-    _figure_name,
     _page,
+    _panel_figure_name,
     _table,
     _window_page_name,
     report_full_impl,
@@ -82,7 +83,7 @@ def test_covariance_block_handles_missing():
 
 def test_name_helpers_zero_pad():
     assert _window_page_name(7) == "window_007.html"
-    assert _figure_name("exp_2638", 7) == "exp_2638_window_007.png"
+    assert _panel_figure_name("exp_2638", 7, "mag") == "exp_2638_window_007_mag.png"
 
 
 def test_unknown_windows_filter_raises(tmp_path):
@@ -162,7 +163,8 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     pages = list((out / "windows").glob("*.html"))
     figures = list((out / "figures").glob("*.png"))
     assert pages and figures
-    assert len(pages) == len(figures)
+    # One detail page per window; one PNG per panel (overview/re/im/mag/hist).
+    assert len(figures) == len(pages) * len(_PANEL_ORDER)
     _assert_wellformed(out)
 
     idx = (out / "index.html").read_text()
@@ -172,7 +174,12 @@ def test_full_site_structure(stage5_small_file, tmp_path):
 
     page = pages[0].read_text()
     assert "<h2>Fit</h2>" in page
-    assert "<img" in page and "figures/" in page
+    # The fit detail is a flexbox of separate panel images, not one figure.
+    assert 'class="fit-panels"' in page
+    assert 'class="panel-row"' in page
+    assert page.count("<img") >= len(_PANEL_ORDER)
+    for panel in _PANEL_ORDER:
+        assert f"_{panel}.png" in page
     assert "Fitted lines" in page
     assert "Parameter covariance" in page
     assert "Ledger candidates" in page

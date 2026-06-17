@@ -351,16 +351,19 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   for the per-band noise table). Markdown only; no emoji (Concerns use text tags).
   Stage 6 also carries a σ_f **distribution** percentile table (σ_stat / σ_ε / σ_f,
   parallel to the Stage 5 σ_stat table) alongside the medians.
-- **L3 `report full` — done (HTML; CSS polish pending).** `report full <file>
-  --output-dir DIR [--windows {all,attention}]` assembles a self-contained linked
-  HTML site: `index.html` (summary + window list with attention badges + full
-  calibrated line table) and one `windows/window_NNN.html` per fit window (the
-  `fit show` figure as a PNG, the fitted-lines table with raw + calibrated
-  frequencies and the σ_f breakdown, the parameter covariance matrix, the ledger
-  candidates, the Stage 6 user decisions, and the audit-trail fit log). `--windows
-  attention` restricts the generated *pages* to review-flagged windows; the index
-  always lists every window, hyperlinking the ones with a page. An assembler over
-  existing renderers (`render_fit_detail_impl` / `fit_window_report_text` /
+- **L3 `report full` — done (HTML + modular panels; CSS polish pending).**
+  `report full <file> --output-dir DIR [--windows {all,attention}]` assembles a
+  self-contained linked HTML site: `index.html` (summary + window list with
+  attention badges + full calibrated line table) and one `windows/window_NNN.html`
+  per fit window (the fit detail rendered as **separate panel PNGs in a CSS
+  flexbox** — overview, three fused Re/Im/|X| panels, residual histogram — plus
+  the fitted-lines table with raw + calibrated frequencies and the σ_f breakdown,
+  the parameter covariance matrix, the ledger candidates, the Stage 6 user
+  decisions, and the audit-trail fit log). The per-window title/metadata is HTML
+  text (not an image). `--windows attention` restricts the generated *pages* to
+  review-flagged windows; the index always lists every window, hyperlinking the
+  ones with a page. An assembler over existing renderers
+  (`render_fit_panels_impl` / `fit_window_report_text` /
   `get_candidate_ledger_impl`) + the L2 summary model; never recomputes. Markup is
   hand-rolled, with presentation factored into `assets/style.css` (a deliberately
   minimal baseline — visual polish is a follow-on pass that touches only that
@@ -368,6 +371,16 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   `_internal/report_html_impl.py`); unit (pure HTML helpers) + integration
   (structure / well-formedness / read-only / cross-interface / windows-filter)
   tests landed.
+
+  The Stage 5 fit-detail renderer (`visualization/fit_detail.py`) was refactored
+  to support this: a single `prepare_window_panels(...)` data-prep plus reusable
+  `draw_*` panel painters (matplotlib axes are not portable between figures, so
+  the shared unit is the painter + prepared data, not the axes). Two assemblers
+  consume them — the combined `fit show` figure (rebuilt at ~16:9 with each data
+  panel fused with a stacked residual strip; `plot_consolidated_detail`) and the
+  modular per-panel figures (`plot_window_panels`, one figure per panel for the
+  HTML flexbox). The in-figure ASCII peak table is combined-figure only; the HTML
+  page renders its own table.
 Catalog match an optional `--catalog` cross-reference input to each (the
 fast-follow after core L1, sharing the tolerance helper with Step 2's pull
 surface): a geometric frequency-proximity annotation against a user catalog

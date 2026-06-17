@@ -1,17 +1,20 @@
 """
 Consolidated Stage 5 per-window detail figure.
 
-A single landscape-letter figure summarising one fit window:
+A single ~16:9 figure summarising one fit window, built from reusable painters
+(:func:`prepare_window_panels` + ``draw_*``) so the combined figure and the
+modular per-panel figures (the HTML report's flexbox, :func:`plot_window_panels`)
+share one source of truth:
 
 * Row 1 -- full-spectrum context (data magnitude) with the window highlighted.
-* Row 2 -- Re / Im / |residual| panels with a vertical line at every fitted
-  peak's molecular frequency. All three are on the fit's native grid so
-  |residual| = sqrt(Re^2 + Im^2) bin-for-bin.
-* Row 3 -- Re / Im / |z| data + model overlays. The model is drawn on an
-  oversampled grid (smooth analytic line shape) *and* as small ``x`` markers at
-  the native data bins, so the eye compares model-at-bin with data-at-bin and
-  the smooth curve is never mistaken for a denser fit.
-* Row 4 -- |residual| histogram against the Rayleigh noise model (left) and a
+* Row 2 -- three fused Re / Im / |X| panels, each a thin residual strip over a
+  data + model panel sharing one x-axis, with a vertical line at every fitted
+  peak's molecular frequency. The residual stays on the fit's native grid so
+  |residual| = sqrt(Re^2 + Im^2) bin-for-bin. The data + model overlay draws the
+  model on an oversampled grid (smooth analytic line shape) *and* as small ``x``
+  markers at the native data bins, so the eye compares model-at-bin with
+  data-at-bin and the smooth curve is never mistaken for a denser fit.
+* Row 3 -- |residual| histogram against the Rayleigh noise model (left) and a
   fitted-peak table with PDG-style uncertainties (right).
 
 Magnitude honesty
@@ -36,11 +39,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.gridspec import GridSpec
+from matplotlib.gridspec import GridSpec, GridSpecBase, GridSpecFromSubplotSpec
 
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
@@ -56,6 +59,10 @@ MODEL_OVERSAMPLE = 8
 # Exactly-2x zero-fill for the magnitude panels (the information limit for a
 # magnitude spectrum; finer is pure interpolation).
 DISPLAY_PAD_FACTOR = 2
+
+# Default combined-figure size, ~16:9 for a typical widescreen monitor (the
+# detail figure is viewed on screen far more often than printed).
+DEFAULT_FIGSIZE = (13.33, 7.5)
 
 
 # ---------------------------------------------------------------------------
@@ -232,9 +239,55 @@ def _eval_model(
 
 
 # ---------------------------------------------------------------------------
-# The figure
+# Panel data preparation (one source of truth for both assemblers)
 # ---------------------------------------------------------------------------
-def plot_consolidated_detail(
+@dataclass
+class WindowPanelData:
+    """Everything the per-window painters need, prepared once.
+
+    Produced by :func:`prepare_window_panels` and consumed by the painters
+    below, so the combined ``fit show`` figure and the modular per-panel figures
+    (the HTML report's flexbox) draw from the same prepared arrays rather than
+    each re-deriving the model and residual.
+    """
+
+    # Full-spectrum context (overview panel).
+    frequencies: np.ndarray
+    complex_spectrum: np.ndarray
+    trim_mhz: Optional[Tuple[float, float]]
+    # Window geometry.
+    lo_f: float
+    hi_f: float
+    center: float
+    # Native window slices (every statistic lives here).
+    f_slice: np.ndarray
+    z_slice: np.ndarray
+    sigma_slice: np.ndarray
+    model_slice: np.ndarray
+    residual: np.ndarray
+    # Oversampled smooth-model overlay (display only).
+    f_fine: np.ndarray
+    model_fine: np.ndarray
+    # Display transforms / noise band.
+    amp: float
+    usuffix: str
+    units_label: str
+    band: float
+    freq_padded: Optional[np.ndarray]
+    spec_padded: Optional[np.ndarray]
+    # Peak annotations and the fitted-peak table.
+    fitted_peaks: List[FittedPeak]
+    fitted_freqs: List[float]
+    labels: List[str]
+    vline_plotter: Callable[[plt.Axes, bool], None]
+    in_window_spurs: List[dict]
+    lattice_peaks: List[FittedPeak]
+    tau_us: float
+    shape: str
+    title: str
+
+
+def prepare_window_panels(
     window_fit: FittingResult,
     *,
     frequencies: np.ndarray,
@@ -242,32 +295,26 @@ def plot_consolidated_detail(
     rms_noise: np.ndarray,
     sideband: SidebandLike,
     acquisition_us: float,
-    title: str,
+    title: str = "",
     amplitude_scale: float = 1.0,
     units_label: str = "",
     trim_mhz: Optional[Tuple[float, float]] = None,
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
-    figsize: Tuple[float, float] = (11, 8.5),
     spurs: Optional[Sequence[dict]] = None,
-) -> plt.Figure:
-    """Render the consolidated per-window detail figure (see module docstring).
+) -> WindowPanelData:
+    """Prepare the per-window model, residual, and annotations once.
 
-    ``frequencies`` / ``complex_spectrum`` / ``rms_noise`` are the native active
-    grid (ascending molecular frequency) the fit lives on. ``freq_padded`` /
-    ``spec_padded`` are the exactly-2x zero-filled display grid for the
-    magnitude panels; when omitted, the magnitude panels fall back to native.
-    ``spurs`` is the fit's gated-spur catalogue
-    (``SpectrumFit.diagnostics["gated_spurs"]``: dicts with ``center_mhz``
-    and ``source``); in-window entries are marked on the data and residual
-    panels so a masked tone is never mistaken for an un-fit line.
+    The native window slice drives every statistic (residual, noise band,
+    histogram); the oversampled ``model_fine`` and the 2x ``freq_padded`` /
+    ``spec_padded`` grids are display-only overlays. See the module docstring
+    for the magnitude-honesty rationale.
     """
     if window_fit.window is None:
         raise ValueError(
             "window_fit has no attached SpectralWindow -- cannot plot detail "
             "(the fit was loaded without window context)"
         )
-    s = sideband_sign(sideband)
     lo, hi = window_fit.window.freq_range
     lo_f, hi_f = float(min(lo, hi)), float(max(lo, hi))
     center = 0.5 * (lo + hi)
@@ -306,165 +353,371 @@ def plot_consolidated_detail(
     sigma_c_slice = sigma_slice / np.sqrt(2.0)
     band = 3.0 * float(np.median(sigma_c_slice)) if sigma_c_slice.size else 0.0
 
-    amp = float(amplitude_scale)
-    usuffix = f" ({units_label})" if units_label else ""
-
-    fig = plt.figure(figsize=figsize)
-    fig.suptitle(title, fontsize=11)
-    gs = GridSpec(
-        nrows=4,
-        ncols=3,
-        figure=fig,
-        height_ratios=[1.0, 1.6, 1.6, 1.6],
-        hspace=0.45,
-        wspace=0.30,
-        left=0.06,
-        right=0.97,
-        top=0.92,
-        bottom=0.07,
-    )
-    ax_overview = fig.add_subplot(gs[0, :])
-    ax_re_res = fig.add_subplot(gs[1, 0])
-    ax_im_res = fig.add_subplot(gs[1, 1], sharex=ax_re_res)
-    ax_mag_res = fig.add_subplot(gs[1, 2], sharex=ax_re_res)
-    ax_re_dat = fig.add_subplot(gs[2, 0], sharex=ax_re_res)
-    ax_im_dat = fig.add_subplot(gs[2, 1], sharex=ax_re_res)
-    ax_mag_dat = fig.add_subplot(gs[2, 2], sharex=ax_re_res)
-    ax_hist = fig.add_subplot(gs[3, 0])
-    ax_peaks = fig.add_subplot(gs[3, 1:])
-    ax_peaks.set_axis_off()
-
-    _draw_overview(
-        ax_overview, frequencies, complex_spectrum, lo_f, hi_f, amp, usuffix, trim_mhz
-    )
-
     fitted_freqs = [float(p.frequency_mhz) for p in window_fit.fitted_peaks]
     labels = _peak_labels(len(fitted_freqs))
-    _vline_plotter = _make_vline_plotter(fitted_freqs, labels, tau_us)
-
-    # Row 2: residuals (native re / im / |residual|), all on the fit's native
-    # grid so |residual| = sqrt(Re^2 + Im^2) bin-for-bin and the three panels
-    # agree. (The |residual| must NOT be drawn on the 2x display grid: the
-    # padded data is the sinc-interpolation of the spectrum, but the analytic
-    # model is its smooth closed form, so subtracting them off the native bins
-    # plots the data's truncation ringing the model lacks -- a spurious
-    # magnitude residual that can dwarf the true one near a strong line. The 2x
-    # grid is for the data |X| overlay only, where that ringing is the point.)
-    band_s = band * amp
-
-    def _res(ax: plt.Axes, vals: np.ndarray, color: str, mag: bool) -> None:
-        if not mag:
-            ax.axhline(0.0, color="0.5", lw=0.4)
-        ax.plot(f_slice, vals * amp, color=color, lw=0.7)
-        if band_s > 0.0:
-            ax.axhline(band_s, color="0.3", lw=0.5, ls="--")
-            if not mag:
-                ax.axhline(-band_s, color="0.3", lw=0.5, ls="--")
-
-    for ax in (ax_re_res, ax_im_res, ax_mag_res):
-        _vline_plotter(ax, True)
-    _res(ax_re_res, np.real(residual), "tab:red", mag=False)
-    _res(ax_im_res, np.imag(residual), "tab:blue", mag=False)
-    _res(ax_mag_res, np.abs(residual), "tab:purple", mag=True)
-    ax_re_res.set_ylabel(f"Re residual{usuffix}", fontsize=9)
-    ax_im_res.set_ylabel(f"Im residual{usuffix}", fontsize=9)
-    ax_mag_res.set_ylabel(f"|residual|{usuffix}", fontsize=9)
-    for ax in (ax_re_res, ax_im_res, ax_mag_res):
-        ax.tick_params(axis="both", labelsize=8)
-        ax.tick_params(axis="x", labelbottom=False)
-
-    # Row 3: data + model (native re/im, 2x-zero-filled |X|), with model
-    # markers at native bins on every panel.
-    for ax in (ax_re_dat, ax_im_dat, ax_mag_dat):
-        _vline_plotter(ax, False)
-    _draw_data_model(
-        ax_re_dat,
-        f_slice,
-        np.real(z_slice),
-        f_fine,
-        np.real(model_fine),
-        np.real(model_slice),
-        "tab:red",
-        amp,
-    )
-    _draw_data_model(
-        ax_im_dat,
-        f_slice,
-        np.imag(z_slice),
-        f_fine,
-        np.imag(model_fine),
-        np.imag(model_slice),
-        "tab:blue",
-        amp,
-    )
-    _draw_mag_data(
-        ax_mag_dat,
-        f_slice,
-        np.abs(z_slice),
-        f_fine,
-        np.abs(model_fine),
-        np.abs(model_slice),
-        lo_f,
-        hi_f,
-        amp,
-        freq_padded,
-        spec_padded,
-    )
-    ax_re_dat.set_ylabel(f"Re{usuffix}", fontsize=9)
-    ax_im_dat.set_ylabel(f"Im{usuffix}", fontsize=9)
-    ax_mag_dat.set_ylabel(f"|X|{usuffix}", fontsize=9)
-    for ax in (ax_re_dat, ax_im_dat, ax_mag_dat):
-        ax.tick_params(axis="both", labelsize=8)
-        ax.set_xlabel("frequency (MHz)", fontsize=9)
-
-    # Gated spurs in-window: mark the masked tone on every data/residual
-    # panel (it is deliberately absent from the model and excluded from the
-    # fit's chi-squared).
+    vline_plotter = _make_vline_plotter(fitted_freqs, labels, tau_us)
     in_window_spurs = [
         sp
         for sp in (spurs or [])
         if lo_f <= float(sp.get("center_mhz", float("nan"))) <= hi_f
     ]
-    for i, sp in enumerate(in_window_spurs):
+    lattice_peaks = [
+        p
+        for p in window_fit.fitted_peaks
+        if getattr(p, "clock_lattice", None) is not None
+    ]
+
+    return WindowPanelData(
+        frequencies=frequencies,
+        complex_spectrum=complex_spectrum,
+        trim_mhz=trim_mhz,
+        lo_f=lo_f,
+        hi_f=hi_f,
+        center=center,
+        f_slice=f_slice,
+        z_slice=z_slice,
+        sigma_slice=sigma_slice,
+        model_slice=model_slice,
+        residual=residual,
+        f_fine=f_fine,
+        model_fine=model_fine,
+        amp=float(amplitude_scale),
+        usuffix=f" ({units_label})" if units_label else "",
+        units_label=units_label,
+        band=band,
+        freq_padded=freq_padded,
+        spec_padded=spec_padded,
+        fitted_peaks=list(window_fit.fitted_peaks),
+        fitted_freqs=fitted_freqs,
+        labels=labels,
+        vline_plotter=vline_plotter,
+        in_window_spurs=in_window_spurs,
+        lattice_peaks=lattice_peaks,
+        tau_us=tau_us,
+        shape=shape_str,
+        title=title,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Panel painters (each paints onto axes the assembler owns)
+# ---------------------------------------------------------------------------
+
+# Per data+residual component: (projection, line colour, data-panel label).
+_COMPONENT_SPECS: Dict[str, Tuple[Callable[[np.ndarray], np.ndarray], str, str]] = {
+    "re": (np.real, "tab:red", "Re"),
+    "im": (np.imag, "tab:blue", "Im"),
+    "mag": (np.abs, "tab:purple", "|X|"),
+}
+
+
+def _stacked_pair(
+    fig: plt.Figure,
+    spec: Optional[Any] = None,
+    *,
+    anchor: Optional[plt.Axes] = None,
+) -> Tuple[plt.Axes, plt.Axes]:
+    """Create a (residual strip, data panel) pair sharing one x-axis.
+
+    ``spec`` is a :class:`~matplotlib.gridspec.SubplotSpec` cell of an outer grid
+    (combined figure) or ``None`` for a standalone single-panel figure. The thin
+    residual strip sits above the taller data panel; ``anchor`` links the x-axis
+    to another data panel so a row of panels zoom together. Returns
+    ``(ax_residual, ax_data)``.
+    """
+    gs: GridSpecBase
+    if spec is None:
+        gs = fig.add_gridspec(2, 1, height_ratios=[1, 3], hspace=0.06)
+    else:
+        gs = GridSpecFromSubplotSpec(
+            2, 1, subplot_spec=spec, height_ratios=[1, 3], hspace=0.06
+        )
+    ax_data = fig.add_subplot(gs[1], sharex=anchor)
+    ax_resid = fig.add_subplot(gs[0], sharex=ax_data)
+    return ax_resid, ax_data
+
+
+def draw_overview(ax: plt.Axes, data: WindowPanelData) -> None:
+    """Full-spectrum context panel with this window highlighted."""
+    _draw_overview(
+        ax,
+        data.frequencies,
+        data.complex_spectrum,
+        data.lo_f,
+        data.hi_f,
+        data.amp,
+        data.usuffix,
+        data.trim_mhz,
+    )
+
+
+def _annotate_spurs_lattice(
+    ax_resid: plt.Axes,
+    ax_data: plt.Axes,
+    data: WindowPanelData,
+    *,
+    with_legend: bool,
+) -> None:
+    """Mark in-window gated spurs (dotted) and lattice-matched lines (dashed).
+
+    The legend is attached to the data panel only when ``with_legend`` so the
+    re/im panels stay uncluttered and the |X| panel carries the key.
+    """
+    for i, sp in enumerate(data.in_window_spurs):
         f_sp = float(sp["center_mhz"])
-        for ax in (ax_re_res, ax_im_res, ax_mag_res, ax_re_dat, ax_im_dat):
-            ax.axvline(f_sp, color="tab:orange", lw=1.0, ls=":", alpha=0.9, zorder=1)
-        ax_mag_dat.axvline(
+        ax_resid.axvline(f_sp, color="tab:orange", lw=1.0, ls=":", alpha=0.9, zorder=1)
+        ax_data.axvline(
             f_sp,
             color="tab:orange",
             lw=1.0,
             ls=":",
             alpha=0.9,
             zorder=1,
-            label=f"spur ({sp.get('source', '?')})" if i == 0 else None,
+            label=(
+                f"spur ({sp.get('source', '?')})" if (with_legend and i == 0) else None
+            ),
         )
-    # Clock-lattice annotated peaks: mark with an orange dashed vline on every
-    # panel.  Distinct from the gated-spur dotted style -- these are FITTED
-    # lines that happen to land on the lattice, not masked tones.
-    lattice_peaks = [
-        p
-        for p in window_fit.fitted_peaks
-        if getattr(p, "clock_lattice", None) is not None
-    ]
-    for i, lp in enumerate(lattice_peaks):
+    for i, lp in enumerate(data.lattice_peaks):
         f_lp = float(lp.frequency_mhz)
-        for ax in (ax_re_res, ax_im_res, ax_mag_res, ax_re_dat, ax_im_dat):
-            ax.axvline(f_lp, color="tab:orange", lw=0.9, ls="--", alpha=0.7, zorder=2)
-        ax_mag_dat.axvline(
+        ax_resid.axvline(f_lp, color="tab:orange", lw=0.9, ls="--", alpha=0.7, zorder=2)
+        ax_data.axvline(
             f_lp,
             color="tab:orange",
             lw=0.9,
             ls="--",
             alpha=0.7,
             zorder=2,
-            label="lattice match" if i == 0 else None,
+            label="lattice match" if (with_legend and i == 0) else None,
         )
-    if in_window_spurs or lattice_peaks:
-        ax_mag_dat.legend(loc="upper right", fontsize=7, framealpha=0.85)
+    if with_legend and (data.in_window_spurs or data.lattice_peaks):
+        ax_data.legend(loc="upper right", fontsize=7, framealpha=0.85)
 
-    _draw_residual_hist(ax_hist, residual, sigma_slice, amp, usuffix)
-    _draw_peak_table(ax_peaks, window_fit.fitted_peaks, labels, amp, units_label)
+
+def draw_component(
+    ax_resid: plt.Axes,
+    ax_data: plt.Axes,
+    data: WindowPanelData,
+    component: str,
+    *,
+    show_xlabel: bool = True,
+) -> None:
+    """Paint one component (``"re"`` / ``"im"`` / ``"mag"``).
+
+    Residual strip on top, data + model below, sharing an x-axis. The residual
+    stays native (so ``|residual|`` is bin-for-bin); the ``|X|`` data overlay
+    uses the 2x display grid -- see the module docstring.
+    """
+    proj, color, dlabel = _COMPONENT_SPECS[component]
+    amp = data.amp
+    usuffix = data.usuffix
+    band_s = data.band * amp
+    is_mag = component == "mag"
+
+    # Peak vlines: labelled on the residual strip (top), plain on the data panel.
+    data.vline_plotter(ax_resid, True)
+    data.vline_plotter(ax_data, False)
+
+    # Residual strip.
+    if is_mag:
+        ax_resid.plot(data.f_slice, np.abs(data.residual) * amp, color=color, lw=0.7)
+        if band_s > 0.0:
+            ax_resid.axhline(band_s, color="0.3", lw=0.5, ls="--")
+        ax_resid.set_ylabel(f"|resid|{usuffix}", fontsize=8)
+    else:
+        ax_resid.axhline(0.0, color="0.5", lw=0.4)
+        ax_resid.plot(data.f_slice, proj(data.residual) * amp, color=color, lw=0.7)
+        if band_s > 0.0:
+            ax_resid.axhline(band_s, color="0.3", lw=0.5, ls="--")
+            ax_resid.axhline(-band_s, color="0.3", lw=0.5, ls="--")
+        ax_resid.set_ylabel(f"{dlabel} resid{usuffix}", fontsize=8)
+
+    # Data + model panel.
+    if is_mag:
+        _draw_mag_data(
+            ax_data,
+            data.f_slice,
+            np.abs(data.z_slice),
+            data.f_fine,
+            np.abs(data.model_fine),
+            np.abs(data.model_slice),
+            data.lo_f,
+            data.hi_f,
+            amp,
+            data.freq_padded,
+            data.spec_padded,
+        )
+    else:
+        _draw_data_model(
+            ax_data,
+            data.f_slice,
+            proj(data.z_slice),
+            data.f_fine,
+            proj(data.model_fine),
+            proj(data.model_slice),
+            color,
+            amp,
+        )
+    ax_data.set_ylabel(f"{dlabel}{usuffix}", fontsize=9)
+
+    _annotate_spurs_lattice(ax_resid, ax_data, data, with_legend=is_mag)
+
+    ax_resid.tick_params(axis="both", labelsize=8)
+    ax_resid.tick_params(axis="x", labelbottom=False)
+    ax_data.tick_params(axis="both", labelsize=8)
+    if show_xlabel:
+        ax_data.set_xlabel("frequency (MHz)", fontsize=9)
+
+
+def draw_residual_hist(ax: plt.Axes, data: WindowPanelData) -> None:
+    """|residual| histogram against the Rayleigh noise model."""
+    _draw_residual_hist(ax, data.residual, data.sigma_slice, data.amp, data.usuffix)
+
+
+def draw_peak_table(ax: plt.Axes, data: WindowPanelData) -> None:
+    """Fitted-peak table with PDG-style uncertainties (combined figure only)."""
+    ax.set_axis_off()
+    _draw_peak_table(ax, data.fitted_peaks, data.labels, data.amp, data.units_label)
+
+
+# ---------------------------------------------------------------------------
+# The figure
+# ---------------------------------------------------------------------------
+def plot_consolidated_detail(
+    window_fit: FittingResult,
+    *,
+    frequencies: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    sideband: SidebandLike,
+    acquisition_us: float,
+    title: str,
+    amplitude_scale: float = 1.0,
+    units_label: str = "",
+    trim_mhz: Optional[Tuple[float, float]] = None,
+    freq_padded: Optional[np.ndarray] = None,
+    spec_padded: Optional[np.ndarray] = None,
+    figsize: Tuple[float, float] = DEFAULT_FIGSIZE,
+    spurs: Optional[Sequence[dict]] = None,
+) -> plt.Figure:
+    """Render the consolidated per-window detail figure (see module docstring).
+
+    ``frequencies`` / ``complex_spectrum`` / ``rms_noise`` are the native active
+    grid (ascending molecular frequency) the fit lives on. ``freq_padded`` /
+    ``spec_padded`` are the exactly-2x zero-filled display grid for the
+    magnitude panels; when omitted, the magnitude panels fall back to native.
+    ``spurs`` is the fit's gated-spur catalogue
+    (``SpectrumFit.diagnostics["gated_spurs"]``: dicts with ``center_mhz``
+    and ``source``); in-window entries are marked on the data and residual
+    panels so a masked tone is never mistaken for an un-fit line.
+    """
+    data = prepare_window_panels(
+        window_fit,
+        frequencies=frequencies,
+        complex_spectrum=complex_spectrum,
+        rms_noise=rms_noise,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        title=title,
+        amplitude_scale=amplitude_scale,
+        units_label=units_label,
+        trim_mhz=trim_mhz,
+        freq_padded=freq_padded,
+        spec_padded=spec_padded,
+        spurs=spurs,
+    )
+
+    fig = plt.figure(figsize=figsize)
+    fig.suptitle(title, fontsize=11)
+    outer = GridSpec(
+        nrows=3,
+        ncols=3,
+        figure=fig,
+        height_ratios=[1.0, 2.8, 1.5],
+        hspace=0.5,
+        wspace=0.26,
+        left=0.06,
+        right=0.975,
+        top=0.91,
+        bottom=0.08,
+    )
+    ax_overview = fig.add_subplot(outer[0, :])
+    draw_overview(ax_overview, data)
+
+    # Three fused panels: each a residual strip over a data + model panel,
+    # sharing one x-axis so a strong line and its residual stay together (and a
+    # whole row zooms together).
+    ax_re_res, ax_re_dat = _stacked_pair(fig, outer[1, 0])
+    ax_im_res, ax_im_dat = _stacked_pair(fig, outer[1, 1], anchor=ax_re_dat)
+    ax_mag_res, ax_mag_dat = _stacked_pair(fig, outer[1, 2], anchor=ax_re_dat)
+    draw_component(ax_re_res, ax_re_dat, data, "re")
+    draw_component(ax_im_res, ax_im_dat, data, "im")
+    draw_component(ax_mag_res, ax_mag_dat, data, "mag")
+
+    ax_hist = fig.add_subplot(outer[2, 0])
+    draw_residual_hist(ax_hist, data)
+    ax_peaks = fig.add_subplot(outer[2, 1:])
+    draw_peak_table(ax_peaks, data)
     return fig
+
+
+def plot_window_panels(
+    window_fit: FittingResult,
+    *,
+    frequencies: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    sideband: SidebandLike,
+    acquisition_us: float,
+    amplitude_scale: float = 1.0,
+    units_label: str = "",
+    trim_mhz: Optional[Tuple[float, float]] = None,
+    freq_padded: Optional[np.ndarray] = None,
+    spec_padded: Optional[np.ndarray] = None,
+    spurs: Optional[Sequence[dict]] = None,
+    panel_figsize: Tuple[float, float] = (5.4, 3.4),
+    overview_figsize: Tuple[float, float] = (12.0, 2.6),
+    hist_figsize: Tuple[float, float] = (5.0, 3.4),
+) -> Dict[str, plt.Figure]:
+    """Render the per-window detail as separate, standalone panel figures.
+
+    Returns a dict keyed ``"overview"`` / ``"re"`` / ``"im"`` / ``"mag"`` /
+    ``"hist"``, each a self-contained :class:`~matplotlib.figure.Figure` (one PNG
+    per panel) for the HTML report's flexbox. Uses the same painters as the
+    combined :func:`plot_consolidated_detail`, so the two stay consistent. The
+    in-figure peak table is omitted -- the HTML page renders its own table. The
+    caller owns closing the figures.
+    """
+    data = prepare_window_panels(
+        window_fit,
+        frequencies=frequencies,
+        complex_spectrum=complex_spectrum,
+        rms_noise=rms_noise,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        amplitude_scale=amplitude_scale,
+        units_label=units_label,
+        trim_mhz=trim_mhz,
+        freq_padded=freq_padded,
+        spec_padded=spec_padded,
+        spurs=spurs,
+    )
+    figures: Dict[str, plt.Figure] = {}
+
+    fig_ov = plt.figure(figsize=overview_figsize, constrained_layout=True)
+    draw_overview(fig_ov.add_subplot(111), data)
+    figures["overview"] = fig_ov
+
+    for component in ("re", "im", "mag"):
+        fig_c = plt.figure(figsize=panel_figsize, constrained_layout=True)
+        ax_res, ax_dat = _stacked_pair(fig_c)
+        draw_component(ax_res, ax_dat, data, component)
+        figures[component] = fig_c
+
+    fig_h = plt.figure(figsize=hist_figsize, constrained_layout=True)
+    draw_residual_hist(fig_h.add_subplot(111), data)
+    figures["hist"] = fig_h
+
+    return figures
 
 
 def _make_vline_plotter(

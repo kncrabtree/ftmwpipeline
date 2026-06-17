@@ -111,7 +111,6 @@ table { border-collapse: collapse; margin: 0.5rem 0 1.25rem; font-size: 0.9rem; 
 th, td { border: 1px solid #d0d4d9; padding: 0.25rem 0.6rem; text-align: right; }
 th { background: #eceff2; }
 td:first-child, th:first-child { text-align: left; }
-img.fit-figure { max-width: 100%; height: auto; border: 1px solid #d0d4d9; }
 pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
       overflow-x: auto; border-radius: 4px; font-size: 0.82rem; }
 .badge { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 3px;
@@ -119,6 +118,17 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
          margin-left: 0.35rem; }
 .nav { margin: 1rem 0; }
 .summary li { margin: 0.15rem 0; }
+/* Fit panels: the overview spans full width, the Re/Im/|X| panels reflow in a
+   flex row, and the residual histogram sits below. Each panel is its own PNG. */
+.fit-panels { margin: 0.5rem 0 1.25rem; }
+.fit-panels figure { margin: 0; }
+.fit-panels img { max-width: 100%; height: auto; border: 1px solid #d0d4d9;
+                  background: #fff; }
+.panel-overview img { width: 100%; }
+.panel-row { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: flex-start;
+             margin: 0.75rem 0; }
+.panel-row .panel { flex: 1 1 320px; min-width: 280px; }
+.panel-hist { max-width: 480px; }
 """
 
 
@@ -131,8 +141,13 @@ def _window_page_name(window_id: int) -> str:
     return f"window_{window_id:03d}.html"
 
 
-def _figure_name(stem: str, window_id: int) -> str:
-    return f"{stem}_window_{window_id:03d}.png"
+# The per-window detail is rendered as separate panel images (overview / re /
+# im / mag / hist) so the page can lay them out in a flexbox.
+_PANEL_ORDER = ("overview", "re", "im", "mag", "hist")
+
+
+def _panel_figure_name(stem: str, window_id: int, panel: str) -> str:
+    return f"{stem}_window_{window_id:03d}_{panel}.png"
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +373,40 @@ def _attention_block(status: Optional[WindowReviewStatus]) -> List[str]:
     return ["<h3>Attention</h3>", "<ul>", *items, "</ul>"]
 
 
+def _fit_panels_block(panel_files: Dict[str, str]) -> List[str]:
+    """Lay the per-window panel PNGs out for a CSS flexbox.
+
+    The overview spans full width on top, the Re / Im / |X| panels reflow in a
+    flex row, and the residual histogram sits below. Each entry is rendered only
+    when its PNG was produced, so a degenerate window with missing panels still
+    yields valid markup.
+    """
+
+    def _fig(panel: str, alt: str, cls: str = "panel") -> List[str]:
+        name = panel_files.get(panel)
+        if name is None:
+            return []
+        return [
+            f'  <figure class="{cls}">'
+            f'<img src="../figures/{name}" alt="{_esc(alt)}"></figure>'
+        ]
+
+    out = ['<div class="fit-panels">']
+    out += _fig("overview", "full-spectrum context", "panel panel-overview")
+    row = (
+        _fig("re", "real part + residual")
+        + _fig("im", "imaginary part + residual")
+        + _fig("mag", "magnitude + residual")
+    )
+    if row:
+        out.append('  <div class="panel-row">')
+        out += row
+        out.append("  </div>")
+    out += _fig("hist", "residual histogram", "panel panel-hist")
+    out.append("</div>")
+    return out
+
+
 def _window_page(
     *,
     stem: str,
@@ -370,7 +419,7 @@ def _window_page(
     ledger: List[LedgerCandidate],
     decisions: List[DecisionLogEntry],
     report_text: str,
-    figure_name: str,
+    panel_files: Dict[str, str],
     prev_id: Optional[int],
     next_id: Optional[int],
 ) -> str:
@@ -404,8 +453,7 @@ def _window_page(
         "</ul>",
         *_attention_block(status),
         "<h2>Fit</h2>",
-        f'<img class="fit-figure" src="../figures/{figure_name}" '
-        f'alt="window {window_id} fit detail">',
+        *_fit_panels_block(panel_files),
         "<h2>Fitted lines</h2>",
         _window_peak_table(peaks, uname, uval),
         "<h2>Parameter covariance</h2>",
@@ -468,7 +516,7 @@ def report_full_impl(
     from .stage5_impl import (
         _resolve_detail_bundle,
         fit_window_report_text,
-        render_fit_detail_impl,
+        render_fit_panels_impl,
     )
     from .stage6_impl import get_candidate_ledger_impl
 
@@ -525,10 +573,18 @@ def report_full_impl(
     # --- per-window pages + figures -------------------------------------
     for idx, wid in enumerate(page_ids):
         wf = win_fits[wid]
-        fig_name = _figure_name(stem, wid)
-        fig = render_fit_detail_impl(path, wid, bundle=bundle)
-        fig.savefig(str(out_root / "figures" / fig_name), dpi=dpi)
-        plt.close(fig)
+        # Each window's detail is a set of standalone panel figures (overview /
+        # re / im / mag / hist) the page lays out in a flexbox.
+        panels = render_fit_panels_impl(path, wid, bundle=bundle)
+        panel_files: Dict[str, str] = {}
+        for panel in _PANEL_ORDER:
+            pfig = panels.get(panel)
+            if pfig is None:
+                continue
+            fname = _panel_figure_name(stem, wid, panel)
+            pfig.savefig(str(out_root / "figures" / fname), dpi=dpi)
+            plt.close(pfig)
+            panel_files[panel] = fname
         report_text = fit_window_report_text(path, wid, bundle=bundle, show_audit=True)
         ledger = get_candidate_ledger_impl(path, wid)
         prev_id = page_ids[idx - 1] if idx > 0 else None
@@ -544,7 +600,7 @@ def report_full_impl(
             ledger=ledger,
             decisions=decisions_by_window.get(wid, []),
             report_text=report_text,
-            figure_name=fig_name,
+            panel_files=panel_files,
             prev_id=prev_id,
             next_id=next_id,
         )
