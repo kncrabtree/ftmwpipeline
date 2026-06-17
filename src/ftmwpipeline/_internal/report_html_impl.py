@@ -80,18 +80,27 @@ def _table(headers: List[str], rows: List[List[str]], *, cls: str = "") -> str:
     return "\n".join(out)
 
 
-def _page(title: str, body: List[str], *, css_href: str) -> str:
-    """Wrap a body fragment list in a minimal HTML document."""
+def _page(title: str, body: List[str], *, css_href: str, head_extra: str = "") -> str:
+    """Wrap a body fragment list in a minimal HTML document.
+
+    ``head_extra`` injects extra ``<head>`` markup (e.g. the MathJax loader on
+    the methods page); empty for the plain pages.
+    """
+    head = [
+        "<head>",
+        '  <meta charset="utf-8">',
+        '  <meta name="viewport" content="width=device-width, ' 'initial-scale=1">',
+        f"  <title>{_esc(title)}</title>",
+        f'  <link rel="stylesheet" href="{css_href}">',
+    ]
+    if head_extra:
+        head.append(head_extra)
+    head.append("</head>")
     return "\n".join(
         [
             "<!DOCTYPE html>",
             '<html lang="en">',
-            "<head>",
-            '  <meta charset="utf-8">',
-            '  <meta name="viewport" content="width=device-width, ' 'initial-scale=1">',
-            f"  <title>{_esc(title)}</title>",
-            f'  <link rel="stylesheet" href="{css_href}">',
-            "</head>",
+            *head,
             "<body>",
             '<main class="report">',
             *body,
@@ -101,6 +110,18 @@ def _page(title: str, body: List[str], *, css_href: str) -> str:
             "",
         ]
     )
+
+
+# MathJax (display math) for the methods page. Loaded from a CDN; when offline
+# the raw ``\[...\]`` TeX source stays visible in the styled equation block, so
+# the page degrades gracefully rather than breaking.
+_MATHJAX_HEAD = (
+    "  <script>window.MathJax={tex:{displayMath:[['$$','$$'],"
+    "['\\\\[','\\\\]']]},options:{skipHtmlTags:['script','noscript','style',"
+    "'textarea','pre','code']}};</script>\n"
+    '  <script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/'
+    'tex-svg.js"></script>'
+)
 
 
 # A deliberately minimal stylesheet -- enough that the structure is legible;
@@ -116,6 +137,15 @@ table { border-collapse: collapse; margin: 0.5rem 0 1.25rem; font-size: 0.9rem; 
 th, td { border: 1px solid #d0d4d9; padding: 0.25rem 0.6rem; text-align: right; }
 th { background: #eceff2; }
 td:first-child, th:first-child { text-align: left; }
+/* Long data tables fill the column width (better use of horizontal space) and
+   stay readable when they run to hundreds of rows: zebra rows, a row hover, and
+   a header that sticks while scrolling. The compact methods-page parameter /
+   percentile tables keep their content width. */
+table.window-list, table.final-list, table.peak-list, table.audit,
+table.ledger, table.covariance { width: 100%; }
+tbody tr:nth-child(even) { background: #f2f4f7; }
+tbody tr:hover { background: #e6edf4; }
+thead th { position: sticky; top: 0; z-index: 1; }
 pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
       overflow-x: auto; border-radius: 4px; font-size: 0.82rem; }
 .badge { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 3px;
@@ -124,6 +154,10 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
 /* Catalog proximity-match badge (a cross-check echo, not an assignment). */
 .badge.cat { background: #cfe8d2; color: #1d5026; margin-left: 0; cursor: help; }
 .nav { margin: 1rem 0; }
+/* The summary key-value list fills the row as a responsive multi-column grid
+   (side-by-side on a wide screen) and collapses to a single column when narrow. */
+ul.summary { list-style: none; padding: 0; display: grid; gap: 0.15rem 1.75rem;
+             grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
 .summary li { margin: 0.15rem 0; }
 /* Fit panels: the overview spans full width on top; the Re/Im model+residual
    panels share a row and the |X| + residual histogram share the row below
@@ -149,11 +183,21 @@ table.audit { font-size: 0.82rem; }
 table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .cov-legend, .audit-legend { font-size: 0.82rem; color: #444;
                              margin: 0.25rem 0 0.75rem; }
-/* Level-2 methods page: equation source blocks and the distributions figure. */
-pre.equation { background: #f0f2f5; color: #1a1a1a; border: 1px solid #d0d4d9;
-               font-size: 0.85rem; }
-.hist img { max-width: 100%; width: 100%; height: auto; border: 1px solid #d0d4d9;
+/* Level-2 methods page: equation blocks (MathJax-rendered, raw TeX fallback)
+   and the distributions figure. */
+.equation { background: #f0f2f5; color: #1a1a1a; border: 1px solid #d0d4d9;
+            border-radius: 4px; padding: 0.6rem 1rem; margin: 0.5rem 0 1.25rem;
+            overflow-x: auto; font-size: 0.9rem; text-align: center; }
+/* The interleaved distribution figures cap their natural width and centre,
+   rather than stretching a 1-2 panel group across the full column. */
+.hist { margin: 0.5rem 0 1.25rem; }
+.hist img { max-width: 100%; width: auto; height: auto; border: 1px solid #d0d4d9;
             background: #fff; }
+/* Narrow viewport: shrink the gutters and table type so nothing overflows. */
+@media (max-width: 700px) {
+  main.report { padding: 1rem 1rem 3rem; }
+  table { font-size: 0.82rem; }
+}
 """
 
 
@@ -248,7 +292,9 @@ def _md_to_html(md: str) -> str:
                 if i < n:
                     eq.append(lines[i])
             body = "\n".join(eq).strip("$").strip()
-            out.append(f'<pre class="equation">{_esc(body)}</pre>')
+            # Emit display math in \[...\] so MathJax (loaded on the methods
+            # page) renders it; offline the raw TeX stays visible in the block.
+            out.append(f'<div class="equation">\\[{_esc(body)}\\]</div>')
             i += 1
             continue
         # Pipe table: a header row followed by a |---| separator.
@@ -309,27 +355,93 @@ def _summary_distribution_specs(
         ("Promoted-peak SNR", "SNR", model.snr_values_promoted),
     ]
     if xref is not None and xref.pull_values:
-        specs.append(
-            ("Catalog pull (f_fit−f_cat)/σ_f", "pull", xref.pull_values)
-        )
+        specs.append(("Catalog pull (f_fit−f_cat)/σ_f", "pull", xref.pull_values))
     return specs
 
 
-def _summary_page(stem: str, md_html: str, hist_name: Optional[str]) -> str:
-    """The HTML methods + results page (Level-2 content plus histograms)."""
+def _summary_distribution_groups(
+    model: Any, xref: Optional[CatalogCrossRef] = None
+) -> List[Tuple[str, str, List[Tuple[str, str, List[float]]]]]:
+    """Histogram groups keyed to the percentile table they sit beside on L3.
+
+    Each entry is ``(anchor_text, slug, specs)``: ``anchor_text`` is a substring
+    of the bold caption above the table the figure follows (so the figure lands
+    next to the numbers it summarizes), ``slug`` names the PNG, and ``specs`` are
+    the ``plot_summary_histograms`` specs. Groups whose data is empty drop out
+    when the figure is rendered.
+    """
+    groups: List[Tuple[str, str, List[Tuple[str, str, List[float]]]]] = [
+        (
+            "Peak-strength distribution",
+            "snr",
+            [("Promoted-peak SNR", "SNR", model.snr_values_promoted)],
+        ),
+        (
+            "Fit-quality distributions",
+            "fitquality",
+            [
+                ("Reduced χ² per window", "χ²_r", model.chi2r_values),
+                ("Shape error ε per window", "ε (% / bin)", model.eps_values),
+                ("Precision σ_stat", "σ_stat (kHz)", model.sigma_stat_values),
+            ],
+        ),
+        (
+            "σ_f budget distribution",
+            "budget",
+            [
+                ("Timebase σ_ε", "σ_ε (kHz)", model.sigma_eps_values),
+                ("Budget σ_f", "σ_f (kHz)", model.sigma_f_values),
+            ],
+        ),
+    ]
+    if xref is not None and xref.pull_values:
+        groups.append(
+            (
+                "Largest pulls",
+                "pull",
+                [("Catalog pull (f_fit−f_cat)/σ_f", "pull", xref.pull_values)],
+            )
+        )
+    return groups
+
+
+def _inject_after_table(html: str, anchor: str, snippet: str) -> Tuple[str, bool]:
+    """Insert *snippet* right after the first ``</table>`` that follows *anchor*.
+
+    *anchor* is a caption substring; returns ``(html, injected)`` -- ``injected``
+    is False when the anchor or a following table is absent (the caller then
+    falls the figure back to a trailing section).
+    """
+    pos = html.find(anchor)
+    if pos < 0:
+        return html, False
+    end = html.find("</table>", pos)
+    if end < 0:
+        return html, False
+    cut = end + len("</table>")
+    return html[:cut] + "\n" + snippet + html[cut:], True
+
+
+def _summary_page(stem: str, md_html: str, leftover: List[str]) -> str:
+    """The HTML methods + results page (Level-2 content; histograms interleaved).
+
+    The per-distribution figures are injected next to their tables in *md_html*
+    by the driver; any that could not be placed (anchor table absent) arrive in
+    *leftover* and are shown in a trailing Distributions section.
+    """
     body: List[str] = [
         '<div class="nav"><a href="index.html">&larr; index</a></div>',
         md_html,
     ]
-    if hist_name is not None:
-        body += [
-            "<h2>Distributions</h2>",
-            "<p>Histograms of the per-window / per-line statistics tabulated "
-            "above (red dashed line = median).</p>",
-            f'<div class="hist"><img src="figures/{hist_name}" '
-            'alt="summary distributions"></div>',
-        ]
-    return _page(f"{stem} methods", body, css_href="assets/style.css")
+    if leftover:
+        body.append("<h2>Distributions</h2>")
+        body += leftover
+    return _page(
+        f"{stem} methods",
+        body,
+        css_href="assets/style.css",
+        head_extra=_MATHJAX_HEAD,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1131,21 +1243,27 @@ def report_full_impl(
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
-    # --- methods + results page (Level-2 content, HTML-ified, + histograms) ---
-    methods_md = _render_markdown(
-        model, path, include_table=False, cross_ref=cross_ref
-    )
-    hist_fig = plot_summary_histograms(
-        _summary_distribution_specs(model, cross_ref)
-    )
-    hist_name: Optional[str] = None
-    if hist_fig is not None:
-        hist_name = f"{stem}_summary_histograms.png"
-        hist_fig.savefig(str(out_root / "figures" / hist_name), dpi=dpi)
-        plt.close(hist_fig)
-    (out_root / "methods.html").write_text(
-        _summary_page(stem, _md_to_html(methods_md), hist_name)
-    )
+    # --- methods + results page (Level-2 content, HTML-ified) ---------------
+    # Each distribution figure is injected next to the percentile table it
+    # summarizes; any that cannot be placed fall back to a trailing section.
+    methods_md = _render_markdown(model, path, include_table=False, cross_ref=cross_ref)
+    methods_html = _md_to_html(methods_md)
+    leftover: List[str] = []
+    for anchor, slug, specs in _summary_distribution_groups(model, cross_ref):
+        fig = plot_summary_histograms(specs, ncols=min(3, len(specs)))
+        if fig is None:
+            continue
+        fname = f"{stem}_hist_{slug}.png"
+        fig.savefig(str(out_root / "figures" / fname), dpi=dpi)
+        plt.close(fig)
+        snippet = (
+            f'<div class="hist"><img src="figures/{fname}" '
+            f'alt="{_esc(anchor)} distribution"></div>'
+        )
+        methods_html, injected = _inject_after_table(methods_html, anchor, snippet)
+        if not injected:
+            leftover.append(snippet)
+    (out_root / "methods.html").write_text(_summary_page(stem, methods_html, leftover))
 
     # --- index ----------------------------------------------------------
     page_set = set(page_ids)

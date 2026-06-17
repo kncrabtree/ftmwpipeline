@@ -108,40 +108,34 @@ fixtures (1512 0.417, 655 0.512), and tail χ² slightly improves (655 p95
 
 - See [[stage5-survival-prune-refit-recheck]].
 
-## 4. Smaller polish follow-ons
+## 4. Smaller polish follow-ons — DONE
 
-- **Methods-page equations.** `$$…$$` blocks render as LaTeX *source* in
-  `<pre class="equation">` (`_md_to_html`). To render math, add MathJax (or
-  KaTeX) via a CDN `<script>` in `_page` / the methods head. Caveat: a CDN
-  dependency is not offline-safe — gate it or vendor a minimal build if offline
-  rendering matters.
-- **Interleave histograms with their tables.** Today the methods page groups all
-  histograms in a trailing "Distributions" section (one `plot_summary_histograms`
-  figure). To place each histogram beside its percentile table, either render
-  per-stat PNGs and inject them at each table in `_md_to_html`, or (cleaner)
-  build the methods page from `_SummaryModel` directly instead of via md→html so
-  tables and histograms are emitted together. The raw distributions are already
-  on the model (`chi2r_values` / `eps_values` / `sigma_*_values` /
-  `snr_values_promoted`).
+- **Methods-page equations.** Equations now render via MathJax v3 (tex-svg, CDN,
+  `async`) loaded only on the methods page (`_MATHJAX_HEAD` via `_page`'s
+  `head_extra`); `_md_to_html` emits `\[…\]` display math. Offline-safe: the raw
+  TeX stays visible in the styled `.equation` block when the CDN is unreachable.
+- **Interleave histograms with their tables.** The methods page renders one
+  figure per distribution group (`_summary_distribution_groups`: SNR /
+  fit-quality / σ_f budget / catalog pull) and `_inject_after_table` places each
+  immediately after the percentile table it summarizes; any that cannot be
+  placed fall back to a trailing Distributions section.
 
-## 5. CSS polish — LAST (after items 1–4)
+## 5. CSS polish — DONE (`_STYLESHEET` only)
 
-Edit **`_STYLESHEET` only** (HTML structure is stable; the design lives in the
-stylesheet by intent). Stable classes: `fit-panels` / `panel-grid` /
-`panel-overview`, `cov-heatmap`, tables `variances` / `covariance` / `audit` /
-`window-list` / `final-list` / `peak-list` / `ledger` / `decisions`,
-`cov-legend` / `audit-legend`, `hist`, `pre.equation`, `summary`, `badge`, `nav`.
+Responsive horizontal-space pass, edits confined to `_STYLESHEET`:
 
-- **User request (explicit):** make better use of horizontal space with
-  grid/flex layouts that **flow to a single column on smaller screens** (the
-  same responsive pattern as the per-window `panel-grid`'s `@media (max-width:
-  900px)` collapse). Candidates: index summary list + key numbers side by side;
-  index window-list and final-line-list two-up on wide screens; per-window page
-  pairing fitted-lines beside the covariance/variances; methods-page parameter
-  tables in a responsive grid.
-- Keep it dependency-free (hand-rolled CSS, no framework). Verify with the
-  headless-Chrome screenshot workflow at wide and narrow widths
-  (`google-chrome-stable --headless=new --window-size=W,H --screenshot=…`).
+- `ul.summary` is a responsive `auto-fit` grid (multi-column on wide screens,
+  single column when narrow) — the index + per-window key-value lists.
+- Long data tables (`window-list` / `final-list` / `peak-list` / `audit` /
+  `ledger` / `covariance`) fill the column width; zebra rows + row hover +
+  sticky `thead th` keep hundred-row tables readable.
+- `@media (max-width: 700px)` tightens gutters and table type; the per-window
+  `panel-grid` keeps its existing 900px collapse.
+
+Verified with the headless-Chrome screenshot workflow at 1400 px and 480 px
+(`scratch/catalog-demo/shots/`): the index, methods page (MathJax-rendered
+equations + interleaved histograms), and per-window page all reflow to a single
+column when narrow. Dependency-free apart from the optional MathJax CDN.
 
 ---
 

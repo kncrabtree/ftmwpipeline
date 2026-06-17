@@ -456,16 +456,19 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     # One PNG per panel (overview/re/im/mag/hist) per window, plus an optional
     # correlation heatmap (``_corr.png``) for each window that has a persisted
     # covariance, plus the one site-level summary-distributions figure.
+    # Per-window panels carry "_window_"; the correlation heatmap ends "_corr.png";
+    # the per-distribution histograms are "<stem>_hist_<slug>.png" (no "_window_").
     corr_pngs = [f for f in figures if f.name.endswith("_corr.png")]
-    hist_pngs = [f for f in figures if f.name.endswith("_summary_histograms.png")]
     panel_pngs = [
-        f
-        for f in figures
-        if not f.name.endswith(("_corr.png", "_summary_histograms.png"))
+        f for f in figures if "_window_" in f.name and not f.name.endswith("_corr.png")
     ]
+    hist_pngs = [f for f in figures if "_window_" not in f.name]
     assert len(panel_pngs) == len(pages) * len(_PANEL_ORDER)
     assert len(corr_pngs) <= len(pages)
-    assert len(hist_pngs) == 1
+    # Distribution histograms (SNR / fit-quality / σ_f budget; pull only with a
+    # catalog), one figure per group that has data.
+    assert 1 <= len(hist_pngs) <= 4
+    assert all("_hist_" in f.name for f in hist_pngs)
     # The Level-2 methods page is built and linked from the index summary.
     assert (out / "methods.html").exists()
     _assert_wellformed(out)
@@ -476,8 +479,12 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert 'href="windows/window_' in idx  # links to the window pages
     assert 'href="methods.html"' in idx
     methods = (out / "methods.html").read_text()
-    assert "Distributions" in methods
-    assert "_summary_histograms.png" in methods
+    # Histograms are interleaved beside their tables (not one trailing figure).
+    assert 'class="hist"' in methods
+    assert "_hist_" in methods
+    # MathJax renders the methods-page equations (raw TeX stays as fallback).
+    assert "MathJax" in methods
+    assert 'class="equation"' in methods
 
     page = pages[0].read_text()
     assert "<h2>Fit</h2>" in page
@@ -534,9 +541,9 @@ def test_full_with_catalog(stage5_small_file, tmp_path):
     assert "proximity only" in idx
     methods = (out / "methods.html").read_text()
     assert "Catalog cross-reference" in methods
-    # The pull histogram is added to the summary distributions figure.
+    # The catalog pull histogram is rendered as its own group figure.
     figures = [f.name for f in (out / "figures").glob("*.png")]
-    assert any(f.endswith("_summary_histograms.png") for f in figures)
+    assert any(f.endswith("_hist_pull.png") for f in figures)
     pages = list((out / "windows").glob("*.html"))
     assert any("<th>Catalog</th>" in p.read_text() for p in pages)
     _assert_wellformed(out)
