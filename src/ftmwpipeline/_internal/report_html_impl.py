@@ -1565,7 +1565,13 @@ def report_full_impl(
             ]
             hfig = plot_correlation_heatmap(cov, sym_labels)
             cov_heatmap_name = _panel_figure_name(stem, wid, "corr")
-            hfig.savefig(str(out_root / "figures" / cov_heatmap_name), dpi=dpi)
+            # bbox_inches="tight" so the wide mathtext axis labels (the baseline
+            # coefficient stacks) are never clipped at the figure edge.
+            hfig.savefig(
+                str(out_root / "figures" / cov_heatmap_name),
+                dpi=dpi,
+                bbox_inches="tight",
+            )
             plt.close(hfig)
         ledger = get_candidate_ledger_impl(path, wid)
         prev_id = page_ids[idx - 1] if idx > 0 else None
