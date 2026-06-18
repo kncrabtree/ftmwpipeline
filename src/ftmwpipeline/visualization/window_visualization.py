@@ -73,6 +73,8 @@ def plot_window_plan(
     edge_m = int(plan.parameters.get("edge_m", DEFAULT_EDGE_M))
     threshold = float(plan.parameters.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))
 
+    from .report_style import apply_bare_style, resolve_title
+
     order = np.argsort(frequencies)
     # De-ramp to the active-region turn-on so the displayed S_coh matches the
     # statistic that drove the plan (see leakage-detection-rework).
@@ -169,7 +171,9 @@ def plot_window_plan(
     ax.set_yscale("log")
     ax.set_ylim(floor, top * max(y_max_factor / 25.0, 1.2))
     ax.set_ylabel("Magnitude")
-    ax.set_title(title or "Stage 4 Window Assignment")
+    resolved_title = resolve_title(title, "Stage 4 Window Assignment")
+    if resolved_title:
+        ax.set_title(resolved_title)
     ax.legend(loc="upper right", fontsize=8, ncol=2)
 
     # Rolling coherence statistic panel.
@@ -186,5 +190,7 @@ def plot_window_plan(
     ax_stat.set_ylabel(f"S_coh (M={edge_m})")
     ax_stat.legend(loc="upper right", fontsize=8)
 
+    apply_bare_style(ax)
+    apply_bare_style(ax_stat)
     fig.tight_layout()
     return fig

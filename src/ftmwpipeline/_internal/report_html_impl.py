@@ -66,14 +66,26 @@ def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value))
 
 
-def _table(headers: List[str], rows: List[List[str]], *, cls: str = "") -> str:
-    """A simple HTML table; cell contents are emitted verbatim (pre-escaped)."""
+def _table(
+    headers: List[str],
+    rows: List[List[str]],
+    *,
+    cls: str = "",
+    row_attrs: Optional[List[str]] = None,
+) -> str:
+    """A simple HTML table; cell contents are emitted verbatim (pre-escaped).
+
+    ``row_attrs`` optionally supplies a pre-formatted attribute string per row
+    (parallel to *rows*, ``""`` for none) injected into the ``<tr>`` -- used to
+    hang ``data-thumb`` / ``data-info`` on rows for the hover-preview popup.
+    """
     cls_attr = f' class="{cls}"' if cls else ""
     out = [f"<table{cls_attr}>", "  <thead>", "    <tr>"]
     out += [f"      <th>{h}</th>" for h in headers]
     out += ["    </tr>", "  </thead>", "  <tbody>"]
-    for r in rows:
-        out.append("    <tr>")
+    for i, r in enumerate(rows):
+        attr = row_attrs[i] if row_attrs is not None else ""
+        out.append(f"    <tr{attr}>")
         out += [f"      <td>{c}</td>" for c in r]
         out.append("    </tr>")
     out += ["  </tbody>", "</table>"]
@@ -145,9 +157,28 @@ table.window-list, table.final-list, table.peak-list, table.audit,
 table.ledger, table.covariance { width: 100%; }
 tbody tr:nth-child(even) { background: #f2f4f7; }
 tbody tr:hover { background: #e6edf4; }
+/* Rows wired to the hover-preview popup (window list / final line list): a
+   help cursor hints that hovering shows the window's magnitude thumbnail. */
+tbody tr[data-thumb]:hover { cursor: help; }
 thead th { position: sticky; top: 0; z-index: 1; }
 pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
       overflow-x: auto; border-radius: 4px; font-size: 0.82rem; }
+/* Single-file builds prepend a sticky top navigation bar (the multi-file site
+   keeps its per-page nav instead). The bar spans the viewport; its inner row is
+   centred to the report column. Anchor jumps and the table sticky-headers are
+   offset by the bar height so nothing lands hidden underneath it. */
+.topnav { position: sticky; top: 0; z-index: 100; background: #11233a;
+          box-shadow: 0 1px 4px rgba(0,0,0,0.25); }
+.topnav-inner { max-width: 1500px; margin: 0 auto; padding: 0.5rem 2rem;
+                display: flex; align-items: center; gap: 1.1rem; flex-wrap: wrap;
+                font-size: 0.9rem; }
+.topnav a { color: #cfe0f5; text-decoration: none; }
+.topnav a:hover { color: #fff; text-decoration: underline; }
+.topnav .brand { font-weight: 600; color: #fff; margin-right: auto; }
+.topnav select { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 3px;
+                 border: 1px solid #2c4a6e; background: #fff; color: #1a1a1a; }
+html.report-single { scroll-padding-top: 3.4rem; }
+html.report-single thead th { top: 3.4rem; }
 .badge { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 3px;
          font-size: 0.78rem; background: #f0d9a8; color: #5a4300;
          margin-left: 0.35rem; }
@@ -193,6 +224,16 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .hist { margin: 0.5rem 0 1.25rem; }
 .hist img { max-width: 100%; width: auto; height: auto; border: 1px solid #d0d4d9;
             background: #fff; }
+/* Magnitude-distribution panels: a reflowing flex row -- each panel keeps a
+   readable minimum width, panels share the row on a wide screen and stack on a
+   narrow one. */
+.maghist-grid { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0.5rem 0 1.25rem; }
+.maghist { flex: 1 1 320px; max-width: 480px; margin: 0; }
+.maghist img { width: 100%; height: auto; border: 1px solid #d0d4d9; background: #fff; }
+/* A short caption above an interleaved figure or figure group. */
+.fig-note { font-size: 0.82rem; color: #555; margin: 0.5rem 0 0.2rem; }
+/* Markdown *emphasis* (the "Results:" labels) -- styleable; bold for now. */
+.md-em { font-weight: 600; }
 /* The index full-spectrum overview spans the content width. */
 .spectrum-overview { margin: 0.5rem 0 0.25rem; }
 .spectrum-overview img { width: 100%; height: auto; border: 1px solid #d0d4d9;
@@ -242,19 +283,61 @@ def _panel_figure_name(stem: str, window_id: int, panel: str) -> str:
     return f"{stem}_window_{window_id:03d}_{panel}.png"
 
 
+def _window_preview_info(
+    window_id: int, lo: float, hi: float, k: int, chi2r: Optional[float]
+) -> str:
+    """The hover-preview info line for a window -- frequency range (1 decimal),
+    peak count, and reduced chi-square. Shared verbatim by the window list and
+    the final line list so both show identical text for a given window."""
+    info = (
+        f"window {window_id}: {min(lo, hi):.1f}–{max(lo, hi):.1f} MHz, "
+        f"{k} peak{'s' if k != 1 else ''}"
+    )
+    if chi2r is not None:
+        info += f", χ²ᵣ {chi2r:.2f}"
+    return info
+
+
+def _preview_row_attr(
+    stem: str,
+    window_id: int,
+    info: str,
+    *,
+    has_page: bool,
+    thumb_prefix: str = "figures/",
+) -> str:
+    """Pre-formatted ``<tr>`` attributes for the hover-preview popup.
+
+    Returns ``data-thumb`` (the window's magnitude panel) plus ``data-info``
+    when the window has a detail page (only those windows render a ``_mag.png``);
+    otherwise ``""`` so the row gets no popup. Mirrors the window-map strip's
+    hover-zoom, reusing the same panel image and the shared :data:`_WINMAP_JS`.
+    """
+    if not has_page:
+        return ""
+    thumb = f"{thumb_prefix}{_panel_figure_name(stem, window_id, 'mag')}"
+    return f' data-thumb="{_esc(thumb)}" data-info="{_esc(info)}"'
+
+
 # ---------------------------------------------------------------------------
 # Level-2 summary -> HTML (small, targeted Markdown converter)
 # ---------------------------------------------------------------------------
 
 _MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MD_EM = re.compile(r"\*(.+?)\*")
 _MD_CODE = re.compile(r"`([^`]+?)`")
 
 
 def _md_inline(text: str) -> str:
-    """Escape one line of Markdown text, then apply bold / inline-code spans."""
+    """Escape one line of Markdown text, then apply bold / emphasis / code spans.
+
+    ``*emphasis*`` (e.g. the ``*Results:*`` labels) becomes a CSS-styleable
+    ``span.md-em`` rather than a bare ``<em>`` so the look is tunable from the
+    stylesheet; bold (``**``) is resolved first so its inner ``*`` are gone."""
     out = _esc(text)
     out = _MD_CODE.sub(lambda m: f"<code>{m.group(1)}</code>", out)
     out = _MD_BOLD.sub(lambda m: f"<strong>{m.group(1)}</strong>", out)
+    out = _MD_EM.sub(lambda m: f'<span class="md-em">{m.group(1)}</span>', out)
     return out
 
 
@@ -428,21 +511,281 @@ def _summary_distribution_groups(
     return groups
 
 
-def _inject_after_table(html: str, anchor: str, snippet: str) -> Tuple[str, bool]:
-    """Insert *snippet* right after the first ``</table>`` that follows *anchor*.
+def _inject_after(
+    html: str, anchor: str, snippet: str, *, closing: str = "</table>"
+) -> Tuple[str, bool]:
+    """Insert *snippet* right after the first *closing* tag that follows *anchor*.
 
-    *anchor* is a caption substring; returns ``(html, injected)`` -- ``injected``
-    is False when the anchor or a following table is absent (the caller then
-    falls the figure back to a trailing section).
+    *anchor* is a substring of the rendered HTML (a caption or results phrase);
+    *closing* is the element it should land after (``</table>`` for a figure that
+    annotates a table, ``</p>`` for one that follows a results paragraph).
+    Returns ``(html, injected)`` -- ``injected`` is False when the anchor or its
+    following *closing* tag is absent (the caller then falls the figure back to a
+    trailing section).
     """
     pos = html.find(anchor)
     if pos < 0:
         return html, False
-    end = html.find("</table>", pos)
+    end = html.find(closing, pos)
     if end < 0:
         return html, False
-    cut = end + len("</table>")
+    cut = end + len(closing)
     return html[:cut] + "\n" + snippet + html[cut:], True
+
+
+def _inject_after_table(html: str, anchor: str, snippet: str) -> Tuple[str, bool]:
+    """Insert *snippet* right after the first ``</table>`` that follows *anchor*."""
+    return _inject_after(html, anchor, snippet, closing="</table>")
+
+
+def _inject_before(html: str, anchor: str, snippet: str) -> Tuple[str, bool]:
+    """Insert *snippet* immediately before the first occurrence of *anchor*.
+
+    Used to drop a stage's figure at the end of its section, anchored on the
+    *next* stage's heading. Returns ``(html, injected)``; ``injected`` is False
+    when the anchor is absent (caller falls the figure back to a trailing block).
+    """
+    pos = html.find(anchor)
+    if pos < 0:
+        return html, False
+    return html[:pos] + snippet + "\n" + html[pos:], True
+
+
+# How many equal-frequency segments the magnitude-distribution panel splits the
+# active band into (plus one overall panel). Six reflows cleanly across the
+# flex row on a wide screen and stacks on a narrow one.
+_MAG_HIST_N_SEGMENTS = 6
+
+
+def _magnitude_histogram_figures(
+    bundle: Any,
+    out_root: Path,
+    stem: str,
+    dpi: int,
+    plot_fn: Any,
+) -> Tuple[str, str]:
+    """Render the magnitude-distribution figures for the methods page.
+
+    A log-log histogram of active-FT bin magnitudes over the whole band, then
+    one per equal-frequency segment, each with the median per-bin sigma and the
+    3-sigma detection level marked. Returns ``(full_band_html, per_band_html)``:
+    the overall figure (a single capped ``hist`` block, placed by the driver at
+    the Stage 2 results) and the segment panels (a reflowing ``maghist-grid``,
+    placed after the per-band noise table). Either is ``""`` when nothing usable
+    rendered."""
+    import matplotlib.pyplot as plt
+
+    f = np.asarray(bundle.frequencies, dtype=float)
+    spec = np.asarray(bundle.complex_spectrum)
+    rms = np.asarray(bundle.rms_noise, dtype=float)
+    amp = float(bundle.amplitude_scale)
+    if bundle.trim_mhz is not None:
+        lo, hi = float(min(bundle.trim_mhz)), float(max(bundle.trim_mhz))
+        m = (f >= lo) & (f <= hi)
+        f, spec, rms = f[m], spec[m], rms[m]
+    if f.size == 0:
+        return "", ""
+    mag = np.abs(spec) * amp
+    sigma = rms * amp
+    units = bundle.units_label
+    xlabel = f"magnitude |X| ({units})" if units else "magnitude |X|"
+    band_lo, band_hi = float(f.min()), float(f.max())
+
+    def _median_sigma(mask: np.ndarray) -> float:
+        vals = sigma[mask]
+        vals = vals[np.isfinite(vals) & (vals > 0.0)]
+        return float(np.median(vals)) if vals.size else 0.0
+
+    def _render(fname: str, title: str, mags: np.ndarray, sig: float) -> Optional[str]:
+        fig = plot_fn(mags, sigma_median=sig, title=title, xlabel=xlabel)
+        if fig is None:
+            return None
+        fig.savefig(str(out_root / "figures" / fname), dpi=dpi)
+        plt.close(fig)
+        return fname
+
+    note = (
+        '<p class="fig-note">Active-FT bin magnitudes on a log–log scale -- a '
+        "noise hump with a heavy line tail. The amber line marks the median "
+        "per-bin &sigma;<sub>x</sub> (SNR&nbsp;=&nbsp;1); the red line the "
+        "3&sigma; detection level.</p>"
+    )
+
+    full_band_html = ""
+    full_name = _render(
+        f"{stem}_maghist_all.png",
+        f"Full band {band_lo:.0f}–{band_hi:.0f} MHz",
+        mag,
+        _median_sigma(np.ones(f.shape, dtype=bool)),
+    )
+    if full_name is not None:
+        full_band_html = (
+            note + f'<div class="hist"><img src="figures/{full_name}" '
+            f'alt="full-band magnitude distribution"></div>'
+        )
+
+    edges = np.linspace(band_lo, band_hi, _MAG_HIST_N_SEGMENTS + 1)
+    cards: List[str] = []
+    for i in range(_MAG_HIST_N_SEGMENTS):
+        seg_lo, seg_hi = float(edges[i]), float(edges[i + 1])
+        # Last segment is right-inclusive so the band's top bin is not dropped.
+        seg_mask = (f >= seg_lo) & (
+            f <= seg_hi if i == _MAG_HIST_N_SEGMENTS - 1 else f < seg_hi
+        )
+        if not seg_mask.any():
+            continue
+        name = _render(
+            f"{stem}_maghist_seg{i:02d}.png",
+            f"{seg_lo:.0f}–{seg_hi:.0f} MHz",
+            mag[seg_mask],
+            _median_sigma(seg_mask),
+        )
+        if name is not None:
+            cards.append(
+                f'<figure class="maghist"><img src="figures/{name}" '
+                f'alt="{seg_lo:.0f}–{seg_hi:.0f} MHz magnitude distribution">'
+                f"</figure>"
+            )
+    per_band_html = ""
+    if cards:
+        per_band_html = (
+            '<p class="fig-note">Per-band magnitude distributions (same axes as '
+            "above), where the noise floor shifts across the band.</p>"
+            '<div class="maghist-grid">' + "".join(cards) + "</div>"
+        )
+    return full_band_html, per_band_html
+
+
+def _methods_stage_figures(
+    path: str, out_root: Path, stem: str, dpi: int
+) -> List[Tuple[str, str]]:
+    """Render the per-stage diagnostic figures for the methods page.
+
+    Each entry is ``(before_anchor, html)``: the figure(s) for one stage, to be
+    inserted right before the *next* stage's heading (i.e. at the end of that
+    stage's section). Every figure is gated -- a stage that was not run, or whose
+    renderer raises, is silently skipped. Reuses the per-stage ``visualize_*``
+    renderers so the report inherits the same grids the CLI draws."""
+    import matplotlib.pyplot as plt
+
+    from ..visualization.fid_visualization import plot_fid_overview
+    from ..visualization.tau_calibration_visualization import (
+        plot_tau_distribution_from_file,
+        plot_tau_heatmap_from_file,
+    )
+    from .stage0_impl import load_fid_from_pipeline_impl
+    from .stage2_impl import visualize_noise_impl
+    from .stage3_impl import visualize_peaks_impl
+    from .stage4_impl import visualize_windows_impl
+
+    # These figures span the full content width, so render them sharper than the
+    # compact per-window panels: more pixels stays crisp when scaled to the page.
+    fig_dpi = int(dpi * 1.4)
+
+    def _block(fig: Any, slug: str, caption: str) -> Optional[str]:
+        if fig is None:
+            return None
+        fname = f"{stem}_methods_{slug}.png"
+        fig.savefig(str(out_root / "figures" / fname), dpi=fig_dpi, bbox_inches="tight")
+        plt.close(fig)
+        return (
+            f'<p class="fig-note">{caption}</p>'
+            f'<div class="hist"><img src="figures/{fname}" alt="{_esc(slug)}"></div>'
+        )
+
+    # (next-stage heading anchor, [(slug, caption, render thunk), ...]).
+    groups: List[Tuple[str, List[Tuple[str, str, Any]]]] = [
+        (
+            "Stage 1 -- Fourier transform",
+            [
+                (
+                    "stage0_fid",
+                    "Raw FID -- full trace, early-time zoom, and voltage histogram.",
+                    lambda: plot_fid_overview(load_fid_from_pipeline_impl(path)),
+                )
+            ],
+        ),
+        (
+            "Stage 2b -- τ calibration",
+            [
+                (
+                    "stage2_noise",
+                    "Stage 2 noise estimate -- the per-bin σₓ across the spectrum "
+                    "and the bins classed as noise.",
+                    lambda: visualize_noise_impl(
+                        path, title="", backend="matplotlib", interactive=False
+                    ),
+                )
+            ],
+        ),
+        (
+            "Stage 3 -- peak detection",
+            [
+                (
+                    "stage2b_tau_heatmap",
+                    "Stage 2b STFT magnitude heatmap (log |S(a, f)|) -- the time–"
+                    "frequency map the τ majority is read from.",
+                    lambda: plot_tau_heatmap_from_file(path, title=""),
+                ),
+                (
+                    "stage2b_tau_dist",
+                    "Stage 2b decay-time distribution -- τ histogram, τ vs SNR, τ vs "
+                    "frequency, and the one- vs two-component test.",
+                    lambda: plot_tau_distribution_from_file(path, title=""),
+                ),
+            ],
+        ),
+        (
+            "Stage 4 -- window assignment",
+            [
+                (
+                    "stage3_peaks",
+                    "Stage 3 promoted detections over the spectrum, coloured by SNR "
+                    "class and detection pass, with the SNR distribution.",
+                    lambda: visualize_peaks_impl(
+                        path,
+                        title="",
+                        backend="matplotlib",
+                        interactive=False,
+                        show_snr_histogram=True,
+                        promoted_only=True,
+                    ),
+                )
+            ],
+        ),
+        (
+            "Stage 5 -- per-window fitting",
+            [
+                (
+                    "stage4_windows",
+                    "Stage 4 window plan -- spans shaded by difficulty, free peaks and "
+                    "fixed contributors, and the edge-coherence statistic.",
+                    lambda: visualize_windows_impl(
+                        path,
+                        title="",
+                        figsize=(15, 9.5),
+                        backend="matplotlib",
+                        interactive=False,
+                    ),
+                )
+            ],
+        ),
+    ]
+
+    out: List[Tuple[str, str]] = []
+    for anchor, figs in groups:
+        blocks: List[str] = []
+        for slug, caption, render in figs:
+            try:
+                fig = render()
+            except Exception:  # optional diagnostic: skip a missing/failed stage
+                fig = None
+            block = _block(fig, slug, caption)
+            if block is not None:
+                blocks.append(block)
+        if blocks:
+            out.append((anchor, "".join(blocks)))
+    return out
 
 
 def _summary_page(stem: str, md_html: str, leftover: List[str]) -> str:
@@ -672,14 +1015,17 @@ def _window_map_svg(
     return '<div class="winmap">' + "".join(parts) + "</div>"
 
 
-# Optional hover-zoom popup for the window map: a tiny, dependency-free script
-# that shows a window's magnitude thumbnail at the cursor on hover. The map is
-# fully usable without it (rects link + carry native <title> tooltips), so this
-# degrades gracefully when scripting is off.
+# Optional hover-zoom popup: a tiny, dependency-free script that shows a window's
+# magnitude thumbnail at the cursor on hover. It drives both the window-map strip
+# (rects carry data-thumb + a native <title>) and the index tables (window list /
+# final line list rows carry data-thumb + data-info). Everything is fully usable
+# without it (rects link + carry native tooltips; rows link to the window page),
+# so this degrades gracefully when scripting is off.
 _WINMAP_JS = """<script>
 (function () {
   var rects = document.querySelectorAll('.winmap [data-window]');
-  if (!rects.length) return;
+  var rows = document.querySelectorAll('tr[data-thumb]');
+  if (!rects.length && !rows.length) return;
   var pop = document.createElement('div');
   pop.className = 'winmap-pop';
   pop.style.display = 'none';
@@ -695,6 +1041,9 @@ _WINMAP_JS = """<script>
   function show(e) {
     var t = e.currentTarget;
     var thumb = t.getAttribute('data-thumb');
+    // Single-file builds key data-thumb to a deduplicated base64 map; the
+    // multi-file site leaves it a real path (no map present).
+    if (thumb && window.__thumbs && window.__thumbs[thumb]) thumb = window.__thumbs[thumb];
     var info = t.getAttribute('data-info') || '';
     pop.innerHTML = (thumb ? '<img src="' + thumb + '" alt="">' : '') +
       '<div class="winmap-pop-info">' + info + '</div>';
@@ -702,10 +1051,10 @@ _WINMAP_JS = """<script>
     move(e);
   }
   function hide() { pop.style.display = 'none'; }
-  rects.forEach(function (el) {
-    // Move the native <title> into a data attribute so the popup (below) is the
-    // only tooltip when scripting is on; without this script the <title> stays
-    // and the browser shows it natively.
+  function bind(el) {
+    // Move any native <title> into a data attribute so the popup is the only
+    // tooltip when scripting is on; without this script the <title> stays and
+    // the browser shows it natively. (Table rows store data-info directly.)
     var titleEl = el.querySelector('title');
     if (titleEl) {
       el.setAttribute('data-info', titleEl.textContent);
@@ -714,17 +1063,25 @@ _WINMAP_JS = """<script>
     el.addEventListener('mouseenter', show);
     el.addEventListener('mousemove', move);
     el.addEventListener('mouseleave', hide);
-  });
+  }
+  rects.forEach(bind);
+  rows.forEach(bind);
 })();
 </script>"""
 
 
 def _index_window_table(
     rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]],
+    preview_attrs: Dict[int, str],
 ) -> str:
     """Build the index window list. Each row:
-    ``(wid, lo, hi, k, chi2r, has_page, needs_attention)``."""
+    ``(wid, lo, hi, k, chi2r, has_page, needs_attention)``.
+
+    ``preview_attrs`` maps a window id to its pre-formatted ``<tr>`` attributes
+    (``data-thumb`` / ``data-info``) so the shared hover-preview popup shows the
+    magnitude panel on hover -- the same map feeds the final line list."""
     out_rows: List[List[str]] = []
+    row_attrs: List[str] = []
     for wid, lo, hi, k, chi2r, has_page, attn in rows:
         label = f"window {wid}"
         if has_page:
@@ -733,6 +1090,7 @@ def _index_window_table(
             link = label
         if attn:
             link += '<span class="badge">attention</span>'
+        row_attrs.append(preview_attrs.get(wid, ""))
         out_rows.append(
             [
                 link,
@@ -745,6 +1103,7 @@ def _index_window_table(
         ["Window", "Range (MHz)", "Peaks", "&chi;&sup2;<sub>r</sub>"],
         out_rows,
         cls="window-list",
+        row_attrs=row_attrs,
     )
 
 
@@ -761,16 +1120,30 @@ def _catalog_cell(m: Optional[CatalogMatch]) -> str:
 
 
 def _index_final_table(
-    products: FinalProducts, matches: Optional[List[Optional[CatalogMatch]]] = None
+    products: FinalProducts,
+    matches: Optional[List[Optional[CatalogMatch]]] = None,
+    *,
+    preview_attrs: Optional[Dict[int, str]] = None,
 ) -> str:
+    """Build the index final line list.
+
+    ``preview_attrs`` maps a window id to its pre-formatted ``<tr>`` attributes;
+    each peak inherits its window's hover-preview popup (the same magnitude-panel
+    thumbnail and identical info text as the window list)."""
     uname, uval = _amplitude_unit(products)
     with_cat = matches is not None
     rows: List[List[str]] = []
+    row_attrs: List[str] = []
     for i, p in enumerate(products.peaks):
         wid = p.window_id
         win_cell = (
             f'<a href="windows/{_window_page_name(wid)}">{wid}</a>'
             if wid is not None
+            else ""
+        )
+        row_attrs.append(
+            preview_attrs.get(wid, "")
+            if preview_attrs is not None and wid is not None
             else ""
         )
         row = [
@@ -794,7 +1167,7 @@ def _index_final_table(
     ]
     if with_cat:
         head.append("Catalog")
-    return _table(head, rows, cls="final-list")
+    return _table(head, rows, cls="final-list", row_attrs=row_attrs)
 
 
 # ---------------------------------------------------------------------------
@@ -1365,6 +1738,174 @@ def _window_page(
 
 
 # ---------------------------------------------------------------------------
+# Single-file collapse (base64-embedded, self-contained HTML)
+# ---------------------------------------------------------------------------
+
+SINGLE_FILE_MODES = ("summary", "full")
+
+# Hover-preview thumbnails are downscaled to a little above the popup's display
+# width (.winmap-pop img is 360px) before base64 embedding, so the deduplicated
+# thumbnail map stays small.
+_THUMB_MAX_W = 400
+
+
+def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> str:
+    """Collapse a built report site into one self-contained HTML document.
+
+    Inlines the stylesheet, base64-embeds every ``<img>`` figure, and rewrites
+    cross-page links to in-document anchors. ``mode="summary"`` keeps the index
+    and methods pages (the portable Level-2 replacement); ``mode="full"`` also
+    folds in every per-window page, reachable via ``#window-<id>``.
+
+    The hover-zoom *thumbnails* (``data-thumb``) are keyed to a single
+    deduplicated, downscaled base64 map (``window.__thumbs``) rather than inlined
+    per reference -- each window thumbnail is referenced on many rows and every
+    page, so a map keeps one small copy instead of hundreds.
+    """
+    import base64
+    import io
+    import json
+
+    css = (site_dir / "assets" / "style.css").read_text()
+    img_re = re.compile(r'src="([^"]+\.png)"')
+    thumb_re = re.compile(r'data-thumb="[^"]*/([^"/]+\.png)"')
+    script_re = re.compile(r"<script\b[^>]*>.*?</script>", re.DOTALL)
+    main_open = '<main class="report">'
+    thumb_keys: set[str] = set()
+
+    def data_uri(p: Path) -> str:
+        enc = base64.b64encode(p.read_bytes()).decode("ascii")
+        return f"data:image/png;base64,{enc}"
+
+    def thumb_data_uri(name: str) -> str:
+        from PIL import Image
+
+        with Image.open(site_dir / "figures" / name) as src:
+            img = src.convert("RGB")
+            if img.width > _THUMB_MAX_W:
+                h = round(img.height * _THUMB_MAX_W / img.width)
+                img = img.resize((_THUMB_MAX_W, h), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG", optimize=True)
+        enc = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{enc}"
+
+    def rewrite_links(frag: str) -> str:
+        if mode == "full":
+            frag = re.sub(
+                r'href="(?:\.\./)?(?:windows/)?window_0*(\d+)\.html"',
+                lambda m: f'href="#window-{int(m.group(1))}"',
+                frag,
+            )
+        else:  # summary has no window pages -- send window links to the top
+            frag = re.sub(
+                r'href="(?:\.\./)?(?:windows/)?window_0*\d+\.html"',
+                'href="#page-top"',
+                frag,
+            )
+        frag = re.sub(r'href="(?:\.\./)?index\.html"', 'href="#page-top"', frag)
+        frag = re.sub(r'href="(?:\.\./)?methods\.html"', 'href="#methods"', frag)
+        return frag
+
+    def to_thumb_key(m: "re.Match[str]") -> str:
+        name = m.group(1)
+        thumb_keys.add(name)
+        return f'data-thumb="{name}"'
+
+    def prep(html: str, page_dir: Path) -> str:
+        i = html.find(main_open)
+        j = html.rfind("</main>")
+        frag = html[i + len(main_open) : j]
+        frag = script_re.sub("", frag)  # one popup script is re-added globally
+        frag = thumb_re.sub(to_thumb_key, frag)  # key into the dedup thumb map
+        frag = rewrite_links(frag)
+
+        def embed(m: "re.Match[str]") -> str:
+            fp = (page_dir / m.group(1)).resolve()
+            return f'src="{data_uri(fp)}"' if fp.exists() else m.group(0)
+
+        return img_re.sub(embed, frag)
+
+    sections = [
+        f'<section id="page-top">{prep((site_dir / "index.html").read_text(), site_dir)}'
+        "</section>"
+    ]
+    methods_p = site_dir / "methods.html"
+    if methods_p.exists():
+        sections.append(
+            f'<section id="methods">{prep(methods_p.read_text(), site_dir)}</section>'
+        )
+    window_ids: List[int] = []
+    if mode == "full":
+        win_dir = site_dir / "windows"
+        for wp in sorted(win_dir.glob("window_*.html")):
+            wid = int(re.search(r"window_0*(\d+)\.html", wp.name).group(1))  # type: ignore[union-attr]
+            window_ids.append(wid)
+            sections.append(
+                f'<section id="window-{wid}" class="embedded-window">'
+                f"{prep(wp.read_text(), win_dir)}</section>"
+            )
+
+    # One deduplicated, downscaled base64 thumbnail per referenced window, looked
+    # up by the hover popup (window.__thumbs); built after prep() has collected
+    # every key.
+    thumb_map = {name: thumb_data_uri(name) for name in sorted(thumb_keys)}
+    thumb_script = (
+        f"<script>window.__thumbs={json.dumps(thumb_map)};</script>"
+        if thumb_map
+        else ""
+    )
+
+    # Sticky section navigation. Overview, the window list, and the final line
+    # list are on the index (present in both modes); Methods when that page is
+    # folded in; the jump-to-window picker only when the per-window pages are.
+    # Everything anchors to in-document section ids.
+    nav_links = ['<a href="#page-top">Overview</a>']
+    if methods_p.exists():
+        nav_links.append('<a href="#methods">Methods</a>')
+    nav_links.append('<a href="#window-list">Windows</a>')
+    nav_links.append('<a href="#final-list">Line list</a>')
+    if window_ids:
+        opts = "".join(
+            f'<option value="#window-{w}">window {w}</option>' for w in window_ids
+        )
+        nav_links.append(
+            '<select class="winjump" aria-label="Jump to window" '
+            'onchange="if(this.value)location.hash=this.value">'
+            f'<option value="">Jump to window…</option>{opts}</select>'
+        )
+    topnav = (
+        '<nav class="topnav"><div class="topnav-inner">'
+        f'<a class="brand" href="#page-top">{_esc(stem)}</a>'
+        f'{"".join(nav_links)}</div></nav>'
+    )
+
+    return "\n".join(
+        [
+            "<!DOCTYPE html>",
+            '<html lang="en" class="report-single">',
+            "<head>",
+            '  <meta charset="utf-8">',
+            '  <meta name="viewport" content="width=device-width, initial-scale=1">',
+            f"  <title>{_esc(stem)} report</title>",
+            f"  <style>{css}</style>",
+            _MATHJAX_HEAD,
+            "</head>",
+            "<body>",
+            topnav,
+            '<main class="report">',
+            *sections,
+            "</main>",
+            thumb_script,
+            _WINMAP_JS,
+            "</body>",
+            "</html>",
+            "",
+        ]
+    )
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -1377,6 +1918,7 @@ def report_full_impl(
     dpi: int = 110,
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
+    single_file: Optional[str] = None,
 ) -> str:
     """Assemble the Level-3 linked-HTML report site and return the index path.
 
@@ -1421,6 +1963,7 @@ def report_full_impl(
     from ..visualization.fit_detail import (
         frequency_sorted_labels,
         plot_correlation_heatmap,
+        plot_magnitude_histogram,
         plot_summary_histograms,
     )
     from .report_impl import _render_markdown
@@ -1432,6 +1975,11 @@ def report_full_impl(
         raise ValueError(
             f"unknown windows filter {windows!r}; choose one of "
             f"{VALID_WINDOW_FILTERS}"
+        )
+    if single_file is not None and single_file not in SINGLE_FILE_MODES:
+        raise ValueError(
+            f"unknown single_file mode {single_file!r}; choose one of "
+            f"{SINGLE_FILE_MODES}"
         )
 
     path = str(file_path)
@@ -1515,7 +2063,16 @@ def report_full_impl(
         if wid_rec is not None:
             merges_by_window.setdefault(int(wid_rec), []).append(rec)
 
-    out_root = Path(output_dir)
+    # For a single-file build, assemble the multi-file site in a scratch dir and
+    # collapse it at the end; otherwise write the site directly to output_dir.
+    import tempfile
+
+    final_dir = Path(output_dir)
+    if single_file is not None:
+        final_dir.mkdir(parents=True, exist_ok=True)
+        out_root = Path(tempfile.mkdtemp(prefix=f"{stem}_report_"))
+    else:
+        out_root = final_dir
     (out_root / "assets").mkdir(parents=True, exist_ok=True)
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
     (out_root / "windows").mkdir(parents=True, exist_ok=True)
@@ -1630,6 +2187,30 @@ def report_full_impl(
         methods_html, injected = _inject_after_table(methods_html, anchor, snippet)
         if not injected:
             leftover.append(snippet)
+    # Magnitude-distribution figures: the full-band panel lands at the Stage 2
+    # results; the per-band panels after the per-band noise table. Either falls
+    # back to a trailing Distributions block if its anchor is absent.
+    full_band_html, per_band_html = _magnitude_histogram_figures(
+        bundle, out_root, stem, dpi, plot_magnitude_histogram
+    )
+    if full_band_html:
+        methods_html, ok = _inject_after(
+            methods_html, "median σ_x", full_band_html, closing="</p>"
+        )
+        if not ok:
+            leftover.append(full_band_html)
+    if per_band_html:
+        methods_html, ok = _inject_after_table(
+            methods_html, "Per-band noise", per_band_html
+        )
+        if not ok:
+            leftover.append(per_band_html)
+    # Per-stage diagnostic figures, each dropped at the end of its section (before
+    # the next stage's heading); a stage that was not run is skipped.
+    for anchor, fig_html in _methods_stage_figures(path, out_root, stem, dpi):
+        methods_html, ok = _inject_before(methods_html, anchor, fig_html)
+        if not ok:
+            leftover.append(fig_html)
     (out_root / "methods.html").write_text(_summary_page(stem, methods_html, leftover))
 
     # --- index ----------------------------------------------------------
@@ -1668,6 +2249,15 @@ def report_full_impl(
             "attention); hover for details, click to open its page.</p>"
         )
 
+    # Hover-preview attributes per window (magnitude thumbnail + identical info
+    # text), shared by the window list and the final line list.
+    preview_attrs: Dict[int, str] = {
+        wid: _preview_row_attr(
+            stem, wid, _window_preview_info(wid, lo, hi, k, chi2r), has_page=has_page
+        )
+        for wid, lo, hi, k, chi2r, has_page, _attn in index_rows
+    }
+
     body: List[str] = [
         f"<h1>FTMW pipeline report &mdash; {_esc(stem)}</h1>",
         "<p>Generated by <code>ftmwpipeline</code>. This site renders the "
@@ -1677,12 +2267,12 @@ def report_full_impl(
         "&mdash; per-stage algorithm notes, parameters, statistics tables, and "
         "distribution histograms.</p>",
         *spectrum_section,
-        "<h2>Windows</h2>",
+        '<h2 id="window-list">Windows</h2>',
         f"<p>{len(page_ids):,} of {len(all_ids):,} windows have a detail page "
         f"(<code>{_esc(key)}</code> filter); {len(attention_ids):,} flagged for "
         "attention.</p>",
-        _index_window_table(index_rows),
-        "<h2>Final line list</h2>",
+        _index_window_table(index_rows, preview_attrs),
+        '<h2 id="final-list">Final line list</h2>',
         f"<p>All {len(products.peaks):,} calibrated lines "
         f"(amplitude in {_esc(uname)})"
         + (
@@ -1694,15 +2284,33 @@ def report_full_impl(
         )
         + "</p>",
         _index_final_table(
-            products, cross_ref.matches if cross_ref is not None else None
+            products,
+            cross_ref.matches if cross_ref is not None else None,
+            preview_attrs=preview_attrs,
         ),
     ]
-    if spectrum_section:
-        body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
+    # The hover-preview popup drives both the window-map strip (when present) and
+    # the index tables' rows, so it is always included on the index page.
+    body.append(_WINMAP_JS)
     index_html = _page(f"{stem} report", body, css_href="assets/style.css")
     index_path = out_root / "index.html"
     index_path.write_text(index_html)
-    return str(index_path)
+
+    if single_file is None:
+        return str(index_path)
+
+    # Collapse the scratch site into one self-contained file, then discard it.
+    import shutil
+
+    suffix = "_summary" if single_file == "summary" else ""
+    single_path = final_dir / f"{stem}_report{suffix}.html"
+    try:
+        single_path.write_text(
+            _collapse_site_to_single_file(out_root, mode=single_file, stem=stem)
+        )
+    finally:
+        shutil.rmtree(out_root, ignore_errors=True)
+    return str(single_path)
 
 
 def _window_range(wf: Any) -> Tuple[float, float]:

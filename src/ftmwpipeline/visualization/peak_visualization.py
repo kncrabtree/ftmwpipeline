@@ -109,6 +109,8 @@ def plot_peak_detection(
             f"Unsupported backend {backend!r}; only 'matplotlib' is available"
         )
 
+    from .report_style import apply_bare_style, resolve_title
+
     if snr_histogram:
         fig, (ax, ax_hist) = plt.subplots(
             2,
@@ -179,9 +181,13 @@ def plot_peak_detection(
     ax.set_ylim(floor, top * max(y_max_factor / 25.0, 1.2))
     ax.set_xlabel("Frequency (MHz)")
     ax.set_ylabel("Magnitude")
-    ax.set_title(title or "Stage 3 Peak Detection")
+    resolved_title = resolve_title(title, "Stage 3 Peak Detection")
+    if resolved_title:
+        ax.set_title(resolved_title)
     ax.legend(loc="upper right", fontsize=8, ncol=2)
+    apply_bare_style(ax)
     if ax_hist is not None:
         _plot_snr_histogram(ax_hist, peaks, promotion_min_snr)
+        apply_bare_style(ax_hist)
     fig.tight_layout()
     return fig

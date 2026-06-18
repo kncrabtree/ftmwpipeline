@@ -613,6 +613,85 @@ def test_full_is_read_only(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
+def test_single_file_summary_is_self_contained(stage5_small_file, tmp_path):
+    out = tmp_path / "sf"
+    path = report_full_impl(
+        str(stage5_small_file), output_dir=str(out), single_file="summary"
+    )
+    p = Path(path)
+    assert p.name.endswith("_report_summary.html")
+    assert p.exists() and p.parent == out
+    # Exactly one self-contained file -- no scratch site dir / assets / figures.
+    assert list(out.glob("*.html")) == [p]
+    assert not (out / "figures").exists() and not (out / "assets").exists()
+
+    doc = p.read_text()
+    html.parser.HTMLParser().feed(doc)
+    # No external asset references survive: CSS inlined, figures base64-embedded,
+    # cross-page links rewritten to in-document anchors.
+    import re as _re
+
+    assert "<style>" in doc and 'rel="stylesheet"' not in doc
+    assert 'src="figures/' not in doc and 'src="../figures/' not in doc
+    assert "data:image/png;base64," in doc
+    # No page-to-page file links survive (every href is an in-document anchor).
+    assert not _re.search(r'href="[^"#][^"]*\.html"', doc)
+    # Index + methods are both present, methods reachable by anchor.
+    assert 'id="methods"' in doc and 'href="#methods"' in doc
+    assert "Methods and results" in doc  # the methods-page content folded in
+    # Summary carries no per-window section (the #window-list nav anchor is fine).
+    assert not _re.search(r'id="window-\d', doc)
+    # Hover previews survive via one deduplicated thumbnail map: data-thumb is a
+    # bare basename key (no path) resolved against window.__thumbs.
+    assert "window.__thumbs=" in doc
+    assert _re.search(r'data-thumb="[^"/]+_mag\.png"', doc)
+    assert not _re.search(r'data-thumb="[^"]*/', doc)  # no path-form keys leak
+    # Sticky section nav: Overview/Methods/Windows/Line list, no window jump.
+    assert 'class="topnav"' in doc and 'href="#methods"' in doc
+    assert 'href="#window-list"' in doc and 'id="window-list"' in doc
+    assert 'href="#final-list"' in doc and 'id="final-list"' in doc
+    assert 'class="winjump"' not in doc
+
+
+@pytest.mark.integration
+def test_single_file_full_folds_in_window_pages(stage5_small_file, tmp_path):
+    out = tmp_path / "sff"
+    path = report_full_impl(
+        str(stage5_small_file), output_dir=str(out), single_file="full"
+    )
+    p = Path(path)
+    assert p.name.endswith("_report.html") and not p.name.endswith("_summary.html")
+    assert list(out.glob("*.html")) == [p]
+    assert not (out / "windows").exists()
+
+    doc = p.read_text()
+    html.parser.HTMLParser().feed(doc)
+    assert 'src="figures/' not in doc and "data:image/png;base64," in doc
+    # Every per-window section is present and every window link is an anchor that
+    # resolves to one of those sections (no dangling file links).
+    import re as _re
+
+    section_ids = set(_re.findall(r'id="window-(\d+)"', doc))
+    link_ids = set(_re.findall(r'href="#window-(\d+)"', doc))
+    assert section_ids and link_ids <= section_ids
+    assert 'href="windows/window_' not in doc
+    # The jump-to-window picker offers every window section as an anchor target.
+    assert 'class="winjump"' in doc
+    jump_ids = set(_re.findall(r'<option value="#window-(\d+)"', doc))
+    assert jump_ids == section_ids
+    # Nav links to the index window list and final line list.
+    assert 'href="#window-list"' in doc and 'href="#final-list"' in doc
+
+
+@pytest.mark.integration
+def test_single_file_rejects_unknown_mode(stage5_small_file, tmp_path):
+    with pytest.raises(ValueError, match="single_file"):
+        report_full_impl(
+            str(stage5_small_file), output_dir=str(tmp_path / "x"), single_file="bogus"
+        )
+
+
+@pytest.mark.integration
 def test_full_cross_interface(stage5_small_file, tmp_path):
     fp = tmp_path / "copy.ftmw"
     shutil.copy(stage5_small_file, fp)

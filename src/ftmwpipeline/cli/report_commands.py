@@ -12,7 +12,11 @@ from __future__ import annotations
 import argparse
 from typing import Any, Optional
 
-from .._internal.report_html_impl import VALID_WINDOW_FILTERS, report_full_impl
+from .._internal.report_html_impl import (
+    SINGLE_FILE_MODES,
+    VALID_WINDOW_FILTERS,
+    report_full_impl,
+)
 from .._internal.report_impl import (
     VALID_FORMATS,
     report_summary_impl,
@@ -106,20 +110,25 @@ def cmd_report_full(args: argparse.Namespace) -> int:
     file_path = _ensure_ftmw(args.file_path)
     output_dir: str = args.output_dir
     windows: str = getattr(args, "windows", "all")
+    single_file: Optional[str] = getattr(args, "single_file", None)
 
     try:
-        index_path = report_full_impl(
+        out_path = report_full_impl(
             file_path,
             output_dir=output_dir,
             windows=windows,
             catalog=getattr(args, "catalog", None),
             catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
+            single_file=single_file,
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
 
-    print(f"report full: wrote HTML site to {index_path}")
+    if single_file is not None:
+        print(f"report full: wrote self-contained HTML to {out_path}")
+    else:
+        print(f"report full: wrote HTML site to {out_path}")
     return 0
 
 
@@ -245,6 +254,18 @@ def register_report_commands(subparsers: Any) -> None:
         help=(
             "Which windows get a detail page: 'all' (default) or 'attention' "
             "(only windows the review flagged). The index lists every window."
+        ),
+    )
+    p_full.add_argument(
+        "--single-file",
+        dest="single_file",
+        choices=SINGLE_FILE_MODES,
+        default=None,
+        help=(
+            "Emit one self-contained HTML file (CSS inlined, figures "
+            "base64-embedded) instead of a directory: 'summary' = index + "
+            "methods only (the portable summary); 'full' = also fold in every "
+            "per-window page via #window-<id> anchors."
         ),
     )
     _add_catalog_args(p_full)

@@ -93,11 +93,13 @@ def _plot_noise_estimation_matplotlib(
 ) -> plt.Figure:
     """Create matplotlib version of noise estimation plot - single wide panel."""
 
+    from .report_style import apply_bare_style, resolve_title
+
     # Create single subplot with wide aspect ratio
     fig, ax = plt.subplots(1, 1, figsize=figsize)
-    fig.suptitle(
-        title or "Noise Estimation Diagnostics", fontsize=14, fontweight="bold"
-    )
+    resolved_title = resolve_title(title, "Noise Estimation Diagnostics")
+    if resolved_title:
+        fig.suptitle(resolved_title, fontsize=14, fontweight="bold")
 
     # Frequencies are already in MHz
     freq_mhz = frequencies
@@ -173,7 +175,7 @@ def _plot_noise_estimation_matplotlib(
     ax.set_xlabel("Frequency (MHz)", fontsize=12)
     ax.set_ylabel("Magnitude", fontsize=12)
     ax.legend(loc="upper right")
-    ax.grid(True, alpha=0.3)
+    apply_bare_style(ax)
 
     # Add summary statistics as text
     stats_text = _compile_noise_statistics_summary(noise_result)
@@ -185,7 +187,9 @@ def _plot_noise_estimation_matplotlib(
         fontsize=9,
         verticalalignment="top",
         fontfamily="monospace",
-        bbox=dict(boxstyle="round,pad=0.4", facecolor="lightblue", alpha=0.8),
+        bbox=dict(
+            boxstyle="round,pad=0.4", facecolor="white", edgecolor="#d0d4d9", alpha=0.85
+        ),
     )
 
     plt.tight_layout()

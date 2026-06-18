@@ -893,6 +893,62 @@ def plot_summary_histograms(
     return fig
 
 
+def plot_magnitude_histogram(
+    magnitudes: np.ndarray,
+    *,
+    sigma_median: float,
+    title: str,
+    xlabel: str = "magnitude |X|",
+    n_sigma: float = 3.0,
+    bins: int = 40,
+    figsize: Tuple[float, float] = (4.4, 3.3),
+) -> Optional[plt.Figure]:
+    """A single log-log histogram of active-FT bin magnitudes.
+
+    The distribution of ``|X|`` over every bin in a band sits as a Rayleigh-like
+    noise hump (the bulk) with a heavy tail of real lines; a log-log scale keeps
+    both legible at once. Two reference verticals mark where the noise floor sits
+    relative to that bulk: the per-bin median ``sigma_x`` (``SNR = 1``) and the
+    ``n_sigma`` detection level (``n_sigma * median sigma_x``), both in the same
+    scaled units as *magnitudes*. Returns ``None`` when too few positive
+    magnitudes remain to histogram (the caller then omits the panel).
+    """
+    arr = np.asarray(magnitudes, dtype=float)
+    arr = arr[np.isfinite(arr) & (arr > 0.0)]
+    if arr.size < 5:
+        return None
+    lo, hi = float(arr.min()), float(arr.max())
+    if not (hi > lo):
+        return None
+    edges = np.logspace(np.log10(lo), np.log10(hi), bins + 1)
+    fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
+    ax.hist(arr, bins=edges, color="tab:blue", alpha=0.8, edgecolor="white", lw=0.3)
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    if sigma_median > 0.0:
+        ax.axvline(
+            sigma_median,
+            color="#d08700",
+            lw=1.1,
+            ls="--",
+            label=f"median σₓ {sigma_median:.3g}",
+        )
+        ax.axvline(
+            n_sigma * sigma_median,
+            color="tab:red",
+            lw=1.1,
+            ls=":",
+            label=f"{n_sigma:g}σ {n_sigma * sigma_median:.3g}",
+        )
+    ax.set_title(f"{title}  (n={arr.size:,})", fontsize=9)
+    ax.set_xlabel(xlabel, fontsize=8)
+    ax.set_ylabel("count", fontsize=8)
+    ax.tick_params(labelsize=7)
+    ax.legend(fontsize=7)
+    _apply_bare_style(ax)
+    return fig
+
+
 def _make_vline_plotter(
     fitted_freqs: Sequence[float],
     labels: Sequence[str],

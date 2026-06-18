@@ -29,6 +29,8 @@ if TYPE_CHECKING:
         SweepResult,
     )
 
+from ._internal.report_html_impl import report_full_impl
+from ._internal.report_impl import report_summary_impl, report_table_impl
 from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
@@ -79,8 +81,6 @@ from ._internal.stage6_impl import (
     set_sigma_floor_impl,
     split_peak_impl,
 )
-from ._internal.report_html_impl import report_full_impl
-from ._internal.report_impl import report_summary_impl, report_table_impl
 from ._internal.start_detection_impl import detect_start_time_impl
 from ._internal.timebase_impl import (
     calibrate_timebase_impl,
@@ -1939,6 +1939,7 @@ class Pipeline:
         windows: str = "all",
         catalog: Optional[Union[str, Path]] = None,
         catalog_n_sigma: float = 3.0,
+        single_file: Optional[str] = None,
     ) -> str:
         """Assemble the linked-HTML per-window report site (report Level 3).
 
@@ -1961,11 +1962,18 @@ class Pipeline:
             page, and a pull histogram (label echo only, never an assignment).
         catalog_n_sigma :
             Catalog match tolerance in combined sigmas (default ``3``).
+        single_file :
+            ``None`` writes the multi-file site (default). ``"summary"`` emits a
+            single self-contained ``<stem>_report_summary.html`` (index +
+            methods, base64-embedded, the portable Level-2 replacement);
+            ``"full"`` emits ``<stem>_report.html`` with every per-window page
+            folded in via ``#window-<id>`` anchors.
 
         Returns
         -------
         str
-            Path to the generated ``index.html``.
+            Path to the generated ``index.html`` (multi-file) or the
+            self-contained ``.html`` (single-file).
         """
         return report_full_impl(
             self.filepath,
@@ -1973,6 +1981,7 @@ class Pipeline:
             windows=windows,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
+            single_file=single_file,
         )
 
     def review_accept(

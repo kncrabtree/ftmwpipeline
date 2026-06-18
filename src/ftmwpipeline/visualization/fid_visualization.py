@@ -284,6 +284,8 @@ def plot_fid_overview(fid: FID, figsize: Tuple[float, float] = (15, 10)) -> Any:
     except ImportError:
         raise ImportError("matplotlib is required for FID visualization")
 
+    from .report_style import apply_bare_style
+
     fig = plt.figure(figsize=figsize)
     gs = fig.add_gridspec(3, 2, hspace=0.3, wspace=0.3)
 
@@ -292,32 +294,41 @@ def plot_fid_overview(fid: FID, figsize: Tuple[float, float] = (15, 10)) -> Any:
 
     # Full FID plot
     ax1 = fig.add_subplot(gs[0, :])
-    ax1.plot(time_data, voltage_data, "b-", linewidth=0.8)
+    ax1.plot(time_data, voltage_data, color="#2f6090", linewidth=0.6)
     ax1.set_xlabel("Time (μs)")
     ax1.set_ylabel("Voltage (V)")
     ax1.set_title(
         f"Complete FID - {fid.n_points:,} points, {fid.duration_us:.1f} μs duration"
     )
-    ax1.grid(True, alpha=0.3)
+    apply_bare_style(ax1)
 
     # Early time zoom (first 10% or 2 μs, whichever is smaller)
     zoom_time = min(fid.duration_us * 0.1, 2.0)
     zoom_mask = time_data <= zoom_time
 
     ax2 = fig.add_subplot(gs[1, 0])
-    ax2.plot(time_data[zoom_mask], voltage_data[zoom_mask], "r-", linewidth=1.0)
+    ax2.plot(
+        time_data[zoom_mask], voltage_data[zoom_mask], color="#d08700", linewidth=0.9
+    )
     ax2.set_xlabel("Time (μs)")
     ax2.set_ylabel("Voltage (V)")
     ax2.set_title(f"Early Time Detail (0-{zoom_time:.1f} μs)")
-    ax2.grid(True, alpha=0.3)
+    apply_bare_style(ax2)
 
     # Voltage histogram
     ax3 = fig.add_subplot(gs[1, 1])
-    ax3.hist(voltage_data, bins=50, alpha=0.7, color="green", edgecolor="black")
+    ax3.hist(
+        voltage_data,
+        bins=50,
+        alpha=0.85,
+        color="tab:blue",
+        edgecolor="white",
+        linewidth=0.3,
+    )
     ax3.set_xlabel("Voltage (V)")
     ax3.set_ylabel("Count")
     ax3.set_title("Voltage Distribution")
-    ax3.grid(True, alpha=0.3)
+    apply_bare_style(ax3)
 
     # Statistics and metadata
     ax4 = fig.add_subplot(gs[2, :])

@@ -37,12 +37,21 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 
+from ._internal.stage6_impl import (
+    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
+    DEFAULT_DISPLAY_BAR,
+    RankedWindow,
+    RefitWindowResult,
+    ReviewRunResult,
+)
 from .core.data_structures import (
     FID,
     ComplexFT,
+    FinalProducts,
     LedgerCandidate,
     Peak,
     SpectrumFit,
+    Stage6Review,
     WindowPlan,
 )
 from .core.noise_settings import NoiseSettings
@@ -51,14 +60,6 @@ from .core.stage_fit_settings import StageFitSettings
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
-from ._internal.stage6_impl import (
-    DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
-    DEFAULT_DISPLAY_BAR,
-    RankedWindow,
-    RefitWindowResult,
-    ReviewRunResult,
-)
-from .core.data_structures import FinalProducts, Stage6Review
 from .fitting.tau_calibration import ShapeRecommendation, TauCalibrationResult
 from .fitting.timebase_calibration import TimebaseCalibrationResult
 from .pipeline import Pipeline
@@ -1670,6 +1671,7 @@ def report_full(
     windows: str = "all",
     catalog: Optional[Union[str, Path]] = None,
     catalog_n_sigma: float = 3.0,
+    single_file: Optional[str] = None,
 ) -> str:
     """Assemble the linked-HTML per-window report site (report Level 3).
 
@@ -1678,13 +1680,17 @@ def report_full(
     persisted record (does not recompute).  Requires ``review_run`` to have
     built the final-products table.  Returns the path to ``index.html``.  Pass
     ``catalog`` to add proximity-match badges and the pull-calibration surface
-    (label echo only, never an assignment).
+    (label echo only, never an assignment).  ``single_file="summary"`` instead
+    emits one self-contained ``<stem>_report_summary.html`` (index + methods,
+    base64-embedded); ``single_file="full"`` folds every per-window page into one
+    ``<stem>_report.html`` -- returning that file's path.
     """
     return Pipeline.open(file_path).report_full(
         output_dir=output_dir,
         windows=windows,
         catalog=catalog,
         catalog_n_sigma=catalog_n_sigma,
+        single_file=single_file,
     )
 
 

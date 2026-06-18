@@ -106,7 +106,8 @@ def plot_tau_heatmap(
             f"trim {result.trim_lo_mhz:.0f}-{result.trim_hi_mhz:.0f} MHz, "
             f"n_seg={result.n_seg}, tau_maj={result.tau_maj_us:.2f} us"
         )
-    ax.set_title(title)
+    if title:
+        ax.set_title(title)
     fig.colorbar(im, ax=ax, label="log10 |S_n|")
     fig.tight_layout()
     return fig
@@ -139,6 +140,8 @@ def plot_tau_distribution(
 
     Matches ``research/figures/09_2638_distribution_analysis.png``.
     """
+    from .report_style import apply_bare_style
+
     fig, axes = plt.subplots(2, 2, figsize=_figsize_or_default(figsize, (14, 8)))
 
     taus = np.asarray(result.contributor_taus_us)
@@ -164,7 +167,7 @@ def plot_tau_distribution(
     ax.set_ylabel("count")
     ax.set_title("Per-bin tau histogram")
     ax.legend()
-    ax.grid(alpha=0.3)
+    apply_bare_style(ax)
 
     # 2. tau vs SNR
     ax = axes[0, 1]
@@ -175,7 +178,7 @@ def plot_tau_distribution(
     ax.set_xlabel("contributor on-line SNR (per-frame)")
     ax.set_ylabel("tau_k (us)")
     ax.set_title("tau vs SNR (Pearson r = " f"{result.pearson_r_log_snr_vs_tau:.3f})")
-    ax.grid(alpha=0.3)
+    apply_bare_style(ax)
 
     # 3. tau vs molecular freq
     ax = axes[1, 0]
@@ -187,7 +190,7 @@ def plot_tau_distribution(
     ax.set_title(
         "tau vs frequency (Pearson r = " f"{result.pearson_r_freq_vs_tau:.3f})"
     )
-    ax.grid(alpha=0.3)
+    apply_bare_style(ax)
     # Annotate the frequency thirds when present.
     for third in result.frequency_thirds:
         ax.axhline(third.median_tau_us, color="C2", ls=":", lw=0.6, alpha=0.7)
@@ -229,7 +232,7 @@ def plot_tau_distribution(
         f"bimodal={bm.two_component_preferred})"
     )
     ax.legend(fontsize=8)
-    ax.grid(alpha=0.3)
+    apply_bare_style(ax)
 
     if title is not None:
         fig.suptitle(title)
