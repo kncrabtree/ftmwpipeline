@@ -79,7 +79,6 @@ def cmd_report_table(args: argparse.Namespace) -> int:
 
 def cmd_report_run(args: argparse.Namespace) -> int:
     """Write the default Stage 6 deliverables: the L1 table + the L3 report."""
-    setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
 
     emit_table = not getattr(args, "no_table", False)
@@ -91,18 +90,31 @@ def cmd_report_run(args: argparse.Namespace) -> int:
     else:
         single_file = "full"
 
+    # Live progress: the HTML render logs per-window, which the StageProgress
+    # capture renders as a percentage (rendering all windows can take minutes).
+    # Verbose wants the full log instead, so the bar yields to it; otherwise we
+    # skip setup_logging so its INFO handler does not flood the progress display.
+    from .._internal.progress import StageProgress
+
+    verbose = getattr(args, "verbose", False)
+    show_progress = emit_html and not getattr(args, "quiet", False) and not verbose
+    if not show_progress:
+        setup_logging(verbose)
+    reporter = StageProgress(1, enabled=show_progress)
     try:
-        out = report_run_impl(
-            file_path,
-            output_dir=args.output_dir,
-            windows=getattr(args, "windows", "all"),
-            emit_table=emit_table,
-            emit_html=emit_html,
-            table_format=getattr(args, "format", "csv"),
-            single_file=single_file,
-            catalog=getattr(args, "catalog", None),
-            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
-        )
+        with reporter.capture_logs():
+            with reporter.stage("rendering report"):
+                out = report_run_impl(
+                    file_path,
+                    output_dir=args.output_dir,
+                    windows=getattr(args, "windows", "all"),
+                    emit_table=emit_table,
+                    emit_html=emit_html,
+                    table_format=getattr(args, "format", "csv"),
+                    single_file=single_file,
+                    catalog=getattr(args, "catalog", None),
+                    catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
+                )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
@@ -251,6 +263,13 @@ def register_report_commands(subparsers: Any) -> None:
         ),
     )
     _add_catalog_args(p_run)
+    p_run.add_argument(
+        "--quiet",
+        dest="quiet",
+        action="store_true",
+        default=False,
+        help="Suppress the live per-window render-progress display.",
+    )
     p_run.add_argument(
         "--verbose",
         dest="verbose",

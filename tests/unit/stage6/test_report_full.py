@@ -733,6 +733,24 @@ def test_full_cross_interface(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
+def test_full_emits_per_window_progress_logs(stage5_small_file, tmp_path, caplog):
+    """The render loop logs one ``window i/N`` per window for the progress bridge."""
+    import logging
+
+    logger_name = "ftmwpipeline._internal.report_html_impl"
+    with caplog.at_level(logging.INFO, logger=logger_name):
+        report_full_impl(str(stage5_small_file), output_dir=str(tmp_path / "out"))
+    win_msgs = [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == logger_name and r.getMessage().startswith("window ")
+    ]
+    assert win_msgs and win_msgs[0].startswith("window 1/")
+    total = win_msgs[0].split("/")[1]
+    assert win_msgs[-1] == f"window {total}/{total}"  # the bar reaches 100%
+
+
+@pytest.mark.integration
 def test_run_default_writes_table_and_single_file(stage5_small_file, tmp_path):
     from ftmwpipeline._internal.report_html_impl import report_run_impl
 

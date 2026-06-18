@@ -3,7 +3,7 @@
 Fast unit tests drive the orchestrator against a fake Pipeline (no fixture fit
 needed) to pin the stage ordering, stop-at-first-failure, the non-fatal timebase
 skip, report gating, and the dual-interface delegation; plus direct tests of the
-``_StageProgress`` display. One integration test runs a real narrow-band build.
+``StageProgress`` display. One integration test runs a real narrow-band build.
 """
 
 from __future__ import annotations
@@ -15,11 +15,8 @@ from pathlib import Path
 import pytest
 
 import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.run_impl import (
-    _ProgressHandler,
-    _StageProgress,
-    run_pipeline_impl,
-)
+from ftmwpipeline._internal.progress import ProgressHandler, StageProgress
+from ftmwpipeline._internal.run_impl import run_pipeline_impl
 from ftmwpipeline.pipeline import Pipeline
 
 # ---------------------------------------------------------------------------
@@ -207,7 +204,7 @@ class _Stream(io.StringIO):
 
 def test_stage_banner_and_done():
     s = _Stream(tty=False)
-    p = _StageProgress(2, stream=s)
+    p = StageProgress(2, stream=s)
     with p.stage("noise"):
         pass
     out = s.getvalue()
@@ -216,7 +213,7 @@ def test_stage_banner_and_done():
 
 def test_stage_marks_failure_and_reraises():
     s = _Stream(tty=False)
-    p = _StageProgress(1, stream=s)
+    p = StageProgress(1, stream=s)
     with pytest.raises(RuntimeError):
         with p.stage("fit"):
             raise RuntimeError("nope")
@@ -225,7 +222,7 @@ def test_stage_marks_failure_and_reraises():
 
 def test_substep_non_tty_emits_decile_lines():
     s = _Stream(tty=False)
-    p = _StageProgress(1, stream=s)
+    p = StageProgress(1, stream=s)
     with p.stage("fit"):
         for n in range(1, 11):
             p.substep(n, 10)
@@ -236,7 +233,7 @@ def test_substep_non_tty_emits_decile_lines():
 
 def test_substep_tty_uses_carriage_return():
     s = _Stream(tty=True)
-    p = _StageProgress(1, stream=s)
+    p = StageProgress(1, stream=s)
     with p.stage("fit"):
         p.substep(3, 10)
     assert "\r" in s.getvalue() and "30% (3/10)" in s.getvalue()
@@ -244,7 +241,7 @@ def test_substep_tty_uses_carriage_return():
 
 def test_disabled_progress_is_silent():
     s = _Stream(tty=False)
-    p = _StageProgress(1, stream=s, enabled=False)
+    p = StageProgress(1, stream=s, enabled=False)
     with p.stage("fit"):
         p.substep(1, 2)
     assert s.getvalue() == ""
@@ -253,8 +250,8 @@ def test_disabled_progress_is_silent():
 def test_handler_bridges_window_log_to_substep():
     """A plan_execution per-window INFO record renders as a percentage."""
     s = _Stream(tty=False)
-    p = _StageProgress(1, stream=s)
-    handler = _ProgressHandler(p)
+    p = StageProgress(1, stream=s)
+    handler = ProgressHandler(p)
     with p.stage("fit"):
         rec = logging.LogRecord(
             name="ftmwpipeline.fitting.plan_execution",

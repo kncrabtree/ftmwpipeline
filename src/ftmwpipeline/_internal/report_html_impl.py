@@ -20,6 +20,7 @@ the styling evolve independently. See ``dev-docs/planning/stage6-reports.md`` §
 from __future__ import annotations
 
 import html
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -47,6 +48,11 @@ from .report_impl import (
     assemble_summary_model,
     report_table_impl,
 )
+
+# Per-window render progress is emitted as a ``"window %d/%d"`` INFO log; a
+# ``StageProgress`` capture (the ``run --report`` orchestrator, or the standalone
+# ``report run`` command) renders it as a percentage. See ``_internal/progress``.
+logger = logging.getLogger(__name__)
 
 # File extension per Level-1 table format (the ``report run`` table artifact).
 _TABLE_EXT = {"csv": "csv", "json": "json", "latex": "tex"}
@@ -2237,7 +2243,10 @@ def report_full_impl(
     )
 
     # --- per-window pages + figures -------------------------------------
+    n_pages = len(page_ids)
     for idx, wid in enumerate(page_ids):
+        # Per-window render progress (the dominant report-rendering cost).
+        logger.info("window %d/%d", idx + 1, n_pages)
         wf = win_fits[wid]
         # The zoomed panels (re / im / mag / hist); the full-spectrum context is
         # the shared interactive overview, not a per-window image.
