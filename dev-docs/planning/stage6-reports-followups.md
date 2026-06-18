@@ -1,23 +1,30 @@
 # Stage 6 reports — follow-up items (handoff)
 
-Handoff for a fresh session. The three report levels are built and polished:
+Handoff for a fresh session. The report surface is built and polished:
 
-- **L1 `report table`** — CSV / JSON / LaTeX of the persisted `FinalProducts`.
-- **L2 `report summary`** — Markdown methods + results; an HTML twin
-  (`methods.html`) is rendered inside the L3 site with distribution histograms.
-- **L3 `report full`** — linked HTML site: `index.html` + `methods.html` +
-  `windows/window_NNN.html` per fit window, `figures/`, `assets/style.css`.
+- **`report run`** — the default deliverable: the L1 `FinalProducts` table (CSV)
+  **and** the L3 HTML report, into `--output-dir`. By default one self-contained
+  file (`index` + methods + every window folded in; CSS inlined; figures embedded
+  as 256-colour palette PNGs; compact-mode toggle); `--multi-file` emits the
+  linked site, `--summary` the index + methods only, `--level1-only` / `--no-table`
+  trim to a single artifact.
+- **L1 `report table`** — CSV / JSON / LaTeX of the persisted `FinalProducts`
+  (the table-only export; shares the table flags with `report run`).
+- **Methods + results prose (former L2)** — the code-versioned methods document
+  (`_render_markdown`) is rendered into the L3 report's `methods.html` page with
+  distribution histograms; there is no standalone `report summary` verb.
 
-All three are dual-interface (`Pipeline.report_*` / `api.report_*` /
-`cli report …`) and read-only over the persisted record (never recompute the
-fit). Code map:
+The verbs are dual-interface (`Pipeline.report_run` / `api.report_run`,
+`Pipeline.report_table` / `api.report_table` / `cli report …`) and read-only over
+the persisted record (never recompute the fit). Code map:
 
-- `src/ftmwpipeline/_internal/report_impl.py` — L1 + L2. `_SummaryModel`,
-  `assemble_summary_model`, `_assemble_summary`, `_render_markdown`,
-  formatters `_concise` (value(unc) BCE) / `_freq` / `_g` / `_scaled` /
-  `_amplitude_unit`, `_percentiles` / `_percentile_table`.
-- `src/ftmwpipeline/_internal/report_html_impl.py` — L3 + the HTML methods page.
-  `report_full_impl` (driver), `_md_to_html`, `_summary_page`,
+- `src/ftmwpipeline/_internal/report_impl.py` — L1 + the methods prose.
+  `_SummaryModel`, `assemble_summary_model`, `_assemble_summary`,
+  `_render_markdown`, formatters `_concise` (value(unc) BCE) / `_freq` / `_g` /
+  `_scaled` / `_amplitude_unit`, `_percentiles` / `_percentile_table`.
+- `src/ftmwpipeline/_internal/report_html_impl.py` — the L3 report (driver
+  `report_full_impl`, orchestrator `report_run_impl`) + the HTML methods page.
+  `_md_to_html`, `_summary_page`,
   `_summary_distribution_specs`, `_covariance_block`, `_audit_block`,
   `_param_symbol_html` / `_param_symbol_mathtext` / `_param_value`,
   `_window_peak_table`, `_index_*`. The single stylesheet is `_STYLESHEET`.
@@ -60,8 +67,8 @@ pipeline emits UNASSIGNED lines; this is a cross-check, not a fit input).
   predicted-line catalog: frequency + MHz error + a species-tag/quantum-number
   opaque label). Pickett `.lin`/SPFIT *emission* (writing) stays out of scope.
 - **Surfacing:** L1 — extra columns `catalog_label` / `catalog_freq_mhz` /
-  `catalog_delta_khz` / `catalog_pull`. L2 — a match-rate line + a worst-pull
-  table. L3 — a "catalog" column in the index final-line table and the
+  `catalog_delta_khz` / `catalog_pull`. The methods page — a match-rate line + a
+  worst-pull table. L3 — a "catalog" column in the index final-line table and the
   per-window fitted-lines table; a match badge.
 - **Acceptance:** dual-interface + cross-interface test; opaque-label echo never
   alters the fit; tolerance helper unit-tested; runs with and without `--catalog`.
@@ -153,7 +160,7 @@ column when narrow. Dependency-free apart from the optional MathJax CDN.
 
 ---
 
-Demo site (regenerate after changes):
-`ftmw.report_full(<file>, output_dir=…, windows='attention')`; a full
+Demo report (regenerate after changes):
+`ftmw.report_run(<file>, output_dir=…, windows='attention')`; a full
 review-run 2638 fixture lives at `scratch/rebaseline-cov-audit/2638/exp_2638.ftmw`
-(copy out, `review_run`, then `report_full`). See [[stage6-reports-step1]].
+(copy out, `review_run`, then `report_run`). See [[stage6-reports-step1]].

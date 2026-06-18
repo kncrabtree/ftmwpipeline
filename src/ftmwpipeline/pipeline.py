@@ -29,8 +29,8 @@ if TYPE_CHECKING:
         SweepResult,
     )
 
-from ._internal.report_html_impl import report_full_impl
-from ._internal.report_impl import report_summary_impl, report_table_impl
+from ._internal.report_html_impl import report_run_impl
+from ._internal.report_impl import report_table_impl
 from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
@@ -1891,97 +1891,68 @@ class Pipeline:
             catalog_n_sigma=catalog_n_sigma,
         )
 
-    def report_summary(
-        self,
-        *,
-        output: Optional[Union[str, Path]] = None,
-        include_table: bool = False,
-        catalog: Optional[Union[str, Path]] = None,
-        catalog_n_sigma: float = 3.0,
-    ) -> str:
-        """Render the methods + results summary document (report Level 2).
-
-        Interleaves static, code-versioned algorithm prose with the
-        per-experiment numbers read from each persisted stage, as Markdown.
-        Renders the persisted record; does not recompute. Requires
-        :meth:`review_run` to have built the final-products table.
-
-        Parameters
-        ----------
-        output :
-            When given, also write the rendered Markdown to this path.
-        include_table :
-            Inline the full calibrated line table rather than a summary plus a
-            pointer to the companion ``report_table`` export.
-        catalog :
-            Optional frequency-catalog path; adds a catalog cross-reference and
-            σ_f pull-calibration section (label echo only, never an assignment).
-        catalog_n_sigma :
-            Catalog match tolerance in combined sigmas (default ``3``).
-
-        Returns
-        -------
-        str
-            The rendered Markdown document.
-        """
-        return report_summary_impl(
-            self.filepath,
-            output=output,
-            include_table=include_table,
-            catalog=catalog,
-            catalog_n_sigma=catalog_n_sigma,
-        )
-
-    def report_full(
+    def report_run(
         self,
         *,
         output_dir: Union[str, Path],
         windows: str = "all",
+        emit_table: bool = True,
+        emit_html: bool = True,
+        table_format: str = "csv",
+        single_file: Optional[str] = "full",
         catalog: Optional[Union[str, Path]] = None,
         catalog_n_sigma: float = 3.0,
-        single_file: Optional[str] = None,
-    ) -> str:
-        """Assemble the linked-HTML per-window report site (report Level 3).
+    ) -> Dict[str, Optional[str]]:
+        """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
-        Builds a local HTML site (index + one page per fit window, each with the
-        fit figure, fitted lines, parameter covariance, ledger candidates, and
-        the fit log) by reusing the existing renderers. Renders the persisted
-        record; does not recompute. Requires :meth:`review_run` to have built
-        the final-products table.
+        Writes the Level-1 final-products table (``<stem>_lines.csv``) and the
+        self-contained Level-3 HTML report with every window folded in
+        (``<stem>_report.html``) into *output_dir*, reusing the existing
+        renderers. Renders the persisted record; does not recompute. Requires
+        :meth:`review_run` to have built the final-products table.
 
         Parameters
         ----------
         output_dir :
-            Directory to write the site into (created if absent).
+            Directory to write the artifacts into (created if absent).
         windows :
-            ``"all"`` (a page per window) or ``"attention"`` (pages only for
-            review-flagged windows). The index always lists every window.
+            ``"all"`` (a detail page per window) or ``"attention"`` (pages only
+            for review-flagged windows). The index always lists every window.
+        emit_table :
+            Write the Level-1 table artifact (default ``True``).
+        emit_html :
+            Write the Level-3 HTML report (default ``True``).
+        table_format :
+            Format for the table artifact: ``"csv"`` (default), ``"json"``, or
+            ``"latex"``.
+        single_file :
+            ``"full"`` (default) writes one self-contained ``<stem>_report.html``
+            with every per-window page folded in; ``"summary"`` writes
+            ``<stem>_report_summary.html`` (index + methods only); ``None``
+            writes the multi-file linked site (``index.html`` + a page per
+            window).
         catalog :
-            Optional frequency-catalog path; adds proximity-match badges to the
-            line tables, a catalog + pull-calibration section to the methods
-            page, and a pull histogram (label echo only, never an assignment).
+            Optional frequency-catalog path; adds proximity-match cross-references
+            to the table and HTML (label echo only, never an assignment).
         catalog_n_sigma :
             Catalog match tolerance in combined sigmas (default ``3``).
-        single_file :
-            ``None`` writes the multi-file site (default). ``"summary"`` emits a
-            single self-contained ``<stem>_report_summary.html`` (index +
-            methods, base64-embedded, the portable Level-2 replacement);
-            ``"full"`` emits ``<stem>_report.html`` with every per-window page
-            folded in via ``#window-<id>`` anchors.
 
         Returns
         -------
-        str
-            Path to the generated ``index.html`` (multi-file) or the
-            self-contained ``.html`` (single-file).
+        dict
+            ``{"table": <path|None>, "html": <path|None>}`` -- the path of each
+            artifact written (``None`` when suppressed).
         """
-        return report_full_impl(
+        return report_run_impl(
             self.filepath,
             output_dir=output_dir,
             windows=windows,
+            emit_table=emit_table,
+            emit_html=emit_html,
+            table_format=table_format,
+            single_file=single_file,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
-            single_file=single_file,
         )
 
     def review_accept(

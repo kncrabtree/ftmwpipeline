@@ -478,10 +478,11 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     pages = list((out / "windows").glob("*.html"))
     figures = list((out / "figures").glob("*.png"))
     assert pages and figures
-    # Per window: the four zoomed panels (re/im/mag/hist) plus an aligned
-    # full-spectrum context ("_ctx.png") and an optional correlation heatmap
-    # ("_corr.png"). The index has one full-spectrum overview ("<stem>_overview.png")
-    # and one figure per distribution group ("<stem>_hist_<slug>.png").
+    # Per window: the four zoomed panels (re/im/mag/hist) plus an optional
+    # correlation heatmap ("_corr.png"). The full-spectrum context is the single
+    # shared overview image -- there is NO per-window context PNG. The index has
+    # one overview ("<stem>_overview.png") and one figure per distribution group
+    # ("<stem>_hist_<slug>.png").
     zoom_suffixes = ("_re.png", "_im.png", "_mag.png", "_hist.png")
     corr_pngs = [f for f in figures if f.name.endswith("_corr.png")]
     panel_pngs = [f for f in figures if f.name.endswith(zoom_suffixes)]
@@ -493,9 +494,9 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     ]
     hist_pngs = [f for f in figures if "_hist_" in f.name]
     assert len(panel_pngs) == len(pages) * len(zoom_suffixes)
-    assert len(ctx_pngs) == len(pages)  # one aligned context figure per window
+    assert len(ctx_pngs) == 0  # the shared overview is the context; no per-window PNG
     assert len(corr_pngs) <= len(pages)
-    # The index full-spectrum overview.
+    # The single shared full-spectrum overview image.
     assert len(overview_pngs) == 1
     # Distribution histograms (SNR / fit-quality / σ_f budget; pull only with a
     # catalog), one figure per group that has data.
@@ -509,19 +510,21 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "Final line list" in idx
     assert 'href="windows/window_' in idx  # links to the window pages
     assert 'href="methods.html"' in idx
-    # The full-spectrum overview is embedded on the index.
+    # The interactive full-spectrum overview: the shared image is the div's CSS
+    # background (bound in the stylesheet, not an <img> on the page) carrying an
+    # SVG overlay of clickable, attention-tinted per-window rects.
     assert "<h2>Spectrum</h2>" in idx
-    assert "_overview.png" in idx
-    # The interactive window-map strip: an SVG with clickable, attention-coloured
-    # rects (one per window), native tooltips, and the optional hover-zoom script.
-    assert 'class="winmap"' in idx
-    assert "winmap-rect" in idx
+    assert 'class="spectrum-ctx"' in idx
+    assert "specnav-rect" in idx
     assert "data-window=" in idx
     assert "<title>" in idx  # native tooltip per rect
     assert 'data-thumb="figures/' in idx  # thumbnail for the popup
     assert "winmap-pop" in idx  # the hover-zoom script wired in
-    # Each window bar links to its page from inside the SVG.
+    # Each window rect links to its page from inside the SVG.
     assert idx.count('<a href="windows/window_') >= 1
+    # The overview image is bound once as the interactive-overview background.
+    css = (out / "assets" / "style.css").read_text()
+    assert "_overview.png" in css and ".spectrum-ctx { background-image:" in css
     methods = (out / "methods.html").read_text()
     # Histograms are interleaved beside their tables (not one trailing figure).
     assert 'class="hist"' in methods
@@ -531,9 +534,11 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert 'class="equation"' in methods
 
     page = pages[0].read_text()
-    # An aligned full-spectrum context figure sits over the window-map strip.
+    # The spectrum context is the shared interactive overview with this window
+    # highlighted -- no per-window context image.
     assert "<h2>Spectrum context</h2>" in page
-    assert "_ctx.png" in page
+    assert "_ctx.png" not in page
+    assert 'class="spectrum-ctx"' in page and "specnav-rect" in page
     assert "<h2>Fit</h2>" in page
     # The fit detail is a responsive grid of the zoomed Re/Im/|X|/hist panels.
     assert 'class="fit-panels"' in page
@@ -546,10 +551,12 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "<h2>Fit history</h2>" in page
     # The raw fit-log dump was removed (it duplicated the structured tables).
     assert "Fit log" not in page
-    # The window-map quick-nav is present on each window page too, with this
-    # window highlighted and figure/page paths relative to the windows/ dir.
-    assert 'class="winmap"' in page
-    assert "winmap-rect current" in page  # the "you are here" highlight
+    # The interactive overview doubles as the quick-nav on each window page too,
+    # with this window highlighted and figure/page paths relative to windows/.
+    assert 'class="spectrum-ctx"' in page
+    # The "you are here" highlight: the current window's rect carries the
+    # `current` class (alongside `attn` when it is also flagged).
+    assert "specnav-rect" in page and 'current"' in page
     assert 'data-thumb="../figures/' in page  # thumbnail path from a window page
     assert 'href="window_' in page  # same-dir links (no windows/ prefix)
     assert "winmap-pop" in page  # the hover-zoom script
@@ -702,13 +709,115 @@ def test_full_cross_interface(stage5_small_file, tmp_path):
 
     from ftmwpipeline._internal.report_html_impl import report_full_impl as impl
 
+    # The multi-file site is reachable through report_run (single_file=None,
+    # HTML only); the rendered index must be identical across all interfaces.
     impl(str(fp), output_dir=str(impl_dir))
-    ftmw.report_full(str(fp), output_dir=str(api_dir))
-    Pipeline.open(fp).report_full(output_dir=str(pipe_dir))
+    ftmw.report_run(
+        str(fp), output_dir=str(api_dir), emit_table=False, single_file=None
+    )
+    Pipeline.open(fp).report_run(
+        output_dir=str(pipe_dir), emit_table=False, single_file=None
+    )
 
     # The rendered HTML is identical across interfaces (paths inside are
     # relative, so only the output directory differs).
     a = (impl_dir / "index.html").read_text()
     b = (api_dir / "index.html").read_text()
     c = (pipe_dir / "index.html").read_text()
+    assert a == b == c
+
+
+# ---------------------------------------------------------------------------
+# report run (the default Stage 6 deliverable: L1 table + L3 report)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_run_default_writes_table_and_single_file(stage5_small_file, tmp_path):
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    out = tmp_path / "run"
+    result = report_run_impl(str(stage5_small_file), output_dir=str(out))
+
+    table_p = Path(result["table"])
+    html_p = Path(result["html"])
+    assert table_p.exists() and table_p.suffix == ".csv"
+    assert table_p.name.endswith("_lines.csv")
+    # The default HTML is the self-contained full single-file report.
+    assert html_p.exists() and html_p.name.endswith("_report.html")
+    assert not html_p.name.endswith("_summary.html")
+    doc = html_p.read_text()
+    assert "data:image/png;base64," in doc and 'src="figures/' not in doc
+    # The compact toggle and its script ship in the single-file build.
+    assert 'class="compact-toggle"' in doc and "report-compact" in doc
+
+
+@pytest.mark.integration
+def test_run_level1_only_skips_html(stage5_small_file, tmp_path):
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    out = tmp_path / "l1"
+    result = report_run_impl(
+        str(stage5_small_file), output_dir=str(out), emit_html=False
+    )
+    assert result["table"] is not None and result["html"] is None
+    assert list(out.glob("*.html")) == []
+    assert Path(result["table"]).exists()
+
+
+@pytest.mark.integration
+def test_run_no_table_skips_table(stage5_small_file, tmp_path):
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    out = tmp_path / "htmlonly"
+    result = report_run_impl(
+        str(stage5_small_file), output_dir=str(out), emit_table=False
+    )
+    assert result["table"] is None and result["html"] is not None
+    assert list(out.glob("*_lines.csv")) == []
+
+
+@pytest.mark.integration
+def test_run_multi_file_emits_site(stage5_small_file, tmp_path):
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    out = tmp_path / "site"
+    result = report_run_impl(
+        str(stage5_small_file), output_dir=str(out), single_file=None
+    )
+    assert Path(result["html"]).name == "index.html"
+    assert (out / "index.html").exists() and (out / "windows").is_dir()
+    assert Path(result["table"]).exists()
+
+
+def test_run_rejects_empty_output():
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    with pytest.raises(ValueError, match="nothing to do"):
+        report_run_impl(
+            "ignored.ftmw", output_dir="x", emit_table=False, emit_html=False
+        )
+
+
+@pytest.mark.integration
+def test_run_cross_interface(stage5_small_file, tmp_path):
+    fp = tmp_path / "rcopy.ftmw"
+    shutil.copy(stage5_small_file, fp)
+
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    impl_out = tmp_path / "rimpl"
+    api_out = tmp_path / "rapi"
+    pipe_out = tmp_path / "rpipe"
+
+    report_run_impl(str(fp), output_dir=str(impl_out))
+    ftmw.report_run(str(fp), output_dir=str(api_out))
+    Pipeline.open(fp).report_run(output_dir=str(pipe_out))
+
+    def _single(d):
+        return next(p for p in Path(d).glob("*_report.html"))
+
+    a = _single(impl_out).read_text()
+    b = _single(api_out).read_text()
+    c = _single(pipe_out).read_text()
     assert a == b == c

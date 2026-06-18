@@ -7,12 +7,11 @@ table serialized to CSV, JSON, or a LaTeX ``booktabs`` table for paper SI. All
 three are flat serializations of the same persisted table -- *assemble once,
 render many* -- so they stay consistent by construction.
 
-Level 2 (``report summary``, methods + results document): a Markdown report
-interleaving **static, code-versioned algorithm prose** -- a methods section
-that lives here so it stays in sync with the code, not pulled from the planning
-docs -- with the per-experiment numbers read from each persisted stage. The full
-line list is the companion Level-1 CSV; only a summary (counts, band, χ² stats,
-strongest lines) appears inline unless ``--include-table`` inlines it.
+This module also holds the **static, code-versioned algorithm prose** -- a
+methods section that lives here so it stays in sync with the code, not pulled
+from the planning docs -- interleaved with the per-experiment numbers read from
+each persisted stage. :func:`_render_markdown` builds that document; the Level-3
+HTML report (``report run``) folds it into its methods page.
 
 Robustness: every numeric field is rendered through width-bounded, non-finite
 guarded formatters, so a degenerate fit (e.g. an amplitude-collapsed phantom
@@ -2374,58 +2373,3 @@ def _render_markdown(
         L.append("")
 
     return "\n".join(L) + "\n"
-
-
-def report_summary_impl(
-    file_path: Union[Path, str],
-    *,
-    output: Optional[Union[Path, str]] = None,
-    include_table: bool = False,
-    catalog: Optional[Union[Path, str]] = None,
-    catalog_n_sigma: float = 3.0,
-) -> str:
-    """Render the persisted Level-2 methods + results summary (Markdown).
-
-    Interleaves static, code-versioned algorithm prose, the parameters each
-    stage ran with, the governing equations, the detailed per-experiment
-    results (with per-band breakdowns), and automatically flagged concerns.
-    The full line list is the companion Level-1 export unless *include_table*
-    inlines it.
-
-    Parameters
-    ----------
-    file_path :
-        Path to the ``.ftmw`` pipeline file.
-    output :
-        When given, also write the rendered Markdown to this path.
-    include_table :
-        Inline the full calibrated line table rather than a summary plus a
-        pointer to the companion ``report table`` export.
-    catalog :
-        Optional frequency-catalog path. When given, a "Catalog
-        cross-reference" section is added: the match rate, the largest-pull
-        lines, and the pull-calibration read on the σ_f budget (proximity
-        annotation only, never an assignment).
-    catalog_n_sigma :
-        Catalog match tolerance in combined sigmas (default ``3``).
-
-    Returns
-    -------
-    str
-        The rendered Markdown document.
-
-    Raises
-    ------
-    ValueError
-        If no final-products table is present (``review run`` has not been
-        run), or *catalog* is given but unreadable / empty.
-    """
-    model = assemble_summary_model(file_path)
-    assert model.products is not None  # guaranteed by assemble_summary_model
-    cross_ref = load_cross_ref(model.products.peaks, catalog, catalog_n_sigma)
-    text = _render_markdown(
-        model, file_path, include_table=include_table, cross_ref=cross_ref
-    )
-    if output is not None:
-        Path(output).write_text(text)
-    return text

@@ -1638,59 +1638,40 @@ def report_table(
     )
 
 
-def report_summary(
-    file_path: Union[str, Path],
-    *,
-    output: Optional[Union[str, Path]] = None,
-    include_table: bool = False,
-    catalog: Optional[Union[str, Path]] = None,
-    catalog_n_sigma: float = 3.0,
-) -> str:
-    """Render the methods + results summary document (report Level 2).
-
-    Equivalent to :meth:`Pipeline.report_summary`.  Interleaves static,
-    code-versioned algorithm prose with the per-experiment numbers from each
-    persisted stage, as Markdown; renders the persisted record (does not
-    recompute).  Requires ``review_run`` to have built the final-products table.
-    The full line list is the companion Level-1 export unless *include_table*
-    inlines it.  Pass ``catalog`` to add a catalog cross-reference and σ_f
-    pull-calibration section (label echo only, never an assignment).
-    """
-    return Pipeline.open(file_path).report_summary(
-        output=output,
-        include_table=include_table,
-        catalog=catalog,
-        catalog_n_sigma=catalog_n_sigma,
-    )
-
-
-def report_full(
+def report_run(
     file_path: Union[str, Path],
     *,
     output_dir: Union[str, Path],
     windows: str = "all",
+    emit_table: bool = True,
+    emit_html: bool = True,
+    table_format: str = "csv",
+    single_file: Optional[str] = "full",
     catalog: Optional[Union[str, Path]] = None,
     catalog_n_sigma: float = 3.0,
-    single_file: Optional[str] = None,
-) -> str:
-    """Assemble the linked-HTML per-window report site (report Level 3).
+) -> Dict[str, Optional[str]]:
+    """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
-    Equivalent to :meth:`Pipeline.report_full`.  Builds a local HTML site (index
-    + one page per fit window, reusing the existing renderers); renders the
-    persisted record (does not recompute).  Requires ``review_run`` to have
-    built the final-products table.  Returns the path to ``index.html``.  Pass
-    ``catalog`` to add proximity-match badges and the pull-calibration surface
-    (label echo only, never an assignment).  ``single_file="summary"`` instead
-    emits one self-contained ``<stem>_report_summary.html`` (index + methods,
-    base64-embedded); ``single_file="full"`` folds every per-window page into one
-    ``<stem>_report.html`` -- returning that file's path.
+    Equivalent to :meth:`Pipeline.report_run`.  Writes the Level-1
+    final-products table (``<stem>_lines.csv``) and the self-contained Level-3
+    HTML report with every window folded in (``<stem>_report.html``) into
+    *output_dir*.  Either artifact can be suppressed (``emit_table`` /
+    ``emit_html``); the HTML form follows *single_file* (``"full"`` /
+    ``"summary"`` self-contained file, or ``None`` for the multi-file linked
+    site).  Renders the persisted record (does not recompute).  Requires
+    ``review_run`` to have built the final-products table.  Pass ``catalog`` to
+    add proximity-match cross-references (label echo only, never an assignment).
+    Returns ``{"table": <path|None>, "html": <path|None>}``.
     """
-    return Pipeline.open(file_path).report_full(
+    return Pipeline.open(file_path).report_run(
         output_dir=output_dir,
         windows=windows,
+        emit_table=emit_table,
+        emit_html=emit_html,
+        table_format=table_format,
+        single_file=single_file,
         catalog=catalog,
         catalog_n_sigma=catalog_n_sigma,
-        single_file=single_file,
     )
 
 

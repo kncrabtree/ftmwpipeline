@@ -1,10 +1,11 @@
 """CLI commands for the Stage 6 ``report`` object (object-verb grammar).
 
-Level 1 (``report table``): render the persisted calibrated final-products
-table to CSV / JSON / LaTeX. Level 2 (``report summary``): a Markdown methods +
-results document. Level 3 (``report full``): a local, linked HTML site with a
-per-window detail page. Reports render the persisted record; they never
-recompute the fit.
+``report run`` is the default Stage 6 deliverable: it writes the Level-1
+calibrated final-products table (CSV) and the self-contained Level-3 HTML report
+(every window folded in) in one call, with flags to trim the output (table only,
+HTML only, attention windows only, a multi-file site, …). ``report table``
+exports just the Level-1 table to CSV / JSON / LaTeX. Reports render the
+persisted record; they never recompute the fit.
 """
 
 from __future__ import annotations
@@ -13,13 +14,11 @@ import argparse
 from typing import Any, Optional
 
 from .._internal.report_html_impl import (
-    SINGLE_FILE_MODES,
     VALID_WINDOW_FILTERS,
-    report_full_impl,
+    report_run_impl,
 )
 from .._internal.report_impl import (
     VALID_FORMATS,
-    report_summary_impl,
     report_table_impl,
 )
 from .utils import add_stage_object, setup_logging
@@ -78,57 +77,45 @@ def cmd_report_table(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_report_summary(args: argparse.Namespace) -> int:
-    """Render the methods + results summary document (report Level 2)."""
+def cmd_report_run(args: argparse.Namespace) -> int:
+    """Write the default Stage 6 deliverables: the L1 table + the L3 report."""
     setup_logging(getattr(args, "verbose", False))
     file_path = _ensure_ftmw(args.file_path)
-    output: Optional[str] = getattr(args, "output", None)
-    include_table: bool = getattr(args, "include_table", False)
 
-    try:
-        text = report_summary_impl(
-            file_path,
-            output=output,
-            include_table=include_table,
-            catalog=getattr(args, "catalog", None),
-            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
-        )
-    except (ValueError, KeyError) as exc:
-        print(f"Error: {exc}")
-        return 1
-
-    if output is not None:
-        print(f"report summary: wrote markdown to {output}")
+    emit_table = not getattr(args, "no_table", False)
+    emit_html = not getattr(args, "level1_only", False)
+    if getattr(args, "multi_file", False):
+        single_file: Optional[str] = None
+    elif getattr(args, "summary", False):
+        single_file = "summary"
     else:
-        print(text, end="")
-    return 0
-
-
-def cmd_report_full(args: argparse.Namespace) -> int:
-    """Assemble the linked-HTML per-window report site (report Level 3)."""
-    setup_logging(getattr(args, "verbose", False))
-    file_path = _ensure_ftmw(args.file_path)
-    output_dir: str = args.output_dir
-    windows: str = getattr(args, "windows", "all")
-    single_file: Optional[str] = getattr(args, "single_file", None)
+        single_file = "full"
 
     try:
-        out_path = report_full_impl(
+        out = report_run_impl(
             file_path,
-            output_dir=output_dir,
-            windows=windows,
-            catalog=getattr(args, "catalog", None),
-            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
+            output_dir=args.output_dir,
+            windows=getattr(args, "windows", "all"),
+            emit_table=emit_table,
+            emit_html=emit_html,
+            table_format=getattr(args, "format", "csv"),
             single_file=single_file,
+            catalog=getattr(args, "catalog", None),
+            catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
         )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
         return 1
 
-    if single_file is not None:
-        print(f"report full: wrote self-contained HTML to {out_path}")
-    else:
-        print(f"report full: wrote HTML site to {out_path}")
+    if out.get("table") is not None:
+        print(f"report run: wrote table to {out['table']}")
+    if out.get("html") is not None:
+        kind = (
+            "multi-file HTML site"
+            if single_file is None
+            else f"self-contained {single_file} HTML report"
+        )
+        print(f"report run: wrote {kind} to {out['html']}")
     return 0
 
 
@@ -142,9 +129,8 @@ def register_report_commands(subparsers: Any) -> None:
             "Report generation over the persisted Stage 6 record.\n\n"
             "Renders the finalized analysis; never recomputes the fit. Requires\n"
             "'review run' to have consolidated the calibrated final products.\n\n"
-            "Verbs: table (Level 1 data export: CSV / JSON / LaTeX),\n"
-            "       summary (Level 2 methods + results document: Markdown),\n"
-            "       full (Level 3 linked-HTML per-window site)"
+            "Verbs: run   (default deliverable: Level-1 table + Level-3 HTML report),\n"
+            "       table (Level-1 data export only: CSV / JSON / LaTeX)"
         ),
     )
 
@@ -185,68 +171,33 @@ def register_report_commands(subparsers: Any) -> None:
     )
     p_table.set_defaults(func=cmd_report_table)
 
-    p_summary = verbs.add_parser(
-        "summary",
-        help="Methods + results document (Markdown)",
+    p_run = verbs.add_parser(
+        "run",
+        help="Default deliverable: Level-1 table + Level-3 HTML report",
         description=(
-            "Render a Markdown methods + results document: static,\n"
-            "code-versioned per-stage algorithm prose interleaved with the\n"
-            "per-experiment numbers from each persisted stage. The full line\n"
-            "list is the companion 'report table' export unless --include-table\n"
-            "inlines it."
+            "Write the default Stage 6 deliverables into --output-dir: the\n"
+            "Level-1 calibrated line table (<stem>_lines.csv) and the\n"
+            "self-contained Level-3 HTML report with every window folded in\n"
+            "(<stem>_report.html). Reuses the existing renderers; never\n"
+            "recomputes the fit.\n\n"
+            "Trim the output with --level1-only (table only), --no-table (HTML\n"
+            "only), --windows attention (only flagged windows get a detail\n"
+            "page), --summary (HTML index + methods, no per-window detail), or\n"
+            "--multi-file (a linked HTML site directory instead of one file)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p_summary.add_argument(
+    p_run.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_summary.add_argument(
-        "--output",
-        dest="output",
-        default=None,
-        metavar="PATH",
-        help="Write to PATH instead of stdout.",
-    )
-    p_summary.add_argument(
-        "--include-table",
-        dest="include_table",
-        action="store_true",
-        default=False,
-        help="Inline the full calibrated line table instead of pointing to it.",
-    )
-    _add_catalog_args(p_summary)
-    p_summary.add_argument(
-        "--verbose",
-        dest="verbose",
-        action="store_true",
-        default=False,
-        help="Enable verbose logging.",
-    )
-    p_summary.set_defaults(func=cmd_report_summary)
-
-    p_full = verbs.add_parser(
-        "full",
-        help="Linked-HTML per-window report site",
-        description=(
-            "Assemble a local, linked HTML site over the persisted record: an\n"
-            "index (summary + final table + window links) and one detail page\n"
-            "per fit window (the fit figure, fitted lines, parameter\n"
-            "covariance, ledger candidates, and the fit log). Reuses the\n"
-            "existing 'fit show' figure renderer; never recomputes the fit."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-    p_full.add_argument(
-        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
-    )
-    p_full.add_argument(
+    p_run.add_argument(
         "--output-dir",
         dest="output_dir",
         required=True,
         metavar="DIR",
-        help="Directory to write the HTML site into (created if absent).",
+        help="Directory to write the report artifacts into (created if absent).",
     )
-    p_full.add_argument(
+    p_run.add_argument(
         "--windows",
         dest="windows",
         choices=VALID_WINDOW_FILTERS,
@@ -256,24 +207,55 @@ def register_report_commands(subparsers: Any) -> None:
             "(only windows the review flagged). The index lists every window."
         ),
     )
-    p_full.add_argument(
-        "--single-file",
-        dest="single_file",
-        choices=SINGLE_FILE_MODES,
-        default=None,
+    p_run.add_argument(
+        "--format",
+        dest="format",
+        choices=VALID_FORMATS,
+        default="csv",
+        help="Format for the Level-1 table artifact (default csv).",
+    )
+    artifact = p_run.add_mutually_exclusive_group()
+    artifact.add_argument(
+        "--level1-only",
+        dest="level1_only",
+        action="store_true",
+        default=False,
+        help="Write only the Level-1 table (skip the HTML report).",
+    )
+    artifact.add_argument(
+        "--no-table",
+        dest="no_table",
+        action="store_true",
+        default=False,
+        help="Write only the HTML report (skip the Level-1 table).",
+    )
+    html_form = p_run.add_mutually_exclusive_group()
+    html_form.add_argument(
+        "--summary",
+        dest="summary",
+        action="store_true",
+        default=False,
         help=(
-            "Emit one self-contained HTML file (CSS inlined, figures "
-            "base64-embedded) instead of a directory: 'summary' = index + "
-            "methods only (the portable summary); 'full' = also fold in every "
-            "per-window page via #window-<id> anchors."
+            "Emit the self-contained HTML index + methods only, without the "
+            "per-window detail (a lighter, portable report)."
         ),
     )
-    _add_catalog_args(p_full)
-    p_full.add_argument(
+    html_form.add_argument(
+        "--multi-file",
+        dest="multi_file",
+        action="store_true",
+        default=False,
+        help=(
+            "Emit a multi-file linked HTML site (index + a page per window) "
+            "instead of one self-contained file."
+        ),
+    )
+    _add_catalog_args(p_run)
+    p_run.add_argument(
         "--verbose",
         dest="verbose",
         action="store_true",
         default=False,
         help="Enable verbose logging.",
     )
-    p_full.set_defaults(func=cmd_report_full)
+    p_run.set_defaults(func=cmd_report_run)

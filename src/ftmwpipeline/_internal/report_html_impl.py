@@ -1,4 +1,4 @@
-"""Level 3 (``report full``): a local, linked HTML site over the persisted record.
+"""Level 3 HTML report (``report run``): a local HTML view over the persisted record.
 
 Reports render the persisted Stage 6 record; they never recompute the fit. L3 is
 an **assembler** over existing artifacts and renderers, not new analysis: it
@@ -45,7 +45,11 @@ from .report_impl import (
     _md_num,
     _scaled,
     assemble_summary_model,
+    report_table_impl,
 )
+
+# File extension per Level-1 table format (the ``report run`` table artifact).
+_TABLE_EXT = {"csv": "csv", "json": "json", "latex": "tex"}
 
 VALID_WINDOW_FILTERS = ("all", "attention")
 
@@ -138,7 +142,7 @@ _MATHJAX_HEAD = (
 
 # A deliberately minimal stylesheet -- enough that the structure is legible;
 # the visual polish is a follow-on pass that only edits this file.
-_STYLESHEET = """/* ftmwpipeline report -- Level 3 (report full).
+_STYLESHEET = """/* ftmwpipeline report -- Level 3 HTML (report run).
    Minimal baseline styling; refine here without touching the HTML. */
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
        margin: 0; color: #1a1a1a; background: #f6f7f9; }
@@ -179,6 +183,46 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
                  border: 1px solid #2c4a6e; background: #fff; color: #1a1a1a; }
 html.report-single { scroll-padding-top: 3.4rem; }
 html.report-single thead th { top: 3.4rem; }
+/* Single-file builds stack the major blocks (index, methods, each embedded
+   window) as <section> children of main; space them apart and rule a divider
+   between consecutive sections so the report reads as distinct blocks rather
+   than one undifferentiated scroll. Harmless on the multi-file pages, which
+   have no direct <section> children. */
+main.report > section { margin-bottom: 2.75rem; }
+main.report > section + section { border-top: 2px solid #c4ccd4;
+                                  padding-top: 2.25rem; }
+section.embedded-window { margin-top: 0.5rem; }
+/* Compact mode (single-file "Compact" topnav toggle): cap every report figure's
+   height (width follows the aspect ratio, so a wide panel like the spectrum
+   overview stays legible as a short strip rather than a tiny square) so a full
+   all-windows report scrolls fast; clicking a figure expands just that one back
+   to full size, and the chatty hint lines are hidden. Pure CSS over the
+   already-embedded figures -- no extra payload -- and gated on a class the toggle
+   script sets, so with scripting off every figure stays full size and the toggle
+   is inert. */
+.topnav .compact-toggle { font-size: 0.85rem; padding: 0.12rem 0.6rem;
+    border-radius: 3px; border: 1px solid #2c4a6e; background: #cfe0f5;
+    color: #11233a; cursor: pointer; }
+.topnav .compact-toggle:hover { background: #fff; }
+html.report-compact .fit-panels, html.report-compact .panel-grid {
+    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: flex-start; }
+html.report-compact .winmap-hint { display: none; }
+html.report-compact .fit-panels img,
+html.report-compact .cov-heatmap img,
+html.report-compact .hist img,
+html.report-compact .maghist img {
+    height: 130px; width: auto; max-width: 100%; cursor: zoom-in; }
+html.report-compact img.zoom-expanded {
+    height: auto; width: 100%; max-width: 100%; cursor: zoom-out; }
+/* The interactive overview stays usable in compact: cap its height (the div
+   hugs the shrunk SVG so the background image stays aligned), click to expand. */
+html.report-compact .spectrum-ctx { width: fit-content; max-width: 100%;
+                                    cursor: zoom-in; }
+html.report-compact .spectrum-ctx-svg { height: 150px; width: auto;
+                                        max-width: 100%; }
+html.report-compact .spectrum-ctx.zoom-expanded { width: auto; cursor: zoom-out; }
+html.report-compact .spectrum-ctx.zoom-expanded .spectrum-ctx-svg {
+    height: auto; width: 100%; }
 .badge { display: inline-block; padding: 0.05rem 0.45rem; border-radius: 3px;
          font-size: 0.78rem; background: #f0d9a8; color: #5a4300;
          margin-left: 0.35rem; }
@@ -234,23 +278,24 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .fig-note { font-size: 0.82rem; color: #555; margin: 0.5rem 0 0.2rem; }
 /* Markdown *emphasis* (the "Results:" labels) -- styleable; bold for now. */
 .md-em { font-weight: 600; }
-/* The index full-spectrum overview spans the content width. */
-.spectrum-overview { margin: 0.5rem 0 0.25rem; }
-.spectrum-overview img { width: 100%; height: auto; border: 1px solid #d0d4d9;
-                         background: #fff; }
-/* Window-map navigation strip: one clickable bar per window under the overview,
-   coloured by attention; hover highlights, the SVG <a> navigates, and the
-   <title> gives a native tooltip. The optional script adds a zoom thumbnail. */
-.winmap { margin: 0 0 0.4rem; }
-.winmap-svg { width: 100%; height: auto; display: block; }
-.winmap-rect { fill: #9bb0c4; stroke: #6b8298; stroke-width: 0.5; }
-.winmap-rect.attn { fill: #f4a23b; stroke: #b9741a; }
-/* "You are here" on a window page: a bold dark outline over the fill. */
-.winmap-rect.current { stroke: #11151a; stroke-width: 2; }
-.winmap a:hover .winmap-rect, .winmap-rect:hover { fill: #1559b3; stroke: #0d3f86;
-                                                   cursor: pointer; }
-.winmap-axis { stroke: #c0c7cf; stroke-width: 1; }
-.winmap-tick { font-size: 11px; fill: #555; }
+/* Interactive full-spectrum overview: ONE shared full-spectrum image (rendered
+   once, applied as the div's background by a per-build rule) carries an SVG
+   overlay of one clickable rect per window -- so the image doubles as the
+   quick-nav and is rendered/embedded once, not re-rendered per window. The
+   overlay viewBox tracks the overview figure's axes box and stretches to the div
+   (preserveAspectRatio="none"), so the rects stay aligned to the frequency axis
+   the image draws. Rects are transparent hotspots (the image shows the spectrum
+   and its attention shading); attention windows get a faint tint, hover a blue
+   wash, and the current window -- on its own page -- a green "you are here". */
+.spectrum-ctx { margin: 0.5rem 0 0.25rem; border: 1px solid #d0d4d9;
+                background: #fff center / 100% 100% no-repeat; line-height: 0; }
+.spectrum-ctx-svg { display: block; width: 100%; height: auto; }
+.specnav-rect { fill: #1559b3; fill-opacity: 0; pointer-events: all;
+                cursor: pointer; }
+.specnav-rect.attn { fill: #f4a23b; fill-opacity: 0.2; }
+.spectrum-ctx a:hover .specnav-rect, .specnav-rect:hover { fill: #1559b3;
+                                                           fill-opacity: 0.28; }
+.specnav-rect.current { fill: #2ca02c; fill-opacity: 0.42; }
 .winmap-hint { font-size: 0.8rem; color: #666; margin: 0 0 1.25rem; }
 .winmap-pop { position: fixed; z-index: 60; pointer-events: none; background: #fff;
               border: 1px solid #888; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
@@ -281,6 +326,33 @@ _PANEL_ORDER = ("overview", "re", "im", "mag", "hist")
 
 def _panel_figure_name(stem: str, window_id: int, panel: str) -> str:
     return f"{stem}_window_{window_id:03d}_{panel}.png"
+
+
+def _save_figure_png(fig: Any, path: Union[str, Path], *, dpi: int, **kw: Any) -> None:
+    """Save a report figure as an adaptive 256-colour palette PNG.
+
+    The report's figures are line plots and small heatmaps with only a few
+    hundred distinct colours, so an adaptive 256-colour palette is visually
+    indistinguishable from the RGBA original while cutting the PNG -- and its
+    base64 embed in the single-file build -- by roughly two thirds. (Lowering the
+    resolution or making the background transparent does *not* help: the panels
+    already render below 800 px wide, downscaling re-introduces intermediate
+    colours, and a transparent background only adds alpha variation at the
+    anti-aliased edges.) Renders to a buffer, then quantizes and writes. ``kw`` is
+    forwarded to ``savefig`` (e.g. ``bbox_inches="tight"``).
+    """
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=dpi, **kw)
+    buf.seek(0)
+    with Image.open(buf) as im:
+        palette = im.convert("RGB").quantize(
+            colors=256, method=Image.Quantize.FASTOCTREE
+        )
+        palette.save(str(path), format="PNG", optimize=True)
 
 
 def _window_preview_info(
@@ -600,7 +672,7 @@ def _magnitude_histogram_figures(
         fig = plot_fn(mags, sigma_median=sig, title=title, xlabel=xlabel)
         if fig is None:
             return None
-        fig.savefig(str(out_root / "figures" / fname), dpi=dpi)
+        _save_figure_png(fig, out_root / "figures" / fname, dpi=dpi)
         plt.close(fig)
         return fname
 
@@ -686,7 +758,9 @@ def _methods_stage_figures(
         if fig is None:
             return None
         fname = f"{stem}_methods_{slug}.png"
-        fig.savefig(str(out_root / "figures" / fname), dpi=fig_dpi, bbox_inches="tight")
+        _save_figure_png(
+            fig, out_root / "figures" / fname, dpi=fig_dpi, bbox_inches="tight"
+        )
         plt.close(fig)
         return (
             f'<p class="fig-note">{caption}</p>'
@@ -930,13 +1004,20 @@ def _plot_index_overview(
     return fig
 
 
-# Window-map SVG geometry (a fixed viewBox the browser scales to the column
-# width; uniform scaling keeps the tick labels undistorted).
-_WINMAP_W = 1400.0
-_WINMAP_H = 64.0
+# Interactive-overview geometry. The SVG overlay's viewBox matches the overview
+# figure's pixel aspect (figsize 13.0 x 2.8), and the rects are placed by the
+# figure's axes box (left margin _OVERVIEW_MARGIN_FRAC, the data band running
+# bottom=0.22..top=0.82 of the figure height). preserveAspectRatio="none" stretches
+# the overlay to the div, which carries the same image at background-size 100% 100%,
+# so a rect at a given frequency lands over that frequency in the image.
+_CTX_VIEW_W = 1300.0
+_CTX_VIEW_H = 280.0
+# Axes box in top-down figure fractions: top = 1 - (0.22 + 0.60), height = 0.60.
+_CTX_PLOT_Y0 = 0.18
+_CTX_PLOT_H = 0.60
 
 
-def _window_map_svg(
+def _spectrum_nav(
     rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]],
     band: Tuple[float, float],
     stem: str,
@@ -945,41 +1026,40 @@ def _window_map_svg(
     thumb_prefix: str,
     current_id: Optional[int] = None,
 ) -> str:
-    """A clickable SVG window-map strip spanning the band.
+    """The interactive full-spectrum overview: clickable per-window rects on the
+    shared overview image.
 
-    One ``<rect>`` per window, positioned by frequency and coloured by attention
-    (the *current_id* window, when on a window page, gets a "you are here"
-    outline); a window with a detail page is wrapped in an SVG ``<a>`` (click
-    navigates) and carries ``data-thumb`` (its magnitude panel) for the optional
-    hover-zoom script. Each rect's ``<title>`` is the native tooltip (and the
-    text the popup reuses). ``rows`` is the index table's
+    A ``div.spectrum-ctx`` (its background is the shared overview image, bound by
+    a per-build CSS rule) holding an SVG overlay with one ``<rect>`` per window,
+    positioned by frequency over the image's frequency axis. Attention windows
+    get a faint tint, the *current_id* window (on its own page) a green "you are
+    here"; a window with a detail page is wrapped in an SVG ``<a>`` (click
+    navigates) and carries ``data-thumb`` (its magnitude panel) plus a ``<title>``
+    for the hover-zoom popup. ``rows`` are the index table's
     ``(wid, lo, hi, k, chi2r, has_page, attn)`` tuples; *link_prefix* /
-    *thumb_prefix* make the page/figure paths resolve from either the index
-    (``"windows/"`` / ``"figures/"``) or a window page (``""`` / ``"../figures/"``).
-    The horizontal margin matches the overview figure (:data:`_OVERVIEW_MARGIN_FRAC`)
-    so the strip lines up with it and the edge frequency labels are not clipped.
+    *thumb_prefix* resolve the page/figure paths from the index (``"windows/"`` /
+    ``"figures/"``) or a window page (``""`` / ``"../figures/"``).
     """
     lo, hi = float(min(band)), float(max(band))
     span = hi - lo if hi > lo else 1.0
-    pad = _OVERVIEW_MARGIN_FRAC * _WINMAP_W
-    top = 6.0
-    strip_h = 40.0
-    usable = _WINMAP_W - 2.0 * pad
+    left = _OVERVIEW_MARGIN_FRAC
+    usable = 1.0 - 2.0 * left
+    y = _CTX_PLOT_Y0 * _CTX_VIEW_H
+    h = _CTX_PLOT_H * _CTX_VIEW_H
 
     def x_of(f: float) -> float:
-        return pad + (float(f) - lo) / span * usable
+        return (left + (float(f) - lo) / span * usable) * _CTX_VIEW_W
 
     parts: List[str] = [
-        f'<svg class="winmap-svg" viewBox="0 0 {_WINMAP_W:.0f} {_WINMAP_H:.0f}" '
-        'preserveAspectRatio="xMidYMid meet" role="img" '
-        'aria-label="window navigation map">',
-        f'<line class="winmap-axis" x1="{pad:.1f}" y1="{top + strip_h:.1f}" '
-        f'x2="{_WINMAP_W - pad:.1f}" y2="{top + strip_h:.1f}"/>',
+        '<div class="spectrum-ctx">',
+        f'<svg class="spectrum-ctx-svg" viewBox="0 0 {_CTX_VIEW_W:.0f} '
+        f'{_CTX_VIEW_H:.0f}" preserveAspectRatio="none" role="img" '
+        'aria-label="interactive full-spectrum overview">',
     ]
     for wid, wlo, whi, k, chi2r, has_page, attn in rows:
         x0, x1 = x_of(min(wlo, whi)), x_of(max(wlo, whi))
-        w = max(x1 - x0, 2.5)
-        cls = "winmap-rect"
+        w = max(x1 - x0, 2.0)
+        cls = "specnav-rect"
         if attn:
             cls += " attn"
         if current_id is not None and wid == current_id:
@@ -996,23 +1076,33 @@ def _window_map_svg(
             else ""
         )
         rect = (
-            f'<rect class="{cls}" x="{x0:.1f}" y="{top:.1f}" width="{w:.1f}" '
-            f'height="{strip_h:.1f}" data-window="{wid}"{thumb}>'
+            f'<rect class="{cls}" x="{x0:.1f}" y="{y:.1f}" width="{w:.1f}" '
+            f'height="{h:.1f}" data-window="{wid}"{thumb}>'
             f"<title>{_esc(info)}</title></rect>"
         )
         if has_page:
             parts.append(f'<a href="{link_prefix}{_window_page_name(wid)}">{rect}</a>')
         else:
             parts.append(rect)
-    n_ticks = 7
-    for i in range(n_ticks):
-        f = lo + span * i / (n_ticks - 1)
-        parts.append(
-            f'<text class="winmap-tick" x="{x_of(f):.1f}" '
-            f'y="{_WINMAP_H - 3:.1f}" text-anchor="middle">{f:.0f}</text>'
-        )
-    parts.append("</svg>")
-    return '<div class="winmap">' + "".join(parts) + "</div>"
+    parts.append("</svg></div>")
+    return "".join(parts)
+
+
+def _spectrum_ctx_css(overview_name: Optional[str]) -> str:
+    """The per-build CSS rule binding the shared overview image as the
+    ``.spectrum-ctx`` background (``""`` when no overview rendered).
+
+    The ``url`` is relative to the stylesheet (``assets/style.css``), so it
+    resolves identically from the index and the per-window pages; the single-file
+    collapse rewrites it to a deduplicated data URI.
+    """
+    if overview_name is None:
+        return ""
+    return (
+        "\n/* Per build: the shared overview image as the interactive-overview "
+        "background. */\n"
+        f".spectrum-ctx {{ background-image: url(../figures/{overview_name}); }}\n"
+    )
 
 
 # Optional hover-zoom popup: a tiny, dependency-free script that shows a window's
@@ -1023,7 +1113,7 @@ def _window_map_svg(
 # so this degrades gracefully when scripting is off.
 _WINMAP_JS = """<script>
 (function () {
-  var rects = document.querySelectorAll('.winmap [data-window]');
+  var rects = document.querySelectorAll('[data-window]');
   var rows = document.querySelectorAll('tr[data-thumb]');
   if (!rects.length && !rows.length) return;
   var pop = document.createElement('div');
@@ -1066,6 +1156,45 @@ _WINMAP_JS = """<script>
   }
   rects.forEach(bind);
   rows.forEach(bind);
+})();
+</script>"""
+
+
+# Optional compact-mode toggle (single-file builds only). The "Compact" topnav
+# button flips a class on <html>; in compact mode the stylesheet shrinks every
+# report figure to a thumbnail (pure CSS over the already-embedded full images,
+# so no extra bytes), and clicking a thumbnail expands just that figure. With
+# scripting off the button does nothing and every figure stays full size.
+_COMPACT_JS = """<script>
+(function () {
+  var root = document.documentElement;
+  var btn = document.querySelector('.compact-toggle');
+  if (!btn) return;
+  var sel = '.fit-panels img, .cov-heatmap img, .hist img, .maghist img';
+  function label() {
+    btn.textContent =
+      root.classList.contains('report-compact') ? 'Full view' : 'Compact';
+  }
+  btn.addEventListener('click', function () {
+    root.classList.toggle('report-compact');
+    label();
+  });
+  document.addEventListener('click', function (e) {
+    if (!root.classList.contains('report-compact')) return;
+    var t = e.target;
+    if (t.tagName === 'IMG' && t.matches && t.matches(sel)) {
+      t.classList.toggle('zoom-expanded');
+      return;
+    }
+    // The interactive overview is an SVG over a CSS background, not an <img>;
+    // expand the container. A click on a window-nav rect navigates instead, so
+    // only a click on empty overview area (no data-window) toggles the zoom.
+    var ctx = t.closest && t.closest('.spectrum-ctx');
+    if (ctx && !(t.closest && t.closest('[data-window]'))) {
+      ctx.classList.toggle('zoom-expanded');
+    }
+  });
+  label();
 })();
 </script>"""
 
@@ -1660,7 +1789,7 @@ def _window_page(
         List[Tuple[int, float, float, int, Optional[float], bool, bool]]
     ] = None,
     band: Optional[Tuple[float, float]] = None,
-    context_name: Optional[str] = None,
+    overview_name: Optional[str] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -1678,19 +1807,15 @@ def _window_page(
         )
     nav.append("</div>")
 
-    # Spectrum-context section: the aligned full-spectrum figure (this window
-    # highlighted) over the window-map quick-nav strip -- the same overview/strip
-    # pairing the index uses, so they line up here too.
+    # Spectrum-context section: the interactive full-spectrum overview with this
+    # window highlighted -- the same shared image + clickable per-window overlay
+    # the index uses (here this window gets the green "you are here"). Rendered
+    # only when the shared overview image was produced.
     context: List[str] = []
-    if nav_rows and band is not None:
+    if nav_rows and band is not None and overview_name is not None:
         context.append("<h2>Spectrum context</h2>")
-        if context_name is not None:
-            context.append(
-                f'<div class="spectrum-overview"><img src="../figures/'
-                f'{context_name}" alt="full-spectrum context"></div>'
-            )
         context.append(
-            _window_map_svg(
+            _spectrum_nav(
                 nav_rows,
                 band,
                 stem,
@@ -1700,8 +1825,8 @@ def _window_page(
             )
         )
         context.append(
-            '<p class="winmap-hint">Quick-nav: each bar is a fit window (orange = '
-            "attention, outlined = this one); hover for details, click to jump.</p>"
+            '<p class="winmap-hint">The shaded bands are fit windows (orange = '
+            "attention, green = this one); hover for details, click to jump.</p>"
         )
 
     body: List[str] = [
@@ -1776,6 +1901,15 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
     def data_uri(p: Path) -> str:
         enc = base64.b64encode(p.read_bytes()).decode("ascii")
         return f"data:image/png;base64,{enc}"
+
+    # The interactive-overview background is a CSS ``url(../figures/...)``; embed
+    # it once as a data URI (the rest of the stylesheet has no url() refs), so the
+    # shared overview image is inlined a single time for the whole document.
+    def _embed_css_url(m: "re.Match[str]") -> str:
+        fp = site_dir / "figures" / m.group(1)
+        return f"url({data_uri(fp)})" if fp.exists() else m.group(0)
+
+    css = re.sub(r"url\((?:\.\./)?figures/([^)]+\.png)\)", _embed_css_url, css)
 
     def thumb_data_uri(name: str) -> str:
         from PIL import Image
@@ -1874,6 +2008,9 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
             'onchange="if(this.value)location.hash=this.value">'
             f'<option value="">Jump to window…</option>{opts}</select>'
         )
+    # The compact toggle shrinks every figure to a thumbnail to speed scrolling;
+    # the report opens in full view, and the button is inert without scripting.
+    nav_links.append('<button class="compact-toggle" type="button">Compact</button>')
     topnav = (
         '<nav class="topnav"><div class="topnav-inner">'
         f'<a class="brand" href="#page-top">{_esc(stem)}</a>'
@@ -1898,6 +2035,7 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
             "</main>",
             thumb_script,
             _WINMAP_JS,
+            _COMPACT_JS,
             "</body>",
             "</html>",
             "",
@@ -2076,30 +2214,33 @@ def report_full_impl(
     (out_root / "assets").mkdir(parents=True, exist_ok=True)
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
     (out_root / "windows").mkdir(parents=True, exist_ok=True)
-    (out_root / "assets" / "style.css").write_text(_STYLESHEET)
+
+    # The interactive full-spectrum overview image, rendered ONCE (attention
+    # windows shaded into it): it backs both the index "Spectrum" section and
+    # every window page's "Spectrum context" via a clickable per-window overlay,
+    # so the full-spectrum image is rendered and embedded once rather than
+    # re-rendered per window.
+    attention_ranges = [_window_range(win_fits[w]) for w in sorted(attention_ids)]
+    overview_name: Optional[str] = None
+    if index_rows and nav_band is not None:
+        try:
+            ov_fig = _plot_index_overview(bundle, attention_ranges)
+            overview_name = f"{stem}_overview.png"
+            _save_figure_png(ov_fig, out_root / "figures" / overview_name, dpi=dpi)
+            plt.close(ov_fig)
+        except (ValueError, KeyError):
+            overview_name = None
+    # The stylesheet, plus the per-build rule binding that overview as the
+    # interactive-overview background.
+    (out_root / "assets" / "style.css").write_text(
+        _STYLESHEET + _spectrum_ctx_css(overview_name)
+    )
 
     # --- per-window pages + figures -------------------------------------
     for idx, wid in enumerate(page_ids):
         wf = win_fits[wid]
-        # The full-spectrum context is rendered in the index-aligned style (this
-        # window highlighted) so it lines up with the window-map strip beneath
-        # it; the per-window panels supply the zoomed re / im / mag / hist.
-        context_name: Optional[str] = None
-        if nav_band is not None:
-            try:
-                ctx_fig = _plot_index_overview(
-                    bundle,
-                    [],
-                    highlight_range=_window_range(wf),
-                    title="full-spectrum context (this window highlighted)",
-                )
-                context_name = f"{stem}_window_{wid:03d}_ctx.png"
-                ctx_fig.savefig(str(out_root / "figures" / context_name), dpi=dpi)
-                plt.close(ctx_fig)
-            except (ValueError, KeyError):
-                context_name = None
-        # The zoomed panels (the overview panel is superseded by the aligned
-        # context figure above, so it is not saved).
+        # The zoomed panels (re / im / mag / hist); the full-spectrum context is
+        # the shared interactive overview, not a per-window image.
         panels = render_fit_panels_impl(path, wid, bundle=bundle)
         panel_files: Dict[str, str] = {}
         for panel in _PANEL_ORDER:
@@ -2110,7 +2251,7 @@ def report_full_impl(
                 plt.close(pfig)
                 continue
             fname = _panel_figure_name(stem, wid, panel)
-            pfig.savefig(str(out_root / "figures" / fname), dpi=dpi)
+            _save_figure_png(pfig, out_root / "figures" / fname, dpi=dpi)
             plt.close(pfig)
             panel_files[panel] = fname
         # Correlation heatmap (when a covariance was persisted) -- a divergent
@@ -2129,8 +2270,9 @@ def report_full_impl(
             cov_heatmap_name = _panel_figure_name(stem, wid, "corr")
             # bbox_inches="tight" so the wide mathtext axis labels (the baseline
             # coefficient stacks) are never clipped at the figure edge.
-            hfig.savefig(
-                str(out_root / "figures" / cov_heatmap_name),
+            _save_figure_png(
+                hfig,
+                out_root / "figures" / cov_heatmap_name,
                 dpi=dpi,
                 bbox_inches="tight",
             )
@@ -2163,7 +2305,7 @@ def report_full_impl(
             merges=merges_by_window.get(wid),
             nav_rows=index_rows,
             band=nav_band,
-            context_name=context_name,
+            overview_name=overview_name,
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
@@ -2178,7 +2320,7 @@ def report_full_impl(
         if fig is None:
             continue
         fname = f"{stem}_hist_{slug}.png"
-        fig.savefig(str(out_root / "figures" / fname), dpi=dpi)
+        _save_figure_png(fig, out_root / "figures" / fname, dpi=dpi)
         plt.close(fig)
         snippet = (
             f'<div class="hist"><img src="figures/{fname}" '
@@ -2214,29 +2356,14 @@ def report_full_impl(
     (out_root / "methods.html").write_text(_summary_page(stem, methods_html, leftover))
 
     # --- index ----------------------------------------------------------
-    # Full-spectrum overview figure (attention windows shaded).
-    attention_ranges = [_window_range(win_fits[w]) for w in sorted(attention_ids)]
-    overview_name: Optional[str] = None
-    try:
-        ov_fig = _plot_index_overview(bundle, attention_ranges)
-        overview_name = f"{stem}_overview.png"
-        ov_fig.savefig(str(out_root / "figures" / overview_name), dpi=dpi)
-        plt.close(ov_fig)
-    except (ValueError, KeyError):
-        overview_name = None
-
-    # Spectrum section: the overview image (when rendered) over an interactive
-    # window-map strip (one clickable bar per window).
+    # Spectrum section: the interactive full-spectrum overview (the shared image
+    # rendered above) with a clickable per-window overlay -- the quick-nav is the
+    # image itself, so there is no separate strip.
     spectrum_section: List[str] = []
-    if index_rows and nav_band is not None:
+    if index_rows and nav_band is not None and overview_name is not None:
         spectrum_section.append("<h2>Spectrum</h2>")
-        if overview_name is not None:
-            spectrum_section.append(
-                f'<div class="spectrum-overview"><img src="figures/'
-                f'{overview_name}" alt="full-spectrum overview"></div>'
-            )
         spectrum_section.append(
-            _window_map_svg(
+            _spectrum_nav(
                 index_rows,
                 nav_band,
                 stem,
@@ -2245,8 +2372,8 @@ def report_full_impl(
             )
         )
         spectrum_section.append(
-            '<p class="winmap-hint">Each bar is a fit window (orange = flagged for '
-            "attention); hover for details, click to open its page.</p>"
+            '<p class="winmap-hint">The shaded bands are fit windows (orange = '
+            "flagged for attention); hover for details, click to open its page.</p>"
         )
 
     # Hover-preview attributes per window (magnitude thumbnail + identical info
@@ -2311,6 +2438,74 @@ def report_full_impl(
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
     return str(single_path)
+
+
+def report_run_impl(
+    file_path: Union[Path, str],
+    *,
+    output_dir: Union[Path, str],
+    windows: str = "all",
+    emit_table: bool = True,
+    emit_html: bool = True,
+    table_format: str = "csv",
+    single_file: Optional[str] = "full",
+    catalog: Optional[Union[Path, str]] = None,
+    catalog_n_sigma: float = 3.0,
+) -> Dict[str, Optional[str]]:
+    """The default Stage 6 report run: the L1 table plus the L3 HTML report.
+
+    Writes both deliverables into *output_dir* in one call. By default that is the
+    Level-1 final-products table (``<stem>_lines.csv``) and the self-contained
+    single-file Level-3 report with every window folded in (``<stem>_report.html``).
+    Either artifact can be suppressed (``emit_table`` / ``emit_html``); the HTML
+    form follows *single_file* (``"full"`` self-contained report, ``"summary"``
+    self-contained index + methods only, or ``None`` for the multi-file linked
+    site). Renders the persisted record; never recomputes.
+
+    Returns ``{"table": <path|None>, "html": <path|None>}`` -- the path of each
+    artifact written, ``None`` when that artifact was suppressed.
+
+    Raises
+    ------
+    ValueError
+        If both artifacts are disabled, or the underlying table / HTML render
+        raises (no final-products table, unknown format / windows / single_file
+        mode, unreadable catalog).
+    """
+    if not emit_table and not emit_html:
+        raise ValueError(
+            "nothing to do: both the table and the HTML report are disabled"
+        )
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = Path(str(file_path)).stem
+
+    results: Dict[str, Optional[str]] = {"table": None, "html": None}
+
+    if emit_table:
+        ext = _TABLE_EXT.get(str(table_format).lower(), "txt")
+        table_path = out_dir / f"{stem}_lines.{ext}"
+        report_table_impl(
+            file_path,
+            fmt=table_format,
+            output=str(table_path),
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
+        )
+        results["table"] = str(table_path)
+
+    if emit_html:
+        results["html"] = report_full_impl(
+            file_path,
+            output_dir=str(out_dir),
+            windows=windows,
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
+            single_file=single_file,
+        )
+
+    return results
 
 
 def _window_range(wf: Any) -> Tuple[float, float]:

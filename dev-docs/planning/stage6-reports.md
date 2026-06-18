@@ -265,28 +265,32 @@ three components, raw frequency, baseband, amplitude, phase, SNR, origin,
 window_id, clock-lattice flag. This is the cheapest level — `FinalProducts` is
 already built and persisted (build-order step 1), so L1 is a serializer over it.
 
-### Level 2 — `report summary` (methods + results document)
+### Level 2 — methods + results prose (folded into the Level-3 report)
 
-A **Markdown** report (the source-of-truth format; html/pdf are thin
-conversions, not separate hand-built renderers) interleaving **static,
-code-versioned algorithm prose** — a "methods section" that lives in the report
-module so it stays in sync with the code, *not* pulled from the dev planning
-docs — with per-experiment numbers from each stage (start time, FT band, noise σ,
-τ, peak/window counts, χ² summary, calibration state). The full peak table is
-emitted as the companion L1 CSV rather than dumped inline; a *summary* (counts,
-band, χ² stats, strongest lines) appears inline, with `--include-table` to inline
-the full table.
+The Level-2 content is no longer a standalone verb. Its **static, code-versioned
+algorithm prose** — a "methods section" that lives in the report module so it
+stays in sync with the code, *not* pulled from the dev planning docs —
+interleaved with per-experiment numbers from each stage (start time, FT band,
+noise σ, τ, peak/window counts, χ² summary, calibration state) is built by
+`_render_markdown` and rendered into the Level-3 report's **methods page** (HTML,
+MathJax equations, interleaved distribution histograms). The full peak table is
+the companion L1 CSV; a summary (counts, band, χ² stats, strongest lines) sits
+inline on that page.
 
-### Level 3 — `report full` (per-window document tree)
+### Level 3 — `report run` (per-window HTML report)
 
-A **local linked HTML site** (dependency-light: hand-rolled HTML + matplotlib
-PNGs, no new heavy dependency; PDF deferred): an index (summary + final table +
-window links) → per-window pages, each with the figure from the existing
+A **local HTML report** (dependency-light: hand-rolled HTML + matplotlib PNGs, no
+new heavy dependency; PDF deferred): an index (summary + final table + window
+links) → per-window pages, each with the figure from the existing
 `fit show --window N` renderer, the audit/thaw/rescue history, raw + calibrated
 frequencies, all window fit parameters + covariance, and the ledger candidates.
 L3 is an **assembler** over existing artifacts + the visualization renderers, not
 new analysis. With ~10³ windows it needs a manifest/index and a `--windows`
-filter (all vs attention-only).
+filter (all vs attention-only). The default build is **one self-contained file**
+(CSS inlined, figures base64-embedded as 256-colour palette PNGs, a compact-mode
+toggle); `--multi-file` emits the linked-site form instead. The interactive
+full-spectrum overview doubles as the quick-nav (a shared overview image, rendered
+and embedded once, under an SVG overlay of clickable per-window rects).
 
 ### σ_floor is persisted and reported (requirement, not optional)
 
@@ -326,18 +330,17 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   provenance header), JSON, or a LaTeX `booktabs` table (state-aware caption);
   stdout by default. Dual-interface (`Pipeline.report_table` / `api.report_table`
   / `_internal/report_impl.py`); cross-interface + serializer tests landed.
-- **L2 `report summary` — done.** `report summary <file> [--output PATH]
-  [--include-table]` renders a Markdown methods + results document: static,
+- **L2 methods + results prose — done, folded into the L3 report.** The static,
   code-versioned per-stage algorithm prose (a methods section living in the
   report module, not pulled from these planning docs) interleaved with the
   per-experiment numbers read from each persisted stage (start time, FT band +
   bin spacing, noise σ_x, τ_maj ± σ_τ and per-band τ, peak counts by class,
   planned/fit window counts, χ²ᵣ summary, thaw/replan/rescue tallies, ε ± σ_ε,
-  σ_floor, calibration state). The full line list is the companion L1 export by
-  default; `--include-table` inlines it. A strongest-lines table (top 10 by SNR)
-  always appears inline. Assembled once from the persisted record, never
-  recomputed. Dual-interface (`Pipeline.report_summary` / `api.report_summary` /
-  `_internal/report_impl.py`); cross-interface + renderer tests landed.
+  σ_floor, calibration state) is built by `_render_markdown` and rendered into the
+  L3 report's methods page (there is no standalone `report summary` verb). The
+  full line list is the companion L1 export; a strongest-lines table (top 10 by
+  SNR) appears inline. Assembled once from the persisted record, never recomputed
+  (`_internal/report_impl.py`).
   Each fitting stage (2–6) additionally carries: a **parameters table** (the
   knobs the stage ran with), the governing **equation(s)**, **detailed result
   tables** (per-band noise σ_x and noise-fraction; per-band τ + bimodality;
@@ -351,26 +354,29 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   for the per-band noise table). Markdown only; no emoji (Concerns use text tags).
   Stage 6 also carries a σ_f **distribution** percentile table (σ_stat / σ_ε / σ_f,
   parallel to the Stage 5 σ_stat table) alongside the medians.
-- **L3 `report full` — done (HTML + modular panels; CSS polish pending).**
-  `report full <file> --output-dir DIR [--windows {all,attention}]` assembles a
-  self-contained linked HTML site: `index.html` (summary + window list with
-  attention badges + full calibrated line table) and one `windows/window_NNN.html`
-  per fit window (the fit detail rendered as **separate panel PNGs in a CSS
-  flexbox** — overview, three fused Re/Im/|X| panels, residual histogram — plus
-  the fitted-lines table with raw + calibrated frequencies and the σ_f breakdown,
-  the parameter covariance matrix, the ledger candidates, the Stage 6 user
-  decisions, and the audit-trail fit log). The per-window title/metadata is HTML
-  text (not an image). `--windows attention` restricts the generated *pages* to
-  review-flagged windows; the index always lists every window, hyperlinking the
-  ones with a page. An assembler over existing renderers
+- **L3 `report run` — done.** `report run <file> --output-dir DIR [--windows
+  {all,attention}] [--summary] [--multi-file] [--level1-only] [--no-table]`
+  writes the default deliverables — the L1 line table (CSV) **and** the L3 HTML
+  report. The report is, by default, **one self-contained file** (`index` +
+  methods + every per-window page folded in via `#window-<id>` anchors; CSS
+  inlined; figures base64-embedded as 256-colour palette PNGs; a compact-mode
+  toggle); `--multi-file` emits the linked-site form (`index.html` +
+  `windows/window_NNN.html` per window) and `--summary` the index + methods only.
+  Each per-window page carries the fit detail as **separate panel PNGs in a CSS
+  flexbox** (three fused Re/Im/|X| panels + residual histogram), the fitted-lines
+  table with raw + calibrated frequencies and the σ_f breakdown, the parameter
+  covariance matrix, the ledger candidates, the Stage 6 user decisions, and the
+  audit-trail fit log. The full-spectrum overview doubles as the quick-nav (a
+  shared image, rendered/embedded once, under an SVG overlay of clickable
+  per-window rects with a "you are here" highlight). `--windows attention`
+  restricts the generated *pages* to review-flagged windows; the index always
+  lists every window. An assembler over existing renderers
   (`render_fit_panels_impl` / `fit_window_report_text` /
-  `get_candidate_ledger_impl`) + the L2 summary model; never recomputes. Markup is
-  hand-rolled, with presentation factored into `assets/style.css` (a deliberately
-  minimal baseline — visual polish is a follow-on pass that touches only that
-  file). Dual-interface (`Pipeline.report_full` / `api.report_full` /
-  `_internal/report_html_impl.py`); unit (pure HTML helpers) + integration
-  (structure / well-formedness / read-only / cross-interface / windows-filter)
-  tests landed.
+  `get_candidate_ledger_impl`) + the methods model; never recomputes.
+  Dual-interface (`Pipeline.report_run` / `api.report_run` /
+  `_internal/report_html_impl.py`, with `report_full_impl` the HTML engine); unit
+  (pure HTML helpers) + integration (structure / well-formedness / read-only /
+  cross-interface / windows-filter / single-file) tests landed.
 
   The Stage 5 fit-detail renderer (`visualization/fit_detail.py`) was refactored
   to support this: a single `prepare_window_panels(...)` data-prep plus reusable
