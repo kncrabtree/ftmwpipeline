@@ -31,6 +31,7 @@ if TYPE_CHECKING:
 
 from ._internal.report_html_impl import report_run_impl
 from ._internal.report_impl import report_table_impl
+from ._internal.run_impl import run_pipeline_impl
 from ._internal.shape_recommendation_impl import recommend_shape_impl
 from ._internal.stage0_impl import import_data_impl, load_fid_from_pipeline_impl
 from ._internal.stage1_impl import (
@@ -327,6 +328,34 @@ class Pipeline:
         filepath, source_metadata, stage_tracker = open_pipeline_file(filepath)
 
         return cls(filepath, source_metadata, stage_tracker)
+
+    @classmethod
+    def build(
+        cls,
+        source: Union[str, Path],
+        *,
+        trim: Optional[Tuple[float, float]] = None,
+        output: Optional[Union[str, Path]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Drive *source* through every stage end-to-end and return the result.
+
+        Convenience classmethod over :func:`run_pipeline_impl`: imports the raw
+        *source*, then runs FT -> noise -> tau -> peaks -> windows -> fit ->
+        timebase -> review (and, with ``report=True``, the report), with live
+        per-stage progress. *trim* (the active-band FT range, MHz) is required.
+        ``output`` is the destination ``.ftmw`` (derived from *source* if
+        omitted). Remaining keyword arguments are forwarded to
+        :func:`run_pipeline_impl` (per-stage ``*_params`` override dicts,
+        ``detect_start`` / ``calibrate`` / ``clocks``, ``report`` /
+        ``report_output_dir``, ``sigma_floor_khz``, ``force``, ``progress``, …).
+
+        Returns the structured run result (``pipeline_file``, ``status``,
+        ``completed_stages``, ``failed_stage``, ``error``, ``timebase``,
+        ``report``, ``elapsed_s``). Open the finished file with
+        :meth:`Pipeline.open` (``result["pipeline_file"]``).
+        """
+        return run_pipeline_impl(source, output, trim=trim, **kwargs)
 
     def load_data(self) -> FID:
         """

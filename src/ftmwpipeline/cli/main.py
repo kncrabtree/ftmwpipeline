@@ -19,6 +19,7 @@ from .info_commands import add_info_subcommand
 from .noise_commands import register_noise_commands
 from .peak_commands import register_peak_commands
 from .report_commands import register_report_commands
+from .run_commands import register_run_command
 from .scan_commands import register_scan_commands
 from .settings_commands import register_settings_commands
 from .start_commands import register_start_commands
@@ -152,6 +153,9 @@ Examples:
 
     # Cross-cutting resolved-settings inspection
     register_settings_commands(subparsers)
+
+    # End-to-end pipeline run command
+    register_run_command(subparsers)
 
     # Pipeline-file info command
     add_info_subcommand(subparsers)

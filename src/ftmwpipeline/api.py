@@ -1675,6 +1675,35 @@ def report_run(
     )
 
 
+def run_pipeline(
+    source: Union[str, Path],
+    output: Optional[Union[str, Path]] = None,
+    *,
+    trim: Optional[Tuple[float, float]] = None,
+    **kwargs: Any,
+) -> Dict[str, Any]:
+    """Drive a raw *source* through every pipeline stage end-to-end.
+
+    Equivalent to :meth:`Pipeline.build`.  Imports *source*, then runs FT ->
+    noise -> tau -> peaks -> windows -> fit -> timebase -> review (and, with
+    ``report=True``, the report) in order, showing live per-stage progress.
+    *trim* (the active-band FT range, MHz) is required; ``output`` is the
+    destination ``.ftmw`` (derived from *source* if omitted).
+
+    Per-stage behavior is tuned with override dicts forwarded to each stage
+    (``ft_params``, ``noise_params``, ``tau_params``, ``peak_params``,
+    ``window_params``, ``fit_params``, ``timebase_params``, ``review_params``,
+    ``report_params``) plus an optional ``preset`` name; ``detect_start`` /
+    ``calibrate`` / ``clocks`` gate the optional stages (timebase is non-fatal --
+    it warns and skips when no clock declaration is resolvable), ``report`` /
+    ``report_output_dir`` emit the report, and ``progress=False`` silences the
+    display.  Returns the structured run result (``pipeline_file``, ``status``,
+    ``completed_stages``, ``failed_stage``, ``error``, ``timebase``, ``report``,
+    ``elapsed_s``); stops at the first failing stage.
+    """
+    return Pipeline.build(source, trim=trim, output=output, **kwargs)
+
+
 def review_accept(
     file_path: Union[str, Path],
     window_id: int,
