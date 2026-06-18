@@ -12,9 +12,11 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional, Tuple
 
 import h5py
+import pandas as pd
 import pytest
 
 from ftmwpipeline.core.stage_fit_settings import (
@@ -116,70 +118,167 @@ class TestClockSourceExtraction:
         ), "Duplicate fundamentals in extracted clocks"
 
 
+class TestClockOperationNormalisation:
+    """``_clock_operation`` accepts the string and integer-enum forms."""
+
+    def test_string_forms(self) -> None:
+        assert BlackChirpLoader._clock_operation("Multiply") == "Multiply"
+        assert BlackChirpLoader._clock_operation("Divide") == "Divide"
+
+    def test_integer_enum_forms(self) -> None:
+        # Older Blackchirp metadata writes the operation as an integer enum.
+        assert BlackChirpLoader._clock_operation(0) == "Multiply"
+        assert BlackChirpLoader._clock_operation(1) == "Divide"
+        assert BlackChirpLoader._clock_operation("0") == "Multiply"
+        assert BlackChirpLoader._clock_operation("1") == "Divide"
+
+    def test_unknown_is_none(self) -> None:
+        assert BlackChirpLoader._clock_operation("garbage") is None
+        assert BlackChirpLoader._clock_operation(7) is None
+
+
+class TestDigitizerKeyDiscovery:
+    """``_digitizer_hw_key`` resolves both the bare and suffixed conventions."""
+
+    @staticmethod
+    def _exp(keys):
+        return SimpleNamespace(hardware=pd.DataFrame({"key": keys}))
+
+    def test_bare_key(self) -> None:
+        exp = self._exp(["AWG", "Clock0", "FtmwDigitizer", "PulseGenerator"])
+        assert BlackChirpLoader._digitizer_hw_key(exp) == "FtmwDigitizer"
+
+    def test_suffixed_key(self) -> None:
+        exp = self._exp(["AWG.0", "Clock.0", "FtmwDigitizer.0"])
+        assert BlackChirpLoader._digitizer_hw_key(exp) == "FtmwDigitizer.0"
+
+    def test_no_digitizer_is_none(self) -> None:
+        assert BlackChirpLoader._digitizer_hw_key(self._exp(["AWG", "Clock0"])) is None
+
+    def test_no_hardware_is_none(self) -> None:
+        assert (
+            BlackChirpLoader._digitizer_hw_key(SimpleNamespace(hardware=None)) is None
+        )
+
+
+class TestHeaderRateUnitConversion:
+    """``_header_rate_mhz`` converts to MHz via the declared header unit."""
+
+    @staticmethod
+    def _exp(value, unit):
+        return SimpleNamespace(
+            header_value=lambda o, v: value,
+            header_unit=lambda o, v: unit,
+        )
+
+    def test_hz_to_mhz(self) -> None:
+        assert BlackChirpLoader._header_rate_mhz(self._exp(5e10, "Hz"), "D", "S") == 5e4
+
+    def test_mhz_passthrough(self) -> None:
+        assert (
+            BlackChirpLoader._header_rate_mhz(self._exp(16000, "MHz"), "A", "S")
+            == 16000.0
+        )
+
+    def test_absent_unit_defaults_mhz(self) -> None:
+        assert (
+            BlackChirpLoader._header_rate_mhz(self._exp(16000, None), "A", "S")
+            == 16000.0
+        )
+
+    def test_missing_value_is_none(self) -> None:
+        def _raise(o, v):
+            raise KeyError("no such header row")
+
+        exp = SimpleNamespace(header_value=_raise, header_unit=lambda o, v: None)
+        assert BlackChirpLoader._header_rate_mhz(exp, "A", "S") is None
+
+
+class _FakeExp:
+    """Stand-in for ``BCExperiment`` carrying the older metadata format.
+
+    Numeric ``Operation`` / ``ClockType``, bare hardware keys (``Clock0``,
+    ``FtmwDigitizer``), and the digitizer ``SampleRate`` in Hz -- the shape that
+    made the hand-rolled parser drop the (unlocked) digitizer.
+    """
+
+    def __init__(self) -> None:
+        self.clocks = pd.DataFrame(
+            {
+                "Index": [0, 0],
+                "ClockType": [0, 1],
+                "FreqMHz": [11520, 40960],
+                "Operation": [0, 0],  # numeric enum: 0 == Multiply
+                "Factor": [2, 8],
+                "HwKey": ["Clock0", "Clock0"],
+                "OutputNum": [0, 1],
+            }
+        )
+        self.hardware = pd.DataFrame(
+            {"key": ["AWG", "Clock0", "FtmwDigitizer", "PulseGenerator"]}
+        )
+        self._header = {
+            ("ChirpConfig", "SampleRate"): (16000.0, "MHz"),
+            ("FtmwDigitizer", "SampleRate"): (5e10, "Hz"),
+        }
+
+    def header_value(self, obj_key, value_key):
+        if (obj_key, value_key) not in self._header:
+            raise KeyError(f"no header row for {obj_key}/{value_key}")
+        return self._header[(obj_key, value_key)][0]
+
+    def header_unit(self, obj_key, value_key):
+        return self._header.get((obj_key, value_key), (None, None))[1]
+
+
+class TestOldFormatExtraction:
+    """The full extractor on the older metadata format (regression guard).
+
+    Reproduces the failure mode where a free-running digitizer was reported as
+    absent / locked: numeric Operation must still divide by Factor, and the
+    bare ``FtmwDigitizer`` key must still yield the unlocked digitizer entry.
+    """
+
+    @pytest.fixture
+    def extracted(self, monkeypatch) -> list:
+        import blackchirp
+
+        monkeypatch.setattr(blackchirp, "BCExperiment", lambda _path: _FakeExp())
+        raw = BlackChirpLoader._extract_clock_sources(Path("ignored"))
+        assert raw is not None
+        return raw
+
+    def test_fundamentals_divided_by_factor(self, extracted) -> None:
+        freqs = {round(e["freq_mhz"], 1) for e in extracted}
+        # 11520/2 = 5760, 40960/8 = 5120 -- the numeric Operation is applied.
+        assert 5760.0 in freqs and 5120.0 in freqs
+        assert 11520.0 not in freqs and 40960.0 not in freqs
+
+    def test_digitizer_present_and_unlocked(self, extracted) -> None:
+        dig = next((e for e in extracted if abs(e["freq_mhz"] - 50000.0) < 0.1), None)
+        assert dig is not None, "bare FtmwDigitizer key must still be discovered"
+        assert dig["locked"] is False
+
+    def test_has_an_unlocked_source(self, extracted) -> None:
+        # The defect was an all-locked declaration -> calibration state rb_locked.
+        assert any(not e["locked"] for e in extracted)
+
+
 class TestClockSourceExtractionMissing:
-    """Graceful handling when clocks.csv or header.csv is absent."""
+    """Graceful handling when the experiment cannot be read."""
 
     def test_returns_none_for_empty_dir(self, tmp_path) -> None:
-        """An empty directory (no clocks.csv, no header.csv) returns None."""
-        result = BlackChirpLoader._extract_clock_sources(tmp_path)
-        assert result is None
+        """A junk directory (no readable experiment) returns None, not an error."""
+        assert BlackChirpLoader._extract_clock_sources(tmp_path) is None
 
-    def test_returns_none_for_empty_csvs(self, tmp_path) -> None:
-        """Empty CSV files (headers only) return None."""
-        (tmp_path / "clocks.csv").write_text(
-            "Index;ClockType;FreqMHz;Operation;Factor;HwKey;OutputNum\n"
-        )
-        (tmp_path / "header.csv").write_text(
-            "ObjKey;ArrayKey;ArrayIndex;ValueKey;Value;Units\n"
-        )
-        result = BlackChirpLoader._extract_clock_sources(tmp_path)
-        assert result is None
+    def test_returns_none_when_experiment_unreadable(self, monkeypatch) -> None:
+        import blackchirp
 
-    def test_clocks_only(self, tmp_path) -> None:
-        """Only clocks.csv present → two synth entries, no AWG/digitizer."""
-        (tmp_path / "clocks.csv").write_text(
-            "Index;ClockType;FreqMHz;Operation;Factor;HwKey;OutputNum\n"
-            "0;DownLO;40960;Multiply;8;Clock.0;1\n"
-        )
-        result = BlackChirpLoader._extract_clock_sources(tmp_path)
-        assert result is not None
-        assert len(result) == 1
-        assert abs(result[0]["freq_mhz"] - 5120.0) < 0.001
-        assert result[0]["locked"] is True
+        def _boom(_path):
+            raise RuntimeError("cannot parse experiment")
 
-    def test_header_only(self, tmp_path) -> None:
-        """Only header.csv present → AWG + digitizer entries."""
-        (tmp_path / "header.csv").write_text(
-            "ObjKey;ArrayKey;ArrayIndex;ValueKey;Value;Units\n"
-            "ChirpConfig;;;SampleRate;16000;MHz\n"
-            "FtmwDigitizer.0;;;SampleRate;5e+10;Hz\n"
-        )
-        result = BlackChirpLoader._extract_clock_sources(tmp_path)
-        assert result is not None
-        freqs = {round(e["freq_mhz"], 1) for e in result}
-        assert 16000.0 in freqs
-        assert 50000.0 in freqs
-
-    def test_malformed_clocks_csv_skipped(self, tmp_path) -> None:
-        """A clocks.csv with bad numeric values does not raise; skips bad rows."""
-        (tmp_path / "clocks.csv").write_text(
-            "Index;ClockType;FreqMHz;Operation;Factor;HwKey;OutputNum\n"
-            "0;DownLO;NOT_A_NUMBER;Multiply;8;Clock.0;1\n"
-        )
-        # Should not raise; bad row is silently skipped.
-        result = BlackChirpLoader._extract_clock_sources(tmp_path)
-        assert result is None  # no valid entries → None
-
-    def test_version_separator_respected(self, tmp_path) -> None:
-        """Separator from version.csv is used when reading clocks.csv."""
-        (tmp_path / "version.csv").write_text(";\n")
-        (tmp_path / "clocks.csv").write_text(
-            "Index;ClockType;FreqMHz;Operation;Factor;HwKey;OutputNum\n"
-            "0;UpLO;11520;Multiply;2;Clock.0;0\n"
-        )
-        result = BlackChirpLoader._extract_clock_sources(tmp_path)
-        assert result is not None
-        assert abs(result[0]["freq_mhz"] - 5760.0) < 0.001
+        monkeypatch.setattr(blackchirp, "BCExperiment", _boom)
+        assert BlackChirpLoader._extract_clock_sources(Path("x")) is None
 
 
 # ---------------------------------------------------------------------------
