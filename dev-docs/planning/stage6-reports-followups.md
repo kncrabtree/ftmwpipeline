@@ -5,9 +5,10 @@ Handoff for a fresh session. The report surface is built and polished:
 - **`report run`** — the default deliverable: the L1 `FinalProducts` table (CSV)
   **and** the L3 HTML report, into `--output-dir`. By default one self-contained
   file (`index` + methods + every window folded in; CSS inlined; figures embedded
-  as 256-colour palette PNGs; compact-mode toggle); `--multi-file` emits the
-  linked site, `--summary` the index + methods only, `--level1-only` / `--no-table`
-  trim to a single artifact.
+  as 256-colour palette PNGs; compact-mode toggle); `--summary` keeps the index +
+  methods only, `--level1-only` / `--no-table` trim to a single artifact. The
+  report is always one self-contained file (the multi-file linked site was
+  retired).
 - **L1 `report table`** — CSV / JSON / LaTeX of the persisted `FinalProducts`
   (the table-only export; shares the table flags with `report run`).
 - **Methods + results prose (former L2)** — the code-versioned methods document

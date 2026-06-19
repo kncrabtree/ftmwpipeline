@@ -173,10 +173,9 @@ tbody tr[data-thumb]:hover { cursor: help; }
 thead th { position: sticky; top: 0; z-index: 1; }
 pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
       overflow-x: auto; border-radius: 4px; font-size: 0.82rem; }
-/* Single-file builds prepend a sticky top navigation bar (the multi-file site
-   keeps its per-page nav instead). The bar spans the viewport; its inner row is
-   centred to the report column. Anchor jumps and the table sticky-headers are
-   offset by the bar height so nothing lands hidden underneath it. */
+/* A sticky top navigation bar spans the viewport; its inner row is centred to
+   the report column. Anchor jumps and the table sticky-headers are offset by the
+   bar height so nothing lands hidden underneath it. */
 .topnav { position: sticky; top: 0; z-index: 100; background: #11233a;
           box-shadow: 0 1px 4px rgba(0,0,0,0.25); }
 .topnav-inner { max-width: 1500px; margin: 0 auto; padding: 0.5rem 2rem;
@@ -189,11 +188,10 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
                  border: 1px solid #2c4a6e; background: #fff; color: #1a1a1a; }
 html.report-single { scroll-padding-top: 3.4rem; }
 html.report-single thead th { top: 3.4rem; }
-/* Single-file builds stack the major blocks (index, methods, each embedded
-   window) as <section> children of main; space them apart and rule a divider
-   between consecutive sections so the report reads as distinct blocks rather
-   than one undifferentiated scroll. Harmless on the multi-file pages, which
-   have no direct <section> children. */
+/* The major blocks (index, methods, each embedded window) stack as <section>
+   children of main; space them apart and rule a divider between consecutive
+   sections so the report reads as distinct blocks rather than one
+   undifferentiated scroll. */
 main.report > section { margin-bottom: 2.75rem; }
 main.report > section + section { border-top: 2px solid #c4ccd4;
                                   padding-top: 2.25rem; }
@@ -1137,8 +1135,8 @@ _WINMAP_JS = """<script>
   function show(e) {
     var t = e.currentTarget;
     var thumb = t.getAttribute('data-thumb');
-    // Single-file builds key data-thumb to a deduplicated base64 map; the
-    // multi-file site leaves it a real path (no map present).
+    // data-thumb is a basename key into the deduplicated base64 map injected by
+    // the single-file collapse; resolve it to the embedded image.
     if (thumb && window.__thumbs && window.__thumbs[thumb]) thumb = window.__thumbs[thumb];
     var info = t.getAttribute('data-info') || '';
     pop.innerHTML = (thumb ? '<img src="' + thumb + '" alt="">' : '') +
@@ -1166,7 +1164,7 @@ _WINMAP_JS = """<script>
 </script>"""
 
 
-# Optional compact-mode toggle (single-file builds only). The "Compact" topnav
+# Optional compact-mode toggle. The "Compact" topnav
 # button flips a class on <html>; in compact mode the stylesheet shrinks every
 # report figure to a thumbnail (pure CSS over the already-embedded full images,
 # so no extra bytes), and clicking a thumbnail expands just that figure. With
@@ -1872,7 +1870,7 @@ def _window_page(
 # Single-file collapse (base64-embedded, self-contained HTML)
 # ---------------------------------------------------------------------------
 
-SINGLE_FILE_MODES = ("summary", "full")
+REPORT_SCOPES = ("summary", "full")
 
 # Hover-preview thumbnails are downscaled to a little above the popup's display
 # width (.winmap-pop img is 360px) before base64 embedding, so the deduplicated
@@ -2054,50 +2052,26 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
 # ---------------------------------------------------------------------------
 
 
-def report_full_impl(
+def _assemble_report_site(
     file_path: Union[Path, str],
     *,
-    output_dir: Union[Path, str],
+    out_root: Union[Path, str],
     windows: str = "all",
     dpi: int = 110,
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
-    single_file: Optional[str] = None,
 ) -> str:
-    """Assemble the Level-3 linked-HTML report site and return the index path.
+    """Build the working report site under *out_root*; return the file stem.
 
-    Parameters
-    ----------
-    file_path :
-        Path to the ``.ftmw`` pipeline file.
-    output_dir :
-        Directory to write the site into (created if absent).
-    windows :
-        ``"all"`` (a page per fit window) or ``"attention"`` (pages only for
-        windows the Stage 6 review flagged for attention). The index always
-        lists every window, hyperlinking the ones with a generated page.
-    dpi :
-        Resolution for the per-window matplotlib figures.
-    catalog :
-        Optional frequency-catalog path. When given, a proximity-match badge
-        column is added to the index and per-window line tables, the methods
-        page gains the catalog cross-reference + pull-calibration section, and a
-        σ_f pull histogram is added to the distributions (label echo only, never
-        an assignment).
-    catalog_n_sigma :
-        Catalog match tolerance in combined sigmas (default ``3``).
+    Writes the linked-site form (``index.html`` + ``methods.html`` + a page per
+    window under ``windows/`` + ``assets/`` + ``figures/``) that
+    :func:`_collapse_site_to_single_file` folds into the one self-contained file
+    :func:`report_full_impl` ships. Split out so the structural invariants of the
+    assembly can be inspected directly. See :func:`report_full_impl` for the
+    parameter semantics (``out_root`` here is the site directory).
 
-    Returns
-    -------
-    str
-        Path to the generated ``index.html``.
-
-    Raises
-    ------
-    ValueError
-        If *windows* is unknown, no final-products table is present (the Stage 6
-        ``review run`` consolidation has not been run), or *catalog* is given
-        but unreadable / empty.
+    Raises ``ValueError`` if *windows* is unknown, no final-products table is
+    present, or *catalog* is given but unreadable / empty.
     """
     import matplotlib
 
@@ -2119,11 +2093,6 @@ def report_full_impl(
         raise ValueError(
             f"unknown windows filter {windows!r}; choose one of "
             f"{VALID_WINDOW_FILTERS}"
-        )
-    if single_file is not None and single_file not in SINGLE_FILE_MODES:
-        raise ValueError(
-            f"unknown single_file mode {single_file!r}; choose one of "
-            f"{SINGLE_FILE_MODES}"
         )
 
     path = str(file_path)
@@ -2207,16 +2176,7 @@ def report_full_impl(
         if wid_rec is not None:
             merges_by_window.setdefault(int(wid_rec), []).append(rec)
 
-    # For a single-file build, assemble the multi-file site in a scratch dir and
-    # collapse it at the end; otherwise write the site directly to output_dir.
-    import tempfile
-
-    final_dir = Path(output_dir)
-    if single_file is not None:
-        final_dir.mkdir(parents=True, exist_ok=True)
-        out_root = Path(tempfile.mkdtemp(prefix=f"{stem}_report_"))
-    else:
-        out_root = final_dir
+    out_root = Path(out_root)
     (out_root / "assets").mkdir(parents=True, exist_ok=True)
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
     (out_root / "windows").mkdir(parents=True, exist_ok=True)
@@ -2432,17 +2392,86 @@ def report_full_impl(
     index_path = out_root / "index.html"
     index_path.write_text(index_html)
 
-    if single_file is None:
-        return str(index_path)
+    return stem
 
-    # Collapse the scratch site into one self-contained file, then discard it.
+
+def report_full_impl(
+    file_path: Union[Path, str],
+    *,
+    output_dir: Union[Path, str],
+    windows: str = "all",
+    dpi: int = 110,
+    catalog: Optional[Union[Path, str]] = None,
+    catalog_n_sigma: float = 3.0,
+    scope: str = "full",
+) -> str:
+    """Render the Level-3 self-contained HTML report; return its path.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    output_dir :
+        Directory to write the report file into (created if absent).
+    windows :
+        ``"all"`` (a detail section per fit window) or ``"attention"`` (sections
+        only for windows the Stage 6 review flagged). The index always lists
+        every window, linking the ones with a generated section.
+    dpi :
+        Resolution for the per-window matplotlib figures.
+    catalog :
+        Optional frequency-catalog path. When given, a proximity-match badge
+        column is added to the index and per-window line tables, the methods
+        section gains the catalog cross-reference + pull-calibration content, and
+        a σ_f pull histogram is added to the distributions (label echo only,
+        never an assignment).
+    catalog_n_sigma :
+        Catalog match tolerance in combined sigmas (default ``3``).
+    scope :
+        Report content scope: ``"full"`` (default) folds in a detail section per
+        window; ``"summary"`` keeps the index + methods only. Either way the
+        output is a single self-contained HTML file.
+
+    Returns
+    -------
+    str
+        Path to the generated self-contained report file (``<stem>_report.html``,
+        or ``<stem>_report_summary.html`` for ``scope="summary"``).
+
+    Raises
+    ------
+    ValueError
+        If *windows* or *scope* is unknown, no final-products table is present
+        (the Stage 6 ``review run`` consolidation has not been run), or *catalog*
+        is given but unreadable / empty.
+    """
     import shutil
+    import tempfile
 
-    suffix = "_summary" if single_file == "summary" else ""
-    single_path = final_dir / f"{stem}_report{suffix}.html"
+    if scope not in REPORT_SCOPES:
+        raise ValueError(
+            f"unknown report scope {scope!r}; choose one of {REPORT_SCOPES}"
+        )
+
+    final_dir = Path(output_dir)
+    final_dir.mkdir(parents=True, exist_ok=True)
+    # Assemble the working site in a scratch dir and collapse it into one
+    # self-contained file (figures embedded, CSS inlined, cross-page links
+    # rewritten to in-document anchors), then discard the scratch site.
+    out_root = Path(tempfile.mkdtemp(prefix="ftmw_report_"))
     try:
+        stem = _assemble_report_site(
+            file_path,
+            out_root=out_root,
+            windows=windows,
+            dpi=dpi,
+            catalog=catalog,
+            catalog_n_sigma=catalog_n_sigma,
+        )
+        suffix = "_summary" if scope == "summary" else ""
+        single_path = final_dir / f"{stem}_report{suffix}.html"
         single_path.write_text(
-            _collapse_site_to_single_file(out_root, mode=single_file, stem=stem)
+            _collapse_site_to_single_file(out_root, mode=scope, stem=stem)
         )
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
@@ -2457,7 +2486,7 @@ def report_run_impl(
     emit_table: bool = True,
     emit_html: bool = True,
     table_format: str = "csv",
-    single_file: Optional[str] = "full",
+    scope: str = "full",
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
 ) -> Dict[str, Optional[str]]:
@@ -2465,11 +2494,10 @@ def report_run_impl(
 
     Writes both deliverables into *output_dir* in one call. By default that is the
     Level-1 final-products table (``<stem>_lines.csv``) and the self-contained
-    single-file Level-3 report with every window folded in (``<stem>_report.html``).
+    Level-3 report with every window folded in (``<stem>_report.html``).
     Either artifact can be suppressed (``emit_table`` / ``emit_html``); the HTML
-    form follows *single_file* (``"full"`` self-contained report, ``"summary"``
-    self-contained index + methods only, or ``None`` for the multi-file linked
-    site). Renders the persisted record; never recomputes.
+    content follows *scope* (``"full"`` folds in every window, ``"summary"`` keeps
+    the index + methods only). Renders the persisted record; never recomputes.
 
     Returns ``{"table": <path|None>, "html": <path|None>}`` -- the path of each
     artifact written, ``None`` when that artifact was suppressed.
@@ -2478,8 +2506,8 @@ def report_run_impl(
     ------
     ValueError
         If both artifacts are disabled, or the underlying table / HTML render
-        raises (no final-products table, unknown format / windows / single_file
-        mode, unreadable catalog).
+        raises (no final-products table, unknown format / windows / scope,
+        unreadable catalog).
     """
     if not emit_table and not emit_html:
         raise ValueError(
@@ -2511,7 +2539,7 @@ def report_run_impl(
             windows=windows,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
-            single_file=single_file,
+            scope=scope,
         )
 
     return results

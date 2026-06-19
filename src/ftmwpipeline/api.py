@@ -1646,7 +1646,7 @@ def report_run(
     emit_table: bool = True,
     emit_html: bool = True,
     table_format: str = "csv",
-    single_file: Optional[str] = "full",
+    scope: str = "full",
     catalog: Optional[Union[str, Path]] = None,
     catalog_n_sigma: float = 3.0,
 ) -> Dict[str, Optional[str]]:
@@ -1656,11 +1656,11 @@ def report_run(
     final-products table (``<stem>_lines.csv``) and the self-contained Level-3
     HTML report with every window folded in (``<stem>_report.html``) into
     *output_dir*.  Either artifact can be suppressed (``emit_table`` /
-    ``emit_html``); the HTML form follows *single_file* (``"full"`` /
-    ``"summary"`` self-contained file, or ``None`` for the multi-file linked
-    site).  Renders the persisted record (does not recompute).  Requires
-    ``review_run`` to have built the final-products table.  Pass ``catalog`` to
-    add proximity-match cross-references (label echo only, never an assignment).
+    ``emit_html``); the HTML content follows *scope* (``"full"`` folds in every
+    window, ``"summary"`` keeps the index + methods only).  Renders the persisted
+    record (does not recompute).  Requires ``review_run`` to have built the
+    final-products table.  Pass ``catalog`` to add proximity-match
+    cross-references (label echo only, never an assignment).
     Returns ``{"table": <path|None>, "html": <path|None>}``.
     """
     return Pipeline.open(file_path).report_run(
@@ -1669,7 +1669,7 @@ def report_run(
         emit_table=emit_table,
         emit_html=emit_html,
         table_format=table_format,
-        single_file=single_file,
+        scope=scope,
         catalog=catalog,
         catalog_n_sigma=catalog_n_sigma,
     )

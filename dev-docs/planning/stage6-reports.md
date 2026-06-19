@@ -286,9 +286,9 @@ links) → per-window pages, each with the figure from the existing
 frequencies, all window fit parameters + covariance, and the ledger candidates.
 L3 is an **assembler** over existing artifacts + the visualization renderers, not
 new analysis. With ~10³ windows it needs a manifest/index and a `--windows`
-filter (all vs attention-only). The default build is **one self-contained file**
+filter (all vs attention-only). The report is always **one self-contained file**
 (CSS inlined, figures base64-embedded as 256-colour palette PNGs, a compact-mode
-toggle); `--multi-file` emits the linked-site form instead. The interactive
+toggle; the multi-file linked site was retired). The interactive
 full-spectrum overview doubles as the quick-nav (a shared overview image, rendered
 and embedded once, under an SVG overlay of clickable per-window rects).
 
@@ -355,13 +355,13 @@ assemble-once / render-many over the persisted record. Sequence **L1 → L2 → 
   Stage 6 also carries a σ_f **distribution** percentile table (σ_stat / σ_ε / σ_f,
   parallel to the Stage 5 σ_stat table) alongside the medians.
 - **L3 `report run` — done.** `report run <file> --output-dir DIR [--windows
-  {all,attention}] [--summary] [--multi-file] [--level1-only] [--no-table]`
+  {all,attention}] [--summary] [--level1-only] [--no-table]`
   writes the default deliverables — the L1 line table (CSV) **and** the L3 HTML
-  report. The report is, by default, **one self-contained file** (`index` +
-  methods + every per-window page folded in via `#window-<id>` anchors; CSS
+  report. The report is always **one self-contained file** (`index` +
+  methods + every per-window section folded in via `#window-<id>` anchors; CSS
   inlined; figures base64-embedded as 256-colour palette PNGs; a compact-mode
-  toggle); `--multi-file` emits the linked-site form (`index.html` +
-  `windows/window_NNN.html` per window) and `--summary` the index + methods only.
+  toggle; the multi-file linked site was retired); `--summary` keeps the index +
+  methods only.
   Each per-window page carries the fit detail as **separate panel PNGs in a CSS
   flexbox** (three fused Re/Im/|X| panels + residual histogram), the fitted-lines
   table with raw + calibrated frequencies and the σ_f breakdown, the parameter

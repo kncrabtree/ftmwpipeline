@@ -3,7 +3,8 @@
 ``report run`` is the default Stage 6 deliverable: it writes the Level-1
 calibrated final-products table (CSV) and the self-contained Level-3 HTML report
 (every window folded in) in one call, with flags to trim the output (table only,
-HTML only, attention windows only, a multi-file site, …). ``report table``
+HTML only, attention windows only, a summary without per-window detail, …).
+``report table``
 exports just the Level-1 table to CSV / JSON / LaTeX. Reports render the
 persisted record; they never recompute the fit.
 """
@@ -83,12 +84,7 @@ def cmd_report_run(args: argparse.Namespace) -> int:
 
     emit_table = not getattr(args, "no_table", False)
     emit_html = not getattr(args, "level1_only", False)
-    if getattr(args, "multi_file", False):
-        single_file: Optional[str] = None
-    elif getattr(args, "summary", False):
-        single_file = "summary"
-    else:
-        single_file = "full"
+    scope = "summary" if getattr(args, "summary", False) else "full"
 
     # Live progress: the HTML render logs per-window, which the StageProgress
     # capture renders as a percentage (rendering all windows can take minutes).
@@ -111,7 +107,7 @@ def cmd_report_run(args: argparse.Namespace) -> int:
                     emit_table=emit_table,
                     emit_html=emit_html,
                     table_format=getattr(args, "format", "csv"),
-                    single_file=single_file,
+                    scope=scope,
                     catalog=getattr(args, "catalog", None),
                     catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
                 )
@@ -122,12 +118,9 @@ def cmd_report_run(args: argparse.Namespace) -> int:
     if out.get("table") is not None:
         print(f"report run: wrote table to {out['table']}")
     if out.get("html") is not None:
-        kind = (
-            "multi-file HTML site"
-            if single_file is None
-            else f"self-contained {single_file} HTML report"
+        print(
+            f"report run: wrote self-contained {scope} HTML report to {out['html']}"
         )
-        print(f"report run: wrote {kind} to {out['html']}")
     return 0
 
 
@@ -194,8 +187,7 @@ def register_report_commands(subparsers: Any) -> None:
             "recomputes the fit.\n\n"
             "Trim the output with --level1-only (table only), --no-table (HTML\n"
             "only), --windows attention (only flagged windows get a detail\n"
-            "page), --summary (HTML index + methods, no per-window detail), or\n"
-            "--multi-file (a linked HTML site directory instead of one file)."
+            "page), or --summary (HTML index + methods, no per-window detail)."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -241,8 +233,7 @@ def register_report_commands(subparsers: Any) -> None:
         default=False,
         help="Write only the HTML report (skip the Level-1 table).",
     )
-    html_form = p_run.add_mutually_exclusive_group()
-    html_form.add_argument(
+    p_run.add_argument(
         "--summary",
         dest="summary",
         action="store_true",
@@ -250,16 +241,6 @@ def register_report_commands(subparsers: Any) -> None:
         help=(
             "Emit the self-contained HTML index + methods only, without the "
             "per-window detail (a lighter, portable report)."
-        ),
-    )
-    html_form.add_argument(
-        "--multi-file",
-        dest="multi_file",
-        action="store_true",
-        default=False,
-        help=(
-            "Emit a multi-file linked HTML site (index + a page per window) "
-            "instead of one self-contained file."
         ),
     )
     _add_catalog_args(p_run)

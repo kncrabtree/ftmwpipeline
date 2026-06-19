@@ -108,8 +108,9 @@ milestones, and finished planning documents — is archived in
      default deliverable, writing the Level-1 calibrated line table (CSV) **and**
      the self-contained single-file Level-3 HTML report with every window folded
      in, with flags to trim the output (`--level1-only`, `--no-table`,
-     `--windows attention`, `--summary`, `--multi-file`) — and **`report table`**
-     (Level-1 export only: CSV / JSON / LaTeX). The Level-2 standalone Markdown
+     `--windows attention`, `--summary`) — and **`report table`**
+     (Level-1 export only: CSV / JSON / LaTeX). The report is always one
+     self-contained HTML file (the multi-file linked site was retired). The Level-2 standalone Markdown
      document was retired; its code-versioned methods prose (`_render_markdown`)
      is folded into the Level-3 report's methods page.
      **Catalog cross-reference + σ_f pull calibration shipped** (`--catalog`

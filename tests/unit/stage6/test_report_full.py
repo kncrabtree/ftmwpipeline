@@ -27,6 +27,7 @@ from ftmwpipeline._internal.report_html_impl import (
     _PANEL_ORDER,
     _covariance_block,
     _esc,
+    _assemble_report_site,
     _page,
     _panel_figure_name,
     _table,
@@ -469,10 +470,11 @@ def _assert_wellformed(path: Path):
 
 @pytest.mark.integration
 def test_full_site_structure(stage5_small_file, tmp_path):
+    # The assembled working site (pre-collapse) carries the structural invariants;
+    # report_full_impl folds this into one self-contained file.
     out = tmp_path / "site"
-    index = report_full_impl(str(stage5_small_file), output_dir=str(out))
+    _assemble_report_site(str(stage5_small_file), out_root=str(out))
 
-    assert index == str(out / "index.html")
     assert (out / "index.html").exists()
     assert (out / "assets" / "style.css").exists()
     pages = list((out / "windows").glob("*.html"))
@@ -566,9 +568,9 @@ def test_full_site_structure(stage5_small_file, tmp_path):
 def test_full_windows_filter_attention_subset(stage5_small_file, tmp_path):
     all_out = tmp_path / "all"
     att_out = tmp_path / "att"
-    report_full_impl(str(stage5_small_file), output_dir=str(all_out), windows="all")
-    report_full_impl(
-        str(stage5_small_file), output_dir=str(att_out), windows="attention"
+    _assemble_report_site(str(stage5_small_file), out_root=str(all_out), windows="all")
+    _assemble_report_site(
+        str(stage5_small_file), out_root=str(att_out), windows="attention"
     )
 
     n_all = len(list((all_out / "windows").glob("*.html")))
@@ -594,7 +596,7 @@ def test_full_with_catalog(stage5_small_file, tmp_path):
         )
     )
     out = tmp_path / "site"
-    report_full_impl(str(stage5_small_file), output_dir=str(out), catalog=str(cat))
+    _assemble_report_site(str(stage5_small_file), out_root=str(out), catalog=str(cat))
 
     idx = (out / "index.html").read_text()
     assert "<th>Catalog</th>" in idx
@@ -623,7 +625,7 @@ def test_full_is_read_only(stage5_small_file, tmp_path):
 def test_single_file_summary_is_self_contained(stage5_small_file, tmp_path):
     out = tmp_path / "sf"
     path = report_full_impl(
-        str(stage5_small_file), output_dir=str(out), single_file="summary"
+        str(stage5_small_file), output_dir=str(out), scope="summary"
     )
     p = Path(path)
     assert p.name.endswith("_report_summary.html")
@@ -664,7 +666,7 @@ def test_single_file_summary_is_self_contained(stage5_small_file, tmp_path):
 def test_single_file_full_folds_in_window_pages(stage5_small_file, tmp_path):
     out = tmp_path / "sff"
     path = report_full_impl(
-        str(stage5_small_file), output_dir=str(out), single_file="full"
+        str(stage5_small_file), output_dir=str(out), scope="full"
     )
     p = Path(path)
     assert p.name.endswith("_report.html") and not p.name.endswith("_summary.html")
@@ -691,10 +693,10 @@ def test_single_file_full_folds_in_window_pages(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_single_file_rejects_unknown_mode(stage5_small_file, tmp_path):
-    with pytest.raises(ValueError, match="single_file"):
+def test_report_rejects_unknown_scope(stage5_small_file, tmp_path):
+    with pytest.raises(ValueError, match="scope"):
         report_full_impl(
-            str(stage5_small_file), output_dir=str(tmp_path / "x"), single_file="bogus"
+            str(stage5_small_file), output_dir=str(tmp_path / "x"), scope="bogus"
         )
 
 
@@ -709,21 +711,19 @@ def test_full_cross_interface(stage5_small_file, tmp_path):
 
     from ftmwpipeline._internal.report_html_impl import report_full_impl as impl
 
-    # The multi-file site is reachable through report_run (single_file=None,
-    # HTML only); the rendered index must be identical across all interfaces.
+    # The report is one self-contained file across every interface; the impl and
+    # the report_run wrappers must render byte-identical HTML (paths inside are
+    # in-document anchors / data URIs, so only the output directory differs).
     impl(str(fp), output_dir=str(impl_dir))
-    ftmw.report_run(
-        str(fp), output_dir=str(api_dir), emit_table=False, single_file=None
-    )
-    Pipeline.open(fp).report_run(
-        output_dir=str(pipe_dir), emit_table=False, single_file=None
-    )
+    ftmw.report_run(str(fp), output_dir=str(api_dir), emit_table=False)
+    Pipeline.open(fp).report_run(output_dir=str(pipe_dir), emit_table=False)
 
-    # The rendered HTML is identical across interfaces (paths inside are
-    # relative, so only the output directory differs).
-    a = (impl_dir / "index.html").read_text()
-    b = (api_dir / "index.html").read_text()
-    c = (pipe_dir / "index.html").read_text()
+    def _single(d):
+        return next(p for p in Path(d).glob("*_report.html"))
+
+    a = _single(impl_dir).read_text()
+    b = _single(api_dir).read_text()
+    c = _single(pipe_dir).read_text()
     assert a == b == c
 
 
@@ -793,19 +793,6 @@ def test_run_no_table_skips_table(stage5_small_file, tmp_path):
     )
     assert result["table"] is None and result["html"] is not None
     assert list(out.glob("*_lines.csv")) == []
-
-
-@pytest.mark.integration
-def test_run_multi_file_emits_site(stage5_small_file, tmp_path):
-    from ftmwpipeline._internal.report_html_impl import report_run_impl
-
-    out = tmp_path / "site"
-    result = report_run_impl(
-        str(stage5_small_file), output_dir=str(out), single_file=None
-    )
-    assert Path(result["html"]).name == "index.html"
-    assert (out / "index.html").exists() and (out / "windows").is_dir()
-    assert Path(result["table"]).exists()
 
 
 def test_run_rejects_empty_output():

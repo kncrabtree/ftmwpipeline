@@ -1928,7 +1928,7 @@ class Pipeline:
         emit_table: bool = True,
         emit_html: bool = True,
         table_format: str = "csv",
-        single_file: Optional[str] = "full",
+        scope: str = "full",
         catalog: Optional[Union[str, Path]] = None,
         catalog_n_sigma: float = 3.0,
     ) -> Dict[str, Optional[str]]:
@@ -1954,12 +1954,11 @@ class Pipeline:
         table_format :
             Format for the table artifact: ``"csv"`` (default), ``"json"``, or
             ``"latex"``.
-        single_file :
+        scope :
             ``"full"`` (default) writes one self-contained ``<stem>_report.html``
-            with every per-window page folded in; ``"summary"`` writes
-            ``<stem>_report_summary.html`` (index + methods only); ``None``
-            writes the multi-file linked site (``index.html`` + a page per
-            window).
+            with every per-window detail folded in; ``"summary"`` writes
+            ``<stem>_report_summary.html`` (index + methods only). Either way the
+            output is a single self-contained file.
         catalog :
             Optional frequency-catalog path; adds proximity-match cross-references
             to the table and HTML (label echo only, never an assignment).
@@ -1979,7 +1978,7 @@ class Pipeline:
             emit_table=emit_table,
             emit_html=emit_html,
             table_format=table_format,
-            single_file=single_file,
+            scope=scope,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
         )
