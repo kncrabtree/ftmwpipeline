@@ -2029,6 +2029,12 @@ def fit_peaks_impl(
                 )
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
+    # The automatic fit is the curation baseline for 'review undo'; a fresh fit
+    # supersedes any snapshot a prior edit session took, so drop it -- the next
+    # user edit re-snapshots this fit.
+    from .stage6_impl import clear_stage5_baseline
+
+    clear_stage5_baseline(file_path)
     # Stamp the resolved settings as the canonical record for this fit so
     # a follow-up call with no explicit args inherits exactly the same
     # knobs (the persisted layer of the resolution chain).

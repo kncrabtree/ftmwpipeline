@@ -1505,6 +1505,10 @@ def refit_window_impl(
             f"len(add_seeds)={len(add_seeds)} must equal len(add)={len(add)}"
         )
 
+    # Snapshot the automatic fit before the first edit mutates it in place, so
+    # 'review undo' can restore it and replay the surviving decisions.
+    _snapshot_stage5_baseline(path)
+
     # --- Load persisted Stage 5 fit ----------------------------------------
     with h5py.File(path, "r") as h5f:
         if "stage5_fitting" not in h5f:
@@ -2635,6 +2639,61 @@ def _curation_ambiguity_warnings(
     return warnings
 
 
+# --- the automatic-fit baseline (for undo replay) --------------------------
+#
+# A user edit mutates ``/stage5_fitting`` in place, so the automatic fit it
+# replaced is otherwise unrecoverable. Before the first edit we snapshot the
+# automatic fit into ``/stage5_fitting_baseline``; ``review_undo_impl`` restores
+# it and replays the surviving decisions onto it. A fresh Stage 5 fit drops the
+# snapshot (``clear_stage5_baseline``) so the next edit re-snapshots.
+
+STAGE5_BASELINE_GROUP = "stage5_fitting_baseline"
+_FIT_EDIT_KINDS = ("add", "remove", "merge", "split")
+
+
+def _snapshot_stage5_baseline(path: str) -> None:
+    """Copy ``/stage5_fitting`` to the baseline group if not already snapshotted."""
+    with h5py.File(path, "a") as h5f:
+        if "stage5_fitting" in h5f and STAGE5_BASELINE_GROUP not in h5f:
+            h5f.copy("stage5_fitting", STAGE5_BASELINE_GROUP)
+
+
+def clear_stage5_baseline(path: Union[Path, str]) -> None:
+    """Drop the automatic-fit baseline snapshot (a fresh fit supersedes it)."""
+    with h5py.File(str(path), "a") as h5f:
+        if STAGE5_BASELINE_GROUP in h5f:
+            del h5f[STAGE5_BASELINE_GROUP]
+
+
+def _has_stage5_baseline(path: str) -> bool:
+    with h5py.File(path, "r") as h5f:
+        return STAGE5_BASELINE_GROUP in h5f
+
+
+def _restore_stage5_baseline(path: str) -> None:
+    """Replace ``/stage5_fitting`` with the baseline snapshot (kept for reuse)."""
+    with h5py.File(path, "a") as h5f:
+        if STAGE5_BASELINE_GROUP not in h5f:
+            raise ValueError("no automatic-fit baseline to restore")
+        if "stage5_fitting" in h5f:
+            del h5f["stage5_fitting"]
+        h5f.copy(STAGE5_BASELINE_GROUP, "stage5_fitting")
+
+
+def _execute_planned_action(path: str, action: PlannedAction) -> None:
+    """Dispatch one resolved action to its edit impl (shared by apply + undo)."""
+    if action.kind == "edit":
+        refit_window_impl(
+            path, action.window_id, add=action.add, remove=action.remove
+        )
+    elif action.kind == "merge":
+        merge_peaks_impl(path, action.window_id, action.peaks)
+    elif action.kind == "split":
+        split_peak_impl(path, action.window_id, action.peak, into=action.into)
+    elif action.kind == "accept":
+        review_accept_impl(path, action.window_id, candidate_freq=action.candidate)
+
+
 def apply_curation_impl(
     file_path: Union[Path, str],
     curation_path: Union[Path, str],
@@ -2667,20 +2726,7 @@ def apply_curation_impl(
     applied = 0
     for i, action in enumerate(plan):
         try:
-            if action.kind == "edit":
-                refit_window_impl(
-                    path, action.window_id, add=action.add, remove=action.remove
-                )
-            elif action.kind == "merge":
-                merge_peaks_impl(path, action.window_id, action.peaks)
-            elif action.kind == "split":
-                split_peak_impl(
-                    path, action.window_id, action.peak, into=action.into
-                )
-            elif action.kind == "accept":
-                review_accept_impl(
-                    path, action.window_id, candidate_freq=action.candidate
-                )
+            _execute_planned_action(path, action)
         except (ValueError, KeyError) as exc:
             raise ValueError(
                 f"curation action {i + 1} ({describe_planned_action(action)}) "
@@ -2697,6 +2743,133 @@ def review_log_impl(file_path: Union[Path, str]) -> List[DecisionLogEntry]:
     """Return the persisted Stage 6 decision log (read-only, execution order)."""
     review = load_stage6_review_from_file(str(file_path))
     return list(review.decision_log)
+
+
+@dataclass
+class UndoResult:
+    """Outcome of :func:`review_undo_impl`.
+
+    Attributes
+    ----------
+    removed : list of DecisionLogEntry
+        The decisions that were (or, in dry-run, would be) undone.
+    surviving : list of DecisionLogEntry
+        The decisions retained and replayed from the automatic baseline.
+    plan : list of PlannedAction
+        The resolved replay of the surviving decisions.
+    applied : int
+        Number of replay actions executed (``0`` for a dry run).
+    dry_run : bool
+        Whether the undo was previewed without mutating.
+    """
+
+    removed: List[DecisionLogEntry]
+    surviving: List[DecisionLogEntry]
+    plan: List["PlannedAction"]
+    applied: int
+    dry_run: bool
+
+
+def _decision_to_op(entry: DecisionLogEntry) -> CurationOp:
+    """Convert a decision-log entry back into a replayable curation op.
+
+    Add/remove/accept replay from the entry alone; merge replays from the
+    recorded ``merged_from`` peak set and split from ``split_into`` (both stamped
+    by their impls at record time), so the decision log is loss-free for replay.
+    """
+    wid = entry.window_id
+    kind = entry.kind
+    if kind in ("add", "remove"):
+        return CurationOp(kind, wid, [float(entry.frequency_mhz)], {}, 0)
+    if kind == "merge":
+        merged_from = entry.evidence.get("merged_from")
+        if not merged_from or len(merged_from) < 2:
+            raise ValueError(
+                f"cannot replay merge on window {wid}: the decision log is "
+                f"missing its 'merged_from' peak set"
+            )
+        return CurationOp("merge", wid, [float(f) for f in merged_from], {}, 0)
+    if kind == "split":
+        into = int(entry.evidence.get("split_into", 2))
+        return CurationOp(
+            "split", wid, [float(entry.frequency_mhz)], {"into": str(into)}, 0
+        )
+    if kind == "accept":
+        return CurationOp("accept", wid, [], {}, 0)
+    raise ValueError(f"cannot replay decision of unknown kind {kind!r}")
+
+
+def review_undo_impl(
+    file_path: Union[Path, str],
+    ids: Sequence[int],
+    *,
+    dry_run: bool = False,
+) -> UndoResult:
+    """Undo one or more recorded decisions by id, replaying the rest.
+
+    Rollback is replay-from-baseline: the automatic Stage 5 fit (snapshotted
+    before the first edit) is restored, the review state rebuilt from it, and
+    every *surviving* decision re-applied through the same engine ``review
+    apply`` uses. The undone ids are dropped; the result is the canonical replay
+    of the remaining decisions, so decision ids are renumbered afterward.
+
+    ``dry_run`` returns the removed/surviving split and the resolved replay plan
+    without mutating.
+
+    Raises ``ValueError`` if an id is unknown, there are no decisions, or the
+    automatic-fit baseline is unavailable while fit-mutating decisions exist
+    (e.g. Stage 5 was re-run after editing -- rebuild and re-edit instead).
+    """
+    path = str(file_path)
+    review = load_stage6_review_from_file(path)
+    log = list(review.decision_log)
+    if not log:
+        raise ValueError("no recorded decisions to undo")
+
+    valid_ids = {e.order_index for e in log}
+    unknown = sorted({int(i) for i in ids} - valid_ids)
+    if unknown:
+        raise ValueError(
+            f"unknown decision id(s) {unknown}; run 'review log' for valid ids"
+        )
+    undo_set = {int(i) for i in ids}
+    if not undo_set:
+        raise ValueError("no decision ids given to undo")
+
+    removed = [e for e in log if e.order_index in undo_set]
+    surviving = [e for e in log if e.order_index not in undo_set]
+
+    has_fit_edits = any(e.kind in _FIT_EDIT_KINDS for e in log)
+    baseline = _has_stage5_baseline(path)
+    if has_fit_edits and not baseline:
+        raise ValueError(
+            "cannot undo: the automatic-fit baseline is unavailable (the fit may "
+            "have been re-run after editing). Rebuild from the source and re-edit."
+        )
+
+    ops = [_decision_to_op(e) for e in surviving]
+    plan = _resolve_curation_plan(ops)
+
+    if dry_run:
+        return UndoResult(
+            removed=removed, surviving=surviving, plan=plan, applied=0, dry_run=True
+        )
+
+    # Restore the automatic fit (when fit-mutating edits existed), rebuild the
+    # review afresh from it, then replay the surviving decisions onto it.
+    if baseline:
+        _restore_stage5_baseline(path)
+    with h5py.File(path, "a") as h5f:
+        if "stage6_review" in h5f:
+            del h5f["stage6_review"]
+    review_run_impl(path)
+    for action in plan:
+        _execute_planned_action(path, action)
+
+    return UndoResult(
+        removed=removed, surviving=surviving, plan=plan, applied=len(plan),
+        dry_run=False,
+    )
 
 
 def get_review_status_impl(file_path: Union[Path, str]) -> Stage6Review:

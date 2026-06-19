@@ -2,7 +2,7 @@
 Stage 6 review commands.
 
 Implements the ``review run``/``show``/``rank``/``edit``/``merge``/``split``/
-``accept``/``apply``/``log`` subcommands.  Thin wrappers over
+``accept``/``apply``/``log``/``undo`` subcommands.  Thin wrappers over
 :mod:`ftmwpipeline._internal.stage6_impl` -- identical behaviour to
 :class:`~ftmwpipeline.Pipeline` and the functional API.
 """
@@ -28,6 +28,7 @@ from .._internal.stage6_impl import (
     review_accept_impl,
     review_log_impl,
     review_run_impl,
+    review_undo_impl,
     split_peak_impl,
 )
 from ..core.data_structures import FittingResult, LedgerCandidate, Stage6Review
@@ -639,6 +640,46 @@ def cmd_review_log(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_undo(args: argparse.Namespace) -> int:
+    """Undo one or more recorded decisions by id, replaying the rest."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    ids: List[int] = getattr(args, "ids", None) or []
+    dry_run: bool = getattr(args, "dry_run", False)
+    if not ids:
+        print("Error: provide at least one --id to undo (see 'review log').")
+        return 1
+
+    try:
+        result = review_undo_impl(file_path, ids, dry_run=dry_run)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print("review undo (dry run)" if dry_run else "review undo")
+    print("removing:")
+    for e in result.removed:
+        print(
+            f"  id {e.order_index}: {e.kind} window {e.window_id} "
+            f"@ {e.frequency_mhz:.4f} MHz"
+        )
+    print("replay of surviving decisions:")
+    if not result.plan:
+        print("  (none -- fully reverted to the automatic fit)")
+    for i, action in enumerate(result.plan, start=1):
+        print(f"  {i:>3}. {describe_planned_action(action)}")
+    if dry_run:
+        print(
+            f"{len(result.removed)} decision(s) would be undone (nothing written)."
+        )
+    else:
+        print(
+            f"undid {len(result.removed)} decision(s); "
+            f"replayed {result.applied} action(s)."
+        )
+    return 0
+
+
 def cmd_review_rank(args: argparse.Namespace) -> int:
     """Rank windows by a persisted per-window statistic (read-only)."""
     setup_logging(getattr(args, "verbose", False))
@@ -684,8 +725,9 @@ def register_review_commands(subparsers: Any) -> None:
             "Stage 6 review surface.\n\n"
             "Inspect the automatic fit, view per-window summaries, explore\n"
             "the candidate ledger, and apply user-directed edits (add, remove,\n"
-            "merge, split peaks) -- one at a time or batched from a curation file.\n\n"
-            "Verbs: run, show, rank, edit, merge, split, accept, apply, log"
+            "merge, split peaks) -- one at a time or batched from a curation file,\n"
+            "and undo them by id.\n\n"
+            "Verbs: run, show, rank, edit, merge, split, accept, apply, log, undo"
         ),
     )
 
@@ -848,6 +890,48 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_log.set_defaults(func=cmd_review_log)
+
+    # ---- review undo ---------------------------------------------------------
+    p_undo = verbs.add_parser(
+        "undo",
+        help="Undo recorded decisions by id, replaying the rest",
+        description=(
+            "Undo one or more decisions (by the id from 'review log').\n\n"
+            "Rollback is replay-from-baseline: the automatic Stage 5 fit is\n"
+            "restored and every surviving decision is re-applied, so decision\n"
+            "ids are renumbered afterward. Use --dry-run to preview. Requires\n"
+            "the automatic-fit baseline (unavailable if the fit was re-run after\n"
+            "editing -- rebuild and re-edit in that case)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_undo.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_undo.add_argument(
+        "--id",
+        dest="ids",
+        type=int,
+        action="append",
+        default=None,
+        metavar="N",
+        help="Decision id to undo; repeat for several: --id 2 --id 4.",
+    )
+    p_undo.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Print what would be undone and the replay plan without writing.",
+    )
+    p_undo.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_undo.set_defaults(func=cmd_review_undo)
 
     p_show = verbs.add_parser(
         "show",

@@ -73,6 +73,7 @@ from ._internal.stage6_impl import (
     RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
+    UndoResult,
     apply_curation_impl,
     get_candidate_ledger_impl,
     get_final_products_impl,
@@ -83,6 +84,7 @@ from ._internal.stage6_impl import (
     review_accept_impl,
     review_log_impl,
     review_run_impl,
+    review_undo_impl,
     set_sigma_floor_impl,
     split_peak_impl,
 )
@@ -2057,6 +2059,38 @@ class Pipeline:
             Every recorded user decision, keyed by ``order_index``.
         """
         return review_log_impl(self.filepath)
+
+    def review_undo(
+        self,
+        ids: Sequence[int],
+        *,
+        dry_run: bool = False,
+    ) -> UndoResult:
+        """Undo recorded decisions by id, replaying the rest from baseline.
+
+        Restores the automatic Stage 5 fit (snapshotted before the first edit),
+        rebuilds the review from it, and re-applies every surviving decision, so
+        decision ids are renumbered afterward.  ``dry_run`` previews the removed/
+        surviving split and the replay plan without writing.
+
+        Parameters
+        ----------
+        ids :
+            Decision ids (``order_index`` values from :meth:`review_log`) to undo.
+        dry_run :
+            Preview without mutating (default ``False``).
+
+        Returns
+        -------
+        UndoResult
+
+        Raises
+        ------
+        ValueError
+            If an id is unknown, there are no decisions, or the automatic-fit
+            baseline is unavailable while fit-mutating decisions exist.
+        """
+        return review_undo_impl(self.filepath, ids, dry_run=dry_run)
 
     def review_status(self) -> Stage6Review:
         """Load the persisted Stage 6 review state, or return an empty one.

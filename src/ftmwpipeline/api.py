@@ -45,6 +45,7 @@ from ._internal.stage6_impl import (
     RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
+    UndoResult,
 )
 from .core.data_structures import (
     FID,
@@ -1786,6 +1787,34 @@ def review_log(file_path: Union[str, Path]) -> List[DecisionLogEntry]:
     list of DecisionLogEntry
     """
     return Pipeline.open(file_path).review_log()
+
+
+def review_undo(
+    file_path: Union[str, Path],
+    ids: Sequence[int],
+    *,
+    dry_run: bool = False,
+) -> UndoResult:
+    """Undo recorded decisions by id, replaying the rest from baseline.
+
+    Equivalent to :meth:`Pipeline.review_undo`.  Restores the automatic Stage 5
+    fit and re-applies every surviving decision (ids are renumbered afterward);
+    ``dry_run`` previews without writing.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    ids :
+        Decision ids (from :func:`review_log`) to undo.
+    dry_run :
+        Preview without mutating (default ``False``).
+
+    Returns
+    -------
+    UndoResult
+    """
+    return Pipeline.open(file_path).review_undo(ids, dry_run=dry_run)
 
 
 def get_review_status(file_path: Union[str, Path]) -> Stage6Review:

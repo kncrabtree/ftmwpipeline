@@ -22,15 +22,24 @@ import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
 from ftmwpipeline._internal.stage6_impl import (
+    STAGE5_BASELINE_GROUP,
     PlannedAction,
     apply_curation_impl,
+    clear_stage5_baseline,
     describe_planned_action,
     parse_curation_file,
     refit_window_impl,
     review_log_impl,
+    review_undo_impl,
+    _decision_to_op,
     _resolve_curation_plan,
 )
-from ftmwpipeline.cli.review_commands import cmd_review_apply, cmd_review_log
+from ftmwpipeline.cli.review_commands import (
+    cmd_review_apply,
+    cmd_review_log,
+    cmd_review_undo,
+)
+from ftmwpipeline.core.data_structures import DecisionLogEntry
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 from ftmwpipeline.pipeline import Pipeline
@@ -414,3 +423,190 @@ def test_cli_log_smoke(stage5_file, tmp_path, capsys):
     rc = cmd_review_log(argparse.Namespace(file_path=str(fp)))
     assert rc == 0
     assert "review log" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# review undo: decision -> op conversion (pure)
+# ---------------------------------------------------------------------------
+
+
+def _entry(order, wid, kind, freq, evidence=None):
+    return DecisionLogEntry(
+        order_index=order,
+        window_id=wid,
+        frequency_mhz=freq,
+        kind=kind,
+        evidence=evidence or {},
+    )
+
+
+def test_decision_to_op_add_remove_accept():
+    assert _decision_to_op(_entry(0, 5, "add", 100.0)).action == "add"
+    assert _decision_to_op(_entry(1, 5, "remove", 101.0)).freqs == [101.0]
+    acc = _decision_to_op(_entry(2, 5, "accept", 0.0))
+    assert acc.action == "accept" and acc.freqs == []
+
+
+def test_decision_to_op_merge_uses_merged_from():
+    op = _decision_to_op(
+        _entry(0, 7, "merge", 50.2, evidence={"merged_from": [50.1, 50.3]})
+    )
+    assert op.action == "merge" and op.freqs == [50.1, 50.3]
+
+
+def test_decision_to_op_split_uses_into():
+    op = _decision_to_op(
+        _entry(0, 7, "split", 50.0, evidence={"split_into": 3})
+    )
+    assert op.action == "split" and op.freqs == [50.0] and op.params == {"into": "3"}
+
+
+def test_decision_to_op_merge_without_peaks_raises():
+    with pytest.raises(ValueError, match="missing its 'merged_from'"):
+        _decision_to_op(_entry(0, 7, "merge", 50.2))
+
+
+# ---------------------------------------------------------------------------
+# review undo: integration
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_edit_snapshots_baseline(stage5_file, tmp_path):
+    fp = tmp_path / "snap.ftmw"
+    shutil.copy(stage5_file, fp)
+    with h5py.File(str(fp), "r") as h5f:
+        assert STAGE5_BASELINE_GROUP not in h5f  # none before any edit
+
+    wid, freq = _a_peak(fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
+    with h5py.File(str(fp), "r") as h5f:
+        assert STAGE5_BASELINE_GROUP in h5f  # snapshotted on the first edit
+
+
+@pytest.mark.integration
+def test_undo_single_returns_to_baseline(stage5_file, tmp_path):
+    fp = tmp_path / "u1.ftmw"
+    shutil.copy(stage5_file, fp)
+    baseline = _fitted_by_window(fp)
+
+    wid, freq = _a_peak(fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
+    assert _fitted_by_window(fp) != baseline  # the add changed the window
+    log = review_log_impl(fp)
+    assert len(log) == 1
+
+    result = review_undo_impl(fp, [log[0].order_index])
+    assert result.applied == 0 and len(result.removed) == 1
+    assert _fitted_by_window(fp) == baseline  # restored exactly
+    assert review_log_impl(fp) == []  # decision log cleared
+
+
+@pytest.mark.integration
+def test_undo_one_of_two_replays_other(stage5_file, tmp_path):
+    by_w = _fitted_by_window(stage5_file)
+    wids = [w for w, f in by_w.items() if f]
+    if len(wids) < 2:
+        pytest.skip("Need two windows with peaks")
+    wa, wb = wids[0], wids[1]
+    fa = by_w[wa][0] + 0.4
+    fb = by_w[wb][0] + 0.4
+
+    # Reference: only the wb add applied to the automatic fit.
+    ref = tmp_path / "ref.ftmw"
+    shutil.copy(stage5_file, ref)
+    apply_curation_impl(ref, _write_curation(tmp_path, f"add,{wb},{fb},\n"))
+
+    # Undone: both adds, then undo the wa add.
+    both = tmp_path / "both.ftmw"
+    shutil.copy(stage5_file, both)
+    cur = tmp_path / "two.csv"
+    cur.write_text(f"add,{wa},{fa},\nadd,{wb},{fb},\n")
+    apply_curation_impl(both, cur)
+    log = review_log_impl(both)
+    wa_id = next(e.order_index for e in log if e.window_id == wa and e.kind == "add")
+    review_undo_impl(both, [wa_id])
+
+    assert _fitted_by_window(both) == _fitted_by_window(ref)
+
+
+@pytest.mark.integration
+def test_undo_dry_run_no_mutation(stage5_file, tmp_path):
+    fp = tmp_path / "udry.ftmw"
+    shutil.copy(stage5_file, fp)
+    wid, freq = _a_peak(fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
+    log = review_log_impl(fp)
+
+    before = hashlib.md5(fp.read_bytes()).hexdigest()
+    result = review_undo_impl(fp, [log[0].order_index], dry_run=True)
+    assert hashlib.md5(fp.read_bytes()).hexdigest() == before
+    assert result.dry_run and len(result.removed) == 1
+
+
+@pytest.mark.integration
+def test_undo_unknown_id_and_empty_log(stage5_file, tmp_path):
+    fp = tmp_path / "uerr.ftmw"
+    shutil.copy(stage5_file, fp)
+    with pytest.raises(ValueError, match="no recorded decisions"):
+        review_undo_impl(fp, [0])
+
+    wid, freq = _a_peak(fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
+    with pytest.raises(ValueError, match="unknown decision id"):
+        review_undo_impl(fp, [999])
+
+
+@pytest.mark.integration
+def test_refit_clears_baseline_and_decisions(stage5_file, tmp_path):
+    """Re-running the automatic fit resets the curation state (fresh start)."""
+    fp = tmp_path / "urefit.ftmw"
+    shutil.copy(stage5_file, fp)
+    wid, freq = _a_peak(fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
+    assert review_log_impl(fp)  # a decision was recorded
+
+    ftmw.fit_peaks(str(fp))
+    with h5py.File(str(fp), "r") as h5f:
+        assert STAGE5_BASELINE_GROUP not in h5f  # snapshot dropped
+    assert review_log_impl(fp) == []  # decisions reset
+
+
+@pytest.mark.integration
+def test_undo_refused_when_baseline_missing(stage5_file, tmp_path):
+    """If the baseline is gone while fit-mutating decisions remain, undo refuses."""
+    fp = tmp_path / "ubad.ftmw"
+    shutil.copy(stage5_file, fp)
+    wid, freq = _a_peak(fp)
+    apply_curation_impl(fp, _write_curation(tmp_path, f"add,{wid},{freq + 0.4},\n"))
+    log = review_log_impl(fp)
+
+    clear_stage5_baseline(fp)  # simulate the snapshot becoming unavailable
+    with pytest.raises(ValueError, match="baseline is unavailable"):
+        review_undo_impl(fp, [log[0].order_index])
+
+
+@pytest.mark.integration
+def test_undo_cross_interface(stage5_file, tmp_path):
+    paths = {k: tmp_path / f"u_{k}.ftmw" for k in ("api", "pipe", "cli")}
+    for p in paths.values():
+        shutil.copy(stage5_file, p)
+    wid, freq = _a_peak(paths["api"])
+    cur = tmp_path / "uc.csv"
+    cur.write_text(f"add,{wid},{freq + 0.4},\nremove,{wid},{freq},\n")
+
+    ids = {}
+    for k, p in paths.items():
+        apply_curation_impl(p, cur)
+        ids[k] = review_log_impl(p)[0].order_index  # undo the first (the add)
+
+    ftmw.review_undo(str(paths["api"]), [ids["api"]])
+    Pipeline.open(paths["pipe"]).review_undo([ids["pipe"]])
+    rc = cmd_review_undo(
+        argparse.Namespace(file_path=str(paths["cli"]), ids=[ids["cli"]], dry_run=False)
+    )
+    assert rc == 0
+
+    ref = _fitted_by_window(paths["api"])
+    assert _fitted_by_window(paths["pipe"]) == ref
+    assert _fitted_by_window(paths["cli"]) == ref
