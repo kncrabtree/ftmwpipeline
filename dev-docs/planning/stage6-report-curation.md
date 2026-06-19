@@ -1,0 +1,316 @@
+# Stage 6 — report-driven curation (HTML report → curation file → `review apply`)
+
+Status: **proposed; design sketch, implementation not started.** A workflow that
+turns the read-only Level-3 HTML report into a *curation author*: per-line and
+per-candidate controls accumulate user-intended edits into a portable
+**curation file**, which a new non-interactive verb **`review apply`** consumes
+to drive the existing Stage 6 `review` edits. It adds **no** fit logic and **no**
+new persisted `.ftmw` schema — the curation file is an external interchange
+artifact, and applying it produces ordinary `review edit`/`merge`/`split`/`accept`
+mutations that persist exactly as those verbs already do.
+
+## Motivation
+
+An out-of-the-box end-to-end run is conservative by design: split lines and weak
+peaks that are defensible-but-marginal are left unfit (the gates considered and
+rejected them — see [`stage5-candidate-revival.md`](stage5-candidate-revival.md)).
+The defaults should **not** change to capture them; the principled lane is human
+arbitration. The Level-3 report is already where the user *sees* every window,
+the candidate ledger, and the per-window figures — so it is the natural place to
+*author* the curation, without retyping file paths, window ids, and frequencies
+into `review edit` by hand.
+
+The review verbs make this cheap: every mutating verb keys on
+`(window_id, molecular MHz)` — `edit --add/--remove F`, `merge --peaks F1 F2`,
+`split --peak F --into K`, `accept --window N [--candidate F]`. Both numbers are
+already rendered in the per-window fitted-lines table and the candidate ledger.
+So generating a correct edit is pure templating from data already on the page.
+
+## Scope and non-goals
+
+- **In scope:**
+  - A **curation file format** (CSV, human-readable and hand-editable) that
+    encodes a sequence of Stage 6 edits.
+  - **`review apply <curation-file>`** — a dual-interface verb that parses the
+    file and delegates each row to the existing `_internal` edit impls, with a
+    `--dry-run` that prints the resolved plan (and ambiguity warnings) without
+    mutating.
+  - **`review log` + `review undo --id`** — an edit-centric listing of the
+    persisted decision log (each entry an id'd, CSV-language line) and a rollback
+    of one or more entries by id, leaning on the existing decision-log replay.
+  - HTML report additions: per-line **Remove / Split / Merge** controls, per
+    candidate **Add** controls, a client-side **curation cart** that accumulates
+    edits, an **Export** action that writes the curation file (plus an equivalent
+    shell-command listing as a convenience), a **read-only toggle** that hides the
+    edit controls for a clean/shareable document view, and — once the figure
+    axes geometry is stamped — **on-plot SVG markers** for queued edits with
+    near-plot controls to drop a queued action.
+  - **Click-on-plot "add peak at this frequency"** (phase 2): stamp the data-axes
+    pixel bounding box and frequency limits onto the embedded figure at render
+    time so a transparent overlay can map a click x-position to a molecular MHz.
+    The same coordinate mapping powers the queued-edit SVG markers.
+- **Out of scope — deliberately:**
+  - **No server and no in-report execution.** The report is a static `file://`
+    artifact — a single self-contained HTML file (the multi-file site is retired;
+    see Resolved decisions). A control can only *emit* text; the user runs
+    `review apply` themselves.
+  - **No new fit semantics, gates, or persisted fields.** Every applied row is
+    one of the already-specified Stage 6 edits.
+  - **No change to the conservative automatic defaults.**
+  - **No heavy JS dependency** (no Plotly/React). Vanilla JS only, in the spirit
+    of the existing hover-popover / compact-toggle code.
+
+## Architecture fit
+
+This is a third *client* of the same Stage 6 edit contract, alongside the
+non-interactive verbs and the proposed
+[interactive CLI shell](stage6-interactive-review.md). The interactive shell is a
+*terminal* REPL holding the current window as session state; this is an
+*asynchronous, batch* path: review the whole report at leisure, collect a
+curation file, apply it in one pass. The two are complementary and share the
+delegation target (`refit_window_impl` / `merge_peaks_impl` / `split_peak_impl` /
+`review_accept_impl`). Like the interactive shell, applying a curation file must
+be **byte-identical** to running the equivalent verb sequence by hand — that is
+the central correctness lever and the central test.
+
+The report generator lives in `_internal/report_html_impl.py` (driver
+`report_full_impl`, orchestrator `report_run_impl`) with figures from
+`visualization/fit_detail.py`; these are where the controls/cart and the
+axes-bbox capture land. The report stays read-only over the persisted record — it
+never mutates the `.ftmw`; it only *describes* edits.
+
+## The curation file format
+
+CSV, comment-friendly, order-preserving. One row per intended edit. Columns:
+
+```
+action,window,freqs,params
+# remove the over-split partner in window 217
+remove,217,38450.123,
+add,217,38451.000,
+merge,438,38450.10;38450.40,
+split,24,38449.900,into=3
+accept,84,,
+accept,309,,candidate=38502.7
+```
+
+- `action` ∈ {`remove`, `add`, `merge`, `split`, `accept`}.
+- `window` — the `window_id` (integer).
+- `freqs` — one molecular MHz value, or a `;`-separated list for `merge`
+  (≥2 peaks). Empty for a bare `accept`.
+- `params` — `key=value` pairs (`;`-separated): `into=K` for `split`,
+  `candidate=F` for an `accept` that revives a ledger candidate. Empty otherwise.
+- Blank lines and `#` comments are ignored. The frequencies are exactly the
+  molecular MHz values the report renders (calibrated frequency, the value the
+  verbs expect).
+
+The CSV is the canonical interchange. It is diffable, hand-editable, replayable,
+and independent of the report — power users will author it directly. The report's
+Export is simply one way to *write* this file. (JSON is a possible second format;
+deferred — CSV first.)
+
+### Mapping to verbs
+
+| row | delegates to |
+| --- | --- |
+| `remove,W,F` | `review edit --window W --remove F` |
+| `add,W,F` | `review edit --window W --add F` |
+| `merge,W,F1;F2;…` | `review merge --window W --peaks F1 --peaks F2 …` |
+| `split,W,F,into=K` | `review split --window W --peak F --into K` |
+| `accept,W` | `review accept --window W` |
+| `accept,W,,candidate=F` | `review accept --window W --candidate F` |
+
+## The `review apply` consumer
+
+`apply_curation_impl(file_path, curation_path, *, dry_run=False)` in
+`_internal/` parses the file into an ordered list of operations and applies them,
+delegating each to the existing edit impl. Key semantics:
+
+- **Refit coalescing.** `review edit` does one full-window NLS refit from the
+  *set* of adds/removes. A maximal run of `add`/`remove` rows on the **same
+  window** is coalesced into a single `review edit` call with the union of adds
+  and removes — one refit instead of N. `merge`/`split`/`accept` rows stand alone
+  and act as **barriers** (they flush any pending edit group first), since they
+  change the peak set with their own seeding semantics. The coalesced result is
+  defined to equal the hand-typed sequence: removes are matched by frequency
+  against the model state at the *start* of the group (the same model the report
+  rendered, and the same state from which the user read every frequency), so the
+  union is unambiguous.
+- **Frequency-matching ambiguity.** The edit verbs match a peak by nearest
+  frequency. When an emitted frequency is within tolerance of **two** fitted
+  peaks (tight doublets), `apply` must **warn and identify both**, not silently
+  mis-target. Tolerance ties to the Fourier resolution element
+  (`1/acquisition_us` MHz), consistent with `split`'s spacing.
+- **`--dry-run`.** Prints the fully-resolved verb sequence (post-coalescing) and
+  any ambiguity warnings, and exits without mutating. This lets a generated
+  curation file be previewed end-to-end before committing — and is the natural
+  acceptance check that the report's Export produced what the user intended.
+- **Provenance.** Each applied edit persists exactly as its verb does (decision
+  log entry, `origin=user`, provenance flip to `user-edited`, candidate-flag
+  clearing). No new persisted state; the curation file itself is not stored in
+  the `.ftmw` (optionally, the decision-log note records `applied from
+  <basename>` for traceability — open question).
+- **Failure handling.** A row that fails to resolve (unknown window, no peak near
+  a `remove`/`split` frequency) is reported with its line number; `--dry-run`
+  surfaces all such problems at once. Non-dry-run application is per-window
+  transactional in the same sense the verbs already are (each refit either
+  converges and persists or raises).
+
+## Edit log and rollback
+
+The CSV is not only an input language — it is also a concise way to *document*
+and *reverse* edits. Stage 6 already persists an anchored decision log with
+re-apply + diff replay; this surface exposes it:
+
+- **`review log`** lists every persisted user edit as an id'd row in the same CSV
+  language (`id  action  window  freqs  params`), worst-anchored first or in
+  application order. It reads, never mutates.
+- **`review undo --id N [--id M …]`** rolls back one or more edits by id.
+  Rollback = replay the affected window(s) from the automatic baseline applying
+  every surviving user edit *except* the named ids — exactly the existing
+  decision-log replay, with the targeted entries dropped (no bespoke inverse per
+  action). `--dry-run` previews the resulting plan. This pairs naturally with the
+  curation file: a `review log` dump *is* a curation file, and re-applying it
+  reconstructs the curated state.
+
+`review log`/`undo` lean entirely on machinery Stage 6 already has and add no new
+persisted schema; they could graduate to their own small piece if the curation
+work ships first, but the CSV-as-edit-language framing makes them belong here.
+
+## HTML report changes
+
+1. **Row data attributes.** Hang `data-window` and `data-freq` on every
+   fitted-line row (`_window_peak_table`) and every ledger-candidate row
+   (`_ledger_block`). The plumbing already exists — rows carry `data-thumb`/
+   `data-info` for the hover popover.
+2. **Per-row controls.** Fitted-line rows get **Remove**, **Split** (with a small
+   `K` input, default 2), and a **Merge** multi-select (checkbox → "merge
+   selected" acts on ≥2 checked rows in the same window). Ledger rows get **Add**.
+   Each control pushes a structured operation onto the cart; it does not run
+   anything.
+3. **Curation cart.** A floating panel accumulates operations **grouped by
+   window** so the user sees "window 217: remove A; add 38451.0". Entries are
+   removable. The cart is in-memory — the report is now a single self-contained
+   page, so there is no cross-page navigation to persist across.
+4. **Export.** One action serializes the cart to the **curation CSV** (primary)
+   and, as a convenience, the equivalent `ftmwpipeline review …` shell listing.
+   Under `file://`, prefer a download (Blob/data-URI) with a copy-to-clipboard
+   fallback (a selectable `<textarea>`, since `navigator.clipboard` is
+   inconsistent under `file://`).
+5. **Read-only toggle.** A topnav toggle (alongside the existing compact toggle)
+   hides every edit control and the cart, returning the report to a clean fixed
+   document for sharing. Default is editable (curation is the purpose); the toggle
+   gives the "just a report" view on demand.
+6. **On-plot queued-edit markers** (with the phase-2 axes stamping). Each queued
+   cart entry renders an SVG marker on its window's magnitude panel at the edit
+   frequency — distinct glyphs for add / remove / split / merge — using the same
+   `data-axes-*` mapping as click-to-add. A small control near the plot drops a
+   queued action directly from the figure, mirroring the cart's remove.
+
+All additions are inline vanilla JS/CSS in the single self-contained file.
+
+## Click-on-plot (phase 2)
+
+Because we own figure generation, capture the data-axes geometry at render time
+and stamp it onto the embedded image so JS can invert a click to a frequency —
+no interactive plotting library required:
+
+- At save time in `visualization/fit_detail.py` (`plot_window_panels`), record
+  the magnitude panel's **data-axes bounding box** in *figure-fraction*
+  (`ax.get_position()`), combined with figure size and DPI to get the pixel bbox
+  within the saved PNG, plus the x-axis frequency limits (`freq_lo`, `freq_hi`,
+  and ascending/descending sense).
+- Transport these to the report as `data-axes-*` attributes on the panel `<img>`
+  (we emit the tag, so HTML data attributes are the simplest carrier; PNG `tEXt`
+  metadata is an alternative if the image must carry it standalone, at the cost
+  of client-side PNG parsing).
+- A transparent overlay sized to the rendered `<img>` (scaled by
+  `naturalWidth`/`naturalHeight`) maps a click x → molecular MHz by linear
+  interpolation across the stamped bbox/limits, and opens an "add at F" cart
+  entry with the frequency prefilled. ~30 lines of vanilla JS.
+
+Treat this as polish on top of a working cart: a plain frequency input on the Add
+control delivers most of the value immediately, and the click overlay is the
+slick finish once the bbox capture is wired and kept in sync with the render DPI.
+
+## Interface surface
+
+- **CLI:** in `cli/review_commands.py`, alongside the existing
+  `run/rank/show/accept/edit/merge/split` verbs —
+  `review apply <file_path> <curation-file> [--dry-run]`,
+  `review log <file_path>`, and
+  `review undo <file_path> --id N [--id M …] [--dry-run]`.
+- **Pipeline:** `Pipeline.review_apply(curation_path, *, dry_run=False)`,
+  `Pipeline.review_log()`, `Pipeline.review_undo(ids, *, dry_run=False)`.
+- **Functional API:** the same three as `api.review_apply` / `api.review_log` /
+  `api.review_undo`, each taking the `.ftmw` path first.
+- All delegate to `apply_curation_impl` / `review_log_impl` / `review_undo_impl`;
+  no logic in the wrappers (dual-interface rule). A cross-interface consistency
+  test covers parity.
+
+## Serialization
+
+None new. The curation file is an external text artifact. Applying it produces
+the same persisted edits the existing verbs produce (decision log + provenance).
+The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in the
+`.ftmw`.
+
+## Test plan
+
+- **Parser unit tests** (`tests/unit/stage6/`): CSV round-trip, comments/blank
+  lines, `params` parsing (`into=`, `candidate=`), `;`-lists for `merge`,
+  malformed-row diagnostics with line numbers.
+- **Coalescing semantics:** consecutive same-window `add`/`remove` collapse to one
+  `edit`; `merge`/`split`/`accept` flush the pending group (barrier). Assert the
+  resolved plan against expected verb calls.
+- **Equivalence (central lever):** a curation file applied via `review apply`
+  yields a **byte-identical** `.ftmw` to the equivalent hand-typed verb sequence
+  (mirrors the interactive-shell test lever). Run across a small fixture window.
+- **Dry-run:** prints the resolved plan and exits with the file hash unchanged.
+- **Ambiguity warning:** fires (and names both peaks) when an emitted frequency is
+  within one resolution element of two fitted peaks.
+- **Cross-interface consistency:** CLI / Pipeline / api `review apply` produce
+  identical state (`tests/integration/test_cross_interface_consistency.py`).
+- **Axes mapping:** a Python-side check that the stamped bbox/limits invert a known
+  pixel-x to the correct molecular MHz (no browser needed).
+- **Report round-trip (golden):** generating a report emits `data-freq`/
+  `data-window` on rows; a small synthesized cart export parses and applies
+  cleanly through `review apply`.
+- **Log/undo:** `review log` output re-parses as a valid curation file; applying
+  it from the automatic baseline reconstructs the curated state. `review undo
+  --id` of the last edit yields a `.ftmw` byte-identical to never having applied
+  it; `--dry-run` leaves the file hash unchanged.
+
+## Resolved decisions
+
+1. **Single-file report only — retire the multi-file site.** The self-contained
+   single HTML file is better all around; the cart lives on one page with no
+   cross-page persistence problem. This is a broader reports change than curation
+   alone: drop `report run --multi-file`, fold `_collapse_site_to_single_file`'s
+   output into the only build path, and prune the multi-file branches in
+   `report_html_impl.py` and the ROADMAP/reports docs. Do this cleanup first (or
+   as a paired prerequisite) so the cart is built against the final structure.
+2. **Export transport:** download (Blob/data-URI) as primary, selectable
+   `<textarea>` copy as fallback — `navigator.clipboard` is unreliable under
+   `file://`.
+3. **Coalesce add/remove by default.** Equivalence to the hand-typed sequence is
+   guaranteed; `--dry-run` makes the resolved plan visible. No opt-in flag.
+4. **The edit, not its source, is what gets logged.** No "applied from <file>"
+   tagging — applied rows are indistinguishable from hand-typed verbs in the
+   decision log. The value is the id'd, replayable edit itself; rollback is by id
+   (`review undo`), and a `review log` dump round-trips as a curation file.
+5. **CSV only for now.** No demonstrated need for JSON; not precluded, but not
+   built up front.
+
+## Implementation order
+
+1. **Curation file format + parser + `review apply` consumer (with `--dry-run`
+   first).** The load-bearing piece, fully testable without any HTML. Establishes
+   the format and the coalescing/ambiguity semantics.
+2. **`review log` + `review undo --id`** on the existing decision-log replay
+   (the CSV-as-edit-language rollback path).
+3. **Retire the multi-file site** (decision 1) — a small reports cleanup, done
+   before or alongside the report controls so they target the final structure.
+4. **Report controls + cart + CSV export + read-only toggle** on the single file.
+5. **Click-on-plot + on-plot queued-edit SVG markers:** axes-bbox capture in
+   `fit_detail.py` + the shared transparent overlay. Phase 2 polish.
