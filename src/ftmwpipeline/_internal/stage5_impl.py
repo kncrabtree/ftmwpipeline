@@ -2454,6 +2454,7 @@ def render_fit_panels_impl(
     window_id: int,
     *,
     bundle: Optional[_DetailBundle] = None,
+    with_overview: bool = True,
 ) -> Dict[str, Any]:
     """Render one window's detail as separate, standalone panel figures.
 
@@ -2462,6 +2463,10 @@ def render_fit_panels_impl(
     report's flexbox -- the modular counterpart of
     :func:`render_fit_detail_impl`, sharing its painters. The caller owns
     closing the figures.
+
+    ``with_overview=False`` skips the full-spectrum ``"overview"`` panel; the
+    HTML report discards it (it embeds one shared interactive overview), so
+    building one per window is wasted work.
     """
     from ..visualization.fit_detail import plot_window_panels
 
@@ -2480,6 +2485,7 @@ def render_fit_panels_impl(
         freq_padded=bundle.freq_padded,
         spec_padded=bundle.spec_padded,
         spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
+        include_overview=with_overview,
     )
 
 

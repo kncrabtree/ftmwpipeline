@@ -23,7 +23,39 @@ The second-instrument fixture (succinimide/UXR) is deferred — the three Blackc
 fixtures already span the moderate → dense-Gaussian → extreme-SNR-Lorentzian range
 and isolate the cost structure; the dense ones ran `--no-report` (see Finding 1).
 
-## Finding 1 — report generation dominates, via an O(N²) reload (not matplotlib)
+## Finding 1 — report generation dominates; an O(N²) reload sat on top of a matplotlib floor
+
+> **Post-implementation correction (re-profiled after 1a + 1b, 2638, pinned):**
+> the report dropped **2730 s → 1580 s (−42 %)**, total run 3015 → 1867 s, fit
+> unchanged, HTML byte-identical. The O(N²) reload was therefore **not the bulk**
+> of the report. cProfile's self-time call *count* (`_load_peak_columns` fired
+> 77,560 ≈ 277² times) over-weighted the reload; its actual *wall* share (plus the
+> discarded overview) was ~42 %, layered on top of a matplotlib rendering floor
+> that was always the real cost. The re-profile shows the residual 1580 s is
+> ~100 % rendering: `_save_figure_png`/`savefig` 1239 s (78 % of the report) across
+> 1402 per-window figures, `do_constrained_layout` 642 s, `get_tightbbox` 679 s,
+> Agg `print_png` 314 s, `h_T_gaussian` resynthesis 74 s self; the reload symbols
+> are gone from the hot list. **1c (figure-render pool) is the dominant report
+> lever**, not 1a. The original framing below is preserved for the record.
+>
+> **1c result (figure-render process pool) + a methodology correction.** The
+> profiled report (1580 → 279 s) is **cProfile-inflated ~5.5×** and not production
+> wall: `profile_run.py` keeps cProfile active while timing each stage, and the 1c
+> render workers **inherit the active profiler across `fork`**, so every matplotlib
+> call ran instrumented. Clean (unprofiled) re-measurements on
+> `scratch/perf-profile/2638/2638.ftmw` (`scratch/cow-exp/`):
+> - all 277 windows render in **22.1 s, ideal/14 = 21.5 s → 97 % parallel
+>   efficiency** (not the profiled "120 s / 40 %"); `top` = 90 % user / 5 % sys.
+> - full unprofiled `report_run` = **50.8 s** (not 279 s).
+> - The COW deep-copy/slice hypothesis was tested (shared-fork vs per-window
+>   pickled slice) and **falsified**: identical wall / sys-CPU / minor faults. The
+>   ~3 M faults are matplotlib RGBA buffer `mmap`/`munmap` churn, not COW refcount
+>   faults on the shared fit graph (negligible). Data layout is not the lever.
+>
+> Net: 1a+1b removed a real O(N²) reload, 1c parallelized the render to 97 %
+> efficiency (~22 s), report is ~50 s clean. **`profile_run.py` must disable
+> cProfile around the report before its absolute numbers can be trusted, and the
+> fit must be re-measured unprofiled before sizing Work item 2.**
 
 2638 whole-pipeline `run`, pinned, total wall **3015 s (50 min)**:
 

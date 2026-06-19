@@ -8,6 +8,7 @@ read-only / cross-interface (api == Pipeline == impl) guarantees.
 
 from __future__ import annotations
 
+import collections
 import hashlib
 import html.parser
 import shutil
@@ -36,7 +37,7 @@ from ftmwpipeline._internal.report_html_impl import (
     report_full_impl,
 )
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
-from ftmwpipeline._internal.stage6_impl import review_run_impl
+from ftmwpipeline._internal.stage6_impl import get_candidate_ledger_impl, review_run_impl
 from ftmwpipeline.core.data_structures import FinalPeak
 from ftmwpipeline.pipeline import Pipeline
 
@@ -606,6 +607,70 @@ def stage5_small_file(tmp_path_factory):
     return fp
 
 
+@pytest.fixture(autouse=True)
+def _serial_report_figures(monkeypatch):
+    # The report fixture is tiny (a few windows); the production figure-render
+    # fork pool is pure overhead at that size. Default the report tests to serial
+    # rendering so the suite does not fork a pool per assemble. The one
+    # production-vs-reference test flips back to parallel explicitly to exercise
+    # the pool.
+    import ftmwpipeline._internal.report_html_impl as rh
+
+    monkeypatch.setattr(rh, "_FIGURE_RENDER_WORKERS", 1, raising=False)
+
+
+_SharedFullReport = collections.namedtuple(
+    "_SharedFullReport", "path out_dir doc source_unchanged window_log_msgs"
+)
+
+
+@pytest.fixture(scope="module")
+def full_report_single_file(stage5_small_file, tmp_path_factory):
+    """Build the default ``scope="full"`` single-file report ONCE for the module.
+
+    Every report build re-renders the expensive methods-page figures (the
+    750k-point FID overview + full-spectrum stage visualizations), so the tests
+    that only *inspect* the default full report share this single build instead
+    of each paying ~16 s for its own. The single build also captures the inputs
+    for two sibling checks: the source ``.ftmw`` hash before/after (read-only
+    guarantee) and the per-window render-progress log records.
+    """
+    import logging
+
+    import ftmwpipeline._internal.report_html_impl as rh
+
+    out = tmp_path_factory.mktemp("full_report_shared")
+    src = Path(stage5_small_file)
+    before = hashlib.md5(src.read_bytes()).hexdigest()
+
+    records: List = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    cap = _Capture()
+    rlogger = logging.getLogger("ftmwpipeline._internal.report_html_impl")
+    rlogger.addHandler(cap)
+    old_level = rlogger.level
+    rlogger.setLevel(logging.INFO)
+    prev = rh._FIGURE_RENDER_WORKERS
+    rh._FIGURE_RENDER_WORKERS = 1  # serial: one tiny build, no fork overhead
+    try:
+        path = report_full_impl(str(src), output_dir=str(out), scope="full")
+    finally:
+        rh._FIGURE_RENDER_WORKERS = prev
+        rlogger.removeHandler(cap)
+        rlogger.setLevel(old_level)
+
+    after = hashlib.md5(src.read_bytes()).hexdigest()
+    win_msgs = [
+        r.getMessage() for r in records if r.getMessage().startswith("window ")
+    ]
+    p = Path(path)
+    return _SharedFullReport(p, out, p.read_text(), before == after, win_msgs)
+
+
 def _assert_wellformed(path: Path):
     for f in path.rglob("*.html"):
         html.parser.HTMLParser().feed(f.read_text())
@@ -708,6 +773,74 @@ def test_full_site_structure(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
+def test_ledger_bundle_equals_self_loading(stage5_small_file):
+    # 1a: the report's per-window hot path passes the already-loaded
+    # ``spectrum_fit``/``sideband`` from the detail bundle to skip two HDF5
+    # reloads. That fast path must derive an identical ledger to the standalone
+    # self-loading ``(path, window_id)`` call the CLI/api expose.
+    from ftmwpipeline._internal.stage5_impl import _resolve_detail_bundle
+
+    path = str(stage5_small_file)
+    bundle = _resolve_detail_bundle(path)
+    for wf in bundle.fit.window_fits:
+        if wf.window_id is None:
+            continue
+        wid = int(wf.window_id)
+        self_loaded = get_candidate_ledger_impl(path, wid)
+        bundled = get_candidate_ledger_impl(
+            path, wid, spectrum_fit=bundle.fit, sideband=bundle.sideband
+        )
+        assert self_loaded == bundled
+
+
+@pytest.mark.integration
+def test_report_production_path_matches_reference(
+    stage5_small_file, tmp_path, monkeypatch
+):
+    # The production report path = parallel figure pool (1c) + in-memory no-disk
+    # assembly (the report-efficiency pass). It must produce a byte-identical
+    # single-file document to the simple reference path = serial render + on-disk
+    # multi-file site + disk collapse. One comparison guards BOTH genuine
+    # divergence risks at once -- the fork-pool plumbing (worker bytes round-trip)
+    # and the in-memory store resolvers (figures/thumbnails/pages embedded from
+    # memory vs re-read from disk) -- which is the value here, not re-confirming
+    # that matplotlib is deterministic.
+    import ftmwpipeline._internal.report_html_impl as rh
+    from ftmwpipeline._internal.report_html_impl import _collapse_site_to_single_file
+
+    # Reference: serial render, multi-file disk site, collapse re-reading disk.
+    monkeypatch.setattr(rh, "_FIGURE_RENDER_WORKERS", 1)
+    ref_root = tmp_path / "ref"
+    m_ref = _assemble_report_site(str(stage5_small_file), out_root=str(ref_root))
+    html_ref = _collapse_site_to_single_file(ref_root, mode="full", stem=m_ref.stem)
+
+    # Production: parallel render, in-memory model, collapse from the stores.
+    monkeypatch.setattr(rh, "_FIGURE_RENDER_WORKERS", 4)
+    prod_root = tmp_path / "prod"
+    m_prod = _assemble_report_site(
+        str(stage5_small_file), out_root=str(prod_root), write_files=False
+    )
+    html_prod = _collapse_site_to_single_file(
+        prod_root,
+        mode="full",
+        stem=m_prod.stem,
+        figure_store=m_prod.figure_store,
+        thumb_store=m_prod.thumb_store,
+        page_store=m_prod.page_store,
+        css=m_prod.css,
+    )
+
+    assert html_ref == html_prod
+    # The in-memory path keeps the O(N) per-window figures + pages in the model,
+    # off disk (only the O(1) methods/overview figures land under figures/).
+    assert m_prod.figure_store and m_prod.page_store and m_prod.thumb_store
+    assert not (prod_root / "windows").exists()
+    # Per-window panels are ``<stem>_window_NNN_<panel>.png``; the methods-page
+    # ``<stem>_methods_stage4_windows.png`` (which stays on disk) must not match.
+    assert list((prod_root / "figures").glob("*_window_*.png")) == []
+
+
+@pytest.mark.integration
 def test_full_windows_filter_attention_subset(stage5_small_file, tmp_path):
     all_out = tmp_path / "all"
     att_out = tmp_path / "att"
@@ -756,12 +889,10 @@ def test_full_with_catalog(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_full_is_read_only(stage5_small_file, tmp_path):
-    fp = tmp_path / "ro.ftmw"
-    shutil.copy(stage5_small_file, fp)
-    before = hashlib.md5(fp.read_bytes()).hexdigest()
-    report_full_impl(str(fp), output_dir=str(tmp_path / "out"))
-    assert hashlib.md5(fp.read_bytes()).hexdigest() == before
+def test_full_is_read_only(full_report_single_file):
+    # The shared fixture hashed the source .ftmw before/after its one build:
+    # report_full_impl must not mutate the input file.
+    assert full_report_single_file.source_unchanged
 
 
 @pytest.mark.integration
@@ -806,17 +937,13 @@ def test_single_file_summary_is_self_contained(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_single_file_full_folds_in_window_pages(stage5_small_file, tmp_path):
-    out = tmp_path / "sff"
-    path = report_full_impl(
-        str(stage5_small_file), output_dir=str(out), scope="full"
-    )
-    p = Path(path)
+def test_single_file_full_folds_in_window_pages(full_report_single_file):
+    p, out = full_report_single_file.path, full_report_single_file.out_dir
     assert p.name.endswith("_report.html") and not p.name.endswith("_summary.html")
     assert list(out.glob("*.html")) == [p]
     assert not (out / "windows").exists()
 
-    doc = p.read_text()
+    doc = full_report_single_file.doc
     html.parser.HTMLParser().feed(doc)
     assert 'src="figures/' not in doc and "data:image/png;base64," in doc
     # Every per-window section is present and every window link is an anchor that
@@ -836,10 +963,8 @@ def test_single_file_full_folds_in_window_pages(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_single_file_carries_curation_surface(stage5_small_file, tmp_path):
-    out = tmp_path / "cur"
-    path = report_full_impl(str(stage5_small_file), output_dir=str(out), scope="full")
-    doc = Path(path).read_text()
+def test_single_file_carries_curation_surface(full_report_single_file):
+    doc = full_report_single_file.doc
     html.parser.HTMLParser().feed(doc)
 
     # The boot script + curation script + topnav chrome ship in the single file.
@@ -883,15 +1008,15 @@ def _peak_list_row(doc: str):
 
 
 @pytest.mark.integration
-def test_curation_emitted_frequency_resolves(stage5_small_file, tmp_path):
+def test_curation_emitted_frequency_resolves(
+    stage5_small_file, full_report_single_file, tmp_path
+):
     """The load-bearing rule: the raw frequency a control emits targets the
     intended peak when fed straight to ``review apply``."""
     from ftmwpipeline._internal.stage6_impl import apply_curation_impl
     from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 
-    out = tmp_path / "lb"
-    path = report_full_impl(str(stage5_small_file), output_dir=str(out), scope="full")
-    doc = Path(path).read_text()
+    doc = full_report_single_file.doc
     wid, freq = _peak_list_row(doc)
 
     def _window_raw_freqs(fp):
@@ -958,18 +1083,10 @@ def test_full_cross_interface(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
-def test_full_emits_per_window_progress_logs(stage5_small_file, tmp_path, caplog):
-    """The render loop logs one ``window i/N`` per window for the progress bridge."""
-    import logging
-
-    logger_name = "ftmwpipeline._internal.report_html_impl"
-    with caplog.at_level(logging.INFO, logger=logger_name):
-        report_full_impl(str(stage5_small_file), output_dir=str(tmp_path / "out"))
-    win_msgs = [
-        r.getMessage()
-        for r in caplog.records
-        if r.name == logger_name and r.getMessage().startswith("window ")
-    ]
+def test_full_emits_per_window_progress_logs(full_report_single_file):
+    """The render loop logs one ``window i/N`` per window for the progress bridge
+    (captured during the shared build's serial render)."""
+    win_msgs = full_report_single_file.window_log_msgs
     assert win_msgs and win_msgs[0].startswith("window 1/")
     total = win_msgs[0].split("/")[1]
     assert win_msgs[-1] == f"window {total}/{total}"  # the bar reaches 100%

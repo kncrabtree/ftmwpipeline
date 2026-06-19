@@ -504,6 +504,8 @@ def get_candidate_ledger_impl(
     window_id: Optional[int] = None,
     *,
     bar: float = DEFAULT_DISPLAY_BAR,
+    spectrum_fit: Optional[SpectrumFit] = None,
+    sideband: Optional[Sideband] = None,
 ) -> List[LedgerCandidate]:
     """Load Stage 5 fit from ``file_path`` and derive the candidate ledger.
 
@@ -516,6 +518,13 @@ def get_candidate_ledger_impl(
         candidates across all windows.
     bar :
         Display bar passed to :func:`derive_candidate_ledger`.
+    spectrum_fit, sideband :
+        Pre-resolved fit and sideband (e.g. from a :class:`_DetailBundle`).
+        When *both* are supplied, the two HDF5 reloads (the full Stage 5 fit and
+        the 750k-point raw FID) are skipped and the ledger is derived directly —
+        the report renderer's per-window hot path. When either is ``None`` the
+        standalone behaviour (self-load from ``file_path``) is unchanged, so the
+        CLI / Pipeline / api ledger verbs see no difference.
 
     Returns
     -------
@@ -532,13 +541,18 @@ def get_candidate_ledger_impl(
     """
     path = str(file_path)
 
-    with h5py.File(path, "r") as h5f:
-        if "stage5_fitting" not in h5f:
-            raise ValueError("No Stage 5 fit found in this file. Run 'fit run' first.")
-        spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    if spectrum_fit is None or sideband is None:
+        with h5py.File(path, "r") as h5f:
+            if "stage5_fitting" not in h5f:
+                raise ValueError(
+                    "No Stage 5 fit found in this file. Run 'fit run' first."
+                )
+            spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        fid = load_fid_from_pipeline_impl(path)
+        sideband = _sideband_from_value(fid.sideband)
+    else:
+        sideband = _sideband_from_value(sideband)
 
-    fid = load_fid_from_pipeline_impl(path)
-    sideband = _sideband_from_value(fid.sideband)
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
     res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
 

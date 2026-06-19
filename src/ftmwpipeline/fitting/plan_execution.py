@@ -1961,6 +1961,183 @@ def _build_doublet_refit_kwargs(
     return refit_kwargs
 
 
+def _process_one_window(
+    win: FitWindow,
+    *,
+    n_done: int,
+    n_total: int,
+    active_ft: ActiveFTResult,
+    noise: np.ndarray,
+    peak_frequencies_mhz: Sequence[float],
+    outcomes: dict[int, WindowOutcome],
+    thaw_history: list[ThawEvent],
+    rescue_history: list[RescueEvent],
+    sideband: SidebandLike,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool,
+    residual_edge_threshold: float,
+    residual_edge_m: int,
+    max_thaw_rounds: int,
+    conservative_kwargs: dict[str, Any],
+    max_residual_rescue_rounds: int,
+    rescue_kwargs: Optional[dict[str, Any]],
+    window_tau_overrides: dict[int, tuple[float, float]],
+    spur_set: Optional[SpurSet],
+    baseline_enabled: bool,
+    baseline_order: int,
+    baseline_edge_threshold: float,
+    baseline_smooth_threshold: float,
+    doublet_kwargs: Optional[dict[str, Any]],
+) -> None:
+    """Process one window end to end: conservative fit -> bounded thaw loop ->
+    residual-rescue B-loop -> leakage-wing baseline -> doublet adjudication.
+
+    Mutates ``outcomes[wid]`` (and, only on an accepted thaw, the contributor's
+    primary outcome) and appends to ``thaw_history`` / ``rescue_history``.
+    Extracted verbatim from :func:`_walk_windows_in_order` so the one per-window
+    unit drives both the sequential walk and the per-level parallel pool.
+    ``n_done`` / ``n_total`` are progress-logging context only.
+    """
+    wid = win.window_id
+    t_start = time.monotonic()
+    if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
+        validation._fringe_window_ctx = {
+            "wid": wid,
+            "center": 0.5 * (win.freq_range[0] + win.freq_range[1]),
+            "sign": sideband_sign(sideband),
+        }
+    ck_for_window = conservative_kwargs
+    tau0_us_for_window = tau0_us
+    if wid in window_tau_overrides:
+        tau_maj_w, sigma_tau_w = window_tau_overrides[wid]
+        ck_for_window = dict(conservative_kwargs)
+        ck_for_window["tau_maj_us"] = float(tau_maj_w)
+        ck_for_window["sigma_tau_us"] = float(sigma_tau_w)
+        tau0_us_for_window = float(tau_maj_w)
+    outcome = _fit_one_window(
+        win,
+        active_ft,
+        noise,
+        peak_frequencies_mhz=peak_frequencies_mhz,
+        outcomes=outcomes,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        tau0_us=tau0_us_for_window,
+        fit_tau=fit_tau,
+        residual_edge_m=residual_edge_m,
+        conservative_kwargs=ck_for_window,
+        spur_set=spur_set,
+        early_baseline_order=baseline_order if baseline_enabled else None,
+        early_baseline_smooth_threshold=(
+            baseline_smooth_threshold if baseline_enabled else None
+        ),
+    )
+    outcomes[wid] = outcome
+    _debug_phase(wid, "conservative", outcome)
+
+    for _ in range(max_thaw_rounds):
+        edge_events = attempt_thaw_round(
+            win,
+            outcome,
+            outcomes=outcomes,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            tau0_us=tau0_us_for_window,
+            fit_tau=fit_tau,
+            residual_edge_threshold=residual_edge_threshold,
+            residual_edge_m=residual_edge_m,
+            shape=conservative_kwargs.get("shape", "lorentzian"),
+            spur_set=spur_set,
+        )
+        if not edge_events:
+            break
+        for event in edge_events:
+            thaw_history.append(event)
+        outcome = outcomes[wid]
+        if not any(e.accepted for e in edge_events):
+            break
+    _debug_phase(wid, "post-thaw", outcome)
+
+    if max_residual_rescue_rounds > 0:
+        events = _apply_rescue_to_outcome(
+            win,
+            outcome,
+            acquisition_us=acquisition_us,
+            tau0_us=tau0_us_for_window,
+            residual_edge_m=residual_edge_m,
+            conservative_kwargs=ck_for_window,
+            max_residual_rescue_rounds=max_residual_rescue_rounds,
+            rescue_kwargs=rescue_kwargs or {},
+            spur_set=spur_set,
+        )
+        for ev in events:
+            rescue_history.append(ev)
+        outcome = outcomes[wid]
+    _debug_phase(wid, "post-rescue", outcome)
+
+    if baseline_enabled:
+        _apply_baseline_to_outcome(
+            outcome,
+            acquisition_us=acquisition_us,
+            residual_edge_m=residual_edge_m,
+            baseline_order=baseline_order,
+            baseline_edge_threshold=baseline_edge_threshold,
+            baseline_smooth_threshold=baseline_smooth_threshold,
+            tau0_us=tau0_us_for_window,
+            conservative_kwargs=ck_for_window,
+        )
+    _debug_phase(wid, "post-baseline", outcome)
+
+    if doublet_kwargs is not None:
+        try:
+            inner = outcome.fit.fit
+            spur_mask_for_doublet = getattr(outcome, "_spur_mask", None)
+            # Derive refit_kwargs that reproduce the production fit conditions:
+            # the same tau-penalty, phase/amp-penalty, and fit_window-level
+            # kwargs that conservative_fit uses via derive_window_fit_constraints.
+            # Build from ck_for_window (includes per-window tau overrides).
+            refit_kwargs_for_doublet = _build_doublet_refit_kwargs(
+                ck_for_window, outcome, acquisition_us
+            )
+            adjudications: list[DoubletAdjudication] = adjudicate_close_pairs(
+                offset_grid_mhz=outcome.offset_grid_mhz,
+                complex_spectrum=outcome.complex_spectrum - outcome.background,
+                rms_noise=outcome.rms_noise,
+                fit=inner,
+                acquisition_us=acquisition_us,
+                shape=ck_for_window.get("shape", "lorentzian"),
+                k_res=doublet_kwargs["k_res"],
+                r_min=doublet_kwargs["r_min"],
+                frozen_background=outcome.background,
+                spur_mask=spur_mask_for_doublet,
+                refit_kwargs=refit_kwargs_for_doublet,
+            )
+            outcome.doublet_adjudications = adjudications
+        except Exception:
+            logger.warning(
+                "doublet-alternative pass failed on window %d; skipping",
+                wid,
+                exc_info=False,
+            )
+            outcome.doublet_adjudications = []
+
+    elapsed = time.monotonic() - t_start
+    final = outcomes[wid]
+    log = logger.warning if elapsed > 60.0 else logger.info
+    log(
+        "window %d/%d w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
+        n_done,
+        n_total,
+        wid,
+        win.freq_range[0],
+        win.freq_range[1],
+        final.fit.n_peaks,
+        final.fit.fit.reduced_chi2,
+        elapsed,
+    )
+
+
 def _walk_windows_in_order(
     plan: WindowPlan,
     order: Sequence[int],
@@ -2026,141 +2203,33 @@ def _walk_windows_in_order(
     n_total = len(order)
     for n_done, wid in enumerate(order, start=1):
         win = by_id[wid]
-        t_start = time.monotonic()
-        if os.environ.get("FTMW_DEBUG_FRINGE_DIR"):
-            validation._fringe_window_ctx = {
-                "wid": wid,
-                "center": 0.5 * (win.freq_range[0] + win.freq_range[1]),
-                "sign": sideband_sign(sideband),
-            }
-        ck_for_window = conservative_kwargs
-        tau0_us_for_window = tau0_us
-        if wid in window_tau_overrides:
-            tau_maj_w, sigma_tau_w = window_tau_overrides[wid]
-            ck_for_window = dict(conservative_kwargs)
-            ck_for_window["tau_maj_us"] = float(tau_maj_w)
-            ck_for_window["sigma_tau_us"] = float(sigma_tau_w)
-            tau0_us_for_window = float(tau_maj_w)
-        outcome = _fit_one_window(
+        _process_one_window(
             win,
-            active_ft,
-            noise,
+            n_done=n_done,
+            n_total=n_total,
+            active_ft=active_ft,
+            noise=noise,
             peak_frequencies_mhz=peak_frequencies_mhz,
             outcomes=outcomes,
+            thaw_history=thaw_history,
+            rescue_history=rescue_history,
             sideband=sideband,
             acquisition_us=acquisition_us,
-            tau0_us=tau0_us_for_window,
+            tau0_us=tau0_us,
             fit_tau=fit_tau,
+            residual_edge_threshold=residual_edge_threshold,
             residual_edge_m=residual_edge_m,
-            conservative_kwargs=ck_for_window,
+            max_thaw_rounds=max_thaw_rounds,
+            conservative_kwargs=conservative_kwargs,
+            max_residual_rescue_rounds=max_residual_rescue_rounds,
+            rescue_kwargs=rescue_kwargs,
+            window_tau_overrides=window_tau_overrides,
             spur_set=spur_set,
-            early_baseline_order=baseline_order if baseline_enabled else None,
-            early_baseline_smooth_threshold=(
-                baseline_smooth_threshold if baseline_enabled else None
-            ),
-        )
-        outcomes[wid] = outcome
-        _debug_phase(wid, "conservative", outcome)
-
-        for _ in range(max_thaw_rounds):
-            edge_events = attempt_thaw_round(
-                win,
-                outcome,
-                outcomes=outcomes,
-                sideband=sideband,
-                acquisition_us=acquisition_us,
-                tau0_us=tau0_us_for_window,
-                fit_tau=fit_tau,
-                residual_edge_threshold=residual_edge_threshold,
-                residual_edge_m=residual_edge_m,
-                shape=conservative_kwargs.get("shape", "lorentzian"),
-                spur_set=spur_set,
-            )
-            if not edge_events:
-                break
-            for event in edge_events:
-                thaw_history.append(event)
-            outcome = outcomes[wid]
-            if not any(e.accepted for e in edge_events):
-                break
-        _debug_phase(wid, "post-thaw", outcome)
-
-        if max_residual_rescue_rounds > 0:
-            events = _apply_rescue_to_outcome(
-                win,
-                outcome,
-                acquisition_us=acquisition_us,
-                tau0_us=tau0_us_for_window,
-                residual_edge_m=residual_edge_m,
-                conservative_kwargs=ck_for_window,
-                max_residual_rescue_rounds=max_residual_rescue_rounds,
-                rescue_kwargs=rescue_kwargs or {},
-                spur_set=spur_set,
-            )
-            for ev in events:
-                rescue_history.append(ev)
-            outcome = outcomes[wid]
-        _debug_phase(wid, "post-rescue", outcome)
-
-        if baseline_enabled:
-            _apply_baseline_to_outcome(
-                outcome,
-                acquisition_us=acquisition_us,
-                residual_edge_m=residual_edge_m,
-                baseline_order=baseline_order,
-                baseline_edge_threshold=baseline_edge_threshold,
-                baseline_smooth_threshold=baseline_smooth_threshold,
-                tau0_us=tau0_us_for_window,
-                conservative_kwargs=ck_for_window,
-            )
-        _debug_phase(wid, "post-baseline", outcome)
-
-        if doublet_kwargs is not None:
-            try:
-                inner = outcome.fit.fit
-                spur_mask_for_doublet = getattr(outcome, "_spur_mask", None)
-                # Derive refit_kwargs that reproduce the production fit conditions:
-                # the same tau-penalty, phase/amp-penalty, and fit_window-level
-                # kwargs that conservative_fit uses via derive_window_fit_constraints.
-                # Build from ck_for_window (includes per-window tau overrides).
-                refit_kwargs_for_doublet = _build_doublet_refit_kwargs(
-                    ck_for_window, outcome, acquisition_us
-                )
-                adjudications: list[DoubletAdjudication] = adjudicate_close_pairs(
-                    offset_grid_mhz=outcome.offset_grid_mhz,
-                    complex_spectrum=outcome.complex_spectrum - outcome.background,
-                    rms_noise=outcome.rms_noise,
-                    fit=inner,
-                    acquisition_us=acquisition_us,
-                    shape=ck_for_window.get("shape", "lorentzian"),
-                    k_res=doublet_kwargs["k_res"],
-                    r_min=doublet_kwargs["r_min"],
-                    frozen_background=outcome.background,
-                    spur_mask=spur_mask_for_doublet,
-                    refit_kwargs=refit_kwargs_for_doublet,
-                )
-                outcome.doublet_adjudications = adjudications
-            except Exception:
-                logger.warning(
-                    "doublet-alternative pass failed on window %d; skipping",
-                    wid,
-                    exc_info=False,
-                )
-                outcome.doublet_adjudications = []
-
-        elapsed = time.monotonic() - t_start
-        final = outcomes[wid]
-        log = logger.warning if elapsed > 60.0 else logger.info
-        log(
-            "window %d/%d w%d [%.1f-%.1f MHz]: %d peaks, chi2r=%.3g, %.1fs",
-            n_done,
-            n_total,
-            wid,
-            win.freq_range[0],
-            win.freq_range[1],
-            final.fit.n_peaks,
-            final.fit.fit.reduced_chi2,
-            elapsed,
+            baseline_enabled=baseline_enabled,
+            baseline_order=baseline_order,
+            baseline_edge_threshold=baseline_edge_threshold,
+            baseline_smooth_threshold=baseline_smooth_threshold,
+            doublet_kwargs=doublet_kwargs,
         )
 
 

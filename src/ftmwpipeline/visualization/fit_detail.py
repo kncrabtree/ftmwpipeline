@@ -754,6 +754,7 @@ def plot_window_panels(
     panel_figsize: Tuple[float, float] = (6.6, 4.4),
     overview_figsize: Tuple[float, float] = (12.0, 2.6),
     hist_figsize: Tuple[float, float] = (6.6, 4.4),
+    include_overview: bool = True,
 ) -> Dict[str, plt.Figure]:
     """Render the per-window detail as separate, standalone panel figures.
 
@@ -763,6 +764,10 @@ def plot_window_panels(
     combined :func:`plot_consolidated_detail`, so the two stay consistent. The
     in-figure peak table is omitted -- the HTML page renders its own table. The
     caller owns closing the figures.
+
+    When ``include_overview`` is False the full-spectrum ``"overview"`` panel is
+    not built (the HTML report discards it in favour of a single shared
+    interactive overview, so building one per window is wasted work).
     """
     data = prepare_window_panels(
         window_fit,
@@ -780,9 +785,10 @@ def plot_window_panels(
     )
     figures: Dict[str, plt.Figure] = {}
 
-    fig_ov = plt.figure(figsize=overview_figsize, constrained_layout=True)
-    draw_overview(fig_ov.add_subplot(111), data)
-    figures["overview"] = fig_ov
+    if include_overview:
+        fig_ov = plt.figure(figsize=overview_figsize, constrained_layout=True)
+        draw_overview(fig_ov.add_subplot(111), data)
+        figures["overview"] = fig_ov
 
     for component in ("re", "im", "mag"):
         fig_c = plt.figure(figsize=panel_figsize, constrained_layout=True)

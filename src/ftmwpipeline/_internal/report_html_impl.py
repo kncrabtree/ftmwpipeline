@@ -22,6 +22,7 @@ from __future__ import annotations
 import html
 import logging
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -427,8 +428,8 @@ def _panel_figure_name(stem: str, window_id: int, panel: str) -> str:
     return f"{stem}_window_{window_id:03d}_{panel}.png"
 
 
-def _save_figure_png(fig: Any, path: Union[str, Path], *, dpi: int, **kw: Any) -> None:
-    """Save a report figure as an adaptive 256-colour palette PNG.
+def _figure_png_bytes(fig: Any, *, dpi: int, **kw: Any) -> bytes:
+    """Render a report figure to adaptive 256-colour palette PNG *bytes*.
 
     The report's figures are line plots and small heatmaps with only a few
     hundred distinct colours, so an adaptive 256-colour palette is visually
@@ -437,8 +438,10 @@ def _save_figure_png(fig: Any, path: Union[str, Path], *, dpi: int, **kw: Any) -
     resolution or making the background transparent does *not* help: the panels
     already render below 800 px wide, downscaling re-introduces intermediate
     colours, and a transparent background only adds alpha variation at the
-    anti-aliased edges.) Renders to a buffer, then quantizes and writes. ``kw`` is
-    forwarded to ``savefig`` (e.g. ``bbox_inches="tight"``).
+    anti-aliased edges.) Renders to a buffer, then quantizes. ``kw`` is forwarded
+    to ``savefig`` (e.g. ``bbox_inches="tight"``). The encoding is sink-agnostic,
+    so the parallel figure-render path (worker returns bytes) and the serial path
+    (write to file) are byte-identical.
     """
     import io
 
@@ -447,11 +450,19 @@ def _save_figure_png(fig: Any, path: Union[str, Path], *, dpi: int, **kw: Any) -
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=dpi, **kw)
     buf.seek(0)
+    out = io.BytesIO()
     with Image.open(buf) as im:
         palette = im.convert("RGB").quantize(
             colors=256, method=Image.Quantize.FASTOCTREE
         )
-        palette.save(str(path), format="PNG", optimize=True)
+        palette.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def _save_figure_png(fig: Any, path: Union[str, Path], *, dpi: int, **kw: Any) -> None:
+    """Save a report figure as an adaptive 256-colour palette PNG (see
+    :func:`_figure_png_bytes`)."""
+    Path(path).write_bytes(_figure_png_bytes(fig, dpi=dpi, **kw))
 
 
 def _window_preview_info(
@@ -837,8 +848,6 @@ def _methods_stage_figures(
     stage's section). Every figure is gated -- a stage that was not run, or whose
     renderer raises, is silently skipped. Reuses the per-stage ``visualize_*``
     renderers so the report inherits the same grids the CLI draws."""
-    import matplotlib.pyplot as plt
-
     from ..visualization.fid_visualization import plot_fid_overview
     from ..visualization.tau_calibration_visualization import (
         plot_tau_distribution_from_file,
@@ -852,19 +861,6 @@ def _methods_stage_figures(
     # These figures span the full content width, so render them sharper than the
     # compact per-window panels: more pixels stays crisp when scaled to the page.
     fig_dpi = int(dpi * 1.4)
-
-    def _block(fig: Any, slug: str, caption: str) -> Optional[str]:
-        if fig is None:
-            return None
-        fname = f"{stem}_methods_{slug}.png"
-        _save_figure_png(
-            fig, out_root / "figures" / fname, dpi=fig_dpi, bbox_inches="tight"
-        )
-        plt.close(fig)
-        return (
-            f'<p class="fig-note">{caption}</p>'
-            f'<div class="hist"><img src="figures/{fname}" alt="{_esc(slug)}"></div>'
-        )
 
     # (next-stage heading anchor, [(slug, caption, render thunk), ...]).
     groups: List[Tuple[str, List[Tuple[str, str, Any]]]] = [
@@ -945,20 +941,98 @@ def _methods_stage_figures(
         ),
     ]
 
+    # The per-stage figures are independent and a couple are expensive (the
+    # 750k-point FID overview, the full-spectrum stage visualizations), so render
+    # the thunks across a process pool, then write the bytes + build the HTML in
+    # group order here. Bytes are byte-identical to a serial render at fixed DPI.
+    flat: List[Tuple[int, str, str, Any]] = [
+        (gi, slug, caption, thunk)
+        for gi, (_anchor, figs) in enumerate(groups)
+        for (slug, caption, thunk) in figs
+    ]
+    rendered = _render_methods_figures([t for (_, _, _, t) in flat], fig_dpi)
+
+    group_blocks: Dict[int, List[str]] = {}
+    for (gi, slug, caption, _thunk), data in zip(flat, rendered):
+        if data is None:  # a stage that was not run, or whose renderer raised
+            continue
+        fname = f"{stem}_methods_{slug}.png"
+        (out_root / "figures" / fname).write_bytes(data)
+        group_blocks.setdefault(gi, []).append(
+            f'<p class="fig-note">{caption}</p>'
+            f'<div class="hist"><img src="figures/{fname}" alt="{_esc(slug)}"></div>'
+        )
+
     out: List[Tuple[str, str]] = []
-    for anchor, figs in groups:
-        blocks: List[str] = []
-        for slug, caption, render in figs:
-            try:
-                fig = render()
-            except Exception:  # optional diagnostic: skip a missing/failed stage
-                fig = None
-            block = _block(fig, slug, caption)
-            if block is not None:
-                blocks.append(block)
+    for gi, (anchor, _figs) in enumerate(groups):
+        blocks = group_blocks.get(gi)
         if blocks:
             out.append((anchor, "".join(blocks)))
     return out
+
+
+# Per-stage methods figures are rendered the same way as the per-window panels:
+# a forking pool, thunks reached via a fork-inherited global (they are local
+# closures over the file path, not picklable, so they must be inherited, never
+# sent as task args). Workers return PNG bytes (or None when the render raises).
+_METHODS_RENDER_CTX: Optional[Dict[str, Any]] = None
+
+
+def _render_one_methods_figure(thunk: Any, fig_dpi: int) -> Optional[bytes]:
+    """Run one methods-figure thunk to PNG bytes; ``None`` if it has no data."""
+    import matplotlib.pyplot as plt
+
+    try:
+        fig = thunk()
+    except Exception:  # optional diagnostic: skip a missing/failed stage
+        return None
+    if fig is None:
+        return None
+    data = _figure_png_bytes(fig, dpi=fig_dpi, bbox_inches="tight")
+    plt.close(fig)
+    return data
+
+
+def _methods_figure_worker(idx: int) -> Tuple[int, Optional[bytes]]:
+    ctx = _METHODS_RENDER_CTX
+    assert ctx is not None
+    return idx, _render_one_methods_figure(ctx["thunks"][idx], ctx["fig_dpi"])
+
+
+def _render_methods_figures(thunks: List[Any], fig_dpi: int) -> List[Optional[bytes]]:
+    """Render the methods-page figure thunks to PNG bytes, in parallel when
+    worthwhile (same forking-pool / serial-fallback policy as the window
+    figures; ``_FIGURE_RENDER_WORKERS`` pins the count for tests)."""
+    import multiprocessing
+    import os
+
+    n = len(thunks)
+    if _FIGURE_RENDER_WORKERS is not None:
+        max_workers = int(_FIGURE_RENDER_WORKERS)
+    else:
+        max_workers = max(1, (os.cpu_count() or 2) - 2)
+    if (
+        n < 2
+        or max_workers < 2
+        or "fork" not in multiprocessing.get_all_start_methods()
+    ):
+        return [_render_one_methods_figure(t, fig_dpi) for t in thunks]
+
+    global _METHODS_RENDER_CTX
+    _METHODS_RENDER_CTX = {"thunks": thunks, "fig_dpi": fig_dpi}
+    results: List[Optional[bytes]] = [None] * n
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+
+        ctx_mp = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(
+            max_workers=min(max_workers, n), mp_context=ctx_mp
+        ) as ex:
+            for idx, data in ex.map(_methods_figure_worker, range(n)):
+                results[idx] = data
+    finally:
+        _METHODS_RENDER_CTX = None
+    return results
 
 
 def _summary_page(stem: str, md_html: str, leftover: List[str]) -> str:
@@ -2283,6 +2357,155 @@ def _mag_axes_geometry(fig: Any, *, dpi: int) -> Optional[Dict[str, float]]:
     }
 
 
+# Per-window figure rendering is the dominant report cost (matplotlib savefig /
+# constrained-layout over ~4 independent panels per window) and is embarrassingly
+# parallel. The render result for one window: the panel PNG bytes keyed by panel,
+# the |X| panel's post-layout axes geometry (for the curation overlay), and the
+# optional correlation-heatmap PNG bytes. Bytes (not files) travel back so the
+# parent owns all figure-file IO and the encoding stays byte-identical to the
+# serial path. ``None`` workers/auto-sizing lets a test pin the worker count.
+_WindowFigures = Tuple[
+    int,  # window id
+    Dict[str, bytes],  # panel name -> PNG bytes
+    Optional[Dict[str, float]],  # |X| panel axes geometry
+    Optional[bytes],  # correlation-heatmap PNG bytes
+    Optional[bytes],  # hover thumbnail PNG bytes (mag panel, downscaled)
+]
+_FIGURE_RENDER_WORKERS: Optional[int] = None  # None => auto (cpu_count - 2); 1 => serial
+_WORKER_RENDER_CTX: Optional[Dict[str, Any]] = None
+
+
+def _render_one_window_figures(
+    wid: int, *, path: str, bundle: Any, dpi: int, stem: str
+) -> _WindowFigures:
+    """Render one window's zoomed panels + correlation heatmap to PNG bytes.
+
+    Pure function of the read-only ``bundle`` (and the persisted spurs it
+    carries); shared by the serial and the process-pool paths so both produce
+    identical bytes.
+    """
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from ..visualization.fit_detail import (
+        frequency_sorted_labels,
+        plot_correlation_heatmap,
+    )
+    from .stage5_impl import render_fit_panels_impl
+
+    panels = render_fit_panels_impl(path, wid, bundle=bundle, with_overview=False)
+    panel_bytes: Dict[str, bytes] = {}
+    mag_geom: Optional[Dict[str, float]] = None
+    for panel in _PANEL_ORDER:
+        pfig = panels.get(panel)
+        if pfig is None:
+            continue
+        if panel == "overview":
+            # The full-spectrum context is the single shared interactive overview,
+            # not a per-window image; discard any overview panel.
+            plt.close(pfig)
+            continue
+        panel_bytes[panel] = _figure_png_bytes(pfig, dpi=dpi)
+        # The |X| panel's data-axes geometry (post-savefig layout) powers the
+        # curation click-to-add overlay; capture before closing the figure.
+        if panel == "mag":
+            mag_geom = _mag_axes_geometry(pfig, dpi=dpi)
+        plt.close(pfig)
+
+    # Correlation heatmap (when a covariance was persisted) -- a divergent
+    # [-1, +1] image that stays readable where the numeric matrix does not.
+    wf = bundle.fit.window_fit(wid)
+    cov = getattr(wf, "covariance", None)
+    cov_labels = getattr(wf, "covariance_param_labels", None)
+    corr_bytes: Optional[bytes] = None
+    if cov is not None and cov_labels:
+        peak_letters = frequency_sorted_labels(
+            [float(p.frequency_mhz) for p in wf.fitted_peaks]
+        )
+        sym_labels = [_param_symbol_mathtext(lbl, peak_letters) for lbl in cov_labels]
+        hfig = plot_correlation_heatmap(cov, sym_labels)
+        # bbox_inches="tight" so the wide mathtext axis labels (the baseline
+        # coefficient stacks) are never clipped at the figure edge.
+        corr_bytes = _figure_png_bytes(hfig, dpi=dpi, bbox_inches="tight")
+        plt.close(hfig)
+
+    # The hover-preview thumbnail is the |X| panel downscaled; doing it here (in
+    # the render worker, off the panel bytes we already hold) parallelizes the
+    # O(N_windows) downscale that the single-file collapse otherwise runs serially.
+    thumb_bytes: Optional[bytes] = None
+    mag_png = panel_bytes.get("mag")
+    if mag_png is not None:
+        thumb_bytes = _downscale_thumb_bytes(mag_png)
+    return wid, panel_bytes, mag_geom, corr_bytes, thumb_bytes
+
+
+def _render_window_worker(wid: int) -> _WindowFigures:
+    """Process-pool entry point: render ``wid`` from the fork-inherited context."""
+    ctx = _WORKER_RENDER_CTX
+    assert ctx is not None  # set in the parent before the pool forks
+    return _render_one_window_figures(
+        wid, path=ctx["path"], bundle=ctx["bundle"], dpi=ctx["dpi"], stem=ctx["stem"]
+    )
+
+
+def _render_all_window_figures(
+    *, path: str, bundle: Any, dpi: int, stem: str, page_ids: List[int]
+) -> Dict[int, _WindowFigures]:
+    """Render every page window's figures, in parallel when worthwhile.
+
+    Returns ``{wid: (wid, panel_bytes, mag_geom, corr_bytes)}``. Uses a forking
+    process pool (the read-only ``bundle`` -- ~200k-1.2M-point arrays -- is
+    inherited via fork, never pickled per task; only the int window id goes out
+    and the PNG bytes come back) capped at ``cpu_count - 2``. Falls back to an
+    in-process serial render for a single window, when only one worker is
+    available, or when the platform lacks ``fork``. The figures are deterministic
+    at fixed DPI, so the parallel and serial outputs are byte-identical.
+    """
+    import multiprocessing
+    import os
+
+    n = len(page_ids)
+    if _FIGURE_RENDER_WORKERS is not None:
+        max_workers = int(_FIGURE_RENDER_WORKERS)
+    else:
+        max_workers = max(1, (os.cpu_count() or 2) - 2)
+
+    serial = (
+        n < 2
+        or max_workers < 2
+        or "fork" not in multiprocessing.get_all_start_methods()
+    )
+    results: Dict[int, _WindowFigures] = {}
+    if serial:
+        for i, wid in enumerate(page_ids, start=1):
+            results[wid] = _render_one_window_figures(
+                wid, path=path, bundle=bundle, dpi=dpi, stem=stem
+            )
+            logger.info("window %d/%d", i, n)
+        return results
+
+    global _WORKER_RENDER_CTX
+    _WORKER_RENDER_CTX = {"path": path, "bundle": bundle, "dpi": dpi, "stem": stem}
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+
+        ctx_mp = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(
+            max_workers=min(max_workers, n), mp_context=ctx_mp
+        ) as ex:
+            # ex.map preserves input order and re-raises worker exceptions, so the
+            # per-window progress log stays ordered (1/n, 2/n, ...) -- the visible
+            # progress signal on long report runs.
+            for i, res in enumerate(ex.map(_render_window_worker, page_ids), start=1):
+                results[res[0]] = res
+                logger.info("window %d/%d", i, n)
+    finally:
+        _WORKER_RENDER_CTX = None
+    return results
+
+
 def _fit_panels_block(
     panel_files: Dict[str, str],
     *,
@@ -2467,7 +2690,38 @@ REPORT_SCOPES = ("summary", "full")
 _THUMB_MAX_W = 400
 
 
-def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> str:
+def _downscale_thumb_bytes(png_bytes: bytes) -> bytes:
+    """Downscale a panel PNG to the hover-preview thumbnail width, as PNG bytes.
+
+    Sink-agnostic (operates on bytes), so a render worker can produce the
+    thumbnail off the panel it just drew -- parallelizing the O(N_windows)
+    downscale that otherwise runs serially in the collapse -- and the result is
+    byte-identical to downscaling the same PNG read back from disk.
+    """
+    import io
+
+    from PIL import Image
+
+    with Image.open(io.BytesIO(png_bytes)) as src:
+        img = src.convert("RGB")
+        if img.width > _THUMB_MAX_W:
+            h = round(img.height * _THUMB_MAX_W / img.width)
+            img = img.resize((_THUMB_MAX_W, h), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def _collapse_site_to_single_file(
+    site_dir: Optional[Path],
+    *,
+    mode: str,
+    stem: str,
+    figure_store: Optional[Dict[str, bytes]] = None,
+    thumb_store: Optional[Dict[str, bytes]] = None,
+    page_store: Optional[Dict[str, str]] = None,
+    css: Optional[str] = None,
+) -> str:
     """Collapse a built report site into one self-contained HTML document.
 
     Inlines the stylesheet, base64-embeds every ``<img>`` figure, and rewrites
@@ -2481,41 +2735,54 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
     page, so a map keeps one small copy instead of hundreds.
     """
     import base64
-    import io
     import json
 
-    css = (site_dir / "assets" / "style.css").read_text()
     img_re = re.compile(r'src="([^"]+\.png)"')
     thumb_re = re.compile(r'data-thumb="[^"]*/([^"/]+\.png)"')
     script_re = re.compile(r"<script\b[^>]*>.*?</script>", re.DOTALL)
     main_open = '<main class="report">'
     thumb_keys: set[str] = set()
 
-    def data_uri(p: Path) -> str:
-        enc = base64.b64encode(p.read_bytes()).decode("ascii")
-        return f"data:image/png;base64,{enc}"
+    # Figures, thumbnails, pages and the stylesheet resolve from the in-memory
+    # stores when given (the single-file production path never touches disk),
+    # else from the built site on disk (the multi-file path / tests). Per-window
+    # figures live in ``figure_store``; the few methods-page figures stay on disk
+    # even in the in-memory path, so the resolvers check the store then the dir.
+    def read_png(name: str) -> Optional[bytes]:
+        if figure_store is not None and name in figure_store:
+            return figure_store[name]
+        if site_dir is not None:
+            fp = site_dir / "figures" / name
+            if fp.exists():
+                return fp.read_bytes()
+        return None
+
+    def data_uri_name(name: str) -> Optional[str]:
+        raw = read_png(name)
+        if raw is None:
+            return None
+        return f"data:image/png;base64,{base64.b64encode(raw).decode('ascii')}"
 
     # The interactive-overview background is a CSS ``url(../figures/...)``; embed
     # it once as a data URI (the rest of the stylesheet has no url() refs), so the
     # shared overview image is inlined a single time for the whole document.
     def _embed_css_url(m: "re.Match[str]") -> str:
-        fp = site_dir / "figures" / m.group(1)
-        return f"url({data_uri(fp)})" if fp.exists() else m.group(0)
+        uri = data_uri_name(m.group(1))
+        return f"url({uri})" if uri is not None else m.group(0)
 
+    css = css if css is not None else (site_dir / "assets" / "style.css").read_text()  # type: ignore[union-attr]
     css = re.sub(r"url\((?:\.\./)?figures/([^)]+\.png)\)", _embed_css_url, css)
 
     def thumb_data_uri(name: str) -> str:
-        from PIL import Image
-
-        with Image.open(site_dir / "figures" / name) as src:
-            img = src.convert("RGB")
-            if img.width > _THUMB_MAX_W:
-                h = round(img.height * _THUMB_MAX_W / img.width)
-                img = img.resize((_THUMB_MAX_W, h), Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG", optimize=True)
-        enc = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{enc}"
+        # Prefer a worker-precomputed (already downscaled) thumbnail; otherwise
+        # downscale the full panel here. Both yield identical bytes.
+        tb = thumb_store.get(name) if thumb_store is not None else None
+        if tb is None:
+            png = read_png(name)
+            if png is None:
+                return ""
+            tb = _downscale_thumb_bytes(png)
+        return f"data:image/png;base64,{base64.b64encode(tb).decode('ascii')}"
 
     def rewrite_links(frag: str) -> str:
         if mode == "full":
@@ -2539,7 +2806,7 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
         thumb_keys.add(name)
         return f'data-thumb="{name}"'
 
-    def prep(html: str, page_dir: Path) -> str:
+    def prep(html: str) -> str:
         i = html.find(main_open)
         j = html.rfind("</main>")
         frag = html[i + len(main_open) : j]
@@ -2548,29 +2815,45 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
         frag = rewrite_links(frag)
 
         def embed(m: "re.Match[str]") -> str:
-            fp = (page_dir / m.group(1)).resolve()
-            return f'src="{data_uri(fp)}"' if fp.exists() else m.group(0)
+            uri = data_uri_name(Path(m.group(1)).name)
+            return f'src="{uri}"' if uri is not None else m.group(0)
 
         return img_re.sub(embed, frag)
 
-    sections = [
-        f'<section id="page-top">{prep((site_dir / "index.html").read_text(), site_dir)}'
-        "</section>"
-    ]
-    methods_p = site_dir / "methods.html"
-    if methods_p.exists():
-        sections.append(
-            f'<section id="methods">{prep(methods_p.read_text(), site_dir)}</section>'
-        )
+    def read_page(name: str) -> Optional[str]:
+        if page_store is not None:
+            return page_store.get(name)
+        fp = site_dir / name if site_dir is not None else None  # type: ignore[union-attr]
+        return fp.read_text() if fp is not None and fp.exists() else None
+
+    sections = [f'<section id="page-top">{prep(read_page("index.html") or "")}</section>']
+    methods_text = read_page("methods.html")
+    if methods_text is not None:
+        sections.append(f'<section id="methods">{prep(methods_text)}</section>')
     window_ids: List[int] = []
     if mode == "full":
-        win_dir = site_dir / "windows"
-        for wp in sorted(win_dir.glob("window_*.html")):
-            wid = int(re.search(r"window_0*(\d+)\.html", wp.name).group(1))  # type: ignore[union-attr]
+        if page_store is not None:
+            win_pages = sorted(
+                k for k in page_store if re.fullmatch(r"windows/window_\d+\.html", k)
+            )
+        elif site_dir is not None:
+            win_pages = [
+                f"windows/{wp.name}"
+                for wp in sorted((site_dir / "windows").glob("window_*.html"))
+            ]
+        else:
+            win_pages = []
+        for key in win_pages:
+            wid = int(re.search(r"window_0*(\d+)\.html", key).group(1))  # type: ignore[union-attr]
             window_ids.append(wid)
+            text = (
+                page_store[key]
+                if page_store is not None
+                else (site_dir / key).read_text()  # type: ignore[union-attr]
+            )
             sections.append(
                 f'<section id="window-{wid}" class="embedded-window">'
-                f"{prep(wp.read_text(), win_dir)}</section>"
+                f"{prep(text)}</section>"
             )
 
     # One deduplicated, downscaled base64 thumbnail per referenced window, looked
@@ -2588,7 +2871,7 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
     # folded in; the jump-to-window picker only when the per-window pages are.
     # Everything anchors to in-document section ids.
     nav_links = ['<a href="#page-top">Overview</a>']
-    if methods_p.exists():
+    if methods_text is not None:
         nav_links.append('<a href="#methods">Methods</a>')
     nav_links.append('<a href="#window-list">Windows</a>')
     nav_links.append('<a href="#final-list">Line list</a>')
@@ -2648,6 +2931,25 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
 # ---------------------------------------------------------------------------
 
 
+@dataclass
+class _ReportModel:
+    """In-memory result of assembling a report site.
+
+    Carries the figure bytes (per-window panels + correlation heatmaps), the
+    per-window hover thumbnails (downscaled in the render workers), the page
+    HTML, and the stylesheet -- everything :func:`_collapse_site_to_single_file`
+    needs to build the single self-contained file *without* a disk round-trip.
+    The few methods-page figures (per-stage diagnostics) and the shared overview
+    are O(1) and stay on disk under ``out_root``. ``stem`` is the file stem.
+    """
+
+    stem: str
+    figure_store: Dict[str, bytes] = field(default_factory=dict)
+    thumb_store: Dict[str, bytes] = field(default_factory=dict)
+    page_store: Dict[str, str] = field(default_factory=dict)
+    css: str = ""
+
+
 def _assemble_report_site(
     file_path: Union[Path, str],
     *,
@@ -2656,14 +2958,21 @@ def _assemble_report_site(
     dpi: int = 110,
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
-) -> str:
-    """Build the working report site under *out_root*; return the file stem.
+    write_files: bool = True,
+) -> _ReportModel:
+    """Assemble the report into an in-memory :class:`_ReportModel`.
 
-    Writes the linked-site form (``index.html`` + ``methods.html`` + a page per
-    window under ``windows/`` + ``assets/`` + ``figures/``) that
+    Builds the linked-site form (``index.html`` + ``methods.html`` + a page per
+    window + ``assets/`` + ``figures/``) that
     :func:`_collapse_site_to_single_file` folds into the one self-contained file
-    :func:`report_full_impl` ships. Split out so the structural invariants of the
-    assembly can be inspected directly. See :func:`report_full_impl` for the
+    :func:`report_full_impl` ships. The per-window figures (the O(N) bulk), their
+    hover thumbnails, and the page HTML are returned in the model; the few
+    methods-page figures + the shared overview are written under ``out_root``
+    (O(1)). When ``write_files`` is True (default) the per-window figures + pages
+    are *also* written to ``out_root`` so the multi-file site exists on disk (the
+    direct-inspection / test path); the single-file production path passes
+    ``write_files=False`` and collapses straight from the model, never writing the
+    O(N) per-window artifacts to disk. See :func:`report_full_impl` for the
     parameter semantics (``out_root`` here is the site directory).
 
     Raises ``ValueError`` if *windows* is unknown, no final-products table is
@@ -2675,13 +2984,11 @@ def _assemble_report_site(
     import matplotlib.pyplot as plt
 
     from ..visualization.fit_detail import (
-        frequency_sorted_labels,
-        plot_correlation_heatmap,
         plot_magnitude_histogram,
         plot_summary_histograms,
     )
     from .report_impl import _render_markdown
-    from .stage5_impl import _resolve_detail_bundle, render_fit_panels_impl
+    from .stage5_impl import _resolve_detail_bundle
     from .stage6_impl import get_candidate_ledger_impl
 
     key = str(windows).lower()
@@ -2773,9 +3080,15 @@ def _assemble_report_site(
             merges_by_window.setdefault(int(wid_rec), []).append(rec)
 
     out_root = Path(out_root)
-    (out_root / "assets").mkdir(parents=True, exist_ok=True)
+    # The methods-page figures + the shared overview (both O(1)) always go to
+    # disk under out_root; the assets/windows dirs are only needed when the
+    # per-window artifacts are also materialized (write_files).
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
-    (out_root / "windows").mkdir(parents=True, exist_ok=True)
+    if write_files:
+        (out_root / "assets").mkdir(parents=True, exist_ok=True)
+        (out_root / "windows").mkdir(parents=True, exist_ok=True)
+
+    site = _ReportModel(stem=stem)
 
     # The interactive full-spectrum overview image, rendered ONCE (attention
     # windows shaded into it): it backs both the index "Spectrum" section and
@@ -2793,61 +3106,59 @@ def _assemble_report_site(
         except (ValueError, KeyError):
             overview_name = None
     # The stylesheet, plus the per-build rule binding that overview as the
-    # interactive-overview background.
-    (out_root / "assets" / "style.css").write_text(
-        _STYLESHEET + _spectrum_ctx_css(overview_name)
-    )
+    # interactive-overview background. Kept in the model (the single-file path
+    # embeds it from there) and written to assets/ for the multi-file site.
+    site.css = _STYLESHEET + _spectrum_ctx_css(overview_name)
+    if write_files:
+        (out_root / "assets" / "style.css").write_text(site.css)
 
-    # --- per-window pages + figures -------------------------------------
+    # --- per-window figures (parallel) ----------------------------------
+    # Figure rendering is the dominant report cost and the windows are
+    # independent, so render them across a forking process pool; the returned
+    # PNG + thumbnail bytes go into the model (the single-file path embeds them
+    # straight from memory) and are written to the figure dir only for the
+    # multi-file site (write_files).
     n_pages = len(page_ids)
-    for idx, wid in enumerate(page_ids):
-        # Per-window render progress (the dominant report-rendering cost).
-        logger.info("window %d/%d", idx + 1, n_pages)
-        wf = win_fits[wid]
-        # The zoomed panels (re / im / mag / hist); the full-spectrum context is
-        # the shared interactive overview, not a per-window image.
-        panels = render_fit_panels_impl(path, wid, bundle=bundle)
+    logger.info("rendering %d window figure sets", n_pages)
+    rendered = _render_all_window_figures(
+        path=path, bundle=bundle, dpi=dpi, stem=stem, page_ids=page_ids
+    )
+    figures_dir = out_root / "figures"
+    panel_files_by_wid: Dict[int, Dict[str, str]] = {}
+    mag_geom_by_wid: Dict[int, Optional[Dict[str, float]]] = {}
+    cov_heatmap_by_wid: Dict[int, Optional[str]] = {}
+    for wid in page_ids:
+        _, panel_bytes, mag_geom, corr_bytes, thumb_bytes = rendered[wid]
         panel_files: Dict[str, str] = {}
-        mag_geom: Optional[Dict[str, float]] = None
-        for panel in _PANEL_ORDER:
-            pfig = panels.get(panel)
-            if pfig is None:
-                continue
-            if panel == "overview":
-                plt.close(pfig)
-                continue
+        for panel, data in panel_bytes.items():
             fname = _panel_figure_name(stem, wid, panel)
-            _save_figure_png(pfig, out_root / "figures" / fname, dpi=dpi)
-            # The |X| panel's data-axes geometry (post-savefig layout) powers the
-            # curation click-to-add overlay; capture before closing the figure.
-            if panel == "mag":
-                mag_geom = _mag_axes_geometry(pfig, dpi=dpi)
-            plt.close(pfig)
+            site.figure_store[fname] = data
+            if write_files:
+                (figures_dir / fname).write_bytes(data)
             panel_files[panel] = fname
-        # Correlation heatmap (when a covariance was persisted) -- a divergent
-        # [-1, +1] image that stays readable where the numeric matrix does not.
-        cov = getattr(wf, "covariance", None)
-        cov_labels = getattr(wf, "covariance_param_labels", None)
+        # The hover thumbnail (worker-downscaled off the |X| panel) keys on the
+        # mag panel's basename, matching the data-thumb the pages emit.
+        if thumb_bytes is not None and "mag" in panel_files:
+            site.thumb_store[panel_files["mag"]] = thumb_bytes
         cov_heatmap_name: Optional[str] = None
-        if cov is not None and cov_labels:
-            peak_letters = frequency_sorted_labels(
-                [float(p.frequency_mhz) for p in wf.fitted_peaks]
-            )
-            sym_labels = [
-                _param_symbol_mathtext(lbl, peak_letters) for lbl in cov_labels
-            ]
-            hfig = plot_correlation_heatmap(cov, sym_labels)
+        if corr_bytes is not None:
             cov_heatmap_name = _panel_figure_name(stem, wid, "corr")
-            # bbox_inches="tight" so the wide mathtext axis labels (the baseline
-            # coefficient stacks) are never clipped at the figure edge.
-            _save_figure_png(
-                hfig,
-                out_root / "figures" / cov_heatmap_name,
-                dpi=dpi,
-                bbox_inches="tight",
-            )
-            plt.close(hfig)
-        ledger = get_candidate_ledger_impl(path, wid)
+            site.figure_store[cov_heatmap_name] = corr_bytes
+            if write_files:
+                (figures_dir / cov_heatmap_name).write_bytes(corr_bytes)
+        panel_files_by_wid[wid] = panel_files
+        mag_geom_by_wid[wid] = mag_geom
+        cov_heatmap_by_wid[wid] = cov_heatmap_name
+
+    # --- per-window pages -----------------------------------------------
+    for idx, wid in enumerate(page_ids):
+        wf = win_fits[wid]
+        panel_files = panel_files_by_wid[wid]
+        mag_geom = mag_geom_by_wid[wid]
+        cov_heatmap_name = cov_heatmap_by_wid[wid]
+        ledger = get_candidate_ledger_impl(
+            path, wid, spectrum_fit=bundle.fit, sideband=bundle.sideband
+        )
         prev_id = page_ids[idx - 1] if idx > 0 else None
         next_id = page_ids[idx + 1] if idx + 1 < len(page_ids) else None
         win_peaks = peaks_by_window.get(wid, [])
@@ -2878,7 +3189,9 @@ def _assemble_report_site(
             overview_name=overview_name,
             mag_geom=mag_geom,
         )
-        (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
+        site.page_store[f"windows/{_window_page_name(wid)}"] = page_html
+        if write_files:
+            (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
     # --- methods + results page (Level-2 content, HTML-ified) ---------------
     # Each distribution figure is injected next to the percentile table it
@@ -2924,7 +3237,10 @@ def _assemble_report_site(
         methods_html, ok = _inject_before(methods_html, anchor, fig_html)
         if not ok:
             leftover.append(fig_html)
-    (out_root / "methods.html").write_text(_summary_page(stem, methods_html, leftover))
+    methods_page = _summary_page(stem, methods_html, leftover)
+    site.page_store["methods.html"] = methods_page
+    if write_files:
+        (out_root / "methods.html").write_text(methods_page)
 
     # --- index ----------------------------------------------------------
     # Spectrum section: the interactive full-spectrum overview (the shared image
@@ -2991,10 +3307,11 @@ def _assemble_report_site(
     # the index tables' rows, so it is always included on the index page.
     body.append(_WINMAP_JS)
     index_html = _page(f"{stem} report", body, css_href="assets/style.css")
-    index_path = out_root / "index.html"
-    index_path.write_text(index_html)
+    site.page_store["index.html"] = index_html
+    if write_files:
+        (out_root / "index.html").write_text(index_html)
 
-    return stem
+    return site
 
 
 def report_full_impl(
@@ -3057,23 +3374,34 @@ def report_full_impl(
 
     final_dir = Path(output_dir)
     final_dir.mkdir(parents=True, exist_ok=True)
-    # Assemble the working site in a scratch dir and collapse it into one
+    # Assemble straight to an in-memory model and collapse it into one
     # self-contained file (figures embedded, CSS inlined, cross-page links
-    # rewritten to in-document anchors), then discard the scratch site.
+    # rewritten to in-document anchors). The O(N_windows) per-window figures +
+    # pages never touch disk -- only the O(1) methods-page figures land in the
+    # scratch dir, which is discarded.
     out_root = Path(tempfile.mkdtemp(prefix="ftmw_report_"))
     try:
-        stem = _assemble_report_site(
+        site = _assemble_report_site(
             file_path,
             out_root=out_root,
             windows=windows,
             dpi=dpi,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
+            write_files=False,
         )
         suffix = "_summary" if scope == "summary" else ""
-        single_path = final_dir / f"{stem}_report{suffix}.html"
+        single_path = final_dir / f"{site.stem}_report{suffix}.html"
         single_path.write_text(
-            _collapse_site_to_single_file(out_root, mode=scope, stem=stem)
+            _collapse_site_to_single_file(
+                out_root,
+                mode=scope,
+                stem=site.stem,
+                figure_store=site.figure_store,
+                thumb_store=site.thumb_store,
+                page_store=site.page_store,
+                css=site.css,
+            )
         )
     finally:
         shutil.rmtree(out_root, ignore_errors=True)
