@@ -376,6 +376,10 @@ tr.cur-added > td { background: #d8efdc !important; }
     color: #11233a; cursor: pointer; }
 .topnav .cur-toggle:hover { background: #fff; }
 .topnav .cur-badge { font-size: 0.82rem; color: #cfe0f5; }
+/* Click-on-plot: the |X| panel takes a crosshair only in curation mode (and not
+   in compact, where a click zooms the thumbnail); a click queues an add seed at
+   the clicked molecular frequency. */
+html.curation-enabled:not(.report-compact) img.cur-plot { cursor: crosshair; }
 """
 
 
@@ -1441,6 +1445,27 @@ _CURATION_JS = r"""<script>
     }
     if (t.classList && t.classList.contains('cur-clear')) { clearCart(); return; }
 
+    // Click-on-plot: invert the click x over the |X| panel to a molecular MHz
+    // and queue an `add` seed at that frequency. The stamped data-axes box is in
+    // natural PNG pixels; scale the click through the rendered <img> size. In
+    // compact mode a click zooms the thumbnail, so defer to that.
+    if (t.classList && t.classList.contains('cur-plot')) {
+      if (!root.classList.contains('curation-enabled')) return;
+      if (root.classList.contains('report-compact')) return;
+      var px0 = parseFloat(t.getAttribute('data-axes-x0'));
+      var px1 = parseFloat(t.getAttribute('data-axes-x1'));
+      var flo = parseFloat(t.getAttribute('data-axes-flo'));
+      var fhi = parseFloat(t.getAttribute('data-axes-fhi'));
+      if (!(px1 > px0) || isNaN(flo) || isNaN(fhi) || !t.naturalWidth) return;
+      var rect = t.getBoundingClientRect();
+      var nat = (e.clientX - rect.left) / rect.width * t.naturalWidth;
+      if (nat < px0 || nat > px1) return;  // outside the data axes
+      var f = (flo + (nat - px0) / (px1 - px0) * (fhi - flo)).toFixed(4);
+      addOp({ action: 'add', window: t.getAttribute('data-window'), freqs: f,
+              params: '', label: 'add ' + f + ' (plot)' });
+      return;
+    }
+
     if (!(t.classList && t.classList.contains('cur-btn'))) return;
     var act = t.getAttribute('data-act');
     var sec = t.closest('section');
@@ -2124,7 +2149,45 @@ def _attention_block(status: Optional[WindowReviewStatus]) -> List[str]:
     return ["<h3>Attention</h3>", "<ul>", *items, "</ul>"]
 
 
-def _fit_panels_block(panel_files: Dict[str, str]) -> List[str]:
+def _mag_axes_geometry(fig: Any, *, dpi: int) -> Optional[Dict[str, float]]:
+    """Capture the |X| panel's data-axes geometry for the click-to-add overlay.
+
+    Returns the data-axes bounding box in *saved-PNG pixels* (the natural image
+    size, ``figsize * dpi``) plus the molecular frequency at the box's left and
+    right edges, so a click x over the rendered ``<img>`` inverts to a molecular
+    MHz by linear interpolation -- carrying the axis sense (ascending or
+    descending) implicitly in ``flo`` / ``fhi``. Must be called *after* the
+    figure is drawn (``savefig`` forces the ``constrained_layout`` pass that
+    finalizes ``ax.get_position()``); the panels are saved without
+    ``bbox_inches="tight"``, so the figure-fraction box maps cleanly to the PNG.
+    Returns ``None`` when the data axis can't be identified.
+    """
+    ax = next((a for a in fig.axes if a.get_xlabel().startswith("frequency")), None)
+    if ax is None:
+        return None
+    pos = ax.get_position()  # figure-fraction, post-layout
+    w_in, h_in = (float(v) for v in fig.get_size_inches())
+    w_px, h_px = w_in * dpi, h_in * dpi
+    flo, fhi = (float(v) for v in ax.get_xlim())
+    return {
+        "x0": pos.x0 * w_px,
+        "x1": pos.x1 * w_px,
+        # Image y grows downward; the matplotlib position fraction grows upward.
+        "y0": (1.0 - pos.y1) * h_px,
+        "y1": (1.0 - pos.y0) * h_px,
+        "w": w_px,
+        "h": h_px,
+        "flo": flo,
+        "fhi": fhi,
+    }
+
+
+def _fit_panels_block(
+    panel_files: Dict[str, str],
+    *,
+    window_id: Optional[int] = None,
+    mag_geom: Optional[Dict[str, float]] = None,
+) -> List[str]:
     """Lay the per-window panel PNGs out for the 1:2:2 responsive grid.
 
     The overview spans full width on top; the Re / Im model+residual panels
@@ -2133,23 +2196,37 @@ def _fit_panels_block(panel_files: Dict[str, str]) -> List[str]:
     each panel takes the full width in turn. Each entry is rendered only when its
     PNG was produced, so a degenerate window with missing panels still yields
     valid markup.
+
+    When *window_id* and *mag_geom* are supplied, the magnitude panel's
+    ``<img>`` carries ``data-window`` + the ``data-axes-*`` geometry the curation
+    click-to-add overlay inverts a click into a molecular-MHz ``add`` seed.
     """
 
-    def _fig(panel: str, alt: str, cls: str = "panel") -> List[str]:
+    def _fig(panel: str, alt: str, cls: str = "panel", attrs: str = "") -> List[str]:
         name = panel_files.get(panel)
         if name is None:
             return []
         return [
             f'  <figure class="{cls}">'
-            f'<img src="../figures/{name}" alt="{_esc(alt)}"></figure>'
+            f'<img src="../figures/{name}" alt="{_esc(alt)}"{attrs}></figure>'
         ]
+
+    mag_attrs = ""
+    if window_id is not None and mag_geom is not None:
+        mag_attrs = (
+            f' class="cur-plot" data-window="{window_id}"'
+            f' data-axes-x0="{mag_geom["x0"]:.2f}"'
+            f' data-axes-x1="{mag_geom["x1"]:.2f}"'
+            f' data-axes-flo="{mag_geom["flo"]:.6f}"'
+            f' data-axes-fhi="{mag_geom["fhi"]:.6f}"'
+        )
 
     out = ['<div class="fit-panels">']
     out += _fig("overview", "full-spectrum context", "panel panel-overview")
     grid = (
         _fig("re", "real part + residual")
         + _fig("im", "imaginary part + residual")
-        + _fig("mag", "magnitude + residual")
+        + _fig("mag", "magnitude + residual", attrs=mag_attrs)
         + _fig("hist", "residual histogram")
     )
     if grid:
@@ -2183,6 +2260,7 @@ def _window_page(
     ] = None,
     band: Optional[Tuple[float, float]] = None,
     overview_name: Optional[str] = None,
+    mag_geom: Optional[Dict[str, float]] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -2237,7 +2315,7 @@ def _window_page(
         *_attention_block(status),
         *context,
         "<h2>Fit</h2>",
-        *_fit_panels_block(panel_files),
+        *_fit_panels_block(panel_files, window_id=window_id, mag_geom=mag_geom),
         "<h2>Fitted lines</h2>",
         _window_peak_table(peaks, uname, uval, catalog_matches, window_id=window_id),
         *_window_curation_controls(window_id, min(lo, hi), max(lo, hi)),
@@ -2609,6 +2687,7 @@ def _assemble_report_site(
         # the shared interactive overview, not a per-window image.
         panels = render_fit_panels_impl(path, wid, bundle=bundle)
         panel_files: Dict[str, str] = {}
+        mag_geom: Optional[Dict[str, float]] = None
         for panel in _PANEL_ORDER:
             pfig = panels.get(panel)
             if pfig is None:
@@ -2618,6 +2697,10 @@ def _assemble_report_site(
                 continue
             fname = _panel_figure_name(stem, wid, panel)
             _save_figure_png(pfig, out_root / "figures" / fname, dpi=dpi)
+            # The |X| panel's data-axes geometry (post-savefig layout) powers the
+            # curation click-to-add overlay; capture before closing the figure.
+            if panel == "mag":
+                mag_geom = _mag_axes_geometry(pfig, dpi=dpi)
             plt.close(pfig)
             panel_files[panel] = fname
         # Correlation heatmap (when a covariance was persisted) -- a divergent
@@ -2672,6 +2755,7 @@ def _assemble_report_site(
             nav_rows=index_rows,
             band=nav_band,
             overview_name=overview_name,
+            mag_geom=mag_geom,
         )
         (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 

@@ -12,8 +12,10 @@ per-row Remove/Split/merge controls, per-window add + merge-selected + mark-
 reviewed controls, ledger-candidate Add buttons, a docked grouped cart with
 download/copy/clear and the run command, progressive-enhancement gating, and the
 raw-frequency correctness rule with its load-bearing test (see
-*In-report curation UX (phase 1)* below). **Next: the phase-2 click-on-plot +
-on-plot queued-edit SVG markers.**
+*In-report curation UX (phase 1)* below). The phase-2 **click-to-add** is also
+shipped: a click on the |X| panel inverts to a molecular-MHz `add` seed via the
+stamped data-axes geometry. **Next: the on-plot queued-edit SVG markers** (the
+remaining phase-2 piece, reusing the same coordinate mapping).
 
 The workflow turns the read-only Level-3 HTML report into a *curation author*:
 per-line and per-candidate controls accumulate user-intended edits into a
@@ -348,25 +350,30 @@ visible and reversible without opening the cart:
 
 Because we own figure generation, capture the data-axes geometry at render time
 and stamp it onto the embedded image so JS can invert a click to a frequency —
-no interactive plotting library required:
+no interactive plotting library required. **Click-to-add is shipped; the on-plot
+queued-edit SVG markers remain (they reuse the same coordinate mapping).**
 
-- At save time in `visualization/fit_detail.py` (`plot_window_panels`), record
-  the magnitude panel's **data-axes bounding box** in *figure-fraction*
-  (`ax.get_position()`), combined with figure size and DPI to get the pixel bbox
-  within the saved PNG, plus the x-axis frequency limits (`freq_lo`, `freq_hi`,
-  and ascending/descending sense).
-- Transport these to the report as `data-axes-*` attributes on the panel `<img>`
-  (we emit the tag, so HTML data attributes are the simplest carrier; PNG `tEXt`
-  metadata is an alternative if the image must carry it standalone, at the cost
-  of client-side PNG parsing).
-- A transparent overlay sized to the rendered `<img>` (scaled by
-  `naturalWidth`/`naturalHeight`) maps a click x → molecular MHz by linear
-  interpolation across the stamped bbox/limits, and opens an "add at F" cart
-  entry with the frequency prefilled. ~30 lines of vanilla JS.
-
-Treat this as polish on top of a working cart: a plain frequency input on the Add
-control delivers most of the value immediately, and the click overlay is the
-slick finish once the bbox capture is wired and kept in sync with the render DPI.
+- **DONE — geometry capture.** `_mag_axes_geometry` reads the magnitude panel's
+  data-axes box (`ax.get_position()`, post-`savefig` so `constrained_layout` has
+  resolved) and, with the figure size and the report DPI, returns the box in
+  *saved-PNG pixels* plus the frequency at its left/right edges (`flo`/`fhi`,
+  which carry the ascending/descending sense). The panels are saved without
+  `bbox_inches="tight"`, so the figure-fraction box maps cleanly to the PNG.
+- **DONE — transport.** `_fit_panels_block` stamps `data-window` + `data-axes-x0`
+  / `-x1` / `-flo` / `-fhi` on the `<img class="cur-plot">` (HTML data attributes;
+  they survive the single-file collapse, which rewrites only the `src`).
+- **DONE — click-to-add.** A click on the `cur-plot` image (curation mode, not
+  compact — where a click zooms the thumbnail) scales the click x through the
+  rendered `<img>` to natural PNG pixels and linearly inverts the stamped
+  box/limits to a molecular MHz, queuing an `add` seed at that frequency. No
+  overlay element needed for add; the image is the click surface. The
+  Python-side inversion is unit-tested (`_mag_axes_geometry` + the linear map),
+  and the integration test asserts the geometry survives the collapse.
+- **TODO — on-plot queued-edit SVG markers.** A transparent overlay sized to the
+  rendered `<img>` (scaled by `naturalWidth`/`naturalHeight`) draws a marker per
+  queued edit at its frequency, with a near-plot control to drop the queued
+  action — the same coordinate mapping, run forward (MHz → pixel) instead of
+  inverted.
 
 ## Interface surface
 
@@ -468,5 +475,8 @@ The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in th
    file curation surface, and the load-bearing rule (a row's emitted `data-freq`
    fed to `review apply` removes that exact peak). JS DOM behavior (cart
    accumulation, CSV serialization, row state) is manual-verify per the spec.
-5. **NEXT — Click-on-plot + on-plot queued-edit SVG markers:** axes-bbox capture
-   in `fit_detail.py` + the shared transparent overlay. Phase 2 polish.
+5. **Click-on-plot (phase 2).** Click-to-add is DONE: `_mag_axes_geometry`
+   captures the |X| panel's data-axes box + frequency limits, `_fit_panels_block`
+   stamps them as `data-axes-*` on the `cur-plot` image, and the curation script
+   inverts a click to a molecular MHz `add` seed. **NEXT** in this phase: the
+   on-plot queued-edit SVG markers (the same mapping run forward, MHz → pixel).

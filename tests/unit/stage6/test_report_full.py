@@ -395,6 +395,78 @@ def test_window_curation_controls():
     assert "38449.0000" in block and "38451.0000" in block  # the window range
 
 
+def test_mag_axes_geometry_and_click_inversion():
+    from ftmwpipeline._internal.report_html_impl import _mag_axes_geometry
+
+    fig = plt.figure(figsize=(10.0, 4.0))
+    ax = fig.add_axes([0.1, 0.2, 0.8, 0.7])  # left, bottom, width, height
+    ax.set_xlim(26500.0, 40000.0)
+    ax.set_xlabel("frequency (MHz)")
+    fig.canvas.draw()  # finalize the layout the way savefig does
+    try:
+        geom = _mag_axes_geometry(fig, dpi=100)
+        assert geom is not None
+        # Natural width = 10 in * 100 dpi = 1000 px; the axes span x∈[0.1,0.9].
+        assert geom["x0"] == pytest.approx(100.0)
+        assert geom["x1"] == pytest.approx(900.0)
+        assert geom["w"] == pytest.approx(1000.0)
+        assert geom["flo"] == pytest.approx(26500.0)
+        assert geom["fhi"] == pytest.approx(40000.0)
+
+        # Replicate the overlay's linear inversion: a click x (natural px) -> MHz.
+        def invert(nat):
+            return geom["flo"] + (nat - geom["x0"]) / (geom["x1"] - geom["x0"]) * (
+                geom["fhi"] - geom["flo"]
+            )
+
+        assert invert(100.0) == pytest.approx(26500.0)  # left edge
+        assert invert(900.0) == pytest.approx(40000.0)  # right edge
+        assert invert(500.0) == pytest.approx(33250.0)  # axes midpoint -> midband
+    finally:
+        plt.close(fig)
+
+    # A descending x-axis carries its sense in flo/fhi, so the same inversion holds.
+    fig2 = plt.figure(figsize=(10.0, 4.0))
+    ax2 = fig2.add_axes([0.1, 0.2, 0.8, 0.7])
+    ax2.set_xlim(40000.0, 26500.0)
+    ax2.set_xlabel("frequency (MHz)")
+    fig2.canvas.draw()
+    try:
+        g2 = _mag_axes_geometry(fig2, dpi=100)
+        assert g2["flo"] == pytest.approx(40000.0) and g2["fhi"] == pytest.approx(
+            26500.0
+        )
+    finally:
+        plt.close(fig2)
+
+    # No frequency axis -> no geometry (the painter that lacks the xlabel).
+    fig3 = plt.figure(figsize=(4.0, 4.0))
+    fig3.add_subplot(111).set_xlabel("|residual|")
+    fig3.canvas.draw()
+    try:
+        assert _mag_axes_geometry(fig3, dpi=100) is None
+    finally:
+        plt.close(fig3)
+
+
+def test_fit_panels_block_mag_geometry_attrs():
+    from ftmwpipeline._internal.report_html_impl import _fit_panels_block
+
+    files = {"re": "w_re.png", "mag": "w_mag.png", "hist": "w_hist.png"}
+    geom = {"x0": 90.0, "x1": 910.0, "flo": 26500.0, "fhi": 40000.0}
+    # Without a window id / geometry, the mag img is plain (no click surface).
+    plain = "\n".join(_fit_panels_block(files))
+    assert "cur-plot" not in plain and "data-axes" not in plain
+    # With both, only the mag panel becomes the click-to-add surface.
+    out = "\n".join(_fit_panels_block(files, window_id=24, mag_geom=geom))
+    assert 'class="cur-plot" data-window="24"' in out
+    assert 'data-axes-x0="90.00"' in out and 'data-axes-x1="910.00"' in out
+    assert 'data-axes-flo="26500.000000"' in out
+    assert 'data-axes-fhi="40000.000000"' in out
+    # The |X| panel alone carries the geometry (Re/Im/hist stay plain images).
+    assert out.count("cur-plot") == 1 and "w_re.png" in out
+
+
 def test_catalog_cell_and_window_table_column():
     from ftmwpipeline._internal.catalog_xref import CatalogMatch
     from ftmwpipeline._internal.report_html_impl import _catalog_cell
@@ -767,6 +839,17 @@ def test_single_file_carries_curation_surface(stage5_small_file, tmp_path):
     assert 'data-act="merge-selected"' in doc and 'data-act="add-typed"' in doc
     # The curation CSS gating rule is present (single-class governance).
     assert "html:not(.curation-enabled)" in doc
+    # Click-on-plot: the |X| panel carries its data-axes geometry so the overlay
+    # can invert a click to a molecular MHz. The geometry survives the single-file
+    # collapse (only the img src is rewritten to a data URI).
+    assert 'class="cur-plot"' in doc
+    assert "data-axes-x0=" in doc and "data-axes-flo=" in doc
+    geom = _re.search(
+        r'data-axes-x0="([0-9.]+)" data-axes-x1="([0-9.]+)"'
+        r' data-axes-flo="(-?[0-9.]+)" data-axes-fhi="(-?[0-9.]+)"',
+        doc,
+    )
+    assert geom and float(geom.group(2)) > float(geom.group(1))  # x1 > x0
 
 
 def _peak_list_row(doc: str):
