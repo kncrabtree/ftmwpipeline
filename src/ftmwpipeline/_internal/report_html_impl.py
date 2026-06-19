@@ -376,10 +376,36 @@ tr.cur-added > td { background: #d8efdc !important; }
     color: #11233a; cursor: pointer; }
 .topnav .cur-toggle:hover { background: #fff; }
 .topnav .cur-badge { font-size: 0.82rem; color: #cfe0f5; }
-/* Click-on-plot: the |X| panel takes a crosshair only in curation mode (and not
-   in compact, where a click zooms the thumbnail); a click queues an add seed at
-   the clicked molecular frequency. */
-html.curation-enabled:not(.report-compact) img.cur-plot { cursor: crosshair; }
+/* Click-on-plot: the |X| panel is wrapped so an SVG marker layer and a corner
+   arm toggle sit over it. Click-to-add fires only while the panel is armed (so a
+   tap meant to scroll or zoom never adds); the armed panel takes a crosshair.
+   The SVG is click-transparent except the marker handles, so a plot click still
+   reaches the image. Arm/markers are hidden outside curation and in compact. */
+.cur-plot-wrap { position: relative; display: block; }
+.cur-plot-svg { position: absolute; inset: 0; width: 100%; height: 100%;
+                pointer-events: none; }
+.cur-plot-svg .cur-marker { pointer-events: all; cursor: pointer; }
+.cur-plot-arm { position: absolute; top: 8px; right: 8px; z-index: 2;
+    font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem;
+    border-radius: 4px; border: 1px solid #2c4a6e;
+    background: rgba(255,255,255,0.92); color: #11233a; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+.cur-plot-wrap.cur-armed .cur-plot-arm { background: #1e8e3e; color: #fff;
+    border-color: #14622a; }
+.cur-plot-wrap.cur-armed img.cur-plot { cursor: crosshair; }
+/* On a hover-capable pointer (desktop), keep the arm out of the way until you
+   hover the panel, focus into it (keyboard), or it is armed. Touch devices
+   report `hover: none`, so this guard never applies there and the button stays
+   visible -- the only way to arm without a hover. */
+@media (hover: hover) {
+  .cur-plot-arm { opacity: 0; pointer-events: none;
+                  transition: opacity 0.12s ease; }
+  .cur-plot-wrap:hover .cur-plot-arm,
+  .cur-plot-wrap:focus-within .cur-plot-arm,
+  .cur-plot-wrap.cur-armed .cur-plot-arm { opacity: 1; pointer-events: auto; }
+}
+html.report-compact .cur-plot-arm, html.report-compact .cur-plot-svg {
+    display: none; }
 """
 
 
@@ -1372,6 +1398,56 @@ _CURATION_JS = r"""<script>
     });
   }
 
+  // On-plot markers: one per queued edit, placed by mapping its frequency
+  // forward (MHz -> pixel) through the same stamped data-axes box the click
+  // inverts. The SVG is click-transparent except the marker handles, so plot
+  // clicks still reach the image; clicking a handle drops that edit.
+  var SVGNS = 'http://www.w3.org/2000/svg';
+  var ACT_COLOR = { remove: '#c0392b', split: '#b9770e', add: '#1e8e3e',
+                    merge: '#7d3c98' };
+  function renderMarkers() {
+    document.querySelectorAll('.cur-plot-svg').forEach(function (svg) {
+      while (svg.firstChild) svg.removeChild(svg.firstChild);
+      var img = svg.parentNode.querySelector('img.cur-plot');
+      if (!img) return;
+      var w = svg.getAttribute('data-window');
+      var px0 = parseFloat(img.getAttribute('data-axes-x0'));
+      var px1 = parseFloat(img.getAttribute('data-axes-x1'));
+      var y0 = parseFloat(img.getAttribute('data-axes-y0'));
+      var y1 = parseFloat(img.getAttribute('data-axes-y1'));
+      var flo = parseFloat(img.getAttribute('data-axes-flo'));
+      var fhi = parseFloat(img.getAttribute('data-axes-fhi'));
+      if (!(px1 > px0) || isNaN(flo) || isNaN(fhi)) return;
+      var fmin = Math.min(flo, fhi), fmax = Math.max(flo, fhi);
+      ops.forEach(function (o, i) {
+        if (String(o.window) !== String(w)) return;
+        var color = ACT_COLOR[o.action];
+        if (!color || !o.freqs) return;
+        o.freqs.split(';').forEach(function (fs) {
+          var f = parseFloat(fs);
+          if (isNaN(f) || f < fmin || f > fmax) return;
+          var x = px0 + (f - flo) / (fhi - flo) * (px1 - px0);
+          var line = document.createElementNS(SVGNS, 'line');
+          line.setAttribute('x1', x); line.setAttribute('x2', x);
+          line.setAttribute('y1', y0); line.setAttribute('y2', y1);
+          line.setAttribute('stroke', color);
+          line.setAttribute('stroke-width', '2');
+          if (o.action === 'remove') line.setAttribute('stroke-dasharray', '6 4');
+          svg.appendChild(line);
+          var dot = document.createElementNS(SVGNS, 'circle');
+          dot.setAttribute('cx', x); dot.setAttribute('cy', y0);
+          dot.setAttribute('r', '7'); dot.setAttribute('fill', color);
+          dot.setAttribute('class', 'cur-marker');
+          dot.setAttribute('data-i', i);
+          var title = document.createElementNS(SVGNS, 'title');
+          title.textContent = o.label + ' — click to drop';
+          dot.appendChild(title);
+          svg.appendChild(dot);
+        });
+      });
+    });
+  }
+
   function renderCart() {
     var n = ops.length;
     document.querySelectorAll('.cur-badge').forEach(function (b) {
@@ -1400,6 +1476,7 @@ _CURATION_JS = r"""<script>
     cmdPre.textContent = fmtCmd();
     copyTa.value = toCsv();
     refreshRows();
+    renderMarkers();
   }
 
   function addOp(o) { ops.push(o); renderCart(); }
@@ -1445,13 +1522,37 @@ _CURATION_JS = r"""<script>
     }
     if (t.classList && t.classList.contains('cur-clear')) { clearCart(); return; }
 
-    // Click-on-plot: invert the click x over the |X| panel to a molecular MHz
-    // and queue an `add` seed at that frequency. The stamped data-axes box is in
-    // natural PNG pixels; scale the click through the rendered <img> size. In
-    // compact mode a click zooms the thumbnail, so defer to that.
+    // Drop a queued edit by clicking its on-plot marker handle.
+    if (t.classList && t.classList.contains('cur-marker')) {
+      e.stopPropagation();
+      dropOp(parseInt(t.getAttribute('data-i'), 10));
+      return;
+    }
+    // Arm toggle: click-to-add is live only on the single armed panel, so a tap
+    // meant to scroll or zoom never adds. Arming one panel disarms the others.
+    if (t.classList && t.classList.contains('cur-plot-arm')) {
+      var wrap = t.closest('.cur-plot-wrap');
+      var on = wrap && wrap.classList.contains('cur-armed');
+      document.querySelectorAll('.cur-plot-wrap.cur-armed').forEach(function (w) {
+        w.classList.remove('cur-armed');
+      });
+      if (wrap && !on) wrap.classList.add('cur-armed');
+      document.querySelectorAll('.cur-plot-arm').forEach(function (b) {
+        var w = b.closest('.cur-plot-wrap');
+        b.textContent = (w && w.classList.contains('cur-armed')) ? '× done' : '+ add';
+      });
+      return;
+    }
+
+    // Click-on-plot: on the armed |X| panel, invert the click x to a molecular
+    // MHz and queue an `add` seed there. The stamped data-axes box is in natural
+    // PNG pixels; scale the click through the rendered <img> size. Compact mode
+    // zooms the thumbnail on click, so defer to that.
     if (t.classList && t.classList.contains('cur-plot')) {
       if (!root.classList.contains('curation-enabled')) return;
       if (root.classList.contains('report-compact')) return;
+      var awrap = t.closest('.cur-plot-wrap');
+      if (!awrap || !awrap.classList.contains('cur-armed')) return;
       var px0 = parseFloat(t.getAttribute('data-axes-x0'));
       var px1 = parseFloat(t.getAttribute('data-axes-x1'));
       var flo = parseFloat(t.getAttribute('data-axes-flo'));
@@ -2197,36 +2298,56 @@ def _fit_panels_block(
     PNG was produced, so a degenerate window with missing panels still yields
     valid markup.
 
-    When *window_id* and *mag_geom* are supplied, the magnitude panel's
-    ``<img>`` carries ``data-window`` + the ``data-axes-*`` geometry the curation
-    click-to-add overlay inverts a click into a molecular-MHz ``add`` seed.
+    When *window_id* and *mag_geom* are supplied, the magnitude panel becomes the
+    curation click surface: its ``<img>`` carries ``data-window`` + the full
+    ``data-axes-*`` geometry (pixel box, frequency limits) so the overlay can map
+    between a click x and a molecular MHz both ways. The panel is wrapped with a
+    corner *arm* toggle (click-to-add fires only on the armed plot, so routine
+    navigation never adds) and an SVG layer the script fills with one marker per
+    queued edit in this window.
     """
 
-    def _fig(panel: str, alt: str, cls: str = "panel", attrs: str = "") -> List[str]:
+    def _fig(panel: str, alt: str, cls: str = "panel") -> List[str]:
         name = panel_files.get(panel)
         if name is None:
             return []
         return [
             f'  <figure class="{cls}">'
-            f'<img src="../figures/{name}" alt="{_esc(alt)}"{attrs}></figure>'
+            f'<img src="../figures/{name}" alt="{_esc(alt)}"></figure>'
         ]
 
-    mag_attrs = ""
-    if window_id is not None and mag_geom is not None:
-        mag_attrs = (
+    def _mag_fig() -> List[str]:
+        name = panel_files.get("mag")
+        if name is None:
+            return []
+        if window_id is None or mag_geom is None:
+            return _fig("mag", "magnitude + residual")
+        g = mag_geom
+        attrs = (
             f' class="cur-plot" data-window="{window_id}"'
-            f' data-axes-x0="{mag_geom["x0"]:.2f}"'
-            f' data-axes-x1="{mag_geom["x1"]:.2f}"'
-            f' data-axes-flo="{mag_geom["flo"]:.6f}"'
-            f' data-axes-fhi="{mag_geom["fhi"]:.6f}"'
+            f' data-axes-x0="{g["x0"]:.2f}" data-axes-x1="{g["x1"]:.2f}"'
+            f' data-axes-y0="{g["y0"]:.2f}" data-axes-y1="{g["y1"]:.2f}"'
+            f' data-axes-w="{g["w"]:.2f}" data-axes-h="{g["h"]:.2f}"'
+            f' data-axes-flo="{g["flo"]:.6f}" data-axes-fhi="{g["fhi"]:.6f}"'
         )
+        return [
+            '  <figure class="panel">'
+            f'<div class="cur-plot-wrap" data-window="{window_id}">'
+            f'<img src="../figures/{name}" alt="magnitude + residual"{attrs}>'
+            '<button type="button" class="cur-plot-arm cur-only" '
+            'title="arm click-to-add on this panel">+ add</button>'
+            f'<svg class="cur-plot-svg cur-only" data-window="{window_id}" '
+            f'viewBox="0 0 {g["w"]:.0f} {g["h"]:.0f}" preserveAspectRatio="none" '
+            'aria-hidden="true"></svg>'
+            "</div></figure>"
+        ]
 
     out = ['<div class="fit-panels">']
     out += _fig("overview", "full-spectrum context", "panel panel-overview")
     grid = (
         _fig("re", "real part + residual")
         + _fig("im", "imaginary part + residual")
-        + _fig("mag", "magnitude + residual", attrs=mag_attrs)
+        + _mag_fig()
         + _fig("hist", "residual histogram")
     )
     if grid:

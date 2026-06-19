@@ -453,18 +453,35 @@ def test_fit_panels_block_mag_geometry_attrs():
     from ftmwpipeline._internal.report_html_impl import _fit_panels_block
 
     files = {"re": "w_re.png", "mag": "w_mag.png", "hist": "w_hist.png"}
-    geom = {"x0": 90.0, "x1": 910.0, "flo": 26500.0, "fhi": 40000.0}
+    geom = {
+        "x0": 90.0,
+        "x1": 910.0,
+        "y0": 40.0,
+        "y1": 360.0,
+        "w": 1000.0,
+        "h": 400.0,
+        "flo": 26500.0,
+        "fhi": 40000.0,
+    }
     # Without a window id / geometry, the mag img is plain (no click surface).
     plain = "\n".join(_fit_panels_block(files))
     assert "cur-plot" not in plain and "data-axes" not in plain
-    # With both, only the mag panel becomes the click-to-add surface.
+
     out = "\n".join(_fit_panels_block(files, window_id=24, mag_geom=geom))
+    # The |X| panel is wrapped as the curation click surface with both-way axes.
+    assert 'class="cur-plot-wrap" data-window="24"' in out
     assert 'class="cur-plot" data-window="24"' in out
     assert 'data-axes-x0="90.00"' in out and 'data-axes-x1="910.00"' in out
+    assert 'data-axes-y0="40.00"' in out and 'data-axes-y1="360.00"' in out
+    assert 'data-axes-w="1000.00"' in out and 'data-axes-h="400.00"' in out
     assert 'data-axes-flo="26500.000000"' in out
     assert 'data-axes-fhi="40000.000000"' in out
-    # The |X| panel alone carries the geometry (Re/Im/hist stay plain images).
-    assert out.count("cur-plot") == 1 and "w_re.png" in out
+    # The corner arm toggle and the marker SVG layer (viewBox = natural px).
+    assert 'class="cur-plot-arm cur-only"' in out
+    assert 'class="cur-plot-svg cur-only" data-window="24"' in out
+    assert 'viewBox="0 0 1000 400"' in out
+    # The |X| panel alone is the click surface (Re/Im/hist stay plain images).
+    assert out.count("cur-plot-wrap") == 1 and "w_re.png" in out
 
 
 def test_catalog_cell_and_window_table_column():
@@ -845,11 +862,13 @@ def test_single_file_carries_curation_surface(stage5_small_file, tmp_path):
     assert 'class="cur-plot"' in doc
     assert "data-axes-x0=" in doc and "data-axes-flo=" in doc
     geom = _re.search(
-        r'data-axes-x0="([0-9.]+)" data-axes-x1="([0-9.]+)"'
-        r' data-axes-flo="(-?[0-9.]+)" data-axes-fhi="(-?[0-9.]+)"',
+        r'data-axes-x0="([0-9.]+)" data-axes-x1="([0-9.]+)"',
         doc,
     )
     assert geom and float(geom.group(2)) > float(geom.group(1))  # x1 > x0
+    # The arm toggle (touch-safe opt-in) and the marker SVG layer ship per panel.
+    assert 'class="cur-plot-arm cur-only"' in doc
+    assert "cur-plot-svg cur-only" in doc and "preserveAspectRatio" in doc
 
 
 def _peak_list_row(doc: str):

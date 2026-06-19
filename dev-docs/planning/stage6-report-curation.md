@@ -1,6 +1,6 @@
 # Stage 6 — report-driven curation (HTML report → curation file → `review apply`)
 
-Status: **in progress.** The CLI/edit-language core is shipped: the curation
+Status: **shipped.** The CLI/edit-language core is shipped: the curation
 file format + parser, **`review apply`** (with `--dry-run`, add/remove
 coalescing, and frequency-resolution warnings), read-only **`review log`**, and
 **`review undo --id`** (replay-from-baseline rollback) — all dual-interface
@@ -12,10 +12,11 @@ per-row Remove/Split/merge controls, per-window add + merge-selected + mark-
 reviewed controls, ledger-candidate Add buttons, a docked grouped cart with
 download/copy/clear and the run command, progressive-enhancement gating, and the
 raw-frequency correctness rule with its load-bearing test (see
-*In-report curation UX (phase 1)* below). The phase-2 **click-to-add** is also
-shipped: a click on the |X| panel inverts to a molecular-MHz `add` seed via the
-stamped data-axes geometry. **Next: the on-plot queued-edit SVG markers** (the
-remaining phase-2 piece, reusing the same coordinate mapping).
+*In-report curation UX (phase 1)* below). **Phase 2 is also shipped:** a
+touch-safe per-panel arm toggle gates click-to-add (a click on the armed |X|
+panel inverts to a molecular-MHz `add` seed), and an SVG layer marks every
+queued edit on the panel by the forward frequency map, each marker clickable to
+drop it.
 
 The workflow turns the read-only Level-3 HTML report into a *curation author*:
 per-line and per-candidate controls accumulate user-intended edits into a
@@ -349,9 +350,10 @@ visible and reversible without opening the cart:
 ## Click-on-plot (phase 2)
 
 Because we own figure generation, capture the data-axes geometry at render time
-and stamp it onto the embedded image so JS can invert a click to a frequency —
-no interactive plotting library required. **Click-to-add is shipped; the on-plot
-queued-edit SVG markers remain (they reuse the same coordinate mapping).**
+and stamp it onto the embedded image so JS can map between a click and a
+frequency both ways — no interactive plotting library required. **Shipped:**
+click-to-add, the on-plot queued-edit SVG markers, and a touch-safe per-panel
+arm toggle.
 
 - **DONE — geometry capture.** `_mag_axes_geometry` reads the magnitude panel's
   data-axes box (`ax.get_position()`, post-`savefig` so `constrained_layout` has
@@ -369,11 +371,19 @@ queued-edit SVG markers remain (they reuse the same coordinate mapping).**
   overlay element needed for add; the image is the click surface. The
   Python-side inversion is unit-tested (`_mag_axes_geometry` + the linear map),
   and the integration test asserts the geometry survives the collapse.
-- **TODO — on-plot queued-edit SVG markers.** A transparent overlay sized to the
-  rendered `<img>` (scaled by `naturalWidth`/`naturalHeight`) draws a marker per
-  queued edit at its frequency, with a near-plot control to drop the queued
-  action — the same coordinate mapping, run forward (MHz → pixel) instead of
-  inverted.
+- **DONE — on-plot queued-edit SVG markers.** Each |X| panel carries an SVG
+  layer (viewBox = natural px, `preserveAspectRatio="none"`) that the curation
+  script fills with one marker per queued edit in that window, placing it by the
+  forward map (MHz → pixel) across the stamped box. Markers are color-coded by
+  action (remove dashed); the layer is click-transparent except the marker
+  handles, so a plot click still reaches the image, and clicking a handle drops
+  that edit. `_mag_axes_geometry` also stamps the box's `y0`/`y1`/`w`/`h` for the
+  vertical extent and the viewBox.
+- **DONE — touch-safe arm toggle.** A corner `+ add` button per |X| panel arms
+  click-to-add for that one panel (arming one disarms the others); the click
+  handler fires only on the armed panel, so routine taps/scroll/zoom never add.
+  The armed panel takes a crosshair; arm + markers are hidden outside curation
+  mode and in compact mode.
 
 ## Interface surface
 
@@ -475,8 +485,9 @@ The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in th
    file curation surface, and the load-bearing rule (a row's emitted `data-freq`
    fed to `review apply` removes that exact peak). JS DOM behavior (cart
    accumulation, CSV serialization, row state) is manual-verify per the spec.
-5. **Click-on-plot (phase 2).** Click-to-add is DONE: `_mag_axes_geometry`
-   captures the |X| panel's data-axes box + frequency limits, `_fit_panels_block`
-   stamps them as `data-axes-*` on the `cur-plot` image, and the curation script
-   inverts a click to a molecular MHz `add` seed. **NEXT** in this phase: the
-   on-plot queued-edit SVG markers (the same mapping run forward, MHz → pixel).
+5. **DONE — Click-on-plot (phase 2).** `_mag_axes_geometry` captures the |X|
+   panel's data-axes box + frequency limits; `_fit_panels_block` stamps them as
+   `data-axes-*` on the `cur-plot` image and wraps it with a corner arm toggle +
+   an SVG marker layer. The curation script inverts a click to a molecular MHz
+   `add` seed (only on the armed panel) and draws one marker per queued edit by
+   the forward map, each clickable to drop it.
