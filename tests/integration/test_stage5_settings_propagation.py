@@ -534,6 +534,12 @@ def test_per_band_tau_routes_tau0_per_window(
         raise _PlanIntercepted("intercepted on first window")
 
     monkeypatch.setattr(plan_execution, "_fit_one_window", _fake_fit_one_window)
+    # This test intercepts _fit_one_window for its in-process ``captured`` side
+    # effect; under the cross-window pool that call runs in a forked worker whose
+    # writes never reach the parent. Force the sequential (in-process) walk -- the
+    # per-window tau routing under test lives in _process_one_window and is
+    # identical in both paths.
+    monkeypatch.setattr(plan_execution, "_FIT_WINDOW_WORKERS", 1)
 
     s = StageFitSettings(shape=ShapeSpec(kind=PeakShape.GAUSSIAN))
     s.tau.per_band_tau = True

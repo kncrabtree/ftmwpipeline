@@ -1,11 +1,17 @@
 # Plan: performance optimization
 
-Status: **Work item 1 (1a + 1b + 1c) complete; report rendering is now
-near-optimal. The profiled numbers were cProfile-inflated — see the methodology
-caveat below.** The benchmark suite ([`perf-benchmarks.md`](perf-benchmarks.md))
-becomes the regression guard once these land. Raw artifacts under
-`scratch/perf-profile/` (`*_summary.json`, `*.prof`, `*_pstats.txt`) and the clean
-re-measurements under `scratch/cow-exp/`.
+Status: **Work item 1 (report) and Work item 2 (Stage 5 cross-window fit
+parallelism) both complete and validated.** The report is near-optimal (clean
+50.8 → 37.3 s, byte-identical). The fit now levelizes the window DAG into
+antichains and fits each level across a fork-per-level process pool: clean 2638
+fit **126.3 → 28.9 s (4.37×), byte-identical** to the sequential walk; 363 and
+655 also byte-identical (max |Δfreq|=|Δamp|=|Δphase|=0 on all three). The
+benchmark suite ([`perf-benchmarks.md`](perf-benchmarks.md)) becomes the
+regression guard. Raw artifacts under `scratch/perf-profile/`
+(`*_summary.json`, `*.prof`, `*_pstats.txt`) and the clean re-measurements +
+equivalence harnesses under `scratch/cow-exp/`.
+
+> **Profiled numbers below are cProfile-inflated — see the methodology caveat.**
 
 > **⚠ Methodology caveat (discovered after 1c): `profile_run.py` numbers are
 > cProfile-inflated and must NOT be read as production wall.** The harness wraps
@@ -289,27 +295,46 @@ What must stay exact is *structure*: the thaw-accept guard and the sequential
 replan tail are about structural correctness (a lost thaw-accept or skipped merge
 moves a line by a real amount, not roundoff), not float bits.
 
-**Staged implementation plan:**
-1. **Extract** the per-window body of `_walk_windows_in_order` (conservative fit →
-   bounded thaw loop → rescue B-loop → baseline → doublet) into a self-contained
-   `_process_one_window(win, …, outcomes, thaw_history, rescue_history)`; the walk
-   calls it in a loop. ✅ **DONE + validated** (`fitting/plan_execution.py:1964`):
-   verbatim block move; a fresh 2638 re-fit (matching `profile_run`'s sequence,
-   incl. `detect_start_time`) is **byte-identical** to the pre-refactor fit (277
-   windows, 533 peaks, max |Δfreq|=|Δamp|=|Δphase|=0). Gotcha for the next
-   validator: the persisted profiling fixtures were built *with* start detection —
-   skip it and the active region / τ / windows all shift (a real change, not a
-   refactor regression).
-2. **Levelize + parallelize the initial walk** (fork-per-level pool, outcomes
-   inherited, outcomes returned), with the thaw-accept guard. Replan stays
-   sequential. Gate: scientifically-equivalent fitted table on 2638 (structure
-   identical; freq/amp/phase/τ within roundoff of the sequential run).
-3. **Validate** on 363 (replan + 6 merges) and 655 (0 edges, biggest win) with the
-   same structural-identity + roundoff-tolerance gate.
+**Staged implementation plan — all three stages DONE + validated:**
+1. **Extract** the per-window body into a self-contained `_process_one_window`
+   (`fitting/plan_execution.py`); the walk calls it in a loop. ✅ Verbatim block
+   move, byte-identical to the pre-refactor 2638 fit.
+2. **Levelize + parallelize the initial walk.** ✅ `_levelize` layers the DAG into
+   antichains; `_walk_windows_parallel` forks a fresh pool per level (each level's
+   workers inherit all earlier-level `outcomes` via fork, return their own
+   outcome + thaw/rescue events). Dependencies are derived from each window's
+   **non-`edge_free` `fixed_contributors`** (the authoritative read-ordering),
+   unioned with `dependency_edges` (which the plan does not always populate — the
+   original `dependency_edges`-only levelization was the first bug). `ex.map` with
+   the default chunksize=1 gives dynamic load balancing. The thaw-accept guard
+   re-fits a whole level sequentially if any worker reports an accepted thaw
+   (never fires on the validated fixtures — thaw-accept = 0). BLAS pinned to 1 in
+   the workers; the non-pool path (`_FIT_WINDOW_WORKERS == 1`, no `fork`, or a
+   width-1 level) delegates to the original `_walk_windows_in_order` — the
+   sequential reference.
+3. **Validate.** ✅ Byte-identical (max |Δfreq|=|Δamp|=|Δphase|=0) on all three:
+   2638 (4.37×), 363 (replan + 6 merges), 655 (0 edges). Because thaw-accept = 0
+   everywhere, any valid topological linearization gives identical results, so the
+   level-grouped walk matches the original order bit-for-bit — equivalence held
+   even stronger than the roundoff gate required.
 
-**Implementation note (not a blocker):** most windows are cheap, so chunk a level's
-windows across workers rather than one task per window, to amortize fork/IPC. Tune
-against 363/655.
+**Also parallelized: the replan tail.** The structural-renegotiation loop's
+affected-window re-walk routes through `_walk_windows_parallel` too (the affected
+set is its own antichain DAG; its already-fit primaries sit in `outcomes` and are
+treated as satisfied). On 363 the sequential replan tail was **25.6 s (27 % of the
+parallel-fit wall)** — the largest single serial component once the initial walk
+parallelized.
+
+**Where the remaining 363 wall goes (the "long tail").** Phase breakdown of the
+94 s parallel fit: **initial walk 50.4 s** (level 0 = 424 windows @ 47.0 s, level
+1 = 62 @ 3.4 s), **replan tail 25.6 s** (now parallelized), **~18 s** aggregation /
+serialization outside `execute_plan`. The level-0 floor is **not** a single
+monster window — measured per-window costs spread (summed 330.8 s, max single
+20.7 s ≈ sum/14 = 23.6 s; top-10 windows = only 32 % of cost), so longest-job-first
+scheduling would not help. Level 0 runs at ~50 % parallel efficiency (47 s vs the
+23.6 s ideal floor) because dense per-window NLS is memory-bandwidth-bound — the
+intra-window levers that would lower per-window cost are explored-and-closed in
+[`stage5-nls-performance.md`](stage5-nls-performance.md).
 
 ## Sequencing and gates
 
@@ -317,63 +342,54 @@ against 363/655.
 2. **Report 1b** (discarded overview) — trivial, byte-identical.
 3. **Re-profile the report** (all fixtures, with report) to establish the new floor.
 4. **Report 1c** (figure-render pool) — wall lever on the new floor.
-5. **Stage 5 parallelism** — feasible (thaw-accept = 0 everywhere; 655 leaf-heavy,
-   0 edges). Stage 1 (per-window extraction) done; Stage 2 (levelize + parallel
-   walk) next. Replan IS real on 363/655 (sequential tail). See Work item 2.
+5. **Stage 5 parallelism** ✅ — levelize + fork-per-level pool + parallel replan
+   tail; byte-identical on 2638/363/655; 2638 4.37×.
 6. **Benchmark suite** ([`perf-benchmarks.md`](perf-benchmarks.md)) captures the
    before/after as the committed regression guard.
 
-The report steps are gated on **byte-identical HTML**. The fit (Work item 2) is
+The report steps were gated on **byte-identical HTML**. The fit (Work item 2) was
 gated on **scientific equivalence** — identical structure (windows / peak counts /
-merges) with freq/amp/phase/τ within roundoff — not byte-identity, since fork +
-BLAS=1 introduces acceptable ULP drift.
+merges) with freq/amp/phase/τ within roundoff — and in fact came out
+**byte-identical** on all three fixtures (thaw-accept = 0, so the levelization is a
+valid topological linearization that reproduces the sequential result exactly).
 
-## Handoff to a fresh implementation session
+## Implemented design (Work item 2)
 
-**Work item 1 (the report) is complete** (1a + 1b + 1c + in-memory no-disk
-assembly + parallel methods figures): clean report 50.8 → 37.3 s, byte-identical.
-**Fit Stage 1 (the `_process_one_window` extraction) is complete + validated.**
-The fresh session picks up at **Work item 2, Stage 2** — levelize the DAG and
-parallelize the initial walk.
+The fit-parallelism surface lives in `fitting/plan_execution.py`:
+- **`_levelize(order, by_id, dependency_edges)`** — antichain longest-path layering.
+  Reads ordering from each window's non-`edge_free` `fixed_contributors` (the
+  authoritative read-dependency) unioned with `dependency_edges`.
+- **`_walk_windows_parallel(...)`** — the parallel walk. Forks a fresh
+  `ProcessPoolExecutor("fork")` per level (workers inherit earlier-level
+  `outcomes` + the shared `active_ft`/`noise` via fork; only the `(n_done, wid)`
+  tuple is pickled out, the `WindowOutcome` + thaw/rescue events come back). The
+  thaw-accept guard re-fits a whole level sequentially if any worker accepts a
+  thaw. `_FIT_WINDOW_WORKERS` (None = auto cpu−2, 1 = sequential reference) pins
+  the count; the non-pool path delegates to **`_walk_windows_in_order`** (the
+  original sequential walk, kept as the reference).
+- **`_fit_window_worker(task)`** — the pool entry point; pins BLAS to 1.
+- **Per-phase timing** at INFO (`fit walk: … levels … workers`, `level k/n: … Ns`,
+  `initial walk: Ns`, `replan tail: Ns`) makes the wall split visible per run.
+- Both the initial walk and the replan loop's affected re-walk call
+  `_walk_windows_parallel`.
 
-**Start here (fit Stage 2):**
-- **The unit is ready:** `_process_one_window` (`fitting/plan_execution.py:1964`)
-  fits one window end to end given the shared `active_ft`/`noise` and the
-  `outcomes` of its (earlier-level) primaries. The sequential walk
-  `_walk_windows_in_order` now just calls it in a loop.
-- **Levelize** `WindowPlan.topological_order` + `dependency_edges` into antichains
-  (the harness `_levelize` in `scratch/perf-profile/profile_run.py` computes
-  levels/widths). Fit each level concurrently; barrier between levels.
-- **Fork per level**, inheriting the prior levels' `outcomes` via a module global
-  set before the pool forks (mirror 1c's `_WORKER_RENDER_CTX` pattern in
-  `report_html_impl.py`). Pass the shared `active_ft`/`noise` by inheritance, never
-  per-task pickling. Each worker returns `(outcome, thaw_events, rescue_events)`;
-  the parent merges them into `outcomes` + the histories.
-- **Thaw-accept guard:** a worker's accepted thaw mutates only its fork-private
-  primary copy (lost on return). Thaw-accept = 0 on all three fixtures, but guard
-  it: if any worker reports an accepted thaw, re-process the affected windows
-  sequentially. **Replan stays sequential** (it is real on 363/655 — 6 merges /
-  41 no-op attempts).
-- **BLAS pinned to 1** in workers *and* the sequential baseline.
-- **Gate (scientific equivalence, NOT byte-identity):** structure identical (same
-  windows / per-window peak counts / merges) and freq/amp/phase/τ within roundoff
-  of the sequential run — fork + BLAS=1 ULP drift is acceptable (the owner's call;
-  it is a more reproducible regime than the already-validated thread-count sweep).
+**Equivalence gate harnesses (under `scratch/cow-exp/`, gitignored):**
+- **`fit_equiv.py <name> <source> <lo> <hi>`** — the fast gate: builds stages 0–4
+  **once** into a cached `cache_<name>_stage4.ftmw`, then copies it and runs ONLY
+  `fit_peaks` for `workers=auto` vs `workers=1`, comparing the fitted table +
+  reporting the speedup. (Stage 0–4, esp. `calibrate_tau`'s 81k-NLS, is the slow
+  part — never redo it per fit.)
+- `validate_parallel.py` (2638, full build twice) and
+  `validate_parallel_fixture.py <name> … [ref.ftmw]` (build par, compare to a
+  persisted sequential fixture — used for 655 to skip its ~20 min sequential fit).
+- `diag_363_levels.py` / `probe_363_costs.py` — level structure + per-window cost
+  distribution (how the long-tail finding was measured).
 
-**Reusable assets (under `scratch/cow-exp/`, gitignored):**
-- Stage5+review fixtures: `scratch/perf-profile/{2638,363,655}/<name>.ftmw` (built
-  *with* `detect_start_time` — match that sequence or the active region shifts).
-- `fit_hazards.py <fixture>` — the thaw/replan/edge/shared-primary analysis.
-- `validate_extract.py` — the re-fit-and-compare validator (Pipeline sequence with
-  `detect_start_time`); adapt it as the Stage-2 equivalence gate (it already
-  compares structure + max |Δfreq|/|Δamp|/|Δphase|).
-- **Re-measure the fit unprofiled** (`scratch/cow-exp/fit_unprofiled.py`) — the
-  profiled 257 s is cProfile-inflated; clean is 119.5 s. `profile_run.py` now pauses
-  cProfile around the report; do the same around the fit before trusting its split.
-
-**Reference data:** measured numbers under `scratch/perf-profile/` +
-[`research/performance-profiling/report.md`](../research/performance-profiling/report.md)
-(both carry the cProfile-inflation caveat — clean numbers are the truth).
+**BLAS note:** the workers set `OMP/OPENBLAS/MKL/NUMEXPR_NUM_THREADS=1`, but env set
+after fork does not re-init an already-loaded OpenBLAS — production fit runs should
+launch with BLAS pinned to 1 in the parent (the conda/CI harness already does).
+The per-window solve is small and barely threads BLAS regardless (cpu/wall 1.29
+unpinned), so oversubscription risk is low.
 
 ## Out of scope / already settled
 

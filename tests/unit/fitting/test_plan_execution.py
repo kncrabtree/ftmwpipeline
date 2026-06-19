@@ -1463,3 +1463,141 @@ def test_baseline_does_not_fire_below_threshold():
     assert fired is False
     assert outcome.baseline_applied is False
     assert outcome.baseline_coeffs is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-window parallel walk: levelization + scientific equivalence
+# ---------------------------------------------------------------------------
+from ftmwpipeline.fitting import plan_execution as _pe  # noqa: E402
+
+
+class TestLevelize:
+    """Antichain layering derives ordering from non-edge_free contributors."""
+
+    def _win(self, wid, contributors=None):
+        return FitWindow(
+            window_id=wid,
+            freq_range=(0.0, 1.0),
+            free_peak_indices=[wid],
+            fixed_contributors=contributors or [],
+            batch=0,
+        )
+
+    def test_independent_windows_share_one_level(self):
+        by_id = {w.window_id: w for w in (self._win(0), self._win(1), self._win(2))}
+        levels = _pe._levelize([0, 1, 2], by_id)
+        assert levels == [[0, 1, 2]]
+
+    def test_chain_via_contributors_layers_in_order(self):
+        w0 = self._win(0)
+        w1 = self._win(1, [FixedContributor(0, 0, 0.5, freeze_eligible=True)])
+        w2 = self._win(2, [FixedContributor(1, 1, 0.5, freeze_eligible=True)])
+        by_id = {w.window_id: w for w in (w0, w1, w2)}
+        levels = _pe._levelize([0, 1, 2], by_id)
+        assert levels == [[0], [1], [2]]
+
+    def test_edge_free_contributor_imposes_no_ordering(self):
+        # window 1 depends on 0 only through an edge_free contributor -> no edge.
+        w0 = self._win(0)
+        w1 = self._win(1, [FixedContributor(0, 0, 0.5, True, edge_free=True)])
+        by_id = {w.window_id: w for w in (w0, w1)}
+        levels = _pe._levelize([0, 1], by_id)
+        assert levels == [[0, 1]]
+
+    def test_diamond_layers_correctly(self):
+        # 0 -> {1, 2} -> 3 (3 depends on both 1 and 2).
+        w0 = self._win(0)
+        w1 = self._win(1, [FixedContributor(0, 0, 0.5, True)])
+        w2 = self._win(2, [FixedContributor(0, 0, 0.5, True)])
+        w3 = self._win(
+            3,
+            [
+                FixedContributor(0, 1, 0.5, True),
+                FixedContributor(0, 2, 0.5, True),
+            ],
+        )
+        by_id = {w.window_id: w for w in (w0, w1, w2, w3)}
+        levels = _pe._levelize([0, 1, 2, 3], by_id)
+        assert levels == [[0], [1, 2], [3]]
+
+    def test_dependency_edges_folded_in(self):
+        # No contributors, but an explicit dependency edge (child=1, parent=0).
+        by_id = {w.window_id: w for w in (self._win(0), self._win(1))}
+        levels = _pe._levelize([0, 1], by_id, dependency_edges=[(1, 0)])
+        assert levels == [[0], [1]]
+
+
+class TestParallelWalkEquivalence:
+    """The fork-per-level pool yields the same fit as the sequential walk."""
+
+    def _build_plan(self):
+        """Two independent strong lines (level 0, width 2) + a weak dependent."""
+        sigma = 1.0
+        f0, f1, f2 = 36100.0, 36200.0, 36105.0
+        freq_array = np.arange(f0 - 5.0, f1 + 5.0, DF_MHZ)
+        spectrum = _synth_spectrum(
+            freq_array,
+            [
+                (f0, _amp_for_snr(300.0, sigma), 0.3),
+                (f1, _amp_for_snr(280.0, sigma), 1.1),
+                (f2, _amp_for_snr(60.0, sigma), 2.4),
+            ],
+        )
+        rng = np.random.default_rng(SEED + 77)
+        spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
+        rms_noise = np.full(freq_array.size, sigma)
+        windows = [
+            FitWindow(0, (f0 - 0.6, f0 + 0.6), free_peak_indices=[0], batch=0),
+            FitWindow(1, (f1 - 0.6, f1 + 0.6), free_peak_indices=[1], batch=0),
+            FitWindow(
+                2,
+                (f2 - 0.6, f2 + 0.6),
+                free_peak_indices=[2],
+                fixed_contributors=[FixedContributor(0, 0, f0, True)],
+                batch=1,
+            ),
+        ]
+        plan = WindowPlan(
+            windows=windows,
+            dependency_edges=[(2, 0)],
+            topological_order=[0, 1, 2],
+        )
+        return plan, freq_array, spectrum, rms_noise, [f0, f1, f2]
+
+    def _fit(self, workers):
+        plan, freqs, spec, noise, peak_freqs = self._build_plan()
+        old = _pe._FIT_WINDOW_WORKERS
+        _pe._FIT_WINDOW_WORKERS = workers
+        try:
+            return execute_plan(
+                plan,
+                _make_active_ft(freqs, spec),
+                noise,
+                peak_freqs,
+                sideband=SIDEBAND,
+                acquisition_us=T_US,
+                tau0_us=TAU_US,
+            )
+        finally:
+            _pe._FIT_WINDOW_WORKERS = old
+
+    @pytest.mark.skipif(
+        "fork" not in __import__("multiprocessing").get_all_start_methods(),
+        reason="requires fork start method",
+    )
+    def test_parallel_matches_sequential(self):
+        seq = self._fit(1)  # in-process sequential reference
+        par = self._fit(2)  # force the fork pool (level 0 has width 2)
+        assert set(seq.window_outcomes) == set(par.window_outcomes) == {0, 1, 2}
+        for wid in (0, 1, 2):
+            so, po = seq.window_outcomes[wid], par.window_outcomes[wid]
+            assert so.fit.n_peaks == po.fit.n_peaks
+            sp = sorted(so.fit.peaks, key=lambda p: p.offset_mhz)
+            pp = sorted(po.fit.peaks, key=lambda p: p.offset_mhz)
+            for a, b in zip(sp, pp):
+                assert a.offset_mhz == pytest.approx(b.offset_mhz, abs=1e-6)
+                assert a.amplitude == pytest.approx(b.amplitude, rel=1e-6)
+                assert a.phase == pytest.approx(b.phase, abs=1e-6)
+        # The dependent (window 2) still saw window 0 as a frozen contributor.
+        assert len(par.window_outcomes[2].fixed_peaks) == 1
+        assert par.window_outcomes[2].fixed_peaks[0].primary_window_id == 0

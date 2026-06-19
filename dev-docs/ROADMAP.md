@@ -29,22 +29,27 @@ milestones, and finished planning documents — is archived in
 
 **Stages 0–6 are implemented and both near-term tracks below are done** (Stage 6
 review/finalization, reports, and report-driven curation all shipped; the
-interactive CLI shell was dropped as superseded). The active near-term effort is **performance optimization**
+interactive CLI shell was dropped as superseded). The most recent effort is
+**performance optimization**
 ([`planning/performance-optimization.md`](planning/performance-optimization.md)),
-**ready for an implementation handoff**. The measure-first profiling pass
-([`planning/performance-profiling.md`](planning/performance-profiling.md),
-complete; results in
+**complete**. The measure-first profiling pass
+([`planning/performance-profiling.md`](planning/performance-profiling.md);
+results in
 [`research/performance-profiling/report.md`](research/performance-profiling/report.md))
-found that **report generation dominates `run` wall (~90 % on 2638, ~10× the fit)
-via an O(N²) HDF5 reload** — not Stage 5, not matplotlib. Order: fix the report
-reload + discarded-overview waste (efficiency, byte-identical-HTML gate) →
-re-profile → parallelize per-window figure rendering → **cross-window fit
-parallelism over the dependency DAG** (antichain levelization; measured ceilings
-125×/243×/1241×, 0 replans, leaf-heavy via self-contained `edge_free`
-contributors; BLAS pinned per worker; byte-identical-table gate). BLAS
-oversubscription measured net-negative → pin to 1. Then the benchmark suite
-([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)) guards it.
-Intra-window Stage 5 levers already explored
+found that **report generation dominated `run` wall (~90 % on 2638, ~10× the fit)
+via an O(N²) HDF5 reload** — not Stage 5, not matplotlib. Done in order: fixed the
+report reload + discarded-overview waste → re-profiled → parallelized per-window
+figure rendering (clean report 50.8 → 37.3 s, byte-identical) → **cross-window fit
+parallelism over the dependency DAG** (antichain levelization + fork-per-level
+pool + parallelized replan tail). The fit is **byte-identical** to the sequential
+walk on 2638/363/655 (thaw-accept = 0 makes the levelized walk a valid topological
+linearization), with **2638 4.37×** (126.3 → 28.9 s). Replan **is** real
+(363 accepts 6 merges) and runs as a parallelized tail; the DAG is leaf-heavy via
+self-contained `edge_free` contributors; BLAS pinned per worker (oversubscription
+measured net-negative). The 363 long tail (~50 % level-0 parallel efficiency) is
+memory-bandwidth-bound dense NLS, not load imbalance. Remaining: the benchmark
+suite ([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)) as the
+committed regression guard. Intra-window Stage 5 levers already explored
 ([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)).
 
 The remaining **Longer horizon** items — chiefly the frequency-calibration / σ_f

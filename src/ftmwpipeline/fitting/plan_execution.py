@@ -1782,8 +1782,14 @@ def execute_plan(
     rescue_history: list[RescueEvent] = []
     replan_history: list[ReplanEvent] = []
 
-    # --- Initial walk over the plan as given -------------------------------
-    _walk_windows_in_order(
+    # --- Initial walk over the plan as given --------------------------------
+    # Cross-window parallel: levelize the DAG and fit each antichain concurrently
+    # (barrier between levels). Falls back to the in-process sequential walk when
+    # the pool is unavailable or forced off (``_FIT_WINDOW_WORKERS == 1``). The
+    # post-replan re-walk below stays sequential (small affected set + the
+    # structural-renegotiation bookkeeping is inherently serial).
+    _t_initial = time.monotonic()
+    _walk_windows_parallel(
         plan,
         plan.topological_order or [w.window_id for w in plan.windows],
         active_ft=active_ft,
@@ -1810,8 +1816,10 @@ def execute_plan(
         baseline_smooth_threshold=baseline_smooth_threshold,
         doublet_kwargs=doublet_kwargs,
     )
+    logger.info("initial walk: %.1fs", time.monotonic() - _t_initial)
 
     # --- Structural renegotiation loop -------------------------------------
+    _t_replan = time.monotonic()
     if replan_context is not None:
         for _ in range(replan_context.max_replan_rounds):
             pending = _dispatch_structural_round(
@@ -1851,7 +1859,13 @@ def execute_plan(
             affected_order = [
                 wid for wid in new_plan.topological_order if wid in affected
             ]
-            _walk_windows_in_order(
+            # Re-fit the affected set through the same parallel walk as the
+            # initial walk -- the affected windows form their own antichain DAG
+            # (their non-affected primaries are already in ``outcomes`` and
+            # treated as satisfied), so this parallelizes the structural-
+            # renegotiation tail too. Small affected sets fall back to the
+            # in-process sequential path inside the walk (level width < 2).
+            _walk_windows_parallel(
                 new_plan,
                 affected_order,
                 active_ft=active_ft,
@@ -1899,6 +1913,13 @@ def execute_plan(
                     )
                 )
             plan = new_plan
+    if replan_context is not None and replan_history:
+        logger.info(
+            "replan tail: %.1fs (%d attempts, %d accepted)",
+            time.monotonic() - _t_replan,
+            len(replan_history),
+            sum(1 for r in replan_history if r.accepted),
+        )
 
     return PlanFitOutcome(
         window_outcomes=outcomes,
@@ -2230,6 +2251,302 @@ def _walk_windows_in_order(
             baseline_edge_threshold=baseline_edge_threshold,
             baseline_smooth_threshold=baseline_smooth_threshold,
             doublet_kwargs=doublet_kwargs,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Cross-window parallel walk: antichain levelization + fork-per-level pool
+# ---------------------------------------------------------------------------
+# ``None`` => auto (cpu_count - 2); ``1`` => force the in-process sequential walk
+# (the scientific-equivalence reference). Any int pins the worker count for tests.
+_FIT_WINDOW_WORKERS: Optional[int] = None
+# Set in the parent before each level's pool forks; read by the worker entry via
+# fork inheritance (the large shared ``active_ft``/``noise`` and the earlier-level
+# ``outcomes`` ride along on the fork, never pickled per task).
+_WORKER_FIT_CTX: Optional[dict[str, Any]] = None
+
+
+def _levelize(
+    order: Sequence[int],
+    by_id: dict[int, FitWindow],
+    dependency_edges: Sequence[tuple[int, int]] = (),
+) -> list[list[int]]:
+    """Layer the window DAG into antichains (levels) over ``order``.
+
+    The fit-ordering dependency of a window is authoritative in its
+    ``fixed_contributors``: a contributor that is **not** ``edge_free`` reads its
+    ``primary_window_id``'s fitted outcome (:func:`evaluate_fixed_contributor`),
+    so that primary must be fit first; an ``edge_free`` contributor is
+    materialized self-contained from the shared active FT and imposes no ordering.
+    ``dependency_edges`` (``(child, parent)`` pairs) is folded in as a belt-and-
+    braces superset -- the plan does not always populate it, so the contributor
+    scan is the primary source. Returns a list of levels; level *k* holds exactly
+    the windows whose every dependency is placed in a level ``< k`` (longest-path
+    layering), so the windows within a level are mutually independent and safe to
+    fit concurrently. ``order`` ordering is preserved within each level for
+    deterministic logging. Only dependencies with both endpoints in ``order``
+    constrain the layering (the post-replan re-walk passes a subset).
+    """
+    in_order = list(order)
+    idset = set(in_order)
+    preds: dict[int, set[int]] = {w: set() for w in in_order}
+    for wid in in_order:
+        win = by_id.get(wid)
+        if win is None:
+            continue
+        for contributor in win.fixed_contributors:
+            if contributor.edge_free:
+                continue
+            primary = contributor.primary_window_id
+            if primary in idset and primary != wid:
+                preds[wid].add(primary)
+    for child, parent in dependency_edges:
+        if child in idset and parent in idset and child != parent:
+            preds[child].add(parent)
+    levels: list[list[int]] = []
+    placed: set[int] = set()
+    remaining = list(in_order)
+    guard = 0
+    while remaining and guard <= len(in_order) + 1:
+        guard += 1
+        ready = [w for w in remaining if preds[w] <= placed]
+        if not ready:
+            # A cycle slipped through the cycle-breaker -- degrade to a single
+            # sequential level rather than drop windows.
+            ready = list(remaining)
+        levels.append(ready)
+        placed.update(ready)
+        ready_set = set(ready)
+        remaining = [w for w in remaining if w not in ready_set]
+    return levels
+
+
+def _fit_window_worker(
+    task: tuple[int, int],
+) -> tuple[int, WindowOutcome, list[ThawEvent], list[RescueEvent]]:
+    """Process-pool entry point: fit one window from the fork-inherited context.
+
+    Pins BLAS to a single thread (the per-window solve is single-threaded; this
+    avoids N-workers x M-BLAS-threads oversubscription). Works on a shallow copy
+    of the inherited ``outcomes`` so concurrent tasks reused on the same worker
+    process never see each other's writes -- within a level the windows are an
+    antichain, so the copy only needs the earlier-level primaries (present in the
+    inherited dict). Returns the window's outcome plus its local thaw / rescue
+    events for the parent to merge.
+    """
+    import os
+
+    for _var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+    ):
+        os.environ[_var] = "1"
+    ctx = _WORKER_FIT_CTX
+    assert ctx is not None  # set in the parent before the pool forks
+    n_done, wid = task
+    local_outcomes: dict[int, WindowOutcome] = dict(ctx["outcomes"])
+    thaw_local: list[ThawEvent] = []
+    rescue_local: list[RescueEvent] = []
+    _process_one_window(
+        ctx["by_id"][wid],
+        n_done=n_done,
+        n_total=ctx["n_total"],
+        outcomes=local_outcomes,
+        thaw_history=thaw_local,
+        rescue_history=rescue_local,
+        **ctx["shared"],
+    )
+    return wid, local_outcomes[wid], thaw_local, rescue_local
+
+
+def _walk_windows_parallel(
+    plan: WindowPlan,
+    order: Sequence[int],
+    *,
+    active_ft: ActiveFTResult,
+    noise: np.ndarray,
+    peak_frequencies_mhz: Sequence[float],
+    outcomes: dict[int, WindowOutcome],
+    thaw_history: list[ThawEvent],
+    rescue_history: list[RescueEvent],
+    sideband: SidebandLike,
+    acquisition_us: float,
+    tau0_us: float,
+    fit_tau: bool,
+    residual_edge_threshold: float,
+    residual_edge_m: int,
+    max_thaw_rounds: int,
+    conservative_kwargs: dict[str, Any],
+    max_residual_rescue_rounds: int = 0,
+    rescue_kwargs: Optional[dict[str, Any]] = None,
+    window_tau_overrides: Optional[dict[int, tuple[float, float]]] = None,
+    spur_set: Optional[SpurSet] = None,
+    baseline_enabled: bool = DEFAULT_BASELINE_ENABLED,
+    baseline_order: int = DEFAULT_BASELINE_ORDER,
+    baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
+    baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
+    doublet_kwargs: Optional[dict[str, Any]] = None,
+) -> None:
+    """Cross-window parallel form of :func:`_walk_windows_in_order`.
+
+    Levelizes ``order`` into antichains and fits each level concurrently across a
+    forking process pool, with a barrier between levels so every window's
+    edged-contributor primaries (which sit in strictly earlier levels) are already
+    fit when it runs. A fresh pool is forked **per level** after the prior level's
+    outcomes are merged into ``outcomes``, so each level's workers inherit the
+    complete earlier-level results via fork. Falls back to the in-process
+    sequential walk when the pool is disabled (``_FIT_WINDOW_WORKERS == 1``), only
+    one worker is available, the platform lacks ``fork``, or a level has a single
+    window.
+
+    Correctness gate is *scientific equivalence*, not byte-identity: structure
+    (windows / peak counts / merges / thaws) is identical to the sequential walk;
+    continuous params drift only at the fork+BLAS=1 ULP scale. The one structural
+    hazard -- an accepted thaw mutates its primary window in place, which a worker
+    can only do to its fork-private copy -- is guarded: if any worker in a level
+    reports an accepted thaw, the whole level is re-fit sequentially in the parent
+    (this never fires on the validated fixtures, where thaw-accept = 0).
+    """
+    if window_tau_overrides is None:
+        window_tau_overrides = {}
+
+    shared_kwargs: dict[str, Any] = dict(
+        active_ft=active_ft,
+        noise=noise,
+        peak_frequencies_mhz=peak_frequencies_mhz,
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+        tau0_us=tau0_us,
+        fit_tau=fit_tau,
+        residual_edge_threshold=residual_edge_threshold,
+        residual_edge_m=residual_edge_m,
+        max_thaw_rounds=max_thaw_rounds,
+        conservative_kwargs=conservative_kwargs,
+        max_residual_rescue_rounds=max_residual_rescue_rounds,
+        rescue_kwargs=rescue_kwargs,
+        window_tau_overrides=window_tau_overrides,
+        spur_set=spur_set,
+        baseline_enabled=baseline_enabled,
+        baseline_order=baseline_order,
+        baseline_edge_threshold=baseline_edge_threshold,
+        baseline_smooth_threshold=baseline_smooth_threshold,
+        doublet_kwargs=doublet_kwargs,
+    )
+
+    import multiprocessing
+    import os
+
+    if _FIT_WINDOW_WORKERS is not None:
+        max_workers = int(_FIT_WINDOW_WORKERS)
+    else:
+        max_workers = max(1, (os.cpu_count() or 2) - 2)
+    pool_available = (
+        max_workers >= 2 and "fork" in multiprocessing.get_all_start_methods()
+    )
+    # No pool (forced off, single worker, or no fork): run the original
+    # topological-order sequential walk -- the scientific-equivalence reference.
+    if not pool_available:
+        _walk_windows_in_order(
+            plan,
+            order,
+            outcomes=outcomes,
+            thaw_history=thaw_history,
+            rescue_history=rescue_history,
+            **shared_kwargs,
+        )
+        return
+
+    by_id = {w.window_id: w for w in plan.windows}
+    levels = _levelize(order, by_id, plan.dependency_edges)
+    n_total = len(order)
+
+    def _run_sequential(level: Sequence[int], n_done0: int) -> None:
+        nd = n_done0
+        for wid in level:
+            nd += 1
+            _process_one_window(
+                by_id[wid],
+                n_done=nd,
+                n_total=n_total,
+                outcomes=outcomes,
+                thaw_history=thaw_history,
+                rescue_history=rescue_history,
+                **shared_kwargs,
+            )
+
+    if len(levels) > 1 or any(len(lv) > 1 for lv in levels):
+        logger.info(
+            "fit walk: %d windows in %d levels (max width %d), %d workers",
+            n_total,
+            len(levels),
+            max(len(lv) for lv in levels) if levels else 0,
+            max_workers,
+        )
+
+    n_done = 0
+    for li, level in enumerate(levels):
+        t_level = time.monotonic()
+        # A width-1 level forks nothing -- run it in-process (no pool overhead).
+        if len(level) < 2:
+            _run_sequential(level, n_done)
+            n_done += len(level)
+            continue
+
+        # Fork a fresh pool for this level so workers inherit every earlier-level
+        # outcome merged into ``outcomes`` below. Only the (n_done, wid) tuples go
+        # out; the shared arrays and outcomes ride the fork.
+        global _WORKER_FIT_CTX
+        _WORKER_FIT_CTX = {
+            "by_id": by_id,
+            "outcomes": outcomes,
+            "n_total": n_total,
+            "shared": shared_kwargs,
+        }
+        tasks = [(n_done + i + 1, wid) for i, wid in enumerate(level)]
+        results: dict[int, tuple[int, WindowOutcome, list, list]] = {}
+        try:
+            from concurrent.futures import ProcessPoolExecutor
+
+            ctx_mp = multiprocessing.get_context("fork")
+            with ProcessPoolExecutor(
+                max_workers=min(max_workers, len(level)), mp_context=ctx_mp
+            ) as ex:
+                for res in ex.map(_fit_window_worker, tasks):
+                    results[res[0]] = res
+        finally:
+            _WORKER_FIT_CTX = None
+
+        any_thaw_accepted = any(
+            any(ev.accepted for ev in res[2]) for res in results.values()
+        )
+        if any_thaw_accepted:
+            # An accepted thaw mutates the contributor's primary window in place;
+            # a worker only mutated its fork-private copy. Re-fit the whole level
+            # sequentially in the parent so the primary mutation is real and
+            # cross-window ordering matches the sequential walk. Discard the
+            # parallel outcomes for this level.
+            logger.warning(
+                "accepted thaw in a parallel level; re-fitting %d windows "
+                "sequentially for cross-window correctness",
+                len(level),
+            )
+            _run_sequential(level, n_done)
+        else:
+            for wid in level:
+                _, outcome, thaws, rescues = results[wid]
+                outcomes[wid] = outcome
+                thaw_history.extend(thaws)
+                rescue_history.extend(rescues)
+        n_done += len(level)
+        logger.info(
+            "  level %d/%d: %d windows on %d workers, %.1fs",
+            li + 1,
+            len(levels),
+            len(level),
+            min(max_workers, len(level)),
+            time.monotonic() - t_level,
         )
 
 
