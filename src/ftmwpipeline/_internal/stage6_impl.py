@@ -2286,6 +2286,419 @@ def review_accept_impl(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Curation files: a human-editable batch language for the review edits.
+#
+# A curation file (CSV) records an ordered sequence of Stage 6 edits, one per
+# row, that ``apply_curation_impl`` replays through the same edit impls the
+# interactive verbs call. The CSV is the canonical interchange: diffable,
+# hand-editable, and independent of the report that may have authored it.
+# ---------------------------------------------------------------------------
+
+_CURATION_ACTIONS = ("add", "remove", "merge", "split", "accept")
+_CURATION_HEADER = ("action", "window", "freqs", "params")
+
+
+@dataclass
+class CurationOp:
+    """One parsed row of a curation file (before coalescing).
+
+    Attributes
+    ----------
+    action : str
+        One of ``add`` / ``remove`` / ``merge`` / ``split`` / ``accept``.
+    window_id : int
+        The target ``FitWindow.window_id``.
+    freqs : list of float
+        Molecular MHz frequencies the row carries (empty for a bare accept).
+    params : dict
+        ``key=value`` modifiers (``into`` for split, ``candidate`` for accept).
+    line_no : int
+        1-based source line, for diagnostics.
+    """
+
+    action: str
+    window_id: int
+    freqs: List[float]
+    params: Dict[str, str]
+    line_no: int
+
+
+@dataclass
+class PlannedAction:
+    """One resolved curation action (post-coalescing) ready to delegate.
+
+    ``kind`` selects the target impl: ``edit`` -> :func:`refit_window_impl`
+    (with the coalesced ``add`` / ``remove`` sets), ``merge`` ->
+    :func:`merge_peaks_impl`, ``split`` -> :func:`split_peak_impl`, ``accept``
+    -> :func:`review_accept_impl`.
+    """
+
+    kind: str
+    window_id: int
+    add: List[float] = field(default_factory=list)
+    remove: List[float] = field(default_factory=list)
+    peaks: List[float] = field(default_factory=list)
+    peak: Optional[float] = None
+    into: int = 2
+    candidate: Optional[float] = None
+
+
+@dataclass
+class CurationApplyResult:
+    """Outcome of :func:`apply_curation_impl`.
+
+    Attributes
+    ----------
+    plan : list of PlannedAction
+        The resolved, coalesced action sequence (the same in dry-run and live).
+    warnings : list of str
+        Frequency-resolution advisories (ambiguous or unmatched targets).
+    applied : int
+        Number of actions executed (``0`` for a dry run).
+    dry_run : bool
+        Whether the file was previewed without mutating.
+    """
+
+    plan: List["PlannedAction"]
+    warnings: List[str]
+    applied: int
+    dry_run: bool
+
+
+def _parse_curation_params(raw: str, line_no: int) -> Dict[str, str]:
+    params: Dict[str, str] = {}
+    for token in raw.split(";"):
+        token = token.strip()
+        if not token:
+            continue
+        if "=" not in token:
+            raise ValueError(
+                f"curation line {line_no}: malformed parameter {token!r} "
+                f"(expected key=value)"
+            )
+        key, _, value = token.partition("=")
+        params[key.strip().lower()] = value.strip()
+    return params
+
+
+def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
+    """Parse a curation CSV into ordered :class:`CurationOp` rows.
+
+    Columns are ``action,window,freqs,params``. Blank lines and ``#`` comments
+    are ignored; an optional header row (first cell ``action``) is skipped.
+    ``freqs`` is a ``;``-separated list of molecular MHz; ``params`` is a
+    ``;``-separated list of ``key=value`` modifiers.
+
+    Raises ``ValueError`` (with the 1-based source line) on any malformed row.
+    """
+    text = Path(curation_path).read_text()
+    ops: List[CurationOp] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        fields = [f.strip() for f in line.split(",")]
+        action = fields[0].lower()
+        if action == "action":  # header row
+            continue
+        if action not in _CURATION_ACTIONS:
+            raise ValueError(
+                f"curation line {line_no}: unknown action {fields[0]!r}; "
+                f"choose one of {_CURATION_ACTIONS}"
+            )
+        if len(fields) < 2 or not fields[1]:
+            raise ValueError(
+                f"curation line {line_no}: missing window id"
+            )
+        try:
+            window_id = int(fields[1])
+        except ValueError:
+            raise ValueError(
+                f"curation line {line_no}: window id {fields[1]!r} is not an integer"
+            ) from None
+        freqs_raw = fields[2] if len(fields) > 2 else ""
+        params_raw = fields[3] if len(fields) > 3 else ""
+        try:
+            freqs = [float(x) for x in freqs_raw.split(";") if x.strip()]
+        except ValueError:
+            raise ValueError(
+                f"curation line {line_no}: non-numeric frequency in {freqs_raw!r}"
+            ) from None
+        params = _parse_curation_params(params_raw, line_no)
+
+        # Per-action arity / parameter validation.
+        if action in ("add", "remove"):
+            if len(freqs) != 1:
+                raise ValueError(
+                    f"curation line {line_no}: {action} needs exactly one frequency"
+                )
+            if params:
+                raise ValueError(
+                    f"curation line {line_no}: {action} takes no parameters"
+                )
+        elif action == "merge":
+            if len(freqs) < 2:
+                raise ValueError(
+                    f"curation line {line_no}: merge needs at least two frequencies"
+                )
+        elif action == "split":
+            if len(freqs) != 1:
+                raise ValueError(
+                    f"curation line {line_no}: split needs exactly one frequency"
+                )
+            if "into" in params:
+                try:
+                    into = int(params["into"])
+                except ValueError:
+                    raise ValueError(
+                        f"curation line {line_no}: into={params['into']!r} "
+                        f"is not an integer"
+                    ) from None
+                if into < 2:
+                    raise ValueError(
+                        f"curation line {line_no}: into must be >= 2"
+                    )
+        elif action == "accept":
+            if freqs:
+                raise ValueError(
+                    f"curation line {line_no}: accept takes no frequency column; "
+                    f"use params candidate=F to revive a candidate"
+                )
+            if "candidate" in params:
+                try:
+                    float(params["candidate"])
+                except ValueError:
+                    raise ValueError(
+                        f"curation line {line_no}: candidate="
+                        f"{params['candidate']!r} is not a number"
+                    ) from None
+
+        ops.append(
+            CurationOp(
+                action=action,
+                window_id=window_id,
+                freqs=freqs,
+                params=params,
+                line_no=line_no,
+            )
+        )
+    return ops
+
+
+def _resolve_curation_plan(ops: Sequence[CurationOp]) -> List[PlannedAction]:
+    """Coalesce parsed ops into the delegated action plan.
+
+    A maximal run of ``add`` / ``remove`` rows on one window collapses into a
+    single ``edit`` (one refit instead of one per row); a ``merge`` / ``split``
+    / ``accept`` on that window is a barrier that flushes the window's pending
+    edit first (it changes the peak set with its own seeding). Windows are
+    independent, so an edit on another window does not flush a pending group.
+    """
+    plan: List[PlannedAction] = []
+    pending: Dict[int, PlannedAction] = {}
+    pending_order: List[int] = []
+
+    def flush(wid: int) -> None:
+        pa = pending.pop(wid, None)
+        if wid in pending_order:
+            pending_order.remove(wid)
+        if pa is not None and (pa.add or pa.remove):
+            plan.append(pa)
+
+    for op in ops:
+        wid = op.window_id
+        if op.action in ("add", "remove"):
+            pa = pending.get(wid)
+            if pa is None:
+                pa = PlannedAction(kind="edit", window_id=wid)
+                pending[wid] = pa
+                pending_order.append(wid)
+            if op.action == "add":
+                pa.add.append(op.freqs[0])
+            else:
+                pa.remove.append(op.freqs[0])
+            continue
+        # Barrier for this window.
+        flush(wid)
+        if op.action == "merge":
+            plan.append(
+                PlannedAction(kind="merge", window_id=wid, peaks=list(op.freqs))
+            )
+        elif op.action == "split":
+            plan.append(
+                PlannedAction(
+                    kind="split",
+                    window_id=wid,
+                    peak=op.freqs[0],
+                    into=int(op.params.get("into", 2)),
+                )
+            )
+        elif op.action == "accept":
+            cand = op.params.get("candidate")
+            plan.append(
+                PlannedAction(
+                    kind="accept",
+                    window_id=wid,
+                    candidate=float(cand) if cand is not None else None,
+                )
+            )
+    for wid in list(pending_order):
+        flush(wid)
+    return plan
+
+
+def describe_planned_action(action: PlannedAction) -> str:
+    """Render one :class:`PlannedAction` as a one-line human-readable summary."""
+    wid = action.window_id
+    if action.kind == "edit":
+        parts = []
+        if action.add:
+            parts.append("add " + ", ".join(f"{f:.4f}" for f in action.add))
+        if action.remove:
+            parts.append("remove " + ", ".join(f"{f:.4f}" for f in action.remove))
+        return f"edit window {wid}: " + "; ".join(parts)
+    if action.kind == "merge":
+        return (
+            f"merge window {wid}: peaks "
+            + ", ".join(f"{f:.4f}" for f in action.peaks)
+        )
+    if action.kind == "split":
+        return f"split window {wid}: peak {action.peak:.4f} into {action.into}"
+    if action.kind == "accept":
+        if action.candidate is not None:
+            return f"accept window {wid}: candidate {action.candidate:.4f}"
+        return f"accept window {wid}"
+    return f"{action.kind} window {wid}"
+
+
+def _fitted_freqs_by_window(path: str) -> Dict[int, List[float]]:
+    """Molecular MHz of each window's persisted fitted peaks (empty if no fit)."""
+    out: Dict[int, List[float]] = {}
+    with h5py.File(path, "r") as h5f:
+        if "stage5_fitting" not in h5f:
+            return out
+        spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+    for wf in spectrum_fit.window_fits:
+        if wf.window_id is None:
+            continue
+        out[int(wf.window_id)] = [float(p.frequency_mhz) for p in wf.fitted_peaks]
+    return out
+
+
+def _curation_ambiguity_warnings(
+    path: str,
+    plan: Sequence[PlannedAction],
+    *,
+    snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+) -> List[str]:
+    """Advisories where a target frequency resolves to zero or >1 fitted peaks.
+
+    ``remove`` / ``split`` / ``merge`` match an *existing* fitted peak by nearest
+    frequency within ``snap_tol_mhz``; if two peaks sit within tolerance the
+    matcher's pick is ambiguous, and if none do the edit will fail. Both are
+    surfaced up front (especially useful with ``--dry-run``). ``add`` / accepted
+    candidates create peaks, so they are not checked here.
+    """
+    by_window = _fitted_freqs_by_window(path)
+    warnings: List[str] = []
+
+    def check(wid: int, freq: float, what: str) -> None:
+        fitted = by_window.get(wid)
+        if fitted is None:
+            warnings.append(f"{what}: window {wid} has no fitted peaks")
+            return
+        near = sorted(f for f in fitted if abs(f - freq) <= snap_tol_mhz)
+        if not near:
+            warnings.append(
+                f"{what}: no fitted peak within {snap_tol_mhz * 1e3:.0f} kHz of "
+                f"{freq:.4f} MHz in window {wid} (the edit will fail)"
+            )
+        elif len(near) > 1:
+            near_str = ", ".join(f"{f:.4f}" for f in near)
+            warnings.append(
+                f"{what}: {freq:.4f} MHz in window {wid} is within "
+                f"{snap_tol_mhz * 1e3:.0f} kHz of {len(near)} fitted peaks "
+                f"({near_str}); the nearest is taken"
+            )
+
+    for action in plan:
+        wid = action.window_id
+        if action.kind == "edit":
+            for f in action.remove:
+                check(wid, f, f"remove {f:.4f}")
+        elif action.kind == "merge":
+            for f in action.peaks:
+                check(wid, f, f"merge {f:.4f}")
+        elif action.kind == "split" and action.peak is not None:
+            check(wid, action.peak, f"split {action.peak:.4f}")
+    return warnings
+
+
+def apply_curation_impl(
+    file_path: Union[Path, str],
+    curation_path: Union[Path, str],
+    *,
+    dry_run: bool = False,
+) -> CurationApplyResult:
+    """Apply a curation file to *file_path*, delegating to the edit impls.
+
+    Parses the curation CSV, coalesces it into a delegated action plan (one
+    refit per window for runs of add/remove; merge/split/accept stand alone),
+    and -- unless ``dry_run`` -- executes each action through the same impls the
+    interactive verbs call, so the result is identical to running the resolved
+    plan by hand. ``dry_run`` returns the resolved plan and frequency-resolution
+    warnings without mutating the file.
+
+    Raises ``ValueError`` on a malformed curation file or when an action fails
+    to resolve (e.g. a ``remove`` frequency matches no fitted peak), tagged with
+    the offending action.
+    """
+    path = str(file_path)
+    ops = parse_curation_file(curation_path)
+    plan = _resolve_curation_plan(ops)
+    warnings = _curation_ambiguity_warnings(path, plan)
+
+    if dry_run:
+        return CurationApplyResult(
+            plan=plan, warnings=warnings, applied=0, dry_run=True
+        )
+
+    applied = 0
+    for i, action in enumerate(plan):
+        try:
+            if action.kind == "edit":
+                refit_window_impl(
+                    path, action.window_id, add=action.add, remove=action.remove
+                )
+            elif action.kind == "merge":
+                merge_peaks_impl(path, action.window_id, action.peaks)
+            elif action.kind == "split":
+                split_peak_impl(
+                    path, action.window_id, action.peak, into=action.into
+                )
+            elif action.kind == "accept":
+                review_accept_impl(
+                    path, action.window_id, candidate_freq=action.candidate
+                )
+        except (ValueError, KeyError) as exc:
+            raise ValueError(
+                f"curation action {i + 1} ({describe_planned_action(action)}) "
+                f"failed: {exc}"
+            ) from exc
+        applied += 1
+
+    return CurationApplyResult(
+        plan=plan, warnings=warnings, applied=applied, dry_run=False
+    )
+
+
+def review_log_impl(file_path: Union[Path, str]) -> List[DecisionLogEntry]:
+    """Return the persisted Stage 6 decision log (read-only, execution order)."""
+    review = load_stage6_review_from_file(str(file_path))
+    return list(review.decision_log)
+
+
 def get_review_status_impl(file_path: Union[Path, str]) -> Stage6Review:
     """Load the :class:`Stage6Review` from *file_path*, or return an empty one.
 

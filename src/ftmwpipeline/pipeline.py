@@ -68,9 +68,12 @@ from ._internal.stage5_validation_impl import validate_stage5_shape_error_impl
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    CurationApplyResult,
+    DecisionLogEntry,
     RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
+    apply_curation_impl,
     get_candidate_ledger_impl,
     get_final_products_impl,
     get_review_status_impl,
@@ -78,6 +81,7 @@ from ._internal.stage6_impl import (
     rank_windows_impl,
     refit_window_impl,
     review_accept_impl,
+    review_log_impl,
     review_run_impl,
     set_sigma_floor_impl,
     split_peak_impl,
@@ -2015,6 +2019,44 @@ class Pipeline:
         return review_accept_impl(
             self.filepath, window_id, candidate_freq=candidate_freq
         )
+
+    def review_apply(
+        self,
+        curation_path: Union[str, Path],
+        *,
+        dry_run: bool = False,
+    ) -> CurationApplyResult:
+        """Apply a curation file of batched review edits.
+
+        Replays a curation CSV (``action,window,freqs,params`` rows) through the
+        same edit impls the interactive verbs use: a run of add/remove rows on
+        one window coalesces into a single refit, while merge/split/accept stand
+        alone.  With ``dry_run`` the resolved plan and any frequency-resolution
+        warnings are returned without modifying the file.
+
+        Parameters
+        ----------
+        curation_path :
+            Path to the curation CSV to apply.
+        dry_run :
+            Preview the resolved plan without writing (default ``False``).
+
+        Returns
+        -------
+        CurationApplyResult
+            The resolved action plan, warnings, and the number applied.
+        """
+        return apply_curation_impl(self.filepath, curation_path, dry_run=dry_run)
+
+    def review_log(self) -> List[DecisionLogEntry]:
+        """Return the persisted Stage 6 decision log (read-only, in order).
+
+        Returns
+        -------
+        list of DecisionLogEntry
+            Every recorded user decision, keyed by ``order_index``.
+        """
+        return review_log_impl(self.filepath)
 
     def review_status(self) -> Stage6Review:
         """Load the persisted Stage 6 review state, or return an empty one.

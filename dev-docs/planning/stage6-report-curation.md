@@ -1,13 +1,32 @@
 # Stage 6 — report-driven curation (HTML report → curation file → `review apply`)
 
-Status: **proposed; design sketch, implementation not started.** A workflow that
-turns the read-only Level-3 HTML report into a *curation author*: per-line and
-per-candidate controls accumulate user-intended edits into a portable
-**curation file**, which a new non-interactive verb **`review apply`** consumes
-to drive the existing Stage 6 `review` edits. It adds **no** fit logic and **no**
-new persisted `.ftmw` schema — the curation file is an external interchange
-artifact, and applying it produces ordinary `review edit`/`merge`/`split`/`accept`
+Status: **in progress.** The CLI/edit-language core is shipped: the curation
+file format + parser, **`review apply`** (with `--dry-run`, add/remove
+coalescing, and frequency-resolution warnings), and a read-only **`review log`**
+— all dual-interface (`apply_curation_impl` / `review_log_impl`, wrapped by the
+CLI, `Pipeline`, and the functional API) with unit + integration tests. Still to
+build: **`review undo`** (blocked — see below), the multi-file-site retirement
+(done separately), and the in-report controls/cart/export.
+
+The workflow turns the read-only Level-3 HTML report into a *curation author*:
+per-line and per-candidate controls accumulate user-intended edits into a
+portable **curation file**, which **`review apply`** consumes to drive the
+existing Stage 6 `review` edits. It adds **no** fit logic and **no** new
+persisted `.ftmw` schema — the curation file is an external interchange artifact,
+and applying it produces ordinary `review edit`/`merge`/`split`/`accept`
 mutations that persist exactly as those verbs already do.
+
+**`review undo` is blocked on baseline preservation.** Honest replay-from-baseline
+undo (the design below) needs the *automatic* Stage 5 fit preserved immutably to
+replay surviving edits onto — but the edit impls mutate `stage5_fitting` **in
+place**, so the pre-edit state of an edited window is not recoverable from the
+file, and no replay/baseline machinery exists yet (the ROADMAP's "re-apply+diff
+replay" was aspirational). Building undo therefore requires, first, a one-time
+snapshot of the automatic fit (e.g. a `stage5_fitting_baseline` group +
+serialization) and a replay engine that restores affected windows from it and
+re-applies the decision log minus the undone ids (which can reuse the
+`apply_curation_impl` engine). Tracked as the next step; not attempted as a
+fragile per-action inverse.
 
 ## Motivation
 
@@ -304,13 +323,18 @@ The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in th
 
 ## Implementation order
 
-1. **Curation file format + parser + `review apply` consumer (with `--dry-run`
-   first).** The load-bearing piece, fully testable without any HTML. Establishes
-   the format and the coalescing/ambiguity semantics.
-2. **`review log` + `review undo --id`** on the existing decision-log replay
-   (the CSV-as-edit-language rollback path).
-3. **Retire the multi-file site** (decision 1) — a small reports cleanup, done
-   before or alongside the report controls so they target the final structure.
+1. **DONE — Curation file format + parser + `review apply` consumer (with
+   `--dry-run`).** The load-bearing piece, fully testable without any HTML;
+   establishes the format and the coalescing/ambiguity semantics.
+   `parse_curation_file` / `_resolve_curation_plan` / `apply_curation_impl` in
+   `_internal/stage6_impl.py`, wrapped by the CLI / `Pipeline` / functional API;
+   tests in `tests/unit/stage6/test_curation.py`.
+2. **DONE — Retire the multi-file site** (decision 1). The report is always one
+   self-contained file; the `scope` selector replaced `single_file`.
+3. **DONE — `review log`** (read-only decision-log listing). **TODO —
+   `review undo --id`:** blocked on baseline preservation + a replay engine (see
+   the Status note); the next step here. It can reuse `apply_curation_impl` once
+   the automatic Stage 5 fit is snapshotted.
 4. **Report controls + cart + CSV export + read-only toggle** on the single file.
 5. **Click-on-plot + on-plot queued-edit SVG markers:** axes-bbox capture in
    `fit_detail.py` + the shared transparent overlay. Phase 2 polish.

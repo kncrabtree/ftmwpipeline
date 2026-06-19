@@ -40,6 +40,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union, cast
 from ._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
+    CurationApplyResult,
+    DecisionLogEntry,
     RankedWindow,
     RefitWindowResult,
     ReviewRunResult,
@@ -1735,6 +1737,55 @@ def review_accept(
     return Pipeline.open(file_path).review_accept(
         window_id, candidate_freq=candidate_freq
     )
+
+
+def review_apply(
+    file_path: Union[str, Path],
+    curation_path: Union[str, Path],
+    *,
+    dry_run: bool = False,
+) -> CurationApplyResult:
+    """Apply a curation file of batched review edits.
+
+    Equivalent to :meth:`Pipeline.review_apply`.  Replays a curation CSV through
+    the same edit impls the interactive verbs use (add/remove on one window
+    coalesce into a single refit; merge/split/accept stand alone).  With
+    ``dry_run`` the resolved plan and frequency-resolution warnings are returned
+    without modifying the file.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+    curation_path :
+        Path to the curation CSV to apply.
+    dry_run :
+        Preview the resolved plan without writing (default ``False``).
+
+    Returns
+    -------
+    CurationApplyResult
+
+    Requires Stage 5 completed.
+    """
+    return Pipeline.open(file_path).review_apply(curation_path, dry_run=dry_run)
+
+
+def review_log(file_path: Union[str, Path]) -> List[DecisionLogEntry]:
+    """Return the persisted Stage 6 decision log (read-only, execution order).
+
+    Equivalent to :meth:`Pipeline.review_log`.
+
+    Parameters
+    ----------
+    file_path :
+        Path to the ``.ftmw`` pipeline file.
+
+    Returns
+    -------
+    list of DecisionLogEntry
+    """
+    return Pipeline.open(file_path).review_log()
 
 
 def get_review_status(file_path: Union[str, Path]) -> Stage6Review:

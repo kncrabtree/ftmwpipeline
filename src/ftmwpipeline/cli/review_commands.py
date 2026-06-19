@@ -1,8 +1,8 @@
 """
 Stage 6 review commands.
 
-Implements the ``review show``, ``review edit``, ``review merge``,
-``review split``, and ``review run`` subcommands.  Thin wrappers over
+Implements the ``review run``/``show``/``rank``/``edit``/``merge``/``split``/
+``accept``/``apply``/``log`` subcommands.  Thin wrappers over
 :mod:`ftmwpipeline._internal.stage6_impl` -- identical behaviour to
 :class:`~ftmwpipeline.Pipeline` and the functional API.
 """
@@ -17,6 +17,8 @@ from .._internal.stage6_impl import (
     RefitWindowResult,
     ReviewRunResult,
     _normalize_metric,
+    apply_curation_impl,
+    describe_planned_action,
     get_candidate_ledger_impl,
     get_final_products_impl,
     get_review_status_impl,
@@ -24,6 +26,7 @@ from .._internal.stage6_impl import (
     rank_windows_impl,
     refit_window_impl,
     review_accept_impl,
+    review_log_impl,
     review_run_impl,
     split_peak_impl,
 )
@@ -582,6 +585,60 @@ def cmd_review_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_review_apply(args: argparse.Namespace) -> int:
+    """Apply a curation file of batched review edits (with optional dry-run)."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+    dry_run: bool = getattr(args, "dry_run", False)
+
+    try:
+        result = apply_curation_impl(file_path, args.curation_file, dry_run=dry_run)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    header = "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
+    print(header)
+    if not result.plan:
+        print("  (no actions)")
+    for i, action in enumerate(result.plan, start=1):
+        print(f"  {i:>3}. {describe_planned_action(action)}")
+    if result.warnings:
+        print("warnings:")
+        for w in result.warnings:
+            print(f"  - {w}")
+    if dry_run:
+        print(f"{len(result.plan)} action(s) would be applied (nothing written).")
+    else:
+        print(f"applied {result.applied} action(s).")
+    return 0
+
+
+def cmd_review_log(args: argparse.Namespace) -> int:
+    """List the persisted Stage 6 decision log (read-only)."""
+    setup_logging(getattr(args, "verbose", False))
+    file_path = _ensure_ftmw(args.file_path)
+
+    try:
+        entries = review_log_impl(file_path)
+    except (ValueError, KeyError, OSError) as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    print("review log (user decisions, execution order):")
+    if not entries:
+        print("  (no recorded decisions)")
+        return 0
+    print(f"  {'id':>4}  {'action':>7}  {'window':>6}  {'freq (MHz)':>12}")
+    print("  " + "-" * 36)
+    for e in entries:
+        print(
+            f"  {e.order_index:>4}  {e.kind:>7}  {e.window_id:>6}  "
+            f"{e.frequency_mhz:>12.4f}"
+        )
+    return 0
+
+
 def cmd_review_rank(args: argparse.Namespace) -> int:
     """Rank windows by a persisted per-window statistic (read-only)."""
     setup_logging(getattr(args, "verbose", False))
@@ -627,8 +684,8 @@ def register_review_commands(subparsers: Any) -> None:
             "Stage 6 review surface.\n\n"
             "Inspect the automatic fit, view per-window summaries, explore\n"
             "the candidate ledger, and apply user-directed edits (add, remove,\n"
-            "merge, split peaks).\n\n"
-            "Verbs: run, show, edit, merge, split, accept"
+            "merge, split peaks) -- one at a time or batched from a curation file.\n\n"
+            "Verbs: run, show, rank, edit, merge, split, accept, apply, log"
         ),
     )
 
@@ -729,6 +786,68 @@ def register_review_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_rank.set_defaults(func=cmd_review_rank)
+
+    # ---- review apply --------------------------------------------------------
+    p_apply = verbs.add_parser(
+        "apply",
+        help="Apply a curation file of batched review edits",
+        description=(
+            "Replay a curation file (CSV) of batched edits through the same\n"
+            "impls the interactive verbs use.\n\n"
+            "Columns: action,window,freqs,params -- where action is one of\n"
+            "add/remove/merge/split/accept, freqs is a ';'-separated list of\n"
+            "molecular MHz, and params is ';'-separated key=value (into=K for\n"
+            "split, candidate=F for accept). Blank lines and '#' comments are\n"
+            "ignored; an optional header row is skipped.\n\n"
+            "A run of add/remove rows on one window coalesces into a single\n"
+            "refit; merge/split/accept stand alone. With --dry-run the resolved\n"
+            "plan and any frequency-resolution warnings print without writing."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_apply.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_apply.add_argument(
+        "curation_file", help="Path to the curation CSV to apply."
+    )
+    p_apply.add_argument(
+        "--dry-run",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help="Print the resolved plan and warnings without modifying the file.",
+    )
+    p_apply.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_apply.set_defaults(func=cmd_review_apply)
+
+    # ---- review log ----------------------------------------------------------
+    p_log = verbs.add_parser(
+        "log",
+        help="List the persisted decision log (read-only)",
+        description=(
+            "List the Stage 6 decision log -- every recorded user edit in\n"
+            "execution order, keyed by id (order_index). Read only."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_log.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_log.add_argument(
+        "--verbose",
+        dest="verbose",
+        action="store_true",
+        default=False,
+        help="Enable verbose logging.",
+    )
+    p_log.set_defaults(func=cmd_review_log)
 
     p_show = verbs.add_parser(
         "show",
