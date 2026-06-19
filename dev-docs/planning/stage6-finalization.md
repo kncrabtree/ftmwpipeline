@@ -1,9 +1,11 @@
 # Stage 6 — user decisions, re-fits, and analysis finalization
 
-Status: **design locked; implementation not started.** The gating
-open-issue sweep (ROADMAP sequence items 1–4) has closed, so the fitted-table
-semantics are stable and this layer can freeze them. The sections below are
-the agreed contract, built in two passes (see "Implementation passes").
+Status: **implemented.** The `review run/show/edit/merge/split/accept` read/edit
+surface, the candidate ledger, the anchored decision log, and the
+consolidate/calibrate finalization layer (the persisted final-products table) are
+all built and shipped; review-findings F1–F5 are resolved, and the curation
+clients (reports + report-driven curation) build on this contract. The sections
+below are the agreed contract this layer implements.
 
 The CLI surface is a new stage object **`review`** (object-verb grammar). The
 tracked stage / HDF5 group is **`stage6_review`** (requires `stage5_fitting`;

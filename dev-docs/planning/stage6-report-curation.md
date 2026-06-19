@@ -454,40 +454,41 @@ The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in th
 5. **CSV only for now.** No demonstrated need for JSON; not precluded, but not
    built up front.
 
-## Implementation order
+## What shipped (where the code lives)
 
-1. **DONE — Curation file format + parser + `review apply` consumer (with
-   `--dry-run`).** The load-bearing piece, fully testable without any HTML;
-   establishes the format and the coalescing/ambiguity semantics.
-   `parse_curation_file` / `_resolve_curation_plan` / `apply_curation_impl` in
-   `_internal/stage6_impl.py`, wrapped by the CLI / `Pipeline` / functional API;
-   tests in `tests/unit/stage6/test_curation.py`.
-2. **DONE — Retire the multi-file site** (decision 1). The report is always one
-   self-contained file; the `scope` selector replaced `single_file`.
-3. **DONE — `review log` + `review undo --id`.** Undo is replay-from-baseline:
-   `refit_window_impl` snapshots the automatic fit to `stage5_fitting_baseline`
-   on the first edit; a fresh Stage 5 fit drops the snapshot (and the dependency
-   tracker already clears the review). `review_undo_impl` restores the baseline,
-   rebuilds the review with `review_run`, and replays the surviving decisions
-   through the shared `_execute_planned_action` engine — so ids renumber and the
-   result is the canonical replay. The decision log is loss-free for replay
-   (merge carries `merged_from`, split carries `split_into`).
-4. **DONE — in-report controls + cart + CSV export + read-only toggle** on the
-   single file. In `_internal/report_html_impl.py`: `_window_peak_table` /
-   `_ledger_block` gained a `window_id` that hangs `data-window`/`data-freq`
-   (raw Stage-5 model frequency) on each row plus the trailing curation control
-   column (`_peak_curation_cell`); `_window_curation_controls` adds the per-window
-   merge-selected / `+ Add peak` / mark-reviewed strip; the topnav gained the
-   Curate/Read-only toggle + cart badge; `_CURATION_JS` (boot + docked cart +
-   event-delegated wiring, stem embedded via `window.__stem`) and `_CURATION_CSS`
-   (folded into `_STYLESHEET`, all gated on `html.curation-enabled`). Tests in
-   `tests/unit/stage6/test_report_full.py` cover the render markup, the single-
-   file curation surface, and the load-bearing rule (a row's emitted `data-freq`
-   fed to `review apply` removes that exact peak). JS DOM behavior (cart
-   accumulation, CSV serialization, row state) is manual-verify per the spec.
-5. **DONE — Click-on-plot (phase 2).** `_mag_axes_geometry` captures the |X|
-   panel's data-axes box + frequency limits; `_fit_panels_block` stamps them as
-   `data-axes-*` on the `cur-plot` image and wraps it with a corner arm toggle +
-   an SVG marker layer. The curation script inverts a click to a molecular MHz
-   `add` seed (only on the armed panel) and draws one marker per queued edit by
-   the forward map, each clickable to drop it.
+The whole feature is shipped; this is the map from each piece to its code.
+
+- **Curation file format + parser + `review apply`.** `parse_curation_file` /
+  `_resolve_curation_plan` / `apply_curation_impl` in `_internal/stage6_impl.py`
+  (the load-bearing piece, fully testable without any HTML — establishes the
+  format and the coalescing/ambiguity semantics), wrapped by the CLI / `Pipeline`
+  / functional API; tests in `tests/unit/stage6/test_curation.py`.
+- **`review log` + `review undo --id`.** Undo is replay-from-baseline:
+  `refit_window_impl` snapshots the automatic fit to `stage5_fitting_baseline` on
+  the first edit (a fresh Stage 5 fit drops the snapshot); `review_undo_impl`
+  restores the baseline, rebuilds the review with `review_run`, and replays the
+  surviving decisions through the shared `_execute_planned_action` engine (ids
+  renumber). The decision log is loss-free for replay (merge carries
+  `merged_from`, split carries `split_into`).
+- **Single self-contained report.** The multi-file site was retired; the report
+  is always one file, the `scope` selector replaced `single_file`.
+- **In-report controls + cart + export.** In `_internal/report_html_impl.py`:
+  `_window_peak_table` / `_ledger_block` take a `window_id` that hangs
+  `data-window`/`data-freq` (the **raw** Stage-5 model frequency) on each row plus
+  the trailing curation control cell (`_peak_curation_cell`);
+  `_window_curation_controls` adds the per-window merge-selected / `+ Add peak` /
+  mark-reviewed strip; the topnav gained the Curate/Read-only toggle + cart badge;
+  `_CURATION_JS` (boot + docked cart + event-delegated wiring, stem via
+  `window.__stem`) and the curation CSS (folded into `_STYLESHEET`) are gated on
+  `html.curation-enabled`.
+- **Click-on-plot + on-plot markers (phase 2).** `_mag_axes_geometry` captures
+  the |X| panel's data-axes box + frequency limits; `_fit_panels_block` stamps
+  them as `data-axes-*` on the `cur-plot` image and wraps it with a corner arm
+  toggle + an SVG marker layer. The script inverts a click to a molecular-MHz
+  `add` seed (only on the armed panel) and draws one marker per queued edit by the
+  forward map, each clickable to drop it.
+- **Tests.** `tests/unit/stage6/test_report_full.py` covers the render markup, the
+  single-file curation surface, the geometry inversion, and the load-bearing rule
+  (a row's emitted `data-freq` fed to `review apply` removes that exact peak). JS
+  DOM behavior (cart accumulation, CSV serialization, row state, arm toggle) is
+  manual-verify per the test plan.

@@ -1,11 +1,23 @@
 # Stage 6 — interactive CLI review shell
 
-Status: **proposed; design sketch, implementation not started.** A
-terminal-interactive front-end over the existing Stage 6 `review` verbs. It
-adds **no** fitting logic and **no** new persisted state — it is a navigation
-and dispatch loop that calls the same `_internal` impl functions the
-non-interactive verbs already call. It is explicitly a stopgap for a future
-C++/Qt graphical shell (see "Relationship to the planned Qt frontend").
+Status: **dropped (superseded); will-not-build.** This terminal REPL was a
+stopgap for the planned C++/Qt graphical shell, but the workflow it targeted is
+now covered without it: the **CSV review language** (`review apply` / `review
+log` / `review undo`, [`stage6-report-curation.md`](stage6-report-curation.md))
+provides batch, replayable, hand-editable curation, and the **in-report
+curation cart** turns the Level-3 HTML report into an authoring surface that
+emits the same curation file. A terminal REPL would add a third interaction
+surface with no remaining unique value, so it is not being built. The design
+sketch below is retained for its rationale — file-based rendering (no live
+matplotlib / `ipywidgets`), the display-letter↔peak map, and the
+byte-identical-to-verb test lever — should a REPL ever be reconsidered.
+
+---
+
+Original proposal (design sketch, not implemented). A terminal-interactive
+front-end over the existing Stage 6 `review` verbs. It adds **no** fitting logic
+and **no** new persisted state — it is a navigation and dispatch loop that calls
+the same `_internal` impl functions the non-interactive verbs already call.
 
 ## Purpose
 
