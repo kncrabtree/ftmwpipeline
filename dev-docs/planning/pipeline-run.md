@@ -1,5 +1,9 @@
 # Pipeline `run` — end-to-end orchestration
 
+Status: **implemented.** The bare `run` CLI verb, `api.run_pipeline`, and
+`Pipeline.build` are shipped across all three interfaces. The sections below are
+the overview of what was built.
+
 A single command that drives a raw source through every stage in sequence
 (import → FT → noise → τ → peaks → windows → fit → timebase → review), with live
 progress, so a user gets a finalized `.ftmw` (and optionally its report) from one
