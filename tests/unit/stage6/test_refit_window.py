@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import List
 
 import h5py
 import numpy as np
@@ -44,57 +43,6 @@ pytestmark = [pytest.mark.integration]
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def exp_2638_data_path():
-    data_path = Path("examples/blackchirp_data/2638")
-    if not data_path.exists():
-        pytest.skip("Experiment 2638 data not available")
-    return str(data_path)
-
-
-@pytest.fixture(scope="module")
-def stage5_small_file(exp_2638_data_path, tmp_path_factory):
-    """Build the 2638 pipeline through Stage 5 (3-window subset) once."""
-    from ftmwpipeline._internal.stage4_impl import (
-        load_windows_impl,
-        save_window_plan_impl,
-    )
-
-    tmp = tmp_path_factory.mktemp("stage5_small_refit")
-    fp = tmp / "2638_stage5_small.ftmw"
-
-    ftmw.import_data(fp, source=exp_2638_data_path)
-    ftmw.compute_ft(fp, trim=(26500, 40000))
-    ftmw.estimate_noise(fp)
-    ftmw.detect_peaks(fp)
-    ftmw.assign_windows(fp)
-
-    # Trim to first 3 dependency-free windows (same logic as conftest).
-    plan = load_windows_impl(str(fp))["plan"]
-    n_target = 3
-    candidates: List[int] = []
-    for wid in plan.topological_order:
-        deps = [(a, b) for (a, b) in plan.dependency_edges if a == wid or b == wid]
-        if all(a in candidates or a == wid for (a, _) in deps) and all(
-            b in candidates or b == wid for (_, b) in deps
-        ):
-            candidates.append(wid)
-        if len(candidates) >= n_target:
-            break
-    if not candidates:
-        candidates = list(plan.topological_order[:n_target])
-    keep = set(candidates)
-    plan.windows = [w for w in plan.windows if w.window_id in keep]
-    plan.topological_order = [w for w in plan.topological_order if w in keep]
-    plan.dependency_edges = [
-        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
-    ]
-    save_window_plan_impl(str(fp), plan)
-
-    ftmw.fit_peaks(str(fp))
-    return fp
 
 
 @pytest.fixture

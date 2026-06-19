@@ -794,6 +794,7 @@ def test_ledger_bundle_equals_self_loading(stage5_small_file):
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_report_production_path_matches_reference(
     stage5_small_file, tmp_path, monkeypatch
 ):
@@ -841,6 +842,7 @@ def test_report_production_path_matches_reference(
 
 
 @pytest.mark.integration
+@pytest.mark.slow
 def test_full_windows_filter_attention_subset(stage5_small_file, tmp_path):
     all_out = tmp_path / "all"
     att_out = tmp_path / "att"
@@ -1050,31 +1052,10 @@ def test_report_rejects_unknown_scope(stage5_small_file, tmp_path):
         )
 
 
-@pytest.mark.integration
-def test_full_cross_interface(stage5_small_file, tmp_path):
-    fp = tmp_path / "copy.ftmw"
-    shutil.copy(stage5_small_file, fp)
-
-    impl_dir = tmp_path / "impl"
-    api_dir = tmp_path / "api"
-    pipe_dir = tmp_path / "pipe"
-
-    from ftmwpipeline._internal.report_html_impl import report_full_impl as impl
-
-    # The report is one self-contained file across every interface; the impl and
-    # the report_run wrappers must render byte-identical HTML (paths inside are
-    # in-document anchors / data URIs, so only the output directory differs).
-    impl(str(fp), output_dir=str(impl_dir))
-    ftmw.report_run(str(fp), output_dir=str(api_dir), emit_table=False)
-    Pipeline.open(fp).report_run(output_dir=str(pipe_dir), emit_table=False)
-
-    def _single(d):
-        return next(p for p in Path(d).glob("*_report.html"))
-
-    a = _single(impl_dir).read_text()
-    b = _single(api_dir).read_text()
-    c = _single(pipe_dir).read_text()
-    assert a == b == c
+# Cross-interface report byte-identity (impl == api == pipe) is covered by
+# test_run_cross_interface below, which exercises the default report_run path;
+# report_run builds the same full single-file HTML internally, so a separate
+# report_full cross-interface build is redundant.
 
 
 # ---------------------------------------------------------------------------

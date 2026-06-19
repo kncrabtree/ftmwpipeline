@@ -13,14 +13,11 @@ from __future__ import annotations
 
 import math
 import shutil
-from pathlib import Path
-from typing import List
 
 import h5py
 import pytest
 
 import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
 from ftmwpipeline._internal.stage6_impl import (
     _build_final_products,
     get_final_products_impl,
@@ -277,44 +274,6 @@ def test_set_sigma_floor_persists(tmp_path):
 # ---------------------------------------------------------------------------
 # End-to-end on the small 2638 fixture + cross-interface
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def stage5_small_file(tmp_path_factory):
-    data_path = Path("examples/blackchirp_data/2638")
-    if not data_path.exists():
-        pytest.skip("Experiment 2638 data not available")
-    tmp = tmp_path_factory.mktemp("stage5_small_final_products")
-    fp = tmp / "2638_stage5_small_fp.ftmw"
-
-    ftmw.import_data(fp, source=str(data_path))
-    ftmw.compute_ft(fp, trim=(26500, 40000))
-    ftmw.estimate_noise(fp)
-    ftmw.detect_peaks(fp)
-    ftmw.assign_windows(fp)
-
-    plan = load_windows_impl(str(fp))["plan"]
-    candidates: List[int] = []
-    for wid in plan.topological_order:
-        deps = [(a, b) for (a, b) in plan.dependency_edges if a == wid or b == wid]
-        if all(a in candidates or a == wid for (a, _) in deps) and all(
-            b in candidates or b == wid for (_, b) in deps
-        ):
-            candidates.append(wid)
-        if len(candidates) >= 3:
-            break
-    if not candidates:
-        candidates = list(plan.topological_order[:3])
-    keep = set(candidates)
-    plan.windows = [w for w in plan.windows if w.window_id in keep]
-    plan.topological_order = [w for w in plan.topological_order if w in keep]
-    plan.dependency_edges = [
-        (a, b) for (a, b) in plan.dependency_edges if a in keep and b in keep
-    ]
-    save_window_plan_impl(str(fp), plan)
-
-    ftmw.fit_peaks(str(fp))
-    return fp
 
 
 @pytest.mark.integration
