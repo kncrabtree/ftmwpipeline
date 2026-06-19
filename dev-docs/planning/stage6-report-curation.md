@@ -6,8 +6,9 @@ coalescing, and frequency-resolution warnings), read-only **`review log`**, and
 **`review undo --id`** (replay-from-baseline rollback) — all dual-interface
 (`apply_curation_impl` / `review_log_impl` / `review_undo_impl`, wrapped by the
 CLI, `Pipeline`, and the functional API) with unit + integration tests, plus the
-multi-file-site retirement (done separately). Still to build: the in-report
-controls/cart/export and the phase-2 plot interaction.
+multi-file-site retirement (done separately). **Next, design-locked and ready for
+a fresh session: the in-report controls/cart/export** — fully specced in
+*In-report curation UX (phase 1)* below. After that, the phase-2 plot interaction.
 
 The workflow turns the read-only Level-3 HTML report into a *curation author*:
 per-line and per-candidate controls accumulate user-intended edits into a
@@ -196,37 +197,147 @@ re-apply + diff replay; this surface exposes it:
 persisted schema; they could graduate to their own small piece if the curation
 work ships first, but the CSV-as-edit-language framing makes them belong here.
 
-## HTML report changes
+## In-report curation UX (phase 1) — the fleshed-out spec
 
-1. **Row data attributes.** Hang `data-window` and `data-freq` on every
-   fitted-line row (`_window_peak_table`) and every ledger-candidate row
-   (`_ledger_block`). The plumbing already exists — rows carry `data-thumb`/
-   `data-info` for the hover popover.
-2. **Per-row controls.** Fitted-line rows get **Remove**, **Split** (with a small
-   `K` input, default 2), and a **Merge** multi-select (checkbox → "merge
-   selected" acts on ≥2 checked rows in the same window). Ledger rows get **Add**.
-   Each control pushes a structured operation onto the cart; it does not run
-   anything.
-3. **Curation cart.** A floating panel accumulates operations **grouped by
-   window** so the user sees "window 217: remove A; add 38451.0". Entries are
-   removable. The cart is in-memory — the report is now a single self-contained
-   page, so there is no cross-page navigation to persist across.
-4. **Export.** One action serializes the cart to the **curation CSV** (primary)
-   and, as a convenience, the equivalent `ftmwpipeline review …` shell listing.
-   Under `file://`, prefer a download (Blob/data-URI) with a copy-to-clipboard
-   fallback (a selectable `<textarea>`, since `navigator.clipboard` is
-   inconsistent under `file://`).
-5. **Read-only toggle.** A topnav toggle (alongside the existing compact toggle)
-   hides every edit control and the cart, returning the report to a clean fixed
-   document for sharing. Default is editable (curation is the purpose); the toggle
-   gives the "just a report" view on demand.
-6. **On-plot queued-edit markers** (with the phase-2 axes stamping). Each queued
-   cart entry renders an SVG marker on its window's magnitude panel at the edit
-   frequency — distinct glyphs for add / remove / split / merge — using the same
-   `data-axes-*` mapping as click-to-add. A small control near the plot drops a
-   queued action directly from the figure, mirroring the cart's remove.
+Design locked with the user. The HTML report becomes a curation *author*: the
+reader clicks controls on the existing per-window tables, edits accumulate in a
+docked cart, and one action exports the curation CSV that `review apply`
+consumes. Pure single self-contained HTML + inline vanilla JS/CSS (no libraries),
+in the spirit of the existing `_WINMAP_JS` popover and `_COMPACT_JS` toggle.
 
-All additions are inline vanilla JS/CSS in the single self-contained file.
+### Progressive enhancement and modes
+
+The report is a complete, static document with scripting off. Curation controls
+are **hidden by default** and revealed only when JS runs — an inline boot script
+adds `class="curation-enabled"` to `<html>` on load. This makes the no-JS view
+and the **read-only** view the same clean document. The topnav (beside
+*Compact*) gains a **Curate / Read-only toggle** that flips `curation-enabled`,
+and a small **cart-count badge**. Default on load is *editable* (curation is the
+purpose); the toggle gives the shareable "just a report" view on demand. All
+curation CSS keys off `html.curation-enabled` so a single class governs
+visibility.
+
+### Per-line controls (inline)
+
+In each window's **fitted-lines table** (`_window_peak_table`), every row gains:
+
+- **Split** with a small `K` stepper (default 2, min 2) → queues
+  `split,<window>,<freq>,into=K`.
+- **Remove** → queues `remove,<window>,<freq>`.
+- a **merge checkbox**. A per-window **“merge N selected”** button (in that
+  window's section) activates at ≥2 checks and queues
+  `merge,<window>,<f1>;<f2>;…`. Selection is scoped to the one window (each
+  window is its own `<section>`/table), so cross-window merge is structurally
+  impossible.
+
+In the window's **ledger-candidate block** (`_ledger_block`), each candidate row
+gains **Add** → queues `add,<window>,<candidate-freq>` (one click, no typing).
+
+Each window section also gets a **“+ Add peak at ⟨MHz⟩”** numeric input + button
+(the window's molecular range is shown right beside it for context) →
+`add,<window>,<typed-freq>`. Arbitrary clicked-on-plot adds are **phase 2**.
+
+Optional, low priority: a per-window **“Mark reviewed”** button →
+`accept,<window>,,` (the bare-accept "looked, no change" decision).
+
+### The frequency the controls emit — the one correctness rule
+
+**Controls emit `frequency_raw_mhz` (the uncalibrated Stage-5 model frequency),
+not the ε-calibrated display value.** `review apply` / `refit_window_impl` match
+`remove` / `split` / `merge` targets against the **Stage-5 fitted-peak
+frequency** (`FittedPeak.frequency_mhz`, which equals `FinalPeak.frequency_raw_mhz`);
+the report's headline “Calibrated f” column has the timebase ε removed and
+differs by ~kHz. With a 50 kHz snap tolerance the ε offset usually still matches,
+but in exactly the tight-doublet cases curation exists for it could mis-target —
+so the data attribute must carry the raw frequency. Concretely:
+`data-window=<id>` + `data-freq=<frequency_raw_mhz>` on every fitted-line row;
+the cart may *display* the calibrated value for readability while the CSV carries
+the raw one. (Adds are seeds, so their frame is immaterial — emit as typed.)
+**This is the single load-bearing correctness check; see the test plan.**
+
+### The docked cart
+
+A collapsible panel (fixed, bottom-right; collapses to a count-badge button on
+narrow viewports) lists queued edits **grouped by window**:
+
+```
+[ Curation cart (3) ]
+ window 217
+   - remove 38450.123        ✕
+   - add    38451.000        ✕
+ window 24
+   - split  38449.900 → 3    ✕
+ ─────────────────────────────
+ [Download .csv] [Copy] [Clear]
+ run:  ftmwpipeline review apply <stem>.ftmw <stem>_curation.csv
+       (add --dry-run to preview the resolved plan)
+```
+
+- In-memory JS array of ops `{action, window, freqs, params, label}`; each entry
+  removable (✕), which also clears the originating row's visual state. **Clear**
+  empties the cart and all row states.
+- **Grouping by window only** — the cart does **not** reimplement the
+  apply-side coalescing/barrier resolution (that lives once in Python). It shows
+  the raw queued ops grouped per window; the authoritative resolved plan comes
+  from `review apply --dry-run`. The cart surfaces the exact command to run
+  (with the report stem embedded at render time) so the loop closes:
+  download → copy command → run.
+- **Export:** **Download .csv** via a Blob/data-URI named
+  `<stem>_curation.csv`; **Copy** uses `navigator.clipboard` with a selectable
+  `<textarea>` fallback (`file://` clipboard is unreliable). The CSV is exactly
+  the `action,window,freqs,params` format `parse_curation_file` already accepts
+  (header row included).
+
+### Edit-state feedback on rows
+
+Queued edits reflect immediately on the originating rows so the pending state is
+visible and reversible without opening the cart:
+
+- **remove** → row struck-through / dimmed, the Remove button becomes an
+  *undo* affordance.
+- **split** → a `split→K` badge on the row.
+- **merge** → the checked rows get a shared “merge group” highlight.
+- **add** (typed or ledger) → a provisional row appended to the window's table,
+  visually marked pending.
+
+### JS / CSS architecture (for the implementer)
+
+- One inline `<script>` constant (`_CURATION_JS`) + one stylesheet block
+  (`_CURATION_CSS`), injected into the single-file build exactly like
+  `_COMPACT_JS` / the compact CSS. The report stem is emitted as a JS variable
+  for the download filename and the “run:” command.
+- Event delegation on `document` for clicks on `.cur-btn` elements; each reads
+  its `data-action` and the closest row's `data-window` / `data-freq`.
+- Functions: `addOp` / `removeOp` / `clearCart` / `renderCart` / `toCsv` /
+  `download` / `copy`, plus `setRowState`. No framework, no build step.
+
+### Code touch points (`_internal/report_html_impl.py` unless noted)
+
+- `_window_peak_table` — row `data-window`/`data-freq` (raw) + the Split/Remove/
+  merge-checkbox control cell (gated by `html.curation-enabled`).
+- `_ledger_block` — candidate `data-window`/`data-freq` + Add button.
+- the per-window section assembler (`_window_page`) — the “+ Add peak”, the
+  per-window “merge selected”, and the optional “Mark reviewed” controls.
+- the topnav builder (`_page` / wherever the Compact toggle is emitted) — the
+  Curate/Read-only toggle + cart-count badge.
+- new `_CURATION_JS` + `_CURATION_CSS`; inject in the single-file collapse path
+  next to the compact assets. Embed the stem.
+
+### Test plan
+
+- **Render assertions:** rendered HTML carries `data-window`/`data-freq` on
+  fitted-line and ledger rows, the per-row controls, the per-window add input,
+  the cart container, and the topnav toggle; all curation markup is inside the
+  `curation-enabled`-gated structure.
+- **The load-bearing correctness test:** parse a fitted-line row out of the
+  rendered report, take its `data-freq`, build a one-line `remove` curation CSV
+  from it, run `apply_curation_impl`, and assert *that specific peak* is gone —
+  proving the emitted (raw) frequency resolves to the intended peak. Repeat for a
+  ledger `add`. Run on a built fixture (1512 or the 2638 subset).
+- **JS behavior** (cart accumulation, CSV serialization, row state) needs a DOM
+  and is out of the pytest harness: verify manually, and keep the serialization
+  format trivial enough to eyeball. Optionally note a future headless-browser
+  smoke test; not a blocker.
 
 ## Click-on-plot (phase 2)
 
@@ -339,6 +450,11 @@ The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in th
    through the shared `_execute_planned_action` engine — so ids renumber and the
    result is the canonical replay. The decision log is loss-free for replay
    (merge carries `merged_from`, split carries `split_into`).
-4. **Report controls + cart + CSV export + read-only toggle** on the single file.
+4. **NEXT (design locked, ready for handoff) — in-report controls + cart +
+   CSV export + read-only toggle** on the single file. Full spec in
+   *In-report curation UX (phase 1)* above: inline per-row Split/Remove/merge +
+   per-window add input + ledger Add, a docked grouped cart with download/copy/
+   clear and the run-command, progressive-enhancement gating, and the
+   raw-frequency correctness rule + its load-bearing test.
 5. **Click-on-plot + on-plot queued-edit SVG markers:** axes-bbox capture in
    `fit_detail.py` + the shared transparent overlay. Phase 2 polish.
