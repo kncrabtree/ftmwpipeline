@@ -311,6 +311,71 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
   main.report { padding: 1rem 1rem 3rem; }
   table { font-size: 0.82rem; }
 }
+/* In-report curation (phase 1). Every curation affordance is hidden until the
+   boot script adds `curation-enabled` to <html>, so the no-JS document and the
+   read-only toggle show the same clean report. A single class governs all of it:
+   the per-row Curate column (always the trailing cell of the fitted-lines /
+   ledger tables), the `.cur-only` per-window control strips, and the docked
+   cart. The topnav toggle/badge stay visible (like the compact toggle) so the
+   reader can flip back to editing. */
+html:not(.curation-enabled) .cur-only { display: none; }
+html:not(.curation-enabled) #cur-cart { display: none; }
+html:not(.curation-enabled) table.peak-list td:last-child,
+html:not(.curation-enabled) table.peak-list th:last-child,
+html:not(.curation-enabled) table.ledger td:last-child,
+html:not(.curation-enabled) table.ledger th:last-child { display: none; }
+.cur-cell { display: inline-flex; align-items: center; gap: 0.3rem;
+            white-space: nowrap; }
+.cur-cell .cur-btn, .cur-window-controls .cur-btn {
+    font-size: 0.78rem; padding: 0.08rem 0.45rem; border-radius: 3px;
+    border: 1px solid #2c4a6e; background: #cfe0f5; color: #11233a;
+    cursor: pointer; }
+.cur-cell .cur-btn:hover, .cur-window-controls .cur-btn:hover { background: #fff; }
+.cur-cell .cur-k { width: 3rem; font-size: 0.78rem; }
+.cur-mergebox { font-size: 0.78rem; color: #444; }
+.cur-splitbadge { display: inline-block; padding: 0.02rem 0.35rem;
+                  border-radius: 3px; background: #f0d9a8; color: #5a4300;
+                  font-size: 0.74rem; }
+/* Pending-edit feedback on the originating fitted-line rows. */
+tr.cur-removed > td { text-decoration: line-through; opacity: 0.5; }
+tr.cur-merge-grp > td { background: #fdeccb !important; }
+tr.cur-added > td { background: #d8efdc !important; }
+.cur-window-controls { display: flex; flex-wrap: wrap; align-items: center;
+    gap: 0.6rem 1rem; margin: 0.25rem 0 1.25rem; font-size: 0.85rem; }
+.cur-window-controls .cur-addfreq { width: 8rem; font-size: 0.82rem; }
+.cur-range { color: #666; }
+/* The docked cart: fixed bottom-right, collapsible, grouped per window. */
+#cur-cart { position: fixed; right: 1rem; bottom: 1rem; z-index: 150;
+    width: 340px; max-width: calc(100vw - 2rem); max-height: 60vh;
+    display: flex; flex-direction: column; background: #fff;
+    border: 1px solid #11233a; border-radius: 6px;
+    box-shadow: 0 4px 18px rgba(0,0,0,0.28); font-size: 0.85rem; }
+.cur-cart-head { background: #11233a; border-radius: 6px 6px 0 0; }
+.cur-cart-head .cur-min { width: 100%; text-align: left; background: none;
+    border: 0; color: #fff; font-size: 0.9rem; font-weight: 600;
+    padding: 0.45rem 0.7rem; cursor: pointer; }
+.cur-cart-body { overflow-y: auto; padding: 0.4rem 0.7rem; }
+#cur-cart.cur-collapsed .cur-cart-body,
+#cur-cart.cur-collapsed .cur-cart-foot { display: none; }
+.cur-grp-h { font-weight: 600; color: #11233a; margin: 0.35rem 0 0.1rem; }
+.cur-entry { display: flex; justify-content: space-between; align-items: center;
+    gap: 0.5rem; padding: 0.05rem 0 0.05rem 0.6rem; }
+.cur-x { background: none; border: 0; color: #a11; cursor: pointer;
+         font-size: 0.85rem; }
+.cur-cart-foot { border-top: 1px solid #d0d4d9; padding: 0.5rem 0.7rem;
+    display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.cur-cart-foot button { font-size: 0.8rem; padding: 0.15rem 0.5rem;
+    border-radius: 3px; border: 1px solid #2c4a6e; background: #cfe0f5;
+    color: #11233a; cursor: pointer; }
+.cur-cart-foot button:hover { background: #eef4fb; }
+.cur-cmd { width: 100%; margin: 0.4rem 0 0; white-space: pre-wrap;
+           font-size: 0.72rem; padding: 0.4rem 0.5rem; }
+.cur-ta { position: absolute; left: -9999px; width: 1px; height: 1px; }
+.topnav .cur-toggle { font-size: 0.85rem; padding: 0.12rem 0.6rem;
+    border-radius: 3px; border: 1px solid #2c4a6e; background: #cfe0f5;
+    color: #11233a; cursor: pointer; }
+.topnav .cur-toggle:hover { background: #fff; }
+.topnav .cur-badge { font-size: 0.82rem; color: #cfe0f5; }
 """
 
 
@@ -1203,6 +1268,254 @@ _COMPACT_JS = """<script>
 </script>"""
 
 
+# In-report curation (phase 1). The boot script adds ``curation-enabled`` to
+# <html> (so the no-JS and read-only views are the same clean document), builds a
+# docked cart, and wires the inline per-row / per-window controls by event
+# delegation. Every control only *emits* an edit into the cart; the cart exports
+# the ``action,window,freqs,params`` curation CSV that ``review apply`` consumes.
+# The frequency a control emits is the row's raw Stage-5 model frequency
+# (``data-freq``), which is what the edit verbs match on -- not the calibrated
+# display value. Vanilla JS only, in the spirit of the compact toggle above.
+_CURATION_JS = r"""<script>
+(function () {
+  var root = document.documentElement;
+  root.classList.add('curation-enabled');
+  var STEM = window.__stem || 'report';
+  var ops = [];  // {action, window, freqs, params, label}
+
+  // --- docked cart -----------------------------------------------------------
+  var cart = document.createElement('div');
+  cart.id = 'cur-cart';
+  cart.innerHTML =
+    '<div class="cur-cart-head"><button type="button" class="cur-min"' +
+    ' title="collapse">Curation cart (<span class="cur-n">0</span>)</button></div>' +
+    '<div class="cur-cart-body"></div>' +
+    '<div class="cur-cart-foot">' +
+    '<button type="button" class="cur-dl">Download .csv</button>' +
+    '<button type="button" class="cur-copy">Copy</button>' +
+    '<button type="button" class="cur-clear">Clear</button>' +
+    '<pre class="cur-cmd"></pre>' +
+    '<textarea class="cur-ta" aria-hidden="true"></textarea></div>';
+  document.body.appendChild(cart);
+  var cartBody = cart.querySelector('.cur-cart-body');
+  var cmdPre = cart.querySelector('.cur-cmd');
+  var copyTa = cart.querySelector('.cur-ta');
+
+  function fmtCmd() {
+    return 'ftmwpipeline review apply ' + STEM + '.ftmw ' + STEM +
+      '_curation.csv\n  (add --dry-run to preview the resolved plan)';
+  }
+  function csvCell(s) { return (s == null) ? '' : String(s); }
+  function toCsv() {
+    var lines = ['action,window,freqs,params'];
+    ops.forEach(function (o) {
+      lines.push([o.action, o.window, csvCell(o.freqs),
+                  csvCell(o.params)].join(','));
+    });
+    return lines.join('\n') + '\n';
+  }
+
+  function opKey(o) {
+    return o.action + '|' + o.window + '|' + o.freqs + '|' + (o.params || '');
+  }
+  function findKey(key) {
+    for (var i = 0; i < ops.length; i++) {
+      if (opKey(ops[i]) === key) return i;
+    }
+    return -1;
+  }
+
+  function rowsFor(table, w, f) {
+    return Array.prototype.slice.call(document.querySelectorAll(
+      'table.' + table + ' tr[data-window="' + w + '"][data-freq="' + f + '"]'));
+  }
+  function refreshRows() {
+    // Re-derive every row's pending state from the op list (idempotent).
+    document.querySelectorAll('tr[data-freq]').forEach(function (tr) {
+      tr.classList.remove('cur-removed', 'cur-split', 'cur-merge-grp',
+                          'cur-added');
+      var b = tr.querySelector('.cur-splitbadge');
+      if (b) b.remove();
+    });
+    ops.forEach(function (o) {
+      if (o.action === 'remove') {
+        rowsFor('peak-list', o.window, o.freqs).forEach(function (tr) {
+          tr.classList.add('cur-removed');
+        });
+      } else if (o.action === 'split') {
+        rowsFor('peak-list', o.window, o.freqs).forEach(function (tr) {
+          tr.classList.add('cur-split');
+          var cell = tr.querySelector('.cur-cell');
+          if (cell && !cell.querySelector('.cur-splitbadge')) {
+            var k = (o.params || '').replace('into=', '') || '2';
+            var s = document.createElement('span');
+            s.className = 'cur-splitbadge';
+            s.textContent = '→' + k;
+            cell.appendChild(s);
+          }
+        });
+      } else if (o.action === 'merge') {
+        o.freqs.split(';').forEach(function (f) {
+          rowsFor('peak-list', o.window, f).forEach(function (tr) {
+            tr.classList.add('cur-merge-grp');
+          });
+        });
+      } else if (o.action === 'add') {
+        rowsFor('ledger', o.window, o.freqs).forEach(function (tr) {
+          tr.classList.add('cur-added');
+        });
+      }
+    });
+  }
+
+  function renderCart() {
+    var n = ops.length;
+    document.querySelectorAll('.cur-badge').forEach(function (b) {
+      b.textContent = 'cart (' + n + ')';
+    });
+    cart.querySelector('.cur-n').textContent = n;
+    cart.classList.toggle('cur-empty', n === 0);
+    var byWin = {}, order = [];
+    ops.forEach(function (o, i) {
+      if (!byWin[o.window]) { byWin[o.window] = []; order.push(o.window); }
+      byWin[o.window].push({ op: o, i: i });
+    });
+    var html = '';
+    order.forEach(function (w) {
+      html += '<div class="cur-grp"><div class="cur-grp-h">window ' + w +
+        '</div>';
+      byWin[w].forEach(function (e) {
+        html += '<div class="cur-entry"><span>' + e.op.label +
+          '</span><button type="button" class="cur-x" data-i="' + e.i +
+          '" title="drop">✕</button></div>';
+      });
+      html += '</div>';
+    });
+    cartBody.innerHTML = html ||
+      '<div class="cur-grp-h">No queued edits.</div>';
+    cmdPre.textContent = fmtCmd();
+    copyTa.value = toCsv();
+    refreshRows();
+  }
+
+  function addOp(o) { ops.push(o); renderCart(); }
+  function dropOp(i) { ops.splice(i, 1); renderCart(); }
+  function clearCart() { ops = []; renderCart(); }
+
+  // --- control wiring (event delegation) -------------------------------------
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t.closest && t.closest('.cur-x')) {
+      dropOp(parseInt(t.closest('.cur-x').getAttribute('data-i'), 10));
+      return;
+    }
+    if (t.classList && t.classList.contains('cur-toggle')) {
+      root.classList.toggle('curation-enabled');
+      t.textContent = root.classList.contains('curation-enabled') ?
+        'Read-only' : 'Curate';
+      return;
+    }
+    if (t.classList && t.classList.contains('cur-min')) {
+      cart.classList.toggle('cur-collapsed');
+      return;
+    }
+    if (t.classList && t.classList.contains('cur-dl')) {
+      var blob = new Blob([toCsv()], { type: 'text/csv' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url; a.download = STEM + '_curation.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 0);
+      return;
+    }
+    if (t.classList && t.classList.contains('cur-copy')) {
+      var text = toCsv();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(function () {
+          copyTa.select(); document.execCommand('copy');
+        });
+      } else {
+        copyTa.select(); document.execCommand('copy');
+      }
+      return;
+    }
+    if (t.classList && t.classList.contains('cur-clear')) { clearCart(); return; }
+
+    if (!(t.classList && t.classList.contains('cur-btn'))) return;
+    var act = t.getAttribute('data-act');
+    var sec = t.closest('section');
+    if (act === 'merge-selected') {
+      var w = t.getAttribute('data-window');
+      var boxes = sec ? sec.querySelectorAll('.cur-merge:checked') : [];
+      if (boxes.length < 2) { return; }
+      var fs = [];
+      Array.prototype.forEach.call(boxes, function (cb) {
+        var tr = cb.closest('tr');
+        fs.push(tr.getAttribute('data-freq'));
+        cb.checked = false;
+      });
+      addOp({ action: 'merge', window: w, freqs: fs.join(';'), params: '',
+              label: 'merge ' + fs.join(' + ') });
+      return;
+    }
+    if (act === 'add-typed') {
+      var w2 = t.getAttribute('data-window');
+      var inp = t.parentNode.querySelector('.cur-addfreq');
+      var v = inp && inp.value ? inp.value.trim() : '';
+      if (!v) { return; }
+      addOp({ action: 'add', window: w2, freqs: v, params: '',
+              label: 'add ' + v });
+      if (inp) inp.value = '';
+      return;
+    }
+    if (act === 'accept') {
+      addOp({ action: 'accept', window: t.getAttribute('data-window'),
+              freqs: '', params: '', label: 'mark reviewed' });
+      return;
+    }
+
+    // Per-row remove / split / ledger add: key off the closest row.
+    var row = t.closest('tr');
+    if (!row) return;
+    var win = row.getAttribute('data-window');
+    var freq = row.getAttribute('data-freq');
+    if (act === 'remove') {
+      var k = 'remove|' + win + '|' + freq + '|';
+      var idx = findKey(k);
+      if (idx >= 0) { dropOp(idx); }
+      else { addOp({ action: 'remove', window: win, freqs: freq, params: '',
+                     label: 'remove ' + freq }); }
+      return;
+    }
+    if (act === 'split') {
+      var kin = row.querySelector('.cur-k');
+      var kk = kin && kin.value ? String(parseInt(kin.value, 10) || 2) : '2';
+      var params = 'into=' + kk;
+      var existing = -1;
+      for (var i = 0; i < ops.length; i++) {
+        if (ops[i].action === 'split' && ops[i].window === win &&
+            ops[i].freqs === freq) { existing = i; break; }
+      }
+      if (existing >= 0) { dropOp(existing); }
+      else { addOp({ action: 'split', window: win, freqs: freq,
+                     params: params, label: 'split ' + freq + ' → ' + kk }); }
+      return;
+    }
+    if (act === 'add') {  // ledger candidate add
+      var ka = 'add|' + win + '|' + freq + '|';
+      var ia = findKey(ka);
+      if (ia >= 0) { dropOp(ia); }
+      else { addOp({ action: 'add', window: win, freqs: freq, params: '',
+                     label: 'add ' + freq }); }
+      return;
+    }
+  });
+
+  renderCart();
+})();
+</script>"""
+
+
 def _index_window_table(
     rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]],
     preview_attrs: Dict[int, str],
@@ -1313,6 +1626,8 @@ def _window_peak_table(
     uname: str,
     uval: float,
     matches: Optional[List[Optional[CatalogMatch]]] = None,
+    *,
+    window_id: Optional[int] = None,
 ) -> str:
     """The per-window fitted-lines table.
 
@@ -1322,12 +1637,22 @@ def _window_peak_table(
     notation (uncertainty in last-digit units) -- the raw frequency and the
     broken-out &sigma; columns stay in plain fixed/scientific form. When a
     catalog cross-reference is supplied, a proximity-match badge column is added.
+
+    When *window_id* is supplied, each row carries ``data-window`` /
+    ``data-freq`` (the **raw** Stage-5 model frequency, the value the edit verbs
+    match on -- not the &epsilon;-calibrated display value), and a trailing
+    curation control column (Remove / Split / merge-checkbox) is appended. The
+    column and attributes are inert markup; the in-report curation script reads
+    them, and the curation-only column is CSS-hidden outside curation mode. The
+    no-window-id form (used by the pure unit tests) emits neither.
     """
     from ..visualization.fit_detail import frequency_sorted_labels
 
     with_cat = matches is not None
+    curate = window_id is not None
     letters = frequency_sorted_labels([float(p.frequency_mhz) for p in peaks])
     rows: List[List[str]] = []
+    row_attrs: List[str] = []
     for i, (lbl, p) in enumerate(zip(letters, peaks)):
         sigma_f_mhz = None if p.sigma_f_khz is None else float(p.sigma_f_khz) / 1e3
         amp = None if p.amplitude is None else float(p.amplitude) / uval
@@ -1346,6 +1671,10 @@ def _window_peak_table(
         ]
         if with_cat:
             row.append(_catalog_cell(matches[i]))  # type: ignore[index]
+        if curate:
+            row.append(_peak_curation_cell())
+            raw = _freq(p.frequency_raw_mhz)
+            row_attrs.append(f' data-window="{window_id}" data-freq="{_esc(raw)}"')
         rows.append(row)
     head = [
         "Peak",
@@ -1361,7 +1690,54 @@ def _window_peak_table(
     ]
     if with_cat:
         head.append("Catalog")
-    return _table(head, rows, cls="peak-list")
+    if curate:
+        head.append('<span class="cur-col-h">Curate</span>')
+    return _table(head, rows, cls="peak-list", row_attrs=row_attrs if curate else None)
+
+
+def _peak_curation_cell() -> str:
+    """The trailing per-row curation control cell (Remove / Split / merge).
+
+    Pure inert markup -- the curation script wires it by event delegation off the
+    ``cur-btn`` class and the row's ``data-window`` / ``data-freq``. The whole
+    column is CSS-hidden when the report is not in curation mode.
+    """
+    return (
+        '<span class="cur-cell">'
+        '<button type="button" class="cur-btn" data-act="remove">Remove</button>'
+        '<button type="button" class="cur-btn" data-act="split">Split</button>'
+        '<input type="number" class="cur-k" min="2" value="2" '
+        'title="split into K" aria-label="split into K">'
+        '<label class="cur-mergebox" title="select to merge">'
+        '<input type="checkbox" class="cur-merge"> merge</label>'
+        "</span>"
+    )
+
+
+def _window_curation_controls(window_id: int, lo: float, hi: float) -> List[str]:
+    """The per-window curation controls under the fitted-lines table.
+
+    The merge-selected button, a typed ``+ Add peak at <MHz>`` input, and an
+    optional bare ``Mark reviewed`` accept. All wrapped in ``cur-only`` so the
+    whole block is CSS-hidden outside curation mode; the curation script binds
+    them by ``data-act`` and the enclosing ``<section>`` (which scopes the merge
+    selection to this one window).
+    """
+    rng = f"{lo:.4f}&ndash;{hi:.4f} MHz"
+    return [
+        '<div class="cur-only cur-window-controls">',
+        f'<button type="button" class="cur-btn" data-act="merge-selected" '
+        f'data-window="{window_id}">Merge selected</button>',
+        '<label class="cur-add">+ Add peak at '
+        '<input type="number" class="cur-addfreq" step="0.0001" '
+        f'placeholder="MHz"> '
+        f'<button type="button" class="cur-btn" data-act="add-typed" '
+        f'data-window="{window_id}">Add</button></label>',
+        f'<span class="cur-range">window range {rng}</span>',
+        f'<button type="button" class="cur-btn" data-act="accept" '
+        f'data-window="{window_id}">Mark reviewed</button>',
+        "</div>",
+    ]
 
 
 # --- parameter-symbol display ------------------------------------------------
@@ -1555,21 +1931,32 @@ def _covariance_block(
     return out
 
 
-def _ledger_block(candidates: List[LedgerCandidate]) -> List[str]:
+def _ledger_block(
+    candidates: List[LedgerCandidate], *, window_id: Optional[int] = None
+) -> List[str]:
     if not candidates:
         return ["<p><em>No revivable ledger candidates for this window.</em></p>"]
+    curate = window_id is not None
     rows: List[List[str]] = []
+    row_attrs: List[str] = []
     for c in candidates:
-        rows.append(
-            [
-                _esc(_freq(c.frequency_mhz)),
-                _esc(f"{c.seed_offset_mhz:+.4f}"),
-                _esc(_g(c.best_evidence, 3)),
-                _esc(c.evidence_kind),
-                _esc(", ".join(c.decision_sites)),
-                _esc("; ".join(c.reasons)),
-            ]
-        )
+        row = [
+            _esc(_freq(c.frequency_mhz)),
+            _esc(f"{c.seed_offset_mhz:+.4f}"),
+            _esc(_g(c.best_evidence, 3)),
+            _esc(c.evidence_kind),
+            _esc(", ".join(c.decision_sites)),
+            _esc("; ".join(c.reasons)),
+        ]
+        if curate:
+            row.append(
+                '<span class="cur-cell">'
+                '<button type="button" class="cur-btn" data-act="add">Add</button>'
+                "</span>"
+            )
+            raw = _freq(c.frequency_mhz)
+            row_attrs.append(f' data-window="{window_id}" data-freq="{_esc(raw)}"')
+        rows.append(row)
     head = [
         "Frequency (MHz)",
         "Seed offset (MHz)",
@@ -1578,7 +1965,9 @@ def _ledger_block(candidates: List[LedgerCandidate]) -> List[str]:
         "Decision sites",
         "Reasons",
     ]
-    return [_table(head, rows, cls="ledger")]
+    if curate:
+        head.append('<span class="cur-col-h">Curate</span>')
+    return [_table(head, rows, cls="ledger", row_attrs=row_attrs if curate else None)]
 
 
 # Decisions that leave a peak in the model (advance K) vs. those that do not.
@@ -1850,7 +2239,8 @@ def _window_page(
         "<h2>Fit</h2>",
         *_fit_panels_block(panel_files),
         "<h2>Fitted lines</h2>",
-        _window_peak_table(peaks, uname, uval, catalog_matches),
+        _window_peak_table(peaks, uname, uval, catalog_matches, window_id=window_id),
+        *_window_curation_controls(window_id, min(lo, hi), max(lo, hi)),
         "<h2>Parameter covariance</h2>",
         *_covariance_block(wf, cov_heatmap_name, sideband),
         "<h2>Fit history</h2>",
@@ -1858,7 +2248,7 @@ def _window_page(
             wf, 0.5 * (float(lo) + float(hi)), _sideband_sign(sideband), merges
         ),
         "<h2>Ledger candidates</h2>",
-        *_ledger_block(ledger),
+        *_ledger_block(ledger, window_id=window_id),
         *_decision_block(decisions),
     ]
     if context:
@@ -2015,6 +2405,11 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
     # The compact toggle shrinks every figure to a thumbnail to speed scrolling;
     # the report opens in full view, and the button is inert without scripting.
     nav_links.append('<button class="compact-toggle" type="button">Compact</button>')
+    # The curation toggle flips between the editable (default) and read-only
+    # views; the badge tracks the cart size. Both are inert without scripting,
+    # and the controls they reveal are CSS-hidden until the boot script runs.
+    nav_links.append('<button class="cur-toggle" type="button">Read-only</button>')
+    nav_links.append('<span class="cur-badge">cart (0)</span>')
     topnav = (
         '<nav class="topnav"><div class="topnav-inner">'
         f'<a class="brand" href="#page-top">{_esc(stem)}</a>'
@@ -2038,8 +2433,10 @@ def _collapse_site_to_single_file(site_dir: Path, *, mode: str, stem: str) -> st
             *sections,
             "</main>",
             thumb_script,
+            f"<script>window.__stem={json.dumps(stem)};</script>",
             _WINMAP_JS,
             _COMPACT_JS,
+            _CURATION_JS,
             "</body>",
             "</html>",
             "",

@@ -341,6 +341,60 @@ def test_window_peak_table_letters_low_to_high_and_bce():
     assert "29147.446690" in table or "29147.44669" in table
 
 
+def test_window_peak_table_curation_markup():
+    # Without a window id (the pure-unit form) the table carries no curation
+    # markup at all -- the clean read-only document.
+    peaks = [_final_peak(29148.0, frequency_raw_mhz=29148.001234)]
+    plain = _window_peak_table(peaks, "uV", 1e-6)
+    assert "data-window" not in plain and "cur-cell" not in plain
+    assert "Curate" not in plain
+
+    # With a window id, every row gains data-window / data-freq (the RAW model
+    # frequency, the value the edit verbs match on) and a trailing control cell.
+    cur = _window_peak_table(peaks, "uV", 1e-6, window_id=217)
+    assert 'data-window="217"' in cur
+    assert 'data-freq="29148.001234"' in cur  # raw, not the calibrated 29148.0
+    assert 'data-act="remove"' in cur and 'data-act="split"' in cur
+    assert 'class="cur-merge"' in cur
+    assert "cur-col-h" in cur  # the gated Curate header label
+    # The curation column is the trailing cell (CSS hides it via :last-child).
+    assert cur.rfind("cur-cell") > cur.rfind('class="badge')
+
+
+def test_ledger_block_curation_add():
+    from ftmwpipeline._internal.report_html_impl import _ledger_block
+    from ftmwpipeline.core.data_structures import LedgerCandidate
+
+    c = LedgerCandidate(
+        frequency_mhz=38502.7,
+        seed_offset_mhz=0.12,
+        seed_amplitude=None,
+        best_evidence=7.3,
+        evidence_kind="matched-filter",
+        reasons=["below add-one gate"],
+        decision_sites=["w309"],
+        window_id=309,
+    )
+    plain = "\n".join(_ledger_block([c]))
+    assert "data-window" not in plain and 'data-act="add"' not in plain
+
+    cur = "\n".join(_ledger_block([c], window_id=309))
+    assert 'data-window="309"' in cur
+    assert 'data-freq="38502.700000"' in cur
+    assert 'data-act="add"' in cur
+
+
+def test_window_curation_controls():
+    from ftmwpipeline._internal.report_html_impl import _window_curation_controls
+
+    block = "\n".join(_window_curation_controls(24, 38449.0, 38451.0))
+    assert 'class="cur-only cur-window-controls"' in block
+    assert 'data-act="merge-selected"' in block and 'data-window="24"' in block
+    assert 'data-act="add-typed"' in block and 'class="cur-addfreq"' in block
+    assert 'data-act="accept"' in block  # the bare "Mark reviewed"
+    assert "38449.0000" in block and "38451.0000" in block  # the window range
+
+
 def test_catalog_cell_and_window_table_column():
     from ftmwpipeline._internal.catalog_xref import CatalogMatch
     from ftmwpipeline._internal.report_html_impl import _catalog_cell
@@ -690,6 +744,75 @@ def test_single_file_full_folds_in_window_pages(stage5_small_file, tmp_path):
     assert jump_ids == section_ids
     # Nav links to the index window list and final line list.
     assert 'href="#window-list"' in doc and 'href="#final-list"' in doc
+
+
+@pytest.mark.integration
+def test_single_file_carries_curation_surface(stage5_small_file, tmp_path):
+    out = tmp_path / "cur"
+    path = report_full_impl(str(stage5_small_file), output_dir=str(out), scope="full")
+    doc = Path(path).read_text()
+    html.parser.HTMLParser().feed(doc)
+
+    # The boot script + curation script + topnav chrome ship in the single file.
+    assert "window.__stem=" in doc
+    assert "curation-enabled" in doc  # the script adds it and the CSS gates on it
+    assert 'class="cur-toggle"' in doc and 'class="cur-badge"' in doc
+    # Per-row controls + raw-frequency data attributes on fitted-line rows.
+    assert 'data-act="remove"' in doc and 'data-act="split"' in doc
+    import re as _re
+
+    assert _re.search(r'data-window="\d+" data-freq="[0-9.]+"', doc)
+    # Per-window controls (merge selected / add / mark reviewed) gated by cur-only.
+    assert 'class="cur-only cur-window-controls"' in doc
+    assert 'data-act="merge-selected"' in doc and 'data-act="add-typed"' in doc
+    # The curation CSS gating rule is present (single-class governance).
+    assert "html:not(.curation-enabled)" in doc
+
+
+def _peak_list_row(doc: str):
+    """Return ``(window_id, raw_freq_str)`` of one fitted-line row in the report."""
+    import re as _re
+
+    for tbl in _re.findall(r'<table class="peak-list">.*?</table>', doc, _re.S):
+        m = _re.search(r'data-window="(\d+)" data-freq="([0-9.]+)"', tbl)
+        if m:
+            return int(m.group(1)), m.group(2)
+    pytest.skip("No fitted-line rows in the built subset")
+
+
+@pytest.mark.integration
+def test_curation_emitted_frequency_resolves(stage5_small_file, tmp_path):
+    """The load-bearing rule: the raw frequency a control emits targets the
+    intended peak when fed straight to ``review apply``."""
+    from ftmwpipeline._internal.stage6_impl import apply_curation_impl
+    from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
+
+    out = tmp_path / "lb"
+    path = report_full_impl(str(stage5_small_file), output_dir=str(out), scope="full")
+    doc = Path(path).read_text()
+    wid, freq = _peak_list_row(doc)
+
+    def _window_raw_freqs(fp):
+        with h5py.File(str(fp), "r") as h5f:
+            sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        for wf in sf.window_fits:
+            if int(wf.window_id) == wid:
+                return [round(float(p.frequency_mhz), 6) for p in wf.fitted_peaks]
+        return []
+
+    target = tmp_path / "lb.ftmw"
+    shutil.copy(stage5_small_file, target)
+    before = _window_raw_freqs(target)
+    assert round(float(freq), 6) in before  # the emitted attr is a real peak
+
+    cur = tmp_path / "remove.csv"
+    cur.write_text(f"action,window,freqs,params\nremove,{wid},{freq},\n")
+    apply_curation_impl(str(target), str(cur))
+
+    after = _window_raw_freqs(target)
+    # That specific peak is gone; the refit did not simply re-add it.
+    assert round(float(freq), 6) not in after
+    assert len(after) == len(before) - 1
 
 
 @pytest.mark.integration

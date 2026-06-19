@@ -6,9 +6,14 @@ coalescing, and frequency-resolution warnings), read-only **`review log`**, and
 **`review undo --id`** (replay-from-baseline rollback) — all dual-interface
 (`apply_curation_impl` / `review_log_impl` / `review_undo_impl`, wrapped by the
 CLI, `Pipeline`, and the functional API) with unit + integration tests, plus the
-multi-file-site retirement (done separately). **Next, design-locked and ready for
-a fresh session: the in-report controls/cart/export** — fully specced in
-*In-report curation UX (phase 1)* below. After that, the phase-2 plot interaction.
+multi-file-site retirement (done separately). The **in-report curation UX
+(phase 1)** is also shipped: the single-file HTML report now carries inline
+per-row Remove/Split/merge controls, per-window add + merge-selected + mark-
+reviewed controls, ledger-candidate Add buttons, a docked grouped cart with
+download/copy/clear and the run command, progressive-enhancement gating, and the
+raw-frequency correctness rule with its load-bearing test (see
+*In-report curation UX (phase 1)* below). **Next: the phase-2 click-on-plot +
+on-plot queued-edit SVG markers.**
 
 The workflow turns the read-only Level-3 HTML report into a *curation author*:
 per-line and per-candidate controls accumulate user-intended edits into a
@@ -450,11 +455,18 @@ The figure axes geometry lives in the HTML (`data-axes-*` attributes), not in th
    through the shared `_execute_planned_action` engine — so ids renumber and the
    result is the canonical replay. The decision log is loss-free for replay
    (merge carries `merged_from`, split carries `split_into`).
-4. **NEXT (design locked, ready for handoff) — in-report controls + cart +
-   CSV export + read-only toggle** on the single file. Full spec in
-   *In-report curation UX (phase 1)* above: inline per-row Split/Remove/merge +
-   per-window add input + ledger Add, a docked grouped cart with download/copy/
-   clear and the run-command, progressive-enhancement gating, and the
-   raw-frequency correctness rule + its load-bearing test.
-5. **Click-on-plot + on-plot queued-edit SVG markers:** axes-bbox capture in
-   `fit_detail.py` + the shared transparent overlay. Phase 2 polish.
+4. **DONE — in-report controls + cart + CSV export + read-only toggle** on the
+   single file. In `_internal/report_html_impl.py`: `_window_peak_table` /
+   `_ledger_block` gained a `window_id` that hangs `data-window`/`data-freq`
+   (raw Stage-5 model frequency) on each row plus the trailing curation control
+   column (`_peak_curation_cell`); `_window_curation_controls` adds the per-window
+   merge-selected / `+ Add peak` / mark-reviewed strip; the topnav gained the
+   Curate/Read-only toggle + cart badge; `_CURATION_JS` (boot + docked cart +
+   event-delegated wiring, stem embedded via `window.__stem`) and `_CURATION_CSS`
+   (folded into `_STYLESHEET`, all gated on `html.curation-enabled`). Tests in
+   `tests/unit/stage6/test_report_full.py` cover the render markup, the single-
+   file curation surface, and the load-bearing rule (a row's emitted `data-freq`
+   fed to `review apply` removes that exact peak). JS DOM behavior (cart
+   accumulation, CSV serialization, row state) is manual-verify per the spec.
+5. **NEXT — Click-on-plot + on-plot queued-edit SVG markers:** axes-bbox capture
+   in `fit_detail.py` + the shared transparent overlay. Phase 2 polish.
