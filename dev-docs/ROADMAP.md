@@ -29,12 +29,27 @@ milestones, and finished planning documents — is archived in
 
 **Stages 0–6 are implemented and both near-term tracks below are done** (Stage 6
 review/finalization, reports, and report-driven curation all shipped; the
-interactive CLI shell was dropped as superseded). The remaining active frontier
-is the **Longer horizon** items — chiefly the frequency-calibration / σ_f
-research write-up, which is intentionally **gated on the pending third
-vinyl-cyanide acquisition** (it turns the run-to-run `δ_down` comparison from one
-pair into a stable-vs-random test). The two completed tracks are kept here for
-continuity until their detail is folded into `STATUS.md` / user docs.
+interactive CLI shell was dropped as superseded). The active near-term effort is now the
+**performance profiling pass**
+([`planning/performance-profiling.md`](planning/performance-profiling.md)) — a
+measure-first scoping of where the pipeline's wall- and CPU-time actually go (the
+named hot spots are Stage 2b `calibrate_tau`, the Stage 5 per-window fit, and
+report image generation), producing a ranked lever list that feeds an
+optimization effort and then the benchmark suite
+([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)). The biggest untried
+lever is **cross-window parallelism over the dependency DAG** (windows on the same
+antichain are independent — the fixed-contributor/replan ordering is a DAG
+linearization), alongside BLAS oversubscription policy and the
+embarrassingly-parallel Stage 2b per-bin fits and per-window report figures; the
+intra-window Stage 5 levers are already explored
+([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)).
+
+The remaining **Longer horizon** items — chiefly the frequency-calibration / σ_f
+research write-up, intentionally **gated on the pending third vinyl-cyanide
+acquisition** (it turns the run-to-run `δ_down` comparison from one pair into a
+stable-vs-random test), and end-user documentation. The two completed tracks
+below are kept for continuity until their detail is folded into `STATUS.md` /
+user docs.
 
 1. **Complete Stage 6 — covariance, peak-survival metrics, window construction,
 
@@ -245,7 +260,8 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md) | Proposed — candidate ledger + user-directed window re-fit. The remaining cross-fixture misses are weak near-blend lines the gates *considered and rejected as marginal* (verified in the persisted audit record on 1231 w50/w425/w426 + 363 w76); lowering the automatic bars to capture them buys dust everywhere else, so the principled lane is human arbitration: surface rejected-but-plausible candidates (normalized/deduped, above a display bar) with the fit, and add a window-scoped `fit refit --window N --add F --remove F` verb (dual-interface) whose user edits bypass the accept gate but carry full provenance (`user` origin flag, audit `user-add`/`user-remove`, curated-vs-automatic separation in validation tooling). Also covers the overfit direction (user removes a peak on imperfect-lineshape ultra-high-SNR windows, e.g. 1019). UX is the primary design consideration |
 | [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
 | [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split`. Same frequency-coupling block structure the NLS-performance plan would exploit in-fit (block-diagonal `JᵀJ` ⇔ block-diagonal covariance) |
-| [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) |
+| [`planning/performance-profiling.md`](planning/performance-profiling.md) | **Planning (scoping; active)** — measure-first pass locating the pipeline's wall- and CPU-time now that Stages 0–6 are functionally complete. Two axes kept separate (efficiency = total CPU via algorithmic change; wall-time via parallelism + BLAS thread policy). Profiles the whole `run` (the missing cross-stage view) and each named hot spot (Stage 2b `calibrate_tau` 81k-NLS, the Stage 5 per-window fit, report figures) with cProfile / py-spy / line_profiler / tracemalloc on a fixture spread (655 dense-Lorentzian, 363 dense-Gaussian, 2638 moderate, succinimide 2nd-instrument). Biggest untried lever = **cross-window parallelism over the dependency DAG** (antichain levelization → process pool; fixed-contributor + replan constraints measured, BLAS pinned per worker; byte-identical-table gate), plus BLAS oversubscription policy and the embarrassingly-parallel Stage 2b per-bin / per-window report figures. Intra-window Stage 5 levers already explored ([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)). Deliverable = a profiling report + ranked lever list (upside × risk × correctness gate) feeding the optimization effort and then the benchmark suite. Measurement only; no optimization here |
+| [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) — the committed `tests/performance/` regression-guard suite; fed by the profiling pass above |
 
 ## Code vs spec divergences
 
