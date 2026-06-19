@@ -1,10 +1,15 @@
 # Plan: performance profiling pass
 
-Status: **planning (scoping).** A measure-first pass to locate the pipeline's
-real cost now that Stages 0–6 are functionally complete, producing a ranked lever
-list that feeds two follow-ups: an optimization effort and the benchmark suite
-([`perf-benchmarks.md`](perf-benchmarks.md)) that guards it. This document scopes
-the *profiling*; it does not optimize.
+Status: **complete.** The measure-first pass is done; results in
+[`../research/performance-profiling/report.md`](../research/performance-profiling/report.md)
+and the ranked levers in
+[`performance-optimization.md`](performance-optimization.md). Headline: report
+generation dominates `run` wall (~90 % on 2638) via an O(N²) HDF5 reload, the fit
+DAG is wide/shallow (ceilings 125×/243×/1241×, 0 replans, leaf-heavy via
+self-contained edge_free contributors), and BLAS oversubscription is net-negative.
+This document scoped the *profiling*; it does not optimize. (The
+second-instrument fixture was deferred — the three Blackchirp fixtures isolated
+the cost structure.)
 
 ## Why now
 

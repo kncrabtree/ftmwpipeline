@@ -29,19 +29,22 @@ milestones, and finished planning documents — is archived in
 
 **Stages 0–6 are implemented and both near-term tracks below are done** (Stage 6
 review/finalization, reports, and report-driven curation all shipped; the
-interactive CLI shell was dropped as superseded). The active near-term effort is now the
-**performance profiling pass**
-([`planning/performance-profiling.md`](planning/performance-profiling.md)) — a
-measure-first scoping of where the pipeline's wall- and CPU-time actually go (the
-named hot spots are Stage 2b `calibrate_tau`, the Stage 5 per-window fit, and
-report image generation), producing a ranked lever list that feeds an
-optimization effort and then the benchmark suite
-([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)). The biggest untried
-lever is **cross-window parallelism over the dependency DAG** (windows on the same
-antichain are independent — the fixed-contributor/replan ordering is a DAG
-linearization), alongside BLAS oversubscription policy and the
-embarrassingly-parallel Stage 2b per-bin fits and per-window report figures; the
-intra-window Stage 5 levers are already explored
+interactive CLI shell was dropped as superseded). The active near-term effort is **performance optimization**
+([`planning/performance-optimization.md`](planning/performance-optimization.md)),
+**ready for an implementation handoff**. The measure-first profiling pass
+([`planning/performance-profiling.md`](planning/performance-profiling.md),
+complete; results in
+[`research/performance-profiling/report.md`](research/performance-profiling/report.md))
+found that **report generation dominates `run` wall (~90 % on 2638, ~10× the fit)
+via an O(N²) HDF5 reload** — not Stage 5, not matplotlib. Order: fix the report
+reload + discarded-overview waste (efficiency, byte-identical-HTML gate) →
+re-profile → parallelize per-window figure rendering → **cross-window fit
+parallelism over the dependency DAG** (antichain levelization; measured ceilings
+125×/243×/1241×, 0 replans, leaf-heavy via self-contained `edge_free`
+contributors; BLAS pinned per worker; byte-identical-table gate). BLAS
+oversubscription measured net-negative → pin to 1. Then the benchmark suite
+([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)) guards it.
+Intra-window Stage 5 levers already explored
 ([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)).
 
 The remaining **Longer horizon** items — chiefly the frequency-calibration / σ_f
@@ -260,8 +263,8 @@ Per-feature implementation plans. Lifecycle and conventions:
 | [`planning/stage5-candidate-revival.md`](planning/stage5-candidate-revival.md) | Proposed — candidate ledger + user-directed window re-fit. The remaining cross-fixture misses are weak near-blend lines the gates *considered and rejected as marginal* (verified in the persisted audit record on 1231 w50/w425/w426 + 363 w76); lowering the automatic bars to capture them buys dust everywhere else, so the principled lane is human arbitration: surface rejected-but-plausible candidates (normalized/deduped, above a display bar) with the fit, and add a window-scoped `fit refit --window N --add F --remove F` verb (dual-interface) whose user edits bypass the accept gate but carry full provenance (`user` origin flag, audit `user-add`/`user-remove`, curated-vs-automatic separation in validation tooling). Also covers the overfit direction (user removes a peak on imperfect-lineshape ultra-high-SNR windows, e.g. 1019). UX is the primary design consideration |
 | [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
 | [`planning/intra-window-clustering.md`](planning/intra-window-clustering.md) | Stub — covariance-based intra-window decomposition; supplants Stage 5 `split`. Same frequency-coupling block structure the NLS-performance plan would exploit in-fit (block-diagonal `JᵀJ` ⇔ block-diagonal covariance) |
-| [`planning/performance-optimization.md`](planning/performance-optimization.md) | **In progress** — optimization plan driven by the profiling pass. Profiling surprise: **report generation dominates (~90 % of `run` wall on 2638, ~10× the fit)**, and the cause is an **O(N²) HDF5 reload** (`get_candidate_ledger_impl` reloads the whole fit + raw FID per window), not matplotlib. Work item 1 (ready, byte-identical-HTML gated): 1a eliminate the per-window reload (thread the loaded bundle in, mirroring `render_fit_panels_impl`), 1b stop building the per-window overview the report discards, 1c parallelize per-window figure rendering. Work item 2 (tentative, pending the 655 worst-case DAG): cross-window fit parallelism over the dependency DAG (antichain levelization → process pool, BLAS pinned per worker, replan sequential, byte-identical-table gate); DAG so far is wide/shallow (2638 125×, 363 243× speedup ceiling, 0 replans). Intra-window Stage 5 levers already closed ([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)) |
-| [`planning/performance-profiling.md`](planning/performance-profiling.md) | **Planning (scoping; active)** — measure-first pass locating the pipeline's wall- and CPU-time now that Stages 0–6 are functionally complete. Two axes kept separate (efficiency = total CPU via algorithmic change; wall-time via parallelism + BLAS thread policy). Profiles the whole `run` (the missing cross-stage view) and each named hot spot (Stage 2b `calibrate_tau` 81k-NLS, the Stage 5 per-window fit, report figures) with cProfile / py-spy / line_profiler / tracemalloc on a fixture spread (655 dense-Lorentzian, 363 dense-Gaussian, 2638 moderate, succinimide 2nd-instrument). Biggest untried lever = **cross-window parallelism over the dependency DAG** (antichain levelization → process pool; fixed-contributor + replan constraints measured, BLAS pinned per worker; byte-identical-table gate), plus BLAS oversubscription policy and the embarrassingly-parallel Stage 2b per-bin / per-window report figures. Intra-window Stage 5 levers already explored ([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)). Deliverable = a profiling report + ranked lever list (upside × risk × correctness gate) feeding the optimization effort and then the benchmark suite. Measurement only; no optimization here |
+| [`planning/performance-optimization.md`](planning/performance-optimization.md) | **Ready for implementation handoff** — optimization plan driven by the (complete) profiling pass. Profiling surprise: **report generation dominates (~90 % of `run` wall on 2638, ~10× the fit)** via an **O(N²) HDF5 reload** (`get_candidate_ledger_impl` reloads the whole fit + raw FID per window), not matplotlib. Order: **1a** eliminate the per-window reload (thread the loaded bundle in, mirroring `render_fit_panels_impl`) → **1b** stop building the per-window overview the report discards → re-profile → **1c** parallelize per-window figure rendering → **2** cross-window fit parallelism over the dependency DAG (antichain levelization → process pool, BLAS pinned per worker, replan sequential, byte-identical-table gate). DAG measured wide/shallow and leaf-heavy (ceilings 125×/243×/**1241×**, 0 replans; 655's 8372 contributors are all self-contained `edge_free`, so levelization preserves edged accuracy at no fit-quality cost). BLAS oversubscription net-negative → pin to 1. Per-step gate = byte-identical output. Intra-window Stage 5 levers already closed ([`planning/stage5-nls-performance.md`](planning/stage5-nls-performance.md)) |
+| [`planning/performance-profiling.md`](planning/performance-profiling.md) | **Complete** — the measure-first pass; results in [`research/performance-profiling/report.md`](research/performance-profiling/report.md), ranked levers in [`planning/performance-optimization.md`](planning/performance-optimization.md). Headline: report O(N²) reload dominates `run` wall; fit DAG wide/shallow (125×/243×/1241× ceilings, 0 replans); BLAS oversubscription net-negative. Second-instrument fixture deferred (the three Blackchirp fixtures isolated the cost structure) |
 | [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) — the committed `tests/performance/` regression-guard suite; fed by the profiling pass above |
 
 ## Code vs spec divergences
