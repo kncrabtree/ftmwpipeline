@@ -53,6 +53,8 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple, Union, cast
 
 import yaml  # type: ignore[import-untyped]
 
+from .knob_metadata import knob_field
+
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
 
@@ -64,14 +66,56 @@ _NONE = "__None__"
 class StftSubSettings:
     """Sliding-active-window STFT knobs (shared by every Stage 2b consumer)."""
 
-    n_seg: Optional[int] = None
-    t_sigma: Optional[float] = None
-    tau_max_us: Optional[float] = None
-    tau_max_factor: Optional[float] = None
-    rss_gate_factor: Optional[float] = None
-    relative_gate_fraction: Optional[float] = None
+    n_seg: Optional[int] = knob_field(
+        help="Number of non-overlapping STFT frames (window = T_full / n_seg).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(6, 8, 10, 14, 20),
+        cli=True,
+        argtype=int,
+    )
+    t_sigma: Optional[float] = knob_field(
+        help="Above-threshold SNR gate for per-frame signal detection "
+        "(contributor floor).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(3.0, 4.0, 5.0, 6.0, 8.0),
+        cli=True,
+        argtype=float,
+    )
+    tau_max_us: Optional[float] = knob_field(
+        help="Hard upper clip on recovered tau (saturation -> spur candidate); "
+        "unset -> derived.",
+        inst_sensitivity="maybe",
+        grid=(20.0, 40.0, 80.0),
+        cli=True,
+        argtype=float,
+    )
+    tau_max_factor: Optional[float] = knob_field(
+        help="tau_max as a multiple of the full-record duration when "
+        "tau_max_us is unset.",
+        inst_sensitivity="maybe",
+        grid=(3.0, 5.0, 8.0, 12.0),
+    )
+    rss_gate_factor: Optional[float] = knob_field(
+        help="Bad-fit gate strength (relative-or-absolute residual hybrid).",
+        inst_sensitivity="maybe",
+        grid=(3.0, 5.0, 8.0, 12.0),
+        cli=True,
+        argtype=float,
+    )
+    relative_gate_fraction: Optional[float] = knob_field(
+        help="Relative-RSS fraction below which a per-frame fit is accepted.",
+        inst_sensitivity="maybe",
+        grid=(0.02, 0.05, 0.10, 0.20),
+    )
     sigma_x_full: Optional[float] = None
-    sigma_time: Optional[float] = None
+    sigma_time: Optional[float] = knob_field(
+        help="Time-domain sigma_t override; default measures from the FID "
+        "active-region tail.",
+        cli=True,
+        argtype=float,
+    )
 
 
 @dataclass
@@ -79,31 +123,91 @@ class PolishSubSettings:
     """Pure-exp polish step (consumed by ``calibrate_tau`` only)."""
 
     polish: Optional[bool] = None
-    polish_n_iter: Optional[int] = None
-    polish_top_n: Optional[int] = None
-    polish_snr_cap: Optional[float] = None
-    polish_noise_debias: Optional[bool] = None
+    polish_n_iter: Optional[int] = knob_field(
+        help="Gauss-Newton polish iterations per eligible contributor.",
+        inst_sensitivity="N",
+        grid=(1, 2, 3),
+    )
+    polish_top_n: Optional[int] = knob_field(
+        help="Polish only the top-N contributors by SNR (unset -> all).",
+        inst_sensitivity="N",
+        grid=(200, 500, 1000, 2000),
+    )
+    polish_snr_cap: Optional[float] = knob_field(
+        help="SNR above which the Gauss-Newton polish is skipped (avoid "
+        "over-correction).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(5.0, 7.0, 9.0, 12.0),
+    )
+    polish_noise_debias: Optional[bool] = knob_field(
+        help="Apply Rician-unbiased magnitude on high-SNR frames (removes "
+        "residual bias).",
+        inst_sensitivity="Y",
+        grid=(False, True),
+    )
 
 
 @dataclass
 class AggregationSubSettings:
     """Majority-vote + acceptance pre-conditions (shared by both τ twins)."""
 
-    min_contributors: Optional[int] = None
-    sigma_tau_fraction_max: Optional[float] = None
-    bimodality_dominant_fraction: Optional[float] = None
-    sigma_tau_floor_us: Optional[float] = None
-    spur_cluster_multiplier: Optional[float] = None
+    min_contributors: Optional[int] = knob_field(
+        help="Minimum contributor count for the calibration to pass "
+        "preconditions.",
+        inst_sensitivity="N",
+        grid=(100, 200, 400, 800),
+        cli=True,
+        argtype=int,
+    )
+    sigma_tau_fraction_max: Optional[float] = knob_field(
+        help="Max sigma_tau/tau_maj for the calibration to pass preconditions.",
+        inst_sensitivity="N",
+        grid=(0.10, 0.20, 0.30),
+        cli=True,
+        argtype=float,
+    )
+    bimodality_dominant_fraction: Optional[float] = knob_field(
+        help="Dominant-mode fraction above which a bimodal histogram still "
+        "passes.",
+        inst_sensitivity="N",
+        grid=(0.6, 0.7, 0.8),
+        cli=True,
+        argtype=float,
+    )
+    sigma_tau_floor_us: Optional[float] = knob_field(
+        help="Floor on the reported sigma_tau (guards against over-tight "
+        "spreads).",
+        inst_sensitivity="maybe",
+        grid=(0.0, 0.5, 1.0),
+    )
+    spur_cluster_multiplier: Optional[float] = knob_field(
+        help="Scale on the spur-cluster width (wider -> more bins flagged as "
+        "spurs).",
+        inst_sensitivity="maybe",
+        grid=(1.0, 1.5, 2.0),
+    )
 
 
 @dataclass
 class BandSubSettings:
     """Per-band majority routing (shared by both τ twins)."""
 
-    compute_band_majorities: Optional[bool] = None
+    compute_band_majorities: Optional[bool] = knob_field(
+        help="Compute per-band tau majorities (the tau-vs-frequency band "
+        "steps).",
+        inst_sensitivity="Y",
+        grid=(False, True),
+    )
     band_edges_mhz: Optional[Tuple[float, ...]] = None
     band_labels: Optional[Tuple[str, ...]] = None
-    min_contributors_per_band: Optional[int] = None
+    min_contributors_per_band: Optional[int] = knob_field(
+        help="Min contributors for a band to use its own tau majority (else "
+        "band-wide).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(25, 50, 100, 200),
+    )
 
 
 @dataclass
@@ -117,13 +221,55 @@ class GaussianSubSettings:
     different sub-blocks to avoid the name collision.
     """
 
-    snr_min: Optional[float] = None
-    tau_G_bound_lo: Optional[float] = None
-    tau_G_bound_hi: Optional[float] = None
+    snr_min: Optional[float] = knob_field(
+        help="Gaussian tau_G: per-bin SNR floor for a contributor to enter "
+        "the fit.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(10.0, 15.0, 20.0, 30.0),
+        cli=True,
+        argtype=float,
+    )
+    tau_G_bound_lo: Optional[float] = knob_field(
+        help="Gaussian tau_G lower fit bound (us).",
+        inst_sensitivity="maybe",
+        grid=(0.2, 0.5, 1.0),
+        cli=True,
+        argtype=float,
+        flag="--tau-g-bound-lo",
+    )
+    tau_G_bound_hi: Optional[float] = knob_field(
+        help="Gaussian tau_G upper fit bound (us).",
+        inst_sensitivity="maybe",
+        grid=(50.0, 100.0, 200.0),
+        cli=True,
+        argtype=float,
+        flag="--tau-g-bound-hi",
+    )
     tau_G_seeds: Optional[Tuple[float, ...]] = None
-    delta_chi2r_min: Optional[float] = None
-    tau_G_upper_fraction: Optional[float] = None
-    min_contributors: Optional[int] = None
+    delta_chi2r_min: Optional[float] = knob_field(
+        help="Min chi2r improvement of the Gaussian over the exp fit to count "
+        "a bin.",
+        inst_sensitivity="maybe",
+        grid=(0.5, 1.0, 2.0),
+        cli=True,
+        argtype=float,
+    )
+    tau_G_upper_fraction: Optional[float] = knob_field(
+        help="Fraction of the tau_G bound above which a fit is treated as "
+        "railed.",
+        inst_sensitivity="maybe",
+        grid=(0.5, 0.7, 0.9),
+        cli=True,
+        argtype=float,
+        flag="--tau-g-upper-fraction",
+    )
+    min_contributors: Optional[int] = knob_field(
+        help="Minimum Gaussian-eligible contributor count for tau_G "
+        "preconditions.",
+        inst_sensitivity="maybe",
+        grid=(25, 50, 100),
+    )
 
 
 @dataclass
@@ -144,11 +290,31 @@ class RecommendationSubSettings:
     run without a second explicit user step.
     """
 
-    snr_min: Optional[float] = None
-    tau_bound_lo: Optional[float] = None
-    tau_bound_hi: Optional[float] = None
+    snr_min: Optional[float] = knob_field(
+        help="Shape vote: per-bin SNR floor for a contributor to vote.",
+        inst_sensitivity="maybe",
+        grid=(10.0, 15.0, 20.0, 30.0),
+    )
+    tau_bound_lo: Optional[float] = knob_field(
+        help="Shape vote: lower tau fit bound shared by the per-bin model "
+        "fits (us).",
+        inst_sensitivity="maybe",
+        grid=(0.2, 0.5, 1.0),
+    )
+    tau_bound_hi: Optional[float] = knob_field(
+        help="Shape vote: upper tau fit bound shared by the per-bin model "
+        "fits (us).",
+        inst_sensitivity="maybe",
+        grid=(50.0, 100.0, 200.0),
+    )
     tau_G_seeds: Optional[Tuple[float, ...]] = None
-    pure_margin_threshold: Optional[float] = None
+    pure_margin_threshold: Optional[float] = knob_field(
+        help="Min SNR-weighted vote margin for a pure shape to win (else "
+        "'none').",
+        tier="primary",
+        inst_sensitivity="maybe",
+        grid=(0.05, 0.10, 0.15, 0.20),
+    )
     auto_recommend: Optional[bool] = None
 
 

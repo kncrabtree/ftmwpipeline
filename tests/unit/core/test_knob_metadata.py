@@ -22,6 +22,7 @@ from ftmwpipeline.core.knob_metadata import (
     knob_meta,
 )
 from ftmwpipeline.core.noise_settings import NoiseSettings
+from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
 
 
 # A synthetic nested settings class exercising the sub-block walk (the real
@@ -155,6 +156,85 @@ class TestRegistryFieldSingleSource:
         ):
             spec = get_knob(f"stage2.{name}")
             km = field_knob_meta(NoiseSettings, name)
+            assert spec.help == km.help
+            assert spec.tier == km.tier
+            assert spec.inst_sensitivity == km.inst_sensitivity
+            assert spec.default_grid == km.grid
+
+
+class TestStage2bFlagParity:
+    """The generated `tau run` flags equal the curated Stage 2b CLI surface.
+
+    Every Stage 2b knob lives in a sub-block, so each generated flag's ``dest``
+    is sub-block-qualified (``"<sub>.<field>"``) to avoid leaf-name collisions
+    (``min_contributors`` lives in both ``aggregation`` and ``gaussian``).
+    """
+
+    def test_stage2b_flags_match_curated_surface(self) -> None:
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, TauCalibrationSettings)
+        flags = {opt for a in p._actions for opt in a.option_strings}
+        expected = {
+            "--n-seg",
+            "--t-sigma",
+            "--tau-max-us",
+            "--rss-gate-factor",
+            "--sigma-time",
+            "--min-contributors",
+            "--sigma-tau-fraction-max",
+            "--bimodality-dominant-fraction",
+            "--snr-min",
+            "--tau-g-bound-lo",
+            "--tau-g-bound-hi",
+            "--delta-chi2r-min",
+            "--tau-g-upper-fraction",
+        }
+        assert flags == expected
+
+    def test_stage2b_dests_are_subblock_qualified(self) -> None:
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, TauCalibrationSettings)
+        dests = {a.dest for a in p._actions if a.dest != "help"}
+        expected = {
+            "stft.n_seg",
+            "stft.t_sigma",
+            "stft.tau_max_us",
+            "stft.rss_gate_factor",
+            "stft.sigma_time",
+            "aggregation.min_contributors",
+            "aggregation.sigma_tau_fraction_max",
+            "aggregation.bimodality_dominant_fraction",
+            "gaussian.snr_min",
+            "gaussian.tau_G_bound_lo",
+            "gaussian.tau_G_bound_hi",
+            "gaussian.delta_chi2r_min",
+            "gaussian.tau_G_upper_fraction",
+        }
+        assert dests == expected
+
+
+class TestStage2bRegistrySingleSource:
+    """The Stage 2b knob registry sources its descriptors from the field.
+
+    A representative sample across all six sub-blocks (including the two
+    same-named knobs ``band.min_contributors_per_band`` and
+    ``gaussian.min_contributors``) must echo the field metadata rather than
+    carry its own literals.
+    """
+
+    def test_stage2b_registry_echoes_field_metadata(self) -> None:
+        from ftmwpipeline._internal.tuning.registry import get_knob
+
+        for tail in (
+            "stft.n_seg",
+            "polish.polish_snr_cap",
+            "aggregation.sigma_tau_fraction_max",
+            "band.min_contributors_per_band",
+            "gaussian.min_contributors",
+            "recommendation.pure_margin_threshold",
+        ):
+            spec = get_knob(f"stage2b.{tail}")
+            km = field_knob_meta(TauCalibrationSettings, tail)
             assert spec.help == km.help
             assert spec.tier == km.tier
             assert spec.inst_sensitivity == km.inst_sensitivity

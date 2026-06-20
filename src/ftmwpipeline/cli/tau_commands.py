@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import argparse
 import logging
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from .._internal.stage2b_g_impl import calibrate_tau_G_impl
 from .._internal.stage2b_impl import calibrate_tau_impl, load_tau_calibration_impl
+from ..core.tau_calibration_settings import TauCalibrationSettings
+from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
 logger = logging.getLogger(__name__)
@@ -33,31 +34,22 @@ def cmd_calibrate_tau(args: argparse.Namespace) -> int:
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
 
-    kwargs: Dict[str, Any] = {}
-    if args.n_seg is not None:
-        kwargs["n_seg"] = int(args.n_seg)
-    if args.t_sigma is not None:
-        kwargs["t_sigma"] = float(args.t_sigma)
-    if args.tau_max_us is not None:
-        kwargs["tau_max_us"] = float(args.tau_max_us)
-    if args.rss_gate_factor is not None:
-        kwargs["rss_gate_factor"] = float(args.rss_gate_factor)
-    if args.sigma_time is not None:
-        kwargs["sigma_time"] = float(args.sigma_time)
-    if args.min_contributors is not None:
-        kwargs["min_contributors"] = int(args.min_contributors)
-    if args.sigma_tau_fraction_max is not None:
-        kwargs["sigma_tau_fraction_max"] = float(args.sigma_tau_fraction_max)
-    if args.bimodality_dominant_fraction is not None:
-        kwargs["bimodality_dominant_fraction"] = float(
-            args.bimodality_dominant_fraction
-        )
-    if args.preset is not None:
-        kwargs["preset"] = args.preset
+    # The per-knob flags are generated from TauCalibrationSettings field
+    # metadata; reconstruct a sparse settings bundle (unset fields fall through
+    # the resolver). --preset is mutually exclusive with explicit knobs.
+    settings = settings_from_namespace(args, TauCalibrationSettings)
+    preset = args.preset
+    if preset is not None and not settings.is_empty():
+        print_error("--preset and per-knob flags are mutually exclusive; pass one")
+        return 1
 
     print(f"Running STFT tau calibration for: {file_path}")
     try:
-        result = calibrate_tau_impl(file_path, **kwargs)
+        result = calibrate_tau_impl(
+            file_path,
+            settings=None if settings.is_empty() else settings,
+            preset=preset,
+        )
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -109,41 +101,28 @@ def cmd_calibrate_tau_G(args: argparse.Namespace) -> int:
     if not file_path.endswith(".ftmw"):
         file_path = file_path + ".ftmw"
 
-    kwargs: Dict[str, Any] = {}
-    if args.n_seg is not None:
-        kwargs["n_seg"] = int(args.n_seg)
-    if args.t_sigma is not None:
-        kwargs["t_sigma"] = float(args.t_sigma)
-    if args.tau_max_us is not None:
-        kwargs["tau_max_us"] = float(args.tau_max_us)
-    if args.rss_gate_factor is not None:
-        kwargs["rss_gate_factor"] = float(args.rss_gate_factor)
-    if args.sigma_time is not None:
-        kwargs["sigma_time"] = float(args.sigma_time)
-    if args.snr_min is not None:
-        kwargs["snr_min"] = float(args.snr_min)
-    if args.tau_g_bound_lo is not None:
-        kwargs["tau_G_bound_lo"] = float(args.tau_g_bound_lo)
-    if args.tau_g_bound_hi is not None:
-        kwargs["tau_G_bound_hi"] = float(args.tau_g_bound_hi)
-    if args.delta_chi2r_min is not None:
-        kwargs["delta_chi2r_min"] = float(args.delta_chi2r_min)
-    if args.tau_g_upper_fraction is not None:
-        kwargs["tau_G_upper_fraction"] = float(args.tau_g_upper_fraction)
-    if args.min_contributors is not None:
-        kwargs["min_contributors"] = int(args.min_contributors)
-    if args.sigma_tau_fraction_max is not None:
-        kwargs["sigma_tau_fraction_max"] = float(args.sigma_tau_fraction_max)
-    if args.bimodality_dominant_fraction is not None:
-        kwargs["bimodality_dominant_fraction"] = float(
-            args.bimodality_dominant_fraction
-        )
-    if args.preset is not None:
-        kwargs["preset"] = args.preset
+    # The per-knob flags are generated from TauCalibrationSettings field
+    # metadata; reconstruct a sparse settings bundle. The shared
+    # --min-contributors flag lands on aggregation.min_contributors, but the
+    # τ_G twin's precondition reads gaussian.min_contributors -- route it
+    # across before the empty-check so an only-min_contributors call still
+    # passes settings through.
+    settings = settings_from_namespace(args, TauCalibrationSettings)
+    if settings.aggregation.min_contributors is not None:
+        settings.gaussian.min_contributors = settings.aggregation.min_contributors
+        settings.aggregation.min_contributors = None
+    preset = args.preset
+    if preset is not None and not settings.is_empty():
+        print_error("--preset and per-knob flags are mutually exclusive; pass one")
+        return 1
 
     print(f"Running STFT τ_G (Gaussian-shape) calibration for: {file_path}")
     try:
-        result = calibrate_tau_G_impl(file_path, **kwargs)
+        result = calibrate_tau_G_impl(
+            file_path,
+            settings=None if settings.is_empty() else settings,
+            preset=preset,
+        )
     except FileNotFoundError as e:
         print_error(f"Pipeline file not found: {e}")
         return 1
@@ -310,60 +289,18 @@ def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
         help="Run the Gaussian-shape τ_G calibration twin (Voigt-fit per-band "
         "tau_G) instead of the pure-exp calibration",
     )
-    parser_cal.add_argument(
-        "--n-seg",
-        type=int,
-        help="Number of non-overlapping STFT frames (default 10)",
-    )
-    parser_cal.add_argument(
-        "--t-sigma",
-        type=float,
-        help="Above-threshold gate factor on per-frame SNR (default 5.0)",
-    )
-    parser_cal.add_argument(
-        "--tau-max-us",
-        type=float,
-        help="Saturation cap on recovered tau (default 5 * T_full)",
-    )
-    parser_cal.add_argument(
-        "--rss-gate-factor",
-        type=float,
-        help="Bad-fit gate strength (default 5.0)",
-    )
-    parser_cal.add_argument(
-        "--sigma-time",
-        type=float,
-        help=(
-            "Time-domain sigma_t override; default measures from the FID "
-            "active-region tail."
-        ),
-    )
-    parser_cal.add_argument(
-        "--min-contributors",
-        type=int,
-        help="Pre-condition minimum contributor count (default 200)",
-    )
-    parser_cal.add_argument(
-        "--sigma-tau-fraction-max",
-        type=float,
-        help="Pre-condition sigma_tau/tau_maj upper bound (default 0.20)",
-    )
-    parser_cal.add_argument(
-        "--bimodality-dominant-fraction",
-        type=float,
-        help=(
-            "Pre-condition floor on dominant-cluster weight when the GMM "
-            "prefers two components (default 0.70)"
-        ),
-    )
+    # Per-knob flags, generated from TauCalibrationSettings field metadata (the
+    # single declaration site shared with `settings` / `scan`). The Gaussian-only
+    # knobs (--snr-min / --tau-g-bound-* / --delta-chi2r-min /
+    # --tau-g-upper-fraction) are consumed only with --gaussian.
+    add_settings_args(parser_cal, TauCalibrationSettings)
     parser_cal.add_argument(
         "--preset",
         type=str,
         default=None,
         help=(
             "Stage 2b preset to apply (bare packaged name or path to a "
-            "YAML file). Mutually exclusive with per-knob flags that "
-            "explicitly set the same field."
+            "YAML file). Mutually exclusive with per-knob flags."
         ),
     )
     parser_cal.add_argument(
@@ -371,39 +308,6 @@ def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
         "--verbose",
         action="store_true",
         help="Enable verbose logging",
-    )
-    # Gaussian-shape (τ_G) knobs -- consumed only with --gaussian.
-    parser_cal.add_argument(
-        "--snr-min",
-        type=float,
-        help="[--gaussian] Per-bin SNR floor on the Voigt-fit contributor pool "
-        "(default 20.0)",
-    )
-    parser_cal.add_argument(
-        "--tau-g-bound-lo",
-        type=float,
-        help="[--gaussian] Lower bound on the Voigt τ_G parameter (default 0.5 us)",
-    )
-    parser_cal.add_argument(
-        "--tau-g-bound-hi",
-        type=float,
-        help="[--gaussian] Upper bound on the Voigt τ_G parameter (default 100.0 us)",
-    )
-    parser_cal.add_argument(
-        "--delta-chi2r-min",
-        type=float,
-        help=(
-            "[--gaussian] Minimum χ²ᵣ improvement (pure-exp − Voigt) for a bin "
-            "to enter the calibration (default 1.0)"
-        ),
-    )
-    parser_cal.add_argument(
-        "--tau-g-upper-fraction",
-        type=float,
-        help=(
-            "[--gaussian] Bins whose τ_G ≥ fraction*tau_g_bound_hi are dropped "
-            "(default 0.7)"
-        ),
     )
     parser_cal.set_defaults(func=_cmd_tau_run)
 

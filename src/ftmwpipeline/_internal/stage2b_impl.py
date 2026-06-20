@@ -11,12 +11,10 @@ detection): Stage 3's gap pass and Stage 5's tau anchor both consume
 ``tau_maj``. Re-running Stage 2b invalidates Stages 3-5 downstream.
 
 Knob configuration follows the four-layer resolver pattern shared with
-Stage 5: each call bundles its legacy per-knob kwargs into an explicit
-:class:`TauCalibrationSettings`, which composes against the optional
-``settings=`` / ``preset=`` layer, the persisted ``stage2b_tau`` settings
-group, and the hard-default table. The resolved settings drive the
-kernel call and are stamped back onto the file so a follow-up no-kwargs
-call inherits the same recipe.
+Stage 5: the optional ``settings=`` / ``preset=`` layer composes against
+the persisted ``stage2b_tau`` settings group and the hard-default table.
+The resolved settings drive the kernel call and are stamped back onto the
+file so a follow-up no-arg call inherits the same recipe.
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, Optional
 
 import h5py
 import numpy as np
@@ -49,7 +47,6 @@ from ..io.tau_calibration_serialization import (
 from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
 )
-from .deprecation import warn_legacy_kwargs
 from .shape_recommendation_impl import recommend_shape_impl
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
@@ -78,51 +75,9 @@ def _read_canonical_ft_settings(file_path: str) -> FTSettings:
     return settings
 
 
-def _build_explicit_from_kwargs(
-    *,
-    n_seg: Optional[int],
-    t_sigma: Optional[float],
-    tau_max_us: Optional[float],
-    rss_gate_factor: Optional[float],
-    sigma_time: Optional[float],
-    min_contributors: Optional[int],
-    sigma_tau_fraction_max: Optional[float],
-    bimodality_dominant_fraction: Optional[float],
-    compute_band_majorities: Optional[bool],
-    min_contributors_per_band: Optional[int],
-) -> TauCalibrationSettings:
-    """Bundle legacy per-knob kwargs into an explicit-layer settings instance.
-
-    Any kwarg that is ``None`` leaves the corresponding field unset so
-    the resolver can fall through to higher layers.
-    """
-    explicit = TauCalibrationSettings()
-    explicit.stft.n_seg = n_seg
-    explicit.stft.t_sigma = t_sigma
-    explicit.stft.tau_max_us = tau_max_us
-    explicit.stft.rss_gate_factor = rss_gate_factor
-    explicit.stft.sigma_time = sigma_time
-    explicit.aggregation.min_contributors = min_contributors
-    explicit.aggregation.sigma_tau_fraction_max = sigma_tau_fraction_max
-    explicit.aggregation.bimodality_dominant_fraction = bimodality_dominant_fraction
-    explicit.band.compute_band_majorities = compute_band_majorities
-    explicit.band.min_contributors_per_band = min_contributors_per_band
-    return explicit
-
-
 def calibrate_tau_impl(
     file_path: str,
     *,
-    n_seg: Optional[int] = None,
-    t_sigma: Optional[float] = None,
-    tau_max_us: Optional[float] = None,
-    rss_gate_factor: Optional[float] = None,
-    sigma_time: Optional[float] = None,
-    min_contributors: Optional[int] = None,
-    sigma_tau_fraction_max: Optional[float] = None,
-    bimodality_dominant_fraction: Optional[float] = None,
-    compute_band_majorities: Optional[bool] = None,
-    min_contributors_per_band: Optional[int] = None,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
     _run_recommendation: bool = True,
@@ -134,13 +89,13 @@ def calibrate_tau_impl(
     trim parameters the calibration consumes; Stage 2's σ is not strictly
     needed but is the natural noise reference for downstream consistency).
 
-    Parameters left as ``None`` fall through the resolution chain
-    (``explicit > persisted > preset > recommended > hard default``); the
-    resolved settings are stamped to ``processing_parameters/stage2b_tau``
-    so a follow-up no-kwargs call on the same file inherits them. Pass
-    ``settings=`` to drive the calibration from a Python dataclass, or
-    ``preset=NAME_OR_PATH`` to load from packaged YAML; they are mutually
-    exclusive.
+    Settings resolve through the chain (``settings`` / ``preset`` > persisted >
+    hard default); the resolved settings are stamped to
+    ``processing_parameters/stage2b_tau`` so a follow-up no-arg call on the same
+    file inherits them. Pass ``settings=`` to drive the calibration from a
+    :class:`TauCalibrationSettings` dataclass, or ``preset=NAME_OR_PATH`` to
+    load from packaged YAML; they are mutually exclusive. A value persisted in
+    the ``.ftmw`` outranks either (D11).
 
     Returns
     -------
@@ -148,26 +103,6 @@ def calibrate_tau_impl(
         ``{"tau_calibration": TauCalibrationResult, "parameters_used": dict,
         "status": "success"}``.
     """
-    warn_legacy_kwargs(
-        func_name="calibrate_tau",
-        legacy_kwargs={
-            "n_seg": n_seg,
-            "t_sigma": t_sigma,
-            "tau_max_us": tau_max_us,
-            "rss_gate_factor": rss_gate_factor,
-            "sigma_time": sigma_time,
-            "min_contributors": min_contributors,
-            "sigma_tau_fraction_max": sigma_tau_fraction_max,
-            "bimodality_dominant_fraction": bimodality_dominant_fraction,
-            "compute_band_majorities": compute_band_majorities,
-            "min_contributors_per_band": min_contributors_per_band,
-        },
-        migration_hint=(
-            "use settings=TauCalibrationSettings(...) or preset='name' to "
-            "drive Stage 2b from the settings resolver"
-        ),
-    )
-
     file_path_obj = Path(file_path)
     with h5py.File(file_path, "r") as h5f:
         if "stage2_noise_result" not in h5f:
@@ -177,18 +112,7 @@ def calibrate_tau_impl(
                 file_path_obj,
             )
 
-    explicit = _build_explicit_from_kwargs(
-        n_seg=n_seg,
-        t_sigma=t_sigma,
-        tau_max_us=tau_max_us,
-        rss_gate_factor=rss_gate_factor,
-        sigma_time=sigma_time,
-        min_contributors=min_contributors,
-        sigma_tau_fraction_max=sigma_tau_fraction_max,
-        bimodality_dominant_fraction=bimodality_dominant_fraction,
-        compute_band_majorities=compute_band_majorities,
-        min_contributors_per_band=min_contributors_per_band,
-    )
+    explicit = TauCalibrationSettings()
     resolved, preset_name = resolve_with_preset_and_persisted(
         file_path,
         explicit=explicit,

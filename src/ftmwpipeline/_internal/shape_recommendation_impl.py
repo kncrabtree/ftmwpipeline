@@ -17,16 +17,17 @@ re-run after :func:`calibrate_tau` / :func:`calibrate_tau_G` if they
 want the persisted contract for Stage 5 to fire).
 
 Knob configuration follows the four-layer resolver pattern shared with
-the τ twins; the same persisted ``processing_parameters/stage2b_tau``
-settings record drives the recommender (Stage 2b is one stage, one
-settings block, three consumers).
+the τ twins; the optional ``settings=`` / ``preset=`` layer composes against
+the same persisted ``processing_parameters/stage2b_tau`` settings record that
+drives the recommender (Stage 2b is one stage, one settings block, three
+consumers).
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -43,7 +44,6 @@ from ..io.stage_fit_settings_serialization import (
 from ..io.tau_calibration_settings_serialization import (
     save_tau_calibration_settings_to_h5,
 )
-from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import _read_settings_layer
 from .tau_settings_resolution import (
@@ -69,56 +69,9 @@ def _read_canonical_ft_settings(file_path: str) -> FTSettings:
     return settings
 
 
-def _build_explicit_from_kwargs(
-    *,
-    n_seg: Optional[int],
-    t_sigma: Optional[float],
-    tau_max_us: Optional[float],
-    rss_gate_factor: Optional[float],
-    sigma_time: Optional[float],
-    snr_min: Optional[float],
-    tau_bound_lo: Optional[float],
-    tau_bound_hi: Optional[float],
-    tau_G_seeds: Optional[Sequence[float]],
-    pure_margin_threshold: Optional[float],
-) -> TauCalibrationSettings:
-    """Bundle legacy per-knob kwargs into an explicit-layer settings instance.
-
-    The recommendation hook's per-bin knobs (``snr_min``,
-    ``tau_bound_lo`` / ``tau_bound_hi``, ``tau_G_seeds``,
-    ``pure_margin_threshold``) sit on
-    :class:`RecommendationSubSettings`, distinct from the Gaussian-twin
-    block of the same name -- the two consumers can ship independent
-    operating points.
-    """
-    explicit = TauCalibrationSettings()
-    explicit.stft.n_seg = n_seg
-    explicit.stft.t_sigma = t_sigma
-    explicit.stft.tau_max_us = tau_max_us
-    explicit.stft.rss_gate_factor = rss_gate_factor
-    explicit.stft.sigma_time = sigma_time
-    explicit.recommendation.snr_min = snr_min
-    explicit.recommendation.tau_bound_lo = tau_bound_lo
-    explicit.recommendation.tau_bound_hi = tau_bound_hi
-    if tau_G_seeds is not None:
-        explicit.recommendation.tau_G_seeds = tuple(float(v) for v in tau_G_seeds)
-    explicit.recommendation.pure_margin_threshold = pure_margin_threshold
-    return explicit
-
-
 def recommend_shape_impl(
     file_path: str,
     *,
-    n_seg: Optional[int] = None,
-    t_sigma: Optional[float] = None,
-    tau_max_us: Optional[float] = None,
-    rss_gate_factor: Optional[float] = None,
-    sigma_time: Optional[float] = None,
-    snr_min: Optional[float] = None,
-    tau_bound_lo: Optional[float] = None,
-    tau_bound_hi: Optional[float] = None,
-    tau_G_seeds: Optional[Sequence[float]] = None,
-    pure_margin_threshold: Optional[float] = None,
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -133,12 +86,13 @@ def recommend_shape_impl(
     ``stage2b_tau_G_calibration``). Stage 5's resolver picks the attr up
     automatically as its *recommended* layer.
 
-    Parameters left as ``None`` fall through the resolution chain
-    (``explicit > persisted > preset > recommended > hard default``); the
-    resolved settings are stamped to
-    ``processing_parameters/stage2b_tau`` so a follow-up no-kwargs call
-    inherits the same recipe. ``settings=`` and ``preset=`` are mutually
-    exclusive.
+    Settings resolve through the chain (``settings`` / ``preset`` > persisted >
+    hard default); the resolved settings are stamped to
+    ``processing_parameters/stage2b_tau`` so a follow-up no-arg call inherits
+    the same recipe. Pass ``settings=`` to drive the recommender from a
+    :class:`TauCalibrationSettings` dataclass, or ``preset=NAME_OR_PATH`` to
+    load from packaged YAML; they are mutually exclusive. A value persisted in
+    the ``.ftmw`` outranks either (D11).
 
     Returns
     -------
@@ -150,40 +104,9 @@ def recommend_shape_impl(
         returned, but Stage 5 won't pick it up until a calibration is
         present).
     """
-    warn_legacy_kwargs(
-        func_name="recommend_shape",
-        legacy_kwargs={
-            "n_seg": n_seg,
-            "t_sigma": t_sigma,
-            "tau_max_us": tau_max_us,
-            "rss_gate_factor": rss_gate_factor,
-            "sigma_time": sigma_time,
-            "snr_min": snr_min,
-            "tau_bound_lo": tau_bound_lo,
-            "tau_bound_hi": tau_bound_hi,
-            "tau_G_seeds": tau_G_seeds,
-            "pure_margin_threshold": pure_margin_threshold,
-        },
-        migration_hint=(
-            "use settings=TauCalibrationSettings(...) or preset='name' to "
-            "drive Stage 2b from the settings resolver"
-        ),
-    )
-
     file_path_obj = Path(file_path)
 
-    explicit = _build_explicit_from_kwargs(
-        n_seg=n_seg,
-        t_sigma=t_sigma,
-        tau_max_us=tau_max_us,
-        rss_gate_factor=rss_gate_factor,
-        sigma_time=sigma_time,
-        snr_min=snr_min,
-        tau_bound_lo=tau_bound_lo,
-        tau_bound_hi=tau_bound_hi,
-        tau_G_seeds=tau_G_seeds,
-        pure_margin_threshold=pure_margin_threshold,
-    )
+    explicit = TauCalibrationSettings()
     resolved, preset_name = resolve_with_preset_and_persisted(
         file_path,
         explicit=explicit,

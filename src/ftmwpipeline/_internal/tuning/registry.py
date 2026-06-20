@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
-from ...core import noise_settings
+from ...core import noise_settings, tau_calibration_settings
 from ...core.knob_metadata import field_knob_meta
 from .fit_support import reduce_plan_for_fit
 from .plots import (
@@ -889,211 +889,91 @@ for _field in (
     )
 
 # Stage 2b tau calibration — requires Stages 0-2. Each value re-runs the STFT
-# calibration (the slowest stage), so default grids are kept modest.
-_register(
-    KnobSpec(
-        path="stage2b.stft.n_seg",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="Number of non-overlapping STFT frames (window = T_full / n_seg).",
-        inst_sensitivity="Y",
-        default_grid=(6, 8, 10, 14, 20),
-        run=_run_tau("stft", "n_seg"),
-        metric=_metric_tau,
-        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-        plot=plot_tau_trend,
-    )
-)
-_register(
-    KnobSpec(
-        path="stage2b.stft.t_sigma",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="Above-threshold SNR gate for per-frame signal detection (contributor floor).",
-        inst_sensitivity="Y",
-        default_grid=(3.0, 4.0, 5.0, 6.0, 8.0),
-        run=_run_tau("stft", "t_sigma"),
-        metric=_metric_tau,
-        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-        plot=plot_tau_trend,
-    )
-)
-_register(
-    KnobSpec(
-        path="stage2b.polish.polish_snr_cap",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="SNR above which the Gauss-Newton polish is skipped (avoid over-correction).",
-        inst_sensitivity="Y",
-        default_grid=(5.0, 7.0, 9.0, 12.0),
-        run=_run_tau("polish", "polish_snr_cap"),
-        metric=_metric_tau,
-        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-        plot=plot_tau_trend,
-    )
-)
-_register(
-    KnobSpec(
-        path="stage2b.polish.polish_noise_debias",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="Apply Rician-unbiased magnitude on high-SNR frames (removes residual bias).",
-        inst_sensitivity="Y",
-        default_grid=(False, True),
-        run=_run_tau("polish", "polish_noise_debias"),
-        metric=_metric_tau,
-        metric_columns=("tau_maj_us", "sigma_tau_us", "n_contributors"),
-        tier="advanced",
-    )
-)
-
-# --- Stage 2b: advanced STFT gates (exp twin) -----------------------------
+# calibration (the slowest stage), so default grids are kept modest. The
+# descriptors (help / tier / inst_sensitivity / grid) are read from the
+# TauCalibrationSettings field metadata — the single knob declaration site —
+# so the registry carries only the sweep behavior (run / metric / plot).
 _TAU_COLS = ("tau_maj_us", "sigma_tau_us", "n_contributors")
+_SHAPE_COLS = ("recommended_shape", "exp", "gauss", "voigt", "n_contributors")
 _TAU_TWIN_SEE_ALSO = (
     "stage2b.gaussian.* is the Gaussian τ_G twin and stage2b.recommendation.* "
     "is the exp-vs-gauss shape vote — all three share the STFT contributor pool."
 )
-for _path, _field, _help, _grid, _inst in (
-    (
-        "stage2b.stft.tau_max_us",
-        "tau_max_us",
-        "Hard upper clip on recovered τ (saturation → spur candidate); unset → derived.",
-        (20.0, 40.0, 80.0),
-        "maybe",
-    ),
-    (
-        "stage2b.stft.tau_max_factor",
-        "tau_max_factor",
-        "τ_max as a multiple of the full-record duration when tau_max_us is unset.",
-        (3.0, 5.0, 8.0, 12.0),
-        "maybe",
-    ),
-    (
-        "stage2b.stft.rss_gate_factor",
-        "rss_gate_factor",
-        "Bad-fit gate strength (relative-or-absolute residual hybrid).",
-        (3.0, 5.0, 8.0, 12.0),
-        "maybe",
-    ),
-    (
-        "stage2b.stft.relative_gate_fraction",
-        "relative_gate_fraction",
-        "Relative-RSS fraction below which a per-frame fit is accepted.",
-        (0.02, 0.05, 0.10, 0.20),
-        "maybe",
-    ),
-):
-    _register(
-        KnobSpec(
-            path=_path,
-            stage="stage2b_tau",
-            requires="stage2_noise_result",
-            help=_help,
-            inst_sensitivity=_inst,
-            default_grid=_grid,
-            run=_run_tau("stft", _field),
-            metric=_metric_tau,
-            metric_columns=_TAU_COLS,
-            plot=plot_tau_trend,
-            tier="advanced",
-        )
-    )
 
-# --- Stage 2b: advanced polish knobs --------------------------------------
-for _path, _field, _help, _grid in (
-    (
-        "stage2b.polish.polish_n_iter",
-        "polish_n_iter",
-        "Gauss-Newton polish iterations per eligible contributor.",
-        (1, 2, 3),
-    ),
-    (
-        "stage2b.polish.polish_top_n",
-        "polish_top_n",
-        "Polish only the top-N contributors by SNR (unset → all).",
-        (200, 500, 1000, 2000),
-    ),
-):
-    _register(
-        KnobSpec(
-            path=_path,
-            stage="stage2b_tau",
-            requires="stage2_noise_result",
-            help=_help,
-            inst_sensitivity="N",
-            default_grid=_grid,
-            run=_run_tau("polish", _field),
-            metric=_metric_tau,
-            metric_columns=_TAU_COLS,
-            plot=plot_tau_trend,
-            tier="advanced",
-        )
-    )
 
-# --- Stage 2b: advanced aggregation / acceptance knobs --------------------
-for _path, _field, _help, _grid, _inst in (
-    (
-        "stage2b.aggregation.min_contributors",
-        "min_contributors",
-        "Minimum contributor count for the calibration to pass preconditions.",
-        (100, 200, 400, 800),
-        "N",
-    ),
-    (
-        "stage2b.aggregation.sigma_tau_fraction_max",
-        "sigma_tau_fraction_max",
-        "Max σ_τ/τ_maj for the calibration to pass preconditions.",
-        (0.10, 0.20, 0.30),
-        "N",
-    ),
-    (
-        "stage2b.aggregation.bimodality_dominant_fraction",
-        "bimodality_dominant_fraction",
-        "Dominant-mode fraction above which a bimodal histogram still passes.",
-        (0.6, 0.7, 0.8),
-        "N",
-    ),
-    (
-        "stage2b.aggregation.sigma_tau_floor_us",
-        "sigma_tau_floor_us",
-        "Floor on the reported σ_τ (guards against over-tight spreads).",
-        (0.0, 0.5, 1.0),
-        "maybe",
-    ),
-    (
-        "stage2b.aggregation.spur_cluster_multiplier",
-        "spur_cluster_multiplier",
-        "Scale on the spur-cluster width (wider → more bins flagged as spurs).",
-        (1.0, 1.5, 2.0),
-        "maybe",
-    ),
-):
-    _register(
-        KnobSpec(
-            path=_path,
-            stage="stage2b_tau",
-            requires="stage2_noise_result",
-            help=_help,
-            inst_sensitivity=_inst,
-            default_grid=_grid,
-            run=_run_tau("aggregation", _field),
-            metric=_metric_tau,
-            metric_columns=_TAU_COLS,
-            plot=plot_tau_trend,
-            tier="advanced",
-        )
-    )
+def _tau_knob(
+    sub_block: str,
+    field_name: str,
+    *,
+    metric: MetricFn,
+    metric_columns: Tuple[str, ...],
+    plot: Optional[Callable[..., Any]],
+    see_also: Optional[str] = None,
+) -> KnobSpec:
+    """Build a Stage 2b ``KnobSpec`` reading its descriptors from the field.
 
-# --- Stage 2b: multi-band majorities --------------------------------------
-_register(
-    KnobSpec(
-        path="stage2b.band.min_contributors_per_band",
+    ``help`` / ``tier`` / ``inst_sensitivity`` / ``default_grid`` come from the
+    :class:`TauCalibrationSettings` field metadata (single source); only the
+    sweep behavior (``run`` / ``metric`` / ``plot``) and the structural
+    ``path`` / ``requires`` are supplied here.
+    """
+    km = field_knob_meta(
+        tau_calibration_settings.TauCalibrationSettings,
+        f"{sub_block}.{field_name}",
+    )
+    assert (
+        km.grid is not None
+    ), f"stage2b.{sub_block}.{field_name} registered without a sweep grid"
+    return KnobSpec(
+        path=f"stage2b.{sub_block}.{field_name}",
         stage="stage2b_tau",
         requires="stage2_noise_result",
-        help="Min contributors for a band to use its own τ majority (else band-wide).",
-        inst_sensitivity="Y",
-        default_grid=(25, 50, 100, 200),
-        run=_run_tau("band", "min_contributors_per_band"),
+        help=km.help,
+        inst_sensitivity=km.inst_sensitivity,
+        default_grid=km.grid,
+        run=_run_tau(sub_block, field_name),
+        metric=metric,
+        metric_columns=metric_columns,
+        plot=plot,
+        tier=km.tier,
+        see_also=see_also,
+    )
+
+
+# Tau-metric knobs (every sub-block except recommendation): one trend view.
+for _sub, _field in (
+    ("stft", "n_seg"),
+    ("stft", "t_sigma"),
+    ("stft", "tau_max_us"),
+    ("stft", "tau_max_factor"),
+    ("stft", "rss_gate_factor"),
+    ("stft", "relative_gate_fraction"),
+    ("polish", "polish_n_iter"),
+    ("polish", "polish_top_n"),
+    ("polish", "polish_snr_cap"),
+    ("polish", "polish_noise_debias"),
+    ("aggregation", "min_contributors"),
+    ("aggregation", "sigma_tau_fraction_max"),
+    ("aggregation", "bimodality_dominant_fraction"),
+    ("aggregation", "sigma_tau_floor_us"),
+    ("aggregation", "spur_cluster_multiplier"),
+    ("band", "compute_band_majorities"),
+):
+    _register(
+        _tau_knob(
+            _sub,
+            _field,
+            metric=_metric_tau,
+            metric_columns=_TAU_COLS,
+            plot=plot_tau_trend,
+        )
+    )
+
+# Tau-metric knobs that point at the shared-pool twins via see_also.
+_register(
+    _tau_knob(
+        "band",
+        "min_contributors_per_band",
         metric=_metric_tau,
         metric_columns=_TAU_COLS,
         plot=plot_tau_trend,
@@ -1101,135 +981,51 @@ _register(
     )
 )
 _register(
-    KnobSpec(
-        path="stage2b.band.compute_band_majorities",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="Compute per-band τ majorities (the τ-vs-frequency band steps).",
-        inst_sensitivity="Y",
-        default_grid=(False, True),
-        run=_run_tau("band", "compute_band_majorities"),
-        metric=_metric_tau,
-        metric_columns=_TAU_COLS,
-        plot=plot_tau_trend,
-        tier="advanced",
-    )
-)
-
-# --- Stage 2b: Gaussian τ_G twin (calibrate_tau_G) ------------------------
-_register(
-    KnobSpec(
-        path="stage2b.gaussian.snr_min",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="Gaussian τ_G: per-bin SNR floor for a contributor to enter the fit.",
-        inst_sensitivity="Y",
-        default_grid=(10.0, 15.0, 20.0, 30.0),
-        run=_run_tau("gaussian", "snr_min"),
+    _tau_knob(
+        "gaussian",
+        "snr_min",
         metric=_metric_tau,
         metric_columns=_TAU_COLS,
         plot=plot_tau_trend,
         see_also=_TAU_TWIN_SEE_ALSO,
     )
 )
-for _path, _field, _help, _grid in (
-    (
-        "stage2b.gaussian.tau_G_bound_lo",
-        "tau_G_bound_lo",
-        "Gaussian τ_G lower fit bound (us).",
-        (0.2, 0.5, 1.0),
-    ),
-    (
-        "stage2b.gaussian.tau_G_bound_hi",
-        "tau_G_bound_hi",
-        "Gaussian τ_G upper fit bound (us).",
-        (50.0, 100.0, 200.0),
-    ),
-    (
-        "stage2b.gaussian.delta_chi2r_min",
-        "delta_chi2r_min",
-        "Min χ²ᵣ improvement of the Gaussian over the exp fit to count a bin.",
-        (0.5, 1.0, 2.0),
-    ),
-    (
-        "stage2b.gaussian.tau_G_upper_fraction",
-        "tau_G_upper_fraction",
-        "Fraction of the τ_G bound above which a fit is treated as railed.",
-        (0.5, 0.7, 0.9),
-    ),
-    (
-        "stage2b.gaussian.min_contributors",
-        "min_contributors",
-        "Minimum Gaussian-eligible contributor count for τ_G preconditions.",
-        (25, 50, 100),
-    ),
+for _field in (
+    "tau_G_bound_lo",
+    "tau_G_bound_hi",
+    "delta_chi2r_min",
+    "tau_G_upper_fraction",
+    "min_contributors",
 ):
     _register(
-        KnobSpec(
-            path=_path,
-            stage="stage2b_tau",
-            requires="stage2_noise_result",
-            help=_help,
-            inst_sensitivity="maybe",
-            default_grid=_grid,
-            run=_run_tau("gaussian", _field),
+        _tau_knob(
+            "gaussian",
+            _field,
             metric=_metric_tau,
             metric_columns=_TAU_COLS,
             plot=plot_tau_trend,
-            tier="advanced",
         )
     )
 
-# --- Stage 2b: exp-vs-gauss shape recommendation (recommend_shape) --------
-_SHAPE_COLS = ("recommended_shape", "exp", "gauss", "voigt", "n_contributors")
+# Shape-vote knobs (recommendation sub-block): the shape-vote view.
 _register(
-    KnobSpec(
-        path="stage2b.recommendation.pure_margin_threshold",
-        stage="stage2b_tau",
-        requires="stage2_noise_result",
-        help="Min SNR-weighted vote margin for a pure shape to win (else 'none').",
-        inst_sensitivity="maybe",
-        default_grid=(0.05, 0.10, 0.15, 0.20),
-        run=_run_tau("recommendation", "pure_margin_threshold"),
+    _tau_knob(
+        "recommendation",
+        "pure_margin_threshold",
         metric=_metric_shape,
         metric_columns=_SHAPE_COLS,
         plot=plot_shape_vote,
         see_also=_TAU_TWIN_SEE_ALSO,
     )
 )
-for _path, _field, _help, _grid in (
-    (
-        "stage2b.recommendation.snr_min",
-        "snr_min",
-        "Shape vote: per-bin SNR floor for a contributor to vote.",
-        (10.0, 15.0, 20.0, 30.0),
-    ),
-    (
-        "stage2b.recommendation.tau_bound_lo",
-        "tau_bound_lo",
-        "Shape vote: lower τ fit bound shared by the per-bin model fits (us).",
-        (0.2, 0.5, 1.0),
-    ),
-    (
-        "stage2b.recommendation.tau_bound_hi",
-        "tau_bound_hi",
-        "Shape vote: upper τ fit bound shared by the per-bin model fits (us).",
-        (50.0, 100.0, 200.0),
-    ),
-):
+for _field in ("snr_min", "tau_bound_lo", "tau_bound_hi"):
     _register(
-        KnobSpec(
-            path=_path,
-            stage="stage2b_tau",
-            requires="stage2_noise_result",
-            help=_help,
-            inst_sensitivity="maybe",
-            default_grid=_grid,
-            run=_run_tau("recommendation", _field),
+        _tau_knob(
+            "recommendation",
+            _field,
             metric=_metric_shape,
             metric_columns=_SHAPE_COLS,
             plot=plot_shape_vote,
-            tier="advanced",
         )
     )
 

@@ -709,16 +709,7 @@ class Pipeline:
 
     def calibrate_tau(
         self,
-        n_seg: Optional[int] = None,
-        t_sigma: Optional[float] = None,
-        tau_max_us: Optional[float] = None,
-        rss_gate_factor: Optional[float] = None,
-        sigma_time: Optional[float] = None,
-        min_contributors: Optional[int] = None,
-        sigma_tau_fraction_max: Optional[float] = None,
-        bimodality_dominant_fraction: Optional[float] = None,
-        compute_band_majorities: Optional[bool] = None,
-        min_contributors_per_band: Optional[int] = None,
+        *,
         settings: Optional[TauCalibrationSettings] = None,
         preset: Optional[str] = None,
     ) -> TauCalibrationResult:
@@ -732,28 +723,19 @@ class Pipeline:
         magnitude vs frame-start time. Persists the result to
         ``/stage2b_tau_calibration`` and invalidates downstream stages.
 
-        Parameters left as ``None`` fall through the resolution chain
-        (``explicit > persisted > preset > recommended > hard default``);
-        pass ``settings=`` to drive the calibration from a Python
-        :class:`TauCalibrationSettings`, or ``preset=NAME_OR_PATH`` to
-        load from packaged YAML. They are mutually exclusive. The
-        resolved settings are stamped to
-        ``processing_parameters/stage2b_tau`` so a follow-up no-kwargs
-        call on the same file inherits them.
+        Settings resolve through the chain (``settings`` / ``preset`` >
+        persisted > hard default); pass ``settings=`` to drive the
+        calibration from a :class:`TauCalibrationSettings` instance, or
+        ``preset=NAME_OR_PATH`` to load from packaged YAML. They are mutually
+        exclusive. A value persisted in the ``.ftmw`` outranks either (D11),
+        so a no-arg follow-up call reproduces the previously resolved
+        settings (stamped to ``processing_parameters/stage2b_tau``). Set
+        individual knobs via ``settings=TauCalibrationSettings(...)`` or a
+        YAML preset's ``stage2b:`` block.
         """
         try:
             result = calibrate_tau_impl(
                 file_path=str(self.filepath),
-                n_seg=n_seg,
-                t_sigma=t_sigma,
-                tau_max_us=tau_max_us,
-                rss_gate_factor=rss_gate_factor,
-                sigma_time=sigma_time,
-                min_contributors=min_contributors,
-                sigma_tau_fraction_max=sigma_tau_fraction_max,
-                bimodality_dominant_fraction=bimodality_dominant_fraction,
-                compute_band_majorities=compute_band_majorities,
-                min_contributors_per_band=min_contributors_per_band,
                 settings=settings,
                 preset=preset,
             )
@@ -831,22 +813,7 @@ class Pipeline:
 
     def calibrate_tau_G(
         self,
-        n_seg: Optional[int] = None,
-        t_sigma: Optional[float] = None,
-        tau_max_us: Optional[float] = None,
-        rss_gate_factor: Optional[float] = None,
-        sigma_time: Optional[float] = None,
-        snr_min: Optional[float] = None,
-        tau_G_bound_lo: Optional[float] = None,
-        tau_G_bound_hi: Optional[float] = None,
-        tau_G_seeds: Optional[List[float]] = None,
-        delta_chi2r_min: Optional[float] = None,
-        tau_G_upper_fraction: Optional[float] = None,
-        min_contributors: Optional[int] = None,
-        sigma_tau_fraction_max: Optional[float] = None,
-        bimodality_dominant_fraction: Optional[float] = None,
-        compute_band_majorities: Optional[bool] = None,
-        min_contributors_per_band: Optional[int] = None,
+        *,
         settings: Optional[TauCalibrationSettings] = None,
         preset: Optional[str] = None,
     ) -> TauCalibrationResult:
@@ -857,31 +824,16 @@ class Pipeline:
         Gaussian path consumes. Persists to ``/stage2b_tau_G_calibration``
         and invalidates downstream stages.
 
-        Parameters left as ``None`` fall through the four-layer
-        resolution chain. ``settings=`` and ``preset=`` populate the
-        preset layer (mutually exclusive). The resolved settings share
-        the ``processing_parameters/stage2b_tau`` block with the pure-exp
-        twin -- both twins are alternative outputs of the same algorithm.
+        Settings resolve through the chain (``settings`` / ``preset`` >
+        persisted > hard default); ``settings=`` and ``preset=`` are mutually
+        exclusive. A value persisted in the ``.ftmw`` outranks either (D11).
+        The resolved settings share the ``processing_parameters/stage2b_tau``
+        block with the pure-exp twin -- both twins are alternative outputs of
+        the same algorithm.
         """
         try:
             result = calibrate_tau_G_impl(
                 file_path=str(self.filepath),
-                n_seg=n_seg,
-                t_sigma=t_sigma,
-                tau_max_us=tau_max_us,
-                rss_gate_factor=rss_gate_factor,
-                sigma_time=sigma_time,
-                snr_min=snr_min,
-                tau_G_bound_lo=tau_G_bound_lo,
-                tau_G_bound_hi=tau_G_bound_hi,
-                tau_G_seeds=tau_G_seeds,
-                delta_chi2r_min=delta_chi2r_min,
-                tau_G_upper_fraction=tau_G_upper_fraction,
-                min_contributors=min_contributors,
-                sigma_tau_fraction_max=sigma_tau_fraction_max,
-                bimodality_dominant_fraction=bimodality_dominant_fraction,
-                compute_band_majorities=compute_band_majorities,
-                min_contributors_per_band=min_contributors_per_band,
                 settings=settings,
                 preset=preset,
             )
@@ -909,16 +861,7 @@ class Pipeline:
 
     def recommend_shape(
         self,
-        n_seg: Optional[int] = None,
-        t_sigma: Optional[float] = None,
-        tau_max_us: Optional[float] = None,
-        rss_gate_factor: Optional[float] = None,
-        sigma_time: Optional[float] = None,
-        snr_min: Optional[float] = None,
-        tau_bound_lo: Optional[float] = None,
-        tau_bound_hi: Optional[float] = None,
-        tau_G_seeds: Optional[List[float]] = None,
-        pure_margin_threshold: Optional[float] = None,
+        *,
         settings: Optional[TauCalibrationSettings] = None,
         preset: Optional[str] = None,
     ) -> ShapeRecommendation:
@@ -941,25 +884,16 @@ class Pipeline:
         least one of them has run; without a Stage 2b group the
         verdict is returned but no attr is stamped.
 
-        Parameters left as ``None`` fall through the four-layer
-        resolution chain. ``settings=`` and ``preset=`` populate the
-        preset layer (mutually exclusive). The resolved settings are
-        stamped to ``processing_parameters/stage2b_tau`` so a follow-up
-        no-kwargs call inherits the same recipe.
+        Settings resolve through the chain (``settings`` / ``preset`` >
+        persisted > hard default); ``settings=`` and ``preset=`` are mutually
+        exclusive. A value persisted in the ``.ftmw`` outranks either (D11).
+        The resolved settings are stamped to
+        ``processing_parameters/stage2b_tau`` so a follow-up no-arg call
+        inherits the same recipe.
         """
         try:
             result = recommend_shape_impl(
                 file_path=str(self.filepath),
-                n_seg=n_seg,
-                t_sigma=t_sigma,
-                tau_max_us=tau_max_us,
-                rss_gate_factor=rss_gate_factor,
-                sigma_time=sigma_time,
-                snr_min=snr_min,
-                tau_bound_lo=tau_bound_lo,
-                tau_bound_hi=tau_bound_hi,
-                tau_G_seeds=tau_G_seeds,
-                pure_margin_threshold=pure_margin_threshold,
                 settings=settings,
                 preset=preset,
             )

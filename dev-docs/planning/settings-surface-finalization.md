@@ -21,7 +21,7 @@ tracks.
 |------:|:--------------:|:--------------:|:-------------:|:-------------------:|
 | 1 (template) | yes (`cli_field`) | n/a (already clean) | yes | n/a |
 | 2 | **done** | **done** | **done** | **done** |
-| 2b | pending | pending | pending | pending |
+| 2b | **done** | **done** | **done** | **done** |
 | 3 | pending | pending | pending | pending |
 | 4 | pending | pending | pending | pending |
 | 5 | pending | pending | pending | pending |
@@ -43,6 +43,17 @@ The Stage 2 pass established the reusable machinery the remaining stages inherit
   `field_knob_meta`; the registry keeps only behavior (`run` / `metric` /
   `plot`) and the structural `path` / `stage` / `requires`. A unit test asserts
   the registry echoes the field (single source, no drift).
+
+Stage 2b validated the nested path and the sub-block collision rule the plan
+flagged: `min_contributors` lives in both `aggregation` and `gaussian`, and the
+historical `tau run` exposed a single `--min-contributors` flag whose target
+depended on the `--gaussian` twin switch. Resolution: tag only
+`aggregation.min_contributors` `cli=True` (the shared flag); the
+`cmd_calibrate_tau_G` handler routes that value into `gaussian.min_contributors`
+before calling the impl. The generated flag set then matches the retired
+`tau run` surface exactly (13 flags). The `scan` registry's `see_also` pointers
+stay literals on the `KnobSpec` (navigational, not a field descriptor); only
+help/tier/inst-sensitivity/grid move to the field.
 
 One realized refinement vs the plan's "no flag rename": the tri-state
 `region_aware` flag is generated with `BooleanOptionalAction`, so it gains
