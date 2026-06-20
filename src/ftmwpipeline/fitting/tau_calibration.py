@@ -228,8 +228,8 @@ class BandMajority:
     """SNR-weighted majority tau over one frequency band.
 
     Stage 5 consumes this as a per-window override for ``(tau_maj_us,
-    sigma_tau_us)`` when ``Pipeline.fit_peaks(..., per_band_tau=True)`` is
-    set. The band is identified by ``[freq_lo_mhz, freq_hi_mhz)`` and
+    sigma_tau_us)`` when the resolved ``StageFitSettings.tau.per_band_tau``
+    is set. The band is identified by ``[freq_lo_mhz, freq_hi_mhz)`` and
     holds the band-local majority + spread, computed by re-running
     :func:`majority_tau` on the contributor subset whose frequency falls
     inside the band. ``n`` is the contributor count in the band; for

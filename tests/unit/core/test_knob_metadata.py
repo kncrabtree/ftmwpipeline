@@ -23,6 +23,7 @@ from ftmwpipeline.core.knob_metadata import (
 )
 from ftmwpipeline.core.noise_settings import NoiseSettings
 from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
+from ftmwpipeline.core.stage_fit_settings import StageFitSettings
 from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
 from ftmwpipeline.core.window_planning_settings import WindowPlanningSettings
 
@@ -380,6 +381,104 @@ class TestStage4RegistrySingleSource:
         ):
             spec = get_knob(f"stage4.{tail}")
             km = field_knob_meta(WindowPlanningSettings, tail)
+            assert spec.help == km.help
+            assert spec.tier == km.tier
+            assert spec.inst_sensitivity == km.inst_sensitivity
+            assert spec.default_grid == km.grid
+
+
+class TestStage5FlagParity:
+    """The generated `fit run` flags equal the curated Stage 5 CLI surface.
+
+    Every Stage 5 knob lives in a sub-block, so each generated flag's ``dest``
+    is sub-block-qualified (``"<sub>.<field>"``). Two of the ten cli=True knobs
+    are tri-state booleans rendered with ``BooleanOptionalAction`` (each spells
+    both ``--x`` and ``--no-x``), so the flag surface is twelve strings.
+    """
+
+    def test_stage5_flags_match_curated_surface(self) -> None:
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, StageFitSettings)
+        flags = {opt for a in p._actions for opt in a.option_strings}
+        expected = {
+            "--tau0-us",
+            "--fit-tau",
+            "--no-fit-tau",
+            "--max-decay-factor",
+            "--per-band-tau",
+            "--no-per-band-tau",
+            "--residual-edge-threshold",
+            "--residual-edge-m",
+            "--max-thaw-rounds",
+            "--max-replan-rounds",
+            "--max-residual-rescue-rounds",
+            "--rescue-snr-threshold",
+        }
+        assert flags == expected
+
+    def test_stage5_dests_are_subblock_qualified(self) -> None:
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, StageFitSettings)
+        dests = {a.dest for a in p._actions if a.dest != "help"}
+        expected = {
+            "tau.tau0_us",
+            "tau.fit_tau",
+            "tau.max_decay_factor",
+            "tau.per_band_tau",
+            "thaw.residual_edge_threshold",
+            "thaw.residual_edge_m",
+            "thaw.max_thaw_rounds",
+            "thaw.max_replan_rounds",
+            "rescue.max_rounds",
+            "rescue.snr_threshold",
+        }
+        assert dests == expected
+
+    def test_stage5_keepers_get_no_generated_flag(self) -> None:
+        """The three kept explicit args and the flag-less rescue prominence knob
+        are not tagged ``cli=True`` -- they must not appear in the generated
+        surface (``shape`` / the τ-override pair are hand-rolled; prominence had
+        no historical flag)."""
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, StageFitSettings)
+        dests = {a.dest for a in p._actions if a.dest != "help"}
+        for absent in (
+            "shape",
+            "tau.tau_maj_override_us",
+            "tau.sigma_tau_override_us",
+            "rescue.prominence_threshold",
+        ):
+            assert absent not in dests
+
+
+class TestStage5RegistrySingleSource:
+    """The Stage 5 knob registry sources its descriptors from the field.
+
+    A representative sample across several sub-blocks (the largest registry
+    block) must echo the field metadata rather than carry its own literals.
+    """
+
+    def test_stage5_registry_echoes_field_metadata(self) -> None:
+        from ftmwpipeline._internal.tuning.registry import get_knob
+
+        for tail in (
+            "tau.fit_tau_min_snr",
+            "tau.tau0_us",
+            "tau.per_band_tau",
+            "conservative.weak_window_snr_threshold",
+            "conservative.max_peaks",
+            "penalties.phase_penalty_lambda",
+            "seeder.seeder_rchi2",
+            "baseline.edge_threshold",
+            "doublet_alternative.k_res",
+            "rescue.snr_threshold",
+            "rescue.max_rounds",
+            "spur.integer_tol_mhz",
+            "thaw.residual_edge_threshold",
+            "thaw.residual_edge_m",
+        ):
+            spec = get_knob(f"stage5.{tail}")
+            km = field_knob_meta(StageFitSettings, tail)
             assert spec.help == km.help
             assert spec.tier == km.tier
             assert spec.inst_sensitivity == km.inst_sensitivity

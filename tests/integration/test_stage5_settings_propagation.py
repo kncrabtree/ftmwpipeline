@@ -44,9 +44,6 @@ from ftmwpipeline.fitting.spur_detection import SpurSet
 
 pytestmark = [
     pytest.mark.integration,
-    # Propagation tests deliberately exercise the legacy per-knob kwarg
-    # path; suppress the expected deprecation noise.
-    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
 ]
 
 
@@ -627,3 +624,117 @@ def test_doublet_alternative_disabled_passes_none(
         stage5_impl.fit_peaks_impl(str(variant), settings=s)
 
     assert captured.get("doublet_kwargs", "MISSING") is None
+
+
+# ---------------------------------------------------------------------------
+# Kept explicit args: shape + the tau-override pair overlay the explicit layer
+# ---------------------------------------------------------------------------
+def test_shape_arg_overlays_explicit_layer(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kept ``shape=`` argument selects the Gaussian envelope at the fit.
+
+    ``shape`` stays a first-class convenience argument (not a generated knob);
+    it overlays ``settings.shape`` at the explicit layer and drives the
+    per-line model the planner builds.
+    """
+    variant = tmp_path / "shape_arg.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(str(variant), shape="gaussian")
+
+    assert captured.get("shape") == PeakShape.GAUSSIAN, (
+        "shape='gaussian' did not reach the planner as the Gaussian "
+        "PeakShape; the kept explicit arg is misrouted"
+    )
+
+
+def test_tau_override_pair_reaches_fit(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The kept ``(tau_maj_override_us, sigma_tau_override_us)`` pair drives τ.
+
+    The atomic pair stays an explicit argument (it crosses a stage boundary).
+    When supplied it replaces any persisted Stage 2b calibration, so the
+    sentinel τ_maj reaches the planner's ``conservative_kwargs``.
+    """
+    variant = tmp_path / "tau_override.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+
+    mock, captured = _intercept_execute_plan()
+    monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+    with pytest.raises(_PlanIntercepted):
+        stage5_impl.fit_peaks_impl(
+            str(variant),
+            tau_maj_override_us=4.25,
+            sigma_tau_override_us=0.875,
+        )
+
+    ck = captured.get("conservative_kwargs")
+    assert ck is not None, "execute_plan was not given conservative_kwargs"
+    assert ck.get("tau_maj_us") == pytest.approx(4.25), (
+        "tau_maj_override_us did not reach conservative_kwargs['tau_maj_us']; "
+        "the override pair beats the persisted calibration"
+    )
+    assert ck.get("sigma_tau_us") == pytest.approx(0.875)
+
+
+def test_tau_override_single_member_raises(
+    baseline_2638_stage4: Path,
+    tmp_path: Path,
+) -> None:
+    """Supplying only one of the atomic τ-override pair raises ``ValueError``."""
+    variant = tmp_path / "tau_override_half.ftmw"
+    shutil.copyfile(baseline_2638_stage4, variant)
+    with pytest.raises(ValueError, match=r"must be supplied together"):
+        stage5_impl.fit_peaks_impl(str(variant), tau_maj_override_us=4.25)
+
+
+# ---------------------------------------------------------------------------
+# Explicit settings= outranks a persisted value (D11 explicit > persisted)
+# ---------------------------------------------------------------------------
+class TestExplicitSettingsOverridePersisted:
+    """A passed ``settings=`` bundle is the explicit override: it outranks a
+    value already persisted in the ``.ftmw`` (D11 ``explicit > persisted``)."""
+
+    def test_settings_beats_persisted_tau_penalty_lambda(
+        self,
+        baseline_2638_stage4: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ftmwpipeline.io.stage_fit_settings_serialization import (
+            save_stage_fit_settings_to_h5,
+        )
+
+        variant = tmp_path / "override.ftmw"
+        shutil.copyfile(baseline_2638_stage4, variant)
+
+        persisted = StageFitSettings()
+        persisted.tau.tau_penalty_lambda = 111.0
+        save_stage_fit_settings_to_h5(str(variant), persisted)
+
+        mock, captured = _intercept_execute_plan()
+        monkeypatch.setattr(stage5_impl, "execute_plan", mock)
+
+        s = _base_settings()
+        s.tau.tau_penalty_lambda = 222.0
+
+        with pytest.raises(_PlanIntercepted):
+            stage5_impl.fit_peaks_impl(str(variant), settings=s)
+
+        ck = captured.get("conservative_kwargs")
+        assert ck is not None
+        assert ck.get("tau_penalty_lambda") == 222.0, (
+            "an explicit settings= bundle must override the persisted "
+            "tau_penalty_lambda; settings= is misrouted below the persisted layer"
+        )

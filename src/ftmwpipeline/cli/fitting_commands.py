@@ -12,6 +12,8 @@ from typing import Any
 
 from .._internal.stage5_impl import fit_peaks_impl, fit_show_impl
 from .._internal.stage5_validation_impl import validate_stage5_shape_error_impl
+from ..core.stage_fit_settings import StageFitSettings
+from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
 
@@ -48,22 +50,22 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     try:
         file_path = _ensure_ftmw(args.file_path)
+        # The per-knob flags are generated from StageFitSettings field
+        # metadata; reconstruct a sparse settings bundle (unset fields fall
+        # through the resolver). --preset is mutually exclusive with knobs.
+        settings = settings_from_namespace(args, StageFitSettings)
+        if args.preset is not None and not settings.is_empty():
+            print_error(
+                "--preset and per-knob flags are mutually exclusive; pass one"
+            )
+            return 1
         print(f"Fitting peaks for: {file_path}")
         result = fit_peaks_impl(
             file_path=file_path,
-            tau0_us=args.tau0_us,
-            fit_tau=args.fit_tau,
-            max_decay_factor=args.max_decay_factor,
-            residual_edge_threshold=args.residual_edge_threshold,
-            residual_edge_m=args.residual_edge_m,
-            max_thaw_rounds=args.max_thaw_rounds,
-            max_replan_rounds=args.max_replan_rounds,
-            max_residual_rescue_rounds=args.max_residual_rescue_rounds,
-            rescue_snr_threshold=args.rescue_snr_threshold,
+            shape=args.shape,
             tau_maj_override_us=args.tau_maj_override_us,
             sigma_tau_override_us=args.sigma_tau_override_us,
-            per_band_tau=args.per_band_tau,
-            shape=args.shape,
+            settings=None if settings.is_empty() else settings,
             preset=args.preset,
         )
         print("\nFitting completed successfully!")
@@ -349,68 +351,12 @@ def register_fitting_commands(subparsers: Any) -> None:
     p_fit.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_fit.add_argument(
-        "--tau0-us",
-        dest="tau0_us",
-        type=float,
-        help="Starting / default shared decay constant per window (us). "
-        "Defaults to the Stage 2b tau_maj when calibrated, otherwise to "
-        "T_active/3.",
-    )
-    p_fit.add_argument(
-        "--no-fit-tau",
-        dest="fit_tau",
-        action="store_false",
-        default=None,
-        help="Hold the per-window tau fixed at tau0 (default: free).",
-    )
-    p_fit.add_argument(
-        "--max-decay-factor",
-        dest="max_decay_factor",
-        type=float,
-        help="Tau bound factor k: tau in [tau0/k, tau0*k] (default 5).",
-    )
-    p_fit.add_argument(
-        "--residual-edge-threshold",
-        dest="residual_edge_threshold",
-        type=float,
-        help="S_coh threshold above which a residual edge triggers a thaw.",
-    )
-    p_fit.add_argument(
-        "--residual-edge-m",
-        dest="residual_edge_m",
-        type=int,
-        help="Band width (in active-FT bins) of the residual-edge test.",
-    )
-    p_fit.add_argument(
-        "--max-thaw-rounds",
-        dest="max_thaw_rounds",
-        type=int,
-        help="Maximum local-thaw rounds per window per call.",
-    )
-    p_fit.add_argument(
-        "--max-replan-rounds",
-        dest="max_replan_rounds",
-        type=int,
-        help="Maximum structural-replan rounds per call (0 disables).",
-    )
-    p_fit.add_argument(
-        "--max-residual-rescue-rounds",
-        dest="max_residual_rescue_rounds",
-        type=int,
-        help="Cap on per-window residual-rescue + joint-refit cycles. "
-        "Omit to use the calibrated default (currently 5); pass 0 to "
-        "disable the rescue pass entirely (escape hatch for diagnostic "
-        "re-fits). The rescue is a structural part of the fit and runs "
-        "on every window's post-thaw fit by default.",
-    )
-    p_fit.add_argument(
-        "--rescue-snr-threshold",
-        dest="rescue_snr_threshold",
-        type=float,
-        help="Detector SNR threshold (in sigma_c) for rescue candidates "
-        "(default 2.5; ignored when --max-residual-rescue-rounds is 0).",
-    )
+    # Per-knob flags, generated from StageFitSettings field metadata (the
+    # single declaration site shared with `settings` / `scan`). This is the
+    # curated cli=True subset: --tau0-us, --fit-tau/--no-fit-tau,
+    # --max-decay-factor, --per-band-tau/--no-per-band-tau, the thaw caps, and
+    # the residual-rescue gates.
+    add_settings_args(p_fit, StageFitSettings)
     p_fit.add_argument(
         "--tau-maj-override",
         dest="tau_maj_override_us",
@@ -427,18 +373,6 @@ def register_fitting_commands(subparsers: Any) -> None:
         type=float,
         help="Manual override for Stage 2b sigma_tau (us). Required when "
         "--tau-maj-override is set (atomic pair).",
-    )
-    p_fit.add_argument(
-        "--no-per-band-tau",
-        dest="per_band_tau",
-        action="store_false",
-        default=None,
-        help="Skip per-band tau routing and use the Stage 2b band-wide "
-        "(tau_maj, sigma_tau) anchor for every window. The default "
-        "(per-band routing on) maps each window to its band-local tau "
-        "majority -- crucial for wide bands with monotonic horn-coupling "
-        "tau (~ 1/f). Omit both this flag and any preset that sets "
-        "per_band_tau and the resolver picks True from the hard defaults.",
     )
     p_fit.add_argument(
         "--shape",
@@ -464,10 +398,9 @@ def register_fitting_commands(subparsers: Any) -> None:
             "packaged presets under ftmwpipeline/presets/, e.g. "
             "'gaussian_default', 'lorentzian_legacy', "
             "'instrument_bc_2638') or by path to a YAML file. The "
-            "preset enters the resolution chain at the preset layer; "
-            "the per-knob CLI flags above still win per-field. "
-            "Mutually exclusive with the api/Pipeline 'settings' "
-            "kwarg."
+            "preset enters the resolution chain at the preset layer "
+            "(a persisted .ftmw outranks it). Mutually exclusive with "
+            "the per-knob flags."
         ),
     )
     p_fit.add_argument(

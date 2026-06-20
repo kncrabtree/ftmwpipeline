@@ -22,6 +22,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 from ...core import (
     noise_settings,
     peak_detection_settings,
+    stage_fit_settings,
     tau_calibration_settings,
     window_planning_settings,
 )
@@ -1271,32 +1272,42 @@ _FIT_SEE_ALSO = (
 
 
 def _fit_knob(
-    path: str,
     sub_block: str,
     field_name: str,
-    help_: str,
-    inst: str,
-    grid: Tuple[Any, ...],
-    tier: str = "primary",
+    *,
     see_also: Optional[str] = None,
     select_hint: Optional[str] = None,
     metric: MetricFn = _metric_fit,
     metric_columns: Tuple[str, ...] = _FIT_COLS,
     plot: Optional[Callable[..., Any]] = plot_fit_quality,
 ) -> None:
+    """Register a Stage 5 ``KnobSpec`` reading its descriptors from the field.
+
+    ``help`` / ``tier`` / ``inst_sensitivity`` / ``default_grid`` come from the
+    :class:`StageFitSettings` field metadata (single source); only the sweep
+    behavior (``run`` / ``metric`` / ``plot`` / ``select_hint``) and the
+    structural ``path`` / ``requires`` / ``see_also`` are supplied here.
+    """
+    km = field_knob_meta(
+        stage_fit_settings.StageFitSettings,
+        f"{sub_block}.{field_name}",
+    )
+    assert (
+        km.grid is not None
+    ), f"stage5.{sub_block}.{field_name} registered without a sweep grid"
     _register(
         KnobSpec(
-            path=path,
+            path=f"stage5.{sub_block}.{field_name}",
             stage="stage5_fitting",
             requires="stage4_windows",
-            help=help_,
-            inst_sensitivity=inst,
-            default_grid=grid,
+            help=km.help,
+            inst_sensitivity=km.inst_sensitivity,
+            default_grid=km.grid,
             run=_run_fit(sub_block, field_name),
             metric=metric,
             metric_columns=metric_columns,
             plot=plot,
-            tier=tier,
+            tier=km.tier,
             see_also=see_also,
             prepare=reduce_plan_for_fit,
             select_hint=select_hint,
@@ -1304,244 +1315,57 @@ def _fit_knob(
     )
 
 
-# Primary — the Y-rated fit-quality knobs (grids lifted from the
-# stage5-gaussian-audit probes where one exists).
+# Primary — the Y-rated fit-quality knobs. ``fit_tau_min_snr`` /
+# ``weak_window_snr_threshold`` carry the snr-threshold select hint. All
+# descriptors come from the StageFitSettings field metadata.
 _fit_knob(
-    "stage5.tau.fit_tau_min_snr",
     "tau",
     "fit_tau_min_snr",
-    "In-window SNR above which τ is freed (the free-τ floor is the max of this "
-    "and conservative.weak_window_snr_threshold; 10 = the weak-window floor).",
-    "Y",
-    (10.0, 25.0, 50.0, 100.0),
     see_also=_FIT_SEE_ALSO,
     select_hint="snr_threshold",
 )
 _fit_knob(
-    "stage5.conservative.weak_window_snr_threshold",
     "conservative",
     "weak_window_snr_threshold",
-    "In-window SNR floor for free-τ eligibility (hold τ fixed below).",
-    "Y",
-    (5.0, 10.0, 15.0, 20.0),
     see_also=_FIT_SEE_ALSO,
     select_hint="snr_threshold",
 )
-_fit_knob(
-    "stage5.baseline.edge_threshold",
-    "baseline",
-    "edge_threshold",
-    "S_coh threshold (max residual edge) gating the leakage-wing baseline refit.",
-    "Y",
-    (2.5, 3.5, 5.0, 8.0),
-    see_also=_FIT_SEE_ALSO,
-)
-_fit_knob(
-    "stage5.baseline.smooth_threshold",
-    "baseline",
-    "smooth_threshold",
-    "Smooth-residual F-test (chi2-drop/dof) gating the baseline on an in-band "
-    "leakage pedestal.",
-    "Y",
-    (20.0, 50.0, 100.0, 200.0),
-    see_also=_FIT_SEE_ALSO,
-)
+_fit_knob("baseline", "edge_threshold", see_also=_FIT_SEE_ALSO)
+_fit_knob("baseline", "smooth_threshold", see_also=_FIT_SEE_ALSO)
 
 # Advanced — tau shaping (the penalty / bounds / routing knobs).
-_g: Tuple[Any, ...]
-for _p, _f, _h, _g, _inst in (
-    (
-        "stage5.tau.tau0_us",
-        "tau0_us",
-        "Starting shared decay τ₀ (µs); None = runtime fallback (Stage 2b / T/3).",
-        (None, 3.0, 5.0, 8.0),
-        "maybe",
-    ),
-    (
-        "stage5.tau.max_decay_factor",
-        "max_decay_factor",
-        "τ bounds multiplier: τ ∈ [τ₀/k, τ₀·k].",
-        (3.0, 5.0, 8.0),
-        "N",
-    ),
-    (
-        "stage5.tau.tau_penalty_lambda",
-        "tau_penalty_lambda",
-        "Strength of the bidirectional Gaussian prior on τ.",
-        (10.0, 50.0, 100.0),
-        "N",
-    ),
-    (
-        "stage5.tau.tau_penalty_n_sigma",
-        "tau_penalty_n_sigma",
-        "τ-bound half-width in units of σ_τ from Stage 2b.",
-        (3.0, 5.0, 8.0),
-        "N",
-    ),
+for _sub, _field in (
+    ("tau", "tau0_us"),
+    ("tau", "max_decay_factor"),
+    ("tau", "tau_penalty_lambda"),
+    ("tau", "tau_penalty_n_sigma"),
+    ("tau", "per_band_tau"),
+    # Conservative add-one-peak loop.
+    ("conservative", "significance"),
+    ("conservative", "max_peaks"),
+    ("conservative", "patience"),
+    ("conservative", "min_separation_factor"),
+    ("conservative", "min_pair_separation_factor"),
+    ("conservative", "min_pair_separation_resolution_factor"),
+    ("conservative", "max_nfev"),
+    # Soft penalties.
+    ("penalties", "phase_penalty_lambda"),
+    ("penalties", "phase_penalty_cutoff_fwhm"),
+    ("penalties", "amp_penalty_lambda"),
+    ("penalties", "amp_max_headroom"),
+    # Blend-aware re-seeder.
+    ("seeder", "seeder_rchi2"),
+    ("seeder", "seeder_straddle_factor"),
+    ("seeder", "seeder_max_k"),
+    # Leakage-wing baseline shape / switch.
+    ("baseline", "order"),
+    ("baseline", "enabled"),
+    # Doublet-alternative observation pass (never changes fitted peaks).
+    ("doublet_alternative", "enabled"),
+    ("doublet_alternative", "k_res"),
+    ("doublet_alternative", "r_min"),
 ):
-    _fit_knob(_p, "tau", _f, _h, _inst, _g, tier="advanced")
-_fit_knob(
-    "stage5.tau.per_band_tau",
-    "tau",
-    "per_band_tau",
-    "Route τ to per-band majorities (True) or a single band-wide τ (False).",
-    "maybe",
-    (False, True),
-    tier="advanced",
-)
-
-# Advanced — the conservative add-one-peak loop.
-for _p, _f, _h, _g in (
-    (
-        "stage5.conservative.significance",
-        "significance",
-        "F-test significance α for add-one-peak acceptance.",
-        (0.01, 0.05, 0.1),
-    ),
-    (
-        "stage5.conservative.max_peaks",
-        "max_peaks",
-        "Hard cap on the final peak count per window; 0 = no cap "
-        "(candidate/patience-bounded).",
-        (0, 8, 16),
-    ),
-    (
-        "stage5.conservative.patience",
-        "patience",
-        "Consecutive-rejection patience before the add loop stops.",
-        (1, 2, 3),
-    ),
-    (
-        "stage5.conservative.min_separation_factor",
-        "min_separation_factor",
-        "Minimum peak separation (FWHM units; unresolvable below).",
-        (0.5, 1.0, 1.5),
-    ),
-    (
-        "stage5.conservative.min_pair_separation_factor",
-        "min_pair_separation_factor",
-        "Post-escalation pair-separation floor (FWHM units).",
-        (0.25, 0.5, 0.75),
-    ),
-    (
-        "stage5.conservative.min_pair_separation_resolution_factor",
-        "min_pair_separation_resolution_factor",
-        "Resolution-referenced pair floor (1/T_active elements).",
-        (0.5, 1.0, 1.5),
-    ),
-    (
-        "stage5.conservative.max_nfev",
-        "max_nfev",
-        "Solver evaluation cap per window.",
-        (1000, 2000, 4000),
-    ),
-):
-    _fit_knob(_p, "conservative", _f, _h, "N", _g, tier="advanced")
-
-# Advanced — the soft penalties.
-for _p, _f, _h, _g in (
-    (
-        "stage5.penalties.phase_penalty_lambda",
-        "phase_penalty_lambda",
-        "Phase-difference soft-penalty strength.",
-        (50.0, 100.0, 200.0),
-    ),
-    (
-        "stage5.penalties.phase_penalty_cutoff_fwhm",
-        "phase_penalty_cutoff_fwhm",
-        "Phase-penalty range (FWHM units; zero in quadrature).",
-        (1.0, 2.0, 3.0),
-    ),
-    (
-        "stage5.penalties.amp_penalty_lambda",
-        "amp_penalty_lambda",
-        "Amplitude-floor soft-penalty strength.",
-        (5.0, 10.0, 20.0),
-    ),
-    (
-        "stage5.penalties.amp_max_headroom",
-        "amp_max_headroom",
-        "Hard amplitude ceiling as a multiple of 2·max_data/τ_eff_min.",
-        (2.0, 3.0, 5.0),
-    ),
-):
-    _fit_knob(_p, "penalties", _f, _h, "N", _g, tier="advanced")
-
-# Advanced — the blend-aware re-seeder.
-for _p, _f, _h, _g in (
-    (
-        "stage5.seeder.seeder_rchi2",
-        "seeder_rchi2",
-        "χ²ᵣ threshold that triggers the K=2/3 blend-aware re-seed.",
-        (1.2, 1.5, 2.0),
-    ),
-    (
-        "stage5.seeder.seeder_straddle_factor",
-        "seeder_straddle_factor",
-        "Re-seed offset spacing in line-FWHM units.",
-        (0.5, 1.0, 1.5),
-    ),
-    (
-        "stage5.seeder.seeder_max_k",
-        "seeder_max_k",
-        "Maximum blend-escalation depth.",
-        (2, 3, 4),
-    ),
-):
-    _fit_knob(_p, "seeder", _f, _h, "N", _g, tier="advanced")
-
-# Advanced — the leakage-wing baseline shape / switch.
-_fit_knob(
-    "stage5.baseline.order",
-    "baseline",
-    "order",
-    "Baseline polynomial order (0 = const, 1 = linear; higher overfits).",
-    "maybe",
-    (0, 1),
-    tier="advanced",
-)
-_fit_knob(
-    "stage5.baseline.enabled",
-    "baseline",
-    "enabled",
-    "Master switch for the evidence-triggered leakage-wing baseline term.",
-    "N",
-    (False, True),
-    tier="advanced",
-)
-
-# Advanced — doublet-alternative observation pass (observation-only; never
-# changes fitted peaks).
-_fit_knob(
-    "stage5.doublet_alternative.enabled",
-    "doublet_alternative",
-    "enabled",
-    "Master switch for the post-fit doublet-alternative observation pass "
-    "(attaches records, never modifies fitted peaks).",
-    "N",
-    (False, True),
-    tier="advanced",
-)
-_fit_knob(
-    "stage5.doublet_alternative.k_res",
-    "doublet_alternative",
-    "k_res",
-    "Sub-resolution separation threshold (1/T_active elements) for doublet "
-    "adjudication; pairs closer than k_res are evaluated.",
-    "N",
-    (1.0, 1.5, 2.0, 2.5),
-    tier="advanced",
-)
-_fit_knob(
-    "stage5.doublet_alternative.r_min",
-    "doublet_alternative",
-    "r_min",
-    "Minimum amplitude ratio for the weaker member to trigger doublet evaluation "
-    "(suppresses ghost pairs beside strong lines).",
-    "N",
-    (0.02, 0.05, 0.1),
-    tier="advanced",
-)
+    _fit_knob(_sub, _field)
 
 
 # ---------------------------------------------------------------------------
@@ -1599,203 +1423,60 @@ _THAW_SEE_ALSO = (
 )
 
 
-# Rescue — primary: the two residual-detection gates (Y-rated). Advanced: the
-# safety cap, the cleanup F-test, and the merge / overfit-absorber factors.
-_fit_knob(
-    "stage5.rescue.snr_threshold",
-    "rescue",
+# Rescue — the residual-detection gates (primary) + the safety cap, cleanup
+# F-test, and merge / overfit-absorber factors (advanced). Tier / descriptors
+# come from the field; the rescue metric + plot are supplied here.
+for _field in (
     "snr_threshold",
-    "Residual-peak detection floor (nominates generously; the F-test gates "
-    "acceptance).",
-    "Y",
-    (2.0, 2.5, 3.0, 4.0),
-    see_also=_RESCUE_SEE_ALSO,
-    metric=_metric_rescue,
-    metric_columns=_RESCUE_COLS,
-    plot=plot_rescue,
-)
-_fit_knob(
-    "stage5.rescue.prominence_threshold",
-    "rescue",
     "prominence_threshold",
-    "Residual-peak prominence threshold for candidate nomination.",
-    "Y",
-    (1.5, 2.0, 3.0, 4.0),
-    see_also=_RESCUE_SEE_ALSO,
-    metric=_metric_rescue,
-    metric_columns=_RESCUE_COLS,
-    plot=plot_rescue,
-)
-for _p, _f, _h, _g in (
-    (
-        "stage5.rescue.max_rounds",
-        "max_rounds",
-        "Maximum residual-rescue iterations per window (safety cap).",
-        (1, 3, 5, 8),
-    ),
-    (
-        "stage5.rescue.cleanup_significance",
-        "cleanup_significance",
-        "F-test significance for the remove-and-refit post-rescue cleanup.",
-        (0.01, 0.05, 0.1),
-    ),
-    (
-        "stage5.rescue.merge_separation_factor",
-        "merge_separation_factor",
-        "AICc-gated merge threshold above resolution (FWHM units).",
-        (0.25, 0.5, 0.75),
-    ),
-    (
-        "stage5.rescue.structural_merge_factor",
-        "structural_merge_factor",
-        "Sub-resolution merge floor: pairs closer than this (FWHM units) collapse "
-        "unconditionally.",
-        (0.25, 0.5, 0.75),
-    ),
-    (
-        "stage5.rescue.overfit_amp_ratio_band",
-        "overfit_amp_ratio_band",
-        "Upper bound (1/T_active elements) of the amplitude-ratio merge tier that "
-        "collapses supra-resolution shape-error absorbers.",
-        (1.0, 1.5, 2.0),
-    ),
-    (
-        "stage5.rescue.overfit_amp_ratio_threshold",
-        "overfit_amp_ratio_threshold",
-        "Amplitude ratio above which a pair in the band collapses as an absorber "
-        "(0 disables).",
-        (0.0, 4.0, 6.0, 10.0),
-    ),
+    "max_rounds",
+    "cleanup_significance",
+    "merge_separation_factor",
+    "structural_merge_factor",
+    "overfit_amp_ratio_band",
+    "overfit_amp_ratio_threshold",
 ):
     _fit_knob(
-        _p,
         "rescue",
-        _f,
-        _h,
-        "N",
-        _g,
-        tier="advanced",
+        _field,
         see_also=_RESCUE_SEE_ALSO,
         metric=_metric_rescue,
         metric_columns=_RESCUE_COLS,
         plot=plot_rescue,
     )
 
-# Spur — primary: the integer-MHz / narrowness gate + the mask half-width (all
-# Y-rated). Advanced: the master switch, the frequency-domain SNR floor, and the
-# Stage 2b saturated-catalogue toggle.
-for _p, _f, _h, _g in (
-    (
-        "stage5.spur.integer_tol_mhz",
-        "integer_tol_mhz",
-        "Max distance (MHz) from an integer MHz for the spur gate's hard integer "
-        "requirement (~½ active-FT bin).",
-        (0.02, 0.04, 0.08, 0.16),
-    ),
-    (
-        "stage5.spur.narrowness_ratio",
-        "narrowness_ratio",
-        "max(neighbour)/peak below which an integer-MHz bin is sub-resolution "
-        "narrow (a CW tone vs a real line with a skirt).",
-        (0.2, 0.3, 0.4, 0.5),
-    ),
-    (
-        "stage5.spur.mask_half_width_bins",
-        "mask_half_width_bins",
-        "Residual-mask half-width (active-FT bins) around a detected spur.",
-        (1, 2, 3, 4),
-    ),
+# Spur — the integer-MHz / narrowness gate + the mask half-width (primary) and
+# the master switch, frequency-domain SNR floor, and saturated-catalogue toggle
+# (advanced). The spur metric + plot are supplied here.
+for _field in (
+    "integer_tol_mhz",
+    "narrowness_ratio",
+    "mask_half_width_bins",
+    "enabled",
+    "snr_threshold",
+    "use_stft_catalogue",
 ):
     _fit_knob(
-        _p,
         "spur",
-        _f,
-        _h,
-        "Y",
-        _g,
-        see_also=_SPUR_SEE_ALSO,
-        metric=_metric_spur,
-        metric_columns=_SPUR_COLS,
-        plot=plot_spur,
-    )
-for _p, _f, _h, _g in (
-    (
-        "stage5.spur.enabled",
-        "enabled",
-        "Master switch for clock/LO-spur detection + masking.",
-        (False, True),
-    ),
-    (
-        "stage5.spur.snr_threshold",
-        "snr_threshold",
-        "Peak-bin / σ_c floor for the frequency-domain spur detector.",
-        (3.0, 5.0, 8.0, 12.0),
-    ),
-    (
-        "stage5.spur.use_stft_catalogue",
-        "use_stft_catalogue",
-        "Consume the persisted Stage 2b flat-spur (saturated) catalogue as the "
-        "gate's persistence half; False = frequency-domain detector only.",
-        (False, True),
-    ),
-):
-    _fit_knob(
-        _p,
-        "spur",
-        _f,
-        _h,
-        "N",
-        _g,
-        tier="advanced",
+        _field,
         see_also=_SPUR_SEE_ALSO,
         metric=_metric_spur,
         metric_columns=_SPUR_COLS,
         plot=plot_spur,
     )
 
-# Thaw — primary: the residual-edge S_coh trigger (Y-rated). Advanced: the
-# thaw / replan round caps and the edge-detection band width.
-_fit_knob(
-    "stage5.thaw.residual_edge_threshold",
-    "thaw",
+# Thaw — the residual-edge S_coh trigger (primary) + the thaw / replan round
+# caps and the edge-detection band width (advanced). The thaw metric + plot are
+# supplied here.
+for _field in (
     "residual_edge_threshold",
-    "S_coh threshold for a residual-edge-coherence boundary violation (the "
-    "thaw / replan trigger).",
-    "Y",
-    (4.0, 6.0, 8.0, 10.0, 12.0),
-    see_also=_THAW_SEE_ALSO,
-    metric=_metric_thaw,
-    metric_columns=_THAW_COLS,
-    plot=plot_thaw,
-)
-for _p, _f, _h, _g in (
-    (
-        "stage5.thaw.max_thaw_rounds",
-        "max_thaw_rounds",
-        "Maximum local-thaw iterations (re-fit a frozen contributor; 0 disables).",
-        (0, 1, 2, 3),
-    ),
-    (
-        "stage5.thaw.max_replan_rounds",
-        "max_replan_rounds",
-        "Maximum structural-replan iterations (window-boundary merges; 0 disables).",
-        (0, 1, 2, 3),
-    ),
-    (
-        "stage5.thaw.residual_edge_m",
-        "residual_edge_m",
-        "Band width (bins) for residual edge-coherence detection.",
-        (16, 32, 48, 64),
-    ),
+    "max_thaw_rounds",
+    "max_replan_rounds",
+    "residual_edge_m",
 ):
     _fit_knob(
-        _p,
         "thaw",
-        _f,
-        _h,
-        "N",
-        _g,
-        tier="advanced",
+        _field,
         see_also=_THAW_SEE_ALSO,
         metric=_metric_thaw,
         metric_columns=_THAW_COLS,

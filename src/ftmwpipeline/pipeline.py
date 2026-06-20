@@ -1346,20 +1346,10 @@ class Pipeline:
 
     def fit_peaks(
         self,
-        tau0_us: Optional[float] = None,
-        fit_tau: Optional[bool] = None,
-        max_decay_factor: Optional[float] = None,
-        residual_edge_threshold: Optional[float] = None,
-        residual_edge_m: Optional[int] = None,
-        max_thaw_rounds: Optional[int] = None,
-        max_replan_rounds: Optional[int] = None,
-        max_residual_rescue_rounds: Optional[int] = None,
-        rescue_snr_threshold: Optional[float] = None,
-        rescue_prominence_threshold: Optional[float] = None,
+        *,
+        shape: Optional[str] = None,
         tau_maj_override_us: Optional[float] = None,
         sigma_tau_override_us: Optional[float] = None,
-        per_band_tau: Optional[bool] = None,
-        shape: Optional[str] = None,
         settings: Optional["StageFitSettings"] = None,
         preset: Optional[str] = None,
     ) -> SpectrumFit:
@@ -1379,83 +1369,40 @@ class Pipeline:
         thaw / replan histories, and the parameters used -- is written to
         ``/stage5_fitting``.
 
+        Settings resolve through the chain (``settings`` / ``preset`` >
+        persisted > recommended > hard default); pass ``settings=`` to drive
+        the fit from a :class:`StageFitSettings` instance, or
+        ``preset=NAME_OR_PATH`` to load from packaged YAML. They are mutually
+        exclusive, and a ``settings`` bundle outranks a value persisted in the
+        ``.ftmw`` while a ``preset`` .yml only seeds unfixed fields (D11).
+
         Parameters
         ----------
-        tau0_us : float, optional
-            Starting / default shared decay constant per window
-            (microseconds). Defaults to the Stage 1 ``expf_us`` when set,
-            otherwise to ``T_active / 3``.
-        fit_tau : bool, optional
-            Free vs fixed per-window tau (default True).
-        max_decay_factor : float, optional
-            Tau bound factor ``k``: tau in ``[tau0/k, tau0*k]`` (default 5).
-        residual_edge_threshold : float, optional
-            ``S_coh`` threshold above which a residual edge triggers a thaw
-            attempt.
-        residual_edge_m : int, optional
-            Band width (in active-FT bins) of the residual-edge coherence
-            test.
-        max_thaw_rounds : int, optional
-            Maximum local-thaw rounds per window per call.
-        max_replan_rounds : int, optional
-            Maximum structural-replan rounds per call. Pass 0 to disable
-            structural renegotiation.
-        max_residual_rescue_rounds : int, optional
-            Cap on per-window residual-rescue + joint-refit cycles.
-            ``None`` (the default) resolves to the calibrated default
-            cap (currently 5); pass ``0`` to disable the rescue pass
-            entirely (escape hatch for diagnostic re-fits). The rescue
-            is a structural part of the fit and runs on every window's
-            post-thaw fit by default.
-        rescue_snr_threshold, rescue_prominence_threshold : optional
-            Detector tuning knobs for the rescue -- see
-            :func:`fit_peaks_impl` for defaults. Ignored when
-            ``max_residual_rescue_rounds`` is 0.
+        shape : {"lorentzian", "gaussian"}, optional
+            Time-domain envelope of the per-line model, kept as a first-class
+            convenience argument. ``"lorentzian"`` uses ``exp(-t/τ)``;
+            ``"gaussian"`` uses ``exp(-(t/τ_G)²)`` and consumes the Stage 2b
+            τ_G calibration (``calibrate_tau_G(...)``) in place of the pure-exp
+            twin for the bidirectional τ anchoring penalty. ``None`` falls
+            through to the resolved settings (preset / persisted / default).
         tau_maj_override_us, sigma_tau_override_us : float, optional
-            Atomic-pair manual override for the Stage 2b tau calibration.
-            When both are supplied (positive), they replace any persisted
-            Stage 2b result for this fit -- useful for A/B-ing a hand-tuned
-            tau anchor against the persisted one, or for forcing a
-            calibrated tau when Stage 2b has not been run. Supplying only
+            Atomic-pair manual override for the Stage 2b tau calibration, kept
+            as explicit arguments (an A/B escape hatch crossing a stage
+            boundary, not a fit knob). When both are supplied (positive), they
+            replace any persisted Stage 2b result for this fit. Supplying only
             one of the pair raises ``ValueError``.
-        per_band_tau : bool, default True
-            Route each window to its band-local ``(tau_maj, sigma_tau)``
-            from the persisted Stage 2b ``band_majorities``. When
-            ``True`` (the default) and ``calibrate_tau(...,
-            compute_band_majorities=True)`` has been run, the per-window
-            prior reflects the band's own tau majority -- crucial for
-            wide bands with monotonic horn-coupling τ ∝ 1/f. Falls back
-            to the band-wide ``(tau_maj_us, sigma_tau_us)`` (and then to
-            no prior) when band_majorities aren't persisted. Pass
-            ``False`` to skip per-band routing even when band majorities
-            are available. Silently skipped when ``tau_maj_override_us``
-            / ``sigma_tau_override_us`` is set (the explicit override
-            wins).
-        shape : {"lorentzian", "gaussian"}, default "lorentzian"
-            Time-domain envelope of the per-line model.
-            ``"lorentzian"`` uses ``exp(-t/τ)``; ``"gaussian"`` uses
-            ``exp(-(t/τ_G)²)``. When ``"gaussian"`` is selected the
-            Stage 2b τ_G calibration (``calibrate_tau_G(...)``) is read
-            in place of the pure-exp ``calibrate_tau`` for the
-            bidirectional τ anchoring penalty; missing τ_G calibration
-            still fits, but without a prior.
         settings : StageFitSettings, optional
-            Bundle of Stage 5 knobs that enters the resolution chain at
-            the *preset* layer. Per-kwarg explicit overrides above
-            (``tau0_us``, ``max_decay_factor``, ...) win over the
-            corresponding field on ``settings``; ``settings`` wins over
-            persisted and recommended values, which win over the hard
-            defaults. Build with
-            :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
-            or load from a preset YAML
-            (:func:`~ftmwpipeline.core.stage_fit_settings.from_yaml`).
+            Bundle of Stage 5 knobs; fields left ``None`` fall through the
+            resolution chain. Resolves at the explicit override layer (outranks
+            the persisted record). Build with
+            :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`.
+            Mutually exclusive with ``preset``.
         preset : str, optional
-            Name of a packaged preset (e.g. ``"instrument_bc_2638"``) or
-            a path to a YAML file. Enters the resolution chain at the
-            same *preset* layer as ``settings`` -- the two are
-            alternatives; passing both raises ``ValueError``. The preset
-            name is captured in the persisted Stage 5 fit's audit attrs
-            for reproducibility.
+            Bare preset name (e.g. ``"instrument_bc_2638"``) or a path to a
+            YAML file carrying a ``stage5:`` block. Enters at the preset layer
+            (a persisted ``.ftmw`` outranks it). The preset name is captured in
+            the persisted Stage 5 fit's audit attrs for reproducibility.
+            Mutually exclusive with ``settings``.
 
         Returns
         -------
@@ -1472,20 +1419,9 @@ class Pipeline:
         try:
             result = fit_peaks_impl(
                 file_path=str(self.filepath),
-                tau0_us=tau0_us,
-                fit_tau=fit_tau,
-                max_decay_factor=max_decay_factor,
-                residual_edge_threshold=residual_edge_threshold,
-                residual_edge_m=residual_edge_m,
-                max_thaw_rounds=max_thaw_rounds,
-                max_replan_rounds=max_replan_rounds,
-                max_residual_rescue_rounds=max_residual_rescue_rounds,
-                rescue_snr_threshold=rescue_snr_threshold,
-                rescue_prominence_threshold=rescue_prominence_threshold,
+                shape=shape,
                 tau_maj_override_us=tau_maj_override_us,
                 sigma_tau_override_us=sigma_tau_override_us,
-                per_band_tau=per_band_tau,
-                shape=shape,
                 settings=settings,
                 preset=preset,
             )

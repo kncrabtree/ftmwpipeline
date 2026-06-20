@@ -1726,7 +1726,7 @@ def execute_plan(
         uses the overriding pair (with all other conservative_kwargs
         entries unchanged) AND seeds its τ-parameter at the band-local
         ``tau_maj_us``. Used by Stage 5 when a per-band tau calibration
-        is plumbed (:func:`fit_peaks_impl` ``per_band_tau=True``);
+        is plumbed (resolved ``StageFitSettings.tau.per_band_tau``);
         windows missing from the map keep the band-wide
         ``tau_maj_us`` / ``sigma_tau_us`` from ``conservative_kwargs``
         and the band-wide ``tau0_us`` (or ``None`` if no calibration is

@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union, c
 
 import yaml  # type: ignore[import-untyped]
 
+from .knob_metadata import knob_field
 from .peak_shape import PeakShape
 
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
@@ -174,73 +175,278 @@ class ShapeSpec:
 class TauSubSettings:
     """Stage 5 τ handling (initial guess, bounds, free-vs-fixed, anchoring)."""
 
-    tau0_us: Optional[float] = None
-    fit_tau: Optional[bool] = None
-    max_decay_factor: Optional[float] = None
-    fit_tau_min_snr: Optional[float] = None
-    tau_penalty_lambda: Optional[float] = None
-    tau_penalty_n_sigma: Optional[float] = None
+    tau0_us: Optional[float] = knob_field(
+        help="Starting shared decay τ₀ (µs); None = runtime fallback "
+        "(Stage 2b / T/3).",
+        tier="advanced",
+        inst_sensitivity="maybe",
+        grid=(None, 3.0, 5.0, 8.0),
+        cli=True,
+        argtype=float,
+    )
+    fit_tau: Optional[bool] = knob_field(
+        help="Hold the per-window tau fixed at tau0 (default: free).",
+        tier="advanced",
+        inst_sensitivity="N",
+        cli=True,
+        is_flag=True,
+        flag="--fit-tau",
+    )
+    max_decay_factor: Optional[float] = knob_field(
+        help="τ bounds multiplier: τ ∈ [τ₀/k, τ₀·k].",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(3.0, 5.0, 8.0),
+        cli=True,
+        argtype=float,
+    )
+    fit_tau_min_snr: Optional[float] = knob_field(
+        help="In-window SNR above which τ is freed (the free-τ floor is the max "
+        "of this and conservative.weak_window_snr_threshold; 10 = the "
+        "weak-window floor).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(10.0, 25.0, 50.0, 100.0),
+    )
+    tau_penalty_lambda: Optional[float] = knob_field(
+        help="Strength of the bidirectional Gaussian prior on τ.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(10.0, 50.0, 100.0),
+    )
+    tau_penalty_n_sigma: Optional[float] = knob_field(
+        help="τ-bound half-width in units of σ_τ from Stage 2b.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(3.0, 5.0, 8.0),
+    )
     tau_maj_override_us: Optional[float] = None
     sigma_tau_override_us: Optional[float] = None
-    per_band_tau: Optional[bool] = None
+    per_band_tau: Optional[bool] = knob_field(
+        help="Route τ to per-band majorities (True) or a single band-wide τ "
+        "(False).",
+        tier="advanced",
+        inst_sensitivity="maybe",
+        grid=(False, True),
+        cli=True,
+        is_flag=True,
+        flag="--per-band-tau",
+    )
 
 
 @dataclass
 class SeederSubSettings:
     """Conservative-fit blend-aware seeder thresholds."""
 
-    seeder_rchi2: Optional[float] = None
-    seeder_straddle_factor: Optional[float] = None
-    seeder_max_k: Optional[int] = None
+    seeder_rchi2: Optional[float] = knob_field(
+        help="χ²ᵣ threshold that triggers the K=2/3 blend-aware re-seed.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1.2, 1.5, 2.0),
+    )
+    seeder_straddle_factor: Optional[float] = knob_field(
+        help="Re-seed offset spacing in line-FWHM units.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.5, 1.0, 1.5),
+    )
+    seeder_max_k: Optional[int] = knob_field(
+        help="Maximum blend-escalation depth.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(2, 3, 4),
+    )
 
 
 @dataclass
 class ConservativeSubSettings:
     """Add-one-peak loop gates and per-call caps."""
 
-    significance: Optional[float] = None
-    max_peaks: Optional[int] = None
-    patience: Optional[int] = None
-    min_separation_factor: Optional[float] = None
-    min_pair_separation_factor: Optional[float] = None
-    min_pair_separation_resolution_factor: Optional[float] = None
+    significance: Optional[float] = knob_field(
+        help="F-test significance α for add-one-peak acceptance.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.01, 0.05, 0.1),
+    )
+    max_peaks: Optional[int] = knob_field(
+        help="Hard cap on the final peak count per window; 0 = no cap "
+        "(candidate/patience-bounded).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0, 8, 16),
+    )
+    patience: Optional[int] = knob_field(
+        help="Consecutive-rejection patience before the add loop stops.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1, 2, 3),
+    )
+    min_separation_factor: Optional[float] = knob_field(
+        help="Minimum peak separation (FWHM units; unresolvable below).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.5, 1.0, 1.5),
+    )
+    min_pair_separation_factor: Optional[float] = knob_field(
+        help="Post-escalation pair-separation floor (FWHM units).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.25, 0.5, 0.75),
+    )
+    min_pair_separation_resolution_factor: Optional[float] = knob_field(
+        help="Resolution-referenced pair floor (1/T_active elements).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.5, 1.0, 1.5),
+    )
     n_eff_kind: Optional[str] = None
-    weak_window_snr_threshold: Optional[float] = None
-    max_nfev: Optional[int] = None
+    weak_window_snr_threshold: Optional[float] = knob_field(
+        help="In-window SNR floor for free-τ eligibility (hold τ fixed below).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(5.0, 10.0, 15.0, 20.0),
+    )
+    max_nfev: Optional[int] = knob_field(
+        help="Solver evaluation cap per window.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1000, 2000, 4000),
+    )
 
 
 @dataclass
 class PenaltySubSettings:
     """Phase / amplitude soft-penalty weights."""
 
-    phase_penalty_lambda: Optional[float] = None
-    phase_penalty_cutoff_fwhm: Optional[float] = None
-    amp_penalty_lambda: Optional[float] = None
-    amp_max_headroom: Optional[float] = None
+    phase_penalty_lambda: Optional[float] = knob_field(
+        help="Phase-difference soft-penalty strength.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(50.0, 100.0, 200.0),
+    )
+    phase_penalty_cutoff_fwhm: Optional[float] = knob_field(
+        help="Phase-penalty range (FWHM units; zero in quadrature).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1.0, 2.0, 3.0),
+    )
+    amp_penalty_lambda: Optional[float] = knob_field(
+        help="Amplitude-floor soft-penalty strength.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(5.0, 10.0, 20.0),
+    )
+    amp_max_headroom: Optional[float] = knob_field(
+        help="Hard amplitude ceiling as a multiple of 2·max_data/τ_eff_min.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(2.0, 3.0, 5.0),
+    )
 
 
 @dataclass
 class RescueSubSettings:
     """Residual-rescue B-loop knobs."""
 
-    max_rounds: Optional[int] = None
-    snr_threshold: Optional[float] = None
-    prominence_threshold: Optional[float] = None
-    cleanup_significance: Optional[float] = None
-    merge_separation_factor: Optional[float] = None
-    structural_merge_factor: Optional[float] = None
-    overfit_amp_ratio_band: Optional[float] = None
-    overfit_amp_ratio_threshold: Optional[float] = None
+    max_rounds: Optional[int] = knob_field(
+        help="Maximum residual-rescue iterations per window (safety cap).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1, 3, 5, 8),
+        cli=True,
+        argtype=int,
+        flag="--max-residual-rescue-rounds",
+    )
+    snr_threshold: Optional[float] = knob_field(
+        help="Residual-peak detection floor (nominates generously; the F-test "
+        "gates acceptance).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(2.0, 2.5, 3.0, 4.0),
+        cli=True,
+        argtype=float,
+        flag="--rescue-snr-threshold",
+    )
+    prominence_threshold: Optional[float] = knob_field(
+        help="Residual-peak prominence threshold for candidate nomination.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(1.5, 2.0, 3.0, 4.0),
+    )
+    cleanup_significance: Optional[float] = knob_field(
+        help="F-test significance for the remove-and-refit post-rescue cleanup.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.01, 0.05, 0.1),
+    )
+    merge_separation_factor: Optional[float] = knob_field(
+        help="AICc-gated merge threshold above resolution (FWHM units).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.25, 0.5, 0.75),
+    )
+    structural_merge_factor: Optional[float] = knob_field(
+        help="Sub-resolution merge floor: pairs closer than this (FWHM units) "
+        "collapse unconditionally.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.25, 0.5, 0.75),
+    )
+    overfit_amp_ratio_band: Optional[float] = knob_field(
+        help="Upper bound (1/T_active elements) of the amplitude-ratio merge tier "
+        "that collapses supra-resolution shape-error absorbers.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1.0, 1.5, 2.0),
+    )
+    overfit_amp_ratio_threshold: Optional[float] = knob_field(
+        help="Amplitude ratio above which a pair in the band collapses as an "
+        "absorber (0 disables).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.0, 4.0, 6.0, 10.0),
+    )
 
 
 @dataclass
 class ThawSubSettings:
     """Local-thaw + structural-replan orchestration."""
 
-    max_thaw_rounds: Optional[int] = None
-    max_replan_rounds: Optional[int] = None
-    residual_edge_threshold: Optional[float] = None
-    residual_edge_m: Optional[int] = None
+    max_thaw_rounds: Optional[int] = knob_field(
+        help="Maximum local-thaw iterations (re-fit a frozen contributor; 0 "
+        "disables).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0, 1, 2, 3),
+        cli=True,
+        argtype=int,
+    )
+    max_replan_rounds: Optional[int] = knob_field(
+        help="Maximum structural-replan iterations (window-boundary merges; 0 "
+        "disables).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0, 1, 2, 3),
+        cli=True,
+        argtype=int,
+    )
+    residual_edge_threshold: Optional[float] = knob_field(
+        help="S_coh threshold for a residual-edge-coherence boundary violation "
+        "(the thaw / replan trigger).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(4.0, 6.0, 8.0, 10.0, 12.0),
+        cli=True,
+        argtype=float,
+    )
+    residual_edge_m: Optional[int] = knob_field(
+        help="Band width (bins) for residual edge-coherence detection.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(16, 32, 48, 64),
+        cli=True,
+        argtype=int,
+    )
 
 
 @dataclass
@@ -259,10 +465,33 @@ class BaselineSubSettings:
     uncertainties. See ``dev-docs/planning/stage5-leakage-wing-baseline.md``.
     """
 
-    enabled: Optional[bool] = None
-    order: Optional[int] = None
-    edge_threshold: Optional[float] = None
-    smooth_threshold: Optional[float] = None
+    enabled: Optional[bool] = knob_field(
+        help="Master switch for the evidence-triggered leakage-wing baseline "
+        "term.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(False, True),
+    )
+    order: Optional[int] = knob_field(
+        help="Baseline polynomial order (0 = const, 1 = linear; higher overfits).",
+        tier="advanced",
+        inst_sensitivity="maybe",
+        grid=(0, 1),
+    )
+    edge_threshold: Optional[float] = knob_field(
+        help="S_coh threshold (max residual edge) gating the leakage-wing "
+        "baseline refit.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(2.5, 3.5, 5.0, 8.0),
+    )
+    smooth_threshold: Optional[float] = knob_field(
+        help="Smooth-residual F-test (chi2-drop/dof) gating the baseline on an "
+        "in-band leakage pedestal.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(20.0, 50.0, 100.0, 200.0),
+    )
 
 
 @dataclass
@@ -285,12 +514,45 @@ class SpurSubSettings:
     See ``dev-docs/planning/instrument-clock-declaration.md``.
     """
 
-    enabled: Optional[bool] = None
-    integer_tol_mhz: Optional[float] = None
-    narrowness_ratio: Optional[float] = None
-    snr_threshold: Optional[float] = None
-    mask_half_width_bins: Optional[int] = None
-    use_stft_catalogue: Optional[bool] = None
+    enabled: Optional[bool] = knob_field(
+        help="Master switch for clock/LO-spur detection + masking.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(False, True),
+    )
+    integer_tol_mhz: Optional[float] = knob_field(
+        help="Max distance (MHz) from an integer MHz for the spur gate's hard "
+        "integer requirement (~½ active-FT bin).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.02, 0.04, 0.08, 0.16),
+    )
+    narrowness_ratio: Optional[float] = knob_field(
+        help="max(neighbour)/peak below which an integer-MHz bin is "
+        "sub-resolution narrow (a CW tone vs a real line with a skirt).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.2, 0.3, 0.4, 0.5),
+    )
+    snr_threshold: Optional[float] = knob_field(
+        help="Peak-bin / σ_c floor for the frequency-domain spur detector.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(3.0, 5.0, 8.0, 12.0),
+    )
+    mask_half_width_bins: Optional[int] = knob_field(
+        help="Residual-mask half-width (active-FT bins) around a detected spur.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(1, 2, 3, 4),
+    )
+    use_stft_catalogue: Optional[bool] = knob_field(
+        help="Consume the persisted Stage 2b flat-spur (saturated) catalogue as "
+        "the gate's persistence half; False = frequency-domain detector only.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(False, True),
+    )
     clocks: Optional[Tuple[ClockSource, ...]] = None
     lattice_decay_ratio: Optional[float] = None
     drift_window_mhz: Optional[float] = None
@@ -325,9 +587,27 @@ class DoubletAlternativeSubSettings:
     for the default values mirrored in :data:`_HARD_DEFAULTS`.
     """
 
-    enabled: Optional[bool] = None
-    k_res: Optional[float] = None
-    r_min: Optional[float] = None
+    enabled: Optional[bool] = knob_field(
+        help="Master switch for the post-fit doublet-alternative observation pass "
+        "(attaches records, never modifies fitted peaks).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(False, True),
+    )
+    k_res: Optional[float] = knob_field(
+        help="Sub-resolution separation threshold (1/T_active elements) for "
+        "doublet adjudication; pairs closer than k_res are evaluated.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1.0, 1.5, 2.0, 2.5),
+    )
+    r_min: Optional[float] = knob_field(
+        help="Minimum amplitude ratio for the weaker member to trigger doublet "
+        "evaluation (suppresses ghost pairs beside strong lines).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0.02, 0.05, 0.1),
+    )
 
 
 @dataclass

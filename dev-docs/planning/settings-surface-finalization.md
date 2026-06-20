@@ -24,8 +24,27 @@ tracks.
 | 2b | **done** | **done** | **done** | **done** |
 | 3 | **done** | **done** | **done** | **done** |
 | 4 | **done** | **done** | **done** | **done** |
-| 5 | pending | pending | pending | pending |
+| 5 | **done** | **done** | **done** | **done** |
 | 0 (outlier) | pending | pending | pending | n/a |
+
+Stage 5 kept three explicit args rather than folding them into a generated
+flag: `shape` (the lineshape selector / Stage 2b twin chooser) and the
+`tau_maj_override_us` / `sigma_tau_override_us` pair (a cross-stage τ override,
+not a fit knob). They overlay onto a deep copy of the passed `settings=`
+explicit layer without mutating the caller's object, so `fit_peaks(preset=…,
+shape="gaussian")` and `fit_peaks(settings=…, shape=…)` both compose correctly.
+The `rescue.max_rounds` / `rescue.snr_threshold` fields carry explicit `flag=`
+to preserve their historical `--max-residual-rescue-rounds` /
+`--rescue-snr-threshold` spellings; `rescue.prominence_threshold` had no flag and
+stays settings-only. The fit is deterministic, so the refit is pure plumbing —
+the `fit show`/cross-interface equivalence suite (CLI == Pipeline == api) is the
+acceptance guard.
+
+**Deprecation machinery retired.** With the last warning-emitting stage
+finalized, `_internal/deprecation.py` (`warn_legacy_kwargs` / `warn_legacy_flag`)
+and `tests/integration/test_deprecation_warnings.py` are deleted — nothing calls
+them. Shims #2/#7/#10/#13/#15/#16 are resolved as removed. (Stage 0 never emitted
+the warning, so its outstanding removal is independent of this deletion.)
 
 The Stage 2 pass established the reusable machinery the remaining stages inherit:
 
