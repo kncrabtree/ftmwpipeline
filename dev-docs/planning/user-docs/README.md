@@ -116,11 +116,44 @@ before any code change (per the per-stage gate).
 - **Stale `README.md` status section.** The root `README.md` states Stages 3–5
   are "not yet implemented"; all stages ship. Update during the repository
   cleanup pass.
+- **`visualize_peaks_impl(promoted_only=)` reaches no interface.** The Stage 3
+  impl's `promoted_only` overlay switch is wired into neither the CLI
+  (`peaks show`), `api.visualize_peaks`, nor `Pipeline.visualize_peaks` — a
+  dual-interface gap (an impl capability no surface exposes). Either expose it on
+  all three or drop the impl parameter; pick during the Stage 4/cleanup pass. The
+  Stage 3 page does not claim it.
+- **`window_assignment` is a dead Phase-5 placeholder package.** Same pattern as
+  the now-removed `peak_detection` stubs (`assign_analysis_windows` /
+  `optimize_window_boundaries` / `resolve_overlaps` all raise
+  `NotImplementedError`); the real Stage 4 lives in `preprocessing/`. Remove
+  during the Stage 4 review (kept this session to stay scoped to Stage 3; a
+  `test_package_imports` case still imports it).
 
 ## Resolved during review
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Stage 3 review: dead stub package removed, stale wrapper docstrings fixed,
+  detection plot recolored, British spellings swept.** The whole
+  `peak_detection` package (`basic_detection` / `hybrid_detection` /
+  `classification`) was three never-wired `NotImplementedError` "Phase 4" stubs
+  — the live detector is `preprocessing.peak_detection` — so it was deleted and
+  the two references repointed: `workflows.validate_installation` now imports
+  `core`/`preprocessing` only, and `test_package_imports` drops the stub case
+  (the commented-out re-exports in the package `__init__` went too). Two thin
+  wrapper docstrings (`Pipeline.detect_peaks`, the CLI `cmd_detect_peaks`) still
+  described the retired design — an "unapodized gap pass masked within each
+  strong line's analytic truncation-leakage reach" — and were corrected to the
+  shipped matched-filter gap pass with the continuous leakage-aware floor scored
+  on the canonical active FT (the `_internal` impl and kernel were already
+  right; only the wrappers had drifted). `peak_visualization.plot_peak_detection`
+  was recolored to the UC Davis brand palette (WEAK/MEDIUM/STRONG → QUAD / POPPY
+  / DOUBLE_DECKER, the noise line and SNR histogram → AGGIE_BLUE, the promotion
+  cutoff → DOUBLE_DECKER), so the new Stage 3 doc figure matches the committed
+  Stage 0/1/2/2b set; the earlier "defer recoloring to Stage 6" note is
+  superseded for this plot. British spellings were swept from the Stage 3
+  modules. Validation: the Stage 3 unit + integration suites (180 tests) and the
+  changed-file black/isort/mypy are green; the figure smoke test passes.
 - **Stage 2b Gaussian/Lorentzian twin code paths fully unified.** The Gaussian
   τ_G calibration had been bolted on as a near-duplicate of the exponential
   twin and promoted to a first-class shape; the parallel code paths had bitten
@@ -410,7 +443,20 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   `clip_percentiles` heatmap, and a `tau_cap_factor` on the distribution. The
   Gaussian/Lorentzian twin code paths were fully unified first (see Resolved
   during review). Build warning-clean under `sphinx-build -W`.
-- [ ] Stage 3 — peak detection.
+- [x] Stage 3 — peak detection. `stage3_peaks.rst` written (the two-pass design
+  — Blackman-Harris primary for robust strong-line positions plus the shape-aware
+  matched-filter gap pass for weak-line recovery; the concave-down Savitzky-Golay
+  locator and why it pairs with the matched filter; the continuous leakage-aware
+  detection floor that replaces a hard mask; scoring/snap-back onto the canonical
+  active FT with sub-bin apex correction; SNR classification and the
+  detection-vs-promotion split with store-all; the hand-edit Stage 3 → Stage 4
+  boundary; the knobs). A regenerable `stage3_peaks.png` (the detection overlay +
+  SNR-distribution curation panel) was added to
+  `docs/source/figures/generate.py` (now builds through Stage 3) and guarded by
+  the `slow` smoke test. Code revisions resolved during review (see below): the
+  dead Phase-4 placeholder `peak_detection` package removed, two stale wrapper
+  docstrings corrected, the peak-detection plot recolored to the brand palette,
+  and British spellings swept. Build warning-clean under `sphinx-build -W`.
 - [ ] Stage 4 — window assignment.
 - [ ] Stage 5 — fitting.
 - [ ] Stage 6 — review / reports / finalization.
@@ -421,50 +467,50 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Handoff: next session is Stage 3 — peak detection
+## Handoff: next session is Stage 4 — window assignment
 
-**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b pages, the
+**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b/3 pages, the
 Methods & Validation section + first note, the brand style system, and the
-committed early-stage figures (now including three Stage 2b tau figures:
-`stage2b_tau_distribution.png`, `stage2b_tau_decay_examples.png`,
-`stage2b_tau_heatmap_zoom.png`) are done and committed. The Stage 2b
-decay-time-calibration page is written and the Gaussian/Lorentzian twin code
-paths were fully unified beforehand (see *Resolved during review*). The working
-tree is clean; the full test suite (1902 passed, 2 skipped) and `sphinx-build
--W` are green. Nothing is mid-flight.
+committed early-stage figures (now including `stage3_peaks.png`) are done and
+committed. The Stage 3 peak-detection page is written and its review-pass code
+revisions landed first (see *Resolved during review*). The working tree is clean;
+the Stage 3 suites (180 tests) and the figure smoke test pass, and `sphinx-build
+-W` is warning-clean. Nothing is mid-flight.
 
-**Last stage's trail (so nothing is re-litigated).** Stage 2b's two shape
-variants are now one shape-parameterized path: public API is
-`calibrate_tau(shape=)` / `load_tau_calibration(shape=)` (no `_G` variants),
-the CLI has `tau run --gaussian` + `tau recommend` + `tau show --gaussian`, and
-`stage2b_g_impl.py` is gone. The `polish_top_n` no-op knob was removed, the
-`--min-contributors` aggregation→gaussian routing moved into the impl, and the
-`recommended_shape` reset is symmetric but gated on the primary-run flag. A
-fresh-fixture golden of the persisted τ fields is byte-identical across the
-refactor; reproducible at `scratch/tau-unify/`. The page itself documents the
-STFT method, the two shape variants, the line-shape vote, the per-band decay
-times, and the horn-coupling frequency trend.
+**Last stage's trail (so nothing is re-litigated).** Stage 3's two passes are the
+Blackman-Harris primary (robust strong-line positions) and the shape-aware
+matched-filter gap pass (weak-line recovery, τ/shape from Stage 2b); both share
+the concave-down Savitzky-Golay locator and a *continuous* leakage-aware floor
+(`k·S_coh/√M·σ`, primary k=1 / gap k=3) — there is no hard leakage mask. Every
+peak is scored on the canonical active FT (apex-snapped, de-duplicated); detection
+runs at a fixed internal floor 2.0 while the user-facing `min_snr` (3.0) is the
+*promotion* cutoff, and all detected peaks are stored. The dead `peak_detection`
+stub package was removed; `Pipeline.detect_peaks` / CLI `cmd_detect_peaks`
+docstrings were de-staled; `plot_peak_detection` is on the brand palette. Two
+follow-ups are logged under *Findings to resolve*: `visualize_peaks_impl`'s
+`promoted_only` reaches no interface, and `window_assignment` is the next dead
+Phase-5 stub package to remove (kept this session to stay scoped).
 
-**The Stage 3 task — apply the per-stage process (this README, "Per-stage
+**The Stage 4 task — apply the per-stage process (this README, "Per-stage
 process"), in order:**
-1. *Read the planning record.* `dev-docs/planning/` for the Stage 3 / peak-
-   detection plan plus the ROADMAP/STATUS entries; note stale prose against the
-   code.
-2. *Review the code (thorough).* The engine (`fitting/` peak-detection modules,
-   the primary apodized pass + the gap-pass matched filter that consumes the
-   Stage 2b `tau_basis`), `_internal/stage3_impl.py`, the serialization, and the
-   three interface wrappers. Surface code smells, dead/`Phase`-era stubs (remove
-   as encountered — standing approval), and test-coverage gaps. **Stop and
-   discuss any proposed code revision with the user before writing docs or
-   changing code.**
-3. *Mine the research reports.* `dev-docs/research/peak-detection`,
-   `matched-filter-detection`, `stage3-*` for the justification; extract what
-   informs a technical reader.
+1. *Read the planning record.* `dev-docs/planning/stage4-window-assignment.md`
+   and `stage4-leakage-contributor-subtraction.md`, plus the ROADMAP/STATUS
+   entries and the D8 leakage-touched-map work; note stale prose against the code.
+2. *Review the code (thorough).* `_internal/stage4_impl.py`, the window-planning
+   engine (`preprocessing/window_planning.py` and the leakage/edge-coherence
+   modules it consumes), the serialization, and the three interface wrappers.
+   Surface code smells, dead/`Phase`-era stubs (remove as encountered — standing
+   approval; the `window_assignment` placeholder package is the known one), and
+   test-coverage gaps. **Stop and discuss any proposed code revision with the
+   user before writing docs or changing code.**
+3. *Mine the research reports.* `dev-docs/research/complex-edge-coherence`,
+   `stage4-*`, and the leakage-detection rework for the justification; extract
+   what informs a technical reader.
 4. *American-English scan.* Sweep the stage's CLI help / log / error strings /
    docstrings.
-5. *Write `stage3_peaks.rst`* (currently a stub) per the style conventions; add
-   a Stage 3 figure by extending `docs/source/figures/generate.py` (it now
-   builds through Stage 2b) and guard it with the `slow` smoke test.
+5. *Write `stage4_windows.rst`* (currently a stub) per the style conventions; add
+   a Stage 4 figure by extending `docs/source/figures/generate.py` (it now builds
+   through Stage 3) and guard it with the `slow` smoke test.
 
 **Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
 review the rendered HTML; direct all run artifacts to `scratch/`; the noise

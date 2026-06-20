@@ -1,6 +1,6 @@
 """Regenerate the representative figures embedded in the pipeline-stage pages.
 
-Builds a complete Stage 0-2 pipeline from the checked-in ``2638`` Blackchirp
+Builds a complete Stage 0-3 pipeline from the checked-in ``2638`` Blackchirp
 fixture in a temporary directory and renders one figure per documented early
 stage into the committed ``docs/source/figures`` directory:
 
@@ -18,6 +18,9 @@ stage into the committed ``docs/source/figures`` directory:
   a noise bin;
 * ``stage2b_tau_heatmap_zoom.png`` -- the STFT magnitude heatmap zoomed to a
   strong-line neighborhood with a clipped color range so the decays read.
+* ``stage3_peaks.png`` -- the Stage 3 detection overlay (classified peaks on the
+  active spectrum, marker-styled by pass) with the SNR-distribution curation
+  panel and the promotion cutoff.
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -66,6 +69,7 @@ def _build_pipeline(workdir: Path) -> str:
             recommendation=RecommendationSubSettings(auto_recommend=False)
         ),
     )
+    ftmw.detect_peaks(path)
     return path
 
 
@@ -79,6 +83,7 @@ def make_figures() -> None:
     import ftmwpipeline.api as ftmw
     from ftmwpipeline._internal.stage1_impl import visualize_ft_impl
     from ftmwpipeline._internal.stage2_impl import visualize_noise_impl
+    from ftmwpipeline._internal.stage3_impl import visualize_peaks_impl
     from ftmwpipeline.visualization.report_style import apply_color_cycle
     from ftmwpipeline.visualization.start_detection_visualization import (
         plot_start_detection_from_file,
@@ -133,6 +138,11 @@ def make_figures() -> None:
         fig2d.savefig(
             FIG_DIR / "stage2b_tau_heatmap_zoom.png", dpi=DPI, bbox_inches="tight"
         )
+
+        fig3 = visualize_peaks_impl(
+            path, title="", interactive=False, show_snr_histogram=True
+        )
+        fig3.savefig(FIG_DIR / "stage3_peaks.png", dpi=DPI, bbox_inches="tight")
 
 
 def main() -> None:
