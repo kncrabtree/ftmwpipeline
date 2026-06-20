@@ -28,7 +28,7 @@ def cmd_data_load(args: argparse.Namespace) -> int:
     Import experimental data into a .ftmw pipeline file.
 
     This command handles data loading from various experimental formats
-    (BlackChirp, native ftmw-hdf5, CSV, Keysight-MAT) and creates a .ftmw
+    (Blackchirp, native ftmw-hdf5, CSV, Keysight-MAT) and creates a .ftmw
     pipeline file for use in subsequent pipeline stages.
     """
     setup_logging(args.verbose)
@@ -66,8 +66,6 @@ def cmd_data_load(args: argparse.Namespace) -> int:
                 value = getattr(args, attr, None)
                 if value is not None:
                     format_params[attr] = value
-            if getattr(args, "rdc", None) is not None:
-                format_params["rdc"] = args.rdc
             if getattr(args, "metadata", None) is not None:
                 format_params["metadata"] = args.metadata
             if getattr(args, "column", None) is not None:
@@ -337,10 +335,10 @@ def add_data_subcommands(subparsers: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Import BlackChirp experiment (auto-detect format)
+  # Import Blackchirp experiment (auto-detect format)
   ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/
 
-  # Import BlackChirp with specific FID index
+  # Import Blackchirp with specific FID index
   ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/ --fid-index 1
 
   # Import a CSV column of voltage samples (metadata via flags)
@@ -373,9 +371,9 @@ Examples:
         help="Overwrite existing file even with different source or layout",
     )
 
-    # BlackChirp-specific options
+    # Blackchirp-specific options
     load_parser.add_argument(
-        "--fid-index", type=int, help="FID index for BlackChirp format (default: 0)"
+        "--fid-index", type=int, help="FID index for Blackchirp format (default: 0)"
     )
 
     # Generic-loader acquisition metadata (CSV and native ftmw-hdf5).
@@ -389,8 +387,8 @@ Examples:
     load_parser.add_argument(
         "--probe_freq_mhz",
         type=float,
-        help="Probe/LO frequency in MHz; 0 for a direct sampler "
-        "(required for CSV unless set in a sidecar)",
+        help="Probe/LO frequency in MHz (default: 0, a direct sampler whose "
+        "baseband is the molecular frequency)",
     )
     load_parser.add_argument(
         "--sideband",
@@ -399,12 +397,6 @@ Examples:
     )
     load_parser.add_argument(
         "--shots", type=int, help="Number of averaged shots (default: 1)"
-    )
-    load_parser.add_argument(
-        "--rdc",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Remove the DC offset before the FT (--rdc / --no-rdc; default: on)",
     )
     load_parser.add_argument(
         "--column",

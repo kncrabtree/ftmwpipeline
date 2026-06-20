@@ -111,7 +111,6 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
     │   ├── description              [attr: str, explains these are suggestions]
     │   ├── start_us                 [attr: float or None, suggested start time]
     │   ├── end_us                   [attr: float or None, suggested end time]
-    │   ├── rdc                      [attr: bool, suggested DC removal]
     │   └── units_power              [attr: int, suggested scaling units]
     └── metadata/                     [group: source and experimental metadata]
         ├── source_info              [dataset: JSON string with source metadata]
@@ -152,7 +151,6 @@ def save_fid_to_hdf5(fid: FID, h5_group: h5py.Group) -> None:
         defaults_group.attrs["end_us"] = _serialize_optional_float(
             fid.processing.end_us
         )
-        defaults_group.attrs["rdc"] = fid.processing.rdc
         defaults_group.attrs["units_power"] = fid.processing.units_power
 
         # Create metadata group and save as JSON strings
@@ -287,13 +285,13 @@ def load_fid_from_hdf5(h5_group: h5py.Group) -> FID:
             proc_group = None
 
         if proc_group is not None:
-            # Legacy files may carry retired apodization keys (winf / zpf /
-            # expf_us) in this group; they are ignored -- the canonical FT is
-            # unconditionally unapodized and native-length.
+            # Legacy files may carry retired keys (the apodization knobs winf /
+            # zpf / expf_us and the rdc toggle) in this group; they are ignored
+            # -- the canonical FT is unconditionally unapodized, native-length,
+            # and DC-removed.
             processing = FIDProcessingParameters(
                 start_us=_deserialize_optional_float(proc_group.attrs["start_us"]),
                 end_us=_deserialize_optional_float(proc_group.attrs["end_us"]),
-                rdc=bool(proc_group.attrs["rdc"]),
                 units_power=int(proc_group.attrs["units_power"]),
             )
         else:
@@ -596,7 +594,7 @@ def update_fid_processing_defaults(
         Unique identifier for the experiment
     new_params : dict
         New processing parameters to save as defaults.
-        Keys can include: start_us, end_us, rdc, units_power
+        Keys can include: start_us, end_us, units_power
     cache_dir : str, default "cache"
         Directory containing cache files
 
@@ -646,9 +644,10 @@ def update_fid_processing_defaults(
             else:
                 defaults_group = fid_group["recommended_processing"]
 
-            # Update attributes with new parameters. The retired apodization
-            # knobs (window_function / winf / zpf / expf_us) are not accepted --
-            # the canonical FT is unconditionally unapodized and native-length.
+            # Update attributes with new parameters. The retired knobs (the
+            # apodization knobs window_function / winf / zpf / expf_us and the
+            # rdc toggle) are not accepted -- the canonical FT is unconditionally
+            # unapodized, native-length, and DC-removed.
             for param_name, param_value in new_params.items():
                 if param_name in ("start_us", "end_us"):
                     # Optional float parameters
@@ -657,8 +656,6 @@ def update_fid_processing_defaults(
                     )
                 elif param_name == "units_power":
                     defaults_group.attrs[param_name] = int(param_value)
-                elif param_name == "rdc":
-                    defaults_group.attrs[param_name] = bool(param_value)
 
     except Exception as e:
         if isinstance(e, (FileNotFoundError, ValueError)):

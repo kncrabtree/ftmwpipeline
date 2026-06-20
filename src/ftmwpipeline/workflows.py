@@ -55,7 +55,7 @@ def process_experiment(
     format_name : str, optional
         Data format name; auto-detected if omitted.
     fid_index : int, optional
-        FID index for multi-FID formats (e.g. BlackChirp).
+        FID index for multi-FID formats (e.g. Blackchirp).
     ft_params : dict, optional
         Keyword arguments forwarded to :meth:`Pipeline.compute_ft`
         (e.g. ``{'trim': (26500, 40000)}``).

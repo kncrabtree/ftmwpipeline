@@ -103,14 +103,6 @@ project memory is updated whenever a code revision changes a documented behavior
 Code-review observations surfaced while writing the docs, held for discussion
 before any code change (per the per-stage gate).
 
-- **Inconsistent ``--trim`` form across CLI commands.** The whole-pipeline
-  ``run`` command parses ``--trim LO HI`` (two space-separated MHz values),
-  while the per-stage ``ft run`` parses ``--trim MIN:MAX`` (a single
-  colon-delimited string). Same concept, two surfaces, two grammars — a
-  dual-interface inconsistency a user will trip over. Candidate resolution:
-  pick one form (the colon form matches the persisted/`settings` convention and
-  the README) and apply it to both. To address with the Stage 1 / CLI-reference
-  review.
 - **Stale `README.md` status section.** The root `README.md` states Stages 3–5
   are "not yet implemented"; all stages ship. Update during the repository
   cleanup pass.
@@ -134,6 +126,50 @@ Code changes made while reviewing the docs, with user sign-off:
   `explicit > sidecar > embedded > default`. Unit + cross-interface tests added.
   The user-facing Sphinx pages remain to be written (Stage 0 + a dedicated
   input-format reference page).
+- **``rdc`` knob removed; DC removal is unconditional.** The canonical FT
+  always subtracts the active-region mean before transforming (as the Stage 1
+  page documents), so the ``rdc`` toggle carried no information. Removed from
+  ``FIDProcessingParameters`` / ``FID.preprocess`` (DC removal now
+  unconditional), ``FTSettings`` (field + ``_HARD_DEFAULTS`` + ``to_attrs`` /
+  ``from_attrs``, which now ignores a legacy ``rdc`` attr like the retired
+  apodization keys), the input-metadata resolver + sidecar key set, the ``csv``
+  / ``ftmw-hdf5`` loaders, the Blackchirp loaders (the instrument ``FidRemoveDC``
+  cell is no longer carried through), `fid_serialization`, the `data import
+  --rdc/--no-rdc` flag, and the FID visualization panels. The internal
+  diagnostic utilities (`utils/signal_processing`, `fitting/active_ft`) keep
+  their ``rdc`` parameter (default True), parallel to the retained apodization
+  knobs there. The 2638 fixture has ``FidRemoveDC;true``, so the canonical FT is
+  byte-identical and no fixture re-baseline was needed; `input_formats.rst`
+  drops the ``rdc`` rows. Tests updated across settings/loader/serialization/
+  three-stage suites.
+- **``probe_freq_mhz`` made optional (default 0 MHz).** The generic-loader
+  metadata resolver required both ``spacing_us`` and ``probe_freq_mhz``; now only
+  ``spacing_us`` is required and ``probe_freq_mhz`` defaults to ``0`` — a
+  direct-sampling instrument whose baseband *is* the molecular frequency (with
+  the default ``upper`` sideband, molecular = baseband). Changed in
+  `io/input_metadata.py` (`_DEFAULTS` + the required-field check), with the
+  `csv` / `ftmw-hdf5` loader docstrings, the `data import --probe_freq_mhz` help,
+  and `input_formats.rst` updated to match; resolver tests cover the new default.
+- **``--trim`` form unified on the colon form.** The whole-pipeline ``run``
+  command parsed ``--trim LO HI`` (two space-separated floats) while the
+  per-stage ``ft run`` parsed ``--trim MIN:MAX`` (colon-delimited). ``run`` now
+  uses the colon form too (the shared `_parse_trim` from `core.settings`),
+  matching `ft run`, the persisted/`settings` convention, and the README, so a
+  single grammar holds across every surface. Docs example in `quickstart.rst`
+  updated; the run-pipeline tests call `run_pipeline_impl` directly so no CLI
+  test changed.
+- **Stale `ft show` help text removed.** `ft show` (and its `--help` epilog)
+  advertised saving "complete parameter sets (preprocessing + postprocessing) as
+  defaults" and prompting "(y/N)"; the command never persists or prompts (it is
+  visualization-only, and there is no longer any postprocessing). The docstring
+  and epilog now state plainly that visualization never persists and point to
+  `ft run` for storing settings.
+- **Blackchirp naming corrected repo-wide.** The companion program is
+  "Blackchirp", not "BlackChirp". A guarded replace (negative lookahead on the
+  `BlackChirpLoader` class identifier) fixed all prose occurrences across
+  `docs/source`, user-facing CLI help/docstrings, `README.md`, `STATUS.md`,
+  `CLAUDE.md`, and the user-docs planning notes; the `blackchirp` format key and
+  `BlackChirpLoader` class name are unchanged.
 - **`report run --output-dir` made optional.** It was a holdover from the
   multi-page report site; the report is now two files, so an omitted
   `--output-dir` writes them to the current directory (no auto-created
@@ -158,6 +194,12 @@ immediately: add the doc-build dependencies (`sphinx`, `sphinx_rtd_theme`, and
 the autodoc/napoleon extensions already named in `conf.py`), repair the stale
 `conf.py`/`index.rst`, and confirm a clean `make html` on the empty-but-valid
 site. The build is exercised continuously as pages are added.
+
+Always build into the default `docs/build/html` (e.g.
+`sphinx-build -W -q -b html source build/html`, or `make html`, from `docs/`),
+never a throwaway tmp location. `docs/build` is gitignored, so it does not
+pollute the tracked tree, and it is where the user opens the rendered HTML to
+review each stage page.
 
 ## Progress
 
@@ -192,7 +234,13 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   declarations, and writing a custom loader). The generic loaders, sidecar, and
   `clocks` surface they document were built first (see Resolved during review).
   Build is warning-clean under `sphinx-build -W`.
-- [ ] Stage 1 — FT.
+- [x] Stage 1 — FT. `stage1_ft.rst` written (the canonical unapodized /
+  native-length transform and why, the active-region + DC-removal selection
+  steps, the molecular-frequency / sideband mapping, the four parameters, the
+  canonical-settings binding + downstream invalidation, and `ft show`). Code
+  revisions resolved during review (see below): the `--trim` form unified on the
+  colon form, the stale `ft show` persistence claims removed, and the Blackchirp
+  naming corrected repo-wide. Build is warning-clean under `sphinx-build -W`.
 - [ ] Stage 2 — noise.
 - [ ] Stage 2b — tau calibration.
 - [ ] Stage 3 — peak detection.
@@ -227,7 +275,7 @@ scan → write the page). A fresh session should:
   surfacing.
 - Write `stage0_import.rst` (currently a stub).
 
-The page should cover both the BlackChirp path (the home instrument) and the
+The page should cover both the Blackchirp path (the home instrument) and the
 generic CSV/HDF5 + raw-scope-record paths; the instrument-specific scope-record
 detail has its own :doc:`Advanced page <scope_record_import>`, so Stage 0 should
 link to it rather than duplicate it.

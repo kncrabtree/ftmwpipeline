@@ -74,12 +74,12 @@ class FIDProcessingParameters:
 
     The canonical FT is unconditionally unapodized, un-windowed, and
     native-length, so the only parameters are data selection (``start_us`` /
-    ``end_us``), DC removal, and the display amplitude scale.
+    ``end_us``) and the display amplitude scale. DC removal (subtracting the
+    active-region mean) is unconditional and has no parameter.
     """
 
     start_us: Optional[float] = None  # Start time in μs for windowing
     end_us: Optional[float] = None  # End time in μs for windowing
-    rdc: bool = True  # Remove DC component (subtract average)
     units_power: int = 6  # Scaling factor (10^units_power, 6 for μV)
 
     def __post_init__(self) -> None:
@@ -308,7 +308,6 @@ class FID:
         self,
         start_us: Optional[float] = None,
         end_us: Optional[float] = None,
-        rdc: bool = True,
         units_power: int = 6,
     ) -> PreprocessedFID:
         """
@@ -317,11 +316,11 @@ class FID:
         Stage 1 of FT processing: preprocessing only, no FFT computation. The
         canonical FT is unconditionally unapodized, un-windowed, and
         native-length, so preprocessing is just active-region selection plus
-        optional DC removal:
+        DC removal:
 
         1. Extract the active region (``start_us`` to ``end_us``); points
            outside it are zeroed.
-        2. Remove the DC component of the active region (when ``rdc``).
+        2. Remove the DC component of the active region (always).
 
         Parameters
         ----------
@@ -329,8 +328,6 @@ class FID:
             Start time in μs for windowing
         end_us : float, optional
             End time in μs for windowing
-        rdc : bool, default=True
-            Remove DC component (subtract average)
         units_power : int, default=6
             Scaling factor (10^units_power, 6 for μV)
 
@@ -342,7 +339,6 @@ class FID:
         processing_params = FIDProcessingParameters(
             start_us=start_us,
             end_us=end_us,
-            rdc=rdc,
             units_power=units_power,
         )
 
@@ -366,8 +362,8 @@ class FID:
         if end_idx < len(windowed_data):
             windowed_data[end_idx:] = 0.0
 
-        # Step 2: Remove DC component from the active region
-        if processing_params.rdc and start_idx < end_idx:
+        # Step 2: Remove the DC component from the active region (unconditional)
+        if start_idx < end_idx:
             active_data = windowed_data[start_idx:end_idx]
             dc_offset = np.mean(active_data)
             windowed_data[start_idx:end_idx] -= dc_offset

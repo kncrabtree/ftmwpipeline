@@ -35,7 +35,7 @@ dependencies (`file_manager.py: PipelineStageTracker.STAGE_DEPENDENCIES`).
 | 4 Window assignment | `stage4_windows` | Implemented |
 | 5 Fitting | `stage5_fitting` | Implemented |
 
-**Stages 0–2 (implemented):** data loading (BlackChirp / CSV / HDF5 via a
+**Stages 0–2 (implemented):** data loading (Blackchirp / CSV / HDF5 via a
 loader registry, format auto-detection), FT processing (preprocess → FFT →
 `ComplexFT`, optional trim, parameter persistence; the canonical FT is
 unconditionally unapodized, un-windowed, and native-length — no

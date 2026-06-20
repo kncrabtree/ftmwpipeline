@@ -25,14 +25,15 @@ from typing import Any, Dict, List, Optional, Union
 from .data_loaders.base import LoaderError
 
 # Acquisition fields a sidecar or explicit layer may set, with their defaults.
-# ``spacing_us`` and ``probe_freq_mhz`` have no default: they are required and
-# resolve to ``None`` when unset so the loader can raise a targeted error.
+# ``spacing_us`` has no default: it is required and resolves to ``None`` when
+# unset so the loader can raise a targeted error. ``probe_freq_mhz`` defaults to
+# ``0`` MHz -- a direct-sampling instrument whose baseband *is* the molecular
+# frequency -- so it need not be supplied.
 _DEFAULTS: Dict[str, Any] = {
     "spacing_us": None,
-    "probe_freq_mhz": None,
+    "probe_freq_mhz": 0.0,
     "sideband": "upper",
     "shots": 1,
-    "rdc": True,
 }
 
 # Keys a sidecar file may contain (acquisition fields plus the two structured
@@ -51,7 +52,6 @@ class ResolvedInputMetadata:
     probe_freq_mhz: float
     sideband: str
     shots: int
-    rdc: bool
     chirp_window: Optional[Dict[str, Any]]
     clock_sources: Optional[List[Dict[str, Any]]]
 
@@ -138,9 +138,9 @@ def resolve_input_metadata(
     Each layer is a mapping that may set any subset of the acquisition fields
     plus ``chirp_window`` / ``clock_sources``.  For every field the first layer
     (explicit, then sidecar, then embedded) that supplies a non-``None`` value
-    wins; otherwise the built-in default applies.  ``spacing_us`` and
-    ``probe_freq_mhz`` are required and raise :class:`LoaderError` when no layer
-    supplies them.
+    wins; otherwise the built-in default applies.  ``spacing_us`` is required and
+    raises :class:`LoaderError` when no layer supplies it; ``probe_freq_mhz``
+    defaults to ``0`` MHz (a direct-sampling instrument) when unset.
     """
     layers = [layer or {} for layer in (explicit, sidecar, embedded)]
 
@@ -153,12 +153,10 @@ def resolve_input_metadata(
 
     resolved: Dict[str, Any] = {key: pick(key) for key in _DEFAULTS}
 
-    missing = [key for key in ("spacing_us", "probe_freq_mhz") if resolved[key] is None]
-    if missing:
+    if resolved["spacing_us"] is None:
         raise LoaderError(
-            "Missing required acquisition metadata: "
-            f"{', '.join(missing)}. Supply it as a load parameter "
-            "(e.g. --spacing_us / --probe_freq_mhz) or in a --metadata sidecar."
+            "Missing required acquisition metadata: spacing_us. Supply it as a "
+            "load parameter (e.g. --spacing_us) or in a --metadata sidecar."
         )
 
     spacing_us = float(resolved["spacing_us"])
@@ -183,7 +181,6 @@ def resolve_input_metadata(
         probe_freq_mhz=probe_freq_mhz,
         sideband=sideband,
         shots=shots,
-        rdc=bool(resolved["rdc"]),
         chirp_window=pick("chirp_window"),
         clock_sources=pick("clock_sources"),
     )
@@ -198,7 +195,7 @@ def explicit_layer_from_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
     """
     explicit: Dict[str, Any] = {
         key: kwargs[key]
-        for key in ("spacing_us", "probe_freq_mhz", "sideband", "shots", "rdc")
+        for key in ("spacing_us", "probe_freq_mhz", "sideband", "shots")
         if kwargs.get(key) is not None
     }
     if kwargs.get("chirp_end_us") is not None:

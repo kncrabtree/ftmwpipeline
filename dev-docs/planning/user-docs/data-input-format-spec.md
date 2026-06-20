@@ -32,7 +32,7 @@ Separately, **clock declarations** (the instrument clock fundamentals the Stage 
 spur gate uses to build its lattice prior) have a real persisted schema —
 `ClockSource(freq_mhz: float, locked: bool, label: str)`, stored at
 `/stage0_fid_data@recommended_clock_sources` — but the only ways to populate it
-are a loader injecting `fid.metadata["clock_sources"]` (BlackChirp auto-extracts
+are a loader injecting `fid.metadata["clock_sources"]` (Blackchirp auto-extracts
 from `clocks.csv`; Keysight-MAT injects interleave combs) or the ephemeral
 `run --clocks` flag (frequencies only, no `locked`/`label`, not persisted as the
 real schema). A custom-data user has no way to declare clocks.

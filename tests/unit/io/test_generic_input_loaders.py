@@ -70,18 +70,25 @@ class TestResolverPrecedence:
         assert resolved.shots == 9  # embedded (only layer that set it)
 
     def test_defaults_applied(self):
-        resolved = resolve_input_metadata(
-            embedded={"spacing_us": 0.02, "probe_freq_mhz": 40960.0}
-        )
+        # Only spacing_us is required; probe_freq_mhz defaults to 0 (a direct
+        # sampler whose baseband is the molecular frequency).
+        resolved = resolve_input_metadata(embedded={"spacing_us": 0.02})
+        assert resolved.probe_freq_mhz == 0.0
         assert resolved.sideband == "upper"
         assert resolved.shots == 1
-        assert resolved.rdc is True
         assert resolved.clock_sources is None
         assert resolved.spacing_s == pytest.approx(0.02e-6)
 
     def test_missing_required_raises(self):
+        # spacing_us is the only required field; supplying probe but not spacing
+        # still raises.
         with pytest.raises(LoaderError, match="spacing_us"):
             resolve_input_metadata(explicit={"probe_freq_mhz": 1.0})
+
+    def test_probe_freq_optional(self):
+        # A CSV-style load that omits probe_freq_mhz succeeds with the 0 default.
+        resolved = resolve_input_metadata(explicit={"spacing_us": 0.02})
+        assert resolved.probe_freq_mhz == 0.0
 
     def test_bad_sideband_raises(self):
         with pytest.raises(LoaderError, match="sideband"):
@@ -148,7 +155,7 @@ class TestFtmwHdf5Loader:
     def test_missing_required_metadata_raises(self, tmp_path):
         path = tmp_path / "nometa.h5"
         _write_native(path)  # no spacing/probe attrs
-        with pytest.raises(LoaderError, match="spacing_us|probe_freq_mhz"):
+        with pytest.raises(LoaderError, match="spacing_us"):
             load_fid(path, format_name="ftmw-hdf5")
 
 
@@ -190,7 +197,7 @@ class TestCSVLoader:
     def test_missing_required_metadata_raises(self, tmp_path):
         path = tmp_path / "data.csv"
         pd.DataFrame({"v": _signal()}).to_csv(path, index=False)
-        with pytest.raises(LoaderError, match="spacing_us|probe_freq_mhz"):
+        with pytest.raises(LoaderError, match="spacing_us"):
             load_fid(path, format_name="csv")
 
 

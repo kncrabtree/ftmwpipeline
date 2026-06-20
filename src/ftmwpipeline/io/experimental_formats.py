@@ -2,7 +2,7 @@
 Experimental data format readers.
 
 This module contains data format readers for various experimental systems.
-Currently implements BlackChirp data loading.
+Currently implements Blackchirp data loading.
 """
 
 import os
@@ -19,12 +19,12 @@ def load_blackchirp_experiment(
     experiment_path: Union[str, Path], fid_index: int = 0
 ) -> FTMWData:
     """
-    Load a complete BlackChirp experiment into FTMWData structure.
+    Load a complete Blackchirp experiment into FTMWData structure.
 
     Parameters
     ----------
     experiment_path : str or Path
-        Path to BlackChirp experiment directory
+        Path to Blackchirp experiment directory
     fid_index : int, optional
         Index of FID to load (default: 0)
 
@@ -52,12 +52,12 @@ def load_blackchirp_experiment(
 
 def load_blackchirp_fid(experiment_path: Union[str, Path], fid_index: int = 0) -> FID:
     """
-    Load BlackChirp FID data into FID object.
+    Load Blackchirp FID data into FID object.
 
     Parameters
     ----------
     experiment_path : str or Path
-        Path to BlackChirp experiment directory
+        Path to Blackchirp experiment directory
     fid_index : int, optional
         Index of FID to load (default: 0)
 
@@ -91,7 +91,7 @@ def load_blackchirp_fid(experiment_path: Union[str, Path], fid_index: int = 0) -
     if not fid_file.exists():
         raise FileNotFoundError(f"FID data file not found: {fid_file}")
 
-    # Read FID data - BlackChirp stores as base-36 integers
+    # Read FID data - Blackchirp stores as base-36 integers
     fid_df = pd.read_csv(fid_file, header=0, dtype=str, keep_default_na=False)
 
     # Convert from base-36 to integers, then to voltage
@@ -126,7 +126,7 @@ def load_blackchirp_fid(experiment_path: Union[str, Path], fid_index: int = 0) -
 
 
 def _load_blackchirp_processing(fid_dir: Path) -> FIDProcessingParameters:
-    """Load BlackChirp processing parameters."""
+    """Load Blackchirp processing parameters."""
     processing_file = fid_dir / "processing.csv"
 
     if not processing_file.exists():
@@ -139,19 +139,19 @@ def _load_blackchirp_processing(fid_dir: Path) -> FIDProcessingParameters:
 
     # Convert to our parameter structure. The instrument's apodization /
     # zero-pad cells are ignored -- the canonical FT is unconditionally
-    # unapodized and native-length.
+    # unapodized and native-length -- and DC removal is unconditional, so the
+    # FidRemoveDC cell is not carried through.
     end_us_val = float(proc_dict.get("FidEndUs", 0))
 
     return FIDProcessingParameters(
         start_us=float(proc_dict.get("FidStartUs", 0)),
         end_us=end_us_val if end_us_val > 0 else None,
-        rdc=proc_dict.get("FidRemoveDC", "false").lower() == "true",
         units_power=int(proc_dict.get("FtUnits", 6)),
     )
 
 
 def _load_blackchirp_metadata(experiment_path: Path) -> Dict[str, Any]:
-    """Load BlackChirp experiment metadata from various files."""
+    """Load Blackchirp experiment metadata from various files."""
     metadata = {}
 
     # Load header information if available

@@ -23,7 +23,7 @@ stage5:
     # default (a sinc skirt falls ~1/(pi*bins)): scale with the tone's SNR.
     mask_target_residual_snr: 2.0
 description: |
-  Stage 5 settings for the BlackChirp 2638 fixture. This preset is
+  Stage 5 settings for the Blackchirp 2638 fixture. This preset is
   intentionally minimal: every field that 2638 calibration would have
   pinned -- the Gaussian line shape, per-band tau routing, the
   tau-prior strength -- is now the package-wide hard default, and the

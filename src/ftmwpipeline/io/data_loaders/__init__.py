@@ -2,13 +2,13 @@
 Data loaders package for multi-format FTMW data ingestion.
 
 This package implements an extensible loader architecture that can handle various
-experimental data formats (BlackChirp, CSV, HDF5, etc.) and produces standardized
+experimental data formats (Blackchirp, CSV, HDF5, etc.) and produces standardized
 FID objects with proper metadata preservation.
 
 Architecture:
 - BaseLoader: Abstract interface for all loaders
 - FormatRegistry: Format detection and loader selection
-- Specific loaders: BlackChirp, CSV, HDF5, etc.
+- Specific loaders: Blackchirp, CSV, HDF5, etc.
 """
 
 from .base import BaseLoader, LoaderError

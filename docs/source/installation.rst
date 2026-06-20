@@ -19,7 +19,7 @@ The standard installation is from PyPI:
 
 This pulls in the runtime dependencies — the scientific Python stack (NumPy,
 SciPy, Matplotlib, pandas, h5py, PyYAML, tqdm) and the ``blackchirp`` module
-that the BlackChirp data loader uses for format-tolerant reading of
+that the Blackchirp data loader uses for format-tolerant reading of
 spectrometer data.
 
 Optional dependency groups are available as extras:

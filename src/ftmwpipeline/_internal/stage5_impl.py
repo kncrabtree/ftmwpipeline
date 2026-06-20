@@ -10,9 +10,9 @@ list (the persistent :class:`~ftmwpipeline.core.data_structures.SpectrumFit`).
 
 Stage 5 owns no FT settings: the active-portion FT it fits on is computed
 on demand from the persisted FID plus the canonical Stage 1 settings (the
-same ``start_us``, ``end_us``, ``rdc`` the user picked for the persisted
-spectrum; the canonical FT is unapodized and native-length). Per-bin noise on
-the active-FT is measured fresh by
+same ``start_us`` / ``end_us`` the user picked for the persisted spectrum; the
+canonical FT is unapodized, native-length, and unconditionally DC-removed).
+Per-bin noise on the active-FT is measured fresh by
 running the Stage 2 adaptive estimator on the active-FT magnitude spectrum
 (see ``dev-docs/planning/stage5-fitting.md`` § "Spectral domain for the fit"
 for why we measure rather than rescale).
@@ -2156,7 +2156,7 @@ def _padded_active_display_ft(
     end_idx = min(int(np.ceil(end_us / sample_dt_us)), fid.size)
     active = fid[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size
-    active -= active.mean()  # match canonical rdc=True
+    active -= active.mean()  # match canonical (unconditional) DC removal
     n_pad = int(pad_factor) * n_active
     padded = np.zeros(n_pad, dtype=float)
     padded[:n_active] = active
@@ -2546,7 +2546,7 @@ def render_windowed_view_impl(
     ) = _build_active_ft_inputs(file_path)
 
     # Active region exactly as compute_active_ft extracts it (searchsorted
-    # bounds, rdc mean removal), but unapodized -- we apply our own window.
+    # bounds, DC mean removal), but unapodized -- we apply our own window.
     fid = np.asarray(fid_samples, dtype=float)
     time_us = np.arange(fid.size) * sample_dt_us
     start_idx = int(np.searchsorted(time_us, start_us))

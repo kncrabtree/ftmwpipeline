@@ -13,24 +13,25 @@ parameters across every surface:
 
 Every field is ``Optional`` with ``None`` meaning *unset* (fall through the
 resolution chain). A *resolved* instance (produced by :func:`resolve`) has the
-two run-critical fields (``units_power``, ``rdc``) filled with hard defaults if
-no layer supplied them; ``start_us`` / ``end_us`` / ``trim`` may legitimately
-stay ``None`` (meaning no windowing / no trim).
+run-critical ``units_power`` field filled with a hard default if no layer
+supplied it; ``start_us`` / ``end_us`` / ``trim`` may legitimately stay ``None``
+(meaning no windowing / no trim).
 
 The canonical FT is unconditionally unapodized, un-windowed, and native-length:
 there are no ``expf_us`` / ``window_function`` / ``zpf`` knobs. Apodization
 trades resolution and biases the line shape, and zero-padding interpolates bins
 and corrupts the Stage 2/5 noise and chi-squared statistics; the robust
-per-window fit is the intended alternative. ``start_us`` / ``end_us`` (active
-region) and ``trim`` (analysis band) are data *selection*, not weighting, and
-are retained.
+per-window fit is the intended alternative. DC removal (subtracting the
+active-region mean before the transform) is likewise unconditional, so there is
+no ``rdc`` knob. ``start_us`` / ``end_us`` (active region) and ``trim``
+(analysis band) are data *selection*, not weighting, and are retained.
 
 This module is intentionally dependency-free within the package (only stdlib +
 the local ``__None__`` HDF5 marker convention shared with
 ``io.fid_serialization``) so it can be imported from ``core`` without cycles.
 """
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from .knob_metadata import knob_field
@@ -42,7 +43,6 @@ _NONE = "__None__"
 # Other fields fall back to None (a legitimate "absent" value).
 _HARD_DEFAULTS: Dict[str, Any] = {
     "units_power": 6,
-    "rdc": True,
 }
 
 # Canonical HDF5 location of the persisted (user-chosen) settings.
@@ -134,9 +134,6 @@ class FTSettings:
         help="Frequency analysis range to keep as 'min:max' in MHz "
         "(e.g. 26500:40000); persisted as canonical and binding downstream",
     )
-    # Not currently user-facing on the CLI; still resolved/persisted so the
-    # canonical record is complete (FID.preprocess needs a concrete rdc).
-    rdc: Optional[bool] = field(default=None)
 
     # -- introspection -------------------------------------------------------
 
@@ -163,7 +160,6 @@ class FTSettings:
         return {
             "start_us": self.start_us,
             "end_us": self.end_us,
-            "rdc": self.rdc,
             "units_power": self.units_power,
         }
 
@@ -180,7 +176,6 @@ class FTSettings:
             "start_us",
             "end_us",
             "units_power",
-            "rdc",
         ):
             value = getattr(self, name)
             attrs[name] = _NONE if value is None else value
@@ -197,9 +192,9 @@ class FTSettings:
         """Inverse of :meth:`to_attrs` (tolerant of missing/legacy keys).
 
         Legacy records may carry the retired apodization keys (``zpf`` /
-        ``expf_us`` / ``window_function`` / ``winf``); they are silently
-        ignored here. Callers that recompute the canonical FT from a legacy
-        file warn about the dropped keys at open time.
+        ``expf_us`` / ``window_function`` / ``winf``) or the retired ``rdc``
+        toggle; they are silently ignored here. Callers that recompute the
+        canonical FT from a legacy file warn about the dropped keys at open time.
         """
 
         def _opt(key: str) -> Any:
@@ -220,13 +215,11 @@ class FTSettings:
             else None
         )
         units = _opt("units_power")
-        rdc = _opt("rdc")
         return cls(
             start_us=_coerce_float(_opt("start_us")),
             end_us=_coerce_float(_opt("end_us")),
             units_power=int(units) if units is not None else None,
             trim=trim,
-            rdc=bool(rdc) if rdc is not None else None,
         )
 
 
@@ -250,8 +243,8 @@ def resolve(
     """Merge the three layers by precedence into a resolved ``FTSettings``.
 
     Precedence per field: ``explicit > persisted > recommended``, then the
-    four run-critical fields fall back to :data:`_HARD_DEFAULTS` if still
-    unset. The result is what Stage 1 computes/persists and what every
+    run-critical ``units_power`` field falls back to :data:`_HARD_DEFAULTS` if
+    still unset. The result is what Stage 1 computes/persists and what every
     downstream stage operates on.
     """
     empty = FTSettings()

@@ -165,7 +165,7 @@ instrument-specific recipe.
 * ``gaussian_default`` — clean Gaussian baseline; otherwise stock.
 * ``lorentzian_legacy`` — the historical Lorentzian default, named
   explicitly for A/B comparisons.
-* ``instrument_bc_2638`` — starting point for the BlackChirp 2638
+* ``instrument_bc_2638`` — starting point for the Blackchirp 2638
   fixture: Gaussian shape, per-band τ routing on.
 
 Use a packaged preset by bare name:

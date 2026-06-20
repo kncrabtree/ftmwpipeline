@@ -1,11 +1,12 @@
 """CSV data format loader.
 
 Imports a single (averaged) FID from a column of time-domain voltage samples.
-A CSV cannot embed acquisition metadata, so ``spacing_us`` and
-``probe_freq_mhz`` must come from explicit load parameters or a ``--metadata``
-sidecar (see :mod:`ftmwpipeline.io.input_metadata`).  Clock declarations -- which
-a single column cannot carry -- come from the sidecar or the ``clocks`` command
-on the imported ``.ftmw`` file.
+A CSV cannot embed acquisition metadata, so ``spacing_us`` (the one required
+field) must come from an explicit load parameter or a ``--metadata`` sidecar
+(see :mod:`ftmwpipeline.io.input_metadata`); ``probe_freq_mhz`` is optional and
+defaults to ``0`` MHz (a direct sampler).  Clock declarations -- which a single
+column cannot carry -- come from the sidecar or the ``clocks`` command on the
+imported ``.ftmw`` file.
 """
 
 from pathlib import Path
@@ -55,7 +56,7 @@ class CSVLoader(BaseLoader):
         ``validate_source`` runs before load parameters and the sidecar are
         known, so it confirms only that the file is a readable CSV with a
         numeric voltage column -- ``load_fid`` raises the targeted error if
-        ``spacing_us`` / ``probe_freq_mhz`` are ultimately missing.
+        ``spacing_us`` is ultimately missing.
         """
         result: Dict[str, Any] = {
             "valid": False,
@@ -130,14 +131,14 @@ class CSVLoader(BaseLoader):
             probe_freq_mhz=resolved.probe_freq_mhz,
             sideband=resolved.sideband,
             shots=resolved.shots,
-            processing=FIDProcessingParameters(rdc=resolved.rdc),
+            processing=FIDProcessingParameters(),
             metadata=metadata,
         )
 
     def get_required_parameters(self) -> List[str]:
-        # spacing_us / probe_freq_mhz are required, but may arrive via the
-        # sidecar rather than as load parameters, so they are validated in
-        # load_fid (the shared resolver) rather than declared required here.
+        # spacing_us is required, but may arrive via the sidecar rather than as
+        # a load parameter, so it is validated in load_fid (the shared resolver)
+        # rather than declared required here.
         return []
 
     def get_optional_parameters(self) -> Dict[str, Any]:
@@ -148,7 +149,6 @@ class CSVLoader(BaseLoader):
             "probe_freq_mhz": None,
             "sideband": None,
             "shots": None,
-            "rdc": None,
         }
 
     @staticmethod

@@ -13,7 +13,7 @@ example experiment included with the package.
 Example data
 ------------
 
-``examples/blackchirp_data/2638/`` is a real BlackChirp experiment provided for
+``examples/blackchirp_data/2638/`` is a real Blackchirp experiment provided for
 testing and exploration: a 15 µs FID of 750,000 points, probe frequency
 40.96 GHz, lower sideband. Its active spectral band is 26500–40000 MHz, so the
 canonical Fourier transform is trimmed to that range. The transform itself is
@@ -32,7 +32,7 @@ progress. The active-band trim is required:
 .. code-block:: bash
 
    ftmwpipeline run examples/blackchirp_data/2638/ \
-       --trim 26500 40000 \
+       --trim 26500:40000 \
        --output exp_2638.ftmw
 
 Add ``--report`` to also emit the line-list table and an HTML report.

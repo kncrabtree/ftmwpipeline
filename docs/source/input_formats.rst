@@ -25,7 +25,7 @@ the *shape* the data must take.
 Three ways in
 -------------
 
-#. **A built-in instrument loader.** A native BlackChirp experiment directory or
+#. **A built-in instrument loader.** A native Blackchirp experiment directory or
    a Keysight oscilloscope record is read directly, with the acquisition
    parameters taken from the instrument's own metadata. Raw oscilloscope records
    have their own page, :doc:`scope_record_import`.
@@ -58,9 +58,10 @@ required values have no default; the rest fall back as shown.
      - *required*
      - Sample period in microseconds.
    * - ``probe_freq_mhz``
-     - *required*
-     - Probe/local-oscillator frequency in MHz. A direct-sampling instrument
-       (the baseband frequency is the molecular frequency) uses ``0``.
+     - ``0``
+     - Probe/local-oscillator frequency in MHz. The default ``0`` describes a
+       direct-sampling instrument, for which the baseband frequency *is* the
+       molecular frequency.
    * - ``sideband``
      - ``upper``
      - ``upper`` (molecular = probe + baseband) or ``lower``
@@ -68,9 +69,6 @@ required values have no default; the rest fall back as shown.
    * - ``shots``
      - ``1``
      - Number of averaged shots; recorded for provenance.
-   * - ``rdc``
-     - ``true``
-     - Remove the DC offset (subtract the mean) before the Fourier transform.
 
 When the same parameter is set in more than one place, the highest-priority
 layer wins:
@@ -111,16 +109,13 @@ The layout (version 1):
      - **Required.**
    * - ``probe_freq_mhz`` *(root attr)*
      - float
-     - **Required** (``0`` for a direct sampler).
+     - Optional, default ``0`` (a direct sampler).
    * - ``sideband`` *(root attr)*
      - string
      - Optional, default ``"upper"``.
    * - ``shots`` *(root attr)*
      - int
      - Optional, default ``1``.
-   * - ``rdc`` *(root attr)*
-     - bool/int
-     - Optional, default true.
    * - ``chirp_end_us`` *(root attr)*
      - float
      - Optional; enables a recommended FID start (see
@@ -186,8 +181,9 @@ sidecar.
   column is chosen with ``--column`` — an integer index (0-based) or, when there
   is a header row, a column name. Omitted, the first column is used; other
   columns are ignored.
-* **Required metadata.** ``spacing_us`` and ``probe_freq_mhz`` must be supplied,
-  because a CSV cannot carry them.
+* **Required metadata.** ``spacing_us`` must be supplied, because a CSV cannot
+  carry it. ``probe_freq_mhz`` is optional and defaults to ``0`` (a direct
+  sampler); supply it for a heterodyne instrument.
 
 .. code-block:: console
 
@@ -220,7 +216,6 @@ one that can.
      "probe_freq_mhz": 40960.0,
      "sideband": "lower",
      "shots": 100,
-     "rdc": true,
      "chirp_window": { "chirp_end_us": 1.5, "start_margin_us": 0.5 },
      "clock_sources": [
        { "freq_mhz": 5760.0, "locked": true,  "label": "synth" },

@@ -669,7 +669,7 @@ def update_processing_parameters(
         Path to the pipeline file
     parameters : dict
         Processing parameters to save. Keys can include:
-        start_us, end_us, units_power, rdc
+        start_us, end_us, units_power
 
     Raises
     ------

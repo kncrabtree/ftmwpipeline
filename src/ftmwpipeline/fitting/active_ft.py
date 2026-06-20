@@ -118,8 +118,9 @@ def compute_active_ft(
     """Compute the active-portion FT of an FID for Stage 5 fitting.
 
     Extracts the ``[start_us, end_us]`` active region from the FID, removes
-    the DC component (matching the canonical ``rdc=True`` Stage 1 step), then
-    rfft's just the active region -- no apodization, no zero-padding. The
+    the DC component (matching the canonical Stage 1 step, which is
+    unconditional), then rfft's just the active region -- no apodization, no
+    zero-padding. The
     result is in the ``[0, T]`` reference frame ``h_T`` models, so the fit
     needs no de-ramp.
 
@@ -151,7 +152,7 @@ def compute_active_ft(
         persisted record to compare against.
     rdc : bool, default True
         Subtract the mean of the active region (matches the canonical Stage 1
-        ``rdc=True``).
+        DC-removal step, which is unconditional).
 
     Returns
     -------
@@ -199,7 +200,8 @@ def compute_active_ft(
     if n_padded < n_active:
         raise ValueError(f"n_padded ({n_padded}) must be >= n_active ({n_active})")
 
-    # Match Stage 1's rdc step (mean removal) on the active region.
+    # Match Stage 1's unconditional DC-removal step (mean removal) on the
+    # active region.
     if rdc:
         active -= active.mean()
 

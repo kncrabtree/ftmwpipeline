@@ -228,7 +228,7 @@ class Pipeline:
         format_name : str, optional
             Data format name. If None, auto-detect format.
         fid_index : int, optional
-            FID index for multi-FID formats (e.g., BlackChirp)
+            FID index for multi-FID formats (e.g., Blackchirp)
         force : bool, default False
             If True, overwrite existing file even with different source
         **loader_params

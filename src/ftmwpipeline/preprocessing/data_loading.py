@@ -9,7 +9,7 @@ Implementation pending for Phase 3.
 
 
 def load_blackchirp_data(*args: object, **kwargs: object) -> None:
-    """Placeholder for BlackChirp data loading."""
+    """Placeholder for Blackchirp data loading."""
     raise NotImplementedError("Not yet implemented")
 
 

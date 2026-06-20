@@ -63,7 +63,6 @@ class TestFIDSerializationInPipelineFiles:
         processing = FIDProcessingParameters(
             start_us=0.5,
             end_us=10.0,
-            rdc=True,
             units_power=6,
         )
 
@@ -129,7 +128,6 @@ class TestFIDSerializationInPipelineFiles:
         # Verify processing parameters
         assert loaded_fid.processing.start_us == sample_fid.processing.start_us
         assert loaded_fid.processing.end_us == sample_fid.processing.end_us
-        assert loaded_fid.processing.rdc == sample_fid.processing.rdc
         assert loaded_fid.processing.units_power == sample_fid.processing.units_power
 
         # Verify metadata preservation

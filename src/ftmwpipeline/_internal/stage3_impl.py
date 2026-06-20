@@ -227,7 +227,8 @@ def _active_windowed_spectrum(
     The single builder for both Stage 3 detection spectra: it extracts the
     ``[start_us, end_us]`` active region (the same samples as the canonical
     active FT), multiplies by ``window`` (length ``N_active``), mean-removes
-    (matching Stage 1's rdc), zero-pads by ``zpf_active`` so the feature lands in
+    (matching Stage 1's unconditional DC removal), zero-pads by ``zpf_active``
+    so the feature lands in
     SavGol's operating range, then ``dt·rfft``s -- the same amplitude convention
     as :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`. The phase
     reference is the active-region turn-on (t=0 maps to start_us), so callers

@@ -592,9 +592,10 @@ class BlackChirpLoader(BaseLoader):
                 return default
 
         end_us = _f("FidEndUs", 0.0)
+        # DC removal is unconditional in the canonical FT, so the instrument's
+        # FidRemoveDC flag is not carried through.
         return FIDProcessingParameters(
             start_us=_f("FidStartUs", 0.0),
             end_us=end_us if end_us > 0 else None,
-            rdc=str(proc.get("FidRemoveDC", "false")).strip().lower() == "true",
             units_power=int(_f("FtUnits", 6.0)),
         )

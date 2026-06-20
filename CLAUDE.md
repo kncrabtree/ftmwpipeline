@@ -151,7 +151,7 @@ survives only beside its research report at
 
 ## Example data and reference parameters
 
-`examples/blackchirp_data/2638/` is a real BlackChirp experiment checked in for tests and
+`examples/blackchirp_data/2638/` is a real Blackchirp experiment checked in for tests and
 manual runs. FID: 750k points, 15 µs, 40.96 GHz probe, lower sideband. The integration
 tests' `standard_ft_params` for this experiment is just the frequency trim to the active
 region **26500–40000 MHz**; the canonical FT itself is unapodized and native-length.

@@ -12,6 +12,7 @@ import argparse
 from typing import Any, List, Optional
 
 from .._internal.run_impl import run_pipeline_impl
+from ..core.settings import _parse_trim
 
 
 def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
@@ -37,7 +38,7 @@ def _parse_clocks(spec: Optional[str]) -> Optional[List[dict]]:
 
 def cmd_run(args: argparse.Namespace) -> int:
     """Run the full pipeline on a raw source."""
-    trim = (float(args.trim[0]), float(args.trim[1])) if args.trim else None
+    trim = args.trim  # already a (min, max) tuple from _parse_trim, or None
 
     result = run_pipeline_impl(
         args.source,
@@ -89,7 +90,7 @@ def register_run_command(subparsers: Any) -> None:
             "--trim (the active-band FT range) is required. Tau calibration and\n"
             "start detection run by default; timebase calibration runs by default\n"
             "but is non-fatal — it auto-resolves the instrument clocks (e.g. from\n"
-            "BlackChirp clocks.csv) and warns + skips when none is declared\n"
+            "Blackchirp clocks.csv) and warns + skips when none is declared\n"
             "(--no-cal skips it deliberately). A fresh build by default."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -105,11 +106,10 @@ def register_run_command(subparsers: Any) -> None:
     p.add_argument(
         "--trim",
         dest="trim",
-        nargs=2,
-        type=float,
+        type=_parse_trim,
         required=True,
-        metavar=("LO", "HI"),
-        help="Active-band FT range in MHz (required).",
+        metavar="MIN:MAX",
+        help="Active-band FT range in MHz, as MIN:MAX (required).",
     )
     p.add_argument(
         "--sigma-floor",
@@ -184,7 +184,7 @@ def register_run_command(subparsers: Any) -> None:
         type=int,
         default=None,
         metavar="N",
-        help="FID index for multi-FID formats (e.g. BlackChirp).",
+        help="FID index for multi-FID formats (e.g. Blackchirp).",
     )
     p.add_argument(
         "--quiet",

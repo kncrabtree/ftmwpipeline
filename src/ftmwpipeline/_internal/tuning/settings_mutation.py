@@ -12,11 +12,11 @@ Two mutating companions to the read-only :mod:`settings_inspection` view:
   ``--preset``.
 
 Stage 1 is special. The canonical FT is unapodized and native-length (there are
-no apodization knobs). Its data-selection knobs (``start_us`` / ``end_us`` /
-``trim`` / ``units_power`` / ``rdc``) are settable but, since the FT is
-recomputed on demand from these settings, changing them invalidates every
-downstream stage. Presets do not carry Stage 1, so it is excluded from
-:func:`export_settings`.
+no apodization knobs) and DC removal is unconditional (no ``rdc`` knob). Its
+data-selection knobs (``start_us`` / ``end_us`` / ``trim`` / ``units_power``)
+are settable but, since the FT is recomputed on demand from these settings,
+changing them invalidates every downstream stage. Presets do not carry Stage 1,
+so it is excluded from :func:`export_settings`.
 """
 
 from __future__ import annotations

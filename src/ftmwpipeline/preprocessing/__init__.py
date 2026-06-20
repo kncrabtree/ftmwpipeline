@@ -2,7 +2,7 @@
 Data preprocessing and preparation for FTMW pipeline.
 
 This module handles:
-- Loading experimental data (BlackChirp format)
+- Loading experimental data (Blackchirp format)
 - Baseline and noise estimation
 - Data validation and quality checks
 """

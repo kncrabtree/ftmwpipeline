@@ -40,7 +40,7 @@ Both environment files install the package itself in editable mode.
 ```python
 from ftmwpipeline import Pipeline
 
-# Create a new analysis from raw data (here: a BlackChirp experiment directory)
+# Create a new analysis from raw data (here: a Blackchirp experiment directory)
 pipe = Pipeline.create("exp_2638.ftmw", source="examples/blackchirp_data/2638/")
 
 fid = pipe.load_data()
@@ -90,7 +90,7 @@ ftmwpipeline version
 
 ## Example data
 
-`examples/blackchirp_data/2638/` is a real BlackChirp experiment included for
+`examples/blackchirp_data/2638/` is a real Blackchirp experiment included for
 testing and trying the pipeline. The canonical FT is unapodized and
 native-length; only trim to the active region 26500–40000 MHz.
 

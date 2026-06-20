@@ -11,10 +11,9 @@ Layout (version 1)::
       attrs:
         ftmw_input_version  int      = 1          # format marker + version (required)
         spacing_us          float64  = 0.02        # required
-        probe_freq_mhz      float64  = 40960.0     # required (0.0 for a direct sampler)
+        probe_freq_mhz      float64  = 40960.0     # optional, default 0.0 (a direct sampler)
         sideband            string   = "lower"     # optional, default "upper"
         shots               int      = 100         # optional, default 1
-        rdc                 bool/int = 1            # optional, default true
         chirp_end_us        float64  = 1.5         # optional (enables a recommended start)
         chirp_start_us      float64  = 0.5         # optional
         start_margin_us     float64  = 0.5         # optional
@@ -197,7 +196,7 @@ class FtmwHdf5Loader(BaseLoader):
             probe_freq_mhz=resolved.probe_freq_mhz,
             sideband=resolved.sideband,
             shots=resolved.shots,
-            processing=FIDProcessingParameters(rdc=resolved.rdc),
+            processing=FIDProcessingParameters(),
             metadata=metadata,
         )
 
@@ -211,7 +210,6 @@ class FtmwHdf5Loader(BaseLoader):
             "probe_freq_mhz": None,
             "sideband": None,
             "shots": None,
-            "rdc": None,
         }
 
     # ------------------------------------------------------------------
@@ -223,7 +221,7 @@ class FtmwHdf5Loader(BaseLoader):
         """Read the embedded acquisition layer (attrs + clock-source group)."""
         attrs = h5f.attrs
         embedded: Dict[str, Any] = {}
-        for key in ("spacing_us", "probe_freq_mhz", "sideband", "shots", "rdc"):
+        for key in ("spacing_us", "probe_freq_mhz", "sideband", "shots"):
             if key in attrs:
                 embedded[key] = _decode(attrs[key])
 

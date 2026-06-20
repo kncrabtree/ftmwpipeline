@@ -1,10 +1,11 @@
 """
 Pure unit tests for FTSettings, resolve(), and argspec helpers.
 
-The canonical FT is unconditionally unapodized, un-windowed, and native-length:
-there are no ``zpf`` / ``expf_us`` / ``window_function`` knobs. The settable
-fields are data selection (``start_us`` / ``end_us`` / ``trim``) plus the
-display/scaling knobs (``units_power`` / ``rdc``).
+The canonical FT is unconditionally unapodized, un-windowed, native-length, and
+unconditionally DC-removed: there are no ``zpf`` / ``expf_us`` /
+``window_function`` / ``rdc`` knobs. The settable fields are data selection
+(``start_us`` / ``end_us`` / ``trim``) plus the display/scaling knob
+(``units_power``).
 
 No real data required; all tests are fast and free of I/O.
 """
@@ -63,6 +64,11 @@ class TestIsEmptyAndOverrides:
         assert not hasattr(s, "expf_us")
         assert not hasattr(s, "window_function")
 
+    def test_no_rdc_field(self):
+        """DC removal is unconditional; there is no rdc knob on FTSettings."""
+        s = FTSettings()
+        assert not hasattr(s, "rdc")
+
 
 # ---------------------------------------------------------------------------
 # resolve() precedence
@@ -87,7 +93,6 @@ class TestResolve:
     def test_hard_defaults_fill_run_critical_fields(self):
         result = resolve(None, None, None)
         assert result.units_power == 6
-        assert result.rdc is True
 
     def test_optional_fields_stay_none_when_unset(self):
         result = resolve(None, None, None)
@@ -128,15 +133,6 @@ class TestResolve:
         assert result.end_us == 2.0  # persisted (explicit absent)
         assert result.units_power == 5  # recommended (only one set)
 
-    def test_rdc_default_true(self):
-        result = resolve(None, None, None)
-        assert result.rdc is True
-
-    def test_rdc_explicit_overrides_default(self):
-        explicit = FTSettings(rdc=False)
-        result = resolve(explicit, None, None)
-        assert result.rdc is False
-
 
 # ---------------------------------------------------------------------------
 # to_attrs / from_attrs round-trips
@@ -145,14 +141,13 @@ class TestResolve:
 
 class TestToAttrsFromAttrs:
     def test_roundtrip_with_trim_set(self):
-        s = FTSettings(start_us=1.0, trim=(26500.0, 40000.0), units_power=6, rdc=True)
+        s = FTSettings(start_us=1.0, trim=(26500.0, 40000.0), units_power=6)
         attrs = s.to_attrs()
         restored = FTSettings.from_attrs(attrs)
 
         assert restored.start_us == 1.0
         assert restored.trim == (26500.0, 40000.0)
         assert restored.units_power == 6
-        assert restored.rdc is True
 
     def test_roundtrip_trim_none_uses_none_marker(self):
         s = FTSettings(units_power=6)
@@ -167,12 +162,13 @@ class TestToAttrsFromAttrs:
         assert restored.trim is None
 
     def test_from_attrs_ignores_legacy_apodization_keys(self):
-        """Legacy records may carry retired apodization keys; they are ignored."""
+        """Legacy records may carry retired apodization/rdc keys; ignore them."""
         attrs = {
             "winf": "blackman",
             "zpf": 2,
             "expf_us": 5.0,
             "window_function": "hann",
+            "rdc": False,
             "start_us": 1.0,
         }
         s = FTSettings.from_attrs(attrs)
@@ -180,6 +176,7 @@ class TestToAttrsFromAttrs:
         assert not hasattr(s, "zpf")
         assert not hasattr(s, "expf_us")
         assert not hasattr(s, "window_function")
+        assert not hasattr(s, "rdc")
 
     def test_from_attrs_tolerant_of_missing_keys(self):
         """Sparse dicts (e.g. old recommended records) do not raise."""
@@ -200,7 +197,6 @@ class TestToAttrsFromAttrs:
             end_us=14.0,
             units_power=6,
             trim=(26500.0, 40000.0),
-            rdc=True,
         )
         restored = FTSettings.from_attrs(s.to_attrs())
 
@@ -208,7 +204,6 @@ class TestToAttrsFromAttrs:
         assert restored.end_us == 14.0
         assert restored.units_power == 6
         assert restored.trim == (26500.0, 40000.0)
-        assert restored.rdc is True
 
     def test_trim_min_max_stored_as_floats(self):
         s = FTSettings(trim=(26500, 40000))

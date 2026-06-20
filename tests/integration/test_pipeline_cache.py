@@ -504,7 +504,7 @@ class TestStage01WorkflowIntegration:
             {"start_us": 2.0},  # Later active start
             {"start_us": 2.0, "end_us": 14.0},  # Windowed
             {"start_us": 3.0, "end_us": 12.0},  # Narrower window
-            {"rdc": False},  # No DC removal
+            {"start_us": 0.5, "units_power": 3},  # Different scaling
         ]
 
         results = []

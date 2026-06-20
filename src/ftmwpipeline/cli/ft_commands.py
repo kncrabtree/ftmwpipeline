@@ -115,39 +115,34 @@ def cmd_ft_process(args: argparse.Namespace) -> int:
 
 
 def cmd_ft_visualize(args: argparse.Namespace) -> int:
-    """Enhanced interactive parameter exploration with FID visualization panels.
+    """Interactive parameter exploration with FID visualization panels.
 
     This is the companion tool to 'ft run', designed for exploratory usage
-    where users want to experiment with different processing parameters and
-    see immediate visual feedback. Creates enhanced multi-panel plots showing
-    the complete processing workflow from raw FID to final spectrum.
+    where users want to try different processing parameters and see immediate
+    visual feedback. Creates multi-panel plots showing the complete processing
+    workflow from raw FID to final spectrum. Visualization never persists; to
+    store settings as canonical, use 'ft run'.
 
-    Enhanced visualization features:
+    Visualization panels:
     - Raw FID panel with windowing bounds (start_us/end_us vertical lines)
     - Preprocessed FID panel showing the active-region selection and DC removal
-    - Traditional spectrum panels (magnitude and real/imaginary components)
-    - Interactive parameter exploration with immediate visual feedback
-    - Save complete parameter sets (preprocessing + postprocessing) as defaults
+    - Spectrum panels (magnitude and real/imaginary components)
 
     Use this command to:
     - Visualize the complete FID-to-spectrum processing workflow
     - Understand the effects of the active-region and trim parameters
-    - Optimize parameters by seeing their impact on both time and frequency domains
-    - Create comprehensive diagnostic plots for publications/presentations
-    - Save optimal parameter combinations for automated processing
+    - See the impact of parameters on both time and frequency domains
+    - Create diagnostic plots for publications/presentations
 
     Key features:
-    - On-demand ComplexFT calculation (no permanent storage unless requested)
-    - Enhanced 3-panel visualization showing processing stages
-    - Interactive parameter persistence with complete parameter sets
+    - On-demand ComplexFT calculation (never persisted)
     - Matplotlib backend for reliable CLI visualization
     - Support for both interactive display and static image export
 
     Workflow:
     1. Load FID data from .ftmw pipeline file
-    2. Apply custom processing parameters (preprocessing + postprocessing)
-    3. Display enhanced multi-panel plot showing complete processing workflow
-    4. Optionally save complete parameter set as defaults for this experiment
+    2. Apply the requested processing parameters (active region, trim, scale)
+    3. Display the multi-panel plot showing the complete processing workflow
     """
     setup_logging(args.verbose)
 
@@ -281,47 +276,39 @@ Workflow:
     # ft show
     ft_visualize_parser = verbs.add_parser(
         "show",
-        help="Enhanced interactive parameter exploration with FID visualization panels",
+        help="Interactive parameter exploration with FID visualization panels",
         description=(
-            "Enhanced companion to 'ft run' showing the complete "
+            "Companion to 'ft run' showing the complete "
             "FID-to-spectrum processing workflow."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Purpose: Enhanced interactive parameter exploration with FID visualization panels
-Intended for: Understanding processing workflow and parameter optimization
+Purpose: Interactive parameter exploration with FID visualization panels
+Intended for: Understanding the processing workflow and choosing parameters
 
-Enhanced Visualization:
+Visualization panels:
   - Raw FID panel shows original time-domain data with windowing bounds
   - Preprocessed FID panel shows the active-region selection and DC removal
   - Spectrum panels show magnitude and real/imaginary frequency components
-  - Interactive parameter exploration with complete processing workflow visibility
 
 Examples:
-  # Enhanced visualization with windowing bounds displayed
+  # Visualization with windowing bounds displayed
   ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0
 
   # Explore the active window with a trimmed frequency range
   ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --trim 26500:40000
 
-  # Static enhanced image export for presentations
+  # Static image export for presentations
   ftmwpipeline ft show exp_2638.ftmw --start-us 2.0 --end-us 12.0 \\
       --no-interactive --output enhanced_spectrum.png
 
-Key Features:
-  - Enhanced 3-panel visualization showing complete FID-to-spectrum workflow
-  - Interactive parameter exploration with immediate visual feedback
-  - Raw FID panel with windowing bounds (start_us/end_us vertical lines)
-  - Preprocessed FID panel showing effects of filtering and preprocessing
-  - Save complete parameter sets (preprocessing + postprocessing) as defaults
-  - Matplotlib-based reliable visualization for CLI environments
-  - Support for both interactive display and static image export
+Note: 'ft show' never persists settings. To store FT settings as canonical,
+use 'ft run'.
 
 Workflow:
-  1. Visualize complete processing workflow from FID to spectrum
-  2. Experiment with parameters and see effects in all processing stages
-  3. Save complete parameter set when prompted (y/N)
-  4. Future pipeline stages will use saved parameters as defaults
+  1. Visualize the complete processing workflow from FID to spectrum
+  2. Try different parameters and see their effects in all processing stages
+  3. Re-run 'ft run' with the chosen parameters to store them
         """,
     )
     ft_visualize_parser.add_argument("file_path", help="Path to .ftmw pipeline file")

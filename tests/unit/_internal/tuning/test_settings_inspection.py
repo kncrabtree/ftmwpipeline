@@ -48,7 +48,6 @@ def test_enumeration_covers_unswept_and_special_fields(bare_ftmw: Path) -> None:
     for expected in (
         "stage1.units_power",
         "stage1.trim",
-        "stage1.rdc",
         "stage1.start_us",
         "stage1.end_us",
         "stage5.shape",

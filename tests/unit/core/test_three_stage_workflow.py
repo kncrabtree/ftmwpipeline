@@ -56,7 +56,6 @@ class TestPreprocessedFID:
         preprocessed = sample_fid.preprocess(
             start_us=0.5,
             end_us=10.0,
-            rdc=True,
             units_power=6,
         )
 
@@ -70,7 +69,6 @@ class TestPreprocessedFID:
         # Check processing parameters were stored
         assert preprocessed.processing_params.start_us == 0.5
         assert preprocessed.processing_params.end_us == 10.0
-        assert preprocessed.processing_params.rdc is True
         assert preprocessed.processing_params.units_power == 6
 
         # The canonical FT is native-length: no zero-padding.
@@ -88,7 +86,6 @@ class TestPreprocessedFID:
         preprocessed = sample_fid.preprocess(
             start_us=start_us,
             end_us=end_us,
-            rdc=True,
         )
 
         # Native-length output, no padding.
@@ -129,9 +126,9 @@ class TestPreprocessedFID:
         preprocessed = sample_fid.preprocess(start_us=None, end_us=None)
         assert isinstance(preprocessed, PreprocessedFID)
 
-    def test_dc_removal(self, sample_fid):
-        """Test DC component removal."""
-        # Create FID with known DC offset
+    def test_dc_removal_is_unconditional(self, sample_fid):
+        """DC removal always runs: the active region is zero-mean afterward."""
+        # Create FID with a known DC offset.
         dc_offset = 5.0
         fid_with_dc = FID(
             data=sample_fid.data + dc_offset,
@@ -140,20 +137,17 @@ class TestPreprocessedFID:
             sideband=sample_fid.sideband,
         )
 
-        # Test with DC removal
         duration_us = fid_with_dc.duration_us
-        with_rdc = fid_with_dc.preprocess(
-            rdc=True, start_us=duration_us * 0.1, end_us=duration_us * 0.9
-        )
+        start_us = duration_us * 0.1
+        end_us = duration_us * 0.9
+        preprocessed = fid_with_dc.preprocess(start_us=start_us, end_us=end_us)
 
-        # Test without DC removal
-        without_rdc = fid_with_dc.preprocess(
-            rdc=False, start_us=duration_us * 0.1, end_us=duration_us * 0.9
-        )
-
-        # With RDC, active region should have lower mean
-        # (This tests that DC was removed from the active region)
-        assert abs(np.mean(with_rdc.data)) < abs(np.mean(without_rdc.data))
+        # The active region (the only part the FFT sees) is mean-subtracted.
+        time_us = fid_with_dc.time_array_us()
+        start_idx = int(np.searchsorted(time_us, start_us))
+        end_idx = int(np.searchsorted(time_us, end_us))
+        active = preprocessed.data[start_idx:end_idx]
+        assert abs(float(np.mean(active))) < 1e-9
 
 
 class TestPreprocessedFIDFFTComputation:
@@ -187,7 +181,7 @@ class TestPreprocessedFIDFFTComputation:
     def test_fft_computation_basic(self, sample_fid):
         """Test basic FFT computation from preprocessed FID."""
         # Preprocess FID
-        preprocessed = sample_fid.preprocess(rdc=True)
+        preprocessed = sample_fid.preprocess()
 
         # Compute FFT
         complex_spectrum, freq_array = preprocessed.compute_fft()
@@ -247,7 +241,7 @@ class TestPreprocessedFIDFFTComputation:
 
     def test_fft_normalization_and_scaling(self, sample_fid):
         """Test FFT normalization and units scaling."""
-        preprocessed = sample_fid.preprocess(units_power=6, rdc=True)
+        preprocessed = sample_fid.preprocess(units_power=6)
 
         # Compute FFT
         complex_spectrum, freq_array = preprocessed.compute_fft()
@@ -302,7 +296,6 @@ class TestThreeStageWorkflow:
         preprocessed_fid = sample_fid.preprocess(
             start_us=1.0,
             end_us=15.0,
-            rdc=True,
             units_power=6,
         )
 
@@ -338,7 +331,6 @@ class TestThreeStageWorkflow:
         params = {
             "start_us": 2.0,
             "end_us": 12.0,
-            "rdc": True,
             "units_power": 6,
         }
 
@@ -393,7 +385,7 @@ class TestThreeStageWorkflow:
     def test_workflow_with_edge_case_parameters(self, sample_fid):
         """Test workflow with edge case parameters."""
         # Test minimal parameters
-        minimal_preprocessed = sample_fid.preprocess(rdc=False)
+        minimal_preprocessed = sample_fid.preprocess()
         minimal_spectrum, minimal_freqs = minimal_preprocessed.compute_fft()
 
         assert len(minimal_spectrum) > 0
@@ -405,7 +397,6 @@ class TestThreeStageWorkflow:
         windowed_preprocessed = sample_fid.preprocess(
             start_us=0.1,
             end_us=sample_fid.duration_us - 0.1,
-            rdc=True,
             units_power=9,
         )
         windowed_spectrum, windowed_freqs = windowed_preprocessed.compute_fft()
@@ -428,7 +419,7 @@ class TestThreeStageWorkflowWithRealData:
             fid = ftmw_data.fid
 
             # Stage 1: Preprocessing (canonical unapodized native-length FT)
-            preprocessed_fid = fid.preprocess(rdc=True, units_power=6)
+            preprocessed_fid = fid.preprocess(units_power=6)
 
             assert preprocessed_fid.n_points == fid.n_points
 
@@ -548,9 +539,9 @@ def test_fidprocessingparameters_defaults():
     params = FIDProcessingParameters()
     assert params.start_us is None
     assert params.end_us is None
-    assert params.rdc is True
     assert params.units_power == 6
-    # The retired apodization knobs no longer exist.
+    # The retired apodization knobs and the rdc toggle no longer exist.
     assert not hasattr(params, "zpf")
     assert not hasattr(params, "expf_us")
     assert not hasattr(params, "winf")
+    assert not hasattr(params, "rdc")
