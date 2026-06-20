@@ -110,10 +110,10 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         bin_info = noise_result.bin_info
         print(f"\nAlgorithm diagnostics:")
         print(f"  Strategy: {bin_info.get('algorithm', 'unknown')}")
-        print(f"  Number of bins: {bin_info.get('n_bins', 'unknown')}")
-        print(
-            f"  Smoothing window: {bin_info.get('smoothing_window_mhz', 'unknown')} MHz"
-        )
+        print(f"  Region windows: {bin_info.get('n_region_windows', 'unknown')}")
+        print(f"  Line bins: {bin_info.get('n_line_bins', 'unknown')}")
+        print(f"  Region-aware: {bin_info.get('region_aware', 'unknown')}")
+        print(f"  Smoothing window: {bin_info.get('smoothing_mhz', 'unknown')} MHz")
 
         print(f"\nResults saved to: {file_path}")
         print("Use 'noise show' command to create diagnostic plots")
@@ -140,40 +140,34 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
     """
     Create noise estimation diagnostic visualization.
 
-    This command creates comprehensive diagnostic plots for noise estimation
-    results, showing the complete spectral analysis including noise points,
-    adaptive bin boundaries, and RMS noise estimates. Essential for validating
-    noise estimation quality and understanding algorithm behavior.
+    This command overlays the Stage 2 noise estimate on the active-FT magnitude
+    spectrum: the spectrum, the bins the estimator kept as noise, and the per-bin
+    σ estimate with 3×σ and 5×σ reference levels. Use it to confirm the σ floor
+    tracks the receiver noise and rides through line-dense bands.
 
     Visualization features:
-    - Full magnitude spectrum with noise points highlighted
-    - Adaptive bin boundaries showing algorithm subdivision strategy
-    - RMS noise estimate with confidence intervals (1x, 3x, 5x RMS levels)
-    - Algorithm statistics and parameter summary
-    - Configurable plot appearance and output options
+    - Active-FT magnitude spectrum with noise points highlighted
+    - Per-bin σ estimate, with 3×σ and 5×σ reference levels
+    - Estimator statistics and parameter summary
 
     Use this command to:
-    - Validate noise estimation quality and algorithm convergence
-    - Understand adaptive binning behavior across different spectral regions
+    - Validate that the σ floor tracks the noise across the band
     - Create diagnostic plots for publications and presentations
-    - Debug noise estimation issues and parameter optimization
-    - Generate standardized noise analysis reports
+    - Debug noise estimation issues and parameter choices
 
     Stage dependencies:
     - Requires Stage 2 (noise estimation) to be completed first
-    - Loads both NoiseResult and ComplexFT data from .ftmw pipeline file
+    - Loads the NoiseResult and rebuilds the active FT it was measured on
 
     Output options:
-    - Interactive matplotlib plots for exploration
-    - Static image export for reports and documentation
-    - Plotly support for web-based interactive visualization
-    - Customizable appearance and layout options
+    - Interactive matplotlib plot (default) for exploration
+    - Static image export (``--output``) for reports and documentation
+    - Plotly backend (``--backend plotly``) for web-based interactive views
 
     Workflow:
-    1. Load noise estimation results from .ftmw pipeline file
-    2. Create comprehensive diagnostic visualization
-    3. Display interactive plot or save to file
-    4. Optionally save visualization parameters for consistency
+    1. Load noise estimation results from the .ftmw pipeline file
+    2. Create the diagnostic visualization
+    3. Display the interactive plot or save it to a file
     """
     setup_logging(args.verbose)
 
@@ -199,8 +193,6 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
                 return 1
         if args.title is not None:
             viz_params["title"] = args.title
-        if args.show_bin_boundaries is not None:
-            viz_params["show_bin_boundaries"] = args.show_bin_boundaries
         if args.show_noise_points is not None:
             viz_params["show_noise_points"] = args.show_noise_points
         if args.backend is not None:
@@ -341,12 +333,6 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
         "--title",
         type=str,
         help="Custom title for the plot (default: auto-generated from filename)",
-    )
-
-    parser_visualize.add_argument(
-        "--show-bin-boundaries",
-        type=lambda x: x.lower() in ("true", "1", "yes"),
-        help="Show bin boundaries as vertical lines (default: true)",
     )
 
     parser_visualize.add_argument(

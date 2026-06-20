@@ -674,7 +674,6 @@ def visualize_noise(
     y_max_factor: Optional[float] = None,
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
-    show_bin_boundaries: Optional[bool] = None,
     show_noise_points: Optional[bool] = None,
     backend: str = "matplotlib",
     interactive: bool = True,
@@ -684,9 +683,10 @@ def visualize_noise(
     """
     Create noise estimation diagnostic visualization.
 
-    This function creates diagnostic plots showing spectrum, noise points,
-    bin boundaries, and RMS noise estimates, equivalent to
-    Pipeline.visualize_noise(). Requires Stage 2 (noise estimation) completion.
+    This function creates diagnostic plots showing the spectrum, the noise
+    points, and the per-bin σ estimate (with 3×/5×σ reference levels),
+    equivalent to Pipeline.visualize_noise(). Requires Stage 2 (noise
+    estimation) completion.
 
     Parameters
     ----------
@@ -698,8 +698,6 @@ def visualize_noise(
         Figure size (width, height) in inches (default: (16, 6))
     title : str, optional
         Custom title for the plot
-    show_bin_boundaries : bool, optional
-        Whether to show bin boundaries (default: True)
     show_noise_points : bool, optional
         Whether to highlight noise points (default: True)
     backend : str, default 'matplotlib'
@@ -741,7 +739,6 @@ def visualize_noise(
             y_max_factor=y_max_factor,
             figsize=figsize,
             title=title,
-            show_bin_boundaries=show_bin_boundaries,
             show_noise_points=show_noise_points,
             backend=backend,
             interactive=interactive,

@@ -53,6 +53,16 @@ as their stage is reached.)
 - **Advanced** — `clock_declaration` (instrument clock tree and timebase
   self-calibration) · `scope_record_import` (raw-scope-record loaders) ·
   `performance` (parallelism and the knobs that control it).
+- **Methods & Validation** — self-contained, regenerable technical notes that
+  justify algorithmic choices for the "why can I trust this" reader. Each note
+  owns a subdirectory with its `generate.py` harness, `figures/`, and a
+  `results.json` regression target; figures + numbers are regenerated from the
+  checked-in example data, never hand-quoted, and a `slow` test guards the key
+  results against drift. First note: `methods/noise_snr_scaling` (the
+  leakage-pedestal failure of naive noise estimation at high signal-to-noise).
+  This is where promoted `dev-docs/research/*` reports live in **timeless**
+  form (no source-evolution framing; a naive running-median baseline replaces
+  the "old vs new estimator" narrative).
 - **Reference** — `cli` (CLI command reference) · `api/index` (autodoc Python
   API) · `changelog`.
 
@@ -126,6 +136,31 @@ Code changes made while reviewing the docs, with user sign-off:
   `explicit > sidecar > embedded > default`. Unit + cross-interface tests added.
   The user-facing Sphinx pages remain to be written (Stage 0 + a dedicated
   input-format reference page).
+- **Rician C(R) correction table monotonized (correct physics).** The baked
+  `_SCATTER_R_TAB` / `_SCATTER_C_TAB` in `preprocessing/noise_estimation.py` were
+  a raw M=1e5 Monte-Carlo cloud, jagged at the Rayleigh end. The jaggedness is
+  not sample noise — near the Rayleigh limit `R = scatter/pedestal` saturates
+  (~0.565), so it is a poor lookup coordinate there and sorting-by-R folds
+  smooth-in-θ points into apparent noise. The true `C(R)` is smooth and monotone
+  increasing, so the table is now the **isotonic (monotone) fit** of a high-M
+  (1e6) simulation on a clean ascending R grid (C: 1.000→1.499), produced by the
+  single canonical `generate.build_cr_table` and pinned by the unit test. Effect
+  on σ is <0.4% (median 0.09%), so the full-suite re-baseline was **clean —
+  1893 passed, 2 skipped, zero value-specific edits**. The `slow` regen results
+  shifted within tolerance (655 overestimate 5.87→5.88×).
+- **Stage 2 noise diagnostics de-staled (retired adaptive-estimator leftovers).**
+  The `noise run` summary and the `noise show` plot read `bin_info` keys
+  (`n_bins`, `smoothing_window` / `smoothing_window_mhz`, `bin_edges`) that only
+  the retired *adaptive* estimator emitted, so they always printed "unknown" and
+  the bin-boundary overlay could never draw. Fixed the diagnostics to read the
+  scatter estimator's real keys (`n_region_windows`, `n_line_bins`,
+  `smoothing_mhz`, `region_aware`, `noise_fraction`); removed the dead
+  `--show-bin-boundaries` flag and `bin_edges` drawing across the CLI, impl,
+  `api`/`Pipeline`, and `noise_visualization` (the plotly dead "Adaptive Bins"
+  panel now shows the σ/3σ/5σ levels); refreshed the stale `noise show` help
+  ("adaptive binning"); and moved `stage2_impl`'s bottom-of-file `json`/
+  `datetime` imports to the top (dropping an unused `open_pipeline_file`). σ
+  values and persistence are untouched.
 - **``rdc`` knob removed; DC removal is unconditional.** The canonical FT
   always subtracts the active-region mean before transforming (as the Stage 1
   page documents), so the ``rdc`` toggle carried no information. Removed from
@@ -241,7 +276,44 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   revisions resolved during review (see below): the `--trim` form unified on the
   colon form, the stale `ft show` persistence claims removed, and the Blackchirp
   naming corrected repo-wide. Build is warning-clean under `sphinx-build -W`.
-- [ ] Stage 2 — noise.
+- [x] Stage 2 — noise. `stage2_noise.rst` written (where σ is measured — the
+  canonical active FT — and the complex-RMS convention; why a level estimator
+  fails on high-SNR line-dense spectra via the leakage pedestal; the scatter
+  estimator's four steps; the eight knobs; and reading `noise show`). Code
+  revisions resolved during review (see below): the stale adaptive-estimator
+  `bin_info` keys fixed, the dead `--show-bin-boundaries` overlay removed, the
+  `noise show` help refreshed, and the bottom-of-file imports in `stage2_impl`
+  cleaned up. Build warning-clean under `sphinx-build -W`.
+- [x] Methods & Validation section stood up + first note. New captioned toctree
+  section; `methods/noise_snr_scaling.rst` is the noise-estimation justification
+  rewritten **timeless** (the leakage pedestal, the 1/√N discriminator, the
+  cross-fixture overestimate, the weak-line floor, the Rician `C(R)` correction)
+  with no source-evolution framing — the contrast is against a naive
+  running-median baseline, not a "retired estimator." Self-contained +
+  regenerable: `methods/noise_snr_scaling/generate.py` rebuilds `figures/*.png`
+  and `results.json` from the checked-in fixtures (~15 s); two fast data-free
+  unit invariants (the `C(R)` table matches the baked constants;
+  synthetic 1/√N slope split) in
+  `tests/unit/preprocessing/test_noise_snr_invariants.py`, and a `slow` regen
+  guard `tests/integration/test_noise_snr_report.py` re-runs the harness and
+  compares `results.json` within tolerance. `stage2_noise.rst` now links the
+  note via `:doc:` instead of the `dev-docs/research` path. The
+  `dev-docs/research/noise-snr-scaling/` original stays as internal provenance
+  until the archival pass (it carries the retired-method history); the
+  user-facing docs no longer depend on it.
+- [x] Figure-style conventions + brand palette. `visualization/report_style.py`
+  (the shared house style) gained the **UC Davis brand palette**: `AGGIE_BLUE` /
+  `AGGIE_GOLD`, the named secondary colors (`DOUBLE_DECKER`, `GUNROCK`, `QUAD`,
+  `POPPY`, `PINOT`, `ARBORETUM`, `REDBUD`, `MERLOT`, `REDWOOD`, `CABERNET`,
+  `TAHOE`, `SUNFLOWER`), a contrast-ordered `BRAND_CYCLE`, `apply_color_cycle`,
+  and `aggie_blue_cmap` / `aggie_gold_cmap` single-hue gradients (divergent /
+  perceptually-uniform data still uses a purpose-built map). Convention: methods
+  figures carry **no title** (the caption labels them) and use the bare
+  spine-free style. The noise note's figures were restyled accordingly (data as
+  scatter + the power-law fit as a line on the two scaling plots; enlarged MC
+  cloud on the C(R) plot). Recoloring the existing pipeline report/CLI plots to
+  the palette (e.g. real/imag/magnitude → Gunrock / Double Decker / Cabernet) is
+  deferred to the Stage 6 report pages.
 - [ ] Stage 2b — tau calibration.
 - [ ] Stage 3 — peak detection.
 - [ ] Stage 4 — window assignment.
@@ -254,28 +326,47 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Next: Stage 0 (fresh session)
+## Next session: viz restyle + stage figures + remove plotly
 
-Getting Started and Concepts are done; the stage pages begin here. Stage 0 is
-the first to run the full per-stage gate (read planning record → thorough code
-review, discuss revisions before writing → mine research → American-English
-scan → write the page). A fresh session should:
+Stages 0–2 pages, the Methods & Validation section + first note, and the brand
+style system are done. The next session has three linked tasks:
 
-- Create the per-stage tracking doc `stage0-docs.md` alongside this README.
-- Read the planning record for import: `planning/scope-record-import.md`
-  (raw-scope loaders), the start-detection material, and the ROADMAP /
-  COMPLETED entries that touch import; flag anything stale against the code.
-- Review the code surface: `file_manager.py` (create/open/validate, provenance),
-  `io/data_loaders/` (the loader registry + `detect_format`, the `blackchirp` /
-  `csv` / `hdf5` loaders), `_internal/stage0_impl.py`, the `start` detection
-  path, and the `data import` CLI / `import_data` / `Pipeline.create` wrappers.
-  Surface smells, TODOs, and intent-vs-coverage gaps; propose structural
-  cleanups and **discuss any code revisions before writing**.
-- Mine `research/` for any import/start-detection justifications worth
-  surfacing.
-- Write `stage0_import.rst` (currently a stub).
+1. **Restyle the earlier-stage visualizations to the house style.** Bring the
+   documented-stage plots into line with `visualization/report_style.py`: the
+   brand palette (`AGGIE_BLUE` / `AGGIE_GOLD`, the named secondary colors,
+   `BRAND_CYCLE`, `apply_color_cycle`, `aggie_blue_cmap` / `aggie_gold_cmap`),
+   `apply_bare_style`, and the suppressible-title convention (`resolve_title`;
+   pass `title=""` for doc figures, captions label them). The modules for the
+   documented stages: `start_detection_visualization.py` (Stage 0),
+   `spectrum_visualization.py` (Stage 1; the `ft show` real/imag/magnitude
+   plot — the user's preferred mapping is real → Double Decker, imag → Gunrock,
+   magnitude → Cabernet), and `noise_visualization.py` (Stage 2; already mostly
+   styled — verify). Later-stage viz (tau, peaks, windows, fit) gets restyled as
+   those stages are documented. **A wrong-start was reverted:** an unused
+   `report_style` import was added to `start_detection_visualization.py` and
+   rolled back — start fresh there.
 
-The page should cover both the Blackchirp path (the home instrument) and the
-generic CSV/HDF5 + raw-scope-record paths; the instrument-specific scope-record
-detail has its own :doc:`Advanced page <scope_record_import>`, so Stage 0 should
-link to it rather than duplicate it.
+2. **Remove plotly entirely** — code, docs, and dependencies. Plotly is a second
+   rendering backend across the visualization modules (`spectrum_visualization`,
+   `noise_visualization`, and others carry `_plot_*_plotly` paths + a `--backend
+   plotly` CLI option and `backend=` kwargs). Rip it out: drop the plotly
+   branches and the `backend` plumbing (matplotlib becomes the sole backend),
+   remove plotly from the dependency lists (`pyproject.toml` /
+   `environment*.yml`), and purge plotly mentions from docstrings, CLI help, and
+   the docs (e.g. the `noise show --backend` text and the `stage2_noise.rst` /
+   `noise_snr_scaling.rst` "plotly backend" lines). Run the suite after.
+
+3. **Add figures to the stage pages.** With the matplotlib paths restyled and
+   plotly gone, add a committed figure harness (mirroring
+   `methods/noise_snr_scaling/generate.py`): build a 2638 pipeline in a temp dir
+   (import → start → ft → noise) and render one representative figure per
+   documented stage into a committed `docs/source/figures/` dir — Stage 0 the
+   start-detection sweep, Stage 1 the canonical FT (magnitude + real/imag),
+   Stage 2 the noise overlay — then embed each with a `.. figure::` + caption in
+   `stage0_import.rst` / `stage1_ft.rst` / `stage2_noise.rst`. Add a `slow`
+   smoke test that the harness renders without error. Build docs into
+   `docs/build/html` and confirm warning-clean.
+
+Reminder on conventions: build docs into `docs/build/html` (gitignored) so they
+are reviewable; direct any run artifacts to `scratch/`; the noise methods harness
+is the reference pattern for committed, regenerable figures.

@@ -6,7 +6,9 @@ and visualization that are shared between CLI, Pipeline class, and functional
 API interfaces.
 """
 
+import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -18,7 +20,6 @@ from ..core.noise_settings import (
 )
 from ..core.noise_settings import load_preset as load_noise_preset
 from ..core.noise_settings import resolve as resolve_noise_settings
-from ..file_manager import open_pipeline_file
 from ..io.noise_result_serialization import (
     load_noise_result_from_hdf5,
     save_noise_result_to_hdf5,
@@ -245,7 +246,6 @@ def visualize_noise_impl(
     y_max_factor: Optional[float] = None,
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
-    show_bin_boundaries: Optional[bool] = None,
     show_noise_points: Optional[bool] = None,
     backend: str = "matplotlib",
     interactive: bool = True,
@@ -267,8 +267,6 @@ def visualize_noise_impl(
         Figure size (width, height) in inches (default: (16, 6))
     title : str, optional
         Custom title for the plot
-    show_bin_boundaries : bool, optional
-        Whether to show adaptive bin boundaries (default: True)
     show_noise_points : bool, optional
         Whether to highlight noise points (default: True)
     backend : str, default 'matplotlib'
@@ -343,9 +341,6 @@ def visualize_noise_impl(
     plot_params: Dict[str, Any] = {
         "y_max_factor": y_max_factor if y_max_factor is not None else 20.0,
         "figsize": figsize if figsize is not None else (16, 6),
-        "show_bin_boundaries": (
-            show_bin_boundaries if show_bin_boundaries is not None else True
-        ),
         "show_noise_points": (
             show_noise_points if show_noise_points is not None else True
         ),
@@ -497,12 +492,6 @@ def load_noise_result_impl(file_path: str) -> Dict[str, Any]:
 
     except Exception as e:
         raise RuntimeError(f"Failed to load NoiseResult from pipeline file: {e}")
-
-
-import json
-
-# Add missing import
-from datetime import datetime
 
 
 def _update_stage_completion(file_path: str, stage_name: str) -> None:

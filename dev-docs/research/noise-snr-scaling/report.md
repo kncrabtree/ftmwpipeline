@@ -1,5 +1,12 @@
 # Noise estimation at extreme SNR: the leakage-pedestal failure
 
+> **Internal research record.** The user-facing, timeless write-up of this
+> material lives at `docs/source/methods/noise_snr_scaling.rst`, with a committed
+> regeneration harness (`docs/source/methods/noise_snr_scaling/generate.py`) and
+> drift tests. This document is retained for its provenance and its
+> retired-method history; the user docs do not depend on it. Keep the docs note
+> authoritative for the shipped numbers.
+
 The Stage 2 noise estimator over-reports σ by up to ~6× on high-SNR,
 line-dense spectra. It measures the *level* of the magnitude spectrum, which on
 such spectra is dominated by the smooth deterministic **leakage pedestal** —

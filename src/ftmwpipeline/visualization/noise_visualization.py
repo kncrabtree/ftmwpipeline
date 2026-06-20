@@ -1,11 +1,12 @@
 """
 Noise estimation diagnostic plots for FTMW spectroscopy.
 
-This module provides visualization functions for noise estimation algorithms,
-including bin boundaries, noise masks, and RMS estimates.
+This module provides visualization functions for the scatter noise estimator,
+overlaying the noise mask and the per-bin σ estimate (with 3×/5×σ reference
+levels) on the active-FT magnitude spectrum.
 """
 
-from typing import Optional, Tuple, Union, cast
+from typing import Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,15 +21,14 @@ def plot_noise_estimation(
     y_max_factor: float = 20.0,
     figsize: Tuple[float, float] = (16, 6),
     title: Optional[str] = None,
-    show_bin_boundaries: bool = True,
     show_noise_points: bool = True,
     backend: str = "matplotlib",
 ) -> Union[plt.Figure, object]:
     """
     Create diagnostic plot for noise estimation.
 
-    Shows original spectrum, noise points, bin boundaries, and RMS noise estimate
-    in a single wide plot for better visibility.
+    Shows the magnitude spectrum, the noise points, and the per-bin σ estimate
+    (with 3×/5×σ reference levels) in a single wide plot.
 
     Parameters:
     -----------
@@ -44,8 +44,6 @@ def plot_noise_estimation(
         Figure size (width, height) in inches - wide aspect ratio
     title : str, optional
         Custom title for the plot
-    show_bin_boundaries : bool, default=True
-        Whether to show adaptive bin boundaries as dotted lines
     show_noise_points : bool, default=True
         Whether to highlight noise points
     backend : str, default="matplotlib"
@@ -64,7 +62,6 @@ def plot_noise_estimation(
             noise_result,
             y_max_factor,
             title,
-            show_bin_boundaries,
             show_noise_points,
         )
         return plotly_fig
@@ -76,7 +73,6 @@ def plot_noise_estimation(
             y_max_factor,
             figsize,
             title,
-            show_bin_boundaries,
             show_noise_points,
         )
 
@@ -88,7 +84,6 @@ def _plot_noise_estimation_matplotlib(
     y_max_factor: float,
     figsize: Tuple[float, float],
     title: Optional[str],
-    show_bin_boundaries: bool,
     show_noise_points: bool,
 ) -> plt.Figure:
     """Create matplotlib version of noise estimation plot - single wide panel."""
@@ -139,37 +134,6 @@ def _plot_noise_estimation_matplotlib(
     )
     ax.fill_between(freq_mhz, 0, noise_result.rms_noise, alpha=0.2, color="green")
 
-    # Add bin boundaries as thin dotted lines
-    if show_bin_boundaries and "bin_edges" in noise_result.bin_info:
-        bin_edges = cast(np.ndarray, noise_result.bin_info["bin_edges"])
-
-        # Limit number of lines if there are too many
-        if len(bin_edges) > 50:
-            step = max(1, len(bin_edges) // 30)
-            bin_edges_to_show = bin_edges[::step]
-            # Add note about subsampling
-            ax.text(
-                0.02,
-                0.98,
-                f"Showing {len(bin_edges_to_show)}/{len(bin_edges)} bin edges",
-                transform=ax.transAxes,
-                fontsize=9,
-                verticalalignment="top",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="yellow", alpha=0.8),
-            )
-        else:
-            bin_edges_to_show = bin_edges
-
-        for edge in bin_edges_to_show:
-            if 0 <= int(edge) < len(frequencies):
-                ax.axvline(
-                    float(freq_mhz[int(edge)]),
-                    color="red",
-                    linestyle=":",
-                    alpha=0.6,
-                    linewidth=0.5,
-                )
-
     # Set limits and labels
     ax.set_ylim(0, y_max)
     ax.set_xlabel("Frequency (MHz)", fontsize=12)
@@ -202,7 +166,6 @@ def _plot_noise_estimation_plotly(
     noise_result: NoiseResult,
     y_max_factor: float,
     title: Optional[str],
-    show_bin_boundaries: bool,
     show_noise_points: bool,
 ) -> object:
     """Create plotly version of noise estimation plot."""
@@ -227,7 +190,7 @@ def _plot_noise_estimation_plotly(
         cols=2,
         subplot_titles=[
             "Spectrum with Noise Points",
-            f'Adaptive Bins ({noise_result.bin_info.get("algorithm", "unknown")})',
+            "Noise σ levels (σ, 3σ, 5σ)",
             "RMS Noise Estimate",
             "Statistics",
         ],
@@ -266,7 +229,7 @@ def _plot_noise_estimation_plotly(
             col=1,
         )
 
-    # Panel 2: Bin boundaries
+    # Panel 2: Spectrum with the σ / 3σ / 5σ reference levels
     fig.add_trace(
         go.Scatter(
             x=freq_mhz,
@@ -280,28 +243,19 @@ def _plot_noise_estimation_plotly(
         row=1,
         col=2,
     )
-
-    if show_bin_boundaries and "bin_edges" in noise_result.bin_info:
-        bin_edges = cast(np.ndarray, noise_result.bin_info["bin_edges"])
-
-        # Limit number of lines if there are too many
-        if len(bin_edges) > 50:
-            step = max(1, len(bin_edges) // 30)
-            bin_edges_to_show = bin_edges[::step]
-        else:
-            bin_edges_to_show = bin_edges
-
-        for edge in bin_edges_to_show:
-            if 0 <= int(edge) < len(frequencies):
-                fig.add_vline(
-                    x=float(freq_mhz[int(edge)]),
-                    line_dash="dot",
-                    line_color="red",
-                    opacity=0.8,
-                    line_width=1,
-                    row=1,
-                    col=2,
-                )
+    for mult, dash in ((1, "solid"), (3, "dash"), (5, "dot")):
+        fig.add_trace(
+            go.Scatter(
+                x=freq_mhz,
+                y=mult * noise_result.rms_noise,
+                mode="lines",
+                name=f"{mult}×σ",
+                line=dict(color="green", width=1, dash=dash),
+                opacity=0.8,
+            ),
+            row=1,
+            col=2,
+        )
 
     # Panel 3: RMS noise estimate
     fig.add_trace(
@@ -395,13 +349,13 @@ def _compile_noise_statistics(
     stats.append("")
 
     # Algorithm parameters
+    info = noise_result.bin_info
     stats.append("ALGORITHM PARAMETERS")
     stats.append("-" * 20)
-    stats.append(f"Strategy: {noise_result.bin_info.get('algorithm', 'unknown')}")
-    stats.append(f"Number of bins: {noise_result.bin_info.get('n_bins', 'unknown')}")
-    stats.append(
-        f"Smoothing window: {noise_result.bin_info.get('smoothing_window', 'unknown')}"
-    )
+    stats.append(f"Strategy: {info.get('algorithm', 'unknown')}")
+    stats.append(f"Region windows: {info.get('n_region_windows', 'unknown')}")
+    stats.append(f"Line bins: {info.get('n_line_bins', 'unknown')}")
+    stats.append(f"Smoothing: {info.get('smoothing_mhz', 'unknown')} MHz")
 
     return "\n".join(stats)
 
@@ -417,6 +371,7 @@ def _compile_noise_statistics_table(
     rms_min: float = float(np.min(noise_result.rms_noise))
     rms_max: float = float(np.max(noise_result.rms_noise))
 
+    info = noise_result.bin_info
     parameters = [
         "Total Points",
         "Noise Points",
@@ -427,22 +382,24 @@ def _compile_noise_statistics_table(
         "RMS Max",
         "RMS Range",
         "Strategy",
-        "Number of Bins",
-        "Smoothing Window",
+        "Region Windows",
+        "Line Bins",
+        "Smoothing (MHz)",
     ]
 
     values = [
         f"{len(frequencies):,}",
         f"{np.sum(noise_result.noise_mask):,}",
-        f"{noise_result.bin_info.get('noise_fraction', 0):.3f}",
+        f"{info.get('noise_fraction', 0):.3f}",
         f"{rms_mean:.2e}",
         f"{rms_std:.2e}",
         f"{rms_min:.2e}",
         f"{rms_max:.2e}",
         f"{rms_max/rms_min:.1f}x",
-        f"{noise_result.bin_info.get('algorithm', 'unknown')}",
-        f"{noise_result.bin_info.get('n_bins', 'unknown')}",
-        f"{noise_result.bin_info.get('smoothing_window', 'unknown')}",
+        f"{info.get('algorithm', 'unknown')}",
+        f"{info.get('n_region_windows', 'unknown')}",
+        f"{info.get('n_line_bins', 'unknown')}",
+        f"{info.get('smoothing_mhz', 'unknown')}",
     ]
 
     return {"parameters": parameters, "values": values}
@@ -451,12 +408,11 @@ def _compile_noise_statistics_table(
 def _compile_noise_statistics_summary(noise_result: NoiseResult) -> str:
     """Compile brief noise statistics for single-plot display."""
 
+    info = noise_result.bin_info
     stats = []
-    stats.append(f"Strategy: {noise_result.bin_info.get('algorithm', 'unknown')}")
-    stats.append(f"Bins: {noise_result.bin_info.get('n_bins', 'unknown')}")
-    stats.append(
-        f"Noise fraction: {noise_result.bin_info.get('noise_fraction', 0):.3f}"
-    )
+    stats.append(f"Strategy: {info.get('algorithm', 'unknown')}")
+    stats.append(f"Region windows: {info.get('n_region_windows', 'unknown')}")
+    stats.append(f"Noise fraction: {info.get('noise_fraction', 0):.3f}")
 
     rms_mean = np.mean(noise_result.rms_noise)
     rms_std = np.std(noise_result.rms_noise)

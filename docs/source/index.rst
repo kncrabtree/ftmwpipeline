@@ -41,6 +41,12 @@
 
 .. toctree::
    :hidden:
+   :caption: Methods & Validation
+
+   methods/noise_snr_scaling
+
+.. toctree::
+   :hidden:
    :caption: Reference
 
    cli
@@ -87,6 +93,13 @@ The pipeline stages, in the order an experiment moves through them:
 * :doc:`stage4_windows` — assign disjoint analysis windows.
 * :doc:`stage5_fitting` — fit the peaks in each window.
 * :doc:`stage6_review` — review, report, and finalize the line list.
+
+Methods and validation notes go deeper on why specific algorithmic choices can
+be trusted, with figures and numbers regenerated from the example data:
+
+* :doc:`methods/noise_snr_scaling` — why naive noise estimation fails on
+  high signal-to-noise, line-dense spectra, and how the scatter estimator is
+  validated.
 
 Indices and tables
 ==================
