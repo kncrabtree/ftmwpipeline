@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.lines import Line2D
 
 from ..core.data_structures import Peak, PeakClassification
 from .report_style import (
@@ -129,7 +130,10 @@ def plot_peak_detection(
         zorder=1,
     )
 
-    legended = set()
+    # Encoding: color = SNR tier, marker shape = detection pass, fill =
+    # promotion. A promoted peak is a filled marker; one below the promotion
+    # cutoff is an open marker, so the curation split reads off the overlay
+    # itself.
     for p in peaks:
         cls = (
             p.classification
@@ -139,23 +143,16 @@ def plot_peak_detection(
         color = _CLASS_COLOR.get(cls, "0.5")
         is_gap = p.properties.get("detection_pass") == "gap"
         marker = "^" if is_gap else "o"
-        key = (cls, is_gap)
-        label = None
-        if key not in legended:
-            legended.add(key)
-            cls_name = cls.value if cls is not None else "unclassified"
-            pass_name = "gap" if is_gap else "primary"
-            label = f"{cls_name} ({pass_name})"
+        promoted = bool(p.properties.get("promoted"))
         ax.scatter(
             p.frequency,
             p.intensity,
             s=30,
-            color=color,
             marker=marker,
-            edgecolors="black",
-            linewidths=0.3,
-            zorder=5,
-            label=label,
+            facecolors=color if promoted else "none",
+            edgecolors="black" if promoted else color,
+            linewidths=0.3 if promoted else 0.7,
+            zorder=5 if promoted else 4,
         )
 
     ax.plot(
@@ -183,7 +180,32 @@ def plot_peak_detection(
     resolved_title = resolve_title(title, "Stage 3 Peak Detection")
     if resolved_title:
         ax.set_title(resolved_title)
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
+
+    def _swatch(marker: str, face: str, edge: str, label: str) -> Line2D:
+        return Line2D(
+            [0],
+            [0],
+            marker=marker,
+            linestyle="none",
+            markerfacecolor=face,
+            markeredgecolor=edge,
+            markeredgewidth=0.6,
+            markersize=7,
+            label=label,
+        )
+
+    handles = [
+        Line2D([0], [0], color="0.4", lw=0.8, label="magnitude spectrum"),
+        Line2D([0], [0], color=AGGIE_BLUE, lw=0.8, alpha=0.7, label="rms noise"),
+        _swatch("o", QUAD, "black", "weak"),
+        _swatch("o", POPPY, "black", "medium"),
+        _swatch("o", DOUBLE_DECKER, "black", "strong"),
+        _swatch("o", "0.5", "black", "primary pass"),
+        _swatch("^", "0.5", "black", "gap pass"),
+        _swatch("o", "0.5", "black", "promoted"),
+        _swatch("o", "none", "0.5", "below cutoff"),
+    ]
+    ax.legend(handles=handles, loc="upper right", fontsize=8, ncol=3)
     apply_bare_style(ax)
     if ax_hist is not None:
         _plot_snr_histogram(ax_hist, peaks, promotion_min_snr)

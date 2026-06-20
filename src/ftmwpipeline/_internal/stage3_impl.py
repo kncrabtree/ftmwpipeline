@@ -828,23 +828,20 @@ def visualize_peaks_impl(
     y_max_factor: Optional[float] = None,
     interactive: bool = True,
     show_snr_histogram: bool = False,
-    promoted_only: bool = False,
 ) -> Any:
     """Overlay the persisted classified peaks on the canonical active FT.
 
     Peaks are scored and stored on the active FT (frequency + re-measured
     amplitude), so the overlay is the active FT with the active-FT authority
     noise -- exactly the surface the peaks were scored on. Requires Stage 3
-    completed. With ``show_snr_histogram`` a second panel shows the active-grid
-    SNR distribution with the promotion cutoff marked (curation view).
-    ``promoted_only`` restricts the overlay to the promoted peaks (the ones that
-    survive into Stage 4+), dropping the sub-threshold candidates.
+    completed. Promoted peaks are drawn filled and sub-threshold candidates
+    open, so the promotion split reads off the overlay. With
+    ``show_snr_histogram`` a second panel shows the active-grid SNR distribution
+    with the promotion cutoff marked (curation view).
     """
     loaded = load_peaks_impl(file_path)
     peaks: List[Peak] = loaded["peaks"]
     promotion_min_snr = loaded.get("promotion_min_snr")
-    if promoted_only:
-        peaks = [p for p in peaks if p.properties.get("promoted")]
 
     stage1 = compute_ft_impl(file_path=file_path)
     trim_range = stage1.get("trim_range")

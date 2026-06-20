@@ -116,12 +116,14 @@ before any code change (per the per-stage gate).
 - **Stale `README.md` status section.** The root `README.md` states Stages 3–5
   are "not yet implemented"; all stages ship. Update during the repository
   cleanup pass.
-- **`visualize_peaks_impl(promoted_only=)` reaches no interface.** The Stage 3
-  impl's `promoted_only` overlay switch is wired into neither the CLI
-  (`peaks show`), `api.visualize_peaks`, nor `Pipeline.visualize_peaks` — a
-  dual-interface gap (an impl capability no surface exposes). Either expose it on
-  all three or drop the impl parameter; pick during the Stage 4/cleanup pass. The
-  Stage 3 page does not claim it.
+- **Window difficulty (HARD/EASY) is computed but unused downstream.** Stage 4's
+  `window_planning.py` sets `w.difficulty` (HARD when a window has a strong line,
+  a fixed contributor, is over-wide, or fails the edge-coherence test), but
+  nothing in Stage 5/6/fitting branches on it — only `window_visualization.py`
+  shades by it and the CLI/logging report counts. The peak **STRONG** tier that
+  partly feeds it is *not* vestigial (it gates fixed-contributor selection and
+  strong-cluster grouping), but the difficulty label itself is a candidate to
+  demote to a pure diagnostic or remove. Assess during the Stage 4 review.
 - **`window_assignment` is a dead Phase-5 placeholder package.** Same pattern as
   the now-removed `peak_detection` stubs (`assign_analysis_windows` /
   `optimize_window_boundaries` / `resolve_overlaps` all raise
@@ -151,9 +153,13 @@ Code changes made while reviewing the docs, with user sign-off:
   / DOUBLE_DECKER, the noise line and SNR histogram → AGGIE_BLUE, the promotion
   cutoff → DOUBLE_DECKER), so the new Stage 3 doc figure matches the committed
   Stage 0/1/2/2b set; the earlier "defer recoloring to Stage 6" note is
-  superseded for this plot. British spellings were swept from the Stage 3
-  modules. Validation: the Stage 3 unit + integration suites (180 tests) and the
-  changed-file black/isort/mypy are green; the figure smoke test passes.
+  superseded for this plot. The detection overlay now encodes promotion in the
+  marker fill — promoted peaks filled, below-cutoff candidates open — so the
+  unreachable `visualize_peaks_impl(promoted_only=)` switch (wired to no
+  interface) was removed in favor of the always-on visual split. British
+  spellings were swept from the Stage 3 modules. Validation: the Stage 3 unit +
+  integration suites and the changed-file black/isort/mypy are green; the figure
+  smoke test passes.
 - **Stage 2b Gaussian/Lorentzian twin code paths fully unified.** The Gaussian
   τ_G calibration had been bolted on as a near-duplicate of the exponential
   twin and promoted to a first-class shape; the parallel code paths had bitten
@@ -486,10 +492,12 @@ peak is scored on the canonical active FT (apex-snapped, de-duplicated); detecti
 runs at a fixed internal floor 2.0 while the user-facing `min_snr` (3.0) is the
 *promotion* cutoff, and all detected peaks are stored. The dead `peak_detection`
 stub package was removed; `Pipeline.detect_peaks` / CLI `cmd_detect_peaks`
-docstrings were de-staled; `plot_peak_detection` is on the brand palette. Two
-follow-ups are logged under *Findings to resolve*: `visualize_peaks_impl`'s
-`promoted_only` reaches no interface, and `window_assignment` is the next dead
-Phase-5 stub package to remove (kept this session to stay scoped).
+docstrings were de-staled; `plot_peak_detection` is on the brand palette and now
+encodes promotion in the marker fill (the unreachable `promoted_only` switch was
+removed). Two follow-ups are logged under *Findings to resolve* for the Stage 4
+review: window difficulty (HARD/EASY) is computed but unused downstream, and
+`window_assignment` is the next dead Phase-5 stub package to remove (both kept
+this session to stay scoped).
 
 **The Stage 4 task — apply the per-stage process (this README, "Per-stage
 process"), in order:**

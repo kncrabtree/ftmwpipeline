@@ -74,10 +74,11 @@ recommends Gaussian); without Stage 2b the gap pass falls back to a default
 5 µs basis. Detections within a small exclusion radius of a primary peak are
 dropped as re-finds, so the gap pass contributes only *new* lines.
 
-The matched-filter gap pass replaced an earlier unapodized gap pass and strictly
-dominates it: at a fixed false-positive load it recovers more real lines from
-fewer candidates. The gap pass is on by default and can be switched off
-(``run_gap_pass=False`` / ``--no-gap-pass``).
+The matched filter is the optimal linear detector for a decaying line: it
+concentrates each line's energy that an unweighted transform would spread across
+the skirt, so at a fixed false-positive load the gap pass recovers more real
+lines from fewer candidates. The gap pass is on by default and can be switched
+off (``run_gap_pass=False`` / ``--no-gap-pass``).
 
 The concave-down locator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -153,9 +154,12 @@ distribution is anchored at the detection floor with a heavy upper tail in every
 regime: across the reference fixtures, spanning three orders of magnitude in line
 strength, all three tiers stay populated and the fixed boundaries generalize
 where percentile boundaries would brand half of a sparse spectrum's real lines
-"weak." Only the ``medium``/``strong`` boundary has a downstream consumer — Stage
-4 marks a window for special handling when it holds a strong line — and the
-``weak``/``medium`` boundary is curation labeling.
+"weak." Of the three tiers, only ``strong`` drives the later stages: a strong
+line is a leakage source, so :doc:`Stage 4 <stage4_windows>` uses the ``strong``
+tier to anchor its window grouping and to decide which lines are attached as
+fixed contributors to neighboring windows whose grid their skirts reach. The
+``weak``/``medium`` distinction is curation and reporting labeling, carried for
+the analyst rather than consumed by an algorithm.
 
 Detection and promotion are separated, which is the key to detecting
 aggressively without flooding the later stages:
@@ -179,11 +183,12 @@ cleanly.
 
    Stage 3 detection on the example experiment. Top: the classified peaks over
    the canonical active spectrum (gray) and its per-bin noise, colored by SNR
-   tier — green ``weak``, orange ``medium``, red ``strong`` — and marker-styled
-   by pass (circles primary, triangles gap). The log magnitude axis makes the
-   noise floor and the hundreds-of-times stronger lines legible together. Bottom:
-   the curation panel, the signal-to-noise distribution of every detected peak
-   with the promotion cutoff marked, so the threshold can be chosen against the
+   tier — green ``weak``, orange ``medium``, red ``strong`` — marker-styled by
+   pass (circles primary, triangles gap), and filled when promoted or left open
+   when below the promotion cutoff. The log magnitude axis makes the noise floor
+   and the hundreds-of-times stronger lines legible together. Bottom: the
+   curation panel, the signal-to-noise distribution of every detected peak with
+   the promotion cutoff marked, so the threshold can be chosen against the
    visible split between the near-noise hump and the real-line tail before peaks
    move to Stage 4.
 
