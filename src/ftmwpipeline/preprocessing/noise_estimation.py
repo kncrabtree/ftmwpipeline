@@ -98,6 +98,14 @@ SCATTER_CONVOLVE_MHZ = (
     200.0  # Gaussian σ (MHz) of the 2nd, step-removing pass (0 = off)
 )
 
+# Complex-domain cross-check guardrail: warn when the magnitude σ and the
+# independent Re/Im σ (see ``estimate_noise_complex_scatter``) disagree by more
+# than this fraction. The magnitude estimator runs ~4–6 % below the complex
+# estimate even on clean data (its Rician/pedestal machinery carries an
+# intrinsic low bias the complex domain avoids), so the threshold sits above
+# that expected baseline and fires only on a genuine anomaly.
+SCATTER_COMPLEX_DIVERGENCE_WARN = 0.12
+
 # Fixed mid-regime σ_c/scatter factor used when ``region_aware=False`` (the
 # Rayleigh-to-under-line endpoints span 1.0–1.47; 1.20 is the validated
 # mid-regime compromise — biased ~±15 % in a regime-dependent way, which is
@@ -523,6 +531,100 @@ def estimate_noise_scatter(
     return NoiseResult(rms_noise=sigma, noise_mask=keep, bin_info=bin_info)
 
 
+def estimate_noise_complex_scatter(
+    frequencies: np.ndarray,
+    complex_spectrum: np.ndarray,
+    noise_mask: np.ndarray,
+    *,
+    window_mhz: float = SCATTER_WINDOW_MHZ,
+    smoothing_mhz: float = SCATTER_SMOOTHING_MHZ,
+    smoothing_percentile: float = SCATTER_SMOOTHING_PERCENTILE,
+    convolve_mhz: float = SCATTER_CONVOLVE_MHZ,
+) -> np.ndarray:
+    """Independent complex-domain σ_x estimate, a cross-check on the magnitude one.
+
+    The real and imaginary parts of pure complex-Gaussian noise are each
+    ``N(0, σ_c)`` -- symmetric, zero-mean, with no Rayleigh skew, no leakage
+    pedestal, and no Rician regime to correct for. So over the bins the magnitude
+    pass already classed as noise (``noise_mask``), the two-sided robust MAD of
+    the real and imaginary parts recovers ``σ_c`` directly, and the complex RMS is
+    ``σ_x = σ_c·√2`` -- the same convention as :func:`estimate_noise_scatter`'s
+    ``rms_noise``. The per-region / interpolate / smooth steps mirror that
+    estimator so the curve is comparable bin-for-bin, but because the estimate
+    never enters the magnitude domain it is free of the ~4–6 % low bias the
+    Rician ``C(R)`` correction carries and of the one-sided-clip downside, making
+    it a guardrail against both.
+
+    Unlike :func:`estimate_noise_scatter` this works on the data in its given bin
+    order (the per-region MAD and the index-interpolation are orientation-free;
+    a descending lower-sideband grid keeps each window a contiguous frequency
+    band), so the caller need not sort first.
+
+    Parameters
+    ----------
+    frequencies : np.ndarray
+        Frequency grid (MHz); ascending or descending.
+    complex_spectrum : np.ndarray
+        Complex spectrum on ``frequencies`` (the same array Stage 2 measures on).
+    noise_mask : np.ndarray
+        Boolean mask, True on bins to treat as noise -- normally the magnitude
+        estimator's own ``noise_mask`` so the two estimates share a line set.
+    window_mhz, smoothing_mhz, smoothing_percentile, convolve_mhz :
+        Mirror :func:`estimate_noise_scatter`; pass the resolved Stage 2 knobs so
+        the curve is smoothed identically.
+
+    Returns
+    -------
+    np.ndarray
+        Per-bin complex RMS σ_x on ``frequencies``' bin order.
+    """
+    freqs = np.asarray(frequencies, dtype=float)
+    cs = np.asarray(complex_spectrum)
+    re = np.real(cs).astype(float)
+    im = np.imag(cs).astype(float)
+    mask = np.asarray(noise_mask, dtype=bool)
+    n = freqs.size
+
+    def _quad_sigma(sl: slice, m: np.ndarray) -> float:
+        return 0.5 * (_robust_sigma(re[sl][m]) + _robust_sigma(im[sl][m]))
+
+    if n < 3:
+        flat = _quad_sigma(slice(None), np.ones(n, dtype=bool)) * _QUADRATURE_TO_COMPLEX_RMS
+        return cast(np.ndarray, np.full(n, flat))
+
+    df = abs(float(np.mean(np.diff(freqs))))
+    half = max(1, int(round(0.5 * window_mhz / df)))
+
+    sigma = np.full(n, np.nan)
+    for c in np.arange(0, n, half):
+        lo, hi = max(0, c - half), min(n, c + half)
+        m = mask[lo:hi]
+        if int(m.sum()) < SCATTER_MIN_WINDOW_SAMPLES:
+            continue
+        sigma[lo:hi] = _quad_sigma(slice(lo, hi), m)
+
+    good = np.isfinite(sigma)
+    if good.any():
+        sigma = np.interp(np.arange(n), np.flatnonzero(good), sigma[good])
+    else:
+        fallback = _quad_sigma(slice(None), mask) if mask.any() else _quad_sigma(
+            slice(None), np.ones(n, dtype=bool)
+        )
+        sigma = np.full(n, fallback)
+
+    sigma = sigma * _QUADRATURE_TO_COMPLEX_RMS
+
+    if smoothing_mhz > 0.0:
+        smooth_size = min(max(3, int(round(smoothing_mhz / df)) | 1), n)
+        sigma = percentile_filter(
+            sigma, percentile=float(smoothing_percentile), size=smooth_size, mode="nearest"
+        )
+        if convolve_mhz > 0.0:
+            sigma = _gaussian_smooth_1d(sigma, sigma=convolve_mhz / df)
+
+    return cast(np.ndarray, sigma)
+
+
 def estimate_active_ft_noise(
     freq_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
@@ -566,11 +668,43 @@ def estimate_active_ft_noise(
 
     result = estimate_noise_scatter(sorted_freq, sorted_mag, **scatter_kwargs)
 
+    # Independent complex-domain σ cross-check on the same grid and line set,
+    # folded into bin_info as a guardrail (see SCATTER_COMPLEX_DIVERGENCE_WARN).
+    sorted_cs = np.ascontiguousarray(np.asarray(complex_spectrum)[sort_idx])
+    info = result.bin_info
+    complex_sigma = estimate_noise_complex_scatter(
+        sorted_freq,
+        sorted_cs,
+        np.asarray(result.noise_mask, dtype=bool),
+        window_mhz=float(cast(float, info.get("window_mhz", SCATTER_WINDOW_MHZ))),
+        smoothing_mhz=float(cast(float, info.get("smoothing_mhz", SCATTER_SMOOTHING_MHZ))),
+        smoothing_percentile=float(
+            cast(float, info.get("smoothing_percentile", SCATTER_SMOOTHING_PERCENTILE))
+        ),
+        convolve_mhz=float(cast(float, info.get("convolve_mhz", SCATTER_CONVOLVE_MHZ))),
+    )
+    mag_med = float(np.median(result.rms_noise))
+    cpx_med = float(np.median(complex_sigma))
+    ratio = mag_med / cpx_med if cpx_med > 0 else float("nan")
+    divergence = abs(ratio - 1.0)
+    warn = bool(np.isfinite(divergence) and divergence > SCATTER_COMPLEX_DIVERGENCE_WARN)
+    info["complex_sigma_median"] = cpx_med
+    info["complex_magnitude_ratio"] = ratio
+    info["complex_divergence"] = divergence
+    info["complex_divergence_warn"] = warn
+    if warn:
+        logger.warning(
+            "Stage 2 noise: magnitude σ and complex-domain σ cross-check disagree "
+            "by %.1f%% (magnitude/complex = %.3f); the per-bin σ may be biased.",
+            100.0 * divergence,
+            ratio,
+        )
+
     unsort = np.argsort(sort_idx)
     return NoiseResult(
         rms_noise=np.asarray(result.rms_noise, dtype=float)[unsort],
         noise_mask=np.asarray(result.noise_mask, dtype=bool)[unsort],
-        bin_info=result.bin_info,
+        bin_info=info,
     )
 
 

@@ -334,6 +334,21 @@ def visualize_noise_impl(
             "Noise visualization not available - visualization module missing"
         )
 
+    # Independent complex-domain σ cross-check, overlaid as a guardrail. Computed
+    # on the same active grid and line set the persisted σ was measured on.
+    from ..preprocessing.noise_estimation import estimate_noise_complex_scatter
+
+    info = noise_result.bin_info
+    complex_rms = estimate_noise_complex_scatter(
+        complex_ft.freq_array,
+        complex_ft.complex_spectrum,
+        noise_result.noise_mask,
+        window_mhz=float(info.get("window_mhz", 80.0)),
+        smoothing_mhz=float(info.get("smoothing_mhz", 800.0)),
+        smoothing_percentile=float(info.get("smoothing_percentile", 50.0)),
+        convolve_mhz=float(info.get("convolve_mhz", 200.0)),
+    )
+
     # Set parameter defaults
     plot_params: Dict[str, Any] = {
         "y_max_factor": y_max_factor if y_max_factor is not None else 20.0,
@@ -341,6 +356,7 @@ def visualize_noise_impl(
         "show_noise_points": (
             show_noise_points if show_noise_points is not None else True
         ),
+        "complex_rms_noise": complex_rms,
     }
 
     # Generate title if not provided

@@ -12,7 +12,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..preprocessing.noise_estimation import NoiseResult
-from .report_style import AGGIE_BLUE, POPPY, QUAD, apply_bare_style, resolve_title
+from .report_style import (
+    AGGIE_BLUE,
+    PINOT,
+    POPPY,
+    QUAD,
+    apply_bare_style,
+    resolve_title,
+)
 
 
 def plot_noise_estimation(
@@ -23,6 +30,7 @@ def plot_noise_estimation(
     figsize: Tuple[float, float] = (16, 6),
     title: Optional[str] = None,
     show_noise_points: bool = True,
+    complex_rms_noise: Optional[np.ndarray] = None,
 ) -> plt.Figure:
     """
     Create the diagnostic plot for noise estimation.
@@ -46,6 +54,10 @@ def plot_noise_estimation(
         Custom title. ``None`` uses the default; ``""`` suppresses it.
     show_noise_points : bool, default=True
         Whether to highlight noise points
+    complex_rms_noise : np.ndarray, optional
+        The independent complex-domain σ_x cross-check (from
+        :func:`ftmwpipeline.preprocessing.noise_estimation.estimate_noise_complex_scatter`),
+        overlaid as a guardrail when supplied.
 
     Returns:
     --------
@@ -103,6 +115,17 @@ def plot_noise_estimation(
     )
     ax.fill_between(freq_mhz, 0, noise_result.rms_noise, alpha=0.2, color=QUAD)
 
+    # Independent complex-domain σ cross-check (guardrail overlay)
+    if complex_rms_noise is not None:
+        ax.plot(
+            freq_mhz,
+            np.asarray(complex_rms_noise),
+            color=PINOT,
+            linestyle="--",
+            linewidth=1.5,
+            label="Complex σ (cross-check)",
+        )
+
     # Set limits and labels
     ax.set_ylim(0, y_max)
     ax.set_xlabel("Frequency (MHz)", fontsize=12)
@@ -141,5 +164,10 @@ def _compile_noise_statistics_summary(noise_result: NoiseResult) -> str:
     rms_mean = np.mean(noise_result.rms_noise)
     rms_std = np.std(noise_result.rms_noise)
     stats.append(f"RMS: {rms_mean:.2e} ± {rms_std:.2e}")
+
+    ratio = info.get("complex_magnitude_ratio")
+    if isinstance(ratio, (int, float)) and np.isfinite(ratio):
+        flag = " (!)" if info.get("complex_divergence_warn") else ""
+        stats.append(f"mag/complex σ: {ratio:.3f}{flag}")
 
     return "\n".join(stats)

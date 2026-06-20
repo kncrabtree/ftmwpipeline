@@ -191,5 +191,18 @@ is the leakage-pedestal contamination the scatter estimator is designed to
 avoid. The same figure is available from Python through
 :func:`ftmwpipeline.api.visualize_noise` and ``Pipeline.visualize_noise``.
 
+Complex-domain cross-check
+--------------------------
+
+The estimator works on the magnitude spectrum, where pure noise is
+Rayleigh-distributed and a small regime correction is needed to recover σ. As an
+independent guardrail, Stage 2 also computes σ directly from the real and
+imaginary parts over the same noise bins — for pure noise these are symmetric,
+zero-mean Gaussian, needing no regime correction — and records the ratio of the
+two estimates in the diagnostics (``mag/complex σ`` on ``noise show``, with the
+complex curve overlaid). The magnitude estimate normally sits a few percent below
+the complex one; a larger divergence is flagged with a warning, indicating the
+per-bin σ may be biased on that spectrum.
+
 The stored per-bin σ is the input to :doc:`Stage 3 <stage3_peaks>`, which
 thresholds the signal-to-noise ratio of candidate peaks against it.
