@@ -960,13 +960,9 @@ class Pipeline:
 
     def detect_start_time(
         self,
-        sweep_max_us: Optional[float] = None,
-        step_us: Optional[float] = None,
-        guard_margin_us: Optional[float] = None,
-        floor_factor: Optional[float] = None,
+        *,
         band: Optional[Tuple[float, float]] = None,
         stamp: bool = True,
-        *,
         settings: Optional[StartDetectionSettings] = None,
     ) -> StartDetectionResult:
         """Infer a good FID ``start_us`` from the data and stamp it.
@@ -983,64 +979,43 @@ class Pipeline:
 
         Parameters
         ----------
-        sweep_max_us, step_us, guard_margin_us, floor_factor :
-            Individual overrides of the matching
-            :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
-            fields. ``guard_margin_us`` is the instrument-specific ringdown
-            margin added past the chirp end.
         band : tuple of float, optional
-            Explicit ``(min_mhz, max_mhz)`` integration band override.
+            Explicit ``(min_mhz, max_mhz)`` integration band override (a
+            convenience for ``settings`` ``band_min_mhz`` / ``band_max_mhz``).
         stamp : bool, default True
             Whether to persist the recommended ``start_us`` to the recommended
             layer.
         settings : StartDetectionSettings, optional
-            A full settings bundle; the explicit kwargs above win per-field.
+            The detection knobs. Unlike the resolver-backed stages, Stage 0 is a
+            flat bundle with concrete defaults: construct a
+            :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
+            with the fields to override (``sweep_max_us`` / ``step_us`` /
+            ``guard_margin_us`` / ``floor_factor`` / …). ``band`` wins over the
+            bundle's band fields when supplied.
 
         Returns
         -------
         StartDetectionResult
             The recommendation plus diagnostics (chirp-end, sweep arrays).
         """
-        resolved = self._resolve_start_detection_settings(
-            settings,
-            sweep_max_us=sweep_max_us,
-            step_us=step_us,
-            guard_margin_us=guard_margin_us,
-            floor_factor=floor_factor,
-            band=band,
-        )
+        resolved = self._apply_band_override(settings, band)
         result = detect_start_time_impl(
             str(self.filepath), settings=resolved, stamp=stamp
         )
         return cast(StartDetectionResult, result["start_detection"])
 
     @staticmethod
-    def _resolve_start_detection_settings(
+    def _apply_band_override(
         settings: Optional[StartDetectionSettings],
-        *,
-        sweep_max_us: Optional[float],
-        step_us: Optional[float],
-        guard_margin_us: Optional[float],
-        floor_factor: Optional[float],
         band: Optional[Tuple[float, float]],
     ) -> StartDetectionSettings:
-        """Overlay explicit per-knob kwargs onto a base settings bundle."""
+        """Fold the ``band`` convenience tuple onto a base settings bundle."""
+        base = settings or StartDetectionSettings()
+        if band is None:
+            return base
         from dataclasses import replace
 
-        base = settings or StartDetectionSettings()
-        overrides: Dict[str, Any] = {}
-        if sweep_max_us is not None:
-            overrides["sweep_max_us"] = float(sweep_max_us)
-        if step_us is not None:
-            overrides["step_us"] = float(step_us)
-        if guard_margin_us is not None:
-            overrides["guard_margin_us"] = float(guard_margin_us)
-        if floor_factor is not None:
-            overrides["floor_factor"] = float(floor_factor)
-        if band is not None:
-            overrides["band_min_mhz"] = float(band[0])
-            overrides["band_max_mhz"] = float(band[1])
-        return replace(base, **overrides) if overrides else base
+        return replace(base, band_min_mhz=float(band[0]), band_max_mhz=float(band[1]))
 
     def visualize_start_detection(
         self,

@@ -260,13 +260,9 @@ def validate_pipeline(file_path: Union[str, Path]) -> Dict[str, Any]:
 
 def detect_start_time(
     file_path: Union[str, Path],
-    sweep_max_us: Optional[float] = None,
-    step_us: Optional[float] = None,
-    guard_margin_us: Optional[float] = None,
-    floor_factor: Optional[float] = None,
+    *,
     band: Optional[Tuple[float, float]] = None,
     stamp: bool = True,
-    *,
     settings: Optional[StartDetectionSettings] = None,
 ) -> StartDetectionResult:
     """Infer a good FID ``start_us`` from the data, equivalent to
@@ -284,16 +280,17 @@ def detect_start_time(
     ----------
     file_path : str or Path
         Path to a ``.ftmw`` file with the FID imported.
-    sweep_max_us, step_us, guard_margin_us, floor_factor :
-        Individual overrides of the matching
-        :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
-        fields.
     band : tuple of float, optional
-        Explicit ``(min_mhz, max_mhz)`` integration band override.
+        Explicit ``(min_mhz, max_mhz)`` integration band override (a convenience
+        for the ``settings`` band fields).
     stamp : bool, default True
         Whether to persist the recommended ``start_us``.
     settings : StartDetectionSettings, optional
-        A full settings bundle; the explicit kwargs above win per-field.
+        The detection knobs. Stage 0 is a flat bundle with concrete defaults:
+        construct a
+        :class:`~ftmwpipeline.core.start_detection_settings.StartDetectionSettings`
+        with the fields to override (``sweep_max_us`` / ``step_us`` /
+        ``guard_margin_us`` / ``floor_factor`` / …).
 
     Returns
     -------
@@ -303,10 +300,6 @@ def detect_start_time(
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.detect_start_time(
-            sweep_max_us=sweep_max_us,
-            step_us=step_us,
-            guard_margin_us=guard_margin_us,
-            floor_factor=floor_factor,
             band=band,
             stamp=stamp,
             settings=settings,

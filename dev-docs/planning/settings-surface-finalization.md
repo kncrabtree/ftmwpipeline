@@ -1,6 +1,6 @@
 # Plan: settings-surface finalization — remove legacy kwargs, unify the knob declaration
 
-Status: **Planning.** Endgame of the settings backfill
+Status: **Implemented.** Endgame of the settings backfill
 ([`settings-backfill.md`](settings-backfill.md)): retire the legacy per-knob
 keyword arguments now that the resolver, persistence, presets, and the
 `settings`/`scan` surface are all live, and collapse the per-knob declaration
@@ -25,7 +25,19 @@ tracks.
 | 3 | **done** | **done** | **done** | **done** |
 | 4 | **done** | **done** | **done** | **done** |
 | 5 | **done** | **done** | **done** | **done** |
-| 0 (outlier) | pending | pending | pending | n/a |
+| 0 (outlier) | n/a | **done** | n/a | n/a |
+
+Stage 0 was the lightest: its impl (`detect_start_time_impl`) and CLI
+(`start_commands.py`, which already builds a `StartDetectionSettings` from its
+flags) were settings-only already. Only the `api`/`Pipeline` wrappers carried
+the four per-knob kwargs (`sweep_max_us` / `step_us` / `guard_margin_us` /
+`floor_factor`); those were removed, leaving `band` (a convenience tuple folded
+onto the bundle's band fields), `stamp`, and `settings=`. `StartDetectionSettings`
+stays a flat, frozen, concrete-default bundle — it is *not* on the `None`-sentinel
+resolver/preset model (no persisted-settings layer; the stage stamps a
+recommended `start_us`, not a settings record), so it has no `knob_field`
+metadata, no generated flags, and no settings-vs-persisted precedence. The CLI
+keeps its hand-rolled flags.
 
 Stage 5 kept three explicit args rather than folding them into a generated
 flag: `shape` (the lineshape selector / Stage 2b twin chooser) and the
