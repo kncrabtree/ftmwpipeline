@@ -163,10 +163,14 @@ argument (``--gaussian`` on the command line):
   margin) and applies a higher signal-to-noise floor, so its eligible pool is
   smaller. Its result is stored at ``/stage2b_tau_G_calibration``.
 
-The two are independent and can coexist on one ``.ftmw`` file. The Stage 5 fit
-consumes the variant that matches the shape it is fitting; if that variant is
-absent, it falls back to a default decay time of one third of the active-region
-length.
+The two variants are alternative-shape fits to the **same** underlying decay —
+one forces a pure-exponential envelope, the other a pure-Gaussian one — not two
+physical decay times the molecule has at once. Both can be stored on a single
+``.ftmw`` file simultaneously: when the shape vote (below) names the variant a
+run did not just compute, the run also builds that one, so whichever shape the
+Stage 5 fit ends up using, its matching decay time is already on the file. If the
+matching variant is absent, the fit falls back to a default decay time of one
+third of the active-region length.
 
 The line-shape recommendation
 ------------------------------
@@ -297,7 +301,10 @@ decay time:
    signal-to-noise. Bottom left: decay time versus molecular frequency, showing
    the band-to-band trend the per-band majorities capture. Bottom right: the
    one- versus two-component Gaussian-mixture fit used for the multimodality
-   flag.
+   flag. The two decay-time scatters cap their axis at one and a half times the
+   active-region length — decay times beyond that are not reliably measurable —
+   and flag any contributor above the cap as an open triangle along the top
+   edge.
 
 The same figures are available from Python through
 :func:`ftmwpipeline.api.visualize_tau_distribution` and

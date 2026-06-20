@@ -139,14 +139,65 @@ def plot_tau_heatmap_from_file(
 # ---------------------------------------------------------------------------
 # Distribution analysis
 # ---------------------------------------------------------------------------
+def _scatter_with_tau_cap(
+    ax: Any, x: np.ndarray, y: np.ndarray, cap: Optional[float], *, color: str
+) -> None:
+    """Scatter ``(x, y)`` with the decay-time axis ``y`` capped at ``cap``.
+
+    Decay times longer than the active-region length cannot be measured
+    reliably, so the panel's y-axis stops at ``cap``; bins above it are drawn
+    as open upward triangles along the ceiling to flag the off-screen data
+    without letting it stretch the axis. ``cap=None`` falls back to a plain
+    scatter.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if cap is None or not np.isfinite(cap) or cap <= 0:
+        ax.scatter(x, y, s=2, alpha=0.4, color=color)
+        return
+    over = y > cap
+    if (~over).any():
+        ax.scatter(x[~over], y[~over], s=2, alpha=0.4, color=color)
+    n_over = int(over.sum())
+    if n_over:
+        ax.scatter(
+            x[over],
+            np.full(n_over, cap),
+            s=16,
+            marker="^",
+            facecolors="none",
+            edgecolors=color,
+            linewidths=0.6,
+            alpha=0.7,
+        )
+        ax.text(
+            0.02,
+            0.97,
+            f"△ {n_over} bins > {cap:.0f} us",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=7,
+            color=color,
+        )
+    ax.set_ylim(0.0, cap * 1.08)
+
+
 def plot_tau_distribution(
     result: TauCalibrationResult,
     *,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
     n_bins: int = 80,
+    tau_cap_factor: float = 1.5,
 ) -> "matplotlib.figure.Figure":
-    """Four-panel distribution analysis: histogram, tau-vs-SNR, tau-vs-freq, GMM."""
+    """Four-panel distribution analysis: histogram, tau-vs-SNR, tau-vs-freq, GMM.
+
+    The two decay-time scatters cap their y-axis at ``tau_cap_factor`` times the
+    active-region length (decay times beyond that are not reliably measurable);
+    contributors above the cap are flagged as open upward triangles along the
+    top edge rather than allowed to stretch the axis.
+    """
     fig, axes = plt.subplots(2, 2, figsize=_figsize_or_default(figsize, (14, 8)))
 
     taus = np.asarray(result.contributor_taus_us)
@@ -155,6 +206,11 @@ def plot_tau_distribution(
     tau_maj = result.tau_maj_us
     sigma_tau = result.sigma_tau_us
     bm = result.bimodality
+
+    # Decay times longer than ~the active-region length are not reliably
+    # measurable; cap the decay-time scatters there and flag anything above.
+    t_active = float(result.end_us - result.start_us)
+    tau_cap = float(tau_cap_factor) * t_active if t_active > 0 else None
 
     # 1. Histogram
     ax = axes[0, 0]
@@ -181,7 +237,7 @@ def plot_tau_distribution(
     # 2. tau vs SNR
     ax = axes[0, 1]
     if snrs.size > 0:
-        ax.scatter(snrs, taus, s=2, alpha=0.4, color=AGGIE_BLUE)
+        _scatter_with_tau_cap(ax, snrs, taus, tau_cap, color=AGGIE_BLUE)
         ax.set_xscale("log")
     ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=1)
     ax.set_xlabel("contributor on-line SNR (per-frame)")
@@ -192,7 +248,7 @@ def plot_tau_distribution(
     # 3. tau vs molecular freq
     ax = axes[1, 0]
     if freqs.size > 0:
-        ax.scatter(freqs, taus, s=2, alpha=0.4, color=AGGIE_BLUE)
+        _scatter_with_tau_cap(ax, freqs, taus, tau_cap, color=AGGIE_BLUE)
     ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=1)
     ax.set_xlabel("molecular frequency (MHz)")
     ax.set_ylabel("tau_k (us)")
