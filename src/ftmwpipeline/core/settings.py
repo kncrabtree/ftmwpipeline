@@ -33,6 +33,8 @@ the local ``__None__`` HDF5 marker convention shared with
 from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from .knob_metadata import knob_field
+
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
 
@@ -70,9 +72,12 @@ def cli_field(
 ) -> Any:
     """Declare an ``FTSettings`` field that is also exposed as a CLI option.
 
-    The default is always ``None`` (the unset sentinel); concrete values come
-    from the resolution chain, never from the dataclass default, so the
-    precedence order stays intact.
+    Thin Stage 1 spelling of the stage-agnostic
+    :func:`ftmwpipeline.core.knob_metadata.knob_field` (``cli=True``): it
+    predates ``knob_field`` and is kept so the ``FTSettings`` declarations read
+    naturally. The default is always ``None`` (the unset sentinel); concrete
+    values come from the resolution chain, never from the dataclass default, so
+    the precedence order stays intact.
 
     Parameters
     ----------
@@ -91,17 +96,13 @@ def cli_field(
         Tri-state boolean rendered with ``BooleanOptionalAction``
         (``--x`` / ``--no-x``).
     """
-    return field(
-        default=None,
-        metadata={
-            "cli": {
-                "help": help,
-                "flag": flag,
-                "argtype": argtype,
-                "metavar": metavar,
-                "is_flag": is_flag,
-            }
-        },
+    return knob_field(
+        help=help,
+        cli=True,
+        flag=flag,
+        argtype=argtype,
+        metavar=metavar,
+        is_flag=is_flag,
     )
 
 

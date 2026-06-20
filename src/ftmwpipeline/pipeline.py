@@ -567,14 +567,6 @@ class Pipeline:
     def estimate_noise(
         self,
         *,
-        window_mhz: Optional[float] = None,
-        pedestal_mhz: Optional[float] = None,
-        line_k: Optional[float] = None,
-        n_iter: Optional[int] = None,
-        region_aware: Optional[bool] = None,
-        smoothing_mhz: Optional[float] = None,
-        smoothing_percentile: Optional[float] = None,
-        convolve_mhz: Optional[float] = None,
         settings: Optional[NoiseSettings] = None,
         preset: Optional[str] = None,
     ) -> NoiseResult:
@@ -589,16 +581,13 @@ class Pipeline:
 
         Parameters
         ----------
-        window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
-        smoothing_percentile, convolve_mhz
-            Scatter-estimator knobs; each defaults to the kernel's hard default
-            when left unset. ``smoothing_mhz`` / ``smoothing_percentile`` control
-            the broad lower-envelope median σ smoothing that rides the noise
-            floor through line-dense bands (``smoothing_mhz=0`` disables it);
-            ``convolve_mhz`` is the Gaussian σ of the second pass that removes
-            the median's staircase.
         settings, preset
-            Alternative ways to populate the preset layer of the settings chain.
+            Mutually-exclusive ways to populate the preset layer of the settings
+            chain (a ``NoiseSettings`` bundle or a YAML preset's ``stage2:``
+            block). Individual knobs (``window_mhz`` / ``smoothing_mhz`` /
+            ``smoothing_percentile`` / ``convolve_mhz`` / …) are set on the
+            ``NoiseSettings`` instance; a value persisted in the ``.ftmw``
+            outranks either, so a no-arg call reproduces it.
 
         Returns
         -------
@@ -618,14 +607,6 @@ class Pipeline:
             # Compute noise estimation using shared implementation (handles dependency checking and storage)
             result = compute_noise_estimation_impl(
                 file_path=str(self.filepath),
-                window_mhz=window_mhz,
-                pedestal_mhz=pedestal_mhz,
-                line_k=line_k,
-                n_iter=n_iter,
-                region_aware=region_aware,
-                smoothing_mhz=smoothing_mhz,
-                smoothing_percentile=smoothing_percentile,
-                convolve_mhz=convolve_mhz,
                 settings=settings,
                 preset=preset,
             )

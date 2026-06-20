@@ -32,7 +32,6 @@ from ..preprocessing.noise_estimation import (
     estimate_active_ft_noise,
 )
 from .active_ft_support import build_trimmed_active_ft
-from .deprecation import warn_legacy_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -46,45 +45,9 @@ def _required(value: Any, name: str) -> Any:
     return value
 
 
-def _build_scatter_explicit_from_kwargs(
-    *,
-    window_mhz: Optional[float],
-    pedestal_mhz: Optional[float],
-    line_k: Optional[float],
-    n_iter: Optional[int],
-    region_aware: Optional[bool],
-    smoothing_mhz: Optional[float],
-    smoothing_percentile: Optional[float],
-    convolve_mhz: Optional[float],
-) -> NoiseSettings:
-    """Bundle the scatter per-knob kwargs into an explicit-layer settings instance.
-
-    Builds an explicit-layer ``NoiseSettings`` so the resolver merges it with
-    any preset / persisted layer.
-    """
-    return NoiseSettings(
-        window_mhz=window_mhz,
-        pedestal_mhz=pedestal_mhz,
-        line_k=line_k,
-        n_iter=n_iter,
-        region_aware=region_aware,
-        smoothing_mhz=smoothing_mhz,
-        smoothing_percentile=smoothing_percentile,
-        convolve_mhz=convolve_mhz,
-    )
-
-
 def compute_noise_estimation_impl(
     file_path: str,
     *,
-    window_mhz: Optional[float] = None,
-    pedestal_mhz: Optional[float] = None,
-    line_k: Optional[float] = None,
-    n_iter: Optional[int] = None,
-    region_aware: Optional[bool] = None,
-    smoothing_mhz: Optional[float] = None,
-    smoothing_percentile: Optional[float] = None,
-    convolve_mhz: Optional[float] = None,
     settings: Optional[NoiseSettings] = None,
     preset: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -92,21 +55,21 @@ def compute_noise_estimation_impl(
     Shared implementation for Stage 2 noise estimation from .ftmw files.
 
     Runs the scatter (high-pass, region-aware) estimator on the ComplexFT
-    computed on-demand from the persisted Stage 1 parameters. The scatter
-    ``scatter`` sub-block resolves through the four-layer chain (explicit
-    per-knob kwargs > preset/settings > persisted > hard default), the
-    NoiseResult is stored in ``stage2_noise_result``, and the resolved
-    settings are persisted to ``processing_parameters/stage2_noise``.
+    computed on-demand from the persisted Stage 1 parameters. The settings
+    resolve through the chain (``settings`` / ``preset`` > persisted > hard
+    default), the NoiseResult is stored in ``stage2_noise_result``, and the
+    resolved settings are persisted to ``processing_parameters/stage2_noise``.
 
     Parameters
     ----------
     file_path : str
         Path to the .ftmw pipeline file.
-    window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
-    smoothing_percentile, convolve_mhz :
-        Scatter-estimator per-knob overrides (the explicit layer).
     settings, preset :
-        Alternative ways to populate the preset layer of the chain.
+        Mutually-exclusive ways to populate the preset layer of the resolver.
+        A value persisted in the ``.ftmw`` outranks either (D11), so a no-arg
+        follow-up call reproduces the previously resolved settings. Individual
+        knobs are set via ``settings=NoiseSettings(...)`` or a YAML preset's
+        ``stage2:`` block.
 
     Returns
     -------
@@ -121,24 +84,6 @@ def compute_noise_estimation_impl(
     ValueError
         If Stage 1 dependencies are not met or parameters are invalid.
     """
-    warn_legacy_kwargs(
-        func_name="estimate_noise",
-        legacy_kwargs={
-            "window_mhz": window_mhz,
-            "pedestal_mhz": pedestal_mhz,
-            "line_k": line_k,
-            "n_iter": n_iter,
-            "region_aware": region_aware,
-            "smoothing_mhz": smoothing_mhz,
-            "smoothing_percentile": smoothing_percentile,
-            "convolve_mhz": convolve_mhz,
-        },
-        migration_hint=(
-            "use settings=NoiseSettings(...) or preset='name' to drive "
-            "Stage 2 from the settings resolver"
-        ),
-    )
-
     # Compute ComplexFT on-demand using Stage 1 implementation (correct architecture)
     try:
         # Check that Stage 1 parameters are available (Stage 1 dependency)
@@ -170,27 +115,16 @@ def compute_noise_estimation_impl(
 
     if preset is not None and settings is not None:
         raise ValueError(
-            "'preset' and 'settings' are alternative ways to populate "
-            "the preset layer of the noise-settings chain; pass exactly "
-            "one (or override individual fields via explicit kwargs)"
+            "'preset' and 'settings' are mutually-exclusive ways to populate "
+            "the preset layer of the noise-settings chain; pass exactly one"
         )
-    scatter_explicit = _build_scatter_explicit_from_kwargs(
-        window_mhz=window_mhz,
-        pedestal_mhz=pedestal_mhz,
-        line_k=line_k,
-        n_iter=n_iter,
-        region_aware=region_aware,
-        smoothing_mhz=smoothing_mhz,
-        smoothing_percentile=smoothing_percentile,
-        convolve_mhz=convolve_mhz,
-    )
     scatter_preset_layer = settings
     scatter_preset_name: Optional[str] = None
     if preset is not None:
         scatter_preset_layer = load_noise_preset(preset)
         scatter_preset_name = str(preset)
     scatter_resolved = resolve_noise_settings(
-        explicit=scatter_explicit,
+        explicit=None,
         preset=scatter_preset_layer,
         persisted=load_noise_settings_from_h5(file_path),
         recommended=None,

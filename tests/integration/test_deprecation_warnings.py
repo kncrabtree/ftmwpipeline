@@ -51,16 +51,13 @@ def _swallow_downstream_errors():
 
 
 class TestImplLevelWarnings:
-    """Each impl emits ``DeprecationWarning`` for legacy per-knob kwargs."""
+    """Each not-yet-finalized impl emits ``DeprecationWarning`` for legacy
+    per-knob kwargs.
 
-    def test_stage2_estimate_noise_scatter_legacy_kwarg(self, tmp_path) -> None:
-        bogus = tmp_path / "no_such.ftmw"
-        with pytest.warns(DeprecationWarning, match=r"estimate_noise.*window_mhz"):
-            with _swallow_downstream_errors():
-                stage2_impl.compute_noise_estimation_impl(
-                    str(bogus),
-                    window_mhz=60.0,
-                )
+    Stage 2 is absent: its legacy per-knob kwargs were removed (the surface is
+    ``settings=`` / ``preset=`` only), so there is nothing left to warn about.
+    The remaining stages keep the shim until they are finalized in turn.
+    """
 
     def test_stage2b_calibrate_tau_legacy_kwarg(self, tmp_path) -> None:
         bogus = tmp_path / "no_such.ftmw"
@@ -125,17 +122,18 @@ class TestImplLevelWarnings:
 class TestApiChainPropagation:
     """One end-to-end test proves the api/Pipeline pass legacy kwargs to impl.
 
-    Stage 2 is the cheapest (only needs Stage 1 baseline); the impls are
-    thin enough that passing through ``ftmw.estimate_noise`` is
-    representative of every stage's wrapper chain.
+    The warning originates in the impl, so this needs a real file (the api
+    wrapper opens the pipeline before reaching the impl). Stage 3 is the
+    cheapest still-shimmed stage with a ready baseline; the impls are thin
+    enough that one such proof is representative of every stage's wrapper chain.
     """
 
-    def test_api_estimate_noise_emits_warning_for_legacy_kwarg(
+    def test_api_detect_peaks_emits_warning_for_legacy_kwarg(
         self,
-        baseline_2638_stage1,
+        baseline_2638_stage2,
         tmp_path,
     ) -> None:
         fp = tmp_path / "warn_api.ftmw"
-        shutil.copy(baseline_2638_stage1, fp)
-        with pytest.warns(DeprecationWarning, match=r"estimate_noise.*window_mhz"):
-            ftmw.estimate_noise(str(fp), window_mhz=60.0)
+        shutil.copy(baseline_2638_stage2, fp)
+        with pytest.warns(DeprecationWarning, match=r"detect_peaks.*min_snr"):
+            ftmw.detect_peaks(str(fp), min_snr=4.0)

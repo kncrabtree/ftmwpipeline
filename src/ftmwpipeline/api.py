@@ -551,14 +551,6 @@ def save_ft_parameters(file_path: Union[str, Path], parameters: Dict[str, Any]) 
 def estimate_noise(
     file_path: Union[str, Path],
     *,
-    window_mhz: Optional[float] = None,
-    pedestal_mhz: Optional[float] = None,
-    line_k: Optional[float] = None,
-    n_iter: Optional[int] = None,
-    region_aware: Optional[bool] = None,
-    smoothing_mhz: Optional[float] = None,
-    smoothing_percentile: Optional[float] = None,
-    convolve_mhz: Optional[float] = None,
     settings: Optional[NoiseSettings] = None,
     preset: Optional[str] = None,
 ) -> NoiseResult:
@@ -573,15 +565,13 @@ def estimate_noise(
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file containing ComplexFT data
-    window_mhz, pedestal_mhz, line_k, n_iter, region_aware, smoothing_mhz,
-    smoothing_percentile, convolve_mhz
-        Scatter-estimator knobs; each defaults to the kernel's hard default
-        when left unset. ``smoothing_mhz`` / ``smoothing_percentile`` set the
-        broad lower-envelope median σ smoothing (``smoothing_mhz=0`` disables
-        it); ``convolve_mhz`` is the Gaussian σ of the second step-removing
-        pass.
     settings, preset :
-        Alternative ways to populate the preset layer of the settings chain.
+        Mutually-exclusive ways to populate the preset layer of the settings
+        chain (a ``NoiseSettings`` bundle or a YAML preset's ``stage2:`` block).
+        Individual scatter knobs (``window_mhz`` / ``smoothing_mhz`` /
+        ``smoothing_percentile`` / ``convolve_mhz`` / …) are set on the
+        ``NoiseSettings`` instance; a value persisted in the ``.ftmw`` outranks
+        either, so a no-arg call reproduces it.
 
     Returns
     -------
@@ -600,25 +590,20 @@ def estimate_noise(
     Examples
     --------
     >>> import ftmwpipeline.api as ftmw
+    >>> from ftmwpipeline.core.noise_settings import NoiseSettings
     >>> # First compute FT if not already done
     >>> ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
     >>> # Estimate noise with default parameters
     >>> noise_result = ftmw.estimate_noise("experiment.ftmw")
     >>> # Override a scatter knob
-    >>> noise_result = ftmw.estimate_noise("experiment.ftmw", window_mhz=120.0)
+    >>> noise_result = ftmw.estimate_noise(
+    ...     "experiment.ftmw", settings=NoiseSettings(window_mhz=120.0)
+    ... )
     """
     try:
         # Delegate to Pipeline class for consistent behavior
         pipeline = Pipeline.open(file_path)
         return pipeline.estimate_noise(
-            window_mhz=window_mhz,
-            pedestal_mhz=pedestal_mhz,
-            line_k=line_k,
-            n_iter=n_iter,
-            region_aware=region_aware,
-            smoothing_mhz=smoothing_mhz,
-            smoothing_percentile=smoothing_percentile,
-            convolve_mhz=convolve_mhz,
             settings=settings,
             preset=preset,
         )

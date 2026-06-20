@@ -45,6 +45,8 @@ from typing import Any, Dict, Mapping, Optional, Union, cast
 
 import yaml  # type: ignore[import-untyped]
 
+from .knob_metadata import knob_field
+
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
 
@@ -56,14 +58,70 @@ class NoiseSettings:
     The fields mirror the ``estimate_noise_scatter`` kernel signature.
     """
 
-    window_mhz: Optional[float] = None
-    pedestal_mhz: Optional[float] = None
-    line_k: Optional[float] = None
-    n_iter: Optional[int] = None
-    region_aware: Optional[bool] = None
-    smoothing_mhz: Optional[float] = None
-    smoothing_percentile: Optional[float] = None
-    convolve_mhz: Optional[float] = None
+    window_mhz: Optional[float] = knob_field(
+        help="Width of the per-region scatter-MAD window (scale over which "
+        "sigma(f) is constant).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(40.0, 60.0, 80.0, 120.0, 160.0),
+        cli=True,
+        argtype=float,
+    )
+    pedestal_mhz: Optional[float] = knob_field(
+        help="High-pass running-median width isolating the smooth leakage "
+        "pedestal.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(10.0, 20.0, 40.0, 80.0),
+        cli=True,
+        argtype=float,
+    )
+    line_k: Optional[float] = knob_field(
+        help="Robust-sigma multiple above which a bin is flagged a line "
+        "(excluded).",
+        inst_sensitivity="maybe",
+        grid=(4.0, 6.0, 8.0, 12.0),
+        cli=True,
+        argtype=float,
+    )
+    n_iter: Optional[int] = knob_field(
+        help="Self-mask refinement iterations of the scatter estimator.",
+        grid=(1, 2, 3, 5),
+        cli=True,
+        argtype=int,
+    )
+    region_aware: Optional[bool] = knob_field(
+        help="Use the region-aware Rician correction (else a fixed mid-regime "
+        "factor).",
+        inst_sensitivity="maybe",
+        grid=(False, True),
+        cli=True,
+        is_flag=True,
+    )
+    smoothing_mhz: Optional[float] = knob_field(
+        help="Broad lower-envelope median sigma smoothing width (0 disables).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.0, 400.0, 800.0, 1200.0),
+        cli=True,
+        argtype=float,
+    )
+    smoothing_percentile: Optional[float] = knob_field(
+        help="Percentile of the broad sigma smoothing (50=median; "
+        "lower=lower-envelope).",
+        inst_sensitivity="maybe",
+        grid=(25.0, 50.0, 75.0),
+        cli=True,
+        argtype=float,
+    )
+    convolve_mhz: Optional[float] = knob_field(
+        help="Gaussian sigma (MHz) of the second, step-removing smoothing pass "
+        "(0=off).",
+        inst_sensitivity="maybe",
+        grid=(0.0, 100.0, 200.0, 400.0),
+        cli=True,
+        argtype=float,
+    )
 
     def is_empty(self) -> bool:
         """True if no field is set."""

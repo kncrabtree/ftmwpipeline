@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
+from ...core import noise_settings
+from ...core.knob_metadata import field_knob_meta
 from .fit_support import reduce_plan_for_fit
 from .plots import (
     plot_fit_quality,
@@ -852,97 +854,37 @@ _register(
 )
 
 # Stage 2 noise — scatter estimator (the canonical default). Requires Stage 1.
-_register(
-    KnobSpec(
-        path="stage2.window_mhz",
-        stage="stage2_noise",
-        requires="stage1_complex_ft",
-        help="Width of the per-region scatter-MAD window (scale over which sigma(f) is constant).",
-        inst_sensitivity="Y",
-        default_grid=(40.0, 60.0, 80.0, 120.0, 160.0),
-        run=_run_noise("window_mhz"),
-        metric=_metric_noise,
-        metric_columns=("median_sigma", "noise_fraction"),
-        plot=plot_noise_sweep,
-    )
-)
-_register(
-    KnobSpec(
-        path="stage2.pedestal_mhz",
-        stage="stage2_noise",
-        requires="stage1_complex_ft",
-        help="High-pass running-median width isolating the smooth leakage pedestal.",
-        inst_sensitivity="Y",
-        default_grid=(10.0, 20.0, 40.0, 80.0),
-        run=_run_noise("pedestal_mhz"),
-        metric=_metric_noise,
-        metric_columns=("median_sigma", "noise_fraction"),
-        plot=plot_noise_sweep,
-    )
-)
-_register(
-    KnobSpec(
-        path="stage2.smoothing_mhz",
-        stage="stage2_noise",
-        requires="stage1_complex_ft",
-        help="Broad lower-envelope median sigma smoothing width (0 disables).",
-        inst_sensitivity="Y",
-        default_grid=(0.0, 400.0, 800.0, 1200.0),
-        run=_run_noise("smoothing_mhz"),
-        metric=_metric_noise,
-        metric_columns=("median_sigma", "noise_fraction"),
-        plot=plot_noise_sweep,
-    )
-)
-
-# Stage 2 advanced — remaining scatter knobs. All re-run Stage 2 and report the
-# same sigma trend + sigma(f)-over-spectrum overlay.
+# The descriptors (help / tier / inst_sensitivity / grid) are read from the
+# NoiseSettings field metadata — the single knob declaration site — so the
+# registry carries only the sweep behavior (run / metric / plot). All knobs
+# re-run Stage 2 and report the same sigma trend + sigma(f)-over-spectrum
+# overlay.
 _NOISE_COLS = ("median_sigma", "noise_fraction")
-for _field, _help, _grid, _inst in (
-    (
-        "line_k",
-        "Robust-sigma multiple above which a bin is flagged a line (excluded).",
-        (4.0, 6.0, 8.0, 12.0),
-        "maybe",
-    ),
-    (
-        "n_iter",
-        "Self-mask refinement iterations of the scatter estimator.",
-        (1, 2, 3, 5),
-        "N",
-    ),
-    (
-        "region_aware",
-        "Use the region-aware Rician correction (else a fixed mid-regime factor).",
-        (False, True),
-        "maybe",
-    ),
-    (
-        "smoothing_percentile",
-        "Percentile of the broad sigma smoothing (50=median; lower=lower-envelope).",
-        (25.0, 50.0, 75.0),
-        "maybe",
-    ),
-    (
-        "convolve_mhz",
-        "Gaussian sigma (MHz) of the second, step-removing smoothing pass (0=off).",
-        (0.0, 100.0, 200.0, 400.0),
-        "maybe",
-    ),
+for _field in (
+    "window_mhz",
+    "pedestal_mhz",
+    "smoothing_mhz",
+    "line_k",
+    "n_iter",
+    "region_aware",
+    "smoothing_percentile",
+    "convolve_mhz",
 ):
+    _km = field_knob_meta(noise_settings.NoiseSettings, _field)
+    assert _km.grid is not None, f"stage2.{_field} registered without a sweep grid"
     _register(
         KnobSpec(
             path=f"stage2.{_field}",
             stage="stage2_noise",
             requires="stage1_complex_ft",
-            help=_help,
-            inst_sensitivity=_inst,
-            default_grid=_grid,
+            help=_km.help,
+            inst_sensitivity=_km.inst_sensitivity,
+            default_grid=_km.grid,
             run=_run_noise(_field),
             metric=_metric_noise,
             metric_columns=_NOISE_COLS,
             plot=plot_noise_sweep,
-            tier="advanced",
+            tier=_km.tier,
         )
     )
 

@@ -15,6 +15,8 @@ from .._internal.stage2_impl import (
     compute_noise_estimation_impl,
     visualize_noise_impl,
 )
+from ..core.noise_settings import NoiseSettings
+from ._argspec import add_settings_args, settings_from_namespace
 from .utils import (
     add_stage_object,
     print_error,
@@ -51,41 +53,35 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
         if not file_path.endswith(".ftmw"):
             file_path = file_path + ".ftmw"
 
-        # Prepare parameters, filtering out None values
-        params = {}
-        if args.preset is not None:
-            params["preset"] = args.preset
-
-        # Scatter (high-pass) estimator knobs.
-        if args.region_aware is not None:
-            params["region_aware"] = args.region_aware
-        if args.window_mhz is not None:
-            params["window_mhz"] = args.window_mhz
-        if args.pedestal_mhz is not None:
-            params["pedestal_mhz"] = args.pedestal_mhz
-        if args.line_k is not None:
-            params["line_k"] = args.line_k
-        if args.n_iter is not None:
-            params["n_iter"] = args.n_iter
-        if args.smoothing_mhz is not None:
-            params["smoothing_mhz"] = args.smoothing_mhz
-        if args.smoothing_percentile is not None:
-            params["smoothing_percentile"] = args.smoothing_percentile
-        if args.convolve_mhz is not None:
-            params["convolve_mhz"] = args.convolve_mhz
+        # The per-knob flags are generated from NoiseSettings field metadata;
+        # reconstruct a sparse settings bundle (unset fields fall through the
+        # resolver). --preset is mutually exclusive with explicit knobs.
+        settings = settings_from_namespace(args, NoiseSettings)
+        preset = args.preset
+        if preset is not None and not settings.is_empty():
+            print_error(
+                "--preset and per-knob flags are mutually exclusive; pass one"
+            )
+            return 1
 
         print(f"Estimating noise for: {file_path}")
 
-        # Print parameters being used
-        if params:
+        overrides = settings.to_yaml_dict() if not settings.is_empty() else {}
+        if preset is not None:
+            print(f"Using preset: {preset}")
+        elif overrides:
             print("\nNoise estimation parameters:")
-            for param, value in params.items():
+            for param, value in overrides.items():
                 print(f"  {param}: {value}")
         else:
             print("Using default parameters for all settings")
 
         # Perform noise estimation using shared implementation
-        result = compute_noise_estimation_impl(file_path=file_path, **params)
+        result = compute_noise_estimation_impl(
+            file_path=file_path,
+            settings=None if settings.is_empty() else settings,
+            preset=preset,
+        )
 
         noise_result = result["noise_result"]
 
@@ -299,61 +295,13 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help=(
             "Stage 2 preset to apply (bare packaged name or path to a "
-            "YAML file). Mutually exclusive with per-knob flags that "
-            "explicitly set the same field."
+            "YAML file). Mutually exclusive with per-knob flags."
         ),
     )
 
-    # Scatter (high-pass) estimator knobs.
-    parser_estimate.add_argument(
-        "--no-region-aware",
-        dest="region_aware",
-        action="store_false",
-        default=None,
-        help="Scatter estimator: use the fixed mid-regime factor instead of the "
-        "Rician C(R) lookup",
-    )
-    parser_estimate.add_argument(
-        "--window-mhz",
-        type=float,
-        help="Scatter estimator: per-region scatter-MAD window width in MHz "
-        "(default: 80)",
-    )
-    parser_estimate.add_argument(
-        "--pedestal-mhz",
-        type=float,
-        help="Scatter estimator: leakage-pedestal running-median width in MHz "
-        "(default: 20)",
-    )
-    parser_estimate.add_argument(
-        "--line-k",
-        type=float,
-        help="Scatter estimator: robust-sigma multiple flagging a bin as a line "
-        "(default: 8)",
-    )
-    parser_estimate.add_argument(
-        "--n-iter",
-        type=int,
-        help="Scatter estimator: self-mask refinement iterations (default: 3)",
-    )
-    parser_estimate.add_argument(
-        "--smoothing-mhz",
-        type=float,
-        help="Scatter estimator: broad lower-envelope sigma smoothing width in "
-        "MHz (default: 800; 0 disables)",
-    )
-    parser_estimate.add_argument(
-        "--smoothing-percentile",
-        type=float,
-        help="Scatter estimator: smoothing percentile (default: 50 = median; "
-        "lower = more aggressive floor de-inflation)",
-    )
-    parser_estimate.add_argument(
-        "--convolve-mhz",
-        type=float,
-        help="Scatter estimator: Gaussian sigma in MHz of the 2nd "
-        "step-removing smoothing pass (default: 200; 0 disables)",
-    )
+    # Scatter (high-pass) estimator knobs, generated from NoiseSettings field
+    # metadata (the single declaration site shared with `settings` / `scan`).
+    add_settings_args(parser_estimate, NoiseSettings)
 
     # General options
     parser_estimate.add_argument(
