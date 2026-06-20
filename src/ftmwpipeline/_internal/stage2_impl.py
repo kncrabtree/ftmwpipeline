@@ -65,8 +65,10 @@ def compute_noise_estimation_impl(
     file_path : str
         Path to the .ftmw pipeline file.
     settings, preset :
-        Mutually-exclusive ways to populate the preset layer of the resolver.
-        A value persisted in the ``.ftmw`` outranks either (D11), so a no-arg
+        Composable ways to drive the resolver: ``settings`` is the explicit
+        override layer (outranks the persisted record), ``preset`` seeds only
+        the fields neither the explicit layer nor the persisted record has
+        fixed (the persisted record outranks the preset, per D11). A no-arg
         follow-up call reproduces the previously resolved settings. Individual
         knobs are set via ``settings=NoiseSettings(...)`` or a YAML preset's
         ``stage2:`` block.
@@ -113,13 +115,6 @@ def compute_noise_estimation_impl(
             f"Failed to compute ComplexFT from pipeline file {file_path}: {e}"
         )
 
-    if preset is not None and settings is not None:
-        raise ValueError(
-            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
-            "A 'settings' bundle is the explicit override (outranks the "
-            "persisted record); a 'preset' .yml seeds only unfixed fields "
-            "(the persisted record outranks it, per D11)."
-        )
     scatter_preset_layer: Optional[NoiseSettings] = None
     scatter_preset_name: Optional[str] = None
     if preset is not None:

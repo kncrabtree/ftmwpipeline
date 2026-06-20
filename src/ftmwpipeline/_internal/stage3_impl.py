@@ -440,19 +440,14 @@ def detect_peaks_impl(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); pass ``settings=`` to drive detection from a
     :class:`PeakDetectionSettings` dataclass, or ``preset=NAME_OR_PATH`` to
-    load from packaged YAML. They are mutually exclusive, and a value persisted
-    in the ``.ftmw`` outranks either (D11). Returns the full peak list (user
+    load from packaged YAML. They may be combined: a ``settings`` bundle is the
+    explicit override that outranks the persisted record, while a ``preset``
+    seeds only the fields neither the explicit layer nor the persisted record
+    has fixed (the persisted record outranks the preset, per D11). Returns the
+    full peak list (user
     grid) plus diagnostics; also writes ``/stage3_peaks`` and marks the stage
     done.
     """
-    if preset is not None and settings is not None:
-        raise ValueError(
-            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
-            "A 'settings' bundle is the explicit override (outranks the "
-            "persisted record); a 'preset' .yml seeds only unfixed fields "
-            "(the persisted record outranks it, per D11)."
-        )
-
     preset_layer: Optional[PeakDetectionSettings] = None
     preset_name: Optional[str] = None
     if preset is not None:

@@ -106,24 +106,43 @@ def test_scatter_field_reaches_kernel(
         assert kwargs[key] == pytest.approx(value)
 
 
-class TestMutualExclusion:
+class TestSettingsPresetComposition:
     """Passing both ``settings=`` and ``preset=`` to ``compute_noise_estimation_impl``
-    must raise ``ValueError``, matching Stages 5 and 2b."""
+    composes: the ``settings`` bundle is the explicit layer (wins for the field
+    it sets) and the ``preset`` fills a field the explicit layer leaves unset
+    (the persisted record outranks the preset, per D11)."""
 
-    def test_settings_and_preset_both_raises(
+    def test_settings_and_preset_compose(
         self,
         baseline_2638_stage1: Path,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "both_scatter.ftmw"
+        variant = tmp_path / "compose_scatter.ftmw"
         shutil.copyfile(baseline_2638_stage1, variant)
-        s = NoiseSettings()
-        with pytest.raises(ValueError, match=r"mutually|alternative"):
+
+        preset_yaml = tmp_path / "preset.yml"
+        preset_yaml.write_text("stage2:\n  smoothing_mhz: 222.0\n")
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage2_impl, "estimate_active_ft_noise", mock)
+
+        s = NoiseSettings(window_mhz=99.0)
+
+        with pytest.raises(ValueError, match=r"intercepted"):
             stage2_impl.compute_noise_estimation_impl(
                 str(variant),
                 settings=s,
-                preset="instrument_bc_2638",
+                preset=str(preset_yaml),
             )
+
+        kwargs = captured["kwargs"]
+        assert kwargs["window_mhz"] == pytest.approx(
+            99.0
+        ), "explicit settings= window_mhz must win over the preset/default"
+        assert kwargs["smoothing_mhz"] == pytest.approx(222.0), (
+            "preset must fill smoothing_mhz, which the explicit settings= " "left unset"
+        )
 
 
 class TestPersistedLayerInherit:

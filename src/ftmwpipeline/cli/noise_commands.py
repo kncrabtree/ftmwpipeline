@@ -55,25 +55,21 @@ def cmd_estimate_noise(args: argparse.Namespace) -> int:
 
         # The per-knob flags are generated from NoiseSettings field metadata;
         # reconstruct a sparse settings bundle (unset fields fall through the
-        # resolver). --preset is mutually exclusive with explicit knobs.
+        # resolver). A preset and per-knob flags compose: the flags are the
+        # explicit layer, the preset the preset layer beneath the persisted one.
         settings = settings_from_namespace(args, NoiseSettings)
         preset = args.preset
-        if preset is not None and not settings.is_empty():
-            print_error(
-                "--preset and per-knob flags are mutually exclusive; pass one"
-            )
-            return 1
 
         print(f"Estimating noise for: {file_path}")
 
         overrides = settings.to_yaml_dict() if not settings.is_empty() else {}
         if preset is not None:
             print(f"Using preset: {preset}")
-        elif overrides:
+        if overrides:
             print("\nNoise estimation parameters:")
             for param, value in overrides.items():
                 print(f"  {param}: {value}")
-        else:
+        elif preset is None:
             print("Using default parameters for all settings")
 
         # Perform noise estimation using shared implementation
@@ -295,7 +291,9 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help=(
             "Stage 2 preset to apply (bare packaged name or path to a "
-            "YAML file). Mutually exclusive with per-knob flags."
+            "YAML file). Composes with per-knob flags: the flags are the "
+            "explicit layer, the preset the layer beneath the persisted "
+            "record."
         ),
     )
 

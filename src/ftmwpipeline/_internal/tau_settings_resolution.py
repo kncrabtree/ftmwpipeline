@@ -64,11 +64,12 @@ def resolve_with_preset_and_persisted(
 ) -> Tuple[TauCalibrationSettings, Optional[str]]:
     """Walk the Stage 2b resolution chain and return ``(resolved, preset_name)``.
 
-    ``settings`` and ``preset`` are mutually exclusive (the rule mirrors
+    ``settings`` and ``preset`` may be combined (the rule mirrors
     :func:`ftmwpipeline._internal.stage5_impl.fit_peaks_impl`). A passed
     ``settings`` bundle is the *explicit* override (it outranks the
-    persisted record); a ``preset`` .yml seeds only unfixed fields (the
-    persisted record outranks it, per D11). When ``preset`` is a bare
+    persisted record); a ``preset`` .yml seeds only the fields neither the
+    explicit layer nor the persisted record has fixed (the persisted record
+    outranks the preset, per D11). When ``preset`` is a bare
     name or YAML path, it is loaded via
     :func:`ftmwpipeline.core.tau_calibration_settings.load_preset` and
     its name is returned for the audit attr on the persisted settings
@@ -78,13 +79,6 @@ def resolve_with_preset_and_persisted(
     caller's base explicit layer (an empty bundle today); a passed
     ``settings`` supersedes it.
     """
-    if preset is not None and settings is not None:
-        raise ValueError(
-            "'preset' and 'settings' are mutually exclusive; pass exactly "
-            "one. A 'settings' bundle is the explicit override (outranks "
-            "the persisted record); a 'preset' .yml seeds only unfixed "
-            "fields (the persisted record outranks it, per D11)."
-        )
     explicit_layer = settings if settings is not None else explicit
     preset_layer: Optional[TauCalibrationSettings] = None
     preset_name: Optional[str] = None

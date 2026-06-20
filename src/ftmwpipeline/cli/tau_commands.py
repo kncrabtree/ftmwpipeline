@@ -36,12 +36,10 @@ def cmd_calibrate_tau(args: argparse.Namespace) -> int:
 
     # The per-knob flags are generated from TauCalibrationSettings field
     # metadata; reconstruct a sparse settings bundle (unset fields fall through
-    # the resolver). --preset is mutually exclusive with explicit knobs.
+    # the resolver). A preset and per-knob flags compose: the flags are the
+    # explicit layer, the preset the preset layer beneath the persisted one.
     settings = settings_from_namespace(args, TauCalibrationSettings)
     preset = args.preset
-    if preset is not None and not settings.is_empty():
-        print_error("--preset and per-knob flags are mutually exclusive; pass one")
-        return 1
 
     print(f"Running STFT tau calibration for: {file_path}")
     try:
@@ -112,9 +110,6 @@ def cmd_calibrate_tau_G(args: argparse.Namespace) -> int:
         settings.gaussian.min_contributors = settings.aggregation.min_contributors
         settings.aggregation.min_contributors = None
     preset = args.preset
-    if preset is not None and not settings.is_empty():
-        print_error("--preset and per-knob flags are mutually exclusive; pass one")
-        return 1
 
     print(f"Running STFT τ_G (Gaussian-shape) calibration for: {file_path}")
     try:
@@ -300,7 +295,9 @@ def register_tau_commands(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help=(
             "Stage 2b preset to apply (bare packaged name or path to a "
-            "YAML file). Mutually exclusive with per-knob flags."
+            "YAML file). Composes with per-knob flags: the flags are the "
+            "explicit layer, the preset the layer beneath the persisted "
+            "record."
         ),
     )
     parser_cal.add_argument(

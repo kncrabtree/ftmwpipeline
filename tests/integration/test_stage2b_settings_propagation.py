@@ -416,57 +416,115 @@ def test_recommend_shape_field_reaches_kernel(
 
 
 # ---------------------------------------------------------------------------
-# Mutually exclusive `settings=` and `preset=`
+# `settings=` and `preset=` compose
 # ---------------------------------------------------------------------------
-class TestMutualExclusion:
+class TestSettingsPresetComposition:
     """Passing both ``settings=`` and ``preset=`` to any of the three Stage 2b
-    impls must raise the same ``ValueError`` Stage 5 raises in the same
-    situation."""
+    impls composes: the ``settings`` bundle is the explicit layer (wins for the
+    field it sets) and the ``preset`` fills a field the explicit layer leaves
+    unset (the persisted record outranks the preset, per D11)."""
 
-    def test_calibrate_tau_rejects_both(
+    def test_calibrate_tau_composes(
         self,
         baseline_2638_stage2: Path,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "both.ftmw"
+        variant = tmp_path / "compose.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
-        s = TauCalibrationSettings()
-        with pytest.raises(ValueError, match=r"mutually|alternative"):
+
+        preset_yaml = tmp_path / "preset.yml"
+        preset_yaml.write_text("stage2b:\n  stft:\n    t_sigma: 4.5\n")
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage2b_impl, "extract_tau_majority", mock)
+
+        s = TauCalibrationSettings(stft=StftSubSettings(n_seg=7))
+
+        with pytest.raises(_CalibIntercepted):
             stage2b_impl.calibrate_tau_impl(
                 str(variant),
                 settings=s,
-                preset="instrument_bc_2638",
+                preset=str(preset_yaml),
             )
 
-    def test_calibrate_tau_G_rejects_both(
+        kwargs = captured["kwargs"]
+        assert (
+            kwargs["n_seg"] == 7
+        ), "explicit settings= n_seg must win over the preset/default"
+        assert (
+            kwargs["t_sigma"] == 4.5
+        ), "preset must fill t_sigma, which the explicit settings= left unset"
+
+    def test_calibrate_tau_G_composes(
         self,
         baseline_2638_stage2: Path,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "both_G.ftmw"
+        variant = tmp_path / "compose_G.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
-        s = TauCalibrationSettings()
-        with pytest.raises(ValueError, match=r"mutually|alternative"):
+
+        preset_yaml = tmp_path / "preset_G.yml"
+        preset_yaml.write_text("stage2b:\n  stft:\n    t_sigma: 4.5\n")
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage2b_g_impl, "extract_tau_G_majority", mock)
+
+        s = TauCalibrationSettings(stft=StftSubSettings(n_seg=7))
+
+        with pytest.raises(_CalibIntercepted):
             stage2b_g_impl.calibrate_tau_G_impl(
                 str(variant),
                 settings=s,
-                preset="instrument_bc_2638",
+                preset=str(preset_yaml),
             )
 
-    def test_recommend_shape_rejects_both(
+        kwargs = captured["kwargs"]
+        assert (
+            kwargs["n_seg"] == 7
+        ), "explicit settings= n_seg must win over the preset/default"
+        assert (
+            kwargs["t_sigma"] == 4.5
+        ), "preset must fill t_sigma, which the explicit settings= left unset"
+
+    def test_recommend_shape_composes(
         self,
         baseline_2638_stage1: Path,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "both_R.ftmw"
+        variant = tmp_path / "compose_R.ftmw"
         shutil.copyfile(baseline_2638_stage1, variant)
-        s = TauCalibrationSettings()
-        with pytest.raises(ValueError, match=r"mutually|alternative"):
+
+        preset_yaml = tmp_path / "preset_R.yml"
+        preset_yaml.write_text("stage2b:\n  recommendation:\n    tau_bound_lo: 0.3\n")
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(
+            shape_recommendation_impl,
+            "compute_shape_recommendation",
+            mock,
+        )
+
+        s = TauCalibrationSettings(
+            recommendation=RecommendationSubSettings(snr_min=18.0)
+        )
+
+        with pytest.raises(_CalibIntercepted):
             shape_recommendation_impl.recommend_shape_impl(
                 str(variant),
                 settings=s,
-                preset="instrument_bc_2638",
+                preset=str(preset_yaml),
             )
+
+        kwargs = captured["kwargs"]
+        assert (
+            kwargs["snr_min"] == 18.0
+        ), "explicit settings= snr_min must win over the preset/default"
+        assert kwargs["tau_bound_lo"] == 0.3, (
+            "preset must fill tau_bound_lo, which the explicit settings= " "left unset"
+        )
 
 
 # ---------------------------------------------------------------------------

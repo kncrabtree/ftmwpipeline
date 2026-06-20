@@ -95,6 +95,13 @@ it has. This matches the Stage 1 canonical-settings order already specified abov
 (`explicit > persisted > recommended`); the preset layer slots directly below
 persisted for every stage.
 
+Because the layers are distinct, an explicit override and a preset may be
+supplied in the same invocation — they are not mutually exclusive. The explicit
+values win per field, the preset seeds the fields the explicit layer and the
+file leave unset, and persisted still outranks the preset. This is what lets a
+runner adopt a preset recipe and override a field or two in one call without
+losing the shared-file reproducibility guarantee.
+
 ## Stage tracking
 
 The file records which stages are complete and the dependency graph between

@@ -57,8 +57,9 @@ walkthrough at [`docs/source/settings_and_presets.rst`](../../docs/source/settin
   as the contract for a future L/G discriminator.
 - **`api.fit_peaks` / `Pipeline.fit_peaks`** — gain `settings:
   Optional[StageFitSettings]` and `preset: Optional[str]` kwargs.
-  Mutually exclusive (passing both raises `ValueError`); both populate
-  the preset layer of `resolve()`.
+  Composable: `settings` populates the explicit layer of `resolve()`,
+  `preset` the preset layer beneath persisted, so passing both is
+  well-defined (explicit wins per field, the preset seeds the rest).
 - **`cli/fitting_commands.py`** — `fit run` gains `--preset
   NAME_OR_PATH`. `--shape` and `--no-per-band-tau` drop to argparse
   `default=None` so the resolver picks them up from a preset; observable
@@ -104,12 +105,14 @@ Per field, in `resolve()`:
 explicit kwarg > persisted > preset / settings > recommended > hard default
 ```
 
-`persisted` outranks `preset`/`settings` (divergence D11): a value already
+`persisted` outranks `preset` (divergence D11): a value already
 written to the `.ftmw` is authoritative over a preset re-supplied at the same
 call, so re-running a stage reproduces the prior fit unless a value is changed
-explicitly. `preset` and `settings` populate the same layer — they're
-alternative surfaces (YAML by name/path vs Python dataclass) and are enforced
-mutually exclusive in `fit_peaks_impl`. The recommended layer reads from
+explicitly. `settings` and `preset` populate *different* layers — `settings`
+(the Python dataclass) is the explicit override, `preset` (YAML by name/path)
+is the preset layer beneath persisted — so they may be combined in one
+`fit_peaks_impl` call: explicit wins per field, the preset seeds the rest. The
+recommended layer reads from
 `stage2b_tau_calibration/.attrs/recommended_shape`; the persisted layer reads
 from `processing_parameters/stage5_fit`. A no-arg `fit_peaks` call on a fresh
 `.ftmw` resolves to the documented hard defaults; a no-arg call on a file that's

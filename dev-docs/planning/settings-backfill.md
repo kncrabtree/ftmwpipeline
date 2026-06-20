@@ -35,7 +35,7 @@ Components landed:
   `_internal/stage2b_g_impl.calibrate_tau_G_impl`,
   `_internal/shape_recommendation_impl.recommend_shape_impl`** — gain
   `settings: Optional[TauCalibrationSettings]` and `preset:
-  Optional[str]` kwargs (mutually exclusive, matching Stage 5). Each
+  Optional[str]` kwargs (composable, matching Stage 5). Each
   builds an explicit `TauCalibrationSettings` from its legacy per-knob
   kwargs, walks `resolve(...)`, lifts the resolved fields into the
   kernel call, and persists the resolved settings via
@@ -116,8 +116,8 @@ The shape every backfilled stage inherits:
   See § "Preset YAML wrapper migration".
 - **Three-surface parity.** CLI subcommand, `Pipeline` method,
   and `ftmwpipeline.api` function each gain `settings=` and
-  `preset=` kwargs (mutually exclusive — passing both raises
-  `ValueError`, matching Stage 5). The existing per-knob kwargs
+  `preset=` kwargs (composable — both may be passed, the explicit
+  layer winning per field, matching Stage 5). The existing per-knob kwargs
   stay on signatures and win per field; their hard-coded defaults
   drop to `None` so the resolver picks them up from a preset or
   the persisted layer.
@@ -209,7 +209,7 @@ Components landed:
   [`stage2-noise-estimation.md`](stage2-noise-estimation.md).
 - **`_internal/stage2_impl.compute_noise_estimation_impl`** — gains
   `settings: Optional[NoiseSettings]` and `preset: Optional[str]` kwargs
-  (mutually exclusive, matching Stages 5 and 2b). Builds an explicit
+  (composable, matching Stages 5 and 2b). Builds an explicit
   `NoiseSettings` from the four legacy per-knob kwargs, walks
   `resolve(...)`, lifts the resolved fields into the kernel call,
   and persists the resolved settings via
@@ -271,7 +271,7 @@ Components landed:
   as the kernel's parameter defaults so old callers see identical behaviour.
 - **`_internal/stage3_impl.detect_peaks_impl`** — gains
   `settings: Optional[PeakDetectionSettings]` and `preset:
-  Optional[str]` kwargs (mutually exclusive, matching Stages 5, 2b,
+  Optional[str]` kwargs (composable, matching Stages 5, 2b,
   and 2). Builds an explicit `PeakDetectionSettings` from the legacy
   per-knob kwargs, walks `resolve(...)`, lifts the resolved fields
   into the helpers and into the `detect_peaks` kernel call, and
@@ -328,7 +328,7 @@ Components landed:
   — same pattern Stages 5, 2, and 3 use).
 - **`_internal/stage4_impl.assign_windows_impl`** — gains
   `settings: Optional[WindowPlanningSettings]` and `preset:
-  Optional[str]` kwargs (mutually exclusive, matching Stages 5, 2b,
+  Optional[str]` kwargs (composable, matching Stages 5, 2b,
   2, and 3). Builds an explicit `WindowPlanningSettings` from the
   legacy per-knob kwargs, walks `resolve(...)`, lifts the resolved
   fields into the `build_window_plan` call, and persists the
@@ -432,8 +432,9 @@ Stage-2 → Stage-2b feeder (SNR-driven `snr_min` from the per-bin
 `rms_noise` distribution is the obvious candidate) can land
 without API churn.
 
-`preset` and `settings` populate the same layer; passing both
-raises `ValueError`, matching the Stage 5 contract.
+`preset` and `settings` populate different layers (preset vs explicit) and may
+be combined; the explicit `settings` wins per field and the preset seeds the
+rest, matching the Stage 5 contract.
 
 ### HDF5 persistence
 

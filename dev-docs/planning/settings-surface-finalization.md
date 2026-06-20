@@ -222,8 +222,9 @@ resolved fields, that meant `noise run --window-mhz 120` (the CLI builds a
 explicit layer, outranks persisted), matching the retired per-knob kwargs and
 the documented D11 order; **`preset=` (a `.yml`) stays at the preset layer**
 (seeds only unfixed fields; a persisted `.ftmw` outranks it, preserving the
-shared-file reproducibility contract). `settings=` and `preset=` remain mutually
-exclusive. Each migrated impl routes `explicit=settings`, `preset=load(preset)`;
+shared-file reproducibility contract). `settings=` and `preset=` populate
+different layers and may be combined in one call (explicit wins per field, the
+preset seeds the rest). Each migrated impl routes `explicit=settings`, `preset=load(preset)`;
 a per-stage propagation test asserts `settings=` beats a persisted value, and
 the existing tests still assert `preset=`/persisted-inherit precedence. Applied
 to Stages 2, 2b, and 3.

@@ -94,8 +94,10 @@ def calibrate_tau_impl(
     ``processing_parameters/stage2b_tau`` so a follow-up no-arg call on the same
     file inherits them. Pass ``settings=`` to drive the calibration from a
     :class:`TauCalibrationSettings` dataclass, or ``preset=NAME_OR_PATH`` to
-    load from packaged YAML; they are mutually exclusive. A value persisted in
-    the ``.ftmw`` outranks either (D11).
+    load from packaged YAML; they may be combined. A ``settings`` bundle is the
+    explicit override that outranks the persisted record, while a ``preset``
+    seeds only the fields neither the explicit layer nor the persisted record
+    has fixed (the persisted record outranks the preset, per D11).
 
     Returns
     -------

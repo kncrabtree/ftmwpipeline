@@ -382,24 +382,45 @@ class TestLeakageFloor:
         ), "gap_leakage_floor_k>0 must raise the floor where leakage exists"
 
 
-class TestMutualExclusion:
+class TestSettingsPresetComposition:
     """Passing both ``settings=`` and ``preset=`` to ``detect_peaks_impl``
-    must raise ``ValueError``, matching Stages 5, 2b, and 2."""
+    composes: the ``settings`` bundle is the explicit layer (wins for the field
+    it sets) and the ``preset`` fills a field the explicit layer leaves unset
+    (the persisted record outranks the preset, per D11)."""
 
-    def test_settings_and_preset_both_raises(
+    def test_settings_and_preset_compose(
         self,
         baseline_2638_stage2: Path,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "both.ftmw"
+        variant = tmp_path / "compose.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
+
+        preset_yaml = tmp_path / "preset.yml"
+        preset_yaml.write_text("stage3:\n  promotion:\n    medium_strong_snr: 75.0\n")
+
+        mock, captured = _intercept_kernel()
+        monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
+
         s = PeakDetectionSettings()
-        with pytest.raises(ValueError, match=r"mutually|alternative"):
+        _sub_set("promotion", "weak_medium_snr", 12.0)(s)
+
+        with pytest.raises(_CalibIntercepted):
             stage3_impl.detect_peaks_impl(
                 str(variant),
                 settings=s,
-                preset="instrument_bc_2638",
+                preset=str(preset_yaml),
             )
+
+        kwargs = captured["kwargs"]
+        assert (
+            kwargs["weak_medium_snr"] == 12.0
+        ), "explicit settings= weak_medium_snr must win over the preset/default"
+        assert kwargs["medium_strong_snr"] == 75.0, (
+            "preset must fill medium_strong_snr, which the explicit settings= "
+            "left unset"
+        )
 
 
 class TestGapPassTauFeeder:

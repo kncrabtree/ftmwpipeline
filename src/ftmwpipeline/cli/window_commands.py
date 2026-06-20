@@ -35,13 +35,9 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
         file_path = _ensure_ftmw(args.file_path)
         # The per-knob flags are generated from WindowPlanningSettings field
         # metadata; reconstruct a sparse settings bundle (unset fields fall
-        # through the resolver). --preset is mutually exclusive with knobs.
+        # through the resolver). A preset and per-knob flags compose: the flags
+        # are the explicit layer, the preset the preset layer beneath persisted.
         settings = settings_from_namespace(args, WindowPlanningSettings)
-        if args.preset is not None and not settings.is_empty():
-            print_error(
-                "--preset and per-knob flags are mutually exclusive; pass one"
-            )
-            return 1
         print(f"Assigning windows for: {file_path}")
         result = assign_windows_impl(
             file_path=file_path,
@@ -182,8 +178,9 @@ def register_window_commands(subparsers: Any) -> None:
         default=None,
         help=(
             "Stage 4 preset (bare name resolves against packaged presets, or "
-            "a path to a YAML file carrying a 'stage4:' block). Mutually "
-            "exclusive with per-knob flags."
+            "a path to a YAML file carrying a 'stage4:' block). Composes with "
+            "per-knob flags: the flags are the explicit layer, the preset the "
+            "layer beneath the persisted record."
         ),
     )
     p_assign.add_argument(

@@ -1180,9 +1180,10 @@ def fit_peaks_impl(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     recommended > hard default); pass ``settings=`` to drive the fit from a
     :class:`StageFitSettings` dataclass, or ``preset=NAME_OR_PATH`` to load from
-    packaged YAML. They are mutually exclusive: a ``settings`` bundle is the
+    packaged YAML. They may be combined: a ``settings`` bundle is the
     explicit override (it outranks the persisted record), while a ``preset``
-    .yml seeds only unfixed fields (the persisted record outranks it, per D11).
+    .yml seeds only the fields neither the explicit layer nor the persisted
+    record has fixed (the persisted record outranks the preset, per D11).
     Returns the persistent :class:`SpectrumFit` plus diagnostics; also writes
     ``/stage5_fitting`` and marks the stage done.
 
@@ -1209,26 +1210,18 @@ def fit_peaks_impl(
     settings : StageFitSettings, optional
         Bundle of Stage 5 knobs; fields left ``None`` fall through the
         resolution chain. Resolves at the explicit override layer (outranks the
-        persisted record). Mutually exclusive with ``preset``.
+        persisted record). May be combined with ``preset``.
     preset : str, optional
         Bare preset name or path to a YAML file carrying a ``stage5:`` block.
-        Mutually exclusive with ``settings``.
+        Seeds the preset layer beneath the persisted record; may be combined
+        with ``settings``.
 
     Raises
     ------
     ValueError
-        If Stage 4 has not been completed, if ``settings=`` and ``preset=`` are
-        both supplied, or if exactly one of the ``tau_maj_override_us`` /
-        ``sigma_tau_override_us`` pair is set.
+        If Stage 4 has not been completed, or if exactly one of the
+        ``tau_maj_override_us`` / ``sigma_tau_override_us`` pair is set.
     """
-    if preset is not None and settings is not None:
-        raise ValueError(
-            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
-            "A 'settings' bundle is the explicit override (outranks the "
-            "persisted record); a 'preset' .yml seeds only unfixed fields "
-            "(the persisted record outranks it, per D11)."
-        )
-
     # --- Resolve parameters via the StageFitSettings chain ------------------
     # A caller-supplied ``settings`` bundle is the explicit override layer;
     # the three kept convenience args (``shape`` + the τ-override pair) overlay

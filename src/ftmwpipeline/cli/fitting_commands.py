@@ -52,13 +52,9 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
         file_path = _ensure_ftmw(args.file_path)
         # The per-knob flags are generated from StageFitSettings field
         # metadata; reconstruct a sparse settings bundle (unset fields fall
-        # through the resolver). --preset is mutually exclusive with knobs.
+        # through the resolver). A preset and per-knob flags compose: the flags
+        # are the explicit layer, the preset the preset layer beneath persisted.
         settings = settings_from_namespace(args, StageFitSettings)
-        if args.preset is not None and not settings.is_empty():
-            print_error(
-                "--preset and per-knob flags are mutually exclusive; pass one"
-            )
-            return 1
         print(f"Fitting peaks for: {file_path}")
         result = fit_peaks_impl(
             file_path=file_path,
@@ -399,8 +395,9 @@ def register_fitting_commands(subparsers: Any) -> None:
             "'gaussian_default', 'lorentzian_legacy', "
             "'instrument_bc_2638') or by path to a YAML file. The "
             "preset enters the resolution chain at the preset layer "
-            "(a persisted .ftmw outranks it). Mutually exclusive with "
-            "the per-knob flags."
+            "(a persisted .ftmw outranks it). Composes with the per-knob "
+            "flags: the flags are the explicit layer, the preset the layer "
+            "beneath the persisted record."
         ),
     )
     p_fit.add_argument(

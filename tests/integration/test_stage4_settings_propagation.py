@@ -132,24 +132,44 @@ def test_assign_windows_field_reaches_kernel(
     )
 
 
-class TestMutualExclusion:
+class TestSettingsPresetComposition:
     """Passing both ``settings=`` and ``preset=`` to ``assign_windows_impl``
-    must raise ``ValueError``, matching Stages 5, 2b, 2, and 3."""
+    composes: the ``settings`` bundle is the explicit layer (wins for the field
+    it sets) and the ``preset`` fills a field the explicit layer leaves unset
+    (the persisted record outranks the preset, per D11)."""
 
-    def test_settings_and_preset_both_raises(
+    def test_settings_and_preset_compose(
         self,
         baseline_2638_stage3: Path,
         tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        variant = tmp_path / "both.ftmw"
+        variant = tmp_path / "compose.ftmw"
         shutil.copyfile(baseline_2638_stage3, variant)
+
+        preset_yaml = tmp_path / "preset.yml"
+        preset_yaml.write_text("stage4:\n  coherence:\n    trim_m: 16\n")
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage4_impl, "build_window_plan", mock)
+
         s = WindowPlanningSettings()
-        with pytest.raises(ValueError, match=r"mutually|alternative"):
+        _sub_set("coherence", "edge_m", 128)(s)
+
+        with pytest.raises(_CalibIntercepted):
             stage4_impl.assign_windows_impl(
                 str(variant),
                 settings=s,
-                preset="instrument_bc_2638",
+                preset=str(preset_yaml),
             )
+
+        kwargs = captured["kwargs"]
+        assert (
+            kwargs["edge_m"] == 128
+        ), "explicit settings= edge_m must win over the preset/default"
+        assert (
+            kwargs["trim_m"] == 16
+        ), "preset must fill trim_m, which the explicit settings= left unset"
 
 
 class TestPersistedLayerInherit:

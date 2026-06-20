@@ -78,8 +78,11 @@ def assign_windows_impl(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); pass ``settings=`` to drive window planning from a
     :class:`WindowPlanningSettings` dataclass, or ``preset=NAME_OR_PATH`` to
-    load from packaged YAML. They are mutually exclusive, and a value persisted
-    in the ``.ftmw`` outranks either (D11). Returns the plan plus diagnostics;
+    load from packaged YAML. They may be combined: a ``settings`` bundle is the
+    explicit override that outranks the persisted record, while a ``preset``
+    seeds only the fields neither the explicit layer nor the persisted record
+    has fixed (the persisted record outranks the preset, per D11). Returns the
+    plan plus diagnostics;
     also writes ``/stage4_windows`` and marks the stage done.
 
     Parameters
@@ -89,10 +92,11 @@ def assign_windows_impl(
     settings : WindowPlanningSettings, optional
         Bundle of Stage 4 knobs; fields left ``None`` fall through the
         resolution chain. Resolves at the explicit override layer (outranks the
-        persisted record). Mutually exclusive with ``preset``.
+        persisted record). May be combined with ``preset``.
     preset : str, optional
         Bare preset name or path to a YAML file carrying a ``stage4:`` block.
-        Mutually exclusive with ``settings``.
+        Seeds the preset layer beneath the persisted record; may be combined
+        with ``settings``.
 
     Raises
     ------
@@ -100,14 +104,6 @@ def assign_windows_impl(
         If Stage 3 has not been completed, or if ``settings=`` and ``preset=``
         are both supplied.
     """
-    if preset is not None and settings is not None:
-        raise ValueError(
-            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
-            "A 'settings' bundle is the explicit override (outranks the "
-            "persisted record); a 'preset' .yml seeds only unfixed fields "
-            "(the persisted record outranks it, per D11)."
-        )
-
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
             raise ValueError(
