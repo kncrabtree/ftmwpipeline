@@ -61,7 +61,7 @@ also how an ambiguous source is disambiguated. The registered formats are:
    * - Format
      - Source
    * - ``blackchirp``
-     - A native BlackChirp experiment directory; acquisition parameters are read
+     - A native Blackchirp experiment directory; acquisition parameters are read
        from the experiment's own metadata, and the instrument clock tree is
        extracted automatically.
    * - ``ftmw-hdf5``
@@ -101,7 +101,7 @@ provenance record and the error conditions are detailed on :doc:`file_format`.
 Start-time detection
 --------------------
 
-A chirped-pulse experiment records the excitation chirp and the switch
+A chirped-pulse experiment often records the excitation chirp and the switch
 ring-down *before* the molecular FID. Fourier-transforming from the very start
 of the record folds that broadband transient into the spectrum, so the pipeline
 processes the FID from a start time chosen to clear it. Stage 0 determines that
@@ -115,7 +115,7 @@ decades to a post-chirp floor. The detector locates that collapse — the chirp
 end — and adds a short instrument-specific guard margin for the switch ring-down
 to yield the recommended start.
 
-When the source declares its chirp timing (a ``chirp_end_us``, from a BlackChirp
+When the source declares its chirp timing (a ``chirp_end_us``, from a Blackchirp
 experiment, a scope import, or the :ref:`chirp window <input-chirp-window>` of a
 generic import), that declaration sets the recommended start directly and the
 sweep runs only as a cross-check, warning if the two disagree. A declared start
