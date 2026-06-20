@@ -57,9 +57,6 @@ dev = [
 docs = [
     "sphinx>=5.0.0",
     "sphinx-rtd-theme>=1.0.0",
-    "sphinx-autodoc-typehints>=1.19.0",
-    "nbsphinx>=0.8.0",
-    "jupyter>=1.0.0",
 ]
 viz = [
     "plotly>=5.0.0",

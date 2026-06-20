@@ -1,75 +1,91 @@
-ftmwpipeline Documentation
-=========================
-
-Welcome to the ftmwpipeline documentation! This package provides tools for 
-processing Fourier Transform Microwave (FTMW) spectroscopy data, including 
-baseline estimation, peak detection, window assignment, and advanced fitting algorithms.
+.. ftmwpipeline documentation master file.
+   The toctrees below define the sidebar navigation. Captioned
+   toctrees become sidebar section headers.
 
 .. toctree::
-   :maxdepth: 2
-   :caption: Contents:
+   :hidden:
+   :caption: Getting Started
 
+   overview
    installation
    quickstart
+
+.. toctree::
+   :hidden:
+   :caption: Concepts
+
    settings_and_presets
+   file_format
+
+.. toctree::
+   :hidden:
+   :caption: Pipeline Stages
+
+   stage0_import
+   stage1_ft
+   stage2_noise
+   stage2b_tau
+   stage3_peaks
+   stage4_windows
+   stage5_fitting
+   stage6_review
+
+.. toctree::
+   :hidden:
+   :caption: Advanced
+
+   clock_declaration
+   scope_record_import
+   performance
+
+.. toctree::
+   :hidden:
+   :caption: Reference
+
+   cli
    api/index
-   examples/index
    changelog
 
-Features
---------
+ftmwpipeline Documentation
+==========================
 
-* **Data Loading**: Support for BlackChirp and generic FID formats
-* **Preprocessing**: Automated baseline and noise estimation
-* **Peak Detection**: Advanced algorithms with clustering and iterative subtraction
-* **Window Assignment**: Physics-based analysis window optimization
-* **Peak Fitting**: Time-domain and conservative fitting with statistical validation
-* **Visualization**: Comprehensive plotting and diagnostic tools
-* **Configuration**: Flexible parameter management and algorithm selection
+``ftmwpipeline`` processes Fourier transform microwave (FTMW) spectroscopy
+data, from a raw free-induction decay to a calibrated table of fitted spectral
+lines. Each experiment is one self-contained, portable ``.ftmw`` file that
+progresses through a sequence of stages — import, Fourier transform, noise
+estimation, decay-time calibration, peak detection, window assignment, peak
+fitting, and review — with every stage's result and its provenance recorded in
+the file.
 
-Quick Start
------------
+The pipeline is built for spectroscopists who need to know not only how to run
+an analysis but what each stage does and why its results can be trusted. The
+stage pages describe the algorithms, the assumptions behind them, and the
+statistical basis for the reported peak parameters and uncertainties.
 
-.. code-block:: python
+Where to start
+==============
 
-   import ftmwpipeline as fmw
+* :doc:`overview` — the purpose and design philosophy, the ``.ftmw`` file
+  model, the three user-facing interfaces, and the stage pipeline at a glance.
+* :doc:`installation` — install the package and its dependencies.
+* :doc:`quickstart` — process an experiment end to end.
+* :doc:`settings_and_presets` — how stage parameters are resolved across
+  keyword arguments, presets, and the values persisted in the file.
 
-   # Process a single experiment
-   results = fmw.process_experiment('data/experiment.h5')
+The pipeline stages, in the order an experiment moves through them:
 
-   # Or use the Pipeline class for more control
-   pipeline = fmw.Pipeline()
-   results = pipeline.process_experiment('data/experiment.h5')
-
-   # Batch processing
-   results = fmw.batch_process_experiments(['exp1.h5', 'exp2.h5'])
-
-Installation
-------------
-
-Install from PyPI:
-
-.. code-block:: bash
-
-   pip install ftmwpipeline
-
-Or install from source:
-
-.. code-block:: bash
-
-   git clone https://github.com/ftmw-pipeline/ftmwpipeline.git
-   cd ftmwpipeline
-   pip install -e .
-
-For development:
-
-.. code-block:: bash
-
-   pip install -e ".[dev,docs,viz]"
+* :doc:`stage0_import` — load a raw FID from an instrument format.
+* :doc:`stage1_ft` — compute the canonical frequency-domain spectrum.
+* :doc:`stage2_noise` — estimate the per-bin noise.
+* :doc:`stage2b_tau` — calibrate the molecular decay time and recommend a line
+  shape.
+* :doc:`stage3_peaks` — detect peaks.
+* :doc:`stage4_windows` — assign disjoint analysis windows.
+* :doc:`stage5_fitting` — fit the peaks in each window.
+* :doc:`stage6_review` — review, report, and finalize the line list.
 
 Indices and tables
 ==================
 
 * :ref:`genindex`
-* :ref:`modindex`
 * :ref:`search`

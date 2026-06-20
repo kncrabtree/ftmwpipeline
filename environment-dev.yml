@@ -27,9 +27,8 @@ dependencies:
   - mypy>=1.0.0
   - pre-commit>=2.15.0
 
-  # Documentation
-  - sphinx>=5.0.0
-  - sphinx_rtd_theme>=1.0.0
+  # Documentation tooling is installed via the pip ``docs`` extra below,
+  # which is the single source of truth for the doc-build dependency set.
 
   # Visualization extras
   - plotly>=5.0.0

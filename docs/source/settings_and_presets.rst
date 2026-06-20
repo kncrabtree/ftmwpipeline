@@ -1,3 +1,9 @@
+.. index::
+   single: settings
+   single: presets
+   single: parameter resolution
+   single: persistence; settings
+
 Settings and presets
 ====================
 

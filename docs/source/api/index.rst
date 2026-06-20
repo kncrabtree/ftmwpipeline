@@ -1,32 +1,13 @@
-API Reference
-=============
+.. index::
+   single: Python API
+   single: API reference
 
-This section contains the complete API reference for ftmwpipeline.
+Python API Reference
+====================
 
-.. toctree::
-   :maxdepth: 2
+Reference for the :class:`~ftmwpipeline.pipeline.Pipeline` class and the
+stateless functional API (``import ftmwpipeline.api as ftmw``).
 
-   pipeline
-   core
-   preprocessing
-   peak_detection
-   window_assignment
-   fitting
-   visualization
-   io
-   config
-   utils
-   workflows
+.. note::
 
-Main Interface
---------------
-
-.. currentmodule:: ftmwpipeline
-
-.. autosummary::
-   :toctree: generated/
-
-   Pipeline
-   process_experiment
-   batch_process_experiments
-   quick_fit
+   This page is in preparation.

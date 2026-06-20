@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.abspath('../../src'))
 
 # Project information
 project = 'ftmwpipeline'
-copyright = '2025, FTMW Pipeline Contributors'
+copyright = '2026, FTMW Pipeline Contributors'
 author = 'FTMW Pipeline Contributors'
 
 # The full version, including alpha/beta/rc tags
@@ -75,7 +75,6 @@ html_theme_options = {
     'canonical_url': '',
     'analytics_id': '',
     'logo_only': False,
-    'display_version': True,
     'prev_next_buttons_location': 'bottom',
     'style_external_links': False,
     'vcs_pageview_mode': '',
