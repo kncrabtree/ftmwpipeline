@@ -4,9 +4,9 @@ Canonical Stage 2b τ calibration settings.
 ``TauCalibrationSettings`` is the single source of truth for the Stage 2b
 parameters across every surface:
 
-* the public API signatures (``Pipeline.calibrate_tau`` /
-  ``Pipeline.calibrate_tau_G`` / ``Pipeline.recommend_shape`` and the
-  matching ``ftmwpipeline.api`` functions),
+* the public API signatures (``Pipeline.calibrate_tau`` (with
+  ``shape="gaussian"`` for the τ_G variant) / ``Pipeline.recommend_shape`` and
+  the matching ``ftmwpipeline.api`` functions),
 * the CLI ``--preset`` flag plus the existing per-knob flags,
 * the resolution chain ``explicit > persisted > preset > recommended >
   hard default``,
@@ -128,11 +128,6 @@ class PolishSubSettings:
         inst_sensitivity="N",
         grid=(1, 2, 3),
     )
-    polish_top_n: Optional[int] = knob_field(
-        help="Polish only the top-N contributors by SNR (unset -> all).",
-        inst_sensitivity="N",
-        grid=(200, 500, 1000, 2000),
-    )
     polish_snr_cap: Optional[float] = knob_field(
         help="SNR above which the Gauss-Newton polish is skipped (avoid "
         "over-correction).",
@@ -208,13 +203,14 @@ class BandSubSettings:
 
 @dataclass
 class GaussianSubSettings:
-    """``calibrate_tau_G``-only knobs.
+    """Knobs consumed only by ``calibrate_tau(shape="gaussian")``.
 
     ``min_contributors`` is distinct from
-    :attr:`AggregationSubSettings.min_contributors` -- the Gaussian twin
+    :attr:`AggregationSubSettings.min_contributors` -- the Gaussian variant
     has a smaller hard default (50 vs 200) because the eligible Gaussian
     pool is naturally smaller after the Δχ²ᵣ filter. The two live on
-    different sub-blocks to avoid the name collision.
+    different sub-blocks to avoid the name collision; the impl routes a
+    bare ``--min-contributors`` onto this block for a Gaussian run.
     """
 
     snr_min: Optional[float] = knob_field(
@@ -269,15 +265,15 @@ class GaussianSubSettings:
 class RecommendationSubSettings:
     """``recommend_shape``-only knobs plus the calibrate_tau auto-run flag.
 
-    Overlaps with :class:`GaussianSubSettings` in three fields
+    Overlaps with :class:`GaussianSubSettings` in four fields
     (``snr_min`` / ``tau_bound_lo`` / ``tau_bound_hi`` / ``tau_G_seeds``)
     by design: the shape-recommendation hook and the production τ_G
     calibration are conceptually independent and may legitimately ship
     with different operating points (the recommender's contributor pool
     can be wider or narrower than the calibration's).
 
-    ``auto_recommend`` controls whether :func:`calibrate_tau` /
-    :func:`calibrate_tau_G` invoke :func:`recommend_shape` automatically
+    ``auto_recommend`` controls whether ``calibrate_tau`` (either shape)
+    invokes :func:`recommend_shape` automatically
     after the primary calibration writes; default ``True`` so the
     Stage 5 resolver's *recommended* layer fires on every fresh Stage 2b
     run without a second explicit user step.
@@ -365,7 +361,6 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "polish_n_iter": 1,
         "polish_snr_cap": 9.0,
         "polish_noise_debias": False,
-        # ``polish_top_n`` legitimately stays None (polish every contributor).
     },
     "aggregation": {
         "min_contributors": 200,

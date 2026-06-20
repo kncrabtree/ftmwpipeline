@@ -64,11 +64,11 @@ from ..fitting.spur_detection import (
     make_chirp_response_probe,
     make_decay_probe,
 )
-from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
 )
+from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
     save_spectrum_fit_to_hdf5,
@@ -84,10 +84,6 @@ from .active_ft_support import _persisted_scatter_knobs, build_active_grid_with_
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
-from .stage2b_g_impl import (
-    load_tau_G_calibration_impl,
-    tau_G_calibration_present,
-)
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 from .stage3_impl import (
     _active_acquisition_us,
@@ -1382,8 +1378,10 @@ def fit_peaks_impl(
     # to the shape-appropriate one based on the caller's ``shape`` arg.
     persisted_cal: Optional[TauCalibrationResult] = None
     if shape_enum is PeakShape.GAUSSIAN:
-        if tau_G_calibration_present(file_path):
-            persisted_cal = load_tau_G_calibration_impl(file_path)["tau_G_calibration"]
+        if tau_calibration_present(file_path, shape="gaussian"):
+            persisted_cal = load_tau_calibration_impl(file_path, shape="gaussian")[
+                "tau_calibration"
+            ]
             if not persisted_cal.preconditions_passed:
                 logger.warning(
                     "Stage 2b τ_G calibration pre-conditions did not pass "
@@ -1398,7 +1396,7 @@ def fit_peaks_impl(
             logger.warning(
                 "Stage 5 shape='gaussian' but no τ_G calibration is "
                 "present on %s; fitting without a τ_G prior. Run "
-                "calibrate_tau_G(...) for an anchored fit.",
+                "calibrate_tau(shape='gaussian') for an anchored fit.",
                 file_path,
             )
     else:

@@ -1,7 +1,7 @@
 """HDF5 serialization for :class:`TauCalibrationResult`.
 
 Persisted at ``/stage2b_tau_calibration``. The schema deliberately stores
-only the artefacts downstream consumers and visualizations need; the full
+only the artifacts downstream consumers and visualizations need; the full
 ``(n_seg, n_bins)`` STFT magnitude grid is large (~50 MB on the 2638 fixture
 even before compression) and can be recomputed on demand from the FID plus
 the persisted calibration knobs (``n_seg``, ``start_us``, ``end_us``,
@@ -273,7 +273,7 @@ def load_tau_calibration_from_hdf5(
     n_bins_arr = sg["n_bins"][:]
     flat = sg["bin_indices_flat"][:]
     offsets = sg["offsets"][:]
-    # ``saturated`` is absent on catalogues written before the Stage 5 spur
+    # ``saturated`` is absent on catalogs written before the Stage 5 spur
     # gate; default to all-False so legacy files load (the gate then falls
     # back to its frequency-domain narrowness detector for those bins).
     saturated_arr = (

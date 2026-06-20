@@ -751,28 +751,32 @@ def visualize_noise(
 def calibrate_tau(
     file_path: Union[str, Path],
     *,
+    shape: str = "lorentzian",
     settings: Optional[TauCalibrationSettings] = None,
     preset: Optional[str] = None,
 ) -> TauCalibrationResult:
     """Run the Stage 2b data-driven tau calibration, equivalent to
     :meth:`Pipeline.calibrate_tau`.
 
-    Requires Stages 0-2 completed. Persists the calibration to
-    ``/stage2b_tau_calibration``. Settings resolve through the chain
-    (``settings`` / ``preset`` > persisted > hard default); ``settings=`` and
-    ``preset=`` may be combined -- the ``settings`` bundle is the explicit
-    override that outranks the persisted record, while the ``preset`` seeds only
-    the fields neither the explicit layer nor the persisted record has fixed
-    (the persisted record outranks the preset, per D11). Individual knobs are
-    set on a
-    :class:`TauCalibrationSettings` instance or a YAML preset's ``stage2b:``
-    block. The resolved settings are stamped to
-    ``processing_parameters/stage2b_tau`` so a no-arg follow-up call
+    Requires Stages 0-2 completed. ``shape`` selects the decay model and its
+    persistence group: ``"lorentzian"`` (pure-exponential,
+    ``/stage2b_tau_calibration``) or ``"gaussian"`` (pure-Gaussian envelope τ_G,
+    ``/stage2b_tau_G_calibration``); the two are independent and can coexist on
+    one ``.ftmw`` file, consumed by the matching-shape Stage 5 fit. Settings
+    resolve through the chain (``settings`` / ``preset`` > persisted > hard
+    default); ``settings=`` and ``preset=`` may be combined -- the ``settings``
+    bundle is the explicit override that outranks the persisted record, while the
+    ``preset`` seeds only the fields neither the explicit layer nor the persisted
+    record has fixed (the persisted record outranks the preset, per D11).
+    Individual knobs are set on a :class:`TauCalibrationSettings` instance or a
+    YAML preset's ``stage2b:`` block. The resolved settings are stamped to the
+    shared ``processing_parameters/stage2b_tau`` block so a no-arg follow-up call
     reproduces the same recipe.
     """
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.calibrate_tau(
+            shape=shape,
             settings=settings,
             preset=preset,
         )
@@ -781,10 +785,12 @@ def calibrate_tau(
         raise
 
 
-def load_tau_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
-    """Load the persisted Stage 2b :class:`TauCalibrationResult`."""
+def load_tau_calibration(
+    file_path: Union[str, Path], *, shape: str = "lorentzian"
+) -> TauCalibrationResult:
+    """Load the persisted Stage 2b :class:`TauCalibrationResult` for ``shape``."""
     try:
-        return Pipeline.open(file_path).load_tau_calibration()
+        return Pipeline.open(file_path).load_tau_calibration(shape=shape)
     except Exception as e:
         logger.error(f"Failed to load tau calibration from {file_path}: {e}")
         raise
@@ -830,49 +836,6 @@ def load_timebase_calibration(
         raise
 
 
-def calibrate_tau_G(
-    file_path: Union[str, Path],
-    *,
-    settings: Optional[TauCalibrationSettings] = None,
-    preset: Optional[str] = None,
-) -> TauCalibrationResult:
-    """Run the Stage 2b Gaussian-shape τ_G calibration, equivalent to
-    :meth:`Pipeline.calibrate_tau_G`.
-
-    Per-bin Voigt fits on the STFT contributor pool yield a per-band τ_G
-    majority that the Stage 5 Gaussian path consumes. Persists to
-    ``/stage2b_tau_G_calibration``. Independent of the pure-exp
-    :func:`calibrate_tau`; both can coexist on one ``.ftmw`` file.
-
-    Settings resolve through the chain (``settings`` / ``preset`` > persisted >
-    hard default); ``settings=`` and ``preset=`` may be combined -- the
-    ``settings`` bundle is the explicit override that outranks the persisted
-    record, while the ``preset`` seeds only the fields neither the explicit
-    layer nor the persisted record has fixed (the persisted record outranks the
-    preset, per D11). The resolved
-    settings share the ``processing_parameters/stage2b_tau`` block with the
-    pure-exp twin.
-    """
-    try:
-        pipeline = Pipeline.open(file_path)
-        return pipeline.calibrate_tau_G(
-            settings=settings,
-            preset=preset,
-        )
-    except Exception as e:
-        logger.error(f"Failed to calibrate τ_G for {file_path}: {e}")
-        raise
-
-
-def load_tau_G_calibration(file_path: Union[str, Path]) -> TauCalibrationResult:
-    """Load the persisted Gaussian Stage 2b :class:`TauCalibrationResult`."""
-    try:
-        return Pipeline.open(file_path).load_tau_G_calibration()
-    except Exception as e:
-        logger.error(f"Failed to load τ_G calibration from {file_path}: {e}")
-        raise
-
-
 def recommend_shape(
     file_path: Union[str, Path],
     *,
@@ -914,14 +877,17 @@ def visualize_tau_heatmap(
     output_file: Optional[Union[str, Path]] = None,
     interactive: bool = True,
     figsize: Optional[tuple] = None,
+    shape: str = "lorentzian",
 ) -> Any:
     """2D STFT magnitude heatmap, equivalent to
-    :meth:`Pipeline.visualize_tau_heatmap`."""
+    :meth:`Pipeline.visualize_tau_heatmap`. ``shape`` selects the pure-exp or
+    Gaussian calibration group."""
     try:
         return Pipeline.open(file_path).visualize_tau_heatmap(
             output_file=output_file,
             interactive=interactive,
             figsize=figsize,
+            shape=shape,
         )
     except Exception as e:
         logger.error(f"Failed to visualize tau heatmap for {file_path}: {e}")
@@ -933,14 +899,17 @@ def visualize_tau_distribution(
     output_file: Optional[Union[str, Path]] = None,
     interactive: bool = True,
     figsize: Optional[tuple] = None,
+    shape: str = "lorentzian",
 ) -> Any:
     """tau-distribution analysis panel, equivalent to
-    :meth:`Pipeline.visualize_tau_distribution`."""
+    :meth:`Pipeline.visualize_tau_distribution`. ``shape`` selects the pure-exp
+    or Gaussian calibration group."""
     try:
         return Pipeline.open(file_path).visualize_tau_distribution(
             output_file=output_file,
             interactive=interactive,
             figsize=figsize,
+            shape=shape,
         )
     except Exception as e:
         logger.error(f"Failed to visualize tau distribution for {file_path}: {e}")

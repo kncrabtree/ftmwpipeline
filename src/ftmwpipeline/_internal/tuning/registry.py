@@ -270,9 +270,10 @@ def _run_tau(sub_block: str, field_name: str) -> RunFn:
     Builds a ``TauCalibrationSettings`` bundle (the preset layer) carrying just
     the one sub-block field, so any tau knob — including fields the orchestrators
     do not expose as kwargs — is sweepable uniformly. The sub-block selects the
-    orchestrator: ``gaussian`` drives ``calibrate_tau_G`` (Gaussian τ_G),
-    ``recommendation`` drives ``recommend_shape`` (the exp/gauss/voigt vote), and
-    every other sub-block drives the exponential ``calibrate_tau``. All three
+    orchestrator: ``gaussian`` drives ``calibrate_tau(shape="gaussian")``
+    (Gaussian τ_G), ``recommendation`` drives ``recommend_shape`` (the
+    exp/gauss/voigt vote), and every other sub-block drives the exponential
+    ``calibrate_tau``. All three
     return through the same settings resolver, so the bundle's single override
     composes with the file's persisted/default layers.
     """
@@ -293,7 +294,7 @@ def _run_tau(sub_block: str, field_name: str) -> RunFn:
             **{sub_block: sub_cls(**{field_name: value})}
         )
         if sub_block == "gaussian":
-            return ftmw.calibrate_tau_G(path, settings=bundle)
+            return ftmw.calibrate_tau(path, shape="gaussian", settings=bundle)
         if sub_block == "recommendation":
             return ftmw.recommend_shape(path, settings=bundle)
         return ftmw.calibrate_tau(path, settings=bundle)
@@ -955,7 +956,6 @@ for _sub, _field in (
     ("stft", "rss_gate_factor"),
     ("stft", "relative_gate_fraction"),
     ("polish", "polish_n_iter"),
-    ("polish", "polish_top_n"),
     ("polish", "polish_snr_cap"),
     ("polish", "polish_noise_debias"),
     ("aggregation", "min_contributors"),

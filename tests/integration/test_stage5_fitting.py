@@ -228,12 +228,10 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
 
     # At least one window should have a non-None covariance (the 3-window
     # small plan has real lines with finite JᵀJ).
-    windows_with_cov = [
-        wf for wf in reloaded.window_fits if wf.covariance is not None
-    ]
-    assert windows_with_cov, (
-        "no windows with persisted covariance in the 3-window small fit"
-    )
+    windows_with_cov = [wf for wf in reloaded.window_fits if wf.covariance is not None]
+    assert (
+        windows_with_cov
+    ), "no windows with persisted covariance in the 3-window small fit"
 
     # For each window with a covariance, verify the amplitude diagonal entries
     # match the stored amplitude_error (sqrt round-trip within float64 precision).
@@ -244,7 +242,9 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
         assert labels is not None
         assert cov.shape[0] == cov.shape[1] == len(labels)
 
-        amp_indices = [i for i, lbl in enumerate(labels) if lbl.startswith("amplitude_")]
+        amp_indices = [
+            i for i, lbl in enumerate(labels) if lbl.startswith("amplitude_")
+        ]
         assert len(amp_indices) == len(wf.fitted_peaks)
 
         for peak_idx, col_idx in enumerate(amp_indices):
@@ -342,7 +342,9 @@ def test_fit_peaks_gaussian_cross_interface(
     # 3-way classifier pass on this fixture.
     staged = temp_ftmw_dir / "gaussian_staged.ftmw"
     shutil.copy(baseline_2638_stage4_small, staged)
-    ftmw.calibrate_tau_G(staged, settings=skip_auto_recommend_settings())
+    ftmw.calibrate_tau(
+        staged, shape="gaussian", settings=skip_auto_recommend_settings()
+    )
     for fp in (pfile, ffile, cfile):
         shutil.copy(staged, fp)
 
@@ -400,7 +402,7 @@ def test_fit_peaks_gaussian_persists_and_loads_shape(
     shutil.copy(baseline_2638_stage4_small, fp)
     # ``shape='gaussian'`` is pinned explicitly below, so the Stage 2b
     # auto-recommend verdict is not needed -- skip the ~50s classifier pass.
-    ftmw.calibrate_tau_G(fp, settings=skip_auto_recommend_settings())
+    ftmw.calibrate_tau(fp, shape="gaussian", settings=skip_auto_recommend_settings())
     ftmw.fit_peaks(fp, shape="gaussian")
     fit = ftmw.load_fit(fp)
     # Every window's FittingResult must carry the persisted shape; older
@@ -438,8 +440,8 @@ def test_calibrate_tau_G_cross_interface(
 
     skip = skip_auto_recommend_settings()
     skip_yaml = skip_auto_recommend_preset_yaml(temp_ftmw_dir)
-    tc_pipe = Pipeline(pfile).calibrate_tau_G(settings=skip)
-    tc_func = ftmw.calibrate_tau_G(ffile, settings=skip)
+    tc_pipe = Pipeline(pfile).calibrate_tau(shape="gaussian", settings=skip)
+    tc_func = ftmw.calibrate_tau(ffile, shape="gaussian", settings=skip)
     res = subprocess.run(
         [
             "ftmwpipeline",
@@ -455,7 +457,7 @@ def test_calibrate_tau_G_cross_interface(
         timeout=600,
     )
     assert res.returncode == 0, f"CLI failed: {res.stdout}\n{res.stderr}"
-    tc_cli = ftmw.load_tau_G_calibration(cfile)
+    tc_cli = ftmw.load_tau_calibration(cfile, shape="gaussian")
 
     # The STFT + per-bin Voigt path is deterministic from the persisted
     # FID and Stage 1 settings; all three interfaces must land on
@@ -528,7 +530,7 @@ def test_recommend_shape_persists_and_feeds_resolver(
     # Disable the calibrate_tau_G auto-recommend pass so the explicit
     # recommend_shape call below is the one whose stamp the test verifies
     # (otherwise the auto pass would have already stamped the same verdict).
-    ftmw.calibrate_tau_G(fp, settings=skip_auto_recommend_settings())
+    ftmw.calibrate_tau(fp, shape="gaussian", settings=skip_auto_recommend_settings())
     rec = ftmw.recommend_shape(fp)
     assert rec.n_contributors > 0
     assert sum(rec.vote_rates.values()) == pytest.approx(1.0, abs=1e-6)

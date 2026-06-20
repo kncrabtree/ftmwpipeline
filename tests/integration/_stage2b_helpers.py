@@ -18,8 +18,8 @@ def skip_auto_recommend_settings():
     """``TauCalibrationSettings`` with ``auto_recommend=False`` set.
 
     Pass via ``settings=`` to ``Pipeline.calibrate_tau`` /
-    ``Pipeline.calibrate_tau_G`` / ``ftmw.calibrate_tau`` /
-    ``ftmw.calibrate_tau_G``. Every other field falls through to
+    ``Pipeline.calibrate_tau(shape="gaussian")`` / ``ftmw.calibrate_tau`` /
+    ``ftmw.calibrate_tau(shape="gaussian")``. Every other field falls through to
     the resolver's hard defaults.
     """
     from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings

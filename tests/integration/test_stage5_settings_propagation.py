@@ -504,9 +504,9 @@ def test_per_band_tau_routes_tau0_per_window(
     """
     import shutil
 
-    from ftmwpipeline._internal.stage2b_g_impl import (
-        calibrate_tau_G_impl,
-        load_tau_G_calibration_impl,
+    from ftmwpipeline._internal.stage2b_impl import (
+        calibrate_tau_impl,
+        load_tau_calibration_impl,
     )
     from ftmwpipeline.fitting import plan_execution
     from tests.integration._stage2b_helpers import skip_auto_recommend_settings
@@ -516,8 +516,10 @@ def test_per_band_tau_routes_tau0_per_window(
     # Stage 2b τ_G must be present for per-band routing to activate. The shape
     # recommendation is irrelevant to band_majorities / per-band τ₀ routing, so
     # skip the auto-recommend NLS pass.
-    calibrate_tau_G_impl(str(variant), settings=skip_auto_recommend_settings())
-    tc = load_tau_G_calibration_impl(str(variant))["tau_G_calibration"]
+    calibrate_tau_impl(
+        str(variant), shape="gaussian", settings=skip_auto_recommend_settings()
+    )
+    tc = load_tau_calibration_impl(str(variant), shape="gaussian")["tau_calibration"]
     assert tc.band_majorities, "Stage 2b τ_G did not produce band_majorities"
 
     captured: Dict[str, Any] = {}

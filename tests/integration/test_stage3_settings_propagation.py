@@ -458,32 +458,33 @@ class TestGapPassTauFeeder:
             def __init__(self, value: float) -> None:
                 self.tau_maj_us = value
 
+        def _fake_tau_calibration_present(fp: Any, shape: str = "lorentzian") -> bool:
+            if shape == "gaussian":
+                return tau_G_maj_us is not None
+            return tau_maj_us is not None
+
+        def _fake_load_tau_calibration_impl(
+            fp: Any, shape: str = "lorentzian"
+        ) -> Dict[str, Any]:
+            if shape == "gaussian":
+                return {"tau_calibration": _Stub(float(tau_G_maj_us))}
+            return {"tau_calibration": _Stub(float(tau_maj_us))}
+
         monkeypatch.setattr(
             stage3_impl,
             "tau_calibration_present",
-            lambda fp: tau_maj_us is not None,
-        )
-        monkeypatch.setattr(
-            stage3_impl,
-            "tau_G_calibration_present",
-            lambda fp: tau_G_maj_us is not None,
+            _fake_tau_calibration_present,
         )
         monkeypatch.setattr(
             stage3_impl,
             "read_stage2b_recommended_shape",
             lambda fp: recommended_shape,
         )
-        if tau_maj_us is not None:
+        if tau_maj_us is not None or tau_G_maj_us is not None:
             monkeypatch.setattr(
                 stage3_impl,
                 "load_tau_calibration_impl",
-                lambda fp: {"tau_calibration": _Stub(float(tau_maj_us))},
-            )
-        if tau_G_maj_us is not None:
-            monkeypatch.setattr(
-                stage3_impl,
-                "load_tau_G_calibration_impl",
-                lambda fp: {"tau_G_calibration": _Stub(float(tau_G_maj_us))},
+                _fake_load_tau_calibration_impl,
             )
 
     def _run_with_spy(

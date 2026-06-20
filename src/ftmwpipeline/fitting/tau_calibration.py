@@ -40,7 +40,7 @@ from scipy.optimize import least_squares
 
 logger = logging.getLogger(__name__)
 
-# Operating points (Phase 1 acceptance gate; see report.md).
+# Operating points (acceptance gate; see report.md).
 DEFAULT_N_SEG = 10
 DEFAULT_T_SIGMA = 5.0
 DEFAULT_TAU_MAX_FACTOR = 5.0  # tau_max = 5 * T_full
@@ -73,7 +73,7 @@ DEFAULT_POLISH_SNR_CAP = 9.0
 # which over-estimates the envelope's effective Gaussian τ relative to
 # what the window fit recovers. The per-bin exp / gauss / voigt fits are
 # batched (closed-form log-linear seed + clipped Gauss-Newton, see
-# ``_vectorised_shape_fit``); ``_voigt_residuals`` /
+# ``_vectorized_shape_fit``); ``_voigt_residuals`` /
 # ``_fit_voigt_nls_multistart`` and their siblings are the scipy reference
 # the ``solver='scipy'`` path uses as the equivalence oracle.
 DEFAULT_TAU_G_SNR_MIN = 20.0
@@ -141,7 +141,7 @@ class SpurCluster:
     A single clock spur produces approximately ``n_seg`` adjacent spur-bins
     (the spur's STFT-rectangular-window sinc-skirt cluster shares its parent's
     constant time-dependence and so is also classified as a spur). Grouping
-    those satellites into one entry keeps the persisted spur catalogue
+    those satellites into one entry keeps the persisted spur catalog
     human-auditable.
 
     Attributes
@@ -163,7 +163,7 @@ class SpurCluster:
         that are *not* spurs. The Stage 5 spur-masking gate keys its
         persistence half on this flag rather than the raw ``cls == 1``
         membership; see ``dev-docs/planning/stage5-spur-masking.md``.
-        Defaults to ``False`` on legacy catalogues that predate the flag.
+        Defaults to ``False`` on legacy catalogs that predate the flag.
     """
 
     center_freq_mhz: float
@@ -326,7 +326,7 @@ def compute_band_majorities(
     Default partition is the three-band arithmetic split of
     ``[trim_lo_mhz, trim_hi_mhz)`` (the same split used by
     [`dev-docs/research/stage5-tau-calibration/lsq_comparison.py`](../../dev-docs/research/stage5-tau-calibration/lsq_comparison.py)
-    for the Phase-4 LSQ comparison). Caller can pass explicit interior
+    for the LSQ comparison). Caller can pass explicit interior
     edges via ``band_edges_mhz`` (a 1-D sequence of strictly-increasing
     interior boundaries; outer edges are taken from ``trim_lo_mhz`` /
     ``trim_hi_mhz``).
@@ -444,7 +444,7 @@ class TauCalibrationResult:
     n_spur_bins : int
         Total number of spur-classified bins (pre-clustering).
     spur_clusters : tuple of SpurCluster
-        Grouped CW spur catalogue (adjacent spur-bins collapsed).
+        Grouped CW spur catalog (adjacent spur-bins collapsed).
     bimodality : GMMBimodality
         1- vs 2-component GMM diagnostic on the contributor histogram.
     pearson_r_log_snr_vs_tau : float
@@ -645,7 +645,7 @@ def _nls_polish_step(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """``n_iter`` Gauss-Newton steps on ``|S_n| = C * exp(-a_n / tau)`` per bin.
 
-    Removes the log-linear-weighting bias documented in Phase 1 § Case 1
+    Removes the log-linear-weighting bias documented in report.md § Case 1
     (a persistent +3-5 % positive shift at intermediate ``T_full / tau``
     ratios). The seed ``(tau, C)`` comes from :func:`_fit_exp_per_bin`'s
     weighted log-linear regression; Gauss-Newton converges quadratically
@@ -662,7 +662,7 @@ def _nls_polish_step(
     tau`` cells (late frames sit at signal ~ noise where the noise
     contribution to ``|S_n|`` tilts apparent tau upward).
 
-    Vectorised over the masked bins (default: every bin). Bins whose
+    Vectorized over the masked bins (default: every bin). Bins whose
     normal-equations determinant is degenerate (~zero) are returned
     unchanged so the polish never makes a bad fit worse. Updated ``tau``
     is clipped to ``tau_clip_us``; ``C`` is floored at ``1e-300``.
@@ -740,7 +740,7 @@ class _ShapeFitResults:
     triples are populated depends on the shape that drove the gate:
 
     * ``shape='lorentzian'`` → instance is ``None`` (no NLS pass; the
-      vectorised log-linear seed already lives in the parent
+      vectorized log-linear seed already lives in the parent
       :class:`_STFTClassification`).
     * ``shape='gaussian'`` → the ``(tau_L_exp, C_exp, rss_exp_nls,
       converged_exp)`` and ``(tau_G_gauss, C_gauss, rss_gauss,
@@ -788,20 +788,20 @@ class _STFTClassification:
 
 _VALID_CLASSIFIER_SHAPES = frozenset(("lorentzian", "gaussian", "best_of_three"))
 
-# Solver behind the per-bin shape gate. ``"vectorised"`` (default) uses a
+# Solver behind the per-bin shape gate. ``"vectorized"`` (default) uses a
 # closed-form weighted log-linear seed plus a few clipped Gauss-Newton steps,
 # batched across every masked bin -- exp/gauss/voigt magnitude decays are
 # linear in log space with polynomial regressors in segment-time
 # (``log|S| = logC - a/tau_L - (a/tau_G)^2``), so the seed is one batched
 # normal-equations solve and needs no trust region. ``"scipy"`` runs the
 # per-bin ``least_squares`` multistart loop and is retained as the reference
-# oracle (``TestVectorisedShapeSolver`` asserts the two agree). The vectorised
+# oracle (``TestVectorizedShapeSolver`` asserts the two agree). The vectorized
 # path reproduces the recommended_shape on all production fixtures and the
 # Gaussian-twin majority to <0.1 %, ~1000x faster; its only systematic
 # departure is voigt vote-mass on near-tie bins (diagnostic-only -- voigt never
 # enters the recommendation).
-_VALID_SHAPE_SOLVERS = frozenset(("vectorised", "scipy"))
-_SHAPE_SOLVER_DEFAULT = "vectorised"
+_VALID_SHAPE_SOLVERS = frozenset(("vectorized", "scipy"))
+_SHAPE_SOLVER_DEFAULT = "vectorized"
 _SHAPE_GN_ITERS = 3
 
 
@@ -898,7 +898,7 @@ def _gn_polish_batched(
     return p
 
 
-def _vectorised_shape_fit(
+def _vectorized_shape_fit(
     mag_masked: np.ndarray,
     a: np.ndarray,
     model: str,
@@ -1037,14 +1037,14 @@ def _run_shape_fits(
 ) -> Optional[_ShapeFitResults]:
     """Per-bin shape fits on the above-threshold non-spur pool for the gate.
 
-    For ``shape='lorentzian'`` returns ``None`` -- the vectorised log-linear
+    For ``shape='lorentzian'`` returns ``None`` -- the vectorized log-linear
     seed in the parent classifier already covers the gate. For ``'gaussian'``
     fits ``(exp, gauss)`` per masked bin; for ``'best_of_three'`` fits
     ``(exp, gauss, voigt)``.
 
-    ``solver`` selects the fitting backend: ``"vectorised"`` (default) uses the
+    ``solver`` selects the fitting backend: ``"vectorized"`` (default) uses the
     batched closed-form-log-seed + clipped-Gauss-Newton path
-    (:func:`_vectorised_shape_fit`); ``"scipy"`` runs the per-bin
+    (:func:`_vectorized_shape_fit`); ``"scipy"`` runs the per-bin
     ``least_squares`` multistart loop and is kept as the equivalence oracle.
 
     Output arrays are full-length (``n_bins``) with ``NaN`` / ``False`` outside
@@ -1063,8 +1063,8 @@ def _run_shape_fits(
             f"solver must be one of {sorted(_VALID_SHAPE_SOLVERS)}; got {solver!r}"
         )
 
-    if solver == "vectorised":
-        return _run_shape_fits_vectorised(
+    if solver == "vectorized":
+        return _run_shape_fits_vectorized(
             shape,
             mag,
             a_centers_us,
@@ -1213,7 +1213,7 @@ def _scatter_full(
     return full
 
 
-def _run_shape_fits_vectorised(
+def _run_shape_fits_vectorized(
     shape: str,
     mag: np.ndarray,
     a_centers_us: np.ndarray,
@@ -1265,8 +1265,8 @@ def _run_shape_fits_vectorised(
         )
 
     mag_m: np.ndarray = mag[:, bin_idxs].astype(float)
-    exp = _vectorised_shape_fit(mag_m, a, "exp", tau_lo=tau_lo, tau_hi=tau_hi)
-    gauss = _vectorised_shape_fit(
+    exp = _vectorized_shape_fit(mag_m, a, "exp", tau_lo=tau_lo, tau_hi=tau_hi)
+    gauss = _vectorized_shape_fit(
         mag_m,
         a,
         "gauss",
@@ -1293,7 +1293,7 @@ def _run_shape_fits_vectorised(
             converged_gauss=conv_g,
         )
 
-    voigt = _vectorised_shape_fit(
+    voigt = _vectorized_shape_fit(
         mag_m,
         a,
         "voigt",
@@ -1384,8 +1384,8 @@ def stft_calibration(
       bins enter the tau histogram.
 
     The bad-fit gate is shape-conditioned via ``shape``. The default
-    ``'lorentzian'`` gates on the vectorised log-linear pure-exp RSS and
-    is the historical behaviour. ``'gaussian'`` runs a per-bin pure-Gauss
+    ``'lorentzian'`` gates on the vectorized log-linear pure-exp RSS and
+    is the historical behavior. ``'gaussian'`` runs a per-bin pure-Gauss
     NLS on the above-threshold non-spur pool and gates on the
     pure-Gauss RSS, so strong on-line bins on Gaussian-envelope fixtures
     enter ``cls=3`` directly instead of being labelled bad-fit by an
@@ -1419,7 +1419,7 @@ def stft_calibration(
         Relative branch of the bad-fit gate (``rss > rss_gate_factor * n_seg *
         (relative_gate_fraction * mean(|S_n|))^2``). The relative branch is
         necessary for high-SNR clean fits not to over-classify as bad-fit; the
-        log-linear weighted regression does not minimise linear-space RSS so
+        log-linear weighted regression does not minimize linear-space RSS so
         its prediction error scales with the signal level, not the noise level.
     sigma_x_full : float, optional
         Override for the per-bin full-record FT noise floor (in ``dt * rfft``
@@ -1432,7 +1432,7 @@ def stft_calibration(
         overestimate).
     shape : {'lorentzian', 'gaussian', 'best_of_three'}, default 'lorentzian'
         Which residual feeds the bad-fit gate. ``'lorentzian'`` uses the
-        cheap vectorised log-linear pure-exp residual (legacy behaviour).
+        cheap vectorized log-linear pure-exp residual (legacy behavior).
         ``'gaussian'`` runs a per-bin pure-Gauss NLS on the above-threshold
         non-spur pool and gates on its residual; the per-bin
         ``(τ_G, C, rss_gauss, converged)`` results are exposed via
@@ -1543,7 +1543,7 @@ def majority_tau(
 ) -> Tuple[float, float]:
     """Robust majority tau and spread sigma_tau from the contributor histogram.
 
-    SNR-weighted by default. The Phase-1 case-1 result showed that strong-line
+    SNR-weighted by default. The Case-1 synthetic result showed that strong-line
     skirt bins cluster tightly around the truth while near-threshold bins are
     biased high by noisy log-linear fits; the SNR-weighted median collapses
     onto the on-line bins and matches the truth. Returns ``(tau_maj_us,
@@ -1578,7 +1578,7 @@ def gmm_bimodality(
     Hand-rolled EM (no sklearn dependency, matching the research prototype).
     Returns the per-component MLE parameters plus
     ``delta_aic = aic1 - aic2``; positive means the 2-component model is
-    preferred. The Phase-2 default of ``delta_aic > 2`` is slightly looser
+    preferred. The default of ``delta_aic > 2`` is slightly looser
     than the planning doc's original ``> 4`` because the prototype's
     realistic-bimodal case (case 6, ``ΔAIC = +53``) clears either threshold
     comfortably while real-world contributor counts of ~50-150 sometimes
@@ -1709,7 +1709,7 @@ def group_spur_bins(
     single :class:`SpurCluster`; the cluster's representative is the bin with
     the largest mean magnitude.
 
-    Empirically: Phase 2 on 2638 reported 649 raw spur bins that collapse to
+    Empirically: on 2638, 649 raw spur bins collapse to
     ~50-100 clusters under this rule, which matches the expected count for
     that instrument's clock harmonics.
 
@@ -1765,7 +1765,7 @@ def estimate_sigma_time_from_tail(
     noise: any line with ``tau <= acquisition / 1.5`` has decayed below
     ``exp(-1.5) ≈ 22 %`` of its peak by then, so the sample standard
     deviation of the tail is a robust direct measurement of the time-domain
-    white-noise RMS. Matches the prototype's Phase-2 noise reference path.
+    white-noise RMS. Matches the prototype's noise reference path.
     """
     arr = np.asarray(fid, dtype=float)
     if arr.size == 0:
@@ -1777,6 +1777,177 @@ def estimate_sigma_time_from_tail(
     if tail.size < 2:
         raise ValueError("fid tail too short to estimate sigma_time")
     return float(np.std(tail - tail.mean()))
+
+
+# ---------------------------------------------------------------------------
+# Shared aggregation tail for both extractors
+# ---------------------------------------------------------------------------
+def _finalize_tau_result(
+    cal: _STFTClassification,
+    freq_mol_mhz: np.ndarray,
+    in_trim: np.ndarray,
+    contributor_bins: np.ndarray,
+    contributor_taus: np.ndarray,
+    contributor_snrs: np.ndarray,
+    contributor_freqs: np.ndarray,
+    *,
+    n_seg: int,
+    t_sigma: float,
+    rss_gate_factor: float,
+    sample_dt_us: float,
+    start_us: float,
+    end_us: float,
+    probe_freq_mhz: float,
+    sb: str,
+    trim_lo_mhz: float,
+    trim_hi_mhz: float,
+    spur_cluster_multiplier: float,
+    min_contributors: int,
+    sigma_tau_fraction_max: float,
+    bimodality_dominant_fraction: float,
+    compute_band_majorities_flag: bool,
+    band_edges_mhz: Optional[Tuple[float, ...]],
+    band_labels: Tuple[str, ...],
+    min_contributors_per_band: int,
+    tau_max_field: float,
+    contributor_noun: str,
+    tau_label: str,
+) -> TauCalibrationResult:
+    """Aggregate a selected contributor set into a :class:`TauCalibrationResult`.
+
+    Shared tail of :func:`extract_tau_majority` and
+    :func:`extract_tau_G_majority`: SNR-weighted majority tau, GMM bimodality,
+    the tau-vs-(SNR, frequency) Pearson diagnostics, the frequency-third
+    medians, the spur catalog, the three acceptance pre-conditions, and the
+    per-band majorities. The two extractors differ only in how they *select*
+    contributors and label them; ``contributor_noun`` ("contributors" /
+    "eligible bins") and ``tau_label`` ("tau_maj" / "tau_G") tune the
+    pre-condition notes, and ``tau_max_field`` is the value reported in
+    :attr:`TauCalibrationResult.tau_max_us`. Logging is left to each caller so
+    the shape-specific message stays close to its entry point.
+    """
+    tau_maj, sigma_tau = majority_tau(contributor_taus, contributor_snrs)
+    bm = gmm_bimodality(contributor_taus)
+
+    if contributor_taus.size >= 5:
+        log_snr = np.log10(np.clip(contributor_snrs, 1e-6, None))
+        r_log_snr = float(np.corrcoef(log_snr, contributor_taus)[0, 1])
+        r_freq = float(np.corrcoef(contributor_freqs, contributor_taus)[0, 1])
+    else:
+        r_log_snr = float("nan")
+        r_freq = float("nan")
+
+    thirds: list[FrequencyThird] = []
+    if contributor_freqs.size > 0:
+        edges = np.percentile(contributor_freqs, [0.0, 33.333, 66.667, 100.0])
+        for i, label in enumerate(("low", "mid", "high")):
+            lo, hi = float(edges[i]), float(edges[i + 1])
+            mask = (contributor_freqs >= lo) & (contributor_freqs <= hi)
+            if mask.any():
+                thirds.append(
+                    FrequencyThird(
+                        label=label,
+                        freq_lo_mhz=lo,
+                        freq_hi_mhz=hi,
+                        n=int(mask.sum()),
+                        median_tau_us=float(np.median(contributor_taus[mask])),
+                    )
+                )
+
+    spur_mask_full = (cal.classification == 1) & in_trim
+    spur_bin_indices = np.where(spur_mask_full)[0]
+    # Flat (saturated) bins: the exp fit railed to tau_max (spur_by_tau), the
+    # reliable CW-tone signal the Stage 5 gate keys on. Mirrors the
+    # ``spur_by_tau`` test in :func:`stft_calibration`.
+    saturated_bins = cal.tau_per_bin >= 0.95 * cal.tau_max_us
+    spur_clusters = group_spur_bins(
+        spur_bin_indices,
+        cal.mag.mean(axis=0),
+        freq_mol_mhz,
+        n_seg=n_seg,
+        cluster_multiplier=spur_cluster_multiplier,
+        saturated_bins=saturated_bins,
+    )
+
+    # Pre-condition checks: report each one independently.
+    notes: list[str] = []
+    cond_count = contributor_bins.size >= int(min_contributors)
+    notes.append(
+        "ok"
+        if cond_count
+        else f"only {contributor_bins.size} {contributor_noun} (< {min_contributors})"
+    )
+    cond_bimodal = (not bm.two_component_preferred) or (
+        bm.dominant_weight >= bimodality_dominant_fraction
+    )
+    notes.append(
+        "ok"
+        if cond_bimodal
+        else (
+            f"strongly bimodal (delta_aic={bm.delta_aic:.1f}) and dominant cluster "
+            f"weight {bm.dominant_weight:.2f} < {bimodality_dominant_fraction:.2f}"
+        )
+    )
+    if tau_maj > 0:
+        sigma_ratio = sigma_tau / tau_maj
+        cond_spread = sigma_ratio < sigma_tau_fraction_max
+        notes.append(
+            "ok"
+            if cond_spread
+            else f"sigma_tau/tau_maj={sigma_ratio:.2f} >= {sigma_tau_fraction_max:.2f}"
+        )
+    else:
+        cond_spread = False
+        notes.append(f"{tau_label} non-positive; spread test undefined")
+
+    all_passed = bool(cond_count and cond_bimodal and cond_spread)
+
+    if compute_band_majorities_flag and contributor_freqs.size > 0:
+        bands = compute_band_majorities(
+            contributor_freqs,
+            contributor_taus,
+            contributor_snrs,
+            trim_lo_mhz=trim_lo_mhz,
+            trim_hi_mhz=trim_hi_mhz,
+            band_edges_mhz=band_edges_mhz,
+            band_labels=band_labels,
+            min_contributors_per_band=int(min_contributors_per_band),
+        )
+    else:
+        bands = tuple()
+
+    return TauCalibrationResult(
+        tau_maj_us=float(tau_maj),
+        sigma_tau_us=float(sigma_tau),
+        n_contributors=int(contributor_bins.size),
+        n_spur_bins=int(spur_bin_indices.size),
+        spur_clusters=spur_clusters,
+        bimodality=bm,
+        pearson_r_log_snr_vs_tau=r_log_snr,
+        pearson_r_freq_vs_tau=r_freq,
+        frequency_thirds=tuple(thirds),
+        band_majorities=bands,
+        contributor_bin_indices=np.asarray(contributor_bins, dtype=np.int64),
+        contributor_taus_us=np.asarray(contributor_taus, dtype=np.float64),
+        contributor_snrs=np.asarray(contributor_snrs, dtype=np.float64),
+        contributor_freqs_mhz=np.asarray(contributor_freqs, dtype=np.float64),
+        n_seg=int(n_seg),
+        t_sigma=float(t_sigma),
+        tau_max_us=float(tau_max_field),
+        rss_gate_factor=float(rss_gate_factor),
+        sample_dt_us=float(sample_dt_us),
+        start_us=float(start_us),
+        end_us=float(end_us),
+        probe_freq_mhz=float(probe_freq_mhz),
+        sideband=sb,
+        trim_lo_mhz=float(trim_lo_mhz),
+        trim_hi_mhz=float(trim_hi_mhz),
+        sigma_x_full=float(cal.sigma_x_full),
+        sigma_frame=float(cal.sigma_frame),
+        snr_weighted=True,
+        preconditions_passed=all_passed,
+        preconditions_notes=tuple(notes),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1804,7 +1975,6 @@ def extract_tau_majority(
     bimodality_dominant_fraction: float = DEFAULT_BIMODALITY_DOMINANT_FRACTION,
     polish: bool = True,
     polish_n_iter: int = 1,
-    polish_top_n: Optional[int] = None,
     polish_snr_cap: Optional[float] = DEFAULT_POLISH_SNR_CAP,
     polish_noise_debias: bool = False,
     sigma_x_full: Optional[float] = None,
@@ -1818,7 +1988,7 @@ def extract_tau_majority(
     Slices the FID to ``[start_us, end_us)``, runs the sliding-active-window
     STFT, classifies bins, computes the SNR-weighted majority tau over the
     trim region, fits a 1- vs 2-component GMM, groups spur clusters, and
-    evaluates the three Phase-2 pre-conditions.
+    evaluates the three pre-conditions.
 
     Parameters
     ----------
@@ -1837,43 +2007,36 @@ def extract_tau_majority(
     trim_lo_mhz, trim_hi_mhz : float
         Molecular-frequency analysis range. Contributors and spurs outside
         the range are dropped (mirrors the Stage 1 user-grid trim so the
-        calibration matches the spectrum the user analyses).
+        calibration matches the spectrum the user analyzes).
     sigma_time : float, optional
         Time-domain white-noise RMS. When ``None``, estimated from the FID
         active-region tail (see :func:`estimate_sigma_time_from_tail`).
     n_seg, t_sigma, tau_max_us, rss_gate_factor, relative_gate_fraction
-        STFT calibration knobs; defaults match the Phase 1 acceptance gate.
+        STFT calibration knobs; defaults match the acceptance gate.
     spur_cluster_multiplier : float
         Cluster-gap multiplier in units of ``n_seg`` full-record bins.
     min_contributors, sigma_tau_fraction_max, bimodality_dominant_fraction
-        Acceptance pre-conditions (Phase 2). Calibrations that fail any
+        Acceptance pre-conditions. Calibrations that fail any
         pre-condition still return a result; downstream consumers gate on
         :attr:`TauCalibrationResult.preconditions_passed`.
     polish : bool, default True
         Apply Gauss-Newton NLS step(s) to each contributor bin's
         ``(C, tau)`` seed before computing the majority. Closes the +3-5 %
-        log-linear-weighting bias documented in Phase 1 § Case 1 to
+        log-linear-weighting bias documented in report.md § Case 1 to
         sub-percent on the case-1 grid; opt-out left as a forensic
         switch for A/B comparison against the legacy log-linear-only path.
     polish_n_iter : int, default 1
         Number of Gauss-Newton steps when ``polish`` is on. One step
         already lands at sub-1 % for most cells; bumping to 2-3 closes
         the residual on the intermediate-``T_full / tau`` regime
-        documented in Phase 1 § Case 1 (a 1-µs run takes < 100 ms).
-    polish_top_n : int, optional
-        When set, the polish runs on only the ``polish_top_n`` highest-SNR
-        contributor bins (the on-line bins of the strongest lines).
-        Default ``None`` polishes every contributor. Limiting to top-N
-        keeps the polish's correction local to high-confidence anchors
-        and avoids shifting weak-skirt bins whose per-bin SNR is too low
-        for one Gauss-Newton step to reliably improve.
+        documented in report.md § Case 1 (a 1-µs run takes < 100 ms).
     polish_snr_cap : float, optional
         When set, the polish runs only on contributors whose per-bin SNR
         is **below** ``polish_snr_cap``; high-SNR contributors retain the
         unpolished log-linear seed (the +3-5 % log-linear bias the polish
         targets concentrates at modest SNR, so applying it to high-SNR
         bins over-corrects). Pass ``None`` to disable the cap and polish
-        every contributor (the legacy polish=True behaviour). Default is
+        every contributor (the legacy polish=True behavior). Default is
         :data:`DEFAULT_POLISH_SNR_CAP`, calibrated against the
         LSQ-fit-and-histogram per-band reference on 2638 to land per-band
         SNR-weighted majority τ within ±5 % of the LSQ low/mid/high
@@ -1914,7 +2077,7 @@ def extract_tau_majority(
     Stage 1 owns the *user-grid* trim; the calibration accepts the
     ``trim_*`` range as parameters rather than re-reading the FT settings
     so the same routine can be applied to non-pipeline FIDs (e.g. from the
-    Phase-1 synthetic study) without dependency on the file format.
+    synthetic study) without dependency on the file format.
     """
     sb = sideband.strip().lower()
     if sb not in ("lower", "upper"):
@@ -1968,11 +2131,10 @@ def extract_tau_majority(
 
     in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
     contributor_mask = (cal.classification == 3) & in_trim
-    spur_mask_full = (cal.classification == 1) & in_trim
 
     # Single NLS Gauss-Newton step on the contributor bins removes the
     # +3-5 % log-linear-weighting bias before majority/histogram aggregation
-    # (see Phase 1 § Case 1; ``_nls_polish_step``).
+    # (see report.md § Case 1; ``_nls_polish_step``).
     tau_per_bin = cal.tau_per_bin
     if polish and contributor_mask.any():
         # Pure NLS polish: a single Gauss-Newton step on
@@ -2012,141 +2174,51 @@ def extract_tau_majority(
     contributor_snrs = cal.snr_per_bin[contributor_bins]
     contributor_freqs = freq_mol_mhz[contributor_bins]
 
-    tau_maj, sigma_tau = majority_tau(contributor_taus, contributor_snrs)
-    bm = gmm_bimodality(contributor_taus)
-
-    if contributor_taus.size >= 5:
-        log_snr = np.log10(np.clip(contributor_snrs, 1e-6, None))
-        r_log_snr = float(np.corrcoef(log_snr, contributor_taus)[0, 1])
-        r_freq = float(np.corrcoef(contributor_freqs, contributor_taus)[0, 1])
-    else:
-        r_log_snr = float("nan")
-        r_freq = float("nan")
-
-    thirds: list[FrequencyThird] = []
-    if contributor_freqs.size > 0:
-        edges = np.percentile(contributor_freqs, [0.0, 33.333, 66.667, 100.0])
-        for i, label in enumerate(("low", "mid", "high")):
-            lo, hi = float(edges[i]), float(edges[i + 1])
-            mask = (contributor_freqs >= lo) & (contributor_freqs <= hi)
-            if mask.any():
-                thirds.append(
-                    FrequencyThird(
-                        label=label,
-                        freq_lo_mhz=lo,
-                        freq_hi_mhz=hi,
-                        n=int(mask.sum()),
-                        median_tau_us=float(np.median(contributor_taus[mask])),
-                    )
-                )
-
-    spur_bin_indices = np.where(spur_mask_full)[0]
-    # Flat (saturated) bins: the exp fit railed to tau_max (spur_by_tau),
-    # the reliable CW-tone signal the Stage 5 gate keys on. Mirrors the
-    # ``spur_by_tau`` test in :func:`stft_calibration`.
-    saturated_bins = cal.tau_per_bin >= 0.95 * cal.tau_max_us
-    spur_clusters = group_spur_bins(
-        spur_bin_indices,
-        cal.mag.mean(axis=0),
+    result = _finalize_tau_result(
+        cal,
         freq_mol_mhz,
+        in_trim,
+        contributor_bins,
+        contributor_taus,
+        contributor_snrs,
+        contributor_freqs,
         n_seg=n_seg,
-        cluster_multiplier=spur_cluster_multiplier,
-        saturated_bins=saturated_bins,
+        t_sigma=t_sigma,
+        rss_gate_factor=rss_gate_factor,
+        sample_dt_us=sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sb=sb,
+        trim_lo_mhz=trim_lo_mhz,
+        trim_hi_mhz=trim_hi_mhz,
+        spur_cluster_multiplier=spur_cluster_multiplier,
+        min_contributors=min_contributors,
+        sigma_tau_fraction_max=sigma_tau_fraction_max,
+        bimodality_dominant_fraction=bimodality_dominant_fraction,
+        compute_band_majorities_flag=compute_band_majorities_flag,
+        band_edges_mhz=band_edges_mhz,
+        band_labels=band_labels,
+        min_contributors_per_band=min_contributors_per_band,
+        tau_max_field=cal.tau_max_us,
+        contributor_noun="contributors",
+        tau_label="tau_maj",
     )
-
-    # Pre-condition checks: report each one independently.
-    notes: list[str] = []
-    cond_count = contributor_bins.size >= min_contributors
-    notes.append(
-        "ok"
-        if cond_count
-        else f"only {contributor_bins.size} contributors (< {min_contributors})"
-    )
-    cond_bimodal = (not bm.two_component_preferred) or (
-        bm.dominant_weight >= bimodality_dominant_fraction
-    )
-    notes.append(
-        "ok"
-        if cond_bimodal
-        else (
-            f"strongly bimodal (delta_aic={bm.delta_aic:.1f}) and dominant cluster "
-            f"weight {bm.dominant_weight:.2f} < {bimodality_dominant_fraction:.2f}"
-        )
-    )
-    if tau_maj > 0:
-        sigma_ratio = sigma_tau / tau_maj
-        cond_spread = sigma_ratio < sigma_tau_fraction_max
-        notes.append(
-            "ok"
-            if cond_spread
-            else f"sigma_tau/tau_maj={sigma_ratio:.2f} >= {sigma_tau_fraction_max:.2f}"
-        )
-    else:
-        cond_spread = False
-        notes.append("tau_maj non-positive; spread test undefined")
-
-    all_passed = bool(cond_count and cond_bimodal and cond_spread)
-
-    if compute_band_majorities_flag and contributor_freqs.size > 0:
-        bands = compute_band_majorities(
-            contributor_freqs,
-            contributor_taus,
-            contributor_snrs,
-            trim_lo_mhz=trim_lo_mhz,
-            trim_hi_mhz=trim_hi_mhz,
-            band_edges_mhz=band_edges_mhz,
-            band_labels=band_labels,
-            min_contributors_per_band=min_contributors_per_band,
-        )
-    else:
-        bands = tuple()
 
     logger.info(
         "STFT tau calibration: tau_maj=%.3f sigma_tau=%.3f us "
         "(n_contrib=%d, n_spur_bins=%d, n_clusters=%d, bimodal=%s, "
         "preconditions=%s, n_bands=%d)",
-        tau_maj,
-        sigma_tau,
-        contributor_bins.size,
-        spur_bin_indices.size,
-        len(spur_clusters),
-        bm.two_component_preferred,
-        "pass" if all_passed else "fail",
-        len(bands),
+        result.tau_maj_us,
+        result.sigma_tau_us,
+        result.n_contributors,
+        result.n_spur_bins,
+        len(result.spur_clusters),
+        result.bimodality.two_component_preferred,
+        "pass" if result.preconditions_passed else "fail",
+        len(result.band_majorities),
     )
-
-    return TauCalibrationResult(
-        tau_maj_us=float(tau_maj),
-        sigma_tau_us=float(sigma_tau),
-        n_contributors=int(contributor_bins.size),
-        n_spur_bins=int(spur_bin_indices.size),
-        spur_clusters=spur_clusters,
-        bimodality=bm,
-        pearson_r_log_snr_vs_tau=r_log_snr,
-        pearson_r_freq_vs_tau=r_freq,
-        frequency_thirds=tuple(thirds),
-        band_majorities=bands,
-        contributor_bin_indices=contributor_bins.astype(np.int64),
-        contributor_taus_us=contributor_taus.astype(np.float64),
-        contributor_snrs=contributor_snrs.astype(np.float64),
-        contributor_freqs_mhz=contributor_freqs.astype(np.float64),
-        n_seg=n_seg,
-        t_sigma=float(t_sigma),
-        tau_max_us=float(cal.tau_max_us),
-        rss_gate_factor=float(rss_gate_factor),
-        sample_dt_us=float(sample_dt_us),
-        start_us=float(start_us),
-        end_us=float(end_us),
-        probe_freq_mhz=float(probe_freq_mhz),
-        sideband=sb,
-        trim_lo_mhz=float(trim_lo_mhz),
-        trim_hi_mhz=float(trim_hi_mhz),
-        sigma_x_full=float(cal.sigma_x_full),
-        sigma_frame=float(cal.sigma_frame),
-        snr_weighted=True,
-        preconditions_passed=all_passed,
-        preconditions_notes=tuple(notes),
-    )
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2353,7 +2425,7 @@ def extract_tau_G_majority(
        eligibility filter inside each band.
 
     The result reuses :class:`TauCalibrationResult` so the existing HDF5
-    serialisation can persist it unchanged (under a different group path).
+    serialization can persist it unchanged (under a different group path).
     Semantic interpretation: every ``τ`` / ``tau`` field carries ``τ_G``
     when this twin is the producer; the group path
     ``/stage2b_tau_G_calibration`` disambiguates from the pure-exp twin.
@@ -2518,137 +2590,51 @@ def extract_tau_G_majority(
     contributor_snrs = np.asarray(eligible_snr, dtype=np.float64)
     contributor_freqs = np.asarray(eligible_freq, dtype=np.float64)
 
-    tau_maj, sigma_tau = majority_tau(contributor_taus, contributor_snrs)
-    bm = gmm_bimodality(contributor_taus)
-
-    if contributor_taus.size >= 5:
-        log_snr = np.log10(np.clip(contributor_snrs, 1e-6, None))
-        r_log_snr = float(np.corrcoef(log_snr, contributor_taus)[0, 1])
-        r_freq = float(np.corrcoef(contributor_freqs, contributor_taus)[0, 1])
-    else:
-        r_log_snr = float("nan")
-        r_freq = float("nan")
-
-    thirds: list[FrequencyThird] = []
-    if contributor_freqs.size > 0:
-        edges = np.percentile(contributor_freqs, [0.0, 33.333, 66.667, 100.0])
-        for i, label in enumerate(("low", "mid", "high")):
-            lo, hi = float(edges[i]), float(edges[i + 1])
-            mask = (contributor_freqs >= lo) & (contributor_freqs <= hi)
-            if mask.any():
-                thirds.append(
-                    FrequencyThird(
-                        label=label,
-                        freq_lo_mhz=lo,
-                        freq_hi_mhz=hi,
-                        n=int(mask.sum()),
-                        median_tau_us=float(np.median(contributor_taus[mask])),
-                    )
-                )
-
-    spur_mask_full = (cal.classification == 1) & in_trim
-    spur_bin_indices = np.where(spur_mask_full)[0]
-    saturated_bins = cal.tau_per_bin >= 0.95 * cal.tau_max_us
-    spur_clusters = group_spur_bins(
-        spur_bin_indices,
-        cal.mag.mean(axis=0),
+    result = _finalize_tau_result(
+        cal,
         freq_mol_mhz,
+        in_trim,
+        contributor_bins,
+        contributor_taus,
+        contributor_snrs,
+        contributor_freqs,
         n_seg=n_seg,
-        cluster_multiplier=spur_cluster_multiplier,
-        saturated_bins=saturated_bins,
+        t_sigma=t_sigma,
+        rss_gate_factor=rss_gate_factor,
+        sample_dt_us=sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sb=sb,
+        trim_lo_mhz=trim_lo_mhz,
+        trim_hi_mhz=trim_hi_mhz,
+        spur_cluster_multiplier=spur_cluster_multiplier,
+        min_contributors=min_contributors,
+        sigma_tau_fraction_max=sigma_tau_fraction_max,
+        bimodality_dominant_fraction=bimodality_dominant_fraction,
+        compute_band_majorities_flag=compute_band_majorities_flag,
+        band_edges_mhz=band_edges_mhz,
+        band_labels=band_labels,
+        min_contributors_per_band=min_contributors_per_band,
+        tau_max_field=tau_G_bound_hi,
+        contributor_noun="eligible bins",
+        tau_label="tau_G",
     )
-
-    notes: list[str] = []
-    cond_count = contributor_bins.size >= int(min_contributors)
-    notes.append(
-        "ok"
-        if cond_count
-        else f"only {contributor_bins.size} eligible bins (< {min_contributors})"
-    )
-    cond_bimodal = (not bm.two_component_preferred) or (
-        bm.dominant_weight >= bimodality_dominant_fraction
-    )
-    notes.append(
-        "ok"
-        if cond_bimodal
-        else (
-            f"strongly bimodal (delta_aic={bm.delta_aic:.1f}) and dominant cluster "
-            f"weight {bm.dominant_weight:.2f} < {bimodality_dominant_fraction:.2f}"
-        )
-    )
-    if tau_maj > 0:
-        sigma_ratio = sigma_tau / tau_maj
-        cond_spread = sigma_ratio < sigma_tau_fraction_max
-        notes.append(
-            "ok"
-            if cond_spread
-            else f"sigma_tau/tau_maj={sigma_ratio:.2f} >= {sigma_tau_fraction_max:.2f}"
-        )
-    else:
-        cond_spread = False
-        notes.append("tau_G non-positive; spread test undefined")
-    all_passed = bool(cond_count and cond_bimodal and cond_spread)
-
-    if compute_band_majorities_flag and contributor_freqs.size > 0:
-        bands = compute_band_majorities(
-            contributor_freqs,
-            contributor_taus,
-            contributor_snrs,
-            trim_lo_mhz=trim_lo_mhz,
-            trim_hi_mhz=trim_hi_mhz,
-            band_edges_mhz=band_edges_mhz,
-            band_labels=band_labels,
-            min_contributors_per_band=int(min_contributors_per_band),
-        )
-    else:
-        bands = tuple()
 
     logger.info(
         "STFT τ_G calibration: tau_G_maj=%.3f sigma_tau_G=%.3f us "
         "(n_eligible=%d / contributor_pool=%d, n_spur_bins=%d, "
         "n_clusters=%d, preconditions=%s, n_bands=%d)",
-        tau_maj,
-        sigma_tau,
-        contributor_bins.size,
+        result.tau_maj_us,
+        result.sigma_tau_us,
+        result.n_contributors,
         bin_indices.size,
-        spur_bin_indices.size,
-        len(spur_clusters),
-        "pass" if all_passed else "fail",
-        len(bands),
+        result.n_spur_bins,
+        len(result.spur_clusters),
+        "pass" if result.preconditions_passed else "fail",
+        len(result.band_majorities),
     )
-
-    return TauCalibrationResult(
-        tau_maj_us=float(tau_maj),
-        sigma_tau_us=float(sigma_tau),
-        n_contributors=int(contributor_bins.size),
-        n_spur_bins=int(spur_bin_indices.size),
-        spur_clusters=spur_clusters,
-        bimodality=bm,
-        pearson_r_log_snr_vs_tau=r_log_snr,
-        pearson_r_freq_vs_tau=r_freq,
-        frequency_thirds=tuple(thirds),
-        band_majorities=bands,
-        contributor_bin_indices=contributor_bins,
-        contributor_taus_us=contributor_taus,
-        contributor_snrs=contributor_snrs,
-        contributor_freqs_mhz=contributor_freqs,
-        n_seg=int(n_seg),
-        t_sigma=float(t_sigma),
-        tau_max_us=float(tau_G_bound_hi),
-        rss_gate_factor=float(rss_gate_factor),
-        sample_dt_us=float(sample_dt_us),
-        start_us=float(start_us),
-        end_us=float(end_us),
-        probe_freq_mhz=float(probe_freq_mhz),
-        sideband=sb,
-        trim_lo_mhz=float(trim_lo_mhz),
-        trim_hi_mhz=float(trim_hi_mhz),
-        sigma_x_full=float(cal.sigma_x_full),
-        sigma_frame=float(cal.sigma_frame),
-        snr_weighted=True,
-        preconditions_passed=all_passed,
-        preconditions_notes=tuple(notes),
-    )
+    return result
 
 
 # ---------------------------------------------------------------------------

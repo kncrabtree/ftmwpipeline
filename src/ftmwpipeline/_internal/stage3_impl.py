@@ -68,10 +68,6 @@ from .active_ft_support import build_active_grid_with_noise
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
-from .stage2b_g_impl import (
-    load_tau_G_calibration_impl,
-    tau_G_calibration_present,
-)
 from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
 
 logger = logging.getLogger(__name__)
@@ -601,9 +597,13 @@ def detect_peaks_impl(
     # else an exponential ``exp(-t/τ)``. This is the true matched filter for
     # the line shape, not an exp filter fed a Gaussian τ.
     recommended_shape = read_stage2b_recommended_shape(file_path)
-    if recommended_shape == "gaussian" and tau_G_calibration_present(file_path):
+    if recommended_shape == "gaussian" and tau_calibration_present(
+        file_path, shape="gaussian"
+    ):
         tau_basis_us = float(
-            load_tau_G_calibration_impl(file_path)["tau_G_calibration"].tau_maj_us
+            load_tau_calibration_impl(file_path, shape="gaussian")[
+                "tau_calibration"
+            ].tau_maj_us
         )
         gap_shape = "gaussian"
     else:

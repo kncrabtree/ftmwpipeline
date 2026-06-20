@@ -2,7 +2,7 @@
 
 Validates the algorithmic kernels (sliding STFT, per-bin classification,
 SNR-weighted majority, GMM bimodality, spur clustering) on controlled
-synthetic FIDs. The Phase-1 research prototype in
+synthetic FIDs. The research prototype in
 ``dev-docs/research/stage5-tau-calibration/prototype.py`` is the
 broader synthetic acceptance gate; these tests are the fast in-tree
 smoke checks.
@@ -17,11 +17,14 @@ from ftmwpipeline.fitting.tau_calibration import (
     DEFAULT_N_SEG,
     DEFAULT_T_SIGMA,
     DEFAULT_TAU_G_BOUND_HI,
+    BandMajority,
     ShapeRecommendation,
     SpurCluster,
     TauCalibrationResult,
     _aggregate_shape_verdict,
     _nls_polish_step,
+    band_majority_for_frequency,
+    compute_band_majorities,
     compute_shape_recommendation,
     estimate_sigma_time_from_tail,
     extract_tau_G_majority,
@@ -287,6 +290,44 @@ class TestExtractTauMajority:
         assert result.tau_maj_us == pytest.approx(6.0, rel=0.10)
         assert result.n_contributors >= 8
         assert result.sideband == "lower"
+
+    def test_preconditions_fail_on_too_few_contributors(self):
+        """A real ``preconditions_passed=False`` outcome (not just round-trip).
+
+        Plant the same clean multi-line FID but demand far more contributors
+        than the band can supply, so the count pre-condition fails and the
+        computed flag flips to ``False`` with the matching note.
+        """
+        rng = np.random.default_rng(20260525 + 99)
+        N = int(round(T_FULL_US / SAMPLE_DT_US))
+        N = (N // DEFAULT_N_SEG) * DEFAULT_N_SEG
+        line_bins = list(range(N // 8, 5 * N // 8, N // 16))[:8]
+        fid, sigma_t = _synth_fid(
+            rng=rng,
+            n_samples=N,
+            line_bins=line_bins,
+            line_taus_us=[6.0] * len(line_bins),
+            line_snrs=[200.0] * len(line_bins),
+        )
+        result = extract_tau_majority(
+            fid,
+            SAMPLE_DT_US,
+            start_us=0.0,
+            end_us=N * SAMPLE_DT_US,
+            probe_freq_mhz=PROBE_MHZ,
+            sideband="lower",
+            trim_lo_mhz=TRIM_LO_MHZ,
+            trim_hi_mhz=TRIM_HI_MHZ,
+            sigma_time=sigma_t,
+            min_contributors=100_000,
+        )
+        assert result.preconditions_passed is False
+        # The count note carries the shape-specific noun and the threshold.
+        assert any(
+            "contributors (< 100000)" in note for note in result.preconditions_notes
+        ), result.preconditions_notes
+        # τ is still computed and returned for downstream consumers to use.
+        assert result.tau_maj_us == pytest.approx(6.0, rel=0.10)
 
     def test_tail_sigma_fallback(self):
         # Quick: estimator returns a positive number on a real noisy FID.
@@ -729,8 +770,8 @@ class TestComputeShapeRecommendation:
             )
 
 
-class TestVectorisedShapeSolver:
-    """The default vectorised shape solver agrees with the scipy oracle.
+class TestVectorizedShapeSolver:
+    """The default vectorized shape solver agrees with the scipy oracle.
 
     The per-bin 3-way fit (``_run_shape_fits``) defaults to a batched
     closed-form-log-seed + clipped-Gauss-Newton solver; ``solver='scipy'``
@@ -765,7 +806,7 @@ class TestVectorisedShapeSolver:
 
     @pytest.fixture(scope="class")
     def vec(self):
-        return self._cal("vectorised")
+        return self._cal("vectorized")
 
     @pytest.fixture(scope="class")
     def sci(self):
@@ -774,7 +815,7 @@ class TestVectorisedShapeSolver:
     def test_pool_and_gaussian_tau_match_scipy(self, vec, sci):
         # Identical above-threshold non-spur classification (the cls=3 pool is
         # set before the shape fits, but the bad-fit gate uses their RSS, so
-        # this also exercises that the vectorised RSS gates the same bins).
+        # this also exercises that the vectorized RSS gates the same bins).
         assert int((vec.classification == 3).sum()) == int(
             (sci.classification == 3).sum()
         )
@@ -794,7 +835,7 @@ class TestVectorisedShapeSolver:
         rel = np.abs(fv.tau_G_gauss[both] - fs.tau_G_gauss[both]) / fs.tau_G_gauss[both]
         assert (
             np.median(rel) < 0.02
-        ), f"vectorised gauss τ median rel error {np.median(rel)*100:.1f}% vs scipy"
+        ), f"vectorized gauss τ median rel error {np.median(rel)*100:.1f}% vs scipy"
 
     def test_recommendation_matches_scipy(self, vec, sci):
         from ftmwpipeline.fitting.tau_calibration import (
@@ -824,3 +865,72 @@ class TestVectorisedShapeSolver:
                 shape="best_of_three",
                 shape_solver="banana",
             )
+
+
+# ---------------------------------------------------------------------------
+# Per-band majorities (compute_band_majorities / band_majority_for_frequency)
+# ---------------------------------------------------------------------------
+class TestBandMajorities:
+    def test_per_band_majority_separates_bands(self):
+        """Each well-populated band reports its own local majority tau."""
+        # Two bands with distinct true tau; enough contributors in each.
+        lo_freqs = np.linspace(27000.0, 30000.0, 60)
+        hi_freqs = np.linspace(36000.0, 39000.0, 60)
+        freqs = np.concatenate([lo_freqs, hi_freqs])
+        taus = np.concatenate([np.full(60, 8.0), np.full(60, 5.0)])
+        snrs = np.full(120, 50.0)
+        bands = compute_band_majorities(
+            freqs,
+            taus,
+            snrs,
+            trim_lo_mhz=26500.0,
+            trim_hi_mhz=40000.0,
+            band_edges_mhz=(33000.0,),
+            band_labels=("low", "high"),
+            min_contributors_per_band=10,
+        )
+        assert [b.label for b in bands] == ["low", "high"]
+        low, high = bands
+        assert low.tau_maj_us == pytest.approx(8.0, abs=1e-6)
+        assert high.tau_maj_us == pytest.approx(5.0, abs=1e-6)
+        assert low.n == 60 and high.n == 60
+
+    def test_short_band_falls_back_to_band_wide(self):
+        """A band below ``min_contributors_per_band`` uses the band-wide majority."""
+        # 50 contributors in the low band, only 3 in the high band.
+        freqs = np.concatenate(
+            [np.linspace(27000.0, 30000.0, 50), [37000.0, 38000.0, 39000.0]]
+        )
+        taus = np.concatenate([np.full(50, 8.0), np.full(3, 5.0)])
+        snrs = np.full(53, 50.0)
+        band_wide_tau, _ = majority_tau(taus, snrs, weighted=True)
+        bands = compute_band_majorities(
+            freqs,
+            taus,
+            snrs,
+            trim_lo_mhz=26500.0,
+            trim_hi_mhz=40000.0,
+            band_edges_mhz=(33000.0,),
+            band_labels=("low", "high"),
+            min_contributors_per_band=10,
+            sigma_floor_us=0.5,
+        )
+        low, high = bands
+        assert low.tau_maj_us == pytest.approx(8.0, abs=1e-6)
+        # Short high band collapses to the band-wide majority, not its own 5.0.
+        assert high.n == 3
+        assert high.tau_maj_us == pytest.approx(band_wide_tau, abs=1e-6)
+        assert high.sigma_tau_us >= 0.5  # floored
+
+    def test_band_majority_for_frequency_routing(self):
+        bands = (
+            BandMajority("low", 26500.0, 33000.0, 10, 8.0, 0.5),
+            BandMajority("high", 33000.0, 40000.0, 10, 5.0, 0.5),
+        )
+        assert band_majority_for_frequency(bands, 28000.0).label == "low"
+        assert band_majority_for_frequency(bands, 37000.0).label == "high"
+        # Closed-closed at the very top edge so a contributor at trim_hi routes.
+        assert band_majority_for_frequency(bands, 40000.0).label == "high"
+        # Outside every band -> None (caller falls back to band-wide).
+        assert band_majority_for_frequency(bands, 10000.0) is None
+        assert band_majority_for_frequency((), 28000.0) is None

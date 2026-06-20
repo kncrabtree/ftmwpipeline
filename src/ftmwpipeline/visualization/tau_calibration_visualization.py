@@ -1,8 +1,6 @@
 """Visualizations for the Stage 2b tau calibration.
 
-Two figures are exposed, mirroring the Phase-2 research figures
-(``figures/08_2638_stft_heatmap.png`` and
-``figures/09_2638_distribution_analysis.png``):
+Two figures are exposed:
 
 * :func:`plot_tau_heatmap`: 2D ``log10 |S_n(f)|`` heatmap across the
   ``n_seg`` STFT frames and the trim frequency range. The STFT is
@@ -13,9 +11,10 @@ Two figures are exposed, mirroring the Phase-2 research figures
   majority overlay, plus tau-vs-SNR and tau-vs-molecular-frequency
   scatters and the 1- vs 2-component GMM overlay.
 
-The two ``*_from_file`` wrappers handle the .ftmw -> figure plumbing so
-the CLI / Pipeline / functional-API surfaces all share the same
-orchestration.
+The two ``*_from_file`` wrappers handle the .ftmw -> figure plumbing so the
+CLI / Pipeline / functional-API surfaces all share the same orchestration.
+``shape`` selects the pure-exp (``"lorentzian"``) or Gaussian (``"gaussian"``)
+calibration group.
 """
 
 from __future__ import annotations
@@ -27,6 +26,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..fitting.tau_calibration import TauCalibrationResult, sliding_stft
+from .report_style import (
+    AGGIE_BLUE,
+    DOUBLE_DECKER,
+    GUNROCK,
+    QUAD,
+    aggie_blue_cmap,
+    apply_bare_style,
+    resolve_title,
+)
 
 __all__ = [
     "plot_tau_heatmap",
@@ -51,15 +59,14 @@ def plot_tau_heatmap(
     *,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
-    cmap: str = "viridis",
 ) -> "matplotlib.figure.Figure":
     """2D STFT magnitude heatmap restricted to the calibration's trim range.
 
     Reruns :func:`sliding_stft` on the active-region FID slice (parameters
     pulled from the persisted ``TauCalibrationResult``: ``start_us``,
-    ``end_us``, ``sample_dt_us``, ``n_seg``) and plots ``log10 |S|`` over
-    the trim molecular-frequency range. Same convention as
-    ``research/figures/08_2638_stft_heatmap.png``.
+    ``end_us``, ``sample_dt_us``, ``n_seg``) and plots ``log10 |S|`` over the
+    trim molecular-frequency range. A real molecular line decays down the
+    frame axis; a clock spur holds constant magnitude.
     """
     sample_dt_us = result.sample_dt_us
     start_idx = int(round(result.start_us / sample_dt_us))
@@ -85,7 +92,9 @@ def plot_tau_heatmap(
     freqs_sorted = freqs_mol[order]
     mag_sorted = mag_trim[:, order]
 
-    fig, ax = plt.subplots(figsize=_figsize_or_default(figsize, (14, 4.5)))
+    fig, ax = plt.subplots(
+        figsize=_figsize_or_default(figsize, (14, 4.5)), layout="constrained"
+    )
     im = ax.imshow(
         np.log10(np.clip(mag_sorted, 1e-30, None)),
         aspect="auto",
@@ -96,32 +105,33 @@ def plot_tau_heatmap(
             float(a_centers_us[0]),
             float(a_centers_us[-1]),
         ),
-        cmap=cmap,
+        cmap=aggie_blue_cmap(),
     )
     ax.set_xlabel("molecular frequency (MHz)")
-    ax.set_ylabel("STFT frame centre a_c (us)")
-    if title is None:
-        title = (
-            "STFT magnitude heatmap (log10 |S(a, f)|) — "
-            f"trim {result.trim_lo_mhz:.0f}-{result.trim_hi_mhz:.0f} MHz, "
-            f"n_seg={result.n_seg}, tau_maj={result.tau_maj_us:.2f} us"
-        )
-    if title:
-        ax.set_title(title)
+    ax.set_ylabel("STFT frame center a_c (us)")
+    default_title = (
+        "STFT magnitude heatmap (log10 |S(a, f)|) — "
+        f"trim {result.trim_lo_mhz:.0f}-{result.trim_hi_mhz:.0f} MHz, "
+        f"n_seg={result.n_seg}, tau_maj={result.tau_maj_us:.2f} us"
+    )
+    resolved_title = resolve_title(title, default_title)
+    if resolved_title:
+        ax.set_title(resolved_title)
     fig.colorbar(im, ax=ax, label="log10 |S_n|")
-    fig.tight_layout()
     return fig
 
 
 def plot_tau_heatmap_from_file(
     file_path: str,
+    *,
+    shape: str = "lorentzian",
     **kwargs: Any,
 ) -> "matplotlib.figure.Figure":
-    """Convenience: load the FID + persisted calibration and call :func:`plot_tau_heatmap`."""
+    """Load the FID + persisted ``shape`` calibration and plot the heatmap."""
     from .._internal.stage0_impl import load_fid_from_pipeline_impl
     from .._internal.stage2b_impl import load_tau_calibration_impl
 
-    cal = load_tau_calibration_impl(file_path)["tau_calibration"]
+    cal = load_tau_calibration_impl(file_path, shape=shape)["tau_calibration"]
     fid = load_fid_from_pipeline_impl(file_path)
     return plot_tau_heatmap(cal, np.asarray(fid.data, dtype=float), **kwargs)
 
@@ -136,12 +146,7 @@ def plot_tau_distribution(
     title: Optional[str] = None,
     n_bins: int = 80,
 ) -> "matplotlib.figure.Figure":
-    """Four-panel distribution analysis: histogram, tau-vs-SNR, tau-vs-freq, GMM overlay.
-
-    Matches ``research/figures/09_2638_distribution_analysis.png``.
-    """
-    from .report_style import apply_bare_style
-
+    """Four-panel distribution analysis: histogram, tau-vs-SNR, tau-vs-freq, GMM."""
     fig, axes = plt.subplots(2, 2, figsize=_figsize_or_default(figsize, (14, 8)))
 
     taus = np.asarray(result.contributor_taus_us)
@@ -154,11 +159,15 @@ def plot_tau_distribution(
     # 1. Histogram
     ax = axes[0, 0]
     ax.hist(
-        taus, bins=n_bins, color="C0", alpha=0.7, label=f"contributors (n={taus.size})"
+        taus,
+        bins=n_bins,
+        color=AGGIE_BLUE,
+        alpha=0.7,
+        label=f"contributors (n={taus.size})",
     )
     ax.axvline(
         tau_maj,
-        color="C3",
+        color=DOUBLE_DECKER,
         ls="--",
         lw=2,
         label=f"tau_maj = {tau_maj:.2f} us (sigma_tau = {sigma_tau:.2f})",
@@ -172,9 +181,9 @@ def plot_tau_distribution(
     # 2. tau vs SNR
     ax = axes[0, 1]
     if snrs.size > 0:
-        ax.scatter(snrs, taus, s=2, alpha=0.4)
+        ax.scatter(snrs, taus, s=2, alpha=0.4, color=AGGIE_BLUE)
         ax.set_xscale("log")
-    ax.axhline(tau_maj, color="C3", ls="--", lw=1)
+    ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=1)
     ax.set_xlabel("contributor on-line SNR (per-frame)")
     ax.set_ylabel("tau_k (us)")
     ax.set_title("tau vs SNR (Pearson r = " f"{result.pearson_r_log_snr_vs_tau:.3f})")
@@ -183,8 +192,8 @@ def plot_tau_distribution(
     # 3. tau vs molecular freq
     ax = axes[1, 0]
     if freqs.size > 0:
-        ax.scatter(freqs, taus, s=2, alpha=0.4)
-    ax.axhline(tau_maj, color="C3", ls="--", lw=1)
+        ax.scatter(freqs, taus, s=2, alpha=0.4, color=AGGIE_BLUE)
+    ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=1)
     ax.set_xlabel("molecular frequency (MHz)")
     ax.set_ylabel("tau_k (us)")
     ax.set_title(
@@ -193,7 +202,7 @@ def plot_tau_distribution(
     apply_bare_style(ax)
     # Annotate the frequency thirds when present.
     for third in result.frequency_thirds:
-        ax.axhline(third.median_tau_us, color="C2", ls=":", lw=0.6, alpha=0.7)
+        ax.axhline(third.median_tau_us, color=QUAD, ls=":", lw=0.6, alpha=0.7)
         ax.text(
             0.5 * (third.freq_lo_mhz + third.freq_hi_mhz),
             third.median_tau_us,
@@ -201,13 +210,13 @@ def plot_tau_distribution(
             fontsize=7,
             ha="center",
             va="bottom",
-            color="C2",
+            color=QUAD,
         )
 
     # 4. GMM overlay
     ax = axes[1, 1]
     if taus.size > 0:
-        ax.hist(taus, bins=n_bins, color="C0", alpha=0.5, density=True)
+        ax.hist(taus, bins=n_bins, color=AGGIE_BLUE, alpha=0.5, density=True)
     if not np.isnan(bm.mu_a) and tau_maj > 0:
         xs = np.linspace(
             0.0, max(tau_maj * 3.0, taus.max() * 1.1 if taus.size else tau_maj), 400
@@ -222,9 +231,15 @@ def plot_tau_distribution(
             / np.sqrt(2 * np.pi * bm.sigma_b**2)
             * np.exp(-0.5 * ((xs - bm.mu_b) / bm.sigma_b) ** 2)
         )
-        ax.plot(xs, ya, "C3", lw=1, label=f"GMM mu_a={bm.mu_a:.2f}, pi_a={bm.pi_a:.2f}")
-        ax.plot(xs, yb, "C2", lw=1, label=f"GMM mu_b={bm.mu_b:.2f}")
-        ax.plot(xs, ya + yb, "k", lw=1, alpha=0.6)
+        ax.plot(
+            xs,
+            ya,
+            color=DOUBLE_DECKER,
+            lw=1,
+            label=f"GMM mu_a={bm.mu_a:.2f}, pi_a={bm.pi_a:.2f}",
+        )
+        ax.plot(xs, yb, color=QUAD, lw=1, label=f"GMM mu_b={bm.mu_b:.2f}")
+        ax.plot(xs, ya + yb, color=GUNROCK, lw=1, alpha=0.6)
     ax.set_xlabel("tau (us)")
     ax.set_ylabel("density")
     ax.set_title(
@@ -234,18 +249,21 @@ def plot_tau_distribution(
     ax.legend(fontsize=8)
     apply_bare_style(ax)
 
-    if title is not None:
-        fig.suptitle(title)
+    resolved_title = resolve_title(title, "")
+    if resolved_title:
+        fig.suptitle(resolved_title)
     fig.tight_layout()
     return fig
 
 
 def plot_tau_distribution_from_file(
     file_path: str,
+    *,
+    shape: str = "lorentzian",
     **kwargs: Any,
 ) -> "matplotlib.figure.Figure":
-    """Convenience: load the persisted calibration and call :func:`plot_tau_distribution`."""
+    """Load the persisted ``shape`` calibration and plot the distribution."""
     from .._internal.stage2b_impl import load_tau_calibration_impl
 
-    cal = load_tau_calibration_impl(file_path)["tau_calibration"]
+    cal = load_tau_calibration_impl(file_path, shape=shape)["tau_calibration"]
     return plot_tau_distribution(cal, **kwargs)

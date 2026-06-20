@@ -1,8 +1,8 @@
 """Shared resolver glue for the Stage 2b user-facing impls.
 
-The three Stage 2b orchestrators (``calibrate_tau_impl``,
-``calibrate_tau_G_impl``, ``recommend_shape_impl``) all build an explicit
-:class:`TauCalibrationSettings` from their legacy per-knob kwargs and
+The Stage 2b orchestrators (``calibrate_tau_impl`` for either shape and
+``recommend_shape_impl``) all build an explicit
+:class:`TauCalibrationSettings` from their per-knob kwargs and
 walk the four-layer resolution chain (``explicit > persisted > preset >
 recommended > hard default``). The shared scaffolding lives here so a
 single resolver-shape change updates every consumer.

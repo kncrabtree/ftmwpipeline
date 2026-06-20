@@ -40,10 +40,6 @@ from ._internal.stage1_impl import (
     visualize_ft_impl,
 )
 from ._internal.stage2_impl import compute_noise_estimation_impl, visualize_noise_impl
-from ._internal.stage2b_g_impl import (
-    calibrate_tau_G_impl,
-    load_tau_G_calibration_impl,
-)
 from ._internal.stage2b_impl import (
     calibrate_tau_impl,
     load_tau_calibration_impl,
@@ -700,6 +696,7 @@ class Pipeline:
     def calibrate_tau(
         self,
         *,
+        shape: str = "lorentzian",
         settings: Optional[TauCalibrationSettings] = None,
         preset: Optional[str] = None,
     ) -> TauCalibrationResult:
@@ -709,9 +706,14 @@ class Pipeline:
         molecular decay constant ``tau_maj`` (with robust spread
         ``sigma_tau``) from the raw FID by sliding a
         ``T_w = T_full / n_seg``-long active sub-window across the
-        zero-padded record and fitting a per-bin exponential to the
-        magnitude vs frame-start time. Persists the result to
-        ``/stage2b_tau_calibration`` and invalidates downstream stages.
+        zero-padded record and fitting a per-bin decay to the magnitude vs
+        frame-start time.
+
+        ``shape`` selects the decay model and its persistence group:
+        ``"lorentzian"`` (pure-exponential, ``/stage2b_tau_calibration``;
+        consumed by a ``shape='lorentzian'`` Stage 5 fit) or ``"gaussian"``
+        (pure-Gaussian envelope τ_G, ``/stage2b_tau_G_calibration``; consumed by
+        a ``shape='gaussian'`` fit). The result invalidates downstream stages.
 
         Settings resolve through the chain (``settings`` / ``preset`` >
         persisted > hard default); pass ``settings=`` to drive the
@@ -721,21 +723,21 @@ class Pipeline:
         the persisted record, while the ``preset`` seeds only the fields neither
         the explicit layer nor the persisted record has fixed (the persisted
         record outranks the preset, per D11), so a no-arg follow-up call
-        reproduces the previously resolved settings (stamped to
-        ``processing_parameters/stage2b_tau``). Set
-        individual knobs via ``settings=TauCalibrationSettings(...)`` or a
-        YAML preset's ``stage2b:`` block.
+        reproduces the previously resolved settings (stamped to the shared
+        ``processing_parameters/stage2b_tau`` block both shape variants use).
         """
         try:
             result = calibrate_tau_impl(
                 file_path=str(self.filepath),
+                shape=shape,
                 settings=settings,
                 preset=preset,
             )
             tc = result["tau_calibration"]
             self.logger.info(
-                "Stage 2b: tau_maj=%.3f us, sigma_tau=%.3f us, "
+                "Stage 2b (%s): tau_maj=%.3f us, sigma_tau=%.3f us, "
                 "n_contributors=%d, preconditions=%s",
+                shape,
                 tc.tau_maj_us,
                 tc.sigma_tau_us,
                 tc.n_contributors,
@@ -747,11 +749,15 @@ class Pipeline:
         except Exception as e:
             raise RuntimeError(f"Failed to calibrate tau: {e}") from e
 
-    def load_tau_calibration(self) -> TauCalibrationResult:
-        """Load the persisted Stage 2b :class:`TauCalibrationResult`."""
+    def load_tau_calibration(
+        self, *, shape: str = "lorentzian"
+    ) -> TauCalibrationResult:
+        """Load the persisted Stage 2b :class:`TauCalibrationResult` for ``shape``."""
         return cast(
             TauCalibrationResult,
-            load_tau_calibration_impl(str(self.filepath))["tau_calibration"],
+            load_tau_calibration_impl(str(self.filepath), shape=shape)[
+                "tau_calibration"
+            ],
         )
 
     def calibrate_timebase(
@@ -802,57 +808,6 @@ class Pipeline:
         return cast(
             TimebaseCalibrationResult,
             load_timebase_calibration_impl(str(self.filepath))["timebase_calibration"],
-        )
-
-    def calibrate_tau_G(
-        self,
-        *,
-        settings: Optional[TauCalibrationSettings] = None,
-        preset: Optional[str] = None,
-    ) -> TauCalibrationResult:
-        """Run the Stage 2b Gaussian-shape τ_G calibration.
-
-        Twin of :meth:`calibrate_tau`: per-bin Voigt fits on the STFT
-        contributor pool yield a per-band τ_G majority that the Stage 5
-        Gaussian path consumes. Persists to ``/stage2b_tau_G_calibration``
-        and invalidates downstream stages.
-
-        Settings resolve through the chain (``settings`` / ``preset`` >
-        persisted > hard default); ``settings=`` and ``preset=`` may be
-        combined -- the ``settings`` bundle is the explicit override that
-        outranks the persisted record, while the ``preset`` seeds only the
-        fields neither the explicit layer nor the persisted record has fixed
-        (the persisted record outranks the preset, per D11).
-        The resolved settings share the ``processing_parameters/stage2b_tau``
-        block with the pure-exp twin -- both twins are alternative outputs of
-        the same algorithm.
-        """
-        try:
-            result = calibrate_tau_G_impl(
-                file_path=str(self.filepath),
-                settings=settings,
-                preset=preset,
-            )
-            tc = result["tau_G_calibration"]
-            self.logger.info(
-                "Stage 2b τ_G: tau_G_maj=%.3f us, sigma_tau_G=%.3f us, "
-                "n_eligible=%d, preconditions=%s",
-                tc.tau_maj_us,
-                tc.sigma_tau_us,
-                tc.n_contributors,
-                "pass" if tc.preconditions_passed else "fail",
-            )
-            return cast(TauCalibrationResult, tc)
-        except StageDependencyError:
-            raise
-        except Exception as e:
-            raise RuntimeError(f"Failed to calibrate τ_G: {e}") from e
-
-    def load_tau_G_calibration(self) -> TauCalibrationResult:
-        """Load the persisted Gaussian Stage 2b :class:`TauCalibrationResult`."""
-        return cast(
-            TauCalibrationResult,
-            load_tau_G_calibration_impl(str(self.filepath))["tau_G_calibration"],
         )
 
     def get_clock_sources(self) -> Optional[Tuple["ClockSource", ...]]:
@@ -965,13 +920,20 @@ class Pipeline:
         output_file: Optional[Union[str, Path]] = None,
         interactive: bool = True,
         figsize: Optional[tuple] = None,
+        shape: str = "lorentzian",
     ) -> Any:
-        """Render the 2D STFT-magnitude heatmap (frame x molecular frequency)."""
+        """Render the 2D STFT-magnitude heatmap (frame x molecular frequency).
+
+        ``shape`` selects the pure-exp (``"lorentzian"``) or Gaussian
+        (``"gaussian"``) Stage 2b calibration group.
+        """
         from .visualization.tau_calibration_visualization import (
             plot_tau_heatmap_from_file,
         )
 
-        fig = plot_tau_heatmap_from_file(str(self.filepath), figsize=figsize)
+        fig = plot_tau_heatmap_from_file(
+            str(self.filepath), shape=shape, figsize=figsize
+        )
         if output_file:
             fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
             self.logger.info(f"Plot saved to: {output_file}")
@@ -986,13 +948,20 @@ class Pipeline:
         output_file: Optional[Union[str, Path]] = None,
         interactive: bool = True,
         figsize: Optional[tuple] = None,
+        shape: str = "lorentzian",
     ) -> Any:
-        """Render the tau-distribution analysis panel."""
+        """Render the tau-distribution analysis panel.
+
+        ``shape`` selects the pure-exp (``"lorentzian"``) or Gaussian
+        (``"gaussian"``) Stage 2b calibration group.
+        """
         from .visualization.tau_calibration_visualization import (
             plot_tau_distribution_from_file,
         )
 
-        fig = plot_tau_distribution_from_file(str(self.filepath), figsize=figsize)
+        fig = plot_tau_distribution_from_file(
+            str(self.filepath), shape=shape, figsize=figsize
+        )
         if output_file:
             fig.savefig(str(output_file), dpi=150, bbox_inches="tight")
             self.logger.info(f"Plot saved to: {output_file}")
@@ -1403,8 +1372,9 @@ class Pipeline:
             Time-domain envelope of the per-line model, kept as a first-class
             convenience argument. ``"lorentzian"`` uses ``exp(-t/τ)``;
             ``"gaussian"`` uses ``exp(-(t/τ_G)²)`` and consumes the Stage 2b
-            τ_G calibration (``calibrate_tau_G(...)``) in place of the pure-exp
-            twin for the bidirectional τ anchoring penalty. ``None`` falls
+            τ_G calibration (``calibrate_tau(shape="gaussian")``) in place of
+            the pure-exp variant for the bidirectional τ anchoring penalty.
+            ``None`` falls
             through to the resolved settings (preset / persisted / default).
         tau_maj_override_us, sigma_tau_override_us : float, optional
             Atomic-pair manual override for the Stage 2b tau calibration, kept

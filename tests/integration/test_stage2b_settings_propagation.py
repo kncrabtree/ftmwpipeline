@@ -25,7 +25,6 @@ import pytest
 
 from ftmwpipeline._internal import (
     shape_recommendation_impl,
-    stage2b_g_impl,
     stage2b_impl,
 )
 from ftmwpipeline.core.tau_calibration_settings import (
@@ -93,7 +92,6 @@ CALIBRATE_TAU_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
         "polish_n_iter",
         3,
     ),
-    ("polish.polish_top_n", _sub_set("polish", "polish_top_n", 25), "polish_top_n", 25),
     (
         "polish.polish_snr_cap",
         _sub_set("polish", "polish_snr_cap", 14.0),
@@ -196,7 +194,7 @@ def test_calibrate_tau_field_reaches_kernel(
 
 
 # ---------------------------------------------------------------------------
-# calibrate_tau_G_impl -> extract_tau_G_majority
+# calibrate_tau_impl(shape="gaussian") -> extract_tau_G_majority
 # ---------------------------------------------------------------------------
 CALIBRATE_TAU_G_FIELDS: list[tuple[str, Callable[..., None], str, Any]] = [
     ("stft.n_seg", _sub_set("stft", "n_seg", 6), "n_seg", 6),
@@ -308,13 +306,13 @@ def test_calibrate_tau_G_field_reaches_kernel(
     shutil.copyfile(baseline_2638_stage2, variant)
 
     mock, captured = _intercept()
-    monkeypatch.setattr(stage2b_g_impl, "extract_tau_G_majority", mock)
+    monkeypatch.setattr(stage2b_impl, "extract_tau_G_majority", mock)
 
     s = TauCalibrationSettings()
     setter(s)
 
     with pytest.raises(_CalibIntercepted):
-        stage2b_g_impl.calibrate_tau_G_impl(str(variant), settings=s)
+        stage2b_impl.calibrate_tau_impl(str(variant), shape="gaussian", settings=s)
 
     kwargs = captured["kwargs"]
     assert key in kwargs, (
@@ -325,6 +323,36 @@ def test_calibrate_tau_G_field_reaches_kernel(
         f"{label}: forwarded value mismatch -- expected {value!r}, "
         f"got {kwargs[key]!r} as kernel kwarg {key!r}."
     )
+
+
+def test_gaussian_run_routes_aggregation_min_contributors(
+    baseline_2638_stage2: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare ``aggregation.min_contributors`` routes onto the Gaussian block.
+
+    The shared ``--min-contributors`` flag lands on ``aggregation``, but a
+    Gaussian run reads ``gaussian.min_contributors``. The impl routes it across
+    so every interface treats the flag identically; the caller's bundle is left
+    untouched (routed on a copy).
+    """
+    variant = tmp_path / "propagation_G_route.ftmw"
+    shutil.copyfile(baseline_2638_stage2, variant)
+
+    mock, captured = _intercept()
+    monkeypatch.setattr(stage2b_impl, "extract_tau_G_majority", mock)
+
+    s = TauCalibrationSettings()
+    s.aggregation.min_contributors = 37  # only the aggregation field is set
+
+    with pytest.raises(_CalibIntercepted):
+        stage2b_impl.calibrate_tau_impl(str(variant), shape="gaussian", settings=s)
+
+    assert captured["kwargs"]["min_contributors"] == 37
+    # The caller's bundle is not mutated by the routing.
+    assert s.aggregation.min_contributors == 37
+    assert s.gaussian.min_contributors is None
 
 
 # ---------------------------------------------------------------------------
@@ -469,13 +497,14 @@ class TestSettingsPresetComposition:
         preset_yaml.write_text("stage2b:\n  stft:\n    t_sigma: 4.5\n")
 
         mock, captured = _intercept()
-        monkeypatch.setattr(stage2b_g_impl, "extract_tau_G_majority", mock)
+        monkeypatch.setattr(stage2b_impl, "extract_tau_G_majority", mock)
 
         s = TauCalibrationSettings(stft=StftSubSettings(n_seg=7))
 
         with pytest.raises(_CalibIntercepted):
-            stage2b_g_impl.calibrate_tau_G_impl(
+            stage2b_impl.calibrate_tau_impl(
                 str(variant),
+                shape="gaussian",
                 settings=s,
                 preset=str(preset_yaml),
             )
@@ -637,11 +666,6 @@ class TestAutoRecommend:
             "recommend_shape_impl",
             _fake_recommend,
         )
-        monkeypatch.setattr(
-            stage2b_g_impl,
-            "recommend_shape_impl",
-            _fake_recommend,
-        )
         return captured
 
     def test_calibrate_tau_auto_recommends_by_default(
@@ -691,11 +715,11 @@ class TestAutoRecommend:
         shutil.copyfile(baseline_2638_stage2, variant)
         captured = self._intercept_recommend(monkeypatch)
 
-        stage2b_g_impl.calibrate_tau_G_impl(str(variant))
+        stage2b_impl.calibrate_tau_impl(str(variant), shape="gaussian")
 
         assert captured["called"], (
             "default-on auto_recommend did not invoke recommend_shape_impl "
-            "after calibrate_tau_G"
+            "after calibrate_tau_impl(shape='gaussian')"
         )
 
     def test_calibrate_tau_G_skips_recommend_when_disabled(
@@ -710,7 +734,7 @@ class TestAutoRecommend:
 
         s = TauCalibrationSettings()
         s.recommendation.auto_recommend = False
-        stage2b_g_impl.calibrate_tau_G_impl(str(variant), settings=s)
+        stage2b_impl.calibrate_tau_impl(str(variant), shape="gaussian", settings=s)
 
         assert not captured["called"]
 
@@ -733,7 +757,7 @@ class TestAutoRecommend:
 
         assert read_stage2b_recommended_shape(str(variant)) == "gaussian"
         assert stage2b_impl.tau_calibration_present(str(variant))
-        assert stage2b_g_impl.tau_G_calibration_present(str(variant)), (
+        assert stage2b_impl.tau_calibration_present(str(variant), shape="gaussian"), (
             "calibrate_tau on a gaussian-voting fixture did not build the "
             "matching tau_G twin"
         )
@@ -753,4 +777,4 @@ class TestAutoRecommend:
         stage2b_impl.calibrate_tau_impl(str(variant), settings=s)
 
         assert stage2b_impl.tau_calibration_present(str(variant))
-        assert not stage2b_g_impl.tau_G_calibration_present(str(variant))
+        assert not stage2b_impl.tau_calibration_present(str(variant), shape="gaussian")

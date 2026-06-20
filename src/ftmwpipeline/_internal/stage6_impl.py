@@ -1502,7 +1502,6 @@ def refit_window_impl(
         read_recommended_clock_sources,
         read_stage2b_recommended_shape,
     )
-    from .stage2b_g_impl import load_tau_G_calibration_impl, tau_G_calibration_present
     from .stage2b_impl import load_tau_calibration_impl, tau_calibration_present
     from .stage3_impl import load_peaks_impl
     from .stage4_impl import load_windows_impl
@@ -1584,8 +1583,10 @@ def refit_window_impl(
     # --- Stage 2b calibration (shape-routed, same logic as fit_peaks_impl) -
     persisted_cal = None
     if shape_enum is PeakShape.GAUSSIAN:
-        if tau_G_calibration_present(path):
-            persisted_cal = load_tau_G_calibration_impl(path)["tau_G_calibration"]
+        if tau_calibration_present(path, shape="gaussian"):
+            persisted_cal = load_tau_calibration_impl(path, shape="gaussian")[
+                "tau_calibration"
+            ]
     else:
         if tau_calibration_present(path):
             persisted_cal = load_tau_calibration_impl(path)["tau_calibration"]
@@ -2426,9 +2427,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
                 f"choose one of {_CURATION_ACTIONS}"
             )
         if len(fields) < 2 or not fields[1]:
-            raise ValueError(
-                f"curation line {line_no}: missing window id"
-            )
+            raise ValueError(f"curation line {line_no}: missing window id")
         try:
             window_id = int(fields[1])
         except ValueError:
@@ -2474,9 +2473,7 @@ def parse_curation_file(curation_path: Union[Path, str]) -> List[CurationOp]:
                         f"is not an integer"
                     ) from None
                 if into < 2:
-                    raise ValueError(
-                        f"curation line {line_no}: into must be >= 2"
-                    )
+                    raise ValueError(f"curation line {line_no}: into must be >= 2")
         elif action == "accept":
             if freqs:
                 raise ValueError(
@@ -2577,9 +2574,8 @@ def describe_planned_action(action: PlannedAction) -> str:
             parts.append("remove " + ", ".join(f"{f:.4f}" for f in action.remove))
         return f"edit window {wid}: " + "; ".join(parts)
     if action.kind == "merge":
-        return (
-            f"merge window {wid}: peaks "
-            + ", ".join(f"{f:.4f}" for f in action.peaks)
+        return f"merge window {wid}: peaks " + ", ".join(
+            f"{f:.4f}" for f in action.peaks
         )
     if action.kind == "split":
         return f"split window {wid}: peak {action.peak:.4f} into {action.into}"
@@ -2697,12 +2693,12 @@ def _restore_stage5_baseline(path: str) -> None:
 def _execute_planned_action(path: str, action: PlannedAction) -> None:
     """Dispatch one resolved action to its edit impl (shared by apply + undo)."""
     if action.kind == "edit":
-        refit_window_impl(
-            path, action.window_id, add=action.add, remove=action.remove
-        )
+        refit_window_impl(path, action.window_id, add=action.add, remove=action.remove)
     elif action.kind == "merge":
         merge_peaks_impl(path, action.window_id, action.peaks)
     elif action.kind == "split":
+        if action.peak is None:
+            raise ValueError("split action requires a peak frequency")
         split_peak_impl(path, action.window_id, action.peak, into=action.into)
     elif action.kind == "accept":
         review_accept_impl(path, action.window_id, candidate_freq=action.candidate)
@@ -2881,7 +2877,10 @@ def review_undo_impl(
         _execute_planned_action(path, action)
 
     return UndoResult(
-        removed=removed, surviving=surviving, plan=plan, applied=len(plan),
+        removed=removed,
+        surviving=surviving,
+        plan=plan,
+        applied=len(plan),
         dry_run=False,
     )
 

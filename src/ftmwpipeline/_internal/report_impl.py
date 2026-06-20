@@ -212,9 +212,7 @@ def _provenance(
         ]
         if xref.pull_mean is not None:
             std = "n/a" if xref.pull_std is None else f"{xref.pull_std:.2f}"
-            out.append(
-                ("catalog_pull_mean_std", f"{xref.pull_mean:.2f} / {std}")
-            )
+            out.append(("catalog_pull_mean_std", f"{xref.pull_mean:.2f} / {std}"))
     return out
 
 
@@ -465,9 +463,11 @@ def _render_latex(
         cols.append(
             (
                 r"Catalog ($\Delta$/kHz)",
-                lambda p, m: "--"
-                if m is None
-                else f"{_latex_escape(m.label)} ({_g(m.delta_khz, 2)})",
+                lambda p, m: (
+                    "--"
+                    if m is None
+                    else f"{_latex_escape(m.label)} ({_g(m.delta_khz, 2)})"
+                ),
             )
         )
     spec = "r" * len(cols)
@@ -1806,9 +1806,10 @@ def _concerns_stage5(m: _SummaryModel) -> List[_Concern]:
                     f"Stage 5 fit a **gaussian** shape but no τ_G calibration "
                     f"(`stage2b_tau_G_calibration`) is present, so τ₀ fell back to "
                     f"T_active/3 = {_md_num(m.tau0_us, 3)} µs{measured}." + extra,
-                    "Run `calibrate_tau_G` (the Gaussian τ twin) before `fit_peaks` "
-                    "for a τ-anchored gaussian fit; `calibrate_tau` alone only "
-                    "builds the Lorentzian twin.",
+                    "Run `calibrate_tau(shape='gaussian')` (the Gaussian τ "
+                    "variant) before `fit_peaks` for a τ-anchored gaussian fit; "
+                    "the default `calibrate_tau` only builds the Lorentzian "
+                    "calibration.",
                 )
             )
         elif shape != "gaussian" and not m.tau_exp_present:
@@ -1828,7 +1829,8 @@ def _concerns_stage5(m: _SummaryModel) -> List[_Concern]:
                     f"({_md_num(m.tau0_us, 3)} µs){measured}; the matching Stage 2b "
                     "twin was not consumed.",
                     "Confirm the shape-matching τ calibration "
-                    "(`calibrate_tau` / `calibrate_tau_G`) ran before `fit_peaks`.",
+                    "(`calibrate_tau`, with `shape='gaussian'` for the τ_G "
+                    "variant) ran before `fit_peaks`.",
                 )
             )
     if m.n_nonconverged:

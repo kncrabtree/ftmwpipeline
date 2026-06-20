@@ -13,7 +13,7 @@ does *not* require either Stage 2b twin to have run -- the
 recommendation is computed directly from the raw FID via the same STFT
 classifier. It writes to whichever Stage 2b groups exist; if neither is
 present the verdict is returned but no attr is stamped (callers can
-re-run after :func:`calibrate_tau` / :func:`calibrate_tau_G` if they
+re-run after ``calibrate_tau`` (either shape) if they
 want the persisted contract for Stage 5 to fire).
 
 Knob configuration follows the four-layer resolver pattern shared with
