@@ -24,6 +24,7 @@ from ftmwpipeline.core.knob_metadata import (
 from ftmwpipeline.core.noise_settings import NoiseSettings
 from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
 from ftmwpipeline.core.tau_calibration_settings import TauCalibrationSettings
+from ftmwpipeline.core.window_planning_settings import WindowPlanningSettings
 
 
 # A synthetic nested settings class exercising the sub-block walk (the real
@@ -306,6 +307,79 @@ class TestStage3RegistrySingleSource:
         ):
             spec = get_knob(f"stage3.{tail}")
             km = field_knob_meta(PeakDetectionSettings, tail)
+            assert spec.help == km.help
+            assert spec.tier == km.tier
+            assert spec.inst_sensitivity == km.inst_sensitivity
+            assert spec.default_grid == km.grid
+
+
+class TestStage4FlagParity:
+    """The generated `windows run` flags equal the curated Stage 4 CLI surface.
+
+    Every Stage 4 knob lives in a sub-block, so each generated flag's ``dest``
+    is sub-block-qualified (``"<sub>.<field>"``). None of the eleven knobs is a
+    boolean, so the surface is exactly eleven plain ``--flag VALUE`` options.
+    """
+
+    def test_stage4_flags_match_curated_surface(self) -> None:
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, WindowPlanningSettings)
+        flags = {opt for a in p._actions for opt in a.option_strings}
+        expected = {
+            "--edge-m",
+            "--trim-m",
+            "--edge-threshold",
+            "--max-window-width-mhz",
+            "--min-window-half-width-mhz",
+            "--min-window-half-width-points",
+            "--max-peaks-per-window",
+            "--max-window-width-points",
+            "--min-freeze-snr",
+            "--magnitude-attachment-threshold",
+            "--tau-us",
+        }
+        assert flags == expected
+
+    def test_stage4_dests_are_subblock_qualified(self) -> None:
+        p = argparse.ArgumentParser(add_help=False)
+        add_settings_args(p, WindowPlanningSettings)
+        dests = {a.dest for a in p._actions if a.dest != "help"}
+        expected = {
+            "coherence.edge_m",
+            "coherence.trim_m",
+            "coherence.edge_threshold",
+            "clustering.max_window_width_mhz",
+            "clustering.min_window_half_width_mhz",
+            "clustering.min_window_half_width_points",
+            "clustering.max_peaks_per_window",
+            "clustering.max_window_width_points",
+            "contributor.min_freeze_snr",
+            "contributor.magnitude_attachment_threshold",
+            "leakage.tau_us",
+        }
+        assert dests == expected
+
+
+class TestStage4RegistrySingleSource:
+    """The Stage 4 knob registry sources its descriptors from the field.
+
+    A representative sample across all four sub-blocks must echo the field
+    metadata rather than carry its own literals.
+    """
+
+    def test_stage4_registry_echoes_field_metadata(self) -> None:
+        from ftmwpipeline._internal.tuning.registry import get_knob
+
+        for tail in (
+            "coherence.edge_threshold",
+            "coherence.edge_m",
+            "clustering.max_window_width_mhz",
+            "clustering.max_peaks_per_window",
+            "contributor.min_freeze_snr",
+            "leakage.tau_us",
+        ):
+            spec = get_knob(f"stage4.{tail}")
+            km = field_knob_meta(WindowPlanningSettings, tail)
             assert spec.help == km.help
             assert spec.tier == km.tier
             assert spec.inst_sensitivity == km.inst_sensitivity

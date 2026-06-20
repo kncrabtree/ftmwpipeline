@@ -27,9 +27,6 @@ from ftmwpipeline.core.window_planning_settings import WindowPlanningSettings
 
 pytestmark = [
     pytest.mark.integration,
-    # Propagation tests deliberately exercise the legacy per-knob kwarg
-    # path; suppress the expected deprecation noise.
-    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
 ]
 
 
@@ -185,4 +182,40 @@ class TestPersistedLayerInherit:
         assert captured["kwargs"]["edge_m"] == 128, (
             "no-kwargs follow-up did not inherit the persisted "
             "edge_m; the persisted layer of the resolver is misrouted"
+        )
+
+
+class TestExplicitSettingsOverridePersisted:
+    """A passed ``settings=`` bundle is the explicit override: it outranks a
+    value already persisted in the ``.ftmw`` (D11 ``explicit > persisted``)."""
+
+    def test_settings_beats_persisted_edge_m(
+        self,
+        baseline_2638_stage3: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ftmwpipeline.io.window_planning_settings_serialization import (
+            save_window_planning_settings_to_h5,
+        )
+
+        variant = tmp_path / "override.ftmw"
+        shutil.copyfile(baseline_2638_stage3, variant)
+
+        persisted = WindowPlanningSettings()
+        persisted.coherence.edge_m = 99
+        save_window_planning_settings_to_h5(str(variant), persisted)
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage4_impl, "build_window_plan", mock)
+
+        s = WindowPlanningSettings()
+        s.coherence.edge_m = 128
+
+        with pytest.raises(_CalibIntercepted):
+            stage4_impl.assign_windows_impl(str(variant), settings=s)
+
+        assert captured["kwargs"]["edge_m"] == 128, (
+            "an explicit settings= bundle must override the persisted "
+            "edge_m; settings= is misrouted below the persisted layer"
         )

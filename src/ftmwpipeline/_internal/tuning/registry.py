@@ -19,7 +19,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
-from ...core import noise_settings, peak_detection_settings, tau_calibration_settings
+from ...core import (
+    noise_settings,
+    peak_detection_settings,
+    tau_calibration_settings,
+    window_planning_settings,
+)
 from ...core.knob_metadata import field_knob_meta
 from .fit_support import reduce_plan_for_fit
 from .plots import (
@@ -1174,153 +1179,68 @@ _WINDOW_SEE_ALSO = (
 
 
 def _window_knob(
-    path: str,
     sub_block: str,
     field_name: str,
-    help_: str,
-    inst: str,
-    grid: Tuple[Any, ...],
-    tier: str = "primary",
+    *,
     see_also: Optional[str] = None,
 ) -> None:
+    """Register a Stage 4 ``KnobSpec`` reading its descriptors from the field.
+
+    ``help`` / ``tier`` / ``inst_sensitivity`` / ``default_grid`` come from the
+    :class:`WindowPlanningSettings` field metadata (single source); only the
+    sweep behavior (``run`` / ``metric`` / ``plot``) and the structural
+    ``path`` / ``requires`` / ``see_also`` are supplied here.
+    """
+    km = field_knob_meta(
+        window_planning_settings.WindowPlanningSettings,
+        f"{sub_block}.{field_name}",
+    )
+    assert (
+        km.grid is not None
+    ), f"stage4.{sub_block}.{field_name} registered without a sweep grid"
     _register(
         KnobSpec(
-            path=path,
+            path=f"stage4.{sub_block}.{field_name}",
             stage="stage4_windows",
             requires="stage3_peaks",
-            help=help_,
-            inst_sensitivity=inst,
-            default_grid=grid,
+            help=km.help,
+            inst_sensitivity=km.inst_sensitivity,
+            default_grid=km.grid,
             run=_run_windows(sub_block, field_name),
             metric=_metric_windows,
             metric_columns=_WINDOW_COLS,
             plot=plot_window_planning,
-            tier=tier,
+            tier=km.tier,
             see_also=see_also,
         )
     )
 
 
-# Primary tier — the Y-rated partition-shaping knobs (grids lifted from the
-# tracked stage4-gaussian-audit probes).
-_window_knob(
-    "stage4.coherence.edge_threshold",
-    "coherence",
-    "edge_threshold",
-    "S_coh cutoff (T_edge) for flagging leakage-touched regions that force "
-    "window boundaries.",
-    "Y",
-    (4.0, 6.0, 8.0, 10.0, 12.0),
-    see_also=_WINDOW_SEE_ALSO,
-)
-_window_knob(
-    "stage4.clustering.max_window_width_mhz",
-    "clustering",
-    "max_window_width_mhz",
-    "Width cap (MHz) above which a window is HARD and gains a split proposal.",
-    "Y",
-    (20.0, 30.0, 40.0, 60.0, 80.0),
-    see_also=_WINDOW_SEE_ALSO,
-)
-_window_knob(
-    "stage4.contributor.magnitude_attachment_threshold",
-    "contributor",
-    "magnitude_attachment_threshold",
-    "Tier-1 contributor attachment: predicted mean-skirt threshold (σ_c units).",
-    "Y",
-    (0.05, 0.075, 0.1, 0.15, 0.2),
-    see_also=_WINDOW_SEE_ALSO,
-)
-_window_knob(
-    "stage4.contributor.min_freeze_snr",
-    "contributor",
-    "min_freeze_snr",
-    "SNR floor for fixed-contributor freeze-eligibility (below = thaw candidate).",
-    "Y",
-    (20.0, 35.0, 50.0, 75.0, 100.0),
-    see_also=_WINDOW_SEE_ALSO,
-)
+# Partition-shaping knobs that point back at the plan-shape view via see_also.
+# (``leakage.tau_us`` is demoted to advanced on the field: the boxcar default
+# only widens windows, absorbed downstream by split proposals, so it is a
+# low-leverage control whose fate — keep, auto-feed the Stage 2b τ, or remove —
+# is deferred to the cross-fixture audit, issue #6.)
+for _sub, _field in (
+    ("coherence", "edge_threshold"),
+    ("clustering", "max_window_width_mhz"),
+    ("contributor", "magnitude_attachment_threshold"),
+    ("contributor", "min_freeze_snr"),
+    ("leakage", "tau_us"),
+    ("clustering", "min_window_half_width_points"),
+    ("clustering", "max_window_width_points"),
+):
+    _window_knob(_sub, _field, see_also=_WINDOW_SEE_ALSO)
 
-# Advanced — the leakage-skirt decay, the coherence band scales, and the
-# isolated-peak / per-window caps. ``leakage.tau_us`` is demoted from primary:
-# the boxcar default only widens windows (absorbed downstream by split
-# proposals), so it is a low-leverage control whose fate — keep, auto-feed the
-# Stage 2b τ, or remove — is deferred to the cross-fixture audit (issue #6).
-_window_knob(
-    "stage4.leakage.tau_us",
-    "leakage",
-    "tau_us",
-    "Decay constant (µs) for the analytic leakage-skirt envelope; None = boxcar "
-    "(undamped) limit. A single band-wide scalar — Stage 2b τ is not auto-fed "
-    "here; set it explicitly via the grid / settings= / preset=.",
-    "Y",
-    (None, 3.0, 6.0, 12.0),
-    tier="advanced",
-    see_also=_WINDOW_SEE_ALSO,
-)
-_window_knob(
-    "stage4.coherence.edge_m",
-    "coherence",
-    "edge_m",
-    "Band width (bins) for the rolling complex-edge coherence statistic.",
-    "N",
-    (32, 48, 64, 96, 128),
-    tier="advanced",
-)
-_window_knob(
-    "stage4.coherence.trim_m",
-    "coherence",
-    "trim_m",
-    "Band width (bins) for coherence refinement after a leakage-region flag.",
-    "N",
-    (16, 24, 32, 48),
-    tier="advanced",
-)
-_window_knob(
-    "stage4.clustering.min_window_half_width_mhz",
-    "clustering",
-    "min_window_half_width_mhz",
-    "MHz form of the window margin; used only when min_window_half_width_points "
-    "is 0 (the points form is the active default).",
-    "N",
-    (1.0, 2.0, 3.0, 4.0),
-    tier="advanced",
-)
-_window_knob(
-    "stage4.clustering.min_window_half_width_points",
-    "clustering",
-    "min_window_half_width_points",
-    "Window margin in active-FT grid points -- the noise budget each side of a "
-    "window's outermost peak (proto half-width and trim budget). Supersedes "
-    "min_window_half_width_mhz when positive. Coherent range: "
-    "trim_m..max_window_width_points/2.",
-    "Y",
-    (24, 32, 40, 48),
-    tier="advanced",
-    see_also=_WINDOW_SEE_ALSO,
-)
-_window_knob(
-    "stage4.clustering.max_peaks_per_window",
-    "clustering",
-    "max_peaks_per_window",
-    "Per-window promoted-peak cap; 0 = no cap (width-bounded). Windows over a "
-    "positive cap are split at their sparsest gaps.",
-    "N",
-    (0, 8, 16, 32),
-    tier="advanced",
-)
-_window_knob(
-    "stage4.clustering.max_window_width_points",
-    "clustering",
-    "max_window_width_points",
-    "Width cap in active-FT grid points (the portable form; bin width varies "
-    "across instruments). 0 = defer to max_window_width_mhz; positive "
-    "supersedes it.",
-    "Y",
-    (0, 64, 96, 128, 256),
-    tier="advanced",
-    see_also=_WINDOW_SEE_ALSO,
-)
+# Every other Stage 4 knob: the coherence band scales, the isolated-peak MHz
+# margin, and the per-window cap. All descriptors come from the field.
+for _sub, _field in (
+    ("coherence", "edge_m"),
+    ("coherence", "trim_m"),
+    ("clustering", "min_window_half_width_mhz"),
+    ("clustering", "max_peaks_per_window"),
+):
+    _window_knob(_sub, _field)
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ tracks.
 | 2 | **done** | **done** | **done** | **done** |
 | 2b | **done** | **done** | **done** | **done** |
 | 3 | **done** | **done** | **done** | **done** |
-| 4 | pending | pending | pending | pending |
+| 4 | **done** | **done** | **done** | **done** |
 | 5 | pending | pending | pending | pending |
 | 0 (outlier) | pending | pending | pending | n/a |
 

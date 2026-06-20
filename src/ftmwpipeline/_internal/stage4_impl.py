@@ -43,7 +43,6 @@ from ..preprocessing.window_planning import (
     build_window_plan,
 )
 from .active_ft_support import build_active_grid_with_noise
-from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -53,36 +52,6 @@ from .stage3_impl import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _build_explicit_from_kwargs(
-    *,
-    edge_m: Optional[int],
-    trim_m: Optional[int],
-    edge_threshold: Optional[float],
-    max_window_width_mhz: Optional[float],
-    min_freeze_snr: Optional[float],
-    min_window_half_width_mhz: Optional[float],
-    magnitude_attachment_threshold: Optional[float],
-    tau_us: Optional[float],
-    max_peaks_per_window: Optional[int] = None,
-    max_window_width_points: Optional[int] = None,
-    min_window_half_width_points: Optional[int] = None,
-) -> WindowPlanningSettings:
-    """Bundle the legacy per-knob kwargs into an explicit-layer settings instance."""
-    explicit = WindowPlanningSettings()
-    explicit.coherence.edge_m = edge_m
-    explicit.coherence.trim_m = trim_m
-    explicit.coherence.edge_threshold = edge_threshold
-    explicit.clustering.max_window_width_mhz = max_window_width_mhz
-    explicit.clustering.min_window_half_width_mhz = min_window_half_width_mhz
-    explicit.clustering.min_window_half_width_points = min_window_half_width_points
-    explicit.clustering.max_peaks_per_window = max_peaks_per_window
-    explicit.clustering.max_window_width_points = max_window_width_points
-    explicit.contributor.min_freeze_snr = min_freeze_snr
-    explicit.contributor.magnitude_attachment_threshold = magnitude_attachment_threshold
-    explicit.leakage.tau_us = tau_us
-    return explicit
 
 
 def _required(value: Any, name: str) -> Any:
@@ -96,17 +65,6 @@ def _required(value: Any, name: str) -> Any:
 
 def assign_windows_impl(
     file_path: str,
-    edge_m: Optional[int] = None,
-    trim_m: Optional[int] = None,
-    edge_threshold: Optional[float] = None,
-    max_window_width_mhz: Optional[float] = None,
-    min_freeze_snr: Optional[float] = None,
-    min_window_half_width_mhz: Optional[float] = None,
-    magnitude_attachment_threshold: Optional[float] = None,
-    tau_us: Optional[float] = None,
-    max_peaks_per_window: Optional[int] = None,
-    max_window_width_points: Optional[int] = None,
-    min_window_half_width_points: Optional[int] = None,
     *,
     settings: Optional[WindowPlanningSettings] = None,
     preset: Optional[str] = None,
@@ -117,51 +75,21 @@ def assign_windows_impl(
     canonical spectrum and the canonical Stage 2 noise; consumes only the
     peaks flagged ``properties['promoted']``.
 
-    Parameters left as ``None`` fall back to the documented defaults from
-    :mod:`ftmwpipeline.preprocessing.edge_coherence` /
-    :mod:`ftmwpipeline.preprocessing.window_planning`. Returns the plan plus
-    diagnostics; also writes ``/stage4_windows`` and marks the stage done.
+    Settings resolve through the chain (``settings`` / ``preset`` > persisted >
+    hard default); pass ``settings=`` to drive window planning from a
+    :class:`WindowPlanningSettings` dataclass, or ``preset=NAME_OR_PATH`` to
+    load from packaged YAML. They are mutually exclusive, and a value persisted
+    in the ``.ftmw`` outranks either (D11). Returns the plan plus diagnostics;
+    also writes ``/stage4_windows`` and marks the stage done.
 
     Parameters
     ----------
     file_path : str
         Path to the .ftmw pipeline file.
-    edge_m : int, optional
-        Rolling-scan coherence band width (default 64).
-    trim_m : int, optional
-        Trim-refinement band width (default 32).
-    edge_threshold : float, optional
-        ``S_coh`` threshold ``T_edge`` (default 8.0).
-    max_window_width_mhz : float, optional
-        Width cap; wider windows are HARD and get a split proposal (default 40).
-    min_freeze_snr : float, optional
-        Freeze-eligibility SNR cutoff for fixed contributors (default 50).
-    min_window_half_width_mhz : float, optional
-        MHz form of the window margin; used only when
-        ``min_window_half_width_points`` is 0 (default 2).
-    min_window_half_width_points : int, optional
-        Window margin in active-FT grid points -- the noise budget each side of
-        a window's outermost peak (proto half-width and trim budget). The
-        portable form; supersedes ``min_window_half_width_mhz`` when positive
-        (default 32). Coherent range ``trim_m..max_window_width_points / 2``.
-    magnitude_attachment_threshold : float, optional
-        Analytic-skirt-magnitude attachment cutoff in units of σ_c (default 0.1).
-    tau_us : float, optional
-        Assumed decay constant for the leakage envelope (default: undamped/boxcar).
-    max_peaks_per_window : int, optional
-        Per-window promoted-peak cap; ``0`` (the default) disables it so a window
-        is bounded only by ``max_window_width_mhz``. A positive value splits dense
-        merged spans at their sparsest gaps until each window holds at most this
-        many peaks (and is at most ``max_window_width_mhz`` wide), tracking Stage 5
-        ``conservative.max_peaks``.
-    max_window_width_points : int, optional
-        Width cap in active-FT grid points -- the portable form of the cap
-        (bin width varies across instruments). ``0`` defers to
-        ``max_window_width_mhz``; a positive value (default 96) supersedes it.
     settings : WindowPlanningSettings, optional
-        Bundle of Stage 4 knobs (preset-layer of the four-layer resolution
-        chain); fields left ``None`` fall through. Mutually exclusive with
-        ``preset``.
+        Bundle of Stage 4 knobs; fields left ``None`` fall through the
+        resolution chain. Resolves at the explicit override layer (outranks the
+        persisted record). Mutually exclusive with ``preset``.
     preset : str, optional
         Bare preset name or path to a YAML file carrying a ``stage4:`` block.
         Mutually exclusive with ``settings``.
@@ -172,32 +100,12 @@ def assign_windows_impl(
         If Stage 3 has not been completed, or if ``settings=`` and ``preset=``
         are both supplied.
     """
-    warn_legacy_kwargs(
-        func_name="assign_windows",
-        legacy_kwargs={
-            "edge_m": edge_m,
-            "trim_m": trim_m,
-            "edge_threshold": edge_threshold,
-            "max_window_width_mhz": max_window_width_mhz,
-            "min_freeze_snr": min_freeze_snr,
-            "min_window_half_width_mhz": min_window_half_width_mhz,
-            "magnitude_attachment_threshold": magnitude_attachment_threshold,
-            "tau_us": tau_us,
-            "max_peaks_per_window": max_peaks_per_window,
-            "max_window_width_points": max_window_width_points,
-            "min_window_half_width_points": min_window_half_width_points,
-        },
-        migration_hint=(
-            "use settings=WindowPlanningSettings(...) or preset='name' to "
-            "drive Stage 4 from the settings resolver"
-        ),
-    )
-
     if preset is not None and settings is not None:
         raise ValueError(
-            "'preset' and 'settings' are alternative ways to populate "
-            "the preset layer of the window-planning-settings chain; pass "
-            "exactly one (or override individual fields via explicit kwargs)"
+            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
+            "A 'settings' bundle is the explicit override (outranks the "
+            "persisted record); a 'preset' .yml seeds only unfixed fields "
+            "(the persisted record outranks it, per D11)."
         )
 
     with h5py.File(file_path, "r") as h5f:
@@ -207,20 +115,7 @@ def assign_windows_impl(
                 "assignment. Run detect_peaks()/'peaks run' first."
             )
 
-    explicit = _build_explicit_from_kwargs(
-        edge_m=edge_m,
-        trim_m=trim_m,
-        edge_threshold=edge_threshold,
-        max_window_width_mhz=max_window_width_mhz,
-        min_freeze_snr=min_freeze_snr,
-        min_window_half_width_mhz=min_window_half_width_mhz,
-        magnitude_attachment_threshold=magnitude_attachment_threshold,
-        tau_us=tau_us,
-        max_peaks_per_window=max_peaks_per_window,
-        max_window_width_points=max_window_width_points,
-        min_window_half_width_points=min_window_half_width_points,
-    )
-    preset_layer: Optional[WindowPlanningSettings] = settings
+    preset_layer: Optional[WindowPlanningSettings] = None
     preset_name: Optional[str] = None
     if preset is not None:
         preset_layer = load_window_planning_preset(preset)
@@ -228,7 +123,7 @@ def assign_windows_impl(
     persisted_layer = load_window_planning_settings_from_h5(file_path)
 
     resolved = resolve_window_planning_settings(
-        explicit=explicit,
+        explicit=settings,
         preset=preset_layer,
         persisted=persisted_layer,
         recommended=None,

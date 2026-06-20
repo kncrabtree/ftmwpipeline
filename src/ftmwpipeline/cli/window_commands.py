@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .._internal.stage4_impl import assign_windows_impl, visualize_windows_impl
+from ..core.window_planning_settings import WindowPlanningSettings
+from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
 
@@ -31,20 +33,19 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     try:
         file_path = _ensure_ftmw(args.file_path)
+        # The per-knob flags are generated from WindowPlanningSettings field
+        # metadata; reconstruct a sparse settings bundle (unset fields fall
+        # through the resolver). --preset is mutually exclusive with knobs.
+        settings = settings_from_namespace(args, WindowPlanningSettings)
+        if args.preset is not None and not settings.is_empty():
+            print_error(
+                "--preset and per-knob flags are mutually exclusive; pass one"
+            )
+            return 1
         print(f"Assigning windows for: {file_path}")
         result = assign_windows_impl(
             file_path=file_path,
-            edge_m=args.edge_m,
-            trim_m=args.trim_m,
-            edge_threshold=args.edge_threshold,
-            max_window_width_mhz=args.max_window_width_mhz,
-            min_freeze_snr=args.min_freeze_snr,
-            min_window_half_width_mhz=args.min_window_half_width_mhz,
-            magnitude_attachment_threshold=args.magnitude_attachment_threshold,
-            tau_us=args.tau_us,
-            max_peaks_per_window=args.max_peaks_per_window,
-            max_window_width_points=args.max_window_width_points,
-            min_window_half_width_points=args.min_window_half_width_points,
+            settings=None if settings.is_empty() else settings,
             preset=args.preset,
         )
         plan = result["plan"]
@@ -171,85 +172,9 @@ def register_window_commands(subparsers: Any) -> None:
     p_assign.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_assign.add_argument(
-        "--edge-m",
-        dest="edge_m",
-        type=int,
-        help="Rolling-scan coherence band width M (default: 64)",
-    )
-    p_assign.add_argument(
-        "--trim-m",
-        dest="trim_m",
-        type=int,
-        help="Trim-refinement coherence band width (default: 32)",
-    )
-    p_assign.add_argument(
-        "--edge-threshold",
-        dest="edge_threshold",
-        type=float,
-        help="S_coh threshold T_edge (default: 3.0)",
-    )
-    p_assign.add_argument(
-        "--max-window-width-mhz",
-        dest="max_window_width_mhz",
-        type=float,
-        help="Width cap; wider windows are hard + get a split proposal "
-        "(default: 40.0)",
-    )
-    p_assign.add_argument(
-        "--min-freeze-snr",
-        dest="min_freeze_snr",
-        type=float,
-        help="Freeze-eligibility SNR cutoff for fixed contributors " "(default: 50.0)",
-    )
-    p_assign.add_argument(
-        "--min-window-half-width-mhz",
-        dest="min_window_half_width_mhz",
-        type=float,
-        help="MHz form of the window margin; used only when "
-        "--min-window-half-width-points is 0 (default: 2.0)",
-    )
-    p_assign.add_argument(
-        "--min-window-half-width-points",
-        dest="min_window_half_width_points",
-        type=int,
-        help="Window margin in active-FT grid points -- the noise budget each "
-        "side of a window's outermost peak (proto half-width and trim budget). "
-        "Supersedes --min-window-half-width-mhz when positive (default 32). "
-        "Coherent range: trim_m..max-window-width-points/2.",
-    )
-    p_assign.add_argument(
-        "--max-peaks-per-window",
-        dest="max_peaks_per_window",
-        type=int,
-        help="Per-window promoted-peak cap; 0 (the default) disables it so a "
-        "window is bounded only by --max-window-width-mhz. A positive value "
-        "splits dense merged spans at their sparsest gaps until each window holds "
-        "at most this many peaks. Tracks the Stage 5 conservative.max_peaks.",
-    )
-    p_assign.add_argument(
-        "--max-window-width-points",
-        dest="max_window_width_points",
-        type=int,
-        help="Width cap in active-FT grid points -- the portable form of the "
-        "cap (bin width varies across instruments). 0 defers to "
-        "--max-window-width-mhz; a positive value (default 96) supersedes it.",
-    )
-    p_assign.add_argument(
-        "--magnitude-attachment-threshold",
-        dest="magnitude_attachment_threshold",
-        type=float,
-        help="Tier-1 contributor-attachment threshold in units of sigma_c. "
-        "A strong promoted peak is attached as a FixedContributor when its "
-        "predicted mean |skirt| on the candidate window exceeds "
-        "threshold * sigma_c(w) (default: 0.1).",
-    )
-    p_assign.add_argument(
-        "--tau-us",
-        dest="tau_us",
-        type=float,
-        help="Assumed decay constant for leakage reach (default: undamped)",
-    )
+    # Per-knob flags, generated from WindowPlanningSettings field metadata (the
+    # single declaration site shared with `settings` / `scan`).
+    add_settings_args(p_assign, WindowPlanningSettings)
     p_assign.add_argument(
         "--preset",
         dest="preset",
@@ -257,7 +182,8 @@ def register_window_commands(subparsers: Any) -> None:
         default=None,
         help=(
             "Stage 4 preset (bare name resolves against packaged presets, or "
-            "a path to a YAML file carrying a 'stage4:' block)."
+            "a path to a YAML file carrying a 'stage4:' block). Mutually "
+            "exclusive with per-knob flags."
         ),
     )
     p_assign.add_argument(

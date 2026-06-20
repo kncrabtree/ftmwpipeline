@@ -55,6 +55,8 @@ from typing import Any, Dict, Mapping, Optional, Union, cast
 
 import yaml  # type: ignore[import-untyped]
 
+from .knob_metadata import knob_field
+
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
 
@@ -72,9 +74,32 @@ class CoherenceSubSettings:
     considered leakage-touched.
     """
 
-    edge_m: Optional[int] = None
-    trim_m: Optional[int] = None
-    edge_threshold: Optional[float] = None
+    edge_m: Optional[int] = knob_field(
+        help="Band width (bins) for the rolling complex-edge coherence statistic.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(32, 48, 64, 96, 128),
+        cli=True,
+        argtype=int,
+    )
+    trim_m: Optional[int] = knob_field(
+        help="Band width (bins) for coherence refinement after a leakage-region "
+        "flag.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(16, 24, 32, 48),
+        cli=True,
+        argtype=int,
+    )
+    edge_threshold: Optional[float] = knob_field(
+        help="S_coh cutoff (T_edge) for flagging leakage-touched regions that "
+        "force window boundaries.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(4.0, 6.0, 8.0, 10.0, 12.0),
+        cli=True,
+        argtype=float,
+    )
 
 
 @dataclass
@@ -108,11 +133,55 @@ class ClusteringSubSettings:
     exceeds the content cap); the hard default 32 is the tight end (== ``trim_m``).
     """
 
-    max_window_width_mhz: Optional[float] = None
-    min_window_half_width_mhz: Optional[float] = None
-    min_window_half_width_points: Optional[int] = None
-    max_peaks_per_window: Optional[int] = None
-    max_window_width_points: Optional[int] = None
+    max_window_width_mhz: Optional[float] = knob_field(
+        help="Width cap (MHz) above which a window is HARD and gains a split "
+        "proposal.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(20.0, 30.0, 40.0, 60.0, 80.0),
+        cli=True,
+        argtype=float,
+    )
+    min_window_half_width_mhz: Optional[float] = knob_field(
+        help="MHz form of the window margin; used only when "
+        "min_window_half_width_points is 0 (the points form is the active "
+        "default).",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(1.0, 2.0, 3.0, 4.0),
+        cli=True,
+        argtype=float,
+    )
+    min_window_half_width_points: Optional[int] = knob_field(
+        help="Window margin in active-FT grid points -- the noise budget each "
+        "side of a window's outermost peak (proto half-width and trim budget). "
+        "Supersedes min_window_half_width_mhz when positive. Coherent range: "
+        "trim_m..max_window_width_points/2.",
+        tier="advanced",
+        inst_sensitivity="Y",
+        grid=(24, 32, 40, 48),
+        cli=True,
+        argtype=int,
+    )
+    max_peaks_per_window: Optional[int] = knob_field(
+        help="Per-window promoted-peak cap; 0 = no cap (width-bounded). Windows "
+        "over a positive cap are split at their sparsest gaps.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(0, 8, 16, 32),
+        cli=True,
+        argtype=int,
+    )
+    max_window_width_points: Optional[int] = knob_field(
+        help="Width cap in active-FT grid points (the portable form; bin width "
+        "varies across instruments). 0 = defer to max_window_width_mhz; positive "
+        "supersedes it.",
+        tier="advanced",
+        inst_sensitivity="Y",
+        grid=(0, 64, 96, 128, 256),
+        cli=True,
+        argtype=int,
+    )
 
 
 @dataclass
@@ -127,8 +196,24 @@ class ContributorSubSettings:
     a window's ``fixed_contributors``.
     """
 
-    min_freeze_snr: Optional[float] = None
-    magnitude_attachment_threshold: Optional[float] = None
+    min_freeze_snr: Optional[float] = knob_field(
+        help="SNR floor for fixed-contributor freeze-eligibility (below = thaw "
+        "candidate).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(20.0, 35.0, 50.0, 75.0, 100.0),
+        cli=True,
+        argtype=float,
+    )
+    magnitude_attachment_threshold: Optional[float] = knob_field(
+        help="Tier-1 contributor attachment: predicted mean-skirt threshold "
+        "(σ_c units).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.05, 0.075, 0.1, 0.15, 0.2),
+        cli=True,
+        argtype=float,
+    )
 
 
 @dataclass
@@ -142,7 +227,16 @@ class LeakageSubSettings:
     ``τ_maj`` via the resolver's recommended layer.
     """
 
-    tau_us: Optional[float] = None
+    tau_us: Optional[float] = knob_field(
+        help="Decay constant (µs) for the analytic leakage-skirt envelope; None "
+        "= boxcar (undamped) limit. A single band-wide scalar — Stage 2b τ is not "
+        "auto-fed here; set it explicitly via the grid / settings= / preset=.",
+        tier="advanced",
+        inst_sensitivity="Y",
+        grid=(None, 3.0, 6.0, 12.0),
+        cli=True,
+        argtype=float,
+    )
 
 
 @dataclass

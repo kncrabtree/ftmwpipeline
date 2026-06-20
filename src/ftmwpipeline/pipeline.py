@@ -1211,17 +1211,6 @@ class Pipeline:
 
     def assign_windows(
         self,
-        edge_m: Optional[int] = None,
-        trim_m: Optional[int] = None,
-        edge_threshold: Optional[float] = None,
-        max_window_width_mhz: Optional[float] = None,
-        min_freeze_snr: Optional[float] = None,
-        min_window_half_width_mhz: Optional[float] = None,
-        magnitude_attachment_threshold: Optional[float] = None,
-        tau_us: Optional[float] = None,
-        max_peaks_per_window: Optional[int] = None,
-        max_window_width_points: Optional[int] = None,
-        min_window_half_width_points: Optional[int] = None,
         *,
         settings: Optional[WindowPlanningSettings] = None,
         preset: Optional[str] = None,
@@ -1239,44 +1228,19 @@ class Pipeline:
         canonical spectrum with the canonical Stage 2 noise. The result is
         persisted to ``/stage4_windows`` and the stage marked complete.
 
+        Settings resolve through the chain (``settings`` / ``preset`` >
+        persisted > hard default); pass ``settings=`` to drive window planning
+        from a :class:`WindowPlanningSettings` instance, or ``preset=NAME_OR_PATH``
+        to load from packaged YAML. They are mutually exclusive, and a value
+        persisted in the ``.ftmw`` outranks either (D11). Set individual knobs
+        via ``settings=WindowPlanningSettings(...)`` or a YAML preset's
+        ``stage4:`` block.
+
         Parameters
         ----------
-        edge_m : int, optional
-            Rolling-scan complex-edge coherence band width (default 64).
-        trim_m : int, optional
-            Trim-refinement band width (default 32).
-        edge_threshold : float, optional
-            ``S_coh`` threshold separating leakage-touched from line-free
-            regions (default 8.0).
-        max_window_width_mhz : float, optional
-            Width cap; a wider window is HARD and gets a split proposal
-            (default 40.0).
-        min_freeze_snr : float, optional
-            Freeze-eligibility SNR cutoff for fixed contributors (default 50.0).
-        min_window_half_width_mhz : float, optional
-            Minimum half-width of a window around an isolated weak line
-            (default 2.0).
-        magnitude_attachment_threshold : float, optional
-            Tier-1 contributor-attachment threshold in units of σ_c
-            (default 0.1). See
-            :data:`ftmwpipeline.preprocessing.window_planning.DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD`.
-        tau_us : float, optional
-            Assumed decay constant for the analytic leakage reach
-            (default: undamped/boxcar limit).
-        max_window_width_points : int, optional
-            Width cap in active-FT grid points -- the portable form of the
-            cap (bin width varies across instruments). ``0`` defers to
-            ``max_window_width_mhz``; a positive value (default 96)
-            supersedes it.
-        min_window_half_width_points : int, optional
-            Window margin in active-FT grid points -- the noise budget each
-            side of a window's outermost peak (proto half-width and trim
-            budget). Supersedes ``min_window_half_width_mhz`` when positive
-            (default 32).
         settings : WindowPlanningSettings, optional
-            Bundle of Stage 4 knobs (preset-layer of the four-layer
-            resolution chain); fields left ``None`` fall through. Mutually
-            exclusive with ``preset``.
+            Bundle of Stage 4 knobs; fields left ``None`` fall through the
+            resolution chain. Mutually exclusive with ``preset``.
         preset : str, optional
             Bare preset name or path to a YAML file carrying a ``stage4:``
             block. Mutually exclusive with ``settings``.
@@ -1297,17 +1261,6 @@ class Pipeline:
         try:
             result = assign_windows_impl(
                 file_path=str(self.filepath),
-                edge_m=edge_m,
-                trim_m=trim_m,
-                edge_threshold=edge_threshold,
-                max_window_width_mhz=max_window_width_mhz,
-                min_freeze_snr=min_freeze_snr,
-                min_window_half_width_mhz=min_window_half_width_mhz,
-                magnitude_attachment_threshold=magnitude_attachment_threshold,
-                tau_us=tau_us,
-                max_peaks_per_window=max_peaks_per_window,
-                max_window_width_points=max_window_width_points,
-                min_window_half_width_points=min_window_half_width_points,
                 settings=settings,
                 preset=preset,
             )
