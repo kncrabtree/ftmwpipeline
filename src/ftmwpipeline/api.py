@@ -559,12 +559,13 @@ def estimate_noise(
     file_path : str or Path
         Path to .ftmw pipeline file containing ComplexFT data
     settings, preset :
-        Mutually-exclusive ways to populate the preset layer of the settings
-        chain (a ``NoiseSettings`` bundle or a YAML preset's ``stage2:`` block).
-        Individual scatter knobs (``window_mhz`` / ``smoothing_mhz`` /
-        ``smoothing_percentile`` / ``convolve_mhz`` / …) are set on the
-        ``NoiseSettings`` instance; a value persisted in the ``.ftmw`` outranks
-        either, so a no-arg call reproduces it.
+        Composable ways to drive the settings chain (a ``NoiseSettings`` bundle
+        as the explicit override layer, a YAML preset's ``stage2:`` block as the
+        preset layer beneath the persisted record). Individual scatter knobs
+        (``window_mhz`` / ``smoothing_mhz`` / ``smoothing_percentile`` /
+        ``convolve_mhz`` / …) are set on the ``NoiseSettings`` instance; the
+        explicit layer outranks the persisted record, which outranks the preset
+        (per D11), so a no-arg call reproduces the persisted recipe.
 
     Returns
     -------
@@ -708,8 +709,11 @@ def calibrate_tau(
     Requires Stages 0-2 completed. Persists the calibration to
     ``/stage2b_tau_calibration``. Settings resolve through the chain
     (``settings`` / ``preset`` > persisted > hard default); ``settings=`` and
-    ``preset=`` are mutually exclusive, and a value persisted in the ``.ftmw``
-    outranks either (D11). Individual knobs are set on a
+    ``preset=`` may be combined -- the ``settings`` bundle is the explicit
+    override that outranks the persisted record, while the ``preset`` seeds only
+    the fields neither the explicit layer nor the persisted record has fixed
+    (the persisted record outranks the preset, per D11). Individual knobs are
+    set on a
     :class:`TauCalibrationSettings` instance or a YAML preset's ``stage2b:``
     block. The resolved settings are stamped to
     ``processing_parameters/stage2b_tau`` so a no-arg follow-up call
@@ -790,8 +794,11 @@ def calibrate_tau_G(
     :func:`calibrate_tau`; both can coexist on one ``.ftmw`` file.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
-    hard default); ``settings=`` and ``preset=`` are mutually exclusive, and a
-    value persisted in the ``.ftmw`` outranks either (D11). The resolved
+    hard default); ``settings=`` and ``preset=`` may be combined -- the
+    ``settings`` bundle is the explicit override that outranks the persisted
+    record, while the ``preset`` seeds only the fields neither the explicit
+    layer nor the persisted record has fixed (the persisted record outranks the
+    preset, per D11). The resolved
     settings share the ``processing_parameters/stage2b_tau`` block with the
     pure-exp twin.
     """
@@ -835,8 +842,11 @@ def recommend_shape(
     persisted contract only fires when at least one of them has run.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
-    hard default); ``settings=`` and ``preset=`` are mutually exclusive, and a
-    value persisted in the ``.ftmw`` outranks either (D11).
+    hard default); ``settings=`` and ``preset=`` may be combined -- the
+    ``settings`` bundle is the explicit override that outranks the persisted
+    record, while the ``preset`` seeds only the fields neither the explicit
+    layer nor the persisted record has fixed (the persisted record outranks the
+    preset, per D11).
     """
     try:
         return Pipeline.open(file_path).recommend_shape(
@@ -907,8 +917,11 @@ def detect_peaks(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); pass ``settings=`` to drive detection from a
     :class:`PeakDetectionSettings` dataclass, or ``preset=NAME_OR_PATH`` to load
-    from packaged YAML. They are mutually exclusive, and a value persisted in
-    the ``.ftmw`` outranks either (D11). Set individual knobs via
+    from packaged YAML. They may be combined: a ``settings`` bundle is the
+    explicit override that outranks the persisted record, while a ``preset``
+    seeds only the fields neither the explicit layer nor the persisted record
+    has fixed (the persisted record outranks the preset, per D11). Set
+    individual knobs via
     ``settings=PeakDetectionSettings(...)`` or a YAML preset's ``stage3:`` block.
 
     Parameters
@@ -917,10 +930,11 @@ def detect_peaks(
         Path to .ftmw pipeline file.
     settings : PeakDetectionSettings, optional
         Bundle of Stage 3 knobs; fields left ``None`` fall through the
-        resolution chain. Mutually exclusive with ``preset``.
+        resolution chain. May be combined with ``preset``.
     preset : str, optional
         Bare preset name or path to a YAML file carrying a ``stage3:`` block.
-        Mutually exclusive with ``settings``.
+        Seeds the preset layer beneath the persisted record; may be combined
+        with ``settings``.
 
     Returns
     -------
@@ -1041,8 +1055,11 @@ def assign_windows(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); pass ``settings=`` to drive window planning from a
     :class:`WindowPlanningSettings` dataclass, or ``preset=NAME_OR_PATH`` to
-    load from packaged YAML. They are mutually exclusive, and a value persisted
-    in the ``.ftmw`` outranks either (D11). Set individual knobs via
+    load from packaged YAML. They may be combined: a ``settings`` bundle is the
+    explicit override that outranks the persisted record, while a ``preset``
+    seeds only the fields neither the explicit layer nor the persisted record
+    has fixed (the persisted record outranks the preset, per D11). Set
+    individual knobs via
     ``settings=WindowPlanningSettings(...)`` or a YAML preset's ``stage4:`` block.
 
     Parameters
@@ -1051,10 +1068,11 @@ def assign_windows(
         Path to .ftmw pipeline file.
     settings : WindowPlanningSettings, optional
         Bundle of Stage 4 knobs; fields left ``None`` fall through the
-        resolution chain. Mutually exclusive with ``preset``.
+        resolution chain. May be combined with ``preset``.
     preset : str, optional
         Bare preset name or path to a YAML file carrying a ``stage4:`` block.
-        Mutually exclusive with ``settings``.
+        Seeds the preset layer beneath the persisted record; may be combined
+        with ``settings``.
 
     Returns
     -------
@@ -1165,9 +1183,10 @@ def fit_peaks(
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     recommended > hard default); pass ``settings=`` to drive the fit from a
     :class:`StageFitSettings` dataclass, or ``preset=NAME_OR_PATH`` to load from
-    packaged YAML. They are mutually exclusive, and a ``settings`` bundle
-    outranks a value persisted in the ``.ftmw`` while a ``preset`` .yml only
-    seeds unfixed fields (D11).
+    packaged YAML. They may be combined: a ``settings`` bundle outranks a value
+    persisted in the ``.ftmw`` while a ``preset`` .yml seeds only the fields
+    neither the explicit layer nor the persisted record has fixed (the persisted
+    record outranks the preset, per D11).
 
     Parameters
     ----------
@@ -1185,10 +1204,11 @@ def fit_peaks(
     settings : StageFitSettings, optional
         Bundle of Stage 5 knobs; fields left ``None`` fall through the
         resolution chain. Resolves at the explicit override layer (outranks the
-        persisted record). Mutually exclusive with ``preset``.
+        persisted record). May be combined with ``preset``.
     preset : str, optional
         Bare preset name or a path to a YAML file carrying a ``stage5:`` block.
-        Mutually exclusive with ``settings``.
+        Seeds the preset layer beneath the persisted record; may be combined
+        with ``settings``.
 
     Returns
     -------
@@ -1436,7 +1456,7 @@ def report_table(
 def report_run(
     file_path: Union[str, Path],
     *,
-    output_dir: Union[str, Path],
+    output_dir: Optional[Union[str, Path]] = None,
     windows: str = "all",
     emit_table: bool = True,
     emit_html: bool = True,
@@ -1450,7 +1470,8 @@ def report_run(
     Equivalent to :meth:`Pipeline.report_run`.  Writes the Level-1
     final-products table (``<stem>_lines.csv``) and the self-contained Level-3
     HTML report with every window folded in (``<stem>_report.html``) into
-    *output_dir*.  Either artifact can be suppressed (``emit_table`` /
+    *output_dir* (the current working directory when omitted).  Either
+    artifact can be suppressed (``emit_table`` /
     ``emit_html``); the HTML content follows *scope* (``"full"`` folds in every
     window, ``"summary"`` keeps the index + methods only).  Renders the persisted
     record (does not recompute).  Requires ``review_run`` to have built the

@@ -180,11 +180,11 @@ def register_report_commands(subparsers: Any) -> None:
         "run",
         help="Default deliverable: Level-1 table + Level-3 HTML report",
         description=(
-            "Write the default Stage 6 deliverables into --output-dir: the\n"
-            "Level-1 calibrated line table (<stem>_lines.csv) and the\n"
-            "self-contained Level-3 HTML report with every window folded in\n"
-            "(<stem>_report.html). Reuses the existing renderers; never\n"
-            "recomputes the fit.\n\n"
+            "Write the default Stage 6 deliverables: the Level-1 calibrated\n"
+            "line table (<stem>_lines.csv) and the self-contained Level-3 HTML\n"
+            "report with every window folded in (<stem>_report.html). They go\n"
+            "into --output-dir, which defaults to the current directory. Reuses\n"
+            "the existing renderers; never recomputes the fit.\n\n"
             "Trim the output with --level1-only (table only), --no-table (HTML\n"
             "only), --windows attention (only flagged windows get a detail\n"
             "page), or --summary (HTML index + methods, no per-window detail)."
@@ -197,9 +197,12 @@ def register_report_commands(subparsers: Any) -> None:
     p_run.add_argument(
         "--output-dir",
         dest="output_dir",
-        required=True,
+        default=None,
         metavar="DIR",
-        help="Directory to write the report artifacts into (created if absent).",
+        help=(
+            "Directory to write the report artifacts into (created if absent). "
+            "Defaults to the current directory."
+        ),
     )
     p_run.add_argument(
         "--windows",

@@ -3411,7 +3411,7 @@ def report_full_impl(
 def report_run_impl(
     file_path: Union[Path, str],
     *,
-    output_dir: Union[Path, str],
+    output_dir: Optional[Union[Path, str]] = None,
     windows: str = "all",
     emit_table: bool = True,
     emit_html: bool = True,
@@ -3422,9 +3422,11 @@ def report_run_impl(
 ) -> Dict[str, Optional[str]]:
     """The default Stage 6 report run: the L1 table plus the L3 HTML report.
 
-    Writes both deliverables into *output_dir* in one call. By default that is the
-    Level-1 final-products table (``<stem>_lines.csv``) and the self-contained
-    Level-3 report with every window folded in (``<stem>_report.html``).
+    Writes both deliverables into *output_dir* in one call, defaulting to the
+    current working directory when *output_dir* is omitted. By default the
+    artifacts are the Level-1 final-products table (``<stem>_lines.csv``) and the
+    self-contained Level-3 report with every window folded in
+    (``<stem>_report.html``).
     Either artifact can be suppressed (``emit_table`` / ``emit_html``); the HTML
     content follows *scope* (``"full"`` folds in every window, ``"summary"`` keeps
     the index + methods only). Renders the persisted record; never recomputes.
@@ -3444,9 +3446,9 @@ def report_run_impl(
             "nothing to do: both the table and the HTML report are disabled"
         )
 
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(str(file_path)).stem
+    out_dir = Path.cwd() if output_dir is None else Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     results: Dict[str, Optional[str]] = {"table": None, "html": None}
 

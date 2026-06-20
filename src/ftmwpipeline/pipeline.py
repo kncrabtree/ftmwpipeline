@@ -582,12 +582,13 @@ class Pipeline:
         Parameters
         ----------
         settings, preset
-            Mutually-exclusive ways to populate the preset layer of the settings
-            chain (a ``NoiseSettings`` bundle or a YAML preset's ``stage2:``
-            block). Individual knobs (``window_mhz`` / ``smoothing_mhz`` /
-            ``smoothing_percentile`` / ``convolve_mhz`` / …) are set on the
-            ``NoiseSettings`` instance; a value persisted in the ``.ftmw``
-            outranks either, so a no-arg call reproduces it.
+            Composable ways to drive the settings chain (a ``NoiseSettings``
+            bundle as the explicit override layer, a YAML preset's ``stage2:``
+            block as the preset layer beneath the persisted record). Individual
+            knobs (``window_mhz`` / ``smoothing_mhz`` / ``smoothing_percentile``
+            / ``convolve_mhz`` / …) are set on the ``NoiseSettings`` instance;
+            the explicit layer outranks the persisted record, which outranks the
+            preset (per D11), so a no-arg call reproduces the persisted recipe.
 
         Returns
         -------
@@ -726,10 +727,13 @@ class Pipeline:
         Settings resolve through the chain (``settings`` / ``preset`` >
         persisted > hard default); pass ``settings=`` to drive the
         calibration from a :class:`TauCalibrationSettings` instance, or
-        ``preset=NAME_OR_PATH`` to load from packaged YAML. They are mutually
-        exclusive. A value persisted in the ``.ftmw`` outranks either (D11),
-        so a no-arg follow-up call reproduces the previously resolved
-        settings (stamped to ``processing_parameters/stage2b_tau``). Set
+        ``preset=NAME_OR_PATH`` to load from packaged YAML. They may be
+        combined: the ``settings`` bundle is the explicit override that outranks
+        the persisted record, while the ``preset`` seeds only the fields neither
+        the explicit layer nor the persisted record has fixed (the persisted
+        record outranks the preset, per D11), so a no-arg follow-up call
+        reproduces the previously resolved settings (stamped to
+        ``processing_parameters/stage2b_tau``). Set
         individual knobs via ``settings=TauCalibrationSettings(...)`` or a
         YAML preset's ``stage2b:`` block.
         """
@@ -825,8 +829,11 @@ class Pipeline:
         and invalidates downstream stages.
 
         Settings resolve through the chain (``settings`` / ``preset`` >
-        persisted > hard default); ``settings=`` and ``preset=`` are mutually
-        exclusive. A value persisted in the ``.ftmw`` outranks either (D11).
+        persisted > hard default); ``settings=`` and ``preset=`` may be
+        combined -- the ``settings`` bundle is the explicit override that
+        outranks the persisted record, while the ``preset`` seeds only the
+        fields neither the explicit layer nor the persisted record has fixed
+        (the persisted record outranks the preset, per D11).
         The resolved settings share the ``processing_parameters/stage2b_tau``
         block with the pure-exp twin -- both twins are alternative outputs of
         the same algorithm.
@@ -885,8 +892,11 @@ class Pipeline:
         verdict is returned but no attr is stamped.
 
         Settings resolve through the chain (``settings`` / ``preset`` >
-        persisted > hard default); ``settings=`` and ``preset=`` are mutually
-        exclusive. A value persisted in the ``.ftmw`` outranks either (D11).
+        persisted > hard default); ``settings=`` and ``preset=`` may be
+        combined -- the ``settings`` bundle is the explicit override that
+        outranks the persisted record, while the ``preset`` seeds only the
+        fields neither the explicit layer nor the persisted record has fixed
+        (the persisted record outranks the preset, per D11).
         The resolved settings are stamped to
         ``processing_parameters/stage2b_tau`` so a follow-up no-arg call
         inherits the same recipe.
@@ -1064,8 +1074,11 @@ class Pipeline:
         Settings resolve through the chain (``settings`` / ``preset`` >
         persisted > hard default); pass ``settings=`` to drive detection from a
         :class:`PeakDetectionSettings` instance, or ``preset=NAME_OR_PATH`` to
-        load from packaged YAML. They are mutually exclusive, and a value
-        persisted in the ``.ftmw`` outranks either (D11). Set individual knobs
+        load from packaged YAML. They may be combined: a ``settings`` bundle is
+        the explicit override that outranks the persisted record, while a
+        ``preset`` seeds only the fields neither the explicit layer nor the
+        persisted record has fixed (the persisted record outranks the preset,
+        per D11). Set individual knobs
         via ``settings=PeakDetectionSettings(...)`` or a YAML preset's
         ``stage3:`` block.
 
@@ -1073,10 +1086,11 @@ class Pipeline:
         ----------
         settings : PeakDetectionSettings, optional
             Bundle of Stage 3 knobs; fields left ``None`` fall through the
-            resolution chain. Mutually exclusive with ``preset``.
+            resolution chain. May be combined with ``preset``.
         preset : str, optional
             Bare preset name or path to a YAML file carrying a ``stage3:``
-            block. Mutually exclusive with ``settings``.
+            block. Seeds the preset layer beneath the persisted record; may be
+            combined with ``settings``.
 
         Returns
         -------
@@ -1206,8 +1220,11 @@ class Pipeline:
         Settings resolve through the chain (``settings`` / ``preset`` >
         persisted > hard default); pass ``settings=`` to drive window planning
         from a :class:`WindowPlanningSettings` instance, or ``preset=NAME_OR_PATH``
-        to load from packaged YAML. They are mutually exclusive, and a value
-        persisted in the ``.ftmw`` outranks either (D11). Set individual knobs
+        to load from packaged YAML. They may be combined: a ``settings`` bundle
+        is the explicit override that outranks the persisted record, while a
+        ``preset`` seeds only the fields neither the explicit layer nor the
+        persisted record has fixed (the persisted record outranks the preset,
+        per D11). Set individual knobs
         via ``settings=WindowPlanningSettings(...)`` or a YAML preset's
         ``stage4:`` block.
 
@@ -1215,10 +1232,11 @@ class Pipeline:
         ----------
         settings : WindowPlanningSettings, optional
             Bundle of Stage 4 knobs; fields left ``None`` fall through the
-            resolution chain. Mutually exclusive with ``preset``.
+            resolution chain. May be combined with ``preset``.
         preset : str, optional
             Bare preset name or path to a YAML file carrying a ``stage4:``
-            block. Mutually exclusive with ``settings``.
+            block. Seeds the preset layer beneath the persisted record; may be
+            combined with ``settings``.
 
         Returns
         -------
@@ -1347,9 +1365,11 @@ class Pipeline:
         Settings resolve through the chain (``settings`` / ``preset`` >
         persisted > recommended > hard default); pass ``settings=`` to drive
         the fit from a :class:`StageFitSettings` instance, or
-        ``preset=NAME_OR_PATH`` to load from packaged YAML. They are mutually
-        exclusive, and a ``settings`` bundle outranks a value persisted in the
-        ``.ftmw`` while a ``preset`` .yml only seeds unfixed fields (D11).
+        ``preset=NAME_OR_PATH`` to load from packaged YAML. They may be
+        combined: a ``settings`` bundle outranks a value persisted in the
+        ``.ftmw`` while a ``preset`` .yml seeds only the fields neither the
+        explicit layer nor the persisted record has fixed (the persisted record
+        outranks the preset, per D11).
 
         Parameters
         ----------
@@ -1371,13 +1391,13 @@ class Pipeline:
             resolution chain. Resolves at the explicit override layer (outranks
             the persisted record). Build with
             :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`.
-            Mutually exclusive with ``preset``.
+            May be combined with ``preset``.
         preset : str, optional
             Bare preset name (e.g. ``"instrument_bc_2638"``) or a path to a
             YAML file carrying a ``stage5:`` block. Enters at the preset layer
             (a persisted ``.ftmw`` outranks it). The preset name is captured in
             the persisted Stage 5 fit's audit attrs for reproducibility.
-            Mutually exclusive with ``settings``.
+            May be combined with ``settings``.
 
         Returns
         -------
@@ -1675,7 +1695,7 @@ class Pipeline:
     def report_run(
         self,
         *,
-        output_dir: Union[str, Path],
+        output_dir: Optional[Union[str, Path]] = None,
         windows: str = "all",
         emit_table: bool = True,
         emit_html: bool = True,
@@ -1695,7 +1715,8 @@ class Pipeline:
         Parameters
         ----------
         output_dir :
-            Directory to write the artifacts into (created if absent).
+            Directory to write the artifacts into (created if absent). Defaults
+            to the current working directory when omitted.
         windows :
             ``"all"`` (a detail page per window) or ``"attention"`` (pages only
             for review-flagged windows). The index always lists every window.

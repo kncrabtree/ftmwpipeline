@@ -1094,6 +1094,17 @@ def test_run_default_writes_table_and_single_file(stage5_small_file, tmp_path):
 
 
 @pytest.mark.integration
+def test_run_defaults_output_dir_to_cwd(stage5_small_file, tmp_path, monkeypatch):
+    from ftmwpipeline._internal.report_html_impl import report_run_impl
+
+    monkeypatch.chdir(tmp_path)
+    result = report_run_impl(str(stage5_small_file))
+
+    assert Path(result["table"]).resolve().parent == tmp_path.resolve()
+    assert Path(result["html"]).resolve().parent == tmp_path.resolve()
+
+
+@pytest.mark.integration
 def test_run_level1_only_skips_html(stage5_small_file, tmp_path):
     from ftmwpipeline._internal.report_html_impl import report_run_impl
 
