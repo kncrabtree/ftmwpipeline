@@ -98,6 +98,44 @@ project memory is updated whenever a code revision changes a documented behavior
   planning documents are archived (their content now living in the docs), and
   research reports are updated where still useful or removed where obsolete.
 
+## Findings to resolve
+
+Code-review observations surfaced while writing the docs, held for discussion
+before any code change (per the per-stage gate).
+
+- **Inconsistent ``--trim`` form across CLI commands.** The whole-pipeline
+  ``run`` command parses ``--trim LO HI`` (two space-separated MHz values),
+  while the per-stage ``ft run`` parses ``--trim MIN:MAX`` (a single
+  colon-delimited string). Same concept, two surfaces, two grammars — a
+  dual-interface inconsistency a user will trip over. Candidate resolution:
+  pick one form (the colon form matches the persisted/`settings` convention and
+  the README) and apply it to both. To address with the Stage 1 / CLI-reference
+  review.
+- **Stale `README.md` status section.** The root `README.md` states Stages 3–5
+  are "not yet implemented"; all stages ship. Update during the repository
+  cleanup pass.
+
+## Resolved during review
+
+Code changes made while reviewing the docs, with user sign-off:
+
+- **`report run --output-dir` made optional.** It was a holdover from the
+  multi-page report site; the report is now two files, so an omitted
+  `--output-dir` writes them to the current directory (no auto-created
+  directory). Applied across impl + `Pipeline`/`api` + CLI, with a test.
+- **`settings=` and `preset=` now compose.** The two were mutually exclusive on
+  every interface; they populate different resolution layers (explicit vs
+  preset), so combining them is well-defined and enables "preset recipe + a few
+  explicit overrides." The `ValueError` guards were removed from the five stage
+  impls and the five CLI commands; the mutual-exclusion tests became
+  composition tests. The resolution order is unchanged: explicit > persisted >
+  preset > recommended > default, so a preset still never overrides a persisted
+  value (the D11 reproducibility guarantee). To keep the old "mutually
+  exclusive" claim from creeping back, the change was reconciled across the
+  records that survive this commit: ROADMAP D11 (amended), `SERIALIZATION_STRATEGY.md`
+  (states the composition rule), and the planning docs `stage5-fit-settings.md`,
+  `settings-backfill.md`, and `settings-surface-finalization.md`.
+
 ## Sphinx build
 
 Stood up before content so reStructuredText and toctree errors surface
@@ -121,8 +159,14 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   exists as a stub (with a real `.. index::` block and one-line scope) except
   `settings_and_presets.rst`, which is migrated intact. The build is
   warning-clean under `sphinx-build -W`.
-- [ ] Getting Started: `overview`, `installation`, `quickstart`.
-- [ ] Concepts: `settings_and_presets` (refresh), `file_format`.
+- [x] Getting Started: `overview`, `installation`, `quickstart`. Written
+  against the verified API/CLI surface (`README.md`, `API_STRATEGY.md`,
+  `CLI_STRATEGY.md`, and the actual `api.py`/`pipeline.py`/`cli` source);
+  documented forms smoke-checked against ``--help``.
+- [~] Concepts: `settings_and_presets` refreshed during review (precedence
+  order corrected to `explicit > persisted > preset > recommended > default`,
+  the `settings=`/`preset=` composition documented, the stale per-knob-kwarg
+  examples replaced); `file_format` still to write.
 - [ ] Stage 0 — import.
 - [ ] Stage 1 — FT.
 - [ ] Stage 2 — noise.

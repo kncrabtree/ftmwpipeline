@@ -30,21 +30,30 @@ The mental model
 A stage's parameters come from layers that are merged per field. Highest
 precedence first:
 
-1. **explicit kwargs** — ``ftmw.fit_peaks(..., max_decay_factor=3.0)``
-2. **preset / settings** — a YAML preset loaded by name, or a settings
-   dataclass you built in Python
-3. **persisted** — what the previous run of this stage on this ``.ftmw``
+1. **explicit** — a settings dataclass passed as ``settings=`` (plus the
+   handful of genuine non-knob keyword arguments a stage accepts, such as
+   ``shape`` on the fit)
+2. **persisted** — what the previous run of this stage on this ``.ftmw``
    file used
+3. **preset** — a ``.yml`` preset loaded by name or path with ``preset=``
 4. **recommended** — an upstream-stage hint (e.g., Stage 2b's
    ``recommended_shape`` for Stage 5); empty for stages without an
    upstream feeder
 5. **hard defaults** — the library's stock values
 
-Each knob walks this chain independently. If you explicitly set
-``max_decay_factor=3.0``, your value wins. Everything else falls through
-one layer at a time until it hits a concrete value. The hard defaults
-are guaranteed to fill any remaining gap so the resolved settings
-instance is always complete.
+Each knob walks this chain independently. A value you set in an explicit
+``settings=`` bundle wins; everything else falls through one layer at a
+time until it hits a concrete value, and the hard defaults are
+guaranteed to fill any remaining gap so the resolved settings instance is
+always complete.
+
+A ``.yml`` preset never overrides a value persisted in the ``.ftmw``
+file. The preset layer sits *below* the persisted layer: a preset only
+seeds fields the file has not already fixed. This is what keeps a shared
+``.ftmw`` reproducible — the file reproduces the same result on its own,
+regardless of any preset a recipient happens to have loaded. To force a
+value regardless of what the file holds, pass it explicitly through
+``settings=``.
 
 The same template applies to every stage that exposes knobs. The five
 settings dataclasses, in pipeline order:
@@ -117,24 +126,28 @@ Equivalent at the CLI::
 One-off overrides
 ~~~~~~~~~~~~~~~~~
 
-Set individual knobs as keyword arguments. They beat every other layer
-per field; unspecified knobs flow through the chain unchanged:
+At the command line, each stage exposes a flag per knob. A flag beats
+every other layer for its field; unspecified knobs flow through the chain
+unchanged:
+
+.. code-block:: shell
+
+   ftmwpipeline fit run exp.ftmw --shape gaussian --max-decay-factor 3.0
+
+Each flag is reconstructed into the stage's settings object before the
+stage runs, so a flag and the corresponding ``settings=`` field are the
+same explicit override reached by two routes.
+
+In Python, a few knobs survive as first-class convenience keyword
+arguments — the fit's ``shape`` and its τ-override pair — which are part
+of the explicit layer as well:
 
 .. code-block:: python
 
-   ftmw.fit_peaks(
-       "exp.ftmw",
-       shape="gaussian",
-       max_decay_factor=3.0,
-   )
+   ftmw.fit_peaks("exp.ftmw", shape="gaussian")
 
-The CLI exposes a flag for the historically-public knobs of each stage
-(``--shape``, ``--max-decay-factor``, ``--max-residual-rescue-rounds``,
-``--edge-m``, ``--min-snr``, …). Knobs beyond that public surface — the
-instrument-tunable ones such as Stage 2's
-``binning.subdivision_threshold`` or Stage 3's
-``gap_pass.gap_mask_edge_threshold`` — are reachable through the Python
-``settings=`` kwarg or a preset YAML.
+Every other knob is set through a ``settings=`` dataclass (below) or a
+preset YAML.
 
 Presets
 ~~~~~~~
@@ -186,14 +199,18 @@ A stage whose block is missing from the preset loads an empty
 ``XxxSettings`` and falls through to the next layer of the resolver —
 nothing breaks.
 
-Presets and explicit kwargs compose: kwargs win per field, so you can
-adopt a preset's recipe and tweak one knob:
+A preset and explicit overrides compose: the explicit value wins per
+field, so you can adopt a preset's recipe and tweak one knob in the same
+call. At the command line, that is a preset plus a per-knob flag:
 
 .. code-block:: shell
 
    ftmwpipeline fit run exp.ftmw \
      --preset instrument_bc_2638 \
      --max-residual-rescue-rounds 3
+
+The flag lands in the explicit layer; the preset seeds the preset layer
+beneath it (and beneath anything the file has already persisted).
 
 The Python ``settings=`` kwarg
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -232,10 +249,19 @@ Same shape for any stage:
    s.savgol.sg_window = 13
    ftmw.detect_peaks("exp.ftmw", settings=s)
 
-``settings=`` and ``preset=`` are alternative ways to populate the same
-layer — passing both raises ``ValueError``. (If you want both a preset
-and dataclass-level overrides, use a preset name plus explicit kwargs
-for the override.)
+``settings=`` and ``preset=`` populate *different* layers, so you can
+pass both in one call. A ``settings=`` bundle is the **explicit** layer
+and outranks the persisted record; a ``preset=`` YAML is the **preset**
+layer and is outranked by it. Reach for ``settings=`` to force values
+regardless of what the file holds, and for ``preset=`` to supply a recipe
+that defers to anything already chosen on the file. When both are given,
+the ``settings=`` fields win per field and the preset seeds the rest:
+
+.. code-block:: python
+
+   s = StageFitSettings()
+   s.rescue.max_rounds = 3
+   ftmw.fit_peaks("exp.ftmw", preset="instrument_bc_2638", settings=s)
 
 Persistence and auto-inheritance
 --------------------------------
