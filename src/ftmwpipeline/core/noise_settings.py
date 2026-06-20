@@ -68,8 +68,7 @@ class NoiseSettings:
         argtype=float,
     )
     pedestal_mhz: Optional[float] = knob_field(
-        help="High-pass running-median width isolating the smooth leakage "
-        "pedestal.",
+        help="High-pass running-median width isolating the smooth leakage " "pedestal.",
         tier="primary",
         inst_sensitivity="Y",
         grid=(10.0, 20.0, 40.0, 80.0),
@@ -77,8 +76,7 @@ class NoiseSettings:
         argtype=float,
     )
     line_k: Optional[float] = knob_field(
-        help="Robust-sigma multiple above which a bin is flagged a line "
-        "(excluded).",
+        help="Robust-sigma multiple above which a bin is flagged a line " "(excluded).",
         inst_sensitivity="maybe",
         grid=(4.0, 6.0, 8.0, 12.0),
         cli=True,

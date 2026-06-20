@@ -466,8 +466,7 @@ class BaselineSubSettings:
     """
 
     enabled: Optional[bool] = knob_field(
-        help="Master switch for the evidence-triggered leakage-wing baseline "
-        "term.",
+        help="Master switch for the evidence-triggered leakage-wing baseline " "term.",
         tier="advanced",
         inst_sensitivity="N",
         grid=(False, True),

@@ -196,8 +196,7 @@ class PrimaryPassSubSettings:
         grid=(1, 2, 3),
     )
     primary_leakage_floor_k: Optional[float] = knob_field(
-        help="Scale on the primary leakage-aware floor k·(S_coh/√M)·σ "
-        "(0 disables).",
+        help="Scale on the primary leakage-aware floor k·(S_coh/√M)·σ " "(0 disables).",
         tier="primary",
         inst_sensitivity="Y",
         grid=(0.0, 0.5, 1.0, 2.0, 3.0),
@@ -213,8 +212,7 @@ class PrimaryPassSubSettings:
         grid=(10.0, 20.0, 40.0, 80.0),
     )
     noise_line_k: Optional[float] = knob_field(
-        help="Apodized-domain σ: robust-σ multiple above which a bin "
-        "self-masks.",
+        help="Apodized-domain σ: robust-σ multiple above which a bin " "self-masks.",
         inst_sensitivity="maybe",
         grid=(4.0, 6.0, 8.0, 12.0),
     )
@@ -229,8 +227,7 @@ class PrimaryPassSubSettings:
         grid=(False, True),
     )
     noise_smoothing_mhz: Optional[float] = knob_field(
-        help="Apodized-domain σ: broad lower-envelope median width (MHz; "
-        "0=off).",
+        help="Apodized-domain σ: broad lower-envelope median width (MHz; " "0=off).",
         inst_sensitivity="Y",
         grid=(0.0, 400.0, 800.0, 1200.0),
     )
@@ -240,8 +237,7 @@ class PrimaryPassSubSettings:
         grid=(25.0, 50.0, 75.0),
     )
     noise_convolve_mhz: Optional[float] = knob_field(
-        help="Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; "
-        "0=off).",
+        help="Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; " "0=off).",
         inst_sensitivity="N",
         grid=(0.0, 100.0, 200.0, 400.0),
     )

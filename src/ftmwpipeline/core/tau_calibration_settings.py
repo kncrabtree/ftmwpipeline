@@ -153,8 +153,7 @@ class AggregationSubSettings:
     """Majority-vote + acceptance pre-conditions (shared by both τ twins)."""
 
     min_contributors: Optional[int] = knob_field(
-        help="Minimum contributor count for the calibration to pass "
-        "preconditions.",
+        help="Minimum contributor count for the calibration to pass " "preconditions.",
         inst_sensitivity="N",
         grid=(100, 200, 400, 800),
         cli=True,
@@ -168,16 +167,14 @@ class AggregationSubSettings:
         argtype=float,
     )
     bimodality_dominant_fraction: Optional[float] = knob_field(
-        help="Dominant-mode fraction above which a bimodal histogram still "
-        "passes.",
+        help="Dominant-mode fraction above which a bimodal histogram still " "passes.",
         inst_sensitivity="N",
         grid=(0.6, 0.7, 0.8),
         cli=True,
         argtype=float,
     )
     sigma_tau_floor_us: Optional[float] = knob_field(
-        help="Floor on the reported sigma_tau (guards against over-tight "
-        "spreads).",
+        help="Floor on the reported sigma_tau (guards against over-tight " "spreads).",
         inst_sensitivity="maybe",
         grid=(0.0, 0.5, 1.0),
     )
@@ -194,8 +191,7 @@ class BandSubSettings:
     """Per-band majority routing (shared by both τ twins)."""
 
     compute_band_majorities: Optional[bool] = knob_field(
-        help="Compute per-band tau majorities (the tau-vs-frequency band "
-        "steps).",
+        help="Compute per-band tau majorities (the tau-vs-frequency band " "steps).",
         inst_sensitivity="Y",
         grid=(False, True),
     )
@@ -222,8 +218,7 @@ class GaussianSubSettings:
     """
 
     snr_min: Optional[float] = knob_field(
-        help="Gaussian tau_G: per-bin SNR floor for a contributor to enter "
-        "the fit.",
+        help="Gaussian tau_G: per-bin SNR floor for a contributor to enter " "the fit.",
         tier="primary",
         inst_sensitivity="Y",
         grid=(10.0, 15.0, 20.0, 30.0),
@@ -256,8 +251,7 @@ class GaussianSubSettings:
         argtype=float,
     )
     tau_G_upper_fraction: Optional[float] = knob_field(
-        help="Fraction of the tau_G bound above which a fit is treated as "
-        "railed.",
+        help="Fraction of the tau_G bound above which a fit is treated as " "railed.",
         inst_sensitivity="maybe",
         grid=(0.5, 0.7, 0.9),
         cli=True,
@@ -265,8 +259,7 @@ class GaussianSubSettings:
         flag="--tau-g-upper-fraction",
     )
     min_contributors: Optional[int] = knob_field(
-        help="Minimum Gaussian-eligible contributor count for tau_G "
-        "preconditions.",
+        help="Minimum Gaussian-eligible contributor count for tau_G " "preconditions.",
         inst_sensitivity="maybe",
         grid=(25, 50, 100),
     )
@@ -309,8 +302,7 @@ class RecommendationSubSettings:
     )
     tau_G_seeds: Optional[Tuple[float, ...]] = None
     pure_margin_threshold: Optional[float] = knob_field(
-        help="Min SNR-weighted vote margin for a pure shape to win (else "
-        "'none').",
+        help="Min SNR-weighted vote margin for a pure shape to win (else " "'none').",
         tier="primary",
         inst_sensitivity="maybe",
         grid=(0.05, 0.10, 0.15, 0.20),
