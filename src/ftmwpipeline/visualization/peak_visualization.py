@@ -152,6 +152,7 @@ def plot_peak_detection(
             facecolors=color if promoted else "none",
             edgecolors="black" if promoted else color,
             linewidths=0.3 if promoted else 0.7,
+            alpha=1.0 if promoted else 0.3,
             zorder=5 if promoted else 4,
         )
 
@@ -181,7 +182,9 @@ def plot_peak_detection(
     if resolved_title:
         ax.set_title(resolved_title)
 
-    def _swatch(marker: str, face: str, edge: str, label: str) -> Line2D:
+    def _swatch(
+        marker: str, face: str, edge: str, label: str, alpha: float = 1.0
+    ) -> Line2D:
         return Line2D(
             [0],
             [0],
@@ -191,6 +194,7 @@ def plot_peak_detection(
             markeredgecolor=edge,
             markeredgewidth=0.6,
             markersize=7,
+            alpha=alpha,
             label=label,
         )
 
@@ -203,7 +207,7 @@ def plot_peak_detection(
         _swatch("o", "0.5", "black", "primary pass"),
         _swatch("^", "0.5", "black", "gap pass"),
         _swatch("o", "0.5", "black", "promoted"),
-        _swatch("o", "none", "0.5", "below cutoff"),
+        _swatch("o", "none", "0.5", "below cutoff", alpha=0.3),
     ]
     ax.legend(handles=handles, loc="upper right", fontsize=8, ncol=3)
     apply_bare_style(ax)
