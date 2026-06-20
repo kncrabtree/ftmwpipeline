@@ -398,11 +398,18 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   signal-to-noise-weighted majority + polish + per-band majorities, the two
   shape variants and the 3-way line-shape vote, the knobs, reading the
   diagnostics, the acceptance pre-conditions, the horn-coupling frequency
-  trend, and what Stages 3/5 consume). A distribution figure was added to
-  `docs/source/figures/generate.py` (lean Lorentzian-only calibration, no
-  auto-recommend) and guarded by the `slow` smoke test. The Gaussian/Lorentzian
-  twin code paths were fully unified first (see Resolved during review). Build
-  warning-clean under `sphinx-build -W`.
+  trend, and what Stages 3/5 consume). Three regenerable figures were added to
+  `docs/source/figures/generate.py` (a lean Lorentzian-only calibration, no
+  auto-recommend) and guarded by the `slow` smoke test: the decay-time
+  distribution panel (with legible per-band boundary/level/label overlay on the
+  τ-vs-frequency scatter, and both τ scatters capped at 1.5·T_active with
+  off-screen bins flagged as open triangles); a per-bin decay-example figure (a
+  strong line with the exponential and Gaussian fits, a saturated clock spur,
+  and a noise bin); and a frequency-windowed, color-clipped heatmap zoom. The
+  visualization gained `plot_stft_decay_examples`, a `freq_window` /
+  `clip_percentiles` heatmap, and a `tau_cap_factor` on the distribution. The
+  Gaussian/Lorentzian twin code paths were fully unified first (see Resolved
+  during review). Build warning-clean under `sphinx-build -W`.
 - [ ] Stage 3 — peak detection.
 - [ ] Stage 4 — window assignment.
 - [ ] Stage 5 — fitting.
@@ -418,11 +425,13 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 
 **State going in.** The Getting Started, Concepts, Stage 0/1/2/2b pages, the
 Methods & Validation section + first note, the brand style system, and the
-committed early-stage figures (now including `stage2b_tau_distribution.png`) are
-done and committed. The Stage 2b decay-time-calibration page is written and the
-Gaussian/Lorentzian twin code paths were fully unified beforehand (see *Resolved
-during review*). The working tree is clean; the targeted suites and
-`sphinx-build -W` are green. Nothing is mid-flight.
+committed early-stage figures (now including three Stage 2b tau figures:
+`stage2b_tau_distribution.png`, `stage2b_tau_decay_examples.png`,
+`stage2b_tau_heatmap_zoom.png`) are done and committed. The Stage 2b
+decay-time-calibration page is written and the Gaussian/Lorentzian twin code
+paths were fully unified beforehand (see *Resolved during review*). The working
+tree is clean; the full test suite (1902 passed, 2 skipped) and `sphinx-build
+-W` are green. Nothing is mid-flight.
 
 **Last stage's trail (so nothing is re-litigated).** Stage 2b's two shape
 variants are now one shape-parameterized path: public API is
