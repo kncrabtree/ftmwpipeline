@@ -16,6 +16,7 @@
 
    settings_and_presets
    file_format
+   input_formats
 
 .. toctree::
    :hidden:
@@ -71,6 +72,9 @@ Where to start
 * :doc:`quickstart` — process an experiment end to end.
 * :doc:`settings_and_presets` — how stage parameters are resolved across
   keyword arguments, presets, and the values persisted in the file.
+* :doc:`input_formats` — bring data from any instrument into the pipeline: the
+  native HDF5 and CSV input formats, the metadata sidecar, and declaring
+  instrument clock sources.
 
 The pipeline stages, in the order an experiment moves through them:
 

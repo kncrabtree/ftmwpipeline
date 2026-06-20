@@ -185,7 +185,13 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   tracking + dependency graph, persisted-vs-recomputed contract, provenance +
   safe re-import, the `PipelineFileError` family), against the verified
   `file_manager.py` / `SERIALIZATION_STRATEGY.md` surface.
-- [ ] Stage 0 — import.
+- [x] Stage 0 — import. `stage0_import.rst` written (import workflow, format
+  detection, provenance + safe re-import, start-time detection), plus a new
+  Concepts page `input_formats.rst` — the reference for the no-code input path
+  (native `ftmw-hdf5` and `csv` formats, the `--metadata` sidecar, clock
+  declarations, and writing a custom loader). The generic loaders, sidecar, and
+  `clocks` surface they document were built first (see Resolved during review).
+  Build is warning-clean under `sphinx-build -W`.
 - [ ] Stage 1 — FT.
 - [ ] Stage 2 — noise.
 - [ ] Stage 2b — tau calibration.
