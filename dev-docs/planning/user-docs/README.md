@@ -163,10 +163,13 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   against the verified API/CLI surface (`README.md`, `API_STRATEGY.md`,
   `CLI_STRATEGY.md`, and the actual `api.py`/`pipeline.py`/`cli` source);
   documented forms smoke-checked against ``--help``.
-- [~] Concepts: `settings_and_presets` refreshed during review (precedence
+- [x] Concepts: `settings_and_presets` refreshed during review (precedence
   order corrected to `explicit > persisted > preset > recommended > default`,
   the `settings=`/`preset=` composition documented, the stale per-knob-kwarg
-  examples replaced); `file_format` still to write.
+  examples replaced); `file_format` written (the `.ftmw` HDF5 model, stage
+  tracking + dependency graph, persisted-vs-recomputed contract, provenance +
+  safe re-import, the `PipelineFileError` family), against the verified
+  `file_manager.py` / `SERIALIZATION_STRATEGY.md` surface.
 - [ ] Stage 0 — import.
 - [ ] Stage 1 — FT.
 - [ ] Stage 2 — noise.
@@ -181,3 +184,29 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] Repository cleanup (stray root artifacts).
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
+
+## Next: Stage 0 (fresh session)
+
+Getting Started and Concepts are done; the stage pages begin here. Stage 0 is
+the first to run the full per-stage gate (read planning record → thorough code
+review, discuss revisions before writing → mine research → American-English
+scan → write the page). A fresh session should:
+
+- Create the per-stage tracking doc `stage0-docs.md` alongside this README.
+- Read the planning record for import: `planning/scope-record-import.md`
+  (raw-scope loaders), the start-detection material, and the ROADMAP /
+  COMPLETED entries that touch import; flag anything stale against the code.
+- Review the code surface: `file_manager.py` (create/open/validate, provenance),
+  `io/data_loaders/` (the loader registry + `detect_format`, the `blackchirp` /
+  `csv` / `hdf5` loaders), `_internal/stage0_impl.py`, the `start` detection
+  path, and the `data import` CLI / `import_data` / `Pipeline.create` wrappers.
+  Surface smells, TODOs, and intent-vs-coverage gaps; propose structural
+  cleanups and **discuss any code revisions before writing**.
+- Mine `research/` for any import/start-detection justifications worth
+  surfacing.
+- Write `stage0_import.rst` (currently a stub).
+
+The page should cover both the BlackChirp path (the home instrument) and the
+generic CSV/HDF5 + raw-scope-record paths; the instrument-specific scope-record
+detail has its own :doc:`Advanced page <scope_record_import>`, so Stage 0 should
+link to it rather than duplicate it.
