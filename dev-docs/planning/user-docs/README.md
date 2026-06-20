@@ -121,6 +121,30 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Complex-domain σ cross-check added to Stage 2 (guardrail, magnitude stays
+  primary).** A reader question — is ``line_k=8`` too lax, leaving line skirts in
+  the noise set and inflating σ? — opened a noise-estimator investigation. The
+  self-mask clip is one-sided (``keep = resid < line_k·σ``), so an aggressive
+  ``line_k`` (3–4) falsely excludes the upper tail of genuine noise (~0.8% of
+  pure-noise bins at k=3, biasing σ ~3.5% low) while the broad lower-envelope
+  median — not the mask — is the real defense against line contamination; ``8``
+  is correctly past the knee, **unchanged**. The deeper finding: the magnitude
+  estimator carries a small intrinsic *low* bias (it must undo the Rayleigh
+  pedestal + Rician ``C(R)``), where an independent estimate from the symmetric,
+  correction-free real/imaginary scatter does not. Shipped that as a **read-only
+  guardrail**: :func:`estimate_noise_complex_scatter` plus a ``mag/complex`` σ
+  ratio + divergence warning folded into ``bin_info`` and overlaid on
+  ``noise show``. A **hybrid** (measure σ in the complex domain) was prototyped
+  behind a ``sigma_source`` flag and **rejected**: on dense, high-SNR spectra the
+  complex estimate is leakage-floor-limited (655 noise slope −0.375 vs the
+  magnitude's −0.448, against the stationary 1/√N = −0.5), because oscillatory
+  line leakage sits in the noise bins and a running median can't remove it (it
+  removes the smooth magnitude pedestal, not Re/Im oscillation). The fixtures
+  also show real ~5–9% signal drift across the acquisition (sign varies), so no
+  clean stationary line-free truth exists in this data and the 1/√N slope was the
+  drift-robust arbiter. **Decision (user):** keep the magnitude estimator
+  primary, complex as the cross-check; the flag was reverted. Reproducible
+  analysis in the gitignored ``scratch/line-k/``.
 - **Plotly removed; matplotlib is the sole visualization backend.** The second
   rendering backend was ripped out across the stack: the ``_plot_*_plotly``
   paths and the plotly statistics-table helper in ``spectrum_visualization`` /
@@ -357,22 +381,59 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Next session: Stage 2b — tau calibration
+## Handoff: next session is Stage 2b — tau calibration
 
-The viz restyle, the committed stage figures, and the full plotly removal are
-done (see *Resolved during review*); Stages 0–2 pages, the Methods & Validation
-section + first note, and the brand style system are in place. The next stage to
-document is **Stage 2b (tau calibration)**, following the per-stage process:
-read the planning record, review the code thorough (the
-`fitting/tau_calibration.py` engine, `calibrate_tau` / `calibrate_tau_G`, the
-two shape twins and the lineshape vote, `_internal` impl, and the three
-interface wrappers), discuss any code revisions before writing, mine the
-research reports, do the American-English scan, then write `stage2b_tau.rst`.
-Restyle `tau_calibration_visualization.py` to the house style and add a stage
-figure (extend `docs/source/figures/generate.py`) as part of that page.
+**State going in.** Stages 0–2 pages, the Methods & Validation section + first
+note, the brand style system, the committed early-stage figures, the full plotly
+removal, and the Stage 2 complex-σ cross-check guardrail are all done and
+committed (see *Resolved during review* and *Progress*). The working tree is
+clean; the test suite and `sphinx-build -W` are green. Nothing is mid-flight.
 
-Conventions reminder: build docs into `docs/build/html` (gitignored) so they are
-reviewable; direct any run artifacts to `scratch/`; the noise methods harness
-and `docs/source/figures/generate.py` are the reference patterns for committed,
-regenerable figures. A latent British spelling to fold into the AmE sweep:
-`fitting/tau_calibration.py` uses "vectorised" in docstrings.
+**Last session's trail (so nothing is re-litigated).** The Stage 2 noise
+estimator was investigated end to end (a reader question about `line_k`). Three
+outcomes, all settled: (1) `line_k=8` stays — it is past the knee of the
+one-sided self-mask clip, and the broad lower-envelope median, not the mask, is
+the real line-contamination defense; (2) a read-only complex-domain σ cross-check
+shipped (`estimate_noise_complex_scatter` + `mag/complex` ratio/warn in
+`bin_info`, overlaid on `noise show`); (3) a complex-σ *hybrid* was prototyped
+behind a `sigma_source` flag and **rejected** (leakage-floor-limited on dense
+spectra; magnitude tracks 1/√N better) — flag reverted, magnitude stays primary.
+The example fixtures carry real ~5–9% signal drift across the acquisition, so
+there is no clean stationary line-free truth in this data — the 1/√N slope is the
+drift-robust arbiter. Reproducible analysis is in the gitignored `scratch/line-k/`
+(disposable). **No Stage 2b code or docs were touched.**
+
+**The Stage 2b task — apply the per-stage process (this README, "Per-stage
+process"), in order:**
+1. *Read the planning record.* `dev-docs/planning/` for the Stage 2b / tau plan
+   plus the ROADMAP/STATUS entries that reference it; note stale prose against the
+   code rather than trusting it.
+2. *Review the code (thorough).* The engine `fitting/tau_calibration.py`
+   (`calibrate_tau` / `calibrate_tau_G`, the 3-way lineshape vote, the two shape
+   twins — exp/Lorentzian vs Gaussian — and the auto-build-the-other-twin logic
+   per `CLAUDE.md`), the `_internal/stage2b_*` impl, the serialization, and the
+   three interface wrappers (`pipeline.py` / `api.py` / `cli`). Surface code
+   smells, dead/`Phase`-era stubs (remove not-implemented holdovers as
+   encountered — the user has standing approval for that cleanup), and
+   test-coverage gaps. **Stop and discuss any proposed code revision with the
+   user before writing docs or changing code.**
+3. *Mine the research reports.* `dev-docs/research/` for the tau-calibration
+   justification (the STFT sliding-active-window method, τ_maj ± σ_τ, the
+   one- vs two-component test); extract what informs a technical reader.
+4. *American-English scan.* Sweep the stage's CLI help / log / error strings /
+   docstrings. Known hit to fix here: `fitting/tau_calibration.py` uses
+   "vectorised" in docstrings.
+5. *Write `stage2b_tau.rst`* (currently a stub) per the style conventions; link
+   from the toctree (already present). Restyle `tau_calibration_visualization.py`
+   to the house style (brand palette, `apply_bare_style`, `resolve_title` with
+   `title=""` for the doc figure) and add a Stage 2b figure by extending
+   `docs/source/figures/generate.py` (it already builds a 2638 pipeline through
+   Stage 2; add a `calibrate_tau` step + render). Embed with `.. figure::` +
+   caption and confirm the `slow` smoke test still renders.
+
+**Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
+review the rendered HTML; direct all run artifacts to `scratch/`; the noise
+methods harness and `docs/source/figures/generate.py` are the reference patterns
+for committed, regenerable figures. Run project commands via
+`conda run -n ftmwpipeline-dev`; scope tests to the stage (per the test-budget
+memory) and save one full run for the end.
