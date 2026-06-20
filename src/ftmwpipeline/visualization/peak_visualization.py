@@ -2,7 +2,7 @@
 Stage 3 peak-detection diagnostic plot.
 
 Overlays the classified, detected peaks on the (full-resolution) magnitude
-spectrum with the detection floor, colour-coded by SNR classification and
+spectrum with the detection floor, color-coded by SNR classification and
 marker-styled by which pass found each peak. Mirrors the matplotlib pattern of
 :mod:`ftmwpipeline.visualization.noise_visualization`.
 """
@@ -13,12 +13,21 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..core.data_structures import Peak, PeakClassification
+from .report_style import (
+    AGGIE_BLUE,
+    DOUBLE_DECKER,
+    POPPY,
+    QUAD,
+    apply_bare_style,
+    resolve_title,
+)
 
+# SNR-tier marker colors, ordered weak -> strong by ascending salience.
 _CLASS_COLOR = {
-    PeakClassification.WEAK: "tab:green",
-    PeakClassification.MEDIUM: "tab:orange",
-    PeakClassification.STRONG: "tab:red",
-    None: "tab:gray",
+    PeakClassification.WEAK: QUAD,
+    PeakClassification.MEDIUM: POPPY,
+    PeakClassification.STRONG: DOUBLE_DECKER,
+    None: "0.5",
 }
 
 
@@ -42,7 +51,7 @@ def _plot_snr_histogram(
         )
         return
     bins = np.logspace(np.log10(max(snrs.min(), 0.5)), np.log10(snrs.max()), 60)
-    ax.hist(snrs, bins=bins, color="steelblue", alpha=0.8)
+    ax.hist(snrs, bins=bins, color=AGGIE_BLUE, alpha=0.8)
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.set_xlabel("peak SNR (user grid)")
@@ -50,7 +59,7 @@ def _plot_snr_histogram(
     if promotion_min_snr is not None:
         ax.axvline(
             promotion_min_snr,
-            color="crimson",
+            color=DOUBLE_DECKER,
             lw=2,
             label=f"promotion cutoff = {promotion_min_snr:g}",
         )
@@ -101,8 +110,6 @@ def plot_peak_detection(
     -------
     matplotlib.figure.Figure
     """
-    from .report_style import apply_bare_style, resolve_title
-
     if snr_histogram:
         fig, (ax, ax_hist) = plt.subplots(
             2,
@@ -129,7 +136,7 @@ def plot_peak_detection(
             if isinstance(p.classification, PeakClassification)
             else None
         )
-        color = _CLASS_COLOR.get(cls, "tab:gray")
+        color = _CLASS_COLOR.get(cls, "0.5")
         is_gap = p.properties.get("detection_pass") == "gap"
         marker = "^" if is_gap else "o"
         key = (cls, is_gap)
@@ -155,7 +162,7 @@ def plot_peak_detection(
         frequencies,
         rms_noise,
         lw=0.8,
-        color="tab:blue",
+        color=AGGIE_BLUE,
         alpha=0.7,
         label="rms noise",
         zorder=2,

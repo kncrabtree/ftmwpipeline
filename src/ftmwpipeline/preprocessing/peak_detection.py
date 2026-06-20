@@ -5,7 +5,7 @@ This module contains the Stage 3 detection algorithm:
 
 * ``locate_peaks`` -- the low-level peak locator, a cleaned, type-annotated
   port of the surviving reference (``bcfitting.ftmwfitting``); numeric
-  behaviour preserved exactly.
+  behavior preserved exactly.
 * ``classify_by_snr`` -- SNR-only weak/medium/strong binning.
 * ``detect_peaks`` -- the two-pass driver: a primary pass on the apodized
   leakage-suppressed spectrum for the robust coarse list, then a gap pass on a
@@ -47,9 +47,9 @@ from ..core.data_structures import Peak, PeakClassification
 # seven fixtures spanning ~3 orders of magnitude in line SNR: the detected-peak
 # SNR distribution is anchored at the detection floor with a heavy upper tail,
 # so all three tiers stay populated in every regime and these fixed *absolute*
-# cutoffs generalise where percentile-based ones would not. Only the
+# cutoffs generalize where percentile-based ones would not. Only the
 # medium/strong boundary has a downstream consumer (Stage 4 marks a window HARD
-# when it holds a STRONG line); the weak/medium boundary is curation labelling.
+# when it holds a STRONG line); the weak/medium boundary is curation labeling.
 # Configurable per instrument. See dev-docs/research/stage3-snr-corner/report.md
 # section 8.
 DEFAULT_WEAK_MEDIUM_SNR = 10.0

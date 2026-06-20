@@ -3,7 +3,7 @@ Peak detection and visualization commands (Stage 3).
 
 Implements the ``peaks run`` and ``peaks show`` subcommands. Thin
 wrappers over the shared ``_internal.stage3_impl`` implementation -- identical
-behaviour to the Pipeline class and functional API.
+behavior to the Pipeline class and functional API.
 """
 
 import argparse
@@ -23,11 +23,13 @@ def _ensure_ftmw(path: str) -> str:
 def cmd_detect_peaks(args: argparse.Namespace) -> int:
     """Run Stage 3 two-pass peak detection on a .ftmw pipeline file.
 
-    An apodized primary pass builds the robust coarse peak list; an unapodized
-    full-resolution gap pass (masked within each strong line's analytic
-    truncation-leakage reach) then recovers weak lines the apodization
-    suppressed. Peaks are classified by SNR (weak/medium/strong) and persisted
-    to the file for hand-curation before Stage 4.
+    An apodized (Blackman-Harris) primary pass builds the robust coarse peak
+    list; a shape-aware matched-filter gap pass then recovers weak lines the
+    apodization suppressed. Both passes raise their detection floor continuously
+    by the local coherent-leakage amplitude (no hard mask), and every peak is
+    scored on the canonical active FT. Peaks are classified by SNR
+    (weak/medium/strong) and persisted to the file for hand-curation before
+    Stage 4.
 
     Requires Stage 1 ('ft run') and Stage 2 ('noise run') first.
     """

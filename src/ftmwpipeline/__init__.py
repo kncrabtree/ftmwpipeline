@@ -41,11 +41,6 @@ from ftmwpipeline.workflows import batch_process_experiments, process_experiment
 # from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
 # from ftmwpipeline.preprocessing.data_loading import load_blackchirp_data
 
-# # Peak detection
-# from ftmwpipeline.peak_detection.basic_detection import locate_peaks
-# from ftmwpipeline.peak_detection.hybrid_detection import locate_peaks_hybrid
-# from ftmwpipeline.peak_detection.classification import classify_peaks
-
 # # Window assignment
 # from ftmwpipeline.window_assignment.greedy_assignment import assign_analysis_windows
 

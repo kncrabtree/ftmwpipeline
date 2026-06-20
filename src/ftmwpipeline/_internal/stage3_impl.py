@@ -154,7 +154,7 @@ def _leakage_floor_amp(
     (:func:`deramp_to_active_start`; ``start_us=0`` is the identity, for the
     active-region-only matched-filter gap FT) before the rolling complex-edge
     coherence, so genuine coherent leakage is exposed. NaN band edges (no full
-    M-band centred) contribute no floor. ``k <= 0`` disables it (zeros).
+    M-band centered) contribute no floor. ``k <= 0`` disables it (zeros).
     """
     if k <= 0:
         return cast(np.ndarray, np.zeros_like(sigma, dtype=float))
@@ -170,7 +170,7 @@ def _leakage_floor_amp(
 def _active_acquisition_us(
     fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
 ) -> float:
-    """Effective acquisition length T (µs) of the analysed FID window."""
+    """Effective acquisition length T (µs) of the analyzed FID window."""
     lo = 0.0 if start_us is None else float(start_us)
     hi = fid_duration_us if end_us is None else float(end_us)
     return max(hi - lo, 0.0)

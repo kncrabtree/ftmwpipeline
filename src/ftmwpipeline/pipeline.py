@@ -1064,10 +1064,14 @@ class Pipeline:
         """Detect and classify peaks (Stage 3, two-pass).
 
         Requires Stage 1 (FT) and Stage 2 (noise) completed. Runs an apodized
-        primary pass plus a leakage-masked unapodized gap pass, scores every
-        peak on the unapodized spectrum, classifies by SNR, and persists ALL
-        detected peaks to the .ftmw file. Equivalent to the CLI
-        ``peaks run`` command and ``ftmwpipeline.api.detect_peaks``.
+        (Blackman-Harris) primary pass for the robust strong-line list plus a
+        shape-aware matched-filter gap pass that recovers weak lines the
+        apodization smears; both raise their detection floor continuously by the
+        local coherent-leakage amplitude rather than a hard mask. Every peak is
+        then scored (amplitude + SNR) on the canonical unapodized active FT,
+        classified by SNR, and ALL detected peaks are persisted to the .ftmw
+        file. Equivalent to the CLI ``peaks run`` command and
+        ``ftmwpipeline.api.detect_peaks``.
 
         Detection operates on the Stage 1 persisted canonical spectrum,
         including its frequency trim range.  Peaks are reported on that user

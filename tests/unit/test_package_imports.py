@@ -78,12 +78,6 @@ class TestSubmoduleImports:
 
         assert hasattr(preprocessing, "__all__")
 
-    def test_peak_detection_import(self):
-        """Test peak detection module import."""
-        from ftmwpipeline import peak_detection
-
-        assert hasattr(peak_detection, "__all__")
-
     def test_window_assignment_import(self):
         """Test window assignment module import."""
         from ftmwpipeline import window_assignment

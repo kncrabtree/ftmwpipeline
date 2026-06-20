@@ -155,12 +155,10 @@ def validate_installation() -> Dict[str, bool]:
     from importlib.util import find_spec
 
     try:
-        from . import core, peak_detection, preprocessing
+        from . import core, preprocessing
 
         # Reference the modules so a successful import is what we assert.
-        validation_results["core_imports"] = bool(
-            core and preprocessing and peak_detection
-        )
+        validation_results["core_imports"] = bool(core and preprocessing)
     except ImportError:
         pass
 
