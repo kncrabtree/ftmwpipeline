@@ -121,6 +121,30 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Stage 2b Gaussian/Lorentzian twin code paths fully unified.** The Gaussian
+  τ_G calibration had been bolted on as a near-duplicate of the exponential
+  twin and promoted to a first-class shape; the parallel code paths had bitten
+  repeatedly. The duplication was collapsed into one shape-parameterized path:
+  the engine extractors share a ``_finalize_tau_result`` core; the Gaussian
+  impl module was deleted and folded into a single
+  ``stage2b_impl.calibrate_tau_impl(shape=)`` (with ``save`` / ``load`` /
+  ``present`` taking ``shape=`` and a normalized result key); and the public API
+  reduced to ``calibrate_tau(shape=)`` / ``load_tau_calibration(shape=)`` on the
+  functional API and ``Pipeline`` (the ``_G`` variants removed). The CLI keeps
+  ``tau run --gaussian``, gains a ``tau recommend`` verb and ``--gaussian`` on
+  ``tau show``. Three latent issues the dual path had masked were fixed in the
+  same pass: the ``polish_top_n`` knob — wired through settings, scan, and
+  provenance but never consumed — was removed; the ``--min-contributors``
+  aggregation-to-Gaussian routing moved into the impl so every interface treats
+  it identically; and the ``recommended_shape`` reset was made symmetric across
+  shapes but gated on whether the call is a primary run, so the auto-built twin
+  does not wipe the vote it acts on. The tau visualizations were restyled to the
+  brand palette and routed by shape; British spellings and source-evolution
+  markers were swept from the tau modules. Validation: a fresh-fixture golden of
+  every persisted τ field is byte-identical before and after; the Stage 2b/3/5/6
+  and cross-interface suites pass; the touched files are black/isort/mypy clean.
+  New tests cover the precondition-failure outcome, the per-band majority
+  helpers, and the min-contributors routing.
 - **Complex-domain σ cross-check added to Stage 2 (guardrail, magnitude stays
   primary).** A reader question — is ``line_k=8`` too lax, leaving line skirts in
   the noise set and inflating σ? — opened a noise-estimator investigation. The
@@ -369,7 +393,16 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   cloud on the C(R) plot). Recoloring the existing pipeline report/CLI plots to
   the palette (e.g. real/imag/magnitude → Gunrock / Double Decker / Cabernet) is
   deferred to the Stage 6 report pages.
-- [ ] Stage 2b — tau calibration.
+- [x] Stage 2b — tau calibration. `stage2b_tau.rst` written (the
+  sliding-window STFT and why it is fit-free, per-bin classification, the
+  signal-to-noise-weighted majority + polish + per-band majorities, the two
+  shape variants and the 3-way line-shape vote, the knobs, reading the
+  diagnostics, the acceptance pre-conditions, the horn-coupling frequency
+  trend, and what Stages 3/5 consume). A distribution figure was added to
+  `docs/source/figures/generate.py` (lean Lorentzian-only calibration, no
+  auto-recommend) and guarded by the `slow` smoke test. The Gaussian/Lorentzian
+  twin code paths were fully unified first (see Resolved during review). Build
+  warning-clean under `sphinx-build -W`.
 - [ ] Stage 3 — peak detection.
 - [ ] Stage 4 — window assignment.
 - [ ] Stage 5 — fitting.
@@ -381,55 +414,48 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Handoff: next session is Stage 2b — tau calibration
+## Handoff: next session is Stage 3 — peak detection
 
-**State going in.** Stages 0–2 pages, the Methods & Validation section + first
-note, the brand style system, the committed early-stage figures, the full plotly
-removal, and the Stage 2 complex-σ cross-check guardrail are all done and
-committed (see *Resolved during review* and *Progress*). The working tree is
-clean; the test suite and `sphinx-build -W` are green. Nothing is mid-flight.
+**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b pages, the
+Methods & Validation section + first note, the brand style system, and the
+committed early-stage figures (now including `stage2b_tau_distribution.png`) are
+done and committed. The Stage 2b decay-time-calibration page is written and the
+Gaussian/Lorentzian twin code paths were fully unified beforehand (see *Resolved
+during review*). The working tree is clean; the targeted suites and
+`sphinx-build -W` are green. Nothing is mid-flight.
 
-**Last session's trail (so nothing is re-litigated).** The Stage 2 noise
-estimator was investigated end to end (a reader question about `line_k`). Three
-outcomes, all settled: (1) `line_k=8` stays — it is past the knee of the
-one-sided self-mask clip, and the broad lower-envelope median, not the mask, is
-the real line-contamination defense; (2) a read-only complex-domain σ cross-check
-shipped (`estimate_noise_complex_scatter` + `mag/complex` ratio/warn in
-`bin_info`, overlaid on `noise show`); (3) a complex-σ *hybrid* was prototyped
-behind a `sigma_source` flag and **rejected** (leakage-floor-limited on dense
-spectra; magnitude tracks 1/√N better) — flag reverted, magnitude stays primary.
-The example fixtures carry real ~5–9% signal drift across the acquisition, so
-there is no clean stationary line-free truth in this data — the 1/√N slope is the
-drift-robust arbiter. Reproducible analysis is in the gitignored `scratch/line-k/`
-(disposable). **No Stage 2b code or docs were touched.**
+**Last stage's trail (so nothing is re-litigated).** Stage 2b's two shape
+variants are now one shape-parameterized path: public API is
+`calibrate_tau(shape=)` / `load_tau_calibration(shape=)` (no `_G` variants),
+the CLI has `tau run --gaussian` + `tau recommend` + `tau show --gaussian`, and
+`stage2b_g_impl.py` is gone. The `polish_top_n` no-op knob was removed, the
+`--min-contributors` aggregation→gaussian routing moved into the impl, and the
+`recommended_shape` reset is symmetric but gated on the primary-run flag. A
+fresh-fixture golden of the persisted τ fields is byte-identical across the
+refactor; reproducible at `scratch/tau-unify/`. The page itself documents the
+STFT method, the two shape variants, the line-shape vote, the per-band decay
+times, and the horn-coupling frequency trend.
 
-**The Stage 2b task — apply the per-stage process (this README, "Per-stage
+**The Stage 3 task — apply the per-stage process (this README, "Per-stage
 process"), in order:**
-1. *Read the planning record.* `dev-docs/planning/` for the Stage 2b / tau plan
-   plus the ROADMAP/STATUS entries that reference it; note stale prose against the
-   code rather than trusting it.
-2. *Review the code (thorough).* The engine `fitting/tau_calibration.py`
-   (`calibrate_tau` / `calibrate_tau_G`, the 3-way lineshape vote, the two shape
-   twins — exp/Lorentzian vs Gaussian — and the auto-build-the-other-twin logic
-   per `CLAUDE.md`), the `_internal/stage2b_*` impl, the serialization, and the
-   three interface wrappers (`pipeline.py` / `api.py` / `cli`). Surface code
-   smells, dead/`Phase`-era stubs (remove not-implemented holdovers as
-   encountered — the user has standing approval for that cleanup), and
-   test-coverage gaps. **Stop and discuss any proposed code revision with the
-   user before writing docs or changing code.**
-3. *Mine the research reports.* `dev-docs/research/` for the tau-calibration
-   justification (the STFT sliding-active-window method, τ_maj ± σ_τ, the
-   one- vs two-component test); extract what informs a technical reader.
+1. *Read the planning record.* `dev-docs/planning/` for the Stage 3 / peak-
+   detection plan plus the ROADMAP/STATUS entries; note stale prose against the
+   code.
+2. *Review the code (thorough).* The engine (`fitting/` peak-detection modules,
+   the primary apodized pass + the gap-pass matched filter that consumes the
+   Stage 2b `tau_basis`), `_internal/stage3_impl.py`, the serialization, and the
+   three interface wrappers. Surface code smells, dead/`Phase`-era stubs (remove
+   as encountered — standing approval), and test-coverage gaps. **Stop and
+   discuss any proposed code revision with the user before writing docs or
+   changing code.**
+3. *Mine the research reports.* `dev-docs/research/peak-detection`,
+   `matched-filter-detection`, `stage3-*` for the justification; extract what
+   informs a technical reader.
 4. *American-English scan.* Sweep the stage's CLI help / log / error strings /
-   docstrings. Known hit to fix here: `fitting/tau_calibration.py` uses
-   "vectorised" in docstrings.
-5. *Write `stage2b_tau.rst`* (currently a stub) per the style conventions; link
-   from the toctree (already present). Restyle `tau_calibration_visualization.py`
-   to the house style (brand palette, `apply_bare_style`, `resolve_title` with
-   `title=""` for the doc figure) and add a Stage 2b figure by extending
-   `docs/source/figures/generate.py` (it already builds a 2638 pipeline through
-   Stage 2; add a `calibrate_tau` step + render). Embed with `.. figure::` +
-   caption and confirm the `slow` smoke test still renders.
+   docstrings.
+5. *Write `stage3_peaks.rst`* (currently a stub) per the style conventions; add
+   a Stage 3 figure by extending `docs/source/figures/generate.py` (it now
+   builds through Stage 2b) and guard it with the `slow` smoke test.
 
 **Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
 review the rendered HTML; direct all run artifacts to `scratch/`; the noise

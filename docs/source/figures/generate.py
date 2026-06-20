@@ -9,7 +9,10 @@ stage into the committed ``docs/source/figures`` directory:
 * ``stage1_canonical_ft.png`` -- the canonical unapodized FT over the active
   band (magnitude plus real/imaginary parts);
 * ``stage2_noise.png`` -- the per-bin scatter noise estimate overlaid on the
-  active spectrum with the 3x/5x reference levels.
+  active spectrum with the 3x/5x reference levels;
+* ``stage2b_tau_distribution.png`` -- the Stage 2b decay-time distribution panel
+  (contributor histogram with the majority-vote overlay, tau vs SNR and tau vs
+  molecular frequency, and the GMM bimodality fit).
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -37,14 +40,27 @@ DPI = 130
 
 
 def _build_pipeline(workdir: Path) -> str:
-    """Import the 2638 fixture and run Stages 0-2; return the ``.ftmw`` path."""
+    """Import the 2638 fixture and run Stages 0-2b; return the ``.ftmw`` path."""
     import ftmwpipeline.api as ftmw
+    from ftmwpipeline.core.tau_calibration_settings import (
+        RecommendationSubSettings,
+        TauCalibrationSettings,
+    )
 
     path = str(workdir / "exp_2638.ftmw")
     ftmw.import_data(path, source=str(_FIXTURE))
     ftmw.detect_start_time(path, stamp=True)
     ftmw.compute_ft(path, trim=TRIM)
     ftmw.estimate_noise(path)
+    # Lorentzian tau calibration only; skip the auto-recommend pass (and its
+    # cross-built Gaussian twin) so the figure build stays lean — the
+    # distribution figure reads the exponential-twin contributor histogram.
+    ftmw.calibrate_tau(
+        path,
+        settings=TauCalibrationSettings(
+            recommendation=RecommendationSubSettings(auto_recommend=False)
+        ),
+    )
     return path
 
 
@@ -59,6 +75,9 @@ def make_figures() -> None:
     from ftmwpipeline.visualization.report_style import apply_color_cycle
     from ftmwpipeline.visualization.start_detection_visualization import (
         plot_start_detection_from_file,
+    )
+    from ftmwpipeline.visualization.tau_calibration_visualization import (
+        plot_tau_distribution_from_file,
     )
 
     apply_color_cycle(matplotlib)
@@ -76,6 +95,11 @@ def make_figures() -> None:
 
         fig2 = visualize_noise_impl(path, title="", interactive=False)
         fig2.savefig(FIG_DIR / "stage2_noise.png", dpi=DPI, bbox_inches="tight")
+
+        fig2b = plot_tau_distribution_from_file(path, shape="lorentzian", title="")
+        fig2b.savefig(
+            FIG_DIR / "stage2b_tau_distribution.png", dpi=DPI, bbox_inches="tight"
+        )
 
 
 def main() -> None:

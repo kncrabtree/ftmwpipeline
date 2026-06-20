@@ -1,11 +1,11 @@
 """Smoke test for the stage-page figure harness.
 
 Runs ``docs/source/figures/generate.py`` against the checked-in ``2638``
-fixture and asserts the three stage figures render to disk without error. The
-harness is the committed source of the figures embedded in the Stage 0-2 pages;
+fixture and asserts the stage figures render to disk without error. The
+harness is the committed source of the figures embedded in the Stage 0-2b pages;
 this guards it against API drift.
 
-Marked ``slow``: it builds a full Stage 0-2 pipeline (a few seconds). Run the
+Marked ``slow``: it builds a full Stage 0-2b pipeline (a few seconds). Run the
 default fast suite with ``-m "not slow"`` to skip it. Figures are written to a
 temporary directory, never the committed tree.
 """
@@ -34,6 +34,7 @@ def test_harness_renders_all_stage_figures(tmp_path, monkeypatch):
         "stage0_start_detection.png",
         "stage1_canonical_ft.png",
         "stage2_noise.png",
+        "stage2b_tau_distribution.png",
     ):
         out = tmp_path / name
         assert out.is_file() and out.stat().st_size > 0
