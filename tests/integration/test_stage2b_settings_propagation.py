@@ -507,6 +507,43 @@ class TestPersistedLayerInherit:
         )
 
 
+class TestExplicitSettingsOverridePersisted:
+    """A passed ``settings=`` bundle is the explicit override: it outranks a
+    value already persisted in the ``.ftmw`` (D11 ``explicit > persisted``)."""
+
+    def test_settings_beats_persisted_n_seg(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ftmwpipeline.core.tau_calibration_settings import StftSubSettings
+        from ftmwpipeline.io.tau_calibration_settings_serialization import (
+            save_tau_calibration_settings_to_h5,
+        )
+
+        variant = tmp_path / "override.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+
+        persisted = TauCalibrationSettings()
+        persisted.stft.n_seg = 12
+        save_tau_calibration_settings_to_h5(str(variant), persisted)
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage2b_impl, "extract_tau_majority", mock)
+
+        with pytest.raises(_CalibIntercepted):
+            stage2b_impl.calibrate_tau_impl(
+                str(variant),
+                settings=TauCalibrationSettings(stft=StftSubSettings(n_seg=7)),
+            )
+
+        assert captured["kwargs"]["n_seg"] == 7, (
+            "an explicit settings= bundle must override the persisted n_seg; "
+            "settings= is misrouted below the persisted layer"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Auto-recommend: calibrate_tau / calibrate_tau_G fire compute_shape_recommendation
 # when ``recommendation.auto_recommend`` is True (the hard default)

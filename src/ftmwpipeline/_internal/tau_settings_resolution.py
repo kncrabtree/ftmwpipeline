@@ -65,29 +65,35 @@ def resolve_with_preset_and_persisted(
     """Walk the Stage 2b resolution chain and return ``(resolved, preset_name)``.
 
     ``settings`` and ``preset`` are mutually exclusive (the rule mirrors
-    :func:`ftmwpipeline._internal.stage5_impl.fit_peaks_impl`). When
-    ``preset`` is a bare name or YAML path, it is loaded via
+    :func:`ftmwpipeline._internal.stage5_impl.fit_peaks_impl`). A passed
+    ``settings`` bundle is the *explicit* override (it outranks the
+    persisted record); a ``preset`` .yml seeds only unfixed fields (the
+    persisted record outranks it, per D11). When ``preset`` is a bare
+    name or YAML path, it is loaded via
     :func:`ftmwpipeline.core.tau_calibration_settings.load_preset` and
     its name is returned for the audit attr on the persisted settings
     record. ``persisted`` comes from
     :func:`load_tau_calibration_settings_from_h5`; the *recommended*
-    layer is reserved (always ``None`` today).
+    layer is reserved (always ``None`` today). ``explicit`` is the
+    caller's base explicit layer (an empty bundle today); a passed
+    ``settings`` supersedes it.
     """
     if preset is not None and settings is not None:
         raise ValueError(
-            "'preset' and 'settings' are alternative ways to populate "
-            "the preset layer of the tau-calibration settings chain; "
-            "pass exactly one (or override individual fields via "
-            "explicit kwargs)"
+            "'preset' and 'settings' are mutually exclusive; pass exactly "
+            "one. A 'settings' bundle is the explicit override (outranks "
+            "the persisted record); a 'preset' .yml seeds only unfixed "
+            "fields (the persisted record outranks it, per D11)."
         )
-    preset_layer = settings
+    explicit_layer = settings if settings is not None else explicit
+    preset_layer: Optional[TauCalibrationSettings] = None
     preset_name: Optional[str] = None
     if preset is not None:
         preset_layer = load_tau_preset(preset)
         preset_name = str(preset)
     persisted = load_tau_calibration_settings_from_h5(file_path)
     resolved = resolve_tau_settings(
-        explicit=explicit,
+        explicit=explicit_layer,
         preset=preset_layer,
         persisted=persisted,
         recommended=None,

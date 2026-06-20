@@ -115,16 +115,18 @@ def compute_noise_estimation_impl(
 
     if preset is not None and settings is not None:
         raise ValueError(
-            "'preset' and 'settings' are mutually-exclusive ways to populate "
-            "the preset layer of the noise-settings chain; pass exactly one"
+            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
+            "A 'settings' bundle is the explicit override (outranks the "
+            "persisted record); a 'preset' .yml seeds only unfixed fields "
+            "(the persisted record outranks it, per D11)."
         )
-    scatter_preset_layer = settings
+    scatter_preset_layer: Optional[NoiseSettings] = None
     scatter_preset_name: Optional[str] = None
     if preset is not None:
         scatter_preset_layer = load_noise_preset(preset)
         scatter_preset_name = str(preset)
     scatter_resolved = resolve_noise_settings(
-        explicit=None,
+        explicit=settings,
         preset=scatter_preset_layer,
         persisted=load_noise_settings_from_h5(file_path),
         recommended=None,

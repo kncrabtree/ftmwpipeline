@@ -157,3 +157,40 @@ class TestPersistedLayerInherit:
             "no-kwargs scatter follow-up did not inherit the persisted "
             "window_mhz; the persisted layer of the resolver is misrouted"
         )
+
+
+class TestExplicitSettingsOverridePersisted:
+    """A passed ``settings=`` bundle is the explicit override: it outranks a
+    value already persisted in the ``.ftmw`` (the D11 ``explicit > persisted``
+    order). This is the contract the retired per-knob kwargs carried; ``settings=``
+    inherits it now that the kwargs are gone."""
+
+    def test_settings_beats_persisted(
+        self,
+        baseline_2638_stage1: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ftmwpipeline.io.noise_settings_serialization import (
+            save_noise_settings_to_h5,
+        )
+
+        variant = tmp_path / "override.ftmw"
+        shutil.copyfile(baseline_2638_stage1, variant)
+
+        persisted = NoiseSettings()
+        persisted.window_mhz = 137.0
+        save_noise_settings_to_h5(str(variant), persisted)
+
+        mock, captured = _intercept()
+        monkeypatch.setattr(stage2_impl, "estimate_active_ft_noise", mock)
+
+        with pytest.raises(ValueError, match=r"intercepted"):
+            stage2_impl.compute_noise_estimation_impl(
+                str(variant), settings=NoiseSettings(window_mhz=99.0)
+            )
+
+        assert captured["kwargs"]["window_mhz"] == 99.0, (
+            "an explicit settings= bundle must override the persisted "
+            "window_mhz; settings= is misrouted below the persisted layer"
+        )
