@@ -1,9 +1,11 @@
-"""
-CSV data format loader placeholder.
+"""CSV data format loader.
 
-This module provides a placeholder implementation for loading FID data from
-CSV files. CSV files require explicit metadata parameters since the format
-cannot store acquisition parameters.
+Imports a single (averaged) FID from a column of time-domain voltage samples.
+A CSV cannot embed acquisition metadata, so ``spacing_us`` and
+``probe_freq_mhz`` must come from explicit load parameters or a ``--metadata``
+sidecar (see :mod:`ftmwpipeline.io.input_metadata`).  Clock declarations -- which
+a single column cannot carry -- come from the sidecar or the ``clocks`` command
+on the imported ``.ftmw`` file.
 """
 
 from pathlib import Path
@@ -12,6 +14,13 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 
+from ..input_metadata import (
+    build_fid_metadata,
+    explicit_layer_from_kwargs,
+    find_sidecar,
+    load_sidecar,
+    resolve_input_metadata,
+)
 from .base import BaseLoader, LoaderError
 
 if TYPE_CHECKING:
@@ -19,46 +28,34 @@ if TYPE_CHECKING:
 
 
 class CSVLoader(BaseLoader):
-    """
-    Placeholder loader for CSV data format.
+    """Loader for CSV files holding a column of voltage samples.
 
-    CSV files contain time-domain voltage data but lack acquisition metadata,
-    so parameters like spacing_us and probe_freq_mhz must be provided explicitly.
-
-    Expected CSV format:
-    - Single column of voltage values (with or without header)
-    - Time series data at uniform spacing
+    The voltage column is selected with ``column`` -- an integer index (0-based)
+    or, when the file has a header row, a column name.  Omitted, the first
+    column is used; other columns are ignored.  Acquisition metadata is resolved
+    from explicit parameters and an optional sidecar.
     """
 
     format_name = "csv"
     file_extensions = [".csv"]
-    directory_indicators = []
+    directory_indicators: List[str] = []
 
     def can_load(self, source_path: Union[str, Path]) -> bool:
-        """
-        Check if source is a CSV file.
-
-        This only checks file extension - actual validation requires
-        parameter information that CSV files don't contain.
-        """
+        """Check the source is a readable ``.csv`` file (structure only)."""
         source_path = Path(source_path)
-
-        if not source_path.exists():
-            return False
-
         if not source_path.is_file():
             return False
-
         return source_path.suffix.lower() == ".csv"
 
     def validate_source(
         self, source_path: Union[str, Path], **kwargs: Any
     ) -> Dict[str, Any]:
-        """
-        Validate CSV file and check for required parameters.
+        """Validate file structure; acquisition metadata is checked at load time.
 
-        CSV files require explicit metadata since the format cannot
-        store acquisition parameters.
+        ``validate_source`` runs before load parameters and the sidecar are
+        known, so it confirms only that the file is a readable CSV with a
+        numeric voltage column -- ``load_fid`` raises the targeted error if
+        ``spacing_us`` / ``probe_freq_mhz`` are ultimately missing.
         """
         result: Dict[str, Any] = {
             "valid": False,
@@ -66,154 +63,113 @@ class CSVLoader(BaseLoader):
             "options": {},
             "errors": [],
         }
-
         source_path = Path(source_path)
 
+        if not self.can_load(source_path):
+            result["errors"].append("Not a CSV file (expected a .csv extension)")
+            return result
+
         try:
-            # Check basic file existence and type
-            if not self.can_load(source_path):
-                result["errors"].append("Not a valid CSV file")
-                return result
-
-            # Try to read CSV file to check format
-            try:
-                # Read first few rows to validate structure
-                df = pd.read_csv(source_path, nrows=10)
-
-                if df.shape[1] != 1:
-                    result["errors"].append(
-                        f"CSV file should have exactly 1 column (voltage data), found {df.shape[1]} columns"
-                    )
-                    return result
-
-                # Check that data looks numeric
-                first_col = df.iloc[:, 0]
-                if not pd.api.types.is_numeric_dtype(first_col):
-                    result["errors"].append(
-                        "CSV data does not appear to be numeric voltage values"
-                    )
-                    return result
-
-                # Get file info
-                full_df = pd.read_csv(source_path)
-                result["metadata"]["n_points"] = len(full_df)
-                result["metadata"]["file_size_bytes"] = source_path.stat().st_size
-
-            except Exception as e:
-                result["errors"].append(f"Failed to read CSV file: {e}")
-                return result
-
-            # Check for required parameters
-            required_params = self.get_required_parameters()
-            missing_params = []
-            for param in required_params:
-                if param not in kwargs:
-                    missing_params.append(param)
-
-            if missing_params:
-                result["errors"].append(
-                    f"CSV format requires these parameters: {missing_params}. "
-                    f"Example: ftmwpipeline data import exp_name data.csv --format csv "
-                    f"--spacing_us 0.02 --probe_freq_mhz 40960"
-                )
-                return result
-
-            # Validate parameter values
-            try:
-                spacing_us = float(kwargs.get("spacing_us", 0))
-                probe_freq_mhz = float(kwargs.get("probe_freq_mhz", 0))
-
-                if spacing_us <= 0:
-                    result["errors"].append("spacing_us must be positive")
-                if probe_freq_mhz <= 0:
-                    result["errors"].append("probe_freq_mhz must be positive")
-
-                if result["errors"]:
-                    return result
-
-                # Calculate duration
-                n_points = result["metadata"]["n_points"]
-                duration_us = n_points * spacing_us
-                result["metadata"]["duration_us"] = duration_us
-                result["metadata"]["spacing_us"] = spacing_us
-                result["metadata"]["probe_freq_mhz"] = probe_freq_mhz
-
-            except (ValueError, TypeError) as e:
-                result["errors"].append(f"Invalid parameter values: {e}")
-                return result
-
-            result["valid"] = True
-            result["options"]["detected_parameters"] = {
-                "n_points": result["metadata"]["n_points"],
-                "estimated_duration_us": result["metadata"]["duration_us"],
-            }
-
+            frame = pd.read_csv(source_path)
+        except Exception as exc:
+            result["errors"].append(f"Failed to read CSV file: {exc}")
             return result
 
-        except Exception as e:
-            result["errors"].append(f"Validation failed: {e}")
+        if frame.shape[1] < 1 or len(frame) == 0:
+            result["errors"].append("CSV file has no data rows")
             return result
 
-    def load_fid(  # type: ignore[override]  # CSV loader requires extra acquisition params; hierarchy refactor tracked separately
-        self,
-        source_path: Union[str, Path],
-        spacing_us: float,
-        probe_freq_mhz: float,
-        sideband: str = "upper",
-        shots: int = 1,
-        **kwargs: Any,
-    ) -> "FID":
-        """
-        Load FID data from CSV file.
+        result["metadata"]["n_points"] = int(len(frame))
+        result["metadata"]["n_columns"] = int(frame.shape[1])
+        result["options"]["columns"] = [str(c) for c in frame.columns]
+        result["valid"] = True
+        return result
 
-        Parameters
-        ----------
-        source_path : str or Path
-            Path to CSV file
-        spacing_us : float
-            Time spacing between points in microseconds
-        probe_freq_mhz : float
-            Probe/LO frequency in MHz
-        sideband : str, optional
-            Sideband configuration ('upper' or 'lower'), default 'upper'
-        shots : int, optional
-            Number of shots averaged, default 1
-        **kwargs
-            Additional parameters for FIDProcessingParameters
+    def load_fid(self, source_path: Union[str, Path], **kwargs: Any) -> "FID":
+        from ...core.data_structures import FID, FIDProcessingParameters
 
-        Returns
-        -------
-        FID
-            Loaded FID object
+        source_path = Path(source_path)
+        sidecar_path = kwargs.pop("metadata", None)
+        column = kwargs.pop("column", None)
 
-        Raises
-        ------
-        LoaderError
-            If loading fails
-        """
-        # TODO: Implement CSV loading when needed
-        # This is a placeholder implementation
-        raise LoaderError(
-            "CSV loader is not yet implemented. This is a placeholder for future development. "
-            "To implement:\n"
-            "1. Read CSV file with pandas\n"
-            "2. Extract voltage data from single column\n"
-            "3. Convert spacing from μs to seconds\n"
-            "4. Create FIDProcessingParameters from kwargs\n"
-            "5. Create and return FID object\n\n"
-            "Example structure:\n"
-            "```python\n"
-            "df = pd.read_csv(source_path)\n"
-            "voltage_data = df.iloc[:, 0].values\n"
-            "spacing_seconds = spacing_us * 1e-6\n"
-            "# ... create FID object\n"
-            "```"
+        try:
+            frame = pd.read_csv(source_path)
+        except Exception as exc:
+            raise LoaderError(f"Failed to read {source_path.name}: {exc}") from exc
+
+        series = self._select_column(frame, column, source_path.name)
+        if not pd.api.types.is_numeric_dtype(series):
+            raise LoaderError(
+                f"Selected CSV column does not hold numeric voltage values "
+                f"in {source_path.name}"
+            )
+        data = np.asarray(series.to_numpy(), dtype=np.float64).ravel()
+        if data.size == 0:
+            raise LoaderError(f"No samples in selected column of {source_path.name}")
+
+        sidecar: Optional[Dict[str, Any]] = None
+        found = find_sidecar(source_path, sidecar_path)
+        if found is not None:
+            sidecar = load_sidecar(found)
+
+        explicit = explicit_layer_from_kwargs(kwargs)
+        resolved = resolve_input_metadata(explicit=explicit, sidecar=sidecar)
+
+        metadata = build_fid_metadata(resolved)
+        metadata.update(
+            self._create_source_metadata(
+                source_path,
+                column=column,
+                metadata=str(found) if found else None,
+            )
+        )
+
+        return FID(
+            data=data,
+            spacing=resolved.spacing_s,
+            probe_freq_mhz=resolved.probe_freq_mhz,
+            sideband=resolved.sideband,
+            shots=resolved.shots,
+            processing=FIDProcessingParameters(rdc=resolved.rdc),
+            metadata=metadata,
         )
 
     def get_required_parameters(self) -> List[str]:
-        """CSV format requires explicit metadata parameters."""
-        return ["spacing_us", "probe_freq_mhz"]
+        # spacing_us / probe_freq_mhz are required, but may arrive via the
+        # sidecar rather than as load parameters, so they are validated in
+        # load_fid (the shared resolver) rather than declared required here.
+        return []
 
     def get_optional_parameters(self) -> Dict[str, Any]:
-        """Get optional parameters for CSV loading."""
-        return {"sideband": "upper", "shots": 1, "rdc": True}
+        return {
+            "column": None,
+            "metadata": None,
+            "spacing_us": None,
+            "probe_freq_mhz": None,
+            "sideband": None,
+            "shots": None,
+            "rdc": None,
+        }
+
+    @staticmethod
+    def _select_column(frame: "pd.DataFrame", column: Any, name: str) -> "pd.Series":
+        """Resolve the ``column`` selector (index, name, or default first)."""
+        if column is None:
+            return frame.iloc[:, 0]
+        # Integer index (also accept an int-valued string like "2").
+        if isinstance(column, int) or (
+            isinstance(column, str) and column.lstrip("-").isdigit()
+        ):
+            idx = int(column)
+            if not -frame.shape[1] <= idx < frame.shape[1]:
+                raise LoaderError(
+                    f"Column index {idx} out of range for {name} "
+                    f"({frame.shape[1]} column(s))"
+                )
+            return frame.iloc[:, idx]
+        if column in frame.columns:
+            return frame[column]
+        raise LoaderError(
+            f"Column {column!r} not found in {name}; available: "
+            f"{[str(c) for c in frame.columns]}"
+        )

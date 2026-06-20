@@ -28,8 +28,8 @@ def cmd_data_load(args: argparse.Namespace) -> int:
     Import experimental data into a .ftmw pipeline file.
 
     This command handles data loading from various experimental formats
-    (BlackChirp, CSV, HDF5, etc.) and creates a .ftmw pipeline file
-    for use in subsequent pipeline stages.
+    (BlackChirp, native ftmw-hdf5, CSV, Keysight-MAT) and creates a .ftmw
+    pipeline file for use in subsequent pipeline stages.
     """
     setup_logging(args.verbose)
 
@@ -56,22 +56,22 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         # Handle format-specific parameters
         if args.format == "blackchirp" and args.fid_index is not None:
             format_params["fid_index"] = args.fid_index
-        elif args.format == "csv":
-            # CSV format requires explicit parameters
-            if args.spacing_us is None:
-                print("Error: CSV format requires --spacing_us parameter")
-                return 1
-            if args.probe_freq_mhz is None:
-                print("Error: CSV format requires --probe_freq_mhz parameter")
-                return 1
-            format_params.update(
-                {
-                    "spacing_us": args.spacing_us,
-                    "probe_freq_mhz": args.probe_freq_mhz,
-                    "sideband": args.sideband or "upper",
-                    "shots": args.shots or 1,
-                }
-            )
+
+        # Generic-loader acquisition metadata (CSV and native ftmw-hdf5). These
+        # may also arrive via a --metadata sidecar or, for ftmw-hdf5, embedded
+        # in the file, so missing required values are reported by the loader's
+        # resolver (with the precedence rule) rather than pre-checked here.
+        if args.format in (None, "csv", "ftmw-hdf5"):
+            for attr in ("spacing_us", "probe_freq_mhz", "sideband", "shots"):
+                value = getattr(args, attr, None)
+                if value is not None:
+                    format_params[attr] = value
+            if getattr(args, "rdc", None) is not None:
+                format_params["rdc"] = args.rdc
+            if getattr(args, "metadata", None) is not None:
+                format_params["metadata"] = args.metadata
+            if getattr(args, "column", None) is not None:
+                format_params["column"] = args.column
 
         # Keysight-MAT / segmented scope-record parameters
         if args.pre_record_us is not None:
@@ -343,10 +343,16 @@ Examples:
   # Import BlackChirp with specific FID index
   ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/ --fid-index 1
 
-  # Import CSV file (requires explicit parameters)
+  # Import a CSV column of voltage samples (metadata via flags)
   ftmwpipeline data import exp_csv.ftmw data.csv --format csv --spacing_us 0.02 --probe_freq_mhz 40960
 
-  # Force specific format
+  # Import a CSV, selecting a named column and reading metadata from a sidecar
+  ftmwpipeline data import exp_csv.ftmw data.csv --format csv --column volts --metadata data.meta.json
+
+  # Import a native ftmwpipeline HDF5 file (self-describing; clocks embedded)
+  ftmwpipeline data import exp.ftmw mydata.h5 --format ftmw-hdf5
+
+  # Force a specific format
   ftmwpipeline data import exp_2638.ftmw examples/blackchirp_data/2638/ --format blackchirp
         """,
     )
@@ -355,7 +361,7 @@ Examples:
     load_parser.add_argument("source", help="Path to data source (file or directory)")
     load_parser.add_argument(
         "--format",
-        choices=["blackchirp", "csv", "hdf5", "keysight-mat"],
+        choices=["blackchirp", "csv", "ftmw-hdf5", "keysight-mat"],
         help="Data format (auto-detected if not specified)",
     )
     load_parser.add_argument(
@@ -372,20 +378,45 @@ Examples:
         "--fid-index", type=int, help="FID index for BlackChirp format (default: 0)"
     )
 
-    # CSV-specific options
+    # Generic-loader acquisition metadata (CSV and native ftmw-hdf5).
+    # For ftmw-hdf5 these override the file's embedded values; a --metadata
+    # sidecar sits between the two (explicit flag > sidecar > embedded > default).
     load_parser.add_argument(
-        "--spacing_us", type=float, help="Time spacing in μs (required for CSV)"
+        "--spacing_us",
+        type=float,
+        help="Sample period in μs (required for CSV unless set in a sidecar)",
     )
     load_parser.add_argument(
-        "--probe_freq_mhz", type=float, help="Probe frequency in MHz (required for CSV)"
+        "--probe_freq_mhz",
+        type=float,
+        help="Probe/LO frequency in MHz; 0 for a direct sampler "
+        "(required for CSV unless set in a sidecar)",
     )
     load_parser.add_argument(
         "--sideband",
         choices=["upper", "lower"],
-        help="Sideband for CSV (default: upper)",
+        help="Sideband (default: upper)",
     )
     load_parser.add_argument(
-        "--shots", type=int, help="Number of shots for CSV (default: 1)"
+        "--shots", type=int, help="Number of averaged shots (default: 1)"
+    )
+    load_parser.add_argument(
+        "--rdc",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Remove the DC offset before the FT (--rdc / --no-rdc; default: on)",
+    )
+    load_parser.add_argument(
+        "--column",
+        default=None,
+        help="CSV voltage column: an integer index (0-based) or a column name "
+        "(default: first column)",
+    )
+    load_parser.add_argument(
+        "--metadata",
+        default=None,
+        help="Path to a JSON/YAML sidecar of acquisition metadata and clock "
+        "declarations (auto-discovered as <source>.ftmwmeta.json/.yaml if omitted)",
     )
 
     # Keysight-MAT / segmented scope-record options

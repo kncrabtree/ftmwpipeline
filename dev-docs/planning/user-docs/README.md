@@ -119,6 +119,21 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **No-code data-input path built (custom loaders + clock declarations).** The
+  generic `csv` and `hdf5` loaders were non-functional stubs (`load_fid` raised
+  "not yet implemented"), so there was no way to bring your own data without
+  writing a `BaseLoader` subclass, and clock declarations
+  (`ClockSource`: `freq_mhz`/`locked`/`label`) could only be injected by a
+  loader or the ephemeral `run --clocks`. Designed (`data-input-format-spec.md`,
+  signed off) and built: a native **`ftmw-hdf5`** input format (self-describing,
+  embeds clocks), a real **`csv`** loader (with a `column` selector), a JSON/YAML
+  **`--metadata` sidecar**, and a **`clocks`** declaration surface
+  (CLI `show`/`set`/`add`/`remove`/`clear` + `api`/`Pipeline` methods) writing
+  the recommended-clock-sources layer. The dead `hdf5` stub was removed
+  (`ftmw-hdf5` replaces it). Shared resolver `io/input_metadata.py` enforces
+  `explicit > sidecar > embedded > default`. Unit + cross-interface tests added.
+  The user-facing Sphinx pages remain to be written (Stage 0 + a dedicated
+  input-format reference page).
 - **`report run --output-dir` made optional.** It was a holdover from the
   multi-page report site; the report is now two files, so an omitted
   `--output-dir` writes them to the current directory (no auto-created

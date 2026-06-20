@@ -140,12 +140,12 @@ class TestFormatDetection:
         fmt = detect_format(mat_path)
         assert fmt == "keysight-mat", f"Expected keysight-mat, got {fmt!r}"
 
-    def test_hdf5_loader_does_not_claim_keysight_mat(self, tmp_path):
-        """The generic HDF5 loader must NOT claim a Keysight .mat file."""
-        from ftmwpipeline.io.data_loaders.hdf5 import HDF5Loader
+    def test_ftmw_hdf5_loader_does_not_claim_keysight_mat(self, tmp_path):
+        """The native ftmw-hdf5 loader must NOT claim a Keysight .mat file."""
+        from ftmwpipeline.io.data_loaders.ftmw_hdf5 import FtmwHdf5Loader
 
         mat_path = _make_mat_file(tmp_path)
-        assert not HDF5Loader().can_load(mat_path)
+        assert not FtmwHdf5Loader().can_load(mat_path)
 
     def test_non_mat_not_detected(self, tmp_path):
         other = tmp_path / "data.h5"

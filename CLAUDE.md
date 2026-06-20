@@ -120,8 +120,14 @@ importing a *different* source over an existing file is refused unless `force=Tr
 
 Per-stage HDF5 (de)serialization lives in `src/ftmwpipeline/io/*_serialization.py`. Input
 formats are pluggable via a loader registry: `src/ftmwpipeline/io/data_loaders/` registers
-`blackchirp`, `csv`, `hdf5`; `detect_format()` auto-detects. To add a format, subclass
-`BaseLoader` and `register_loader(...)` in `data_loaders/__init__.py`.
+`blackchirp`, `csv`, `ftmw-hdf5` (the native self-describing HDF5 input format), and
+`keysight-mat`; `detect_format()` auto-detects. To add a *new binary* format, subclass
+`BaseLoader` and `register_loader(...)` in `data_loaders/__init__.py`. For *generic* data,
+the no-code path is to shape it into `ftmw-hdf5` or a `csv` column (acquisition metadata
+and clock declarations via a `--metadata` JSON/YAML sidecar or the `clocks` CLI); the
+`csv`/`ftmw-hdf5` loaders share `io/input_metadata.py`, which resolves metadata by
+`explicit > sidecar > embedded > default`. The full contract is
+`dev-docs/planning/user-docs/data-input-format-spec.md`.
 
 ## Core data structures
 

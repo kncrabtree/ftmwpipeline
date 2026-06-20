@@ -106,7 +106,11 @@ from .core.data_structures import (
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
 from .core.settings import FTSettings
-from .core.stage_fit_settings import StageFitSettings, coerce_clock_sources
+from .core.stage_fit_settings import (
+    ClockSource,
+    StageFitSettings,
+    coerce_clock_sources,
+)
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
@@ -865,6 +869,51 @@ class Pipeline:
             TauCalibrationResult,
             load_tau_G_calibration_impl(str(self.filepath))["tau_G_calibration"],
         )
+
+    def get_clock_sources(self) -> Optional[Tuple["ClockSource", ...]]:
+        """Return the declared (recommended) instrument clock sources, or ``None``.
+
+        These are the clock fundamentals the Stage 5 spur gate builds its
+        lattice prior from. The declaration is the *recommended* resolver layer;
+        an explicit ``clocks=`` at fit time and persisted Stage 5 settings still
+        outrank it.
+        """
+        from ._internal.clocks_impl import get_clock_sources_impl
+
+        return get_clock_sources_impl(str(self.filepath))
+
+    def set_clock_sources(
+        self,
+        clocks: Any,
+        *,
+        replace: bool = True,
+    ) -> Tuple["ClockSource", ...]:
+        """Declare instrument clock sources on this experiment.
+
+        ``clocks`` is a sequence of :class:`ClockSource` or
+        ``{freq_mhz, locked, label}`` mappings. With ``replace=False`` the
+        sources are appended to the current declaration. Declare chain
+        *fundamentals* (e.g. 5760, not the 11520 product). Returns the resulting
+        declaration. Writes the recommended layer, so the D11 reproducibility
+        guarantee holds.
+        """
+        from ._internal.clocks_impl import set_clock_sources_impl
+
+        return set_clock_sources_impl(str(self.filepath), clocks, replace=replace)
+
+    def remove_clock_sources(
+        self, freqs_mhz: Sequence[float]
+    ) -> Tuple["ClockSource", ...]:
+        """Remove declared clock sources matching the given frequencies (MHz)."""
+        from ._internal.clocks_impl import remove_clock_sources_impl
+
+        return remove_clock_sources_impl(str(self.filepath), freqs_mhz)
+
+    def clear_clock_sources(self) -> None:
+        """Clear the clock-source declaration on this experiment."""
+        from ._internal.clocks_impl import clear_clock_sources_impl
+
+        clear_clock_sources_impl(str(self.filepath))
 
     def recommend_shape(
         self,

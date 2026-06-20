@@ -11,6 +11,7 @@ from typing import List, Optional, cast
 
 from .. import __version__
 from ..workflows import validate_installation
+from .clocks_commands import register_clocks_commands
 from .data_commands import add_data_subcommands
 from .fitting_commands import register_fitting_commands
 from .review_commands import register_review_commands
@@ -153,6 +154,9 @@ Examples:
 
     # Cross-cutting resolved-settings inspection
     register_settings_commands(subparsers)
+
+    # Instrument clock-source declaration
+    register_clocks_commands(subparsers)
 
     # End-to-end pipeline run command
     register_run_command(subparsers)

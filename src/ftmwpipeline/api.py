@@ -59,7 +59,7 @@ from .core.data_structures import (
 )
 from .core.noise_settings import NoiseSettings
 from .core.peak_detection_settings import PeakDetectionSettings
-from .core.stage_fit_settings import StageFitSettings
+from .core.stage_fit_settings import ClockSource, StageFitSettings
 from .core.start_detection_settings import StartDetectionSettings
 from .core.tau_calibration_settings import TauCalibrationSettings
 from .core.window_planning_settings import WindowPlanningSettings
@@ -173,6 +173,68 @@ def import_data(
     except Exception as e:
         logger.error(f"Failed to import data: {e}")
         raise
+
+
+def get_clock_sources(
+    file_path: Union[str, Path],
+) -> Optional[Tuple[ClockSource, ...]]:
+    """Return the declared (recommended) instrument clock sources, or ``None``.
+
+    These clock fundamentals seed the Stage 5 spur-gate lattice. The
+    declaration is the *recommended* resolver layer; an explicit ``clocks=`` at
+    fit time and persisted Stage 5 settings outrank it.
+
+    Parameters
+    ----------
+    file_path : str or Path
+        Path to an existing .ftmw pipeline file.
+
+    Examples
+    --------
+    >>> import ftmwpipeline.api as ftmw
+    >>> ftmw.get_clock_sources("exp_2638.ftmw")
+    """
+    return Pipeline(file_path).get_clock_sources()
+
+
+def set_clock_sources(
+    file_path: Union[str, Path],
+    clocks: Any,
+    *,
+    replace: bool = True,
+) -> Tuple[ClockSource, ...]:
+    """Declare instrument clock sources on an existing experiment.
+
+    ``clocks`` is a sequence of :class:`ClockSource` or
+    ``{freq_mhz, locked, label}`` mappings. Declare chain *fundamentals*
+    (e.g. 5760, not the 11520 product). With ``replace=False`` the sources are
+    appended to the current declaration. Returns the resulting declaration.
+
+    The declaration is written to the recommended layer, so it never overrides a
+    persisted Stage 5 setting (the D11 reproducibility guarantee).
+
+    Examples
+    --------
+    >>> import ftmwpipeline.api as ftmw
+    >>> ftmw.set_clock_sources(
+    ...     "exp.ftmw",
+    ...     [{"freq_mhz": 5760.0, "locked": True, "label": "synth"}],
+    ... )
+    """
+    return Pipeline(file_path).set_clock_sources(clocks, replace=replace)
+
+
+def remove_clock_sources(
+    file_path: Union[str, Path],
+    freqs_mhz: Sequence[float],
+) -> Tuple[ClockSource, ...]:
+    """Remove declared clock sources matching the given frequencies (MHz)."""
+    return Pipeline(file_path).remove_clock_sources(freqs_mhz)
+
+
+def clear_clock_sources(file_path: Union[str, Path]) -> None:
+    """Clear the clock-source declaration on an existing experiment."""
+    Pipeline(file_path).clear_clock_sources()
 
 
 def load_fid(file_path: Union[str, Path]) -> FID:
