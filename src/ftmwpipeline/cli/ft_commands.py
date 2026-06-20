@@ -169,7 +169,6 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
                 settings=settings,
                 title=plot_title,
                 show_fid_panels=True,
-                backend="matplotlib",
                 interactive=not args.no_interactive,
             )
 

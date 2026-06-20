@@ -176,6 +176,15 @@ spectrum, the bins kept as noise, and the per-bin σ with :math:`3\sigma` and
 
    $ ftmwpipeline noise show exp_2638.ftmw
 
+.. figure:: figures/stage2_noise.png
+   :width: 90%
+   :align: center
+
+   The scatter noise estimate on the example experiment, overlaid on the
+   active-FT magnitude spectrum (clipped to the noise scale). The per-bin σ and
+   its :math:`3\sigma` / :math:`5\sigma` levels ride through the line-dense
+   regions rather than bulging beneath the lines.
+
 The σ curve should track the receiver noise across the band and ride *through*
 the line-dense regions rather than bulging upward beneath the lines — the latter
 is the leakage-pedestal contamination the scatter estimator is designed to

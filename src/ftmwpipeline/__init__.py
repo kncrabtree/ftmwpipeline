@@ -109,18 +109,10 @@ try:
 except ImportError:
     _HAS_MATPLOTLIB = False
 
-try:
-    import plotly
-
-    _HAS_PLOTLY = True
-except ImportError:
-    _HAS_PLOTLY = False
-
 # Package metadata
 PACKAGE_INFO = {
     "name": "ftmwpipeline",
     "version": __version__,
     "description": "FTMW spectroscopy signal processing and peak fitting",
     "has_matplotlib": _HAS_MATPLOTLIB,
-    "has_plotly": _HAS_PLOTLY,
 }

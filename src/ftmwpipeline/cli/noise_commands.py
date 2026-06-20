@@ -162,7 +162,6 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
     Output options:
     - Interactive matplotlib plot (default) for exploration
     - Static image export (``--output``) for reports and documentation
-    - Plotly backend (``--backend plotly``) for web-based interactive views
 
     Workflow:
     1. Load noise estimation results from the .ftmw pipeline file
@@ -195,8 +194,6 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
             viz_params["title"] = args.title
         if args.show_noise_points is not None:
             viz_params["show_noise_points"] = args.show_noise_points
-        if args.backend is not None:
-            viz_params["backend"] = args.backend
         if args.interactive is not None:
             viz_params["interactive"] = args.interactive
 
@@ -215,10 +212,7 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
         if args.output:
             try:
                 output_path = Path(args.output)
-                if viz_params.get("backend") == "plotly":
-                    fig.write_html(str(output_path))
-                else:
-                    fig.savefig(str(output_path), dpi=300, bbox_inches="tight")
+                fig.savefig(str(output_path), dpi=300, bbox_inches="tight")
                 print(f"Visualization saved to: {output_path}")
             except Exception as e:
                 print_error(f"Failed to save visualization: {e}")
@@ -226,8 +220,8 @@ def cmd_visualize_noise(args: argparse.Namespace) -> int:
 
         print("Noise visualization completed successfully!")
 
-        # Show the plot if not saving to file (and interactive mode)
-        if not args.output and viz_params.get("backend", "matplotlib") == "matplotlib":
+        # Show the plot if not saving to file
+        if not args.output:
             try:
                 import matplotlib.pyplot as plt
 
@@ -342,12 +336,6 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
     )
 
     parser_visualize.add_argument(
-        "--backend",
-        choices=["matplotlib", "plotly"],
-        help="Plotting backend (default: matplotlib)",
-    )
-
-    parser_visualize.add_argument(
         "--interactive",
         type=lambda x: x.lower() in ("true", "1", "yes"),
         help="Create interactive plots (default: true)",
@@ -358,7 +346,7 @@ def register_noise_commands(subparsers: argparse._SubParsersAction) -> None:
         "-o",
         "--output",
         type=str,
-        help="Save plot to file (format determined by extension: .png, .pdf, .svg, .html)",
+        help="Save plot to file (format determined by extension: .png, .pdf, .svg)",
     )
 
     # General options

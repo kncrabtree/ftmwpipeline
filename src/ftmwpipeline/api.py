@@ -476,7 +476,6 @@ def visualize_ft(
     end_us: Optional[float] = None,
     units_power: Optional[int] = None,
     save_params: bool = False,
-    backend: str = "matplotlib",
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
     show_fid_panels: bool = True,
@@ -503,8 +502,6 @@ def visualize_ft(
         Scaling factor as power of 10. If None, uses cached default or 6.
     save_params : bool, default False
         Whether to save parameters as defaults for this experiment
-    backend : str, default 'matplotlib'
-        Plotting backend ('matplotlib' or 'plotly')
     interactive : bool, default True
         Whether to show interactive plot
     output_file : str or Path, optional
@@ -515,7 +512,7 @@ def visualize_ft(
     Returns
     -------
     figure
-        Matplotlib or Plotly figure object
+        Matplotlib figure object
 
     Raises
     ------
@@ -544,7 +541,6 @@ def visualize_ft(
             end_us=end_us,
             units_power=units_power,
             save_params=save_params,
-            backend=backend,
             interactive=interactive,
             output_file=output_file,
             show_fid_panels=show_fid_panels,
@@ -675,7 +671,6 @@ def visualize_noise(
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
     show_noise_points: Optional[bool] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
     **plot_kwargs: Any,
@@ -700,8 +695,6 @@ def visualize_noise(
         Custom title for the plot
     show_noise_points : bool, optional
         Whether to highlight noise points (default: True)
-    backend : str, default 'matplotlib'
-        Plotting backend ('matplotlib' or 'plotly')
     interactive : bool, default True
         Whether to create interactive plots
     output_file : str or Path, optional
@@ -711,7 +704,7 @@ def visualize_noise(
 
     Returns
     -------
-    matplotlib.Figure or plotly.Figure
+    matplotlib.figure.Figure
         The created figure object
 
     Raises
@@ -740,7 +733,6 @@ def visualize_noise(
             figsize=figsize,
             title=title,
             show_noise_points=show_noise_points,
-            backend=backend,
             interactive=interactive,
             output_file=output_file,
             **plot_kwargs,
@@ -1028,7 +1020,6 @@ def visualize_peaks(
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
     y_max_factor: Optional[float] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
     show_snr_histogram: bool = False,
@@ -1046,8 +1037,6 @@ def visualize_peaks(
         Custom plot title.
     y_max_factor : float, optional
         Y-axis max as multiple of median RMS noise (default 25.0).
-    backend : str, default ``'matplotlib'``
-        Plotting backend (``'matplotlib'`` or ``'plotly'``).
     interactive : bool, default True
         Whether to open an interactive window.
     output_file : str or Path, optional
@@ -1068,7 +1057,6 @@ def visualize_peaks(
             figsize=figsize,
             title=title,
             y_max_factor=y_max_factor,
-            backend=backend,
             interactive=interactive,
             output_file=output_file,
             show_snr_histogram=show_snr_histogram,
@@ -1165,7 +1153,6 @@ def visualize_windows(
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
     y_max_factor: Optional[float] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
 ) -> Any:
@@ -1182,8 +1169,6 @@ def visualize_windows(
         Custom plot title.
     y_max_factor : float, optional
         Spectrum-panel y-axis headroom (default 25.0).
-    backend : str, default ``'matplotlib'``
-        Plotting backend (only ``'matplotlib'`` supported).
     interactive : bool, default True
         Whether to open an interactive window.
     output_file : str or Path, optional
@@ -1200,7 +1185,6 @@ def visualize_windows(
             figsize=figsize,
             title=title,
             y_max_factor=y_max_factor,
-            backend=backend,
             interactive=interactive,
             output_file=output_file,
         )
@@ -1763,7 +1747,6 @@ def visualize_fit(
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
     window_id: Optional[int] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
     output_file: Optional[Union[str, Path]] = None,
 ) -> Any:
@@ -1782,8 +1765,6 @@ def visualize_fit(
         When set, draw a per-window detail figure (re/im, magnitude+residual,
         time envelope, audit-trail); otherwise an overview overlay of the
         fitted model on the persisted spectrum.
-    backend : str, default ``'matplotlib'``
-        Plotting backend (only ``'matplotlib'`` supported).
     interactive : bool, default True
         Whether to open an interactive window.
     output_file : str or Path, optional
@@ -1795,7 +1776,6 @@ def visualize_fit(
             figsize=figsize,
             title=title,
             window_id=window_id,
-            backend=backend,
             interactive=interactive,
             output_file=output_file,
         )

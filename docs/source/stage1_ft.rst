@@ -155,5 +155,15 @@ The view is interactive by default; ``--no-interactive --output <path>`` writes
 a static image instead. Visualization never persists settings — once a choice
 looks right, re-run ``ft run`` with it to make it canonical.
 
+.. figure:: figures/stage1_canonical_ft.png
+   :width: 90%
+   :align: center
+
+   The canonical FT of the example experiment over the ``26500:40000`` MHz
+   active band. *Top:* the magnitude spectrum. *Bottom:* the real and imaginary
+   components on the same molecular-frequency axis. The transform is unapodized
+   and native-length, so the line shapes and per-bin amplitudes are faithful to
+   the data.
+
 The resolved spectrum is the input to :doc:`Stage 2 <stage2_noise>`, which
 measures the per-bin noise on the active FT.

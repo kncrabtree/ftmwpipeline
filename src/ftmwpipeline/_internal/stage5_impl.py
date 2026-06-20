@@ -2024,7 +2024,6 @@ def visualize_fit_impl(
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
     window_id: Optional[int] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
 ) -> Any:
     """Overlay the persisted Stage 5 fit on the active FT it was fit on.
@@ -2074,7 +2073,6 @@ def visualize_fit_impl(
         figsize=figsize if figsize is not None else (16, 10),
         title=title,
         window_id=window_id,
-        backend=backend,
         model_amplitude_scale=model_amplitude_scale,
         probe_freq_mhz=float(fid.probe_freq_mhz),
         start_us=start_us,

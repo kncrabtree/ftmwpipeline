@@ -58,11 +58,6 @@ docs = [
     "sphinx>=5.0.0",
     "sphinx-rtd-theme>=1.0.0",
 ]
-viz = [
-    "plotly>=5.0.0",
-    "bokeh>=2.4.0",
-    "seaborn>=0.11.0",
-]
 notebook = [
     "jupyter>=1.0.0",
     "ipywidgets>=7.6.0",
@@ -179,7 +174,6 @@ module = [
     "matplotlib.*",
     "h5py.*",
     "pandas.*",
-    "plotly.*",
     "blackchirp.*",
 ]
 ignore_missing_imports = true

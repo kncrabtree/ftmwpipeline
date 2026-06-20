@@ -121,6 +121,37 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Plotly removed; matplotlib is the sole visualization backend.** The second
+  rendering backend was ripped out across the stack: the ``_plot_*_plotly``
+  paths and the plotly statistics-table helper in ``spectrum_visualization`` /
+  ``noise_visualization``; the ``backend`` parameter and its pass-through on
+  every visualization surface (``stage1``–``stage5`` impls, ``report_html_impl``
+  callers, the five ``api`` / ``Pipeline`` ``visualize_*`` methods, and the
+  ``ft`` / ``noise`` / ``peaks`` / ``windows`` CLI commands, including the
+  ``noise show --backend`` option and the ``.html`` save path); the
+  ``has_plotly`` package-info flag and ``version`` print; the ``pytest_plotly``
+  marker; and the dependency declarations (the dead ``[viz]`` extra —
+  plotly + the equally unused bokeh/seaborn — plus the conda env entries and the
+  ``plotly.*`` mypy override). Docstrings that promised "matplotlib or plotly"
+  now say matplotlib. ``installation.rst`` drops the ``[viz]`` extra.
+- **Dead not-implemented placeholders removed.** The ``fit_diagnostics`` and
+  ``summary_reports`` modules were whole-module ``NotImplementedError`` "Phase 8"
+  stubs (never wired up); the ``plot_peaks`` / ``plot_windows`` placeholders in
+  ``spectrum_visualization`` shadowed the real ``peak_visualization`` /
+  ``window_visualization`` implementations; and ``visualization/__init__``
+  exported a non-existent ``plot_spectrum``. All removed, and the package
+  ``__init__`` trimmed to the spectrum + noise re-exports that actually exist.
+- **Earlier-stage visualizations restyled to the house style.** Stage 0
+  (``start_detection_visualization``), Stage 1 (``spectrum_visualization`` —
+  real → Double Decker, imag → Gunrock, magnitude → Cabernet), and Stage 2
+  (``noise_visualization``) now use the brand palette, ``apply_bare_style``, and
+  the suppressible-title convention (``title=""`` for doc figures). The FT figure
+  uses constrained layout to avoid the spanning-axes ``tight_layout`` warning.
+- **Committed stage figures + regenerable harness.** ``docs/source/figures/``
+  holds one figure per documented early stage, rebuilt by
+  ``docs/source/figures/generate.py`` (a 2638 pipeline in a temp dir, render
+  Stage 0/1/2), embedded with ``.. figure::`` + captions in the stage pages, and
+  guarded by the ``slow`` smoke test ``tests/integration/test_stage_figures.py``.
 - **No-code data-input path built (custom loaders + clock declarations).** The
   generic `csv` and `hdf5` loaders were non-functional stubs (`load_fid` raised
   "not yet implemented"), so there was no way to bring your own data without
@@ -326,47 +357,22 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Next session: viz restyle + stage figures + remove plotly
+## Next session: Stage 2b — tau calibration
 
-Stages 0–2 pages, the Methods & Validation section + first note, and the brand
-style system are done. The next session has three linked tasks:
+The viz restyle, the committed stage figures, and the full plotly removal are
+done (see *Resolved during review*); Stages 0–2 pages, the Methods & Validation
+section + first note, and the brand style system are in place. The next stage to
+document is **Stage 2b (tau calibration)**, following the per-stage process:
+read the planning record, review the code thorough (the
+`fitting/tau_calibration.py` engine, `calibrate_tau` / `calibrate_tau_G`, the
+two shape twins and the lineshape vote, `_internal` impl, and the three
+interface wrappers), discuss any code revisions before writing, mine the
+research reports, do the American-English scan, then write `stage2b_tau.rst`.
+Restyle `tau_calibration_visualization.py` to the house style and add a stage
+figure (extend `docs/source/figures/generate.py`) as part of that page.
 
-1. **Restyle the earlier-stage visualizations to the house style.** Bring the
-   documented-stage plots into line with `visualization/report_style.py`: the
-   brand palette (`AGGIE_BLUE` / `AGGIE_GOLD`, the named secondary colors,
-   `BRAND_CYCLE`, `apply_color_cycle`, `aggie_blue_cmap` / `aggie_gold_cmap`),
-   `apply_bare_style`, and the suppressible-title convention (`resolve_title`;
-   pass `title=""` for doc figures, captions label them). The modules for the
-   documented stages: `start_detection_visualization.py` (Stage 0),
-   `spectrum_visualization.py` (Stage 1; the `ft show` real/imag/magnitude
-   plot — the user's preferred mapping is real → Double Decker, imag → Gunrock,
-   magnitude → Cabernet), and `noise_visualization.py` (Stage 2; already mostly
-   styled — verify). Later-stage viz (tau, peaks, windows, fit) gets restyled as
-   those stages are documented. **A wrong-start was reverted:** an unused
-   `report_style` import was added to `start_detection_visualization.py` and
-   rolled back — start fresh there.
-
-2. **Remove plotly entirely** — code, docs, and dependencies. Plotly is a second
-   rendering backend across the visualization modules (`spectrum_visualization`,
-   `noise_visualization`, and others carry `_plot_*_plotly` paths + a `--backend
-   plotly` CLI option and `backend=` kwargs). Rip it out: drop the plotly
-   branches and the `backend` plumbing (matplotlib becomes the sole backend),
-   remove plotly from the dependency lists (`pyproject.toml` /
-   `environment*.yml`), and purge plotly mentions from docstrings, CLI help, and
-   the docs (e.g. the `noise show --backend` text and the `stage2_noise.rst` /
-   `noise_snr_scaling.rst` "plotly backend" lines). Run the suite after.
-
-3. **Add figures to the stage pages.** With the matplotlib paths restyled and
-   plotly gone, add a committed figure harness (mirroring
-   `methods/noise_snr_scaling/generate.py`): build a 2638 pipeline in a temp dir
-   (import → start → ft → noise) and render one representative figure per
-   documented stage into a committed `docs/source/figures/` dir — Stage 0 the
-   start-detection sweep, Stage 1 the canonical FT (magnitude + real/imag),
-   Stage 2 the noise overlay — then embed each with a `.. figure::` + caption in
-   `stage0_import.rst` / `stage1_ft.rst` / `stage2_noise.rst`. Add a `slow`
-   smoke test that the harness renders without error. Build docs into
-   `docs/build/html` and confirm warning-clean.
-
-Reminder on conventions: build docs into `docs/build/html` (gitignored) so they
-are reviewable; direct any run artifacts to `scratch/`; the noise methods harness
-is the reference pattern for committed, regenerable figures.
+Conventions reminder: build docs into `docs/build/html` (gitignored) so they are
+reviewable; direct any run artifacts to `scratch/`; the noise methods harness
+and `docs/source/figures/generate.py` are the reference patterns for committed,
+regenerable figures. A latent British spelling to fold into the AmE sweep:
+`fitting/tau_calibration.py` uses "vectorised" in docstrings.

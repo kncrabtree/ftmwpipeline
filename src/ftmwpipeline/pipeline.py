@@ -468,7 +468,6 @@ class Pipeline:
         end_us: Optional[float] = None,
         units_power: Optional[int] = None,
         save_params: bool = False,
-        backend: str = "matplotlib",
         interactive: bool = True,
         output_file: Optional[Union[str, Path]] = None,
         show_fid_panels: bool = True,
@@ -493,8 +492,6 @@ class Pipeline:
             Spectrum scaling as power of 10.
         save_params : bool, default False
             If ``True``, persist the explicitly provided settings.
-        backend : str, default ``'matplotlib'``
-            Plotting backend (``'matplotlib'`` or ``'plotly'``).
         interactive : bool, default True
             Whether to show an interactive plot.
         output_file : str or Path, optional
@@ -505,7 +502,7 @@ class Pipeline:
         Returns
         -------
         figure
-            Matplotlib or Plotly figure object.
+            Matplotlib figure object.
 
         Raises
         ------
@@ -526,7 +523,6 @@ class Pipeline:
                 settings=settings,
                 title=None,
                 show_fid_panels=show_fid_panels,
-                backend=backend,
                 interactive=interactive,
             )
 
@@ -538,7 +534,7 @@ class Pipeline:
                 default_name = f"{self.filepath.stem}_enhanced_spectrum.png"
                 fig.savefig(default_name, dpi=150, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {default_name}")
-            elif interactive and backend == "matplotlib":
+            elif interactive:
                 import matplotlib.pyplot as plt
 
                 plt.show()
@@ -632,7 +628,6 @@ class Pipeline:
         figsize: Optional[tuple] = None,
         title: Optional[str] = None,
         show_noise_points: Optional[bool] = None,
-        backend: str = "matplotlib",
         interactive: bool = True,
         output_file: Optional[Union[str, Path]] = None,
         **plot_kwargs: Any,
@@ -654,8 +649,6 @@ class Pipeline:
             Custom title for the plot
         show_noise_points : bool, optional
             Whether to highlight noise points (default: True)
-        backend : str, default 'matplotlib'
-            Plotting backend ('matplotlib' or 'plotly')
         interactive : bool, default True
             Whether to create interactive plots
         output_file : str or Path, optional
@@ -665,7 +658,7 @@ class Pipeline:
 
         Returns
         -------
-        matplotlib.Figure or plotly.Figure
+        matplotlib.figure.Figure
             The created figure object
 
         Raises
@@ -683,7 +676,6 @@ class Pipeline:
                 figsize=figsize,
                 title=title,
                 show_noise_points=show_noise_points,
-                backend=backend,
                 interactive=interactive,
                 **plot_kwargs,
             )
@@ -691,10 +683,7 @@ class Pipeline:
             # Save output file if requested
             if output_file:
                 try:
-                    if backend == "plotly":
-                        fig.write_html(str(output_file))
-                    else:
-                        fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
+                    fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
                     self.logger.info(f"Visualization saved to: {output_file}")
                 except Exception as e:
                     self.logger.warning(f"Failed to save visualization: {e}")
@@ -1182,7 +1171,6 @@ class Pipeline:
         figsize: Optional[tuple] = None,
         title: Optional[str] = None,
         y_max_factor: Optional[float] = None,
-        backend: str = "matplotlib",
         interactive: bool = True,
         output_file: Optional[Union[str, Path]] = None,
         show_snr_histogram: bool = False,
@@ -1201,8 +1189,6 @@ class Pipeline:
             Custom plot title.
         y_max_factor : float, optional
             Y-axis max as multiple of median RMS noise (default 25.0).
-        backend : str, default ``'matplotlib'``
-            Plotting backend (``'matplotlib'`` or ``'plotly'``).
         interactive : bool, default True
             Whether to open an interactive window.
         output_file : str or Path, optional
@@ -1228,14 +1214,13 @@ class Pipeline:
                 figsize=figsize,
                 title=title,
                 y_max_factor=y_max_factor,
-                backend=backend,
                 interactive=interactive,
                 show_snr_histogram=show_snr_histogram,
             )
             if not interactive and output_file:
                 fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {output_file}")
-            elif interactive and backend == "matplotlib":
+            elif interactive:
                 import matplotlib.pyplot as plt
 
                 plt.show()
@@ -1326,7 +1311,6 @@ class Pipeline:
         figsize: Optional[tuple] = None,
         title: Optional[str] = None,
         y_max_factor: Optional[float] = None,
-        backend: str = "matplotlib",
         interactive: bool = True,
         output_file: Optional[Union[str, Path]] = None,
     ) -> Any:
@@ -1345,8 +1329,6 @@ class Pipeline:
             Custom plot title.
         y_max_factor : float, optional
             Spectrum-panel y-axis headroom (default 25.0).
-        backend : str, default ``'matplotlib'``
-            Plotting backend (only ``'matplotlib'`` supported).
         interactive : bool, default True
             Whether to open an interactive window.
         output_file : str or Path, optional
@@ -1368,13 +1350,12 @@ class Pipeline:
                 figsize=figsize,
                 title=title,
                 y_max_factor=y_max_factor,
-                backend=backend,
                 interactive=interactive,
             )
             if not interactive and output_file:
                 fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {output_file}")
-            elif interactive and backend == "matplotlib":
+            elif interactive:
                 import matplotlib.pyplot as plt
 
                 plt.show()
@@ -1984,7 +1965,6 @@ class Pipeline:
         figsize: Optional[tuple] = None,
         title: Optional[str] = None,
         window_id: Optional[int] = None,
-        backend: str = "matplotlib",
         interactive: bool = True,
         output_file: Optional[Union[str, Path]] = None,
     ) -> Any:
@@ -2001,13 +1981,12 @@ class Pipeline:
                 figsize=figsize,
                 title=title,
                 window_id=window_id,
-                backend=backend,
                 interactive=interactive,
             )
             if not interactive and output_file:
                 fig.savefig(str(output_file), dpi=300, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {output_file}")
-            elif interactive and backend == "matplotlib":
+            elif interactive:
                 import matplotlib.pyplot as plt
 
                 plt.show()

@@ -290,7 +290,6 @@ def visualize_windows_impl(
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
     y_max_factor: Optional[float] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
 ) -> Any:
     """Overlay the persisted Stage 4 window plan on the user's spectrum.
@@ -325,7 +324,6 @@ def visualize_windows_impl(
         figsize=figsize if figsize is not None else (16, 8),
         title=title,
         y_max_factor=y_max_factor if y_max_factor is not None else 25.0,
-        backend=backend,
     )
 
 

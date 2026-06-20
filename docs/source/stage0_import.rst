@@ -115,6 +115,17 @@ decades to a post-chirp floor. The detector locates that collapse — the chirp
 end — and adds a short instrument-specific guard margin for the switch ring-down
 to yield the recommended start.
 
+.. figure:: figures/stage0_start_detection.png
+   :width: 90%
+   :align: center
+
+   Start-time detection on the example experiment. *Top:* the integrated
+   FT magnitude across candidate start times (log scale) — the pre-chirp
+   plateau, the two-to-three-decade collapse at the chirp end (dotted), and the
+   recommended start past the ring-down guard margin (dashed). *Bottom:* a
+   linear zoom on the post-chirp floor where the ring-down shoulder settles into
+   the molecular tail.
+
 When the source declares its chirp timing (a ``chirp_end_us``, from a Blackchirp
 experiment, a scope import, or the :ref:`chirp window <input-chirp-window>` of a
 generic import), that declaration sets the recommended start directly and the

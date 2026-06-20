@@ -63,7 +63,6 @@ def cmd_version(args: argparse.Namespace) -> int:
     print(
         f"  matplotlib: {'available' if PACKAGE_INFO['has_matplotlib'] else 'missing'}"
     )
-    print(f"  plotly: {'available' if PACKAGE_INFO['has_plotly'] else 'missing'}")
 
     return 0
 

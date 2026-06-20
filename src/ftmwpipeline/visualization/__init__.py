@@ -1,36 +1,18 @@
 """
 Visualization and plotting functions for FTMW pipeline.
 
-This module provides:
-- Pipeline stage visualization
-- Fit diagnostics and residual analysis
-- Summary reports and batch processing visualization
+The per-stage plotting helpers live in dedicated submodules
+(``spectrum_visualization``, ``noise_visualization``, ``peak_visualization``,
+``window_visualization``, ``fit_visualization``, ...) and are imported directly
+where used. This package re-exports the spectrum and noise plots for
+convenience.
 """
 
-from .fit_diagnostics import plot_fit_results, plot_residuals, plot_time_domain_fit
 from .noise_visualization import plot_noise_estimation
-from .spectrum_visualization import (
-    plot_complex_ft,
-    plot_peaks,
-    plot_spectral_window,
-    plot_windows,
-)
-from .summary_reports import create_batch_summary, generate_fit_report
+from .spectrum_visualization import plot_complex_ft, plot_spectral_window
 
 __all__ = [
-    # Spectrum visualization (direct and cache-based)
     "plot_complex_ft",
     "plot_spectral_window",
-    "plot_spectrum",
-    "plot_peaks",
-    "plot_windows",
-    # Noise visualization (direct and cache-based)
     "plot_noise_estimation",
-    # Fitting visualization
-    "plot_fit_results",
-    "plot_residuals",
-    "plot_time_domain_fit",
-    # Summary reports
-    "generate_fit_report",
-    "create_batch_summary",
 ]

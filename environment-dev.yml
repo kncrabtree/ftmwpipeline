@@ -30,11 +30,6 @@ dependencies:
   # Documentation tooling is installed via the pip ``docs`` extra below,
   # which is the single source of truth for the doc-build dependency set.
 
-  # Visualization extras
-  - plotly>=5.0.0
-  - bokeh>=2.4.0
-  - seaborn>=0.11.0
-
   # Interactive / build tooling
   - jupyterlab
   - ipython

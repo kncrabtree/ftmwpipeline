@@ -114,7 +114,6 @@ def cmd_visualize_windows(args: argparse.Namespace) -> int:
             figsize=figsize,
             title=args.title,
             y_max_factor=args.y_max_factor,
-            backend="matplotlib",
             interactive=not args.no_interactive,
         )
 

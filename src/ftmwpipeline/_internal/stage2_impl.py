@@ -247,7 +247,6 @@ def visualize_noise_impl(
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
     show_noise_points: Optional[bool] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
     **plot_kwargs: Any,
 ) -> Any:
@@ -255,7 +254,7 @@ def visualize_noise_impl(
     Shared implementation for noise visualization from .ftmw pipeline files.
 
     This function creates noise estimation diagnostic plots showing spectrum,
-    noise points, bin boundaries, and RMS estimates.
+    noise points, and RMS estimates.
 
     Parameters
     ----------
@@ -269,8 +268,6 @@ def visualize_noise_impl(
         Custom title for the plot
     show_noise_points : bool, optional
         Whether to highlight noise points (default: True)
-    backend : str, default 'matplotlib'
-        Plotting backend ('matplotlib' or 'plotly')
     interactive : bool, default True
         Whether to create interactive plots
     **plot_kwargs
@@ -278,7 +275,7 @@ def visualize_noise_impl(
 
     Returns
     -------
-    matplotlib.Figure or plotly.Figure
+    matplotlib.figure.Figure
         The created figure object
 
     Raises
@@ -344,7 +341,6 @@ def visualize_noise_impl(
         "show_noise_points": (
             show_noise_points if show_noise_points is not None else True
         ),
-        "backend": backend,
     }
 
     # Generate title if not provided

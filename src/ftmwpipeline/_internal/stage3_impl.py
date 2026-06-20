@@ -826,7 +826,6 @@ def visualize_peaks_impl(
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
     y_max_factor: Optional[float] = None,
-    backend: str = "matplotlib",
     interactive: bool = True,
     show_snr_histogram: bool = False,
     promoted_only: bool = False,
@@ -869,7 +868,6 @@ def visualize_peaks_impl(
         figsize=figsize if figsize is not None else (16, 6),
         title=title,
         y_max_factor=y_max_factor if y_max_factor is not None else 25.0,
-        backend=backend,
         snr_histogram=show_snr_histogram,
         promotion_min_snr=promotion_min_snr,
     )

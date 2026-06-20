@@ -9,7 +9,7 @@ partition. Mirrors the matplotlib pattern of
 :mod:`ftmwpipeline.visualization.peak_visualization`.
 """
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -37,8 +37,7 @@ def plot_window_plan(
     figsize: Tuple[float, float] = (16, 8),
     title: Optional[str] = None,
     y_max_factor: float = 25.0,
-    backend: str = "matplotlib",
-) -> Union[plt.Figure, object]:
+) -> plt.Figure:
     """Plot a Stage 4 window plan over the spectrum.
 
     Parameters
@@ -57,18 +56,11 @@ def plot_window_plan(
     title : str, optional
     y_max_factor : float, default 25.0
         Spectrum-panel y-axis headroom above the tallest peak.
-    backend : str, default "matplotlib"
-        Only ``"matplotlib"`` is supported.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
-    if backend != "matplotlib":
-        raise ValueError(
-            f"Unsupported backend {backend!r}; only 'matplotlib' is available"
-        )
-
     magnitude = np.abs(np.asarray(complex_spectrum, dtype=complex))
     edge_m = int(plan.parameters.get("edge_m", DEFAULT_EDGE_M))
     threshold = float(plan.parameters.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))

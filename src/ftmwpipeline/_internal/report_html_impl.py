@@ -882,7 +882,7 @@ def _methods_stage_figures(
                     "Stage 2 noise estimate -- the per-bin σₓ across the spectrum "
                     "and the bins classed as noise.",
                     lambda: visualize_noise_impl(
-                        path, title="", backend="matplotlib", interactive=False
+                        path, title="", interactive=False
                     ),
                 )
             ],
@@ -914,7 +914,6 @@ def _methods_stage_figures(
                     lambda: visualize_peaks_impl(
                         path,
                         title="",
-                        backend="matplotlib",
                         interactive=False,
                         show_snr_histogram=True,
                         promoted_only=True,
@@ -933,7 +932,6 @@ def _methods_stage_figures(
                         path,
                         title="",
                         figsize=(15, 9.5),
-                        backend="matplotlib",
                         interactive=False,
                     ),
                 )
@@ -2770,7 +2768,10 @@ def _collapse_site_to_single_file(
         uri = data_uri_name(m.group(1))
         return f"url({uri})" if uri is not None else m.group(0)
 
-    css = css if css is not None else (site_dir / "assets" / "style.css").read_text()  # type: ignore[union-attr]
+    if css is None:
+        # Without an in-memory stylesheet the built site on disk is the source.
+        assert site_dir is not None
+        css = (site_dir / "assets" / "style.css").read_text()
     css = re.sub(r"url\((?:\.\./)?figures/([^)]+\.png)\)", _embed_css_url, css)
 
     def thumb_data_uri(name: str) -> str:
@@ -2823,7 +2824,7 @@ def _collapse_site_to_single_file(
     def read_page(name: str) -> Optional[str]:
         if page_store is not None:
             return page_store.get(name)
-        fp = site_dir / name if site_dir is not None else None  # type: ignore[union-attr]
+        fp = site_dir / name if site_dir is not None else None
         return fp.read_text() if fp is not None and fp.exists() else None
 
     sections = [f'<section id="page-top">{prep(read_page("index.html") or "")}</section>']
@@ -2846,11 +2847,11 @@ def _collapse_site_to_single_file(
         for key in win_pages:
             wid = int(re.search(r"window_0*(\d+)\.html", key).group(1))  # type: ignore[union-attr]
             window_ids.append(wid)
-            text = (
-                page_store[key]
-                if page_store is not None
-                else (site_dir / key).read_text()  # type: ignore[union-attr]
-            )
+            if page_store is not None:
+                text = page_store[key]
+            else:
+                assert site_dir is not None
+                text = (site_dir / key).read_text()
             sections.append(
                 f'<section id="window-{wid}" class="embedded-window">'
                 f"{prep(text)}</section>"

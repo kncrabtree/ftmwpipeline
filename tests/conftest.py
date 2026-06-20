@@ -170,19 +170,7 @@ def _has_matplotlib() -> bool:
         return False
 
 
-def _has_plotly() -> bool:
-    """Check if plotly is available."""
-    try:
-        import plotly
-
-        return True
-    except ImportError:
-        return False
-
-
 # Skip markers for optional dependencies
 pytest_matplotlib = pytest.mark.skipif(
     not _has_matplotlib(), reason="matplotlib not available"
 )
-
-pytest_plotly = pytest.mark.skipif(not _has_plotly(), reason="plotly not available")

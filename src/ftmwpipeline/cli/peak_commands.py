@@ -120,7 +120,6 @@ def cmd_visualize_peaks(args: argparse.Namespace) -> int:
             figsize=figsize,
             title=args.title,
             y_max_factor=args.y_max_factor,
-            backend="matplotlib",
             interactive=not args.no_interactive,
             show_snr_histogram=args.snr_histogram,
         )

@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 
 from ..core.start_detection_settings import StartDetectionSettings
 from ..preprocessing.start_detection import StartDetectionResult
+from .report_style import AGGIE_BLUE, POPPY, QUAD, apply_bare_style, resolve_title
 
 
 def _figsize_or_default(
@@ -47,22 +48,26 @@ def plot_start_detection(
         else "full spectrum"
     )
 
-    ax_top.semilogy(starts, summag, "-", lw=1, color="C0")
+    ax_top.semilogy(starts, summag, "-", lw=1, color=AGGIE_BLUE)
     ax_top.axvline(
         result.chirp_end_us,
-        color="r",
+        color=POPPY,
         ls=":",
         label=f"chirp-end {result.chirp_end_us:.2f} us",
     )
     ax_top.axvline(
         result.start_us,
-        color="g",
+        color=QUAD,
         ls="--",
         label=f"recommended start {result.start_us:.2f} us",
     )
     ax_top.set_ylabel("Σ|FT| over band")
     ax_top.legend(loc="upper right", fontsize=8)
-    ax_top.set_title(title or f"Start-time detection (band {band}, unapodized)")
+    resolved_title = resolve_title(
+        title, f"Start-time detection (band {band}, unapodized)"
+    )
+    if resolved_title:
+        ax_top.set_title(resolved_title)
     if not result.chirp_detected:
         ax_top.text(
             0.02,
@@ -76,13 +81,15 @@ def plot_start_detection(
     # Linear zoom on the post-chirp floor; clip the collapse spike so the
     # ringdown shoulder settling into the molecular tail is legible.
     zoom = (starts > result.chirp_end_us - 0.1) & (starts < result.chirp_end_us + 3.0)
-    ax_bot.plot(starts[zoom], summag[zoom], "-", lw=1, color="C0")
-    ax_bot.axvline(result.start_us, color="g", ls="--")
+    ax_bot.plot(starts[zoom], summag[zoom], "-", lw=1, color=AGGIE_BLUE)
+    ax_bot.axvline(result.start_us, color=QUAD, ls="--")
     if result.floor > 0:
         ax_bot.set_ylim(0, result.floor * 8.0)
     ax_bot.set_xlabel("start_us")
     ax_bot.set_ylabel("Σ|FT| (post-chirp floor, linear)")
 
+    apply_bare_style(ax_top)
+    apply_bare_style(ax_bot)
     fig.tight_layout()
     return fig
 

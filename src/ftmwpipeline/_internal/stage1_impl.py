@@ -206,7 +206,6 @@ def visualize_ft_impl(
     settings: Optional[FTSettings] = None,
     title: Optional[str] = None,
     show_fid_panels: bool = True,
-    backend: str = "matplotlib",
     interactive: bool = True,
     **plot_kwargs: Any,
 ) -> Any:
@@ -238,7 +237,6 @@ def visualize_ft_impl(
         fig = plot_complex_ft(
             complex_ft=complex_ft,
             title=title,
-            backend=backend,
             interactive=interactive,
             fid=original_fid if show_fid_panels else None,
             preprocessed_fid=preprocessed_fid if show_fid_panels else None,

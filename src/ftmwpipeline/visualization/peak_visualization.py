@@ -7,7 +7,7 @@ marker-styled by which pass found each peak. Mirrors the matplotlib pattern of
 :mod:`ftmwpipeline.visualization.noise_visualization`.
 """
 
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -76,10 +76,9 @@ def plot_peak_detection(
     figsize: Tuple[float, float] = (16, 6),
     title: Optional[str] = None,
     y_max_factor: float = 25.0,
-    backend: str = "matplotlib",
     snr_histogram: bool = False,
     promotion_min_snr: Optional[float] = None,
-) -> Union[plt.Figure, object]:
+) -> plt.Figure:
     """Plot detected/classified peaks over the spectrum.
 
     Parameters
@@ -92,8 +91,6 @@ def plot_peak_detection(
     title : str, optional
     y_max_factor : float, default 25.0
         Y-axis max as a multiple of the median RMS noise.
-    backend : str, default "matplotlib"
-        Only ``"matplotlib"`` is supported.
     snr_histogram : bool, default False
         If True, add a second panel below the overlay showing the user-grid
         SNR distribution with the promotion cutoff marked (curation view).
@@ -104,11 +101,6 @@ def plot_peak_detection(
     -------
     matplotlib.figure.Figure
     """
-    if backend != "matplotlib":
-        raise ValueError(
-            f"Unsupported backend {backend!r}; only 'matplotlib' is available"
-        )
-
     from .report_style import apply_bare_style, resolve_title
 
     if snr_histogram:

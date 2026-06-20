@@ -585,7 +585,6 @@ def plot_spectrum_fit(
     figsize: Tuple[float, float] = (16, 10),
     title: Optional[str] = None,
     window_id: Optional[int] = None,
-    backend: str = "matplotlib",
     model_amplitude_scale: float = 1.0,
     probe_freq_mhz: Optional[float] = None,
     start_us: float = 0.0,
@@ -613,8 +612,6 @@ def plot_spectrum_fit(
     window_id : int, optional
         When set, draw a per-window detail figure for the given window
         instead of the spectrum-wide overview.
-    backend : str, default ``"matplotlib"``
-        Plotting backend (only ``"matplotlib"`` supported today).
     model_amplitude_scale : float, default 1.0
         Multiplicative factor applied to the fitted model when plotting on
         the persisted-FT grid. The fit's amplitudes are in active-FT units
@@ -634,11 +631,6 @@ def plot_spectrum_fit(
         ``exp(-i 2 pi f_bb start_us)`` to put it on the persisted-FT phase
         frame. ``0`` skips the re-roll.
     """
-    if backend != "matplotlib":
-        raise NotImplementedError(
-            f"backend {backend!r} is not implemented for fit visualization; "
-            "only 'matplotlib' is supported"
-        )
     if title is None:
         title = (
             f"Stage 5 fit (window {window_id})"

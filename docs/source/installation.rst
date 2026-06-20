@@ -26,11 +26,10 @@ Optional dependency groups are available as extras:
 
 * ``[dev]`` — testing, linting, and type-checking tools.
 * ``[docs]`` — the Sphinx toolchain for building this documentation.
-* ``[viz]`` — additional plotting backends.
 
 .. code-block:: bash
 
-   pip install "ftmwpipeline[viz]"
+   pip install "ftmwpipeline[dev]"
 
 From source
 -----------
