@@ -35,6 +35,8 @@ def test_harness_renders_all_stage_figures(tmp_path, monkeypatch):
         "stage1_canonical_ft.png",
         "stage2_noise.png",
         "stage2b_tau_distribution.png",
+        "stage2b_tau_decay_examples.png",
+        "stage2b_tau_heatmap_zoom.png",
     ):
         out = tmp_path / name
         assert out.is_file() and out.stat().st_size > 0

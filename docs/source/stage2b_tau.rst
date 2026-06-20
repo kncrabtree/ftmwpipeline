@@ -97,6 +97,18 @@ method:
 Because a line's leakage skirt decays at the parent's rate, skirt bins reinforce
 the real-line cluster in the histogram rather than forming a spurious one.
 
+.. figure:: figures/stage2b_tau_decay_examples.png
+   :width: 95%
+   :align: center
+
+   The per-bin magnitude-versus-window series the classifier fits, for three
+   representative bins of the example experiment. Left: a strong molecular line,
+   with the exponential and Gaussian decay fits overlaid — its decay time is the
+   single parameter each contributor bin reports, and the two shape fits are
+   what the line-shape vote compares. Center: a clock spur, constant across the
+   windows. Right: a noise bin, with no clean decay. The three classes are
+   visually distinct, which is what makes the fit-free read robust.
+
 Classifying each bin
 --------------------
 
@@ -283,9 +295,24 @@ Reading the diagnostics
 ``tau show`` renders two views (``--gaussian`` selects the Gaussian group). The
 **heatmap** (``--kind heatmap``) shows the magnitude across the sliding windows
 and the analysis band, so real lines appear as streaks that fade down the
-window axis while clock spurs hold constant brightness. The **distribution**
-view (``--kind distribution``) shows the contributor histogram and the recovered
-decay time:
+window axis while clock spurs hold constant brightness:
+
+.. code-block:: console
+
+   $ ftmwpipeline tau show --kind heatmap exp_2638.ftmw
+
+.. figure:: figures/stage2b_tau_heatmap_zoom.png
+   :width: 90%
+   :align: center
+
+   The STFT magnitude heatmap, zoomed to a strong-line neighborhood of the
+   example experiment and with the color range clipped so the decays read.
+   Window position runs from the earliest at the top to the latest at the
+   bottom; a real line is a column that is darkest at the top and fades
+   downward, while a clock spur holds the same shade down the whole column.
+
+The **distribution** view (``--kind distribution``) shows the contributor
+histogram and the recovered decay time:
 
 .. code-block:: console
 

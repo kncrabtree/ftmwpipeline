@@ -12,7 +12,12 @@ stage into the committed ``docs/source/figures`` directory:
   active spectrum with the 3x/5x reference levels;
 * ``stage2b_tau_distribution.png`` -- the Stage 2b decay-time distribution panel
   (contributor histogram with the majority-vote overlay, tau vs SNR and tau vs
-  molecular frequency, and the GMM bimodality fit).
+  molecular frequency with the per-band levels, and the GMM bimodality fit);
+* ``stage2b_tau_decay_examples.png`` -- the per-bin magnitude-vs-window decay
+  for a strong line (with the exponential and Gaussian fits), a clock spur, and
+  a noise bin;
+* ``stage2b_tau_heatmap_zoom.png`` -- the STFT magnitude heatmap zoomed to a
+  strong-line neighborhood with a clipped color range so the decays read.
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -65,11 +70,13 @@ def _build_pipeline(workdir: Path) -> str:
 
 
 def make_figures() -> None:
-    """Build the pipeline and write the three stage figures."""
+    """Build the pipeline and write the stage figures."""
     import matplotlib
+    import numpy as np
 
     matplotlib.use("Agg")
 
+    import ftmwpipeline.api as ftmw
     from ftmwpipeline._internal.stage1_impl import visualize_ft_impl
     from ftmwpipeline._internal.stage2_impl import visualize_noise_impl
     from ftmwpipeline.visualization.report_style import apply_color_cycle
@@ -77,7 +84,9 @@ def make_figures() -> None:
         plot_start_detection_from_file,
     )
     from ftmwpipeline.visualization.tau_calibration_visualization import (
+        plot_stft_decay_examples_from_file,
         plot_tau_distribution_from_file,
+        plot_tau_heatmap_from_file,
     )
 
     apply_color_cycle(matplotlib)
@@ -86,7 +95,9 @@ def make_figures() -> None:
         path = _build_pipeline(Path(tmp))
 
         fig0 = plot_start_detection_from_file(path, title="")
-        fig0.savefig(FIG_DIR / "stage0_start_detection.png", dpi=DPI, bbox_inches="tight")
+        fig0.savefig(
+            FIG_DIR / "stage0_start_detection.png", dpi=DPI, bbox_inches="tight"
+        )
 
         fig1 = visualize_ft_impl(
             path, title="", show_fid_panels=False, interactive=False
@@ -99,6 +110,28 @@ def make_figures() -> None:
         fig2b = plot_tau_distribution_from_file(path, shape="lorentzian", title="")
         fig2b.savefig(
             FIG_DIR / "stage2b_tau_distribution.png", dpi=DPI, bbox_inches="tight"
+        )
+
+        fig2c = plot_stft_decay_examples_from_file(path, shape="lorentzian", title="")
+        fig2c.savefig(
+            FIG_DIR / "stage2b_tau_decay_examples.png", dpi=DPI, bbox_inches="tight"
+        )
+
+        # Zoom the heatmap to the neighborhood of the strongest contributor and
+        # clip the color range so the per-line decays read clearly.
+        cal = ftmw.load_tau_calibration(path)
+        f_center = float(
+            cal.contributor_freqs_mhz[int(np.argmax(cal.contributor_snrs))]
+        )
+        fig2d = plot_tau_heatmap_from_file(
+            path,
+            shape="lorentzian",
+            title="",
+            freq_window=(f_center - 120.0, f_center + 120.0),
+            clip_percentiles=(60.0, 99.9),
+        )
+        fig2d.savefig(
+            FIG_DIR / "stage2b_tau_heatmap_zoom.png", dpi=DPI, bbox_inches="tight"
         )
 
 
