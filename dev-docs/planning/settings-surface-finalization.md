@@ -22,7 +22,7 @@ tracks.
 | 1 (template) | yes (`cli_field`) | n/a (already clean) | yes | n/a |
 | 2 | **done** | **done** | **done** | **done** |
 | 2b | **done** | **done** | **done** | **done** |
-| 3 | pending | pending | pending | pending |
+| 3 | **done** | **done** | **done** | **done** |
 | 4 | pending | pending | pending | pending |
 | 5 | pending | pending | pending | pending |
 | 0 (outlier) | pending | pending | pending | n/a |
@@ -175,6 +175,27 @@ All default `None` (except Stage 0's outlier shape), all map to dataclass fields
   A/B-testing escape hatch. **Recommendation: keep the pair as explicit args**
   (they cross a stage boundary; folding them into `StageFitSettings` would
   misrepresent them as fit knobs). Document as advanced.
+
+## Resolution-layer semantics of `settings=` vs `preset=`
+
+Removing the per-knob kwargs forced a decision the backfill had deferred. The
+resolver order is `explicit > persisted(.ftmw) > preset(.yml) > recommended >
+default` (D11). Originally the per-knob kwargs filled the **explicit** layer
+(override the file) and `settings=` filled the **preset** layer (seed; the file
+wins). With the kwargs gone, a `settings=` left at the preset layer would lose
+to anything persisted — and because the first run of a stage persists *all*
+resolved fields, that meant `noise run --window-mhz 120` (the CLI builds a
+`settings=` bundle) was silently ignored on an already-run file.
+
+**Decision: a passed `settings=` bundle is the explicit override** (fills the
+explicit layer, outranks persisted), matching the retired per-knob kwargs and
+the documented D11 order; **`preset=` (a `.yml`) stays at the preset layer**
+(seeds only unfixed fields; a persisted `.ftmw` outranks it, preserving the
+shared-file reproducibility contract). `settings=` and `preset=` remain mutually
+exclusive. Each migrated impl routes `explicit=settings`, `preset=load(preset)`;
+a per-stage propagation test asserts `settings=` beats a persisted value, and
+the existing tests still assert `preset=`/persisted-inherit precedence. Applied
+to Stages 2, 2b, and 3.
 
 ## Design: unified field metadata
 

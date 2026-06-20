@@ -1,6 +1,6 @@
 """DeprecationWarning fires on legacy per-knob kwargs at every migrated impl.
 
-The still-shimmed settings dataclasses (Stages 3, 4, 5) keep their legacy
+The still-shimmed settings dataclasses (Stages 4, 5) keep their legacy
 per-knob kwargs alive as a back-compat shim. ``warn_legacy_kwargs`` in
 each impl surfaces any remaining legacy-form call site so it can be
 migrated to ``settings=`` / ``preset=`` before the surrounding work
@@ -49,17 +49,11 @@ class TestImplLevelWarnings:
     """Each not-yet-finalized impl emits ``DeprecationWarning`` for legacy
     per-knob kwargs.
 
-    Stages 2 and 2b are absent: their legacy per-knob kwargs were removed (the
-    surface is ``settings=`` / ``preset=`` only), so there is nothing left to
-    warn about. The remaining stages keep the shim until they are finalized in
-    turn.
+    Stages 2, 2b and 3 are absent: their legacy per-knob kwargs were removed
+    (the surface is ``settings=`` / ``preset=`` only), so there is nothing left
+    to warn about. The remaining stages keep the shim until they are finalized
+    in turn.
     """
-
-    def test_stage3_detect_peaks_legacy_kwarg(self, tmp_path) -> None:
-        bogus = tmp_path / "no_such.ftmw"
-        with pytest.warns(DeprecationWarning, match=r"detect_peaks.*min_snr"):
-            with _swallow_downstream_errors():
-                stage3_impl.detect_peaks_impl(str(bogus), min_snr=4.0)
 
     def test_stage4_assign_windows_legacy_kwarg(self, tmp_path) -> None:
         bogus = tmp_path / "no_such.ftmw"
@@ -94,17 +88,17 @@ class TestApiChainPropagation:
     """One end-to-end test proves the api/Pipeline pass legacy kwargs to impl.
 
     The warning originates in the impl, so this needs a real file (the api
-    wrapper opens the pipeline before reaching the impl). Stage 3 is the
+    wrapper opens the pipeline before reaching the impl). Stage 4 is the
     cheapest still-shimmed stage with a ready baseline; the impls are thin
     enough that one such proof is representative of every stage's wrapper chain.
     """
 
-    def test_api_detect_peaks_emits_warning_for_legacy_kwarg(
+    def test_api_assign_windows_emits_warning_for_legacy_kwarg(
         self,
-        baseline_2638_stage2,
+        baseline_2638_stage3,
         tmp_path,
     ) -> None:
         fp = tmp_path / "warn_api.ftmw"
-        shutil.copy(baseline_2638_stage2, fp)
-        with pytest.warns(DeprecationWarning, match=r"detect_peaks.*min_snr"):
-            ftmw.detect_peaks(str(fp), min_snr=4.0)
+        shutil.copy(baseline_2638_stage3, fp)
+        with pytest.warns(DeprecationWarning, match=r"assign_windows.*edge_m"):
+            ftmw.assign_windows(str(fp), edge_m=64)

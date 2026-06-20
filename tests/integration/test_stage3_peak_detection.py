@@ -25,6 +25,21 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
+from ftmwpipeline.core.peak_detection_settings import (
+    GapPassSubSettings,
+    PeakDetectionSettings,
+    PromotionSubSettings,
+)
+
+
+def _peak_settings(
+    min_snr: float = 3.0, run_gap_pass: bool | None = None
+) -> PeakDetectionSettings:
+    s = PeakDetectionSettings(promotion=PromotionSubSettings(min_snr=min_snr))
+    if run_gap_pass is not None:
+        s.gap_pass = GapPassSubSettings(run_gap_pass=run_gap_pass)
+    return s
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -68,8 +83,8 @@ def test_cross_interface_consistency(baseline_2638_stage2, temp_ftmw_dir):
 
     # D7 Phase B: detect_peaks no longer accepts trim= or zpf=; the persisted
     # Stage 1 canonical settings (including trim=(26500,40000)) govern.
-    peaks_pipe = Pipeline(pfile).detect_peaks(min_snr=3.0)
-    peaks_func = ftmw.detect_peaks(ffile, min_snr=3.0)
+    peaks_pipe = Pipeline(pfile).detect_peaks(settings=_peak_settings())
+    peaks_func = ftmw.detect_peaks(ffile, settings=_peak_settings())
 
     res = subprocess.run(
         [
@@ -103,7 +118,7 @@ def test_detection_is_sane_vs_known_lines(baseline_2638_stage2, temp_ftmw_dir):
     fp = temp_ftmw_dir / "sane.ftmw"
     shutil.copy(baseline_2638_stage2, fp)
     # D7 Phase B: no trim= on detect_peaks; Stage 1 persisted trim is used.
-    peaks = ftmw.detect_peaks(fp, min_snr=3.0)
+    peaks = ftmw.detect_peaks(fp, settings=_peak_settings())
 
     # Stage 3 stores ALL detected peaks (store-all contract): the total count
     # includes sub-promotion-threshold peaks, so the upper bound is generous.
@@ -148,8 +163,8 @@ def test_gap_pass_recovers_a_weak_line(baseline_2638_stage2, temp_ftmw_dir):
     shutil.copy(baseline_2638_stage2, fp_yes)
 
     # D7 Phase B: trim= removed; run_gap_pass= still supported.
-    no_gap = ftmw.detect_peaks(fp_no, min_snr=3.0, run_gap_pass=False)
-    with_gap = ftmw.detect_peaks(fp_yes, min_snr=3.0)
+    no_gap = ftmw.detect_peaks(fp_no, settings=_peak_settings(run_gap_pass=False))
+    with_gap = ftmw.detect_peaks(fp_yes, settings=_peak_settings())
 
     assert all(p.properties["detection_pass"] == "primary" for p in no_gap)
     gap_peaks = [p for p in with_gap if p.properties["detection_pass"] == "gap"]
@@ -182,7 +197,7 @@ def test_gap_pass_does_not_promote_strong_line_sidelobes(
     """
     fp = temp_ftmw_dir / "sidelobes.ftmw"
     shutil.copy(baseline_2638_stage2, fp)
-    peaks = ftmw.detect_peaks(fp, min_snr=3.0)
+    peaks = ftmw.detect_peaks(fp, settings=_peak_settings())
 
     gap_freqs = np.array(
         [p.frequency for p in peaks if p.properties["detection_pass"] == "gap"]

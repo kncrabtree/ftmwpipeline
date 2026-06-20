@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from .._internal.stage3_impl import detect_peaks_impl, visualize_peaks_impl
+from ..core.peak_detection_settings import PeakDetectionSettings
+from ._argspec import add_settings_args, settings_from_namespace
 from .utils import add_stage_object, print_error, setup_logging
 
 
@@ -32,18 +34,21 @@ def cmd_detect_peaks(args: argparse.Namespace) -> int:
     setup_logging(args.verbose)
     try:
         file_path = _ensure_ftmw(args.file_path)
+        # The per-knob flags are generated from PeakDetectionSettings field
+        # metadata; reconstruct a sparse settings bundle (unset fields fall
+        # through the resolver). --preset is mutually exclusive with knobs.
+        settings = settings_from_namespace(args, PeakDetectionSettings)
+        preset = args.preset
+        if preset is not None and not settings.is_empty():
+            print_error(
+                "--preset and per-knob flags are mutually exclusive; pass one"
+            )
+            return 1
         print(f"Detecting peaks for: {file_path}")
         result = detect_peaks_impl(
             file_path=file_path,
-            min_snr=args.min_snr,
-            weak_medium_snr=args.weak_medium_snr,
-            medium_strong_snr=args.medium_strong_snr,
-            sg_window=args.sg_window,
-            sg_order=args.sg_order,
-            primary_window=args.primary_window,
-            min_exclusion_mhz=args.min_exclusion_mhz,
-            run_gap_pass=(None if args.no_gap_pass is False else False),
-            preset=args.preset,
+            settings=None if settings.is_empty() else settings,
+            preset=preset,
         )
         peaks = result["peaks"]
         promoted = [p for p in peaks if p.properties.get("promoted")]
@@ -173,61 +178,11 @@ def register_peak_commands(subparsers: Any) -> None:
     p_detect.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_detect.add_argument(
-        "--min-snr",
-        dest="min_snr",
-        type=float,
-        help=(
-            "Promotion SNR cutoff (peaks at/above move to Stage 4; detection "
-            "runs aggressively below this internally). default 3.0"
-        ),
-    )
-    p_detect.add_argument(
-        "--weak-medium-snr",
-        dest="weak_medium_snr",
-        type=float,
-        help="Weak/medium SNR boundary (provisional default: 10.0)",
-    )
-    p_detect.add_argument(
-        "--medium-strong-snr",
-        dest="medium_strong_snr",
-        type=float,
-        help="Medium/strong SNR boundary (provisional default: 50.0)",
-    )
-    p_detect.add_argument(
-        "--sg-window",
-        dest="sg_window",
-        type=int,
-        help="Savitzky-Golay window in points, odd (default: 11)",
-    )
-    p_detect.add_argument(
-        "--sg-order",
-        dest="sg_order",
-        type=int,
-        help="Savitzky-Golay polynomial order (default: 3)",
-    )
-    p_detect.add_argument(
-        "--primary-window",
-        dest="primary_window",
-        type=str,
-        help=(
-            "Apodization window for the primary position-finding pass "
-            "(scipy.signal window name). default: blackmanharris -- a strong "
-            "window chosen to suppress truncation sidelobes"
-        ),
-    )
-    p_detect.add_argument(
-        "--min-exclusion-mhz",
-        dest="min_exclusion_mhz",
-        type=float,
-        help="Minimum gap-pass exclusion half-width per primary peak (MHz)",
-    )
-    p_detect.add_argument(
-        "--no-gap-pass",
-        dest="no_gap_pass",
-        action="store_true",
-        help="Disable the unapodized gap pass (primary pass only)",
-    )
+    # Per-knob flags, generated from PeakDetectionSettings field metadata (the
+    # single declaration site shared with `settings` / `scan`). The gap-pass
+    # toggle is a BooleanOptionalAction, so it spells both --gap-pass and the
+    # historical --no-gap-pass.
+    add_settings_args(p_detect, PeakDetectionSettings)
     p_detect.add_argument(
         "--preset",
         dest="preset",
@@ -235,10 +190,11 @@ def register_peak_commands(subparsers: Any) -> None:
         default=None,
         help=(
             "Stage 3 preset (bare name resolves against packaged presets, or "
-            "a path to a YAML file carrying a 'stage3:' block). Knobs the "
-            "per-flag CLI does not expose -- detection_zpf, gap_active_zpf, "
-            "primary_leakage_floor_k, gap_leakage_floor_k, internal_min_snr, "
-            "sg_fwhm_coverage, sg_min_window -- flow through this flag only."
+            "a path to a YAML file carrying a 'stage3:' block). Mutually "
+            "exclusive with per-knob flags. Knobs the per-flag CLI does not "
+            "expose -- detection_zpf, gap_active_zpf, primary_leakage_floor_k, "
+            "gap_leakage_floor_k, internal_min_snr, sg_fwhm_coverage, "
+            "sg_min_window -- flow through this flag only."
         ),
     )
     p_detect.add_argument(

@@ -65,7 +65,6 @@ from ..preprocessing.peak_detection import (
 )
 from ..utils.signal_processing import make_apodization, matched_filter_window
 from .active_ft_support import build_active_grid_with_noise
-from .deprecation import warn_legacy_kwargs
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -409,38 +408,6 @@ def _snap_to_active_grid(
     return sorted(by_idx.values(), key=lambda q: q.frequency)
 
 
-def _build_explicit_from_kwargs(
-    *,
-    min_snr: Optional[float],
-    weak_medium_snr: Optional[float],
-    medium_strong_snr: Optional[float],
-    sg_window: Optional[int],
-    sg_order: Optional[int],
-    primary_window: Optional[str],
-    min_exclusion_mhz: Optional[float],
-    run_gap_pass: Optional[bool],
-) -> PeakDetectionSettings:
-    """Bundle the legacy per-knob kwargs into an explicit-layer settings instance.
-
-    The remaining knobs that the resolver covers
-    (``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
-    ``detection_zpf``, ``gap_active_zpf``, ``primary_leakage_floor_k``,
-    ``gap_leakage_floor_k``)
-    are not on the public Stage 3 signature; they flow through ``settings=``
-    / ``preset=`` only.
-    """
-    explicit = PeakDetectionSettings()
-    explicit.promotion.min_snr = min_snr
-    explicit.promotion.weak_medium_snr = weak_medium_snr
-    explicit.promotion.medium_strong_snr = medium_strong_snr
-    explicit.savgol.sg_window = sg_window
-    explicit.savgol.sg_order = sg_order
-    explicit.primary_pass.primary_window = primary_window
-    explicit.primary_pass.min_exclusion_mhz = min_exclusion_mhz
-    explicit.gap_pass.run_gap_pass = run_gap_pass
-    return explicit
-
-
 def _required(value: Any, name: str) -> Any:
     """Coerce a post-resolve field that must be filled (hard default present)."""
     if value is None:
@@ -452,14 +419,6 @@ def _required(value: Any, name: str) -> Any:
 
 def detect_peaks_impl(
     file_path: str,
-    min_snr: Optional[float] = None,
-    weak_medium_snr: Optional[float] = None,
-    medium_strong_snr: Optional[float] = None,
-    sg_window: Optional[int] = None,
-    sg_order: Optional[int] = None,
-    primary_window: Optional[str] = None,
-    min_exclusion_mhz: Optional[float] = None,
-    run_gap_pass: Optional[bool] = None,
     *,
     settings: Optional[PeakDetectionSettings] = None,
     preset: Optional[str] = None,
@@ -470,70 +429,31 @@ def detect_peaks_impl(
     Detection operates on the user's persisted spectrum: there is no Stage 3
     ``trim``/``zpf`` -- those come from the Stage 1 canonical record.
 
-    ``min_snr`` is the **promotion cutoff** on the user-grid SNR -- which
-    peaks move on to Stage 4 -- not the detection floor. Detection always runs
-    aggressively on the internal zpf=1 grids at
-    ``min(internal_min_snr, promotion)`` (cheap, and recovers real
-    peaks the user-grid re-measure would otherwise miss). *Every* detected
-    peak is persisted with a ``promoted`` flag; the promotion cutoff is stored
-    so Stage 4 / curation can re-threshold without re-running detection.
+    The promotion cutoff (``promotion.min_snr``) is the **user-grid SNR** at
+    which a peak moves on to Stage 4 -- not the detection floor. Detection
+    always runs aggressively on the internal zpf=1 grids at
+    ``min(internal_min_snr, promotion)`` (cheap, and recovers real peaks the
+    user-grid re-measure would otherwise miss). *Every* detected peak is
+    persisted with a ``promoted`` flag; the promotion cutoff is stored so
+    Stage 4 / curation can re-threshold without re-running detection.
 
-    ``primary_window`` selects the apodization window for the primary pass
-    (any scipy.signal window name accepted by ``FID.preprocess``, e.g.
-    ``"blackmanharris"``, ``"blackman"``, ``"hann"``). It defaults to
-    :data:`DEFAULT_PRIMARY_WINDOW` -- a strong window chosen to suppress
-    truncation sidelobes; weaker windows leave sidelobe contamination in the
-    strong-line list that seeds the gap-pass mask. It affects only which
-    positions the primary pass finds, never any reported amplitude or SNR.
-
-    ``settings`` / ``preset`` populate the same layer of the four-layer
-    resolution chain (``explicit > persisted > preset > recommended``);
-    passing both raises ``ValueError``. Knobs beyond the legacy per-knob
-    signature -- ``internal_min_snr``, ``sg_fwhm_coverage``, ``sg_min_window``,
-    ``detection_zpf``, ``gap_active_zpf``, ``primary_leakage_floor_k``,
-    ``gap_leakage_floor_k`` --
-    flow through ``settings=`` / ``preset=`` only.
-
-    Parameters left as ``None`` fall back to documented defaults. Returns the
-    full peak list (user grid) plus diagnostics; also writes ``/stage3_peaks``
-    and marks the stage done.
+    Settings resolve through the chain (``settings`` / ``preset`` > persisted >
+    hard default); pass ``settings=`` to drive detection from a
+    :class:`PeakDetectionSettings` dataclass, or ``preset=NAME_OR_PATH`` to
+    load from packaged YAML. They are mutually exclusive, and a value persisted
+    in the ``.ftmw`` outranks either (D11). Returns the full peak list (user
+    grid) plus diagnostics; also writes ``/stage3_peaks`` and marks the stage
+    done.
     """
-    warn_legacy_kwargs(
-        func_name="detect_peaks",
-        legacy_kwargs={
-            "min_snr": min_snr,
-            "weak_medium_snr": weak_medium_snr,
-            "medium_strong_snr": medium_strong_snr,
-            "sg_window": sg_window,
-            "sg_order": sg_order,
-            "primary_window": primary_window,
-            "min_exclusion_mhz": min_exclusion_mhz,
-            "run_gap_pass": run_gap_pass,
-        },
-        migration_hint=(
-            "use settings=PeakDetectionSettings(...) or preset='name' to "
-            "drive Stage 3 from the settings resolver"
-        ),
-    )
-
     if preset is not None and settings is not None:
         raise ValueError(
-            "'preset' and 'settings' are alternative ways to populate "
-            "the preset layer of the peak-detection-settings chain; pass "
-            "exactly one (or override individual fields via explicit kwargs)"
+            "'preset' and 'settings' are mutually exclusive; pass exactly one. "
+            "A 'settings' bundle is the explicit override (outranks the "
+            "persisted record); a 'preset' .yml seeds only unfixed fields "
+            "(the persisted record outranks it, per D11)."
         )
 
-    explicit = _build_explicit_from_kwargs(
-        min_snr=min_snr,
-        weak_medium_snr=weak_medium_snr,
-        medium_strong_snr=medium_strong_snr,
-        sg_window=sg_window,
-        sg_order=sg_order,
-        primary_window=primary_window,
-        min_exclusion_mhz=min_exclusion_mhz,
-        run_gap_pass=run_gap_pass,
-    )
-    preset_layer: Optional[PeakDetectionSettings] = settings
+    preset_layer: Optional[PeakDetectionSettings] = None
     preset_name: Optional[str] = None
     if preset is not None:
         preset_layer = load_peak_detection_preset(preset)
@@ -541,7 +461,7 @@ def detect_peaks_impl(
     persisted_layer = load_peak_detection_settings_from_h5(file_path)
 
     resolved = resolve_peak_detection_settings(
-        explicit=explicit,
+        explicit=settings,
         preset=preset_layer,
         persisted=persisted_layer,
         recommended=None,

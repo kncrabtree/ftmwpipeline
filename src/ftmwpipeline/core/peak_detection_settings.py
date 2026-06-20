@@ -58,6 +58,8 @@ from typing import Any, Dict, Mapping, Optional, Union, cast
 
 import yaml  # type: ignore[import-untyped]
 
+from .knob_metadata import knob_field
+
 # Mirrors the marker used by io.fid_serialization for optional HDF5 attrs.
 _NONE = "__None__"
 
@@ -76,10 +78,36 @@ class PromotionSubSettings:
     ``medium_strong_snr`` are the classification bin edges.
     """
 
-    min_snr: Optional[float] = None
-    internal_min_snr: Optional[float] = None
-    weak_medium_snr: Optional[float] = None
-    medium_strong_snr: Optional[float] = None
+    min_snr: Optional[float] = knob_field(
+        help="User-grid promotion cutoff: peaks at/above this SNR advance to "
+        "Stage 4.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(2.0, 2.5, 3.0, 4.0, 5.0),
+        cli=True,
+        argtype=float,
+    )
+    internal_min_snr: Optional[float] = knob_field(
+        help="Internal detection floor on the zpf grids (recovers lines "
+        "apodization smears).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(1.5, 2.0, 2.5, 3.0),
+    )
+    weak_medium_snr: Optional[float] = knob_field(
+        help="Weak/medium SNR classification boundary.",
+        inst_sensitivity="Y",
+        grid=(5.0, 10.0, 15.0, 20.0),
+        cli=True,
+        argtype=float,
+    )
+    medium_strong_snr: Optional[float] = knob_field(
+        help="Medium/strong SNR classification boundary.",
+        inst_sensitivity="Y",
+        grid=(30.0, 50.0, 75.0, 100.0),
+        cli=True,
+        argtype=float,
+    )
 
 
 @dataclass
@@ -92,10 +120,30 @@ class SavgolSubSettings:
     rounded up to odd, floored at ``sg_min_window``.
     """
 
-    sg_window: Optional[int] = None
-    sg_order: Optional[int] = None
-    sg_fwhm_coverage: Optional[float] = None
-    sg_min_window: Optional[int] = None
+    sg_window: Optional[int] = knob_field(
+        help="Primary-pass Savitzky-Golay window (bins, odd).",
+        inst_sensitivity="N",
+        grid=(7, 9, 11, 15),
+        cli=True,
+        argtype=int,
+    )
+    sg_order: Optional[int] = knob_field(
+        help="Savitzky-Golay polynomial order.",
+        inst_sensitivity="N",
+        grid=(2, 3, 4),
+        cli=True,
+        argtype=int,
+    )
+    sg_fwhm_coverage: Optional[float] = knob_field(
+        help="Gap-pass window target in line-FWHM units (window auto-derived).",
+        inst_sensitivity="N",
+        grid=(3.0, 4.0, 5.0),
+    )
+    sg_min_window: Optional[int] = knob_field(
+        help="Minimum Savitzky-Golay window (polynomial stability floor).",
+        inst_sensitivity="N",
+        grid=(5, 7, 9),
+    )
 
 
 @dataclass
@@ -125,18 +173,78 @@ class PrimaryPassSubSettings:
     tunable through the same Stage 3 settings the rest of the pass uses.
     """
 
-    primary_window: Optional[str] = None
-    min_exclusion_mhz: Optional[float] = None
-    detection_zpf: Optional[int] = None
-    primary_leakage_floor_k: Optional[float] = None
-    noise_window_mhz: Optional[float] = None
-    noise_pedestal_mhz: Optional[float] = None
-    noise_line_k: Optional[float] = None
-    noise_n_iter: Optional[int] = None
-    noise_region_aware: Optional[bool] = None
-    noise_smoothing_mhz: Optional[float] = None
-    noise_smoothing_percentile: Optional[float] = None
-    noise_convolve_mhz: Optional[float] = None
+    primary_window: Optional[str] = knob_field(
+        help="Primary-pass apodization window (sidelobe suppression; affects "
+        "positions only).",
+        inst_sensitivity="N",
+        grid=("blackmanharris", "blackman", "hann", "hamming"),
+        cli=True,
+        argtype=str,
+    )
+    min_exclusion_mhz: Optional[float] = knob_field(
+        help="Half-width (MHz) around each primary peak the gap pass excludes "
+        "from its mask.",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.0, 0.05, 0.1, 0.2, 0.5),
+        cli=True,
+        argtype=float,
+    )
+    detection_zpf: Optional[int] = knob_field(
+        help="Zero-padding factor for the active-region primary spectrum.",
+        inst_sensitivity="N",
+        grid=(1, 2, 3),
+    )
+    primary_leakage_floor_k: Optional[float] = knob_field(
+        help="Scale on the primary leakage-aware floor k·(S_coh/√M)·σ "
+        "(0 disables).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.0, 0.5, 1.0, 2.0, 3.0),
+    )
+    noise_window_mhz: Optional[float] = knob_field(
+        help="Apodized-domain σ: scatter-MAD window width (MHz).",
+        inst_sensitivity="Y",
+        grid=(40.0, 60.0, 80.0, 120.0, 160.0),
+    )
+    noise_pedestal_mhz: Optional[float] = knob_field(
+        help="Apodized-domain σ: high-pass running-median width (MHz).",
+        inst_sensitivity="Y",
+        grid=(10.0, 20.0, 40.0, 80.0),
+    )
+    noise_line_k: Optional[float] = knob_field(
+        help="Apodized-domain σ: robust-σ multiple above which a bin "
+        "self-masks.",
+        inst_sensitivity="maybe",
+        grid=(4.0, 6.0, 8.0, 12.0),
+    )
+    noise_n_iter: Optional[int] = knob_field(
+        help="Apodized-domain σ: self-mask refinement iterations.",
+        inst_sensitivity="N",
+        grid=(1, 2, 3, 5),
+    )
+    noise_region_aware: Optional[bool] = knob_field(
+        help="Apodized-domain σ: region-aware Rician correction switch.",
+        inst_sensitivity="N",
+        grid=(False, True),
+    )
+    noise_smoothing_mhz: Optional[float] = knob_field(
+        help="Apodized-domain σ: broad lower-envelope median width (MHz; "
+        "0=off).",
+        inst_sensitivity="Y",
+        grid=(0.0, 400.0, 800.0, 1200.0),
+    )
+    noise_smoothing_percentile: Optional[float] = knob_field(
+        help="Apodized-domain σ: percentile of the broad smoothing (50=median).",
+        inst_sensitivity="maybe",
+        grid=(25.0, 50.0, 75.0),
+    )
+    noise_convolve_mhz: Optional[float] = knob_field(
+        help="Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; "
+        "0=off).",
+        inst_sensitivity="N",
+        grid=(0.0, 100.0, 200.0, 400.0),
+    )
 
 
 @dataclass
@@ -158,9 +266,27 @@ class GapPassSubSettings:
     the Stage 1 user apodization).
     """
 
-    run_gap_pass: Optional[bool] = None
-    gap_active_zpf: Optional[int] = None
-    gap_leakage_floor_k: Optional[float] = None
+    run_gap_pass: Optional[bool] = knob_field(
+        help="Enable the matched-filter gap pass (recovers weak "
+        "apodization-suppressed lines).",
+        inst_sensitivity="N",
+        grid=(False, True),
+        cli=True,
+        is_flag=True,
+        flag="--gap-pass",
+    )
+    gap_active_zpf: Optional[int] = knob_field(
+        help="Zero-padding factor for the matched-filter active-region FFT.",
+        inst_sensitivity="N",
+        grid=(1, 2, 3),
+    )
+    gap_leakage_floor_k: Optional[float] = knob_field(
+        help="Scale on the gap leakage-aware floor k·(S_coh/√M)·σ (0 disables; "
+        "replaces the former hard S_coh mask).",
+        tier="primary",
+        inst_sensitivity="Y",
+        grid=(0.0, 1.0, 2.0, 3.0, 5.0),
+    )
 
 
 @dataclass

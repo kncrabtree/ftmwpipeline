@@ -29,9 +29,6 @@ from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
 
 pytestmark = [
     pytest.mark.integration,
-    # Propagation tests deliberately exercise the legacy per-knob kwarg
-    # path; suppress the expected deprecation noise.
-    pytest.mark.filterwarnings("ignore::DeprecationWarning"),
 ]
 
 
@@ -589,4 +586,40 @@ class TestPersistedLayerInherit:
         assert captured["kwargs"]["sg_window"] == 17, (
             "no-kwargs follow-up did not inherit the persisted "
             "sg_window; the persisted layer of the resolver is misrouted"
+        )
+
+
+class TestExplicitSettingsOverridePersisted:
+    """A passed ``settings=`` bundle is the explicit override: it outranks a
+    value already persisted in the ``.ftmw`` (D11 ``explicit > persisted``)."""
+
+    def test_settings_beats_persisted_sg_window(
+        self,
+        baseline_2638_stage2: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ftmwpipeline.io.peak_detection_settings_serialization import (
+            save_peak_detection_settings_to_h5,
+        )
+
+        variant = tmp_path / "override.ftmw"
+        shutil.copyfile(baseline_2638_stage2, variant)
+
+        persisted = PeakDetectionSettings()
+        persisted.savgol.sg_window = 17
+        save_peak_detection_settings_to_h5(str(variant), persisted)
+
+        mock, captured = _intercept_kernel()
+        monkeypatch.setattr(stage3_impl, "detect_peaks", mock)
+
+        s = PeakDetectionSettings()
+        s.savgol.sg_window = 9
+
+        with pytest.raises(_CalibIntercepted):
+            stage3_impl.detect_peaks_impl(str(variant), settings=s)
+
+        assert captured["kwargs"]["sg_window"] == 9, (
+            "an explicit settings= bundle must override the persisted "
+            "sg_window; settings= is misrouted below the persisted layer"
         )

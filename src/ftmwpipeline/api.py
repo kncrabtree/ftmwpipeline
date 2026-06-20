@@ -900,14 +900,6 @@ def visualize_tau_distribution(
 
 def detect_peaks(
     file_path: Union[str, Path],
-    min_snr: Optional[float] = None,
-    weak_medium_snr: Optional[float] = None,
-    medium_strong_snr: Optional[float] = None,
-    sg_window: Optional[int] = None,
-    sg_order: Optional[int] = None,
-    primary_window: Optional[str] = None,
-    min_exclusion_mhz: Optional[float] = None,
-    run_gap_pass: Optional[bool] = None,
     *,
     settings: Optional[PeakDetectionSettings] = None,
     preset: Optional[str] = None,
@@ -919,37 +911,20 @@ def detect_peaks(
     range); peaks are reported on that user grid with SNR measured against the
     canonical Stage 2 noise.  There is no per-Stage-3 trim or zpf.
 
+    Settings resolve through the chain (``settings`` / ``preset`` > persisted >
+    hard default); pass ``settings=`` to drive detection from a
+    :class:`PeakDetectionSettings` dataclass, or ``preset=NAME_OR_PATH`` to load
+    from packaged YAML. They are mutually exclusive, and a value persisted in
+    the ``.ftmw`` outranks either (D11). Set individual knobs via
+    ``settings=PeakDetectionSettings(...)`` or a YAML preset's ``stage3:`` block.
+
     Parameters
     ----------
     file_path : str or Path
         Path to .ftmw pipeline file.
-    min_snr : float, optional
-        Promotion SNR cutoff (peaks at/above this threshold on the user grid
-        are marked ``promoted=True`` and move to Stage 4); detection runs
-        aggressively below this internally. ALL detected peaks are stored;
-        ``promoted`` marks the Stage-4 gate. Default 3.0.
-    weak_medium_snr : float, optional
-        Weak/medium SNR boundary for classification (default 10.0).
-    medium_strong_snr : float, optional
-        Medium/strong SNR boundary for classification (default 50.0).
-    sg_window : int, optional
-        Savitzky-Golay smoothing window in points (default 11).
-    sg_order : int, optional
-        Savitzky-Golay polynomial order (default 3).
-    primary_window : str, optional
-        Apodization window for the primary (position-finding) pass; any
-        scipy.signal window name (e.g. ``"blackmanharris"``, ``"blackman"``,
-        ``"hann"``). Default ``"blackmanharris"`` -- a strong window that
-        suppresses truncation sidelobes so the primary strong-line list is
-        clean. Affects only which positions are found, never amplitude/SNR.
-    min_exclusion_mhz : float, optional
-        Minimum gap-pass exclusion half-width per primary peak in MHz.
-    run_gap_pass : bool, optional
-        If False, disable the unapodized gap pass (primary pass only).
     settings : PeakDetectionSettings, optional
-        Bundle of Stage 3 knobs (preset-layer of the four-layer
-        resolution chain); fields left ``None`` fall through. Mutually
-        exclusive with ``preset``.
+        Bundle of Stage 3 knobs; fields left ``None`` fall through the
+        resolution chain. Mutually exclusive with ``preset``.
     preset : str, optional
         Bare preset name or path to a YAML file carrying a ``stage3:`` block.
         Mutually exclusive with ``settings``.
@@ -964,14 +939,6 @@ def detect_peaks(
     try:
         pipeline = Pipeline.open(file_path)
         return pipeline.detect_peaks(
-            min_snr=min_snr,
-            weak_medium_snr=weak_medium_snr,
-            medium_strong_snr=medium_strong_snr,
-            sg_window=sg_window,
-            sg_order=sg_order,
-            primary_window=primary_window,
-            min_exclusion_mhz=min_exclusion_mhz,
-            run_gap_pass=run_gap_pass,
             settings=settings,
             preset=preset,
         )

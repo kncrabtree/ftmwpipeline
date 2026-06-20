@@ -35,10 +35,19 @@ from ftmwpipeline._internal.stage3_impl import (
     detect_peaks_impl,
     load_peaks_impl,
 )
+from ftmwpipeline.core.peak_detection_settings import (
+    PeakDetectionSettings,
+    PromotionSubSettings,
+)
 from ftmwpipeline.preprocessing.peak_detection import (
     DEFAULT_INTERNAL_MIN_SNR,
     DEFAULT_MIN_SNR,
 )
+
+
+def _promotion_settings(min_snr: float) -> PeakDetectionSettings:
+    return PeakDetectionSettings(promotion=PromotionSubSettings(min_snr=min_snr))
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -51,7 +60,23 @@ TRIM = (26500.0, 40000.0)
 
 
 @pytest.fixture(scope="module")
-def stage3_result(exp_2638_data_path, tmp_path_factory):
+def stage2_file(exp_2638_data_path, tmp_path_factory):
+    """A 2638 file prepared through Stage 2 (no Stage 3 block persisted yet).
+
+    The varying-cutoff tests copy this so each detection runs against the hard
+    defaults: a persisted Stage 3 ``min_snr`` would outrank the ``settings=``
+    preset layer (D11), masking the cutoff under test.
+    """
+    tmp = tmp_path_factory.mktemp("stage3_promotion_stage2")
+    fp = str(tmp / "exp.ftmw")
+    import_data_impl(fp, source=exp_2638_data_path)
+    ftmw.compute_ft(fp, trim=TRIM)
+    ftmw.estimate_noise(fp)  # scatter (canonical default) Stage 3 reference
+    return fp
+
+
+@pytest.fixture(scope="module")
+def stage3_result(stage2_file, tmp_path_factory):
     """
     Prepare 2638 through Stage 2 with the canonical (unapodized) FT, then run
     detect_peaks_impl with default settings.  The file path is also returned
@@ -60,13 +85,23 @@ def stage3_result(exp_2638_data_path, tmp_path_factory):
     NOTE: per the CLAUDE.md instructions the task specifies zpf=1 for Stage 3
     tests; this matches the reference Stage 3 test suite.
     """
+    import shutil
+
     tmp = tmp_path_factory.mktemp("stage3_promotion")
     fp = str(tmp / "exp.ftmw")
-    import_data_impl(fp, source=exp_2638_data_path)
-    ftmw.compute_ft(fp, trim=TRIM)
-    ftmw.estimate_noise(fp)  # scatter (canonical default) Stage 3 reference
+    shutil.copy(stage2_file, fp)
     result = detect_peaks_impl(fp)
     return result, fp
+
+
+@pytest.fixture
+def fresh_stage2_file(stage2_file, tmp_path):
+    """A per-test writable copy of the Stage-2 file (no Stage 3 block)."""
+    import shutil
+
+    fp = str(tmp_path / "exp.ftmw")
+    shutil.copy(stage2_file, fp)
+    return fp
 
 
 # ---------------------------------------------------------------------------
@@ -249,39 +284,35 @@ class TestOnDiskStructure:
 
 
 # ---------------------------------------------------------------------------
-# Variable promotion cutoff (function-scoped; re-run detect on module file)
+# Variable promotion cutoff (each runs on its own fresh Stage-2 copy, so the
+# settings= preset layer is not shadowed by a persisted Stage 3 min_snr)
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def stage3_file(stage3_result):
-    """Return just the file path from the module fixture (pre-Stage-2 already done)."""
-    _, fp = stage3_result
-    return fp
-
-
-def test_min_snr_below_floor_lowers_internal_floor(stage3_file):
+def test_min_snr_below_floor_lowers_internal_floor(fresh_stage2_file):
     """min_snr=1.5 (below DEFAULT_INTERNAL_MIN_SNR=2.0) -> internal_min_snr=1.5."""
-    r = detect_peaks_impl(stage3_file, min_snr=1.5)
+    r = detect_peaks_impl(fresh_stage2_file, settings=_promotion_settings(1.5))
     assert r["internal_min_snr"] == pytest.approx(
         1.5
     ), f"Expected internal_min_snr=1.5, got {r['internal_min_snr']}"
     assert r["promotion_min_snr"] == pytest.approx(1.5)
 
 
-def test_min_snr_above_floor_keeps_internal_floor(stage3_file):
+def test_min_snr_above_floor_keeps_internal_floor(fresh_stage2_file):
     """min_snr=10.0 -> internal_min_snr stays at 2.0 (floor is not raised)."""
-    r = detect_peaks_impl(stage3_file, min_snr=10.0)
+    r = detect_peaks_impl(fresh_stage2_file, settings=_promotion_settings(10.0))
     assert r["internal_min_snr"] == pytest.approx(
         DEFAULT_INTERNAL_MIN_SNR
     ), f"Expected internal_min_snr=2.0, got {r['internal_min_snr']}"
     assert r["promotion_min_snr"] == pytest.approx(10.0)
 
 
-def test_lower_internal_floor_yields_at_least_as_many_peaks(stage3_file, stage3_result):
+def test_lower_internal_floor_yields_at_least_as_many_peaks(
+    fresh_stage2_file, stage3_result
+):
     """Detection at floor=1.5 must yield >= as many stored peaks as the default (2.0)."""
     default_n = stage3_result[0]["n_peaks"]
-    r_low = detect_peaks_impl(stage3_file, min_snr=1.5)
+    r_low = detect_peaks_impl(fresh_stage2_file, settings=_promotion_settings(1.5))
     assert r_low["n_peaks"] >= default_n, (
         f"Lower floor (1.5) yielded fewer peaks ({r_low['n_peaks']}) than "
         f"default floor (2.0, {default_n} peaks)"

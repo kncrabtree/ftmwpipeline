@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence, Tuple, cast
 
-from ...core import noise_settings, tau_calibration_settings
+from ...core import noise_settings, peak_detection_settings, tau_calibration_settings
 from ...core.knob_metadata import field_knob_meta
 from .fit_support import reduce_plan_for_fit
 from .plots import (
@@ -1058,232 +1058,93 @@ _PEAK_SEE_ALSO = (
 
 
 def _peak_knob(
-    path: str,
     sub_block: str,
     field_name: str,
-    help_: str,
-    inst: str,
-    grid: Tuple[Any, ...],
-    tier: str = "primary",
+    *,
+    metric: MetricFn,
+    metric_columns: Tuple[str, ...],
+    plot: Optional[Callable[..., Any]],
     see_also: Optional[str] = None,
 ) -> None:
+    """Register a Stage 3 ``KnobSpec`` reading its descriptors from the field.
+
+    ``help`` / ``tier`` / ``inst_sensitivity`` / ``default_grid`` come from the
+    :class:`PeakDetectionSettings` field metadata (single source); only the
+    sweep behavior (``run`` / ``metric`` / ``plot``) and the structural
+    ``path`` / ``requires`` / ``see_also`` are supplied here.
+    """
+    km = field_knob_meta(
+        peak_detection_settings.PeakDetectionSettings,
+        f"{sub_block}.{field_name}",
+    )
+    assert (
+        km.grid is not None
+    ), f"stage3.{sub_block}.{field_name} registered without a sweep grid"
     _register(
         KnobSpec(
-            path=path,
+            path=f"stage3.{sub_block}.{field_name}",
             stage="stage3_peaks",
             requires="stage2_noise_result",
-            help=help_,
-            inst_sensitivity=inst,
-            default_grid=grid,
+            help=km.help,
+            inst_sensitivity=km.inst_sensitivity,
+            default_grid=km.grid,
             run=_run_peaks(sub_block, field_name),
-            metric=_metric_peaks,
-            metric_columns=_PEAK_COLS,
-            plot=plot_peak_detection,
-            tier=tier,
+            metric=metric,
+            metric_columns=metric_columns,
+            plot=plot,
+            tier=km.tier,
             see_also=see_also,
         )
     )
 
 
-# Primary tier — the Y-rated detection-shaping knobs.
-_peak_knob(
-    "stage3.promotion.min_snr",
-    "promotion",
-    "min_snr",
-    "User-grid promotion cutoff: peaks at/above this SNR advance to Stage 4.",
-    "Y",
-    (2.0, 2.5, 3.0, 4.0, 5.0),
-    see_also=_PEAK_SEE_ALSO,
-)
-_peak_knob(
-    "stage3.promotion.internal_min_snr",
-    "promotion",
-    "internal_min_snr",
-    "Internal detection floor on the zpf grids (recovers lines apodization smears).",
-    "Y",
-    (1.5, 2.0, 2.5, 3.0),
-    see_also=_PEAK_SEE_ALSO,
-)
-_peak_knob(
-    "stage3.primary_pass.min_exclusion_mhz",
-    "primary_pass",
-    "min_exclusion_mhz",
-    "Half-width (MHz) around each primary peak the gap pass excludes from its mask.",
-    "Y",
-    (0.0, 0.05, 0.1, 0.2, 0.5),
-    see_also=_PEAK_SEE_ALSO,
-)
-_peak_knob(
-    "stage3.primary_pass.primary_leakage_floor_k",
-    "primary_pass",
-    "primary_leakage_floor_k",
-    "Scale on the primary leakage-aware floor k·(S_coh/√M)·σ (0 disables).",
-    "Y",
-    (0.0, 0.5, 1.0, 2.0, 3.0),
-    see_also=_PEAK_SEE_ALSO,
-)
-_peak_knob(
-    "stage3.gap_pass.gap_leakage_floor_k",
-    "gap_pass",
-    "gap_leakage_floor_k",
-    "Scale on the gap leakage-aware floor k·(S_coh/√M)·σ (0 disables; replaces "
-    "the former hard S_coh mask).",
-    "Y",
-    (0.0, 1.0, 2.0, 3.0, 5.0),
-    see_also=_PEAK_SEE_ALSO,
-)
-
-# Advanced — classification edges (move only the weak/medium/strong labels).
-_peak_knob(
-    "stage3.promotion.weak_medium_snr",
-    "promotion",
-    "weak_medium_snr",
-    "Weak/medium SNR classification boundary.",
-    "Y",
-    (5.0, 10.0, 15.0, 20.0),
-    tier="advanced",
-)
-_peak_knob(
-    "stage3.promotion.medium_strong_snr",
-    "promotion",
-    "medium_strong_snr",
-    "Medium/strong SNR classification boundary.",
-    "Y",
-    (30.0, 50.0, 75.0, 100.0),
-    tier="advanced",
-)
-
-# Advanced — Savitzky-Golay apex localiser (algorithmic conditioning).
-for _path, _field, _help, _grid in (
-    (
-        "stage3.savgol.sg_window",
-        "sg_window",
-        "Primary-pass Savitzky-Golay window (bins, odd).",
-        (7, 9, 11, 15),
-    ),
-    (
-        "stage3.savgol.sg_order",
-        "sg_order",
-        "Savitzky-Golay polynomial order.",
-        (2, 3, 4),
-    ),
-    (
-        "stage3.savgol.sg_fwhm_coverage",
-        "sg_fwhm_coverage",
-        "Gap-pass window target in line-FWHM units (window auto-derived).",
-        (3.0, 4.0, 5.0),
-    ),
-    (
-        "stage3.savgol.sg_min_window",
-        "sg_min_window",
-        "Minimum Savitzky-Golay window (polynomial stability floor).",
-        (5, 7, 9),
-    ),
+# Detection-shaping knobs that point at the noise-floor twins via see_also.
+for _sub, _field in (
+    ("promotion", "min_snr"),
+    ("promotion", "internal_min_snr"),
+    ("primary_pass", "min_exclusion_mhz"),
+    ("primary_pass", "primary_leakage_floor_k"),
+    ("gap_pass", "gap_leakage_floor_k"),
 ):
-    _peak_knob(_path, "savgol", _field, _help, "N", _grid, tier="advanced")
+    _peak_knob(
+        _sub,
+        _field,
+        metric=_metric_peaks,
+        metric_columns=_PEAK_COLS,
+        plot=plot_peak_detection,
+        see_also=_PEAK_SEE_ALSO,
+    )
 
-# Advanced — primary-pass apodization + zpf (position-finding only).
-_peak_knob(
-    "stage3.primary_pass.primary_window",
-    "primary_pass",
-    "primary_window",
-    "Primary-pass apodization window (sidelobe suppression; affects positions only).",
-    "N",
-    ("blackmanharris", "blackman", "hann", "hamming"),
-    tier="advanced",
-)
-_peak_knob(
-    "stage3.primary_pass.detection_zpf",
-    "primary_pass",
-    "detection_zpf",
-    "Zero-padding factor for the active-region primary spectrum.",
-    "N",
-    (1, 2, 3),
-    tier="advanced",
-)
-
-# Advanced — the primary pass's own apodized-domain σ (scatter estimator on the
-# Blackman-Harris spectrum). Mirrors the Stage 2 NoiseSettings knobs; see
-# stage2.* for the unapodized authority twin.
-for _path, _field, _help, _grid, _inst in (
-    (
-        "stage3.primary_pass.noise_window_mhz",
-        "noise_window_mhz",
-        "Apodized-domain σ: scatter-MAD window width (MHz).",
-        (40.0, 60.0, 80.0, 120.0, 160.0),
-        "Y",
-    ),
-    (
-        "stage3.primary_pass.noise_pedestal_mhz",
-        "noise_pedestal_mhz",
-        "Apodized-domain σ: high-pass running-median width (MHz).",
-        (10.0, 20.0, 40.0, 80.0),
-        "Y",
-    ),
-    (
-        "stage3.primary_pass.noise_smoothing_mhz",
-        "noise_smoothing_mhz",
-        "Apodized-domain σ: broad lower-envelope median width (MHz; 0=off).",
-        (0.0, 400.0, 800.0, 1200.0),
-        "Y",
-    ),
-    (
-        "stage3.primary_pass.noise_line_k",
-        "noise_line_k",
-        "Apodized-domain σ: robust-σ multiple above which a bin self-masks.",
-        (4.0, 6.0, 8.0, 12.0),
-        "maybe",
-    ),
-    (
-        "stage3.primary_pass.noise_smoothing_percentile",
-        "noise_smoothing_percentile",
-        "Apodized-domain σ: percentile of the broad smoothing (50=median).",
-        (25.0, 50.0, 75.0),
-        "maybe",
-    ),
-    (
-        "stage3.primary_pass.noise_convolve_mhz",
-        "noise_convolve_mhz",
-        "Apodized-domain σ: step-removing second-pass Gaussian σ (MHz; 0=off).",
-        (0.0, 100.0, 200.0, 400.0),
-        "N",
-    ),
-    (
-        "stage3.primary_pass.noise_n_iter",
-        "noise_n_iter",
-        "Apodized-domain σ: self-mask refinement iterations.",
-        (1, 2, 3, 5),
-        "N",
-    ),
-    (
-        "stage3.primary_pass.noise_region_aware",
-        "noise_region_aware",
-        "Apodized-domain σ: region-aware Rician correction switch.",
-        (False, True),
-        "N",
-    ),
+# Every other Stage 3 knob: classification edges, the SavGol localiser, the
+# primary-pass apodization + zpf, the apodized-domain σ scatter knobs, and the
+# gap-pass structural toggles. All descriptors come from the field.
+for _sub, _field in (
+    ("promotion", "weak_medium_snr"),
+    ("promotion", "medium_strong_snr"),
+    ("savgol", "sg_window"),
+    ("savgol", "sg_order"),
+    ("savgol", "sg_fwhm_coverage"),
+    ("savgol", "sg_min_window"),
+    ("primary_pass", "primary_window"),
+    ("primary_pass", "detection_zpf"),
+    ("primary_pass", "noise_window_mhz"),
+    ("primary_pass", "noise_pedestal_mhz"),
+    ("primary_pass", "noise_smoothing_mhz"),
+    ("primary_pass", "noise_line_k"),
+    ("primary_pass", "noise_smoothing_percentile"),
+    ("primary_pass", "noise_convolve_mhz"),
+    ("primary_pass", "noise_n_iter"),
+    ("primary_pass", "noise_region_aware"),
+    ("gap_pass", "run_gap_pass"),
+    ("gap_pass", "gap_active_zpf"),
 ):
-    _peak_knob(_path, "primary_pass", _field, _help, _inst, _grid, tier="advanced")
-
-# Advanced — gap pass structural toggles.
-_peak_knob(
-    "stage3.gap_pass.run_gap_pass",
-    "gap_pass",
-    "run_gap_pass",
-    "Enable the matched-filter gap pass (recovers weak apodization-suppressed lines).",
-    "N",
-    (False, True),
-    tier="advanced",
-)
-_peak_knob(
-    "stage3.gap_pass.gap_active_zpf",
-    "gap_pass",
-    "gap_active_zpf",
-    "Zero-padding factor for the matched-filter active-region FFT.",
-    "N",
-    (1, 2, 3),
-    tier="advanced",
-)
+    _peak_knob(
+        _sub,
+        _field,
+        metric=_metric_peaks,
+        metric_columns=_PEAK_COLS,
+        plot=plot_peak_detection,
+    )
 
 
 # ---------------------------------------------------------------------------
