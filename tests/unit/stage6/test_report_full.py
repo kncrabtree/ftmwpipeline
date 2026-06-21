@@ -521,6 +521,34 @@ def test_index_final_table_catalog_column():
     assert "<th>Catalog</th>" not in _index_final_table(prod)
 
 
+def test_lattice_cell_and_table_columns():
+    """The clock-lattice annotation: a flagged badge for an on-lattice line,
+    rendered as its own column in both the per-window and index tables."""
+    from ftmwpipeline._internal.report_html_impl import (
+        _index_final_table,
+        _lattice_cell,
+    )
+    from ftmwpipeline.core.data_structures import FinalProducts
+
+    on = _final_peak(30000.0, clock_lattice="320x6 (bb)")
+    off = _final_peak(31000.0)  # clock_lattice defaults None
+    cell = _lattice_cell(on)
+    assert 'class="badge lattice"' in cell
+    assert "320x6 (bb)" in cell
+    assert "instrumental artifact" in cell  # tooltip framing
+    assert _lattice_cell(off) == ""
+
+    # Per-window detail table.
+    win = _window_peak_table([on, off], "uV", 1e-6)
+    assert "<th>Lattice</th>" in win
+    assert 'class="badge lattice"' in win
+
+    # Index line list.
+    idx = _index_final_table(FinalProducts(peaks=[on, off]))
+    assert "<th>Lattice</th>" in idx
+    assert "320x6 (bb)" in idx
+
+
 def test_summary_distribution_groups_appends_pull():
     from types import SimpleNamespace
 

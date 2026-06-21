@@ -182,6 +182,36 @@ def test_metadata_and_origin_carried():
     assert [p.window_id for p in fp.peaks] == [3, 7]
 
 
+def test_clock_lattice_carried_and_roundtrips(tmp_path):
+    fit = _synthetic_fit()
+    # One line sits on the declared clock lattice; the other is off-lattice.
+    fit.fitted_peaks[0].clock_lattice = "320x6 (bb)"
+    fit.fitted_peaks[1].clock_lattice = None
+    fp = _build_final_products(
+        fit,
+        probe_freq_mhz=PROBE,
+        sideband=Sideband.LOWER,
+        calibration_state="rb_locked",
+        epsilon=0.0,
+        sigma_epsilon=0.0,
+        sigma_floor_khz=0.0,
+    )
+    assert [p.clock_lattice for p in fp.peaks] == ["320x6 (bb)", None]
+
+    review = Stage6Review(final_products=fp)
+    out = tmp_path / "review.h5"
+    with h5py.File(out, "w") as h5f:
+        grp = h5f.create_group("stage6_review")
+        save_stage6_review_to_hdf5(review, grp)
+    with h5py.File(out, "r") as h5f:
+        loaded = load_stage6_review_from_hdf5(h5f["stage6_review"])
+    assert loaded.final_products is not None
+    assert [p.clock_lattice for p in loaded.final_products.peaks] == [
+        "320x6 (bb)",
+        None,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Serialization round-trips
 # ---------------------------------------------------------------------------

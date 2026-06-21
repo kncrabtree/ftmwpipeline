@@ -124,6 +124,7 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
         "amplitude_error": p.amplitude_error,
         "phase_error": p.phase_error,
         "snr_error": p.snr_error,
+        "clock_lattice": p.clock_lattice,
     }
 
 
@@ -149,6 +150,9 @@ def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
         amplitude_error=_opt_float(d, "amplitude_error"),
         phase_error=_opt_float(d, "phase_error"),
         snr_error=_opt_float(d, "snr_error"),
+        clock_lattice=(
+            None if d.get("clock_lattice") is None else str(d["clock_lattice"])
+        ),
     )
 
 

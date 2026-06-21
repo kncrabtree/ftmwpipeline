@@ -47,6 +47,7 @@ def _products() -> FinalProducts:
                 amplitude_error=0.0005,
                 phase_error=0.02,
                 snr_error=4.0,
+                clock_lattice="320x6 (bb)",
             ),
             FinalPeak(
                 frequency_mhz=39000.019800,
@@ -128,6 +129,9 @@ def test_csv_structure(tmp_path):
     assert rows[1]["amplitude_err"] == ""
     assert rows[1]["snr_err"] == ""
     assert rows[1]["window_id"] == ""
+    # The clock-lattice annotation: identity on-lattice, empty off-lattice.
+    assert rows[0]["clock_lattice"] == "320x6 (bb)"
+    assert rows[1]["clock_lattice"] == ""
 
 
 def test_json_structure(tmp_path):
@@ -146,6 +150,8 @@ def test_json_structure(tmp_path):
     assert p0["snr_error"] == pytest.approx(4.0)
     assert payload["peaks"][1]["phase_rad"] is None
     assert payload["peaks"][1]["amplitude_error"] is None
+    assert p0["clock_lattice"] == "320x6 (bb)"
+    assert payload["peaks"][1]["clock_lattice"] is None
 
 
 def test_latex_structure(tmp_path):

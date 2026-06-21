@@ -231,6 +231,9 @@ html.report-compact .spectrum-ctx.zoom-expanded .spectrum-ctx-svg {
          margin-left: 0.35rem; }
 /* Catalog proximity-match badge (a cross-check echo, not an assignment). */
 .badge.cat { background: #cfe8d2; color: #1d5026; margin-left: 0; cursor: help; }
+/* Clock-lattice badge (a line on the declared clock lattice -- a candidate
+   instrumental artifact flagged for review, never auto-removed). */
+.badge.lattice { background: #f3c9bd; color: #7a2810; margin-left: 0; cursor: help; }
 .nav { margin: 1rem 0; }
 /* The summary key-value list fills the row as a responsive multi-column grid
    (side-by-side on a wide screen) and collapses to a single column when narrow. */
@@ -1738,6 +1741,23 @@ def _catalog_cell(m: Optional[CatalogMatch]) -> str:
     return f'<span class="badge cat" title="{_esc(title)}">{_esc(m.label)}</span>'
 
 
+def _lattice_cell(p: FinalPeak) -> str:
+    """A clock-lattice badge cell: the matched lattice identity, or empty.
+
+    A non-empty cell marks a fitted line that lands on the declared clock
+    lattice -- a candidate instrumental artifact that survived the spur gate.
+    It is flagged for review, never an assignment and never auto-removed.
+    """
+    cl = getattr(p, "clock_lattice", None)
+    if not cl:
+        return ""
+    title = (
+        f"On the declared clock lattice ({cl}) -- possible instrumental "
+        "artifact, not a molecular line"
+    )
+    return f'<span class="badge lattice" title="{_esc(title)}">{_esc(cl)}</span>'
+
+
 def _index_final_table(
     products: FinalProducts,
     matches: Optional[List[Optional[CatalogMatch]]] = None,
@@ -1771,6 +1791,7 @@ def _index_final_table(
             _esc(_scaled(p.amplitude, uval)),
             _esc(_md_num(p.snr, 3)),
             _esc(p.origin),
+            _lattice_cell(p),
             win_cell,
         ]
         if with_cat:
@@ -1782,6 +1803,7 @@ def _index_final_table(
         f"Amplitude ({_esc(uname)})",
         "SNR",
         "Origin",
+        "Lattice",
         "Window",
     ]
     if with_cat:
@@ -1841,6 +1863,7 @@ def _window_peak_table(
             _esc("" if p.phase is None else _concise(float(p.phase), p.phase_error)),
             _esc("" if p.snr is None else _concise(float(p.snr), p.snr_error)),
             _esc(p.origin),
+            _lattice_cell(p),
         ]
         if with_cat:
             row.append(_catalog_cell(matches[i]))  # type: ignore[index]
@@ -1860,6 +1883,7 @@ def _window_peak_table(
         "Phase (rad)",
         "SNR",
         "Origin",
+        "Lattice",
     ]
     if with_cat:
         head.append("Catalog")

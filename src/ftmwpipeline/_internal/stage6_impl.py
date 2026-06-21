@@ -3288,6 +3288,7 @@ def _build_final_products(
                 amplitude_error=amp_err,
                 phase_error=None if pk.phase_error is None else float(pk.phase_error),
                 snr_error=snr_err,
+                clock_lattice=pk.clock_lattice,
             )
         )
 

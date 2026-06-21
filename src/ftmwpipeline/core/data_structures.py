@@ -1891,6 +1891,12 @@ class FinalPeak:
     snr_error : float or None
         1-sigma uncertainty on ``snr``, propagated from the amplitude error
         (``snr * amplitude_error / amplitude``), or ``None``.
+    clock_lattice : str or None
+        Carried through from the Stage 5 peak: the identity of the declared
+        clock-lattice point the line lands on (e.g. ``"320x6 (bb)"``), or
+        ``None`` when off-lattice or no clock declaration was supplied. An
+        on-lattice line is a candidate instrumental artifact that survived the
+        spur gate; the report flags it for review but never removes it.
     """
 
     frequency_mhz: float
@@ -1908,6 +1914,7 @@ class FinalPeak:
     amplitude_error: Optional[float] = None
     phase_error: Optional[float] = None
     snr_error: Optional[float] = None
+    clock_lattice: Optional[str] = None
 
 
 @dataclass

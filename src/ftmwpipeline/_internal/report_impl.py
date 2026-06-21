@@ -238,6 +238,7 @@ _CSV_COLUMNS = [
     "snr_err",
     "origin",
     "window_id",
+    "clock_lattice",
 ]
 
 
@@ -273,6 +274,7 @@ def _csv_row(p: FinalPeak, unit_value: float) -> List[str]:
         _g(p.snr_error),
         p.origin,
         "" if p.window_id is None else str(p.window_id),
+        p.clock_lattice or "",
     ]
 
 
@@ -345,6 +347,7 @@ def _peak_json(
         "snr_error": _jnum(p.snr_error),
         "origin": p.origin,
         "window_id": p.window_id,
+        "clock_lattice": p.clock_lattice,
     }
     if with_catalog:
         payload["catalog"] = _catalog_json(match)
