@@ -31,6 +31,8 @@ into the committed ``docs/source/figures`` directory:
   window (a resolved close blend beside a third line, with a masked clock spur):
   the real/imaginary/magnitude data with the model and residuals, the residual
   histogram, and the fitted-peak table.
+* ``stage6_review.png`` -- the Stage 6 report's full-spectrum index overview: the
+  finalized active spectrum with the review-flagged (attention) windows shaded.
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -82,6 +84,9 @@ def _build_pipeline(workdir: Path) -> str:
     ftmw.detect_peaks(path)
     ftmw.assign_windows(path)
     ftmw.fit_peaks(path)
+    # Stage 6 review: build the curation layer (attention routing) and the
+    # consolidated final-products table the report figure reads.
+    ftmw.review_run(path)
     return path
 
 
@@ -190,6 +195,35 @@ def make_figures() -> None:
             detail_wid = max(cand)[1] if cand else fit5.window_fits[0].window_id
         fig5b = render_fit_detail_impl(path, detail_wid, title="")
         fig5b.savefig(FIG_DIR / "stage5_fit_detail.png", dpi=DPI, bbox_inches="tight")
+
+        # Stage 6: the report's full-spectrum index overview -- the finalized
+        # spectrum with the review-flagged (attention) windows shaded. This is
+        # the review surface over the consolidated line list.
+        from ftmwpipeline._internal.report_html_impl import (
+            _plot_index_overview,
+            _window_range,
+        )
+        from ftmwpipeline._internal.stage5_impl import _resolve_detail_bundle
+        from ftmwpipeline.io.stage6_review_serialization import (
+            load_stage6_review_from_file,
+        )
+
+        bundle = _resolve_detail_bundle(path)
+        review = load_stage6_review_from_file(path)
+        win_fits = {
+            int(wf.window_id): wf
+            for wf in bundle.fit.window_fits
+            if wf.window is not None and wf.window_id is not None
+        }
+        attention_ranges = [
+            _window_range(win_fits[wid])
+            for wid, st in sorted(review.window_statuses.items())
+            if st.needs_attention and wid in win_fits
+        ]
+        fig6 = _plot_index_overview(
+            bundle, attention_ranges, title="", figsize=(13.0, 3.2)
+        )
+        fig6.savefig(FIG_DIR / "stage6_review.png", dpi=DPI, bbox_inches="tight")
 
 
 def main() -> None:
