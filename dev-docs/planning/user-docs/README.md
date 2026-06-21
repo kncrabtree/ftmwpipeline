@@ -609,6 +609,17 @@ write `stage6_review.rst` (the review/read-edit surface, the L1/L2/L3 reports, t
 cross-reference, the attention metrics) and add a Stage 6 figure. Memory carries
 deep Stage 6 context — start from `[[stage6-sequence-handoff]]` and its links.
 
+**Carry forward — incorporate the per-line determinacy score into Stage 6.** The
+Stage 5 work added `fitting/validation.peak_quality_score` (a prior-free `k/4`
+determinacy tier; see *Resolved during review* and [[user-docs-effort]]), so far
+surfaced only in the `fit show` per-window detail table. Stage 6 should consume it:
+add it as a `review rank --by` key, include the `qual` score as a column in the
+HTML report's fitted-lines table (and consider the L1 `report table` output), and
+make sure its framing stays "determinacy, not realness" wherever it appears. It
+reuses the persisted survival floor (`diagnostics["peak_survival"]["snr_floor"]`)
+and VIF threshold (`diagnostics["vif_collapse"]["vif_threshold"]`) — already
+sourced that way in `render_fit_detail_impl`.
+
 **Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
 review the rendered HTML; direct all run artifacts to `scratch/`;
 `docs/source/figures/generate.py` (now builds through Stage 5) is the reference
