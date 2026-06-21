@@ -10,6 +10,8 @@ Implements the ``review run``/``show``/``rank``/``edit``/``merge``/``split``/
 import argparse
 from typing import Any, List, Optional, Sequence
 
+import h5py
+
 from .._internal.stage6_impl import (
     DEFAULT_ATTENTION_CANDIDATE_EVIDENCE,
     DEFAULT_DISPLAY_BAR,
@@ -34,8 +36,6 @@ from .._internal.stage6_impl import (
 from ..core.data_structures import FittingResult, LedgerCandidate, Stage6Review
 from ..io.fitting_serialization import load_spectrum_fit_from_hdf5
 from .utils import add_stage_object, setup_logging
-
-import h5py
 
 
 def _ensure_ftmw(path: str) -> str:
@@ -116,8 +116,9 @@ def cmd_review_show(args: argparse.Namespace) -> int:
     # ---- render window fit to file (--window N --output PATH) ----------------
     if window_filter is not None and output_path is not None:
         try:
-            from .._internal.stage5_impl import render_fit_detail_impl
             import matplotlib
+
+            from .._internal.stage5_impl import render_fit_detail_impl
 
             matplotlib.use("Agg")
             fig = render_fit_detail_impl(file_path, window_filter)
@@ -598,7 +599,9 @@ def cmd_review_apply(args: argparse.Namespace) -> int:
         print(f"Error: {exc}")
         return 1
 
-    header = "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
+    header = (
+        "review apply (dry run): resolved plan" if dry_run else "review apply: plan"
+    )
     print(header)
     if not result.plan:
         print("  (no actions)")
@@ -669,9 +672,7 @@ def cmd_review_undo(args: argparse.Namespace) -> int:
     for i, action in enumerate(result.plan, start=1):
         print(f"  {i:>3}. {describe_planned_action(action)}")
     if dry_run:
-        print(
-            f"{len(result.removed)} decision(s) would be undone (nothing written)."
-        )
+        print(f"{len(result.removed)} decision(s) would be undone (nothing written).")
     else:
         print(
             f"undid {len(result.removed)} decision(s); "
@@ -850,9 +851,7 @@ def register_review_commands(subparsers: Any) -> None:
     p_apply.add_argument(
         "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
     )
-    p_apply.add_argument(
-        "curation_file", help="Path to the curation CSV to apply."
-    )
+    p_apply.add_argument("curation_file", help="Path to the curation CSV to apply.")
     p_apply.add_argument(
         "--dry-run",
         dest="dry_run",

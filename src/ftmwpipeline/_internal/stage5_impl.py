@@ -2040,7 +2040,10 @@ def visualize_fit_impl(
     )
 
     # The fit and the active FT share the ``dt_us * rfft(active)`` amplitude
-    # convention, so the model overlay needs no rescale.
+    # convention, so the model overlay needs no rescale. They also share the
+    # ``[0, T]`` active-region phase frame, so the model needs no phase re-roll
+    # either (``start_us = 0`` below); the re-roll is only for a persisted-grid
+    # overlay, which this is not.
     model_amplitude_scale = 1.0
 
     from ..visualization.fit_visualization import plot_spectrum_fit
@@ -2054,8 +2057,6 @@ def visualize_fit_impl(
         )
         title = f"Pipeline {name} - Stage 5 Fit ({scope})"
 
-    start_us = float(base_pp.start_us) if base_pp.start_us is not None else 0.0
-
     return plot_spectrum_fit(
         frequencies=active_ft.freq_array,
         complex_spectrum=active_ft.complex_spectrum,
@@ -2067,8 +2068,7 @@ def visualize_fit_impl(
         title=title,
         window_id=window_id,
         model_amplitude_scale=model_amplitude_scale,
-        probe_freq_mhz=float(fid.probe_freq_mhz),
-        start_us=start_us,
+        start_us=0.0,
     )
 
 

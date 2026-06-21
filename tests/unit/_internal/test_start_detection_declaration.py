@@ -16,14 +16,14 @@ import h5py
 import numpy as np
 import pytest
 
-from ftmwpipeline.core.data_structures import ChirpWindow, FID, Sideband
+from ftmwpipeline._internal.start_detection_impl import detect_start_time_impl
+from ftmwpipeline.core.data_structures import FID, ChirpWindow, Sideband
 from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
 from ftmwpipeline.file_manager import SourceMetadata, create_pipeline_file
 from ftmwpipeline.io.stage_fit_settings_serialization import (
     read_recommended_chirp_window,
     write_recommended_chirp_window,
 )
-from ftmwpipeline._internal.start_detection_impl import detect_start_time_impl
 
 # Coarse detection settings for speed.
 _FAST = StartDetectionSettings(step_us=0.05, sweep_max_us=7.0)

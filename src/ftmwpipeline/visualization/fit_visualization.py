@@ -6,17 +6,16 @@ Two modes:
 * **Overview** (``window_id=None``): the persisted high-resolution magnitude
   spectrum overlaid with the fitted model (sum of every window's
   contribution), with each fit window's span shaded. The model is
-  re-evaluated on the persisted grid via :func:`model_spectrum` -- the
-  active-FT was a fit-time convenience; the model is grid-agnostic.
+  re-evaluated on the persisted grid via :func:`model_spectrum`, which is
+  grid-agnostic, so the display grid is independent of the fit-time active-FT.
 * **Per-window detail** (``window_id=int``): four panels for one window --
   real and imaginary parts of the model-on-data with their residuals, the
   magnitude with its residual, the time-domain envelope (intuition only),
   and a compact rendering of the conservative add-one-peak audit trail.
 
 The time-domain envelope is a synthesized ``A_eff(t) = sum_j 0.5 A_j
-exp(-(t - t0)/tau)`` envelope -- the prototype's "spectrum-IFFT vs the
-time-domain model" panel was dropped per the planning doc as adding little
-diagnostic value over the residual-on-data view.
+exp(-(t - t0)/tau)`` envelope -- an intuition aid alongside the
+residual-on-data view, which carries the diagnostic weight.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ import numpy as np
 
 from ..core.data_structures import FittingResult, Sideband, SpectrumFit
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
+from .report_style import AGGIE_BLUE, AGGIE_GOLD, DOUBLE_DECKER, apply_bare_style
 
 SidebandLike = Union[Sideband, str]
 
@@ -125,7 +125,7 @@ def _shade_windows(ax: plt.Axes, fit: SpectrumFit) -> None:
         if window_fit.window is None:
             continue
         lo, hi = window_fit.window.freq_range
-        ax.axvspan(lo, hi, color="tab:green", alpha=0.08, linewidth=0)
+        ax.axvspan(lo, hi, color=AGGIE_GOLD, alpha=0.12, linewidth=0)
 
 
 def _plot_overview(
@@ -153,25 +153,32 @@ def _plot_overview(
         2, 1, figsize=figsize, sharex=True, gridspec_kw={"height_ratios": [3, 1]}
     )
     ax_top.plot(
-        frequencies, np.abs(complex_spectrum), color="0.4", lw=0.7, label="data |X|"
+        frequencies, np.abs(complex_spectrum), color="0.5", lw=0.7, label="data |X|"
     )
-    ax_top.plot(
-        frequencies, np.abs(model), color="tab:orange", lw=0.9, label="model |X|"
-    )
+    ax_top.plot(frequencies, np.abs(model), color=AGGIE_GOLD, lw=0.9, label="model |X|")
     _shade_windows(ax_top, fit)
     ax_top.set_ylabel("|X(f)|")
     ax_top.set_title(title)
     ax_top.legend(loc="upper right", fontsize=8)
+    apply_bare_style(ax_top)
 
     residual_mag = np.abs(complex_spectrum - model)
-    ax_bot.plot(frequencies, residual_mag, color="tab:red", lw=0.6, label="|residual|")
     ax_bot.plot(
-        frequencies, rms_noise, color="0.4", lw=0.6, ls="--", label="canonical sigma"
+        frequencies, residual_mag, color=DOUBLE_DECKER, lw=0.6, label="|residual|"
+    )
+    ax_bot.plot(
+        frequencies,
+        rms_noise,
+        color=AGGIE_BLUE,
+        lw=0.7,
+        ls="--",
+        label="canonical sigma",
     )
     _shade_windows(ax_bot, fit)
     ax_bot.set_xlabel("frequency (MHz)")
     ax_bot.set_ylabel("|residual|")
     ax_bot.legend(loc="upper right", fontsize=8)
+    apply_bare_style(ax_bot)
     fig.tight_layout()
     return fig
 

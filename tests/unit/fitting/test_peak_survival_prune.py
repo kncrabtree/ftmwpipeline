@@ -732,6 +732,7 @@ class TestSettingsRoundTrip:
 
     def test_hdf5_round_trip_peak_survival(self, tmp_path):
         import h5py
+
         from ftmwpipeline.core.stage_fit_settings import (
             PeakSurvivalSubSettings,
             StageFitSettings,
@@ -760,6 +761,7 @@ class TestSettingsRoundTrip:
     def test_resolved_hdf5_round_trip(self, tmp_path):
         """A fully resolved StageFitSettings round-trips the peak_survival sub-block."""
         import h5py
+
         from ftmwpipeline.core.stage_fit_settings import resolve
         from ftmwpipeline.io.stage_fit_settings_serialization import (
             load_stage_fit_settings_from_h5,

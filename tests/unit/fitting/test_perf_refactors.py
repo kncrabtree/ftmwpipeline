@@ -18,6 +18,7 @@ import numpy as np
 import pytest
 
 from ftmwpipeline.fitting.peak_model import ModelPeak, effective_tau, model_spectrum
+from ftmwpipeline.fitting.residual_rescue import iterative_aicc_cleanup
 from ftmwpipeline.fitting.validation import (
     line_escape_background_columns,
     line_escape_nuisance_columns,
@@ -31,7 +32,6 @@ from ftmwpipeline.fitting.window_fit import (
     fit_window,
     knockout_test,
 )
-from ftmwpipeline.fitting.residual_rescue import iterative_aicc_cleanup
 
 T_US = 12.65
 TAU_US = 5.0

@@ -1072,7 +1072,7 @@ def test_chirp_response_cw_overrides_decaying_decay_probe():
     decay ratio < DEFAULT_DECAY_RATIO_LINE: the chirp-response probe's pre-
     record confirmation must still gate it.
     """
-    from ftmwpipeline.fitting.spur_detection import gate_spurs, Spur
+    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
 
     probe = _cr_probe_for(cw_amp=1.0)
 
@@ -1110,7 +1110,7 @@ def test_chirp_response_cw_overrides_decaying_decay_probe():
 #     with high fid_detectability -> protect verdict vetoes the gating.
 def test_chirp_response_protect_vetoes_molecular_line():
     """A chirp-responsive line absent pre-record is protected from gating."""
-    from ftmwpipeline.fitting.spur_detection import gate_spurs, Spur
+    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
 
     # Strong line in FID only; CW counterpart would be bright pre-record.
     probe = _cr_probe_for(line_amp=1.0, tau_us=4.0)
@@ -1145,7 +1145,7 @@ def test_chirp_response_protect_vetoes_molecular_line():
 def test_chirp_response_inconclusive_falls_through():
     """A tone weak enough to be below the pre-record floor leaves the verdict
     to the existing lanes (no protect, no gate-confirm)."""
-    from ftmwpipeline.fitting.spur_detection import gate_spurs, Spur
+    from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
 
     # Pure-noise probe: both pre_snr and fid_detectability will be near 1
     # (noise-level), so neither gate-confirm nor protect fires.
