@@ -10,12 +10,10 @@ Performance
 ===========
 
 The pipeline parallelizes the expensive stages automatically and ships with
-defaults tuned to give a good fit without hand-holding. This page is the
-user-facing side of performance: how many CPU cores the work spreads across, how
-to make a report cheaper when you do not need every figure, and the settings that
-trade fitting thoroughness against time. How that parallelism and speed are
-achieved internally is a developer-documentation concern; here the focus is the
-knobs you control.
+defaults tuned to give a good fit without hand-holding. The controls that remain
+are few: how many CPU cores the work spreads across, how to make a report cheaper
+when you do not need every figure, and a handful of settings that trade fitting
+thoroughness against time.
 
 Two of the stages do enough work to be worth parallelizing:
 
@@ -167,6 +165,4 @@ a slow run, in order: make sure the pools have the cores you intend (``--jobs`` 
 ``FTMW_MAX_WORKERS``); check whether the fit is doing more work than you need
 because of upstream choices (the Stage 3 cutoff and Stage 2b calibration above);
 reach for the Stage 5 thoroughness settings if a dense spectrum is genuinely the
-bottleneck; and scope the report output. The internal techniques that make each
-stage fast are documented for developers, not here — from a user's seat the
-controls on this page are the whole surface.
+bottleneck; and scope the report output.
