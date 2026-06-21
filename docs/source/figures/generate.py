@@ -40,6 +40,11 @@ into the committed ``docs/source/figures`` directory:
   phase ramp of the strongest demodulated clock tone and the coherent-sum scan
   whose peak locates the offset (Advanced / clock declaration).
 
+The scope-record acquisition-layout schematic on the scope-record-import page is a
+hand-authored SVG (``figures/scope_acquisition_layout.svg``), not generated here:
+it is a conceptual, data-free diagram, so it is committed as editable vector text
+rather than a rendered raster.
+
 Run as a script to (re)write the PNGs beside this file::
 
     python docs/source/figures/generate.py

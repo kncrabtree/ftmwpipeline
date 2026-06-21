@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 360"
+     font-family="Helvetica, Arial, sans-serif" font-size="15" fill="#222">
+  <defs>
+    <marker id="dim" markerWidth="9" markerHeight="9" refX="6" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6,3 L0,6 z" fill="#5a5f66"/>
+    </marker>
+    <marker id="avg" markerWidth="9" markerHeight="9" refX="6" refY="3"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6,3 L0,6 z" fill="#c10230"/>
+    </marker>
+  </defs>
+
+  <!-- span over the frames: N frames -->
+  <text x="540" y="30" text-anchor="middle">N frames</text>
+  <line x1="160" y1="42" x2="920" y2="42" stroke="#5a5f66" stroke-width="1.1"
+        marker-start="url(#dim)" marker-end="url(#dim)"/>
+
+  <!-- one frame period (over frame 1) -->
+  <text x="280" y="66" text-anchor="middle" font-size="13">
+    T<tspan dy="3" font-size="10">frame</tspan></text>
+  <line x1="160" y1="78" x2="400" y2="78" stroke="#5a5f66" stroke-width="1.1"
+        marker-start="url(#dim)" marker-end="url(#dim)"/>
+
+  <!-- record blocks: pre-record | frame 1 | frame 2 | ... | frame N | tail -->
+  <!-- pre-record -->
+  <rect x="20" y="110" width="140" height="70" fill="#c7ccd1"/>
+  <text x="90" y="151" text-anchor="middle" font-size="13">pre-record</text>
+
+  <!-- frame 1 : chirp + hold-off + FID -->
+  <rect x="160" y="110" width="36" height="70" fill="#FFBF00"/>
+  <rect x="196" y="110" width="28" height="70" fill="#ececec"/>
+  <rect x="224" y="110" width="176" height="70" fill="#022851"/>
+  <text x="312" y="151" text-anchor="middle" fill="#fff" font-size="13">FID 1</text>
+
+  <!-- frame 2 -->
+  <rect x="400" y="110" width="36" height="70" fill="#FFBF00"/>
+  <rect x="436" y="110" width="28" height="70" fill="#ececec"/>
+  <rect x="464" y="110" width="176" height="70" fill="#022851"/>
+  <text x="552" y="151" text-anchor="middle" fill="#fff" font-size="13">FID 2</text>
+
+  <!-- ellipsis -->
+  <text x="660" y="155" text-anchor="middle" font-size="24">&#8943;</text>
+
+  <!-- frame N -->
+  <rect x="680" y="110" width="36" height="70" fill="#FFBF00"/>
+  <rect x="716" y="110" width="28" height="70" fill="#ececec"/>
+  <rect x="744" y="110" width="176" height="70" fill="#022851"/>
+  <text x="832" y="151" text-anchor="middle" fill="#fff" font-size="13">FID N</text>
+
+  <!-- tail -->
+  <rect x="920" y="110" width="140" height="70" fill="#c7ccd1"/>
+  <text x="990" y="151" text-anchor="middle" font-size="13">tail</text>
+
+  <!-- chirp / hold-off callouts on frame 1 -->
+  <text x="178" y="103" text-anchor="middle" font-size="11" fill="#5a4300">chirp</text>
+  <text x="178" y="206" text-anchor="middle" font-size="12">
+    t<tspan dy="3" font-size="9">c</tspan></text>
+  <line x1="160" y1="190" x2="196" y2="190" stroke="#5a5f66" stroke-width="1.0"
+        marker-start="url(#dim)" marker-end="url(#dim)"/>
+  <text x="210" y="206" text-anchor="middle" font-size="12">&#916;</text>
+  <line x1="196" y1="190" x2="224" y2="190" stroke="#5a5f66" stroke-width="1.0"
+        marker-start="url(#dim)" marker-end="url(#dim)"/>
+
+  <!-- pre-record duration -->
+  <line x1="20" y1="190" x2="160" y2="190" stroke="#5a5f66" stroke-width="1.0"
+        marker-start="url(#dim)" marker-end="url(#dim)"/>
+  <text x="90" y="206" text-anchor="middle" font-size="12">
+    T<tspan dy="3" font-size="9">pre</tspan></text>
+
+  <!-- average / select arrow down to the science FID -->
+  <line x1="540" y1="183" x2="540" y2="266" stroke="#c10230" stroke-width="1.4"
+        marker-end="url(#avg)"/>
+
+  <!-- science FID -->
+  <rect x="340" y="268" width="400" height="50" fill="#022851"/>
+  <text x="540" y="298" text-anchor="middle" fill="#fff">science FID (Stage 0)</text>
+  <text x="540" y="340" text-anchor="middle" font-size="13">
+    coherent average of the N frames, or one selected frame</text>
+</svg>
