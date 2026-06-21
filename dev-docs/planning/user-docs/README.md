@@ -121,6 +121,34 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Stage 5 review: British spellings and build-order markers swept from the
+  fitting stack, a duplicate constant folded, the `fit_peaks` docstrings
+  aligned, and the `fit show` overview phase frame fixed and recolored.** The
+  Stage 5 code was already free of `NotImplementedError` stubs, dead `Phase`-era
+  stub packages, and dual-interface violations (cleaner than Stages 3/4). The
+  review pass corrected what remained: a repo-wide British→American sweep
+  (docstrings, comments, messages, and identifiers — including the persisted
+  settings field and cross-stage helpers renamed `catalogue`→`catalog`:
+  `use_stft_catalog`, `spur_set_from_catalog`, `replay_spur_catalog`; `optimistic`
+  and the `Blackchirp` proper noun left untouched); removal of the
+  `task-N`/`Phase-N` build-scaffolding references from the fitting docstrings,
+  restating the surrounding design timelessly (the de-ramp/`D9` history in
+  `peak_model`/`plan_execution`, the `D-6`/`D8` window-padding deferral notes in
+  `result_conversion`, and the dropped-panel note in `fit_visualization`); the
+  duplicate `DEFAULT_MAX_DECAY_FACTOR` folded into the single `window_fit`
+  definition; and the functional/`Pipeline` `fit_peaks` docstrings aligned to
+  the same detail. The dormant asymmetric tau-penalty knobs (`tau_anchor_us` /
+  `tau_penalty_sigma_lo_factor`) were **kept** with sign-off — a tested,
+  clearly-marked prototype with a stated future blend use case. The `fit show`
+  **overview** carried a real rendering bug: it feeds the active FT to a renderer
+  written for the persisted grid and still applied the persisted-frame phase
+  re-roll, so the complex residual was inflated several-fold at strong lines
+  (median 0.90σ → 0.83σ, 95th pct 2.42σ → 1.81σ, max 782σ → 111σ once removed).
+  `visualize_fit_impl` now renders the active grid in its native `[0, T]` frame
+  (no re-roll), and the overview was recolored to the brand palette (model in
+  Aggie Gold, residual in Double Decker, the canonical σ in Aggie Blue, the
+  windows shaded gold) so the Stage 5 doc figure matches the committed set.
+  British spellings were swept and the touched files are black/isort/mypy-clean.
 - **Stage 4 review: difficulty/split annotations removed, dead stub package
   deleted, the window plot recolored, British spellings swept.** The Stage 4
   `WindowDifficulty` (HARD/EASY) label, the `FitWindow.split_proposal`
@@ -507,7 +535,24 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   difficulty/split annotations removed, the dead `window_assignment` stub
   deleted, the window plot recolored, two stale docstrings fixed, British
   spellings swept. Build warning-clean under `sphinx-build -W`.
-- [ ] Stage 5 — fitting.
+- [x] Stage 5 — fitting. `stage5_fitting.rst` written (the finite-acquisition
+  line-shape model and why leakage is fit rather than apodized; the active-FT
+  fit frame and the sideband/baseband mapping; the conservative add-one-peak
+  loop with the F-test/AIC gate and blend-aware seeding; shared τ freed only
+  above the SNR floor and otherwise held at the Stage 2b majority; fixed
+  contributors and the parallel-batch dependency order; the evidence-triggered
+  leakage-wing baseline; residual rescue; spur masking; the thaw/replan
+  renegotiation handshake; the post-fit SNR-prune + VIF-collapse survival pass
+  and the observation-only doublet pass; the persisted record; the knobs;
+  reading `fit show`; `fit check`; the Stage 5 → Stage 6 curation boundary). A
+  regenerable `stage5_fitting.png` (the fit overview — model overlay + magnitude
+  residual at the noise level) was added to `docs/source/figures/generate.py`
+  (now builds through Stage 5) and guarded by the `slow` smoke test. Code
+  revisions resolved during review (see below): the British→American sweep and
+  build-order-marker removal across the fitting stack, the duplicate
+  decay-factor constant folded, the `fit_peaks` docstrings aligned, and the
+  `fit show` overview phase-frame fix + brand-palette recolor. Build
+  warning-clean under `sphinx-build -W`.
 - [ ] Stage 6 — review / reports / finalization.
 - [ ] Advanced: `clock_declaration`, `scope_record_import`, `performance`.
 - [ ] Reference: `cli`, `api/index`, `changelog`.
@@ -516,68 +561,60 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Handoff: next session is Stage 5 — fitting
+## Handoff: next session is Stage 6 — review / reports / finalization
 
-**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b/3/4 pages, the
+**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b/3/4/5 pages, the
 Methods & Validation section + first note, the brand style system, and the
-committed early-stage figures (now including `stage4_windows.png`) are done and
-committed. The Stage 4 window-assignment page is written and its review-pass code
+committed stage figures (now including `stage5_fitting.png`) are done and
+committed. The Stage 5 peak-fitting page is written and its review-pass code
 revisions landed first (see *Resolved during review*). The working tree is clean;
-the touched Stage 4 / fitting / tuning / Stage 6 / scan / figure suites pass and
-`sphinx-build -W` is warning-clean. Nothing is mid-flight.
+the touched fitting / viz / stage6 / cross-interface / figure suites pass and
+`sphinx-build -W` is warning-clean. Nothing is mid-flight. A reusable Stage-5
+fixture lives at `scratch/stage5-doc/exp_2638.ftmw` (gitignored) for cheap figure
+iteration without a full rebuild.
 
-**Last stage's trail (so nothing is re-litigated).** Stage 4 is *purely
-structural* — it classifies and proposes, never fits. The plan keeps two
-groupings distinct: **fit windows** (disjoint, cover each point ≤ once — the hard
-invariant) vs **contributor sets** (the free in-band peaks plus the frozen
-out-of-band fixed contributors, which overlap across windows by design). The
-load-bearing decision is the complex **edge-coherence statistic**
-`S_coh = |Σz|/(σ√M)` on the **de-ramped** spectrum (null ≈ 0.89; `T_edge = 8` at
-`M = 64` flags ≳ 1σ/bin leakage); its above-threshold runs are the
-leakage-touched regions. Build sequence: leakage-touched map → tight per-peak
-proposals (position + margin, *not* the skirt run) → strong-cluster merge (lines
-sharing one touched region fit jointly) → **content-bounded** cap split (bounds
-peak content, never bisects a content-fitting cluster) → trim to the margin.
-Fixed contributors attach by predicted analytic-skirt magnitude
-(`magnitude_attachment_threshold` 0.1σ), gated for freeze by `min_freeze_snr`
-(50); the **edge-free** mechanism keeps the dominant cycle-orphaned contributors
-(skirt read self-contained at fit time, no ordering edge) so the cycle-breaker
-can't drop needed leakage. The dependency DAG topo-sorts into parallel batches;
-Stage 5 may emit `MergeRequest`s routed through `replan`. **The
-difficulty/split_proposal/needs_joint_treatment annotations were REMOVED this
-session** (no downstream consumer — see *Resolved during review* and
-[[stage4-difficulty-removed]]); the width cap is still enforced structurally by
-the cap split. The dead `window_assignment` stub package is gone.
+**Last stage's trail (so nothing is re-litigated).** Stage 5 fits each Stage 4
+window's lines on the **active-portion FT** with the exact finite-`T` damped-cosine
+model `h_T` (leakage carried, never apodized). The engine is a **conservative
+add-one-peak loop**: seed the strongest line, then add a residual peak only when
+it both passes an F-test (α 0.05) and lowers AIC; **blend-aware seeding** (K=2/3
+straddling) is what resolves real doublets. One **shared τ per window**, freed
+only above `fit_tau_min_snr` (10) and otherwise held at the Stage 2b `τ_maj`
+(per-band when available), softly anchored by a penalty. **Fixed contributors**
+(frozen out-of-window skirts) are fit in **parallel batches** in dependency order.
+Three evidence-triggered helpers absorb hard structure: the **leakage-wing
+baseline** (low-order complex polynomial on a coherent edge or smooth pedestal,
+order 4, re-freed τ), **residual rescue**, and the **thaw/replan** renegotiation
+handshake (local thaw common, structural merge rare; no split). A **post-fit
+survival pass** prunes sub-3.2σ lines to a fixpoint and merges VIF≥4
+sub-resolution over-splits (catastrophic-merge veto), with an observation-only
+doublet pass recording statistics but changing nothing. The reported
+uncertainties are **precision only** (covariance); accuracy/clock systematics are
+a Stage 6 / clock-declaration concern. **The `fit show` overview phase-frame bug
+was fixed this session** (it rendered the active grid with the persisted-frame
+re-roll, inflating the complex residual) and the overview was recolored to the
+brand palette — see *Resolved during review*.
 
-**The Stage 5 task — apply the per-stage process (this README, "Per-stage
-process"), in order:**
-1. *Read the planning record.* `dev-docs/planning/stage5-fitting.md` and the many
-   `stage5-*.md` companions (the cap removal, NLS performance, the leakage-wing
-   baseline, the context-invariant gate, the line-evidence / deep-skirt /
-   blend-split escapes, the doublet-alternative, the σ-scope D14 fix, the
-   survival-prune fixpoint, the fit parallelism); plus ROADMAP/STATUS. These are
-   extensive — note stale prose against the code.
-2. *Review the code (thorough).* `_internal/stage5_impl.py`, the fitting engine
-   (`fitting/plan_execution.py`, `peak_model.py`, `validation.py`,
-   `result_conversion.py`, the active-FT support), the serialization, and the
-   three interface wrappers. Surface code smells, dead/`Phase`-era stubs (remove
-   as encountered — standing approval), and test-coverage gaps. **Stop and
-   discuss any proposed code revision with the user before writing docs or
-   changing code.**
-3. *Mine the research reports.* `dev-docs/research/stage5-cross-fixture` and the
-   companions for the justification; extract what informs a technical reader.
-4. *American-English scan.* Sweep the stage's CLI help / log / error strings /
-   docstrings.
-5. *Write `stage5_fitting.rst`* (currently a stub) per the style conventions; add
-   a Stage 5 figure by extending `docs/source/figures/generate.py` (it now builds
-   through Stage 4) and guard it with the `slow` smoke test.
+**The Stage 6 task — apply the per-stage process (this README, "Per-stage
+process"), in order:** read the Stage 6 planning record
+(`dev-docs/planning/stage6-reports*.md`, `stage6-review-*.md`,
+`stage6-peak-survival.md`, the followups; plus ROADMAP/STATUS — extensive, note
+stale prose against code); thorough review of `_internal/stage6_impl.py`,
+`report_impl.py`, `report_html_impl.py`, `catalog_xref.py`, the `review`/`report`
+CLI, and the serialization, **stopping to discuss any proposed code revision
+before writing docs or changing code**; mine the Stage 6 research; American-English
+scan (most of the fitting-stack sweep already covered the shared modules); then
+write `stage6_review.rst` (the review/read-edit surface, the L1/L2/L3 reports, the
+ε-correction + 3-term σ_f budget with the user-settable σ_floor, the catalog
+cross-reference, the attention metrics) and add a Stage 6 figure. Memory carries
+deep Stage 6 context — start from `[[stage6-sequence-handoff]]` and its links.
 
 **Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
-review the rendered HTML; direct all run artifacts to `scratch/`; the noise
-methods harness and `docs/source/figures/generate.py` are the reference patterns
-for committed, regenerable figures. Run project commands via
-`conda run -n ftmwpipeline-dev`; scope tests to the stage (per the test-budget
-memory) and save one full run for the end. Note the Stage 4 *planning* docs
-(`dev-docs/planning/stage4-window-assignment.md`) and ROADMAP still describe the
-removed difficulty/split annotations — a known code-vs-planning-doc divergence the
-archival pass reconciles; the shipped `stage4_windows.rst` does not inherit it.
+review the rendered HTML; direct all run artifacts to `scratch/`;
+`docs/source/figures/generate.py` (now builds through Stage 5) is the reference
+pattern for committed, regenerable figures guarded by the `slow` smoke test. Run
+project commands via `conda run -n ftmwpipeline-dev`; scope tests to the stage
+(per the test-budget memory) and save one full run for the end. Note the Stage 4/5
+*planning* docs and ROADMAP still describe some removed/renamed details (the Stage
+4 difficulty annotations; the `catalogue` spelling) — known code-vs-planning-doc
+divergences the archival pass reconciles; the shipped pages do not inherit them.
