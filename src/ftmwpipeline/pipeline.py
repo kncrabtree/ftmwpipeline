@@ -1478,6 +1478,7 @@ class Pipeline:
         *,
         add: Sequence[float] = (),
         remove: Sequence[float] = (),
+        snap_tol_mhz: float = 0.05,
     ) -> RefitWindowResult:
         """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1493,10 +1494,13 @@ class Pipeline:
             The window to refit.
         add :
             Molecular frequencies (MHz) of peaks to add.  Snapped to the
-            nearest ledger candidate within 50 kHz or seeded fresh at F.
+            nearest ledger candidate within ``snap_tol_mhz`` or seeded fresh
+            at F.
         remove :
             Molecular frequencies (MHz) of fitted peaks to remove.  Snapped
-            to the nearest fitted peak within 50 kHz.
+            to the nearest fitted peak within ``snap_tol_mhz``.
+        snap_tol_mhz :
+            Snap tolerance for ``add``/``remove`` (MHz; default 0.05 = 50 kHz).
 
         Returns
         -------
@@ -1510,6 +1514,7 @@ class Pipeline:
             window_id,
             add=add,
             remove=remove,
+            snap_tol_mhz=snap_tol_mhz,
         )
 
     def review_merge(

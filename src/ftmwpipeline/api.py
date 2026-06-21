@@ -1304,6 +1304,7 @@ def review_edit(
     *,
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
+    snap_tol_mhz: float = 0.05,
 ) -> RefitWindowResult:
     """User-directed single-window refit (Stage 6 ``review edit``).
 
@@ -1323,6 +1324,8 @@ def review_edit(
         Molecular frequencies (MHz) of peaks to add.
     remove :
         Molecular frequencies (MHz) of fitted peaks to remove.
+    snap_tol_mhz :
+        Snap tolerance for ``add``/``remove`` (MHz; default 0.05 = 50 kHz).
 
     Returns
     -------
@@ -1331,7 +1334,9 @@ def review_edit(
 
     Requires Stage 5 completed.
     """
-    return Pipeline.open(file_path).review_edit(window_id, add=add, remove=remove)
+    return Pipeline.open(file_path).review_edit(
+        window_id, add=add, remove=remove, snap_tol_mhz=snap_tol_mhz
+    )
 
 
 def review_merge(

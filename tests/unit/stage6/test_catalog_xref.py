@@ -88,6 +88,26 @@ def test_read_header_keyword_columns_out_of_order(tmp_path):
     assert cat[0].label == "foo"
 
 
+def test_header_freq_outranks_label_substring(tmp_path):
+    # "transition_frequency_mhz" carries both a label keyword ("transition") and a
+    # frequency keyword; frequency must win so the column is read as the frequency.
+    f = tmp_path / "cat.csv"
+    f.write_text("transition_frequency_mhz,name\n30000.0,xyz\n")
+    cat = read_catalog(f)
+    assert cat[0].frequency_mhz == 30000.0
+    assert cat[0].label == "xyz"
+
+
+def test_header_short_label_keyword_no_substring_misfire(tmp_path):
+    # The two-character "id" keyword must not fire inside "midpoint"; the
+    # frequency column stays correctly identified.
+    f = tmp_path / "cat.csv"
+    f.write_text("freq_mhz,midpoint,name\n30000.0,1.0,abc\n")
+    cat = read_catalog(f)
+    assert cat[0].frequency_mhz == 30000.0
+    assert cat[0].label == "abc"
+
+
 def test_read_empty_file(tmp_path):
     f = tmp_path / "cat.csv"
     f.write_text("# only comments\n\n")

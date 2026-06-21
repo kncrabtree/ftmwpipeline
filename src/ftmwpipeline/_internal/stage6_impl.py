@@ -1,14 +1,17 @@
 """
-Shared implementation for Stage 6: review, candidate ledger, and user-directed
-single-window refit.
+Shared implementation for Stage 6: the human review and finalization layer
+over the automatic Stage 5 fit.
 
-Pass 1 — candidate ledger derivation (``review show``/``--candidates``) and
-the single-window refit engine (``review edit``).
+It owns the candidate ledger (``review show``/``--candidates``), the
+user-directed single-window refit verbs (``review edit``/``merge``/``split``/
+``accept``), the advisory attention routing and per-window review status, the
+anchored decision log, and the consolidated final-products table with its
+frequency-calibration budget (``review run``).
 
-The ledger is a pure function of the already-persisted Stage 5 audit trail
-(``FittingResult.audit_trail``) and rescue events
-(``FittingResult.rescue_events``).  It is derived on demand; no re-fitting
-and no writes to the Stage 5 group.
+The candidate ledger is a pure function of the already-persisted Stage 5 audit
+trail (``FittingResult.audit_trail``) and rescue events
+(``FittingResult.rescue_events``).  It is derived on demand; no re-fitting and
+no writes to the Stage 5 group.
 
 The refit engine (``refit_window_impl``) re-fits a single window using the
 production NLS primitives, starting from the persisted peaks as seeds.  It
@@ -861,7 +864,7 @@ def _parse_complex_amplitude(value: object) -> complex:
 
     ``result_conversion.py`` stores ``frozen.model_peak.amplitude`` (a real
     float) via ``json.dumps(..., default=str)``, which calls ``repr(v)`` on
-    non-serialisable values.  For a real float the repr is just the float
+    non-serializable values.  For a real float the repr is just the float
     string; for an accidentally-complex value it would be ``"(a+bj)"``.
     Both cases are handled here to cover legacy files.
     """

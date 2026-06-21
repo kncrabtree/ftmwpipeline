@@ -12,14 +12,18 @@ matches the catalog when its nearest catalog entry is within
 ``N * sqrt(sigma_f^2 + sigma_cat^2)`` of it (``N`` = ``n_sigma``); ``sigma_cat``
 is ``0`` when the catalog carries no per-line uncertainty.
 
-The catalog reader is deliberately format-light: a CSV (or whitespace-delimited)
-table of ``frequency_mhz``, an optional uncertainty (kHz), and an optional opaque
-label. Pickett ``.lin`` / SPFIT emission is out of scope by design.
+The catalog reader is deliberately format-light. It accepts a CSV (or
+whitespace-delimited) table of ``frequency_mhz``, an optional uncertainty (unit
+read from the header), and an optional opaque label, plus the Pickett/SPCAT
+``.cat`` predicted-line catalog (fixed-width frequency + MHz error + an opaque
+species/quantum-number tag). Writing Pickett ``.lin`` / SPFIT emission is out of
+scope by design — this surface only reads, for cross-reference.
 """
 
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Sequence, Union
@@ -158,10 +162,29 @@ def _unc_scale_khz(header_name: str) -> float:
     return 1.0
 
 
+def _is_label_header(key: str) -> bool:
+    """True if a header names a label column, without short-substring misfires.
+
+    Multi-character keywords match as substrings (so ``assign`` catches
+    ``assignment``); the two-character keys (``id``, ``qn``) match only as whole
+    tokens, so they do not fire inside ``midpoint`` / ``valid`` / ``width``.
+    """
+    tokens = set(re.split(r"[^a-z0-9]+", key))
+    for k in _LABEL_KEYS:
+        if (k in key) if len(k) >= 3 else (k in tokens):
+            return True
+    return False
+
+
 def _resolve_columns(
     header: Sequence[str],
 ) -> "tuple[int, Optional[int], Optional[int], float]":
-    """Map a header to ``(freq_col, unc_col, label_col, unc_scale_khz)``."""
+    """Map a header to ``(freq_col, unc_col, label_col, unc_scale_khz)``.
+
+    Precedence per column: uncertainty, then frequency, then label. Frequency
+    outranks label so a header carrying both (e.g. ``transition_frequency_mhz``)
+    is read as the frequency column, not the label.
+    """
     freq_col = 0
     unc_col: Optional[int] = None
     label_col: Optional[int] = None
@@ -171,10 +194,10 @@ def _resolve_columns(
         if unc_col is None and any(k in key for k in _UNC_KEYS):
             unc_col = j
             unc_scale = _unc_scale_khz(key)
-        elif label_col is None and any(k in key for k in _LABEL_KEYS):
-            label_col = j
         elif any(k in key for k in _FREQ_KEYS):
             freq_col = j
+        elif label_col is None and _is_label_header(key):
+            label_col = j
     return freq_col, unc_col, label_col, unc_scale
 
 

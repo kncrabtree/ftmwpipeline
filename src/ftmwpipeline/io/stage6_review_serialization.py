@@ -9,10 +9,13 @@ HDF5 layout (under the caller-supplied group)::
     .attrs:
         creation_time (ISO8601)
         n_windows     (int)
-    window_statuses/ (JSON, per-window serialisation)
+    window_statuses/ (JSON, per-window serialization)
         .attrs:
             data  (JSON string)
     decision_log/
+        .attrs:
+            data  (JSON string)
+    final_products/ (present once consolidated; absent otherwise)
         .attrs:
             data  (JSON string)
 
@@ -21,7 +24,9 @@ The window-status data is a JSON list of dicts with keys
 Each element of ``attention_reasons`` is a dict with keys
 ``kind``, ``detail``, ``severity``.
 
-The decision log is a JSON list (empty until Pass 2 verbs are invoked).
+The decision log is a JSON list (a window carries entries once a `review` edit
+records a decision against it). The final-products subgroup holds the
+consolidated, frequency-calibrated line list `review run` builds.
 
 Reading a group that does not exist returns an empty :class:`Stage6Review`
 (legacy-safe).
@@ -223,11 +228,18 @@ def load_stage6_review_from_hdf5(group: h5py.Group) -> Stage6Review:
 
 
 def load_stage6_review_from_file(file_path: str) -> Stage6Review:
-    """Load :class:`Stage6Review` from a ``.ftmw`` file, or return empty."""
+    """Load :class:`Stage6Review` from a ``.ftmw`` file, or return empty.
+
+    An unreadable / non-HDF5 file and a file without a ``stage6_review`` group
+    both return an empty review (legacy-safe). A group that *is* present but
+    fails to decode is a corrupt record, not an absent one: its error
+    propagates rather than silently discarding the user's curation.
+    """
     try:
-        with h5py.File(file_path, "r") as h5f:
-            if "stage6_review" not in h5f:
-                return Stage6Review()
-            return load_stage6_review_from_hdf5(h5f["stage6_review"])
-    except Exception:
+        h5f = h5py.File(file_path, "r")
+    except OSError:
         return Stage6Review()
+    with h5f:
+        if "stage6_review" not in h5f:
+            return Stage6Review()
+        return load_stage6_review_from_hdf5(h5f["stage6_review"])
