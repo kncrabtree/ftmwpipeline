@@ -304,8 +304,7 @@ above: the fit windows shaded, each window's free peaks and fixed contributors m
 the rolling edge-coherence statistic with its threshold in a lower panel. It is the view to
 use when checking that the boundaries sit in clean gaps and that every strong line anchors a
 window. By default the command opens an interactive window; ``--no-interactive`` together
-with ``-o`` saves a static image (direct it into ``scratch/`` to keep the working tree
-clean).
+with ``-o`` saves a static image to the given path instead.
 
 The ``windows run`` summary also reports the window count, the free-peak and
 fixed-contributor totals, the dependency and parallel-batch counts, and a warning for any

@@ -274,8 +274,8 @@ a log magnitude axis. Adding ``--snr-histogram`` appends the curation panel of
 the figure above — the signal-to-noise distribution of every detected peak with
 the promotion cutoff marked — which is the view to use when choosing a promotion
 threshold deliberately. By default the command opens an interactive window;
-``--no-interactive`` together with ``-o`` saves a static image (direct it into
-``scratch/`` to keep the working tree clean).
+``--no-interactive`` together with ``-o`` saves a static image to the given path
+instead.
 
 .. _stage3-handedit:
 
