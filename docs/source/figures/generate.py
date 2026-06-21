@@ -33,6 +33,12 @@ into the committed ``docs/source/figures`` directory:
   histogram, and the fitted-peak table.
 * ``stage6_review.png`` -- the Stage 6 report's full-spectrum index overview: the
   finalized active spectrum with the review-flagged (attention) windows shaded.
+* ``clock_timebase.png`` -- the timebase self-calibration: each Rb-locked clock
+  tone's measured frequency offset against its baseband frequency, with the
+  shared-epsilon fit line and its 1-sigma band (Advanced / clock declaration).
+* ``clock_phase_ramp.png`` -- how one tone's offset is measured: the residual
+  phase ramp of the strongest demodulated clock tone and the coherent-sum scan
+  whose peak locates the offset (Advanced / clock declaration).
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -224,6 +230,172 @@ def make_figures() -> None:
             bundle, attention_ranges, title="", figsize=(13.0, 3.2)
         )
         fig6.savefig(FIG_DIR / "stage6_review.png", dpi=DPI, bbox_inches="tight")
+
+        # Advanced: the timebase self-calibration. Measure epsilon from the
+        # Rb-locked clock spurs and plot each tone's measured offset against its
+        # baseband frequency -- the kept tones fall on the shared-epsilon line.
+        result = ftmw.calibrate_timebase(path)
+        fig_tb = _plot_timebase(result, np)
+        fig_tb.savefig(FIG_DIR / "clock_timebase.png", dpi=DPI, bbox_inches="tight")
+
+        # Advanced: how one tone's offset is measured -- the residual phase ramp
+        # of the demodulated tone and the coherent-sum scan that locates it.
+        fig_pr = _plot_phase_ramp(path, result, np)
+        fig_pr.savefig(FIG_DIR / "clock_phase_ramp.png", dpi=DPI, bbox_inches="tight")
+
+
+def _plot_timebase(result: Any, np: Any) -> Any:
+    """Per-tone timebase self-calibration scatter with the fitted-epsilon line."""
+    import matplotlib.pyplot as plt
+
+    from ftmwpipeline.visualization.report_style import (
+        AGGIE_BLUE,
+        DOUBLE_DECKER,
+        POPPY,
+        apply_bare_style,
+    )
+
+    tones = list(result.tone_reads)
+    kept = [t for t in tones if t.used]
+    rej = [t for t in tones if not t.used]
+    eps = result.epsilon
+    sig = result.sigma_epsilon
+
+    fig, ax = plt.subplots(figsize=(7.2, 4.4), constrained_layout=True)
+    # The fitted epsilon line (offset in kHz = epsilon * f_bb_MHz * 1e3) with its
+    # 1-sigma band, drawn across the measured baseband range.
+    f_max = max((t.f_bb_mhz for t in tones), default=1.0)
+    xs = np.linspace(0.0, f_max * 1.02, 200)
+    ax.fill_between(
+        xs / 1e3,
+        (eps - sig) * xs * 1e3,
+        (eps + sig) * xs * 1e3,
+        color=AGGIE_BLUE,
+        alpha=0.15,
+        linewidth=0,
+    )
+    ax.plot(
+        xs / 1e3,
+        eps * xs * 1e3,
+        color=AGGIE_BLUE,
+        linewidth=1.6,
+        label=rf"$\varepsilon = {eps*1e6:+.2f} \pm {sig*1e6:.2f}$ ppm",
+    )
+    if rej:
+        ax.scatter(
+            [t.f_bb_mhz / 1e3 for t in rej],
+            [t.df_mhz * 1e3 for t in rej],
+            facecolors="none",
+            edgecolors=POPPY,
+            s=34,
+            linewidths=1.2,
+            label="rejected (off-line / inconsistent)",
+        )
+    if kept:
+        ax.scatter(
+            [t.f_bb_mhz / 1e3 for t in kept],
+            [t.df_mhz * 1e3 for t in kept],
+            color=DOUBLE_DECKER,
+            s=38,
+            label="kept (shared-$\\varepsilon$ fit)",
+            zorder=3,
+        )
+    ax.axhline(0.0, color="#9aa3ad", linewidth=0.8, zorder=0)
+    ax.set_xlabel("Baseband frequency (GHz)")
+    ax.set_ylabel("Measured tone offset (kHz)")
+    ax.legend(loc="upper left", frameon=False, fontsize=9)
+    apply_bare_style(ax)
+    return fig
+
+
+def _plot_phase_ramp(path: str, result: Any, np: Any) -> Any:
+    """Demonstrate the phase-ramp measurement on the strongest clock tone.
+
+    Reconstructs the calibration's active segment and demodulates it at the
+    tone's nominal baseband frequency (exactly as ``calibrate_timebase_from_fid``
+    does), then shows the residual rotation as (left) the block-averaged phase
+    advancing linearly in time and (right) the coherent-sum scan whose peak is
+    the measured offset.
+    """
+    import matplotlib.pyplot as plt
+
+    from ftmwpipeline._internal.stage0_impl import load_fid_from_pipeline_impl
+    from ftmwpipeline.fitting.timebase_calibration import _build_block_demod
+    from ftmwpipeline.visualization.report_style import (
+        AGGIE_BLUE,
+        DOUBLE_DECKER,
+        POPPY,
+        apply_bare_style,
+    )
+
+    # The strongest tone kept in the fit makes the cleanest illustration.
+    tone = max((t for t in result.tone_reads if t.used), key=lambda t: t.snr)
+    fbb = float(tone.f_bb_mhz)
+
+    # Rebuild the exact active segment and time vector the calibration used.
+    fid = load_fid_from_pipeline_impl(path)
+    x = np.asarray(fid.data, dtype=float)
+    dt = float(result.sample_dt_us)
+    i0 = max(int(result.start_us / dt), 0)
+    i1 = min(int(result.end_us / dt), x.size)
+    seg = x[i0:i1]
+    t = (np.arange(i0, i1) - i0) * dt
+
+    z = seg * np.exp(-2j * np.pi * fbb * t)
+
+    # The coherent-sum scan uses the full block count (matching the estimator);
+    # the offset is the grid frequency that maximizes the coherent amplitude.
+    grid, _t_blocks, scan_matrix = _build_block_demod(t, 4096, 0.1, 0.0001)
+    zb = np.array([c.mean() for c in np.array_split(z, 4096)])
+    amp = np.abs(scan_matrix @ zb)
+    df = float(grid[int(np.argmax(amp))])
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11.0, 4.2), constrained_layout=True)
+
+    # Left: the residual phase ramp. The demodulated tone rotates at the offset,
+    # so the slope of its phase in time is the offset (the same demodulation as
+    # the scan; coarser blocks here only smooth the display). For a positive
+    # offset df, the phase advances as +360*df*t degrees.
+    n_disp = 160
+    zc = np.array([c.mean() for c in np.array_split(z, n_disp)])
+    tc = np.array([c.mean() for c in np.array_split(t, n_disp)])
+    phase_deg = np.degrees(np.unwrap(np.angle(zc)))
+    slope_line = phase_deg[0] + 360.0 * df * (tc - tc[0])
+    axL.plot(
+        tc,
+        phase_deg,
+        color=DOUBLE_DECKER,
+        linewidth=1.4,
+        label=f"residual phase ({fbb/1e3:.2f} GHz tone)",
+    )
+    axL.plot(
+        tc,
+        slope_line,
+        color=AGGIE_BLUE,
+        linewidth=1.2,
+        linestyle="--",
+        label=rf"slope $\Rightarrow \delta f = {df*1e3:+.1f}$ kHz",
+    )
+    axL.set_xlabel("Time (µs)")
+    axL.set_ylabel("Demodulated phase (degrees)")
+    axL.legend(loc="best", frameon=False, fontsize=9)
+    apply_bare_style(axL)
+
+    # Right: the coherent-sum scan. Its peak is the maximum-likelihood offset.
+    axR.plot(grid * 1e3, amp / amp.max(), color=AGGIE_BLUE, linewidth=1.4)
+    axR.axvline(0.0, color="#9aa3ad", linewidth=0.8, label="nominal frequency")
+    axR.axvline(
+        df * 1e3,
+        color=POPPY,
+        linewidth=1.2,
+        linestyle="--",
+        label=rf"peak $\Rightarrow \delta f = {df*1e3:+.1f}$ kHz",
+    )
+    axR.set_xlabel("Candidate offset from nominal (kHz)")
+    axR.set_ylabel("Coherent-sum amplitude (normalized)")
+    axR.legend(loc="upper left", frameon=False, fontsize=9)
+    apply_bare_style(axR)
+    return fig
 
 
 def main() -> None:
