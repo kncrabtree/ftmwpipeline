@@ -100,7 +100,7 @@ _NEAR_GATE_FACTOR: float = 10.0
 # resolved ``peak_survival.vif_attention_threshold`` (mirrors the hard default
 # in :class:`~ftmwpipeline.core.stage_fit_settings.PeakSurvivalSubSettings`).
 # A fitted amplitude whose variance-inflation factor ``(amp_err / amp) * snr``
-# clears this is non-identifiable with a neighbour (degenerate split) even
+# clears this is non-identifiable with a neighbor (degenerate split) even
 # though it survived the end-of-Stage-5 collapse (which fires only on the much
 # higher ``vif_collapse_threshold`` at sub-half-resolution separation).
 DEFAULT_VIF_ATTENTION_THRESHOLD: float = 4.0
@@ -153,7 +153,7 @@ def _to_molecular(offset_mhz: float, center_mhz: float, sideband: Sideband) -> f
 
 
 def _window_center(fit: FittingResult) -> Optional[float]:
-    """Return the molecular centre of ``fit``'s window, or ``None``."""
+    """Return the molecular center of ``fit``'s window, or ``None``."""
     if fit.window is not None and fit.window.freq_range is not None:
         lo, hi = fit.window.freq_range
         return (lo + hi) / 2.0
@@ -402,7 +402,7 @@ def derive_candidate_ledger(
     fitting_result :
         The per-window :class:`~ftmwpipeline.core.data_structures.FittingResult`.
     center_mhz :
-        Molecular centre of the fit window (midpoint of its ``freq_range``).
+        Molecular center of the fit window (midpoint of its ``freq_range``).
     sideband :
         Pipeline sideband (``Sideband.UPPER`` or ``Sideband.LOWER``).
     bar :
@@ -413,7 +413,7 @@ def derive_candidate_ledger(
         :data:`SHAPE_ERROR_MAX_SEP_RES` resolution elements of a fitted peak
         whose ``snr * SHAPE_ERROR_EVIDENCE_FRACTION`` is at least the
         candidate's evidence is a lineshape sidelobe of that brighter line and
-        is excluded.  ``None`` disables the filter (legacy behaviour).
+        is excluded.  ``None`` disables the filter (legacy behavior).
 
     Returns
     -------
@@ -523,7 +523,7 @@ def get_candidate_ledger_impl(
         When *both* are supplied, the two HDF5 reloads (the full Stage 5 fit and
         the 750k-point raw FID) are skipped and the ledger is derived directly —
         the report renderer's per-window hot path. When either is ``None`` the
-        standalone behaviour (self-load from ``file_path``) is unchanged, so the
+        standalone behavior (self-load from ``file_path``) is unchanged, so the
         CLI / Pipeline / api ledger verbs see no difference.
 
     Returns
@@ -901,7 +901,7 @@ def _reconstruct_frozen_peaks(
         }
 
     The offset in the dependent window's baseband frame is derived from the
-    molecular frequency and the window centre (same convention as
+    molecular frequency and the window center (same convention as
     :func:`~ftmwpipeline.fitting.plan_execution.evaluate_fixed_contributor`).
     """
     from ..fitting.plan_execution import FrozenPeak
@@ -966,7 +966,7 @@ def refit_window_core(
     The edit / thaw / origin semantics are identical to and documented on
     :func:`refit_window_impl`, which is now a thin file-bound shell over this
     core (it loads the fit, builds ``fit_ctx`` with the persisted spur
-    catalogue replayed, calls this core, then persists and records decisions).
+    catalog replayed, calls this core, then persists and records decisions).
     The Stage 5 peak-survival pass routes through it too, holding ``fit_ctx`` /
     the plan / ``resolved`` live from ``fit_peaks_impl``. ``add_origin`` stamps
     the origin of added peaks: ``"user"`` for a user edit (the default, immune
@@ -1398,7 +1398,7 @@ def refit_window_core(
         # The NLS ran with only the non-thawed peaks free; the covariance only
         # covers those K_free params.  After re-inserting the thawed peaks the
         # fitted_peaks list grows, so the covariance labels no longer match the
-        # full peak count.  Clear it rather than persist a partial / mislabelled
+        # full peak count.  Clear it rather than persist a partial / mislabeled
         # matrix — the per-peak amplitude_error / frequency_error / phase_error
         # fields already carry the per-parameter uncertainties.
         new_wf.covariance = None
@@ -1450,7 +1450,7 @@ def refit_window_impl(
     to ~1e-5 MHz on a window whose peaks are a single-window optimum.  A window
     that was subject to a **thaw co-fit** holds peaks at a *two-window* joint
     optimum; a single-window NLS relaxes those toward the one-window optimum, so
-    such windows reproduce only to ~kHz (the neighbour's data is intentionally
+    such windows reproduce only to ~kHz (the neighbor's data is intentionally
     not re-included).  This is an inherent property of thaw, not a defect.
 
     Parameters
@@ -1597,8 +1597,8 @@ def refit_window_impl(
     )
 
     # --- Build shared active-FT context (VERBATIM helper) ------------------
-    # Replay the persisted Stage 5 gated spur catalogue rather than re-running
-    # detection: the catalogue is a Stage 5 product, so the refit must mask the
+    # Replay the persisted Stage 5 gated spur catalog rather than re-running
+    # detection: the catalog is a Stage 5 product, so the refit must mask the
     # window exactly as the fit did (a detector-code change between the fit and
     # the refit would otherwise silently re-mask the window it is editing).
     fit_ctx: Stage5FitContext = build_stage5_fit_context(
@@ -1606,12 +1606,12 @@ def refit_window_impl(
         resolved,
         persisted_cal,
         shape_enum,
-        replay_spur_catalogue=spectrum_fit.parameters,
+        replay_spur_catalog=spectrum_fit.parameters,
     )
     # --- In-memory refit core (materialize -> reconstruct frozen -> NLS) ---
     # Everything from the window materialization through the thawed-line
     # re-insertion lives in the file-I/O-free core so the survival pass can
-    # reuse it verbatim. The shell keeps the file load, spur-catalogue replay,
+    # reuse it verbatim. The shell keeps the file load, spur-catalog replay,
     # persistence, and decision recording around this call.
     new_wf: FittingResult = refit_window_core(
         fit_ctx,
@@ -1988,7 +1988,7 @@ def split_peak_impl(
     # The split seed spacing needs the active acquisition length T and the
     # sideband, both already on the persisted fit -- no need to rebuild the
     # active-FT context for two scalars. T is persisted as ``acquisition_us``;
-    # the seed frame matches ``materialize_window`` (window-midpoint centre).
+    # the seed frame matches ``materialize_window`` (window-midpoint center).
     fid = load_fid_from_pipeline_impl(path)
     sideband = _sideband_from_value(fid.sideband)
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
@@ -2002,7 +2002,7 @@ def split_peak_impl(
 
     # Place the K seeds symmetrically about ``matched_freq``.  For K=2 the
     # spacing is ±½ resolution element; for K>2 the spacing is evenly
-    # distributed over 1 resolution element centred on ``matched_freq``.
+    # distributed over 1 resolution element centered on ``matched_freq``.
     if into == 2:
         offsets = [-0.5 * resolution_mhz, 0.5 * resolution_mhz]
     else:
@@ -3024,7 +3024,7 @@ def _compute_attention_reasons(
     # --- overfit_vif: flag a non-identifiable (degenerate-split) amplitude ---
     # The diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``
     # is ~1 for an identifiable line and >> 1 when a line is degenerate with a
-    # sub-resolution neighbour (the pair *sum* is constrained, neither amplitude
+    # sub-resolution neighbor (the pair *sum* is constrained, neither amplitude
     # individually). The end-of-Stage-5 collapse already removed the extreme
     # (VIF > vif_collapse_threshold, sub-half-resolution) pairs, so what reaches
     # here is the attention band: high-VIF lines that survived because they sit
@@ -3049,7 +3049,7 @@ def _compute_attention_reasons(
                 detail=(
                     f"amplitude VIF={worst_vif:.1f} at {worst_vif_freq:.4f} MHz "
                     f">= {vif_attention_threshold:.1f} "
-                    f"(non-identifiable; degenerate with a neighbour)"
+                    f"(non-identifiable; degenerate with a neighbor)"
                 ),
                 severity=float(worst_vif),
             )

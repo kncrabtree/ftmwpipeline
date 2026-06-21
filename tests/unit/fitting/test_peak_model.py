@@ -103,7 +103,7 @@ class TestFiniteTResponse:
         assert np.allclose(h_T(-u, TAU_US, T_US), np.conj(h_T(u, TAU_US, T_US)))
 
     def test_skirt_decays_as_inverse_offset(self):
-        """Far from centre the magnitude follows the 1/|Δf| leakage envelope."""
+        """Far from center the magnitude follows the 1/|Δf| leakage envelope."""
         far = np.array([1.0, 2.0, 4.0])  # MHz, well outside the core
         mag = np.abs(h_T(far, TAU_US, T_US))
         # |h_T| ~ const / |Δf|: the product |Δf|·|h_T| is roughly flat.
@@ -208,7 +208,7 @@ def _numerical_fft_gaussian(
 
 
 class TestHTGaussian:
-    def test_centre_is_effective_tau(self):
+    def test_center_is_effective_tau(self):
         """``h_T_gaussian(0; τ_G, T) = effective_tau_gaussian(τ_G, T)``, real."""
         z = h_T_gaussian(np.array([0.0]), TAU_G_US, T_US)
         assert z.imag[0] == pytest.approx(0.0, abs=1e-12)

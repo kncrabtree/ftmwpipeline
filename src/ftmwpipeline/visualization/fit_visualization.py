@@ -198,8 +198,8 @@ def _plot_audit_trail_on_freq(
     """Audit trail on the molecular-frequency axis.
 
     Each step is a horizontal bar at ``y = step_index`` from the window
-    centre to the candidate's molecular frequency (so the bar's terminus is
-    the line position on the same axis as the spectra above). Colour =
+    center to the candidate's molecular frequency (so the bar's terminus is
+    the line position on the same axis as the spectra above). Color =
     decision, with a short label ``decision (p=...)``.
     """
     audit = fit_window.audit_trail

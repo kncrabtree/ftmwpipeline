@@ -1,6 +1,6 @@
 """Unit tests for the peak-detection plot panel logic.
 
-The 1-panel (default) vs 2-panel (``snr_histogram=True``) behaviour and the
+The 1-panel (default) vs 2-panel (``snr_histogram=True``) behavior and the
 promotion-cutoff marker live entirely in ``plot_peak_detection``; they need
 no real spectrum. These replace two ex-integration tests that drove the full
 2638 pipeline (~60 s) to assert the same axis counts.

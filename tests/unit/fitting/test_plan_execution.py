@@ -679,7 +679,7 @@ class TestLocalThaw:
         rng = np.random.default_rng(SEED + 10)
         sigma = 1.0
         strong_freq = 36100.0
-        # 4 MHz apart: A's skirt at B is ~A/(2*pi*4) ~ 4% of A's centre, and
+        # 4 MHz apart: A's skirt at B is ~A/(2*pi*4) ~ 4% of A's center, and
         # the weak line's skirt at A is similarly modest, so neither line
         # makes the other's window residual coherent under a clean fit.
         weak_freq = 36104.0
@@ -1076,7 +1076,7 @@ class TestStructuralReplan:
     """``execute_plan`` with a :class:`ReplanContext` runs the structural
     renegotiation outer loop after the main fit + thaw passes. When a
     residual edge flags with no contributor on that side and a
-    frequency-adjacent neighbour exists, a :class:`MergeRequest` is emitted
+    frequency-adjacent neighbor exists, a :class:`MergeRequest` is emitted
     and the plan is revised in place. Outcomes for the merged windows + their
     downstream dependents are dropped and refit on the revised plan.
 
@@ -1258,7 +1258,7 @@ class TestStructuralReplan:
         assert outcome.replan_history == []
 
     def test_flagged_edge_with_no_adjacent_window_records_no_event(self):
-        """A flagged edge at the plan's outer boundary has no neighbour to
+        """A flagged edge at the plan's outer boundary has no neighbor to
         merge with -- the dispatcher silently drops the request and exits."""
         sigma = 1.0
         # Peak placed near the *low* edge of the only window so its skirt

@@ -1745,7 +1745,7 @@ def _concerns_stage2b(m: _SummaryModel) -> List[_Concern]:
         out.append(
             _Concern(
                 "note",
-                f"The Stage 2b lineshape vote favoured `{m.recommended_shape}` but "
+                f"The Stage 2b lineshape vote favored `{m.recommended_shape}` but "
                 f"Stage 5 fit `{m.shape}`.",
                 "Usually fine (the vote is advisory and the bare-prototype vote "
                 "can over-call Voigt); re-fit with the voted shape to compare "

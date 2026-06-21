@@ -598,21 +598,21 @@ class TestAddPeak:
 
 
 # ---------------------------------------------------------------------------
-# Spur-catalogue replay: the refit must reproduce the Stage 5 residual mask
-# from the persisted gated catalogue, never re-derive it (detection is a
+# Spur-catalog replay: the refit must reproduce the Stage 5 residual mask
+# from the persisted gated catalog, never re-derive it (detection is a
 # Stage 5 product; a detector change between fit and refit must not re-mask).
 # ---------------------------------------------------------------------------
 
 
-class TestSpurCatalogueReplay:
-    def test_spur_set_from_catalogue_roundtrip(self):
+class TestSpurCatalogReplay:
+    def test_spur_set_from_catalog_roundtrip(self):
         """Reconstructing a SpurSet from its persisted fields reproduces the
-        window mask spec exactly (centres, default + per-spur half-widths)."""
+        window mask spec exactly (centers, default + per-spur half-widths)."""
         from ftmwpipeline.core.data_structures import Sideband
         from ftmwpipeline.fitting.spur_detection import (
             GatedSpur,
             SpurSet,
-            spur_set_from_catalogue,
+            spur_set_from_catalog,
         )
 
         orig = SpurSet(
@@ -630,7 +630,7 @@ class TestSpurCatalogueReplay:
             bin_spacing_mhz=0.094,
             mask_half_width_bins=2,
         )
-        rebuilt = spur_set_from_catalogue(
+        rebuilt = spur_set_from_catalog(
             centers_mhz=[s.center_mhz for s in orig.spurs],
             sources=[s.source for s in orig.spurs],
             lattice=[s.lattice for s in orig.spurs],
@@ -650,11 +650,11 @@ class TestSpurCatalogueReplay:
             assert a.half_widths_mhz == pytest.approx(b.half_widths_mhz)
 
     def test_legacy_short_lists_default(self):
-        """A pre-field file (only centres + sources persisted) still rebuilds:
+        """A pre-field file (only centers + sources persisted) still rebuilds:
         lattice->None, drift->False, per-spur width->None (uniform default)."""
-        from ftmwpipeline.fitting.spur_detection import spur_set_from_catalogue
+        from ftmwpipeline.fitting.spur_detection import spur_set_from_catalog
 
-        s = spur_set_from_catalogue(
+        s = spur_set_from_catalog(
             centers_mhz=[28023.0, 30100.0],
             sources=["narrow", "narrow"],
             bin_spacing_mhz=0.094,
@@ -664,10 +664,10 @@ class TestSpurCatalogueReplay:
         assert all(sp.mask_half_width_bins is None for sp in s.spurs)
         assert all(sp.lattice is None and sp.drift is False for sp in s.spurs)
 
-    def test_refit_replays_persisted_catalogue_not_detection(self, stage5_small_file):
-        """build_stage5_fit_context(replay_spur_catalogue=...) must yield a
-        spur set matching the INJECTED catalogue, not whatever detection finds.
-        Inject a fictional spur centre and confirm it is the one masked."""
+    def test_refit_replays_persisted_catalog_not_detection(self, stage5_small_file):
+        """build_stage5_fit_context(replay_spur_catalog=...) must yield a
+        spur set matching the INJECTED catalog, not whatever detection finds.
+        Inject a fictional spur center and confirm it is the one masked."""
         from ftmwpipeline.core.stage_fit_settings import StageFitSettings
         from ftmwpipeline.core.stage_fit_settings import resolve as resolve_settings
         from ftmwpipeline.io.stage_fit_settings_serialization import (
@@ -696,7 +696,7 @@ class TestSpurCatalogueReplay:
         )
         shape_enum = resolved.shape.kind
 
-        # A fictional catalogue current detection would not produce.
+        # A fictional catalog current detection would not produce.
         injected = {
             "spur_centers_mhz": [28123.456, 33000.789],
             "spur_sources": ["narrow", "saturated"],
@@ -706,7 +706,7 @@ class TestSpurCatalogueReplay:
             "spur_mask_half_width_bins": 2,
         }
         ctx = build_stage5_fit_context(
-            path, resolved, None, shape_enum, replay_spur_catalogue=injected
+            path, resolved, None, shape_enum, replay_spur_catalog=injected
         )
         centers = sorted(s.center_mhz for s in ctx.spur_set.spurs)
         assert centers == pytest.approx([28123.456, 33000.789])

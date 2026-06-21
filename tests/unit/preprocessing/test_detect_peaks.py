@@ -4,7 +4,7 @@ Unit tests for the Stage 3 two-pass driver and SNR classification.
 Synthetic spectra only: classification bin edges, gap-pass recovery of a weak
 line the (simulated) apodized primary pass misses, suppression of a strong
 line's sidelobe via the continuous gap leakage-aware floor, the gap-pass
-switch, provenance, validation. Real-data 2638 behaviour is the integration
+switch, provenance, validation. Real-data 2638 behavior is the integration
 suite.
 """
 

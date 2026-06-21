@@ -317,7 +317,7 @@ def match_peak(
     if cat_freqs is None:
         cat_freqs = np.asarray([e.frequency_mhz for e in catalog], dtype=float)
     # cat_freqs is sorted ascending (see build_cross_ref); searchsorted gives the
-    # insertion point, and the nearest entry is one of its two neighbours.
+    # insertion point, and the nearest entry is one of its two neighbors.
     pos = int(np.searchsorted(cat_freqs, f_line))
     best_i = -1
     best_abs = math.inf

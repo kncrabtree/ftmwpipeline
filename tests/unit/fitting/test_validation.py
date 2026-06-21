@@ -216,7 +216,7 @@ class TestAICc:
         """A K=2 vs K=1 comparison should swing toward K=1 as n_eff shrinks."""
         chi2_k1, k1 = 200.0, 4  # 1 peak + tau
         chi2_k2, k2 = 195.0, 7  # 2 peaks + tau, marginal chi^2 improvement
-        # Large n_eff: marginal improvement may favour K=2.
+        # Large n_eff: marginal improvement may favor K=2.
         large = 200.0
         d_large = calculate_aicc(chi2_k2, k2, large) - calculate_aicc(
             chi2_k1, k1, large

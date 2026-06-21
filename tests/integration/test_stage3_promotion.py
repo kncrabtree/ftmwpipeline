@@ -1,7 +1,7 @@
 """
 Stage 3 integration tests: store-all / promotion / provenance on real 2638 data.
 
-Behaviour under test:
+Behavior under test:
   - detect_peaks_impl stores ALL detected peaks (no pre-filter at promotion floor).
   - internal_min_snr == 2.0 (DEFAULT_INTERNAL_MIN_SNR) for default call.
   - promotion_min_snr == 3.0 (DEFAULT_MIN_SNR) for default call.
@@ -319,7 +319,7 @@ def test_lower_internal_floor_yields_at_least_as_many_peaks(
     )
 
 
-# Visualization axis-count behaviour (default 1 panel vs snr_histogram 2
+# Visualization axis-count behavior (default 1 panel vs snr_histogram 2
 # panels) is unit-tested directly on synthetic peaks in
 # tests/unit/visualization/test_peak_visualization.py. That logic lives
 # entirely in plot_peak_detection; exercising it through the full 2638

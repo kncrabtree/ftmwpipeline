@@ -1,7 +1,7 @@
 """
 Unit tests for the Stage 3 projection-coherence screen helper.
 
-Covers the three behaviours the cross-tabulation analysis relies on:
+Covers the three behaviors the cross-tabulation analysis relies on:
 
 * A synthetic Lorentzian on the active-FT grid projects to ratio ≈ 1 (the
   basis matches the data; the σ-weighted complex projection recovers the

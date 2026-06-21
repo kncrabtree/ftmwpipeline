@@ -545,19 +545,19 @@ def test_per_band_tau_routes_tau0_per_window(
     with pytest.raises(_PlanIntercepted):
         stage5_impl.fit_peaks_impl(str(variant), settings=s)
 
-    # The captured window's centre frequency tells us which band it sits in.
-    centre = 0.5 * (captured["window_freq_lo"] + captured["window_freq_hi"])
+    # The captured window's center frequency tells us which band it sits in.
+    center = 0.5 * (captured["window_freq_lo"] + captured["window_freq_hi"])
     matching_band = None
     for band in tc.band_majorities:
-        if band.freq_lo_mhz <= centre < band.freq_hi_mhz:
+        if band.freq_lo_mhz <= center < band.freq_hi_mhz:
             matching_band = band
             break
     assert matching_band is not None, (
-        f"window centre {centre} MHz is outside every band majority "
+        f"window center {center} MHz is outside every band majority "
         f"({[(b.label, b.freq_lo_mhz, b.freq_hi_mhz) for b in tc.band_majorities]})"
     )
     assert captured["tau0_us"] == pytest.approx(matching_band.tau_maj_us), (
-        f"window {captured['window_id']} (centre {centre:.1f} MHz, "
+        f"window {captured['window_id']} (center {center:.1f} MHz, "
         f"band {matching_band.label}) saw tau0_us={captured['tau0_us']:.3f} "
         f"but the band-local τ_maj is {matching_band.tau_maj_us:.3f}. "
         f"Band-wide τ_maj is {tc.tau_maj_us:.3f} -- if those match, the "

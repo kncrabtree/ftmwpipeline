@@ -254,8 +254,8 @@ class BlackChirpLoader(BaseLoader):
 
             bcfid = ftmw.get_fid(fid_index)
             params = bcfid.fidparams
-            # bcfid.data is (n_samples, n_frames); the pipeline analyses the
-            # primary (cumulative) frame, matching the historical behaviour.
+            # bcfid.data is (n_samples, n_frames); the pipeline analyzes the
+            # primary (cumulative) frame, matching the historical behavior.
             voltage_data = np.asarray(bcfid.data)[:, 0]
             # Sideband is resolved locally rather than via
             # ``bcfid.is_lower_sideband()``: pandas reads an integer-coded
@@ -301,7 +301,7 @@ class BlackChirpLoader(BaseLoader):
         """Extract instrument clock declarations from a Blackchirp experiment.
 
         Delegates metadata parsing to the ``blackchirp`` package
-        (:class:`~blackchirp.BCExperiment`), which normalises the CSV format
+        (:class:`~blackchirp.BCExperiment`), which normalizes the CSV format
         across Blackchirp versions, and applies the instrument semantics on top:
         the synthesiser chain fundamentals, the AWG sample clock, and the
         free-running digitizer clock. Returns a list of
@@ -395,7 +395,7 @@ class BlackChirpLoader(BaseLoader):
 
     @staticmethod
     def _clock_operation(value: Any) -> Optional[str]:
-        """Normalise a clocks ``Operation`` to ``"Multiply"`` / ``"Divide"``.
+        """Normalize a clocks ``Operation`` to ``"Multiply"`` / ``"Divide"``.
 
         Accepts the string serialisation and the integer enum older Blackchirp
         metadata writes (``0`` = Multiply, ``1`` = Divide); anything else is

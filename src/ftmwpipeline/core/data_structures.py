@@ -866,7 +866,7 @@ class AuditStep:
 
     Persistent twin of :class:`ftmwpipeline.fitting.window_fit.AddStep`. The
     add-one-peak loop records one of these per seed / re-seed / candidate so
-    the conservative loop's accept/reject behaviour can be replayed and
+    the conservative loop's accept/reject behavior can be replayed and
     curated after the fact.
 
     Attributes
@@ -1249,7 +1249,7 @@ class FixedContributor:
         converged fit, so the dependent window does not have to be fit after
         the primary. Edge-free contributors are excluded from the dependency
         DAG, so the Step-7 cycle-breaker never drops them -- which is what lets
-        a bright neighbour's leakage skirt be subtracted from a window whose
+        a bright neighbor's leakage skirt be subtracted from a window whose
         ordinary (edge-bearing) attachment would otherwise be discarded to keep
         the DAG acyclic. They are also skipped by the local-thaw handshake (a
         thaw needs the primary's converged fit, which an edge-free contributor
@@ -1430,7 +1430,7 @@ class ReplanInfo:
 
     Persistent twin of :class:`ftmwpipeline.fitting.plan_execution.ReplanEvent`.
     Emitted when a residual edge-coherence flag has no fixed contributor to
-    thaw and a frequency-adjacent neighbour exists, prompting Stage 4 to
+    thaw and a frequency-adjacent neighbor exists, prompting Stage 4 to
     merge the two windows and bump the plan revision.
 
     Attributes
@@ -1503,7 +1503,7 @@ class DoubletAlternativeInfo:
     Persistent twin of
     :class:`ftmwpipeline.fitting.doublet_alternative.DoubletAdjudication`.
     All frequencies are in molecular MHz (fit-frame baseband offsets
-    converted via the window centre + sideband sign); ``merged_offset_mhz``
+    converted via the window center + sideband sign); ``merged_offset_mhz``
     is similarly converted and stored as ``merged_frequency_mhz``.
     NaN fields indicate a failed or undefined result (refit did not converge,
     AICc was degenerate, etc.).
@@ -1526,7 +1526,7 @@ class DoubletAlternativeInfo:
         ``chi_squared(merged) - chi_squared(production)``; positive when
         the doublet fit is better. NaN on failure.
     delta_aicc : float
-        ``AICc(merged) - AICc(production)``; positive favours the doublet.
+        ``AICc(merged) - AICc(production)``; positive favors the doublet.
         NaN on failure or degenerate AICc.
     merged_frequency_mhz : float
         Molecular frequency of the merged peak. NaN on failure.
@@ -1745,7 +1745,7 @@ class LedgerCandidate:
     (``FittingResult.audit_trail``) and rescue events
     (``FittingResult.rescue_events``).  All frequencies are in **molecular
     MHz** (audit-trail baseband offsets have been mapped through
-    ``molecular_frequency`` using the window centre and sideband sign).
+    ``molecular_frequency`` using the window center and sideband sign).
 
     Attributes
     ----------

@@ -187,7 +187,7 @@ class TestStampBehavior:
 
 
 class TestNoDeclarationPathUnchanged:
-    """Without a declaration the behaviour is byte-identical to the original."""
+    """Without a declaration the behavior is byte-identical to the original."""
 
     def test_no_declaration_flag_false(self, tmp_path: Path) -> None:
         fid = _make_fid()

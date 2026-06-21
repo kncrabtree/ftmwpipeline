@@ -129,7 +129,7 @@ DEFAULT_PRIMARY_WINDOW = "blackmanharris"
 # so it needs a larger ``gap k = 3``; at k=1 the floor sits at the wing level
 # and the gap pass floods with skirt ripple. ``gap k = 3`` is set by direct
 # visual validation on 1512 (the flood collapses and the survivors are genuine
-# catalogued / clean-region lines).
+# cataloged / clean-region lines).
 #
 # This continuous floor replaces the former hard gap-mask ``S_coh`` cutoff,
 # which over-killed real lines sitting on strong wings (recall improves). See

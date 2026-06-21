@@ -344,7 +344,7 @@ class TestReviewMergeVerb:
         # The recorded merged frequency is offset from the centroid by 0.5 MHz
         # (well outside snap_tol_mhz=0.05), but within the window.
         # NOTE: the merge will still produce a peak near the centroid because
-        # the NLS optimises from the seed.  What we verify is that the
+        # the NLS optimizes from the seed.  What we verify is that the
         # *initial seed* is taken from the record (the logged "snapped" message).
         # A more direct check is that the returned peaks are all origin="user".
         recorded_merge_freq = centroid + 0.5

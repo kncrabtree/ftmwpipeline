@@ -281,7 +281,7 @@ class TestApplySnrSurvivalPrune:
         assert fit.diagnostics["peak_survival"]["n_pruned"] == 2
 
     def test_borderline_neighbor_recovers_after_dust_removed(self):
-        """Removing one dust line per pass lets a borderline neighbour recover on
+        """Removing one dust line per pass lets a borderline neighbor recover on
         the refit (deblend) instead of being swept out with the initial dust."""
         w1 = _make_window(
             1,
@@ -294,7 +294,7 @@ class TestApplySnrSurvivalPrune:
         def _refit(wf: FittingResult, remove: list[float]) -> FittingResult:
             kept = [p for p in wf.fitted_peaks if float(p.frequency_mhz) not in remove]
             new = FittingResult(window_id=wf.window_id)
-            # With the dust gone the neighbour deblends up to 4.0 (above floor).
+            # With the dust gone the neighbor deblends up to 4.0 (above floor).
             new.fitted_peaks = [
                 _make_peak(p.frequency_mhz, 4.0 if p.frequency_mhz == 1001.0 else p.snr)
                 for p in kept
@@ -358,7 +358,7 @@ def _window_with_range(
 
     wf = FittingResult(window_id=window_id)
     wf.fitted_peaks = list(peaks)
-    # The collapse only reads ``wf.window.freq_range`` for the window centre.
+    # The collapse only reads ``wf.window.freq_range`` for the window center.
     wf.window = SimpleNamespace(freq_range=freq_range)  # type: ignore[assignment]
     if doublet_alternatives is not None:
         wf.doublet_alternatives = doublet_alternatives

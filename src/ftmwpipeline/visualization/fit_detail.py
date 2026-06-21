@@ -179,7 +179,7 @@ def _eval_window_baseline(
     (``baseline_applied`` / ``baseline_order`` / ``baseline_offset_scale`` /
     ``baseline_coeff{k}_re`` / ``baseline_coeff{k}_im``) and returns the complex
     ``B(u) = sum_{k<=p} (a_k + i b_k) (u/u_s)^k`` on the signed baseband offset
-    from the window centre. Returns zeros when no baseline fired, so callers can
+    from the window center. Returns zeros when no baseline fired, so callers can
     add it unconditionally. The Stage 5 fit applies the baseline jointly with
     the de-biased lines, so the faithful plotted model is
     ``model_spectrum(peaks) + B(u)``.
@@ -211,7 +211,7 @@ def _window_model_peaks(
     """Fitted peaks + frozen out-of-window contributors as offset ModelPeaks.
 
     The frozen contributors (``frozen_peak_*`` in ``fixed_parameters``) are the
-    strong neighbouring lines whose leakage skirt reaches into this window; the
+    strong neighboring lines whose leakage skirt reaches into this window; the
     fit subtracts them as a fixed background, so a faithful overlay must add
     them back.
     """
@@ -310,7 +310,7 @@ class WindowPanelData:
 # Spine-free / light-grid presentation (shared by the report and CLI panels)
 # ---------------------------------------------------------------------------
 
-# Distinct colour for the noise-band (+/- sigma) reference lines and the
+# Distinct color for the noise-band (+/- sigma) reference lines and the
 # peak-position vlines: amber reads as a deliberate reference mark and stays
 # clear of both the grey grid and the red / blue / purple residual traces
 # (vlines are vertical, the noise bands horizontal dashed -- distinct by
@@ -326,7 +326,7 @@ def _apply_bare_style(ax: plt.Axes) -> None:
     No spines (the top / right ones especially read as clutter), no tick marks
     (labels kept), and a faint major grid in their place, sitting behind the
     data. The reference marks (noise band, peak vlines, zero baseline) are
-    coloured distinctly so they are not mistaken for grid lines.
+    colored distinctly so they are not mistaken for grid lines.
     """
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -460,7 +460,7 @@ def prepare_window_panels(
 # Panel painters (each paints onto axes the assembler owns)
 # ---------------------------------------------------------------------------
 
-# Per data+residual component: (projection, line colour, data-panel label).
+# Per data+residual component: (projection, line color, data-panel label).
 _COMPONENT_SPECS: Dict[str, Tuple[Callable[[np.ndarray], np.ndarray], str, str]] = {
     "re": (np.real, "tab:red", "Re"),
     "im": (np.imag, "tab:blue", "Im"),
@@ -575,7 +575,7 @@ def draw_component(
     band_s = data.band * amp
     is_mag = component == "mag"
 
-    # Peak vlines: labelled on the residual strip (top), plain on the data panel.
+    # Peak vlines: labeled on the residual strip (top), plain on the data panel.
     data.vline_plotter(ax_resid, True)
     data.vline_plotter(ax_data, False)
 
@@ -682,7 +682,7 @@ def plot_consolidated_detail(
     grid (ascending molecular frequency) the fit lives on. ``freq_padded`` /
     ``spec_padded`` are the exactly-2x zero-filled display grid for the
     magnitude panels; when omitted, the magnitude panels fall back to native.
-    ``spurs`` is the fit's gated-spur catalogue
+    ``spurs`` is the fit's gated-spur catalog
     (``SpectrumFit.diagnostics["gated_spurs"]``: dicts with ``center_mhz``
     and ``source``); in-window entries are marked on the data and residual
     panels so a masked tone is never mistaken for an un-fit line.
@@ -766,7 +766,7 @@ def plot_window_panels(
     caller owns closing the figures.
 
     When ``include_overview`` is False the full-spectrum ``"overview"`` panel is
-    not built (the HTML report discards it in favour of a single shared
+    not built (the HTML report discards it in favor of a single shared
     interactive overview, so building one per window is wasted work).
     """
     data = prepare_window_panels(
@@ -813,7 +813,7 @@ def plot_correlation_heatmap(
 
     Normalizes the covariance to correlation coefficients
     ``rho_ij = cov_ij / sqrt(cov_ii * cov_jj)`` and draws them on a fixed
-    ``[-1, +1]`` divergent colour scale, so the off-diagonal structure (which
+    ``[-1, +1]`` divergent color scale, so the off-diagonal structure (which
     parameter pairs trade off) is legible at a glance even for a wide window
     where the numeric matrix is unreadable. Zero-variance parameters (a
     degenerate diagonal entry) yield a zero correlation rather than a NaN. The
@@ -967,7 +967,7 @@ def _make_vline_plotter(
     """Build the per-peak vertical-line annotator with row-staggered labels.
 
     ``color`` / ``alpha`` / ``lw`` style the peak lines -- the bare/grid panels
-    pass the amber reference colour so the peak positions read distinctly from
+    pass the amber reference color so the peak positions read distinctly from
     the grey major grid.
     """
     fwhm = 1.0 / (math.pi * tau_us) if tau_us > 0.0 else 0.0
@@ -1299,7 +1299,7 @@ def plot_windowed_comparison(
 
     Strictly diagnostic: the window changes the noise correlation, so this is
     *not* the fit metric -- no residuals or chi-squared are shown. The model is
-    the persisted fit's lines re-synthesised and windowed identically to the
+    the persisted fit's lines re-synthesized and windowed identically to the
     data; the leakage-wing baseline is omitted because apodization suppresses
     the very skirt it compensates.
     """

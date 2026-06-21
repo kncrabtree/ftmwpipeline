@@ -174,7 +174,7 @@ tbody tr[data-thumb]:hover { cursor: help; }
 thead th { position: sticky; top: 0; z-index: 1; }
 pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
       overflow-x: auto; border-radius: 4px; font-size: 0.82rem; }
-/* A sticky top navigation bar spans the viewport; its inner row is centred to
+/* A sticky top navigation bar spans the viewport; its inner row is centered to
    the report column. Anchor jumps and the table sticky-headers are offset by the
    bar height so nothing lands hidden underneath it. */
 .topnav { position: sticky; top: 0; z-index: 100; background: #11233a;
@@ -268,7 +268,7 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .equation { background: #f0f2f5; color: #1a1a1a; border: 1px solid #d0d4d9;
             border-radius: 4px; padding: 0.6rem 1rem; margin: 0.5rem 0 1.25rem;
             overflow-x: auto; font-size: 0.9rem; text-align: center; }
-/* The interleaved distribution figures cap their natural width and centre,
+/* The interleaved distribution figures cap their natural width and center,
    rather than stretching a 1-2 panel group across the full column. */
 .hist { margin: 0.5rem 0 1.25rem; }
 .hist img { max-width: 100%; width: auto; height: auto; border: 1px solid #d0d4d9;
@@ -429,15 +429,15 @@ def _panel_figure_name(stem: str, window_id: int, panel: str) -> str:
 
 
 def _figure_png_bytes(fig: Any, *, dpi: int, **kw: Any) -> bytes:
-    """Render a report figure to adaptive 256-colour palette PNG *bytes*.
+    """Render a report figure to adaptive 256-color palette PNG *bytes*.
 
     The report's figures are line plots and small heatmaps with only a few
-    hundred distinct colours, so an adaptive 256-colour palette is visually
+    hundred distinct colors, so an adaptive 256-color palette is visually
     indistinguishable from the RGBA original while cutting the PNG -- and its
     base64 embed in the single-file build -- by roughly two thirds. (Lowering the
     resolution or making the background transparent does *not* help: the panels
     already render below 800 px wide, downscaling re-introduces intermediate
-    colours, and a transparent background only adds alpha variation at the
+    colors, and a transparent background only adds alpha variation at the
     anti-aliased edges.) Renders to a buffer, then quantizes. ``kw`` is forwarded
     to ``savefig`` (e.g. ``bbox_inches="tight"``). The encoding is sink-agnostic,
     so the parallel figure-render path (worker returns bytes) and the serial path
@@ -460,7 +460,7 @@ def _figure_png_bytes(fig: Any, *, dpi: int, **kw: Any) -> bytes:
 
 
 def _save_figure_png(fig: Any, path: Union[str, Path], *, dpi: int, **kw: Any) -> None:
-    """Save a report figure as an adaptive 256-colour palette PNG (see
+    """Save a report figure as an adaptive 256-color palette PNG (see
     :func:`_figure_png_bytes`)."""
     Path(path).write_bytes(_figure_png_bytes(fig, dpi=dpi, **kw))
 
@@ -909,7 +909,7 @@ def _methods_stage_figures(
             [
                 (
                     "stage3_peaks",
-                    "Stage 3 promoted detections over the spectrum, coloured by SNR "
+                    "Stage 3 promoted detections over the spectrum, colored by SNR "
                     "class and detection pass, with the SNR distribution.",
                     lambda: visualize_peaks_impl(
                         path,

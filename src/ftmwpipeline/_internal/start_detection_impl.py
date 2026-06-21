@@ -133,7 +133,7 @@ def detect_start_time_impl(
                 threshold,
             )
     else:
-        # No declaration: fall back to sweep detector behaviour.
+        # No declaration: fall back to sweep detector behavior.
         if not result.chirp_detected:
             logger.warning(
                 "Start detection found no chirp collapse (plateau/floor = %.1f < %.1f); "

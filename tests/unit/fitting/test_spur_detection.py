@@ -91,7 +91,7 @@ def test_low_snr_integer_spike_rejected():
 # ---------------------------------------------------------------------------
 def test_gate_union_of_narrow_and_saturated():
     narrow = detect_active_ft_spurs(*_grid([(30720.0, 100.0, 0.0)]), band=BAND)
-    # A split-bin spur the frequency test missed, caught by the flat catalogue.
+    # A split-bin spur the frequency test missed, caught by the flat catalog.
     sat = SpurCluster(
         center_freq_mhz=39040.0,
         peak_bin_index=10,
@@ -208,7 +208,7 @@ def test_empty_spur_set_is_falsey():
     )
 
 
-def test_use_stft_catalogue_false_drops_flat_only_spurs():
+def test_use_stft_catalog_false_drops_flat_only_spurs():
     sat = SpurCluster(
         center_freq_mhz=39040.0,
         peak_bin_index=10,
@@ -223,7 +223,7 @@ def test_use_stft_catalogue_false_drops_flat_only_spurs():
         sig_c,
         band=BAND,
         saturated_clusters=[sat],
-        use_stft_catalogue=False,
+        use_stft_catalog=False,
     )
     assert not bool(spur_set)
 
@@ -313,7 +313,7 @@ def test_gate_accepts_probe_confirmed_flat_cluster_off_integer():
 
 def _pair_split_grid(f_int=35840.0):
     """A CW tone between two bins: power split across the pair, sinc-level
-    second neighbours (the measured 655 35840 profile)."""
+    second neighbors (the measured 655 35840 profile)."""
     freqs = np.arange(f_int - 5.0, f_int + 5.0, SPACING)
     spec = np.zeros(freqs.size, dtype=np.complex128)
     k = int(np.argmin(np.abs(freqs - f_int)))
@@ -326,8 +326,8 @@ def _pair_split_grid(f_int=35840.0):
 
 
 def test_pair_split_tone_nominated_as_pair():
-    # Split power defeats the single-bin test (neighbour ratio 0.65), but
-    # the two-bin pair towers over its second neighbours.
+    # Split power defeats the single-bin test (neighbor ratio 0.65), but
+    # the two-bin pair towers over its second neighbors.
     freqs, spec, sig_c, k = _pair_split_grid()
     spurs = detect_active_ft_spurs(freqs, spec, sig_c, band=BAND)
     assert len(spurs) == 1
@@ -678,7 +678,7 @@ def test_snr_mask_window_spec_carries_per_offset_widths():
 
 def test_flat_lane_tone_mask_scaled_from_measured_snr():
     # The 363 w100 defect: a flat-lane tone (gated via the saturated /
-    # probe-flat catalogue) carries snr=NaN, so SNR-scaled mask never fired
+    # probe-flat catalog) carries snr=NaN, so SNR-scaled mask never fired
     # and its strong sinc skirt detonated the window. The fallback reads the
     # bin SNR from the active FT and widens the mask.
     from ftmwpipeline.core.stage_fit_settings import ClockSource
@@ -686,7 +686,7 @@ def test_flat_lane_tone_mask_scaled_from_measured_snr():
 
     # A strong tone at an off-lattice, non-integer frequency: the
     # frequency-domain sweep never visits it (only integer/lattice points
-    # are swept), so only the flat catalogue + flat probe gate it. The
+    # are swept), so only the flat catalog + flat probe gate it. The
     # single-bin spike is skirt-consistent, so the scaled mask is not
     # truncated. Bin SNR ~ 139.
     center = 28057.46

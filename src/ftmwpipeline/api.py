@@ -1187,10 +1187,16 @@ def fit_peaks(
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
-    Requires Stage 4 (window assignment). The fit runs on the active-portion FT
-    computed on demand from the FID plus the canonical Stage 1 settings; per-bin
-    noise is measured on the active-FT directly. Persists the resulting
-    :class:`SpectrumFit` to ``/stage5_fitting``.
+    Requires Stage 4 (window assignment). Drives the conservative add-one-peak
+    loop over each window with the shared per-window decay ``tau`` and the
+    frozen-contributor model, then the residual edge-coherence handshake (local
+    thaw + structural replan). The fit runs on the active-portion FT (computed
+    on demand from the FID + canonical Stage 1 settings), so per-bin statistics
+    are independent and reduced chi-squared / F-test / AIC are calibrated as
+    written. The persistent :class:`SpectrumFit` -- per-window
+    :class:`FittingResult` s, the merged global fitted-peak list, the thaw /
+    replan histories, and the parameters used -- is written to
+    ``/stage5_fitting``.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     recommended > hard default); pass ``settings=`` to drive the fit from a
@@ -1205,27 +1211,38 @@ def fit_peaks(
     file_path : str or Path
         Path to .ftmw pipeline file.
     shape : {"lorentzian", "gaussian"}, optional
-        Per-line envelope shape, kept as a first-class convenience argument.
-        ``"gaussian"`` consumes the Stage 2b τ_G calibration in place of the
-        pure-exp twin. ``None`` falls through to the resolved settings.
+        Time-domain envelope of the per-line model, kept as a first-class
+        convenience argument. ``"lorentzian"`` uses ``exp(-t/τ)``;
+        ``"gaussian"`` uses ``exp(-(t/τ_G)²)`` and consumes the Stage 2b τ_G
+        calibration (``calibrate_tau(shape="gaussian")``) in place of the
+        pure-exp variant for the bidirectional τ anchoring penalty. ``None``
+        falls through to the resolved settings (preset / persisted / default).
     tau_maj_override_us, sigma_tau_override_us : float, optional
         Atomic-pair manual override for the Stage 2b tau calibration, kept as
-        explicit arguments (an A/B escape hatch crossing a stage boundary). When
-        both are supplied (positive), they replace any persisted Stage 2b result
-        for this fit. Supplying only one of the pair raises ``ValueError``.
+        explicit arguments (an A/B escape hatch crossing a stage boundary, not
+        a fit knob). When both are supplied (positive), they replace any
+        persisted Stage 2b result for this fit. Supplying only one of the pair
+        raises ``ValueError``.
     settings : StageFitSettings, optional
         Bundle of Stage 5 knobs; fields left ``None`` fall through the
         resolution chain. Resolves at the explicit override layer (outranks the
         persisted record). May be combined with ``preset``.
     preset : str, optional
-        Bare preset name or a path to a YAML file carrying a ``stage5:`` block.
-        Seeds the preset layer beneath the persisted record; may be combined
-        with ``settings``.
+        Bare preset name (e.g. ``"instrument_bc_2638"``) or a path to a YAML
+        file carrying a ``stage5:`` block. Seeds the preset layer beneath the
+        persisted record; may be combined with ``settings``.
 
     Returns
     -------
     SpectrumFit
         The persistent fit aggregate.
+
+    Raises
+    ------
+    StageDependencyError
+        If Stage 4 has not been completed.
+    RuntimeError
+        If fitting fails.
     """
     try:
         pipeline = Pipeline.open(file_path)

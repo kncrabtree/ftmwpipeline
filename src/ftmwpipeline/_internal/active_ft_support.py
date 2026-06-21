@@ -41,7 +41,7 @@ def _resolve_sideband(value: Sideband | str) -> Sideband:
 def _active_acquisition_us(
     fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
 ) -> float:
-    """Effective acquisition length T (µs) of the analysed FID window."""
+    """Effective acquisition length T (µs) of the analyzed FID window."""
     lo = 0.0 if start_us is None else float(start_us)
     hi = fid_duration_us if end_us is None else float(end_us)
     return max(hi - lo, 0.0)

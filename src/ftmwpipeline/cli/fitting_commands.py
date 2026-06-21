@@ -3,7 +3,7 @@ Stage 5 fitting commands.
 
 Implements the ``fit run``, ``fit show``, and ``fit check`` subcommands. Thin
 wrappers over the shared ``_internal.stage5_impl`` implementation --
-identical behaviour to the Pipeline class and functional API.
+identical behavior to the Pipeline class and functional API.
 """
 
 import argparse

@@ -10,7 +10,7 @@ is parameterised in.
 It is a pure algorithm module (arrays in, arrays out, no file or pipeline
 state), unit-tested in isolation. Orchestration lives in
 :mod:`ftmwpipeline._internal.stage5_impl` and the per-window least-squares
-solver in :mod:`ftmwpipeline.fitting.window_fit` (Stage 5 task 3). The model
+solver in :mod:`ftmwpipeline.fitting.window_fit`. The model
 and its conventions were established by the Stage 5 research prototype
 (``dev-docs/research/stage5-fitting/``); the plan is
 ``dev-docs/planning/stage5-fitting.md``.
@@ -19,14 +19,14 @@ The model
 ---------
 A molecular line is an exponentially damped cosine excited at the
 active-region turn-on and observed over the finite acquisition ``[t0, t0+T]``.
-In *baseband* frequency offset ``Δf`` (MHz) from line centre its complex-FT
+In *baseband* frequency offset ``Δf`` (MHz) from line center its complex-FT
 response, in the de-ramped ``[0, T]`` frame, is
 
     X(Δf) ≈ ½ A e^{iφ} · h_T(Δf; τ)
     h_T(Δf; τ) = [1 - exp(-(1/τ + i2π Δf) T)] / (1/τ + i2π Δf)
 
-``h_T`` is the exact rfft-domain line shape: at centre ``h_T(0) = τ_eff =
-τ(1 - e^{-T/τ})`` and far from centre its magnitude decays as the ``1/|Δf|``
+``h_T`` is the exact rfft-domain line shape: at center ``h_T(0) = τ_eff =
+τ(1 - e^{-T/τ})`` and far from center its magnitude decays as the ``1/|Δf|``
 truncation-leakage skirt. A window's model is a sum of such terms -- see
 :func:`model_spectrum`. Because the model carries leakage exactly, the fit can
 be done on the *unwindowed* (boxcar-truncated) spectrum without apodization.
@@ -57,18 +57,15 @@ both sidebands precisely to guard this.
 The fit frame
 -------------
 ``h_T`` is in the ``[0, T]`` form. Stage 5 fits on the **active-portion FT**
-(:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active samples
-with the canonical apodization, which is already in the ``[0, T]`` form
-natively. No de-ramp is needed: :func:`to_baseband_offset` only does the grid
-conversion from molecular MHz to the signed baseband offset.
-
-(Earlier drafts -- before D9 -- fitted on the persisted Stage 1 FT, which
-carries an ``exp(-i2π f_bb t0)`` turn-on phase ramp; this module called
-:func:`ftmwpipeline.preprocessing.leakage.deramp_to_active_start` to remove
-it. With the active-FT contract the active samples are referenced to
-``t = 0`` directly, so the deramp is a no-op. The de-ramp helper survives in
-``preprocessing/leakage.py`` for Stage 4's edge-coherence work on the
-persisted spectrum.)
+(:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active samples,
+which is already in the ``[0, T]`` form natively. No de-ramp is needed:
+:func:`to_baseband_offset` only does the grid conversion from molecular MHz to
+the signed baseband offset. Because the active samples are referenced to
+``t = 0`` directly, the de-ramp helper
+:func:`ftmwpipeline.preprocessing.leakage.deramp_to_active_start` is a no-op
+here; it survives in ``preprocessing/leakage.py`` for Stage 4's edge-coherence
+work on the persisted spectrum, which does carry the
+``exp(-i2π f_bb t0)`` turn-on phase ramp.
 """
 
 from __future__ import annotations
@@ -155,8 +152,8 @@ def h_T(
     """Closed-form complex FFT of a finite-T damped cosine.
 
     Evaluates ``h_T(Δf; τ)`` on a baseband frequency-offset grid -- the exact
-    rfft-domain line shape, in the de-ramped ``[0, T]`` frame. At centre
-    ``h_T(0) = τ_eff`` (see :func:`effective_tau`); far from centre the
+    rfft-domain line shape, in the de-ramped ``[0, T]`` frame. At center
+    ``h_T(0) = τ_eff`` (see :func:`effective_tau`); far from center the
     magnitude decays as the ``1/|Δf|`` truncation-leakage skirt with the
     coherent phase that lets a fitted line's skirt be subtracted exactly.
 
@@ -166,7 +163,7 @@ def h_T(
     Parameters
     ----------
     delta_f_mhz : np.ndarray
-        Baseband frequency offset ``Δf`` from line centre, in MHz. Scalars
+        Baseband frequency offset ``Δf`` from line center, in MHz. Scalars
         are accepted; the result is always an :class:`~numpy.ndarray`.
     tau_us : float
         Effective decay time constant ``τ`` in microseconds (``> 0``).
@@ -214,7 +211,7 @@ def h_T_jacobian(
     Parameters
     ----------
     delta_f_mhz : np.ndarray
-        Baseband frequency offset ``Δf`` from line centre, in MHz.
+        Baseband frequency offset ``Δf`` from line center, in MHz.
     tau_us : float
         Effective decay time constant ``τ`` in microseconds (``> 0``).
     acquisition_us : float
@@ -308,7 +305,7 @@ def h_T_gaussian(
     ``i (T/τ_G + β)`` has bounded real and imaginary parts, the damping
     factor ``exp(−(T/τ_G)²) ≤ 1``, and the phase factor is unit-modulus.
 
-    At centre Δf = 0, ``β = 0``, ``wofz(0) = 1``, the phase factor = 1, so
+    At center Δf = 0, ``β = 0``, ``wofz(0) = 1``, the phase factor = 1, so
 
         h_T(0; τ_G) = (τ_G √π / 2) · [1 − exp(−(T/τ_G)²)·wofz(i T/τ_G)]
                     = (τ_G √π / 2) · erf(T/τ_G)
@@ -322,7 +319,7 @@ def h_T_gaussian(
     Parameters
     ----------
     delta_f_mhz : np.ndarray
-        Baseband frequency offset ``Δf`` from line centre, in MHz. Scalars
+        Baseband frequency offset ``Δf`` from line center, in MHz. Scalars
         are accepted; the result is always an :class:`~numpy.ndarray`.
     tau_G_us : float
         Gaussian decay time constant ``τ_G`` in microseconds (``> 0``).
@@ -387,7 +384,7 @@ def h_T_gaussian_jacobian(
     Parameters
     ----------
     delta_f_mhz : np.ndarray
-        Baseband frequency offset ``Δf`` from line centre, in MHz.
+        Baseband frequency offset ``Δf`` from line center, in MHz.
     tau_G_us : float
         Gaussian decay time constant ``τ_G`` in microseconds (``> 0``).
     acquisition_us : float
@@ -640,7 +637,7 @@ def synthesize_fid(
 
     Unlike :func:`model_spectrum`, peaks are given by their **absolute
     baseband frequency** ``f_bb`` (MHz, ``= s·(f_molecular - f_probe)``), not a
-    window-centre offset -- the synthesised FID lives in the raw active-region
+    window-center offset -- the synthesized FID lives in the raw active-region
     frame so it can be windowed in time alongside the real data and run through
     the same ``rfft``.
 

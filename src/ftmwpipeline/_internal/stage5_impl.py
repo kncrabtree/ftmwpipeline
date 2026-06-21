@@ -93,11 +93,6 @@ from .stage4_impl import load_windows_impl
 
 logger = logging.getLogger(__name__)
 
-# Default per-window tau bound factor k (tau in [tau0/k, tau0*k]). The free-τ
-# SNR floor lives with the gate it drives (fitting.window_fit, composed against
-# the weak-window floor); it is not duplicated here.
-DEFAULT_MAX_DECAY_FACTOR = 5.0
-
 
 def annotate_lattice_matches(
     spectrum_fit: SpectrumFit, lattice: Optional[ClockLattice]
@@ -312,7 +307,7 @@ def _survival_prune_window(
 
     Removes the single lowest-SNR dust peak, refits the survivors, and
     **re-classifies** -- because the refit re-estimates the survivors free of
-    the removed line, a peak that was sub-floor only because a neighbour stole
+    the removed line, a peak that was sub-floor only because a neighbor stole
     its amplitude can recover and is then kept, while a survivor that the refit
     pushes below the floor is caught on the next pass (the single-pass classify
     left such a survivor sub-floor). Removing one peak per pass (not the whole
@@ -424,7 +419,7 @@ def amplitude_vif(peak: FittedPeak) -> Optional[float]:
     """Diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``.
 
     The overfit discriminant: ~1 for an identifiable line, >> 1 when a line is
-    degenerate with a sub-resolution neighbour (the pair *sum* is constrained,
+    degenerate with a sub-resolution neighbor (the pair *sum* is constrained,
     neither amplitude individually). A pure function of already-persisted
     per-peak fields -- no covariance matrix needed. Returns ``None`` when any
     input is missing / non-finite or the amplitude is zero.
@@ -520,7 +515,7 @@ def apply_vif_collapse(
     peaks are both well determined (not degenerate) from collapsing.
 
     Pairs are matched greedily from the highest-VIF peak down: each high-VIF
-    peak pairs with its nearest unused neighbour within the separation bound
+    peak pairs with its nearest unused neighbor within the separation bound
     (every VIF>>1 line comes in a degenerate pair, so the partner is
     structural). Each window with at least one pair is refitted with all paired
     members removed and one merged seed added per pair (origin ``"auto"`` -- an
@@ -568,13 +563,13 @@ def apply_vif_collapse(
     s = sideband_sign(sideband)
 
     def _pairs_for_window(wf: FittingResult) -> List[Tuple[int, int]]:
-        """Greedy high-VIF nearest-neighbour pairs within the separation bound."""
+        """Greedy high-VIF nearest-neighbor pairs within the separation bound."""
         peaks = wf.fitted_peaks
         if len(peaks) < 2:
             return []
         vifs = [amplitude_vif(p) for p in peaks]
         # High-VIF peaks first, so the most degenerate pairs form before a
-        # shared neighbour is consumed by a weaker pairing.
+        # shared neighbor is consumed by a weaker pairing.
         high_vif_order = sorted(
             (i for i, v in enumerate(vifs) if v is not None and v > vif_threshold),
             key=lambda i: -(vifs[i] or 0.0),
@@ -860,7 +855,7 @@ def build_stage5_fit_context(
     resolved: Any,  # StageFitSettings
     persisted_cal: Optional[Any],  # TauCalibrationResult | None
     shape_enum: Any,  # PeakShape
-    replay_spur_catalogue: Optional[Mapping[str, Any]] = None,
+    replay_spur_catalog: Optional[Mapping[str, Any]] = None,
 ) -> Stage5FitContext:
     """Assemble the active-FT, noise, and spur-set shared context.
 
@@ -880,13 +875,13 @@ def build_stage5_fit_context(
         Persisted Stage 2b calibration result (``None`` when absent).
     shape_enum :
         Resolved :class:`~ftmwpipeline.fitting.peak_model.PeakShape` for the fit.
-    replay_spur_catalogue :
+    replay_spur_catalog :
         When given (a persisted ``SpectrumFit.parameters`` mapping), the gated
-        spur catalogue is **replayed** from it -- the spur detector (decay /
+        spur catalog is **replayed** from it -- the spur detector (decay /
         chirp probes, frequency-domain sweep, clock lattice) does NOT run.
         The detection is a Stage 5 product; a later stage (the Stage 6
         single-window refit) must reproduce the exact mask the fit used rather
-        than re-deriving a possibly-drifted catalogue.  ``None`` (the
+        than re-deriving a possibly-drifted catalog.  ``None`` (the
         production first-fit path) runs the full detector.
 
     Returns
@@ -903,7 +898,7 @@ def build_stage5_fit_context(
         make_band_power_probe,
         make_chirp_response_probe,
         make_decay_probe,
-        spur_set_from_catalogue,
+        spur_set_from_catalog,
     )
     from ..io.fid_serialization import load_acquisition_segments_from_hdf5
     from ..preprocessing.noise_estimation import estimate_active_ft_noise
@@ -966,17 +961,17 @@ def build_stage5_fit_context(
     clock_lattice: Optional[Any] = None
     spur_cfg = resolved.spur
     spur_enabled = True if spur_cfg.enabled is None else bool(spur_cfg.enabled)
-    if spur_enabled and replay_spur_catalogue is not None:
-        # Replay the persisted Stage 5 gated catalogue verbatim (no detection):
-        # the catalogue is a Stage 5 product, so a later-stage refit reproduces
+    if spur_enabled and replay_spur_catalog is not None:
+        # Replay the persisted Stage 5 gated catalog verbatim (no detection):
+        # the catalog is a Stage 5 product, so a later-stage refit reproduces
         # the exact residual mask the fit used instead of re-deriving it.
-        cat = replay_spur_catalogue
+        cat = replay_spur_catalog
         bin_spacing = (
             float(np.median(np.abs(np.diff(sorted_freq))))
             if sorted_freq.size > 1
             else 0.0
         )
-        spur_set = spur_set_from_catalogue(
+        spur_set = spur_set_from_catalog(
             centers_mhz=list(cat.get("spur_centers_mhz", []) or []),
             sources=list(cat.get("spur_sources", []) or []),
             lattice=list(cat.get("spur_lattice", []) or []),
@@ -995,14 +990,14 @@ def build_stage5_fit_context(
             len(spur_set.spurs),
         )
     elif spur_enabled:
-        use_catalogue = (
+        use_catalog = (
             True
-            if spur_cfg.use_stft_catalogue is None
-            else bool(spur_cfg.use_stft_catalogue)
+            if spur_cfg.use_stft_catalog is None
+            else bool(spur_cfg.use_stft_catalog)
         )
         saturated_clusters = (
             persisted_cal.spur_clusters
-            if (persisted_cal is not None and use_catalogue)
+            if (persisted_cal is not None and use_catalog)
             else ()
         )
         sorted_sig_c = active_rms[sort_idx] / np.sqrt(2.0)
@@ -1104,7 +1099,7 @@ def build_stage5_fit_context(
             mask_half_width_bins=_required_int(
                 spur_cfg.mask_half_width_bins, "spur.mask_half_width_bins"
             ),
-            use_stft_catalogue=use_catalogue,
+            use_stft_catalog=use_catalog,
             decay_probe=decay_probe,
             chirp_response_probe=chirp_response_probe,
             chirp_response_gate_ratio=_required_float(
@@ -1128,11 +1123,11 @@ def build_stage5_fit_context(
         if spur_set:
             logger.info(
                 "Stage 5 spur masking: %d gated spur(s) "
-                "(sources: %s); mask half-width %d bins, catalogue=%s",
+                "(sources: %s); mask half-width %d bins, catalog=%s",
                 len(spur_set.spurs),
                 ", ".join(sorted({s.source for s in spur_set.spurs})),
                 spur_set.mask_half_width_bins,
-                "on" if (use_catalogue and saturated_clusters) else "off",
+                "on" if (use_catalog and saturated_clusters) else "off",
             )
         else:
             logger.info("Stage 5 spur masking: enabled, no spurs gated")
@@ -1285,7 +1280,7 @@ def fit_peaks_impl(
     # ``rescue.max_rounds`` resolves to the calibrated default cap; explicit
     # ``0`` disables the rescue (kept as an escape hatch). Any positive
     # value runs the B-loop with that round cap. Clamp to non-negative for
-    # parity with the prior ``max(0, int(...))`` behaviour.
+    # parity with the prior ``max(0, int(...))`` behavior.
     rescue_max_v = max(
         0, _required_int(resolved.rescue.max_rounds, "rescue.max_rounds")
     )
@@ -1501,11 +1496,11 @@ def fit_peaks_impl(
     # --- Per-band tau routing (Item 4) --------------------------------------
     # When per_band_tau=True AND the persisted Stage 2b carries
     # ``band_majorities``, build window_tau_overrides[window_id] =
-    # (tau_maj_band, sigma_tau_band) by mapping each window's centre
+    # (tau_maj_band, sigma_tau_band) by mapping each window's center
     # frequency to the band whose [freq_lo, freq_hi) contains it. The
     # band-wide ``(tau_maj_us, sigma_tau_us)`` in conservative_kwargs
     # remains the fallback for windows that don't match any band (e.g.
-    # window centre outside the calibration trim range).
+    # window center outside the calibration trim range).
     window_tau_overrides: Dict[int, tuple[float, float]] = {}
     per_band_used = False
     if per_band_tau_v:
@@ -1527,7 +1522,7 @@ def fit_peaks_impl(
             # when band_majorities aren't available: fall through to the
             # band-wide prior (or no prior at all if Stage 2b also missing).
             # An explicit per_band_tau=True caller still gets the soft
-            # fallback -- the original strict-raise behaviour penalised
+            # fallback -- the original strict-raise behavior penalised
             # workflows that don't run Stage 2b without giving the caller
             # anything actionable.
             logger.info(
@@ -1540,10 +1535,10 @@ def fit_peaks_impl(
             )
         else:
             for win in plan.windows:
-                centre_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
+                center_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
                 band = band_majority_for_frequency(
                     persisted_cal.band_majorities,
-                    centre_mhz,
+                    center_mhz,
                 )
                 if band is None:
                     continue
@@ -1714,7 +1709,7 @@ def fit_peaks_impl(
         "tau_calibration_source": tau_source,
         "per_band_tau": per_band_used,
         "n_windows_band_routed": len(window_tau_overrides) if per_band_used else 0,
-        # Spur-masking audit: the gated spur catalogue this fit consumed.
+        # Spur-masking audit: the gated spur catalog this fit consumed.
         "spur_masking_enabled": spur_enabled,
         "n_spurs_gated": len(spur_set.spurs) if spur_set else 0,
         "spur_centers_mhz": (
@@ -1730,7 +1725,7 @@ def fit_peaks_impl(
         ),
         # Per-spur SNR-scaled mask half-width override (parallel to
         # ``spur_centers_mhz``; null where the uniform default applies). A
-        # later stage replays the gated catalogue rather than re-deriving it
+        # later stage replays the gated catalog rather than re-deriving it
         # (the detection is a Stage 5 product), so the per-spur widths must
         # round-trip for the residual mask to reconstruct exactly.
         "spur_mask_half_width_bins_per_spur": (
@@ -1764,7 +1759,7 @@ def fit_peaks_impl(
                 "rescue_prominence_threshold": rescue_prom_v,
             }
         )
-    # Persist the gated spur catalogue with the fit: the masked bins are
+    # Persist the gated spur catalog with the fit: the masked bins are
     # invisible in the per-window residuals, so visualizations need the
     # spur list to label what the fit deliberately did not model.
     diagnostics: Dict[str, Any] = {}
@@ -2474,7 +2469,7 @@ def _window_peaks_baseband(
 
     ``f_bb = s*(f_molecular - f_probe)`` is the absolute baseband frequency the
     synthesized FID modulates at -- the raw active-region frame the real data
-    lives in (not the window-centre offset frame ``model_spectrum`` uses).
+    lives in (not the window-center offset frame ``model_spectrum`` uses).
     """
     from ..fitting.peak_model import sideband_sign
 
@@ -2514,7 +2509,7 @@ def render_windowed_view_impl(
     """Render the windowed (apodized) data-vs-model comparison for one window.
 
     Applies the same time-domain window to the real active FID and to the
-    persisted fit's re-synthesised model FID, transforms both, and overlays them
+    persisted fit's re-synthesized model FID, transforms both, and overlays them
     over the window's frequency range. Strictly diagnostic: no re-fit, no fit
     statistics (windowing changes the noise correlation), and the leakage-wing
     baseline is omitted because apodization suppresses the skirt it compensates.

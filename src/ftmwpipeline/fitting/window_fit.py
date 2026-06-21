@@ -12,8 +12,8 @@ engine, inferred from its surviving call sites
 :func:`fit_window` is the *fixed-K* core: given a window of complex FT data and
 a starting set of ``K`` lines it refines all line parameters at once by
 complex-domain least squares. The conservative add-one-peak loop that *decides*
-K -- and the F-test / AIC / blend-aware seeding around it -- is Stage 5 task 4
-and builds on this core; it is not here.
+K -- and the F-test / AIC / blend-aware seeding around it -- lives in the
+conservative add-one-peak loop and builds on this core; it is not here.
 
 The fit frame
 -------------
@@ -33,8 +33,8 @@ identical point counts, real and imaginary parts stacked into one real vector.
 The canonical Stage 2 ``rms_noise`` is a per-bin *complex* RMS ``sigma``; the
 real and imaginary parts each carry variance ``sigma**2 / 2``, so every stacked
 element is weighted by ``sigma / sqrt(2)`` to be unit-variance. Then the cost
-is a proper chi-squared (reduced chi-squared ~ 1) and -- once task 4 adds it --
-the F-test is calibrated (D-8; the prototype confirmed weighting by ``sigma``
+is a proper chi-squared (reduced chi-squared ~ 1) and the F-test is calibrated
+(D-8; the prototype confirmed weighting by ``sigma``
 itself leaves reduced chi-squared ~ 0.5).
 
 tau handling
@@ -313,7 +313,7 @@ def derive_window_fit_constraints(
         mega-windows the Stage 4 window peak-count cap eliminates. The knobs
         and tests are kept for a possible future genuine-blend use case; absent
         one, the settings/orchestrator/dual-interface wiring is omitted.
-        See ``dev-docs/research/stage5-cross-fixture/report.md`` (Phase 2).
+        See ``dev-docs/research/stage5-cross-fixture/report.md``.
     """
     shape_resolved = PeakShape.coerce(shape)
     z = np.asarray(complex_spectrum, dtype=np.complex128)
@@ -535,7 +535,7 @@ class WindowFitResult:
     # sites and persisted-file readers behave unchanged.
     shape: PeakShape = field(default=PeakShape.LORENTZIAN)
     # Optional low-order complex baseline ``B(u) = Σ_{k≤p} (a_k + i b_k)
-    # (u/u_s)^k`` jointly fit with the peaks to absorb a neighbour's
+    # (u/u_s)^k`` jointly fit with the peaks to absorb a neighbor's
     # mismodeled leakage wing (the leakage-wing baseline nuisance term).
     # ``baseline_order`` is ``p`` (0 = const, 1 = linear); ``None`` means
     # no baseline was fit. ``baseline_coeffs`` is the length-``(p+1)``
@@ -574,7 +574,7 @@ class WindowFitResult:
         """Akaike information criterion ``2k + n * ln(chi-squared / n)``.
 
         The form ported from the bcfitting reference shell; used by the
-        conservative add-one-peak loop (task 4) to compare nested models.
+        conservative add-one-peak loop to compare nested models.
         ``inf`` for a degenerate (non-positive ``chi-squared``) fit.
         """
         return calculate_aic(self.chi_squared, self.n_params, self.n_data)
@@ -671,7 +671,7 @@ def baseline_basis(
     The complex baseline ``B(u) = Σ_{k=0..p} (a_k + i b_k)(u/u_s)^k`` shares
     one real basis column ``(u/u_s)^k`` between its real coefficient ``a_k``
     and imaginary coefficient ``b_k``. ``offset_scale`` (``u_s``, the window's
-    ``max|u|``) normalises the abscissa so the design matrix stays well
+    ``max|u|``) normalizes the abscissa so the design matrix stays well
     conditioned across windows of different widths.
 
     Parameters
@@ -793,7 +793,7 @@ def _penalty_count(
     """Number of penalty residual elements for a window with ``k`` peaks.
 
     Always-emitted shape (zero when inactive) so scipy's least-squares sees a
-    constant residual length across iterations; otherwise the optimiser
+    constant residual length across iterations; otherwise the optimizer
     silently breaks when peaks cross the cutoff or amplitude floor mid-fit.
     """
     n = 0
@@ -825,7 +825,7 @@ def _penalty_residuals_and_jacobian(
     """Penalty residuals + analytic Jacobian rows for the augmented LSQ.
 
     Three soft penalties, all built so ``sum(r**2)`` matches the cost the
-    scipy solver minimises in addition to the data residual:
+    scipy solver minimizes in addition to the data residual:
 
     * **Pair phase penalty** -- one residual element per unordered pair
       ``(i, j)``. The penalty is
@@ -981,7 +981,7 @@ def fit_window(
 
     Refines every line's ``(amplitude, offset_mhz, phase)`` -- and optionally
     the shared ``tau`` -- against the active-FT complex window data, using the
-    analytic Jacobian. This is the fixed-K core; choosing K is task 4.
+    analytic Jacobian. This is the fixed-K core; choosing K is the conservative add-one-peak loop's job.
 
     Parameters
     ----------
@@ -1036,11 +1036,11 @@ def fit_window(
         Weight of the lower-side tau penalty. ``0`` disables it.
     tau_penalty_reference : float, optional
         Reference tau (the calibrated ``tau_maj`` or, in the legacy path,
-        the apodization ``expf_us``) the tau penalty centres on. Required
+        the apodization ``expf_us``) the tau penalty centers on. Required
         when ``tau_penalty_lambda > 0``.
     tau_penalty_sigma_us : float, optional
         When set with ``tau_penalty_reference``, switches the tau penalty
-        to the bidirectional Gaussian-prior form (centred on the
+        to the bidirectional Gaussian-prior form (centered on the
         reference, width ``sigma_tau``). ``None`` keeps the legacy
         one-sided hinge form.
     spur_mask : SpurMaskSpec, optional
@@ -1057,7 +1057,7 @@ def fit_window(
         Order ``p`` of an optional complex baseline ``B(u) = Σ_{k=0..p}
         (a_k + i b_k)(u/u_s)^k`` fit jointly with the lines (``0`` = const,
         ``1`` = linear). ``None`` (default) fits no baseline. The baseline
-        absorbs a neighbour's mismodeled leakage wing without representing a
+        absorbs a neighbor's mismodeled leakage wing without representing a
         narrow line (it is too smooth to do so); its ``2(p+1)`` real
         coefficients enter the covariance, so the reported per-line
         uncertainties honestly price the added flexibility. The fitted
@@ -1402,7 +1402,7 @@ class AddStep:
 
     Every iteration of :func:`conservative_fit` -- the seed, each blend-aware
     re-seed, and each candidate tested -- records an :class:`AddStep` so the
-    loop's accept/reject behaviour can be validated and curated.
+    loop's accept/reject behavior can be validated and curated.
 
     Attributes
     ----------
@@ -1479,8 +1479,8 @@ class KnockoutResult:
     delta_chi2 : float
         Diagnostic: chi-squared increase when the line is removed and every
         other parameter is held frozen at the K-fit value. The "energy
-        carried by this line" check; meaningful in isolation but no longer
-        the gate (frozen others leave duplicate twins half-fit and produce
+        carried by this line" check; informative in isolation but not the
+        gate (frozen others leave duplicate twins half-fit and produce
         spurious large delta_chi2).
     expected_delta_chi2 : float
         Diagnostic: the line's own noise-weighted energy -- the increase a
@@ -1589,7 +1589,7 @@ def knockout_test(
     With the refit, C re-converges to full amplitude when A is removed
     and the (K-1) chi-squared matches the K chi-squared, so AICc prefers
     K-1 and both duplicates flip to ``supported = False``. See
-    `dev-docs/planning/stage5-residual-rescue.md`, Phase 2.
+    `dev-docs/planning/stage5-residual-rescue.md`.
 
     Tau is locked (``fit_tau=False``) in the (K-1) refit because tau is
     effectively a dataset-shared parameter (transit time x natural

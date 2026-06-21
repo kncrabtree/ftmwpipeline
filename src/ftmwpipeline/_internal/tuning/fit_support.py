@@ -36,7 +36,7 @@ def window_snr_max(wf: object) -> float:
 
 def window_fit_quality(wf: object) -> Dict[str, object]:
     """Per-window fit-quality row shared by the Stage 5 metric and plot: reduced
-    χ²ᵣ, SNR_max, the SNR-normalised shape-error fraction ε, and the SNR-aware
+    χ²ᵣ, SNR_max, the SNR-normalized shape-error fraction ε, and the SNR-aware
     pass gate — all from the shipped :mod:`fitting.validation` so the tuning
     surface and the Stage 5 health report agree.
 
@@ -99,8 +99,8 @@ def _spread_evenly(ids: List[int], value_by_id: Dict[int, float], k: int) -> Lis
 
 def _close_components(keep: Set[int], edges: List[Tuple[int, int]]) -> Set[int]:
     """Grow ``keep`` to the full connected component (over ``edges``) of each
-    member, so a window that may be jointly co-fit with a neighbour never loses
-    that neighbour."""
+    member, so a window that may be jointly co-fit with a neighbor never loses
+    that neighbor."""
     adj: Dict[int, Set[int]] = defaultdict(set)
     for a, b in edges:
         adj[a].add(b)

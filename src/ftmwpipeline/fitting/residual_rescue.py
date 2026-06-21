@@ -746,8 +746,8 @@ def iterative_aicc_cleanup(
     null, which is strongly supported for a real feature. The loop
     terminates with one surviving peak.
 
-    Tau is locked at the K-fit's ``tau_us`` for every (K-1) refit (per
-    Phase 2 spec). REJECT-on-tie: ``aicc_km1 >= aicc_k`` preserves the
+    Tau is locked at the K-fit's ``tau_us`` for every (K-1) refit.
+    REJECT-on-tie: ``aicc_km1 >= aicc_k`` preserves the
     peak; only ``aicc_km1 < aicc_k`` drops it. The empty-set case (drop
     the last surviving peak) is decided by comparing AICc(K=1 fit) to
     AICc(K=0 null on data); the K=1 vs K=0 comparison uses the K-fit
@@ -1235,9 +1235,8 @@ def attempt_residual_rescue(
     # When a Stage 2b calibration is available, use ``tau_maj`` for every
     # window regardless of the initial fit's outcome -- the calibration is
     # the global physical tau and the rescue should anchor to it, not the
-    # broken per-window LSQ tau. (Phase-3 step 7 of the tau-calibration
-    # plan; closes the channel the cross-fixture-validation
-    # "broken-initial-fit pathology" identified.) Legacy fallback: when no
+    # broken per-window LSQ tau (closes the channel the cross-fixture-validation
+    # "broken-initial-fit pathology" identified). Legacy fallback: when no
     # ``tau_maj`` is plumbed, default to the initial fit's tau and override
     # to the apodization tau only when initial.tau is pegged at the lower
     # bound -- the original w198-style heuristic.

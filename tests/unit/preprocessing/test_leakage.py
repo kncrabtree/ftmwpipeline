@@ -88,7 +88,7 @@ class TestScaling:
         assert b == pytest.approx(0.5 * a, rel=1e-12)
 
 
-class TestDampedBehaviour:
+class TestDampedBehavior:
     def test_large_tau_approaches_undamped_limit(self):
         undamped = estimate_leakage_reach(100.0, 10.0, tau_us=None)
         big_tau = estimate_leakage_reach(100.0, 10.0, tau_us=1.0e6)

@@ -118,7 +118,7 @@ class TestClockSourceExtraction:
         ), "Duplicate fundamentals in extracted clocks"
 
 
-class TestClockOperationNormalisation:
+class TestClockOperationNormalization:
     """``_clock_operation`` accepts the string and integer-enum forms."""
 
     def test_string_forms(self) -> None:

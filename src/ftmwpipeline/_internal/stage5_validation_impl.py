@@ -236,7 +236,7 @@ def _tier3(
 ) -> Dict[str, Any]:
     """Match fitted lines to a ground-truth catalog and assess accuracy.
 
-    Mutual-nearest-neighbour matching within ``match_tol_fwhm * FWHM`` (FWHM from
+    Mutual-nearest-neighbor matching within ``match_tol_fwhm * FWHM`` (FWHM from
     each peak's window tau via :func:`feature_fwhm`). Reports recall, a caveated
     precision (the spectrum legitimately carries real lines absent from the
     catalog -- vibrational satellites, unmodelled species -- so unmatched fitted
@@ -358,7 +358,7 @@ def _doublet_alternatives_summary(fit: SpectrumFit) -> Dict[str, Any]:
     """Aggregate the doublet-alternative observation records across all windows.
 
     For each adjudicated pair, reports the per-pair chi2r comparison and the
-    summary counts: how many pairs were evaluated, how many favour the doublet
+    summary counts: how many pairs were evaluated, how many favor the doublet
     interpretation (chi2r_doublet < chi2r_single), and how many are
     definitively required (delta_chi2_raw > 0 and merged_success).
     """

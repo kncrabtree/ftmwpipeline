@@ -38,7 +38,7 @@ _PEAK_N_REGIONS = 3
 _PEAK_YMIN_SIGMA_FRACTION = 0.5
 _PEAK_YMAX_PEAK_FACTOR = 1.5
 # Frequency tolerance (MHz) for treating a promoted peak as the "same" line
-# across swept values when colouring it by the last value at which it survives.
+# across swept values when coloring it by the last value at which it survives.
 _PEAK_PERSIST_TOL_MHZ = 0.05
 
 
@@ -324,7 +324,7 @@ def _plot_contributor_decays(ax: Any, row: Any, leaf: str, fit_color: str) -> No
 
     span = float(end) - float(start)
     t = np.linspace(0.0, span, 80)
-    # Vectorised cloud: one normalised exponential per contributor.
+    # Vectorised cloud: one normalized exponential per contributor.
     curves = np.exp(-t[None, :] / taus[:, None])  # (n_contrib, n_t)
     xs_grid = np.broadcast_to(t, curves.shape)
     segments = np.stack([xs_grid, curves], axis=-1)  # (n_contrib, n_t, 2)
@@ -628,7 +628,7 @@ def _draw_peak_panel(
         if finite.size:
             median_sigma = float(np.median(finite))
 
-    # Promoted peaks only, solid, coloured by detection pass (primary vs gap).
+    # Promoted peaks only, solid, colored by detection pass (primary vs gap).
     # Dropped (below-cutoff) peaks are intentionally not drawn — the dashed
     # threshold already shows the cutoff, and the band-wide persistence panel
     # above carries the survival story.
@@ -696,7 +696,7 @@ def _plot_peak_persistence(
     leaf: str,
     labels: List[str],
 ) -> None:
-    """Full-width log spectrum with every promoted peak coloured by the last
+    """Full-width log spectrum with every promoted peak colored by the last
     swept value it survives (early-drop → survives-throughout), and the zoom
     regions shaded. The active FT is invariant across the sweep, so the spectrum
     is drawn once from the first row."""
@@ -713,7 +713,7 @@ def _plot_peak_persistence(
 
     # Shade the zoom regions detailed below. A cool tint + edge lines so the
     # bands read clearly against the grey spectrum and the warm plasma peak
-    # colours (a grey shade blended in and was easy to miss).
+    # colors (a grey shade blended in and was easy to miss).
     for lo, hi in regions:
         ax.axvspan(lo, hi, color="#6baed6", alpha=0.28, zorder=0)
         for edge in (lo, hi):
@@ -753,7 +753,7 @@ def _plot_peak_persistence(
     ax.grid(True, alpha=0.2, which="both")
     ax.legend(fontsize=7, ncol=min(n, 6), loc="upper right")
     ax.set_title(
-        "promoted peaks coloured by the last sweep value they survive "
+        "promoted peaks colored by the last sweep value they survive "
         "(shaded = zoom regions below)"
     )
 
@@ -765,7 +765,7 @@ def plot_peak_detection(spec: Any, rows: List[Any], ctx: Any) -> Any:
     The active FT is invariant across the sweep — only which peaks are found and
     promoted changes. The top trend tracks the peaks passed to Stage 4 (total and
     by weak/medium/strong SNR band) vs the swept value; the full-width panel
-    below it draws the whole band once and colours every
+    below it draws the whole band once and colors every
     promoted peak by the last value at which it survives (so a glance shows which
     lines drop out first), shading the zoom regions. Each remaining row is one
     swept value and each column one auto-selected ~100 MHz region (chosen where
@@ -1285,14 +1285,14 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
     """Stage 5 fit-quality sweep view (the shared adapter for tau / conservative
     / penalties / seeder / baseline knobs).
 
-    The honest fit-quality lens is the SNR-normalised shape-error fraction ε, not
+    The honest fit-quality lens is the SNR-normalized shape-error fraction ε, not
     χ²ᵣ (which rides an SNR² floor). Three stacked sections:
     (1) an ε-percentile + fail-count / peak-count trend vs the swept value;
-    (2) the headline **ε-vs-SNR scatter** — every fitted window, coloured by
+    (2) the headline **ε-vs-SNR scatter** — every fitted window, colored by
     swept value, with the pass boundary drawn as the flat line ε = κ (the gate
     ``χ²ᵣ ≤ F + (κ·SNR)²`` is exactly ``ε ≤ κ``): watch the knob push windows
     across the line; (3) a per-window **ε-vs-frequency strip** showing *where* on
-    the band the knob moved the misfit, coloured by value.
+    the band the knob moved the misfit, colored by value.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -1348,7 +1348,7 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, loc="upper left")
     ax.set_title(f"Stage 5 fit quality vs {leaf}")
 
-    # (2) headline: ε vs SNR, coloured by value, pass line at ε = κ.
+    # (2) headline: ε vs SNR, colored by value, pass line at ε = κ.
     ax2 = fig.add_subplot(gs[1, 0])
     for i, pv in enumerate(per_value):
         snr = [w["snr_max"] for w in pv if w["snr_max"] > 0]
@@ -1387,7 +1387,7 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
         if fc:
             ax3.scatter(fc, eps, s=18, color=colors[i], alpha=0.75)
     ax3.axhline(kappa, color="crimson", ls="--", lw=1.0)
-    ax3.set_xlabel("window centre frequency (MHz)")
+    ax3.set_xlabel("window center frequency (MHz)")
     ax3.set_ylabel("shape-error ε")
     ax3.grid(True, alpha=0.25)
     ax3.set_title(
@@ -1400,7 +1400,7 @@ def plot_fit_quality(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
 
 def _window_center(result: Any, window_id: int) -> Any:
-    """Centre frequency (MHz) of a fitted window by id, or None."""
+    """Center frequency (MHz) of a fitted window by id, or None."""
     fit = result.get("fit") if result else None
     if fit is None:
         return None
@@ -1421,7 +1421,7 @@ def _band_spectrum(ctx: Any) -> Any:
     it spans the full 0→Nyquist RF band (the trim is applied only downstream to
     the windows / peaks). The persisted FT is the canonical analysis spectrum —
     the truncated FID *and* the trimmed analysis band — which is what these
-    overlays should show. Markers (window centres, spur centres, candidates) are
+    overlays should show. Markers (window centers, spur centers, candidates) are
     absolute MHz, so they register on it regardless. Mirrors ``plot_noise_sweep``.
     """
     import numpy as np
@@ -1475,7 +1475,7 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     (1) a count + χ²-reduction trend vs the swept value (does the knob add lines,
     and do they lower the misfit or just churn — watch ``rescue-origin pruned``,
     the failsafe); (2) a band-wide **where-rescue-fires** raster, one row per
-    value, marking the window centres of accepted rounds over the spectrum; and
+    value, marking the window centers of accepted rounds over the spectrum; and
     (3) the **candidate-SNR-vs-gate** strip — every nominated candidate's SNR per
     value with the ``snr_threshold`` cut drawn, so the detection gates visibly
     bite instead of looking inert.
@@ -1527,7 +1527,7 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax.legend(h1 + h2, l1 + l2, fontsize=8, ncol=3, loc="upper left")
     ax.set_title(f"Stage 5 rescue vs {leaf}: lines added and whether they stick")
 
-    # (2) where-on-band raster: accepted-round window centres, one row per value.
+    # (2) where-on-band raster: accepted-round window centers, one row per value.
     ax2 = fig.add_subplot(gs[1, 0])
     spec_xy = _band_spectrum(ctx)
     if spec_xy is not None:
@@ -1556,7 +1556,7 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax2.set_yticklabels(labels)
     ax2.set_ylim(-0.5, n - 0.5)
     ax2.set_ylabel(leaf)
-    ax2.set_xlabel("window centre frequency (MHz)")
+    ax2.set_xlabel("window center frequency (MHz)")
     ax2.set_title("Where rescue adds lines across the band (one row per value)")
 
     # (3) candidate SNR vs the detection gate.
@@ -1589,7 +1589,7 @@ def plot_rescue(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax3.grid(True, alpha=0.25)
     ax3.set_title(
         "Residual candidates nominated vs the detection gate "
-        "(per-value gate in colour when sweeping snr_threshold)"
+        "(per-value gate in color when sweeping snr_threshold)"
     )
 
     fig.suptitle(f"Rescue sweep: {spec.path}")
@@ -1602,13 +1602,13 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
 
     A spur is a persistent integer-MHz CW tone (clock/LO harmonic) no finite-T
     line shape can represent; the gate drops it from nomination and masks its
-    bins out of the residual. The persisted band-level catalogue
+    bins out of the residual. The persisted band-level catalog
     (``spur_centers_mhz`` / ``spur_sources`` / ``spur_mask_half_width_bins``) is
     computed on the whole active FT, so spur sweeps are immune to the fit's plan
     reduction. Two panels: (1) a count-by-source trend (total / narrow /
     saturated gated vs the swept value); and (2) the **spectrum overlay** —
     ``|FT|`` drawn once with every gated spur as a vertical marker at its
-    integer-MHz, its ±mask half-width shaded, coloured by *how many* swept values
+    integer-MHz, its ±mask half-width shaded, colored by *how many* swept values
     gate it (a robustness ramp: a tone gated at every value is an unambiguous
     spur; one only the most permissive value catches is fragile). Robustness, not
     a last-surviving value, because spur gating is not monotonic in one direction
@@ -1634,11 +1634,11 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
         [float(c) for c in (_params(r).get("spur_centers_mhz") or [])] for r in rows
     ]
     # Key spurs by nearest integer MHz (the gate's anchor); a spur is "gated at
-    # value i" when an integer-equal centre is in that value's catalogue. Colour
+    # value i" when an integer-equal center is in that value's catalog. Color
     # by the *number* of values that gate it (robustness) rather than a
     # last-surviving value: spur gating is not monotonic in one direction across
     # the spur knobs (looser narrowness_ratio adds spurs, higher snr_threshold
-    # removes them), so a directional survival ramp would collapse to one colour.
+    # removes them), so a directional survival ramp would collapse to one color.
     keyed = [{round(c): c for c in cs} for cs in per_value_centers]
     all_keys = sorted({k for d in keyed for k in d})
     gate_count = {}
@@ -1697,7 +1697,7 @@ def plot_spur(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ax2.set_xlabel("frequency (MHz)")
     ax2.set_ylabel("|FT|")
     ax2.set_title(
-        "Gated spurs, coloured by how many values gate them "
+        "Gated spurs, colored by how many values gate them "
         f"(robustness; ±{hw_bins} bin mask shaded)"
     )
     handles = [plt.Line2D([0], [0], color=ramp[i], lw=2.5) for i in range(n)]
@@ -1720,7 +1720,7 @@ def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
     adapter).
 
     A post-fit residual edge that stays coherent triggers the renegotiation
-    handshake: unfreeze the neighbouring fixed contributor and co-fit it (thaw),
+    handshake: unfreeze the neighboring fixed contributor and co-fit it (thaw),
     or, with no contributor to thaw, merge the adjacent window and re-plan
     (replan). The persisted ``thaw_history`` / ``replan_history`` record where
     each edge was flagged, the edge ``S_coh`` before and after, and accept/reject
@@ -1728,7 +1728,7 @@ def plot_thaw(spec: Any, rows: List[Any], ctx: Any) -> Any:
     **coherence handshake**, not boundary geometry. Three panels:
     (1) an attempt / accept count + plan-revision trend vs the swept value;
     (2) a band-wide **contested-edge raster**, one row per value (thaw at the
-    contributor frequency, replan at the surviving-window centre; filled =
+    contributor frequency, replan at the surviving-window center; filled =
     accepted); and (3) the **before→after coherence scatter** with the trigger
     threshold drawn — points on the diagonal are edges the handshake left
     unchanged (the common case: thaw is near-dormant on clean spectra).

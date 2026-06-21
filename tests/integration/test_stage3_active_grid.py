@@ -1,7 +1,7 @@
 """
 Stage 3 active-grid snap integration tests.
 
-Behaviour under test:
+Behavior under test:
   - detect_peaks_impl runs detection internally (primary full-record rfft +
     matched-filter gap FFT) for apex localization.
   - Every returned/persisted Peak is snapped onto the **canonical active FT**

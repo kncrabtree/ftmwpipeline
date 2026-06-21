@@ -1,7 +1,7 @@
 """
 Integration tests for downstream invalidation when canonical FT settings change.
 
-Behaviour under test (Behaviour A):
+Behavior under test (Behavior A):
   - compute_ft (persist=True / user-driven) writes resolved settings to
     processing_parameters/ft_processing.
   - If the resolved settings DIFFER from the previously persisted record,

@@ -455,7 +455,7 @@ class BaselineSubSettings:
 
     An evidence-triggered low-order complex baseline ``B(u) = Σ_{k≤p}
     (a_k + i b_k)(u/u_s)^k`` added to a window's fit to absorb the coherent
-    residual a neighbouring strong line's mismodeled leakage skirt -- or the
+    residual a neighboring strong line's mismodeled leakage skirt -- or the
     summed far-wings of the many lines the discrete contributors cannot fully
     subtract -- leaves behind. Fires where ``residual_edge_coherence`` exceeds
     ``edge_threshold`` (a coherent edge wing) OR where an order-``p`` polynomial
@@ -527,7 +527,7 @@ class SpurSubSettings:
         grid=(0.02, 0.04, 0.08, 0.16),
     )
     narrowness_ratio: Optional[float] = knob_field(
-        help="max(neighbour)/peak below which an integer-MHz bin is "
+        help="max(neighbor)/peak below which an integer-MHz bin is "
         "sub-resolution narrow (a CW tone vs a real line with a skirt).",
         tier="primary",
         inst_sensitivity="Y",
@@ -545,8 +545,8 @@ class SpurSubSettings:
         inst_sensitivity="Y",
         grid=(1, 2, 3, 4),
     )
-    use_stft_catalogue: Optional[bool] = knob_field(
-        help="Consume the persisted Stage 2b flat-spur (saturated) catalogue as "
+    use_stft_catalog: Optional[bool] = knob_field(
+        help="Consume the persisted Stage 2b flat-spur (saturated) catalog as "
         "the gate's persistence half; False = frequency-domain detector only.",
         tier="advanced",
         inst_sensitivity="N",
@@ -717,7 +717,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "tau": {
         "max_decay_factor": 5.0,
         # The free-τ floor: τ is freed above max(this, weak_window_snr_threshold).
-        # Defaults to the weak-window floor (10) so behaviour is unchanged until
+        # Defaults to the weak-window floor (10) so behavior is unchanged until
         # tuned upward; see fitting.window_fit.DEFAULT_FIT_TAU_MIN_SNR.
         "fit_tau_min_snr": 10.0,
         "tau_penalty_lambda": 50.0,
@@ -775,7 +775,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "narrowness_ratio": 0.30,
         "snr_threshold": 5.0,
         "mask_half_width_bins": 2,
-        "use_stft_catalogue": True,
+        "use_stft_catalog": True,
         # Clock declaration: empty = no declaration (legacy integer-MHz
         # anchor). The lattice/drift/mask-scaling knobs below only act when
         # a declaration is present, except mask scaling which also applies

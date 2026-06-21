@@ -128,7 +128,7 @@ def cmd_data_load(args: argparse.Namespace) -> int:
         return 0
 
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
+        print("\nOperation canceled by user")
         return 1
     except Exception as e:
         print(f"Unexpected error: {e}")
@@ -234,7 +234,7 @@ def cmd_data_visualize(args: argparse.Namespace) -> int:
                 return 1
 
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
+        print("\nOperation canceled by user")
         return 1
     except Exception as e:
         print(f"Unexpected error: {e}")

@@ -217,7 +217,7 @@ class TestTriggerEnumeration:
 class TestTrueDoublet:
     """Two real lines at ~1.2 res elements; merged fit should be visibly worse."""
 
-    def test_chi2r_and_orth_evidence_favour_doublet(self):
+    def test_chi2r_and_orth_evidence_favor_doublet(self):
         rng = np.random.default_rng(SEED)
         sigma = 1.0
         snr = 50.0

@@ -95,7 +95,7 @@ class TestRollingCoherence:
         z = _complex_noise(n, 0.02, seed=9)
         roll = rolling_coherence(z, np.full(n, 0.02), band_m=m)
         assert roll.shape == (n,)
-        # The first/last ~M/2 points have no centred band -> NaN.
+        # The first/last ~M/2 points have no centered band -> NaN.
         assert np.isnan(roll[0]) and np.isnan(roll[-1])
         assert np.isfinite(roll[n // 2])
 
@@ -104,7 +104,7 @@ class TestRollingCoherence:
         n = 2000
         sigma = 0.02
         z = _complex_noise(n, sigma, seed=11)
-        # A coherent skirt centred at index 1000 (slow 1/df decay).
+        # A coherent skirt centered at index 1000 (slow 1/df decay).
         idx = np.arange(n)
         with np.errstate(divide="ignore"):
             skirt = 1.0 / np.maximum(np.abs(idx - 1000), 1.0)

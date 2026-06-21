@@ -3,7 +3,7 @@ Stage 6 review commands.
 
 Implements the ``review run``/``show``/``rank``/``edit``/``merge``/``split``/
 ``accept``/``apply``/``log``/``undo`` subcommands.  Thin wrappers over
-:mod:`ftmwpipeline._internal.stage6_impl` -- identical behaviour to
+:mod:`ftmwpipeline._internal.stage6_impl` -- identical behavior to
 :class:`~ftmwpipeline.Pipeline` and the functional API.
 """
 

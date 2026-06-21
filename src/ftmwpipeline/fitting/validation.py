@@ -76,7 +76,7 @@ NoiseLike = Union[float, np.ndarray]
 # cleanup, knockout, iterative cleanup). Each bin is weighted by
 # ``log(1 + |model|/sigma)`` -- the per-bin Shannon information of a signal-
 # vs-noise detection -- and ``n_eff`` is the perplexity ``exp(H(p))`` of the
-# normalised distribution. On a Lorentzian peak with peak SNR ~ 100 this
+# normalized distribution. On a Lorentzian peak with peak SNR ~ 100 this
 # returns ~50 bins (the bins where the skirt is significant) rather than
 # the ~5 FWHM-in-bins a magnitude-concentrated weight gives. The gate then
 # stays in the AICc-identifiable regime for the realistic K-vs-(K+/-1)
@@ -1088,7 +1088,7 @@ def effective_sample_size(
     - **Information-weighted** (``perplexity_log1p_snr``). The weight is
       ``log(1 + |model|/sigma)`` (per-bin Shannon information of a signal-
       vs-noise detection at that SNR), aggregated as the perplexity
-      ``exp(H(p))`` of the normalised weight distribution. It keeps ``n_eff``
+      ``exp(H(p))`` of the normalized weight distribution. It keeps ``n_eff``
       in the AICc-identifiable regime across the realistic K-vs-(K±1)
       transitions and only diverges when the model is genuinely
       under-determined.
@@ -1123,7 +1123,7 @@ def effective_sample_size(
         threshold-sensitive but simpler to reason about.
         ``"perplexity_log1p_snr"`` uses ``w_f = log1p(|model(f)|/sigma(f))``
         as a per-bin information weight and returns the perplexity of the
-        normalised distribution; this requires ``sigma``.
+        normalized distribution; this requires ``sigma``.
     cutoff_fraction : float, default 0.1
         Fraction of ``max|model|`` used by ``"hard_radius"`` to delimit the
         active region. Ignored by the other kinds.

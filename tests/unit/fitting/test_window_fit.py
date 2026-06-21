@@ -263,7 +263,7 @@ class TestNoiseWeightingAndCovariance:
             z = model_spectrum(u, [true], TAU_US, T_US) + _noise(u.size, sigma, rng)
             res = fit_window(u, z, sigma, [true], TAU_US, T_US, fit_tau=True)
             reduced.append(res.reduced_chi2)
-        # Weighting by sigma (not sigma/sqrt(2)) would centre this at ~0.5.
+        # Weighting by sigma (not sigma/sqrt(2)) would center this at ~0.5.
         assert 0.9 < float(np.mean(reduced)) < 1.1
 
     def test_covariance_matches_trial_scatter(self):
@@ -515,7 +515,7 @@ class TestPairPhasePenalty:
 
 
 # ---------------------------------------------------------------------------
-# Bidirectional tau penalty (Gaussian prior centred on tau_maj, width sigma_tau)
+# Bidirectional tau penalty (Gaussian prior centered on tau_maj, width sigma_tau)
 # ---------------------------------------------------------------------------
 class TestBidirectionalTauPenalty:
     """The Phase-3 tau-anchoring penalty pulls tau toward ``tau_maj`` from
@@ -551,29 +551,29 @@ class TestBidirectionalTauPenalty:
         assert res.shape == (1,)
         return float(res[0])
 
-    def test_bidirectional_residual_below_centre(self):
+    def test_bidirectional_residual_below_center(self):
         # tau < tau_maj: residual = sqrt(L)*(tau - tau_maj)/sigma < 0.
         r = self._penalty(self.TAU_MAJ - self.SIGMA_TAU, sigma_us=self.SIGMA_TAU)
         expected = np.sqrt(self.LAMBDA) * (-1.0)
         assert r == pytest.approx(expected, abs=1e-9)
 
-    def test_bidirectional_residual_above_centre(self):
+    def test_bidirectional_residual_above_center(self):
         # tau > tau_maj: residual = sqrt(L)*(tau - tau_maj)/sigma > 0.
         r = self._penalty(self.TAU_MAJ + 0.5 * self.SIGMA_TAU, sigma_us=self.SIGMA_TAU)
         expected = np.sqrt(self.LAMBDA) * 0.5
         assert r == pytest.approx(expected, abs=1e-9)
 
-    def test_bidirectional_vanishes_at_centre(self):
+    def test_bidirectional_vanishes_at_center(self):
         r = self._penalty(self.TAU_MAJ, sigma_us=self.SIGMA_TAU)
         assert r == pytest.approx(0.0, abs=1e-12)
 
-    def test_one_sided_hinge_above_centre(self):
-        # sigma_us is None -> legacy one-sided behaviour: penalty is zero
+    def test_one_sided_hinge_above_center(self):
+        # sigma_us is None -> legacy one-sided behavior: penalty is zero
         # when tau >= tau_ref.
         r = self._penalty(self.TAU_MAJ + 1.0, sigma_us=None)
         assert r == pytest.approx(0.0, abs=1e-12)
 
-    def test_one_sided_hinge_below_centre(self):
+    def test_one_sided_hinge_below_center(self):
         # sigma_us is None: positive residual proportional to
         # (tau_ref - tau) / tau_ref.
         tau_value = self.TAU_MAJ - 1.2

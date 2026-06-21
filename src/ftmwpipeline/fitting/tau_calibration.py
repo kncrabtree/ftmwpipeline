@@ -1388,7 +1388,7 @@ def stft_calibration(
     is the historical behavior. ``'gaussian'`` runs a per-bin pure-Gauss
     NLS on the above-threshold non-spur pool and gates on the
     pure-Gauss RSS, so strong on-line bins on Gaussian-envelope fixtures
-    enter ``cls=3`` directly instead of being labelled bad-fit by an
+    enter ``cls=3`` directly instead of being labeled bad-fit by an
     exp model that does not describe them. ``'best_of_three'`` runs
     per-bin exp / gauss / voigt NLS and gates on the minimum of the
     three residuals -- a bin enters ``cls=3`` if any of the three
@@ -2733,7 +2733,7 @@ def _aggregate_shape_verdict(
     1. SNR-weighted vote rates over the per-bin ``argmin AICc`` verdicts.
     2. If neither pure shape beats the other by ``pure_margin_threshold``
        of the total weight, return ``recommended_shape=None`` -- the data
-       does not strongly favour one pure shape over the other and the
+       does not strongly favor one pure shape over the other and the
        Stage 5 resolver's *recommended* layer falls through. Otherwise
        recommend the dominant pure shape (``"lorentzian"`` for exp,
        ``"gaussian"`` for gauss). Voigt vote mass is reported but does
@@ -2841,7 +2841,7 @@ def compute_shape_recommendation(
     vote mass; the Voigt votes are reported as diagnostic but do not
     enter the recommendation. When neither pure shape wins by at least
     ``pure_margin_threshold`` of the total weight, the recommendation
-    is ``None`` (the data does not strongly favour one pure shape and
+    is ``None`` (the data does not strongly favor one pure shape and
     the Stage 5 resolver's *recommended* layer falls through to the
     next layer).
 

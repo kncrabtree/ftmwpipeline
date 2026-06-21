@@ -12,14 +12,14 @@ requirement is an exact integer-MHz center (clock harmonics):
 
 * **frequency-domain narrowness** -- on the active-FT a CW tone is
   transform-limited by the full boxcar (first null ~ one bin), so its peak
-  bin towers over its neighbours, whereas a real finite-T molecular line
+  bin towers over its neighbors, whereas a real finite-T molecular line
   has a coherent leakage skirt. This is the zero-false-positive primary
   (it spares real lines that merely sit near an integer MHz).
 * **temporal flatness** -- the Stage 2b STFT τ-calibration flags bins
   whose magnitude is flat across the STFT frames (``spur_by_tau``: τ
   rails to ``tau_max``). That flag is persisted per :class:`SpurCluster`
   as :attr:`SpurCluster.saturated`. It catches split-bin spurs the
-  narrowness test misses. The *raw* ``cls == 1`` catalogue is **not**
+  narrowness test misses. The *raw* ``cls == 1`` catalog is **not**
   usable here -- its AICc branch also fires on erratic beat / blend bins
   that are not spurs (measured on 2638: 53 of 59 integer-MHz ``cls == 1``
   bins are erratic real lines); only the saturated subset is trusted.
@@ -27,7 +27,7 @@ requirement is an exact integer-MHz center (clock harmonics):
 The nomination gate is ``integer-MHz ∧ (narrow ∨ saturated)``, plus a
 **pair lane** for tones that fall *between* two grid bins: the split power
 defeats the single-bin narrowness test, so the two-bin pair is tested
-against its second neighbours instead -- but that signature is ambiguous
+against its second neighbors instead -- but that signature is ambiguous
 against a blended doublet, so pair nominees gate only with time-domain
 flatness confirmation. When the raw FID is available, every verdict is
 additionally **arbitrated by a direct time-domain decay probe**
@@ -40,11 +40,11 @@ fixes both error directions the frequency-domain gate alone carries:
 * a real line whose center happens to fall within ``integer_tol`` of an
   integer MHz **and** whose ``tau`` is long enough that its on-grid profile
   passes the narrowness test (measured: a bin-centered ``tau ~ 0.7 T`` line
-  has a neighbour ratio ~ 0.23) is *vetoed* out of the gate when the probe
+  has a neighbor ratio ~ 0.23) is *vetoed* out of the gate when the probe
   sees it decay;
 * a genuinely flat tone at a NON-integer frequency (LO/IF intermodulation
   rather than a clock harmonic) nominated by the Stage 2b cluster
-  catalogue is gated when the probe confirms flatness -- the ``saturated``
+  catalog is gated when the probe confirms flatness -- the ``saturated``
   flag alone is not trusted in either direction (measured false positives
   on decaying lines and false negatives on real tones).
 
@@ -96,7 +96,7 @@ __all__ = [
 # Detection thresholds (validated on the 2638 fixture; instrument-tunable
 # via the Stage 5 ``spur`` settings sub-block).
 DEFAULT_INTEGER_TOL_MHZ = 0.04  # ~half a bin (active-FT spacing ~79 kHz)
-DEFAULT_NARROWNESS_RATIO = 0.30  # max(neighbour)/peak below this => narrow
+DEFAULT_NARROWNESS_RATIO = 0.30  # max(neighbor)/peak below this => narrow
 DEFAULT_SNR_THRESHOLD = 5.0  # peak-bin magnitude / local sigma_c floor
 DEFAULT_MASK_HALF_WIDTH_BINS = 2  # residual-mask half-width in active-FT bins
 
@@ -113,7 +113,7 @@ DEFAULT_DECAY_N_FRAMES = 8  # frames over the active record
 
 # Chirp-response anchor thresholds. Measured on the reference instrument
 # (Keysight UXR0204A, 19-frame scope record): known interference tones have
-# pre/FID amplitude ratios 0.59–1.68 (7 of 8 catalogued >= 0.9; clock tones
+# pre/FID amplitude ratios 0.59–1.68 (7 of 8 cataloged >= 0.9; clock tones
 # 0.81–1.01); known chirp-responsive molecular lines have ratios <= 0.28,
 # consistent with e^{-Δt/τ} bleed from the previous chirp. The ambiguous
 # band (0.50–0.74) is left as inconclusive (fall-through to other lanes).
@@ -151,8 +151,8 @@ class Spur:
 
     ``pair`` marks a *two-bin* nominee: a CW tone whose frequency falls
     between two grid bins splits its power across them (each reads ~0.6-1.0
-    of the other), so the single-bin neighbour test fails even though the
-    pair together is transform-limited (second neighbours fall back to the
+    of the other), so the single-bin neighbor test fails even though the
+    pair together is transform-limited (second neighbors fall back to the
     sinc skirt). Pair nominees are a weaker frequency-domain signature --
     a blended doublet can mimic them -- so the joint gate only accepts them
     with explicit time-domain flatness confirmation (never on the
@@ -189,7 +189,7 @@ class GatedSpur:
     ``source`` is one of ``"narrow"`` (frequency-domain only),
     ``"saturated"`` (Stage 2b flat-cluster only), or ``"narrow+saturated"``
     (both detectors agree). ``snr`` / ``narrowness_ratio`` are NaN when the
-    spur came only from the persisted flat catalogue (no active-FT
+    spur came only from the persisted flat catalog (no active-FT
     measurement).
     """
 
@@ -249,7 +249,7 @@ class SpurMaskSpec:
 
 @dataclass(frozen=True)
 class SpurSet:
-    """Gated spur catalogue + mask geometry for one Stage 5 fit.
+    """Gated spur catalog + mask geometry for one Stage 5 fit.
 
     Built once per fit by :func:`build_spur_set`; consumed by the plan
     executor to derive each window's :class:`SpurMaskSpec` (residual mask)
@@ -348,7 +348,7 @@ class SpurSet:
         return any(abs(freq_mhz - c) <= tol for c in self.centers_mhz)
 
 
-def spur_set_from_catalogue(
+def spur_set_from_catalog(
     *,
     centers_mhz: Sequence[float],
     sources: Sequence[str],
@@ -358,13 +358,13 @@ def spur_set_from_catalogue(
     bin_spacing_mhz: float,
     default_mask_half_width_bins: int,
 ) -> SpurSet:
-    """Reconstruct a :class:`SpurSet` from a persisted Stage 5 spur catalogue.
+    """Reconstruct a :class:`SpurSet` from a persisted Stage 5 spur catalog.
 
-    The gated spur catalogue is a **Stage 5 product**: it is derived once
+    The gated spur catalog is a **Stage 5 product**: it is derived once
     during the fit (frequency-domain detector + time-domain decay/chirp
     arbitration + clock lattice) and persisted on the ``SpectrumFit``.  A
     later stage that needs the same per-window residual mask -- a Stage 6
-    user-directed window refit -- must *replay* that catalogue rather than
+    user-directed window refit -- must *replay* that catalog rather than
     re-running the detector, otherwise a detection-code change between the
     original fit and the refit silently re-masks the window and the refit no
     longer reproduces the fit it is editing.
@@ -372,7 +372,7 @@ def spur_set_from_catalogue(
     Only the fields that drive the residual mask
     (:meth:`SpurSet.window_mask_spec`) and candidate nomination
     (:meth:`SpurSet.candidate_on_spur`) are reconstructed: the per-spur
-    centre, source, lattice/drift provenance, and the per-spur mask
+    center, source, lattice/drift provenance, and the per-spur mask
     half-width override.  Measurement-only fields (``snr`` /
     ``narrowness_ratio``) are not persisted and come back ``NaN`` -- they are
     diagnostics, never consumed by the mask.  ``bin_spacing_mhz`` is recovered
@@ -489,7 +489,7 @@ def detect_active_ft_spurs(
             continue
         # Pair lane: a tone between two bins splits its power, so neither
         # bin passes the single-bin test. Treat the integer bin plus its
-        # stronger neighbour as the tone and test the bins flanking the
+        # stronger neighbor as the tone and test the bins flanking the
         # pair instead. This signature alone is NOT gate-worthy (a blended
         # doublet looks identical); the joint gate requires time-domain
         # flatness confirmation for ``pair`` nominees.
@@ -1079,7 +1079,7 @@ def gate_spurs(
                 merged_lattice = existing.lattice or lattice
                 merged_drift = existing.drift or drift
                 # Prefer the frequency-domain center / SNR (a measured bin)
-                # over the catalogue center when both are present.
+                # over the catalog center when both are present.
                 if source == "narrow":
                     gated[i] = GatedSpur(
                         center_mhz=center,
@@ -1306,7 +1306,7 @@ def build_spur_set(
     narrowness_ratio: float = DEFAULT_NARROWNESS_RATIO,
     snr_threshold: float = DEFAULT_SNR_THRESHOLD,
     mask_half_width_bins: int = DEFAULT_MASK_HALF_WIDTH_BINS,
-    use_stft_catalogue: bool = True,
+    use_stft_catalog: bool = True,
     decay_probe: Optional[Callable[[float], Tuple[float, float]]] = None,
     lattice: Optional[ClockLattice] = None,
     lattice_decay_ratio: float = DEFAULT_LATTICE_DECAY_RATIO,
@@ -1324,7 +1324,7 @@ def build_spur_set(
     """Detect + gate spurs and package them with the mask geometry.
 
     ``saturated_clusters`` is the persisted Stage 2b ``spur_clusters``
-    catalogue. Pass an empty sequence (or ``use_stft_catalogue=False``) to
+    catalog. Pass an empty sequence (or ``use_stft_catalog=False``) to
     run the frequency-domain detector alone -- the auto-detect fallback
     when no Stage 2b calibration is present. ``decay_probe`` (see
     :func:`make_decay_probe`) enables the time-domain arbitration of every
@@ -1444,7 +1444,7 @@ def build_spur_set(
                 window_override_mhz=drift_win,
                 locked_fallback=True,
             )
-    clusters = tuple(saturated_clusters) if use_stft_catalogue else ()
+    clusters = tuple(saturated_clusters) if use_stft_catalog else ()
     gated = gate_spurs(
         active_spurs,
         clusters,
@@ -1511,7 +1511,7 @@ def _measure_bin_snr(
     """Bin SNR ``|X| / sigma_c`` at the active-FT bin nearest ``center``.
 
     The mask-scaling fallback for a gated spur whose own
-    :attr:`GatedSpur.snr` is non-finite (the flat-lane / saturated catalogue
+    :attr:`GatedSpur.snr` is non-finite (the flat-lane / saturated catalog
     nominees never measured a frequency-domain bin): read the active FT in
     hand directly so a strong flat tone's sinc skirt gets a scaled mask too
     (363 w100's SNR-139 flat 28057.46 tone). Returns ``nan`` when the bin
@@ -1601,7 +1601,7 @@ def _scale_spur_mask(
     :attr:`GatedSpur.snr` is non-finite (the flat-lane / saturated nominees),
     so a strong flat tone's skirt still earns a wide mask. The persisted
     :attr:`GatedSpur.snr` field is left unchanged (its NaN-vs-finite value
-    distinguishes flat-catalogue from frequency-domain provenance).
+    distinguishes flat-catalog from frequency-domain provenance).
 
     When the sorted active-FT arrays are supplied, the scaled width is
     truncated where the spectrum stops being skirt-consistent

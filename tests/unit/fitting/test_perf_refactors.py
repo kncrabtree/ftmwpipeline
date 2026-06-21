@@ -3,7 +3,7 @@ Unit tests for the three compute-avoidance refactors.
 
 All three changes are byte-identical in results; these tests pin that
 invariant by checking that the new parameters / code paths yield results
-exactly equal to the baseline behaviour.
+exactly equal to the baseline behavior.
 
 1. knockout_test refit_sink
 2. iterative_aicc_cleanup initial_refits

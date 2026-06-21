@@ -163,7 +163,7 @@ class TestFitShowImpl:
 # ---------------------------------------------------------------------------
 class TestWindowedView:
     def test_boxcar_model_at_right_frequency(self, stage5_file, fit_obj):
-        # The re-synthesised model line must land at the brightest fitted peak's
+        # The re-synthesized model line must land at the brightest fitted peak's
         # molecular frequency -- i.e. synthesize (f_bb frame) -> rfft -> molecular
         # axis round-trips the coordinate transform. (Amplitude depends on the
         # fixture's apodization domain; position does not.)

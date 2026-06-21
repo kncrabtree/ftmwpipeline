@@ -53,7 +53,7 @@ Practical guidance: for production use, take ``τ_basis`` from a
 data-derived estimate -- the Stage 2b ``tau_maj``, a per-experiment τ
 fitted on the brightest detected lines, or an explicit override. The
 research project at ``dev-docs/research/stage3-coherence-screen/``
-characterises the screen's behaviour against linewidth-in-bin-units;
+characterises the screen's behavior against linewidth-in-bin-units;
 consult its report for how sensitive the screen is to ``τ_basis`` being
 off by a factor of 2.
 
@@ -110,7 +110,7 @@ class ProjectionResult:
         SNR-equivalent on-line response of the projected Lorentzian.
     detected_snr_active : float
         ``|z(f_c)| / σ_c[bin_c]`` -- the active-FT magnitude SNR at the
-        candidate's bin (the per-bin reference the ratio normalises against).
+        candidate's bin (the per-bin reference the ratio normalizes against).
     ratio : float
         ``coherent_snr / detected_snr_active``. ≈ 1 for a real Lorentzian;
         ≪ 1 for a phase-incoherent excursion.
@@ -200,7 +200,7 @@ def project_candidates(
         magnitude has decayed to a few percent of the on-line value --
         beyond it the projection adds only noise to the numerator. The
         residual-screen reference used the same number as the boundary
-        between "neighbour contaminating" and "isolated" candidates.
+        between "neighbor contaminating" and "isolated" candidates.
     min_window_bins : int, default 3
         Floor on the sub-window bin count. For instruments / FT settings
         where ``FWHM`` ≲ 2 bins the FWHM-scaled half-width may pick only
@@ -324,7 +324,7 @@ def project_candidates(
         coherent_amp = float(abs(amp))
 
         # Median σ_c over the projection sub-window -- the Rayleigh scale
-        # the coherent SNR normalises against. Robust to the slice's
+        # the coherent SNR normalizes against. Robust to the slice's
         # bin-count being small (mean would be more sensitive to a single
         # noisy bin).
         finite_sigma_c = sigma_c_slice[sigma_c_slice > 0.0]

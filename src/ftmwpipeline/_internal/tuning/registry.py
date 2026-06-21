@@ -96,7 +96,7 @@ class KnobSpec:
     as-is."""
     select_hint: Optional[str] = None
     """Optional hint to the ``prepare`` window-selector. ``"snr_threshold"``
-    marks a knob that gates per-window behaviour on the window's SNR, so the
+    marks a knob that gates per-window behavior on the window's SNR, so the
     selector straddle-samples windows across the grid's SNR range (otherwise the
     knob can look inert when the random sample misses its regime)."""
 
@@ -511,7 +511,7 @@ def _metric_windows(result: Any) -> Dict[str, Any]:
 
 
 def _metric_fit(result: Any) -> Dict[str, Any]:
-    """Reduce a Stage 5 fit to the fit-quality lens: the SNR-normalised
+    """Reduce a Stage 5 fit to the fit-quality lens: the SNR-normalized
     shape-error fraction ε (and the SNR-aware fail count) as the honest quality
     headline, the structural counts a fit knob actually moves (peaks, free-τ
     windows, median freq uncertainty), and raw χ²ᵣ kept only as a de-emphasised
@@ -605,7 +605,7 @@ def _metric_rescue(result: Any) -> Dict[str, Any]:
 def _metric_spur(result: Any) -> Dict[str, Any]:
     """Reduce a Stage 5 fit to the spur gate's verdict: how many integer-MHz tones
     were masked, split by source (narrow / saturated), the mask half-width in
-    bins, and the net ε / peak count. The catalogue is band-level (computed on the
+    bins, and the net ε / peak count. The catalog is band-level (computed on the
     full active FT), so these are unaffected by the fit's plan reduction."""
     fit = result["fit"]
     params = fit.parameters
@@ -1240,7 +1240,7 @@ for _sub, _field in (
 # window subset (top-SNR + seeded sample + frequency pins), so a value costs a
 # few tens of fits, not the whole band. This is the *fit-quality* family
 # (tau / conservative / penalties / seeder / baseline); rescue / spur / thaw get
-# their own dedicated plots. The honest quality lens is the SNR-normalised
+# their own dedicated plots. The honest quality lens is the SNR-normalized
 # shape-error fraction ε (pass ⇔ ε ≤ κ), not the SNR²-floored χ²ᵣ.
 # ---------------------------------------------------------------------------
 _FIT_COLS = (
@@ -1254,7 +1254,7 @@ _FIT_COLS = (
     "chi2r_p95",
 )
 _FIT_SEE_ALSO = (
-    "the headline is the SNR-normalised shape-error ε (pass ⇔ ε ≤ κ=0.05), not "
+    "the headline is the SNR-normalized shape-error ε (pass ⇔ ε ≤ κ=0.05), not "
     "χ²ᵣ (which rides an SNR² floor); n_peaks / n_free_tau / sigma_f_khz track "
     "what the knob structurally moved. Sweeps a reduced window subset — widen it "
     "with --fit-top-snr / --fit-sample / --fit-freqs (or --fit-all)."
@@ -1390,9 +1390,9 @@ _SPUR_COLS = (
     "n_peaks",
 )
 _SPUR_SEE_ALSO = (
-    "the gated-spur catalogue is band-level (computed on the full active FT), so "
+    "the gated-spur catalog is band-level (computed on the full active FT), so "
     "spur counts are immune to the window reduction; the overlay shows which "
-    "integer-MHz tones each value masks, coloured by the last value still "
+    "integer-MHz tones each value masks, colored by the last value still "
     "gating them."
 )
 _THAW_COLS = (
@@ -1436,7 +1436,7 @@ for _field in (
     )
 
 # Spur — the integer-MHz / narrowness gate + the mask half-width (primary) and
-# the master switch, frequency-domain SNR floor, and saturated-catalogue toggle
+# the master switch, frequency-domain SNR floor, and saturated-catalog toggle
 # (advanced). The spur metric + plot are supplied here.
 for _field in (
     "integer_tol_mhz",
@@ -1444,7 +1444,7 @@ for _field in (
     "mask_half_width_bins",
     "enabled",
     "snr_threshold",
-    "use_stft_catalogue",
+    "use_stft_catalog",
 ):
     _fit_knob(
         "spur",

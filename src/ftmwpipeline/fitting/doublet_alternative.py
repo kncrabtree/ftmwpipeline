@@ -116,7 +116,7 @@ class DoubletAdjudication:
         the production doublet fit is better.  ``nan`` on refit failure.
     delta_aicc : float
         ``AICc(merged) - AICc(production)`` evaluated with each fit's own
-        ``n_data`` / ``n_params``.  Positive values favour the production
+        ``n_data`` / ``n_params``.  Positive values favor the production
         doublet.  ``nan`` on refit failure or degenerate AICc.
     merged_offset_mhz : float
         Fitted offset of the merged peak in the refit result.

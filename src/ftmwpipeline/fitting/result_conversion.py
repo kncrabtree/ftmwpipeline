@@ -17,8 +17,8 @@ This module is the **pure conversion layer** that bridges the two -- arrays
 in, dataclasses out, no algorithm changes and no file IO. It is called once
 at the end of an :func:`~ftmwpipeline.fitting.plan_execution.execute_plan`
 invocation; the in-flight records stay alive for any subsequent algorithm
-work that needs them, and the persistent snapshot is what gets serialized
-(task 9) and exposed through the dual-interface wrappers (task 10).
+work that needs them, and the persistent snapshot is what the serialization
+layer consumes and the dual-interface wrappers expose.
 
 Decoupling
 ----------
@@ -28,12 +28,12 @@ the Stage 4 precedent (:class:`FitWindow` / :class:`MergeRequest` live in
 ``core/`` even though Stage 4 algorithms produce/consume them): the
 persistence layer is then independent of the algorithm module's evolution.
 
-Window padding (D-6)
---------------------
-The :class:`SpectralWindow` materialized per window here uses the bare
-active-FT slice produced by :func:`materialize_window` -- i.e. the Stage 4
-``freq_range`` with no baseline context margin. Window baseline padding per
-D-6 is deferred (see ``dev-docs/planning/stage5-fitting.md`` "D8 open items").
+Window padding
+--------------
+The :class:`SpectralWindow` materialized per window here uses the active-FT
+slice produced by :func:`materialize_window` -- i.e. the Stage 4 ``freq_range``
+with no baseline-context margin. Each window carries exactly the active-FT
+region it is fit over.
 """
 
 from __future__ import annotations
@@ -325,8 +325,8 @@ def window_outcome_to_spectral_window(
     :class:`ComplexFT` (it is regenerated on demand from the FID), so there
     is no parent to link.
 
-    The slice spans the bare Stage 4 ``freq_range``; D-6 baseline padding is
-    deferred to a follow-up.
+    The slice spans the Stage 4 ``freq_range`` with no baseline-context margin:
+    each window carries exactly the active-FT region it is fit over.
     """
     center_mhz = _window_center(outcome)
     freq_array = molecular_frequency(outcome.offset_grid_mhz, center_mhz, sideband)
@@ -467,9 +467,9 @@ def window_outcome_to_fitting_result(
     # Per-window parameter covariance. Label it by the covariance's *actual*
     # dimension rather than trusting ``inner.fit_tau``: a cleanup / knockout
     # refit can lock tau (its covariance then has no tau row) while ``fit_tau``
-    # stays True from the upstream tau-free determination, which used to drop the
-    # matrix on a shape mismatch. Try the tau-present and tau-absent labelings
-    # and keep whichever matches, so a valid covariance is always persisted.
+    # stays True from the upstream tau-free determination. Try the tau-present
+    # and tau-absent labelings and keep whichever matches, so a valid covariance
+    # is always persisted.
     cov = inner.covariance
     if cov is not None:
         cov_arr = np.asarray(cov, dtype=float)
@@ -486,7 +486,7 @@ def window_outcome_to_fitting_result(
                     result.covariance_param_labels = labels
                     break
             # else: genuine layout mismatch -- leave both None rather than
-            # persist a mislabelled matrix.
+            # persist a mislabeled matrix.
 
     # Shared parameter: the per-window decay constant. ``fitted`` records
     # whether tau was determined by an LSQ that included it as a free

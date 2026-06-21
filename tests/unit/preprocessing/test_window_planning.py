@@ -259,7 +259,7 @@ class TestMagnitudeAttachment:
 
     def test_threshold_persisted_in_plan_parameters(self):
         """The configured threshold lands in ``plan.parameters`` so a
-        downstream ``replan`` reproduces the same attachment behaviour."""
+        downstream ``replan`` reproduces the same attachment behavior."""
         freqs, spec, rms, peaks = _synthetic(
             [(30040.0, 2.0, PeakClassification.STRONG)]
         )
@@ -486,7 +486,7 @@ class TestBoundedMergeAndCapSplit:
         # push the padded span over the cap. Four lines spanning 0.94 MHz with a
         # 0.39 MHz largest interior gap (the 2638 33723.5-33724.6 case): with a
         # +/- 2 MHz proto-margin the merged span is ~4.9 MHz, over a 4 MHz cap,
-        # but the 0.94 MHz of content fits, so it stays one centred window.
+        # but the 0.94 MHz of content fits, so it stays one centered window.
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30040.00, 1.0, PeakClassification.WEAK),
@@ -506,13 +506,13 @@ class TestBoundedMergeAndCapSplit:
         )
         assert plan.n_windows == 1, "content-fitting cluster was split"
         assert sorted(plan.windows[0].free_peak_indices) == [0, 1, 2, 3]
-        # The lone window is centred on its content, not edge-piled.
+        # The lone window is centered on its content, not edge-piled.
         w = plan.windows[0]
         content_lo, content_hi = 30040.00, 30040.94
         margin_lo = content_lo - w.freq_range[0]
         margin_hi = w.freq_range[1] - content_hi
         assert margin_lo > 0 and margin_hi > 0
-        assert abs(margin_lo - margin_hi) < 0.5, "cluster is off-centre"
+        assert abs(margin_lo - margin_hi) < 0.5, "cluster is off-center"
         _assert_invariants(plan)
 
     def test_max_peaks_per_window_recorded_in_parameters(self):

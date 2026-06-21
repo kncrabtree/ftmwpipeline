@@ -546,7 +546,7 @@ class TestGapPassTauFeeder:
     ) -> None:
         """No recommended_shape stamp → falls through to Lorentzian τ_maj
         even when the Gaussian twin is present. Preserves the pre-Phase-A
-        behaviour for files without an auto-recommend pass."""
+        behavior for files without an auto-recommend pass."""
         variant = tmp_path / "tau_feed_no_rec.ftmw"
         shutil.copyfile(baseline_2638_stage2, variant)
         self._patch_tau_lookup(

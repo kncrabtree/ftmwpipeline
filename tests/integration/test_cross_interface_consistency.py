@@ -137,7 +137,7 @@ class TestIdenticalResults:
         """Verify all interfaces produce identical NoiseResult for same parameters.
 
         Cross-interface identity only requires one parameter set (default).
-        Parameter-variation behaviour is already covered by unit noise tests
+        Parameter-variation behavior is already covered by unit noise tests
         in tests/unit/io/test_noise_result_serialization.py.
 
         We copy the module-scoped stage1 trio files into this test's own tmp

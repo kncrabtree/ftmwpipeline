@@ -1,9 +1,9 @@
 """
 Plan-level execution for Stage 5 fitting.
 
-Stage 5 task 5: drive a Stage 4 :class:`~ftmwpipeline.core.data_structures.WindowPlan`
-through to a fitted line list. This module owns the three pieces the task plan
-calls out:
+Drive a Stage 4 :class:`~ftmwpipeline.core.data_structures.WindowPlan`
+through to a fitted line list. This module owns the three pieces that make up
+plan execution:
 
 * **Fixed-contributor evaluation.** A
   :class:`~ftmwpipeline.core.data_structures.FixedContributor` names a strong line
@@ -35,20 +35,20 @@ calls out:
 
 The fit frame is the **active-portion FT**
 (:mod:`ftmwpipeline.fitting.active_ft`) -- the rfft of just the active FID
-samples with the canonical apodization, which is already in the ``[0, T]``
-form ``h_T`` models. Each window is sliced from the active-FT and its
-molecular-frequency grid is relabelled to a signed baseband offset
-(:func:`~ftmwpipeline.fitting.peak_model.to_baseband_offset`); the original
-de-ramp step the task-5 commit applied against the persisted FT is dropped
-(D9).
+samples, which is already in the ``[0, T]`` form ``h_T`` models. Each window is
+sliced from the active-FT and its molecular-frequency grid is relabeled to a
+signed baseband offset
+(:func:`~ftmwpipeline.fitting.peak_model.to_baseband_offset`). No de-ramp is
+needed: the active samples are referenced to ``t = 0`` directly.
 
-Scope -- this is *task 5 + task 6*. The Stage 4 ``replan`` entry point and
-the ``merge`` / ``split`` re-plan requests are task 7; serialization, the
-``_internal/stage5_impl.py`` file orchestrator, and the dual-interface
-wrappers are later tasks. The light dataclasses defined here
+This module fits a whole :class:`WindowPlan` -- traversing the dependency DAG,
+fitting each window, freezing out-of-band contributors, and running the
+edge-coherence renegotiation handshake (local thaw plus, for structural
+coupling, a Stage 4 ``replan``). The light dataclasses defined here
 (:class:`FrozenPeak`, :class:`ThawEvent`, :class:`WindowOutcome`,
-:class:`PlanFitOutcome`) are minimal records that later tasks will compose
-into the persistent :class:`~ftmwpipeline.core.data_structures.FittedPeak` /
+:class:`PlanFitOutcome`) are the algorithm-side records that
+:mod:`ftmwpipeline.fitting.result_conversion` composes into the persistent
+:class:`~ftmwpipeline.core.data_structures.FittedPeak` /
 :class:`~ftmwpipeline.core.data_structures.FittingResult` / the
 ``SpectrumFit`` aggregate.
 """
@@ -178,7 +178,7 @@ without the edge-free contributors (the byte-stable path a healthy window keeps,
 its in-window leakage already covered by the const leakage-wing baseline) and
 with them -- and the skirt is adopted only if it reduces the noise-weighted
 residual sum of squares to at most this fraction of the no-skirt fit's. This
-keeps the subtraction *evidence-triggered*: an orphaned bright neighbour's skirt
+keeps the subtraction *evidence-triggered*: an orphaned bright neighbor's skirt
 (360 w287: SSR drops ~10x) is adopted, while on a window the skirt would harm
 (2638 w106, where the const baseline already handles the leakage) the no-skirt
 fit stands unchanged, so the skirt never fights the baseline (open question O2).
@@ -383,7 +383,7 @@ class ReplanContext:
     Stage 3 peak list and the *persisted* Stage 1 spectrum (for the
     leakage-touched region recomputation that drives the bookkeeping tail of
     the plan). This dataclass bundles that context so the production
-    orchestrator (``_internal/stage5_impl.py``, task 9) can hand one object
+    orchestrator (``_internal/stage5_impl.py``) can hand one object
     through; tests can pass ``None`` to disable structural renegotiation.
 
     Stage 4 parameters (``edge_m``, ``edge_threshold``, ``max_window_width_mhz``,
@@ -423,7 +423,7 @@ class ReplanEvent:
     Parallels :class:`ThawEvent` but captures a *plan-structural* change
     rather than a local co-fit. Emitted when the residual edge-coherence
     check flags a window edge that has no fixed contributor to thaw and a
-    frequency-adjacent neighbour exists for a :class:`MergeRequest`.
+    frequency-adjacent neighbor exists for a :class:`MergeRequest`.
 
     Attributes
     ----------
@@ -468,7 +468,7 @@ class ReplanEvent:
 class WindowOutcome:
     """Stage 5 result for one window.
 
-    Holds enough state for downstream consumers -- task 7's
+    Holds enough state for downstream consumers -- the
     :class:`~ftmwpipeline.core.data_structures.FittingResult` wiring, the
     visualization, and the next batch's fixed-contributor lookup -- to work from
     one object per window. The free-peak fit is left intact in ``fit``; the full
@@ -628,7 +628,7 @@ def evaluate_fixed_contributor(
     s = sideband_sign(sideband)
 
     # Pick the primary fit's peak nearest the persisted contributor frequency.
-    # The primary window's offset is signed-baseband from its own centre, so we
+    # The primary window's offset is signed-baseband from its own center, so we
     # compare in primary-offset space by mapping the contributor frequency the
     # same way.
     primary_center = _window_center_mhz(primary_outcome)
@@ -705,7 +705,7 @@ def evaluate_edge_free_contributors(
     robust to the leakage pedestal -- the global *single-bin phasor* read was
     NEGATIVE on the dense 655 spectrum (each core bin carries ~300 other lines'
     summed skirts; see ``dev-docs/research/stage5-cross-fixture/report.md``
-    §Phase 1).
+    §1).
 
     The read uses the dependent window's ``tau_us`` -- the same decay the frozen
     skirt is later drawn with by :func:`subtract_frozen_background` -- so the
@@ -1147,7 +1147,7 @@ def build_window_outcome(
     residual_edge_m :
         Band width (bins) for the residual edge-coherence test.
     center_mhz :
-        Molecular centre of the window (MHz); stashed as ``outcome._center_mhz``.
+        Molecular center of the window (MHz); stashed as ``outcome._center_mhz``.
     spur_mask :
         Per-window spur mask (or ``None``); stashed as ``outcome._spur_mask``.
 
@@ -1173,7 +1173,7 @@ def build_window_outcome(
         edge_coherence_low=low_coh,
         edge_coherence_high=high_coh,
     )
-    # Stash the centre so this outcome can serve as a primary for downstream
+    # Stash the center so this outcome can serve as a primary for downstream
     # windows. See _window_center_mhz for the contract.
     outcome._center_mhz = center_mhz  # type: ignore[attr-defined]
     # Stash the per-window spur mask so the rescue pass (and the refit) mask
@@ -1221,7 +1221,7 @@ def fit_seeds_window_outcome(
     sig_slice :
         Per-bin complex noise RMS over the window.
     center_mhz :
-        Molecular centre of the window (MHz).
+        Molecular center of the window (MHz).
     background :
         Frozen-contributor model on ``offset_grid``.
     data_minus_bg :
@@ -1335,7 +1335,7 @@ def select_contributor_to_thaw(
        low side and ``window.freq_range[1]`` for the high side; a contributor
        is "on" that side if its frequency lies outside the window in that
        direction (the typical case for a fixed contributor -- they live in
-       neighbouring windows).
+       neighboring windows).
     2. Prefer ``freeze_eligible=False`` contributors -- Stage 4 already flagged
        these as not safe to freeze (O4-2).
     3. Among the remaining candidates, pick the one nearest the flagged edge
@@ -1394,7 +1394,7 @@ def local_thaw_cofit(
     """Joint co-fit of two windows with one contributor unfrozen.
 
     The two windows' active-FT data are concatenated under a shared baseband
-    coordinate centred at the primary window's reference frequency: the
+    coordinate centered at the primary window's reference frequency: the
     primary's free peaks keep their offsets unchanged; the dependent window's
     grid and free-peak offsets are remapped into the shared frame by adding
     ``shift = s*(dep_center - primary_center)``. The thawed contributor was
@@ -1554,10 +1554,9 @@ def materialize_window(
 
     The molecular frequency reference is the midpoint of
     ``fit_window_spec.freq_range`` -- the natural symmetric choice, also the
-    one cached on each :class:`WindowOutcome` as ``_center_mhz``. Window
-    baseline padding per D-6 is intentionally not applied here; the slice
-    is the bare Stage 4 freq_range (a follow-up will add the context margin
-    once the persistence layer can record it).
+    one cached on each :class:`WindowOutcome` as ``_center_mhz``. No
+    baseline-context margin is applied here; the slice is the bare Stage 4
+    freq_range.
     """
     lo, hi = fit_window_spec.freq_range
     if lo > hi:
@@ -1662,16 +1661,15 @@ def execute_plan(
        that have *no* fixed contributor on that side -- thaw cannot help
        them; a real feature crosses the boundary. Emit a
        :class:`~ftmwpipeline.core.data_structures.MergeRequest` pairing
-       each such window with its frequency-adjacent neighbour, dedup by
+       each such window with its frequency-adjacent neighbor, dedup by
        sorted pair, and route them through
        :func:`~ftmwpipeline.preprocessing.window_planning.replan`. Drop
        outcomes for the affected windows (mergers + transitive
        downstream), re-walk them in topo order on the revised plan. Bounded
        by ``replan_context.max_replan_rounds``.
 
-    The full plan-level outcome is returned; this function does **no file IO**
-    -- persistence is task 9, and the ``_internal/stage5_impl.py`` orchestrator
-    is task 9. Pure inputs in, pure outputs out.
+    The full plan-level outcome is returned; this function does **no file IO**.
+    Pure inputs in, pure outputs out.
 
     Parameters
     ----------
@@ -1744,7 +1742,7 @@ def execute_plan(
         and rescue, any window whose residual ``max(edge_low, edge_high)``
         exceeds ``baseline_edge_threshold`` is refit jointly with a complex
         baseline of order ``baseline_order`` (the lines' tau held fixed) so a
-        neighbour's mismodeled leakage skirt is absorbed as a smooth nuisance
+        neighbor's mismodeled leakage skirt is absorbed as a smooth nuisance
         and the per-line uncertainties are priced from the joint covariance.
     baseline_order : int, default :data:`DEFAULT_BASELINE_ORDER`
         Baseline polynomial order ``p`` (0 = const, 1 = linear).
@@ -2570,7 +2568,7 @@ def _find_adjacent_window(
 ) -> Optional[FitWindow]:
     """Return the immediately-adjacent window in ``side`` direction, or None.
 
-    Adjacency is in molecular frequency: the ``"low"``-side neighbour is the
+    Adjacency is in molecular frequency: the ``"low"``-side neighbor is the
     window whose ``freq_range[1]`` is the largest value still ``<=
     win.freq_range[0]``; ``"high"`` mirrors. Returns ``None`` when ``win`` is
     at the plan's outer boundary on that side.
@@ -2855,7 +2853,7 @@ def _fit_one_window(
     # evidence-triggered: fit the window without them first (the byte-stable
     # path for a healthy window whose leakage the const baseline already
     # handles), then only adopt the edge-free skirt if it clearly reduces the
-    # noise-weighted residual -- so an orphaned bright neighbour's skirt is
+    # noise-weighted residual -- so an orphaned bright neighbor's skirt is
     # subtracted where it helps without fighting the baseline elsewhere (O2).
     fit_result, background, full_fitted, full_residual = (
         fit_window_with_fixed_contributors(
@@ -3541,7 +3539,7 @@ def _apply_baseline_to_outcome(
     """Refit a window with a complex baseline when a coherent or smooth residual
     clears its trigger; update the outcome in place.
 
-    A neighbouring strong line's mismodeled leakage skirt -- and, on a dense
+    A neighboring strong line's mismodeled leakage skirt -- and, on a dense
     ultra-high-SNR spectrum, the summed far-wings of the many lines the discrete
     frozen contributors cannot fully subtract -- leaves a systematic residual
     that inflates the dependent window's chi-squared and biases the lines sitting
