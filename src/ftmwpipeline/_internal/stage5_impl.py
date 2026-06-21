@@ -1139,6 +1139,7 @@ def fit_peaks_impl(
     sigma_tau_override_us: Optional[float] = None,
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
+    jobs: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Run Stage 5 per-window fitting and persist the result.
 
@@ -1684,6 +1685,7 @@ def fit_peaks_impl(
         baseline_edge_threshold=baseline_edge_threshold_v,
         baseline_smooth_threshold=baseline_smooth_threshold_v,
         doublet_kwargs=doublet_kwargs,
+        jobs=jobs,
     )
 
     parameters = {

@@ -1342,6 +1342,7 @@ class Pipeline:
         sigma_tau_override_us: Optional[float] = None,
         settings: Optional["StageFitSettings"] = None,
         preset: Optional[str] = None,
+        jobs: Optional[int] = None,
     ) -> SpectrumFit:
         """Fit each Stage 4 window's lines (Stage 5).
 
@@ -1417,6 +1418,7 @@ class Pipeline:
                 sigma_tau_override_us=sigma_tau_override_us,
                 settings=settings,
                 preset=preset,
+                jobs=jobs,
             )
             self.logger.info(
                 "Stage 5: %d windows, %d fitted peaks; thaw %d/%d, "
@@ -1706,6 +1708,7 @@ class Pipeline:
         scope: str = "full",
         catalog: Optional[Union[str, Path]] = None,
         catalog_n_sigma: float = 3.0,
+        jobs: Optional[int] = None,
     ) -> Dict[str, Optional[str]]:
         """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
@@ -1757,6 +1760,7 @@ class Pipeline:
             scope=scope,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
+            jobs=jobs,
         )
 
     def review_accept(

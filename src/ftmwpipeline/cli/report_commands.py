@@ -110,6 +110,7 @@ def cmd_report_run(args: argparse.Namespace) -> int:
                     scope=scope,
                     catalog=getattr(args, "catalog", None),
                     catalog_n_sigma=getattr(args, "catalog_n_sigma", 3.0),
+                    jobs=getattr(args, "jobs", None),
                 )
     except (ValueError, KeyError) as exc:
         print(f"Error: {exc}")
@@ -253,6 +254,18 @@ def register_report_commands(subparsers: Any) -> None:
         action="store_true",
         default=False,
         help="Suppress the live per-window render-progress display.",
+    )
+    p_run.add_argument(
+        "-j",
+        "--jobs",
+        dest="jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Worker processes for the figure-render pool "
+            "(default: CPU count minus 2; or set FTMW_MAX_WORKERS)."
+        ),
     )
     p_run.add_argument(
         "--verbose",

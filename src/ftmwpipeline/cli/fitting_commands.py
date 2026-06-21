@@ -63,6 +63,7 @@ def cmd_fit_peaks(args: argparse.Namespace) -> int:
             sigma_tau_override_us=args.sigma_tau_override_us,
             settings=None if settings.is_empty() else settings,
             preset=args.preset,
+            jobs=args.jobs,
         )
         print("\nFitting completed successfully!")
         print(f"  Windows fitted: {result['n_windows']:,}")
@@ -398,6 +399,18 @@ def register_fitting_commands(subparsers: Any) -> None:
             "(a persisted .ftmw outranks it). Composes with the per-knob "
             "flags: the flags are the explicit layer, the preset the layer "
             "beneath the persisted record."
+        ),
+    )
+    p_fit.add_argument(
+        "-j",
+        "--jobs",
+        dest="jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Worker processes for the cross-window fit pool "
+            "(default: CPU count minus 2; or set FTMW_MAX_WORKERS)."
         ),
     )
     p_fit.add_argument(

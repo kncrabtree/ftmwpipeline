@@ -1184,6 +1184,7 @@ def fit_peaks(
     sigma_tau_override_us: Optional[float] = None,
     settings: Optional[StageFitSettings] = None,
     preset: Optional[str] = None,
+    jobs: Optional[int] = None,
 ) -> SpectrumFit:
     """Fit each Stage 4 window's lines (Stage 5), equivalent to Pipeline.fit_peaks().
 
@@ -1252,6 +1253,7 @@ def fit_peaks(
             sigma_tau_override_us=sigma_tau_override_us,
             settings=settings,
             preset=preset,
+            jobs=jobs,
         )
     except Exception as e:
         logger.error(f"Failed to fit peaks for {file_path}: {e}")
@@ -1498,6 +1500,7 @@ def report_run(
     scope: str = "full",
     catalog: Optional[Union[str, Path]] = None,
     catalog_n_sigma: float = 3.0,
+    jobs: Optional[int] = None,
 ) -> Dict[str, Optional[str]]:
     """Write the default Stage 6 deliverables: the L1 table + the L3 report.
 
@@ -1522,6 +1525,7 @@ def report_run(
         scope=scope,
         catalog=catalog,
         catalog_n_sigma=catalog_n_sigma,
+        jobs=jobs,
     )
 
 

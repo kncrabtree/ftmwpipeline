@@ -101,6 +101,7 @@ from .window_fit import (
     evaluate_baseline,
     fit_window,
 )
+from ..utils.parallelism import resolve_worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -1636,6 +1637,7 @@ def execute_plan(
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
     doublet_kwargs: Optional[dict[str, Any]] = None,
+    jobs: Optional[int] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1813,6 +1815,7 @@ def execute_plan(
         baseline_edge_threshold=baseline_edge_threshold,
         baseline_smooth_threshold=baseline_smooth_threshold,
         doublet_kwargs=doublet_kwargs,
+        jobs=jobs,
     )
     logger.info("initial walk: %.1fs", time.monotonic() - _t_initial)
 
@@ -1889,6 +1892,7 @@ def execute_plan(
                 baseline_edge_threshold=baseline_edge_threshold,
                 baseline_smooth_threshold=baseline_smooth_threshold,
                 doublet_kwargs=doublet_kwargs,
+                jobs=jobs,
             )
 
             applied_pairs = {
@@ -2386,6 +2390,7 @@ def _walk_windows_parallel(
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
     doublet_kwargs: Optional[dict[str, Any]] = None,
+    jobs: Optional[int] = None,
 ) -> None:
     """Cross-window parallel form of :func:`_walk_windows_in_order`.
 
@@ -2434,12 +2439,8 @@ def _walk_windows_parallel(
     )
 
     import multiprocessing
-    import os
 
-    if _FIT_WINDOW_WORKERS is not None:
-        max_workers = int(_FIT_WINDOW_WORKERS)
-    else:
-        max_workers = max(1, (os.cpu_count() or 2) - 2)
+    max_workers = resolve_worker_count(jobs, override=_FIT_WINDOW_WORKERS)
     pool_available = (
         max_workers >= 2 and "fork" in multiprocessing.get_all_start_methods()
     )

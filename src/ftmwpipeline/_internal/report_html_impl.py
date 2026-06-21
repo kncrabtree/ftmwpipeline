@@ -35,6 +35,7 @@ from ..core.data_structures import (
 )
 from ..fitting.peak_model import sideband_sign as _sideband_sign
 from ..io.stage6_review_serialization import load_stage6_review_from_file
+from ..utils.parallelism import resolve_worker_count
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
 from .report_impl import (
     _CAL_STATE_PHRASE,
@@ -819,7 +820,7 @@ def _magnitude_histogram_figures(
 
 
 def _methods_stage_figures(
-    path: str, out_root: Path, stem: str, dpi: int
+    path: str, out_root: Path, stem: str, dpi: int, *, jobs: Optional[int] = None
 ) -> List[Tuple[str, str]]:
     """Render the per-stage diagnostic figures for the methods page.
 
@@ -926,7 +927,7 @@ def _methods_stage_figures(
         for gi, (_anchor, figs) in enumerate(groups)
         for (slug, caption, thunk) in figs
     ]
-    rendered = _render_methods_figures([t for (_, _, _, t) in flat], fig_dpi)
+    rendered = _render_methods_figures([t for (_, _, _, t) in flat], fig_dpi, jobs=jobs)
 
     group_blocks: Dict[int, List[str]] = {}
     for (gi, slug, caption, _thunk), data in zip(flat, rendered):
@@ -975,18 +976,16 @@ def _methods_figure_worker(idx: int) -> Tuple[int, Optional[bytes]]:
     return idx, _render_one_methods_figure(ctx["thunks"][idx], ctx["fig_dpi"])
 
 
-def _render_methods_figures(thunks: List[Any], fig_dpi: int) -> List[Optional[bytes]]:
+def _render_methods_figures(
+    thunks: List[Any], fig_dpi: int, *, jobs: Optional[int] = None
+) -> List[Optional[bytes]]:
     """Render the methods-page figure thunks to PNG bytes, in parallel when
     worthwhile (same forking-pool / serial-fallback policy as the window
     figures; ``_FIGURE_RENDER_WORKERS`` pins the count for tests)."""
     import multiprocessing
-    import os
 
     n = len(thunks)
-    if _FIGURE_RENDER_WORKERS is not None:
-        max_workers = int(_FIGURE_RENDER_WORKERS)
-    else:
-        max_workers = max(1, (os.cpu_count() or 2) - 2)
+    max_workers = resolve_worker_count(jobs, override=_FIGURE_RENDER_WORKERS)
     if (
         n < 2
         or max_workers < 2
@@ -2450,7 +2449,13 @@ def _render_window_worker(wid: int) -> _WindowFigures:
 
 
 def _render_all_window_figures(
-    *, path: str, bundle: Any, dpi: int, stem: str, page_ids: List[int]
+    *,
+    path: str,
+    bundle: Any,
+    dpi: int,
+    stem: str,
+    page_ids: List[int],
+    jobs: Optional[int] = None,
 ) -> Dict[int, _WindowFigures]:
     """Render every page window's figures, in parallel when worthwhile.
 
@@ -2463,13 +2468,9 @@ def _render_all_window_figures(
     at fixed DPI, so the parallel and serial outputs are byte-identical.
     """
     import multiprocessing
-    import os
 
     n = len(page_ids)
-    if _FIGURE_RENDER_WORKERS is not None:
-        max_workers = int(_FIGURE_RENDER_WORKERS)
-    else:
-        max_workers = max(1, (os.cpu_count() or 2) - 2)
+    max_workers = resolve_worker_count(jobs, override=_FIGURE_RENDER_WORKERS)
 
     serial = (
         n < 2
@@ -2940,6 +2941,7 @@ def _assemble_report_site(
     dpi: int = 110,
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
+    jobs: Optional[int] = None,
 ) -> _ReportModel:
     """Assemble the report into an in-memory :class:`_ReportModel`.
 
@@ -3092,7 +3094,7 @@ def _assemble_report_site(
     n_pages = len(page_ids)
     logger.info("rendering %d window figure sets", n_pages)
     rendered = _render_all_window_figures(
-        path=path, bundle=bundle, dpi=dpi, stem=stem, page_ids=page_ids
+        path=path, bundle=bundle, dpi=dpi, stem=stem, page_ids=page_ids, jobs=jobs
     )
     panel_files_by_wid: Dict[int, Dict[str, str]] = {}
     mag_geom_by_wid: Dict[int, Optional[Dict[str, float]]] = {}
@@ -3197,7 +3199,9 @@ def _assemble_report_site(
             leftover.append(per_band_html)
     # Per-stage diagnostic figures, each dropped at the end of its section (before
     # the next stage's heading); a stage that was not run is skipped.
-    for anchor, fig_html in _methods_stage_figures(path, out_root, stem, dpi):
+    for anchor, fig_html in _methods_stage_figures(
+        path, out_root, stem, dpi, jobs=jobs
+    ):
         methods_html, ok = _inject_before(methods_html, anchor, fig_html)
         if not ok:
             leftover.append(fig_html)
@@ -3283,6 +3287,7 @@ def report_full_impl(
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
     scope: str = "full",
+    jobs: Optional[int] = None,
 ) -> str:
     """Render the Level-3 self-contained HTML report; return its path.
 
@@ -3348,6 +3353,7 @@ def report_full_impl(
             dpi=dpi,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
+            jobs=jobs,
         )
         suffix = "_summary" if scope == "summary" else ""
         single_path = final_dir / f"{site.stem}_report{suffix}.html"
@@ -3378,6 +3384,7 @@ def report_run_impl(
     scope: str = "full",
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
+    jobs: Optional[int] = None,
 ) -> Dict[str, Optional[str]]:
     """The default Stage 6 report run: the L1 table plus the L3 HTML report.
 
@@ -3431,6 +3438,7 @@ def report_run_impl(
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
             scope=scope,
+            jobs=jobs,
         )
 
     return results
