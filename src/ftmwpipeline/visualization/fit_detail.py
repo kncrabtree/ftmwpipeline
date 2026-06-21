@@ -49,6 +49,7 @@ from matplotlib.ticker import ScalarFormatter
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
 from ..utils.signal_processing import APODIZATION_EXAMPLES, make_apodization
+from .report_style import AGGIE_GOLD, CABERNET, DOUBLE_DECKER, GUNROCK, POPPY
 
 SidebandLike = Union[Sideband, str]
 
@@ -310,12 +311,11 @@ class WindowPanelData:
 # Spine-free / light-grid presentation (shared by the report and CLI panels)
 # ---------------------------------------------------------------------------
 
-# Distinct color for the noise-band (+/- sigma) reference lines and the
-# peak-position vlines: amber reads as a deliberate reference mark and stays
-# clear of both the grey grid and the red / blue / purple residual traces
-# (vlines are vertical, the noise bands horizontal dashed -- distinct by
-# orientation).
-_BARE_BAND_COLOR = "#d4920a"
+# Neutral gray for the noise-band (+/- sigma) reference lines: a statistical
+# guide that stays clear of the grid and the Re/Im/|X| traces, and distinct
+# from the Poppy peak-position vlines (vlines vertical, the noise bands
+# horizontal dashed).
+_BARE_BAND_COLOR = "#9aa0a6"
 # The zero baseline, emphasised so it pops out of the faint grid.
 _BARE_ZERO_COLOR = "#2a2a2a"
 
@@ -355,7 +355,7 @@ def prepare_window_panels(
     freq_padded: Optional[np.ndarray] = None,
     spec_padded: Optional[np.ndarray] = None,
     spurs: Optional[Sequence[dict]] = None,
-    vline_color: str = _BARE_BAND_COLOR,
+    vline_color: str = POPPY,
     vline_alpha: float = 0.7,
 ) -> WindowPanelData:
     """Prepare the per-window model, residual, and annotations once.
@@ -462,9 +462,9 @@ def prepare_window_panels(
 
 # Per data+residual component: (projection, line color, data-panel label).
 _COMPONENT_SPECS: Dict[str, Tuple[Callable[[np.ndarray], np.ndarray], str, str]] = {
-    "re": (np.real, "tab:red", "Re"),
-    "im": (np.imag, "tab:blue", "Im"),
-    "mag": (np.abs, "tab:purple", "|X|"),
+    "re": (np.real, DOUBLE_DECKER, "Re"),
+    "im": (np.imag, GUNROCK, "Im"),
+    "mag": (np.abs, CABERNET, "|X|"),
 }
 
 
@@ -524,10 +524,10 @@ def _annotate_spurs_lattice(
     """
     for i, sp in enumerate(data.in_window_spurs):
         f_sp = float(sp["center_mhz"])
-        ax_resid.axvline(f_sp, color="tab:orange", lw=1.0, ls=":", alpha=0.9, zorder=1)
+        ax_resid.axvline(f_sp, color=POPPY, lw=1.0, ls=":", alpha=0.9, zorder=1)
         ax_data.axvline(
             f_sp,
-            color="tab:orange",
+            color=POPPY,
             lw=1.0,
             ls=":",
             alpha=0.9,
@@ -538,10 +538,10 @@ def _annotate_spurs_lattice(
         )
     for i, lp in enumerate(data.lattice_peaks):
         f_lp = float(lp.frequency_mhz)
-        ax_resid.axvline(f_lp, color="tab:orange", lw=0.9, ls="--", alpha=0.7, zorder=2)
+        ax_resid.axvline(f_lp, color=POPPY, lw=0.9, ls="--", alpha=0.7, zorder=2)
         ax_data.axvline(
             f_lp,
-            color="tab:orange",
+            color=POPPY,
             lw=0.9,
             ls="--",
             alpha=0.7,
@@ -885,9 +885,9 @@ def plot_summary_histograms(
             ax.set_xscale("log")
         else:
             edges = np.linspace(lo, hi if hi > lo else lo + 1.0, bins + 1)
-        ax.hist(arr, bins=edges, color="tab:blue", alpha=0.8, edgecolor="white", lw=0.3)
+        ax.hist(arr, bins=edges, color=GUNROCK, alpha=0.8, edgecolor="white", lw=0.3)
         med = float(np.median(arr))
-        ax.axvline(med, color="tab:red", lw=1.0, ls="--", label=f"median {med:.3g}")
+        ax.axvline(med, color=DOUBLE_DECKER, lw=1.0, ls="--", label=f"median {med:.3g}")
         ax.set_title(f"{title}  (n={arr.size})", fontsize=9)
         ax.set_xlabel(xlabel, fontsize=8)
         ax.set_ylabel("count", fontsize=8)
@@ -928,20 +928,20 @@ def plot_magnitude_histogram(
         return None
     edges = np.logspace(np.log10(lo), np.log10(hi), bins + 1)
     fig, ax = plt.subplots(figsize=figsize, constrained_layout=True)
-    ax.hist(arr, bins=edges, color="tab:blue", alpha=0.8, edgecolor="white", lw=0.3)
+    ax.hist(arr, bins=edges, color=GUNROCK, alpha=0.8, edgecolor="white", lw=0.3)
     ax.set_xscale("log")
     ax.set_yscale("log")
     if sigma_median > 0.0:
         ax.axvline(
             sigma_median,
-            color="#d08700",
+            color=CABERNET,
             lw=1.1,
             ls="--",
             label=f"median σₓ {sigma_median:.3g}",
         )
         ax.axvline(
             n_sigma * sigma_median,
-            color="tab:red",
+            color=DOUBLE_DECKER,
             lw=1.1,
             ls=":",
             label=f"{n_sigma:g}σ {n_sigma * sigma_median:.3g}",
@@ -1032,9 +1032,9 @@ def _draw_overview(
     else:
         ov_f, ov_d = frequencies, complex_spectrum
     ax.plot(ov_f, np.abs(ov_d) * amp, color="0.3", lw=0.5, label="data |X|")
-    ax.axvspan(lo_f, hi_f, color="tab:green", alpha=0.35, zorder=0, label="this window")
-    ax.axvline(lo_f, color="tab:green", lw=0.9, alpha=0.75, zorder=1)
-    ax.axvline(hi_f, color="tab:green", lw=0.9, alpha=0.75, zorder=1)
+    ax.axvspan(lo_f, hi_f, color=AGGIE_GOLD, alpha=0.35, zorder=0, label="this window")
+    ax.axvline(lo_f, color=AGGIE_GOLD, lw=0.9, alpha=0.75, zorder=1)
+    ax.axvline(hi_f, color=AGGIE_GOLD, lw=0.9, alpha=0.75, zorder=1)
     if ov_f.size:
         ax.set_xlim(float(ov_f[0]), float(ov_f[-1]))
     ax.set_ylabel(f"|X(f)|{usuffix}", fontsize=9)
@@ -1118,9 +1118,7 @@ def _draw_mag_data(
             markeredgecolor="black",
             zorder=2,
         )
-    ax.plot(
-        f_fine, model_mag_fine * amp, color="tab:purple", lw=1.0, alpha=0.8, zorder=3
-    )
+    ax.plot(f_fine, model_mag_fine * amp, color=CABERNET, lw=1.0, alpha=0.8, zorder=3)
     ax.plot(
         f_slice,
         model_mag_native * amp,
@@ -1128,7 +1126,7 @@ def _draw_mag_data(
         linestyle="None",
         markersize=4.0,
         markeredgewidth=0.9,
-        color="tab:purple",
+        color=CABERNET,
         zorder=4,
     )
 
@@ -1163,12 +1161,12 @@ def _draw_residual_hist(
         ax.plot(
             x,
             rayleigh,
-            color="tab:purple",
+            color=CABERNET,
             lw=1.0,
             label=r"Rayleigh($\sigma/\sqrt{2}$)",
         )
         ax.axvline(
-            3.0 * sigma_c, color="tab:red", lw=0.6, ls="--", label=r"$3\sigma_c$"
+            3.0 * sigma_c, color=DOUBLE_DECKER, lw=0.6, ls="--", label=r"$3\sigma_c$"
         )
         ax.legend(loc="upper right", fontsize=7, framealpha=0.85)
     ax.set_xlabel(f"|residual|{usuffix}", fontsize=9)
@@ -1257,7 +1255,7 @@ def _draw_peak_table(
             )
         # Annotated lines are tinted orange (consistent with the gated-spur
         # convention) so they stand out without a separate legend entry.
-        text_color = "tab:orange" if cl is not None else "black"
+        text_color = POPPY if cl is not None else "black"
         ax.text(
             0.02,
             0.98 - (i + 1.5) * line_h,
@@ -1315,7 +1313,7 @@ def plot_windowed_comparison(
         view.freq_model_fine,
         np.real(view.model_fine),
         np.real(view.model_native),
-        "tab:red",
+        DOUBLE_DECKER,
         amp,
     )
     _draw_data_model(
@@ -1325,7 +1323,7 @@ def plot_windowed_comparison(
         view.freq_model_fine,
         np.imag(view.model_fine),
         np.imag(view.model_native),
-        "tab:blue",
+        GUNROCK,
         amp,
     )
     _draw_mag_data(
