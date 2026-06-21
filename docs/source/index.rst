@@ -46,6 +46,7 @@
    methods/noise_snr_scaling
    methods/matched_filter_detection
    methods/edge_coherence
+   methods/stage5_fitting
 
 .. toctree::
    :hidden:
@@ -108,6 +109,9 @@ be trusted, with figures and numbers regenerated from the example data:
 * :doc:`methods/edge_coherence` — the phase-coherent edge test behind window
   assignment: its closed-form null, threshold calibration, and the active-FT
   frame it must be scored in.
+* :doc:`methods/stage5_fitting` — the peak-fitting acceptance gate: why it is
+  window-size invariant, how it handles blends, and the SNR-aware health check
+  validated across the example experiments.
 
 Indices and tables
 ==================

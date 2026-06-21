@@ -94,22 +94,29 @@ Each window is fit by growing its model one line at a time:
    data, weighted by the :doc:`Stage 2 <stage2_noise>` per-bin noise.
 #. **Propose.** Pick the strongest peak in the current residual that has not
    yet been tried and trial-fit it jointly with the lines already accepted.
-#. **Accept or stop.** Keep the new line only when it lowers a corrected,
-   small-sample form of the Akaike information criterion (**AICc**): the AICc of
-   the larger model must be strictly below that of the current one. The criterion
-   is evaluated on an *effective* sample size that counts only the bins the lines
-   actually inform, not every bin in the window — so a window padded with quiet
-   noise cannot manufacture significance for an extra line. A candidate that does
-   not lower the AICc is rejected, and the loop stops after a bounded run of
+#. **Accept or stop.** Keep the new line only when its chi-squared improvement
+   clears a fixed penalized bar: the drop :math:`\Delta\chi^2` from adding the
+   line must exceed :math:`2\lambda\,\Delta k`, where :math:`\Delta k` is the
+   parameters the line costs and :math:`\lambda` is a single global strictness
+   (a stricter, BIC-like setting of the textbook information criterion). Because
+   the two models compared share the window's bins, :math:`\Delta\chi^2` is the
+   *local* evidence for the line and the bar carries no window geometry — so a
+   window padded with quiet noise cannot manufacture significance for an extra
+   line. The chi-squared is scored against a per-bin noise inflated by the
+   lineshape-fidelity budget where the model is bright, so a candidate that only
+   absorbs a strong line's irreducible shape misfit cannot clear the bar. A
+   candidate that fails is rejected, and the loop stops after a bounded run of
    consecutive rejections, when no candidate remains, or when a width or
    separation bound is reached.
 
 Because the residual is weighted by the real per-bin noise, a converged window
-has a proper reduced :math:`\chi^2` near one, and the information-weighted
-effective sample size keeps the gate honest — the loop adds a line only on
-genuine statistical evidence, not to chase a lineshape floor. A classical
-F-test on the :math:`\chi^2` drop is recorded at each step as a familiar
-diagnostic, but it does not gate acceptance.
+sits at its noise-and-fidelity floor, and the window-size-independent bar keeps
+the gate honest — the loop adds a line only on genuine local evidence, not to
+chase a lineshape floor or to exploit a window's quiet bins. A classical F-test
+on the :math:`\chi^2` drop is recorded at each step as a familiar diagnostic, but
+it does not gate acceptance. The derivation of the gate, the window-size bias it
+avoids, and its cross-instrument validation are in the
+:doc:`fitting-statistics methods note <methods/stage5_fitting>`.
 
 **Blend-aware seeding.** A single line fit to a close blend lands at the
 blend's centroid and leaves an elevated reduced :math:`\chi^2`. When that
@@ -188,7 +195,7 @@ After the add loop converges, a **rescue** pass re-examines the residual for
 weak lines the initial nomination missed — typically lines on the shoulder of a
 strong neighbor, where the Stage 3 position was slightly off. It nominates
 generously from residual prominence and then gates each candidate through the
-same F-test acceptance the main loop uses, with a remove-and-refit cleanup that
+same penalized acceptance the main loop uses, with a remove-and-refit cleanup that
 drops any line the joint fit no longer supports and merges sub-resolution
 duplicates. Rescue is bounded by a round cap and is what closes the gap between
 detection and a complete fit on dense, high-dynamic-range spectra.
@@ -368,8 +375,10 @@ preset, or via ``settings=StageFitSettings(...)`` on the Python interfaces.
        value (``False``).
    * - ``conservative.significance``
      - ``0.05``
-     - F-test significance :math:`\alpha` for accepting an added line. Lower is
-       stricter (fewer lines).
+     - Significance :math:`\alpha` for the recorded F-test diagnostic and the
+       rescue cleanup test. The main accept gate is the window-size-independent
+       penalized bar (see the
+       :doc:`methods note <methods/stage5_fitting>`), not this :math:`\alpha`.
    * - ``rescue.snr_threshold``
      - ``2.5``
      - Residual-peak nomination floor for the rescue pass (nominates generously;
