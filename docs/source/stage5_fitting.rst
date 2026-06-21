@@ -232,11 +232,14 @@ Two automatic cuts run on the merged line list once every window is fit.
 Both leave hand-added (``user``-origin) lines untouched.
 
 - **Signal-to-noise prune.** Every automatically fitted line whose post-fit SNR
-  falls below the survival floor (``snr_survival_floor``, default ``3.2`` — the
-  Stage 3 detection threshold) is dropped, windows left empty are removed, and
+  falls below the survival floor is dropped, windows left empty are removed, and
   partially pruned windows are refit so the survivors' parameters stay honest.
-  The prune iterates to a fixed point, because removing a line and refitting can
-  push a marginal neighbor below the floor.
+  The floor **tracks the Stage 3 promotion cutoff**: by default it is that cutoff
+  scaled by ``snr_survival_factor`` (``1.1``), so a survivor never sits below the
+  signal-to-noise that admitted the line at detection, and raising the Stage 3
+  cutoff raises the survival bar in step. Setting ``snr_survival_floor`` pins an
+  absolute floor instead. The prune iterates to a fixed point, because removing a
+  line and refitting can push a marginal neighbor below the floor.
 - **Degenerate-pair merge.** A sub-resolution pair that the fit split into two
   lines is merged back into one when a member's amplitude is statistically
   unidentifiable — its amplitude variance-inflation factor
@@ -374,9 +377,11 @@ preset, or via ``settings=StageFitSettings(...)`` on the Python interfaces.
    * - ``spur.enabled``
      - ``True``
      - Detect and mask clock/LO spurs (integer-megahertz CW tones).
-   * - ``peak_survival.snr_survival_floor``
-     - ``3.2``
-     - Post-fit SNR floor below which an automatically fitted line is pruned.
+   * - ``peak_survival.snr_survival_factor``
+     - ``1.1``
+     - Sets the post-fit survival floor as this multiple of the Stage 3
+       promotion cutoff. Set ``peak_survival.snr_survival_floor`` to pin an
+       absolute floor instead.
 
 The full knob set — the seeder thresholds, the per-window peak and separation
 caps, the phase/amplitude penalties, the rescue merge tiers, the spur and clock
@@ -399,6 +404,20 @@ histogram, and a table of the fitted peaks with their uncertainties, alongside
 the printed fit log for that window. The detail figure is the tool for
 understanding *why* a window fit the way it did. By default the command opens an
 interactive window; ``--no-interactive`` with ``-o`` saves a static image.
+
+.. figure:: figures/stage5_fit_detail.png
+   :width: 95%
+   :align: center
+
+   Per-window detail for a single window of the example experiment. The top strip
+   locates the window in the full spectrum. The real, imaginary, and magnitude
+   panels show the data (points) with the fitted model (lines, model values
+   marked at the data bins) and the residual above each. The fit resolves a close
+   blend — lines A and B sit about 0.06 MHz apart, well inside one linewidth —
+   beside a third line C, while a clock spur (dotted) is masked from the fit. The
+   residual histogram tracks the Rayleigh noise expectation, and the table lists
+   each fitted line's frequency, amplitude, phase, and signal-to-noise with the
+   fit uncertainty on the trailing digits.
 
 Assessing a fit with ``fit check``
 ----------------------------------

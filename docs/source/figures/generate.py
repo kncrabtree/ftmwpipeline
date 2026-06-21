@@ -1,8 +1,8 @@
 """Regenerate the representative figures embedded in the pipeline-stage pages.
 
-Builds a complete Stage 0-3 pipeline from the checked-in ``2638`` Blackchirp
-fixture in a temporary directory and renders one figure per documented early
-stage into the committed ``docs/source/figures`` directory:
+Builds a complete Stage 0-5 pipeline from the checked-in ``2638`` Blackchirp
+fixture in a temporary directory and renders one figure per documented stage
+into the committed ``docs/source/figures`` directory:
 
 * ``stage0_start_detection.png`` -- the Σ|FT|-vs-start sweep that locates the
   chirp end and the recommended active-region start;
@@ -27,6 +27,10 @@ stage into the committed ``docs/source/figures`` directory:
 * ``stage5_fitting.png`` -- the Stage 5 fit overview: the fitted model overlaid
   on the active spectrum with the windows shaded, and the magnitude residual
   against the canonical noise in a lower panel.
+* ``stage5_fit_detail.png`` -- the per-window fit detail for a representative
+  window (a resolved close blend beside a third line, with a masked clock spur):
+  the real/imaginary/magnitude data with the model and residuals, the residual
+  histogram, and the fitted-peak table.
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -93,7 +97,11 @@ def make_figures() -> None:
     from ftmwpipeline._internal.stage2_impl import visualize_noise_impl
     from ftmwpipeline._internal.stage3_impl import visualize_peaks_impl
     from ftmwpipeline._internal.stage4_impl import visualize_windows_impl
-    from ftmwpipeline._internal.stage5_impl import visualize_fit_impl
+    from ftmwpipeline._internal.stage5_impl import (
+        load_fit_impl,
+        render_fit_detail_impl,
+        visualize_fit_impl,
+    )
     from ftmwpipeline.visualization.report_style import apply_color_cycle
     from ftmwpipeline.visualization.start_detection_visualization import (
         plot_start_detection_from_file,
@@ -159,6 +167,29 @@ def make_figures() -> None:
 
         fig5 = visualize_fit_impl(path, title="", interactive=False)
         fig5.savefig(FIG_DIR / "stage5_fitting.png", dpi=DPI, bbox_inches="tight")
+
+        # Per-window detail: the window covering ~29148 MHz -- a resolved close
+        # blend beside a third line, with a masked clock spur. Select it by
+        # frequency so the example survives any change in window numbering;
+        # fall back to the highest-SNR multi-line window.
+        fit5 = load_fit_impl(path)["fit"]
+        detail_wid = None
+        for wf in fit5.window_fits:
+            if wf.window is None or not wf.fitted_peaks:
+                continue
+            lo, hi = wf.window.freq_range
+            if min(lo, hi) <= 29148.0 <= max(lo, hi):
+                detail_wid = wf.window_id
+                break
+        if detail_wid is None:
+            cand = [
+                (max((p.snr or 0.0) for p in wf.fitted_peaks), wf.window_id)
+                for wf in fit5.window_fits
+                if wf.window is not None and len(wf.fitted_peaks) >= 2
+            ]
+            detail_wid = max(cand)[1] if cand else fit5.window_fits[0].window_id
+        fig5b = render_fit_detail_impl(path, detail_wid, title="")
+        fig5b.savefig(FIG_DIR / "stage5_fit_detail.png", dpi=DPI, bbox_inches="tight")
 
 
 def main() -> None:
