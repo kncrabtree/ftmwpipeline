@@ -80,6 +80,7 @@ from ..io.stage_fit_settings_serialization import (
     save_stage_fit_settings_to_h5,
 )
 from ..preprocessing.noise_estimation import estimate_active_ft_noise
+from ..preprocessing.peak_detection import DEFAULT_MIN_SNR as DEFAULT_PROMOTION_MIN_SNR
 from .active_ft_support import _persisted_scatter_knobs, build_active_grid_with_noise
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
@@ -1329,9 +1330,14 @@ def fit_peaks_impl(
     peak_survival_enabled_v = _required_bool(
         resolved.peak_survival.enabled, "peak_survival.enabled"
     )
-    peak_survival_floor_v = _required_float(
-        resolved.peak_survival.snr_survival_floor, "peak_survival.snr_survival_floor"
+    # The survival floor tracks the Stage 3 promotion cutoff: by default it is
+    # that cutoff times ``snr_survival_factor`` (computed below, once the cutoff
+    # is loaded), so a stricter detection threshold raises the survival bar in
+    # step. An explicit ``snr_survival_floor`` overrides the factor.
+    peak_survival_factor_v = _required_float(
+        resolved.peak_survival.snr_survival_factor, "peak_survival.snr_survival_factor"
     )
+    peak_survival_floor_override = resolved.peak_survival.snr_survival_floor
     vif_collapse_threshold_v = _required_float(
         resolved.peak_survival.vif_collapse_threshold,
         "peak_survival.vif_collapse_threshold",
@@ -1357,6 +1363,19 @@ def fit_peaks_impl(
     peaks_loaded = load_peaks_impl(file_path)
     peaks = peaks_loaded["peaks"]
     peak_frequencies_mhz = [float(p.frequency) for p in peaks]
+
+    # Resolve the effective survival floor now the Stage 3 promotion cutoff is
+    # available: an explicit absolute floor wins; otherwise scale the cutoff by
+    # ``snr_survival_factor``. Stage 3 is a hard dependency, so the cutoff is
+    # present; fall back to the Stage 3 promotion default only for a legacy file
+    # that predates persisting it.
+    promotion_cutoff = peaks_loaded.get("promotion_min_snr")
+    if promotion_cutoff is None:
+        promotion_cutoff = DEFAULT_PROMOTION_MIN_SNR
+    if peak_survival_floor_override is not None:
+        peak_survival_floor_v = float(peak_survival_floor_override)
+    else:
+        peak_survival_floor_v = float(promotion_cutoff) * peak_survival_factor_v
 
     # --- Stage 2b calibration (optional) ------------------------------------
     # When present, ``tau_maj`` and ``sigma_tau`` drive the per-window tau

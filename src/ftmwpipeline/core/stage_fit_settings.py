@@ -617,9 +617,14 @@ class PeakSurvivalSubSettings:
     two automatic cuts run (``origin == "user"`` peaks are immune to both):
 
     1. **SNR-floor prune.** Drop every automatic-origin fitted peak whose
-       post-fit ``snr < snr_survival_floor``, then drop windows left empty;
-       partially-pruned windows are refitted so survivors stay honest. Finite
-       SNR only -- ``None``/NaN snr peaks are kept unconditionally.
+       post-fit ``snr`` falls below the survival floor, then drop windows left
+       empty; partially-pruned windows are refitted so survivors stay honest.
+       Finite SNR only -- ``None``/NaN snr peaks are kept unconditionally. The
+       floor **tracks the Stage 3 promotion cutoff**: by default it is that
+       cutoff scaled by ``snr_survival_factor`` (so a stricter detection
+       threshold raises the survival bar in step, and a survivor never sits
+       below the SNR that admitted it). Set ``snr_survival_floor`` to pin an
+       absolute floor instead, which overrides the factor.
     2. **Degenerate-pair merge.** Merge a close pair into one line when a
        member's amplitude variance-inflation factor
        ``VIF = (amplitude_error / amplitude) * snr`` reaches
@@ -641,14 +646,18 @@ class PeakSurvivalSubSettings:
     ``vif_attention_threshold`` is consumed by the Stage 6 attention surface
     (the ``overfit_vif`` reason for residual high-VIF pairs above the merge
     separation bound, i.e. >= 1.0 res). Defaults: ``enabled`` True,
-    ``snr_survival_floor`` 3.2 (Stage-3 detection threshold),
+    ``snr_survival_factor`` 1.1 (the floor tracks 1.1x the Stage 3 promotion
+    cutoff; ``snr_survival_floor`` unset = no absolute override),
     ``vif_collapse_threshold`` 4.0, ``collapse_max_separation_res`` 1.0,
     ``vif_attention_threshold`` 4.0. See
     ``dev-docs/planning/stage6-peak-survival.md``.
     """
 
     enabled: Optional[bool] = None
+    # Absolute survival floor; unset (None) = derive from the Stage 3 promotion
+    # cutoff via ``snr_survival_factor``. A set value overrides the factor.
     snr_survival_floor: Optional[float] = None
+    snr_survival_factor: Optional[float] = None
     vif_collapse_threshold: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
     merge_chi2_veto: Optional[float] = None
@@ -840,7 +849,11 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # user to re-split. ``collapse_max_separation_res`` 1.0 = merge up to
         # one full resolution element; wider pairs are resolved and kept.
         "enabled": True,
-        "snr_survival_floor": 3.2,
+        # The survival floor tracks the Stage 3 promotion cutoff: the effective
+        # floor is that cutoff times ``snr_survival_factor``. ``snr_survival_floor``
+        # has no hard default (None = derive from the factor); set it to pin an
+        # absolute floor that overrides the factor.
+        "snr_survival_factor": 1.1,
         "vif_collapse_threshold": 4.0,
         "collapse_max_separation_res": 1.0,
         # Catastrophic-merge veto: if collapsing a degenerate pair leaves the

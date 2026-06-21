@@ -693,7 +693,10 @@ class TestSettingsWiring:
         from ftmwpipeline.core.stage_fit_settings import resolve
 
         resolved = resolve()
-        assert resolved.peak_survival.snr_survival_floor == pytest.approx(3.2)
+        # The floor has no hard default: it tracks the Stage 3 promotion cutoff
+        # via the factor (default 1.1). The absolute override stays unset.
+        assert resolved.peak_survival.snr_survival_floor is None
+        assert resolved.peak_survival.snr_survival_factor == pytest.approx(1.1)
 
     def test_persisted_beats_default(self):
         """If a StageFitSettings with a different floor is passed as persisted,
@@ -777,4 +780,7 @@ class TestSettingsRoundTrip:
         loaded = load_stage_fit_settings_from_h5(str(p))
         assert loaded is not None
         assert loaded.peak_survival.enabled == True  # noqa: E712 (np.True_ != is True)
-        assert loaded.peak_survival.snr_survival_floor == pytest.approx(3.2)
+        # The floor is an unset absolute override (None); the factor carries the
+        # default that derives it from the Stage 3 promotion cutoff.
+        assert loaded.peak_survival.snr_survival_floor is None
+        assert loaded.peak_survival.snr_survival_factor == pytest.approx(1.1)
