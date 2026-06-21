@@ -183,7 +183,11 @@ def recommend_shape_impl(
     import h5py
 
     groups_written: list[str] = []
-    write_stage2b_recommended_shape(file_path, verdict.recommended_shape)
+    write_stage2b_recommended_shape(
+        file_path,
+        verdict.recommended_shape,
+        vote_rates=verdict.vote_rates,
+    )
     with h5py.File(file_path, "r") as h5f:
         for path in (
             "stage2b_tau_calibration",

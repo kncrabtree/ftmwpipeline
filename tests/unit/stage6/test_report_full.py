@@ -26,9 +26,9 @@ import pytest
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.report_html_impl import (
     _PANEL_ORDER,
+    _assemble_report_site,
     _covariance_block,
     _esc,
-    _assemble_report_site,
     _page,
     _panel_figure_name,
     _table,
@@ -37,7 +37,10 @@ from ftmwpipeline._internal.report_html_impl import (
     report_full_impl,
 )
 from ftmwpipeline._internal.stage4_impl import load_windows_impl, save_window_plan_impl
-from ftmwpipeline._internal.stage6_impl import get_candidate_ledger_impl, review_run_impl
+from ftmwpipeline._internal.stage6_impl import (
+    get_candidate_ledger_impl,
+    review_run_impl,
+)
 from ftmwpipeline.core.data_structures import FinalPeak
 from ftmwpipeline.pipeline import Pipeline
 
@@ -518,11 +521,11 @@ def test_index_final_table_catalog_column():
     assert "<th>Catalog</th>" not in _index_final_table(prod)
 
 
-def test_summary_distribution_specs_appends_pull():
+def test_summary_distribution_groups_appends_pull():
     from types import SimpleNamespace
 
     from ftmwpipeline._internal.catalog_xref import CatalogCrossRef
-    from ftmwpipeline._internal.report_html_impl import _summary_distribution_specs
+    from ftmwpipeline._internal.report_html_impl import _summary_distribution_groups
 
     model = SimpleNamespace(
         chi2r_values=[1.0],
@@ -532,13 +535,16 @@ def test_summary_distribution_specs_appends_pull():
         sigma_f_values=[1.0],
         snr_values_promoted=[10.0],
     )
-    assert len(_summary_distribution_specs(model)) == 6
+    # Without a catalog: SNR / fit-quality / σ_f budget groups, no pull group.
+    groups = _summary_distribution_groups(model)
+    assert [g[1] for g in groups] == ["snr", "fitquality", "budget"]
+    # With a catalog carrying pulls, the pull group is appended.
     xref = CatalogCrossRef(
         catalog_path="c", n_sigma=3.0, n_catalog=2, matches=[], pull_values=[0.5, -0.3]
     )
-    specs = _summary_distribution_specs(model, xref)
-    assert len(specs) == 7
-    assert specs[-1][2] == [0.5, -0.3]
+    groups = _summary_distribution_groups(model, xref)
+    assert groups[-1][1] == "pull"
+    assert groups[-1][2][0][2] == [0.5, -0.3]
 
 
 def test_name_helpers_zero_pad():
@@ -664,58 +670,82 @@ def full_report_single_file(stage5_small_file, tmp_path_factory):
         rlogger.setLevel(old_level)
 
     after = hashlib.md5(src.read_bytes()).hexdigest()
-    win_msgs = [
-        r.getMessage() for r in records if r.getMessage().startswith("window ")
-    ]
+    win_msgs = [r.getMessage() for r in records if r.getMessage().startswith("window ")]
     p = Path(path)
     return _SharedFullReport(p, out, p.read_text(), before == after, win_msgs)
 
 
-def _assert_wellformed(path: Path):
-    for f in path.rglob("*.html"):
-        html.parser.HTMLParser().feed(f.read_text())
+def _collapse(model, out_root, *, mode="full") -> str:
+    """Fold an assembled report model into its single self-contained document."""
+    from ftmwpipeline._internal.report_html_impl import _collapse_site_to_single_file
+
+    return _collapse_site_to_single_file(
+        Path(out_root),
+        mode=mode,
+        stem=model.stem,
+        figure_store=model.figure_store,
+        thumb_store=model.thumb_store,
+        page_store=model.page_store,
+        css=model.css,
+    )
+
+
+def _feed(*html_strings: str) -> None:
+    """Parse each HTML string, asserting it is well-formed enough to tokenize."""
+    for doc in html_strings:
+        html.parser.HTMLParser().feed(doc)
+
+
+def _window_pages(model) -> List[str]:
+    """The per-window page HTML strings held in the assembled model."""
+    return [v for k, v in model.page_store.items() if k.startswith("windows/")]
 
 
 @pytest.mark.integration
 def test_full_site_structure(stage5_small_file, tmp_path):
-    # The assembled working site (pre-collapse) carries the structural invariants;
-    # report_full_impl folds this into one self-contained file.
+    # The assembled model (pre-collapse) carries the structural invariants;
+    # report_full_impl folds it into one self-contained file. Pages and per-window
+    # figures live in the in-memory stores; only the O(1) methods-page figures
+    # (overview + histograms) land on disk under figures/.
     out = tmp_path / "site"
-    _assemble_report_site(str(stage5_small_file), out_root=str(out))
+    model = _assemble_report_site(str(stage5_small_file), out_root=str(out))
 
-    assert (out / "index.html").exists()
-    assert (out / "assets" / "style.css").exists()
-    pages = list((out / "windows").glob("*.html"))
-    figures = list((out / "figures").glob("*.png"))
-    assert pages and figures
+    assert "index.html" in model.page_store
+    assert "methods.html" in model.page_store  # methods page built + linked
+    assert model.css
+    pages = _window_pages(model)
+    fig_names = list(model.figure_store)
+    disk_figs = [f.name for f in (out / "figures").glob("*.png")]
+    assert pages and fig_names
     # Per window: the four zoomed panels (re/im/mag/hist) plus an optional
-    # correlation heatmap ("_corr.png"). The full-spectrum context is the single
-    # shared overview image -- there is NO per-window context PNG. The index has
-    # one overview ("<stem>_overview.png") and one figure per distribution group
-    # ("<stem>_hist_<slug>.png").
+    # correlation heatmap ("_corr.png") -- all in the figure store. The
+    # full-spectrum context is the single shared overview image (on disk), NOT a
+    # per-window context PNG. The methods page has one overview
+    # ("<stem>_overview.png") and one figure per distribution group
+    # ("<stem>_hist_<slug>.png"), both on disk.
     zoom_suffixes = ("_re.png", "_im.png", "_mag.png", "_hist.png")
-    corr_pngs = [f for f in figures if f.name.endswith("_corr.png")]
-    panel_pngs = [f for f in figures if f.name.endswith(zoom_suffixes)]
-    ctx_pngs = [f for f in figures if f.name.endswith("_ctx.png")]
-    overview_pngs = [
-        f
-        for f in figures
-        if f.name.endswith("_overview.png") and "_window_" not in f.name
-    ]
-    hist_pngs = [f for f in figures if "_hist_" in f.name]
+    corr_pngs = [n for n in fig_names if n.endswith("_corr.png")]
+    panel_pngs = [n for n in fig_names if n.endswith(zoom_suffixes)]
     assert len(panel_pngs) == len(pages) * len(zoom_suffixes)
-    assert len(ctx_pngs) == 0  # the shared overview is the context; no per-window PNG
+    # The shared overview is the context; no per-window context PNG anywhere.
+    assert not any(n.endswith("_ctx.png") for n in fig_names + disk_figs)
     assert len(corr_pngs) <= len(pages)
+    # The per-window panels stay off disk; only methods-page figures land there.
+    assert not [f for f in disk_figs if "_window_" in f]
+    overview_pngs = [
+        f for f in disk_figs if f.endswith("_overview.png") and "_window_" not in f
+    ]
+    hist_pngs = [f for f in disk_figs if "_hist_" in f]
     # The single shared full-spectrum overview image.
     assert len(overview_pngs) == 1
     # Distribution histograms (SNR / fit-quality / σ_f budget; pull only with a
     # catalog), one figure per group that has data.
     assert 1 <= len(hist_pngs) <= 4
-    # The Level-2 methods page is built and linked from the index summary.
-    assert (out / "methods.html").exists()
-    _assert_wellformed(out)
 
-    idx = (out / "index.html").read_text()
+    idx = model.page_store["index.html"]
+    methods = model.page_store["methods.html"]
+    page = pages[0]
+    _feed(idx, methods, page, _collapse(model, out))
     assert "FTMW pipeline report" in idx
     assert "Final line list" in idx
     assert 'href="windows/window_' in idx  # links to the window pages
@@ -733,9 +763,8 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     # Each window rect links to its page from inside the SVG.
     assert idx.count('<a href="windows/window_') >= 1
     # The overview image is bound once as the interactive-overview background.
-    css = (out / "assets" / "style.css").read_text()
-    assert "_overview.png" in css and ".spectrum-ctx { background-image:" in css
-    methods = (out / "methods.html").read_text()
+    assert "_overview.png" in model.css
+    assert ".spectrum-ctx { background-image:" in model.css
     # Histograms are interleaved beside their tables (not one trailing figure).
     assert 'class="hist"' in methods
     assert "_hist_" in methods
@@ -743,7 +772,6 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "MathJax" in methods
     assert 'class="equation"' in methods
 
-    page = pages[0].read_text()
     # The spectrum context is the shared interactive overview with this window
     # highlighted -- no per-window context image.
     assert "<h2>Spectrum context</h2>" in page
@@ -795,68 +823,52 @@ def test_ledger_bundle_equals_self_loading(stage5_small_file):
 
 @pytest.mark.integration
 @pytest.mark.slow
-def test_report_production_path_matches_reference(
+def test_report_serial_and_parallel_render_match(
     stage5_small_file, tmp_path, monkeypatch
 ):
-    # The production report path = parallel figure pool (1c) + in-memory no-disk
-    # assembly (the report-efficiency pass). It must produce a byte-identical
-    # single-file document to the simple reference path = serial render + on-disk
-    # multi-file site + disk collapse. One comparison guards BOTH genuine
-    # divergence risks at once -- the fork-pool plumbing (worker bytes round-trip)
-    # and the in-memory store resolvers (figures/thumbnails/pages embedded from
-    # memory vs re-read from disk) -- which is the value here, not re-confirming
-    # that matplotlib is deterministic.
+    # The production report keeps every per-window figure + page in memory and
+    # renders the figures across a forking process pool. A serial render and a
+    # parallel render must fold into a byte-identical single-file document --
+    # guarding the fork-pool plumbing (worker bytes round-trip) on top of plain
+    # matplotlib determinism.
     import ftmwpipeline._internal.report_html_impl as rh
-    from ftmwpipeline._internal.report_html_impl import _collapse_site_to_single_file
 
-    # Reference: serial render, multi-file disk site, collapse re-reading disk.
     monkeypatch.setattr(rh, "_FIGURE_RENDER_WORKERS", 1)
-    ref_root = tmp_path / "ref"
-    m_ref = _assemble_report_site(str(stage5_small_file), out_root=str(ref_root))
-    html_ref = _collapse_site_to_single_file(ref_root, mode="full", stem=m_ref.stem)
+    serial_root = tmp_path / "serial"
+    m_serial = _assemble_report_site(str(stage5_small_file), out_root=str(serial_root))
+    html_serial = _collapse(m_serial, serial_root)
 
-    # Production: parallel render, in-memory model, collapse from the stores.
     monkeypatch.setattr(rh, "_FIGURE_RENDER_WORKERS", 4)
-    prod_root = tmp_path / "prod"
-    m_prod = _assemble_report_site(
-        str(stage5_small_file), out_root=str(prod_root), write_files=False
-    )
-    html_prod = _collapse_site_to_single_file(
-        prod_root,
-        mode="full",
-        stem=m_prod.stem,
-        figure_store=m_prod.figure_store,
-        thumb_store=m_prod.thumb_store,
-        page_store=m_prod.page_store,
-        css=m_prod.css,
-    )
+    par_root = tmp_path / "parallel"
+    m_par = _assemble_report_site(str(stage5_small_file), out_root=str(par_root))
+    html_par = _collapse(m_par, par_root)
 
-    assert html_ref == html_prod
-    # The in-memory path keeps the O(N) per-window figures + pages in the model,
-    # off disk (only the O(1) methods/overview figures land under figures/).
-    assert m_prod.figure_store and m_prod.page_store and m_prod.thumb_store
-    assert not (prod_root / "windows").exists()
-    # Per-window panels are ``<stem>_window_NNN_<panel>.png``; the methods-page
-    # ``<stem>_methods_stage4_windows.png`` (which stays on disk) must not match.
-    assert list((prod_root / "figures").glob("*_window_*.png")) == []
+    assert html_serial == html_par
+    # The O(N) per-window figures + pages stay in the model, off disk (only the
+    # O(1) methods/overview figures land under figures/).
+    assert m_par.figure_store and m_par.page_store and m_par.thumb_store
+    assert not (par_root / "windows").exists() and not (par_root / "assets").exists()
+    # Per-window panels (``<stem>_window_NNN_<panel>.png``) are never written;
+    # only methods-page figures (e.g. ``<stem>_methods_stage4_windows.png``) land.
+    assert list((par_root / "figures").glob("*_window_*.png")) == []
 
 
 @pytest.mark.integration
 @pytest.mark.slow
 def test_full_windows_filter_attention_subset(stage5_small_file, tmp_path):
-    all_out = tmp_path / "all"
-    att_out = tmp_path / "att"
-    _assemble_report_site(str(stage5_small_file), out_root=str(all_out), windows="all")
-    _assemble_report_site(
-        str(stage5_small_file), out_root=str(att_out), windows="attention"
+    m_all = _assemble_report_site(
+        str(stage5_small_file), out_root=str(tmp_path / "all"), windows="all"
+    )
+    m_att = _assemble_report_site(
+        str(stage5_small_file), out_root=str(tmp_path / "att"), windows="attention"
     )
 
-    n_all = len(list((all_out / "windows").glob("*.html")))
-    n_att = len(list((att_out / "windows").glob("*.html")))
+    n_all = len(_window_pages(m_all))
+    n_att = len(_window_pages(m_att))
     # The attention filter never produces more pages than 'all'.
     assert 0 <= n_att <= n_all
     # The index still lists every window in both modes.
-    assert "<code>attention</code> filter" in (att_out / "index.html").read_text()
+    assert "<code>attention</code> filter" in m_att.page_store["index.html"]
 
 
 @pytest.mark.integration
@@ -874,20 +886,22 @@ def test_full_with_catalog(stage5_small_file, tmp_path):
         )
     )
     out = tmp_path / "site"
-    _assemble_report_site(str(stage5_small_file), out_root=str(out), catalog=str(cat))
+    model = _assemble_report_site(
+        str(stage5_small_file), out_root=str(out), catalog=str(cat)
+    )
 
-    idx = (out / "index.html").read_text()
+    idx = model.page_store["index.html"]
     assert "<th>Catalog</th>" in idx
     assert "cat-0" in idx
     assert "proximity only" in idx
-    methods = (out / "methods.html").read_text()
+    methods = model.page_store["methods.html"]
     assert "Catalog cross-reference" in methods
-    # The catalog pull histogram is rendered as its own group figure.
+    # The catalog pull histogram is rendered as its own group figure (on disk).
     figures = [f.name for f in (out / "figures").glob("*.png")]
     assert any(f.endswith("_hist_pull.png") for f in figures)
-    pages = list((out / "windows").glob("*.html"))
-    assert any("<th>Catalog</th>" in p.read_text() for p in pages)
-    _assert_wellformed(out)
+    pages = _window_pages(model)
+    assert any("<th>Catalog</th>" in p for p in pages)
+    _feed(idx, methods, *pages, _collapse(model, out))
 
 
 @pytest.mark.integration
@@ -971,7 +985,7 @@ def test_single_file_carries_curation_surface(full_report_single_file):
 
     # The boot script + curation script + topnav chrome ship in the single file.
     assert "window.__stem=" in doc
-    assert "curation-enabled" in doc  # the script adds it and the CSS gates on it
+    assert "curation-enabled" in doc  # the CSS gates on it; the toggle adds it
     assert 'class="cur-toggle"' in doc and 'class="cur-badge"' in doc
     # Per-row controls + raw-frequency data attributes on fitted-line rows.
     assert 'data-act="remove"' in doc and 'data-act="split"' in doc

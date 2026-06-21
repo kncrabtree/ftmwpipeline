@@ -63,6 +63,7 @@ _AUDIT_ATTRS = ("creation_time", "preset_name")
 # same value to whichever groups exist and the reader takes the first
 # concrete value it finds.
 _STAGE2B_RECOMMENDED_SHAPE_ATTR = "recommended_shape"
+_STAGE2B_VOTE_RATES_ATTR = "shape_vote_rates"
 _STAGE2B_GROUP_PATHS = (
     "stage2b_tau_calibration",
     "stage2b_tau_G_calibration",
@@ -163,6 +164,7 @@ def stage_fit_settings_present(file_path: str) -> bool:
 def write_stage2b_recommended_shape(
     file_path: str,
     shape: Optional[str] = None,
+    vote_rates: Optional[Dict[str, float]] = None,
 ) -> None:
     """Stamp the ``recommended_shape`` attr on every persisted Stage 2b group.
 
@@ -174,16 +176,29 @@ def write_stage2b_recommended_shape(
     (:func:`~ftmwpipeline.fitting.tau_calibration.compute_shape_recommendation`)
     and are passed through this same attr.
 
+    ``vote_rates`` carries the discriminator's per-model SNR-weighted vote
+    fractions (keys ``"exp"``/``"gauss"``/``"voigt"``); they are stored as a
+    JSON ``shape_vote_rates`` attr beside the verdict so the report can render
+    the vote breakdown without recomputing it. Passing ``vote_rates=None``
+    clears any stale breakdown, keeping it consistent with a reset verdict.
+
     The Lorentzian-twin (``stage2b_tau_calibration``) and Gaussian-twin
     (``stage2b_tau_G_calibration``) groups can each carry the attr; the
     recommendation is shape-agnostic so the same value is mirrored to
     whichever groups exist. No-op if neither group is present.
     """
     encoded = _NONE_SENTINEL if shape is None else str(shape)
+    encoded_votes = None if vote_rates is None else json.dumps(dict(vote_rates))
     with h5py.File(file_path, "a") as h5f:
         for path in _STAGE2B_GROUP_PATHS:
-            if path in h5f:
-                h5f[path].attrs[_STAGE2B_RECOMMENDED_SHAPE_ATTR] = encoded
+            if path not in h5f:
+                continue
+            attrs = h5f[path].attrs
+            attrs[_STAGE2B_RECOMMENDED_SHAPE_ATTR] = encoded
+            if encoded_votes is None:
+                attrs.pop(_STAGE2B_VOTE_RATES_ATTR, None)
+            else:
+                attrs[_STAGE2B_VOTE_RATES_ATTR] = encoded_votes
 
 
 def read_stage2b_recommended_shape(file_path: str) -> Optional[str]:
@@ -211,6 +226,30 @@ def read_stage2b_recommended_shape(file_path: str) -> Optional[str]:
     except (OSError, KeyError):
         return None
     return None
+
+
+def read_stage2b_vote_rates(file_path: str) -> Dict[str, float]:
+    """Read the persisted Stage 2b shape-vote breakdown, or ``{}`` if absent.
+
+    Returns the SNR-weighted per-model vote fractions
+    (keys ``"exp"``/``"gauss"``/``"voigt"``) stamped beside the verdict, or an
+    empty mapping when no Stage 2b group carries the attr. The Lorentzian-twin
+    group is checked first, then the Gaussian twin.
+    """
+    try:
+        with h5py.File(file_path, "r") as h5f:
+            for path in _STAGE2B_GROUP_PATHS:
+                if path not in h5f:
+                    continue
+                attr = h5f[path].attrs.get(_STAGE2B_VOTE_RATES_ATTR)
+                if attr is None:
+                    continue
+                decoded = _decode_attr(attr)
+                rates = json.loads(decoded)
+                return {str(k): float(v) for k, v in rates.items()}
+    except (OSError, KeyError, ValueError):
+        return {}
+    return {}
 
 
 # The recommended clock declaration is stored as a JSON attr on the Stage 0
@@ -368,6 +407,7 @@ __all__ = [
     "stage_fit_settings_present",
     "write_stage2b_recommended_shape",
     "read_stage2b_recommended_shape",
+    "read_stage2b_vote_rates",
     "write_recommended_clock_sources",
     "read_recommended_clock_sources",
     "write_recommended_chirp_window",

@@ -1,20 +1,18 @@
-"""Level 3 HTML report (``report run``): a local HTML view over the persisted record.
+"""HTML report (``report run``): a local HTML view over the persisted record.
 
-Reports render the persisted Stage 6 record; they never recompute the fit. L3 is
-an **assembler** over existing artifacts and renderers, not new analysis: it
-reuses the L2 summary model for the index, the ``fit show`` figure renderer for
-the per-window plots, the candidate ledger, and the persisted Stage 6 review
-status / decision log. The output is a self-contained directory:
+Reports render the persisted Stage 6 record; they never recompute the fit. The
+report is an **assembler** over existing artifacts and renderers, not new
+analysis: it reuses the summary model for the index, the ``fit show`` figure
+renderer for the per-window plots, the candidate ledger, and the persisted
+Stage 6 review status / decision log.
 
-    <output_dir>/
-        index.html                  -- summary + final table + window links
-        assets/style.css            -- styling (hand-tuned later)
-        figures/<stem>_window_NNN.png
-        windows/window_NNN.html     -- one page per window
-
-The HTML is dependency-light (hand-rolled markup + matplotlib PNGs); a separate
-stylesheet (``assets/style.css``) carries the presentation so the structure and
-the styling evolve independently. See ``dev-docs/planning/stage6-reports.md`` §C.
+The output is one self-contained ``.html`` file. It is assembled internally as a
+set of linked pages (an index, a methods-and-results page, and a page per fit
+window) with their figures, then folded into a single document with the
+stylesheet inlined and every figure base64-embedded
+(:func:`_collapse_site_to_single_file`); cross-page links become in-document
+anchors. The markup is dependency-light (hand-rolled HTML + matplotlib PNGs),
+with the presentation isolated in one stylesheet (``_STYLESHEET``).
 """
 
 from __future__ import annotations
@@ -147,10 +145,10 @@ _MATHJAX_HEAD = (
 )
 
 
-# A deliberately minimal stylesheet -- enough that the structure is legible;
-# the visual polish is a follow-on pass that only edits this file.
-_STYLESHEET = """/* ftmwpipeline report -- Level 3 HTML (report run).
-   Minimal baseline styling; refine here without touching the HTML. */
+# The single stylesheet -- the presentation lives here, isolated from the HTML
+# structure so the two can change independently.
+_STYLESHEET = """/* ftmwpipeline report styling (report run).
+   All presentation lives here; the HTML structure carries none. */
 body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
        margin: 0; color: #1a1a1a; background: #f6f7f9; }
 main.report { max-width: 1500px; margin: 0 auto; padding: 1.5rem 2rem 4rem; }
@@ -312,13 +310,13 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
   main.report { padding: 1rem 1rem 3rem; }
   table { font-size: 0.82rem; }
 }
-/* In-report curation (phase 1). Every curation affordance is hidden until the
-   boot script adds `curation-enabled` to <html>, so the no-JS document and the
-   read-only toggle show the same clean report. A single class governs all of it:
-   the per-row Curate column (always the trailing cell of the fitted-lines /
-   ledger tables), the `.cur-only` per-window control strips, and the docked
-   cart. The topnav toggle/badge stay visible (like the compact toggle) so the
-   reader can flip back to editing. */
+/* In-report curation. Every curation affordance is hidden until the `Curate`
+   toggle adds `curation-enabled` to <html>, so the no-JS document and the
+   default read-only view show the same clean report. A single class governs all
+   of it: the per-row Curate column (always the trailing cell of the
+   fitted-lines / ledger tables), the `.cur-only` per-window control strips, and
+   the docked cart. The topnav toggle/badge stay visible (like the compact
+   toggle) so the reader can flip into editing. */
 html:not(.curation-enabled) .cur-only { display: none; }
 html:not(.curation-enabled) #cur-cart { display: none; }
 html:not(.curation-enabled) table.peak-list td:last-child,
@@ -626,27 +624,6 @@ def _md_to_html(md: str) -> str:
     return "\n".join(out)
 
 
-def _summary_distribution_specs(
-    model: Any, xref: Optional[CatalogCrossRef] = None
-) -> List[Tuple[str, str, List[float]]]:
-    """The (title, xlabel, values) histogram specs drawn from the L2 model.
-
-    When a catalog cross-reference is supplied, the σ_f pull distribution is
-    appended (the calibration surface: ~unit-normal when σ_f is honest).
-    """
-    specs = [
-        ("Reduced χ² per window", "χ²_r", model.chi2r_values),
-        ("Shape error ε per window", "ε (% / bin)", model.eps_values),
-        ("Precision σ_stat", "σ_stat (kHz)", model.sigma_stat_values),
-        ("Timebase σ_ε", "σ_ε (kHz)", model.sigma_eps_values),
-        ("Budget σ_f", "σ_f (kHz)", model.sigma_f_values),
-        ("Promoted-peak SNR", "SNR", model.snr_values_promoted),
-    ]
-    if xref is not None and xref.pull_values:
-        specs.append(("Catalog pull (f_fit−f_cat)/σ_f", "pull", xref.pull_values))
-    return specs
-
-
 def _summary_distribution_groups(
     model: Any, xref: Optional[CatalogCrossRef] = None
 ) -> List[Tuple[str, str, List[Tuple[str, str, List[float]]]]]:
@@ -881,9 +858,7 @@ def _methods_stage_figures(
                     "stage2_noise",
                     "Stage 2 noise estimate -- the per-bin σₓ across the spectrum "
                     "and the bins classed as noise.",
-                    lambda: visualize_noise_impl(
-                        path, title="", interactive=False
-                    ),
+                    lambda: visualize_noise_impl(path, title="", interactive=False),
                 )
             ],
         ),
@@ -909,14 +884,14 @@ def _methods_stage_figures(
             [
                 (
                     "stage3_peaks",
-                    "Stage 3 promoted detections over the spectrum, colored by SNR "
-                    "class and detection pass, with the SNR distribution.",
+                    "Stage 3 detections over the spectrum, colored by SNR class "
+                    "and detection pass (promoted peaks filled, below-cutoff "
+                    "candidates open), with the SNR distribution.",
                     lambda: visualize_peaks_impl(
                         path,
                         title="",
                         interactive=False,
                         show_snr_histogram=True,
-                        promoted_only=True,
                     ),
                 )
             ],
@@ -926,7 +901,7 @@ def _methods_stage_figures(
             [
                 (
                     "stage4_windows",
-                    "Stage 4 window plan -- spans shaded by difficulty, free peaks and "
+                    "Stage 4 window plan -- the fit-window spans, free peaks and "
                     "fixed contributors, and the edge-coherence statistic.",
                     lambda: visualize_windows_impl(
                         path,
@@ -1370,18 +1345,18 @@ _COMPACT_JS = """<script>
 </script>"""
 
 
-# In-report curation (phase 1). The boot script adds ``curation-enabled`` to
-# <html> (so the no-JS and read-only views are the same clean document), builds a
-# docked cart, and wires the inline per-row / per-window controls by event
-# delegation. Every control only *emits* an edit into the cart; the cart exports
-# the ``action,window,freqs,params`` curation CSV that ``review apply`` consumes.
+# In-report curation. The report opens read-only -- the same clean document the
+# no-JS view shows -- and the ``Curate`` toggle adds ``curation-enabled`` to
+# <html> to reveal the controls. The boot script builds a docked cart and wires
+# the inline per-row / per-window controls by event delegation. Every control
+# only *emits* an edit into the cart; the cart exports the
+# ``action,window,freqs,params`` curation CSV that ``review apply`` consumes.
 # The frequency a control emits is the row's raw Stage-5 model frequency
 # (``data-freq``), which is what the edit verbs match on -- not the calibrated
 # display value. Vanilla JS only, in the spirit of the compact toggle above.
 _CURATION_JS = r"""<script>
 (function () {
   var root = document.documentElement;
-  root.classList.add('curation-enabled');
   var STEM = window.__stem || 'report';
   var ops = [];  // {action, window, freqs, params, label}
 
@@ -2369,7 +2344,9 @@ _WindowFigures = Tuple[
     Optional[bytes],  # correlation-heatmap PNG bytes
     Optional[bytes],  # hover thumbnail PNG bytes (mag panel, downscaled)
 ]
-_FIGURE_RENDER_WORKERS: Optional[int] = None  # None => auto (cpu_count - 2); 1 => serial
+_FIGURE_RENDER_WORKERS: Optional[int] = (
+    None  # None => auto (cpu_count - 2); 1 => serial
+)
 _WORKER_RENDER_CTX: Optional[Dict[str, Any]] = None
 
 
@@ -2711,21 +2688,26 @@ def _downscale_thumb_bytes(png_bytes: bytes) -> bytes:
 
 
 def _collapse_site_to_single_file(
-    site_dir: Optional[Path],
+    site_dir: Path,
     *,
     mode: str,
     stem: str,
-    figure_store: Optional[Dict[str, bytes]] = None,
-    thumb_store: Optional[Dict[str, bytes]] = None,
-    page_store: Optional[Dict[str, str]] = None,
-    css: Optional[str] = None,
+    figure_store: Dict[str, bytes],
+    thumb_store: Dict[str, bytes],
+    page_store: Dict[str, str],
+    css: str,
 ) -> str:
-    """Collapse a built report site into one self-contained HTML document.
+    """Collapse the assembled report model into one self-contained HTML document.
 
     Inlines the stylesheet, base64-embeds every ``<img>`` figure, and rewrites
     cross-page links to in-document anchors. ``mode="summary"`` keeps the index
-    and methods pages (the portable Level-2 replacement); ``mode="full"`` also
-    folds in every per-window page, reachable via ``#window-<id>``.
+    and methods pages (the portable methods-and-results replacement);
+    ``mode="full"`` also folds in every per-window page, reachable via
+    ``#window-<id>``.
+
+    The pages, per-window figures, thumbnails, and stylesheet resolve from the
+    in-memory stores; only the O(1) methods-page figures live on disk under
+    ``site_dir/figures`` (``read_png`` falls back there for them).
 
     The hover-zoom *thumbnails* (``data-thumb``) are keyed to a single
     deduplicated, downscaled base64 map (``window.__thumbs``) rather than inlined
@@ -2741,18 +2723,14 @@ def _collapse_site_to_single_file(
     main_open = '<main class="report">'
     thumb_keys: set[str] = set()
 
-    # Figures, thumbnails, pages and the stylesheet resolve from the in-memory
-    # stores when given (the single-file production path never touches disk),
-    # else from the built site on disk (the multi-file path / tests). Per-window
-    # figures live in ``figure_store``; the few methods-page figures stay on disk
-    # even in the in-memory path, so the resolvers check the store then the dir.
+    # Per-window figures resolve from ``figure_store``; the few methods-page
+    # figures stay on disk, so the resolver checks the store then the figure dir.
     def read_png(name: str) -> Optional[bytes]:
-        if figure_store is not None and name in figure_store:
+        if name in figure_store:
             return figure_store[name]
-        if site_dir is not None:
-            fp = site_dir / "figures" / name
-            if fp.exists():
-                return fp.read_bytes()
+        fp = site_dir / "figures" / name
+        if fp.exists():
+            return fp.read_bytes()
         return None
 
     def data_uri_name(name: str) -> Optional[str]:
@@ -2768,16 +2746,12 @@ def _collapse_site_to_single_file(
         uri = data_uri_name(m.group(1))
         return f"url({uri})" if uri is not None else m.group(0)
 
-    if css is None:
-        # Without an in-memory stylesheet the built site on disk is the source.
-        assert site_dir is not None
-        css = (site_dir / "assets" / "style.css").read_text()
     css = re.sub(r"url\((?:\.\./)?figures/([^)]+\.png)\)", _embed_css_url, css)
 
     def thumb_data_uri(name: str) -> str:
         # Prefer a worker-precomputed (already downscaled) thumbnail; otherwise
         # downscale the full panel here. Both yield identical bytes.
-        tb = thumb_store.get(name) if thumb_store is not None else None
+        tb = thumb_store.get(name)
         if tb is None:
             png = read_png(name)
             if png is None:
@@ -2821,40 +2795,23 @@ def _collapse_site_to_single_file(
 
         return img_re.sub(embed, frag)
 
-    def read_page(name: str) -> Optional[str]:
-        if page_store is not None:
-            return page_store.get(name)
-        fp = site_dir / name if site_dir is not None else None
-        return fp.read_text() if fp is not None and fp.exists() else None
-
-    sections = [f'<section id="page-top">{prep(read_page("index.html") or "")}</section>']
-    methods_text = read_page("methods.html")
+    sections = [
+        f'<section id="page-top">{prep(page_store.get("index.html") or "")}</section>'
+    ]
+    methods_text = page_store.get("methods.html")
     if methods_text is not None:
         sections.append(f'<section id="methods">{prep(methods_text)}</section>')
     window_ids: List[int] = []
     if mode == "full":
-        if page_store is not None:
-            win_pages = sorted(
-                k for k in page_store if re.fullmatch(r"windows/window_\d+\.html", k)
-            )
-        elif site_dir is not None:
-            win_pages = [
-                f"windows/{wp.name}"
-                for wp in sorted((site_dir / "windows").glob("window_*.html"))
-            ]
-        else:
-            win_pages = []
+        win_pages = sorted(
+            k for k in page_store if re.fullmatch(r"windows/window_\d+\.html", k)
+        )
         for key in win_pages:
             wid = int(re.search(r"window_0*(\d+)\.html", key).group(1))  # type: ignore[union-attr]
             window_ids.append(wid)
-            if page_store is not None:
-                text = page_store[key]
-            else:
-                assert site_dir is not None
-                text = (site_dir / key).read_text()
             sections.append(
                 f'<section id="window-{wid}" class="embedded-window">'
-                f"{prep(text)}</section>"
+                f"{prep(page_store[key])}</section>"
             )
 
     # One deduplicated, downscaled base64 thumbnail per referenced window, looked
@@ -2888,10 +2845,10 @@ def _collapse_site_to_single_file(
     # The compact toggle shrinks every figure to a thumbnail to speed scrolling;
     # the report opens in full view, and the button is inert without scripting.
     nav_links.append('<button class="compact-toggle" type="button">Compact</button>')
-    # The curation toggle flips between the editable (default) and read-only
+    # The curation toggle flips between the read-only (default) and editable
     # views; the badge tracks the cart size. Both are inert without scripting,
-    # and the controls they reveal are CSS-hidden until the boot script runs.
-    nav_links.append('<button class="cur-toggle" type="button">Read-only</button>')
+    # and the controls they reveal are CSS-hidden until the toggle is engaged.
+    nav_links.append('<button class="cur-toggle" type="button">Curate</button>')
     nav_links.append('<span class="cur-badge">cart (0)</span>')
     topnav = (
         '<nav class="topnav"><div class="topnav-inner">'
@@ -2959,22 +2916,17 @@ def _assemble_report_site(
     dpi: int = 110,
     catalog: Optional[Union[Path, str]] = None,
     catalog_n_sigma: float = 3.0,
-    write_files: bool = True,
 ) -> _ReportModel:
     """Assemble the report into an in-memory :class:`_ReportModel`.
 
-    Builds the linked-site form (``index.html`` + ``methods.html`` + a page per
-    window + ``assets/`` + ``figures/``) that
-    :func:`_collapse_site_to_single_file` folds into the one self-contained file
-    :func:`report_full_impl` ships. The per-window figures (the O(N) bulk), their
-    hover thumbnails, and the page HTML are returned in the model; the few
-    methods-page figures + the shared overview are written under ``out_root``
-    (O(1)). When ``write_files`` is True (default) the per-window figures + pages
-    are *also* written to ``out_root`` so the multi-file site exists on disk (the
-    direct-inspection / test path); the single-file production path passes
-    ``write_files=False`` and collapses straight from the model, never writing the
-    O(N) per-window artifacts to disk. See :func:`report_full_impl` for the
-    parameter semantics (``out_root`` here is the site directory).
+    Builds the index page, the methods page, and one page per window, each as an
+    HTML string in the returned model alongside the per-window figures (the O(N)
+    bulk) and their hover thumbnails;
+    :func:`_collapse_site_to_single_file` folds them into the one self-contained
+    file :func:`report_full_impl` ships. Only the few O(1) methods-page figures
+    (the shared spectrum overview, the distribution histograms, the per-stage
+    diagnostics) land on disk under ``out_root/figures``; the collapse reads them
+    back from there. See :func:`report_full_impl` for the parameter semantics.
 
     Raises ``ValueError`` if *windows* is unknown, no final-products table is
     present, or *catalog* is given but unreadable / empty.
@@ -3081,13 +3033,10 @@ def _assemble_report_site(
             merges_by_window.setdefault(int(wid_rec), []).append(rec)
 
     out_root = Path(out_root)
-    # The methods-page figures + the shared overview (both O(1)) always go to
-    # disk under out_root; the assets/windows dirs are only needed when the
-    # per-window artifacts are also materialized (write_files).
+    # Only the O(1) methods-page figures + the shared overview land on disk under
+    # out_root/figures; the collapse reads them back from there. The per-window
+    # pages and figures stay in the in-memory model.
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
-    if write_files:
-        (out_root / "assets").mkdir(parents=True, exist_ok=True)
-        (out_root / "windows").mkdir(parents=True, exist_ok=True)
 
     site = _ReportModel(stem=stem)
 
@@ -3107,24 +3056,20 @@ def _assemble_report_site(
         except (ValueError, KeyError):
             overview_name = None
     # The stylesheet, plus the per-build rule binding that overview as the
-    # interactive-overview background. Kept in the model (the single-file path
-    # embeds it from there) and written to assets/ for the multi-file site.
+    # interactive-overview background. The single-file path embeds it from the
+    # model.
     site.css = _STYLESHEET + _spectrum_ctx_css(overview_name)
-    if write_files:
-        (out_root / "assets" / "style.css").write_text(site.css)
 
     # --- per-window figures (parallel) ----------------------------------
     # Figure rendering is the dominant report cost and the windows are
     # independent, so render them across a forking process pool; the returned
-    # PNG + thumbnail bytes go into the model (the single-file path embeds them
-    # straight from memory) and are written to the figure dir only for the
-    # multi-file site (write_files).
+    # PNG + thumbnail bytes go into the model and the single-file path embeds
+    # them straight from memory.
     n_pages = len(page_ids)
     logger.info("rendering %d window figure sets", n_pages)
     rendered = _render_all_window_figures(
         path=path, bundle=bundle, dpi=dpi, stem=stem, page_ids=page_ids
     )
-    figures_dir = out_root / "figures"
     panel_files_by_wid: Dict[int, Dict[str, str]] = {}
     mag_geom_by_wid: Dict[int, Optional[Dict[str, float]]] = {}
     cov_heatmap_by_wid: Dict[int, Optional[str]] = {}
@@ -3134,8 +3079,6 @@ def _assemble_report_site(
         for panel, data in panel_bytes.items():
             fname = _panel_figure_name(stem, wid, panel)
             site.figure_store[fname] = data
-            if write_files:
-                (figures_dir / fname).write_bytes(data)
             panel_files[panel] = fname
         # The hover thumbnail (worker-downscaled off the |X| panel) keys on the
         # mag panel's basename, matching the data-thumb the pages emit.
@@ -3145,8 +3088,6 @@ def _assemble_report_site(
         if corr_bytes is not None:
             cov_heatmap_name = _panel_figure_name(stem, wid, "corr")
             site.figure_store[cov_heatmap_name] = corr_bytes
-            if write_files:
-                (figures_dir / cov_heatmap_name).write_bytes(corr_bytes)
         panel_files_by_wid[wid] = panel_files
         mag_geom_by_wid[wid] = mag_geom
         cov_heatmap_by_wid[wid] = cov_heatmap_name
@@ -3191,13 +3132,11 @@ def _assemble_report_site(
             mag_geom=mag_geom,
         )
         site.page_store[f"windows/{_window_page_name(wid)}"] = page_html
-        if write_files:
-            (out_root / "windows" / _window_page_name(wid)).write_text(page_html)
 
     # --- methods + results page (Level-2 content, HTML-ified) ---------------
     # Each distribution figure is injected next to the percentile table it
     # summarizes; any that cannot be placed fall back to a trailing section.
-    methods_md = _render_markdown(model, path, include_table=False, cross_ref=cross_ref)
+    methods_md = _render_markdown(model, path, cross_ref=cross_ref)
     methods_html = _md_to_html(methods_md)
     leftover: List[str] = []
     for anchor, slug, specs in _summary_distribution_groups(model, cross_ref):
@@ -3240,8 +3179,6 @@ def _assemble_report_site(
             leftover.append(fig_html)
     methods_page = _summary_page(stem, methods_html, leftover)
     site.page_store["methods.html"] = methods_page
-    if write_files:
-        (out_root / "methods.html").write_text(methods_page)
 
     # --- index ----------------------------------------------------------
     # Spectrum section: the interactive full-spectrum overview (the shared image
@@ -3309,8 +3246,6 @@ def _assemble_report_site(
     body.append(_WINMAP_JS)
     index_html = _page(f"{stem} report", body, css_href="assets/style.css")
     site.page_store["index.html"] = index_html
-    if write_files:
-        (out_root / "index.html").write_text(index_html)
 
     return site
 
@@ -3389,7 +3324,6 @@ def report_full_impl(
             dpi=dpi,
             catalog=catalog,
             catalog_n_sigma=catalog_n_sigma,
-            write_files=False,
         )
         suffix = "_summary" if scope == "summary" else ""
         single_path = final_dir / f"{site.stem}_report{suffix}.html"

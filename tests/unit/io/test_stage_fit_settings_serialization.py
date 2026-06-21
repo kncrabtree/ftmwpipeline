@@ -21,6 +21,7 @@ from ftmwpipeline.io.stage_fit_settings_serialization import (
     STAGE_FIT_PATH,
     load_stage_fit_settings_from_h5,
     read_stage2b_recommended_shape,
+    read_stage2b_vote_rates,
     save_stage_fit_settings_to_h5,
     stage_fit_settings_present,
     write_stage2b_recommended_shape,
@@ -137,3 +138,21 @@ class TestStage2bRecommendedShape:
             h5f.create_group("stage2b_tau_calibration")
         write_stage2b_recommended_shape(empty_ftmw, shape="gaussian")
         assert read_stage2b_recommended_shape(empty_ftmw) == "gaussian"
+
+    def test_vote_rates_round_trip(self, empty_ftmw) -> None:
+        with h5py.File(empty_ftmw, "a") as h5f:
+            h5f.create_group("stage2b_tau_calibration")
+        assert read_stage2b_vote_rates(empty_ftmw) == {}  # absent -> empty
+        votes = {"exp": 0.21, "gauss": 0.71, "voigt": 0.08}
+        write_stage2b_recommended_shape(empty_ftmw, shape="gaussian", vote_rates=votes)
+        assert read_stage2b_vote_rates(empty_ftmw) == votes
+
+    def test_vote_rates_cleared_on_reset(self, empty_ftmw) -> None:
+        with h5py.File(empty_ftmw, "a") as h5f:
+            h5f.create_group("stage2b_tau_calibration")
+        write_stage2b_recommended_shape(
+            empty_ftmw, shape="gaussian", vote_rates={"gauss": 1.0}
+        )
+        # A reset verdict (shape=None, no vote_rates) clears the stale breakdown.
+        write_stage2b_recommended_shape(empty_ftmw, shape=None)
+        assert read_stage2b_vote_rates(empty_ftmw) == {}

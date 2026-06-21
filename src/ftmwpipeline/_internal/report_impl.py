@@ -24,6 +24,8 @@ LaTeX uses concise value(uncertainty) notation. See
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import math
 from dataclasses import dataclass, field
@@ -280,16 +282,22 @@ def _render_csv(
     xref: Optional[CatalogCrossRef] = None,
 ) -> str:
     uname, uval = _amplitude_unit(products)
-    lines = ["# ftmwpipeline final products"]
-    lines += [f"# {k}: {v}" for k, v in _provenance(products, file_path, uname, xref)]
+    comments = ["# ftmwpipeline final products"]
+    comments += [
+        f"# {k}: {v}" for k, v in _provenance(products, file_path, uname, xref)
+    ]
     cols = list(_CSV_COLUMNS) + (_CATALOG_COLUMNS if xref is not None else [])
-    lines.append(",".join(cols))
+    # The stdlib writer quotes any free-text cell (a catalog label or origin) that
+    # carries a comma / quote / newline, so column alignment survives such values.
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(cols)
     for i, p in enumerate(products.peaks):
         row = _csv_row(p, uval)
         if xref is not None:
             row = row + _catalog_csv_cells(xref.matches[i])
-        lines.append(",".join(row))
-    return "\n".join(lines) + "\n"
+        writer.writerow(row)
+    return "\n".join(comments) + "\n" + buf.getvalue()
 
 
 def _jnum(x: Optional[float]) -> Optional[float]:
@@ -636,7 +644,6 @@ class _SummaryModel:
     tau_maj_us: Optional[float]
     sigma_tau_us: Optional[float]
     n_contributors: Optional[int]
-    tau_source: Optional[str]
     band_taus: List[_BandTau] = field(default_factory=list)
     # Stage 3 -- peak detection
     n_peaks_total: int = 0
@@ -798,6 +805,34 @@ def _noise_band_table(
     return overall, bands
 
 
+_NONE_SENTINEL = "__None__"
+
+# The 3-way discriminator votes over exp/gauss/voigt models; the report names
+# the exponential model by its line shape (Lorentzian) for reader continuity
+# with ``recommended_shape``.
+_VOTE_DISPLAY_SHAPE = {"exp": "lorentzian", "gauss": "gaussian", "voigt": "voigt"}
+
+
+def _decode_recommended_shape(attr: Any) -> Optional[str]:
+    """Decode the persisted ``recommended_shape`` attr, mapping the sentinel."""
+    if attr is None:
+        return None
+    decoded = attr.decode() if isinstance(attr, bytes) else str(attr)
+    return None if decoded == _NONE_SENTINEL else decoded
+
+
+def _decode_vote_rates(attr: Any) -> Dict[str, float]:
+    """Decode the JSON shape-vote attr into display-named fractions."""
+    if attr is None:
+        return {}
+    decoded = attr.decode() if isinstance(attr, bytes) else str(attr)
+    try:
+        rates = json.loads(decoded)
+    except (ValueError, TypeError):
+        return {}
+    return {_VOTE_DISPLAY_SHAPE.get(str(k), str(k)): float(v) for k, v in rates.items()}
+
+
 def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
     """Gather the per-stage numbers for the L2 report from the persisted file.
 
@@ -877,7 +912,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         # --- Stage 2b: tau (optional dependency) ----------------------------
         tau_maj = sigma_tau = None
         n_contrib = None
-        tau_source = None
         band_taus: List[_BandTau] = []
         tau_params: Dict[str, Any] = {}
         tau_pre_passed: Optional[bool] = None
@@ -885,10 +919,12 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         tau_bimodal: Optional[bool] = None
         tau_delta_aic = tau_dom_w = tau_mu_a = tau_mu_b = tau_pear = None
         recommended_shape: Optional[str] = None
+        shape_vote_rates: Dict[str, float] = {}
         if "stage2b_tau_calibration" in h5f:
             tau_grp = h5f["stage2b_tau_calibration"]
             rs_attr = tau_grp.attrs.get("recommended_shape")
-            recommended_shape = None if rs_attr is None else str(rs_attr)
+            recommended_shape = _decode_recommended_shape(rs_attr)
+            shape_vote_rates = _decode_vote_rates(tau_grp.attrs.get("shape_vote_rates"))
             tau = load_tau_calibration_from_hdf5(tau_grp)
             tau_maj = float(tau.tau_maj_us)
             sigma_tau = float(tau.sigma_tau_us)
@@ -1127,7 +1163,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         tau_maj_us=tau_maj,
         sigma_tau_us=sigma_tau,
         n_contributors=n_contrib,
-        tau_source=tau_source,
         band_taus=band_taus,
         n_peaks_total=n_total,
         n_strong=n_strong,
@@ -1162,7 +1197,7 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         tau_mu_b=tau_mu_b,
         tau_pearson_freq=tau_pear,
         recommended_shape=recommended_shape,
-        shape_vote_rates={},
+        shape_vote_rates=shape_vote_rates,
         tau_exp_present=tau_exp_present,
         tau_G_present=tau_G_present,
         det_params=det,
@@ -1845,7 +1880,7 @@ def _concerns_stage5(m: _SummaryModel) -> List[_Concern]:
                 "fail the SNR-aware χ² gate (genuine misfit, not the high-SNR "
                 f"shape floor). Worst: windows {wid_list}.",
                 "Review those windows with `fit show`; a real misfit usually means "
-                "a missing line, an unmodelled blend, or a spur under the line.",
+                "a missing line, an unmodeled blend, or a spur under the line.",
             )
         )
     return out
@@ -1926,7 +1961,6 @@ def _render_markdown(
     model: _SummaryModel,
     file_path: Union[Path, str],
     *,
-    include_table: bool,
     cross_ref: Optional[CatalogCrossRef] = None,
 ) -> str:
     m = model
@@ -2080,7 +2114,10 @@ def _render_markdown(
         ]
         if m.recommended_shape:
             votes = ", ".join(
-                f"{k} {v*100:.0f}%" for k, v in sorted(m.shape_vote_rates.items())
+                f"{k} {v*100:.0f}%"
+                for k, v in sorted(
+                    m.shape_vote_rates.items(), key=lambda kv: kv[1], reverse=True
+                )
             )
             tau_results.append(
                 f"lineshape vote → {m.recommended_shape}"
@@ -2351,19 +2388,10 @@ def _render_markdown(
     # --- Full line list -------------------------------------------------
     L.append("## Final line list")
     L.append("")
-    if include_table:
-        L.append(
-            f"All {len(products.peaks):,} calibrated lines (amplitude in {uname}):"
-        )
-        L.append("")
-        L.append(_md_line_table(list(products.peaks), uval, uname))
-        L.append("")
-    else:
-        L.append(
-            f"The full {len(products.peaks):,}-line calibrated table is the "
-            "companion data export -- run `report table --format csv` (or json / "
-            "latex), or pass `--include-table` to inline it here."
-        )
-        L.append("")
+    L.append(
+        f"The full {len(products.peaks):,}-line calibrated table is the companion "
+        "data export -- run `report table --format csv` (or json / latex)."
+    )
+    L.append("")
 
     return "\n".join(L) + "\n"
