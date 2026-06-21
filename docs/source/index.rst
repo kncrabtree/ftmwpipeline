@@ -44,6 +44,7 @@
    :caption: Methods & Validation
 
    methods/noise_snr_scaling
+   methods/matched_filter_detection
 
 .. toctree::
    :hidden:
@@ -100,6 +101,9 @@ be trusted, with figures and numbers regenerated from the example data:
 * :doc:`methods/noise_snr_scaling` — why naive noise estimation fails on
   high signal-to-noise, line-dense spectra, and how the scatter estimator is
   validated.
+* :doc:`methods/matched_filter_detection` — why the weak-line gap pass detects
+  with an exponentially-apodized transform, derived and validated on synthetic
+  ground truth and the example experiment.
 
 Indices and tables
 ==================

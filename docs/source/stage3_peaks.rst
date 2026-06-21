@@ -77,8 +77,10 @@ dropped as re-finds, so the gap pass contributes only *new* lines.
 The matched filter is the optimal linear detector for a decaying line: it
 concentrates each line's energy that an unweighted transform would spread across
 the skirt, so at a fixed false-positive load the gap pass recovers more real
-lines from fewer candidates. The gap pass is on by default and can be switched
-off (``run_gap_pass=False`` / ``--no-gap-pass``).
+lines from fewer candidates. The :doc:`matched-filter methods note
+<methods/matched_filter_detection>` derives why and validates the recall. The gap
+pass is on by default and can be switched off (``run_gap_pass=False`` /
+``--no-gap-pass``).
 
 The concave-down locator
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

@@ -94,17 +94,22 @@ Each window is fit by growing its model one line at a time:
    data, weighted by the :doc:`Stage 2 <stage2_noise>` per-bin noise.
 #. **Propose.** Pick the strongest peak in the current residual that has not
    yet been tried and trial-fit it jointly with the lines already accepted.
-#. **Accept or stop.** Keep the new line only when adding it both passes an
-   **F-test** (the drop in :math:`\chi^2` is more than chance at significance
-   :math:`\alpha`, default ``0.05``) **and** lowers the AIC. A candidate that
-   fails either test is rejected, and the loop stops after a bounded run of
+#. **Accept or stop.** Keep the new line only when it lowers a corrected,
+   small-sample form of the Akaike information criterion (**AICc**): the AICc of
+   the larger model must be strictly below that of the current one. The criterion
+   is evaluated on an *effective* sample size that counts only the bins the lines
+   actually inform, not every bin in the window — so a window padded with quiet
+   noise cannot manufacture significance for an extra line. A candidate that does
+   not lower the AICc is rejected, and the loop stops after a bounded run of
    consecutive rejections, when no candidate remains, or when a width or
    separation bound is reached.
 
 Because the residual is weighted by the real per-bin noise, a converged window
-has a proper reduced :math:`\chi^2` near one, and the F-test is calibrated —
-the loop adds a line only on genuine statistical evidence, not to chase a
-lineshape floor.
+has a proper reduced :math:`\chi^2` near one, and the information-weighted
+effective sample size keeps the gate honest — the loop adds a line only on
+genuine statistical evidence, not to chase a lineshape floor. A classical
+F-test on the :math:`\chi^2` drop is recorded at each step as a familiar
+diagnostic, but it does not gate acceptance.
 
 **Blend-aware seeding.** A single line fit to a close blend lands at the
 blend's centroid and leaves an elevated reduced :math:`\chi^2`. When that

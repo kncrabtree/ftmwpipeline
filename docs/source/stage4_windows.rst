@@ -131,9 +131,13 @@ no randomness:
 #. **Strong-cluster grouping.** Strong lines that share one leakage-touched region are
    mutually coupled — the statistic stays above threshold all the way between them — so
    none can be a frozen background for the others. Their proposals are merged into a
-   single joint window. The reference experiment's 36350/36389 MHz pair (39 MHz apart)
-   is the canonical case: the inter-line skirt keeps :math:`S_\text{coh}` above
-   threshold across the gap, so the pair fits together.
+   single joint window. The reference experiment's tight cluster near 36350 MHz is the
+   canonical case: the strong doublet at 36349.95/36350.11 MHz and its half-dozen near
+   neighbors fall inside one contiguous leakage-touched run, so they fit together in a
+   single window. Lines far enough apart that the statistic drops below threshold in the
+   gap are *not* joined: the same experiment's 36350 and 36389 MHz lines (39 MHz apart)
+   land in separate windows, each carried into the other's neighborhood as a fixed
+   contributor rather than by widening one window to span both.
 #. **Merge and cap.** Overlapping proposals merge to a fixpoint, giving disjoint spans.
    A span whose **peak content** exceeds the width cap is split at its sparsest interior
    peak gap, so a genuinely over-wide cluster is broken into within-cap windows while a
