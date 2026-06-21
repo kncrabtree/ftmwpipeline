@@ -104,6 +104,14 @@ project memory is updated whenever a code revision changes a documented behavior
 - **Repository cleanup.** Stray run artifacts at the repo root
   (`*_enhanced_spectrum.png`, `output/`) are removed; the working tree is kept
   free of run output per the `scratch/` convention.
+- **Repository-wide lint/format pass.** A batched black/isort/mypy sweep over the
+  whole tree (not just files a given change touched). The codebase was never run
+  through its configured formatters, and not every session kept its work clean
+  before committing, so "would reformat" debt has accumulated. Deferred to the end
+  on purpose: doing it per-commit during the docs effort would bury each
+  feature/doc diff under unrelated reformatting. Run as its own commit(s) after
+  the documentation is drafted, so the formatting churn stays legible and separate
+  from the content changes.
 - **Archival.** Only after the user has reviewed the documentation: completed
   planning documents are archived (their content now living in the docs), and
   research reports are updated where still useful or removed where obsolete.
@@ -121,6 +129,31 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Advanced review: the fit and report worker-pool size exposed to the user.**
+  The Stage 5 cross-window fit pool and the Stage 6 figure-render pool hardcoded
+  their worker count to ``cpu_count() - 2`` through internal module constants with
+  no override — unusable on a shared node or inside a scheduler core allocation,
+  and no way to force sequential for debugging. A shared resolver
+  (``utils/parallelism.resolve_worker_count``: explicit argument >
+  ``FTMW_MAX_WORKERS`` environment variable > ``cpu_count() - 2``, clamped to at
+  least one) was added and a ``jobs`` argument threaded through both stages across
+  the functional API, the ``Pipeline`` class, and the impls, surfaced as a
+  ``--jobs`` / ``-j`` flag on ``fit run`` and ``report run``. The worker count is
+  result-invariant (the fit and figures are byte-identical regardless), so the
+  default path is unchanged; the internal test-pin constants remain the highest
+  precedence. Validation: a new ``resolve_worker_count`` unit suite plus the
+  fit/report cross-interface consistency guard pass; the touched files are mypy
+  clean and black clean (one pre-existing ``report_commands.py`` reformat left for
+  the batched repo-wide pass).
+- **Advanced review: the clock-lattice flag surfaced in the Stage 6 reports.**
+  The per-line ``clock_lattice`` annotation (a fitted line that lands on the
+  declared clock lattice — a candidate instrumental artifact that survived the
+  spur gate) was rendered in ``fit show`` but not in any report. It is now carried
+  through the consolidated ``FinalPeak`` table and its serialization and rendered
+  as a flagged column in the Level-1 CSV/JSON exports and both Level-3 HTML line
+  tables, framed as a possible instrumental artifact and never auto-removed (the
+  compact LaTeX publication table and the Markdown summary are left unchanged).
+  New tests cover the carry-through and the report columns.
 - **Stage 6 review: report rendering corrected, robustness tightened, the
   read-only default set.** The methods page advertised a Stage 2b lineshape-vote
   breakdown that was a dead `{}`; the vote fractions are now persisted beside the
@@ -582,7 +615,18 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   the final-products CSV hardened, the review-state loader and catalog column
   resolution tightened, and several dead/incorrect members fixed. Build
   warning-clean under `sphinx-build -W`.
-- [~] Advanced: `clock_declaration`, `scope_record_import`, `performance`.
+- [x] Advanced: `clock_declaration` (titled "Clocks and Frequency Calibration" —
+  the clock tree, declaring fundamentals, the spur lattice prior + per-line
+  lattice annotation, timebase self-calibration with the phase-ramp/ML estimator;
+  two regenerable figures), `scope_record_import` (segmented raw-scope import: the
+  `keysight-mat` loader, the acquisition layout, interleave cleanup, the
+  pre-record chirp-response anchor, the declared chirp window cross-linked to
+  Stage 0; a hand-authored SVG schematic), and `performance` (the `--jobs` /
+  `FTMW_MAX_WORKERS` core-count control, report-scoping flags, the Stage 5
+  thoroughness tradeoffs, and the holistic "earlier stages set later cost" view).
+  Code revisions resolved during review (see below): the clock-lattice flag
+  surfaced in the Stage 6 reports, and the fit/report worker-pool size exposed to
+  the user. Build warning-clean under `sphinx-build -W`.
 - [ ] Reference: `cli`, `api/index`, `changelog`.
 - [ ] Repo-wide American-English sweep.
 - [ ] Repository cleanup (stray root artifacts).
