@@ -121,6 +121,24 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Stage 6 review: report rendering corrected, robustness tightened, the
+  read-only default set.** The methods page advertised a Stage 2b lineshape-vote
+  breakdown that was a dead `{}`; the vote fractions are now persisted beside the
+  verdict and read back. The HTML report defaults to read-only with an opt-in
+  Curate toggle. The retired multi-file on-disk site path was pruned — a single
+  self-contained file is the only output (the collapse is in-memory only). The
+  final-products CSV moved to the stdlib writer so a comma-bearing catalog label
+  can no longer corrupt columns. The review-state loader was narrowed so a corrupt
+  `stage6_review` group surfaces instead of silently discarding curation; catalog
+  header column resolution was tightened (frequency outranks a label keyword;
+  two-character keys match whole tokens); `snap_tol_mhz` was added to `review edit`
+  for parity. A factually wrong Stage 4 caption, a dead inline-table branch
+  advertising a non-existent flag, two dead members, and a silently-swallowed
+  broken Stage 3 methods figure (it passed a kwarg the Stage 3 review removed) were
+  fixed. British spellings and build-order docstrings were swept. Validation: the
+  Stage 6, io, cross-interface, and figure-smoke suites pass; mypy and black are
+  clean; `sphinx-build -W` is warning-clean. New tests cover the vote-rate
+  round-trip and the catalog column-resolution fixes.
 - **Stage 5 review: British spellings and build-order markers swept from the
   fitting stack, a duplicate constant folded, the `fit_peaks` docstrings
   aligned, and the `fit show` overview phase frame fixed and recolored.** The
@@ -553,79 +571,68 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   decay-factor constant folded, the `fit_peaks` docstrings aligned, and the
   `fit show` overview phase-frame fix + brand-palette recolor. Build
   warning-clean under `sphinx-build -W`.
-- [ ] Stage 6 — review / reports / finalization.
-- [ ] Advanced: `clock_declaration`, `scope_record_import`, `performance`.
+- [x] Stage 6 — review / reports / finalization. `stage6_review.rst` written (the
+  review/read-edit surface — provenance, attention routing, the candidate ledger,
+  the anchored decision log + diff replay; the L1/L2/L3 reports; the ε-correction
+  + three-term σ_f budget with the user-settable σ_floor and the three calibration
+  states; the catalog cross-reference + pull calibration; the per-line determinacy
+  score), plus a regenerable Stage 6 figure. Code revisions resolved during review
+  (see below): the Stage 2b lineshape-vote breakdown wired into the methods page,
+  the HTML report defaulted to read-only, the retired multi-file site path pruned,
+  the final-products CSV hardened, the review-state loader and catalog column
+  resolution tightened, and several dead/incorrect members fixed. Build
+  warning-clean under `sphinx-build -W`.
+- [~] Advanced: `clock_declaration`, `scope_record_import`, `performance`.
 - [ ] Reference: `cli`, `api/index`, `changelog`.
 - [ ] Repo-wide American-English sweep.
 - [ ] Repository cleanup (stray root artifacts).
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Handoff: next session is Stage 6 — review / reports / finalization
+## Handoff: next section is Advanced — clock declaration, scope-record import, performance
 
-**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b/3/4/5 pages, the
-Methods & Validation section + first note, the brand style system, and the
-committed stage figures (now including `stage5_fitting.png`) are done and
-committed. The Stage 5 peak-fitting page is written and its review-pass code
-revisions landed first (see *Resolved during review*). The working tree is clean;
-the touched fitting / viz / stage6 / cross-interface / figure suites pass and
-`sphinx-build -W` is warning-clean. Nothing is mid-flight. A reusable Stage-5
-fixture lives at `scratch/stage5-doc/exp_2638.ftmw` (gitignored) for cheap figure
-iteration without a full rebuild.
+**State going in.** The Getting Started, Concepts, every Pipeline-Stage page
+(Stage 0/1/2/2b/3/4/5/6), the Methods & Validation section + first note, the brand
+style system, and the committed stage figures (through `stage6_review`) are done
+and committed. Stage 6's review-pass code revisions landed first (see *Resolved
+during review*). The working tree is clean; the touched suites pass and
+`sphinx-build -W` is warning-clean. Nothing is mid-flight.
 
-**Last stage's trail (so nothing is re-litigated).** Stage 5 fits each Stage 4
-window's lines on the **active-portion FT** with the exact finite-`T` damped-cosine
-model `h_T` (leakage carried, never apodized). The engine is a **conservative
-add-one-peak loop**: seed the strongest line, then add a residual peak only when
-it both passes an F-test (α 0.05) and lowers AIC; **blend-aware seeding** (K=2/3
-straddling) is what resolves real doublets. One **shared τ per window**, freed
-only above `fit_tau_min_snr` (10) and otherwise held at the Stage 2b `τ_maj`
-(per-band when available), softly anchored by a penalty. **Fixed contributors**
-(frozen out-of-window skirts) are fit in **parallel batches** in dependency order.
-Three evidence-triggered helpers absorb hard structure: the **leakage-wing
-baseline** (low-order complex polynomial on a coherent edge or smooth pedestal,
-order 4, re-freed τ), **residual rescue**, and the **thaw/replan** renegotiation
-handshake (local thaw common, structural merge rare; no split). A **post-fit
-survival pass** prunes sub-3.2σ lines to a fixpoint and merges VIF≥4
-sub-resolution over-splits (catastrophic-merge veto), with an observation-only
-doublet pass recording statistics but changing nothing. The reported
-uncertainties are **precision only** (covariance); accuracy/clock systematics are
-a Stage 6 / clock-declaration concern. **The `fit show` overview phase-frame bug
-was fixed this session** (it rendered the active grid with the persisted-frame
-re-roll, inflating the complex residual) and the overview was recolored to the
-brand palette — see *Resolved during review*.
+**The Advanced section — three pages, same per-stage process** (this README,
+"Per-stage process"). These document cross-cutting capabilities rather than a
+single pipeline stage, so each is gated on the same read-planning →
+thorough-code-review-and-discuss → mine-research → American-English-scan → write
+sequence. Drafting order: **`clock_declaration` first** (the instrument clock tree
+and timebase self-calibration), then `scope_record_import` (raw-scope-record
+loaders), then `performance` (parallelism and the user-facing knobs).
 
-**The Stage 6 task — apply the per-stage process (this README, "Per-stage
-process"), in order:** read the Stage 6 planning record
-(`dev-docs/planning/stage6-reports*.md`, `stage6-review-*.md`,
-`stage6-peak-survival.md`, the followups; plus ROADMAP/STATUS — extensive, note
-stale prose against code); thorough review of `_internal/stage6_impl.py`,
-`report_impl.py`, `report_html_impl.py`, `catalog_xref.py`, the `review`/`report`
-CLI, and the serialization, **stopping to discuss any proposed code revision
-before writing docs or changing code**; mine the Stage 6 research; American-English
-scan (most of the fitting-stack sweep already covered the shared modules); then
-write `stage6_review.rst` (the review/read-edit surface, the L1/L2/L3 reports, the
-ε-correction + 3-term σ_f budget with the user-settable σ_floor, the catalog
-cross-reference, the attention metrics) and add a Stage 6 figure. Memory carries
-deep Stage 6 context — start from `[[stage6-sequence-handoff]]` and its links.
-
-**Carry forward — incorporate the per-line determinacy score into Stage 6.** The
-Stage 5 work added `fitting/validation.peak_quality_score` (a prior-free `k/4`
-determinacy tier; see *Resolved during review* and [[user-docs-effort]]), so far
-surfaced only in the `fit show` per-window detail table. Stage 6 should consume it:
-add it as a `review rank --by` key, include the `qual` score as a column in the
-HTML report's fitted-lines table (and consider the L1 `report table` output), and
-make sure its framing stays "determinacy, not realness" wherever it appears. It
-reuses the persisted survival floor (`diagnostics["peak_survival"]["snr_floor"]`)
-and VIF threshold (`diagnostics["vif_collapse"]["vif_threshold"]`) — already
-sourced that way in `render_fit_detail_impl`.
+**`clock_declaration` — the first Advanced page.** The shipped surface (priority-1
+work, committed `f8df33b`): the `clocks` declaration object (CLI
+`show`/`set`/`add`/`remove`/`clear` + `api`/`Pipeline` methods writing the
+recommended-clock-sources layer) and the `timebase` self-calibration object
+(`run`/`show`) that recovers the unlocked-digitizer ε from the gated clock spurs.
+The relevant context lives across several places: the input-format/clocks plumbing
+in `io/input_metadata.py` and the `data_loaders/`, the spur-lattice gate and
+`calibrate_timebase` estimator, and the Stage 6 σ_f budget that consumes ε (the
+`Δf = ε·f_baseband` correction; σ_floor stays the user's accuracy declaration).
+Memory carries deep context — start from [[clock-declaration-implemented]] and
+[[instrument-clock-tree]], plus [[frequency-uncertainty-digitizer-clock]] for the
+ε-vs-δ_down accuracy story already written into the Stage 6 reports page (don't
+re-explain the budget there; the clock page covers ε recovery and the lattice,
+and cross-references Stage 6 for how ε feeds σ_f).
 
 **Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
 review the rendered HTML; direct all run artifacts to `scratch/`;
-`docs/source/figures/generate.py` (now builds through Stage 5) is the reference
+`docs/source/figures/generate.py` (builds through Stage 6) is the reference
 pattern for committed, regenerable figures guarded by the `slow` smoke test. Run
-project commands via `conda run -n ftmwpipeline-dev`; scope tests to the stage
-(per the test-budget memory) and save one full run for the end. Note the Stage 4/5
-*planning* docs and ROADMAP still describe some removed/renamed details (the Stage
-4 difficulty annotations; the `catalogue` spelling) — known code-vs-planning-doc
+project commands via `conda run -n ftmwpipeline-dev`; scope tests to the touched
+surface (per the test-budget memory) and save one full run for the end. Note some
+*planning* docs and ROADMAP still describe removed/renamed details (the Stage 4
+difficulty annotations; the `catalogue` spelling) — known code-vs-planning-doc
 divergences the archival pass reconciles; the shipped pages do not inherit them.
+
+**A documentation review stage is still owed.** Before archival, the drafted pages
+need a content pass for coverage, organization/flow, and audience appropriateness:
+some pages drift into hyperliteral code-flow narration where they should explain
+the concept to the user. This is the final-revision pass, not a per-page gate —
+keep drafting; see [[user-docs-effort]].
