@@ -30,6 +30,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
 
 import h5py
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from ..core.data_structures import (
     ComplexFT,
@@ -1132,6 +1133,45 @@ def build_stage5_fit_context(
 
 
 def fit_peaks_impl(
+    file_path: str,
+    *,
+    shape: "PeakShape | str | None" = None,
+    tau_maj_override_us: Optional[float] = None,
+    sigma_tau_override_us: Optional[float] = None,
+    settings: Optional[StageFitSettings] = None,
+    preset: Optional[str] = None,
+    jobs: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run Stage 5 with BLAS pinned to one thread per process, then persist.
+
+    Every per-window solve in Stage 5 is single-threaded -- the cross-window
+    fork pool gets its parallelism from separate worker *processes*, not from
+    BLAS threads -- so multithreaded BLAS buys nothing and, left unpinned, has a
+    single process spread one solve across every core. The fork-pool walk pins
+    its workers, but the main-process work outside that walk does not: the
+    in-process (width-1) levels of the walk, and especially the post-fit
+    survival prune, VIF collapse, and doublet-adjudication refits, all run NLS
+    in this process. On a dense fixture those passes refit hundreds of windows
+    and thrash the machine. Pinning the whole call to one BLAS thread covers
+    every path -- the forked children inherit the limit -- and is the
+    runtime equivalent of an ``OPENBLAS_NUM_THREADS=1`` environment variable
+    (which cannot be set here, the backend having initialized at import).
+    :func:`threadpoolctl.threadpool_limits` reconfigures the loaded backend at
+    call time. See :func:`_fit_peaks_impl` for the parameters and return value.
+    """
+    with threadpool_limits(limits=1):
+        return _fit_peaks_impl(
+            file_path,
+            shape=shape,
+            tau_maj_override_us=tau_maj_override_us,
+            sigma_tau_override_us=sigma_tau_override_us,
+            settings=settings,
+            preset=preset,
+            jobs=jobs,
+        )
+
+
+def _fit_peaks_impl(
     file_path: str,
     *,
     shape: "PeakShape | str | None" = None,
