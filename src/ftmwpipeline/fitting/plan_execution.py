@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional, Tuple, Union, cast
 
 import numpy as np
+from threadpoolctl import threadpool_limits
 
 from ftmwpipeline.core.data_structures import (
     FitWindow,
@@ -2328,38 +2329,35 @@ def _fit_window_worker(
 ) -> tuple[int, WindowOutcome, list[ThawEvent], list[RescueEvent]]:
     """Process-pool entry point: fit one window from the fork-inherited context.
 
-    Pins BLAS to a single thread (the per-window solve is single-threaded; this
-    avoids N-workers x M-BLAS-threads oversubscription). Works on a shallow copy
-    of the inherited ``outcomes`` so concurrent tasks reused on the same worker
-    process never see each other's writes -- within a level the windows are an
-    antichain, so the copy only needs the earlier-level primaries (present in the
-    inherited dict). Returns the window's outcome plus its local thaw / rescue
-    events for the parent to merge.
+    Pins BLAS to a single thread for the solve (the per-window solve is
+    single-threaded; this avoids N-workers x M-BLAS-threads oversubscription).
+    The limit is applied with :func:`threadpoolctl.threadpool_limits`, which
+    re-configures the *already-loaded* BLAS/OpenMP runtime (OpenBLAS, MKL, BLIS,
+    Accelerate) at call time -- a ``*_NUM_THREADS`` environment variable cannot,
+    because the backend reads it only at initialization, which already happened
+    in the parent before the fork. Works on a shallow copy of the inherited
+    ``outcomes`` so concurrent tasks reused on the same worker process never see
+    each other's writes -- within a level the windows are an antichain, so the
+    copy only needs the earlier-level primaries (present in the inherited dict).
+    Returns the window's outcome plus its local thaw / rescue events for the
+    parent to merge.
     """
-    import os
-
-    for _var in (
-        "OMP_NUM_THREADS",
-        "OPENBLAS_NUM_THREADS",
-        "MKL_NUM_THREADS",
-        "NUMEXPR_NUM_THREADS",
-    ):
-        os.environ[_var] = "1"
     ctx = _WORKER_FIT_CTX
     assert ctx is not None  # set in the parent before the pool forks
     n_done, wid = task
     local_outcomes: dict[int, WindowOutcome] = dict(ctx["outcomes"])
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
-    _process_one_window(
-        ctx["by_id"][wid],
-        n_done=n_done,
-        n_total=ctx["n_total"],
-        outcomes=local_outcomes,
-        thaw_history=thaw_local,
-        rescue_history=rescue_local,
-        **ctx["shared"],
-    )
+    with threadpool_limits(limits=1):
+        _process_one_window(
+            ctx["by_id"][wid],
+            n_done=n_done,
+            n_total=ctx["n_total"],
+            outcomes=local_outcomes,
+            thaw_history=thaw_local,
+            rescue_history=rescue_local,
+            **ctx["shared"],
+        )
     return wid, local_outcomes[wid], thaw_local, rescue_local
 
 
