@@ -78,12 +78,6 @@ class TestSubmoduleImports:
 
         assert hasattr(preprocessing, "__all__")
 
-    def test_window_assignment_import(self):
-        """Test window assignment module import."""
-        from ftmwpipeline import window_assignment
-
-        assert hasattr(window_assignment, "__all__")
-
     def test_fitting_import(self):
         """Test fitting module import."""
         from ftmwpipeline import fitting

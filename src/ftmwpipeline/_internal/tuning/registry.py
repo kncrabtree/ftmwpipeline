@@ -485,16 +485,13 @@ def _metric_peaks(result: Any) -> Dict[str, Any]:
 
 
 def _metric_windows(result: Any) -> Dict[str, Any]:
-    """Reduce a Stage 4 result to the plan's shape: window counts split by
-    difficulty, the contributor/dependency bookkeeping, and the window-width
-    distribution.
+    """Reduce a Stage 4 result to the plan's shape: the window count, the
+    contributor/dependency bookkeeping, and the window-width distribution.
 
     What a user tunes Stage 4 for is how the band partitions — how many windows,
-    how many are HARD (oversized / leakage-touched), how many out-of-window lines
-    are frozen as fixed contributors, how many windows the knob forces a split
-    on, and how wide the windows run. The width tail (p95/max) is the headline
-    for the width-cap knob; the HARD/split counts track the coherence and cap
-    knobs.
+    how many out-of-window lines are frozen as fixed contributors, how many fit
+    dependencies that induces, and how wide the windows run. The width tail
+    (p95/max) is the headline for the width-cap knob.
     """
     import numpy as np
 
@@ -502,15 +499,11 @@ def _metric_windows(result: Any) -> Dict[str, Any]:
     widths = np.asarray([w.width_mhz for w in plan.windows], dtype=float)
     if widths.size == 0:
         widths = np.zeros(1)
-    n_split = sum(1 for w in plan.windows if w.split_proposal is not None)
     return {
         "n_windows": int(result["n_windows"]),
-        "n_hard": int(result["n_hard"]),
-        "n_easy": int(result["n_easy"]),
         "n_free": int(result["n_free_peaks"]),
         "n_fixed": int(result["n_fixed_contributors"]),
         "n_dep": int(result["n_dependencies"]),
-        "n_split": int(n_split),
         "width_p50": round(float(np.median(widths)), 3),
         "width_p95": round(float(np.percentile(widths, 95)), 3),
         "width_max": round(float(widths.max()), 3),
@@ -1156,25 +1149,22 @@ for _sub, _field in (
 # ---------------------------------------------------------------------------
 # Stage 4 window assignment — requires Stage 3 (peaks). Every Stage 4 sweep
 # re-runs assign_windows and renders the same view: a window-count trend, a
-# band-wide boundary-shift overlay (each value's window edges coloured by
-# value), then per-value × per-region zoom panels showing how the partition,
-# its difficulty, and the driving S_coh statistic move across the grid.
+# band-wide boundary-shift overlay (each value's window edges colored by
+# value), then per-value × per-region zoom panels showing how the partition
+# and the driving S_coh statistic move across the grid.
 # ---------------------------------------------------------------------------
 _WINDOW_COLS = (
     "n_windows",
-    "n_hard",
-    "n_easy",
     "n_free",
     "n_fixed",
     "n_dep",
-    "n_split",
     "width_p50",
     "width_p95",
     "width_max",
 )
 _WINDOW_SEE_ALSO = (
-    "the table reports the plan shape (window/hard/contributor counts + the "
-    "width distribution); the panels show how the boundaries move — read "
+    "the table reports the plan shape (window/contributor/dependency counts + "
+    "the width distribution); the panels show how the boundaries move — read "
     "alongside the Stage 3 promoted peaks (stage3.*) that seed the partition."
 )
 

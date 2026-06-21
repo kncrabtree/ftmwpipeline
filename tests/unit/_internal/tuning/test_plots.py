@@ -392,11 +392,6 @@ def test_peak_persistence_buckets_by_last_surviving_value():
 
 
 @dataclass
-class _FakeDifficulty:
-    value: str
-
-
-@dataclass
 class _FakeContributor:
     peak_index: int
     frequency_mhz: float
@@ -405,10 +400,8 @@ class _FakeContributor:
 @dataclass
 class _FakeWindow:
     freq_range: tuple
-    difficulty: _FakeDifficulty
     free_peak_indices: list
     fixed_contributors: list
-    split_proposal: Optional[float] = None
 
     @property
     def width_mhz(self) -> float:
@@ -421,13 +414,11 @@ class _FakePlan:
     parameters: dict
 
 
-def _window(lo, hi, diff="easy", free=(), fixed=(), split=None):
+def _window(lo, hi, free=(), fixed=()):
     return _FakeWindow(
         (lo, hi),
-        _FakeDifficulty(diff),
         list(free),
         [_FakeContributor(i, f) for i, f in fixed],
-        split,
     )
 
 
@@ -440,15 +431,12 @@ def _windows_result(windows):
         windows,
         {"edge_m": 64, "edge_threshold": 8.0, "probe_freq_mhz": 0.0, "start_us": 0.0},
     )
-    n_hard = sum(1 for w in windows if w.difficulty.value == "hard")
     n_fixed = sum(len(w.fixed_contributors) for w in windows)
     return {
         "plan": plan,
         "active_ft": ft,
         "active_rms": np.full(freqs.shape, 0.01),
         "n_windows": len(windows),
-        "n_hard": n_hard,
-        "n_easy": len(windows) - n_hard,
         "n_free_peaks": sum(len(w.free_peak_indices) for w in windows),
         "n_fixed_contributors": n_fixed,
         "n_dependencies": 0,
@@ -456,12 +444,10 @@ def _windows_result(windows):
 
 
 def _window_metrics(res):
-    plan = res["plan"]
     return {
         "n_windows": res["n_windows"],
-        "n_hard": res["n_hard"],
         "n_fixed": res["n_fixed_contributors"],
-        "n_split": sum(1 for w in plan.windows if w.split_proposal is not None),
+        "n_dep": res["n_dependencies"],
     }
 
 
@@ -469,15 +455,15 @@ def test_plot_window_planning_returns_figure():
     # two values whose partition differs -> a region is auto-selected to zoom.
     r1 = _windows_result(
         [
-            _window(27000.0, 27040.0, "hard", free=(0,), split=27020.0),
-            _window(35000.0, 35020.0, "easy", free=(1,), fixed=((2, 35010.0),)),
+            _window(27000.0, 27040.0, free=(0,)),
+            _window(35000.0, 35020.0, free=(1,), fixed=((2, 35010.0),)),
         ]
     )
     r2 = _windows_result(
         [
-            _window(27000.0, 27020.0, "easy", free=(0,)),
-            _window(27020.0, 27040.0, "easy"),
-            _window(35000.0, 35020.0, "easy", free=(1,)),
+            _window(27000.0, 27020.0, free=(0,)),
+            _window(27020.0, 27040.0),
+            _window(35000.0, 35020.0, free=(1,)),
         ]
     )
     rows = [
@@ -495,8 +481,8 @@ def test_plot_window_planning_returns_figure():
 def test_plot_window_planning_handles_none_value():
     # leakage.tau_us sweeps over None (boxcar) + floats; the categorical trend
     # x and labels must not raise on the None.
-    r1 = _windows_result([_window(27000.0, 27040.0, "hard", free=(0,))])
-    r2 = _windows_result([_window(27000.0, 27040.0, "easy", free=(0,))])
+    r1 = _windows_result([_window(27000.0, 27040.0, free=(0,))])
+    r2 = _windows_result([_window(27000.0, 27040.0, free=(0,))])
     rows = [
         SweepRow(None, _window_metrics(r1), r1),
         SweepRow(3.0, _window_metrics(r2), r2),
@@ -521,15 +507,15 @@ def test_select_window_regions_ranks_by_divergence():
     # The 27000 region diverges (different edge counts); 35000 is identical.
     rA = _windows_result(
         [
-            _window(27000.0, 27050.0, "easy"),
-            _window(27050.0, 27100.0, "easy"),
-            _window(35000.0, 35050.0, "easy"),
+            _window(27000.0, 27050.0),
+            _window(27050.0, 27100.0),
+            _window(35000.0, 35050.0),
         ]
     )
     rB = _windows_result(
         [
-            _window(27000.0, 27100.0, "easy"),
-            _window(35000.0, 35050.0, "easy"),
+            _window(27000.0, 27100.0),
+            _window(35000.0, 35050.0),
         ]
     )
     rows = [SweepRow(1, {}, rA), SweepRow(2, {}, rB)]
@@ -586,8 +572,8 @@ def test_resolve_regions_defaults_when_unset():
 
 def test_plot_window_planning_honors_explicit_zoom():
     # two explicit windows -> exactly two zoom columns, regardless of divergence.
-    r1 = _windows_result([_window(27000.0, 27040.0, "hard", free=(0,))])
-    r2 = _windows_result([_window(27000.0, 27040.0, "easy", free=(0,))])
+    r1 = _windows_result([_window(27000.0, 27040.0, free=(0,))])
+    r2 = _windows_result([_window(27000.0, 27040.0, free=(0,))])
     rows = [
         SweepRow(6.0, _window_metrics(r1), r1),
         SweepRow(8.0, _window_metrics(r2), r2),

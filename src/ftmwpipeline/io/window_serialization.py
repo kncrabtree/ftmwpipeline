@@ -18,9 +18,7 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage4_windows``)::
     windows/
         window_0000/
             .attrs:
-                window_id, freq_min, freq_max, difficulty ("easy"|"hard"),
-                batch, split_proposal (NaN if none), needs_joint_treatment,
-                diagnostics (JSON)
+                window_id, freq_min, freq_max, batch, diagnostics (JSON)
             free_peak_indices        [i8]  indices into the Stage 3 peak list
             fixed_peak_index         [i8]  ditto, for fixed contributors
             fixed_primary_window_id  [i8]
@@ -31,8 +29,8 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage4_windows``)::
 
 Round-trip contract: ``load`` -> edit -> ``save`` -> ``load`` returns the
 edited plan. A malformed group (missing required attr/dataset, mismatched
-fixed-contributor column lengths, unknown difficulty label) raises
-``ValueError`` loudly rather than silently dropping or guessing.
+fixed-contributor column lengths) raises ``ValueError`` loudly rather than
+silently dropping or guessing.
 """
 
 import json
@@ -45,11 +43,9 @@ import numpy as np
 from ..core.data_structures import (
     FitWindow,
     FixedContributor,
-    WindowDifficulty,
     WindowPlan,
 )
 
-_VALID_DIFFICULTY = {d.value for d in WindowDifficulty}
 _FIXED_COLUMNS = (
     "fixed_peak_index",
     "fixed_primary_window_id",
@@ -87,12 +83,7 @@ def save_window_plan_to_hdf5(plan: WindowPlan, h5_group: h5py.Group) -> None:
         wg.attrs["window_id"] = int(w.window_id)
         wg.attrs["freq_min"] = float(w.freq_range[0])
         wg.attrs["freq_max"] = float(w.freq_range[1])
-        wg.attrs["difficulty"] = w.difficulty.value
         wg.attrs["batch"] = int(w.batch)
-        wg.attrs["split_proposal"] = (
-            float("nan") if w.split_proposal is None else float(w.split_proposal)
-        )
-        wg.attrs["needs_joint_treatment"] = bool(w.needs_joint_treatment)
         wg.attrs["diagnostics"] = json.dumps(w.diagnostics, default=str)
 
         wg.create_dataset(
@@ -144,8 +135,8 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
     ------
     ValueError
         If the ``windows`` subgroup is missing, a window subgroup lacks a
-        required attribute/dataset, the fixed-contributor columns have
-        mismatched lengths, or a difficulty label is not ``easy``/``hard``.
+        required attribute/dataset, or the fixed-contributor columns have
+        mismatched lengths.
     """
     if "windows" not in h5_group:
         raise ValueError("stage4_windows group missing required 'windows' subgroup")
@@ -162,17 +153,9 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
     windows: List[FitWindow] = []
     for name in sorted(windows_group.keys()):
         wg = windows_group[name]
-        for attr in ("window_id", "freq_min", "freq_max", "difficulty", "batch"):
+        for attr in ("window_id", "freq_min", "freq_max", "batch"):
             if attr not in wg.attrs:
                 raise ValueError(f"window {name!r} missing required attribute {attr!r}")
-        difficulty_label = wg.attrs["difficulty"]
-        if isinstance(difficulty_label, bytes):
-            difficulty_label = difficulty_label.decode("utf-8")
-        if difficulty_label not in _VALID_DIFFICULTY:
-            raise ValueError(
-                f"window {name!r} has invalid difficulty {difficulty_label!r}; "
-                f"expected one of {sorted(_VALID_DIFFICULTY)}"
-            )
 
         for col in ("free_peak_indices", *_FIXED_COLUMNS):
             if col not in wg:
@@ -210,12 +193,6 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
             for i in range(len(fixed_idx))
         ]
 
-        split_raw = wg.attrs.get("split_proposal", float("nan"))
-        split_proposal = (
-            None
-            if split_raw is None or np.isnan(float(split_raw))
-            else float(split_raw)
-        )
         win_diag = _load_json_attr(wg, "diagnostics", {})
 
         windows.append(
@@ -224,12 +201,7 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
                 freq_range=(float(wg.attrs["freq_min"]), float(wg.attrs["freq_max"])),
                 free_peak_indices=[int(x) for x in wg["free_peak_indices"][:]],
                 fixed_contributors=fixed_contributors,
-                difficulty=WindowDifficulty(difficulty_label),
                 batch=int(wg.attrs["batch"]),
-                split_proposal=split_proposal,
-                needs_joint_treatment=bool(
-                    wg.attrs.get("needs_joint_treatment", False)
-                ),
                 diagnostics=win_diag,
             )
         )

@@ -24,7 +24,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import h5py
 
-from ..core.data_structures import ComplexFT, WindowDifficulty, WindowPlan
+from ..core.data_structures import ComplexFT, WindowPlan
 from ..core.window_planning_settings import (
     WindowPlanningSettings,
 )
@@ -101,8 +101,7 @@ def assign_windows_impl(
     Raises
     ------
     ValueError
-        If Stage 3 has not been completed, or if ``settings=`` and ``preset=``
-        are both supplied.
+        If Stage 3 has not been completed.
     """
     with h5py.File(file_path, "r") as h5f:
         if "stage3_peaks" not in h5f:
@@ -223,14 +222,12 @@ def assign_windows_impl(
     # Re-assignment supersedes any Stage 5 fit built on the old plan.
     invalidate_downstream_stages(file_path, "stage4_windows")
 
-    n_hard = sum(1 for w in plan.windows if w.difficulty == WindowDifficulty.HARD)
     n_free = sum(w.n_free_peaks for w in plan.windows)
     n_fixed = sum(len(w.fixed_contributors) for w in plan.windows)
     logger.info(
-        "Stage 4: %d windows (%d hard), %d batches, %d free peaks, "
+        "Stage 4: %d windows, %d batches, %d free peaks, "
         "%d fixed contributors, %d dependencies",
         plan.n_windows,
-        n_hard,
         plan.n_batches,
         n_free,
         n_fixed,
@@ -240,8 +237,6 @@ def assign_windows_impl(
         "status": "success",
         "plan": plan,
         "n_windows": plan.n_windows,
-        "n_hard": n_hard,
-        "n_easy": plan.n_windows - n_hard,
         "n_batches": plan.n_batches,
         "n_free_peaks": n_free,
         "n_fixed_contributors": n_fixed,
@@ -274,11 +269,9 @@ def load_windows_impl(file_path: str) -> Dict[str, Any]:
         grp = h5f["stage4_windows"]
         plan = load_window_plan_from_hdf5(grp)
         creation_time = grp.attrs.get("creation_time", "unknown")
-    n_hard = sum(1 for w in plan.windows if w.difficulty == WindowDifficulty.HARD)
     return {
         "plan": plan,
         "n_windows": plan.n_windows,
-        "n_hard": n_hard,
         "n_batches": plan.n_batches,
         "creation_time": creation_time,
         "parameters_used": plan.parameters,

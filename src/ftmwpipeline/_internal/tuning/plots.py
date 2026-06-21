@@ -893,11 +893,7 @@ _WINDOW_REGION_WIDTH_MHZ = 150.0
 _WINDOW_N_REGIONS = 3
 _WINDOW_YMIN_SIGMA_FRACTION = 0.5
 _WINDOW_YMAX_PEAK_FACTOR = 1.5
-_DIFFICULTY_COLORS = {"easy": "tab:green", "hard": "tab:red"}
-
-
-def _difficulty(w: Any) -> str:
-    return getattr(getattr(w, "difficulty", None), "value", "easy")
+_WINDOW_SPAN_COLOR = "tab:blue"
 
 
 def _coherence_curve(result: Any) -> Any:
@@ -945,10 +941,9 @@ def _select_window_regions(rows: List[Any], width_mhz: float, k: int) -> List[An
     much the *partition* diverges across the swept values.
 
     Per candidate window the score is the variance, across values, of the number
-    of window edges falling inside it plus the variance of the count of HARD
-    windows touching it — so the panels land where the knob actually moves
-    boundaries or flips difficulty. When nothing diverges the ranking falls back
-    to the richest windows (most edges), so the panels still show structure.
+    of window edges falling inside it — so the panels land where the knob
+    actually moves boundaries. When nothing diverges the ranking falls back to
+    the richest windows (most edges), so the panels still show structure.
     Returns ``(lo_mhz, hi_mhz)`` tuples, low-frequency first.
     """
     import numpy as np
@@ -972,24 +967,20 @@ def _select_window_regions(rows: List[Any], width_mhz: float, k: int) -> List[An
 
     scored = []
     for lo, hi in edges:
-        n_edges, n_hard = [], []
+        n_edges = []
         for p in plans:
-            e_in = h_in = 0
+            e_in = 0
             for w in p.windows:
                 wlo, whi = w.freq_range
                 if whi < lo or wlo > hi:
                     continue
                 e_in += sum(1 for e in (wlo, whi) if lo <= e <= hi)
-                if _difficulty(w) == "hard":
-                    h_in += 1
             n_edges.append(e_in)
-            n_hard.append(h_in)
         ne = np.asarray(n_edges, dtype=float)
-        nh = np.asarray(n_hard, dtype=float)
         richness = float(ne.max()) if ne.size else 0.0
         if richness <= 0.0:
             continue  # no windows here — nothing to show
-        scored.append((float(ne.var() + nh.var()), richness, lo, hi))
+        scored.append((float(ne.var()), richness, lo, hi))
     if not scored:
         return []
 
@@ -1007,9 +998,9 @@ def _plot_boundary_shift(
     labels: List[str],
 ) -> None:
     """Full-width log spectrum drawn once, with every swept value's window
-    boundaries overlaid as vertical lines coloured by value and its HARD windows
-    hatched in the same colour — so a glance shows how the partition walks as the
-    knob changes. The zoom regions detailed below are shaded."""
+    boundaries overlaid as vertical lines colored by value — so a glance shows
+    how the partition walks as the knob changes. The zoom regions detailed below
+    are shaded."""
     import numpy as np
 
     ft = rows[0].result.get("active_ft")
@@ -1029,21 +1020,8 @@ def _plot_boundary_shift(
             continue
         for w in plan.windows:
             lo, hi = w.freq_range
-            if _difficulty(w) == "hard":
-                ax.axvspan(
-                    lo, hi, color=colors[i], alpha=0.10, lw=0, hatch="///", zorder=0
-                )
             for edge in (lo, hi):
                 ax.axvline(edge, color=colors[i], lw=0.6, alpha=0.65, zorder=2)
-            if w.split_proposal is not None:
-                ax.axvline(
-                    w.split_proposal,
-                    color=colors[i],
-                    lw=0.7,
-                    ls=":",
-                    alpha=0.8,
-                    zorder=2,
-                )
         ax.plot([], [], color=colors[i], lw=1.4, label=f"{leaf}={labels[i]}")
 
     for lo, hi in regions:
@@ -1065,8 +1043,8 @@ def _plot_boundary_shift(
     ax.grid(True, alpha=0.2, which="both")
     ax.legend(fontsize=7, ncol=min(n, 6), loc="upper right")
     ax.set_title(
-        "window boundaries per swept value (coloured by value; hatched = HARD, "
-        "dotted = split proposal; shaded = zoom regions below)"
+        "window boundaries per swept value (colored by value; "
+        "shaded = zoom regions below)"
     )
 
 
@@ -1079,9 +1057,9 @@ def _draw_window_panel(
     hi: float,
 ) -> None:
     """One value × one region: the log active-FT magnitude zoomed to the region,
-    the window spans shaded by difficulty with their boundaries and split
-    proposals, free peaks (filled) vs fixed contributors (open square), and the
-    S_coh coherence statistic with its T_edge threshold on a twin axis."""
+    the window spans shaded with their boundaries, free peaks (filled) vs fixed
+    contributors (open square), and the S_coh coherence statistic with its
+    T_edge threshold on a twin axis."""
     import numpy as np
 
     ft = result.get("active_ft")
@@ -1104,15 +1082,13 @@ def _draw_window_panel(
         ax.axvspan(
             max(wlo, lo),
             min(whi, hi),
-            color=_DIFFICULTY_COLORS.get(_difficulty(w), "tab:gray"),
-            alpha=0.13,
+            color=_WINDOW_SPAN_COLOR,
+            alpha=0.10,
             zorder=0,
         )
         for edge in (wlo, whi):
             if lo <= edge <= hi:
                 ax.axvline(edge, color="0.4", lw=0.6, zorder=2)
-        if w.split_proposal is not None and lo <= w.split_proposal <= hi:
-            ax.axvline(w.split_proposal, color="purple", lw=1.0, ls=":", zorder=3)
 
     # Free peaks (filled black) vs fixed contributors (open blue square).
     for w in plan.windows:
@@ -1176,15 +1152,14 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     overlay, then per-value × per-region zoom detail.
 
     The active FT is invariant across the sweep — only the partition changes.
-    The top trend tracks the plan's shape (n_windows, n_hard, n_fixed
-    contributors, n_split) vs the swept value; the full-width panel below draws
-    the band once and overlays every value's window boundaries coloured by value
-    (HARD hatched, split proposals dotted), shading the zoom regions. Each
-    remaining row is one swept value and each column one auto-selected ~150 MHz
-    region (chosen where the partition diverges most across values): log-scaled,
-    window spans shaded by difficulty, free peaks filled / fixed contributors
-    open, and the S_coh coherence statistic with its T_edge threshold on a twin
-    axis — the statistic that set the boundaries.
+    The top trend tracks the plan's shape (n_windows, n_fixed contributors,
+    n_dep) vs the swept value; the full-width panel below draws the band once
+    and overlays every value's window boundaries colored by value, shading the
+    zoom regions. Each remaining row is one swept value and each column one
+    auto-selected ~150 MHz region (chosen where the partition diverges most
+    across values): log-scaled, window spans shaded, free peaks filled / fixed
+    contributors open, and the S_coh coherence statistic with its T_edge
+    threshold on a twin axis — the statistic that set the boundaries.
     """
     import matplotlib.pyplot as plt
     import numpy as np
@@ -1228,9 +1203,8 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
     ]
     for col, color, marker in (
         ("n_windows", "0.2", "o"),
-        ("n_hard", "tab:red", "^"),
         ("n_fixed", "tab:blue", "s"),
-        ("n_split", "tab:purple", "D"),
+        ("n_dep", "tab:purple", "D"),
     ):
         ys = [r.metrics.get(col) for r in rows]
         ax_trend.plot(xs, ys, marker + "-", color=color, label=col)
@@ -1274,21 +1248,19 @@ def plot_window_planning(spec: Any, rows: List[Any], ctx: Any) -> Any:
             markerfacecolor="none",
             label="fixed contributor",
         ),
-        Line2D([], [], color="tab:green", lw=6, alpha=0.4, label="EASY window"),
-        Line2D([], [], color="tab:red", lw=6, alpha=0.4, label="HARD window"),
+        Line2D([], [], color=_WINDOW_SPAN_COLOR, lw=6, alpha=0.4, label="fit window"),
         Line2D(
             [], [], color="tab:purple", lw=1.2, alpha=0.55, label=r"$S_{coh}$ coherence"
         ),
         Line2D(
             [], [], color="crimson", ls="--", label=r"$T_{edge}$ coherence threshold"
         ),
-        Line2D([], [], color="purple", ls=":", label="split proposal"),
     ]
     fig.legend(
         handles=handles,
         fontsize=8,
         loc="lower center",
-        ncol=7,
+        ncol=5,
         bbox_to_anchor=(0.5, -0.01),
     )
     fig.suptitle(f"Window-planning sweep: {spec.path}")

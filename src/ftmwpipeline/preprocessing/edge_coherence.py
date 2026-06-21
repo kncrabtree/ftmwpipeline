@@ -97,7 +97,7 @@ def max_cumsum_statistic(z: np.ndarray, sigma: float) -> Tuple[float, int]:
     -------
     tuple of (float, int)
         ``(S_cum, t_hot)`` where ``t_hot`` is the 0-based index of the band
-        element at which the running statistic is maximised — i.e. the edge of
+        element at which the running statistic is maximized — i.e. the edge of
         the coherent stretch. ``(0.0, 0)`` for an empty band / degenerate
         sigma.
     """
@@ -117,13 +117,13 @@ def rolling_coherence(
     rms_noise: np.ndarray,
     band_m: int = DEFAULT_EDGE_M,
 ) -> np.ndarray:
-    """Rolling ``S_coh`` across a spectrum, one value per band centre.
+    """Rolling ``S_coh`` across a spectrum, one value per band center.
 
     A length-M band slides over the spectrum; the statistic of the band
-    starting at index ``s`` is assigned to its centre ``s + M//2``. The per-band
+    starting at index ``s`` is assigned to its center ``s + M//2``. The per-band
     ``sigma`` is the mean of ``rms_noise`` over the band (the report's locally-
     varying noise — never a global median). Positions with no full band
-    centred on them (the first/last ~M/2 points) are ``NaN``.
+    centered on them (the first/last ~M/2 points) are ``NaN``.
 
     Parameters
     ----------
@@ -140,7 +140,7 @@ def rolling_coherence(
     -------
     np.ndarray
         Float array the same length as ``complex_spectrum``; entry ``c`` is the
-        ``S_coh`` of the band centred at ``c``, or ``NaN`` near the edges. If
+        ``S_coh`` of the band centered at ``c``, or ``NaN`` near the edges. If
         the spectrum is shorter than ``band_m`` the single whole-spectrum
         statistic is placed at the midpoint and all other entries are ``NaN``.
 
@@ -177,8 +177,8 @@ def rolling_coherence(
         stat = np.abs(band_sum) / (band_sigma * np.sqrt(band_m))
     stat = np.where(band_sigma > 0.0, stat, 0.0)
 
-    centres = np.arange(band_sum.size) + band_m // 2
-    out[centres] = stat
+    centers = np.arange(band_sum.size) + band_m // 2
+    out[centers] = stat
     return out
 
 
@@ -198,7 +198,7 @@ def above_threshold_intervals(
     ----------
     rolling : np.ndarray
         Rolling ``S_coh`` array from :func:`rolling_coherence`.
-    threshold : float, default 3.0
+    threshold : float, default 8.0
         ``S_coh`` threshold ``T_edge``.
 
     Returns

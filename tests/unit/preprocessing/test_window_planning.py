@@ -15,7 +15,6 @@ from ftmwpipeline.core.data_structures import (
     MergeRequest,
     Peak,
     PeakClassification,
-    WindowDifficulty,
 )
 from ftmwpipeline.preprocessing.window_planning import build_window_plan, replan
 
@@ -88,7 +87,7 @@ def _assert_invariants(plan):
 
 
 class TestIsolatedStrongLine:
-    def test_single_window_hard(self):
+    def test_single_window(self):
         freqs, spec, rms, peaks = _synthetic(
             [(30040.0, 2.0, PeakClassification.STRONG)]
         )
@@ -96,7 +95,6 @@ class TestIsolatedStrongLine:
         assert plan.n_windows == 1
         w = plan.windows[0]
         assert w.free_peak_indices == [0]
-        assert w.difficulty == WindowDifficulty.HARD
         assert not w.fixed_contributors
         assert not plan.dependency_edges
         assert w.freq_range[0] <= 30040.0 <= w.freq_range[1]
@@ -133,7 +131,6 @@ class TestStrongCluster:
         assert plan.n_windows == 1
         w = plan.windows[0]
         assert sorted(w.free_peak_indices) == [0, 1]
-        assert w.difficulty == WindowDifficulty.HARD
         _assert_invariants(plan)
 
 
@@ -166,15 +163,14 @@ class TestWeakLineOnSkirt:
         # ... and a dependency edge + batch ordering follows.
         assert (weak_w.window_id, strong_w.window_id) in plan.dependency_edges
         assert weak_w.batch > strong_w.batch
-        assert weak_w.difficulty == WindowDifficulty.HARD
 
     def test_distant_weak_line_is_independent(self):
         """A weak line beyond the analytic skirt-magnitude threshold of any
-        strong line is an easy, independent window with no fixed
-        contributor. With Tier-1 magnitude-based attachment, "independent"
-        means the strong line's predicted mean |skirt| on this window's
-        grid sits below ``threshold * sigma_c`` -- not that the window
-        sits outside any rolling-coherence-touched region."""
+        strong line is an independent window with no fixed contributor. With
+        Tier-1 magnitude-based attachment, "independent" means the strong
+        line's predicted mean |skirt| on this window's grid sits below
+        ``threshold * sigma_c`` -- not that the window sits outside any
+        rolling-coherence-touched region."""
         # Strong intensity 0.3 at 140 MHz separation predicts mean skirt
         # ~4.5e-5 = 0.006 * sigma_c, well below the 0.1 sigma_c threshold.
         freqs, spec, rms, peaks = _synthetic(
@@ -184,15 +180,13 @@ class TestWeakLineOnSkirt:
             ],
             n=12000,
         )
-        # Points cap pinned off: the weak window's minimum width (2 * 2 MHz
-        # half-width) exceeds the default points cap on this fine synthetic
-        # grid (96 points = 1.92 MHz), which would flip its difficulty to HARD.
+        # Points cap pinned off (the default 96-point cap would split this
+        # fine synthetic grid).
         plan = build_window_plan(
             peaks, freqs, spec, rms, acquisition_us=15.0, max_window_width_points=0
         )
         weak_w = next(w for w in plan.windows if 1 in w.free_peak_indices)
         assert not weak_w.fixed_contributors
-        assert weak_w.difficulty == WindowDifficulty.EASY
         assert weak_w.batch == 0
         _assert_invariants(plan)
 
@@ -351,14 +345,12 @@ class TestLeakageArtifactPruning:
         _assert_invariants(plan)
 
 
-class TestDifficultyAndWidthCap:
-    def test_over_cap_cluster_is_split_not_flagged(self):
+class TestWidthCap:
+    def test_over_cap_cluster_is_split(self):
         # The width cap is enforced structurally by the cap split (on peak
         # content), so an over-cap cluster is broken into within-cap windows
-        # rather than left whole and flagged. ``width_cap_hit`` is judged on
-        # content, which the split guarantees stays within the cap -- so no
-        # surviving window is flagged too-wide, and there is nothing to propose
-        # splitting (the F2 fix: never re-bisect a content-fitting window).
+        # rather than left whole (the F2 fix: never re-bisect a content-fitting
+        # window, but always split a genuinely over-content cluster).
         lines = [
             (30040.0 + 0.5 * i, 3.0, PeakClassification.STRONG) for i in range(8)
         ]  # 8 strong lines 0.5 MHz apart -> ~3.5 MHz of coupled content
@@ -375,8 +367,6 @@ class TestDifficultyAndWidthCap:
         assert plan.n_windows >= 2, "over-cap cluster must be split"
         for w in plan.windows:
             assert _content_mhz(w, peaks) <= 2.0 + 1e-6
-            assert w.diagnostics["width_cap_hit"] is False
-            assert w.split_proposal is None and not w.needs_joint_treatment
         _assert_invariants(plan)
 
 
@@ -681,7 +671,7 @@ class TestReplanMerge:
     """
 
     def _two_window_plan(self):
-        """Two well-separated EASY weak windows -- a clean merge fixture."""
+        """Two well-separated weak windows -- a clean merge fixture."""
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30030.0, 0.05, PeakClassification.WEAK),

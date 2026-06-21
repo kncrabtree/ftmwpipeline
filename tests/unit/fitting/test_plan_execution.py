@@ -28,7 +28,6 @@ from ftmwpipeline.core.data_structures import (
     Peak,
     PeakClassification,
     Sideband,
-    WindowDifficulty,
     WindowPlan,
 )
 from ftmwpipeline.fitting.active_ft import ActiveFTResult
@@ -491,7 +490,6 @@ class TestExecutePlanHappyPath:
             freq_range=(strong_freq - 0.6, strong_freq + 0.6),
             free_peak_indices=[0],
             fixed_contributors=[],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         # Window B: tight around the weak line; A is its frozen contributor.
@@ -507,7 +505,6 @@ class TestExecutePlanHappyPath:
                     freeze_eligible=True,
                 )
             ],
-            difficulty=WindowDifficulty.EASY,
             batch=1,
         )
         plan = WindowPlan(
@@ -1113,7 +1110,6 @@ class TestStructuralReplan:
             window_id=0,
             freq_range=(36108.0, 36112.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         plan = WindowPlan(windows=[win], topological_order=[0])
@@ -1142,20 +1138,18 @@ class TestStructuralReplan:
         )
 
         # Manual two-window plan: boundary at 36105.0, peak in window A.
-        # Both windows EASY, no fixed contributors -- the dispatcher will
+        # Both windows have no fixed contributors -- the dispatcher will
         # blame the flagged edge on no contributor and merge.
         win_a = FitWindow(
             window_id=0,
             freq_range=(36100.0, 36105.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         win_b = FitWindow(
             window_id=1,
             freq_range=(36105.0, 36110.0),
             free_peak_indices=[],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         plan = WindowPlan(
@@ -1215,7 +1209,6 @@ class TestStructuralReplan:
             window_id=0,
             freq_range=(36100.0, 36105.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.HARD,
             batch=0,
         )
         # B claims the peak in A as a fixed contributor (the standard
@@ -1233,7 +1226,6 @@ class TestStructuralReplan:
                     freeze_eligible=True,
                 )
             ],
-            difficulty=WindowDifficulty.HARD,
             batch=1,
         )
         plan = WindowPlan(
@@ -1279,7 +1271,6 @@ class TestStructuralReplan:
             window_id=0,
             freq_range=(36100.0, 36105.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         plan = WindowPlan(
@@ -1317,14 +1308,12 @@ class TestStructuralReplan:
             window_id=0,
             freq_range=(36100.0, 36105.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         win_b = FitWindow(
             window_id=1,
             freq_range=(36105.0, 36110.0),
             free_peak_indices=[],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         plan = WindowPlan(

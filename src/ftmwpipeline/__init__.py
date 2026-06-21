@@ -26,7 +26,6 @@ from ftmwpipeline.core.data_structures import (
     PeakClassification,
     Sideband,
     SpectralWindow,
-    WindowDifficulty,
     WindowPlan,
 )
 
@@ -35,32 +34,6 @@ from ftmwpipeline.pipeline import Pipeline
 
 # Convenience workflow functions (thin wrappers over Pipeline)
 from ftmwpipeline.workflows import batch_process_experiments, process_experiment
-
-# TODO: Fix imports for other modules when they're implemented
-# # Preprocessing functions
-# from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_scatter
-# from ftmwpipeline.preprocessing.data_loading import load_blackchirp_data
-
-# # Window assignment
-# from ftmwpipeline.window_assignment.greedy_assignment import assign_analysis_windows
-
-# # Fitting algorithms
-# from ftmwpipeline.fitting.time_domain import fit_time_domain_peaks
-# from ftmwpipeline.fitting.conservative import fit_conservative_time_domain
-# from ftmwpipeline.fitting.validation import validate_fit_results
-
-# # Import submodules to make them accessible
-# from ftmwpipeline import (
-#     core,
-#     preprocessing,
-#     peak_detection,
-#     window_assignment,
-#     fitting,
-#     visualization,
-#     io,
-#     config,
-#     utils,
-# )
 
 __all__ = [
     # Version info
@@ -77,7 +50,6 @@ __all__ = [
     "FIDProcessingParameters",
     "PeakClassification",
     "Sideband",
-    "WindowDifficulty",
     "FixedContributor",
     "FitWindow",
     "WindowPlan",

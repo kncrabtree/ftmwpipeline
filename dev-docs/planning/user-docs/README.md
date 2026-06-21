@@ -116,25 +116,55 @@ before any code change (per the per-stage gate).
 - **Stale `README.md` status section.** The root `README.md` states Stages 3–5
   are "not yet implemented"; all stages ship. Update during the repository
   cleanup pass.
-- **Window difficulty (HARD/EASY) is computed but unused downstream.** Stage 4's
-  `window_planning.py` sets `w.difficulty` (HARD when a window has a strong line,
-  a fixed contributor, is over-wide, or fails the edge-coherence test), but
-  nothing in Stage 5/6/fitting branches on it — only `window_visualization.py`
-  shades by it and the CLI/logging report counts. The peak **STRONG** tier that
-  partly feeds it is *not* vestigial (it gates fixed-contributor selection and
-  strong-cluster grouping), but the difficulty label itself is a candidate to
-  demote to a pure diagnostic or remove. Assess during the Stage 4 review.
-- **`window_assignment` is a dead Phase-5 placeholder package.** Same pattern as
-  the now-removed `peak_detection` stubs (`assign_analysis_windows` /
-  `optimize_window_boundaries` / `resolve_overlaps` all raise
-  `NotImplementedError`); the real Stage 4 lives in `preprocessing/`. Remove
-  during the Stage 4 review (kept this session to stay scoped to Stage 3; a
-  `test_package_imports` case still imports it).
 
 ## Resolved during review
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Stage 4 review: difficulty/split annotations removed, dead stub package
+  deleted, the window plot recolored, British spellings swept.** The Stage 4
+  `WindowDifficulty` (HARD/EASY) label, the `FitWindow.split_proposal`
+  frequency, and the `needs_joint_treatment` flag were *computed but consumed by
+  no downstream stage* — Stage 5's structural-replan handshake is driven by its
+  own fit-time edge-coherence check emitting `MergeRequest`s, never by the
+  Stage 4 hints, and nothing branches on the difficulty label (it reached only
+  the `windows run` summary, the `windows show` shading, the `scan` tuning
+  plots, and one line of the Stage 6 report). With sign-off all three were
+  removed end to end: the data structures (`WindowDifficulty` enum + the three
+  `FitWindow` fields + both `__repr__`s + the `core`/package exports), the
+  window-planning step 6 (which now only records the per-window
+  `edge_coherence_statistic`/`edge_coherence_fail` diagnostic — the difficulty
+  classification, the content-vs-cap `too_wide` test, and the
+  `split_proposal`/`needs_joint_treatment` assignment are gone, and the
+  now-dead `edge_m`/`max_window_width_mhz` parameters were dropped from
+  `_finalize_plan`), the HDF5 serialization (the `difficulty` required attr +
+  its `_VALID_DIFFICULTY` validation, the `split_proposal` NaN column, and the
+  `needs_joint_treatment` attr), the `stage4_impl`/`pipeline`/`api`/CLI
+  summaries and docstrings (the `n_hard`/`n_easy` result keys and the
+  hard/split/joint print lines), the `scan` surface (the `n_hard`/`n_easy`/
+  `n_split` metric columns + the two Stage 4 tuning plots' HARD hatching/split
+  dotting/legend), and the Stage 6 report (`n_hard_windows` + the "N flagged
+  hard (joint treatment)" line). The dead `window_assignment` placeholder
+  package (`assign_analysis_windows` / `optimize_window_boundaries` /
+  `resolve_overlaps`, three `NotImplementedError` "Phase 5" stubs — the live
+  stage is `preprocessing/window_planning.py`) was deleted along with the
+  commented-out re-exports in the package `__init__` and the
+  `test_package_imports` case. `window_visualization.plot_window_plan` was
+  recolored to the UC Davis brand palette (uniform `AGGIE_GOLD` window spans now
+  that difficulty is gone, `AGGIE_BLUE` free peaks, `POPPY` fixed-contributor
+  squares, `PINOT` S_coh trace, `DOUBLE_DECKER` `T_edge` line) so the Stage 4
+  doc figure will match the committed Stage 0/1/2/2b/3 set, and the
+  `split_proposal` marker was dropped. Two stale docstrings were corrected (the
+  `edge_coherence.above_threshold_intervals` "default 3.0" → 8.0; the
+  `assign_windows_impl` "raises if settings= and preset= are both supplied"
+  clause, left over from before composition was allowed) and British spellings
+  swept from the Stage 4 modules. The `plan_revision` round-trip gap was left
+  as-is (the field is never persisted with a non-zero value) and its docstring
+  trimmed to say so. Validation: the Stage 4 unit/integration/serialization,
+  the fitting plan-execution/result-conversion, the tuning-plot, the
+  Stage 6 report, the scan cross-interface, and the package-import suites pass
+  (290 tests across the touched suites); the touched files are
+  black/isort/mypy-clean.
 - **Stage 3 review: dead stub package removed, stale wrapper docstrings fixed,
   detection plot recolored, British spellings swept.** The whole
   `peak_detection` package (`basic_detection` / `hybrid_detection` /

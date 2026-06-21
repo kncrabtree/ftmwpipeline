@@ -25,7 +25,6 @@ from .data_structures import (
     PeakClassification,
     Sideband,
     SpectralWindow,
-    WindowDifficulty,
     WindowPlan,
 )
 
@@ -40,7 +39,6 @@ __all__ = [
     "FIDProcessingParameters",
     "PeakClassification",
     "Sideband",
-    "WindowDifficulty",
     "FixedContributor",
     "FitWindow",
     "WindowPlan",

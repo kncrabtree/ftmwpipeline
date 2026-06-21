@@ -1219,19 +1219,6 @@ class FTMWData:
 # peak list). See ``dev-docs/planning/stage4-window-assignment.md``.
 
 
-class WindowDifficulty(Enum):
-    """Stage 4 difficulty class for a fit window.
-
-    ``EASY`` windows are isolated/independent and can be fit in parallel;
-    ``HARD`` windows contain or are materially influenced by a strong line (or
-    exceed the width cap, or sit in a coupled cluster) and warrant extra Stage 5
-    budget.
-    """
-
-    EASY = "easy"
-    HARD = "hard"
-
-
 @dataclass
 class FixedContributor:
     """A strong line, fit freely in *its own* window, contributing leakage here.
@@ -1295,30 +1282,19 @@ class FitWindow:
         this window (leakage-artifact detections already pruned out).
     fixed_contributors : list of FixedContributor
         Out-of-band strong lines whose frozen leakage is carried here.
-    difficulty : WindowDifficulty
-        ``EASY`` or ``HARD``.
     batch : int
         Parallel-execution group: all windows in a batch are mutually
         independent and depend only on earlier batches.
-    split_proposal : float, optional
-        A complex-edge-clean interior frequency at which Stage 5 *may* split a
-        too-wide hard window. ``None`` when no split is proposed.
-    needs_joint_treatment : bool
-        Set when a hard window is strongly coupled with no clean interior split
-        point — Stage 5 must treat it jointly.
     diagnostics : dict
         Free-form diagnostics (predicted vs trimmed extent, edge-statistic
-        values, width-cap hit flag, pruned-artifact count, …).
+        values, pruned-artifact count, …).
     """
 
     window_id: int
     freq_range: Tuple[float, float]
     free_peak_indices: List[int] = field(default_factory=list)
     fixed_contributors: List[FixedContributor] = field(default_factory=list)
-    difficulty: WindowDifficulty = WindowDifficulty.EASY
     batch: int = 0
-    split_proposal: Optional[float] = None
-    needs_joint_treatment: bool = False
     diagnostics: Dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -1336,7 +1312,7 @@ class FitWindow:
             f"FitWindow(id={self.window_id}, "
             f"range=[{self.freq_range[0]:.1f}, {self.freq_range[1]:.1f}] MHz, "
             f"free={self.n_free_peaks}, fixed={len(self.fixed_contributors)}, "
-            f"{self.difficulty.value}, batch={self.batch})"
+            f"batch={self.batch})"
         )
 
 
@@ -1394,9 +1370,9 @@ class WindowPlan:
         Monotonic counter bumped each time
         :func:`~ftmwpipeline.preprocessing.window_planning.replan` applies a
         structural change. ``0`` is the initial plan from
-        :func:`~ftmwpipeline.preprocessing.window_planning.build_window_plan`;
-        downstream stages can use this to detect plan churn between Stage 5
-        invocations.
+        :func:`~ftmwpipeline.preprocessing.window_planning.build_window_plan`.
+        It tracks the live plan during Stage 5's structural-replan handshake; it
+        is not persisted (a freshly built plan is always revision 0).
     """
 
     windows: List[FitWindow] = field(default_factory=list)
@@ -1426,9 +1402,8 @@ class WindowPlan:
         raise KeyError(f"no window with window_id={window_id}")
 
     def __repr__(self) -> str:
-        n_hard = sum(1 for w in self.windows if w.difficulty == WindowDifficulty.HARD)
         return (
-            f"WindowPlan(n_windows={self.n_windows}, hard={n_hard}, "
+            f"WindowPlan(n_windows={self.n_windows}, "
             f"n_batches={self.n_batches}, "
             f"n_dependencies={len(self.dependency_edges)})"
         )

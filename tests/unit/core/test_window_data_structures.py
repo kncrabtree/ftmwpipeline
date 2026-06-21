@@ -5,7 +5,6 @@ import pytest
 from ftmwpipeline.core.data_structures import (
     FitWindow,
     FixedContributor,
-    WindowDifficulty,
     WindowPlan,
 )
 
@@ -15,10 +14,7 @@ class TestFitWindow:
         w = FitWindow(window_id=2, freq_range=(100.0, 140.0))
         assert w.width_mhz == 40.0
         assert w.n_free_peaks == 0
-        assert w.difficulty == WindowDifficulty.EASY
         assert w.batch == 0
-        assert w.split_proposal is None
-        assert not w.needs_joint_treatment
 
     def test_carries_contributors(self):
         fc = FixedContributor(peak_index=7, primary_window_id=0, frequency_mhz=123.4)
@@ -27,12 +23,11 @@ class TestFitWindow:
             freq_range=(120.0, 130.0),
             free_peak_indices=[3, 4, 5],
             fixed_contributors=[fc],
-            difficulty=WindowDifficulty.HARD,
         )
         assert w.n_free_peaks == 3
         assert w.fixed_contributors[0].peak_index == 7
         assert w.fixed_contributors[0].freeze_eligible is True
-        assert "hard" in repr(w)
+        assert "fixed=1" in repr(w)
 
 
 class TestWindowPlan:
@@ -42,7 +37,6 @@ class TestWindowPlan:
             FitWindow(
                 window_id=1,
                 freq_range=(10.0, 20.0),
-                difficulty=WindowDifficulty.HARD,
                 batch=1,
             ),
         ]
@@ -53,7 +47,7 @@ class TestWindowPlan:
         )
         assert plan.n_windows == 2
         assert plan.n_batches == 2
-        assert plan.window(1).difficulty == WindowDifficulty.HARD
+        assert plan.window(1).batch == 1
         with pytest.raises(KeyError):
             plan.window(99)
 

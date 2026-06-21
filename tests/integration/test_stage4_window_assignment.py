@@ -19,7 +19,6 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline import Pipeline
-from ftmwpipeline.core.data_structures import WindowDifficulty
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -71,7 +70,6 @@ def test_cross_interface_consistency(baseline_2638_stage3, temp_ftmw_dir):
             assert a.window_id == b.window_id
             assert a.freq_range == pytest.approx(b.freq_range)
             assert a.free_peak_indices == b.free_peak_indices
-            assert a.difficulty == b.difficulty
             assert a.batch == b.batch
 
 
@@ -97,7 +95,7 @@ def test_real_data_sanity(baseline_2638_stage3, temp_ftmw_dir):
     )
     assert len(free) == len(promoted) - pruned
 
-    # Each known strong line anchors a HARD window.
+    # Each known strong line anchors a window.
     for line in KNOWN_STRONG:
         hits = [
             w
@@ -105,13 +103,6 @@ def test_real_data_sanity(baseline_2638_stage3, temp_ftmw_dir):
             if w.freq_range[0] - 1.0 <= line <= w.freq_range[1] + 1.0
         ]
         assert hits, f"no window near known strong line {line} MHz"
-        assert any(
-            w.difficulty == WindowDifficulty.HARD for w in hits
-        ), f"strong line {line} MHz not in a hard window"
-
-    # Dense strong regions are flagged hard, not exploded into noise windows.
-    n_hard = sum(1 for w in plan.windows if w.difficulty == WindowDifficulty.HARD)
-    assert n_hard > 0
 
 
 def test_serialization_round_trip_and_hand_edit(baseline_2638_stage3, temp_ftmw_dir):
@@ -126,25 +117,18 @@ def test_serialization_round_trip_and_hand_edit(baseline_2638_stage3, temp_ftmw_
     for a, b in zip(plan.windows, reloaded.windows):
         assert a.freq_range == pytest.approx(b.freq_range)
         assert a.free_peak_indices == b.free_peak_indices
-        assert a.difficulty == b.difficulty
 
     # Hand-edit the persisted plan and confirm it reloads edited.
-    from ftmwpipeline.io.window_serialization import (
-        load_window_plan_from_hdf5,
-        save_window_plan_to_hdf5,
-    )
+    from ftmwpipeline.io.window_serialization import save_window_plan_to_hdf5
 
     edited = ftmw.load_windows(fp)
-    edited.windows[0].difficulty = (
-        WindowDifficulty.EASY
-        if edited.windows[0].difficulty == WindowDifficulty.HARD
-        else WindowDifficulty.HARD
-    )
+    edited.windows[0].free_peak_indices = edited.windows[0].free_peak_indices[:1]
+    expected = list(edited.windows[0].free_peak_indices)
     with h5py.File(fp, "a") as h5f:
         del h5f["stage4_windows"]
         save_window_plan_to_hdf5(edited, h5f.create_group("stage4_windows"))
     again = ftmw.load_windows(fp)
-    assert again.windows[0].difficulty == edited.windows[0].difficulty
+    assert again.windows[0].free_peak_indices == expected
 
 
 def test_redetection_invalidates_stage4(baseline_2638_stage3, temp_ftmw_dir):

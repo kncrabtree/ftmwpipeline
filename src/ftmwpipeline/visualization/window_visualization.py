@@ -2,11 +2,10 @@
 Stage 4 window-assignment diagnostic plot.
 
 Overlays the :class:`~ftmwpipeline.core.data_structures.WindowPlan` on the
-user's magnitude spectrum: each fit window's span (shaded by difficulty), its
-free peaks, its fixed contributors, and -- in a lower panel -- the rolling
-complex-edge coherence statistic with the ``T_edge`` threshold that drove the
-partition. Mirrors the matplotlib pattern of
-:mod:`ftmwpipeline.visualization.peak_visualization`.
+user's magnitude spectrum: each fit window's span, its free peaks, its fixed
+contributors, and -- in a lower panel -- the rolling complex-edge coherence
+statistic with the ``T_edge`` threshold that drove the partition. Mirrors the
+matplotlib pattern of :mod:`ftmwpipeline.visualization.peak_visualization`.
 """
 
 from typing import List, Optional, Tuple
@@ -14,18 +13,13 @@ from typing import List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
-from ..core.data_structures import Peak, WindowDifficulty, WindowPlan
+from ..core.data_structures import Peak, WindowPlan
 from ..preprocessing.edge_coherence import (
     DEFAULT_EDGE_M,
     DEFAULT_EDGE_THRESHOLD,
     rolling_coherence,
 )
 from ..preprocessing.leakage import deramp_to_active_start
-
-_DIFFICULTY_COLOR = {
-    WindowDifficulty.EASY: "tab:green",
-    WindowDifficulty.HARD: "tab:red",
-}
 
 
 def plot_window_plan(
@@ -65,7 +59,15 @@ def plot_window_plan(
     edge_m = int(plan.parameters.get("edge_m", DEFAULT_EDGE_M))
     threshold = float(plan.parameters.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))
 
-    from .report_style import apply_bare_style, resolve_title
+    from .report_style import (
+        AGGIE_BLUE,
+        AGGIE_GOLD,
+        DOUBLE_DECKER,
+        PINOT,
+        POPPY,
+        apply_bare_style,
+        resolve_title,
+    )
 
     order = np.argsort(frequencies)
     # De-ramp to the active-region turn-on so the displayed S_coh matches the
@@ -95,35 +97,24 @@ def plot_window_plan(
         frequencies,
         magnitude,
         lw=0.5,
-        color="0.4",
+        color="0.45",
         label="magnitude spectrum",
         zorder=1,
     )
 
-    # Window spans shaded by difficulty.
-    legended = set()
+    # Fit-window spans, uniformly shaded (Stage 4 is purely structural; no
+    # difficulty grading).
+    span_done = False
     for w in plan.windows:
-        color = _DIFFICULTY_COLOR.get(w.difficulty, "tab:gray")
-        label = None
-        if w.difficulty not in legended:
-            legended.add(w.difficulty)
-            label = f"{w.difficulty.value} window"
         ax.axvspan(
             w.freq_range[0],
             w.freq_range[1],
-            color=color,
-            alpha=0.12,
+            color=AGGIE_GOLD,
+            alpha=0.15,
             zorder=0,
-            label=label,
+            label=None if span_done else "fit window",
         )
-        if w.split_proposal is not None:
-            ax.axvline(
-                w.split_proposal,
-                color="purple",
-                lw=1.0,
-                ls=":",
-                zorder=3,
-            )
+        span_done = True
 
     # Free peaks and fixed contributors.
     free_done = fixed_done = False
@@ -135,7 +126,7 @@ def plot_window_plan(
                     p.frequency,
                     p.intensity,
                     s=28,
-                    color="black",
+                    color=AGGIE_BLUE,
                     marker="o",
                     zorder=5,
                     label=None if free_done else "free peak",
@@ -149,7 +140,7 @@ def plot_window_plan(
                     p.intensity,
                     s=70,
                     facecolors="none",
-                    edgecolors="tab:blue",
+                    edgecolors=POPPY,
                     marker="s",
                     linewidths=1.5,
                     zorder=6,
@@ -169,10 +160,10 @@ def plot_window_plan(
     ax.legend(loc="upper right", fontsize=8, ncol=2)
 
     # Rolling coherence statistic panel.
-    ax_stat.plot(ordered_freq, rolling, lw=0.6, color="tab:purple")
+    ax_stat.plot(ordered_freq, rolling, lw=0.6, color=PINOT)
     ax_stat.axhline(
         threshold,
-        color="crimson",
+        color=DOUBLE_DECKER,
         lw=1.0,
         ls="--",
         label=f"T_edge = {threshold:g}",

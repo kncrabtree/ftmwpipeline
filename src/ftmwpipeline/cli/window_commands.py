@@ -3,7 +3,7 @@ Window-assignment commands (Stage 4).
 
 Implements the ``windows run`` and ``windows show`` subcommands. Thin
 wrappers over the shared ``_internal.stage4_impl`` implementation -- identical
-behaviour to the Pipeline class and functional API.
+behavior to the Pipeline class and functional API.
 """
 
 import argparse
@@ -25,8 +25,8 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
 
     Turns the promoted Stage 3 peaks into a fit plan: disjoint analysis
     windows, each carrying the peaks to fit freely, the strong out-of-band
-    lines whose leakage is carried frozen, a fit dependency order, and a
-    difficulty class. The plan is persisted for hand-curation before Stage 5.
+    lines whose leakage is carried frozen, and a fit dependency order. The
+    plan is persisted for hand-curation before Stage 5.
 
     Requires Stage 3 ('peaks run') first.
     """
@@ -47,23 +47,13 @@ def cmd_assign_windows(args: argparse.Namespace) -> int:
         plan = result["plan"]
         print("\nWindow assignment completed successfully!")
         print(f"  Promoted peaks consumed: {result['n_promoted']:,}")
-        print(
-            f"  Windows: {result['n_windows']:,} "
-            f"({result['n_hard']:,} hard, {result['n_easy']:,} easy)"
-        )
+        print(f"  Windows: {result['n_windows']:,}")
         print(f"  Free peaks: {result['n_free_peaks']:,}")
         print(f"  Fixed contributors: {result['n_fixed_contributors']:,}")
         print(
             f"  Fit dependencies: {result['n_dependencies']:,}   "
             f"parallel batches: {result['n_batches']:,}"
         )
-        n_split = sum(1 for w in plan.windows if w.split_proposal is not None)
-        n_joint = sum(1 for w in plan.windows if w.needs_joint_treatment)
-        if n_split or n_joint:
-            print(
-                f"  Hard-window annotations: {n_split:,} split proposals, "
-                f"{n_joint:,} need joint treatment"
-            )
         unexplained = plan.diagnostics.get("unexplained_coherent_regions_mhz")
         if unexplained:
             print(
@@ -159,7 +149,7 @@ def register_window_commands(subparsers: Any) -> None:
             "Stage 4 window assignment.\n\n"
             "Turns the promoted Stage 3 peaks into a fit plan: disjoint\n"
             "analysis windows, each carrying free peaks, fixed (frozen-leakage)\n"
-            "contributors, a fit dependency order, and a difficulty class.\n"
+            "contributors, and a fit dependency order.\n"
             "Run 'peaks run' first."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,

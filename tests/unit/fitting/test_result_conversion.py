@@ -32,7 +32,6 @@ from ftmwpipeline.core.data_structures import (
     SpectralWindow,
     SpectrumFit,
     ThawInfo,
-    WindowDifficulty,
     WindowPlan,
 )
 from ftmwpipeline.fitting.peak_model import ModelPeak, molecular_frequency
@@ -584,14 +583,12 @@ class TestSpectrumFitMetadata:
             window_id=0,
             freq_range=(36100.0, 36105.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         win_b = FitWindow(
             window_id=1,
             freq_range=(36105.0, 36110.0),
             free_peak_indices=[],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         plan = WindowPlan(
@@ -625,7 +622,6 @@ class TestSpectrumFitMetadata:
             window_id=0,
             freq_range=(36100.0, 36110.0),
             free_peak_indices=[0],
-            difficulty=WindowDifficulty.EASY,
             batch=0,
         )
         merged_plan = WindowPlan(

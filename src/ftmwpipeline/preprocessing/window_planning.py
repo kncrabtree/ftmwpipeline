@@ -4,7 +4,7 @@ Stage 4 window-planning algorithm.
 This module turns the promoted Stage 3 peak list into a :class:`WindowPlan` --
 an ordered set of disjoint analysis windows, each carrying the peaks to fit
 freely, the strong out-of-band lines whose leakage must be carried frozen, a
-fit dependency DAG, and a difficulty class. It is *purely structural*: it makes
+fit dependency DAG. It is *purely structural*: it makes
 no fits and changes no spectrum (see
 ``dev-docs/planning/stage4-window-assignment.md``).
 
@@ -35,10 +35,9 @@ Outline (the plan's eight steps):
 5. Leakage-artifact detections -- a strong line's sidelobes that Stage 3's gap
    pass promoted as peaks -- are pruned from the free set once that line is a
    contributor (its analytic envelope explains them).
-6. Difficulty is strong-line-driven: a window is HARD if it contains/near a
-   strong line (in-band or as a fixed contributor) or exceeds the width cap;
-   EASY otherwise. Too-wide hard windows get a proposed split at a
-   complex-edge-clean interior point, or a ``needs_joint_treatment`` marker.
+6. Each window records a per-edge coherence diagnostic (does its edge band
+   still carry coherent leakage) for inspection -- nothing downstream branches
+   on it.
 7. The dependency DAG is topologically ordered into parallel batches.
 """
 
@@ -54,7 +53,6 @@ from ..core.data_structures import (
     MergeRequest,
     Peak,
     PeakClassification,
-    WindowDifficulty,
     WindowPlan,
 )
 from .edge_coherence import (
@@ -123,7 +121,7 @@ window is bounded only by ``max_window_width_mhz``. A fragmenting peak cap split
 dense cluster into windows too narrow for the Stage 5 AICc-with-``n_eff`` gate to
 behave: the perplexity ``n_eff`` collapsed on a few-point fragment, so the gate
 both under-fit (parking real lines) and over-fit (packing weak near-resolution
-peaks) on neighbouring slices of one physical cluster. Bounding a window by width
+peaks) on neighboring slices of one physical cluster. Bounding a window by width
 alone gives the gate enough informative bins to self-regulate K, fixing both at
 the root (cross-fixture: every issue-#3 fixture's SNR-aware pass improved or held).
 The strong-cluster merge and the cap split are still bounded by
@@ -392,8 +390,9 @@ def build_window_plan(
     edge_threshold : float
         ``S_coh`` threshold ``T_edge``.
     max_window_width_mhz : float
-        Width cap; a wider window is HARD and gets a split proposal.
-        Superseded by ``max_window_width_points`` when that is positive.
+        Width cap; merged spans wider than this are split at their sparsest
+        internal peak gaps. Superseded by ``max_window_width_points`` when that
+        is positive.
     max_window_width_points : int
         Width cap in grid points; ``0`` (the default) defers to
         ``max_window_width_mhz``. The portable form of the cap -- see
@@ -583,7 +582,7 @@ def build_window_plan(
     # outermost promoted peak. The merge and cap split leave wide empty margins
     # (a lone line proposes a full +/- half_idx span that may overlap nothing; a
     # cap split places its boundary at a gap midpoint that can sit far from the
-    # nearest peak), which leaves the feature off-centre and dilutes the
+    # nearest peak), which leaves the feature off-center and dilutes the
     # per-window statistics with noise-only bins. Trimming shrinks each span to
     # its peak content plus the margin so the outermost peaks sit ``half_idx``
     # points from the edge -- enough noise to anchor the leakage-wing baseline,
@@ -638,12 +637,8 @@ def build_window_plan(
         promoted=promoted,
         parameters=parameters,
         diagnostics=diagnostics,
-        edge_m=edge_m,
         trim_m=trim_m,
         edge_threshold=edge_threshold,
-        # The difficulty classifier's too-wide test must match the cap the
-        # split actually enforced.
-        max_window_width_mhz=cap_idx * step_mhz,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
         max_edge_free_neighbors=max_edge_free_neighbors,
@@ -663,10 +658,8 @@ def _finalize_plan(
     promoted: List[_PPeak],
     parameters: Dict[str, Any],
     diagnostics: Dict[str, Any],
-    edge_m: int,
     trim_m: int,
     edge_threshold: float,
-    max_window_width_mhz: float,
     min_freeze_snr: float,
     magnitude_attachment_threshold: float,
     max_edge_free_neighbors: int,
@@ -682,8 +675,7 @@ def _finalize_plan(
     * recomputes the fixed-contributor lists and dependency edges from the
       leakage-touched regions (step 4),
     * prunes leakage-artifact detections (step 5),
-    * classifies difficulty + sets ``split_proposal`` / ``needs_joint_treatment``
-      (step 6),
+    * records the per-window edge-coherence diagnostic (step 6),
     * topo-sorts and computes parallel batches (step 7),
     * records plan-level diagnostics.
 
@@ -815,52 +807,22 @@ def _finalize_plan(
     if total_pruned:
         diagnostics["n_pruned_leakage_artifacts"] = total_pruned
 
-    # --- Step 6: difficulty classification + width-cap split proposal -------
+    # --- Step 6: per-window edge-coherence diagnostic -----------------------
+    # Record whether either edge band still carries coherent leakage (rolling
+    # S_coh above threshold within trim_m of an edge) -- a hint that a strong
+    # line materially influences the window even when none is in-band. Purely
+    # diagnostic: nothing downstream branches on it.
     for w in windows:
-        has_strong = len(strong_by_window[w.window_id]) > 0
-        has_fixed = len(w.fixed_contributors) > 0
-        # Too-wide is judged on the peak *content* span, not the padded
-        # ``width_mhz`` (which carries the noise margin every window keeps). The
-        # cap split bounds content, so a correctly-sized window has content <=
-        # the cap even when its padding makes it physically wider; comparing the
-        # padded width would flag content-fitting windows and propose a split
-        # that re-bisects them -- the F2 defect this rework removes.
-        w_members = members_by_window[w.window_id]
-        if len(w_members) >= 2:
-            w_fs = [m.frequency for m in w_members]
-            content_mhz = max(w_fs) - min(w_fs)
-        else:
-            content_mhz = 0.0
-        too_wide = content_mhz > max_window_width_mhz
-        # Edge-coherence test: a window whose edge band still carries coherent
-        # leakage (rolling S_coh above threshold within trim_m of either edge)
-        # is materially influenced by a strong line even when none is in-band.
         lo, hi = w.diagnostics["grid_span"]
         edge_lo = rolling[max(lo - trim_m, 0) : lo + trim_m + 1]
         edge_hi = rolling[max(hi - trim_m, 0) : hi + trim_m + 1]
-        edge_fail = False
         edge_stat = 0.0
         for band in (edge_lo, edge_hi):
             finite_band = band[np.isfinite(band)]
             if finite_band.size:
                 edge_stat = max(edge_stat, float(np.max(finite_band)))
-        edge_fail = edge_stat > edge_threshold
         w.diagnostics["edge_coherence_statistic"] = edge_stat
-        w.diagnostics["edge_coherence_fail"] = bool(edge_fail)
-        w.difficulty = (
-            WindowDifficulty.HARD
-            if (has_strong or has_fixed or too_wide or edge_fail)
-            else WindowDifficulty.EASY
-        )
-        w.diagnostics["width_cap_hit"] = bool(too_wide)
-        if too_wide:
-            interior = rolling[lo + edge_m : hi - edge_m + 1]
-            finite = interior[np.isfinite(interior)]
-            if finite.size and float(np.min(finite)) < edge_threshold:
-                rel = int(np.argmin(np.where(np.isfinite(interior), interior, np.inf)))
-                w.split_proposal = float(ofreqs[lo + edge_m + rel])
-            else:
-                w.needs_joint_treatment = True
+        w.diagnostics["edge_coherence_fail"] = bool(edge_stat > edge_threshold)
 
     # --- Step 7: topological order + parallel batches -----------------------
     window_ids = [w.window_id for w in windows]
@@ -876,7 +838,7 @@ def _finalize_plan(
         # DAG acyclic; the matching FixedContributor can no longer be evaluated
         # from its primary's converged fit (the primary is no longer guaranteed
         # to precede the dependent). Discarding it outright -- the previous
-        # behaviour -- leaves a bright neighbour's leakage skirt subtracted from
+        # behavior -- leaves a bright neighbor's leakage skirt subtracted from
         # nowhere, the in-window lines under-fit: the issue-#3 cross-fixture
         # failure mode. Instead, the few most *dominant* orphaned contributors
         # per window are converted to EDGE-FREE: kept on the window but flagged
@@ -886,7 +848,7 @@ def _finalize_plan(
         # (ranked by aggregated predicted skirt) -- a dense, ultra-high-SNR
         # forest drops dozens of edges, and a self-contained skirt for every one
         # re-creates the global-crude over-subtraction that regressed the bulk
-        # fit; only genuinely dominant neighbours earn one. The rest are dropped
+        # fit; only genuinely dominant neighbors earn one. The rest are dropped
         # as before.
         drops_by_dep: Dict[int, set] = {}
         for w_id, p_id in dropped_edges:
@@ -900,7 +862,7 @@ def _finalize_plan(
             w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
             # Aggregate the predicted leakage skirt each orphaned primary
             # contributes to this window, so the cap keeps the strongest
-            # neighbours (the same analytic envelope the Tier-1 attachment uses).
+            # neighbors (the same analytic envelope the Tier-1 attachment uses).
             skirt_by_primary: Dict[int, float] = {}
             for fc in w.fixed_contributors:
                 if fc.primary_window_id not in doomed:
@@ -1044,7 +1006,7 @@ def _apply_merge(
         window_id=survivor_id,
         freq_range=(new_lo, new_hi),
         free_peak_indices=merged_free,
-        # fixed_contributors / difficulty / batch are rebuilt by _finalize_plan.
+        # fixed_contributors / batch are rebuilt by _finalize_plan.
         diagnostics=base_diag,
     )
 
@@ -1089,8 +1051,8 @@ def replan(
     available to thaw -- i.e. a real spectral feature crosses the window
     boundary. ``replan`` applies each request to the existing window list,
     then re-runs the bookkeeping tail of :func:`build_window_plan`
-    (contributor / dependency / difficulty / batch recomputation, artifact
-    pruning) against the new window list, and bumps
+    (contributor / dependency / batch recomputation, artifact pruning) against
+    the new window list, and bumps
     :attr:`WindowPlan.plan_revision`.
 
     The spectrum-dependent state (the rolling complex-edge coherence
@@ -1120,8 +1082,8 @@ def replan(
     WindowPlan
         A revised plan with ``plan_revision = plan.plan_revision + 1``,
         the merged windows, and freshly recomputed dependency edges,
-        difficulty, batches, and topological order. The disjoint-coverage
-        invariant is preserved.
+        batches, and topological order. The disjoint-coverage invariant is
+        preserved.
 
     Raises
     ------
@@ -1190,10 +1152,7 @@ def replan(
             freq_range=w.freq_range,
             free_peak_indices=list(w.free_peak_indices),
             fixed_contributors=[],  # rebuilt by _finalize_plan
-            difficulty=w.difficulty,
             batch=w.batch,
-            split_proposal=w.split_proposal,
-            needs_joint_treatment=w.needs_joint_treatment,
             diagnostics=dict(w.diagnostics),
         )
         for w in plan.windows
@@ -1211,16 +1170,8 @@ def replan(
         promoted=promoted,
         parameters=parameters,
         diagnostics=diagnostics,
-        edge_m=edge_m,
         trim_m=trim_m,
         edge_threshold=edge_threshold,
-        # Match build_window_plan: a positive points cap supersedes the MHz
-        # cap, so classify difficulty against the cap actually in force.
-        max_window_width_mhz=(
-            max_window_width_points * step_mhz
-            if max_window_width_points > 0
-            else max_window_width_mhz
-        ),
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
         max_edge_free_neighbors=max_edge_free_neighbors,

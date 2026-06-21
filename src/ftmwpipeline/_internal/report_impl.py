@@ -697,7 +697,6 @@ class _SummaryModel:
     ppw_median: Optional[float] = None
     ppw_max: Optional[int] = None
     ppw_pctiles: Dict[str, float] = field(default_factory=dict)
-    n_hard_windows: int = 0
     # Stage 5
     fit_params: Dict[str, Any] = field(default_factory=dict)
     tau0_us: Optional[float] = None
@@ -956,7 +955,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         window_params: Dict[str, Any] = {}
         widths: List[float] = []
         ppw: List[int] = []
-        n_hard = 0
         if "stage4_windows" in h5f:
             plan = load_window_plan_from_hdf5(h5f["stage4_windows"])
             n_windows_planned = plan.n_windows
@@ -967,9 +965,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
                 if getattr(w, "width_mhz", None) is not None
             ]
             ppw = [int(getattr(w, "n_free_peaks", 0)) for w in plan.windows]
-            n_hard = sum(
-                1 for w in plan.windows if str(getattr(w, "difficulty", "")) == "hard"
-            )
 
         # Which Stage 2b twins exist (drives the Stage 5 tau-source diagnosis).
         tau_exp_present = "stage2b_tau_calibration" in h5f
@@ -1184,7 +1179,6 @@ def _assemble_summary(file_path: Union[Path, str]) -> _SummaryModel:
         ppw_median=ppw_med,
         ppw_max=ppw_max,
         ppw_pctiles=ppw_pctiles,
-        n_hard_windows=n_hard,
         fit_params=dict(fit.parameters),
         tau0_us=_opt_float(fit.parameters.get("tau0_us")),
         tau_calibration_source=(
@@ -2204,8 +2198,6 @@ def _render_markdown(
         win_results.append(
             f"{m.ppw_median:.0f} peaks/window median ({m.ppw_max:,} max)"
         )
-    if m.n_hard_windows:
-        win_results.append(f"{m.n_hard_windows:,} flagged hard (joint treatment)")
     win_detail: List[str] = []
     win_detail += _percentile_table(
         "Window distribution",

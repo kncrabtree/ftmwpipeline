@@ -1065,8 +1065,8 @@ def assign_windows(
     Requires Stage 3 (peak detection). Turns the promoted Stage 3 peaks into a
     fit plan -- a set of disjoint analysis windows, each annotated with the
     peaks to fit freely, the strong out-of-band lines whose leakage is carried
-    frozen, a fit dependency order, and a difficulty class. Stage 4 is purely
-    structural; the plan is persisted to the .ftmw file.
+    frozen, and a fit dependency order. Stage 4 is purely structural; the plan
+    is persisted to the .ftmw file.
 
     Settings resolve through the chain (``settings`` / ``preset`` > persisted >
     hard default); pass ``settings=`` to drive window planning from a

@@ -1212,9 +1212,9 @@ class Pipeline:
         Requires Stage 3 (peak detection) completed. Builds a set of disjoint
         fit windows over the persisted user spectrum, each annotated with the
         peaks to fit freely, the strong out-of-band lines whose leakage is
-        carried frozen, a fit dependency order, and a difficulty class. Stage 4
-        is purely structural -- it makes no fits. Equivalent to the CLI
-        ``windows run`` command and ``ftmwpipeline.api.assign_windows``.
+        carried frozen, and a fit dependency order. Stage 4 is purely
+        structural -- it makes no fits. Equivalent to the CLI ``windows run``
+        command and ``ftmwpipeline.api.assign_windows``.
 
         Consumes only the peaks flagged ``promoted`` by Stage 3, on the Stage 1
         canonical spectrum with the canonical Stage 2 noise. The result is
@@ -1261,10 +1261,9 @@ class Pipeline:
                 preset=preset,
             )
             self.logger.info(
-                "Stage 4: %d windows (%d hard), %d batches, %d free peaks, "
+                "Stage 4: %d windows, %d batches, %d free peaks, "
                 "%d fixed contributors",
                 result["n_windows"],
-                result["n_hard"],
                 result["n_batches"],
                 result["n_free_peaks"],
                 result["n_fixed_contributors"],
@@ -1290,9 +1289,8 @@ class Pipeline:
         """Overlay the Stage 4 window plan on the spectrum.
 
         Equivalent to the CLI ``windows show`` command. Shows each fit
-        window's span (shaded by difficulty), free peaks, fixed contributors,
-        and the rolling complex-edge coherence statistic. Requires Stage 4
-        completed.
+        window's span, free peaks, fixed contributors, and the rolling
+        complex-edge coherence statistic. Requires Stage 4 completed.
 
         Parameters
         ----------
