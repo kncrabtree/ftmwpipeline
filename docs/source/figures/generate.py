@@ -21,6 +21,9 @@ stage into the committed ``docs/source/figures`` directory:
 * ``stage3_peaks.png`` -- the Stage 3 detection overlay (classified peaks on the
   active spectrum, marker-styled by pass) with the SNR-distribution curation
   panel and the promotion cutoff.
+* ``stage4_windows.png`` -- the Stage 4 window plan over the active spectrum (the
+  fit-window spans, free peaks, and fixed contributors) with the rolling
+  edge-coherence statistic and its T_edge threshold in a lower panel.
 
 Run as a script to (re)write the PNGs beside this file::
 
@@ -70,6 +73,7 @@ def _build_pipeline(workdir: Path) -> str:
         ),
     )
     ftmw.detect_peaks(path)
+    ftmw.assign_windows(path)
     return path
 
 
@@ -84,6 +88,7 @@ def make_figures() -> None:
     from ftmwpipeline._internal.stage1_impl import visualize_ft_impl
     from ftmwpipeline._internal.stage2_impl import visualize_noise_impl
     from ftmwpipeline._internal.stage3_impl import visualize_peaks_impl
+    from ftmwpipeline._internal.stage4_impl import visualize_windows_impl
     from ftmwpipeline.visualization.report_style import apply_color_cycle
     from ftmwpipeline.visualization.start_detection_visualization import (
         plot_start_detection_from_file,
@@ -143,6 +148,9 @@ def make_figures() -> None:
             path, title="", interactive=False, show_snr_histogram=True
         )
         fig3.savefig(FIG_DIR / "stage3_peaks.png", dpi=DPI, bbox_inches="tight")
+
+        fig4 = visualize_windows_impl(path, title="", interactive=False)
+        fig4.savefig(FIG_DIR / "stage4_windows.png", dpi=DPI, bbox_inches="tight")
 
 
 def main() -> None:

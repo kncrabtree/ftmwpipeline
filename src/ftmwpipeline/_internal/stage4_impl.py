@@ -6,9 +6,8 @@ Orchestration only -- the planning algorithm lives in
 ``ftmwpipeline.preprocessing.edge_coherence``. Stage 4 turns the *promoted*
 Stage 3 peak list into a :class:`~ftmwpipeline.core.data_structures.WindowPlan`:
 a set of disjoint fit windows, each annotated with the peaks to fit freely, the
-strong out-of-band lines whose leakage is carried frozen, a fit dependency DAG,
-and a difficulty classification. It is purely structural -- it makes no fits
-and changes no spectrum.
+strong out-of-band lines whose leakage is carried frozen, and a fit dependency
+DAG. It is purely structural -- it makes no fits and changes no spectrum.
 
 Stage 4 owns no FT settings: it operates on the Stage 1 persisted canonical
 spectrum (incl. trim) and the canonical Stage 2 noise, exactly the surface the

@@ -1209,9 +1209,9 @@ def _window_knob(
 
 # Partition-shaping knobs that point back at the plan-shape view via see_also.
 # (``leakage.tau_us`` is demoted to advanced on the field: the boxcar default
-# only widens windows, absorbed downstream by split proposals, so it is a
-# low-leverage control whose fate — keep, auto-feed the Stage 2b τ, or remove —
-# is deferred to the cross-fixture audit, issue #6.)
+# only widens the predicted leakage skirt, absorbed downstream by the cap
+# split, so it is a low-leverage control whose fate — keep, auto-feed the
+# Stage 2b τ, or remove — is deferred to the cross-fixture audit, issue #6.)
 for _sub, _field in (
     ("coherence", "edge_threshold"),
     ("clustering", "max_window_width_mhz"),

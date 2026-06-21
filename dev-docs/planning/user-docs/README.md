@@ -493,7 +493,20 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   dead Phase-4 placeholder `peak_detection` package removed, two stale wrapper
   docstrings corrected, the peak-detection plot recolored to the brand palette,
   and British spellings swept. Build warning-clean under `sphinx-build -W`.
-- [ ] Stage 4 — window assignment.
+- [x] Stage 4 — window assignment. `stage4_windows.rst` written (the two
+  groupings — disjoint fit windows vs overlapping contributor sets; the
+  complex edge-coherence statistic and its de-ramp; the build sequence
+  leakage-touched map → per-peak proposals → strong-cluster merge →
+  content-bounded cap split → trim; fixed contributors + freeze-eligibility +
+  the edge-free cycle recovery; leakage-artifact pruning; the dependency DAG +
+  parallel batches; the Stage 5 renegotiation handshake; the knobs; reading
+  `windows show`; the hand-edit boundary). A regenerable `stage4_windows.png`
+  (the window plan over the active spectrum + the `S_coh` panel) was added to
+  `docs/source/figures/generate.py` (now builds through Stage 4) and guarded by
+  the `slow` smoke test. Code revisions resolved during review (see below): the
+  difficulty/split annotations removed, the dead `window_assignment` stub
+  deleted, the window plot recolored, two stale docstrings fixed, British
+  spellings swept. Build warning-clean under `sphinx-build -W`.
 - [ ] Stage 5 — fitting.
 - [ ] Stage 6 — review / reports / finalization.
 - [ ] Advanced: `clock_declaration`, `scope_record_import`, `performance`.
@@ -503,56 +516,68 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.
 
-## Handoff: next session is Stage 4 — window assignment
+## Handoff: next session is Stage 5 — fitting
 
-**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b/3 pages, the
+**State going in.** The Getting Started, Concepts, Stage 0/1/2/2b/3/4 pages, the
 Methods & Validation section + first note, the brand style system, and the
-committed early-stage figures (now including `stage3_peaks.png`) are done and
-committed. The Stage 3 peak-detection page is written and its review-pass code
+committed early-stage figures (now including `stage4_windows.png`) are done and
+committed. The Stage 4 window-assignment page is written and its review-pass code
 revisions landed first (see *Resolved during review*). The working tree is clean;
-the Stage 3 suites (180 tests) and the figure smoke test pass, and `sphinx-build
--W` is warning-clean. Nothing is mid-flight.
+the touched Stage 4 / fitting / tuning / Stage 6 / scan / figure suites pass and
+`sphinx-build -W` is warning-clean. Nothing is mid-flight.
 
-**Last stage's trail (so nothing is re-litigated).** Stage 3's two passes are the
-Blackman-Harris primary (robust strong-line positions) and the shape-aware
-matched-filter gap pass (weak-line recovery, τ/shape from Stage 2b); both share
-the concave-down Savitzky-Golay locator and a *continuous* leakage-aware floor
-(`k·S_coh/√M·σ`, primary k=1 / gap k=3) — there is no hard leakage mask. Every
-peak is scored on the canonical active FT (apex-snapped, de-duplicated); detection
-runs at a fixed internal floor 2.0 while the user-facing `min_snr` (3.0) is the
-*promotion* cutoff, and all detected peaks are stored. The dead `peak_detection`
-stub package was removed; `Pipeline.detect_peaks` / CLI `cmd_detect_peaks`
-docstrings were de-staled; `plot_peak_detection` is on the brand palette and now
-encodes promotion in the marker fill (the unreachable `promoted_only` switch was
-removed). Two follow-ups are logged under *Findings to resolve* for the Stage 4
-review: window difficulty (HARD/EASY) is computed but unused downstream, and
-`window_assignment` is the next dead Phase-5 stub package to remove (both kept
-this session to stay scoped).
+**Last stage's trail (so nothing is re-litigated).** Stage 4 is *purely
+structural* — it classifies and proposes, never fits. The plan keeps two
+groupings distinct: **fit windows** (disjoint, cover each point ≤ once — the hard
+invariant) vs **contributor sets** (the free in-band peaks plus the frozen
+out-of-band fixed contributors, which overlap across windows by design). The
+load-bearing decision is the complex **edge-coherence statistic**
+`S_coh = |Σz|/(σ√M)` on the **de-ramped** spectrum (null ≈ 0.89; `T_edge = 8` at
+`M = 64` flags ≳ 1σ/bin leakage); its above-threshold runs are the
+leakage-touched regions. Build sequence: leakage-touched map → tight per-peak
+proposals (position + margin, *not* the skirt run) → strong-cluster merge (lines
+sharing one touched region fit jointly) → **content-bounded** cap split (bounds
+peak content, never bisects a content-fitting cluster) → trim to the margin.
+Fixed contributors attach by predicted analytic-skirt magnitude
+(`magnitude_attachment_threshold` 0.1σ), gated for freeze by `min_freeze_snr`
+(50); the **edge-free** mechanism keeps the dominant cycle-orphaned contributors
+(skirt read self-contained at fit time, no ordering edge) so the cycle-breaker
+can't drop needed leakage. The dependency DAG topo-sorts into parallel batches;
+Stage 5 may emit `MergeRequest`s routed through `replan`. **The
+difficulty/split_proposal/needs_joint_treatment annotations were REMOVED this
+session** (no downstream consumer — see *Resolved during review* and
+[[stage4-difficulty-removed]]); the width cap is still enforced structurally by
+the cap split. The dead `window_assignment` stub package is gone.
 
-**The Stage 4 task — apply the per-stage process (this README, "Per-stage
+**The Stage 5 task — apply the per-stage process (this README, "Per-stage
 process"), in order:**
-1. *Read the planning record.* `dev-docs/planning/stage4-window-assignment.md`
-   and `stage4-leakage-contributor-subtraction.md`, plus the ROADMAP/STATUS
-   entries and the D8 leakage-touched-map work; note stale prose against the code.
-2. *Review the code (thorough).* `_internal/stage4_impl.py`, the window-planning
-   engine (`preprocessing/window_planning.py` and the leakage/edge-coherence
-   modules it consumes), the serialization, and the three interface wrappers.
-   Surface code smells, dead/`Phase`-era stubs (remove as encountered — standing
-   approval; the `window_assignment` placeholder package is the known one), and
-   test-coverage gaps. **Stop and discuss any proposed code revision with the
-   user before writing docs or changing code.**
-3. *Mine the research reports.* `dev-docs/research/complex-edge-coherence`,
-   `stage4-*`, and the leakage-detection rework for the justification; extract
-   what informs a technical reader.
+1. *Read the planning record.* `dev-docs/planning/stage5-fitting.md` and the many
+   `stage5-*.md` companions (the cap removal, NLS performance, the leakage-wing
+   baseline, the context-invariant gate, the line-evidence / deep-skirt /
+   blend-split escapes, the doublet-alternative, the σ-scope D14 fix, the
+   survival-prune fixpoint, the fit parallelism); plus ROADMAP/STATUS. These are
+   extensive — note stale prose against the code.
+2. *Review the code (thorough).* `_internal/stage5_impl.py`, the fitting engine
+   (`fitting/plan_execution.py`, `peak_model.py`, `validation.py`,
+   `result_conversion.py`, the active-FT support), the serialization, and the
+   three interface wrappers. Surface code smells, dead/`Phase`-era stubs (remove
+   as encountered — standing approval), and test-coverage gaps. **Stop and
+   discuss any proposed code revision with the user before writing docs or
+   changing code.**
+3. *Mine the research reports.* `dev-docs/research/stage5-cross-fixture` and the
+   companions for the justification; extract what informs a technical reader.
 4. *American-English scan.* Sweep the stage's CLI help / log / error strings /
    docstrings.
-5. *Write `stage4_windows.rst`* (currently a stub) per the style conventions; add
-   a Stage 4 figure by extending `docs/source/figures/generate.py` (it now builds
-   through Stage 3) and guard it with the `slow` smoke test.
+5. *Write `stage5_fitting.rst`* (currently a stub) per the style conventions; add
+   a Stage 5 figure by extending `docs/source/figures/generate.py` (it now builds
+   through Stage 4) and guard it with the `slow` smoke test.
 
 **Conventions.** Build docs into `docs/build/html` (gitignored) so the user can
 review the rendered HTML; direct all run artifacts to `scratch/`; the noise
 methods harness and `docs/source/figures/generate.py` are the reference patterns
 for committed, regenerable figures. Run project commands via
 `conda run -n ftmwpipeline-dev`; scope tests to the stage (per the test-budget
-memory) and save one full run for the end.
+memory) and save one full run for the end. Note the Stage 4 *planning* docs
+(`dev-docs/planning/stage4-window-assignment.md`) and ROADMAP still describe the
+removed difficulty/split annotations — a known code-vs-planning-doc divergence the
+archival pass reconciles; the shipped `stage4_windows.rst` does not inherit it.

@@ -2,10 +2,10 @@
 
 Runs ``docs/source/figures/generate.py`` against the checked-in ``2638``
 fixture and asserts the stage figures render to disk without error. The
-harness is the committed source of the figures embedded in the Stage 0-3 pages;
+harness is the committed source of the figures embedded in the Stage 0-4 pages;
 this guards it against API drift.
 
-Marked ``slow``: it builds a full Stage 0-3 pipeline (a few seconds). Run the
+Marked ``slow``: it builds a full Stage 0-4 pipeline (a few seconds). Run the
 default fast suite with ``-m "not slow"`` to skip it. Figures are written to a
 temporary directory, never the committed tree.
 """
@@ -38,6 +38,7 @@ def test_harness_renders_all_stage_figures(tmp_path, monkeypatch):
         "stage2b_tau_decay_examples.png",
         "stage2b_tau_heatmap_zoom.png",
         "stage3_peaks.png",
+        "stage4_windows.png",
     ):
         out = tmp_path / name
         assert out.is_file() and out.stat().st_size > 0

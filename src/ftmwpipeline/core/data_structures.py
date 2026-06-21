@@ -1213,7 +1213,7 @@ class FTMWData:
 # Stage 4 turns the promoted Stage 3 peak list into a *fit plan*: an ordered set
 # of disjoint analysis windows, each carrying the peaks to fit freely, the
 # strong out-of-band lines whose leakage must be carried as a frozen background,
-# a fit dependency DAG, and a difficulty class. The plain ``SpectralWindow``
+# and a fit dependency DAG. The plain ``SpectralWindow``
 # above is the data-bearing window used downstream; the structures here are the
 # *planning* substrate (no spectrum arrays — only references into the Stage 3
 # peak list). See ``dev-docs/planning/stage4-window-assignment.md``.

@@ -106,8 +106,8 @@ class CoherenceSubSettings:
 class ClusteringSubSettings:
     """Window-extent decisions.
 
-    ``max_window_width_mhz`` is the width cap above which a window is
-    classified as HARD and gets a split proposal; ``min_window_half_width_mhz``
+    ``max_window_width_mhz`` is the width cap above which a window's peak
+    content is split at its sparsest gaps; ``min_window_half_width_mhz``
     is the minimum half-width of a window built around an isolated weak line.
     ``max_peaks_per_window`` is the per-window promoted-peak cap; ``0`` (the
     default) disables it so a window is bounded only by ``max_window_width_mhz``.
@@ -134,8 +134,8 @@ class ClusteringSubSettings:
     """
 
     max_window_width_mhz: Optional[float] = knob_field(
-        help="Width cap (MHz) above which a window is HARD and gains a split "
-        "proposal.",
+        help="Width cap (MHz); a window's peak content wider than this is split "
+        "at its sparsest gaps.",
         tier="primary",
         inst_sensitivity="Y",
         grid=(20.0, 30.0, 40.0, 60.0, 80.0),
