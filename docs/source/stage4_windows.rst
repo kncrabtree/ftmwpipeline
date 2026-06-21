@@ -103,17 +103,21 @@ about one :math:`\sigma` per bin. The per-bin noise is the **local** value — t
 window mean of the :doc:`Stage 2 <stage2_noise>` noise array, which varies several-fold
 across the band — never a global median.
 
-One subtlety makes the statistic work on the pipeline's full-record transform. A
-strong line's leakage skirt carries a phase ramp from the active-region turn-on, and
-that ramp makes the coherent sum cancel — the statistic would read noise-level over
-genuine leakage. Stage 4 first **de-ramps** the spectrum to the active-region start,
-which removes the ramp and exposes the leakage the test is looking for. The same
-de-ramped statistic drives every boundary decision below.
+The statistic is scored on the :doc:`Stage 1 <stage1_ft>` canonical **active FT** —
+the transform of just the active region :math:`[t_0,\,t_0+T]`. Because that transform
+begins at the active-region turn-on, the spectrum is already in the line's own
+:math:`[0, T]` reference frame: the turn-on phase ramp that a full-record transform
+would impose — which would make the coherent sum cancel over genuine leakage — is
+absent by construction, so the coherent sum is taken directly with no de-ramp. The
+:doc:`methods note <methods/edge_coherence>` derives the null distribution, the
+threshold, and the active-FT frame the statistic is scored in.
 
-Rolling the statistic across the whole spectrum and thresholding it at
+Rolling the statistic across the spectrum and thresholding it at
 :math:`T_\text{edge}` partitions the band into contiguous **leakage-touched
-regions** — the stretches a strong line and its coherent skirt cover. Those regions
-are what group the strong lines and attach the fixed contributors.
+regions** — the stretches a strong line and its coherent skirt cover. These regions
+identify which strong lines are mutually coupled (their skirts stay coherent across
+the gap between them), which drives the strong-cluster grouping below; the fixed
+contributors are attached separately, by the predicted skirt amplitude.
 
 Building the windows
 --------------------

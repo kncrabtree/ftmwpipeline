@@ -45,6 +45,7 @@
 
    methods/noise_snr_scaling
    methods/matched_filter_detection
+   methods/edge_coherence
 
 .. toctree::
    :hidden:
@@ -104,6 +105,9 @@ be trusted, with figures and numbers regenerated from the example data:
 * :doc:`methods/matched_filter_detection` — why the weak-line gap pass detects
   with an exponentially-apodized transform, derived and validated on synthetic
   ground truth and the example experiment.
+* :doc:`methods/edge_coherence` — the phase-coherent edge test behind window
+  assignment: its closed-form null, threshold calibration, and the active-FT
+  frame it must be scored in.
 
 Indices and tables
 ==================
