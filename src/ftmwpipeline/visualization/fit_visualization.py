@@ -27,7 +27,13 @@ import numpy as np
 
 from ..core.data_structures import FittingResult, Sideband, SpectrumFit
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
-from .report_style import AGGIE_BLUE, AGGIE_GOLD, DOUBLE_DECKER, apply_bare_style
+from .report_style import (
+    AGGIE_BLUE,
+    AGGIE_GOLD,
+    DOUBLE_DECKER,
+    PINOT,
+    apply_bare_style,
+)
 
 SidebandLike = Union[Sideband, str]
 
@@ -125,7 +131,7 @@ def _shade_windows(ax: plt.Axes, fit: SpectrumFit) -> None:
         if window_fit.window is None:
             continue
         lo, hi = window_fit.window.freq_range
-        ax.axvspan(lo, hi, color=AGGIE_GOLD, alpha=0.12, linewidth=0)
+        ax.axvspan(lo, hi, color=AGGIE_GOLD, alpha=0.30, linewidth=0)
 
 
 def _plot_overview(
@@ -153,9 +159,13 @@ def _plot_overview(
         2, 1, figsize=figsize, sharex=True, gridspec_kw={"height_ratios": [3, 1]}
     )
     ax_top.plot(
-        frequencies, np.abs(complex_spectrum), color="0.5", lw=0.7, label="data |X|"
+        frequencies,
+        np.abs(complex_spectrum),
+        color=DOUBLE_DECKER,
+        lw=1.0,
+        label="data |X|",
     )
-    ax_top.plot(frequencies, np.abs(model), color=AGGIE_GOLD, lw=0.9, label="model |X|")
+    ax_top.plot(frequencies, np.abs(model), color=AGGIE_BLUE, lw=0.9, label="model |X|")
     _shade_windows(ax_top, fit)
     ax_top.set_ylabel("|X(f)|")
     ax_top.set_title(title)
@@ -163,13 +173,11 @@ def _plot_overview(
     apply_bare_style(ax_top)
 
     residual_mag = np.abs(complex_spectrum - model)
-    ax_bot.plot(
-        frequencies, residual_mag, color=DOUBLE_DECKER, lw=0.6, label="|residual|"
-    )
+    ax_bot.plot(frequencies, residual_mag, color=PINOT, lw=0.6, label="|residual|")
     ax_bot.plot(
         frequencies,
         rms_noise,
-        color=AGGIE_BLUE,
+        color="0.35",
         lw=0.7,
         ls="--",
         label="canonical sigma",
