@@ -68,6 +68,7 @@ from ..fitting.tau_calibration import (
     TauCalibrationResult,
     band_majority_for_frequency,
 )
+from ..fitting.validation import amplitude_vif
 from ..io.fid_serialization import load_acquisition_segments_from_hdf5
 from ..io.fitting_serialization import (
     load_spectrum_fit_from_hdf5,
@@ -414,29 +415,6 @@ def apply_snr_survival_prune(
         "pruned": pruned_records,
         "dropped_window_ids": dropped_window_ids,
     }
-
-
-def amplitude_vif(peak: FittedPeak) -> Optional[float]:
-    """Diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``.
-
-    The overfit discriminant: ~1 for an identifiable line, >> 1 when a line is
-    degenerate with a sub-resolution neighbor (the pair *sum* is constrained,
-    neither amplitude individually). A pure function of already-persisted
-    per-peak fields -- no covariance matrix needed. Returns ``None`` when any
-    input is missing / non-finite or the amplitude is zero.
-    """
-    import math
-
-    amp = float(peak.amplitude)
-    amp_err = peak.amplitude_error
-    snr = peak.snr
-    if amp_err is None or snr is None:
-        return None
-    if not (math.isfinite(amp) and math.isfinite(amp_err) and math.isfinite(snr)):
-        return None
-    if abs(amp) <= 0.0:
-        return None
-    return abs(amp_err / amp) * float(snr)
 
 
 def _merged_seed_for_pair(
@@ -2347,6 +2325,16 @@ def render_fit_detail_impl(
         spec_padded=bundle.spec_padded,
         figsize=figsize if figsize is not None else DEFAULT_FIGSIZE,
         spurs=(bundle.fit.diagnostics or {}).get("gated_spurs"),
+        survival_floor=float(
+            (bundle.fit.diagnostics or {})
+            .get("peak_survival", {})
+            .get("snr_floor", DEFAULT_PROMOTION_MIN_SNR * 1.1)
+        ),
+        vif_collapse_threshold=float(
+            (bundle.fit.diagnostics or {})
+            .get("vif_collapse", {})
+            .get("vif_threshold", 4.0)
+        ),
     )
 
 

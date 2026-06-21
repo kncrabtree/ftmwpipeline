@@ -225,6 +225,8 @@ accepted or not — is recorded in the fit's audit trail. A window *split* is
 deliberately not part of the handshake; over-fitting is handled after the fact
 by the survival pass.
 
+.. _stage5-survival:
+
 The post-fit survival pass
 --------------------------
 
@@ -417,7 +419,23 @@ interactive window; ``--no-interactive`` with ``-o`` saves a static image.
    beside a third line C, while a clock spur (dotted) is masked from the fit. The
    residual histogram tracks the Rayleigh noise expectation, and the table lists
    each fitted line's frequency, amplitude, phase, and signal-to-noise with the
-   fit uncertainty on the trailing digits.
+   fit uncertainty on the trailing digits, plus a ``qual`` determinacy score
+   (see below): the isolated line C scores ``4/4`` while the blended pair A and B
+   score ``2/4`` — flagging that, though both are strong, they are not
+   individually well determined.
+
+The ``qual`` column is a per-line **determinacy score** — how many of four
+independent checks the line clearly passes, written ``k/4``. The four checks are
+**detected with margin** (signal-to-noise comfortably above the
+:ref:`survival floor <stage5-survival>`), **amplitude identifiable** (the
+amplitude variance-inflation factor is well below the degenerate-collapse bar),
+**position pinned** (the frequency uncertainty is under a tenth of a resolution
+element), and **isolated** (no fitted neighbor within a resolution element). Each
+check reuses a threshold the pipeline already applies elsewhere, so the score
+introduces no new tuning. It measures how firmly the data *determine* a line, not
+whether the line is a real, assignable transition — a high score can still attach
+to an unmasked spur or an unassigned feature, which is why it informs curation
+rather than gating it.
 
 Assessing a fit with ``fit check``
 ----------------------------------

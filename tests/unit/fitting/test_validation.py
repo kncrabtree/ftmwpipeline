@@ -351,3 +351,65 @@ class TestSNRAwareChi2Pass:
         boundary = DEFAULT_CHI2R_NOISE_FLOOR + (DEFAULT_SHAPE_ERROR_KAPPA * snr) ** 2
         assert snr_aware_chi2_pass(boundary, snr)
         assert not snr_aware_chi2_pass(boundary + 1e-6, snr)
+
+
+class TestPeakQualityScore:
+    """The per-peak determinacy score (0..4 clear passes)."""
+
+    @staticmethod
+    def _peak(freq, amp=1.0, amp_err=0.01, snr=100.0, freq_err=1e-5):
+        from ftmwpipeline.core.data_structures import FittedPeak
+
+        return FittedPeak(
+            peak_id=0,
+            frequency_mhz=freq,
+            amplitude=amp,
+            snr=snr,
+            amplitude_error=amp_err,
+            frequency_error=freq_err,
+        )
+
+    def test_perfect_isolated_line_scores_full(self):
+        from ftmwpipeline.fitting.validation import (
+            PEAK_QUALITY_MAX,
+            peak_quality_score,
+        )
+
+        # Strong, well-determined, isolated line: all four checks pass.
+        pk = self._peak(30000.0, amp=1.0, amp_err=0.005, snr=200.0, freq_err=1e-4)
+        score = peak_quality_score(
+            pk,
+            peer_freqs_mhz=[30000.0],
+            acquisition_us=13.0,  # res ~0.077 MHz; 0.1*res ~7.7e-3 >> 1e-4
+            survival_floor=3.3,
+        )
+        assert score == PEAK_QUALITY_MAX == 4
+
+    def test_marginal_blended_line_scores_low(self):
+        from ftmwpipeline.fitting.validation import peak_quality_score
+
+        # Barely above floor, degenerate amplitude (high VIF), poor position,
+        # and a sub-resolution neighbor: every check fails.
+        pk = self._peak(30000.0, amp=1.0, amp_err=0.5, snr=5.0, freq_err=1.0)
+        score = peak_quality_score(
+            pk,
+            peer_freqs_mhz=[30000.0, 30000.02],  # 0.02 MHz << res
+            acquisition_us=13.0,
+            survival_floor=3.3,
+        )
+        assert score == 0
+
+    def test_missing_inputs_do_not_pass(self):
+        from ftmwpipeline.core.data_structures import FittedPeak
+        from ftmwpipeline.fitting.validation import peak_quality_score
+
+        # No errors/SNR: the margin, VIF, and position checks cannot pass; only
+        # isolation (a lone line) passes.
+        pk = FittedPeak(peak_id=0, frequency_mhz=30000.0, amplitude=1.0)
+        score = peak_quality_score(
+            pk,
+            peer_freqs_mhz=[30000.0],
+            acquisition_us=13.0,
+            survival_floor=3.3,
+        )
+        assert score == 1

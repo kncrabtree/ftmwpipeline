@@ -48,6 +48,7 @@ from matplotlib.ticker import ScalarFormatter
 
 from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
+from ..fitting.validation import PEAK_QUALITY_MAX, peak_quality_score
 from ..utils.signal_processing import APODIZATION_EXAMPLES, make_apodization
 from .report_style import AGGIE_GOLD, CABERNET, DOUBLE_DECKER, GUNROCK, POPPY
 
@@ -159,16 +160,6 @@ def frequency_sorted_labels(freqs: Sequence[float]) -> List[str]:
     for rank, i in enumerate(sorted(range(n), key=lambda j: freqs[j])):
         out[i] = letters[rank]
     return out
-
-
-def _peak_confidence(peak: FittedPeak) -> Optional[float]:
-    """Per-peak confidence rating placeholder.
-
-    No principled per-peak confidence statistic exists yet; the column is wired
-    here so it can be filled in one place when one does. Returns ``None`` (the
-    table renders ``-``).
-    """
-    return None
 
 
 def _eval_window_baseline(
@@ -299,6 +290,7 @@ class WindowPanelData:
     fitted_peaks: List[FittedPeak]
     fitted_freqs: List[float]
     labels: List[str]
+    quality_scores: List[int]
     vline_plotter: Callable[[plt.Axes, bool], None]
     in_window_spurs: List[dict]
     lattice_peaks: List[FittedPeak]
@@ -357,6 +349,8 @@ def prepare_window_panels(
     spurs: Optional[Sequence[dict]] = None,
     vline_color: str = POPPY,
     vline_alpha: float = 0.7,
+    survival_floor: float = 3.3,
+    vif_collapse_threshold: float = 4.0,
 ) -> WindowPanelData:
     """Prepare the per-window model, residual, and annotations once.
 
@@ -410,6 +404,16 @@ def prepare_window_panels(
 
     fitted_freqs = [float(p.frequency_mhz) for p in window_fit.fitted_peaks]
     labels = frequency_sorted_labels(fitted_freqs)
+    quality_scores = [
+        peak_quality_score(
+            p,
+            peer_freqs_mhz=fitted_freqs,
+            acquisition_us=acquisition_us,
+            survival_floor=survival_floor,
+            vif_collapse_threshold=vif_collapse_threshold,
+        )
+        for p in window_fit.fitted_peaks
+    ]
     vline_plotter = _make_vline_plotter(
         fitted_freqs, labels, tau_us, color=vline_color, alpha=vline_alpha
     )
@@ -447,6 +451,7 @@ def prepare_window_panels(
         fitted_peaks=list(window_fit.fitted_peaks),
         fitted_freqs=fitted_freqs,
         labels=labels,
+        quality_scores=quality_scores,
         vline_plotter=vline_plotter,
         in_window_spurs=in_window_spurs,
         lattice_peaks=lattice_peaks,
@@ -653,7 +658,14 @@ def draw_residual_hist(ax: plt.Axes, data: WindowPanelData) -> None:
 def draw_peak_table(ax: plt.Axes, data: WindowPanelData) -> None:
     """Fitted-peak table with PDG-style uncertainties (combined figure only)."""
     ax.set_axis_off()
-    _draw_peak_table(ax, data.fitted_peaks, data.labels, data.amp, data.units_label)
+    _draw_peak_table(
+        ax,
+        data.fitted_peaks,
+        data.labels,
+        data.quality_scores,
+        data.amp,
+        data.units_label,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +687,8 @@ def plot_consolidated_detail(
     spec_padded: Optional[np.ndarray] = None,
     figsize: Tuple[float, float] = DEFAULT_FIGSIZE,
     spurs: Optional[Sequence[dict]] = None,
+    survival_floor: float = 3.3,
+    vif_collapse_threshold: float = 4.0,
 ) -> plt.Figure:
     """Render the consolidated per-window detail figure (see module docstring).
 
@@ -701,6 +715,8 @@ def plot_consolidated_detail(
         freq_padded=freq_padded,
         spec_padded=spec_padded,
         spurs=spurs,
+        survival_floor=survival_floor,
+        vif_collapse_threshold=vif_collapse_threshold,
     )
 
     fig = plt.figure(figsize=figsize)
@@ -1179,10 +1195,16 @@ def _draw_peak_table(
     ax: plt.Axes,
     fitted_peaks: Sequence[FittedPeak],
     labels: Sequence[str],
+    quality_scores: Sequence[int],
     amp: float,
     units_label: str,
 ) -> None:
     """Row 4 right: fitted-peak table with PDG-style uncertainties.
+
+    The ``qual`` column is the per-line determinacy score
+    (:func:`~ftmwpipeline.fitting.validation.peak_quality_score`): how many of
+    four independent checks -- detected with margin, amplitude identifiable,
+    position pinned, isolated -- the line clearly passes, as ``k/N``.
 
     When any peak in the window carries a ``clock_lattice`` annotation a narrow
     "lattice" column is appended so the user can spot spur candidates at a
@@ -1202,12 +1224,12 @@ def _draw_peak_table(
     if show_lattice:
         header = (
             f"  pk | {'frequency (MHz)':>18} | {amp_hdr:>14} | "
-            f"{'phase (rad)':>12} | {'SNR':>5} | conf | {'lattice':>{lattice_col_w}}"
+            f"{'phase (rad)':>12} | {'SNR':>5} | qual | {'lattice':>{lattice_col_w}}"
         )
     else:
         header = (
             f"  pk | {'frequency (MHz)':>18} | {amp_hdr:>14} | "
-            f"{'phase (rad)':>12} | {'SNR':>5} | conf"
+            f"{'phase (rad)':>12} | {'SNR':>5} | qual"
         )
     ax.text(
         0.02,
@@ -1239,19 +1261,18 @@ def _draw_peak_table(
             else "-"
         )
         snr_s = f"{pk.snr:.2f}" if pk.snr is not None else "-"
-        conf = _peak_confidence(pk)
-        conf_s = f"{conf:.2f}" if conf is not None else "-"
+        qual_s = f"{quality_scores[i]}/{PEAK_QUALITY_MAX}"
         cl = getattr(pk, "clock_lattice", None)
         if show_lattice:
             lattice_s = (cl or "")[:lattice_col_w]
             line = (
                 f"  {lbl:>2} | {freq_s:>18} | {amp_s:>14} | {phase_s:>12} | "
-                f"{snr_s:>5} | {conf_s:>4} | {lattice_s:>{lattice_col_w}}"
+                f"{snr_s:>5} | {qual_s:>4} | {lattice_s:>{lattice_col_w}}"
             )
         else:
             line = (
                 f"  {lbl:>2} | {freq_s:>18} | {amp_s:>14} | {phase_s:>12} | "
-                f"{snr_s:>5} | {conf_s:>4}"
+                f"{snr_s:>5} | {qual_s:>4}"
             )
         # Annotated lines are tinted orange (consistent with the gated-spur
         # convention) so they stand out without a separate legend entry.

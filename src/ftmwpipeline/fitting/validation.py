@@ -23,6 +23,7 @@ sigma the correct factor is exactly ``sqrt(2)`` and nothing else.
 from __future__ import annotations
 
 import itertools
+import math
 import os
 from pathlib import Path
 from typing import Any, List, Optional, Sequence, Tuple, Union, cast
@@ -30,6 +31,7 @@ from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 import numpy as np
 from scipy.stats import f as f_distribution
 
+from ..core.data_structures import FittedPeak
 from .peak_model import ModelPeak, PeakShape, h_T_shape
 
 __all__ = [
@@ -67,6 +69,9 @@ __all__ = [
     "validate_peak_separation",
     "shape_error_fraction",
     "snr_aware_chi2_pass",
+    "amplitude_vif",
+    "peak_quality_score",
+    "PEAK_QUALITY_MAX",
 ]
 
 NoiseLike = Union[float, np.ndarray]
@@ -1608,3 +1613,88 @@ def validate_peak_separation(
             if abs(offsets[i] - offsets[j]) < min_separation_mhz:
                 too_close.append((i, j))
     return len(too_close) == 0, too_close
+
+
+# ---------------------------------------------------------------------------
+# Per-peak quality (determinacy) score
+# ---------------------------------------------------------------------------
+# Number of independent determinacy checks a fitted line is graded on.
+PEAK_QUALITY_MAX = 4
+
+
+def amplitude_vif(peak: FittedPeak) -> Optional[float]:
+    """Diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``.
+
+    The overfit discriminant: ~1 for an identifiable line, >> 1 when a line is
+    degenerate with a sub-resolution neighbor (the pair *sum* is constrained,
+    neither amplitude individually). A pure function of already-persisted
+    per-peak fields -- no covariance matrix needed. Returns ``None`` when any
+    input is missing / non-finite or the amplitude is zero.
+    """
+    amp = float(peak.amplitude)
+    amp_err = peak.amplitude_error
+    snr = peak.snr
+    if amp_err is None or snr is None:
+        return None
+    if not (math.isfinite(amp) and math.isfinite(amp_err) and math.isfinite(snr)):
+        return None
+    if abs(amp) <= 0.0:
+        return None
+    return abs(amp_err / amp) * float(snr)
+
+
+def peak_quality_score(
+    peak: FittedPeak,
+    *,
+    peer_freqs_mhz: Sequence[float],
+    acquisition_us: float,
+    survival_floor: float,
+    vif_collapse_threshold: float = 4.0,
+) -> int:
+    """Grade how well the fit *determines* a line, in ``0..PEAK_QUALITY_MAX``.
+
+    A coarse, prior-free determinacy tier: it counts how many of four
+    independent checks the line clearly passes, each reusing a threshold the
+    pipeline already trusts so no new tuning is introduced. It says how firmly
+    the data pin the line, **not** whether the line is a real, assignable
+    transition -- a high score can still attach to an unflagged spur or an
+    unassigned feature.
+
+    The four checks:
+
+    #. **Detected with margin** -- ``snr >= 2 * survival_floor`` (well clear of
+       the survival floor, not a marginal survivor).
+    #. **Amplitude identifiable** -- :func:`amplitude_vif` ``<= 0.5 *
+       vif_collapse_threshold`` (the amplitude is individually determined, far
+       from the degenerate-collapse bar).
+    #. **Position pinned** -- ``frequency_error <= 0.1 / acquisition_us`` (the
+       1-sigma frequency error is under a tenth of a resolution element).
+    #. **Isolated** -- the nearest other fitted line is ``>= 1 /
+       acquisition_us`` away (not inside a sub-resolution blend); a lone line
+       passes by default.
+
+    A check whose inputs are missing or non-finite does not count as a pass.
+    """
+    score = 0
+
+    snr = peak.snr
+    if snr is not None and math.isfinite(snr) and snr >= 2.0 * survival_floor:
+        score += 1
+
+    vif = amplitude_vif(peak)
+    if vif is not None and vif <= 0.5 * vif_collapse_threshold:
+        score += 1
+
+    res_element = 1.0 / acquisition_us if acquisition_us > 0.0 else math.inf
+    ferr = peak.frequency_error
+    if ferr is not None and math.isfinite(ferr) and ferr <= 0.1 * res_element:
+        score += 1
+
+    others = [float(f) for f in peer_freqs_mhz if float(f) != float(peak.frequency_mhz)]
+    if (
+        not others
+        or min(abs(float(peak.frequency_mhz) - f) for f in others) >= res_element
+    ):
+        score += 1
+
+    return score
