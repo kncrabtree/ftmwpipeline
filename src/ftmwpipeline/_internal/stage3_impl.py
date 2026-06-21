@@ -53,8 +53,7 @@ from ..io.peak_serialization import (
 from ..io.stage_fit_settings_serialization import (
     read_stage2b_recommended_shape,
 )
-from ..preprocessing.edge_coherence import DEFAULT_EDGE_M, rolling_coherence
-from ..preprocessing.leakage import deramp_to_active_start
+from ..preprocessing.edge_coherence import DEFAULT_EDGE_M, active_edge_coherence
 from ..preprocessing.noise_estimation import (
     NoiseResult,
     estimate_noise_scatter,
@@ -140,28 +139,23 @@ _LEAKAGE_M = DEFAULT_EDGE_M
 
 
 def _leakage_floor_amp(
-    freq_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
     sigma: np.ndarray,
-    probe_freq_mhz: float,
-    start_us: float,
     k: float,
     band_m: int = _LEAKAGE_M,
 ) -> np.ndarray:
     """Continuous leakage-aware additive floor ``k * (S_coh / sqrt(M)) * sigma``.
 
-    De-ramps the spectrum to the active-region turn-on
-    (:func:`deramp_to_active_start`; ``start_us=0`` is the identity, for the
-    active-region-only matched-filter gap FT) before the rolling complex-edge
-    coherence, so genuine coherent leakage is exposed. NaN band edges (no full
-    M-band centered) contribute no floor. ``k <= 0`` disables it (zeros).
+    Scores the rolling complex-edge coherence on the active FT through the
+    shared :func:`active_edge_coherence` entry point, so genuine coherent
+    leakage is exposed. The active FT is in the ``[0, T]`` frame, so no de-ramp
+    is applied (that convention lives in ``active_edge_coherence``). NaN band
+    edges (no full M-band centered) contribute no floor. ``k <= 0`` disables it
+    (zeros).
     """
     if k <= 0:
         return cast(np.ndarray, np.zeros_like(sigma, dtype=float))
-    deramped = deramp_to_active_start(
-        freq_mhz, complex_spectrum, probe_freq_mhz, start_us
-    )
-    scoh = rolling_coherence(deramped, sigma, band_m=band_m)
+    scoh = active_edge_coherence(complex_spectrum, sigma, band_m=band_m)
     return cast(
         np.ndarray, k * (np.nan_to_num(scoh, nan=0.0) / np.sqrt(band_m)) * sigma
     )
@@ -227,9 +221,10 @@ def _active_windowed_spectrum(
     so the feature lands in
     SavGol's operating range, then ``dt·rfft``s -- the same amplitude convention
     as :func:`ftmwpipeline.fitting.active_ft.compute_active_ft`. The phase
-    reference is the active-region turn-on (t=0 maps to start_us), so callers
-    running coherence statistics pass ``start_us=0.0`` -- there is no full-record
-    phase ramp to de-ramp.
+    reference is the active-region turn-on (t=0 maps to start_us), so the
+    coherence floor scores it directly through
+    :func:`~ftmwpipeline.preprocessing.edge_coherence.active_edge_coherence` --
+    there is no full-record phase ramp to de-ramp.
 
     Returns the trimmed ``ComplexFT`` and the window's white-noise gain
     ``√(Σ w² / N_active)`` (a boxcar window gives gain 1).
@@ -684,19 +679,13 @@ def detect_peaks_impl(
     # dt·rffts, so their phase reference is already the turn-on -- the de-ramp is
     # the identity (start_us=0.0) for both.
     primary_leakage_amp = _leakage_floor_amp(
-        primary_ft.freq_array,
         primary_ft.complex_spectrum,
         primary_noise.rms_noise,
-        fid.probe_freq_mhz,
-        0.0,
         primary_leakage_floor_k_v,
     )
     gap_leakage_amp = _leakage_floor_amp(
-        gap_ft.freq_array,
         gap_ft.complex_spectrum,
         gap_noise.rms_noise,
-        fid.probe_freq_mhz,
-        0.0,
         gap_leakage_floor_k_v,
     )
 

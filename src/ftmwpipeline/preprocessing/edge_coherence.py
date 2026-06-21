@@ -182,6 +182,46 @@ def rolling_coherence(
     return out
 
 
+def active_edge_coherence(
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    *,
+    band_m: int = DEFAULT_EDGE_M,
+) -> np.ndarray:
+    """Rolling ``S_coh`` on the canonical active FT -- the single edge-coherence
+    entry point shared by Stages 3 and 4.
+
+    The canonical active FT is the ``dt_us * rfft`` of just the
+    ``[start_us, end_us]`` active region, so it is already in the ``[0, T]``
+    reference frame: the active signal begins at the transform's own time
+    origin. The turn-on phase ramp ``exp(-i 2pi f t0)`` a *full-record* rfft
+    would carry -- and that a coherent sum must be de-ramped to remove (see
+    :func:`ftmwpipeline.preprocessing.leakage.deramp_to_active_start`) -- is
+    absent here by construction, so the coherent sum is taken directly with no
+    de-ramp. Routing the Stage 3 detection floor and the Stage 4
+    leakage-touched map through this one function keeps that frame convention in
+    a single place (de-ramping the active grid would wind the band phase through
+    several turns and collapse ``S_coh`` to the null).
+
+    Parameters
+    ----------
+    complex_spectrum : np.ndarray
+        Complex active FT (1-D), in the order the caller scores it (a monotone
+        frequency grid, ascending or descending, so each band is contiguous).
+    rms_noise : np.ndarray
+        Per-bin noise RMS aligned with ``complex_spectrum``.
+    band_m : int, default :data:`DEFAULT_EDGE_M`
+        Band width M.
+
+    Returns
+    -------
+    np.ndarray
+        Rolling ``S_coh`` (see :func:`rolling_coherence`); ``NaN`` near the
+        band-less edges.
+    """
+    return rolling_coherence(complex_spectrum, rms_noise, band_m=band_m)
+
+
 def above_threshold_intervals(
     rolling: np.ndarray,
     threshold: float = DEFAULT_EDGE_THRESHOLD,

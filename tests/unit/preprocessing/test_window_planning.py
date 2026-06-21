@@ -599,10 +599,14 @@ class TestEmptyAndEdgeCases:
             build_window_plan(peaks, freqs, spec, rms, acquisition_us=0.0)
 
 
-class TestDeRamp:
-    """The full-record-rfft turn-on ramp and the de-ramp that undoes it."""
+class TestActiveFrame:
+    """The plan scores the active FT directly: it is in the ``[0, T]`` frame
+    (sliced active region), so there is no turn-on ramp to de-ramp. A ramped
+    spectrum -- which a caller should never pass -- is scored as-is, confirming
+    the de-ramp is not silently reintroduced (the full-record turn-on physics is
+    tested on ``deramp_to_active_start`` itself)."""
 
-    def test_deramp_recovers_plan_from_ramped_spectrum(self):
+    def test_active_frame_is_scored_directly(self):
         lines = [
             (30038.0, 3.0, PeakClassification.STRONG),
             (30042.0, 3.0, PeakClassification.STRONG),
@@ -614,49 +618,24 @@ class TestDeRamp:
         ramped = spec * ramp
 
         ref = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
-        fixed = build_window_plan(
-            peaks,
-            freqs,
-            ramped,
-            rms,
-            acquisition_us=15.0,
-            probe_freq_mhz=probe_mhz,
-            start_us=t0_us,
-        )
-        broken = build_window_plan(peaks, freqs, ramped, rms, acquisition_us=15.0)
+        ramped_plan = build_window_plan(peaks, freqs, ramped, rms, acquisition_us=15.0)
 
-        # Matching start_us de-ramps back to the reference spectrum exactly.
-        assert fixed.n_windows == ref.n_windows
-        assert [w.freq_range for w in fixed.windows] == [
-            w.freq_range for w in ref.windows
-        ]
         ref_stat = max(w.diagnostics["edge_coherence_statistic"] for w in ref.windows)
-        fixed_stat = max(
-            w.diagnostics["edge_coherence_statistic"] for w in fixed.windows
+        ramped_stat = max(
+            w.diagnostics["edge_coherence_statistic"] for w in ramped_plan.windows
         )
-        broken_stat = max(
-            w.diagnostics["edge_coherence_statistic"] for w in broken.windows
-        )
-        assert fixed_stat == pytest.approx(ref_stat, rel=1e-6)
-        # Leaving the ramp in place collapses the coherent edge statistic.
-        assert broken_stat < 0.5 * fixed_stat
-        _assert_invariants(fixed)
+        # The [0, T] spectrum carries coherent leakage; a spurious ramp collapses
+        # the coherent edge statistic -- the plan does not de-ramp it back.
+        assert ref_stat > 2.0 * ramped_stat
+        _assert_invariants(ref)
 
-    def test_start_us_recorded_in_parameters(self):
+    def test_no_deramp_parameters_recorded(self):
         freqs, spec, rms, peaks = _synthetic(
             [(30040.0, 2.0, PeakClassification.STRONG)]
         )
-        plan = build_window_plan(
-            peaks,
-            freqs,
-            spec,
-            rms,
-            acquisition_us=15.0,
-            probe_freq_mhz=30000.0,
-            start_us=2.35,
-        )
-        assert plan.parameters["start_us"] == 2.35
-        assert plan.parameters["probe_freq_mhz"] == 30000.0
+        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        assert "start_us" not in plan.parameters
+        assert "probe_freq_mhz" not in plan.parameters
 
 
 # ---------------------------------------------------------------------------

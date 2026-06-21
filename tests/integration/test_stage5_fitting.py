@@ -775,4 +775,6 @@ def test_no_auto_peak_below_snr_floor_after_fit(
     assert "n_pruned" in ps
     assert "pruned" in ps
     assert "dropped_window_ids" in ps
-    assert ps["snr_floor"] == pytest.approx(3.2)
+    # The survival floor tracks the Stage 3 promotion cutoff (default 3.0) times
+    # ``snr_survival_factor`` (default 1.1) -> 3.3.
+    assert ps["snr_floor"] == pytest.approx(3.3)

@@ -79,6 +79,7 @@ from ftmwpipeline.preprocessing.edge_coherence import (
 )
 from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
+from ..utils.parallelism import resolve_worker_count
 from . import validation
 from .active_ft import ActiveFTResult
 from .doublet_alternative import DoubletAdjudication, adjudicate_close_pairs
@@ -101,7 +102,6 @@ from .window_fit import (
     evaluate_baseline,
     fit_window,
 )
-from ..utils.parallelism import resolve_worker_count
 
 logger = logging.getLogger(__name__)
 
@@ -2689,8 +2689,6 @@ _REPLAN_PARAM_KEYS = (
     "max_edge_free_neighbors",
     "acquisition_us",
     "tau_us",
-    "start_us",
-    "probe_freq_mhz",
 )
 
 

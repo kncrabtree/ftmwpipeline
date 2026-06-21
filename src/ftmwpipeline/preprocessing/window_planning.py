@@ -60,10 +60,9 @@ from .edge_coherence import (
     DEFAULT_EDGE_THRESHOLD,
     DEFAULT_TRIM_M,
     above_threshold_intervals,
+    active_edge_coherence,
     max_cumsum_statistic,
-    rolling_coherence,
 )
-from .leakage import deramp_to_active_start
 
 # Stage 4 parameter defaults. All configurable on the pipeline file.
 DEFAULT_MAX_WINDOW_WIDTH_MHZ = 40.0
@@ -367,8 +366,6 @@ def build_window_plan(
     max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
-    probe_freq_mhz: float = 0.0,
-    start_us: float = 0.0,
 ) -> WindowPlan:
     """Build the Stage 4 fit plan from the promoted Stage 3 peaks.
 
@@ -426,14 +423,6 @@ def build_window_plan(
         contributors are converted to edge-free skirts per dependent window
         (see :data:`DEFAULT_MAX_EDGE_FREE_NEIGHBORS`). Keeps the
         leakage-subtraction recovery targeted on a dense spectrum.
-    probe_freq_mhz : float
-        Probe (LO) frequency in MHz, used to de-ramp the spectrum to the
-        active-region turn-on before the edge-coherence statistic (see
-        :func:`~ftmwpipeline.preprocessing.leakage.deramp_to_active_start`).
-    start_us : float
-        Active-region start time ``t0`` in microseconds for that de-ramp.
-        ``0`` (the default) makes the de-ramp the identity -- correct for a
-        synthetic spectrum with no turn-on ramp.
 
     Returns
     -------
@@ -465,8 +454,6 @@ def build_window_plan(
         "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
-        "start_us": float(start_us),
-        "probe_freq_mhz": float(probe_freq_mhz),
     }
 
     ofreqs, ospec, orms, _order = _ordered_grid(
@@ -474,11 +461,6 @@ def build_window_plan(
         np.asarray(complex_spectrum, dtype=complex),
         np.asarray(rms_noise, dtype=float),
     )
-    # Reference the spectrum to the active-region turn-on: the pipeline FT is a
-    # full-record rfft, so a strong line's truncation-leakage skirt carries an
-    # exp(+/-i2pi f t0) ramp that makes the coherent edge statistic cancel on
-    # genuine leakage. The de-ramp restores it (see leakage-detection-rework).
-    ospec = deramp_to_active_start(ofreqs, ospec, probe_freq_mhz, start_us)
     n = ofreqs.size
     diagnostics: Dict[str, Any] = {}
 
@@ -505,7 +487,9 @@ def build_window_plan(
     step_mhz = abs(step_mhz) or 1.0
 
     # --- Step 1: rolling coherence statistic + leakage-touched regions ------
-    rolling = rolling_coherence(ospec, orms, band_m=edge_m)
+    # The active FT is in the [0, T] frame (sliced active region), so the
+    # coherent sum is scored directly -- no de-ramp (active_edge_coherence).
+    rolling = active_edge_coherence(ospec, orms, band_m=edge_m)
     touched = above_threshold_intervals(rolling, edge_threshold)
 
     # --- Step 2: per-peak proposed windows (tight, uniform) -----------------
@@ -1041,8 +1025,6 @@ def replan(
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
     max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
-    probe_freq_mhz: float = 0.0,
-    start_us: float = 0.0,
 ) -> WindowPlan:
     """Re-plan: apply structural change requests to an existing window plan.
 
@@ -1073,8 +1055,7 @@ def replan(
     peaks, freqs, complex_spectrum, rms_noise : ...
         Same inputs the plan was built from.
     acquisition_us, tau_us, edge_m, trim_m, edge_threshold,
-    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz,
-    probe_freq_mhz, start_us : ...
+    max_window_width_mhz, min_freeze_snr, min_window_half_width_mhz : ...
         Stage 4 parameters; see :func:`build_window_plan`.
 
     Returns
@@ -1109,8 +1090,6 @@ def replan(
         "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
-        "start_us": float(start_us),
-        "probe_freq_mhz": float(probe_freq_mhz),
     }
 
     ofreqs, ospec, orms, _order = _ordered_grid(
@@ -1118,7 +1097,6 @@ def replan(
         np.asarray(complex_spectrum, dtype=complex),
         np.asarray(rms_noise, dtype=float),
     )
-    ospec = deramp_to_active_start(ofreqs, ospec, probe_freq_mhz, start_us)
     n = ofreqs.size
     diagnostics: Dict[str, Any] = {}
 
@@ -1141,7 +1119,7 @@ def replan(
     step_mhz = float(np.mean(np.diff(ofreqs))) if n > 1 else 1.0
     step_mhz = abs(step_mhz) or 1.0
 
-    rolling = rolling_coherence(ospec, orms, band_m=edge_m)
+    rolling = active_edge_coherence(ospec, orms, band_m=edge_m)
     touched = above_threshold_intervals(rolling, edge_threshold)
 
     # Deep-copy the windows so mutations during _finalize_plan don't leak

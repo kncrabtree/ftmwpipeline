@@ -14,10 +14,34 @@ from ftmwpipeline.preprocessing.edge_coherence import (
     DEFAULT_EDGE_THRESHOLD,
     NULL_MEAN,
     above_threshold_intervals,
+    active_edge_coherence,
     coherence_statistic,
     max_cumsum_statistic,
     rolling_coherence,
 )
+
+
+def test_active_edge_coherence_is_deramp_free():
+    """The shared active-grid entry point scores the spectrum directly.
+
+    The active FT is in the ``[0, T]`` frame, so ``active_edge_coherence`` takes
+    the coherent sum with no de-ramp -- identical to ``rolling_coherence`` on the
+    same arrays. A spurious turn-on ramp (which the active grid never carries) is
+    therefore not corrected, and collapses the statistic.
+    """
+    rng = np.random.default_rng(7)
+    n = 512
+    freq = np.linspace(30000.0, 30050.0, n)
+    z = 0.3 * np.exp(1j * 0.4) * np.ones(n) + _complex_noise(n, 0.02, 1)
+    rms = np.full(n, 0.02)
+    np.testing.assert_array_equal(
+        active_edge_coherence(z, rms, band_m=64),
+        rolling_coherence(z, rms, band_m=64),
+    )
+    ramp = np.exp(-2j * np.pi * (freq - 29990.0) * 1e6 * (3.0 * 1e-6))
+    direct = np.nanmax(active_edge_coherence(z, rms, band_m=64))
+    ramped = np.nanmax(active_edge_coherence(z * ramp, rms, band_m=64))
+    assert direct > 2.0 * ramped
 
 
 def _complex_noise(n, sigma, seed):
