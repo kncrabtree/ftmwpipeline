@@ -32,6 +32,7 @@ from ..fitting.timebase_calibration import (
     TimebaseCalibrationResult,
     TimebaseToneRead,
 )
+from ._hdf5_helpers import reset_group
 
 SCHEMA_VERSION = "1.0"
 GROUP_PATH = "timebase_calibration"
@@ -54,10 +55,7 @@ def save_timebase_calibration_to_hdf5(
     The group is wiped and rebuilt; pass a freshly-created group or accept
     that all of its contents will be replaced.
     """
-    for key in list(h5_group.keys()):
-        del h5_group[key]
-    for key in list(h5_group.attrs.keys()):
-        del h5_group.attrs[key]
+    reset_group(h5_group, attrs=True)
 
     h5_group.attrs["epsilon"] = float(result.epsilon)
     h5_group.attrs["sigma_epsilon"] = float(result.sigma_epsilon)

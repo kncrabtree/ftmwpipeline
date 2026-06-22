@@ -37,13 +37,13 @@ than silently dropping or guessing data.
 """
 
 import json
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import h5py
 import numpy as np
 
 from ..core.data_structures import Peak, PeakClassification
+from ._hdf5_helpers import nan_if_none, none_if_nan, stamp_stage_header
 
 _COLUMNS = (
     "frequency",
@@ -66,10 +66,7 @@ _VALID_CLASSES = {c.value for c in PeakClassification}
 
 def _prop_float(peak: Peak, key: str) -> float:
     """Provenance value from ``peak.properties`` as float (NaN if absent)."""
-    value = peak.properties.get(key)
-    if value is None:
-        return float("nan")
-    return float(value)
+    return nan_if_none(peak.properties.get(key))
 
 
 def save_peaks_to_hdf5(
@@ -111,10 +108,8 @@ def save_peaks_to_hdf5(
         frequency[i] = p.frequency
         intensity[i] = p.intensity
         index[i] = -1 if p.index is None else int(p.index)
-        snr[i] = np.nan if p.snr is None else float(p.snr)
-        noise_std_local[i] = (
-            np.nan if p.noise_std_local is None else float(p.noise_std_local)
-        )
+        snr[i] = nan_if_none(p.snr)
+        noise_std_local[i] = nan_if_none(p.noise_std_local)
         internal_snr[i] = _prop_float(p, "internal_snr")
         internal_frequency[i] = _prop_float(p, "internal_frequency")
         cls: Any = p.classification
@@ -149,13 +144,10 @@ def save_peaks_to_hdf5(
             h5_group.create_dataset(name, data=data)
 
     params = parameters or {}
-    h5_group.attrs["n_peaks"] = n
-    h5_group.attrs["creation_time"] = datetime.now().isoformat()
-    h5_group.attrs["stage_name"] = "stage3_peaks"
+    stamp_stage_header(h5_group, "stage3_peaks", n_peaks=n)
     h5_group.attrs["parameters"] = json.dumps(params, default=str)
     for attr in ("promotion_min_snr", "internal_min_snr"):
-        value = params.get(attr)
-        h5_group.attrs[attr] = float("nan") if value is None else float(value)
+        h5_group.attrs[attr] = nan_if_none(params.get(attr))
 
 
 def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
@@ -209,8 +201,7 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
 
         extra: Dict[str, Any] = {"detection_pass": raw_pass}
         for opt in present_optional:
-            opt_val = float(cols[opt][i])
-            extra[opt] = None if np.isnan(opt_val) else opt_val
+            extra[opt] = none_if_nan(cols[opt][i])
         if promotion_min_snr is not None:
             extra["promoted"] = not np.isnan(snr_val) and snr_val >= promotion_min_snr
 
@@ -219,8 +210,8 @@ def load_peaks_from_hdf5(h5_group: h5py.Group) -> List[Peak]:
                 frequency=float(cols["frequency"][i]),
                 intensity=float(cols["intensity"][i]),
                 index=None if idx < 0 else idx,
-                snr=None if np.isnan(snr_val) else snr_val,
-                noise_std_local=None if np.isnan(nsl_val) else nsl_val,
+                snr=none_if_nan(snr_val),
+                noise_std_local=none_if_nan(nsl_val),
                 classification=raw_class if raw_class != "" else None,
                 **extra,
             )

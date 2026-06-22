@@ -34,8 +34,7 @@ silently dropping or guessing.
 """
 
 import json
-from datetime import datetime
-from typing import Any, Dict, List
+from typing import List
 
 import h5py
 import numpy as np
@@ -45,6 +44,7 @@ from ..core.data_structures import (
     FixedContributor,
     WindowPlan,
 )
+from ._hdf5_helpers import load_json_attr, reset_group, stamp_stage_header
 
 _FIXED_COLUMNS = (
     "fixed_peak_index",
@@ -64,12 +64,9 @@ def save_window_plan_to_hdf5(plan: WindowPlan, h5_group: h5py.Group) -> None:
     h5_group : h5py.Group
         Destination group; any existing window-plan content is overwritten.
     """
-    for key in list(h5_group.keys()):
-        del h5_group[key]
+    reset_group(h5_group)
 
-    h5_group.attrs["n_windows"] = plan.n_windows
-    h5_group.attrs["creation_time"] = datetime.now().isoformat()
-    h5_group.attrs["stage_name"] = "stage4_windows"
+    stamp_stage_header(h5_group, "stage4_windows", n_windows=plan.n_windows)
     h5_group.attrs["parameters"] = json.dumps(plan.parameters, default=str)
     h5_group.attrs["dependency_edges"] = json.dumps(
         [list(e) for e in plan.dependency_edges]
@@ -115,19 +112,6 @@ def save_window_plan_to_hdf5(plan: WindowPlan, h5_group: h5py.Group) -> None:
         )
 
 
-def _load_json_attr(h5_group: h5py.Group, name: str, default: Any) -> Any:
-    """Parse a JSON-encoded attribute, falling back to ``default`` if absent."""
-    raw = h5_group.attrs.get(name)
-    if raw is None:
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise ValueError(
-            f"stage4_windows attribute {name!r} is not valid JSON"
-        ) from exc
-
-
 def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
     """Load a :class:`WindowPlan` from an HDF5 group, validating loudly.
 
@@ -141,12 +125,12 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
     if "windows" not in h5_group:
         raise ValueError("stage4_windows group missing required 'windows' subgroup")
 
-    parameters = _load_json_attr(h5_group, "parameters", {})
-    diagnostics = _load_json_attr(h5_group, "diagnostics", {})
-    raw_edges = _load_json_attr(h5_group, "dependency_edges", [])
+    parameters = load_json_attr(h5_group, "parameters", {})
+    diagnostics = load_json_attr(h5_group, "diagnostics", {})
+    raw_edges = load_json_attr(h5_group, "dependency_edges", [])
     dependency_edges: List[tuple] = [tuple(e) for e in raw_edges]
     topological_order: List[int] = [
-        int(x) for x in _load_json_attr(h5_group, "topological_order", [])
+        int(x) for x in load_json_attr(h5_group, "topological_order", [])
     ]
 
     windows_group = h5_group["windows"]
@@ -193,7 +177,7 @@ def load_window_plan_from_hdf5(h5_group: h5py.Group) -> WindowPlan:
             for i in range(len(fixed_idx))
         ]
 
-        win_diag = _load_json_attr(wg, "diagnostics", {})
+        win_diag = load_json_attr(wg, "diagnostics", {})
 
         windows.append(
             FitWindow(

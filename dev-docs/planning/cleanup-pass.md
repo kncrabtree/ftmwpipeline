@@ -64,7 +64,7 @@ in `io/data_loaders/`):
 
 ## Phase 3 — low-risk duplication extractions
 
-(Finding numbers from the duplication audit.) **F6/F8/F10 done; F3/F4/F11
+(Finding numbers from the duplication audit.) **F3/F6/F8/F10 done; F4/F11
 pending; F5 deferred to Phase 4 — it pairs with the F1 settings work and has
 per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
@@ -85,10 +85,15 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
   (pairs with F1; many call sites, must preserve the per-class assertion message).
 - [x] **F10** protected-offset matcher (3 identical in `residual_rescue.py`) →
   `make_protected_matcher(protected, tol)` factory in `fitting/validation.py`.
-- [ ] **F3** HDF5 attr helpers (`_load_json_attr`, NaN-sentinel float coercion,
+- [x] **F3** HDF5 attr helpers (`_load_json_attr`, NaN-sentinel float coercion,
   group-reset + stage-header stamp) scattered across `io/*_serialization.py` →
   `io/_hdf5_helpers.py` (`load_json_attr`, `nan_if_none`/`none_if_nan`/`opt_float`,
-  `reset_group`, `stamp_stage_header`).
+  `reset_group`, `stamp_stage_header`). Repointed fitting/window/peak/stage6_review/
+  timebase/tau serializers; deleted the two local `_load_json_attr`, the
+  `_nan_if_none`/`_none_if_nan` pair, and `stage6_review._opt_float`. `stamp_stage_header`
+  writes the count attrs before `creation_time`/`stage_name` to match the prior order
+  (HDF5 attrs are order-independent on disk regardless). 341 io unit tests + 33
+  cross-interface green; touched files black + mypy clean.
 - [x] **F8** τ₀ fallback (Stage 5 seed + Stage 6 frozen-background dependent τ) →
   `default_tau0_us(acquisition_us)` in `active_ft_support.py` (a *function*
   returning `acquisition_us / 3.0`, not a `1/3` constant — preserves the exact
@@ -159,20 +164,19 @@ Working tree clean; committed through Phase 3's low-risk set:
   **F8** (`default_tau0_us`). 700 fitting/core/cross-interface tests green; touched
   files black + mypy clean.
 
-**Next up: Phase 3 leftovers, then Phase 4.** Suggested order:
+**Next up: Phase 3 leftovers (F4, F11), then Phase 4.** Suggested order:
 
-1. **F3** (HDF5 attr helpers → `io/_hdf5_helpers.py`) — mechanical, low risk; do
-   it before F2 (F2 depends on these helpers).
-2. **F4** (baseband↔molecular conversion) — byte-identity sensitive; make the
+1. **F4** (baseband↔molecular conversion) — byte-identity sensitive; make the
    shared helper reproduce each call site's exact arithmetic (`probe + sign*f_bb`,
    sign = −1 for lower), then verify a Stage 5 fit table is unchanged.
-3. **F11** (bare-style dedup + the edge-coherence default-divergence **bug fix** —
+2. **F11** (bare-style dedup + the edge-coherence default-divergence **bug fix** —
    this one intentionally changes behavior where the defaults diverged; confirm the
    `DEFAULT_*` values are the intended ones and re-run the Stage 4 viz/tuning paths).
-4. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
-   refactors. F5 (`require_resolved`) pairs with F1. Build a fresh 2638 fixture and
-   diff the persisted fields / fitted table before vs after for F2 and F9.
-5. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
+3. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
+   refactors. F5 (`require_resolved`) pairs with F1. F2 (settings serialization)
+   builds on F3's new `io/_hdf5_helpers.py`. Build a fresh 2638 fixture and diff the
+   persisted fields / fitted table before vs after for F2 and F9.
+4. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
    black/isort/mypy + full green suite) last.
 
 ## Resume notes

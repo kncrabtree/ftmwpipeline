@@ -92,7 +92,6 @@ mismatched peak-column lengths, unknown audit-step decision) raises
 from __future__ import annotations
 
 import json
-from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 import h5py
@@ -110,6 +109,13 @@ from ..core.data_structures import (
     SpectralWindow,
     SpectrumFit,
     ThawInfo,
+)
+from ._hdf5_helpers import (
+    load_json_attr,
+    nan_if_none,
+    none_if_nan,
+    reset_group,
+    stamp_stage_header,
 )
 
 __all__ = [
@@ -398,17 +404,6 @@ def _json_to_doublet_alternative(
 # ---------------------------------------------------------------------------
 # Small attribute helpers
 # ---------------------------------------------------------------------------
-def _nan_if_none(value: Optional[float]) -> float:
-    """``float(value)`` or NaN sentinel when ``value is None``."""
-    if value is None:
-        return float("nan")
-    return float(value)
-
-
-def _none_if_nan(value: float) -> Optional[float]:
-    """Inverse of :func:`_nan_if_none`: NaN -> None, finite value otherwise."""
-    f = float(value)
-    return None if np.isnan(f) else f
 
 
 def _peak_id_to_int(peak_id: Any) -> int:
@@ -419,19 +414,6 @@ def _peak_id_to_int(peak_id: Any) -> int:
         raise ValueError(
             f"FittedPeak.peak_id must be int-coercible for HDF5 storage; "
             f"got {peak_id!r}"
-        ) from exc
-
-
-def _load_json_attr(h5_group: h5py.Group, name: str, default: Any) -> Any:
-    raw = h5_group.attrs.get(name)
-    if raw is None:
-        return default
-    try:
-        return json.loads(raw)
-    except (json.JSONDecodeError, TypeError) as exc:
-        raise ValueError(
-            f"stage5_fitting attribute {name!r} on "
-            f"{h5_group.name} is not valid JSON"
         ) from exc
 
 
@@ -450,13 +432,14 @@ def save_spectrum_fit_to_hdf5(fit: SpectrumFit, h5_group: h5py.Group) -> None:
     h5_group : h5py.Group
         Destination group; any existing fit content is overwritten.
     """
-    for key in list(h5_group.keys()):
-        del h5_group[key]
+    reset_group(h5_group)
 
-    h5_group.attrs["n_windows"] = int(fit.n_windows)
-    h5_group.attrs["n_fitted_peaks"] = int(fit.n_fitted_peaks)
-    h5_group.attrs["creation_time"] = datetime.now().isoformat()
-    h5_group.attrs["stage_name"] = "stage5_fitting"
+    stamp_stage_header(
+        h5_group,
+        "stage5_fitting",
+        n_windows=fit.n_windows,
+        n_fitted_peaks=fit.n_fitted_peaks,
+    )
     h5_group.attrs["final_plan_revision"] = int(fit.final_plan_revision)
     h5_group.attrs["parameters"] = json.dumps(fit.parameters, default=str)
     h5_group.attrs["diagnostics"] = json.dumps(fit.diagnostics, default=str)
@@ -487,7 +470,7 @@ def _save_window_fit(window_fit: FittingResult, wg: h5py.Group) -> None:
     assert window_fit.window_id is not None  # guarded by caller
     tau_entry = window_fit.shared_parameters.get("tau_us") or {}
     tau_us = float(tau_entry.get("value", float("nan")))
-    tau_error = _nan_if_none(tau_entry.get("error"))
+    tau_error = nan_if_none(tau_entry.get("error"))
     tau_fitted_val = tau_entry.get("fitted")
 
     wg.attrs["window_id"] = int(window_fit.window_id)
@@ -581,14 +564,14 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
         columns["amplitude"][i] = float(p.amplitude)
-        columns["phase"][i] = _nan_if_none(p.phase)
-        columns["decay_rate"][i] = _nan_if_none(p.decay_rate)
-        columns["frequency_error"][i] = _nan_if_none(p.frequency_error)
-        columns["amplitude_error"][i] = _nan_if_none(p.amplitude_error)
-        columns["phase_error"][i] = _nan_if_none(p.phase_error)
-        columns["decay_rate_error"][i] = _nan_if_none(p.decay_rate_error)
-        columns["snr"][i] = _nan_if_none(p.snr)
-        columns["chi_squared"][i] = _nan_if_none(p.chi_squared)
+        columns["phase"][i] = nan_if_none(p.phase)
+        columns["decay_rate"][i] = nan_if_none(p.decay_rate)
+        columns["frequency_error"][i] = nan_if_none(p.frequency_error)
+        columns["amplitude_error"][i] = nan_if_none(p.amplitude_error)
+        columns["phase_error"][i] = nan_if_none(p.phase_error)
+        columns["decay_rate_error"][i] = nan_if_none(p.decay_rate_error)
+        columns["snr"][i] = nan_if_none(p.snr)
+        columns["chi_squared"][i] = nan_if_none(p.chi_squared)
         columns["window_id"][i] = -1 if p.window_id is None else int(p.window_id)
         if p.knockout is None:
             columns["knockout_delta_chi2"][i] = float("nan")
@@ -639,20 +622,20 @@ def load_spectrum_fit_from_hdf5(h5_group: h5py.Group) -> SpectrumFit:
 
     final_revision_attr = h5_group.attrs.get("final_plan_revision", 0)
     final_plan_revision = int(final_revision_attr)
-    parameters = _load_json_attr(h5_group, "parameters", {})
-    diagnostics = _load_json_attr(h5_group, "diagnostics", {})
+    parameters = load_json_attr(h5_group, "parameters", {}, label="stage5_fitting")
+    diagnostics = load_json_attr(h5_group, "diagnostics", {}, label="stage5_fitting")
 
-    raw_thaw = _load_json_attr(h5_group, "thaw_history", [])
+    raw_thaw = load_json_attr(h5_group, "thaw_history", [], label="stage5_fitting")
     thaw_history = [
         _json_to_thaw_info(blob, f"thaw_history[{i}]")
         for i, blob in enumerate(raw_thaw)
     ]
-    raw_replan = _load_json_attr(h5_group, "replan_history", [])
+    raw_replan = load_json_attr(h5_group, "replan_history", [], label="stage5_fitting")
     replan_history = [
         _json_to_replan_info(blob, f"replan_history[{i}]")
         for i, blob in enumerate(raw_replan)
     ]
-    raw_rescue = _load_json_attr(h5_group, "rescue_history", [])
+    raw_rescue = load_json_attr(h5_group, "rescue_history", [], label="stage5_fitting")
     rescue_history = [
         _json_to_rescue_round(blob, f"rescue_history[{i}]")
         for i, blob in enumerate(raw_rescue)
@@ -736,7 +719,7 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
     )
 
     tau_us = float(wg.attrs["tau_us"])
-    tau_error = _none_if_nan(float(wg.attrs.get("tau_error", float("nan"))))
+    tau_error = none_if_nan(float(wg.attrs.get("tau_error", float("nan"))))
     # tau_fitted: 1 -> True, 0 -> False, -1 or absent -> backward-compat
     # best-effort (finite tau_error implies tau was fit; otherwise unknown).
     tau_fitted: Optional[bool]
@@ -758,8 +741,12 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
         "fitted": tau_fitted,
         "peak_ids": [p.peak_id for p in fitted_peaks],
     }
-    result.fixed_parameters = _load_json_attr(wg, "fixed_parameters", {})
-    result.quality_metrics = _load_json_attr(wg, "quality_metrics", {})
+    result.fixed_parameters = load_json_attr(
+        wg, "fixed_parameters", {}, label="stage5_fitting"
+    )
+    result.quality_metrics = load_json_attr(
+        wg, "quality_metrics", {}, label="stage5_fitting"
+    )
     # Ensure edge-coherence scalar attrs make it back into quality_metrics
     # even if a hand-edit nuked the JSON attribute -- the scalar attrs are
     # canonical.
@@ -772,23 +759,23 @@ def _load_window_fit(wg: h5py.Group, where: str) -> FittingResult:
             wg.attrs["edge_coherence_high"]
         )
 
-    raw_audit = _load_json_attr(wg, "audit_trail", [])
+    raw_audit = load_json_attr(wg, "audit_trail", [], label="stage5_fitting")
     result.audit_trail = [
         _json_to_audit_step(blob, f"{where}/audit_trail[{i}]")
         for i, blob in enumerate(raw_audit)
     ]
-    raw_thaw = _load_json_attr(wg, "thaw_events", [])
+    raw_thaw = load_json_attr(wg, "thaw_events", [], label="stage5_fitting")
     result.thaw_events = [
         _json_to_thaw_info(blob, f"{where}/thaw_events[{i}]")
         for i, blob in enumerate(raw_thaw)
     ]
-    raw_rescue = _load_json_attr(wg, "rescue_events", [])
+    raw_rescue = load_json_attr(wg, "rescue_events", [], label="stage5_fitting")
     result.rescue_events = [
         _json_to_rescue_round(blob, f"{where}/rescue_events[{i}]")
         for i, blob in enumerate(raw_rescue)
     ]
     # Tolerate missing attr (older files predating the doublet-alternative pass).
-    raw_doublet = _load_json_attr(wg, "doublet_alternatives", [])
+    raw_doublet = load_json_attr(wg, "doublet_alternatives", [], label="stage5_fitting")
     result.doublet_alternatives = [
         _json_to_doublet_alternative(blob, f"{where}/doublet_alternatives[{i}]")
         for i, blob in enumerate(raw_doublet)
@@ -892,14 +879,14 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 peak_id=int(cols["peak_id"][i]),
                 frequency_mhz=float(cols["frequency_mhz"][i]),
                 amplitude=float(cols["amplitude"][i]),
-                phase=_none_if_nan(float(cols["phase"][i])),
-                decay_rate=_none_if_nan(float(cols["decay_rate"][i])),
-                frequency_error=_none_if_nan(float(cols["frequency_error"][i])),
-                amplitude_error=_none_if_nan(float(cols["amplitude_error"][i])),
-                phase_error=_none_if_nan(float(cols["phase_error"][i])),
-                decay_rate_error=_none_if_nan(float(cols["decay_rate_error"][i])),
-                snr=_none_if_nan(float(cols["snr"][i])),
-                chi_squared=_none_if_nan(float(cols["chi_squared"][i])),
+                phase=none_if_nan(float(cols["phase"][i])),
+                decay_rate=none_if_nan(float(cols["decay_rate"][i])),
+                frequency_error=none_if_nan(float(cols["frequency_error"][i])),
+                amplitude_error=none_if_nan(float(cols["amplitude_error"][i])),
+                phase_error=none_if_nan(float(cols["phase_error"][i])),
+                decay_rate_error=none_if_nan(float(cols["decay_rate_error"][i])),
+                snr=none_if_nan(float(cols["snr"][i])),
+                chi_squared=none_if_nan(float(cols["chi_squared"][i])),
                 window_id=None if wid_raw < 0 else wid_raw,
                 knockout=knockout,
                 clock_lattice=clock_lattice_vals[i],

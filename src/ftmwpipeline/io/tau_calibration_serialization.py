@@ -58,6 +58,7 @@ from ..fitting.tau_calibration import (
     SpurCluster,
     TauCalibrationResult,
 )
+from ._hdf5_helpers import reset_group
 
 SCHEMA_VERSION = "1.0"
 GROUP_PATH = "stage2b_tau_calibration"
@@ -82,10 +83,7 @@ def save_tau_calibration_to_hdf5(
     contents will be replaced.
     """
     # Wipe existing contents.
-    for key in list(h5_group.keys()):
-        del h5_group[key]
-    for key in list(h5_group.attrs.keys()):
-        del h5_group.attrs[key]
+    reset_group(h5_group, attrs=True)
 
     # --- scalars -------------------------------------------------------------
     scalars = h5_group.create_group("scalars")

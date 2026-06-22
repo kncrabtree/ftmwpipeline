@@ -48,6 +48,7 @@ from ..core.data_structures import (
     Stage6Review,
     WindowReviewStatus,
 )
+from ._hdf5_helpers import opt_float
 
 __all__ = [
     "save_stage6_review_to_hdf5",
@@ -128,11 +129,6 @@ def _final_peak_to_dict(p: FinalPeak) -> Dict[str, Any]:
     }
 
 
-def _opt_float(d: Dict[str, Any], key: str) -> Any:
-    v = d.get(key)
-    return None if v is None else float(v)
-
-
 def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
     return FinalPeak(
         frequency_mhz=float(d["frequency_mhz"]),
@@ -143,13 +139,13 @@ def _final_peak_from_dict(d: Dict[str, Any]) -> FinalPeak:
         sigma_eps_khz=float(d["sigma_eps_khz"]),
         sigma_floor_khz=float(d["sigma_floor_khz"]),
         amplitude=float(d["amplitude"]),
-        phase=_opt_float(d, "phase"),
-        snr=_opt_float(d, "snr"),
+        phase=opt_float(d, "phase"),
+        snr=opt_float(d, "snr"),
         origin=str(d.get("origin", "auto")),
         window_id=None if d.get("window_id") is None else int(d["window_id"]),
-        amplitude_error=_opt_float(d, "amplitude_error"),
-        phase_error=_opt_float(d, "phase_error"),
-        snr_error=_opt_float(d, "snr_error"),
+        amplitude_error=opt_float(d, "amplitude_error"),
+        phase_error=opt_float(d, "phase_error"),
+        snr_error=opt_float(d, "snr_error"),
         clock_lattice=(
             None if d.get("clock_lattice") is None else str(d["clock_lattice"])
         ),
