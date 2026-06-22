@@ -16,8 +16,7 @@ invariants. Where the code diverges, see the divergence log in
 What must be true of the analysis *as science* — the integrity of the data, the
 spectrum, the statistics, and the result — regardless of interface or storage
 layout. These are requirements on outcomes, not on algorithms: how a stage
-achieves them is the code's to decide and [`../STATUS.md`](../STATUS.md)'s to
-record.
+achieves them is the code's to decide.
 
 ## Requirements
 

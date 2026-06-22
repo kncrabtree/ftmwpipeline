@@ -22,7 +22,6 @@ large efforts).
 
 - A planning document is normative only for the work it tracks; the
   `*_STRATEGY.md` specs remain the authority on requirements.
-- No emojis. No dated progress logs — git history and `../STATUS.md` cover
-  state.
+- No emojis. No dated progress logs — git history and the code cover state.
 - Naming: `stage<N>-<topic>.md` (e.g. `stage3-peak-detection.md`), or a
   subdirectory for multi-document efforts.

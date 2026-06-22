@@ -76,9 +76,8 @@ missing dependency.
 
 This contract is uniform and fixed: adding a stage adds a method that obeys it
 without altering any existing signature. The roster of stages, their parameters,
-and their return types are the code's to define and
-[`../STATUS.md`](../STATUS.md)'s to record; the requirement here is the shared
-shape, not the list.
+and their return types are the code's to define; the requirement here is the
+shared shape, not the list.
 
 **Canonical FT settings.** That the canonical transform is unapodized,
 un-windowed, and native-length is a scientific requirement specified in

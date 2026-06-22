@@ -1,8 +1,7 @@
 # Specification: Testing
 
 Status of this document: **normative specification**. It states testing
-requirements, not the current state of the suite. For the current suite and
-counts see [`../STATUS.md`](../STATUS.md).
+requirements, not the current state of the suite.
 
 ## Scope
 

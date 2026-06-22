@@ -221,7 +221,7 @@ output/
 *.h5
 
 # Test-generated visualization artifacts (non-interactive visualize-ft
-# writes to the working directory; see STATUS.md known issues)
+# writes to the working directory)
 *_enhanced_spectrum.png
 
 # Conventional untracked scratch directory for run/test artifacts
@@ -233,3 +233,6 @@ scratch/
 
 # Claude Code per-session bookkeeping (scheduled-task locks, etc.)
 .claude/
+
+# Machine-local agent conventions (AGENTS.md is the tracked canonical source)
+CLAUDE.local.md

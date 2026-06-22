@@ -1,9 +1,8 @@
 # Completed work
 
 Archive of finished roadmap items and completed planning documents, moved out of
-the forward-looking [`ROADMAP.md`](ROADMAP.md). Verified current state is in
-[`../STATUS.md`](../STATUS.md); these entries are implementation overviews that
-seed user documentation.
+the forward-looking [`ROADMAP.md`](ROADMAP.md). These entries are implementation
+overviews that seed user documentation.
 
 ## Closed near-term sequence
 

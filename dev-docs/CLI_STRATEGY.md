@@ -49,7 +49,7 @@ reach the same command. An analysis stage requires its predecessor to be
 complete and must fail with a clear dependency message otherwise.
 
 Three rules govern the stage surface; the roster of stage objects itself is the
-code's and is recorded in [`../STATUS.md`](../STATUS.md):
+code's:
 
 - **Execute is uniform `run`.** The one deliberate exception is data import: it
   *creates* a file from a raw source rather than running on an existing one, so

@@ -3,7 +3,7 @@
 Status of this document: **normative specification**. It defines storage
 invariants and requirements, not the literal on-disk layout. Exact HDF5
 group/attribute names are an implementation detail; the code is their source of
-truth and the current layout is recorded in [`../STATUS.md`](../STATUS.md).
+truth.
 
 ## Scope
 
