@@ -149,6 +149,32 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 - [ ] Full test suite green (`-o addopts=""`), including `slow`/regen guards
   where touched.
 
+## Start here (current state)
+
+Working tree clean; committed through Phase 3's low-risk set:
+
+- `0aeb922` — Phase 1 (stray artifacts) + Phase 2 (dead modules + the legacy
+  Blackchirp loader; five test files migrated to `BlackChirpLoader`).
+- `77ac107` — Phase 3 **F6** (`Sideband.coerce`), **F10** (`make_protected_matcher`),
+  **F8** (`default_tau0_us`). 700 fitting/core/cross-interface tests green; touched
+  files black + mypy clean.
+
+**Next up: Phase 3 leftovers, then Phase 4.** Suggested order:
+
+1. **F3** (HDF5 attr helpers → `io/_hdf5_helpers.py`) — mechanical, low risk; do
+   it before F2 (F2 depends on these helpers).
+2. **F4** (baseband↔molecular conversion) — byte-identity sensitive; make the
+   shared helper reproduce each call site's exact arithmetic (`probe + sign*f_bb`,
+   sign = −1 for lower), then verify a Stage 5 fit table is unchanged.
+3. **F11** (bare-style dedup + the edge-coherence default-divergence **bug fix** —
+   this one intentionally changes behavior where the defaults diverged; confirm the
+   `DEFAULT_*` values are the intended ones and re-run the Stage 4 viz/tuning paths).
+4. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
+   refactors. F5 (`require_resolved`) pairs with F1. Build a fresh 2638 fixture and
+   diff the persisted fields / fitted table before vs after for F2 and F9.
+5. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
+   black/isort/mypy + full green suite) last.
+
 ## Resume notes
 
 - Run commands via `conda run -n ftmwpipeline-dev`; `-o addopts=""` drops
