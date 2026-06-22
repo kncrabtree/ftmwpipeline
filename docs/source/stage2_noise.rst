@@ -198,15 +198,11 @@ avoid. The same figure is available from Python through
 
 The overlay marks many clearly visible lines among the bins kept for the
 estimate, rather than masking them out, which can look like it would inflate σ. It
-does not. The line self-mask is one-sided and deliberately loose (``line_k = 8``):
-it removes only the strongest excursions, because the windowed scatter is a robust
-statistic that tolerates the minority of line bins left in, and the broad
-lower-envelope median (not the mask) is what actually keeps line power out of σ,
-riding the noise floor beneath the lines. Masking more aggressively (``line_k`` of
-3–5) would instead clip the upper tail of the genuine noise and bias σ *low*, the
-wrong direction for honest signal-to-noise and χ². The small residual from the
-weak lines left in is the weak-line floor; the threshold choice is analyzed in
-:ref:`noise-line-mask`.
+does not: the line self-mask is deliberately loose (``line_k = 8``) because the
+windowed scatter is a robust statistic that tolerates the line bins left in, and
+the broad lower-envelope median — not the mask — is what keeps line power out of
+σ. Why a *tighter* threshold would instead bias σ low, and why the loose mask's
+only cost is a small weak-line floor, is analyzed in :ref:`noise-line-mask`.
 
 Complex-domain cross-check
 --------------------------
