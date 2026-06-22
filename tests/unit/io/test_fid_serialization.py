@@ -319,13 +319,12 @@ class TestRealExperimentalDataIntegration:
     def test_experiment_2638_pipeline_file_integration(self, temp_dir):
         """Test FID serialization with real experiment 2638 data through pipeline files."""
         try:
-            from ftmwpipeline.io import load_blackchirp_experiment
+            from ftmwpipeline.io.data_loaders import BlackChirpLoader
 
             # Load real experimental data
-            ftmw_data = load_blackchirp_experiment(
+            original_fid = BlackChirpLoader().load_fid(
                 "examples/blackchirp_data/2638", fid_index=0
             )
-            original_fid = ftmw_data.fid
 
             print(f"Experiment 2638 FID loaded:")
             print(f"  Points: {original_fid.n_points}")
@@ -397,13 +396,12 @@ class TestRealExperimentalDataIntegration:
     def test_pipeline_file_portability_with_real_data(self, temp_dir):
         """Test that pipeline files are self-contained and portable."""
         try:
-            from ftmwpipeline.io import load_blackchirp_experiment
+            from ftmwpipeline.io.data_loaders import BlackChirpLoader
 
             # Load and create pipeline file with experiment 2638
-            ftmw_data = load_blackchirp_experiment(
+            original_fid = BlackChirpLoader().load_fid(
                 "examples/blackchirp_data/2638", fid_index=0
             )
-            original_fid = ftmw_data.fid
 
             source_metadata = SourceMetadata(
                 source_path="examples/blackchirp_data/2638",

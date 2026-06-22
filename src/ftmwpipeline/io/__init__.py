@@ -2,16 +2,13 @@
 Input/output and logging functions for FTMW pipeline.
 
 This module handles:
-- Experimental data format readers
 - Result serialization (HDF5, JSON, CSV)
 - Structured logging and decision tracking
+
+Input data formats are loaded through the pluggable registry in
+:mod:`ftmwpipeline.io.data_loaders`.
 """
 
-from .experimental_formats import (
-    load_blackchirp_experiment,
-    load_blackchirp_fid,
-    load_generic_fid,
-)
 from .fid_serialization import (
     load_fid_cache,
     save_fid_cache,
@@ -24,9 +21,6 @@ from .noise_result_serialization import (
 )
 
 __all__ = [
-    "load_blackchirp_experiment",
-    "load_blackchirp_fid",
-    "load_generic_fid",
     # Logging
     "setup_logging",
     "FittingLogger",

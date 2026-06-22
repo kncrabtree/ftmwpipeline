@@ -395,13 +395,12 @@ class TestRealDataIntegration:
     def test_experiment_2638_end_to_end_workflow(self, temp_dir):
         """Test complete workflow with experiment 2638 data if available."""
         try:
-            from ftmwpipeline.io import load_blackchirp_experiment
+            from ftmwpipeline.io.data_loaders import BlackChirpLoader
 
             # Load real experimental data
-            ftmw_data = load_blackchirp_experiment(
+            fid = BlackChirpLoader().load_fid(
                 "examples/blackchirp_data/2638", fid_index=0
             )
-            fid = ftmw_data.fid
 
             # Create source metadata
             source_metadata = SourceMetadata(

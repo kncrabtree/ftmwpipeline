@@ -21,7 +21,7 @@ from ftmwpipeline.core.data_structures import (
     PreprocessedFID,
     Sideband,
 )
-from ftmwpipeline.io import load_blackchirp_experiment
+from ftmwpipeline.io.data_loaders import BlackChirpLoader
 
 
 class TestPreprocessedFID:
@@ -413,10 +413,9 @@ class TestThreeStageWorkflowWithRealData:
         """Test complete workflow with real experiment 2638 data."""
         try:
             # Load real experimental data
-            ftmw_data = load_blackchirp_experiment(
+            fid = BlackChirpLoader().load_fid(
                 "examples/blackchirp_data/2638", fid_index=0
             )
-            fid = ftmw_data.fid
 
             # Stage 1: Preprocessing (canonical unapodized native-length FT)
             preprocessed_fid = fid.preprocess(units_power=6)
@@ -467,10 +466,9 @@ class TestThreeStageWorkflowWithRealData:
         """Test that the three-stage workflow is enforced (no legacy FID.ft())."""
         try:
             # Load experiment data
-            ftmw_data = load_blackchirp_experiment(
+            fid = BlackChirpLoader().load_fid(
                 "examples/blackchirp_data/2638", fid_index=0
             )
-            fid = ftmw_data.fid
 
             # Verify that legacy FID.ft() method does not exist
             assert not hasattr(

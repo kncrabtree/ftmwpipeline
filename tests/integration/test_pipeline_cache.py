@@ -30,9 +30,7 @@ import numpy as np
 import pytest
 
 from ftmwpipeline.core.data_structures import FID, ComplexFT, FIDProcessingParameters
-from ftmwpipeline.io.experimental_formats import load_blackchirp_experiment
-
-# NEW imports for Stage 0-1 architecture
+from ftmwpipeline.io.data_loaders import BlackChirpLoader
 from ftmwpipeline.io.fid_serialization import (
     load_fid_cache,
     save_fid_cache,
@@ -42,6 +40,11 @@ from ftmwpipeline.preprocessing.noise_estimation import (
     NoiseResult,
     estimate_noise_scatter,
 )
+
+
+def _load_example_fid(experiment_path):
+    """Load an example Blackchirp FID through the live loader."""
+    return BlackChirpLoader().load_fid(str(experiment_path), fid_index=0)
 
 
 class TestStage0FIDCaching:
@@ -82,8 +85,7 @@ class TestStage0FIDCaching:
             pytest.skip("Experiment 2638 data not available for FID caching testing")
 
         # Load real experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
 
         # === STAGE 0: CACHE FID DATA ===
         cache_id = self._get_cache_id("fid_roundtrip")
@@ -128,9 +130,9 @@ class TestStage0FIDCaching:
             ), "Units power not preserved"
 
         # Metadata should preserve original experiment information
-        assert cached_fid.metadata["experiment_path"] == str(
-            self.example_data_path
-        ), "Experiment path not preserved"
+        assert (
+            cached_fid.metadata["source_path"] == original_fid.metadata["source_path"]
+        ), "Source path not preserved"
         # Note: FID cache architecture preserves original FID data exactly - no cache-specific metadata is added to FID object
 
     def test_fid_cache_independence_from_source(self):
@@ -139,8 +141,7 @@ class TestStage0FIDCaching:
             pytest.skip("Experiment 2638 data not available for independence testing")
 
         # Load and cache FID
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
         cache_id = self._get_cache_id("independence")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
@@ -156,7 +157,10 @@ class TestStage0FIDCaching:
             np.testing.assert_array_equal(cached_fid.data, original_fid.data)
 
             # Cache should contain complete metadata for provenance
-            assert cached_fid.metadata["experiment_path"] == str(self.example_data_path)
+            assert (
+                cached_fid.metadata["source_path"]
+                == original_fid.metadata["source_path"]
+            )
             # Note: Cache preserves original metadata exactly - cache-specific metadata is in HDF5 file attributes
 
     def test_processing_parameter_updates(self):
@@ -167,8 +171,7 @@ class TestStage0FIDCaching:
             )
 
         # Load and cache FID
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
         cache_id = self._get_cache_id("param_update")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
@@ -224,8 +227,7 @@ class TestStage1OnDemandComplexFT:
             )
 
         # Load and cache FID
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
         cache_id = self._get_cache_id("complexft_consistency")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
@@ -274,8 +276,7 @@ class TestStage1OnDemandComplexFT:
             )
 
         # Load and cache FID
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
         cache_id = self._get_cache_id("param_variation")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
@@ -321,8 +322,7 @@ class TestStage1OnDemandComplexFT:
             pytest.skip("Experiment 2638 data not available for calculation logging")
 
         # Load and cache FID
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
         cache_id = self._get_cache_id("performance")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
@@ -394,8 +394,7 @@ class TestStage01WorkflowIntegration:
             )
 
         # Load experiment 2638 data
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
 
         # === DIRECT PROCESSING (NO CACHE) ===
         ft_params = {"start_us": 2.0, "end_us": 14.0}
@@ -487,8 +486,7 @@ class TestStage01WorkflowIntegration:
             )
 
         # Load and cache FID once
-        ftmw_data = load_blackchirp_experiment(str(self.example_data_path), fid_index=0)
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid(self.example_data_path)
         cache_id = self._get_cache_id("param_exploration")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
@@ -613,10 +611,7 @@ class TestStage01CacheRobustness:
             pytest.skip("Experiment 2638 data not available")
 
         # Create valid FID cache first
-        ftmw_data = load_blackchirp_experiment(
-            "examples/blackchirp_data/2638", fid_index=0
-        )
-        original_fid = ftmw_data.fid
+        original_fid = _load_example_fid("examples/blackchirp_data/2638")
         cache_id = self._get_cache_id("corruption_test")
         save_fid_cache(cache_id, original_fid, str(self.test_output_dir))
 
