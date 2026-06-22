@@ -132,6 +132,11 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
 ## Phase 4 — large duplication refactors (byte-identity sensitive)
 
+The self-contained pair (**F9** sort/broadcast preamble, **F12** `fork_map`) are
+done — see their `[x]` entries lower in this section. The settings-framework trio
+(F1 + F5, then F2) is the heavy, golden-sensitive remainder, deferred to a fresh
+session.
+
 - [ ] **F1** settings resolve/preset framework across `core/stage_fit_settings.py`,
   `tau_calibration_settings.py`, `peak_detection_settings.py`,
   `window_planning_settings.py` → `core/settings_framework.py` parameterized by
@@ -153,11 +158,17 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
   `iterative_aicc_cleanup` identity-permutation `initial_refits` guard is
   preserved unchanged. 2638 fit table byte-identical (golden `check`); 74
   window_fit/residual_rescue tests green; black + mypy clean.
-- [ ] **F12** the two fork-pool figure-render orchestrators in
+- [x] **F12** the two fork-pool figure-render orchestrators in
   `_internal/report_html_impl.py` (`_render_methods_figures`,
-  `_render_all_window_figures`) → `fork_map(items, worker, *, jobs, override)`.
-  The fork-inherited module-global + ordered progress log are load-bearing
-  (BLAS/fork notes) — preserve ordering and clear-on-finally.
+  `_render_all_window_figures`) → `fork_map(items, worker, *, jobs, override,
+  progress)`. The helper owns the serial/fork decision, the capped
+  `ProcessPoolExecutor("fork")`, and the in-order `ex.map` drain (with the
+  optional `progress(i, n)` callback carrying the ordered per-window log); each
+  caller still sets/clears its own fork-inherited module-global in a `try/finally`
+  around the call (`fork_map` does not manage it, per the BLAS/fork notes). The
+  serial paths now also route through the global-reading worker — output-identical.
+  42 `test_report_full` + 6 render-path tests green (real end-to-end HTML render);
+  black + mypy clean.
 
 ## Phase 5 — top-level docs refresh
 
@@ -182,7 +193,8 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
 ## Start here (current state)
 
-Working tree clean; Phase 3 complete (all of F3/F4/F6/F8/F10/F11 committed):
+Working tree clean; Phase 3 done; Phase 4 self-contained items (F9, F12) done.
+Only the heavy settings-framework trio (F1, F2, F5) remains in Phase 4.
 
 - `0aeb922` — Phase 1 (stray artifacts) + Phase 2 (dead modules + the legacy
   Blackchirp loader; five test files migrated to `BlackChirpLoader`).
@@ -193,16 +205,19 @@ Working tree clean; Phase 3 complete (all of F3/F4/F6/F8/F10/F11 committed):
   `none_if_nan`/`opt_float`/`reset_group`/`stamp_stage_header`).
 - `d150bc4` — **F4** (`Sideband.sign` single source of truth; 2638 fit table
   byte-identical).
-- **F11** (bare-style dedup + `set_log_spectrum_ylim` + `edge_coherence.coherence_curve`
-  with the default-divergence fix) committed alongside this doc update.
+- `5215555` — **F11** (bare-style dedup + `set_log_spectrum_ylim` +
+  `edge_coherence.coherence_curve` with the default-divergence fix).
+- `71b7c79` — **F9** (`window_fit.sort_window_arrays`; golden byte-identical).
+- **F12** (`fork_map` render orchestrator) committed alongside this doc update.
 
-**Next up: Phase 4 (the heavy refactors), then Phases 5–6.** Suggested order:
+**Next up: Phase 4 trio (F1+F5, then F2), then Phases 5–6.** Suggested order:
 
-1. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
-   refactors. F5 (`require_resolved`) pairs with F1. F2 (settings serialization)
-   builds on F3's new `io/_hdf5_helpers.py`. Build a fresh 2638 fixture and diff the
-   persisted fields / fitted table before vs after for F2 and F9 (the
-   stash → rebuild → `diff` harness used for F4 works here too).
+1. **F1 + F5 together** (settings resolve/preset framework + `require_resolved`)
+   then **F2** (settings serialization, builds on F3's `io/_hdf5_helpers.py`).
+   These are the heavy, golden/byte-identity-sensitive refactors — deferred to a
+   fresh session. Validate with the golden harness
+   (`scratch/cleanup-golden/golden.py check`) plus the settings round-trip tests;
+   for F2 also diff the persisted settings fields before vs after.
 2. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
    black/isort/mypy + full green suite) last.
 

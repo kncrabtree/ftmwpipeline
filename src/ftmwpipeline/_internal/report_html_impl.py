@@ -22,7 +22,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar, Union
 
 import numpy as np
 
@@ -948,6 +948,62 @@ def _methods_stage_figures(
     return out
 
 
+_FORK_ITEM = TypeVar("_FORK_ITEM")
+_FORK_RESULT = TypeVar("_FORK_RESULT")
+
+
+def fork_map(
+    items: List[_FORK_ITEM],
+    worker: Callable[[_FORK_ITEM], _FORK_RESULT],
+    *,
+    jobs: Optional[int] = None,
+    override: Optional[int] = None,
+    progress: Optional[Callable[[int, int], None]] = None,
+) -> List[_FORK_RESULT]:
+    """Map *worker* over *items*, in a forking process pool when worthwhile.
+
+    Runs serially in-process when there are fewer than two items, fewer than two
+    resolvable workers (``resolve_worker_count(jobs, override=override)``), or the
+    platform lacks ``fork``; otherwise forks a ``ProcessPoolExecutor`` capped at
+    ``min(workers, n)``. Either way the results come back in input order, and
+    *progress* (if given) is called ``progress(i, n)`` once per completed item
+    (1-based, in order) -- the ordered per-window progress log.
+
+    The big read-only inputs a *worker* needs (file path, the active-FT bundle,
+    unpicklable closures) must travel through a fork-inherited module global the
+    caller sets **before** calling this and clears in a ``finally``; only the
+    *items* entries cross the process boundary. ``fork_map`` does not manage that
+    global.
+    """
+    import multiprocessing
+
+    n = len(items)
+    max_workers = resolve_worker_count(jobs, override=override)
+    serial = (
+        n < 2
+        or max_workers < 2
+        or "fork" not in multiprocessing.get_all_start_methods()
+    )
+    out: List[_FORK_RESULT] = []
+    if serial:
+        for i, item in enumerate(items, start=1):
+            out.append(worker(item))
+            if progress is not None:
+                progress(i, n)
+        return out
+
+    from concurrent.futures import ProcessPoolExecutor
+
+    ctx_mp = multiprocessing.get_context("fork")
+    with ProcessPoolExecutor(max_workers=min(max_workers, n), mp_context=ctx_mp) as ex:
+        # ex.map preserves input order and re-raises worker exceptions.
+        for i, res in enumerate(ex.map(worker, items), start=1):
+            out.append(res)
+            if progress is not None:
+                progress(i, n)
+    return out
+
+
 # Per-stage methods figures are rendered the same way as the per-window panels:
 # a forking pool, thunks reached via a fork-inherited global (they are local
 # closures over the file path, not picklable, so they must be inherited, never
@@ -982,32 +1038,18 @@ def _render_methods_figures(
     """Render the methods-page figure thunks to PNG bytes, in parallel when
     worthwhile (same forking-pool / serial-fallback policy as the window
     figures; ``_FIGURE_RENDER_WORKERS`` pins the count for tests)."""
-    import multiprocessing
-
-    n = len(thunks)
-    max_workers = resolve_worker_count(jobs, override=_FIGURE_RENDER_WORKERS)
-    if (
-        n < 2
-        or max_workers < 2
-        or "fork" not in multiprocessing.get_all_start_methods()
-    ):
-        return [_render_one_methods_figure(t, fig_dpi) for t in thunks]
-
     global _METHODS_RENDER_CTX
     _METHODS_RENDER_CTX = {"thunks": thunks, "fig_dpi": fig_dpi}
-    results: List[Optional[bytes]] = [None] * n
     try:
-        from concurrent.futures import ProcessPoolExecutor
-
-        ctx_mp = multiprocessing.get_context("fork")
-        with ProcessPoolExecutor(
-            max_workers=min(max_workers, n), mp_context=ctx_mp
-        ) as ex:
-            for idx, data in ex.map(_methods_figure_worker, range(n)):
-                results[idx] = data
+        rendered = fork_map(
+            list(range(len(thunks))),
+            _methods_figure_worker,
+            jobs=jobs,
+            override=_FIGURE_RENDER_WORKERS,
+        )
     finally:
         _METHODS_RENDER_CTX = None
-    return results
+    return [data for _idx, data in rendered]
 
 
 def _summary_page(stem: str, md_html: str, leftover: List[str]) -> str:
@@ -2467,43 +2509,25 @@ def _render_all_window_figures(
     available, or when the platform lacks ``fork``. The figures are deterministic
     at fixed DPI, so the parallel and serial outputs are byte-identical.
     """
-    import multiprocessing
-
     n = len(page_ids)
-    max_workers = resolve_worker_count(jobs, override=_FIGURE_RENDER_WORKERS)
 
-    serial = (
-        n < 2
-        or max_workers < 2
-        or "fork" not in multiprocessing.get_all_start_methods()
-    )
-    results: Dict[int, _WindowFigures] = {}
-    if serial:
-        for i, wid in enumerate(page_ids, start=1):
-            results[wid] = _render_one_window_figures(
-                wid, path=path, bundle=bundle, dpi=dpi, stem=stem
-            )
-            logger.info("window %d/%d", i, n)
-        return results
+    def _log_progress(i: int, _n: int) -> None:
+        # The ordered per-window progress signal on long report runs.
+        logger.info("window %d/%d", i, n)
 
     global _WORKER_RENDER_CTX
     _WORKER_RENDER_CTX = {"path": path, "bundle": bundle, "dpi": dpi, "stem": stem}
     try:
-        from concurrent.futures import ProcessPoolExecutor
-
-        ctx_mp = multiprocessing.get_context("fork")
-        with ProcessPoolExecutor(
-            max_workers=min(max_workers, n), mp_context=ctx_mp
-        ) as ex:
-            # ex.map preserves input order and re-raises worker exceptions, so the
-            # per-window progress log stays ordered (1/n, 2/n, ...) -- the visible
-            # progress signal on long report runs.
-            for i, res in enumerate(ex.map(_render_window_worker, page_ids), start=1):
-                results[res[0]] = res
-                logger.info("window %d/%d", i, n)
+        rendered = fork_map(
+            page_ids,
+            _render_window_worker,
+            jobs=jobs,
+            override=_FIGURE_RENDER_WORKERS,
+            progress=_log_progress,
+        )
     finally:
         _WORKER_RENDER_CTX = None
-    return results
+    return {res[0]: res for res in rendered}
 
 
 def _fit_panels_block(
