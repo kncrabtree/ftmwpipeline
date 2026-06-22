@@ -589,7 +589,10 @@ def estimate_noise_complex_scatter(
         return 0.5 * (_robust_sigma(re[sl][m]) + _robust_sigma(im[sl][m]))
 
     if n < 3:
-        flat = _quad_sigma(slice(None), np.ones(n, dtype=bool)) * _QUADRATURE_TO_COMPLEX_RMS
+        flat = (
+            _quad_sigma(slice(None), np.ones(n, dtype=bool))
+            * _QUADRATURE_TO_COMPLEX_RMS
+        )
         return cast(np.ndarray, np.full(n, flat))
 
     df = abs(float(np.mean(np.diff(freqs))))
@@ -607,8 +610,10 @@ def estimate_noise_complex_scatter(
     if good.any():
         sigma = np.interp(np.arange(n), np.flatnonzero(good), sigma[good])
     else:
-        fallback = _quad_sigma(slice(None), mask) if mask.any() else _quad_sigma(
-            slice(None), np.ones(n, dtype=bool)
+        fallback = (
+            _quad_sigma(slice(None), mask)
+            if mask.any()
+            else _quad_sigma(slice(None), np.ones(n, dtype=bool))
         )
         sigma = np.full(n, fallback)
 
@@ -617,7 +622,10 @@ def estimate_noise_complex_scatter(
     if smoothing_mhz > 0.0:
         smooth_size = min(max(3, int(round(smoothing_mhz / df)) | 1), n)
         sigma = percentile_filter(
-            sigma, percentile=float(smoothing_percentile), size=smooth_size, mode="nearest"
+            sigma,
+            percentile=float(smoothing_percentile),
+            size=smooth_size,
+            mode="nearest",
         )
         if convolve_mhz > 0.0:
             sigma = _gaussian_smooth_1d(sigma, sigma=convolve_mhz / df)
@@ -677,7 +685,9 @@ def estimate_active_ft_noise(
         sorted_cs,
         np.asarray(result.noise_mask, dtype=bool),
         window_mhz=float(cast(float, info.get("window_mhz", SCATTER_WINDOW_MHZ))),
-        smoothing_mhz=float(cast(float, info.get("smoothing_mhz", SCATTER_SMOOTHING_MHZ))),
+        smoothing_mhz=float(
+            cast(float, info.get("smoothing_mhz", SCATTER_SMOOTHING_MHZ))
+        ),
         smoothing_percentile=float(
             cast(float, info.get("smoothing_percentile", SCATTER_SMOOTHING_PERCENTILE))
         ),
@@ -687,7 +697,9 @@ def estimate_active_ft_noise(
     cpx_med = float(np.median(complex_sigma))
     ratio = mag_med / cpx_med if cpx_med > 0 else float("nan")
     divergence = abs(ratio - 1.0)
-    warn = bool(np.isfinite(divergence) and divergence > SCATTER_COMPLEX_DIVERGENCE_WARN)
+    warn = bool(
+        np.isfinite(divergence) and divergence > SCATTER_COMPLEX_DIVERGENCE_WARN
+    )
     info["complex_sigma_median"] = cpx_med
     info["complex_magnitude_ratio"] = ratio
     info["complex_divergence"] = divergence

@@ -119,9 +119,7 @@ def cmd_report_run(args: argparse.Namespace) -> int:
     if out.get("table") is not None:
         print(f"report run: wrote table to {out['table']}")
     if out.get("html") is not None:
-        print(
-            f"report run: wrote self-contained {scope} HTML report to {out['html']}"
-        )
+        print(f"report run: wrote self-contained {scope} HTML report to {out['html']}")
     return 0
 
 

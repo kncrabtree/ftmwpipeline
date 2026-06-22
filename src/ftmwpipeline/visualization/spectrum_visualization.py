@@ -7,10 +7,9 @@ visualization, styled with the shared house style in :mod:`report_style`.
 
 from typing import Any, Optional, Tuple
 
-import numpy as np
-
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
+import numpy as np
 
 from ..core.data_structures import FID, ComplexFT, PreprocessedFID, SpectralWindow
 from .report_style import (
@@ -155,7 +154,9 @@ def _plot_complex_ft_matplotlib(
             assert fid is not None
             ax_raw = fig.add_subplot(gs[0, 0])
             time_us = fid.time_array_us()
-            ax_raw.plot(time_us, fid.data, color=AGGIE_BLUE, linewidth=1, label="Raw FID")
+            ax_raw.plot(
+                time_us, fid.data, color=AGGIE_BLUE, linewidth=1, label="Raw FID"
+            )
             ax_raw.set_ylabel("Voltage")
             ax_raw.set_xlabel("Time (μs)")
             ax_raw.set_title("Raw FID Data")

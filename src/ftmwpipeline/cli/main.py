@@ -14,12 +14,12 @@ from ..workflows import validate_installation
 from .clocks_commands import register_clocks_commands
 from .data_commands import add_data_subcommands
 from .fitting_commands import register_fitting_commands
-from .review_commands import register_review_commands
 from .ft_commands import add_ft_subcommands
 from .info_commands import add_info_subcommand
 from .noise_commands import register_noise_commands
 from .peak_commands import register_peak_commands
 from .report_commands import register_report_commands
+from .review_commands import register_review_commands
 from .run_commands import register_run_command
 from .scan_commands import register_scan_commands
 from .settings_commands import register_settings_commands

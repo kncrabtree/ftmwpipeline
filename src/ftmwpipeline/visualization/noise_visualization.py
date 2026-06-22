@@ -80,7 +80,12 @@ def plot_noise_estimation(
 
     # Plot full spectrum
     ax.plot(
-        freq_mhz, magnitudes, color=AGGIE_BLUE, linewidth=0.8, alpha=0.8, label="Spectrum"
+        freq_mhz,
+        magnitudes,
+        color=AGGIE_BLUE,
+        linewidth=0.8,
+        alpha=0.8,
+        label="Spectrum",
     )
 
     # Plot noise points using masked array approach

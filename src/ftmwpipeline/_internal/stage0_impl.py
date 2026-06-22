@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from ..core.data_structures import ChirpWindow, FID
+from ..core.data_structures import FID, ChirpWindow
 from ..core.stage_fit_settings import coerce_clock_sources
 from ..core.start_detection_settings import StartDetectionSettings
 from ..file_manager import (
