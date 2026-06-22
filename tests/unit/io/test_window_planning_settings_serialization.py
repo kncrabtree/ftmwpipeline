@@ -64,12 +64,10 @@ class TestStage4WindowsSettingsPersistence:
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = WindowPlanningSettings()
         s.coherence.edge_m = 32
-        save_window_planning_settings_to_h5(
-            empty_ftmw, s, preset_name="instrument_bc_2638"
-        )
+        save_window_planning_settings_to_h5(empty_ftmw, s, preset_name="defaults")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE4_WINDOWS_SETTINGS_PATH].attrs)
-        assert attrs.get("preset_name") == "instrument_bc_2638"
+        assert attrs.get("preset_name") == "defaults"
         assert "creation_time" in attrs
 
     def test_overwrites_prior_block(self, empty_ftmw) -> None:

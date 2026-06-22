@@ -252,7 +252,7 @@ def dump_yaml(yaml_dict: Dict[str, Any]) -> str:
 def looks_like_path(name_or_path: Union[str, Path]) -> bool:
     """Heuristic: does ``name_or_path`` reference a file rather than a bare name?
 
-    A bare preset name is a single identifier (e.g. ``instrument_bc_2638``)
+    A bare preset name is a single identifier (e.g. ``defaults``)
     that resolves against the packaged ``ftmwpipeline.presets`` resources.
     Anything else -- a path with separators, a string ending in ``.yaml`` /
     ``.yml``, or an absolute path -- gets loaded directly.

@@ -4,11 +4,13 @@ handling for ``fit:`` ↔ ``stage5:``, ``stage2b:`` sibling-block
 coexistence, error surfaces) and for the preset/explicit kwarg precedence
 inside ``resolve()``.
 
-These verify the Step 4 surface: ``ftmwpipeline fit-peaks --preset
-gaussian_default exp.ftmw`` works end-to-end on the YAML side, the
-back-compat shim for the legacy ``fit:`` wrapper still parses, and the
-Stage 2b ``load_preset`` returns the matching ``stage2b:`` block on the
-same packaged preset files.
+These verify the preset surface: ``ftmwpipeline fit run --preset defaults
+exp.ftmw`` works end-to-end on the YAML side, the back-compat shim for the
+legacy ``fit:`` wrapper still parses, and every stage's ``load_preset``
+returns the matching block of the single packaged ``defaults`` preset. The
+``defaults`` preset is the canonical all-knobs-at-their-default template;
+:class:`TestDefaultsPresetIsIdentity` pins that applying it resolves to the
+exact same settings as passing no preset at all.
 """
 
 from __future__ import annotations
@@ -17,6 +19,11 @@ from importlib.resources import files
 
 import pytest
 
+import ftmwpipeline.core.noise_settings as noise_mod
+import ftmwpipeline.core.peak_detection_settings as peak_mod
+import ftmwpipeline.core.stage_fit_settings as fit_mod
+import ftmwpipeline.core.tau_calibration_settings as tau_mod
+import ftmwpipeline.core.window_planning_settings as window_mod
 from ftmwpipeline.core.noise_settings import load_preset as load_noise_preset
 from ftmwpipeline.core.peak_detection_settings import load_preset as load_peak_preset
 from ftmwpipeline.core.peak_shape import PeakShape
@@ -34,36 +41,28 @@ class TestPackagedPresetResolution:
     def test_packaged_preset_dir_exists(self) -> None:
         pkg = files("ftmwpipeline.presets")
         names = sorted(p.name for p in pkg.iterdir() if p.name.endswith(".yaml"))
-        assert "gaussian_default.yaml" in names
-        assert "lorentzian_legacy.yaml" in names
-        assert "instrument_bc_2638.yaml" in names
+        # The single shipped preset is the all-defaults template.
+        assert names == ["defaults.yaml"]
 
-    def test_load_gaussian_default(self) -> None:
-        s = load_preset("gaussian_default")
-        assert s.shape is not None and s.shape.kind is PeakShape.GAUSSIAN
-
-    def test_load_lorentzian_legacy(self) -> None:
-        s = load_preset("lorentzian_legacy")
-        assert s.shape is not None and s.shape.kind is PeakShape.LORENTZIAN
-
-    def test_load_instrument_bc_2638(self) -> None:
-        """The 2638 preset declares the instrument clock tree in spur.clocks
-        and pins mask_target_residual_snr.  Shape and tau knobs are not set
-        (the shape is auto-recommended by Stage 2b; tau knobs are package-wide
-        defaults).
+    def test_load_defaults_stage5_shape_unset(self) -> None:
+        """The defaults preset pins Stage 5's knobs at their hard defaults but
+        leaves ``shape`` unset so Stage 2b's lineshape recommendation drives
+        it; the clock declaration is a commented-out template (also unset).
         """
-        from ftmwpipeline.core.stage_fit_settings import ClockSource
+        s = load_preset("defaults")
+        assert s.shape is None, "shape should be left to Stage 2b auto-recommendation"
+        assert s.spur.clocks is None, "clocks ship commented-out (no declaration)"
+        # A representative knob is present at its package default.
+        assert s.tau.max_decay_factor == 5.0
+        assert s.tau.per_band_tau is True
+        assert not s.is_empty()
 
-        s = load_preset("instrument_bc_2638")
-        assert s.spur.clocks is not None, "2638 preset should carry a clock declaration"
-        assert len(s.spur.clocks) >= 1
-        freqs = {round(c.freq_mhz, 1) for c in s.spur.clocks}
-        assert 5120.0 in freqs, "Expected 5120 MHz synth fundamental"
-        assert 5760.0 in freqs, "Expected 5760 MHz synth fundamental"
-        assert s.spur.mask_target_residual_snr is not None
-        # Shape and all other knobs remain unset.
-        assert s.shape is None, "Shape should be left to Stage 2b auto-recommendation"
-        assert s.tau.max_decay_factor is None
+    def test_load_defaults_stage2b_auto_recommend(self) -> None:
+        """The defaults preset makes the Stage 2b auto-recommend behavior
+        explicit (recommendation.auto_recommend = True)."""
+        ts = load_tau_preset("defaults")
+        assert ts.recommendation.auto_recommend is True
+        assert not ts.is_empty()
 
     def test_unknown_bare_name_lists_available(self) -> None:
         with pytest.raises(FileNotFoundError, match=r"no packaged preset"):
@@ -141,14 +140,12 @@ class TestStage2bPresetResolution:
     """The Stage 2b ``load_preset`` reads the ``stage2b:`` block from the
     same packaged preset files Stage 5 uses; absence is not an error."""
 
-    def test_packaged_presets_load_empty_when_no_stage2b_block(self) -> None:
-        """The three packaged presets carry no ``stage2b:`` block today."""
-        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
-            s = load_tau_preset(name)
-            assert s.is_empty(), (
-                f"packaged preset {name!r} should produce an empty "
-                f"TauCalibrationSettings until a stage2b: block lands"
-            )
+    def test_defaults_preset_populates_stage2b_at_defaults(self) -> None:
+        """The defaults preset carries a full ``stage2b:`` block at defaults."""
+        s = load_tau_preset("defaults")
+        assert not s.is_empty()
+        assert s.stft.n_seg == 10
+        assert s.recommendation.auto_recommend is True
 
     def test_stage2b_block_populates_dataclass(self, tmp_path) -> None:
         p = tmp_path / "with_stage2b.yaml"
@@ -185,13 +182,10 @@ class TestStage2PresetResolution:
     """The Stage 2 ``load_preset`` reads the ``stage2:`` block from the
     same packaged preset files Stages 5 and 2b use; absence is not an error."""
 
-    def test_packaged_presets_load_empty_when_no_stage2_block(self) -> None:
-        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
-            s = load_noise_preset(name)
-            assert s.is_empty(), (
-                f"packaged preset {name!r} should produce an empty "
-                f"NoiseSettings until a stage2: block lands"
-            )
+    def test_defaults_preset_populates_stage2_at_defaults(self) -> None:
+        s = load_noise_preset("defaults")
+        assert not s.is_empty()
+        assert s.window_mhz == 80.0
 
     def test_stage2_block_populates_dataclass(self, tmp_path) -> None:
         p = tmp_path / "with_stage2.yaml"
@@ -234,13 +228,10 @@ class TestStage3PresetResolution:
     same packaged preset files Stages 2, 2b, and 5 use; absence is not an
     error."""
 
-    def test_packaged_presets_load_empty_when_no_stage3_block(self) -> None:
-        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
-            s = load_peak_preset(name)
-            assert s.is_empty(), (
-                f"packaged preset {name!r} should produce an empty "
-                f"PeakDetectionSettings until a stage3: block lands"
-            )
+    def test_defaults_preset_populates_stage3_at_defaults(self) -> None:
+        s = load_peak_preset("defaults")
+        assert not s.is_empty()
+        assert s.promotion.min_snr == 3.0
 
     def test_stage3_block_populates_dataclass(self, tmp_path) -> None:
         p = tmp_path / "with_stage3.yaml"
@@ -288,13 +279,10 @@ class TestStage4PresetResolution:
     same packaged preset files Stages 2, 2b, 3, and 5 use; absence is not
     an error."""
 
-    def test_packaged_presets_load_empty_when_no_stage4_block(self) -> None:
-        for name in ("gaussian_default", "lorentzian_legacy", "instrument_bc_2638"):
-            s = load_window_preset(name)
-            assert s.is_empty(), (
-                f"packaged preset {name!r} should produce an empty "
-                f"WindowPlanningSettings until a stage4: block lands"
-            )
+    def test_defaults_preset_populates_stage4_at_defaults(self) -> None:
+        s = load_window_preset("defaults")
+        assert not s.is_empty()
+        assert s.coherence.edge_m == 64
 
     def test_stage4_block_populates_dataclass(self, tmp_path) -> None:
         p = tmp_path / "with_stage4.yaml"
@@ -341,18 +329,17 @@ class TestStage4PresetResolution:
 class TestResolutionWithPreset:
     """Preset + explicit kwarg precedence: explicit wins per field."""
 
-    def test_preset_only(self) -> None:
-        preset = load_preset("gaussian_default")
-        merged = resolve(preset=preset)
-        assert merged.shape is not None and merged.shape.kind is PeakShape.GAUSSIAN
-        # per_band_tau is the package-wide hard default (True).
+    def test_defaults_preset_only_resolves_to_hard_defaults(self) -> None:
+        """The defaults preset leaves shape unset, so a preset-only resolve
+        falls through to the lorentzian hard default and the package defaults."""
+        merged = resolve(preset=load_preset("defaults"))
+        assert merged.shape is not None and merged.shape.kind is PeakShape.LORENTZIAN
         assert merged.tau.per_band_tau is True
-        # Hard default for an unspecified field
         assert merged.tau.max_decay_factor == 5.0
 
     def test_explicit_overrides_preset_shape(self) -> None:
-        """``explicit.shape = LORENTZIAN`` beats the preset's GAUSSIAN."""
-        preset = load_preset("gaussian_default")
+        """``explicit.shape = LORENTZIAN`` beats a preset's GAUSSIAN."""
+        preset = StageFitSettings(shape=ShapeSpec(kind=PeakShape.GAUSSIAN))
         explicit = StageFitSettings(shape=ShapeSpec(kind=PeakShape.LORENTZIAN))
         merged = resolve(explicit=explicit, preset=preset)
         assert merged.shape is not None and merged.shape.kind is PeakShape.LORENTZIAN
@@ -370,3 +357,33 @@ class TestResolutionWithPreset:
         assert merged.tau.max_decay_factor == 1.5
         # preset wins where explicit is unset
         assert merged.conservative.max_peaks == 6
+
+
+@pytest.mark.parametrize(
+    "mod",
+    [noise_mod, tau_mod, peak_mod, window_mod, fit_mod],
+    ids=["stage2", "stage2b", "stage3", "stage4", "stage5"],
+)
+class TestDefaultsPresetIsIdentity:
+    """Applying the shipped ``defaults`` preset must change nothing.
+
+    For every stage, resolving with the preset must equal resolving with no
+    layers at all -- the preset's whole job is to be a documented, no-op
+    template. This is the drift guard: if a package default changes and the
+    preset is not updated, the preset's pinned (now-stale) value diverges from
+    the new hard default and this test fails.
+    """
+
+    def test_resolve_with_defaults_equals_no_preset(self, mod) -> None:
+        assert mod.resolve(preset=mod.load_preset("defaults")) == mod.resolve()
+
+
+class TestDefaultsLetsRecommendationDriveShape:
+    """The defaults preset leaves Stage 5's shape unset, so an upstream
+    recommendation (Stage 2b's lineshape vote) wins -- exactly the
+    auto-recommend behavior the preset documents."""
+
+    def test_recommended_shape_wins_through_defaults_preset(self) -> None:
+        recommended = StageFitSettings(shape=ShapeSpec(kind=PeakShape.GAUSSIAN))
+        merged = resolve(preset=load_preset("defaults"), recommended=recommended)
+        assert merged.shape is not None and merged.shape.kind is PeakShape.GAUSSIAN

@@ -342,9 +342,9 @@ atomic pair).
 
 Settings resolve in the usual order — explicit flags, then a persisted record,
 then a preset, then the recommended values, then the hard defaults — as
-described on :doc:`settings_and_presets`. Packaged presets cover the common
-cases (``gaussian_default``, ``lorentzian_legacy``, ``instrument_bc_2638``); a
-preset composes with explicit flags.
+described on :doc:`settings_and_presets`. The packaged ``defaults`` preset is a
+copy-and-edit template of every knob at its default; a preset composes with
+explicit flags.
 
 Knobs
 -----

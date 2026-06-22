@@ -391,10 +391,9 @@ def register_fitting_commands(subparsers: Any) -> None:
         default=None,
         metavar="NAME_OR_PATH",
         help=(
-            "Load a Stage 5 fit preset by bare name (one of the "
-            "packaged presets under ftmwpipeline/presets/, e.g. "
-            "'gaussian_default', 'lorentzian_legacy', "
-            "'instrument_bc_2638') or by path to a YAML file. The "
+            "Load a Stage 5 fit preset by bare name (the packaged "
+            "'defaults' template under ftmwpipeline/presets/) or by path "
+            "to a YAML file. The "
             "preset enters the resolution chain at the preset layer "
             "(a persisted .ftmw outranks it). Composes with the per-knob "
             "flags: the flags are the explicit layer, the preset the layer "

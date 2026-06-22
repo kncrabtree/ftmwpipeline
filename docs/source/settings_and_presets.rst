@@ -160,40 +160,36 @@ and a ``stage5:`` block side-by-side. Each stage's loader reads only
 its own block and ignores the rest, so one preset can drive a complete
 instrument-specific recipe.
 
-``ftmwpipeline`` ships three:
+``ftmwpipeline`` ships exactly one packaged preset, ``defaults``: every
+pipeline knob written at its package-wide default value, and nothing else.
+Applying it is a no-op — ``--preset defaults`` reproduces exactly what the
+pipeline does with no preset at all — so its purpose is documentation. It is
+the canonical, copy-and-edit starting point: open it, delete the blocks you
+do not care about, and change the few values you want to pin.
 
-* ``gaussian_default`` — clean Gaussian baseline; otherwise stock.
-* ``lorentzian_legacy`` — the historical Lorentzian default, named
-  explicitly for A/B comparisons.
-* ``instrument_bc_2638`` — starting point for the Blackchirp 2638
-  fixture: Gaussian shape, per-band τ routing on.
-
-Use a packaged preset by bare name:
-
-.. code-block:: python
-
-   ftmw.fit_peaks("exp.ftmw", preset="instrument_bc_2638")
+Use it by bare name (mostly to read it; as a recipe you would copy and edit
+it first):
 
 .. code-block:: shell
 
-   ftmwpipeline fit run exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline fit run exp.ftmw --preset defaults
 
-Or load a YAML file you wrote yourself by path:
+Or, the usual workflow, load a YAML file you wrote yourself by path:
 
 .. code-block:: shell
 
    ftmwpipeline fit run exp.ftmw --preset ./my_lab_recipe.yaml
 
-The same preset name passed to any stage CLI subcommand loads only that
-stage's block:
+The same preset name (or path) passed to any stage CLI subcommand loads only
+that stage's block:
 
 .. code-block:: shell
 
-   ftmwpipeline noise run    exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline tau run      exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline peaks run    exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline windows run  exp.ftmw --preset instrument_bc_2638
-   ftmwpipeline fit run      exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline noise run    exp.ftmw --preset ./my_lab_recipe.yaml
+   ftmwpipeline tau run      exp.ftmw --preset ./my_lab_recipe.yaml
+   ftmwpipeline peaks run    exp.ftmw --preset ./my_lab_recipe.yaml
+   ftmwpipeline windows run  exp.ftmw --preset ./my_lab_recipe.yaml
+   ftmwpipeline fit run      exp.ftmw --preset ./my_lab_recipe.yaml
 
 A stage whose block is missing from the preset loads an empty
 ``XxxSettings`` and falls through to the next layer of the resolver —
@@ -206,11 +202,87 @@ call. At the command line, that is a preset plus a per-knob flag:
 .. code-block:: shell
 
    ftmwpipeline fit run exp.ftmw \
-     --preset instrument_bc_2638 \
+     --preset ./my_lab_recipe.yaml \
      --max-residual-rescue-rounds 3
 
 The flag lands in the explicit layer; the preset seeds the preset layer
 beneath it (and beneath anything the file has already persisted).
+
+The preset YAML format
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A preset is a YAML mapping with up to five top-level stage blocks —
+``stage2`` (noise), ``stage2b`` (τ calibration), ``stage3`` (peaks),
+``stage4`` (windows), ``stage5`` (the fit) — plus optional ``name`` and
+``description`` metadata that the loader carries but ignores. Within a
+stage block, knobs are grouped into the same named sub-blocks the settings
+dataclass uses (for example ``stage5`` has ``tau``, ``seeder``,
+``conservative``, ``penalties``, ``rescue``, ``thaw``, ``spur``,
+``baseline``, ``doublet_alternative``, ``peak_survival``; ``stage2`` is
+flat, with no sub-blocks). Every field is optional: omit a knob and it
+falls through the resolver; write it and it is pinned at the preset layer.
+An unknown stage block, sub-block, or field name is rejected with an error
+so typos surface loudly rather than silently doing nothing.
+
+.. code-block:: yaml
+
+   name: my_lab_recipe
+   description: my instrument, tuned
+
+   stage2:
+     window_mhz: 120.0            # flat — Stage 2 has no sub-blocks
+   stage3:
+     promotion:
+       min_snr: 4.0
+   stage5:
+     shape: gaussian              # see the note below before pinning this
+     tau:
+       max_decay_factor: 4.0
+
+For the meaning, type, and suggested values of every knob, read the
+shipped ``defaults`` preset (it lists them all at their defaults) or run
+``ftmwpipeline settings show`` for a file's resolved values and
+``ftmwpipeline scan list`` for the tunable knobs and their sweep grids.
+
+Line shape and the Stage 2b recommendation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+There is one subtlety worth calling out, and it is why the ``defaults``
+preset leaves ``stage5.shape`` unset. Stage 2b runs a three-way lineshape
+vote (``stage2b.recommendation.auto_recommend``, default ``true``) and
+stamps the winning shape on the ``.ftmw`` as the *recommended* layer.
+Stage 5 consumes that recommendation **only when ``stage5.shape`` is
+unset** — because a pinned ``shape:`` sits in the higher-precedence preset
+layer and silently overrides the recommendation. So:
+
+* leave ``stage5.shape`` out to let Stage 2b choose the shape (the
+  out-of-the-box behavior);
+* set ``stage5.shape: lorentzian`` or ``gaussian`` to force it, knowingly
+  bypassing the vote.
+
+Declaring the instrument clock tree
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``stage5.spur.clocks`` block declares an instrument's clock-source
+fundamentals so the spur detector can use the locked intermod *lattice*
+instead of the generic integer-MHz anchor (and add a drift lane for any
+unlocked source). The ``defaults`` preset ships this commented out as a
+template; the Blackchirp 2638 instrument is shown as a worked example:
+
+.. code-block:: yaml
+
+   stage5:
+     spur:
+       clocks:
+         - {freq_mhz: 5120, locked: true,  label: synth-downconv}
+         - {freq_mhz: 5760, locked: true,  label: synth-upconv}
+         - {freq_mhz: 16000, locked: true, label: awg}
+         - {freq_mhz: 8000, locked: true,  label: awg-half}
+         - {freq_mhz: 6250, locked: false, label: scope-adc}
+
+Declare chain *fundamentals* only — harmonics and products derive. The same
+declaration can be supplied at import from a ``clocks.csv`` sidecar instead;
+see :doc:`clock_declaration`.
 
 The Python ``settings=`` kwarg
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -261,7 +333,7 @@ the ``settings=`` fields win per field and the preset seeds the rest:
 
    s = StageFitSettings()
    s.rescue.max_rounds = 3
-   ftmw.fit_peaks("exp.ftmw", preset="instrument_bc_2638", settings=s)
+   ftmw.fit_peaks("exp.ftmw", preset="./my_lab_recipe.yaml", settings=s)
 
 Persistence and auto-inheritance
 --------------------------------
@@ -274,22 +346,21 @@ a sequence like:
 
 .. code-block:: shell
 
-   ftmwpipeline fit run exp.ftmw --preset instrument_bc_2638
+   ftmwpipeline fit run exp.ftmw --preset ./my_lab_recipe.yaml
    ftmwpipeline fit show exp.ftmw
    # ... look at the fit, decide to tighten rescue ...
    ftmwpipeline fit run exp.ftmw --max-residual-rescue-rounds 3
 
-does what you probably expect: the second fit keeps the Gaussian shape
-and the per-band τ routing from the first call's preset, and just
-tightens the rescue. You don't have to re-supply ``--preset`` to keep
-the prior recipe.
+does what you probably expect: the second fit keeps the settings from the
+first call's preset and just tightens the rescue. You don't have to
+re-supply ``--preset`` to keep the prior recipe.
 
 The persisted block is structured to be inspectable on disk::
 
    $ h5dump -A exp.ftmw | head -40
    /processing_parameters/stage5_fit
      @creation_time = "2026-05-27T17:42:11..."
-     @preset_name = "instrument_bc_2638"
+     @preset_name = "my_lab_recipe"
      shape/
        @kind = "gaussian"
      tau/

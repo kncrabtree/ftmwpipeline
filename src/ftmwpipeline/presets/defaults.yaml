@@ -1,0 +1,215 @@
+name: defaults
+description: |
+  The canonical reference preset: every pipeline knob written at its
+  package-wide default value, and nothing else. Applying it is a no-op --
+  ``--preset defaults`` reproduces exactly what the pipeline does with no
+  preset at all -- so its purpose is documentation: copy this file, delete the
+  blocks you don't care about, and edit the few values you want to pin.
+
+  Resolution order is ``explicit > persisted (in the .ftmw) > preset >
+  recommended (e.g. Stage 2b's lineshape vote) > hard default``. A value you
+  leave out of a preset falls through to the next layer; a value you write
+  *pins* it at the preset layer. Note the consequence: every line you keep
+  here pins that knob, so a copied-and-edited preset will not track future
+  changes to the package defaults for the lines it still carries -- keep only
+  the knobs you actually mean to fix.
+
+  The blocks are ``stage2`` (noise), ``stage2b`` (tau calibration),
+  ``stage3`` (peak detection), ``stage4`` (window planning), and ``stage5``
+  (the fit). One file can carry any subset of them; each stage reads only its
+  own block. For the meaning and allowed values of each knob see
+  ``docs/source/settings_and_presets.rst`` or ``ftmwpipeline settings show``.
+
+# --- Stage 2: noise estimation (scatter-MAD) -------------------------------
+stage2:
+  window_mhz: 80.0
+  pedestal_mhz: 20.0
+  line_k: 8.0
+  n_iter: 3
+  region_aware: true
+  smoothing_mhz: 800.0
+  smoothing_percentile: 50.0
+  convolve_mhz: 200.0
+
+# --- Stage 2b: tau calibration + lineshape recommendation ------------------
+stage2b:
+  stft:
+    n_seg: 10
+    t_sigma: 5.0
+    tau_max_factor: 5.0
+    rss_gate_factor: 5.0
+    relative_gate_fraction: 0.05
+  polish:
+    polish: true
+    polish_n_iter: 1
+    polish_snr_cap: 9.0
+    polish_noise_debias: false
+  aggregation:
+    min_contributors: 200
+    sigma_tau_fraction_max: 0.2
+    bimodality_dominant_fraction: 0.7
+    sigma_tau_floor_us: 0.5
+    spur_cluster_multiplier: 1.0
+  band:
+    compute_band_majorities: true
+    min_contributors_per_band: 50
+  gaussian:
+    snr_min: 20.0
+    tau_G_bound_lo: 0.5
+    tau_G_bound_hi: 100.0
+    tau_G_seeds: [100.0, 50.0, 20.0, 10.0, 5.0, 3.0]
+    delta_chi2r_min: 1.0
+    tau_G_upper_fraction: 0.7
+    min_contributors: 50
+  recommendation:
+    snr_min: 20.0
+    tau_bound_lo: 0.5
+    tau_bound_hi: 100.0
+    tau_G_seeds: [100.0, 50.0, 20.0, 10.0, 5.0, 3.0]
+    pure_margin_threshold: 0.1
+    # When true (the default), calibrate_tau runs the 3-way lineshape vote and
+    # stamps the recommended shape on the file. Stage 5 consumes it only when
+    # stage5.shape is left unset below -- see the note there.
+    auto_recommend: true
+
+# --- Stage 3: peak detection -----------------------------------------------
+stage3:
+  promotion:
+    min_snr: 3.0
+    internal_min_snr: 2.0
+    weak_medium_snr: 10.0
+    medium_strong_snr: 50.0
+  savgol:
+    sg_window: 11
+    sg_order: 3
+    sg_fwhm_coverage: 4.0
+    sg_min_window: 5
+  primary_pass:
+    primary_window: blackmanharris
+    min_exclusion_mhz: 0.0
+    detection_zpf: 2
+    primary_leakage_floor_k: 1.0
+    noise_window_mhz: 80.0
+    noise_pedestal_mhz: 20.0
+    noise_line_k: 8.0
+    noise_n_iter: 3
+    noise_region_aware: true
+    noise_smoothing_mhz: 800.0
+    noise_smoothing_percentile: 50.0
+    noise_convolve_mhz: 200.0
+  gap_pass:
+    run_gap_pass: true
+    gap_active_zpf: 2
+    gap_leakage_floor_k: 3.0
+
+# --- Stage 4: window planning ----------------------------------------------
+stage4:
+  coherence:
+    edge_m: 64
+    trim_m: 32
+    edge_threshold: 8.0
+  clustering:
+    max_window_width_mhz: 40.0
+    min_window_half_width_mhz: 2.0
+    min_window_half_width_points: 32
+    max_peaks_per_window: 0
+    max_window_width_points: 96
+  contributor:
+    min_freeze_snr: 50.0
+    magnitude_attachment_threshold: 0.1
+  # leakage.tau_us has no default -- omitting it is the boxcar (undamped)
+  # limit. Set it (us) to assume a shared decay for the analytic leakage skirt:
+  # leakage:
+  #   tau_us: 6.0
+
+# --- Stage 5: the fit ------------------------------------------------------
+stage5:
+  # shape: the per-line envelope. LEAVE UNSET to let Stage 2b's lineshape vote
+  # choose (recommendation.auto_recommend above); the hard default is
+  # lorentzian when no vote exists. Uncomment to pin a shape -- which OVERRIDES
+  # the Stage 2b recommendation.
+  # shape: lorentzian        # or: gaussian
+  tau:
+    max_decay_factor: 5.0
+    fit_tau_min_snr: 10.0
+    tau_penalty_lambda: 50.0
+    tau_penalty_n_sigma: 5.0
+    per_band_tau: true
+  seeder:
+    seeder_rchi2: 1.5
+    seeder_straddle_factor: 1.0
+    seeder_max_k: 3
+  conservative:
+    significance: 0.05
+    max_peaks: 0
+    patience: 1
+    min_separation_factor: 1.0
+    min_pair_separation_factor: 0.5
+    min_pair_separation_resolution_factor: 1.0
+    n_eff_kind: perplexity_log1p_snr
+    weak_window_snr_threshold: 10.0
+    max_nfev: 2000
+  penalties:
+    phase_penalty_lambda: 100.0
+    phase_penalty_cutoff_fwhm: 2.0
+    amp_penalty_lambda: 10.0
+    amp_max_headroom: 3.0
+  rescue:
+    max_rounds: 5
+    snr_threshold: 2.5
+    prominence_threshold: 2.0
+    cleanup_significance: 0.05
+    merge_separation_factor: 0.5
+    structural_merge_factor: 0.5
+    overfit_amp_ratio_band: 1.5
+    overfit_amp_ratio_threshold: 6.0
+  thaw:
+    max_thaw_rounds: 2
+    max_replan_rounds: 2
+    residual_edge_threshold: 8.0
+    residual_edge_m: 32
+  spur:
+    enabled: true
+    integer_tol_mhz: 0.04
+    narrowness_ratio: 0.3
+    snr_threshold: 5.0
+    mask_half_width_bins: 2
+    use_stft_catalog: true
+    lattice_decay_ratio: 0.45
+    drift_window_mhz: 0.3
+    drift_band_ratio: 0.35
+    drift_min_snr: 10.0
+    mask_target_residual_snr: 0.0
+    mask_max_half_width_bins: 32
+    chirp_response_gate_ratio: 0.8
+    chirp_response_protect_ratio: 0.3
+    # clocks: the instrument clock tree. Omitted = no declaration (the legacy
+    # integer-MHz spur anchor). Declaring the locked chain fundamentals replaces
+    # that with the intermod lattice and enables the drift lane for unlocked
+    # sources. The Blackchirp 2638 instrument is shown as a template -- uncomment
+    # and edit for your hardware (or let it auto-resolve from a clocks.csv
+    # sidecar at import; see docs/source/clock_declaration.rst):
+    # clocks:
+    #   - {freq_mhz: 5120, locked: true,  label: synth-downconv}
+    #   - {freq_mhz: 5760, locked: true,  label: synth-upconv}
+    #   - {freq_mhz: 16000, locked: true, label: awg}
+    #   - {freq_mhz: 8000, locked: true,  label: awg-half}
+    #   - {freq_mhz: 6250, locked: false, label: scope-adc}
+  baseline:
+    enabled: true
+    order: 4
+    edge_threshold: 3.5
+    smooth_threshold: 50.0
+  doublet_alternative:
+    enabled: true
+    k_res: 1.5
+    r_min: 0.05
+  peak_survival:
+    enabled: true
+    snr_survival_factor: 1.1
+    vif_collapse_threshold: 4.0
+    collapse_max_separation_res: 1.0
+    merge_chi2_veto: 100.0
+    vif_attention_threshold: 4.0
+    drop_empty_windows: true
+    drop_spur_only_windows: true

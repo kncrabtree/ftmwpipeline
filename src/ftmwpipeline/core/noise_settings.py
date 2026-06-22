@@ -267,8 +267,8 @@ def load_preset(name_or_path: Union[str, Path]) -> NoiseSettings:
     """Load a Stage 2 preset by bare name or by filesystem path.
 
     Bare names resolve against the packaged ``ftmwpipeline.presets``
-    resources (e.g. ``"instrument_bc_2638"`` ->
-    ``ftmwpipeline/presets/instrument_bc_2638.yaml``); paths load directly.
+    resources (e.g. ``"defaults"`` ->
+    ``ftmwpipeline/presets/defaults.yaml``); paths load directly.
     Preset YAML wraps the Stage 2 settings inside a top-level ``stage2:``
     block (alongside optional ``stage2b:`` / ``stage5:`` blocks for other
     stages).

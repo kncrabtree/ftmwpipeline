@@ -1391,7 +1391,7 @@ class Pipeline:
             :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`.
             May be combined with ``preset``.
         preset : str, optional
-            Bare preset name (e.g. ``"instrument_bc_2638"``) or a path to a
+            Bare preset name (e.g. ``"defaults"``) or a path to a
             YAML file carrying a ``stage5:`` block. Enters at the preset layer
             (a persisted ``.ftmw`` outranks it). The preset name is captured in
             the persisted Stage 5 fit's audit attrs for reproducibility.

@@ -64,10 +64,10 @@ class TestStage2NoiseSettingsPersistence:
 
     def test_preset_name_audit_attr(self, empty_ftmw) -> None:
         s = NoiseSettings(window_mhz=60.0)
-        save_noise_settings_to_h5(empty_ftmw, s, preset_name="instrument_bc_2638")
+        save_noise_settings_to_h5(empty_ftmw, s, preset_name="defaults")
         with h5py.File(empty_ftmw, "r") as h5f:
             attrs = dict(h5f[STAGE2_NOISE_SETTINGS_PATH].attrs)
-        assert attrs.get("preset_name") == "instrument_bc_2638"
+        assert attrs.get("preset_name") == "defaults"
         assert "creation_time" in attrs
 
     def test_audit_attrs_do_not_leak_into_settings(self, empty_ftmw) -> None:

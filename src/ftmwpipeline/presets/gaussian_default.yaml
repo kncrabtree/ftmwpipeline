@@ -1,9 +1,0 @@
-name: gaussian_default
-description: |
-  Stage 5 with the Gaussian (exp(-(t/tau_G)^2)) line shape and otherwise
-  stock defaults. A clean baseline for the Gaussian path that does not
-  introduce any tuning beyond the shape change; use this as the starting
-  point for Gaussian retuning sweeps.
-
-stage5:
-  shape: gaussian

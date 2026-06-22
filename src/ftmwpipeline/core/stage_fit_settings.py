@@ -1022,8 +1022,8 @@ def load_preset(name_or_path: Union[str, Path]) -> StageFitSettings:
     """Load a Stage 5 preset by bare name or by filesystem path.
 
     Bare names resolve against the packaged ``ftmwpipeline.presets``
-    resources (e.g. ``"instrument_bc_2638"`` ->
-    ``ftmwpipeline/presets/instrument_bc_2638.yaml``); paths load
+    resources (e.g. ``"defaults"`` ->
+    ``ftmwpipeline/presets/defaults.yaml``); paths load
     directly. Preset YAML may wrap the Stage 5 settings inside a
     top-level ``stage5:`` block (the supported convention, allowing parallel
     ``stage2b:`` / ``stage2:`` blocks for other stages), a legacy

@@ -1228,7 +1228,7 @@ def fit_peaks(
         resolution chain. Resolves at the explicit override layer (outranks the
         persisted record). May be combined with ``preset``.
     preset : str, optional
-        Bare preset name (e.g. ``"instrument_bc_2638"``) or a path to a YAML
+        Bare preset name (e.g. ``"defaults"``) or a path to a YAML
         file carrying a ``stage5:`` block. Seeds the preset layer beneath the
         persisted record; may be combined with ``settings``.
     jobs : int, optional
