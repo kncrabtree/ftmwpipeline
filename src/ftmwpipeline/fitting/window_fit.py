@@ -185,6 +185,48 @@ DEFAULT_WEAK_WINDOW_SNR_THRESHOLD = 10.0
 DEFAULT_FIT_TAU_MIN_SNR = 10.0
 
 
+def sort_window_arrays(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: Union[float, np.ndarray],
+    *,
+    extras: Optional[Mapping[str, tuple[Optional[np.ndarray], Any]]] = None,
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    dict[str, Optional[np.ndarray]],
+]:
+    """Normalize a window's arrays to the fit dtypes and ascending-offset order.
+
+    Coerces the offset grid to float, the spectrum to ``complex128``, and the
+    noise to a per-bin float array (a scalar is broadcast to the grid width),
+    then sorts all three -- and any ``extras`` -- by ascending offset (the model
+    and ``np.interp`` both need a monotone grid). ``extras`` maps a name to an
+    ``(array_or_None, dtype)`` pair; each is coerced to ``dtype`` and reindexed
+    by the same permutation, ``None`` passing through untouched.
+
+    Returns ``(u, z, sigma, order, sorted_extras)``. ``order`` is the argsort
+    permutation, exposed so callers can detect a non-identity sort (e.g. to
+    discard refits that were computed on the caller's unsorted grid).
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+    order = np.argsort(u)
+    u, z, sigma = u[order], z[order], sigma[order]
+    sorted_extras: dict[str, Optional[np.ndarray]] = {}
+    if extras:
+        for name, (arr, dtype) in extras.items():
+            sorted_extras[name] = (
+                None if arr is None else np.asarray(arr, dtype=dtype)[order]
+            )
+    return u, z, sigma, order, sorted_extras
+
+
 def _effective_min_pair_separation(
     fwhm_mhz: float,
     acquisition_us: float,
@@ -2402,20 +2444,18 @@ def conservative_fit(
         The final fit, the add-one-peak audit trail, and the knockout results.
     """
     shape_resolved = PeakShape.coerce(shape)
-    u = np.asarray(offset_grid_mhz, dtype=float)
-    z = np.asarray(complex_spectrum, dtype=np.complex128)
-    sigma = np.asarray(rms_noise, dtype=float)
-    if sigma.ndim == 0:
-        sigma = np.full(u.size, float(sigma))
     # np.interp needs an ascending grid; sort the window once on entry.
-    order = np.argsort(u)
-    u, z, sigma = u[order], z[order], sigma[order]
-    budget: Optional[np.ndarray] = None
-    if gate_budget_extra is not None:
-        budget = np.asarray(gate_budget_extra, dtype=float)[order]
-    background: Optional[np.ndarray] = None
-    if gate_background is not None:
-        background = np.asarray(gate_background, dtype=np.complex128)[order]
+    u, z, sigma, _order, _extras = sort_window_arrays(
+        offset_grid_mhz,
+        complex_spectrum,
+        rms_noise,
+        extras={
+            "budget": (gate_budget_extra, float),
+            "background": (gate_background, np.complex128),
+        },
+    )
+    budget: Optional[np.ndarray] = _extras["budget"]
+    background: Optional[np.ndarray] = _extras["background"]
 
     weighted = (
         validation.DEFAULT_WEIGHTED_GATE_CHI2

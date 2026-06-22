@@ -68,6 +68,7 @@ from .window_fit import (
     evaluate_baseline,
     fit_window,
     knockout_test,
+    sort_window_arrays,
 )
 
 __all__ = [
@@ -292,16 +293,13 @@ def merge_close_peaks_cleanup(
     """
     if fit.n_peaks < 2:
         return fit, 0
-    u = np.asarray(offset_grid_mhz, dtype=float)
-    z = np.asarray(complex_spectrum, dtype=np.complex128)
-    sigma = np.asarray(rms_noise, dtype=float)
-    if sigma.ndim == 0:
-        sigma = np.full(u.size, float(sigma))
-    order = np.argsort(u)
-    u, z, sigma = u[order], z[order], sigma[order]
-    budget: Optional[np.ndarray] = None
-    if gate_budget_extra is not None:
-        budget = np.asarray(gate_budget_extra, dtype=float)[order]
+    u, z, sigma, _order, _extras = sort_window_arrays(
+        offset_grid_mhz,
+        complex_spectrum,
+        rms_noise,
+        extras={"budget": (gate_budget_extra, float)},
+    )
+    budget: Optional[np.ndarray] = _extras["budget"]
 
     weighted = (
         validation.DEFAULT_WEIGHTED_GATE_CHI2
@@ -590,13 +588,9 @@ def remove_and_refit_cleanup(
     converges on the same physical landscape (no surprise solutions that
     only show up because the constraints differ).
     """
-    u = np.asarray(offset_grid_mhz, dtype=float)
-    z = np.asarray(complex_spectrum, dtype=np.complex128)
-    sigma = np.asarray(rms_noise, dtype=float)
-    if sigma.ndim == 0:
-        sigma = np.full(u.size, float(sigma))
-    order = np.argsort(u)
-    u, z, sigma = u[order], z[order], sigma[order]
+    u, z, sigma, _order, _extras = sort_window_arrays(
+        offset_grid_mhz, complex_spectrum, rms_noise
+    )
 
     _is_protected_rar = make_protected_matcher(protected_offsets, protected_tol_mhz)
 
@@ -780,25 +774,23 @@ def iterative_aicc_cleanup(
     if fit.n_peaks == 0:
         return fit, 0
 
-    u = np.asarray(offset_grid_mhz, dtype=float)
-    z = np.asarray(complex_spectrum, dtype=np.complex128)
-    sigma = np.asarray(rms_noise, dtype=float)
-    if sigma.ndim == 0:
-        sigma = np.full(u.size, float(sigma))
-    order = np.argsort(u)
+    u, z, sigma, order, _extras = sort_window_arrays(
+        offset_grid_mhz,
+        complex_spectrum,
+        rms_noise,
+        extras={
+            "budget": (gate_budget_extra, float),
+            "background": (gate_background, np.complex128),
+        },
+    )
     # initial_refits are valid only when the input grid is already ascending
     # (identity permutation).  If a sort step is needed the refits were
     # produced on the caller's grid order and cannot be reused after reindex.
     _initial_refits: Optional[Mapping[int, WindowFitResult]] = initial_refits
     if _initial_refits is not None and not np.array_equal(order, np.arange(u.size)):
         _initial_refits = None
-    u, z, sigma = u[order], z[order], sigma[order]
-    budget: Optional[np.ndarray] = None
-    if gate_budget_extra is not None:
-        budget = np.asarray(gate_budget_extra, dtype=float)[order]
-    background: Optional[np.ndarray] = None
-    if gate_background is not None:
-        background = np.asarray(gate_background, dtype=np.complex128)[order]
+    budget: Optional[np.ndarray] = _extras["budget"]
+    background: Optional[np.ndarray] = _extras["background"]
 
     refit_kwargs: dict[str, Any] = dict(fit_kwargs_inner)
     refit_kwargs["fit_tau"] = False

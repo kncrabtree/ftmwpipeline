@@ -26,6 +26,14 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   persisted fields / fitted table must be byte-identical before vs after
   (`fit_peaks` is deterministic — table equality is the bar). Settings round-trip
   is already golden-tested.
+- **Golden harness** (`scratch/cleanup-golden/golden.py`, gitignored, persists
+  across sessions): builds the 2638 experiment end-to-end and snapshots the fit
+  (512 per-peak rows + per-window tau/χ²ᵣ scalars). `python
+  scratch/cleanup-golden/golden.py check` diffs the current tree against the
+  stored `fit_2638.golden.txt`; `... record` refreshes the reference. Use `check`
+  for every byte-identity-sensitive item instead of the stash→rebuild→diff dance;
+  only `record` after a *deliberate* behavior change. Reference recorded at the
+  F9-committed state (== pre-F9 output).
 - New code black/isort/mypy-clean; the repo-wide format pass is the last step so
   its churn stays separate from the content changes.
 
@@ -137,10 +145,14 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
   (`save_subblock_settings`, `load_subblock_settings`, `settings_block_present`),
   with read/write callbacks for stage_fit's `shape` subgroup + tau's tuples.
   (Persistence twin of F1; depends on F3's helpers.)
-- [ ] **F9** sort + σ-broadcast cleanup preamble (residual_rescue ×3 +
-  window_fit.conservative_fit) → `sort_window_arrays(offset_grid, spectrum,
-  rms_noise, *, extras=...)`. Must preserve byte-identical ordering and the
-  `iterative_aicc_cleanup` identity-permutation `initial_refits` guard.
+- [x] **F9** sort + σ-broadcast cleanup preamble (residual_rescue ×3 +
+  window_fit.conservative_fit) → `window_fit.sort_window_arrays(offset_grid,
+  spectrum, rms_noise, *, extras=...)`, returning `(u, z, sigma, order,
+  sorted_extras)`. `extras` maps a name to an `(array_or_None, dtype)` pair
+  (budget→float, background→complex128); `order` is returned so the
+  `iterative_aicc_cleanup` identity-permutation `initial_refits` guard is
+  preserved unchanged. 2638 fit table byte-identical (golden `check`); 74
+  window_fit/residual_rescue tests green; black + mypy clean.
 - [ ] **F12** the two fork-pool figure-render orchestrators in
   `_internal/report_html_impl.py` (`_render_methods_figures`,
   `_render_all_window_figures`) → `fork_map(items, worker, *, jobs, override)`.
