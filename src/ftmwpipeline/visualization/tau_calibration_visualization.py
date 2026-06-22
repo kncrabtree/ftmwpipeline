@@ -29,6 +29,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 
+from ..core.data_structures import Sideband
 from ..fitting.tau_calibration import TauCalibrationResult, sliding_stft
 from .report_style import (
     AGGIE_BLUE,
@@ -76,7 +77,7 @@ def _active_stft(
     new_size = (active.size // result.n_seg) * result.n_seg
     active = active[:new_size]
     mag, a_centers_us, freq_bb_mhz = sliding_stft(active, sample_dt_us, result.n_seg)
-    sign = -1.0 if result.sideband == "lower" else +1.0
+    sign = Sideband.coerce(result.sideband).sign
     freq_mol_mhz = result.probe_freq_mhz + sign * freq_bb_mhz
     return mag, a_centers_us, freq_mol_mhz
 

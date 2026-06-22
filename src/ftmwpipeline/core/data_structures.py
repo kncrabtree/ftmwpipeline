@@ -78,6 +78,19 @@ class Sideband(Enum):
             return cls.UPPER
         raise ValueError(f"unknown sideband: {value!r}")
 
+    @property
+    def sign(self) -> float:
+        """Sign ``s`` connecting the molecular and baseband axes.
+
+        A line at molecular frequency ``f`` sits at baseband frequency
+        ``f_bb = s·(f - f_probe)``, so the inverse is ``f = f_probe + s·f_bb``.
+        ``s = -1`` for the lower sideband (molecular axis descends as baseband
+        rises) and ``s = +1`` for the upper. This is the single source of truth
+        for the convention; :func:`ftmwpipeline.fitting.peak_model.sideband_sign`
+        delegates here.
+        """
+        return -1.0 if self is Sideband.LOWER else 1.0
+
 
 @dataclass
 class FIDProcessingParameters:
@@ -173,10 +186,10 @@ class PreprocessedFID:
         For upper sideband: molecular = probe + scope
         For lower sideband: molecular = probe - scope
         """
-        if self.sideband in (Sideband.LOWER, Sideband.LSB):
-            return cast(np.ndarray, self.probe_freq_mhz - scope_freq_mhz)
-        else:
-            return cast(np.ndarray, self.probe_freq_mhz + scope_freq_mhz)
+        return cast(
+            np.ndarray,
+            self.probe_freq_mhz + self.sideband.sign * scope_freq_mhz,
+        )
 
     def compute_fft(self) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -313,10 +326,10 @@ class FID:
         For upper sideband: molecular = probe + scope
         For lower sideband: molecular = probe - scope
         """
-        if self.sideband in (Sideband.LOWER, Sideband.LSB):
-            return cast(np.ndarray, self.probe_freq_mhz - scope_freq_mhz)
-        else:
-            return cast(np.ndarray, self.probe_freq_mhz + scope_freq_mhz)
+        return cast(
+            np.ndarray,
+            self.probe_freq_mhz + self.sideband.sign * scope_freq_mhz,
+        )
 
     def preprocess(
         self,

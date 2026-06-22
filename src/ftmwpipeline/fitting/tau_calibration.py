@@ -38,6 +38,8 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, cast
 import numpy as np
 from scipy.optimize import least_squares
 
+from ..core.data_structures import Sideband
+
 logger = logging.getLogger(__name__)
 
 # Operating points (acceptance gate; see report.md).
@@ -2126,7 +2128,7 @@ def extract_tau_majority(
 
     # Baseband -> molecular conversion: lower sideband -> f_mol = probe - f_bb,
     # upper sideband -> f_mol = probe + f_bb.
-    sign = -1.0 if sb == "lower" else +1.0
+    sign = Sideband.coerce(sb).sign
     freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
 
     in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
@@ -2533,7 +2535,7 @@ def extract_tau_G_majority(
         nls_tau_seeds=tau_G_seeds,
     )
 
-    sign = -1.0 if sb == "lower" else +1.0
+    sign = Sideband.coerce(sb).sign
     freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
     in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
 
@@ -2919,7 +2921,7 @@ def compute_shape_recommendation(
         nls_tau_seeds=tau_G_seeds,
     )
 
-    sign = -1.0 if sb == "lower" else +1.0
+    sign = Sideband.coerce(sb).sign
     freq_mol_mhz = probe_freq_mhz + sign * cal.freq_bb_mhz
     in_trim = (freq_mol_mhz >= trim_lo_mhz) & (freq_mol_mhz <= trim_hi_mhz)
     above_snr = cal.snr_per_bin > float(snr_min)

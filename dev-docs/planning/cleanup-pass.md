@@ -64,17 +64,23 @@ in `io/data_loaders/`):
 
 ## Phase 3 — low-risk duplication extractions
 
-(Finding numbers from the duplication audit.) **F3/F6/F8/F10 done; F4/F11
+(Finding numbers from the duplication audit.) **F3/F4/F6/F8/F10 done; F11
 pending; F5 deferred to Phase 4 — it pairs with the F1 settings work and has
 per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
-- [ ] **F4** baseband↔molecular conversion (5+ sites, two spellings) → one
-  `baseband_to_molecular` / `molecular_to_baseband` in `utils/signal_processing.py`
-  (or a `Sideband.sign` property), accepting `Sideband` or `"lower"/"upper"`.
-  Sites: `fitting/tau_calibration.py`, `visualization/tau_calibration_visualization.py`,
-  `core/data_structures.py` (`PreprocessedFID`/`FID.apply_molecular_frequency`),
-  `_internal/stage3_impl.py`, `_internal/stage5_impl.py`, `fitting/spur_detection.py`.
-  Watch the `data_structures`→`utils` import direction for a cycle.
+- [x] **F4** baseband↔molecular conversion (5+ sites, two spellings). The actual
+  duplication was the **sign convention**, spelled two ways: inline
+  `-1.0 if "lower"` (data_structures `apply_molecular_frequency` ×2, tau_calibration
+  ×3, tau viz ×1) vs `peak_model.sideband_sign` (stage3/5, spur_detection). The
+  probe-relative conversion itself already had canonical helpers
+  (`peak_model.molecular_frequency`/`baseband_offset`), so no new converter was
+  added. Fix: added a **`Sideband.sign`** property (single source of truth, lives on
+  the enum in `data_structures` so there is no `data_structures`→`fitting` cycle);
+  `sideband_sign` now delegates to it; the two `apply_molecular_frequency` copies
+  collapse to `probe + sideband.sign * scope`; the inline tau_calibration/viz signs
+  route through `Sideband.coerce(...).sign`. Fresh 2638 e2e fit table **byte-identical**
+  before vs after (512 peaks, `diff` clean); 286 core + 39 tau/viz tests green; black +
+  mypy clean.
 - [x] **F6** sideband string→enum coercion → `Sideband.coerce` classmethod on the
   enum (lsb/usb-aware); deleted the three local resolvers
   (`stage5_impl._resolve_sideband`, `stage6_impl._sideband_from_value`,
@@ -164,19 +170,16 @@ Working tree clean; committed through Phase 3's low-risk set:
   **F8** (`default_tau0_us`). 700 fitting/core/cross-interface tests green; touched
   files black + mypy clean.
 
-**Next up: Phase 3 leftovers (F4, F11), then Phase 4.** Suggested order:
+**Next up: Phase 3 leftover (F11), then Phase 4.** Suggested order:
 
-1. **F4** (baseband↔molecular conversion) — byte-identity sensitive; make the
-   shared helper reproduce each call site's exact arithmetic (`probe + sign*f_bb`,
-   sign = −1 for lower), then verify a Stage 5 fit table is unchanged.
-2. **F11** (bare-style dedup + the edge-coherence default-divergence **bug fix** —
+1. **F11** (bare-style dedup + the edge-coherence default-divergence **bug fix** —
    this one intentionally changes behavior where the defaults diverged; confirm the
    `DEFAULT_*` values are the intended ones and re-run the Stage 4 viz/tuning paths).
-3. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
+2. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
    refactors. F5 (`require_resolved`) pairs with F1. F2 (settings serialization)
    builds on F3's new `io/_hdf5_helpers.py`. Build a fresh 2638 fixture and diff the
    persisted fields / fitted table before vs after for F2 and F9.
-4. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
+3. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
    black/isort/mypy + full green suite) last.
 
 ## Resume notes

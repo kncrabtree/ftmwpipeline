@@ -131,14 +131,7 @@ def sideband_sign(sideband: SidebandLike) -> float:
     ValueError
         If ``sideband`` is a string that is not a recognized sideband name.
     """
-    if isinstance(sideband, str):
-        key = sideband.strip().lower()
-        if key in ("lower", "lsb"):
-            return -1.0
-        if key in ("upper", "usb"):
-            return 1.0
-        raise ValueError(f"unknown sideband: {sideband!r}")
-    return -1.0 if sideband == Sideband.LOWER else 1.0
+    return Sideband.coerce(sideband).sign
 
 
 # ---------------------------------------------------------------------------
