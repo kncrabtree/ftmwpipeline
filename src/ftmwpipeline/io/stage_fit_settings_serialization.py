@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 import h5py
@@ -48,6 +47,12 @@ from ..core.stage_fit_settings import (
 )
 from ..core.stage_fit_settings import from_attrs as stage_fit_from_attrs
 from ..core.stage_fit_settings import to_attrs as stage_fit_to_attrs
+from ._settings_serialization import (
+    decode_attr,
+    load_subblock_settings,
+    save_settings,
+    settings_block_present,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -71,13 +76,6 @@ _STAGE2B_GROUP_PATHS = (
 _NONE_SENTINEL = "__None__"
 
 
-def _decode_attr(value: Any) -> Any:
-    """Decode an HDF5 attribute value (handles bytes -> str)."""
-    if isinstance(value, bytes):
-        value = value.decode("utf-8")
-    return value
-
-
 def save_stage_fit_settings_to_h5(
     file_path: str,
     settings: StageFitSettings,
@@ -88,34 +86,32 @@ def save_stage_fit_settings_to_h5(
 
     Overwrites any prior group at that path. ``preset_name`` (if given) is
     recorded as a top-level attr for audit/reproducibility — useful when a
-    fit was driven by a named preset.
+    fit was driven by a named preset. The set ``shape`` is a ``{"kind": ...}``
+    subgroup (room for future shape-specific blocks); an unset shape is the
+    ``__None__`` sentinel top-level attr -- both fall out of the generic
+    dict-value-becomes-subgroup rule in ``save_settings``.
     """
-    attrs = stage_fit_to_attrs(settings)
-    with h5py.File(file_path, "a") as h5f:
-        if STAGE_FIT_PATH in h5f:
-            del h5f[STAGE_FIT_PATH]
-        grp = h5f.create_group(STAGE_FIT_PATH)
-        grp.attrs["creation_time"] = datetime.now().isoformat()
-        if preset_name is not None:
-            grp.attrs["preset_name"] = preset_name
-        # Shape: a subgroup carrying the discriminator + any future
-        # shape-specific parameter blocks. When unset, write the sentinel
-        # as a top-level attr (no subgroup).
-        shape_val = attrs["shape"]
-        if isinstance(shape_val, dict):
-            shape_grp = grp.create_group("shape")
-            for k, v in shape_val.items():
-                shape_grp.attrs[k] = v
-        else:
-            grp.attrs["shape"] = shape_val
-        # One subgroup per sub-dataclass; attrs hold field values or the
-        # ``__None__`` sentinel.
-        for sub_name, sub_attrs in attrs.items():
-            if sub_name == "shape":
-                continue
-            sub_grp = grp.create_group(sub_name)
-            for field_name, value in sub_attrs.items():
-                sub_grp.attrs[field_name] = value
+    save_settings(
+        file_path,
+        STAGE_FIT_PATH,
+        stage_fit_to_attrs(settings),
+        preset_name=preset_name,
+    )
+
+
+def _read_shape(grp: h5py.Group, attrs_dict: Dict[str, Any]) -> None:
+    """Pull the ``shape`` discriminator off the group before the sub-blocks.
+
+    Prefers the subgroup form (the set case), falls back to the top-level attr
+    (the ``__None__`` sentinel), else stamps the sentinel so a missing shape
+    decodes as unset.
+    """
+    if "shape" in grp and isinstance(grp["shape"], h5py.Group):
+        attrs_dict["shape"] = {k: decode_attr(v) for k, v in grp["shape"].attrs.items()}
+    elif "shape" in grp.attrs:
+        attrs_dict["shape"] = decode_attr(grp.attrs["shape"])
+    else:
+        attrs_dict["shape"] = _NONE_SENTINEL
 
 
 def load_stage_fit_settings_from_h5(file_path: str) -> Optional[StageFitSettings]:
@@ -124,41 +120,18 @@ def load_stage_fit_settings_from_h5(file_path: str) -> Optional[StageFitSettings
     Tolerates missing sub-blocks (a partial group still loads); fields
     not present default to ``None``.
     """
-    with h5py.File(file_path, "r") as h5f:
-        if STAGE_FIT_PATH not in h5f:
-            return None
-        grp = h5f[STAGE_FIT_PATH]
-        attrs_dict: Dict[str, Any] = {}
-        # Shape — prefer the subgroup form; fall back to the top-level attr.
-        if "shape" in grp and isinstance(grp["shape"], h5py.Group):
-            shape_grp = grp["shape"]
-            attrs_dict["shape"] = {
-                k: _decode_attr(v) for k, v in shape_grp.attrs.items()
-            }
-        elif "shape" in grp.attrs:
-            attrs_dict["shape"] = _decode_attr(grp.attrs["shape"])
-        else:
-            attrs_dict["shape"] = _NONE_SENTINEL
-        # Sub-dataclass subgroups (canonical list, so a newly added block
-        # such as ``spur`` / ``baseline`` round-trips without a second edit).
-        for sub_name in _SUB_NAMES:
-            if sub_name in grp and isinstance(grp[sub_name], h5py.Group):
-                sub_grp = grp[sub_name]
-                attrs_dict[sub_name] = {
-                    k: _decode_attr(v) for k, v in sub_grp.attrs.items()
-                }
-            else:
-                attrs_dict[sub_name] = {}
-    return stage_fit_from_attrs(attrs_dict)
+    return load_subblock_settings(
+        file_path,
+        STAGE_FIT_PATH,
+        _SUB_NAMES,
+        stage_fit_from_attrs,
+        extra_top=_read_shape,
+    )
 
 
 def stage_fit_settings_present(file_path: str) -> bool:
     """Lightweight: does the file have a persisted ``stage5_fit`` block?"""
-    try:
-        with h5py.File(file_path, "r") as h5f:
-            return STAGE_FIT_PATH in h5f
-    except (OSError, KeyError):
-        return False
+    return settings_block_present(file_path, STAGE_FIT_PATH)
 
 
 def write_stage2b_recommended_shape(
@@ -219,7 +192,7 @@ def read_stage2b_recommended_shape(file_path: str) -> Optional[str]:
                 attr = h5f[path].attrs.get(_STAGE2B_RECOMMENDED_SHAPE_ATTR)
                 if attr is None:
                     continue
-                decoded = _decode_attr(attr)
+                decoded = decode_attr(attr)
                 if decoded == _NONE_SENTINEL:
                     continue
                 return str(decoded)
@@ -244,7 +217,7 @@ def read_stage2b_vote_rates(file_path: str) -> Dict[str, float]:
                 attr = h5f[path].attrs.get(_STAGE2B_VOTE_RATES_ATTR)
                 if attr is None:
                     continue
-                decoded = _decode_attr(attr)
+                decoded = decode_attr(attr)
                 rates = json.loads(decoded)
                 return {str(k): float(v) for k, v in rates.items()}
     except (OSError, KeyError, ValueError):
@@ -306,7 +279,7 @@ def read_recommended_clock_sources(
             attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_CLOCKS_ATTR)
             if attr is None:
                 return None
-            decoded = _decode_attr(attr)
+            decoded = decode_attr(attr)
             if decoded == _NONE_SENTINEL:
                 return None
             return coerce_clock_sources(decoded)
@@ -374,7 +347,7 @@ def read_recommended_chirp_window(
             attr = h5f[_STAGE0_GROUP].attrs.get(_RECOMMENDED_CHIRP_WINDOW_ATTR)
             if attr is None:
                 return None
-            decoded = _decode_attr(attr)
+            decoded = decode_attr(attr)
             if decoded == _NONE_SENTINEL:
                 return None
             d = json.loads(decoded)

@@ -31,8 +31,6 @@ different shape selections; the shape itself lives on
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime
 from typing import Any, Dict, Optional
 
 import h5py
@@ -42,8 +40,12 @@ from ..core.tau_calibration_settings import (
 )
 from ..core.tau_calibration_settings import from_attrs as tau_settings_from_attrs
 from ..core.tau_calibration_settings import to_attrs as tau_settings_to_attrs
-
-logger = logging.getLogger(__name__)
+from ._settings_serialization import (
+    decode_attr,
+    load_subblock_settings,
+    save_settings,
+    settings_block_present,
+)
 
 STAGE2B_TAU_SETTINGS_PATH = "processing_parameters/stage2b_tau"
 
@@ -64,20 +66,10 @@ _TUPLE_FIELDS = {"tau_G_seeds", "band_edges_mhz", "band_labels"}
 _NONE_SENTINEL = "__None__"
 
 
-def _decode_attr(value: Any) -> Any:
-    """Decode an HDF5 attribute value (handles bytes -> str, ndarray -> list)."""
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return value
-
-
 def _write_attr(grp: h5py.Group, name: str, value: Any) -> None:
     """Write one attr, lifting lists/tuples to numpy 1-D arrays."""
     if isinstance(value, list):
-        if all(isinstance(v, str) for v in value):
-            grp.attrs[name] = list(value)
-        else:
-            grp.attrs[name] = list(value)
+        grp.attrs[name] = list(value)
     else:
         grp.attrs[name] = value
 
@@ -85,7 +77,7 @@ def _write_attr(grp: h5py.Group, name: str, value: Any) -> None:
 def _read_sub_attrs(grp: h5py.Group) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     for key, raw in grp.attrs.items():
-        value = _decode_attr(raw)
+        value = decode_attr(raw)
         if key in _TUPLE_FIELDS:
             # HDF5 may return numpy arrays for sequence attrs; pass them
             # through as iterables so the dataclass decoder can coerce to
@@ -93,7 +85,7 @@ def _read_sub_attrs(grp: h5py.Group) -> Dict[str, Any]:
             if isinstance(value, str) and value == _NONE_SENTINEL:
                 out[key] = _NONE_SENTINEL
                 continue
-            out[key] = [_decode_attr(v) for v in value]
+            out[key] = [decode_attr(v) for v in value]
         else:
             out[key] = value
     return out
@@ -111,18 +103,13 @@ def save_tau_calibration_settings_to_h5(
     recorded as a top-level attr for audit/reproducibility -- useful when
     a calibration was driven by a named preset.
     """
-    attrs = tau_settings_to_attrs(settings)
-    with h5py.File(file_path, "a") as h5f:
-        if STAGE2B_TAU_SETTINGS_PATH in h5f:
-            del h5f[STAGE2B_TAU_SETTINGS_PATH]
-        grp = h5f.create_group(STAGE2B_TAU_SETTINGS_PATH)
-        grp.attrs["creation_time"] = datetime.now().isoformat()
-        if preset_name is not None:
-            grp.attrs["preset_name"] = preset_name
-        for sub_name in _SUB_NAMES:
-            sub_grp = grp.create_group(sub_name)
-            for field_name, value in attrs[sub_name].items():
-                _write_attr(sub_grp, field_name, value)
+    save_settings(
+        file_path,
+        STAGE2B_TAU_SETTINGS_PATH,
+        tau_settings_to_attrs(settings),
+        preset_name=preset_name,
+        write_attr=_write_attr,
+    )
 
 
 def load_tau_calibration_settings_from_h5(
@@ -133,26 +120,18 @@ def load_tau_calibration_settings_from_h5(
     Tolerates missing sub-blocks (a partial group still loads); fields
     not present default to ``None``.
     """
-    with h5py.File(file_path, "r") as h5f:
-        if STAGE2B_TAU_SETTINGS_PATH not in h5f:
-            return None
-        grp = h5f[STAGE2B_TAU_SETTINGS_PATH]
-        attrs_dict: Dict[str, Any] = {}
-        for sub_name in _SUB_NAMES:
-            if sub_name in grp and isinstance(grp[sub_name], h5py.Group):
-                attrs_dict[sub_name] = _read_sub_attrs(grp[sub_name])
-            else:
-                attrs_dict[sub_name] = {}
-    return tau_settings_from_attrs(attrs_dict)
+    return load_subblock_settings(
+        file_path,
+        STAGE2B_TAU_SETTINGS_PATH,
+        _SUB_NAMES,
+        tau_settings_from_attrs,
+        read_sub=_read_sub_attrs,
+    )
 
 
 def tau_calibration_settings_present(file_path: str) -> bool:
     """Lightweight: does the file have a persisted ``stage2b_tau`` block?"""
-    try:
-        with h5py.File(file_path, "r") as h5f:
-            return STAGE2B_TAU_SETTINGS_PATH in h5f
-    except (OSError, KeyError):
-        return False
+    return settings_block_present(file_path, STAGE2B_TAU_SETTINGS_PATH)
 
 
 __all__ = [

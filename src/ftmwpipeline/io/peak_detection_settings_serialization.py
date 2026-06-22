@@ -39,33 +39,22 @@ and is owned by ``_internal/stage3_impl.save_peak_parameters_impl``.
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime
-from typing import Any, Dict, Optional
-
-import h5py
+from typing import Optional
 
 from ..core.peak_detection_settings import (
     PeakDetectionSettings,
 )
 from ..core.peak_detection_settings import from_attrs as peak_from_attrs
 from ..core.peak_detection_settings import to_attrs as peak_to_attrs
-
-logger = logging.getLogger(__name__)
+from ._settings_serialization import (
+    load_subblock_settings,
+    save_settings,
+    settings_block_present,
+)
 
 STAGE3_PEAKS_SETTINGS_PATH = "processing_parameters/stage3_peaks"
 
 _SUB_NAMES = ("promotion", "savgol", "primary_pass", "gap_pass")
-
-
-def _decode_attr(value: Any) -> Any:
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return value
-
-
-def _read_sub_attrs(grp: h5py.Group) -> Dict[str, Any]:
-    return {key: _decode_attr(raw) for key, raw in grp.attrs.items()}
 
 
 def save_peak_detection_settings_to_h5(
@@ -79,18 +68,12 @@ def save_peak_detection_settings_to_h5(
     Overwrites any prior group at that path. ``preset_name`` (if given) is
     recorded as a top-level attr for audit/reproducibility.
     """
-    attrs = peak_to_attrs(settings)
-    with h5py.File(file_path, "a") as h5f:
-        if STAGE3_PEAKS_SETTINGS_PATH in h5f:
-            del h5f[STAGE3_PEAKS_SETTINGS_PATH]
-        grp = h5f.create_group(STAGE3_PEAKS_SETTINGS_PATH)
-        grp.attrs["creation_time"] = datetime.now().isoformat()
-        if preset_name is not None:
-            grp.attrs["preset_name"] = preset_name
-        for sub_name in _SUB_NAMES:
-            sub_grp = grp.create_group(sub_name)
-            for field_name, value in attrs[sub_name].items():
-                sub_grp.attrs[field_name] = value
+    save_settings(
+        file_path,
+        STAGE3_PEAKS_SETTINGS_PATH,
+        peak_to_attrs(settings),
+        preset_name=preset_name,
+    )
 
 
 def load_peak_detection_settings_from_h5(
@@ -101,26 +84,14 @@ def load_peak_detection_settings_from_h5(
     Tolerates missing sub-blocks (a partial group still loads); fields not
     present default to ``None``.
     """
-    with h5py.File(file_path, "r") as h5f:
-        if STAGE3_PEAKS_SETTINGS_PATH not in h5f:
-            return None
-        grp = h5f[STAGE3_PEAKS_SETTINGS_PATH]
-        attrs_dict: Dict[str, Any] = {}
-        for sub_name in _SUB_NAMES:
-            if sub_name in grp and isinstance(grp[sub_name], h5py.Group):
-                attrs_dict[sub_name] = _read_sub_attrs(grp[sub_name])
-            else:
-                attrs_dict[sub_name] = {}
-    return peak_from_attrs(attrs_dict)
+    return load_subblock_settings(
+        file_path, STAGE3_PEAKS_SETTINGS_PATH, _SUB_NAMES, peak_from_attrs
+    )
 
 
 def peak_detection_settings_present(file_path: str) -> bool:
     """Lightweight: does the file have a persisted ``stage3_peaks`` settings block?"""
-    try:
-        with h5py.File(file_path, "r") as h5f:
-            return STAGE3_PEAKS_SETTINGS_PATH in h5f
-    except (OSError, KeyError):
-        return False
+    return settings_block_present(file_path, STAGE3_PEAKS_SETTINGS_PATH)
 
 
 __all__ = [

@@ -29,30 +29,23 @@ at the root. Same pattern Stage 5 uses
 
 from __future__ import annotations
 
-import logging
-from datetime import datetime
-from typing import Any, Dict, Optional
-
-import h5py
+from typing import Optional
 
 from ..core.noise_settings import (
     NoiseSettings,
 )
 from ..core.noise_settings import from_attrs as noise_from_attrs
 from ..core.noise_settings import to_attrs as noise_to_attrs
-
-logger = logging.getLogger(__name__)
+from ._settings_serialization import (
+    load_flat_settings,
+    save_settings,
+    settings_block_present,
+)
 
 STAGE2_NOISE_SETTINGS_PATH = "processing_parameters/stage2_noise"
 
 # Group-level bookkeeping attrs that are not NoiseSettings fields.
 _AUDIT_ATTRS = ("creation_time", "preset_name")
-
-
-def _decode_attr(value: Any) -> Any:
-    if isinstance(value, bytes):
-        return value.decode("utf-8")
-    return value
 
 
 def save_noise_settings_to_h5(
@@ -68,16 +61,12 @@ def save_noise_settings_to_h5(
     group at that path. ``preset_name`` (if given) is recorded as a top-level
     attr for audit/reproducibility.
     """
-    attrs = noise_to_attrs(settings)
-    with h5py.File(file_path, "a") as h5f:
-        if STAGE2_NOISE_SETTINGS_PATH in h5f:
-            del h5f[STAGE2_NOISE_SETTINGS_PATH]
-        grp = h5f.create_group(STAGE2_NOISE_SETTINGS_PATH)
-        grp.attrs["creation_time"] = datetime.now().isoformat()
-        if preset_name is not None:
-            grp.attrs["preset_name"] = preset_name
-        for field_name, value in attrs.items():
-            grp.attrs[field_name] = value
+    save_settings(
+        file_path,
+        STAGE2_NOISE_SETTINGS_PATH,
+        noise_to_attrs(settings),
+        preset_name=preset_name,
+    )
 
 
 def load_noise_settings_from_h5(file_path: str) -> Optional[NoiseSettings]:
@@ -85,25 +74,17 @@ def load_noise_settings_from_h5(file_path: str) -> Optional[NoiseSettings]:
 
     Fields not present default to ``None``; the audit attrs are skipped.
     """
-    with h5py.File(file_path, "r") as h5f:
-        if STAGE2_NOISE_SETTINGS_PATH not in h5f:
-            return None
-        grp = h5f[STAGE2_NOISE_SETTINGS_PATH]
-        attrs_dict: Dict[str, Any] = {
-            key: _decode_attr(raw)
-            for key, raw in grp.attrs.items()
-            if key not in _AUDIT_ATTRS
-        }
-    return noise_from_attrs(attrs_dict)
+    return load_flat_settings(
+        file_path,
+        STAGE2_NOISE_SETTINGS_PATH,
+        noise_from_attrs,
+        audit_attrs=_AUDIT_ATTRS,
+    )
 
 
 def noise_settings_present(file_path: str) -> bool:
     """Lightweight: does the file have a persisted ``stage2_noise`` block?"""
-    try:
-        with h5py.File(file_path, "r") as h5f:
-            return STAGE2_NOISE_SETTINGS_PATH in h5f
-    except (OSError, KeyError):
-        return False
+    return settings_block_present(file_path, STAGE2_NOISE_SETTINGS_PATH)
 
 
 __all__ = [
