@@ -81,7 +81,7 @@ un-windowed, and native-length — there are no `expf_us` / `window_function` /
 zero-padding interpolates bins and corrupts the Stage 2/5 noise and χ²
 statistics; the robust per-window fit is the intended alternative). The
 user-chosen Stage 1 settings are data selection (`start_us`, `end_us`, and the
-frequency `trim` range) plus display/scaling (`units_power`, `rdc`); they are
+frequency `trim` range) plus the display/scaling knob `units_power`; they are
 persisted in the `.ftmw` file as the experiment's canonical settings.  All
 later stages operate on the spectrum they define; no stage carries its own
 trim.  Resolution order for each setting is: **explicit caller override >

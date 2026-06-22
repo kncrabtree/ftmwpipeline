@@ -93,10 +93,11 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
   enum (lsb/usb-aware); deleted the three local resolvers
   (`stage5_impl._resolve_sideband`, `stage6_impl._sideband_from_value`,
   `active_ft_support._resolve_sideband`) and repointed all 11 call sites.
-- [ ] **F5** `_required*` post-resolve coercion (6 copies: stage2/3/4/5_impl,
-  tau_settings_resolution, re-imported by stage6) → `require_resolved(value, name,
-  *, cast=None, owner=...)` in `_internal/shared_utils.py`. **DEFERRED to Phase 4**
-  (pairs with F1; many call sites, must preserve the per-class assertion message).
+- [x] **F5** `_required*` post-resolve coercion (stage2/3/4/5_impl,
+  tau_settings_resolution) → `require_resolved(value, name, *, cast=None,
+  owner=...)` in `_internal/shared_utils.py`. Each stage's `_required` /
+  `_required_{int,float,bool,str}` now delegates to it, preserving the
+  per-owner assertion message; golden byte-identical.
 - [x] **F10** protected-offset matcher (3 identical in `residual_rescue.py`) →
   `make_protected_matcher(protected, tol)` factory in `fitting/validation.py`.
 - [x] **F3** HDF5 attr helpers (`_load_json_attr`, NaN-sentinel float coercion,
@@ -134,22 +135,26 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
 The self-contained pair (**F9** sort/broadcast preamble, **F12** `fork_map`) are
 done — see their `[x]` entries lower in this section. The settings-framework trio
-(F1 + F5, then F2) is the heavy, golden-sensitive remainder, deferred to a fresh
-session.
+(F1 + F5, then F2) is done.
 
-- [ ] **F1** settings resolve/preset framework across `core/stage_fit_settings.py`,
+- [x] **F1** settings resolve/preset framework across `core/stage_fit_settings.py`,
   `tau_calibration_settings.py`, `peak_detection_settings.py`,
-  `window_planning_settings.py` → `core/settings_framework.py` parameterized by
-  `(settings_cls, sub_names, hard_defaults, preset_block_key, value_codec)`.
-  Capture stage_fit's sibling-key stripping + tuple/ClockSource/shape codecs as
-  hooks. Round-trip is test-covered.
-- [ ] **F2** settings serialization save/load/present across
-  `io/noise_settings_serialization.py`, `peak_detection_settings_serialization.py`,
-  `window_planning_settings_serialization.py`, `stage_fit_settings_serialization.py`,
-  `tau_calibration_serialization.py` → `io/_settings_serialization.py`
-  (`save_subblock_settings`, `load_subblock_settings`, `settings_block_present`),
-  with read/write callbacks for stage_fit's `shape` subgroup + tau's tuples.
-  (Persistence twin of F1; depends on F3's helpers.)
+  `window_planning_settings.py` → `core/settings_framework.py`. The structural
+  pieces (layer walk, sub-block merge, attrs/YAML loops, preset file resolution +
+  block extraction) live there once, parameterized by the settings class,
+  `sub_names`, `hard_defaults`, and per-module value codecs. stage_fit keeps its
+  `shape`-aware resolve/to_attrs/from_attrs + the legacy `fit:` / flat-fallback
+  `load_preset`; tau keeps its tuple codecs; the other two delegate wholesale.
+  golden byte-identical, 206 settings/serialization round-trip tests + 33
+  cross-interface green; black/isort/mypy clean.
+- [x] **F2** settings serialization save/load/present across the five
+  `io/*_settings_serialization.py` modules → `io/_settings_serialization.py`
+  (`save_settings`, `load_subblock_settings`, `load_flat_settings`,
+  `settings_block_present`). A dict-valued `to_attrs` entry → subgroup, a scalar →
+  top-level attr, so one save path covers the flat Stage 2 layout, the sub-block
+  layouts, and Stage 5's `shape` subgroup-or-sentinel. tau's tuple lifting and
+  Stage 5's `shape` reader ride in as `write_attr` / `read_sub` / `extra_top`
+  callbacks. golden byte-identical, 46 io round-trip + 33 cross-interface green.
 - [x] **F9** sort + σ-broadcast cleanup preamble (residual_rescue ×3 +
   window_fit.conservative_fit) → `window_fit.sort_window_arrays(offset_grid,
   spectrum, rms_noise, *, extras=...)`, returning `(u, z, sigma, order,
@@ -170,65 +175,57 @@ session.
   42 `test_report_full` + 6 render-path tests green (real end-to-end HTML render);
   black + mypy clean.
 
-## Phase 5 — top-level docs refresh
+## Phase 5 — top-level docs refresh — DONE
 
-- [ ] **README.md** — replace the "Stages 3–5 not yet implemented" status block
-  (Stages 0–6 all ship); extend/repoint the Stage-2-capped quickstart (mention
-  `ftmwpipeline run` for the whole-experiment path).
-- [ ] **STATUS.md** — add Stage 6 + timebase rows to the stage table; fix the
-  `_internal/stage{...}_impl.py` glob (drop deleted `stage2b_g_impl`, add `6`);
-  re-measure + reconcile the test counts; cross-interface 20→33; add
-  `timebase_calibration` + `stage6_review` to the `.ftmw` group layout; add
-  `timebase`/`review`/`report`/`clocks`/`run` to the CLI grammar list. (Reconcile
-  against the dead-module removals too.)
-- [ ] **Strategy docs** — drop the retired `rdc` knob from the display/scaling
-  list in `API_STRATEGY.md` (~line 84) and `SERIALIZATION_STRATEGY.md` (~line 48).
+- [x] **README.md** — status block now describes the full Stages 0–6 pipeline;
+  the CLI quickstart leads with `ftmwpipeline run` (whole-experiment) and lists
+  the per-stage verbs through `report run`.
+- [x] **STATUS.md** — stage table carries the 2b/6/timebase rows; the impl glob
+  is `stage{0,1,2,2b,3,4,5,6}_impl.py`; test counts re-measured (1943 collected);
+  cross-interface 20→33; `timebase_calibration` + `stage6_review` added to the
+  `.ftmw` group layout (plus the `processing_parameters/stage*` settings groups);
+  CLI grammar lists `timebase`/`review`/`report`/`clocks`/`run`; the lint-debt
+  note reflects the now-clean state.
+- [x] **Strategy docs** — the retired `rdc` knob is dropped from the
+  display/scaling list in `API_STRATEGY.md` and `SERIALIZATION_STRATEGY.md`
+  (it survives only as an unconditional internal function arg).
 
-## Phase 6 — lint/format + tests
+## Phase 6 — lint/format + tests — DONE
 
-- [ ] Repo-wide batched `black` + `isort` + `mypy` (strict) pass over `src/`
-  (the long-deferred formatting debt; its own commit(s) so churn stays separate).
-- [ ] Full test suite green (`-o addopts=""`), including `slow`/regen guards
-  where touched.
+- [x] Repo-wide `black` + `isort` over `src/`. `mypy --strict` was already clean
+  (132 source files — the earlier doc effort had normalized most of the debt), so
+  the residual was a handful of `black`/`isort` files; normalized in its own
+  commit.
+- [x] Full test suite green (`-o addopts=""`): 1943 collected, all passing after
+  realigning the one drifted Stage 4 tuning metric-columns assertion (a
+  pre-existing staleness, unrelated to the refactors).
 
-## Start here (current state)
+## Outcome
 
-Working tree clean; Phase 3 done; Phase 4 self-contained items (F9, F12) done.
-Only the heavy settings-framework trio (F1, F2, F5) remains in Phase 4.
+All phases complete. The cleanup removed the dead scaffold modules and the legacy
+Blackchirp loader, extracted the duplication findings F1–F12, refreshed the
+top-level docs, and normalized the formatting. Byte-identity held throughout
+(golden `check` clean after every byte-sensitive refactor).
 
 - `0aeb922` — Phase 1 (stray artifacts) + Phase 2 (dead modules + the legacy
   Blackchirp loader; five test files migrated to `BlackChirpLoader`).
-- `77ac107` — Phase 3 **F6** (`Sideband.coerce`), **F10** (`make_protected_matcher`),
-  **F8** (`default_tau0_us`). 700 fitting/core/cross-interface tests green; touched
-  files black + mypy clean.
-- `9d7565c` — **F3** (`io/_hdf5_helpers.py`: `load_json_attr`/`nan_if_none`/
-  `none_if_nan`/`opt_float`/`reset_group`/`stamp_stage_header`).
-- `d150bc4` — **F4** (`Sideband.sign` single source of truth; 2638 fit table
-  byte-identical).
+- `77ac107` — **F6** (`Sideband.coerce`), **F10** (`make_protected_matcher`),
+  **F8** (`default_tau0_us`).
+- `9d7565c` — **F3** (`io/_hdf5_helpers.py`).
+- `d150bc4` — **F4** (`Sideband.sign` single source of truth).
 - `5215555` — **F11** (bare-style dedup + `set_log_spectrum_ylim` +
-  `edge_coherence.coherence_curve` with the default-divergence fix).
-- `71b7c79` — **F9** (`window_fit.sort_window_arrays`; golden byte-identical).
-- **F12** (`fork_map` render orchestrator) committed alongside this doc update.
+  `edge_coherence.coherence_curve`).
+- `71b7c79` — **F9** (`window_fit.sort_window_arrays`).
+- `f8b9719` — **F12** (`fork_map` render orchestrator).
+- `4977ab9` — **F1** + **F5** (`core/settings_framework.py` + `require_resolved`).
+- `3833522` — **F2** (`io/_settings_serialization.py`).
 
-**Next up: Phase 4 trio (F1+F5, then F2), then Phases 5–6.** Suggested order:
+## Provenance
 
-1. **F1 + F5 together** (settings resolve/preset framework + `require_resolved`)
-   then **F2** (settings serialization, builds on F3's `io/_hdf5_helpers.py`).
-   These are the heavy, golden/byte-identity-sensitive refactors — deferred to a
-   fresh session. Validate with the golden harness
-   (`scratch/cleanup-golden/golden.py check`) plus the settings round-trip tests;
-   for F2 also diff the persisted settings fields before vs after.
-2. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
-   black/isort/mypy + full green suite) last.
-
-## Resume notes
-
-- Run commands via `conda run -n ftmwpipeline-dev`; `-o addopts=""` drops
-  coverage; scope tests to the touched surface mid-effort, save one full run for
-  the end.
-- Commit in logical groups (artifacts+deadcode; each refactor family; docs;
-  lint) so diffs stay legible — the `commit` skill governs the messages.
-- Findings provenance: dead-code + artifacts from a direct grep/graph sweep
+- Findings: dead-code + artifacts from a direct grep/graph sweep
   (codebase-memory MCP confirmed no edgeless nodes before disconnecting);
   duplication F1–F12 from the duplication audit; docs staleness from the
   docs-freshness audit.
+- Validation: the golden harness (`scratch/cleanup-golden/golden.py check`,
+  gitignored) snapshots the 2638 end-to-end fit; it stayed byte-identical across
+  every byte-sensitive refactor. Settings round-trip is unit-test-covered.

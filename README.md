@@ -9,10 +9,11 @@ API and a command-line interface.
 
 ## Status
 
-Implemented and tested: **data import**, **FT processing**, and **noise
-estimation** (pipeline Stages 0–2), via the CLI, the `Pipeline` class, and the
-functional API. Peak detection, window assignment, and fitting are not yet
-implemented.
+The full pipeline is implemented and tested — **data import**, **FT
+processing**, **noise estimation**, **τ calibration**, **peak detection**,
+**window assignment**, **time-domain fitting**, **timebase calibration**, and
+the **review / report** surface (pipeline Stages 0–6) — exposed identically
+through the CLI, the `Pipeline` class, and the functional API.
 
 For the precise, verified current state see [`STATUS.md`](STATUS.md). For
 direction and specifications see [`dev-docs/ROADMAP.md`](dev-docs/ROADMAP.md).
@@ -78,12 +79,25 @@ result = Pipeline.build(
 
 ### Command line
 
+Run the whole experiment in one command (import → FT → noise → tau → peaks →
+windows → fit → timebase → review):
+
+```bash
+ftmwpipeline run examples/blackchirp_data/2638/ --output exp_2638.ftmw --trim 26500:40000
+```
+
+Or drive it stage by stage with the object-verb grammar (each stage object takes
+`run`/`show`):
+
 ```bash
 ftmwpipeline data import   exp_2638.ftmw examples/blackchirp_data/2638/
 ftmwpipeline ft run        exp_2638.ftmw --trim 26500:40000
-ftmwpipeline ft show       exp_2638.ftmw --trim 26500:40000 --no-interactive
 ftmwpipeline noise run     exp_2638.ftmw
-ftmwpipeline noise show    exp_2638.ftmw
+ftmwpipeline tau run       exp_2638.ftmw
+ftmwpipeline peaks run     exp_2638.ftmw
+ftmwpipeline windows run   exp_2638.ftmw
+ftmwpipeline fit run       exp_2638.ftmw
+ftmwpipeline report run    exp_2638.ftmw --output-dir scratch/report
 
 ftmwpipeline info exp_2638.ftmw            # provenance and stage status
 ftmwpipeline validate                      # check installation

@@ -44,13 +44,14 @@ How an experiment's analysis is persisted. One experiment is one self-contained
   The canonical FT is unconditionally unapodized, un-windowed, and
   native-length — there are no `expf_us` / `window_function` / `zpf` settings.
   The user-chosen Stage 1 FT processing settings are data selection (`start_us`,
-  `end_us`, **and the frequency `trim` range**) plus display/scaling
-  (`units_power`, `rdc`); they are persisted in
+  `end_us`, **and the frequency `trim` range**) plus the display/scaling knob
+  `units_power`; they are persisted in
   `processing_parameters/ft_processing` as the experiment's *canonical*
-  settings.  Legacy `.ftmw` files carrying the retired apodization keys open
-  with a warning and are recomputed unapodized.  All later stages operate on the
-  spectrum they define.  Setting resolution order is **explicit override >
-  persisted canonical > import-time recommended**.  Changing canonical settings
+  settings.  Legacy `.ftmw` files carrying the retired apodization keys (or the
+  retired `rdc` toggle) open with a warning and are recomputed unapodized.  All
+  later stages operate on the spectrum they define.  Setting resolution order is
+  **explicit override > persisted canonical > import-time recommended**.
+  Changing canonical settings
   via an explicit override invalidates downstream stage results (Stages 2–5
   must be re-run).
 - **Stage 2 — NoiseResult.** Persisted, using a compact representation
