@@ -50,7 +50,14 @@ from ..core.data_structures import FittedPeak, FittingResult, Sideband
 from ..fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
 from ..fitting.validation import PEAK_QUALITY_MAX, peak_quality_score
 from ..utils.signal_processing import APODIZATION_EXAMPLES, make_apodization
-from .report_style import AGGIE_GOLD, CABERNET, DOUBLE_DECKER, GUNROCK, POPPY
+from .report_style import (
+    AGGIE_GOLD,
+    CABERNET,
+    DOUBLE_DECKER,
+    GUNROCK,
+    POPPY,
+    apply_bare_style,
+)
 
 SidebandLike = Union[Sideband, str]
 
@@ -312,21 +319,6 @@ _BARE_BAND_COLOR = "#9aa0a6"
 _BARE_ZERO_COLOR = "#2a2a2a"
 
 
-def _apply_bare_style(ax: plt.Axes) -> None:
-    """Strip an axes to a spine-free, tick-mark-free look with a light major grid.
-
-    No spines (the top / right ones especially read as clutter), no tick marks
-    (labels kept), and a faint major grid in their place, sitting behind the
-    data. The reference marks (noise band, peak vlines, zero baseline) are
-    colored distinctly so they are not mistaken for grid lines.
-    """
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    ax.tick_params(length=0)
-    ax.grid(True, which="major", color="#dbe0e6", lw=0.6, zorder=0)
-    ax.set_axisbelow(True)
-
-
 def _draw_bare_zero(ax: plt.Axes) -> None:
     """Emphasised y = 0 baseline for a bare-style axes (darker than the grid)."""
     ax.axhline(0.0, color=_BARE_ZERO_COLOR, lw=0.9, alpha=0.65, zorder=2.5)
@@ -512,7 +504,7 @@ def draw_overview(ax: plt.Axes, data: WindowPanelData) -> None:
         data.trim_mhz,
     )
     # Spine-free / light-grid presentation; magnitude is positive, no zero line.
-    _apply_bare_style(ax)
+    apply_bare_style(ax)
 
 
 def _annotate_spurs_lattice(
@@ -570,9 +562,9 @@ def draw_component(
     Residual strip on top, data + model below, sharing an x-axis. The residual
     stays native (so ``|residual|`` is bin-for-bin); the ``|X|`` data overlay
     uses the 2x display grid -- see the module docstring. Rendered spine-free
-    over a light major grid (:func:`_apply_bare_style`): the noise band is amber
-    dashed and the zero baseline is emphasized, both distinct from the grid. The
-    strictly-positive magnitude panels carry no zero line.
+    over a light major grid (:func:`.report_style.apply_bare_style`): the noise
+    band is amber dashed and the zero baseline is emphasized, both distinct from
+    the grid. The strictly-positive magnitude panels carry no zero line.
     """
     proj, color, dlabel = _COMPONENT_SPECS[component]
     amp = data.amp
@@ -638,8 +630,8 @@ def draw_component(
     if show_xlabel:
         ax_data.set_xlabel("frequency (MHz)", fontsize=9)
 
-    _apply_bare_style(ax_resid)
-    _apply_bare_style(ax_data)
+    apply_bare_style(ax_resid)
+    apply_bare_style(ax_data)
     # Emphasise the zero baseline only where zero is meaningful: the dispersive
     # re / im residual and data traces cross it. The magnitude panels are
     # strictly positive, so no zero line.
@@ -652,7 +644,7 @@ def draw_residual_hist(ax: plt.Axes, data: WindowPanelData) -> None:
     """|residual| histogram against the Rayleigh noise model."""
     _draw_residual_hist(ax, data.residual, data.sigma_slice, data.amp, data.usuffix)
     # Spine-free / light-grid presentation, matching the spectral panels.
-    _apply_bare_style(ax)
+    apply_bare_style(ax)
 
 
 def draw_peak_table(ax: plt.Axes, data: WindowPanelData) -> None:
@@ -909,7 +901,7 @@ def plot_summary_histograms(
         ax.set_ylabel("count", fontsize=8)
         ax.tick_params(labelsize=7)
         ax.legend(fontsize=7)
-        _apply_bare_style(ax)
+        apply_bare_style(ax)
     for ax in flat[n:]:
         ax.set_axis_off()
     return fig
@@ -967,7 +959,7 @@ def plot_magnitude_histogram(
     ax.set_ylabel("count", fontsize=8)
     ax.tick_params(labelsize=7)
     ax.legend(fontsize=7)
-    _apply_bare_style(ax)
+    apply_bare_style(ax)
     return fig
 
 

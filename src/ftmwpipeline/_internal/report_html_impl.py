@@ -1146,9 +1146,9 @@ def _plot_index_overview(
     ax.set_title(title, fontsize=10)
     # Spine-free / light-grid presentation, matching the per-window panels. The
     # magnitude is strictly positive, so no zero baseline.
-    from ..visualization.fit_detail import _apply_bare_style
+    from ..visualization.report_style import apply_bare_style
 
-    _apply_bare_style(ax)
+    apply_bare_style(ax)
     return fig
 
 

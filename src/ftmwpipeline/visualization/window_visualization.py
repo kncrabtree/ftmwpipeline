@@ -14,12 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from ..core.data_structures import Peak, WindowPlan
-from ..preprocessing.edge_coherence import (
-    DEFAULT_EDGE_M,
-    DEFAULT_EDGE_THRESHOLD,
-    rolling_coherence,
-)
-from ..preprocessing.leakage import deramp_to_active_start
+from ..preprocessing.edge_coherence import coherence_curve
 
 
 def plot_window_plan(
@@ -56,8 +51,6 @@ def plot_window_plan(
     matplotlib.figure.Figure
     """
     magnitude = np.abs(np.asarray(complex_spectrum, dtype=complex))
-    edge_m = int(plan.parameters.get("edge_m", DEFAULT_EDGE_M))
-    threshold = float(plan.parameters.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))
 
     from .report_style import (
         AGGIE_BLUE,
@@ -67,23 +60,14 @@ def plot_window_plan(
         POPPY,
         apply_bare_style,
         resolve_title,
+        set_log_spectrum_ylim,
     )
 
-    order = np.argsort(frequencies)
     # De-ramp to the active-region turn-on so the displayed S_coh matches the
     # statistic that drove the plan (see leakage-detection-rework).
-    referenced = deramp_to_active_start(
-        np.asarray(frequencies, dtype=float),
-        np.asarray(complex_spectrum, dtype=complex),
-        float(plan.parameters.get("probe_freq_mhz", 0.0)),
-        float(plan.parameters.get("start_us", 0.0)),
+    ordered_freq, rolling, threshold, edge_m = coherence_curve(
+        frequencies, complex_spectrum, rms_noise, plan.parameters
     )
-    rolling = rolling_coherence(
-        referenced[order],
-        np.asarray(rms_noise)[order],
-        band_m=edge_m,
-    )
-    ordered_freq = np.asarray(frequencies)[order]
 
     fig, (ax, ax_stat) = plt.subplots(
         2,
@@ -148,11 +132,8 @@ def plot_window_plan(
                 )
                 fixed_done = True
 
-    median_rms = float(np.median(rms_noise)) if len(rms_noise) else 1.0
-    floor = max(median_rms * 0.1, 1e-12)
     top = float(np.max(magnitude)) if magnitude.size else 1.0
-    ax.set_yscale("log")
-    ax.set_ylim(floor, top * max(y_max_factor / 25.0, 1.2))
+    set_log_spectrum_ylim(ax, rms_noise, top, y_max_factor)
     ax.set_ylabel("Magnitude")
     resolved_title = resolve_title(title, "Stage 4 Window Assignment")
     if resolved_title:

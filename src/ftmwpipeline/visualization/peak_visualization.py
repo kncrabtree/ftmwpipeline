@@ -21,6 +21,7 @@ from .report_style import (
     QUAD,
     apply_bare_style,
     resolve_title,
+    set_log_spectrum_ylim,
 )
 
 # SNR-tier marker colors, ordered weak -> strong by ascending salience.
@@ -169,13 +170,10 @@ def plot_peak_detection(
     # Log y: noise floor and the 100s-of-x stronger lines (and their
     # markers, now at the true apex magnitude) are both legible. y_max_factor
     # only sets headroom above the tallest peak.
-    median_rms = float(np.median(rms_noise)) if len(rms_noise) else 1.0
-    floor = max(median_rms * 0.1, 1e-12)
     top = float(np.max(magnitudes)) if len(magnitudes) else 1.0
     if peaks:
         top = max(top, max(p.intensity for p in peaks))
-    ax.set_yscale("log")
-    ax.set_ylim(floor, top * max(y_max_factor / 25.0, 1.2))
+    set_log_spectrum_ylim(ax, rms_noise, top, y_max_factor)
     ax.set_xlabel("Frequency (MHz)")
     ax.set_ylabel("Magnitude")
     resolved_title = resolve_title(title, "Stage 3 Peak Detection")

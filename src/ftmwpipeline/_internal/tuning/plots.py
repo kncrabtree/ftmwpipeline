@@ -912,28 +912,14 @@ def _coherence_curve(result: Any) -> Any:
     if plan is None or ft is None or rms is None:
         return None
     try:
-        from ...preprocessing.edge_coherence import rolling_coherence
-        from ...preprocessing.leakage import deramp_to_active_start
+        from ...preprocessing.edge_coherence import coherence_curve
     except Exception:
         return None
     params = getattr(plan, "parameters", {}) or {}
-    freqs = np.asarray(ft.freq_array, dtype=float)
-    spec = np.asarray(ft.complex_spectrum, dtype=complex)
-    order = np.argsort(freqs)
-    edge_m = int(params.get("edge_m", 64))
-    thr = float(params.get("edge_threshold", 8.0))
-    referenced = deramp_to_active_start(
-        freqs,
-        spec,
-        float(params.get("probe_freq_mhz", 0.0)),
-        float(params.get("start_us", 0.0)),
+    ordered_freq, rolling, thr, _ = coherence_curve(
+        ft.freq_array, ft.complex_spectrum, rms, params
     )
-    rolling = rolling_coherence(
-        referenced[order],
-        np.asarray(rms, dtype=float)[order],
-        band_m=edge_m,
-    )
-    return freqs[order], np.asarray(rolling, dtype=float), thr
+    return ordered_freq, np.asarray(rolling, dtype=float), thr
 
 
 def _select_window_regions(rows: List[Any], width_mhz: float, k: int) -> List[Any]:

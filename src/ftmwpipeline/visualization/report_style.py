@@ -18,6 +18,8 @@ instead of a brand gradient.
 
 from typing import Any, List, Optional
 
+import numpy as np
+
 _BARE_GRID_COLOR = "#dbe0e6"
 
 # -- UC Davis brand palette -------------------------------------------------
@@ -115,6 +117,24 @@ def apply_bare_style(ax: Any) -> None:
     ax.tick_params(length=0)
     ax.grid(True, which="major", color=_BARE_GRID_COLOR, lw=0.6, zorder=0)
     ax.set_axisbelow(True)
+
+
+def set_log_spectrum_ylim(
+    ax: Any, rms_noise: np.ndarray, top: float, y_max_factor: float
+) -> None:
+    """Apply the shared log-magnitude y-axis for a spectrum panel.
+
+    Sets a log y-scale with the lower limit a decade below the median noise
+    (floored at ``1e-12``) and the upper limit ``y_max_factor``-scaled headroom
+    above the tallest feature ``top`` -- so the noise floor and the 100s-of-x
+    stronger lines are both legible. ``y_max_factor`` only sets the headroom;
+    its baseline of 25 leaves a 1.2x minimum so small factors do not clip peaks.
+    Shared by the Stage 3 peak and Stage 4 window spectrum panels.
+    """
+    median_rms = float(np.median(rms_noise)) if len(rms_noise) else 1.0
+    floor = max(median_rms * 0.1, 1e-12)
+    ax.set_yscale("log")
+    ax.set_ylim(floor, top * max(y_max_factor / 25.0, 1.2))
 
 
 def resolve_title(title: Optional[str], default: str) -> str:

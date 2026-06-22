@@ -30,7 +30,7 @@ The functions here are pure (arrays in, arrays out) so they stay unit-testable;
 file orchestration lives in :mod:`ftmwpipeline._internal.stage4_impl`.
 """
 
-from typing import List, Tuple
+from typing import Any, List, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -258,3 +258,62 @@ def above_threshold_intervals(
     starts = np.where(edges == 1)[0]
     ends = np.where(edges == -1)[0] - 1
     return [(int(s), int(e)) for s, e in zip(starts, ends)]
+
+
+def coherence_curve(
+    freqs: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    parameters: Optional[Mapping[str, Any]] = None,
+) -> Tuple[np.ndarray, np.ndarray, float, int]:
+    """Reconstruct the plotted ``S_coh`` curve that drove a Stage 4 partition.
+
+    De-ramps the full-record spectrum to the active turn-on, rolls ``S_coh``
+    over the persisted ``edge_m`` band on the frequency-sorted grid, and reads
+    the ``edge_threshold`` -- both knobs falling back to the module
+    :data:`DEFAULT_EDGE_M` / :data:`DEFAULT_EDGE_THRESHOLD`, so every plotting
+    surface shares one set of defaults. This is the display companion to
+    :func:`active_edge_coherence` (which scores the already-``[0, T]`` active
+    FT and needs no de-ramp).
+
+    Parameters
+    ----------
+    freqs : np.ndarray
+        Frequency axis (MHz) of the persisted user spectrum.
+    complex_spectrum : np.ndarray
+        Complex full-record FT on ``freqs``.
+    rms_noise : np.ndarray
+        Per-point noise RMS aligned with ``freqs``.
+    parameters : mapping, optional
+        Stage 4 plan parameters; ``edge_m``, ``edge_threshold``,
+        ``probe_freq_mhz``, and ``start_us`` are read with safe defaults.
+
+    Returns
+    -------
+    tuple
+        ``(ordered_freq, rolling, threshold, edge_m)`` -- the ascending
+        frequency grid, the rolling ``S_coh`` on it, the ``T_edge`` threshold,
+        and the band width used.
+    """
+    # Local import: leakage imports from this module, so importing it at module
+    # scope would cycle.
+    from .leakage import deramp_to_active_start
+
+    params = parameters or {}
+    freqs_arr = np.asarray(freqs, dtype=float)
+    spec = np.asarray(complex_spectrum, dtype=complex)
+    order = np.argsort(freqs_arr)
+    edge_m = int(params.get("edge_m", DEFAULT_EDGE_M))
+    threshold = float(params.get("edge_threshold", DEFAULT_EDGE_THRESHOLD))
+    referenced = deramp_to_active_start(
+        freqs_arr,
+        spec,
+        float(params.get("probe_freq_mhz", 0.0)),
+        float(params.get("start_us", 0.0)),
+    )
+    rolling = rolling_coherence(
+        referenced[order],
+        np.asarray(rms_noise, dtype=float)[order],
+        band_m=edge_m,
+    )
+    return freqs_arr[order], rolling, threshold, edge_m

@@ -64,8 +64,8 @@ in `io/data_loaders/`):
 
 ## Phase 3 — low-risk duplication extractions
 
-(Finding numbers from the duplication audit.) **F3/F4/F6/F8/F10 done; F11
-pending; F5 deferred to Phase 4 — it pairs with the F1 settings work and has
+(Finding numbers from the duplication audit.) **F3/F4/F6/F8/F10/F11 all done;
+F5 deferred to Phase 4 — it pairs with the F1 settings work and has
 per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
 - [x] **F4** baseband↔molecular conversion (5+ sites, two spellings). The actual
@@ -106,13 +106,21 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
   division so the fit seed stays bit-identical). The `_active_acquisition_us`
   dup (active_ft_support + stage3_impl) and the padded-active-rFFT block are
   deferred (cross-module import + χ²/noise byte-equivalence).
-- [ ] **F11** delete `fit_detail._apply_bare_style` (private dup of public
-  `report_style.apply_bare_style`; repoint the `report_html_impl` import to the
-  public name); add `set_log_spectrum_ylim` to `report_style.py`; consolidate the
-  edge-coherence curve into `preprocessing/edge_coherence.py`
-  **fixing the divergent `edge_m`/`edge_threshold` defaults** (latent bug:
-  `window_visualization.py` uses `DEFAULT_*`, `tuning/plots._coherence_curve`
-  hardcodes 64/8.0).
+- [x] **F11** deleted `fit_detail._apply_bare_style` (byte-for-byte dup of public
+  `report_style.apply_bare_style` — same `#dbe0e6` grid) and repointed its 6 call
+  sites + the `report_html_impl` import to the public name; added
+  `set_log_spectrum_ylim(ax, rms_noise, top, y_max_factor)` to `report_style.py`,
+  collapsing the identical floor/yscale/ylim block in `peak_visualization` and
+  `window_visualization`; consolidated the de-ramp + rolling-`S_coh` + threshold
+  computation into `edge_coherence.coherence_curve(freqs, spec, rms, params)` used
+  by both `window_visualization` and `tuning/plots._coherence_curve`. The latter
+  **fixes the divergent defaults** — `tuning/plots` hardcoded `edge_m=64`/
+  `edge_threshold=8.0`, which only happened to equal `DEFAULT_EDGE_M`/
+  `DEFAULT_EDGE_THRESHOLD`; the curve is byte-identical today but the helper now
+  pulls the constants so the two surfaces can never silently diverge. Local
+  `deramp_to_active_start` import inside `coherence_curve` keeps the
+  `edge_coherence`↔`leakage` cycle at bay. 173 viz/tuning/preprocessing tests
+  green; real 2638 window-plan + peak figures render; black + mypy clean.
 
 ## Phase 4 — large duplication refactors (byte-identity sensitive)
 
@@ -162,24 +170,28 @@ per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
 ## Start here (current state)
 
-Working tree clean; committed through Phase 3's low-risk set:
+Working tree clean; Phase 3 complete (all of F3/F4/F6/F8/F10/F11 committed):
 
 - `0aeb922` — Phase 1 (stray artifacts) + Phase 2 (dead modules + the legacy
   Blackchirp loader; five test files migrated to `BlackChirpLoader`).
 - `77ac107` — Phase 3 **F6** (`Sideband.coerce`), **F10** (`make_protected_matcher`),
   **F8** (`default_tau0_us`). 700 fitting/core/cross-interface tests green; touched
   files black + mypy clean.
+- `9d7565c` — **F3** (`io/_hdf5_helpers.py`: `load_json_attr`/`nan_if_none`/
+  `none_if_nan`/`opt_float`/`reset_group`/`stamp_stage_header`).
+- `d150bc4` — **F4** (`Sideband.sign` single source of truth; 2638 fit table
+  byte-identical).
+- **F11** (bare-style dedup + `set_log_spectrum_ylim` + `edge_coherence.coherence_curve`
+  with the default-divergence fix) committed alongside this doc update.
 
-**Next up: Phase 3 leftover (F11), then Phase 4.** Suggested order:
+**Next up: Phase 4 (the heavy refactors), then Phases 5–6.** Suggested order:
 
-1. **F11** (bare-style dedup + the edge-coherence default-divergence **bug fix** —
-   this one intentionally changes behavior where the defaults diverged; confirm the
-   `DEFAULT_*` values are the intended ones and re-run the Stage 4 viz/tuning paths).
-2. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
+1. **Phase 4** (F1, F2, F5, F9, F12) — the heavy, golden/byte-identity-sensitive
    refactors. F5 (`require_resolved`) pairs with F1. F2 (settings serialization)
    builds on F3's new `io/_hdf5_helpers.py`. Build a fresh 2638 fixture and diff the
-   persisted fields / fitted table before vs after for F2 and F9.
-3. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
+   persisted fields / fitted table before vs after for F2 and F9 (the
+   stash → rebuild → `diff` harness used for F4 works here too).
+2. **Phase 5** (README/STATUS/strategy refresh) then **Phase 6** (repo-wide
    black/isort/mypy + full green suite) last.
 
 ## Resume notes
