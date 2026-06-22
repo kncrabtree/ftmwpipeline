@@ -71,10 +71,10 @@ notebook = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ftmw-pipeline/ftmwpipeline"
+Homepage = "https://github.com/kncrabtree/ftmwpipeline"
 Documentation = "https://ftmwpipeline.readthedocs.io/"
-Repository = "https://github.com/ftmw-pipeline/ftmwpipeline.git"
-"Bug Tracker" = "https://github.com/ftmw-pipeline/ftmwpipeline/issues"
+Repository = "https://github.com/kncrabtree/ftmwpipeline.git"
+"Bug Tracker" = "https://github.com/kncrabtree/ftmwpipeline/issues"
 
 [project.scripts]
 ftmwpipeline = "ftmwpipeline.cli:main"
