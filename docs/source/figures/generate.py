@@ -33,6 +33,10 @@ into the committed ``docs/source/figures`` directory:
   histogram, and the fitted-peak table.
 * ``stage6_review.png`` -- the Stage 6 report's full-spectrum index overview: the
   finalized active spectrum with the review-flagged (attention) windows shaded.
+* ``fit_curation_annotations.png`` -- two windows' report magnitude panels (rendered
+  through the report's own per-window painter) overlaid with a curation cart: two
+  merges over over-split close pairs and a missed-line add on one window, two splits
+  on another (Concepts / fit curation).
 * ``clock_timebase.png`` -- the timebase self-calibration: each Rb-locked clock
   tone's measured frequency offset against its baseband frequency, with the
   shared-epsilon fit line and its 1-sigma band (Advanced / clock declaration).
@@ -236,6 +240,13 @@ def make_figures() -> None:
         )
         fig6.savefig(FIG_DIR / "stage6_review.png", dpi=DPI, bbox_inches="tight")
 
+        # Concepts / fit curation: two report magnitude panels overlaid with a
+        # real curation cart (merges, an add, splits), in the report's color code.
+        fig_cur = _plot_curation_annotations(bundle, np)
+        fig_cur.savefig(
+            FIG_DIR / "fit_curation_annotations.png", dpi=DPI, bbox_inches="tight"
+        )
+
         # Advanced: the timebase self-calibration. Measure epsilon from the
         # Rb-locked clock spurs and plot each tone's measured offset against its
         # baseband frequency -- the kept tones fall on the shared-epsilon line.
@@ -247,6 +258,119 @@ def make_figures() -> None:
         # of the demodulated tone and the coherent-sum scan that locates it.
         fig_pr = _plot_phase_ramp(path, result, np)
         fig_pr.savefig(FIG_DIR / "clock_phase_ramp.png", dpi=DPI, bbox_inches="tight")
+
+
+# A curation cart captured from the browser report on the 2638 example: two
+# over-split close pairs merged and a missed line added on window 61, and two
+# weak lines split on window 80. Frequencies are the raw Stage 5 model values the
+# edit verbs match on (the values the cart emits), so the figure annotates the
+# real fitted peaks by frequency.
+_CURATION_DEMO = (
+    (61, "merge", (28802.036876, 28802.091386)),
+    (61, "merge", (28802.843411, 28802.899680)),
+    (61, "add", (28799.9725,)),
+    (80, "split", (29351.363439,)),
+    (80, "split", (29352.880164,)),
+)
+_CURATION_INTO = 2  # the demo splits each line into two
+
+
+def _plot_curation_annotations(bundle: Any, np: Any) -> Any:
+    """The report's own window panels, annotated with a real curation cart.
+
+    Paints the magnitude panel for each window named in :data:`_CURATION_DEMO`
+    through the same renderer the HTML report uses
+    (:func:`~ftmwpipeline.visualization.fit_detail.draw_component`, on the 2x
+    zero-padded display grid with the fitted model and the absolute-frequency
+    axis), then overlays the cart's queued edits exactly as the browser does: a
+    vertical marker per frequency, colored by action. Window 61 carries two
+    merges over over-split close pairs and a missed-line add; window 80 carries
+    two splits. The markers are queued intentions, not applied edits.
+    """
+    import matplotlib.pyplot as plt
+
+    from ftmwpipeline.visualization.fit_detail import (
+        _stacked_pair,
+        draw_component,
+        prepare_window_panels,
+    )
+    from ftmwpipeline.visualization.report_style import (
+        DOUBLE_DECKER,
+        PINOT,
+        POPPY,
+        QUAD,
+    )
+
+    colors = {"remove": DOUBLE_DECKER, "add": QUAD, "merge": PINOT, "split": POPPY}
+
+    # Resolve each cart group's panel by frequency, not window id: the ids are
+    # incidental (and renumber when the fit changes), but the lines persist.
+    def _window_for(freq: float) -> Any:
+        for wf in bundle.fit.window_fits:
+            if wf.window is None:
+                continue
+            lo, hi = wf.window.freq_range
+            if min(lo, hi) <= freq <= max(lo, hi):
+                return wf
+        raise ValueError(f"no fit window contains {freq} MHz")
+
+    panel_ids: list[int] = []
+    for wid, _action, _freqs in _CURATION_DEMO:
+        if wid not in panel_ids:
+            panel_ids.append(wid)
+
+    fig = plt.figure(figsize=(12.0, 4.8), constrained_layout=True)
+    outer = fig.add_gridspec(1, len(panel_ids), wspace=0.16)
+    spurs = (bundle.fit.diagnostics or {}).get("gated_spurs")
+
+    for col, wid in enumerate(panel_ids):
+        ops = [(a, fs) for (w, a, fs) in _CURATION_DEMO if w == wid]
+        data = prepare_window_panels(
+            _window_for(ops[0][1][0]),
+            frequencies=bundle.frequencies,
+            complex_spectrum=bundle.complex_spectrum,
+            rms_noise=bundle.rms_noise,
+            sideband=bundle.sideband,
+            acquisition_us=bundle.acquisition_us,
+            amplitude_scale=bundle.amplitude_scale,
+            units_label=bundle.units_label,
+            trim_mhz=bundle.trim_mhz,
+            freq_padded=bundle.freq_padded,
+            spec_padded=bundle.spec_padded,
+            spurs=spurs,
+        )
+        ax_resid, ax_data = _stacked_pair(fig, outer[col])
+        draw_component(ax_resid, ax_data, data, "mag")
+
+        # Overlay the queued edits on the magnitude panel, as the report does.
+        y_lo, y_hi = ax_data.get_ylim()
+        ax_data.set_ylim(y_lo, y_hi * 1.16)
+        for action, fs in ops:
+            color = colors[action]
+            for fc in fs:
+                ax_data.plot(
+                    [fc, fc],
+                    [y_lo, y_hi],
+                    color=color,
+                    lw=1.6,
+                    ls="--" if action == "remove" else "-",
+                    zorder=6,
+                )
+                ax_data.plot([fc], [y_hi], marker="o", color=color, ms=6, zorder=7)
+            text = f"split →{_CURATION_INTO}" if action == "split" else action
+            ax_data.annotate(
+                text,
+                (0.5 * (fs[0] + fs[-1]), y_hi),
+                textcoords="offset points",
+                xytext=(0, 6),
+                ha="center",
+                va="bottom",
+                fontsize=8.5,
+                color=color,
+                zorder=7,
+            )
+
+    return fig
 
 
 def _plot_timebase(result: Any, np: Any) -> Any:

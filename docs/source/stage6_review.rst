@@ -366,24 +366,12 @@ three components ``sigma_stat_khz`` / ``sigma_eps_khz`` / ``sigma_floor_khz``,
    36389.044700,0.55,0.55,0.000,0.000,36389.044700,10389.044700,9.1,0.41,-1.12,0.05,71.6,3.2,auto,218,
 
 ``report run`` is the default deliverable: it writes that table (``<stem>_lines.csv`` by
-default) and a **self-contained HTML report** (``<stem>_report.html``) — one portable
-file, with the stylesheet inlined and every figure embedded. The HTML opens on a
-full-spectrum index (the overview above, with each window clickable and the attention
-windows shaded), links to a methods-and-results page (the per-stage algorithm prose
-plus this experiment's numbers and distribution histograms), and carries one page per
-fit window (the fit panels, the fitted lines with raw and calibrated frequencies, the
-covariance, the candidate ledger, the recorded decisions, and the fit history).
-``--summary`` keeps the index and methods only; ``--windows attention`` folds in detail
-pages only for the flagged windows, for a spectrum with thousands of them;
-``--level1-only`` writes the table without the HTML.
-
-The HTML report also opens **read-only** with an opt-in ``Curate`` toggle that collects
-edits in the browser and exports them as a **curation file** — a small CSV of batched
-``add`` / ``remove`` / ``merge`` / ``split`` operations that ``review apply`` replays
-against the file, each as a real refit. It is the way to triage a report in the browser
-and apply the decisions in one batch, without ever editing the file from the page. The
-curation-file language and the interactive cart get their own dedicated page
-(forthcoming).
+default) and a **self-contained HTML report** (``<stem>_report.html``), one portable
+file with the stylesheet inlined and every figure embedded. The report opens
+**read-only**, with an opt-in ``Curate`` toggle that collects edits in the browser and
+exports them as a **curation file** for ``review apply`` to replay. Its anatomy, the
+in-browser curation cart, and the curation-file language are documented on the
+:doc:`Fit Curation <fit_curation>` page.
 
 Limitations
 -----------

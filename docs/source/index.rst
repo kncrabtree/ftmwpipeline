@@ -17,6 +17,7 @@
    settings_and_presets
    file_format
    input_formats
+   fit_curation
 
 .. toctree::
    :hidden:
