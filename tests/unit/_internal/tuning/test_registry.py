@@ -139,12 +139,9 @@ def test_stage4_paths_resolve_to_settings_fields():
         assert field in names, spec.path
         assert spec.metric_columns == (
             "n_windows",
-            "n_hard",
-            "n_easy",
             "n_free",
             "n_fixed",
             "n_dep",
-            "n_split",
             "width_p50",
             "width_p95",
             "width_max",
