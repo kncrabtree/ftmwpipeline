@@ -42,75 +42,49 @@ commands*).
 
 The pipeline stages are the primary objects. Every stage object accepts the
 same two verbs — `run` (execute the stage) and `show` (visualize its output) —
-so the surface is uniform and discoverable: every stage runs with `<object>
-run` and is viewed with `<object> show`. An analysis stage requires its
-predecessor to be complete and must fail with a clear dependency message
-otherwise.
+so the surface is uniform and discoverable. Each stage object also carries a
+**`stageN` synonym** fully interchangeable with its name (e.g. `ft run` ≡
+`stage1 run`), so a user who thinks in stage numbers and one who thinks in names
+reach the same command. An analysis stage requires its predecessor to be
+complete and must fail with a clear dependency message otherwise.
 
-Each stage object also has a **`stageN` synonym** fully interchangeable with its
-name (`ft run` ≡ `stage1 run`), so a user who thinks in stage numbers and one
-who thinks in names reach the same command.
+Three rules govern the stage surface; the roster of stage objects itself is the
+code's and is recorded in [`../STATUS.md`](../STATUS.md):
 
-| Stage | Object (synonym) | Execute | Visualize |
-|---|---|---|---|
-| 0 Data import | `data` (`stage0`) | `import` | `show` |
-| — Start detection | `start` | `run` | `show` |
-| 1 FT processing | `ft` (`stage1`) | `run` | `show` |
-| 2 Noise estimation | `noise` (`stage2`) | `run` | `show` |
-| 2b τ calibration | `tau` (`stage2b`) | `run` | `show` |
-| 3 Peak detection | `peaks` (`stage3`) | `run` | `show` |
-| 4 Window assignment | `windows` (`stage4`) | `run` | `show` |
-| 5 Fitting | `fit` (`stage5`) | `run` | `show` |
+- **Execute is uniform `run`.** The one deliberate exception is data import: it
+  *creates* a file from a raw source rather than running on an existing one, so
+  its execute verb names that act and takes the source — not a `.ftmw` — as
+  input. A pre-stage step that is not itself a numbered stage may omit the
+  `stageN` synonym.
+- **Output variants are `--kind` options, not extra commands.** A stage with
+  more than one view selects among them with `--kind`; the default is the
+  stage's primary view. Likewise a within-stage algorithm variant is a flag on
+  `run`, not a separate object.
+- **A stage-specific action beyond run/show is a named verb on that object**,
+  used only where the action genuinely has no run/show form (for example a
+  fit-quality check).
 
-Notes:
+### Cross-cutting objects
 
-- **Execute is uniform `run`**, with one deliberate exception: stage 0 *creates*
-  a file rather than running on one, so its execute verb is `import`
-  (`data import <source-path-or-dir> [--format <name>]`). `start` has no `stageN`
-  synonym — start detection is the pre-FT step that produces `start_us` for
-  stage 1, not a numbered stage.
-- **A stage with output variants selects them with `--kind`**, not extra
-  commands: `tau show --kind heatmap|distribution`. The default is the stage's
-  primary view.
-- **Stage-specific actions beyond run/show are named verbs on the object.** The
-  only current case is the Stage 5 fit-quality report, `fit check` (the
-  SNR-aware shape-error validation).
-- **`tau run --gaussian`** selects the pure-Gaussian τ calibration variant.
-
-### Meta objects
-
-Cross-cutting tooling that operates *across* stages is grouped under its own
-object and scoped by an optional dotted **selector** (a stage name or a
-sub-block / field path, e.g. `noise`, `noise.window_mhz`, `stage2b.gaussian` —
-the same selector grammar the knob registry uses). These do not belong to one
-stage, so they are not stage objects.
-
-| Object | Verb | Purpose |
-|---|---|---|
-| `settings` | `show <file> [selector]` | Resolved value + provenance layer (`.ftmw` / `.yml:<name>` / `recommended` / `default`) per setting |
-| | `set <file> <knob> <value>` | Persist a chosen value into the `.ftmw` |
-| | `export <file> <out.yml> [selector]` | Write the chosen values to a `.yml` preset block |
-| `scan` | `list <file> [selector]` | List the tunable knobs |
-| | `run <file> <knob>` | Sweep one knob across a grid and report the metric table (+ CSV / plot) |
-| | `all <file> [selector]` | Sweep every knob in a stage / sub-block on its default grid |
-
-The `settings` and `scan` verbs are explicit subcommands, so there is no
-collision between a subcommand token and the file positional.
+Tooling that operates *across* stages — for example settings management,
+parameter scans, or driving the whole pipeline in one call — is grouped under
+its own object with named action subcommands, rather than folded into a stage.
+Where such an object addresses a particular stage or a field within one, it does
+so with an optional dotted **selector** (a stage name or a sub-block / field
+path, e.g. `noise` or `noise.window_mhz`) — the same selector grammar the knob
+registry uses. The requirement is structural: each cross-cutting object groups
+its actions under its own object name and uses explicit named subcommands, so a
+subcommand token never collides with the file positional. The set of such
+objects is the code's.
 
 ### Utility commands
 
-File-global operations that are not stage actions remain **bare commands** (no
-object):
-
-| Command | Purpose |
-|---|---|
-| `info` | Pipeline-file provenance and stage status (`--format text\|json`) |
-| `formats` | List available data formats |
-| `validate` | Installation/environment check |
-| `version` | Version and package information |
-
-Pipeline-file integrity is reported through `info` (and the Python
-`.validate()`); `validate` is reserved for installation checks.
+File-global operations that are not stage actions — environment or
+single-file utilities such as an installation check, a formats listing, a
+version report, or file provenance/status — remain **bare commands** (no
+object). Pipeline-*file* integrity is reported through the provenance/status
+command (and the Python `.validate()`); the installation check is reserved for
+*environment* validation, not file integrity.
 
 ## Output and errors
 
@@ -136,11 +110,11 @@ Pipeline-file integrity is reported through `info` (and the Python
 Commands use an **object-verb** form: the object (a pipeline stage or a
 cross-cutting tool) first, the action second. Stage objects share a uniform
 two-verb vocabulary (`run` / `show`) plus their `stageN` synonym; output
-variants are `--kind` options, not new commands; cross-cutting tools
-(`settings`, `scan`) group their actions under their own object and scope with a
-selector. The tables above are the contract; new commands must follow the same
-scheme — a new stage adds an object with `run`/`show` (and a `stageN` synonym);
-a new cross-cutting tool adds an object with named action subcommands.
+variants are `--kind` options, not new commands; cross-cutting tools group their
+actions under their own object and scope with a selector. These rules are the
+contract; new commands must follow the same scheme — a new stage adds an object
+with `run`/`show` (and a `stageN` synonym); a new cross-cutting tool adds an
+object with named action subcommands.
 
 ## Scripting
 

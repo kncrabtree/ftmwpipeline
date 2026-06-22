@@ -15,7 +15,9 @@ implementation:
 Both are thin; all stage logic resides in shared internal implementation
 functions (see [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) and
 [`CLI_STRATEGY.md`](CLI_STRATEGY.md) for the other consumers of that shared
-core).
+core). The scientific invariants the API must uphold — faithful raw data, the
+unbiased canonical spectrum, reproducibility — are specified in
+[`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md) and are not restated here.
 
 ## Principles
 
@@ -37,12 +39,16 @@ A `Pipeline` instance is bound to exactly one `.ftmw` file for its lifetime.
 
 ### Construction
 
-- `Pipeline.create(path, source, *, format_name=None, fid_index=None,
-  force=False, **loader_params) -> Pipeline` — create a new analysis from raw
-  data.
-- `Pipeline.open(path) -> Pipeline` — open an existing analysis.
-- `Pipeline(path)` — convenience constructor: open if the file exists,
-  otherwise raise a clear error directing the user to `create`.
+Three entry points with distinct, non-overlapping roles:
+
+- **create** — start a new analysis from a raw source.
+- **open** — attach to an existing analysis.
+- **smart constructor** (`Pipeline(path)`) — open if the file exists, otherwise
+  raise a clear error directing the user to create.
+
+The role separation and the failure modes are the contract; the exact keyword
+parameters (source selection, input format, loader options, force-overwrite)
+are the code's to define.
 
 `create` semantics:
 
@@ -61,33 +67,29 @@ present but unreadable as a pipeline file.
 
 ### Stage methods
 
-Each implemented stage exposes a method that loads its inputs from the file,
-applies the stage with user-overridable parameters, persists results/parameters
-to the same file, and returns the stage result object:
+Each stage exposes a method that loads its inputs from the file, applies the
+stage with user-overridable parameters, persists its results and parameters
+back to the same file, and returns the stage's result object; visualizing a
+stage's output is a sibling method. Every stage method must reject execution
+when a required predecessor is incomplete, raising an error that names the
+missing dependency.
 
-- `load_data() -> FID`
-- `compute_ft(...) -> ComplexFT`
-- `visualize_ft(...)`
-- `estimate_noise(...) -> NoiseResult`
-- `visualize_noise(...)`
-- `detect_peaks(...) -> list[Peak]`
+This contract is uniform and fixed: adding a stage adds a method that obeys it
+without altering any existing signature. The roster of stages, their parameters,
+and their return types are the code's to define and
+[`../STATUS.md`](../STATUS.md)'s to record; the requirement here is the shared
+shape, not the list.
 
-Future stages (window assignment, fitting) follow the same contract and are
-added without changing existing signatures.
-
-**Canonical FT settings.**  The canonical FT is unconditionally unapodized,
-un-windowed, and native-length — there are no `expf_us` / `window_function` /
-`zpf` knobs (apodization trades resolution and biases the line shape;
-zero-padding interpolates bins and corrupts the Stage 2/5 noise and χ²
-statistics; the robust per-window fit is the intended alternative). The
-user-chosen Stage 1 settings are data selection (`start_us`, `end_us`, and the
-frequency `trim` range) plus the display/scaling knob `units_power`; they are
-persisted in the `.ftmw` file as the experiment's canonical settings.  All
-later stages operate on the spectrum they define; no stage carries its own
-trim.  Resolution order for each setting is: **explicit caller override >
-persisted canonical > import-time recommended default**.  Passing explicit
-overrides to `compute_ft` stores them as the new canonical state and
-invalidates any downstream stage results (they must be re-run).
+**Canonical FT settings.** That the canonical transform is unapodized,
+un-windowed, and native-length is a scientific requirement specified in
+[`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md). The API consequence is that the
+user-chosen Stage 1 settings are data selection and display/scaling only, and
+are persisted as the experiment's canonical settings; every later stage operates
+on the spectrum they define and none carries its own trim. Resolution order per
+setting is **explicit caller override > persisted canonical > import-time
+recommended default**. Passing an explicit override stores it as the new
+canonical state and invalidates any downstream stage results, which must be
+re-run.
 
 ### Introspection
 

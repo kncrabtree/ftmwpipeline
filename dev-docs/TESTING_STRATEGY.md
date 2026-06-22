@@ -12,7 +12,10 @@ functional API) that share one implementation core.
 ## Core principle
 
 All interfaces must produce identical scientific results for identical inputs
-and parameters. This is the central invariant the suite exists to protect.
+and parameters (the cross-interface invariant in
+[`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md)). This is the central invariant the
+suite exists to protect; the remaining scientific invariants that document
+states are likewise what the suite verifies.
 
 ## Required test categories
 
@@ -21,7 +24,7 @@ and parameters. This is the central invariant the suite exists to protect.
    exact reconstruction for losslessly-stored data (FID) and scientific
    equivalence for derived results.
 2. **Per-interface workflow tests.** Each interface independently exercised
-   through a real Stage 0 → 1 → 2 workflow on real experiment data.
+   through a real multi-stage workflow on real experiment data.
 3. **Cross-interface consistency tests.** The same operation performed via CLI
    (as a subprocess), the Pipeline class, and the functional API must yield
    numerically identical results and consistent pipeline state. This category

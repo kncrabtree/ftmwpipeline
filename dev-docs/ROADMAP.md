@@ -257,6 +257,7 @@ contract.
 
 | Spec | Covers |
 |---|---|
+| [`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md) | Scientific invariants (faithful raw data, unbiased spectrum, statistical integrity, honest uncertainties, reproducibility) — interface-independent; the other specs reference it |
 | [`API_STRATEGY.md`](API_STRATEGY.md) | Python API (Pipeline class + functional API), `.ftmw` file lifecycle, safe re-import |
 | [`CLI_STRATEGY.md`](CLI_STRATEGY.md) | Command-line interface contract |
 | [`SERIALIZATION_STRATEGY.md`](SERIALIZATION_STRATEGY.md) | `.ftmw` storage model and invariants |

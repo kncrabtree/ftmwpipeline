@@ -8,64 +8,35 @@ truth and the current layout is recorded in [`../STATUS.md`](../STATUS.md).
 ## Scope
 
 How an experiment's analysis is persisted. One experiment is one self-contained
-`.ftmw` file (HDF5 container).
+`.ftmw` file (HDF5 container). This document specifies the *storage* invariants
+that realize the scientific requirements in
+[`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md) — lossless raw data, honest
+uncertainties, and a reproducible self-contained record — and references that
+document rather than restating the science.
 
 ## Principles
 
 1. **Lightweight files.** Persist only what is needed to reconstruct results.
-   Large derived arrays that are cheap to recompute are not stored.
+   Large derived arrays that are cheap to recompute are not stored; what is
+   stored uses a compact lossless representation (for example indices or
+   coefficients rather than dense masks).
 2. **Bit-perfect raw data.** The imported FID is stored losslessly and
    reconstructs exactly.
 3. **Parameter flexibility.** A single stored FID must serve unlimited FT
    parameter combinations; exploring parameters never requires re-importing.
 4. **Self-contained and portable.** A `.ftmw` file carries everything needed to
    continue or reproduce the analysis on another machine, with no external
-   dependencies. Sharing the file is sufficient to reproduce the result: a
-   recipient running a compatible package version obtains identical output from
-   the file alone, with no instrument preset or other side artifact required.
-   It follows that **no external artifact may silently override a setting the
-   file persists** — see *Settings resolution and reproducibility* below.
+   dependencies. This is the storage realization of the reproducible,
+   self-contained result required by
+   [`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md): it follows that **no external
+   artifact may silently override a setting the file persists** — see *Settings
+   resolution and reproducibility* below.
 5. **Provenance.** Source identity and import parameters are recorded (see
    [`API_STRATEGY.md`](API_STRATEGY.md)).
-
-## Storage model by stage
-
-- **Stage 0 — FID.** The raw time-series and its acquisition metadata
-  (sample spacing, probe frequency, sideband, shot count, point count,
-  duration) are stored losslessly, together with any source-format
-  *recommended* processing parameters (advisory defaults the user may
-  override).
-- **Stage 1 — ComplexFT.** Not persisted. The frequency-domain result is
-  recomputed on demand from the stored FID plus the active processing
-  parameters. Only the processing parameters are persisted (for reproducibility
-  and parameter persistence). Consequently a completed Stage 1 is proven by the
-  presence of its persisted parameters, not by a stored result array.
-
-  The canonical FT is unconditionally unapodized, un-windowed, and
-  native-length — there are no `expf_us` / `window_function` / `zpf` settings.
-  The user-chosen Stage 1 FT processing settings are data selection (`start_us`,
-  `end_us`, **and the frequency `trim` range**) plus the display/scaling knob
-  `units_power`; they are persisted in
-  `processing_parameters/ft_processing` as the experiment's *canonical*
-  settings.  Legacy `.ftmw` files carrying the retired apodization keys (or the
-  retired `rdc` toggle) open with a warning and are recomputed unapodized.  All
-  later stages operate on the spectrum they define.  Setting resolution order is
-  **explicit override > persisted canonical > import-time recommended**.
-  Changing canonical settings
-  via an explicit override invalidates downstream stage results (Stages 2–5
-  must be re-run).
-- **Stage 2 — NoiseResult.** Persisted, using a compact representation
-  sufficient for exact reconstruction (store indices/coefficients rather than
-  full dense masks where that is lossless).
-- **Stages 3–5.** Expensive derived results (peaks, window definitions, fitted
-  parameters) are persisted; anything cheaply reconstructible from them and the
-  on-demand ComplexFT is not.  Stage 5 additionally persists, per window, the
-  full fitted-parameter covariance matrix (inverse weighted JᵀJ at the NLS
-  solution) with a documented parameter ordering — peak-major amplitude/offset/phase,
-  then shared tau when fitted, then baseline real and imaginary polynomial
-  coefficients — supporting correlated error bars and overfit/identifiability
-  metrics downstream; the matrix is omitted when JᵀJ was singular at the
-  solution.
+6. **Sufficient for honest uncertainties.** Where a result carries
+   uncertainties, the file persists enough to reconstruct them *with their
+   correlations*, not as independent error bars — the honest-uncertainties
+   requirement of [`SCIENCE_STRATEGY.md`](SCIENCE_STRATEGY.md).
 
 ## Settings resolution and reproducibility
 
@@ -77,7 +48,9 @@ explicit override  >  persisted (.ftmw)  >  preset (.yml)  >  recommended  >  ha
 ```
 
 - **explicit override** — a value passed by the caller for this invocation. A
-  deliberate, per-run act; it recomputes and persists intent (see
+  deliberate, per-run act: it recomputes the stage, persists the new intent, and
+  invalidates the results of any stage downstream of it, which must be re-run
+  (see
   [`planning/processing-settings-persistence.md`](planning/processing-settings-persistence.md)).
 - **persisted (.ftmw)** — the value stamped into the file when the stage was
   last run. **Authoritative over any external artifact.**
@@ -92,9 +65,9 @@ The invariant — **persisted outranks preset** — is what makes Principle 4 ho
 a `.yml` a recipient happens to have (possibly tuned for a different instrument)
 cannot change the output of a shared, fully-processed `.ftmw`. The preset layer
 exists to *seed* fields the file has not yet fixed, not to second-guess fields
-it has. This matches the Stage 1 canonical-settings order already specified above
-(`explicit > persisted > recommended`); the preset layer slots directly below
-persisted for every stage.
+it has. It is consistent with the canonical (data-selection) settings, whose
+resolution omits the preset layer (`explicit > persisted > recommended`); the
+preset layer slots directly below persisted for every stage that has one.
 
 Because the layers are distinct, an explicit override and a preset may be
 supplied in the same invocation — they are not mutually exclusive. The explicit
