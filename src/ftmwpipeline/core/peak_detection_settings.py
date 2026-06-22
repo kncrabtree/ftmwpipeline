@@ -112,7 +112,7 @@ class PromotionSubSettings:
 
 @dataclass
 class SavgolSubSettings:
-    """Savitzky-Golay second-derivative apex localiser knobs.
+    """Savitzky-Golay second-derivative apex localizer knobs.
 
     ``sg_window`` is the primary-pass fixed window (odd, > sg_order).
     The gap-pass window is computed at runtime from the actual grid

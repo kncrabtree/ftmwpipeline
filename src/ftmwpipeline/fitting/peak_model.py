@@ -5,7 +5,7 @@ Stage 5 fits each analysis window to a sum of finite-acquisition damped
 cosines. This module is the *model* layer: the closed-form line shape ``h_T``,
 its analytic Jacobian, and the demodulation / sideband mapping that connects
 the molecular-frequency grid the data lives on to the baseband offset the fit
-is parameterised in.
+is parameterized in.
 
 It is a pure algorithm module (arrays in, arrays out, no file or pipeline
 state), unit-tested in isolation. Orchestration lives in
@@ -129,7 +129,7 @@ def sideband_sign(sideband: SidebandLike) -> float:
     Raises
     ------
     ValueError
-        If ``sideband`` is a string that is not a recognised sideband name.
+        If ``sideband`` is a string that is not a recognized sideband name.
     """
     if isinstance(sideband, str):
         key = sideband.strip().lower()
@@ -522,7 +522,7 @@ def effective_tau_shape(
 class ModelPeak:
     """A single line in baseband-offset coordinates.
 
-    The fit is parameterised per line by ``(amplitude, offset_mhz, phase)``:
+    The fit is parameterized per line by ``(amplitude, offset_mhz, phase)``:
     a real amplitude ``A``, the *signed* baseband offset ``δ`` from the window
     reference frequency (MHz), and a free phase ``φ`` (radians). The shared
     decay ``τ`` is a window-level parameter, not carried here.
@@ -601,7 +601,7 @@ def model_spectrum(
         return cast(np.ndarray, np.zeros(u.shape, dtype=np.complex128))
     # Evaluate every line in one broadcast over the (K, M) offset grid rather
     # than a Python loop of K per-peak ``h_T`` calls: the line shape is the
-    # dominant assembly cost and a single vectorised evaluation replaces K
+    # dominant assembly cost and a single vectorized evaluation replaces K
     # calls' worth of dispatch / validation / array-setup overhead (the shape
     # is coerced once). The summed result matches the loop to floating-point
     # round-off -- the only difference is the reduction order.

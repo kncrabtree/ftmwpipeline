@@ -247,7 +247,7 @@ the discrete contributor set. And close pairs that the fit split are reconciled
 by a two-tier merge that is **conservative by default**: below half a linewidth a
 pair is merged, and above it a merge is gated by the same penalized criterion.
 The bias toward merging is deliberate — in the ambiguous sub-resolution band an
-LSQ split is far more often a cancelling near-duplicate artifact (the recurring
+LSQ split is far more often a canceling near-duplicate artifact (the recurring
 pathology where two cosines collapse onto one position) than a real doublet, so
 the safe default is to collapse it and surface the window for review rather than
 claim a split the data do not compel.

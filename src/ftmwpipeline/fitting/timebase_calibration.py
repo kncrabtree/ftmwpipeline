@@ -380,7 +380,7 @@ def calibrate_timebase_from_fid(
         snr = pk / noise_ref
         if snr < snr_min:
             continue
-        # Edge-pinned maxima are scan artefacts, not tones.
+        # Edge-pinned maxima are scan artifacts, not tones.
         if abs(abs(df) - scan_half_range_mhz) < edge_tol:
             continue
         sigma_f = sigma_f_coef / snr

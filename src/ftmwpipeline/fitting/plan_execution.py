@@ -323,7 +323,7 @@ class RescueEvent:
         with the previous round's peaks is what the joint refit fits).
     n_pruned_by_knockout : int
         Peaks the joint-refit's knockout sweep flagged as unsupported
-        (dropped before the consolidated fit was finalised).
+        (dropped before the consolidated fit was finalized).
     n_pruned_rescue_origin : int
         Of the pruned peaks, how many came from *this round's* rescue
         (the failsafe diagnostic -- a high count signals the joint refit

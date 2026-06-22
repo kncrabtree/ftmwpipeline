@@ -494,7 +494,7 @@ class TauCalibrationResult:
         Analysis frequency range (molecular, MHz). Bins outside are not
         considered for tau extraction.
     sigma_x_full : float
-        |X|-RMS noise floor on the full-record FT (per-bin, scalar).
+        ``|X|``-RMS noise floor on the full-record FT (per-bin, scalar).
     sigma_frame : float
         Per-frame noise floor (= ``sigma_x_full / sqrt(n_seg)``).
     snr_weighted : bool
@@ -1403,7 +1403,7 @@ def stft_calibration(
         Sample spacing (microseconds).
     sigma_time : float
         Time-domain white-noise RMS of the FID. Used to derive the
-        analytic per-bin |X|-RMS (``sigma_x_full = sigma_t * dt * sqrt(N/2)``)
+        analytic per-bin ``|X|``-RMS (``sigma_x_full = sigma_t * dt * sqrt(N/2)``)
         and the per-frame floor (``sigma_frame = sigma_x_full / sqrt(n_seg)``).
         Must be positive.
     n_seg : int, default :data:`DEFAULT_N_SEG`
@@ -1668,7 +1668,7 @@ def gmm_bimodality(
     aic2 = 2 * 5 - 2 * ll2
     delta_aic = aic1 - aic2
 
-    # Enforce mu_a <= mu_b for output stability (the EM initialisation already
+    # Enforce mu_a <= mu_b for output stability (the EM initialization already
     # primes this but small-n mixtures can swap).
     if mu_a > mu_b:
         mu_a, mu_b = mu_b, mu_a

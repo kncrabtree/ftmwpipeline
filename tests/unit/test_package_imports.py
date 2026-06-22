@@ -46,14 +46,6 @@ class TestPackageImports:
         ):
             assert hasattr(Pipeline, method), f"Pipeline missing {method}()"
 
-    def test_workflow_functions_import(self):
-        """Test that workflow convenience functions can be imported."""
-        from ftmwpipeline import batch_process_experiments, process_experiment
-
-        # Functions should be callable
-        assert callable(process_experiment)
-        assert callable(batch_process_experiments)
-
     def test_validation_function(self):
         """Test the installation validation function."""
         from ftmwpipeline.workflows import validate_installation

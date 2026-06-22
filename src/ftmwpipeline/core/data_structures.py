@@ -100,8 +100,10 @@ class PreprocessedFID:
     """
     Preprocessed FID data ready for FFT calculation.
 
-    Contains time-domain FID data that has been preprocessed with windowing,
-    zero-padding, filtering, etc. Separates preprocessing from FFT calculation.
+    Contains time-domain FID data after active-region selection and
+    unconditional DC removal. The canonical transform is unapodized and
+    native-length, so no windowing, zero-padding, or filtering is applied;
+    this type separates that selection step from the FFT calculation.
     """
 
     def __init__(
@@ -120,7 +122,7 @@ class PreprocessedFID:
         Parameters
         ----------
         data : np.ndarray
-            Preprocessed FID data (windowed, filtered, zero-padded)
+            Preprocessed FID data (active-region-selected, DC-removed)
         spacing : float
             Original time spacing in seconds
         probe_freq_mhz : float

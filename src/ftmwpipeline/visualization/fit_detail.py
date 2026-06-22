@@ -1,7 +1,7 @@
 """
 Consolidated Stage 5 per-window detail figure.
 
-A single ~16:9 figure summarising one fit window, built from reusable painters
+A single ~16:9 figure summarizing one fit window, built from reusable painters
 (:func:`prepare_window_panels` + ``draw_*``) so the combined figure and the
 modular per-panel figures (the HTML report's flexbox, :func:`plot_window_panels`)
 share one source of truth:
@@ -308,7 +308,7 @@ class WindowPanelData:
 # from the Poppy peak-position vlines (vlines vertical, the noise bands
 # horizontal dashed).
 _BARE_BAND_COLOR = "#9aa0a6"
-# The zero baseline, emphasised so it pops out of the faint grid.
+# The zero baseline, emphasized so it pops out of the faint grid.
 _BARE_ZERO_COLOR = "#2a2a2a"
 
 
@@ -571,7 +571,7 @@ def draw_component(
     stays native (so ``|residual|`` is bin-for-bin); the ``|X|`` data overlay
     uses the 2x display grid -- see the module docstring. Rendered spine-free
     over a light major grid (:func:`_apply_bare_style`): the noise band is amber
-    dashed and the zero baseline is emphasised, both distinct from the grid. The
+    dashed and the zero baseline is emphasized, both distinct from the grid. The
     strictly-positive magnitude panels carry no zero line.
     """
     proj, color, dlabel = _COMPONENT_SPECS[component]
@@ -984,7 +984,7 @@ def _make_vline_plotter(
 
     ``color`` / ``alpha`` / ``lw`` style the peak lines -- the bare/grid panels
     pass the amber reference color so the peak positions read distinctly from
-    the grey major grid.
+    the gray major grid.
     """
     fwhm = 1.0 / (math.pi * tau_us) if tau_us > 0.0 else 0.0
     n_rows = 3

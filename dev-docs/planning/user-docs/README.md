@@ -129,6 +129,20 @@ before any code change (per the per-stage gate).
 
 Code changes made while reviewing the docs, with user sign-off:
 
+- **Reference review: the stale whole-experiment wrappers removed.** The
+  package top-level `process_experiment` / `batch_process_experiments` wrappers
+  ran only stages 0–2 — a leftover from when those were the only implemented
+  stages — while the full import-through-review workflow already ships as
+  `api.run_pipeline` / `Pipeline.build` (and the `run` CLI verb). With sign-off
+  both were removed end to end: the functions and their now-orphaned
+  `_default_ftmw_path` helper from `workflows.py` (which keeps only
+  `validate_installation`), the package `__init__` import + `__all__` entries,
+  the `test_package_imports` callable-assertion case, the API-page section, and
+  the `README` whole-experiment example (now `Pipeline.build`); the normative
+  `API_STRATEGY.md`, `STATUS.md`, and the ROADMAP `D3` divergence note were
+  updated to name `api.run_pipeline` / `Pipeline.build` as the workflow entry
+  points. The top-level surface is now the `Pipeline` class, the `api` module,
+  and the core data structures.
 - **Advanced review: the fit and report worker-pool size exposed to the user.**
   The Stage 5 cross-window fit pool and the Stage 6 figure-render pool hardcoded
   their worker count to ``cpu_count() - 2`` through internal module constants with
@@ -627,8 +641,30 @@ Status legend: `[ ]` not started · `[~]` in progress · `[x]` done.
   Code revisions resolved during review (see below): the clock-lattice flag
   surfaced in the Stage 6 reports, and the fit/report worker-pool size exposed to
   the user. Build warning-clean under `sphinx-build -W`.
-- [ ] Reference: `cli`, `api/index`, `changelog`.
-- [ ] Repo-wide American-English sweep.
+- [x] Reference: `cli`, `api/index`, `changelog`. `cli.rst` written (the
+  object-verb grammar, a command-summary table, and per-object documentation of
+  every stage/meta/utility command and its shaping options, cross-linked to the
+  stage pages; verified against captured `--help`). `api/index.rst` written
+  (autodoc of the `Pipeline` class, the functional API, the data structures,
+  calibration results, settings dataclasses, and the exception family, behind a
+  stage→operation correspondence table; `undoc-members` off and
+  `napoleon_use_ivar` on in `conf.py`). `changelog.rst` written (a 0.1.0
+  initial-release entry by capability area). A docstring-accuracy audit of the
+  autodoc'd surface corrected what it found: Markdown fences in the `api`/
+  `Pipeline` module docstrings, a wrong exception name in `Pipeline.open`, a
+  stale removed-knob sentence in `settings_set`, the undocumented `jobs`
+  parameter on `fit_peaks` / `report_run`, the `PreprocessedFID` preprocessing
+  description, and two `|X|` RST-substitution errors. The stale stages-0–2
+  `process_experiment` / `batch_process_experiments` top-level wrappers were
+  removed (see *Resolved during review*). Build warning-clean under
+  `sphinx-build -W`.
+- [x] Repo-wide American-English sweep. A pass over `src/`, `docs/source/`, and
+  the root prose docs across the full British-spelling categories corrected the
+  remaining occurrences (all in comments and docstrings — the runtime-facing
+  CLI/log/error strings were already clean from the per-stage sweeps). The
+  second-pass scan returns zero British forms; the false positives
+  (`color`/`behavior`/`neighbor`/`optimistic`/`cancellation`) were left as the
+  correct American forms.
 - [ ] Repository cleanup (stray root artifacts).
 - [ ] User review of the documentation.
 - [ ] Archive completed planning docs; update/remove obsolete research reports.

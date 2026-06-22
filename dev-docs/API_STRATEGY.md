@@ -109,9 +109,10 @@ introspection.
 
 The canonical functional namespace is `ftmwpipeline.api`
 (`import ftmwpipeline.api as ftmw`); the package top level is intentionally not
-flooded with these functions. Only the whole-experiment convenience wrappers
-`process_experiment` and `batch_process_experiments` (and the `Pipeline` class)
-are exported at the package top level.
+flooded with these functions. The `Pipeline` class and the `api` module are
+exported at the package top level; the whole-experiment workflow is
+`api.run_pipeline` / `Pipeline.build` (and the `run` CLI verb), which drive a
+raw source through every stage.
 
 ## Provenance
 

@@ -144,22 +144,21 @@ class Pipeline:
     - Consistent with CLI: methods behave identically to CLI commands
     - Error handling: clear error messages using custom exceptions
 
-    Example Usage:
-    ```python
-    # Create new pipeline from raw data
-    pipe = Pipeline.create("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
+    Example Usage::
 
-    # Open existing pipeline for analysis
-    pipe = Pipeline.open("exp_2638.ftmw")
+        # Create new pipeline from raw data
+        pipe = Pipeline.create("exp_2638.ftmw", source='examples/blackchirp_data/2638/')
 
-    # Stage 1: FT Processing (canonical FT is unapodized, native-length)
-    pipe.compute_ft(trim=(26500, 40000))
-    pipe.visualize_ft(save_params=True)
+        # Open existing pipeline for analysis
+        pipe = Pipeline.open("exp_2638.ftmw")
 
-    # File info and validation
-    pipe.info()       # Show pipeline status and metadata
-    pipe.validate()   # Check file integrity
-    ```
+        # Stage 1: FT Processing (canonical FT is unapodized, native-length)
+        pipe.compute_ft(trim=(26500, 40000))
+        pipe.visualize_ft(save_params=True)
+
+        # File info and validation
+        pipe.info()       # Show pipeline status and metadata
+        pipe.validate()   # Check file integrity
     """
 
     def __init__(
@@ -326,7 +325,7 @@ class Pipeline:
         ------
         FileNotFoundError
             If pipeline file doesn't exist
-        PipelineCorruptedError
+        PipelineCorruptionError
             If file appears to be corrupted
         ValueError
             If file format is invalid
@@ -1397,6 +1396,12 @@ class Pipeline:
             (a persisted ``.ftmw`` outranks it). The preset name is captured in
             the persisted Stage 5 fit's audit attrs for reproducibility.
             May be combined with ``settings``.
+        jobs : int, optional
+            Worker-pool size for the cross-window parallel fit. ``None`` (the
+            default) resolves the pool from the ``FTMW_MAX_WORKERS`` environment
+            variable, falling back to ``cpu_count() - 2``; ``1`` forces a
+            sequential fit. The fit result is byte-identical regardless of the
+            worker count.
 
         Returns
         -------
@@ -1743,6 +1748,11 @@ class Pipeline:
             to the table and HTML (label echo only, never an assignment).
         catalog_n_sigma :
             Catalog match tolerance in combined sigmas (default ``3``).
+        jobs :
+            Worker-pool size for the per-window figure rendering. ``None`` (the
+            default) resolves the pool from the ``FTMW_MAX_WORKERS`` environment
+            variable, falling back to ``cpu_count() - 2``; ``1`` renders
+            sequentially.
 
         Returns
         -------
@@ -2250,8 +2260,10 @@ class Pipeline:
         stored stage results were computed against the old value, the affected
         stage and all downstream stages are invalidated (their results dropped
         and completion cleared) so the file never carries results inconsistent
-        with its settings. Stage 1 FT-shaping knobs (``zpf`` / ``expf_us`` /
-        ``window_function``) are rejected -- set them via :meth:`compute_ft`.
+        with its settings. Stage 1 data-selection knobs (``stage1.start_us`` /
+        ``stage1.end_us`` / ``stage1.trim_min_mhz`` / ``stage1.trim_max_mhz`` /
+        ``stage1.units_power``) may also be set here, equivalently to passing
+        them to :meth:`compute_ft`.
         Returns a :class:`SetResult` with the invalidated stage names.
         """
         from ._internal.tuning import set_setting

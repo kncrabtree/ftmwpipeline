@@ -306,7 +306,7 @@ class BlackChirpLoader(BaseLoader):
         the synthesiser chain fundamentals, the AWG sample clock, and the
         free-running digitizer clock. Returns a list of
         ``{"freq_mhz": float, "locked": bool, "label": str}`` dicts (the
-        serialised form of a :class:`~...ClockSource`) consumed by the Stage 5
+        serialized form of a :class:`~...ClockSource`) consumed by the Stage 5
         spur gate and the timebase self-calibration, or ``None`` when nothing is
         parseable. The caller stores it in ``result["metadata"]["clock_sources"]``.
 
@@ -397,7 +397,7 @@ class BlackChirpLoader(BaseLoader):
     def _clock_operation(value: Any) -> Optional[str]:
         """Normalize a clocks ``Operation`` to ``"Multiply"`` / ``"Divide"``.
 
-        Accepts the string serialisation and the integer enum older Blackchirp
+        Accepts the string serialization and the integer enum older Blackchirp
         metadata writes (``0`` = Multiply, ``1`` = Divide); anything else is
         ``None`` (pass-through fundamental).
         """

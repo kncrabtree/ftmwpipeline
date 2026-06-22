@@ -77,7 +77,7 @@ def _window_model_on_persisted_grid(
 
     Each window's per-peak ``(amplitude, frequency_mhz, phase)`` and shared
     ``tau_us`` are converted into the window's signed baseband-offset
-    parameterisation, then :func:`model_spectrum` is evaluated on the
+    parameterization, then :func:`model_spectrum` is evaluated on the
     persisted-grid offsets (``u = s*(f - f_c)``). Frequencies outside any
     window contribute zero -- but the leakage skirt of each fitted line
     naturally reaches across the persisted grid through the closed-form

@@ -447,7 +447,7 @@ def _metric_peaks(result: Any) -> Dict[str, Any]:
     band plus the SNR distribution.
 
     Stage 3 stores every line it detects, but what a user tunes for is which
-    lines advance — so the table summarises only the promoted peaks. Two
+    lines advance — so the table summarizes only the promoted peaks. Two
     cross-cutting views: counts split into the weak / medium / strong SNR bands
     (whose edges are themselves the tunable ``weak_medium_snr`` /
     ``medium_strong_snr`` knobs), and the SNR distribution (min, p10/p25/p50/p90,
@@ -514,7 +514,7 @@ def _metric_fit(result: Any) -> Dict[str, Any]:
     """Reduce a Stage 5 fit to the fit-quality lens: the SNR-normalized
     shape-error fraction ε (and the SNR-aware fail count) as the honest quality
     headline, the structural counts a fit knob actually moves (peaks, free-τ
-    windows, median freq uncertainty), and raw χ²ᵣ kept only as a de-emphasised
+    windows, median freq uncertainty), and raw χ²ᵣ kept only as a de-emphasized
     secondary so the SNR² floor never masquerades as misfit.
     """
     import numpy as np
@@ -740,7 +740,7 @@ _register(
     )
 )
 
-# Stage 0 advanced detection internals (chirp-end localisation + sweep). The
+# Stage 0 advanced detection internals (chirp-end localization + sweep). The
 # band_min_mhz / band_max_mhz integration-band override is intentionally not a
 # sweep knob — the detector ignores it unless both edges are set, so neither
 # sweeps meaningfully alone (reach them via settings= / preset=).
@@ -1114,7 +1114,7 @@ for _sub, _field in (
         see_also=_PEAK_SEE_ALSO,
     )
 
-# Every other Stage 3 knob: classification edges, the SavGol localiser, the
+# Every other Stage 3 knob: classification edges, the SavGol localizer, the
 # primary-pass apodization + zpf, the apodized-domain σ scatter knobs, and the
 # gap-pass structural toggles. All descriptors come from the field.
 for _sub, _field in (

@@ -150,7 +150,7 @@ DEFAULT_GATE_FLOOR_SCALING = False
 # set) the penalized gate computes both models' chi-squared against the
 # inflated per-bin noise ``sigma_eff_f**2 = sigma_f**2 + (kappa*|model_f|)**2``
 # (:func:`sigma_eff_chi2`, weights model = the more-complex model, shared by
-# both sides like ``n_eff``). This is the per-bin localisation of the
+# both sides like ``n_eff``). This is the per-bin localization of the
 # SNR-aware window allowance ``chi2r <= F + (kappa*SNR_max)**2``
 # (:func:`snr_aware_chi2_pass`): residual evidence sitting *under a bright
 # model component* is discounted by the lineshape-fidelity budget
@@ -220,7 +220,7 @@ DEFAULT_GATE_LINE_ESCAPE_LAMBDA: Optional[float] = 50.0
 # (:func:`pair_cancellation_fraction`). The unconditional anti-collapse
 # layers (the merge cleanup's sub-resolution tier, the seeder's straddle
 # veto, the add-loop's post-fit collapse check) exist to kill ONE pathology:
-# the cancelling near-duplicate pair, two large opposite-phase amplitudes
+# the canceling near-duplicate pair, two large opposite-phase amplitudes
 # buying chi-squared by synthesizing structure no physical pair of lines
 # produces. But the same layers also destroy genuine unresolved blends the
 # complex-domain evidence supports overwhelmingly -- measured rescue joint
@@ -498,7 +498,7 @@ def sigma_eff_chi2(
     shrunk to the fidelity budget -- a model fit to its lineshape floor
     contributes ~1 per bin there instead of ``(kappa*SNR)**2`` -- while bins
     where the model is small keep their full noise weighting. This is the
-    per-bin localisation of the window-aggregate SNR-aware allowance
+    per-bin localization of the window-aggregate SNR-aware allowance
     ``F + (kappa * SNR_max)**2`` (:func:`snr_aware_chi2_pass`).
 
     Parameters
@@ -778,7 +778,7 @@ def pair_cancellation_fraction(
 
     ``1 - |A_a e^{i phi_a} + A_b e^{i phi_b}| / (A_a + A_b)`` -- 0 for
     perfectly constructive members (a physical unresolved blend sharing the
-    molecular phase field), 1 for the cancelling near-duplicate pathology
+    molecular phase field), 1 for the canceling near-duplicate pathology
     (two large opposite-phase amplitudes synthesizing structure no pair of
     real lines produces).
     """
@@ -815,7 +815,7 @@ def blend_pair_escape(
     ``evidence_floor`` scales the bar by the model-fidelity level (pass
     ``max(1, reduced_chi2)``, the same floor the penalized gate uses) at
     call sites whose target pathology is the *shape-error absorber* rather
-    than the cancelling pair: an absorber's chi-squared win is bounded by
+    than the canceling pair: an absorber's chi-squared win is bounded by
     the lineshape-fidelity floor it soaks, so demanding evidence far above
     that floor keeps high-SNR absorbers collapsed while a genuine blend
     (whose win is reducible structure the single-line model cannot
@@ -1076,7 +1076,7 @@ def effective_sample_size(
     distinguish K-peak from (K±1)-peak models on a narrow feature: only the
     handful of bins under the feature carry information about the parameter
     change. The effective sample size collapses a flat spectrum to ``n_data``
-    and a delta to ``1``; for a localised feature it returns roughly the
+    and a delta to ``1``; for a localized feature it returns roughly the
     extent over which the feature is informative. Feeding ``n_eff`` into
     :func:`calculate_aicc` makes the small-sample correction kick in on
     narrow features and naturally rejects spurious K growth.

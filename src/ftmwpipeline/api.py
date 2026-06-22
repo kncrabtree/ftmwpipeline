@@ -12,25 +12,24 @@ Key Features:
 - Consistent: Same behavior as Pipeline class methods
 - Efficient: Leverages existing tested implementations
 
-Example Usage:
-```python
-import ftmwpipeline.api as ftmw
+Example Usage::
 
-# Create pipeline from data
-ftmw.import_data("experiment.ftmw", source="examples/blackchirp_data/2638/")
+    import ftmwpipeline.api as ftmw
 
-# Load and process data
-fid = ftmw.load_fid("experiment.ftmw")
-complex_ft = ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
+    # Create pipeline from data
+    ftmw.import_data("experiment.ftmw", source="examples/blackchirp_data/2638/")
 
-# Visualization and parameter management
-ftmw.visualize_ft("experiment.ftmw", save_params=True)
-ftmw.save_ft_parameters("experiment.ftmw", {'trim': (26500, 40000)})
+    # Load and process data
+    fid = ftmw.load_fid("experiment.ftmw")
+    complex_ft = ftmw.compute_ft("experiment.ftmw", trim=(26500, 40000))
 
-# File management
-info = ftmw.get_pipeline_info("experiment.ftmw")
-stages = ftmw.list_available_stages("experiment.ftmw")
-```
+    # Visualization and parameter management
+    ftmw.visualize_ft("experiment.ftmw", save_params=True)
+    ftmw.save_ft_parameters("experiment.ftmw", {'trim': (26500, 40000)})
+
+    # File management
+    info = ftmw.get_pipeline_info("experiment.ftmw")
+    stages = ftmw.list_available_stages("experiment.ftmw")
 """
 
 import logging
@@ -1232,6 +1231,11 @@ def fit_peaks(
         Bare preset name (e.g. ``"instrument_bc_2638"``) or a path to a YAML
         file carrying a ``stage5:`` block. Seeds the preset layer beneath the
         persisted record; may be combined with ``settings``.
+    jobs : int, optional
+        Worker-pool size for the cross-window parallel fit. ``None`` (the
+        default) resolves the pool from the ``FTMW_MAX_WORKERS`` environment
+        variable, falling back to ``cpu_count() - 2``; ``1`` forces a sequential
+        fit. The fit result is byte-identical regardless of the worker count.
 
     Returns
     -------
@@ -1513,7 +1517,10 @@ def report_run(
     window, ``"summary"`` keeps the index + methods only).  Renders the persisted
     record (does not recompute).  Requires ``review_run`` to have built the
     final-products table.  Pass ``catalog`` to add proximity-match
-    cross-references (label echo only, never an assignment).
+    cross-references (label echo only, never an assignment).  ``jobs`` sets the
+    worker-pool size for the per-window figure rendering (``None`` resolves it
+    from the ``FTMW_MAX_WORKERS`` environment variable, falling back to
+    ``cpu_count() - 2``; ``1`` renders sequentially).
     Returns ``{"table": <path|None>, "html": <path|None>}``.
     """
     return Pipeline.open(file_path).report_run(

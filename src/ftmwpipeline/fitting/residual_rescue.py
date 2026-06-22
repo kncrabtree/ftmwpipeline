@@ -478,7 +478,7 @@ def merge_close_peaks_cleanup(
 
         # Tier 1: sub-resolution -> merge unconditionally, UNLESS the pair
         # earns the blend escape. The unconditional collapse targets the
-        # cancelling near-duplicate artifact, but the complex-domain
+        # canceling near-duplicate artifact, but the complex-domain
         # evidence CAN distinguish a genuine sub-resolution blend from a
         # single peak (distinct member phases produce a profile one ``h_T``
         # cannot match): a pair whose collapse costs overwhelming raw

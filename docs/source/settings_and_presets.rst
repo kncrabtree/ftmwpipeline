@@ -21,7 +21,7 @@ chain so you can pick the level of detail that matches your workflow:
 
 The same call producing the same result is the goal regardless of which
 surface you use. This page walks through the mental model, the three
-input surfaces, persistence behaviour, and how to write your own presets
+input surfaces, persistence behavior, and how to write your own presets
 that span multiple stages.
 
 The mental model

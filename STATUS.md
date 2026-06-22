@@ -65,7 +65,7 @@ the calibration.
 primary + matched-filter gap pass, scored on the scatter noise behind a
 continuous leakage-aware floor), window assignment (peak-clustering-driven
 edges, `S_coh` de-ramped leakage map, plus edge-free leakage-contributor
-subtraction — a bright neighbour's skirt orphaned by the cycle-breaker is kept
+subtraction — a bright neighbor's skirt orphaned by the cycle-breaker is kept
 as an `edge_free` contributor and subtracted self-contained at fit time, gated
 to fire only where it strictly improves the fit), and the Stage 5 fit
 (active-portion FT, conservative add-one-peak loop whose AICc-with-`n_eff` accept
@@ -114,9 +114,9 @@ against the surviving `bcfitting` shell's contract.
     `Pipeline.open(...)`, or the smart constructor `Pipeline(path)`
     (opens if present, else `FileNotFoundError` with guidance).
   - Functional API is the `ftmwpipeline.api` namespace
-    (`import ftmwpipeline.api as ftmw`). `process_experiment` /
-    `batch_process_experiments` and `Pipeline` are also exported at the
-    package top level.
+    (`import ftmwpipeline.api as ftmw`). `Pipeline` and the `api` module are
+    exported at the package top level; the whole-experiment workflow is
+    `api.run_pipeline` / `Pipeline.build`.
 
 ## Notable behaviors
 
@@ -125,8 +125,8 @@ against the surviving `bcfitting` shell's contract.
   between Stage 2 and Stage 3) through one mechanism with declared
   dependencies; `Pipeline.info()` reflects on-disk state; validation checks
   each stage's real persisted artifact (Stage 1 is lightweight — no group).
-- **`workflows.py`** is thin `Pipeline` wrappers only
-  (`process_experiment`, `batch_process_experiments`); no analysis logic.
+- **`workflows.py`** holds only the `validate_installation` smoke check; the
+  whole-experiment workflow lives in `api.run_pipeline` / `Pipeline.build`.
 - `ftmwpipeline validate` exercises a real installation smoke check.
 
 ## Known issues / caveats

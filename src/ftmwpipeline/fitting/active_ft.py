@@ -206,7 +206,7 @@ def compute_active_ft(
         active -= active.mean()
 
     # Natural h_T convention: dt * rfft(active). At bin spacing 1/T_active MHz,
-    # this is the [0, T]-frame analogue of the continuous FT
+    # this is the [0, T]-frame analog of the continuous FT
     # ∫_0^T x(t) e^{-i2π Δf t} dt, with no further normalization.
     spectrum = sample_dt_us * np.fft.rfft(active)
 

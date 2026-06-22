@@ -1560,7 +1560,7 @@ def _fit_peaks_impl(
             # when band_majorities aren't available: fall through to the
             # band-wide prior (or no prior at all if Stage 2b also missing).
             # An explicit per_band_tau=True caller still gets the soft
-            # fallback -- the original strict-raise behavior penalised
+            # fallback -- the original strict-raise behavior penalized
             # workflows that don't run Stage 2b without giving the caller
             # anything actionable.
             logger.info(

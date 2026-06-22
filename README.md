@@ -65,12 +65,14 @@ noise = ftmw.estimate_noise("exp_2638.ftmw")
 ### Python — whole-experiment convenience
 
 ```python
-from ftmwpipeline import process_experiment
+from ftmwpipeline import Pipeline
 
-result = process_experiment(
+# Drive a raw source through every stage (import → FT → noise → tau →
+# peaks → windows → fit → timebase → review).
+result = Pipeline.build(
     "examples/blackchirp_data/2638/",
-    "exp_2638.ftmw",
-    ft_params={"trim": (26500, 40000)},
+    trim=(26500, 40000),
+    output="exp_2638.ftmw",
 )
 ```
 

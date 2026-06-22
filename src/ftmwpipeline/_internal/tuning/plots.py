@@ -424,7 +424,7 @@ def plot_tau_trend(spec: Any, rows: List[Any], ctx: Any) -> Any:
     twin axis (top, spanning), then per grid value a pair of panels: the
     contributor decay cloud with the majority fit (left) and contributor τ vs
     molecular frequency with the per-band majorities (right), so both the spread
-    τ_maj summarises and any frequency-dependence are visible.
+    τ_maj summarizes and any frequency-dependence are visible.
     Returns ``None`` for non-numeric knobs (table-only)."""
     import matplotlib.pyplot as plt
 
@@ -712,8 +712,8 @@ def _plot_peak_persistence(
     ax.plot(freqs[order], mag[order], lw=0.4, color="0.6", zorder=1)
 
     # Shade the zoom regions detailed below. A cool tint + edge lines so the
-    # bands read clearly against the grey spectrum and the warm plasma peak
-    # colors (a grey shade blended in and was easy to miss).
+    # bands read clearly against the gray spectrum and the warm plasma peak
+    # colors (a gray shade blended in and was easy to miss).
     for lo, hi in regions:
         ax.axvspan(lo, hi, color="#6baed6", alpha=0.28, zorder=0)
         for edge in (lo, hi):

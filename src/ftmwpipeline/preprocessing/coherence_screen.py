@@ -2,7 +2,7 @@
 Stage 3 projection-coherence screen.
 
 Given a set of Stage 3 candidates on the active-portion FT, score each one by
-how well the data on a localised sub-window around the candidate projects onto
+how well the data on a localized sub-window around the candidate projects onto
 a unit-amplitude finite-T Lorentzian basis at the candidate's frequency. The
 output is the *coherent-to-detected SNR ratio* per candidate: ratio ≈ 1 for a
 real Lorentzian (the basis matches the data), ratio ≪ 1 for a phase-incoherent
@@ -53,11 +53,11 @@ Practical guidance: for production use, take ``τ_basis`` from a
 data-derived estimate -- the Stage 2b ``tau_maj``, a per-experiment τ
 fitted on the brightest detected lines, or an explicit override. The
 research project at ``dev-docs/research/stage3-coherence-screen/``
-characterises the screen's behavior against linewidth-in-bin-units;
+characterizes the screen's behavior against linewidth-in-bin-units;
 consult its report for how sensitive the screen is to ``τ_basis`` being
 off by a factor of 2.
 
-Why a localised projection window
+Why a localized projection window
 ---------------------------------
 The active-FT is the full-spectrum complex spectrum; running the projection on
 the whole range would let any far-away strong line's coherent skirt
@@ -193,7 +193,7 @@ def project_candidates(
     sideband : Sideband or str
         Sideband convention (``"lower"`` / ``"upper"`` or the enum).
         Used to translate the molecular grid to the signed baseband
-        offset the basis is parameterised in.
+        offset the basis is parameterized in.
     window_fwhm_factor : float, default 5.0
         Half-width of the projection sub-window in units of the
         Lorentzian FWHM. 5 FWHM is the point at which the basis

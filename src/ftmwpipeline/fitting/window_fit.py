@@ -18,7 +18,7 @@ conservative add-one-peak loop and builds on this core; it is not here.
 The fit frame
 -------------
 The core works entirely in the demodulated *fit frame*: the window grid is
-the signed baseband offset ``u`` and each line is parameterised by
+the signed baseband offset ``u`` and each line is parameterized by
 ``(amplitude, offset_mhz, phase)`` (:class:`~ftmwpipeline.fitting.peak_model.ModelPeak`)
 plus a window-shared decay ``tau``. The data passed in is a slice of the
 active-portion FT (:mod:`ftmwpipeline.fitting.active_ft`), already in the
@@ -128,7 +128,7 @@ DEFAULT_SEEDER_MAX_K = 3
 # growing linearly to (lambda * cos(d_phase)^2) at sep = 0. Penalises both the
 # in-phase degeneracy basin (two peaks at the same offset with aligned phases
 # summing to a single feature's amplitude) and the anti-phase cancellation
-# basin (cancelling phases producing inflated amplitudes). The penalty is zero
+# basin (canceling phases producing inflated amplitudes). The penalty is zero
 # only in quadrature (Δφ = π/2) -- the configuration where two close peaks
 # carry independent information.
 DEFAULT_PHASE_PENALTY_LAMBDA = 100.0
@@ -140,7 +140,7 @@ DEFAULT_AMP_PENALTY_LAMBDA = 10.0
 # Hard upper bound on a peak amplitude as a multiple of 2 * max(|data|) /
 # tau_eff_min (the strongest physically-plausible amplitude). 3x leaves
 # headroom for blended-peak superposition while still rejecting the
-# degenerate ~1000x-inflated amplitudes from the cancelling-pair pathology.
+# degenerate ~1000x-inflated amplitudes from the canceling-pair pathology.
 DEFAULT_AMP_MAX_HEADROOM = 3.0
 # Post-fit sanity check in _blend_aware_seed: reject a K>=2 escalation if any
 # two of its fitted peaks collapsed to within this fraction of a FWHM.
@@ -1891,14 +1891,14 @@ def _blend_aware_seed(
 
     A single-cosine seed fit that leaves an elevated reduced chi-squared is
     treated as an unresolved blend (the prototype's key finding -- the failure
-    is *initialisation*, not detectability). The fit is then retried with K
-    lines initialised at positions straddling the seed, accepting each
+    is *initialization*, not detectability). The fit is then retried with K
+    lines initialized at positions straddling the seed, accepting each
     escalation only on the AICc-with-``n_eff`` gate (REJECT-on-tie: the
     K+1 model must score strictly better; a tied or worse score preserves
     the simpler K-peak fit). ``offset_grid_mhz`` must be ascending.
 
     Each K=2/K=3 trial fit is also post-checked for the "two peaks collapsed
-    onto the same offset with cancelling phases" degenerate solution
+    onto the same offset with canceling phases" degenerate solution
     (the minimum allowed pair separation is
     ``max(min_pair_separation_factor * fwhm, min_pair_separation_resolution_factor
     / acquisition_us)`` -- the larger of the FWHM-referenced floor and the
@@ -2086,7 +2086,7 @@ def _blend_aware_seed(
             trial.n_params,
         )
         # Post-fit sanity check: reject escalations whose peaks collapsed onto
-        # the same offset (the cancelling-phase degenerate solution). A
+        # the same offset (the canceling-phase degenerate solution). A
         # genuine sub-separation BLEND earns the escape: when the escalation's
         # raw chi-squared win is overwhelming and every violating pair is
         # constructive, the straddle resolved physical structure, not the
@@ -2311,7 +2311,7 @@ def conservative_fit(
     phase_penalty_lambda : float, default :data:`DEFAULT_PHASE_PENALTY_LAMBDA`
         Soft pair-phase penalty weight (see
         :func:`_penalty_residuals_and_jacobian`). Catches the degenerate
-        "two peaks collapsed onto the same offset with cancelling phases"
+        "two peaks collapsed onto the same offset with canceling phases"
         blend-aware re-seed pathology. ``0`` disables.
     amp_penalty_lambda : float, default :data:`DEFAULT_AMP_PENALTY_LAMBDA`
         Soft amplitude-floor penalty weight; pushes noise-amplitude peaks
@@ -2323,7 +2323,7 @@ def conservative_fit(
         Hard amplitude upper bound is set to
         ``amp_max_headroom * 2 * max(|z|) / tau_eff(tau_bounds[0], T)`` -- a
         few times the strongest physically-plausible amplitude at the tightest
-        bound, which still rejects the cancelling-pair pathology's inflated
+        bound, which still rejects the canceling-pair pathology's inflated
         amplitudes.
     min_pair_separation_factor : float, default
         :data:`DEFAULT_MIN_PAIR_SEPARATION_FACTOR`
@@ -2648,7 +2648,7 @@ def conservative_fit(
         )
         # Post-fit collapse check on the *candidate*: the NLS can migrate a
         # legitimately-separated candidate onto an existing bright core and
-        # converge to the cancelling near-duplicate pair (huge opposite-phase
+        # converge to the canceling near-duplicate pair (huge opposite-phase
         # amplitudes buying raw chi-squared) -- the same degenerate solution
         # the seeder rejects on its escalations. Scope deliberately narrow:
         # only pairs involving the candidate's fitted position (a transient
@@ -2681,7 +2681,7 @@ def conservative_fit(
                 # Blend escape: a candidate that converged sub-separation
                 # beside an existing peak with overwhelming raw evidence and
                 # a constructive pair is an unresolved blend, not the
-                # cancelling absorber this check targets.
+                # canceling absorber this check targets.
                 cj = min(
                     (i for i in range(len(trial_offsets)) if i != ci),
                     key=lambda i: abs(trial_offsets[i] - trial_offsets[ci]),

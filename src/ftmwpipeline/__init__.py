@@ -32,9 +32,6 @@ from ftmwpipeline.core.data_structures import (
 # Main pipeline interface
 from ftmwpipeline.pipeline import Pipeline
 
-# Convenience workflow functions (thin wrappers over Pipeline)
-from ftmwpipeline.workflows import batch_process_experiments, process_experiment
-
 __all__ = [
     # Version info
     "__version__",
@@ -57,9 +54,6 @@ __all__ = [
     "Pipeline",
     # Functional API module
     "api",
-    # Convenience workflows
-    "process_experiment",
-    "batch_process_experiments",
 ]
 
 # Package-level configuration
