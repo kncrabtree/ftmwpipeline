@@ -7,8 +7,8 @@
    single: dependencies; pipeline stages
    single: reproducibility
 
-The .ftmw File
-==============
+Inside the .ftmw file
+=====================
 
 Every experiment is one self-contained, portable file with a ``.ftmw``
 extension. The file is an HDF5 container that holds the raw measurement, every
@@ -87,8 +87,8 @@ result without being a precondition. The scope-timebase self-calibration depends
 only on the raw FID and feeds the report's frequency uncertainty rather than any
 fit.
 
-Re-running a stage with new parameters is safe. Re-running an *earlier* stage —
-or changing the canonical FT settings, or re-importing the source — invalidates
+Re-running a stage with new parameters is safe. Re-running an *earlier* stage
+(or changing the canonical FT settings, or re-importing the source) invalidates
 the downstream results that depended on it, so the file is never left in a
 silently inconsistent state: the invalidated stages must be re-run.
 

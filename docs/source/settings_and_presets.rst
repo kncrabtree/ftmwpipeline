@@ -7,25 +7,22 @@
 Settings and presets
 ====================
 
-Every pipeline stage past Stage 0 has knobs — adaptive-binning fractions,
+Every pipeline stage past Stage 0 has knobs — noise smoothing widths,
 edge-coherence widths, line shape, decay-time bounds, rescue SNR cutoffs.
 ``ftmwpipeline`` exposes those knobs through a single layered resolution
-chain so you can pick the level of detail that matches your workflow:
+chain, at the level of detail a given workflow needs:
 
-* one-off experiments: pass keyword arguments to a stage function and
-  forget about it;
+* one-off experiments: pass keyword arguments to a stage function;
 * recurring instrument workflows: load a *preset* YAML by name and
   override one or two knobs from the CLI;
 * programmatic sweeps: build a settings dataclass in Python and pass
   it as ``settings=``.
 
-The same call producing the same result is the goal regardless of which
-surface you use. This page walks through the mental model, the three
-input surfaces, persistence behavior, and how to write your own presets
-that span multiple stages.
+All three surfaces resolve to the same settings, so the same parameters
+produce the same result whichever drives the analysis.
 
-The mental model
-----------------
+How a stage's parameters resolve
+--------------------------------
 
 A stage's parameters come from layers that are merged per field. Highest
 precedence first:
@@ -72,7 +69,7 @@ settings dataclasses, in pipeline order:
      - ``processing_parameters/ft_processing``
    * - 2
      - :class:`~ftmwpipeline.core.noise_settings.NoiseSettings`
-     - ``binning``, ``skewness``, ``smoothing``, ``skirt_exclusion``
+     - flat (no sub-blocks)
      - ``processing_parameters/stage2_noise``
    * - 2b
      - :class:`~ftmwpipeline.core.tau_calibration_settings.TauCalibrationSettings`
@@ -90,10 +87,11 @@ settings dataclasses, in pipeline order:
    * - 5
      - :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`
      - ``shape``, ``tau``, ``seeder``, ``conservative``, ``penalties``,
-       ``rescue``, ``thaw``
+       ``rescue``, ``thaw``, ``spur``, ``baseline``,
+       ``doublet_alternative``, ``peak_survival``
      - ``processing_parameters/stage5_fit``
 
-Each row is independent: you can tune Stage 2 noise binning without
+Each row is independent: you can tune Stage 2 noise smoothing without
 touching Stage 5, override Stage 3 SNR cutoffs without re-running the
 τ calibration, and so on. The persisted layer for one stage is
 unrelated to the persisted layer for another.
@@ -139,8 +137,8 @@ stage runs, so a flag and the corresponding ``settings=`` field are the
 same explicit override reached by two routes.
 
 In Python, a few knobs survive as first-class convenience keyword
-arguments — the fit's ``shape`` and its τ-override pair — which are part
-of the explicit layer as well:
+arguments (the fit's ``shape`` and its τ-override pair), part of the
+explicit layer as well:
 
 .. code-block:: python
 
@@ -208,8 +206,8 @@ call. At the command line, that is a preset plus a per-knob flag:
 The flag lands in the explicit layer; the preset seeds the preset layer
 beneath it (and beneath anything the file has already persisted).
 
-The preset YAML format
-~~~~~~~~~~~~~~~~~~~~~~~
+Preset YAML format
+~~~~~~~~~~~~~~~~~~
 
 A preset is a YAML mapping with up to five top-level stage blocks —
 ``stage2`` (noise), ``stage2b`` (τ calibration), ``stage3`` (peaks),
@@ -247,8 +245,8 @@ shipped ``defaults`` preset (it lists them all at their defaults) or run
 Line shape and the Stage 2b recommendation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-There is one subtlety worth calling out, and it is why the ``defaults``
-preset leaves ``stage5.shape`` unset. Stage 2b runs a three-way lineshape
+The ``defaults`` preset leaves ``stage5.shape`` unset for a reason. Stage 2b
+runs a three-way lineshape
 vote (``stage2b.recommendation.auto_recommend``, default ``true``) and
 stamps the winning shape on the ``.ftmw`` as the *recommended* layer.
 Stage 5 consumes that recommendation **only when ``stage5.shape`` is
@@ -284,12 +282,12 @@ Declare chain *fundamentals* only — harmonics and products derive. The same
 declaration can be supplied at import from a ``clocks.csv`` sidecar instead;
 see :doc:`clock_declaration`.
 
-The Python ``settings=`` kwarg
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Constructing settings in Python
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-For programmatic sweeps — comparing several knob variants from a
-notebook, or building a recipe at runtime — construct the relevant
-settings dataclass directly:
+For programmatic sweeps (comparing several knob variants from a notebook,
+or building a recipe at runtime), construct the relevant settings dataclass
+directly:
 
 .. code-block:: python
 
@@ -310,8 +308,8 @@ Same shape for any stage:
    from ftmwpipeline.core.noise_settings import NoiseSettings
 
    s = NoiseSettings()
-   s.smoothing.smoothing_window_mhz = 100.0
-   s.skirt_exclusion.strong_peak_snr = 25.0
+   s.window_mhz = 120.0
+   s.smoothing_mhz = 600.0
    ftmw.estimate_noise("exp.ftmw", settings=s)
 
    from ftmwpipeline.core.peak_detection_settings import PeakDetectionSettings
@@ -351,9 +349,8 @@ a sequence like:
    # ... look at the fit, decide to tighten rescue ...
    ftmwpipeline fit run exp.ftmw --max-residual-rescue-rounds 3
 
-does what you probably expect: the second fit keeps the settings from the
-first call's preset and just tightens the rescue. You don't have to
-re-supply ``--preset`` to keep the prior recipe.
+behaves as expected: the second fit keeps the settings from the first call's
+preset and only tightens the rescue; the prior recipe need not be re-supplied.
 
 The persisted block is structured to be inspectable on disk::
 
@@ -400,10 +397,8 @@ the whole pipeline:
      Whatever your lab calls this recipe. Multi-line markdown ok.
 
    stage2:
-     smoothing:
-       smoothing_window_mhz: 100.0
-     skirt_exclusion:
-       strong_peak_snr: 25.0
+     window_mhz: 120.0
+     smoothing_mhz: 600.0
 
    stage2b:
      stft:
@@ -483,14 +478,13 @@ canonical example: Stage 2b's τ calibration writes a
 *recommended* layer of the shape field. The attribute carries the
 ``__None__`` sentinel until Stage 2b's 3-way L/G/V discriminator runs;
 once it does, Stage 5 picks the recommendation up automatically — one
-step weaker than what you've persisted on the file, two steps weaker
-than an explicit kwarg or preset. The mental model is: the library has
-an opinion about the line shape, but you always get to override.
+step weaker than the file's persisted value, two steps weaker than an
+explicit argument or preset. The pipeline recommends a line shape, but an
+explicit or persisted choice always overrides it.
 
-If you've persisted ``shape: gaussian`` and Stage 2b later recommends
-Lorentzian, the persisted value wins (you already chose). Likewise, an
-explicit ``--shape lorentzian`` always wins, regardless of the
-recommendation.
+If the file has persisted ``shape: gaussian`` and Stage 2b later recommends
+Lorentzian, the persisted value wins. An explicit ``--shape lorentzian``
+likewise always wins, regardless of the recommendation.
 
 The *recommended* layer of the other four stages (2, 2b, 3, 4) is
 reserved but currently empty — no upstream feeder produces a hint for
@@ -517,18 +511,8 @@ Per-stage settings modules (all share the same architectural template):
 * :mod:`ftmwpipeline.core.stage_fit_settings` —
   :class:`~ftmwpipeline.core.stage_fit_settings.StageFitSettings`.
 
-Matching HDF5 persistence modules in ``ftmwpipeline.io``:
-
-* ``noise_settings_serialization`` →
-  ``processing_parameters/stage2_noise``
-* ``tau_calibration_settings_serialization`` →
-  ``processing_parameters/stage2b_tau``
-* ``peak_detection_settings_serialization`` →
-  ``processing_parameters/stage3_peaks``
-* ``window_planning_settings_serialization`` →
-  ``processing_parameters/stage4_windows``
-* ``stage_fit_settings_serialization`` →
-  ``processing_parameters/stage5_fit``
+The matching HDF5 persistence groups are the *Persisted at* column of the
+settings table above.
 
 Other useful references:
 

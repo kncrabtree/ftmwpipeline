@@ -18,9 +18,9 @@ samples, or a self-describing HDF5 file, optionally accompanied by a small
 metadata file. This page is the reference for those formats and for declaring
 instrument clock sources on the imported file.
 
-The mechanics of running an import — the command, the provenance record,
-start-time detection — are described on :doc:`stage0_import`. This page is about
-the *shape* the data must take.
+The mechanics of running an import (the command, the provenance record,
+start-time detection) are described on :doc:`stage0_import`; the formats below
+define the *shape* the data must take.
 
 Three ways in
 -------------
@@ -41,8 +41,8 @@ Whichever path is used, the result is identical: one FID, with its sample
 spacing, probe frequency, sideband, and shot count, written into a new ``.ftmw``
 file.
 
-The acquisition metadata
-------------------------
+Acquisition metadata
+--------------------
 
 Every path resolves the same small set of acquisition parameters. The two
 required values have no default; the rest fall back as shown.
@@ -201,8 +201,8 @@ A single column cannot carry clock declarations; supply those in a
 
 .. _input-sidecar:
 
-The sidecar metadata file
--------------------------
+Sidecar metadata file
+---------------------
 
 A sidecar is a small JSON or YAML file holding acquisition metadata and,
 optionally, the chirp window and clock declarations. It is the no-code home for
@@ -230,8 +230,8 @@ key is reported as an error rather than ignored, so a typo surfaces immediately.
 
 .. _input-chirp-window:
 
-The chirp window and start time
--------------------------------
+Chirp window and start time
+---------------------------
 
 A chirped-pulse experiment records the excitation chirp and switch ring-down
 before the molecular signal, so the FID is processed from a start time past the
