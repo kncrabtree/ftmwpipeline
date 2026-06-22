@@ -137,17 +137,6 @@ _REVIVABLE_DECISIONS = frozenset({"reject", "tentative"})
 # ---------------------------------------------------------------------------
 
 
-def _sideband_from_value(value: Union[str, Sideband]) -> Sideband:
-    if isinstance(value, Sideband):
-        return value
-    key = str(value).strip().lower()
-    if key in ("lower", "lsb"):
-        return Sideband.LOWER
-    if key in ("upper", "usb"):
-        return Sideband.UPPER
-    raise ValueError(f"unknown sideband: {value!r}")
-
-
 def _to_molecular(offset_mhz: float, center_mhz: float, sideband: Sideband) -> float:
     """Convert a single baseband offset to molecular MHz."""
     arr = np.array([offset_mhz])
@@ -552,9 +541,9 @@ def get_candidate_ledger_impl(
                 )
             spectrum_fit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
         fid = load_fid_from_pipeline_impl(path)
-        sideband = _sideband_from_value(fid.sideband)
+        sideband = Sideband.coerce(fid.sideband)
     else:
-        sideband = _sideband_from_value(sideband)
+        sideband = Sideband.coerce(sideband)
 
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
     res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
@@ -774,7 +763,7 @@ def rank_windows_impl(
         spectrum_fit: SpectrumFit = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
 
     fid = load_fid_from_pipeline_impl(path)
-    sideband = _sideband_from_value(fid.sideband)
+    sideband = Sideband.coerce(fid.sideband)
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
     res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else None
     spur_centers_mhz = [
@@ -1027,8 +1016,12 @@ def refit_window_core(
     frozen_peaks = _reconstruct_frozen_peaks(wf.fixed_parameters, center_mhz, sideband)
     # The frozen background uses the window's persisted tau as the dependent
     # tau (exactly the convention in evaluate_fixed_contributor).
+    from .active_ft_support import default_tau0_us
+
     tau_persisted = float(
-        wf.shared_parameters.get("tau_us", {}).get("value", acquisition_us / 3.0)
+        wf.shared_parameters.get("tau_us", {}).get(
+            "value", default_tau0_us(acquisition_us)
+        )
     )
     # Compute background and data-minus-background.  If thawed peaks are present
     # they will be added to frozen_peaks during the partition step below, after
@@ -1271,7 +1264,7 @@ def refit_window_core(
 
     # Derive per-window ledger candidates for snap-to-candidate logic.
     center_for_ledger = center_mhz
-    wf_sideband = _sideband_from_value(sideband)
+    wf_sideband = Sideband.coerce(sideband)
 
     for i, add_freq in enumerate(add):
         add_offset = float(s * (float(add_freq) - center_mhz))
@@ -1857,7 +1850,7 @@ def merge_peaks_impl(
     add_freqs = [merge_freq]
 
     fid = load_fid_from_pipeline_impl(path)
-    sideband = _sideband_from_value(fid.sideband)
+    sideband = Sideband.coerce(fid.sideband)
     s = sideband_sign(sideband)
     center_mhz: Optional[float] = None
     if wf.window is not None and wf.window.freq_range is not None:
@@ -1993,7 +1986,7 @@ def split_peak_impl(
     # active-FT context for two scalars. T is persisted as ``acquisition_us``;
     # the seed frame matches ``materialize_window`` (window-midpoint center).
     fid = load_fid_from_pipeline_impl(path)
-    sideband = _sideband_from_value(fid.sideband)
+    sideband = Sideband.coerce(fid.sideband)
     acquisition_us = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
     if acquisition_us <= 0.0:
         # Legacy fits without the persisted scalar: the FID active duration is
@@ -2125,7 +2118,7 @@ def _record_decision(
             spectrum_fit.parameters.get("acquisition_us", 0.0)
         )
         fid = load_fid_from_pipeline_impl(path)
-        sideband = _sideband_from_value(fid.sideband)
+        sideband = Sideband.coerce(fid.sideband)
 
         vif_attention_threshold = _resolve_vif_attention_threshold(path)
         merged_window_ids = _auto_merged_window_ids(spectrum_fit)
@@ -3377,7 +3370,7 @@ def review_run_impl(
             existing_review = Stage6Review()
 
     fid = load_fid_from_pipeline_impl(path)
-    sideband = _sideband_from_value(fid.sideband)
+    sideband = Sideband.coerce(fid.sideband)
 
     spur_centers_mhz: List[float] = [
         float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])

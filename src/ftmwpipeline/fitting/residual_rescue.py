@@ -50,6 +50,7 @@ from .validation import (
     effective_sample_size,
     feature_fwhm,
     gate_aicc_pair,
+    make_protected_matcher,
 )
 from .window_fit import (
     DEFAULT_MAX_PEAKS,
@@ -372,18 +373,7 @@ def merge_close_peaks_cleanup(
     refit_kwargs.setdefault("shape", fit.shape)
     refit_kwargs["spur_mask"] = spur_mask
 
-    _protected_arr = (
-        np.asarray(list(protected_offsets), dtype=float)
-        if protected_offsets is not None
-        else None
-    )
-
-    def _is_protected_peak(offset_mhz: float) -> bool:
-        if _protected_arr is None or _protected_arr.size == 0:
-            return False
-        return bool(
-            np.min(np.abs(_protected_arr - float(offset_mhz))) <= protected_tol_mhz
-        )
+    _is_protected_peak = make_protected_matcher(protected_offsets, protected_tol_mhz)
 
     current = fit
     n_merged = 0
@@ -608,18 +598,7 @@ def remove_and_refit_cleanup(
     order = np.argsort(u)
     u, z, sigma = u[order], z[order], sigma[order]
 
-    _rar_protected = (
-        np.asarray(list(protected_offsets), dtype=float)
-        if protected_offsets is not None
-        else None
-    )
-
-    def _is_protected_rar(offset_mhz: float) -> bool:
-        if _rar_protected is None or _rar_protected.size == 0:
-            return False
-        return bool(
-            np.min(np.abs(_rar_protected - float(offset_mhz))) <= protected_tol_mhz
-        )
+    _is_protected_rar = make_protected_matcher(protected_offsets, protected_tol_mhz)
 
     current = fit
     n_dropped = 0
@@ -839,16 +818,7 @@ def iterative_aicc_cleanup(
     sigma_keep = sigma[keep]
     budget_keep: Optional[np.ndarray] = None if budget is None else budget[keep]
 
-    protected = (
-        np.asarray(list(protected_offsets), dtype=float)
-        if protected_offsets is not None
-        else None
-    )
-
-    def _is_protected(offset_mhz: float) -> bool:
-        if protected is None or protected.size == 0:
-            return False
-        return bool(np.min(np.abs(protected - float(offset_mhz))) <= protected_tol_mhz)
+    _is_protected = make_protected_matcher(protected_offsets, protected_tol_mhz)
 
     shape_coerced = PeakShape.coerce(fit.shape)
 

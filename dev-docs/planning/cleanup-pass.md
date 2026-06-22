@@ -64,7 +64,9 @@ in `io/data_loaders/`):
 
 ## Phase 3 — low-risk duplication extractions
 
-(Finding numbers from the duplication audit.)
+(Finding numbers from the duplication audit.) **F6/F8/F10 done; F3/F4/F11
+pending; F5 deferred to Phase 4 — it pairs with the F1 settings work and has
+per-call-site churn.** 700 touched-area tests green after F6/F8/F10.
 
 - [ ] **F4** baseband↔molecular conversion (5+ sites, two spellings) → one
   `baseband_to_molecular` / `molecular_to_baseband` in `utils/signal_processing.py`
@@ -73,22 +75,26 @@ in `io/data_loaders/`):
   `core/data_structures.py` (`PreprocessedFID`/`FID.apply_molecular_frequency`),
   `_internal/stage3_impl.py`, `_internal/stage5_impl.py`, `fitting/spur_detection.py`.
   Watch the `data_structures`→`utils` import direction for a cycle.
-- [ ] **F6** sideband string→enum coercion: `_resolve_sideband` (stage5_impl) and
-  `_sideband_from_value` (stage6_impl) are byte-identical; `active_ft_support._resolve_sideband`
-  is a simpler variant. Keep the richer one (lsb/usb-aware), delete the others.
+- [x] **F6** sideband string→enum coercion → `Sideband.coerce` classmethod on the
+  enum (lsb/usb-aware); deleted the three local resolvers
+  (`stage5_impl._resolve_sideband`, `stage6_impl._sideband_from_value`,
+  `active_ft_support._resolve_sideband`) and repointed all 11 call sites.
 - [ ] **F5** `_required*` post-resolve coercion (6 copies: stage2/3/4/5_impl,
   tau_settings_resolution, re-imported by stage6) → `require_resolved(value, name,
-  *, cast=None)` in `_internal/shared_utils.py`.
-- [ ] **F10** protected-offset matcher (3 identical in `residual_rescue.py`) →
-  `_protected_offset_matcher(protected, tol)` factory in `fitting/validation.py`.
+  *, cast=None, owner=...)` in `_internal/shared_utils.py`. **DEFERRED to Phase 4**
+  (pairs with F1; many call sites, must preserve the per-class assertion message).
+- [x] **F10** protected-offset matcher (3 identical in `residual_rescue.py`) →
+  `make_protected_matcher(protected, tol)` factory in `fitting/validation.py`.
 - [ ] **F3** HDF5 attr helpers (`_load_json_attr`, NaN-sentinel float coercion,
   group-reset + stage-header stamp) scattered across `io/*_serialization.py` →
   `io/_hdf5_helpers.py` (`load_json_attr`, `nan_if_none`/`none_if_nan`/`opt_float`,
   `reset_group`, `stamp_stage_header`).
-- [ ] **F8** `_active_acquisition_us` dup (active_ft_support + stage3_impl) →
-  import the single one; add `DEFAULT_TAU0_ACTIVE_FRACTION = 1/3` (Stage 5/6 must
-  stay in lockstep — Stage 6 replays Stage 5). Defer the padded-active-rFFT block
-  (feeds χ²/noise; byte-equivalence sensitive) — extract only the conversion line.
+- [x] **F8** τ₀ fallback (Stage 5 seed + Stage 6 frozen-background dependent τ) →
+  `default_tau0_us(acquisition_us)` in `active_ft_support.py` (a *function*
+  returning `acquisition_us / 3.0`, not a `1/3` constant — preserves the exact
+  division so the fit seed stays bit-identical). The `_active_acquisition_us`
+  dup (active_ft_support + stage3_impl) and the padded-active-rFFT block are
+  deferred (cross-module import + χ²/noise byte-equivalence).
 - [ ] **F11** delete `fit_detail._apply_bare_style` (private dup of public
   `report_style.apply_bare_style`; repoint the `report_html_impl` import to the
   public name); add `set_log_spectrum_ylim` to `report_style.py`; consolidate the

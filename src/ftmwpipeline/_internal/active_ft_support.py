@@ -31,13 +31,6 @@ from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 
 
-def _resolve_sideband(value: Sideband | str) -> Sideband:
-    """Coerce a stored sideband (enum or string) to the :class:`Sideband` enum."""
-    if isinstance(value, Sideband):
-        return value
-    return Sideband(str(value).lower())
-
-
 def _active_acquisition_us(
     fid_duration_us: float, start_us: Optional[float], end_us: Optional[float]
 ) -> float:
@@ -45,6 +38,16 @@ def _active_acquisition_us(
     lo = 0.0 if start_us is None else float(start_us)
     hi = fid_duration_us if end_us is None else float(end_us)
     return max(hi - lo, 0.0)
+
+
+def default_tau0_us(acquisition_us: float) -> float:
+    """Fallback starting decay τ₀ (µs) when no Stage 2b calibration is available.
+
+    A third of the active acquisition length. Stage 5 (the fit seed) and Stage 6
+    (the frozen-background dependent τ when a window carries no persisted τ) must
+    use the same fallback, so it lives in one place.
+    """
+    return acquisition_us / 3.0
 
 
 def compute_canonical_active_ft(
@@ -88,7 +91,7 @@ def compute_canonical_active_ft(
         start_us=start_us,
         end_us=end_us,
         probe_freq_mhz=float(fid.probe_freq_mhz),
-        sideband=_resolve_sideband(fid.sideband),
+        sideband=Sideband.coerce(fid.sideband),
         n_padded=n_padded,
     )
 

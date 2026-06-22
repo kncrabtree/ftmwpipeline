@@ -26,7 +26,7 @@ import itertools
 import math
 import os
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, List, Optional, Sequence, Tuple, Union, cast
 
 import numpy as np
 from scipy.stats import f as f_distribution
@@ -34,7 +34,31 @@ from scipy.stats import f as f_distribution
 from ..core.data_structures import FittedPeak
 from .peak_model import ModelPeak, PeakShape, h_T_shape
 
+
+def make_protected_matcher(
+    protected_offsets: Optional[Sequence[float]], tol_mhz: float
+) -> Callable[[float], bool]:
+    """Build a predicate: is a baseband offset within ``tol_mhz`` of a protected one.
+
+    Returns a closure that is ``False`` for every offset when no protected
+    offsets are supplied.
+    """
+    arr = (
+        np.asarray(list(protected_offsets), dtype=float)
+        if protected_offsets is not None
+        else None
+    )
+
+    def is_protected(offset_mhz: float) -> bool:
+        if arr is None or arr.size == 0:
+            return False
+        return bool(np.min(np.abs(arr - float(offset_mhz))) <= tol_mhz)
+
+    return is_protected
+
+
 __all__ = [
+    "make_protected_matcher",
     "DEFAULT_N_EFF_KIND",
     "DEFAULT_WEIGHTED_GATE_CHI2",
     "DEFAULT_GATE_PENALTY_LAMBDA",

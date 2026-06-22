@@ -66,6 +66,18 @@ class Sideband(Enum):
     LSB = "lower"  # Alias for compatibility
     USB = "upper"  # Alias for compatibility
 
+    @classmethod
+    def coerce(cls, value: Union[str, "Sideband"]) -> "Sideband":
+        """Coerce an enum or string (including ``lsb``/``usb``) to a Sideband."""
+        if isinstance(value, cls):
+            return value
+        key = str(value).strip().lower()
+        if key in ("lower", "lsb"):
+            return cls.LOWER
+        if key in ("upper", "usb"):
+            return cls.UPPER
+        raise ValueError(f"unknown sideband: {value!r}")
+
 
 @dataclass
 class FIDProcessingParameters:

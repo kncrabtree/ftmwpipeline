@@ -83,7 +83,11 @@ from ..io.stage_fit_settings_serialization import (
 )
 from ..preprocessing.noise_estimation import estimate_active_ft_noise
 from ..preprocessing.peak_detection import DEFAULT_MIN_SNR as DEFAULT_PROMOTION_MIN_SNR
-from .active_ft_support import _persisted_scatter_knobs, build_active_grid_with_noise
+from .active_ft_support import (
+    _persisted_scatter_knobs,
+    build_active_grid_with_noise,
+    default_tau0_us,
+)
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -175,18 +179,6 @@ def _resolve_tau_calibration_for_fit(
     return None, None, "none"
 
 
-def _resolve_sideband(value: Sideband | str) -> Sideband:
-    """Coerce a string sideband to the :class:`Sideband` enum."""
-    if isinstance(value, Sideband):
-        return value
-    key = str(value).strip().lower()
-    if key in ("lower", "lsb"):
-        return Sideband.LOWER
-    if key in ("upper", "usb"):
-        return Sideband.UPPER
-    raise ValueError(f"unknown sideband: {value!r}")
-
-
 def _build_active_ft_inputs(
     file_path: str,
 ) -> Tuple[
@@ -225,7 +217,7 @@ def _build_active_ft_inputs(
             f"Stage 1 canonical settings produce a non-positive active "
             f"acquisition length ({acquisition_us} us)"
         )
-    sideband = _resolve_sideband(fid.sideband)
+    sideband = Sideband.coerce(fid.sideband)
 
     # n_padded: the canonical full-record FT input length (the native FID
     # length -- the persisted FT is unpadded). The active-FT records alpha for
@@ -1494,7 +1486,7 @@ def _fit_peaks_impl(
         if tau_maj_us is not None and tau_maj_us > 0.0:
             tau0_us_v = float(tau_maj_us)
         else:
-            tau0_us_v = acquisition_us / 3.0
+            tau0_us_v = default_tau0_us(acquisition_us)
     else:
         tau0_us_v = float(resolved.tau.tau0_us)
     if tau0_us_v <= 0:
@@ -2072,7 +2064,7 @@ def visualize_fit_impl(
     trim_range = stage1.get("trim_range")
     active_ft, active_rms = build_active_grid_with_noise(file_path, trim_range)
     fid = load_fid_from_pipeline_impl(file_path)
-    sideband = _resolve_sideband(fid.sideband)
+    sideband = Sideband.coerce(fid.sideband)
     base_pp = user_ft.metadata["processing_params"]
     acquisition_us = _active_acquisition_us(
         fid.duration_us, base_pp.start_us, base_pp.end_us
