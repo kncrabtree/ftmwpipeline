@@ -59,7 +59,7 @@ def cmd_version(args: argparse.Namespace) -> int:
 
     print(f"ftmwpipeline {__version__}")
     print(f"Description: {PACKAGE_INFO['description']}")
-    print(f"Optional dependencies:")
+    print("Visualization backend:")
     print(
         f"  matplotlib: {'available' if PACKAGE_INFO['has_matplotlib'] else 'missing'}"
     )

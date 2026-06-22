@@ -26,6 +26,7 @@ Optional dependency groups are available as extras:
 
 * ``[dev]`` — testing, linting, and type-checking tools.
 * ``[docs]`` — the Sphinx toolchain for building this documentation.
+* ``[notebook]`` — Jupyter, IPython, and widget support for interactive use.
 
 .. code-block:: bash
 
@@ -46,7 +47,7 @@ The minimal runtime environment:
    conda activate ftmwpipeline
 
 The development environment, a superset that adds the test suite, linters, type
-checker, documentation tooling, and visualization extras:
+checker, and documentation tooling:
 
 .. code-block:: bash
 
@@ -71,5 +72,5 @@ Confirm that the command-line entry point and its dependencies are in place:
    ftmwpipeline version
 
 ``validate`` reports the status of the installation and its dependencies;
-``version`` prints the package version and the availability of the optional
-extras.
+``version`` prints the package version and confirms the matplotlib
+visualization backend is available.

@@ -143,8 +143,8 @@ The equivalent introspection from Python:
 Producing a report
 ------------------
 
-After the review stage, the finalized line list and an HTML report are written
-by the ``report`` command:
+``review run`` consolidates the finalized line list; ``report run`` then writes
+it alongside an HTML report:
 
 .. code-block:: bash
 

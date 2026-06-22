@@ -8,11 +8,9 @@ Overview
 ========
 
 ``ftmwpipeline`` turns a raw Fourier transform microwave (FTMW) free-induction
-decay into a calibrated, uncertainty-bearing list of spectral lines. It is
-built for spectroscopists who need both a working analysis and a defensible
-one: every stage records what it did, the settings it used, and the
-statistical basis for its output, so a result can be inspected, reproduced, and
-trusted rather than taken on faith.
+decay into a calibrated, uncertainty-bearing list of spectral lines. Every stage
+records what it did, the settings it used, and the statistical basis for its
+output, so the result is fully inspectable and reproducible.
 
 Purpose
 -------
@@ -36,11 +34,14 @@ Design philosophy
 -----------------
 
 **One file, one experiment.** Each experiment is a single, self-contained,
-portable ``.ftmw`` file (an HDF5 container). The file holds the raw FID, every
-stage's result, the settings each stage used, and the provenance of the source
-data. Moving the analysis between machines, or handing it to a collaborator, is
-a matter of copying one file; reproducing the analysis needs nothing but the
-file itself. See :doc:`file_format`.
+portable ``.ftmw`` file (an HDF5 container) holding the raw FID, every stage's
+result, the settings each stage used, and the provenance of the source data. The
+raw record is preserved losslessly and never mutated, and exploring processing
+parameters never re-imports or alters it. A stage's resolved settings are stamped
+into the file, so a shared ``.ftmw`` reproduces the same result from the file
+alone, independent of any local configuration; moving the analysis between
+machines, or handing it to a collaborator, is a matter of copying one file. See
+:doc:`file_format`.
 
 **Staged and incremental.** The analysis is a sequence of stages with declared
 dependencies, each persisting its result before the next begins. A stage reads
@@ -49,25 +50,30 @@ Re-running a stage with new parameters is safe and cheap, and re-running an
 upstream stage invalidates the downstream results that depended on it, so the
 file is never left in a silently inconsistent state.
 
+**Unbiased spectrum, valid statistics.** The canonical spectrum that every later
+stage measures is computed without apodization, time-domain windowing, or
+zero-padding, so its per-bin noise and reduced χ² stay valid. Those operations
+would trade frequency resolution, bias the line shape, or interpolate bins and
+break the noise model that detection thresholds and fitted uncertainties rest on.
+The intended way to trade variance for robustness is the per-window fit, never a
+transform-level window.
+
+**Honest, correlated uncertainties.** Every fitted quantity carries an
+uncertainty, propagated with its correlations rather than as an independent error
+bar. A reported precision reflects what the data constrain; an uncertainty the
+data cannot determine is surfaced as such, never silently assumed away or
+fabricated. The per-bin noise measured in :doc:`Stage 2 <stage2_noise>` and the
+count of statistically independent samples in the band — not heuristics — back
+every acceptance decision and reported uncertainty.
+
 **Three interfaces, one implementation.** The pipeline is usable three ways — a
 command-line interface, a ``Pipeline`` class, and a stateless functional API —
 and all three produce identical results because they share a single underlying
 implementation. The choice between them is a matter of workflow, not
 capability.
 
-**Reproducibility and honest statistics.** A stage's resolved settings are
-stamped into the file, so a shared ``.ftmw`` reproduces the same output from the
-file alone, independent of any local configuration. The fit and its acceptance
-decisions rest on the per-bin noise measured in Stage 2 and on the number of
-statistically independent samples in the analysis band, not on heuristics — the
-reasoning behind each reported parameter and uncertainty is documented on the
-corresponding stage page.
-
 The three interfaces
 --------------------
-
-All three interfaces are thin wrappers over the same core and are
-interchangeable.
 
 **Command-line interface.** An object-verb grammar: the first token names a
 pipeline stage (or a cross-cutting tool), the second names the action. Every
@@ -104,7 +110,7 @@ work:
    ftmw.estimate_noise("exp.ftmw")
 
 The functional namespace is ``ftmwpipeline.api``; the package top level exports
-only the ``Pipeline`` class and the whole-experiment convenience wrappers.
+the ``Pipeline`` class, the ``api`` module, and the core data structures.
 
 The stage pipeline at a glance
 ------------------------------
