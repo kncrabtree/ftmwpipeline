@@ -6,9 +6,31 @@ Common functionality used across multiple pipeline stages and interfaces.
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+def require_resolved(
+    value: Any,
+    name: str,
+    *,
+    cast: Optional[Callable[[Any], Any]] = None,
+    owner: str,
+) -> Any:
+    """Assert a post-resolve settings field is filled, optionally casting it.
+
+    Every stage impl reads its knobs from a *resolved* settings bundle whose
+    fields should all be non-``None`` (the resolver fills any gap from the
+    hard defaults). A ``None`` here means a hard default is missing -- a
+    programming error, not user input -- so this raises ``AssertionError``
+    naming ``{owner}.{name}``. When ``cast`` is given the returned value is
+    coerced through it (``int``/``float``/``bool``/``str``); otherwise the
+    value passes through unchanged.
+    """
+    if value is None:
+        raise AssertionError(f"resolved {owner}.{name} is None; missing hard default")
+    return cast(value) if cast is not None else value
 
 
 def parse_frequency_range(range_str: str) -> Tuple[float, float]:

@@ -64,6 +64,7 @@ from ..preprocessing.peak_detection import (
 )
 from ..utils.signal_processing import make_apodization, matched_filter_window
 from .active_ft_support import build_active_grid_with_noise
+from .shared_utils import require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -402,11 +403,7 @@ def _snap_to_active_grid(
 
 def _required(value: Any, name: str) -> Any:
     """Coerce a post-resolve field that must be filled (hard default present)."""
-    if value is None:
-        raise AssertionError(
-            f"resolved PeakDetectionSettings.{name} is None; missing hard default"
-        )
-    return value
+    return require_resolved(value, name, owner="PeakDetectionSettings")
 
 
 def detect_peaks_impl(

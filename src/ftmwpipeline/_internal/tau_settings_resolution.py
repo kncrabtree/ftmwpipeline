@@ -26,33 +26,26 @@ from ..core.tau_calibration_settings import resolve as resolve_tau_settings
 from ..io.tau_calibration_settings_serialization import (
     load_tau_calibration_settings_from_h5,
 )
+from .shared_utils import require_resolved
 
 
 def _required_int(value: Optional[int], name: str) -> int:
     """Coerce a post-resolve field that must be filled into ``int``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved TauCalibrationSettings.{name} is None; missing hard default"
-        )
-    return int(value)
+    return int(require_resolved(value, name, cast=int, owner="TauCalibrationSettings"))
 
 
 def _required_float(value: Optional[float], name: str) -> float:
     """Coerce a post-resolve field that must be filled into ``float``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved TauCalibrationSettings.{name} is None; missing hard default"
-        )
-    return float(value)
+    return float(
+        require_resolved(value, name, cast=float, owner="TauCalibrationSettings")
+    )
 
 
 def _required_bool(value: Optional[bool], name: str) -> bool:
     """Coerce a post-resolve field that must be filled into ``bool``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved TauCalibrationSettings.{name} is None; missing hard default"
-        )
-    return bool(value)
+    return bool(
+        require_resolved(value, name, cast=bool, owner="TauCalibrationSettings")
+    )
 
 
 def resolve_with_preset_and_persisted(

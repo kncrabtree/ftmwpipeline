@@ -88,6 +88,7 @@ from .active_ft_support import (
     build_active_grid_with_noise,
     default_tau0_us,
 )
+from .shared_utils import require_resolved
 from .stage0_impl import load_fid_from_pipeline_impl
 from .stage1_impl import compute_ft_impl
 from .stage2_impl import _update_stage_completion
@@ -242,38 +243,22 @@ def _build_active_ft_inputs(
 
 def _required_float(value: Optional[float], name: str) -> float:
     """Coerce a post-resolve field that must be filled into ``float``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved StageFitSettings.{name} is None; missing hard default"
-        )
-    return float(value)
+    return float(require_resolved(value, name, cast=float, owner="StageFitSettings"))
 
 
 def _required_int(value: Optional[int], name: str) -> int:
     """Coerce a post-resolve field that must be filled into ``int``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved StageFitSettings.{name} is None; missing hard default"
-        )
-    return int(value)
+    return int(require_resolved(value, name, cast=int, owner="StageFitSettings"))
 
 
 def _required_bool(value: Optional[bool], name: str) -> bool:
     """Coerce a post-resolve field that must be filled into ``bool``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved StageFitSettings.{name} is None; missing hard default"
-        )
-    return bool(value)
+    return bool(require_resolved(value, name, cast=bool, owner="StageFitSettings"))
 
 
 def _required_str(value: Optional[str], name: str) -> str:
     """Coerce a post-resolve field that must be filled into ``str``."""
-    if value is None:
-        raise AssertionError(
-            f"resolved StageFitSettings.{name} is None; missing hard default"
-        )
-    return str(value)
+    return str(require_resolved(value, name, cast=str, owner="StageFitSettings"))
 
 
 def _is_survival_dust(peak: FittedPeak, floor: float) -> bool:

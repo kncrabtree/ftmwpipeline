@@ -33,17 +33,14 @@ from ..preprocessing.noise_estimation import (
     estimate_active_ft_noise,
 )
 from .active_ft_support import build_trimmed_active_ft
+from .shared_utils import require_resolved
 
 logger = logging.getLogger(__name__)
 
 
 def _required(value: Any, name: str) -> Any:
     """Coerce a post-resolve field that must be filled (hard default present)."""
-    if value is None:
-        raise AssertionError(
-            f"resolved NoiseSettings.{name} is None; missing hard default"
-        )
-    return value
+    return require_resolved(value, name, owner="NoiseSettings")
 
 
 def compute_noise_estimation_impl(
