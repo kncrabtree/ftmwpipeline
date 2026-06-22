@@ -141,7 +141,7 @@ def plot_tau_heatmap(
         vmax=vmax,
     )
     ax.set_xlabel("molecular frequency (MHz)")
-    ax.set_ylabel("STFT window center a_c (us)")
+    ax.set_ylabel("STFT window center $a_c$ (µs)")
     span = (
         f"{lo:.0f}-{hi:.0f} MHz"
         if freq_window is not None
@@ -235,7 +235,7 @@ def plot_stft_decay_examples(
                 c * np.exp(slope * a_fine),
                 color=DOUBLE_DECKER,
                 lw=1.6,
-                label=f"exponential (tau = {tau:.1f} us)",
+                label=f"exponential ($\\tau$ = {tau:.1f} µs)",
             )
         gauss_fit = _loglin_decay_fit(y, a_us**2)
         if gauss_fit is not None:
@@ -247,12 +247,12 @@ def plot_stft_decay_examples(
                 color=QUAD,
                 lw=1.6,
                 ls="--",
-                label=f"Gaussian (tau_G = {tau_g:.1f} us)",
+                label=f"Gaussian ($\\tau_G$ = {tau_g:.1f} µs)",
             )
         ax.set_title(f"molecular line @ {freq_mol_mhz[i]:.1f} MHz (SNR {snr:.0f})")
         ax.legend(fontsize=7)
-    ax.set_xlabel("STFT window center a_c (us)")
-    ax.set_ylabel("|S_n|")
+    ax.set_xlabel("STFT window center $a_c$ (µs)")
+    ax.set_ylabel("$|S_n|$")
     ax.set_ylim(bottom=0.0)
     apply_bare_style(ax)
 
@@ -276,8 +276,8 @@ def plot_stft_decay_examples(
             fontsize=8,
             color=GUNROCK,
         )
-    ax.set_xlabel("STFT window center a_c (us)")
-    ax.set_ylabel("|S_n|")
+    ax.set_xlabel("STFT window center $a_c$ (µs)")
+    ax.set_ylabel("$|S_n|$")
     ax.set_ylim(bottom=0.0)
     apply_bare_style(ax)
 
@@ -301,8 +301,8 @@ def plot_stft_decay_examples(
             fontsize=8,
             color=AGGIE_BLUE,
         )
-    ax.set_xlabel("STFT window center a_c (us)")
-    ax.set_ylabel("|S_n|")
+    ax.set_xlabel("STFT window center $a_c$ (µs)")
+    ax.set_ylabel("$|S_n|$")
     ax.set_ylim(bottom=0.0)
     apply_bare_style(ax)
 
@@ -364,7 +364,7 @@ def _scatter_with_tau_cap(
         ax.text(
             0.02,
             0.97,
-            f"△ {n_over} bins > {cap:.0f} us",
+            f"△ {n_over} bins > {cap:.0f} µs",
             transform=ax.transAxes,
             ha="left",
             va="top",
@@ -417,11 +417,12 @@ def plot_tau_distribution(
         color=DOUBLE_DECKER,
         ls="--",
         lw=2,
-        label=f"tau_maj = {tau_maj:.2f} us (sigma_tau = {sigma_tau:.2f})",
+        label=f"$\\tau_\\mathrm{{maj}}$ = {tau_maj:.2f} µs "
+        f"($\\sigma_\\tau$ = {sigma_tau:.2f})",
     )
-    ax.set_xlabel("recovered tau (us)")
+    ax.set_xlabel("recovered $\\tau$ (µs)")
     ax.set_ylabel("count")
-    ax.set_title("Per-bin tau histogram")
+    ax.set_title("Per-bin $\\tau$ histogram")
     ax.legend()
     apply_bare_style(ax)
 
@@ -430,46 +431,66 @@ def plot_tau_distribution(
     if snrs.size > 0:
         _scatter_with_tau_cap(ax, snrs, taus, tau_cap, color=AGGIE_BLUE)
         ax.set_xscale("log")
-    ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=1)
+    ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=2)
     ax.set_xlabel("contributor on-line SNR (per-frame)")
-    ax.set_ylabel("tau_k (us)")
-    ax.set_title("tau vs SNR (Pearson r = " f"{result.pearson_r_log_snr_vs_tau:.3f})")
+    ax.set_ylabel("$\\tau_k$ (µs)")
+    ax.set_title(
+        "$\\tau$ vs SNR (Pearson $r$ = " f"{result.pearson_r_log_snr_vs_tau:.3f})"
+    )
     apply_bare_style(ax)
 
     # 3. tau vs molecular freq
     ax = axes[1, 0]
     if freqs.size > 0:
         _scatter_with_tau_cap(ax, freqs, taus, tau_cap, color=AGGIE_BLUE)
-    ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=1)
+    ax.axhline(tau_maj, color=DOUBLE_DECKER, ls="--", lw=2)
     ax.set_xlabel("molecular frequency (MHz)")
-    ax.set_ylabel("tau_k (us)")
+    ax.set_ylabel("$\\tau_k$ (µs)")
     ax.set_title(
-        "tau vs frequency (Pearson r = " f"{result.pearson_r_freq_vs_tau:.3f})"
+        "$\\tau$ vs frequency (Pearson $r$ = " f"{result.pearson_r_freq_vs_tau:.3f})"
     )
     apply_bare_style(ax)
     # Per-band majority levels and boundaries, labeled legibly at the top edge.
     # Prefer the persisted per-band majorities (what the fit routes on); fall
     # back to the per-third medians when band majorities were not computed.
+    band_specs: list[Tuple[str, float, float, float, Optional[float]]]
     if result.band_majorities:
         band_specs = [
-            (b.label, b.freq_lo_mhz, b.freq_hi_mhz, b.tau_maj_us)
+            (b.label, b.freq_lo_mhz, b.freq_hi_mhz, b.tau_maj_us, b.sigma_tau_us)
             for b in result.band_majorities
         ]
     else:
         band_specs = [
-            (t.label, t.freq_lo_mhz, t.freq_hi_mhz, t.median_tau_us)
+            (t.label, t.freq_lo_mhz, t.freq_hi_mhz, t.median_tau_us, None)
             for t in result.frequency_thirds
         ]
     if band_specs:
         ymax = ax.get_ylim()[1]
-        for i, (label, flo, fhi, level) in enumerate(band_specs):
+        for i, (label, flo, fhi, level, sig) in enumerate(band_specs):
             if i > 0:  # interior boundary between bands
                 ax.axvline(flo, color="0.6", ls="-", lw=0.7, alpha=0.8, zorder=1)
+            # Shade the per-band majority's robust spread sigma_tau so the
+            # uncertainty on each band's tau is visible, not just the level.
+            if sig is not None and np.isfinite(sig) and sig > 0:
+                ax.fill_between(
+                    [flo, fhi],
+                    level - sig,
+                    level + sig,
+                    color=POPPY,
+                    alpha=0.18,
+                    lw=0,
+                    zorder=4,
+                )
             ax.hlines(level, flo, fhi, color=POPPY, lw=2.5, zorder=5)
+            band_txt = (
+                f"{label}\n{level:.2f} µs"
+                if sig is None
+                else f"{label}\n{level:.2f}±{sig:.2f} µs"
+            )
             ax.text(
                 0.5 * (flo + fhi),
                 ymax * 0.97,
-                f"{label}\n{level:.2f} us",
+                band_txt,
                 ha="center",
                 va="top",
                 fontsize=9,
@@ -481,7 +502,7 @@ def plot_tau_distribution(
     # 4. GMM overlay
     ax = axes[1, 1]
     if taus.size > 0:
-        ax.hist(taus, bins=n_bins, color=AGGIE_BLUE, alpha=0.5, density=True)
+        ax.hist(taus, bins=n_bins, color=AGGIE_BLUE, alpha=0.7, density=True)
     if not np.isnan(bm.mu_a) and tau_maj > 0:
         xs = np.linspace(
             0.0, max(tau_maj * 3.0, taus.max() * 1.1 if taus.size else tau_maj), 400
@@ -500,15 +521,15 @@ def plot_tau_distribution(
             xs,
             ya,
             color=DOUBLE_DECKER,
-            lw=1,
-            label=f"GMM mu_a={bm.mu_a:.2f}, pi_a={bm.pi_a:.2f}",
+            lw=2,
+            label=f"GMM $\\mu_a$={bm.mu_a:.2f}, $\\pi_a$={bm.pi_a:.2f}",
         )
-        ax.plot(xs, yb, color=QUAD, lw=1, label=f"GMM mu_b={bm.mu_b:.2f}")
-        ax.plot(xs, ya + yb, color=GUNROCK, lw=1, alpha=0.6)
-    ax.set_xlabel("tau (us)")
+        ax.plot(xs, yb, color=QUAD, lw=2, label=f"GMM $\\mu_b$={bm.mu_b:.2f}")
+        ax.plot(xs, ya + yb, color="black", lw=2, alpha=0.85)
+    ax.set_xlabel("$\\tau$ (µs)")
     ax.set_ylabel("density")
     ax.set_title(
-        f"GMM 1 vs 2 component (delta_aic = {bm.delta_aic:.1f}, "
+        f"GMM 1 vs 2 component ($\\Delta$AIC = {bm.delta_aic:.1f}, "
         f"bimodal={bm.two_component_preferred})"
     )
     ax.legend(fontsize=8)

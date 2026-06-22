@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 572"
+     font-family="Helvetica, Arial, sans-serif" font-size="18" fill="#222">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="6.5" refY="3.2"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6.5,3.2 L0,6.4 z" fill="#495057"/>
+    </marker>
+  </defs>
+
+  <!-- input -->
+  <rect x="40" y="24" width="520" height="44" rx="9" fill="#ffffff" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="52" text-anchor="middle" font-weight="bold" fill="#022851">Window: free peaks + fixed contributors (Stage 4)</text>
+  <path d="M300,68 V92" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- per-window lifecycle -->
+  <rect x="40" y="92" width="520" height="58" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="117" text-anchor="middle" font-weight="bold" fill="#022851">Seed</text>
+  <text x="300" y="138" text-anchor="middle" font-size="13" fill="#495057">fit the strongest peak as a single line</text>
+  <path d="M300,150 V174" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <rect x="40" y="174" width="520" height="58" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="199" text-anchor="middle" font-weight="bold" fill="#022851">Add-one-peak loop</text>
+  <text x="300" y="220" text-anchor="middle" font-size="13" fill="#495057">propose the next residual peak; keep only if it clears the penalty bar</text>
+  <!-- self-loop: accept -> propose again -->
+  <path d="M560,222 Q622,203 560,184" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <text x="628" y="207" font-size="13" fill="#495057">accept</text>
+  <path d="M300,232 V256" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <text x="312" y="249" font-size="13" fill="#495057">stop</text>
+
+  <rect x="40" y="256" width="520" height="58" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="281" text-anchor="middle" font-weight="bold" fill="#022851">Baseline &amp; rescue</text>
+  <text x="300" y="302" text-anchor="middle" font-size="13" fill="#495057">add a leakage-wing baseline where coherent; rescue missed weak lines</text>
+  <path d="M300,314 V338" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <rect x="40" y="338" width="520" height="58" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="363" text-anchor="middle" font-weight="bold" fill="#022851">Renegotiation</text>
+  <text x="300" y="384" text-anchor="middle" font-size="13" fill="#495057">coherent edge → thaw a contributor or replan-merge windows</text>
+  <path d="M300,396 V420" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- global pass -->
+  <rect x="40" y="420" width="520" height="58" rx="9" fill="#fff6db" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="445" text-anchor="middle" font-weight="bold" fill="#022851">Post-fit survival pass</text>
+  <text x="300" y="466" text-anchor="middle" font-size="13" fill="#495057">SNR-prune weak lines; merge degenerate sub-resolution pairs</text>
+  <path d="M300,478 V502" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- output -->
+  <rect x="40" y="502" width="520" height="44" rx="9" fill="#022851" stroke="#022851" stroke-width="1.8"/>
+  <text x="300" y="530" text-anchor="middle" font-weight="bold" fill="#ffffff">Fitted line list → Stage 6</text>
+</svg>

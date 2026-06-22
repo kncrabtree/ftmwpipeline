@@ -259,7 +259,7 @@ def projection_fft_identity(seed: int = SEED) -> Dict[str, float]:
     matched-filter basis ``exp(-t/tau) * exp(-i 2 pi f_c t)`` at every bin
     frequency, computed as the explicit O(N^2) sum, equals the apodized FFT
     ``dt * rfft(exp(-t/tau) * fid)`` to floating-point precision. This is the
-    load-bearing claim that makes the matched filter one FFT, not N
+    key claim that makes the matched filter one FFT, not N
     projections.
     """
     rng = np.random.default_rng(seed)

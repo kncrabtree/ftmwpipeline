@@ -156,6 +156,32 @@ acquisition series.
    The scatter-squared is linear in :math:`1/N`; the intercept is the additive
    weak-line floor :math:`f^2`.
 
+.. _noise-line-mask:
+
+Choosing the line-mask threshold
+--------------------------------
+
+The self-mask is deliberately loose: with ``line_k = 8`` it removes only the
+sharpest excursions, and many clearly visible lines remain in the bins the
+estimator treats as line-free. This is by design, for two reasons. The windowed
+scatter is a robust statistic — a median absolute deviation — and is insensitive
+to the minority of line bins that survive the mask, so masking every visible line
+is unnecessary. And line power can only *raise* a window's local scatter, so the
+broad lower-envelope median that rides the floor across regions, not the mask, is
+the real defense against line contamination: it stays beneath the contaminated
+windows rather than having to find and remove every line first.
+
+A tighter threshold is not merely unnecessary but harmful. The mask is one-sided —
+it keeps the bins whose residual lies *below* ``line_k`` robust standard
+deviations — so lowering it toward 3–5 begins excluding the upper tail of the
+genuine noise itself, truncating the noise distribution and biasing :math:`\sigma`
+*low*. That is the opposite of the feared inflation, and the wrong direction for
+honest signal-to-noise and :math:`\chi^2`. The only cost of the loose mask is the
+small additive weak-line floor above; stricter masking shrinks that floor
+slightly but cannot remove it (the principled removal is a blank acquisition, not
+a tighter threshold), and it sits far below the multiplicative pedestal error the
+scatter estimate exists to remove. The default is set past that knee.
+
 Caveats
 -------
 

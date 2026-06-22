@@ -8,41 +8,46 @@
 Stage 2: Noise Estimation
 =========================
 
+Overview
+--------
+
 Stage 2 measures the noise of the spectrum: a per-bin RMS amplitude
-:math:`\sigma_x(f)` that quantifies how large a feature must be to stand above
-the noise. Every later stage divides by it — peak detection thresholds a
-signal-to-noise ratio against it, window assignment plans against it, and the
-fit weights its residuals by it — so the noise estimate is the statistical
-reference for the whole back half of the pipeline. The estimate is one value per
-frequency bin, because the noise on an FTMW instrument is not flat: it varies
-across the band with the receiver bandpass, the mixer and local-oscillator
-artifacts, and frequency-dependent amplifier noise.
-
-Where the noise is measured
----------------------------
-
-Stage 2 measures and stores the noise on the **canonical active FT** — the
-transform of just the ``[start_us, end_us]`` active region, trimmed to the
-analysis band. This is the single grid every later stage scores, plans, and fits
-on; the full-record spectrum is a Stage 0/1 start-time comparison view only. The
-active FT is rebuilt on demand from the persisted FID and the canonical Stage 1
-settings, so Stage 2 always measures on exactly the grid the downstream stages
-consume.
+:math:`\sigma_x(f)` that quantifies how large a feature must be to stand above the
+noise. Every later stage divides by it — peak detection thresholds a
+signal-to-noise ratio against it, window assignment plans against it, and the fit
+weights its residuals by it — so the noise estimate is the statistical reference for
+the whole back half of the pipeline. The estimate is one value per frequency bin,
+because the noise on an FTMW instrument is not flat: it varies across the band with
+the receiver bandpass, the mixer and local-oscillator artifacts, and
+frequency-dependent amplifier noise.
 
 The estimate is the per-bin **complex RMS** :math:`\sigma_x = \sigma_c\sqrt{2}`,
 where :math:`\sigma_c` is the per-quadrature noise (the real and imaginary parts
-each carry :math:`\sigma_x^2/2`). This is the convention the fit's
-:math:`\chi^2` weighting consumes.
+each carry :math:`\sigma_x^2/2`). This is the convention the fit's :math:`\chi^2`
+weighting consumes.
 
-Why a simple noise floor fails
-------------------------------
+Method
+------
 
-The obvious way to estimate noise is to take the *level* of the magnitude
-spectrum in the quiet regions between lines. On most spectra that works. On
-high signal-to-noise, line-dense spectra it fails, and the failure is worth
-understanding because it motivates the whole estimator.
+Stage 2 measures and stores the noise on the **active FT** — the transform of just
+the ``[start_us, end_us]`` active region, trimmed to the analysis band. This is the
+single grid every later stage scores, plans, and fits on (the full-record spectrum
+is a Stage 0/1 start-time comparison view only); it is rebuilt on demand from the
+persisted FID and the Stage 1 settings, so Stage 2
+always measures on exactly the grid the downstream stages consume.
 
-The canonical FT is deliberately raw and unapodized. A boxcar transform of a
+The obvious estimate, the magnitude level in the quiet regions between lines,
+fails on high signal-to-noise, line-dense spectra, because it measures a coherent
+leakage pedestal rather than the random noise. The scatter estimator instead
+isolates the white, bin-to-bin *scatter* of the magnitude from the smooth pedestal,
+yielding a per-bin :math:`\sigma_x(f)` that follows the receiver noise while
+ignoring the lines on top of it. The two sections below detail the pedestal
+contamination and the estimator that defeats it.
+
+Noise vs. leakage
+-----------------
+
+The active FT is deliberately raw and unapodized. A boxcar transform of a
 strong line has a slowly decaying magnitude skirt, and the transform's own
 sidelobes ring across the entire record. Any single line's wings are small, but
 the **sum** of the far-wings of hundreds of strong lines forms a smooth
@@ -58,8 +63,8 @@ noise by up to ``6×`` on the most extreme fixtures. Because the error grows wit
 signal-to-noise, no amount of better binning or line-trimming on the magnitude
 *level* can remove it; the quantity being measured is the wrong one.
 
-The scatter estimator
----------------------
+Estimating noise from spectral scatter
+--------------------------------------
 
 The estimator (:func:`~ftmwpipeline.preprocessing.noise_estimation.estimate_noise_scatter`)
 separates the noise from the pedestal with a high-pass along the frequency axis:
@@ -96,8 +101,8 @@ shows it stays close to the true noise across a :math:`10^3`–:math:`10^6`
 signal-to-noise range, where a naive level estimator over-reports by up to
 ``6×``; the derivation and validation are in :doc:`methods/noise_snr_scaling`.
 
-Running the estimate
---------------------
+Running the stage
+-----------------
 
 Stage 2 requires Stage 1. The command runs the estimator and stores the result:
 
@@ -191,14 +196,26 @@ is the leakage-pedestal contamination the scatter estimator is designed to
 avoid. The same figure is available from Python through
 :func:`ftmwpipeline.api.visualize_noise` and ``Pipeline.visualize_noise``.
 
+The overlay marks many clearly visible lines among the bins kept for the
+estimate, rather than masking them out, which can look like it would inflate σ. It
+does not. The line self-mask is one-sided and deliberately loose (``line_k = 8``):
+it removes only the strongest excursions, because the windowed scatter is a robust
+statistic that tolerates the minority of line bins left in, and the broad
+lower-envelope median (not the mask) is what actually keeps line power out of σ,
+riding the noise floor beneath the lines. Masking more aggressively (``line_k`` of
+3–5) would instead clip the upper tail of the genuine noise and bias σ *low*, the
+wrong direction for honest signal-to-noise and χ². The small residual from the
+weak lines left in is the weak-line floor; the threshold choice is analyzed in
+:ref:`noise-line-mask`.
+
 Complex-domain cross-check
 --------------------------
 
 The estimator works on the magnitude spectrum, where pure noise is
 Rayleigh-distributed and a small regime correction is needed to recover σ. As an
 independent guardrail, Stage 2 also computes σ directly from the real and
-imaginary parts over the same noise bins — for pure noise these are symmetric,
-zero-mean Gaussian, needing no regime correction — and records the ratio of the
+imaginary parts over the same noise bins (for pure noise these are symmetric,
+zero-mean Gaussian, needing no regime correction) and records the ratio of the
 two estimates in the diagnostics (``mag/complex σ`` on ``noise show``, with the
 complex curve overlaid). The magnitude estimate normally sits a few percent below
 the complex one; a larger divergence is flagged with a warning, indicating the

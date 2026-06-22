@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 620"
+     font-family="Helvetica, Arial, sans-serif" font-size="19" fill="#222">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="6.5" refY="3.2"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L6.5,3.2 L0,6.4 z" fill="#495057"/>
+    </marker>
+  </defs>
+
+  <!-- input -->
+  <rect x="220" y="16" width="320" height="60" rx="9" fill="#ffffff" stroke="#022851" stroke-width="1.8"/>
+  <text x="380" y="42" text-anchor="middle" font-weight="bold" fill="#022851">Canonical active FT (Stage 1)</text>
+  <text x="380" y="64" text-anchor="middle" font-size="15" fill="#495057">+ per-bin noise (Stage 2)</text>
+
+  <!-- split arrows: junction below the input, landing on each column's top inner corner -->
+  <path d="M380,76 V92" stroke="#495057" stroke-width="2" fill="none"/>
+  <path d="M380,92 L310,112" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M380,92 L450,112" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- column headers -->
+  <text x="170" y="100" text-anchor="middle" font-size="16" font-weight="bold" fill="#c10230">Primary pass</text>
+  <text x="590" y="100" text-anchor="middle" font-size="16" font-weight="bold" fill="#c10230">Gap pass</text>
+
+  <!-- row A: apodization -->
+  <rect x="30" y="112" width="280" height="64" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="170" y="140" text-anchor="middle" font-weight="bold" fill="#022851">Blackman-Harris window</text>
+  <text x="170" y="162" text-anchor="middle" font-size="15" fill="#495057">suppress truncation sidelobes</text>
+
+  <rect x="450" y="112" width="280" height="64" rx="9" fill="#fff6db" stroke="#022851" stroke-width="1.8"/>
+  <text x="590" y="140" text-anchor="middle" font-weight="bold" fill="#022851">Matched filter</text>
+  <text x="590" y="162" text-anchor="middle" font-size="15" fill="#495057">maximize weak-line SNR</text>
+
+  <path d="M170,176 V196" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M590,176 V196" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- row B: localization -->
+  <rect x="30" y="200" width="280" height="64" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="170" y="228" text-anchor="middle" font-weight="bold" fill="#022851">Second-derivative search</text>
+  <text x="170" y="250" text-anchor="middle" font-size="15" fill="#495057">accept concave-down features</text>
+
+  <rect x="450" y="200" width="280" height="64" rx="9" fill="#fff6db" stroke="#022851" stroke-width="1.8"/>
+  <text x="590" y="228" text-anchor="middle" font-weight="bold" fill="#022851">Second-derivative search</text>
+  <text x="590" y="250" text-anchor="middle" font-size="15" fill="#495057">accept concave-down features</text>
+
+  <path d="M170,264 V284" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M590,264 V284" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- row C: leakage-aware threshold -->
+  <rect x="30" y="288" width="280" height="64" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="170" y="316" text-anchor="middle" font-weight="bold" fill="#022851">Leakage-aware threshold</text>
+  <text x="170" y="338" text-anchor="middle" font-size="15" fill="#495057">gain k = 1 (residual)</text>
+
+  <rect x="450" y="288" width="280" height="64" rx="9" fill="#fff6db" stroke="#022851" stroke-width="1.8"/>
+  <text x="590" y="316" text-anchor="middle" font-weight="bold" fill="#022851">Leakage-aware threshold</text>
+  <text x="590" y="338" text-anchor="middle" font-size="15" fill="#495057">gain k = 3; drop re-finds</text>
+
+  <!-- converge to merge: each column bottom-center lands on a top corner of the merge box -->
+  <path d="M170,352 L250,382" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+  <path d="M590,352 L510,382" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- merge -->
+  <rect x="250" y="382" width="260" height="54" rx="9" fill="#f4f4f4" stroke="#022851" stroke-width="1.8"/>
+  <text x="380" y="416" text-anchor="middle" font-weight="bold" fill="#022851">Merge positions</text>
+
+  <path d="M380,436 V456" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- re-score -->
+  <rect x="190" y="460" width="380" height="64" rx="9" fill="#ffffff" stroke="#022851" stroke-width="1.8"/>
+  <text x="380" y="488" text-anchor="middle" font-weight="bold" fill="#022851">Re-score on canonical FT</text>
+  <text x="380" y="510" text-anchor="middle" font-size="15" fill="#495057">amplitude, SNR &#183; apex-snap &#183; de-duplicate</text>
+
+  <path d="M380,524 V544" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
+
+  <!-- classify + output combined row -->
+  <rect x="190" y="548" width="380" height="64" rx="9" fill="#022851" stroke="#022851" stroke-width="1.8"/>
+  <text x="380" y="576" text-anchor="middle" font-weight="bold" fill="#ffffff">Classify &amp; promote &#8594; Stage 4</text>
+  <text x="380" y="598" text-anchor="middle" font-size="15" fill="#c7ccd1">weak / medium / strong &#183; SNR &#8805; min_snr</text>
+</svg>

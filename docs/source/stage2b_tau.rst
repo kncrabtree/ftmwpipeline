@@ -9,32 +9,24 @@
 Stage 2b: Decay-Time Calibration
 ================================
 
+Overview
+--------
+
 A molecular free-induction decay rings down with a characteristic time constant
 :math:`\tau`. That decay time sets the natural linewidth of every peak (a longer
 :math:`\tau` is a narrower line), so the per-window fit in :doc:`Stage 5
 <stage5_fitting>` needs a good starting value and a sensible prior for it.
-Stage 2b measures :math:`\tau` directly from the raw FID — before any peak is
-detected — and produces a single data-driven decay time :math:`\tau_{maj}` with
+Stage 2b measures :math:`\tau` directly from the raw FID, before any peak is
+detected, and produces a single data-driven decay time :math:`\tau_{maj}` with
 a robust spread :math:`\sigma_\tau`, optionally broken down by frequency band.
 The same machinery also recommends which **line shape** the fit should use.
 
-The measurement is fit-free: it does not run a least-squares peak fit. It slides
-a short analysis window across the FID and reads how the magnitude at each
-frequency decays from one window position to the next. A real molecular line
-decays; a clock spur does not; noise gives no clean decay at all. The decay
-rates of the surviving bins form a histogram, and the calibration reports its
-majority.
-
 Stage 2b sits between :doc:`Stage 2 <stage2_noise>` (noise) and :doc:`Stage 3
 <stage3_peaks>` (peak detection). It is optional — Stages 3 and 5 run without it
-and fall back to a default decay time — but running it is what lets the fit
-anchor its line widths on the instrument's real decay physics rather than a
-guess.
+and fall back to a default decay time — but running it lets the fit anchor its
+line widths on the instrument's real decay physics rather than a guess.
 
-What the calibration produces
------------------------------
-
-A completed Stage 2b run persists, for the chosen line shape:
+A completed run persists, for the chosen line shape:
 
 - :math:`\tau_{maj}` and :math:`\sigma_\tau` — the band-wide majority decay time
   and its robust spread;
@@ -49,8 +41,23 @@ A completed Stage 2b run persists, for the chosen line shape:
 - a **line-shape recommendation** stamped onto the file for Stages 3 and 5 to
   read.
 
-The sliding-window STFT
------------------------
+Method
+------
+
+Stage 2b measures :math:`\tau` in four steps, none of which runs a least-squares
+peak fit. It slides a short analysis window across the FID and, for each frequency
+bin, reads how the magnitude decays from one window position to the next — a
+single-parameter read of the decay rate, with no peak model and no blend
+ambiguity. Each bin is classified from that decay: a real molecular line decays, a
+clock spur holds constant, and noise or contaminated bins give no clean decay and
+are set aside. The surviving contributors' decay rates are aggregated into a
+signal-to-noise-weighted majority :math:`\tau_{maj}`, optionally split by frequency
+band. Separately, the strong on-line bins are fit to three candidate line shapes
+and voted on to recommend which shape Stage 5 should use. Each step is expanded
+below.
+
+Sliding-window STFT
+-------------------
 
 For a single damped cosine
 :math:`s(t) = A\,e^{-t/\tau}\cos(2\pi f_0 t + \phi)`, take a short sub-interval
@@ -65,6 +72,21 @@ and transform the full-length record. The on-line magnitude is
 Sliding the window start :math:`a` across the record traces out a pure
 exponential in :math:`a` whose rate is :math:`1/\tau` directly — a
 single-parameter read, with no least-squares peak model and no blend ambiguity.
+
+The same construction applies to a Gaussian-decaying line. For
+:math:`s(t) = A\,e^{-(t/\tau_G)^2}\cos(2\pi f_0 t + \phi)`, a window short against
+the decay traces the Gaussian envelope instead of the exponential one,
+
+.. math::
+
+   |S(a, f_0)| \approx \text{constant} \times e^{-(a/\tau_G)^2},
+
+so the per-bin series is read against a Gaussian in :math:`a` with :math:`\tau_G`
+as its single parameter. The two envelopes are alternative-shape models of the
+*same* underlying decay (one forces a pure-exponential ring-down, the other a
+pure-Gaussian one), not two decay times the molecule has at once. The line-shape
+recommendation below decides which variant the fit consumes.
+
 The calibration splits the active region into ``n_seg`` non-overlapping windows
 (default ten), so each frequency bin yields a short time series of magnitudes
 versus window position.
@@ -76,8 +98,7 @@ every frame shares one frequency grid and the per-bin time series are directly
 comparable. Truncating to :math:`T_w` would double the bin width and break the
 comparison.
 
-What each kind of bin looks like across the frames is the whole basis of the
-method:
+The behavior of each kind of bin across the frames is the basis of the method:
 
 .. list-table::
    :header-rows: 1
@@ -113,16 +134,16 @@ Classifying each bin
 --------------------
 
 At each frequency bin the calibration fits the magnitude-versus-position series
-to an exponential and sorts the bin into one of four classes:
+to the decay envelope being calibrated and sorts the bin into one of four classes:
 
 #. **Discard** — the strongest frame's magnitude is below ``t_sigma`` times the
    per-frame noise floor. Most bins land here.
-#. **Spur** — the constant model is preferred over the exponential, or the
+#. **Spur** — a small-sample information criterion (AICc, defined under
+   `Line-shape recommendation`_) prefers a constant model over the decay, or the
    fitted decay time saturates against its upper bound (a continuous tone has
    effectively infinite :math:`\tau`).
-#. **Bad fit** — the exponential residual is too large, marking dense or
-   contaminated bins (overlapping skirts, mid-blend positions) that should not
-   enter the histogram.
+#. **Bad fit** — the fit residual is too large, marking dense or contaminated bins
+   (overlapping skirts, mid-blend positions) that should not enter the histogram.
 #. **Contributor** — everything else. These bins carry the decay times that are
    aggregated into :math:`\tau_{maj}`.
 
@@ -132,6 +153,19 @@ true noise because it still carries decaying signal, and that inflation is
 deliberately kept: it acts as a stricter above-threshold gate that admits only
 well-determined on-line bins, which is what holds the per-band decay times on an
 independent fit-based reference.
+
+The bad-fit gate is shape-matched: it tests the residual of the envelope the run
+is calibrating (the exponential for a Lorentzian run, the Gaussian
+:math:`e^{-(a/\tau_G)^2}` for a Gaussian run), so a Gaussian-decaying line is not
+branded a bad fit by an exponential model that was never meant to describe it (the
+line-shape recommendation below, which fits all three candidate shapes, keeps a bin
+when the best of the three describes it well). A bin fails the gate when its
+residual sum of squares exceeds a hybrid threshold: the larger of a noise-scaled
+bound (a multiple ``rss_gate_factor`` of the per-frame noise) and a signal-scaled
+bound (a fraction ``relative_gate_fraction`` of the bin's mean magnitude). The
+signal-scaled branch keeps clean, high-signal bins from being over-rejected,
+because the fast log-linear fit's residual grows with the signal level rather than
+with the noise.
 
 From contributors to a decay time
 ---------------------------------
@@ -160,50 +194,55 @@ flags multimodality. On a single-species recording the decay time is expected to
 be unimodal; a genuinely bimodal histogram is surfaced as a flag for a human to
 audit rather than acted on automatically.
 
-Two line shapes
-----------------
+Line-shape recommendation
+-------------------------
 
-The calibration runs in one of two shape variants, selected by the ``shape``
-argument (``--gaussian`` on the command line):
+The recommendation determines which line shape the fit should use, from the data.
+On the strong on-line bins it fits three candidate decay envelopes: the
+exponential :math:`e^{-a/\tau}` (Lorentzian), the Gaussian
+:math:`e^{-(a/\tau_G)^2}`, and a Voigt envelope
+:math:`e^{-a/\tau_L}\,e^{-(a/\tau_G)^2}` carrying both a Lorentzian and a Gaussian
+decay. It scores each by its **AICc**, the small-sample-corrected Akaike
+information criterion, which measures goodness of fit while penalizing the Voigt
+model for its extra parameter. Each bin votes for its lowest-AICc model, and the
+votes are tallied signal-to-noise-weighted so the strong on-line bins that actually
+constrain the shape dominate. The recommendation is the pure shape
+(``lorentzian`` or ``gaussian``) that leads by at least a set margin of the
+weighted vote mass (``pure_margin_threshold``, default ``0.10``); when neither
+pulls ahead it is left unset.
 
-- **Lorentzian** (the default) fits a pure exponential decay
-  :math:`e^{-a/\tau}` and is consumed by a Lorentzian Stage 5 fit. Its result is
-  stored at ``/stage2b_tau_calibration``.
-- **Gaussian** fits a pure-Gaussian envelope :math:`e^{-(a/\tau_G)^2}` and is
-  consumed by a Gaussian Stage 5 fit. It keeps only the bins where the Gaussian
-  describes the data better than the exponential (by a reduced-:math:`\chi^2`
-  margin) and applies a higher signal-to-noise floor, so its eligible pool is
-  smaller. Its result is stored at ``/stage2b_tau_G_calibration``.
+The Voigt model is a foil, not an output. It is included so that a bin of mixed
+character is not forced to vote for a pure shape it does not match, but the
+recommendation itself is only ever ``lorentzian``, ``gaussian``, or unset: the
+Stage 5 fit supports the two pure shapes, and Voigt vote mass is tabulated for
+diagnostics only. The verdict is stamped on the file as a ``recommended_shape``
+attribute that :doc:`Stage 3 <stage3_peaks>` and :doc:`Stage 5 <stage5_fitting>`
+read.
 
-The two variants are alternative-shape fits to the **same** underlying decay —
-one forces a pure-exponential envelope, the other a pure-Gaussian one — not two
-physical decay times the molecule has at once. Both can be stored on a single
-``.ftmw`` file simultaneously: when the shape vote (below) names the variant a
-run did not just compute, the run also builds that one, so whichever shape the
-Stage 5 fit ends up using, its matching decay time is already on the file. If the
-matching variant is absent, the fit falls back to a default decay time of one
-third of the active-region length.
+Each shape variant is stored separately: the Lorentzian (exponential) result at
+``/stage2b_tau_calibration`` and the Gaussian (:math:`\tau_G`) result at
+``/stage2b_tau_G_calibration``. The Gaussian variant keeps only the bins where the
+Gaussian describes the data better than the exponential (by a
+reduced-:math:`\chi^2` margin) and applies a higher signal-to-noise floor, so its
+eligible contributor pool is smaller.
 
-The line-shape recommendation
-------------------------------
+When the recommendation is unset — no pure shape clears the margin, or the Voigt
+foil leads — :doc:`Stage 5 <stage5_fitting>`'s shape resolver falls through to its
+configured default, **Lorentzian**, and consumes the Lorentzian calibration's
+:math:`\tau_{maj}` (the per-band value where routing is on). The decay time is only
+ever the :math:`T_\text{active}/3` default when no calibration for the resolved
+shape is on the file at all — Stage 2b was not run, or only the other shape's twin
+is present. Because a default ``tau run`` always produces the Lorentzian
+calibration, the common path uses the measured decay time, not the fallback.
 
-Which shape *should* the fit use? The recommendation answers this from the data.
-On the strong on-line bins it fits all three candidates — exponential, Gaussian,
-and Voigt — and holds a signal-to-noise-weighted vote using a small-sample
-information criterion. When one pure shape wins by a clear margin the
-recommendation is ``lorentzian`` or ``gaussian``; when neither pulls ahead it is
-left unset and the fit falls back to its configured default. The verdict is
-stamped on the file as a ``recommended_shape`` attribute that :doc:`Stage 3
-<stage3_peaks>` and :doc:`Stage 5 <stage5_fitting>` read.
+Running a Lorentzian or Gaussian calibration runs the recommendation automatically
+(controlled by ``auto_recommend``, on by default) and, when the vote names the
+*other* shape, also builds that shape's calibration — so a single call leaves the
+file with whichever decay time the fit will actually consume. The vote can also be
+run on its own.
 
-Running a Lorentzian or Gaussian calibration runs the recommendation
-automatically (controlled by ``auto_recommend``, on by default) and, when the
-vote names the *other* shape, also builds that shape's calibration — so a single
-call leaves the file with whichever decay time the fit will actually consume. The
-vote can also be run on its own.
-
-Running the calibration
------------------------
+Running the stage
+-----------------
 
 Stage 2b requires Stages 0–2. The default (Lorentzian) calibration:
 
@@ -289,8 +328,8 @@ the :math:`\tau_G` fit bounds, and the reduced-:math:`\chi^2` eligibility margin
 ``delta_chi2r_min``); the per-band split is configurable through
 ``band_edges_mhz`` and ``band_labels``.
 
-Reading the diagnostics
------------------------
+Inspecting the diagnostics
+--------------------------
 
 ``tau show`` renders two views (``--gaussian`` selects the Gaussian group). The
 **heatmap** (``--kind heatmap``) shows the magnitude across the sliding windows
@@ -325,13 +364,14 @@ histogram and the recovered decay time:
    The decay-time distribution on the example experiment. Top left: the
    contributor histogram with the signal-to-noise-weighted majority
    :math:`\tau_{maj}` overlaid. Top right: per-bin decay time versus
-   signal-to-noise. Bottom left: decay time versus molecular frequency, showing
-   the band-to-band trend the per-band majorities capture. Bottom right: the
+   signal-to-noise. Bottom left: decay time versus molecular frequency, with each
+   per-band majority drawn as a level and its robust spread :math:`\sigma_\tau`
+   shaded — the band-to-band trend the per-band routing captures. Bottom right: the
    one- versus two-component Gaussian-mixture fit used for the multimodality
    flag. The two decay-time scatters cap their axis at one and a half times the
-   active-region length — decay times beyond that are not reliably measurable —
-   and flag any contributor above the cap as an open triangle along the top
-   edge.
+   active-region length, because decay times beyond that are not reliably
+   measurable, and flag any contributor above the cap as an open triangle along
+   the top edge.
 
 The same figures are available from Python through
 :func:`ftmwpipeline.api.visualize_tau_distribution` and
@@ -361,7 +401,7 @@ is far smaller than the trend. It is consistent with the transmit/receive horn
 geometry (a fixed-gain horn's beamwidth narrows with frequency, so the molecular
 beam spends less time in the coherent interaction region at higher frequency,
 shortening the observed decay). Because the trend is geometric rather than
-molecular, the per-band decay times — not a single global value — are the
+molecular, the per-band decay times (not a single global value) are the
 faithful description, which is why per-band routing is on by default.
 
 What the later stages consume

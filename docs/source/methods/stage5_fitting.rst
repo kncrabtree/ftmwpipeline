@@ -308,7 +308,7 @@ Cross-fixture validation
 ------------------------
 
 The defaults are tuned on one experiment (the gaussian-shaped reference at SNR up
-to a few hundred), so the load-bearing question is whether they generalize. The
+to a few hundred), so the question that matters is whether they generalize. The
 seven checked-in fixtures span vinyl cyanide at SNR above :math:`30{,}000`, three
 methyl-rotor spectra, and several sparse ones — built fresh through Stage 5, each
 in the line shape its :doc:`Stage 2b <../stage2b_tau>` vote recommends, with no

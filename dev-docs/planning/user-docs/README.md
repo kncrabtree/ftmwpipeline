@@ -36,6 +36,75 @@ The documentation mirrors Blackchirp's conventions
 - **Theme.** `sphinx_rtd_theme`; a `docs/source/requirements.txt` (or equivalent
   doc-build dependency set) pins the build dependencies.
 
+The following were established during the content-revision pass and the
+de-journalism sweep. The **writing conventions** transfer to *every* page —
+Concepts, Advanced, Methods & Validation, Reference — not only the stage pages. The
+**stage-page structure** at the end is specific to the eight pipeline-stage pages;
+other pages follow their own natural organization, with the writing conventions
+still in force.
+
+Writing conventions (all pages):
+
+- **Register: methods section, not magazine feature.** Declarative, impersonal,
+  present tense. The failure mode to avoid is "Medium-article voice": punchy
+  short-sentence-for-effect, rhetorical questions and setups ("Which shape should
+  the fit use?"), and inline emphasis-for-drama. Do not explain the audience to
+  itself ("from a user's seat", "documented for devs not here"). Write as if for a
+  journal methods section a spectroscopist is reading to decide whether to trust the
+  result.
+- **No hyperbole or assistant-isms.** State things plainly. Drop "load-bearing",
+  "crucially", "it's worth noting", and similar dramatic or filler framing,
+  especially for things that are ordinary or trivial to get right (a sign convention
+  taken from metadata is not "load-bearing"; it just has to be correct).
+- **Section headings name the topic, by purpose.** Flat and declarative, but
+  informative enough that a scientist scanning the table of contents can find what
+  they need. A heading names its subject, not a program internal (prefer
+  "Estimating noise from spectral scatter" to "The scatter estimator"; "Noise vs.
+  leakage" to "Why a simple noise floor fails"). No heading or page title begins
+  with an article (the / a / an), and avoid the "Two X" journalism tic ("Two
+  passes", "Two flags").
+- **Em-dash discipline.** The pervasive failure here is the *paired* em-dash
+  interjection ("text — aside — more text"). Convert most of them, in order of
+  preference: restructure inline so the aside flows without a dash; a parenthetical
+  in round brackets; a subordinate or relative clause; or a colon when the dash
+  introduces an appositive list or elaboration. Keep the punctuation occasional, not
+  zero — single trailing em-dashes read fine, and one or two paired interjections on
+  a long page are acceptable for variety. The monotony of the pattern is the
+  problem, not the character.
+- **Jargon restraint.** Keep internal vocabulary out of the prose. "Canonical" in
+  particular is reserved for the binding-settings concept (defined once on the
+  Stage 1 page); elsewhere the spectrum is the "active FT" / "active spectrum" /
+  "active grid" / "active band."
+- **Show the equations a scientist expects.** Where the method has a governing
+  model, give the formula, not a paraphrase of it — both line-shape responses, the
+  full window model, the σ_f budget. Identify which quantities are fitted and which
+  are fixed (e.g. underbrace the free-peak terms vs the frozen contributors).
+- **Consolidate; do not fragment.** Closely-linked concepts belong in one section.
+  A single-paragraph section is usually a sign of over-fragmentation — merge it into
+  a neighbor. Fold a stage's outputs into its Overview rather than a standalone "what
+  this produces" section.
+- **Flowcharts.** Add an SVG schematic only where the workflow branches or loops and
+  the topology is not obvious from the prose; a straight sequence needs none. Match
+  the established template (`docs/source/figures/stage3_detection_flow.svg`):
+  Helvetica, the UC Davis palette, ~19 px box titles / ~13–15 px subtitles, legible
+  without zooming, branch arrows terminating on box corners, an iteration drawn as a
+  labeled self-loop. All text must meet WCAG 2.1 AA contrast (≥4.5:1 on its box
+  fill); the subtitle/arrow gray is `#495057` (≥7:1 on the light fills), not a
+  lighter gray. Colour two-phase pipelines by phase (light blue `#eef1f4` /
+  light gold `#fff6db`), input white, terminal output navy.
+
+Stage-page structure (the eight pipeline-stage pages only):
+
+- **Page structure.** Overview → Method → methodology aspects → Running the stage →
+  Inspecting → handoff / Limitations. The Overview motivates the stage, states its
+  role in the pipeline, and gives its objectives; the stage's outputs fold into the
+  Overview. A standalone **Method** overview earns its place only when several
+  distinct aspects follow it; when a stage's method is essentially one idea, the
+  Method section carries that content directly instead of previewing a lone
+  subsection (the preview-then-restate redundancy is the thing to avoid). This
+  sequence is for the pipeline-stage pages; the Concepts, Advanced, and Reference
+  pages organize themselves naturally under the writing conventions above.
+
 ## Documentation-site map
 
 Grouped into captioned `toctree` sections in `index.rst`, in roughly the order a
@@ -716,3 +785,47 @@ need a content pass for coverage, organization/flow, and audience appropriatenes
 some pages drift into hyperliteral code-flow narration where they should explain
 the concept to the user. This is the final-revision pass, not a per-page gate —
 keep drafting; see [[user-docs-effort]].
+
+## Handoff: "Fit curation" Concepts page (fresh session)
+
+Deferred from the Stage 6 revision pass. Create a new **Concepts** page
+`docs/source/fit_curation.rst` and add it to the Concepts toctree in `index.rst`
+(beside `settings_and_presets` / `file_format`). It documents the two power-user
+curation surfaces that the Stage 6 page now only points at:
+
+1. **The self-contained HTML report anatomy** — `report run` writes one portable
+   `<stem>_report.html` (stylesheet inlined, every figure base64-embedded;
+   `_collapse_site_to_single_file`, `report_html_impl.py:2739`): an index page
+   (summary block, clickable full-spectrum overview, windows table, final line
+   list), a methods-and-results page (per-stage prose + this experiment's numbers +
+   distribution histograms + MathJax), and one page per fit window (fit panels,
+   fitted-lines table, covariance heatmap, fit history, ledger). `--summary` =
+   index+methods only; `--windows attention` = detail pages for flagged windows only.
+2. **The interactive Curate cart + the curation-CSV language.** The HTML's opt-in
+   `Curate` toggle (`_CURATION_JS`, `report_html_impl.py:1401`) collects edits into a
+   docked cart and exports a curation CSV (`<stem>_curation.csv`), printing
+   `ftmwpipeline review apply <stem>.ftmw <stem>_curation.csv`. The CSV language:
+   header `action,window,freqs,params` (`_CURATION_HEADER`, `stage6_impl.py:2314`;
+   parsed by `parse_curation_file`, `:2400`); actions `add`/`remove`/`merge`/`split`/
+   `accept`; `window` = int id; `freqs` = `;`-separated MHz (add/remove/split: one;
+   merge: ≥2; accept: none); `params` = `;`-separated `key=value` (`into=K` for split,
+   `candidate=F` for accept); blank lines and `#` comments ignored. Coalescing
+   (`_resolve_curation_plan`, `:2500`): a run of `add`/`remove` on one window collapses
+   into one refit; `merge`/`split`/`accept` flush the pending edit. `review apply`
+   (`--dry-run` previews the plan + warnings without refitting) returns
+   `CurationApplyResult(plan, warnings, applied, dry_run)`. Worked example CSV:
+
+   ```
+   action,window,freqs,params
+   remove,42,26613.6131,
+   add,42,26614.20,
+   merge,17,9001.10;9001.18,
+   split,5,12000.50,into=3
+   accept,8,,candidate=15001.4
+   ```
+
+When the page exists, replace the two "(forthcoming)" / "their own dedicated page"
+mentions in `stage6_review.rst` (the Reports section) with `:doc:` cross-links, and
+trim the Stage 6 HTML-anatomy paragraph to a one-line pointer. Apply the writing
+conventions in "Style and conventions" (the page is not a pipeline stage, so it has
+no Overview→Method structure; organize it naturally).

@@ -124,15 +124,17 @@ def set_log_spectrum_ylim(
 ) -> None:
     """Apply the shared log-magnitude y-axis for a spectrum panel.
 
-    Sets a log y-scale with the lower limit a decade below the median noise
+    Sets a log y-scale with the lower limit at half the smallest noise value
     (floored at ``1e-12``) and the upper limit ``y_max_factor``-scaled headroom
     above the tallest feature ``top`` -- so the noise floor and the 100s-of-x
-    stronger lines are both legible. ``y_max_factor`` only sets the headroom;
-    its baseline of 25 leaves a 1.2x minimum so small factors do not clip peaks.
-    Shared by the Stage 3 peak and Stage 4 window spectrum panels.
+    stronger lines are both legible. Anchoring just below the noise floor rather
+    than a decade under the median devotes the vertical span to the spread of
+    peak heights instead of empty sub-noise space. ``y_max_factor`` only sets the
+    headroom; its baseline of 25 leaves a 1.2x minimum so small factors do not
+    clip peaks. Shared by the Stage 3 peak and Stage 4 window spectrum panels.
     """
-    median_rms = float(np.median(rms_noise)) if len(rms_noise) else 1.0
-    floor = max(median_rms * 0.1, 1e-12)
+    min_rms = float(np.min(rms_noise)) if len(rms_noise) else 1.0
+    floor = max(min_rms * 0.5, 1e-12)
     ax.set_yscale("log")
     ax.set_ylim(floor, top * max(y_max_factor / 25.0, 1.2))
 
