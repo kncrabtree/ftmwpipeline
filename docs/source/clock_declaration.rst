@@ -14,8 +14,8 @@ the digitizer sample clock. Those clocks leave deterministic fingerprints in the
 spectrum: narrow, non-decaying tones at frequencies set by clock arithmetic
 (harmonics, mixing products, sample-rate images). They are *spurs*, not molecular
 lines, and the :doc:`Stage 5 <stage5_fitting>` spur gate already removes the ones
-it can recognize. Declaring the instrument's clocks turns that recognition from
-an empirical guess into physics.
+it can recognize. Declaring the instrument's clocks grounds that recognition in
+the known clock arithmetic instead of an empirical guess.
 
 A clock declaration adds two pieces of prior knowledge:
 
