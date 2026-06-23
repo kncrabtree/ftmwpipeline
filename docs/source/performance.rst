@@ -10,9 +10,9 @@ Performance
 ===========
 
 The pipeline parallelizes the expensive stages automatically and ships with
-defaults tuned to give a good fit without hand-holding. The controls that remain
-are few: how many CPU cores the work spreads across, how to make a report cheaper
-when you do not need every figure, and a handful of settings that trade fitting
+defaults tuned to give a good fit out of the box. The controls that remain are
+few: how many CPU cores the work spreads across, how to make a report cheaper
+when not every figure is needed, and a handful of settings that trade fitting
 thoroughness against time.
 
 Two of the stages do enough work to be worth parallelizing:
@@ -34,10 +34,10 @@ process), and pins the linear-algebra libraries inside each worker to a single
 thread so that *N* workers each running multi-threaded math do not oversubscribe
 the machine. On a dedicated workstation this is usually what you want.
 
-You will want to override it when the default does not fit the machine you are on
-— a shared login node where grabbing every core is antisocial, or a batch
-scheduler that gave your job a fixed core allocation the pipeline cannot see. Two
-controls set the worker count, highest precedence first:
+An override is warranted when the default does not fit the machine — a shared
+login node where cores must be left free for other users, or a batch scheduler
+that allocated a fixed core count the pipeline cannot see. Two controls set the
+worker count, highest precedence first:
 
 - the ``--jobs N`` (``-j N``) flag on ``fit run`` and ``report run``;
 - the ``FTMW_MAX_WORKERS`` environment variable.
@@ -68,12 +68,12 @@ The same control is available programmatically as a ``jobs`` argument:
    ftmw.fit_peaks("exp.ftmw", jobs=8)
    ftmw.report_run("exp.ftmw", jobs=8)
 
-Two things worth knowing. First, the worker count does **not** change the
-result — the fit and the rendered figures are identical regardless of how many
-workers run them — so it is purely a speed/occupancy choice, safe to set per run.
-Second, because each worker already pins its math libraries to one thread, you do
-not need to set ``OMP_NUM_THREADS`` / ``OPENBLAS_NUM_THREADS`` yourself for the
-pool; the pipeline manages that to avoid oversubscription.
+The worker count does **not** change the result — the fit and the rendered
+figures are identical regardless of how many workers run them — so it is purely a
+speed/occupancy choice, safe to set per run. And because each worker already pins
+its math libraries to one thread, the ``OMP_NUM_THREADS`` /
+``OPENBLAS_NUM_THREADS`` variables need not be set by hand for the pool; the
+pipeline manages that to avoid oversubscription.
 
 Making a report cheaper
 -----------------------
@@ -151,9 +151,9 @@ generic guess, so the solver begins near the solution and tends to converge in
 fewer iterations. Stage 2b itself costs about a second, so a good decay-time
 calibration can pay for itself in the fit.
 
-The lesson is to read performance across the whole pipeline rather than stage by
-stage: a choice made at detection or calibration time propagates into the most
-expensive stage. Tune the earlier, cheaper stages first.
+Performance is best read across the whole pipeline rather than stage by stage: a
+choice made at detection or calibration time propagates into the most expensive
+stage. Tune the earlier, cheaper stages first.
 
 Where the time goes
 -------------------

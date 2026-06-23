@@ -20,10 +20,10 @@ transforms (frame averaging, ADC-offset cleanup) *inside* the pipeline so they
 land in the provenance, and keeps the diagnostic segments the later stages need.
 
 The governing rule is that **any transform that changes the science record happens
-in-pipeline**. You can always average a scope record into a bare FID offline and
-import that through the generic :doc:`csv or ftmw-hdf5 path <input_formats>`, but
-then the provenance and the diagnostic segments are lost. Importing the raw record
-keeps both.
+in-pipeline**. A scope record can always be averaged into a bare FID offline and
+imported through the generic :doc:`csv or ftmw-hdf5 path <input_formats>`, but then
+the provenance and the diagnostic segments are lost. Importing the raw record keeps
+both.
 
 The segmented record
 --------------------
@@ -62,14 +62,17 @@ itself). Two options change that:
 
 The averaging is a plain mean — no robust averaging or frame rejection.
 
-Importing a Keysight record
----------------------------
+The shipped loader: keysight-mat
+--------------------------------
 
-The shipped loader is ``keysight-mat``, for Keysight oscilloscope ``.mat`` files
-(MATLAB v7.3, which is HDF5 underneath). It reads the raw samples and the sample
-clock, vertical scaling, and instrument identity, and is auto-detected from the
-``.mat`` extension and the file's channel structure. It is a thin vendor loader —
-other vendors' raw formats are future sibling loaders, not options on this one.
+The layout parameters, averaging, interleave cleanup, chirp window, and
+pre-record anchor are all generic to the segmented-scope-record model; a per-vendor
+loader supplies only the raw samples and the acquisition metadata. One such loader
+ships today, ``keysight-mat``, for Keysight oscilloscope ``.mat`` files (MATLAB
+v7.3, which is HDF5 underneath). It reads the raw samples and the sample clock,
+vertical scaling, and instrument identity, and is auto-detected from the ``.mat``
+extension and the file's channel structure. Other vendors' raw formats are future
+sibling loaders feeding the same generic surface, not options on this one.
 
 .. code-block:: console
 
@@ -149,11 +152,15 @@ Interleave-offset cleanup
 A high-rate digitizer is built from several slower ADCs interleaved in turn. Tiny
 fixed voltage offsets between those sub-converters repeat every ``M`` samples and
 appear in the spectrum as a comb of tones at multiples of ``f_s / M``. Because the
-offsets are a fixed per-phase DC pattern, they can be estimated and removed:
-``--interleave-factors`` (for example ``16,512``) declares the interleave depths,
-and the import estimates each per-phase mean on the **raw pre-record samples**
-(before voltage scaling, where the pattern is cleanest) and subtracts the tiled
-pattern from the whole record before slicing.
+offsets are a fixed per-phase DC pattern, they can be estimated and removed.
+
+The cleanup is opt-in and operator-declared. Passing ``--interleave-factors`` (for
+example ``16,512``) declares the interleave depths and runs the cleanup; omitting
+it suppresses the cleanup entirely. The depths are a property of the digitizer the
+operator supplies — they are not auto-detected from the record. When declared, the
+import estimates each per-phase mean on the **raw pre-record samples** (before
+voltage scaling, where the pattern is cleanest) and subtracts the tiled pattern
+from the whole record before slicing.
 
 The cleanup is partial by design — part of the comb rides the signal path, not
 just the ADC, so the subtraction reduces but does not erase it. What it leaves
@@ -163,13 +170,12 @@ so the :doc:`spur lattice <clock_declaration>` knows to expect them.
 
 One subtlety matters for trusting the spur lane. The cleanup estimates its pattern
 *on the pre-record*, so it nulls those comb frequencies in the stored pre-record
-exactly — a manufactured silence. An unguarded chirp-response test would read that
-silence as "absent without the chirp" and wrongly protect a clock tone. The probe
-therefore returns *inconclusive* at the cleanup-comb frequencies and lets the
-lattice and decay lanes decide. The general lesson is worth stating: any
-preprocessing estimated on a reference segment manufactures absence in that segment
-at its own correction frequencies, and any later statistic on that segment must
-exclude them.
+exactly. An unguarded chirp-response test would read that absence as "absent without
+the chirp" and wrongly protect a clock tone. The probe therefore returns
+*inconclusive* at the cleanup-comb frequencies and lets the lattice and decay lanes
+decide. The principle is general: any preprocessing estimated on a reference segment
+removes its own correction frequencies from that segment, so any later statistic on
+the segment must exclude them.
 
 The chirp window and the FID start
 ----------------------------------
@@ -178,10 +184,10 @@ The FID must start only after the excitation chirp and the switch ring-down have
 cleared. How long that takes is a property of the instrument — how quickly its
 chamber and switches settle — not of the digitizer; some instruments settle in a
 fraction of a microsecond, others ring for several (the example Keysight record is
-one of the latter, its chamber being lightly absorbed). Scope-record import lets
-you declare the chirp window at import time (``--chirp-start-us`` /
-``--chirp-end-us`` / ``--start-margin-us``), and the margin is where you allow for
-whatever ring-down your instrument has.
+one of the latter, its chamber being lightly absorbed). Scope-record import
+declares the chirp window at import time (``--chirp-start-us`` / ``--chirp-end-us``
+/ ``--start-margin-us``), and the margin absorbs whatever ring-down the instrument
+has.
 
 This feeds the same declared-chirp-window path :doc:`Stage 0 start-time detection
 <stage0_import>` already uses: a declared chirp end sets the recommended start to
