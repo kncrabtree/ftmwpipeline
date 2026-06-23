@@ -278,6 +278,8 @@ Three mechanisms shape the final line population: recovering real lines the init
 pass missed, excluding instrumental artifacts, and pruning lines the data do not
 support.
 
+.. _stage5-residual-rescue:
+
 **Residual rescue.** After the add loop converges, a **rescue** pass re-examines the
 residual for weak lines the initial nomination missed — typically lines on the
 shoulder of a strong neighbor, where the Stage 3 position was slightly off. It
@@ -432,6 +434,14 @@ introduces no new tuning. It measures how firmly the data *determine* a line, no
 whether the line is a real, assignable transition — a high score can still attach
 to an unmasked spur or an unassigned feature, which is why it informs curation
 rather than gating it.
+
+Adding ``--rescue`` to any per-window selector emits a companion figure that traces
+how the :ref:`residual-rescue pass <stage5-residual-rescue>` built that window: the
+data and model, the final residual with each rescue round's candidate nominations
+marked on it — filled where a nomination became a retained line, open where it was
+rejected or pruned — and a summary of the per-round :math:`\chi^2` descent and peak
+budget. It renders from the persisted rescue record, so it needs no re-fit; it is the
+view for seeing which weak lines the rescue recovered and which it correctly declined.
 
 **Grading.** ``fit check`` grades a completed fit against a signal-to-noise-aware
 acceptance framework: it flags windows whose reduced

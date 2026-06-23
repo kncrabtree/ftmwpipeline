@@ -231,7 +231,9 @@ sets the cross-window worker pool (see :doc:`performance`).
 with window selectors (``--window``, ``--window-list``, ``--freq``,
 ``--freq-list``, ``--random``, ``--top-snr``, ``--all-windows``), a consolidated
 per-window detail figure for each. ``--apodize WINDOW`` adds a diagnostic
-apodized data-vs-model comparison. ``fit check`` is a read-only health
+apodized data-vs-model comparison, and ``--rescue`` a residual-rescue summary
+(data/model, the residual with each round's nominations, and the per-round
+:math:`\chi^2` descent and peak budget). ``fit check`` is a read-only health
 assessment against the SNR-aware acceptance gate, with a Tier-3 catalog
 comparison under ``--ground-truth``. See :doc:`stage5_fitting`.
 

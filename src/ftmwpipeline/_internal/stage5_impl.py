@@ -2373,7 +2373,7 @@ def render_fit_detail_impl(
     )
 
 
-def render_rescue_progression_impl(
+def render_rescue_summary_impl(
     file_path: str,
     window_id: int,
     *,
@@ -2381,16 +2381,43 @@ def render_rescue_progression_impl(
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
 ) -> Any:
-    """Render the residual-rescue progression figure for one window.
+    """Render the residual-rescue summary figure for one window.
 
-    Reads the window's persisted ``rescue_events`` (no re-fit) and draws the
-    chi-squared trajectory, per-round peak budget, and residual nominations.
-    A window with no rescue rounds yields an annotated placeholder figure.
+    Reconstructs the window's residual spectrum from the persisted fit (the same
+    ``prepare_window_panels`` prep the ``fit show`` detail figure uses -- exact,
+    no re-fit) and combines, in one figure: the window data/model, the final
+    residual with each rescue round's nominations overlaid (filled = retained as
+    a fitted line, open = rejected), the rescue chi-squared trajectory, and the
+    per-round peak budget. Reads the rounds from ``rescue_events``.
     """
-    from ..visualization.fit_visualization import plot_rescue_progression
+    from ..visualization.fit_detail import prepare_window_panels
+    from ..visualization.fit_visualization import plot_rescue_summary
 
     bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
     wf = bundle.fit.window_fit(window_id)
+    diag = bundle.fit.diagnostics or {}
+    panel_data = prepare_window_panels(
+        wf,
+        frequencies=bundle.frequencies,
+        complex_spectrum=bundle.complex_spectrum,
+        rms_noise=bundle.rms_noise,
+        sideband=bundle.sideband,
+        acquisition_us=bundle.acquisition_us,
+        amplitude_scale=bundle.amplitude_scale,
+        units_label=bundle.units_label,
+        trim_mhz=bundle.trim_mhz,
+        freq_padded=bundle.freq_padded,
+        spec_padded=bundle.spec_padded,
+        spurs=diag.get("gated_spurs"),
+        survival_floor=float(
+            diag.get("peak_survival", {}).get(
+                "snr_floor", DEFAULT_PROMOTION_MIN_SNR * 1.1
+            )
+        ),
+        vif_collapse_threshold=float(
+            diag.get("vif_collapse", {}).get("vif_threshold", 4.0)
+        ),
+    )
     kwargs: Dict[str, Any] = {
         "window_id": window_id,
         "acquisition_us": bundle.acquisition_us,
@@ -2400,7 +2427,9 @@ def render_rescue_progression_impl(
         kwargs["figsize"] = figsize
     if title is not None:
         kwargs["title"] = title
-    return plot_rescue_progression(list(wf.rescue_events), **kwargs)
+    return plot_rescue_summary(
+        panel_data, list(wf.rescue_events), bundle.sideband, **kwargs
+    )
 
 
 def render_fit_panels_impl(
@@ -2491,7 +2520,10 @@ def fit_window_report_text(
     labels = frequency_sorted_labels(
         [float(pk.frequency_mhz) for pk in wf.fitted_peaks]
     )
-    for pk, lbl in zip(wf.fitted_peaks, labels):
+    # List ascending in frequency so the log starts with peak A.
+    for pk, lbl in sorted(
+        zip(wf.fitted_peaks, labels), key=lambda t: float(t[0].frequency_mhz)
+    ):
         freq_s = _format_spectroscopic(float(pk.frequency_mhz), pk.frequency_error)
         amp_val = float(pk.amplitude) * amp
         amp_err = pk.amplitude_error * amp if pk.amplitude_error is not None else None
@@ -2728,9 +2760,10 @@ def fit_show_impl(
     selected windows is in ``"log"``. With ``apodize`` set, an extra windowed
     (apodized) data-vs-model comparison figure is produced per window
     (``<stem>_window_<id>_apodized.png``) -- a diagnostic view, not a re-fit.
-    With ``rescue`` set, an extra residual-rescue progression figure is produced
-    per window (``<stem>_window_<id>_rescue.png``) from the persisted rescue
-    rounds (no re-fit).
+    With ``rescue`` set, an extra residual-rescue summary figure is produced per
+    window (``<stem>_window_<id>_rescue.png``) from the persisted rescue rounds
+    (no re-fit): window data/model, the final residual with each round's
+    nominations overlaid, the chi-squared trajectory, and the peak budget.
     """
     if not _has_selection(window_ids, freqs, random_n, top_snr, all_windows):
         fig = visualize_fit_impl(
@@ -2789,7 +2822,7 @@ def fit_show_impl(
                 wfig.savefig(str(wdest), dpi=130)
                 paths.append(str(wdest))
         if rescue:
-            rfig = render_rescue_progression_impl(
+            rfig = render_rescue_summary_impl(
                 file_path, wid, bundle=bundle, figsize=figsize
             )
             figures.append(rfig)

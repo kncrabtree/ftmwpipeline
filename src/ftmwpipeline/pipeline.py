@@ -2011,7 +2011,9 @@ class Pipeline:
         ``random_n`` / ``top_snr`` / ``all_windows``) compose as a union; with
         ``output_dir`` each detail figure is written as
         ``<stem>_window_<id>.png``. With ``rescue`` an extra residual-rescue
-        progression figure is produced per window (no re-fit). Returns
+        summary figure is produced per window (no re-fit): data/model, the final
+        residual with each round's nominations, the chi-squared trajectory, and
+        the peak budget. Returns
         ``{"mode", "window_ids", "figures", "paths", "log"}``. Requires Stage 5.
         """
         try:

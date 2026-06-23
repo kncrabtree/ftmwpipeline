@@ -20,11 +20,14 @@ residual-on-data view, which carries the diagnostic weight.
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, List, Optional, Tuple, Union, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
+
+if TYPE_CHECKING:
+    from .fit_detail import WindowPanelData
 
 from ..core.data_structures import (
     FittingResult,
@@ -704,190 +707,210 @@ def plot_spectrum_fit(
     )
 
 
-def plot_rescue_progression(
-    rounds: List[RescueRoundInfo],
-    *,
-    window_id: int,
-    acquisition_us: float,
-    file_stem: str = "",
-    detector_floor_snr: float = 2.5,
-    figsize: Tuple[float, float] = (11.0, 4.4),
-    title: Optional[str] = None,
-) -> plt.Figure:
-    """Residual-rescue progression for one window, from the persisted rounds.
+# Within this many resolution elements of a retained fitted line, a rescue
+# nomination is taken to have been accepted (it became a fitted peak); farther
+# than this it was rejected or later pruned. Per-candidate accept is not
+# persisted, so coincidence with a surviving line is the honest accept signal.
+_RESCUE_ACCEPT_TOL_RES = 0.6
 
-    Renders entirely from ``FittingResult.rescue_events`` (no re-fit): a
-    window's residual-rescue chain is a deterministic function of the persisted
-    fit, so this is a cheap on-demand "how was this window built up" view.
 
-    Three panels:
-
-    * **chi-squared trajectory** -- the noise-weighted window chi-squared at the
-      initial fit and after each round, accepted rounds in green and the
-      terminating rejected round in red.
-    * **peak budget per round** -- inherited / rescue-added / pruned+merged,
-      annotated with the surviving peak count.
-    * **residual nominations per round** -- the detector candidates each round
-      passed to the conservative fit, by offset from the window center and SNR
-      (marker size tracks ``|residual|``), with the detector floor marked.
-
-    A window with no rescue rounds renders a single annotated placeholder axis.
-
-    Parameters
-    ----------
-    rounds :
-        The window's :attr:`FittingResult.rescue_events`, in round order.
-    window_id :
-        Window id, for the title.
-    acquisition_us :
-        Active acquisition length (µs); the resolution element ``1 /
-        acquisition_us`` MHz normalizes the candidate-offset axis annotation.
-    file_stem :
-        File stem for the title (optional).
-    detector_floor_snr :
-        Residual-detector SNR floor drawn as a reference line (the screening
-        ``snr_threshold``; default 2.5).
-    figsize, title :
-        Standard matplotlib overrides.
-    """
-    ordered = sorted(rounds, key=lambda r: r.round_idx)
-    stem = f" ({file_stem})" if file_stem else ""
-
-    if not ordered:
-        fig, ax = plt.subplots(figsize=(figsize[0] * 0.6, figsize[1] * 0.7))
-        ax.text(
-            0.5,
-            0.5,
-            f"no residual-rescue rounds for window {window_id}",
-            ha="center",
-            va="center",
-            fontsize=11,
-            color="0.4",
-            transform=ax.transAxes,
-        )
-        ax.set_axis_off()
-        fig.suptitle(
-            title or f"Residual-rescue progression -- window {window_id}{stem}",
-            fontsize=11,
-        )
-        return fig
-
-    fig = plt.figure(figsize=figsize)
-    # Reserve headroom for the suptitle and footroom for the budget legend so
-    # the figure renders correctly when saved without bbox_inches="tight".
-    gs = fig.add_gridspec(
-        1, 3, wspace=0.32, width_ratios=[1.0, 1.15, 1.25],
-        top=0.82, bottom=0.2, left=0.07, right=0.98,
-    )
-    ax_chi = fig.add_subplot(gs[0])
-    ax_budget = fig.add_subplot(gs[1])
-    ax_cand = fig.add_subplot(gs[2])
-
-    # --- chi-squared trajectory --------------------------------------------
+def _draw_rescue_chi2(ax: plt.Axes, ordered: List[RescueRoundInfo]) -> None:
+    """Noise-weighted window chi-squared at the initial fit and after each round."""
     xs = list(range(len(ordered) + 1))
     ys = [ordered[0].chi2_before] + [r.chi2_after for r in ordered]
-    ax_chi.semilogy(xs, ys, "-", color="0.5", lw=1.3, zorder=1)
-    ax_chi.scatter([0], [ys[0]], s=55, color="0.35", zorder=3)
+    ax.semilogy(xs, ys, "-", color="0.5", lw=1.3, zorder=1)
+    ax.scatter([0], [ys[0]], s=50, color="0.35", zorder=3)
     for i, r in enumerate(ordered):
         c = QUAD if r.accepted else DOUBLE_DECKER
-        ax_chi.scatter(
-            [i + 1], [r.chi2_after], s=60, color=c, zorder=3,
+        ax.scatter(
+            [i + 1], [r.chi2_after], s=55, color=c, zorder=3,
             edgecolor="white", linewidth=0.8,
         )
-    ax_chi.set_xticks(xs)
-    ax_chi.set_xticklabels(["init"] + [f"R{r.round_idx}" for r in ordered], fontsize=8)
-    ax_chi.set_ylabel(r"window $\chi^2$ (noise-weighted)", fontsize=9)
-    ax_chi.set_title(r"rescue $\chi^2$ trajectory", fontsize=10)
-    apply_bare_style(ax_chi)
-    ax_chi.legend(
+    ax.set_xticks(xs)
+    ax.set_xticklabels(["init"] + [f"R{r.round_idx}" for r in ordered], fontsize=8)
+    ax.set_ylabel(r"window $\chi^2$", fontsize=9)
+    ax.set_title(r"rescue $\chi^2$ trajectory", fontsize=10)
+    apply_bare_style(ax)
+    ax.legend(
         handles=[
             Line2D([], [], marker="o", ls="", color=QUAD, label="accepted"),
             Line2D([], [], marker="o", ls="", color=DOUBLE_DECKER, label="rejected"),
         ],
-        fontsize=7,
-        loc="upper right",
-        frameon=False,
+        fontsize=7, loc="upper right", frameon=False,
     )
 
-    # --- peak budget per round ---------------------------------------------
+
+def _draw_rescue_budget(ax: plt.Axes, ordered: List[RescueRoundInfo]) -> None:
+    """Per-round peak budget: inherited / rescue-added / pruned+merged."""
     y = np.arange(len(ordered))[::-1]
     max_x = 1
     for i, r in enumerate(ordered):
         yy = y[i]
         base = r.n_initial_peaks
-        ax_budget.barh(
-            yy, base, height=0.6, color="0.78", zorder=2,
-            label="inherited" if i == 0 else None,
-        )
+        ax.barh(yy, base, height=0.6, color="0.78", zorder=2,
+                label="inherited" if i == 0 else None)
         if r.n_rescue_added:
-            ax_budget.barh(
-                yy, r.n_rescue_added, left=base, height=0.6, color=QUAD, zorder=2,
-                label="rescue-added" if i == 0 else None,
-            )
+            ax.barh(yy, r.n_rescue_added, left=base, height=0.6, color=QUAD,
+                    zorder=2, label="rescue-added" if i == 0 else None)
         removed = r.n_pruned_total + r.n_merged
         if removed:
-            ax_budget.barh(
-                yy, removed, left=base + r.n_rescue_added, height=0.6,
-                color=DOUBLE_DECKER, alpha=0.55, hatch="///", zorder=2,
-                label="pruned/merged" if i == 0 else None,
-            )
+            ax.barh(yy, removed, left=base + r.n_rescue_added, height=0.6,
+                    color=DOUBLE_DECKER, alpha=0.55, hatch="///", zorder=2,
+                    label="pruned/merged" if i == 0 else None)
         final = base + r.n_rescue_added - removed
-        bar_end = base + r.n_rescue_added + removed  # right edge of the drawn bar
+        bar_end = base + r.n_rescue_added + removed
         max_x = max(max_x, bar_end)
-        ax_budget.annotate(
-            f"= {final}", (bar_end + 0.25, yy), va="center", fontsize=8,
-            color="0.25", fontweight="bold",
-        )
-    ax_budget.set_yticks(y)
-    ax_budget.set_yticklabels([f"R{r.round_idx}" for r in ordered], fontsize=8)
-    ax_budget.set_xlim(0, max_x + 2.0)
-    ax_budget.set_xlabel("peaks in model", fontsize=9)
-    ax_budget.set_title("peak budget per round", fontsize=10)
-    apply_bare_style(ax_budget)
-    ax_budget.legend(
-        fontsize=7, loc="upper center", bbox_to_anchor=(0.5, -0.16),
-        ncol=3, frameon=False,
-    )
+        ax.annotate(f"= {final}", (bar_end + 0.25, yy), va="center", fontsize=8,
+                    color="0.25", fontweight="bold")
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"R{r.round_idx}" for r in ordered], fontsize=8)
+    ax.set_xlim(0, max_x + 2.0)
+    ax.set_xlabel("peaks in model", fontsize=9)
+    ax.set_title("peak budget per round", fontsize=10)
+    apply_bare_style(ax)
+    ax.legend(fontsize=7, loc="lower right", frameon=False, ncol=1)
 
-    # --- residual nominations per round ------------------------------------
-    any_cand = False
-    for i, r in enumerate(ordered):
-        if not r.candidates:
-            continue
-        any_cand = True
-        fr = [c.frequency_mhz for c in r.candidates]
-        snr = [c.snr for c in r.candidates]
-        mag = np.array([c.magnitude for c in r.candidates], dtype=float)
-        mscale = mag / mag.max() if mag.max() > 0 else np.ones_like(mag)
-        ax_cand.scatter(
-            fr, snr, s=25 + 120 * mscale,
-            color=_RESCUE_ROUND_COLORS[i % len(_RESCUE_ROUND_COLORS)],
-            alpha=0.8, edgecolor="white", linewidth=0.6, zorder=3,
-            label=f"R{r.round_idx} ({r.n_rescue_added} accepted)",
+
+def plot_rescue_summary(
+    panel_data: "WindowPanelData",
+    rounds: List[RescueRoundInfo],
+    sideband: SidebandLike,
+    *,
+    window_id: int,
+    acquisition_us: float,
+    file_stem: str = "",
+    figsize: Tuple[float, float] = (11.0, 9.0),
+    title: Optional[str] = None,
+) -> plt.Figure:
+    """Residual-rescue summary for one window, from the persisted fit.
+
+    Renders cheaply from the persisted state (no re-fit): the window's residual
+    spectrum is reconstructed by the same ``prepare_window_panels`` prep the
+    ``fit show`` detail figure uses, and the rescue rounds come from
+    ``FittingResult.rescue_events``. Four panels in three rows:
+
+    * **data and model** (full width) -- the window ``|data|`` with the
+      converged ``|model|`` overlaid.
+    * **residual and nominations** (full width, shared frequency axis) -- the
+      final ``|residual|`` with its ``+/- sigma`` band, and every round's
+      detector nominations at their persisted round-time residual magnitude
+      (color by round; **filled** when the nomination became a retained fitted
+      line, **open** when it was rejected or later pruned).
+    * **rescue chi-squared trajectory** and **peak budget per round** (bottom
+      row) -- the summary of how the model grew across rounds.
+
+    Only the final residual *curve* is reconstructable from the persisted fit
+    (the intermediate per-round fits are not stored), so the markers carry the
+    per-round story on top of the one final residual.
+
+    Parameters
+    ----------
+    panel_data :
+        Prepared window panels from
+        :func:`ftmwpipeline.visualization.fit_detail.prepare_window_panels`.
+    rounds :
+        The window's :attr:`FittingResult.rescue_events`, in round order.
+    sideband :
+        Pipeline sideband -- converts a candidate's signed window offset to a
+        molecular frequency (``f = center + s * offset``).
+    window_id, acquisition_us, file_stem, figsize, title :
+        Title fields, the resolution element for the accept tolerance, and
+        standard matplotlib overrides.
+    """
+    ordered = sorted(rounds, key=lambda r: r.round_idx)
+    stem = f" ({file_stem})" if file_stem else ""
+    amp = panel_data.amp
+    ulabel = f" ({panel_data.units_label})" if panel_data.units_label else ""
+    f = np.asarray(panel_data.f_slice, dtype=float)
+    s = sideband_sign(sideband)
+    fitted = np.asarray(panel_data.fitted_freqs, dtype=float)
+    res_el = (1.0 / acquisition_us) if acquisition_us > 0.0 else 0.1
+    tol = _RESCUE_ACCEPT_TOL_RES * res_el
+
+    fig = plt.figure(figsize=figsize)
+    ax_chi: Optional[plt.Axes] = None
+    ax_budget: Optional[plt.Axes] = None
+    if ordered:
+        gs = fig.add_gridspec(
+            3, 2, height_ratios=[2.0, 2.2, 1.8], hspace=0.42, wspace=0.28,
+            left=0.08, right=0.97, top=0.93, bottom=0.07,
         )
-    if any_cand:
-        ax_cand.axhline(detector_floor_snr, color="0.4", ls="--", lw=1.0, zorder=1)
-        ax_cand.set_yscale("log")
-        ax_cand.legend(fontsize=7, loc="best", frameon=False)
+        ax_top = fig.add_subplot(gs[0, :])
+        ax_res = fig.add_subplot(gs[1, :], sharex=ax_top)
+        ax_chi = fig.add_subplot(gs[2, 0])
+        ax_budget = fig.add_subplot(gs[2, 1])
     else:
-        ax_cand.text(
-            0.5, 0.5, "no residual candidates nominated", ha="center", va="center",
-            fontsize=9, color="0.4", transform=ax_cand.transAxes,
+        gs = fig.add_gridspec(
+            2, 1, height_ratios=[2.0, 2.2], hspace=0.3,
+            left=0.08, right=0.97, top=0.92, bottom=0.1,
         )
-    ax_cand.set_xlabel("offset from window center (MHz)", fontsize=9)
-    ax_cand.set_ylabel("residual candidate SNR", fontsize=9)
-    ax_cand.set_title("residual nominations per round", fontsize=10)
-    apply_bare_style(ax_cand)
+        ax_top = fig.add_subplot(gs[0, 0])
+        ax_res = fig.add_subplot(gs[1, 0], sharex=ax_top)
 
-    chi0, chiN = ordered[0].chi2_before, ordered[-1].chi2_after
+    # --- Row 1: data + model ----------------------------------------------
+    ax_top.plot(f, np.abs(panel_data.z_slice) * amp, color=DOUBLE_DECKER, lw=1.0,
+                label="data |X|")
+    ax_top.plot(f, np.abs(panel_data.model_slice) * amp, color=AGGIE_BLUE, lw=1.0,
+                label="model |X|")
+    for pf in panel_data.fitted_freqs:
+        ax_top.axvline(pf, color=POPPY, lw=0.7, alpha=0.45, zorder=1)
+    ax_top.set_ylabel(f"|X(f)|{ulabel}", fontsize=9)
+    ax_top.legend(fontsize=7, loc="upper right", frameon=False)
+    ax_top.ticklabel_format(useOffset=False, style="plain", axis="x")
+    apply_bare_style(ax_top)
+
+    # --- Row 2: residual + per-round nominations --------------------------
+    ax_res.plot(f, np.abs(panel_data.residual) * amp, color=PINOT, lw=0.8,
+                label="final |residual|", zorder=2)
+    ax_res.plot(f, np.asarray(panel_data.sigma_slice, dtype=float) * amp,
+                color="0.55", lw=0.8, ls="--", label=r"$\sigma$", zorder=1)
+    seen_open = False
+    round_handles: List[Line2D] = []
+    for i, r in enumerate(ordered):
+        col = _RESCUE_ROUND_COLORS[i % len(_RESCUE_ROUND_COLORS)]
+        round_handles.append(
+            Line2D([], [], marker="o", ls="", color=col, label=f"R{r.round_idx}")
+        )
+        for c in r.candidates:
+            mf = panel_data.center + s * c.frequency_mhz
+            mag = abs(c.magnitude) * amp
+            accepted = bool(fitted.size and np.min(np.abs(fitted - mf)) <= tol)
+            ax_res.scatter(
+                [mf], [mag], s=48, zorder=3, linewidth=1.1,
+                facecolor=(col if accepted else "none"), edgecolor=col,
+            )
+            seen_open = seen_open or (not accepted)
+    ax_res.set_xlabel("frequency (MHz)", fontsize=9)
+    ax_res.set_ylabel(f"|residual|{ulabel}", fontsize=9)
+    ax_res.ticklabel_format(useOffset=False, style="plain", axis="x")
+    style_handles = [
+        Line2D([], [], marker="o", ls="", mfc="0.4", mec="0.4", label="accepted"),
+    ]
+    if seen_open:
+        style_handles.append(
+            Line2D([], [], marker="o", ls="", mfc="none", mec="0.4", label="rejected")
+        )
+    ax_res.legend(
+        handles=round_handles + style_handles, fontsize=7, loc="upper right",
+        frameon=False, ncol=2,
+    )
+    apply_bare_style(ax_res)
+
+    # --- Row 3: chi2 trajectory + peak budget -----------------------------
+    if ax_chi is not None and ax_budget is not None:
+        _draw_rescue_chi2(ax_chi, ordered)
+        _draw_rescue_budget(ax_budget, ordered)
+
+    chi_str = ""
+    if ordered:
+        chi_str = (
+            rf":  {len(ordered)} round(s), $\chi^2$ "
+            rf"{ordered[0].chi2_before:.0f}$\to${ordered[-1].chi2_after:.0f}"
+        )
+    else:
+        chi_str = ":  no residual-rescue rounds"
     fig.suptitle(
-        title
-        or (
-            f"Residual-rescue progression -- window {window_id}{stem}:  "
-            f"{len(ordered)} round(s), "
-            rf"$\chi^2$ {chi0:.0f}$\to${chiN:.0f}"
-        ),
+        title or f"Residual rescue -- window {window_id}{stem}{chi_str}",
         fontsize=11,
-        y=0.96,
     )
     return fig

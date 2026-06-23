@@ -1243,7 +1243,13 @@ def _draw_peak_table(
         va="top",
         color="0.5",
     )
-    for i, (pk, lbl) in enumerate(zip(fitted_peaks, labels)):
+    # List ascending in frequency so the table starts with peak A (the
+    # lowest-frequency line), independent of the stored fitted-peak order.
+    rows = sorted(
+        zip(fitted_peaks, labels, quality_scores),
+        key=lambda t: float(t[0].frequency_mhz),
+    )
+    for i, (pk, lbl, qual_score) in enumerate(rows):
         freq_s = _format_spectroscopic(float(pk.frequency_mhz), pk.frequency_error)
         amp_err = pk.amplitude_error * amp if pk.amplitude_error is not None else None
         amp_s = _format_spectroscopic_sci(float(pk.amplitude) * amp, amp_err)
@@ -1253,7 +1259,7 @@ def _draw_peak_table(
             else "-"
         )
         snr_s = f"{pk.snr:.2f}" if pk.snr is not None else "-"
-        qual_s = f"{quality_scores[i]}/{PEAK_QUALITY_MAX}"
+        qual_s = f"{qual_score}/{PEAK_QUALITY_MAX}"
         cl = getattr(pk, "clock_lattice", None)
         if show_lattice:
             lattice_s = (cl or "")[:lattice_col_w]

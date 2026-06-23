@@ -1811,8 +1811,9 @@ def show_fit(
     (``window_ids`` / ``freqs`` / ``random_n`` / ``top_snr`` / ``all_windows``)
     compose as a union and produce one consolidated per-window detail figure
     each. With ``output_dir`` each detail figure is written there. With
-    ``rescue`` an extra residual-rescue progression figure is produced per
-    window (no re-fit). Returns
+    ``rescue`` an extra residual-rescue summary figure is produced per window
+    (no re-fit): data/model, the final residual with each round's nominations,
+    the chi-squared trajectory, and the peak budget. Returns
     ``{"mode", "window_ids", "figures", "paths", "log"}``. Requires Stage 5.
     """
     try:

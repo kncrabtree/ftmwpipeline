@@ -539,10 +539,11 @@ def register_fitting_commands(subparsers: Any) -> None:
     p_vis.add_argument(
         "--rescue",
         action="store_true",
-        help="Also emit a residual-rescue progression figure per window "
-        "(chi-squared trajectory, per-round peak budget, and the residual "
-        "candidates each round nominated), rendered from the persisted rescue "
-        "rounds. Diagnostic only -- no re-fit.",
+        help="Also emit a residual-rescue summary figure per window: the "
+        "window data/model, the final residual with each rescue round's "
+        "nominations overlaid (filled = retained as a fitted line, open = "
+        "rejected), the chi-squared trajectory, and the per-round peak budget. "
+        "Rendered from the persisted rescue rounds -- diagnostic only, no re-fit.",
     )
     p_vis.add_argument(
         "--no-interactive",
