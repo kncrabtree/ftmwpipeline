@@ -63,34 +63,61 @@ be effectively dead code in production.
 
 **Hypothesis (to test):** the cycle-breaker is too aggressive — dropping all
 cyclic edges and demoting to edge-free pushes leakage-skirt modeling onto the
-complex/leakage-wing **baseline**, which silently soaks up structure that should
-be modeled as contributor skirts. Bulk χ²ᵣ stays healthy (655 median 1.09) so it
-has gone unnoticed, but specific dense windows may carry mis-modeled wings.
+complex/leakage-wing **baseline**, which on the dense fixtures runs at order 4
+in ~99% of windows and may be modeling leakage skirts that contributors should
+carry. (The earlier visual impression that 655 was "deeply pathological" was a
+display bug — the magnitude panels plotted a misaligned padded FT that erased
+narrow lines — now fixed and committed. With a trustworthy display, 655 reads
+healthy in bulk; the open question is the baseline-vs-contributor one, not a
+broken fit.)
 
-## Investigation plan (do this first)
+## Investigation plan
 
-1. **Look at the fits.** Generate reports for the extreme-SNR fixtures (fresh
-   655 built; build fresh 1512, 1019) and inspect how the fit actually looks in
-   the densely-coupled regions — residual skirts at window edges, baseline order
-   absorbing leakage, mis-centered or missing lines. The goal is to find the
-   suspected latent pathology, not to trust the bulk χ²ᵣ.
-2. **Quantify the cycle-breaker's reach and the baseline's load.** Per fixture:
-   edges proposed vs dropped vs kept-as-edge-free vs dropped-entirely; the
-   leakage-wing baseline order distribution and how often it fires in
-   densely-coupled windows; residual edge-coherence where edges were dropped.
-3. **Decide the resolution.** Two endpoints, pick deliberately and make it
-   **consistent across SNR**:
-   - **Better cyclic-dependency resolution** than "drop all edges" — e.g. break
-     the minimal feedback arc set instead of every edge, or resolve dense cycles
-     with a real (accepted) thaw co-fit rather than edge-free demotion.
-   - **Declare dependencies unnecessary** — if the complex baseline genuinely
-     models the leakage adequately, retire contributor edges (and possibly the
-     edge-free/thaw machinery) uniformly, so moderate fixtures are treated the
-     same way as the dense ones.
+Done so far: fresh 655/1512/1019 built and reported; contributor structure
+characterized (the SNR table above); the display bug found and fixed; the
+faithful skirt A/B prototyped. The dependency-model question itself is **open**
+and is the next session's work.
 
-Only once the dependency model is settled and consistent does the cascade design
-below apply: the cascade propagates edits *along the dependency graph*, so its
-value and even its existence depend on whether that graph should exist.
+1. **Baseline-magnitude diagnostic (build this).** When a contributor skirt is
+   modeled physically, the leakage-wing baseline should be a *small correction*,
+   not a data-scale term. So compare each window's fitted baseline magnitude
+   (and its slope) against a robust estimate of the average and slope of the
+   real/imaginary data — a baseline whose magnitude is the same order as the data
+   marks a **leakage-touched window that should be coupled** to a neighbor. Use
+   this to map which windows the baseline is silently carrying (an investigation
+   instrument, not necessarily a production flag).
+2. **The contributor-model fix + cascade test on 1019 w79/w80** (the clean
+   experiment). 1019 w79 has a strong peak over-split into a doublet (a merge in
+   curation); w80 next to it has a weak feature riding w79's skirt, currently
+   modeled by baseline alone (edge dropped → `ncon=0`). Fix the contributor model
+   (window-level resolution) so w80 carries w79's fitted line(s) as contributors,
+   then: merge w79's doublet and confirm the change *cascades* into w80's skirt
+   and moves its fit. This is the decisive "does the dependency matter" test on a
+   real, defensible curation decision.
+3. **Decide the resolution**, consistent across SNR:
+   - **Better cyclic-dependency resolution** than "drop all edges" — break the
+     minimal feedback arc set, or resolve dense cycles with a real (accepted)
+     thaw co-fit rather than edge-free demotion.
+   - **Declare dependencies unnecessary** — if the baseline genuinely models the
+     leakage adequately (the baseline-magnitude diagnostic says it is small),
+     retire contributor edges uniformly so moderate fixtures match the dense ones.
+
+Only once the dependency model is settled does the cascade design below apply:
+the cascade propagates edits *along the dependency graph*, so its value and even
+its existence depend on whether that graph should exist.
+
+### Handoff state (scratch harnesses, reusable)
+
+Built this session under `scratch/cascade/` (gitignored): `build_655.py
+<name>` (fresh fixture build via `run_pipeline`), `characterize.py` (edge-free
+vs edge-bearing contributor structure + closures), `pathology_scan.py`
+(per-window baseline order + post-fit residual edge-coherence), `ab_skirt.py`
+and `ab_faithful.py` (skirt-vs-baseline A/B; the *faithful* one restores a
+dropped contributor into the persisted plan as edge-free and re-runs the
+production fit so the evidence gate decides), `show_w24.py` (native Re/Im/|X|
+decomposition). Fresh fixtures: `scratch/cascade/{655,1512,1019}.ftmw` and their
+reports under `scratch/cascade/reports/`. Rebuild fresh per the rebuild-fixtures
+rule if code changes (a stale fixture carries build-time settings).
 
 ### Deferred follow-up (diagnostic surfacing)
 
