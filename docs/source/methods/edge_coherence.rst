@@ -141,6 +141,28 @@ megahertz wide — while long stretches between clusters sit near the rolling-ba
 null. Thresholding at :math:`T_\text{edge}=8` marks about 6.6 % of the band as
 leakage-touched.
 
+.. figure:: edge_coherence/figures/fig3_strong_line_coherence.png
+   :width: 90%
+   :align: center
+
+   The 36350 MHz strong line on the reference active FT, in local-SNR units. The
+   magnitude :math:`|X|/\sigma` is clipped so the leakage skirt reads: away from
+   the core the magnitude decays toward the noise, yet the real and imaginary
+   parts keep oscillating coherently across it. The rolling :math:`S_\text{coh}`
+   (lower panel, :math:`M=64`) towers far above the :math:`T_\text{edge}=8`
+   threshold across the whole leakage-touched span (gold fill), settling back
+   toward the null :math:`\sqrt{\pi/4}` only well away from the line.
+
+The twin-peaked profile in the lower panel is a property of the statistic, not a
+pair of separate detections. In a line's skirt the leakage is nearly pure
+dispersion — the quadrature lineshape, which is odd about the line center — so a
+band centered exactly on the line sums equal and opposite dispersive
+contributions that cancel, leaving only the smaller absorptive part. Shifted to
+either side the cancellation breaks and the net dispersive sum lifts
+:math:`S_\text{coh}`, so the statistic peaks just off the line and dips at its
+center; a synthetic isolated line reproduces the same symmetric pair. The blend
+here (a weaker companion near 36352.5 MHz) reinforces the right peak.
+
 Two properties matter for trusting it there. First, the per-bin noise must be the
 **local** value: the Stage 2 noise varies by a factor of :math:`\approx 2.6`
 across this spectrum, so a global median would understate significance in quiet
@@ -164,6 +186,15 @@ Caveats
   which strong lines are mutually coupled (the strong-cluster grouping); the fixed
   contributors a window carries are chosen separately, by the predicted skirt
   amplitude on that window's grid (see :doc:`../stage4_windows`).
+* **Interference can locally suppress the statistic.** A coherent sum can be
+  pulled down where leakage is still present: the dispersive cancellation at a
+  line center, or destructive interference between two lines' leakage in a blend,
+  dips :math:`S_\text{coh}` — in principle below threshold — and can split or
+  shorten a leakage-touched run. The :math:`M`-bin band smooths the statistic and
+  a strong line's central dip stays well above threshold (in the figure it falls
+  only to :math:`S_\text{coh}\approx 90`), so this bites only on finely-tuned
+  cancellations, but a boundary drawn at such a dip would sit in still-contaminated
+  spectrum.
 
 .. _edge-coherence-reproducing:
 

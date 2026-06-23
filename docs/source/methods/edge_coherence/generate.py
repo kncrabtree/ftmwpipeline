@@ -11,7 +11,10 @@ fixture, the quantitative claims in :doc:`edge_coherence`:
 * the **active-FT application** on the reference experiment -- the
   leakage-touched coverage, the local-sigma requirement, the absence of a
   pedestal, and the de-ramp pitfall (de-ramping the already-[0, T] active grid
-  collapses the statistic to the null).
+  collapses the statistic to the null);
+* a **strong-line illustration** (``fig3``) over the centered 36350 MHz line: the
+  real/imaginary leakage skirt the magnitude hides, and the rolling statistic
+  towering above threshold and crossing back below it on either side.
 
 The statistic, the rolling map, and the de-ramp are the shipped
 ``ftmwpipeline.preprocessing.edge_coherence`` /
@@ -109,8 +112,13 @@ def signal_growth(seed: int = SEED) -> Dict[str, Any]:
     return out
 
 
-def run_2638(workdir: Optional[Path] = None) -> Dict[str, Any]:
-    """Score the shipped edge-coherence map on the reference active FT."""
+def _build_2638_active(workdir: Optional[Path] = None) -> Dict[str, Any]:
+    """Build 2638 through noise estimation; return the active-FT arrays.
+
+    Returns the ascending-frequency active FT (``freq``, ``spec``, ``sigma``),
+    the rolling edge-coherence map, and the de-ramped counterpart, shared by the
+    scalar summary and the strong-line figure.
+    """
     import tempfile
 
     import ftmwpipeline.api as ftmw
@@ -132,10 +140,7 @@ def run_2638(workdir: Optional[Path] = None) -> Dict[str, Any]:
     freq = cft.freq_array[order]
     spec = cft.complex_spectrum[order]
     sigma = rms[order]
-
     rolling = active_edge_coherence(spec, sigma, band_m=64)
-    finite = rolling[np.isfinite(rolling)]
-    coverage = float(np.mean(finite >= EDGE_THRESHOLD))
 
     # De-ramp pitfall: de-ramping the already-[0, T] active grid winds the band
     # phase and collapses the statistic toward the null.
@@ -145,6 +150,21 @@ def run_2638(workdir: Optional[Path] = None) -> Dict[str, Any]:
     probe = float(fid.probe_freq_mhz)
     deramped = deramp_to_active_start(freq, spec, probe, start_us)
     rolling_dr = active_edge_coherence(deramped, sigma, band_m=64)
+    return {
+        "freq": freq,
+        "spec": spec,
+        "sigma": sigma,
+        "rolling": rolling,
+        "rolling_dr": rolling_dr,
+        "start_us": start_us,
+    }
+
+
+def _summarize_2638(a: Dict[str, Any]) -> Dict[str, Any]:
+    """Scalar regression summary from the active-FT arrays."""
+    freq, spec, sigma = a["freq"], a["spec"], a["sigma"]
+    rolling, rolling_dr = a["rolling"], a["rolling_dr"]
+    finite = rolling[np.isfinite(rolling)]
     finite_dr = rolling_dr[np.isfinite(rolling_dr)]
 
     # Strong line at 36350: peak value and the contiguous above-threshold run.
@@ -158,9 +178,9 @@ def run_2638(workdir: Optional[Path] = None) -> Dict[str, Any]:
     im_q = float(np.median(spec[quiet].imag)) / sig_q
 
     return {
-        "start_us": start_us,
+        "start_us": float(a["start_us"]),
         "n_bins": int(freq.size),
-        "coverage_active": coverage,
+        "coverage_active": float(np.mean(finite >= EDGE_THRESHOLD)),
         "median_active": float(np.median(finite)),
         "median_deramped": float(np.median(finite_dr)),
         "coverage_deramped": float(np.mean(finite_dr >= EDGE_THRESHOLD)),
@@ -174,13 +194,20 @@ def run_2638(workdir: Optional[Path] = None) -> Dict[str, Any]:
     }
 
 
+def run_2638(workdir: Optional[Path] = None) -> Dict[str, Any]:
+    """Score the shipped edge-coherence map on the reference active FT."""
+    return _summarize_2638(_build_2638_active(workdir))
+
+
 def _figdir() -> Path:
     d = Path(__file__).resolve().parent / "figures"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
 
-def make_figures(results: Dict[str, Any]) -> None:
+def make_figures(
+    results: Dict[str, Any], panel: Optional[Dict[str, Any]] = None
+) -> None:
     import matplotlib
 
     matplotlib.use("Agg")
@@ -190,7 +217,9 @@ def make_figures(results: Dict[str, Any]) -> None:
         AGGIE_BLUE,
         AGGIE_GOLD,
         BRAND_CYCLE,
+        CABERNET,
         DOUBLE_DECKER,
+        GUNROCK,
         apply_bare_style,
         apply_color_cycle,
     )
@@ -247,6 +276,94 @@ def make_figures(results: Dict[str, Any]) -> None:
     fig.savefig(figdir / "fig2_signal_growth.png", dpi=130)
     plt.close(fig)
 
+    if panel is None:
+        return
+
+    # fig3: a strong line on the reference active FT, in local-SNR units, with the
+    # real and imaginary components carrying the coherent leakage skirt that the
+    # magnitude alone hides, and the rolling S_coh beneath it. Window the 36350 MHz
+    # line and ~12 MHz of its skirt.
+    freq = panel["freq"]
+    sigma = panel["sigma"]
+    z_over_s = panel["spec"] / sigma
+    rolling = panel["rolling"]
+    mag_all = np.abs(z_over_s)
+
+    # Center on the strong line and widen until the rolling statistic falls back
+    # below the threshold on both sides, so the figure shows the full
+    # above-threshold run and both crossings, with the line centered.
+    core_idxs = np.flatnonzero((freq >= 36348.0) & (freq <= 36352.0))
+    core_i = int(core_idxs[int(np.argmax(mag_all[core_idxs]))])
+    lo_i = hi_i = core_i
+    while (
+        lo_i > 0
+        and np.isfinite(rolling[lo_i - 1])
+        and rolling[lo_i - 1] >= EDGE_THRESHOLD
+        and freq[core_i] - freq[lo_i - 1] < 40.0
+    ):
+        lo_i -= 1
+    while (
+        hi_i < freq.size - 1
+        and np.isfinite(rolling[hi_i + 1])
+        and rolling[hi_i + 1] >= EDGE_THRESHOLD
+        and freq[hi_i + 1] - freq[core_i] < 40.0
+    ):
+        hi_i += 1
+    half = max(freq[core_i] - freq[lo_i], freq[hi_i] - freq[core_i]) + 2.0
+    sel = (freq >= freq[core_i] - half) & (freq <= freq[core_i] + half)
+    f = freq[sel]
+    re, im, mag = z_over_s[sel].real, z_over_s[sel].imag, np.abs(z_over_s[sel])
+    sc = rolling[sel]
+
+    fig, (axT, axB) = plt.subplots(
+        2, 1, sharex=True, figsize=(8.5, 5.8), height_ratios=[3, 2]
+    )
+    # Top: Re / Im / |X| in local-SNR units; clip so the off-scale core does not
+    # flatten the skirt structure the figure is about.
+    axT.axhline(0.0, color="#c8ced6", lw=0.8, zorder=0)
+    axT.plot(f, re, color=DOUBLE_DECKER, lw=0.9, label=r"$\mathrm{Re}/\sigma$")
+    axT.plot(f, im, color=GUNROCK, lw=0.9, label=r"$\mathrm{Im}/\sigma$")
+    axT.plot(f, mag, color=CABERNET, lw=1.5, label=r"$|X|/\sigma$")
+    clip = float(np.nanpercentile(mag, 90)) * 1.8
+    axT.set_ylim(-clip, clip)
+    axT.text(
+        0.015,
+        0.96,
+        "strong lines clipped to skirt scale",
+        transform=axT.transAxes,
+        fontsize=8,
+        va="top",
+        color="0.35",
+    )
+    axT.set_ylabel(r"amplitude / $\sigma$")
+    axT.legend(fontsize=8, ncol=3, loc="upper right")
+    apply_bare_style(axT)
+
+    # Bottom: the rolling coherent-sum statistic over the same span.
+    axB.plot(f, sc, color=AGGIE_BLUE, lw=1.5)
+    axB.fill_between(
+        f, EDGE_THRESHOLD, sc, where=sc >= EDGE_THRESHOLD, color=AGGIE_GOLD, alpha=0.30
+    )
+    axB.axhline(
+        EDGE_THRESHOLD,
+        color=DOUBLE_DECKER,
+        ls="--",
+        lw=1.2,
+        label=r"$T_\mathrm{edge}=8$",
+    )
+    axB.axhline(
+        NULL_MEAN, color="#999999", ls=":", lw=1.0, label=r"null $\sqrt{\pi/4}$"
+    )
+    axB.set_ylim(bottom=0.0)
+    axB.set_ylabel(r"$S_\mathrm{coh}$ ($M{=}64$)")
+    axB.set_xlabel("frequency (MHz)")
+    axB.legend(fontsize=8, loc="upper right")
+    apply_bare_style(axB)
+
+    fig.tight_layout()
+    fig.savefig(figdir / "fig3_strong_line_coherence.png", dpi=130)
+    plt.close(fig)
+
 
 def run(do_2638: bool = True, figures: bool = True) -> Dict[str, Any]:
     results: Dict[str, Any] = {}
@@ -257,8 +374,10 @@ def run(do_2638: bool = True, figures: bool = True) -> Dict[str, Any]:
         f"(sqrt(pi/4)={NULL_MEAN:.3f})",
         flush=True,
     )
+    panel: Optional[Dict[str, Any]] = None
     if do_2638:
-        results["2638"] = run_2638()
+        panel = _build_2638_active()
+        results["2638"] = _summarize_2638(panel)
         d = results["2638"]
         print(
             f"2638: active coverage {100*d['coverage_active']:.1f}% median "
@@ -267,7 +386,7 @@ def run(do_2638: bool = True, figures: bool = True) -> Dict[str, Any]:
             flush=True,
         )
     if figures:
-        make_figures(results)
+        make_figures(results, panel)
     return results
 
 
