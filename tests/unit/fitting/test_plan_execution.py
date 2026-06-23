@@ -1124,6 +1124,9 @@ class TestStructuralReplan:
         )
         assert outcome.replan_history == []
         assert outcome.final_plan_revision == 0
+        # With no replan the outcome carries the original plan unchanged, so
+        # the caller's conversion/refit sees identical windows.
+        assert outcome.final_plan is plan
 
     def test_merge_fires_when_feature_crosses_boundary(self):
         """A peak sitting just inside window A; window B is empty but its low
@@ -1185,12 +1188,24 @@ class TestStructuralReplan:
         assert ev.revision_after == ev.revision_before + 1
         assert outcome.final_plan_revision == 1
 
+        # The revised plan travels back on the outcome so the caller persists
+        # the survivor with the *union* freq_range. Without it the survivor
+        # keeps window A's narrow range while its fit spans the merged span,
+        # which renders fitted peaks outside the stored window (the w340 bug).
+        assert outcome.final_plan is not None
+        survivor = {w.window_id: w for w in outcome.final_plan.windows}
+        assert set(survivor) == {0}
+        assert survivor[0].freq_range == (36100.0, 36110.0)
+
         # Only one window left; it contains the peak as a free peak; its
         # edges are clean (the feature is no longer cut by a boundary).
         assert set(outcome.window_outcomes.keys()) == {0}
         merged = outcome.window_outcomes[0]
         assert merged.fit.fit.success
         assert merged.fit.n_peaks == 1
+        # The survivor's stored range contains its fitted peak (no escape).
+        lo, hi = survivor[0].freq_range
+        assert lo <= peak_freq <= hi
         # Edges below the dispatcher threshold (else another round would fire
         # if max_replan_rounds allowed).
         assert merged.edge_coherence_low <= DEFAULT_RESIDUAL_EDGE_THRESHOLD

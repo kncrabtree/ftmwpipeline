@@ -409,15 +409,16 @@ window; ``--no-interactive`` with ``-o`` saves a static image.
    Per-window detail for a single window of the example experiment. The top strip
    locates the window in the full spectrum. The real, imaginary, and magnitude
    panels show the data (points) with the fitted model (lines, model values
-   marked at the data bins) and the residual above each. The fit resolves a close
-   blend (lines A and B sit about 0.06 MHz apart, well inside one linewidth)
-   beside a third line C, while a clock spur (dotted) is masked from the fit. The
-   residual histogram tracks the Rayleigh noise expectation, and the table lists
-   each fitted line's frequency, amplitude, phase, and signal-to-noise with the
-   fit uncertainty on the trailing digits, plus a ``qual`` determinacy score
-   (below): the isolated line C scores ``4/4`` while the blended pair A and B
-   score ``2/4`` — flagging that, though both are strong, they are not
-   individually well determined.
+   marked at the data bins) and the residual above each. The window holds a
+   sub-resolution doublet — two lines about :math:`8` kHz apart, far inside one
+   resolution element — beside three well-separated lines. The residual histogram
+   tracks the Rayleigh noise expectation, and the table lists each fitted line's
+   frequency, amplitude, phase, and signal-to-noise with the fit uncertainty on
+   the trailing digits, plus a ``qual`` determinacy score (below): the three
+   resolved lines score ``4/4``, while the two doublet members score ``1/4`` —
+   flagging that, though they are the strongest lines in the window
+   (signal-to-noise above :math:`2{,}000`), the fit does not determine them
+   individually. Determinacy is not strength.
 
 The ``qual`` column is a per-line **determinacy score** — how many of four
 independent checks the line clearly passes, written ``k/4``. The four checks are

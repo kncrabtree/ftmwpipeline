@@ -83,9 +83,9 @@ marker on its window plot, color-coded by action and removable with a click:
    cart exported from the browser (the marker colors match the in-report
    controls). Each panel shows the fitted model on the display grid above a
    residual strip, with the per-peak labels the report assigns. On the left
-   window, two **merge** markers (purple) each collapse an over-split close pair,
-   and an **add** (green) seeds a missed line in the gap beside them; on the
-   right window, two **split** markers (orange) each divide a line in two. The
+   window, a **split** marker (orange) divides a weak line in two and an **add**
+   (green) seeds a missed line in the gap beside it; on the right window, a
+   **merge** marker (purple) collapses a resolved close pair into one. The
    markers are queued intentions, not yet applied: exporting the cart writes them
    to a curation file that ``review apply`` refits.
 

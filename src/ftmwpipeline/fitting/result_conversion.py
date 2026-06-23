@@ -74,6 +74,7 @@ from .window_fit import AddStep, KnockoutResult
 
 __all__ = [
     "build_covariance_param_labels",
+    "sort_fitting_result_by_frequency",
     "window_outcome_to_spectral_window",
     "window_outcome_to_fitting_result",
     "plan_fit_outcome_to_spectrum_fit",
@@ -127,6 +128,53 @@ def build_covariance_param_labels(
         for k in range(n_base):
             labels.append(f"baseline_im_{k}")
     return labels
+
+
+def sort_fitting_result_by_frequency(result: FittingResult) -> None:
+    """Reorder a window's fitted peaks (and covariance) by ascending frequency.
+
+    The NLS assembles a window's peaks in seed order; sorting them by molecular
+    frequency makes the persisted line list, the report and ``fit show`` tables,
+    the numeric covariance matrix, and the correlation heatmap all read in one
+    ascending order. Sorts ``fitted_peaks`` in place and applies the matching
+    block permutation to ``covariance``: the peak-major ``(amplitude, offset,
+    phase)`` triple for each peak moves as a unit while the shared ``tau`` and
+    baseline coefficients keep their tail positions, so the positional
+    ``covariance_param_labels`` stay valid and every peak keeps its own
+    covariance block (``sqrt(diag)`` still matches that peak's stored errors).
+
+    In place; idempotent (a no-op when the peaks are already ascending). If a
+    covariance is present but its layout does not match the documented
+    peak-major form, neither the peaks nor the covariance are reordered, so the
+    two never fall out of correspondence.
+    """
+    peaks = result.fitted_peaks
+    n = len(peaks)
+    if n < 2:
+        return
+    order = sorted(range(n), key=lambda i: float(peaks[i].frequency_mhz))
+    if order == list(range(n)):
+        return
+
+    cov = result.covariance
+    labels = result.covariance_param_labels
+    if cov is not None and labels is not None:
+        arr = np.asarray(cov, dtype=float)
+        layout_ok = (
+            arr.ndim == 2
+            and arr.shape[0] == arr.shape[1]
+            and arr.shape[0] >= 3 * n
+            and all(labels[3 * i] == f"amplitude_{i}" for i in range(n))
+        )
+        if not layout_ok:
+            # Unexpected layout: leave both peaks and covariance untouched
+            # rather than risk a mislabeled matrix.
+            return
+        perm = [3 * i + k for i in order for k in (0, 1, 2)]
+        perm.extend(range(3 * n, arr.shape[0]))  # tau / baseline tail stays put
+        result.covariance = arr[np.ix_(perm, perm)]
+
+    result.fitted_peaks = [peaks[i] for i in order]
 
 
 # ---------------------------------------------------------------------------

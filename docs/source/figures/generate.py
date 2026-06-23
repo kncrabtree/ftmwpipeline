@@ -75,25 +75,17 @@ DPI = 130
 def _build_pipeline(workdir: Path) -> str:
     """Import the 2638 fixture and run Stages 0-2b; return the ``.ftmw`` path."""
     import ftmwpipeline.api as ftmw
-    from ftmwpipeline.core.tau_calibration_settings import (
-        RecommendationSubSettings,
-        TauCalibrationSettings,
-    )
 
     path = str(workdir / "exp_2638.ftmw")
     ftmw.import_data(path, source=str(_FIXTURE))
     ftmw.detect_start_time(path, stamp=True)
     ftmw.compute_ft(path, trim=TRIM)
     ftmw.estimate_noise(path)
-    # Lorentzian tau calibration only; skip the auto-recommend pass (and its
-    # cross-built Gaussian twin) so the figure build stays lean — the
-    # distribution figure reads the exponential-twin contributor histogram.
-    ftmw.calibrate_tau(
-        path,
-        settings=TauCalibrationSettings(
-            recommendation=RecommendationSubSettings(auto_recommend=False)
-        ),
-    )
+    # Default tau calibration: the auto-recommend shape vote runs and stamps the
+    # recommended shape (Gaussian on 2638), building both twins, so Stage 5 fits
+    # in the recommended shape -- the same fit a default run produces. (Forcing
+    # the Lorentzian twin here would over-split the lines; see the Stage 5 note.)
+    ftmw.calibrate_tau(path)
     ftmw.detect_peaks(path)
     ftmw.assign_windows(path)
     ftmw.fit_peaks(path)
@@ -186,17 +178,20 @@ def make_figures() -> None:
         fig5 = visualize_fit_impl(path, title="", interactive=False)
         fig5.savefig(FIG_DIR / "stage5_fitting.png", dpi=DPI, bbox_inches="tight")
 
-        # Per-window detail: the window covering ~29148 MHz -- a resolved close
-        # blend beside a third line, with a masked clock spur. Select it by
-        # frequency so the example survives any change in window numbering;
-        # fall back to the highest-SNR multi-line window.
+        # Per-window detail: the window covering ~36350 MHz -- a genuine
+        # sub-resolution doublet (two SNR>2000 lines ~8.5 kHz apart, far inside
+        # one resolution element) beside three resolved lines, so the qual
+        # determinacy score reads 1/4 on the unresolved pair and 4/4 on the
+        # resolved lines (determinacy is not strength). Select it by frequency so
+        # the example survives window renumbering; fall back to the highest-SNR
+        # multi-line window.
         fit5 = load_fit_impl(path)["fit"]
         detail_wid = None
         for wf in fit5.window_fits:
             if wf.window is None or not wf.fitted_peaks:
                 continue
             lo, hi = wf.window.freq_range
-            if min(lo, hi) <= 29148.0 <= max(lo, hi):
+            if min(lo, hi) <= 36350.0 <= max(lo, hi):
                 detail_wid = wf.window_id
                 break
         if detail_wid is None:
@@ -246,17 +241,15 @@ def make_figures() -> None:
         )
 
 
-# A curation cart captured from the browser report on the 2638 example: two
-# over-split close pairs merged and a missed line added on window 61, and two
-# weak lines split on window 80. Frequencies are the raw Stage 5 model values the
-# edit verbs match on (the values the cart emits), so the figure annotates the
-# real fitted peaks by frequency.
+# A curation cart captured from the browser report on the 2638 example: on
+# window 120 a weak line is split into two and a missed line is added between the
+# pair; on window 265 a resolved close pair is merged back into one. Frequencies
+# are the raw Stage 5 model values the edit verbs match on (the values the cart
+# emits), so the figure annotates the real fitted peaks by frequency.
 _CURATION_DEMO = (
-    (61, "merge", (28802.036876, 28802.091386)),
-    (61, "merge", (28802.843411, 28802.899680)),
-    (61, "add", (28799.9725,)),
-    (80, "split", (29351.363439,)),
-    (80, "split", (29352.880164,)),
+    (120, "split", (31076.184844,)),
+    (120, "add", (31074.2667,)),
+    (265, "merge", (36147.043509, 36147.138722)),
 )
 _CURATION_INTO = 2  # the demo splits each line into two
 
@@ -269,9 +262,10 @@ def _plot_curation_annotations(bundle: Any, np: Any) -> Any:
     (:func:`~ftmwpipeline.visualization.fit_detail.draw_component`, on the 2x
     zero-padded display grid with the fitted model and the absolute-frequency
     axis), then overlays the cart's queued edits exactly as the browser does: a
-    vertical marker per frequency, colored by action. Window 61 carries two
-    merges over over-split close pairs and a missed-line add; window 80 carries
-    two splits. The markers are queued intentions, not applied edits.
+    vertical marker per frequency, colored by action. Window 120 carries a split
+    of a weak line and a missed-line add between the pair; window 265 carries a
+    merge over a resolved close pair. The markers are queued intentions, not
+    applied edits.
     """
     import matplotlib.pyplot as plt
 

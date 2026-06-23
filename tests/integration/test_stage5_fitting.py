@@ -226,6 +226,16 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
     fit = ftmw.fit_peaks(fp)
     reloaded = ftmw.load_fit(fp)
 
+    # Every window's peaks are ordered by ascending frequency (so the line list,
+    # the report / fit-show tables, and the covariance / correlation heatmap all
+    # read in one order). The amplitude/offset/phase diagonal checks below then
+    # confirm each peak kept its own covariance block through that reorder.
+    for wf in reloaded.window_fits:
+        freqs = [p.frequency_mhz for p in wf.fitted_peaks]
+        assert freqs == sorted(freqs), (
+            f"window {wf.window_id} peaks are not frequency-ordered: {freqs}"
+        )
+
     # At least one window should have a non-None covariance (the 3-window
     # small plan has real lines with finite JᵀJ).
     windows_with_cov = [wf for wf in reloaded.window_fits if wf.covariance is not None]
@@ -233,8 +243,10 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
         windows_with_cov
     ), "no windows with persisted covariance in the 3-window small fit"
 
-    # For each window with a covariance, verify the amplitude diagonal entries
-    # match the stored amplitude_error (sqrt round-trip within float64 precision).
+    # For each window with a covariance, verify the amplitude / offset / phase
+    # diagonal entries match the stored per-peak errors (sqrt round-trip). The
+    # diagonal entry for peak ``i`` must equal *that* peak's error -- the check
+    # that the frequency sort permuted the covariance in lockstep with the peaks.
     for wf in windows_with_cov:
         cov = wf.covariance
         labels = wf.covariance_param_labels
@@ -242,20 +254,21 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
         assert labels is not None
         assert cov.shape[0] == cov.shape[1] == len(labels)
 
-        amp_indices = [
-            i for i, lbl in enumerate(labels) if lbl.startswith("amplitude_")
-        ]
-        assert len(amp_indices) == len(wf.fitted_peaks)
-
-        for peak_idx, col_idx in enumerate(amp_indices):
-            cov_amp_err = math.sqrt(float(cov[col_idx, col_idx]))
-            stored_amp_err = wf.fitted_peaks[peak_idx].amplitude_error
-            if stored_amp_err is not None:
-                assert cov_amp_err == pytest.approx(stored_amp_err, rel=1e-6), (
-                    f"window {wf.window_id} peak {peak_idx}: "
-                    f"sqrt(cov[amp,amp])={cov_amp_err} != "
-                    f"amplitude_error={stored_amp_err}"
-                )
+        for kind, attr in (
+            ("amplitude", "amplitude_error"),
+            ("offset", "frequency_error"),
+            ("phase", "phase_error"),
+        ):
+            indices = [i for i, lbl in enumerate(labels) if lbl.startswith(f"{kind}_")]
+            assert len(indices) == len(wf.fitted_peaks)
+            for peak_idx, col_idx in enumerate(indices):
+                cov_err = math.sqrt(float(cov[col_idx, col_idx]))
+                stored = getattr(wf.fitted_peaks[peak_idx], attr)
+                if stored is not None:
+                    assert cov_err == pytest.approx(stored, rel=1e-6), (
+                        f"window {wf.window_id} peak {peak_idx}: "
+                        f"sqrt(cov[{kind},{kind}])={cov_err} != {attr}={stored}"
+                    )
 
 
 def _inject_stage5_marker(fp) -> None:

@@ -563,6 +563,12 @@ class PlanFitOutcome:
     final_plan_revision : int
         :attr:`WindowPlan.plan_revision` of the plan the per-window
         outcomes describe. ``0`` if no replan happened.
+    final_plan : WindowPlan or None
+        The plan the per-window outcomes describe, after any structural
+        replan. When a merge fires, the survivor's ``freq_range`` is the
+        union of the merged windows, so this -- not the caller's pre-replan
+        plan -- is the authority for converting and refitting the outcomes.
+        ``None`` only on the degenerate empty-plan path.
     """
 
     window_outcomes: dict[int, WindowOutcome]
@@ -570,6 +576,7 @@ class PlanFitOutcome:
     rescue_history: list[RescueEvent] = field(default_factory=list)
     replan_history: list[ReplanEvent] = field(default_factory=list)
     final_plan_revision: int = 0
+    final_plan: Optional[WindowPlan] = None
 
 
 # ---------------------------------------------------------------------------
@@ -1930,6 +1937,7 @@ def execute_plan(
         rescue_history=rescue_history,
         replan_history=replan_history,
         final_plan_revision=plan.plan_revision,
+        final_plan=plan,
     )
 
 

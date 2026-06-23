@@ -57,6 +57,7 @@ from ..fitting.plan_execution import (
 )
 from ..fitting.result_conversion import (
     plan_fit_outcome_to_spectrum_fit,
+    sort_fitting_result_by_frequency,
 )
 from ..fitting.spur_detection import (
     SpurSet,
@@ -1704,6 +1705,12 @@ def _fit_peaks_impl(
         doublet_kwargs=doublet_kwargs,
         jobs=jobs,
     )
+    # A structural replan (merge) rebuilds the plan inside ``execute_plan`` --
+    # the survivor's ``freq_range`` becomes the union of the merged windows.
+    # Convert and refit against that revised plan, not the pre-replan one, so a
+    # merge survivor is not persisted with its original (narrow) range while its
+    # peaks span the merged span (which renders peaks outside the window).
+    final_plan = plan_outcome.final_plan or plan
 
     parameters = {
         "shape": shape_enum.value,
@@ -1796,7 +1803,7 @@ def _fit_peaks_impl(
         ]
     spectrum_fit: SpectrumFit = plan_fit_outcome_to_spectrum_fit(
         plan_outcome,
-        plan,
+        final_plan,
         sideband=sideband,
         peak_frequencies_mhz=peak_frequencies_mhz,
         acquisition_us=acquisition_us,
@@ -1818,7 +1825,7 @@ def _fit_peaks_impl(
     if peak_survival_enabled_v:
         from .stage6_impl import refit_window_core
 
-        survival_window_map = {w.window_id: w for w in plan.windows}
+        survival_window_map = {w.window_id: w for w in final_plan.windows}
 
         def _survival_refit(
             wf: FittingResult, dust_freqs: List[float]
@@ -1927,6 +1934,15 @@ def _fit_peaks_impl(
                     wc.get("n_empty_dropped", 0),
                     wc.get("n_spur_only_dropped", 0),
                 )
+
+    # Order each window's fitted peaks (and its parameter covariance) by
+    # ascending frequency before persisting, so the line list, the report and
+    # ``fit show`` tables, and the covariance matrix / correlation heatmap all
+    # read in one ascending order. Runs after every refit pass (peak origins are
+    # already stamped), so it only reorders -- a window's covariance block stays
+    # with its peak.
+    for wf in spectrum_fit.window_fits:
+        sort_fitting_result_by_frequency(wf)
 
     save_spectrum_fit_impl(file_path, spectrum_fit)
     # The automatic fit is the curation baseline for 'review undo'; a fresh fit

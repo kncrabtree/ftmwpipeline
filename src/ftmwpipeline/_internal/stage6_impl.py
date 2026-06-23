@@ -1624,6 +1624,15 @@ def refit_window_impl(
         snap_tol_mhz=snap_tol_mhz,
     )
 
+    # Order the refit window's peaks (and covariance) by ascending frequency,
+    # matching the automatic fit's persistence so the line list, the report /
+    # fit-show tables, and the covariance heatmap stay consistent after an edit.
+    # Origin flags were already stamped inside refit_window_core, so this only
+    # reorders.
+    from ..fitting.result_conversion import sort_fitting_result_by_frequency
+
+    sort_fitting_result_by_frequency(new_wf)
+
     # --- Replace this window's entry in SpectrumFit + persist --------------
     # Update the global fitted_peaks list: remove old peaks for this window,
     # insert new ones, keep all other windows' peaks unchanged, re-sort.
