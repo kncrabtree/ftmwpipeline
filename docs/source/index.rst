@@ -48,6 +48,7 @@
    methods/matched_filter_detection
    methods/edge_coherence
    methods/stage5_fitting
+   methods/timebase_calibration
 
 .. toctree::
    :hidden:
@@ -113,6 +114,9 @@ be trusted, with figures and numbers regenerated from the example data:
 * :doc:`methods/stage5_fitting` — the peak-fitting acceptance gate: why it is
   window-size invariant, how it handles blends, and the SNR-aware health check
   validated across the example experiments.
+* :doc:`methods/timebase_calibration` — measuring the digitizer scale error from
+  the clock spurs' phase, its Cramér–Rao precision bound, and how the frequency
+  correction reaches the line list.
 
 Indices and tables
 ==================
