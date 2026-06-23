@@ -6,7 +6,6 @@ This module handles:
 - Peak detection and leakage analysis
 """
 
-from .leakage import estimate_leakage_reach
 from .noise_estimation import NoiseResult, estimate_noise_scatter
 from .peak_detection import (
     PeakResult,
@@ -22,5 +21,4 @@ __all__ = [
     "PeakResult",
     "classify_by_snr",
     "detect_peaks",
-    "estimate_leakage_reach",
 ]

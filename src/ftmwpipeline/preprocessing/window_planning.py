@@ -171,9 +171,10 @@ def _leakage_envelope_fraction(
 ) -> float:
     """Finite-T leakage envelope as a fraction of the source line's peak height.
 
-    ``|S_env(Δf)| / |S(0)| = (1 + e^{-T/τ}) / (2π·|Δf|·τ_eff)`` -- the same
-    analytic model used by :func:`estimate_leakage_reach`, evaluated here to
-    decide whether a weaker nearby detection sits below a strong line's skirt.
+    ``|S_env(Δf)| / |S(0)| = (1 + e^{-T/τ}) / (2π·|Δf|·τ_eff)`` -- the
+    finite-T leakage envelope of a damped cosine observed over acquisition
+    ``T``, evaluated here to decide whether a weaker nearby detection sits
+    below a strong line's skirt.
     """
     t_s = acquisition_us * 1e-6
     if tau_us is None:

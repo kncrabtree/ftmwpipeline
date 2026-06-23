@@ -102,11 +102,12 @@ extents.
 
 ## `estimate_leakage_reach` disposition
 
-Demoted, not deleted. The de-ramped `S_coh` map is the leakage-extent
-authority for both stages; the analytic `1/Δf` reach under-predicts the
-cumulative skirt of multiple strong lines. `estimate_leakage_reach` stays in
-`leakage.py`, unused by Stages 3–4 — the finite-T reach formula may still seed
-a Stage 5 `τ` prior; final deletion is deferred to Stage 5 scoping.
+Deleted. The de-ramped `S_coh` map is the leakage-extent authority for both
+stages; the analytic `1/Δf` reach under-predicted the cumulative skirt of
+multiple strong lines and never found a Stage 5 use. The finite-T leakage
+envelope it was built on survives where Stage 4 still needs it, inlined in
+`window_planning._leakage_envelope_fraction` (the weaker-detection-under-skirt
+test); the standalone reach estimator and its tests are removed.
 
 ## Verification (2638 fixture)
 

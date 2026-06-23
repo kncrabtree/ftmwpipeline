@@ -1,15 +1,22 @@
 # Plan: Intra-window parameter clustering for Stage 5
 
-Status: **stub.** Registered to capture a design idea that replaced the
-*proposed* Stage 5 `split` structural renegotiation primitive
+Status: **retired (will-not-build).** Registered to capture a design idea that
+replaced the *proposed* Stage 5 `split` structural renegotiation primitive
 ([`stage5-fitting.md`](stage5-fitting.md) § "Renegotiation handshake with
 Stage 4"). That primitive was never built — Stage 5 ships merge-only, and
-`FitWindow.split_proposal` remains a carried-but-unconsumed field — so there is
-nothing to retire; this stub is the deferred replacement, not an active
-migration. Stage 5 has since been exercised on the 2638 fixture without
-covariance-block clustering becoming necessary: the merge handshake plus the
-leakage-wing baseline covered the practical need. Opened only if a future
-fixture makes intra-window decomposition a measurable win.
+`FitWindow.split_proposal` remains a carried-but-unconsumed field.
+
+Retired because the gain it promised does not exist by construction. Stage 5
+already fits every window **jointly** — all its peaks, one shared `τ`, one NLS —
+so the maximum-likelihood parameter estimates and their full covariance are
+already what the joint fit returns. A block-diagonal covariance only means the
+joint fit *decomposed* into independent sub-fits with no information loss; acting
+on it (the "Reduce" step below) is purely cosmetic relabeling of the
+per-cluster parameter count and buys no precision. The speculative
+non-contiguous joint-fit direction has no driver either: the merge handshake
+plus the leakage-wing baseline covered the practical need on 2638, and no fixture
+has surfaced a window where intra-window decomposition would be a measurable win.
+The design is preserved below as a record; reopen only if such a fixture appears.
 
 ## Motivation
 
