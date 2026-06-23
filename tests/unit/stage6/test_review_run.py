@@ -275,6 +275,47 @@ def test_attention_reasons_edge_boundary(stage5_small_file, tmp_path):
     ), f"Expected edge_boundary reason for window {wid}; got {kinds}"
 
 
+def test_attention_reasons_spur_adjacent(stage5_small_file, tmp_path):
+    """spur_adjacent fires for a fitted line sitting on a gated spur node, and
+    stays silent when every gated spur is far from every fitted line."""
+    from ftmwpipeline.io.fitting_serialization import (
+        load_spectrum_fit_from_hdf5,
+        save_spectrum_fit_to_hdf5,
+    )
+
+    def _run_with_spurs(spur_centers):
+        fp = tmp_path / f"spur_{abs(hash(tuple(spur_centers))) % 100000}.ftmw"
+        shutil.copy(stage5_small_file, fp)
+        with h5py.File(str(fp), "r") as h5f:
+            sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
+        target = _first_window_with_peak(sf)
+        if target is None:
+            pytest.skip("No suitable window found in the 3-window fixture")
+        peak_f = float(target.fitted_peaks[0].frequency_mhz)
+        sf.parameters["spur_centers_mhz"] = [c(peak_f) for c in spur_centers]
+        with h5py.File(str(fp), "a") as h5f:
+            del h5f["stage5_fitting"]
+            save_spectrum_fit_to_hdf5(sf, h5f.create_group("stage5_fitting"))
+        review_run_impl(str(fp))
+        review = load_stage6_review_from_file(str(fp))
+        wid = target.window_id if target.window_id is not None else -1
+        return wid, review
+
+    # Positive: a gated spur exactly on the first peak (plus a decoy 100 MHz off).
+    wid, review = _run_with_spurs([lambda f: f, lambda f: f + 100.0])
+    kinds = {r.kind for r in review.window_statuses[wid].attention_reasons}
+    assert "spur_adjacent" in kinds, f"expected spur_adjacent for window {wid}; got {kinds}"
+
+    # Negative: every gated spur is 50 MHz away -- no window should flag.
+    _, review_clean = _run_with_spurs([lambda f: f + 50.0])
+    all_kinds = {
+        r.kind
+        for st in review_clean.window_statuses.values()
+        for r in st.attention_reasons
+    }
+    assert "spur_adjacent" not in all_kinds
+
+
 def _first_window_with_peak(sf):
     for wf in sf.window_fits:
         if (

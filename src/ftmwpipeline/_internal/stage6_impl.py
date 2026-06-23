@@ -124,6 +124,17 @@ _DEDUP_TOL_MHZ: float = 0.02  # 20 kHz; roughly half an active-FT bin at 13 µs
 SHAPE_ERROR_MAX_SEP_RES: float = 2.0
 SHAPE_ERROR_EVIDENCE_FRACTION: float = 0.25
 
+# spur_adjacent tolerance. A *surviving* fitted line within this many resolution
+# elements of a gated clock-harmonic spur center is suspiciously coincident with
+# an instrumental node: the spur was masked during the fit, so a line landing on
+# top of it is either a real molecule contaminated by the spur or a spur residual
+# that escaped the gate -- either way a human should confirm it is molecular. The
+# tolerance is line-on-node (not window-overlaps-spur): only the rare coincident
+# line flags, keeping the advisory high-precision per the F1 principle. Sized to
+# catch a line within ~1 resolution element of the node while a small margin
+# absorbs the gated center's drift excursion from the ideal node.
+SPUR_ADJACENT_MAX_SEP_RES: float = 1.5
+
 
 # ---------------------------------------------------------------------------
 # Revivable decision labels from the conservative add-loop
@@ -3105,23 +3116,35 @@ def _compute_attention_reasons(
                 )
             )
 
-    # --- spur_adjacent: flag when a gated spur center falls in or near the window ---
-    if wf.window is not None and wf.window.freq_range is not None:
-        flo, fhi = wf.window.freq_range
+    # --- spur_adjacent: flag a surviving fitted line that sits on a gated spur
+    # node. Line-on-node, not window-overlaps-spur: a window merely overlapping a
+    # masked spur whose lines are all clear of it is benign and does not flag.
+    if wf.fitted_peaks and spur_centers_mhz:
         resolution_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.1
-        for spur_f in spur_centers_mhz:
-            if (flo - resolution_mhz) <= spur_f <= (fhi + resolution_mhz):
-                reasons.append(
-                    AttentionReason(
-                        kind="spur_adjacent",
-                        detail=(
-                            f"gated spur at {spur_f:.4f} MHz near or within window "
-                            f"[{flo:.4f}, {fhi:.4f}] MHz"
-                        ),
-                        severity=1.0,
-                    )
+        tol_mhz = SPUR_ADJACENT_MAX_SEP_RES * resolution_mhz
+        centers = np.asarray(spur_centers_mhz, dtype=float)
+        nearest: Optional[Tuple[float, float, float]] = None  # (sep, peak_f, spur_f)
+        for p in wf.fitted_peaks:
+            pf = float(p.frequency_mhz)
+            j = int(np.argmin(np.abs(centers - pf)))
+            sep = abs(pf - float(centers[j]))
+            if sep <= tol_mhz and (nearest is None or sep < nearest[0]):
+                nearest = (sep, pf, float(centers[j]))
+        if nearest is not None:
+            sep, pf, spur_f = nearest
+            sep_res = sep / resolution_mhz if resolution_mhz > 0.0 else sep
+            reasons.append(
+                AttentionReason(
+                    kind="spur_adjacent",
+                    detail=(
+                        f"fitted line at {pf:.4f} MHz is {sep_res:.2f} resolution "
+                        f"element(s) ({sep * 1e3:.1f} kHz) from gated spur node "
+                        f"at {spur_f:.4f} MHz -- confirm it is molecular"
+                    ),
+                    # closer to the node = higher attention
+                    severity=float(2.0 - min(sep_res, SPUR_ADJACENT_MAX_SEP_RES)),
                 )
-                break  # one spur per window is sufficient for routing
+            )
 
     # --- edge_boundary: flag when a fitted peak sits within 1 resolution element of edge ---
     if wf.fitted_peaks and wf.window is not None and wf.window.freq_range is not None:
