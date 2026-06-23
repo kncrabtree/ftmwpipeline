@@ -2373,6 +2373,36 @@ def render_fit_detail_impl(
     )
 
 
+def render_rescue_progression_impl(
+    file_path: str,
+    window_id: int,
+    *,
+    bundle: Optional[_DetailBundle] = None,
+    figsize: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = None,
+) -> Any:
+    """Render the residual-rescue progression figure for one window.
+
+    Reads the window's persisted ``rescue_events`` (no re-fit) and draws the
+    chi-squared trajectory, per-round peak budget, and residual nominations.
+    A window with no rescue rounds yields an annotated placeholder figure.
+    """
+    from ..visualization.fit_visualization import plot_rescue_progression
+
+    bundle = bundle if bundle is not None else _resolve_detail_bundle(file_path)
+    wf = bundle.fit.window_fit(window_id)
+    kwargs: Dict[str, Any] = {
+        "window_id": window_id,
+        "acquisition_us": bundle.acquisition_us,
+        "file_stem": bundle.file_stem,
+    }
+    if figsize is not None:
+        kwargs["figsize"] = figsize
+    if title is not None:
+        kwargs["title"] = title
+    return plot_rescue_progression(list(wf.rescue_events), **kwargs)
+
+
 def render_fit_panels_impl(
     file_path: str,
     window_id: int,
@@ -2684,6 +2714,7 @@ def fit_show_impl(
     show_audit: bool = False,
     apodize: Optional[str] = None,
     apodize_us: Optional[float] = None,
+    rescue: bool = False,
     figsize: Optional[Tuple[float, float]] = None,
     title: Optional[str] = None,
 ) -> Dict[str, Any]:
@@ -2697,6 +2728,9 @@ def fit_show_impl(
     selected windows is in ``"log"``. With ``apodize`` set, an extra windowed
     (apodized) data-vs-model comparison figure is produced per window
     (``<stem>_window_<id>_apodized.png``) -- a diagnostic view, not a re-fit.
+    With ``rescue`` set, an extra residual-rescue progression figure is produced
+    per window (``<stem>_window_<id>_rescue.png``) from the persisted rescue
+    rounds (no re-fit).
     """
     if not _has_selection(window_ids, freqs, random_n, top_snr, all_windows):
         fig = visualize_fit_impl(
@@ -2754,6 +2788,15 @@ def fit_show_impl(
                 wdest = out_dir / f"{bundle.file_stem}_window_{wid:03d}_apodized.png"
                 wfig.savefig(str(wdest), dpi=130)
                 paths.append(str(wdest))
+        if rescue:
+            rfig = render_rescue_progression_impl(
+                file_path, wid, bundle=bundle, figsize=figsize
+            )
+            figures.append(rfig)
+            if out_dir is not None:
+                rdest = out_dir / f"{bundle.file_stem}_window_{wid:03d}_rescue.png"
+                rfig.savefig(str(rdest), dpi=130)
+                paths.append(str(rdest))
     return {
         "mode": "detail",
         "window_ids": ids,

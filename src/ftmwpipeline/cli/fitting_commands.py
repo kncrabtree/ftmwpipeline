@@ -142,6 +142,7 @@ def cmd_visualize_fit(args: argparse.Namespace) -> int:
             show_audit=args.show_audit,
             apodize=args.apodize,
             apodize_us=args.apodize_us,
+            rescue=args.rescue,
             figsize=figsize,
             title=args.title,
         )
@@ -534,6 +535,14 @@ def register_fitting_commands(subparsers: Any) -> None:
         default=None,
         help="Width (us) for --apodize exp; defaults to the window's fitted "
         "tau (the matched filter).",
+    )
+    p_vis.add_argument(
+        "--rescue",
+        action="store_true",
+        help="Also emit a residual-rescue progression figure per window "
+        "(chi-squared trajectory, per-round peak budget, and the residual "
+        "candidates each round nominated), rendered from the persisted rescue "
+        "rounds. Diagnostic only -- no re-fit.",
     )
     p_vis.add_argument(
         "--no-interactive",

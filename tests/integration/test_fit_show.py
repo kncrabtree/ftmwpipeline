@@ -19,10 +19,13 @@ from ftmwpipeline._internal.stage5_impl import (
     fit_show_impl,
     load_fit_impl,
     render_fit_detail_impl,
+    render_rescue_progression_impl,
     render_windowed_view_impl,
     select_window_ids,
 )
+from ftmwpipeline.core.data_structures import RescueCandidateInfo, RescueRoundInfo
 from ftmwpipeline.pipeline import Pipeline
+from ftmwpipeline.visualization.fit_visualization import plot_rescue_progression
 
 
 @pytest.fixture
@@ -205,6 +208,86 @@ class TestWindowedView:
 
 
 # ---------------------------------------------------------------------------
+# Residual-rescue progression view
+# ---------------------------------------------------------------------------
+def _synthetic_rounds():
+    """A two-round rescue chain: round 0 accepted, round 1 the empty terminator."""
+    return [
+        RescueRoundInfo(
+            window_id=3,
+            round_idx=0,
+            n_initial_peaks=2,
+            n_rescue_added=1,
+            n_pruned_total=0,
+            n_pruned_rescue_origin=0,
+            n_merged=0,
+            chi2_before=900.0,
+            chi2_after=120.0,
+            tau_us_before=10.0,
+            tau_us_after=10.1,
+            accepted=True,
+            reason="joint refit accepted 1 peak",
+            candidates=[
+                RescueCandidateInfo(frequency_mhz=0.8, magnitude=3e-6, snr=11.0),
+                RescueCandidateInfo(frequency_mhz=-1.4, magnitude=1e-6, snr=4.0),
+            ],
+        ),
+        RescueRoundInfo(
+            window_id=3,
+            round_idx=1,
+            n_initial_peaks=3,
+            n_rescue_added=0,
+            n_pruned_total=0,
+            n_pruned_rescue_origin=0,
+            n_merged=0,
+            chi2_before=120.0,
+            chi2_after=120.0,
+            tau_us_before=10.1,
+            tau_us_after=10.1,
+            accepted=False,
+            reason="no rescue candidates accepted",
+            candidates=[],
+        ),
+    ]
+
+
+class TestRescueProgression:
+    def test_renderer_three_panels_with_rounds(self):
+        fig = plot_rescue_progression(
+            _synthetic_rounds(), window_id=3, acquisition_us=13.0
+        )
+        # chi2 trajectory + peak budget + candidate panels.
+        assert len(fig.axes) == 3
+        plt.close(fig)
+
+    def test_renderer_placeholder_when_no_rounds(self):
+        fig = plot_rescue_progression([], window_id=7, acquisition_us=13.0)
+        # A single annotated placeholder axis, no crash.
+        assert len(fig.axes) == 1
+        plt.close(fig)
+
+    def test_impl_renders_for_real_window(self, stage5_file, fit_obj):
+        wid = int(fit_obj.window_fits[0].window_id)
+        fig = render_rescue_progression_impl(stage5_file, wid)
+        assert fig is not None
+        plt.close(fig)
+
+    def test_rescue_adds_companion_figures(self, stage5_file, fit_obj, tmp_path):
+        wid = int(fit_obj.window_fits[0].window_id)
+        out = tmp_path / "figs"
+        result = fit_show_impl(
+            stage5_file, window_ids=[wid], rescue=True, output_dir=str(out)
+        )
+        names = sorted(p.name for p in out.glob("*.png"))
+        # one detail + one rescue companion.
+        assert any(n.endswith("_rescue.png") for n in names)
+        assert len([n for n in names if not n.endswith("_rescue.png")]) == 1
+        assert len(result["figures"]) == 2
+        for fig in result["figures"]:
+            plt.close(fig)
+
+
+# ---------------------------------------------------------------------------
 # Cross-interface consistency
 # ---------------------------------------------------------------------------
 def test_show_fit_cross_interface(baseline_2638_stage5_small, tmp_path):
@@ -218,11 +301,15 @@ def test_show_fit_cross_interface(baseline_2638_stage5_small, tmp_path):
     p_out = tmp_path / "p_out"
     f_out = tmp_path / "f_out"
 
-    r_pipe = Pipeline.open(pfile).show_fit(top_snr=2, output_dir=str(p_out))
-    r_func = ftmw.show_fit(str(ffile), top_snr=2, output_dir=str(f_out))
+    r_pipe = Pipeline.open(pfile).show_fit(
+        top_snr=2, rescue=True, output_dir=str(p_out)
+    )
+    r_func = ftmw.show_fit(str(ffile), top_snr=2, rescue=True, output_dir=str(f_out))
 
     assert r_pipe["window_ids"] == r_func["window_ids"]
-    assert len(r_pipe["paths"]) == len(r_func["paths"]) == len(r_pipe["window_ids"])
+    assert len(r_pipe["paths"]) == len(r_func["paths"])
+    # detail + rescue companion per selected window.
+    assert len(r_pipe["paths"]) == 2 * len(r_pipe["window_ids"])
     assert r_pipe["log"] == r_func["log"]
     for fig in r_pipe["figures"] + r_func["figures"]:
         plt.close(fig)

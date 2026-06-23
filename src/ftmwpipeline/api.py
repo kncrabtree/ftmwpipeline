@@ -1799,6 +1799,7 @@ def show_fit(
     show_audit: bool = False,
     apodize: Optional[str] = None,
     apodize_us: Optional[float] = None,
+    rescue: bool = False,
     figsize: Optional[tuple] = None,
     title: Optional[str] = None,
     interactive: bool = False,
@@ -1809,7 +1810,9 @@ def show_fit(
     With no selector, returns the spectrum-wide overview. Selectors
     (``window_ids`` / ``freqs`` / ``random_n`` / ``top_snr`` / ``all_windows``)
     compose as a union and produce one consolidated per-window detail figure
-    each. With ``output_dir`` each detail figure is written there. Returns
+    each. With ``output_dir`` each detail figure is written there. With
+    ``rescue`` an extra residual-rescue progression figure is produced per
+    window (no re-fit). Returns
     ``{"mode", "window_ids", "figures", "paths", "log"}``. Requires Stage 5.
     """
     try:
@@ -1825,6 +1828,7 @@ def show_fit(
             show_audit=show_audit,
             apodize=apodize,
             apodize_us=apodize_us,
+            rescue=rescue,
             figsize=figsize,
             title=title,
             interactive=interactive,
