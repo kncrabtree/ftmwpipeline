@@ -63,10 +63,35 @@ from .peak_model import sideband_sign
 
 __all__ = [
     "ActiveFTResult",
+    "active_region_bounds",
     "compute_active_ft",
 ]
 
 SidebandLike = Union[Sideband, str]
+
+
+def active_region_bounds(
+    n_total: int, sample_dt_us: float, start_us: float, end_us: float
+) -> tuple[int, int]:
+    """Half-open ``[start_idx, end_idx)`` slice of the active FID region.
+
+    Single source of truth for the active-sample slice. Uses ``searchsorted`` on
+    the FID time axis (matching Stage 1's preprocess), so the active samples are
+    exactly those Stage 1 keeps before zero-padding. ``end_idx`` is clamped to
+    ``n_total``.
+
+    Both the fit's :func:`compute_active_ft` and the display-only padded FT
+    (``_padded_active_display_ft``) extract via this helper, so the 2x-zero-pad
+    of the display spectrum coincides with the native active FT bin-for-bin
+    (``padded[2k] == native[k]``). Independent ``floor``/``ceil`` vs
+    ``searchsorted`` extractions previously differed by one sample, which shifted
+    the padded grid off the native grid and -- when the offset count landed a
+    line on a mid-bin null -- erased the line from the magnitude display.
+    """
+    time_us = np.arange(int(n_total)) * sample_dt_us
+    start_idx = int(np.searchsorted(time_us, start_us))
+    end_idx = min(int(np.searchsorted(time_us, end_us)), int(n_total))
+    return start_idx, end_idx
 
 
 @dataclass
@@ -179,20 +204,16 @@ def compute_active_ft(
     if n_total == 0:
         raise ValueError("fid must not be empty")
 
-    # Active-region indexing: searchsorted on the FID time axis. The
-    # convention matches Stage 1's preprocess (which uses
-    # ``np.searchsorted(time_us, start_us)`` / ``end_us``) so the active
-    # samples here are exactly those Stage 1 keeps before zero-padding.
-    time_us = np.arange(n_total) * sample_dt_us
-    start_idx = int(np.searchsorted(time_us, start_us))
-    end_idx = int(np.searchsorted(time_us, end_us))
+    # Active-region indexing via the shared bounds helper so the display-only
+    # padded FT extracts the *exact same* samples (see active_region_bounds).
+    start_idx, end_idx = active_region_bounds(
+        n_total, sample_dt_us, start_us, end_us
+    )
     if end_idx <= start_idx:
         raise ValueError(
             f"active region [{start_us}, {end_us}] us is empty in FID of "
             f"length {n_total} at sample_dt_us={sample_dt_us}"
         )
-    if end_idx > n_total:
-        end_idx = n_total
 
     active = fid_arr[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size

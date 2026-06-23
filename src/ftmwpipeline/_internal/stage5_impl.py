@@ -2172,11 +2172,17 @@ def _padded_active_display_ft(
     measured bins; the extra bins are the single-zero-fill magnitude
     interpolation. Returns ``(freq_mhz, complex_spectrum)`` sorted by ascending
     molecular frequency. Never feeds fitting / noise / chi-squared."""
+    from ..fitting.active_ft import active_region_bounds
     from ..fitting.peak_model import sideband_sign
 
     fid = np.asarray(fid_samples, dtype=float)
-    start_idx = max(int(np.floor(start_us / sample_dt_us)), 0)
-    end_idx = min(int(np.ceil(end_us / sample_dt_us)), fid.size)
+    # Extract through the SAME helper compute_active_ft uses (searchsorted), so
+    # the 2x-padded grid coincides with the native bins (padded[2k] == native[k]).
+    # An independent floor/ceil slice differed by one sample, offsetting the grid
+    # and -- on 655 -- erasing lines that landed on a mid-bin null.
+    start_idx, end_idx = active_region_bounds(
+        fid.size, sample_dt_us, start_us, end_us
+    )
     active = fid[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size
     active -= active.mean()  # match canonical (unconditional) DC removal
