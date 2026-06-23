@@ -75,11 +75,22 @@ damped-sinusoid signal from noise at a higher signal-to-noise ratio. The
 apodization weight is what makes it optimal — weighting each time sample by the
 signal's own envelope concentrates the line's energy, which an unweighted (boxcar)
 transform spreads across the transform's skirt. The optimum is reached when the
-filter's decay :math:`\tau_\text{basis}` equals the line's true decay; the gap
-pass takes that decay from the :doc:`Stage 2b <../stage2b_tau>` calibration. The
-gain is not in the signal — apodization slightly lowers the on-line amplitude —
-but in the noise: the apodized transform's per-bin noise falls faster than the
+filter matches the line's true envelope, both its **shape** and its decay time.
+The gap pass takes both from the :doc:`Stage 2b <../stage2b_tau>` calibration:
+when the line-shape vote is Gaussian the matched window is itself Gaussian,
+:math:`\exp(-(t/\tau_G)^2)` with the Gaussian decay time, and otherwise it is the
+exponential :math:`\exp(-t/\tau)` of a Lorentzian line — the true matched filter
+for the recommended shape, not an exponential filter fed a Gaussian decay time.
+The gain is not in the signal — apodization slightly lowers the on-line amplitude
+— but in the noise: the apodized transform's per-bin noise falls faster than the
 signal does, so the per-bin signal-to-noise rises.
+
+The line shape changes little else about detection. On the reference experiment a
+Stage 3 audit across the Lorentzian and Gaussian paths finds the detection
+defaults — the promotion floors, the gap-mask edge threshold, the primary-pass
+exclusion radius — shape-invariant to within a few percent, so matching the window
+to the recommended shape is the whole of the adaptation and no Gaussian-specific
+tuning is warranted.
 
 Once the data are reduced to a per-bin signal-to-noise statistic, the detection
 threshold has a clean statistical reading. In a line-free region the magnitude of
@@ -197,11 +208,12 @@ locator, the leakage-aware floor, and the per-window fit downstream resolve.
 Caveats
 -------
 
-* **The matched filter is matched to a decay.** Its optimality assumes the line
-  shape and the decay time it is given. The gap pass takes the decay from the
-  Stage 2b calibration and falls back to a default when that is absent; a badly
-  wrong decay degrades the gain (the synthetic sweep shows recall is insensitive
-  to the basis decay over a factor of several, so the fallback is safe).
+* **The matched filter is matched to a shape and a decay.** Its optimality assumes
+  the line shape and the decay time it is given, both taken from the Stage 2b
+  calibration; it falls back to an exponential window at a default decay when that
+  is absent. A badly wrong decay degrades the gain, but the synthetic sweep shows
+  recall is insensitive to the basis decay over a factor of several, so the
+  fallback is safe.
 * **Optimality is per bin, not per line.** The structural discrimination against a
   strong line's own skirt comes from the concave-down locator, not the matched
   filter; the two are a pair, and neither alone is sufficient.
