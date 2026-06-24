@@ -660,6 +660,7 @@ class PeakSurvivalSubSettings:
     vif_collapse_threshold: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
     merge_chi2_veto: Optional[float] = None
+    merge_chi2_veto_min_separation_res: Optional[float] = None
     vif_attention_threshold: Optional[float] = None
     drop_empty_windows: Optional[bool] = None
     drop_spur_only_windows: Optional[bool] = None
@@ -863,6 +864,14 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # resolve a split (merged chi2r stays low -> merge), high SNR resolves
         # it (merged chi2r blows up -> keep split).
         "merge_chi2_veto": 100.0,
+        # Below this pair separation (resolution elements) the catastrophic-merge
+        # veto does not apply: an unresolvable pair (every calibration-truth
+        # doublet sits >= 0.82 res) cannot be two resolvable lines, so a high
+        # post-merge chi2r there is the irreducible unresolved-structure floor
+        # (unresolved hyperfine), not evidence for the split -- force-collapse it.
+        # The veto still guards the marginally-resolvable band (0.5 .. 1.0 res),
+        # which is where the real-doublet protection (1512 w250) lives.
+        "merge_chi2_veto_min_separation_res": 0.5,
         "vif_attention_threshold": 4.0,
         # End-of-Stage-5 window cleanup: drop windows with no surviving fitted
         # peak (K=0 -- pure noise, no product), and drop a single-line window

@@ -370,12 +370,18 @@ def _stub_collapse(
     remove_freqs: list[float],
     add_freqs: list[float],
     add_seeds: list,
+    freeze: bool = False,
 ) -> FittingResult:
     """Stand-in for the production collapse refit: drop the paired peaks and
-    add one merged peak per ``add_freqs`` entry (origin auto)."""
+    add one merged peak per ``add_freqs`` entry (origin auto). ``freeze`` (the
+    sequential collapse's frozen-intermediate flag) is irrelevant to the stub --
+    a frozen merge and the final relaxed refit produce the same peak set here.
+    With no ``add_freqs`` (the final relaxed refit) the peak set is returned
+    unchanged."""
     kept = [p for p in wf.fitted_peaks if float(p.frequency_mhz) not in remove_freqs]
     merged = [_cpeak(f, snr=50.0, amplitude=2.0) for f in add_freqs]
-    new = FittingResult(window_id=wf.window_id)
+    new = FittingResult(window_id=wf.window_id, success=True)
+    new.window = wf.window  # production refit carries the window forward
     new.fitted_peaks = kept + merged
     return new
 
@@ -422,6 +428,7 @@ class TestApplyVifCollapse:
             sideband=Sideband.UPPER,
             refit_collapse=kw.get("refit_collapse", _stub_collapse),
             max_post_chi2r=kw.get("max_post_chi2r", float("inf")),
+            veto_min_separation_res=kw.get("veto_min_separation_res", 0.0),
         )
 
     def test_catastrophic_merge_vetoed(self):
@@ -432,7 +439,7 @@ class TestApplyVifCollapse:
         wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
         fit = _make_fit([wf])
 
-        def _bad_merge(wf_, remove_freqs, add_freqs, add_seeds):
+        def _bad_merge(wf_, remove_freqs, add_freqs, add_seeds, freeze):
             new = _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
             new.reduced_chi2 = 5000.0  # the 1-line model is a terrible fit
             return new
@@ -451,7 +458,7 @@ class TestApplyVifCollapse:
         wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
         fit = _make_fit([wf])
 
-        def _ok_merge(wf_, remove_freqs, add_freqs, add_seeds):
+        def _ok_merge(wf_, remove_freqs, add_freqs, add_seeds, freeze):
             new = _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
             new.reduced_chi2 = 2.0
             return new
@@ -460,6 +467,32 @@ class TestApplyVifCollapse:
         assert len(fit.window_fits[0].fitted_peaks) == 1
         assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 1
         assert fit.diagnostics["vif_collapse"]["n_vetoed_pairs"] == 0
+
+    def test_subresolution_pair_exempt_from_veto(self):
+        # An unresolvable pair (every member below ``veto_min_separation_res``)
+        # is force-collapsed even when the 1-line refit is catastrophic: a high
+        # post-merge chi2r there is the unresolved-structure floor, not evidence
+        # for two resolvable lines. The 0.01 MHz pair is 0.13 res < 0.5.
+        pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=10.0, snr=500.0)
+        pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=10.0, snr=500.0)
+        wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
+        fit = _make_fit([wf])
+
+        def _bad_merge(wf_, remove_freqs, add_freqs, add_seeds, freeze):
+            new = _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
+            new.reduced_chi2 = 5000.0
+            return new
+
+        self._run(
+            fit,
+            refit_collapse=_bad_merge,
+            max_post_chi2r=100.0,
+            veto_min_separation_res=0.5,
+        )
+        assert len(fit.window_fits[0].fitted_peaks) == 1  # collapsed despite chi2r
+        diag = fit.diagnostics["vif_collapse"]
+        assert diag["n_collapsed_pairs"] == 1
+        assert diag["n_vetoed_pairs"] == 0
 
     def test_degenerate_pair_collapses(self):
         # Two near-degenerate high-VIF lines 0.01 MHz apart (< 0.0385).
@@ -505,8 +538,10 @@ class TestApplyVifCollapse:
         assert len(fit.window_fits[0].fitted_peaks) == 2  # untouched
 
     def test_iterates_until_no_resplit(self):
-        # A refit that re-splits its merged line into a fresh degenerate pair
-        # must be collapsed again, not left behind: the sweep iterates.
+        # A frozen merge that re-splits its merged line into a fresh degenerate
+        # pair must be collapsed again, not left behind: the per-window
+        # single-pair loop re-detects the pair and merges it before the final
+        # relaxed refit.
         pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=10.0, snr=500.0)
         pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=10.0, snr=500.0)
         wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
@@ -514,7 +549,7 @@ class TestApplyVifCollapse:
 
         state = {"resplit": True}
 
-        def _resplitting(wf_, remove_freqs, add_freqs, add_seeds):
+        def _resplitting(wf_, remove_freqs, add_freqs, add_seeds, freeze):
             # First collapse: re-split the merged line into a new degenerate
             # high-VIF pair (what a dense NLS refit can do). Second collapse:
             # behave normally (one identifiable merged line) so it converges.
@@ -523,7 +558,7 @@ class TestApplyVifCollapse:
                 for p in wf_.fitted_peaks
                 if float(p.frequency_mhz) not in remove_freqs
             ]
-            new = FittingResult(window_id=wf_.window_id)
+            new = FittingResult(window_id=wf_.window_id, success=True)
             new.window = wf_.window  # production refit carries the window forward
             if state["resplit"]:
                 state["resplit"] = False
@@ -575,10 +610,13 @@ class TestApplyVifCollapse:
 
         captured: dict = {}
 
-        def _capturing(wf_, remove_freqs, add_freqs, add_seeds):
-            captured["add_freqs"] = list(add_freqs)
-            captured["seed_amp"] = add_seeds[0].amplitude
-            captured["seed_phase"] = add_seeds[0].phase
+        def _capturing(wf_, remove_freqs, add_freqs, add_seeds, freeze):
+            # Capture only the merge call (the final relaxed refit passes no
+            # add_freqs/add_seeds).
+            if add_freqs:
+                captured["add_freqs"] = list(add_freqs)
+                captured["seed_amp"] = add_seeds[0].amplitude
+                captured["seed_phase"] = add_seeds[0].phase
             return _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
 
         self._run(fit, refit_collapse=_capturing)

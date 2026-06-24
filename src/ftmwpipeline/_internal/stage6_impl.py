@@ -951,6 +951,7 @@ def refit_window_core(
     add_seeds: Optional[List[ModelPeak]] = None,
     add_origin: str = "user",
     snap_tol_mhz: float = _REFIT_SNAP_TOL_MHZ,
+    freeze_inherited: bool = False,
 ) -> FittingResult:
     """In-memory single-window refit core (no file I/O, no spur replay, no
     decision recording).
@@ -1329,6 +1330,59 @@ def refit_window_core(
     final_seeds = [mp for mp, _ in seed_peaks_with_origin]
     origin_flags = [orig for _, orig in seed_peaks_with_origin]
 
+    # "Freeze inherited" mode for the VIF-collapse sequential merge: fit ONLY
+    # the added (merged) seeds, holding every inherited peak frozen at its
+    # persisted value -- added to the frozen background AND re-appended verbatim
+    # after the NLS (the same hold-out path thawed lines use). The sequential
+    # collapse loop calls this once per single pair, so a dominant line stays
+    # pinned while each new merged line converges. The all-free relaxation that
+    # lets a 1e5 giant drag a weak merged line away (655 w124) is deferred to one
+    # final relaxed refit at the end of the per-window merge sequence. No-op
+    # unless a seed was added.
+    n_added = len(add)
+    if freeze_inherited and n_added > 0 and len(final_seeds) > n_added:
+        inherited_seeds = final_seeds[:-n_added]
+        added_seeds = final_seeds[-n_added:]
+        added_origins = origin_flags[-n_added:]
+        used_src: set[int] = set()
+        for mp in inherited_seeds:
+            freq = center_mhz + s * mp.offset_mhz
+            best_idx = -1
+            best_d = float("inf")
+            for idx, fp in enumerate(wf.fitted_peaks):
+                if idx in used_src:
+                    continue
+                d = abs(float(fp.frequency_mhz) - freq)
+                if d < best_d:
+                    best_d, best_idx = d, idx
+            if best_idx < 0:
+                continue
+            used_src.add(best_idx)
+            src_fp = wf.fitted_peaks[best_idx]
+            frozen_peaks.append(
+                FrozenPeak(
+                    peak_index=(
+                        int(src_fp.peak_id) if src_fp.peak_id is not None else -1
+                    ),
+                    primary_window_id=-1,
+                    model_peak=mp,
+                    frequency_mhz=freq,
+                    freeze_eligible=False,
+                    edge_free=False,
+                )
+            )
+            thawed_held_peaks.append(src_fp)
+        final_seeds = list(added_seeds)
+        origin_flags = list(added_origins)
+        background, data_minus_bg = subtract_frozen_background(
+            offset_grid,
+            z_slice,
+            frozen_peaks,
+            tau_persisted,
+            acquisition_us,
+            shape=shape_enum,
+        )
+
     # --- Single joint NLS over the seeded set → WindowOutcome ---------------
     # A user refit is NLS-only: it holds the persisted peak set (plus/minus the
     # user's edit) and re-converges it. It deliberately does NOT run residual
@@ -1424,6 +1478,15 @@ def refit_window_core(
     # no add-one history in the report).
     new_wf.audit_trail = list(wf.audit_trail or [])
     new_wf.rescue_events = list(getattr(wf, "rescue_events", []) or [])
+
+    # ``freeze_inherited`` parked the window's OWN inherited peaks in the frozen
+    # background to hold them during the merged-line fit (and re-appended them to
+    # ``fitted_peaks`` above). They must NOT persist as fixed contributors -- a
+    # later refit would reconstruct them as background AND fit them as peaks
+    # (double-count). Restore the original contributor set; the inherited peaks
+    # live only in ``fitted_peaks``.
+    if freeze_inherited and len(add) > 0:
+        new_wf.fixed_parameters = dict(wf.fixed_parameters or {})
 
     return new_wf
 

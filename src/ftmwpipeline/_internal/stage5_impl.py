@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
 
@@ -440,6 +440,47 @@ def _merged_seed_for_pair(
     return merge_freq, merge_amp, merge_phase
 
 
+def _inflate_merged_frequency_errors(
+    wf: FittingResult, pending: List[Dict[str, Any]]
+) -> None:
+    """Inflate each merged line's ``frequency_error`` by its component spread.
+
+    The collapsed multiplet's effective frequency uncertainty is
+    ``sqrt(formal_frequency_error**2 + unresolved_spread_mhz**2)`` -- the merged
+    line's position is honestly known only to within the (unresolved-hyperfine)
+    spread of the components it absorbed. Each ``pending`` record is matched to
+    its merged peak (nearest ``frequency_mhz`` to ``merged_frequency_mhz``) and
+    the peak is rebuilt with the inflated error; the spread is also recorded in
+    ``extra_errors['unresolved_spread_mhz']`` for the report/provenance. The
+    merged peaks were stamped ``origin="auto"`` by the collapse refit.
+    """
+    peaks = list(wf.fitted_peaks)
+    used: set[int] = set()
+    for rec in pending:
+        spread = float(rec.get("unresolved_spread_mhz") or 0.0)
+        target = float(rec["merged_frequency_mhz"])
+        best_k = -1
+        best_d = float("inf")
+        for k, pk in enumerate(peaks):
+            if k in used:
+                continue
+            d = abs(float(pk.frequency_mhz) - target)
+            if d < best_d:
+                best_d, best_k = d, k
+        if best_k < 0:
+            continue
+        used.add(best_k)
+        pk = peaks[best_k]
+        formal = float(pk.frequency_error) if pk.frequency_error is not None else 0.0
+        eff = float(np.hypot(formal, spread))
+        extra_errors = dict(pk.extra_errors)
+        extra_errors["unresolved_spread_mhz"] = spread
+        peaks[best_k] = replace(
+            pk, frequency_error=eff, extra_errors=extra_errors
+        )
+    wf.fitted_peaks = peaks
+
+
 def apply_vif_collapse(
     fit: SpectrumFit,
     *,
@@ -448,11 +489,12 @@ def apply_vif_collapse(
     res_element_mhz: float,
     sideband: Sideband,
     refit_collapse: Callable[
-        [FittingResult, List[float], List[float], List[Any]], FittingResult
+        [FittingResult, List[float], List[float], List[Any], bool], FittingResult
     ],
     snap_tol_mhz: float = 0.05,
     max_iterations: int = 5,
     max_post_chi2r: float = float("inf"),
+    veto_min_separation_res: float = 0.0,
 ) -> None:
     """Collapse degenerate sub-resolution overfit pairs (in-place).
 
@@ -514,6 +556,18 @@ def apply_vif_collapse(
         ``overfit_vif``) -- the data overwhelmingly demands two components.
         ``inf`` disables the veto. Raw chi2r, not SNR-normalized eps (the D10
         lineshape floor saturates eps at high SNR).
+    veto_min_separation_res :
+        Separation floor (in resolution elements) below which the
+        ``max_post_chi2r`` veto does **not** apply. The veto's premise -- a high
+        post-merge chi^2 means the data demands two components -- only holds for
+        a *resolvable* pair. A deeply sub-resolution pair (every calibration-truth
+        doublet sits >= 0.82 res) cannot be two resolvable lines, so a high
+        post-merge chi^2 there is the irreducible unresolved-structure floor
+        (unresolved hyperfine), not evidence for the split: such pairs are
+        force-collapsed regardless of chi^2. The veto still guards the
+        marginally-resolvable band (``veto_min_separation_res`` .. ``max_sep_res``).
+        A window is exempt from the veto only when *every* collapsing pair in it
+        is below this floor. ``0.0`` keeps the legacy unconditional veto.
     """
     from ..fitting.peak_model import ModelPeak, sideband_sign
 
@@ -553,96 +607,117 @@ def apply_vif_collapse(
 
     collapse_records: List[Dict[str, Any]] = []
     veto_records: List[Dict[str, Any]] = []
-    vetoed_ids: set[int] = set()
-    n_iterations = 0
+    n_iterations = 0  # most merges performed in any single window (diagnostic)
 
-    # Iterate until a full sweep collapses nothing: an NLS collapse refit can
-    # re-converge two seeds into a fresh degenerate split, so one pass is not
-    # enough. ``max_iterations`` caps a window that oscillates collapse<->split.
-    for _ in range(max(1, max_iterations)):
-        any_collapsed = False
-        new_window_fits = []
-        for wf in fit.window_fits:
-            wid = int(wf.window_id) if wf.window_id is not None else -1
-            peaks = wf.fitted_peaks
-            center = None
-            if wf.window is not None and wf.window.freq_range is not None:
-                lo, hi = wf.window.freq_range
-                center = 0.5 * (lo + hi)
-            if center is None or wid in vetoed_ids:
-                new_window_fits.append(wf)
-                continue
+    # Sequential per-window collapse: merge ONE pair at a time, each followed by
+    # a *frozen* refit (only the new merged line free; every inherited peak,
+    # including a dominant 1e5 line, held at its persisted value). A multiplet
+    # collapses K -> K-1 -> ... within this loop (a sub-resolution quartet folds
+    # 4->3->2->1) without a dominant line ever dragging a weak merged line away
+    # mid-sequence (the all-at-once relaxation's 655 w124 failure). One final
+    # relaxed refit at the end re-fits every peak free for honest covariance,
+    # seeded from the fully-converged frozen state so it stays in the good basin.
+    new_window_fits = []
+    for wf in fit.window_fits:
+        wid = int(wf.window_id) if wf.window_id is not None else -1
+        center = None
+        if wf.window is not None and wf.window.freq_range is not None:
+            lo, hi = wf.window.freq_range
+            center = 0.5 * (lo + hi)
+        if center is None:
+            new_window_fits.append(wf)
+            continue
 
-            pairs = _pairs_for_window(wf)
+        cur = wf
+        pending: List[Dict[str, Any]] = []
+        cap = len(wf.fitted_peaks)  # each merge removes one peak: a hard bound
+        while len(pending) < cap:
+            pairs = _pairs_for_window(cur)
             if not pairs:
-                new_window_fits.append(wf)
-                continue
-
+                break
+            i, j = pairs[0]  # highest-VIF pair first (greedy order)
+            peaks = cur.fitted_peaks
             vifs = [amplitude_vif(p) for p in peaks]
-            remove_freqs = []
-            add_freqs = []
-            add_seeds = []
-            pending: List[Dict[str, Any]] = []
-            for i, j in pairs:
-                pa, pb = peaks[i], peaks[j]
-                merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
-                    wf, pa, pb, snap_tol_mhz
-                )
-                offset = float(s * (merge_freq - center))
-                add_seeds.append(
-                    ModelPeak(
-                        amplitude=max(abs(merge_amp), 1e-30),
-                        offset_mhz=offset,
-                        phase=merge_phase,
+            pa, pb = peaks[i], peaks[j]
+            merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
+                cur, pa, pb, snap_tol_mhz
+            )
+            offset = float(s * (merge_freq - center))
+            seed = ModelPeak(
+                amplitude=max(abs(merge_amp), 1e-30),
+                offset_mhz=offset,
+                phase=merge_phase,
+            )
+            # Effective frequency uncertainty of the merged line: the collapsed
+            # pair represents one unresolvable feature whose true position is
+            # uncertain by the amplitude-weighted spread of its (unresolved-
+            # hyperfine) components, not just the formal LSQ error -- recorded so
+            # the merged line's frequency_error can be inflated to
+            # ``sqrt(formal**2 + spread**2)`` (a clean single line has spread 0).
+            fa, fb = float(pa.frequency_mhz), float(pb.frequency_mhz)
+            amp_a, amp_b = abs(float(pa.amplitude)), abs(float(pb.amplitude))
+            w_sum = amp_a + amp_b
+            if w_sum > 0.0:
+                f_centroid = (amp_a * fa + amp_b * fb) / w_sum
+                spread = float(
+                    np.sqrt(
+                        (amp_a * (fa - f_centroid) ** 2 + amp_b * (fb - f_centroid) ** 2)
+                        / w_sum
                     )
                 )
-                remove_freqs.extend([float(pa.frequency_mhz), float(pb.frequency_mhz)])
-                add_freqs.append(merge_freq)
-                pending.append(
-                    {
-                        "window_id": wid,
-                        "frequency_a_mhz": float(pa.frequency_mhz),
-                        "frequency_b_mhz": float(pb.frequency_mhz),
-                        "vif_a": vifs[i],
-                        "vif_b": vifs[j],
-                        "separation_res": (
-                            abs(float(pa.frequency_mhz) - float(pb.frequency_mhz))
-                            / res_element_mhz
-                            if res_element_mhz > 0
-                            else None
-                        ),
-                        "merged_frequency_mhz": float(merge_freq),
-                    }
-                )
-
-            new_wf = refit_collapse(wf, remove_freqs, add_freqs, add_seeds)
-
-            # Catastrophic-merge veto: if collapsing the pair leaves a window the
-            # 1-line model fits this badly, the data overwhelmingly demands two
-            # components, so keep the split (it flags ``overfit_vif`` for human
-            # review) rather than ship a broken fit. Raw post-merge chi2r (not the
-            # SNR-normalized eps, which the D10 lineshape floor saturates at high
-            # SNR). The window is not retried in later iterations.
-            post_chi2r_raw = getattr(new_wf, "reduced_chi2", None)
-            post_chi2r = (
-                float(post_chi2r_raw) if post_chi2r_raw is not None else float("inf")
+            else:
+                spread = 0.5 * abs(fa - fb)
+            pending.append(
+                {
+                    "window_id": wid,
+                    "frequency_a_mhz": fa,
+                    "frequency_b_mhz": fb,
+                    "vif_a": vifs[i],
+                    "vif_b": vifs[j],
+                    "separation_res": (
+                        abs(fa - fb) / res_element_mhz if res_element_mhz > 0 else None
+                    ),
+                    "merged_frequency_mhz": float(merge_freq),
+                    "unresolved_spread_mhz": spread,
+                }
             )
-            if post_chi2r > max_post_chi2r:
-                for rec in pending:
-                    rec["post_merge_chi2r"] = post_chi2r
-                veto_records.extend(pending)
-                vetoed_ids.add(wid)
-                new_window_fits.append(wf)
-                continue
+            # Frozen intermediate refit: only the merged line free.
+            cur = refit_collapse(cur, [fa, fb], [merge_freq], [seed], True)
 
-            collapse_records.extend(pending)
-            new_window_fits.append(new_wf)
-            any_collapsed = True
+        if not pending:
+            new_window_fits.append(wf)
+            continue
+        n_iterations = max(n_iterations, len(pending))
 
-        fit.window_fits = new_window_fits
-        if not any_collapsed:
-            break
-        n_iterations += 1
+        # Final relaxed refit: every peak free, for honest covariance / errors.
+        relaxed = refit_collapse(cur, [], [], [], False)
+
+        # Catastrophic-merge veto on the final result: a window whose every
+        # collapsing pair is below ``veto_min_separation_res`` carries only
+        # unresolvable splits (high post-merge chi^2 is the irreducible
+        # unresolved-structure floor, not evidence for two resolvable lines) and
+        # is force-collapsed; otherwise a too-high post-merge chi^2 reverts the
+        # whole window's merges (the split is kept and flags ``overfit_vif``).
+        post_chi2r_raw = getattr(relaxed, "reduced_chi2", None)
+        post_chi2r = (
+            float(post_chi2r_raw) if post_chi2r_raw is not None else float("inf")
+        )
+        seps_res = [r["separation_res"] for r in pending if r["separation_res"] is not None]
+        veto_exempt = bool(seps_res) and max(seps_res) < veto_min_separation_res
+        if (post_chi2r > max_post_chi2r and not veto_exempt) or not getattr(
+            relaxed, "success", True
+        ):
+            for rec in pending:
+                rec["post_merge_chi2r"] = post_chi2r
+            veto_records.extend(pending)
+            new_window_fits.append(wf)
+            continue
+
+        _inflate_merged_frequency_errors(relaxed, pending)
+        collapse_records.extend(pending)
+        new_window_fits.append(relaxed)
+
+    fit.window_fits = new_window_fits
 
     all_peaks: List[FittedPeak] = [p for wf in fit.window_fits for p in wf.fitted_peaks]
     all_peaks.sort(key=lambda p: p.frequency_mhz)
@@ -1347,6 +1422,10 @@ def _fit_peaks_impl(
         resolved.peak_survival.merge_chi2_veto,
         "peak_survival.merge_chi2_veto",
     )
+    merge_chi2_veto_min_sep_res_v = _required_float(
+        resolved.peak_survival.merge_chi2_veto_min_separation_res,
+        "peak_survival.merge_chi2_veto_min_separation_res",
+    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -1870,6 +1949,7 @@ def _fit_peaks_impl(
             remove_freqs: List[float],
             add_freqs: List[float],
             add_seeds: List[Any],
+            freeze: bool,
         ) -> FittingResult:
             return refit_window_core(
                 fit_ctx,
@@ -1882,8 +1962,9 @@ def _fit_peaks_impl(
                 peak_frequencies_mhz=peak_frequencies_mhz,
                 remove=tuple(remove_freqs),
                 add=tuple(add_freqs),
-                add_seeds=add_seeds,
+                add_seeds=add_seeds if add_seeds else None,
                 add_origin="auto",
+                freeze_inherited=freeze,
             )
 
         res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.0
@@ -1895,6 +1976,7 @@ def _fit_peaks_impl(
             sideband=sideband,
             refit_collapse=_collapse_refit,
             max_post_chi2r=merge_chi2_veto_v,
+            veto_min_separation_res=merge_chi2_veto_min_sep_res_v,
         )
         n_collapsed = len(
             spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])

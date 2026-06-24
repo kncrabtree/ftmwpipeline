@@ -121,6 +121,29 @@ DEFAULT_MIN_SEPARATION_FACTOR = 1.0
 # Blend-aware seeder: a single-cosine seed fit whose reduced chi-squared
 # exceeds this is treated as an unresolved blend and re-seeded at K=2/K=3.
 DEFAULT_SEEDER_RCHI2 = 1.5
+
+# In-window bright-line far-skirt fidelity budget (sigma_eff). The core
+# ``kappa * |model|`` budget (:data:`validation.DEFAULT_GATE_SIGMA_EFF_KAPPA`)
+# covers a bright line's irreducible lineshape misfit *at its core*, but that
+# misfit concentrates in the *far skirt* (3+ FWHM), where ``|model|`` is small
+# so ``kappa * |model|`` under-budgets it -- the gate then reads the uncovered
+# far-skirt floor of an ultra-strong line as a blend and escalates K, the NLS
+# collapsing the straddle into a canceling-phase overfit pair. This budget
+# applies a fidelity ``kappa`` to a bright in-window line's own *skirt*, with the
+# core (within ``CORE_FWHM`` feature widths of the line) masked so close real
+# blends keep the unbudgeted core ``kappa``. ``None`` disables (A/B); a
+# brightness gate keeps it off weak lines whose skirt is negligible anyway.
+#
+# The value is ~0.1, NOT the frozen-contributor ``kappa_skirt`` (0.4): that
+# governs the *extrapolation* error of an out-of-window skirt subtracted from
+# the data (10-40% wrong far from where ``h_T`` was read), whereas an in-window
+# line's own skirt is fit jointly -- its only error is the ``h_T``-vs-true-shape
+# lineshape floor (~5%). Calibrated empirically: 0.10 closes the canceling-pair
+# escalation on the 1e6-SNR giant (655 w1006) AND preserves a real snr-1500 line
+# riding that giant's skirt (37903.57), which 0.4 buried.
+DEFAULT_IN_WINDOW_SKIRT_KAPPA: Optional[float] = 0.1
+DEFAULT_IN_WINDOW_SKIRT_MIN_SNR: float = 500.0
+DEFAULT_IN_WINDOW_SKIRT_CORE_FWHM: float = 1.0
 # Straddle of the re-seeded inits, in units of the feature FWHM.
 DEFAULT_SEEDER_STRADDLE_FACTOR = 1.0
 DEFAULT_SEEDER_MAX_K = 3
@@ -761,6 +784,87 @@ def evaluate_baseline(
     return cast(
         np.ndarray, basis @ np.asarray(fit.baseline_coeffs, dtype=np.complex128)
     )
+
+
+def in_window_skirt_budget(
+    peaks: Sequence[ModelPeak],
+    offset_grid_mhz: np.ndarray,
+    tau_us: float,
+    acquisition_us: float,
+    *,
+    shape: PeakShape | str = PeakShape.LORENTZIAN,
+    rms_noise: NoiseLike,
+    kappa_skirt: Optional[float] = DEFAULT_IN_WINDOW_SKIRT_KAPPA,
+    min_snr: float = DEFAULT_IN_WINDOW_SKIRT_MIN_SNR,
+    core_fwhm: float = DEFAULT_IN_WINDOW_SKIRT_CORE_FWHM,
+    mode: str = "a",
+    kappa_core: float = 0.05,
+) -> np.ndarray:
+    """Per-bin ``sigma_eff`` budget for bright in-window lines' own far skirts.
+
+    Returns ``kappa_skirt * |S(u)|`` where ``S`` is the coherent model sum of
+    the *bright* lines (peak model magnitude ``>= min_snr * median(sigma)``)
+    with each line's **core** (within ``core_fwhm`` feature widths of its
+    center) masked to zero -- the skirt-only contribution. Combined in
+    quadrature with the core ``kappa * |model|`` budget (via the gate's
+    ``extra``), it lifts ``sigma_eff`` to the skirt-fidelity level only in the
+    far skirt of bright lines, where an ultra-strong line's irreducible
+    lineshape floor concentrates, while leaving the core (where real close
+    blends live) at the unbudgeted core ``kappa``. Zeros when disabled, no
+    bright line is present, or the feature width is undefined.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    zeros = cast("np.ndarray", np.zeros(u.size, dtype=float))
+    if kappa_skirt is None or not peaks:
+        return zeros
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+    fwhm = feature_fwhm(tau_us, acquisition_us, shape=shape) if tau_us > 0.0 else 0.0
+    if not fwhm > 0.0:
+        return zeros
+    finite = sigma[np.isfinite(sigma) & (sigma > 0.0)]
+    sigma_med = float(np.median(finite)) if finite.size else 0.0
+    if not sigma_med > 0.0:
+        return zeros
+    core = float(core_fwhm) * fwhm
+    skirt = np.zeros(u.size, dtype=np.complex128)
+    any_bright = False
+    for pk in peaks:
+        line = model_spectrum(u, [pk], tau_us, acquisition_us, shape=shape)
+        if float(np.max(np.abs(line))) < float(min_snr) * sigma_med:
+            continue
+        any_bright = True
+        line[np.abs(u - pk.offset_mhz) <= core] = 0.0
+        skirt = skirt + line
+    if not any_bright:
+        return zeros
+    skirt_mag = np.abs(skirt)
+    if mode == "b":
+        # Per-bin blended kappa: kappa(u) ramps kappa_core -> kappa_skirt by the
+        # fraction of the local model that is bright-line skirt, applied to the
+        # *full* model. extra = |model|*sqrt(kappa(u)^2 - kappa_core^2), so the
+        # gate's sigma_eff = sigma^2 + (kappa(u)*|model|)^2 (the core kappa is
+        # already applied to |model| by the gate, this adds the elevation).
+        full = np.abs(model_spectrum(u, peaks, tau_us, acquisition_us, shape=shape))
+        frac = np.where(full > 0.0, skirt_mag / full, 0.0)
+        frac = np.clip(frac, 0.0, 1.0)
+        kc = float(kappa_core)
+        kappa_u = kc + (float(kappa_skirt) - kc) * frac
+        return cast("np.ndarray", full * np.sqrt(np.clip(kappa_u**2 - kc**2, 0.0, None)))
+    # mode == "a": additive skirt term, kappa_skirt * |bright skirt|.
+    return cast("np.ndarray", float(kappa_skirt) * skirt_mag)
+
+
+def _combine_budget(
+    base: Optional[np.ndarray], extra: Optional[np.ndarray]
+) -> Optional[np.ndarray]:
+    """Quadrature-combine two per-bin ``sigma_eff`` budget arrays (either None)."""
+    if base is None:
+        return extra
+    if extra is None:
+        return base
+    return cast(np.ndarray, np.hypot(np.asarray(base, dtype=float), extra))
 
 
 # ---------------------------------------------------------------------------
@@ -1972,6 +2076,34 @@ def _blend_aware_seed(
     if gate_budget_extra is not None:
         budget_keep = np.asarray(gate_budget_extra, dtype=float)[keep]
 
+    def _gate_budget(res_fit: WindowFitResult) -> Optional[np.ndarray]:
+        # Quadrature-combine the (frozen-background) budget with the in-window
+        # bright-line far-skirt budget computed from the fit's *own* peaks, so
+        # a bright line's irreducible far-skirt floor is covered and the
+        # trigger / escalation gate no longer reads it as a blend.
+        # ``FTMW_NO_IN_WINDOW_SKIRT`` disables it for the A/B baseline.
+        kappa_skirt = (
+            None
+            if import_os.environ.get("FTMW_NO_IN_WINDOW_SKIRT")
+            else DEFAULT_IN_WINDOW_SKIRT_KAPPA
+        )
+        # ``FTMW_SKIRT_MODE=b`` selects the per-bin blended-kappa variant.
+        mode = "b" if import_os.environ.get("FTMW_SKIRT_MODE") == "b" else "a"
+        kappa_core = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA or 0.05
+        skirt = in_window_skirt_budget(
+            res_fit.peaks,
+            u_grid,
+            float(res_fit.tau_us),
+            acquisition_us,
+            shape=shape_resolved,
+            rms_noise=sigma_arr,
+            kappa_skirt=kappa_skirt,
+            mode=mode,
+            kappa_core=float(kappa_core),
+        )
+        skirt_keep = skirt[keep] if skirt is not None else None
+        return _combine_budget(budget_keep, skirt_keep)
+
     def _trigger_rchi2(res_fit: WindowFitResult) -> float:
         # Escalation-trigger reduced chi-squared. Under the sigma_eff gate
         # (:data:`validation.DEFAULT_GATE_SIGMA_EFF_KAPPA`) the trigger is
@@ -1988,7 +2120,7 @@ def _blend_aware_seed(
             sigma_keep,
             np.asarray(res_fit.fitted_spectrum)[keep],
             kappa,
-            extra=budget_keep,
+            extra=_gate_budget(res_fit),
         )
         dof = max(res_fit.n_data - res_fit.n_params, 1)
         return chi2_eff / dof
@@ -2213,7 +2345,7 @@ def _blend_aware_seed(
                 weight_model=np.asarray(trial.fitted_spectrum)[keep],
                 n_eff_kind=n_eff_kind,
                 ref_reduced_chi2=trial.reduced_chi2,
-                budget_extra=budget_keep,
+                budget_extra=_gate_budget(trial),
             )
             aicc_delta = aicc_trial - aicc_prev
             gate_accepts = aicc_trial < aicc_prev
