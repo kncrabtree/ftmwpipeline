@@ -135,9 +135,16 @@ class TestStrongCluster:
 
 
 class TestWeakLineOnSkirt:
-    def test_weak_window_gets_strong_fixed_contributor(self):
+    def test_weak_window_gets_strong_fixed_contributor(self, monkeypatch):
         """A weak line on a strong line's far skirt becomes a separate window
-        with the strong line attached as a fixed contributor."""
+        with the strong line attached as a fixed contributor.
+
+        Pins the legacy magnitude-attachment / edge-free cycle-break (retained
+        behind ``FTMW_LEGACY_CYCLE_BREAK``). The default Step 7 now orients
+        strong->weak and keeps only *material* downward skirts edge-bearing,
+        dropping a far smooth skirt to the baseline (validated in the 7-fixture
+        A/B, dev-docs/planning/stage6-cascade-refit.md "Step B refit")."""
+        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30050.0, 6.0, PeakClassification.STRONG),
@@ -202,11 +209,16 @@ class TestMagnitudeAttachment:
     mechanism diagnosed in scratch/stage5-validation/.
     """
 
-    def test_strong_far_skirt_above_threshold_is_attached(self):
+    def test_strong_far_skirt_above_threshold_is_attached(self, monkeypatch):
         """A strong line 140 MHz from a weak window predicts a mean |skirt|
         of ~9e-4 (= 13 sigma_c at sigma=0.01), well above the 0.1 sigma_c
         threshold. The magnitude rule attaches it; the touched-region rule
-        previously missed it."""
+        previously missed it.
+
+        Legacy path (``FTMW_LEGACY_CYCLE_BREAK``): the default Step 7 drops this
+        far smooth skirt to the baseline by design (its S_resid is ~0 and its
+        S_level is below the keep bar) -- see "Step B refit"."""
+        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30010.0, 6.0, PeakClassification.STRONG),
@@ -224,9 +236,14 @@ class TestMagnitudeAttachment:
         assert (weak_w.window_id, strong_w.window_id) in plan.dependency_edges
         _assert_invariants(plan)
 
-    def test_threshold_respected(self):
+    def test_threshold_respected(self, monkeypatch):
         """Raising ``magnitude_attachment_threshold`` drops borderline
-        contributors; lowering it adds them. Same physical layout."""
+        contributors; lowering it adds them. Same physical layout.
+
+        Pins the legacy magnitude-attachment gate (``FTMW_LEGACY_CYCLE_BREAK``);
+        the default Step 7 gates the kept edge on skirt level/curvature instead
+        (see "Step B refit")."""
+        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30010.0, 6.0, PeakClassification.STRONG),
@@ -273,7 +290,7 @@ class TestMagnitudeAttachment:
         )
         assert plan.parameters["magnitude_attachment_threshold"] == pytest.approx(0.42)
 
-    def test_mutual_attachment_does_not_break_dag(self):
+    def test_mutual_attachment_does_not_break_dag(self, monkeypatch):
         """Two strong lines whose skirts mutually reach each other form a
         2-cycle in the attachment graph. The cycle-breaker drops both
         fit-ordering edges from ``dependency_edges`` to keep the DAG acyclic,
@@ -282,7 +299,13 @@ class TestMagnitudeAttachment:
         leakage subtraction survives without a dependency edge. The
         execution-time invariant ("primary fit must exist before an
         edge-bearing dependent fits") still holds because an edge-free
-        contributor carries no such requirement."""
+        contributor carries no such requirement.
+
+        Pins the legacy edge-free cycle-break (``FTMW_LEGACY_CYCLE_BREAK``). The
+        default Step 7 instead orients the 2-cycle strong->weak (acyclic by the
+        strength total order) and keeps the surviving arc edge-bearing when
+        material -- see "Step B refit"."""
+        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
         # Two strong lines at 30050 and 30090 -- 40 MHz apart, each strong
         # enough that the other's skirt clears the 0.1 sigma_c threshold.
         # They don't fall in the same touched region (clean band between
@@ -747,7 +770,7 @@ class TestReplanMerge:
                 acquisition_us=15.0,
             )
 
-    def test_merge_drops_now_internal_contributor(self):
+    def test_merge_drops_now_internal_contributor(self, monkeypatch):
         """A merge that swallows a primary makes its contributor internal.
 
         Setup (same fixture shape as ``TestWeakLineOnSkirt``): a strong line
@@ -757,7 +780,12 @@ class TestReplanMerge:
         window now contains the strong line as a free peak, so its earlier
         role as a fixed contributor to the (now-merged) weak window is
         no longer needed and the contributor list comes back empty.
+
+        Pins the legacy attachment (``FTMW_LEGACY_CYCLE_BREAK``) so the pre-merge
+        plan has the dependency edge this test merges away; the default Step 7
+        would drop the far skirt to the baseline (see "Step B refit").
         """
+        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30050.0, 6.0, PeakClassification.STRONG),

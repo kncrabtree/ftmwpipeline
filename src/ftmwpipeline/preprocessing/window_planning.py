@@ -42,6 +42,7 @@ Outline (the plan's eight steps):
 """
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -55,6 +56,7 @@ from ..core.data_structures import (
     PeakClassification,
     WindowPlan,
 )
+from ..fitting.peak_model import baseline_basis, effective_tau, h_T
 from .edge_coherence import (
     DEFAULT_EDGE_M,
     DEFAULT_EDGE_THRESHOLD,
@@ -346,6 +348,250 @@ def _topological_batches(
                 dropped.append((w, d))
     kept = [(w, d) for (w, d) in edges if (w, d) not in dropped]
     return order, batch, kept
+
+
+# Tiered cycle-break (replaces the Kahn drop-leftover + edge-free demotion).
+# The goal is a deterministic, tiered dependency DAG along which a Stage-6 edit
+# cascades on a predictable path -- NOT to maximally decouple the windows. So:
+# orient every candidate edge strong->weak (window strength = strongest
+# promoted-peak intensity, ties broken by id -> a total order, hence acyclic),
+# which levels the windows into tiers; keep a stronger (higher-tier) window's
+# skirt as an edge-bearing contributor to weaker (lower-tier) windows whenever it
+# is *material* -- i.e. it carries either significant skirt LEVEL (it consumes
+# real baseline budget on the dependent, esp. a floor-dominated window) OR
+# order-p-irreducible CURVATURE. These are the cascade paths and are kept
+# generously; same-tier peer couplings the orientation cannot order are left to
+# the joint thawed fit (Step C). A pure-curvature gate (level decays ~1/Δf, so
+# curvature ~1/Δf**3 is steeply local) removes too many real relationships: a far
+# but bright source's skirt is smooth (low curvature) yet large (high level), and
+# dropping it onto the order-p baseline starves a floor-dominated dependent (the
+# 655 w1010 baseline-budget failure). Level is the materiality measure; curvature
+# is the secondary catch for steep-local skirts of modest level.
+DEFAULT_SKIRT_LEVEL_KEEP = 150.0
+"""S_level threshold (the skirt's total significance ``||skirt/sigma_c||`` over
+the dependent window) above which a downward edge is kept edge-bearing. Materiality
+measure: a skirt this significant consumes baseline budget the dependent may need
+for its own line, so it is carried as a physical contributor rather than left to
+the polynomial. Env override: ``FTMW_SKIRT_LEVEL_KEEP``.
+
+Calibrated on the 7-fixture A/B (dev-docs/planning/stage6-cascade-refit.md "Step B
+refit"): 150 vs 50 halves the contributor load on the dense 655 (1982 -> 971),
+shallows the cascade (6 -> 4 tiers), cuts fit time (656s -> 493s), and *reduces*
+over-subtraction (655 peaks 1794 -> 1846) by pruning the long tail of weak-source
+edges, while the budget-critical giant skirts (e.g. 655 w1010) survive at any bar."""
+
+DEFAULT_CURVATURE_KEEP_SIGMA = 5.0
+"""S_resid threshold (in the dependent's per-component sigma_c): a *secondary*
+keep criterion for a skirt whose curvature an order-p baseline cannot absorb even
+when its level is below ``DEFAULT_SKIRT_LEVEL_KEEP``. Env: ``FTMW_CURVATURE_KEEP_SIGMA``."""
+
+CURVATURE_BASELINE_ORDER = 4
+"""Baseline order the curvature discriminator projects against -- the part of the
+skirt this order of polynomial cannot absorb is what an explicit contributor must
+carry. Matches the ``baseline.order`` default (presets/defaults.yaml)."""
+
+
+def _skirt_significance(
+    grid_freqs: np.ndarray,
+    sigma_c: np.ndarray,
+    src_freqs: List[float],
+    src_intensities: List[float],
+    acquisition_us: float,
+    tau_us: Optional[float],
+    order: int,
+) -> Tuple[float, float]:
+    """``(S_level, S_resid)`` of a source window's strong peaks projected into a
+    dependent window grid, in units of the dependent's per-component noise:
+
+    * ``S_level  = ||skirt / sigma_c||``                -- raw skirt significance
+      (materiality: how much baseline budget the skirt consumes).
+    * ``S_resid  = ||(skirt - B_p[skirt]) / sigma_c||`` -- the part an order-``p``
+      baseline cannot absorb (steep-local curvature).
+
+    Phase is unavailable at plan time, so each source line is synthesised at
+    phase 0 (the coherent worst-case skirt). Both norms are invariant to the
+    sideband sign (it flips ``skirt -> conj(skirt)``, leaving the magnitudes
+    unchanged). The shape is the Lorentzian ``h_T``; this is a coarse keep/drop,
+    not a precise fit, so a per-window shape is not threaded here.
+    """
+    if grid_freqs.size == 0 or not src_freqs:
+        return 0.0, 0.0
+    tau_model = float(tau_us) if tau_us else acquisition_us / 3.0
+    tau_eff = effective_tau(tau_model, acquisition_us)
+    center = 0.5 * (float(grid_freqs[0]) + float(grid_freqs[-1]))
+    u = grid_freqs - center
+    skirt = np.zeros(u.shape, dtype=np.complex128)
+    for f, inten in zip(src_freqs, src_intensities):
+        amp = 2.0 * float(inten) / tau_eff  # intensity = 0.5*A*tau_eff
+        skirt = skirt + 0.5 * amp * h_T(u - (float(f) - center), tau_model,
+                                        acquisition_us)
+    sig = np.where(sigma_c > 0, sigma_c, np.nan)
+    s_level = float(np.sqrt(np.nansum((np.abs(skirt) / sig) ** 2)))
+    u_s = float(np.max(np.abs(u))) or 1.0
+    basis = baseline_basis(u, order, u_s)
+    coef, *_ = np.linalg.lstsq(basis, skirt, rcond=None)
+    resid = skirt - basis @ coef
+    s_resid = float(np.sqrt(np.nansum((np.abs(resid) / sig) ** 2)))
+    return s_level, s_resid
+
+
+def _env_float(name: str, default: float) -> float:
+    """Read a float override from the environment, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _orient_and_gate_contributors(
+    windows: List[FitWindow],
+    strong_by_window: Dict[int, List["_PPeak"]],
+    ofreqs: np.ndarray,
+    orms: np.ndarray,
+    acquisition_us: float,
+    tau_us: Optional[float],
+    diagnostics: Dict[str, Any],
+    level_keep: float,
+    resid_keep: float,
+    order: int,
+) -> List[Tuple[int, int]]:
+    """Orient candidate edges strong->weak and keep the material downward ones.
+
+    Mutates each window's ``fixed_contributors`` in place to the surviving
+    edge-bearing set (``edge_free=False``). A dependency edge ``(w, primary)``
+    survives when ``primary`` is the stronger window (orientation -> tiered DAG)
+    *and* its projected skirt is material into ``w``: ``S_level >= level_keep``
+    (it consumes real baseline budget) OR ``S_resid >= resid_keep`` (steep-local
+    curvature an order-p baseline cannot absorb). Reverse arcs are dropped; a
+    sub-threshold downward skirt is left to the dependent's baseline. Returns the
+    surviving edge list (acyclic by the strength total order).
+    """
+    strength: Dict[int, float] = {
+        w.window_id: max(
+            (pk.intensity for pk in strong_by_window.get(w.window_id, [])),
+            default=0.0,
+        )
+        for w in windows
+    }
+    kept_edges: List[Tuple[int, int]] = []
+    n_bearing = n_drop_base = n_drop_reverse = 0
+    for w in windows:
+        if not w.fixed_contributors:
+            continue
+        wid = w.window_id
+        wlo, whi = w.diagnostics["grid_span"]
+        grid_freqs = ofreqs[wlo : whi + 1]
+        sigma_c = orms[wlo : whi + 1] / math.sqrt(2.0)
+        by_primary: Dict[int, List[FixedContributor]] = {}
+        for fc in w.fixed_contributors:
+            by_primary.setdefault(fc.primary_window_id, []).append(fc)
+        survivors: List[FixedContributor] = []
+        for primary, group in by_primary.items():
+            # Orientation: the weaker window depends on the stronger. A reverse
+            # arc (this window is the stronger) is dropped -- the forward arc, if
+            # any, is a contributor on the *primary*'s list, gated when we reach
+            # that window.
+            if (strength.get(primary, 0.0), primary) <= (strength[wid], wid):
+                n_drop_reverse += len(group)
+                continue
+            src = strong_by_window.get(primary, [])
+            s_level, s_resid = _skirt_significance(
+                grid_freqs,
+                sigma_c,
+                [pk.frequency for pk in src],
+                [pk.intensity for pk in src],
+                acquisition_us,
+                tau_us,
+                order,
+            )
+            if s_level >= level_keep or s_resid >= resid_keep:
+                for fc in group:
+                    fc.edge_free = False
+                survivors.extend(group)
+                kept_edges.append((wid, primary))
+                n_bearing += len(group)
+            else:
+                n_drop_base += len(group)
+        w.fixed_contributors = survivors
+    if n_bearing:
+        diagnostics["n_edge_bearing_contributors"] = n_bearing
+    if n_drop_base:
+        diagnostics["n_dropped_baseline_contributors"] = n_drop_base
+    if n_drop_reverse:
+        diagnostics["n_dropped_reverse_contributors"] = n_drop_reverse
+    return kept_edges
+
+
+def _legacy_cycle_break(
+    windows: List[FitWindow],
+    window_ids: List[int],
+    edges: List[Tuple[int, int]],
+    ofreqs: np.ndarray,
+    by_list_index: Dict[int, "_PPeak"],
+    acquisition_us: float,
+    tau_us: Optional[float],
+    max_edge_free_neighbors: int,
+    diagnostics: Dict[str, Any],
+) -> Tuple[List[int], Dict[int, int], List[Tuple[int, int]]]:
+    """The pre-curvature Step 7: Kahn topo-sort, then demote the most dominant
+    orphaned (cyclic-dropped) contributors per window to ``edge_free`` (capped at
+    ``max_edge_free_neighbors``), dropping the rest. Retained behind
+    ``FTMW_LEGACY_CYCLE_BREAK`` as the A/B comparison arm for the curvature
+    cycle-break (dev-docs/planning/stage6-cascade-refit.md)."""
+    topo, batch, kept_edges = _topological_batches(window_ids, edges)
+    for w in windows:
+        w.batch = batch[w.window_id]
+    if len(kept_edges) != len(edges):
+        dropped_edges = [e for e in edges if e not in kept_edges]
+        diagnostics["dropped_cyclic_dependencies"] = [list(e) for e in dropped_edges]
+        drops_by_dep: Dict[int, set] = {}
+        for w_id, p_id in dropped_edges:
+            drops_by_dep.setdefault(w_id, set()).add(p_id)
+        n_edge_free = 0
+        for w in windows:
+            doomed = drops_by_dep.get(w.window_id)
+            if not doomed:
+                continue
+            wlo, whi = w.diagnostics["grid_span"]
+            w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
+            skirt_by_primary: Dict[int, float] = {}
+            for fc in w.fixed_contributors:
+                if fc.primary_window_id not in doomed:
+                    continue
+                src_pk = by_list_index.get(fc.peak_index)
+                if src_pk is None:
+                    continue
+                df_mhz = abs(src_pk.frequency - w_center_mhz)
+                if df_mhz <= 0.0:
+                    continue
+                pred = src_pk.intensity * _leakage_envelope_fraction(
+                    df_mhz * 1e6, acquisition_us, tau_us
+                )
+                skirt_by_primary[fc.primary_window_id] = (
+                    skirt_by_primary.get(fc.primary_window_id, 0.0) + pred
+                )
+            keep_primaries = set(
+                sorted(
+                    skirt_by_primary,
+                    key=lambda p: skirt_by_primary[p],
+                    reverse=True,
+                )[:max_edge_free_neighbors]
+            )
+            kept_contribs: List[FixedContributor] = []
+            for fc in w.fixed_contributors:
+                if fc.primary_window_id not in doomed:
+                    kept_contribs.append(fc)
+                elif fc.primary_window_id in keep_primaries:
+                    fc.edge_free = True
+                    kept_contribs.append(fc)
+                    n_edge_free += 1
+            w.fixed_contributors = kept_contribs
+        if n_edge_free:
+            diagnostics["n_edge_free_contributors"] = n_edge_free
+    return topo, batch, kept_edges
 
 
 def build_window_plan(
@@ -809,80 +1055,40 @@ def _finalize_plan(
         w.diagnostics["edge_coherence_statistic"] = edge_stat
         w.diagnostics["edge_coherence_fail"] = bool(edge_stat > edge_threshold)
 
-    # --- Step 7: topological order + parallel batches -----------------------
+    # --- Step 7: orient + curvature-gate contributors, then topo-order ------
     window_ids = [w.window_id for w in windows]
-    topo, batch, kept_edges = _topological_batches(window_ids, edges)
-    for w in windows:
-        w.batch = batch[w.window_id]
-    if len(kept_edges) != len(edges):
-        dropped_edges = [e for e in edges if e not in kept_edges]
-        diagnostics["dropped_cyclic_dependencies"] = [list(e) for e in dropped_edges]
-        # The magnitude-based attachment rule can produce cycles (two or more
-        # strong lines in separate windows each attaching the other as a
-        # contributor). The cycle-breaker drops the dependency edge to keep the
-        # DAG acyclic; the matching FixedContributor can no longer be evaluated
-        # from its primary's converged fit (the primary is no longer guaranteed
-        # to precede the dependent). Discarding it outright -- the previous
-        # behavior -- leaves a bright neighbor's leakage skirt subtracted from
-        # nowhere, the in-window lines under-fit: the issue-#3 cross-fixture
-        # failure mode. Instead, the few most *dominant* orphaned contributors
-        # per window are converted to EDGE-FREE: kept on the window but flagged
-        # so Stage 5 reads their frozen (amplitude, phase) self-contained from
-        # the active FT rather than from the un-ordered primary fit. Conversion
-        # is capped at the top ``max_edge_free_neighbors`` primary windows
-        # (ranked by aggregated predicted skirt) -- a dense, ultra-high-SNR
-        # forest drops dozens of edges, and a self-contained skirt for every one
-        # re-creates the global-crude over-subtraction that regressed the bulk
-        # fit; only genuinely dominant neighbors earn one. The rest are dropped
-        # as before.
-        drops_by_dep: Dict[int, set] = {}
-        for w_id, p_id in dropped_edges:
-            drops_by_dep.setdefault(w_id, set()).add(p_id)
-        n_edge_free = 0
+    if os.environ.get("FTMW_LEGACY_CYCLE_BREAK"):
+        topo, batch, kept_edges = _legacy_cycle_break(
+            windows,
+            window_ids,
+            edges,
+            ofreqs,
+            by_list_index,
+            acquisition_us,
+            tau_us,
+            max_edge_free_neighbors,
+            diagnostics,
+        )
+    else:
+        # Orient every candidate edge strong->weak and keep it edge-bearing only
+        # where the source's skirt carries order-p-irreducible curvature; drop
+        # the rest to the (order-4) baseline. The strength total order makes the
+        # surviving graph acyclic by construction, so no edge is force-dropped.
+        kept_edges = _orient_and_gate_contributors(
+            windows,
+            strong_by_window,
+            ofreqs,
+            orms,
+            acquisition_us,
+            tau_us,
+            diagnostics,
+            _env_float("FTMW_SKIRT_LEVEL_KEEP", DEFAULT_SKIRT_LEVEL_KEEP),
+            _env_float("FTMW_CURVATURE_KEEP_SIGMA", DEFAULT_CURVATURE_KEEP_SIGMA),
+            CURVATURE_BASELINE_ORDER,
+        )
+        topo, batch, kept_edges = _topological_batches(window_ids, kept_edges)
         for w in windows:
-            doomed = drops_by_dep.get(w.window_id)
-            if not doomed:
-                continue
-            wlo, whi = w.diagnostics["grid_span"]
-            w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
-            # Aggregate the predicted leakage skirt each orphaned primary
-            # contributes to this window, so the cap keeps the strongest
-            # neighbors (the same analytic envelope the Tier-1 attachment uses).
-            skirt_by_primary: Dict[int, float] = {}
-            for fc in w.fixed_contributors:
-                if fc.primary_window_id not in doomed:
-                    continue
-                src_pk = by_list_index.get(fc.peak_index)
-                if src_pk is None:
-                    continue
-                df_mhz = abs(src_pk.frequency - w_center_mhz)
-                if df_mhz <= 0.0:
-                    continue
-                pred = src_pk.intensity * _leakage_envelope_fraction(
-                    df_mhz * 1e6, acquisition_us, tau_us
-                )
-                skirt_by_primary[fc.primary_window_id] = (
-                    skirt_by_primary.get(fc.primary_window_id, 0.0) + pred
-                )
-            keep_primaries = set(
-                sorted(
-                    skirt_by_primary,
-                    key=lambda p: skirt_by_primary[p],
-                    reverse=True,
-                )[:max_edge_free_neighbors]
-            )
-            kept_contribs: List[FixedContributor] = []
-            for fc in w.fixed_contributors:
-                if fc.primary_window_id not in doomed:
-                    kept_contribs.append(fc)
-                elif fc.primary_window_id in keep_primaries:
-                    fc.edge_free = True
-                    kept_contribs.append(fc)
-                    n_edge_free += 1
-                # else: drop the orphaned contributor entirely.
-            w.fixed_contributors = kept_contribs
-        if n_edge_free:
-            diagnostics["n_edge_free_contributors"] = n_edge_free
+            w.batch = batch[w.window_id]
 
     # Plan-level diagnostics: leakage-touched regions with no promoted peak --
     # an early-warning hint that Stage 3 may have missed a line.

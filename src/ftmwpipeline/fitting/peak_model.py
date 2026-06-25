@@ -608,6 +608,45 @@ def model_spectrum(
     return cast(np.ndarray, spectrum.sum(axis=0))
 
 
+def baseline_basis(
+    offset_grid_mhz: np.ndarray, order: int, offset_scale: float
+) -> np.ndarray:
+    """Real polynomial basis ``[(u/u_s)^0, ..., (u/u_s)^order]`` for the baseline.
+
+    The complex baseline ``B(u) = Σ_{k=0..p} (a_k + i b_k)(u/u_s)^k`` shares
+    one real basis column ``(u/u_s)^k`` between its real coefficient ``a_k``
+    and imaginary coefficient ``b_k``. ``offset_scale`` (``u_s``, the window's
+    ``max|u|``) normalizes the abscissa so the design matrix stays well
+    conditioned across windows of different widths.
+
+    Lives here (with the spectrum model) rather than in ``window_fit`` so the
+    leakage-wing baseline the fit subtracts and the plan-time skirt-curvature
+    discriminator (``window_planning``) project against the *same* basis -- one
+    definition, no drift if the baseline parameterization changes.
+
+    Parameters
+    ----------
+    offset_grid_mhz : np.ndarray
+        Baseband-offset grid ``u`` (MHz), 1-D.
+    order : int
+        Baseline polynomial order ``p`` (``0`` = constant, ``1`` = linear).
+    offset_scale : float
+        Conditioning scale ``u_s`` (``> 0``).
+
+    Returns
+    -------
+    np.ndarray
+        Real array of shape ``(M, order + 1)``; column ``k`` is ``(u/u_s)^k``.
+    """
+    if order < 0:
+        raise ValueError("baseline order must be non-negative")
+    if not offset_scale > 0.0:
+        raise ValueError("offset_scale must be positive")
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    x = u / float(offset_scale)
+    return cast(np.ndarray, np.vander(x, order + 1, increasing=True))
+
+
 def synthesize_fid(
     t_us: np.ndarray,
     peaks_baseband: Sequence[Tuple[float, float, float]],

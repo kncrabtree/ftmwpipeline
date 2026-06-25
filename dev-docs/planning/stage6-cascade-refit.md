@@ -452,6 +452,237 @@ fixpoint loop catches): a locality / parameter-correlation-block-gated relax
 (thaw only the merged line's correlation block, freeze distant strong lines);
 compute the block on the *pre-collapse* fit. Not needed for the current 7.
 
+### Step B de-risk: plan-time curvature orientation is acyclic on all 7 (done)
+
+Before touching the production Stage-4 cycle-breaker, the one untested assumption
+in §B was confirmed: the validated strong→weak curvature asymmetry was measured on
+**post-Stage-5 *fitted* skirts** (`curvature_edge.py`), but the cycle-breaker runs
+at **Stage-4 plan time**, where only Stage-3 *estimated* peak intensities /
+frequencies exist (no fitted amplitude, no phase). `scratch/cascade/plan_curvature.py`
+re-derives each fixture's plan from its *persisted* window-planning parameters
+(monkeypatching `_topological_batches` to capture the full candidate edge set
+pre-break — no file mutation), synthesizes each source window's strong promoted
+peaks' skirt into each dependent grid (amplitude `A = 2·intensity/τ_eff`, **phase 0**
+= the coherent worst-case, since plan-time phase is unavailable), fits an order-4
+baseline, and reports `S_level`, `S_resid(4)` in units of the dependent's σ_c.
+
+**Plan-time skirt synthesis is faithful.** Cross-checked against the post-fit
+harness on 655 w1006→w1007: plan-time `S_resid(4)=1.36` vs post-fit `1.63` — they
+agree within estimation error (the doc's earlier "21.8 for one member" was a
+different/earlier measurement; the current fixture reads ~1.6 either way). So the
+Stage-3 estimate is sufficient to compute the curvature discriminator.
+
+**All 7 fixtures: acyclic after strong→weak orientation.** Orienting every
+candidate edge `(dependent ← source)` so the *weaker* window depends on the
+*stronger* (strength = strongest in-window promoted-peak intensity, ties broken by
+window id → a total order) dissolves every cycle. The hardest case, 655, has a
+candidate graph with a **133-node cyclic set (biggest SCC 82 windows)** across 9 523
+edges; orientation drops only **351 reverse arcs** and leaves a clean DAG
+(0 cyclic nodes). 363 (SCC 19) and 1231 (SCC 5) likewise resolve to acyclic; 360
+has **0 candidate edges** at the current default `magnitude_attachment_threshold`.
+
+| Fixture | windows | cand. edges | cyclic nodes (SCC>1) | reverse dropped | acyclic | edge-bearing kept (S_resid≥5) |
+|---|---|---|---|---|---|---|
+| 655  | 1194 | 9523 | 133 (SCC 82) | 351 | ✓ | **7** |
+| 1512 | 243  | 444  | 11  (SCC 6)  | 11  | ✓ | 0 |
+| 1019 | 87   | 274  | 11  (SCC 11) | 18  | ✓ | 0 |
+| 2638 | —    | 163  | 30 pairs     | —   | ✓ | 0 |
+| 360  | 542  | 0    | 0            | 0   | ✓ | 0 |
+| 363  | 478  | 1419 | 82  (SCC 19) | 327 | ✓ | 0 |
+| 1231 | 291  | 477  | 42  (SCC 5)  | 49  | ✓ | **1** |
+
+(Candidate-edge counts differ from the SNR table further below — those were a
+differently-built fixture set; the acyclicity verdict is independent of the count.)
+
+**Asymmetry holds**, but only the strong pairs carry it: the fwd/rev `S_resid`
+ratio reaches **175–2648×** (per fixture max) while reverse `S_resid` medians are
+~0 (p90 ≤ 0.84) — dropping the reverse arc is safe. The *bulk* of edges have tiny
+`S_resid` in **both** directions (median fwd `S_resid` ≈ 0.00 on every fixture), so
+for them the orientation is immaterial: a low-order baseline absorbs the skirt
+either way.
+
+**Bonus finding — the genuine edge-bearing set is tiny and identifiable.** Across
+all 7 fixtures only **~8 edges** clear `S_resid(4) ≥ 5`; they are all *immediate*
+neighbors of the brightest lines (655: w1101/w1103←w1102, w919←w918,
+w183/w185←w184, w123←w124, w1015←w1014). The 1/Δf³ locality cleanly separates a
+*near* neighbor of a giant (curvature survives order 4) from a *far* one: w1006's
+own neighbors w1005 (`S_resid 2.35`) and w1007 (`1.36`) sit ≥6 MHz out of its wide
+12.6 MHz window → baseline-absorbable → **drop to baseline**, not edge-bearing. So
+the principled replacement for the blunt "demote-all-to-edge-free" is: **orient
+strong→weak (acyclic, no arbitrary drop), keep only the handful of genuine-
+curvature edges edge-bearing on a §A-curated source, and drop the rest to the
+order-4 baseline** — simpler than the current edge-free demotion *and* it dissolves
+the joint-arbitration entanglement (the edge-free contributors being arbitrated
+mostly disappear).
+
+**Two boundary cautions for the real build (do not block the de-risk verdict):**
+1. *The w1005 tension.* `corr_experiment.py` earlier found w1005 baseline-*only*
+   insufficient (χ²ᵣ 13–31 at order 4), yet its plan-time `S_resid(4)=2.35` says
+   baseline-absorbable. Likely causes to resolve against the *fit* baseline: (a) the
+   old experiment used the **pre-§A overfit** w1006 skirt (different phases/
+   multiplicity than the consolidated estimate); (b) **σ_c contamination** — w1005
+   is "87% skirt," so its noise estimate is inflated by the neighbor's wing,
+   deflating `S_resid` on exactly the skirt-dominated windows that most need an
+   edge. The `S_RESID_KEEP` threshold (tentatively 5) lives on this boundary and is
+   the "settle from the 7-fixture re-baseline" open question.
+2. *Grid critical-sampling.* The active-FT grid spacing (~84 kHz) ≈ the leakage
+   ripple period 1/T_active (~85 kHz), so the |h_T| sidelobe ripple is aliased away
+   on-grid and the residual skirt reads *smooth* — but this is the **operative grid
+   the fit itself uses**, so "order-4 absorbs it" is a true statement about the
+   fit's baseline, not an artifact (both harnesses agree on this grid).
+
+Harness: `scratch/cascade/plan_curvature.py <files...>` (sweep) /
+`--pair <dep> <src>` (cross-check); `scratch/cascade/build_stage4.py <name>`
+(fast through-Stage-4 fixture build, trim 26500–40000). NEXT: implement the
+curvature orientation in `window_planning.py` Step 7 (replace the Kahn
+drop-leftover + edge-free demotion), validated against the 7-fixture *fit*
+baseline, resolving the w1005 threshold/σ_c boundary there.
+
+### Step B implemented + 7-fixture fit A/B (curvature is a net improvement)
+
+`window_planning.py` Step 7 now orients every candidate edge strong→weak (window
+strength = strongest in-window promoted-peak intensity, ties by id → a total
+order, hence acyclic) and gates each forward edge on the plan-time skirt-curvature
+residual `_skirt_curvature_resid` (`DEFAULT_CURVATURE_KEEP_SIGMA`=5,
+`CURVATURE_BASELINE_ORDER`=4): ≥ threshold → edge-bearing contributor; else drop
+to the baseline. The legacy Kahn-drop + edge-free demotion is preserved as
+`_legacy_cycle_break` behind `FTMW_LEGACY_CYCLE_BREAK` (the A/B arm). `baseline_basis`
+was extracted from `window_fit.py` to `peak_model.py` so the fit's baseline and the
+discriminator project against one definition. The change is Step 7 only (after
+window construction + artifact pruning), so both arms share identical windows /
+free peaks; the fit delta isolates the frozen-background treatment.
+
+Contributor counts collapse (legacy edge-free → curvature edge-bearing): 655
+8063→27, 2638 327→0, 1512 920→0, 1231 871→5, 360 0→0. Despite that, the
+**7-fixture Stage-5 fit A/B** (`scratch/cascade/ab_curvature.py` per arm,
+`ab_run.sh` driver, `ab_compare.py` comparator, `ab_render.py` = `fit show`
+panels) shows the curvature arm is a **net improvement**, not a wash:
+
+| fixture | Δpeaks | drop snr>50 | drop snr<20 | gain snr<20 | read |
+|---|---|---|---|---|---|
+| 360  | +0  | 0 | 0  | 0   | flat (no candidate edges) |
+| 363  | +6  | 1 | 8  | 14  | χ²ᵣ **down** (edge-free was over-subtracting) |
+| 655  | +25 | 5 | 88 | 117 | over-split removal + 1 line unmasked |
+| 1019 | −1  | 0 | 2  | 0   | ~flat |
+| 1231 | +6  | 3 | 18 | 29  | mostly over-split removal; 1 real regression |
+| 1512 | +3  | 0 | 8  | 13  | net positive |
+| 2638 | −1  | 1 | 7  | 7   | flat + 1 edge-baseline struggle |
+
+**Reading the A/B correctly (lesson):** a per-window χ²ᵣ *increase* is **not** a
+regression — it is the over-split-removal signature. Legacy's edge-free
+contributors over-subtract (the §A frozen-skirt fringe error), handing the fitter
+freedom to add floor-absorbing spurious peaks that lower *raw* χ²ᵣ; dropping to
+baseline removes that freedom → fewer, honest peaks and a higher *honest*
+lineshape-floor χ²ᵣ (surfaced as ε, not raw χ²ᵣ — the §A discipline). Ranking
+windows by Δχ²ᵣ over-flags; the right signal is **real-peak preservation**. Every
+high-SNR (>50) dropped peak across all 7 fixtures (~10 total) classifies as an
+**over-split cluster member that merged into a surviving strong line** (655 w1010
+4→3 with the snr-3656 giant surviving; 655 w168 5→4; 1231 w222 5→4 with snr-650
+surviving; 2638 w54; 363 w170) — user-confirmed overfits, not losses. The
+dropped peaks are otherwise ~95% low-SNR churn. Central values barely move
+(|Δf|/σ_f median 0 on every fixture).
+
+**The only genuine regressions** are the rare window where the dropped skirt was
+*load-bearing* for the joint fit: **1231 w158** (tau collapsed 4.11→2.72µs, lost a
+real shoulder, χ²ᵣ→43 = the §A tau-collapse basin) and **655 w1101** (merged a
+doublet that may be real — debatable). Both are the same class: a strong
+neighbour's skirt enters a window **edge** with curvature the order-4 polynomial
+cannot hold, but the discriminator scored it baseline-absorbable because the
+window is **skirt-dominated → its σ_c is inflated by the neighbour's wing →
+S_resid under-stated** (the de-risk-flagged σ_c contamination, now observed live;
+the user's "the baseline struggles at the edge — needs a better skirt model").
+
+**Decision pending (next step):** make the keep/drop boundary conservative *only*
+for the load-bearing case — the principled fix is to **de-contaminate σ_c in the
+discriminator** (a skirt-free noise estimate) so a skirt-dominated window keeps its
+edge edge-bearing; alternatives are an edge-free fallback for sub-threshold edges
+(the "better skirt model", but keeps the joint-arbitration entanglement) or a
+tau-collapse guard in the cascade fit (§A-style). Then re-baseline the 7-fixture
+suite and update the 5 `test_window_planning.py` tests that pin the legacy
+magnitude-attachment / edge-free model (they pass under `FTMW_LEGACY_CYCLE_BREAK`;
+the new default flips far-skirt attachment to baseline by design).
+
+Code-vs-doc divergence found (log + resolve separately): `api.visualize_fit` /
+`Pipeline.visualize_fit` still route to the old `visualize_fit_impl` (re/im +
+residual-trio + audit-trail) while CLI `fit show` / `Pipeline.show_fit` use the
+newer `fit_show_impl` (context strip + |X| markers + peak table); `visualize_fit`'s
+"equivalent to `fit show`" docstring is stale. Render via `fit show`.
+
+### Step B refit: level-keep gate, the w1013 over-accumulation, and the seeder
+
+The pure-curvature gate (S_resid) dropped too many *material* relationships — a
+far but bright source's skirt is smooth (low curvature) yet large (high level),
+and dropping it onto the order-p baseline starves a floor-dominated dependent
+(655 w1010: curv-only χ²ᵣ 1623, baseline can't carry the giant's smooth skirt).
+The reframed design (user): the goal is a **deterministic tiered DAG for a
+predictable cascade**, not maximal decoupling — orient strong→weak (tiers), keep
+a stronger window's skirt edge-bearing into weaker ones whenever **material**
+(`S_level >= DEFAULT_SKIRT_LEVEL_KEEP` OR `S_resid >= DEFAULT_CURVATURE_KEEP_SIGMA`),
+peers within a tier go to a joint thawed fit (§C). Implemented: `_skirt_significance`
+returns `(S_level, S_resid)`; `_orient_and_gate_contributors` keeps on either;
+env overrides `FTMW_SKIRT_LEVEL_KEEP` / `FTMW_CURVATURE_KEEP_SIGMA`.
+
+7-fixture fit A/B (legacy / curv-only / lvl50): **lvl50 fixes w1010** (χ²ᵣ
+1623→984, 12 edge-bearing contributors free the baseline). But lvl50 **broke 655
+w1013** (χ²ᵣ 22→1683, tau collapsed 0.18µs, npk 7→1) and cost 2.6× fit time on
+655 (656s; total 979s vs 567s legacy — the *fork-per-level* scheduler stalls on
+each tier's tail, a known naive-scheduler ceiling, not the floor; a DAG-ready
+scheduler that releases a window when its own in-edges converge reclaims it).
+
+**Root-causing w1013 (three wrong guesses corrected by measurement):** *not*
+σ_c contamination (its σ_c is a clean 2.3e-7), *not* singularity (with unique
+source peaks + the real source tau ~2.94µs its sources are resolved multiplets,
+cond# 2–4 — the earlier 1e33 was an artifact of duplicate seeds + the collapsed
+tau), *not* wrong contributor amplitudes (edge-bearing Σ|amp| matches a
+data-anchored read to ratio ≈1). The frozen background is **correct**. w1013's
+blow-up is an **NLS path failure**: a self-contained prototype
+(`scratch/cascade/staged_fit.py`) fitting the same window all-free from good seeds
+(Stage-3 lines + source contributors) lands at χ²ᵣ **23.86, tau 2.45µs** — the
+healthy edge-free answer (22), no collapse. So the production collapse is the
+**conservative seeder's incremental add-one build-up under the frozen
+edge-bearing background** walking into a bad basin, not the contributors and not
+the final NLS.
+
+The staged-fit idea (soft-fit contributors on line-masked bins, freeze, fit
+lines, guarded polish) was prototyped but underperformed (χ²ᵣ 44): the ~24 *far*
+contributors (Δ up to 58 MHz) have near-collinear smooth skirts, so their
+individual amplitudes are **unidentifiable** from the dependent's own bins (49σ
+drift even against a tight 2% prior — the degeneracy is inherent, not a loose
+prior). Lesson: do **not** re-fit contributor amplitudes in the dependent; freeze
+them at the source values (which are correct) and fix the seeder. The
+edge-bearing/edge-free distinction is precisely a Bayesian prior-width choice
+(source σ → 0 = edge-bearing, σ → ∞ = edge-free), but the *level* channel is too
+degenerate to update in the dependent, so freeze is right here.
+
+**Level-bar cost lever (S_level 50 → 150 on 655):** edges 626→222, contributors
+2730→1097 (halved), tiers 6→4, dep-windows 468→190, fan-in 1.34→1.17 — it prunes
+the long tail of weak-source edges while the giant skirts (w1010's fix, w1013's
+24) persist at any bar. So 150 is the cheaper, shallower operating point; whether
+the pruned tail costs real lines needs the full re-fit (`ab_run_lvl150.sh`).
+w1013 is *identical* at 150 (giant-sourced) → the level bar is not w1013's lever;
+the seeder is. Harnesses added: `ab_compare3.py` (legacy/curv/lvl 3-way + fit
+time), `ab_render.py --arms`, `level_map.py`, `_seed_fix.py` (cond# reverse
+signal + rcond-at-resolvability), `staged_fit.py`, `_w1013_pieces[_lvl].py`,
+`_count_lvl.py`.
+
+### PRIORITY for next session: Stage-3 BH-seed authority in the Stage-5 seeder
+
+The cascade work keeps bottoming out at **seeder robustness** (the w1013 collapse
+is the conservative add-one loop, not the contributors). User's hypothesis worth
+pursuing *soon* because it is on the critical path: Stage-3's primary pass is
+**Blackman-Harris apodized** — it annihilates leakage at the cost of SNR and
+resolution, so its only weaknesses are (a) the very weakest lines and (b) splits
+≲3 res. For everything else **the BH seed is authoritative**: if BH found a peak
+there, the peak is real (there may be *extra* splitting, but the detection should
+not be second-guessed). The conservative add-one loop under-trusts the BH seeds
+and leans on **residual rescue** to re-find them, which is where the bad-basin
+build-up happens. Concrete cheap diagnostic to run first: **how often does
+residual rescue add a line that was neither a Stage-3 BH seed nor a straddle-K
+product?** If that is rare, the seeder can trust the BH seeds far more (seed all
+of them up front, reserve rescue for genuine residual structure) and the w1013
+class of collapse should disappear. Likely the right robustness fix that also
+unblocks edge-bearing dependent fits.
+
 ## Prerequisite finding: the dependency model is inconsistent across SNR
 
 Characterizing the contributor / dependency structure of fresh and recent
