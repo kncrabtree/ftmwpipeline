@@ -634,20 +634,19 @@ class PeakSurvivalSubSettings:
        default is to merge (VIF<4 identifiable = keep, VIF>=4 degenerate =
        merge) and let the user opt into a split with catalog support. The merge
        overrides chi^2 / AICc unconditionally (at high SNR chi^2 is a lineshape
-       floor that rewards the spurious split) and the sweep iterates to
-       convergence (an NLS refit can re-split a dense window). Merged windows
-       are flagged ``auto_merged_review`` for overrule. **Veto:** if collapsing
-       a pair leaves the window's 1-line model fitting catastrophically badly
-       (raw post-merge reduced chi^2 above ``merge_chi2_veto``), the data
-       overwhelmingly demands two components, so the split is kept (flagged
-       ``overfit_vif``) rather than shipping a broken fit.
+       floor that rewards the spurious split; a high post-merge chi^2 is the
+       irreducible unresolved-structure floor, never evidence for two resolvable
+       lines) and the sweep iterates to a fixpoint, including over the all-free
+       relax that can re-split a dense window. A chained fold is bounded so it
+       cannot cross a resolvable gap into a real neighbor. Merged windows are
+       flagged ``auto_merged_review`` for overrule.
 
     ``vif_attention_threshold`` is consumed by the Stage 6 attention surface
     (the ``overfit_vif`` reason for residual high-VIF pairs above the merge
     separation bound, i.e. >= 1.0 res). Defaults: ``enabled`` True,
     ``snr_survival_factor`` 1.1 (the floor tracks 1.1x the Stage 3 promotion
     cutoff; ``snr_survival_floor`` unset = no absolute override),
-    ``vif_collapse_threshold`` 4.0, ``collapse_max_separation_res`` 1.0,
+    ``vif_collapse_threshold`` 25.0, ``collapse_max_separation_res`` 1.0,
     ``vif_attention_threshold`` 4.0. See
     ``dev-docs/planning/stage6-peak-survival.md``.
     """
@@ -659,8 +658,6 @@ class PeakSurvivalSubSettings:
     snr_survival_factor: Optional[float] = None
     vif_collapse_threshold: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
-    merge_chi2_veto: Optional[float] = None
-    merge_chi2_veto_min_separation_res: Optional[float] = None
     vif_attention_threshold: Optional[float] = None
     drop_empty_windows: Optional[bool] = None
     drop_spur_only_windows: Optional[bool] = None
@@ -833,45 +830,32 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # resolution elements; the sweep iterates to convergence. user-origin
         # peaks are immune. POLICY (prior-free): declaring a sub-resolution
         # *split* is a high-bar claim that needs catalog/physical support the
-        # pipeline does not have, so the default is to merge and let the user
-        # opt into a split (``review split``). Calibrated against the 1512+655
-        # catalog truth: the 0.5-1.0 res VIF>=4 band is ~92% true over-splits
-        # (48:4), and no prior-free statistic (VIF, SNR, chi2/AICc, orthogonal
-        # second-line evidence) separates the 4 real doublets from the 48
-        # over-splits -- real high-SNR multiplets carry VIF as high as the
-        # splits. So the threshold is the identifiability floor (VIF 4, same as
-        # ``vif_attention_threshold``): VIF<4 = identifiable (keep), VIF>=4 =
-        # degenerate (merge). The few merged real doublets are flagged for the
-        # user to re-split. ``collapse_max_separation_res`` 1.0 = merge up to
-        # one full resolution element; wider pairs are resolved and kept.
+        # pipeline does not have, so the default is to merge the clearly-
+        # degenerate ones and flag the rest (``overfit_vif``) for the user to
+        # opt into a split or merge (``review``). The threshold is set well above
+        # the identifiability floor because the two error directions are NOT
+        # symmetric: merging a *resolved* doublet destroys a real line (a single
+        # Lorentzian at the centroid fits the trough between the two peaks --
+        # observed catastrophe: 360 w36, a methyl A/E doublet at 0.68 res, snr
+        # 120+82, merged -> chi2r 386 with the dominant line gone), whereas
+        # leaving an over-split merely ships an extra peak that the attention
+        # surface flags. A resolved doublet's amplitudes ARE individually
+        # constrained, so its VIF stays moderate (<= ~20 across the fixtures:
+        # w36 17, w383 4, w1096's real line 23), while a genuinely sub-resolution
+        # degenerate over-split has unconstrained amplitudes -> VIF >> that
+        # (>= ~40, up to 1e6: w139 40, w201 98, w134 476, w124 1e6). The default
+        # sits in that gap so only unambiguous degeneracy collapses; pairs with
+        # ``vif_attention_threshold`` <= VIF < ``vif_collapse_threshold`` are
+        # kept and flagged. ``collapse_max_separation_res`` 1.0 = consider pairs
+        # up to one full resolution element; wider pairs are resolved and kept.
         "enabled": True,
         # The survival floor tracks the Stage 3 promotion cutoff: the effective
         # floor is that cutoff times ``snr_survival_factor``. ``snr_survival_floor``
         # has no hard default (None = derive from the factor); set it to pin an
         # absolute floor that overrides the factor.
         "snr_survival_factor": 1.1,
-        "vif_collapse_threshold": 4.0,
+        "vif_collapse_threshold": 25.0,
         "collapse_max_separation_res": 1.0,
-        # Catastrophic-merge veto: if collapsing a degenerate pair leaves the
-        # window's 1-line model fitting this badly (raw post-merge chi2r), the
-        # data overwhelmingly demands two components, so keep the split (flagged
-        # overfit_vif for review) rather than ship a broken fit. Calibrated
-        # against 1512/655: ordinary (over-split) merges leave chi2r <= ~90,
-        # real-doublet merges blow up (>= ~300, e.g. 1512 w250 5275); the bound
-        # sits in that gap. SNR-normalized eps does NOT separate them (the D10
-        # lineshape floor saturates eps at high SNR), so the veto is on raw
-        # chi2r. This is also the super-resolution boundary: low SNR can't
-        # resolve a split (merged chi2r stays low -> merge), high SNR resolves
-        # it (merged chi2r blows up -> keep split).
-        "merge_chi2_veto": 100.0,
-        # Below this pair separation (resolution elements) the catastrophic-merge
-        # veto does not apply: an unresolvable pair (every calibration-truth
-        # doublet sits >= 0.82 res) cannot be two resolvable lines, so a high
-        # post-merge chi2r there is the irreducible unresolved-structure floor
-        # (unresolved hyperfine), not evidence for the split -- force-collapse it.
-        # The veto still guards the marginally-resolvable band (0.5 .. 1.0 res),
-        # which is where the real-doublet protection (1512 w250) lives.
-        "merge_chi2_veto_min_separation_res": 0.5,
         "vif_attention_threshold": 4.0,
         # End-of-Stage-5 window cleanup: drop windows with no surviving fitted
         # peak (K=0 -- pure noise, no product), and drop a single-line window

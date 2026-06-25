@@ -396,6 +396,17 @@ def apply_snr_survival_prune(
     }
 
 
+# A collapsed line represents one unresolvable feature, so the span of the
+# original component frequencies it absorbs must stay within this many resolution
+# elements. It bounds a *chained* fold (one sub-pair merges, then the merged line
+# would merge again): above this the fold would cross a genuinely-resolvable gap
+# into a real neighboring line. Set above the calibration-truth doublet floor
+# (~0.82 res) and below the smallest resolved doublet observed in the fixtures
+# (~1.5 res), so an over-split cluster (span ~1 res) fully collapses while a real
+# resolved doublet over-split into a triplet keeps its two centroids.
+_COLLAPSE_FOOTPRINT_MAX_RES = 1.3
+
+
 def _merged_seed_for_pair(
     wf: FittingResult,
     pa: FittedPeak,
@@ -475,9 +486,7 @@ def _inflate_merged_frequency_errors(
         eff = float(np.hypot(formal, spread))
         extra_errors = dict(pk.extra_errors)
         extra_errors["unresolved_spread_mhz"] = spread
-        peaks[best_k] = replace(
-            pk, frequency_error=eff, extra_errors=extra_errors
-        )
+        peaks[best_k] = replace(pk, frequency_error=eff, extra_errors=extra_errors)
     wf.fitted_peaks = peaks
 
 
@@ -493,8 +502,6 @@ def apply_vif_collapse(
     ],
     snap_tol_mhz: float = 0.05,
     max_iterations: int = 5,
-    max_post_chi2r: float = float("inf"),
-    veto_min_separation_res: float = 0.0,
 ) -> None:
     """Collapse degenerate sub-resolution overfit pairs (in-place).
 
@@ -505,30 +512,36 @@ def apply_vif_collapse(
     unconditionally: at high SNR chi^2 is a lineshape-fidelity floor, so a
     near-degenerate second line absorbs lineshape mismodeling and chi^2 / AICc
     *reward* the spurious split. The window chi^2_r *rising* on collapse is
-    expected and must not veto it.
+    expected -- it is the irreducible unresolved-structure / lineshape floor,
+    **not** evidence that the data demands two resolvable components, so it
+    never vetoes the merge.
 
-    The separation bound (``max_sep_res``, the half-resolution-element physical
-    limit) is the real guard: two lines closer than that are unresolvable, so a
-    split there is spurious regardless of VIF, and every genuine doublet in the
-    calibration truth set sits well outside it (>= 0.82 res). ``vif_threshold``
-    is therefore only a modest sanity floor that keeps a window whose close
-    peaks are both well determined (not degenerate) from collapsing.
+    The separation bound (``max_sep_res``) is the real guard: two lines closer
+    than that are unresolvable, so a split there is spurious regardless of VIF.
+    A second, **footprint** guard bounds a *sequence* of merges: a merged line
+    represents one unresolvable feature, so the span of the original component
+    frequencies it has absorbed must stay within
+    :data:`_COLLAPSE_FOOTPRINT_MAX_RES` resolution elements. This stops a greedy
+    fold from chaining across a genuinely-resolvable gap -- e.g. a real ~1.5-res
+    doublet whose lower member was over-split into two: the over-split sub-pair
+    merges, but the fold cannot then swallow the resolved upper member.
 
     Pairs are matched greedily from the highest-VIF peak down: each high-VIF
-    peak pairs with its nearest unused neighbor within the separation bound
-    (every VIF>>1 line comes in a degenerate pair, so the partner is
-    structural). Each window with at least one pair is refitted with all paired
-    members removed and one merged seed added per pair (origin ``"auto"`` -- an
+    peak pairs with its nearest unused neighbor that satisfies both the
+    separation and footprint bounds. The window is refitted once per merge with
+    that pair removed and one merged seed added (origin ``"auto"`` -- an
     automatic decision, not a human edit). The merged seed reuses the recorded
     doublet-alternative when present (see :func:`_merged_seed_for_pair`).
 
-    **Iterated to convergence.** A collapse refit is NLS over the surviving
-    seeds; on a dense, high-SNR window two seeds can re-converge into a *new*
-    degenerate split that a single pass would leave behind (only to be flagged
-    for attention later). The sweep therefore repeats until a full pass finds no
-    collapsible pair, capped at ``max_iterations`` (the cap is a backstop
-    against a window that oscillates collapse<->re-split; any residual pair is
-    still surfaced by the Stage 6 ``overfit_vif`` attention reason).
+    **Sequential, frozen, iterated to a fixpoint.** Each merge is followed by a
+    *frozen* intermediate refit (only the new merged line free; every inherited
+    peak pinned) so a dominant line never drags a weak merged line away
+    mid-sequence. After the per-window merge sweep reaches a fixpoint, one
+    **all-free** relax re-fits every peak for honest covariance. That relax can
+    itself walk a strong line back into a *new* degenerate split, so the sweep
+    repeats over the relaxed result until a full pass finds no collapsible pair
+    (capped at ``max_iterations`` against a collapse<->re-split oscillation; any
+    residual pair is still surfaced by the Stage 6 ``overfit_vif`` reason).
 
     Parameters
     ----------
@@ -542,81 +555,98 @@ def apply_vif_collapse(
     sideband :
         Pipeline sideband (for the molecular -> baseband-offset seed mapping).
     refit_collapse :
-        Callable ``(wf, remove_freqs, add_freqs, add_seeds) -> FittingResult``
-        that re-fits ``wf`` with the paired peaks removed and the merged seeds
-        added (origin ``"auto"``). In production this routes through
+        Callable ``(wf, remove_freqs, add_freqs, add_seeds, freeze) ->
+        FittingResult`` that re-fits ``wf`` with the paired peaks removed and the
+        merged seed added (origin ``"auto"``); ``freeze`` pins every inherited
+        peak. In production this routes through
         :func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`.
     snap_tol_mhz :
         Tolerance for matching a pair to a recorded doublet alternative.
     max_iterations :
-        Maximum collapse sweeps over the window set (convergence backstop).
-    max_post_chi2r :
-        Catastrophic-merge veto: if a window's post-merge reduced chi^2 exceeds
-        this, the merge is reverted (the split is kept and will flag
-        ``overfit_vif``) -- the data overwhelmingly demands two components.
-        ``inf`` disables the veto. Raw chi2r, not SNR-normalized eps (the D10
-        lineshape floor saturates eps at high SNR).
-    veto_min_separation_res :
-        Separation floor (in resolution elements) below which the
-        ``max_post_chi2r`` veto does **not** apply. The veto's premise -- a high
-        post-merge chi^2 means the data demands two components -- only holds for
-        a *resolvable* pair. A deeply sub-resolution pair (every calibration-truth
-        doublet sits >= 0.82 res) cannot be two resolvable lines, so a high
-        post-merge chi^2 there is the irreducible unresolved-structure floor
-        (unresolved hyperfine), not evidence for the split: such pairs are
-        force-collapsed regardless of chi^2. The veto still guards the
-        marginally-resolvable band (``veto_min_separation_res`` .. ``max_sep_res``).
-        A window is exempt from the veto only when *every* collapsing pair in it
-        is below this floor. ``0.0`` keeps the legacy unconditional veto.
+        Maximum collapse<->relax sweeps over a window (convergence backstop).
     """
     from ..fitting.peak_model import ModelPeak, sideband_sign
 
     max_sep_mhz = max_sep_res * res_element_mhz
+    footprint_cap_mhz = _COLLAPSE_FOOTPRINT_MAX_RES * res_element_mhz
     s = sideband_sign(sideband)
 
-    def _pairs_for_window(wf: FittingResult) -> List[Tuple[int, int]]:
-        """Greedy high-VIF nearest-neighbor pairs within the separation bound."""
-        peaks = wf.fitted_peaks
+    # A footprint is (center, lo, hi): the merged line's current position and the
+    # span [lo, hi] of the *original* component frequencies it has absorbed (a
+    # clean line has lo == hi == center). Footprints are re-keyed by nearest
+    # frequency after every refit (frozen merges pin the inherited peaks; the
+    # all-free relax moves them only slightly).
+    Footprint = Tuple[float, float, float]
+
+    def _select_pair(
+        peaks: List[FittedPeak], foots: List[Footprint]
+    ) -> Optional[Tuple[int, int]]:
+        """Highest-VIF peak paired with its nearest separation- and
+        footprint-admissible neighbor, or ``None``."""
         if len(peaks) < 2:
-            return []
+            return None
         vifs = [amplitude_vif(p) for p in peaks]
-        # High-VIF peaks first, so the most degenerate pairs form before a
-        # shared neighbor is consumed by a weaker pairing.
         high_vif_order = sorted(
             (i for i, v in enumerate(vifs) if v is not None and v > vif_threshold),
             key=lambda i: -(vifs[i] or 0.0),
         )
-        used: set[int] = set()
-        pairs: List[Tuple[int, int]] = []
         for i in high_vif_order:
-            if i in used:
-                continue
+            fi = float(peaks[i].frequency_mhz)
             best_j: Optional[int] = None
             best_d = float("inf")
             for j in range(len(peaks)):
-                if j == i or j in used:
+                if j == i:
                     continue
-                d = abs(float(peaks[i].frequency_mhz) - float(peaks[j].frequency_mhz))
+                fj = float(peaks[j].frequency_mhz)
+                d = abs(fi - fj)
+                if d > max_sep_mhz or d >= best_d:
+                    continue
+                lo = min(foots[i][1], foots[j][1], fi, fj)
+                hi = max(foots[i][2], foots[j][2], fi, fj)
+                if hi - lo > footprint_cap_mhz:
+                    continue  # fold would cross a resolvable gap
+                best_d, best_j = d, j
+            if best_j is not None:
+                return (i, best_j)
+        return None
+
+    def _rekey_footprints(
+        peaks: List[FittedPeak], prev: List[Footprint]
+    ) -> List[Footprint]:
+        """Re-attach footprints to ``peaks`` by greedy nearest center match,
+        preserving each carried [lo, hi] span and updating the center."""
+        used: set[int] = set()
+        out: List[Footprint] = []
+        for p in peaks:
+            f = float(p.frequency_mhz)
+            best_k = -1
+            best_d = float("inf")
+            for k, (c, _lo, _hi) in enumerate(prev):
+                if k in used:
+                    continue
+                d = abs(f - c)
                 if d < best_d:
-                    best_d, best_j = d, j
-            if best_j is not None and best_d <= max_sep_mhz:
-                pairs.append((i, best_j))
-                used.add(i)
-                used.add(best_j)
-        return pairs
+                    best_d, best_k = d, k
+            if best_k >= 0:
+                used.add(best_k)
+                _c, lo, hi = prev[best_k]
+                out.append((f, lo, hi))
+            else:
+                out.append((f, f, f))
+        return out
 
     collapse_records: List[Dict[str, Any]] = []
-    veto_records: List[Dict[str, Any]] = []
     n_iterations = 0  # most merges performed in any single window (diagnostic)
 
-    # Sequential per-window collapse: merge ONE pair at a time, each followed by
-    # a *frozen* refit (only the new merged line free; every inherited peak,
-    # including a dominant 1e5 line, held at its persisted value). A multiplet
-    # collapses K -> K-1 -> ... within this loop (a sub-resolution quartet folds
-    # 4->3->2->1) without a dominant line ever dragging a weak merged line away
-    # mid-sequence (the all-at-once relaxation's 655 w124 failure). One final
-    # relaxed refit at the end re-fits every peak free for honest covariance,
-    # seeded from the fully-converged frozen state so it stays in the good basin.
+    # Sequential per-window collapse to a fixpoint. Each merge collapses ONE pair
+    # and is followed by a *frozen* intermediate refit (only the new merged line
+    # free; every inherited peak, including a dominant 1e6 line, held at its
+    # persisted value), so a multiplet folds K -> K-1 -> ... without a dominant
+    # line ever dragging a weak merged line away mid-sequence. After the merge
+    # sweep stalls, one all-free relax re-fits every peak for honest covariance;
+    # that relax can walk a strong line back into a fresh degenerate split, so the
+    # whole sweep repeats over the relaxed result until a pass finds no pair (the
+    # ``max_iterations`` cap guards a collapse<->re-split oscillation).
     new_window_fits = []
     for wf in fit.window_fits:
         wid = int(wf.window_id) if wf.window_id is not None else -1
@@ -629,93 +659,111 @@ def apply_vif_collapse(
             continue
 
         cur = wf
+        foots: List[Footprint] = [
+            (float(p.frequency_mhz), float(p.frequency_mhz), float(p.frequency_mhz))
+            for p in cur.fitted_peaks
+        ]
         pending: List[Dict[str, Any]] = []
-        cap = len(wf.fitted_peaks)  # each merge removes one peak: a hard bound
-        while len(pending) < cap:
-            pairs = _pairs_for_window(cur)
-            if not pairs:
-                break
-            i, j = pairs[0]  # highest-VIF pair first (greedy order)
-            peaks = cur.fitted_peaks
-            vifs = [amplitude_vif(p) for p in peaks]
-            pa, pb = peaks[i], peaks[j]
-            merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
-                cur, pa, pb, snap_tol_mhz
-            )
-            offset = float(s * (merge_freq - center))
-            seed = ModelPeak(
-                amplitude=max(abs(merge_amp), 1e-30),
-                offset_mhz=offset,
-                phase=merge_phase,
-            )
-            # Effective frequency uncertainty of the merged line: the collapsed
-            # pair represents one unresolvable feature whose true position is
-            # uncertain by the amplitude-weighted spread of its (unresolved-
-            # hyperfine) components, not just the formal LSQ error -- recorded so
-            # the merged line's frequency_error can be inflated to
-            # ``sqrt(formal**2 + spread**2)`` (a clean single line has spread 0).
-            fa, fb = float(pa.frequency_mhz), float(pb.frequency_mhz)
-            amp_a, amp_b = abs(float(pa.amplitude)), abs(float(pb.amplitude))
-            w_sum = amp_a + amp_b
-            if w_sum > 0.0:
-                f_centroid = (amp_a * fa + amp_b * fb) / w_sum
-                spread = float(
-                    np.sqrt(
-                        (amp_a * (fa - f_centroid) ** 2 + amp_b * (fb - f_centroid) ** 2)
-                        / w_sum
-                    )
+        n_merges = 0
+        for _ in range(max(1, max_iterations)):
+            merged_this_pass = 0
+            # Frozen merge sweep to a fixpoint over the current peaks (each merge
+            # drops K by one; the loop ends when no admissible pair remains).
+            while len(cur.fitted_peaks) >= 2:
+                pair = _select_pair(cur.fitted_peaks, foots)
+                if pair is None:
+                    break
+                i, j = pair
+                peaks = cur.fitted_peaks
+                vifs = [amplitude_vif(p) for p in peaks]
+                pa, pb = peaks[i], peaks[j]
+                merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
+                    cur, pa, pb, snap_tol_mhz
                 )
-            else:
-                spread = 0.5 * abs(fa - fb)
-            pending.append(
-                {
-                    "window_id": wid,
-                    "frequency_a_mhz": fa,
-                    "frequency_b_mhz": fb,
-                    "vif_a": vifs[i],
-                    "vif_b": vifs[j],
-                    "separation_res": (
-                        abs(fa - fb) / res_element_mhz if res_element_mhz > 0 else None
-                    ),
-                    "merged_frequency_mhz": float(merge_freq),
-                    "unresolved_spread_mhz": spread,
-                }
-            )
-            # Frozen intermediate refit: only the merged line free.
-            cur = refit_collapse(cur, [fa, fb], [merge_freq], [seed], True)
+                offset = float(s * (merge_freq - center))
+                seed = ModelPeak(
+                    amplitude=max(abs(merge_amp), 1e-30),
+                    offset_mhz=offset,
+                    phase=merge_phase,
+                )
+                # Effective frequency uncertainty of the merged line: the
+                # collapsed pair represents one unresolvable feature whose true
+                # position is uncertain by the amplitude-weighted spread of its
+                # (unresolved-hyperfine) components, not just the formal LSQ error
+                # -- recorded so the merged line's frequency_error can be inflated
+                # to sqrt(formal**2 + spread**2) (a clean line has spread 0).
+                fa, fb = float(pa.frequency_mhz), float(pb.frequency_mhz)
+                amp_a, amp_b = abs(float(pa.amplitude)), abs(float(pb.amplitude))
+                w_sum = amp_a + amp_b
+                if w_sum > 0.0:
+                    f_centroid = (amp_a * fa + amp_b * fb) / w_sum
+                    spread = float(
+                        np.sqrt(
+                            (
+                                amp_a * (fa - f_centroid) ** 2
+                                + amp_b * (fb - f_centroid) ** 2
+                            )
+                            / w_sum
+                        )
+                    )
+                else:
+                    spread = 0.5 * abs(fa - fb)
+                pending.append(
+                    {
+                        "window_id": wid,
+                        "frequency_a_mhz": fa,
+                        "frequency_b_mhz": fb,
+                        "vif_a": vifs[i],
+                        "vif_b": vifs[j],
+                        "separation_res": (
+                            abs(fa - fb) / res_element_mhz
+                            if res_element_mhz > 0
+                            else None
+                        ),
+                        "merged_frequency_mhz": float(merge_freq),
+                        "unresolved_spread_mhz": spread,
+                    }
+                )
+                # Union footprint of the merged line: the span of original
+                # frequencies absorbed by both members (carries the resolvable-gap
+                # guard forward through the sequence).
+                merged_foot: Footprint = (
+                    float(merge_freq),
+                    min(foots[i][1], foots[j][1], fa, fb),
+                    max(foots[i][2], foots[j][2], fa, fb),
+                )
+                next_foots = [
+                    foots[k] for k in range(len(foots)) if k not in (i, j)
+                ] + [merged_foot]
+                # Frozen intermediate refit: only the merged line free.
+                cur = refit_collapse(cur, [fa, fb], [merge_freq], [seed], True)
+                foots = _rekey_footprints(cur.fitted_peaks, next_foots)
+                merged_this_pass += 1
+                n_merges += 1
+
+            if merged_this_pass == 0:
+                break  # fixpoint: neither the merge sweep nor a prior relax left a pair
+
+            # All-free relax for honest covariance, then loop to catch a relax-
+            # induced re-split (the next pass's _select_pair runs on it). The relax
+            # commits the sweep's merges and re-establishes every peak position, so
+            # footprints reset to single points: the resolvable-gap guard bounds a
+            # *chain of frozen merges* (stable positions, reliable re-keying), not a
+            # span carried across an all-free refit that relocates every peak (which
+            # mis-attributes a wide footprint to a shuffled peak and spuriously
+            # blocks a legitimate re-merge -- the 655 w1013 bug).
+            relaxed = refit_collapse(cur, [], [], [], False)
+            foots = [(float(p.frequency_mhz),) * 3 for p in relaxed.fitted_peaks]
+            cur = relaxed
 
         if not pending:
             new_window_fits.append(wf)
             continue
-        n_iterations = max(n_iterations, len(pending))
+        n_iterations = max(n_iterations, n_merges)
 
-        # Final relaxed refit: every peak free, for honest covariance / errors.
-        relaxed = refit_collapse(cur, [], [], [], False)
-
-        # Catastrophic-merge veto on the final result: a window whose every
-        # collapsing pair is below ``veto_min_separation_res`` carries only
-        # unresolvable splits (high post-merge chi^2 is the irreducible
-        # unresolved-structure floor, not evidence for two resolvable lines) and
-        # is force-collapsed; otherwise a too-high post-merge chi^2 reverts the
-        # whole window's merges (the split is kept and flags ``overfit_vif``).
-        post_chi2r_raw = getattr(relaxed, "reduced_chi2", None)
-        post_chi2r = (
-            float(post_chi2r_raw) if post_chi2r_raw is not None else float("inf")
-        )
-        seps_res = [r["separation_res"] for r in pending if r["separation_res"] is not None]
-        veto_exempt = bool(seps_res) and max(seps_res) < veto_min_separation_res
-        if (post_chi2r > max_post_chi2r and not veto_exempt) or not getattr(
-            relaxed, "success", True
-        ):
-            for rec in pending:
-                rec["post_merge_chi2r"] = post_chi2r
-            veto_records.extend(pending)
-            new_window_fits.append(wf)
-            continue
-
-        _inflate_merged_frequency_errors(relaxed, pending)
+        _inflate_merged_frequency_errors(cur, pending)
         collapse_records.extend(pending)
-        new_window_fits.append(relaxed)
+        new_window_fits.append(cur)
 
     fit.window_fits = new_window_fits
 
@@ -726,13 +774,11 @@ def apply_vif_collapse(
     fit.diagnostics["vif_collapse"] = {
         "vif_threshold": float(vif_threshold),
         "max_separation_res": float(max_sep_res),
+        "footprint_max_res": float(_COLLAPSE_FOOTPRINT_MAX_RES),
         "res_element_mhz": float(res_element_mhz),
-        "max_post_chi2r": float(max_post_chi2r),
         "n_collapsed_pairs": len(collapse_records),
-        "n_vetoed_pairs": len(veto_records),
         "n_iterations": n_iterations,
         "collapses": collapse_records,
-        "vetoed": veto_records,
     }
 
 
@@ -1418,14 +1464,6 @@ def _fit_peaks_impl(
         resolved.peak_survival.collapse_max_separation_res,
         "peak_survival.collapse_max_separation_res",
     )
-    merge_chi2_veto_v = _required_float(
-        resolved.peak_survival.merge_chi2_veto,
-        "peak_survival.merge_chi2_veto",
-    )
-    merge_chi2_veto_min_sep_res_v = _required_float(
-        resolved.peak_survival.merge_chi2_veto_min_separation_res,
-        "peak_survival.merge_chi2_veto_min_separation_res",
-    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -1975,8 +2013,6 @@ def _fit_peaks_impl(
             res_element_mhz=res_element_mhz,
             sideband=sideband,
             refit_collapse=_collapse_refit,
-            max_post_chi2r=merge_chi2_veto_v,
-            veto_min_separation_res=merge_chi2_veto_min_sep_res_v,
         )
         n_collapsed = len(
             spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])
@@ -2262,9 +2298,7 @@ def _padded_active_display_ft(
     # the 2x-padded grid coincides with the native bins (padded[2k] == native[k]).
     # An independent floor/ceil slice differed by one sample, offsetting the grid
     # and -- on 655 -- erasing lines that landed on a mid-bin null.
-    start_idx, end_idx = active_region_bounds(
-        fid.size, sample_dt_us, start_us, end_us
-    )
+    start_idx, end_idx = active_region_bounds(fid.size, sample_dt_us, start_us, end_us)
     active = fid[start_idx:end_idx].astype(float, copy=True)
     n_active = active.size
     active -= active.mean()  # match canonical (unconditional) DC removal

@@ -351,14 +351,15 @@ line — w905 went 6→4 (corrupted, χ²ᵣ 3→409) and w124 *lost a real line
   `fitted_peaks`). After the fix: w124 **10→4 with all four catalog lines**
   (27766.43 recovered), w905 6→5 (χ²ᵣ 18), w187 6→3 (χ²ᵣ 525), w186 8→5.
 
-**Sequential collapse validated (655 trace, `init_K/frozen_K/relaxed_K`):**
-w124 10→(6 merges)→4, w187 6→3, w905 6→5, w769 **11**→(2 merges)→9. **No window
-grows** (`relaxed_K` never exceeds `init_K`) — the collapse never adds peaks and
-the **final all-free relax never walks**. The apparent "w769 6→9 regression" was
-a *misread*: the fresh fit has 11 peaks pre-collapse; the new code merges only
-the 2 genuinely-degenerate pairs (→9), while the old all-at-once + outer-
-iteration code drifted weak peaks together and over-merged to 6. Less aggressive
-here is *more* correct.
+**Sequential collapse spot-check (655 trace, `init_K/frozen_K/relaxed_K`):**
+w124 10→(6 merges)→4, w187 6→3, w905 6→5, w769 **11**→(2 merges)→9. The apparent
+"w769 6→9 regression" was a *misread*: the fresh fit has 11 peaks pre-collapse;
+the new code merges only the 2 genuinely-degenerate pairs (→9), while the old
+all-at-once + outer-iteration code over-merged to 6. **CAUTION — superseded:**
+this spot-check led to the claim "the final all-free relax never walks," which
+the full 7-fixture audit *disproved* (it does walk on 655 w1013, 1231 w134, …).
+See **"Step A, audit-review resolution"** below for the corrected picture and the
+fixpoint fix.
 
 **Trap that cost a cycle:** a debug `os.environ.get(...)` print in
 `apply_vif_collapse` referenced `os`, which `stage5_impl` did not import →
@@ -366,15 +367,90 @@ here is *more* correct.
 mimicking "stale code / uncollapsed result". `import os` added; the print must be
 **removed before commit**.
 
-**Open at handoff:** (a) **Full 7-fixture audit** with the sequential code
-(`scratch/cascade/refit_after.py` then `audit.py`); the last `audit/audit.txt` is
-from the superseded per-call-2-step state. (b) **Re-run targeted suites** after
-the rewrite (only the veto-gate stage was tested). (c) **Remove the
-`FTMW_DEBUG_COLLAPSE` print** + decide whether to keep `import os`. (d) Reserve,
-only if a future fixture's final relax walks: a **locality / parameter-
-correlation-block-gated final relax** (thaw only the merged line's correlation
-block, freeze distant strong lines); compute the block on the *pre-collapse* fit
-(post-collapse it is degenerate). Not needed for the current 7 fixtures.
+### Step A, audit-review resolution: veto removed, footprint guard, fixpoint, VIF threshold 25
+
+The user reviewed the full 7-fixture audit (`ab` baseline vs the sequential
+collapse) and flagged 13 windows. The headline handoff claim above — "the final
+all-free relax never walks" — was **false** (it held only on the 655 spot-check);
+tracing every flagged window (`FTMW_TRACE_COLLAPSE` env, since removed) found
+**three** root causes and one calibration error, all now fixed:
+
+1. **The catastrophic-merge veto reverted *correct* collapses (6 windows).** The
+   `merge_chi2_veto`=100 + `veto_min_separation_res`=0.5-exempt gate reverted
+   exactly the collapses the user wanted (1512 w45 7→4, w228 8→4; 1231 w122 10→4,
+   w196 4→2; 360 w201 6→3, w104). `veto_exempt` (all pairs < 0.5 res) never fires
+   for a 3+ cluster — folding it passes through 0.5–0.9-res steps — so a high
+   post-merge χ²ᵣ (the honest unresolved-structure floor) reverted the window.
+   Zero correct saves in the audit. **Fix: removed the veto entirely + dropped
+   both knobs** (`merge_chi2_veto`, `merge_chi2_veto_min_separation_res`).
+2. **Over-merge across a real gap (655 w1096).** A real ~1.5-res doublet
+   over-split into a triplet folded all the way to one line (the merged centroid
+   drifted toward the strong neighbour, a 2nd merge swallowed the resolved line).
+   **Fix: a footprint guard** — a merged line carries the span `[lo, hi]` of the
+   *original* component frequencies it has absorbed; a chained merge is blocked
+   when the combined span exceeds `_COLLAPSE_FOOTPRINT_MAX_RES` = **1.3 res**
+   (separates w122's 1.04-res cluster → collapse from w1096's 1.6-res doublet →
+   keep; w288's 1.35-res cluster caps at a quartet, which the user accepts).
+3. **The all-free relax *does* re-split into degenerate pairs, and the old code
+   never re-checked (655 w1013 VIF 87, 1231 w134 VIF 5–11 post-relax).** **Fix:
+   collapse-to-fixpoint** — `apply_vif_collapse` is an outer loop (≤
+   `max_iterations` passes): a frozen merge sweep to a fixpoint → one all-free
+   relax → repeat over the relaxed result; it stops when a pass finds no pair.
+   *Sub-bug found mid-fix:* `_rekey_footprints` mis-matched footprints across the
+   all-free relax (it relocates every peak; greedy nearest grabbed the wrong one
+   → inflated a span to 1.58 res → spuriously blocked w1013's legitimate
+   re-merge). **Footprints reset to single points after each relax** — the guard
+   bounds a *chain of frozen merges* (only the merged line moves, re-keying is
+   reliable), not a span carried across a refit that moves everything.
+
+4. **The VIF threshold of 4 was too low — it merged *resolvable* doublets
+   catastrophically.** With the veto gone, 360 w36 (a real methyl A/E doublet at
+   0.68 res, snr 120+82) and 1512 w45's resolvable pair collapsed to a single
+   centroid that fits the trough between the two peaks → a **real line lost,
+   χ²ᵣ 386 / 24968**. The two error directions are **not symmetric**: merging a
+   resolved doublet *deletes a line* (unrecoverable), while leaving an over-split
+   merely ships an extra peak the attention surface flags (recoverable). A
+   resolved doublet's amplitudes are individually constrained → moderate VIF
+   (≤ ~23 across the fixtures: w36 17, w383 4, w1096's real line 23), whereas a
+   genuinely sub-resolution degenerate over-split has unconstrained amplitudes →
+   VIF ≫ that (≥ ~40, up to 1e6: w139 40, w201 98, w124 1e6). **Fix:
+   `vif_collapse_threshold` 4 → 25** (in the gap), so only unambiguous degeneracy
+   collapses; pairs with `vif_attention_threshold` ≤ VIF < 25 are kept and
+   flagged. The decision uses the **pre-collapse** VIF (an earlier "irreducible
+   conflict" was a misread of the *post*-collapse relaxed VIF). Per-pair, so a
+   window with both a degenerate and a resolvable pair (w45) collapses the former
+   and keeps the latter (5 peaks, χ²ᵣ 40 — the right answer). Cost: catalog-
+   confirmed over-splits whose pairs sit in VIF 4–25 (w134 → 4 not 2, w228 → 5
+   not 4) stay flagged rather than auto-merged; net line counts rise ~+50/fixture
+   vs the aggressive arm — the recall-safe side of the asymmetry.
+
+**Catalog confirmation (w134).** Parsed the MTBE XIAM catalog
+(`mtbe-new/si/sims/mtbe-7k.xo`, A/E internal-rotation output; not frequency-
+ordered) with the bcfitting field-width logic: w134's region holds exactly two
+real lines — the 6₁₆←5₀₅ **E** (34412.268 MHz) and **A** (34412.608 MHz)
+components, each int 2.6e2, split 0.34 MHz (≈ 4.4 res). The fit's two clusters
+land on them, but each is over-split into a spurious sub-doublet at ~0.9 res
+where the catalog has nothing — so the 4-peak fit is an over-split of a real
+doublet, **not** a real quartet. This is the *benign* direction (extra flagged
+peaks, no lost line); its only hazard is the edge-bearing skirt it propagates to
+~18 neighbours (w129–w147; phasor/mag ≈ 0.6 → ~40 % skirt cancellation, the
+overfit-skirt trap), which the deferred cascade work (§§ B–D: edge-free-on-
+overfit-source) is the right place to address — not a fragile per-pathology
+collapse gate.
+
+**State: validated, ready to commit.** 7-fixture re-baseline at threshold 25:
+11/13 flagged windows match intent; w36/w45 real-line losses fixed; w383/w166
+"wins" restored; all windows preserved. Tests green (peak_survival 40, fitting
+469, knob-metadata, cross-interface 33; mypy clean). The anti-phase penalty
+*does* fire on w134 (weight ~0.72, cos ~−0.7, cost ~24–30/pair) but is swamped
+by the snr-720 line's lineshape-floor reward and sits below the canceling-pair
+escape gate (cancellation 0.4 < 0.75) — a known floor-vs-penalty limitation, not
+a missing penalty.
+
+**Reserve** (only if a future fixture's final relax walks beyond what the
+fixpoint loop catches): a locality / parameter-correlation-block-gated relax
+(thaw only the merged line's correlation block, freeze distant strong lines);
+compute the block on the *pre-collapse* fit. Not needed for the current 7.
 
 ## Prerequisite finding: the dependency model is inconsistent across SNR
 

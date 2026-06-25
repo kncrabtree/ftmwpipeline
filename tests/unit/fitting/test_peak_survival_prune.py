@@ -427,13 +427,13 @@ class TestApplyVifCollapse:
             res_element_mhz=self.RES,
             sideband=Sideband.UPPER,
             refit_collapse=kw.get("refit_collapse", _stub_collapse),
-            max_post_chi2r=kw.get("max_post_chi2r", float("inf")),
-            veto_min_separation_res=kw.get("veto_min_separation_res", 0.0),
         )
 
-    def test_catastrophic_merge_vetoed(self):
-        # A collapse whose 1-line refit is catastrophic (chi2r above the veto) is
-        # reverted: the original split is kept and recorded under "vetoed".
+    def test_high_post_merge_chi2_still_collapses(self):
+        # A degenerate sub-resolution pair collapses regardless of the post-merge
+        # chi2r: a high 1-line chi2r is the irreducible unresolved-structure floor
+        # (the data cannot resolve a sub-resolution split), never evidence for two
+        # resolvable lines, so there is no catastrophic-merge veto.
         pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=10.0, snr=500.0)
         pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=10.0, snr=500.0)
         wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
@@ -441,58 +441,35 @@ class TestApplyVifCollapse:
 
         def _bad_merge(wf_, remove_freqs, add_freqs, add_seeds, freeze):
             new = _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
-            new.reduced_chi2 = 5000.0  # the 1-line model is a terrible fit
+            new.reduced_chi2 = 5000.0  # the 1-line model fits badly -- expected
             return new
 
-        self._run(fit, refit_collapse=_bad_merge, max_post_chi2r=100.0)
-        out = fit.window_fits[0]
-        assert len(out.fitted_peaks) == 2  # split kept, not merged
-        diag = fit.diagnostics["vif_collapse"]
-        assert diag["n_collapsed_pairs"] == 0
-        assert diag["n_vetoed_pairs"] == 1
-
-    def test_acceptable_merge_not_vetoed(self):
-        # The same pair with a benign post-merge chi2r still merges.
-        pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=10.0, snr=500.0)
-        pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=10.0, snr=500.0)
-        wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
-        fit = _make_fit([wf])
-
-        def _ok_merge(wf_, remove_freqs, add_freqs, add_seeds, freeze):
-            new = _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
-            new.reduced_chi2 = 2.0
-            return new
-
-        self._run(fit, refit_collapse=_ok_merge, max_post_chi2r=100.0)
-        assert len(fit.window_fits[0].fitted_peaks) == 1
-        assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 1
-        assert fit.diagnostics["vif_collapse"]["n_vetoed_pairs"] == 0
-
-    def test_subresolution_pair_exempt_from_veto(self):
-        # An unresolvable pair (every member below ``veto_min_separation_res``)
-        # is force-collapsed even when the 1-line refit is catastrophic: a high
-        # post-merge chi2r there is the unresolved-structure floor, not evidence
-        # for two resolvable lines. The 0.01 MHz pair is 0.13 res < 0.5.
-        pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=10.0, snr=500.0)
-        pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=10.0, snr=500.0)
-        wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
-        fit = _make_fit([wf])
-
-        def _bad_merge(wf_, remove_freqs, add_freqs, add_seeds, freeze):
-            new = _stub_collapse(wf_, remove_freqs, add_freqs, add_seeds)
-            new.reduced_chi2 = 5000.0
-            return new
-
-        self._run(
-            fit,
-            refit_collapse=_bad_merge,
-            max_post_chi2r=100.0,
-            veto_min_separation_res=0.5,
-        )
+        self._run(fit, refit_collapse=_bad_merge)
         assert len(fit.window_fits[0].fitted_peaks) == 1  # collapsed despite chi2r
-        diag = fit.diagnostics["vif_collapse"]
-        assert diag["n_collapsed_pairs"] == 1
-        assert diag["n_vetoed_pairs"] == 0
+        assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 1
+
+    def test_footprint_guard_blocks_cross_gap_fold(self):
+        # A real resolvable line over-split into a triplet: the over-split sub-pair
+        # is sub-resolution (mergeable), but the third member sits a full ~1.5 res
+        # away -- a genuinely resolvable gap. The chained fold must stop before it
+        # crosses that gap and swallows the resolved line: 3 -> 2, not 3 -> 1.
+        # RES ~ 0.0769 MHz; footprint cap 1.3 res ~ 0.10 MHz.
+        lo_a = _cpeak(1000.000, amplitude=1.0, amplitude_error=10.0, snr=500.0)
+        lo_b = _cpeak(
+            1000.030, amplitude=1.0, amplitude_error=10.0, snr=500.0
+        )  # 0.39 res
+        hi = _cpeak(
+            1000.115, amplitude=1.0, amplitude_error=10.0, snr=500.0
+        )  # 1.30 res from merged
+        wf = _window_with_range(1, [lo_a, lo_b, hi], (999.8, 1000.3))
+        fit = _make_fit([wf])
+        # Allow pairing out to 1.5 res so the merged lo centroid <-> hi separation
+        # (1.30 res) is within max_sep, leaving only the footprint guard (1.3 res
+        # span) to block folding the whole triplet to one line.
+        self._run(fit, max_sep_res=1.5)
+        out = fit.window_fits[0]
+        assert len(out.fitted_peaks) == 2  # over-split pair merged; resolved line kept
+        assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 1
 
     def test_degenerate_pair_collapses(self):
         # Two near-degenerate high-VIF lines 0.01 MHz apart (< 0.0385).
@@ -720,9 +697,8 @@ class TestSettingsWiring:
         from ftmwpipeline.core.stage_fit_settings import resolve
 
         ps = resolve().peak_survival
-        assert ps.vif_collapse_threshold == pytest.approx(4.0)
+        assert ps.vif_collapse_threshold == pytest.approx(25.0)
         assert ps.collapse_max_separation_res == pytest.approx(1.0)
-        assert ps.merge_chi2_veto == pytest.approx(100.0)
         assert ps.vif_attention_threshold == pytest.approx(4.0)
         assert ps.drop_empty_windows is True
         assert ps.drop_spur_only_windows is True
