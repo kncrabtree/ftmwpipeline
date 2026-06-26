@@ -500,6 +500,45 @@ class TestApplyVifCollapse:
         assert rec["window_id"] == 1
         assert {rec["frequency_a_mhz"], rec["frequency_b_mhz"]} == {1000.00, 1000.01}
 
+    def test_singular_covariance_pair_collapses(self):
+        # The strongest degeneracy: a sub-resolution pair whose joint amplitude
+        # covariance is singular, so amplitude_error is None and the VIF is
+        # *undefined*. The VIF gate alone is blind to it (``None > threshold`` is
+        # False), so the most degenerate pairs would escape -- the singular-
+        # covariance path must still collapse it (655 w1006's coincident giant).
+        pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=None, snr=500.0)
+        pb = _cpeak(1000.01, amplitude=1.0, amplitude_error=None, snr=500.0)
+        wf = _window_with_range(1, [pa, pb], (999.9, 1000.1))
+        fit = _make_fit([wf])
+        self._run(fit)
+        assert len(fit.window_fits[0].fitted_peaks) == 1  # collapsed to one line
+        assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 1
+
+    def test_singular_covariance_isolated_not_collapsed(self):
+        # A singular-covariance line with no sub-resolution neighbor is left
+        # alone: the separation guard, not the VIF, is what protects it, so the
+        # new eligibility path cannot collapse an isolated line.
+        singular = _cpeak(1000.0, amplitude=1.0, amplitude_error=None, snr=500.0)
+        far = _cpeak(1000.2, amplitude=1.0, amplitude_error=0.02, snr=50.0)
+        wf = _window_with_range(1, [singular, far], (999.8, 1000.4))
+        fit = _make_fit([wf])
+        self._run(fit)
+        assert len(fit.window_fits[0].fitted_peaks) == 2
+        assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 0
+
+    def test_dead_zero_amplitude_not_collapse_eligible(self):
+        # amplitude_vif also returns None for a dead (zero-amplitude) peak; that
+        # is not a degeneracy signal. A zero-amplitude line beside a close
+        # neighbor must NOT trigger the singular-covariance path (the amplitude
+        # guard distinguishes singular covariance from a dead peak).
+        dead = _cpeak(1000.00, amplitude=0.0, amplitude_error=None, snr=500.0)
+        clean = _cpeak(1000.01, amplitude=1.0, amplitude_error=0.02, snr=50.0)
+        wf = _window_with_range(1, [dead, clean], (999.9, 1000.1))
+        fit = _make_fit([wf])
+        self._run(fit)
+        assert len(fit.window_fits[0].fitted_peaks) == 2
+        assert fit.diagnostics["vif_collapse"]["n_collapsed_pairs"] == 0
+
     def test_low_vif_pair_not_collapsed(self):
         # Same separation, but identifiable (VIF ~ 1).
         pa = _cpeak(1000.00, amplitude=1.0, amplitude_error=0.02, snr=50.0)

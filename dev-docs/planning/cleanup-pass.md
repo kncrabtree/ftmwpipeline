@@ -220,6 +220,40 @@ top-level docs, and normalized the formatting. Byte-identity held throughout
 - `4977ab9` — **F1** + **F5** (`core/settings_framework.py` + `require_resolved`).
 - `3833522` — **F2** (`io/_settings_serialization.py`).
 
+## Backlog — retire the band-wide `tau_maj` mechanism (architectural)
+
+**Problem (recurring).** Stage 2b persists *per-band* tau majorities, yet a
+band-wide scalar `tau_maj` (+ `sigma_tau`) is **also** persisted and exposed in
+`conservative_kwargs` / `_resolve_tau_calibration_for_fit`. Every new fit/refit
+path that needs a tau penalty anchor reaches for the inviting `tau_maj` scalar
+instead of doing the per-band lookup (`window_tau_overrides` /
+`band_majority_for_frequency`). This has bitten the project repeatedly — most
+recently three sites at once: the Stage 6 refit (`refit_window_impl`) and **both**
+in-fit cleanup callbacks (`_survival_refit`, `_collapse_refit`), all anchoring tau
+globally while the main fit anchors per-band, so a refit pulled tau (and every
+peak) off the fit's optimum (655: ~138 windows non-reproducing). Patched by
+routing all three through the new `resolve_window_tau_anchor` helper, but the
+underlying invitation remains.
+
+**The clean fix.** `tau_maj` *is* a single-band tau (one band spanning the whole
+range), so there is no reason for both representations to coexist. Make per-band
+majorities the **only** tau representation:
+
+- Stage 2b always emits `band_majorities` (a single whole-range band when bands
+  aren't computed); drop the separate band-wide `tau_maj` / `sigma_tau` scalars
+  from the persisted calibration and from `conservative_kwargs`.
+- All consumers resolve their per-window anchor through one helper
+  (`resolve_window_tau_anchor`), which can no longer fall back to a global scalar
+  because there isn't one — a window always maps to a band.
+- `_resolve_tau_calibration_for_fit`'s override path becomes "a user-supplied
+  single band" rather than a parallel scalar mechanism.
+
+This removes the failure mode by construction (no global scalar to grab) rather
+than patching each new site. Re-baselines (serialization change to the persisted
+calibration); gate behind the golden harness. Until then, **every** tau-penalty
+anchor MUST go through `resolve_window_tau_anchor` — never read the persisted
+band-wide `tau_maj` directly.
+
 ## Provenance
 
 - Findings: dead-code + artifacts from a direct grep/graph sweep

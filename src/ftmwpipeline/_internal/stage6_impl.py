@@ -1666,6 +1666,23 @@ def refit_window_impl(
     tau_maj_us, sigma_tau_us, _tau_source = _resolve_tau_calibration_for_fit(
         persisted_cal, tau_maj_override_v, sigma_tau_override_v
     )
+    # Per-band tau anchor: the production fit anchors each window's tau penalty
+    # at the band its center falls in (window_tau_overrides), NOT the global
+    # band-wide tau_maj. A refit that re-anchors globally pulls tau (and every
+    # peak) off the fit's optimum -- the recurring tau_maj-vs-per-band bug. Replay
+    # the same per-band anchor for the window being refit (skipped under an
+    # explicit override, where the override drives every window by design).
+    if (
+        bool(resolved.tau.per_band_tau)
+        and _tau_source != "override"
+        and persisted_cal is not None
+    ):
+        from .stage5_impl import resolve_window_tau_anchor
+
+        center_mhz = 0.5 * (fit_win.freq_range[0] + fit_win.freq_range[1])
+        tau_maj_us, sigma_tau_us = resolve_window_tau_anchor(
+            center_mhz, persisted_cal.band_majorities, tau_maj_us, sigma_tau_us
+        )
 
     # --- Build shared active-FT context (VERBATIM helper) ------------------
     # Replay the persisted Stage 5 gated spur catalog rather than re-running

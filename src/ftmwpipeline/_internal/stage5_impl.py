@@ -68,6 +68,7 @@ from ..fitting.spur_detection import (
     make_decay_probe,
 )
 from ..fitting.tau_calibration import (
+    BandMajority,
     TauCalibrationResult,
     band_majority_for_frequency,
 )
@@ -180,6 +181,35 @@ def _resolve_tau_calibration_for_fit(
             "persisted",
         )
     return None, None, "none"
+
+
+def resolve_window_tau_anchor(
+    center_mhz: float,
+    band_majorities: Optional[Tuple["BandMajority", ...]],
+    fallback_tau_maj_us: Optional[float],
+    fallback_sigma_tau_us: Optional[float],
+) -> Tuple[Optional[float], Optional[float]]:
+    """The single source of truth for a window's tau penalty anchor.
+
+    Stage 2b persists *per-band* tau majorities; a window's tau penalty (and its
+    starting tau) must anchor at the band its center frequency falls in, **not**
+    the global band-wide ``tau_maj``. Returns the per-band
+    ``(tau_maj_us, sigma_tau_us)`` when ``center_mhz`` maps to a band, else the
+    band-wide fallback.
+
+    Every fit and refit path -- the main fit's ``window_tau_overrides``, the
+    in-fit survival-prune / VIF-collapse refits, and the Stage 6 edit / cascade
+    refit -- must resolve its anchor through this one helper so they reproduce
+    the tau the originating fit used. Reaching for the persisted band-wide
+    ``tau_maj`` directly is the recurring bug this function exists to prevent.
+    See the ROADMAP cleanup note on retiring ``tau_maj`` (it is exactly a
+    single-band tau, so per-band majorities should be the only representation).
+    """
+    if band_majorities:
+        band = band_majority_for_frequency(band_majorities, center_mhz)
+        if band is not None:
+            return float(band.tau_maj_us), float(band.sigma_tau_us)
+    return fallback_tau_maj_us, fallback_sigma_tau_us
 
 
 def _build_active_ft_inputs(
@@ -598,17 +628,47 @@ def apply_vif_collapse(
     # all-free relax moves them only slightly).
     Footprint = Tuple[float, float, float]
 
+    def _collapse_rank(p: FittedPeak) -> Optional[float]:
+        """Collapse-eligibility rank for a peak, or ``None`` if not eligible.
+
+        A finite amplitude VIF above ``vif_threshold`` ranks at its VIF. But the
+        VIF is *undefined* (``amplitude_vif`` returns ``None``) exactly when the
+        joint covariance is singular at the amplitude slot -- the strongest
+        possible degeneracy signal, which the VIF gate would otherwise be blind
+        to. A peak whose amplitude / SNR are valid but whose ``amplitude_error``
+        is missing or non-finite (singular covariance, not a dead zero-amplitude
+        peak) ranks at ``+inf`` so the most degenerate cluster collapses first.
+        The separation / footprint guards in the caller still bound every merge,
+        so an isolated singular-covariance line never pairs.
+        """
+        vif = amplitude_vif(p)
+        if vif is not None:
+            return vif if vif > vif_threshold else None
+        amp = float(p.amplitude)
+        snr = p.snr
+        amp_err = p.amplitude_error
+        amplitude_singular = amp_err is None or not np.isfinite(amp_err)
+        if (
+            snr is not None
+            and np.isfinite(snr)
+            and np.isfinite(amp)
+            and abs(amp) > 0.0
+            and amplitude_singular
+        ):
+            return float("inf")
+        return None
+
     def _select_pair(
         peaks: List[FittedPeak], foots: List[Footprint]
     ) -> Optional[Tuple[int, int]]:
-        """Highest-VIF peak paired with its nearest separation- and
+        """Highest-rank degenerate peak paired with its nearest separation- and
         footprint-admissible neighbor, or ``None``."""
         if len(peaks) < 2:
             return None
-        vifs = [amplitude_vif(p) for p in peaks]
+        ranks = [_collapse_rank(p) for p in peaks]
         high_vif_order = sorted(
-            (i for i, v in enumerate(vifs) if v is not None and v > vif_threshold),
-            key=lambda i: -(vifs[i] or 0.0),
+            (i for i, r in enumerate(ranks) if r is not None),
+            key=lambda i: -(ranks[i] or 0.0),
         )
         for i in high_vif_order:
             fi = float(peaks[i].frequency_mhz)
@@ -1697,16 +1757,12 @@ def _fit_peaks_impl(
         else:
             for win in plan.windows:
                 center_mhz = 0.5 * (win.freq_range[0] + win.freq_range[1])
-                band = band_majority_for_frequency(
-                    persisted_cal.band_majorities,
-                    center_mhz,
+                tm, st = resolve_window_tau_anchor(
+                    center_mhz, persisted_cal.band_majorities, None, None
                 )
-                if band is None:
+                if tm is None:
                     continue
-                window_tau_overrides[int(win.window_id)] = (
-                    float(band.tau_maj_us),
-                    float(band.sigma_tau_us),
-                )
+                window_tau_overrides[int(win.window_id)] = (tm, cast(float, st))
             per_band_used = True
             logger.info(
                 "Stage 5 per-band tau routing on: %d / %d windows mapped "
@@ -1977,14 +2033,19 @@ def _fit_peaks_impl(
         def _survival_refit(
             wf: FittingResult, dust_freqs: List[float]
         ) -> FittingResult:
+            # Anchor the refit's tau penalty at this window's per-band tau (the
+            # same one the main fit used), not the global band-wide tau_maj.
+            tm, st = window_tau_overrides.get(
+                cast(int, wf.window_id), (tau_maj_us, sigma_tau_us)
+            )
             return refit_window_core(
                 fit_ctx,
                 survival_window_map[cast(int, wf.window_id)],
                 wf,
                 resolved=resolved,
                 shape_enum=shape_enum,
-                tau_maj_us=tau_maj_us,
-                sigma_tau_us=sigma_tau_us,
+                tau_maj_us=tm,
+                sigma_tau_us=st,
                 peak_frequencies_mhz=peak_frequencies_mhz,
                 peak_detection_passes=peak_detection_passes,
                 remove=tuple(dust_freqs),
@@ -2023,14 +2084,18 @@ def _fit_peaks_impl(
             add_seeds: List[Any],
             freeze: bool,
         ) -> FittingResult:
+            # Per-band tau anchor for this window (matches the main fit).
+            tm, st = window_tau_overrides.get(
+                cast(int, wf.window_id), (tau_maj_us, sigma_tau_us)
+            )
             return refit_window_core(
                 fit_ctx,
                 survival_window_map[cast(int, wf.window_id)],
                 wf,
                 resolved=resolved,
                 shape_enum=shape_enum,
-                tau_maj_us=tau_maj_us,
-                sigma_tau_us=sigma_tau_us,
+                tau_maj_us=tm,
+                sigma_tau_us=st,
                 peak_frequencies_mhz=peak_frequencies_mhz,
                 peak_detection_passes=peak_detection_passes,
                 remove=tuple(remove_freqs),
