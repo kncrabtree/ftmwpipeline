@@ -2303,6 +2303,39 @@ _FIT_WINDOW_WORKERS: Optional[int] = None
 _WORKER_FIT_CTX: Optional[dict[str, Any]] = None
 
 
+def _build_preds(
+    order: Sequence[int],
+    by_id: dict[int, FitWindow],
+    dependency_edges: Sequence[tuple[int, int]] = (),
+) -> dict[int, set[int]]:
+    """Fit-ordering predecessors of every window in ``order``.
+
+    A window's predecessors are the windows whose fitted outcome it must read
+    before it can be fit: the ``primary_window_id`` of each **non-edge_free**
+    fixed contributor (an edge-free contributor is self-contained from the shared
+    active FT and imposes no ordering). ``dependency_edges`` (``(child, parent)``
+    pairs) is folded in as a belt-and-braces superset. Only edges with both
+    endpoints in ``order`` constrain the ordering. This is the single source the
+    antichain levelizer and the dependency-gated scheduler both consume.
+    """
+    idset = set(order)
+    preds: dict[int, set[int]] = {w: set() for w in order}
+    for wid in order:
+        win = by_id.get(wid)
+        if win is None:
+            continue
+        for contributor in win.fixed_contributors:
+            if contributor.edge_free:
+                continue
+            primary = contributor.primary_window_id
+            if primary in idset and primary != wid:
+                preds[wid].add(primary)
+    for child, parent in dependency_edges:
+        if child in idset and parent in idset and child != parent:
+            preds[child].add(parent)
+    return preds
+
+
 def _levelize(
     order: Sequence[int],
     by_id: dict[int, FitWindow],
@@ -2325,21 +2358,7 @@ def _levelize(
     constrain the layering (the post-replan re-walk passes a subset).
     """
     in_order = list(order)
-    idset = set(in_order)
-    preds: dict[int, set[int]] = {w: set() for w in in_order}
-    for wid in in_order:
-        win = by_id.get(wid)
-        if win is None:
-            continue
-        for contributor in win.fixed_contributors:
-            if contributor.edge_free:
-                continue
-            primary = contributor.primary_window_id
-            if primary in idset and primary != wid:
-                preds[wid].add(primary)
-    for child, parent in dependency_edges:
-        if child in idset and parent in idset and child != parent:
-            preds[child].add(parent)
+    preds = _build_preds(in_order, by_id, dependency_edges)
     levels: list[list[int]] = []
     placed: set[int] = set()
     remaining = list(in_order)
@@ -2380,6 +2399,38 @@ def _fit_window_worker(
     assert ctx is not None  # set in the parent before the pool forks
     n_done, wid = task
     local_outcomes: dict[int, WindowOutcome] = dict(ctx["outcomes"])
+    thaw_local: list[ThawEvent] = []
+    rescue_local: list[RescueEvent] = []
+    with threadpool_limits(limits=1):
+        _process_one_window(
+            ctx["by_id"][wid],
+            n_done=n_done,
+            n_total=ctx["n_total"],
+            outcomes=local_outcomes,
+            thaw_history=thaw_local,
+            rescue_history=rescue_local,
+            **ctx["shared"],
+        )
+    return wid, local_outcomes[wid], thaw_local, rescue_local
+
+
+def _fit_window_worker_dag(
+    task: tuple[int, int, dict[int, WindowOutcome]],
+) -> tuple[int, WindowOutcome, list[ThawEvent], list[RescueEvent]]:
+    """Process-pool entry for the dependency-gated walk: fit one window.
+
+    Unlike :func:`_fit_window_worker` (which inherits the full earlier-level
+    ``outcomes`` via a fresh per-level fork), the persistent DAG pool forks once
+    up front with no outcomes, so each task is **handed** its predecessors'
+    outcomes in ``task[2]`` -- exactly the ``primary_window_id`` outcomes the
+    window's fixed contributors read. The heavy shared ``active_ft`` / ``noise``
+    still ride the initial fork in :data:`_WORKER_FIT_CTX`. BLAS is pinned to one
+    thread (single-threaded per-window solve; avoids oversubscription).
+    """
+    ctx = _WORKER_FIT_CTX
+    assert ctx is not None  # set in the parent before the pool forks
+    n_done, wid, pred_outcomes = task
+    local_outcomes: dict[int, WindowOutcome] = dict(pred_outcomes)
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
     with threadpool_limits(limits=1):
@@ -2461,6 +2512,148 @@ def parallel_window_refit_map(
         _WORKER_REFIT_CTX = None
 
 
+def _walk_windows_dag(
+    plan: WindowPlan,
+    order: Sequence[int],
+    *,
+    outcomes: dict[int, WindowOutcome],
+    thaw_history: list[ThawEvent],
+    rescue_history: list[RescueEvent],
+    max_workers: int,
+    shared_kwargs: dict[str, Any],
+) -> None:
+    """Dependency-gated cross-window walk over one persistent fork pool.
+
+    Replaces the fork-per-level barrier: a window is submitted the moment its own
+    predecessors (:func:`_build_preds`) have converged, so a worker freed by any
+    finished window immediately picks up whatever is newly ready instead of idling
+    until a whole antichain level drains. The pool forks **once** up front, so the
+    workers cannot inherit later-computed outcomes by fork; each task is instead
+    handed ``{primary_window_id: outcome}`` for its fixed-contributor primaries
+    (small -- most windows have none; the heavy shared arrays still ride the
+    initial fork in :data:`_WORKER_FIT_CTX`). Scheduling gates on the in-``order``
+    predecessors (:func:`_build_preds`); the data dict is the superset that also
+    carries any primary fit in an earlier phase (a post-replan partial re-walk).
+
+    Outcomes are keyed by window id, so the result is order-independent; the thaw
+    and rescue histories are merged in topological ``order`` after the walk for a
+    deterministic sequence. The accepted-thaw hazard (a thaw mutates its primary
+    in place, which a worker did only to its fork-private copy, so any dependent
+    already dispatched read the pre-thaw primary) is handled conservatively: if
+    *any* window reports an accepted thaw, the entire walk is redone via the
+    sequential :func:`_walk_windows_in_order` (authoritative), discarding the
+    parallel outcomes. Thaw-accept is 0 on every validated fixture, so this path
+    does not fire in practice.
+    """
+    import multiprocessing
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+
+    by_id = {w.window_id: w for w in plan.windows}
+    in_order = list(order)
+    n_total = len(in_order)
+    preds = _build_preds(in_order, by_id, plan.dependency_edges)
+    succs: dict[int, list[int]] = {wid: [] for wid in in_order}
+    for wid in in_order:
+        for p in preds[wid]:
+            succs[p].append(wid)
+    indeg = {wid: len(preds[wid]) for wid in in_order}
+
+    logger.info(
+        "fit walk (dag): %d windows, %d workers, %d dependency edges",
+        n_total,
+        max_workers,
+        sum(len(s) for s in succs.values()),
+    )
+
+    global _WORKER_FIT_CTX
+    _WORKER_FIT_CTX = {"by_id": by_id, "n_total": n_total, "shared": shared_kwargs}
+    results: dict[int, tuple[list[ThawEvent], list[RescueEvent]]] = {}
+    accepted_thaw = False
+    n_submitted = 0
+    try:
+        ctx_mp = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(
+            max_workers=min(max_workers, n_total), mp_context=ctx_mp
+        ) as ex:
+            futures: dict[Any, int] = {}
+
+            def _submit(wid: int) -> None:
+                nonlocal n_submitted
+                n_submitted += 1
+                # Hand the worker every contributor primary's outcome -- not just
+                # the in-order ``preds`` (which gate scheduling). A post-replan
+                # partial re-walk has contributors whose primary was fit in an
+                # earlier phase and lives in ``outcomes`` but outside this
+                # ``order``; the level walk saw it via the fork-inherited full
+                # dict, so the scheduler must pass it explicitly.
+                win = by_id[wid]
+                primary_ids = {
+                    c.primary_window_id
+                    for c in win.fixed_contributors
+                    if not c.edge_free
+                }
+                pred_outcomes = {p: outcomes[p] for p in primary_ids if p in outcomes}
+                fut = ex.submit(
+                    _fit_window_worker_dag, (n_submitted, wid, pred_outcomes)
+                )
+                futures[fut] = wid
+
+            for wid in in_order:
+                if indeg[wid] == 0:
+                    _submit(wid)
+            while futures:
+                done, _ = wait(list(futures), return_when=FIRST_COMPLETED)
+                for fut in done:
+                    wid = futures.pop(fut)
+                    _, outcome, thaws, rescues = fut.result()
+                    outcomes[wid] = outcome
+                    results[wid] = (thaws, rescues)
+                    if any(e.accepted for e in thaws):
+                        accepted_thaw = True
+                    for s in succs[wid]:
+                        indeg[s] -= 1
+                        if indeg[s] == 0:
+                            _submit(s)
+    finally:
+        _WORKER_FIT_CTX = None
+
+    # Two cases force a conservative sequential redo (authoritative, overwrites
+    # the parallel outcomes): an accepted thaw (a worker mutated its fork-private
+    # primary, so any already-dispatched dependent read the stale pre-thaw copy),
+    # or a residual dependency cycle that left windows unschedulable (their indeg
+    # never reached 0). Both are absent on every validated fixture.
+    unscheduled = n_total - len(results)
+    if accepted_thaw or unscheduled:
+        reason = "accepted thaw" if accepted_thaw else f"{unscheduled} cyclic windows"
+        logger.warning(
+            "dag walk falling back to the sequential walk (%s); re-fitting %d "
+            "windows for cross-window correctness",
+            reason,
+            n_total,
+        )
+        # The DAG loop accumulates histories into ``results`` (not the caller's
+        # lists) and overwrites only in-order ``outcomes`` keys, so the caller's
+        # pre-walk history and any out-of-order outcomes are intact; the
+        # sequential walk re-fits in topological order, overwriting the stale
+        # in-order outcomes before any dependent reads them.
+        _walk_windows_in_order(
+            plan,
+            in_order,
+            outcomes=outcomes,
+            thaw_history=thaw_history,
+            rescue_history=rescue_history,
+            **shared_kwargs,
+        )
+        return
+
+    # Merge per-window histories in topological order for a deterministic sequence
+    # (completion order is nondeterministic; the outcomes dict is not).
+    for wid in in_order:
+        thaws, rescues = results.get(wid, ([], []))
+        thaw_history.extend(thaws)
+        rescue_history.extend(rescues)
+
+
 def _walk_windows_parallel(
     plan: WindowPlan,
     order: Sequence[int],
@@ -2493,23 +2686,26 @@ def _walk_windows_parallel(
 ) -> None:
     """Cross-window parallel form of :func:`_walk_windows_in_order`.
 
-    Levelizes ``order`` into antichains and fits each level concurrently across a
-    forking process pool, with a barrier between levels so every window's
-    edged-contributor primaries (which sit in strictly earlier levels) are already
-    fit when it runs. A fresh pool is forked **per level** after the prior level's
-    outcomes are merged into ``outcomes``, so each level's workers inherit the
-    complete earlier-level results via fork. Falls back to the in-process
-    sequential walk when the pool is disabled (``_FIT_WINDOW_WORKERS == 1``), only
-    one worker is available, the platform lacks ``fork``, or a level has a single
-    window.
+    Falls back to the in-process sequential walk when the pool is disabled
+    (``_FIT_WINDOW_WORKERS == 1``), only one worker is available, or the platform
+    lacks ``fork``. Otherwise the **default** path is the dependency-gated
+    scheduler (:func:`_walk_windows_dag`): one persistent fork pool, each window
+    released as soon as its own predecessors converge. Setting
+    ``FTMW_LEGACY_LEVEL_WALK`` selects the legacy fork-per-level barrier walk
+    instead -- it levelizes ``order`` into antichains and fits each level
+    concurrently across a fresh per-level pool, with a barrier between levels so
+    every window's edged-contributor primaries (strictly earlier levels) are fit
+    when it runs; that walk stalls on each level's slowest window, which the
+    scheduler avoids.
 
     Correctness gate is *scientific equivalence*, not byte-identity: structure
     (windows / peak counts / merges / thaws) is identical to the sequential walk;
     continuous params drift only at the fork+BLAS=1 ULP scale. The one structural
     hazard -- an accepted thaw mutates its primary window in place, which a worker
-    can only do to its fork-private copy -- is guarded: if any worker in a level
-    reports an accepted thaw, the whole level is re-fit sequentially in the parent
-    (this never fires on the validated fixtures, where thaw-accept = 0).
+    can only do to its fork-private copy -- is guarded in both walks: the level
+    walk re-fits the affected level sequentially, the scheduler re-fits the whole
+    walk sequentially (this never fires on the validated fixtures, where
+    thaw-accept = 0).
     """
     if window_tau_overrides is None:
         window_tau_overrides = {}
@@ -2554,6 +2750,23 @@ def _walk_windows_parallel(
             thaw_history=thaw_history,
             rescue_history=rescue_history,
             **shared_kwargs,
+        )
+        return
+
+    # Default: the dependency-gated scheduler over one persistent pool -- release
+    # each window the moment its own predecessors converge instead of stalling on
+    # the slowest window of every antichain level. The legacy fork-per-level
+    # barrier walk below is kept behind FTMW_LEGACY_LEVEL_WALK as an escape hatch
+    # and an A/B arm.
+    if not os.environ.get("FTMW_LEGACY_LEVEL_WALK"):
+        _walk_windows_dag(
+            plan,
+            order,
+            outcomes=outcomes,
+            thaw_history=thaw_history,
+            rescue_history=rescue_history,
+            max_workers=max_workers,
+            shared_kwargs=shared_kwargs,
         )
         return
 

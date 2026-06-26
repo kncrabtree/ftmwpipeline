@@ -46,13 +46,17 @@ Two workstreams have run on branch `stage6-cascade-refit`, both **uncommitted**:
 window fork pool via `parallel_window_refit_map` (BLAS-pinned workers, order-
 preserving, in-process serial fallback when the pool is unavailable or there is
 one window) — byte-identical to the serial passes (655 / 360 line tables match
-to 0 freq/amp delta), 655 wall time 23:20 → 16:02. (2) DAG-ready window-walk
-scheduler — replace the fork-per-level barrier in `_walk_windows_parallel` with
-dependency-gated submission over one persistent pool (hand each task its
-predecessors' outcomes instead of fork-inheriting all; accepted-thaw fallback to
-the level walk) — remains open. 655's DAG is shallow (5 levels, widths
-{1004, 167, 16, 5, 2}; level 0 saturates the pool), so the reclaimable
-level-boundary drain is the smaller, riskier win. Then commit + a full 7-fixture
+to 0 freq/amp delta), 655 wall time 23:20 → 16:02. (2) Dependency-gated window
+scheduler (`_walk_windows_dag`, now the default in `_walk_windows_parallel`)
+replaces the fork-per-level barrier: one persistent fork pool, each window
+released as soon as its own predecessors converge, each task handed its
+contributor primaries' outcomes (a post-replan partial re-walk also carries
+primaries fit in an earlier phase) instead of fork-inheriting the full outcomes
+dict. Accepted-thaw or a residual cycle falls back to the sequential walk; the
+legacy level walk stays behind `FTMW_LEGACY_LEVEL_WALK`. Byte-identical to the
+level walk (360 / 655 line tables match to 0), 655 wall 16:02 → 14:46 (~8%; the
+DAG is shallow — 5 levels, widths {1004, 167, 16, 5, 2}, level 0 saturates the
+pool, so only the level-boundary drain was reclaimable). Then a full 7-fixture
 re-baseline. **Followups**: per-bin
 Stage-2 noise for peak SNR (`result_conversion.py` averages the window noise);
 calibrate the placement-mask K from line curvature not raw amplitude. The
