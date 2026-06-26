@@ -1366,8 +1366,14 @@ def fit_seeds_window_outcome(
 
     # ``knockout_test`` passes tau0_us / acquisition_us positionally and
     # spur_mask explicitly; strip spur_mask from the inner kwargs so it does
-    # not collide on the multi-peak refit path.
-    knockout_inner = {k: v for k, v in fw_kwargs.items() if k != "spur_mask"}
+    # not collide on the multi-peak refit path. ``initial_baseline_coeffs`` is a
+    # warm-start for the main NLS only -- the knockout refits a reduced peak set
+    # to test significance and should cold-start its baseline (unchanged).
+    knockout_inner = {
+        k: v
+        for k, v in fw_kwargs.items()
+        if k not in ("spur_mask", "initial_baseline_coeffs")
+    }
     knockouts = knockout_test(
         offset_grid,
         data_minus_bg,
@@ -1661,12 +1667,20 @@ def refit_outcome(
     )
     fw_kwargs.setdefault("shape", shape)
     # Re-co-fit the leakage-wing baseline against the new peak set (the cleanup
-    # removes / merges peaks, so the smooth nuisance should re-optimize). The
-    # order / conditioning scale are the node's own.
+    # removes / merges peaks, so the smooth nuisance should re-optimize), but
+    # warm-start it from the node's converged coefficients. The baseline stays a
+    # free parameter; seeding the joint NLS at the prior baseline rather than
+    # cold-starting at zero keeps a no-op refit a fixed point and stops untouched
+    # peaks from sliding along the near-degenerate baseline/position valley of
+    # wide, low-SNR windows. The order / conditioning scale are the node's own.
     if outcome.baseline_applied and outcome.baseline_order is not None:
         fw_kwargs["baseline_order"] = int(outcome.baseline_order)
         if outcome.baseline_offset_scale:
             fw_kwargs["baseline_offset_scale"] = float(outcome.baseline_offset_scale)
+        if outcome.baseline_coeffs is not None:
+            fw_kwargs["initial_baseline_coeffs"] = np.asarray(
+                outcome.baseline_coeffs, dtype=np.complex128
+            )
     if spur_mask is not None:
         fw_kwargs["spur_mask"] = spur_mask
 

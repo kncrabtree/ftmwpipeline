@@ -310,154 +310,6 @@ def _required_str(value: Optional[str], name: str) -> str:
     return str(require_resolved(value, name, cast=str, owner="StageFitSettings"))
 
 
-def _is_survival_dust(peak: FittedPeak, floor: float) -> bool:
-    """Return True when ``peak`` is auto-origin dust below the SNR floor.
-
-    User-origin peaks are immune; ``None`` / NaN SNR is kept unconditionally
-    (conservative).
-    """
-    import math
-
-    snr = peak.snr
-    if peak.origin == "user" or snr is None:
-        return False
-    if isinstance(snr, float) and math.isnan(snr):
-        return False
-    return snr < floor
-
-
-def _survival_prune_window(
-    wf: FittingResult,
-    floor: float,
-    refit_window: Callable[[FittingResult, List[float]], FittingResult],
-    pruned_records: List[Dict[str, Any]],
-) -> Tuple[Optional[FittingResult], int]:
-    """Prune one window's sub-floor dust to a fixpoint; return (result, n_refits).
-
-    Removes the single lowest-SNR dust peak, refits the survivors, and
-    **re-classifies** -- because the refit re-estimates the survivors free of
-    the removed line, a peak that was sub-floor only because a neighbor stole
-    its amplitude can recover and is then kept, while a survivor that the refit
-    pushes below the floor is caught on the next pass (the single-pass classify
-    left such a survivor sub-floor). Removing one peak per pass (not the whole
-    initial dust set at once) is the over-pruning-cascade guard: each borderline
-    line gets a fresh refit before its own removal is considered.
-
-    Returns ``(result, n_refits)``; ``result`` is ``None`` when the window
-    cascades to empty (its last remaining line is itself dust) and should be
-    dropped. ``n_refits`` is 0 when the window had no dust (``result is wf``).
-    """
-    current = wf
-    n_refits = 0
-    while True:
-        peaks = current.fitted_peaks
-        dust = [p for p in peaks if _is_survival_dust(p, floor)]
-        if not dust:
-            return current, n_refits
-        worst = min(dust, key=lambda p: cast(float, p.snr))
-        pruned_records.append(
-            {
-                "window_id": (
-                    int(current.window_id) if current.window_id is not None else -1
-                ),
-                "frequency_mhz": float(worst.frequency_mhz),
-                "snr": float(cast(float, worst.snr)),  # finite by _is_survival_dust
-            }
-        )
-        if len(peaks) == 1:
-            # The lone remaining line is itself dust -> drop the window. (A
-            # pre-existing K=0 window has no dust and never reaches here, so the
-            # window-construction signal is preserved.)
-            return None, n_refits
-        current = refit_window(current, [float(worst.frequency_mhz)])
-        n_refits += 1
-
-
-def apply_snr_survival_prune(
-    fit: SpectrumFit,
-    floor: float,
-    *,
-    refit_window: Callable[[FittingResult, List[float]], FittingResult],
-    jobs: Optional[int] = None,
-) -> None:
-    """Prune fitted peaks below the SNR survival floor (in-place).
-
-    For each window, classifies its automatic-origin peaks with finite
-    ``snr < floor`` as dust (``origin == "user"`` peaks are immune; ``None`` /
-    NaN SNR is kept) and prunes to a fixpoint (see
-    :func:`_survival_prune_window`):
-
-    - **no dust** -> the window is untouched;
-    - **partial dust** -> the lowest-SNR dust line is removed and the survivors
-      are **refitted** via ``refit_window`` so their point estimates,
-      covariance, and χ²ᵣ are re-estimated free of the removed line (not a
-      marginal slice of the stale joint fit); the result is re-classified and
-      the process repeats until no survivor is sub-floor;
-    - **cascade to empty** -> a window whose every line is sub-floor (after the
-      refits) is dropped from ``window_fits``.
-
-    Re-classifying after each refit closes the single-pass gap where a refit
-    pushed a *surviving* peak below the floor and nothing re-checked it.
-
-    Finally rebuilds ``fit.fitted_peaks`` sorted ascending by ``frequency_mhz``
-    and records the prune in ``fit.diagnostics["peak_survival"]``.
-
-    Parameters
-    ----------
-    fit :
-        The :class:`SpectrumFit` to prune in place.
-    floor :
-        Absolute SNR survival floor; auto peaks below it are dust.
-    refit_window :
-        Callable ``(wf, remove_freqs) -> FittingResult`` that re-fits ``wf``
-        with the given molecular frequencies removed and returns the new
-        per-window result. Invoked once per removed line. In production this
-        routes through the bare in-memory window-refit core
-        (:func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`), which
-        reconstructs the frozen background, replays the baseline, and
-        re-converges the survivors honestly.
-    jobs :
-        Worker-pool size for the per-window prune (each window is independent;
-        see :func:`~ftmwpipeline.fitting.plan_execution.parallel_window_refit_map`).
-        ``None`` resolves through the standard ``FTMW_MAX_WORKERS`` / cpu-2 path.
-    """
-    pruned_records: List[Dict[str, Any]] = []
-    dropped_window_ids: List[int] = []
-
-    def _prune_one(
-        wf: FittingResult,
-    ) -> Tuple[Optional[FittingResult], List[Dict[str, Any]]]:
-        local_records: List[Dict[str, Any]] = []
-        result, _ = _survival_prune_window(wf, floor, refit_window, local_records)
-        return result, local_records
-
-    results = parallel_window_refit_map(fit.window_fits, _prune_one, jobs=jobs)
-
-    surviving_windows: List[FittingResult] = []
-    for wf, (result, local_records) in zip(fit.window_fits, results):
-        pruned_records.extend(local_records)
-        if result is None:
-            dropped_window_ids.append(
-                int(wf.window_id) if wf.window_id is not None else -1
-            )
-        else:
-            surviving_windows.append(result)
-
-    fit.window_fits = surviving_windows
-
-    # Rebuild the global sorted line list from surviving per-window peaks.
-    all_peaks: List[FittedPeak] = [p for wf in fit.window_fits for p in wf.fitted_peaks]
-    all_peaks.sort(key=lambda p: p.frequency_mhz)
-    fit.fitted_peaks = all_peaks
-
-    fit.diagnostics["peak_survival"] = {
-        "snr_floor": float(floor),
-        "n_pruned": len(pruned_records),
-        "pruned": pruned_records,
-        "dropped_window_ids": dropped_window_ids,
-    }
-
-
 # A collapsed line represents one unresolvable feature, so the span of the
 # original component frequencies it absorbs must stay within this many resolution
 # elements. It bounds a *chained* fold (one sub-pair merges, then the merged line
@@ -467,50 +319,6 @@ def apply_snr_survival_prune(
 # (~1.5 res), so an over-split cluster (span ~1 res) fully collapses while a real
 # resolved doublet over-split into a triplet keeps its two centroids.
 _COLLAPSE_FOOTPRINT_MAX_RES = 1.3
-
-
-def _merged_seed_for_pair(
-    wf: FittingResult,
-    pa: FittedPeak,
-    pb: FittedPeak,
-    snap_tol_mhz: float,
-) -> Tuple[float, float, float]:
-    """Seed (frequency, amplitude, phase) for the line that collapses a pair.
-
-    Defaults to the amplitude-weighted centroid frequency and the summed
-    amplitude. When the window recorded a :class:`DoubletAlternativeInfo` for
-    exactly this pair (order-independent, within ``snap_tol_mhz``) whose merged
-    refit succeeded, reuses its converged ``merged_{frequency,amplitude,phase}``
-    instead -- the doublet-adjudication pass already fit the one-line model.
-    """
-    import math
-
-    fa = float(pa.frequency_mhz)
-    fb = float(pb.frequency_mhz)
-    aw = abs(float(pa.amplitude))
-    bw = abs(float(pb.amplitude))
-    total = aw + bw if (aw + bw) > 0 else 1.0
-    centroid_freq = (fa * aw + fb * bw) / total
-    centroid_amp = float(pa.amplitude) + float(pb.amplitude)
-
-    merge_freq, merge_amp, merge_phase = centroid_freq, centroid_amp, 0.0
-    for da in getattr(wf, "doublet_alternatives", []):
-        a, b = float(da.frequency_a_mhz), float(da.frequency_b_mhz)
-        pair_match = (abs(a - fa) <= snap_tol_mhz and abs(b - fb) <= snap_tol_mhz) or (
-            abs(a - fb) <= snap_tol_mhz and abs(b - fa) <= snap_tol_mhz
-        )
-        if (
-            pair_match
-            and da.merged_success
-            and math.isfinite(float(da.merged_frequency_mhz))
-        ):
-            merge_freq = float(da.merged_frequency_mhz)
-            if math.isfinite(float(da.merged_amplitude)):
-                merge_amp = float(da.merged_amplitude)
-            if math.isfinite(float(da.merged_phase)):
-                merge_phase = float(da.merged_phase)
-            break
-    return merge_freq, merge_amp, merge_phase
 
 
 def _inflate_merged_frequency_errors(
@@ -550,338 +358,6 @@ def _inflate_merged_frequency_errors(
         extra_errors["unresolved_spread_mhz"] = spread
         peaks[best_k] = replace(pk, frequency_error=eff, extra_errors=extra_errors)
     wf.fitted_peaks = peaks
-
-
-def apply_vif_collapse(
-    fit: SpectrumFit,
-    *,
-    vif_threshold: float,
-    max_sep_res: float,
-    res_element_mhz: float,
-    sideband: Sideband,
-    refit_collapse: Callable[
-        [FittingResult, List[float], List[float], List[Any], bool], FittingResult
-    ],
-    snap_tol_mhz: float = 0.05,
-    max_iterations: int = 5,
-    jobs: Optional[int] = None,
-) -> None:
-    """Collapse degenerate sub-resolution overfit pairs (in-place).
-
-    For each window, a close pair is collapsed to one line when a member's
-    amplitude VIF exceeds ``vif_threshold`` *and* the pair sits within
-    ``max_sep_res`` resolution elements (``res_element_mhz = 1 / T_active``).
-    The collapse fires on VIF + separation **alone** and overrides chi^2 / AICc
-    unconditionally: at high SNR chi^2 is a lineshape-fidelity floor, so a
-    near-degenerate second line absorbs lineshape mismodeling and chi^2 / AICc
-    *reward* the spurious split. The window chi^2_r *rising* on collapse is
-    expected -- it is the irreducible unresolved-structure / lineshape floor,
-    **not** evidence that the data demands two resolvable components, so it
-    never vetoes the merge.
-
-    The separation bound (``max_sep_res``) is the real guard: two lines closer
-    than that are unresolvable, so a split there is spurious regardless of VIF.
-    A second, **footprint** guard bounds a *sequence* of merges: a merged line
-    represents one unresolvable feature, so the span of the original component
-    frequencies it has absorbed must stay within
-    :data:`_COLLAPSE_FOOTPRINT_MAX_RES` resolution elements. This stops a greedy
-    fold from chaining across a genuinely-resolvable gap -- e.g. a real ~1.5-res
-    doublet whose lower member was over-split into two: the over-split sub-pair
-    merges, but the fold cannot then swallow the resolved upper member.
-
-    Pairs are matched greedily from the highest-VIF peak down: each high-VIF
-    peak pairs with its nearest unused neighbor that satisfies both the
-    separation and footprint bounds. The window is refitted once per merge with
-    that pair removed and one merged seed added (origin ``"auto"`` -- an
-    automatic decision, not a human edit). The merged seed reuses the recorded
-    doublet-alternative when present (see :func:`_merged_seed_for_pair`).
-
-    **Sequential, frozen, iterated to a fixpoint.** Each merge is followed by a
-    *frozen* intermediate refit (only the new merged line free; every inherited
-    peak pinned) so a dominant line never drags a weak merged line away
-    mid-sequence. After the per-window merge sweep reaches a fixpoint, one
-    **all-free** relax re-fits every peak for honest covariance. That relax can
-    itself walk a strong line back into a *new* degenerate split, so the sweep
-    repeats over the relaxed result until a full pass finds no collapsible pair
-    (capped at ``max_iterations`` against a collapse<->re-split oscillation; any
-    residual pair is still surfaced by the Stage 6 ``overfit_vif`` reason).
-
-    Parameters
-    ----------
-    fit :
-        The :class:`SpectrumFit` to collapse in place (post SNR-floor prune).
-    vif_threshold, max_sep_res :
-        Collapse gate: amplitude VIF bound and maximum pair separation in
-        resolution elements.
-    res_element_mhz :
-        One resolution element ``1 / T_active`` (MHz).
-    sideband :
-        Pipeline sideband (for the molecular -> baseband-offset seed mapping).
-    refit_collapse :
-        Callable ``(wf, remove_freqs, add_freqs, add_seeds, freeze) ->
-        FittingResult`` that re-fits ``wf`` with the paired peaks removed and the
-        merged seed added (origin ``"auto"``); ``freeze`` pins every inherited
-        peak. In production this routes through
-        :func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`.
-    snap_tol_mhz :
-        Tolerance for matching a pair to a recorded doublet alternative.
-    max_iterations :
-        Maximum collapse<->relax sweeps over a window (convergence backstop).
-    jobs :
-        Worker-pool size for the per-window collapse (each window is independent;
-        see :func:`~ftmwpipeline.fitting.plan_execution.parallel_window_refit_map`).
-        ``None`` resolves through the standard ``FTMW_MAX_WORKERS`` / cpu-2 path.
-    """
-    from ..fitting.peak_model import ModelPeak, sideband_sign
-
-    max_sep_mhz = max_sep_res * res_element_mhz
-    footprint_cap_mhz = _COLLAPSE_FOOTPRINT_MAX_RES * res_element_mhz
-    s = sideband_sign(sideband)
-
-    # A footprint is (center, lo, hi): the merged line's current position and the
-    # span [lo, hi] of the *original* component frequencies it has absorbed (a
-    # clean line has lo == hi == center). Footprints are re-keyed by nearest
-    # frequency after every refit (frozen merges pin the inherited peaks; the
-    # all-free relax moves them only slightly).
-    Footprint = Tuple[float, float, float]
-
-    def _collapse_rank(p: FittedPeak) -> Optional[float]:
-        """Collapse-eligibility rank for a peak, or ``None`` if not eligible.
-
-        A finite amplitude VIF above ``vif_threshold`` ranks at its VIF. But the
-        VIF is *undefined* (``amplitude_vif`` returns ``None``) exactly when the
-        joint covariance is singular at the amplitude slot -- the strongest
-        possible degeneracy signal, which the VIF gate would otherwise be blind
-        to. A peak whose amplitude / SNR are valid but whose ``amplitude_error``
-        is missing or non-finite (singular covariance, not a dead zero-amplitude
-        peak) ranks at ``+inf`` so the most degenerate cluster collapses first.
-        The separation / footprint guards in the caller still bound every merge,
-        so an isolated singular-covariance line never pairs.
-        """
-        vif = amplitude_vif(p)
-        if vif is not None:
-            return vif if vif > vif_threshold else None
-        amp = float(p.amplitude)
-        snr = p.snr
-        amp_err = p.amplitude_error
-        amplitude_singular = amp_err is None or not np.isfinite(amp_err)
-        if (
-            snr is not None
-            and np.isfinite(snr)
-            and np.isfinite(amp)
-            and abs(amp) > 0.0
-            and amplitude_singular
-        ):
-            return float("inf")
-        return None
-
-    def _select_pair(
-        peaks: List[FittedPeak], foots: List[Footprint]
-    ) -> Optional[Tuple[int, int]]:
-        """Highest-rank degenerate peak paired with its nearest separation- and
-        footprint-admissible neighbor, or ``None``."""
-        if len(peaks) < 2:
-            return None
-        ranks = [_collapse_rank(p) for p in peaks]
-        high_vif_order = sorted(
-            (i for i, r in enumerate(ranks) if r is not None),
-            key=lambda i: -(ranks[i] or 0.0),
-        )
-        for i in high_vif_order:
-            fi = float(peaks[i].frequency_mhz)
-            best_j: Optional[int] = None
-            best_d = float("inf")
-            for j in range(len(peaks)):
-                if j == i:
-                    continue
-                fj = float(peaks[j].frequency_mhz)
-                d = abs(fi - fj)
-                if d > max_sep_mhz or d >= best_d:
-                    continue
-                lo = min(foots[i][1], foots[j][1], fi, fj)
-                hi = max(foots[i][2], foots[j][2], fi, fj)
-                if hi - lo > footprint_cap_mhz:
-                    continue  # fold would cross a resolvable gap
-                best_d, best_j = d, j
-            if best_j is not None:
-                return (i, best_j)
-        return None
-
-    def _rekey_footprints(
-        peaks: List[FittedPeak], prev: List[Footprint]
-    ) -> List[Footprint]:
-        """Re-attach footprints to ``peaks`` by greedy nearest center match,
-        preserving each carried [lo, hi] span and updating the center."""
-        used: set[int] = set()
-        out: List[Footprint] = []
-        for p in peaks:
-            f = float(p.frequency_mhz)
-            best_k = -1
-            best_d = float("inf")
-            for k, (c, _lo, _hi) in enumerate(prev):
-                if k in used:
-                    continue
-                d = abs(f - c)
-                if d < best_d:
-                    best_d, best_k = d, k
-            if best_k >= 0:
-                used.add(best_k)
-                _c, lo, hi = prev[best_k]
-                out.append((f, lo, hi))
-            else:
-                out.append((f, f, f))
-        return out
-
-    # Per-window collapse to a fixpoint. Each merge collapses ONE pair and is
-    # followed by a *frozen* intermediate refit (only the new merged line free;
-    # every inherited peak, including a dominant 1e6 line, held at its persisted
-    # value), so a multiplet folds K -> K-1 -> ... without a dominant line ever
-    # dragging a weak merged line away mid-sequence. After the merge sweep stalls,
-    # one all-free relax re-fits every peak for honest covariance; that relax can
-    # walk a strong line back into a fresh degenerate split, so the whole sweep
-    # repeats over the relaxed result until a pass finds no pair (the
-    # ``max_iterations`` cap guards a collapse<->re-split oscillation). Each window
-    # is independent, so the sweeps fan across the window fork pool.
-    def _collapse_one(
-        wf: FittingResult,
-    ) -> Tuple[FittingResult, List[Dict[str, Any]], int]:
-        center = None
-        if wf.window is not None and wf.window.freq_range is not None:
-            lo, hi = wf.window.freq_range
-            center = 0.5 * (lo + hi)
-        if center is None:
-            return wf, [], 0
-
-        wid = int(wf.window_id) if wf.window_id is not None else -1
-        cur = wf
-        foots: List[Footprint] = [
-            (float(p.frequency_mhz), float(p.frequency_mhz), float(p.frequency_mhz))
-            for p in cur.fitted_peaks
-        ]
-        pending: List[Dict[str, Any]] = []
-        n_merges = 0
-        for _ in range(max(1, max_iterations)):
-            merged_this_pass = 0
-            # Frozen merge sweep to a fixpoint over the current peaks (each merge
-            # drops K by one; the loop ends when no admissible pair remains).
-            while len(cur.fitted_peaks) >= 2:
-                pair = _select_pair(cur.fitted_peaks, foots)
-                if pair is None:
-                    break
-                i, j = pair
-                peaks = cur.fitted_peaks
-                vifs = [amplitude_vif(p) for p in peaks]
-                pa, pb = peaks[i], peaks[j]
-                merge_freq, merge_amp, merge_phase = _merged_seed_for_pair(
-                    cur, pa, pb, snap_tol_mhz
-                )
-                offset = float(s * (merge_freq - center))
-                seed = ModelPeak(
-                    amplitude=max(abs(merge_amp), 1e-30),
-                    offset_mhz=offset,
-                    phase=merge_phase,
-                )
-                # Effective frequency uncertainty of the merged line: the
-                # collapsed pair represents one unresolvable feature whose true
-                # position is uncertain by the amplitude-weighted spread of its
-                # (unresolved-hyperfine) components, not just the formal LSQ error
-                # -- recorded so the merged line's frequency_error can be inflated
-                # to sqrt(formal**2 + spread**2) (a clean line has spread 0).
-                fa, fb = float(pa.frequency_mhz), float(pb.frequency_mhz)
-                amp_a, amp_b = abs(float(pa.amplitude)), abs(float(pb.amplitude))
-                w_sum = amp_a + amp_b
-                if w_sum > 0.0:
-                    f_centroid = (amp_a * fa + amp_b * fb) / w_sum
-                    spread = float(
-                        np.sqrt(
-                            (
-                                amp_a * (fa - f_centroid) ** 2
-                                + amp_b * (fb - f_centroid) ** 2
-                            )
-                            / w_sum
-                        )
-                    )
-                else:
-                    spread = 0.5 * abs(fa - fb)
-                pending.append(
-                    {
-                        "window_id": wid,
-                        "frequency_a_mhz": fa,
-                        "frequency_b_mhz": fb,
-                        "vif_a": vifs[i],
-                        "vif_b": vifs[j],
-                        "separation_res": (
-                            abs(fa - fb) / res_element_mhz
-                            if res_element_mhz > 0
-                            else None
-                        ),
-                        "merged_frequency_mhz": float(merge_freq),
-                        "unresolved_spread_mhz": spread,
-                    }
-                )
-                # Union footprint of the merged line: the span of original
-                # frequencies absorbed by both members (carries the resolvable-gap
-                # guard forward through the sequence).
-                merged_foot: Footprint = (
-                    float(merge_freq),
-                    min(foots[i][1], foots[j][1], fa, fb),
-                    max(foots[i][2], foots[j][2], fa, fb),
-                )
-                next_foots = [
-                    foots[k] for k in range(len(foots)) if k not in (i, j)
-                ] + [merged_foot]
-                # Frozen intermediate refit: only the merged line free.
-                cur = refit_collapse(cur, [fa, fb], [merge_freq], [seed], True)
-                foots = _rekey_footprints(cur.fitted_peaks, next_foots)
-                merged_this_pass += 1
-                n_merges += 1
-
-            if merged_this_pass == 0:
-                break  # fixpoint: neither the merge sweep nor a prior relax left a pair
-
-            # All-free relax for honest covariance, then loop to catch a relax-
-            # induced re-split (the next pass's _select_pair runs on it). The relax
-            # commits the sweep's merges and re-establishes every peak position, so
-            # footprints reset to single points: the resolvable-gap guard bounds a
-            # *chain of frozen merges* (stable positions, reliable re-keying), not a
-            # span carried across an all-free refit that relocates every peak (which
-            # mis-attributes a wide footprint to a shuffled peak and spuriously
-            # blocks a legitimate re-merge -- the 655 w1013 bug).
-            relaxed = refit_collapse(cur, [], [], [], False)
-            foots = [(float(p.frequency_mhz),) * 3 for p in relaxed.fitted_peaks]
-            cur = relaxed
-
-        if not pending:
-            return wf, [], 0
-
-        _inflate_merged_frequency_errors(cur, pending)
-        return cur, pending, n_merges
-
-    results = parallel_window_refit_map(fit.window_fits, _collapse_one, jobs=jobs)
-
-    collapse_records: List[Dict[str, Any]] = []
-    n_iterations = 0  # most merges performed in any single window (diagnostic)
-    new_window_fits = []
-    for result_wf, pending_records, n_merges in results:
-        new_window_fits.append(result_wf)
-        collapse_records.extend(pending_records)
-        n_iterations = max(n_iterations, n_merges)
-
-    fit.window_fits = new_window_fits
-
-    all_peaks: List[FittedPeak] = [p for wf in fit.window_fits for p in wf.fitted_peaks]
-    all_peaks.sort(key=lambda p: p.frequency_mhz)
-    fit.fitted_peaks = all_peaks
-
-    fit.diagnostics["vif_collapse"] = {
-        "vif_threshold": float(vif_threshold),
-        "max_separation_res": float(max_sep_res),
-        "footprint_max_res": float(_COLLAPSE_FOOTPRINT_MAX_RES),
-        "res_element_mhz": float(res_element_mhz),
-        "n_collapsed_pairs": len(collapse_records),
-        "n_iterations": n_iterations,
-        "collapses": collapse_records,
-    }
 
 
 # Decay-probe source tags that confidently mark an instrumental (non-molecular)
@@ -1039,6 +515,33 @@ def _prune_outcome(
         n_refits += 1
 
 
+def _collapse_rank(view: "FittedLineView", vif_threshold: float) -> Optional[float]:
+    """Collapse-eligibility rank for one line, or ``None`` if not eligible.
+
+    The amplitude VIF when it clears ``vif_threshold``; ``+inf`` for the strongest
+    degeneracy (a finite, non-zero amplitude whose joint covariance is singular,
+    so the VIF is undefined and the gate alone would miss it); ``None`` otherwise.
+    A zero / non-finite amplitude is a dead peak, not a degeneracy, so it never
+    ranks. Pure decision function over a :class:`FittedLineView` so both the
+    in-walk collapse and its unit tests read the same logic."""
+    vif = view.amplitude_vif()
+    if vif is not None:
+        return vif if vif > vif_threshold else None
+    amp = float(view.amplitude)
+    snr = view.snr
+    amp_err = view.amplitude_error
+    amplitude_singular = amp_err is None or not np.isfinite(amp_err)
+    if (
+        snr is not None
+        and np.isfinite(snr)
+        and np.isfinite(amp)
+        and abs(amp) > 0.0
+        and amplitude_singular
+    ):
+        return float("inf")
+    return None
+
+
 def _collapse_outcome(
     outcome: "WindowOutcome",
     *,
@@ -1070,30 +573,12 @@ def _collapse_outcome(
 
     Footprint = Tuple[float, float, float]
 
-    def _collapse_rank(v: FittedLineView) -> Optional[float]:
-        vif = v.amplitude_vif()
-        if vif is not None:
-            return vif if vif > vif_threshold else None
-        amp = float(v.amplitude)
-        snr = v.snr
-        amp_err = v.amplitude_error
-        amplitude_singular = amp_err is None or not np.isfinite(amp_err)
-        if (
-            snr is not None
-            and np.isfinite(snr)
-            and np.isfinite(amp)
-            and abs(amp) > 0.0
-            and amplitude_singular
-        ):
-            return float("inf")
-        return None
-
     def _select_pair(
         views: List[FittedLineView], foots: List[Footprint]
     ) -> Optional[Tuple[int, int]]:
         if len(views) < 2:
             return None
-        ranks = [_collapse_rank(v) for v in views]
+        ranks = [_collapse_rank(v, vif_threshold) for v in views]
         high_vif_order = sorted(
             (i for i, r in enumerate(ranks) if r is not None),
             key=lambda i: -(ranks[i] or 0.0),

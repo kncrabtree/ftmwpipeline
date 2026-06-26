@@ -1,9 +1,56 @@
 # Stage 5 — fold per-window cleanup into the fit walk (design spec)
 
-**Status:** §§1–4 implemented on `stage6-cascade-refit`; §5 + the reproducibility
-sweep remain. Companion: `dev-docs/planning/stage6-cascade-refit.md` (the cascade
-gate that surfaced this), memory `stage6-cascade-gate-finding`. The design
-sections below stay as the reference; this header records what landed.
+**Status:** §§1–4 implemented on `stage6-cascade-refit`; the reproducibility
+sweep is done and the C0 decision is resolved (baseline **warm-start**, below);
+§5 reduced to dead-code retirement (the module move + `refit_outcome` wrap are
+obsolete, below). Companion: `dev-docs/planning/stage6-cascade-refit.md` (the
+cascade gate that surfaced this), memory `stage6-cascade-gate-finding`. The
+design sections below stay as the reference; this header records what landed.
+
+## Reproducibility root cause — baseline warm-start (C0 resolved)
+
+The identity-refit reproducibility sweep root-caused the residual #3c giant-skirt
+non-reproduction to a single mechanism: **`fit_window` always cold-started the
+co-fit complex baseline at zero.** A refit warm-started the *peaks* from their
+converged values but reset the *baseline* to zero, so the seed was never the full
+converged state. On wide, low-SNR windows the baseline/line-position Jacobian is
+near-degenerate (a flat valley); peaks-at-converged + baseline-at-zero lands the
+joint NLS on a different valley point and slides untouched peaks (655 w848 by
+**1.2 MHz**).
+
+Fix: seed the baseline from the persisted converged coefficients
+(`initial_baseline_coeffs` on `fit_window`; wired through `refit_window_core`
+*and* `refit_outcome`). The baseline stays a **free parameter** (faithful model);
+the seed is just the true converged point, so an identity refit is a fixed point.
+This **superseded and replaced** the uncommitted `freeze_baseline` prototype,
+which removed the baseline DOF and was a net-negative trade (it pinned wide
+isolated windows but blew up χ²ᵣ on contributor-bearing windows). 655 sweep:
+cold-start 21 movers (slides to 1.2 MHz) → warm-start **14 movers, max 84 kHz, no
+catastrophe**. Folding the warm-start into the in-walk `refit_outcome` is
+output-neutral on the automatic fit (655 recall 0.662/0.885 identical, χ²ᵣ med
+0.99, +2 lines) and leaves the same 14 movers — confirming the residual is a
+distinct class: weak (snr 3–7) sub-resolution **blend members** reseeding into an
+equivalent-χ² configuration within ~1–3× their own σf. Peak-peak (multiplet)
+degeneracy, not peak-baseline; baseline policy is irrelevant to it (FREEZE ==
+RELAX on every residual mover). The honest statistical floor of blend
+localization, left as-is.
+
+## §5 resolution — dead-code retirement only (move + wrap obsolete)
+
+§5 was written assuming the in-walk cleanup would route through
+`refit_window_core`, creating a `stage5 → stage6` upward import that the "move to
+`stage5_impl`" would fix. But §§1–4 routed the cleanup through **`refit_outcome`**
+(`plan_execution`), not `refit_window_core`. So there is no such import (the only
+`stage5 → stage6` import is `clear_stage5_baseline`), and `refit_window_core` is
+used only by `refit_window_impl` — they cohabit correctly in stage6. The headline
+"move" removes no import; the "wrap `refit_outcome`" is now a pure-internal dedup
+with output-drift risk on the user-edit path the fixture rebuilds don't exercise.
+Both were dropped. What §5 actually delivered: **deleted the dead post-pass**
+(`apply_snr_survival_prune`, `_survival_prune_window`, `_is_survival_dust`,
+`apply_vif_collapse`, `_collapse_one`, and the now-orphaned `_merged_seed_for_pair`),
+extracted `_collapse_rank` to module level, and repointed the unit tests at the
+view-based decision functions (`_is_survival_dust_view`, `_collapse_rank`),
+retiring the orchestration tests in favor of the Stage-5 integration coverage.
 
 ## Implemented (§§1–4)
 

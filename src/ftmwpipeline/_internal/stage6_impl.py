@@ -978,6 +978,14 @@ def refit_window_core(
     to later auto-prune/cleanup), ``"auto"`` for an automatic add such as the
     VIF-collapse merged line (a normal fitted peak, not a human decision).
 
+    The co-fit leakage-wing baseline is warm-started from the persisted
+    converged coefficients (see ``initial_baseline_coeffs`` below) so an
+    identity refit is a fixed point: the baseline stays a free parameter (the
+    model is unchanged), but the joint NLS starts at the originating fit's
+    converged baseline rather than cold-starting at zero, which would re-open
+    the near-degenerate baseline/position valley on wide, low-SNR windows and
+    slide untouched peaks.
+
     Returns the new per-window :class:`FittingResult`; the caller splices it
     back into the :class:`SpectrumFit` and persists.
     """
@@ -1127,10 +1135,24 @@ def refit_window_core(
     # the peaks shift to absorb it.
     _qm = wf.quality_metrics or {}
     if _qm.get("baseline_applied", 0.0) and "baseline_order" in _qm:
-        fw_kwargs["baseline_order"] = int(_qm["baseline_order"])
+        _border = int(_qm["baseline_order"])
+        fw_kwargs["baseline_order"] = _border
         _bscale = _qm.get("baseline_offset_scale")
         if _bscale:
             fw_kwargs["baseline_offset_scale"] = float(_bscale)
+        # Warm-start the co-fit baseline from the persisted converged
+        # coefficients so a no-op refit is a fixed point (otherwise the
+        # baseline cold-starts at zero and untouched peaks slide on the
+        # near-degenerate baseline/position valley of wide, low-SNR windows).
+        _ibc = np.array(
+            [
+                _qm.get(f"baseline_coeff{k}_re", 0.0)
+                + 1j * _qm.get(f"baseline_coeff{k}_im", 0.0)
+                for k in range(_border + 1)
+            ],
+            dtype=np.complex128,
+        )
+        fw_kwargs["initial_baseline_coeffs"] = _ibc
 
     # --- Build seed ModelPeak list from persisted fitted_peaks + edits -----
     s = sideband_sign(sideband)

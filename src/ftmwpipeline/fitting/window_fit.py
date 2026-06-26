@@ -1099,6 +1099,7 @@ def fit_window(
     spur_mask: Optional[SpurMaskSpec] = None,
     baseline_order: Optional[int] = None,
     baseline_offset_scale: Optional[float] = None,
+    initial_baseline_coeffs: Optional[np.ndarray] = None,
 ) -> WindowFitResult:
     """Fit a fixed number of lines to one window by complex least squares.
 
@@ -1331,10 +1332,25 @@ def fit_window(
     hi_arr = np.asarray(hi, dtype=float)
     p0 = np.clip(_pack(initial_peaks, tau0_us, fit_tau), lo_arr, hi_arr)
     if baseline_active:
-        # Baseline coefficients are unbounded and seed at zero.
+        # Baseline coefficients are unbounded. They seed at zero for a first fit;
+        # a refit warm-starts them from the originating fit's converged
+        # coefficients (``initial_baseline_coeffs``). Warm-starting is what makes
+        # an identity refit a fixed point: the baseline / line-position valley is
+        # near-degenerate on wide, low-SNR windows, so cold-starting the baseline
+        # at zero (while the peaks seed at their converged values) lands the joint
+        # NLS on a different point of the valley and slides untouched peaks. The
+        # seed is in the same packed (a_0..a_p, b_0..b_p) order as the parameters.
         lo_arr = np.concatenate([lo_arr, np.full(2 * n_base, -np.inf)])
         hi_arr = np.concatenate([hi_arr, np.full(2 * n_base, np.inf)])
-        p0 = np.concatenate([p0, np.zeros(2 * n_base, dtype=float)])
+        if initial_baseline_coeffs is not None:
+            ibc = np.asarray(initial_baseline_coeffs, dtype=np.complex128).ravel()
+            if ibc.size == n_base:
+                base_seed = np.concatenate([ibc.real, ibc.imag]).astype(float)
+            else:
+                base_seed = np.zeros(2 * n_base, dtype=float)
+        else:
+            base_seed = np.zeros(2 * n_base, dtype=float)
+        p0 = np.concatenate([p0, base_seed])
 
     penalty_kw: dict[str, Any] = dict(
         phase_penalty_lambda=phase_penalty_lambda,
