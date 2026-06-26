@@ -50,6 +50,7 @@ from ftmwpipeline.fitting.plan_execution import (
     execute_plan,
     fit_window_with_fixed_contributors,
     local_thaw_cofit,
+    refit_outcome,
     residual_edge_coherence,
     select_contributor_to_thaw,
     subtract_frozen_background,
@@ -541,10 +542,14 @@ class TestExecutePlanHappyPath:
         assert w0.fit.n_peaks == 1
         assert w1.fit.n_peaks == 1
 
-        # The dependent saw the strong line as a frozen contributor.
+        # The dependent froze the ancestor window's actual fitted line as its
+        # leakage background: keyed off the DAG edge (primary_window_id), content
+        # read from window 0's fit -- no Stage-3 contributor record, so peak_index
+        # is the no-link sentinel and the frozen frequency is the *fitted* one.
         assert len(w1.fixed_peaks) == 1
-        assert w1.fixed_peaks[0].peak_index == 0
+        assert w1.fixed_peaks[0].peak_index == -1
         assert w1.fixed_peaks[0].primary_window_id == 0
+        assert w1.fixed_peaks[0].frequency_mhz == pytest.approx(strong_freq, abs=0.01)
 
         # The dependent's free fit recovers the weak line to ~kHz.
         s = -1.0
@@ -556,6 +561,41 @@ class TestExecutePlanHappyPath:
 
         # No thaw was triggered.
         assert outcome.thaw_history == []
+
+    def test_frozen_background_is_one_per_ancestor_line_not_per_contributor(self):
+        """§4: a dependent freezes the ancestor's *fitted* lines, deduping the
+        Stage-3 contributor count. Two contributors that both reference the same
+        single-line ancestor produce ONE frozen peak (no doubled skirt)."""
+        strong_freq, weak_freq = 36100.0, 36110.0
+        plan, freqs, spec, noise, peak_freqs, _ = self._build_two_window_plan(
+            strong_freq, weak_freq, strong_snr=300.0, weak_snr=50.0
+        )
+        # Window 0 fits a single strong line, but give window 1 a SECOND
+        # contributor that also points at window 0 (as if Stage 3 double-detected
+        # the strong line). The pre-§4 path would freeze its skirt twice.
+        win1 = plan.windows[1]
+        win1.fixed_contributors.append(
+            FixedContributor(
+                peak_index=99,
+                primary_window_id=0,
+                frequency_mhz=strong_freq + 0.001,
+                freeze_eligible=True,
+            )
+        )
+        outcome = execute_plan(
+            plan,
+            _make_active_ft(freqs, spec),
+            noise,
+            peak_freqs,
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        # Window 0 fit exactly one line -> the dependent freezes exactly one,
+        # despite two contributors referencing window 0.
+        assert outcome.window_outcomes[0].fit.n_peaks == 1
+        assert len(outcome.window_outcomes[1].fixed_peaks) == 1
+        assert outcome.window_outcomes[1].fixed_peaks[0].primary_window_id == 0
 
     def test_respects_topological_order(self):
         """A window referenced as a primary must be fit before its dependent."""
@@ -1605,3 +1645,75 @@ class TestParallelWalkEquivalence:
         # The dependent (window 2) still saw window 0 as a frozen contributor.
         assert len(par.window_outcomes[2].fixed_peaks) == 1
         assert par.window_outcomes[2].fixed_peaks[0].primary_window_id == 0
+
+
+# ---------------------------------------------------------------------------
+# refit_outcome: live-outcome single-window refit primitive
+# ---------------------------------------------------------------------------
+class TestRefitOutcome:
+    """The in-walk refit primitive: identity reproduction + edit semantics."""
+
+    def _two_line_window_outcome(self, f0: float, f1: float) -> WindowOutcome:
+        """Fit one window holding two well-separated lines; return its outcome.
+
+        The single-window walk stashes the refit context on the outcome, which
+        is exactly what :func:`refit_outcome` consumes.
+        """
+        sigma = 1.0
+        center = 0.5 * (f0 + f1)
+        freq_array = np.arange(center - 5.0, center + 5.0, DF_MHZ)
+        a0 = _amp_for_snr(120.0, sigma)
+        a1 = _amp_for_snr(80.0, sigma)
+        spectrum = _synth_spectrum(freq_array, [(f0, a0, 0.3), (f1, a1, 1.7)])
+        rng = np.random.default_rng(SEED + 7)
+        spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
+        rms_noise = np.full(freq_array.size, sigma)
+        win = FitWindow(
+            window_id=0,
+            freq_range=(center - 4.0, center + 4.0),
+            free_peak_indices=[0, 1],
+            fixed_contributors=[],
+            batch=0,
+        )
+        plan = WindowPlan(windows=[win], dependency_edges=[], topological_order=[0])
+        out = execute_plan(
+            plan,
+            _make_active_ft(freq_array, spectrum),
+            rms_noise,
+            [f0, f1],
+            sideband=SIDEBAND,
+            acquisition_us=T_US,
+            tau0_us=TAU_US,
+        )
+        return out.window_outcomes[0]
+
+    def test_identity_refit_reproduces_the_fit(self):
+        """An identity refit (no edits) reproduces the converged peak set."""
+        outcome = self._two_line_window_outcome(36100.0, 36106.0)
+        before = sorted(outcome.fit.peaks, key=lambda p: p.offset_mhz)
+        refit = refit_outcome(outcome)
+        after = sorted(refit.fit.peaks, key=lambda p: p.offset_mhz)
+        assert len(after) == len(before)
+        for a, b in zip(after, before):
+            assert a.offset_mhz == pytest.approx(b.offset_mhz, abs=2e-4)
+            assert a.amplitude == pytest.approx(b.amplitude, rel=2e-3)
+
+    def test_remove_drops_the_targeted_peak(self):
+        """A remove edit drops the nearest converged peak; the survivor holds."""
+        outcome = self._two_line_window_outcome(36100.0, 36106.0)
+        peaks = sorted(outcome.fit.peaks, key=lambda p: p.offset_mhz)
+        assert len(peaks) == 2
+        # Remove the lower-offset peak by its offset.
+        drop_off = peaks[0].offset_mhz
+        keep_off = peaks[1].offset_mhz
+        refit = refit_outcome(outcome, remove_offsets=[drop_off])
+        assert refit.fit.n_peaks == 1
+        assert refit.fit.peaks[0].offset_mhz == pytest.approx(keep_off, abs=0.05)
+
+    def test_requires_stashed_context(self):
+        """refit_outcome needs a walk-produced outcome (refit context stashed)."""
+        outcome = self._two_line_window_outcome(36100.0, 36106.0)
+        # Strip the stashed context -> a clear error, not a silent wrong fit.
+        delattr(outcome, "_ck_for_window")
+        with pytest.raises(ValueError, match="refit context"):
+            refit_outcome(outcome)

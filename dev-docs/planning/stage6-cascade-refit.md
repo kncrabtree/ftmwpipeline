@@ -123,6 +123,14 @@ walk's per-node tail (and evaluate the frozen background from the ancestor's
 [`stage5-inline-cleanup.md`](stage5-inline-cleanup.md). The giant-skirt
 degeneracy (`#3c`, e.g. w919) is separate and smaller.
 
+**Implemented (§§1–4 of `stage5-inline-cleanup.md`):** the cleanup now runs in
+the walk's per-node tail, and a dependent freezes the ancestor window's *current
+fitted lines* (keyed off the Stage-4 DAG edge), not Stage-3 contributor records.
+Re-baseline is a net win — 6/7 fixtures flat, 655 isotopologue recall +9 and
+χ²ᵣ p90 3.89→2.68 with main recall held. Remaining: §5 (`refit_window_core`
+move + dead-post-pass retirement), the reproducibility sweep, and the §§C/D
+user-edit cascade (now small, per §4). See `scratch/cascade/HANDOFF.md`.
+
 ---
 
 Status: **prerequisite investigation complete; production prototype on branch

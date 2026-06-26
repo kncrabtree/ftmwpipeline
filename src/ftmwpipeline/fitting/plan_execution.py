@@ -60,7 +60,7 @@ import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import numpy as np
 from threadpoolctl import threadpool_limits
@@ -78,6 +78,9 @@ from ftmwpipeline.preprocessing.edge_coherence import (
     DEFAULT_TRIM_M,
     coherence_statistic,
 )
+from ftmwpipeline.preprocessing.window_planning import (
+    DEFAULT_MIN_FREEZE_SNR,
+)
 from ftmwpipeline.preprocessing.window_planning import replan as stage4_replan
 
 from ..utils.parallelism import resolve_worker_count
@@ -87,6 +90,7 @@ from .doublet_alternative import DoubletAdjudication, adjudicate_close_pairs
 from .peak_model import (
     ModelPeak,
     PeakShape,
+    effective_tau_shape,
     model_spectrum,
     sideband_sign,
     to_baseband_offset,
@@ -577,6 +581,11 @@ class PlanFitOutcome:
     replan_history: list[ReplanEvent] = field(default_factory=list)
     final_plan_revision: int = 0
     final_plan: Optional[WindowPlan] = None
+    # Per-window cleanup provenance (one record per finalized window):
+    # ``{window_id, pruned: [...], collapses: [...], dropped: bool}``. Empty when
+    # no per-node cleanup callback was injected. The end-of-walk aggregation
+    # rolls these into the ``peak_survival`` / ``vif_collapse`` diagnostics.
+    cleanup_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -666,6 +675,80 @@ def evaluate_fixed_contributor(
         frequency_mhz=fitted_freq_mhz,
         freeze_eligible=contributor.freeze_eligible,
     )
+
+
+def evaluate_ancestor_leakage(
+    primary_outcome: WindowOutcome,
+    primary_window_id: int,
+    *,
+    dependent_center_mhz: float,
+    sideband: SidebandLike,
+    acquisition_us: float,
+    min_freeze_snr: float,
+) -> list[FrozenPeak]:
+    """Freeze an ancestor window's current *fitted* lines that leak into a dependent.
+
+    The frozen-background **content** is whatever the ancestor window actually fit,
+    read straight off ``primary_outcome.fit.fit.peaks`` -- never a Stage-3
+    contributor record. Stage 3 / Stage 4 decide only the dependency *edge* (which
+    ancestor a dependent reads); this decides *what* is frozen: every ancestor line
+    clearing ``min_freeze_snr`` (the stable-enough-to-freeze bar Stage 4 used for
+    ``freeze_eligible``), at the ancestor's *fitted* ``(amplitude, frequency,
+    phase)`` mapped into the dependent's offset frame.
+
+    Reading the fit rather than the Stage-3 detections dissolves two failure modes
+    by construction: when the ancestor's fit collapses several Stage-3 detections
+    into one line (a degenerate over-split merged, sub-resolution structure cleaned
+    to a centroid), that line is frozen **once** -- never summed N times (the
+    ``w925`` doubling that makes a dependent over-subtract and over-split); and the
+    background is the ancestor's *current* fit, never a stale snapshot. Returns an
+    empty list when the ancestor fit is empty (a dropped / all-dust source leaks
+    nothing -- the same skip the dropped-primary path uses).
+
+    No spatial leakage-range gate is applied: Stage 4 already keeps an edge-bearing
+    contributor only when its skirt is *material* and *near* (the curvature/level
+    gate demotes far giants to the self-contained edge-free path), so an
+    edge-bearing ancestor's lines all sit within leakage reach; a sub-``min_freeze_snr``
+    line leaks negligibly and is dropped by the SNR bar regardless.
+    """
+    inner = primary_outcome.fit.fit
+    if not inner.peaks:
+        return []
+    s = sideband_sign(sideband)
+    primary_center = _window_center_mhz(primary_outcome)
+    rms_mean = float(np.mean(np.asarray(primary_outcome.rms_noise, dtype=float)))
+    tau_us = inner.tau_us
+    tau_eff = (
+        effective_tau_shape(inner.shape, tau_us, acquisition_us)
+        if tau_us > 0
+        else float("nan")
+    )
+    frozen: list[FrozenPeak] = []
+    for pk in inner.peaks:
+        if rms_mean > 0 and np.isfinite(tau_eff):
+            snr = 0.5 * float(pk.amplitude) * tau_eff / rms_mean
+        else:
+            # Cannot establish the SNR bar -> freeze conservatively (the line was
+            # fit; a missing noise estimate is not grounds to drop its leak).
+            snr = float("inf")
+        if snr < min_freeze_snr:
+            continue
+        fitted_freq_mhz = primary_center + s * pk.offset_mhz
+        delta_dep = s * (fitted_freq_mhz - dependent_center_mhz)
+        frozen.append(
+            FrozenPeak(
+                peak_index=-1,  # no Stage-3 link: content is the ancestor's fit
+                primary_window_id=primary_window_id,
+                model_peak=ModelPeak(
+                    amplitude=float(pk.amplitude),
+                    offset_mhz=float(delta_dep),
+                    phase=float(pk.phase),
+                ),
+                frequency_mhz=float(fitted_freq_mhz),
+                freeze_eligible=True,  # cleared min_freeze_snr by construction
+            )
+        )
+    return frozen
 
 
 def _window_center_mhz(outcome: WindowOutcome) -> float:
@@ -1330,6 +1413,314 @@ def fit_seeds_window_outcome(
     )
 
 
+# Keys :func:`derive_window_fit_constraints` accepts that a window's resolved
+# ``conservative_kwargs`` may carry; the refit reconstructs the exact penalty /
+# tau / bound kwargs the node's own fit used by forwarding whichever of these
+# are present. The single source of truth for "what makes a window's fit
+# conditions" shared by the in-walk refit and the doublet-alternative refit.
+_REFIT_CONSTRAINT_KEYS: Tuple[str, ...] = (
+    "min_separation_factor",
+    "max_decay_factor",
+    "amp_max_headroom",
+    "amp_penalty_lambda",
+    "phase_penalty_lambda",
+    "phase_penalty_cutoff_fwhm",
+    "tau_penalty_lambda",
+    "tau_penalty_n_sigma",
+    "weak_window_snr_threshold",
+    "fit_tau_min_snr",
+    "tau_apodization_us",
+    "tau_maj_us",
+    "sigma_tau_us",
+    "tau_anchor_us",
+    "tau_penalty_sigma_lo_factor",
+    "shape",
+)
+
+
+@dataclass
+class NodeCleanup:
+    """Result of a per-node cleanup: the cleaned outcome (or a drop) + provenance.
+
+    ``outcome`` is the pruned-and-collapsed :class:`WindowOutcome`, or ``None``
+    when the window cascaded to empty (all dust) and is dropped -- its leak into
+    any dependent is then treated as absent (the "no fitted peak to freeze" skip
+    the spur-on-contributor path already uses). ``pruned`` / ``collapses`` are
+    the per-window provenance records the end-of-walk aggregation rolls into the
+    ``peak_survival`` / ``vif_collapse`` diagnostics; they are carried out even
+    on a drop so the dropped window's last sub-floor lines are still recorded.
+    """
+
+    outcome: Optional[WindowOutcome]
+    pruned: List[dict[str, Any]] = field(default_factory=list)
+    collapses: List[dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def dropped(self) -> bool:
+        return self.outcome is None
+
+
+# A per-node cleanup callback: prune sub-floor dust + collapse degenerate pairs
+# for one converged window, returning a :class:`NodeCleanup`. Built in
+# ``stage5_impl`` (which owns the floor / VIF threshold / footprint constants)
+# and injected into the walk so the cleanup rides the same fork + BLAS pin and
+# every dependent reads a *clean* source the first time.
+FinalizeNode = Callable[[WindowOutcome], "NodeCleanup"]
+
+
+def stash_refit_context(
+    outcome: WindowOutcome,
+    *,
+    ck_for_window: dict[str, Any],
+    acquisition_us: float,
+    residual_edge_m: int,
+    n_eff_kind: str,
+) -> None:
+    """Stash the per-window fit conditions a live-outcome refit needs.
+
+    :func:`refit_outcome` re-derives a node's exact ``fit_window`` kwargs from
+    its resolved ``conservative_kwargs`` (the per-band τ anchor / penalties live
+    there) and the live data on the outcome -- never from a persisted snapshot.
+    The walk caches that context here, on the outcome, the moment the node
+    converges, so the per-node cleanup tail inherits it structurally (this is
+    what retires the global-anchor bug class). Carried as private attributes so
+    the :class:`WindowOutcome` dataclass surface stays unchanged.
+    """
+    outcome._ck_for_window = dict(ck_for_window)  # type: ignore[attr-defined]
+    outcome._acquisition_us = float(acquisition_us)  # type: ignore[attr-defined]
+    outcome._residual_edge_m = int(residual_edge_m)  # type: ignore[attr-defined]
+    outcome._n_eff_kind = str(n_eff_kind)  # type: ignore[attr-defined]
+
+
+def _mirror_outcome_baseline(outcome: WindowOutcome) -> None:
+    """Mirror the inner fit's leakage-wing baseline onto the outcome's audit
+    fields (the same projection :func:`_fit_one_window` does post-construction).
+
+    :func:`build_window_outcome` leaves the baseline mirror at its defaults, so a
+    refit that re-co-fit a baseline must restamp these for the end-of-walk
+    :class:`FittingResult` conversion (which reads the inner fit for the
+    coefficients but the outcome for ``baseline_edge_coherence``)."""
+    inner = outcome.fit.fit
+    if inner.baseline_order is not None:
+        outcome.baseline_applied = True
+        outcome.baseline_order = inner.baseline_order
+        outcome.baseline_coeffs = inner.baseline_coeffs
+        outcome.baseline_offset_scale = inner.baseline_offset_scale
+        lo, hi = outcome.edge_coherence_low, outcome.edge_coherence_high
+        outcome.baseline_edge_coherence = float(
+            max(lo, hi) if np.isfinite(lo) and np.isfinite(hi) else 0.0
+        )
+
+
+def refit_outcome(
+    outcome: WindowOutcome,
+    *,
+    remove_offsets: Sequence[float] = (),
+    add_seeds: Sequence[ModelPeak] = (),
+    freeze_inherited: bool = False,
+    snap_tol_mhz: float = 0.05,
+) -> WindowOutcome:
+    """Live-outcome single-window refit: re-converge a node's peaks with edits.
+
+    The in-walk twin of
+    :func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`: it reuses the
+    node's live frozen ``background`` / grids / noise / spur mask and re-derives
+    its exact ``fit_window`` kwargs from the cached ``conservative_kwargs``
+    (:func:`stash_refit_context`) and the *post-edit* data -- so the per-band τ
+    anchor, baseline order, spur mask, and penalties are inherited by
+    construction, never re-resolved from a band-wide default. It applies the
+    ``remove_offsets`` / ``add_seeds`` edits to the converged free peaks
+    (``outcome.fit.fit.peaks``) and re-runs :func:`fit_seeds_window_outcome`. No
+    :class:`FittingResult` round-trip, no snapshot reconstruction.
+
+    ``remove_offsets`` and ``add_seeds`` are in the window's signed-baseband
+    offset frame. Each ``remove_offsets`` entry drops the nearest converged free
+    peak (within ``snap_tol_mhz``). ``freeze_inherited`` parks every inherited
+    (non-added) peak in the frozen background and fits only the added seeds (the
+    VIF-collapse sequential merge: a dominant line never drags a weak merged line
+    away mid-sequence), re-appending the held peaks verbatim after the NLS.
+
+    Returns a fresh :class:`WindowOutcome` carrying the same refit context and
+    the source outcome's thaw / rescue / doublet records (the cleanup edits the
+    peak set, not that provenance).
+    """
+    from dataclasses import replace
+
+    from .window_fit import ParameterErrors
+
+    inner = outcome.fit.fit
+    offset_grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
+    z_slice = np.asarray(outcome.complex_spectrum, dtype=np.complex128)
+    sig_slice = np.asarray(outcome.rms_noise, dtype=float)
+    center_mhz = _window_center_mhz(outcome)
+    spur_mask = getattr(outcome, "_spur_mask", None)
+    ck = getattr(outcome, "_ck_for_window", None)
+    acquisition_us = getattr(outcome, "_acquisition_us", None)
+    residual_edge_m = getattr(outcome, "_residual_edge_m", None)
+    n_eff_kind = getattr(outcome, "_n_eff_kind", None)
+    if ck is None or acquisition_us is None or residual_edge_m is None:
+        raise ValueError(
+            "refit_outcome requires a walk-produced outcome with refit context "
+            "stashed (see stash_refit_context); got an outcome without it."
+        )
+
+    shape = inner.shape
+    tau0 = float(inner.tau_us)
+    fit_tau = (
+        bool(inner.tau_was_fit)
+        if inner.tau_was_fit is not None
+        else bool(inner.fit_tau)
+    )
+
+    # Seeds from the converged free peaks (their ParameterErrors carried parallel
+    # for the freeze re-append below), with the remove edits applied first.
+    seeds: List[ModelPeak] = [
+        ModelPeak(p.amplitude, p.offset_mhz, p.phase) for p in inner.peaks
+    ]
+    seed_errors: List[ParameterErrors] = list(inner.peak_errors)
+    for rm in remove_offsets:
+        if not seeds:
+            raise ValueError("refit_outcome: remove with no remaining seeds")
+        k = min(range(len(seeds)), key=lambda i: abs(seeds[i].offset_mhz - float(rm)))
+        if abs(seeds[k].offset_mhz - float(rm)) > snap_tol_mhz:
+            raise ValueError(
+                f"refit_outcome: no seed within {snap_tol_mhz} MHz of offset {rm}"
+            )
+        seeds.pop(k)
+        if k < len(seed_errors):
+            seed_errors.pop(k)
+
+    added = list(add_seeds)
+    seeds = seeds + added
+
+    # The window's own frozen background (its ancestor-leakage contributors). The
+    # ``freeze_inherited`` path *temporarily* parks the window's inherited peaks
+    # here so the merged-line NLS holds them fixed, but the returned outcome must
+    # carry only ``original_fixed_peaks`` -- a held inherited peak persisted as a
+    # contributor would be subtracted as background AND re-fit as a peak on the
+    # next refit (double-count). The held peaks live only in the fit's peak list
+    # (re-appended below), exactly as ``refit_window_core`` restores them.
+    original_fixed_peaks = list(outcome.fixed_peaks)
+    fixed_peaks = list(original_fixed_peaks)
+    held_peaks: List[ModelPeak] = []
+    held_errors: List[ParameterErrors] = []
+    n_added = len(added)
+    if freeze_inherited and n_added > 0 and len(seeds) > n_added:
+        inherited = seeds[:-n_added]
+        for idx, mp in enumerate(inherited):
+            er = (
+                seed_errors[idx]
+                if idx < len(seed_errors)
+                else ParameterErrors(float("nan"), float("nan"), float("nan"))
+            )
+            # frequency_mhz is diagnostic only -- the frozen background draws the
+            # term from model_peak.offset_mhz, not the molecular frequency.
+            fixed_peaks.append(
+                FrozenPeak(
+                    peak_index=-1,
+                    primary_window_id=-1,
+                    model_peak=mp,
+                    frequency_mhz=float("nan"),
+                    freeze_eligible=False,
+                    edge_free=False,
+                )
+            )
+            held_peaks.append(mp)
+            held_errors.append(er)
+        seeds = list(added)
+
+    background, data_minus_bg = subtract_frozen_background(
+        offset_grid,
+        z_slice,
+        fixed_peaks,
+        tau0,
+        acquisition_us,
+        shape=shape,
+    )
+
+    # Build the fit_window kwargs the same way the post-fit refit primitive
+    # (``refit_window_core``) does: derive the penalty / tau-anchor / amplitude
+    # bounds from the cached conditions and the *post-edit* data, then swap the
+    # ``tau_bounds`` term for ``max_decay_factor`` (the originating fit was bounded
+    # by the factor cap, not the calibrated band). Pulling the penalties from
+    # ``fit_kwargs_inner`` lets ``derive_window_fit_constraints`` supply each
+    # default when the cached kwargs omit one.
+    constraints = derive_window_fit_constraints(
+        data_minus_bg,
+        sig_slice,
+        tau0,
+        acquisition_us,
+        fit_tau=fit_tau,
+        **{k: ck[k] for k in _REFIT_CONSTRAINT_KEYS if k in ck},
+    )
+    fw_kwargs: dict[str, Any] = dict(constraints.fit_kwargs_inner)
+    fw_kwargs.pop("tau_bounds", None)
+    fw_kwargs.pop("tau_penalty_sigma_lo_us", None)
+    fw_kwargs["max_decay_factor"] = float(
+        ck.get("max_decay_factor", DEFAULT_MAX_DECAY_FACTOR)
+    )
+    fw_kwargs.setdefault("shape", shape)
+    # Re-co-fit the leakage-wing baseline against the new peak set (the cleanup
+    # removes / merges peaks, so the smooth nuisance should re-optimize). The
+    # order / conditioning scale are the node's own.
+    if outcome.baseline_applied and outcome.baseline_order is not None:
+        fw_kwargs["baseline_order"] = int(outcome.baseline_order)
+        if outcome.baseline_offset_scale:
+            fw_kwargs["baseline_offset_scale"] = float(outcome.baseline_offset_scale)
+    if spur_mask is not None:
+        fw_kwargs["spur_mask"] = spur_mask
+
+    new_outcome = fit_seeds_window_outcome(
+        offset_grid,
+        z_slice,
+        sig_slice,
+        center_mhz,
+        background,
+        data_minus_bg,
+        fixed_peaks,
+        seeds,
+        tau0,
+        acquisition_us,
+        fw_kwargs,
+        spur_mask,
+        n_eff_kind or validation.DEFAULT_N_EFF_KIND,
+        int(residual_edge_m),
+        outcome.window_id,
+    )
+
+    # Re-append the frozen-held inherited peaks verbatim (their model is already
+    # in ``background`` -> the full model / residual are consistent); the NLS
+    # covariance covers only the free seeds, so it is dropped on re-append. Then
+    # restore the *original* contributor set: the held peaks were parked in the
+    # background only to hold them during the NLS; they now live solely in the
+    # fit's peak list. Leaving them in ``fixed_peaks`` would persist them as
+    # contributors and double-count them on the next refit (the recurring
+    # frozen-refit trap; cf. ``refit_window_core``).
+    if held_peaks:
+        merged_inner = replace(
+            new_outcome.fit.fit,
+            peaks=list(new_outcome.fit.fit.peaks) + held_peaks,
+            peak_errors=list(new_outcome.fit.fit.peak_errors) + held_errors,
+            covariance=None,
+        )
+        new_outcome.fit = replace(new_outcome.fit, fit=merged_inner)
+        new_outcome.fixed_peaks = original_fixed_peaks
+
+    # Carry the refit context + provenance the cleanup does not change forward.
+    stash_refit_context(
+        new_outcome,
+        ck_for_window=ck,
+        acquisition_us=acquisition_us,
+        residual_edge_m=int(residual_edge_m),
+        n_eff_kind=n_eff_kind or validation.DEFAULT_N_EFF_KIND,
+    )
+    new_outcome.thaw_events = list(outcome.thaw_events)
+    new_outcome.rescue_events = list(outcome.rescue_events)
+    new_outcome.doublet_adjudications = list(outcome.doublet_adjudications)
+    _mirror_outcome_baseline(new_outcome)
+    return new_outcome
+
+
 # ---------------------------------------------------------------------------
 # Thaw selection + local co-fit
 # ---------------------------------------------------------------------------
@@ -1660,6 +2051,8 @@ def execute_plan(
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
     doublet_kwargs: Optional[dict[str, Any]] = None,
     jobs: Optional[int] = None,
+    min_freeze_snr: Optional[float] = None,
+    finalize_node: Optional[FinalizeNode] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -1805,10 +2198,20 @@ def execute_plan(
     if noise.shape != active_ft.complex_spectrum.shape:
         raise ValueError("rms_noise must match active_ft.complex_spectrum shape")
 
+    # The SNR bar an ancestor's fitted line must clear to be frozen into a
+    # dependent's background (``evaluate_ancestor_leakage``). Reuse the Stage 4
+    # ``min_freeze_snr`` the plan was built with (the same stable-enough-to-freeze
+    # threshold), so the fit-time leakage bar matches the plan's edge eligibility.
+    if min_freeze_snr is None:
+        min_freeze_snr = float(
+            plan.parameters.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR)
+        )
+
     outcomes: dict[int, WindowOutcome] = {}
     thaw_history: list[ThawEvent] = []
     rescue_history: list[RescueEvent] = []
     replan_history: list[ReplanEvent] = []
+    cleanup_history: list[dict[str, Any]] = []
 
     # --- Initial walk over the plan as given --------------------------------
     # Cross-window parallel: levelize the DAG and fit each antichain concurrently
@@ -1845,6 +2248,9 @@ def execute_plan(
         baseline_smooth_threshold=baseline_smooth_threshold,
         doublet_kwargs=doublet_kwargs,
         jobs=jobs,
+        min_freeze_snr=min_freeze_snr,
+        finalize_node=finalize_node,
+        cleanup_history=cleanup_history,
     )
     logger.info("initial walk: %.1fs", time.monotonic() - _t_initial)
 
@@ -1886,6 +2292,14 @@ def execute_plan(
             for wid in list(outcomes.keys()):
                 if wid not in new_by_id or wid in affected:
                     outcomes.pop(wid, None)
+            # Drop stale cleanup provenance for the windows about to be re-fit
+            # (and for any window the merge absorbed) so the re-walk's fresh
+            # records are the only ones the aggregation sees.
+            cleanup_history[:] = [
+                r
+                for r in cleanup_history
+                if r["window_id"] in new_by_id and r["window_id"] not in affected
+            ]
             affected_order = [
                 wid for wid in new_plan.topological_order if wid in affected
             ]
@@ -1923,6 +2337,9 @@ def execute_plan(
                 baseline_smooth_threshold=baseline_smooth_threshold,
                 doublet_kwargs=doublet_kwargs,
                 jobs=jobs,
+                min_freeze_snr=min_freeze_snr,
+                finalize_node=finalize_node,
+                cleanup_history=cleanup_history,
             )
 
             applied_pairs = {
@@ -1960,6 +2377,7 @@ def execute_plan(
         replan_history=replan_history,
         final_plan_revision=plan.plan_revision,
         final_plan=plan,
+        cleanup_history=cleanup_history,
     )
 
 
@@ -2044,6 +2462,9 @@ def _process_one_window(
     baseline_edge_threshold: float,
     baseline_smooth_threshold: float,
     doublet_kwargs: Optional[dict[str, Any]],
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    finalize_node: Optional[FinalizeNode] = None,
+    cleanup_history: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Process one window end to end: conservative fit -> bounded thaw loop ->
     residual-rescue B-loop -> leakage-wing baseline -> doublet adjudication.
@@ -2083,6 +2504,7 @@ def _process_one_window(
         fit_tau=fit_tau,
         residual_edge_m=residual_edge_m,
         conservative_kwargs=ck_for_window,
+        min_freeze_snr=min_freeze_snr,
         spur_set=spur_set,
         early_baseline_order=baseline_order if baseline_enabled else None,
         early_baseline_smooth_threshold=(
@@ -2178,7 +2600,50 @@ def _process_one_window(
             )
             outcome.doublet_adjudications = []
 
+    # Cache the per-window fit conditions on the outcome so the per-node cleanup
+    # tail (and any post-fit refit) re-derives this node's exact fit_window
+    # kwargs -- per-band tau anchor, penalties, baseline order, spur mask --
+    # without re-resolving them from a band-wide default.
+    stash_refit_context(
+        outcomes[wid],
+        ck_for_window=ck_for_window,
+        acquisition_us=acquisition_us,
+        residual_edge_m=residual_edge_m,
+        n_eff_kind=str(ck_for_window.get("n_eff_kind", validation.DEFAULT_N_EFF_KIND)),
+    )
+
+    # Per-node cleanup tail: prune sub-floor dust + collapse degenerate pairs so
+    # this window is clean before the walk releases its dependents (a dependent
+    # then reads the cleaned source the first time -- the #3b stale-frozen-
+    # background class cannot arise). Provenance is collected for the end-of-walk
+    # diagnostics; a window that cascades to empty is dropped from ``outcomes``.
+    if finalize_node is not None:
+        cleanup = finalize_node(outcomes[wid])
+        record: dict[str, Any] = {
+            "window_id": wid,
+            "pruned": cleanup.pruned,
+            "collapses": cleanup.collapses,
+            "dropped": cleanup.dropped,
+        }
+        if cleanup.outcome is None:
+            outcomes.pop(wid, None)
+        else:
+            outcomes[wid] = cleanup.outcome
+        if cleanup_history is not None:
+            cleanup_history.append(record)
+
     elapsed = time.monotonic() - t_start
+    if wid not in outcomes:
+        # The window was dropped by the cleanup; nothing more to log / time here.
+        logger.info(
+            "window %d/%d w%d [%.1f-%.1f MHz]: dropped (cascaded to empty)",
+            n_done,
+            n_total,
+            wid,
+            win.freq_range[0],
+            win.freq_range[1],
+        )
+        return
     final = outcomes[wid]
     log = logger.warning if elapsed > 60.0 else logger.info
     log(
@@ -2222,6 +2687,9 @@ def _walk_windows_in_order(
     baseline_edge_threshold: float = DEFAULT_BASELINE_EDGE_THRESHOLD,
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
     doublet_kwargs: Optional[dict[str, Any]] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    finalize_node: Optional[FinalizeNode] = None,
+    cleanup_history: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -2288,6 +2756,9 @@ def _walk_windows_in_order(
             baseline_edge_threshold=baseline_edge_threshold,
             baseline_smooth_threshold=baseline_smooth_threshold,
             doublet_kwargs=doublet_kwargs,
+            min_freeze_snr=min_freeze_snr,
+            finalize_node=finalize_node,
+            cleanup_history=cleanup_history,
         )
 
 
@@ -2379,7 +2850,13 @@ def _levelize(
 
 def _fit_window_worker(
     task: tuple[int, int],
-) -> tuple[int, WindowOutcome, list[ThawEvent], list[RescueEvent]]:
+) -> tuple[
+    int,
+    Optional[WindowOutcome],
+    list[ThawEvent],
+    list[RescueEvent],
+    list[dict[str, Any]],
+]:
     """Process-pool entry point: fit one window from the fork-inherited context.
 
     Pins BLAS to a single thread for the solve (the per-window solve is
@@ -2401,6 +2878,7 @@ def _fit_window_worker(
     local_outcomes: dict[int, WindowOutcome] = dict(ctx["outcomes"])
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
+    cleanup_local: list[dict[str, Any]] = []
     with threadpool_limits(limits=1):
         _process_one_window(
             ctx["by_id"][wid],
@@ -2409,14 +2887,21 @@ def _fit_window_worker(
             outcomes=local_outcomes,
             thaw_history=thaw_local,
             rescue_history=rescue_local,
+            cleanup_history=cleanup_local,
             **ctx["shared"],
         )
-    return wid, local_outcomes[wid], thaw_local, rescue_local
+    return wid, local_outcomes.get(wid), thaw_local, rescue_local, cleanup_local
 
 
 def _fit_window_worker_dag(
     task: tuple[int, int, dict[int, WindowOutcome]],
-) -> tuple[int, WindowOutcome, list[ThawEvent], list[RescueEvent]]:
+) -> tuple[
+    int,
+    Optional[WindowOutcome],
+    list[ThawEvent],
+    list[RescueEvent],
+    list[dict[str, Any]],
+]:
     """Process-pool entry for the dependency-gated walk: fit one window.
 
     Unlike :func:`_fit_window_worker` (which inherits the full earlier-level
@@ -2433,6 +2918,7 @@ def _fit_window_worker_dag(
     local_outcomes: dict[int, WindowOutcome] = dict(pred_outcomes)
     thaw_local: list[ThawEvent] = []
     rescue_local: list[RescueEvent] = []
+    cleanup_local: list[dict[str, Any]] = []
     with threadpool_limits(limits=1):
         _process_one_window(
             ctx["by_id"][wid],
@@ -2441,9 +2927,10 @@ def _fit_window_worker_dag(
             outcomes=local_outcomes,
             thaw_history=thaw_local,
             rescue_history=rescue_local,
+            cleanup_history=cleanup_local,
             **ctx["shared"],
         )
-    return wid, local_outcomes[wid], thaw_local, rescue_local
+    return wid, local_outcomes.get(wid), thaw_local, rescue_local, cleanup_local
 
 
 # Set in the parent before a refit-map pool forks; read by the worker entry via
@@ -2521,6 +3008,7 @@ def _walk_windows_dag(
     rescue_history: list[RescueEvent],
     max_workers: int,
     shared_kwargs: dict[str, Any],
+    cleanup_history: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Dependency-gated cross-window walk over one persistent fork pool.
 
@@ -2567,7 +3055,9 @@ def _walk_windows_dag(
 
     global _WORKER_FIT_CTX
     _WORKER_FIT_CTX = {"by_id": by_id, "n_total": n_total, "shared": shared_kwargs}
-    results: dict[int, tuple[list[ThawEvent], list[RescueEvent]]] = {}
+    results: dict[
+        int, tuple[list[ThawEvent], list[RescueEvent], list[dict[str, Any]]]
+    ] = {}
     accepted_thaw = False
     n_submitted = 0
     try:
@@ -2605,9 +3095,14 @@ def _walk_windows_dag(
                 done, _ = wait(list(futures), return_when=FIRST_COMPLETED)
                 for fut in done:
                     wid = futures.pop(fut)
-                    _, outcome, thaws, rescues = fut.result()
-                    outcomes[wid] = outcome
-                    results[wid] = (thaws, rescues)
+                    _, outcome, thaws, rescues, cleanups = fut.result()
+                    # A cleanup that cascaded the window to empty returns no
+                    # outcome: leave it out of ``outcomes`` so a dependent sees it
+                    # as absent (its contributor is skipped), but still count it
+                    # scheduled and release its successors.
+                    if outcome is not None:
+                        outcomes[wid] = outcome
+                    results[wid] = (thaws, rescues, cleanups)
                     if any(e.accepted for e in thaws):
                         accepted_thaw = True
                     for s in succs[wid]:
@@ -2636,12 +3131,15 @@ def _walk_windows_dag(
         # pre-walk history and any out-of-order outcomes are intact; the
         # sequential walk re-fits in topological order, overwriting the stale
         # in-order outcomes before any dependent reads them.
+        if cleanup_history is not None:
+            cleanup_history.clear()
         _walk_windows_in_order(
             plan,
             in_order,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
+            cleanup_history=cleanup_history,
             **shared_kwargs,
         )
         return
@@ -2649,9 +3147,11 @@ def _walk_windows_dag(
     # Merge per-window histories in topological order for a deterministic sequence
     # (completion order is nondeterministic; the outcomes dict is not).
     for wid in in_order:
-        thaws, rescues = results.get(wid, ([], []))
+        thaws, rescues, cleanups = results.get(wid, ([], [], []))
         thaw_history.extend(thaws)
         rescue_history.extend(rescues)
+        if cleanup_history is not None:
+            cleanup_history.extend(cleanups)
 
 
 def _walk_windows_parallel(
@@ -2683,6 +3183,9 @@ def _walk_windows_parallel(
     baseline_smooth_threshold: float = DEFAULT_BASELINE_SMOOTH_THRESHOLD,
     doublet_kwargs: Optional[dict[str, Any]] = None,
     jobs: Optional[int] = None,
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
+    finalize_node: Optional[FinalizeNode] = None,
+    cleanup_history: Optional[list[dict[str, Any]]] = None,
 ) -> None:
     """Cross-window parallel form of :func:`_walk_windows_in_order`.
 
@@ -2732,6 +3235,8 @@ def _walk_windows_parallel(
         baseline_edge_threshold=baseline_edge_threshold,
         baseline_smooth_threshold=baseline_smooth_threshold,
         doublet_kwargs=doublet_kwargs,
+        min_freeze_snr=min_freeze_snr,
+        finalize_node=finalize_node,
     )
 
     import multiprocessing
@@ -2749,6 +3254,7 @@ def _walk_windows_parallel(
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
+            cleanup_history=cleanup_history,
             **shared_kwargs,
         )
         return
@@ -2767,6 +3273,7 @@ def _walk_windows_parallel(
             rescue_history=rescue_history,
             max_workers=max_workers,
             shared_kwargs=shared_kwargs,
+            cleanup_history=cleanup_history,
         )
         return
 
@@ -2785,6 +3292,7 @@ def _walk_windows_parallel(
                 outcomes=outcomes,
                 thaw_history=thaw_history,
                 rescue_history=rescue_history,
+                cleanup_history=cleanup_history,
                 **shared_kwargs,
             )
 
@@ -2817,7 +3325,7 @@ def _walk_windows_parallel(
             "shared": shared_kwargs,
         }
         tasks = [(n_done + i + 1, wid) for i, wid in enumerate(level)]
-        results: dict[int, tuple[int, WindowOutcome, list, list]] = {}
+        results: dict[int, tuple[int, Optional[WindowOutcome], list, list, list]] = {}
         try:
             from concurrent.futures import ProcessPoolExecutor
 
@@ -2847,10 +3355,15 @@ def _walk_windows_parallel(
             _run_sequential(level, n_done)
         else:
             for wid in level:
-                _, outcome, thaws, rescues = results[wid]
-                outcomes[wid] = outcome
+                _, outcome, thaws, rescues, cleanups = results[wid]
+                # A cleanup that emptied the window returns no outcome; leave it
+                # out of ``outcomes`` (the next level reads it as absent).
+                if outcome is not None:
+                    outcomes[wid] = outcome
                 thaw_history.extend(thaws)
                 rescue_history.extend(rescues)
+                if cleanup_history is not None:
+                    cleanup_history.extend(cleanups)
         n_done += len(level)
         logger.info(
             "  level %d/%d: %d windows on %d workers, %.1fs",
@@ -3066,6 +3579,7 @@ def _fit_one_window(
     fit_tau: bool,
     residual_edge_m: int,
     conservative_kwargs: dict[str, Any],
+    min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     spur_set: Optional[SpurSet] = None,
     early_baseline_order: Optional[int] = None,
     early_baseline_smooth_threshold: Optional[float] = None,
@@ -3090,37 +3604,48 @@ def _fit_one_window(
         lo, hi = win.freq_range
         spur_mask = spur_set.window_mask_spec(lo, hi, center_mhz, sideband)
 
+    # Edge-bearing contributors: Stage 3 / Stage 4 supply only the dependency
+    # *edge* (which ancestor windows this dependent reads); the frozen-background
+    # *content* is read straight from each ancestor window's current fit (see
+    # ``evaluate_ancestor_leakage``), never from the Stage-3 contributor records.
+    # Collect the unique ancestor window ids in first-seen order (deterministic).
     fixed_peaks: list[FrozenPeak] = []
     edge_free_contributors: list[FixedContributor] = []
+    ancestor_ids: list[int] = []
+    seen_ancestors: set[int] = set()
     for contributor in win.fixed_contributors:
-        # A fixed contributor whose frequency lands on a spur is a spurious
-        # frozen term: the spur is no longer fit as a peak in its primary
-        # window (nomination exclusion), so it has no fitted peak to freeze
-        # here. Drop it -- the spur's own bins are masked from this window's
-        # residual anyway.
-        if (
-            spur_set is not None
-            and spur_set
-            and spur_set.candidate_on_spur(contributor.frequency_mhz)
-        ):
-            continue
         if contributor.edge_free:
             # Read self-contained from the active FT below -- no primary
             # outcome required (the whole point of an edge-free contributor).
             edge_free_contributors.append(contributor)
             continue
-        primary_outcome = outcomes.get(contributor.primary_window_id)
+        aid = contributor.primary_window_id
+        if aid not in seen_ancestors:
+            seen_ancestors.add(aid)
+            ancestor_ids.append(aid)
+    for aid in ancestor_ids:
+        primary_outcome = outcomes.get(aid)
         if primary_outcome is None:
-            raise ValueError(
-                f"window {win.window_id} depends on un-fit primary window "
-                f"{contributor.primary_window_id} (topological_order broken)"
+            # The ancestor's per-node cleanup cascaded it to empty (all sub-floor
+            # dust) and dropped it: it carries no fitted line to freeze, so its
+            # leak into this dependent is correctly absent. (The topological walk
+            # guarantees the ancestor is *done* before this window runs, so a
+            # missing ancestor here means a drop, not a broken order.)
+            logger.debug(
+                "window %d: skipping dropped ancestor window %d", win.window_id, aid
             )
-        fixed_peaks.append(
-            evaluate_fixed_contributor(
-                contributor,
+            continue
+        # Lines on a gated spur are never fit as free peaks in their primary
+        # (nomination exclusion), so they are absent from the ancestor's fit and
+        # need no separate spur filter here.
+        fixed_peaks.extend(
+            evaluate_ancestor_leakage(
                 primary_outcome,
+                aid,
                 dependent_center_mhz=center_mhz,
                 sideband=sideband,
+                acquisition_us=acquisition_us,
+                min_freeze_snr=min_freeze_snr,
             )
         )
     edge_free_peaks: list[FrozenPeak] = []

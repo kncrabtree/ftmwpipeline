@@ -1,8 +1,62 @@
 # Stage 5 — fold per-window cleanup into the fit walk (design spec)
 
-**Status:** spec (implementation deferred to a fresh session). Branch context:
-`stage6-cascade-refit`. Companion: `dev-docs/planning/stage6-cascade-refit.md`
-(the cascade gate that surfaced this), memory `stage6-cascade-gate-finding`.
+**Status:** §§1–4 implemented on `stage6-cascade-refit`; §5 + the reproducibility
+sweep remain. Companion: `dev-docs/planning/stage6-cascade-refit.md` (the cascade
+gate that surfaced this), memory `stage6-cascade-gate-finding`. The design
+sections below stay as the reference; this header records what landed.
+
+## Implemented (§§1–4)
+
+The per-window cleanup now runs in the fit walk's per-node tail, so every
+dependent is fit against an already-cleaned source and the global post-pass +
+its second fork pool are gone:
+
+- **`refit_outcome`** (`fitting/plan_execution.py`) — the live-outcome refit
+  primitive. Reuses the node's frozen background / grids / spur mask off the
+  outcome and rebuilds its `fit_window` kwargs exactly as `refit_window_core`
+  does (penalties + `max_decay_factor`, amp bounds from `derive_window_fit_constraints`
+  on the post-edit data), so per-band τ / baseline / spur are inherited by
+  construction. The walk caches that context on each outcome (`stash_refit_context`).
+- **Shared fitted-line view** (`fitting/result_conversion.py`: `FittedLineView`
+  + `outcome_line_views` / `result_line_views`) — one decision surface the
+  prune/collapse logic reads from either an outcome or a `FittingResult`.
+- **`finalize_node`** (`_internal/stage5_impl.py`: `build_finalize_node` +
+  `_prune_outcome` / `_collapse_outcome`) — the SNR-prune → VIF-collapse fixpoint
+  in outcome space, returning a cleaned outcome or a `NodeCleanup` drop. Injected
+  into all three walks; `_fit_peaks_impl` aggregates the per-window provenance
+  into the same `peak_survival` / `vif_collapse` diagnostics and inflates merged
+  frequency errors at end-of-walk.
+- **§4 — frozen background from the ancestor's fit** (`evaluate_ancestor_leakage`):
+  a dependent freezes each ancestor window's *current fitted lines* above
+  `min_freeze_snr`, keyed only off the Stage-4 dependency edge — no Stage-3
+  contributor content, no nearest-match, no doubling. `fixed_parameters` is
+  re-keyed by enumeration (`frozen_peak_{i}`, `peak_index = -1`); the round-trip
+  is unchanged because `_reconstruct_frozen_peaks` reads every `frozen_peak_*`
+  entry by value.
+
+**The decisive bug.** A first re-baseline showed a recall regression (655 main
+0.66→0.50, 1512 0.58→0.49). The cause was *not* the cleaned-source cascade or
+Stage-3 doubling (§4 alone barely moved it) — it was `refit_outcome`'s
+`freeze_inherited` path leaving the parked inherited peaks in `fixed_peaks` (the
+held NaN-frequency peaks then persisted as contributors and were double-counted,
+corrupting the collapse fixpoint into over-split + merged-line drift). The fix is
+the same restore `refit_window_core` already does: capture `original_fixed_peaks`
+before parking, restore it on the returned outcome (the held peaks live only in
+the fit's peak list). After the fix the regression is gone.
+
+**Re-baseline result (7 fixtures, vs prior committed HEAD).** 6/7 flat (≤±4
+lines, χ²ᵣ equal or p90 slightly better — 1231 p90 10.9→9.8). 655 (densest):
+main recall = HEAD (0.662), isotopologue recall **+9** (0.817→0.885), χ²ᵣ median
+1.07→0.99, **p90 3.89→2.68**, +76 lines (distributed resolved structure — top-K
+13 unchanged, the +9 K≥5 windows match the +9 iso lines), with *fewer* collapses
+(48→33: cleaner upstream fits over-split less). Suites green (fitting unit,
+stage6 refit/serialization/review, stage5 integration + cross-interface).
+
+Remaining: §5 (`refit_window_core` module move + wrap `refit_outcome`; retire the
+now-dead `apply_snr_survival_prune` / `apply_vif_collapse` and migrate their
+tests); the reproducibility sweep (does a relaxed refit reproduce now → can the
+uncommitted C0 `freeze_baseline` prototype be deleted); update
+`scratch/cascade/BASELINE.md` to the new reference.
 
 ## Problem
 

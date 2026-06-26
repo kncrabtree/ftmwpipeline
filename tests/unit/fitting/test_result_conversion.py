@@ -362,9 +362,12 @@ class TestAuditAndKnockoutAttachment:
         win0 = fit.window_fit(0)
         win1 = fit.window_fit(1)
         assert win0.fixed_parameters == {}
+        # The frozen background is the ancestor window's actual fitted line, keyed
+        # by enumeration and carrying the no-Stage-3-link sentinel peak_index; the
+        # DAG edge (primary_window_id) is retained.
         assert "frozen_peak_0" in win1.fixed_parameters
         entry = win1.fixed_parameters["frozen_peak_0"]
-        assert entry["peak_index"] == 0
+        assert entry["peak_index"] == -1
         assert entry["primary_window_id"] == 0
 
 

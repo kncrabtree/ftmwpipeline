@@ -78,9 +78,151 @@ __all__ = [
     "window_outcome_to_spectral_window",
     "window_outcome_to_fitting_result",
     "plan_fit_outcome_to_spectrum_fit",
+    "FittedLineView",
+    "outcome_line_views",
+    "result_line_views",
 ]
 
 SidebandLike = Union[Sideband, str]
+
+
+# ---------------------------------------------------------------------------
+# Shared fitted-line view (DRY: one decision surface for the cleanup)
+# ---------------------------------------------------------------------------
+import math
+from dataclasses import dataclass
+
+
+@dataclass
+class FittedLineView:
+    """The per-line fields the SNR-prune / VIF-collapse decisions reason about.
+
+    One thin projection of a fitted line -- ``(frequency_mhz, offset_mhz,
+    amplitude, amplitude_error, phase, snr, origin)`` plus its ``index`` in the
+    source peak list -- computable from *either* a Stage-5
+    :class:`~ftmwpipeline.fitting.plan_execution.WindowOutcome` (the in-walk
+    cleanup) or a persisted
+    :class:`~ftmwpipeline.core.data_structures.FittingResult` (the post-fit
+    user-edit path). The prune/collapse decision code takes a list of these, so
+    there is one decision path and no per-iteration ``FittingResult``
+    construction inside the fit walk.
+
+    ``offset_mhz`` is the signed-baseband offset the in-walk refit edits in;
+    ``index`` is the line's position in the source list so an edit can target it.
+    """
+
+    frequency_mhz: float
+    offset_mhz: float
+    amplitude: float
+    amplitude_error: Optional[float]
+    phase: float
+    snr: Optional[float]
+    origin: str
+    index: int
+
+    def amplitude_vif(self) -> Optional[float]:
+        """Diagonal amplitude variance-inflation factor ``(amp_err/amp)*snr``.
+
+        Mirrors :func:`ftmwpipeline.fitting.validation.amplitude_vif` on the
+        view's fields (the overfit discriminant). ``None`` when any input is
+        missing / non-finite or the amplitude is zero."""
+        amp = float(self.amplitude)
+        amp_err = self.amplitude_error
+        snr = self.snr
+        if amp_err is None or snr is None:
+            return None
+        if not (math.isfinite(amp) and math.isfinite(amp_err) and math.isfinite(snr)):
+            return None
+        if abs(amp) <= 0.0:
+            return None
+        return abs(amp_err / amp) * float(snr)
+
+
+def outcome_line_views(
+    outcome: WindowOutcome,
+    *,
+    sideband: SidebandLike,
+    acquisition_us: float,
+) -> List[FittedLineView]:
+    """Fitted-line views for a live :class:`WindowOutcome` (the in-walk path).
+
+    Derives ``snr`` / ``amplitude_error`` by the same formulas
+    :func:`window_outcome_to_fitting_result` uses, so a view computed here
+    matches the line's persisted fields exactly. Every line carries
+    ``origin="auto"`` -- the automatic fit has no user-origin peaks (those enter
+    only on the post-fit edit path)."""
+    inner = outcome.fit.fit
+    center_mhz = _window_center(outcome)
+    s = sideband_sign(sideband)
+    rms_mean = float(np.mean(np.asarray(outcome.rms_noise, dtype=float)))
+    tau_us = inner.tau_us
+    tau_eff = (
+        effective_tau_shape(inner.shape, tau_us, acquisition_us)
+        if tau_us > 0
+        else float("nan")
+    )
+    views: List[FittedLineView] = []
+    for i, peak in enumerate(inner.peaks):
+        peak_error = inner.peak_errors[i] if i < len(inner.peak_errors) else None
+        if rms_mean > 0 and np.isfinite(tau_eff):
+            snr: Optional[float] = float(0.5 * peak.amplitude * tau_eff / rms_mean)
+        else:
+            snr = None
+        amp_err = (
+            float(peak_error.amplitude)
+            if peak_error is not None and np.isfinite(peak_error.amplitude)
+            else None
+        )
+        views.append(
+            FittedLineView(
+                frequency_mhz=float(center_mhz + s * peak.offset_mhz),
+                offset_mhz=float(peak.offset_mhz),
+                amplitude=float(peak.amplitude),
+                amplitude_error=amp_err,
+                phase=float(peak.phase),
+                snr=snr,
+                origin="auto",
+                index=i,
+            )
+        )
+    return views
+
+
+def result_line_views(
+    wf: FittingResult,
+    *,
+    sideband: SidebandLike,
+) -> List[FittedLineView]:
+    """Fitted-line views for a persisted :class:`FittingResult` (the post-fit
+    user-edit path). Reads the already-computed per-peak fields straight off
+    each :class:`~ftmwpipeline.core.data_structures.FittedPeak`."""
+    center_mhz = None
+    if wf.window is not None and wf.window.freq_range is not None:
+        lo, hi = wf.window.freq_range
+        center_mhz = 0.5 * (lo + hi)
+    s = sideband_sign(sideband)
+    views: List[FittedLineView] = []
+    for i, p in enumerate(wf.fitted_peaks):
+        offset = (
+            float(s * (float(p.frequency_mhz) - center_mhz))
+            if center_mhz is not None
+            else float("nan")
+        )
+        views.append(
+            FittedLineView(
+                frequency_mhz=float(p.frequency_mhz),
+                offset_mhz=offset,
+                amplitude=float(p.amplitude),
+                amplitude_error=(
+                    float(p.amplitude_error) if p.amplitude_error is not None else None
+                ),
+                phase=float(p.phase) if p.phase is not None else 0.0,
+                snr=float(p.snr) if p.snr is not None else None,
+                origin=getattr(p, "origin", "auto"),
+                index=i,
+            )
+        )
+    return views
 
 
 # ---------------------------------------------------------------------------
@@ -563,10 +705,14 @@ def window_outcome_to_fitting_result(
         "peak_ids": [p.peak_id for p in fitted_peaks],
     }
 
-    # Fixed parameters: one entry per frozen contributor used in the fit.
-    for frozen in outcome.fixed_peaks:
-        key = f"frozen_peak_{frozen.peak_index}"
-        result.fixed_parameters[key] = {
+    # Fixed parameters: one entry per frozen ancestor line used in the fit. The
+    # content is the ancestor's *fitted* (frequency, amplitude, phase) -- not a
+    # Stage-3 contributor snapshot -- so the entries carry no Stage-3
+    # ``peak_index`` (it is ``-1``); key by enumeration to keep the keys unique
+    # (``_reconstruct_frozen_peaks`` reads every ``frozen_peak_*`` entry by value,
+    # so the key index is immaterial on the round-trip).
+    for i, frozen in enumerate(outcome.fixed_peaks):
+        result.fixed_parameters[f"frozen_peak_{i}"] = {
             "peak_index": frozen.peak_index,
             "primary_window_id": frozen.primary_window_id,
             "frequency_mhz": frozen.frequency_mhz,

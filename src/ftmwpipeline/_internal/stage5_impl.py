@@ -26,7 +26,18 @@ import copy
 import logging
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    Union,
+    cast,
+)
 
 import h5py
 import numpy as np
@@ -52,9 +63,12 @@ from ..fitting.active_ft import compute_active_ft
 from ..fitting.clock_lattice import ClockLattice, build_clock_lattice
 from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
+    FinalizeNode,
     ReplanContext,
+    WindowOutcome,
     execute_plan,
     parallel_window_refit_map,
+    refit_outcome,
 )
 from ..fitting.result_conversion import (
     plan_fit_outcome_to_spectrum_fit,
@@ -101,6 +115,9 @@ from .stage3_impl import (
     load_peaks_impl,
 )
 from .stage4_impl import load_windows_impl
+
+if TYPE_CHECKING:
+    from ..fitting.result_conversion import FittedLineView
 
 logger = logging.getLogger(__name__)
 
@@ -956,6 +973,350 @@ def apply_window_cleanup(
         "n_spur_only_dropped": len(dropped_spur),
         "spur_only_dropped": dropped_spur,
     }
+
+
+# ---------------------------------------------------------------------------
+# Per-node cleanup, in outcome space (folded into the fit walk's per-node tail)
+# ---------------------------------------------------------------------------
+# The SNR-survival prune and VIF-collapse, re-expressed on a live
+# ``WindowOutcome`` and driven by ``refit_outcome`` instead of the global
+# post-pass over persisted ``FittingResult`` s. Folding them into the walk's
+# per-node tail means every dependent window is fit against an *already cleaned*
+# source (the ``#3b`` stale-frozen-background class), and each refit inherits the
+# node's exact fit kwargs (per-band tau anchor, baseline order, spur mask) by
+# construction -- the global-anchor bug class cannot recur.
+
+
+def _is_survival_dust_view(view: "FittedLineView", floor: float) -> bool:
+    """True when ``view`` is auto-origin dust below the SNR floor (outcome twin
+    of :func:`_is_survival_dust`)."""
+    import math
+
+    snr = view.snr
+    if view.origin == "user" or snr is None:
+        return False
+    if isinstance(snr, float) and math.isnan(snr):
+        return False
+    return snr < floor
+
+
+def _prune_outcome(
+    outcome: "WindowOutcome",
+    floor: float,
+    *,
+    sideband: Sideband,
+    acquisition_us: float,
+    records: List[Dict[str, Any]],
+) -> Tuple[Optional["WindowOutcome"], int]:
+    """Prune one window's sub-floor dust to a fixpoint, in outcome space.
+
+    Outcome twin of :func:`_survival_prune_window`: remove the single lowest-SNR
+    dust line, refit the survivors via :func:`refit_outcome`, re-classify, repeat.
+    Returns ``(outcome, n_refits)``; ``outcome`` is ``None`` when the window
+    cascades to empty (its last line is itself dust)."""
+    from ..fitting.result_conversion import outcome_line_views
+
+    current = outcome
+    n_refits = 0
+    while True:
+        views = outcome_line_views(
+            current, sideband=sideband, acquisition_us=acquisition_us
+        )
+        dust = [v for v in views if _is_survival_dust_view(v, floor)]
+        if not dust:
+            return current, n_refits
+        worst = min(dust, key=lambda v: cast(float, v.snr))
+        records.append(
+            {
+                "window_id": int(current.window_id),
+                "frequency_mhz": float(worst.frequency_mhz),
+                "snr": float(cast(float, worst.snr)),
+            }
+        )
+        if len(views) == 1:
+            return None, n_refits
+        current = refit_outcome(current, remove_offsets=[worst.offset_mhz])
+        n_refits += 1
+
+
+def _collapse_outcome(
+    outcome: "WindowOutcome",
+    *,
+    vif_threshold: float,
+    max_sep_res: float,
+    res_element_mhz: float,
+    sideband: Sideband,
+    acquisition_us: float,
+    snap_tol_mhz: float,
+    max_iterations: int,
+    records: List[Dict[str, Any]],
+) -> "WindowOutcome":
+    """Collapse degenerate sub-resolution overfit pairs to a fixpoint, in outcome
+    space (outcome twin of :func:`apply_vif_collapse`'s ``_collapse_one``).
+
+    Same gate (amplitude VIF + separation + footprint guard), same sequence
+    (frozen single-pair merge sweep to a fixpoint -> one all-free relax -> repeat
+    over the relaxed result, capped at ``max_iterations``). Each merge appends a
+    collapse provenance record; the merged line's frequency-error inflation by
+    the unresolved spread is applied at end-of-walk from those records (reusing
+    :func:`_inflate_merged_frequency_errors`)."""
+    from ..fitting.peak_model import ModelPeak, sideband_sign
+    from ..fitting.result_conversion import FittedLineView, outcome_line_views
+
+    max_sep_mhz = max_sep_res * res_element_mhz
+    footprint_cap_mhz = _COLLAPSE_FOOTPRINT_MAX_RES * res_element_mhz
+    s = sideband_sign(sideband)
+    center_mhz = float(getattr(outcome, "_center_mhz"))
+
+    Footprint = Tuple[float, float, float]
+
+    def _collapse_rank(v: FittedLineView) -> Optional[float]:
+        vif = v.amplitude_vif()
+        if vif is not None:
+            return vif if vif > vif_threshold else None
+        amp = float(v.amplitude)
+        snr = v.snr
+        amp_err = v.amplitude_error
+        amplitude_singular = amp_err is None or not np.isfinite(amp_err)
+        if (
+            snr is not None
+            and np.isfinite(snr)
+            and np.isfinite(amp)
+            and abs(amp) > 0.0
+            and amplitude_singular
+        ):
+            return float("inf")
+        return None
+
+    def _select_pair(
+        views: List[FittedLineView], foots: List[Footprint]
+    ) -> Optional[Tuple[int, int]]:
+        if len(views) < 2:
+            return None
+        ranks = [_collapse_rank(v) for v in views]
+        high_vif_order = sorted(
+            (i for i, r in enumerate(ranks) if r is not None),
+            key=lambda i: -(ranks[i] or 0.0),
+        )
+        for i in high_vif_order:
+            fi = float(views[i].frequency_mhz)
+            best_j: Optional[int] = None
+            best_d = float("inf")
+            for j in range(len(views)):
+                if j == i:
+                    continue
+                fj = float(views[j].frequency_mhz)
+                d = abs(fi - fj)
+                if d > max_sep_mhz or d >= best_d:
+                    continue
+                lo = min(foots[i][1], foots[j][1], fi, fj)
+                hi = max(foots[i][2], foots[j][2], fi, fj)
+                if hi - lo > footprint_cap_mhz:
+                    continue
+                best_d, best_j = d, j
+            if best_j is not None:
+                return (i, best_j)
+        return None
+
+    def _merged_seed(
+        va: FittedLineView, vb: FittedLineView
+    ) -> Tuple[float, float, float]:
+        """Merged-line seed offset / amplitude / phase. Defaults to the
+        amplitude-weighted centroid + summed amplitude; reuses a recorded
+        doublet adjudication's converged merged model when present (offset-frame
+        twin of :func:`_merged_seed_for_pair`)."""
+        import math as _math
+
+        oa, ob = float(va.offset_mhz), float(vb.offset_mhz)
+        aw, bw = abs(float(va.amplitude)), abs(float(vb.amplitude))
+        total = aw + bw if (aw + bw) > 0 else 1.0
+        centroid_off = (oa * aw + ob * bw) / total
+        centroid_amp = float(va.amplitude) + float(vb.amplitude)
+        m_off, m_amp, m_phase = centroid_off, centroid_amp, 0.0
+        for adj in getattr(outcome, "doublet_adjudications", []):
+            a, b = float(adj.offset_a_mhz), float(adj.offset_b_mhz)
+            pair_match = (
+                abs(a - oa) <= snap_tol_mhz and abs(b - ob) <= snap_tol_mhz
+            ) or (abs(a - ob) <= snap_tol_mhz and abs(b - oa) <= snap_tol_mhz)
+            if (
+                pair_match
+                and adj.merged_success
+                and _math.isfinite(float(adj.merged_offset_mhz))
+            ):
+                m_off = float(adj.merged_offset_mhz)
+                if _math.isfinite(float(adj.merged_amplitude)):
+                    m_amp = float(adj.merged_amplitude)
+                if _math.isfinite(float(adj.merged_phase)):
+                    m_phase = float(adj.merged_phase)
+                break
+        return m_off, m_amp, m_phase
+
+    def _rekey_footprints(
+        views: List[FittedLineView], prev: List[Footprint]
+    ) -> List[Footprint]:
+        used: set[int] = set()
+        out: List[Footprint] = []
+        for v in views:
+            f = float(v.frequency_mhz)
+            best_k = -1
+            best_d = float("inf")
+            for k, (c, _lo, _hi) in enumerate(prev):
+                if k in used:
+                    continue
+                d = abs(f - c)
+                if d < best_d:
+                    best_d, best_k = d, k
+            if best_k >= 0:
+                used.add(best_k)
+                _c, lo, hi = prev[best_k]
+                out.append((f, lo, hi))
+            else:
+                out.append((f, f, f))
+        return out
+
+    cur = outcome
+    views = outcome_line_views(cur, sideband=sideband, acquisition_us=acquisition_us)
+    foots: List[Footprint] = [(float(v.frequency_mhz),) * 3 for v in views]
+    pending: List[Dict[str, Any]] = []
+    wid = int(cur.window_id)
+
+    for _ in range(max(1, max_iterations)):
+        merged_this_pass = 0
+        while True:
+            views = outcome_line_views(
+                cur, sideband=sideband, acquisition_us=acquisition_us
+            )
+            if len(views) < 2:
+                break
+            pair = _select_pair(views, foots)
+            if pair is None:
+                break
+            i, j = pair
+            va, vb = views[i], views[j]
+            vif_a, vif_b = va.amplitude_vif(), vb.amplitude_vif()
+            m_off, m_amp, m_phase = _merged_seed(va, vb)
+            merge_freq = float(center_mhz + s * m_off)
+            seed = ModelPeak(
+                amplitude=max(abs(m_amp), 1e-30),
+                offset_mhz=float(m_off),
+                phase=float(m_phase),
+            )
+            fa, fb = float(va.frequency_mhz), float(vb.frequency_mhz)
+            amp_a, amp_b = abs(float(va.amplitude)), abs(float(vb.amplitude))
+            w_sum = amp_a + amp_b
+            if w_sum > 0.0:
+                f_centroid = (amp_a * fa + amp_b * fb) / w_sum
+                spread = float(
+                    np.sqrt(
+                        (
+                            amp_a * (fa - f_centroid) ** 2
+                            + amp_b * (fb - f_centroid) ** 2
+                        )
+                        / w_sum
+                    )
+                )
+            else:
+                spread = 0.5 * abs(fa - fb)
+            pending.append(
+                {
+                    "window_id": wid,
+                    "frequency_a_mhz": fa,
+                    "frequency_b_mhz": fb,
+                    "vif_a": vif_a,
+                    "vif_b": vif_b,
+                    "separation_res": (
+                        abs(fa - fb) / res_element_mhz if res_element_mhz > 0 else None
+                    ),
+                    "merged_frequency_mhz": merge_freq,
+                    "unresolved_spread_mhz": spread,
+                }
+            )
+            merged_foot: Footprint = (
+                merge_freq,
+                min(foots[i][1], foots[j][1], fa, fb),
+                max(foots[i][2], foots[j][2], fa, fb),
+            )
+            next_foots = [foots[k] for k in range(len(foots)) if k not in (i, j)] + [
+                merged_foot
+            ]
+            cur = refit_outcome(
+                cur,
+                remove_offsets=[va.offset_mhz, vb.offset_mhz],
+                add_seeds=[seed],
+                freeze_inherited=True,
+            )
+            views = outcome_line_views(
+                cur, sideband=sideband, acquisition_us=acquisition_us
+            )
+            foots = _rekey_footprints(views, next_foots)
+            merged_this_pass += 1
+
+        if merged_this_pass == 0:
+            break
+
+        cur = refit_outcome(cur, freeze_inherited=False)
+        views = outcome_line_views(
+            cur, sideband=sideband, acquisition_us=acquisition_us
+        )
+        foots = [(float(v.frequency_mhz),) * 3 for v in views]
+
+    records.extend(pending)
+    return cur
+
+
+def build_finalize_node(
+    *,
+    floor: float,
+    enabled: bool,
+    vif_threshold: float,
+    max_sep_res: float,
+    res_element_mhz: float,
+    sideband: Sideband,
+    acquisition_us: float,
+    snap_tol_mhz: float = 0.05,
+    max_iterations: int = 5,
+) -> "FinalizeNode":
+    """Build the per-node cleanup callback injected into the fit walk.
+
+    The returned ``finalize_node(outcome) -> NodeCleanup`` prunes one window's
+    sub-floor dust to a fixpoint, then collapses its degenerate sub-resolution
+    pairs to a fixpoint -- in outcome space, driving :func:`refit_outcome`. The
+    per-window prune / collapse provenance rides on the :class:`NodeCleanup`
+    (carried out even on a drop); the end-of-walk aggregation derives the
+    ``peak_survival`` / ``vif_collapse`` diagnostics from it. A disabled cleanup
+    returns the outcome untouched."""
+    from ..fitting.plan_execution import NodeCleanup
+
+    def finalize_node(outcome: "WindowOutcome") -> "NodeCleanup":
+        if not enabled:
+            return NodeCleanup(outcome=outcome)
+        pruned_records: List[Dict[str, Any]] = []
+        result, _ = _prune_outcome(
+            outcome,
+            floor,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            records=pruned_records,
+        )
+        if result is None:
+            return NodeCleanup(outcome=None, pruned=pruned_records)
+        collapse_records: List[Dict[str, Any]] = []
+        result = _collapse_outcome(
+            result,
+            vif_threshold=vif_threshold,
+            max_sep_res=max_sep_res,
+            res_element_mhz=res_element_mhz,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            snap_tol_mhz=snap_tol_mhz,
+            max_iterations=max_iterations,
+            records=collapse_records,
+        )
+        return NodeCleanup(
+            outcome=result, pruned=pruned_records, collapses=collapse_records
+        )
+
+    return finalize_node
 
 
 @dataclass
@@ -1880,6 +2241,22 @@ def _fit_peaks_impl(
             }
         )
 
+    # Per-node cleanup, folded into the fit walk's per-node tail: prune sub-floor
+    # dust + collapse degenerate sub-resolution pairs the moment a window
+    # converges, before the DAG releases its dependents -- so every dependent is
+    # fit against an already-cleaned source (no stale frozen-background snapshot)
+    # and each cleanup refit inherits the node's exact fit kwargs (per-band tau /
+    # baseline / spur) by construction.
+    finalize_node = build_finalize_node(
+        floor=peak_survival_floor_v,
+        enabled=peak_survival_enabled_v,
+        vif_threshold=vif_collapse_threshold_v,
+        max_sep_res=collapse_max_sep_res_v,
+        res_element_mhz=(1.0 / acquisition_us if acquisition_us > 0 else 0.0),
+        sideband=sideband,
+        acquisition_us=acquisition_us,
+    )
+
     plan_outcome = execute_plan(
         plan,
         active_ft,
@@ -1906,6 +2283,7 @@ def _fit_peaks_impl(
         baseline_smooth_threshold=baseline_smooth_threshold_v,
         doublet_kwargs=doublet_kwargs,
         jobs=jobs,
+        finalize_node=finalize_node,
     )
     # A structural replan (merge) rebuilds the plan inside ``execute_plan`` --
     # the survivor's ``freq_range`` becomes the union of the merged windows.
@@ -2019,110 +2397,77 @@ def _fit_peaks_impl(
     # was present (``clock_lattice`` is ``None``).
     annotate_lattice_matches(spectrum_fit, clock_lattice)
 
-    # Peak-survival prune: drop dust below the SNR floor, re-fitting any
-    # partially-pruned window so the surviving peaks' parameters / covariance /
-    # χ²ᵣ are re-estimated free of the removed dust (not a stale slice). The
-    # refit routes through the bare in-memory window-refit core, reusing the
-    # live fit context / plan / resolved settings -- no file reload, no spur
-    # re-derivation.
+    # Peak-survival cleanup now runs *in the walk's per-node tail*
+    # (``build_finalize_node`` injected into ``execute_plan``): each window's
+    # sub-floor dust is pruned and its degenerate sub-resolution pairs collapsed
+    # the moment it converges, before the DAG releases its dependents -- so a
+    # dependent reads the cleaned source the first time. Here we only (1) roll the
+    # per-window cleanup provenance the walk collected into the same
+    # ``peak_survival`` / ``vif_collapse`` diagnostics the global post-pass used
+    # to write, and (2) inflate each merged line's frequency error by its
+    # unresolved-component spread.
+    res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.0
     if peak_survival_enabled_v:
-        from .stage6_impl import refit_window_core
+        pruned_records: List[Dict[str, Any]] = []
+        dropped_window_ids: List[int] = []
+        collapse_records: List[Dict[str, Any]] = []
+        n_iterations = 0
+        collapses_by_window: Dict[int, List[Dict[str, Any]]] = {}
+        for rec in plan_outcome.cleanup_history:
+            pruned_records.extend(rec.get("pruned", []))
+            if rec.get("dropped"):
+                dropped_window_ids.append(int(rec["window_id"]))
+            wcoll = rec.get("collapses", [])
+            if wcoll:
+                collapse_records.extend(wcoll)
+                collapses_by_window.setdefault(int(rec["window_id"]), []).extend(wcoll)
+                n_iterations = max(n_iterations, len(wcoll))
 
-        survival_window_map = {w.window_id: w for w in final_plan.windows}
+        # Inflate each merged line's frequency error to sqrt(formal^2 + spread^2)
+        # -- the collapsed multiplet's position is honestly known only to within
+        # its unresolved-component spread. Per window, from the recorded merges.
+        wf_by_id = {int(cast(int, wf.window_id)): wf for wf in spectrum_fit.window_fits}
+        for wid, wcoll in collapses_by_window.items():
+            wf_target = wf_by_id.get(wid)
+            if wf_target is not None:
+                _inflate_merged_frequency_errors(wf_target, wcoll)
 
-        def _survival_refit(
-            wf: FittingResult, dust_freqs: List[float]
-        ) -> FittingResult:
-            # Anchor the refit's tau penalty at this window's per-band tau (the
-            # same one the main fit used), not the global band-wide tau_maj.
-            tm, st = window_tau_overrides.get(
-                cast(int, wf.window_id), (tau_maj_us, sigma_tau_us)
-            )
-            return refit_window_core(
-                fit_ctx,
-                survival_window_map[cast(int, wf.window_id)],
-                wf,
-                resolved=resolved,
-                shape_enum=shape_enum,
-                tau_maj_us=tm,
-                sigma_tau_us=st,
-                peak_frequencies_mhz=peak_frequencies_mhz,
-                peak_detection_passes=peak_detection_passes,
-                remove=tuple(dust_freqs),
-            )
+        # Rebuild the global sorted line list after the inflation (positions are
+        # unchanged, but keep the contract that fitted_peaks mirrors the windows).
+        all_peaks: List[FittedPeak] = [
+            p for wf in spectrum_fit.window_fits for p in wf.fitted_peaks
+        ]
+        all_peaks.sort(key=lambda p: p.frequency_mhz)
+        spectrum_fit.fitted_peaks = all_peaks
 
-        n_before = spectrum_fit.n_fitted_peaks
-        apply_snr_survival_prune(
-            spectrum_fit,
-            peak_survival_floor_v,
-            refit_window=_survival_refit,
-            jobs=jobs,
-        )
-        n_pruned = n_before - spectrum_fit.n_fitted_peaks
-        if n_pruned:
+        spectrum_fit.diagnostics["peak_survival"] = {
+            "snr_floor": float(peak_survival_floor_v),
+            "n_pruned": len(pruned_records),
+            "pruned": pruned_records,
+            "dropped_window_ids": dropped_window_ids,
+        }
+        spectrum_fit.diagnostics["vif_collapse"] = {
+            "vif_threshold": float(vif_collapse_threshold_v),
+            "max_separation_res": float(collapse_max_sep_res_v),
+            "footprint_max_res": float(_COLLAPSE_FOOTPRINT_MAX_RES),
+            "res_element_mhz": float(res_element_mhz),
+            "n_collapsed_pairs": len(collapse_records),
+            "n_iterations": n_iterations,
+            "collapses": collapse_records,
+        }
+        if pruned_records:
             logger.info(
                 "Stage 5 peak-survival prune: removed %d sub-floor peaks "
                 "(snr < %.2f), %d windows emptied",
-                n_pruned,
+                len(pruned_records),
                 peak_survival_floor_v,
-                len(
-                    spectrum_fit.diagnostics.get("peak_survival", {}).get(
-                        "dropped_window_ids", []
-                    )
-                ),
+                len(dropped_window_ids),
             )
-
-        # Degenerate-overfit collapse: merge near-degenerate sub-resolution
-        # pairs (high amplitude VIF within < collapse_max_separation_res
-        # resolution elements). Runs after the prune (dust gone), refits the
-        # touched window through the same core with the merged line stamped
-        # origin="auto". The resolution element is 1 / T_active (MHz).
-        def _collapse_refit(
-            wf: FittingResult,
-            remove_freqs: List[float],
-            add_freqs: List[float],
-            add_seeds: List[Any],
-            freeze: bool,
-        ) -> FittingResult:
-            # Per-band tau anchor for this window (matches the main fit).
-            tm, st = window_tau_overrides.get(
-                cast(int, wf.window_id), (tau_maj_us, sigma_tau_us)
-            )
-            return refit_window_core(
-                fit_ctx,
-                survival_window_map[cast(int, wf.window_id)],
-                wf,
-                resolved=resolved,
-                shape_enum=shape_enum,
-                tau_maj_us=tm,
-                sigma_tau_us=st,
-                peak_frequencies_mhz=peak_frequencies_mhz,
-                peak_detection_passes=peak_detection_passes,
-                remove=tuple(remove_freqs),
-                add=tuple(add_freqs),
-                add_seeds=add_seeds if add_seeds else None,
-                add_origin="auto",
-                freeze_inherited=freeze,
-            )
-
-        res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0 else 0.0
-        apply_vif_collapse(
-            spectrum_fit,
-            vif_threshold=vif_collapse_threshold_v,
-            max_sep_res=collapse_max_sep_res_v,
-            res_element_mhz=res_element_mhz,
-            sideband=sideband,
-            refit_collapse=_collapse_refit,
-            jobs=jobs,
-        )
-        n_collapsed = len(
-            spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])
-        )
-        if n_collapsed:
+        if collapse_records:
             logger.info(
                 "Stage 5 VIF collapse: merged %d degenerate sub-resolution "
                 "pair(s) (VIF > %.0f within %.2f resolution elements)",
-                n_collapsed,
+                len(collapse_records),
                 vif_collapse_threshold_v,
                 collapse_max_sep_res_v,
             )
