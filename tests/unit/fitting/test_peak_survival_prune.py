@@ -14,6 +14,20 @@ from ftmwpipeline.core.data_structures import (
     FittingResult,
     SpectrumFit,
 )
+from ftmwpipeline.fitting import plan_execution
+
+
+@pytest.fixture(autouse=True)
+def _serial_window_pool(monkeypatch):
+    """Pin the per-window refit map to the in-process serial path.
+
+    These tests exercise the prune/collapse per-window logic and reassembly with
+    side-effecting stub closures (call capture / counts); the parallel path would
+    fork a process pool and run the stubs in children, losing the parent-side
+    mutations and adding fork overhead. Pinning the worker count to 1 keeps the
+    helper on its serial fallback -- the per-window logic is identical either way.
+    """
+    monkeypatch.setattr(plan_execution, "_FIT_WINDOW_WORKERS", 1)
 
 
 def _make_peak(

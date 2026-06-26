@@ -78,10 +78,20 @@ class TestAcceptReject:
             ModelPeak(_amp_for_snr(90.0), 0.6, 2.0),
         ]
         u, z = _window(true, 2.0, 1.0, rng)
-        # The third candidate sits where there is no line.
+        # The third candidate sits where there is no line. The two real lines
+        # are primary (Stage-3 BH) seeds; the spurious nomination is a gap-pass
+        # candidate, so it faces the add-one accept gate (and is rejected).
         candidates = [-0.5, 0.6, 1.4]
 
-        res = conservative_fit(u, z, 1.0, candidates, TAU_US, T_US)
+        res = conservative_fit(
+            u,
+            z,
+            1.0,
+            candidates,
+            TAU_US,
+            T_US,
+            candidate_passes=["primary", "primary", "gap"],
+        )
 
         assert res.n_peaks == 2
         # The spurious candidate appears in the trail but was never accepted.
@@ -90,6 +100,28 @@ class TestAcceptReject:
             and s.decision in ("tentative", "reject")
             for s in res.audit_trail
         )
+
+    def test_seeds_all_primary_up_front(self):
+        """Every primary (BH) candidate is seeded in one joint fit, recorded as
+        a single ``seed`` step -- not built up one-at-a-time through the
+        add-one accept gate."""
+        rng = np.random.default_rng(SEED)
+        true = [
+            ModelPeak(_amp_for_snr(120.0), -0.6, 0.4),
+            ModelPeak(_amp_for_snr(90.0), 0.6, 2.0),
+        ]
+        u, z = _window(true, 2.0, 1.0, rng)
+        # Both candidates are primary detections (the default labelling).
+        res = conservative_fit(u, z, 1.0, [-0.6, 0.6], TAU_US, T_US)
+
+        assert res.n_peaks == 2
+        # A single up-front seed step covers all primaries; no add-one accept.
+        assert res.audit_trail[0].decision == "seed"
+        assert "all-primary" in res.audit_trail[0].reason
+        assert all(s.decision != "accept" for s in res.audit_trail)
+        recovered = sorted(p.offset_mhz for p in res.peaks)
+        for got, want in zip(recovered, sorted(p.offset_mhz for p in true)):
+            assert abs(got - want) < 0.02
 
     def test_empty_candidate_list(self):
         """No candidates -> a graceful empty result."""
@@ -105,11 +137,20 @@ class TestAcceptReject:
         rng = np.random.default_rng(SEED)
         true = [ModelPeak(_amp_for_snr(150.0), 0.0, 0.5)]
         u, z = _window(true, 1.5, 1.0, rng)
-        # A second candidate a hundredth of a FWHM from the real line.
+        # A second candidate a hundredth of a FWHM from the real line. The real
+        # line is the primary seed; the near-duplicate is a gap candidate, so
+        # the add-one separation check (not the up-front seed) drops it.
         candidates = [0.0, 0.01 * FWHM]
 
         res = conservative_fit(
-            u, z, 1.0, candidates, TAU_US, T_US, min_separation_factor=1.0
+            u,
+            z,
+            1.0,
+            candidates,
+            TAU_US,
+            T_US,
+            min_separation_factor=1.0,
+            candidate_passes=["primary", "gap"],
         )
         assert res.n_peaks == 1
         assert any(
@@ -130,6 +171,10 @@ class TestAcceptReject:
         kwargs = dict(
             min_separation_factor=1.0,
             seeder_max_k=1,  # force the add-loop (not the seeder) to resolve it
+            # The compromise-positioned line is the primary seed; the second
+            # component is a gap candidate so the add-loop's blend-split trial
+            # (not the up-front joint seed) is what resolves the doublet.
+            candidate_passes=["primary", "gap"],
         )
 
         res = conservative_fit(u, z, 1.0, [0.0, sep], TAU_US, T_US, **kwargs)
@@ -211,8 +256,19 @@ class TestAuditTrail:
         u, z = _window(true, 2.0, 1.0, rng)
         # The escalating seeder (straddle + residual re-seed) would resolve
         # the second line at seed time; hold it at K=1 so the add-one-peak
-        # loop's accept decision is what the trail exercises.
-        res = conservative_fit(u, z, 1.0, [-0.6, 0.5], TAU_US, T_US, seeder_max_k=1)
+        # loop's accept decision is what the trail exercises. Only the first
+        # line is a primary (up-front) seed; the second is a gap candidate the
+        # add-one loop accepts.
+        res = conservative_fit(
+            u,
+            z,
+            1.0,
+            [-0.6, 0.5],
+            TAU_US,
+            T_US,
+            seeder_max_k=1,
+            candidate_passes=["primary", "gap"],
+        )
 
         assert len(res.audit_trail) == res.n_iterations
         assert all(isinstance(s, AddStep) for s in res.audit_trail)

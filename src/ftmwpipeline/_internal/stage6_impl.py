@@ -946,6 +946,7 @@ def refit_window_core(
     tau_maj_us: Optional[float],
     sigma_tau_us: Optional[float],
     peak_frequencies_mhz: List[float],
+    peak_detection_passes: Optional[Sequence[str]] = None,
     add: Sequence[float] = (),
     remove: Sequence[float] = (),
     add_seeds: Optional[List[ModelPeak]] = None,

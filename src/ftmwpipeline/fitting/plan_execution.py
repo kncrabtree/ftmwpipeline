@@ -917,6 +917,7 @@ def fit_window_with_fixed_contributors(
     acquisition_us: float,
     early_baseline_order: Optional[int] = None,
     early_baseline_smooth_threshold: Optional[float] = None,
+    candidate_passes: Optional[Sequence[str]] = None,
     **conservative_kwargs: Any,
 ) -> tuple[ConservativeFitResult, np.ndarray, np.ndarray, np.ndarray]:
     """Conservative free-peak fit of a window with frozen contributors.
@@ -987,6 +988,7 @@ def fit_window_with_fixed_contributors(
         tau0_us,
         acquisition_us,
         gate_background=background,
+        candidate_passes=candidate_passes,
         **conservative_kwargs,
     )
     if (
@@ -1021,6 +1023,7 @@ def fit_window_with_fixed_contributors(
                 tau0_us,
                 acquisition_us,
                 gate_background=background,
+                candidate_passes=candidate_passes,
                 **retry_kwargs,
             )
             # Adopt only on a strict raw-chi-squared win: the re-run spends
@@ -1596,15 +1599,25 @@ def materialize_window(
 def _peaks_to_candidate_offsets(
     fit_window_spec: FitWindow,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Sequence[str],
     center_mhz: float,
     sideband: SidebandLike,
-) -> list[float]:
-    """Free-peak frequencies (MHz) -> signed baseband offsets in this window."""
+) -> tuple[list[float], list[str]]:
+    """Free-peak frequencies (MHz) -> signed baseband offsets in this window.
+
+    Returns the per-candidate baseband offsets and the index-aligned
+    detection-pass labels (``"primary"`` / ``"gap"``), both ordered by
+    ``fit_window_spec.free_peak_indices``.
+    """
     s = sideband_sign(sideband)
-    return [
+    offsets = [
         float(s * (float(peak_frequencies_mhz[idx]) - center_mhz))
         for idx in fit_window_spec.free_peak_indices
     ]
+    passes = [
+        str(peak_detection_passes[idx]) for idx in fit_window_spec.free_peak_indices
+    ]
+    return offsets, passes
 
 
 def _debug_phase(wid: int, phase: str, outcome: "WindowOutcome") -> None:
@@ -1625,6 +1638,7 @@ def execute_plan(
     active_ft: ActiveFTResult,
     rms_noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Optional[Sequence[str]] = None,
     *,
     sideband: SidebandLike,
     acquisition_us: float,
@@ -1780,6 +1794,12 @@ def execute_plan(
     conservative_kwargs.setdefault("shape", shape)
     if window_tau_overrides is None:
         window_tau_overrides = {}
+    # Per-Stage-3-peak detection-pass label, threaded parallel to
+    # ``peak_frequencies_mhz`` for pass-aware seeding (currently unused).
+    # Normalize the unset case to all-"primary" so the internal chain always
+    # carries a concrete list aligned with the frequency list.
+    if peak_detection_passes is None:
+        peak_detection_passes = ["primary"] * len(peak_frequencies_mhz)
 
     noise = np.asarray(rms_noise, dtype=float)
     if noise.shape != active_ft.complex_spectrum.shape:
@@ -1803,6 +1823,7 @@ def execute_plan(
         active_ft=active_ft,
         noise=noise,
         peak_frequencies_mhz=peak_frequencies_mhz,
+        peak_detection_passes=peak_detection_passes,
         outcomes=outcomes,
         thaw_history=thaw_history,
         rescue_history=rescue_history,
@@ -1880,6 +1901,7 @@ def execute_plan(
                 active_ft=active_ft,
                 noise=noise,
                 peak_frequencies_mhz=peak_frequencies_mhz,
+                peak_detection_passes=peak_detection_passes,
                 outcomes=outcomes,
                 thaw_history=thaw_history,
                 rescue_history=rescue_history,
@@ -2001,6 +2023,7 @@ def _process_one_window(
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Sequence[str],
     outcomes: dict[int, WindowOutcome],
     thaw_history: list[ThawEvent],
     rescue_history: list[RescueEvent],
@@ -2052,6 +2075,7 @@ def _process_one_window(
         active_ft,
         noise,
         peak_frequencies_mhz=peak_frequencies_mhz,
+        peak_detection_passes=peak_detection_passes,
         outcomes=outcomes,
         sideband=sideband,
         acquisition_us=acquisition_us,
@@ -2177,6 +2201,7 @@ def _walk_windows_in_order(
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Sequence[str],
     outcomes: dict[int, WindowOutcome],
     thaw_history: list[ThawEvent],
     rescue_history: list[RescueEvent],
@@ -2242,6 +2267,7 @@ def _walk_windows_in_order(
             active_ft=active_ft,
             noise=noise,
             peak_frequencies_mhz=peak_frequencies_mhz,
+            peak_detection_passes=peak_detection_passes,
             outcomes=outcomes,
             thaw_history=thaw_history,
             rescue_history=rescue_history,
@@ -2369,6 +2395,72 @@ def _fit_window_worker(
     return wid, local_outcomes[wid], thaw_local, rescue_local
 
 
+# Set in the parent before a refit-map pool forks; read by the worker entry via
+# fork inheritance. The heavy per-window ``work`` closure (which captures the live
+# fit context, plan, and resolved settings) and the window list ride the fork;
+# only the small integer index goes out per task.
+_WORKER_REFIT_CTX: Optional[dict[str, Any]] = None
+
+
+def _refit_map_worker(index: int) -> Any:
+    """Process-pool entry: run one item of the fork-inherited per-window work.
+
+    Pins BLAS to a single thread (the per-window refit solve is single-threaded;
+    this avoids N-workers x M-BLAS-threads oversubscription, matching
+    :func:`_fit_window_worker`). The ``work`` callable and item list ride the
+    fork in :data:`_WORKER_REFIT_CTX`; only the integer ``index`` is pickled per
+    task.
+    """
+    ctx = _WORKER_REFIT_CTX
+    assert ctx is not None  # set in the parent before the pool forks
+    with threadpool_limits(limits=1):
+        return ctx["work"](ctx["items"][index])
+
+
+def parallel_window_refit_map(
+    items: Sequence[Any],
+    work: Any,
+    *,
+    jobs: Optional[int] = None,
+) -> list[Any]:
+    """Map ``work`` over ``items`` across the window fork pool, preserving order.
+
+    The post-fit cleanup passes (SNR-survival prune, VIF collapse) each loop over
+    independent windows doing a per-window NLS refit -- the serial tail of a full
+    fit. Each window's work is self-contained (its refit reconstructs that
+    window's own frozen background from the persisted fixed parameters), so the
+    items fan across the same forking process pool the window walk uses. Results
+    are returned in input order (``ProcessPoolExecutor.map`` preserves it), so the
+    caller's reassembly is deterministic regardless of completion order.
+
+    Falls back to an in-process serial map -- byte-identical to the pre-parallel
+    behavior, with no BLAS pinning -- when the pool is unavailable (forced off,
+    single worker, or no ``fork``) or there are fewer than two items.
+    """
+    n = len(items)
+    max_workers = resolve_worker_count(jobs, override=_FIT_WINDOW_WORKERS)
+    import multiprocessing
+
+    pool_available = (
+        max_workers >= 2 and "fork" in multiprocessing.get_all_start_methods()
+    )
+    if not pool_available or n < 2:
+        return [work(it) for it in items]
+
+    global _WORKER_REFIT_CTX
+    _WORKER_REFIT_CTX = {"work": work, "items": list(items)}
+    try:
+        from concurrent.futures import ProcessPoolExecutor
+
+        ctx_mp = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(
+            max_workers=min(max_workers, n), mp_context=ctx_mp
+        ) as ex:
+            return list(ex.map(_refit_map_worker, range(n)))
+    finally:
+        _WORKER_REFIT_CTX = None
+
+
 def _walk_windows_parallel(
     plan: WindowPlan,
     order: Sequence[int],
@@ -2376,6 +2468,7 @@ def _walk_windows_parallel(
     active_ft: ActiveFTResult,
     noise: np.ndarray,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Sequence[str],
     outcomes: dict[int, WindowOutcome],
     thaw_history: list[ThawEvent],
     rescue_history: list[RescueEvent],
@@ -2425,6 +2518,7 @@ def _walk_windows_parallel(
         active_ft=active_ft,
         noise=noise,
         peak_frequencies_mhz=peak_frequencies_mhz,
+        peak_detection_passes=peak_detection_passes,
         sideband=sideband,
         acquisition_us=acquisition_us,
         tau0_us=tau0_us,
@@ -2751,6 +2845,7 @@ def _fit_one_window(
     noise: np.ndarray,
     *,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Sequence[str],
     outcomes: dict[int, WindowOutcome],
     sideband: SidebandLike,
     acquisition_us: float,
@@ -2828,8 +2923,8 @@ def _fit_one_window(
             shape=conservative_kwargs.get("shape", "lorentzian"),
         )
 
-    candidate_offsets = _peaks_to_candidate_offsets(
-        win, peak_frequencies_mhz, center_mhz, sideband
+    candidate_offsets, candidate_passes = _peaks_to_candidate_offsets(
+        win, peak_frequencies_mhz, peak_detection_passes, center_mhz, sideband
     )
     # Drop nominated candidates that land on a spur core so the fitter never
     # seeds a peak on a spur. The residual mask still spans +/-N bins; the
@@ -2837,11 +2932,15 @@ def _fit_one_window(
     ck_for_fit = conservative_kwargs
     if spur_mask is not None and spur_mask.offsets_mhz:
         tol = spur_set.nomination_tol_mhz  # type: ignore[union-attr]
-        candidate_offsets = [
-            o
-            for o in candidate_offsets
+        # Filter the offsets and their detection-pass labels in lockstep so the
+        # two lists stay index-aligned through the spur-core drop.
+        pairs = [
+            (o, p)
+            for o, p in zip(candidate_offsets, candidate_passes)
             if not any(abs(o - so) <= tol for so in spur_mask.offsets_mhz)
         ]
+        candidate_offsets = [o for o, _ in pairs]
+        candidate_passes = [p for _, p in pairs]
         ck_for_fit = dict(conservative_kwargs)
         ck_for_fit["spur_mask"] = spur_mask
     # Inject per-window immunity params when provided (no-op when None).
@@ -2872,6 +2971,7 @@ def _fit_one_window(
             fit_tau=fit_tau,
             early_baseline_order=early_baseline_order,
             early_baseline_smooth_threshold=early_baseline_smooth_threshold,
+            candidate_passes=candidate_passes,
             **ck_for_fit,
         )
     )
@@ -2888,6 +2988,7 @@ def _fit_one_window(
             fit_tau=fit_tau,
             early_baseline_order=early_baseline_order,
             early_baseline_smooth_threshold=early_baseline_smooth_threshold,
+            candidate_passes=candidate_passes,
             **ck_for_fit,
         )
         ssr_without = _noise_weighted_ssr(full_residual, sig_slice)

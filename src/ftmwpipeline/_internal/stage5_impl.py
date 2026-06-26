@@ -54,6 +54,7 @@ from ..fitting.peak_model import PeakShape
 from ..fitting.plan_execution import (
     ReplanContext,
     execute_plan,
+    parallel_window_refit_map,
 )
 from ..fitting.result_conversion import (
     plan_fit_outcome_to_spectrum_fit,
@@ -330,6 +331,7 @@ def apply_snr_survival_prune(
     floor: float,
     *,
     refit_window: Callable[[FittingResult, List[float]], FittingResult],
+    jobs: Optional[int] = None,
 ) -> None:
     """Prune fitted peaks below the SNR survival floor (in-place).
 
@@ -367,13 +369,26 @@ def apply_snr_survival_prune(
         (:func:`~ftmwpipeline._internal.stage6_impl.refit_window_core`), which
         reconstructs the frozen background, replays the baseline, and
         re-converges the survivors honestly.
+    jobs :
+        Worker-pool size for the per-window prune (each window is independent;
+        see :func:`~ftmwpipeline.fitting.plan_execution.parallel_window_refit_map`).
+        ``None`` resolves through the standard ``FTMW_MAX_WORKERS`` / cpu-2 path.
     """
     pruned_records: List[Dict[str, Any]] = []
     dropped_window_ids: List[int] = []
 
+    def _prune_one(
+        wf: FittingResult,
+    ) -> Tuple[Optional[FittingResult], List[Dict[str, Any]]]:
+        local_records: List[Dict[str, Any]] = []
+        result, _ = _survival_prune_window(wf, floor, refit_window, local_records)
+        return result, local_records
+
+    results = parallel_window_refit_map(fit.window_fits, _prune_one, jobs=jobs)
+
     surviving_windows: List[FittingResult] = []
-    for wf in fit.window_fits:
-        result, _ = _survival_prune_window(wf, floor, refit_window, pruned_records)
+    for wf, (result, local_records) in zip(fit.window_fits, results):
+        pruned_records.extend(local_records)
         if result is None:
             dropped_window_ids.append(
                 int(wf.window_id) if wf.window_id is not None else -1
@@ -502,6 +517,7 @@ def apply_vif_collapse(
     ],
     snap_tol_mhz: float = 0.05,
     max_iterations: int = 5,
+    jobs: Optional[int] = None,
 ) -> None:
     """Collapse degenerate sub-resolution overfit pairs (in-place).
 
@@ -564,6 +580,10 @@ def apply_vif_collapse(
         Tolerance for matching a pair to a recorded doublet alternative.
     max_iterations :
         Maximum collapse<->relax sweeps over a window (convergence backstop).
+    jobs :
+        Worker-pool size for the per-window collapse (each window is independent;
+        see :func:`~ftmwpipeline.fitting.plan_execution.parallel_window_refit_map`).
+        ``None`` resolves through the standard ``FTMW_MAX_WORKERS`` / cpu-2 path.
     """
     from ..fitting.peak_model import ModelPeak, sideband_sign
 
@@ -635,29 +655,27 @@ def apply_vif_collapse(
                 out.append((f, f, f))
         return out
 
-    collapse_records: List[Dict[str, Any]] = []
-    n_iterations = 0  # most merges performed in any single window (diagnostic)
-
-    # Sequential per-window collapse to a fixpoint. Each merge collapses ONE pair
-    # and is followed by a *frozen* intermediate refit (only the new merged line
-    # free; every inherited peak, including a dominant 1e6 line, held at its
-    # persisted value), so a multiplet folds K -> K-1 -> ... without a dominant
-    # line ever dragging a weak merged line away mid-sequence. After the merge
-    # sweep stalls, one all-free relax re-fits every peak for honest covariance;
-    # that relax can walk a strong line back into a fresh degenerate split, so the
-    # whole sweep repeats over the relaxed result until a pass finds no pair (the
-    # ``max_iterations`` cap guards a collapse<->re-split oscillation).
-    new_window_fits = []
-    for wf in fit.window_fits:
-        wid = int(wf.window_id) if wf.window_id is not None else -1
+    # Per-window collapse to a fixpoint. Each merge collapses ONE pair and is
+    # followed by a *frozen* intermediate refit (only the new merged line free;
+    # every inherited peak, including a dominant 1e6 line, held at its persisted
+    # value), so a multiplet folds K -> K-1 -> ... without a dominant line ever
+    # dragging a weak merged line away mid-sequence. After the merge sweep stalls,
+    # one all-free relax re-fits every peak for honest covariance; that relax can
+    # walk a strong line back into a fresh degenerate split, so the whole sweep
+    # repeats over the relaxed result until a pass finds no pair (the
+    # ``max_iterations`` cap guards a collapse<->re-split oscillation). Each window
+    # is independent, so the sweeps fan across the window fork pool.
+    def _collapse_one(
+        wf: FittingResult,
+    ) -> Tuple[FittingResult, List[Dict[str, Any]], int]:
         center = None
         if wf.window is not None and wf.window.freq_range is not None:
             lo, hi = wf.window.freq_range
             center = 0.5 * (lo + hi)
         if center is None:
-            new_window_fits.append(wf)
-            continue
+            return wf, [], 0
 
+        wid = int(wf.window_id) if wf.window_id is not None else -1
         cur = wf
         foots: List[Footprint] = [
             (float(p.frequency_mhz), float(p.frequency_mhz), float(p.frequency_mhz))
@@ -757,13 +775,20 @@ def apply_vif_collapse(
             cur = relaxed
 
         if not pending:
-            new_window_fits.append(wf)
-            continue
-        n_iterations = max(n_iterations, n_merges)
+            return wf, [], 0
 
         _inflate_merged_frequency_errors(cur, pending)
-        collapse_records.extend(pending)
-        new_window_fits.append(cur)
+        return cur, pending, n_merges
+
+    results = parallel_window_refit_map(fit.window_fits, _collapse_one, jobs=jobs)
+
+    collapse_records: List[Dict[str, Any]] = []
+    n_iterations = 0  # most merges performed in any single window (diagnostic)
+    new_window_fits = []
+    for result_wf, pending_records, n_merges in results:
+        new_window_fits.append(result_wf)
+        collapse_records.extend(pending_records)
+        n_iterations = max(n_iterations, n_merges)
 
     fit.window_fits = new_window_fits
 
@@ -1477,6 +1502,9 @@ def _fit_peaks_impl(
     peaks_loaded = load_peaks_impl(file_path)
     peaks = peaks_loaded["peaks"]
     peak_frequencies_mhz = [float(p.frequency) for p in peaks]
+    peak_detection_passes = [
+        str((p.properties or {}).get("detection_pass") or "primary") for p in peaks
+    ]
 
     # Resolve the effective survival floor now the Stage 3 promotion cutoff is
     # available: an explicit absolute floor wins; otherwise scale the cutoff by
@@ -1801,6 +1829,7 @@ def _fit_peaks_impl(
         active_ft,
         rms_for_fit,
         peak_frequencies_mhz,
+        peak_detection_passes=peak_detection_passes,
         sideband=sideband,
         acquisition_us=acquisition_us,
         tau0_us=tau0_us_v,
@@ -1923,6 +1952,7 @@ def _fit_peaks_impl(
         final_plan,
         sideband=sideband,
         peak_frequencies_mhz=peak_frequencies_mhz,
+        peak_detection_passes=peak_detection_passes,
         acquisition_us=acquisition_us,
         parameters=parameters,
         diagnostics=diagnostics,
@@ -1956,12 +1986,16 @@ def _fit_peaks_impl(
                 tau_maj_us=tau_maj_us,
                 sigma_tau_us=sigma_tau_us,
                 peak_frequencies_mhz=peak_frequencies_mhz,
+                peak_detection_passes=peak_detection_passes,
                 remove=tuple(dust_freqs),
             )
 
         n_before = spectrum_fit.n_fitted_peaks
         apply_snr_survival_prune(
-            spectrum_fit, peak_survival_floor_v, refit_window=_survival_refit
+            spectrum_fit,
+            peak_survival_floor_v,
+            refit_window=_survival_refit,
+            jobs=jobs,
         )
         n_pruned = n_before - spectrum_fit.n_fitted_peaks
         if n_pruned:
@@ -1998,6 +2032,7 @@ def _fit_peaks_impl(
                 tau_maj_us=tau_maj_us,
                 sigma_tau_us=sigma_tau_us,
                 peak_frequencies_mhz=peak_frequencies_mhz,
+                peak_detection_passes=peak_detection_passes,
                 remove=tuple(remove_freqs),
                 add=tuple(add_freqs),
                 add_seeds=add_seeds if add_seeds else None,
@@ -2013,6 +2048,7 @@ def _fit_peaks_impl(
             res_element_mhz=res_element_mhz,
             sideband=sideband,
             refit_collapse=_collapse_refit,
+            jobs=jobs,
         )
         n_collapsed = len(
             spectrum_fit.diagnostics.get("vif_collapse", {}).get("collapses", [])

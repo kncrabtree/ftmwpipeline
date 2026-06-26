@@ -145,6 +145,16 @@ DEFAULT_SEEDER_RCHI2 = 1.5
 DEFAULT_IN_WINDOW_SKIRT_KAPPA: Optional[float] = 0.1
 DEFAULT_IN_WINDOW_SKIRT_MIN_SNR: float = 500.0
 DEFAULT_IN_WINDOW_SKIRT_CORE_FWHM: float = 1.0
+# Placement-baseline mask level. The frozen-incremental primary placement runs
+# on data with a robust line-masked baseline subtracted (so the leakage pedestal
+# does not pull a per-add seed off-position); a bin is treated as line-dominated
+# (masked out of the baseline pre-fit) when the summed seed skirt there exceeds
+# this many sigma. ~50-200 is a safe plateau: too small masks everything and the
+# pre-fit degrades to placing on the raw data; too large lets the baseline absorb
+# a bright line's skirt. An amplitude-scaled (1/df-style) mask -- a future
+# refinement is to set it from the estimated line curvature rather than the raw
+# amplitude.
+DEFAULT_PLACEMENT_BASELINE_MASK_KAPPA: float = 50.0
 # Straddle of the re-seeded inits, in units of the feature FWHM.
 DEFAULT_SEEDER_STRADDLE_FACTOR = 1.0
 DEFAULT_SEEDER_MAX_K = 3
@@ -2350,6 +2360,221 @@ def _blend_aware_seed(
     return best, audit
 
 
+def _robust_line_masked_baseline(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: np.ndarray,
+    seed_offsets: Sequence[float],
+    tau0_us: float,
+    acquisition_us: float,
+    *,
+    shape: PeakShape,
+    order: int,
+    offset_scale: float,
+    mask_kappa: float,
+    n_iter: int = 5,
+) -> Optional[np.ndarray]:
+    """Robust (IRLS) complex baseline pre-fit on amplitude-masked bins.
+
+    A *placement aid only*: subtracting this leakage-pedestal estimate before
+    the frozen-incremental primary placement keeps a per-add seed from being
+    pulled off-position by the pedestal (the caller's final relax co-fits the
+    real baseline and is what gets reported). Masks every bin where the summed
+    single-cosine skirt of the seeds rises above ``mask_kappa * sigma`` -- an
+    amplitude-scaled (1/df-style) mask, so a brighter line's wider skirt is
+    excluded -- then fits the order-``order`` complex baseline to the survivors
+    with iteratively reweighted least squares (down-weighting residual line
+    contamination). Returns the per-bin complex baseline, or ``None`` when too
+    few bins survive (an ultra-SNR giant whose skirt spans the window: the
+    pre-fit is infeasible and the caller falls back to placing on the raw data).
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+    min_bins = 2 * (int(order) + 1)
+    if u.size < min_bins or not seed_offsets:
+        return None
+    line_sum = np.zeros(u.size)
+    for off in seed_offsets:
+        sd = _seed_peak(off, u, z, tau0_us, acquisition_us, shape=shape)
+        line_sum += np.abs(
+            model_spectrum(u, [sd], tau0_us, acquisition_us, shape=shape)
+        )
+    mask = line_sum < float(mask_kappa) * sigma
+    if int(mask.sum()) < min_bins:
+        return None
+    basis = baseline_basis(u, int(order), float(offset_scale))  # (N, order+1) real
+    a = basis[mask]
+    y = z[mask]
+    w = np.ones(a.shape[0])
+    coef: np.ndarray = np.zeros(int(order) + 1, dtype=np.complex128)
+    for _ in range(n_iter):
+        aw = a * w[:, None]
+        coef, *_ = np.linalg.lstsq(aw, y * w, rcond=None)
+        resid = np.abs(y - a @ coef)
+        scale_r = float(np.median(resid)) + 1e-12
+        w = 1.0 / np.sqrt(np.maximum(resid, 1e-3 * scale_r))
+    return cast("np.ndarray", basis @ coef)
+
+
+def _frozen_incremental_seed(
+    offset_grid_mhz: np.ndarray,
+    complex_spectrum: np.ndarray,
+    rms_noise: NoiseLike,
+    primary_offsets: Sequence[float],
+    tau0_us: float,
+    acquisition_us: float,
+    *,
+    fit_kwargs_inner: dict[str, Any],
+    shape: PeakShape,
+    spur_mask: Optional[SpurMaskSpec],
+) -> list[ModelPeak]:
+    """Place each primary one at a time against the residual of the already-
+    placed peaks, then leave the joint relax to the caller.
+
+    A single all-free :func:`fit_window` over many overlapping single-cosine
+    primary seeds drops into a bad basin on dense / high-SNR clusters -- the
+    tightly spaced lines collapse onto each other and a giant swamps its
+    neighbours (655 W245: 4 primaries up to snr 28650 collapse to ~1). The
+    legacy seeder avoided this by adding each line to an already-converged
+    model. This reproduces that stability for the trusted primary set: place
+    the strongest primary, freeze it, fit the next against the residual, and so
+    on -- every add is a stable K=1 fit. ``tau`` is held at the calibrated
+    ``tau0_us`` for every add (the tau-reset invariant); the caller's joint
+    all-free relax, started from these well-separated placements, recovers the
+    shared tau and honest covariance from the good basin. Primaries are trusted,
+    so an add is always kept (its support is judged later by the knockout).
+    """
+    # Strength order: strongest in-window |data| first, so the dominant line is
+    # placed before its weaker neighbours can be pulled into it.
+    u_grid = np.asarray(offset_grid_mhz, dtype=float)
+    z = np.asarray(complex_spectrum, dtype=np.complex128)
+    order = sorted(
+        primary_offsets,
+        key=lambda o: -abs(float(np.interp(o, u_grid, np.abs(z)))),
+    )
+    frozen_kwargs = dict(fit_kwargs_inner)
+    frozen_kwargs["fit_tau"] = False  # tau-reset: every add at calibrated tau0_us
+    # No per-add baseline. A fresh order-p baseline co-fit with a lone K=1 seed
+    # over a wide window gives the peak enough freedom to collapse tau onto the
+    # pedestal and converge to a canceling near-duplicate -- the bad basin then
+    # propagates through the remaining adds and the joint relax (655 W908: a
+    # 10 MHz window's snr-170 primaries collapse to tau 0.93 / snr-15000
+    # cancelers). The pedestal stays in each add's residual harmlessly; the
+    # joint relax (caller) co-fits the baseline once, jointly with all the
+    # well-placed lines, where the lineshape models absorb their own skirts and
+    # the baseline fits only the true pedestal -- which the robust line-masked
+    # pre-fit alternative cannot do on an ultra-SNR window whose giant skirt
+    # spans the whole window.
+    frozen_kwargs.pop("baseline_order", None)
+    frozen_kwargs.pop("baseline_offset_scale", None)
+    placed: list[ModelPeak] = []
+    for off in order:
+        resid = z - model_spectrum(u_grid, placed, tau0_us, acquisition_us, shape=shape)
+        seed = _seed_peak(off, u_grid, resid, tau0_us, acquisition_us, shape=shape)
+        fit_new = fit_window(
+            u_grid,
+            resid,
+            rms_noise,
+            [seed],
+            tau0_us,
+            acquisition_us,
+            spur_mask=spur_mask,
+            **frozen_kwargs,
+        )
+        placed.append(
+            fit_new.peaks[0] if (fit_new.success and fit_new.peaks) else seed
+        )
+    return placed
+
+
+def _nominate_primary_splits(
+    offset_grid_mhz: np.ndarray,
+    fit: WindowFitResult,
+    primary_offsets: Sequence[float],
+    acquisition_us: float,
+    fwhm_mhz: float,
+    *,
+    shape: PeakShape,
+    rms_noise: np.ndarray,
+    keep: np.ndarray,
+    gate_budget_extra: Optional[np.ndarray],
+    straddle_factor: float,
+    min_snr: float,
+) -> list[float]:
+    """Shoulder offsets at which to attempt splitting an under-fit primary.
+
+    The all-primary joint seed (increment 2) seeds each primary as a single
+    cosine with no escalation, so a primary that is really a *resolvable*
+    multiplet -- Blackman-Harris detected it as one line at its ~3-resolution
+    limit -- is left under-fit. For each primary feature this finds the largest
+    ``sigma_eff``-significant residual on its shoulder, where ``sigma_eff``
+    carries the full lineshape-floor budget (the frozen-background
+    ``gate_budget_extra`` + the bright-line far-skirt
+    :func:`in_window_skirt_budget` + the core ``kappa * |model|``) so a bright
+    line's *irreducible floor* is not nominated -- only genuine unmodeled
+    structure clears the bar. The returned offsets are fed to the add-one loop,
+    whose blend-split trial resets tau to the calibrated value, refits all
+    lines free, and arbitrates with the collapse check + ``sigma_eff`` gate.
+    Returns at most one offset per primary feature.
+    """
+    u = np.asarray(offset_grid_mhz, dtype=float)
+    if not fit.success or not (fwhm_mhz > 0.0) or u.size < 3:
+        return []
+    sigma = np.asarray(rms_noise, dtype=float)
+    if sigma.ndim == 0:
+        sigma = np.full(u.size, float(sigma))
+    resid = np.abs(np.asarray(fit.residual))
+    fitted = np.abs(np.asarray(fit.fitted_spectrum))
+    kc = validation.DEFAULT_GATE_SIGMA_EFF_KAPPA or 0.05
+    kappa_skirt = (
+        None
+        if import_os.environ.get("FTMW_NO_IN_WINDOW_SKIRT")
+        else DEFAULT_IN_WINDOW_SKIRT_KAPPA
+    )
+    mode = "b" if import_os.environ.get("FTMW_SKIRT_MODE") == "b" else "a"
+    skirt = in_window_skirt_budget(
+        fit.peaks,
+        u,
+        float(fit.tau_us),
+        acquisition_us,
+        shape=shape,
+        rms_noise=sigma,
+        kappa_skirt=kappa_skirt,
+        mode=mode,
+        kappa_core=float(kc),
+    )
+    extra2 = (float(kc) * fitted) ** 2 + np.asarray(skirt, dtype=float) ** 2
+    if gate_budget_extra is not None:
+        extra2 = extra2 + np.asarray(gate_budget_extra, dtype=float) ** 2
+    sigma_eff = np.sqrt(sigma**2 + extra2)
+    ratio = np.where((sigma_eff > 0.0) & keep, resid / np.maximum(sigma_eff, 1e-30), 0.0)
+    core = 0.3 * fwhm_mhz
+    search = max(float(straddle_factor), 1.0) * fwhm_mhz
+    existing = np.asarray([pk.offset_mhz for pk in fit.peaks], dtype=float)
+    out: list[float] = []
+    for p in primary_offsets:
+        region = (np.abs(u - p) <= search) & (np.abs(u - p) >= core)
+        if existing.size:
+            near_other = np.zeros(u.size, dtype=bool)
+            for e in existing:
+                if abs(e - p) <= core:
+                    continue  # the primary itself -- its core is allowed to anchor
+                near_other |= np.abs(u - e) <= core
+            region &= ~near_other
+        region &= ratio > 0.0
+        if not region.any():
+            continue
+        idx = int(np.argmax(np.where(region, ratio, 0.0)))
+        if ratio[idx] >= float(min_snr):
+            off = float(u[idx])
+            if all(abs(off - o) > 1e-9 for o in out):
+                out.append(off)
+    return out
+
+
 def conservative_fit(
     offset_grid_mhz: np.ndarray,
     complex_spectrum: np.ndarray,
@@ -2397,6 +2622,7 @@ def conservative_fit(
     forbidden_tol_mhz: float = 0.0,
     protected_offsets: Optional[Sequence[float]] = None,
     protected_tol_mhz: float = 0.0,
+    candidate_passes: Optional[Sequence[str]] = None,
 ) -> ConservativeFitResult:
     """Conservative incremental peak fitting of one window.
 
@@ -2421,6 +2647,14 @@ def conservative_fit(
         Per-bin complex noise RMS.
     candidate_offsets : sequence of float
         Baseband offsets of the promoted peaks to consider for this window.
+    candidate_passes : sequence of str, optional
+        Per-candidate Stage 3 detection-pass label (``"primary"`` /
+        ``"gap"``), index-aligned with ``candidate_offsets``. Drives
+        pass-aware seeding: every ``"primary"`` (Blackman-Harris) candidate is
+        seeded up front in one joint fit, then the add-one accept gate runs
+        over the ``"gap"`` candidates only. ``None`` (or any missing label)
+        treats the candidate as primary. ``FTMW_NO_SEED_ALL_PRIMARY`` restores
+        the legacy single-strongest seed + add-one-over-all path.
     tau0_us : float
         Default / starting shared decay constant (microseconds).
     acquisition_us : float
@@ -2631,11 +2865,27 @@ def conservative_fit(
             and float(np.min(np.abs(_forbidden_cf - float(off)))) <= forbidden_tol_mhz
         )
 
-    remaining = sorted(
-        (o for o in candidate_offsets if not _is_forbidden_cf(float(o))),
-        key=lambda o: -abs(float(np.interp(o, u, np.abs(z)))),
+    # Detection-pass partition (increment 2). A promoted *primary* (Blackman-
+    # Harris) seed is near-gold: seed every primary up front in one joint fit,
+    # which lands at the healthy basin rather than the incremental add-one
+    # build-up's bad basin (the w1013-class tau collapse), then run the add-one
+    # accept gate over the *gap* candidates only. ``candidate_passes`` is
+    # index-aligned with ``candidate_offsets``; absent labels default to
+    # primary. ``FTMW_NO_SEED_ALL_PRIMARY`` selects the legacy single-strongest
+    # seed + add-one-over-all path (the byte-identical A/B baseline arm): it
+    # treats every candidate as a gap candidate so the fallback branch below
+    # reproduces the historical behavior exactly.
+    passes_list = (
+        [str(p) for p in candidate_passes]
+        if candidate_passes is not None
+        else ["primary"] * len(list(candidate_offsets))
     )
-    if not remaining:
+    paired = [
+        (float(o), (passes_list[i] if i < len(passes_list) else "primary"))
+        for i, o in enumerate(candidate_offsets)
+        if not _is_forbidden_cf(float(o))
+    ]
+    if not paired:
         empty = fit_window(
             u,
             z,
@@ -2648,6 +2898,16 @@ def conservative_fit(
         )
         return ConservativeFitResult(empty, [], [])
 
+    if import_os.environ.get("FTMW_NO_SEED_ALL_PRIMARY"):
+        primary_offsets: list[float] = []
+        gap_offsets = [o for o, _ in paired]
+    else:
+        primary_offsets = [o for o, p in paired if p == "primary"]
+        gap_offsets = [o for o, p in paired if p != "primary"]
+
+    def _mag_key(off: float) -> float:
+        return -abs(float(np.interp(off, u, np.abs(z))))
+
     null = fit_window(
         u,
         z,
@@ -2658,44 +2918,161 @@ def conservative_fit(
         shape=shape_resolved,
         spur_mask=spur_mask,
     )
-    seed = remaining.pop(0)
-    current, audit = _blend_aware_seed(
-        u,
-        z,
-        sigma,
-        seed,
-        tau0_us,
-        acquisition_us,
-        fit_tau=fit_tau_eff,
-        tau_bounds=tau_bounds,
-        fwhm_mhz=fwhm,
-        null_chi2=null.chi_squared,
-        null_aic=null.aic,
-        significance=significance,
-        rchi2_threshold=seeder_rchi2_threshold,
-        straddle_factor=seeder_straddle_factor,
-        max_k=seeder_max_k,
-        amp_max=amp_max,
-        amp_floor=amp_floor,
-        phase_penalty_lambda=phase_penalty_lambda,
-        amp_penalty_lambda=amp_penalty_lambda,
-        phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
-        min_pair_separation_factor=min_pair_separation_factor,
-        min_pair_separation_resolution_factor=(min_pair_separation_resolution_factor),
-        tau_penalty_lambda=effective_tau_penalty_lambda,
-        tau_penalty_reference=tau_penalty_ref,
-        tau_penalty_sigma_us=tau_penalty_sigma_us,
-        tau_penalty_sigma_lo_us=constraints.tau_penalty_sigma_lo_us,
-        n_eff_kind=n_eff_kind,
-        weighted_gate_chi2=weighted,
-        shape=shape_resolved,
-        spur_mask=spur_mask,
-        gate_budget_extra=budget,
-        baseline_order=baseline_order,
-        baseline_offset_scale=baseline_offset_scale,
-    )
+
+    def _blend_seed(seed_offset: float) -> tuple[WindowFitResult, list[AddStep]]:
+        return _blend_aware_seed(
+            u,
+            z,
+            sigma,
+            seed_offset,
+            tau0_us,
+            acquisition_us,
+            fit_tau=fit_tau_eff,
+            tau_bounds=tau_bounds,
+            fwhm_mhz=fwhm,
+            null_chi2=null.chi_squared,
+            null_aic=null.aic,
+            significance=significance,
+            rchi2_threshold=seeder_rchi2_threshold,
+            straddle_factor=seeder_straddle_factor,
+            max_k=seeder_max_k,
+            amp_max=amp_max,
+            amp_floor=amp_floor,
+            phase_penalty_lambda=phase_penalty_lambda,
+            amp_penalty_lambda=amp_penalty_lambda,
+            phase_penalty_cutoff_fwhm=phase_penalty_cutoff_fwhm,
+            min_pair_separation_factor=min_pair_separation_factor,
+            min_pair_separation_resolution_factor=(
+                min_pair_separation_resolution_factor
+            ),
+            tau_penalty_lambda=effective_tau_penalty_lambda,
+            tau_penalty_reference=tau_penalty_ref,
+            tau_penalty_sigma_us=tau_penalty_sigma_us,
+            tau_penalty_sigma_lo_us=constraints.tau_penalty_sigma_lo_us,
+            n_eff_kind=n_eff_kind,
+            weighted_gate_chi2=weighted,
+            shape=shape_resolved,
+            spur_mask=spur_mask,
+            gate_budget_extra=budget,
+            baseline_order=baseline_order,
+            baseline_offset_scale=baseline_offset_scale,
+        )
+
+    if len(primary_offsets) >= 2:
+        # Place every primary one at a time against the residual of the already-
+        # placed peaks (tau frozen at the calibrated ``tau0_us``), so a dense /
+        # high-SNR cluster cannot collapse the way a single all-free joint fit
+        # over overlapping single-cosine seeds does. Then one all-free joint
+        # relax from those well-separated placements recovers the shared tau and
+        # honest covariance from the good basin (the staged-fit result). Sub-
+        # resolution splitting of a primary is handled by the splitting phase.
+        #
+        # Subtract a robust line-masked baseline estimate first, so the per-add
+        # placement is not pulled off-position by the leakage pedestal (the
+        # placement aid; the final relax below co-fits the real baseline). Infeasible
+        # on an ultra-SNR giant whose skirt spans the window -> ``None`` -> place
+        # on the raw data and let the final co-fit baseline carry the pedestal.
+        placement_z = z
+        if baseline_order is not None and int(baseline_order) > 0:
+            base = _robust_line_masked_baseline(
+                u,
+                z,
+                sigma,
+                primary_offsets,
+                tau0_us,
+                acquisition_us,
+                shape=shape_resolved,
+                order=int(baseline_order),
+                offset_scale=baseline_offset_scale or 1.0,
+                mask_kappa=DEFAULT_PLACEMENT_BASELINE_MASK_KAPPA,
+            )
+            if base is not None:
+                placement_z = z - base
+        seeds = _frozen_incremental_seed(
+            u,
+            placement_z,
+            sigma,
+            primary_offsets,
+            tau0_us,
+            acquisition_us,
+            fit_kwargs_inner=fit_kwargs_inner,
+            shape=shape_resolved,
+            spur_mask=spur_mask,
+        )
+        current = fit_window(
+            u,
+            z,
+            sigma,
+            seeds,
+            tau0_us,
+            acquisition_us,
+            spur_mask=spur_mask,
+            **fit_kwargs_inner,
+        )
+        p_seed, f_seed, _ = calculate_chi_squared_improvement(
+            null.chi_squared,
+            current.chi_squared,
+            max(current.n_params, 1),
+            current.n_data,
+            current.n_params,
+        )
+        audit = [
+            AddStep(
+                n_peaks_before=0,
+                candidate_offset_mhz=float(min(primary_offsets, key=_mag_key)),
+                chi2_before=null.chi_squared,
+                chi2_after=current.chi_squared,
+                f_statistic=f_seed,
+                p_value=p_seed,
+                aic_before=null.aic,
+                aic_after=current.aic,
+                separation_ok=True,
+                decision="seed",
+                reason=f"K={len(primary_offsets)} all-primary seed fit",
+            )
+        ]
+        remaining = sorted(gap_offsets, key=_mag_key)
+        split_primaries = list(primary_offsets)
+    elif len(primary_offsets) == 1:
+        # A single primary seed keeps the blend-aware escalation (today's
+        # behavior for a one-line window; nothing to seed jointly, and the
+        # escalation already does its own splitting -- no extra nomination).
+        current, audit = _blend_seed(primary_offsets[0])
+        remaining = sorted(gap_offsets, key=_mag_key)
+        split_primaries = []
+    else:
+        # No primary candidate (gap-only window, or the legacy arm): seed the
+        # strongest candidate via the blend-aware seeder and add-one over the
+        # rest -- the historical conservative path.
+        remaining = sorted(gap_offsets, key=_mag_key)
+        seed = remaining.pop(0)
+        current, audit = _blend_seed(seed)
+        split_primaries = []
     if not current.success:
         return ConservativeFitResult(current, audit, [])
+
+    # Splitting phase (item 4). The all-primary joint seed dropped the
+    # blend-aware escalation, so a primary that is really a resolvable multiplet
+    # is left under-fit. Nominate a shoulder split candidate for each such
+    # primary (sigma_eff-significant residual beyond the lineshape floor) and
+    # let the add-one loop's blend-split trial resolve it from the calibrated
+    # tau. ``FTMW_NO_SPLIT_PRIMARY`` disables it for the A/B arm.
+    if split_primaries and not import_os.environ.get("FTMW_NO_SPLIT_PRIMARY"):
+        for off in _nominate_primary_splits(
+            u,
+            current,
+            split_primaries,
+            acquisition_us,
+            fwhm,
+            shape=shape_resolved,
+            rms_noise=sigma,
+            keep=keep,
+            gate_budget_extra=budget,
+            straddle_factor=seeder_straddle_factor,
+            min_snr=blend_split_min_snr,
+        ):
+            if all(abs(off - r) > 1e-9 for r in remaining):
+                remaining.append(off)
 
     tentative: list[ModelPeak] = []
     consecutive_rejects = 0

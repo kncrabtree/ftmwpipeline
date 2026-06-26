@@ -1,5 +1,70 @@
 # Stage 6 — contributor-edit cascade (window-level dependency resolution)
 
+## Current state (consolidated — read this first)
+
+Two workstreams have run on branch `stage6-cascade-refit`, both **uncommitted**:
+
+1. **Stage-4 curvature cycle-break (§B)** — shipped earlier (commit 580c3cd):
+   orient every leakage-dependency edge strong→weak (tiered acyclic DAG), keep a
+   downward skirt edge-bearing only when *material*. Legacy behind
+   `FTMW_LEGACY_CYCLE_BREAK`. (Detail in the "Step B" sections below.)
+
+2. **Stage-5 conservative-seeder rework** — the active work; trusts Stage-3
+   Blackman-Harris detections. Functionally complete + lab-validated, uncommitted.
+   The mechanism, in `fitting/window_fit.py` `conservative_fit`:
+   - **Pass-aware seeding**: with ≥2 primaries, seed *all* primaries up front,
+     add-one gate over *gap* candidates only (`candidate_passes` plumbed through).
+   - **Frozen-incremental placement** (`_frozen_incremental_seed`): place each
+     primary one-at-a-time vs the residual of the placed peaks (tau frozen at the
+     calibrated `tau0_us`) → one all-free joint relax. Fixes the dense/high-SNR
+     **cluster collapse** the all-free joint seed caused. 655 recall 0.631→0.704.
+   - **Robust-baseline placement (C4)**: the *remaining* gap was the **per-add
+     order-p baseline absorbing a well-separated line** in wide windows (655 W908,
+     10.2 MHz → tau collapse / canceling pairs / lost lines). Per-add fits carry
+     no baseline; a robust line-masked IRLS baseline
+     (`_robust_line_masked_baseline`, amplitude-scaled mask `skirt > K·σ`,
+     `DEFAULT_PLACEMENT_BASELINE_MASK_KAPPA = 50`) is subtracted *only* to
+     stabilize placement; the **final joint relax co-fits the real baseline**
+     (no `baseline_coeffs` contract change). Lab (single-window `win_lab.py`):
+     W908 recovers all 4 lines, ultra-SNR W245/w1006 *improve*, clean unchanged —
+     **but the full-fixture effect was net-negative** (see status below).
+   - **Late-split nomination** (`_nominate_primary_splits`, env
+     `FTMW_NO_SPLIT_PRIMARY`): present but NOT the recall lever (the gap was
+     baseline absorption, not splitting) — leave as-is.
+   - Tests: `tests/unit/fitting/` 470 green, mypy clean.
+
+   **⚠ HONEST RECALL STATUS (655 = vinyl cyanide, catalog recall):** legacy
+   seeder **0.735** > frz **0.704** > c4 **0.695**. The rework is NOT yet a win on
+   the densest fixture — both variants sit below legacy. C4 fixed W908 *locally*
+   (the lab was right) but lost ~5 catalog matches elsewhere globally (net −3 vs
+   frz); the 4-window lab was unrepresentative. The clean fixture 1512 DOES win
+   (0.486→0.517). **Unresolved decision for a fresh session:** keep C4 / revert to
+   frz / chase the C4 global regression. Does not block the performance work.
+
+**Performance.** (1) The cleanup passes (`apply_snr_survival_prune` /
+`apply_vif_collapse`) fan their per-window-independent NLS refits across the
+window fork pool via `parallel_window_refit_map` (BLAS-pinned workers, order-
+preserving, in-process serial fallback when the pool is unavailable or there is
+one window) — byte-identical to the serial passes (655 / 360 line tables match
+to 0 freq/amp delta), 655 wall time 23:20 → 16:02. (2) DAG-ready window-walk
+scheduler — replace the fork-per-level barrier in `_walk_windows_parallel` with
+dependency-gated submission over one persistent pool (hand each task its
+predecessors' outcomes instead of fork-inheriting all; accepted-thaw fallback to
+the level walk) — remains open. 655's DAG is shallow (5 levels, widths
+{1004, 167, 16, 5, 2}; level 0 saturates the pool), so the reclaimable
+level-boundary drain is the smaller, riskier win. Then commit + a full 7-fixture
+re-baseline. **Followups**: per-bin
+Stage-2 noise for peak SNR (`result_conversion.py` averages the window noise);
+calibrate the placement-mask K from line curvature not raw amplitude. The
+in-seed sub-floor **cull was tried and reverted** (modest perf gain, cost recall,
+changed trajectory — parallelize the prune instead). Full orientation:
+`scratch/cascade/HANDOFF.md`; memory `stage6-cascade-seeder-increments`.
+
+The cascade proper (§§C/D: thaw, transitive descendant recompute) remains future
+work; seeder robustness was the prerequisite that kept blocking it.
+
+---
+
 Status: **prerequisite investigation complete; production prototype on branch
 `stage6-cascade-refit`.** The investigation (recorded below) resolved the
 dependency-model question and reshaped the cascade design. Headline conclusions:
@@ -682,6 +747,87 @@ product?** If that is rare, the seeder can trust the BH seeds far more (seed all
 of them up front, reserve rescue for genuine residual structure) and the w1013
 class of collapse should disappear. Likely the right robustness fix that also
 unblocks edge-bearing dependent fits.
+
+### BH-seed authority diagnostic — DONE (BH seeds ARE authoritative)
+
+Ran cached (no refit), `scratch/cascade/bh_seed_cached.py`: for every final fitted
+line, distance to the nearest **promoted** Stage-3 seed (raw absolute frequency,
+split primary=BH / matched-filter gap pass), bucketed BH-backed / gap-backed /
+unbacked plus SNR tiers. Across all seven (correctly-built) fixtures, lines far
+(>3 res) from every promoted seed are overwhelmingly **weak** (snr<6) — expected
+rescue/blend marginal adds. Strong unbacked lines (snr≥15) are ~0 everywhere except
+655; of 655's 52, 42 are borderline (d_bh 3.0–3.5 res, i.e. giants whose seed is
+just outside the cutoff) and only 6 are genuinely far. Rendering those 6
+(`seed_render.py`, `fit show`) and a delayed-start ringdown test (`ringdown_test.py`)
+showed **none is a real molecular line**: w926/w993/w1109 are fit over-splits / lines
+on magnitude dips / window-edge artifacts (the strong BH detections at internal_snr
+130–222 go unfitted); w488/w560 are **chamber ringdown** (broad, fast-decaying — at
+start+1.0 µs they collapse to ~0.30 of nominal while a real molecular line holds
+~0.6) that the unapodized active-FT fit harvests but BH suppresses. So the fit never
+discovers a real molecular line away from a BH seed; everything it invents far from
+seeds is weak churn or an artifact one would want suppressed.
+
+**Fixture-build bug found + fixed** (per the rebuild-fixtures-fresh rule): the old
+`build_stage4.py` called `compute_ft(trim=)` *without* `detect_start_time()`, so 360's
+active region included the chirp — every window tau-collapsed (med 0.48 µs, 443/443
+windows <1 µs) and the fit emitted ~780 spurious *broad* lines (the entire
+"989 strong-unbacked" false alarm). `build_360_fix.py` (import → **detect_start_time** →
+compute_ft(trim) → … → fit_peaks) restores it (tau 0.48→8.0 µs, 0 collapsed,
+1497→719 lines). Only 360 was affected; all seven were rebuilt to
+`scratch/cascade/ab/{name}_fix.ftmw` (the prior `*_lvl150.ftmw` etc. are superseded).
+
+### Seeder change — design + increments (the implementation)
+
+> **OUTCOME (see "Current state" at the top):** increments 1–2 (pass-aware seed-
+> all-primary) shipped, but the all-free joint seed *collapsed* dense/high-SNR
+> clusters, so it was replaced by **frozen-incremental placement** + a **robust
+> line-masked baseline for placement (C4)**. The "Rescue → splitting" increment
+> (item 4 below) was implemented as `_nominate_primary_splits` but proved **not**
+> to be the recall lever — the residual gap was a *baseline-absorption* bug in
+> wide windows, not missing splits. The design principles below stand; the
+> realization differs from the original increment ordering.
+
+Design principles (user): a **promoted primary (BH) seed is near-gold** — seed all of
+them up front and discard one only on *overwhelming* evidence (high retention prior,
+not the normal AICc add gate). Do **not** be militant about weak (snr<6) lines; many
+are real, so retention is evidence-backed, not a threshold cull. A **gap-pass-only
+seed is considered but scrutinized** by the conservative loop (weaker prior). **Residual
+rescue is rarely needed** — its primary purpose is likely *splitting* a BH seed into
+sub-resolution multiplets, not discovering new lines. Caveat: BH *positions* for weak
+detections (internal_snr ~17–19) can be ~1 res off, so trust the detection and let the
+fit refine position.
+
+Increments, each A/B'd against the `_fix` 7-fixture baseline (byte-identical where the
+increment is meant to be behavior-neutral), real `_internal`/dual-interface, not scratch:
+
+1. **Plumbing (behavior-neutral).** Thread the per-promoted-peak `detection_pass`
+   (primary/gap) parallel to `peak_frequencies_mhz` from `execute_plan` down to
+   `_fit_one_window`, which builds `candidate_offsets` via `_peaks_to_candidate_offsets`
+   (today a flat list with no pass label). Produce a parallel `candidate_passes` and pass
+   it to `conservative_fit`. No decision uses it yet → fits stay byte-identical. The
+   conservative loop currently (`window_fit.py:2634`) seeds the single strongest candidate
+   into `_blend_aware_seed` then add-ones the rest through the AICc gate; knockout
+   (`knockout_test:1674`) removes any line AICc prefers to drop.
+2. **Seed all primary up front.** Build the initial joint fit from *all* primary
+   candidates (single-cosine seeds from the data), not just the strongest, then run the
+   existing add-one loop over the **gap** candidates only (critical eval, unchanged gate).
+   Rationale: an all-free fit from good seeds lands at the healthy basin (w1013 χ²ᵣ 24 in
+   `staged_fit.py`); the bad basin came from the incremental add-one build-up under a
+   frozen background. Sub-res splitting of a primary seed moves out of the initial seed
+   (the blend-aware K=2/K=3 escalation) into the splitting phase (item 4).
+3. **Pass-aware knockout.** Primary seeds get a high removal bar (overwhelming AICc
+   evidence; reuse/generalize the existing `protected_offsets` hook on `conservative_fit`);
+   gap and rescue peaks keep the normal knockout. Weak primary lines are retained unless
+   strongly contradicted.
+4. **Rescue → splitting.** Re-scope residual rescue toward splitting a BH seed into
+   sub-res multiplets rather than free discovery; it should rarely fire otherwise.
+   **Tau-reset invariant (user, critical):** a splitting re-seed must RESET tau to the
+   initial *calibrated* value (Stage-2b `tau0_us`) when it attempts the NLS fit — never
+   inherit the underfit multiplet's tau. Underfitting a multiplet *suppresses* (broadens)
+   tau to absorb the unresolved structure; if the split NLS starts from that too-broad
+   tau the system is singular and can never resolve the true multiplet. This is the same
+   tau-collapse family as w1013 and the 360-chirp mis-build. Applies to the seed-all-primary
+   joint fit too: start NLS from the calibrated tau, not an inherited suppressed one.
 
 ## Prerequisite finding: the dependency model is inconsistent across SNR
 

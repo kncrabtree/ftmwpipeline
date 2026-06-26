@@ -624,6 +624,7 @@ def plan_fit_outcome_to_spectrum_fit(
     *,
     sideband: SidebandLike,
     peak_frequencies_mhz: Sequence[float],
+    peak_detection_passes: Optional[Sequence[str]] = None,
     acquisition_us: float,
     parameters: Optional[dict] = None,
     diagnostics: Optional[dict] = None,
