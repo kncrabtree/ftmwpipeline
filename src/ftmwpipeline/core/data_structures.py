@@ -1815,6 +1815,14 @@ class LedgerCandidate:
 # ---------------------------------------------------------------------------
 
 
+# Attention reasons that are advisory-only: they remain on a window's
+# ``attention_reasons`` (so ``review rank`` and the report still surface them)
+# but do not, on their own, put the window in the default review queue. The merge
+# advisory is the more-likely-correct call (~92% of the sub-resolution band is
+# over-splits), so it flags a re-split opportunity rather than demanding a look.
+_ADVISORY_REASON_KINDS: frozenset[str] = frozenset({"auto_merged_review"})
+
+
 @dataclass
 class AttentionReason:
     """One reason why a window needs human attention during Stage 6 review.
@@ -1861,8 +1869,18 @@ class WindowReviewStatus:
 
     @property
     def needs_attention(self) -> bool:
-        """True when the window has at least one advisory attention reason."""
-        return len(self.attention_reasons) > 0
+        """True when the window carries a non-advisory attention reason.
+
+        Advisory-only reasons (:data:`_ADVISORY_REASON_KINDS`, e.g. the
+        ``auto_merged_review`` merge note) stay on ``attention_reasons`` so they
+        remain discoverable (``review rank``, the report's per-window detail) but
+        do not by themselves place the window in the default review queue: the
+        merge is the more-likely-correct call, so it is a re-split opportunity,
+        not a demand for a look.
+        """
+        return any(
+            r.kind not in _ADVISORY_REASON_KINDS for r in self.attention_reasons
+        )
 
 
 @dataclass

@@ -155,7 +155,16 @@ the stated criterion (revert only if *resolvable* doublets regress; χ²ᵣ is t
 safety net). After A-1(b)+A-3 the default queue drops sharply (overfit_vif 165
 gone; e.g. 1231 49→~11).
 
-### A-2. `candidate_bearing` on the honest signal
+### A-2. `candidate_bearing` on the honest signal — no code change needed
+
+With F-1/F-2/F-3 committed, the post-F123 ledger already yields the honest
+residue: `candidate_bearing` fell 99→35 across the seven fixtures (F-1 de-stale +
+F-3 de-sidelobe + F-2 auto-recovers companions). The remaining flags are the
+genuinely ambiguous residual candidates (655 dominates at ~20, the bright-line
+residual-dust case tracked separately). The optional width / phase discriminant
+to demote single-bin spurs is deferred polish.
+
+### A-2 (original analysis). `candidate_bearing` on the honest signal
 
 With F-1/F-3 in place, the ledger is already de-staled and de-sidelobed. The flag
 then:
@@ -169,12 +178,19 @@ then:
   discriminant to demote single-bin spurs (e.g. 360 w172) to a lower-severity
   advisory — a real line spans several bins tracking the line shape.
 
-### A-3. Demote `auto_merged_review` out of the default queue
+### A-3. Demote `auto_merged_review` out of the default queue — implemented
 
 The merge is the more-likely-correct call (~92% of the sub-res band is
 over-splits); the advisory exists only so a user with catalog support can find
-and re-split it. Keep it discoverable (e.g. `review rank --by`, or a report
-section) but out of the default attention queue so it stops padding the count.
+and re-split it. `WindowReviewStatus.needs_attention` (the single chokepoint for
+the default queue: CLI `review` list, the report attention section, and the
+`n_attention` count) now returns True only for a **non-advisory** reason;
+`auto_merged_review` is the lone member of `_ADVISORY_REASON_KINDS`. The reason
+still rides on `attention_reasons` (so `review rank --by merged-chi2r`, `review
+show`, and the per-window report detail surface it), it just no longer pads the
+queue. Combined with the `overfit_vif` retirement, the seven-fixture default
+queue drops from 246 (12.4% of windows) to 64 (3.2%): 655 99→25, 1231 49→12,
+363 32→13, 360 29→4, 2638 12→2.
 
 ### A-4. B5 cascade surface (folded in from the cascade effort)
 
