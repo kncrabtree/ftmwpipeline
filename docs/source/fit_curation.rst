@@ -38,15 +38,29 @@ The report carries three kinds of content:
 
 - **An index.** A summary block (the experiment's calibration state, line count,
   and worklist tally), a clickable full-spectrum overview with the
-  attention-flagged windows shaded, a windows table, and the finalized line
-  list.
+  attention-flagged windows shaded, a windows table, an **applied-edits** table
+  when the file already carries curation decisions (see below), and the finalized
+  line list.
 - **A methods-and-results page.** The per-stage algorithm prose with this
   experiment's own numbers folded in, distribution histograms of the fitted
   parameters, and rendered display math.
 - **One page per fit window.** The fit panels (real, imaginary, and magnitude
   data with the model and residuals), the fitted lines with their raw and
   calibrated frequencies, the parameter covariance, the candidate ledger, the
-  recorded decisions, and the fit history.
+  recorded decisions, and the fit history. Where a window carries an attention
+  flag with a definite locus, the magnitude panel is annotated with a small
+  caret and one-letter tag at that frequency — **C** for a missed-line
+  (candidate) residual, **S** for a line sitting on a gated spur, **M** for an
+  auto-merged pair — so it is obvious *where* to look; hover the caret for the
+  reason detail.
+
+The single-file report carries a sticky navigation bar. Besides the section
+links and the **Jump to window** picker, a **Freq MHz** box jumps to the window
+nearest a typed frequency, and a pair of ⚑ buttons step through the attention
+queue (flagged windows only). Keyboard shortcuts mirror these: ``j`` / ``k`` move
+to the next / previous window, ``J`` / ``K`` to the next / previous *flagged*
+window. The controls are inert when scripting is disabled; the anchors still
+work.
 
 Three flags scope the output for large spectra, where rendering a detail page
 for every window is neither fast nor useful:
@@ -95,6 +109,35 @@ command that replays it. The frequency a control emits is the line's raw
 Stage 5 model frequency, the value the edit verbs match on, not the calibrated
 value shown in the table. The browser never writes to the file; it only composes
 the curation file that the command-line tool applies.
+
+Several convenience controls speed a long worklist. Each window has a **Reviewed
+& next** button that marks it reviewed and jumps to the next flagged window, and
+a **Clear window edits** button that drops just that window's queued ops; the
+index windows table gains a per-row **reviewed** button so windows can be triaged
+from the overview without scrolling to each. A cart entry is clickable — it
+scrolls to its originating window and flashes the row. In curation mode the
+hovered fitted-line row also takes keyboard shortcuts: ``r`` to remove, ``s`` to
+split, ``m`` to toggle its merge selection, and ``a`` to arm click-to-add on the
+hovered window's plot.
+
+Applied edits and rollback
+--------------------------
+
+When a report is generated from a ``.ftmw`` that already carries curation edits,
+the index lists them in an **Applied edits** table — the file's recorded decision
+log, in execution order, with each edit's window, action, and frequency anchor.
+This is a read-only record of the file's curation state and is always shown. In
+curation mode each row gains an **Undo** button; queuing one does not enter the
+curation file (a rollback is a different operation) but instead makes the cart
+surface a ``review undo`` command alongside the ``review apply`` one:
+
+.. code-block:: console
+
+   ftmwpipeline review undo exp_2638.ftmw --id 3 5
+
+``review undo`` restores the automatic-fit baseline snapshot and replays every
+surviving decision, so undoing by id is exact and order-independent; the ids
+shown in the table are the ones to pass.
 
 Curation files
 --------------
