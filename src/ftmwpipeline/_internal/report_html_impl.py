@@ -187,6 +187,13 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
 .topnav .brand { font-weight: 600; color: #fff; margin-right: auto; }
 .topnav select { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 3px;
                  border: 1px solid #2c4a6e; background: #fff; color: #1a1a1a; }
+.topnav .freqjump { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 3px;
+                    border: 1px solid #2c4a6e; background: #fff; color: #1a1a1a;
+                    width: 7.5rem; }
+.topnav .nav-flag { font-size: 0.85rem; padding: 0.12rem 0.5rem; border-radius: 3px;
+                    border: 1px solid #2c4a6e; background: #cfe0f5; color: #11233a;
+                    cursor: pointer; }
+.topnav .nav-flag:hover { background: #fff; }
 html.report-single { scroll-padding-top: 3.4rem; }
 html.report-single thead th { top: 3.4rem; }
 /* The major blocks (index, methods, each embedded window) stack as <section>
@@ -1450,6 +1457,71 @@ _COMPACT_JS = """<script>
 # anywhere or Escape closes it. Works in every mode (in compact mode the plots
 # are thumbnails, so this is the way to inspect them full-size). Inert without
 # scripting -- the plots stay in the layout.
+# In-document navigation: jump to the window nearest a typed frequency, step
+# through the attention queue (prev/next flagged window), and keyboard shortcuts
+# (j/k = window, J/K = flagged). Reads ``window.__nav`` = ``[[id, lo, hi, flag],
+# ...]`` in document order. Inert without scripting (the controls just sit there
+# and the anchors still work). The "current" window is the section whose top is
+# nearest the viewport top, so stepping is relative to what is on screen.
+_NAV_JS = """<script>
+(function () {
+  var nav = window.__nav || [];
+  if (!nav.length) return;
+  function sec(id) { return document.getElementById('window-' + id); }
+  function go(id) { var s = sec(id); if (s) s.scrollIntoView(); }
+  function curIdx() {
+    var best = 0, bestD = Infinity;
+    for (var i = 0; i < nav.length; i++) {
+      var s = sec(nav[i][0]); if (!s) continue;
+      var d = Math.abs(s.getBoundingClientRect().top);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+  function step(delta) {
+    var i = curIdx() + delta;
+    if (i >= 0 && i < nav.length) go(nav[i][0]);
+  }
+  function stepFlag(delta) {
+    var i = curIdx(), n = nav.length;
+    for (var k = 1; k <= n; k++) {
+      var j = i + delta * k;
+      if (j < 0 || j >= n) return;
+      if (nav[j][3]) { go(nav[j][0]); return; }
+    }
+  }
+  function jumpFreq(f) {
+    if (isNaN(f)) return;
+    var best = null, bestD = Infinity;
+    for (var i = 0; i < nav.length; i++) {
+      var lo = Math.min(nav[i][1], nav[i][2]), hi = Math.max(nav[i][1], nav[i][2]);
+      var d = (f >= lo && f <= hi) ? 0 : Math.min(Math.abs(f - lo), Math.abs(f - hi));
+      if (d < bestD) { bestD = d; best = nav[i][0]; }
+    }
+    if (best !== null) go(best);
+  }
+  var fi = document.querySelector('.freqjump');
+  if (fi) fi.addEventListener('change', function () {
+    jumpFreq(parseFloat(this.value));
+  });
+  document.addEventListener('click', function (e) {
+    var t = e.target.closest ? e.target.closest('.nav-flag') : null;
+    if (!t) return;
+    stepFlag(t.classList.contains('nav-flag-prev') ? -1 : 1);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var tag = (e.target.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if (e.key === 'j') step(1);
+    else if (e.key === 'k') step(-1);
+    else if (e.key === 'J') stepFlag(1);
+    else if (e.key === 'K') stepFlag(-1);
+  });
+})();
+</script>"""
+
+
 _LIGHTBOX_JS = """<script>
 (function () {
   var box = null;
@@ -2973,6 +3045,7 @@ def _collapse_site_to_single_file(
     thumb_store: Dict[str, bytes],
     page_store: Dict[str, str],
     css: str,
+    nav_windows: Optional[List[Tuple[int, float, float, bool]]] = None,
 ) -> str:
     """Collapse the assembled report model into one self-contained HTML document.
 
@@ -3119,6 +3192,19 @@ def _collapse_site_to_single_file(
             'onchange="if(this.value)location.hash=this.value">'
             f'<option value="">Jump to window…</option>{opts}</select>'
         )
+        # Jump to the window nearest a typed frequency, and step through the
+        # attention queue (prev/next flagged window). Keyboard: j/k = window,
+        # J/K = flagged window. Inert without scripting.
+        nav_links.append(
+            '<input class="freqjump" type="number" step="any" '
+            'aria-label="Jump to frequency (MHz)" placeholder="Freq MHz…">'
+        )
+        nav_links.append(
+            '<button class="nav-flag nav-flag-prev" type="button" '
+            'title="previous flagged window (K)">&#9873;&larr;</button>'
+            '<button class="nav-flag nav-flag-next" type="button" '
+            'title="next flagged window (J)">&#9873;&rarr;</button>'
+        )
     # The compact toggle shrinks every figure to a thumbnail; pages load at full
     # size by default, and the button switches to compact (inert without scripting).
     nav_links.append('<button class="compact-toggle" type="button">Compact</button>')
@@ -3151,9 +3237,11 @@ def _collapse_site_to_single_file(
             "</main>",
             thumb_script,
             f"<script>window.__stem={json.dumps(stem)};</script>",
+            f"<script>window.__nav={json.dumps(nav_windows or [])};</script>",
             _WINMAP_JS,
             _COMPACT_JS,
             _LIGHTBOX_JS,
+            _NAV_JS,
             _CURATION_JS,
             "</body>",
             "</html>",
@@ -3184,6 +3272,10 @@ class _ReportModel:
     thumb_store: Dict[str, bytes] = field(default_factory=dict)
     page_store: Dict[str, str] = field(default_factory=dict)
     css: str = ""
+    # Navigable windows in document order: ``(window_id, lo_mhz, hi_mhz,
+    # needs_attention)`` for the windows that have an in-document section. Drives
+    # the report's jump-to-frequency and attention-queue navigation.
+    nav_windows: List[Tuple[int, float, float, bool]] = field(default_factory=list)
 
 
 def _assemble_report_site(
@@ -3318,6 +3410,13 @@ def _assemble_report_site(
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
 
     site = _ReportModel(stem=stem)
+    # Windows with an in-document section, in order, for jump-to-frequency and
+    # attention-queue navigation (lo/hi keep the fit's axis sense).
+    site.nav_windows = [
+        (wid, lo, hi, attn)
+        for (wid, lo, hi, _k, _chi2, has_page, attn) in index_rows
+        if has_page
+    ]
 
     # The interactive full-spectrum overview image, rendered ONCE (attention
     # windows shaded into it): it backs both the index "Spectrum" section and
@@ -3619,6 +3718,7 @@ def report_full_impl(
                 thumb_store=site.thumb_store,
                 page_store=site.page_store,
                 css=site.css,
+                nav_windows=site.nav_windows,
             )
         )
     finally:
