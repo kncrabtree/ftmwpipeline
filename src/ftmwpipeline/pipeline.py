@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         SweepResult,
     )
 
+from ._internal.report_diff_impl import report_diff_impl
 from ._internal.report_html_impl import report_run_impl
 from ._internal.report_impl import report_table_impl
 from ._internal.run_impl import run_pipeline_impl
@@ -1772,6 +1773,37 @@ class Pipeline:
             catalog_n_sigma=catalog_n_sigma,
             jobs=jobs,
         )
+
+    def report_diff(
+        self,
+        *,
+        output_dir: Optional[Union[str, Path]] = None,
+        dpi: int = 110,
+    ) -> str:
+        """Render the post-curation before/after diff report; return its path.
+
+        Compares the automatic-fit baseline snapshot with the current curated fit
+        and writes a self-contained ``<stem>_diff.html`` with a side-by-side
+        panel for every window that differs materially -- both the windows edited
+        directly and the dependents the contributor-edit cascade changed -- so the
+        changes can be evaluated before they are committed. When no curation edit
+        has been made (no baseline snapshot exists), a report stating that is
+        written instead. Read-only; never recomputes the fit.
+
+        Parameters
+        ----------
+        output_dir :
+            Directory to write the report into (created if absent). Defaults to
+            the current working directory.
+        dpi :
+            Resolution for the per-window panels.
+
+        Returns
+        -------
+        str
+            Path to the generated ``<stem>_diff.html`` file.
+        """
+        return report_diff_impl(self.filepath, output_dir=output_dir, dpi=dpi)
 
     def review_accept(
         self,

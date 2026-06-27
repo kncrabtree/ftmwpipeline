@@ -53,8 +53,9 @@ Pipeline stages
 * **Review and reporting (Stage 6).** A read/edit curation surface with
   attention routing, a candidate ledger, an anchored decision log with undo, and
   catalog cross-referencing; calibrated final products with a three-term
-  frequency-uncertainty budget; and Level-1 (table), Level-2 (Markdown), and
-  Level-3 (HTML) reports.
+  frequency-uncertainty budget; Level-1 (table), Level-2 (Markdown), and
+  Level-3 (HTML) reports; and a post-curation diff report (``report diff``)
+  showing every materially-changed window before and after, side by side.
 
 Instrument calibration
 ~~~~~~~~~~~~~~~~~~~~~~~

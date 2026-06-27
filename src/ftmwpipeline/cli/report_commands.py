@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 from typing import Any, Optional
 
+from .._internal.report_diff_impl import report_diff_impl
 from .._internal.report_html_impl import (
     VALID_WINDOW_FILTERS,
     report_run_impl,
@@ -123,6 +124,22 @@ def cmd_report_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_report_diff(args: argparse.Namespace) -> int:
+    """Write the post-curation before/after diff report."""
+    file_path = _ensure_ftmw(args.file_path)
+    try:
+        out = report_diff_impl(
+            file_path,
+            output_dir=args.output_dir,
+            dpi=getattr(args, "dpi", 110),
+        )
+    except (ValueError, KeyError) as exc:
+        print(f"Error: {exc}")
+        return 1
+    print(f"report diff: wrote curation diff report to {out}")
+    return 0
+
+
 def register_report_commands(subparsers: Any) -> None:
     """Register the ``report`` object-verb subcommands."""
     verbs = add_stage_object(
@@ -134,7 +151,8 @@ def register_report_commands(subparsers: Any) -> None:
             "Renders the finalized analysis; never recomputes the fit. Requires\n"
             "'review run' to have consolidated the calibrated final products.\n\n"
             "Verbs: run   (default deliverable: Level-1 table + Level-3 HTML report),\n"
-            "       table (Level-1 data export only: CSV / JSON / LaTeX)"
+            "       table (Level-1 data export only: CSV / JSON / LaTeX),\n"
+            "       diff  (before/after report of materially-changed windows)"
         ),
     )
 
@@ -273,3 +291,40 @@ def register_report_commands(subparsers: Any) -> None:
         help="Enable verbose logging.",
     )
     p_run.set_defaults(func=cmd_report_run)
+
+    p_diff = verbs.add_parser(
+        "diff",
+        help="Before/after report of windows changed by curation",
+        description=(
+            "Write a self-contained HTML report (<stem>_diff.html) comparing the\n"
+            "automatic-fit baseline with the current curated fit, side by side,\n"
+            "for every window that differs materially -- both the windows edited\n"
+            "directly and the dependents the contributor-edit cascade changed.\n"
+            "Lets the changes be evaluated before they are committed, without\n"
+            "juggling two files. When no curation edit has been made, a report\n"
+            "stating that is written. Read-only; never recomputes the fit."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_diff.add_argument(
+        "file_path", help="Path to .ftmw pipeline file (.ftmw auto-added)"
+    )
+    p_diff.add_argument(
+        "--output-dir",
+        dest="output_dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Directory to write the report into (created if absent). "
+            "Defaults to the current directory."
+        ),
+    )
+    p_diff.add_argument(
+        "--dpi",
+        dest="dpi",
+        type=int,
+        default=110,
+        metavar="N",
+        help="Resolution for the per-window panels (default 110).",
+    )
+    p_diff.set_defaults(func=cmd_report_diff)

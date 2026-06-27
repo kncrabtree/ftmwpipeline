@@ -1,8 +1,11 @@
 # Attention-metric refinements + the coupled Stage 5 fitting changes
 
-Status: **F-1/F-2/F-3 committed (e7a5374); A-1 (collapse extension + `overfit_vif`
-retirement) implemented and A/B-validated, uncommitted; A-2/A-3/A-4 and the report
-phase pending.** Reassessment of the Stage 6 attention
+Status: **F-1/F-2/F-3 committed (e7a5374); A-1 committed (collapse extension +
+`overfit_vif` retirement, A/B-validated); A-2 = no code change; A-3 committed
+(merge advisory demoted, default queue 12.4%→3.2%); A-4 reframed and implemented
+as the `report diff` post-curation before/after report. Remaining report-phase
+items (vertical compaction, on-plot annotations) pending.** Reassessment of the
+Stage 6 attention
 surface after the F1 rework, plus the Stage 5 fitting changes the reassessment
 exposed as the real fix. Diagnosis was measured on the seven-fixture `s4c` set
 (review run + `--windows attention` reports + targeted refits; harnesses under
@@ -192,13 +195,47 @@ queue. Combined with the `overfit_vif` retirement, the seven-fixture default
 queue drops from 246 (12.4% of windows) to 64 (3.2%): 655 99→25, 1231 49→12,
 363 32→13, 360 29→4, 2638 12→2.
 
-### A-4. B5 cascade surface (folded in from the cascade effort)
+### A-4. Post-curation diff report (reframed from the `rank --by` framing)
 
-The contributor-edit cascade deferred its attention/report surface here: a
-`review rank --by <diff-metric>` over revised-vs-baseline dependent diffs (peak
-moved ≳k·σ, σ inflated, χ²ᵣ shifted, peak-count changed) and a cascade report
-section. Land the ranking metric here; the report section rides the later report
-phase.
+User direction: the real deliverable is a **targeted before/after side-by-side
+report** of every *materially-changed* window — both the windows the user edited
+and the dependents the cascade changed — so they can evaluate the changes before
+committing, without maintaining and switching between two files. The `rank --by`
+framing is incidental; optionally persist Δχ²ᵣ / Δpeaks / Δeps as rankable
+metrics, but the report is the point.
+
+The two states are already on disk: `/stage5_fitting` (current/curated) and
+`/stage5_fitting_baseline` (the automatic-fit snapshot, present once any
+fit-mutating edit has been made; `_snapshot_stage5_baseline`). A window-by-window
+diff of the two captures user edits *and* cascade changes in one pass (the
+cascade mutates dependents in `/stage5_fitting`, and the baseline predates them).
+
+- **Materiality** (a window is included when, baseline → current): peak count
+  changed, or a matched peak moved beyond a separation/σ threshold, or |Δχ²ᵣ| /
+  |Δeps| beyond threshold. Filters out the sub-σ_f cascade jitter (the cascade
+  gate finding: most cascade effects are `<<σ_f`), leaving genuine edits + the
+  rare material cascade shift.
+- **Form**: a self-contained HTML report listing only the material windows, each
+  as before | after side-by-side panels (reuse `prepare_window_panels` /
+  `draw_component`) plus a per-window stat line (Δχ²ᵣ, Δpeak-count, Δeps,
+  per-peak frequency/σ shifts) and a header summary.
+- **Read-only**; requires the baseline snapshot (no edits → "no changes").
+- **Optional**: `delta-chi2r` / `delta-peaks` / `delta-eps` rank metrics in
+  `RANK_METRICS` (return `None` when no baseline).
+
+**Implemented as `report diff`** (chosen over `review diff`: it renders an HTML
+document and reuses the report machinery). `report_diff_impl` in
+`_internal/report_diff_impl.py`: loads the baseline (`/stage5_fitting_baseline`)
+and current (`/stage5_fitting`) fits, computes the per-window diff, and renders
+material windows as before|after `|X|`+model panels (the baseline panel via
+`dataclasses.replace(bundle, fit=baseline_fit)` — the FID-derived grid/noise are
+shared, only `fit` differs) embedded as base64 in a self-contained HTML, with a
+per-window Δχ²ᵣ / Δε / peak-count stat line. No baseline → notice report; no
+material change → notice report. Materiality defaults: peak-count change, a
+matched peak moving ≥ 0.25 res, relative |Δχ²ᵣ| ≥ 0.10, or |Δε| ≥ 0.01. Exposed
+identically through `Pipeline.report_diff`, `api.report_diff`, and CLI
+`report diff` (cross-interface byte-identical test). The optional Δ rank metrics
+were not added (the report is the deliverable; `rank --by` was incidental).
 
 ## Interface surface (dual-interface invariant)
 
@@ -208,8 +245,10 @@ inherited likewise. New tunables (the fracUnc merge bar, the brightness-scaled
 reach, the final-add bar) are promoted to first-class settings
 (`PeakSurvivalSubSettings` / the candidate settings) with byte-identical defaults
 where a default already exists, and exposed through the standard settings path —
-no interface-specific logic. Any new `review rank --by` metric is added to
-`RANK_METRICS` and the CLI `review rank` enumeration identically.
+no interface-specific logic. The `report diff` report is exposed identically
+through `Pipeline.report_diff`, `api.report_diff`, and the CLI `report diff` verb
+(thin wrappers over `report_diff_impl`), gated by a cross-interface byte-identical
+test.
 
 ## Serialization
 
@@ -252,10 +291,9 @@ no interface-specific logic. Any new `review rank --by` metric is added to
 ## Deferred (later report phase)
 
 Vertical compaction (hide covariance/correlation by default, tighter layout),
-above-the-fold reorg of the per-window page, quick-clear controls + richer
-in-table attention detail, and the **post-curation diff report** (side-by-side
-plots and χ²ᵣ/peak-drift stats for windows a curation action touched, building on
-the cascade's revised-vs-baseline diff). Scoped separately after the metrics land.
+above-the-fold reorg of the per-window page, and quick-clear controls + richer
+in-table attention detail. (The post-curation diff report landed as `report diff`
+— see A-4.)
 
 **On-plot attention annotations.** Mark the part of the window an attention reason
 points at directly on the per-window plot — SVG overlays in the same vein as the

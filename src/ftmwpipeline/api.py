@@ -1536,6 +1536,25 @@ def report_run(
     )
 
 
+def report_diff(
+    file_path: Union[str, Path],
+    *,
+    output_dir: Optional[Union[str, Path]] = None,
+    dpi: int = 110,
+) -> str:
+    """Render the post-curation before/after diff report; return its path.
+
+    Equivalent to :meth:`Pipeline.report_diff`.  Compares the automatic-fit
+    baseline snapshot with the current curated fit and writes a self-contained
+    ``<stem>_diff.html`` with a side-by-side panel for every window that differs
+    materially -- both the windows edited directly and the dependents the
+    contributor-edit cascade changed -- so the changes can be evaluated before
+    they are committed.  When no curation edit has been made, a report stating
+    that is written instead.  Read-only; never recomputes the fit.
+    """
+    return Pipeline.open(file_path).report_diff(output_dir=output_dir, dpi=dpi)
+
+
 def run_pipeline(
     source: Union[str, Path],
     output: Optional[Union[str, Path]] = None,
