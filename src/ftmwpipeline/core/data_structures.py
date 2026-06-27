@@ -1836,11 +1836,16 @@ class AttentionReason:
         Human-readable explanation of the attention trigger.
     severity : float
         Sortable weight for ranked display (higher = more attention).
+    locations : list of float
+        Molecular frequencies (MHz) the reason points at, for an on-plot marker
+        (e.g. each strong residual candidate, the spur-adjacent line, the merged
+        peak). Empty for window-wide reasons with no single locus.
     """
 
     kind: str
     detail: str
     severity: float
+    locations: List[float] = field(default_factory=list)
 
 
 @dataclass
@@ -1878,9 +1883,7 @@ class WindowReviewStatus:
         merge is the more-likely-correct call, so it is a re-split opportunity,
         not a demand for a look.
         """
-        return any(
-            r.kind not in _ADVISORY_REASON_KINDS for r in self.attention_reasons
-        )
+        return any(r.kind not in _ADVISORY_REASON_KINDS for r in self.attention_reasons)
 
 
 @dataclass

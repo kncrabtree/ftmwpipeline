@@ -149,12 +149,23 @@ def _window_center(fit: FittingResult) -> Optional[float]:
 
 def _auto_merged_window_ids(spectrum_fit: SpectrumFit) -> set:
     """Window ids the end-of-Stage-5 VIF merge touched (from the diagnostic)."""
+    return set(_auto_merged_window_freqs(spectrum_fit))
+
+
+def _auto_merged_window_freqs(spectrum_fit: SpectrumFit) -> Dict[int, List[float]]:
+    """Map each auto-merged window id to its merged-peak molecular frequencies
+    (from the ``vif_collapse`` provenance), for the ``auto_merged_review`` marker."""
     vc = spectrum_fit.diagnostics.get("vif_collapse", {}) if spectrum_fit else {}
-    return {
-        int(c["window_id"])
-        for c in vc.get("collapses", [])
-        if c.get("window_id") is not None and int(c["window_id"]) >= 0
-    }
+    out: Dict[int, List[float]] = {}
+    for c in vc.get("collapses", []):
+        wid = c.get("window_id")
+        if wid is None or int(wid) < 0:
+            continue
+        out.setdefault(int(wid), [])
+        mf = c.get("merged_frequency_mhz")
+        if mf is not None and math.isfinite(float(mf)):
+            out[int(wid)].append(float(mf))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2516,7 +2527,7 @@ def _record_decision(
         fid = load_fid_from_pipeline_impl(path)
         sideband = Sideband.coerce(fid.sideband)
 
-        merged_window_ids = _auto_merged_window_ids(spectrum_fit)
+        merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
         wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
         if wf_list:
             new_reasons = _compute_attention_reasons(
@@ -2528,7 +2539,8 @@ def _record_decision(
                 sideband=sideband,
                 kappa=kappa,
                 noise_floor=noise_floor,
-                auto_merged=window_id in merged_window_ids,
+                auto_merged=window_id in merged_window_freqs,
+                merged_freqs=merged_window_freqs.get(window_id, ()),
             )
         else:
             new_reasons = (
@@ -3319,6 +3331,7 @@ def _compute_attention_reasons(
     kappa: float,
     noise_floor: float,
     auto_merged: bool = False,
+    merged_freqs: Sequence[float] = (),
 ) -> List[AttentionReason]:
     """Derive the set of advisory attention reasons for one window.
 
@@ -3365,6 +3378,7 @@ def _compute_attention_reasons(
                     "re-split (review split) if catalog/model supports two lines"
                 ),
                 severity=0.1,
+                locations=[float(f) for f in merged_freqs],
             )
         )
 
@@ -3456,6 +3470,7 @@ def _compute_attention_reasons(
                         f"(best residual SNR={best_ev:.2f})"
                     ),
                     severity=float(len(strong) + best_ev * 0.1),
+                    locations=[float(c.frequency_mhz) for c in strong],
                 )
             )
 
@@ -3486,6 +3501,7 @@ def _compute_attention_reasons(
                     ),
                     # closer to the node = higher attention
                     severity=float(2.0 - min(sep_res, SPUR_ADJACENT_MAX_SEP_RES)),
+                    locations=[pf],
                 )
             )
 
@@ -3511,6 +3527,7 @@ def _compute_attention_reasons(
                         f"({resolution_mhz:.4f} MHz) of window edge: {freqs_str}"
                     ),
                     severity=float(len(edge_peaks)),
+                    locations=[float(p.frequency_mhz) for p in edge_peaks],
                 )
             )
 
@@ -3751,7 +3768,7 @@ def review_run_impl(
         float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
     ]
     acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
-    merged_window_ids = _auto_merged_window_ids(spectrum_fit)
+    merged_window_freqs = _auto_merged_window_freqs(spectrum_fit)
 
     new_statuses: Dict[int, WindowReviewStatus] = {}
     for wf in spectrum_fit.window_fits:
@@ -3766,7 +3783,8 @@ def review_run_impl(
             sideband=sideband,
             kappa=kappa,
             noise_floor=noise_floor,
-            auto_merged=wid in merged_window_ids,
+            auto_merged=wid in merged_window_freqs,
+            merged_freqs=merged_window_freqs.get(wid, ()),
         )
 
         # Preserve existing provenance (never downgrade reviewed/user-edited to auto).

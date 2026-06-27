@@ -417,6 +417,21 @@ tr.cur-added > td { background: #d8efdc !important; }
 .cur-plot-svg { position: absolute; inset: 0; width: 100%; height: 100%;
                 pointer-events: none; }
 .cur-plot-svg .cur-marker { pointer-events: all; cursor: pointer; }
+/* On-plot attention markers: a static caret + one-letter tag at the top of the
+   |X| data box pointing at where each flag applies. The group keeps pointer
+   events so the <title> tooltip shows the reason detail on hover. Color-coded by
+   reason kind. */
+.attn-svg { position: absolute; inset: 0; width: 100%; height: 100%;
+            pointer-events: none; }
+.attn-svg .attn-mark { pointer-events: all; }
+.attn-svg text { font: 600 13px system-ui, sans-serif; dominant-baseline: middle;
+                 paint-order: stroke; stroke: #fff; stroke-width: 3px; }
+.attn-svg .attn-candidate_bearing path { fill: #b42318; }
+.attn-svg .attn-candidate_bearing text { fill: #b42318; }
+.attn-svg .attn-spur_adjacent path { fill: #9a5b00; }
+.attn-svg .attn-spur_adjacent text { fill: #9a5b00; }
+.attn-svg .attn-auto_merged_review path { fill: #5b6470; }
+.attn-svg .attn-auto_merged_review text { fill: #5b6470; }
 .cur-plot-arm { position: absolute; top: 8px; right: 8px; z-index: 2;
     font-size: 0.85rem; font-weight: 600; padding: 0.3rem 0.75rem;
     border-radius: 4px; border: 1px solid #2c4a6e;
@@ -2605,11 +2620,69 @@ def _render_all_window_figures(
     return {res[0]: res for res in rendered}
 
 
+# Attention reasons that get an on-plot marker on the |X| panel, mapped to the
+# one-letter tag drawn in the caret. Window-wide reasons (``worst_eps``) have no
+# single locus and are surfaced by the header chip instead; ``edge_boundary``
+# carries a location too and can be added here if it should be marked.
+_ATTENTION_MARKERS: Dict[str, str] = {
+    "candidate_bearing": "C",
+    "spur_adjacent": "S",
+    "auto_merged_review": "M",
+}
+
+
+def _attention_marker_svg(
+    geom: Dict[str, float],
+    markers: List[Tuple[float, str, str]],
+) -> str:
+    """Build the static attention-marker SVG overlay for the |X| panel.
+
+    *markers* is ``(molecular_freq_mhz, kind, detail)``. Each renders as a small
+    downward caret + one-letter tag at the top of the data-axes box, positioned
+    by mapping the frequency through the stamped geometry (``flo``/``fhi`` carry
+    the axis sense). The overlay shares the panel's ``viewBox`` (natural PNG
+    pixels) with ``preserveAspectRatio="none"``, exactly like the curation
+    overlay, so it tracks the responsive image without distortion. Returns ``""``
+    when there is nothing in range to mark.
+    """
+    flo, fhi = geom["flo"], geom["fhi"]
+    if fhi == flo:
+        return ""
+    x0, x1, y0 = geom["x0"], geom["x1"], geom["y0"]
+    glyphs: List[str] = []
+    for freq, kind, detail in markers:
+        letter = _ATTENTION_MARKERS.get(kind)
+        if letter is None:
+            continue
+        frac = (freq - flo) / (fhi - flo)
+        if not (0.0 <= frac <= 1.0):
+            continue  # outside the plotted band
+        x = x0 + frac * (x1 - x0)
+        cls = f"attn-mark attn-{kind}"
+        # Caret tip points down at the line; the letter sits to its right.
+        caret = (
+            f"M{x - 6:.1f},{y0 + 2:.1f} L{x + 6:.1f},{y0 + 2:.1f} "
+            f"L{x:.1f},{y0 + 13:.1f} Z"
+        )
+        glyphs.append(
+            f'<g class="{cls}"><title>{_esc(detail)}</title>'
+            f'<path d="{caret}"/>'
+            f'<text x="{x + 9:.1f}" y="{y0 + 13:.1f}">{letter}</text></g>'
+        )
+    if not glyphs:
+        return ""
+    return (
+        f'<svg class="attn-svg" viewBox="0 0 {geom["w"]:.0f} {geom["h"]:.0f}" '
+        'preserveAspectRatio="none" aria-hidden="true">' + "".join(glyphs) + "</svg>"
+    )
+
+
 def _fit_panels_block(
     panel_files: Dict[str, str],
     *,
     window_id: Optional[int] = None,
     mag_geom: Optional[Dict[str, float]] = None,
+    attn_markers: Optional[List[Tuple[float, str, str]]] = None,
 ) -> List[str]:
     """Lay the per-window Re/Im/|X| panel PNGs out in a two-column grid.
 
@@ -2654,6 +2727,7 @@ def _fit_panels_block(
             f' data-axes-w="{g["w"]:.2f}" data-axes-h="{g["h"]:.2f}"'
             f' data-axes-flo="{g["flo"]:.6f}" data-axes-fhi="{g["fhi"]:.6f}"'
         )
+        attn_svg = _attention_marker_svg(g, attn_markers) if attn_markers else ""
         return [
             '  <figure class="panel">'
             f'<div class="cur-plot-wrap" data-window="{window_id}">'
@@ -2663,6 +2737,7 @@ def _fit_panels_block(
             f'<svg class="cur-plot-svg cur-only" data-window="{window_id}" '
             f'viewBox="0 0 {g["w"]:.0f} {g["h"]:.0f}" preserveAspectRatio="none" '
             'aria-hidden="true"></svg>'
+            f"{attn_svg}"
             "</div></figure>"
         ]
 
@@ -2717,6 +2792,18 @@ def _window_page(
     snr_max = max(snrs) if snrs else 0.0
     eps_val = shape_error_fraction(chi2r, snr_max, DEFAULT_CHI2R_NOISE_FLOOR)
     has_attention = status is not None and bool(status.attention_reasons)
+
+    # On-plot attention markers: each flagged location that has a marker glyph,
+    # carried onto the |X| panel as a caret + one-letter tag pointing at where the
+    # reason applies (the residual candidate, the spur-adjacent line, the merged
+    # peak). Window-wide reasons without a locus contribute nothing here.
+    attn_markers: List[Tuple[float, str, str]] = []
+    if status is not None:
+        for r in status.attention_reasons:
+            if r.kind not in _ATTENTION_MARKERS:
+                continue
+            for f in r.locations:
+                attn_markers.append((float(f), r.kind, r.detail))
 
     # --- nav bar (thin, prev/next/index) ----------------------------------------
     nav = ['<div class="nav">', '<a href="../index.html">&larr; index</a>']
@@ -2799,7 +2886,12 @@ def _window_page(
         *nav,
         *header,
         "<h2>Fit</h2>",
-        *_fit_panels_block(panel_files, window_id=window_id, mag_geom=mag_geom),
+        *_fit_panels_block(
+            panel_files,
+            window_id=window_id,
+            mag_geom=mag_geom,
+            attn_markers=attn_markers,
+        ),
         "<h2>Fitted lines</h2>",
         _window_peak_table(peaks, uname, uval, catalog_matches, window_id=window_id),
         *_window_curation_controls(window_id, min(lo, hi), max(lo, hi)),

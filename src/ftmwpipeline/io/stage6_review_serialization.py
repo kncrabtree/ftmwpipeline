@@ -62,7 +62,12 @@ def _status_to_dict(status: WindowReviewStatus) -> Dict[str, Any]:
         "window_id": status.window_id,
         "provenance": status.provenance,
         "attention_reasons": [
-            {"kind": r.kind, "detail": r.detail, "severity": r.severity}
+            {
+                "kind": r.kind,
+                "detail": r.detail,
+                "severity": r.severity,
+                "locations": list(r.locations),
+            }
             for r in status.attention_reasons
         ],
         "invalidated": status.invalidated,
@@ -75,6 +80,7 @@ def _status_from_dict(d: Dict[str, Any]) -> WindowReviewStatus:
             kind=str(r["kind"]),
             detail=str(r["detail"]),
             severity=float(r["severity"]),
+            locations=[float(x) for x in r.get("locations", [])],
         )
         for r in d.get("attention_reasons", [])
     ]
