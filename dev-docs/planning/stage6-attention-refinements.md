@@ -288,15 +288,21 @@ test.
 - Whether `candidate_bearing` survives at all once F-1/F-2/F-3 land, or collapses
   to so few windows that it folds into `worst_eps` + the on-demand ledger.
 
-## Report enhancements (in progress)
+## Report enhancements (shipped)
 
-Three buckets after the layout work (`53d80b7`): **annotations** (on-plot SVG
-markers — shipped, `f9e812b`), **navigation** (jump-to-frequency + attention-queue
-traversal + j/k/J/K — shipped, `2e252eb`), and **convenience controls for
-curation** (reviewed-and-advance, per-window clear, index-list mark-reviewed,
-clickable cart entries, curate-mode keyboard r/s/m/a; plus surfacing
-already-applied edits as an "Applied edits" table with per-edit Undo that queues a
-`review undo --id` into the cart — in progress).
+Three buckets after the layout work (`53d80b7`), all shipped:
+
+- **Annotations** — on-plot SVG attention markers (caret + C/S/M tag on the |X|
+  panel via the stamped axes geometry); `f9e812b`.
+- **Navigation** — jump-to-frequency + attention-queue traversal (⚑) + keyboard
+  j/k (window) and J/K (flagged), over a build-time `window.__nav` array;
+  `2e252eb`.
+- **Convenience controls for curation** — per-window "Reviewed & next" and "Clear
+  window edits", a per-row reviewed button in the index windows table, clickable
+  cart entries (scroll + flash), and curate-mode keyboard r/s/m/a; plus an
+  "Applied edits" table on the index surfacing the file's decision log with a
+  per-edit Undo that queues a `review undo --id` (kept out of the curation CSV);
+  `6c8455a`, docs `6591c96`.
 
 ### Queued ideas (not yet scoped)
 
