@@ -381,6 +381,23 @@ exports them as a **curation file** for ``review apply`` to replay. Its anatomy,
 in-browser curation cart, and the curation-file language are documented on the
 :doc:`Fit Curation <fit_curation>` page.
 
+.. _stage6-diff:
+
+``report diff`` is a **before/after review aid** for vetting a curation before
+committing to it. It writes a self-contained ``<stem>_diff.html`` that compares the
+**automatic fit** with the **current curated fit**, side by side, for every window the
+curation changed *materially* — both the windows edited directly and the dependents the
+contributor-edit cascade touched — so the changes can be
+reviewed in one place without maintaining and diffing two separate files. Each window
+shows its before and after :math:`|X|`-and-model panels (click either to zoom) with a
+stat line giving the change in reduced :math:`\chi^2`, the shape-error fraction, and the
+peak count; a window is included when a peak was added or removed, a peak moved
+appreciably, or the fit quality shifted beyond a small threshold, which filters out the
+sub-noise cascade jitter. The comparison is possible because the first curation edit
+snapshots the automatic fit inside the file; before any edit (nothing to compare) the
+report says so. Like the other ``report`` verbs it is read-only and never recomputes the
+fit.
+
 Limitations
 -----------
 

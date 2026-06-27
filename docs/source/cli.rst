@@ -262,9 +262,13 @@ requires ``review run`` to have consolidated the calibrated final products.
 Level-1 CSV and the self-contained Level-3 HTML report — into ``--output-dir``
 (the current directory by default); trim with ``--level1-only``, ``--no-table``,
 ``--windows attention``, or ``--summary``, and parallelize the figure rendering
-with ``-j`` / ``--jobs``. Both verbs accept ``--catalog`` / ``--catalog-nsigma``
-to proximity-flag each line against a frequency catalog (label echo only, never
-an assignment). See :doc:`stage6_review`.
+with ``-j`` / ``--jobs``. ``report table`` and ``report run`` accept
+``--catalog`` / ``--catalog-nsigma`` to proximity-flag each line against a
+frequency catalog (label echo only, never an assignment). ``report diff`` writes
+a self-contained ``<stem>_diff.html`` comparing the automatic fit with the
+current curated fit, side by side, for every window a curation (or its cascade)
+changed materially — a before/after review aid for vetting edits before
+committing them, without juggling two files. See :doc:`stage6_review`.
 
 Cross-cutting commands
 ----------------------

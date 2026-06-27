@@ -78,7 +78,7 @@ a diagnostic figure.
      - :func:`~ftmwpipeline.api.load_fit`, :func:`~ftmwpipeline.api.visualize_fit`, :func:`~ftmwpipeline.api.show_fit`
    * - Review (Stage 6)
      - :func:`~ftmwpipeline.api.review_run`
-     - :func:`~ftmwpipeline.api.get_review_status`, :func:`~ftmwpipeline.api.report_run`
+     - :func:`~ftmwpipeline.api.get_review_status`, :func:`~ftmwpipeline.api.report_run`, :func:`~ftmwpipeline.api.report_diff`
 
 To drive a raw source through every stage in one call, use
 :func:`~ftmwpipeline.api.run_pipeline` (functional) or
