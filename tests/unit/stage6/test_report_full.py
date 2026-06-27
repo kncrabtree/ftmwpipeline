@@ -421,7 +421,33 @@ def test_window_curation_controls():
     assert 'data-act="merge-selected"' in block and 'data-window="24"' in block
     assert 'data-act="add-typed"' in block and 'class="cur-addfreq"' in block
     assert 'data-act="accept"' in block  # the bare "Mark reviewed"
+    # Convenience controls: mark-reviewed-and-advance + per-window clear.
+    assert 'data-act="accept-next"' in block
+    assert 'data-act="clear-window"' in block
     assert "38449.0000" in block and "38451.0000" in block  # the window range
+
+
+def test_applied_edits_section():
+    from ftmwpipeline._internal.report_html_impl import _applied_edits_section
+    from ftmwpipeline.core.data_structures import DecisionLogEntry
+
+    # No decisions -> no section.
+    assert _applied_edits_section([]) == []
+
+    decisions = [
+        DecisionLogEntry(
+            order_index=0, window_id=24, frequency_mhz=38450.123, kind="remove"
+        ),
+        DecisionLogEntry(order_index=1, window_id=7, frequency_mhz=0.0, kind="accept"),
+    ]
+    html_block = "\n".join(_applied_edits_section(decisions))
+    assert 'id="applied-edits"' in html_block
+    # Each decision lists with an undo control carrying its id + window.
+    assert 'data-act="undo"' in html_block
+    assert 'data-edit-id="0"' in html_block and 'data-window="24"' in html_block
+    assert "38450.1230" in html_block  # the remove anchor
+    # The undo control is curate-only (never alters the read-only view).
+    assert 'class="cur-only cur-btn cur-undo"' in html_block
 
 
 def test_mag_axes_geometry_and_click_inversion():
@@ -1158,6 +1184,13 @@ def test_single_file_carries_curation_surface(full_report_single_file):
     # The arm toggle (touch-safe opt-in) and the marker SVG layer ship per panel.
     assert 'class="cur-plot-arm cur-only"' in doc
     assert "cur-plot-svg cur-only" in doc and "preserveAspectRatio" in doc
+    # Curation convenience controls ship in the single file: reviewed-and-advance,
+    # per-window clear, the index-list per-row accept, and the cart jump + keyboard
+    # handlers in the script.
+    assert 'data-act="accept-next"' in doc and 'data-act="clear-window"' in doc
+    assert "cur-list-accept" in doc
+    assert "function jumpToEdit" in doc and "function clearWindow" in doc
+    assert "__navNextFlag" in doc
 
 
 def _peak_list_row(doc: str):

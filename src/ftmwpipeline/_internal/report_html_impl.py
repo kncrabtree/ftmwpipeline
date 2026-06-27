@@ -409,6 +409,17 @@ tr.cur-added > td { background: #d8efdc !important; }
 .cur-cart-foot button:hover { background: #eef4fb; }
 .cur-cmd { width: 100%; margin: 0.4rem 0 0; white-space: pre-wrap;
            font-size: 0.72rem; padding: 0.4rem 0.5rem; }
+/* Cart entry label clicks through to its window/row. */
+.cur-entry .cur-jump { cursor: pointer; text-decoration: underline dotted;
+                       flex: 1; }
+.cur-entry .cur-jump:hover { color: #1a4f8a; }
+/* Brief highlight when a row is jumped to from the cart. */
+tr.cur-flash > td { background: #fff3bf !important; transition: background 0.3s; }
+/* Per-row "Mark reviewed" in the index window list (curate mode). */
+.window-list .cur-list-accept { margin-left: 0.5rem; }
+/* Applied-edits table: a queued undo highlights its button. */
+.applied-edits .cur-undo-queued { background: #fdecd8; border-color: #b9770e;
+                                  color: #7a3d00; }
 .cur-ta { position: absolute; left: -9999px; width: 1px; height: 1px; }
 .topnav .cur-toggle { font-size: 0.85rem; padding: 0.12rem 0.6rem;
     border-radius: 3px; border: 1px solid #2c4a6e; background: #cfe0f5;
@@ -1518,6 +1529,9 @@ _NAV_JS = """<script>
     else if (e.key === 'J') stepFlag(1);
     else if (e.key === 'K') stepFlag(-1);
   });
+  // Exposed so the curation "mark reviewed & next" action can advance the queue.
+  window.__navNextFlag = function () { stepFlag(1); };
+  window.__navPrevFlag = function () { stepFlag(-1); };
 })();
 </script>"""
 
@@ -1585,13 +1599,31 @@ _CURATION_JS = r"""<script>
   var copyTa = cart.querySelector('.cur-ta');
 
   function fmtCmd() {
-    return 'ftmwpipeline review apply ' + STEM + '.ftmw ' + STEM +
-      '_curation.csv\n  (add --dry-run to preview the resolved plan)';
+    // Curation ops export as the apply CSV; undo ops (rolling back already-applied
+    // edits) are a different verb, so they surface as a separate review-undo
+    // command. Undo is listed first so its id numbering matches this report.
+    var parts = [];
+    var und = ops.filter(function (o) { return o.action === 'undo'; });
+    var cur = ops.filter(function (o) { return o.action !== 'undo'; });
+    if (und.length) {
+      var ids = und.map(function (o) { return o.id; })
+        .sort(function (a, b) { return a - b; });
+      parts.push('ftmwpipeline review undo ' + STEM + '.ftmw --id ' +
+        ids.join(' '));
+    }
+    if (cur.length) {
+      parts.push('ftmwpipeline review apply ' + STEM + '.ftmw ' + STEM +
+        '_curation.csv');
+    }
+    if (!parts.length) return '';
+    parts.push('  (add --dry-run to preview)');
+    return parts.join('\n');
   }
   function csvCell(s) { return (s == null) ? '' : String(s); }
   function toCsv() {
     var lines = ['action,window,freqs,params'];
     ops.forEach(function (o) {
+      if (o.action === 'undo') return;  // not a curation-file op
       lines.push([o.action, o.window, csvCell(o.freqs),
                   csvCell(o.params)].join(','));
     });
@@ -1599,6 +1631,7 @@ _CURATION_JS = r"""<script>
   }
 
   function opKey(o) {
+    if (o.action === 'undo') return 'undo||' + o.id + '|';
     return o.action + '|' + o.window + '|' + o.freqs + '|' + (o.params || '');
   }
   function findKey(key) {
@@ -1718,7 +1751,8 @@ _CURATION_JS = r"""<script>
       html += '<div class="cur-grp"><div class="cur-grp-h">window ' + w +
         '</div>';
       byWin[w].forEach(function (e) {
-        html += '<div class="cur-entry"><span>' + e.op.label +
+        html += '<div class="cur-entry"><span class="cur-jump" data-i="' + e.i +
+          '" title="go to this edit">' + e.op.label +
           '</span><button type="button" class="cur-x" data-i="' + e.i +
           '" title="drop">✕</button></div>';
       });
@@ -1730,17 +1764,47 @@ _CURATION_JS = r"""<script>
     copyTa.value = toCsv();
     refreshRows();
     renderMarkers();
+    // Reflect queued undos on the applied-edits buttons.
+    document.querySelectorAll('.cur-undo').forEach(function (b) {
+      var eid = parseInt(b.getAttribute('data-edit-id'), 10);
+      var queued = findKey('undo||' + eid + '|') >= 0;
+      b.classList.toggle('cur-undo-queued', queued);
+      b.textContent = queued ? 'Undo queued ✓' : 'Undo';
+    });
   }
 
   function addOp(o) { ops.push(o); renderCart(); }
   function dropOp(i) { ops.splice(i, 1); renderCart(); }
   function clearCart() { ops = []; renderCart(); }
+  function clearWindow(w) {
+    ops = ops.filter(function (o) { return String(o.window) !== String(w); });
+    renderCart();
+  }
+  function flashRow(tr) {
+    if (!tr) return;
+    tr.classList.add('cur-flash');
+    setTimeout(function () { tr.classList.remove('cur-flash'); }, 1500);
+  }
+  // Scroll a cart entry's originating window into view and flash its row(s).
+  function jumpToEdit(o) {
+    var sec = document.getElementById('window-' + o.window);
+    if (sec) sec.scrollIntoView();
+    var tbl = o.action === 'add' ? 'ledger' : 'peak-list';
+    (o.freqs || '').split(';').forEach(function (f) {
+      if (f) rowsFor(tbl, o.window, f).forEach(flashRow);
+    });
+  }
 
   // --- control wiring (event delegation) -------------------------------------
   document.addEventListener('click', function (e) {
     var t = e.target;
     if (t.closest && t.closest('.cur-x')) {
       dropOp(parseInt(t.closest('.cur-x').getAttribute('data-i'), 10));
+      return;
+    }
+    if (t.closest && t.closest('.cur-jump')) {
+      var je = ops[parseInt(t.closest('.cur-jump').getAttribute('data-i'), 10)];
+      if (je) jumpToEdit(je);
       return;
     }
     if (t.classList && t.classList.contains('cur-toggle')) {
@@ -1852,6 +1916,28 @@ _CURATION_JS = r"""<script>
               freqs: '', params: '', label: 'mark reviewed' });
       return;
     }
+    if (act === 'accept-next') {
+      addOp({ action: 'accept', window: t.getAttribute('data-window'),
+              freqs: '', params: '', label: 'mark reviewed' });
+      if (window.__navNextFlag) window.__navNextFlag();
+      return;
+    }
+    if (act === 'clear-window') {
+      clearWindow(t.getAttribute('data-window'));
+      return;
+    }
+    if (act === 'undo') {  // queue rollback of an already-applied edit (by id)
+      var eid = parseInt(t.getAttribute('data-edit-id'), 10);
+      var ux = findKey('undo||' + eid + '|');
+      if (ux >= 0) { dropOp(ux); }
+      else {
+        addOp({ action: 'undo', window: t.getAttribute('data-window'), id: eid,
+                freqs: '', params: '',
+                label: 'undo #' + eid + ' (' +
+                  (t.getAttribute('data-edit-label') || '') + ')' });
+      }
+      return;
+    }
 
     // Per-row remove / split / ledger add: key off the closest row.
     var row = t.closest('tr');
@@ -1890,6 +1976,39 @@ _CURATION_JS = r"""<script>
     }
   });
 
+  // Keyboard shortcuts (curation mode only): act on the fitted-line row / window
+  // under the pointer to cut mouse round-trips on dense windows. r = remove,
+  // s = split, m = toggle merge-select (all on the hovered row); a = arm
+  // click-to-add on the hovered window. Reuses the existing button handlers, so
+  // toggles and cart state stay identical to clicking.
+  var lastRow = null, lastSec = null;
+  document.addEventListener('mouseover', function (e) {
+    if (!e.target.closest) return;
+    var tr = e.target.closest('tr[data-freq]');
+    if (tr) lastRow = tr;
+    var sec = e.target.closest('section[id^="window-"]');
+    if (sec) lastSec = sec;
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!root.classList.contains('curation-enabled')) return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    var tag = (e.target.tagName || '').toUpperCase();
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    if ((e.key === 'r' || e.key === 's' || e.key === 'm') && lastRow) {
+      if (e.key === 'm') {
+        var cb = lastRow.querySelector('.cur-merge');
+        if (cb) { cb.checked = !cb.checked; e.preventDefault(); }
+        return;
+      }
+      var sel = e.key === 'r' ? '[data-act="remove"]' : '[data-act="split"]';
+      var btn = lastRow.querySelector(sel);
+      if (btn) { btn.click(); e.preventDefault(); }
+    } else if (e.key === 'a' && lastSec) {
+      var arm = lastSec.querySelector('.cur-plot-arm');
+      if (arm) { arm.click(); e.preventDefault(); }
+    }
+  });
+
   renderCart();
 })();
 </script>"""
@@ -1915,6 +2034,13 @@ def _index_window_table(
             link = label
         if attn:
             link += '<span class="badge">attention</span>'
+        # Curate-mode quick triage: mark a window reviewed straight from the
+        # overview without scrolling to it (the per-window button still exists).
+        link += (
+            '<button type="button" class="cur-only cur-btn cur-list-accept" '
+            f'data-act="accept" data-window="{wid}" '
+            'title="mark this window reviewed">&#10003; reviewed</button>'
+        )
         row_attrs.append(preview_attrs.get(wid, ""))
         out_rows.append(
             [
@@ -1930,6 +2056,56 @@ def _index_window_table(
         cls="window-list",
         row_attrs=row_attrs,
     )
+
+
+def _applied_edits_section(decisions: List[DecisionLogEntry]) -> List[str]:
+    """The index "Applied edits" section: the persisted decision log of edits
+    already applied to this file (empty list -> no section).
+
+    Each row shows the decision id, its window (linked), the action, and the
+    frequency anchor; in curate mode a per-row **Undo** button queues an ``undo``
+    op into the cart (which surfaces a ``review undo --id`` command). Always
+    visible as a record of the file's curation state; the Undo control is
+    curate-only."""
+    if not decisions:
+        return []
+    out_rows: List[List[str]] = []
+    for d in sorted(decisions, key=lambda e: e.order_index):
+        wid = int(d.window_id)
+        anchor = f"{d.frequency_mhz:.4f}" if d.kind != "accept" else "&mdash;"
+        label = f"{d.kind} @ {d.frequency_mhz:.4f}" if d.kind != "accept" else d.kind
+        undo = (
+            '<button type="button" class="cur-only cur-btn cur-undo" '
+            f'data-act="undo" data-edit-id="{d.order_index}" data-window="{wid}" '
+            f'data-edit-label="{_esc(label)}" title="queue undo of this edit">'
+            "Undo</button>"
+        )
+        out_rows.append(
+            [
+                f"{d.order_index}",
+                f'<a href="windows/{_window_page_name(wid)}">window {wid}</a>',
+                _esc(d.kind),
+                anchor,
+                undo,
+            ]
+        )
+    return [
+        '<h2 id="applied-edits">Applied edits</h2>',
+        f"<p>{len(decisions):,} curation decision(s) recorded in this file "
+        "(execution order). In curate mode, <em>Undo</em> queues a rollback; the "
+        "cart surfaces the <code>review undo</code> command.</p>",
+        _table(
+            [
+                "#",
+                "Window",
+                "Action",
+                "Anchor (MHz)",
+                '<span class="cur-only">Undo</span>',
+            ],
+            out_rows,
+            cls="applied-edits",
+        ),
+    ]
 
 
 def _catalog_cell(m: Optional[CatalogMatch]) -> str:
@@ -2136,6 +2312,11 @@ def _window_curation_controls(window_id: int, lo: float, hi: float) -> List[str]
         f'<span class="cur-range">window range {rng}</span>',
         f'<button type="button" class="cur-btn" data-act="accept" '
         f'data-window="{window_id}">Mark reviewed</button>',
+        f'<button type="button" class="cur-btn" data-act="accept-next" '
+        f'data-window="{window_id}" title="mark reviewed and jump to the next '
+        f'flagged window">Reviewed &amp; next &#9873;&rarr;</button>',
+        f'<button type="button" class="cur-btn cur-clear-win" data-act="clear-window" '
+        f'data-window="{window_id}">Clear window edits</button>',
         "</div>",
     ]
 
@@ -3604,6 +3785,7 @@ def _assemble_report_site(
         f"(<code>{_esc(key)}</code> filter); {len(attention_ids):,} flagged for "
         "attention.</p>",
         _index_window_table(index_rows, preview_attrs),
+        *_applied_edits_section(review.decision_log),
         '<h2 id="final-list">Final line list</h2>',
         f"<p>All {len(products.peaks):,} calibrated lines "
         f"(amplitude in {_esc(uname)})"

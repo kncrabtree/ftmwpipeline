@@ -288,12 +288,31 @@ test.
 - Whether `candidate_bearing` survives at all once F-1/F-2/F-3 land, or collapses
   to so few windows that it folds into `worst_eps` + the on-demand ledger.
 
+## Report enhancements (in progress)
+
+Three buckets after the layout work (`53d80b7`): **annotations** (on-plot SVG
+markers — shipped, `f9e812b`), **navigation** (jump-to-frequency + attention-queue
+traversal + j/k/J/K — shipped, `2e252eb`), and **convenience controls for
+curation** (reviewed-and-advance, per-window clear, index-list mark-reviewed,
+clickable cart entries, curate-mode keyboard r/s/m/a; plus surfacing
+already-applied edits as an "Applied edits" table with per-edit Undo that queues a
+`review undo --id` into the cart — in progress).
+
+### Queued ideas (not yet scoped)
+
+- **Window tags + filter menu.** Per-window chips (`edited`, `attention`,
+  `high-eps`, `high-chi2r`, `cascade-edit`, …) on each section/header, plus a
+  filter menu in the topnav that hides sections not matching the selected tag(s).
+  A client-side filter over the single-file report (each section carries its tag
+  set as a data attribute; the menu toggles visibility), reusing the existing
+  `window.__nav`-style build-time data injection. Pairs with the navigation work.
+
 ## Deferred (later report phase)
 
-Vertical compaction (hide covariance/correlation by default, tighter layout),
-above-the-fold reorg of the per-window page, and quick-clear controls + richer
-in-table attention detail. (The post-curation diff report landed as `report diff`
-— see A-4.)
+Vertical compaction (hide covariance/correlation by default, tighter layout) and
+above-the-fold reorg of the per-window page. (The post-curation diff report landed
+as `report diff` — see A-4; on-plot annotations, navigation, and the curation
+convenience controls shipped — see the buckets above.)
 
 **On-plot attention annotations.** Mark the part of the window an attention reason
 points at directly on the per-window plot — SVG overlays in the same vein as the
