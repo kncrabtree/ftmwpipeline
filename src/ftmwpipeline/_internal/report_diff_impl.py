@@ -241,13 +241,22 @@ section.win>h2{margin:0;padding:11px 16px;font-size:15px;background:#eef1f4;
  font-weight:600}
 .tag.add{background:#e7f6ec;color:#067647}.tag.rm{background:#fdeceb;color:#b42318}
 .tag.shift{background:#fff4e5;color:#9a5b00}
-.panels{display:grid;grid-template-columns:1fr 1fr;gap:0}
-.panels figure{margin:0;padding:10px 12px}
-.panels figure:first-child{border-right:1px solid #eceff2}
+/* Before|after pack two across at >= the floor width and reflow to a single
+   column as the view narrows (same auto-fit logic as the main report). */
+.panels{display:grid;gap:12px;padding:12px;
+ grid-template-columns:repeat(auto-fit,minmax(440px,1fr))}
+.panels figure{margin:0;border:1px solid #eceff2;border-radius:6px;padding:10px 12px}
 .panels figcaption{font-size:12px;font-weight:600;color:#586069;
  text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
-.panels img{width:100%;height:auto;display:block;background:#fff}
+.panels img{width:100%;height:auto;display:block;background:#fff;cursor:zoom-in}
 .panels .missing{color:#9aa1a8;font-style:italic;padding:30px 0;text-align:center}
+/* Full-size lightbox (the already-embedded image scaled to the viewport); click
+   anywhere or press Esc to close. Matches the main report's behavior. */
+.lightbox{display:none;position:fixed;inset:0;z-index:2000;
+ background:rgba(0,0,0,.88);cursor:zoom-out;align-items:center;
+ justify-content:center;padding:2vmin}
+.lightbox.open{display:flex}
+.lightbox img{max-width:96vw;max-height:96vh;background:#fff;box-shadow:0 0 24px #000}
 """
 
 
@@ -312,8 +321,10 @@ def _window_section(
             body = f'<img src="{uri}" alt="{label} window {d.window_id}">'
         return f"<figure><figcaption>{label}</figcaption>{body}</figure>"
 
+    # ``fit-panels`` so the shared ``_LIGHTBOX_JS`` (selector ``.fit-panels img``)
+    # wires click-to-zoom on these panels exactly as on the main report.
     panels = (
-        f'<div class="panels">'
+        f'<div class="panels fit-panels">'
         f"{_panel(before_uri, 'Before (automatic)')}"
         f"{_panel(after_uri, 'After (curated)')}"
         f"</div>"
@@ -460,6 +471,10 @@ def report_diff_impl(
 
 
 def _shell(stem: str, subtitle: str, body: str) -> str:
+    # Reuse the main report's click-to-zoom lightbox verbatim (it targets
+    # ``.fit-panels img``, which the panel containers carry).
+    from .report_html_impl import _LIGHTBOX_JS
+
     return (
         "<!DOCTYPE html>\n"
         '<html lang="en"><head><meta charset="utf-8">'
@@ -470,5 +485,7 @@ def _shell(stem: str, subtitle: str, body: str) -> str:
         f'<div class="sub">automatic fit &rarr; curated fit &middot; {subtitle}</div>'
         "</header><main>"
         f"{body}"
-        "</main></body></html>"
+        "</main>"
+        f"{_LIGHTBOX_JS}"
+        "</body></html>"
     )
