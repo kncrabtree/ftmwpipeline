@@ -34,6 +34,7 @@ from ..core.data_structures import (
     WindowReviewStatus,
 )
 from ..fitting.peak_model import sideband_sign as _sideband_sign
+from ..fitting.validation import DEFAULT_CHI2R_NOISE_FLOOR, shape_error_fraction
 from ..io.stage6_review_serialization import load_stage6_review_from_file
 from ..utils.parallelism import resolve_worker_count
 from .catalog_xref import CatalogCrossRef, CatalogMatch, load_cross_ref
@@ -241,19 +242,47 @@ html.report-compact .spectrum-ctx.zoom-expanded .spectrum-ctx-svg {
 ul.summary { list-style: none; padding: 0; display: grid; gap: 0.15rem 1.75rem;
              grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); }
 .summary li { margin: 0.15rem 0; }
-/* Fit panels: the overview spans full width on top; the Re/Im model+residual
-   panels share a row and the |X| + residual histogram share the row below
-   (a 1:2:2 stack that gives the model+residual panels the most space). On a
-   narrow viewport the grid collapses to a single column, so Re, Im, and |X|
-   each get the full width in turn. Each panel is its own PNG. */
+/* Per-window header band: strong visual weight for the key fit summary. */
+.win-header { background: #eef2f7; border: 1px solid #c4ccd4;
+              border-radius: 4px; padding: 0.6rem 1rem 0.5rem;
+              margin: 0.75rem 0 1.25rem; }
+.win-header h1 { margin: 0 0 0.35rem; font-size: 1.6rem; line-height: 1.2; }
+.metric-chips { display: flex; flex-wrap: wrap; gap: 0.4rem;
+                margin: 0 0 0.35rem; }
+.metric-chip { display: inline-block; padding: 0.15rem 0.55rem;
+               border-radius: 12px; font-size: 0.85rem; font-weight: 600;
+               background: #dce6f0; color: #11233a; }
+.metric-chip-attn { background: #f9ded3; color: #7a2810;
+                    text-decoration: none; }
+.metric-chip-attn:hover { background: #f3c9bd; }
+.header-subtitle { font-size: 0.82rem; color: #666; }
+/* Fit panels: the Re/Im/|X| primary panels are large by default (click to zoom
+   stays). Compact mode (toggled by the topnav button) shrinks them to thumbnail
+   height; see the .report-compact rules below. The residual histogram lives in
+   its own collapsed <details> below the table, not in the primary grid. */
 .fit-panels { margin: 0.5rem 0 1.25rem; }
 .fit-panels figure { margin: 0; }
-.fit-panels img { width: 100%; height: auto; border: 1px solid #d0d4d9;
-                  background: #fff; }
+.fit-panels img { width: 100%; height: auto; cursor: zoom-in;
+                  border: 1px solid #d0d4d9; background: #fff; }
+/* Full-size lightbox: clicking a primary plot opens it scaled to the viewport
+   over a dark backdrop (the already-embedded image, no extra bytes); click
+   anywhere or press Esc to close. */
+.lightbox { display: none; position: fixed; inset: 0; z-index: 2000;
+            background: rgba(0, 0, 0, 0.88); cursor: zoom-out;
+            align-items: center; justify-content: center; padding: 2vmin; }
+.lightbox.open { display: flex; }
+.lightbox img { max-width: 96vw; max-height: 96vh;
+                background: #fff; box-shadow: 0 0 24px #000; }
 .panel-overview { margin-bottom: 0.9rem; }
-.panel-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0.9rem;
-              align-items: start; }
-@media (max-width: 900px) { .panel-grid { grid-template-columns: 1fr; } }
+/* Re/Im/|X| pack as many per row as fit at >= the floor, each stretching to an
+   equal share: three across on a wide screen, reflowing to two then one as the
+   window narrows, always filling the width. */
+.panel-grid { display: grid; gap: 0.9rem; align-items: start;
+              grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); }
+/* Residual histogram inside its collapsed details: modest natural size. */
+.hist-detail { margin: 0.5rem 0 1rem; }
+.hist-detail img { max-width: 420px; width: 100%; height: auto;
+                   border: 1px solid #d0d4d9; background: #fff; }
 /* Covariance: a small variances table, the correlation heatmap, then the full
    numeric matrix below (the heatmap stays readable where the matrix does not). */
 .cov-heatmap { margin: 0.5rem 0 1rem; }
@@ -409,6 +438,16 @@ tr.cur-added > td { background: #d8efdc !important; }
 }
 html.report-compact .cur-plot-arm, html.report-compact .cur-plot-svg {
     display: none; }
+/* Collapsible detail sections on the per-window page (parameter covariance,
+   fit history, ledger candidates). Closed by default; the <summary> acts as
+   the visible section heading, styled to match the existing <h2> elements. */
+details.report-detail { margin: 0.5rem 0 1.25rem; }
+details.report-detail > summary {
+    cursor: pointer; user-select: none; display: list-item;
+    font-size: 1.5rem; font-weight: 700; line-height: 1.2;
+    margin: 0.5rem 0 0.3rem; color: #1a1a1a; }
+details.report-detail[open] > summary { margin-bottom: 0.6rem; }
+details.report-detail > summary:hover { color: #1559b3; }
 """
 
 
@@ -1350,17 +1389,19 @@ _WINMAP_JS = """<script>
 </script>"""
 
 
-# Optional compact-mode toggle. The "Compact" topnav
-# button flips a class on <html>; in compact mode the stylesheet shrinks every
-# report figure to a thumbnail (pure CSS over the already-embedded full images,
-# so no extra bytes), and clicking a thumbnail expands just that figure. With
-# scripting off the button does nothing and every figure stays full size.
+# Compact-mode toggle. Pages load at full size by default (no report-compact on
+# <html>); the "Compact" topnav button adds the class to shrink every figure to
+# a thumbnail for fast scanning; clicking again restores full size. In compact
+# mode the stylesheet shrinks every figure to a thumbnail (pure CSS over the
+# already-embedded full images, so no extra bytes), and clicking a thumbnail
+# expands just that figure. Without scripting the button does nothing and every
+# figure stays at full size.
 _COMPACT_JS = """<script>
 (function () {
   var root = document.documentElement;
   var btn = document.querySelector('.compact-toggle');
   if (!btn) return;
-  var sel = '.fit-panels img, .cov-heatmap img, .hist img, .maghist img';
+  var sel = '.cov-heatmap img, .hist img, .maghist img';
   function label() {
     btn.textContent =
       root.classList.contains('report-compact') ? 'Full view' : 'Compact';
@@ -1385,6 +1426,40 @@ _COMPACT_JS = """<script>
     }
   });
   label();
+})();
+</script>"""
+
+
+# Full-size lightbox for the primary Re/Im/|X| plots. Clicking one opens the
+# already-embedded image scaled to the viewport over a dark backdrop; a click
+# anywhere or Escape closes it. Works in every mode (in compact mode the plots
+# are thumbnails, so this is the way to inspect them full-size). Inert without
+# scripting -- the plots stay in the layout.
+_LIGHTBOX_JS = """<script>
+(function () {
+  var box = null;
+  function close() { if (box) box.classList.remove('open'); }
+  function open(src) {
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'lightbox';
+      box.appendChild(document.createElement('img'));
+      box.addEventListener('click', close);
+      document.body.appendChild(box);
+    }
+    box.firstChild.src = src;
+    box.classList.add('open');
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    if (t.tagName !== 'IMG' || !t.matches || !t.matches('.fit-panels img')) return;
+    // Leave a click on an armed curation plot to the add-marker handler.
+    if (t.closest && t.closest('.cur-plot-wrap.cur-armed')) return;
+    open(t.src);
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') close();
+  });
 })();
 </script>"""
 
@@ -2536,13 +2611,15 @@ def _fit_panels_block(
     window_id: Optional[int] = None,
     mag_geom: Optional[Dict[str, float]] = None,
 ) -> List[str]:
-    """Lay the per-window panel PNGs out for the 1:2:2 responsive grid.
+    """Lay the per-window Re/Im/|X| panel PNGs out in a two-column grid.
 
-    The overview spans full width on top; the Re / Im model+residual panels
-    share a two-column grid row and the |X| + residual histogram share the row
-    below. The grid collapses to a single column on a narrow viewport (CSS), so
-    each panel takes the full width in turn. Each entry is rendered only when its
-    PNG was produced, so a degenerate window with missing panels still yields
+    The residual histogram is intentionally excluded here; it lives in its own
+    collapsed ``<details>`` section below the fitted-lines table so it does not
+    clutter the primary model/data comparison. The overview panel is discarded
+    (the shared interactive full-spectrum overview in the context section serves
+    that role). The grid collapses to a single column on a narrow viewport (CSS),
+    so each panel takes the full width in turn. Each entry is rendered only when
+    its PNG was produced, so a degenerate window with missing panels still yields
     valid markup.
 
     When *window_id* and *mag_geom* are supplied, the magnitude panel becomes the
@@ -2589,13 +2666,13 @@ def _fit_panels_block(
             "</div></figure>"
         ]
 
+    # Primary panels: Re, Im, |X| only. The residual histogram is placed in its
+    # own collapsed <details> by the caller (_window_page), not here.
     out = ['<div class="fit-panels">']
-    out += _fig("overview", "full-spectrum context", "panel panel-overview")
     grid = (
         _fig("re", "real part + residual")
         + _fig("im", "imaginary part + residual")
         + _mag_fig()
-        + _fig("hist", "residual histogram")
     )
     if grid:
         out.append('  <div class="panel-grid">')
@@ -2635,6 +2712,13 @@ def _window_page(
     shape = getattr(wf, "shape", "lorentzian")
     chi2r = float(wf.reduced_chi2)
 
+    # ε (shape-error fraction) from the FinalPeak SNR values for this window.
+    snrs = [float(p.snr) for p in peaks if p.snr is not None and np.isfinite(p.snr)]
+    snr_max = max(snrs) if snrs else 0.0
+    eps_val = shape_error_fraction(chi2r, snr_max, DEFAULT_CHI2R_NOISE_FLOOR)
+    has_attention = status is not None and bool(status.attention_reasons)
+
+    # --- nav bar (thin, prev/next/index) ----------------------------------------
     nav = ['<div class="nav">', '<a href="../index.html">&larr; index</a>']
     if prev_id is not None:
         nav.append(
@@ -2646,59 +2730,111 @@ def _window_page(
         )
     nav.append("</div>")
 
-    # Spectrum-context section: the interactive full-spectrum overview with this
-    # window highlighted -- the same shared image + clickable per-window overlay
-    # the index uses (here this window gets the green "you are here"). Rendered
-    # only when the shared overview image was produced.
-    context: List[str] = []
-    if nav_rows and band is not None and overview_name is not None:
-        context.append("<h2>Spectrum context</h2>")
-        context.append(
-            _spectrum_nav(
-                nav_rows,
-                band,
-                stem,
-                link_prefix="",
-                thumb_prefix="../figures/",
-                current_id=window_id,
-            )
+    # --- header band (visual weight: range title + metric chips + subtitle) ------
+    range_str = f"{min(lo, hi):.4f}&ndash;{max(lo, hi):.4f} MHz"
+    k = len(wf.fitted_peaks)
+    chips: List[str] = [
+        f'<span class="metric-chip">'
+        f"&chi;&sup2;<sub>r</sub> {_esc(_md_num(chi2r, 4))}</span>",
+    ]
+    if snr_max > 0:
+        chips.append(
+            f'<span class="metric-chip">&epsilon; {eps_val * 100.0:.2f}%</span>'
         )
-        context.append(
-            '<p class="winmap-hint">The shaded bands are fit windows (orange = '
-            "attention, green = this one); hover for details, click to jump.</p>"
+    chips.append(f'<span class="metric-chip">{k} peak{"s" if k != 1 else ""}</span>')
+    if has_attention:
+        chips.append(
+            '<a href="#attention" class="metric-chip metric-chip-attn">'
+            "&#9888; attention</a>"
         )
+    header: List[str] = [
+        '<div class="win-header">',
+        f"<h1>{range_str}</h1>",
+        '<div class="metric-chips">',
+        *chips,
+        "</div>",
+        f'<div class="header-subtitle">'
+        f"&tau; {_esc(_md_num(tau, 4))} &micro;s &middot; {_esc(shape)}</div>",
+        "</div>",
+    ]
 
+    # --- residual histogram in its own collapsed <details> ----------------------
+    hist_name = panel_files.get("hist")
+    hist_details: List[str] = []
+    if hist_name is not None:
+        hist_details = [
+            '<details class="report-detail">',
+            "<summary>Residual histogram</summary>",
+            f'<div class="hist-detail"><img src="../figures/{hist_name}" '
+            'alt="residual histogram"></div>',
+            "</details>",
+        ]
+
+    # --- spectrum-context collapsed <details> (at bottom of page) ---------------
+    # The interactive full-spectrum overview (shared image + clickable overlay),
+    # this window highlighted in green. Collapsed by default since it is
+    # context for the data comparison, not the primary result.
+    context_details: List[str] = []
+    has_context = bool(nav_rows and band is not None and overview_name is not None)
+    if has_context:
+        ctx_html = _spectrum_nav(
+            nav_rows,  # type: ignore[arg-type]
+            band,  # type: ignore[arg-type]
+            stem,
+            link_prefix="",
+            thumb_prefix="../figures/",
+            current_id=window_id,
+        )
+        context_details = [
+            '<details class="report-detail">',
+            "<summary>Spectrum context</summary>",
+            ctx_html,
+            '<p class="winmap-hint">The shaded bands are fit windows (orange = '
+            "attention, green = this one); hover for details, click to jump.</p>",
+            "</details>",
+        ]
+
+    # --- assemble body in target order ------------------------------------------
     body: List[str] = [
         *nav,
-        f"<h1>{_esc(stem)} &mdash; window {window_id}</h1>",
-        '<ul class="summary">',
-        f"<li><strong>Range:</strong> {min(lo, hi):.4f}&ndash;{max(lo, hi):.4f} "
-        "MHz</li>",
-        f"<li><strong>Peaks:</strong> {len(wf.fitted_peaks):,}</li>",
-        f"<li><strong>&chi;&sup2;<sub>r</sub>:</strong> "
-        f"{_esc(_md_num(chi2r, 4))}</li>",
-        f"<li><strong>&tau;:</strong> {_esc(_md_num(tau, 4))} &micro;s</li>",
-        f"<li><strong>Shape:</strong> {_esc(shape)}</li>",
-        "</ul>",
-        *_attention_block(status),
-        *context,
+        *header,
         "<h2>Fit</h2>",
         *_fit_panels_block(panel_files, window_id=window_id, mag_geom=mag_geom),
         "<h2>Fitted lines</h2>",
         _window_peak_table(peaks, uname, uval, catalog_matches, window_id=window_id),
         *_window_curation_controls(window_id, min(lo, hi), max(lo, hi)),
-        "<h2>Parameter covariance</h2>",
+        # Ledger expanded (not in <details>) immediately below the table.
+        "<h2>Ledger candidates</h2>",
+        *_ledger_block(ledger, window_id=window_id),
+    ]
+    # Attention block expanded, with an in-page anchor the header chip links to.
+    if has_attention:
+        body += [
+            '<div id="attention">',
+            *_attention_block(status),
+            "</div>",
+        ]
+    # Fit-health collapsed sections.
+    body += [
+        *hist_details,
+        '<details class="report-detail">',
+        "<summary>Parameter covariance</summary>",
         *_covariance_block(wf, cov_heatmap_name, sideband),
-        "<h2>Fit history</h2>",
+        "</details>",
+        '<details class="report-detail">',
+        "<summary>Fit history</summary>",
         *_audit_block(
             wf, 0.5 * (float(lo) + float(hi)), _sideband_sign(sideband), merges
         ),
-        "<h2>Ledger candidates</h2>",
-        *_ledger_block(ledger, window_id=window_id),
+        "</details>",
+        # Spectrum context collapsed last.
+        *context_details,
+        # User decisions (conditional, always last).
         *_decision_block(decisions),
     ]
-    if context:
+    if has_context:
         body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
+    body.append(_LIGHTBOX_JS)  # click a primary plot to view it full-size
     return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
 
 
@@ -2891,8 +3027,8 @@ def _collapse_site_to_single_file(
             'onchange="if(this.value)location.hash=this.value">'
             f'<option value="">Jump to window…</option>{opts}</select>'
         )
-    # The compact toggle shrinks every figure to a thumbnail to speed scrolling;
-    # the report opens in full view, and the button is inert without scripting.
+    # The compact toggle shrinks every figure to a thumbnail; pages load at full
+    # size by default, and the button switches to compact (inert without scripting).
     nav_links.append('<button class="compact-toggle" type="button">Compact</button>')
     # The curation toggle flips between the read-only (default) and editable
     # views; the badge tracks the cart size. Both are inert without scripting,
@@ -2925,6 +3061,7 @@ def _collapse_site_to_single_file(
             f"<script>window.__stem={json.dumps(stem)};</script>",
             _WINMAP_JS,
             _COMPACT_JS,
+            _LIGHTBOX_JS,
             _CURATION_JS,
             "</body>",
             "</html>",

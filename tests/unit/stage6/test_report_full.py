@@ -25,7 +25,9 @@ import pytest
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.report_html_impl import (
+    _LIGHTBOX_JS,
     _PANEL_ORDER,
+    _STYLESHEET,
     _assemble_report_site,
     _covariance_block,
     _esc,
@@ -68,6 +70,29 @@ def test_page_is_wellformed_html():
     assert '<link rel="stylesheet" href="assets/style.css">' in doc
     assert "<title>Title</title>" in doc
     html.parser.HTMLParser().feed(doc)  # no exception => parses
+    # Full size is the default: the <html> element must NOT carry report-compact.
+    html_tag = doc[
+        doc.index("<!DOCTYPE html>") : doc.index(">", doc.index("<html")) + 1
+    ]
+    assert "report-compact" not in html_tag
+
+
+def test_responsive_panel_grid_styles():
+    """The primary plots reflow (auto-fit) and fill their cell -- no fixed
+    two-column grid or fixed image height."""
+    assert "repeat(auto-fit, minmax(440px, 1fr))" in _STYLESHEET
+    assert ".fit-panels img { width: 100%" in _STYLESHEET
+    assert "height: 340px" not in _STYLESHEET  # the old fixed panel height is gone
+    # The full-size lightbox overlay is styled.
+    assert ".lightbox" in _STYLESHEET
+    assert ".lightbox.open" in _STYLESHEET
+
+
+def test_lightbox_triggers_on_plots_and_yields_to_curation():
+    """Clicking a primary plot opens the lightbox, except on an armed curation
+    plot where the add-marker handler must win."""
+    assert ".fit-panels img" in _LIGHTBOX_JS  # the click trigger
+    assert "cur-plot-wrap.cur-armed" in _LIGHTBOX_JS  # curation add-marker gate
 
 
 class _FakePeak:
@@ -800,21 +825,29 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "MathJax" in methods
     assert 'class="equation"' in methods
 
-    # The spectrum context is the shared interactive overview with this window
-    # highlighted -- no per-window context image.
-    assert "<h2>Spectrum context</h2>" in page
+    # The spectrum context is now in a collapsed <details> at the bottom of the
+    # window page -- no per-window context image.
+    assert "<summary>Spectrum context</summary>" in page
     assert "_ctx.png" not in page
     assert 'class="spectrum-ctx"' in page and "specnav-rect" in page
     assert "<h2>Fit</h2>" in page
-    # The fit detail is a responsive grid of the zoomed Re/Im/|X|/hist panels.
+    # The primary fit detail is a responsive grid of the zoomed Re/Im/|X| panels.
+    # The residual histogram is in its own collapsed <details>, not in the grid.
     assert 'class="fit-panels"' in page
     assert 'class="panel-grid"' in page
-    for panel in ("re", "im", "mag", "hist"):
+    for panel in ("re", "im", "mag"):
         assert f"_{panel}.png" in page
+    assert "_hist.png" in page  # still rendered, just in a <details>
+    assert "<summary>Residual histogram</summary>" in page
     assert "Fitted lines" in page
-    assert "Parameter covariance" in page
-    assert "Ledger candidates" in page
-    assert "<h2>Fit history</h2>" in page
+    # Ledger is expanded (bare <h2>), not a <summary>.
+    assert "<h2>Ledger candidates</h2>" in page
+    assert "<summary>Ledger candidates</summary>" not in page
+    # Fit-health sections wrapped in <details> (closed by default, no `open`).
+    assert "<summary>Parameter covariance</summary>" in page
+    assert "<summary>Fit history</summary>" in page
+    assert '<details class="report-detail">' in page
+    assert "<details" in page and "open" not in page.split("<details")[1].split(">")[0]
     # The raw fit-log dump was removed (it duplicated the structured tables).
     assert "Fit log" not in page
     # The interactive overview doubles as the quick-nav on each window page too,
@@ -826,6 +859,93 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert 'data-thumb="../figures/' in page  # thumbnail path from a window page
     assert 'href="window_' in page  # same-dir links (no windows/ prefix)
     assert "winmap-pop" in page  # the hover-zoom script
+    # Full size is the default: <html> on multi-page site pages must NOT carry
+    # report-compact.
+    html_tag = page[page.index("<html") : page.index(">", page.index("<html")) + 1]
+    assert "report-compact" not in html_tag
+
+
+@pytest.mark.integration
+def test_window_page_layout_order_and_details(stage5_small_file, tmp_path):
+    """Per-window page: section order, <details> collapse, full-size by default."""
+    import re as _re
+
+    out = tmp_path / "site"
+    model = _assemble_report_site(str(stage5_small_file), out_root=str(out))
+    pages = _window_pages(model)
+    assert pages, "need at least one window page"
+    page = pages[0]
+
+    # --- section order ---
+    # Primary plots (Re/Im/|X|) appear before the fitted-lines table.
+    fit_pos = page.index('class="fit-panels"')
+    table_pos = page.index('class="peak-list"')
+    assert fit_pos < table_pos, "fit panels must precede the peak table"
+
+    # Ledger section (expanded, not in <details>) follows the table.
+    ledger_h2_pos = page.index("<h2>Ledger candidates</h2>")
+    assert table_pos < ledger_h2_pos, "ledger must follow the peak table"
+
+    # All <details> blocks appear after the ledger.
+    details_pos = page.index("<details")
+    assert ledger_h2_pos < details_pos, "ledger must precede <details> sections"
+
+    # Attention block (when present) is between ledger and first <details>.
+    attn_match = _re.search(r'id="attention"', page)
+    if attn_match:
+        attn_pos = attn_match.start()
+        assert (
+            ledger_h2_pos < attn_pos < details_pos
+        ), "attention anchor must be after the ledger and before <details>"
+
+    # Spectrum context is in a collapsed <details> AFTER the fit-health blocks.
+    ctx_match = _re.search(r"<summary>Spectrum context</summary>", page)
+    assert ctx_match is not None, "spectrum context must be wrapped in a <details>"
+    assert (
+        ctx_match.start() > details_pos
+    ), "spectrum context <details> must come after the first fit-health <details>"
+
+    # --- header band ---
+    # χ²ᵣ chip and ε chip (when snr_max > 0) appear in the header band.
+    assert 'class="metric-chip"' in page
+    assert "&chi;&sup2;<sub>r</sub>" in page
+    # The residual histogram is inside a <details>, NOT in the primary panel grid.
+    panels_html = page[fit_pos:table_pos]
+    assert "_hist.png" not in panels_html, "hist must not be in the primary panel grid"
+    # The hist is in its own <details> with the right summary.
+    assert "<summary>Residual histogram</summary>" in page
+
+    # --- <details> structure ---
+    # Four closed <details class="report-detail"> elements:
+    # residual histogram, parameter covariance, fit history, spectrum context.
+    detail_tags = _re.findall(r"<details([^>]*)>", page)
+    assert (
+        len(detail_tags) == 4
+    ), f"expected exactly 4 <details> elements, got {len(detail_tags)}"
+    for attrs in detail_tags:
+        assert "report-detail" in attrs
+        assert "open" not in attrs.split(), "details must be closed by default"
+
+    # Fit-health headings are <summary> elements.
+    assert "<summary>Residual histogram</summary>" in page
+    assert "<summary>Parameter covariance</summary>" in page
+    assert "<summary>Fit history</summary>" in page
+    # Ledger is expanded (bare <h2>), not a <summary>.
+    assert "<h2>Ledger candidates</h2>" in page
+    assert "<summary>Ledger candidates</summary>" not in page
+    # Spectrum context is in a <details>.
+    assert "<summary>Spectrum context</summary>" in page
+
+    # --- full size by default ---
+    # The multi-page <html> element must NOT carry the report-compact class.
+    html_tag = page[page.index("<html") : page.index(">", page.index("<html")) + 1]
+    assert "report-compact" not in html_tag
+
+    # --- full-size lightbox ---
+    # The lightbox script is included on the window page and yields to the
+    # curation add-marker on an armed plot.
+    assert ".fit-panels img" in page  # lightbox click trigger
+    assert "cur-plot-wrap.cur-armed" in page  # gate: armed plot -> curation, not zoom
 
 
 @pytest.mark.integration
