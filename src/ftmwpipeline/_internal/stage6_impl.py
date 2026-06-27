@@ -99,15 +99,6 @@ DEFAULT_ATTENTION_CANDIDATE_EVIDENCE: float = 10.0
 # passes the bar even when its raw SNR is below DEFAULT_DISPLAY_BAR.
 _NEAR_GATE_FACTOR: float = 10.0
 
-# Fallback amplitude-VIF attention threshold used when the file carries no
-# resolved ``peak_survival.vif_attention_threshold`` (mirrors the hard default
-# in :class:`~ftmwpipeline.core.stage_fit_settings.PeakSurvivalSubSettings`).
-# A fitted amplitude whose variance-inflation factor ``(amp_err / amp) * snr``
-# clears this is non-identifiable with a neighbor (degenerate split) even
-# though it survived the end-of-Stage-5 collapse (which fires only on the much
-# higher ``vif_collapse_threshold`` at sub-half-resolution separation).
-DEFAULT_VIF_ATTENTION_THRESHOLD: float = 4.0
-
 # Deduplicate candidates whose molecular frequencies are within this window.
 _DEDUP_TOL_MHZ: float = 0.02  # 20 kHz; roughly half an active-FT bin at 13 µs
 
@@ -164,29 +155,6 @@ def _auto_merged_window_ids(spectrum_fit: SpectrumFit) -> set:
         for c in vc.get("collapses", [])
         if c.get("window_id") is not None and int(c["window_id"]) >= 0
     }
-
-
-def _resolve_vif_attention_threshold(path: str) -> float:
-    """Resolve ``peak_survival.vif_attention_threshold`` for *path*.
-
-    Reads the knob from the file's persisted settings (persisted layer over the
-    hard defaults), so the attention surface picks up exactly where the
-    end-of-Stage-5 collapse left off. Falls back to the module default when the
-    settings cannot be read.
-    """
-    from ..core.stage_fit_settings import resolve as resolve_stage_fit_settings
-    from ..io.stage_fit_settings_serialization import load_stage_fit_settings_from_h5
-
-    vif = DEFAULT_VIF_ATTENTION_THRESHOLD
-    try:
-        resolved = resolve_stage_fit_settings(
-            persisted=load_stage_fit_settings_from_h5(path)
-        )
-        if resolved.peak_survival.vif_attention_threshold is not None:
-            vif = float(resolved.peak_survival.vif_attention_threshold)
-    except Exception:
-        pass
-    return vif
 
 
 # ---------------------------------------------------------------------------
@@ -2548,7 +2516,6 @@ def _record_decision(
         fid = load_fid_from_pipeline_impl(path)
         sideband = Sideband.coerce(fid.sideband)
 
-        vif_attention_threshold = _resolve_vif_attention_threshold(path)
         merged_window_ids = _auto_merged_window_ids(spectrum_fit)
         wf_list = [wf for wf in spectrum_fit.window_fits if wf.window_id == window_id]
         if wf_list:
@@ -2561,7 +2528,6 @@ def _record_decision(
                 sideband=sideband,
                 kappa=kappa,
                 noise_floor=noise_floor,
-                vif_attention_threshold=vif_attention_threshold,
                 auto_merged=window_id in merged_window_ids,
             )
         else:
@@ -3352,7 +3318,6 @@ def _compute_attention_reasons(
     sideband: Sideband,
     kappa: float,
     noise_floor: float,
-    vif_attention_threshold: float = DEFAULT_VIF_ATTENTION_THRESHOLD,
     auto_merged: bool = False,
 ) -> List[AttentionReason]:
     """Derive the set of advisory attention reasons for one window.
@@ -3376,11 +3341,6 @@ def _compute_attention_reasons(
         Shape-error kappa for the SNR-aware gate.
     noise_floor :
         Noise-regime chi-squared allowance.
-    vif_attention_threshold :
-        A window flags ``overfit_vif`` when any fitted amplitude's
-        variance-inflation factor ``(amp_err / amp) * snr`` reaches this value
-        -- the high-precision non-identifiability signal (degenerate split)
-        that survived the end-of-Stage-5 collapse.
 
     Returns
     -------
@@ -3388,7 +3348,6 @@ def _compute_attention_reasons(
         Advisory flags, possibly empty.
     """
     from ..fitting.validation import shape_error_fraction, snr_aware_chi2_pass
-    from .stage5_impl import amplitude_vif
 
     reasons: List[AttentionReason] = []
 
@@ -3445,39 +3404,15 @@ def _compute_attention_reasons(
             )
         )
 
-    # --- overfit_vif: flag a non-identifiable (degenerate-split) amplitude ---
-    # The diagonal amplitude variance-inflation factor ``(amp_err / amp) * snr``
-    # is ~1 for an identifiable line and >> 1 when a line is degenerate with a
-    # sub-resolution neighbor (the pair *sum* is constrained, neither amplitude
-    # individually). The end-of-Stage-5 collapse already removed the extreme
-    # (VIF > vif_collapse_threshold, sub-half-resolution) pairs, so what reaches
-    # here is the attention band: high-VIF lines that survived because they sit
-    # above the collapse separation guard. SNR-normalized, so a genuine low-SNR
-    # multiplet (large *raw* errors, VIF still ~2) is not flagged. The
-    # AICc-preferred-doublet observation is *not* an attention trigger -- that is
-    # the pipeline confirming a real doublet, not an actionable overfit (the
-    # doublet detail still surfaces in ``review show --window N``).
-    worst_vif: Optional[float] = None
-    worst_vif_freq: float = 0.0
-    for p in wf.fitted_peaks:
-        vif = amplitude_vif(p)
-        if vif is None or not math.isfinite(vif):
-            continue
-        if vif >= vif_attention_threshold and (worst_vif is None or vif > worst_vif):
-            worst_vif = vif
-            worst_vif_freq = float(p.frequency_mhz)
-    if worst_vif is not None:
-        reasons.append(
-            AttentionReason(
-                kind="overfit_vif",
-                detail=(
-                    f"amplitude VIF={worst_vif:.1f} at {worst_vif_freq:.4f} MHz "
-                    f">= {vif_attention_threshold:.1f} "
-                    f"(non-identifiable; degenerate with a neighbor)"
-                ),
-                severity=float(worst_vif),
-            )
-        )
+    # NOTE: ``overfit_vif`` is retired as a standalone flag. A high amplitude VIF
+    # has two populations and both are now handled without a user flag: the
+    # sub-resolution over-splits are merged at end-of-Stage-5 (the VIF/singular
+    # criterion plus the new ``collapse_frac_unc_threshold`` band), surfacing as
+    # the low-severity ``auto_merged_review`` advisory; the genuine misfits fail
+    # the SNR-aware gate and surface through ``worst_eps``. A well-resolved
+    # doublet with a moderate VIF that passes the gate is simply fine and is no
+    # longer flagged (it was pure over-production). Degeneracy remains discoverable
+    # on demand via ``review rank --by max-vif``.
 
     # NOTE: a low-SNR fitted peak is deliberately NOT an attention reason. A
     # weak peak just above the survival floor is rarely actionable (an isolated
@@ -3816,7 +3751,6 @@ def review_run_impl(
         float(v) for v in spectrum_fit.parameters.get("spur_centers_mhz", [])
     ]
     acquisition_us: float = float(spectrum_fit.parameters.get("acquisition_us", 0.0))
-    vif_attention_threshold = _resolve_vif_attention_threshold(path)
     merged_window_ids = _auto_merged_window_ids(spectrum_fit)
 
     new_statuses: Dict[int, WindowReviewStatus] = {}
@@ -3832,7 +3766,6 @@ def review_run_impl(
             sideband=sideband,
             kappa=kappa,
             noise_floor=noise_floor,
-            vif_attention_threshold=vif_attention_threshold,
             auto_merged=wid in merged_window_ids,
         )
 

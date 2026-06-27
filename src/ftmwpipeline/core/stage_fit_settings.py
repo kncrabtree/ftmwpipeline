@@ -633,11 +633,18 @@ class PeakSurvivalSubSettings:
        threshold raises the survival bar in step, and a survivor never sits
        below the SNR that admitted it). Set ``snr_survival_floor`` to pin an
        absolute floor instead, which overrides the factor.
-    2. **Degenerate-pair merge.** Merge a close pair into one line when a
-       member's amplitude variance-inflation factor
-       ``VIF = (amplitude_error / amplitude) * snr`` reaches
-       ``vif_collapse_threshold`` **and** the pair sits within
-       ``collapse_max_separation_res`` resolution elements (``1 / T_active``).
+    2. **Degenerate-pair merge.** Merge a close pair into one line, within
+       ``collapse_max_separation_res`` resolution elements (``1 / T_active``),
+       when a member is not individually constrained -- either its amplitude
+       variance-inflation factor ``VIF = (amplitude_error / amplitude) * snr``
+       reaches ``vif_collapse_threshold`` (the singular, brightness-invariant
+       degeneracy) **or** its fractional amplitude uncertainty
+       ``amplitude_error / amplitude`` reaches ``collapse_frac_unc_threshold``
+       (the sub-resolution over-split band at VIF 4-25 the VIF gate alone
+       leaves behind). The fractional-uncertainty path applies only within the
+       tighter ``collapse_frac_unc_max_separation_res`` (deep sub-resolution),
+       since a high fractional uncertainty at a marginally-resolvable separation
+       is modest SNR on a real doublet, not an over-split.
        Policy: a sub-resolution *split* is a high-bar claim a prior-free fit
        cannot support, and the ambiguous band is ~92% over-splits, so the
        default is to merge (VIF<4 identifiable = keep, VIF>=4 degenerate =
@@ -650,13 +657,11 @@ class PeakSurvivalSubSettings:
        cannot cross a resolvable gap into a real neighbor. Merged windows are
        flagged ``auto_merged_review`` for overrule.
 
-    ``vif_attention_threshold`` is consumed by the Stage 6 attention surface
-    (the ``overfit_vif`` reason for residual high-VIF pairs above the merge
-    separation bound, i.e. >= 1.0 res). Defaults: ``enabled`` True,
-    ``snr_survival_factor`` 1.1 (the floor tracks 1.1x the Stage 3 promotion
-    cutoff; ``snr_survival_floor`` unset = no absolute override),
-    ``vif_collapse_threshold`` 25.0, ``collapse_max_separation_res`` 1.0,
-    ``vif_attention_threshold`` 4.0. See
+    Defaults: ``enabled`` True, ``snr_survival_factor`` 1.1 (the floor tracks
+    1.1x the Stage 3 promotion cutoff; ``snr_survival_floor`` unset = no absolute
+    override), ``vif_collapse_threshold`` 25.0, ``collapse_frac_unc_threshold``
+    0.15, ``collapse_frac_unc_max_separation_res`` 0.5,
+    ``collapse_max_separation_res`` 1.0. See
     ``dev-docs/planning/stage6-peak-survival.md``.
     """
 
@@ -666,8 +671,9 @@ class PeakSurvivalSubSettings:
     snr_survival_floor: Optional[float] = None
     snr_survival_factor: Optional[float] = None
     vif_collapse_threshold: Optional[float] = None
+    collapse_frac_unc_threshold: Optional[float] = None
+    collapse_frac_unc_max_separation_res: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
-    vif_attention_threshold: Optional[float] = None
     drop_empty_windows: Optional[bool] = None
     drop_spur_only_windows: Optional[bool] = None
 
@@ -841,23 +847,26 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # peaks are immune. POLICY (prior-free): declaring a sub-resolution
         # *split* is a high-bar claim that needs catalog/physical support the
         # pipeline does not have, so the default is to merge the clearly-
-        # degenerate ones and flag the rest (``overfit_vif``) for the user to
-        # opt into a split or merge (``review``). The threshold is set well above
-        # the identifiability floor because the two error directions are NOT
-        # symmetric: merging a *resolved* doublet destroys a real line (a single
-        # Lorentzian at the centroid fits the trough between the two peaks --
-        # observed catastrophe: 360 w36, a methyl A/E doublet at 0.68 res, snr
-        # 120+82, merged -> chi2r 386 with the dominant line gone), whereas
-        # leaving an over-split merely ships an extra peak that the attention
-        # surface flags. A resolved doublet's amplitudes ARE individually
-        # constrained, so its VIF stays moderate (<= ~20 across the fixtures:
-        # w36 17, w383 4, w1096's real line 23), while a genuinely sub-resolution
-        # degenerate over-split has unconstrained amplitudes -> VIF >> that
-        # (>= ~40, up to 1e6: w139 40, w201 98, w134 476, w124 1e6). The default
-        # sits in that gap so only unambiguous degeneracy collapses; pairs with
-        # ``vif_attention_threshold`` <= VIF < ``vif_collapse_threshold`` are
-        # kept and flagged. ``collapse_max_separation_res`` 1.0 = consider pairs
-        # up to one full resolution element; wider pairs are resolved and kept.
+        # degenerate ones (``review`` re-splits with catalog support). The VIF
+        # threshold is set well above the identifiability floor because the two
+        # error directions are NOT symmetric: merging a *resolved* doublet
+        # destroys a real line (a single Lorentzian at the centroid fits the
+        # trough between the two peaks -- observed catastrophe: 360 w36, a methyl
+        # A/E doublet at 0.68 res, snr 120+82, merged -> chi2r 386 with the
+        # dominant line gone), whereas leaving an over-split merely ships an extra
+        # peak. A resolved doublet's amplitudes ARE individually constrained, so
+        # its VIF stays moderate (<= ~20 across the fixtures: w36 17, w383 4,
+        # w1096's real line 23), while a genuinely sub-resolution degenerate
+        # over-split has unconstrained amplitudes -> VIF >> that (>= ~40, up to
+        # 1e6: w139 40, w201 98, w134 476, w124 1e6). The default sits in that
+        # gap so only unambiguous degeneracy collapses on VIF alone. The
+        # fractional-uncertainty criterion (``collapse_frac_unc_threshold``)
+        # catches the remaining VIF 4-25 over-splits, but only deep sub-resolution
+        # (``collapse_frac_unc_max_separation_res``) so it cannot merge the
+        # marginally-resolvable doublets the VIF gate protects.
+        # ``collapse_max_separation_res`` 1.0 = the VIF/singular path considers
+        # pairs up to one full resolution element; wider pairs are resolved and
+        # kept.
         "enabled": True,
         # The survival floor tracks the Stage 3 promotion cutoff: the effective
         # floor is that cutoff times ``snr_survival_factor``. ``snr_survival_floor``
@@ -865,8 +874,29 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # absolute floor that overrides the factor.
         "snr_survival_factor": 1.1,
         "vif_collapse_threshold": 25.0,
+        # Second collapse criterion, on the *weak member*'s fractional amplitude
+        # uncertainty ``amp_err / amp`` (= VIF / snr). The VIF gate alone leaves
+        # a band of sub-resolution over-splits at VIF 4-25 (separations well
+        # inside the guard, 0.2-0.5 res) unmerged: amplitudes too uncertain to
+        # claim two lines, but not singular enough to clear 25. A weak member
+        # with ``amp_err / amp`` >= this fraction is not individually
+        # constrained, so the pair collapses. Calibrated to leave the resolvable
+        # methyl A/E doublet 360 w36 (frac 14.3%, snr 120+82) just below the bar
+        # while folding the genuine over-splits above it; merged windows still
+        # flag ``auto_merged_review`` for catalog-supported re-split.
+        "collapse_frac_unc_threshold": 0.15,
+        # The fractional-uncertainty criterion fires only *deep* sub-resolution
+        # (<= half a resolution element). The VIF/singular criterion can merge up
+        # to the full ``collapse_max_separation_res`` because a singular
+        # amplitude is unambiguous degeneracy at any sub-resolution separation;
+        # a merely-high fractional uncertainty is not -- at 0.6-0.9 res a high
+        # ``amp_err/amp`` is modest SNR on a *resolvable* doublet, not an
+        # over-split, and merging it destroys a real line (363 w404 0.61 res,
+        # w61 0.86 res -> post-merge chi2r misfit). 0.5 res = the unresolvability
+        # boundary: the genuine over-splits cluster at 0.2-0.5 res, the
+        # resolvable doublets at >= ~0.6 res.
+        "collapse_frac_unc_max_separation_res": 0.5,
         "collapse_max_separation_res": 1.0,
-        "vif_attention_threshold": 4.0,
         # End-of-Stage-5 window cleanup: drop windows with no surviving fitted
         # peak (K=0 -- pure noise, no product), and drop a single-line window
         # whose sole peak sits on a confidently-instrumental gated spur (a

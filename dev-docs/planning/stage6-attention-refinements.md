@@ -1,7 +1,8 @@
 # Attention-metric refinements + the coupled Stage 5 fitting changes
 
-Status: **fitting refinements (F-1/F-2/F-3) implemented; attention metrics
-(A-1–A-4) and the report phase pending.** Reassessment of the Stage 6 attention
+Status: **F-1/F-2/F-3 committed (e7a5374); A-1 (collapse extension + `overfit_vif`
+retirement) implemented and A/B-validated, uncommitted; A-2/A-3/A-4 and the report
+phase pending.** Reassessment of the Stage 6 attention
 surface after the F1 rework, plus the Stage 5 fitting changes the reassessment
 exposed as the real fix. Diagnosis was measured on the seven-fixture `s4c` set
 (review run + `--windows attention` reports + targeted refits; harnesses under
@@ -99,16 +100,60 @@ modest-SNR ≤ ~300 lines).
 ### A-1. Retire `overfit_vif` as a standalone flag; route its content
 
 - The merge decision moves to the **weak-member fractional amplitude
-  uncertainty** (the end-of-Stage-5 collapse already owns merging; extend its
-  criterion so the fracUnc ≳ 15% sub-res pairs that currently survive past the
-  1.0-res separation guard are merged). Merged windows keep the low-severity
-  `auto_merged_review` advisory.
+  uncertainty**. **Mechanism (revised against current post-F123 data — the
+  separation-guard framing below was based on a stale diagnosis):** re-measuring
+  all 165 `overfit_vif` windows on the freshly-built fixtures shows the
+  fracUnc ≳ 15% merge zone (102 windows) does *not* sit past the 1.0-res guard.
+  It sits at sep **0.2–0.5 res** (74/102 below 0.8 res; only 6 in [1.0,1.2)) and
+  survives collapse because its **VIF is 4–25**, just under the `vif_collapse_
+  threshold`=25. So the criterion is added *inside* the existing guard, not by
+  widening it: a pair collapses when a member's VIF clears 25 **or** its
+  fractional amplitude uncertainty `amp_err/amp` reaches the new
+  `collapse_frac_unc_threshold` (default **0.15**) — `_collapse_rank` in
+  `stage5_impl.py`. Calibration: the canonical resolvable methyl A/E doublet
+  360 w36 measures fracUnc=14.3%, just below the bar (protected, but marginally);
+  the merge zone is dominated by 360/363/655. Line-list-changing → own A/B
+  re-baseline (`scratch/attention-reports/a1ab/`, OFF=frac 1e9 / ON=0.15).
+  Merged windows keep the low-severity `auto_merged_review` advisory.
+- **Separation cap on the fracUnc path (`collapse_frac_unc_max_separation_res`,
+  default 0.5 res).** The first 363 A/B fired the safety net: the bare fracUnc
+  bar merged ~5 *resolvable* doublets catastrophically (w61 sep 0.86, w400 0.71,
+  w404 0.61, w162 0.65 → post-merge χ²ᵣ misfit, `worst_eps` 4→8). The
+  discriminant is **separation**: genuine over-splits cluster at 0.2–0.5 res, the
+  resolvable doublets at ≥ ~0.6 res. So the fracUnc path fires only within 0.5
+  res (the VIF/singular path keeps the full 1.0-res reach — singular degeneracy
+  is unambiguous at any sub-res separation). With the cap, 363 `worst_eps` is
+  back to the OFF baseline (4) and `collapsed_pairs` 29→13, while still folding
+  the deep-sub-res over-splits (`overfit_vif` 24→18). `_line_max_sep_mhz` in
+  `_collapse_outcome`. (Known pre-existing, out of scope: 363 w71 vif=25.05
+  merges via the VIF≥25 path → χ²ᵣ 415; the cascade-refit calibration chose
+  vif=25 knowingly.)
 - The genuine misfits (low fracUnc, fails the SNR-aware ε-gate) surface through
   `worst_eps`, which already exists. Do **not** introduce a raw absolute χ²ᵣ bar:
   the lineshape model tolerates ~5% lineshape error, which is catastrophic in
   χ²ᵣ at high SNR by design, and the ε-gate already accounts for it.
 - Net: `overfit_vif` no longer fires on its own; the well-resolved-doublet
   over-production disappears.
+
+**Implemented (uncommitted).** The flag block is deleted from
+`_compute_attention_reasons`; the now-dead `vif_attention_threshold` setting,
+its `_resolve_vif_attention_threshold` resolver, `DEFAULT_VIF_ATTENTION_THRESHOLD`,
+and the `defaults.yaml` entry are removed (loader tolerates the orphaned persisted
+attr on old files). `test_attention_reasons_overfit_vif` → `test_overfit_vif_retired`.
+Degeneracy stays discoverable via `review rank --by max-vif`.
+
+**7-fixture A/B re-baseline (`scratch/attention-reports/a1ab/`, OFF=frac 1e9 /
+ON=0.15+0.5cap).** χ²ᵣ **median identical on all 7**; p95 flat (worst 360
+8.2→10.2). `worst_eps` flat except +1 on 1512 and +1 on 1231 (no catastrophic
+merge — the sep cap holds). Over-splits merged: 1019/2638 0 (bright, neutral),
+1512 5, 360 7, 1231 3, 363 8, 655 8. Recall (main isotopologue): **655 neutral**
+(0.679→0.679, −8 soft-FP — pure win), **1512 −2** (0.580→0.556); both lost 1512
+lines are deep-sub-res merges (0.36 / 0.41 res, single catalog lines the fit had
+over-split) lost only to an 87 kHz centroid shift at the 85 kHz match tol — the
+expected merge-by-default trade, not a resolvable-doublet regression. Accepted per
+the stated criterion (revert only if *resolvable* doublets regress; χ²ᵣ is the
+safety net). After A-1(b)+A-3 the default queue drops sharply (overfit_vif 165
+gone; e.g. 1231 49→~11).
 
 ### A-2. `candidate_bearing` on the honest signal
 

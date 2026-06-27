@@ -327,8 +327,11 @@ def _first_window_with_peak(sf):
     return None
 
 
-def test_attention_reasons_overfit_vif(stage5_small_file, tmp_path):
-    """overfit_vif fires when a fitted amplitude is non-identifiable (VIF >> 1)."""
+def test_overfit_vif_retired(stage5_small_file, tmp_path):
+    """overfit_vif is retired: a non-identifiable amplitude (VIF >> 1) no longer
+    raises a standalone flag. Its content now routes to the end-of-Stage-5 merge
+    (``auto_merged_review``) or the SNR-aware gate (``worst_eps``); degeneracy is
+    discoverable on demand via ``review rank --by max-vif``."""
     from ftmwpipeline.io.fitting_serialization import (
         load_spectrum_fit_from_hdf5,
         save_spectrum_fit_to_hdf5,
@@ -347,7 +350,7 @@ def test_attention_reasons_overfit_vif(stage5_small_file, tmp_path):
     # Force a degenerate amplitude: error == amplitude, healthy SNR -> VIF == snr.
     p = target_wf.fitted_peaks[0]
     p.amplitude_error = abs(float(p.amplitude))
-    p.snr = 10.0  # VIF = (amp_err/amp) * snr = 10 >= 4 (default threshold)
+    p.snr = 10.0  # VIF = (amp_err/amp) * snr = 10
 
     with h5py.File(str(fp), "a") as h5f:
         del h5f["stage5_fitting"]
@@ -359,7 +362,7 @@ def test_attention_reasons_overfit_vif(stage5_small_file, tmp_path):
 
     wid = target_wf.window_id if target_wf.window_id is not None else -1
     kinds = {r.kind for r in review.window_statuses[wid].attention_reasons}
-    assert "overfit_vif" in kinds, f"Expected overfit_vif for window {wid}; got {kinds}"
+    assert "overfit_vif" not in kinds, f"overfit_vif should be retired; got {kinds}"
 
 
 def test_low_snr_retired(stage5_small_file, tmp_path):

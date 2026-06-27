@@ -344,19 +344,23 @@ dependent always freezes a clean, current background. Both leave hand-added
   floor instead. The prune iterates to a fixed point, because removing a line and
   refitting can push a marginal neighbor below the floor.
 - **Degenerate-pair merge.** A sub-resolution pair that the fit split into two lines
-  is merged back into one when a member's amplitude is statistically unidentifiable —
-  its amplitude variance-inflation factor
-  :math:`\text{VIF} = (\sigma_A / A)\cdot\text{SNR}` reaches ``vif_collapse_threshold``
-  (``25``) within about one resolution element. A prior-free fit cannot justify a
-  sub-resolution *split*, and in the ambiguous band such splits are over-splits far
-  more often than real doublets, so the default merges the unambiguously degenerate
-  pairs and flags the rest (``overfit_vif``) for the analyst to opt into a split or
-  merge with catalog support. The bar is set high on purpose: a genuinely resolved
-  doublet keeps its amplitudes individually constrained, so its VIF stays moderate,
-  whereas merging a real doublet would destroy a line — an asymmetric, unrecoverable
-  error — so only unambiguous degeneracy collapses. A **footprint guard** stops the
-  merge from folding across a real gap into a neighbor, and the collapse iterates to a
-  fixed point.
+  is merged back into one when a member's amplitude is statistically unidentifiable.
+  Two criteria trigger the merge, both within the separation guard: the amplitude
+  variance-inflation factor :math:`\text{VIF} = (\sigma_A / A)\cdot\text{SNR}` reaching
+  ``vif_collapse_threshold`` (``25``) up to about one resolution element (the
+  brightness-invariant singular degeneracy), or the fractional amplitude uncertainty
+  :math:`\sigma_A / A` reaching ``collapse_frac_unc_threshold`` (``0.15``) within the
+  tighter deep-sub-resolution ``collapse_frac_unc_max_separation_res`` (``0.5`` res).
+  A prior-free fit cannot justify a sub-resolution *split*, and in the ambiguous band
+  such splits are over-splits far more often than real doublets, so the default merges
+  the degenerate pairs (re-splittable later with catalog support) and flags them
+  ``auto_merged_review``. The VIF bar is set high on purpose, and the
+  fractional-uncertainty path is capped to deep sub-resolution, because merging a real
+  doublet destroys a line — an asymmetric, unrecoverable error: a genuinely resolved
+  doublet keeps its amplitudes individually constrained (moderate VIF) and sits at a
+  marginally-resolvable separation, so only unambiguous degeneracy collapses. A
+  **footprint guard** stops the merge from folding across a real gap into a neighbor,
+  and the collapse iterates to a fixed point.
 
 A separate, **observation-only** doublet-alternative pass refits each sub-resolution
 pair as a single line and records the comparison statistics (:math:`\Delta\chi^2`,

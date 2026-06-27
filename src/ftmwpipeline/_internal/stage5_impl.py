@@ -515,18 +515,31 @@ def _prune_outcome(
         n_refits += 1
 
 
-def _collapse_rank(view: "FittedLineView", vif_threshold: float) -> Optional[float]:
+def _collapse_rank(
+    view: "FittedLineView",
+    vif_threshold: float,
+    frac_threshold: float = float("inf"),
+) -> Optional[float]:
     """Collapse-eligibility rank for one line, or ``None`` if not eligible.
 
-    The amplitude VIF when it clears ``vif_threshold``; ``+inf`` for the strongest
-    degeneracy (a finite, non-zero amplitude whose joint covariance is singular,
-    so the VIF is undefined and the gate alone would miss it); ``None`` otherwise.
-    A zero / non-finite amplitude is a dead peak, not a degeneracy, so it never
-    ranks. Pure decision function over a :class:`FittedLineView` so both the
-    in-walk collapse and its unit tests read the same logic."""
+    The amplitude VIF when the line is not individually constrained -- either its
+    VIF clears ``vif_threshold`` (the brightness-invariant degeneracy) or its
+    fractional amplitude uncertainty ``amp_err / amp`` (= VIF / snr) reaches
+    ``frac_threshold`` (the sub-resolution over-split band at VIF 4-25 the VIF
+    gate alone leaves behind); ``+inf`` for the strongest degeneracy (a finite,
+    non-zero amplitude whose joint covariance is singular, so the VIF is
+    undefined and the gate alone would miss it); ``None`` otherwise. A zero /
+    non-finite amplitude is a dead peak, not a degeneracy, so it never ranks.
+    Pure decision function over a :class:`FittedLineView` so both the in-walk
+    collapse and its unit tests read the same logic."""
     vif = view.amplitude_vif()
     if vif is not None:
-        return vif if vif > vif_threshold else None
+        if vif > vif_threshold:
+            return vif
+        # ``amplitude_vif`` is non-None only when amp / amp_err / snr are all
+        # finite and amp != 0, so the fractional uncertainty is well-defined.
+        frac = abs(float(view.amplitude_error) / float(view.amplitude))  # type: ignore[arg-type]
+        return vif if frac >= frac_threshold else None
     amp = float(view.amplitude)
     snr = view.snr
     amp_err = view.amplitude_error
@@ -546,6 +559,8 @@ def _collapse_outcome(
     outcome: "WindowOutcome",
     *,
     vif_threshold: float,
+    frac_threshold: float,
+    frac_max_sep_res: float,
     max_sep_res: float,
     res_element_mhz: float,
     sideband: Sideband,
@@ -567,24 +582,37 @@ def _collapse_outcome(
     from ..fitting.result_conversion import FittedLineView, outcome_line_views
 
     max_sep_mhz = max_sep_res * res_element_mhz
+    frac_max_sep_mhz = frac_max_sep_res * res_element_mhz
     footprint_cap_mhz = _COLLAPSE_FOOTPRINT_MAX_RES * res_element_mhz
     s = sideband_sign(sideband)
     center_mhz = float(getattr(outcome, "_center_mhz"))
 
     Footprint = Tuple[float, float, float]
 
+    def _line_max_sep_mhz(view: FittedLineView) -> float:
+        """Per-line collapse reach. A line that clears the VIF / singular gate is
+        an unambiguous degeneracy and may merge to the full guard; a line
+        eligible only via its fractional amplitude uncertainty merges within the
+        tighter deep-sub-resolution cap, where a high ``amp_err/amp`` reflects
+        non-identifiability rather than modest SNR on a resolvable doublet."""
+        vif = view.amplitude_vif()
+        if vif is None or vif > vif_threshold:
+            return max_sep_mhz
+        return frac_max_sep_mhz
+
     def _select_pair(
         views: List[FittedLineView], foots: List[Footprint]
     ) -> Optional[Tuple[int, int]]:
         if len(views) < 2:
             return None
-        ranks = [_collapse_rank(v, vif_threshold) for v in views]
+        ranks = [_collapse_rank(v, vif_threshold, frac_threshold) for v in views]
         high_vif_order = sorted(
             (i for i, r in enumerate(ranks) if r is not None),
             key=lambda i: -(ranks[i] or 0.0),
         )
         for i in high_vif_order:
             fi = float(views[i].frequency_mhz)
+            this_max_sep_mhz = _line_max_sep_mhz(views[i])
             best_j: Optional[int] = None
             best_d = float("inf")
             for j in range(len(views)):
@@ -592,7 +620,7 @@ def _collapse_outcome(
                     continue
                 fj = float(views[j].frequency_mhz)
                 d = abs(fi - fj)
-                if d > max_sep_mhz or d >= best_d:
+                if d > this_max_sep_mhz or d >= best_d:
                     continue
                 lo = min(foots[i][1], foots[j][1], fi, fj)
                 hi = max(foots[i][2], foots[j][2], fi, fj)
@@ -754,6 +782,8 @@ def build_finalize_node(
     floor: float,
     enabled: bool,
     vif_threshold: float,
+    frac_threshold: float,
+    frac_max_sep_res: float,
     max_sep_res: float,
     res_element_mhz: float,
     sideband: Sideband,
@@ -789,6 +819,8 @@ def build_finalize_node(
         result = _collapse_outcome(
             result,
             vif_threshold=vif_threshold,
+            frac_threshold=frac_threshold,
+            frac_max_sep_res=frac_max_sep_res,
             max_sep_res=max_sep_res,
             res_element_mhz=res_element_mhz,
             sideband=sideband,
@@ -1391,6 +1423,14 @@ def _fit_peaks_impl(
         resolved.peak_survival.vif_collapse_threshold,
         "peak_survival.vif_collapse_threshold",
     )
+    collapse_frac_unc_threshold_v = _required_float(
+        resolved.peak_survival.collapse_frac_unc_threshold,
+        "peak_survival.collapse_frac_unc_threshold",
+    )
+    collapse_frac_unc_max_sep_res_v = _required_float(
+        resolved.peak_survival.collapse_frac_unc_max_separation_res,
+        "peak_survival.collapse_frac_unc_max_separation_res",
+    )
     collapse_max_sep_res_v = _required_float(
         resolved.peak_survival.collapse_max_separation_res,
         "peak_survival.collapse_max_separation_res",
@@ -1736,6 +1776,8 @@ def _fit_peaks_impl(
         floor=peak_survival_floor_v,
         enabled=peak_survival_enabled_v,
         vif_threshold=vif_collapse_threshold_v,
+        frac_threshold=collapse_frac_unc_threshold_v,
+        frac_max_sep_res=collapse_frac_unc_max_sep_res_v,
         max_sep_res=collapse_max_sep_res_v,
         res_element_mhz=(1.0 / acquisition_us if acquisition_us > 0 else 0.0),
         sideband=sideband,
@@ -1940,6 +1982,8 @@ def _fit_peaks_impl(
         }
         spectrum_fit.diagnostics["vif_collapse"] = {
             "vif_threshold": float(vif_collapse_threshold_v),
+            "frac_unc_threshold": float(collapse_frac_unc_threshold_v),
+            "frac_unc_max_separation_res": float(collapse_frac_unc_max_sep_res_v),
             "max_separation_res": float(collapse_max_sep_res_v),
             "footprint_max_res": float(_COLLAPSE_FOOTPRINT_MAX_RES),
             "res_element_mhz": float(res_element_mhz),

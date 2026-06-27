@@ -184,6 +184,24 @@ class TestCollapseRank:
         v = _view(amplitude=1.0, amplitude_error=None, snr=None)
         assert _collapse_rank(v, self.THRESH) is None
 
+    def test_frac_unc_eligible_below_vif(self):
+        # VIF = 0.2/1 * 50 = 10 < 100 (kept by the VIF gate alone), but the
+        # fractional amplitude uncertainty 0.2 >= 0.15 -> eligible at its VIF.
+        v = _view(amplitude=1.0, amplitude_error=0.2, snr=50.0)
+        assert _collapse_rank(v, self.THRESH, 0.15) == pytest.approx(10.0)
+
+    def test_frac_unc_below_bar_not_eligible(self):
+        # frac 0.10 < 0.15 and VIF = 0.10*50 = 5 < 100: individually
+        # constrained, kept (the resolvable-doublet protection).
+        v = _view(amplitude=1.0, amplitude_error=0.10, snr=50.0)
+        assert _collapse_rank(v, self.THRESH, 0.15) is None
+
+    def test_frac_unc_default_is_noop(self):
+        # Without the fractional bar (default +inf) a high-frac/low-VIF line is
+        # not eligible -- preserves the VIF-only behavior for 2-arg callers.
+        v = _view(amplitude=1.0, amplitude_error=0.5, snr=50.0)
+        assert _collapse_rank(v, self.THRESH) is None
+
 
 def _spur_set(centers_sources):
     """Build a minimal SpurSet (center_mhz, source) for cleanup tests."""
@@ -281,8 +299,9 @@ class TestSettingsWiring:
 
         ps = resolve().peak_survival
         assert ps.vif_collapse_threshold == pytest.approx(25.0)
+        assert ps.collapse_frac_unc_threshold == pytest.approx(0.15)
+        assert ps.collapse_frac_unc_max_separation_res == pytest.approx(0.5)
         assert ps.collapse_max_separation_res == pytest.approx(1.0)
-        assert ps.vif_attention_threshold == pytest.approx(4.0)
         assert ps.drop_empty_windows is True
         assert ps.drop_spur_only_windows is True
 

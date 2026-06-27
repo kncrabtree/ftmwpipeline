@@ -1822,9 +1822,8 @@ class AttentionReason:
     Attributes
     ----------
     kind : str
-        Category: one of ``"worst_eps"``, ``"overfit_vif"``,
-        ``"auto_merged_review"``, ``"candidate_bearing"``, ``"spur_adjacent"``,
-        ``"edge_boundary"``.
+        Category: one of ``"worst_eps"``, ``"auto_merged_review"``,
+        ``"candidate_bearing"``, ``"spur_adjacent"``, ``"edge_boundary"``.
     detail : str
         Human-readable explanation of the attention trigger.
     severity : float

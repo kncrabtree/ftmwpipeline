@@ -210,7 +210,8 @@ stage5:
     enabled: true
     snr_survival_factor: 1.1
     vif_collapse_threshold: 25.0
+    collapse_frac_unc_threshold: 0.15
+    collapse_frac_unc_max_separation_res: 0.5
     collapse_max_separation_res: 1.0
-    vif_attention_threshold: 4.0
     drop_empty_windows: true
     drop_spur_only_windows: true
