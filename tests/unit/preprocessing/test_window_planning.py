@@ -135,16 +135,12 @@ class TestStrongCluster:
 
 
 class TestWeakLineOnSkirt:
-    def test_weak_window_gets_strong_fixed_contributor(self, monkeypatch):
-        """A weak line on a strong line's far skirt becomes a separate window
-        with the strong line attached as a fixed contributor.
-
-        Pins the legacy magnitude-attachment / edge-free cycle-break (retained
-        behind ``FTMW_LEGACY_CYCLE_BREAK``). The default Step 7 now orients
-        strong->weak and keeps only *material* downward skirts edge-bearing,
-        dropping a far smooth skirt to the baseline (validated in the 7-fixture
-        A/B, dev-docs/planning/stage6-cascade-refit.md "Step B refit")."""
-        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
+    def test_weak_window_gets_strong_fixed_contributor(self):
+        """A weak line on a strong line's skirt becomes a separate window with
+        the strong line attached as an edge-bearing fixed contributor when the
+        skirt is material. The ``skirt_level_keep`` bar is set low so the
+        attached skirt clears the Step-7 materiality gate (the gate itself is
+        exercised in ``test_skirt_level_gate``)."""
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30050.0, 6.0, PeakClassification.STRONG),
@@ -152,7 +148,9 @@ class TestWeakLineOnSkirt:
             ],
             n=8000,
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, skirt_level_keep=1.0
+        )
         assert plan.n_windows == 2
         _assert_invariants(plan)
 
@@ -160,14 +158,15 @@ class TestWeakLineOnSkirt:
         weak_w = next(w for w in plan.windows if 1 in w.free_peak_indices)
         assert strong_w.window_id != weak_w.window_id
 
-        # The weak window carries the strong line as a fixed contributor.
+        # The weak window carries the strong line as an edge-bearing contributor.
         assert len(weak_w.fixed_contributors) == 1
         fc = weak_w.fixed_contributors[0]
         assert fc.peak_index == 0
         assert fc.primary_window_id == strong_w.window_id
         assert fc.freeze_eligible is True  # SNR 600 >= default min_freeze_snr
+        assert fc.edge_free is False  # the new path never demotes to edge-free
 
-        # ... and a dependency edge + batch ordering follows.
+        # ... and a dependency edge + batch ordering follows (oriented strong->weak).
         assert (weak_w.window_id, strong_w.window_id) in plan.dependency_edges
         assert weak_w.batch > strong_w.batch
 
@@ -209,16 +208,11 @@ class TestMagnitudeAttachment:
     mechanism diagnosed in scratch/stage5-validation/.
     """
 
-    def test_strong_far_skirt_above_threshold_is_attached(self, monkeypatch):
+    def test_strong_far_skirt_attached_and_gate_kept(self):
         """A strong line 140 MHz from a weak window predicts a mean |skirt|
         of ~9e-4 (= 13 sigma_c at sigma=0.01), well above the 0.1 sigma_c
-        threshold. The magnitude rule attaches it; the touched-region rule
-        previously missed it.
-
-        Legacy path (``FTMW_LEGACY_CYCLE_BREAK``): the default Step 7 drops this
-        far smooth skirt to the baseline by design (its S_resid is ~0 and its
-        S_level is below the keep bar) -- see "Step B refit"."""
-        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
+        attachment threshold, so Step 4 attaches it. With ``skirt_level_keep``
+        low the Step-7 materiality gate keeps it edge-bearing."""
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30010.0, 6.0, PeakClassification.STRONG),
@@ -226,24 +220,24 @@ class TestMagnitudeAttachment:
             ],
             n=12000,
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, skirt_level_keep=1.0
+        )
         weak_w = next(w for w in plan.windows if 1 in w.free_peak_indices)
         strong_w = next(w for w in plan.windows if 0 in w.free_peak_indices)
         assert len(weak_w.fixed_contributors) == 1
         fc = weak_w.fixed_contributors[0]
         assert fc.peak_index == 0
         assert fc.primary_window_id == strong_w.window_id
+        assert fc.edge_free is False
         assert (weak_w.window_id, strong_w.window_id) in plan.dependency_edges
         _assert_invariants(plan)
 
-    def test_threshold_respected(self, monkeypatch):
+    def test_threshold_respected(self):
         """Raising ``magnitude_attachment_threshold`` drops borderline
-        contributors; lowering it adds them. Same physical layout.
-
-        Pins the legacy magnitude-attachment gate (``FTMW_LEGACY_CYCLE_BREAK``);
-        the default Step 7 gates the kept edge on skirt level/curvature instead
-        (see "Step B refit")."""
-        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
+        contributors at Step 4; lowering it adds them. ``skirt_level_keep`` is
+        held low so the Step-7 gate does not also remove the attached skirt,
+        isolating the attachment threshold."""
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30010.0, 6.0, PeakClassification.STRONG),
@@ -258,6 +252,7 @@ class TestMagnitudeAttachment:
             rms,
             acquisition_us=15.0,
             magnitude_attachment_threshold=0.01,  # very permissive
+            skirt_level_keep=1.0,
         )
         plan_high = build_window_plan(
             peaks,
@@ -266,6 +261,7 @@ class TestMagnitudeAttachment:
             rms,
             acquisition_us=15.0,
             magnitude_attachment_threshold=10.0,  # very strict
+            skirt_level_keep=1.0,
         )
         weak_low = next(w for w in plan_low.windows if 1 in w.free_peak_indices)
         weak_high = next(w for w in plan_high.windows if 1 in w.free_peak_indices)
@@ -273,6 +269,51 @@ class TestMagnitudeAttachment:
         assert len(weak_high.fixed_contributors) == 0
         _assert_invariants(plan_low)
         _assert_invariants(plan_high)
+
+    def test_skirt_level_gate(self):
+        """The Step-7 ``skirt_level_keep`` gate decides whether an *attached*
+        downward skirt survives edge-bearing or is dropped to the dependent's
+        baseline. Same layout, two bars: a low bar keeps the contributor (with a
+        dependency edge); an unreachably high bar drops it (no contributor, no
+        edge), the skirt left to the baseline polynomial."""
+        layout = [
+            (30050.0, 6.0, PeakClassification.STRONG),
+            (30056.0, 0.12, PeakClassification.MEDIUM),
+        ]
+        freqs, spec, rms, peaks = _synthetic(layout, n=8000)
+        kept = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, skirt_level_keep=1.0
+        )
+        freqs, spec, rms, peaks = _synthetic(layout, n=8000)
+        dropped = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, skirt_level_keep=1e12
+        )
+        weak_kept = next(w for w in kept.windows if 1 in w.free_peak_indices)
+        weak_dropped = next(w for w in dropped.windows if 1 in w.free_peak_indices)
+        assert len(weak_kept.fixed_contributors) == 1
+        assert kept.dependency_edges
+        assert weak_dropped.fixed_contributors == []
+        assert dropped.dependency_edges == []
+        _assert_invariants(kept)
+        _assert_invariants(dropped)
+
+    def test_thresholds_persisted_in_plan_parameters(self):
+        """The Step-7 gate thresholds land in ``plan.parameters`` so a
+        downstream ``replan`` reproduces the same gating."""
+        freqs, spec, rms, peaks = _synthetic(
+            [(30040.0, 2.0, PeakClassification.STRONG)]
+        )
+        plan = build_window_plan(
+            peaks,
+            freqs,
+            spec,
+            rms,
+            acquisition_us=15.0,
+            skirt_level_keep=123.0,
+            curvature_keep_sigma=7.0,
+        )
+        assert plan.parameters["skirt_level_keep"] == pytest.approx(123.0)
+        assert plan.parameters["curvature_keep_sigma"] == pytest.approx(7.0)
 
     def test_threshold_persisted_in_plan_parameters(self):
         """The configured threshold lands in ``plan.parameters`` so a
@@ -290,26 +331,15 @@ class TestMagnitudeAttachment:
         )
         assert plan.parameters["magnitude_attachment_threshold"] == pytest.approx(0.42)
 
-    def test_mutual_attachment_does_not_break_dag(self, monkeypatch):
-        """Two strong lines whose skirts mutually reach each other form a
-        2-cycle in the attachment graph. The cycle-breaker drops both
-        fit-ordering edges from ``dependency_edges`` to keep the DAG acyclic,
-        but the orphaned contributors are *not* discarded: each is converted
-        to an EDGE-FREE contributor (read self-contained at fit time), so the
-        leakage subtraction survives without a dependency edge. The
-        execution-time invariant ("primary fit must exist before an
-        edge-bearing dependent fits") still holds because an edge-free
-        contributor carries no such requirement.
-
-        Pins the legacy edge-free cycle-break (``FTMW_LEGACY_CYCLE_BREAK``). The
-        default Step 7 instead orients the 2-cycle strong->weak (acyclic by the
-        strength total order) and keeps the surviving arc edge-bearing when
-        material -- see "Step B refit"."""
-        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
-        # Two strong lines at 30050 and 30090 -- 40 MHz apart, each strong
-        # enough that the other's skirt clears the 0.1 sigma_c threshold.
-        # They don't fall in the same touched region (clean band between
-        # them) so they end up in separate windows under the rule.
+    def test_mutual_attachment_oriented_acyclic(self):
+        """Two strong lines whose skirts mutually reach each other attach to one
+        another at Step 4. Step 7 orients the pair by strength (ties broken by
+        window id) into a single strong->weak edge rather than a 2-cycle: the
+        weaker window keeps the stronger as an edge-bearing contributor, the
+        stronger drops its reverse arc, no edge-free contributor is produced, and
+        the graph is acyclic by construction. ``skirt_level_keep`` is low so the
+        surviving arc clears the materiality gate."""
+        # Two equal-intensity strong lines 40 MHz apart in separate windows.
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30050.0, 8.0, PeakClassification.STRONG),
@@ -317,34 +347,26 @@ class TestMagnitudeAttachment:
             ],
             n=8000,
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, skirt_level_keep=1.0
+        )
         _assert_invariants(plan)
-        # Edge consistency now depends on the contributor kind: an edge-bearing
-        # contributor's (window, primary) edge must be present; an edge-free
-        # contributor's must be absent (it is deliberately out of the DAG).
-        for w in plan.windows:
-            for fc in w.fixed_contributors:
-                edge = (w.window_id, fc.primary_window_id)
-                if fc.edge_free:
-                    assert edge not in plan.dependency_edges, (
-                        f"edge-free contributor on window {w.window_id} must "
-                        f"not appear in dependency_edges, found {edge}"
-                    )
-                else:
-                    assert edge in plan.dependency_edges, (
-                        f"edge-bearing contributor on window {w.window_id} "
-                        f"points at primary {fc.primary_window_id} but that "
-                        f"edge was dropped from dependency_edges"
-                    )
-        # The 2-cycle's orphaned contributors are recovered as edge-free, not
-        # discarded -- this is the issue-#3 leakage-subtraction fix.
-        edge_free = [
+
+        # No contributor is ever demoted to edge-free in the oriented path.
+        assert not [
             fc for w in plan.windows for fc in w.fixed_contributors if fc.edge_free
         ]
-        assert (
-            edge_free
-        ), "mutual-attachment 2-cycle should yield edge-free contributors"
-        assert plan.diagnostics.get("n_edge_free_contributors", 0) == len(edge_free)
+        # Every surviving contributor is edge-bearing and carries its edge.
+        for w in plan.windows:
+            for fc in w.fixed_contributors:
+                assert (w.window_id, fc.primary_window_id) in plan.dependency_edges
+        # The mutual pair collapses to a single oriented edge (not a 2-cycle):
+        # the lower-strength window depends on the higher, never both ways.
+        wa, wb = sorted(plan.windows, key=lambda w: w.window_id)
+        assert (wa.window_id, wb.window_id) in plan.dependency_edges
+        assert (wb.window_id, wa.window_id) not in plan.dependency_edges
+        # The stronger (higher-id, tie-broken) window has no contributor.
+        assert wb.fixed_contributors == []
 
 
 class TestLeakageArtifactPruning:
@@ -770,22 +792,17 @@ class TestReplanMerge:
                 acquisition_us=15.0,
             )
 
-    def test_merge_drops_now_internal_contributor(self, monkeypatch):
+    def test_merge_drops_now_internal_contributor(self):
         """A merge that swallows a primary makes its contributor internal.
 
         Setup (same fixture shape as ``TestWeakLineOnSkirt``): a strong line
-        and a weak line on its far skirt. Stage 4 builds a 2-window plan
-        with the strong line attached to the weak window as a fixed
-        contributor + a dependency edge. Merge the two windows: the merged
-        window now contains the strong line as a free peak, so its earlier
-        role as a fixed contributor to the (now-merged) weak window is
-        no longer needed and the contributor list comes back empty.
-
-        Pins the legacy attachment (``FTMW_LEGACY_CYCLE_BREAK``) so the pre-merge
-        plan has the dependency edge this test merges away; the default Step 7
-        would drop the far skirt to the baseline (see "Step B refit").
+        and a weak line on its skirt. With ``skirt_level_keep`` low, Stage 4
+        builds a 2-window plan with the strong line attached to the weak window
+        as an edge-bearing contributor + a dependency edge. Merge the two
+        windows: the merged window now contains the strong line as a free peak,
+        so its earlier role as a fixed contributor to the (now-merged) weak
+        window is no longer needed and the contributor list comes back empty.
         """
-        monkeypatch.setenv("FTMW_LEGACY_CYCLE_BREAK", "1")
         freqs, spec, rms, peaks = _synthetic(
             [
                 (30050.0, 6.0, PeakClassification.STRONG),
@@ -793,7 +810,9 @@ class TestReplanMerge:
             ],
             n=8000,
         )
-        plan = build_window_plan(peaks, freqs, spec, rms, acquisition_us=15.0)
+        plan = build_window_plan(
+            peaks, freqs, spec, rms, acquisition_us=15.0, skirt_level_keep=1.0
+        )
         # Sanity: there should be two windows with a dep edge.
         assert plan.n_windows == 2
         assert plan.dependency_edges, "expected a dependency edge in setup"
@@ -807,6 +826,7 @@ class TestReplanMerge:
             spec,
             rms,
             acquisition_us=15.0,
+            skirt_level_keep=1.0,
         )
         assert revised.n_windows == 1
         merged = revised.windows[0]

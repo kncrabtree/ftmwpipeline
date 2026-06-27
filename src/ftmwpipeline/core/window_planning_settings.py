@@ -189,7 +189,14 @@ class ContributorSubSettings:
     rather than safely frozen); ``magnitude_attachment_threshold`` is the
     analytic-skirt-magnitude attachment rule (in units of σ_c on the
     target window) governing which strong promoted peaks are attached to
-    a window's ``fixed_contributors``.
+    a window's ``fixed_contributors``. ``skirt_level_keep`` and
+    ``curvature_keep_sigma`` gate which attached downward skirts survive as
+    edge-bearing contributors after the dependency edges are oriented
+    strong→weak: a skirt is kept when its total significance ``S_level``
+    clears ``skirt_level_keep`` (it consumes baseline budget the dependent
+    needs) or its order-``p``-irreducible curvature ``S_resid`` clears
+    ``curvature_keep_sigma``; a sub-threshold skirt is left to the
+    dependent's baseline polynomial.
     """
 
     min_freeze_snr: Optional[float] = knob_field(
@@ -207,6 +214,26 @@ class ContributorSubSettings:
         tier="primary",
         inst_sensitivity="Y",
         grid=(0.05, 0.075, 0.1, 0.15, 0.2),
+        cli=True,
+        argtype=float,
+    )
+    skirt_level_keep: Optional[float] = knob_field(
+        help="Keep a downward skirt edge-bearing when its total significance "
+        "S_level (||skirt/σ_c||) over the dependent clears this; sub-threshold "
+        "skirts fall to the baseline polynomial.",
+        tier="advanced",
+        inst_sensitivity="Y",
+        grid=(50.0, 100.0, 150.0, 250.0, 500.0),
+        cli=True,
+        argtype=float,
+    )
+    curvature_keep_sigma: Optional[float] = knob_field(
+        help="Secondary keep criterion (σ_c units): keep a downward skirt whose "
+        "order-p-irreducible curvature S_resid clears this even when its level is "
+        "below skirt_level_keep.",
+        tier="advanced",
+        inst_sensitivity="N",
+        grid=(3.0, 5.0, 8.0, 12.0),
         cli=True,
         argtype=float,
     )
@@ -275,6 +302,8 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
     "contributor": {
         "min_freeze_snr": 50.0,
         "magnitude_attachment_threshold": 0.1,
+        "skirt_level_keep": 150.0,
+        "curvature_keep_sigma": 5.0,
     },
     "leakage": {
         # ``tau_us`` legitimately stays None (boxcar / undamped limit).

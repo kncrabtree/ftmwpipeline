@@ -3526,7 +3526,8 @@ _REPLAN_PARAM_KEYS = (
     "min_window_half_width_mhz",
     "min_window_half_width_points",
     "magnitude_attachment_threshold",
-    "max_edge_free_neighbors",
+    "skirt_level_keep",
+    "curvature_keep_sigma",
     "acquisition_us",
     "tau_us",
 )

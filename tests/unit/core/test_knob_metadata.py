@@ -54,7 +54,9 @@ class TestKnobMeta:
         assert _Sub().alpha is None and _Sub().beta is None
 
     def test_knob_meta_reads_descriptors(self) -> None:
-        f = next(f for s, f in iter_knob_fields(NoiseSettings) if f.name == "window_mhz")
+        f = next(
+            f for s, f in iter_knob_fields(NoiseSettings) if f.name == "window_mhz"
+        )
         km = knob_meta(f)
         assert km is not None
         assert km.tier == "primary"
@@ -337,6 +339,8 @@ class TestStage4FlagParity:
             "--max-window-width-points",
             "--min-freeze-snr",
             "--magnitude-attachment-threshold",
+            "--skirt-level-keep",
+            "--curvature-keep-sigma",
             "--tau-us",
         }
         assert flags == expected
@@ -356,6 +360,8 @@ class TestStage4FlagParity:
             "clustering.max_window_width_points",
             "contributor.min_freeze_snr",
             "contributor.magnitude_attachment_threshold",
+            "contributor.skirt_level_keep",
+            "contributor.curvature_keep_sigma",
             "leakage.tau_us",
         }
         assert dests == expected

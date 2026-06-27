@@ -38,11 +38,15 @@ Outline (the plan's eight steps):
 6. Each window records a per-edge coherence diagnostic (does its edge band
    still carry coherent leakage) for inspection -- nothing downstream branches
    on it.
-7. The dependency DAG is topologically ordered into parallel batches.
+7. Candidate dependency edges are oriented strong->weak (acyclic by the
+   window-strength total order) and a downward skirt is kept edge-bearing only
+   when material -- its level clears ``skirt_level_keep`` or its
+   order-p-irreducible curvature clears ``curvature_keep_sigma``; sub-threshold
+   skirts fall to the dependent's baseline. The surviving DAG is then
+   topologically ordered into parallel batches.
 """
 
 import math
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -132,20 +136,6 @@ was wrongly credited with preventing was the unbounded strong-cluster force-merg
 governed by the width cap. A positive value restores an explicit cap (power users /
 diagnostics); it tracks the Stage 5 ``conservative.max_peaks`` and both should be
 set together."""
-
-DEFAULT_MAX_EDGE_FREE_NEIGHBORS = 3
-"""Cap on how many distinct primary windows per dependent window may have their
-cycle-orphaned contributors converted to edge-free skirts (the issue-#3
-leakage-subtraction recovery). When the Step-7 cycle-breaker drops a
-fit-ordering edge it would otherwise discard the attached
-:class:`~ftmwpipeline.core.data_structures.FixedContributor`; the few most
-dominant orphans (ranked by aggregated predicted skirt) are instead kept as
-``edge_free`` so their leakage is still subtracted. Capping the count keeps the
-subtraction *targeted*: a dense ultra-high-SNR forest (655) drops dozens of
-edges, and converting them all re-creates the global-crude over-subtraction that
-regressed the bulk fit (see the Phase-1 negative in the stage5 cross-fixture
-report). 3 spans the largest real adjacent cluster (the 360 w288 triplet) while
-staying well short of the forest."""
 
 DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD = 0.1
 """Tier-1 attachment threshold (in units of σ_c on the target window) for the
@@ -372,7 +362,8 @@ DEFAULT_SKIRT_LEVEL_KEEP = 150.0
 the dependent window) above which a downward edge is kept edge-bearing. Materiality
 measure: a skirt this significant consumes baseline budget the dependent may need
 for its own line, so it is carried as a physical contributor rather than left to
-the polynomial. Env override: ``FTMW_SKIRT_LEVEL_KEEP``.
+the polynomial. The hard default mirrored by
+``WindowPlanningSettings.contributor.skirt_level_keep``.
 
 Calibrated on the 7-fixture A/B (dev-docs/planning/stage6-cascade-refit.md "Step B
 refit"): 150 vs 50 halves the contributor load on the dense 655 (1982 -> 971),
@@ -383,7 +374,8 @@ edges, while the budget-critical giant skirts (e.g. 655 w1010) survive at any ba
 DEFAULT_CURVATURE_KEEP_SIGMA = 5.0
 """S_resid threshold (in the dependent's per-component sigma_c): a *secondary*
 keep criterion for a skirt whose curvature an order-p baseline cannot absorb even
-when its level is below ``DEFAULT_SKIRT_LEVEL_KEEP``. Env: ``FTMW_CURVATURE_KEEP_SIGMA``."""
+when its level is below ``DEFAULT_SKIRT_LEVEL_KEEP``. The hard default mirrored by
+``WindowPlanningSettings.contributor.curvature_keep_sigma``."""
 
 CURVATURE_BASELINE_ORDER = 4
 """Baseline order the curvature discriminator projects against -- the part of the
@@ -423,8 +415,9 @@ def _skirt_significance(
     skirt = np.zeros(u.shape, dtype=np.complex128)
     for f, inten in zip(src_freqs, src_intensities):
         amp = 2.0 * float(inten) / tau_eff  # intensity = 0.5*A*tau_eff
-        skirt = skirt + 0.5 * amp * h_T(u - (float(f) - center), tau_model,
-                                        acquisition_us)
+        skirt = skirt + 0.5 * amp * h_T(
+            u - (float(f) - center), tau_model, acquisition_us
+        )
     sig = np.where(sigma_c > 0, sigma_c, np.nan)
     s_level = float(np.sqrt(np.nansum((np.abs(skirt) / sig) ** 2)))
     u_s = float(np.max(np.abs(u))) or 1.0
@@ -433,17 +426,6 @@ def _skirt_significance(
     resid = skirt - basis @ coef
     s_resid = float(np.sqrt(np.nansum((np.abs(resid) / sig) ** 2)))
     return s_level, s_resid
-
-
-def _env_float(name: str, default: float) -> float:
-    """Read a float override from the environment, falling back to ``default``."""
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 def _orient_and_gate_contributors(
@@ -525,75 +507,6 @@ def _orient_and_gate_contributors(
     return kept_edges
 
 
-def _legacy_cycle_break(
-    windows: List[FitWindow],
-    window_ids: List[int],
-    edges: List[Tuple[int, int]],
-    ofreqs: np.ndarray,
-    by_list_index: Dict[int, "_PPeak"],
-    acquisition_us: float,
-    tau_us: Optional[float],
-    max_edge_free_neighbors: int,
-    diagnostics: Dict[str, Any],
-) -> Tuple[List[int], Dict[int, int], List[Tuple[int, int]]]:
-    """The pre-curvature Step 7: Kahn topo-sort, then demote the most dominant
-    orphaned (cyclic-dropped) contributors per window to ``edge_free`` (capped at
-    ``max_edge_free_neighbors``), dropping the rest. Retained behind
-    ``FTMW_LEGACY_CYCLE_BREAK`` as the A/B comparison arm for the curvature
-    cycle-break (dev-docs/planning/stage6-cascade-refit.md)."""
-    topo, batch, kept_edges = _topological_batches(window_ids, edges)
-    for w in windows:
-        w.batch = batch[w.window_id]
-    if len(kept_edges) != len(edges):
-        dropped_edges = [e for e in edges if e not in kept_edges]
-        diagnostics["dropped_cyclic_dependencies"] = [list(e) for e in dropped_edges]
-        drops_by_dep: Dict[int, set] = {}
-        for w_id, p_id in dropped_edges:
-            drops_by_dep.setdefault(w_id, set()).add(p_id)
-        n_edge_free = 0
-        for w in windows:
-            doomed = drops_by_dep.get(w.window_id)
-            if not doomed:
-                continue
-            wlo, whi = w.diagnostics["grid_span"]
-            w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
-            skirt_by_primary: Dict[int, float] = {}
-            for fc in w.fixed_contributors:
-                if fc.primary_window_id not in doomed:
-                    continue
-                src_pk = by_list_index.get(fc.peak_index)
-                if src_pk is None:
-                    continue
-                df_mhz = abs(src_pk.frequency - w_center_mhz)
-                if df_mhz <= 0.0:
-                    continue
-                pred = src_pk.intensity * _leakage_envelope_fraction(
-                    df_mhz * 1e6, acquisition_us, tau_us
-                )
-                skirt_by_primary[fc.primary_window_id] = (
-                    skirt_by_primary.get(fc.primary_window_id, 0.0) + pred
-                )
-            keep_primaries = set(
-                sorted(
-                    skirt_by_primary,
-                    key=lambda p: skirt_by_primary[p],
-                    reverse=True,
-                )[:max_edge_free_neighbors]
-            )
-            kept_contribs: List[FixedContributor] = []
-            for fc in w.fixed_contributors:
-                if fc.primary_window_id not in doomed:
-                    kept_contribs.append(fc)
-                elif fc.primary_window_id in keep_primaries:
-                    fc.edge_free = True
-                    kept_contribs.append(fc)
-                    n_edge_free += 1
-            w.fixed_contributors = kept_contribs
-        if n_edge_free:
-            diagnostics["n_edge_free_contributors"] = n_edge_free
-    return topo, batch, kept_edges
-
-
 def build_window_plan(
     peaks: List[Peak],
     freqs: np.ndarray,
@@ -610,7 +523,8 @@ def build_window_plan(
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     min_window_half_width_points: int = DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
-    max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
+    skirt_level_keep: float = DEFAULT_SKIRT_LEVEL_KEEP,
+    curvature_keep_sigma: float = DEFAULT_CURVATURE_KEEP_SIGMA,
     max_peaks_per_window: int = DEFAULT_MAX_PEAKS_PER_WINDOW,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
 ) -> WindowPlan:
@@ -665,11 +579,16 @@ def build_window_plan(
         its predicted mean |skirt| on that window's grid is at least
         ``threshold * sigma_c(w)``. Default
         :data:`DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD`.
-    max_edge_free_neighbors : int
-        Cap on the number of distinct primary windows whose cycle-orphaned
-        contributors are converted to edge-free skirts per dependent window
-        (see :data:`DEFAULT_MAX_EDGE_FREE_NEIGHBORS`). Keeps the
-        leakage-subtraction recovery targeted on a dense spectrum.
+    skirt_level_keep : float
+        Keep an oriented downward skirt edge-bearing when its total
+        significance ``S_level`` clears this (see
+        :data:`DEFAULT_SKIRT_LEVEL_KEEP`); a sub-threshold skirt falls to the
+        dependent's baseline polynomial.
+    curvature_keep_sigma : float
+        Secondary keep criterion in σ_c units: keep a downward skirt whose
+        order-``p``-irreducible curvature ``S_resid`` clears this even when its
+        level is below ``skirt_level_keep`` (see
+        :data:`DEFAULT_CURVATURE_KEEP_SIGMA`).
 
     Returns
     -------
@@ -696,7 +615,8 @@ def build_window_plan(
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "min_window_half_width_points": int(min_window_half_width_points),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
-        "max_edge_free_neighbors": int(max_edge_free_neighbors),
+        "skirt_level_keep": float(skirt_level_keep),
+        "curvature_keep_sigma": float(curvature_keep_sigma),
         "max_peaks_per_window": int(max_peaks_per_window),
         "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
@@ -872,7 +792,8 @@ def build_window_plan(
         edge_threshold=edge_threshold,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
-        max_edge_free_neighbors=max_edge_free_neighbors,
+        skirt_level_keep=skirt_level_keep,
+        curvature_keep_sigma=curvature_keep_sigma,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=0,
@@ -893,7 +814,8 @@ def _finalize_plan(
     edge_threshold: float,
     min_freeze_snr: float,
     magnitude_attachment_threshold: float,
-    max_edge_free_neighbors: int,
+    skirt_level_keep: float,
+    curvature_keep_sigma: float,
     acquisition_us: float,
     tau_us: Optional[float],
     plan_revision: int,
@@ -950,7 +872,6 @@ def _finalize_plan(
         for s in strong_by_window[w.window_id]:
             primary_of_strong[s.list_index] = w.window_id
 
-    edges: List[Tuple[int, int]] = []
     for w in windows:
         wlo, whi = w.diagnostics["grid_span"]
         w_center_mhz = 0.5 * (float(ofreqs[wlo]) + float(ofreqs[whi]))
@@ -961,7 +882,6 @@ def _finalize_plan(
         sigma_c_w = w_rms_mean / math.sqrt(2.0) if w_rms_mean > 0 else 0.0
         threshold = magnitude_attachment_threshold * sigma_c_w
 
-        primaries_attached: set = set()
         for li, primary_wid in primary_of_strong.items():
             if primary_wid == w.window_id:
                 continue
@@ -990,9 +910,6 @@ def _finalize_plan(
                     freeze_eligible=s_pk.snr >= min_freeze_snr,
                 )
             )
-            primaries_attached.add(primary_wid)
-        for primary_wid in primaries_attached:
-            edges.append((w.window_id, primary_wid))
 
     # --- Step 5: prune leakage-artifact detections from the free set --------
     total_pruned = 0
@@ -1055,40 +972,29 @@ def _finalize_plan(
         w.diagnostics["edge_coherence_statistic"] = edge_stat
         w.diagnostics["edge_coherence_fail"] = bool(edge_stat > edge_threshold)
 
-    # --- Step 7: orient + curvature-gate contributors, then topo-order ------
+    # --- Step 7: orient + materiality-gate contributors, then topo-order ----
+    # Orient every candidate edge strong->weak and keep it edge-bearing only
+    # where the source's skirt is material into the dependent -- it carries
+    # significant level (``skirt_level_keep``) or order-p-irreducible curvature
+    # (``curvature_keep_sigma``); the rest fall to the (order-p) baseline. The
+    # strength total order makes the surviving graph acyclic by construction, so
+    # no edge is force-dropped.
     window_ids = [w.window_id for w in windows]
-    if os.environ.get("FTMW_LEGACY_CYCLE_BREAK"):
-        topo, batch, kept_edges = _legacy_cycle_break(
-            windows,
-            window_ids,
-            edges,
-            ofreqs,
-            by_list_index,
-            acquisition_us,
-            tau_us,
-            max_edge_free_neighbors,
-            diagnostics,
-        )
-    else:
-        # Orient every candidate edge strong->weak and keep it edge-bearing only
-        # where the source's skirt carries order-p-irreducible curvature; drop
-        # the rest to the (order-4) baseline. The strength total order makes the
-        # surviving graph acyclic by construction, so no edge is force-dropped.
-        kept_edges = _orient_and_gate_contributors(
-            windows,
-            strong_by_window,
-            ofreqs,
-            orms,
-            acquisition_us,
-            tau_us,
-            diagnostics,
-            _env_float("FTMW_SKIRT_LEVEL_KEEP", DEFAULT_SKIRT_LEVEL_KEEP),
-            _env_float("FTMW_CURVATURE_KEEP_SIGMA", DEFAULT_CURVATURE_KEEP_SIGMA),
-            CURVATURE_BASELINE_ORDER,
-        )
-        topo, batch, kept_edges = _topological_batches(window_ids, kept_edges)
-        for w in windows:
-            w.batch = batch[w.window_id]
+    kept_edges = _orient_and_gate_contributors(
+        windows,
+        strong_by_window,
+        ofreqs,
+        orms,
+        acquisition_us,
+        tau_us,
+        diagnostics,
+        skirt_level_keep,
+        curvature_keep_sigma,
+        CURVATURE_BASELINE_ORDER,
+    )
+    topo, batch, kept_edges = _topological_batches(window_ids, kept_edges)
+    for w in windows:
+        w.batch = batch[w.window_id]
 
     # Plan-level diagnostics: leakage-touched regions with no promoted peak --
     # an early-warning hint that Stage 3 may have missed a line.
@@ -1230,7 +1136,8 @@ def replan(
     min_window_half_width_mhz: float = DEFAULT_MIN_WINDOW_HALF_WIDTH_MHZ,
     min_window_half_width_points: int = DEFAULT_MIN_WINDOW_HALF_WIDTH_POINTS,
     magnitude_attachment_threshold: float = DEFAULT_MAGNITUDE_ATTACHMENT_THRESHOLD,
-    max_edge_free_neighbors: int = DEFAULT_MAX_EDGE_FREE_NEIGHBORS,
+    skirt_level_keep: float = DEFAULT_SKIRT_LEVEL_KEEP,
+    curvature_keep_sigma: float = DEFAULT_CURVATURE_KEEP_SIGMA,
     max_window_width_points: int = DEFAULT_MAX_WINDOW_WIDTH_POINTS,
 ) -> WindowPlan:
     """Re-plan: apply structural change requests to an existing window plan.
@@ -1293,7 +1200,8 @@ def replan(
         "min_window_half_width_mhz": float(min_window_half_width_mhz),
         "min_window_half_width_points": int(min_window_half_width_points),
         "magnitude_attachment_threshold": float(magnitude_attachment_threshold),
-        "max_edge_free_neighbors": int(max_edge_free_neighbors),
+        "skirt_level_keep": float(skirt_level_keep),
+        "curvature_keep_sigma": float(curvature_keep_sigma),
         "max_window_width_points": int(max_window_width_points),
         "acquisition_us": float(acquisition_us),
         "tau_us": tau_us,
@@ -1359,7 +1267,8 @@ def replan(
         edge_threshold=edge_threshold,
         min_freeze_snr=min_freeze_snr,
         magnitude_attachment_threshold=magnitude_attachment_threshold,
-        max_edge_free_neighbors=max_edge_free_neighbors,
+        skirt_level_keep=skirt_level_keep,
+        curvature_keep_sigma=curvature_keep_sigma,
         acquisition_us=acquisition_us,
         tau_us=tau_us,
         plan_revision=plan.plan_revision + 1,

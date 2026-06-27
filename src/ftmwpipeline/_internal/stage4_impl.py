@@ -160,6 +160,12 @@ def assign_windows_impl(
             "contributor.magnitude_attachment_threshold",
         )
     )
+    skirt_level_keep_v: float = float(
+        _required(contrib.skirt_level_keep, "contributor.skirt_level_keep")
+    )
+    curvature_keep_sigma_v: float = float(
+        _required(contrib.curvature_keep_sigma, "contributor.curvature_keep_sigma")
+    )
     # ``leakage.tau_us`` is legitimately allowed to remain ``None`` after
     # resolution -- ``None`` selects the undamped/boxcar limit downstream.
     tau_us_v: Optional[float] = float(leak.tau_us) if leak.tau_us is not None else None
@@ -196,6 +202,8 @@ def assign_windows_impl(
         min_window_half_width_mhz=min_half_v,
         min_window_half_width_points=min_half_points_v,
         magnitude_attachment_threshold=mag_thresh_v,
+        skirt_level_keep=skirt_level_keep_v,
+        curvature_keep_sigma=curvature_keep_sigma_v,
         max_peaks_per_window=max_peaks_per_window_v,
         max_window_width_points=max_width_points_v,
     )

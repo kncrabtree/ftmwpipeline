@@ -117,6 +117,8 @@ stage4:
   contributor:
     min_freeze_snr: 50.0
     magnitude_attachment_threshold: 0.1
+    skirt_level_keep: 150.0
+    curvature_keep_sigma: 5.0
   # leakage.tau_us has no default -- omitting it is the boxcar (undamped)
   # limit. Set it (us) to assume a shared decay for the analytic leakage skirt:
   # leakage:
