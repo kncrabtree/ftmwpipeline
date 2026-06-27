@@ -1,9 +1,10 @@
 # Attention-metric refinements + the coupled Stage 5 fitting changes
 
-Status: **planned.** Reassessment of the Stage 6 attention surface after the F1
-rework, plus the Stage 5 fitting changes the reassessment exposed as the real
-fix. Diagnosis was measured on the seven-fixture `s4c` set (review run +
-`--windows attention` reports + targeted refits; harnesses under
+Status: **fitting refinements (F-1/F-2/F-3) implemented; attention metrics
+(A-1–A-4) and the report phase pending.** Reassessment of the Stage 6 attention
+surface after the F1 rework, plus the Stage 5 fitting changes the reassessment
+exposed as the real fix. Diagnosis was measured on the seven-fixture `s4c` set
+(review run + `--windows attention` reports + targeted refits; harnesses under
 `scratch/attention-reports/`, evidence summary in that directory's `FINDINGS.md`).
 
 This document covers the **attention metrics** and the **fitting refinements**
@@ -51,59 +52,45 @@ Three measured facts drive the plan:
    the converged fit at the honest residual-peak location, the same gate would
    accept them.
 
-## The fitting refinements (Stage 5)
+## The fitting refinements (Stage 5) — implemented
 
-These produce the honest signals the attention layer then reads. They share one
-hook: `_process_one_window` in `fitting/plan_execution.py`, immediately after the
-per-node cleanup tail, where the converged `WindowOutcome` carries
-`full_residual`, `rms_noise`, `offset_grid_mhz`, and the final peak set.
+F-1, F-2, and F-3 are implemented and validated against the seven-fixture `s4c`
+set. They produce the honest candidate signals the attention layer reads.
 
-### F-1. Refresh the candidate-ledger SNR on the final residual; prune stale
+**F-1 — refresh the candidate-ledger SNR on the final residual.**
+`_refresh_rescue_candidates` in `fitting/plan_execution.py` re-runs
+`find_residual_peaks` on the post-cleanup `outcome.full_residual` at the
+`_process_one_window` tail, replaces each persisted rescue candidate's SNR /
+magnitude with the matched final-residual value, and drops candidates with no
+surviving residual peak. No schema change (the records are mutated in place by
+reference, so both `rescue_events` and the plan-level `rescue_history` see it);
+`derive_candidate_ledger` then reads an already-honest ledger. Line-list-neutral.
 
-After the cleanup tail, re-run `find_residual_peaks` on `outcome.full_residual`
-(with `outcome.rms_noise`). For each persisted rescue candidate, replace its
-recorded SNR/magnitude with the final-residual value matched by frequency, and
-drop candidates that no longer clear the detector bar. The stale rescue SNR then
-never leaves Stage 5; `derive_candidate_ledger` (Stage 6) reads an already-honest
-ledger. Removes the stale bucket (~11/35 here, and the broader noise-grass tail).
+**F-2 — final add-from-convergence pass.** `_add_from_convergence` attempts one
+warm-started add per surviving candidate above `final_add_snr_threshold` (new
+`RescueSubSettings` knob, default `10`, `0` disables): it seeds the new line at
+the residual peak via `refit_outcome(add_seeds=...)` and reads the AICc verdict
+straight off the trial's `knockouts` (`fit_seeds_window_outcome` already runs the
+knockout gate), accepting only when the added peak is `supported` and no pair
+collapses within the min-separation guard. Key decision: the pass reuses F-3's
+brightness-scaled sidelobe predicate as a **pre-filter**, so it never installs a
+bright line's lineshape sidelobe (the AICc gate alone accepts them because the
+core σ_eff budget does not cover the far skirt) — this keeps F-2 and F-3
+consistent. Re-baseline: χ²ᵣ never worsens; 655 +19 genuine companions (χ²ᵣ p95
+5.05→3.88, catalog recall 0.662→0.688 main), 1231 +3, 1512 +2, the
+bright-line-dominated fixtures +0. Known caveat: the 1.5-res w156 doublet is *not*
+recovered (the warm start still collapses it / the AICc gate rejects from
+convergence) — accepted as the safe, over-production-free direction.
 
-- Data: mutate `RescueCandidateInfo.snr` / `.magnitude` in `outcome.rescue_events`
-  (or rebuild the candidate list from the final residual and reconcile by
-  frequency). Serialization already round-trips these fields.
-- Bar: the residual detector's `snr_threshold` (default 2.5) for retention;
-  the Stage 6 display/attention bars are unchanged and still apply downstream.
-
-### F-2. Final add-from-convergence pass (recover the companions)
-
-After F-1, for each surviving final-residual candidate above the display bar,
-attempt **one** warm-started add through the existing conservative AICc gate:
-warm-start the existing free peaks at their converged positions and seed the new
-peak exactly at the residual-peak location. Keep the result only if it clears the
-gate **and** does not collapse within the min-separation guard. The gate and the
-collapse guard are unchanged, so a true over-split that collapses again is still
-rejected — no new over-fit risk; the change is purely a better seed from a better
-starting point.
-
-- Reuses `attempt_residual_rescue` / the conservative add machinery, but seeded
-  from the post-cleanup (post-baseline) state rather than mid-fit. The baseline
-  must be carried as part of the held model during the add (the production rescue
-  runs pre-baseline; this pass runs post-baseline, so the polynomial baseline
-  joins the frozen background for the add's residual).
-- Any installed line is re-baselined / re-cleaned consistently with the rest of
-  the window before the node releases its dependents.
-- Provenance: lines added here are `auto` (pipeline-installed), distinct from a
-  Stage 6 user `review`/`refit --add`.
-
-### F-3. Brightness-scaled shape-error reach in the candidate ledger
-
-`derive_candidate_ledger`'s shape-error filter drops a candidate within
-`SHAPE_ERROR_MAX_SEP_RES = 2.0` res of a fitted peak whose `snr·0.25` exceeds the
-candidate evidence. Bright-line lineshape error extends far past 2.0 res (15–50
-res for snr 10³–10⁵), so the cap lets ~half the strong candidates through as
-sidelobes. Make the reach grow with the neighbor line's SNR (a wider lineshape-
-error shadow for a brighter line) so a bright line's wings stop nominating
-phantom candidates. Calibrate the reach against the measured sidelobe set
-(`scratch/attention-reports/`, the class-C candidates).
+**F-3 — brightness-scaled shape-error reach.** The hard `2.0`-res /
+`0.25`-fraction cap in `derive_candidate_ledger` is replaced by a single
+`1/Δ`-decay rule: a candidate is a sidelobe when `sep_res ≤ κ·snr/evidence` for
+some fitted peak (the finite-T boxcar sinc envelope, so the reach widens with the
+neighbor's brightness). `SHAPE_ERROR_REACH_KAPPA = 0.2` lives in
+`fitting/validation.py` (one calibration shared by F-3's ledger filter and F-2's
+install pre-filter). Calibrated on the seven-fixture strong-candidate set: drops
+83/88 measured sidelobes, keeps 0/35 genuine companions (which sit near
+modest-SNR ≤ ~300 lines).
 
 ## The attention refinements (Stage 6)
 

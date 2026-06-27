@@ -83,15 +83,21 @@ The active track is the **attention-metric refinements + coupled Stage 5 fitting
 changes** ([`planning/stage6-attention-refinements.md`](planning/stage6-attention-refinements.md)):
 a data-driven reassessment of the attention surface after F1 found the two
 dominant flags (`overfit_vif`, `candidate_bearing`) over-produce from a shared
-root cause — bright-line lineshape mismodeling. The plan retires `overfit_vif` as
-a standalone flag (routing to merge / the ε-gate), puts `candidate_bearing` on an
-honest final-residual signal, and adds the Stage 5 fitting changes the diagnosis
-exposed: refresh the candidate-ledger SNR on the final residual and prune stale
-candidates, a final add-from-convergence pass that recovers real companion lines
-the mid-fit add rejected on a seed/collapse failure, and a brightness-scaled
-shape-error reach. It also absorbs the cascade's deferred B5 attention surface.
-The coupled report work (compaction, above-the-fold reorg, post-curation diff
-report) is a later phase scoped after the metrics land.
+root cause — bright-line lineshape mismodeling. The **Stage 5 fitting refinements
+the diagnosis exposed are implemented**: F-1 refreshes the candidate-ledger SNR on
+the final residual and prunes stale candidates; F-2 is a final add-from-convergence
+pass that recovers real companion lines the mid-fit add rejected on a seed/collapse
+failure (new `rescue.final_add_snr_threshold` knob, default 10), gated by the
+unchanged AICc/collapse gate plus F-3's sidelobe pre-filter so it never installs a
+bright line's lineshape sidelobe; F-3 replaces the brightness-blind shape-error cap
+with a `sep_res ≤ κ·snr/evidence` reach (`SHAPE_ERROR_REACH_KAPPA = 0.2`, shared in
+`fitting/validation.py`). Re-baseline: χ²ᵣ never worsens, recall up on 655 (+2
+catalog main lines, χ²ᵣ p95 5.05→3.88), over-production-neutral elsewhere. **Still
+pending**: the attention metrics themselves (retire `overfit_vif` as a standalone
+flag → merge / the ε-gate; `candidate_bearing` on the now-honest signal; demote
+`auto_merged_review`; fold in the cascade's deferred B5 ranking) and the coupled
+report work (compaction, above-the-fold reorg, post-curation diff report), scoped
+after the metrics land.
 
 The remaining **Longer horizon** item is the frequency-calibration / σ_f
 research write-up, intentionally **gated on the pending third vinyl-cyanide

@@ -405,6 +405,15 @@ class RescueSubSettings:
         inst_sensitivity="N",
         grid=(0.0, 4.0, 6.0, 10.0),
     )
+    final_add_snr_threshold: Optional[float] = knob_field(
+        help="Strong residual-candidate SNR above which a final warm-started "
+        "add-from-convergence is attempted (recovers companion lines the "
+        "mid-fit seeder rejected; the conservative AICc gate still decides). "
+        "0 disables.",
+        tier="advanced",
+        inst_sensitivity="Y",
+        grid=(8.0, 10.0, 12.0, 15.0),
+    )
 
 
 @dataclass
@@ -761,6 +770,7 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "structural_merge_factor": 0.5,
         "overfit_amp_ratio_band": 1.5,
         "overfit_amp_ratio_threshold": 6.0,
+        "final_add_snr_threshold": 10.0,
     },
     "thaw": {
         "max_thaw_rounds": 2,

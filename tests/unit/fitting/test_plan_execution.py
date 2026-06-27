@@ -1717,3 +1717,359 @@ class TestRefitOutcome:
         delattr(outcome, "_ck_for_window")
         with pytest.raises(ValueError, match="refit context"):
             refit_outcome(outcome)
+
+
+# ---------------------------------------------------------------------------
+# F-1: _refresh_rescue_candidates
+# ---------------------------------------------------------------------------
+def test_refresh_rescue_candidates_destale_and_prune():
+    """F-1: the persisted rescue ledger is re-measured on the final residual.
+
+    A candidate that still has a real residual peak keeps its refreshed SNR; a
+    candidate whose location is flat on the converged residual is dropped before
+    it can reach the Stage 6 ledger.
+    """
+    from ftmwpipeline.fitting.plan_execution import (
+        RescueEvent,
+        _refresh_rescue_candidates,
+    )
+    from ftmwpipeline.fitting.residual_screening import ResidualPeakCandidate
+    from ftmwpipeline.fitting.window_fit import (
+        ConservativeFitResult,
+        fit_window,
+    )
+
+    u = np.arange(-160, 161) * DF_MHZ
+    sigma = np.full(u.size, 0.02)
+    # The final residual carries one genuine leftover peak at offset +0.25 MHz
+    # and nothing at -0.25 MHz. A localized bump (not a finite-T lineshape)
+    # keeps the synthetic residual free of boxcar sidelobes elsewhere.
+    real_off = 0.25
+    full_resid = (0.3 * np.exp(-(((u - real_off) / 0.04) ** 2))).astype(np.complex128)
+    # A converged single-line fit -- only its tau / shape are read by the refresh.
+    fit = fit_window(
+        u, full_resid, sigma, [ModelPeak(1.0, 0.0, 0.0)], TAU_US, T_US, fit_tau=False
+    )
+    outcome = WindowOutcome(
+        window_id=1,
+        fit=ConservativeFitResult(fit, [], []),
+        fixed_peaks=[],
+        offset_grid_mhz=u,
+        complex_spectrum=full_resid,
+        rms_noise=sigma,
+        background=np.zeros(u.size, dtype=np.complex128),
+        full_fitted_spectrum=np.zeros(u.size, dtype=np.complex128),
+        full_residual=full_resid,
+    )
+
+    def _cand(off: float, snr: float) -> ResidualPeakCandidate:
+        return ResidualPeakCandidate(
+            bin_index=0,
+            frequency_mhz=off,
+            magnitude=snr * 0.02 / np.sqrt(2.0),
+            snr=snr,
+            prominence_sigma_c=snr,
+            nearest_existing_peak_id=None,
+            nearest_existing_freq_mhz=None,
+            nearest_existing_separation_mhz=None,
+            near_existing=False,
+        )
+
+    # The round records a stale candidate (-0.25, no final peak) and the real
+    # one (+0.25) with an inflated rescue-time SNR of 40.
+    outcome.rescue_events = [
+        RescueEvent(
+            window_id=1,
+            round_idx=0,
+            n_initial_peaks=1,
+            n_candidates=2,
+            n_rescue_added=0,
+            n_pruned_by_knockout=0,
+            n_pruned_rescue_origin=0,
+            n_merged=0,
+            chi2_before=1.0,
+            chi2_after=1.0,
+            tau_us_before=TAU_US,
+            tau_us_after=TAU_US,
+            accepted=False,
+            reason="",
+            candidates=[_cand(-0.25, 11.0), _cand(real_off, 40.0)],
+        )
+    ]
+
+    _refresh_rescue_candidates(outcome, acquisition_us=T_US, conservative_kwargs={})
+
+    cands = outcome.rescue_events[0].candidates
+    assert len(cands) == 1  # the stale candidate is pruned
+    kept = cands[0]
+    assert kept.frequency_mhz == pytest.approx(real_off)
+    # SNR refreshed to the measured final-residual value (the inflated 40 is gone).
+    assert kept.snr != pytest.approx(40.0)
+    assert kept.snr > 4.0  # a real peak well above the detector bar
+
+
+# ---------------------------------------------------------------------------
+# F-2: _add_from_convergence
+# ---------------------------------------------------------------------------
+def _one_line_outcome(f0: float, snr0: float = 120.0) -> WindowOutcome:
+    """Fit a single-line spectrum and return the walk-produced outcome.
+
+    The outcome carries a stashed refit context (from :func:`execute_plan`),
+    which is required by :func:`_add_from_convergence`.  The window is
+    centered on ``f0`` and the spectrum contains only one line at ``f0``
+    (no companion), so ``outcome.fit.n_peaks == 1``.
+    """
+    sigma = 1.0
+    center = f0
+    freq_array = np.arange(center - 5.0, center + 5.0, DF_MHZ)
+    a0 = _amp_for_snr(snr0, sigma)
+    spectrum = _synth_spectrum(freq_array, [(f0, a0, 0.3)])
+    rng = np.random.default_rng(SEED + 200)
+    spectrum = spectrum + _complex_noise(freq_array.size, sigma, rng)
+    rms_noise = np.full(freq_array.size, sigma)
+    win = FitWindow(
+        window_id=0,
+        freq_range=(center - 4.0, center + 4.0),
+        free_peak_indices=[0],
+        fixed_contributors=[],
+        batch=0,
+    )
+    plan = WindowPlan(windows=[win], dependency_edges=[], topological_order=[0])
+    plan_out = execute_plan(
+        plan,
+        _make_active_ft(freq_array, spectrum),
+        rms_noise,
+        [f0],
+        sideband=SIDEBAND,
+        acquisition_us=T_US,
+        tau0_us=TAU_US,
+    )
+    return plan_out.window_outcomes[0]
+
+
+def _make_rescue_event(
+    window_id: int,
+    candidates: list,
+) -> "RescueEvent":
+    from ftmwpipeline.fitting.plan_execution import RescueEvent
+
+    return RescueEvent(
+        window_id=window_id,
+        round_idx=0,
+        n_initial_peaks=1,
+        n_candidates=len(candidates),
+        n_rescue_added=0,
+        n_pruned_by_knockout=0,
+        n_pruned_rescue_origin=0,
+        n_merged=0,
+        chi2_before=2.0,
+        chi2_after=2.0,
+        tau_us_before=TAU_US,
+        tau_us_after=TAU_US,
+        accepted=False,
+        reason="",
+        candidates=list(candidates),
+    )
+
+
+def _make_cand(off: float, snr: float, sigma: float = 1.0) -> "ResidualPeakCandidate":
+    from ftmwpipeline.fitting.residual_screening import ResidualPeakCandidate
+
+    return ResidualPeakCandidate(
+        bin_index=0,
+        frequency_mhz=off,
+        magnitude=snr * sigma / np.sqrt(2.0),
+        snr=snr,
+        prominence_sigma_c=snr,
+        nearest_existing_peak_id=None,
+        nearest_existing_freq_mhz=None,
+        nearest_existing_separation_mhz=None,
+        near_existing=False,
+    )
+
+
+def test_add_from_convergence_recovers_companion():
+    """F-2: a companion line missed by the seeder is recovered post-convergence.
+
+    Fit a single-line spectrum (only f0).  Then inject the companion signal at
+    f1 directly into the outcome's complex_spectrum and full_residual so the
+    warm-started add has real data to fit.  Attach a high-SNR rescue candidate
+    at f1's signed-baseband-offset coordinate.  With a no-op finalize_node,
+    F-2 should accept the add and return a two-peak outcome.
+    """
+    from ftmwpipeline.fitting.plan_execution import (
+        NodeCleanup,
+        _add_from_convergence,
+    )
+
+    sigma = 1.0
+    f0 = 36100.0
+    f1 = 36101.5  # companion; 1.5 MHz from f0, well above min_sep
+
+    outcome = _one_line_outcome(f0)
+    assert outcome.fit.n_peaks == 1  # only f0 was seeded and fit
+
+    grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
+    a1 = _amp_for_snr(35.0, sigma)
+    # Build a companion spectrum on the same molecular-frequency array that
+    # _one_line_outcome used (center - 5 to center + 5), then slice to the
+    # window grid (center ± 4).  The companion is h_T-shaped at f1.
+    center = f0
+    freq_array_full = np.arange(center - 5.0, center + 5.0, DF_MHZ)
+    companion_full = _synth_spectrum(freq_array_full, [(f1, a1, 1.1)])
+    mask = (freq_array_full >= center - 4.0) & (freq_array_full <= center + 4.0)
+    companion_in_window = companion_full[mask]
+    assert companion_in_window.size == grid.size
+
+    # Add the companion to both complex_spectrum and full_residual so they
+    # stay consistent: full_residual = complex_spectrum - full_fitted_spectrum.
+    outcome.complex_spectrum = (
+        np.asarray(outcome.complex_spectrum, dtype=np.complex128) + companion_in_window
+    )
+    outcome.full_residual = (
+        np.asarray(outcome.full_residual, dtype=np.complex128) + companion_in_window
+    )
+
+    # The rescue candidate's frequency_mhz must be in the signed baseband
+    # offset frame (same as outcome.offset_grid_mhz).  For a lower sideband:
+    # u = s * (f - f_center) = -(f1 - f0) = -1.5.
+    s = -1.0  # lower sideband
+    companion_offset = s * (f1 - center)  # -1.5
+
+    outcome.rescue_events = [
+        _make_rescue_event(0, [_make_cand(companion_offset, 30.0, sigma)])
+    ]
+
+    def noop_finalize(o: WindowOutcome) -> NodeCleanup:
+        return NodeCleanup(outcome=o)
+
+    result = _add_from_convergence(
+        outcome,
+        acquisition_us=T_US,
+        conservative_kwargs={},
+        snr_threshold=10.0,
+        finalize_node=noop_finalize,
+    )
+    assert result.fit.n_peaks == 2  # companion was recovered
+
+
+def test_add_from_convergence_rejects_collapse():
+    """F-2: a candidate within min-separation of an existing peak is rejected.
+
+    A candidate placed almost exactly on top of the already-fitted peak would
+    collapse (the NLS drives the added line onto the existing one); the
+    collapse guard must reject it and leave the outcome unchanged.
+    """
+    from ftmwpipeline.fitting.plan_execution import (
+        NodeCleanup,
+        _add_from_convergence,
+    )
+
+    sigma = 1.0
+    f0 = 36100.0
+    outcome = _one_line_outcome(f0)
+    assert outcome.fit.n_peaks == 1
+
+    # Place a candidate at the *same position* as the fitted peak.  This will
+    # collapse (the two lines cannot be resolved) and must be rejected.
+    existing_off = outcome.fit.peaks[0].offset_mhz
+
+    outcome.rescue_events = [
+        _make_rescue_event(0, [_make_cand(existing_off, 25.0, sigma)])
+    ]
+
+    def noop_finalize(o: WindowOutcome) -> NodeCleanup:
+        return NodeCleanup(outcome=o)
+
+    result = _add_from_convergence(
+        outcome,
+        acquisition_us=T_US,
+        conservative_kwargs={},
+        snr_threshold=10.0,
+        finalize_node=noop_finalize,
+    )
+    # The collapse should have been caught; peak count unchanged.
+    assert result.fit.n_peaks == 1
+
+
+def test_add_from_convergence_skips_bright_line_sidelobe():
+    """F-2: a candidate inside a bright line's shape-error shadow is not added.
+
+    A strong (snr~3000) line casts a wide lineshape-error shadow
+    (``reach = kappa * snr / evidence`` res). A residual candidate several
+    resolution elements away -- well outside the collapse min-separation, so
+    only the sidelobe pre-filter can stop it -- must be skipped before any
+    refit, matching the Stage 6 ledger filter that drops the same sidelobe.
+    """
+    from ftmwpipeline.fitting.plan_execution import (
+        NodeCleanup,
+        _add_from_convergence,
+    )
+
+    sigma = 1.0
+    f0 = 36100.0
+    outcome = _one_line_outcome(f0, snr0=3000.0)
+    assert outcome.fit.n_peaks == 1
+
+    # Candidate ~5 resolution elements (0.4 MHz) from the bright line, evidence
+    # 30: reach = 0.2 * 3000 / 30 = 20 res >> 5 res -> filtered as a sidelobe.
+    s = -1.0  # lower sideband: u = -(f - f_center)
+    sidelobe_offset = s * 0.4
+
+    outcome.rescue_events = [
+        _make_rescue_event(0, [_make_cand(sidelobe_offset, 30.0, sigma)])
+    ]
+
+    n_called = 0
+
+    def counting_finalize(o: WindowOutcome) -> NodeCleanup:
+        nonlocal n_called
+        n_called += 1
+        return NodeCleanup(outcome=o)
+
+    result = _add_from_convergence(
+        outcome,
+        acquisition_us=T_US,
+        conservative_kwargs={},
+        snr_threshold=10.0,
+        finalize_node=counting_finalize,
+    )
+    assert result.fit.n_peaks == 1  # sidelobe not installed
+    assert n_called == 0  # skipped before any refit / finalize
+
+
+def test_add_from_convergence_skips_below_threshold():
+    """F-2: candidates below snr_threshold are not attempted."""
+    from ftmwpipeline.fitting.plan_execution import (
+        NodeCleanup,
+        _add_from_convergence,
+    )
+
+    sigma = 1.0
+    f0 = 36100.0
+    f1 = 36101.5
+
+    outcome = _one_line_outcome(f0)
+    n_peaks_before = (
+        outcome.fit.n_peaks
+    )  # could be 1 or 2, we only test that F-2 is not called
+
+    # Candidate SNR (5.0) is below the threshold (10.0): no add attempted.
+    outcome.rescue_events = [_make_rescue_event(0, [_make_cand(f1, 5.0, sigma)])]
+
+    n_called = 0
+
+    def counting_finalize(o: WindowOutcome) -> NodeCleanup:
+        nonlocal n_called
+        n_called += 1
+        return NodeCleanup(outcome=o)
+
+    result = _add_from_convergence(
+        outcome,
+        acquisition_us=T_US,
+        conservative_kwargs={},
+        snr_threshold=10.0,
+        finalize_node=counting_finalize,
+    )
+    assert result.fit.n_peaks == n_peaks_before  # unchanged
+    assert n_called == 0  # finalize_node was never called

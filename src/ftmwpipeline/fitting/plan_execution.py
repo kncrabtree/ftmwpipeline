@@ -59,7 +59,7 @@ import logging
 import os
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, List, Optional, Tuple, Union, cast
 
 import numpy as np
@@ -95,13 +95,22 @@ from .peak_model import (
     sideband_sign,
     to_baseband_offset,
 )
-from .residual_rescue import rescue_and_consolidate
+from .residual_rescue import (
+    DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
+    DEFAULT_RESCUE_SNR_THRESHOLD,
+    rescue_and_consolidate,
+)
+from .residual_screening import find_residual_peaks
 from .spur_detection import GatedSpur, SpurMaskSpec, SpurSet
 from .window_fit import (
     DEFAULT_MAX_DECAY_FACTOR,
+    DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
+    DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
     ConservativeFitResult,
     WindowFitConstraints,
     WindowFitResult,
+    _effective_min_pair_separation,
+    _seed_peak,
     conservative_fit,
     derive_window_fit_constraints,
     evaluate_baseline,
@@ -137,6 +146,12 @@ __all__ = [
     "execute_plan",
     "build_window_outcome",
     "fit_seeds_window_outcome",
+    "refit_outcome",
+    "stash_refit_context",
+    "FinalizeNode",
+    "NodeCleanup",
+    "_refresh_rescue_candidates",
+    "_add_from_convergence",
 ]
 
 NoiseLike = Union[float, np.ndarray]
@@ -1550,8 +1565,6 @@ def refit_outcome(
     the source outcome's thaw / rescue / doublet records (the cleanup edits the
     peak set, not that provenance).
     """
-    from dataclasses import replace
-
     from .window_fit import ParameterErrors
 
     inner = outcome.fit.fit
@@ -2067,6 +2080,7 @@ def execute_plan(
     jobs: Optional[int] = None,
     min_freeze_snr: Optional[float] = None,
     finalize_node: Optional[FinalizeNode] = None,
+    final_add_snr_threshold: Optional[float] = None,
 ) -> PlanFitOutcome:
     """Walk a Stage 4 :class:`WindowPlan` and fit every window on the active-FT.
 
@@ -2265,6 +2279,7 @@ def execute_plan(
         min_freeze_snr=min_freeze_snr,
         finalize_node=finalize_node,
         cleanup_history=cleanup_history,
+        final_add_snr_threshold=final_add_snr_threshold,
     )
     logger.info("initial walk: %.1fs", time.monotonic() - _t_initial)
 
@@ -2354,6 +2369,7 @@ def execute_plan(
                 min_freeze_snr=min_freeze_snr,
                 finalize_node=finalize_node,
                 cleanup_history=cleanup_history,
+                final_add_snr_threshold=final_add_snr_threshold,
             )
 
             applied_pairs = {
@@ -2447,6 +2463,236 @@ def _build_doublet_refit_kwargs(
     return refit_kwargs
 
 
+def _refresh_rescue_candidates(
+    outcome: WindowOutcome,
+    *,
+    acquisition_us: float,
+    conservative_kwargs: dict[str, Any],
+) -> None:
+    """Re-measure each persisted rescue candidate's SNR on the *final* residual.
+
+    The rescue records a candidate's SNR/magnitude at rescue-round time -- an
+    early, not-yet-converged residual that can badly overstate the leftover
+    power once the bounded thaw, the leakage-wing baseline, and the per-node
+    cleanup tail have run. Re-detect peaks on the final ``outcome.full_residual``
+    (with the same detector knobs the rescue used) and, for every candidate the
+    rescue persisted, replace its magnitude/SNR with the matched final-residual
+    value (matched by offset frequency) or drop it when the final residual no
+    longer carries a peak above the detector bar at that location.
+
+    Mutates ``ev.candidates`` for each rescue event in place. Because those
+    candidate records are carried by reference into both
+    ``outcome.rescue_events`` and the plan-level ``rescue_history``, the
+    de-staled list is what the Stage 6 candidate ledger then reads -- the stale
+    rescue SNR never leaves Stage 5. No-op when rescue produced no candidates.
+    """
+    events = [ev for ev in outcome.rescue_events if ev.candidates]
+    if not events:
+        return
+    grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
+    residual = np.asarray(outcome.full_residual)
+    sigma = np.asarray(outcome.rms_noise, dtype=float)
+    if grid.size == 0 or residual.size != grid.size:
+        return
+
+    shape = conservative_kwargs.get("shape", "lorentzian")
+    tau_us = float(outcome.fit.fit.tau_us)
+    fwhm = (
+        validation.feature_fwhm(tau_us, acquisition_us, shape=shape)
+        if tau_us > 0.0 and acquisition_us > 0.0
+        else 0.0
+    )
+    final_peaks = find_residual_peaks(
+        grid,
+        residual,
+        sigma,
+        snr_threshold=DEFAULT_RESCUE_SNR_THRESHOLD,
+        prominence_threshold=DEFAULT_RESCUE_PROMINENCE_THRESHOLD,
+        fwhm_mhz=fwhm if fwhm > 0.0 else None,
+    )
+    final_freqs = np.array([p.frequency_mhz for p in final_peaks], dtype=float)
+
+    # Match a persisted candidate to a final-residual peak within one Fourier
+    # resolution element (or the line FWHM when wider) -- the validated ~0.08
+    # MHz match window at the 2638 scale.
+    res_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.0
+    match_tol = max(res_mhz, fwhm)
+    if match_tol <= 0.0:
+        return
+
+    for ev in events:
+        refreshed: list[Any] = []
+        for cand in ev.candidates:
+            if final_freqs.size == 0:
+                continue
+            seps = np.abs(final_freqs - cand.frequency_mhz)
+            j = int(np.argmin(seps))
+            if float(seps[j]) > match_tol:
+                # No final-residual peak here: the leftover the rescue round saw
+                # was resolved by the converged fit / baseline. Drop the stale
+                # candidate so it never reaches the Stage 6 ledger.
+                continue
+            fp = final_peaks[j]
+            refreshed.append(replace(cand, magnitude=fp.magnitude, snr=fp.snr))
+        ev.candidates = refreshed
+
+
+def _add_from_convergence(
+    outcome: WindowOutcome,
+    *,
+    acquisition_us: float,
+    conservative_kwargs: dict[str, Any],
+    snr_threshold: float,
+    finalize_node: FinalizeNode,
+) -> WindowOutcome:
+    """Post-convergence companion-line recovery (F-2).
+
+    For each surviving rescue candidate whose final-residual SNR (refreshed by
+    F-1) clears ``snr_threshold``, attempt one warm-started add: re-converge
+    the existing free peaks at their fitted positions and add one new seed at
+    the candidate's residual-peak offset.  The add is accepted only if the AICc
+    knockout gate prefers the K+1 fit (``kout.supported``) AND the newly placed
+    peak does not collapse within ``min_sep`` of its nearest neighbour.
+
+    If the add is accepted, ``finalize_node`` is re-run so the window stays
+    consistent with the per-node cleanup tail.  Candidates are tried in
+    descending SNR order; a collapse or gate rejection skips the candidate
+    silently without touching the running outcome.
+
+    Returns the (possibly updated) :class:`WindowOutcome`.  No-ops when there
+    are no surviving candidates above the bar, when rescue produced no
+    candidates, or when the outcome carries no stashed refit context.
+    """
+    # Guard: need stashed context for refit_outcome to work.
+    if getattr(outcome, "_ck_for_window", None) is None:
+        return outcome
+
+    # Gather all surviving high-SNR candidates across all rescue events.
+    candidates: list[Any] = []
+    for ev in outcome.rescue_events:
+        for cand in ev.candidates:
+            if cand.snr >= snr_threshold:
+                candidates.append(cand)
+    if not candidates:
+        return outcome
+
+    # Sort descending by SNR; try the strongest first.
+    candidates.sort(key=lambda c: c.snr, reverse=True)
+
+    shape = PeakShape.coerce(conservative_kwargs.get("shape", "lorentzian"))
+    tau_us = float(outcome.fit.fit.tau_us)
+    fwhm = (
+        validation.feature_fwhm(tau_us, acquisition_us, shape=shape)
+        if tau_us > 0.0 and acquisition_us > 0.0
+        else 0.0
+    )
+    min_sep = _effective_min_pair_separation(
+        fwhm,
+        acquisition_us,
+        DEFAULT_MIN_PAIR_SEPARATION_FACTOR,
+        DEFAULT_MIN_PAIR_SEPARATION_RESOLUTION_FACTOR,
+    )
+    # Inputs for the bright-line shape-error pre-filter: a candidate inside a
+    # fitted line's lineshape-error shadow must NOT be installed (it is the same
+    # sidelobe the Stage 6 ledger filter drops). A fitted peak's SNR is recovered
+    # from its amplitude the same way the result-conversion does
+    # (``0.5 * amp * tau_eff / mean(sigma)``).
+    res_element_mhz = 1.0 / acquisition_us if acquisition_us > 0.0 else 0.0
+    rms_mean = float(np.mean(np.asarray(outcome.rms_noise, dtype=float)))
+    tau_eff = effective_tau_shape(shape, tau_us, acquisition_us)
+
+    grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
+    residual = np.asarray(outcome.full_residual)
+    # ``_seed_peak`` requires an ascending grid (``np.interp`` requirement).
+    # The window offset grid may be descending (lower sideband: u = -(f - f_c)).
+    if grid.size > 1 and grid[-1] < grid[0]:
+        grid_asc = grid[::-1]
+        residual_asc = residual[::-1]
+    else:
+        grid_asc = grid
+        residual_asc = residual
+
+    for cand in candidates:
+        seed_offset = float(cand.frequency_mhz)
+        if grid_asc.size == 0:
+            break
+        g_lo = float(grid_asc[0])
+        g_hi = float(grid_asc[-1])
+        if seed_offset < g_lo or seed_offset > g_hi:
+            continue
+
+        # Shape-error pre-filter: skip a candidate that is a brighter fitted
+        # line's lineshape sidelobe (``sep_res <= kappa * snr / evidence``),
+        # so F-2 never installs what the Stage 6 ledger filter would drop.
+        evidence = float(cand.snr)
+        if (
+            res_element_mhz > 0.0
+            and rms_mean > 0.0
+            and tau_eff > 0.0
+            and evidence > 0.0
+        ):
+            is_sidelobe = False
+            for p in outcome.fit.fit.peaks:
+                peak_snr = 0.5 * float(p.amplitude) * tau_eff / rms_mean
+                sep_res = abs(float(p.offset_mhz) - seed_offset) / res_element_mhz
+                if sep_res <= validation.SHAPE_ERROR_REACH_KAPPA * peak_snr / evidence:
+                    is_sidelobe = True
+                    break
+            if is_sidelobe:
+                continue
+
+        seed = _seed_peak(
+            seed_offset,
+            grid_asc,
+            residual_asc,
+            tau_us,
+            acquisition_us,
+            shape=shape,
+        )
+
+        # Attempt the warm-started add.
+        try:
+            candidate_outcome = refit_outcome(outcome, add_seeds=[seed])
+        except Exception:
+            continue
+
+        # AICc gate: find the knockout for the added peak (nearest to our seed
+        # by converged offset_mhz). If it is not supported, reject.
+        knockouts = candidate_outcome.fit.knockouts
+        if not knockouts:
+            continue
+        kout = min(knockouts, key=lambda k: abs(k.offset_mhz - seed_offset))
+        if not kout.supported:
+            continue
+
+        # Collapse guard: no pair of converged peaks closer than min_sep.
+        if min_sep > 0.0:
+            offsets = sorted(p.offset_mhz for p in candidate_outcome.fit.fit.peaks)
+            if any(
+                abs(offsets[i + 1] - offsets[i]) < min_sep
+                for i in range(len(offsets) - 1)
+            ):
+                continue
+
+        # Accept: run finalize_node so cleanup is consistent with the tail.
+        cleanup = finalize_node(candidate_outcome)
+        if cleanup.outcome is None:
+            # Unexpected: adding a peak somehow cascaded to an empty window.
+            continue
+        outcome = cleanup.outcome
+        # Update the local grid / residual for subsequent candidates.
+        grid = np.asarray(outcome.offset_grid_mhz, dtype=float)
+        residual = np.asarray(outcome.full_residual)
+        if grid.size > 1 and grid[-1] < grid[0]:
+            grid_asc = grid[::-1]
+            residual_asc = residual[::-1]
+        else:
+            grid_asc = grid
+            residual_asc = residual
+
+    return outcome
+
+
 def _process_one_window(
     win: FitWindow,
     *,
@@ -2479,6 +2725,7 @@ def _process_one_window(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     finalize_node: Optional[FinalizeNode] = None,
     cleanup_history: Optional[list[dict[str, Any]]] = None,
+    final_add_snr_threshold: Optional[float] = None,
 ) -> None:
     """Process one window end to end: conservative fit -> bounded thaw loop ->
     residual-rescue B-loop -> leakage-wing baseline -> doublet adjudication.
@@ -2646,6 +2893,30 @@ def _process_one_window(
         if cleanup_history is not None:
             cleanup_history.append(record)
 
+    # F-1: de-stale the persisted rescue-candidate ledger against the final
+    # post-cleanup residual so the Stage 6 candidate ledger reads honest SNR.
+    if wid in outcomes:
+        _refresh_rescue_candidates(
+            outcomes[wid],
+            acquisition_us=acquisition_us,
+            conservative_kwargs=ck_for_window,
+        )
+
+    # F-2: final add-from-convergence pass -- recover companion lines that the
+    # mid-fit seeder rejected on a seed/collapse failure.
+    if (
+        wid in outcomes
+        and final_add_snr_threshold is not None
+        and finalize_node is not None
+    ):
+        outcomes[wid] = _add_from_convergence(
+            outcomes[wid],
+            acquisition_us=acquisition_us,
+            conservative_kwargs=ck_for_window,
+            snr_threshold=final_add_snr_threshold,
+            finalize_node=finalize_node,
+        )
+
     elapsed = time.monotonic() - t_start
     if wid not in outcomes:
         # The window was dropped by the cleanup; nothing more to log / time here.
@@ -2704,6 +2975,7 @@ def _walk_windows_in_order(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     finalize_node: Optional[FinalizeNode] = None,
     cleanup_history: Optional[list[dict[str, Any]]] = None,
+    final_add_snr_threshold: Optional[float] = None,
 ) -> None:
     """Fit each window in ``order``, run the bounded local-thaw loop, and
     (when ``max_residual_rescue_rounds > 0``) the residual-rescue B-loop.
@@ -2773,6 +3045,7 @@ def _walk_windows_in_order(
             min_freeze_snr=min_freeze_snr,
             finalize_node=finalize_node,
             cleanup_history=cleanup_history,
+            final_add_snr_threshold=final_add_snr_threshold,
         )
 
 
@@ -3200,6 +3473,7 @@ def _walk_windows_parallel(
     min_freeze_snr: float = DEFAULT_MIN_FREEZE_SNR,
     finalize_node: Optional[FinalizeNode] = None,
     cleanup_history: Optional[list[dict[str, Any]]] = None,
+    final_add_snr_threshold: Optional[float] = None,
 ) -> None:
     """Cross-window parallel form of :func:`_walk_windows_in_order`.
 
@@ -3251,6 +3525,7 @@ def _walk_windows_parallel(
         doublet_kwargs=doublet_kwargs,
         min_freeze_snr=min_freeze_snr,
         finalize_node=finalize_node,
+        final_add_snr_threshold=final_add_snr_threshold,
     )
 
     import multiprocessing

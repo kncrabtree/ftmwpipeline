@@ -65,6 +65,7 @@ __all__ = [
     "DEFAULT_GATE_FLOOR_SCALING",
     "DEFAULT_GATE_SIGMA_EFF_KAPPA",
     "DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT",
+    "SHAPE_ERROR_REACH_KAPPA",
     "DEFAULT_GATE_LINE_ESCAPE_LAMBDA",
     "DEFAULT_BLEND_RELATIVE_EVIDENCE_FRACTION",
     "DEFAULT_PAIR_CANCELLATION_MAX",
@@ -209,6 +210,20 @@ DEFAULT_GATE_SIGMA_EFF_KAPPA: Optional[float] = 0.05
 # measured knee of the bright-band fringe sweep (1512 spurious in-band lines:
 # 0.2 -> 61, 0.4 -> 13) while the dense 363 anchors hold to 0.6.
 DEFAULT_GATE_SIGMA_EFF_KAPPA_SKIRT: Optional[float] = 0.4
+
+# Brightness-scaled shape-error reach. A residual feature at ``sep_res``
+# resolution elements from a fitted line of peak SNR ``snr`` is that line's
+# lineshape-error sidelobe -- not a separate line -- when its own evidence
+# ``ev`` (residual SNR) satisfies ``sep_res <= SHAPE_ERROR_REACH_KAPPA * snr /
+# ev``. The reach follows the finite-T boxcar sinc envelope (``~1/sep_res``), so
+# it widens with the neighbor's brightness: a snr 10^4-10^5 line's mismodeling
+# shadow extends 15-66 res out. Shared by the Stage 6 candidate-ledger filter
+# (drops sidelobe candidates from the attention surface) and the Stage 5 final
+# add-from-convergence pass (never *installs* a line a sidelobe would seed), so
+# the two stay consistent. Calibrated 0.2 on the seven-fixture strong-candidate
+# set: tags 83/88 measured sidelobes while keeping 0/35 genuine companions
+# (which all sit near modest-SNR <= ~300 lines).
+SHAPE_ERROR_REACH_KAPPA: float = 0.2
 
 # Evidence bar (per peak-parameter, in gate-lambda units) for the
 # line-evidence escape hatch (:func:`line_evidence_escape`). The sigma_eff

@@ -658,3 +658,71 @@ class TestAICcRejectSemanticFix:
         )
         assert len(result) == 1
         assert result[0].evidence_kind == "f_p"
+
+
+# ---------------------------------------------------------------------------
+# Tests: F-3 brightness-scaled shape-error filter
+# ---------------------------------------------------------------------------
+
+_RES_ELEMENT = 0.08  # MHz; ~1 / 12.65 us acquisition
+
+
+class TestShapeErrorReach:
+    """The brightness-scaled shape-error filter (``SHAPE_ERROR_REACH_KAPPA``).
+
+    A candidate is a lineshape sidelobe -- dropped -- when
+    ``sep_res <= kappa * snr / evidence`` for some fitted peak; the reach grows
+    with the neighbor line's SNR, so a bright line's far sidelobes are filtered
+    while a genuine companion of a faint line survives.
+    """
+
+    def test_bright_line_sidelobe_filtered(self):
+        """A candidate 5 res from a snr-30000 line is its lineshape sidelobe."""
+        # Lower sideband: mol = center - offset. Bright fitted peak at offset 5
+        # MHz -> mol 36005; candidate 5 res (0.4 MHz) further out -> mol 36004.6.
+        cand = RescueCandidateInfo(frequency_mhz=5.4, magnitude=30.0, snr=30.0)
+        fr = _make_fitting_result(rescue_events=[_make_rescue_round([cand])])
+        fr.fitted_peaks = [
+            FittedPeak(peak_id=0, frequency_mhz=36005.0, amplitude=1.0, snr=30000.0)
+        ]
+        # Reach = 0.2 * 30000 / 30 = 200 res >> 5 res -> dropped.
+        result = derive_candidate_ledger(
+            fr,
+            center_mhz=_CENTER,
+            sideband=_LOWER,
+            bar=0.0,
+            res_element_mhz=_RES_ELEMENT,
+        )
+        assert result == []
+
+    def test_faint_line_companion_kept(self):
+        """A companion 3 res from a snr-20 line is not inside its tiny shadow."""
+        # Faint fitted peak at offset 2 MHz -> mol 36008; candidate 3 res
+        # (0.24 MHz) out -> mol 36007.76, evidence 12.
+        cand = RescueCandidateInfo(frequency_mhz=2.24, magnitude=12.0, snr=12.0)
+        fr = _make_fitting_result(rescue_events=[_make_rescue_round([cand])])
+        fr.fitted_peaks = [
+            FittedPeak(peak_id=0, frequency_mhz=36008.0, amplitude=1.0, snr=20.0)
+        ]
+        # Reach = 0.2 * 20 / 12 = 0.33 res < 3 res -> kept.
+        result = derive_candidate_ledger(
+            fr,
+            center_mhz=_CENTER,
+            sideband=_LOWER,
+            bar=0.0,
+            res_element_mhz=_RES_ELEMENT,
+        )
+        assert len(result) == 1
+        assert result[0].frequency_mhz == pytest.approx(36007.76, abs=1e-6)
+
+    def test_filter_disabled_without_res_element(self):
+        """Without ``res_element_mhz`` the sidelobe survives (filter off)."""
+        cand = RescueCandidateInfo(frequency_mhz=5.4, magnitude=30.0, snr=30.0)
+        fr = _make_fitting_result(rescue_events=[_make_rescue_round([cand])])
+        fr.fitted_peaks = [
+            FittedPeak(peak_id=0, frequency_mhz=36005.0, amplitude=1.0, snr=30000.0)
+        ]
+        result = derive_candidate_ledger(
+            fr, center_mhz=_CENTER, sideband=_LOWER, bar=0.0
+        )
+        assert len(result) == 1

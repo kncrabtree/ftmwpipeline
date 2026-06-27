@@ -1742,6 +1742,11 @@ def _fit_peaks_impl(
         acquisition_us=acquisition_us,
     )
 
+    final_add_v = resolved.rescue.final_add_snr_threshold
+    final_add_snr_v = (
+        float(final_add_v) if (final_add_v is not None and final_add_v > 0) else None
+    )
+
     plan_outcome = execute_plan(
         plan,
         active_ft,
@@ -1769,6 +1774,7 @@ def _fit_peaks_impl(
         doublet_kwargs=doublet_kwargs,
         jobs=jobs,
         finalize_node=finalize_node,
+        final_add_snr_threshold=final_add_snr_v,
     )
     # A structural replan (merge) rebuilds the plan inside ``execute_plan`` --
     # the survivor's ``freq_range`` becomes the union of the merged windows.
@@ -1845,6 +1851,7 @@ def _fit_peaks_impl(
             {
                 "rescue_snr_threshold": rescue_snr_v,
                 "rescue_prominence_threshold": rescue_prom_v,
+                "final_add_snr_threshold": final_add_snr_v,
             }
         )
     # Persist the gated spur catalog with the fit: the masked bins are

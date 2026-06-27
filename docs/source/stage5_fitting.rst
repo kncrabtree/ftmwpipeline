@@ -299,6 +299,23 @@ that drops any line the joint fit no longer supports and merges sub-resolution
 duplicates. Rescue is bounded by a round cap and is what closes the gap between
 detection and a complete fit on dense, high-dynamic-range spectra.
 
+.. _stage5-final-add:
+
+**Final add-from-convergence.** Once a window has fully converged and been cleaned, a
+last recovery pass revisits the strongest peaks its residual still carries. For each it
+attempts a single line addition warm-started from the converged fit — the existing
+lines held at their fitted positions, the new line seeded exactly at the residual peak
+— through the same penalized acceptance gate and minimum-separation guard the main loop
+uses. Seeding from convergence at the true residual location recovers a close companion,
+a weak line about one and a half resolution elements from a moderate neighbor, that the
+mid-fit nomination loses when its symmetric trial seed collapses the pair; the unchanged
+gate still rejects a genuine over-split, so the pass adds recall without adding overfit
+risk. A candidate that sits inside a brighter line's lineshape-error shadow — residual
+signal that scales with the neighbor's brightness rather than marking a separate
+molecule — is skipped, so a strong line's imperfect-shape sidelobe is never promoted to
+a phantom detection. The residual signal-to-noise that triggers an attempt is
+``final_add_snr_threshold`` (``10``); set it to ``0`` to disable the pass.
+
 **Spur masking.** Clock and local-oscillator harmonics appear as **spurs**:
 persistent continuous-wave tones that sit at integer megahertz and are a single bin
 wide — narrower than any finite-:math:`T` line shape can be. Fitting one as a
@@ -552,6 +569,11 @@ covariance uncertainties, its originating window, and its provenance:
 The per-window detail figure above renders exactly this stored record for one
 window (the fitted parameters, the residual, and the add-loop decisions), so it is a
 concrete picture of what the fit persists.
+
+Each rescue candidate the add never installed is also carried with its leftover
+signal-to-noise re-measured on the **final** residual, not the early-pass value that
+first nominated it, so the revival ledger :doc:`Stage 6 <stage6_review>` builds from
+these candidates reflects the signal still genuinely unmodeled at convergence.
 
 The fitted line list is the substrate for :doc:`Stage 6 <stage6_review>`, where it is
 reviewed, curated, and turned into the final products. Hand-edits (adding a line the

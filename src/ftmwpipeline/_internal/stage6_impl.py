@@ -111,18 +111,11 @@ DEFAULT_VIF_ATTENTION_THRESHOLD: float = 4.0
 # Deduplicate candidates whose molecular frequencies are within this window.
 _DEDUP_TOL_MHZ: float = 0.02  # 20 kHz; roughly half an active-FT bin at 13 µs
 
-# Shape-error candidate filter. A revival "candidate" that sits within
-# SHAPE_ERROR_MAX_SEP_RES resolution elements of a fitted peak whose SNR is
-# large enough that the candidate's evidence is only a small fraction
-# (< SHAPE_ERROR_EVIDENCE_FRACTION) of it is a lineshape sidelobe of that
-# brighter line, not a missed line -- the residual-SNR currency is dominated by
-# lineshape mismodeling in bright/dense windows. Measured on the 2638 truth set:
-# this cleanly tags 22/29 rescue-round candidates as shape error and 0/18
-# conservative-loop "tentative" candidates. Same normalize-by-the-local-strong-
-# line idea as the amplitude VIF. Both are module constants (the attention layer
-# is advisory and recomputed each ``review run``, so no persisted knob).
-SHAPE_ERROR_MAX_SEP_RES: float = 2.0
-SHAPE_ERROR_EVIDENCE_FRACTION: float = 0.25
+# Brightness-scaled shape-error reach is shared with the Stage 5 final
+# add-from-convergence pass (one calibration, two consumers); see
+# :data:`ftmwpipeline.fitting.validation.SHAPE_ERROR_REACH_KAPPA`. Re-exported
+# here so the ledger filter and its tests keep their module-local name.
+from ..fitting.validation import SHAPE_ERROR_REACH_KAPPA
 
 # spur_adjacent tolerance. A *surviving* fitted line within this many resolution
 # elements of a gated clock-harmonic spur center is suspiciously coincident with
@@ -412,11 +405,12 @@ def derive_candidate_ledger(
         Display SNR / evidence bar.  Candidates below it are dropped.
     res_element_mhz :
         Fourier resolution element (``1 / T_active`` MHz). When given, the
-        shape-error filter runs: a candidate within
-        :data:`SHAPE_ERROR_MAX_SEP_RES` resolution elements of a fitted peak
-        whose ``snr * SHAPE_ERROR_EVIDENCE_FRACTION`` is at least the
-        candidate's evidence is a lineshape sidelobe of that brighter line and
-        is excluded.  ``None`` disables the filter (legacy behavior).
+        brightness-scaled shape-error filter runs: a candidate is a lineshape
+        sidelobe of a brighter fitted line -- and is excluded -- when
+        ``sep_res <= SHAPE_ERROR_REACH_KAPPA * snr / evidence`` for some fitted
+        peak (the ``~1/sep_res`` lineshape-error shadow; see
+        :data:`SHAPE_ERROR_REACH_KAPPA`).  ``None`` disables the filter (legacy
+        behavior).
 
     Returns
     -------
@@ -452,11 +446,11 @@ def derive_candidate_ledger(
     else:
         not_installed = merged
 
-    # Shape-error filter: drop a candidate that is a lineshape sidelobe of a
-    # brighter nearby fitted line (residual-SNR evidence is dominated by
-    # lineshape mismodeling in bright/dense windows). See the module constants.
+    # Brightness-scaled shape-error filter: drop a candidate that falls inside a
+    # brighter fitted line's ~1/sep_res lineshape-error shadow (residual-SNR
+    # evidence is dominated by lineshape mismodeling in bright/dense windows).
+    # See :data:`SHAPE_ERROR_REACH_KAPPA`.
     if res_element_mhz is not None and res_element_mhz > 0.0 and fitted_freqs.size:
-        max_sep_mhz = SHAPE_ERROR_MAX_SEP_RES * res_element_mhz
         fitted_snr = np.array(
             [
                 (
@@ -470,15 +464,14 @@ def derive_candidate_ledger(
         )
 
         def _is_shape_error(c: Dict) -> bool:
-            near = np.abs(fitted_freqs - c["freq_mhz"]) <= max_sep_mhz
-            if not near.any():
+            evidence = float(c["evidence"])
+            if evidence <= 0.0:
                 return False
-            return bool(
-                (
-                    fitted_snr[near] * SHAPE_ERROR_EVIDENCE_FRACTION
-                    >= float(c["evidence"])
-                ).any()
-            )
+            sep_res = np.abs(fitted_freqs - c["freq_mhz"]) / res_element_mhz
+            # A fitted peak's sidelobe reaches sep_res <= kappa * snr / evidence;
+            # a candidate inside any peak's reach is that peak's shape error.
+            reach_res = SHAPE_ERROR_REACH_KAPPA * fitted_snr / evidence
+            return bool((sep_res <= reach_res).any())
 
         not_installed = [c for c in not_installed if not _is_shape_error(c)]
 

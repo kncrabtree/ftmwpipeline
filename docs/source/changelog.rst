@@ -47,8 +47,9 @@ Pipeline stages
 * **Peak fitting (Stage 5).** A conservative add-one-peak loop fits each window
   with a finite-acquisition line-shape model (leakage is fit, not apodized),
   shared per-window decay, an evidence-triggered leakage baseline, residual
-  rescue, spur masking, and a survival pass, with the cross-window fit
-  parallelized.
+  rescue, a final add-from-convergence pass that recovers close companion lines
+  a mid-fit seed collapsed, spur masking, and a survival pass, with the
+  cross-window fit parallelized.
 * **Review and reporting (Stage 6).** A read/edit curation surface with
   attention routing, a candidate ledger, an anchored decision log with undo, and
   catalog cross-referencing; calibrated final products with a three-term
