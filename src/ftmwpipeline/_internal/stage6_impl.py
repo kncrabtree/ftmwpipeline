@@ -1514,6 +1514,287 @@ def refit_window_core(
     return new_wf
 
 
+# ---------------------------------------------------------------------------
+# Contributor-edit cascade: propagate a Stage-6 edit into dependent windows.
+#
+# A strong line fit in its own window W contributes its frozen leakage skirt to
+# every dependent window D as a FixedContributor. When W is edited during Stage 6
+# curation, D keeps the skirt it was given at fit time -- a stale model of W. The
+# cascade re-evaluates each dependent's frozen background from its sources' CURRENT
+# fits (window-level resolution: "all source peaks >= min_freeze_snr", the same
+# rule the in-walk path uses via ``evaluate_ancestor_leakage``) and re-fits it.
+#
+# It is internal to the edit verbs -- not a user verb. The persisted truth stays
+# (automatic baseline, decision_log); the curated fit is derived by replaying the
+# log, and each replayed edit fires this cascade, so reversibility and "undo all ->
+# the automatic fit" hold by construction (see ``review_undo_impl``). The cascade
+# refits are NOT logged as separate decisions: they are a deterministic function of
+# the edit.
+#
+# Scope note: the gate experiment found propagation is <<sigma_f for every realistic
+# edit class (split/merge/satellite are far-field-invariant in the source's total
+# power and centroid); the cascade is a correctness/honesty fix with rare practical
+# bite. The DAG is wide-shallow, so a serial closure re-walk is adequate.
+# ---------------------------------------------------------------------------
+
+
+def _non_edge_free_primaries(fit_win: Optional["FitWindow"]) -> Optional[set]:
+    """Source window ids a dependent reads via a **cascade-bearing** edge.
+
+    An ``edge_free`` contributor reads its frozen ``(amplitude, phase)`` from the
+    active FT (the data), not from its primary's fit, so it is cascade-immune and
+    must be preserved across an edit (design §1). Returns the set of primaries that
+    are *not* edge-free for this window, or ``None`` when the plan window is
+    unavailable (caller then treats every primary as a dependency).
+    """
+    if fit_win is None:
+        return None
+    return {
+        int(c.primary_window_id) for c in fit_win.fixed_contributors if not c.edge_free
+    }
+
+
+def _cascade_succs(
+    window_fits: Sequence[FittingResult],
+    fit_window_map: Dict[int, "FitWindow"],
+) -> Dict[int, set]:
+    """Reverse dependency map ``primary -> {dependent}`` over the fitted windows,
+    from each window's NON-edge-free frozen contributors (the cascade edges)."""
+    fitted = {int(wf.window_id) for wf in window_fits if wf.window_id is not None}
+    succs: Dict[int, set] = {w: set() for w in fitted}
+    for wf in window_fits:
+        if wf.window_id is None:
+            continue
+        d = int(wf.window_id)
+        nonef = _non_edge_free_primaries(fit_window_map.get(d))
+        for key, entry in wf.fixed_parameters.items():
+            if not key.startswith("frozen_peak_"):
+                continue
+            p = int(entry["primary_window_id"])
+            if p not in fitted or p == d:
+                continue
+            if nonef is not None and p not in nonef:
+                continue  # edge-free contributor: no cascade edge
+            succs[p].add(d)
+    return succs
+
+
+def _cascade_closure(edited_wids: Sequence[int], succs: Dict[int, set]) -> set:
+    """Transitive descendants of ``edited_wids`` over ``succs`` (dependents only)."""
+    from collections import deque
+
+    closure: set = set()
+    dq: "deque[int]" = deque()
+    for w in edited_wids:
+        dq.extend(succs.get(int(w), ()))
+    while dq:
+        x = dq.popleft()
+        if x in closure:
+            continue
+        closure.add(x)
+        dq.extend(succs.get(x, ()))
+    closure -= {int(w) for w in edited_wids}
+    return closure
+
+
+def _cascade_topo(nodes: set, preds: Dict[int, set]) -> List[int]:
+    """Kahn topological order of ``nodes`` (predecessors within the set gate)."""
+    nodes = set(nodes)
+    placed: set = set()
+    out: List[int] = []
+    remaining = sorted(nodes)
+    while remaining:
+        ready = [w for w in remaining if (preds.get(w, set()) & nodes) <= placed]
+        if not ready:
+            ready = remaining  # residual cycle: bail in input order
+        out.extend(ready)
+        placed.update(ready)
+        rs = set(ready)
+        remaining = [w for w in remaining if w not in rs]
+    return out
+
+
+def _resolve_refit_window_tau(
+    fit_win: "FitWindow",
+    resolved: "StageFitSettings",
+    persisted_cal: object,
+    tau_maj_us: Optional[float],
+    sigma_tau_us: Optional[float],
+    tau_source: str,
+) -> Tuple[Optional[float], Optional[float]]:
+    """Per-band tau anchor for one window (the refit replay of the production
+    per-band penalty anchor; the global ``tau_maj`` would pull tau off the fit's
+    optimum -- the recurring tau_maj-vs-per-band bug). A no-op under an explicit
+    override or without a calibration."""
+    if (
+        bool(resolved.tau.per_band_tau)
+        and tau_source != "override"
+        and persisted_cal is not None
+    ):
+        from .stage5_impl import resolve_window_tau_anchor
+
+        center_mhz = 0.5 * (fit_win.freq_range[0] + fit_win.freq_range[1])
+        return resolve_window_tau_anchor(
+            center_mhz,
+            persisted_cal.band_majorities,  # type: ignore[attr-defined]
+            tau_maj_us,
+            sigma_tau_us,
+        )
+    return tau_maj_us, sigma_tau_us
+
+
+def _refresh_frozen_window_level(
+    wf: FittingResult,
+    fit_window_map: Dict[int, "FitWindow"],
+    fit_map: Dict[int, FittingResult],
+    min_freeze_snr: float,
+) -> None:
+    """Rebuild ``wf``'s non-edge-free frozen contributors from its source windows'
+    **current** fitted peaks clearing ``min_freeze_snr`` (window-level resolution).
+
+    This is the one piece the cascade adds: a plain refit reconstructs the frozen
+    background from ``wf``'s own persisted snapshot (a fixed point -- a no-op), so a
+    dependent only tracks its source's edit once its background is re-read from the
+    source's live fit. Edge-free contributors (read from data, cascade-immune) and
+    any non-``frozen_peak_*`` entries are preserved verbatim. Add / remove / split /
+    delete are handled uniformly: the source simply has more or fewer peaks above
+    threshold.
+
+    Thawed peaks (co-fit lines owned by a primary, held in ``fitted_peaks``, design
+    §5) are not refreshed here -- no current fixture exercises thaw; they remain at
+    their persisted values, which ``refit_window_core`` holds frozen. Tracked as the
+    one §5 gap.
+    """
+    wid = wf.window_id
+    assert wid is not None
+    d = int(wid)
+    nonef = _non_edge_free_primaries(fit_window_map.get(d))
+
+    def _is_dep(primary: int) -> bool:
+        return nonef is None or primary in nonef
+
+    non_frozen: Dict[str, Dict] = {}
+    preserved_edge_free: List[Dict] = []
+    src_wids: List[int] = []
+    for key, entry in wf.fixed_parameters.items():
+        if not key.startswith("frozen_peak_"):
+            non_frozen[key] = entry
+            continue
+        primary = int(entry["primary_window_id"])
+        if _is_dep(primary):
+            if primary not in src_wids:
+                src_wids.append(primary)
+        else:
+            preserved_edge_free.append(entry)
+
+    rebuilt: List[Dict] = []
+    for primary in src_wids:
+        pwf = fit_map.get(primary)
+        if pwf is None:
+            continue  # source dropped/merged away -> contributes no skirt
+        for pk in sorted(pwf.fitted_peaks, key=lambda q: float(q.frequency_mhz)):
+            if float(pk.snr or 0.0) < min_freeze_snr:
+                continue
+            rebuilt.append(
+                {
+                    "peak_index": -1,
+                    "primary_window_id": primary,
+                    "frequency_mhz": float(pk.frequency_mhz),
+                    "amplitude": float(pk.amplitude),
+                    "phase": float(pk.phase) if pk.phase is not None else 0.0,
+                    "freeze_eligible": True,
+                }
+            )
+
+    frozen = preserved_edge_free + rebuilt
+    rekeyed = {f"frozen_peak_{i}": e for i, e in enumerate(frozen)}
+    wf.fixed_parameters = {**non_frozen, **rekeyed}
+
+
+def _cascade_refit_dependents(
+    *,
+    spectrum_fit: SpectrumFit,
+    edited_wids: Sequence[int],
+    fit_window_map: Dict[int, "FitWindow"],
+    fit_ctx: "Stage5FitContext",
+    resolved: "StageFitSettings",
+    shape_enum: "PeakShape",
+    persisted_cal: object,
+    tau_maj_us: Optional[float],
+    sigma_tau_us: Optional[float],
+    tau_source: str,
+    peak_frequencies_mhz: List[float],
+    min_freeze_snr: float,
+    snap_tol_mhz: float,
+) -> List[int]:
+    """Refresh + identity-refit every dependent in the transitive closure of
+    ``edited_wids`` (window-level), in dependency order; splice the results back
+    into ``spectrum_fit``. ``tau_maj_us`` / ``sigma_tau_us`` are the **global**
+    anchors -- each dependent is re-anchored per band. Returns the cascaded ids.
+
+    The refit is identity (no add/remove): a directly-edited dependent already
+    carries its own edit in its peak set, so the identity refit honors both the edit
+    and the refreshed skirt in one fit (design §3). Mutates ``spectrum_fit``.
+    """
+    from ..fitting.result_conversion import sort_fitting_result_by_frequency
+
+    window_fits = spectrum_fit.window_fits
+    fit_map: Dict[int, FittingResult] = {
+        int(wf.window_id): wf for wf in window_fits if wf.window_id is not None
+    }
+    succs = _cascade_succs(window_fits, fit_window_map)
+    closure = _cascade_closure(edited_wids, succs)
+    if not closure:
+        return []
+    preds: Dict[int, set] = {w: set() for w in fit_map}
+    for primary, deps in succs.items():
+        for dep in deps:
+            preds[dep].add(primary)
+    ordered = _cascade_topo(closure, preds)
+
+    cascaded: List[int] = []
+    for d in ordered:
+        wf = fit_map.get(d)
+        fit_win = fit_window_map.get(d)
+        if wf is None or fit_win is None:
+            continue
+        _refresh_frozen_window_level(wf, fit_window_map, fit_map, min_freeze_snr)
+        tm, st = _resolve_refit_window_tau(
+            fit_win, resolved, persisted_cal, tau_maj_us, sigma_tau_us, tau_source
+        )
+        new_wf = refit_window_core(
+            fit_ctx,
+            fit_win,
+            wf,
+            resolved=resolved,
+            shape_enum=shape_enum,
+            tau_maj_us=tm,
+            sigma_tau_us=st,
+            peak_frequencies_mhz=peak_frequencies_mhz,
+            snap_tol_mhz=snap_tol_mhz,
+        )
+        sort_fitting_result_by_frequency(new_wf)
+        fit_map[d] = new_wf
+        cascaded.append(d)
+
+    if cascaded:
+        cset = set(cascaded)
+        spectrum_fit.window_fits = [
+            (
+                fit_map[int(wf.window_id)]
+                if wf.window_id is not None and int(wf.window_id) in cset
+                else wf
+            )
+            for wf in window_fits
+        ]
+        kept = [p for p in spectrum_fit.fitted_peaks if p.window_id not in cset]
+        for d in cascaded:
+            kept.extend(fit_map[d].fitted_peaks)
+        kept.sort(key=lambda p: float(p.frequency_mhz))
+        spectrum_fit.fitted_peaks = kept
+    return cascaded
+
+
 def refit_window_impl(
     file_path: Union[Path, str],
     window_id: int,
@@ -1685,26 +1966,19 @@ def refit_window_impl(
             persisted_cal = load_tau_calibration_impl(path)["tau_calibration"]
     tau_maj_override_v = resolved.tau.tau_maj_override_us
     sigma_tau_override_v = resolved.tau.sigma_tau_override_us
-    tau_maj_us, sigma_tau_us, _tau_source = _resolve_tau_calibration_for_fit(
+    tau_maj_global, sigma_tau_global, _tau_source = _resolve_tau_calibration_for_fit(
         persisted_cal, tau_maj_override_v, sigma_tau_override_v
     )
-    # Per-band tau anchor: the production fit anchors each window's tau penalty
-    # at the band its center falls in (window_tau_overrides), NOT the global
-    # band-wide tau_maj. A refit that re-anchors globally pulls tau (and every
-    # peak) off the fit's optimum -- the recurring tau_maj-vs-per-band bug. Replay
-    # the same per-band anchor for the window being refit (skipped under an
-    # explicit override, where the override drives every window by design).
-    if (
-        bool(resolved.tau.per_band_tau)
-        and _tau_source != "override"
-        and persisted_cal is not None
-    ):
-        from .stage5_impl import resolve_window_tau_anchor
-
-        center_mhz = 0.5 * (fit_win.freq_range[0] + fit_win.freq_range[1])
-        tau_maj_us, sigma_tau_us = resolve_window_tau_anchor(
-            center_mhz, persisted_cal.band_majorities, tau_maj_us, sigma_tau_us
-        )
+    # Per-band tau anchor: the production fit anchors each window's tau penalty at
+    # the band its center falls in (window_tau_overrides), NOT the global band-wide
+    # tau_maj. A refit that re-anchors globally pulls tau (and every peak) off the
+    # fit's optimum -- the recurring tau_maj-vs-per-band bug. Replay the same
+    # per-band anchor for the window being refit (a no-op under an explicit
+    # override). The GLOBAL anchor is kept for the cascade below, which re-anchors
+    # each dependent at its own band.
+    tau_maj_us, sigma_tau_us = _resolve_refit_window_tau(
+        fit_win, resolved, persisted_cal, tau_maj_global, sigma_tau_global, _tau_source
+    )
 
     # --- Build shared active-FT context (VERBATIM helper) ------------------
     # Replay the persisted Stage 5 gated spur catalog rather than re-running
@@ -1761,6 +2035,44 @@ def refit_window_impl(
         new_wf if wf_entry.window_id == window_id else wf_entry
         for wf_entry in spectrum_fit.window_fits
     ]
+
+    # --- Cascade the edit into dependent windows ---------------------------
+    # An edit changes the edited window's leakage skirt; every window that froze
+    # that skirt now holds a stale model of it. Re-evaluate each dependent's frozen
+    # background from its sources' CURRENT fits (window-level) and re-fit, in
+    # dependency order, splicing the results into ``spectrum_fit`` before the single
+    # persist below. An identity refit (no add/remove) changes nothing, so it
+    # cascades nothing. The cascade refits are derived, not logged as decisions:
+    # undo replays from the automatic baseline and re-fires the cascade.
+    cascaded_window_ids: List[int] = []
+    if add or remove or add_seeds:
+        from ..preprocessing.window_planning import DEFAULT_MIN_FREEZE_SNR
+
+        min_freeze_snr = float(
+            plan.parameters.get("min_freeze_snr", DEFAULT_MIN_FREEZE_SNR)
+        )
+        cascaded_window_ids = _cascade_refit_dependents(
+            spectrum_fit=spectrum_fit,
+            edited_wids=[window_id],
+            fit_window_map=fit_window_map,
+            fit_ctx=fit_ctx,
+            resolved=resolved,
+            shape_enum=shape_enum,
+            persisted_cal=persisted_cal,
+            tau_maj_us=tau_maj_global,
+            sigma_tau_us=sigma_tau_global,
+            tau_source=_tau_source,
+            peak_frequencies_mhz=peak_frequencies_mhz,
+            min_freeze_snr=min_freeze_snr,
+            snap_tol_mhz=snap_tol_mhz,
+        )
+        if cascaded_window_ids:
+            logger.info(
+                "Stage 6 cascade from window %d: re-fit %d dependent window(s) %s",
+                window_id,
+                len(cascaded_window_ids),
+                sorted(cascaded_window_ids),
+            )
 
     # Persist the updated SpectrumFit.
     shape_attr = str(spectrum_fit.parameters.get("shape", "lorentzian"))

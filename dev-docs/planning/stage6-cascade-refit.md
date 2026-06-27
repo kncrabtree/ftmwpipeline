@@ -4,10 +4,30 @@
 
 The cascade's prerequisites are all shipped and committed on
 `stage6-cascade-refit`. **The cascade proper — propagating a Stage-6 contributor
-edit into its dependent windows (§§C/D) — is the remaining work.** It is
-specified below in "The decided design" and "Cascade scope and the staged build
-order"; **start there.** Everything above that is the implementation summary of
-the prerequisites and the original motivation.
+edit into its dependent windows — is the remaining work.**
+
+**The gate experiment is done and decisive (2026-06-26).** On the reproducible
+baseline, with a faithful **window-level** refresh, a contributor edit propagates
+**≪ σ_f** to dependents in every realistic class — 0/41 dependents moved ≥0.5σ at
+the worst-case hub (655 `w1006`) for identity / insidious-satellite / structural
+split, firing materially (5/41, 469 kHz) only on the drastic deletion of the
+dominant strong line. The far-field skirt depends only on the source's total power
+and centroid, invariant under split/merge. **The cascade is therefore a
+correctness/honesty fix with rare practical bite — build the lightweight core, not
+heavy per-hop machinery.** Full writeup: `scratch/cascade/EXPERIMENT_FINDINGS.md`
+(headline block); harness `scratch/cascade/cascade_lab_wl.py`.
+
+**The build is small** because the cascade folds into machinery that already
+exists (see "The build" below). The model is **two states — automatic and revised
+— with no multi-level undo history**: the revised fit is always re-derived from
+the automatic baseline by replaying the decision log, and every mutation (an edit,
+a second edit, an undo) re-derives from the automatic fit. This is exactly the
+existing `review_undo_impl` path (`_restore_stage5_baseline` → rebuild review →
+replay decisions); the cascade just widens what each replay recomputes. The only
+genuinely new logic is the **window-level dependent refresh**.
+
+"The decided design" (§§1–6) and "The build" below are the spec. Everything above
+the horizontal rule is the prerequisite summary and original motivation.
 
 ## Implemented (prerequisites, committed)
 
@@ -263,135 +283,104 @@ should be drawn before fixing thresholds.
   flagged dependent** — which is consistent with the model (the dependent then
   becomes a directly-curated window).
 
-## Cascade scope (measured) and the staged build order
+## The build
 
-The decided design (sections 1–6 above) frames window-level resolution as an
-obligatory foundation that must land and re-baseline before anything. Measuring
-the actual blast radius on the seven fixtures changes the staging calculus.
+### Scope (measured) — wide-shallow, mostly local
 
-**Measured scope** (`scratch/cascade/cascade_scope.py`, exact from each window's
-persisted `fixed_parameters[*].primary_window_id`; confirmed identical to the
-plan-derived `_build_preds` restricted to fitted windows):
+`scratch/cascade/cascade_scope.py`, exact from each window's persisted
+`fixed_parameters[*].primary_window_id` (identical to `_build_preds` restricted to
+fitted windows):
 
-| fixture | fitted | sources (edit cascades) | leaves (edit local) | DAG depth | worst blast |
-|---|---|---|---|---|---|
-| 2638 | 266 | 0 | 100% | 0 | 0 |
-| 363 | 401 | 0 | 100% | 0 | 0 |
-| 360 | 243 | 3 | 98.8% | 1 | 1 |
-| 1231 | 207 | 4 | 98.1% | 1 | 2 |
-| 1019 | 64 | 3 | 95.3% | 1 | 12 |
-| 1512 | 86 | 5 | 94.2% | 1 | 3 |
-| 655 | 716 | 15 | 97.9% | 4 | 42 |
+| fixture | fitted | sources (edit cascades) | leaves (edit local) | worst blast |
+|---|---|---|---|---|
+| 2638 | 266 | 0 | 100% | 0 |
+| 363 | 401 | 0 | 100% | 0 |
+| 360 | 243 | 3 | 98.8% | 1 |
+| 1231 | 207 | 4 | 98.1% | 2 |
+| 1019 | 64 | 3 | 95.3% | 12 |
+| 1512 | 86 | 5 | 94.2% | 3 |
+| 655 | 716 | 15 | 97.9% | 42 |
 
-The cascade is **wide-shallow, not deep**: 655's big blasts are hubs (`w1006`
-feeds 42 dependents, `blast == direct` — those 42 are leaves), with only a small
-`w1008–w1014` cluster (fan-in 4) needing multi-hop recursion. 94–100% of edits
-cascade to nothing.
+94–100% of edits cascade to nothing; the big blasts are hubs (`w1006` feeds ~41
+leaves in one antichain). On the rebuilt `s4c` arm the DAG is **maxhop=1** — every
+closure re-fits in a single wave. Serial re-walk is trivially adequate.
 
-**What's already in place** (the cascade is mostly assembly):
+### Everything is already in place except the dependent refresh
 
-- `refit_window_core` (`stage6_impl.py`) — the NLS-only per-window refit unit
-  driving the edit verbs, now **reproducible** (the C0 baseline warm-start): an
-  identity refit is a fixed point, so a cascade refit changes a dependent only
-  because its source's skirt actually changed. (The in-walk cleanup drives the
-  outcome-native twin `refit_outcome`; the cascade uses `refit_window_core`.)
-- Each `FittingResult.fixed_parameters` holds its frozen contributors tagged with
-  `primary_window_id` **and** a freq/amp/phase snapshot — both the exact
-  dependency linkage and the stale state to refresh. `_reconstruct_frozen_peaks`
-  reads it (today from the snapshot — the thing the cascade replaces; the in-walk
-  path already reads the ancestor's current fit, per §4 of the inline-cleanup).
-- Edit verbs (`merge_peaks_impl` / `split_peak_impl` / `review_accept_impl`, the
-  add/remove refit) each append to `decision_log`, refit **one** window, persist.
-  `apply_curation_impl` replays a batch one-window-at-a-time.
-- `_walk_windows_dag` + `_build_preds` (`plan_execution.py`) — the dependency-
-  ordered scheduler; the cascade re-walk reuses its indeg-gated loop.
+- **Refit unit** — `refit_window_core` (`stage6_impl.py`): NLS-only, reproducible
+  (an identity refit is a fixed point), already drives every edit verb.
+- **Dependency linkage** — each `FittingResult.fixed_parameters` carries
+  `primary_window_id` per frozen contributor (and `peak_index=-1`: the in-walk path
+  already writes window-level content, the ancestor's current above-threshold
+  fitted lines). Reverse map (`succs`) + closure/topo are ~10 lines
+  (`cascade_scope.py` prototypes them).
+- **Two-state replay** — `review_undo_impl` (`stage6_impl.py:2989`) already does
+  `_restore_stage5_baseline` → rebuild review (`review_run_impl`) → replay the
+  decision log via `_execute_planned_action`. `apply_curation_impl` shares that
+  replay engine. This *is* the "automatic + revised, re-derive from baseline on
+  every mutation, no multi-level undo" model — so reversibility, determinism, and
+  "undo all → exactly the automatic fit" come for free.
 
-**The build, in stages** (each a real `_internal` change behind the dual-interface
-invariant, validated against the 7-fixture reference in `scratch/cascade/BASELINE.md`):
+**The one new piece: the window-level dependent refresh.** A plain refit of a
+dependent reconstructs its frozen background from its *own* persisted snapshot
+(`_reconstruct_frozen_peaks`) → identity fixed point → **a no-op**. To propagate an
+edit, each dependent must first rebuild its frozen background from its sources'
+*current* fits — "all source peaks ≥ `min_freeze_snr`", the window-level semantics
+`evaluate_ancestor_leakage` already uses in-walk. Prototyped and validated as
+`refresh_frozen_wl` in `scratch/cascade/cascade_lab_wl.py` (~30 lines). This is the
+foundation the decided design §1 calls for, but it costs **no Stage-5 re-baseline**:
+it touches only the post-fit refresh, and the persisted format already stores
+window-level content. It handles shift, add, remove, split, and delete uniformly
+(remove → fewer source peaks above threshold; split → both children above
+threshold), dissolving the nearest-match aliasing artifacts the per-peak refresh
+hit.
 
-- **C1 — reverse dependency map.** `succs: primary_wid -> {dependent_wid}` from
-  `fixed_parameters` (what `cascade_scope.py` already builds). No new persisted
+### The build, in steps (one `_internal` change behind the dual-interface invariant)
+
+- **B1 — reverse map + closure.** `succs: primary_wid -> {dependent_wid}` and the
+  topo-ordered transitive closure of a set of edited windows, from
+  `fixed_parameters` (lift `cascade_scope.py` into `_internal`). No new persisted
   structure.
-- **C2 — the cascade walk** `cascade_refit(edited_wids)`: closure = transitive
-  descendants over `succs` ∪ the edited windows; topo-order the closure; for each
-  window in order rebuild its frozen background **and** thawed-peak channel
-  (section 5) from its primaries' *current* fits, apply its own direct edits,
-  `refit_window_core`, splice back, record a revision. Reuse the
-  `_walk_windows_dag` loop restricted to the closure (the closure is small — the
-  42-blast is a single antichain that re-fits in one wave; serial is also fine).
-- **C3 — hook into the edit verbs.** Each verb, after its direct edit, calls
-  `cascade_refit({edited_wid})`. `apply_curation_impl` collects **all** directly-
-  edited window ids and does **one merged** cascade walk over their combined
-  closure (section 3: a window that is both a cascade target and directly edited
-  is fit once, honoring both).
-- **C4 — provenance / reversibility / flags.** Persisted truth stays
-  `(baseline, decision_log)`; the curated fit is derived by replaying the log,
-  each replay triggering its cascade; undo = drop entry + re-walk (section 2).
-  Log entries gain cascade + rescue-add provenance; attention flags (section 6)
-  surface via `review rank --by <diff-metric>`. Guard: the one bounded rescue
-  round must not re-add a user-suppressed frequency (section 4).
+- **B2 — window-level dependent refresh.** Productionize `refresh_frozen_wl`:
+  rebuild a window's frozen contributors (and the thawed-peak channel, §5) from its
+  source windows' current above-`min_freeze_snr` fitted lines. Reuses the
+  `evaluate_ancestor_leakage` rule; replaces the per-peak snapshot read inside the
+  cascade path.
+- **B3 — `cascade_refit(edited_wids)`.** Topo-walk the merged closure of all
+  `edited_wids`; for each window in order: refresh (B2) from current sources,
+  identity-`refit_window_core`, splice back. A directly-edited window already
+  carries its own edit in its peak set (applied in the replay phase), so the
+  identity refit honors both the edit and the refreshed skirt in one fit (§3) — no
+  second code path. The lone bounded rescue round (§4) only when an out-of-band
+  contributor changed; it must not re-add a user-suppressed frequency.
+- **B4 — fold into the replay.** Route every mutation through the existing
+  restore-baseline → replay path, then run **one** `cascade_refit` over the union of
+  all replayed edits' closures (§3). The interactive verbs append their decision and
+  re-derive; undo drops the decision and re-derives. The decision log stays
+  user-edits-only — the cascade is *derived*, never logged as separate undoable
+  units, so "undo all → automatic" holds by construction.
+- **B5 — surface (after correctness lands).** Attention flags (§6) comparing revised
+  vs baseline, exposed via `review rank --by <diff-metric>`; the cascade section in
+  `review show` / the HTML report; the edit-time "feeds windows [X,Y]" hint. Update
+  the `docs/source/stage6_review.rst` "no re-fit" limitation and the ROADMAP D-row.
 
-**The staging refinement the scope unlocks.** Window-level resolution (section 1:
-retire `peak_index`, resolve "all source peaks above `min_freeze_snr`") is needed
-**only** for edits that change peak *identity* — split (1→2 contributors) and
-delete (1→0), where `peak_index` resolution breaks. The exact linkage already
-lives in `fixed_parameters` and refreshing a dependent is just re-reading its
-primaries' current fits, so the cascade **core** (refresh + re-walk the closure)
-is buildable on the *existing* per-window linkage with **no baseline change** for
-the common **shift** edit class. So:
+Validated against the 7-fixture `s4c` reference (`scratch/cascade/BASELINE.md`):
+because the automatic fit's in-walk path already self-consistent-freezes sources,
+**an un-edited file re-derives byte-identically** — the cascade only changes a file
+once a user edits it. That is the primary regression gate.
 
-1. **Experiment first** (the gate below): on 655 hub `w1006` (42-blast) and a 1512
-   ¹⁴N doublet, run an insidious (blend-satellite) and a structural (split) edit;
-   measure Δfreq/σ, Δχ²ᵣ, peak-count decay per hop. Confirms the bounded,
-   fast-decaying, mostly-single-hop hypothesis before any production wiring.
-2. **C1–C4 on the existing linkage, shift-class edits** — no re-baseline, validated
-   against the reference table. Most of the value, most of the safety.
-3. **Window-level resolution (section 1) + split/delete cascades** — isolated,
-   re-baselined, reconciled with the edge-free / cycle-break path — only where
-   structurally required, **not** as an upfront gate on everything.
+## Experiment (the gate) — DONE, decisive
 
-This inverts the decided design's "foundation first" into "cheap correct core
-first, foundational change only where peak identity changes" — which the scope
-(98% of edits cascade to nothing; the dependency graph is already exact and
-minimal in `fixed_parameters`) makes safe.
-
-## Experiment plan (gates the build)
-
-Build a scratch harness that implements **window-level resolution** and a
-cascade so we measure the magnitude/decay *and* validate the foundational
-semantics before either touches Stage 5. There is no cascade entry point today,
-and `_reconstruct_frozen_peaks` reads the stale snapshot, so the harness must
-rebuild a dependent's frozen background from the source window's current
-above-threshold peaks and re-fit.
-
-Two fixtures, two purposes (build **fresh** per the rebuild-fresh rule):
-
-- **655 → closure size / fan-out (the cost question).** Dense, high-SNR, many
-  strong contributors with real dependents and a known leakage pedestal — the
-  worst case for cascade radius. Pick the strongest line that is a contributor
-  to ≥1 window (rank by predicted skirt into the dependent so an effect is
-  visible) and measure how many hops the cascade reaches before every flag goes
-  quiet. Confirms the "obligatory" cost is bounded (the 1–2-hop hypothesis).
-- **1512 → scientifically-defensible structural edit (the magnitude question).**
-  The ¹⁴N hyperfine doublets give a physically motivated split/merge on a strong
-  line that is also plausibly a contributor — a *reasonable* curation decision,
-  not a contrived one.
-
-For each, run two edit classes on the chosen contributor's window W:
-
-- **(a) Insidious / indirect.** Add or remove a *blend satellite* in W, leaving
-  the strong line nominally alone, to see how much the contributor moves
-  *indirectly* (joint-NLS correlation) and whether that trips a dependent.
-- **(b) Structural.** Split the strong contributor — the upper bound.
-
-Per hop record: Δfreq / σ_f, σ_after / σ_before, Δχ²ᵣ, peak-count change. Track
-the decay across hops.
-
-**Headline to watch for.** If even a structural split of a strong contributor
-moves its top dependent by ≪ σ_f, the feature is a correctness/honesty fix with
-rare practical bite (still worth doing — the file should never lie about its own
-consistency) rather than a frequently-material recomputation. Either result is
-useful and informs how much machinery is justified.
+Ran on the reproducible `s4c` baseline with the window-level harness
+(`scratch/cascade/cascade_lab_wl.py`). At the worst-case hub (655 `w1006`, 41
+dependents) and 1512 ¹⁴N doublets (`w45`/`w192`), a contributor edit moved **0
+dependents ≥0.5σ (worst 0 kHz)** for identity, insidious satellite add/remove, and
+structural split; it fired materially (5/41, 469 kHz) only on the drastic deletion
+of the dominant strong line. Far-field skirt = total power + centroid, invariant
+under split/merge — so the cascade is a **correctness/honesty fix with rare
+practical bite**. This reverses the pre-C0 finding (whose MHz propagation was the C0
+baseline bug compounded with the per-peak nearest-match aliasing artifact, both now
+resolved). Full writeup: `scratch/cascade/EXPERIMENT_FINDINGS.md` (headline block).
 
 ## Interface surface (to design during build)
 
