@@ -15,12 +15,12 @@
   <!-- per-window lifecycle -->
   <rect x="40" y="92" width="520" height="58" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
   <text x="300" y="117" text-anchor="middle" font-weight="bold" fill="#022851">Seed</text>
-  <text x="300" y="138" text-anchor="middle" font-size="13" fill="#495057">fit the strongest peak as a single line</text>
+  <text x="300" y="138" text-anchor="middle" font-size="13" fill="#495057">seed the Stage 3 primary detections</text>
   <path d="M300,150 V174" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
 
   <rect x="40" y="174" width="520" height="58" rx="9" fill="#eef1f4" stroke="#022851" stroke-width="1.8"/>
   <text x="300" y="199" text-anchor="middle" font-weight="bold" fill="#022851">Add-one-peak loop</text>
-  <text x="300" y="220" text-anchor="middle" font-size="13" fill="#495057">propose the next residual peak; keep only if it clears the penalty bar</text>
+  <text x="300" y="220" text-anchor="middle" font-size="13" fill="#495057">propose the next weak-line candidate; keep only if it clears the penalty bar</text>
   <!-- self-loop: accept -> propose again -->
   <path d="M560,222 Q622,203 560,184" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
   <text x="628" y="207" font-size="13" fill="#495057">accept</text>
@@ -37,9 +37,9 @@
   <text x="300" y="384" text-anchor="middle" font-size="13" fill="#495057">coherent edge → thaw a contributor or replan-merge windows</text>
   <path d="M300,396 V420" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
 
-  <!-- global pass -->
+  <!-- in-walk cleanup (per window, before the window is released) -->
   <rect x="40" y="420" width="520" height="58" rx="9" fill="#fff6db" stroke="#022851" stroke-width="1.8"/>
-  <text x="300" y="445" text-anchor="middle" font-weight="bold" fill="#022851">Post-fit survival pass</text>
+  <text x="300" y="445" text-anchor="middle" font-weight="bold" fill="#022851">Survival cleanup (per window)</text>
   <text x="300" y="466" text-anchor="middle" font-size="13" fill="#495057">SNR-prune weak lines; merge degenerate sub-resolution pairs</text>
   <path d="M300,478 V502" stroke="#495057" stroke-width="2" fill="none" marker-end="url(#arr)"/>
 

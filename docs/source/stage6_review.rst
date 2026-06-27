@@ -135,14 +135,22 @@ analyst draws from when a window is flagged candidate-bearing.
 Editing the fit
 ---------------
 
-**Every edit verb performs an immediate single-window refit.** It re-seeds from the
-window's own persisted state (its fitted peaks as seeds, its frozen contributors
-reconstructed from its own record), applies the add or remove, runs one joint
-nonlinear least-squares fit with the production fitting primitive, and replaces only
-that window's entry in the stored fit. No neighbor is re-fit, and no upstream stage
-re-runs. The refit is fit-only: it does not re-run conservative discovery, rescue, or
-the Stage 4 renegotiation, so it does exactly what the analyst asked and nothing more.
-(Contrast ``review run``, which builds the worklist and products but refits nothing.)
+**Every edit verb refits the edited window and propagates into its dependents.** The
+edited window re-seeds from its own persisted state (its fitted peaks as seeds, its
+frozen contributors reconstructed from its own record), applies the add or remove, runs
+one joint nonlinear least-squares fit with the production fitting primitive, and replaces
+that window's entry in the stored fit. Because a strong line contributes its frozen
+leakage skirt to neighboring windows, the edit then **cascades**: every window that froze
+a skirt from the edited one has its frozen background rebuilt from the edited window's
+*current* fit and is refit, in dependency order, so the file never carries a neighbor's
+stale model of an edited line. The cascade refits are fit-only — no conservative
+discovery, no rescue, no Stage 4 renegotiation — and are a deterministic consequence of
+the edit rather than logged decisions of their own. The propagation is usually far below
+the reported precision: a split or merge that preserves a line's total power and centroid
+leaves its far-field skirt unchanged, so most edits move their dependents by
+:math:`\ll\sigma_f`, and the case that matters is an edit that changes a strong line's
+amplitude or position by a large amount. (Contrast ``review run``, which builds the
+worklist and products but refits nothing.)
 
 - ``review edit --window N --add F`` / ``--remove F`` — add or remove a line. ``--add``
   snaps to the nearest ledger candidate within tolerance (reviving its recorded seed)
@@ -376,10 +384,12 @@ in-browser curation cart, and the curation-file language are documented on the
 Limitations
 -----------
 
-- **No automatic cascade.** A single-window refit changes only that window. If the
-  edited window is a *contributor primary* whose frozen skirt reaches its neighbors,
-  those neighbors become stale; Stage 6 reports which neighbors reference the window but
-  does not re-fit them. A cascading re-fit is future work.
+- **The cascade is least-squares only.** Propagating an edit refits each dependent
+  against the corrected skirt with the production primitive, but does not re-run line
+  discovery or rescue on it: it re-determines a dependent's existing lines, and will not
+  *add* a line that the corrected background newly reveals. A dependent that a large edit
+  leaves visibly under- or over-fit (its reduced :math:`\chi^2` is the tell) is curated
+  directly, which is consistent with the model — it becomes a directly-edited window.
 - **Curation is recorded, not interpreted.** The decisions and their provenance
   persist, but adjudicating a genuine sub-resolution doublet against an over-split
   remains the analyst's call, supported by the observation-only doublet statistics and a

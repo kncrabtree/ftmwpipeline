@@ -34,28 +34,30 @@ Method
 ------
 
 Stage 5 fits each window of the :doc:`Stage 4 <stage4_windows>` plan independently,
-growing the window's model one line at a time and keeping a line only when a formal
-test demands it. A window is **seeded** with its strongest peak; the **add-one-peak
-loop** then proposes the next residual peak and accepts it only when its fit
+seeding the lines Stage 3 detected robustly and then growing the window's model one
+line at a time, keeping each added line only when a formal test demands it. A window is
+**seeded** with its Stage 3 primary detections; the **add-one-peak loop** then proposes
+the next residual peak from the weak-line candidates and accepts it only when its fit
 improvement clears a window-size-independent penalty bar, stopping when no candidate
 clears it. A **leakage-wing baseline** is added where the residual stays coherent, a
 **rescue** pass recovers weak lines the loop missed, and a **renegotiation** with
-Stage 4 thaws a frozen contributor or merges windows when a coherent edge remains.
-Windows are fit in the plan's dependency-ordered parallel batches, so a frozen skirt
-is always available before the window that needs it. Once every window is fit, a
-global **survival pass** prunes lines that fell below the detection floor and merges
-sub-resolution pairs the fit cannot justify. The model the fit uses, and the frame it
-runs in, come first; each mechanism is then taken in turn.
+Stage 4 thaws a frozen contributor or merges windows when a coherent edge remains. As
+each window converges it is cleaned in place — lines below the detection floor pruned,
+sub-resolution pairs the fit cannot justify merged — before the dependency-ordered
+parallel batches release the windows that depend on it, so every window reads clean,
+current neighbors. The model the fit uses, and the frame it runs in, come first; each
+mechanism is then taken in turn.
 
 .. figure:: figures/stage5_fit_flow.svg
    :width: 62%
    :align: center
 
-   The Stage 5 fit lifecycle. Each window (blue) is seeded, grown by the
-   add-one-peak loop (which iterates while a proposed line clears the penalty bar),
-   then refined by the baseline, rescue, and renegotiation steps; the windows run in
-   dependency-ordered batches. Once all windows are fit, a global survival pass
-   (gold) finalizes the merged line list.
+   The Stage 5 fit lifecycle. Each window (blue) is seeded with its Stage 3 primary
+   detections, grown by the add-one-peak loop (which iterates while a proposed line
+   clears the penalty bar), then refined by the baseline, rescue, and renegotiation
+   steps, and cleaned in place (gold) — pruned and merged — before the window is
+   released. The windows run in dependency-ordered batches, so each reads clean,
+   current neighbors.
 
 Line-shape model
 ----------------
@@ -148,14 +150,22 @@ magnitude residual looking plausible.
 Conservative add-one-peak loop
 ------------------------------
 
-Each window is fit by growing its model one line at a time:
+Each window is fit by seeding the lines Stage 3 detected robustly, then growing the
+model one line at a time over the remaining candidates:
 
-#. **Seed.** Start from the window's strongest promoted peak and fit a
-   single-line model (amplitude, frequency, phase, and — where eligible — the
-   shared decay time) by complex nonlinear least squares against the window's
-   data, weighted by the :doc:`Stage 2 <stage2_noise>` per-bin noise.
-#. **Propose.** Pick the strongest peak in the current residual that has not
-   yet been tried and trial-fit it jointly with the lines already accepted.
+#. **Seed the primaries.** Stage 3's primary (Blackman–Harris) detections are the
+   robust strong-line positions, so Stage 5 trusts them and seeds them all up front. In
+   a window with several, each is placed in turn against the running residual — so a
+   dense cluster converges on its lines instead of collapsing onto one basin — and the
+   seeded set is then fit jointly (amplitude, frequency, phase, and, where eligible, the
+   shared decay time) by complex nonlinear least squares against the window's data,
+   weighted by the :doc:`Stage 2 <stage2_noise>` per-bin noise. A window with one
+   primary is seeded with that line.
+#. **Propose.** From the *gap* candidates — the weak lines the Stage 3 matched-filter
+   pass nominated between the strong ones — pick the strongest in the current residual
+   that has not yet been tried and trial-fit it jointly with the lines already accepted.
+   The robust primaries are not re-adjudicated by the gate; only these weak candidates
+   are.
 #. **Accept or stop.** Keep the new line only when its chi-squared improvement
    clears a fixed penalized bar: the drop :math:`\Delta\chi^2` from adding the
    line must exceed :math:`2\lambda\,\Delta k`, where :math:`\Delta k` is the
@@ -230,9 +240,9 @@ signal-to-noise is too low to freeze confidently is flagged for the thaw handsha
 below. Because a frozen skirt can only be drawn once its source line has been fit,
 windows carry a dependency order: Stage 4 groups them into **parallel batches**
 (batch 0 has no dependencies, batch 1 depends only on batch 0, and so on), and
-Stage 5 fits each batch's windows concurrently, advancing batch by batch. The result
-is identical to a strictly sequential fit; parallelism only shortens the wall-clock
-time
+Stage 5 fits them concurrently across a worker pool, releasing each window as soon as
+the windows it depends on have converged. The result is identical to a strictly
+sequential fit; parallelism only shortens the wall-clock time
 (see :doc:`performance <performance>`).
 
 **Leakage-wing baseline.** Hundreds of distant lines each contribute a little
@@ -302,8 +312,10 @@ a drifting-tone lane handles a free-running digitizer clock.
 
 .. _stage5-survival:
 
-**Post-fit survival.** Two automatic cuts run on the merged line list once every
-window is fit. Both leave hand-added (``user``-origin) lines untouched.
+**Survival cleanup.** Two automatic cuts run on each window in place as it converges,
+before the dependency-ordered batches release the windows that depend on it — so a
+dependent always freezes a clean, current background. Both leave hand-added
+(``user``-origin) lines untouched.
 
 - **Signal-to-noise prune.** Every automatically fitted line whose post-fit SNR
   falls below the survival floor is dropped, windows left empty are removed, and
@@ -318,12 +330,16 @@ window is fit. Both leave hand-added (``user``-origin) lines untouched.
   is merged back into one when a member's amplitude is statistically unidentifiable —
   its amplitude variance-inflation factor
   :math:`\text{VIF} = (\sigma_A / A)\cdot\text{SNR}` reaches ``vif_collapse_threshold``
-  (``4``) within about one resolution element. A prior-free fit cannot justify a
+  (``25``) within about one resolution element. A prior-free fit cannot justify a
   sub-resolution *split*, and in the ambiguous band such splits are over-splits far
-  more often than real doublets, so the default is to merge and flag the window for
-  review, leaving the analyst to opt into a split with catalog support. A safety
-  **veto** keeps the split when collapsing the pair would leave the one-line model
-  fitting catastrophically badly (the data genuinely demand two components).
+  more often than real doublets, so the default merges the unambiguously degenerate
+  pairs and flags the rest (``overfit_vif``) for the analyst to opt into a split or
+  merge with catalog support. The bar is set high on purpose: a genuinely resolved
+  doublet keeps its amplitudes individually constrained, so its VIF stays moderate,
+  whereas merging a real doublet would destroy a line — an asymmetric, unrecoverable
+  error — so only unambiguous degeneracy collapses. A **footprint guard** stops the
+  merge from folding across a real gap into a neighbor, and the collapse iterates to a
+  fixed point.
 
 A separate, **observation-only** doublet-alternative pass refits each sub-resolution
 pair as a single line and records the comparison statistics (:math:`\Delta\chi^2`,
@@ -367,10 +383,10 @@ exactly. Re-running supersedes any review or report built on the old fit.
    :width: 95%
    :align: center
 
-   Stage 5 fit of the example experiment. Top: the fitted model (gold) overlaid
-   on the active spectrum (gray, magnitude), with the fit windows shaded. The
+   Stage 5 fit of the example experiment. Top: the fitted model (navy) overlaid
+   on the active spectrum (red, magnitude), with the fit windows shaded gold. The
    model tracks the data across the full dynamic range — the strong lines and the
-   weak forest alike. Bottom: the magnitude residual (red) against the per-bin
+   weak forest alike. Bottom: the magnitude residual (purple) against the per-bin
    noise (gray dashed); across the band the residual sits at the noise level, the
    signature of a complete fit that has neither left real lines unmodeled nor
    manufactured spurious ones.
@@ -411,16 +427,16 @@ window; ``--no-interactive`` with ``-o`` saves a static image.
    Per-window detail for a single window of the example experiment. The top strip
    locates the window in the full spectrum. The real, imaginary, and magnitude
    panels show the data (points) with the fitted model (lines, model values
-   marked at the data bins) and the residual above each. The window holds a
-   sub-resolution doublet — two lines about :math:`8` kHz apart, far inside one
-   resolution element — beside three well-separated lines. The residual histogram
-   tracks the Rayleigh noise expectation, and the table lists each fitted line's
-   frequency, amplitude, phase, and signal-to-noise with the fit uncertainty on
-   the trailing digits, plus a ``qual`` determinacy score (below): the three
-   resolved lines score ``4/4``, while the two doublet members score ``1/4`` —
-   flagging that, though they are the strongest lines in the window
-   (signal-to-noise above :math:`2{,}000`), the fit does not determine them
-   individually. Determinacy is not strength.
+   marked at the data bins) and the residual above each. The window holds two
+   doublets — a strong, well-separated pair near :math:`36350` MHz
+   (signal-to-noise :math:`\approx 300`) and a weak pair near :math:`36352` MHz
+   (signal-to-noise :math:`\approx 40`). The residual histogram tracks the
+   Rayleigh noise expectation, and the table lists each fitted line's frequency,
+   amplitude, phase, and signal-to-noise with the fit uncertainty on the trailing
+   digits, plus a ``qual`` determinacy score (below). All four lines score
+   ``4/4``: the fit determines each one, the weak doublet as firmly as the strong,
+   so the score reflects how well the data *pin* a line rather than how bright it
+   is. Determinacy is not strength.
 
 The ``qual`` column is a per-line **determinacy score** — how many of four
 independent checks the line clearly passes, written ``k/4``. The four checks are
@@ -496,7 +512,7 @@ through a preset, or via ``settings=StageFitSettings(...)`` on the Python interf
      - Detect and mask clock/LO spurs (integer-megahertz CW tones).
    * - ``peak_survival.snr_survival_factor``
      - ``1.1``
-     - Sets the post-fit survival floor as this multiple of the Stage 3
+     - Sets the survival-cleanup floor as this multiple of the Stage 3
        promotion cutoff. Set ``peak_survival.snr_survival_floor`` to pin an
        absolute floor instead.
 

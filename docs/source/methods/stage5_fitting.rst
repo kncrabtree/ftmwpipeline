@@ -224,30 +224,32 @@ when the initial fit pinned the decay at its bound — the signature of a broken
 absorbing unmodeled residual — in which case it falls back to the calibrated
 :doc:`Stage 2b <../stage2b_tau>` value.
 
-Two further pieces close the dense, high-dynamic-range case. A **leakage-wing
-baseline**, a low-order complex polynomial added only on an F-test or
+A **leakage-wing baseline**, a low-order complex polynomial added only on an F-test or
 edge-coherence trigger, carries the smooth pedestal that hundreds of distant lines'
-summed leakage leaves under a window and that the discrete contributor set cannot
-model. And close pairs the fit split are reconciled by a two-tier merge that is
-**conservative by default**: below half a linewidth a pair is merged, and above it
-a merge is gated by the same penalized criterion. The bias toward merging is
-deliberate — in the ambiguous sub-resolution band a least-squares split is far more
-often a canceling near-duplicate artifact (the pathology where two cosines collapse
-onto one position) than a real doublet, so the safe default collapses it and
-surfaces the window for review rather than claiming a split the data do not compel.
+summed leakage leaves under a window and that the discrete contributor set cannot model.
 
-This does **not** contradict the sub-linewidth recovery above. The blend study
-shows the *fitter* can resolve a pair to 0.3 of a linewidth when told there are two
-lines; the merge governs whether the pipeline *keeps* a sub-resolution split by
-default. The two are reconciled by a **blend escape**: a sub-linewidth pair
-survives the structural merge when collapsing it would cost overwhelming
-chi-squared *and* its members are physically constructive — distinct phases
-producing a composite a single line shape cannot match, the signature of a genuine
-blend rather than a numerical duplicate. A tight doublet the data truly demand is
-preserved; an over-split of noise is not. (A phase-coherence projection screen was
-built for the rescue and then removed: a counterfactual on every window of the
-reference experiment showed it was a no-op against the penalized gate and the
-:math:`\sigma_\text{eff}` weighting, which already do its job.)
+A sub-resolution pair the fit split into two lines is then adjudicated by the amplitude
+**variance-inflation factor** :math:`\text{VIF} = (\sigma_A/A)\cdot\text{SNR}`, the
+diagnostic that separates a resolved doublet from a least-squares over-split. When two
+components sit within a resolution element their amplitudes trade against one another: the
+covariance inflates and a member's VIF climbs. A genuinely resolved doublet keeps its
+amplitudes individually constrained — across the catalog-checked fixtures its VIF stays
+moderate (:math:`\lesssim 20`) — while an unidentifiable pair drives a member's VIF far
+higher, so a threshold (default :math:`25`) collapses only the unambiguously degenerate
+pairs to a single centroid line carrying a spread-inflated frequency uncertainty, and
+leaves the borderline ones split but flagged for review.
+
+The bias toward merging is deliberate and asymmetric. In the ambiguous sub-resolution
+band a prior-free least-squares split is far more often a canceling near-duplicate
+artifact than a real doublet, and the two errors are not equal: merging a genuinely
+resolved doublet destroys a real line and cannot be recovered downstream, whereas a
+flagged over-split is recovered by review. The threshold therefore sits well above the
+resolved-doublet VIF range so only unidentifiable structure collapses, guarded by a
+footprint test that forbids a merge from folding across a real gap into a neighbor, and
+iterated to a fixed point. This does **not** contradict the sub-linewidth recovery above:
+the *fitter* can resolve a pair to 0.3 of a linewidth when told there are two lines (the
+blend study), while this criterion governs whether the pipeline *keeps* a sub-resolution
+split with no prior — a curation decision it surfaces rather than forces.
 
 An SNR-aware health criterion
 -----------------------------

@@ -138,7 +138,7 @@ Building the windows
 The plan is built in a deterministic sequence — same spectrum in, same partition out,
 no randomness:
 
-#. **Leakage-touched map.** Roll :math:`S_\text{coh}` across the de-ramped spectrum
+#. **Leakage-touched map.** Roll :math:`S_\text{coh}` across the active spectrum
    and threshold it into the leakage-touched regions.
 #. **Per-peak proposals.** Each promoted peak proposes a *tight* window: its position
    plus a fixed **margin** of noise on each side. The extent is deliberately *not* the
@@ -179,30 +179,89 @@ statistics reason in bins.
 Fixed contributors and freeze-eligibility
 -----------------------------------------
 
-For each window, every strong line that belongs to a *different* window is tested as a
-candidate fixed contributor by predicting the mean amplitude of its leakage skirt on
-this window's grid from the analytic finite-acquisition envelope. When that predicted
-skirt rises above a small fraction of the window's noise
-(``magnitude_attachment_threshold``, default :math:`0.1\,\sigma`), the line is attached
-as a fixed contributor and a dependency edge is added, so this window must be fit after
-the line's own window. A fixed contributor is the strong line's frozen damped-cosine term
-evaluated in the dependent window's model, consistent with the Stage 5 least-squares
-contract; it is **not** subtracted from the data.
+A fixed contributor is one window's strong line carried into a *different* window as a
+frozen leakage term, and each one implies a dependency edge. The contributor set and the
+edges are derived together in three steps a reader can follow in order — **attach,
+orient, gate** — keyed off the analytic finite-acquisition envelope.
+
+**1. Attach by predicted skirt.** For every pair (strong promoted line :math:`s`,
+window :math:`w`) where :math:`s` lives in a window other than :math:`w`, predict the
+mean amplitude :math:`s` leaks onto :math:`w`'s grid. The source line's peak FT
+magnitude is :math:`I_s = \tfrac{1}{2} A_s\,\tau_\text{eff}`, and the finite-acquisition
+envelope falls off as the :math:`1/|\Delta f|` truncation tail,
+
+.. math::
+
+   \frac{|S_\text{env}(\Delta f)|}{|S(0)|}
+     = \frac{1 + e^{-T/\tau}}{2\pi\,|\Delta f|\,\tau_\text{eff}},
+   \qquad \Delta f = f_s - f_c(w),
+
+so the predicted skirt at the dependent is :math:`\hat s = I_s\,|S_\text{env}(\Delta
+f)|/|S(0)|` for :math:`f_c(w)` the window center. Attach :math:`s` to :math:`w` (a
+candidate contributor, a candidate edge :math:`w \leftarrow \text{window}(s)`) when
+
+.. math::
+
+   \hat s \;\ge\; \texttt{magnitude\_attachment\_threshold}\,\cdot\,\sigma_c(w),
+
+where :math:`\sigma_c(w)` is the window's per-quadrature noise (its mean
+:doc:`Stage 2 <stage2_noise>` RMS divided by :math:`\sqrt 2`) and the default threshold
+is :math:`0.1\,\sigma_c`. Attachment is **symmetric**: two strong neighbors each clear
+the bar into the other, so the candidate edges are an undirected graph.
+
+**2. Orient stronger → weaker.** A fit-ordering edge cannot be symmetric — a frozen
+skirt can only be drawn after its source line is fit — so each attached pair is given a
+direction. Rank windows by **strength**, the intensity :math:`I` of their strongest
+promoted line, and keep an edge only in the direction *weaker depends on stronger*:
+:math:`w` keeps the window :math:`p = \text{window}(s)` as a contributor when
+
+.. math::
+
+   (\text{strength}_p,\; p) \;>\; (\text{strength}_w,\; w)
+
+— the window id breaks an intensity tie, so the comparison is a strict total order. The
+reverse arc is discarded. Because a total order can hold no cycle, the surviving directed
+graph is acyclic by construction: no edge is ever dropped to break one.
+
+**3. Gate on materiality.** Keep an oriented edge edge-bearing only when carrying the
+skirt explicitly buys something the dependent's own leakage-wing baseline cannot.
+Synthesize the source window's strong lines as a coherent skirt :math:`b(u)` on the
+dependent's grid (each line at phase 0, the worst-case coherent sum), and measure it
+against the per-bin per-quadrature noise :math:`\sigma_c`:
+
+.. math::
+
+   S_\text{level} = \left\| \frac{b}{\sigma_c} \right\|_2,
+   \qquad
+   S_\text{resid} = \left\| \frac{b - \mathcal{P}_p[b]}{\sigma_c} \right\|_2,
+
+where :math:`\mathcal{P}_p[b]` is the least-squares fit of an order-:math:`p` complex
+polynomial to :math:`b` (default :math:`p = 4`, matching the leakage-wing baseline
+order). :math:`S_\text{level}` is the skirt's total significance — how much baseline
+budget it consumes — and :math:`S_\text{resid}` is the part an order-:math:`p` baseline
+*cannot* absorb, its steep, local curvature. The edge survives as a contributor when
+
+.. math::
+
+   S_\text{level} \ge \texttt{skirt\_level\_keep}\;(150)
+   \quad\text{or}\quad
+   S_\text{resid} \ge \texttt{curvature\_keep\_sigma}\;(5);
+
+otherwise the skirt is left to the dependent's baseline and **no edge is recorded**. A
+far, smooth giant skirt is absorbed by the baseline (high but smooth, so low
+:math:`S_\text{resid}`, and below the level bar); only a near or sharply curved skirt
+earns an explicit, ordered contributor. This keeps the dependency graph sparse on a
+dense spectrum without losing the leakage the baseline cannot represent.
+
+Each surviving contributor is the source line's frozen damped-cosine term, evaluated in
+the dependent window's model (**added to the model, never subtracted from the data**,
+consistent with the Stage 5 least-squares contract); the surviving oriented edges are the
+window plan's ``dependency_edges``.
 
 Freezing a line's parameters is only safe if those parameters are well determined. A
 fixed contributor whose own signal-to-noise falls below ``min_freeze_snr`` (default
 ``50``) is flagged **not** freeze-eligible — a candidate for Stage 5's thaw-and-re-fit
 handshake, where its parameters are reopened rather than trusted frozen.
-
-Some leakage subtraction would be lost to fit ordering alone. On a dense,
-high-dynamic-range spectrum the strong-line neighborhood is densely interdependent, and
-forcing every contributor into the fit-ordering graph can create cycles that have to be
-broken, dropping the edge, and with it the leakage subtraction. To keep the
-subtraction without the ordering, the few most dominant orphaned contributors are kept as
-**edge-free**: their frozen amplitude and phase are read directly from the spectrum at
-fit time rather than from a predecessor fit, so they carry no ordering edge and survive
-the cycle break. This recovery is deliberately capped at the most dominant neighbors so a
-dense forest stays targeted rather than globally over-subtracted.
 
 Pruning leakage artifacts
 -------------------------
@@ -218,22 +277,36 @@ window, and the residual after the strong term is what defines the genuine free 
 Fit order: dependencies and batches
 -----------------------------------
 
-The dependency edges form a directed graph that Stage 4 topologically orders into
-**parallel batches**: batch 0 is every window with no dependencies, batch 1 depends only
-on batch 0, and so on. Stage 5 fits a batch's windows in parallel and advances batch by
-batch, so a frozen contributor is always fit before the window that needs it. The graph is
-acyclic by construction (the edge-free mechanism above is what keeps it so); on the rare
-mutually-reaching pair that would form a cycle, the offending edge is dropped and recorded
-in the diagnostics.
+Each surviving edge is a pair :math:`(w, p)` — "window :math:`w` depends on window
+:math:`p`." Stage 4 turns the edge set into a fit order by a textbook topological
+levelling (Kahn's algorithm): a window's **in-degree** is its number of dependencies;
+every window with in-degree zero enters **batch 0**; placing a window then decrements its
+dependents' in-degrees, and a window's batch index is one past the maximum batch of the
+windows it depends on,
+
+.. math::
+
+   \text{batch}(w) = 1 + \max_{p \,:\, (w,p)\,\in\,\text{edges}} \text{batch}(p),
+
+with :math:`\text{batch}(w) = 0` when :math:`w` has no dependencies. So batch 0 holds
+every window that frozen-skirts nothing, batch 1 the windows that depend only on batch 0,
+and so on; the number of batches is the longest dependency chain. Because the edges were
+oriented by a window-strength total order the graph is acyclic, so the levelling always
+completes with every window placed — there is no cycle to break.
+
+Stage 5 walks this order: it fits windows concurrently across a worker pool and releases
+each as soon as the windows it depends on have converged, so a frozen contributor is
+always fit before the window that needs it. The batch index is the coarse picture; the
+scheduler is finer, gated per window rather than by a hard batch barrier.
 
 .. figure:: figures/stage4_windows.png
    :width: 95%
    :align: center
 
-   Stage 4 window plan on the example experiment. Top: the fit windows (gold spans) over
-   the active spectrum (gray, log magnitude), with each window's free peaks
-   (blue) and the strong lines attached to it as fixed contributors (open orange squares).
-   The windows hug their line content (dense regions consolidate into a few windows, the
+   Stage 4 window plan on a spectrum of vinyl cyanide. Top: the fit windows (gold spans)
+   over the active spectrum (gray, log magnitude), with each window's free peaks (blue)
+   and the strong lines attached to it as fixed contributors (open orange squares). The
+   windows hug their line content (dense regions consolidate into a few windows, the
    strongest lines anchor their own) and noise-only gaps open between them. Bottom: the
    rolling edge-coherence statistic :math:`S_\text{coh}` with the :math:`T_\text{edge}`
    threshold (red) that set the leakage-touched regions; the statistic towers over
@@ -305,17 +378,25 @@ described on :doc:`settings_and_presets`.
      - ``0.1``
      - Predicted mean skirt (in units of the window's per-quadrature noise) above which a
        strong line is attached as a fixed contributor.
+   * - ``skirt_level_keep``
+     - ``150``
+     - Materiality gate: an attached skirt is kept edge-bearing when its total
+       significance :math:`S_\text{level}` clears this; below it (and the curvature bar)
+       the skirt falls to the baseline. Raise to carry fewer contributors, lower for more.
+   * - ``curvature_keep_sigma``
+     - ``5``
+     - Companion gate: keeps a skirt whose order-:math:`p`-irreducible curvature
+       :math:`S_\text{resid}` clears this even when its level is below ``skirt_level_keep``.
    * - ``min_window_half_width_points``
      - ``32``
      - The window margin: the noise budget kept on each side of a window's outermost peak.
        Superseded form ``min_window_half_width_mhz`` applies when this is ``0``.
 
-Advanced knobs flow through a preset or a settings bundle rather than per-flag: the
-coherence band widths (``edge_m``, ``trim_m``), the per-window peak cap
-(``max_peaks_per_window``, ``0`` = width-bounded), and the assumed leakage decay constant
-(``leakage.tau_us``, ``None`` = the boxcar limit). These rarely need touching; the Stage 2b
-decay time is not auto-fed into ``tau_us``, so set it explicitly if a damped envelope is
-wanted.
+Advanced knobs flow through a preset or a settings bundle: the coherence band widths
+(``edge_m``, ``trim_m``), the per-window peak cap (``max_peaks_per_window``, ``0`` =
+width-bounded), and the assumed leakage decay constant (``leakage.tau_us``, ``None`` = the
+boxcar limit). These rarely need touching; the Stage 2b decay time is not auto-fed into
+``tau_us``, so set it explicitly if a damped envelope is wanted.
 
 Inspecting the plan
 -------------------

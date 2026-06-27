@@ -23,7 +23,9 @@ into the committed ``docs/source/figures`` directory:
   panel and the promotion cutoff.
 * ``stage4_windows.png`` -- the Stage 4 window plan over the active spectrum (the
   fit-window spans, free peaks, and fixed contributors) with the rolling
-  edge-coherence statistic and its T_edge threshold in a lower panel.
+  edge-coherence statistic and its T_edge threshold in a lower panel. Built from
+  the denser vinyl-cyanide (1512) fixture, not 2638: the sparse 2638 spectrum
+  carries no material cross-window skirt, so it has no contributors to show.
 * ``stage5_fitting.png`` -- the Stage 5 fit overview: the fitted model overlaid
   on the active spectrum with the windows shaded, and the magnitude residual
   against the canonical noise in a lower panel.
@@ -66,6 +68,11 @@ from typing import Any
 # Repo root: docs/source/figures/generate.py -> parents[3].
 _ROOT = Path(__file__).resolve().parents[3]
 _FIXTURE = _ROOT / "examples" / "blackchirp_data" / "2638"
+# The Stage 4 figure uses a denser fixture (vinyl cyanide) so the fixed
+# contributors and the dependency structure are visible: 2638 is sparse enough
+# that the materiality gate carries no cross-window skirt (zero contributors),
+# while 1512 keeps a representative set.
+_VCN_FIXTURE = _ROOT / "examples" / "blackchirp_data" / "1512"
 FIG_DIR = Path(__file__).resolve().parent
 
 TRIM = (26500.0, 40000.0)
@@ -92,6 +99,25 @@ def _build_pipeline(workdir: Path) -> str:
     # Stage 6 review: build the curation layer (attention routing) and the
     # consolidated final-products table the report figure reads.
     ftmw.review_run(path)
+    return path
+
+
+def _build_through_windows(workdir: Path, fixture: Path, stem: str) -> str:
+    """Import ``fixture`` and run Stages 0-4 (no fit); return the ``.ftmw`` path.
+
+    Used for the Stage 4 window-plan figure, which only needs the plan, the
+    active FT, and the noise -- not a completed fit.
+    """
+    import ftmwpipeline.api as ftmw
+
+    path = str(workdir / f"{stem}.ftmw")
+    ftmw.import_data(path, source=str(fixture))
+    ftmw.detect_start_time(path, stamp=True)
+    ftmw.compute_ft(path, trim=TRIM)
+    ftmw.estimate_noise(path)
+    ftmw.calibrate_tau(path)
+    ftmw.detect_peaks(path)
+    ftmw.assign_windows(path)
     return path
 
 
@@ -172,19 +198,23 @@ def make_figures() -> None:
         )
         fig3.savefig(FIG_DIR / "stage3_peaks.png", dpi=DPI, bbox_inches="tight")
 
-        fig4 = visualize_windows_impl(path, title="", interactive=False)
-        fig4.savefig(FIG_DIR / "stage4_windows.png", dpi=DPI, bbox_inches="tight")
+        # Stage 4 window plan on the denser vinyl-cyanide fixture (see
+        # ``_VCN_FIXTURE``), where the fixed contributors and dependency edges
+        # are visible. Built in its own temp dir through Stage 4 only.
+        with tempfile.TemporaryDirectory() as tmp4:
+            wpath = _build_through_windows(Path(tmp4), _VCN_FIXTURE, "exp_1512")
+            fig4 = visualize_windows_impl(wpath, title="", interactive=False)
+            fig4.savefig(FIG_DIR / "stage4_windows.png", dpi=DPI, bbox_inches="tight")
 
         fig5 = visualize_fit_impl(path, title="", interactive=False)
         fig5.savefig(FIG_DIR / "stage5_fitting.png", dpi=DPI, bbox_inches="tight")
 
-        # Per-window detail: the window covering ~36350 MHz -- a genuine
-        # sub-resolution doublet (two SNR>2000 lines ~8.5 kHz apart, far inside
-        # one resolution element) beside three resolved lines, so the qual
-        # determinacy score reads 1/4 on the unresolved pair and 4/4 on the
-        # resolved lines (determinacy is not strength). Select it by frequency so
-        # the example survives window renumbering; fall back to the highest-SNR
-        # multi-line window.
+        # Per-window detail: the window covering ~36350 MHz -- a strong, resolved
+        # doublet near 36350 (SNR ~300) beside a weak doublet near 36352 (SNR ~40),
+        # all determined, so the qual determinacy score reads 4/4 across the window
+        # (a weak line pinned as firmly as a strong one; determinacy is not
+        # strength). Select it by frequency so the example survives window
+        # renumbering; fall back to the highest-SNR multi-line window.
         fit5 = load_fit_impl(path)["fit"]
         detail_wid = None
         for wf in fit5.window_fits:
