@@ -12,12 +12,14 @@ HDF5 layout (under the caller-provided group, e.g. ``/stage3_peaks``)::
     frequency          [f8]  MHz, on the persisted user grid
     intensity          [f8]  magnitude, re-measured on the user spectrum
     index              [i8]  index into the user-grid spectrum
-    snr                [f8]  vs the canonical Stage 2 noise (user grid)
+    snr                [f8]  excess-over-leakage SNR, (|X|-pedestal)/sigma,
+                             vs the canonical Stage 2 noise (user grid)
     noise_std_local    [f8]
     classification     [str] "weak" | "medium" | "strong" | ""
     detection_pass     [str] "primary" | "gap" | ""
     internal_snr       [f8]  SNR on the internal zpf=1 detection grid
     internal_frequency [f8]  MHz on the internal detection grid
+    leakage_pedestal   [f8]  local coherent-leakage pedestal subtracted in snr
     .attrs:
         n_peaks, creation_time, stage_name, parameters (JSON),
         promotion_min_snr, internal_min_snr
@@ -59,6 +61,7 @@ _COLUMNS = (
 _OPTIONAL_COLUMNS = (
     "internal_snr",
     "internal_frequency",
+    "leakage_pedestal",
 )
 
 _VALID_CLASSES = {c.value for c in PeakClassification}
@@ -101,6 +104,7 @@ def save_peaks_to_hdf5(
     noise_std_local: np.ndarray = np.empty(n, dtype="f8")
     internal_snr: np.ndarray = np.empty(n, dtype="f8")
     internal_frequency: np.ndarray = np.empty(n, dtype="f8")
+    leakage_pedestal: np.ndarray = np.empty(n, dtype="f8")
     classification: List[str] = []
     detection_pass: List[str] = []
 
@@ -112,6 +116,7 @@ def save_peaks_to_hdf5(
         noise_std_local[i] = nan_if_none(p.noise_std_local)
         internal_snr[i] = _prop_float(p, "internal_snr")
         internal_frequency[i] = _prop_float(p, "internal_frequency")
+        leakage_pedestal[i] = _prop_float(p, "leakage_pedestal")
         cls: Any = p.classification
         if cls is None:
             classification.append("")
@@ -132,6 +137,7 @@ def save_peaks_to_hdf5(
         "noise_std_local": noise_std_local,
         "internal_snr": internal_snr,
         "internal_frequency": internal_frequency,
+        "leakage_pedestal": leakage_pedestal,
         "classification": np.array(classification, dtype=object),
         "detection_pass": np.array(detection_pass, dtype=object),
     }

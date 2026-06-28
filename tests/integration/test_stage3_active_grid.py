@@ -8,8 +8,10 @@ Behavior under test:
     (the dt_us*rfft of the [start_us, end_us] active region, trimmed to the
     analysis band): peak.frequency == active_ft.freq_array[peak.index] (exact),
     peak.intensity == active_ft.magnitude_spectrum[peak.index] (exact), and
-    peak.snr == intensity / active_rms[index]. There is no "user grid": the
-    front-zeroed full-record spectrum is never the scoring/report domain.
+    peak.snr == (intensity - leakage_pedestal) / active_rms[index] -- the excess
+    over the local coherent-leakage pedestal, not the raw pedestal-inclusive
+    magnitude (the Rician-limit fix). There is no "user grid": the front-zeroed
+    full-record spectrum is never the scoring/report domain.
   - Internal-grid values kept under peak.properties: internal_frequency,
     internal_snr (for diagnostics). internal_index / internal_intensity are
     intentionally NOT stored (different grid, not needed downstream).
@@ -91,8 +93,14 @@ class TestActiveGridSnap:
                 f"[{p.index}] = {expected_int}"
             )
 
-    def test_snr_matches_intensity_over_active_rms(self, detection_result):
-        """peak.snr ~ peak.intensity / active_rms[peak.index] (sample check)."""
+    def test_snr_is_excess_over_leakage_pedestal(self, detection_result):
+        """peak.snr ~ (intensity - leakage_pedestal) / active_rms (excess SNR).
+
+        Stage 3 scores the line's excess over the local coherent-leakage
+        pedestal, not the raw pedestal-inclusive magnitude (the Rician-limit
+        fix), so the invariant is ``(|X| - pedestal)/sigma`` with the pedestal
+        recorded under ``properties['leakage_pedestal']``.
+        """
         active_rms = detection_result["active_rms"]
         peaks = detection_result["peaks"]
 
@@ -103,10 +111,11 @@ class TestActiveGridSnap:
             p = peaks[i]
             sd = float(active_rms[p.index])
             if sd > 0:
-                expected_snr = p.intensity / sd
+                pedestal = float(p.properties["leakage_pedestal"])
+                expected_snr = max(p.intensity - pedestal, 0.0) / sd
                 assert np.isclose(
                     p.snr, expected_snr, rtol=1e-6
-                ), f"peaks[{i}].snr {p.snr} != intensity/rms {expected_snr}"
+                ), f"peaks[{i}].snr {p.snr} != excess/rms {expected_snr}"
 
 
 # ---------------------------------------------------------------------------

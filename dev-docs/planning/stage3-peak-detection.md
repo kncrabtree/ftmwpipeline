@@ -126,6 +126,55 @@ full leakage and needs the stronger floor (`gap_leakage_floor_k = 3`). Both `k`
 are per-instrument tunable. This continuous floor replaces the former hard
 gap-mask `S_coh` cutoff (the retired `GAP_MASK_EDGE_THRESHOLD`).
 
+### Excess-over-leakage SNR scoring (Rician limit)
+
+The leakage-aware floor patches the *detection threshold*; the **scoring** SNR
+must be leakage-aware too. The snap-back originally scored `|X| / σ` on the
+active FT, but `σ` is the pedestal-*subtracted* fluctuation noise (the Stage 2
+estimator high-passes the leakage pedestal and applies the Rician `C(R)`
+correction). On a leakage pedestal — the Rician limit, e.g. 655, where the
+whole-spectrum pedestal sits ≈ 5σ above the floor — `|X| / σ` floats *every*
+bin (genuine line or pure pedestal noise) above the promotion cutoff, so Stage 4
+floods with garbage candidates and slow fits. `_snap_to_active_grid` instead
+scores the **excess over the local coherent-leakage pedestal**,
+`(|X| − pedestal) / σ` (clamped at 0), where `pedestal` is the `k = 1` leakage
+amplitude `(S_coh / √M) · σ` (`_leakage_floor_amp`, the physical pedestal, not
+the k-scaled threshold margin). A sharp real line is diluted across the M-band
+sum, so its own height barely enters `pedestal` and its excess SNR ≈ its raw
+SNR; only broad coherent leakage is removed. `intensity` stays the raw
+magnitude (the amplitude seed); the subtracted `pedestal` is recorded under
+`properties['leakage_pedestal']` (serialized) and the raw ratio is recoverable
+as `intensity / noise_std_local`.
+
+Validation (Stage-3 promotion vs the VyCN main-isotopologue catalog, cutoff 3):
+on 655 promoted peaks drop 3003 → 1151 (−62 %) for a net cost of **1** catalog
+line (recall 26→25 / 82); of 1852 demoted peaks only 1 was near a catalog line.
+On 1512 promoted drop 492 → 181 (−63 %) with **0** catalog lines lost (recall
+38/82 unchanged) — all 311 demotions non-catalog. Clean fixtures see smaller
+demotions (2638 −21 %, 363 −15 %) tracking their modest pedestals
+(median pedestal/σ ≈ 0.23–0.37 vs 655's 5.5). The demotions are ~99.9 % junk.
+
+The `internal_min_snr` floor is re-applied on the **active** grid's excess SNR,
+not only on the internal detection grids. The Blackman-Harris primary and the
+matched-filter gap spectra flatten the leakage pedestal on their own grids, so a
+pedestal-noise bump can clear the internal floor there yet be pure pedestal on
+the authoritative active FT; re-flooring on the active excess SNR drops it before
+it is persisted/rendered. Detection still runs at `internal_min_snr` on the
+internal grids (a peak the internal grid under-reports but that clears the floor
+on the active grid is still recovered), and peaks in
+`[internal_min_snr, promotion_min_snr)` are still stored (promotion stays
+re-thresholdable). This leaves the **promoted** set byte-identical while shrinking
+the stored/rendered list: 655 3449 → 1375, 1512 3760 → 1166, 2638 4298 → 1199,
+363 4607 → 2529, 1019 435 → 139 (promoted unchanged at 1151 / 181 / 534 / 1598 /
+71). Since Stage 4 consumes only promoted peaks, the end-to-end wall-time and
+recall are unaffected by this declutter.
+
+End-to-end wall time (fresh Stages 0–6, dominated by Stage 5): **1512 451 s →
+54 s (−88 %)**, main-isotopologue recall 44/82 unchanged; **655 359 s → 127 s
+(−65 %)**, recall 53 → 52 / 82. The win is Stage 5 fitting ≈ half the windows
+(1512 238 → 110, 655 1050 → 563); final line lists also shrink (655 2003 → 1655,
+1512 192 → 158), a precision gain alongside the speedup.
+
 ## Data structures
 
 Reuse the existing `core.data_structures.Peak`

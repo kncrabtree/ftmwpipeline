@@ -40,7 +40,10 @@ Pipeline stages
   fitter uses.
 * **Peak detection (Stage 3).** A two-pass detector — a robust primary pass for
   strong-line positions plus a shape-aware matched-filter gap pass for weak-line
-  recovery — classifies peaks by SNR on the canonical spectrum.
+  recovery — classifies peaks by SNR on the canonical spectrum. SNR is the
+  magnitude's excess over the local coherent-leakage pedestal, so a dense leakage
+  pedestal cannot float pedestal noise above the promotion cutoff and flood the
+  later stages.
 * **Window assignment (Stage 4).** Promoted peaks are grouped into disjoint fit
   windows with frozen-leakage contributors and a fit dependency order, bounded
   by a phase-coherent edge test.

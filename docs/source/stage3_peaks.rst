@@ -30,12 +30,13 @@ detects aggressively where lines crowd and leaves the final say to the fit and t
 the analyst.
 
 A completed run persists an ordered peak list. Each peak carries its **frequency**
-and **magnitude** on the active spectrum, its **signal-to-noise ratio**
-against the Stage 2 noise, an **SNR classification** (``weak``, ``medium``, or
+and **magnitude** on the active spectrum, its **signal-to-noise ratio** — the
+excess of the magnitude over the local coherent-leakage pedestal, measured
+against the Stage 2 noise — an **SNR classification** (``weak``, ``medium``, or
 ``strong``), the **pass** that found it (``primary`` or ``gap``), a **promoted**
 flag marking whether it clears the cutoff that advances peaks to Stage 4, and its
-detection **provenance** (frequency and SNR on the internal detection grid) for
-curation. Every detected peak is stored, not only the promoted ones, so the
+detection **provenance** (frequency and SNR on the internal detection grid, and
+the subtracted leakage pedestal) for curation. Every detected peak is stored, not only the promoted ones, so the
 promotion threshold can be re-chosen without re-running detection, and the list is
 a flat enough structure to be hand-edited between Stage 3 and Stage 4 (see
 :ref:`stage3-handedit`).
@@ -154,6 +155,18 @@ that all peaks share one signal-to-noise scale and the overlay matches the spect
 the fit sees. The apodized primary and matched-filter spectra are detection
 scaffolding; no apodized amplitude is ever reported.
 
+Signal-to-noise is the magnitude's **excess over the local coherent-leakage
+pedestal**, :math:`(|X| - \text{pedestal})/\sigma`, not the raw :math:`|X|/\sigma`.
+The Stage 2 :math:`\sigma` is the pedestal-subtracted fluctuation noise, so on a
+strong leakage pedestal — the limit where a dense forest of lines fills every
+quiet bin, several :math:`\sigma` above the floor — the raw ratio would float
+*every* bin, genuine line or pure pedestal noise alike, above the cutoff and flood
+the later stages. The pedestal is the same per-bin coherent-leakage amplitude that
+raises the detection threshold; subtracting it scores the honest signal. A real
+line is sharp, so its own height is diluted across the coherence band and barely
+enters the pedestal, leaving its SNR essentially unchanged, while broad leakage is
+removed. The raw magnitude is still reported as the amplitude.
+
 Re-measuring on the active grid also corrects two position artifacts. The
 second-derivative locator lands a few points off the true apex for ultra-narrow
 lines, so each detection is **apex-snapped** to the nearest local maximum on the
@@ -194,6 +207,12 @@ without flooding the later stages:
   of the promotion cutoff. Detecting at the promotion cutoff and then re-measuring
   on the active grid would lose lines that genuinely clear the cutoff there;
   detecting lower recovers them, and below the internal floor there is only noise.
+  The floor is re-applied to the active-grid excess SNR after re-measurement: the
+  apodized detection spectra flatten the leakage pedestal on their own grids, so a
+  pedestal-noise bump can clear the floor there yet be pure pedestal on the active
+  FT, and the second pass drops it before it is stored. Peaks between the internal
+  floor and the promotion cutoff are kept (so the cutoff stays re-thresholdable);
+  only sub-floor pedestal noise is discarded.
 
 Each detected peak is persisted with a ``promoted`` flag derived from the stored
 cutoff, so re-thresholding is free and an edited list re-derives the flag cleanly.

@@ -19,11 +19,14 @@ primary apodization is independent of the user's Stage 1 settings and affects
 only *which positions* are found, never any reported amplitude or SNR. Every
 detected peak is then snapped
 back onto the user's persisted spectrum by physical frequency: its amplitude
-is re-measured on the user-settings ``ComplexFT`` and its SNR against the
-canonical Stage 2 noise, so the stored/returned result is expressed entirely
-on the user grid. The internal-grid values are kept under ``properties`` for
-diagnostics. Wrapped identically by the CLI, Pipeline class, and functional
-API.
+is re-measured on the user-settings ``ComplexFT`` and its SNR scored as the
+excess over the local coherent-leakage pedestal,
+``(|X| - pedestal) / sigma``, against the canonical Stage 2 noise -- so a
+leakage pedestal (the Rician limit) cannot float pedestal noise above the
+promotion cutoff. The stored/returned result is expressed entirely on the user
+grid. The internal-grid values and the subtracted pedestal are kept under
+``properties`` for diagnostics. Wrapped identically by the CLI, Pipeline class,
+and functional API.
 """
 
 import json
@@ -355,6 +358,8 @@ def _snap_to_active_grid(
     internal_peaks: List[Peak],
     snap_ft: ComplexFT,
     snap_rms: np.ndarray,
+    snap_pedestal: np.ndarray,
+    internal_min_snr: float,
     weak_medium_snr: float,
     medium_strong_snr: float,
     promotion_min_snr: float,
@@ -367,9 +372,36 @@ def _snap_to_active_grid(
     active grid (keeps the strongest). Internal-grid SNR/frequency are
     preserved under ``properties`` for curation/diagnosis, and a ``promoted``
     flag marks whether the active-grid SNR meets the Stage 4 promotion cutoff.
-    All detections are kept (promotion is a downstream gate, not a filter
-    here). The active FT -- not the front-zeroed full-record spectrum -- is the
-    single grid on which detection results are scored and reported.
+    The active FT -- not the front-zeroed full-record spectrum -- is the single
+    grid on which detection results are scored and reported.
+
+    SNR is the line's **excess over the local coherent-leakage pedestal**,
+    ``(|X| - pedestal) / sigma`` (clamped at 0), where ``pedestal`` is the
+    per-bin coherent-leakage amplitude ``(S_coh / sqrt(M)) * sigma`` already
+    used to build the detection floor (``snap_pedestal``). The raw
+    pedestal-inclusive ratio ``|X| / sigma`` is *not* an SNR on a leakage
+    pedestal: in the Rician limit (e.g. 655) the whole-spectrum pedestal sits
+    ~5 sigma above the fluctuation floor, so ``|X| / sigma`` floats every bin --
+    genuine line or pure noise alike -- above the promotion cutoff. Subtracting
+    the pedestal makes the score the honest signal and keeps pedestal noise out
+    of Stage 4. A sharp real line is diluted across the M-band sum, so its own
+    height barely enters ``pedestal`` and its excess SNR is essentially its raw
+    SNR; only broad coherent leakage is removed. ``intensity`` stays the raw
+    magnitude (the amplitude seed); ``leakage_pedestal`` is recorded under
+    ``properties`` and the raw ratio is recoverable as
+    ``intensity / noise_std_local``.
+
+    The ``internal_min_snr`` floor is re-applied here on the **active** grid's
+    excess SNR, not just on the internal detection grids. The two internal
+    spectra (Blackman-Harris primary, matched-filter gap) flatten the leakage
+    pedestal on their own grids, so a pedestal-noise bump can clear the internal
+    floor there yet be pure pedestal on the authoritative active FT. Re-floor on
+    the active excess SNR drops that noise before it is persisted/rendered, while
+    peaks in the ``[internal_min_snr, promotion_min_snr)`` band are still kept
+    (so the promotion cutoff stays re-thresholdable without re-running
+    detection). Detection itself still runs at ``internal_min_snr`` on the
+    internal grids, so a peak the internal grid under-reports but that clears the
+    floor on the active grid is still recovered.
     """
     snap_freq = snap_ft.freq_array
     snap_mag = snap_ft.magnitude_spectrum
@@ -381,7 +413,11 @@ def _snap_to_active_grid(
         ui = _nearest_index(sorted_pairs, p.frequency)
         intensity = float(snap_mag[ui])
         sd = float(snap_rms[ui])
-        snr = intensity / sd if sd > 0 else 0.0
+        pedestal = float(snap_pedestal[ui])
+        excess = max(intensity - pedestal, 0.0)
+        snr = excess / sd if sd > 0 else 0.0
+        if snr < internal_min_snr:
+            continue
         snapped = Peak(
             frequency=float(snap_freq[ui]),
             intensity=intensity,
@@ -392,6 +428,7 @@ def _snap_to_active_grid(
             detection_pass=p.properties.get("detection_pass"),
             internal_frequency=p.frequency,
             internal_snr=p.snr,
+            leakage_pedestal=pedestal,
             promoted=snr >= promotion_min_snr,
         )
         prev = by_idx.get(ui)
@@ -555,6 +592,13 @@ def detect_peaks_impl(
     base_pp = user_ft.metadata["processing_params"]
     trim_range = stage1.get("trim_range")
     snap_ft, snap_rms = build_active_grid_with_noise(file_path, trim_range)
+    # Per-bin coherent-leakage pedestal on the scoring grid: the k=1 leakage
+    # amplitude ``(S_coh / sqrt(M)) * sigma`` (the physical pedestal, not the
+    # k-scaled detection-floor margin). Subtracted from each peak's magnitude
+    # so the promotion gate scores excess-over-leakage rather than the
+    # pedestal-inclusive magnitude -- the Rician-limit fix (see
+    # ``_snap_to_active_grid``).
+    snap_pedestal = _leakage_floor_amp(snap_ft.complex_spectrum, snap_rms, 1.0)
 
     fid = load_fid_from_pipeline_impl(file_path)
     acquisition_us = _active_acquisition_us(
@@ -711,6 +755,8 @@ def detect_peaks_impl(
         internal_peaks,
         snap_ft,
         snap_rms,
+        snap_pedestal,
+        internal_min_snr,
         weak_medium_v,
         medium_strong_v,
         promotion_v,
