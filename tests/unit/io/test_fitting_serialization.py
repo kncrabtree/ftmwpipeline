@@ -77,6 +77,19 @@ def _sample_audit() -> list[AuditStep]:
             decision="accept",
             reason="+1 line(s)",
         ),
+        AuditStep(
+            n_peaks_before=2,
+            candidate_offset_mhz=0.5,
+            chi2_before=180.0,
+            chi2_after=float("nan"),
+            f_statistic=float("nan"),
+            p_value=float("nan"),
+            aic_before=1880.0,
+            aic_after=float("nan"),
+            separation_ok=True,
+            decision="spur-drop",
+            reason="converged peak on a gated spur, no primary backing",
+        ),
     ]
 
 

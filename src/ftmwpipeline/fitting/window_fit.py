@@ -828,7 +828,9 @@ def in_window_skirt_budget(
         frac = np.clip(frac, 0.0, 1.0)
         kc = float(kappa_core)
         kappa_u = kc + (float(kappa_skirt) - kc) * frac
-        return cast("np.ndarray", full * np.sqrt(np.clip(kappa_u**2 - kc**2, 0.0, None)))
+        return cast(
+            "np.ndarray", full * np.sqrt(np.clip(kappa_u**2 - kc**2, 0.0, None))
+        )
     # mode == "a": additive skirt term, kappa_skirt * |bright skirt|.
     return cast("np.ndarray", float(kappa_skirt) * skirt_mag)
 
@@ -1561,9 +1563,11 @@ class AddStep:
         Whether the candidate cleared the peak-separation constraint.
     decision : str
         ``"seed"``, ``"seed-blend"``, ``"accept"``, ``"promote"``,
-        ``"tentative"``, ``"reject"`` or ``"knockout-null"`` (the lone
+        ``"tentative"``, ``"reject"``, ``"knockout-null"`` (the lone
         seed removed at exit by its own K=1-vs-null knockout verdict, see
-        :data:`validation.DEFAULT_ENFORCE_SEED_KNOCKOUT`).
+        :data:`validation.DEFAULT_ENFORCE_SEED_KNOCKOUT`), or ``"spur-drop"``
+        (a converged peak on a gated spur with no primary-pass backing,
+        removed at exit).
     reason : str
         Free-text note on the decision.
     n_eff : float
@@ -2500,9 +2504,7 @@ def _frozen_incremental_seed(
             spur_mask=spur_mask,
             **frozen_kwargs,
         )
-        placed.append(
-            fit_new.peaks[0] if (fit_new.success and fit_new.peaks) else seed
-        )
+        placed.append(fit_new.peaks[0] if (fit_new.success and fit_new.peaks) else seed)
     return placed
 
 
@@ -2566,7 +2568,9 @@ def _nominate_primary_splits(
     if gate_budget_extra is not None:
         extra2 = extra2 + np.asarray(gate_budget_extra, dtype=float) ** 2
     sigma_eff = np.sqrt(sigma**2 + extra2)
-    ratio = np.where((sigma_eff > 0.0) & keep, resid / np.maximum(sigma_eff, 1e-30), 0.0)
+    ratio = np.where(
+        (sigma_eff > 0.0) & keep, resid / np.maximum(sigma_eff, 1e-30), 0.0
+    )
     core = 0.3 * fwhm_mhz
     search = max(float(straddle_factor), 1.0) * fwhm_mhz
     existing = np.asarray([pk.offset_mhz for pk in fit.peaks], dtype=float)
@@ -3460,6 +3464,59 @@ def conservative_fit(
             consecutive_rejects += 1
             if consecutive_rejects > patience:
                 break
+
+    # Spur-position guard. The spur's own seed is filtered before the add-loop,
+    # but the blend-aware seeder / straddle re-fit / residual rescue can still
+    # place a converged peak *beside* a gated spur from its residual skirt,
+    # leaving a spurious near-spur line (the succinimide UXR 16000 comb, the
+    # 655 clock combs). Drop a converged peak that lands within a gated spur's
+    # mask unless a distinct primary-pass detection backs it -- a real line that
+    # merely sits near a clock frequency keeps its primary seed and survives.
+    if spur_mask is not None and spur_mask.offsets_mhz and current.n_peaks > 0:
+        back_tol = feature_fwhm(tau0_us, acquisition_us, shape=shape_resolved)
+        kept_peaks: list[ModelPeak] = []
+        spur_dropped: list[float] = []
+        for pk in current.peaks:
+            off = float(pk.offset_mhz)
+            on_spur = bool(spur_mask.bin_mask(np.asarray([off], dtype=float))[0])
+            backed = any(abs(off - po) <= back_tol for po in primary_offsets)
+            if on_spur and not backed:
+                spur_dropped.append(off)
+            else:
+                kept_peaks.append(pk)
+        if spur_dropped:
+            for off in spur_dropped:
+                audit.append(
+                    AddStep(
+                        n_peaks_before=current.n_peaks,
+                        candidate_offset_mhz=off,
+                        chi2_before=current.chi_squared,
+                        chi2_after=float("nan"),
+                        f_statistic=float("nan"),
+                        p_value=float("nan"),
+                        aic_before=current.aic,
+                        aic_after=float("nan"),
+                        separation_ok=True,
+                        decision="spur-drop",
+                        reason="converged peak on a gated spur, no primary backing",
+                        n_eff=float("nan"),
+                        aicc_delta=float("nan"),
+                    )
+                )
+            current = (
+                fit_window(
+                    u,
+                    z,
+                    sigma,
+                    kept_peaks,
+                    tau0_us,
+                    acquisition_us,
+                    spur_mask=spur_mask,
+                    **fit_kwargs_inner,
+                )
+                if kept_peaks
+                else null
+            )
 
     knockouts = knockout_test(
         u,

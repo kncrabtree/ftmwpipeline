@@ -162,6 +162,7 @@ _VALID_AUDIT_DECISIONS = {
     "tentative",
     "reject",
     "knockout-null",
+    "spur-drop",
 }
 _VALID_EDGE_SIDES = {"low", "high"}
 
