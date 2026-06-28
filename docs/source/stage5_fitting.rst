@@ -329,9 +329,9 @@ a drifting-tone lane handles a free-running digitizer clock.
 
 .. _stage5-survival:
 
-**Survival cleanup.** Two automatic cuts run on each window in place as it converges,
+**Survival cleanup.** Four automatic cuts run on each window in place as it converges,
 before the dependency-ordered batches release the windows that depend on it — so a
-dependent always freezes a clean, current background. Both leave hand-added
+dependent always freezes a clean, current background. All leave hand-added
 (``user``-origin) lines untouched.
 
 - **Signal-to-noise prune.** Every automatically fitted line whose post-fit SNR
@@ -361,6 +361,30 @@ dependent always freezes a clean, current background. Both leave hand-added
   marginally-resolvable separation, so only unambiguous degeneracy collapses. A
   **footprint guard** stops the merge from folding across a real gap into a neighbor,
   and the collapse iterates to a fixed point.
+- **Bright-neighbor sidelobe prune.** A faint line that sits inside a much brighter
+  line's lineshape skirt is that bright line's lineshape artifact, not a molecular
+  feature, and is removed. The reach is the brightness-scaled finite-:math:`T` sinc
+  shadow — a separation within :math:`\min(\text{cap},\,\kappa\cdot\text{SNR}_\text{bright}/\text{SNR}_\text{self})`
+  resolution elements (:math:`\kappa = 0.2`), capped at
+  ``sidelobe_prune_max_separation_res`` (``2.5`` res) so the prune stays in the
+  near-field skirt, where the apodization pass cannot otherwise vouch for the line.
+  Removing the artifact **raises** :math:`\chi^2_r` — it was absorbing the bright
+  line's imperfect lineshape — which is accepted on purpose: the deliverable is a
+  reliable line list, not a low :math:`\chi^2_r`, so the residual lineshape error is
+  reported honestly through :math:`\varepsilon` rather than laundered into a spurious
+  line. A comparable-brightness pair has a sub-:math:`\kappa` reach and is left to the
+  degenerate-pair merge above, so the two never act on the same pair. Set
+  ``sidelobe_prune_max_separation_res`` to ``0`` to disable.
+- **Degenerate merge trial.** Between the deep-sub-resolution merge band and one
+  resolution element — where a high amplitude uncertainty is genuinely ambiguous — a
+  pair whose *both* members are clearly degenerate (fractional amplitude uncertainty
+  ≥ ``degenerate_trial_frac``, ``0.5``; a sidelobe never qualifies) is *trial*-merged
+  and kept **only if** :math:`\chi^2_r` does not rise by more than
+  ``degenerate_trial_chi2r_rel_tol`` (``0.5``, relative). Whether the merge holds is
+  the one signal that separates a genuine over-split (it holds) from a real but
+  poorly-conditioned doublet (it blows up), which no static quantity distinguishes in
+  this marginally-resolved band; kept merges flag ``auto_merged_review``. Set
+  ``degenerate_trial_frac`` to ``0`` to disable.
 
 A separate, **observation-only** doublet-alternative pass refits each sub-resolution
 pair as a single line and records the comparison statistics (:math:`\Delta\chi^2`,

@@ -213,5 +213,8 @@ stage5:
     collapse_frac_unc_threshold: 0.15
     collapse_frac_unc_max_separation_res: 0.5
     collapse_max_separation_res: 1.0
+    sidelobe_prune_max_separation_res: 2.5
+    degenerate_trial_frac: 0.5
+    degenerate_trial_chi2r_rel_tol: 0.5
     drop_empty_windows: true
     drop_spur_only_windows: true

@@ -271,3 +271,49 @@ the refactor changes structure, not output.
   sub-½-resolution degenerate collapse, so the small recall dip buys a large
   precision gain. The scratch audit + isolation harnesses live under
   `scratch/stage6-survival/` (gitignored).
+
+## Bright-neighbor sidelobe prune + degenerate merge trial (added)
+
+Two further survival cuts extend the pass past the deep-sub-resolution band,
+prompted by a fixture review of 360 (MTBE): the fit was carrying faint peaks
+whose amplitude uncertainty equalled or exceeded their amplitude. Two distinct
+populations turned out to be involved, needing opposite treatment.
+
+**Type B — bright-neighbor lineshape sidelobe (`_sidelobe_prune_outcome`).** A
+faint fitted peak inside a *brighter* line's lineshape skirt is that bright
+line's artifact, not a molecular line. The predicate
+(`_is_brightness_sidelobe`) reuses the F-3 brightness-scaled reach
+`sep_res <= SHAPE_ERROR_REACH_KAPPA * snr_bright / snr_self`, capped at
+`sidelobe_prune_max_separation_res` (2.5 res) because the unbounded reach runs to
+tens of resolution elements for a very bright / very faint pair, where a feature
+is resolved and the Blackman-Harris apodization pass — not this geometric
+predicate — is the realness arbiter. The artifact is **removed regardless of
+chi2r**: removing it raises chi2r (it was absorbing the bright line's
+non-Lorentzian lineshape error), which is the honest signal — the deliverable is
+a reliable line list, not a low chi2r, and the residual error surfaces through
+`epsilon` / `worst_eps`. Comparable-brightness pairs get a sub-kappa reach and
+are left to the VIF collapse, so the passes do not overlap. F-2/F-3's install
+pre-filter already prevents the rescue from re-adding a pruned sidelobe.
+
+**Type A — degenerate merge trial (`_degenerate_merge_trial_outcome`).** In the
+band `(collapse_frac_unc_max_separation_res, collapse_max_separation_res]` a pair
+whose *both* members are degenerate (fractional amplitude uncertainty >=
+`degenerate_trial_frac`, 0.5 — which a sidelobe never satisfies) is trial-merged
+and the merge **kept only if** chi2r rises by <= `degenerate_trial_chi2r_rel_tol`
+(0.5, relative). This is the one discriminant that works in the marginally-
+resolved band: a genuine over-split's merge holds chi2r (360 w13 1.57 -> 1.92),
+a real but poorly-conditioned doublet's merge blows it up (363 w61 2.53 -> 7.39).
+Accepted merges record the standard collapse provenance, so error inflation and
+the `auto_merged_review` flag apply.
+
+**Validation.** Operating point swept over cap in {2.0, 2.5, 3.0} and trial tol
+in {0.25, 0.5, 0.75} on 360/363/1512: stable, no cliffs (defaults sit in the
+interior). Full 7-fixture re-baseline: chi2r median unchanged on all 7; chi2r p95
+rises only where sidelobes were masking lineshape error (the honest exposure).
+Recall against the authoritative catalogs (MTBE 7 K si/sims for 360/363/1231 via
+the bcfitting `.xo` reader; the in-repo vinyl-cyanide truth for 1512) is
+**unchanged (Δ = 0)** on 363/1231/1512; 360 loses 3 (the w13 pair, in a region
+where the catalog is denser than the resolution, flagged by the user as an
+over-split). 363 w61 and the 1512 hyperfine doublets are correctly kept. Harnesses
+under `scratch/attention-test/` (gitignored): `sweep.py`, `baseline_summary.py`,
+`recall_gate.py`, `mtbe_catalog.py`.

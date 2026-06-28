@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import pytest
 
-from ftmwpipeline._internal.stage5_impl import _collapse_rank, _is_survival_dust_view
+from ftmwpipeline._internal.stage5_impl import (
+    _collapse_rank,
+    _is_brightness_sidelobe,
+    _is_survival_dust_view,
+)
 from ftmwpipeline.core.data_structures import (
     FittedPeak,
     FittingResult,
@@ -74,7 +78,9 @@ class TestSurvivalDustView:
 
     def test_user_origin_immune(self):
         # A user-origin line below the floor is never dust.
-        assert _is_survival_dust_view(_view(snr=1.0, origin="user"), self.FLOOR) is False
+        assert (
+            _is_survival_dust_view(_view(snr=1.0, origin="user"), self.FLOOR) is False
+        )
 
     def test_none_snr_not_dust(self):
         assert _is_survival_dust_view(_view(snr=None), self.FLOOR) is False
@@ -302,6 +308,9 @@ class TestSettingsWiring:
         assert ps.collapse_frac_unc_threshold == pytest.approx(0.15)
         assert ps.collapse_frac_unc_max_separation_res == pytest.approx(0.5)
         assert ps.collapse_max_separation_res == pytest.approx(1.0)
+        assert ps.sidelobe_prune_max_separation_res == pytest.approx(2.5)
+        assert ps.degenerate_trial_frac == pytest.approx(0.5)
+        assert ps.degenerate_trial_chi2r_rel_tol == pytest.approx(0.5)
         assert ps.drop_empty_windows is True
         assert ps.drop_spur_only_windows is True
 
@@ -400,3 +409,41 @@ class TestSettingsRoundTrip:
         # default that derives it from the Stage 3 promotion cutoff.
         assert loaded.peak_survival.snr_survival_floor is None
         assert loaded.peak_survival.snr_survival_factor == pytest.approx(1.1)
+
+
+# ---------------------------------------------------------------------------
+# Bright-neighbor sidelobe predicate (Type B), the pure decision function.
+# The prune orchestration (faintest-first removal, refit-to-fixpoint) and the
+# Type A degenerate merge-trial are covered by the Stage-5 integration rebuilds.
+# ---------------------------------------------------------------------------
+
+
+def test_brightness_sidelobe_predicate() -> None:
+    res = 0.1  # MHz per resolution element
+    cap = 2.5
+
+    def sl(victim_snr, neighbor_snr, sep_res, **kw):
+        return _is_brightness_sidelobe(
+            _view(snr=victim_snr, freq=1000.0 + sep_res * res),
+            _view(snr=neighbor_snr, freq=1000.0),
+            max_sep_res=cap,
+            res_element_mhz=res,
+        )
+
+    # A faint peak inside a much brighter neighbor's reach (0.2*100/10 = 2.0 res).
+    assert sl(10.0, 100.0, 0.5) is True
+    assert sl(10.0, 100.0, 1.9) is True
+    # Past the brightness-scaled reach (2.0 res) -> not a sidelobe.
+    assert sl(10.0, 100.0, 2.5) is False
+    # Reach is capped: a very bright neighbor would reach far, but the cap holds.
+    assert sl(5.0, 1000.0, 3.0) is False  # uncapped reach 40 res, capped to 2.5
+    assert sl(5.0, 1000.0, 2.0) is True
+    # Comparable brightness -> sub-kappa reach (0.2*100/80 = 0.25 res): a real
+    # doublet (e.g. 360 w36 A/E at ~0.7 res) is NOT flagged.
+    assert sl(80.0, 100.0, 0.6) is False
+    # The neighbor must be brighter than the victim.
+    assert sl(100.0, 10.0, 0.3) is False
+    # Missing / non-finite SNR is never a sidelobe.
+    assert sl(None, 100.0, 0.3) is False
+    assert sl(10.0, None, 0.3) is False
+    assert sl(float("nan"), 100.0, 0.3) is False

@@ -99,6 +99,18 @@ flag → merge / the ε-gate; `candidate_bearing` on the now-honest signal; demo
 report work (compaction, above-the-fold reorg, post-curation diff report), scoped
 after the metrics land.
 
+A fixture review then drove two further **Stage 5 survival cuts** (the F-3 reach
+predicate applied to *fitted* peaks, not just candidates): a **bright-neighbor
+lineshape-sidelobe prune** that removes a bright line's lineshape artifacts from
+the line list even at a higher χ²ᵣ (the residual lineshape error is reported
+honestly through ε, never absorbed by a spurious line), and a **χ²ᵣ-gated
+degenerate merge trial** for the marginally-resolved band the unconditional
+collapse leaves. New knobs `peak_survival.sidelobe_prune_max_separation_res`
+(2.5), `degenerate_trial_frac` (0.5), `degenerate_trial_chi2r_rel_tol` (0.5).
+Operating point swept for stability; 7-fixture re-baseline keeps χ²ᵣ median flat
+and loses zero catalog lines on 363/1231/1512 (360 −3 on a sub-resolution-dense
+pair). See [`planning/stage6-peak-survival.md`](planning/stage6-peak-survival.md).
+
 The remaining **Longer horizon** item is the frequency-calibration / σ_f
 research write-up, intentionally **gated on the pending third vinyl-cyanide
 acquisition** (it turns the run-to-run `δ_down` comparison from one pair into a

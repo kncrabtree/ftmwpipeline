@@ -1475,6 +1475,7 @@ class NodeCleanup:
     outcome: Optional[WindowOutcome]
     pruned: List[dict[str, Any]] = field(default_factory=list)
     collapses: List[dict[str, Any]] = field(default_factory=list)
+    sidelobes: List[dict[str, Any]] = field(default_factory=list)
 
     @property
     def dropped(self) -> bool:
@@ -2884,6 +2885,7 @@ def _process_one_window(
             "window_id": wid,
             "pruned": cleanup.pruned,
             "collapses": cleanup.collapses,
+            "sidelobes": cleanup.sidelobes,
             "dropped": cleanup.dropped,
         }
         if cleanup.outcome is None:

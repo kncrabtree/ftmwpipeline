@@ -619,10 +619,11 @@ class DoubletAlternativeSubSettings:
 
 @dataclass
 class PeakSurvivalSubSettings:
-    """Post-fit peak-survival pass: SNR-floor prune + degenerate-overfit collapse.
+    """Post-fit peak-survival pass: SNR-floor prune, degenerate-overfit collapse,
+    bright-neighbor sidelobe prune, and the degenerate merge trial.
 
     After Stage 5 produces the fitted :class:`~ftmwpipeline.core.data_structures.SpectrumFit`,
-    two automatic cuts run (``origin == "user"`` peaks are immune to both):
+    four automatic cuts run (``origin == "user"`` peaks are immune to all):
 
     1. **SNR-floor prune.** Drop every automatic-origin fitted peak whose
        post-fit ``snr`` falls below the survival floor, then drop windows left
@@ -656,12 +657,41 @@ class PeakSurvivalSubSettings:
        relax that can re-split a dense window. A chained fold is bounded so it
        cannot cross a resolvable gap into a real neighbor. Merged windows are
        flagged ``auto_merged_review`` for overrule.
+    3. **Bright-neighbor sidelobe prune.** Remove an automatic-origin peak that
+       sits inside a *brighter* line's lineshape skirt -- separation within
+       ``min(sidelobe_prune_max_separation_res, SHAPE_ERROR_REACH_KAPPA *
+       snr_bright / snr_self)`` resolution elements (the finite-T sinc shadow,
+       brightness-scaled, the same reach the Stage 6 candidate ledger uses) --
+       then refit. Such a peak is the bright line's lineshape artifact, not a
+       molecular line; removing it **raises** ``chi2r`` (the artifact was
+       absorbing the bright line's non-Lorentzian lineshape error), and that is
+       accepted: the goal is a reliable line list, not a low ``chi2r`` -- the
+       residual lineshape error then surfaces honestly through ``epsilon`` /
+       ``worst_eps`` rather than as a spurious line. The reach is capped because a
+       very bright / very faint pair's unbounded reach extends past where a
+       feature is resolved (and could be a real faint line); beyond the cap the
+       Blackman-Harris apodization pass is the realness arbiter. A
+       comparable-brightness pair has a sub-``kappa`` reach and is left to the
+       collapse (2), so the two passes do not overlap.
+    4. **Degenerate merge trial.** In the band
+       ``(collapse_frac_unc_max_separation_res, collapse_max_separation_res]`` --
+       past the unconditional collapse's reach -- a close pair where BOTH members
+       are clearly degenerate (fractional amplitude uncertainty >=
+       ``degenerate_trial_frac``; a sidelobe never qualifies, its bright parent is
+       well determined) is trial-merged to its centroid and the merge **kept only
+       if** ``chi2r`` does not rise by more than ``degenerate_trial_chi2r_rel_tol``
+       (relative). The merge holding distinguishes a genuine over-split (kept) from
+       a real but poorly-conditioned doublet (rejected, ``chi2r`` blows up) -- the
+       one signal that separates them in this marginally-resolved band. Accepted
+       merges flag ``auto_merged_review`` like (2).
 
     Defaults: ``enabled`` True, ``snr_survival_factor`` 1.1 (the floor tracks
     1.1x the Stage 3 promotion cutoff; ``snr_survival_floor`` unset = no absolute
     override), ``vif_collapse_threshold`` 25.0, ``collapse_frac_unc_threshold``
     0.15, ``collapse_frac_unc_max_separation_res`` 0.5,
-    ``collapse_max_separation_res`` 1.0. See
+    ``collapse_max_separation_res`` 1.0, ``sidelobe_prune_max_separation_res`` 2.5
+    (0.0 disables), ``degenerate_trial_frac`` 0.5 (0.0 disables),
+    ``degenerate_trial_chi2r_rel_tol`` 0.5. See
     ``dev-docs/planning/stage6-peak-survival.md``.
     """
 
@@ -674,6 +704,9 @@ class PeakSurvivalSubSettings:
     collapse_frac_unc_threshold: Optional[float] = None
     collapse_frac_unc_max_separation_res: Optional[float] = None
     collapse_max_separation_res: Optional[float] = None
+    sidelobe_prune_max_separation_res: Optional[float] = None
+    degenerate_trial_frac: Optional[float] = None
+    degenerate_trial_chi2r_rel_tol: Optional[float] = None
     drop_empty_windows: Optional[bool] = None
     drop_spur_only_windows: Optional[bool] = None
 
@@ -897,6 +930,34 @@ _HARD_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # resolvable doublets at >= ~0.6 res.
         "collapse_frac_unc_max_separation_res": 0.5,
         "collapse_max_separation_res": 1.0,
+        # Bright-neighbor lineshape-sidelobe prune. A faint fitted peak inside a
+        # brighter line's near-field lineshape skirt (``sep_res <=
+        # SHAPE_ERROR_REACH_KAPPA * snr_bright / snr_self``, the same predicate the
+        # candidate ledger / F-2 install filter use) is the bright line's lineshape
+        # artifact, not a molecular line, and is removed -- overriding chi2r (the
+        # artifact was absorbing real lineshape error; a higher post-prune chi2r is
+        # the honest lineshape floor, surfaced via the eps attention flag). The
+        # brightness-scaled reach runs out to tens of resolution elements for a
+        # very bright / very faint pair, where a feature is fully resolved and may
+        # be a real faint line; this caps the prune to the near-field skirt (a few
+        # resolution elements), beyond which the Blackman-Harris apodization pass is
+        # the realness arbiter. 0.0 disables. Comparable-brightness degenerate pairs
+        # have a sub-kappa reach and are handled by the VIF collapse, not here.
+        "sidelobe_prune_max_separation_res": 2.5,
+        # Degenerate-pair merge TRIAL (Type A over-splits the unconditional collapse
+        # leaves in the (collapse_frac_unc_max_separation_res, collapse_max_
+        # separation_res] band). A pair where BOTH members have fractional amplitude
+        # uncertainty >= ``degenerate_trial_frac`` (a bright-line sidelobe never
+        # qualifies -- its bright parent is well determined, so this does not
+        # overlap the sidelobe prune) is trial-merged to its centroid and the merge
+        # KEPT only if the post-merge chi2r does not rise by more than
+        # ``degenerate_trial_chi2r_rel_tol`` (relative). The merge holding tells a
+        # genuine over-split (kept) from a real but poorly-conditioned doublet
+        # (rejected, chi2r blows up): 360 w13 1.57->1.92 (held, merged); 363 w61
+        # 2.53->7.39 (rejected, kept split). Accepted merges flag auto_merged_review.
+        # ``degenerate_trial_frac`` 0.0 disables the trial.
+        "degenerate_trial_frac": 0.5,
+        "degenerate_trial_chi2r_rel_tol": 0.5,
         # End-of-Stage-5 window cleanup: drop windows with no surviving fitted
         # peak (K=0 -- pure noise, no product), and drop a single-line window
         # whose sole peak sits on a confidently-instrumental gated spur (a

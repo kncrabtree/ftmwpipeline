@@ -48,8 +48,13 @@ Pipeline stages
   with a finite-acquisition line-shape model (leakage is fit, not apodized),
   shared per-window decay, an evidence-triggered leakage baseline, residual
   rescue, a final add-from-convergence pass that recovers close companion lines
-  a mid-fit seed collapsed, spur masking, and a survival pass, with the
-  cross-window fit parallelized.
+  a mid-fit seed collapsed, spur masking, and a four-cut survival pass
+  (SNR-floor prune, degenerate-pair collapse, bright-neighbor lineshape-sidelobe
+  prune, and a chi-squared-gated degenerate merge trial), with the cross-window
+  fit parallelized. The sidelobe prune removes a bright line's lineshape
+  artifacts from the line list even at the cost of a higher reduced chi-squared —
+  the residual lineshape error is reported honestly through the shape-error
+  fraction rather than absorbed by a spurious line.
 * **Review and reporting (Stage 6).** A read/edit curation surface with
   attention routing, a candidate ledger, an anchored decision log with undo, and
   catalog cross-referencing; calibrated final products with a three-term

@@ -320,6 +320,19 @@ def _required_str(value: Optional[str], name: str) -> str:
 # resolved doublet over-split into a triplet keeps its two centroids.
 _COLLAPSE_FOOTPRINT_MAX_RES = 1.3
 
+# Degenerate-pair merge TRIAL band (Type A over-splits). The unconditional VIF /
+# fractional-uncertainty collapse stops at ``collapse_frac_unc_max_separation_res``
+# because past it a high fractional uncertainty is ambiguous: a genuine over-split
+# (two halves of one feature, the merge HOLDS chi2r) and a real but
+# poorly-conditioned doublet (the merge BLOWS chi2r up) are indistinguishable by
+# any static quantity. In the band (frac_unc_max_sep, collapse_max_separation_res]
+# a pair where BOTH members are clearly degenerate (fractional amplitude
+# uncertainty >= ``degenerate_trial_frac`` -- which a bright-line sidelobe never
+# satisfies, its bright parent is well-determined) is *trial-merged* and the merge
+# KEPT only if the post-merge chi2r does not rise by more than
+# ``degenerate_trial_chi2r_rel_tol`` (relative). See
+# :class:`~ftmwpipeline.core.stage_fit_settings.PeakSurvivalSubSettings`.
+
 
 def _inflate_merged_frequency_errors(
     wf: FittingResult, pending: List[Dict[str, Any]]
@@ -777,6 +790,244 @@ def _collapse_outcome(
     return cur
 
 
+def _degenerate_merge_trial_outcome(
+    outcome: "WindowOutcome",
+    *,
+    min_sep_res: float,
+    max_sep_res: float,
+    degenerate_frac: float,
+    chi2r_rel_tol: float,
+    res_element_mhz: float,
+    sideband: Sideband,
+    acquisition_us: float,
+    records: List[Dict[str, Any]],
+    max_iterations: int = 6,
+) -> "WindowOutcome":
+    """Trial-merge comparable-brightness degenerate over-splits in the band the
+    unconditional collapse leaves behind (Type A), in outcome space.
+
+    For a pair in ``(min_sep_res, max_sep_res]`` resolution elements where BOTH
+    members are clearly degenerate (fractional amplitude uncertainty >=
+    ``_DEGEN_TRIAL_FRAC`` -- a bright-line sidelobe never qualifies, its parent is
+    well determined, so this does not overlap the sidelobe prune), the pair is
+    merged to its amplitude-weighted centroid and refit; the merge is kept only
+    when ``chi2r`` does not rise by more than ``_DEGEN_TRIAL_CHI2R_REL`` (relative).
+    The merge holding distinguishes a genuine over-split (kept) from a real
+    poorly-conditioned doublet (rejected, chi2r blows up). Accepted merges append
+    the same collapse provenance the VIF collapse writes, so the merged line's
+    frequency-error inflation and the ``auto_merged_review`` flag both apply."""
+    if res_element_mhz <= 0.0 or max_sep_res <= min_sep_res or degenerate_frac <= 0.0:
+        return outcome
+    from ..fitting.peak_model import ModelPeak, sideband_sign
+    from ..fitting.result_conversion import FittedLineView, outcome_line_views
+
+    min_sep_mhz = min_sep_res * res_element_mhz
+    max_sep_mhz = max_sep_res * res_element_mhz
+    s = sideband_sign(sideband)
+
+    def _frac(v: FittedLineView) -> Optional[float]:
+        amp, ae = v.amplitude, v.amplitude_error
+        if amp is None or ae is None or float(amp) == 0.0 or not np.isfinite(ae):
+            return None
+        return abs(float(ae) / float(amp))
+
+    rejected: set = set()
+    cur = outcome
+    for _ in range(max_iterations):
+        views = outcome_line_views(
+            cur, sideband=sideband, acquisition_us=acquisition_us
+        )
+        if len(views) < 2:
+            break
+        center_mhz = float(getattr(cur, "_center_mhz"))
+        best: Optional[Tuple[float, int, int, Tuple[float, float]]] = None
+        for i in range(len(views)):
+            fri = _frac(views[i])
+            if fri is None or fri < degenerate_frac:
+                continue
+            fi = float(views[i].frequency_mhz)
+            for j in range(i + 1, len(views)):
+                frj = _frac(views[j])
+                if frj is None or frj < degenerate_frac:
+                    continue
+                fj = float(views[j].frequency_mhz)
+                d = abs(fi - fj)
+                if not (min_sep_mhz < d <= max_sep_mhz):
+                    continue
+                key = (round(min(fi, fj), 3), round(max(fi, fj), 3))
+                if key in rejected:
+                    continue
+                if best is None or d < best[0]:
+                    best = (d, i, j, key)
+        if best is None:
+            break
+        d, i, j, key = best
+        va, vb = views[i], views[j]
+        oa, ob = float(va.offset_mhz), float(vb.offset_mhz)
+        aw, bw = abs(float(va.amplitude)), abs(float(vb.amplitude))
+        total = aw + bw if (aw + bw) > 0 else 1.0
+        m_off = (oa * aw + ob * bw) / total
+        m_amp = float(va.amplitude) + float(vb.amplitude)
+        seed = ModelPeak(
+            amplitude=max(abs(m_amp), 1e-30), offset_mhz=float(m_off), phase=0.0
+        )
+        chi2_before = float(cur.fit.fit.reduced_chi2)
+        trial = refit_outcome(
+            cur,
+            remove_offsets=[va.offset_mhz, vb.offset_mhz],
+            add_seeds=[seed],
+            freeze_inherited=False,
+        )
+        chi2_after = float(trial.fit.fit.reduced_chi2)
+        if np.isfinite(chi2_after) and chi2_after <= chi2_before * (
+            1.0 + chi2r_rel_tol
+        ):
+            fa, fb = float(va.frequency_mhz), float(vb.frequency_mhz)
+            f_centroid = (aw * fa + bw * fb) / total
+            spread = float(
+                np.sqrt(
+                    (aw * (fa - f_centroid) ** 2 + bw * (fb - f_centroid) ** 2) / total
+                )
+            )
+            records.append(
+                {
+                    "window_id": int(cur.window_id),
+                    "frequency_a_mhz": fa,
+                    "frequency_b_mhz": fb,
+                    "vif_a": va.amplitude_vif(),
+                    "vif_b": vb.amplitude_vif(),
+                    "separation_res": d / res_element_mhz,
+                    "merged_frequency_mhz": float(center_mhz + s * m_off),
+                    "unresolved_spread_mhz": spread,
+                    "trial_chi2r_before": chi2_before,
+                    "trial_chi2r_after": chi2_after,
+                }
+            )
+            cur = trial
+        else:
+            rejected.add(key)
+    return cur
+
+
+def _is_brightness_sidelobe(
+    victim: "FittedLineView",
+    neighbor: "FittedLineView",
+    *,
+    max_sep_res: float,
+    res_element_mhz: float,
+) -> bool:
+    """True when *victim* lies inside *neighbor*'s brightness-scaled lineshape
+    skirt (Type B), the bright-line artifact predicate.
+
+    *neighbor* must be brighter, and the separation within ``min(max_sep_res,
+    SHAPE_ERROR_REACH_KAPPA * snr_neighbor / snr_victim)`` resolution elements --
+    the finite-T sinc skirt, brightness-scaled (the same reach the Stage 6
+    candidate ledger and the F-2/F-3 install filter use), capped to the near-field
+    where the apodization pass cannot vouch for realness. Comparable-brightness
+    pairs (``snr_neighbor ~ snr_victim``) get a sub-``kappa`` reach and so never
+    qualify -- they are the VIF collapse's business. Pure decision function over
+    two :class:`FittedLineView`, mirroring :func:`_collapse_rank`."""
+    from ..fitting.validation import SHAPE_ERROR_REACH_KAPPA
+
+    if max_sep_res <= 0.0 or res_element_mhz <= 0.0:
+        return False
+    sv, sn = victim.snr, neighbor.snr
+    if sv is None or sn is None or not np.isfinite(sv) or not np.isfinite(sn):
+        return False
+    if sv <= 0.0 or sn <= sv:
+        return False
+    sep_res = (
+        abs(float(victim.frequency_mhz) - float(neighbor.frequency_mhz))
+        / res_element_mhz
+    )
+    reach = min(max_sep_res, SHAPE_ERROR_REACH_KAPPA * float(sn) / float(sv))
+    return sep_res <= reach
+
+
+def _sidelobe_prune_outcome(
+    outcome: "WindowOutcome",
+    *,
+    max_sep_res: float,
+    res_element_mhz: float,
+    sideband: Sideband,
+    acquisition_us: float,
+    records: List[Dict[str, Any]],
+    max_iterations: int = 10,
+) -> "WindowOutcome":
+    """Remove bright-neighbor lineshape sidelobes to a fixpoint, in outcome space.
+
+    A fitted peak that sits inside a *brighter* neighbor's lineshape-error shadow
+    -- ``sep_res <= SHAPE_ERROR_REACH_KAPPA * snr_bright / snr_self`` (the finite-T
+    sinc skirt, brightness-scaled; same predicate the Stage 6 candidate ledger and
+    the F-2/F-3 install filter use) **and** within ``max_sep_res`` resolution
+    elements -- is not a molecular line but the bright line's lineshape artifact.
+    Removing it raises ``chi2r`` (the artifact was absorbing real lineshape error),
+    which is the honest signal: the goal is reliable molecular lines, not a low
+    ``chi2r``, so the removal overrides ``chi2r`` exactly as the VIF collapse does.
+
+    The reach cap matters because the ``kappa * snr_bright / snr_self`` reach runs
+    out to tens of resolution elements for a very bright line and a faint
+    candidate, where a feature is fully resolved and may be a real faint line; the
+    Blackman-Harris apodization pass is the realness arbiter beyond a couple of
+    resolution elements, so the cap keeps the prune to the near-field skirt.
+    user-origin peaks are immune. Comparable-brightness degenerate pairs
+    (``snr_bright ~ snr_self``) have a sub-``kappa`` reach and so are left to the
+    VIF collapse, not removed here -- the two passes do not overlap.
+
+    The faintest victim is removed and the survivors refit before re-checking, so
+    a window with several sidelobes converges over a few iterations."""
+    if max_sep_res <= 0.0 or res_element_mhz <= 0.0:
+        return outcome
+    from ..fitting.result_conversion import outcome_line_views
+
+    def _finite_snr(v: "FittedLineView") -> Optional[float]:
+        snr = v.snr
+        if snr is None or not np.isfinite(snr) or snr <= 0.0:
+            return None
+        return float(snr)
+
+    current = outcome
+    for _ in range(max_iterations):
+        views = outcome_line_views(
+            current, sideband=sideband, acquisition_us=acquisition_us
+        )
+        if len(views) < 2:
+            break
+        victim: Optional[Tuple["FittedLineView", float, float]] = None
+        for vi in views:
+            if vi.origin == "user":
+                continue
+            si = _finite_snr(vi)
+            if si is None:
+                continue
+            for vj in views:
+                if vj is vi:
+                    continue
+                sj = _finite_snr(vj)
+                if sj is None:
+                    continue
+                if _is_brightness_sidelobe(
+                    vi, vj, max_sep_res=max_sep_res, res_element_mhz=res_element_mhz
+                ):
+                    # The faintest qualifying peak is the clearest artifact.
+                    if victim is None or si < victim[1]:
+                        victim = (vi, si, sj)
+                    break
+        if victim is None:
+            break
+        v, si, sj = victim
+        records.append(
+            {
+                "window_id": int(current.window_id),
+                "frequency_mhz": float(v.frequency_mhz),
+                "snr": float(si),
+                "neighbor_snr": float(sj),
+            }
+        )
+        current = refit_outcome(current, remove_offsets=[v.offset_mhz])
+    return current
+
+
 def build_finalize_node(
     *,
     floor: float,
@@ -785,6 +1036,9 @@ def build_finalize_node(
     frac_threshold: float,
     frac_max_sep_res: float,
     max_sep_res: float,
+    sidelobe_max_sep_res: float,
+    degenerate_trial_frac: float,
+    degenerate_trial_chi2r_rel_tol: float,
     res_element_mhz: float,
     sideband: Sideband,
     acquisition_us: float,
@@ -829,8 +1083,31 @@ def build_finalize_node(
             max_iterations=max_iterations,
             records=collapse_records,
         )
+        result = _degenerate_merge_trial_outcome(
+            result,
+            min_sep_res=frac_max_sep_res,
+            max_sep_res=max_sep_res,
+            degenerate_frac=degenerate_trial_frac,
+            chi2r_rel_tol=degenerate_trial_chi2r_rel_tol,
+            res_element_mhz=res_element_mhz,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            records=collapse_records,
+        )
+        sidelobe_records: List[Dict[str, Any]] = []
+        result = _sidelobe_prune_outcome(
+            result,
+            max_sep_res=sidelobe_max_sep_res,
+            res_element_mhz=res_element_mhz,
+            sideband=sideband,
+            acquisition_us=acquisition_us,
+            records=sidelobe_records,
+        )
         return NodeCleanup(
-            outcome=result, pruned=pruned_records, collapses=collapse_records
+            outcome=result,
+            pruned=pruned_records,
+            collapses=collapse_records,
+            sidelobes=sidelobe_records,
         )
 
     return finalize_node
@@ -1435,6 +1712,18 @@ def _fit_peaks_impl(
         resolved.peak_survival.collapse_max_separation_res,
         "peak_survival.collapse_max_separation_res",
     )
+    sidelobe_max_sep_res_v = _required_float(
+        resolved.peak_survival.sidelobe_prune_max_separation_res,
+        "peak_survival.sidelobe_prune_max_separation_res",
+    )
+    degenerate_trial_frac_v = _required_float(
+        resolved.peak_survival.degenerate_trial_frac,
+        "peak_survival.degenerate_trial_frac",
+    )
+    degenerate_trial_chi2r_rel_tol_v = _required_float(
+        resolved.peak_survival.degenerate_trial_chi2r_rel_tol,
+        "peak_survival.degenerate_trial_chi2r_rel_tol",
+    )
 
     # --- Validate Stage 4 prerequisite up front ----------------------------
     with h5py.File(file_path, "r") as h5f:
@@ -1779,6 +2068,9 @@ def _fit_peaks_impl(
         frac_threshold=collapse_frac_unc_threshold_v,
         frac_max_sep_res=collapse_frac_unc_max_sep_res_v,
         max_sep_res=collapse_max_sep_res_v,
+        sidelobe_max_sep_res=sidelobe_max_sep_res_v,
+        degenerate_trial_frac=degenerate_trial_frac_v,
+        degenerate_trial_chi2r_rel_tol=degenerate_trial_chi2r_rel_tol_v,
         res_element_mhz=(1.0 / acquisition_us if acquisition_us > 0 else 0.0),
         sideband=sideband,
         acquisition_us=acquisition_us,
@@ -1945,6 +2237,7 @@ def _fit_peaks_impl(
         pruned_records: List[Dict[str, Any]] = []
         dropped_window_ids: List[int] = []
         collapse_records: List[Dict[str, Any]] = []
+        sidelobe_records: List[Dict[str, Any]] = []
         n_iterations = 0
         collapses_by_window: Dict[int, List[Dict[str, Any]]] = {}
         for rec in plan_outcome.cleanup_history:
@@ -1956,6 +2249,7 @@ def _fit_peaks_impl(
                 collapse_records.extend(wcoll)
                 collapses_by_window.setdefault(int(rec["window_id"]), []).extend(wcoll)
                 n_iterations = max(n_iterations, len(wcoll))
+            sidelobe_records.extend(rec.get("sidelobes", []))
 
         # Inflate each merged line's frequency error to sqrt(formal^2 + spread^2)
         # -- the collapsed multiplet's position is honestly known only to within
@@ -1990,6 +2284,12 @@ def _fit_peaks_impl(
             "n_collapsed_pairs": len(collapse_records),
             "n_iterations": n_iterations,
             "collapses": collapse_records,
+        }
+        spectrum_fit.diagnostics["sidelobe_prune"] = {
+            "max_separation_res": float(sidelobe_max_sep_res_v),
+            "res_element_mhz": float(res_element_mhz),
+            "n_removed": len(sidelobe_records),
+            "removed": sidelobe_records,
         }
         if pruned_records:
             logger.info(
