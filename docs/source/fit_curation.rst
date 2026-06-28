@@ -62,6 +62,17 @@ to the next / previous window, ``J`` / ``K`` to the next / previous *flagged*
 window. The controls are inert when scripting is disabled; the anchors still
 work.
 
+Each window header carries a row of **tag chips** classifying the window at a
+glance — ``attention`` (in the review queue), ``edited`` / ``reviewed`` (its
+curation provenance), ``cascade-edit`` (changed only because another window's
+edit propagated into it), ``merged`` (an auto-merged degenerate pair),
+``high-χ²ᵣ`` / ``high-ε`` (fit-quality outliers), and ``catalog-match`` (a
+catalog hit, when a catalog was supplied). A **Filter** menu in the navigation
+bar lists the tags present in the report; ticking one or more hides every window
+whose tags do not include any of the ticked ones (``Show all`` clears the
+filter). The keyboard and ⚑ navigation skip the hidden windows while a filter is
+active.
+
 Three flags scope the output for large spectra, where rendering a detail page
 for every window is neither fast nor useful:
 

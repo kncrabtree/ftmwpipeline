@@ -304,21 +304,27 @@ Three buckets after the layout work (`53d80b7`), all shipped:
   per-edit Undo that queues a `review undo --id` (kept out of the curation CSV);
   `6c8455a`, docs `6591c96`.
 
-### Queued ideas (not yet scoped)
+- **Window tags + filter menu** — per-window chips (`attention`, `edited`,
+  `cascade-edit`, `reviewed`, `merged`, `high-chi2r`, `high-eps`,
+  `catalog-match`) on each window header, plus a topnav "Filter" menu that hides
+  the window sections whose tag set does not intersect the ticked tags (OR
+  semantics; empty = show all). Client-side over the single-file report: each
+  `<section class="embedded-window">` carries a `data-tags` attribute, the menu
+  lists only the tags present, and the j/k / flag / freq navigation skips
+  filtered-out sections (`offsetParent`-null check in `_NAV_JS`). Tags are
+  computed in `_assemble_report_site` (`_window_tags`); `cascade-edit` reuses the
+  `report diff` materiality test against the automatic-fit baseline (material
+  change with no direct user edit). `edited` supersedes `cascade-edit`/`reviewed`.
 
-- **Window tags + filter menu.** Per-window chips (`edited`, `attention`,
-  `high-eps`, `high-chi2r`, `cascade-edit`, …) on each section/header, plus a
-  filter menu in the topnav that hides sections not matching the selected tag(s).
-  A client-side filter over the single-file report (each section carries its tag
-  set as a data attribute; the menu toggles visibility), reusing the existing
-  `window.__nav`-style build-time data injection. Pairs with the navigation work.
+## Deferred (later report phase) — shipped
 
-## Deferred (later report phase)
-
-Vertical compaction (hide covariance/correlation by default, tighter layout) and
-above-the-fold reorg of the per-window page. (The post-curation diff report landed
-as `report diff` — see A-4; on-plot annotations, navigation, and the curation
-convenience controls shipped — see the buckets above.)
+Vertical compaction (covariance/correlation/residual-histogram/spectrum-context
+collapsed into `<details>` by default) and the above-the-fold reorg of the
+per-window page (header band with metric + tag chips → primary Re/Im/|X| panels →
+fitted-lines table → collapsed fit-health sections) are in place. (The
+post-curation diff report landed as `report diff` — see A-4; on-plot annotations,
+navigation, the curation convenience controls, and the tag filter shipped — see
+the buckets above.)
 
 **On-plot attention annotations.** Mark the part of the window an attention reason
 points at directly on the per-window plot — SVG overlays in the same vein as the

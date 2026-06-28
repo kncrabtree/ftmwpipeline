@@ -66,6 +66,36 @@ VALID_WINDOW_FILTERS = ("all", "attention")
 # parameter symbols keep a wider matrix legible than the old word-labels did.
 _COVARIANCE_RENDER_CAP = 36
 
+# Window tag vocabulary for the report's per-window chips + topnav filter menu.
+# Each tag is a cheap, derived classification of one window, surfaced both as a
+# header chip and as a ``data-tags`` token the client-side filter matches on.
+# The order here is the display order (chips and filter menu alike).
+_WINDOW_TAG_ORDER: Tuple[str, ...] = (
+    "attention",
+    "edited",
+    "cascade-edit",
+    "reviewed",
+    "merged",
+    "high-chi2r",
+    "high-eps",
+    "catalog-match",
+)
+_WINDOW_TAG_LABELS: Dict[str, str] = {
+    "attention": "attention",
+    "edited": "edited",
+    "cascade-edit": "cascade edit",
+    "reviewed": "reviewed",
+    "merged": "merged",
+    "high-chi2r": "high χ²ᵣ",
+    "high-eps": "high ε",
+    "catalog-match": "catalog match",
+}
+# Fit-quality tag thresholds: the misfit corner (χ²ᵣ ≥ 4, the
+# candidate-analysis fit-deficient bar) and the shape-error fraction past the
+# ~5% the Lorentzian lineshape tolerates.
+_TAG_HIGH_CHI2R = 4.0
+_TAG_HIGH_EPS = 0.05
+
 
 # ---------------------------------------------------------------------------
 # HTML helpers
@@ -194,6 +224,30 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
                     border: 1px solid #2c4a6e; background: #cfe0f5; color: #11233a;
                     cursor: pointer; }
 .topnav .nav-flag:hover { background: #fff; }
+/* Tag filter: a button that drops a checkbox menu of the tags present in the
+   report. The menu is absolutely positioned under the button and CSS-hidden
+   until .tagfilter-open; with scripting off it never opens (so every window
+   stays shown). */
+.topnav .tagfilter { position: relative; }
+.topnav .tagfilter-btn { font-size: 0.85rem; padding: 0.12rem 0.6rem;
+    border-radius: 3px; border: 1px solid #2c4a6e; background: #cfe0f5;
+    color: #11233a; cursor: pointer; }
+.topnav .tagfilter-btn:hover { background: #fff; }
+.topnav .tagfilter-btn.tagfilter-active { background: #ffd479; }
+.topnav .tagfilter-menu { display: none; position: absolute; top: 1.9rem;
+    right: 0; min-width: 11rem; background: #fff; color: #1a1a1a;
+    border: 1px solid #2c4a6e; border-radius: 4px; padding: 0.4rem 0.3rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 110; }
+.topnav .tagfilter.tagfilter-open .tagfilter-menu { display: block; }
+.topnav .tagfilter-item { display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.18rem 0.45rem; font-size: 0.85rem; cursor: pointer;
+    white-space: nowrap; }
+.topnav .tagfilter-item:hover { background: #eef2f7; }
+.topnav .tagfilter-clear { display: block; width: 100%; margin-top: 0.35rem;
+    font-size: 0.8rem; padding: 0.2rem; border-radius: 3px;
+    border: 1px solid #c4ccd4; background: #f1f4f8; color: #11233a;
+    cursor: pointer; }
+.topnav .tagfilter-clear:hover { background: #e3e9f1; }
 html.report-single { scroll-padding-top: 3.4rem; }
 html.report-single thead th { top: 3.4rem; }
 /* The major blocks (index, methods, each embedded window) stack as <section>
@@ -263,6 +317,22 @@ ul.summary { list-style: none; padding: 0; display: grid; gap: 0.15rem 1.75rem;
                     text-decoration: none; }
 .metric-chip-attn:hover { background: #f3c9bd; }
 .header-subtitle { font-size: 0.82rem; color: #666; }
+/* Per-window tag chips (the filterable classifications). Smaller and lighter
+   than the metric chips above; one accent per tag, echoed in the filter menu. */
+.win-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.4rem; }
+.win-tag { display: inline-block; padding: 0.08rem 0.5rem; border-radius: 10px;
+           font-size: 0.74rem; font-weight: 600; letter-spacing: 0.01em;
+           background: #e3e8ee; color: #3a4654; }
+.win-tag-attention { background: #f9ded3; color: #7a2810; }
+.win-tag-edited { background: #d7ecdc; color: #1f5130; }
+.win-tag-cascade-edit { background: #e6ddf5; color: #4a2a78; }
+.win-tag-reviewed { background: #dde7f2; color: #2a4a6e; }
+.win-tag-merged { background: #fbeccb; color: #6b4a07; }
+.win-tag-high-chi2r { background: #f6dada; color: #7a2222; }
+.win-tag-high-eps { background: #f6e4d3; color: #7a4410; }
+.win-tag-catalog-match { background: #d5ece9; color: #16544c; }
+/* A tag-filtered-out window section is fully removed from layout. */
+section.embedded-window.tag-hidden { display: none; }
 /* Fit panels: the Re/Im/|X| primary panels are large by default (click to zoom
    stays). Compact mode (toggled by the topnav button) shrinks them to thumbnail
    height; see the .report-compact rules below. The residual histogram lives in
@@ -1479,32 +1549,40 @@ _NAV_JS = """<script>
   var nav = window.__nav || [];
   if (!nav.length) return;
   function sec(id) { return document.getElementById('window-' + id); }
+  // A tag-filtered section is display:none, so offsetParent goes null: skip it
+  // so j/k and the flag/freq jumps land only on currently-shown windows.
+  function vis(s) { return s && s.offsetParent !== null; }
   function go(id) { var s = sec(id); if (s) s.scrollIntoView(); }
   function curIdx() {
     var best = 0, bestD = Infinity;
     for (var i = 0; i < nav.length; i++) {
-      var s = sec(nav[i][0]); if (!s) continue;
+      var s = sec(nav[i][0]); if (!vis(s)) continue;
       var d = Math.abs(s.getBoundingClientRect().top);
       if (d < bestD) { bestD = d; best = i; }
     }
     return best;
   }
   function step(delta) {
-    var i = curIdx() + delta;
-    if (i >= 0 && i < nav.length) go(nav[i][0]);
+    var i = curIdx(), n = nav.length;
+    for (var k = 1; k <= n; k++) {
+      var j = i + delta * k;
+      if (j < 0 || j >= n) return;
+      if (vis(sec(nav[j][0]))) { go(nav[j][0]); return; }
+    }
   }
   function stepFlag(delta) {
     var i = curIdx(), n = nav.length;
     for (var k = 1; k <= n; k++) {
       var j = i + delta * k;
       if (j < 0 || j >= n) return;
-      if (nav[j][3]) { go(nav[j][0]); return; }
+      if (nav[j][3] && vis(sec(nav[j][0]))) { go(nav[j][0]); return; }
     }
   }
   function jumpFreq(f) {
     if (isNaN(f)) return;
     var best = null, bestD = Infinity;
     for (var i = 0; i < nav.length; i++) {
+      if (!vis(sec(nav[i][0]))) continue;
       var lo = Math.min(nav[i][1], nav[i][2]), hi = Math.max(nav[i][1], nav[i][2]);
       var d = (f >= lo && f <= hi) ? 0 : Math.min(Math.abs(f - lo), Math.abs(f - hi));
       if (d < bestD) { bestD = d; best = nav[i][0]; }
@@ -1532,6 +1610,54 @@ _NAV_JS = """<script>
   // Exposed so the curation "mark reviewed & next" action can advance the queue.
   window.__navNextFlag = function () { stepFlag(1); };
   window.__navPrevFlag = function () { stepFlag(-1); };
+})();
+</script>"""
+
+
+# Tag filter: the topnav "Filter" menu lists every tag present across the
+# rendered windows. Ticking tags hides the window sections whose ``data-tags``
+# set does not intersect the selection (OR semantics; no tag ticked = show all).
+# A small count badge tracks how many windows are showing. Inert without
+# scripting (the menu is CSS-hidden, the sections all show).
+_FILTER_JS = """<script>
+(function () {
+  var wrap = document.querySelector('.tagfilter');
+  if (!wrap) return;
+  var btn = wrap.querySelector('.tagfilter-btn');
+  var menu = wrap.querySelector('.tagfilter-menu');
+  var boxes = [].slice.call(menu.querySelectorAll('input[type=checkbox]'));
+  var secs = [].slice.call(document.querySelectorAll('section.embedded-window'));
+  function selected() {
+    var s = {};
+    boxes.forEach(function (b) { if (b.checked) s[b.value] = 1; });
+    return s;
+  }
+  function apply() {
+    var sel = selected(), any = Object.keys(sel).length > 0, shown = 0;
+    secs.forEach(function (s) {
+      var tags = (s.getAttribute('data-tags') || '').split(/\\s+/);
+      var keep = !any || tags.some(function (t) { return sel[t]; });
+      s.classList.toggle('tag-hidden', !keep);
+      if (keep) shown++;
+    });
+    btn.classList.toggle('tagfilter-active', any);
+    btn.textContent = (any ? 'Filter (' + shown + ') ' : 'Filter ') + '\\u25be';
+  }
+  btn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    wrap.classList.toggle('tagfilter-open');
+  });
+  menu.addEventListener('click', function (e) { e.stopPropagation(); });
+  menu.addEventListener('change', apply);
+  var clear = menu.querySelector('.tagfilter-clear');
+  if (clear) clear.addEventListener('click', function () {
+    boxes.forEach(function (b) { b.checked = false; });
+    apply();
+    wrap.classList.remove('tagfilter-open');
+  });
+  document.addEventListener('click', function () {
+    wrap.classList.remove('tagfilter-open');
+  });
 })();
 </script>"""
 
@@ -2873,6 +2999,67 @@ def _render_all_window_figures(
     return {res[0]: res for res in rendered}
 
 
+def _window_tags(
+    *,
+    wf: Any,
+    status: Optional[WindowReviewStatus],
+    edited: bool,
+    reviewed: bool,
+    merged: bool,
+    cascade: bool,
+    catalog_match: bool,
+) -> List[str]:
+    """The report tags for one window, in canonical display order.
+
+    Tags drive both the per-window header chips and the topnav filter menu; each
+    is a cheap classification: the attention queue, provenance (a user edit, or
+    just reviewed), a cascade-touched dependent (materially changed by the
+    propagation of *another* window's edit, not this one's), the auto-merge
+    advisory, fit-quality outliers (χ²ᵣ / ε), and a catalog hit. ``edited``
+    supersedes ``cascade-edit`` and ``reviewed`` (a window the user touched is
+    not also a passive cascade dependent or merely reviewed).
+    """
+    present: set[str] = set()
+    if status is not None and status.needs_attention:
+        present.add("attention")
+    if edited:
+        present.add("edited")
+    elif cascade:
+        present.add("cascade-edit")
+    elif reviewed:
+        present.add("reviewed")
+    if merged:
+        present.add("merged")
+    chi2r = float(getattr(wf, "reduced_chi2", float("nan")))
+    if np.isfinite(chi2r) and chi2r >= _TAG_HIGH_CHI2R:
+        present.add("high-chi2r")
+    snrs = [
+        float(p.snr)
+        for p in wf.fitted_peaks
+        if p.snr is not None and np.isfinite(p.snr)
+    ]
+    snr_max = max(snrs) if snrs else 0.0
+    if snr_max > 0 and np.isfinite(chi2r):
+        eps = shape_error_fraction(chi2r, snr_max, DEFAULT_CHI2R_NOISE_FLOOR)
+        if np.isfinite(eps) and eps >= _TAG_HIGH_EPS:
+            present.add("high-eps")
+    if catalog_match:
+        present.add("catalog-match")
+    return [t for t in _WINDOW_TAG_ORDER if t in present]
+
+
+def _window_tag_chips(tags: List[str]) -> str:
+    """The per-window header chip row for *tags* (empty string when none)."""
+    if not tags:
+        return ""
+    chips = "".join(
+        f'<span class="win-tag win-tag-{t}">'
+        f"{_esc(_WINDOW_TAG_LABELS.get(t, t))}</span>"
+        for t in tags
+    )
+    return f'<div class="win-tags">{chips}</div>'
+
+
 # Attention reasons that get an on-plot marker on the |X| panel, mapped to the
 # one-letter tag drawn in the caret. Window-wide reasons (``worst_eps``) have no
 # single locus and are surfaced by the header chip instead; ``edge_boundary``
@@ -3034,6 +3221,7 @@ def _window_page(
     band: Optional[Tuple[float, float]] = None,
     overview_name: Optional[str] = None,
     mag_geom: Optional[Dict[str, float]] = None,
+    tags: Optional[List[str]] = None,
 ) -> str:
     lo, hi = wf.window.freq_range
     tau = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
@@ -3093,6 +3281,7 @@ def _window_page(
         '<div class="metric-chips">',
         *chips,
         "</div>",
+        _window_tag_chips(tags or []),
         f'<div class="header-subtitle">'
         f"&tau; {_esc(_md_num(tau, 4))} &micro;s &middot; {_esc(shape)}</div>",
         "</div>",
@@ -3227,6 +3416,7 @@ def _collapse_site_to_single_file(
     page_store: Dict[str, str],
     css: str,
     nav_windows: Optional[List[Tuple[int, float, float, bool]]] = None,
+    tags_by_wid: Optional[Dict[int, List[str]]] = None,
 ) -> str:
     """Collapse the assembled report model into one self-contained HTML document.
 
@@ -3340,8 +3530,10 @@ def _collapse_site_to_single_file(
         for key in win_pages:
             wid = int(re.search(r"window_0*(\d+)\.html", key).group(1))  # type: ignore[union-attr]
             window_ids.append(wid)
+            tags = (tags_by_wid or {}).get(wid) or []
+            data_tags = f' data-tags="{_esc(" ".join(tags))}"' if tags else ""
             sections.append(
-                f'<section id="window-{wid}" class="embedded-window">'
+                f'<section id="window-{wid}" class="embedded-window"{data_tags}>'
                 f"{prep(page_store[key])}</section>"
             )
 
@@ -3386,6 +3578,29 @@ def _collapse_site_to_single_file(
             '<button class="nav-flag nav-flag-next" type="button" '
             'title="next flagged window (J)">&#9873;&rarr;</button>'
         )
+        # Tag filter: the menu lists every tag present across the rendered
+        # windows; ticking tags hides the window sections whose tag set does not
+        # intersect the selection (OR semantics, empty = show all). Client-side,
+        # inert without scripting.
+        present_tags = [
+            t
+            for t in _WINDOW_TAG_ORDER
+            if any(t in (tags_by_wid or {}).get(w, []) for w in window_ids)
+        ]
+        if present_tags:
+            items = "".join(
+                f'<label class="tagfilter-item"><input type="checkbox" '
+                f'value="{t}"> {_esc(_WINDOW_TAG_LABELS.get(t, t))}</label>'
+                for t in present_tags
+            )
+            nav_links.append(
+                '<div class="tagfilter"><button type="button" '
+                'class="tagfilter-btn" title="filter windows by tag">'
+                "Filter &#9662;</button>"
+                f'<div class="tagfilter-menu">{items}'
+                '<button type="button" class="tagfilter-clear">Show all</button>'
+                "</div></div>"
+            )
     # The compact toggle shrinks every figure to a thumbnail; pages load at full
     # size by default, and the button switches to compact (inert without scripting).
     nav_links.append('<button class="compact-toggle" type="button">Compact</button>')
@@ -3423,6 +3638,7 @@ def _collapse_site_to_single_file(
             _COMPACT_JS,
             _LIGHTBOX_JS,
             _NAV_JS,
+            _FILTER_JS,
             _CURATION_JS,
             "</body>",
             "</html>",
@@ -3457,6 +3673,9 @@ class _ReportModel:
     # needs_attention)`` for the windows that have an in-document section. Drives
     # the report's jump-to-frequency and attention-queue navigation.
     nav_windows: List[Tuple[int, float, float, bool]] = field(default_factory=list)
+    # Per-window report tags (``window_id -> [tag, ...]``) for the header chips
+    # and the topnav filter menu; only windows with an in-document section.
+    tags_by_wid: Dict[int, List[str]] = field(default_factory=dict)
 
 
 def _assemble_report_site(
@@ -3584,6 +3803,57 @@ def _assemble_report_site(
         if wid_rec is not None:
             merges_by_window.setdefault(int(wid_rec), []).append(rec)
 
+    # Per-window report tags (header chips + topnav filter). ``cascade-edit``
+    # needs the automatic-fit baseline: a window is a cascade dependent when it
+    # changed materially vs the baseline but the user did not edit it directly
+    # (the propagation of another window's edit). Reuses the ``report diff``
+    # materiality test on the same thresholds.
+    from .report_diff_impl import (
+        _DEFAULT_CHI2R_REL,
+        _DEFAULT_EPS_ABS,
+        _DEFAULT_SHIFT_RES,
+        _diff_window,
+        _load_baseline_fit,
+    )
+
+    baseline_fit = _load_baseline_fit(path)
+    res_element_mhz = 1.0 / bundle.acquisition_us if bundle.acquisition_us > 0 else 0.0
+    base_by_id: Dict[int, Any] = {}
+    if baseline_fit is not None:
+        base_by_id = {
+            int(w.window_id): w
+            for w in baseline_fit.window_fits
+            if w.window_id is not None
+        }
+    tags_by_wid: Dict[int, List[str]] = {}
+    for wid in all_ids:
+        wf_t = win_fits[wid]
+        st_t = review.window_statuses.get(wid)
+        edited = wid in decisions_by_window
+        cascade = False
+        if baseline_fit is not None and not edited:
+            cascade = _diff_window(
+                wid,
+                base_by_id.get(wid),
+                wf_t,
+                res_element_mhz=res_element_mhz,
+                shift_res=_DEFAULT_SHIFT_RES,
+                chi2r_rel=_DEFAULT_CHI2R_REL,
+                eps_abs=_DEFAULT_EPS_ABS,
+            ).material
+        cat_match = cross_ref is not None and any(
+            match_by_peak.get(id(p)) is not None for p in peaks_by_window.get(wid, [])
+        )
+        tags_by_wid[wid] = _window_tags(
+            wf=wf_t,
+            status=st_t,
+            edited=edited,
+            reviewed=(st_t is not None and st_t.provenance == "reviewed"),
+            merged=wid in merges_by_window,
+            cascade=cascade,
+            catalog_match=cat_match,
+        )
+
     out_root = Path(out_root)
     # Only the O(1) methods-page figures + the shared overview land on disk under
     # out_root/figures; the collapse reads them back from there. The per-window
@@ -3591,6 +3861,7 @@ def _assemble_report_site(
     (out_root / "figures").mkdir(parents=True, exist_ok=True)
 
     site = _ReportModel(stem=stem)
+    site.tags_by_wid = {wid: tags_by_wid[wid] for wid in page_ids}
     # Windows with an in-document section, in order, for jump-to-frequency and
     # attention-queue navigation (lo/hi keep the fit's axis sense).
     site.nav_windows = [
@@ -3689,6 +3960,7 @@ def _assemble_report_site(
             band=nav_band,
             overview_name=overview_name,
             mag_geom=mag_geom,
+            tags=tags_by_wid.get(wid),
         )
         site.page_store[f"windows/{_window_page_name(wid)}"] = page_html
 
@@ -3901,6 +4173,7 @@ def report_full_impl(
                 page_store=site.page_store,
                 css=site.css,
                 nav_windows=site.nav_windows,
+                tags_by_wid=site.tags_by_wid,
             )
         )
     finally:

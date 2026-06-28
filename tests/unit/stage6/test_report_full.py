@@ -95,6 +95,93 @@ def test_lightbox_triggers_on_plots_and_yields_to_curation():
     assert "cur-plot-wrap.cur-armed" in _LIGHTBOX_JS  # curation add-marker gate
 
 
+class _TagWf:
+    """Minimal per-window stand-in for the tag classifier."""
+
+    def __init__(self, chi2r, snrs):
+        self.reduced_chi2 = chi2r
+        self.fitted_peaks = [_TagPeak(s) for s in snrs]
+
+
+class _TagPeak:
+    def __init__(self, snr):
+        self.snr = snr
+
+
+class _TagStatus:
+    def __init__(self, needs_attention=False, provenance="auto"):
+        self._na = needs_attention
+        self.provenance = provenance
+
+    @property
+    def needs_attention(self):
+        return self._na
+
+
+def test_window_tags_classification_and_precedence():
+    from ftmwpipeline._internal.report_html_impl import _window_tags
+
+    # A clean, untouched, well-fit window earns no tags.
+    clean = _TagWf(1.0, [50.0])
+    assert (
+        _window_tags(
+            wf=clean,
+            status=_TagStatus(),
+            edited=False,
+            reviewed=False,
+            merged=False,
+            cascade=False,
+            catalog_match=False,
+        )
+        == []
+    )
+
+    # A user edit supersedes both the cascade and reviewed provenance tags, and
+    # the queue / merge / fit-quality / catalog tags ride alongside in order.
+    tags = _window_tags(
+        # χ²ᵣ past the misfit bar with a low-SNR peak, so ε = sqrt((χ²ᵣ-floor)/
+        # floor)/snr clears 5% too (high SNR would shrink ε below the bar).
+        wf=_TagWf(20.0, [15.0]),
+        status=_TagStatus(needs_attention=True),
+        edited=True,
+        reviewed=True,
+        cascade=True,
+        merged=True,
+        catalog_match=True,
+    )
+    assert "edited" in tags
+    assert "cascade-edit" not in tags and "reviewed" not in tags
+    assert {"attention", "merged", "high-chi2r", "high-eps", "catalog-match"} <= set(
+        tags
+    )
+    # Canonical display order is preserved.
+    from ftmwpipeline._internal.report_html_impl import _WINDOW_TAG_ORDER
+
+    assert tags == [t for t in _WINDOW_TAG_ORDER if t in tags]
+
+    # A passive cascade dependent (material change, no user edit) tags as such.
+    casc = _window_tags(
+        wf=_TagWf(1.0, [50.0]),
+        status=_TagStatus(),
+        edited=False,
+        reviewed=True,
+        cascade=True,
+        merged=False,
+        catalog_match=False,
+    )
+    assert casc == ["cascade-edit"]
+
+
+def test_window_tag_chips_markup():
+    from ftmwpipeline._internal.report_html_impl import _window_tag_chips
+
+    assert _window_tag_chips([]) == ""
+    out = _window_tag_chips(["attention", "merged"])
+    assert 'class="win-tags"' in out
+    assert 'class="win-tag win-tag-attention"' in out
+    assert 'class="win-tag win-tag-merged"' in out
+
+
 class _FakePeak:
     def __init__(self, frequency_mhz, amplitude=1.0, phase=0.5):
         self.frequency_mhz = frequency_mhz
@@ -766,6 +853,8 @@ def _collapse(model, out_root, *, mode="full") -> str:
         thumb_store=model.thumb_store,
         page_store=model.page_store,
         css=model.css,
+        nav_windows=model.nav_windows,
+        tags_by_wid=model.tags_by_wid,
     )
 
 
@@ -889,6 +978,73 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     # report-compact.
     html_tag = page[page.index("<html") : page.index(">", page.index("<html")) + 1]
     assert "report-compact" not in html_tag
+
+
+def test_collapse_stamps_tags_and_builds_filter_menu(tmp_path):
+    """The single-file collapse stamps each tagged window section with its
+    data-tags set and grows a topnav filter menu of exactly the tags present, in
+    canonical order, with the "show all" reset. Driven by a minimal page set so
+    the menu/data-attr/JS wiring is exercised without the heavy pipeline fixture
+    (the classifier and the chip markup are covered by the pure unit tests)."""
+    import re as _re
+
+    from ftmwpipeline._internal.report_html_impl import (
+        _FILTER_JS,
+        _NAV_JS,
+        _STYLESHEET,
+        _WINDOW_TAG_ORDER,
+        _collapse_site_to_single_file,
+    )
+
+    out = tmp_path / "site"
+    (out / "figures").mkdir(parents=True)
+
+    def _doc(body: str) -> str:
+        return f'<html><body><main class="report">{body}</main></body></html>'
+
+    page_store = {
+        "index.html": _doc("<h1>index</h1>"),
+        "windows/window_2.html": _doc("<h2>window 2</h2>"),
+        "windows/window_5.html": _doc("<h2>window 5</h2>"),
+    }
+    # One window carries several out-of-canonical-order tags; the other none.
+    tags_by_wid = {2: ["high-eps", "attention", "merged"], 5: []}
+    nav_windows = [(2, 10.0, 11.0, True), (5, 12.0, 13.0, False)]
+    expected = {"attention", "high-eps", "merged"}
+
+    doc = _collapse_site_to_single_file(
+        out,
+        mode="full",
+        stem="x",
+        figure_store={},
+        thumb_store={},
+        page_store=page_store,
+        css="",
+        nav_windows=nav_windows,
+        tags_by_wid=tags_by_wid,
+    )
+    _feed(doc)
+
+    # Only the tagged window section carries data-tags; tokens are known tags.
+    section_tags = _re.findall(r'class="embedded-window" data-tags="([^"]*)"', doc)
+    assert len(section_tags) == 1
+    assert set(section_tags[0].split()) == expected <= set(_WINDOW_TAG_ORDER)
+    # The untagged window section gets no data-tags attribute.
+    assert 'id="window-5" class="embedded-window">' in doc
+
+    # The topnav filter menu lists exactly those tags, in canonical order.
+    menu_vals = _re.findall(
+        r'tagfilter-item"><input type="checkbox" value="([^"]+)"', doc
+    )
+    assert menu_vals == [t for t in _WINDOW_TAG_ORDER if t in expected]
+    assert "tagfilter-clear" in doc  # the "show all" reset
+
+    # The filter + nav-skip behaviour is wired (inert without scripting): the
+    # filter toggles .tag-hidden, the navigation skips hidden sections, and the
+    # stylesheet hides a filtered-out section.
+    assert "function apply" in _FILTER_JS and "tag-hidden" in _FILTER_JS
+    assert "function vis(s)" in _NAV_JS
+    assert "section.embedded-window.tag-hidden { display: none; }" in _STYLESHEET
 
 
 @pytest.mark.integration
