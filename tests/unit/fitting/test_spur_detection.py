@@ -1065,45 +1065,63 @@ def test_chirp_response_cw_tone_gate_confirm():
     assert pre_snr >= 5.0, f"CW tone pre_snr {pre_snr:.2f} below floor"
 
 
-def test_chirp_response_cw_overrides_decaying_decay_probe():
-    """Gate-confirm from chirp-response probe overrides a decay-probe 'decays' veto.
+def test_chirp_response_gate_confirm_yields_to_clear_decay():
+    """A clearly-decaying nominee overrides the chirp-response gate-confirm.
 
-    A CW tone whose phase modulation makes the coherent demod read a pseudo-
-    decay ratio < DEFAULT_DECAY_RATIO_LINE: the chirp-response probe's pre-
-    record confirmation must still gate it.
+    A strong molecular line can persist into the pre-record (measured on the
+    succinimide UXR fixture: the brightest lines read a pre-record ratio
+    ~0.9-1.2), so the chirp-response probe reads it as CW. A line that *clearly
+    decays* in the active FID (coherent demod ratio < DEFAULT_DECAY_RATIO_LINE)
+    is molecular regardless of any pre-record presence, so the decay veto wins
+    and the line is NOT gated. A chirp-confirmed nominee whose coherent demod is
+    flat (a true CW tone) is still gated -- the override applies only to a clear
+    decay, which a CW tone cannot fake in the narrow lane (a phase-modulated
+    carrier pseudo-decays near the bar and is arbitrated in the drift lane).
     """
     from ftmwpipeline.fitting.spur_detection import Spur, gate_spurs
 
     probe = _cr_probe_for(cw_amp=1.0)
 
-    # Confirm the chirp-response probe sees ratio >= 0.8.
+    # Confirm the chirp-response probe sees ratio >= 0.8 (gate-confirm).
     ratio, pre_snr, _ = probe(_CR_FREQ_MOL)
     assert ratio >= 0.8 and pre_snr >= 5.0
 
-    # Construct a synthetic narrow nominee at _CR_FREQ_MOL (200 MHz) so we
-    # don't need a full active-FT grid at that frequency.
-    sp = Spur(
-        integer_mhz=int(round(_CR_FREQ_MOL)),
-        center_mhz=_CR_FREQ_MOL,
-        bin_index=10,
-        magnitude=100.0,
-        snr=50.0,
-        narrowness_ratio=0.1,
-    )
+    def _nominee() -> "Spur":
+        # Synthetic narrow nominee at _CR_FREQ_MOL (200 MHz) so we don't need a
+        # full active-FT grid at that frequency.
+        return Spur(
+            integer_mhz=int(round(_CR_FREQ_MOL)),
+            center_mhz=_CR_FREQ_MOL,
+            bin_index=10,
+            magnitude=100.0,
+            snr=50.0,
+            narrowness_ratio=0.1,
+        )
 
-    # A decay probe that reads "decays" (ratio 0.2) would veto the narrow
-    # nominee on its own.  With the chirp-response probe confirming CW, the
-    # spur must still be gated.
-    gated = gate_spurs(
-        [sp],
+    # A nominee that clearly decays (ratio 0.2) is a real line persisting into
+    # the pre-record: the decay veto overrides the chirp gate-confirm.
+    gated_decays = gate_spurs(
+        [_nominee()],
         [],
-        decay_probe=lambda f: (0.2, 50.0),  # would veto alone
+        decay_probe=lambda f: (0.2, 50.0),  # clearly decays
         chirp_response_probe=probe,
     )
     assert (
-        len(gated) == 1
-    ), "chirp-response gate-confirm did not override the decay-probe veto"
-    assert gated[0].integer_mhz == int(round(_CR_FREQ_MOL))
+        gated_decays == []
+    ), "a clearly-decaying nominee must override the chirp gate-confirm"
+
+    # A chirp-confirmed nominee whose coherent demod is flat (ratio 0.95) is a
+    # true CW tone and is still gated.
+    gated_cw = gate_spurs(
+        [_nominee()],
+        [],
+        decay_probe=lambda f: (0.95, 50.0),  # flat: a real CW tone
+        chirp_response_probe=probe,
+    )
+    assert (
+        len(gated_cw) == 1
+    ), "a chirp-confirmed CW tone that does not clearly decay must still gate"
+    assert gated_cw[0].integer_mhz == int(round(_CR_FREQ_MOL))
 
 
 # (b) Decaying molecular line: absent from pre-record (or present at 0.1x)

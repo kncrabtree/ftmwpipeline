@@ -1133,6 +1133,29 @@ def gate_spurs(
             return "protect"
         return "inconclusive"
 
+    def _clearly_decays(center_mhz: float) -> bool:
+        """True when the coherent decay probe confirms a real (decaying) line.
+
+        A chirp-response gate-confirm rests on the premise that a tone present
+        in the pre-record is external CW. That premise fails for a strong
+        molecular line whose emission persists into the pre-record (measured on
+        the succinimide UXR fixture: the brightest lines read pre-record ratio
+        ~0.9-1.2). A line that *clearly decays* in the active FID is molecular
+        regardless of any pre-record presence, so it must override the
+        gate-confirm and fall through to the decay veto. The bar is the legacy
+        off-lattice line bar (a coherent demod of a modulated/drifting carrier
+        does not produce a clean exponential at this depth -- those are
+        arbitrated in the drift/band-power lane, not here).
+        """
+        if decay_probe is None:
+            return False
+        decay_ratio, amp_snr = decay_probe(center_mhz)
+        return bool(
+            np.isfinite(decay_ratio)
+            and decay_ratio < DEFAULT_DECAY_RATIO_LINE
+            and amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO
+        )
+
     for sp in active_ft_spurs:
         # Chirp-response anchor: run before the decay probe. Modulated carriers
         # can mimic FID decay (pseudo-decay failure mode), so the pre-record
@@ -1235,9 +1258,12 @@ def gate_spurs(
                 _add(sp.center_mhz, "narrow-pair", sp.snr, sp.narrowness_ratio)
             continue
         # Narrow (non-pair, non-drift) nominee.
-        if cr == "gate":
-            # Pre-record confirms CW presence: gate without consulting the
-            # decay probe (overrides the modulated-carrier pseudo-decay).
+        if cr == "gate" and not _clearly_decays(sp.center_mhz):
+            # Pre-record confirms CW presence and the line does not clearly
+            # decay: gate (the gate-confirm overrides the modulated-carrier
+            # pseudo-decay). A clearly-decaying line is a real molecular line
+            # that happens to persist into the pre-record -- it falls through
+            # to the decay veto below.
             _add(
                 sp.center_mhz, "narrow", sp.snr, sp.narrowness_ratio, lattice=sp.lattice
             )
@@ -1267,8 +1293,11 @@ def gate_spurs(
         cr = _chirp_verdict(center)
         if cr == "protect":
             continue
-        if cr == "gate":
-            # Pre-record confirms CW: gate regardless of the decay probe.
+        if cr == "gate" and not _clearly_decays(center):
+            # Pre-record confirms CW and the line does not clearly decay. A
+            # clearly-decaying cluster is a strong molecular line persisting
+            # into the pre-record (the dominant UXR failure mode), so it falls
+            # through to the flatness check below, which does not gate it.
             source = "flat+saturated" if cl.saturated else "flat"
             _add(center, source, float("nan"), float("nan"))
             continue
