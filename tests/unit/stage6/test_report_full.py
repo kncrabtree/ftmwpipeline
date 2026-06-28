@@ -951,6 +951,11 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     # The overview image is bound once as the interactive-overview background.
     assert "_overview.png" in model.css
     assert ".spectrum-ctx { background-image:" in model.css
+    # The Stage 3 methods section carries both detection views: the active-FT
+    # overlay and the primary-pass (Blackman-Harris) detection spectrum.
+    assert "_methods_stage3_peaks.png" in methods
+    assert "_methods_stage3_primary.png" in methods
+    assert "primary-pass" in methods
     # Histograms are interleaved beside their tables (not one trailing figure).
     assert 'class="hist"' in methods
     assert "_hist_" in methods
@@ -958,9 +963,13 @@ def test_full_site_structure(stage5_small_file, tmp_path):
     assert "MathJax" in methods
     assert 'class="equation"' in methods
 
-    # The spectrum context is now in a collapsed <details> at the bottom of the
-    # window page -- no per-window context image.
-    assert "<summary>Spectrum context</summary>" in page
+    # The spectrum context now lives in the window header, hidden by default and
+    # revealed by the header bar's "Full spectrum" toggle -- no per-window context
+    # image, no bottom <details>.
+    assert "<summary>Spectrum context</summary>" not in page
+    assert 'class="win-spectrum-ctx" hidden' in page
+    assert 'class="win-navbtn spectrum-toggle"' in page
+    assert ">Full spectrum<" in page
     assert "_ctx.png" not in page
     assert 'class="spectrum-ctx"' in page and "specnav-rect" in page
     assert "<h2>Fit</h2>" in page
@@ -1098,12 +1107,12 @@ def test_window_page_layout_order_and_details(stage5_small_file, tmp_path):
             ledger_h2_pos < attn_pos < details_pos
         ), "attention anchor must be after the ledger and before <details>"
 
-    # Spectrum context is in a collapsed <details> AFTER the fit-health blocks.
-    ctx_match = _re.search(r"<summary>Spectrum context</summary>", page)
-    assert ctx_match is not None, "spectrum context must be wrapped in a <details>"
-    assert (
-        ctx_match.start() > details_pos
-    ), "spectrum context <details> must come after the first fit-health <details>"
+    # Spectrum context now lives in the window header (hidden), revealed by the
+    # "Full spectrum" toggle -- it precedes the Fit section, not a trailing <details>.
+    assert "<summary>Spectrum context</summary>" not in page
+    ctx_pos = page.find('class="win-spectrum-ctx"')
+    assert ctx_pos != -1, "spectrum context must be in the window header"
+    assert ctx_pos < fit_pos, "spectrum context must be in the header, before Fit"
 
     # --- header band ---
     # χ²ᵣ chip and ε chip (when snr_max > 0) appear in the header band.
@@ -1116,12 +1125,12 @@ def test_window_page_layout_order_and_details(stage5_small_file, tmp_path):
     assert "<summary>Residual histogram</summary>" in page
 
     # --- <details> structure ---
-    # Four closed <details class="report-detail"> elements:
-    # residual histogram, parameter covariance, fit history, spectrum context.
+    # Three closed <details class="report-detail"> elements: residual histogram,
+    # parameter covariance, fit history. (Spectrum context moved to the header.)
     detail_tags = _re.findall(r"<details([^>]*)>", page)
     assert (
-        len(detail_tags) == 4
-    ), f"expected exactly 4 <details> elements, got {len(detail_tags)}"
+        len(detail_tags) == 3
+    ), f"expected exactly 3 <details> elements, got {len(detail_tags)}"
     for attrs in detail_tags:
         assert "report-detail" in attrs
         assert "open" not in attrs.split(), "details must be closed by default"
@@ -1133,8 +1142,6 @@ def test_window_page_layout_order_and_details(stage5_small_file, tmp_path):
     # Ledger is expanded (bare <h2>), not a <summary>.
     assert "<h2>Ledger candidates</h2>" in page
     assert "<summary>Ledger candidates</summary>" not in page
-    # Spectrum context is in a <details>.
-    assert "<summary>Spectrum context</summary>" in page
 
     # --- full size by default ---
     # The multi-page <html> element must NOT carry the report-compact class.

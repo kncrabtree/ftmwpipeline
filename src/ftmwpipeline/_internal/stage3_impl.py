@@ -807,6 +807,40 @@ def detect_peaks_impl(
     }
 
 
+def primary_detection_spectrum_impl(
+    file_path: str,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Replay the Stage 3 primary-pass (apodized) detection spectrum.
+
+    Re-applies the persisted Stage 3 ``primary_window`` / ``detection_zpf`` to the
+    canonical Stage 1 active region and returns ``(freq_mhz, magnitude)`` of the
+    Blackman-Harris primary spectrum -- the leakage-suppressed surface the primary
+    pass localizes on, where the truncation pedestal is flattened. The spectrum
+    itself is not persisted; like the active-FT overview it is a deterministic
+    function of the FID and the persisted settings, recomputed on demand for the
+    report's detection diagnostic. Requires Stages 1-3.
+    """
+    persisted = load_peak_detection_settings_from_h5(file_path)
+    resolved = resolve_peak_detection_settings(
+        explicit=None, preset=None, persisted=persisted, recommended=None
+    )
+    primary = resolved.primary_pass
+    window = str(_required(primary.primary_window, "primary_pass.primary_window"))
+    zpf = int(_required(primary.detection_zpf, "primary_pass.detection_zpf"))
+
+    stage1 = compute_ft_impl(file_path=file_path)
+    base_pp = stage1["complex_ft"].metadata["processing_params"]
+    trim_range = stage1.get("trim_range")
+    fid = load_fid_from_pipeline_impl(file_path)
+    primary_ft, _ = _primary_active_spectrum(
+        fid, base_pp, trim_range, window_function=window, zpf_active=zpf
+    )
+    return (
+        np.asarray(primary_ft.freq_array, dtype=float),
+        np.asarray(primary_ft.magnitude_spectrum, dtype=float),
+    )
+
+
 def save_peaks_impl(
     file_path: str,
     peaks: List[Peak],
@@ -898,6 +932,73 @@ def visualize_peaks_impl(
         title=title,
         y_max_factor=y_max_factor if y_max_factor is not None else 25.0,
         snr_histogram=show_snr_histogram,
+        promotion_min_snr=promotion_min_snr,
+    )
+
+
+def visualize_primary_detection_impl(
+    file_path: str,
+    figsize: Optional[Tuple[float, float]] = None,
+    title: Optional[str] = None,
+    y_max_factor: Optional[float] = None,
+    interactive: bool = True,
+) -> Any:
+    """Overlay the Stage 3 nominations on the primary-pass detection spectrum.
+
+    The same SNR-classed, log-scale overlay as :func:`visualize_peaks_impl`, but
+    drawn on the leakage-suppressed primary (Blackman-Harris) spectrum the primary
+    pass actually localizes on -- where the truncation pedestal that inflates the
+    raw active FT is flattened -- rather than the active FT. A detection diagnostic
+    showing what the detector works on. Each nomination's marker amplitude is
+    re-measured on the primary spectrum so it sits on that curve; its SNR class,
+    promotion, and pass come from the persisted peaks. Requires Stage 3.
+    """
+    loaded = load_peaks_impl(file_path)
+    peaks: List[Peak] = loaded["peaks"]
+    promotion_min_snr = loaded.get("promotion_min_snr")
+
+    freq, mag = primary_detection_spectrum_impl(file_path)
+    primary_noise = estimate_noise_scatter(freq, mag)
+    sigma = primary_noise.rms_noise
+
+    # Re-measure each nomination's amplitude on the primary curve (the persisted
+    # intensity/SNR are scored on the active FT), keeping its class/promotion/pass
+    # so the overlay encoding matches the active-FT view.
+    order = np.argsort(freq)
+    fa, ma = freq[order], mag[order]
+    redrawn: List[Peak] = [
+        Peak(
+            frequency=float(p.frequency),
+            intensity=float(np.interp(float(p.frequency), fa, ma)),
+            index=p.index,
+            snr=p.snr,
+            noise_std_local=p.noise_std_local,
+            classification=p.classification,
+            detection_pass=p.properties.get("detection_pass"),
+            promoted=p.properties.get("promoted"),
+        )
+        for p in peaks
+    ]
+
+    from ..visualization.peak_visualization import plot_peak_detection
+
+    if title is None:
+        name = Path(file_path).stem
+        fr = (float(freq.min()), float(freq.max()))
+        title = (
+            f"Pipeline {name} - Stage 3 Primary-pass Detection Spectrum "
+            f"({fr[0]:.0f}-{fr[1]:.0f} MHz, {len(peaks)} peaks)"
+        )
+
+    return plot_peak_detection(
+        frequencies=freq,
+        magnitudes=mag,
+        rms_noise=sigma,
+        peaks=redrawn,
+        figsize=figsize if figsize is not None else (16, 6),
+        title=title,
+        y_max_factor=y_max_factor if y_max_factor is not None else 25.0,
+        snr_histogram=False,
         promotion_min_snr=promotion_min_snr,
     )
 

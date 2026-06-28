@@ -42,8 +42,11 @@ The report carries three kinds of content:
   when the file already carries curation decisions (see below), and the finalized
   line list.
 - **A methods-and-results page.** The per-stage algorithm prose with this
-  experiment's own numbers folded in, distribution histograms of the fitted
-  parameters, and rendered display math.
+  experiment's own numbers folded in, a diagnostic figure for each stage —
+  including the Stage 3 detections drawn over both the active FT and the
+  primary-pass (Blackman-Harris) detection spectrum the detector localizes on,
+  so a leakage-dominated regime is legible — distribution histograms of the
+  fitted parameters, and rendered display math.
 - **One page per fit window.** The fit panels (real, imaginary, and magnitude
   data with the model and residuals), the fitted lines with their raw and
   calibrated frequencies, the parameter covariance, the candidate ledger, the
@@ -61,7 +64,9 @@ nearest a typed frequency, and a pair of **window** buttons step to the previous
 previous window. Both the buttons and the keys skip windows hidden by the tag
 filter, so the filter selects which window types you step through. The controls
 are inert when scripting is disabled; the anchors still work. Each window's own
-title bar also carries **index** / prev / next buttons.
+title bar also carries **index** / prev / next buttons and a **Full spectrum**
+toggle that reveals — hidden by default — the clickable full-spectrum overview
+inside the window header, with this window highlighted.
 
 Each window header carries a row of **tag chips** classifying the window at a
 glance — ``attention`` (in the review queue), ``edited`` / ``reviewed`` (its

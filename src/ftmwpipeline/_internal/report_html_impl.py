@@ -316,6 +316,15 @@ ul.summary { list-style: none; padding: 0; display: grid; gap: 0.15rem 1.75rem;
               border: 1px solid #2c4a6e; background: #eef4fb; color: #11233a;
               text-decoration: none; white-space: nowrap; }
 .win-navbtn:hover { background: #fff; text-decoration: none; }
+/* "Full spectrum" toggle: a nav button that reveals the in-header overview;
+   the active (expanded) state is filled so the open/closed state reads. */
+.spectrum-toggle { cursor: pointer; }
+.spectrum-toggle-active { background: #2c4a6e; color: #fff; }
+.spectrum-toggle-active:hover { background: #25405f; }
+/* In-header full-spectrum overview, revealed by the toggle (hidden via the
+   [hidden] attribute by default). */
+.win-spectrum-ctx { margin: 0.5rem 0 0.25rem; }
+.win-spectrum-ctx[hidden] { display: none; }
 /* Curate verbs sit to the right of the nav buttons. */
 .win-cur-actions { display: inline-flex; flex-wrap: wrap; gap: 0.4rem;
                    margin-left: auto; }
@@ -999,7 +1008,10 @@ def _methods_stage_figures(
     )
     from .stage0_impl import load_fid_from_pipeline_impl
     from .stage2_impl import visualize_noise_impl
-    from .stage3_impl import visualize_peaks_impl
+    from .stage3_impl import (
+        visualize_peaks_impl,
+        visualize_primary_detection_impl,
+    )
     from .stage4_impl import visualize_windows_impl
 
     # These figures span the full content width, so render them sharper than the
@@ -1060,7 +1072,17 @@ def _methods_stage_figures(
                         interactive=False,
                         show_snr_histogram=True,
                     ),
-                )
+                ),
+                (
+                    "stage3_primary",
+                    "The same detections over the primary-pass (Blackman-Harris) "
+                    "spectrum the detector localizes on -- the leakage pedestal "
+                    "that inflates the raw active FT is suppressed here, so this is "
+                    "what the primary pass actually nominates against.",
+                    lambda: visualize_primary_detection_impl(
+                        path, title="", interactive=False
+                    ),
+                ),
             ],
         ),
         (
@@ -1553,6 +1575,30 @@ _COMPACT_JS = """<script>
     }
   });
   label();
+})();
+</script>"""
+
+
+# "Full spectrum" header toggle. Each window header carries a hidden
+# ``.win-spectrum-ctx`` overview and a ``.spectrum-toggle`` button in its action
+# row; clicking the button shows/hides that window's overview. Delegated on the
+# document so one handler covers every window (single-file mode embeds them all);
+# scopes to the clicked button's own ``.win-header`` so it toggles only that
+# window. Inert without scripting (the overview just stays hidden).
+_SPECTRUM_TOGGLE_JS = """<script>
+(function () {
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('.spectrum-toggle');
+    if (!btn) return;
+    var hdr = btn.closest('.win-header');
+    var ctx = hdr && hdr.querySelector('.win-spectrum-ctx');
+    if (!ctx) return;
+    var show = ctx.hasAttribute('hidden');
+    if (show) { ctx.removeAttribute('hidden'); } else { ctx.setAttribute('hidden', ''); }
+    btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+    btn.classList.toggle('spectrum-toggle-active', show);
+    btn.textContent = show ? 'Hide spectrum' : 'Full spectrum';
+  });
 })();
 </script>"""
 
@@ -2543,17 +2589,22 @@ def _peak_curation_cell() -> str:
 
 
 def _window_header_bar(
-    window_id: int, prev_id: Optional[int], next_id: Optional[int]
+    window_id: int,
+    prev_id: Optional[int],
+    next_id: Optional[int],
+    has_context: bool = False,
 ) -> str:
     """The window title-bar action row at the top of the header.
 
-    Prev/next/index navigation (always visible, styled as buttons) plus the
-    common per-window curation verbs -- ``Mark reviewed`` (accept),
-    ``Reviewed & next`` (accept-next, advances to the next window), and
-    ``Clear window edits`` -- wrapped ``cur-only`` so they show only in curation
-    mode. The curation script binds them by ``data-act``. Navigation links use the
-    multi-page hrefs; the single-file collapse rewrites them to in-document
-    anchors.
+    Prev/next/index navigation (always visible, styled as buttons), then -- when
+    a spectrum-context overview is available (``has_context``) -- a
+    ``Full spectrum`` toggle that shows/hides the in-header overview (hidden by
+    default; bound by :data:`_SPECTRUM_TOGGLE_JS`), then the common per-window
+    curation verbs -- ``Mark reviewed`` (accept), ``Reviewed & next``
+    (accept-next, advances to the next window), and ``Clear window edits`` --
+    wrapped ``cur-only`` so they show only in curation mode. The curation script
+    binds them by ``data-act``. Navigation links use the multi-page hrefs; the
+    single-file collapse rewrites them to in-document anchors.
     """
     nav = ['<a class="win-navbtn" href="../index.html">index</a>']
     if prev_id is not None:
@@ -2565,6 +2616,11 @@ def _window_header_bar(
         nav.append(
             f'<a class="win-navbtn" href="{_window_page_name(next_id)}">'
             f"window {next_id} &rarr;</a>"
+        )
+    if has_context:
+        nav.append(
+            '<button type="button" class="win-navbtn spectrum-toggle" '
+            'aria-expanded="false">Full spectrum</button>'
         )
     cur = (
         '<span class="cur-only win-cur-actions">'
@@ -3428,14 +3484,40 @@ def _window_page(
             '<a href="#attention" class="metric-chip metric-chip-attn">'
             "&#9888; attention</a>"
         )
+
+    # --- in-header spectrum-context overview (hidden by default) -----------------
+    # The interactive full-spectrum overview (shared image + clickable overlay),
+    # this window highlighted in green. It lives in the window header and is
+    # revealed by the header bar's "Full spectrum" toggle; hidden by default
+    # since it is context for the data comparison, not the primary result.
+    has_context = bool(nav_rows and band is not None and overview_name is not None)
+    context_block: List[str] = []
+    if has_context:
+        ctx_html = _spectrum_nav(
+            nav_rows,  # type: ignore[arg-type]
+            band,  # type: ignore[arg-type]
+            stem,
+            link_prefix="",
+            thumb_prefix="../figures/",
+            current_id=window_id,
+        )
+        context_block = [
+            '<div class="win-spectrum-ctx" hidden>',
+            ctx_html,
+            '<p class="winmap-hint">The shaded bands are fit windows (orange = '
+            "attention, green = this one); hover for details, click to jump.</p>",
+            "</div>",
+        ]
+
     header: List[str] = [
         '<div class="win-header">',
-        _window_header_bar(window_id, prev_id, next_id),
+        _window_header_bar(window_id, prev_id, next_id, has_context=has_context),
         f'<h1>Window {window_id} <span class="win-range">{range_str}</span></h1>',
         '<div class="metric-chips">',
         *chips,
         "</div>",
         _window_tag_chips(tags or []),
+        *context_block,
         "</div>",
     ]
 
@@ -3448,30 +3530,6 @@ def _window_page(
             "<summary>Residual histogram</summary>",
             f'<div class="hist-detail"><img src="../figures/{hist_name}" '
             'alt="residual histogram"></div>',
-            "</details>",
-        ]
-
-    # --- spectrum-context collapsed <details> (at bottom of page) ---------------
-    # The interactive full-spectrum overview (shared image + clickable overlay),
-    # this window highlighted in green. Collapsed by default since it is
-    # context for the data comparison, not the primary result.
-    context_details: List[str] = []
-    has_context = bool(nav_rows and band is not None and overview_name is not None)
-    if has_context:
-        ctx_html = _spectrum_nav(
-            nav_rows,  # type: ignore[arg-type]
-            band,  # type: ignore[arg-type]
-            stem,
-            link_prefix="",
-            thumb_prefix="../figures/",
-            current_id=window_id,
-        )
-        context_details = [
-            '<details class="report-detail">',
-            "<summary>Spectrum context</summary>",
-            ctx_html,
-            '<p class="winmap-hint">The shaded bands are fit windows (orange = '
-            "attention, green = this one); hover for details, click to jump.</p>",
             "</details>",
         ]
 
@@ -3512,13 +3570,12 @@ def _window_page(
             wf, 0.5 * (float(lo) + float(hi)), _sideband_sign(sideband), merges
         ),
         "</details>",
-        # Spectrum context collapsed last.
-        *context_details,
         # User decisions (conditional, always last).
         *_decision_block(decisions),
     ]
     if has_context:
         body.append(_WINMAP_JS)  # hover-zoom popup; the map works without it
+        body.append(_SPECTRUM_TOGGLE_JS)  # "Full spectrum" header toggle
     body.append(_LIGHTBOX_JS)  # click a primary plot to view it full-size
     return _page(f"{stem} window {window_id}", body, css_href="../assets/style.css")
 
@@ -3788,6 +3845,7 @@ def _collapse_site_to_single_file(
             f"<script>window.__nav={json.dumps(nav_windows or [])};</script>",
             _WINMAP_JS,
             _COMPACT_JS,
+            _SPECTRUM_TOGGLE_JS,
             _LIGHTBOX_JS,
             _NAV_JS,
             _FILTER_JS,
@@ -4037,6 +4095,7 @@ def _assemble_report_site(
             plt.close(ov_fig)
         except (ValueError, KeyError):
             overview_name = None
+
     # The stylesheet, plus the per-build rule binding that overview as the
     # interactive-overview background. The single-file path embeds it from the
     # model.
