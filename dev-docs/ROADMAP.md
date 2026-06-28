@@ -31,20 +31,16 @@ historical narrative worth keeping are archived in [`COMPLETED.md`](COMPLETED.md
    batched `black`/`isort`/`mypy` cleanup, catching anything that landed since
    the last sweep. The documentation and repository-cleanup tracks are otherwise
    done.
-2. **Performance benchmark suite** (D5,
-   [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)) — the committed
-   `tests/performance/` regression-guard, fed by the completed profiling pass.
-   *Queued next.*
-3. **Cross-instrument (succinimide UXR) end-to-end validation + catalog** — the
+2. **Cross-instrument (succinimide UXR) end-to-end validation + catalog** — the
    loader/cleanup/spur lane is in; the remaining work is a full end-to-end fit
    validated against a succinimide catalog. *Queued next.*
-4. **Frequency-calibration / σ_f research write-up**
+3. **Frequency-calibration / σ_f research write-up**
    ([`research/frequency-calibration-uncertainty/PLAN.md`](research/frequency-calibration-uncertainty/PLAN.md))
    — findings settled and shipped into the report; the consolidated write-up is
    **gated on the pending third vinyl-cyanide acquisition** (turns the run-to-run
    `δ_down` comparison into a stable-vs-random test), expected within ~2 weeks.
    Pairs with productizing the data-driven `σ_floor` (cross-acquisition tier).
-5. **Ultra-high-SNR lineshape floor**
+4. **Ultra-high-SNR lineshape floor**
    ([`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md))
    — on the list; reassess on **655** and the strong **vinyl-fluoride** fixture
    (**1019**). Asym-τ was measured null in-pipeline, so this needs a fresh angle.
@@ -93,7 +89,6 @@ Per-feature implementation plans. Lifecycle and conventions:
 | Document | Status |
 |---|---|
 | [`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md) | Planning — per-dataset shape-error ε calibration framework; cross-fixture acceptance metrics; covers the lineshape-deficit physics discovery from Phase 1 validation on 2638 |
-| [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md) | Deferred (D5) — the committed `tests/performance/` regression-guard suite; fed by the completed profiling pass (archived in `COMPLETED.md`) |
 
 ## Code vs spec divergences
 
@@ -106,7 +101,7 @@ here and resolved deliberately (amend spec, or change code), never silently.
 | D2 | `Pipeline("x.ftmw")` smart constructor required by spec, not implemented | **Resolved (code):** `Pipeline(path)` opens if present, raises `FileNotFoundError` with guidance otherwise; `create()`/`open()` unchanged |
 | D3 | Spec showed functional API as top-level `import ftmwpipeline as ftmw; ftmw.import_data(...)` | **Resolved (spec):** the canonical functional namespace is `ftmwpipeline.api` (`import ftmwpipeline.api as ftmw`); the `Pipeline` class and the `api` module are the package top-level exports, and the whole-experiment workflow is `api.run_pipeline` / `Pipeline.build`. API_STRATEGY amended to match |
 | D4 | CLI `info <file>` + machine-readable `--format json` not implemented | **Resolved (code):** `info` command added with `text`/`json` output |
-| D5 | Performance/benchmark tests absent; storage-reduction figures unmeasured | **Deferred (tracked):** specs already made unmeasured figures non-normative; benchmark work tracked in [`planning/perf-benchmarks.md`](planning/perf-benchmarks.md). `tests/performance/` remains empty until then |
+| D5 | Performance/benchmark tests absent; storage-reduction figures unmeasured | **Resolved (code):** `tests/performance/` carries the regression-guard suite ([`planning/perf-benchmarks.md`](planning/perf-benchmarks.md)) — deterministic guards (storage size after import/Stage 2 against measured references + the lightweight-file invariant; report fit-reload complexity O(N) not O(N²); `tracemalloc` no-growth under repeated FT exploration; parallel-fit byte-identity) with wall-clock recorded informationally. The 2638 reference figures (import 4.87 MB, Stage 2 5.92 MB) are now measured, so the specs may cite them |
 | D6 | `io/complex_ft_serialization.py` never invoked by the pipeline | **Resolved (code):** module and its tests removed; the serialization spec prohibits persisting ComplexFT, so it was dead by design |
 | D7 | User-chosen FT processing settings (trim, zpf, expf, …) are not persisted as canonical state; later stages silently fall back to import-time *recommended* defaults instead of what the user chose. Stage 3 currently masks this with interim per-stage `trim`/`zpf` options | **Resolved (code + spec):** Stage 1 now persists user-chosen settings (incl. trim) as canonical; Stages 2–5 operate on that grid; changing canonical settings invalidates downstream results. Stage 3's interim `trim`/`zpf` ownership removed from `_internal/stage3_impl`, `Pipeline.detect_peaks`, `api.detect_peaks`, and `cli/peak_commands.py`. `SERIALIZATION_STRATEGY.md` and `API_STRATEGY.md` amended with normative canonical-settings text |
 | D8 | Truncation-leakage handling is wrong in both Stage 3 and Stage 4. Stage 3's gap pass promotes a strong line's sinc sidelobes as weak lines — its leakage mask (`estimate_leakage_reach`) is 7–25× too narrow vs the real ±20+ MHz coherent skirt. Stage 4's edge statistic `S_coh` (a coherent windowed sum) cancels on the oscillating sinc skirt and reads noise-level over obvious leakage, so its leakage-touched map, fixed-contributor attachment, and difficulty classification are unreliable on real data | **Resolved (code + docs):** root cause is the full-record rfft phase ramp `exp(±i2πf·t₀)` (`t₀=start_us`) that makes truncation leakage oscillate so a coherent sum cancels on it. Fixed by one shared de-ramp to the active-region turn-on (`deramp_to_active_start` / `leakage_touched_intervals` in `preprocessing/leakage.py`) feeding the existing `S_coh` — no new statistic. Stage 4's edge-coherence calls and Stage 3's gap-pass mask both consume the de-ramped leakage-touched map; `estimate_leakage_reach` is demoted to an unused analytic proposal; `T_edge` calibrated to 8 for both stages. Both research reports (`research/peak-detection`, `research/complex-edge-coherence`) revised. Implementation overview in [`planning/leakage-detection-rework.md`](planning/leakage-detection-rework.md) |
