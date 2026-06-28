@@ -220,10 +220,10 @@ pre { background: #11151a; color: #e6e6e6; padding: 0.75rem 1rem;
 .topnav .freqjump { font-size: 0.85rem; padding: 0.1rem 0.3rem; border-radius: 3px;
                     border: 1px solid #2c4a6e; background: #fff; color: #1a1a1a;
                     width: 7.5rem; }
-.topnav .nav-flag { font-size: 0.85rem; padding: 0.12rem 0.5rem; border-radius: 3px;
+.topnav .nav-step { font-size: 0.85rem; padding: 0.12rem 0.5rem; border-radius: 3px;
                     border: 1px solid #2c4a6e; background: #cfe0f5; color: #11233a;
-                    cursor: pointer; }
-.topnav .nav-flag:hover { background: #fff; }
+                    cursor: pointer; white-space: nowrap; }
+.topnav .nav-step:hover { background: #fff; }
 /* Tag filter: a button that drops a checkbox menu of the tags present in the
    report. The menu is absolutely positioned under the button and CSS-hidden
    until .tagfilter-open; with scripting off it never opens (so every window
@@ -308,6 +308,17 @@ ul.summary { list-style: none; padding: 0; display: grid; gap: 0.15rem 1.75rem;
               border-radius: 4px; padding: 0.6rem 1rem 0.5rem;
               margin: 0.75rem 0 1.25rem; }
 .win-header h1 { margin: 0 0 0.35rem; font-size: 1.6rem; line-height: 1.2; }
+.win-header h1 .win-range { font-weight: 400; color: #54616f; }
+/* Title-bar action row: prev/next/index nav (buttons) + curate verbs. */
+.win-header-bar { display: flex; flex-wrap: wrap; align-items: center;
+                  gap: 0.4rem; margin: 0 0 0.5rem; }
+.win-navbtn { font-size: 0.8rem; padding: 0.12rem 0.55rem; border-radius: 3px;
+              border: 1px solid #2c4a6e; background: #eef4fb; color: #11233a;
+              text-decoration: none; white-space: nowrap; }
+.win-navbtn:hover { background: #fff; text-decoration: none; }
+/* Curate verbs sit to the right of the nav buttons. */
+.win-cur-actions { display: inline-flex; flex-wrap: wrap; gap: 0.4rem;
+                   margin-left: auto; }
 .metric-chips { display: flex; flex-wrap: wrap; gap: 0.4rem;
                 margin: 0 0 0.35rem; }
 .metric-chip { display: inline-block; padding: 0.15rem 0.55rem;
@@ -316,7 +327,6 @@ ul.summary { list-style: none; padding: 0; display: grid; gap: 0.15rem 1.75rem;
 .metric-chip-attn { background: #f9ded3; color: #7a2810;
                     text-decoration: none; }
 .metric-chip-attn:hover { background: #f3c9bd; }
-.header-subtitle { font-size: 0.82rem; color: #666; }
 /* Per-window tag chips (the filterable classifications). Smaller and lighter
    than the metric chips above; one accent per tag, echoed in the filter menu. */
 .win-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.4rem; }
@@ -405,10 +415,14 @@ table.audit td:last-child, table.audit th:last-child { text-align: left; }
 .spectrum-ctx-svg { display: block; width: 100%; height: auto; }
 .specnav-rect { fill: #1559b3; fill-opacity: 0; pointer-events: all;
                 cursor: pointer; }
-.specnav-rect.attn { fill: #f4a23b; fill-opacity: 0.2; }
+.specnav-rect.attn { fill: #f4a23b; fill-opacity: 0.34; }
 .spectrum-ctx a:hover .specnav-rect, .specnav-rect:hover { fill: #1559b3;
                                                            fill-opacity: 0.28; }
 .specnav-rect.current { fill: #2ca02c; fill-opacity: 0.42; }
+/* A queued "mark reviewed" drops the attention tint from the overview rect. */
+.specnav-rect.attn.cur-reviewed { fill-opacity: 0; }
+.cur-btn.cur-queued { background: #d6eddb; border-color: #1e8e3e;
+                      color: #145523; }
 .winmap-hint { font-size: 0.8rem; color: #666; margin: 0 0 1.25rem; }
 .winmap-pop { position: fixed; z-index: 60; pointer-events: none; background: #fff;
               border: 1px solid #888; box-shadow: 0 2px 10px rgba(0,0,0,0.25);
@@ -435,11 +449,12 @@ html:not(.curation-enabled) table.ledger td:last-child,
 html:not(.curation-enabled) table.ledger th:last-child { display: none; }
 .cur-cell { display: inline-flex; align-items: center; gap: 0.3rem;
             white-space: nowrap; }
-.cur-cell .cur-btn, .cur-window-controls .cur-btn {
+.cur-cell .cur-btn, .cur-window-controls .cur-btn, .win-header-bar .cur-btn {
     font-size: 0.78rem; padding: 0.08rem 0.45rem; border-radius: 3px;
     border: 1px solid #2c4a6e; background: #cfe0f5; color: #11233a;
     cursor: pointer; }
-.cur-cell .cur-btn:hover, .cur-window-controls .cur-btn:hover { background: #fff; }
+.cur-cell .cur-btn:hover, .cur-window-controls .cur-btn:hover,
+.win-header-bar .cur-btn:hover { background: #fff; }
 .cur-cell .cur-k { width: 3rem; font-size: 0.78rem; }
 .cur-mergebox { font-size: 0.78rem; color: #444; }
 .cur-splitbadge { display: inline-block; padding: 0.02rem 0.35rem;
@@ -463,7 +478,13 @@ tr.cur-added > td { background: #d8efdc !important; }
 .cur-cart-head .cur-min { width: 100%; text-align: left; background: none;
     border: 0; color: #fff; font-size: 0.9rem; font-weight: 600;
     padding: 0.45rem 0.7rem; cursor: pointer; }
+.cur-keys { padding: 0.35rem 0.7rem; border-bottom: 1px solid #d0d4d9;
+    background: #f5f8fc; color: #33485f; font-size: 0.72rem; line-height: 1.5; }
+.cur-keys kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.72rem; background: #fff; border: 1px solid #b8c4d2;
+    border-bottom-width: 2px; border-radius: 3px; padding: 0 0.3rem; color: #11233a; }
 .cur-cart-body { overflow-y: auto; padding: 0.4rem 0.7rem; }
+#cur-cart.cur-collapsed .cur-keys,
 #cur-cart.cur-collapsed .cur-cart-body,
 #cur-cart.cur-collapsed .cur-cart-foot { display: none; }
 .cur-grp-h { font-weight: 600; color: #11233a; margin: 0.35rem 0 0.1rem; }
@@ -1445,7 +1466,10 @@ def _spectrum_ctx_css(overview_name: Optional[str]) -> str:
 # so this degrades gracefully when scripting is off.
 _WINMAP_JS = """<script>
 (function () {
-  var rects = document.querySelectorAll('[data-window]');
+  // The overview rects carry data-window; curation added data-window to many
+  // other elements (plot wraps, buttons, fitted-line rows), so target the
+  // overview rects by class rather than the now-overloaded [data-window].
+  var rects = document.querySelectorAll('.specnav-rect');
   var rows = document.querySelectorAll('tr[data-thumb]');
   if (!rects.length && !rows.length) return;
   var pop = document.createElement('div');
@@ -1478,7 +1502,7 @@ _WINMAP_JS = """<script>
     // tooltip when scripting is on; without this script the <title> stays and
     // the browser shows it natively. (Table rows store data-info directly.)
     var titleEl = el.querySelector('title');
-    if (titleEl) {
+    if (titleEl && titleEl.parentNode === el) {  // only a direct-child <title>
       el.setAttribute('data-info', titleEl.textContent);
       el.removeChild(titleEl);
     }
@@ -1570,14 +1594,6 @@ _NAV_JS = """<script>
       if (vis(sec(nav[j][0]))) { go(nav[j][0]); return; }
     }
   }
-  function stepFlag(delta) {
-    var i = curIdx(), n = nav.length;
-    for (var k = 1; k <= n; k++) {
-      var j = i + delta * k;
-      if (j < 0 || j >= n) return;
-      if (nav[j][3] && vis(sec(nav[j][0]))) { go(nav[j][0]); return; }
-    }
-  }
   function jumpFreq(f) {
     if (isNaN(f)) return;
     var best = null, bestD = Infinity;
@@ -1594,9 +1610,9 @@ _NAV_JS = """<script>
     jumpFreq(parseFloat(this.value));
   });
   document.addEventListener('click', function (e) {
-    var t = e.target.closest ? e.target.closest('.nav-flag') : null;
+    var t = e.target.closest ? e.target.closest('.nav-step') : null;
     if (!t) return;
-    stepFlag(t.classList.contains('nav-flag-prev') ? -1 : 1);
+    step(t.classList.contains('nav-step-prev') ? -1 : 1);
   });
   document.addEventListener('keydown', function (e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -1604,12 +1620,11 @@ _NAV_JS = """<script>
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     if (e.key === 'j') step(1);
     else if (e.key === 'k') step(-1);
-    else if (e.key === 'J') stepFlag(1);
-    else if (e.key === 'K') stepFlag(-1);
   });
-  // Exposed so the curation "mark reviewed & next" action can advance the queue.
-  window.__navNextFlag = function () { stepFlag(1); };
-  window.__navPrevFlag = function () { stepFlag(-1); };
+  // Exposed so the curation "mark reviewed & next" action can advance to the
+  // next window (filter-aware, skipping windows the tag filter hides).
+  window.__navNext = function () { step(1); };
+  window.__navPrev = function () { step(-1); };
 })();
 </script>"""
 
@@ -1712,6 +1727,11 @@ _CURATION_JS = r"""<script>
   cart.innerHTML =
     '<div class="cur-cart-head"><button type="button" class="cur-min"' +
     ' title="collapse">Curation cart (<span class="cur-n">0</span>)</button></div>' +
+    '<div class="cur-keys" title="hover the magnitude plot near a peak, then '
+    + 'press a key">Plot keys: ' +
+    '<kbd>r</kbd> remove · <kbd>s</kbd> split · <kbd>m</kbd> merge nearest · ' +
+    '<kbd>a</kbd> arm add &nbsp;|&nbsp; <kbd>j</kbd>/<kbd>k</kbd> window · ' +
+    '<kbd>J</kbd>/<kbd>K</kbd> flagged</div>' +
     '<div class="cur-cart-body"></div>' +
     '<div class="cur-cart-foot">' +
     '<button type="button" class="cur-dl">Download .csv</button>' +
@@ -1771,6 +1791,60 @@ _CURATION_JS = r"""<script>
     return Array.prototype.slice.call(document.querySelectorAll(
       'table.' + table + ' tr[data-window="' + w + '"][data-freq="' + f + '"]'));
   }
+
+  // Invert a pointer x over a magnitude panel to a molecular MHz, using the
+  // stamped data-axes box (natural-pixel axes span -> frequency limits). Returns
+  // null outside the data axes or before the image has loaded. Shared by
+  // click-to-add and the plot keyboard shortcuts so both map x the same way.
+  function plotMhz(img, clientX) {
+    var px0 = parseFloat(img.getAttribute('data-axes-x0'));
+    var px1 = parseFloat(img.getAttribute('data-axes-x1'));
+    var flo = parseFloat(img.getAttribute('data-axes-flo'));
+    var fhi = parseFloat(img.getAttribute('data-axes-fhi'));
+    if (!(px1 > px0) || isNaN(flo) || isNaN(fhi) || !img.naturalWidth) return null;
+    var rect = img.getBoundingClientRect();
+    var nat = (clientX - rect.left) / rect.width * img.naturalWidth;
+    if (nat < px0 || nat > px1) return null;  // outside the data axes
+    return flo + (nat - px0) / (px1 - px0) * (fhi - flo);
+  }
+  // The fitted-line rows of one window, in document order.
+  function peakRowsIn(w) {
+    return Array.prototype.slice.call(document.querySelectorAll(
+      'table.peak-list tr[data-window="' + w + '"][data-freq]'));
+  }
+  // The fitted-line row whose frequency is closest to a target MHz (raw
+  // data-freq vs the molecular axis -- the epsilon offset is sub-pixel, the same
+  // approximation the on-plot markers already use).
+  function nearestPeakRow(w, mhz) {
+    var best = null, bestD = Infinity;
+    peakRowsIn(w).forEach(function (tr) {
+      var f = parseFloat(tr.getAttribute('data-freq'));
+      if (isNaN(f)) return;
+      var d = Math.abs(f - mhz);
+      if (d < bestD) { bestD = d; best = tr; }
+    });
+    return best;
+  }
+  // The fitted-line row closest in frequency to a given row (its neighbour).
+  function neighborPeakRow(w, tr) {
+    var f0 = parseFloat(tr.getAttribute('data-freq'));
+    var best = null, bestD = Infinity;
+    peakRowsIn(w).forEach(function (r) {
+      if (r === tr) return;
+      var f = parseFloat(r.getAttribute('data-freq'));
+      if (isNaN(f)) return;
+      var d = Math.abs(f - f0);
+      if (d < bestD) { bestD = d; best = r; }
+    });
+    return best;
+  }
+  // Queue a merge of two-or-more fitted lines in one window (shared by the
+  // "Merge selected" button and the plot `m` shortcut).
+  function queueMerge(w, fs) {
+    addOp({ action: 'merge', window: w, freqs: fs.join(';'), params: '',
+            label: 'merge ' + fs.join(' + ') });
+  }
+
   function refreshRows() {
     // Re-derive every row's pending state from the op list (idempotent).
     document.querySelectorAll('tr[data-freq]').forEach(function (tr) {
@@ -1860,6 +1934,29 @@ _CURATION_JS = r"""<script>
     });
   }
 
+  // Reflect queued "mark reviewed" (accept) ops, keyed by window: drop the
+  // orange attention tint from that window's rect in every overview overlay, and
+  // badge EVERY accept button for the window -- the index list button and the
+  // window page's "Mark reviewed" button alike, so the two stay in sync. Derived
+  // from the op list (idempotent), so un-queuing restores both -- a live preview
+  // of what applying the accept will do.
+  function refreshReviewed() {
+    var accepted = {};
+    ops.forEach(function (o) { if (o.action === 'accept') accepted[o.window] = 1; });
+    document.querySelectorAll('.specnav-rect').forEach(function (r) {
+      r.classList.toggle('cur-reviewed', !!accepted[r.getAttribute('data-window')]);
+    });
+    document.querySelectorAll('[data-act="accept"]').forEach(function (b) {
+      var q = !!accepted[b.getAttribute('data-window')];
+      b.classList.toggle('cur-queued', q);
+      if (b.classList.contains('cur-list-accept')) {
+        b.textContent = q ? '✓ queued' : '✓ reviewed';
+      } else {
+        b.textContent = q ? 'Reviewed ✓ (queued)' : 'Mark reviewed';
+      }
+    });
+  }
+
   function renderCart() {
     var n = ops.length;
     document.querySelectorAll('.cur-badge').forEach(function (b) {
@@ -1890,6 +1987,7 @@ _CURATION_JS = r"""<script>
     copyTa.value = toCsv();
     refreshRows();
     renderMarkers();
+    refreshReviewed();
     // Reflect queued undos on the applied-edits buttons.
     document.querySelectorAll('.cur-undo').forEach(function (b) {
       var eid = parseInt(b.getAttribute('data-edit-id'), 10);
@@ -1996,15 +2094,9 @@ _CURATION_JS = r"""<script>
       if (root.classList.contains('report-compact')) return;
       var awrap = t.closest('.cur-plot-wrap');
       if (!awrap || !awrap.classList.contains('cur-armed')) return;
-      var px0 = parseFloat(t.getAttribute('data-axes-x0'));
-      var px1 = parseFloat(t.getAttribute('data-axes-x1'));
-      var flo = parseFloat(t.getAttribute('data-axes-flo'));
-      var fhi = parseFloat(t.getAttribute('data-axes-fhi'));
-      if (!(px1 > px0) || isNaN(flo) || isNaN(fhi) || !t.naturalWidth) return;
-      var rect = t.getBoundingClientRect();
-      var nat = (e.clientX - rect.left) / rect.width * t.naturalWidth;
-      if (nat < px0 || nat > px1) return;  // outside the data axes
-      var f = (flo + (nat - px0) / (px1 - px0) * (fhi - flo)).toFixed(4);
+      var mhz = plotMhz(t, e.clientX);
+      if (mhz == null) return;
+      var f = mhz.toFixed(4);
       addOp({ action: 'add', window: t.getAttribute('data-window'), freqs: f,
               params: '', label: 'add ' + f + ' (plot)' });
       return;
@@ -2023,8 +2115,7 @@ _CURATION_JS = r"""<script>
         fs.push(tr.getAttribute('data-freq'));
         cb.checked = false;
       });
-      addOp({ action: 'merge', window: w, freqs: fs.join(';'), params: '',
-              label: 'merge ' + fs.join(' + ') });
+      queueMerge(w, fs);
       return;
     }
     if (act === 'add-typed') {
@@ -2037,15 +2128,21 @@ _CURATION_JS = r"""<script>
       if (inp) inp.value = '';
       return;
     }
-    if (act === 'accept') {
-      addOp({ action: 'accept', window: t.getAttribute('data-window'),
-              freqs: '', params: '', label: 'mark reviewed' });
+    if (act === 'accept') {  // toggle the "mark reviewed" op for this window
+      var wa = t.getAttribute('data-window');
+      var iacc = findKey('accept|' + wa + '||');
+      if (iacc >= 0) { dropOp(iacc); }
+      else { addOp({ action: 'accept', window: wa, freqs: '', params: '',
+                     label: 'mark reviewed' }); }
       return;
     }
     if (act === 'accept-next') {
-      addOp({ action: 'accept', window: t.getAttribute('data-window'),
-              freqs: '', params: '', label: 'mark reviewed' });
-      if (window.__navNextFlag) window.__navNextFlag();
+      var wn = t.getAttribute('data-window');
+      if (findKey('accept|' + wn + '||') < 0) {
+        addOp({ action: 'accept', window: wn, freqs: '', params: '',
+                label: 'mark reviewed' });
+      }
+      if (window.__navNext) window.__navNext();
       return;
     }
     if (act === 'clear-window') {
@@ -2102,37 +2199,47 @@ _CURATION_JS = r"""<script>
     }
   });
 
-  // Keyboard shortcuts (curation mode only): act on the fitted-line row / window
-  // under the pointer to cut mouse round-trips on dense windows. r = remove,
-  // s = split, m = toggle merge-select (all on the hovered row); a = arm
-  // click-to-add on the hovered window. Reuses the existing button handlers, so
-  // toggles and cart state stay identical to clicking.
-  var lastRow = null, lastSec = null;
-  document.addEventListener('mouseover', function (e) {
-    if (!e.target.closest) return;
-    var tr = e.target.closest('tr[data-freq]');
-    if (tr) lastRow = tr;
-    var sec = e.target.closest('section[id^="window-"]');
-    if (sec) lastSec = sec;
+  // Keyboard shortcuts (curation mode only): act on the magnitude plot the
+  // pointer is over -- consistent with click-to-add. Hover near a peak, then
+  // r = remove it, s = split it (into 2), m = merge it with its nearest
+  // neighbour, a = arm/disarm click-to-add on this plot. r/s reuse the row's own
+  // buttons and m reuses queueMerge, so cart state stays identical to clicking;
+  // the affected row(s) flash and an on-plot marker appears as feedback.
+  var hoverWin = null, hoverMhz = null;
+  document.addEventListener('mousemove', function (e) {
+    if (!root.classList.contains('curation-enabled')) return;
+    var img = e.target.closest ? e.target.closest('img.cur-plot') : null;
+    var mhz = img ? plotMhz(img, e.clientX) : null;
+    if (mhz == null) { hoverWin = null; hoverMhz = null; return; }
+    hoverWin = img.getAttribute('data-window');
+    hoverMhz = mhz;
   });
   document.addEventListener('keydown', function (e) {
     if (!root.classList.contains('curation-enabled')) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     var tag = (e.target.tagName || '').toUpperCase();
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
-    if ((e.key === 'r' || e.key === 's' || e.key === 'm') && lastRow) {
-      if (e.key === 'm') {
-        var cb = lastRow.querySelector('.cur-merge');
-        if (cb) { cb.checked = !cb.checked; e.preventDefault(); }
-        return;
-      }
-      var sel = e.key === 'r' ? '[data-act="remove"]' : '[data-act="split"]';
-      var btn = lastRow.querySelector(sel);
-      if (btn) { btn.click(); e.preventDefault(); }
-    } else if (e.key === 'a' && lastSec) {
-      var arm = lastSec.querySelector('.cur-plot-arm');
+    if (e.key === 'a' && hoverWin) {
+      var sec = document.getElementById('window-' + hoverWin);
+      var arm = sec && sec.querySelector('.cur-plot-arm');
       if (arm) { arm.click(); e.preventDefault(); }
+      return;
     }
+    if (e.key !== 'r' && e.key !== 's' && e.key !== 'm') return;
+    if (!hoverWin || hoverMhz == null) return;
+    var tr = nearestPeakRow(hoverWin, hoverMhz);
+    if (!tr) return;
+    if (e.key === 'm') {
+      var nb = neighborPeakRow(hoverWin, tr);
+      if (!nb) return;  // nothing to merge with
+      queueMerge(hoverWin,
+        [tr.getAttribute('data-freq'), nb.getAttribute('data-freq')]);
+      flashRow(tr); flashRow(nb); e.preventDefault();
+      return;
+    }
+    var btn = tr.querySelector(
+      e.key === 'r' ? '[data-act="remove"]' : '[data-act="split"]');
+    if (btn) { btn.click(); flashRow(tr); e.preventDefault(); }
   });
 
   renderCart();
@@ -2143,13 +2250,22 @@ _CURATION_JS = r"""<script>
 def _index_window_table(
     rows: List[Tuple[int, float, float, int, Optional[float], bool, bool]],
     preview_attrs: Dict[int, str],
+    tags_by_wid: Optional[Dict[int, List[str]]] = None,
 ) -> str:
     """Build the index window list. Each row:
     ``(wid, lo, hi, k, chi2r, has_page, needs_attention)``.
 
     ``preview_attrs`` maps a window id to its pre-formatted ``<tr>`` attributes
     (``data-thumb`` / ``data-info``) so the shared hover-preview popup shows the
-    magnitude panel on hover -- the same map feeds the final line list."""
+    magnitude panel on hover -- the same map feeds the final line list.
+    ``tags_by_wid`` supplies each window's classification chips (the same set the
+    per-window header and the topnav filter use) for the Tags column.
+
+    The trailing **Review** column is curate-only and rendered only for windows
+    flagged for attention: its button queues an ``accept`` (mark reviewed) and,
+    via the curation script, drops the orange attention tint from that window's
+    rect in every overview overlay."""
+    tags_by_wid = tags_by_wid or {}
     out_rows: List[List[str]] = []
     row_attrs: List[str] = []
     for wid, lo, hi, k, chi2r, has_page, attn in rows:
@@ -2158,15 +2274,16 @@ def _index_window_table(
             link = f'<a href="windows/{_window_page_name(wid)}">{label}</a>'
         else:
             link = label
+        # Curate-mode quick triage: mark an attention window reviewed straight
+        # from the overview without scrolling to it (the per-window button still
+        # exists). Only attention windows carry the control.
+        review = ""
         if attn:
-            link += '<span class="badge">attention</span>'
-        # Curate-mode quick triage: mark a window reviewed straight from the
-        # overview without scrolling to it (the per-window button still exists).
-        link += (
-            '<button type="button" class="cur-only cur-btn cur-list-accept" '
-            f'data-act="accept" data-window="{wid}" '
-            'title="mark this window reviewed">&#10003; reviewed</button>'
-        )
+            review = (
+                '<button type="button" class="cur-only cur-btn cur-list-accept" '
+                f'data-act="accept" data-window="{wid}" '
+                'title="mark this window reviewed">&#10003; reviewed</button>'
+            )
         row_attrs.append(preview_attrs.get(wid, ""))
         out_rows.append(
             [
@@ -2174,10 +2291,19 @@ def _index_window_table(
                 f"{min(lo, hi):.3f}&ndash;{max(lo, hi):.3f}",
                 f"{k:,}",
                 "n/a" if chi2r is None else _esc(_md_num(chi2r, 3)),
+                _window_tag_chips(tags_by_wid.get(wid, [])),
+                review,
             ]
         )
     return _table(
-        ["Window", "Range (MHz)", "Peaks", "&chi;&sup2;<sub>r</sub>"],
+        [
+            "Window",
+            "Range (MHz)",
+            "Peaks",
+            "&chi;&sup2;<sub>r</sub>",
+            "Tags",
+            '<span class="cur-only">Review</span>',
+        ],
         out_rows,
         cls="window-list",
         row_attrs=row_attrs,
@@ -2416,14 +2542,53 @@ def _peak_curation_cell() -> str:
     )
 
 
+def _window_header_bar(
+    window_id: int, prev_id: Optional[int], next_id: Optional[int]
+) -> str:
+    """The window title-bar action row at the top of the header.
+
+    Prev/next/index navigation (always visible, styled as buttons) plus the
+    common per-window curation verbs -- ``Mark reviewed`` (accept),
+    ``Reviewed & next`` (accept-next, advances to the next window), and
+    ``Clear window edits`` -- wrapped ``cur-only`` so they show only in curation
+    mode. The curation script binds them by ``data-act``. Navigation links use the
+    multi-page hrefs; the single-file collapse rewrites them to in-document
+    anchors.
+    """
+    nav = ['<a class="win-navbtn" href="../index.html">index</a>']
+    if prev_id is not None:
+        nav.append(
+            f'<a class="win-navbtn" href="{_window_page_name(prev_id)}">'
+            f"&larr; window {prev_id}</a>"
+        )
+    if next_id is not None:
+        nav.append(
+            f'<a class="win-navbtn" href="{_window_page_name(next_id)}">'
+            f"window {next_id} &rarr;</a>"
+        )
+    cur = (
+        '<span class="cur-only win-cur-actions">'
+        f'<button type="button" class="cur-btn" data-act="accept" '
+        f'data-window="{window_id}">Mark reviewed</button>'
+        f'<button type="button" class="cur-btn" data-act="accept-next" '
+        f'data-window="{window_id}" title="mark reviewed and advance to the next '
+        f'window">Reviewed &amp; next</button>'
+        f'<button type="button" class="cur-btn cur-clear-win" '
+        f'data-act="clear-window" data-window="{window_id}">'
+        "Clear window edits</button></span>"
+    )
+    return '<div class="win-header-bar">' + "".join(nav) + cur + "</div>"
+
+
 def _window_curation_controls(window_id: int, lo: float, hi: float) -> List[str]:
     """The per-window curation controls under the fitted-lines table.
 
-    The merge-selected button, a typed ``+ Add peak at <MHz>`` input, and an
-    optional bare ``Mark reviewed`` accept. All wrapped in ``cur-only`` so the
-    whole block is CSS-hidden outside curation mode; the curation script binds
-    them by ``data-act`` and the enclosing ``<section>`` (which scopes the merge
-    selection to this one window).
+    The merge-selected button and a typed ``+ Add peak at <MHz>`` input (the
+    accept / accept-next / clear verbs live in the title bar, see
+    :func:`_window_header_bar`). Wrapped in ``cur-only`` so the block is
+    CSS-hidden outside curation mode; the curation script binds them by
+    ``data-act`` and the enclosing ``<section>`` (which scopes the merge selection
+    to this one window).
     """
     rng = f"{lo:.4f}&ndash;{hi:.4f} MHz"
     return [
@@ -2436,13 +2601,6 @@ def _window_curation_controls(window_id: int, lo: float, hi: float) -> List[str]
         f'<button type="button" class="cur-btn" data-act="add-typed" '
         f'data-window="{window_id}">Add</button></label>',
         f'<span class="cur-range">window range {rng}</span>',
-        f'<button type="button" class="cur-btn" data-act="accept" '
-        f'data-window="{window_id}">Mark reviewed</button>',
-        f'<button type="button" class="cur-btn" data-act="accept-next" '
-        f'data-window="{window_id}" title="mark reviewed and jump to the next '
-        f'flagged window">Reviewed &amp; next &#9873;&rarr;</button>',
-        f'<button type="button" class="cur-btn cur-clear-win" data-act="clear-window" '
-        f'data-window="{window_id}">Clear window edits</button>',
         "</div>",
     ]
 
@@ -3162,6 +3320,8 @@ def _fit_panels_block(
         g = mag_geom
         attrs = (
             f' class="cur-plot" data-window="{window_id}"'
+            ' title="curate: hover near a peak, then r remove / s split /'
+            ' m merge nearest / a arm add"'
             f' data-axes-x0="{g["x0"]:.2f}" data-axes-x1="{g["x1"]:.2f}"'
             f' data-axes-y0="{g["y0"]:.2f}" data-axes-y1="{g["y1"]:.2f}"'
             f' data-axes-w="{g["w"]:.2f}" data-axes-h="{g["h"]:.2f}"'
@@ -3247,18 +3407,7 @@ def _window_page(
                 attn_markers.append((float(f), r.kind, r.detail))
 
     # --- nav bar (thin, prev/next/index) ----------------------------------------
-    nav = ['<div class="nav">', '<a href="../index.html">&larr; index</a>']
-    if prev_id is not None:
-        nav.append(
-            f'<a href="{_window_page_name(prev_id)}">&larr; window {prev_id}</a>'
-        )
-    if next_id is not None:
-        nav.append(
-            f'<a href="{_window_page_name(next_id)}">window {next_id} &rarr;</a>'
-        )
-    nav.append("</div>")
-
-    # --- header band (visual weight: range title + metric chips + subtitle) ------
+    # --- header band: action bar (nav + curate verbs) + title + chips ----------
     range_str = f"{min(lo, hi):.4f}&ndash;{max(lo, hi):.4f} MHz"
     k = len(wf.fitted_peaks)
     chips: List[str] = [
@@ -3270,6 +3419,10 @@ def _window_page(
             f'<span class="metric-chip">&epsilon; {eps_val * 100.0:.2f}%</span>'
         )
     chips.append(f'<span class="metric-chip">{k} peak{"s" if k != 1 else ""}</span>')
+    chips.append(
+        f'<span class="metric-chip">&tau; {_esc(_md_num(tau, 4))} &micro;s</span>'
+    )
+    chips.append(f'<span class="metric-chip">{_esc(shape)}</span>')
     if has_attention:
         chips.append(
             '<a href="#attention" class="metric-chip metric-chip-attn">'
@@ -3277,13 +3430,12 @@ def _window_page(
         )
     header: List[str] = [
         '<div class="win-header">',
-        f"<h1>{range_str}</h1>",
+        _window_header_bar(window_id, prev_id, next_id),
+        f'<h1>Window {window_id} <span class="win-range">{range_str}</span></h1>',
         '<div class="metric-chips">',
         *chips,
         "</div>",
         _window_tag_chips(tags or []),
-        f'<div class="header-subtitle">'
-        f"&tau; {_esc(_md_num(tau, 4))} &micro;s &middot; {_esc(shape)}</div>",
         "</div>",
     ]
 
@@ -3325,7 +3477,6 @@ def _window_page(
 
     # --- assemble body in target order ------------------------------------------
     body: List[str] = [
-        *nav,
         *header,
         "<h2>Fit</h2>",
         *_fit_panels_block(
@@ -3565,18 +3716,19 @@ def _collapse_site_to_single_file(
             'onchange="if(this.value)location.hash=this.value">'
             f'<option value="">Jump to window…</option>{opts}</select>'
         )
-        # Jump to the window nearest a typed frequency, and step through the
-        # attention queue (prev/next flagged window). Keyboard: j/k = window,
-        # J/K = flagged window. Inert without scripting.
+        # Jump to the window nearest a typed frequency, and step prev/next window
+        # (skipping windows hidden by the tag filter, so the filter selects which
+        # window types you step through). Keyboard: j/k = window. Inert without
+        # scripting.
         nav_links.append(
             '<input class="freqjump" type="number" step="any" '
             'aria-label="Jump to frequency (MHz)" placeholder="Freq MHz…">'
         )
         nav_links.append(
-            '<button class="nav-flag nav-flag-prev" type="button" '
-            'title="previous flagged window (K)">&#9873;&larr;</button>'
-            '<button class="nav-flag nav-flag-next" type="button" '
-            'title="next flagged window (J)">&#9873;&rarr;</button>'
+            '<button class="nav-step nav-step-prev" type="button" '
+            'title="previous window (k)">&larr; window</button>'
+            '<button class="nav-step nav-step-next" type="button" '
+            'title="next window (j)">window &rarr;</button>'
         )
         # Tag filter: the menu lists every tag present across the rendered
         # windows; ticking tags hides the window sections whose tag set does not
@@ -3870,16 +4022,16 @@ def _assemble_report_site(
         if has_page
     ]
 
-    # The interactive full-spectrum overview image, rendered ONCE (attention
-    # windows shaded into it): it backs both the index "Spectrum" section and
-    # every window page's "Spectrum context" via a clickable per-window overlay,
-    # so the full-spectrum image is rendered and embedded once rather than
-    # re-rendered per window.
-    attention_ranges = [_window_range(win_fits[w]) for w in sorted(attention_ids)]
+    # The interactive full-spectrum overview image, rendered ONCE: it backs both
+    # the index "Spectrum" section and every window page's "Spectrum context" via
+    # a clickable per-window overlay, so the full-spectrum image is rendered and
+    # embedded once rather than re-rendered per window. Attention windows are NOT
+    # shaded into the image -- the SVG overlay draws the (toggleable) attention
+    # tint, so marking a window reviewed can clear it client-side.
     overview_name: Optional[str] = None
     if index_rows and nav_band is not None:
         try:
-            ov_fig = _plot_index_overview(bundle, attention_ranges)
+            ov_fig = _plot_index_overview(bundle, [])
             overview_name = f"{stem}_overview.png"
             _save_figure_png(ov_fig, out_root / "figures" / overview_name, dpi=dpi)
             plt.close(ov_fig)
@@ -4056,7 +4208,7 @@ def _assemble_report_site(
         f"<p>{len(page_ids):,} of {len(all_ids):,} windows have a detail page "
         f"(<code>{_esc(key)}</code> filter); {len(attention_ids):,} flagged for "
         "attention.</p>",
-        _index_window_table(index_rows, preview_attrs),
+        _index_window_table(index_rows, preview_attrs, tags_by_wid),
         *_applied_edits_section(review.decision_log),
         '<h2 id="final-list">Final line list</h2>',
         f"<p>All {len(products.peaks):,} calibrated lines "

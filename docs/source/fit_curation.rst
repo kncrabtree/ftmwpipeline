@@ -56,11 +56,12 @@ The report carries three kinds of content:
 
 The single-file report carries a sticky navigation bar. Besides the section
 links and the **Jump to window** picker, a **Freq MHz** box jumps to the window
-nearest a typed frequency, and a pair of ⚑ buttons step through the attention
-queue (flagged windows only). Keyboard shortcuts mirror these: ``j`` / ``k`` move
-to the next / previous window, ``J`` / ``K`` to the next / previous *flagged*
-window. The controls are inert when scripting is disabled; the anchors still
-work.
+nearest a typed frequency, and a pair of **window** buttons step to the previous
+/ next window. Keyboard shortcuts mirror these: ``j`` / ``k`` move to the next /
+previous window. Both the buttons and the keys skip windows hidden by the tag
+filter, so the filter selects which window types you step through. The controls
+are inert when scripting is disabled; the anchors still work. Each window's own
+title bar also carries **index** / prev / next buttons.
 
 Each window header carries a row of **tag chips** classifying the window at a
 glance — ``attention`` (in the review queue), ``edited`` / ``reviewed`` (its
@@ -70,8 +71,8 @@ edit propagated into it), ``merged`` (an auto-merged degenerate pair),
 catalog hit, when a catalog was supplied). A **Filter** menu in the navigation
 bar lists the tags present in the report; ticking one or more hides every window
 whose tags do not include any of the ticked ones (``Show all`` clears the
-filter). The keyboard and ⚑ navigation skip the hidden windows while a filter is
-active.
+filter). The keyboard and window-step navigation skip the hidden windows while a
+filter is active.
 
 Three flags scope the output for large spectra, where rendering a detail page
 for every window is neither fast nor useful:
@@ -121,15 +122,20 @@ Stage 5 model frequency, the value the edit verbs match on, not the calibrated
 value shown in the table. The browser never writes to the file; it only composes
 the curation file that the command-line tool applies.
 
-Several convenience controls speed a long worklist. Each window has a **Reviewed
-& next** button that marks it reviewed and jumps to the next flagged window, and
-a **Clear window edits** button that drops just that window's queued ops; the
-index windows table gains a per-row **reviewed** button so windows can be triaged
-from the overview without scrolling to each. A cart entry is clickable — it
-scrolls to its originating window and flashes the row. In curation mode the
-hovered fitted-line row also takes keyboard shortcuts: ``r`` to remove, ``s`` to
-split, ``m`` to toggle its merge selection, and ``a`` to arm click-to-add on the
-hovered window's plot.
+Several convenience controls speed a long worklist. Each window's title bar
+carries **Mark reviewed**, **Reviewed & next** (marks it reviewed and advances to
+the next window, honouring the tag filter), and **Clear window edits** (drops just
+that window's queued ops); the index windows table gains a per-row **reviewed**
+button, in its own column on attention windows, so they can be triaged from the
+overview without scrolling to each. Marking a window reviewed (from either place)
+also clears its attention tint from the overview, and the two buttons stay in
+sync. A cart entry is clickable — it scrolls to its originating window and flashes
+the row. In curation mode the
+magnitude plots take keyboard shortcuts that act on the peak nearest the pointer,
+mirroring click-to-add: hover the plot near a line, then press ``r`` to remove
+it, ``s`` to split it in two, or ``m`` to merge it with its nearest neighbour;
+``a`` arms (and disarms) click-to-add on that plot. The affected line flashes and
+its marker appears on the plot. The cart lists these keys for reference.
 
 Applied edits and rollback
 --------------------------

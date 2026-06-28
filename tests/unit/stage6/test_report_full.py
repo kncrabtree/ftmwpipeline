@@ -507,11 +507,29 @@ def test_window_curation_controls():
     assert 'class="cur-only cur-window-controls"' in block
     assert 'data-act="merge-selected"' in block and 'data-window="24"' in block
     assert 'data-act="add-typed"' in block and 'class="cur-addfreq"' in block
-    assert 'data-act="accept"' in block  # the bare "Mark reviewed"
-    # Convenience controls: mark-reviewed-and-advance + per-window clear.
-    assert 'data-act="accept-next"' in block
-    assert 'data-act="clear-window"' in block
     assert "38449.0000" in block and "38451.0000" in block  # the window range
+    # The accept / accept-next / clear verbs now live in the title bar, not here.
+    assert 'data-act="accept"' not in block
+    assert 'data-act="accept-next"' not in block
+    assert 'data-act="clear-window"' not in block
+
+
+def test_window_header_bar():
+    from ftmwpipeline._internal.report_html_impl import _window_header_bar
+
+    bar = _window_header_bar(24, 23, 25)
+    assert 'class="win-header-bar"' in bar
+    # Navigation buttons (index + prev/next window), styled as buttons.
+    assert 'class="win-navbtn" href="../index.html"' in bar
+    assert "window 23" in bar and "window 25" in bar
+    # Curation verbs moved here, curate-only, no flag glyph on "Reviewed & next".
+    assert 'class="cur-only win-cur-actions"' in bar
+    assert 'data-act="accept"' in bar and 'data-act="accept-next"' in bar
+    assert 'data-act="clear-window"' in bar
+    assert "&#9873;" not in bar  # no flag icon
+    # Endpoints: no prev/next link when there is no neighbour.
+    first = _window_header_bar(0, None, 5)
+    assert "&larr; window" not in first and "window 5 &rarr;" in first
 
 
 def test_applied_edits_section():
@@ -1346,7 +1364,31 @@ def test_single_file_carries_curation_surface(full_report_single_file):
     assert 'data-act="accept-next"' in doc and 'data-act="clear-window"' in doc
     assert "cur-list-accept" in doc
     assert "function jumpToEdit" in doc and "function clearWindow" in doc
-    assert "__navNextFlag" in doc
+    assert "__navNext" in doc
+    # Window nav + curate verbs live in the title bar; topnav steps plain windows
+    # (no flagged-step buttons), relying on the tag filter for window types.
+    assert 'class="win-header-bar"' in doc and 'class="win-navbtn"' in doc
+    assert 'class="nav-step nav-step-prev"' in doc
+    assert "nav-flag" not in doc and "&#9873;" not in doc
+    # Plot keyboard shortcuts act on the magnitude plot under the pointer (not
+    # table rows), mirroring click-to-add, and the cart shows a legend for them.
+    assert "function nearestPeakRow" in doc and "function plotMhz" in doc
+    assert 'class="cur-keys"' in doc
+    # A queued "mark reviewed" drops the attention tint from the overview rect,
+    # and syncs every accept button for that window (index list + window page).
+    assert "function refreshReviewed" in doc
+    assert ".specnav-rect.attn.cur-reviewed" in doc
+    assert "querySelectorAll('[data-act=\"accept\"]')" in doc
+    assert ".cur-btn.cur-queued" in doc
+    # The overview attention tint is the SVG overlay (toggleable), not baked into
+    # the shared overview PNG -- so reviewing can clear it client-side.
+    assert ".specnav-rect.attn { fill:" in doc
+    # Regression guard: the hover-preview popup must target the overview rects by
+    # class, not the now-overloaded [data-window] (curation hangs data-window on
+    # plot wraps/buttons/rows, and an attention plot wrap holds a descendant
+    # <title> that broke the bind loop and killed the table-row previews).
+    assert "querySelectorAll('.specnav-rect')" in doc
+    assert "titleEl.parentNode === el" in doc
 
 
 def _peak_list_row(doc: str):
