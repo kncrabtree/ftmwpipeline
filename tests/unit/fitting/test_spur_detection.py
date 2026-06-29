@@ -311,6 +311,54 @@ def test_gate_accepts_probe_confirmed_flat_cluster_off_integer():
     assert abs(gated[0].center_mhz - 33421.1) < 1e-9
 
 
+def test_cluster_decay_three_tier_gate_flag_keep():
+    """A Stage-2b cluster nominee is gated/flagged/kept by its coherent decay.
+
+    Clear decay (< LINE) -> kept clean; flat (>= FLAT) -> gated; ambiguous
+    (LINE..FLAT) -> kept but appended to ``flat_decay_out`` for review. The
+    narrow lane (a single-bin integer-MHz clock tone) is unaffected -- only the
+    over-nominating cluster catalog gets the three tiers.
+    """
+
+    def _cluster(center: float) -> SpurCluster:
+        return SpurCluster(
+            center_freq_mhz=center,
+            peak_bin_index=10,
+            n_bins=1,
+            bin_indices=(10,),
+            saturated=False,
+        )
+
+    # Flat (ratio 0.9) -> gated.
+    assert (
+        len(gate_spurs([], [_cluster(33000.0)], decay_probe=lambda f: (0.9, 50.0))) == 1
+    )
+
+    # Clearly decays (ratio 0.3) -> kept clean, nothing gated or flagged.
+    flags_decay: list[float] = []
+    assert (
+        gate_spurs(
+            [],
+            [_cluster(33000.0)],
+            decay_probe=lambda f: (0.3, 50.0),
+            flat_decay_out=flags_decay,
+        )
+        == []
+    )
+    assert flags_decay == []
+
+    # Ambiguous (ratio 0.72) -> NOT gated, flagged for review.
+    flags_amb: list[float] = []
+    gated = gate_spurs(
+        [],
+        [_cluster(33000.0)],
+        decay_probe=lambda f: (0.72, 50.0),
+        flat_decay_out=flags_amb,
+    )
+    assert gated == []
+    assert flags_amb == [33000.0]
+
+
 def _pair_split_grid(f_int=35840.0):
     """A CW tone between two bins: power split across the pair, sinc-level
     second neighbors (the measured 655 35840 profile)."""

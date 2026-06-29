@@ -3505,6 +3505,29 @@ def _compute_attention_reasons(
                 )
             )
 
+    # --- flat_decay: a Stage-2b flat-cluster line whose coherent decay was
+    # ambiguous (a real line and a CW tone are indistinguishable there) was kept
+    # rather than masked. Advisory -- surface it for review without forcing the
+    # window into the active queue (most such picks are clock spurs).
+    flat_decay_freqs = [
+        float(p.frequency_mhz)
+        for p in wf.fitted_peaks
+        if getattr(p, "flat_decay", False)
+    ]
+    if flat_decay_freqs:
+        reasons.append(
+            AttentionReason(
+                kind="flat_decay",
+                detail=(
+                    f"{len(flat_decay_freqs)} line(s) sat in the ambiguous "
+                    "spur-decay band (real line vs CW tone indistinguishable); "
+                    "kept for review -- confirm molecular or drop (review)"
+                ),
+                severity=0.2,
+                locations=flat_decay_freqs,
+            )
+        )
+
     # --- edge_boundary: flag when a fitted peak sits within 1 resolution element of edge ---
     if wf.fitted_peaks and wf.window is not None and wf.window.freq_range is not None:
         flo, fhi = wf.window.freq_range

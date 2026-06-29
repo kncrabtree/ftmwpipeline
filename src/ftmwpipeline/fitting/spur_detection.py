@@ -263,14 +263,27 @@ class SpurSet:
         Active-FT bin spacing (MHz).
     mask_half_width_bins : int
         Residual-mask half-width in active-FT bins.
+    flat_decay_flags : tuple of float
+        Molecular-frequency centers of cluster nominees kept-but-flagged: a
+        Stage-2b flat-cluster pick whose coherent decay is ambiguous
+        (``DEFAULT_DECAY_RATIO_LINE..DEFAULT_DECAY_RATIO_FLAT``) -- a real line
+        and a CW tone are indistinguishable there, so the line is fit but
+        surfaced for review rather than masked.
     """
 
     spurs: Tuple[GatedSpur, ...]
     bin_spacing_mhz: float
     mask_half_width_bins: int = DEFAULT_MASK_HALF_WIDTH_BINS
+    flat_decay_flags: Tuple[float, ...] = ()
 
     def __bool__(self) -> bool:
         return len(self.spurs) > 0
+
+    def flat_decay_match(self, freq_mhz: float) -> bool:
+        """Whether a fitted peak at ``freq_mhz`` (molecular) was flagged
+        ``flat_decay`` (kept-but-ambiguous cluster nominee)."""
+        tol = self.nomination_tol_mhz
+        return any(abs(freq_mhz - c) <= tol for c in self.flat_decay_flags)
 
     @property
     def centers_mhz(self) -> np.ndarray:
@@ -980,6 +993,7 @@ def gate_spurs(
     ] = None,
     chirp_response_gate_ratio: float = DEFAULT_CHIRP_RESPONSE_GATE_RATIO,
     chirp_response_protect_ratio: float = DEFAULT_CHIRP_RESPONSE_PROTECT_RATIO,
+    flat_decay_out: Optional[List[float]] = None,
 ) -> List[GatedSpur]:
     """Combine the frequency-domain spurs with the Stage 2b cluster set.
 
@@ -1293,25 +1307,54 @@ def gate_spurs(
         cr = _chirp_verdict(center)
         if cr == "protect":
             continue
-        if cr == "gate" and not _clearly_decays(center):
-            # Pre-record confirms CW and the line does not clearly decay. A
-            # clearly-decaying cluster is a strong molecular line persisting
-            # into the pre-record (the dominant UXR failure mode), so it falls
-            # through to the flatness check below, which does not gate it.
-            source = "flat+saturated" if cl.saturated else "flat"
-            _add(center, source, float("nan"), float("nan"))
-            continue
+        # Decay-driven verdict for a Stage-2b flat-cluster nominee. Unlike the
+        # narrow lane (a single-bin integer-MHz tone is a clock spur regardless
+        # of decay), the cluster catalog over-nominates *strong real lines* that
+        # look flat-topped to the STFT clustering. The coherent decay is the
+        # arbiter, in three tiers:
+        #   * clearly decays (< LINE)        -> a real line, keep clean;
+        #   * flat (>= FLAT)                 -> a CW tone, gate;
+        #   * ambiguous (LINE..FLAT)         -> indistinguishable by decay alone
+        #                                       (the line bleeds into the
+        #                                       pre-record at a near-CW ratio) ->
+        #                                       keep but flag ``flat_decay`` for
+        #                                       human review.
+        # The chirp gate-confirm no longer independently removes a non-flat
+        # cluster (that was the bug); it only decides when the probe is
+        # inconclusive (NaN / sub-threshold SNR).
         if decay_probe is not None:
             decay_ratio, amp_snr = decay_probe(center)
-            if (
-                np.isfinite(decay_ratio)
-                and decay_ratio >= DEFAULT_DECAY_RATIO_FLAT
-                and amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT
-            ):
+            if np.isfinite(decay_ratio):
+                if (
+                    decay_ratio < DEFAULT_DECAY_RATIO_LINE
+                    and amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO
+                ):
+                    continue  # clearly decays -> real line, keep clean
+                if (
+                    decay_ratio >= DEFAULT_DECAY_RATIO_FLAT
+                    and amp_snr >= DEFAULT_DECAY_MIN_SNR_FLAT
+                ):
+                    source = "flat+saturated" if cl.saturated else "flat"
+                    _add(center, source, float("nan"), float("nan"))
+                    continue
+                if (
+                    DEFAULT_DECAY_RATIO_LINE <= decay_ratio < DEFAULT_DECAY_RATIO_FLAT
+                    and amp_snr >= DEFAULT_DECAY_MIN_SNR_VETO
+                ):
+                    if flat_decay_out is not None:
+                        flat_decay_out.append(center)
+                    continue  # ambiguous -> keep, flag for review
+            # Inconclusive probe (NaN or sub-threshold SNR): fall back to the
+            # chirp gate-confirm.
+            if cr == "gate":
                 source = "flat+saturated" if cl.saturated else "flat"
                 _add(center, source, float("nan"), float("nan"))
             continue
-        # Legacy (no probe): only saturated clusters at integer MHz.
+        # Legacy (no probe): chirp gate-confirm, else saturated integer-MHz.
+        if cr == "gate":
+            source = "flat+saturated" if cl.saturated else "flat"
+            _add(center, source, float("nan"), float("nan"))
+            continue
         if not cl.saturated:
             continue
         if abs(center - round(center)) > integer_tol_mhz:
@@ -1474,6 +1517,7 @@ def build_spur_set(
                 locked_fallback=True,
             )
     clusters = tuple(saturated_clusters) if use_stft_catalog else ()
+    flat_decay_flags: List[float] = []
     gated = gate_spurs(
         active_spurs,
         clusters,
@@ -1486,6 +1530,7 @@ def build_spur_set(
         chirp_response_probe=chirp_response_probe,
         chirp_response_gate_ratio=chirp_response_gate_ratio,
         chirp_response_protect_ratio=chirp_response_protect_ratio,
+        flat_decay_out=flat_decay_flags,
     )
     if freqs.size >= 2:
         bin_spacing = float(np.median(np.abs(np.diff(freqs))))
@@ -1515,6 +1560,7 @@ def build_spur_set(
         spurs=tuple(gated),
         bin_spacing_mhz=bin_spacing,
         mask_half_width_bins=base_bins,
+        flat_decay_flags=tuple(flat_decay_flags),
     )
 
 

@@ -151,6 +151,28 @@ def annotate_lattice_matches(
                 peak.clock_lattice = point.identity
 
 
+def annotate_flat_decay_matches(
+    spectrum_fit: SpectrumFit, spur_set: Optional[Any]
+) -> None:
+    """Stamp ``flat_decay`` on every fitted peak the spur gate kept-but-flagged.
+
+    Called after the fit is assembled but before persistence. A Stage-2b
+    flat-cluster nominee whose coherent decay was ambiguous (the ``flat_decay``
+    band) is fit rather than masked, but surfaced for review: this stamps the
+    review hint on the matching fitted peak. Purely informational -- no effect
+    on the fit. No-op when the spur set carries no flags.
+    """
+    if spur_set is None or not getattr(spur_set, "flat_decay_flags", ()):
+        return
+    for peak in spectrum_fit.fitted_peaks:
+        if spur_set.flat_decay_match(peak.frequency_mhz):
+            peak.flat_decay = True
+    for wf in spectrum_fit.window_fits:
+        for peak in wf.fitted_peaks:
+            if spur_set.flat_decay_match(peak.frequency_mhz):
+                peak.flat_decay = True
+
+
 def _resolve_tau_calibration_for_fit(
     persisted: Optional[TauCalibrationResult],
     tau_maj_override_us: Optional[float],
@@ -2222,6 +2244,9 @@ def _fit_peaks_impl(
     # read -- no effect on the fit statistics.  No-op when no declaration
     # was present (``clock_lattice`` is ``None``).
     annotate_lattice_matches(spectrum_fit, clock_lattice)
+    # Stamp ``flat_decay`` on peaks the spur gate kept-but-flagged (ambiguous
+    # cluster decay). Pure read -- a review hint, no effect on the fit.
+    annotate_flat_decay_matches(spectrum_fit, spur_set)
 
     # Peak-survival cleanup now runs *in the walk's per-node tail*
     # (``build_finalize_node`` injected into ``execute_plan``): each window's

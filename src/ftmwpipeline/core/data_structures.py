@@ -758,6 +758,15 @@ class FittedPeak:
     origin: str = "auto"
     """Per-peak provenance for Stage 6 curation (``"auto"`` or ``"user"``)."""
 
+    # Spur-review hint: set when the peak's frequency was a Stage-2b flat-cluster
+    # nominee whose coherent decay was ambiguous (the ``flat_decay`` band, where
+    # a real line and a CW tone are indistinguishable). The line was fit, not
+    # masked; the flag surfaces it for human review. Purely informational --
+    # it has no effect on the fit.
+    flat_decay: bool = False
+    """``True`` when the line sat in the ambiguous spur-decay band and was kept
+    for review rather than masked."""
+
     # Additional fitted parameters
     extra_parameters: Dict[str, float] = field(default_factory=dict)
     extra_errors: Dict[str, float] = field(default_factory=dict)
@@ -1820,7 +1829,7 @@ class LedgerCandidate:
 # but do not, on their own, put the window in the default review queue. The merge
 # advisory is the more-likely-correct call (~92% of the sub-resolution band is
 # over-splits), so it flags a re-split opportunity rather than demanding a look.
-_ADVISORY_REASON_KINDS: frozenset[str] = frozenset({"auto_merged_review"})
+_ADVISORY_REASON_KINDS: frozenset[str] = frozenset({"auto_merged_review", "flat_decay"})
 
 
 @dataclass
@@ -1831,7 +1840,8 @@ class AttentionReason:
     ----------
     kind : str
         Category: one of ``"worst_eps"``, ``"auto_merged_review"``,
-        ``"candidate_bearing"``, ``"spur_adjacent"``, ``"edge_boundary"``.
+        ``"candidate_bearing"``, ``"spur_adjacent"``, ``"edge_boundary"``,
+        ``"flat_decay"``.
     detail : str
         Human-readable explanation of the attention trigger.
     severity : float

@@ -561,6 +561,7 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
     _vlen_str = h5py.string_dtype(encoding="utf-8")
     clock_lattice_col: np.ndarray = np.empty(n, dtype=object)
     origin_col: np.ndarray = np.empty(n, dtype=object)
+    flat_decay_col: np.ndarray = np.empty(n, dtype="i1")
     for i, p in enumerate(peaks):
         columns["peak_id"][i] = _peak_id_to_int(p.peak_id)
         columns["frequency_mhz"][i] = float(p.frequency_mhz)
@@ -594,11 +595,14 @@ def _save_peak_columns(peaks: List[FittedPeak], peaks_group: h5py.Group) -> None
         clock_lattice_col[i] = p.clock_lattice if p.clock_lattice is not None else ""
         # origin: always a non-empty string; default "auto" for every pipeline peak.
         origin_col[i] = p.origin
+        # flat_decay: review hint, 0 for every peak unless the spur gate flagged it.
+        flat_decay_col[i] = 1 if p.flat_decay else 0
     for name, data in columns.items():
         peaks_group.create_dataset(name, data=data)
     # String columns stored as variable-length UTF-8 datasets.
     peaks_group.create_dataset("clock_lattice", data=clock_lattice_col, dtype=_vlen_str)
     peaks_group.create_dataset("origin", data=origin_col, dtype=_vlen_str)
+    peaks_group.create_dataset("flat_decay", data=flat_decay_col)
 
 
 # ---------------------------------------------------------------------------
@@ -859,6 +863,12 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
         ]
     else:
         origin_vals = ["auto"] * n
+    # Optional numeric column: absent in files written before the spur-review
+    # flag; default False (no peak flagged) for back-compat.
+    if "flat_decay" in peaks_group:
+        flat_decay_vals = [bool(int(v)) for v in peaks_group["flat_decay"][:]]
+    else:
+        flat_decay_vals = [False] * n
     peaks: List[FittedPeak] = []
     for i in range(n):
         ko_supported_raw = int(cols["knockout_supported"][i])
@@ -892,6 +902,7 @@ def _load_peak_columns(peaks_group: h5py.Group, *, where: str) -> List[FittedPea
                 knockout=knockout,
                 clock_lattice=clock_lattice_vals[i],
                 origin=origin_vals[i],
+                flat_decay=flat_decay_vals[i],
             )
         )
     return peaks
