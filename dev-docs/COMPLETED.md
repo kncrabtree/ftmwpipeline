@@ -123,7 +123,20 @@ Completed predecessors of this sequence (detail in their planning docs):
    untrimmed active grid, 3.4× low on this instrument) — fixed, with
    the seven-fixture re-baseline at `scratch/stage5-gate/ship-audit-d14/`
    improving every fixture (1512 recall .365→.443, 655 tier-1 pass
-   .844→.982). Follow-on:
+   .844→.982). **Full-pipeline validation (stages 0–6) completed:** the
+   segmented-scope fixture runs end-to-end with frequency accuracy at
+   0 ppm (matched-line residuals confirm the Rb-locked / null-timebase
+   assumption), and the cross-instrument run surfaced and fixed three
+   Stage-5 spur-handling defects — the chirp gate-confirm removing strong
+   real lines (a clear FID decay now overrides it), the add-loop seeding
+   beside a gated spur (a converged peak on a spur with no primary backing
+   is dropped), and the ambiguous-decay cluster three-tier policy (clear
+   decay keeps, flat gates, ambiguous keeps-and-flags `flat_decay` for
+   review) — all recall-neutral on the home fixtures. The catalog is an
+   extrapolated SPCAT prediction (no prior 8–18 GHz data), so strong-line
+   coverage against low-`E_lower` transitions is the honest check, not
+   recall. Residual nicety: promote the operator-supplied interleave/clock
+   declaration to recommended settings for the instrument class. Follow-on:
    [`planning/stage5-doublet-alternative.md`](planning/stage5-doublet-alternative.md)
    (sub-resolution pair adjudication; observation-only).
 The former candidate-revival and reports items of this list are absorbed

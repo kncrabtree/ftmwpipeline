@@ -31,16 +31,13 @@ historical narrative worth keeping are archived in [`COMPLETED.md`](COMPLETED.md
    batched `black`/`isort`/`mypy` cleanup, catching anything that landed since
    the last sweep. The documentation and repository-cleanup tracks are otherwise
    done.
-2. **Cross-instrument (succinimide UXR) end-to-end validation + catalog** — the
-   loader/cleanup/spur lane is in; the remaining work is a full end-to-end fit
-   validated against a succinimide catalog. *Queued next.*
-3. **Frequency-calibration / σ_f research write-up**
+2. **Frequency-calibration / σ_f research write-up**
    ([`research/frequency-calibration-uncertainty/PLAN.md`](research/frequency-calibration-uncertainty/PLAN.md))
    — findings settled and shipped into the report; the consolidated write-up is
    **gated on the pending third vinyl-cyanide acquisition** (turns the run-to-run
    `δ_down` comparison into a stable-vs-random test), expected within ~2 weeks.
    Pairs with productizing the data-driven `σ_floor` (cross-acquisition tier).
-4. **Ultra-high-SNR lineshape floor**
+3. **Ultra-high-SNR lineshape floor**
    ([`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md))
    — on the list; reassess on **655** and the strong **vinyl-fluoride** fixture
    (**1019**). Asym-τ was measured null in-pipeline, so this needs a fresh angle.
