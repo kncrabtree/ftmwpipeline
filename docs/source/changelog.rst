@@ -8,12 +8,15 @@ Changelog
 Notable changes to ``ftmwpipeline``, newest first. Versions follow
 `semantic versioning <https://semver.org/>`_.
 
-Version 0.1.0 (unreleased)
---------------------------
+Version 0.1.0b1 (2026-06-28)
+----------------------------
 
-The first development release. It provides the full free-induction-decay to
-fitted-line-list pipeline behind three interchangeable interfaces over one
-shared implementation: the command-line tool (:doc:`cli`), the
+The first public beta. As a pre-release it installs only when explicitly
+requested: ``pip install --pre ftmwpipeline``.
+
+It provides the full free-induction-decay to fitted-line-list pipeline behind
+three interchangeable interfaces over one shared implementation: the
+command-line tool (:doc:`cli`), the
 :class:`~ftmwpipeline.pipeline.Pipeline` class, and the stateless functional API
 (:doc:`api/index`).
 

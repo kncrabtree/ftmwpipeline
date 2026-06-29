@@ -14,12 +14,14 @@ sys.path.insert(0, os.path.abspath("../../src"))
 
 # Project information
 project = "ftmwpipeline"
-copyright = "2026, FTMW Pipeline Contributors"
-author = "FTMW Pipeline Contributors"
+copyright = "2026, Kyle N. Crabtree"
+author = "Kyle N. Crabtree"
 
-# The full version, including alpha/beta/rc tags
-release = "0.1.0"
-version = "0.1.0"
+# The full version, including alpha/beta/rc tags, sourced from the package so it
+# never drifts from src/ftmwpipeline/__init__.py.
+from ftmwpipeline import __version__ as release  # noqa: E402
+
+version = release
 
 # Extensions
 extensions = [

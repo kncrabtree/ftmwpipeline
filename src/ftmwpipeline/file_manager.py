@@ -27,11 +27,21 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 import h5py
 
+from . import __version__
 from .core.data_structures import FID
 from .io.fid_serialization import load_fid_from_hdf5, save_fid_to_hdf5
 
 # Module-level logger for file manager operations
 logger = logging.getLogger(__name__)
+
+
+# On-disk format version of the .ftmw container, written to the file root at
+# creation. It is independent of the package version and uses MAJOR.MINOR
+# semantics: bump MAJOR for a change that older readers cannot safely parse,
+# MINOR for a backward-compatible addition. Reading is governed by
+# _check_format_compatibility(): a newer MAJOR is refused, a newer MINOR warns,
+# a missing stamp is treated as a legacy pre-stamp file.
+FTMW_FORMAT_VERSION = "1.0"
 
 
 # Custom exceptions for clear error handling
@@ -84,6 +94,23 @@ class PipelineCorruptionError(PipelineFileError):
             f"Pipeline file is corrupted: {filepath}\n"
             f"Details: {corruption_details}\n"
             f"Try recreating from original data source."
+        )
+
+
+class PipelineCompatibilityError(PipelineFileError):
+    """Raised when a pipeline file's format version is too new to read."""
+
+    def __init__(self, filepath: Path, file_version: str, supported_version: str):
+        self.filepath = filepath
+        self.file_version = file_version
+        self.supported_version = supported_version
+        super().__init__(
+            f"Pipeline file format is newer than this ftmwpipeline supports:\n"
+            f"  File: {filepath}\n"
+            f"  File format version:      {file_version}\n"
+            f"  Supported format version: {supported_version}\n\n"
+            f"Upgrade ftmwpipeline to read this file:\n"
+            f"  pip install --upgrade ftmwpipeline"
         )
 
 
@@ -340,6 +367,11 @@ def create_pipeline_file(
 
     try:
         with h5py.File(filepath, "w") as h5f:
+            # Stamp the file-format and writer-package versions at the root for
+            # forward/backward-compatibility checks on open.
+            h5f.attrs["ftmw_format_version"] = FTMW_FORMAT_VERSION
+            h5f.attrs["created_with_ftmwpipeline"] = __version__
+
             # Store source metadata
             source_group = h5f.create_group("source_metadata")
             source_dict = source_metadata.to_dict()
@@ -414,6 +446,49 @@ def _warn_legacy_ft_apodization_keys(filepath: Path, h5f: "h5py.File") -> None:
             )
 
 
+def _check_format_compatibility(filepath: Path, h5f: "h5py.File") -> None:
+    """Check the file's format-version stamp against this package.
+
+    The stamp is the root ``ftmw_format_version`` attribute (MAJOR.MINOR). A
+    file with a newer MAJOR cannot be parsed safely and raises
+    :class:`PipelineCompatibilityError`; a newer MINOR (same MAJOR) is readable
+    but may carry data this version ignores, so it warns. A file with no stamp
+    predates version stamping and is treated as a compatible legacy file with a
+    warning.
+    """
+    file_version = h5f.attrs.get("ftmw_format_version")
+    if file_version is None:
+        logger.warning(
+            "%s carries no format-version stamp; treating it as a legacy "
+            "pre-1.0 file and proceeding.",
+            filepath.name,
+        )
+        return
+
+    file_version = str(file_version)
+    try:
+        file_major, file_minor = (int(p) for p in file_version.split(".")[:2])
+        cur_major, cur_minor = (int(p) for p in FTMW_FORMAT_VERSION.split(".")[:2])
+    except ValueError:
+        logger.warning(
+            "%s has an unparseable format-version stamp %r; proceeding.",
+            filepath.name,
+            file_version,
+        )
+        return
+
+    if file_major > cur_major:
+        raise PipelineCompatibilityError(filepath, file_version, FTMW_FORMAT_VERSION)
+    if file_major == cur_major and file_minor > cur_minor:
+        logger.warning(
+            "%s was written with a newer .ftmw format (%s > %s); reading it "
+            "with this version may ignore newer fields.",
+            filepath.name,
+            file_version,
+            FTMW_FORMAT_VERSION,
+        )
+
+
 def open_pipeline_file(
     filepath: Union[str, Path],
 ) -> Tuple[Path, SourceMetadata, PipelineStageTracker]:
@@ -458,10 +533,15 @@ def open_pipeline_file(
             if source_metadata is None:
                 raise PipelineCorruptionError(filepath, "Missing source metadata")
 
+            _check_format_compatibility(filepath, h5f)
             _warn_legacy_ft_apodization_keys(filepath, h5f)
 
             return filepath, source_metadata, stage_tracker
 
+    except PipelineFileError:
+        # Our own diagnostics (compatibility, corruption) carry intentional
+        # messages and types; let them propagate unwrapped.
+        raise
     except Exception as e:
         if "h5py" in str(type(e)).lower() or "hdf5" in str(e).lower():
             raise PipelineCorruptionError(filepath, f"HDF5 error: {e}") from e
@@ -505,6 +585,11 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
                 f"Original source file no longer exists: {source_metadata.source_path}"
             )
 
+        # Read the format/writer version stamps (absent on legacy files).
+        with h5py.File(filepath, "r") as h5f:
+            file_format_version = h5f.attrs.get("ftmw_format_version")
+            created_with = h5f.attrs.get("created_with_ftmwpipeline")
+
         # Validate stage data. Each completed stage must have its persisted
         # data present at its known HDF5 location (which is not always a group
         # named after the stage - e.g. Stage 1 is lightweight).
@@ -530,6 +615,10 @@ def validate_pipeline_file(filepath: Union[str, Path]) -> Dict[str, Any]:
             "warnings": warnings,
             "file_size": filepath.stat().st_size,
             "stages": stage_tracker.to_dict(),
+            "format_version": (
+                str(file_format_version) if file_format_version is not None else None
+            ),
+            "created_with": (str(created_with) if created_with is not None else None),
         }
 
     except Exception as e:

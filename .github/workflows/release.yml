@@ -1,0 +1,48 @@
+name: release
+
+# Build and publish to PyPI when a GitHub Release is published. Publishing uses
+# PyPI Trusted Publishing (OIDC) — no API token is stored. Configure the trusted
+# publisher on PyPI first (project `ftmwpipeline`, owner `kncrabtree`, workflow
+# `release.yml`, environment `pypi`); it may be registered as a pending publisher
+# before the project's first upload. Mark a pre-release (e.g. 0.1.0b1) as a
+# pre-release on the GitHub Release.
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      # Required for PyPI Trusted Publishing (OIDC).
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

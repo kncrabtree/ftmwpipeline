@@ -1,23 +1,23 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ftmwpipeline"
-version = "0.1.0"
+dynamic = ["version"]
 description = "A Python package for FTMW spectroscopy signal processing and peak fitting"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
-    {name = "FTMW Pipeline Contributors"}
+    {name = "Kyle N. Crabtree", email = "kncrabtree@ucdavis.edu"}
 ]
 maintainers = [
-    {name = "FTMW Pipeline Contributors"}
+    {name = "Kyle N. Crabtree", email = "kncrabtree@ucdavis.edu"}
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
@@ -57,8 +57,14 @@ dev = [
     "black>=22.0.0",
     "isort>=5.10.0",
     "flake8>=5.0.0",
+    # Lets flake8 read the [tool.flake8] config from pyproject.toml (flake8 does
+    # not read pyproject natively), so local and CI linting agree.
+    "Flake8-pyproject>=1.2.0",
     "mypy>=1.0.0",
     "pre-commit>=2.15.0",
+    # Release tooling: build sdist/wheel and validate the package metadata.
+    "build>=1.0.0",
+    "twine>=4.0.0",
 ]
 docs = [
     "sphinx>=5.0.0",
@@ -78,6 +84,9 @@ Repository = "https://github.com/kncrabtree/ftmwpipeline.git"
 
 [project.scripts]
 ftmwpipeline = "ftmwpipeline.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "ftmwpipeline.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

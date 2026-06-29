@@ -20,8 +20,11 @@ import h5py
 import numpy as np
 import pytest
 
+from ftmwpipeline import __version__
 from ftmwpipeline.core.data_structures import FID, FIDProcessingParameters, Sideband
 from ftmwpipeline.file_manager import (
+    FTMW_FORMAT_VERSION,
+    PipelineCompatibilityError,
     PipelineCorruptionError,
     PipelineExistsError,
     PipelineFileError,
@@ -545,3 +548,100 @@ class TestCustomExceptions:
         assert (
             "recreating" in error_str.lower()
         )  # Should suggest recreating from source
+
+
+class TestVersionStamping:
+    """The .ftmw root carries a format-version and writer-package stamp, and
+    opening checks the format version for forward/backward compatibility."""
+
+    @pytest.fixture
+    def sample_fid(self):
+        n_points = 256
+        spacing = 2e-11
+        t = np.arange(n_points) * spacing
+        data = np.exp(-t / 2e-6) * np.cos(2 * np.pi * 100e6 * t)
+        return FID(
+            data=data,
+            spacing=spacing,
+            probe_freq_mhz=40960.0,
+            sideband=Sideband.LOWER,
+            shots=1000,
+            processing=FIDProcessingParameters(start_us=1.0, end_us=4.0),
+        )
+
+    @pytest.fixture
+    def source_metadata(self):
+        return SourceMetadata(source_path="/test/source", format_name="blackchirp")
+
+    def test_create_stamps_format_and_package_version(
+        self, tmp_path, sample_fid, source_metadata
+    ):
+        """A freshly created file carries both root stamps."""
+        filepath = tmp_path / "stamped.ftmw"
+        create_pipeline_file(filepath, sample_fid, source_metadata)
+
+        with h5py.File(filepath, "r") as h5f:
+            assert h5f.attrs["ftmw_format_version"] == FTMW_FORMAT_VERSION
+            assert h5f.attrs["created_with_ftmwpipeline"] == __version__
+
+    def test_validate_reports_version_fields(
+        self, tmp_path, sample_fid, source_metadata
+    ):
+        """The validation report surfaces the stamps for the info command."""
+        filepath = tmp_path / "stamped.ftmw"
+        create_pipeline_file(filepath, sample_fid, source_metadata)
+
+        report = validate_pipeline_file(filepath)
+        assert report["valid"] is True
+        assert report["format_version"] == FTMW_FORMAT_VERSION
+        assert report["created_with"] == __version__
+
+    def test_open_rejects_newer_major_format(
+        self, tmp_path, sample_fid, source_metadata
+    ):
+        """A file from a newer MAJOR format cannot be read and raises."""
+        filepath = tmp_path / "future.ftmw"
+        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with h5py.File(filepath, "a") as h5f:
+            h5f.attrs["ftmw_format_version"] = "2.0"
+
+        with pytest.raises(PipelineCompatibilityError) as exc_info:
+            open_pipeline_file(filepath)
+        error = exc_info.value
+        assert error.file_version == "2.0"
+        assert error.supported_version == FTMW_FORMAT_VERSION
+        assert "upgrade" in str(error).lower()
+
+    def test_open_warns_on_newer_minor_but_succeeds(
+        self, tmp_path, sample_fid, source_metadata, caplog
+    ):
+        """A newer MINOR (same MAJOR) is readable, with a warning."""
+        filepath = tmp_path / "newer_minor.ftmw"
+        create_pipeline_file(filepath, sample_fid, source_metadata)
+        cur_major = FTMW_FORMAT_VERSION.split(".")[0]
+        with h5py.File(filepath, "a") as h5f:
+            h5f.attrs["ftmw_format_version"] = f"{cur_major}.99"
+
+        with caplog.at_level("WARNING"):
+            opened_path, _, _ = open_pipeline_file(filepath)
+        assert opened_path == filepath
+        assert any("newer .ftmw format" in r.message for r in caplog.records)
+
+    def test_open_treats_unstamped_file_as_legacy(
+        self, tmp_path, sample_fid, source_metadata, caplog
+    ):
+        """A file without the stamp (legacy) opens with a warning, no raise."""
+        filepath = tmp_path / "legacy.ftmw"
+        create_pipeline_file(filepath, sample_fid, source_metadata)
+        with h5py.File(filepath, "a") as h5f:
+            del h5f.attrs["ftmw_format_version"]
+
+        with caplog.at_level("WARNING"):
+            opened_path, _, _ = open_pipeline_file(filepath)
+        assert opened_path == filepath
+        assert any("legacy" in r.message.lower() for r in caplog.records)
+
+        # And the validation report degrades gracefully.
+        report = validate_pipeline_file(filepath)
+        assert report["valid"] is True
+        assert report["format_version"] is None

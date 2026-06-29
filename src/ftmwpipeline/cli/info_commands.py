@@ -38,6 +38,8 @@ def cmd_info(args: argparse.Namespace) -> int:
     print(f"Pipeline: {file_path}")
     print(f"  source:          {info.get('source_path')}")
     print(f"  format:          {info.get('format')}")
+    print(f"  file format:     {info.get('format_version') or '(legacy, unstamped)'}")
+    print(f"  created with:    {info.get('created_with') or '(unknown)'}")
     print(f"  imported:        {info.get('import_time')}")
     print(
         f"  completed:       {', '.join(info.get('completed_stages', [])) or '(none)'}"

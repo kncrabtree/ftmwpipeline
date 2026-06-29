@@ -6,8 +6,8 @@ spectroscopy data, including baseline estimation, peak detection, window assignm
 and advanced fitting algorithms.
 """
 
-__version__ = "0.1.0"
-__author__ = "FTMW Pipeline Contributors"
+__version__ = "0.1.0b1"
+__author__ = "Kyle N. Crabtree"
 
 # Functional API - can be imported as "import ftmwpipeline.api as ftmw"
 from ftmwpipeline import api
