@@ -35,8 +35,8 @@ from ftmwpipeline.core.data_structures import (
     WindowReviewStatus,
 )
 from ftmwpipeline.io.stage6_review_serialization import (
-    load_stage6_review_from_hdf5,
     load_stage6_review_from_file,
+    load_stage6_review_from_hdf5,
     save_stage6_review_to_hdf5,
 )
 from ftmwpipeline.pipeline import Pipeline
@@ -304,7 +304,9 @@ def test_attention_reasons_spur_adjacent(stage5_small_file, tmp_path):
     # Positive: a gated spur exactly on the first peak (plus a decoy 100 MHz off).
     wid, review = _run_with_spurs([lambda f: f, lambda f: f + 100.0])
     kinds = {r.kind for r in review.window_statuses[wid].attention_reasons}
-    assert "spur_adjacent" in kinds, f"expected spur_adjacent for window {wid}; got {kinds}"
+    assert (
+        "spur_adjacent" in kinds
+    ), f"expected spur_adjacent for window {wid}; got {kinds}"
 
     # Negative: every gated spur is 50 MHz away -- no window should flag.
     _, review_clean = _run_with_spurs([lambda f: f + 50.0])

@@ -1066,7 +1066,7 @@ def test_collapse_stamps_tags_and_builds_filter_menu(tmp_path):
     assert menu_vals == [t for t in _WINDOW_TAG_ORDER if t in expected]
     assert "tagfilter-clear" in doc  # the "show all" reset
 
-    # The filter + nav-skip behaviour is wired (inert without scripting): the
+    # The filter + nav-skip behavior is wired (inert without scripting): the
     # filter toggles .tag-hidden, the navigation skips hidden sections, and the
     # stylesheet hides a filtered-out section.
     assert "function apply" in _FILTER_JS and "tag-hidden" in _FILTER_JS

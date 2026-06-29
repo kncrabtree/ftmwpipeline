@@ -209,7 +209,7 @@ def _run_ft_trim(edge: str) -> RunFn:
 
     The canonical trim edges are read once from the persisted FT (its
     ``freq_array`` spans the active band; the array is sideband-ordered, so the
-    edges are its min/max, not its endpoints) and memoised for the sweep.
+    edges are its min/max, not its endpoints) and memoized for the sweep.
     """
     cache: Dict[Any, Tuple[float, float]] = {}
 
@@ -235,7 +235,7 @@ def _run_ft_trim(edge: str) -> RunFn:
 def _run_guard() -> RunFn:
     """Sweep the guard margin: the FT window start is ``chirp_end + guard``.
 
-    The chirp end is detected once per sweep (memoised on the working file's
+    The chirp end is detected once per sweep (memoized on the working file's
     identity) since the guard does not affect detection — it only shifts the
     start past the chirp. So the sweep costs one detection plus a fast FT per
     value, not a full detection per value.

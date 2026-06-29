@@ -17,8 +17,8 @@ import pytest
 from ftmwpipeline._internal.stage6_impl import (
     _DEDUP_TOL_MHZ,
     DEFAULT_DISPLAY_BAR,
-    _dedup_and_merge,
     _audit_step_candidates,
+    _dedup_and_merge,
     _rescue_round_candidates,
     _to_molecular,
     derive_candidate_ledger,

@@ -190,7 +190,7 @@ class TestNoiseRejection:
             )[0]
             ratios.append(r.ratio)
         median_ratio = float(np.median(ratios))
-        # Empirically, σ-weighted projection of pure noise onto a localised
+        # Empirically, σ-weighted projection of pure noise onto a localized
         # Lorentzian basis sits at coherent/detected median ≈ 0.5--0.7 (the
         # numerator is itself a noise average over a few bins). The screen's
         # discrimination comes from real Lorentzians sitting *above* this

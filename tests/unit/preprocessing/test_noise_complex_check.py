@@ -51,9 +51,7 @@ def _with_lines(cs: np.ndarray, amp: float) -> np.ndarray:
 
 def test_complex_scatter_unbiased_on_pure_noise():
     cs = _complex_noise(0)
-    sigma = estimate_noise_complex_scatter(
-        _freqs(), cs, np.ones(_N, dtype=bool)
-    )
+    sigma = estimate_noise_complex_scatter(_freqs(), cs, np.ones(_N, dtype=bool))
     # Within a few percent of the true complex RMS -- the magnitude estimator
     # is ~4% low here, the complex one is not.
     assert np.median(sigma) == pytest.approx(_TRUE_RMS, rel=0.03)

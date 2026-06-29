@@ -1160,22 +1160,20 @@ class TestCandidateLedgerConsistency:
         # Functional API
         cands_api = ftmw.get_candidate_ledger(fp)
 
-        assert len(cands_pipe) == len(cands_api), (
-            f"Candidate count mismatch: Pipeline={len(cands_pipe)}, API={len(cands_api)}"
-        )
+        assert len(cands_pipe) == len(
+            cands_api
+        ), f"Candidate count mismatch: Pipeline={len(cands_pipe)}, API={len(cands_api)}"
         for i, (cp, ca) in enumerate(zip(cands_pipe, cands_api)):
-            assert cp.frequency_mhz == pytest.approx(ca.frequency_mhz, abs=1e-9), (
-                f"Candidate {i}: freq differs (Pipeline={cp.frequency_mhz}, API={ca.frequency_mhz})"
-            )
-            assert cp.window_id == ca.window_id, (
-                f"Candidate {i}: window_id differs"
-            )
-            assert cp.evidence_kind == ca.evidence_kind, (
-                f"Candidate {i}: evidence_kind differs"
-            )
-            assert cp.best_evidence == pytest.approx(ca.best_evidence, rel=1e-6), (
-                f"Candidate {i}: best_evidence differs"
-            )
+            assert cp.frequency_mhz == pytest.approx(
+                ca.frequency_mhz, abs=1e-9
+            ), f"Candidate {i}: freq differs (Pipeline={cp.frequency_mhz}, API={ca.frequency_mhz})"
+            assert cp.window_id == ca.window_id, f"Candidate {i}: window_id differs"
+            assert (
+                cp.evidence_kind == ca.evidence_kind
+            ), f"Candidate {i}: evidence_kind differs"
+            assert cp.best_evidence == pytest.approx(
+                ca.best_evidence, rel=1e-6
+            ), f"Candidate {i}: best_evidence differs"
 
     def test_pipeline_vs_api_window_filter(self, baseline_2638_stage5_small):
         """window_id filter returns a consistent subset."""
@@ -1206,9 +1204,9 @@ class TestCandidateLedgerConsistency:
             check=False,
             timeout=30,
         )
-        assert result.returncode == 0, (
-            f"CLI review show failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"CLI review show failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
         # Should contain a header line
         assert "win" in result.stdout.lower() or "window" in result.stdout.lower()
 
@@ -1222,9 +1220,9 @@ class TestCandidateLedgerConsistency:
             check=False,
             timeout=30,
         )
-        assert result.returncode == 0, (
-            f"CLI review show --candidates failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"CLI review show --candidates failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
     def test_cli_candidate_count_matches_api(self, baseline_2638_stage5_small):
         """CLI candidate count (from stdout) matches API total."""
@@ -1245,9 +1243,10 @@ class TestCandidateLedgerConsistency:
         header_line = result.stdout.splitlines()[0] if result.stdout else ""
         # Extract the number from the first line
         import re
+
         m = re.search(r"(\d+) candidate", header_line)
         if m:
             cli_count = int(m.group(1))
-            assert cli_count == len(cands_api), (
-                f"CLI reports {cli_count} candidates but API returns {len(cands_api)}"
-            )
+            assert cli_count == len(
+                cands_api
+            ), f"CLI reports {cli_count} candidates but API returns {len(cands_api)}"

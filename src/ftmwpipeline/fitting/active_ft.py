@@ -206,9 +206,7 @@ def compute_active_ft(
 
     # Active-region indexing via the shared bounds helper so the display-only
     # padded FT extracts the *exact same* samples (see active_region_bounds).
-    start_idx, end_idx = active_region_bounds(
-        n_total, sample_dt_us, start_us, end_us
-    )
+    start_idx, end_idx = active_region_bounds(n_total, sample_dt_us, start_us, end_us)
     if end_idx <= start_idx:
         raise ValueError(
             f"active region [{start_us}, {end_us}] us is empty in FID of "

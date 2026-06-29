@@ -41,7 +41,9 @@ def _make_result(freqs, *, fit_tau, baseline_order=None) -> FittingResult:
     :class:`FittingResult`), so the diagonal/error correspondence is testable.
     """
     n = len(freqs)
-    labels = build_covariance_param_labels(n, fit_tau=fit_tau, baseline_order=baseline_order)
+    labels = build_covariance_param_labels(
+        n, fit_tau=fit_tau, baseline_order=baseline_order
+    )
     cov = _encoded_covariance(len(labels))
     fr = FittingResult()
     peaks = []
@@ -66,7 +68,9 @@ def _make_result(freqs, *, fit_tau, baseline_order=None) -> FittingResult:
     return fr
 
 
-def _entry_by_identity(fr: FittingResult, peak_id_a, kind_a, peak_id_b, kind_b) -> float:
+def _entry_by_identity(
+    fr: FittingResult, peak_id_a, kind_a, peak_id_b, kind_b
+) -> float:
     """Covariance entry between two parameters located by peak *identity*.
 
     ``peak_id`` is the stable seed id carried on the FittedPeak, so the same
@@ -82,16 +86,21 @@ def _entry_by_identity(fr: FittingResult, peak_id_a, kind_a, peak_id_b, kind_b) 
 def test_sorts_peaks_and_preserves_each_peak_block():
     fr = _make_result([30.0, 10.0, 20.0], fit_tau=True)
     # Capture the diagonal-error correspondence by identity before the sort.
-    before = {pk.peak_id: (pk.amplitude_error, pk.frequency_error, pk.phase_error) for pk in fr.fitted_peaks}
+    before = {
+        pk.peak_id: (pk.amplitude_error, pk.frequency_error, pk.phase_error)
+        for pk in fr.fitted_peaks
+    }
 
     sort_fitting_result_by_frequency(fr)
 
     # Peaks now ascending by frequency.
     assert [pk.frequency_mhz for pk in fr.fitted_peaks] == [10.0, 20.0, 30.0]
     # Labels are positional, so they are unchanged.
-    assert list(fr.covariance_param_labels) == build_covariance_param_labels(3, fit_tau=True, baseline_order=None)
+    assert list(fr.covariance_param_labels) == build_covariance_param_labels(
+        3, fit_tau=True, baseline_order=None
+    )
     # Every peak still owns its block: sqrt(diag at its new position) equals the
-    # errors it carried before (the values travelled with the peak).
+    # errors it carried before (the values traveled with the peak).
     labels = list(fr.covariance_param_labels)
     for pos, pk in enumerate(fr.fitted_peaks):
         a = labels.index(f"amplitude_{pos}")
@@ -102,7 +111,9 @@ def test_sorts_peaks_and_preserves_each_peak_block():
         assert np.sqrt(fr.covariance[o, o]) == exp_f
         assert np.sqrt(fr.covariance[p, p]) == exp_p
         # And the peak's own stored errors are untouched by the reorder.
-        assert (pk.amplitude_error, pk.frequency_error, pk.phase_error) == before[pk.peak_id]
+        assert (pk.amplitude_error, pk.frequency_error, pk.phase_error) == before[
+            pk.peak_id
+        ]
 
 
 def test_offdiagonal_crossterms_preserved_by_identity():
@@ -125,7 +136,9 @@ def test_full_matrix_is_a_pure_permutation():
     sort_fitting_result_by_frequency(fr)
     # The sorted matrix is a symmetric permutation of the original: same multiset
     # of entries, and the tau + baseline tail block is bit-for-bit unchanged.
-    assert sorted(fr.covariance.flatten().tolist()) == sorted(original.flatten().tolist())
+    assert sorted(fr.covariance.flatten().tolist()) == sorted(
+        original.flatten().tolist()
+    )
     tail = 3 * 3  # 3 peaks * 3 params; tau + baseline tail begins here
     np.testing.assert_array_equal(fr.covariance[tail:, tail:], original[tail:, tail:])
 

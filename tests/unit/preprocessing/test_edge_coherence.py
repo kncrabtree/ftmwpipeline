@@ -103,8 +103,8 @@ class TestCoherentBand:
 
 
 class TestMaxCumsum:
-    def test_hotspot_localised(self):
-        """Max-cumsum localises a coherent sub-stretch at its far edge."""
+    def test_hotspot_localized(self):
+        """Max-cumsum localizes a coherent sub-stretch at its far edge."""
         sigma = 0.02
         z = _complex_noise(64, sigma, seed=5)
         z[:20] += 3.0 * sigma  # coherent hot spot in the first 20 bins

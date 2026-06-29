@@ -7,7 +7,7 @@ script overlays both models on the same axes per window so the difference
 shows up at a glance:
 
 * Top panel: data |X| + Lorentzian model + Gaussian model on shared axes
-  (different colours).
+  (different colors).
 * Middle panel: |residual_L| and |residual_G| overlaid + noise band.
 * Bottom-left: residual histograms (L vs G).
 * Bottom-right: peak listing — fitted peaks from both shapes side-by-side.
@@ -51,8 +51,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
 import numpy as np
+from matplotlib.gridspec import GridSpec
 
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage5_impl import _build_active_ft_inputs
@@ -67,15 +67,23 @@ from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CSV_PATH = (
-    REPO_ROOT / "dev-docs" / "research" / "gaussian-shape" / "data"
+    REPO_ROOT
+    / "dev-docs"
+    / "research"
+    / "gaussian-shape"
+    / "data"
     / "exp_2638_unapodized_per_window.csv"
 )
 LORENTZ_FIXTURE = (
-    REPO_ROOT / "scratch" / "gaussian-shape-compare"
+    REPO_ROOT
+    / "scratch"
+    / "gaussian-shape-compare"
     / "exp_2638_unapodized_lorentzian.ftmw"
 )
 GAUSS_FIXTURE = (
-    REPO_ROOT / "scratch" / "gaussian-shape-compare"
+    REPO_ROOT
+    / "scratch"
+    / "gaussian-shape-compare"
     / "exp_2638_unapodized_gaussian.ftmw"
 )
 DEFAULT_OUTPUT_DIR = (
@@ -165,9 +173,7 @@ def _load_window_rows() -> dict[int, WindowRow]:
                     continue
                 g = f[f"stage5_fitting/windows/{wname}"]
                 fp_raw = g.attrs.get("fixed_parameters", "{}")
-                fp_str = (
-                    fp_raw if isinstance(fp_raw, str) else fp_raw.decode("utf-8")
-                )
+                fp_str = fp_raw if isinstance(fp_raw, str) else fp_raw.decode("utf-8")
                 fp = json.loads(fp_str)
                 n_fixed = sum(1 for k in fp if k.startswith("frozen_peak_"))
                 setattr(rows[wid], f"fixed_{key}", n_fixed)
@@ -176,7 +182,8 @@ def _load_window_rows() -> dict[int, WindowRow]:
                     if len(snr_arr) > 0:
                         setattr(rows[wid], f"snr_{key}", float(np.max(snr_arr)))
                 setattr(
-                    rows[wid], f"tau_{key}",
+                    rows[wid],
+                    f"tau_{key}",
                     float(g.attrs.get("tau_us", float("nan"))),
                 )
 
@@ -186,13 +193,13 @@ def _load_window_rows() -> dict[int, WindowRow]:
 
 
 def _select_windows(
-    rows: dict[int, WindowRow], mode: str, explicit_ids: Sequence[int],
+    rows: dict[int, WindowRow],
+    mode: str,
+    explicit_ids: Sequence[int],
 ) -> List[int]:
     if mode == "windows":
         if not explicit_ids:
-            raise SystemExit(
-                "--mode windows requires at least one --window-id"
-            )
+            raise SystemExit("--mode windows requires at least one --window-id")
         missing = [w for w in explicit_ids if w not in rows]
         if missing:
             raise SystemExit(f"window ids not in fixture: {missing}")
@@ -273,7 +280,10 @@ def _compute_padded_display_spectrum(
 
 
 def _build_window_model(
-    wf, freq_slice: np.ndarray, sideband, acquisition_us: float,
+    wf,
+    freq_slice: np.ndarray,
+    sideband,
+    acquisition_us: float,
 ) -> Tuple[np.ndarray, float, str]:
     """Sum the per-peak model on ``freq_slice`` for one shape's window fit.
 
@@ -302,16 +312,18 @@ def _build_window_model(
         peaks.append(
             ModelPeak(
                 amplitude=float(fp_data["amplitude"]),
-                offset_mhz=float(
-                    s * (float(fp_data["frequency_mhz"]) - center)
-                ),
+                offset_mhz=float(s * (float(fp_data["frequency_mhz"]) - center)),
                 phase=float(fp_data.get("phase", 0.0) or 0.0),
             )
         )
     if not peaks or tau_us <= 0:
         return np.zeros_like(freq_slice, dtype=np.complex128), tau_us, shape_str
     model = model_spectrum(
-        u_slice, peaks, tau_us, acquisition_us, shape=shape_str,
+        u_slice,
+        peaks,
+        tau_us,
+        acquisition_us,
+        shape=shape_str,
     )
     return model, tau_us, shape_str
 
@@ -370,10 +382,16 @@ def _save_compare_figure(
     )
     fig.suptitle(suptitle, fontsize=11)
     gs = GridSpec(
-        nrows=4, ncols=2, figure=fig,
+        nrows=4,
+        ncols=2,
+        figure=fig,
         height_ratios=[2.0, 1.4, 1.4, 1.2],
-        hspace=0.32, wspace=0.22,
-        left=0.07, right=0.97, top=0.94, bottom=0.06,
+        hspace=0.32,
+        wspace=0.22,
+        left=0.07,
+        right=0.97,
+        top=0.94,
+        bottom=0.06,
     )
     ax_mag = fig.add_subplot(gs[0, :])
     ax_re = fig.add_subplot(gs[1, 0], sharex=ax_mag)
@@ -391,34 +409,58 @@ def _save_compare_figure(
     # grid. Residual / χ² / noise calculations elsewhere still use the
     # canonical (native-resolution) active-FT.
     ax_mag.plot(
-        freq_display, mag_display * amp_scale, color="0.25", lw=0.6,
-        zorder=1, label=f"data |X| (×{DISPLAY_PAD_FACTOR} zpf display)",
+        freq_display,
+        mag_display * amp_scale,
+        color="0.25",
+        lw=0.6,
+        zorder=1,
+        label=f"data |X| (×{DISPLAY_PAD_FACTOR} zpf display)",
     )
     ax_mag.plot(
-        freq_display, mag_display * amp_scale, marker="o", linestyle="None",
-        markersize=2.0, markerfacecolor="0.1", markeredgecolor="0.1",
+        freq_display,
+        mag_display * amp_scale,
+        marker="o",
+        linestyle="None",
+        markersize=2.0,
+        markerfacecolor="0.1",
+        markeredgecolor="0.1",
         zorder=2,
     )
     ax_mag.plot(
-        freq_fine, np.abs(model_L_fine) * amp_scale, color="tab:red", lw=1.4,
+        freq_fine,
+        np.abs(model_L_fine) * amp_scale,
+        color="tab:red",
+        lw=1.4,
         zorder=4,
         label=f"Lorentzian (χ²ᵣ={row.c2_L:.2f})",
     )
     ax_mag.plot(
-        freq_fine, np.abs(model_G_fine) * amp_scale, color="tab:blue", lw=1.4,
-        ls="--", zorder=4,
+        freq_fine,
+        np.abs(model_G_fine) * amp_scale,
+        color="tab:blue",
+        lw=1.4,
+        ls="--",
+        zorder=4,
         label=f"Gaussian (χ²ᵣ={row.c2_G:.2f})",
     )
-    # Mark fitted-peak centres for each shape
+    # Mark fitted-peak centers for each shape
     for p in wf_L.fitted_peaks:
         ax_mag.axvline(
-            float(p.frequency_mhz), color="tab:red", lw=0.6, ls=":",
-            alpha=0.5, zorder=0,
+            float(p.frequency_mhz),
+            color="tab:red",
+            lw=0.6,
+            ls=":",
+            alpha=0.5,
+            zorder=0,
         )
     for p in wf_G.fitted_peaks:
         ax_mag.axvline(
-            float(p.frequency_mhz), color="tab:blue", lw=0.6, ls=":",
-            alpha=0.5, zorder=0,
+            float(p.frequency_mhz),
+            color="tab:blue",
+            lw=0.6,
+            ls=":",
+            alpha=0.5,
+            zorder=0,
         )
     ax_mag.set_ylabel(f"|X| ({units_lbl})", fontsize=10)
     ax_mag.set_title("data + both models", fontsize=9)
@@ -436,12 +478,19 @@ def _save_compare_figure(
         ax.axhline(band, color="0.3", lw=0.5, ls="--")
         ax.axhline(-band, color="0.3", lw=0.5, ls="--")
         ax.plot(
-            f_mhz, comp(res_L) * amp_scale, color="tab:red", lw=0.7,
+            f_mhz,
+            comp(res_L) * amp_scale,
+            color="tab:red",
+            lw=0.7,
             label="L residual",
         )
         ax.plot(
-            f_mhz, comp(res_G) * amp_scale, color="tab:blue", lw=0.7,
-            ls="--", label="G residual",
+            f_mhz,
+            comp(res_G) * amp_scale,
+            color="tab:blue",
+            lw=0.7,
+            ls="--",
+            label="G residual",
         )
         ax.set_ylabel(f"{label} residual ({units_lbl})", fontsize=9)
         ax.grid(True, alpha=0.25)
@@ -452,14 +501,28 @@ def _save_compare_figure(
     diff = (np.abs(res_L) - np.abs(res_G)) * amp_scale
     ax_diff.axhline(0.0, color="0.4", lw=0.6)
     ax_diff.plot(
-        f_mhz, diff, color="tab:purple", lw=0.7, label="|res L| − |res G|",
+        f_mhz,
+        diff,
+        color="tab:purple",
+        lw=0.7,
+        label="|res L| − |res G|",
     )
     ax_diff.fill_between(
-        f_mhz, 0.0, diff, where=(diff > 0), color="tab:red", alpha=0.18,
+        f_mhz,
+        0.0,
+        diff,
+        where=(diff > 0),
+        color="tab:red",
+        alpha=0.18,
         label="G fits better here",
     )
     ax_diff.fill_between(
-        f_mhz, 0.0, diff, where=(diff < 0), color="tab:blue", alpha=0.18,
+        f_mhz,
+        0.0,
+        diff,
+        where=(diff < 0),
+        color="tab:blue",
+        alpha=0.18,
         label="L fits better here",
     )
     ax_diff.set_ylabel(f"|res| diff ({units_lbl})", fontsize=9)
@@ -475,21 +538,37 @@ def _save_compare_figure(
         x_hi = max(float(mag_L.max()), float(mag_G.max()), 5.0 * sigma_c)
         bins = np.linspace(0.0, x_hi, 30)
         ax_hist.hist(
-            mag_L, bins=bins, density=True, color="tab:red", alpha=0.45,
-            edgecolor="tab:red", label=f"L (median {np.median(mag_L):.2f})",
+            mag_L,
+            bins=bins,
+            density=True,
+            color="tab:red",
+            alpha=0.45,
+            edgecolor="tab:red",
+            label=f"L (median {np.median(mag_L):.2f})",
         )
         ax_hist.hist(
-            mag_G, bins=bins, density=True, color="tab:blue", alpha=0.45,
-            edgecolor="tab:blue", label=f"G (median {np.median(mag_G):.2f})",
+            mag_G,
+            bins=bins,
+            density=True,
+            color="tab:blue",
+            alpha=0.45,
+            edgecolor="tab:blue",
+            label=f"G (median {np.median(mag_G):.2f})",
         )
         x = np.linspace(0.0, x_hi, 200)
-        rayleigh = (x / (sigma_c ** 2)) * np.exp(-(x ** 2) / (2.0 * sigma_c ** 2))
+        rayleigh = (x / (sigma_c**2)) * np.exp(-(x**2) / (2.0 * sigma_c**2))
         ax_hist.plot(
-            x, rayleigh, color="0.25", lw=1.0,
+            x,
+            rayleigh,
+            color="0.25",
+            lw=1.0,
             label=r"Rayleigh($\sigma_c$)",
         )
         ax_hist.axvline(
-            3.0 * sigma_c, color="0.4", lw=0.5, ls="--",
+            3.0 * sigma_c,
+            color="0.4",
+            lw=0.5,
+            ls="--",
         )
     ax_hist.set_xlabel(f"|residual| ({units_lbl})", fontsize=9)
     ax_hist.set_ylabel("density", fontsize=9)
@@ -507,8 +586,12 @@ def _save_compare_figure(
     for p in wf_G.fitted_peaks:
         lines.append("  " + _format_peak_row(p))
     ax_peaks.text(
-        0.02, 0.97, "\n".join(lines),
-        transform=ax_peaks.transAxes, family="monospace", fontsize=8.0,
+        0.02,
+        0.97,
+        "\n".join(lines),
+        transform=ax_peaks.transAxes,
+        family="monospace",
+        fontsize=8.0,
         va="top",
     )
 
@@ -532,7 +615,7 @@ class WindowVerdict:
     L_clustered: bool
     G_clustered: bool
     verdict: str  # one of CLEAN_G_WIN, CLEAN_L_WIN, L_OVER_FIT,
-                  # G_UNDER_FIT, G_OVER_FIT, TIED, BLEND_DEGENERATE
+    # G_UNDER_FIT, G_OVER_FIT, TIED, BLEND_DEGENERATE
 
 
 VERDICT_CLEAN_G = "clean-G-win"
@@ -581,27 +664,33 @@ def _classify_window(
     fwhm_G = 1.0 / (np.pi * tau_G) if tau_G > 0 else float("nan")
     sep_L = _min_pairwise_sep(p.frequency_mhz for p in wf_L.fitted_peaks)
     sep_G = _min_pairwise_sep(p.frequency_mhz for p in wf_G.fitted_peaks)
-    L_clustered = (
-        np.isfinite(fwhm_L) and sep_L < CLUSTER_FWHM_FRACTION * fwhm_L
-    )
-    G_clustered = (
-        np.isfinite(fwhm_G) and sep_G < CLUSTER_FWHM_FRACTION * fwhm_G
-    )
+    L_clustered = np.isfinite(fwhm_L) and sep_L < CLUSTER_FWHM_FRACTION * fwhm_L
+    G_clustered = np.isfinite(fwhm_G) and sep_G < CLUSTER_FWHM_FRACTION * fwhm_G
 
     base = WindowVerdict(
-        wid=wid, K_L=K_L, K_G=K_G,
-        chi2_L=chi2_L, chi2_G=chi2_G,
-        tau_L=tau_L, tau_G=tau_G,
-        fwhm_L_mhz=fwhm_L, fwhm_G_mhz=fwhm_G,
-        min_sep_L_mhz=sep_L, min_sep_G_mhz=sep_G,
-        L_clustered=bool(L_clustered), G_clustered=bool(G_clustered),
+        wid=wid,
+        K_L=K_L,
+        K_G=K_G,
+        chi2_L=chi2_L,
+        chi2_G=chi2_G,
+        tau_L=tau_L,
+        tau_G=tau_G,
+        fwhm_L_mhz=fwhm_L,
+        fwhm_G_mhz=fwhm_G,
+        min_sep_L_mhz=sep_L,
+        min_sep_G_mhz=sep_G,
+        L_clustered=bool(L_clustered),
+        G_clustered=bool(G_clustered),
         verdict="",
     )
 
     if (
-        K_L == 0 or K_G == 0
-        or not np.isfinite(chi2_L) or not np.isfinite(chi2_G)
-        or tau_L <= 0 or tau_G <= 0
+        K_L == 0
+        or K_G == 0
+        or not np.isfinite(chi2_L)
+        or not np.isfinite(chi2_G)
+        or tau_L <= 0
+        or tau_G <= 0
         or min(chi2_L, chi2_G) > DEGENERATE_CHI2_MAX
     ):
         base.verdict = VERDICT_DEGENERATE
@@ -629,7 +718,9 @@ def _classify_window(
 
 
 def _slice_window(
-    wf, freqs_sorted: np.ndarray, spec_sorted: np.ndarray,
+    wf,
+    freqs_sorted: np.ndarray,
+    spec_sorted: np.ndarray,
     rms_sorted: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     lo, hi = wf.window.freq_range
@@ -650,19 +741,22 @@ def main() -> None:
         ),
     )
     parser.add_argument(
-        "--window-id", type=int, action="append", dest="window_ids",
+        "--window-id",
+        type=int,
+        action="append",
+        dest="window_ids",
         default=[],
-        help=(
-            "Used with --mode windows: restrict to this id. Repeat for "
-            "multiple."
-        ),
+        help=("Used with --mode windows: restrict to this id. Repeat for " "multiple."),
     )
     parser.add_argument(
-        "--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR,
+        "--output-dir",
+        type=Path,
+        default=DEFAULT_OUTPUT_DIR,
         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})",
     )
     parser.add_argument(
-        "--no-figures", action="store_true",
+        "--no-figures",
+        action="store_true",
         help=(
             "Skip per-window PNG rendering. Still emits verdicts.csv "
             "and INDEX.md. Useful with --mode all for fast classification."
@@ -671,15 +765,15 @@ def main() -> None:
     args = parser.parse_args()
 
     if not CSV_PATH.exists():
-        raise SystemExit(
-            f"missing {CSV_PATH}; run compare_shapes.py first."
-        )
+        raise SystemExit(f"missing {CSV_PATH}; run compare_shapes.py first.")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = _load_window_rows()
     selected = _select_windows(rows, args.mode, args.window_ids)
     logger.info(
-        "Selected %d windows (mode=%s)", len(selected), args.mode,
+        "Selected %d windows (mode=%s)",
+        len(selected),
+        args.mode,
     )
 
     # Load both fits + a shared active-FT (the L and G fixtures share the
@@ -692,30 +786,47 @@ def main() -> None:
     by_G = {wf.window_id: wf for wf in fit_G.window_fits}
 
     (
-        fid_samples, sample_dt_us, start_us, end_us, expf_us,
-        probe_freq_mhz, sideband_enum, n_padded,
-        acquisition_us, _user_ft, _user_rms,
+        fid_samples,
+        sample_dt_us,
+        start_us,
+        end_us,
+        expf_us,
+        probe_freq_mhz,
+        sideband_enum,
+        n_padded,
+        acquisition_us,
+        _user_ft,
+        _user_rms,
     ) = _build_active_ft_inputs(str(LORENTZ_FIXTURE))
     active_ft = compute_active_ft(
-        fid_samples, sample_dt_us,
-        start_us=start_us, end_us=end_us, expf_us=expf_us,
-        probe_freq_mhz=probe_freq_mhz, sideband=sideband_enum,
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        expf_us=expf_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband_enum,
         n_padded=n_padded,
     )
     sort_idx = np.argsort(active_ft.freq_mhz)
     freqs_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
     spec_sorted = np.ascontiguousarray(active_ft.complex_spectrum[sort_idx])
     active_noise = estimate_noise_adaptive(
-        freqs_sorted, np.abs(spec_sorted).astype(np.float64),
+        freqs_sorted,
+        np.abs(spec_sorted).astype(np.float64),
     )
     rms_sorted = np.asarray(active_noise.rms_noise, dtype=float)
 
     # 2× zero-padded display spectrum (magnitude panel only — does NOT touch
     # residual, noise, or χ² paths).
     freqs_display, spec_display = _compute_padded_display_spectrum(
-        fid_samples, sample_dt_us,
-        start_us=start_us, end_us=end_us, expf_us=expf_us,
-        probe_freq_mhz=probe_freq_mhz, sideband=sideband_enum,
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        expf_us=expf_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband_enum,
     )
     mag_display_all = np.abs(spec_display)
 
@@ -743,19 +854,31 @@ def main() -> None:
         wf_G = by_G[wid]
         r = rows[wid]
         f_slice, z_slice, sig_slice = _slice_window(
-            wf_L, freqs_sorted, spec_sorted, rms_sorted,
+            wf_L,
+            freqs_sorted,
+            spec_sorted,
+            rms_sorted,
         )
         model_L, tau_L, _ = _build_window_model(
-            wf_L, f_slice, sideband_enum, acquisition_us,
+            wf_L,
+            f_slice,
+            sideband_enum,
+            acquisition_us,
         )
         model_G, tau_G, _ = _build_window_model(
-            wf_G, f_slice, sideband_enum, acquisition_us,
+            wf_G,
+            f_slice,
+            sideband_enum,
+            acquisition_us,
         )
         verdict = _classify_window(
             wid,
-            wf_L=wf_L, wf_G=wf_G,
-            tau_L=tau_L, tau_G=tau_G,
-            chi2_L=r.c2_L, chi2_G=r.c2_G,
+            wf_L=wf_L,
+            wf_G=wf_G,
+            tau_L=tau_L,
+            tau_G=tau_G,
+            chi2_L=r.c2_L,
+            chi2_G=r.c2_G,
         )
         verdicts.append(verdict)
 
@@ -763,8 +886,7 @@ def main() -> None:
         # next-session prompt: gate on min(K_L, K_G) > 0 and finite χ²ᵣ) and
         # whenever the user passed --no-figures.
         skip_render = args.no_figures or (
-            args.mode == "all"
-            and verdict.verdict == VERDICT_DEGENERATE
+            args.mode == "all" and verdict.verdict == VERDICT_DEGENERATE
         )
         if skip_render:
             index_lines.append(
@@ -784,29 +906,39 @@ def main() -> None:
         else:
             f_fine = f_slice.copy()
         model_L_fine, _, _ = _build_window_model(
-            wf_L, f_fine, sideband_enum, acquisition_us,
+            wf_L,
+            f_fine,
+            sideband_enum,
+            acquisition_us,
         )
         model_G_fine, _, _ = _build_window_model(
-            wf_G, f_fine, sideband_enum, acquisition_us,
+            wf_G,
+            f_fine,
+            sideband_enum,
+            acquisition_us,
         )
         lo, hi = wf_L.window.freq_range
-        mask_disp = (
-            (freqs_display >= min(lo, hi))
-            & (freqs_display <= max(lo, hi))
-        )
+        mask_disp = (freqs_display >= min(lo, hi)) & (freqs_display <= max(lo, hi))
         f_disp = freqs_display[mask_disp]
         mag_disp = mag_display_all[mask_disp]
         out_path = args.output_dir / f"compare_{wid:03d}.png"
         _save_compare_figure(
             out_path,
             wid=wid,
-            freq_slice=f_slice, z_slice=z_slice, sigma_slice=sig_slice,
-            model_L=model_L, model_G=model_G,
+            freq_slice=f_slice,
+            z_slice=z_slice,
+            sigma_slice=sig_slice,
+            model_L=model_L,
+            model_G=model_G,
             freq_fine=f_fine,
-            model_L_fine=model_L_fine, model_G_fine=model_G_fine,
-            freq_display=f_disp, mag_display=mag_disp,
-            tau_L=tau_L, tau_G=tau_G,
-            wf_L=wf_L, wf_G=wf_G,
+            model_L_fine=model_L_fine,
+            model_G_fine=model_G_fine,
+            freq_display=f_disp,
+            mag_display=mag_disp,
+            tau_L=tau_L,
+            tau_G=tau_G,
+            wf_L=wf_L,
+            wf_G=wf_G,
             row=rows[wid],
         )
         rendered.add(wid)
@@ -830,13 +962,23 @@ def main() -> None:
     # verdict, χ² aggregates per verdict bucket) read from this file.
     csv_path = args.output_dir / "verdicts.csv"
     fields = [
-        "window_id", "verdict", "K_L", "K_G",
-        "chi2_L", "chi2_G", "delta_chi2",
-        "tau_L_us", "tau_G_us",
-        "fwhm_L_mhz", "fwhm_G_mhz",
-        "min_sep_L_mhz", "min_sep_G_mhz",
-        "min_sep_L_in_fwhm", "min_sep_G_in_fwhm",
-        "L_clustered", "G_clustered",
+        "window_id",
+        "verdict",
+        "K_L",
+        "K_G",
+        "chi2_L",
+        "chi2_G",
+        "delta_chi2",
+        "tau_L_us",
+        "tau_G_us",
+        "fwhm_L_mhz",
+        "fwhm_G_mhz",
+        "min_sep_L_mhz",
+        "min_sep_G_mhz",
+        "min_sep_L_in_fwhm",
+        "min_sep_G_in_fwhm",
+        "L_clustered",
+        "G_clustered",
     ]
     with csv_path.open("w", newline="") as fh:
         writer = csv.writer(fh)
@@ -844,39 +986,57 @@ def main() -> None:
         for v in verdicts:
             sep_L_in_fwhm = (
                 v.min_sep_L_mhz / v.fwhm_L_mhz
-                if np.isfinite(v.fwhm_L_mhz) and v.fwhm_L_mhz > 0
+                if np.isfinite(v.fwhm_L_mhz)
+                and v.fwhm_L_mhz > 0
                 and np.isfinite(v.min_sep_L_mhz)
                 else float("inf")
             )
             sep_G_in_fwhm = (
                 v.min_sep_G_mhz / v.fwhm_G_mhz
-                if np.isfinite(v.fwhm_G_mhz) and v.fwhm_G_mhz > 0
+                if np.isfinite(v.fwhm_G_mhz)
+                and v.fwhm_G_mhz > 0
                 and np.isfinite(v.min_sep_G_mhz)
                 else float("inf")
             )
-            writer.writerow([
-                v.wid, v.verdict, v.K_L, v.K_G,
-                f"{v.chi2_L:.6g}", f"{v.chi2_G:.6g}",
-                f"{v.chi2_L - v.chi2_G:.6g}",
-                f"{v.tau_L:.4f}", f"{v.tau_G:.4f}",
-                f"{v.fwhm_L_mhz:.4f}", f"{v.fwhm_G_mhz:.4f}",
-                f"{v.min_sep_L_mhz:.4f}", f"{v.min_sep_G_mhz:.4f}",
-                f"{sep_L_in_fwhm:.3f}", f"{sep_G_in_fwhm:.3f}",
-                int(v.L_clustered), int(v.G_clustered),
-            ])
+            writer.writerow(
+                [
+                    v.wid,
+                    v.verdict,
+                    v.K_L,
+                    v.K_G,
+                    f"{v.chi2_L:.6g}",
+                    f"{v.chi2_G:.6g}",
+                    f"{v.chi2_L - v.chi2_G:.6g}",
+                    f"{v.tau_L:.4f}",
+                    f"{v.tau_G:.4f}",
+                    f"{v.fwhm_L_mhz:.4f}",
+                    f"{v.fwhm_G_mhz:.4f}",
+                    f"{v.min_sep_L_mhz:.4f}",
+                    f"{v.min_sep_G_mhz:.4f}",
+                    f"{sep_L_in_fwhm:.3f}",
+                    f"{sep_G_in_fwhm:.3f}",
+                    int(v.L_clustered),
+                    int(v.G_clustered),
+                ]
+            )
     print(f"wrote {csv_path}")
 
     # Summary print: distribution of verdicts + headline χ² aggregates so the
     # batch run terminates with the answer in the log without forcing the
     # reader to open the CSV.
     from collections import Counter
+
     counts = Counter(v.verdict for v in verdicts)
     total = sum(counts.values())
     print(f"\nVerdict distribution ({total} windows):")
     order = [
-        VERDICT_CLEAN_G, VERDICT_CLEAN_L,
-        VERDICT_L_OVER_FIT, VERDICT_G_UNDER_FIT, VERDICT_G_OVER_FIT,
-        VERDICT_TIED, VERDICT_DEGENERATE,
+        VERDICT_CLEAN_G,
+        VERDICT_CLEAN_L,
+        VERDICT_L_OVER_FIT,
+        VERDICT_G_UNDER_FIT,
+        VERDICT_G_OVER_FIT,
+        VERDICT_TIED,
+        VERDICT_DEGENERATE,
     ]
     for label in order:
         n = counts.get(label, 0)
@@ -887,9 +1047,7 @@ def main() -> None:
         v for v in verdicts if v.verdict not in (VERDICT_DEGENERATE, VERDICT_TIED)
     ]
     if nontrivial:
-        g_better = sum(
-            1 for v in nontrivial if v.chi2_G < v.chi2_L
-        )
+        g_better = sum(1 for v in nontrivial if v.chi2_G < v.chi2_L)
         print(
             f"\nNon-degenerate, non-tied: {len(nontrivial)} windows. "
             f"G better χ²: {g_better} ({100*g_better/len(nontrivial):.1f}%); "
@@ -900,9 +1058,7 @@ def main() -> None:
         # many of those wins are L-over-fits (spurious)?
         L_wins = [v for v in nontrivial if v.chi2_L < v.chi2_G]
         if L_wins:
-            n_spurious = sum(
-                1 for v in L_wins if v.verdict == VERDICT_L_OVER_FIT
-            )
+            n_spurious = sum(1 for v in L_wins if v.verdict == VERDICT_L_OVER_FIT)
             print(
                 f"Of {len(L_wins)} L-wins, {n_spurious} are L-over-fit "
                 f"(spurious): {100*n_spurious/len(L_wins):.1f}%."

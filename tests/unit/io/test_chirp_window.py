@@ -17,7 +17,7 @@ import h5py
 import numpy as np
 import pytest
 
-from ftmwpipeline.core.data_structures import ChirpWindow, FID, Sideband
+from ftmwpipeline.core.data_structures import FID, ChirpWindow, Sideband
 from ftmwpipeline.file_manager import SourceMetadata, create_pipeline_file
 from ftmwpipeline.io.data_loaders.blackchirp import BlackChirpLoader
 from ftmwpipeline.io.data_loaders.keysight_mat import KeysightMatLoader
@@ -285,9 +285,8 @@ def test_keysight_chirp_window_stamps_recommended_start(tmp_path: Path) -> None:
 
 def test_keysight_chirp_window_default_margin(tmp_path: Path) -> None:
     """When start_margin_us is absent, the guard_margin_us default (0.67) is used."""
-    from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
-
     import ftmwpipeline.api as ftmw
+    from ftmwpipeline.core.start_detection_settings import StartDetectionSettings
 
     mat = _make_mat_file(tmp_path)
     ftmw_path = str(tmp_path / "scope_default.ftmw")

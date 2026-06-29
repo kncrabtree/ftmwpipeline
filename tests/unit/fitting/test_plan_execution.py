@@ -772,7 +772,7 @@ class TestLocalThaw:
 
         # Mutate the primary's converged fit: bump the strong line's fitted
         # amplitude 25% high. This stands in for the blended-primary case where
-        # the conservative loop's sequential initialisation collapses two close
+        # the conservative loop's sequential initialization collapses two close
         # cosines into one stronger-looking fit (§4 of the prototype report).
         primary = outcome.window_outcomes[0]
         original_amp = primary.fit.peaks[0].amplitude

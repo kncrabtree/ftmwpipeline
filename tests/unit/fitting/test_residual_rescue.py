@@ -544,7 +544,7 @@ class TestMergeCleanupAICc:
 
     def test_blend_escape_decision_function(self):
         """The escape keeps only overwhelming-evidence constructive pairs:
-        the cancelling pathology and weak-evidence pairs are rejected."""
+        the canceling pathology and weak-evidence pairs are rejected."""
         from ftmwpipeline.fitting.validation import (
             blend_pair_escape,
             pair_cancellation_fraction,
@@ -554,7 +554,7 @@ class TestMergeCleanupAICc:
         assert blend_pair_escape(5000.0, 3, 1.0, 0.4, 0.9, 0.9)
         # Same pair, weak evidence (below 2*50*3) -> no escape.
         assert not blend_pair_escape(250.0, 3, 1.0, 0.4, 0.9, 0.9)
-        # Near-anti-aligned (cancelling) pair -> no escape at any evidence.
+        # Near-anti-aligned (canceling) pair -> no escape at any evidence.
         assert pair_cancellation_fraction(1.0, 0.0, 0.95, np.pi * 0.98) > 0.9
         assert not blend_pair_escape(1.0e6, 3, 1.0, 0.0, 0.95, np.pi * 0.98)
         # The fidelity-floor scaling raises the bar (the Tier-3 absorber
@@ -788,7 +788,7 @@ class TestRemoveAndRefitProtectedOffsets:
         sigma = np.full(u.size, 1.0)
         fit_kwargs = self._constraints_kwargs(u, z, sigma)
 
-        # Ghost peak at 2× FWHM, initialised to near-zero amplitude.
+        # Ghost peak at 2× FWHM, initialized to near-zero amplitude.
         ghost_offset = 2.0 * FWHM
         epsilon_amp = _amp_for_snr(0.01, sigma=1.0)  # negligible amplitude
         k2_init = [
@@ -855,15 +855,11 @@ class TestRescueForbiddenOffsets:
         sigma = np.full(u.size, 1.0)
 
         # Initial fit: only the first peak (given its exact offset).
-        initial = conservative_fit(
-            u, z, sigma, [-0.8], TAU_US, T_US, seeder_max_k=1
-        )
+        initial = conservative_fit(u, z, sigma, [-0.8], TAU_US, T_US, seeder_max_k=1)
         # In noiseless data the fitter installs the seed unconditionally.
 
         # Rescue without forbidden: the detector nominates around +0.7.
-        outcome_free = attempt_residual_rescue(
-            u, z, sigma, initial.fit, TAU_US, T_US
-        )
+        outcome_free = attempt_residual_rescue(u, z, sigma, initial.fit, TAU_US, T_US)
         # The second peak must be among the rescue's *candidates* (pre-fit).
         cand_offsets = [c.frequency_mhz for c in outcome_free.candidates]
         assert any(abs(o - true[1].offset_mhz) < 0.5 for o in cand_offsets), (

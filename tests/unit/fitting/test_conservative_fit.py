@@ -111,7 +111,7 @@ class TestAcceptReject:
             ModelPeak(_amp_for_snr(90.0), 0.6, 2.0),
         ]
         u, z = _window(true, 2.0, 1.0, rng)
-        # Both candidates are primary detections (the default labelling).
+        # Both candidates are primary detections (the default labeling).
         res = conservative_fit(u, z, 1.0, [-0.6, 0.6], TAU_US, T_US)
 
         assert res.n_peaks == 2
@@ -230,7 +230,7 @@ class TestBlendAwareSeeder:
         """With the seeder threshold lifted, the same blend fits as one line.
 
         This is the prototype's finding: the plain add-one-peak loop's
-        sequential initialisation reports one line where the blend-aware
+        sequential initialization reports one line where the blend-aware
         seeder resolves two.
         """
         rng = np.random.default_rng(SEED)

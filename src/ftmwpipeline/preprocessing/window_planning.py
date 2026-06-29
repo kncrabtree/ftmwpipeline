@@ -400,7 +400,7 @@ def _skirt_significance(
     * ``S_resid  = ||(skirt - B_p[skirt]) / sigma_c||`` -- the part an order-``p``
       baseline cannot absorb (steep-local curvature).
 
-    Phase is unavailable at plan time, so each source line is synthesised at
+    Phase is unavailable at plan time, so each source line is synthesized at
     phase 0 (the coherent worst-case skirt). Both norms are invariant to the
     sideband sign (it flips ``skirt -> conj(skirt)``, leaving the magnitudes
     unchanged). The shape is the Lorentzian ``h_T``; this is a coarse keep/drop,

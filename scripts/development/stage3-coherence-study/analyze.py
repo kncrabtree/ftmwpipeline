@@ -4,7 +4,7 @@ Stage 3 projection-coherence study -- cross-tabulation and threshold analysis.
 Consumes ``scratch/stage3-coherence-study/candidates.csv`` produced by
 ``survey.py``. Buckets by projection ratio, reports per-bucket
 ``became_fitted_peak`` rates, sweeps a threshold, picks the threshold that
-maximises precision at TPR ≥ ``--min-recall``, and emits a Markdown report
+maximizes precision at TPR ≥ ``--min-recall``, and emits a Markdown report
 plus a histogram + ROC figure.
 
 The report's verdict section assumes the ratio is monotone -- higher ratio =
@@ -29,7 +29,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-logger = logging.getLogger("stage3-coherence-analyse")
+logger = logging.getLogger("stage3-coherence-analyze")
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_CSV = REPO_ROOT / "scratch" / "stage3-coherence-study" / "candidates.csv"
@@ -48,12 +48,8 @@ def _load(csv_path: Path) -> dict[str, np.ndarray]:
     out["detected_snr_active"] = np.array(
         [float(r["detected_snr_active"]) for r in rows]
     )
-    out["promoted"] = np.array(
-        [r["user_grid_promoted"] == "True" for r in rows]
-    )
-    out["became_peak"] = np.array(
-        [r["became_fitted_peak"] == "True" for r in rows]
-    )
+    out["promoted"] = np.array([r["user_grid_promoted"] == "True" for r in rows])
+    out["became_peak"] = np.array([r["became_fitted_peak"] == "True" for r in rows])
     out["close_pair"] = np.array([r["close_pair"] == "True" for r in rows])
     return out
 
@@ -117,7 +113,7 @@ def _pick_threshold(
     *,
     min_recall: float,
 ) -> dict[str, float] | None:
-    """Pick threshold = highest ratio with TPR ≥ min_recall, minimising FPR."""
+    """Pick threshold = highest ratio with TPR ≥ min_recall, minimizing FPR."""
     if thresholds.size == 0:
         return None
     eligible = tpr >= min_recall
@@ -142,11 +138,17 @@ def _plot(data: dict[str, np.ndarray], out_path: Path) -> None:
 
     bins = np.linspace(min(0.0, ratio.min()), max(3.0, ratio.max()), 50)
     axes[0].hist(
-        ratio[~became], bins=bins, alpha=0.5, label="became_peak=False",
+        ratio[~became],
+        bins=bins,
+        alpha=0.5,
+        label="became_peak=False",
         color="C3",
     )
     axes[0].hist(
-        ratio[became], bins=bins, alpha=0.5, label="became_peak=True",
+        ratio[became],
+        bins=bins,
+        alpha=0.5,
+        label="became_peak=True",
         color="C0",
     )
     axes[0].set_xlabel("projection ratio (coherent_snr / detected_snr_active)")

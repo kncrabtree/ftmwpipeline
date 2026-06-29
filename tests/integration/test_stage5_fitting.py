@@ -232,9 +232,9 @@ def test_per_window_covariance_persisted(baseline_2638_stage4_small, temp_ftmw_d
     # confirm each peak kept its own covariance block through that reorder.
     for wf in reloaded.window_fits:
         freqs = [p.frequency_mhz for p in wf.fitted_peaks]
-        assert freqs == sorted(freqs), (
-            f"window {wf.window_id} peaks are not frequency-ordered: {freqs}"
-        )
+        assert freqs == sorted(
+            freqs
+        ), f"window {wf.window_id} peaks are not frequency-ordered: {freqs}"
 
     # At least one window should have a non-None covariance (the 3-window
     # small plan has real lines with finite JᵀJ).

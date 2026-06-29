@@ -330,7 +330,7 @@ class TestResultStatistics:
         assert res.n_params == 0
         assert np.all(res.fitted_spectrum == 0.0)
         assert np.allclose(res.residual, z)
-        # chi-squared is the unit-variance norm of the un-modelled data.
+        # chi-squared is the unit-variance norm of the un-modeled data.
         sig_ri = 1.0 / np.sqrt(2.0)
         expected = float(np.sum(np.abs(z / sig_ri) ** 2))
         assert res.chi_squared == pytest.approx(expected)
@@ -478,7 +478,7 @@ class TestPairPhasePenalty:
 
     def test_jacobian_matches_finite_difference(self):
         """The analytic penalty Jacobian matches central finite differences."""
-        # Three peaks: one in-phase pair, one in-quadrature pair, one cancelling.
+        # Three peaks: one in-phase pair, one in-quadrature pair, one canceling.
         params = self._packed(
             [
                 (1.5, -0.3 * self.FWHM, 0.4),

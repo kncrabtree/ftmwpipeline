@@ -723,8 +723,13 @@ def _draw_rescue_chi2(ax: plt.Axes, ordered: List[RescueRoundInfo]) -> None:
     for i, r in enumerate(ordered):
         c = QUAD if r.accepted else DOUBLE_DECKER
         ax.scatter(
-            [i + 1], [r.chi2_after], s=55, color=c, zorder=3,
-            edgecolor="white", linewidth=0.8,
+            [i + 1],
+            [r.chi2_after],
+            s=55,
+            color=c,
+            zorder=3,
+            edgecolor="white",
+            linewidth=0.8,
         )
     ax.set_xticks(xs)
     ax.set_xticklabels(["init"] + [f"R{r.round_idx}" for r in ordered], fontsize=8)
@@ -736,7 +741,9 @@ def _draw_rescue_chi2(ax: plt.Axes, ordered: List[RescueRoundInfo]) -> None:
             Line2D([], [], marker="o", ls="", color=QUAD, label="accepted"),
             Line2D([], [], marker="o", ls="", color=DOUBLE_DECKER, label="rejected"),
         ],
-        fontsize=7, loc="upper right", frameon=False,
+        fontsize=7,
+        loc="upper right",
+        frameon=False,
     )
 
 
@@ -747,21 +754,48 @@ def _draw_rescue_budget(ax: plt.Axes, ordered: List[RescueRoundInfo]) -> None:
     for i, r in enumerate(ordered):
         yy = y[i]
         base = r.n_initial_peaks
-        ax.barh(yy, base, height=0.6, color="0.78", zorder=2,
-                label="inherited" if i == 0 else None)
+        ax.barh(
+            yy,
+            base,
+            height=0.6,
+            color="0.78",
+            zorder=2,
+            label="inherited" if i == 0 else None,
+        )
         if r.n_rescue_added:
-            ax.barh(yy, r.n_rescue_added, left=base, height=0.6, color=QUAD,
-                    zorder=2, label="rescue-added" if i == 0 else None)
+            ax.barh(
+                yy,
+                r.n_rescue_added,
+                left=base,
+                height=0.6,
+                color=QUAD,
+                zorder=2,
+                label="rescue-added" if i == 0 else None,
+            )
         removed = r.n_pruned_total + r.n_merged
         if removed:
-            ax.barh(yy, removed, left=base + r.n_rescue_added, height=0.6,
-                    color=DOUBLE_DECKER, alpha=0.55, hatch="///", zorder=2,
-                    label="pruned/merged" if i == 0 else None)
+            ax.barh(
+                yy,
+                removed,
+                left=base + r.n_rescue_added,
+                height=0.6,
+                color=DOUBLE_DECKER,
+                alpha=0.55,
+                hatch="///",
+                zorder=2,
+                label="pruned/merged" if i == 0 else None,
+            )
         final = base + r.n_rescue_added - removed
         bar_end = base + r.n_rescue_added + removed
         max_x = max(max_x, bar_end)
-        ax.annotate(f"= {final}", (bar_end + 0.25, yy), va="center", fontsize=8,
-                    color="0.25", fontweight="bold")
+        ax.annotate(
+            f"= {final}",
+            (bar_end + 0.25, yy),
+            va="center",
+            fontsize=8,
+            color="0.25",
+            fontweight="bold",
+        )
     ax.set_yticks(y)
     ax.set_yticklabels([f"R{r.round_idx}" for r in ordered], fontsize=8)
     ax.set_xlim(0, max_x + 2.0)
@@ -832,8 +866,15 @@ def plot_rescue_summary(
     ax_budget: Optional[plt.Axes] = None
     if ordered:
         gs = fig.add_gridspec(
-            3, 2, height_ratios=[2.0, 2.2, 1.8], hspace=0.42, wspace=0.28,
-            left=0.08, right=0.97, top=0.93, bottom=0.07,
+            3,
+            2,
+            height_ratios=[2.0, 2.2, 1.8],
+            hspace=0.42,
+            wspace=0.28,
+            left=0.08,
+            right=0.97,
+            top=0.93,
+            bottom=0.07,
         )
         ax_top = fig.add_subplot(gs[0, :])
         ax_res = fig.add_subplot(gs[1, :], sharex=ax_top)
@@ -841,17 +882,33 @@ def plot_rescue_summary(
         ax_budget = fig.add_subplot(gs[2, 1])
     else:
         gs = fig.add_gridspec(
-            2, 1, height_ratios=[2.0, 2.2], hspace=0.3,
-            left=0.08, right=0.97, top=0.92, bottom=0.1,
+            2,
+            1,
+            height_ratios=[2.0, 2.2],
+            hspace=0.3,
+            left=0.08,
+            right=0.97,
+            top=0.92,
+            bottom=0.1,
         )
         ax_top = fig.add_subplot(gs[0, 0])
         ax_res = fig.add_subplot(gs[1, 0], sharex=ax_top)
 
     # --- Row 1: data + model ----------------------------------------------
-    ax_top.plot(f, np.abs(panel_data.z_slice) * amp, color=DOUBLE_DECKER, lw=1.0,
-                label="data |X|")
-    ax_top.plot(f, np.abs(panel_data.model_slice) * amp, color=AGGIE_BLUE, lw=1.0,
-                label="model |X|")
+    ax_top.plot(
+        f,
+        np.abs(panel_data.z_slice) * amp,
+        color=DOUBLE_DECKER,
+        lw=1.0,
+        label="data |X|",
+    )
+    ax_top.plot(
+        f,
+        np.abs(panel_data.model_slice) * amp,
+        color=AGGIE_BLUE,
+        lw=1.0,
+        label="model |X|",
+    )
     for pf in panel_data.fitted_freqs:
         ax_top.axvline(pf, color=POPPY, lw=0.7, alpha=0.45, zorder=1)
     ax_top.set_ylabel(f"|X(f)|{ulabel}", fontsize=9)
@@ -860,10 +917,23 @@ def plot_rescue_summary(
     apply_bare_style(ax_top)
 
     # --- Row 2: residual + per-round nominations --------------------------
-    ax_res.plot(f, np.abs(panel_data.residual) * amp, color=PINOT, lw=0.8,
-                label="final |residual|", zorder=2)
-    ax_res.plot(f, np.asarray(panel_data.sigma_slice, dtype=float) * amp,
-                color="0.55", lw=0.8, ls="--", label=r"$\sigma$", zorder=1)
+    ax_res.plot(
+        f,
+        np.abs(panel_data.residual) * amp,
+        color=PINOT,
+        lw=0.8,
+        label="final |residual|",
+        zorder=2,
+    )
+    ax_res.plot(
+        f,
+        np.asarray(panel_data.sigma_slice, dtype=float) * amp,
+        color="0.55",
+        lw=0.8,
+        ls="--",
+        label=r"$\sigma$",
+        zorder=1,
+    )
     seen_open = False
     round_handles: List[Line2D] = []
     for i, r in enumerate(ordered):
@@ -876,8 +946,13 @@ def plot_rescue_summary(
             mag = abs(c.magnitude) * amp
             accepted = bool(fitted.size and np.min(np.abs(fitted - mf)) <= tol)
             ax_res.scatter(
-                [mf], [mag], s=48, zorder=3, linewidth=1.1,
-                facecolor=(col if accepted else "none"), edgecolor=col,
+                [mf],
+                [mag],
+                s=48,
+                zorder=3,
+                linewidth=1.1,
+                facecolor=(col if accepted else "none"),
+                edgecolor=col,
             )
             seen_open = seen_open or (not accepted)
     ax_res.set_xlabel("frequency (MHz)", fontsize=9)
@@ -891,8 +966,11 @@ def plot_rescue_summary(
             Line2D([], [], marker="o", ls="", mfc="none", mec="0.4", label="rejected")
         )
     ax_res.legend(
-        handles=round_handles + style_handles, fontsize=7, loc="upper right",
-        frameon=False, ncol=2,
+        handles=round_handles + style_handles,
+        fontsize=7,
+        loc="upper right",
+        frameon=False,
+        ncol=2,
     )
     apply_bare_style(ax_res)
 

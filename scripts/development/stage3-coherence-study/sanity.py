@@ -44,9 +44,7 @@ from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 logger = logging.getLogger("stage3-coherence-sanity")
 
 
-DEFAULT_FTMW_PATH = (
-    REPO_ROOT / "scratch" / "stage5-validation" / "exp_2638.ftmw"
-)
+DEFAULT_FTMW_PATH = REPO_ROOT / "scratch" / "stage5-validation" / "exp_2638.ftmw"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "scratch" / "stage3-coherence-study"
 DEFAULT_CANDIDATES_CSV = DEFAULT_OUTPUT_DIR / "candidates.csv"
 
@@ -71,9 +69,7 @@ def strong_peak_control(candidates_csv: Path, output_md: list[str]) -> None:
         "the amplitude). A failure here means the basis tau / sub-window "
         "choice is wrong.\n"
     )
-    strong = [
-        r for r in rows if float(r["active_snr"]) >= 10.0
-    ]
+    strong = [r for r in rows if float(r["active_snr"]) >= 10.0]
     ratios = np.array([float(r["ratio"]) for r in strong])
     if ratios.size == 0:
         output_md.append("- no strong candidates in survey\n")
@@ -83,9 +79,7 @@ def strong_peak_control(candidates_csv: Path, output_md: list[str]) -> None:
         f"median={float(np.median(ratios)):.3f}\n"
     )
     n_below_0p8 = int((ratios < 0.8).sum())
-    output_md.append(
-        f"- candidates with ratio < 0.8: {n_below_0p8}/{ratios.size}\n"
-    )
+    output_md.append(f"- candidates with ratio < 0.8: {n_below_0p8}/{ratios.size}\n")
     if n_below_0p8 == 0:
         output_md.append("- **PASS**: no strong-peak failures.\n\n")
     else:
@@ -112,9 +106,7 @@ def pure_noise_control(
     )
 
     peaks_list = ftmw.load_peaks(str(ftmw_path))
-    peak_freqs = np.sort(
-        np.array([float(p.frequency) for p in peaks_list])
-    )
+    peak_freqs = np.sort(np.array([float(p.frequency) for p in peaks_list]))
 
     (
         fid_samples,
@@ -139,18 +131,14 @@ def pure_noise_control(
         sideband=sideband_enum,
         n_padded=n_padded,
     )
-    tau_us = (
-        float(expf_us) if expf_us is not None else float(acquisition_us / 3.0)
-    )
+    tau_us = float(expf_us) if expf_us is not None else float(acquisition_us / 3.0)
     fwhm_mhz = 1.0 / (np.pi * tau_us)
     exclusion_mhz = 5.0 * fwhm_mhz
 
     sort_idx = np.argsort(active_ft.freq_mhz)
     unsort_idx = np.argsort(sort_idx)
     freq_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-    mag_sorted = np.ascontiguousarray(
-        np.abs(active_ft.complex_spectrum)[sort_idx]
-    )
+    mag_sorted = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
     noise = estimate_noise_adaptive(freq_sorted, mag_sorted)
     rms_sorted = np.asarray(noise.rms_noise, dtype=float)
     sigma_active = rms_sorted[unsort_idx]
@@ -250,9 +238,7 @@ def padded_vs_active(
     )
     rows = list(csv.DictReader(candidates_csv.open()))
     strong = [
-        r for r in rows
-        if float(r["active_snr"]) >= 20.0
-        and r["close_pair"] != "True"
+        r for r in rows if float(r["active_snr"]) >= 20.0 and r["close_pair"] != "True"
     ]
     strong.sort(key=lambda r: float(r["active_snr"]), reverse=True)
     strong = strong[:n_peaks]
@@ -284,17 +270,13 @@ def padded_vs_active(
         sideband=sideband_enum,
         n_padded=n_padded,
     )
-    tau_us = (
-        float(expf_us) if expf_us is not None else float(acquisition_us / 3.0)
-    )
+    tau_us = float(expf_us) if expf_us is not None else float(acquisition_us / 3.0)
 
     # Active-FT noise.
     sort_idx = np.argsort(active_ft.freq_mhz)
     unsort_idx = np.argsort(sort_idx)
     freq_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-    mag_sorted = np.ascontiguousarray(
-        np.abs(active_ft.complex_spectrum)[sort_idx]
-    )
+    mag_sorted = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
     noise_a = estimate_noise_adaptive(freq_sorted, mag_sorted)
     sigma_active = noise_a.rms_noise[unsort_idx]
 
@@ -331,8 +313,7 @@ def padded_vs_active(
     )
 
     output_md.append(
-        "| freq_mhz | active_snr | ratio(active) | ratio(user FT) | "
-        "Δratio |\n"
+        "| freq_mhz | active_snr | ratio(active) | ratio(user FT) | " "Δratio |\n"
     )
     output_md.append(
         "|---------|-----------|--------------|---------------|--------|\n"
@@ -367,9 +348,7 @@ def padded_vs_active(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ftmw", type=Path, default=DEFAULT_FTMW_PATH)
-    parser.add_argument(
-        "--candidates", type=Path, default=DEFAULT_CANDIDATES_CSV
-    )
+    parser.add_argument("--candidates", type=Path, default=DEFAULT_CANDIDATES_CSV)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     args = parser.parse_args()
 

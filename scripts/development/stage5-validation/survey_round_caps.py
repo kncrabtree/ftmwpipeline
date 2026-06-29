@@ -41,6 +41,13 @@ from typing import List, Sequence
 
 import numpy as np
 
+# Reuse the harness's _run_window_rescue helper -- the survey runs the
+# same rescue path the validation harness exercises, just without the
+# PNG/MD output. ``generate_validation`` sits next to this script; Python
+# adds the script directory to ``sys.path[0]`` at startup so the bare
+# module name resolves when this file is run as a script.
+from generate_validation import _run_window_rescue  # type: ignore
+
 import ftmwpipeline.api as ftmw
 from ftmwpipeline._internal.stage5_impl import _build_active_ft_inputs
 from ftmwpipeline.core.data_structures import (
@@ -56,14 +63,6 @@ from ftmwpipeline.fitting.residual_rescue import (
     ConsolidatedRescueOutcome,
 )
 from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
-
-# Reuse the harness's _run_window_rescue helper -- the survey runs the
-# same rescue path the validation harness exercises, just without the
-# PNG/MD output. ``generate_validation`` sits next to this script; Python
-# adds the script directory to ``sys.path[0]`` at startup so the bare
-# module name resolves when this file is run as a script.
-from generate_validation import _run_window_rescue  # type: ignore
-
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent.parent
@@ -89,9 +88,7 @@ def _row(
         "n_rounds_executed": len(consolidated.rounds),
         "terminated_reason": consolidated.terminated_reason,
         "init_chi2_r": _reduced_chi2(init.chi_squared, init.n_data, init.n_params),
-        "final_chi2_r": _reduced_chi2(
-            final.chi_squared, final.n_data, final.n_params
-        ),
+        "final_chi2_r": _reduced_chi2(final.chi_squared, final.n_data, final.n_params),
         "n_peaks_initial": consolidated.initial_fit.n_peaks,
         "n_peaks_final": consolidated.fit.n_peaks,
     }

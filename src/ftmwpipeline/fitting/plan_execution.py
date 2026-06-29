@@ -20,7 +20,7 @@ plan execution:
   :attr:`FitWindow.batch`); a window's fixed contributors are pulled from the
   already-fit primary windows it depends on, so the dependency invariant is
   enforced by the walk order. Within a batch the windows are mutually
-  independent, which keeps this pure-Python walk safe to parallelise later
+  independent, which keeps this pure-Python walk safe to parallelize later
   without changing its semantics.
 
 * **Local thaw renegotiation.** After each window fit, a complex-edge coherence
@@ -1226,7 +1226,7 @@ def build_window_outcome(
     computes the residual edge-coherence statistics, assembles the
     :class:`WindowOutcome`, and stashes the window center and spur mask as
     dynamic attributes so downstream consumers can locate the window without
-    re-materialising it.
+    re-materializing it.
 
     The caller is responsible for any post-construction extras (e.g.
     mirroring the early-baseline fields in :func:`_fit_one_window`, or

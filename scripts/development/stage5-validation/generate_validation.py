@@ -33,33 +33,33 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 import matplotlib
+
 matplotlib.use("Agg")  # non-interactive for batch runs
 import matplotlib.pyplot as plt
+import numpy as np
 from matplotlib.gridspec import GridSpec
 
-import numpy as np
-
 import ftmwpipeline.api as ftmw
-from ftmwpipeline._internal.stage1_impl import _read_settings_layer
+from ftmwpipeline._internal.active_ft_support import _persisted_scatter_knobs
+from ftmwpipeline._internal.stage0_impl import load_fid_from_pipeline_impl
+from ftmwpipeline._internal.stage1_impl import _read_settings_layer, compute_ft_impl
 from ftmwpipeline._internal.stage3_impl import (
     _active_acquisition_us,
 )
-from ftmwpipeline.core.settings import FTSettings
 from ftmwpipeline._internal.stage5_impl import (
     _build_active_ft_inputs,
     _resolve_sideband,
 )
-from ftmwpipeline._internal.stage1_impl import compute_ft_impl
-from ftmwpipeline._internal.stage0_impl import load_fid_from_pipeline_impl
 from ftmwpipeline.core.data_structures import (
     AuditStep,
-    FitWindow,
     FittedPeak,
     FittingResult,
+    FitWindow,
     SpectrumFit,
     WindowDifficulty,
     WindowPlan,
 )
+from ftmwpipeline.core.settings import FTSettings
 from ftmwpipeline.fitting.active_ft import compute_active_ft
 from ftmwpipeline.fitting.peak_model import ModelPeak, model_spectrum, sideband_sign
 from ftmwpipeline.fitting.plan_execution import (
@@ -84,15 +84,13 @@ from ftmwpipeline.fitting.window_fit import (
     ConservativeFitResult,
     WindowFitResult,
 )
-from ftmwpipeline._internal.active_ft_support import _persisted_scatter_knobs
 from ftmwpipeline.preprocessing.noise_estimation import estimate_active_ft_noise
-from ftmwpipeline.visualization.fit_visualization import (
-    plot_spectrum_fit,
-    _window_model_on_persisted_grid,
-    _shade_windows,
-)
 from ftmwpipeline.visualization.fit_detail import plot_consolidated_detail
-
+from ftmwpipeline.visualization.fit_visualization import (
+    _shade_windows,
+    _window_model_on_persisted_grid,
+    plot_spectrum_fit,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 # Script lives at <repo>/scripts/development/stage5-validation/; outputs go to
@@ -181,6 +179,7 @@ def _load_display_style(ftmw_path: Path) -> DisplayStyle:
         label = UNITS_LABEL_BY_POWER.get(int(units_power), f"·10^{units_power} V")
     trim = settings.trim
     return DisplayStyle(amplitude_scale=scale, units_label=label, trim_mhz=trim)
+
 
 # Deliberate sample (matches the choices reported in the conversation).
 EASY_SAMPLE: Tuple[int, ...] = (215, 16, 104, 337, 64, 63)
@@ -361,22 +360,37 @@ def _render_validation_overview(
     z = complex_spectrum[mask]
     sigma = rms_noise[mask]
     model = _window_model_on_persisted_grid(
-        f, fit, sideband, acquisition_us, 1.0, None,
+        f,
+        fit,
+        sideband,
+        acquisition_us,
+        1.0,
+        None,
     )
     amp_scale = float(style.amplitude_scale)
     units_label = style.units_label or ""
     suffix = f" ({units_label})" if units_label else ""
 
     fig, (ax_top, ax_bot) = plt.subplots(
-        2, 1, figsize=figsize, sharex=True,
+        2,
+        1,
+        figsize=figsize,
+        sharex=True,
         gridspec_kw={"height_ratios": [3, 1]},
     )
     ax_top.plot(
-        f, np.abs(z) * amp_scale, color="0.4", lw=0.7, label="data |X|",
+        f,
+        np.abs(z) * amp_scale,
+        color="0.4",
+        lw=0.7,
+        label="data |X|",
     )
     ax_top.plot(
-        f, np.abs(model) * amp_scale,
-        color="tab:orange", lw=0.9, label="model |X|",
+        f,
+        np.abs(model) * amp_scale,
+        color="tab:orange",
+        lw=0.9,
+        label="model |X|",
     )
     _shade_windows(ax_top, fit)
     ax_top.set_xlim(lo, hi)
@@ -386,11 +400,18 @@ def _render_validation_overview(
 
     residual_mag = np.abs(z - model)
     ax_bot.plot(
-        f, residual_mag * amp_scale,
-        color="tab:red", lw=0.6, label="|residual|",
+        f,
+        residual_mag * amp_scale,
+        color="tab:red",
+        lw=0.6,
+        label="|residual|",
     )
     ax_bot.plot(
-        f, sigma * amp_scale, color="0.4", lw=0.6, ls="--",
+        f,
+        sigma * amp_scale,
+        color="0.4",
+        lw=0.6,
+        ls="--",
         label="canonical sigma",
     )
     _shade_windows(ax_bot, fit)
@@ -495,9 +516,7 @@ def _compute_window_residual(
         frozen_peaks.append(
             ModelPeak(
                 amplitude=float(fp_data["amplitude"]),
-                offset_mhz=float(
-                    s * (float(fp_data["frequency_mhz"]) - center)
-                ),
+                offset_mhz=float(s * (float(fp_data["frequency_mhz"]) - center)),
                 phase=float(fp_data.get("phase", 0.0) or 0.0),
             )
         )
@@ -505,7 +524,11 @@ def _compute_window_residual(
     shape_str = getattr(wf, "shape", "lorentzian")
     if all_peaks and tau_us > 0:
         model_slice = model_spectrum(
-            u_slice, all_peaks, tau_us, acquisition_us, shape=shape_str,
+            u_slice,
+            all_peaks,
+            tau_us,
+            acquisition_us,
+            shape=shape_str,
         )
     else:
         model_slice = np.zeros_like(z_slice)
@@ -579,7 +602,12 @@ def _overlay_residual_candidates(
     for i, c in enumerate(candidates):
         color = "tab:gray" if c.near_existing else "tab:orange"
         ax_mag.axvline(
-            c.frequency_mhz, color=color, lw=0.8, ls=":", alpha=0.7, zorder=1,
+            c.frequency_mhz,
+            color=color,
+            lw=0.8,
+            ls=":",
+            alpha=0.7,
+            zorder=1,
         )
         ax_mag.plot(
             c.frequency_mhz,
@@ -635,7 +663,10 @@ def _run_window_rescue(
     window for the 2638 fixture.
     """
     _, offset_grid, z_offset, sig_slice, center_mhz = materialize_window(
-        window, active_ft, active_noise_arr, sideband=sideband,
+        window,
+        active_ft,
+        active_noise_arr,
+        sideband=sideband,
     )
     s = sideband_sign(sideband)
     frozen_peaks: List[FrozenPeak] = []
@@ -659,13 +690,22 @@ def _run_window_rescue(
             )
         )
     candidate_offsets = _peaks_to_candidate_offsets(
-        window, peak_frequencies_mhz, center_mhz, sideband,
+        window,
+        peak_frequencies_mhz,
+        center_mhz,
+        sideband,
     )
     initial_fit, background, _full_fitted, _full_residual = (
         fit_window_with_fixed_contributors(
-            offset_grid, z_offset, sig_slice, frozen_peaks, candidate_offsets,
-            tau0_us, acquisition_us,
-            fit_tau=fit_tau, **init_conservative_kwargs,
+            offset_grid,
+            z_offset,
+            sig_slice,
+            frozen_peaks,
+            candidate_offsets,
+            tau0_us,
+            acquisition_us,
+            fit_tau=fit_tau,
+            **init_conservative_kwargs,
         )
     )
     consolidated = rescue_and_consolidate(
@@ -710,11 +750,7 @@ def _build_consolidated_fittingresult(
     fitted_peaks: List[FittedPeak] = []
     for i, pk in enumerate(joint_fit.peaks):
         mol_freq = center_mhz + s * pk.offset_mhz
-        err = (
-            joint_fit.peak_errors[i]
-            if i < len(joint_fit.peak_errors)
-            else None
-        )
+        err = joint_fit.peak_errors[i] if i < len(joint_fit.peak_errors) else None
         freq_err = (
             float(err.offset_mhz)
             if err is not None and np.isfinite(err.offset_mhz)
@@ -726,9 +762,7 @@ def _build_consolidated_fittingresult(
             else None
         )
         phase_err = (
-            float(err.phase)
-            if err is not None and np.isfinite(err.phase)
-            else None
+            float(err.phase) if err is not None and np.isfinite(err.phase) else None
         )
         fitted_peaks.append(
             FittedPeak(
@@ -760,8 +794,7 @@ def _build_consolidated_fittingresult(
         "value": tau_us,
         "error": (
             float(joint_fit.tau_error)
-            if joint_fit.tau_error is not None
-            and np.isfinite(joint_fit.tau_error)
+            if joint_fit.tau_error is not None and np.isfinite(joint_fit.tau_error)
             else None
         ),
         "peak_ids": [p.peak_id for p in fitted_peaks],
@@ -821,9 +854,7 @@ def _peak_provenance(
     # on the final peak set; KnockoutResult.peak_index aligns with
     # ``consolidated.fit.fit.peaks`` order, which is the same order our
     # ``consolidated_wf.fitted_peaks`` was built in. Map by peak_index.
-    knockout_by_index = {
-        ko.peak_index: ko for ko in consolidated.fit.knockouts
-    }
+    knockout_by_index = {ko.peak_index: ko for ko in consolidated.fit.knockouts}
 
     out: List[Tuple[Optional[str], Optional[float], Optional[str]]] = []
     for fp_idx, fp in enumerate(consolidated_wf.fitted_peaks):
@@ -854,7 +885,9 @@ def _peak_provenance(
 
 
 def _format_p_origin(
-    label: Optional[str], p_value: Optional[float], decision: Optional[str],
+    label: Optional[str],
+    p_value: Optional[float],
+    decision: Optional[str],
 ) -> str:
     """Render the per-peak 'p (origin)' column for the peak listing axes.
 
@@ -927,9 +960,7 @@ def _full_spectrum_model(
             peaks.append(
                 ModelPeak(
                     amplitude=float(fp_data["amplitude"]),
-                    offset_mhz=float(
-                        s * (float(fp_data["frequency_mhz"]) - center)
-                    ),
+                    offset_mhz=float(s * (float(fp_data["frequency_mhz"]) - center)),
                     phase=float(fp_data.get("phase", 0.0) or 0.0),
                 )
             )
@@ -1052,10 +1083,13 @@ def _plot_audit_trail_figure(
     title_inches = 0.5
     bottom_inches = 0.6
     gs = GridSpec(
-        nrows=2, ncols=1, figure=fig,
+        nrows=2,
+        ncols=1,
+        figure=fig,
         height_ratios=[SPECTRUM_INCHES, audit_inches],
         hspace=0.0,
-        left=0.09, right=0.97,
+        left=0.09,
+        right=0.97,
         top=1.0 - title_inches / fig_height,
         bottom=bottom_inches / fig_height,
     )
@@ -1064,17 +1098,30 @@ def _plot_audit_trail_figure(
 
     # --- Top: fitted window magnitude + final model -----------------
     ax_spec.plot(
-        f_slice, np.abs(z_slice) * amp_scale,
-        color="0.25", lw=0.7, label="data |X|", zorder=2,
+        f_slice,
+        np.abs(z_slice) * amp_scale,
+        color="0.25",
+        lw=0.7,
+        label="data |X|",
+        zorder=2,
     )
     ax_spec.plot(
-        f_slice, np.abs(z_slice) * amp_scale,
-        marker="o", linestyle="None", markersize=2.2,
-        markerfacecolor="0.15", markeredgecolor="0.15", zorder=3,
+        f_slice,
+        np.abs(z_slice) * amp_scale,
+        marker="o",
+        linestyle="None",
+        markersize=2.2,
+        markerfacecolor="0.15",
+        markeredgecolor="0.15",
+        zorder=3,
     )
     ax_spec.plot(
-        f_fine, np.abs(model_fine) * amp_scale,
-        color="tab:purple", lw=1.4, label="consolidated model |X|", zorder=4,
+        f_fine,
+        np.abs(model_fine) * amp_scale,
+        color="tab:purple",
+        lw=1.4,
+        label="consolidated model |X|",
+        zorder=4,
     )
     ax_spec.set_ylabel(f"|X(f)|{amp_unit_suffix}", fontsize=9)
     ax_spec.set_xlim(min(lo, hi), max(lo, hi))
@@ -1091,17 +1138,27 @@ def _plot_audit_trail_figure(
     ax_audit.set_xlabel("frequency (MHz)", fontsize=9)
     ax_audit.set_yticks([])
     ax_audit.set_ylabel(
-        "rescue audit  (bottom: initial, top: final)", fontsize=9,
+        "rescue audit  (bottom: initial, top: final)",
+        fontsize=9,
     )
 
     def _label_left(y: float, text: str, color: str = "0.25") -> None:
         ax_audit.annotate(
             text,
-            xy=(0.0, y), xycoords=("axes fraction", "data"),
-            xytext=(2, 0), textcoords="offset points",
-            ha="left", va="center", fontsize=7.5, color=color,
+            xy=(0.0, y),
+            xycoords=("axes fraction", "data"),
+            xytext=(2, 0),
+            textcoords="offset points",
+            ha="left",
+            va="center",
+            fontsize=7.5,
+            color=color,
             bbox=dict(
-                boxstyle="round,pad=0.15", fc="white", ec="0.85", lw=0.4, alpha=0.9,
+                boxstyle="round,pad=0.15",
+                fc="white",
+                ec="0.85",
+                lw=0.4,
+                alpha=0.9,
             ),
         )
 
@@ -1111,14 +1168,16 @@ def _plot_audit_trail_figure(
     final_freqs = [float(p.frequency_mhz) for p in consolidated_wf.fitted_peaks]
 
     # --- Initial row (bottom) -----------------------------------------
-    init_peak_freqs = [
-        center_mhz + s * pk.offset_mhz for pk in initial_fit.fit.peaks
-    ]
+    init_peak_freqs = [center_mhz + s * pk.offset_mhz for pk in initial_fit.fit.peaks]
     for f_pk in init_peak_freqs:
         ax_audit.plot(
-            f_pk, Y_INIT,
-            marker="o", markersize=8, markerfacecolor="tab:blue",
-            markeredgecolor="black", markeredgewidth=0.6,
+            f_pk,
+            Y_INIT,
+            marker="o",
+            markersize=8,
+            markerfacecolor="tab:blue",
+            markeredgecolor="black",
+            markeredgewidth=0.6,
             zorder=3,
         )
     _label_left(Y_INIT, f"initial: K={initial_fit.n_peaks}", color="tab:blue")
@@ -1139,17 +1198,25 @@ def _plot_audit_trail_figure(
         for c in rescue.candidates:
             f_c = center_mhz + s * float(c.frequency_mhz)
             ax_audit.plot(
-                f_c, y_candidates,
-                marker="v", markersize=6, markerfacecolor="tab:green",
-                markeredgecolor="black", markeredgewidth=0.5,
+                f_c,
+                y_candidates,
+                marker="v",
+                markersize=6,
+                markerfacecolor="tab:green",
+                markeredgecolor="black",
+                markeredgewidth=0.5,
                 zorder=3,
             )
         for pk in rescue.fit.peaks:
             f_pk = center_mhz + s * pk.offset_mhz
             ax_audit.plot(
-                f_pk, y_candidates,
-                marker="o", markersize=8, markerfacecolor="none",
-                markeredgecolor="tab:green", markeredgewidth=1.2,
+                f_pk,
+                y_candidates,
+                marker="o",
+                markersize=8,
+                markerfacecolor="none",
+                markeredgecolor="tab:green",
+                markeredgewidth=1.2,
                 zorder=4,
             )
         _label_left(
@@ -1171,9 +1238,13 @@ def _plot_audit_trail_figure(
                 edge_color = "tab:red" if is_rescue_origin else "0.3"
                 edge_width = 1.5 if is_rescue_origin else 0.8
                 ax_audit.plot(
-                    f_ko, y_merge,
-                    marker="X", markersize=10, markerfacecolor="tab:red",
-                    markeredgecolor=edge_color, markeredgewidth=edge_width,
+                    f_ko,
+                    y_merge,
+                    marker="X",
+                    markersize=10,
+                    markerfacecolor="tab:red",
+                    markeredgecolor=edge_color,
+                    markeredgewidth=edge_width,
                     zorder=3,
                 )
             joint_k = diag.joint_fit.n_peaks
@@ -1199,9 +1270,13 @@ def _plot_audit_trail_figure(
     _hline(Y_FINAL - 0.5)
     for f_pk in final_freqs:
         ax_audit.plot(
-            f_pk, Y_FINAL,
-            marker="o", markersize=10, markerfacecolor="tab:purple",
-            markeredgecolor="black", markeredgewidth=0.7,
+            f_pk,
+            Y_FINAL,
+            marker="o",
+            markersize=10,
+            markerfacecolor="tab:purple",
+            markeredgecolor="black",
+            markeredgewidth=0.7,
             zorder=4,
         )
     _label_left(
@@ -1217,9 +1292,7 @@ def _plot_audit_trail_figure(
     # close in frequency (within ~1 FWHM), stagger the offset so labels
     # don't overlap. With non-inverted y, "below" is negative offset.
     tau_us_final = float(consolidated.fit.fit.tau_us)
-    fwhm_final = (
-        1.0 / (np.pi * tau_us_final) if tau_us_final > 0.0 else 0.0
-    )
+    fwhm_final = 1.0 / (np.pi * tau_us_final) if tau_us_final > 0.0 else 0.0
     annot_offsets = [-12.0] * len(final_freqs)
     order = sorted(range(len(final_freqs)), key=lambda i: final_freqs[i])
     last_used_offset = -12.0
@@ -1242,7 +1315,11 @@ def _plot_audit_trail_figure(
     for f_pk, prov, y_off in zip(final_freqs, peak_provenance, annot_offsets):
         for ax in (ax_spec, ax_audit):
             ax.axvline(
-                f_pk, color="tab:purple", lw=0.6, ls=":", alpha=0.5,
+                f_pk,
+                color="tab:purple",
+                lw=0.6,
+                ls=":",
+                alpha=0.5,
                 zorder=1,
             )
         _, p_val, decision = prov
@@ -1254,8 +1331,13 @@ def _plot_audit_trail_figure(
             label = f"{p_val:.1e}"
         ax_audit.annotate(
             label,
-            xy=(f_pk, Y_FINAL), xytext=(0, y_off), textcoords="offset points",
-            ha="center", va="top", fontsize=7, color="tab:purple",
+            xy=(f_pk, Y_FINAL),
+            xytext=(0, y_off),
+            textcoords="offset points",
+            ha="center",
+            va="top",
+            fontsize=7,
+            color="tab:purple",
         )
 
     return fig
@@ -1277,7 +1359,11 @@ def _save_audit_trail_figure_wrapper(
 ) -> None:
     """Write ``audit-trail.png`` (Figure 2)."""
     consolidated_wf = _build_consolidated_fittingresult(
-        window, original_wf, consolidated.fit.fit, sideband, center_mhz,
+        window,
+        original_wf,
+        consolidated.fit.fit,
+        sideband,
+        center_mhz,
         label="final",
     )
     # Compute window slice + final consolidated model on slice.
@@ -1310,7 +1396,11 @@ def _save_audit_trail_figure_wrapper(
     shape_str = getattr(consolidated_wf, "shape", "lorentzian")
     if all_peaks and tau_us > 0.0:
         model_slice = model_spectrum(
-            u_slice, all_peaks, tau_us, acquisition_us, shape=shape_str,
+            u_slice,
+            all_peaks,
+            tau_us,
+            acquisition_us,
+            shape=shape_str,
         )
     else:
         model_slice = np.zeros_like(z_slice)
@@ -1322,7 +1412,11 @@ def _save_audit_trail_figure_wrapper(
         u_fine = s * (f_fine - center)
         if all_peaks and tau_us > 0.0:
             model_fine = model_spectrum(
-                u_fine, all_peaks, tau_us, acquisition_us, shape=shape_str,
+                u_fine,
+                all_peaks,
+                tau_us,
+                acquisition_us,
+                shape=shape_str,
             )
         else:
             model_fine = np.zeros_like(f_fine, dtype=np.complex128)
@@ -1330,8 +1424,11 @@ def _save_audit_trail_figure_wrapper(
         f_fine = f_slice.copy()
         model_fine = model_slice.copy()
     provenance = _peak_provenance(
-        consolidated.initial_fit, consolidated, consolidated_wf,
-        sideband, center,
+        consolidated.initial_fit,
+        consolidated,
+        consolidated_wf,
+        sideband,
+        center,
     )
     n_rounds_total = len(consolidated.rounds)
     n_rounds_accepted = sum(1 for d in consolidated.rounds if d.accepted)
@@ -1350,12 +1447,17 @@ def _save_audit_trail_figure_wrapper(
         f"({n_rounds_accepted}/{n_rounds_total} rounds accepted)"
     )
     fig = _plot_audit_trail_figure(
-        window, consolidated_wf,
+        window,
+        consolidated_wf,
         initial_fit=consolidated.initial_fit,
         consolidated=consolidated,
-        f_slice=f_slice, z_slice=z_slice, model_slice=model_slice,
-        f_fine=f_fine, model_fine=model_fine,
-        sideband=sideband, center_mhz=center,
+        f_slice=f_slice,
+        z_slice=z_slice,
+        model_slice=model_slice,
+        f_fine=f_fine,
+        model_fine=model_fine,
+        sideband=sideband,
+        center_mhz=center,
         peak_provenance=provenance,
         title=title,
         style=style,
@@ -1384,7 +1486,11 @@ def _save_consolidated_detail(
 ) -> None:
     """Write ``detail.png`` showing the final consolidated fit (Figure 1)."""
     consolidated_wf = _build_consolidated_fittingresult(
-        window, original_wf, consolidated.fit.fit, sideband, center_mhz,
+        window,
+        original_wf,
+        consolidated.fit.fit,
+        sideband,
+        center_mhz,
         label="final",
     )
     # The live rescue re-run reproduces the *pre-baseline* fit (peaks-only,
@@ -1394,9 +1500,9 @@ def _save_consolidated_detail(
     # term (added in _plot_consolidated_detail) are the faithful final model.
     # Per-peak rescue provenance degrades to "(joint)" in that case, as in the
     # --detail-only path.
-    baseline_applied = float(
-        (original_wf.quality_metrics or {}).get("baseline_applied", 0.0)
-    ) >= 0.5
+    baseline_applied = (
+        float((original_wf.quality_metrics or {}).get("baseline_applied", 0.0)) >= 0.5
+    )
     if baseline_applied:
         display_wf = original_wf
         provenance: List[str] = []
@@ -1404,8 +1510,11 @@ def _save_consolidated_detail(
     else:
         display_wf = consolidated_wf
         provenance = _peak_provenance(
-            consolidated.initial_fit, consolidated, consolidated_wf,
-            sideband, center_mhz,
+            consolidated.initial_fit,
+            consolidated,
+            consolidated_wf,
+            sideband,
+            center_mhz,
         )
         final_chi2 = float(consolidated.fit.fit.chi_squared)
         final_n_residual = max(
@@ -1429,7 +1538,9 @@ def _save_consolidated_detail(
         f"(consolidated, {rounds_note}{baseline_note})"
     )
     fig = _plot_consolidated_detail(
-        window, display_wf, other_window_fits,
+        window,
+        display_wf,
+        other_window_fits,
         frequencies=freqs_sorted,
         complex_spectrum=spec_sorted,
         rms_noise=rms_sorted,
@@ -1482,7 +1593,11 @@ def _save_rescue_artifacts(
         if joint is None:
             continue  # nothing new to plot (rescue accepted 0, or all pruned)
         round_wf = _build_consolidated_fittingresult(
-            window, wf, joint, sideband, center_mhz,
+            window,
+            wf,
+            joint,
+            sideband,
+            center_mhz,
             label=f"rr{diag.round_idx}",
         )
         round_fit = SpectrumFit(
@@ -1490,10 +1605,12 @@ def _save_rescue_artifacts(
             parameters={"source": f"rescue_consolidated_round{diag.round_idx}"},
         )
         init_rchi2 = float(initial_fit.fit.chi_squared) / max(
-            1, initial_fit.fit.n_data - initial_fit.fit.n_params,
+            1,
+            initial_fit.fit.n_data - initial_fit.fit.n_params,
         )
         round_rchi2 = float(joint.chi_squared) / max(
-            1, joint.n_data - joint.n_params,
+            1,
+            joint.n_data - joint.n_params,
         )
         title = (
             f"Window {window.window_id} RESCUE round {diag.round_idx}  "
@@ -1564,8 +1681,7 @@ def _rescue_report(
         f"- n_peaks: **{final_fit.n_peaks}** "
         f"(net change vs initial: {final_fit.n_peaks - initial_fit.n_peaks:+d})",
         f"- chi-squared: {final_chi2:.4g}",
-        f"- reduced chi-squared: **{final_rchi2:.4g}** "
-        f"(initial {init_rchi2:.4g})",
+        f"- reduced chi-squared: **{final_rchi2:.4g}** " f"(initial {init_rchi2:.4g})",
         f"- AIC: {float(final_fit.fit.aic):.4g}",
         f"- tau (us): {float(final_fit.fit.tau_us):.4g}",
         "",
@@ -1597,7 +1713,8 @@ def _rescue_round_section(diag: RescueRoundDiagnostics) -> List[str]:
     ]
     if diag.joint_fit is not None:
         joint_rchi2 = float(diag.joint_fit.chi_squared) / max(
-            1, diag.joint_fit.n_data - diag.joint_fit.n_params,
+            1,
+            diag.joint_fit.n_data - diag.joint_fit.n_params,
         )
         parts.append(
             f"- joint refit: success={diag.joint_fit.success}, "
@@ -1717,15 +1834,15 @@ def _save_window_artifacts(
     # see the same data. ``existing_freqs`` aggregates fitted + frozen
     # contributors -- a residual peak co-located with either is a
     # fit-quality flag rather than a missed line.
-    f_slice, residual, sigma_slice, _model_slice, fwhm_mhz = (
-        _compute_window_residual(
-            wf, frequencies, complex_spectrum, rms_noise,
-            sideband, acquisition_us,
-        )
+    f_slice, residual, sigma_slice, _model_slice, fwhm_mhz = _compute_window_residual(
+        wf,
+        frequencies,
+        complex_spectrum,
+        rms_noise,
+        sideband,
+        acquisition_us,
     )
-    existing_freqs: List[float] = [
-        float(p.frequency_mhz) for p in wf.fitted_peaks
-    ]
+    existing_freqs: List[float] = [float(p.frequency_mhz) for p in wf.fitted_peaks]
     existing_ids: List[int] = [int(p.peak_id) for p in wf.fitted_peaks]
     for key, fp_data in wf.fixed_parameters.items():
         if key.startswith("frozen_peak_"):
@@ -1759,7 +1876,10 @@ def _save_window_artifacts(
 
     (out_dir / "report.md").write_text(
         _window_report(
-            window, wf, peaks_loaded, note=note,
+            window,
+            wf,
+            peaks_loaded,
+            note=note,
             residual_candidates=candidates,
             residual_summary=residual_summary,
         )
@@ -1812,23 +1932,18 @@ def _emit_windows_toml(
         wf = fit_by_id.get(wid)
         if wf is None:
             continue
-        n_fixed = sum(
-            1 for k in wf.fixed_parameters if k.startswith("frozen_peak_")
-        )
+        n_fixed = sum(1 for k in wf.fixed_parameters if k.startswith("frozen_peak_"))
         lo, hi = window.freq_range
         chi2r_s = (
-            f"{float(wf.reduced_chi2):.6f}"
-            if np.isfinite(wf.reduced_chi2) else "nan"
+            f"{float(wf.reduced_chi2):.6f}" if np.isfinite(wf.reduced_chi2) else "nan"
         )
         lines.append(f"[window.{wid:03d}]")
-        lines.append(
-            f"freq_range_mhz = [{float(lo):.4f}, {float(hi):.4f}]"
-        )
+        lines.append(f"freq_range_mhz = [{float(lo):.4f}, {float(hi):.4f}]")
         lines.append(f"chi2r = {chi2r_s}")
         lines.append(f"n_peaks = {len(wf.fitted_peaks)}")
         lines.append(f"n_fixed = {n_fixed}")
-        lines.append("classification = \"\"")
-        lines.append("notes = \"\"")
+        lines.append('classification = ""')
+        lines.append('notes = ""')
         lines.append("")
     out_path.write_text("\n".join(lines))
     return out_path
@@ -2199,11 +2314,9 @@ def main() -> None:
 
     # --named-window overrides NAMED_SAMPLE for the --window-id path.
     cli_named: List[Tuple[int, str]] = []
-    for entry in (args.named_windows or []):
+    for entry in args.named_windows or []:
         if ":" not in entry:
-            raise SystemExit(
-                f"--named-window expects 'ID:NOTE', got {entry!r}"
-            )
+            raise SystemExit(f"--named-window expects 'ID:NOTE', got {entry!r}")
         sid, note = entry.split(":", 1)
         try:
             cli_named.append((int(sid), note.strip()))
@@ -2275,9 +2388,13 @@ def main() -> None:
     # below. ``freqs_padded`` is sorted ascending so per-window masking is
     # cheap.
     freqs_padded, spec_padded = _padded_active_ft(
-        fid_samples, sample_dt_us,
-        start_us=start_us, end_us=end_us, expf_us=expf_us,
-        probe_freq_mhz=probe_freq_mhz, sideband=sideband_enum,
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        expf_us=expf_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband_enum,
         pad_factor=DISPLAY_PAD_FACTOR,
     )
     # Sort active-FT by molecular frequency so the plot axis is ascending
@@ -2384,16 +2501,15 @@ def main() -> None:
         rel_dir = OUTPUT_DIR / f"window_{window_id:03d}"
         rel_dir.mkdir(parents=True, exist_ok=True)
         lo, hi = window.freq_range
-        tau_us_v = float(
-            wf.shared_parameters.get("tau_us", {}).get("value", 0.0)
-        )
+        tau_us_v = float(wf.shared_parameters.get("tau_us", {}).get("value", 0.0))
         n_rounds_total = len(wf.rescue_events) if wf.rescue_events else 0
         n_rounds_accepted = sum(
             1 for e in (wf.rescue_events or []) if getattr(e, "accepted", False)
         )
         rounds_note = (
             f"{n_rounds_accepted}/{n_rounds_total} rescue rounds accepted"
-            if n_rounds_total > 0 else "no rescue rounds"
+            if n_rounds_total > 0
+            else "no rescue rounds"
         )
         title = (
             f"Window {window_id}  [{lo:.2f}, {hi:.2f}] MHz  "
@@ -2403,7 +2519,9 @@ def main() -> None:
             f"(consolidated, {rounds_note})"
         )
         fig = _plot_consolidated_detail(
-            window, wf, [],
+            window,
+            wf,
+            [],
             frequencies=freqs_sorted,
             complex_spectrum=spec_sorted,
             rms_noise=rms_sorted,
@@ -2462,7 +2580,8 @@ def main() -> None:
             # Consolidated final-fit detail (Figure 1). Built on the rescue
             # outcome so the model shown is post-rescue, post-knockout.
             other_window_fits = [
-                wf_other for wf_other in fit.window_fits
+                wf_other
+                for wf_other in fit.window_fits
                 if wf_other.window_id != window_id
             ]
             _save_consolidated_detail(
@@ -2689,19 +2808,13 @@ def main() -> None:
     else:
         for wid in EASY_SAMPLE:
             rel = emit(wid, None)
-            easy_entries.append(
-                (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
-            )
+            easy_entries.append((wid, plan_by_id[wid], fit_by_id[wid], None, rel))
         for wid in HARD_SAMPLE:
             rel = emit(wid, None)
-            hard_entries.append(
-                (wid, plan_by_id[wid], fit_by_id[wid], None, rel)
-            )
+            hard_entries.append((wid, plan_by_id[wid], fit_by_id[wid], None, rel))
         for wid, note in NAMED_SAMPLE:
             rel = emit(wid, note)
-            named_entries.append(
-                (wid, plan_by_id[wid], fit_by_id[wid], note, rel)
-            )
+            named_entries.append((wid, plan_by_id[wid], fit_by_id[wid], note, rel))
 
     # --- INDEX.md ----------------------------------------------------------
     n_thaw = len(fit.thaw_history)
@@ -2752,10 +2865,15 @@ def main() -> None:
         variant_id_for_header = args.variant_id or "manual"
         toml_dest = OUTPUT_DIR / "windows.toml"
         if args.detail_only and toml_dest.exists():
-            print(f"windows.toml: {toml_dest} (preserved -- existing classifications kept)")
+            print(
+                f"windows.toml: {toml_dest} (preserved -- existing classifications kept)"
+            )
         else:
             toml_path = _emit_windows_toml(
-                plan, fit, OUTPUT_DIR, variant_id_for_header,
+                plan,
+                fit,
+                OUTPUT_DIR,
+                variant_id_for_header,
             )
             print(f"windows.toml: {toml_path}")
 

@@ -9,7 +9,7 @@ breakdown of what each setting would eliminate at several thresholds.
 
 Output: ``scratch/stage3-coherence-study/apply_screen.md`` plus a
 multi-panel ratio-distribution figure. No ground-truth claims: this is
-a descriptive look at the screen's behaviour on a real dataset, *not*
+a descriptive look at the screen's behavior on a real dataset, *not*
 a validation. The research project at
 ``dev-docs/research/stage3-coherence-screen/`` is the source for the
 τ_basis choice and the operating-point intuition.
@@ -65,10 +65,7 @@ def _ascending_bin(sorted_freq: np.ndarray, value: float) -> int:
         return 0
     if pos >= sorted_freq.size:
         return int(sorted_freq.size - 1)
-    if (
-        abs(value - sorted_freq[pos - 1])
-        <= abs(value - sorted_freq[pos])
-    ):
+    if abs(value - sorted_freq[pos - 1]) <= abs(value - sorted_freq[pos]):
         return pos - 1
     return pos
 
@@ -79,8 +76,7 @@ def main() -> None:
     peaks = ftmw.load_peaks(str(FTMW_PATH))
 
     easy_ids = {
-        w.window_id for w in plan.windows
-        if w.difficulty == WindowDifficulty.EASY
+        w.window_id for w in plan.windows if w.difficulty == WindowDifficulty.EASY
     }
     easy_windows = [w for w in plan.windows if w.window_id in easy_ids]
 
@@ -104,34 +100,48 @@ def main() -> None:
 
     # Build the active-FT once.
     (
-        fid_samples, sample_dt_us, start_us, end_us, expf_us,
-        probe_freq_mhz, sideband_enum, n_padded, acquisition_us,
-        _user_ft, _user_rms,
+        fid_samples,
+        sample_dt_us,
+        start_us,
+        end_us,
+        expf_us,
+        probe_freq_mhz,
+        sideband_enum,
+        n_padded,
+        acquisition_us,
+        _user_ft,
+        _user_rms,
     ) = _build_active_ft_inputs(str(FTMW_PATH))
     active_ft = compute_active_ft(
-        fid_samples, sample_dt_us, start_us=start_us, end_us=end_us,
-        expf_us=expf_us, probe_freq_mhz=probe_freq_mhz,
-        sideband=sideband_enum, n_padded=n_padded,
+        fid_samples,
+        sample_dt_us,
+        start_us=start_us,
+        end_us=end_us,
+        expf_us=expf_us,
+        probe_freq_mhz=probe_freq_mhz,
+        sideband=sideband_enum,
+        n_padded=n_padded,
     )
     # Active-FT noise.
     sort_idx = np.argsort(active_ft.freq_mhz)
     unsort_idx = np.argsort(sort_idx)
     freq_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-    mag_sorted = np.ascontiguousarray(
-        np.abs(active_ft.complex_spectrum)[sort_idx]
-    )
+    mag_sorted = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
     noise = estimate_noise_adaptive(freq_sorted, mag_sorted)
     rms_sorted = np.asarray(noise.rms_noise, dtype=float)
     sigma_active = rms_sorted[unsort_idx]
     bin_mhz = 1.0 / acquisition_us
     logger.info(
         "active-FT: %d bins, T=%.3f µs, bin=%.4f MHz",
-        active_ft.freq_mhz.size, acquisition_us, bin_mhz,
+        active_ft.freq_mhz.size,
+        acquisition_us,
+        bin_mhz,
     )
     fwhm_data = 1.0 / (np.pi * 3.0)  # τ_eff=3 µs from strong-line fit
     logger.info(
         "expected FWHM (τ_eff=3 µs): %.4f MHz = %.2f bins",
-        fwhm_data, fwhm_data / bin_mhz,
+        fwhm_data,
+        fwhm_data / bin_mhz,
     )
 
     # Per-candidate baseline columns.
@@ -147,9 +157,7 @@ def main() -> None:
         [int(unsort_idx[_ascending_bin(freq_sorted, f)]) for f in cand_freqs]
     )
     active_mag = np.abs(active_ft.complex_spectrum)[active_bins]
-    sigma_c_per_bin = np.where(
-        sigma_active > 0, sigma_active / np.sqrt(2.0), 1.0
-    )
+    sigma_c_per_bin = np.where(sigma_active > 0, sigma_active / np.sqrt(2.0), 1.0)
     active_snr = active_mag / sigma_c_per_bin[active_bins]
 
     # Run projection at each τ_basis.
@@ -157,9 +165,12 @@ def main() -> None:
     for label, tau in TAU_SETTINGS:
         logger.info("τ_basis = %.2f µs ... %s", tau, label)
         projections = project_candidates(
-            active_ft.freq_mhz, active_ft.complex_spectrum,
-            sigma_active, cand_freqs.tolist(),
-            tau_us=tau, acquisition_us=acquisition_us,
+            active_ft.freq_mhz,
+            active_ft.complex_spectrum,
+            sigma_active,
+            cand_freqs.tolist(),
+            tau_us=tau,
+            acquisition_us=acquisition_us,
             sideband=sideband_enum,
         )
         runs[label] = np.array([p.ratio for p in projections])
@@ -222,9 +233,7 @@ def main() -> None:
 
     # Threshold scan per τ_basis.
     md.append("## What gets eliminated at various thresholds\n\n")
-    md.append(
-        "Candidates with ratio below the threshold are eliminated.\n\n"
-    )
+    md.append("Candidates with ratio below the threshold are eliminated.\n\n")
     for label, tau in TAU_SETTINGS:
         r = runs[label]
         md.append(f"### τ_basis = {tau:.1f} µs ({label})\n\n")
@@ -244,9 +253,7 @@ def main() -> None:
             n_kp = int((killed & promoted).sum())
             n_knp = int((killed & ~promoted).sum())
             n_low = int((killed & (user_snr < 3.0)).sum())
-            n_mid = int(
-                (killed & (user_snr >= 3.0) & (user_snr < 5.0)).sum()
-            )
+            n_mid = int((killed & (user_snr >= 3.0) & (user_snr < 5.0)).sum())
             n_hi = int((killed & (user_snr >= 5.0)).sum())
             md.append(
                 f"| {t:.2f} | {n_k} | {n_k / r.size:.1%} | {n_kp} | "
@@ -257,14 +264,11 @@ def main() -> None:
     # Cross-tau comparison: how many of the candidates each setting
     # kills are common across settings? (Stability check.)
     md.append("## Stability across τ_basis at threshold 0.9\n\n")
-    md.append(
-        "Same-candidate overlap between τ_basis settings, threshold 0.9.\n\n"
-    )
+    md.append("Same-candidate overlap between τ_basis settings, threshold 0.9.\n\n")
     md.append("| | " + " | ".join(label for label, _ in TAU_SETTINGS) + " |\n")
     md.append("|" + "|".join(["-"] * (len(TAU_SETTINGS) + 1)) + "|\n")
     killed_sets = {
-        label: set(np.where(runs[label] < 0.9)[0].tolist())
-        for label, _ in TAU_SETTINGS
+        label: set(np.where(runs[label] < 0.9)[0].tolist()) for label, _ in TAU_SETTINGS
     }
     for label_a, _ in TAU_SETTINGS:
         row = [label_a]
@@ -330,11 +334,17 @@ def main() -> None:
         r = runs[label]
         bins_h = np.linspace(0.0, max(2.0, r.max() + 0.1), 40)
         ax.hist(
-            r[promoted], bins=bins_h, alpha=0.6, color="C0",
+            r[promoted],
+            bins=bins_h,
+            alpha=0.6,
+            color="C0",
             label=f"promoted (SNR≥3, n={int(promoted.sum())})",
         )
         ax.hist(
-            r[~promoted], bins=bins_h, alpha=0.6, color="C3",
+            r[~promoted],
+            bins=bins_h,
+            alpha=0.6,
+            color="C3",
             label=f"not promoted (n={int((~promoted).sum())})",
         )
         for t in [0.7, 0.9, 1.0]:
@@ -348,11 +358,17 @@ def main() -> None:
         r = runs[label]
         bins_h = np.linspace(0.0, max(2.0, r.max() + 0.1), 40)
         ax.hist(
-            r[promoted], bins=bins_h, alpha=0.6, color="C0",
+            r[promoted],
+            bins=bins_h,
+            alpha=0.6,
+            color="C0",
             label=f"promoted (SNR≥3, n={int(promoted.sum())})",
         )
         ax.hist(
-            r[~promoted], bins=bins_h, alpha=0.6, color="C3",
+            r[~promoted],
+            bins=bins_h,
+            alpha=0.6,
+            color="C3",
             label=f"not promoted (n={int((~promoted).sum())})",
         )
         for t in [0.7, 0.9, 1.0]:
@@ -362,9 +378,7 @@ def main() -> None:
         ax.set_title(f"{label}: τ={tau:.1f} µs")
         ax.legend(loc="upper right", fontsize=9)
 
-    fig.suptitle(
-        "Projection ratios on 2638 EASY candidates -- four τ_basis settings"
-    )
+    fig.suptitle("Projection ratios on 2638 EASY candidates -- four τ_basis settings")
     fig.tight_layout()
     fig_path = OUTPUT_DIR / "apply_screen.png"
     fig.savefig(fig_path, dpi=120)

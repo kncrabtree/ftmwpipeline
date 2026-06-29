@@ -48,7 +48,9 @@ def _make_synthetic_mat(tmp_path: Path) -> tuple:
         frm = f.create_group("Frame")
         frm.create_dataset(
             "Model",
-            data=np.array([ord(c) for c in "TestScope"], dtype=np.uint16).reshape(-1, 1),
+            data=np.array([ord(c) for c in "TestScope"], dtype=np.uint16).reshape(
+                -1, 1
+            ),
         )
         frm.create_dataset(
             "Serial",
@@ -72,7 +74,9 @@ class TestKeysightMatCrossInterface:
     def trio(self, tmp_path_factory):
         """Build three pipeline files — one per interface — and return their paths."""
         tmp = tmp_path_factory.mktemp("keysight_mat_trio")
-        mat_path, layout, expected_avg, frame_s, pre_s, tail_s = _make_synthetic_mat(tmp)
+        mat_path, layout, expected_avg, frame_s, pre_s, tail_s = _make_synthetic_mat(
+            tmp
+        )
 
         # Functional API
         fp_api = tmp / "via_api.ftmw"
@@ -85,17 +89,24 @@ class TestKeysightMatCrossInterface:
         # CLI
         fp_cli = tmp / "via_cli.ftmw"
         cmd = [
-            sys.executable, "-m", "ftmwpipeline",
-            "data", "import",
-            str(fp_cli), str(mat_path),
-            "--pre-record-us", str(layout["pre_record_us"]),
-            "--frame-period-us", str(layout["frame_period_us"]),
-            "--n-frames", str(layout["n_frames"]),
+            sys.executable,
+            "-m",
+            "ftmwpipeline",
+            "data",
+            "import",
+            str(fp_cli),
+            str(mat_path),
+            "--pre-record-us",
+            str(layout["pre_record_us"]),
+            "--frame-period-us",
+            str(layout["frame_period_us"]),
+            "--n-frames",
+            str(layout["n_frames"]),
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
-        assert result.returncode == 0, (
-            f"CLI import failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
-        )
+        assert (
+            result.returncode == 0
+        ), f"CLI import failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
 
         return {
             "api": fp_api,

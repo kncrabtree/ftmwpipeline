@@ -51,24 +51,19 @@ from ftmwpipeline.preprocessing.noise_estimation import estimate_noise_adaptive
 logger = logging.getLogger("stage3-coherence-survey")
 
 
-DEFAULT_FTMW_PATH = (
-    REPO_ROOT / "scratch" / "stage5-validation" / "exp_2638.ftmw"
-)
+DEFAULT_FTMW_PATH = REPO_ROOT / "scratch" / "stage5-validation" / "exp_2638.ftmw"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "scratch" / "stage3-coherence-study"
 
 
-def _ascending_bin(
-    freq_sorted_ascending: np.ndarray, value: float
-) -> int:
+def _ascending_bin(freq_sorted_ascending: np.ndarray, value: float) -> int:
     """Index of the nearest entry in an ascending array to ``value``."""
     pos = int(np.searchsorted(freq_sorted_ascending, value))
     if pos == 0:
         return 0
     if pos >= freq_sorted_ascending.size:
         return int(freq_sorted_ascending.size - 1)
-    if (
-        abs(value - freq_sorted_ascending[pos - 1])
-        <= abs(value - freq_sorted_ascending[pos])
+    if abs(value - freq_sorted_ascending[pos - 1]) <= abs(
+        value - freq_sorted_ascending[pos]
     ):
         return pos - 1
     return pos
@@ -153,9 +148,7 @@ def run_survey(
     sort_idx = np.argsort(active_ft.freq_mhz)
     unsort_idx = np.argsort(sort_idx)
     freq_sorted = np.ascontiguousarray(active_ft.freq_mhz[sort_idx])
-    mag_sorted = np.ascontiguousarray(
-        np.abs(active_ft.complex_spectrum)[sort_idx]
-    )
+    mag_sorted = np.ascontiguousarray(np.abs(active_ft.complex_spectrum)[sort_idx])
     noise = estimate_noise_adaptive(freq_sorted, mag_sorted)
     rms_sorted = np.asarray(noise.rms_noise, dtype=float)
     sigma_active = rms_sorted[unsort_idx]

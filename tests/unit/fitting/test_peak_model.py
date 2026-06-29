@@ -54,7 +54,7 @@ def _numerical_fft_response(
     acquisition_us: float,
     fs_mhz: float = 50.0,
 ) -> np.ndarray:
-    """Literal numerical realisation of the model (prototype cross-check).
+    """Literal numerical realization of the model (prototype cross-check).
 
     Synthesizes a damped-cosine FID over ``[0, T]``, rfft's the zero-padded
     record, and interpolates the response near the line onto ``delta_f_mhz``.

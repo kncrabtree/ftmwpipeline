@@ -27,7 +27,11 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 CSV_PATH = (
-    REPO_ROOT / "dev-docs" / "research" / "gaussian-shape" / "data"
+    REPO_ROOT
+    / "dev-docs"
+    / "research"
+    / "gaussian-shape"
+    / "data"
     / "exp_2638_unapodized_per_window.csv"
 )
 OUT_DIR = REPO_ROOT / "scratch" / "gaussian-shape-validation"
@@ -37,8 +41,23 @@ G_DIR = OUT_DIR / "gaussian"
 # Original stage5-validation deliberate sample (matches the order in
 # scratch/stage5-validation/INDEX.md so a reader can hop directly between
 # the apodized-fit validation set and this one).
-ORIGINAL_VALIDATION = (215, 16, 104, 337, 64, 63, 127, 260, 148, 68, 132, 198,
-                       209, 269, 271)
+ORIGINAL_VALIDATION = (
+    215,
+    16,
+    104,
+    337,
+    64,
+    63,
+    127,
+    260,
+    148,
+    68,
+    132,
+    198,
+    209,
+    269,
+    271,
+)
 LORENTZIAN_WINS = (218, 284, 71, 312, 67, 198, 291, 185, 342)
 # Part-A shape-error windows from the Voigt-deficit prototype. w141 is in the
 # fixture but not in our re-run set (we picked the original validation set
@@ -115,10 +134,12 @@ def _section(title: str, wids, rows, intro: str | None = None) -> list[str]:
     if intro:
         out.append(intro)
         out.append("")
-    out.extend([
-        "| wid | freq range (MHz) | K (L / G) | χ²ᵣ (L / G) | ΔAIC | wins | Lorentzian artifacts | Gaussian artifacts |",
-        "|---:|---|:---:|:---:|---:|:---:|---|---|",
-    ])
+    out.extend(
+        [
+            "| wid | freq range (MHz) | K (L / G) | χ²ᵣ (L / G) | ΔAIC | wins | Lorentzian artifacts | Gaussian artifacts |",
+            "|---:|---|:---:|:---:|---:|:---:|---|---|",
+        ]
+    )
     for wid in wids:
         out.append(_row(rows, wid))
     out.append("")
@@ -137,58 +158,69 @@ def main() -> None:
         print(f"WARNING: windows not present in per-window CSV: {missing}")
 
     body: list[str] = []
-    body.extend([
-        "# Stage 5 Lorentzian-vs-Gaussian validation index",
-        "",
-        "Side-by-side per-window artifacts for the 2638 unapodized fixture.",
-        "Each row links to the Lorentzian and Gaussian detail.png / "
-        "audit-trail.png / report.md emitted by the validation harness "
-        "(`scripts/development/stage5-validation/generate_validation.py`).",
-        "Aggregate stats and the comparison figure live under "
-        "[`../../dev-docs/research/gaussian-shape/`](../../dev-docs/research/gaussian-shape/).",
-        "",
-        "ΔAIC = AIC(L) − AIC(G). **Positive** = Gaussian preferred; "
-        "**negative** = Lorentzian preferred. ±5 is the conventional "
-        "decisive-evidence threshold.",
-        "",
-    ])
-    body.extend(_section(
-        "Original stage5-validation set",
-        ORIGINAL_VALIDATION, rows,
-        intro=(
-            "Same window IDs as `scratch/stage5-validation/INDEX.md` "
-            "(though the unapodized fixture's window plan has slightly "
-            "different freq boundaries because Stage 4 was re-run after "
-            "rebuilding without apodization)."
-        ),
-    ))
-    body.extend(_section(
-        "Lorentzian-wins (potential clock spurs / collisional regime)",
-        LORENTZIAN_WINS, rows,
-        intro=(
-            "Sorted by ΔAIC (most-negative first in the underlying CSV). "
-            "Two patterns to look for in the per-window plots: "
-            "(a) narrow lines with χ²ᵣ_L ≈ 1 that the Gaussian "
-            "model over-broadens (collisional / rotationally-cold "
-            "regime — true Lorentzian shape), and "
-            "(b) bins where Gaussian χ²ᵣ blows up dramatically — "
-            "candidate clock spurs whose CW time-domain content the "
-            "Gaussian envelope cannot accommodate. **w218** is the "
-            "extreme case (χ²ᵣ_G = 213)."
-        ),
-    ))
-    body.extend(_section(
-        "Part A reference (Voigt-deficit prototype targets)",
-        PART_A_REFERENCE, rows,
-        intro=(
-            "The four windows the per-window joint `(τ_L, τ_G)` LSQ in "
-            "`dev-docs/planning/stage5-voigt-deficit.md` flagged as the "
-            "strongest Gaussian-preference candidates on 2638. Three of "
-            "the four (w141, w213, w310) win Gaussian by large ΔAIC; "
-            "w355 went the other way (the open-question case the "
-            "planning doc calls out for deep-dive)."
-        ),
-    ))
+    body.extend(
+        [
+            "# Stage 5 Lorentzian-vs-Gaussian validation index",
+            "",
+            "Side-by-side per-window artifacts for the 2638 unapodized fixture.",
+            "Each row links to the Lorentzian and Gaussian detail.png / "
+            "audit-trail.png / report.md emitted by the validation harness "
+            "(`scripts/development/stage5-validation/generate_validation.py`).",
+            "Aggregate stats and the comparison figure live under "
+            "[`../../dev-docs/research/gaussian-shape/`](../../dev-docs/research/gaussian-shape/).",
+            "",
+            "ΔAIC = AIC(L) − AIC(G). **Positive** = Gaussian preferred; "
+            "**negative** = Lorentzian preferred. ±5 is the conventional "
+            "decisive-evidence threshold.",
+            "",
+        ]
+    )
+    body.extend(
+        _section(
+            "Original stage5-validation set",
+            ORIGINAL_VALIDATION,
+            rows,
+            intro=(
+                "Same window IDs as `scratch/stage5-validation/INDEX.md` "
+                "(though the unapodized fixture's window plan has slightly "
+                "different freq boundaries because Stage 4 was re-run after "
+                "rebuilding without apodization)."
+            ),
+        )
+    )
+    body.extend(
+        _section(
+            "Lorentzian-wins (potential clock spurs / collisional regime)",
+            LORENTZIAN_WINS,
+            rows,
+            intro=(
+                "Sorted by ΔAIC (most-negative first in the underlying CSV). "
+                "Two patterns to look for in the per-window plots: "
+                "(a) narrow lines with χ²ᵣ_L ≈ 1 that the Gaussian "
+                "model over-broadens (collisional / rotationally-cold "
+                "regime — true Lorentzian shape), and "
+                "(b) bins where Gaussian χ²ᵣ blows up dramatically — "
+                "candidate clock spurs whose CW time-domain content the "
+                "Gaussian envelope cannot accommodate. **w218** is the "
+                "extreme case (χ²ᵣ_G = 213)."
+            ),
+        )
+    )
+    body.extend(
+        _section(
+            "Part A reference (Voigt-deficit prototype targets)",
+            PART_A_REFERENCE,
+            rows,
+            intro=(
+                "The four windows the per-window joint `(τ_L, τ_G)` LSQ in "
+                "`dev-docs/planning/stage5-voigt-deficit.md` flagged as the "
+                "strongest Gaussian-preference candidates on 2638. Three of "
+                "the four (w141, w213, w310) win Gaussian by large ΔAIC; "
+                "w355 went the other way (the open-question case the "
+                "planning doc calls out for deep-dive)."
+            ),
+        )
+    )
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     out_path = OUT_DIR / "INDEX.md"

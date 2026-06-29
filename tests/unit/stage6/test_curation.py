@@ -23,6 +23,8 @@ from ftmwpipeline._internal import stage6_impl as s6
 from ftmwpipeline._internal.stage6_impl import (
     STAGE5_BASELINE_GROUP,
     PlannedAction,
+    _decision_to_op,
+    _resolve_curation_plan,
     apply_curation_impl,
     clear_stage5_baseline,
     describe_planned_action,
@@ -30,8 +32,6 @@ from ftmwpipeline._internal.stage6_impl import (
     refit_window_impl,
     review_log_impl,
     review_undo_impl,
-    _decision_to_op,
-    _resolve_curation_plan,
 )
 from ftmwpipeline.cli.review_commands import (
     cmd_review_apply,
@@ -42,7 +42,6 @@ from ftmwpipeline.core.data_structures import DecisionLogEntry
 from ftmwpipeline.io.fitting_serialization import load_spectrum_fit_from_hdf5
 from ftmwpipeline.io.stage6_review_serialization import load_stage6_review_from_file
 from ftmwpipeline.pipeline import Pipeline
-
 
 # ---------------------------------------------------------------------------
 # Parsing (pure, no fixture)
@@ -257,7 +256,9 @@ def _fitted_by_window(path: Path) -> Dict[int, List[float]]:
     with h5py.File(str(path), "r") as h5f:
         sf = load_spectrum_fit_from_hdf5(h5f["stage5_fitting"])
     return {
-        int(wf.window_id): sorted(round(float(p.frequency_mhz), 6) for p in wf.fitted_peaks)
+        int(wf.window_id): sorted(
+            round(float(p.frequency_mhz), 6) for p in wf.fitted_peaks
+        )
         for wf in sf.window_fits
         if wf.window_id is not None
     }
@@ -410,9 +411,7 @@ def test_decision_to_op_merge_uses_merged_from():
 
 
 def test_decision_to_op_split_uses_into():
-    op = _decision_to_op(
-        _entry(0, 7, "split", 50.0, evidence={"split_into": 3})
-    )
+    op = _decision_to_op(_entry(0, 7, "split", 50.0, evidence={"split_into": 3}))
     assert op.action == "split" and op.freqs == [50.0] and op.params == {"into": "3"}
 
 

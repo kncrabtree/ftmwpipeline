@@ -7,7 +7,7 @@ fixtures, the quantitative claims in :doc:`stage5_fitting`:
   bar ``Delta chi2 > 2 lambda Delta k`` is independent of how many quiet bins
   pad a window, while the classical nested-model F-test the bar replaced
   manufactures significance from that padding;
-* the **sigma_eff localisation** -- the same gate, scored against the
+* the **sigma_eff localization** -- the same gate, scored against the
   fidelity-inflated per-bin noise ``sigma_eff^2 = sigma^2 + (kappa |model|)^2``,
   discounts residual evidence sitting *under* a bright model component (the
   irreducible lineshape floor) while keeping full weight where the model is
@@ -15,7 +15,7 @@ fixtures, the quantitative claims in :doc:`stage5_fitting`:
 * **blend recovery vs detectability** -- a K-known joint fit recovers a close
   blend to ~kHz down to half a line width, and a single-cosine fit to the same
   blend leaves a large, smooth reduced-chi^2 elevation, so blends are always
-  detectable and the only failure mode is sequential initialisation (which the
+  detectable and the only failure mode is sequential initialization (which the
   blend-aware seeder fixes);
 * the **SNR-aware health gate across fixtures** -- on the seven checked-in
   experiments the per-window reduced chi^2 tracks ``F + (kappa SNR)^2`` across
@@ -160,7 +160,7 @@ def gate_window_invariance() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 2. sigma_eff localises the gate: irreducible misfit under a bright line is
+# 2. sigma_eff localizes the gate: irreducible misfit under a bright line is
 #    discounted; a real line over quiet bins keeps its evidence.
 # ---------------------------------------------------------------------------
 def sigma_eff_localization() -> Dict[str, Any]:
@@ -213,7 +213,7 @@ def blend_study(seed: int = SEED) -> Dict[str, Any]:
     """Sweep a two-line blend over separation in line widths.
 
     For each separation, a 1:1 in-phase blend at on-line SNR ``snr`` is
-    synthesised and (a) fit jointly with two lines started at the true positions
+    synthesized and (a) fit jointly with two lines started at the true positions
     -- the K-known recovery error -- and (b) fit with a single line -- the
     detectability signature (an elevated single-cosine reduced chi^2). Recovery
     holds to ~kHz down to about half a line width; the single-cosine elevation is
@@ -431,7 +431,7 @@ def make_figures(results: Dict[str, Any]) -> None:
     fig.savefig(figdir / "fig1_gate_window_invariance.png", dpi=130)
     plt.close(fig)
 
-    # fig2: sigma_eff localisation -- raw vs effective evidence, by location.
+    # fig2: sigma_eff localization -- raw vs effective evidence, by location.
     se = results["sigma_eff"]
     fig, ax = plt.subplots(figsize=(7, 5))
     labels = ["real line\n(quiet bins)", "absorber\n(under bright line)"]

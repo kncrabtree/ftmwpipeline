@@ -239,7 +239,7 @@ def _tier3(
     Mutual-nearest-neighbor matching within ``match_tol_fwhm * FWHM`` (FWHM from
     each peak's window tau via :func:`feature_fwhm`). Reports recall, a caveated
     precision (the spectrum legitimately carries real lines absent from the
-    catalog -- vibrational satellites, unmodelled species -- so unmatched fitted
+    catalog -- vibrational satellites, unmodeled species -- so unmatched fitted
     peaks are not necessarily spurious), the frequency-residual statistics, the
     reported-sigma honesty, and the detrended instrument accuracy floor.
     """

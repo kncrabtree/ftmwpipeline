@@ -361,7 +361,7 @@ class TestExtractTauMajority:
         +3 % over truth; the polish-ON majority lands within +- 1 % over
         the same trials. This test verifies the bias direction and the
         relative magnitude of the improvement, not the absolute number
-        (jitter across N_seg-frame realisations is ~ +- 1 %).
+        (jitter across N_seg-frame realizations is ~ +- 1 %).
         """
         rng_seed = 20260525 + 200
         N = int(round(T_FULL_US / SAMPLE_DT_US))

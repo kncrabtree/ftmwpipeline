@@ -303,7 +303,7 @@ class BlackChirpLoader(BaseLoader):
         Delegates metadata parsing to the ``blackchirp`` package
         (:class:`~blackchirp.BCExperiment`), which normalizes the CSV format
         across Blackchirp versions, and applies the instrument semantics on top:
-        the synthesiser chain fundamentals, the AWG sample clock, and the
+        the synthesizer chain fundamentals, the AWG sample clock, and the
         free-running digitizer clock. Returns a list of
         ``{"freq_mhz": float, "locked": bool, "label": str}`` dicts (the
         serialized form of a :class:`~...ClockSource`) consumed by the Stage 5
@@ -312,13 +312,13 @@ class BlackChirpLoader(BaseLoader):
 
         Clock-source rules
         ------------------
-        * ``clocks`` rows -> synthesiser chain fundamental = FreqMHz / Factor for
+        * ``clocks`` rows -> synthesizer chain fundamental = FreqMHz / Factor for
           a Multiply operation, FreqMHz * Factor for Divide, pass-through
           otherwise. ``Operation`` is accepted as the string form
           (``"Multiply"`` / ``"Divide"``) **and** the integer enum (``0`` / ``1``)
           older Blackchirp metadata writes. Fundamentals are deduplicated on the
-          rounded MHz value (a dual-output synthesiser driving two chains yields
-          two rows at one fundamental). All synthesiser sources are locked
+          rounded MHz value (a dual-output synthesizer driving two chains yields
+          two rows at one fundamental). All synthesizer sources are locked
           (referenced to the instrument Rb standard).
         * AWG ``ChirpConfig`` SampleRate -> AWG entry, locked.
         * The ``FtmwDigitizer`` sample rate -> digitizer entry, locked=False (the
@@ -341,7 +341,7 @@ class BlackChirpLoader(BaseLoader):
 
         entries: List[Dict[str, Any]] = []
 
-        # --- synthesiser chain fundamentals (clocks table) ---
+        # --- synthesizer chain fundamentals (clocks table) ---
         clocks = getattr(exp, "clocks", None)
         if (
             clocks is not None
@@ -548,7 +548,7 @@ class BlackChirpLoader(BaseLoader):
             return Sideband.LOWER
         if "upper" in low:
             return Sideband.UPPER
-        raise LoaderError(f"Unrecognised Blackchirp sideband value: {value!r}")
+        raise LoaderError(f"Unrecognized Blackchirp sideband value: {value!r}")
 
     @staticmethod
     def _read_separator(source_path: Path) -> str:

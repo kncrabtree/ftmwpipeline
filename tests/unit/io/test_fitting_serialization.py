@@ -1105,9 +1105,7 @@ def _make_window_fit_with_covariance(
     from ftmwpipeline.fitting.result_conversion import build_covariance_param_labels
 
     peaks = [
-        _sample_fitted_peak(
-            peak_id=i, window_id=window_id, freq_mhz=36100.0 + i * 0.5
-        )
+        _sample_fitted_peak(peak_id=i, window_id=window_id, freq_mhz=36100.0 + i * 0.5)
         for i in range(n_peaks)
     ]
     labels = build_covariance_param_labels(
@@ -1174,9 +1172,15 @@ class TestCovarianceRoundTrip:
             n_peaks=3, fit_tau=False, baseline_order=None
         )
         assert labels == [
-            "amplitude_0", "offset_0", "phase_0",
-            "amplitude_1", "offset_1", "phase_1",
-            "amplitude_2", "offset_2", "phase_2",
+            "amplitude_0",
+            "offset_0",
+            "phase_0",
+            "amplitude_1",
+            "offset_1",
+            "phase_1",
+            "amplitude_2",
+            "offset_2",
+            "phase_2",
         ]
 
     def test_covariance_labels_with_tau_and_baseline(self, tmp_path):
@@ -1187,10 +1191,16 @@ class TestCovarianceRoundTrip:
             n_peaks=1, fit_tau=True, baseline_order=2
         )
         assert labels == [
-            "amplitude_0", "offset_0", "phase_0",
+            "amplitude_0",
+            "offset_0",
+            "phase_0",
             "tau",
-            "baseline_re_0", "baseline_re_1", "baseline_re_2",
-            "baseline_im_0", "baseline_im_1", "baseline_im_2",
+            "baseline_re_0",
+            "baseline_re_1",
+            "baseline_re_2",
+            "baseline_im_0",
+            "baseline_im_1",
+            "baseline_im_2",
         ]
 
     def test_malformed_covariance_non_square_raises(self, tmp_path):
@@ -1246,8 +1256,12 @@ class TestCovarianceRoundTrip:
             wg = g["windows/window_0000"]
             # 2 peaks worth of labels but only 1 fitted peak.
             labels_2peaks = [
-                "amplitude_0", "offset_0", "phase_0",
-                "amplitude_1", "offset_1", "phase_1",
+                "amplitude_0",
+                "offset_0",
+                "phase_0",
+                "amplitude_1",
+                "offset_1",
+                "phase_1",
             ]
             wg.create_dataset("covariance", data=np.eye(6, dtype="f8"))
             wg.attrs["covariance_param_labels"] = json.dumps(labels_2peaks)

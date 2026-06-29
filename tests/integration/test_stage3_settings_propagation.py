@@ -447,7 +447,7 @@ class TestGapPassTauFeeder:
         tau_G_maj_us: Any = None,
         recommended_shape: Any = None,
     ) -> None:
-        """Pin Stage 2b loader results without materialising HDF5 groups.
+        """Pin Stage 2b loader results without materializing HDF5 groups.
 
         Each ``None`` means "no calibration present"; a float means
         ``tau_calibration_present`` returns True and ``load_..._impl``
