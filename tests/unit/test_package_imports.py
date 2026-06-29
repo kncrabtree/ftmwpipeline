@@ -99,18 +99,25 @@ class TestPackageMetadata:
     """Test package metadata and version information."""
 
     def test_version_format(self):
-        """Test that version follows semantic versioning."""
+        """Test that version is a valid PEP 440 release string."""
+        import re
+
         import ftmwpipeline
 
         version = ftmwpipeline.__version__
         assert isinstance(version, str)
 
-        # Should follow semantic versioning (major.minor.patch)
-        parts = version.split(".")
-        assert len(parts) >= 2  # At least major.minor
-        assert all(
-            part.isdigit() for part in parts[:3]
-        )  # First 3 parts should be numbers
+        # PEP 440: a numeric release (at least major.minor) optionally followed
+        # by pre-release (aN/bN/rcN), post (.postN), or dev (.devN) segments.
+        # Accepts e.g. "0.1.0", "0.1.0b1", "1.2.3rc1", "1.0.dev0".
+        match = re.fullmatch(
+            r"(\d+)\.(\d+)(?:\.\d+)*"  # release: at least major.minor
+            r"(?:(?:a|b|rc)\d+)?"  # optional pre-release
+            r"(?:\.post\d+)?"  # optional post-release
+            r"(?:\.dev\d+)?",  # optional dev-release
+            version,
+        )
+        assert match is not None, f"version {version!r} is not a valid PEP 440 release"
 
     def test_package_info(self):
         """Test package info dictionary."""
