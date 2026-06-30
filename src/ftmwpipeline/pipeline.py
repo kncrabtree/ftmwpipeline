@@ -526,10 +526,6 @@ class Pipeline:
             if not interactive and output_file:
                 fig.savefig(output_file, dpi=150, bbox_inches="tight")
                 self.logger.info(f"Plot saved to: {output_file}")
-            elif not interactive:
-                default_name = f"{self.filepath.stem}_enhanced_spectrum.png"
-                fig.savefig(default_name, dpi=150, bbox_inches="tight")
-                self.logger.info(f"Plot saved to: {default_name}")
             elif interactive:
                 import matplotlib.pyplot as plt
 

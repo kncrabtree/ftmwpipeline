@@ -32,8 +32,10 @@ plausible-looking spectrum:
 
 ## Installation
 
+`ftmwpipeline` is currently in open beta. To install,
+
 ```bash
-pip install ftmwpipeline
+pip install --pre ftmwpipeline
 ```
 
 This pulls in the scientific Python stack (NumPy, SciPy, Matplotlib, pandas,

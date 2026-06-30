@@ -313,7 +313,7 @@ class TestCLIWorkflows:
         return result.returncode == 0, result.stdout, result.stderr
 
     def test_cli_basic_workflow(
-        self, exp_2638_data_path, temp_ftmw_file, standard_ft_params
+        self, exp_2638_data_path, temp_ftmw_file, standard_ft_params, tmp_path
     ):
         """Test CLI creates valid .ftmw files and processes data correctly."""
         # data import → ft run → ft show (via subprocess)
@@ -346,7 +346,8 @@ class TestCLIWorkflows:
             in stdout
         ), "FT validation success message missing"
 
-        # Stage 1: Visualize FT (non-interactive)
+        # Stage 1: Visualize FT (non-interactive, explicit output path)
+        plot_path = tmp_path / "ft_show.png"
         success, stdout, stderr = self.run_cli_command(
             [
                 "ft",
@@ -355,10 +356,13 @@ class TestCLIWorkflows:
                 "--trim",
                 f"{trim_min}:{trim_max}",
                 "--no-interactive",
+                "--output",
+                str(plot_path),
             ]
         )
         assert success, f"ft show failed: {stderr}"
         assert "Enhanced plot saved" in stdout, "Visualization success message missing"
+        assert plot_path.exists(), "ft show --output did not write the plot file"
 
         # Verify pipeline file is valid using functional API
         info = ftmw.get_pipeline_info(temp_ftmw_file)

@@ -172,24 +172,27 @@ def cmd_ft_visualize(args: argparse.Namespace) -> int:
                 interactive=not args.no_interactive,
             )
 
-            if args.no_interactive:
-                if args.output:
-                    fig.savefig(args.output, dpi=150, bbox_inches="tight")
-                    print(f"Enhanced plot saved to: {args.output}")
-                else:
-                    output_file = f"{pipeline_name}_enhanced_spectrum.png"
-                    fig.savefig(output_file, dpi=150, bbox_inches="tight")
-                    print(f"Enhanced plot saved to: {output_file}")
+            if args.output:
+                fig.savefig(args.output, dpi=150, bbox_inches="tight")
+                print(f"Enhanced plot saved to: {args.output}")
 
                 import matplotlib.pyplot as plt
 
                 plt.close(fig)
-            else:
+            elif not args.no_interactive:
                 import matplotlib.pyplot as plt
 
                 plt.show()
                 print("Enhanced interactive plot displayed")
                 print("   Close the plot window to continue...")
+            else:
+                import matplotlib.pyplot as plt
+
+                plt.close(fig)
+                print(
+                    "(no --output and --no-interactive: figure rendered but not "
+                    "saved; pass --output to write it)"
+                )
 
             print()
             print("ComplexFT calculated on-demand from pipeline file")
