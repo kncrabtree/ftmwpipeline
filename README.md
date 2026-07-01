@@ -2,6 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](pyproject.toml)
+[![Documentation Status](https://readthedocs.org/projects/ftmwpipeline/badge/?version=devel)](https://ftmwpipeline.readthedocs.io/en/devel/)
 
 A Python package for FTMW (Fourier Transform Microwave) spectroscopy signal
 processing and peak fitting — from a raw free-induction decay to a fitted line
@@ -101,7 +102,7 @@ ftmwpipeline report run   exp.ftmw --output-dir report
 
 Full documentation — installation, a worked quickstart on bundled example data,
 a guide to each pipeline stage, and the CLI/API reference — is at
-[ftmwpipeline.readthedocs.io](https://ftmwpipeline.readthedocs.io/).
+[ftmwpipeline.readthedocs.io/en/devel](https://ftmwpipeline.readthedocs.io/en/devel/).
 
 ## License
 
