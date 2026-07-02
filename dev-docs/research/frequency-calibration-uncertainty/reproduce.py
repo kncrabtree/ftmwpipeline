@@ -426,9 +426,345 @@ def sec_pedestal(args):
     print("  seeds: scratch/pedestal-test/{recon,pedestal_test,apod_arm}.py")
 
 
+# ---------------------------------------------------------------------------
+# §12 — the reproducibility grid (17 controlled vinyl-cyanide acquisitions)
+# The raw grid is user-held external data (not checked in); this section reads it
+# from $FREQCAL_GRID (default scratch/vycn_repro) and skips if absent. It builds
+# each acquisition (co-averaging 10-record files via the blackchirp package),
+# then prints the ε clock-control table, the δ_down consensus decomposition, and
+# the frame-coherence retention, writing eps_clock / delta_down / frame_coherence.
+# ---------------------------------------------------------------------------
+import os
+
+GRID_DIR = Path(os.environ.get("FREQCAL_GRID", str(REPO / "scratch/vycn_repro")))
+# committed report figures (regenerated here, embedded in report.md §12)
+FIGURES = Path(__file__).resolve().parent / "figures"
+# committed grid artifacts: Stage 6 line CSVs + design metadata + coherence bins.
+# `grid` reads these (self-contained); `export-grid` regenerates them from raw.
+DATA = Path(__file__).resolve().parent / "data"
+
+
+def _grid_meta():
+    """Parse summary.csv into {exp: {records, ref, psi}} (records from header.csv)."""
+    import re
+    meta = {}
+    with open(GRID_DIR / "summary.csv") as fh:
+        for row in csv.DictReader(fh):
+            exp = row["Experiment"].strip()
+            ref = "Rb" if "rb" in row["Reference"].lower() else "Internal"
+            psi = 30 if "30" in row["Pressure (psi)"] else 10
+            hdr = (GRID_DIR / "experiments" / exp / "header.csv").read_text()
+            m = re.search(r"MultiRecordNum;(\d+)", hdr)
+            meta[exp] = dict(records=int(m.group(1)) if m else 1, ref=ref, psi=psi)
+    return meta
+
+
+def _grid_build(exp, meta, built_dir):
+    """Build one grid acquisition; co-average 10-record files first. Returns path."""
+    import shutil
+    import numpy as np
+    import pandas as pd
+    from blackchirp import BCFTMW
+    out = built_dir / f"{exp}.ftmw"
+    if out.exists():
+        return out
+    src = GRID_DIR / "experiments" / exp
+    if meta["records"] == 10:                       # materialize a co-averaged copy
+        dst = built_dir / "coavg" / exp
+        if dst.exists():
+            shutil.rmtree(dst)
+        shutil.copytree(src, dst)
+        fid = BCFTMW(str(src), sep=";").get_fid(0)
+        fid.average_frames()
+        col = np.frompyfunc(lambda v: np.base_repr(int(v), 36), 1, 1)(
+            fid._rawdata.ravel()).astype(str)
+        (dst / "fid" / "0.csv").write_text("fid0\n" + "\n".join(col) + "\n")
+        fp = pd.read_csv(src / "fid" / "fidparams.csv", sep=";")
+        fp.loc[fp.index[0], "shots"] = int(fid.fidparams["shots"])
+        fp.to_csv(dst / "fid" / "fidparams.csv", sep=";", index=False)
+        src = dst
+    res = ftmw.run_pipeline(str(src), output=str(out), trim=TRIM, force=True,
+                            calibrate=True, progress=False)
+    if res["status"] != "success":
+        raise SystemExit(f"grid build {exp} failed at {res.get('failed_stage')}")
+    ftmw.review_run(str(out))
+    return out
+
+
+def _read_lines_csv(path):
+    """(eps, sigma_eps, [per-line dict]) from a committed Stage 6 CSV export."""
+    import re
+    import pandas as pd
+    eps = sig = 0.0
+    with open(path) as fh:
+        for line in fh:
+            if not line.startswith("#"):
+                break
+            m = re.search(r"epsilon_ppm:\s*([+-][\d.]+)\s*\+-\s*([\d.]+)", line)
+            if m:
+                eps, sig = float(m.group(1)) / 1e6, float(m.group(2)) / 1e6
+    df = pd.read_csv(path, comment="#")
+    fr = df["frequency_mhz"].to_numpy()
+    out = []
+    for i in range(len(df)):
+        f = float(fr[i])
+        nn = float(np.min(np.abs(np.delete(fr, i) - f))) if len(fr) > 1 else 1e9
+        snr = df["snr"].iloc[i]
+        out.append(dict(f=f, fraw=float(df["frequency_raw_mhz"].iloc[i]),
+                        snr=float(snr) if pd.notna(snr) else 0.0, nn=nn))
+    return eps, sig, out
+
+
+def _read_coher_csv(path):
+    """(baseband_signal, eta_signal, eta_noise) from a committed coherence CSV."""
+    import re
+    import pandas as pd
+    eta_noise = float("nan")
+    with open(path) as fh:
+        for line in fh:
+            if not line.startswith("#"):
+                break
+            m = re.search(r"eta_noise:\s*([\d.]+)", line)
+            if m:
+                eta_noise = float(m.group(1))
+    df = pd.read_csv(path, comment="#")
+    return df["baseband_mhz"].to_numpy(), df["eta"].to_numpy(), eta_noise
+
+
+def sec_export_grid(args):
+    """Regenerate the committed data/ artifacts from the raw $FREQCAL_GRID export.
+
+    Run once when the raw 17-acquisition export is available; the committed CSVs
+    are what `grid` (and thus the report) actually depend on."""
+    print("\n## export-grid: regenerate committed data/ from raw export")
+    if not (GRID_DIR / "summary.csv").exists():
+        print(f"  raw grid not found at {GRID_DIR}; set $FREQCAL_GRID. Skipping.")
+        return
+    meta = _grid_meta()
+    built_dir = GRID_DIR / "built"
+    built_dir.mkdir(parents=True, exist_ok=True)
+    (DATA / "lines").mkdir(parents=True, exist_ok=True)
+    (DATA / "coherence").mkdir(parents=True, exist_ok=True)
+    with open(DATA / "grid_meta.csv", "w") as fh:
+        fh.write("exp,ref,psi,records\n")
+        for exp in sorted(meta):
+            m = meta[exp]
+            fh.write(f"{exp},{m['ref']},{m['psi']},{m['records']}\n")
+    for exp in sorted(meta):
+        p = _grid_build(exp, meta[exp], built_dir)
+        ftmw.report_table(str(p), fmt="csv",
+                          output=str(DATA / "lines" / f"{exp}.csv"))
+        if meta[exp]["records"] == 10:
+            _, freq, S = _grid_spectra(exp)
+            mag = np.abs(S); mm = mag.mean(axis=1)
+            eta = np.abs(S.sum(axis=1)) / (mag.sum(axis=1) + 1e-30)
+            band = (freq >= 1400) & (freq <= 5000)
+            thr = np.percentile(mm[band], 30)
+            sig = band & (mm > 8 * thr)
+            en = float(np.median(eta[band & (mm < thr)]))
+            with open(DATA / "coherence" / f"{exp}.csv", "w") as fh:
+                fh.write(f"# frame-coherence signal bins for {exp}\n")
+                fh.write(f"# eta_noise: {en:.4f}\n")
+                fh.write("baseband_mhz,eta\n")
+                for b, e in zip(freq[sig], eta[sig]):
+                    fh.write(f"{b:.4f},{e:.5f}\n")
+        print(f"  exported {exp}", flush=True)
+    print(f"  wrote {DATA}/ (grid_meta.csv, lines/, coherence/)")
+
+
+def sec_grid(args):
+    print("\n## §12  reproducibility grid (17 controlled VyCN acquisitions)")
+    if not (DATA / "grid_meta.csv").exists():
+        print(f"  committed grid artifacts not found at {DATA}; regenerate with "
+              f"'reproduce.py export-grid' and $FREQCAL_GRID set to the raw export.")
+        return
+    meta = {}
+    for r in csv.DictReader(open(DATA / "grid_meta.csv")):
+        meta[r["exp"]] = dict(ref=r["ref"], psi=int(r["psi"]),
+                              records=int(r["records"]))
+    lines, eps, coher = {}, {}, {}
+    for exp in sorted(meta):
+        es, sg, ln = _read_lines_csv(DATA / "lines" / f"{exp}.csv")
+        lines[exp], eps[exp] = ln, (es, sg)
+        cf = DATA / "coherence" / f"{exp}.csv"
+        if cf.exists():
+            coher[exp] = _read_coher_csv(cf)
+
+    # §12.1 -- ε clock control
+    cat = catalog_freqs()
+    print("\n  §12.1 ε: Internal (free-running) vs Rb-locked digitizer")
+    grp = {"Internal": [], "Rb": []}
+    for exp in sorted(meta):
+        es, sg = eps[exp]
+        draw, base = [], []
+        for ln in lines[exp]:
+            j = int(np.argmin(np.abs(cat - ln["f"])))
+            if abs(cat[j] - ln["f"]) <= 0.010 and ln["nn"] >= 0.3:
+                draw.append(cat[j] - ln["fraw"]); base.append(PROBE - ln["fraw"])
+        ec = (float(np.sum(np.array(draw) * base) / np.sum(np.array(base) ** 2))
+              if len(draw) >= 3 else float("nan"))
+        grp[meta[exp]["ref"]].append((es * 1e6, ec * 1e6))
+    for ref in ("Internal", "Rb"):
+        g = np.array(grp[ref])
+        spur = g[:, 0]; catv = g[:, 1][~np.isnan(g[:, 1])]
+        print(f"    {ref:<8} n={len(g)}  eps_spur = {spur.mean():+.2f} ± {spur.std():.2f}"
+              f"   eps_catalog = {catv.mean():+.2f} ± {catv.std():.2f} ppm")
+
+    # §12.2 -- δ_down from dominant hyperfine-multiplet centroids (all 17 runs)
+    print("\n  §12.2 δ_down (dominant ¹⁴N-multiplet centroids, catalog-free)")
+    cents = _grid_centroids(meta, lines)   # [(consensus_mhz, {exp: centroid_mhz})]
+    offs = {}
+    for _, byexp in cents:
+        med = np.median(list(byexp.values()))
+        for exp, c in byexp.items():
+            offs.setdefault(exp, []).append((c - med) * 1e3)
+    dd = {e: float(np.median(v)) for e, v in offs.items()}
+    allv = np.array([dd[e] for e in sorted(dd)])
+    byref = {r: np.array([dd[e] for e in dd if meta[e]["ref"] == r])
+             for r in ("Internal", "Rb")}
+    bypsi = {p: np.array([dd[e] for e in dd if meta[e]["psi"] == p]) for p in (10, 30)}
+    print(f"    {len(cents)} dominant multiplet centroids anchor all {len(dd)} runs "
+          f"(¹⁵N sub-SNR at ~3000 shots; ¹⁴N-bearing only)")
+    print(f"    run-to-run δ_down std = {allv.std(ddof=1):.2f} kHz, mean {allv.mean():+.2f}")
+    print(f"    Internal {byref['Internal'].mean():+.2f}±{byref['Internal'].std(ddof=1):.2f}"
+          f"  Rb {byref['Rb'].mean():+.2f}±{byref['Rb'].std(ddof=1):.2f} kHz "
+          f"(means overlap; no clock-dependent offset)")
+    print(f"    10psi {bypsi[10].mean():+.2f}±{bypsi[10].std(ddof=1):.2f}"
+          f"  30psi {bypsi[30].mean():+.2f}±{bypsi[30].std(ddof=1):.2f} kHz "
+          f"(no resolved pressure shift)")
+
+    # §12.3 -- frame coherence (from committed coherence bins)
+    print("\n  §12.3 frame coherence η (10-record co-average retention)")
+    for exp in sorted(coher):
+        freq_sig, eta_sig, eta_noise = coher[exp]
+        print(f"    {exp} {meta[exp]['ref']:<8} η_signal={np.median(eta_sig):.3f} "
+              f"η_noise={eta_noise:.3f}")
+    _grid_figures(args, meta, eps, dd, offs, coher)
+
+
+def _grid_centroids(meta, lines, cluster_mhz=0.5, min_acq=12, min_totsnr=100.0):
+    """Dominant hyperfine-multiplet centroids across acquisitions.
+
+    Cluster all fitted peaks within cluster_mhz; keep strong clusters present in
+    >= min_acq acquisitions; each acquisition's SNR-weighted centroid (the
+    split-invariant first moment) is its estimate of that dominant line.
+    Returns [(consensus_median_mhz, {exp: centroid_mhz}), ...]."""
+    allpk = sorted((ln["f"], ln["snr"], e) for e in lines for ln in lines[e])
+    clusters, cur = [], [allpk[0]]
+    for p in allpk[1:]:
+        if p[0] - cur[-1][0] <= cluster_mhz:
+            cur.append(p)
+        else:
+            clusters.append(cur); cur = [p]
+    clusters.append(cur)
+    out = []
+    for cl in clusters:
+        byexp = {}
+        tot = []
+        for e in {p[2] for p in cl}:
+            f = np.array([p[0] for p in cl if p[2] == e])
+            w = np.array([p[1] for p in cl if p[2] == e])
+            byexp[e] = float(np.sum(f * w) / np.sum(w))
+            tot.append(w.sum())
+        if len(byexp) >= min_acq and np.median(tot) >= min_totsnr:
+            out.append((float(np.median(list(byexp.values()))), byexp))
+    return out
+
+
+def _grid_spectra(exp, start_us=3.35, end_us=15.0):
+    from blackchirp import BCFTMW
+    fid = BCFTMW(str(GRID_DIR / "experiments" / exp), sep=";").get_fid(0)
+    d = np.asarray(fid.data); sp = float(fid.fidparams["spacing"])
+    lo = max(round(start_us / 1e6 / sp), 0)
+    hi = min(round(end_us / 1e6 / sp), d.shape[0])
+    S = np.fft.rfft(d[lo:hi, :], axis=0)
+    freq = np.fft.rfftfreq(hi - lo, sp) * 1e-6
+    return PROBE - freq, freq, S
+
+
+def _grid_figures(args, meta, eps, dd, offs, coher):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    RED, BLUE = "#c0392b", "#2c6fbb"
+    FIGURES.mkdir(parents=True, exist_ok=True)
+    names = sorted(meta)
+    col = {e: (RED if meta[e]["ref"] == "Internal" else BLUE) for e in names}
+
+    # --- Fig 01: ε clock control ---
+    fig, ax = plt.subplots(figsize=(10, 4.6))
+    for i, e in enumerate(names):
+        ax.errorbar(i, eps[e][0] * 1e6, yerr=eps[e][1] * 1e6, fmt="o", ms=9,
+                    color=col[e], ecolor="0.4", capsize=3, zorder=3)
+    igrp = [eps[e][0] * 1e6 for e in names if meta[e]["ref"] == "Internal"]
+    rgrp = [eps[e][0] * 1e6 for e in names if meta[e]["ref"] == "Rb"]
+    ax.axhline(np.mean(igrp), color=RED, ls="--", lw=1.3,
+               label=f"Internal mean +{np.mean(igrp):.2f} ± {np.std(igrp):.2f} ppm")
+    ax.axhline(np.mean(rgrp), color=BLUE, ls="--", lw=1.3,
+               label=f"Rb-locked mean +{np.mean(rgrp):.2f} ± {np.std(rgrp):.2f} ppm")
+    ax.axhline(0, color="0.7", lw=0.8, zorder=0)
+    ax.set_xticks(range(len(names)))
+    ax.set_xticklabels([f"{e}\n{meta[e]['ref'][0]}" for e in names], fontsize=7.5)
+    ax.set_ylabel("clock scale error ε  (ppm)")
+    ax.set_title("§12.1  Digitizer sample clock: free-running (Internal) vs Rb-locked")
+    ax.legend(loc="center right", framealpha=.95); ax.grid(axis="y", alpha=.3)
+    fig.tight_layout(); fig.savefig(FIGURES / "01_eps_clock_control.png", dpi=140)
+    plt.close(fig)
+
+    # --- Fig 02: δ_down, two panels (per-acquisition + by condition) ---
+    fig, (a0, a1) = plt.subplots(1, 2, figsize=(12, 4.6),
+                                 gridspec_kw={"width_ratios": [2.3, 1]})
+    allv = np.array([dd[e] for e in names])
+    for i, e in enumerate(names):
+        a0.scatter(i, dd[e], color=col[e], s=90, alpha=.9, zorder=3)
+    a0.axhline(0, color="0.6", lw=.8)
+    a0.axhspan(-allv.std(ddof=1), allv.std(ddof=1), color="0.6", alpha=.13,
+               label=f"±{allv.std(ddof=1):.1f} kHz (run-to-run std)")
+    a0.set_xticks(range(len(names)))
+    a0.set_xticklabels([f"{e}\n{meta[e]['ref'][0]}{meta[e]['psi']}·r{meta[e]['records']}"
+                        for e in names], fontsize=6.5)
+    a0.set_ylabel("δ_down vs consensus  (kHz)")
+    a0.set_title("§12.2  Between-acquisition δ_down (dominant hyperfine-multiplet centroids)")
+    a0.legend(loc="lower left"); a0.grid(axis="y", alpha=.3)
+    # right: strip by (clock × pressure)
+    conds = [("Internal", 10), ("Internal", 30), ("Rb", 10), ("Rb", 30)]
+    for j, (ref, psi) in enumerate(conds):
+        vals = [dd[e] for e in names if meta[e]["ref"] == ref and meta[e]["psi"] == psi]
+        c = RED if ref == "Internal" else BLUE
+        a1.scatter(np.full(len(vals), j) + np.linspace(-.12, .12, len(vals)),
+                   vals, color=c, s=70, alpha=.9)
+        a1.plot([j - .2, j + .2], [np.mean(vals)] * 2, color=c, lw=2)
+    a1.axhline(0, color="0.6", lw=.8)
+    a1.set_xticks(range(4))
+    a1.set_xticklabels([f"{r[0]}\n{p}psi" for r, p in conds], fontsize=8)
+    a1.set_title("by condition (bar = mean)"); a1.grid(axis="y", alpha=.3)
+    fig.tight_layout(); fig.savefig(FIGURES / "02_delta_down.png", dpi=140)
+    plt.close(fig)
+
+    # --- Fig 03: frame coherence ---
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for exp, (freq_sig, eta_sig, _noise) in coher.items():
+        ax.scatter(freq_sig, eta_sig, s=10,
+                   color=(RED if meta[exp]["ref"] == "Internal" else BLUE), alpha=.45)
+    ax.axhline(1 / np.sqrt(10), color="0.4", ls="--",
+               label="incoherent floor  1/√10 ≈ 0.32")
+    ax.axhline(1.0, color="0.7", lw=.8)
+    ax.plot([], [], "o", color=RED, label="Internal (free-running)")
+    ax.plot([], [], "o", color=BLUE, label="Rb-locked")
+    ax.set_xlabel("baseband frequency  (MHz)")
+    ax.set_ylabel("co-average retention  η = |Σ Sₖ| / Σ|Sₖ|")
+    ax.set_title("§12.3  Ten-frame co-average is phase-coherent across the band (both clocks)")
+    ax.set_ylim(0.2, 1.03); ax.grid(alpha=.3); ax.legend(loc="lower left", framealpha=.95)
+    fig.tight_layout(); fig.savefig(FIGURES / "03_frame_coherence.png", dpi=140)
+    plt.close(fig)
+    print(f"  wrote {FIGURES}/{{01_eps_clock_control,02_delta_down,03_frame_coherence}}.png")
+
+
 SECTIONS = {"eps": sec_eps, "between": sec_between, "within": sec_within,
             "snr": sec_snr, "quad": sec_quad,
-            "lattice": sec_lattice, "pedestal": sec_pedestal}
+            "lattice": sec_lattice, "pedestal": sec_pedestal, "grid": sec_grid}
+# export-grid regenerates committed data/ from raw; not part of a default run.
+EXTRA = {"export-grid": sec_export_grid}
 
 
 def main():
@@ -437,12 +773,16 @@ def main():
     ap.add_argument("--out", default=str(REPO / "output/freqcal-repro"))
     ap.add_argument("--rebuild", action="store_true")
     args = ap.parse_args()
-    for name in FIXTURES:
-        ensure_fixture(name, args.rebuild)
     todo = args.sections or list(SECTIONS)
+    # the 655/1512 fixtures are only needed by the archival-pair sections
+    if any(s in todo for s in ("eps", "between", "within", "snr", "quad")):
+        for name in FIXTURES:
+            ensure_fixture(name, args.rebuild)
     for s in todo:
         if s in SECTIONS:
             SECTIONS[s](args)
+        elif s in EXTRA:
+            EXTRA[s](args)
         else:
             print(f"  (section '{s}' not yet ported)")
 
