@@ -24,10 +24,12 @@ instrumental terms from an unlocked digitizer:
   clock). It produces `Δf = ε·f_baseband` — simultaneously a ~20 kHz offset and a
   ~2–3 kHz/GHz tilt, one parameter. It self-calibrates: the clock-spur lattice
   recovers the same ε the catalog regression does, prior-free.
-- **An additive per-acquisition absolute offset `δ_down` (~4–12 kHz)**, flat in
-  frequency. It is *not* self-calibratable — no in-band spur reaches it through
-  the downconversion mixer — and it varies run to run. It is the dominant
-  accuracy limit and is documented, not corrected, by default.
+- **An additive per-acquisition absolute offset `δ_down`**, flat in frequency. It
+  is *not* self-calibratable — no in-band spur reaches it through the
+  downconversion mixer — and it varies run to run. A controlled 17-acquisition
+  grid (§12) shows it is a **small (~3 kHz run-to-run), unbiased, random**
+  per-acquisition draw with no stable per-instrument component and no dependence
+  on the digitizer clock; it is documented, not corrected, by default.
 
 Two direct reproducibility measurements bound the random and systematic parts
 separately. **Within** an acquisition, splitting into independent
@@ -37,8 +39,10 @@ the co-average level, and — in the statistics-limited regime — empirical sca
 equal to ~1.25× the reported CRB across 1.5 decades of shots, validating σ_stat.
 **Between** acquisitions, differencing two independent vinyl-cyanide runs
 (catalog-free) gives random reproducibility shrinking with SNR toward ~2.7 kHz
-*plus* the flat δ_down (≈ 4.5 kHz here). The within-acquisition test is
-structurally blind to δ_down; only the between-acquisition test sees it.
+*plus* the flat δ_down (≈ 4.5 kHz for the one archival pair). The
+within-acquisition test is structurally blind to δ_down; only the
+between-acquisition test sees it — and the 17-acquisition grid of §12 resolves it
+as a small, random, clock-independent per-acquisition draw.
 
 The budget is therefore `σ_f = sqrt(σ_stat² + (σ_ε·f_baseband)² + σ_floor²)`:
 σ_stat the CRB, σ_ε·f_baseband the propagated timebase-parameter uncertainty, and
@@ -93,6 +97,9 @@ Applying `f_corr = f_meas + ε·f_baseband` drops the median catalog residual
 ~21 → 5 kHz (1512) and ~23 → 2 kHz (655). The timebase machinery measures and
 persists ε; the final-products surface applies it (see
 [`../../planning/instrument-clock-declaration.md`](../../planning/instrument-clock-declaration.md)).
+The 17-acquisition grid of §12 turns this inference into a proof: Rb-locking the
+digitizer collapses ε from +2.24 ppm to +0.05 ppm, and the prior-free spur ε
+tracks that control to zero with no catalog.
 
 ## 4. The σ_f budget
 
@@ -259,23 +266,125 @@ exposed as a user-owned accuracy floor (default 0), not silently baked in. The
 catalog pull `(f_corr − f_cat)/σ_f` is a user calibration tool, read knowing the
 catalog adds ~3 kHz — not a validation gate.
 
-**Open / pending.** The vinyl-cyanide run-to-run is currently one pair (n = 2
-acquisitions). Additional VyCN acquisitions turn the single δ_down into a
-distribution that tests stable-per-instrument vs random-per-acquisition — the
-decisive distinction for whether any fixed correction is possible; the comparator
-accepts an arbitrary acquisition list. A planned instrument grid addresses three
-things at once: (i) **same-molecule, two backing-pressures** repeats that separate
-instrumental δ_down (same-pressure runs) from any expansion-dependent shift
-(cross-pressure) — the controlled comparison MTBE could not provide; (ii) **single-
-vs multi-frame × free-running vs Rb-locked digitizer**, testing a predicted
-co-average *signal-loss* mechanism where a free-running sampler's per-frame
-sub-sample timing scatter imprints a baseband-dependent phase incoherence
-`η(f) ≈ exp(−½(2π f σ_δt)²)` that erodes the coherent average toward the band edge;
-and (iii) more pairwise δ_down draws. A hyperfine-free molecule (or reliance on the
-¹⁵N lines, §7) would sharpen the within-acquisition floor, since VyCN's ¹⁴N
-hyperfine caps the clean-line set. A second-spectrometer comparison (shared catalog
-cancels) and a bench counter test on the downconversion LO would characterize
-δ_down further.
+**The grid closed the open questions (§12).** What was a single pair (n = 2) is
+now 17 controlled acquisitions, and all three planned tests resolved: (i) the
+free-running-vs-Rb-locked clock arm **proved** ε is the digitizer sample clock
+(Rb-locking collapses ε to zero, §12.1); (ii) the multi-frame arm **refuted** the
+predicted co-average signal-loss mechanism — ten-frame co-averaging is
+phase-coherent to η ≈ 0.99 across the band for both clocks (§12.3), because the
+free-running error is a fixed per-acquisition offset, not intra-acquisition
+jitter; and (iii) the pairwise δ_down draws settled the **stable-vs-random**
+question — δ_down is a small (~3 kHz run-to-run), unbiased, clock-independent
+random draw with no stable per-instrument component (§12.2), so no fixed
+correction is possible and none is warranted. The two-backing-pressure arm did
+not resolve an expansion-dependent shift at this SNR (below a few kHz).
+
+**Still open.** A hyperfine-free molecule (or the ¹⁵N lines at high shot count,
+§7) would sharpen the within-acquisition floor, since VyCN's ¹⁴N hyperfine caps
+the clean-line set — the low-shot grid could reach only the ¹⁴N-bearing lines. A
+second-spectrometer comparison (shared catalog cancels) and a bench counter test
+on the downconversion LO would characterize the absolute (common) δ_down that the
+catalog-free differential tests are structurally blind to.
+
+## 12. The reproducibility grid — a controlled 17-acquisition test
+
+The evidence above rests on two archival acquisitions (1512, 655) plus the MTBE
+pair. A dedicated grid of **17 vinyl-cyanide acquisitions on the home
+instrument** was acquired to turn the single-pair δ_down and the *inferred* clock
+mechanism into controlled tests: a 2×2×2 factorial — free-running **Internal** vs
+**Rb-locked** digitizer sample clock × **10 vs 30 psi** backing pressure × **1 vs
+10** stored records — with two replicates per cell, plus one high-objective run.
+Natural-abundance vinyl cyanide; each 10-record file is co-averaged across its ten
+phase-locked frames (lossless — §12.3) before the standard pipeline (trim
+26.5–40 GHz, timebase calibration, review). The exported acquisitions are
+low-shot (~2 200–3 450 shots/frame, below 1512), so the analysis leans on the
+brightest common lines. The raw grid is user-held external data (like the
+100-backup acquisition of §7); what is committed beside this report is the Stage 6
+final-products CSV of each acquisition plus a small frame-coherence artifact
+(`data/`), from which every §12 number and figure regenerates (see *Reproducer*).
+
+### 12.1 ε is the digitizer sample clock (the mechanism, proven)
+
+§3 *inferred* that ε is a free-running sample-clock scale error. The grid proves
+it by controlling the clock directly:
+
+| digitizer clock | ε (prior-free spurs) | ε (catalog regression) | n |
+|---|---|---|---|
+| Internal (free-running) | **+2.24 ± 0.09 ppm** | +2.18 ± 0.23 ppm | 9 |
+| Rb-locked | **+0.05 ± 0.16 ppm** | +0.04 ± 0.20 ppm | 8 |
+
+Locking the digitizer to the Rb standard collapses ε to zero. Three things
+follow. (i) ε is *exactly* the unlocked sample clock — nothing else. (ii) The
+prior-free spur calibration (`calibrate_timebase`) measures the **true** clock
+error: within each group it agrees with the catalog regression, and it tracks the
+Rb control to zero **with no catalog input**. (iii) The Internal ε (+2.24 ppm)
+reproduces the archival 1512/655 values (~2.0–2.28 ppm) and is itself stable to
+±0.09 ppm across nine acquisitions — a fixed clock offset, not a jittering one
+(consistent with §12.3).
+
+![Prior-free spur ε per acquisition, separating cleanly into a +2.24 ppm Internal band and a ~0 ppm Rb-locked band](figures/01_eps_clock_control.png)
+
+### 12.2 δ_down is a small, unbiased, random per-acquisition draw
+
+§8 saw one δ_down (+4.2 kHz, 655−1512) and could not separate a **stable**
+per-instrument offset from a **random** per-acquisition draw. The grid answers
+it, catalog-free.
+
+**The anchor lines are hyperfine multiplets.** Every spectrum carries the same
+~6 dominant VyCN lines at SNR 500–2900, but each is a ¹⁴N quadrupole-hyperfine
+multiplet the fitter splits into 2–3 components 50–250 kHz apart. The reproducible,
+split-invariant quantity is therefore the multiplet **centroid** (SNR-weighted
+first moment), not any single component — an "isolated single peak" criterion
+rejects the dominant lines outright and leaves only sparse incidental ones. Each
+ε-corrected acquisition is referred to the cross-acquisition consensus of ~12
+dominant multiplet centroids (present in ≥ 12 of 17); its median residual is
+δ_down. (The ¹⁵N lines, the hyperfine-free probe of §7, are sub-SNR at ~3 000
+shots and never enter — the grid measures the ¹⁴N-bearing lines only.)
+
+- **All 17 acquisitions anchor on the same centroids** — no line-poor runs to
+  exclude. The individual multiplet centroid wanders ~17 kHz run-to-run
+  (hyperfine fit-decomposition at low SNR, the §7 effect), but the per-acquisition
+  **common** offset is small: **run-to-run std 3.2 kHz, mean ≈ 0**, because the
+  wander is line-specific and averages out of the 12-line median while the shared
+  shift survives.
+- **No clock-dependent offset** (Internal −1.6 ± 3.7, Rb +0.3 ± 2.3 kHz — the
+  means overlap; Rb-locked runs are modestly tighter) → δ_down is not the
+  digitizer, consistent with §9's downconversion-side offset. **No resolved
+  pressure shift** (10 psi +0.4 ± 2.4, 30 psi −1.9 ± 3.7 kHz); the
+  expansion-dependent term MTBE hinted at is below a few kHz here.
+
+The single 655↔1512 +4.2 kHz was therefore one draw from a **small (~3 kHz
+run-to-run), unbiased, random** per-acquisition distribution with no stable
+component — confirming §11's prediction that no fixed δ_down correction is
+possible. And 3.2 kHz ≈ the ~2.7 kHz between-acquisition random floor of §8 and
+the catalog's own ~3 kHz accuracy (§6): at this precision δ_down *is* that random
+floor. Reaching it on 17 sub-1512-SNR acquisitions, from hyperfine-blended lines,
+makes the "no large stable offset" conclusion the stronger for it.
+
+![Per-acquisition δ_down for all 17 runs (red Internal, blue Rb) within a ±3.2 kHz band, and the same grouped by clock×pressure condition](figures/02_delta_down.png)
+
+The one visible clustering — the two Internal / 30 psi / 10-record replicates
+(2855, 2859) both at ≈ −6 to −8 kHz while the matching Rb cell sits at ≈ 0 — is a
+two-point cell and not resolvable from a coincident pair of random draws; it is
+the sole hint of a possible condition interaction and would need a dedicated
+repeat to confirm.
+
+### 12.3 Multi-frame co-averaging is phase-coherent (a predicted loss, refuted)
+
+§11 predicted that a free-running sampler's per-frame sub-sample timing scatter
+would imprint a baseband-dependent phase incoherence
+`η(f) ≈ exp(−½(2π f σ_δt)²)`, eroding the co-average toward the band edge. The
+ten-record files test it directly: for each, the co-average amplitude retention
+`η(f) = |Σ_frames S(f)| / Σ_frames |S(f)|` (1 = phase-coherent; 1/√10 ≈ 0.32 =
+the incoherent noise floor). Across all eight, at both low and high baseband and
+for **both** clock references, **η ≈ 0.99 with no roll-off** (noise floor 0.34, as
+expected). There is no measurable co-average signal loss and no
+Internal-vs-Rb difference. The ten frames of one acquisition share a single clock
+over the ~ms it takes to record them, so the free-running error is a *fixed
+per-acquisition offset* (§12.1), not intra-acquisition jitter — and multi-frame
+co-averaging is lossless regardless of clock reference.
+
+![Co-average retention η at signal bins sits at ~0.99 across the full baseband for both clocks, far above the 1/√10 incoherent floor](figures/03_frame_coherence.png)
 
 ## Reproducer
 
@@ -289,3 +398,16 @@ and figure (§8); the lattice spur reconstruction (§9); and the pedestal
 cross-method convergence table (§10). The development seeds it consolidates live
 under gitignored `scratch/` (`floor-uxr/`, `floor-bc/`, `vycn-crossacq/`,
 `unc_*.py`, `lattice_intercept*.py`, `pedestal-test/`).
+
+The grid of §12 is **self-contained from committed artifacts** — the raw
+17-acquisition export is too large and is user-held. The `grid` section reads
+only `data/` beside this report: `grid_meta.csv` (the design), `lines/<exp>.csv`
+(one Stage 6 final-products export per acquisition — the `report_table` CSV,
+carrying `epsilon_ppm`, `frequency_raw_mhz`, `f_baseband_mhz`, and `snr`), and
+`coherence/<exp>.csv` (per-frame co-average retention η at the signal bins, the
+one quantity that needs the raw frames). From those it regenerates the
+ε clock-control table (§12.1), the δ_down centroid decomposition (§12.2), the
+frame-coherence retention (§12.3), and the three embedded figures under
+`figures/`. The `export-grid` section regenerates `data/` from the raw export
+(`$FREQCAL_GRID`, default `scratch/vycn_repro`) and is run only when the raw data
+is on hand; the committed CSVs are what the report actually depends on.

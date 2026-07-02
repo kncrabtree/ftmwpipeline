@@ -1,12 +1,14 @@
 # Frequency calibration and the σ_f uncertainty budget — research-report plan
 
-Status: **planned (not written).** This document is the outline and the
-findings-to-date for a self-contained research report (in the style of
-[`../noise-snr-scaling/report.md`](../noise-snr-scaling/report.md)) covering the
-complete frequency-calibration and frequency-uncertainty source analysis. The
-findings below are already established; what remains is to consolidate them into
-one narrative `report.md` backed by **one self-contained reproducer script** that
-regenerates every number and figure from the `.ftmw` fixtures + catalogs.
+Status: **written.** `report.md` and `reproduce.py` are complete, and the
+pending third-acquisition input has landed as a full 17-acquisition
+reproducibility grid, integrated as report §12. This document is the outline and
+the findings history; the report is authoritative. The grid resolved the three
+open questions: the free-running-vs-Rb-locked clock arm **proved** ε is the
+digitizer sample clock (§12.1); the multi-frame arm **refuted** the predicted
+co-average signal-loss mechanism (§12.3); and the δ_down draws settled the
+stable-vs-random question — **small, unbiased, random, clock-independent**
+(§12.2). Remaining tails are instrument-side only (see below).
 
 The settled engineering decision this analysis produced is shipped and recorded
 separately ([`../../planning/stage6-reports.md`](../../planning/stage6-reports.md)
@@ -143,20 +145,30 @@ re-bin sweep); the catalog-free between-acquisition comparator
 and the pedestal test (`scratch/pedestal-test/{recon,pedestal_test,apod_arm}.py`).
 The report consolidates these into the single reproducer.
 
-## Pending input — a third vinyl-cyanide acquisition
+## Landed input — the 17-acquisition reproducibility grid (report §12)
 
-A further VyCN acquisition strengthens §8 materially: the VC run-to-run is
-currently a single pair (1512↔655, n = 2 acquisitions → one pairwise difference).
-A third VC acquisition gives three pairwise differences and tests whether `δ_down`
-is a **stable** per-instrument offset or a **random** per-acquisition draw — the
-decisive distinction for whether any fixed correction is even possible. The
-`scratch/vycn-crossacq/compare.py` comparator already accepts an arbitrary list of
-acquisitions, so an added fixture drops straight in. An in-progress grid (vinyl
-cyanide; single- vs multi-frame, free-running vs Rb-locked digitizer) is the
-intended source — and it doubles as the §7 within-acquisition coherence test
-(free-running scope clock → frame phase-incoherence → co-average signal loss
-that scales with baseband frequency). Write the report with the two-acquisition
-caveat and append the grid results when they land.
+The pending "third acquisition" arrived as a full 2×2×2 factorial (Internal vs
+Rb-locked digitizer × 10 vs 30 psi × 1 vs 10 records; two replicates/cell + one
+high-objective run) — 17 vinyl-cyanide acquisitions, natural abundance. Built
+with the standard recipe (10-record files co-averaged via the blackchirp
+package's `average_frames`). The raw export is user-held (too large to commit);
+`reproduce.py export-grid` distills it into committed artifacts under `data/`
+(per-acquisition Stage 6 line CSVs + design metadata + a small frame-coherence
+artifact), and the `grid` section regenerates every §12 number and figure from
+those alone. Outcome, integrated as §12:
+
+- **ε clock control (§12.1):** Rb-locking the digitizer collapses ε from
+  +2.24 ± 0.09 ppm (Internal, n=9) to +0.05 ± 0.16 ppm (Rb, n=8) — the §3
+  mechanism, proven; the prior-free spur ε tracks the control to zero.
+- **δ_down stable-vs-random (§12.2):** run-to-run δ_down is small (~1.5 kHz robust;
+  3.4 kHz with one real −11 kHz outlier), unbiased, clock-independent — a random
+  per-acquisition draw, no stable offset. All 16 consensus lines are ¹⁴N-bearing
+  (¹⁵N is sub-SNR at ~3 000 shots); per-line hyperfine wander ~10 kHz averages out
+  of the common offset. No pressure shift resolved at this SNR.
+- **frame coherence (§12.3):** ten-frame co-average retention η ≈ 0.99 across
+  baseband for both clocks (noise floor ~0.34) — the predicted free-running
+  signal-loss mechanism is absent; the clock error is a fixed per-acquisition
+  offset, not intra-acquisition jitter.
 
 ## Deferred / non-blocking instrument-side tests (from §B)
 

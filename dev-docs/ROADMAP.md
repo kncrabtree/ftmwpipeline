@@ -31,12 +31,18 @@ historical narrative worth keeping are archived in [`COMPLETED.md`](COMPLETED.md
    batched `black`/`isort`/`mypy` cleanup, catching anything that landed since
    the last sweep. The documentation and repository-cleanup tracks are otherwise
    done.
-2. **Frequency-calibration / σ_f research write-up**
-   ([`research/frequency-calibration-uncertainty/PLAN.md`](research/frequency-calibration-uncertainty/PLAN.md))
-   — findings settled and shipped into the report; the consolidated write-up is
-   **gated on the pending third vinyl-cyanide acquisition** (turns the run-to-run
-   `δ_down` comparison into a stable-vs-random test), expected within ~2 weeks.
-   Pairs with productizing the data-driven `σ_floor` (cross-acquisition tier).
+2. **Data-driven `σ_floor` productization (cross-acquisition tier)** — the
+   frequency-calibration / σ_f research write-up
+   ([`research/frequency-calibration-uncertainty/report.md`](research/frequency-calibration-uncertainty/report.md))
+   is **done**: the pending third acquisition landed as a 17-acquisition
+   reproducibility grid (report §12) that proved ε is the free-running digitizer
+   clock (Rb-locking zeroes it), refuted the frame co-average signal-loss
+   mechanism, and settled `δ_down` as a small, random, clock-independent
+   per-acquisition draw (no stable offset → no fixed correction warranted). What
+   remains from that track is optional: productize the measured random floor as a
+   user-facing cross-acquisition `σ_floor` tier, and the instrument-side tests
+   (second-spectrometer comparison; bench counter on the downconversion LO) that
+   would characterize the common `δ_down` the catalog-free tests can't see.
 3. **Ultra-high-SNR lineshape floor**
    ([`planning/stage5-cross-fixture-validation.md`](planning/stage5-cross-fixture-validation.md))
    — on the list; reassess on **655** and the strong **vinyl-fluoride** fixture
